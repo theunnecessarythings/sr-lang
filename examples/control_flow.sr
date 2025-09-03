@@ -1,0 +1,60 @@
+// Control Flow
+
+main :: proc() {
+
+    // If expression
+    if x > 5 { 
+        y := 1 
+    } else {
+        y := 2
+    }
+
+    // `while` loop with a boolean condition
+    keep_looping := true
+    while keep_looping {
+        // loop body
+        keep_looping = false // exit condition
+    }
+
+
+    // `for` loop for iteration
+    for x in .[1, 2, 3] {
+        print(x)
+    }
+
+    // `while` loop with a pattern match
+    // This is the replacement for `while let`
+    while is Some(x) := maybe_value {
+        print(x)
+    }
+
+    // Infinite loop
+    while {
+        if should_break {
+            break
+        }
+    }
+
+    // Match expression
+    match x {
+        1 => print("one"),
+        2 => print("two"),
+        _ => print("other"),
+    }
+
+    // Match with `unreachable` expression
+    MyBool :: enum { True, False }
+    val: MyBool = MyBool.True
+    match val {
+        MyBool.True => print("It was true!"),
+        MyBool.False => print("It was false!"),
+        // The compiler knows all cases are covered, so a `_` case is not needed.
+    }
+
+    // Example where unreachable might be used
+    match some_integer {
+        0..100 => print("Small number"),
+        _ => if some_condition { print("Large number") } else { unreachable },
+    }
+
+}
