@@ -12,11 +12,6 @@ pub fn main() !void {
 
     var file = try std.fs.cwd().openFile(filename, .{});
     const source = try file.readToEndAlloc(std.heap.page_allocator, (try file.stat()).size);
-
-    var lexer = compiler.lexer.Tokenizer.init(try std.heap.page_allocator.dupeZ(u8, source));
-    while (true) {
-        const token = lexer.next();
-        std.debug.print("{s}({}, {})\n", .{ @tagName(token.tag), token.loc.start, token.loc.end });
-        if (token.tag == .eof) break;
-    }
+    defer std.heap.page_allocator.free(source);
+    std.debug.print("Compiling {s}...\n", .{filename});
 }
