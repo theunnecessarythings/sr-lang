@@ -81,6 +81,10 @@ pub const Parser = struct {
         return .{ .bytes = self.slice(tok), .loc = tok.loc };
     }
 
+    inline fn isUnderscore(self: *Parser) bool {
+        return self.current().tag == .identifier and std.mem.eql(u8, self.slice(self.current()), "_");
+    }
+
     inline fn parseOptionalInitializer(self: *Parser, comptime mode: ParseMode) !?*ast.Expr {
         if (self.current().tag == .eq) {
             self.advance();
@@ -335,6 +339,7 @@ pub const Parser = struct {
             .keyword_return => try self.parseReturn(),
             .keyword_if => try self.parseIfExpr(),
             .keyword_while => try self.parseWhileExpr(),
+            .keyword_match => try self.parseMatchExpr(),
             .keyword_break => blk: {
                 const break_token = self.current();
                 self.advance();
@@ -346,6 +351,12 @@ pub const Parser = struct {
                 self.advance();
                 const continue_expr = ast.Continue{ .loc = continue_token.loc };
                 break :blk try self.alloc(ast.Expr, .{ .Continue = continue_expr });
+            },
+            .keyword_unreachable => blk: {
+                const unreachable_token = self.current();
+                self.advance();
+                const unreachable_expr = ast.Unreachable{ .loc = unreachable_token.loc };
+                break :blk try self.alloc(ast.Expr, .{ .Unreachable = unreachable_expr });
             },
             else => {
                 std.debug.print("Unexpected token in expression: {}\n", .{tag});
@@ -605,17 +616,385 @@ pub const Parser = struct {
         const while_start = self.currentLoc();
         self.advance(); // "while"
         var condition: ?*ast.Expr = null;
-        if (self.current().tag != .lcurly) {
-            condition = try self.parseExpr(0, .expr_no_struct);
+        var pattern: ?*ast.Pattern = null;
+        switch (self.current().tag) {
+            .keyword_is => {
+                self.advance();
+                pattern = try self.parsePattern();
+                try self.expect(.coloneq);
+                condition = try self.parseExpr(0, .expr_no_struct);
+            },
+            .lcurly => {}, // forever loop
+            else => {
+                condition = try self.parseExpr(0, .expr_no_struct);
+            },
         }
         const body = try self.parseBlock();
         const while_expr = ast.While{
             .cond = condition,
+            .pattern = pattern,
             .body = body,
             .loc = while_start,
             .is_pattern = false,
         };
         return try self.alloc(ast.Expr, .{ .While = while_expr });
+    }
+
+    fn parseMatchExpr(self: *Parser) !*ast.Expr {
+        const start = self.currentLoc();
+        self.advance(); // "match"
+
+        const scrutinee = try self.parseExpr(0, .expr_no_struct);
+
+        try self.expect(.lcurly);
+        var arms = self.list(ast.MatchArm);
+        while (self.current().tag != .rcurly and self.current().tag != .eof) {
+            const pat_expr = try self.parsePattern();
+
+            var guard: ?*ast.Expr = null;
+            if (self.current().tag == .keyword_if) {
+                self.advance();
+                guard = try self.parseExpr(0, .expr_no_struct);
+            }
+
+            try self.expect(.fatarrow);
+
+            const body: *ast.Expr = if (self.current().tag == .lcurly)
+                try self.parseBlockExpr()
+            else
+                try self.parseExpr(0, .expr);
+
+            if (self.current().tag == .comma) self.advance();
+
+            try arms.append(.{ .pattern = pat_expr, .guard = guard, .body = body, .loc = self.currentLoc() });
+        }
+        try self.expect(.rcurly);
+
+        return try self.alloc(ast.Expr, .{ .Match = .{ .expr = scrutinee, .arms = arms, .loc = start } });
+    }
+
+    //=================================================================
+    // Patterns
+    // =================================================================
+
+    fn parsePattern(self: *Parser) !*ast.Pattern {
+        return try self.parsePatOr();
+    }
+
+    fn parsePatOr(self: *Parser) !*ast.Pattern {
+        const current_loc = self.currentLoc();
+        const first = try self.parsePatRange();
+        if (self.current().tag != .b_or) return first; // '|' token; you already use .b_or for '|'
+
+        var alts = self.list(*ast.Pattern);
+        try alts.append(first);
+        while (self.current().tag == .b_or) {
+            self.advance();
+            try alts.append(try self.parsePatRange());
+        }
+        const or_pat = ast.OrPattern{ .loc = current_loc, .alts = alts };
+        return try self.alloc(ast.Pattern, .{ .Or = or_pat });
+    }
+
+    fn parsePatRange(self: *Parser) !*ast.Pattern {
+        // Handle prefix/open ranges first:  ..X  or  ..=X
+        if (self.current().tag == .dotdot or self.current().tag == .dotdoteq) {
+            const start_loc = self.currentLoc();
+            const incl = (self.current().tag == .dotdoteq);
+            self.advance();
+            const end = try self.parseConstExprForRangeEnd();
+            return try self.alloc(ast.Pattern, .{ .Range = .{
+                .loc = start_loc,
+                .start = null,
+                .end = end,
+                .inclusive_right = incl,
+            } });
+        }
+
+        // Otherwise parse a primary/atomic pattern as the potential left side
+        const left = try self.parsePatAt();
+
+        // If followed by  .. or ..=  then we have an infix range: LEFT .. RIGHT
+        if (self.current().tag == .dotdot or self.current().tag == .dotdoteq) {
+            const incl = (self.current().tag == .dotdoteq);
+            const loc = self.currentLoc();
+            self.advance();
+
+            const rhs = try self.parseConstExprForRangeEnd();
+            const lhs_expr = try self.patternToConstExpr(left); // convert left pattern to a const expr
+            return try self.alloc(ast.Pattern, .{ .Range = .{
+                .loc = loc,
+                .start = lhs_expr,
+                .end = rhs,
+                .inclusive_right = incl,
+            } });
+        }
+
+        return left;
+    }
+
+    fn patternToConstExpr(self: *Parser, pat: *ast.Pattern) !*ast.Expr {
+        return switch (pat.*) {
+            .Literal => |lit_expr_ptr| lit_expr_ptr, // you already store the literal as an *ast.Expr
+            .Path => |p| try self.pathToConstExpr(p.segments),
+            .Binding => |b| blk: {
+                // Turn binding name into an expr; the checker can complain if it's not const.
+                const ident = ast.Ident{ .name = b.name, .loc = b.loc };
+                break :blk try self.alloc(ast.Expr, .{ .Ident = ident });
+            },
+            .Wildcard => {
+                std.debug.print("Wildcard '_' is not valid as a constant in a range pattern\n", .{});
+                return error.UnexpectedToken;
+            },
+            // Disallow complex patterns on the LHS of a range.
+            else => {
+                std.debug.print("Left side of a range pattern must be a const-like literal/path/binding, got pattern tag\n", .{});
+                return error.UnexpectedToken;
+            },
+        };
+    }
+
+    fn patternToBindingName(pat: *ast.Pattern) ![]const u8 {
+        return switch (pat.*) {
+            .Binding => pat.Binding.name,
+            .Path => blk: {
+                if (pat.Path.segments.items.len == 1) {
+                    break :blk pat.Path.segments.items[0].name;
+                } else {
+                    std.debug.print("Expected simple identifier for binding name, got path: {}\n", .{pat.Path});
+                    return error.InvalidPatternForBinding;
+                }
+            },
+            else => {
+                std.debug.print("Expected simple identifier for binding name, got pattern: {}\n", .{pat});
+                return error.InvalidPatternForBinding;
+            },
+        };
+    }
+
+    fn parsePatAt(self: *Parser) !*ast.Pattern {
+        // binding '@' pattern: IDENT '@' subpattern
+        // But IDENT alone might be a Path/Binding; we need a lookahead.
+        const p = try self.parsePatPrimary();
+
+        if (self.current().tag == .at) { // '@'
+            const current_loc = self.currentLoc();
+            // Left must be a binding name (IDENT) to be valid; let checker enforce that
+            self.advance();
+            const sub = try self.parsePatAt(); // right-assoc
+            // Extract binder name if `p` is a simple Path/Binding; otherwise checker will error
+            const name = try patternToBindingName(p);
+            const at = ast.AtPattern{ .loc = current_loc, .binder = name, .pattern = sub };
+            return try self.alloc(ast.Pattern, .{ .At = at });
+        }
+        return p;
+    }
+
+    fn parsePatPrimary(self: *Parser) !*ast.Pattern {
+        switch (self.current().tag) {
+            // .underscore_like => { /* see note below */ },
+            .char_literal, .string_literal, .raw_string_literal, .byte_literal, .byte_char_literal, .byte_string_literal, .raw_byte_string_literal, .integer_literal, .float_literal, .keyword_true, .keyword_false => {
+                const lit = try self.nud(self.current().tag); // reuse literal expr nud
+                return try self.alloc(ast.Pattern, .{ .Literal = lit });
+            },
+            // .star => { // *pat
+            //     self.advance();
+            //     const sub = try self.parsePatPrimary();
+            //     return try self.alloc(ast.Pattern, .{ .Deref = sub });
+            // },
+            .lparen => return try self.parseTuplePattern(),
+            .lsquare => return try self.parseSlicePattern(),
+            .dotdot, .dotdoteq => { // .. / ..= open ranges
+                const start_loc = self.currentLoc();
+                const incl = (self.current().tag == .dotdoteq);
+                self.advance();
+                const end = try self.parseConstExprForRangeEnd();
+                const range = ast.RangePattern{
+                    .loc = start_loc,
+                    .start = null,
+                    .end = end,
+                    .inclusive_right = incl,
+                };
+                return try self.alloc(ast.Pattern, .{ .Range = range });
+            },
+            .identifier => return try self.parsePathishPattern(),
+            else => {
+                std.debug.print("Unexpected token in pattern: {}\n", .{self.current().tag});
+                return error.UnexpectedToken;
+            },
+        }
+    }
+
+    fn parseTuplePattern(self: *Parser) anyerror!*ast.Pattern {
+        const loc = self.currentLoc();
+        try self.expect(.lparen);
+        var elems = self.list(*ast.Pattern);
+        if (self.current().tag != .rparen) {
+            while (true) {
+                try elems.append(try self.parsePattern());
+                if (self.current().tag != .comma) break;
+                self.advance();
+            }
+        }
+        try self.expect(.rparen);
+        const tuple_pat = ast.TuplePattern{ .loc = loc, .elems = elems };
+        return try self.alloc(ast.Pattern, .{ .Tuple = tuple_pat });
+    }
+
+    fn parsePathishPattern(self: *Parser) anyerror!*ast.Pattern {
+        // Collect a dotted path: Foo.Bar.Baz
+        var segs = self.list(ast.Ident);
+        while (true) {
+            const tok = self.current();
+            try self.expect(.identifier);
+            try segs.append(.{ .name = self.slice(tok), .loc = tok.loc });
+            if (self.current().tag != .dot) break;
+            self.advance();
+            if (self.current().tag != .identifier) break; // allow weirdness; checker will flag
+        }
+        const path = segs;
+
+        switch (self.current().tag) {
+            .lparen => { // tuple/variant data
+                const loc = self.currentLoc();
+                self.advance();
+                var elems = self.list(*ast.Pattern);
+                if (self.current().tag != .rparen) {
+                    while (true) {
+                        try elems.append(try self.parsePattern());
+                        if (self.current().tag != .comma) break;
+                        self.advance();
+                    }
+                }
+                try self.expect(.rparen);
+                if (path.items.len == 1) {
+                    // Could be tuple pattern without a variant; but in Rust, plain tuple pattern has no head.
+                    // In practice, treat as VariantTuple and let checker resolve head=path
+                }
+                const tuple_pat = ast.VariantTuplePattern{ .loc = loc, .path = path, .elems = elems };
+                return try self.alloc(ast.Pattern, .{ .VariantTuple = tuple_pat });
+            },
+            .lcurly => { // struct/variant struct data; supports {..., ..}
+                self.advance();
+                var fields = self.list(ast.StructPatternField);
+                var has_rest = false;
+                const pat_loc = self.currentLoc();
+                while (self.current().tag != .rcurly and self.current().tag != .eof) {
+                    if (self.current().tag == .dotdot) { // '..'
+                        has_rest = true;
+                        self.advance();
+                        if (self.current().tag == .comma) self.advance();
+                        break;
+                    }
+                    const name_tok = self.current();
+                    try self.expect(.identifier);
+                    const name = self.slice(name_tok);
+                    const loc = name_tok.loc;
+
+                    var pat: *ast.Pattern = undefined;
+                    if (self.current().tag == .colon) {
+                        self.advance();
+                        pat = try self.parsePattern();
+                    } else {
+                        // field shorthand: `name` == bind name
+                        pat = try self.alloc(
+                            ast.Pattern,
+                            .{ .Binding = .{ .loc = loc, .name = name } },
+                        );
+                    }
+                    try fields.append(.{ .name = name, .pattern = pat, .loc = loc });
+
+                    if (self.current().tag != .comma) break;
+                    self.advance();
+                }
+                try self.expect(.rcurly);
+                // disambiguation left to checker: path may be a struct type or enum variant
+                return try self.alloc(
+                    ast.Pattern,
+                    .{ .VariantStruct = .{ .loc = pat_loc, .path = path, .fields = fields, .has_rest = has_rest } },
+                );
+            },
+            .dotdot, .dotdoteq => { // range like: Foo .. Bar  (typically literals/consts; allow path here)
+                const incl = (self.current().tag == .dotdoteq);
+                const loc = self.currentLoc();
+                self.advance();
+                const rhs = try self.parseConstExprForRangeEnd();
+                const start_expr = try self.pathToConstExpr(path);
+                return try self.alloc(ast.Pattern, .{ .Range = .{
+                    .loc = loc,
+                    .start = start_expr,
+                    .end = rhs,
+                    .inclusive_right = incl,
+                } });
+            },
+            else => {
+                // bare identifier/path: binding or const-path pattern; let checker decide
+                if (path.items.len == 1 and std.mem.eql(u8, path.items[0].name, "_")) {
+                    return try self.alloc(ast.Pattern, .{ .Wildcard = .{ .loc = path.items[0].loc } });
+                }
+                // default to Binding; checker can upgrade to const-path pattern if name resolves to a const
+                if (path.items.len == 1) {
+                    return try self.alloc(ast.Pattern, .{
+                        .Binding = .{ .name = path.items[0].name, .loc = path.items[0].loc },
+                    });
+                }
+                return try self.alloc(ast.Pattern, .{
+                    .Path = .{ .segments = path, .loc = path.items[0].loc },
+                });
+            },
+        }
+    }
+
+    fn parseSlicePattern(self: *Parser) anyerror!*ast.Pattern {
+        try self.expect(.lsquare);
+        var elems = self.list(*ast.Pattern);
+        var has_rest = false;
+        var rest_index: usize = 0;
+        const loc = self.currentLoc();
+
+        if (self.current().tag != .rsquare) {
+            var i: usize = 0;
+            while (true) : (i += 1) {
+                if (self.current().tag == .dotdot) {
+                    has_rest = true;
+                    rest_index = i;
+                    self.advance();
+                    if (self.current().tag == .comma) self.advance();
+                    break;
+                }
+                try elems.append(try self.parsePattern());
+                if (self.current().tag != .comma) break;
+                self.advance();
+            }
+        }
+
+        try self.expect(.rsquare);
+        return try self.alloc(ast.Pattern, .{ .Slice = .{
+            .loc = loc,
+            .elems = elems,
+            .has_rest = has_rest,
+            .rest_index = rest_index,
+        } });
+    }
+
+    fn parseConstExprForRangeEnd(self: *Parser) !*ast.Expr {
+        // use normal expr, semantic checker will ensure "const evaluable" and no side effects
+        return self.parseExpr(0, .expr_no_struct);
+    }
+
+    fn pathToConstExpr(self: *Parser, path: std.array_list.Managed(ast.Ident)) !*ast.Expr {
+        // Build an ast.Expr Ident/Field chain from the path for the checker to resolve.
+        var expr: *ast.Expr = try self.alloc(ast.Expr, .{ .Ident = path.items[0] });
+        var i: usize = 1;
+        while (i < path.items.len) : (i += 1) {
+            expr = try self.alloc(ast.Expr, .{ .Field = .{
+                .parent = expr,
+                .field = path.items[i].name,
+                .is_tuple = false,
+                .loc = self.currentLoc(),
+            } });
+        }
+        return expr;
     }
 
     //=================================================================
@@ -967,4 +1346,3 @@ pub const Parser = struct {
         return self.alloc(ast.Expr, .{ .BuiltinType = .{ .Variant = variant_type } });
     }
 };
-

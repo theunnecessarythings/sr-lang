@@ -40,8 +40,10 @@ pub const Expr = union(enum) {
     Return: Return,
     If: If,
     While: While,
+    Match: Match,
     Break: Break,
     Continue: Continue,
+    Unreachable: Unreachable,
 };
 
 pub const Literal = struct {
@@ -205,9 +207,23 @@ pub const If = struct {
 
 pub const While = struct {
     cond: ?*Expr,
+    pattern: ?*Pattern,
     body: Block,
     loc: Loc,
     is_pattern: bool,
+};
+
+pub const Match = struct {
+    expr: *Expr,
+    arms: List(MatchArm),
+    loc: Loc,
+};
+
+pub const MatchArm = struct {
+    pattern: *Pattern,
+    guard: ?*Expr,
+    body: *Expr,
+    loc: Loc,
 };
 
 pub const Break = struct {
@@ -215,6 +231,10 @@ pub const Break = struct {
 };
 
 pub const Continue = struct {
+    loc: Loc,
+};
+
+pub const Unreachable = struct {
     loc: Loc,
 };
 
@@ -341,6 +361,95 @@ pub const AnyType = struct {
 };
 
 pub const NoreturnType = struct {
+    loc: Loc,
+};
+
+pub const Pattern = union(enum) {
+    Wildcard: WildcardPattern, // _
+    Literal: *Expr, // reuse existing literal expr nodes
+    Path: PathPattern, // foo::bar::Baz
+    Binding: BindingPattern, // x, mut x, ref x, ref mut x
+    Tuple: TuplePattern, // (p1, p2, p3)
+    Slice: SlicePattern, // [p1, p2, .., pN]
+    Struct: StructPattern, // Path { field1: p1, field2: p2, .. }
+    VariantTuple: VariantTuplePattern, // Path(p1, p2, p3)
+    VariantStruct: VariantStructPattern, // Path { field1: p1, field2: p2, .. }
+    // Ref: *Pattern, // &pat
+    // Deref: *Pattern, // *pat
+    Range: RangePattern, // start .. end, start ..= end
+    Or: OrPattern, // pat1 | pat2 | pat3
+    At: AtPattern, // binder @ pat
+};
+
+pub const RangePattern = struct {
+    start: ?*Expr,
+    end: ?*Expr,
+    inclusive_right: bool,
+    loc: Loc,
+};
+
+pub const OrPattern = struct {
+    alts: List(*Pattern),
+    loc: Loc,
+};
+
+pub const AtPattern = struct {
+    binder: []const u8,
+    pattern: *Pattern,
+    loc: Loc,
+};
+
+pub const VariantTuplePattern = struct {
+    path: List(Ident),
+    elems: List(*Pattern),
+    loc: Loc,
+};
+
+pub const VariantStructPattern = struct {
+    path: List(Ident),
+    fields: List(StructPatternField),
+    has_rest: bool,
+    loc: Loc,
+};
+
+pub const StructPattern = struct {
+    path: List(Ident),
+    fields: List(StructPatternField),
+    has_rest: bool,
+    loc: Loc,
+};
+
+pub const StructPatternField = struct {
+    name: []const u8,
+    pattern: *Pattern,
+    loc: Loc,
+};
+
+pub const PathPattern = struct {
+    segments: List(Ident),
+    loc: Loc,
+};
+
+pub const BindingPattern = struct {
+    name: []const u8,
+    by_ref: bool = false,
+    is_mut: bool = false,
+    loc: Loc,
+};
+
+pub const WildcardPattern = struct {
+    loc: Loc,
+};
+
+pub const TuplePattern = struct {
+    elems: List(*Pattern),
+    loc: Loc,
+};
+
+pub const SlicePattern = struct {
+    elems: List(*Pattern),
+    has_rest: bool,
+    rest_index: usize,
     loc: Loc,
 };
 
@@ -544,6 +653,11 @@ pub const AstPrinter = struct {
             },
             .While => |while_expr| {
                 try self.beginNode("(while is_pattern={}", .{while_expr.is_pattern});
+                if (while_expr.pattern) |pat| {
+                    try self.beginNode("(pattern", .{});
+                    try self.printPattern(pat);
+                    try self.endNode();
+                }
                 if (while_expr.cond) |cond| {
                     try self.printNamedExpr("cond", cond);
                 }
@@ -554,8 +668,25 @@ pub const AstPrinter = struct {
                 try self.endNode();
                 try self.endNode();
             },
+            .Match => |match| {
+                try self.beginNode("(match", .{});
+                try self.printNamedExpr("expr", match.expr);
+                for (match.arms.items) |arm| {
+                    try self.beginNode("(arm", .{});
+                    try self.beginNode("(pattern", .{});
+                    try self.printPattern(arm.pattern);
+                    try self.endNode();
+                    if (arm.guard) |guard| {
+                        try self.printNamedExpr("guard", guard);
+                    }
+                    try self.printNamedExpr("body", arm.body);
+                    try self.endNode();
+                }
+                try self.endNode();
+            },
             .Break => |_| try self.printLeaf("(break)", .{}),
             .Continue => |_| try self.printLeaf("(continue)", .{}),
+            .Unreachable => |_| try self.printLeaf("(unreachable)", .{}),
             .Function => |fun| {
                 try self.beginNode("({s}", .{if (fun.is_proc) "procedure" else "function"});
                 for (fun.params.items) |param| {
@@ -578,6 +709,96 @@ pub const AstPrinter = struct {
                     }
                     try self.endNode();
                 }
+                try self.endNode();
+            },
+        }
+    }
+
+    fn printPattern(self: *AstPrinter, pattern: *const Pattern) anyerror!void {
+        switch (pattern.*) {
+            .Wildcard => try self.printLeaf("(wildcard)", .{}),
+            .Literal => |lit| try self.printNamedExpr("literal", lit),
+            .Path => |path| {
+                try self.beginNode("(path", .{});
+                for (path.segments.items) |seg| {
+                    try self.printLeaf("segment=\"{s}\"", .{seg.name});
+                }
+                try self.endNode();
+            },
+            .Binding => |bind| {
+                try self.printLeaf(
+                    "(binding name=\"{s}\" by_ref={} is_mut={})",
+                    .{ bind.name, bind.by_ref, bind.is_mut },
+                );
+            },
+            .Tuple => |tup| {
+                try self.beginNode("(tuple_pattern", .{});
+                for (tup.elems.items) |elem| {
+                    try self.printPattern(elem);
+                }
+                try self.endNode();
+            },
+            .Slice => |slice| {
+                try self.beginNode("(slice_pattern has_rest={}", .{slice.has_rest});
+                for (slice.elems.items) |elem| {
+                    try self.printPattern(elem);
+                }
+                try self.endNode();
+            },
+            .Struct => |st| {
+                try self.beginNode("(struct_pattern has_rest={}", .{st.has_rest});
+                for (st.path.items) |seg| {
+                    try self.printLeaf("segment=\"{s}\"", .{seg.name});
+                }
+                for (st.fields.items) |field| {
+                    try self.beginNode("(field name=\"{s}\"", .{field.name});
+                    try self.printPattern(field.pattern);
+                    try self.endNode();
+                }
+                try self.endNode();
+            },
+            .VariantTuple => |vt| {
+                try self.beginNode("(variant_tuple_pattern", .{});
+                for (vt.path.items) |seg| {
+                    try self.printLeaf("segment=\"{s}\"", .{seg.name});
+                }
+                for (vt.elems.items) |elem| {
+                    try self.printPattern(elem);
+                }
+                try self.endNode();
+            },
+            .VariantStruct => |vs| {
+                try self.beginNode("(variant_struct_pattern has_rest={}", .{vs.has_rest});
+                for (vs.path.items) |seg| {
+                    try self.printLeaf("segment=\"{s}\"", .{seg.name});
+                }
+                for (vs.fields.items) |field| {
+                    try self.beginNode("(field name=\"{s}\"", .{field.name});
+                    try self.printPattern(field.pattern);
+                    try self.endNode();
+                }
+                try self.endNode();
+            },
+            .Range => |range| {
+                try self.beginNode("(range_pattern inclusive_right={}", .{range.inclusive_right});
+                if (range.start) |start| {
+                    try self.printNamedExpr("start", start);
+                }
+                if (range.end) |end| {
+                    try self.printNamedExpr("end", end);
+                }
+                try self.endNode();
+            },
+            .Or => |or_p| {
+                try self.beginNode("(or_pattern", .{});
+                for (or_p.alts.items) |opt| {
+                    try self.printPattern(opt);
+                }
+                try self.endNode();
+            },
+            .At => |at| {
+                try self.beginNode("(at_pattern binder=\"{s}\"", .{at.binder});
+                try self.printPattern(at.pattern);
                 try self.endNode();
             },
         }
