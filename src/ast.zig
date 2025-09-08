@@ -35,6 +35,9 @@ pub const Expr = union(enum) {
     Block: Block,
     Call: Call,
     Index: Index,
+    Field: Field,
+    Struct: StructLiteral,
+    Return: Return,
 };
 
 pub const Literal = struct {
@@ -107,6 +110,8 @@ pub const InfixOp = enum {
     gte,
     logical_and,
     logical_or,
+    range,
+    range_inclusive,
     assign,
 
     add_assign,
@@ -158,6 +163,29 @@ pub const Call = struct {
 pub const Index = struct {
     collection: *Expr,
     index: *Expr,
+    loc: Loc,
+};
+
+pub const Field = struct {
+    parent: *Expr,
+    field: []const u8,
+    is_tuple: bool,
+    loc: Loc,
+};
+
+pub const StructLiteral = struct {
+    fields: List(StructFieldValue),
+    loc: Loc,
+};
+
+pub const StructFieldValue = struct {
+    name: ?[]const u8,
+    value: *Expr,
+    loc: Loc,
+};
+
+pub const Return = struct {
+    value: ?*Expr,
     loc: Loc,
 };
 
@@ -226,6 +254,7 @@ pub const ErrorSetType = struct {
 pub const StructField = struct {
     name: []const u8,
     ty: *Expr,
+    value: ?*Expr,
     loc: Loc,
 };
 
@@ -359,6 +388,9 @@ pub const AstPrinter = struct {
     fn printStructField(self: *AstPrinter, field: *const StructField) !void {
         try self.beginNode("(field name=\"{s}\"", .{field.name});
         try self.printExpr(field.ty);
+        if (field.value) |val| {
+            try self.printNamedExpr("value", val);
+        }
         try self.endNode();
     }
 
@@ -439,6 +471,32 @@ pub const AstPrinter = struct {
                 try self.beginNode("(index", .{});
                 try self.printNamedExpr("collection", index.collection);
                 try self.printNamedExpr("index", index.index);
+                try self.endNode();
+            },
+            .Field => |field| {
+                try self.beginNode("(field name=\"{s}\" is_tuple={}", .{ field.field, field.is_tuple });
+                try self.printExpr(field.parent);
+                try self.endNode();
+            },
+            .Struct => |st| {
+                try self.beginNode("(struct_literal", .{});
+                for (st.fields.items) |field| {
+                    try self.beginNode("(field", .{});
+                    if (field.name) |name| {
+                        try self.printLeaf("name=\"{s}\"", .{name});
+                    } else {
+                        try self.printLeaf("name=null", .{});
+                    }
+                    try self.printNamedExpr("value", field.value);
+                    try self.endNode();
+                }
+                try self.endNode();
+            },
+            .Return => |ret| {
+                try self.beginNode("(return", .{});
+                if (ret.value) |val| {
+                    try self.printNamedExpr("value", val);
+                }
                 try self.endNode();
             },
             .Function => |fun| {
@@ -563,4 +621,3 @@ pub const AstPrinter = struct {
         }
     }
 };
-

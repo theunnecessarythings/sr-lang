@@ -680,6 +680,7 @@ pub const Tokenizer = struct {
                             } else if (self.buffer[self.index + 1] == '/') {
                                 // line comment: skip to EOL and let newline rule below emit EOS
                                 while (self.index < self.buffer.len and self.buffer[self.index] != '\n' and self.buffer[self.index] != '\r') self.index += 1;
+                                if (self.index > 0) self.index -= 1;
                                 continue;
                             } else {
                                 // other slash → break NLSEMI, resume default
@@ -739,7 +740,18 @@ pub const Tokenizer = struct {
                             result.tag = kw;
                             // NLSEMI keywords
                             switch (kw) {
-                                .keyword_any, .keyword_await, .keyword_break, .keyword_continue, .keyword_false, .keyword_noreturn, .keyword_null, .keyword_return, .keyword_true, .keyword_undefined => self.nlsemi = true,
+                                .keyword_any,
+                                .keyword_await,
+                                .keyword_break,
+                                .keyword_continue,
+                                .keyword_false,
+                                .keyword_noreturn,
+                                .keyword_null,
+                                .keyword_return,
+                                .keyword_true,
+                                .keyword_type,
+                                .keyword_undefined,
+                                => self.nlsemi = true,
                                 else => {},
                             }
                         } else {
@@ -1403,7 +1415,7 @@ pub const Tokenizer = struct {
         return result;
     }
 
-    // --- helpers (kept minimal; state machine remains the driver) ---
+    // --- helpers ---
 
     fn startsWith(buf: []const u8, off: usize, s: []const u8) bool {
         return off + s.len <= buf.len and std.mem.eql(u8, buf[off .. off + s.len], s);
