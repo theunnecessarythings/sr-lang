@@ -45,6 +45,9 @@ pub const Expr = union(enum) {
     Break: Break,
     Continue: Continue,
     Unreachable: Unreachable,
+    Defer: Defer,
+    ErrDefer: ErrDefer,
+    ErrUnwrap: ErrUnwrap,
 };
 
 pub const Literal = struct {
@@ -120,9 +123,11 @@ pub const InfixOp = enum {
     gte,
     logical_and,
     logical_or,
+
     range,
     range_inclusive,
     assign,
+    error_union,
 
     add_assign,
     sub_assign,
@@ -243,6 +248,21 @@ pub const Continue = struct {
 };
 
 pub const Unreachable = struct {
+    loc: Loc,
+};
+
+pub const Defer = struct {
+    expr: *Expr,
+    loc: Loc,
+};
+
+pub const ErrDefer = struct {
+    expr: *Expr,
+    loc: Loc,
+};
+
+pub const ErrUnwrap = struct {
+    expr: *Expr,
     loc: Loc,
 };
 
@@ -458,6 +478,7 @@ pub const SlicePattern = struct {
     elems: List(*Pattern),
     has_rest: bool,
     rest_index: usize,
+    rest_binding: ?*Pattern,
     loc: Loc,
 };
 
@@ -705,6 +726,21 @@ pub const AstPrinter = struct {
                 try self.endNode();
                 try self.endNode();
             },
+            .ErrUnwrap => |err_unwrap| {
+                try self.beginNode("(err_unwrap", .{});
+                try self.printExpr(err_unwrap.expr);
+                try self.endNode();
+            },
+            .Defer => |e| {
+                try self.beginNode("(defer", .{});
+                try self.printExpr(e.expr);
+                try self.endNode();
+            },
+            .ErrDefer => |err_defer| {
+                try self.beginNode("(err_defer", .{});
+                try self.printExpr(err_defer.expr);
+                try self.endNode();
+            },
             .Break => |_| try self.printLeaf("(break)", .{}),
             .Continue => |_| try self.printLeaf("(continue)", .{}),
             .Unreachable => |_| try self.printLeaf("(unreachable)", .{}),
@@ -763,6 +799,11 @@ pub const AstPrinter = struct {
                 try self.beginNode("(slice_pattern has_rest={}", .{slice.has_rest});
                 for (slice.elems.items) |elem| {
                     try self.printPattern(elem);
+                }
+                if (slice.rest_binding) |rest| {
+                    try self.beginNode("(rest_binding", .{});
+                    try self.printPattern(rest);
+                    try self.endNode();
                 }
                 try self.endNode();
             },

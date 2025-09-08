@@ -153,6 +153,7 @@ pub const Parser = struct {
             .dotdot, .dotdoteq => .{ 27, 28 },
             .keyword_and => .{ 25, 26 },
             .keyword_or => .{ 20, 21 },
+            .bang => .{ 15, 16 }, // for error union
             .plus_equal,
             .minus_equal,
             .star_equal,
@@ -177,7 +178,7 @@ pub const Parser = struct {
 
     inline fn postfixBp(tag: Token.Tag) ?u8 {
         return switch (tag) {
-            .lparen, .lsquare, .lcurly, .dot, .dotdot, .dotdoteq => 95,
+            .lparen, .lsquare, .lcurly, .dot, .dotdot, .dotdoteq, .bang => 95,
             else => null,
         };
     }
@@ -359,6 +360,20 @@ pub const Parser = struct {
                 const unreachable_expr = ast.Unreachable{ .loc = unreachable_token.loc };
                 break :blk try self.alloc(ast.Expr, .{ .Unreachable = unreachable_expr });
             },
+            .keyword_defer => blk: {
+                const defer_token = self.current();
+                self.advance();
+                const deferred = try self.parseExpr(0, .expr);
+                const defer_expr = ast.Defer{ .expr = deferred, .loc = defer_token.loc };
+                break :blk try self.alloc(ast.Expr, .{ .Defer = defer_expr });
+            },
+            .keyword_errdefer => blk: {
+                const errdefer_token = self.current();
+                self.advance();
+                const deferred = try self.parseExpr(0, .expr);
+                const errdefer_expr = ast.ErrDefer{ .expr = deferred, .loc = errdefer_token.loc };
+                break :blk try self.alloc(ast.Expr, .{ .ErrDefer = errdefer_expr });
+            },
             else => {
                 std.debug.print("Unexpected token in expression: {}\n", .{tag});
                 return error.UnexpectedToken;
@@ -412,6 +427,7 @@ pub const Parser = struct {
             .star_percent_equal => .mul_wrap_assign,
             .plus_percent_equal => .add_wrap_assign,
             .minus_percent_equal => .sub_wrap_assign,
+            .bang => .error_union,
             else => unreachable,
         };
     }
@@ -433,8 +449,8 @@ pub const Parser = struct {
                     // 2) only treat '{' as struct initializer if the LHS looks like a ctor head
                     if (tag == .lcurly and !self.looksLikeCtorHead(left)) break;
 
-                    const is_range_postfix = (tag == .dotdot or tag == .dotdoteq);
-                    const should_let_infix_win = is_range_postfix and !self.nextIsTerminator();
+                    const prefer_postfix = (tag == .dotdot or tag == .dotdoteq or tag == .bang);
+                    const should_let_infix_win = prefer_postfix and !self.nextIsTerminator();
 
                     if (!should_let_infix_win) {
                         self.advance();
@@ -443,6 +459,11 @@ pub const Parser = struct {
                             .lsquare => try self.parseIndex(left),
                             .dot => try self.parseField(left),
                             .lcurly => try self.parseStructLiteral(),
+                            .bang => blk: {
+                                const loc = self.currentLoc();
+                                const err_unwrap = ast.ErrUnwrap{ .expr = left, .loc = loc };
+                                break :blk try self.alloc(ast.Expr, .{ .ErrUnwrap = err_unwrap });
+                            },
                             // .dotdot, .dotdoteq => blk: {
                             //     // only reached when nextIsTerminator() == true → x.. / x..=
                             //     const range = ast.Range{
@@ -967,6 +988,7 @@ pub const Parser = struct {
         var elems = self.list(*ast.Pattern);
         var has_rest = false;
         var rest_index: usize = 0;
+        var rest_binding: ?*ast.Pattern = null;
         const loc = self.currentLoc();
 
         if (self.current().tag != .rsquare) {
@@ -976,8 +998,22 @@ pub const Parser = struct {
                     has_rest = true;
                     rest_index = i;
                     self.advance();
+
+                    // OPTIONAL: allow a binding name after `..` (e.g. `.. rest`)
+                    if (self.current().tag == .identifier) {
+                        const name_tok = self.current();
+                        const name = self.slice(name_tok);
+                        self.advance();
+                        if (!std.mem.eql(u8, name, "_")) {
+                            rest_binding = try self.alloc(
+                                ast.Pattern,
+                                .{ .Binding = .{ .name = name, .loc = name_tok.loc } },
+                            );
+                        }
+                    }
+
                     if (self.current().tag == .comma) self.advance();
-                    break;
+                    break; // rest consumes the remainder
                 }
                 try elems.append(try self.parsePattern());
                 if (self.current().tag != .comma) break;
@@ -986,12 +1022,15 @@ pub const Parser = struct {
         }
 
         try self.expect(.rsquare);
-        return try self.alloc(ast.Pattern, .{ .Slice = .{
-            .loc = loc,
-            .elems = elems,
-            .has_rest = has_rest,
-            .rest_index = rest_index,
-        } });
+        return try self.alloc(ast.Pattern, .{
+            .Slice = .{
+                .loc = loc,
+                .elems = elems,
+                .has_rest = has_rest,
+                .rest_index = rest_index,
+                .rest_binding = rest_binding, // NEW
+            },
+        });
     }
 
     fn parseConstExprForRangeEnd(self: *Parser) !*ast.Expr {
