@@ -38,6 +38,7 @@ pub const Expr = union(enum) {
     Field: Field,
     Struct: StructLiteral,
     Return: Return,
+    If: If,
 };
 
 pub const Literal = struct {
@@ -189,6 +190,13 @@ pub const StructFieldValue = struct {
 
 pub const Return = struct {
     value: ?*Expr,
+    loc: Loc,
+};
+
+pub const If = struct {
+    cond: *Expr,
+    then_block: Block,
+    else_block: ?*Expr, // can be another If or a Block
     loc: Loc,
 };
 
@@ -500,6 +508,19 @@ pub const AstPrinter = struct {
                 try self.beginNode("(return", .{});
                 if (ret.value) |val| {
                     try self.printNamedExpr("value", val);
+                }
+                try self.endNode();
+            },
+            .If => |if_expr| {
+                try self.beginNode("(if", .{});
+                try self.printNamedExpr("cond", if_expr.cond);
+                try self.beginNode("(then", .{});
+                for (if_expr.then_block.items.items) |decl| {
+                    try self.printDecl(&decl);
+                }
+                try self.endNode();
+                if (if_expr.else_block) |else_blk| {
+                    try self.printNamedExpr("else", else_blk);
                 }
                 try self.endNode();
             },

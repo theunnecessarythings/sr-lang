@@ -185,6 +185,20 @@ pub const Parser = struct {
         };
     }
 
+    fn looksLikeCtorHead(self: *Parser, expr: *ast.Expr) bool {
+        return switch (expr.*) {
+            // Type names and qualified paths: Foo{...}, pkg.Foo{...}, Event.Click{...}
+            .Ident, .Field => true,
+            // Generic/type-function: List(u8){...}, map[string]{} — allow, recurse on the *head*
+            .Call => self.looksLikeCtorHead(expr.Call.callee),
+            // Indexed type heads: Vec[3]{...}, Matrix[m,n]{...}
+            .Index => self.looksLikeCtorHead(expr.Index.collection),
+            // Parenthesized type heads if you ever wrap them
+            .Tuple => expr.Tuple.elems.items.len == 1 and self.looksLikeCtorHead(expr.Tuple.elems.items[0]),
+            else => false,
+        };
+    }
+
     //=================================================================
     // Parsing
     //=================================================================
@@ -319,6 +333,7 @@ pub const Parser = struct {
             .keyword_enum => try self.parseEnumType(),
             .keyword_variant => try self.parseVariantType(),
             .keyword_return => try self.parseReturn(),
+            .keyword_if => try self.parseIfExpr(),
             else => {
                 std.debug.print("Unexpected token in expression: {}\n", .{tag});
                 return error.UnexpectedToken;
@@ -385,8 +400,11 @@ pub const Parser = struct {
             // Postfix — but do NOT preempt infix ".." / "..="
             if (postfixBp(tag)) |l_bp| {
                 if (l_bp >= min_bp) {
-                    // do not start a struct literal in type context
+                    // 1) never parse a struct literal in type-context
                     if (tag == .lcurly and mode == .type) break;
+
+                    // 2) only treat '{' as struct initializer if the LHS looks like a ctor head
+                    if (tag == .lcurly and !self.looksLikeCtorHead(left)) break;
 
                     const is_range_postfix = (tag == .dotdot or tag == .dotdoteq);
                     const should_let_infix_win = is_range_postfix and !self.nextIsTerminator();
@@ -547,6 +565,25 @@ pub const Parser = struct {
     fn parseBlockExpr(self: *Parser) !*ast.Expr {
         const block = try self.parseBlock();
         return self.alloc(ast.Expr, .{ .Block = block });
+    }
+
+    fn parseIfExpr(self: *Parser) !*ast.Expr {
+        const if_start = self.currentLoc();
+        self.advance(); // "if"
+        const condition = try self.parseExpr(0, .expr);
+        const then_block = try self.parseBlock();
+        var else_block: ?*ast.Expr = null;
+        if (self.current().tag == .keyword_else) {
+            self.advance();
+            else_block = try self.parseExpr(0, .expr);
+        }
+        const if_expr = ast.If{
+            .cond = condition,
+            .then_block = then_block,
+            .else_block = else_block,
+            .loc = if_start,
+        };
+        return try self.alloc(ast.Expr, .{ .If = if_expr });
     }
 
     //=================================================================
@@ -898,4 +935,3 @@ pub const Parser = struct {
         return self.alloc(ast.Expr, .{ .BuiltinType = .{ .Variant = variant_type } });
     }
 };
-
