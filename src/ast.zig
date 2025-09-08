@@ -76,6 +76,9 @@ pub const PrefixOp = enum {
     plus,
     minus,
     address_of,
+    logical_not,
+    range,
+    range_inclusive,
 };
 
 pub const Prefix = struct {

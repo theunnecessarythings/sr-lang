@@ -22,7 +22,10 @@ pub fn main() !void {
     var lexer = compiler.lexer.Tokenizer.init(source0);
     while (true) {
         const token = lexer.next();
-        std.debug.print("{any}\n", .{token.tag});
+        std.debug.print(
+            "{any} -> `{s}`\n",
+            .{ token.tag, source0[token.loc.start..token.loc.end] },
+        );
         if (token.tag == .eof) break;
     }
 
