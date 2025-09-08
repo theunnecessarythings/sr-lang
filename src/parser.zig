@@ -276,6 +276,8 @@ pub const Parser = struct {
             .lcurly => try self.parseBlockExpr(),
             .keyword_struct => try self.parseStructLikeType(.keyword_struct),
             .keyword_union => try self.parseStructLikeType(.keyword_union),
+            .keyword_enum => try self.parseEnumType(),
+            .keyword_variant => try self.parseVariantType(),
             .keyword_return => try self.parseReturn(),
             else => {
                 std.debug.print("Unexpected token in expression: {}\n", .{
@@ -284,6 +286,122 @@ pub const Parser = struct {
                 return error.UnexpectedToken;
             },
         };
+    }
+
+    inline fn parseVariantType(self: *Parser) !*ast.Expr {
+        // rust like enum with data
+        const variant_start = self.currentLoc();
+        self.advance(); // consume "variant"
+        try self.expect(.lcurly);
+        var fields = self.list(ast.VariantField);
+        while (self.current().tag != .rcurly and self.current().tag != .eof) {
+            const field_start = self.currentLoc();
+            const field_name_token = self.current();
+            try self.expect(.identifier);
+            const field_name = self.slice(field_name_token);
+            switch (self.current().tag) {
+                .lparen => {
+                    // tuple like data
+                    self.advance();
+                    var types = self.list(*ast.Expr);
+                    if (self.current().tag != .rparen) {
+                        while (true) {
+                            const ty = try self.parseExpr(0, .type);
+                            try types.append(ty);
+                            if (self.current().tag != .comma) break;
+                            self.advance(); // consume ","
+                        }
+                    }
+                    try self.expect(.rparen);
+                    var value: ?*ast.Expr = null;
+                    if (self.current().tag == .eq) {
+                        self.advance();
+                        value = try self.parseExpr(0, .expr);
+                    }
+                    try fields.append(
+                        .{ .name = field_name, .ty = .{ .Tuple = types }, .value = value, .loc = field_start },
+                    );
+                    if (self.current().tag != .comma) break;
+                    self.advance(); // consume ","
+                },
+                .lcurly => {
+                    // struct like data
+                    self.advance();
+                    var struct_fields = self.list(ast.StructField);
+                    while (self.current().tag != .rcurly and self.current().tag != .eof) {
+                        const struct_field_start = self.currentLoc();
+                        const struct_field_name_token = self.current();
+                        try self.expect(.identifier);
+                        const struct_field_name = self.slice(struct_field_name_token);
+                        try self.expect(.colon);
+                        const struct_field_type = try self.parseExpr(0, .type);
+                        var struct_field_value: ?*ast.Expr = null;
+                        if (self.current().tag == .eq) {
+                            self.advance();
+                            struct_field_value = try self.parseExpr(0, .expr);
+                        }
+                        try struct_fields.append(.{ .name = struct_field_name, .ty = struct_field_type, .value = struct_field_value, .loc = struct_field_start });
+                        if (self.current().tag != .comma) break;
+                        self.advance(); // consume ","
+                    }
+                    var value: ?*ast.Expr = null;
+                    if (self.current().tag == .eq) {
+                        self.advance();
+                        value = try self.parseExpr(0, .expr);
+                    }
+                    try self.expect(.rcurly);
+                    try fields.append(
+                        .{ .name = field_name, .ty = .{ .Struct = struct_fields }, .value = value, .loc = field_start },
+                    );
+                    if (self.current().tag != .comma) break;
+                    self.advance(); // consume ","
+                },
+                else => {
+                    // no data
+                    var value: ?*ast.Expr = null;
+                    if (self.current().tag == .eq) {
+                        self.advance();
+                        value = try self.parseExpr(0, .expr);
+                    }
+                    try fields.append(.{ .name = field_name, .ty = null, .value = value, .loc = field_start });
+                    if (self.current().tag != .comma) break;
+                    self.advance(); // consume ","
+                },
+            }
+        }
+        try self.expect(.rcurly);
+        const variant_type = ast.VariantLikeType{ .fields = fields, .loc = variant_start };
+        return self.alloc(ast.Expr, .{ .BuiltinType = .{ .Variant = variant_type } });
+    }
+
+    inline fn parseEnumType(self: *Parser) !*ast.Expr {
+        const enum_start = self.currentLoc();
+        self.advance(); // consume "enum"
+        var backing_type: ?*ast.Expr = null;
+        if (self.current().tag == .lparen) {
+            self.advance();
+            backing_type = try self.parseExpr(0, .type);
+            try self.expect(.rparen);
+        }
+        try self.expect(.lcurly);
+        var fields = self.list(ast.EnumField);
+        while (self.current().tag != .rcurly and self.current().tag != .eof) {
+            const field_start = self.currentLoc();
+            const field_name_token = self.current();
+            try self.expect(.identifier);
+            const field_name = self.slice(field_name_token);
+            var field_value: ?*ast.Expr = null;
+            if (self.current().tag == .eq) {
+                self.advance();
+                field_value = try self.parseExpr(0, .expr);
+            }
+            try fields.append(.{ .name = field_name, .value = field_value, .loc = field_start });
+            if (self.current().tag != .comma) break;
+            self.advance(); // consume ","
+        }
+        try self.expect(.rcurly);
+        const enum_type = ast.EnumType{ .fields = fields, .discriminant = backing_type, .loc = enum_start };
+        return self.alloc(ast.Expr, .{ .BuiltinType = .{ .Enum = enum_type } });
     }
 
     inline fn parseReturn(self: *Parser) !*ast.Expr {

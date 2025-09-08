@@ -29,7 +29,7 @@ pub const Expr = union(enum) {
     Infix: Infix,
     BuiltinType: BuiltinType,
     Array: Array,
-    Tuple: Tuple,
+    Tuple: Tuple, // NOTE: used for both tuple literals and tuple types
     Map: Map,
     Function: Function,
     Block: Block,
@@ -276,6 +276,7 @@ pub const VariantField = struct {
         Tuple: List(*Expr),
         Struct: List(StructField),
     },
+    value: ?*Expr,
     loc: Loc,
 };
 
@@ -570,6 +571,9 @@ pub const AstPrinter = struct {
                                 try self.endNode();
                             },
                         }
+                    }
+                    if (field.value) |val| {
+                        try self.printNamedExpr("value", val);
                     }
                     try self.endNode();
                 }
