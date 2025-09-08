@@ -10,8 +10,29 @@ pub fn main() !void {
         return;
     };
 
+    const allocator = std.heap.page_allocator;
+
     var file = try std.fs.cwd().openFile(filename, .{});
-    const source = try file.readToEndAlloc(std.heap.page_allocator, (try file.stat()).size);
-    defer std.heap.page_allocator.free(source);
+    const source = try file.readToEndAlloc(allocator, (try file.stat()).size);
+    const source0 = try allocator.dupeZ(u8, source);
+    defer allocator.free(source0);
+    defer allocator.free(source);
     std.debug.print("Compiling {s}...\n", .{filename});
+
+    var lexer = compiler.lexer.Tokenizer.init(source0);
+    while (true) {
+        const token = lexer.next();
+        std.debug.print("{any}\n", .{token.tag});
+        if (token.tag == .eof) break;
+    }
+
+    var parser = compiler.parser.Parser.init(allocator, source0);
+    const ast = try parser.parse();
+
+    var buffer: [1024]u8 = undefined;
+    var writer = std.fs.File.stdout().writer(&buffer);
+    var out = &writer.interface;
+    var printer = compiler.ast.AstPrinter.init(out);
+    try printer.print(&ast);
+    try out.flush();
 }

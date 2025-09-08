@@ -6,7 +6,10 @@ pub fn build(b: *std.Build) void {
     const mod = b.addModule("compiler", .{
         .root_source_file = b.path("src/root.zig"),
         .target = target,
+        .optimize = optimize,
+        .link_libc = true,
     });
+    mod.addIncludePath(b.path("grammar/"));
 
     const exe = b.addExecutable(.{
         .name = "sr_lang",

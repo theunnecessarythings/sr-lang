@@ -1,0 +1,49 @@
+package main
+
+a :: 2
+b := 3
+
+c : i32 = 4
+d : i32 : 5
+
+e = 4 + 5.0 * 2 % 2 - 3 / 6
+f = 2i + a
+
+slice: []i32 = [1, 2, 3, 4,]
+dyn_arr: [dyn]i32 = [11241, "aaa", 3.14, true, a + 2.3]
+fixed_arr: [5]i32 = [1, 2, 3, 4, 5]
+map_arr: [i32: string] = [1: "one", 2: "two", 3: "three",]
+
+tuple: (i32, string, bool) = (4, "hello", true,)
+
+a = a +| 2 -% 3 <<| 1 
+
+a += 2
+a <<|= 1
+
+main :: fn () i32 {
+  a :: 2
+  b := 3
+}
+
+main2 :: proc (a: i32, b: i32) i32 {
+  a + b
+}
+
+fn_typ :: fn() i32 
+
+proc_typ :: proc(i32, i32) 
+
+any_typ :: any
+typetype :: type
+
+complex_f32 :: complex(f32)
+complex_i64 :: complex(i64)
+simd_vec :: simd(4, f32)
+tensor_mat :: tensor(2, 3, i32)
+
+ptr_type :: *i32
+
+const_ptr_type :: *const i32
+
+call :: add(a + 1i, 2)
