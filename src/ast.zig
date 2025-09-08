@@ -166,6 +166,7 @@ pub const Function = struct {
     loc: Loc,
     is_proc: bool,
     is_variadic: bool,
+    is_extern: bool,
 };
 
 pub const Block = struct {
@@ -296,6 +297,7 @@ pub const UnaryType = struct {
 pub const StructLikeType = struct {
     fields: List(StructField),
     loc: Loc,
+    is_extern: bool,
 };
 
 pub const VariantLikeType = struct {
@@ -359,6 +361,7 @@ pub const EnumField = struct {
 pub const EnumType = struct {
     fields: List(EnumField),
     discriminant: ?*Expr,
+    is_extern: bool,
     loc: Loc,
 };
 
@@ -772,6 +775,12 @@ pub const AstPrinter = struct {
             .Null => |_| try self.printLeaf("(null)", .{}),
             .Function => |fun| {
                 try self.beginNode("({s}", .{if (fun.is_proc) "procedure" else "function"});
+                if (fun.is_variadic) {
+                    try self.printLeaf("(variadic)", .{});
+                }
+                if (fun.is_extern) {
+                    try self.printLeaf("(extern)", .{});
+                }
                 for (fun.params.items) |param| {
                     try self.beginNode("(param", .{});
                     if (param.pat) |pat|
@@ -902,6 +911,7 @@ pub const AstPrinter = struct {
             .ErrorSet => |eset| try self.printBinary("error_set", eset.err, eset.value),
             .Struct => |st| {
                 try self.beginNode("(struct", .{});
+                try self.printLeaf("is_extern={}", .{st.is_extern});
                 for (st.fields.items) |field| {
                     try self.printStructField(&field);
                 }
@@ -909,6 +919,7 @@ pub const AstPrinter = struct {
             },
             .Enum => |en| {
                 try self.beginNode("(enum", .{});
+                try self.printLeaf("is_extern={}", .{en.is_extern});
                 if (en.discriminant) |disc| {
                     try self.printNamedExpr("discriminant", disc);
                 }
@@ -946,6 +957,7 @@ pub const AstPrinter = struct {
             },
             .Union => |un| {
                 try self.beginNode("(union", .{});
+                try self.printLeaf("is_extern={}", .{un.is_extern});
                 for (un.fields.items) |field| {
                     try self.printStructField(&field);
                 }

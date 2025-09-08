@@ -316,7 +316,8 @@ pub const Parser = struct {
             .lsquare => try self.parseArrayLike(),
             .lparen => try self.parseParenExpr(),
             .lcurly => try self.parseBlockExpr(),
-            .keyword_proc, .keyword_fn => try self.parseFunctionLike(self.current().tag),
+            .keyword_proc, .keyword_fn => try self.parseFunctionLike(self.current().tag, false),
+            .keyword_extern => try self.parseExternDecl(),
             .keyword_any => blk: {
                 const any_type = ast.AnyType{ .loc = self.currentLoc() };
                 self.advance();
@@ -335,9 +336,9 @@ pub const Parser = struct {
             .keyword_complex => try self.parseComplexType(),
             .keyword_simd => try self.parseSimdType(),
             .keyword_tensor => try self.parseTensorType(),
-            .keyword_struct => try self.parseStructLikeType(.keyword_struct),
-            .keyword_union => try self.parseStructLikeType(.keyword_union),
-            .keyword_enum => try self.parseEnumType(),
+            .keyword_struct => try self.parseStructLikeType(.keyword_struct, false),
+            .keyword_union => try self.parseStructLikeType(.keyword_union, false),
+            .keyword_enum => try self.parseEnumType(false),
             .keyword_variant => try self.parseVariantType(),
             .keyword_error => try self.parseErrorType(),
             .keyword_return => try self.parseReturn(),
@@ -859,7 +860,7 @@ pub const Parser = struct {
         switch (self.current().tag) {
             // .underscore_like => { /* see note below */ },
             .char_literal, .string_literal, .raw_string_literal, .byte_literal, .byte_char_literal, .byte_string_literal, .raw_byte_string_literal, .integer_literal, .float_literal, .keyword_true, .keyword_false => {
-                const lit = try self.nud(self.current().tag, .expr); // reuse literal expr nud
+                const lit = try self.nud(self.current().tag, .expr_no_struct); // reuse literal expr nud
                 return try self.alloc(ast.Pattern, .{ .Literal = lit });
             },
             // .star => { // *pat
@@ -1104,12 +1105,16 @@ pub const Parser = struct {
         return fields;
     }
 
-    inline fn parseStructLikeType(self: *Parser, comptime tag: Token.Tag) !*ast.Expr {
+    inline fn parseStructLikeType(
+        self: *Parser,
+        comptime tag: Token.Tag,
+        comptime is_extern: bool,
+    ) !*ast.Expr {
         const struct_start = self.currentLoc();
         self.advance(); // "struct" / "union"
         try self.expect(.lcurly);
         const fields = try self.parseStructFieldList(.rcurly);
-        const struct_type = ast.StructLikeType{ .fields = fields, .loc = struct_start };
+        const struct_type = ast.StructLikeType{ .is_extern = is_extern, .fields = fields, .loc = struct_start };
         if (tag == .keyword_struct) {
             return self.alloc(ast.Expr, .{ .BuiltinType = .{ .Struct = struct_type } });
         }
@@ -1300,7 +1305,21 @@ pub const Parser = struct {
         };
     }
 
-    fn parseFunctionLike(self: *Parser, tag: Token.Tag) !*ast.Expr {
+    fn parseExternDecl(self: *Parser) !*ast.Expr {
+        self.advance(); // "extern"
+        switch (self.current().tag) {
+            .keyword_proc, .keyword_fn => return try self.parseFunctionLike(self.current().tag, true),
+            .keyword_struct => return try self.parseStructLikeType(.keyword_struct, true),
+            .keyword_enum => return try self.parseEnumType(true),
+            .keyword_union => return try self.parseStructLikeType(.keyword_union, true),
+            else => {
+                std.debug.print("Expected 'proc', 'fn', or string literal after 'extern', but got: {}\n", .{self.current().tag});
+                return error.UnexpectedToken;
+            },
+        }
+    }
+
+    fn parseFunctionLike(self: *Parser, tag: Token.Tag, comptime is_extern: bool) !*ast.Expr {
         const start_token = self.current();
         self.advance(); // "proc" or "fn"
         try self.expect(.lparen);
@@ -1346,7 +1365,8 @@ pub const Parser = struct {
             .result_ty = return_type,
             .body = body,
             .loc = start_token.loc,
-            .is_variadic = false, // TODO
+            .is_variadic = false, // TODO: i could just use  "any" as last param type
+            .is_extern = is_extern,
         };
         return try self.alloc(ast.Expr, .{ .Function = func });
     }
@@ -1355,7 +1375,7 @@ pub const Parser = struct {
     // Enums / Variants
     //=================================================================
 
-    inline fn parseEnumType(self: *Parser) !*ast.Expr {
+    inline fn parseEnumType(self: *Parser, comptime is_extern: bool) !*ast.Expr {
         const enum_start = self.currentLoc();
         self.advance(); // "enum"
 
@@ -1379,7 +1399,7 @@ pub const Parser = struct {
         }
 
         try self.expect(.rcurly);
-        const enum_type = ast.EnumType{ .fields = fields, .discriminant = backing_type, .loc = enum_start };
+        const enum_type = ast.EnumType{ .is_extern = is_extern, .fields = fields, .discriminant = backing_type, .loc = enum_start };
         return self.alloc(ast.Expr, .{ .BuiltinType = .{ .Enum = enum_type } });
     }
 
