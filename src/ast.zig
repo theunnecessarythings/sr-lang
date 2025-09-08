@@ -45,9 +45,11 @@ pub const Expr = union(enum) {
     Break: Break,
     Continue: Continue,
     Unreachable: Unreachable,
+    Null: Null,
     Defer: Defer,
     ErrDefer: ErrDefer,
     ErrUnwrap: ErrUnwrap,
+    Catch: Catch,
 };
 
 pub const Literal = struct {
@@ -128,6 +130,8 @@ pub const InfixOp = enum {
     range_inclusive,
     assign,
     error_union,
+    error_catch,
+    unwrap_orelse,
 
     add_assign,
     sub_assign,
@@ -251,6 +255,10 @@ pub const Unreachable = struct {
     loc: Loc,
 };
 
+pub const Null = struct {
+    loc: Loc,
+};
+
 pub const Defer = struct {
     expr: *Expr,
     loc: Loc,
@@ -263,6 +271,13 @@ pub const ErrDefer = struct {
 
 pub const ErrUnwrap = struct {
     expr: *Expr,
+    loc: Loc,
+};
+
+pub const Catch = struct {
+    expr: *Expr,
+    binding: ?Ident,
+    handler: *Expr,
     loc: Loc,
 };
 
@@ -667,6 +682,16 @@ pub const AstPrinter = struct {
                 }
                 try self.endNode();
             },
+            .Catch => |c| {
+                try self.beginNode("(catch", .{});
+                try self.printNamedExpr("expr", c.expr);
+                if (c.binding) |b| {
+                    try self.beginNode("(binding name=\"{s}\")", .{b.name});
+                    try self.endNode();
+                }
+                try self.printNamedExpr("handler", c.handler);
+                try self.endNode();
+            },
             .If => |if_expr| {
                 try self.beginNode("(if", .{});
                 try self.printNamedExpr("cond", if_expr.cond);
@@ -744,6 +769,7 @@ pub const AstPrinter = struct {
             .Break => |_| try self.printLeaf("(break)", .{}),
             .Continue => |_| try self.printLeaf("(continue)", .{}),
             .Unreachable => |_| try self.printLeaf("(unreachable)", .{}),
+            .Null => |_| try self.printLeaf("(null)", .{}),
             .Function => |fun| {
                 try self.beginNode("({s}", .{if (fun.is_proc) "procedure" else "function"});
                 for (fun.params.items) |param| {

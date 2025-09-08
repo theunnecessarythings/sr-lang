@@ -154,6 +154,7 @@ pub const Parser = struct {
             .keyword_and => .{ 25, 26 },
             .keyword_or => .{ 20, 21 },
             .bang => .{ 15, 16 }, // for error union
+            .keyword_orelse => .{ 12, 11 },
             .plus_equal,
             .minus_equal,
             .star_equal,
@@ -178,14 +179,14 @@ pub const Parser = struct {
 
     inline fn postfixBp(tag: Token.Tag) ?u8 {
         return switch (tag) {
-            .lparen, .lsquare, .lcurly, .dot, .dotdot, .dotdoteq, .bang => 95,
+            .lparen, .lsquare, .lcurly, .dot, .dotdot, .dotdoteq, .bang, .question, .keyword_catch => 95,
             else => null,
         };
     }
 
     inline fn prefixBp(tag: Token.Tag) u8 {
         return switch (tag) {
-            .plus, .minus, .b_and, .star, .bang, .dotdot, .dotdoteq => 90,
+            .plus, .minus, .b_and, .star, .question, .bang, .dotdot, .dotdoteq => 90,
             else => unreachable,
         };
     }
@@ -283,13 +284,13 @@ pub const Parser = struct {
         return .{ .lhs = lhs, .rhs = rhs, .ty = ty, .loc = loc, .is_const = is_const, .is_assign = is_assign };
     }
 
-    fn nud(self: *Parser, tag: Token.Tag) anyerror!*ast.Expr {
+    fn nud(self: *Parser, tag: Token.Tag, comptime mode: ParseMode) anyerror!*ast.Expr {
         // prefix
         switch (tag) {
             .plus, .minus, .b_and, .bang, .dotdot, .dotdoteq => {
                 const op_tok = self.current();
                 self.advance();
-                const rhs = try self.parseExpr(prefixBp(tag), .expr);
+                const rhs = try self.parseExpr(prefixBp(tag), mode);
                 const unary = ast.Prefix{ .op = toPrefixOp(op_tok.tag), .right = rhs, .loc = op_tok.loc };
                 return try self.alloc(ast.Expr, .{ .Prefix = unary });
             },
@@ -306,6 +307,7 @@ pub const Parser = struct {
         // others
         return switch (tag) {
             .star => try self.parsePointerType(),
+            .question => try self.parseOptionalType(),
             .identifier => blk: {
                 const ident = ast.Ident{ .name = self.slice(self.current()), .loc = self.currentLoc() };
                 self.advance();
@@ -337,6 +339,7 @@ pub const Parser = struct {
             .keyword_union => try self.parseStructLikeType(.keyword_union),
             .keyword_enum => try self.parseEnumType(),
             .keyword_variant => try self.parseVariantType(),
+            .keyword_error => try self.parseErrorType(),
             .keyword_return => try self.parseReturn(),
             .keyword_if => try self.parseIfExpr(),
             .keyword_while => try self.parseWhileExpr(),
@@ -359,6 +362,12 @@ pub const Parser = struct {
                 self.advance();
                 const unreachable_expr = ast.Unreachable{ .loc = unreachable_token.loc };
                 break :blk try self.alloc(ast.Expr, .{ .Unreachable = unreachable_expr });
+            },
+            .keyword_null => blk: {
+                const null_token = self.current();
+                self.advance();
+                const null_expr = ast.Null{ .loc = null_token.loc };
+                break :blk try self.alloc(ast.Expr, .{ .Null = null_expr });
             },
             .keyword_defer => blk: {
                 const defer_token = self.current();
@@ -428,29 +437,38 @@ pub const Parser = struct {
             .plus_percent_equal => .add_wrap_assign,
             .minus_percent_equal => .sub_wrap_assign,
             .bang => .error_union,
+            .keyword_orelse => .unwrap_orelse,
             else => unreachable,
         };
     }
 
     fn parseExpr(self: *Parser, min_bp: u8, comptime mode: ParseMode) !*ast.Expr {
-        var left = try self.nud(self.current().tag);
+        var left = try self.nud(self.current().tag, mode);
 
         while (true) {
             const tag = self.current().tag;
 
-            // Postfix — but do NOT preempt infix ".." / "..="
+            // ---------- Postfix ----------
             if (postfixBp(tag)) |l_bp| {
-                if (l_bp >= min_bp) {
-                    // 1) never parse a struct literal in type-context
-                    if (tag == .lcurly and mode == .type) break;
-
-                    if (tag == .lcurly and mode == .expr_no_struct) break;
-
-                    // 2) only treat '{' as struct initializer if the LHS looks like a ctor head
+                // never treat '!' as postfix in type context
+                if (tag == .bang and mode == .type) {
+                    // skip; might be infix type operator
+                } else if (l_bp >= min_bp) {
+                    // block struct-literal when not allowed
+                    if (tag == .lcurly and (mode == .type or mode == .expr_no_struct)) break;
                     if (tag == .lcurly and !self.looksLikeCtorHead(left)) break;
 
-                    const prefer_postfix = (tag == .dotdot or tag == .dotdoteq or tag == .bang);
-                    const should_let_infix_win = prefer_postfix and !self.nextIsTerminator();
+                    // SPECIAL-CASE: for '!' in expr modes, always take postfix unwrap.
+                    if (tag == .bang and mode != .type) {
+                        const loc = self.currentLoc();
+                        self.advance();
+                        left = try self.alloc(ast.Expr, .{ .ErrUnwrap = .{ .expr = left, .loc = loc } });
+                        continue;
+                    }
+
+                    // Range postfix still defers to infix when it’s actually x..y or x..=y
+                    const prefer_postfix_for_range = (tag == .dotdot or tag == .dotdoteq);
+                    const should_let_infix_win = prefer_postfix_for_range and !self.nextIsTerminator();
 
                     if (!should_let_infix_win) {
                         self.advance();
@@ -459,21 +477,7 @@ pub const Parser = struct {
                             .lsquare => try self.parseIndex(left),
                             .dot => try self.parseField(left),
                             .lcurly => try self.parseStructLiteral(),
-                            .bang => blk: {
-                                const loc = self.currentLoc();
-                                const err_unwrap = ast.ErrUnwrap{ .expr = left, .loc = loc };
-                                break :blk try self.alloc(ast.Expr, .{ .ErrUnwrap = err_unwrap });
-                            },
-                            // .dotdot, .dotdoteq => blk: {
-                            //     // only reached when nextIsTerminator() == true → x.. / x..=
-                            //     const range = ast.Range{
-                            //         .start = left,
-                            //         .end = null,
-                            //         .inclusive_right = (tag == .dotdoteq),
-                            //         .loc = self.currentLoc(),
-                            //     };
-                            //     break :blk try self.alloc(ast.Expr, .{ .Range = range });
-                            // },
+                            .keyword_catch => try self.parseCatchExpr(left),
                             else => unreachable,
                         };
                         continue;
@@ -481,10 +485,14 @@ pub const Parser = struct {
                 }
             }
 
-            // Infix (this now gets 1 .. 3)
+            // ---------- Infix ----------
             if (infixBp(tag)) |bp| {
+                // Only allow infix '!' in *type* mode (error-union like `T ! E`)
+                if (tag == .bang and mode != .type) break;
+
                 const l_bp, const r_bp = bp;
                 if (l_bp < min_bp) break;
+
                 const loc = self.currentLoc();
                 self.advance();
                 const right = try self.parseExpr(r_bp, mode);
@@ -613,6 +621,25 @@ pub const Parser = struct {
     fn parseBlockExpr(self: *Parser) !*ast.Expr {
         const block = try self.parseBlock();
         return self.alloc(ast.Expr, .{ .Block = block });
+    }
+
+    fn parseCatchExpr(self: *Parser, expr: *ast.Expr) anyerror!*ast.Expr {
+        const catch_loc = self.currentLoc();
+        var binding: ?ast.Ident = null;
+        if (self.current().tag == .b_or) {
+            self.advance();
+            const name = try self.expectIdent();
+            binding = ast.Ident{ .name = name.bytes, .loc = name.loc };
+            try self.expect(.b_or);
+        }
+        var handler: *ast.Expr = undefined;
+        if (self.current().tag == .lcurly) {
+            handler = try self.parseBlockExpr();
+        } else {
+            handler = try self.parseExpr(0, .expr);
+        }
+        const catch_expr = ast.Catch{ .expr = expr, .binding = binding, .handler = handler, .loc = catch_loc };
+        return self.alloc(ast.Expr, .{ .Catch = catch_expr });
     }
 
     fn parseIfExpr(self: *Parser) !*ast.Expr {
@@ -832,7 +859,7 @@ pub const Parser = struct {
         switch (self.current().tag) {
             // .underscore_like => { /* see note below */ },
             .char_literal, .string_literal, .raw_string_literal, .byte_literal, .byte_char_literal, .byte_string_literal, .raw_byte_string_literal, .integer_literal, .float_literal, .keyword_true, .keyword_false => {
-                const lit = try self.nud(self.current().tag); // reuse literal expr nud
+                const lit = try self.nud(self.current().tag, .expr); // reuse literal expr nud
                 return try self.alloc(ast.Pattern, .{ .Literal = lit });
             },
             // .star => { // *pat
@@ -1102,6 +1129,14 @@ pub const Parser = struct {
         return try self.alloc(ast.Expr, .{ .BuiltinType = .{ .Pointer = ptr_type } });
     }
 
+    inline fn parseOptionalType(self: *Parser) !*ast.Expr {
+        const start_token = self.current();
+        self.advance(); // "?"
+        const elem_type = try self.parseExpr(0, .type);
+        const opt_type = ast.UnaryType{ .elem = elem_type, .loc = start_token.loc };
+        return try self.alloc(ast.Expr, .{ .BuiltinType = .{ .Optional = opt_type } });
+    }
+
     inline fn parseComplexType(self: *Parser) !*ast.Expr {
         const start = try self.beginKeywordParen(.keyword_complex);
         const elem_type = try self.parseExpr(0, .type);
@@ -1348,7 +1383,15 @@ pub const Parser = struct {
         return self.alloc(ast.Expr, .{ .BuiltinType = .{ .Enum = enum_type } });
     }
 
+    inline fn parseErrorType(self: *Parser) !*ast.Expr {
+        return self.parseVariantLikeType(true);
+    }
+
     inline fn parseVariantType(self: *Parser) !*ast.Expr {
+        return self.parseVariantLikeType(false);
+    }
+
+    fn parseVariantLikeType(self: *Parser, comptime is_error: bool) !*ast.Expr {
         // Rust-like enum with payloads
         const variant_start = self.currentLoc();
         self.advance(); // "variant"
@@ -1399,6 +1442,9 @@ pub const Parser = struct {
 
         try self.expect(.rcurly);
         const variant_type = ast.VariantLikeType{ .fields = fields, .loc = variant_start };
+        if (is_error)
+            return self.alloc(ast.Expr, .{ .BuiltinType = .{ .Error = variant_type } });
         return self.alloc(ast.Expr, .{ .BuiltinType = .{ .Variant = variant_type } });
     }
 };
+
