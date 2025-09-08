@@ -382,58 +382,47 @@ pub const Parser = struct {
         while (true) {
             const tag = self.current().tag;
 
+            // Postfix — but do NOT preempt infix ".." / "..="
             if (postfixBp(tag)) |l_bp| {
-                if (l_bp < min_bp) break;
+                if (l_bp >= min_bp) {
+                    // do not start a struct literal in type context
+                    if (tag == .lcurly and mode == .type) break;
 
-                // For ".." and "..=", if the next token is not a terminator, treat as infix operator instead.
-                if ((tag == .dotdot or tag == .dotdoteq) and !self.nextIsTerminator()) {
-                    break; // fall through to the infix handler below
+                    const is_range_postfix = (tag == .dotdot or tag == .dotdoteq);
+                    const should_let_infix_win = is_range_postfix and !self.nextIsTerminator();
+
+                    if (!should_let_infix_win) {
+                        self.advance();
+                        left = switch (tag) {
+                            .lparen => try self.parseCall(left),
+                            .lsquare => try self.parseIndex(left),
+                            .dot => try self.parseField(left),
+                            .lcurly => try self.parseStructLiteral(),
+                            // .dotdot, .dotdoteq => blk: {
+                            //     // only reached when nextIsTerminator() == true → x.. / x..=
+                            //     const range = ast.Range{
+                            //         .start = left,
+                            //         .end = null,
+                            //         .inclusive_right = (tag == .dotdoteq),
+                            //         .loc = self.currentLoc(),
+                            //     };
+                            //     break :blk try self.alloc(ast.Expr, .{ .Range = range });
+                            // },
+                            else => unreachable,
+                        };
+                        continue;
+                    }
                 }
-
-                // In type mode, don't allow struct literals (the body curly must remain available).
-                if (tag == .lcurly and mode == .type) break;
-
-                self.advance();
-                left = switch (tag) {
-                    .lparen => try self.parseCall(left),
-                    .lsquare => try self.parseIndex(left),
-                    .dot => try self.parseField(left),
-                    .lcurly => blk: {
-                        // struct literal: parse field values in expr mode (even if outer mode is .type)
-                        const struct_start = self.currentLoc();
-                        var entries = self.list(ast.StructFieldValue);
-                        while (self.current().tag != .rcurly and self.current().tag != .eof) {
-                            const field_tok = self.current();
-                            var field_name: ?[]const u8 = null;
-                            if (self.current().tag == .identifier) {
-                                field_name = self.slice(field_tok);
-                                self.advance();
-                                try self.expect(.colon);
-                            }
-                            const value = try self.parseExpr(0, .expr);
-                            try entries.append(.{ .name = field_name, .value = value, .loc = field_tok.loc });
-                            if (self.current().tag != .comma) break;
-                            self.advance();
-                        }
-                        try self.expect(.rcurly);
-                        const struct_lit = ast.StructLiteral{ .fields = entries, .loc = struct_start };
-                        break :blk try self.alloc(ast.Expr, .{ .Struct = struct_lit });
-                    },
-                    else => unreachable,
-                };
-                continue;
             }
 
+            // Infix (this now gets 1 .. 3)
             if (infixBp(tag)) |bp| {
                 const l_bp, const r_bp = bp;
                 if (l_bp < min_bp) break;
-
                 const loc = self.currentLoc();
                 self.advance();
-
                 const right = try self.parseExpr(r_bp, mode);
-                const infix = ast.Infix{ .op = toInfixOp(tag), .left = left, .right = right, .loc = loc };
-                left = try self.alloc(ast.Expr, .{ .Infix = infix });
+                left = try self.alloc(ast.Expr, .{ .Infix = .{ .op = toInfixOp(tag), .left = left, .right = right, .loc = loc } });
                 continue;
             }
 
@@ -445,6 +434,27 @@ pub const Parser = struct {
     //=================================================================
     // Common element parsers
     //=================================================================
+
+    fn parseStructLiteral(self: *Parser) anyerror!*ast.Expr {
+        const struct_start = self.currentLoc();
+        var entries = self.list(ast.StructFieldValue);
+        while (self.current().tag != .rcurly and self.current().tag != .eof) {
+            const field_tok = self.current();
+            var field_name: ?[]const u8 = null;
+            if (self.current().tag == .identifier) {
+                field_name = self.slice(field_tok);
+                self.advance();
+                try self.expect(.colon);
+            }
+            const value = try self.parseExpr(0, .expr);
+            try entries.append(.{ .name = field_name, .value = value, .loc = field_tok.loc });
+            if (self.current().tag != .comma) break;
+            self.advance();
+        }
+        try self.expect(.rcurly);
+        const struct_lit = ast.StructLiteral{ .fields = entries, .loc = struct_start };
+        return self.alloc(ast.Expr, .{ .Struct = struct_lit });
+    }
 
     fn parseIndex(self: *Parser, collection: *ast.Expr) anyerror!*ast.Expr {
         const index_start = self.currentLoc();

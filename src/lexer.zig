@@ -427,6 +427,7 @@ pub const Tokenizer = struct {
         raw_string_prefix, // r, r#, r##..., br, br#, ...
         raw_string_body, // reading until closing "###...
         raw_string_maybe_close,
+        byte_string_body,
 
         // asm
         maybe_raw_asm_ws,
@@ -514,42 +515,62 @@ pub const Tokenizer = struct {
 
                     // identifiers / keywords / raw-id / raw-strings / byte strings
                     'a'...'z', 'A'...'Z', '_' => {
-                        // special handling for r*, b* prefixes
+                        // ----- RAW BYTE STRING: br"..." / br#"..."
+                        if (self.buffer[self.index] == 'b' and self.buffer[self.index + 1] == 'r') {
+                            var j: usize = self.index + 2; // after "br"
+                            var h: usize = 0;
+                            while (self.buffer[j] == '#') : (j += 1) h += 1;
+                            if (self.buffer[j] == '"') {
+                                result.tag = .raw_byte_string_literal;
+                                self.raw_hashes = 0;
+                                continue :state .raw_string_prefix;
+                            }
+                            // else fall through to normal identifier "br..."
+                        }
+
+                        // ----- PLAIN BYTE LITERALS: b'..' and b".."
+                        if (self.buffer[self.index] == 'b') {
+                            const nxt = self.buffer[self.index + 1];
+                            if (nxt == '\'') {
+                                result.tag = .byte_char_literal;
+                                continue :state .byte_char_literal; // this one is fine as-is
+                            } else if (nxt == '"') {
+                                result.tag = .byte_string_literal;
+                                continue :state .byte_string_literal; // we'll redirect this immediately
+                            }
+                        }
+                        // ----- RAW STRING vs RAW IDENTIFIER: r".." / r#".."# vs r#ident
                         if (self.buffer[self.index] == 'r') {
-                            // raw identifier r#id or raw string r"..." / r#"..."#
-                            if (self.buffer[self.index + 1] == '#') {
-                                // raw identifier requires XID_Start after r#
-                                result.tag = .raw_identifier;
-                                self.index += 2;
-                                if (!isXIDStart(self.peek())) continue :state .invalid;
-                                self.scanIdent();
-                                // break :state .start_end(result, .raw_identifier);
-                            } else if (self.buffer[self.index + 1] == '"' or self.buffer[self.index + 1] == '#') {
+                            const j: usize = self.index + 1; // after 'r'
+                            if (self.buffer[j] == '"') {
                                 result.tag = .raw_string_literal;
                                 self.raw_hashes = 0;
                                 continue :state .raw_string_prefix;
                             }
-                        }
-                        if (self.buffer[self.index] == 'b') {
-                            if (self.buffer[self.index + 1] == '"') {
-                                result.tag = .byte_string_literal;
-                                continue :state .byte_string_literal;
-                            } else if (self.buffer[self.index + 1] == '\'') {
-                                result.tag = .byte_char_literal;
-                                continue :state .byte_char_literal;
-                            } else if (self.buffer[self.index + 1] == 'r' and (self.buffer[self.index + 2] == '"' or self.buffer[self.index + 2] == '#')) {
-                                result.tag = .raw_byte_string_literal;
-                                self.raw_hashes = 0;
-                                self.index = self.index; // stay here; unified raw handler starts from 'r' position
-                                // we will treat 'br' as 'b' + 'r' sequence in raw_string_prefix by skipping 'br'
-                                continue :state .raw_string_prefix;
+                            if (self.buffer[j] == '#') {
+                                var k = j;
+                                var h: usize = 0;
+                                while (self.buffer[k] == '#') : (k += 1) h += 1;
+                                if (self.buffer[k] == '"') {
+                                    result.tag = .raw_string_literal;
+                                    self.raw_hashes = 0;
+                                    continue :state .raw_string_prefix;
+                                } else {
+                                    // r#ident
+                                    result.tag = .raw_identifier;
+                                    self.index = j + 1; // after the first '#'
+                                    if (!isXIDStart(self.peek())) continue :state .invalid;
+                                    self.scanIdent();
+                                    // fall through to keyword/ident finalization below
+                                }
                             }
                         }
 
                         // maybe raw asm block: 'asm' WS* '{' ...
-                        if (startsWith(self.buffer, self.index, "asm") and !isXIDContinue(self.buffer[self.index + 3])) {
-                            self.asm_maybe = true;
-                        } else self.asm_maybe = false;
+                        if (startsWith(self.buffer, self.index, "asm") and !isXIDContinue(self.buffer[self.index + 3]))
+                            self.asm_maybe = true
+                        else
+                            self.asm_maybe = false;
 
                         result.tag = .identifier;
                         continue :state .identifier;
@@ -807,19 +828,25 @@ pub const Tokenizer = struct {
             },
 
             .byte_string_literal => {
-                // start at b"
+                // Entry at 'b' of b"...": skip b"
                 self.index += 2;
+                continue :state .byte_string_body;
+            },
+
+            .byte_string_body => {
                 switch (self.buffer[self.index]) {
                     0 => result.tag = .invalid,
-                    '"' => self.index += 1,
-                    '\\' => {
+                    '"' => { // closing quote
+                        self.index += 1;
+                    },
+                    '\\' => { // simple escape: consume the backslash + next char
                         self.index += 2;
-                        continue :state .byte_string_literal;
+                        continue :state .byte_string_body;
                     },
                     '\n', '\r' => result.tag = .invalid,
                     else => {
                         self.index += 1;
-                        continue :state .byte_string_literal;
+                        continue :state .byte_string_body;
                     },
                 }
                 self.nlsemi = true;
@@ -875,20 +902,16 @@ pub const Tokenizer = struct {
             },
 
             .raw_string_maybe_close => {
-                // we are just after a '"'
                 var k: usize = 0;
                 while (k < self.raw_hashes and self.buffer[self.index + 1 + k] == '#') : (k += 1) {}
                 if (k == self.raw_hashes) {
-                    self.index += 1 + k;
-                    // Decide whether it was byte or normal raw string by tag set earlier
-                    if (result.tag == .raw_byte_string_literal or result.tag == .byte_string_literal) {} // keep
+                    self.index += 1 + k; // consume '"' and the hashes
                     self.nlsemi = true;
                 } else {
-                    self.index += 1; // treat the quote as part of body
+                    self.index += 1; // treat the '"' as part of body
                     continue :state .raw_string_body;
                 }
             },
-
             // ===== raw asm block after 'asm' + WS + '{' =====
             .maybe_raw_asm_ws => unreachable, // handled in identifier path
 
