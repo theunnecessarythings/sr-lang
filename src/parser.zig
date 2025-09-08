@@ -340,6 +340,7 @@ pub const Parser = struct {
             .keyword_if => try self.parseIfExpr(),
             .keyword_while => try self.parseWhileExpr(),
             .keyword_match => try self.parseMatchExpr(),
+            .keyword_for => try self.parseForExpr(),
             .keyword_break => blk: {
                 const break_token = self.current();
                 self.advance();
@@ -638,6 +639,22 @@ pub const Parser = struct {
             .is_pattern = false,
         };
         return try self.alloc(ast.Expr, .{ .While = while_expr });
+    }
+
+    fn parseForExpr(self: *Parser) !*ast.Expr {
+        const for_start = self.currentLoc();
+        self.advance(); // "for"
+        const pattern = try self.parsePattern();
+        try self.expect(.keyword_in);
+        const iterable = try self.parseExpr(0, .expr_no_struct);
+        const body = try self.parseBlock();
+        const for_expr = ast.For{
+            .pattern = pattern,
+            .iterable = iterable,
+            .body = body,
+            .loc = for_start,
+        };
+        return try self.alloc(ast.Expr, .{ .For = for_expr });
     }
 
     fn parseMatchExpr(self: *Parser) !*ast.Expr {

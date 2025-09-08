@@ -40,6 +40,7 @@ pub const Expr = union(enum) {
     Return: Return,
     If: If,
     While: While,
+    For: For,
     Match: Match,
     Break: Break,
     Continue: Continue,
@@ -211,6 +212,13 @@ pub const While = struct {
     body: Block,
     loc: Loc,
     is_pattern: bool,
+};
+
+pub const For = struct {
+    pattern: *Pattern,
+    iterable: *Expr,
+    body: Block,
+    loc: Loc,
 };
 
 pub const Match = struct {
@@ -682,6 +690,19 @@ pub const AstPrinter = struct {
                     try self.printNamedExpr("body", arm.body);
                     try self.endNode();
                 }
+                try self.endNode();
+            },
+            .For => |for_expr| {
+                try self.beginNode("(for", .{});
+                try self.beginNode("(pattern", .{});
+                try self.printPattern(for_expr.pattern);
+                try self.endNode();
+                try self.printNamedExpr("iterable", for_expr.iterable);
+                try self.beginNode("(body", .{});
+                for (for_expr.body.items.items) |decl| {
+                    try self.printDecl(&decl);
+                }
+                try self.endNode();
                 try self.endNode();
             },
             .Break => |_| try self.printLeaf("(break)", .{}),
