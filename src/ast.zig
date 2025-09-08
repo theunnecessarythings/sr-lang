@@ -39,6 +39,9 @@ pub const Expr = union(enum) {
     Struct: StructLiteral,
     Return: Return,
     If: If,
+    While: While,
+    Break: Break,
+    Continue: Continue,
 };
 
 pub const Literal = struct {
@@ -197,6 +200,21 @@ pub const If = struct {
     cond: *Expr,
     then_block: Block,
     else_block: ?*Expr, // can be another If or a Block
+    loc: Loc,
+};
+
+pub const While = struct {
+    cond: ?*Expr,
+    body: Block,
+    loc: Loc,
+    is_pattern: bool,
+};
+
+pub const Break = struct {
+    loc: Loc,
+};
+
+pub const Continue = struct {
     loc: Loc,
 };
 
@@ -524,6 +542,20 @@ pub const AstPrinter = struct {
                 }
                 try self.endNode();
             },
+            .While => |while_expr| {
+                try self.beginNode("(while is_pattern={}", .{while_expr.is_pattern});
+                if (while_expr.cond) |cond| {
+                    try self.printNamedExpr("cond", cond);
+                }
+                try self.beginNode("(body", .{});
+                for (while_expr.body.items.items) |decl| {
+                    try self.printDecl(&decl);
+                }
+                try self.endNode();
+                try self.endNode();
+            },
+            .Break => |_| try self.printLeaf("(break)", .{}),
+            .Continue => |_| try self.printLeaf("(continue)", .{}),
             .Function => |fun| {
                 try self.beginNode("({s}", .{if (fun.is_proc) "procedure" else "function"});
                 for (fun.params.items) |param| {

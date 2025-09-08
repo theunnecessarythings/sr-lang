@@ -11,7 +11,7 @@ pub const Parser = struct {
     current_token: Token,
     next_token: Token,
 
-    const ParseMode = enum { expr, type };
+    const ParseMode = enum { expr, type, expr_no_struct };
 
     pub fn init(allocator: std.mem.Allocator, source: [:0]const u8) Parser {
         var lexer = Lexer.init(source);
@@ -334,6 +334,19 @@ pub const Parser = struct {
             .keyword_variant => try self.parseVariantType(),
             .keyword_return => try self.parseReturn(),
             .keyword_if => try self.parseIfExpr(),
+            .keyword_while => try self.parseWhileExpr(),
+            .keyword_break => blk: {
+                const break_token = self.current();
+                self.advance();
+                const break_expr = ast.Break{ .loc = break_token.loc };
+                break :blk try self.alloc(ast.Expr, .{ .Break = break_expr });
+            },
+            .keyword_continue => blk: {
+                const continue_token = self.current();
+                self.advance();
+                const continue_expr = ast.Continue{ .loc = continue_token.loc };
+                break :blk try self.alloc(ast.Expr, .{ .Continue = continue_expr });
+            },
             else => {
                 std.debug.print("Unexpected token in expression: {}\n", .{tag});
                 return error.UnexpectedToken;
@@ -402,6 +415,8 @@ pub const Parser = struct {
                 if (l_bp >= min_bp) {
                     // 1) never parse a struct literal in type-context
                     if (tag == .lcurly and mode == .type) break;
+
+                    if (tag == .lcurly and mode == .expr_no_struct) break;
 
                     // 2) only treat '{' as struct initializer if the LHS looks like a ctor head
                     if (tag == .lcurly and !self.looksLikeCtorHead(left)) break;
@@ -570,7 +585,7 @@ pub const Parser = struct {
     fn parseIfExpr(self: *Parser) !*ast.Expr {
         const if_start = self.currentLoc();
         self.advance(); // "if"
-        const condition = try self.parseExpr(0, .expr);
+        const condition = try self.parseExpr(0, .expr_no_struct);
         const then_block = try self.parseBlock();
         var else_block: ?*ast.Expr = null;
         if (self.current().tag == .keyword_else) {
@@ -584,6 +599,23 @@ pub const Parser = struct {
             .loc = if_start,
         };
         return try self.alloc(ast.Expr, .{ .If = if_expr });
+    }
+
+    fn parseWhileExpr(self: *Parser) !*ast.Expr {
+        const while_start = self.currentLoc();
+        self.advance(); // "while"
+        var condition: ?*ast.Expr = null;
+        if (self.current().tag != .lcurly) {
+            condition = try self.parseExpr(0, .expr_no_struct);
+        }
+        const body = try self.parseBlock();
+        const while_expr = ast.While{
+            .cond = condition,
+            .body = body,
+            .loc = while_start,
+            .is_pattern = false,
+        };
+        return try self.alloc(ast.Expr, .{ .While = while_expr });
     }
 
     //=================================================================
@@ -935,3 +967,4 @@ pub const Parser = struct {
         return self.alloc(ast.Expr, .{ .BuiltinType = .{ .Variant = variant_type } });
     }
 };
+
