@@ -19,17 +19,11 @@ pub fn main() !void {
     defer allocator.free(source);
     std.debug.print("Compiling {s}...\n", .{filename});
 
-    var lexer = compiler.lexer.Tokenizer.init(source0);
-    while (true) {
-        const token = lexer.next();
-        std.debug.print(
-            "{any} -> `{s}`\n",
-            .{ token.tag, source0[token.loc.start..token.loc.end] },
-        );
-        if (token.tag == .eof) break;
-    }
+    // Initialize diagnostics collector and parser
+    var diags = compiler.diagnostics.Diagnostics.init(allocator);
+    defer diags.deinit();
 
-    var parser = compiler.parser.Parser.init(allocator, source0);
+    var parser = compiler.parser.Parser.init(allocator, source0, &diags);
     const ast = try parser.parse();
 
     var buffer: [1024]u8 = undefined;
@@ -38,4 +32,10 @@ pub fn main() !void {
     var printer = compiler.ast.AstPrinter.init(out);
     try printer.print(&ast);
     try out.flush();
+
+    // Emit diagnostics after parsing
+    var err_buf: [1024]u8 = undefined;
+    var err_writer = std.fs.File.stderr().writer(&err_buf);
+    try diags.emitStyled(source0, &err_writer.interface, filename, true);
+    try err_writer.interface.flush();
 }

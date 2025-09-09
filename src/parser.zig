@@ -3,6 +3,7 @@ const Lexer = @import("lexer.zig").Tokenizer;
 const Token = @import("lexer.zig").Token;
 const Loc = Token.Loc;
 const ast = @import("ast.zig");
+const Diagnostics = @import("diagnostics.zig").Diagnostics;
 
 pub const Parser = struct {
     allocator: std.mem.Allocator,
@@ -10,14 +11,15 @@ pub const Parser = struct {
     lexer: Lexer,
     current_token: Token,
     next_token: Token,
+    diags: *Diagnostics,
 
     const ParseMode = enum { expr, type, expr_no_struct };
 
-    pub fn init(allocator: std.mem.Allocator, source: [:0]const u8) Parser {
+    pub fn init(allocator: std.mem.Allocator, source: [:0]const u8, diags: *Diagnostics) Parser {
         var lexer = Lexer.init(source);
         const current_token = lexer.next();
         const next_token = lexer.next();
-        return .{ .allocator = allocator, .source = source, .lexer = lexer, .current_token = current_token, .next_token = next_token };
+        return .{ .allocator = allocator, .source = source, .lexer = lexer, .current_token = current_token, .next_token = next_token, .diags = diags };
     }
 
     //=================================================================
@@ -43,10 +45,7 @@ pub const Parser = struct {
 
     inline fn expect(self: *Parser, tag: Token.Tag) !void {
         if (self.current_token.tag != tag) {
-            std.debug.print("Expected token: {}, but got: {}\n", .{
-                tag,
-                self.current_token.tag,
-            });
+            self.errorNote(self.current_token.loc, "expected {s}, found {s}", .{ Token.Tag.symbol(tag), Token.Tag.symbol(self.current_token.tag) }, self.current_token.loc, "unexpected token here", .{});
             return error.UnexpectedToken;
         }
         self.advance();
@@ -72,6 +71,27 @@ pub const Parser = struct {
         const ptr = try self.allocator.create(T);
         ptr.* = value;
         return ptr;
+    }
+
+    //=================================================================
+    // Diagnostics helpers
+    //=================================================================
+
+    inline fn errorNote(
+        self: *Parser,
+        loc: Loc,
+        comptime fmt: []const u8,
+        args: anytype,
+        note_loc: ?Loc,
+        comptime note_fmt: []const u8,
+        note_args: anytype,
+    ) void {
+        const before = self.diags.count();
+        _ = self.diags.addError(loc, fmt, args) catch {};
+        if (self.diags.count() > before) {
+            const idx = self.diags.count() - 1;
+            _ = self.diags.attachNote(idx, note_loc, note_fmt, note_args) catch {};
+        }
     }
 
     inline fn isStmtTerminator(self: *const Parser) bool {
@@ -124,7 +144,7 @@ pub const Parser = struct {
                 name_bytes = lx;
                 self.advance();
             } else {
-                std.debug.print("Expected attribute name, got: {}\n", .{tok.tag});
+                self.errorNote(tok.loc, "expected attribute name, found {s}", .{Token.Tag.symbol(tok.tag)}, tok.loc, "attribute names can be identifiers or keywords", .{});
                 return error.UnexpectedToken;
             }
             var val: ?*ast.Expr = null;
@@ -135,7 +155,14 @@ pub const Parser = struct {
                 if (isLiteralTag(t) or t == .identifier) {
                     val = try self.parseExpr(0, .expr);
                 } else {
-                    std.debug.print("Expected literal or identifier after '=' in attribute, got: {}\n", .{t});
+                    self.errorNote(
+                        self.currentLoc(),
+                        "expected literal or identifier after '=', found {s}",
+                        .{Token.Tag.symbol(t)},
+                        self.currentLoc(),
+                        "attribute values must be literals or identifiers",
+                        .{},
+                    );
                     return error.UnexpectedToken;
                 }
             }
@@ -273,14 +300,29 @@ pub const Parser = struct {
     // Parsing
     //=================================================================
 
+    fn syncToStmtBoundary(self: *Parser) void {
+        while (self.current().tag != .eos and self.current().tag != .rcurly and self.current().tag != .eof) {
+            self.advance();
+        }
+        if (self.current().tag == .eos) self.advance();
+    }
+
     pub fn parse(self: *Parser) !ast.Program {
         var decls = self.list(ast.Decl);
         var pkg_decl: ?ast.PackageDecl = null;
         if (self.current_token.tag == .keyword_package) {
-            pkg_decl = try self.parsePackageDecl();
+            pkg_decl = self.parsePackageDecl() catch blk: {
+                // Assume a more specific diagnostic was already added at the error site
+                self.syncToStmtBoundary();
+                break :blk null;
+            };
         }
         while (self.current_token.tag != .eof) {
-            const decl = try self.parseDecl();
+            const decl = self.parseDecl() catch {
+                // Assume a more specific diagnostic was already added at the error site
+                self.syncToStmtBoundary();
+                continue;
+            };
             try decls.append(decl);
         }
         return .{ .decls = decls, .package = pkg_decl };
@@ -330,7 +372,8 @@ pub const Parser = struct {
                             is_const = true;
                         },
                         else => {
-                            std.debug.print("Expected '=' or '::' after type in declaration, but got: {}\n", .{self.current().tag});
+                            const unexpected_tok = self.current();
+                            self.errorNote(self.currentLoc(), "expected '=' or '::' after type in declaration, found {s}", .{Token.Tag.symbol(unexpected_tok.tag)}, unexpected_tok.loc, "did you mean '=' before the initializer?", .{});
                             return error.UnexpectedToken;
                         },
                     }
@@ -348,15 +391,14 @@ pub const Parser = struct {
                 return .{ .lhs = null, .rhs = lhs, .ty = null, .loc = loc, .is_const = false, .is_assign = false };
             },
             else => {
-                std.debug.print("Expected '::' or '=' after lhs in declaration, but got: {}\n", .{self.current().tag});
+                const got = self.current();
+                self.errorNote(self.currentLoc(), "expected '::' or '=' after lhs in declaration, found {s}", .{Token.Tag.symbol(got.tag)}, got.loc, "use '::' for constants, '=' to assign or initialize variables", .{});
                 return error.UnexpectedToken;
             },
         }
 
         const rhs = try self.parseExpr(0, .expr);
         if (self.current().tag != .rcurly and self.current().tag != .eof) {
-            // DEBUG
-            std.debug.print("[debug] expecting .eos, current={any}\n", .{self.current().tag});
             try self.expect(.eos);
         }
         return .{ .lhs = lhs, .rhs = rhs, .ty = ty, .loc = loc, .is_const = is_const, .is_assign = is_assign };
@@ -522,7 +564,8 @@ pub const Parser = struct {
                 break :blk try self.alloc(ast.Expr, .{ .ErrDefer = errdefer_expr });
             },
             else => {
-                std.debug.print("Unexpected token in expression: {}\n", .{tag});
+                const got = self.current();
+                self.errorNote(self.currentLoc(), "unexpected token in expression: {s}", .{Token.Tag.symbol(tag)}, got.loc, "this token cannot start or continue an expression here", .{});
                 return error.UnexpectedToken;
             },
         };
@@ -642,8 +685,7 @@ pub const Parser = struct {
 
             break;
         }
-        // DEBUG: show token at parseExpr exit
-        std.debug.print("[debug] parseExpr exit: current={any}\n", .{self.current().tag});
+        // Debug log removed for cleaner output
         return left;
     }
 
@@ -689,7 +731,8 @@ pub const Parser = struct {
                 self.advance();
             },
             else => {
-                std.debug.print("Expected identifier or integer after '.', but got: {}\n", .{self.current().tag});
+                const got = self.current();
+                self.errorNote(self.currentLoc(), "expected identifier or integer after '.', found {s}", .{Token.Tag.symbol(got.tag)}, got.loc, "use a field name like .foo or a tuple index like .0", .{});
                 return error.UnexpectedToken;
             },
         }
@@ -794,7 +837,11 @@ pub const Parser = struct {
         var items = self.list(ast.Decl);
         const loc = try self.beginBrace();
         while (self.current().tag != .rcurly and self.current().tag != .eof) {
-            const stmt = try self.parseDecl();
+            const stmt = self.parseDecl() catch {
+                // Assume a more specific diagnostic was already added at the error site
+                self.syncToStmtBoundary();
+                continue;
+            };
             try items.append(stmt);
         }
         try self.endBrace();
@@ -843,7 +890,8 @@ pub const Parser = struct {
                 } else if (self.current().tag == .b_or) {
                     break;
                 } else {
-                    std.debug.print("Expected ',' or '|' after closure parameter, but got: {}\n", .{self.current().tag});
+                    const got = self.current();
+                    self.errorNote(self.currentLoc(), "expected ',' or '|' after closure parameter, found {s}", .{Token.Tag.symbol(got.tag)}, got.loc, "separate parameters with ',' and end the list with '|'", .{});
                     return error.UnexpectedToken;
                 }
             }
@@ -946,7 +994,15 @@ pub const Parser = struct {
                 break :blk loop;
             },
             else => {
-                std.debug.print("Expected 'for' or 'while' after label, got: {}\n", .{self.current().tag});
+                const got = self.current();
+                self.errorNote(
+                    self.currentLoc(),
+                    "expected 'for' or 'while' after label, found {s}",
+                    .{Token.Tag.symbol(got.tag)},
+                    got.loc,
+                    "labeled loops: label: for ... {{ ... }} or label: while ... {{ ... }}",
+                    .{},
+                );
                 return error.UnexpectedToken;
             },
         };
@@ -1068,30 +1124,44 @@ pub const Parser = struct {
                 break :blk try self.alloc(ast.Expr, .{ .Ident = ident });
             },
             .Wildcard => {
-                std.debug.print("Wildcard '_' is not valid as a constant in a range pattern\n", .{});
+                self.errorNote(self.currentLoc(), "'_' is not valid as a constant in a range pattern", .{}, null, "use a literal, constant path, or a binding name", .{});
                 return error.UnexpectedToken;
             },
             // Disallow complex patterns on the LHS of a range.
             else => {
-                std.debug.print("Left side of a range pattern must be a const-like literal/path/binding, got pattern tag\n", .{});
+                self.errorNote(self.currentLoc(), "left side of a range pattern must be a const-like literal/path/binding", .{}, null, "use a literal, constant path, or a simple binding", .{});
                 return error.UnexpectedToken;
             },
         };
     }
 
-    fn patternToBindingName(pat: *ast.Pattern) ![]const u8 {
+    fn patternToBindingName(self: *Parser, pat: *ast.Pattern) ![]const u8 {
         return switch (pat.*) {
             .Binding => pat.Binding.name,
             .Path => blk: {
                 if (pat.Path.segments.items.len == 1) {
                     break :blk pat.Path.segments.items[0].name;
                 } else {
-                    std.debug.print("Expected simple identifier for binding name, got path: {}\n", .{pat.Path});
+                    self.errorNote(
+                        self.currentLoc(),
+                        "only simple identifier paths can be used as binding names in '@' patterns",
+                        .{},
+                        null,
+                        "use a single identifier without dots",
+                        .{},
+                    );
                     return error.InvalidPatternForBinding;
                 }
             },
             else => {
-                std.debug.print("Expected simple identifier for binding name, got pattern: {}\n", .{pat});
+                self.errorNote(
+                    self.currentLoc(),
+                    "only simple identifier paths can be used as binding names in '@' patterns",
+                    .{},
+                    null,
+                    "use a single identifier without dots",
+                    .{},
+                );
                 return error.InvalidPatternForBinding;
             },
         };
@@ -1108,7 +1178,7 @@ pub const Parser = struct {
             self.advance();
             const sub = try self.parsePatAt(); // right-assoc
             // Extract binder name if `p` is a simple Path/Binding; otherwise checker will error
-            const name = try patternToBindingName(p);
+            const name = try self.patternToBindingName(p);
             const at = ast.AtPattern{ .loc = current_loc, .binder = name, .pattern = sub };
             return try self.alloc(ast.Pattern, .{ .At = at });
         }
@@ -1144,7 +1214,14 @@ pub const Parser = struct {
             },
             .identifier => return try self.parsePathishPattern(),
             else => {
-                std.debug.print("Unexpected token in pattern: {}\n", .{self.current().tag});
+                self.errorNote(
+                    self.currentLoc(),
+                    "unexpected token in pattern: {s}",
+                    .{Token.Tag.symbol(self.current().tag)},
+                    null,
+                    "this token cannot start a pattern",
+                    .{},
+                );
                 return error.UnexpectedToken;
             },
         }
@@ -1459,7 +1536,14 @@ pub const Parser = struct {
                 break :blk try self.alloc(ast.Expr, .{ .Map = map });
             },
             else => {
-                std.debug.print("Expected ']' or ',' in map type/literal, but got: {}\n", .{self.current().tag});
+                self.errorNote(
+                    self.currentLoc(),
+                    "expected ']' or ',' in map type/literal, found {s}",
+                    .{Token.Tag.symbol(self.current().tag)},
+                    null,
+                    "use ']' to end a map type or ',' to separate key-value pairs in a map literal",
+                    .{},
+                );
                 return error.UnexpectedToken;
             },
         };
@@ -1519,7 +1603,14 @@ pub const Parser = struct {
                         break :blk try self.alloc(ast.Expr, .{ .Array = array });
                     },
                     else => {
-                        std.debug.print("Expected ']', ':', or ',' in array-like, but got: {}\n", .{self.current().tag});
+                        self.errorNote(
+                            self.currentLoc(),
+                            "expected ']', ':', or ',' in array-like, found {s}",
+                            .{Token.Tag.symbol(self.current().tag)},
+                            null,
+                            "use ']' to end an array type or literal, ':' for a map type/literal, or ',' to separate elements in an array literal",
+                            .{},
+                        );
                         return error.UnexpectedToken;
                     },
                 }
@@ -1571,7 +1662,14 @@ pub const Parser = struct {
                 switch (self.current().tag) {
                     .keyword_proc, .keyword_fn => return try self.parseFunctionLike(self.current().tag, true, true),
                     else => {
-                        std.debug.print("Expected 'proc' or 'fn' after 'extern async', but got: {}\n", .{self.current().tag});
+                        self.errorNote(
+                            self.currentLoc(),
+                            "expected 'proc' or 'fn' after 'extern async', found {s}",
+                            .{Token.Tag.symbol(self.current().tag)},
+                            null,
+                            "use 'extern async proc' or 'extern async fn'",
+                            .{},
+                        );
                         return error.UnexpectedToken;
                     },
                 }
@@ -1581,7 +1679,14 @@ pub const Parser = struct {
             .keyword_enum => return try self.parseEnumType(true),
             .keyword_union => return try self.parseStructLikeType(.keyword_union, true),
             else => {
-                std.debug.print("Expected 'proc', 'fn', or string literal after 'extern', but got: {}\n", .{self.current().tag});
+                self.errorNote(
+                    self.currentLoc(),
+                    "expected 'proc', 'fn', or a type after 'extern', found {s}",
+                    .{Token.Tag.symbol(self.current().tag)},
+                    null,
+                    "use 'extern proc', 'extern fn', or 'extern struct/enum/union'",
+                    .{},
+                );
                 return error.UnexpectedToken;
             },
         }
@@ -1611,7 +1716,14 @@ pub const Parser = struct {
                 ty = pat.?;
                 pat = null;
             } else {
-                std.debug.print("Expected ':', ',', or ')' after parameter, but got: {}\n", .{self.current().tag});
+                self.errorNote(
+                    self.currentLoc(),
+                    "expected ':', ',', or ')' after parameter, found {s}",
+                    .{Token.Tag.symbol(self.current().tag)},
+                    null,
+                    "use ':' to specify a type, or ',' / ')' to end the parameter",
+                    .{},
+                );
                 return error.UnexpectedToken;
             }
 

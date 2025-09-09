@@ -352,6 +352,7 @@ pub const Token = struct {
         }
 
         pub fn symbol(tag: Tag) []const u8 {
+            // Prefer a concrete lexeme when available, otherwise return a descriptive name.
             return tag.lexeme() orelse switch (tag) {
                 .invalid => "invalid token",
                 .eof => "EOF",
@@ -365,7 +366,7 @@ pub const Token = struct {
                 .integer_literal => "an integer literal",
                 .float_literal => "a floating-point literal",
                 .imaginary_literal => "an imaginary literal",
-                else => unreachable,
+                else => @tagName(tag),
             };
         }
     };
