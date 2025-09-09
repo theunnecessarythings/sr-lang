@@ -33,6 +33,14 @@ pub const Parser = struct {
         return std.array_list.Managed(T).init(self.allocator);
     }
 
+    inline fn consumeIf(self: *Parser, tag: Token.Tag) bool {
+        if (self.current_token.tag == tag) {
+            self.advance();
+            return true;
+        }
+        return false;
+    }
+
     inline fn expect(self: *Parser, tag: Token.Tag) !void {
         if (self.current_token.tag != tag) {
             std.debug.print("Expected token: {}, but got: {}\n", .{
@@ -310,6 +318,10 @@ pub const Parser = struct {
                 return try self.alloc(ast.Expr, .{ .Prefix = unary });
             },
             .b_or => return try self.parseClosure(),
+            .keyword_comptime => return try self.parseComptime(),
+            .keyword_code => return try self.parseCodeBlock(),
+            .keyword_mlir => return try self.parseMlir(),
+            .keyword_insert => return try self.parseInsert(),
             else => {},
         }
 
@@ -332,7 +344,7 @@ pub const Parser = struct {
             .lsquare => try self.parseArrayLike(),
             .lparen => try self.parseParenExpr(),
             .lcurly => try self.parseBlockExpr(),
-            .keyword_proc, .keyword_fn => try self.parseFunctionLike(self.current().tag, false),
+            .keyword_proc, .keyword_fn => try self.parseFunctionLike(self.current().tag, false, false),
             .keyword_extern => try self.parseExternDecl(),
             .keyword_any => blk: {
                 const any_type = ast.AnyType{ .loc = self.currentLoc() };
@@ -358,12 +370,28 @@ pub const Parser = struct {
             .keyword_variant => try self.parseVariantType(),
             .keyword_error => try self.parseErrorType(),
             .keyword_return => try self.parseReturn(),
+            .keyword_import => blk: {
+                const loc = self.currentLoc();
+                self.advance(); // "import"
+                const expr = try self.parseExpr(0, .expr);
+                break :blk try self.alloc(ast.Expr, .{ .Import = .{ .expr = expr, .loc = loc } });
+            },
+            .keyword_typeof => blk: {
+                const start = try self.beginKeywordParen(.keyword_typeof);
+                const expr = try self.parseExpr(0, .expr);
+                try self.endParen();
+                break :blk try self.alloc(ast.Expr, .{ .TypeOf = .{ .expr = expr, .loc = start } });
+            },
             .keyword_async => blk: {
                 const loc = self.currentLoc();
                 self.advance(); // "async"
-                // Only async blocks for now
-                const body = try self.parseBlockExpr();
-                break :blk try self.alloc(ast.Expr, .{ .Async = .{ .body = body, .loc = loc } });
+                switch (self.current().tag) {
+                    .keyword_proc, .keyword_fn => break :blk try self.parseFunctionLike(self.current().tag, false, true),
+                    else => {
+                        const body = try self.parseBlockExpr();
+                        break :blk try self.alloc(ast.Expr, .{ .Async = .{ .body = body, .loc = loc } });
+                    },
+                }
             },
             .keyword_if => try self.parseIfExpr(),
             .keyword_while => try self.parseWhileExpr(),
@@ -499,13 +527,7 @@ pub const Parser = struct {
                         left = switch (tag) {
                             .lparen => try self.parseCall(left),
                             .lsquare => try self.parseIndex(left),
-                            .dot => blk: {
-                                switch (self.current().tag) {
-                                    .keyword_await => break :blk try self.parseAwait(left),
-                                    .caret, .b_or, .percent, .question => break :blk try self.parseCastSigil(left),
-                                    else => break :blk try self.parseField(left),
-                                }
-                            },
+                            .dot => try self.parsePostfixAfterDot(left),
                             .dot_lparen => try self.parseCastParen(left),
                             .lcurly => try self.parseStructLiteral(),
                             .dotstar => try self.parseDeref(left),
@@ -556,8 +578,7 @@ pub const Parser = struct {
             }
             const value = try self.parseExpr(0, .expr);
             try entries.append(.{ .name = field_name, .value = value, .loc = field_tok.loc });
-            if (self.current().tag != .comma) break;
-            self.advance();
+            if (!self.consumeIf(.comma)) break;
         }
         try self.expect(.rcurly);
         const struct_lit = ast.StructLiteral{ .fields = entries, .loc = struct_start };
@@ -596,8 +617,7 @@ pub const Parser = struct {
             while (true) {
                 const arg = try self.parseExpr(0, .expr);
                 try items.append(arg);
-                if (self.current().tag != .comma) break;
-                self.advance();
+                if (!self.consumeIf(.comma)) break;
             }
         }
         try self.expect(end_tag);
@@ -616,8 +636,7 @@ pub const Parser = struct {
         while (self.current().tag != end_tag and self.current().tag != .eof) {
             const elem = try self.parseExpr(0, .expr);
             try elements.append(elem);
-            if (self.current().tag != .comma) break;
-            self.advance();
+            if (!self.consumeIf(.comma)) break;
         }
         try self.expect(end_tag);
         return elements;
@@ -631,6 +650,14 @@ pub const Parser = struct {
         const loc = self.currentLoc();
         // Current token was .dotstar, already consumed by caller.
         return self.alloc(ast.Expr, .{ .Deref = .{ .expr = expr, .loc = loc } });
+    }
+
+    inline fn parsePostfixAfterDot(self: *Parser, left: *ast.Expr) anyerror!*ast.Expr {
+        return switch (self.current().tag) {
+            .keyword_await => try self.parseAwait(left),
+            .caret, .b_or, .percent, .question => try self.parseCastSigil(left),
+            else => try self.parseField(left),
+        };
     }
 
     fn parseCastParen(self: *Parser, expr: *ast.Expr) anyerror!*ast.Expr {
@@ -693,29 +720,39 @@ pub const Parser = struct {
         return self.alloc(ast.Expr, .{ .Block = block });
     }
 
+    inline fn parseExprOrBlock(self: *Parser) anyerror!*ast.Expr {
+        if (self.current().tag == .lcurly) {
+            return try self.parseBlockExpr();
+        } else {
+            return try self.parseExpr(0, .expr);
+        }
+    }
+
     fn parseClosure(self: *Parser) !*ast.Expr {
         const closure_start = self.currentLoc();
         try self.expect(.b_or);
         var params = self.list(ast.Param);
         if (self.current().tag != .b_or) {
+            const p = infixBp(.b_or).?; // {.l_bp, .r_bp}
+            const r_bp = p[1];
+            const barrier: u8 = r_bp + 1; // stop before consuming '|'
             while (true) {
                 const param_start = self.currentLoc();
                 // Parse parameter pattern; do not consume '|' as bitwise-or.
-                const pat_expr = try self.parseExpr(32, .expr_no_struct);
+                const pat_expr = try self.parseExpr(barrier, .expr_no_struct);
                 var ty: ?*ast.Expr = null;
                 var value: ?*ast.Expr = null;
                 if (self.current().tag == .colon) {
                     self.advance();
                     // Parse type but prevent consuming the closing '|' as bitwise-or.
-                    ty = try self.parseExpr(32, .type);
+                    ty = try self.parseExpr(barrier, .type);
                 }
                 if (self.current().tag == .eq) {
                     self.advance();
                     value = try self.parseExpr(0, .expr);
                 }
                 try params.append(.{ .pat = pat_expr, .ty = ty, .value = value, .loc = param_start });
-                if (self.current().tag == .comma) {
-                    self.advance();
+                if (self.consumeIf(.comma)) {
                     continue;
                 } else if (self.current().tag == .b_or) {
                     break;
@@ -757,12 +794,7 @@ pub const Parser = struct {
             binding = ast.Ident{ .name = name.bytes, .loc = name.loc };
             try self.expect(.b_or);
         }
-        var handler: *ast.Expr = undefined;
-        if (self.current().tag == .lcurly) {
-            handler = try self.parseBlockExpr();
-        } else {
-            handler = try self.parseExpr(0, .expr);
-        }
+        const handler: *ast.Expr = try self.parseExprOrBlock();
         const catch_expr = ast.Catch{ .expr = expr, .binding = binding, .handler = handler, .loc = catch_loc };
         return self.alloc(ast.Expr, .{ .Catch = catch_expr });
     }
@@ -775,7 +807,7 @@ pub const Parser = struct {
         var else_block: ?*ast.Expr = null;
         if (self.current().tag == .keyword_else) {
             self.advance();
-            else_block = try self.parseExpr(0, .expr);
+            else_block = try self.parseExprOrBlock();
         }
         const if_expr = ast.If{
             .cond = condition,
@@ -849,12 +881,9 @@ pub const Parser = struct {
 
             try self.expect(.fatarrow);
 
-            const body: *ast.Expr = if (self.current().tag == .lcurly)
-                try self.parseBlockExpr()
-            else
-                try self.parseExpr(0, .expr);
+            const body: *ast.Expr = try self.parseExprOrBlock();
 
-            if (self.current().tag == .comma) self.advance();
+            _ = self.consumeIf(.comma);
 
             try arms.append(.{ .pattern = pat_expr, .guard = guard, .body = body, .loc = self.currentLoc() });
         }
@@ -1022,8 +1051,7 @@ pub const Parser = struct {
         if (self.current().tag != .rparen) {
             while (true) {
                 try elems.append(try self.parsePattern());
-                if (self.current().tag != .comma) break;
-                self.advance();
+                if (!self.consumeIf(.comma)) break;
             }
         }
         try self.expect(.rparen);
@@ -1052,8 +1080,7 @@ pub const Parser = struct {
                 if (self.current().tag != .rparen) {
                     while (true) {
                         try elems.append(try self.parsePattern());
-                        if (self.current().tag != .comma) break;
-                        self.advance();
+                        if (!self.consumeIf(.comma)) break;
                     }
                 }
                 try self.expect(.rparen);
@@ -1094,8 +1121,7 @@ pub const Parser = struct {
                     }
                     try fields.append(.{ .name = name, .pattern = pat, .loc = loc });
 
-                    if (self.current().tag != .comma) break;
-                    self.advance();
+                    if (!self.consumeIf(.comma)) break;
                 }
                 try self.expect(.rcurly);
                 // disambiguation left to checker: path may be a struct type or enum variant
@@ -1164,12 +1190,11 @@ pub const Parser = struct {
                         }
                     }
 
-                    if (self.current().tag == .comma) self.advance();
+                    _ = self.consumeIf(.comma);
                     break; // rest consumes the remainder
                 }
                 try elems.append(try self.parsePattern());
-                if (self.current().tag != .comma) break;
-                self.advance();
+                if (!self.consumeIf(.comma)) break;
             }
         }
 
@@ -1211,6 +1236,10 @@ pub const Parser = struct {
 
     fn parseStructField(self: *Parser) !ast.StructField {
         const start = self.currentLoc();
+        // Optional visibility modifier (currently ignored in AST)
+        if (self.current().tag == .keyword_pub) {
+            self.advance();
+        }
         const name = try self.expectIdent();
         try self.expect(.colon);
         const ty = try self.parseExpr(0, .type);
@@ -1222,8 +1251,7 @@ pub const Parser = struct {
         var fields = self.list(ast.StructField);
         while (self.current().tag != end_tag and self.current().tag != .eof) {
             try fields.append(try self.parseStructField());
-            if (self.current().tag != .comma) break;
-            self.advance();
+            if (!self.consumeIf(.comma)) break;
         }
         try self.expect(end_tag);
         return fields;
@@ -1317,8 +1345,7 @@ pub const Parser = struct {
                     try self.expect(.colon);
                     const v = try self.parseExpr(0, .expr);
                     try entries.append(.{ .key = k, .value = v, .loc = self.currentLoc() });
-                    if (self.current().tag != .comma) break;
-                    self.advance();
+                    if (!self.consumeIf(.comma)) break;
                 }
                 try self.expect(.rsquare);
                 const map = ast.Map{ .entries = entries, .loc = start_loc };
@@ -1432,7 +1459,17 @@ pub const Parser = struct {
     fn parseExternDecl(self: *Parser) !*ast.Expr {
         self.advance(); // "extern"
         switch (self.current().tag) {
-            .keyword_proc, .keyword_fn => return try self.parseFunctionLike(self.current().tag, true),
+            .keyword_async => {
+                self.advance();
+                switch (self.current().tag) {
+                    .keyword_proc, .keyword_fn => return try self.parseFunctionLike(self.current().tag, true, true),
+                    else => {
+                        std.debug.print("Expected 'proc' or 'fn' after 'extern async', but got: {}\n", .{self.current().tag});
+                        return error.UnexpectedToken;
+                    },
+                }
+            },
+            .keyword_proc, .keyword_fn => return try self.parseFunctionLike(self.current().tag, true, false),
             .keyword_struct => return try self.parseStructLikeType(.keyword_struct, true),
             .keyword_enum => return try self.parseEnumType(true),
             .keyword_union => return try self.parseStructLikeType(.keyword_union, true),
@@ -1443,7 +1480,7 @@ pub const Parser = struct {
         }
     }
 
-    fn parseFunctionLike(self: *Parser, tag: Token.Tag, comptime is_extern: bool) !*ast.Expr {
+    fn parseFunctionLike(self: *Parser, tag: Token.Tag, comptime is_extern: bool, is_async: bool) !*ast.Expr {
         const start_token = self.current();
         self.advance(); // "proc" or "fn"
         try self.expect(.lparen);
@@ -1479,8 +1516,14 @@ pub const Parser = struct {
         const return_type: ?*ast.Expr = try self.parseOptionalReturnType();
 
         var body: ?ast.Block = null;
+        var raw_asm: ?[]const u8 = null;
         if (self.current().tag == .lcurly) {
             body = try self.parseBlock();
+        } else if (self.current().tag == .raw_asm_block) {
+            // Capture the raw asm text as-is from the source
+            const tok = self.current();
+            raw_asm = self.slice(tok);
+            self.advance();
         }
 
         const func = ast.Function{
@@ -1489,10 +1532,68 @@ pub const Parser = struct {
             .result_ty = return_type,
             .body = body,
             .loc = start_token.loc,
+            .is_async = is_async,
             .is_variadic = false, // TODO: i could just use  "any" as last param type
             .is_extern = is_extern,
+            .raw_asm = raw_asm,
         };
         return try self.alloc(ast.Expr, .{ .Function = func });
+    }
+
+    //=================================================================
+    // Metaprogramming: comptime, code, insert, mlir
+    //=================================================================
+
+    fn parseComptime(self: *Parser) !*ast.Expr {
+        self.advance(); // "comptime"
+        if (self.current().tag == .lcurly) {
+            const blk = try self.parseBlock();
+            return try self.alloc(ast.Expr, .{ .Comptime = .{ .Block = blk } });
+        } else {
+            const expr = try self.parseExpr(0, .expr);
+            return try self.alloc(ast.Expr, .{ .Comptime = .{ .Expr = expr } });
+        }
+    }
+
+    fn parseCodeBlock(self: *Parser) !*ast.Expr {
+        const start = self.currentLoc();
+        self.advance(); // "code"
+        const blk = try self.parseBlock();
+        return try self.alloc(ast.Expr, .{ .Code = .{ .block = blk, .loc = start } });
+    }
+
+    fn parseInsert(self: *Parser) !*ast.Expr {
+        const start = self.currentLoc();
+        self.advance(); // "insert"
+        const expr = try self.parseExpr(0, .expr);
+        return try self.alloc(ast.Expr, .{ .Insert = .{ .expr = expr, .loc = start } });
+    }
+
+    fn parseMlir(self: *Parser) !*ast.Expr {
+        const start = self.currentLoc();
+        self.advance(); // "mlir"
+        var kind: ast.MlirKind = .Module;
+        switch (self.current().tag) {
+            .identifier => {
+                const kw = self.slice(self.current());
+                if (std.mem.eql(u8, kw, "attribute")) {
+                    kind = .Attribute;
+                    self.advance();
+                } else if (std.mem.eql(u8, kw, "op") or std.mem.eql(u8, kw, "operation")) {
+                    kind = .Operation;
+                    self.advance();
+                }
+            },
+            .keyword_type => {
+                kind = .Type;
+                self.advance();
+            },
+            else => {},
+        }
+        const tok = self.current();
+        const raw = self.slice(tok);
+        try self.expect(.mlir_content);
+        return try self.alloc(ast.Expr, .{ .Mlir = .{ .kind = kind, .text = raw, .loc = start } });
     }
 
     //=================================================================
@@ -1518,8 +1619,7 @@ pub const Parser = struct {
             const name = try self.expectIdent();
             const value = try self.parseOptionalInitializer(.expr);
             try fields.append(.{ .name = name.bytes, .value = value, .loc = field_start });
-            if (self.current().tag != .comma) break;
-            self.advance();
+            if (!self.consumeIf(.comma)) break;
         }
 
         try self.expect(.rcurly);
@@ -1555,8 +1655,7 @@ pub const Parser = struct {
                     if (self.current().tag != .rparen) {
                         while (true) {
                             try types.append(try self.parseExpr(0, .type));
-                            if (self.current().tag != .comma) break;
-                            self.advance();
+                            if (!self.consumeIf(.comma)) break;
                         }
                     }
                     try self.expect(.rparen);
@@ -1571,15 +1670,13 @@ pub const Parser = struct {
                     const struct_fields = try self.parseStructFieldList(.rcurly);
                     const value = try self.parseOptionalInitializer(.expr);
                     try fields.append(.{ .name = case_name.bytes, .ty = .{ .Struct = struct_fields }, .value = value, .loc = case_start });
-                    if (self.current().tag != .comma) break;
-                    self.advance();
+                    if (!self.consumeIf(.comma)) break;
                 },
                 else => {
                     // No payload
                     const value = try self.parseOptionalInitializer(.expr);
                     try fields.append(.{ .name = case_name.bytes, .ty = null, .value = value, .loc = case_start });
-                    if (self.current().tag != .comma) break;
-                    self.advance();
+                    if (!self.consumeIf(.comma)) break;
                 },
             }
         }

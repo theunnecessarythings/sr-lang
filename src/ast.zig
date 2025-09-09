@@ -34,6 +34,11 @@ pub const Expr = union(enum) {
     Map: Map,
     Function: Function,
     Block: Block,
+    // Metaprogramming and low-level constructs
+    Comptime: Comptime,
+    Code: CodeBlock,
+    Insert: Insert,
+    Mlir: Mlir,
     Call: Call,
     Index: Index,
     Field: Field,
@@ -55,6 +60,8 @@ pub const Expr = union(enum) {
     Closure: Closure,
     Async: Async,
     Cast: Cast,
+    Import: Import,
+    TypeOf: TypeOf,
 };
 
 pub const Literal = struct {
@@ -175,12 +182,42 @@ pub const Function = struct {
     body: ?Block,
     loc: Loc,
     is_proc: bool,
+    is_async: bool,
     is_variadic: bool,
     is_extern: bool,
+    // If present, the function body is provided as a raw asm block ("asm { ... }")
+    raw_asm: ?[]const u8 = null,
 };
 
 pub const Block = struct {
     items: List(Decl),
+    loc: Loc,
+};
+
+// Metaprogramming: a comptime block or expression
+pub const Comptime = union(enum) {
+    Block: Block,
+    Expr: *Expr,
+};
+
+// Metaprogramming: an AST captured as a value
+pub const CodeBlock = struct {
+    block: Block,
+    loc: Loc,
+};
+
+// Metaprogramming: insert a code block/value into current scope
+pub const Insert = struct {
+    expr: *Expr,
+    loc: Loc,
+};
+
+// MLIR block captured as raw text, with a simple kind tag
+pub const MlirKind = enum { Module, Type, Attribute, Operation };
+
+pub const Mlir = struct {
+    kind: MlirKind,
+    text: []const u8,
     loc: Loc,
 };
 
@@ -321,6 +358,16 @@ pub const Catch = struct {
     expr: *Expr,
     binding: ?Ident,
     handler: *Expr,
+    loc: Loc,
+};
+
+pub const Import = struct {
+    expr: *Expr,
+    loc: Loc,
+};
+
+pub const TypeOf = struct {
+    expr: *Expr,
     loc: Loc,
 };
 
@@ -858,12 +905,65 @@ pub const AstPrinter = struct {
                 try self.printNamedExpr("type", c.ty);
                 try self.endNode();
             },
+            .Import => |imp| {
+                try self.beginNode("(import", .{});
+                try self.printExpr(imp.expr);
+                try self.endNode();
+            },
+            .TypeOf => |t| {
+                try self.beginNode("(typeof", .{});
+                try self.printExpr(t.expr);
+                try self.endNode();
+            },
+            .Comptime => |ct| {
+                switch (ct) {
+                    .Block => |blk| {
+                        try self.beginNode("(comptime_block", .{});
+                        for (blk.items.items) |decl| {
+                            try self.printDecl(&decl);
+                        }
+                        try self.endNode();
+                    },
+                    .Expr => |e| {
+                        try self.beginNode("(comptime_expr", .{});
+                        try self.printExpr(e);
+                        try self.endNode();
+                    },
+                }
+            },
+            .Code => |code_blk| {
+                try self.beginNode("(code", .{});
+                for (code_blk.block.items.items) |decl| {
+                    try self.printDecl(&decl);
+                }
+                try self.endNode();
+            },
+            .Insert => |ins| {
+                try self.beginNode("(insert", .{});
+                try self.printExpr(ins.expr);
+                try self.endNode();
+            },
+            .Mlir => |ml| {
+                const kind_str = switch (ml.kind) {
+                    .Module => "module",
+                    .Type => "type",
+                    .Attribute => "attribute",
+                    .Operation => "operation",
+                };
+                try self.beginNode("(mlir", .{});
+                try self.printLeaf("kind={s}", .{kind_str});
+                try self.printLeaf("text:{s}", .{ml.text});
+                try self.endNode();
+            },
             .Break => |_| try self.printLeaf("(break)", .{}),
             .Continue => |_| try self.printLeaf("(continue)", .{}),
             .Unreachable => |_| try self.printLeaf("(unreachable)", .{}),
             .Null => |_| try self.printLeaf("(null)", .{}),
             .Function => |fun| {
                 try self.beginNode("({s}", .{if (fun.is_proc) "procedure" else "function"});
+                if (fun.is_async) {
+                    try self.printLeaf("(async)", .{});
+                }
                 if (fun.is_variadic) {
                     try self.printLeaf("(variadic)", .{});
                 }
@@ -889,6 +989,8 @@ pub const AstPrinter = struct {
                         try self.printDecl(&decl);
                     }
                     try self.endNode();
+                } else if (fun.raw_asm) |asm_text| {
+                    try self.printLeaf("(asm_body \"{s}\")", .{asm_text});
                 }
                 try self.endNode();
             },

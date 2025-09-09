@@ -90,6 +90,7 @@ pub const Token = struct {
         byte_string_literal,
         raw_byte_string_literal,
         raw_asm_block,
+        mlir_content,
         integer_literal,
         float_literal,
         imaginary_literal,
@@ -360,6 +361,7 @@ pub const Token = struct {
                 .string_literal, .raw_string_literal, .byte_string_literal, .raw_byte_string_literal => "a string literal",
                 .byte_literal => "a byte literal",
                 .raw_asm_block => "an asm block",
+                .mlir_content => "an mlir block",
                 .integer_literal => "an integer literal",
                 .float_literal => "a floating-point literal",
                 .imaginary_literal => "an imaginary literal",
@@ -382,6 +384,8 @@ pub const Tokenizer = struct {
 
     // aux for raw-asm lookahead
     asm_maybe: bool = false,
+    // aux for mlir block capture after seeing 'mlir'
+    mlir_maybe: bool = false,
 
     // NEW: last two emitted token kinds (to implement floatLiteralPossible)
     lt1: Token.Tag = .invalid,
@@ -643,8 +647,35 @@ pub const Tokenizer = struct {
                         self.nlsemi = true;
                     },
                     '{' => {
-                        result.tag = .lcurly;
-                        self.index += 1;
+                        if (self.mlir_maybe) {
+                            // Capture nested braces content as a single mlir_content token
+                            result.tag = .mlir_content;
+                            const block_start = self.index; // at '{'
+                            var depth: usize = 1;
+                            self.index += 1; // move past initial '{'
+                            while (self.index < self.buffer.len and depth > 0) {
+                                const ch = self.buffer[self.index];
+                                if (ch == '{') {
+                                    depth += 1;
+                                    self.index += 1;
+                                    continue;
+                                }
+                                if (ch == '}') {
+                                    depth -= 1;
+                                    self.index += 1; // include this '}'
+                                    if (depth == 0) break;
+                                    continue;
+                                }
+                                self.index += 1;
+                            }
+                            // The token slice will include the full "{...}" block
+                            result.loc.start = block_start;
+                            self.mlir_maybe = false;
+                            self.nlsemi = true;
+                        } else {
+                            result.tag = .lcurly;
+                            self.index += 1;
+                        }
                     },
                     '}' => {
                         result.tag = .rcurly;
@@ -753,31 +784,35 @@ pub const Tokenizer = struct {
                                 while (self.index < self.buffer.len and self.buffer[self.index] != '}') self.index += 1;
                                 if (self.index < self.buffer.len and self.buffer[self.index] == '}') self.index += 1;
                                 self.nlsemi = true;
-                                // break :state .start_end(result, .raw_asm_block);
+                                // Do not fall through to keyword/ident finalization
                             }
                         }
-                        const slice = self.buffer[result.loc.start..self.index];
-                        if (Token.getKeyword(slice)) |kw| {
-                            result.tag = kw;
-                            // NLSEMI keywords
-                            switch (kw) {
-                                .keyword_any,
-                                .keyword_await,
-                                .keyword_break,
-                                .keyword_continue,
-                                .keyword_false,
-                                .keyword_noreturn,
-                                .keyword_null,
-                                .keyword_return,
-                                .keyword_true,
-                                .keyword_type,
-                                .keyword_undefined,
-                                => self.nlsemi = true,
-                                else => {},
+                        if (result.tag == .identifier) {
+                            const slice = self.buffer[result.loc.start..self.index];
+                            if (Token.getKeyword(slice)) |kw| {
+                                result.tag = kw;
+                                // NLSEMI keywords
+                                switch (kw) {
+                                    .keyword_any,
+                                    .keyword_await,
+                                    .keyword_break,
+                                    .keyword_continue,
+                                    .keyword_false,
+                                    .keyword_noreturn,
+                                    .keyword_null,
+                                    .keyword_return,
+                                    .keyword_true,
+                                    .keyword_type,
+                                    .keyword_undefined,
+                                    => self.nlsemi = true,
+                                    else => {},
+                                }
+                                // latch mlir detection to capture following '{...}' as one token
+                                if (kw == .keyword_mlir) self.mlir_maybe = true;
+                            } else {
+                                result.tag = .identifier;
+                                self.nlsemi = true;
                             }
-                        } else {
-                            result.tag = .identifier;
-                            self.nlsemi = true;
                         }
                     },
                 }
