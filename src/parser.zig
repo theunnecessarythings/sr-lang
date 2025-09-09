@@ -249,7 +249,7 @@ pub const Parser = struct {
         return .{ .name = name.bytes, .loc = loc };
     }
 
-    fn parseDecl(self: *Parser) !ast.Decl {
+    fn parseDecl(self: *Parser) anyerror!ast.Decl {
         const loc = self.currentLoc();
         const lhs = try self.parseExpr(0, .expr);
         var is_const = false;
@@ -265,18 +265,30 @@ pub const Parser = struct {
                 self.advance();
             },
             .colon => {
-                self.advance();
-                ty = try self.parseExpr(0, .type);
-                switch (self.current().tag) {
-                    .eq => self.advance(),
-                    .colon => {
-                        self.advance();
-                        is_const = true;
-                    },
-                    else => {
-                        std.debug.print("Expected '=' or '::' after type in declaration, but got: {}\n", .{self.current().tag});
-                        return error.UnexpectedToken;
-                    },
+                // Special case: labeled loop like "label: for/while ... { ... }"
+                const next = self.peek().tag;
+                if (lhs.* == .Ident and (next == .keyword_for or next == .keyword_while)) {
+                    const label_name = lhs.Ident.name;
+                    self.advance(); // consume ':'
+                    const loop_expr = try self.parseLabeledLoop(label_name);
+                    if (self.current().tag != .rcurly and self.current().tag != .eof) {
+                        try self.expect(.eos);
+                    }
+                    return .{ .lhs = null, .rhs = loop_expr, .ty = null, .loc = loc, .is_const = false, .is_assign = false };
+                } else {
+                    self.advance();
+                    ty = try self.parseExpr(0, .type);
+                    switch (self.current().tag) {
+                        .eq => self.advance(),
+                        .colon => {
+                            self.advance();
+                            is_const = true;
+                        },
+                        else => {
+                            std.debug.print("Expected '=' or '::' after type in declaration, but got: {}\n", .{self.current().tag});
+                            return error.UnexpectedToken;
+                        },
+                    }
                 }
             },
             .eq => {
@@ -400,7 +412,17 @@ pub const Parser = struct {
             .keyword_break => blk: {
                 const break_token = self.current();
                 self.advance();
-                const break_expr = ast.Break{ .loc = break_token.loc };
+                var label: ?[]const u8 = null;
+                var value: ?*ast.Expr = null;
+                if (self.current().tag == .colon) {
+                    self.advance();
+                    const name = try self.expectIdent();
+                    label = name.bytes;
+                }
+                if (!self.isStmtTerminator()) {
+                    value = try self.parseExpr(0, .expr);
+                }
+                const break_expr = ast.Break{ .loc = break_token.loc, .label = label, .value = value };
                 break :blk try self.alloc(ast.Expr, .{ .Break = break_expr });
             },
             .keyword_continue => blk: {
@@ -842,8 +864,28 @@ pub const Parser = struct {
             .body = body,
             .loc = while_start,
             .is_pattern = false,
+            .label = null,
         };
         return try self.alloc(ast.Expr, .{ .While = while_expr });
+    }
+
+    fn parseLabeledLoop(self: *Parser, label_name: []const u8) anyerror!*ast.Expr {
+        return switch (self.current().tag) {
+            .keyword_for => blk: {
+                var loop = try self.parseForExpr();
+                if (loop.* == .For) loop.For.label = label_name;
+                break :blk loop;
+            },
+            .keyword_while => blk: {
+                var loop = try self.parseWhileExpr();
+                if (loop.* == .While) loop.While.label = label_name;
+                break :blk loop;
+            },
+            else => {
+                std.debug.print("Expected 'for' or 'while' after label, got: {}\n", .{self.current().tag});
+                return error.UnexpectedToken;
+            },
+        };
     }
 
     fn parseForExpr(self: *Parser) !*ast.Expr {

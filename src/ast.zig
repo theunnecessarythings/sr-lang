@@ -269,6 +269,7 @@ pub const While = struct {
     body: Block,
     loc: Loc,
     is_pattern: bool,
+    label: ?[]const u8 = null,
 };
 
 pub const For = struct {
@@ -276,6 +277,7 @@ pub const For = struct {
     iterable: *Expr,
     body: Block,
     loc: Loc,
+    label: ?[]const u8 = null,
 };
 
 pub const Match = struct {
@@ -293,6 +295,8 @@ pub const MatchArm = struct {
 
 pub const Break = struct {
     loc: Loc,
+    label: ?[]const u8 = null,
+    value: ?*Expr = null,
 };
 
 pub const Continue = struct {
@@ -809,6 +813,9 @@ pub const AstPrinter = struct {
             },
             .While => |while_expr| {
                 try self.beginNode("(while is_pattern={}", .{while_expr.is_pattern});
+                if (while_expr.label) |lbl| {
+                    try self.printLeaf("label=\"{s}\"", .{lbl});
+                }
                 if (while_expr.pattern) |pat| {
                     try self.beginNode("(pattern", .{});
                     try self.printPattern(pat);
@@ -842,6 +849,9 @@ pub const AstPrinter = struct {
             },
             .For => |for_expr| {
                 try self.beginNode("(for", .{});
+                if (for_expr.label) |lbl| {
+                    try self.printLeaf("label=\"{s}\"", .{lbl});
+                }
                 try self.beginNode("(pattern", .{});
                 try self.printPattern(for_expr.pattern);
                 try self.endNode();
@@ -955,7 +965,12 @@ pub const AstPrinter = struct {
                 try self.printLeaf("text:{s}", .{ml.text});
                 try self.endNode();
             },
-            .Break => |_| try self.printLeaf("(break)", .{}),
+            .Break => |b| {
+                try self.beginNode("(break", .{});
+                if (b.label) |lbl| try self.printLeaf("label=\"{s}\"", .{lbl});
+                if (b.value) |val| try self.printNamedExpr("value", val);
+                try self.endNode();
+            },
             .Continue => |_| try self.printLeaf("(continue)", .{}),
             .Unreachable => |_| try self.printLeaf("(unreachable)", .{}),
             .Null => |_| try self.printLeaf("(null)", .{}),
