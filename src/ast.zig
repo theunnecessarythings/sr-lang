@@ -22,6 +22,12 @@ pub const Decl = struct {
     is_assign: bool,
 };
 
+pub const Attribute = struct {
+    name: []const u8,
+    value: ?*Expr,
+    loc: Loc,
+};
+
 pub const Expr = union(enum) {
     Literal: Literal,
     Ident: Ident,
@@ -187,6 +193,7 @@ pub const Function = struct {
     is_extern: bool,
     // If present, the function body is provided as a raw asm block ("asm { ... }")
     raw_asm: ?[]const u8 = null,
+    attrs: ?List(Attribute) = null,
 };
 
 pub const Block = struct {
@@ -380,6 +387,7 @@ pub const Param = struct {
     ty: ?*Expr,
     value: ?*Expr,
     loc: Loc,
+    attrs: ?List(Attribute) = null,
 };
 
 pub const UnaryType = struct {
@@ -391,6 +399,7 @@ pub const StructLikeType = struct {
     fields: List(StructField),
     loc: Loc,
     is_extern: bool,
+    attrs: ?List(Attribute) = null,
 };
 
 pub const VariantLikeType = struct {
@@ -443,12 +452,14 @@ pub const StructField = struct {
     ty: *Expr,
     value: ?*Expr,
     loc: Loc,
+    attrs: ?List(Attribute) = null,
 };
 
 pub const EnumField = struct {
     name: []const u8,
     value: ?*Expr,
     loc: Loc,
+    attrs: ?List(Attribute) = null,
 };
 
 pub const EnumType = struct {
@@ -456,6 +467,7 @@ pub const EnumType = struct {
     discriminant: ?*Expr,
     is_extern: bool,
     loc: Loc,
+    attrs: ?List(Attribute) = null,
 };
 
 pub const VariantField = struct {
@@ -466,6 +478,7 @@ pub const VariantField = struct {
     },
     value: ?*Expr,
     loc: Loc,
+    attrs: ?List(Attribute) = null,
 };
 
 pub const PointerType = struct {
@@ -637,6 +650,18 @@ pub const AstPrinter = struct {
         try self.writer.writeAll("\n");
     }
 
+    fn printAttributes(self: *AstPrinter, attrs: List(Attribute)) !void {
+        try self.beginNode("(attributes", .{});
+        for (attrs.items) |a| {
+            try self.beginNode("(attr name=\"{s}\"", .{a.name});
+            if (a.value) |v| {
+                try self.printNamedExpr("value", v);
+            }
+            try self.endNode();
+        }
+        try self.endNode();
+    }
+
     fn printNamedExpr(self: *AstPrinter, name: []const u8, expr: *const Expr) !void {
         try self.beginNode("({s}", .{name});
         try self.printExpr(expr);
@@ -666,6 +691,9 @@ pub const AstPrinter = struct {
 
     fn printStructField(self: *AstPrinter, field: *const StructField) !void {
         try self.beginNode("(field name=\"{s}\"", .{field.name});
+        if (field.attrs) |attrs| {
+            try self.printAttributes(attrs);
+        }
         try self.printExpr(field.ty);
         if (field.value) |val| {
             try self.printNamedExpr("value", val);
@@ -976,6 +1004,9 @@ pub const AstPrinter = struct {
             .Null => |_| try self.printLeaf("(null)", .{}),
             .Function => |fun| {
                 try self.beginNode("({s}", .{if (fun.is_proc) "procedure" else "function"});
+                if (fun.attrs) |attrs| {
+                    try self.printAttributes(attrs);
+                }
                 if (fun.is_async) {
                     try self.printLeaf("(async)", .{});
                 }
@@ -987,6 +1018,9 @@ pub const AstPrinter = struct {
                 }
                 for (fun.params.items) |param| {
                     try self.beginNode("(param", .{});
+                    if (param.attrs) |attrs| {
+                        try self.printAttributes(attrs);
+                    }
                     if (param.pat) |pat|
                         try self.printNamedExpr("pat", pat);
                     try self.printNamedExpr("type", param.ty.?);
@@ -1117,6 +1151,7 @@ pub const AstPrinter = struct {
             .ErrorSet => |eset| try self.printBinary("error_set", eset.err, eset.value),
             .Struct => |st| {
                 try self.beginNode("(struct", .{});
+                if (st.attrs) |attrs| try self.printAttributes(attrs);
                 try self.printLeaf("is_extern={}", .{st.is_extern});
                 for (st.fields.items) |field| {
                     try self.printStructField(&field);
@@ -1125,12 +1160,14 @@ pub const AstPrinter = struct {
             },
             .Enum => |en| {
                 try self.beginNode("(enum", .{});
+                if (en.attrs) |attrs| try self.printAttributes(attrs);
                 try self.printLeaf("is_extern={}", .{en.is_extern});
                 if (en.discriminant) |disc| {
                     try self.printNamedExpr("discriminant", disc);
                 }
                 for (en.fields.items) |field| {
                     try self.beginNode("(field name=\"{s}\")", .{field.name});
+                    if (field.attrs) |attrs| try self.printAttributes(attrs);
                     if (field.value) |val| {
                         try self.printExpr(val);
                     }
@@ -1142,6 +1179,7 @@ pub const AstPrinter = struct {
                 try self.beginNode("(variant", .{});
                 for (variant.fields.items) |field| {
                     try self.beginNode("(field name=\"{s}\"", .{field.name});
+                    if (field.attrs) |attrs| try self.printAttributes(attrs);
                     if (field.ty) |ty| {
                         switch (ty) {
                             .Tuple => |tup| try self.printExprList("tuple", tup),
@@ -1163,6 +1201,7 @@ pub const AstPrinter = struct {
             },
             .Union => |un| {
                 try self.beginNode("(union", .{});
+                if (un.attrs) |attrs| try self.printAttributes(attrs);
                 try self.printLeaf("is_extern={}", .{un.is_extern});
                 for (un.fields.items) |field| {
                     try self.printStructField(&field);
@@ -1173,6 +1212,7 @@ pub const AstPrinter = struct {
                 try self.beginNode("(error", .{});
                 for (err.fields.items) |field| {
                     try self.beginNode("(field name=\"{s}\"", .{field.name});
+                    if (field.attrs) |attrs| try self.printAttributes(attrs);
                     if (field.ty) |ty| {
                         switch (ty) {
                             .Tuple => |tup| try self.printExprList("tuple", tup),

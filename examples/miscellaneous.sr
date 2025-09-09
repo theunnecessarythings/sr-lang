@@ -38,6 +38,19 @@ loop_examples :: proc() {
       }
   }
 
+    // Labeled while example
+    i := 0
+    j := 0
+    outer_while: while i < 10 {
+        while j < 10 {
+            if i * j > 50 {
+                break :outer_while
+            }
+            j := j + 1
+        }
+        i := i + 1
+    }
+
     // `break` with a value example
     // A loop can be an expression that evaluates to a value.
     // The `break` statement can provide the result of the loop expression.

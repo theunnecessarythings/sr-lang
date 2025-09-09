@@ -108,6 +108,51 @@ pub const Parser = struct {
         return start;
     }
 
+    fn parseAttributesList(self: *Parser) !std.array_list.Managed(ast.Attribute) {
+        var attrs = self.list(ast.Attribute);
+        try self.expect(.at);
+        try self.expect(.lsquare);
+        while (self.current().tag != .rsquare and self.current().tag != .eof) {
+            const attr_loc = self.currentLoc();
+            // attribute name can be an identifier or a keyword name like 'align'
+            var name_bytes: []const u8 = undefined;
+            const tok = self.current();
+            if (tok.tag == .identifier) {
+                name_bytes = self.slice(tok);
+                self.advance();
+            } else if (Token.Tag.lexeme(tok.tag)) |lx| {
+                name_bytes = lx;
+                self.advance();
+            } else {
+                std.debug.print("Expected attribute name, got: {}\n", .{tok.tag});
+                return error.UnexpectedToken;
+            }
+            var val: ?*ast.Expr = null;
+            if (self.current().tag == .eq) {
+                self.advance();
+                // Only literals or identifiers are allowed
+                const t = self.current().tag;
+                if (isLiteralTag(t) or t == .identifier) {
+                    val = try self.parseExpr(0, .expr);
+                } else {
+                    std.debug.print("Expected literal or identifier after '=' in attribute, got: {}\n", .{t});
+                    return error.UnexpectedToken;
+                }
+            }
+            try attrs.append(.{ .name = name_bytes, .value = val, .loc = attr_loc });
+            if (!self.consumeIf(.comma)) break;
+        }
+        try self.expect(.rsquare);
+        return attrs;
+    }
+
+    fn parseOptionalAttributes(self: *Parser) !?std.array_list.Managed(ast.Attribute) {
+        if (self.current().tag == .at) {
+            return try self.parseAttributesList();
+        }
+        return null;
+    }
+
     inline fn endParen(self: *Parser) !void {
         try self.expect(.rparen);
     }
@@ -348,6 +393,25 @@ pub const Parser = struct {
         return switch (tag) {
             .star => try self.parsePointerType(),
             .question => try self.parseOptionalType(),
+            .at => blk: {
+                // Attributes preceding a construct
+                const attrs = try self.parseAttributesList();
+                // Allow optional EOS/newlines between attrs and the annotated construct
+                while (self.current().tag == .eos) self.advance();
+                // Parse the next expression and attach attributes where applicable
+                const annotated = try self.parseExpr(0, mode);
+                switch (annotated.*) {
+                    .Function => |*fnn| fnn.attrs = attrs,
+                    .BuiltinType => |*bt| switch (bt.*) {
+                        .Struct => |*st| st.attrs = attrs,
+                        .Union => |*un| un.attrs = attrs,
+                        .Enum => |*en| en.attrs = attrs,
+                        else => {},
+                    },
+                    else => {},
+                }
+                break :blk annotated;
+            },
             .identifier => blk: {
                 const ident = ast.Ident{ .name = self.slice(self.current()), .loc = self.currentLoc() };
                 self.advance();
@@ -1282,11 +1346,12 @@ pub const Parser = struct {
         if (self.current().tag == .keyword_pub) {
             self.advance();
         }
+        const field_attrs = try self.parseOptionalAttributes();
         const name = try self.expectIdent();
         try self.expect(.colon);
         const ty = try self.parseExpr(0, .type);
         const value = try self.parseOptionalInitializer(.expr);
-        return .{ .name = name.bytes, .ty = ty, .value = value, .loc = start };
+        return .{ .name = name.bytes, .ty = ty, .value = value, .loc = start, .attrs = field_attrs };
     }
 
     fn parseStructFieldList(self: *Parser, end_tag: Token.Tag) !std.array_list.Managed(ast.StructField) {
@@ -1530,6 +1595,7 @@ pub const Parser = struct {
         var params = self.list(ast.Param);
         while (self.current().tag != .rparen and self.current().tag != .eof) {
             const param_start = self.currentLoc();
+            const param_attrs = try self.parseOptionalAttributes();
             var pat: ?*ast.Expr = try self.parseExpr(0, .expr);
             var ty: *ast.Expr = undefined;
             var value: ?*ast.Expr = null;
@@ -1549,7 +1615,7 @@ pub const Parser = struct {
                 return error.UnexpectedToken;
             }
 
-            try params.append(.{ .pat = pat, .ty = ty, .value = value, .loc = param_start });
+            try params.append(.{ .pat = pat, .ty = ty, .value = value, .loc = param_start, .attrs = param_attrs });
             if (self.current().tag != .comma) break;
             self.advance();
         }
@@ -1658,14 +1724,15 @@ pub const Parser = struct {
         var fields = self.list(ast.EnumField);
         while (self.current().tag != .rcurly and self.current().tag != .eof) {
             const field_start = self.currentLoc();
+            const field_attrs = try self.parseOptionalAttributes();
             const name = try self.expectIdent();
             const value = try self.parseOptionalInitializer(.expr);
-            try fields.append(.{ .name = name.bytes, .value = value, .loc = field_start });
+            try fields.append(.{ .name = name.bytes, .value = value, .loc = field_start, .attrs = field_attrs });
             if (!self.consumeIf(.comma)) break;
         }
 
         try self.expect(.rcurly);
-        const enum_type = ast.EnumType{ .is_extern = is_extern, .fields = fields, .discriminant = backing_type, .loc = enum_start };
+        const enum_type = ast.EnumType{ .is_extern = is_extern, .fields = fields, .discriminant = backing_type, .loc = enum_start, .attrs = null };
         return self.alloc(ast.Expr, .{ .BuiltinType = .{ .Enum = enum_type } });
     }
 
@@ -1687,6 +1754,8 @@ pub const Parser = struct {
 
         while (self.current().tag != .rcurly and self.current().tag != .eof) {
             const case_start = self.currentLoc();
+            const case_attrs = try self.parseOptionalAttributes();
+            while (self.current().tag == .eos) self.advance();
             const case_name = try self.expectIdent();
 
             switch (self.current().tag) {
@@ -1702,7 +1771,7 @@ pub const Parser = struct {
                     }
                     try self.expect(.rparen);
                     const value = try self.parseOptionalInitializer(.expr);
-                    try fields.append(.{ .name = case_name.bytes, .ty = .{ .Tuple = types }, .value = value, .loc = case_start });
+                    try fields.append(.{ .name = case_name.bytes, .ty = .{ .Tuple = types }, .value = value, .loc = case_start, .attrs = case_attrs });
                     if (self.current().tag != .comma) break;
                     self.advance();
                 },
@@ -1711,13 +1780,13 @@ pub const Parser = struct {
                     self.advance();
                     const struct_fields = try self.parseStructFieldList(.rcurly);
                     const value = try self.parseOptionalInitializer(.expr);
-                    try fields.append(.{ .name = case_name.bytes, .ty = .{ .Struct = struct_fields }, .value = value, .loc = case_start });
+                    try fields.append(.{ .name = case_name.bytes, .ty = .{ .Struct = struct_fields }, .value = value, .loc = case_start, .attrs = case_attrs });
                     if (!self.consumeIf(.comma)) break;
                 },
                 else => {
                     // No payload
                     const value = try self.parseOptionalInitializer(.expr);
-                    try fields.append(.{ .name = case_name.bytes, .ty = null, .value = value, .loc = case_start });
+                    try fields.append(.{ .name = case_name.bytes, .ty = null, .value = value, .loc = case_start, .attrs = case_attrs });
                     if (!self.consumeIf(.comma)) break;
                 },
             }

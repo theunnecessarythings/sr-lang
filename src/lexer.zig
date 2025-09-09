@@ -223,7 +223,7 @@ pub const Token = struct {
 
         pub fn lexeme(tag: Tag) ?[]const u8 {
             return switch (tag) {
-                .invalid, .eof, .eos, .identifier, .raw_identifier, .char_literal, .string_literal, .raw_string_literal, .byte_literal, .byte_string_literal, .raw_byte_string_literal, .raw_asm_block, .integer_literal, .float_literal, .imaginary_literal => null,
+                .invalid, .eof, .eos, .identifier, .raw_identifier, .char_literal, .string_literal, .raw_string_literal, .byte_literal, .byte_char_literal, .byte_string_literal, .raw_byte_string_literal, .raw_asm_block, .mlir_content, .integer_literal, .float_literal, .imaginary_literal => null,
 
                 .plus => "+",
                 .minus => "-",
@@ -480,7 +480,7 @@ pub const Tokenizer = struct {
     /// Returns next token.
     pub fn next(self: *Tokenizer) Token {
         var result: Token = .{
-            .tag = undefined,
+            .tag = .invalid,
             .loc = .{ .start = self.index, .end = undefined },
         };
 
@@ -1424,16 +1424,17 @@ pub const Tokenizer = struct {
 
             .block_comment => {
                 self.index += 1;
+                const len = self.buffer.len;
                 switch (self.buffer[self.index]) {
                     0 => result.tag = .invalid,
                     '/' => {
-                        if (self.buffer[self.index + 1] == '*') {
+                        if (self.index + 1 < len and self.buffer[self.index + 1] == '*') {
                             self.block_depth += 1;
                             self.index += 1;
                         } else continue :state .block_comment;
                     },
                     '*' => {
-                        if (self.buffer[self.index + 1] == '/') {
+                        if (self.index + 1 < len and self.buffer[self.index + 1] == '/') {
                             self.block_depth -= 1;
                             self.index += 1;
                             if (self.block_depth == 0) {
