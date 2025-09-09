@@ -27,6 +27,7 @@ pub const Expr = union(enum) {
     Ident: Ident,
     Prefix: Prefix,
     Infix: Infix,
+    Deref: Deref,
     BuiltinType: BuiltinType,
     Array: Array,
     Tuple: Tuple, // NOTE: used for both tuple literals and tuple types
@@ -50,6 +51,9 @@ pub const Expr = union(enum) {
     ErrDefer: ErrDefer,
     ErrUnwrap: ErrUnwrap,
     Catch: Catch,
+    Await: Await,
+    Closure: Closure,
+    Async: Async,
 };
 
 pub const Literal = struct {
@@ -97,6 +101,11 @@ pub const Prefix = struct {
     right: *Expr,
     loc: Loc,
     op: PrefixOp,
+};
+
+pub const Deref = struct {
+    expr: *Expr,
+    loc: Loc,
 };
 
 pub const InfixOp = enum {
@@ -275,6 +284,23 @@ pub const ErrUnwrap = struct {
     loc: Loc,
 };
 
+pub const Await = struct {
+    expr: *Expr,
+    loc: Loc,
+};
+
+pub const Closure = struct {
+    params: List(Param),
+    result_ty: ?*Expr,
+    body: *Expr,
+    loc: Loc,
+};
+
+pub const Async = struct {
+    body: *Expr,
+    loc: Loc,
+};
+
 pub const Catch = struct {
     expr: *Expr,
     binding: ?Ident,
@@ -284,7 +310,7 @@ pub const Catch = struct {
 
 pub const Param = struct {
     pat: ?*Expr,
-    ty: *Expr,
+    ty: ?*Expr,
     value: ?*Expr,
     loc: Loc,
 };
@@ -613,10 +639,20 @@ pub const AstPrinter = struct {
                 try self.printExpr(prefix.right);
                 try self.endNode();
             },
+            .Deref => |d| {
+                try self.beginNode("(deref", .{});
+                try self.printExpr(d.expr);
+                try self.endNode();
+            },
             .Infix => |infix| {
                 try self.beginNode("(infix op={}", .{infix.op});
                 try self.printExpr(infix.left);
                 try self.printExpr(infix.right);
+                try self.endNode();
+            },
+            .Await => |aw| {
+                try self.beginNode("(await", .{});
+                try self.printExpr(aw.expr);
                 try self.endNode();
             },
             .BuiltinType => |btype| try self.printBuiltinType(&btype),
@@ -769,6 +805,30 @@ pub const AstPrinter = struct {
                 try self.printExpr(err_defer.expr);
                 try self.endNode();
             },
+            .Closure => |closure| {
+                try self.beginNode("(closure", .{});
+                for (closure.params.items) |param| {
+                    try self.beginNode("(param", .{});
+                    if (param.pat) |pat|
+                        try self.printNamedExpr("pat", pat);
+                    if (param.ty) |ty|
+                        try self.printNamedExpr("type", ty);
+                    if (param.value) |val| {
+                        try self.printNamedExpr("value", val);
+                    }
+                    try self.endNode();
+                }
+                if (closure.result_ty) |res| {
+                    try self.printNamedExpr("result", res);
+                }
+                try self.printNamedExpr("body", closure.body);
+                try self.endNode();
+            },
+            .Async => |asyn| {
+                try self.beginNode("(async", .{});
+                try self.printExpr(asyn.body);
+                try self.endNode();
+            },
             .Break => |_| try self.printLeaf("(break)", .{}),
             .Continue => |_| try self.printLeaf("(continue)", .{}),
             .Unreachable => |_| try self.printLeaf("(unreachable)", .{}),
@@ -785,7 +845,7 @@ pub const AstPrinter = struct {
                     try self.beginNode("(param", .{});
                     if (param.pat) |pat|
                         try self.printNamedExpr("pat", pat);
-                    try self.printNamedExpr("type", param.ty);
+                    try self.printNamedExpr("type", param.ty.?);
                     if (param.value) |val| {
                         try self.printNamedExpr("value", val);
                     }

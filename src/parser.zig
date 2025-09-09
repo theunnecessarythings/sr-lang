@@ -179,7 +179,17 @@ pub const Parser = struct {
 
     inline fn postfixBp(tag: Token.Tag) ?u8 {
         return switch (tag) {
-            .lparen, .lsquare, .lcurly, .dot, .dotdot, .dotdoteq, .bang, .question, .keyword_catch => 95,
+            .lparen,
+            .lsquare,
+            .lcurly,
+            .dot,
+            .dotdot,
+            .dotstar,
+            .dotdoteq,
+            .bang,
+            .question,
+            .keyword_catch,
+            => 95,
             else => null,
         };
     }
@@ -279,6 +289,8 @@ pub const Parser = struct {
 
         const rhs = try self.parseExpr(0, .expr);
         if (self.current().tag != .rcurly and self.current().tag != .eof) {
+            // DEBUG
+            std.debug.print("[debug] expecting .eos, current={any}\n", .{self.current().tag});
             try self.expect(.eos);
         }
         return .{ .lhs = lhs, .rhs = rhs, .ty = ty, .loc = loc, .is_const = is_const, .is_assign = is_assign };
@@ -288,12 +300,15 @@ pub const Parser = struct {
         // prefix
         switch (tag) {
             .plus, .minus, .b_and, .bang, .dotdot, .dotdoteq => {
-                const op_tok = self.current();
+                // Capture operator info up-front to avoid mutation by recursive parse
+                const op_loc = self.currentLoc();
+                const op_kind = toPrefixOp(tag);
                 self.advance();
                 const rhs = try self.parseExpr(prefixBp(tag), mode);
-                const unary = ast.Prefix{ .op = toPrefixOp(op_tok.tag), .right = rhs, .loc = op_tok.loc };
+                const unary = ast.Prefix{ .op = op_kind, .right = rhs, .loc = op_loc };
                 return try self.alloc(ast.Expr, .{ .Prefix = unary });
             },
+            .b_or => return try self.parseClosure(),
             else => {},
         }
 
@@ -342,6 +357,13 @@ pub const Parser = struct {
             .keyword_variant => try self.parseVariantType(),
             .keyword_error => try self.parseErrorType(),
             .keyword_return => try self.parseReturn(),
+            .keyword_async => blk: {
+                const loc = self.currentLoc();
+                self.advance(); // "async"
+                // Only async blocks for now
+                const body = try self.parseBlockExpr();
+                break :blk try self.alloc(ast.Expr, .{ .Async = .{ .body = body, .loc = loc } });
+            },
             .keyword_if => try self.parseIfExpr(),
             .keyword_while => try self.parseWhileExpr(),
             .keyword_match => try self.parseMatchExpr(),
@@ -476,8 +498,15 @@ pub const Parser = struct {
                         left = switch (tag) {
                             .lparen => try self.parseCall(left),
                             .lsquare => try self.parseIndex(left),
-                            .dot => try self.parseField(left),
+                            .dot => blk: {
+                                if (self.current().tag == .keyword_await) {
+                                    break :blk try self.parseAwait(left);
+                                } else {
+                                    break :blk try self.parseField(left);
+                                }
+                            },
                             .lcurly => try self.parseStructLiteral(),
+                            .dotstar => try self.parseDeref(left),
                             .keyword_catch => try self.parseCatchExpr(left),
                             else => unreachable,
                         };
@@ -503,6 +532,8 @@ pub const Parser = struct {
 
             break;
         }
+        // DEBUG: show token at parseExpr exit
+        std.debug.print("[debug] parseExpr exit: current={any}\n", .{self.current().tag});
         return left;
     }
 
@@ -594,6 +625,18 @@ pub const Parser = struct {
     // Statements / blocks
     //=================================================================
 
+    inline fn parseDeref(self: *Parser, expr: *ast.Expr) !*ast.Expr {
+        const loc = self.currentLoc();
+        // Current token was .dotstar, already consumed by caller.
+        return self.alloc(ast.Expr, .{ .Deref = .{ .expr = expr, .loc = loc } });
+    }
+
+    inline fn parseAwait(self: *Parser, expr: *ast.Expr) !*ast.Expr {
+        const loc = self.currentLoc();
+        try self.expect(.keyword_await);
+        return self.alloc(ast.Expr, .{ .Await = .{ .expr = expr, .loc = loc } });
+    }
+
     inline fn parseReturn(self: *Parser) !*ast.Expr {
         const return_token = self.current();
         self.advance();
@@ -622,6 +665,61 @@ pub const Parser = struct {
     fn parseBlockExpr(self: *Parser) !*ast.Expr {
         const block = try self.parseBlock();
         return self.alloc(ast.Expr, .{ .Block = block });
+    }
+
+    fn parseClosure(self: *Parser) !*ast.Expr {
+        const closure_start = self.currentLoc();
+        try self.expect(.b_or);
+        var params = self.list(ast.Param);
+        if (self.current().tag != .b_or) {
+            while (true) {
+                const param_start = self.currentLoc();
+                // Parse parameter pattern; do not consume '|' as bitwise-or.
+                const pat_expr = try self.parseExpr(32, .expr_no_struct);
+                var ty: ?*ast.Expr = null;
+                var value: ?*ast.Expr = null;
+                if (self.current().tag == .colon) {
+                    self.advance();
+                    // Parse type but prevent consuming the closing '|' as bitwise-or.
+                    ty = try self.parseExpr(32, .type);
+                }
+                if (self.current().tag == .eq) {
+                    self.advance();
+                    value = try self.parseExpr(0, .expr);
+                }
+                try params.append(.{ .pat = pat_expr, .ty = ty, .value = value, .loc = param_start });
+                if (self.current().tag == .comma) {
+                    self.advance();
+                    continue;
+                } else if (self.current().tag == .b_or) {
+                    break;
+                } else {
+                    std.debug.print("Expected ',' or '|' after closure parameter, but got: {}\n", .{self.current().tag});
+                    return error.UnexpectedToken;
+                }
+            }
+        }
+        try self.expect(.b_or);
+
+        var return_type: ?*ast.Expr = null;
+        var body: *ast.Expr = undefined;
+        if (self.current().tag == .lcurly) {
+            body = try self.parseBlockExpr();
+        } else {
+            // Parse a potential return type first; if it is immediately followed by '{',
+            // treat it as the explicit result type and parse a block body.
+            // Otherwise, the parsed node is the expression body (no explicit result type).
+            const ty_or_body = try self.parseExpr(0, .type);
+            if (self.current().tag == .lcurly) {
+                return_type = ty_or_body;
+                body = try self.parseBlockExpr();
+            } else {
+                body = ty_or_body; // expression-bodied closure
+            }
+        }
+
+        const closure = ast.Closure{ .params = params, .result_ty = return_type, .body = body, .loc = closure_start };
+        return self.alloc(ast.Expr, .{ .Closure = closure });
     }
 
     fn parseCatchExpr(self: *Parser, expr: *ast.Expr) anyerror!*ast.Expr {
@@ -1467,4 +1565,3 @@ pub const Parser = struct {
         return self.alloc(ast.Expr, .{ .BuiltinType = .{ .Variant = variant_type } });
     }
 };
-
