@@ -183,6 +183,7 @@ pub const Parser = struct {
             .lsquare,
             .lcurly,
             .dot,
+            .dot_lparen,
             .dotdot,
             .dotstar,
             .dotdoteq,
@@ -499,12 +500,13 @@ pub const Parser = struct {
                             .lparen => try self.parseCall(left),
                             .lsquare => try self.parseIndex(left),
                             .dot => blk: {
-                                if (self.current().tag == .keyword_await) {
-                                    break :blk try self.parseAwait(left);
-                                } else {
-                                    break :blk try self.parseField(left);
+                                switch (self.current().tag) {
+                                    .keyword_await => break :blk try self.parseAwait(left),
+                                    .caret, .b_or, .percent, .question => break :blk try self.parseCastSigil(left),
+                                    else => break :blk try self.parseField(left),
                                 }
                             },
+                            .dot_lparen => try self.parseCastParen(left),
                             .lcurly => try self.parseStructLiteral(),
                             .dotstar => try self.parseDeref(left),
                             .keyword_catch => try self.parseCatchExpr(left),
@@ -629,6 +631,30 @@ pub const Parser = struct {
         const loc = self.currentLoc();
         // Current token was .dotstar, already consumed by caller.
         return self.alloc(ast.Expr, .{ .Deref = .{ .expr = expr, .loc = loc } });
+    }
+
+    fn parseCastParen(self: *Parser, expr: *ast.Expr) anyerror!*ast.Expr {
+        const loc = self.currentLoc();
+        // Current token was .dot_lparen, already consumed by caller.
+        // Parse a type until ')'
+        const ty = try self.parseExpr(0, .type);
+        try self.expect(.rparen);
+        return self.alloc(ast.Expr, .{ .Cast = .{ .expr = expr, .ty = ty, .kind = .normal, .loc = loc } });
+    }
+
+    fn parseCastSigil(self: *Parser, expr: *ast.Expr) anyerror!*ast.Expr {
+        const loc = self.currentLoc();
+        const op_tag = self.current().tag;
+        const kind: ast.CastKind = switch (op_tag) {
+            .caret => .bitcast,
+            .b_or => .saturate,
+            .percent => .wrap,
+            .question => .checked,
+            else => unreachable,
+        };
+        self.advance();
+        const ty = try self.parseExpr(0, .type);
+        return self.alloc(ast.Expr, .{ .Cast = .{ .expr = expr, .ty = ty, .kind = kind, .loc = loc } });
     }
 
     inline fn parseAwait(self: *Parser, expr: *ast.Expr) !*ast.Expr {

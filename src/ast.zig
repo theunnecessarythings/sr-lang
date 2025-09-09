@@ -54,6 +54,7 @@ pub const Expr = union(enum) {
     Await: Await,
     Closure: Closure,
     Async: Async,
+    Cast: Cast,
 };
 
 pub const Literal = struct {
@@ -298,6 +299,21 @@ pub const Closure = struct {
 
 pub const Async = struct {
     body: *Expr,
+    loc: Loc,
+};
+
+pub const CastKind = enum {
+    normal, // .(T)
+    bitcast, // .^T
+    saturate, // .|T
+    wrap, // .%T
+    checked, // .?T
+};
+
+pub const Cast = struct {
+    expr: *Expr,
+    ty: *Expr,
+    kind: CastKind,
     loc: Loc,
 };
 
@@ -827,6 +843,19 @@ pub const AstPrinter = struct {
             .Async => |asyn| {
                 try self.beginNode("(async", .{});
                 try self.printExpr(asyn.body);
+                try self.endNode();
+            },
+            .Cast => |c| {
+                const kind_str = switch (c.kind) {
+                    .normal => "cast",
+                    .bitcast => "bitcast",
+                    .saturate => "saturating_cast",
+                    .wrap => "wrapping_cast",
+                    .checked => "checked_cast",
+                };
+                try self.beginNode("({s}", .{kind_str});
+                try self.printNamedExpr("expr", c.expr);
+                try self.printNamedExpr("type", c.ty);
                 try self.endNode();
             },
             .Break => |_| try self.printLeaf("(break)", .{}),
