@@ -15,7 +15,7 @@ fetch_user :: async proc(id: i32) User {
 // Fetches the user's friends.
 fetch_friends :: async proc(user: User) []User {
     print("Fetching friends for user: ", user.name)
-    return .[User{ id: 2, name: "Bob"}, User{ id: 3, name: "Charlie"}]
+    return [User{ id: 2, name: "Bob"}, User{ id: 3, name: "Charlie"}]
 }
 
 // An async procedure that coordinates other async procedures.

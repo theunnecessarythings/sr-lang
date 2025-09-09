@@ -8,12 +8,12 @@ Point :: struct {
   y: i32,
 }
 
-// TODO: Idea
-Box :: struct {
- // attributes are some comptime constraint that get checked on every field access
- @[some_comptime_constraint] width: i32, 
-  height: i32,
-}
+//// TODO: Idea
+//Box :: struct {
+// // attributes are some comptime constraint that get checked on every field access
+// @[some_comptime_constraint] width: i32, 
+//  height: i32,
+//}
 
 some_comptime_constraint :: proc(field: Field) bool {
   // Example set the field to private

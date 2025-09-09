@@ -7,7 +7,7 @@
 main := proc() {
     // Create an empty dynamic array of integers.
     // Note the type annotation is needed here.
-    numbers: [dyn]i32 = .[]
+    numbers: [dyn]i32 = []
 
     print("Initial capacity:", numbers.capacity) // Assuming .capacity property
     print("Initial length:", numbers.len)       // Assuming .len property

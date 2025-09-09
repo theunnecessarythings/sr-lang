@@ -28,3 +28,18 @@ my_attr := mlir attribute {
      }>
 }
 
+// 4. Operation
+// A single MLIR operation captured as text.
+// Backend or a later lowering phase can interpret this op.
+my_add_op := mlir op {
+    arith.addi %a, %b : i32
+}
+
+// 5. Operation with nested region
+my_region_op := mlir op {
+    scf.if %c0 {
+        %1 = arith.addi %a, %b : i32
+    } else {
+        %2 = arith.subi %a, %b : i32
+    }
+}

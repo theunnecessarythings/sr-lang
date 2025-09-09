@@ -23,11 +23,11 @@ process_resource :: proc() bool!Error {
 
 main := proc() {
     print("--- Running successful case ---")
-    process_resource() catch |_| {} // Ignore error for this example run
+    process_resource() catch {} // Ignore error for this example run
 
     print("\n--- Running failure case ---")
     // Assume `acquire_resource` is now rigged to fail
     process_resource_that_fails() catch |err| {
-        print("Caught expected error: ", err)
+       print("Caught expected error: ", err)
     }
 }

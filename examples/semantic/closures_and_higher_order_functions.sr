@@ -3,7 +3,7 @@
 // A higher-order function that takes a list and a function (closure)
 // and returns a new list with the function applied to each element.
 map :: proc(list: []i32, f: fn(i32) i32) [dyn]i32 {
-    new_list : [dyn]i32 = .[]
+    new_list : [dyn]i32 = []
     for item in list {
         new_list.append(f(item))
     }
@@ -21,7 +21,7 @@ make_adder :: proc(amount: i32) fn(i32) i32 {
 
 main := proc() {
     // 1. Using a higher-order function
-    numbers := .[1, 2, 3, 4]
+    numbers := [1, 2, 3, 4]
     doubler := |x| x * 2
     doubled_numbers := map(numbers, doubler)
     print("Doubled numbers: ", doubled_numbers) // Expected: [2, 4, 6, 8]

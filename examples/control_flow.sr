@@ -18,10 +18,10 @@ main :: proc() {
 
 
     // `for` loop for iteration
-    for x in .[1, 2, 3] {
+    for x in [1, 2, 3] {
         print(x)
     }
-
+  
     // `while` loop with a pattern match
     // This is the replacement for `while let`
     while is Some(x) := maybe_value {
@@ -50,7 +50,7 @@ main :: proc() {
         MyBool.False => print("It was false!"),
         // The compiler knows all cases are covered, so a `_` case is not needed.
     }
-
+  
     // Example where unreachable might be used
     match some_integer {
         0..100 => print("Small number"),

@@ -4,9 +4,9 @@ main::proc() {
   my_tuple := (1, "hello", true)
 
   // Accessing tuple elements
-  //first := my_tuple.0
-  //second := my_tuple.1
-  //
+  first := my_tuple.0
+  second := my_tuple.1
+  
   // Array expression
   my_array := [1, 2, 3, 4, 5]
 
@@ -17,7 +17,7 @@ main::proc() {
   val := my_array[2]
 
   // Array slicing 
-  //slice := my_array[1..3]
+  slice := my_array[1..3]
 
 
   // --- Hash Maps ---

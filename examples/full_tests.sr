@@ -47,3 +47,21 @@ ptr_type :: *i32
 const_ptr_type :: *const i32
 
 call :: add(a + 1i, 2)
+
+a = "hi\n\"ok\""           
+a = r"no escapes \n "       
+a = r#"hash " inside"#        
+a = br"bytes"                
+a = b"Z"
+a = r#ident#
+a = 'c' + b'Z'                   
+a = 0 - 1 + 12_345                
+a = 0xFF * 0o755 +| 0b1011_0011    
+a = 1. % 0.5 << 1.0 -| 1e9 -% 1.f32        
+a = 1..2 / 1..=2        
+a = x.1 *| x..1          
+//a = a.b(c)[i].d? %   2  
+
+
+a = -1
+
