@@ -459,6 +459,7 @@ pub const Lower = struct {
                 .Operation => .Operation,
             }, .text = ml.text, .loc = ml.loc } },
             .ErrUnwrap => |eu| ast.Expr{ .PostfixErrorUnwrap = .{ .expr = try self.lowerExpr(eu.expr), .loc = eu.loc } },
+            .OptionalUnwrap => |ou| ast.Expr{ .PostfixOptionalUnwrap = .{ .expr = try self.lowerExpr(ou.expr), .loc = ou.loc } },
             .Null => |n| ast.Expr{ .NullLit = .{ .loc = n.loc } },
             .Unreachable => |u| blk: {
                 var items = list(self, ast.Statement);

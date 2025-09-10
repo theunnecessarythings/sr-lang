@@ -660,8 +660,13 @@ pub const Parser = struct {
                             .dot_lparen => try self.parseCastParen(left),
                             .lcurly => try self.parseStructLiteral(),
                             .dotstar => try self.parseDeref(left),
+                            .question => try self.parseOptionalUnwrap(left),
                             .keyword_catch => try self.parseCatchExpr(left),
-                            else => unreachable,
+                            else => {
+                                const got = self.current();
+                                self.errorNote(self.currentLoc(), "unexpected postfix operator: {s}", .{Token.Tag.symbol(tag)}, got.loc, "this operator cannot be used here", .{});
+                                return error.UnexpectedToken;
+                            },
                         };
                         continue;
                     }
@@ -779,6 +784,12 @@ pub const Parser = struct {
         const loc = self.currentLoc();
         // Current token was .dotstar, already consumed by caller.
         return self.alloc(cst.Expr, .{ .Deref = .{ .expr = expr, .loc = loc } });
+    }
+
+    inline fn parseOptionalUnwrap(self: *Parser, expr: *cst.Expr) !*cst.Expr {
+        const loc = self.currentLoc();
+        // Current token was '?', already consumed by caller.
+        return self.alloc(cst.Expr, .{ .OptionalUnwrap = .{ .expr = expr, .loc = loc } });
     }
 
     inline fn parsePostfixAfterDot(self: *Parser, left: *cst.Expr) anyerror!*cst.Expr {

@@ -61,6 +61,7 @@ pub const Expr = union(enum) {
     Defer: Defer,
     ErrDefer: ErrDefer,
     ErrUnwrap: ErrUnwrap,
+    OptionalUnwrap: OptionalUnwrap,
     Catch: Catch,
     Await: Await,
     Closure: Closure,
@@ -329,6 +330,11 @@ pub const ErrDefer = struct {
 };
 
 pub const ErrUnwrap = struct {
+    expr: *Expr,
+    loc: Loc,
+};
+
+pub const OptionalUnwrap = struct {
     expr: *Expr,
     loc: Loc,
 };
@@ -894,6 +900,11 @@ pub const CstPrinter = struct {
             .ErrUnwrap => |err_unwrap| {
                 try self.beginNode("(err_unwrap", .{});
                 try self.printExpr(err_unwrap.expr);
+                try self.endNode();
+            },
+            .OptionalUnwrap => |opt| {
+                try self.beginNode("(opt_unwrap", .{});
+                try self.printExpr(opt.expr);
                 try self.endNode();
             },
             .Defer => |e| {

@@ -224,11 +224,26 @@ pub const Checker = struct {
             .PostfixAwait => |p| try self.checkExpr(p.expr),
 
             // casts
-            .CastNormal => |c| { try self.checkExpr(c.expr); try self.checkTypeExpr(c.ty); },
-            .CastBit => |c| { try self.checkExpr(c.expr); try self.checkTypeExpr(c.ty); },
-            .CastSaturate => |c| { try self.checkExpr(c.expr); try self.checkTypeExpr(c.ty); },
-            .CastWrap => |c| { try self.checkExpr(c.expr); try self.checkTypeExpr(c.ty); },
-            .CastChecked => |c| { try self.checkExpr(c.expr); try self.checkTypeExpr(c.ty); },
+            .CastNormal => |c| {
+                try self.checkExpr(c.expr);
+                try self.checkTypeExpr(c.ty);
+            },
+            .CastBit => |c| {
+                try self.checkExpr(c.expr);
+                try self.checkTypeExpr(c.ty);
+            },
+            .CastSaturate => |c| {
+                try self.checkExpr(c.expr);
+                try self.checkTypeExpr(c.ty);
+            },
+            .CastWrap => |c| {
+                try self.checkExpr(c.expr);
+                try self.checkTypeExpr(c.ty);
+            },
+            .CastChecked => |c| {
+                try self.checkExpr(c.expr);
+                try self.checkTypeExpr(c.ty);
+            },
 
             // control flow
             .If => |iff| {
@@ -470,14 +485,6 @@ pub const Checker = struct {
 
     fn exprLoc(e: *const ast.Expr) Loc {
         return switch (e.*) {
-            .IntLit => |x| x.loc,
-            .FloatLit => |x| x.loc,
-            .BoolLit => |x| x.loc,
-            .StringLit => |x| x.loc,
-            .CharLit => |x| x.loc,
-            .NullLit => |x| x.loc,
-            .UndefLit => |x| x.loc,
-            .Identifier => |x| x.loc,
             .Type => |x| switch (x) {
                 inline else => |v| v.loc,
             },

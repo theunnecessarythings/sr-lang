@@ -785,3 +785,98 @@ pub const Typer = struct {
         }
     }
 };
+
+fn findDecl(unit: *ast.Unit, name: []const u8) ?*ast.Decl {
+    for (unit.decls.items) |*d| {
+        if (d.binding) |pat| switch (pat.*) {
+            .Binding => |b| if (std.mem.eql(u8, b.name, name)) return d,
+            else => {},
+        };
+    }
+    return null;
+}
+
+test "infer: literals, ops, tuple field, and string index" {
+    const allocator = std.heap.page_allocator;
+    var diags = @import("diagnostics.zig").Diagnostics.init(allocator);
+    defer diags.deinit();
+
+    const src =
+        "package main\n" ++
+        "a := 1 + 2\n" ++
+        "b := true and false\n" ++
+        "t := (1, 2.0)\n" ++
+        "x := t.0\n" ++
+        "s: string = \"hi\"\n" ++
+        "c := s[0]\n";
+    const srcz = try allocator.dupeZ(u8, src);
+    defer allocator.free(srcz);
+
+    var parser = @import("parser.zig").Parser.init(allocator, srcz, &diags);
+    var cst_program = try parser.parse();
+    var pl = @import("pipeline.zig").Pipeline.init(allocator, &diags);
+    const result = try pl.run(&cst_program);
+    defer {
+        if (result.type_info) |ti| {
+            ti.deinit();
+            allocator.destroy(ti);
+        }
+        if (result.binder) |b| {
+            var bm = b;
+            bm.deinit();
+        }
+    }
+    const ti = result.type_info.?;
+
+    const a_decl = findDecl(&result.hir, "a").?;
+    const b_decl = findDecl(&result.hir, "b").?;
+    const x_decl = findDecl(&result.hir, "x").?;
+    const c_decl = findDecl(&result.hir, "c").?;
+
+    const t_i32 = try ti.arena.mk(.{ .I32 = {} });
+    const t_bool = try ti.arena.mk(.{ .Bool = {} });
+    const t_u32 = try ti.arena.mk(.{ .U32 = {} });
+
+    const a_ty = (ti.expr_types.get(a_decl.value)).?;
+    const b_ty = (ti.expr_types.get(b_decl.value)).?;
+    const x_ty = (ti.expr_types.get(x_decl.value)).?;
+    const c_ty = (ti.expr_types.get(c_decl.value)).?;
+
+    try std.testing.expectEqual(t_i32, a_ty);
+    try std.testing.expectEqual(t_bool, b_ty);
+    try std.testing.expectEqual(t_i32, x_ty);
+    try std.testing.expectEqual(t_u32, c_ty);
+}
+
+test "infer: decl annotation vs initializer mismatch" {
+    const allocator = std.heap.page_allocator;
+    var diags = @import("diagnostics.zig").Diagnostics.init(allocator);
+    defer diags.deinit();
+
+    const src =
+        "package main\n" ++
+        "x: i32 = 1.5\n"; // mismatch on purpose
+    const srcz = try allocator.dupeZ(u8, src);
+    defer allocator.free(srcz);
+
+    var parser = @import("parser.zig").Parser.init(allocator, srcz, &diags);
+    var cst_program = try parser.parse();
+    var pl = @import("pipeline.zig").Pipeline.init(allocator, &diags);
+    const result = try pl.run(&cst_program);
+    defer {
+        if (result.type_info) |ti| {
+            ti.deinit();
+            allocator.destroy(ti);
+        }
+        if (result.binder) |b| {
+            var bm = b;
+            bm.deinit();
+        }
+    }
+    // Expect at least one error due to mismatch
+    var has_err = false;
+    for (diags.messages.items) |m| {
+        if (m.severity == .err) { has_err = true; break; }
+    }
+    try std.testing.expect(has_err);
+}

@@ -5,15 +5,6 @@ const c = @cImport({
     @cInclude("mlir-c/IR.h");
 });
 
-pub fn main2() !void {
-    const ctx = c.mlirContextCreate();
-    defer c.mlirContextDestroy(ctx);
-    const loc = c.mlirLocationUnknownGet(ctx);
-    const mod = c.mlirModuleCreateEmpty(loc);
-    defer c.mlirOperationDestroy(c.mlirModuleGetOperation(mod));
-    c.mlirOperationDump(c.mlirModuleGetOperation(mod));
-}
-
 pub fn main() !void {
     var args = std.process.args();
     const exec = args.next();
@@ -37,7 +28,7 @@ pub fn main() !void {
 
     var file_arg: []const u8 = undefined;
     file_arg = filename orelse {
-        std.debug.print("Usage: {s} [--mlir-empty] [--emit-mlir <out.mlir>] <source_file>\n", .{exec.?});
+        std.debug.print("Usage: {s} [--emit-mlir <out.mlir>] <source_file>\n", .{exec.?});
         return;
     };
 
@@ -79,6 +70,11 @@ pub fn main() !void {
         try sym_printer.printTop(&binder_mut.symtab);
     }
     try out.flush();
+
+    // MLIR emission if requested
+    if (emit_mlir or run_mlir) {
+        try compiler.mlir_codegen.emitModule(&result.hir, mlir_path);
+    }
 
     // Emit diagnostics after parsing
     var err_buf: [1024]u8 = undefined;
