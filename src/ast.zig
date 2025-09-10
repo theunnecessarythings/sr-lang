@@ -3,6 +3,7 @@ const List = std.array_list.Managed;
 const cst = @import("cst.zig");
 const Tag = @import("lexer.zig").Token.Tag;
 const Loc = @import("lexer.zig").Token.Loc;
+const types = @import("types.zig");
 
 pub const Unit = struct {
     decls: List(Decl),
@@ -487,9 +488,19 @@ pub const SlicePattern = struct {
 pub const AstPrinter = struct {
     writer: *std.io.Writer,
     indent_size: usize = 0,
+    // Optional type context
+    type_arena: ?*types.TypeArena = null,
+    expr_types: ?*std.AutoHashMap(*const Expr, types.TypeId) = null,
+    decl_types: ?*std.AutoHashMap(*const Decl, types.TypeId) = null,
 
     pub fn init(writer: *std.io.Writer) AstPrinter {
         return .{ .writer = writer };
+    }
+
+    pub fn withTypes(self: *AstPrinter, arena: *types.TypeArena, expr_map: *std.AutoHashMap(*const Expr, types.TypeId), decl_map: *std.AutoHashMap(*const Decl, types.TypeId)) void {
+        self.type_arena = arena;
+        self.expr_types = expr_map;
+        self.decl_types = decl_map;
     }
 
     fn printIndent(self: *AstPrinter) !void {
@@ -568,10 +579,19 @@ pub const AstPrinter = struct {
         try self.endNode();
     }
 
+    fn printTypeLeaf(self: *AstPrinter, label: []const u8, tid: types.TypeId) !void {
+        if (self.type_arena) |arena| {
+            try self.printIndent();
+            try self.writer.print("({s} ", .{label});
+            try arena.fmt(tid, self.writer);
+            try self.writer.writeAll(")\n");
+        }
+    }
+
     pub fn print(self: *AstPrinter, unit: *const Unit) !void {
         self.indent_size = 0;
         try self.beginNode("(unit package={s}", .{if (unit.package) |pkg| pkg.name else "null"});
-        for (unit.decls.items) |decl| try self.printDecl(&decl);
+        for (unit.decls.items) |*decl| try self.printDecl(decl);
         try self.endNode();
     }
 
@@ -582,6 +602,13 @@ pub const AstPrinter = struct {
         try self.beginNode("(value", .{});
         try self.printExpr(decl.value);
         try self.endNode();
+        // Print inferred types if available
+        if (self.decl_types) |map| {
+            if (map.get(decl)) |tid| try self.printTypeLeaf("decl_type", tid);
+        }
+        if (self.expr_types) |emap| {
+            if (emap.get(decl.value)) |etid| try self.printTypeLeaf("value_type", etid);
+        }
         try self.endNode();
     }
 
@@ -923,6 +950,17 @@ pub const AstPrinter = struct {
                 try self.printExpr(t.expr);
                 try self.endNode();
             },
+        }
+        // Optionally print the inferred type for this expression as a sibling leaf
+        if (self.expr_types) |emap| {
+            if (self.type_arena) |arena| {
+                if (emap.get(expr)) |tid| {
+                    try self.printIndent();
+                    try self.writer.print("(type ", .{});
+                    try arena.fmt(tid, self.writer);
+                    try self.writer.writeAll(")\n");
+                }
+            }
         }
     }
 

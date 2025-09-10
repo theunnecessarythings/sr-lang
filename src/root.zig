@@ -9,3 +9,6 @@ pub const symbols = @import("symbols.zig");
 pub const bind = @import("bind.zig");
 pub const infer = @import("infer.zig");
 pub const pipeline = @import("pipeline.zig");
+pub const types = @import("types.zig");
+pub const tir = @import("tir.zig");
+pub const lower_tir = @import("lower_tir.zig");

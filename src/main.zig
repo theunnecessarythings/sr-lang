@@ -1,23 +1,54 @@
 const std = @import("std");
 const compiler = @import("compiler");
 
+const c = @cImport({
+    @cInclude("mlir-c/IR.h");
+});
+
+pub fn main2() !void {
+    const ctx = c.mlirContextCreate();
+    defer c.mlirContextDestroy(ctx);
+    const loc = c.mlirLocationUnknownGet(ctx);
+    const mod = c.mlirModuleCreateEmpty(loc);
+    defer c.mlirOperationDestroy(c.mlirModuleGetOperation(mod));
+    c.mlirOperationDump(c.mlirModuleGetOperation(mod));
+}
+
 pub fn main() !void {
     var args = std.process.args();
     const exec = args.next();
 
-    const filename = args.next() orelse {
-        std.debug.print("Usage: {s} <source_file>\n", .{exec.?});
+    var emit_mlir: bool = false;
+    var run_mlir: bool = false;
+    var mlir_path: ?[]const u8 = null;
+    var filename: ?[]const u8 = null;
+
+    while (args.next()) |arg| {
+        if (std.mem.eql(u8, arg, "--emit-mlir")) {
+            emit_mlir = true;
+            mlir_path = args.next();
+        } else if (std.mem.eql(u8, arg, "--run-mlir")) {
+            run_mlir = true;
+        } else {
+            filename = arg;
+            break;
+        }
+    }
+
+    var file_arg: []const u8 = undefined;
+    file_arg = filename orelse {
+        std.debug.print("Usage: {s} [--mlir-empty] [--emit-mlir <out.mlir>] <source_file>\n", .{exec.?});
         return;
     };
 
     const allocator = std.heap.page_allocator;
 
-    var file = try std.fs.cwd().openFile(filename, .{});
+    var file = try std.fs.cwd().openFile(file_arg, .{});
     const source = try file.readToEndAlloc(allocator, (try file.stat()).size);
     const source0 = try allocator.dupeZ(u8, source);
     defer allocator.free(source0);
     defer allocator.free(source);
-    std.debug.print("Compiling {s}...\n", .{filename});
+    std.debug.print("Compiling {s}...\n", .{file_arg});
 
     // Initialize diagnostics collector and parser
     var diags = compiler.diagnostics.Diagnostics.init(allocator);
@@ -38,6 +69,9 @@ pub fn main() !void {
     var cst_printer = compiler.cst.CstPrinter.init(out);
     try cst_printer.print(&cst_program);
     var ast_printer = compiler.ast.AstPrinter.init(out);
+    if (result.type_info) |ti| {
+        ast_printer.withTypes(&ti.arena, &ti.expr_types, &ti.decl_types);
+    }
     try ast_printer.print(&result.hir);
     var sym_printer = compiler.symbols.SymPrinter.init(out);
     if (result.binder) |b| {
@@ -49,6 +83,6 @@ pub fn main() !void {
     // Emit diagnostics after parsing
     var err_buf: [1024]u8 = undefined;
     var err_writer = std.fs.File.stderr().writer(&err_buf);
-    try diags.emitStyled(source0, &err_writer.interface, filename, true);
+    try diags.emitStyled(source0, &err_writer.interface, file_arg, true);
     try err_writer.interface.flush();
 }

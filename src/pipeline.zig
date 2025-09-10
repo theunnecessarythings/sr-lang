@@ -10,6 +10,7 @@ const Diagnostics = @import("diagnostics.zig").Diagnostics;
 pub const Result = struct {
     hir: ast.Unit,
     binder: ?bind.Binder,
+    type_info: ?*infer.TypeInfo,
 };
 
 pub const Pipeline = struct {
@@ -29,17 +30,18 @@ pub const Pipeline = struct {
         var binder = bind.Binder.init(self.allocator);
         try binder.run(&hir);
         //
-        // // 3) Checker pass over HIR (structural checks)
-        // var chk = checker.Checker.init(self.allocator, self.diags);
-        // defer chk.deinit();
-        // _ = try chk.run(&hir);
+        // 3) Checker pass over HIR (structural checks)
+        var chk = checker.Checker.init(self.allocator, self.diags);
+        defer chk.deinit();
+        try chk.run(&hir);
         //
-        // // 4) Type inference (scaffold)
-        // var typer = infer.Typer.init(self.allocator, self.diags, &binder.symtab);
-        // try typer.run(&hir);
+        // 4) Type inference: produce a side table of types
+        var typer = infer.Typer.init(self.allocator, self.diags, &binder.symtab);
+        const type_info = try self.allocator.create(infer.TypeInfo);
+        type_info.* = try typer.run(&hir);
         //
         // // 5) Meta pipeline looping would go here (fixed-point driver)
 
-        return .{ .hir = hir, .binder = binder };
+        return .{ .hir = hir, .binder = binder, .type_info = type_info };
     }
 };
