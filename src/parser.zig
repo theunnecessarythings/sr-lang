@@ -2,7 +2,7 @@ const std = @import("std");
 const Lexer = @import("lexer.zig").Tokenizer;
 const Token = @import("lexer.zig").Token;
 const Loc = Token.Loc;
-const ast = @import("ast.zig");
+const cst = @import("cst.zig");
 const Diagnostics = @import("diagnostics.zig").Diagnostics;
 
 pub const Parser = struct {
@@ -113,7 +113,7 @@ pub const Parser = struct {
         return self.current().tag == .identifier and std.mem.eql(u8, self.slice(self.current()), "_");
     }
 
-    inline fn parseOptionalInitializer(self: *Parser, comptime mode: ParseMode) !?*ast.Expr {
+    inline fn parseOptionalInitializer(self: *Parser, comptime mode: ParseMode) !?*cst.Expr {
         if (self.current().tag == .eq) {
             self.advance();
             return try self.parseExpr(0, mode);
@@ -128,8 +128,8 @@ pub const Parser = struct {
         return start;
     }
 
-    fn parseAttributesList(self: *Parser) !std.array_list.Managed(ast.Attribute) {
-        var attrs = self.list(ast.Attribute);
+    fn parseAttributesList(self: *Parser) !std.array_list.Managed(cst.Attribute) {
+        var attrs = self.list(cst.Attribute);
         try self.expect(.at);
         try self.expect(.lsquare);
         while (self.current().tag != .rsquare and self.current().tag != .eof) {
@@ -147,7 +147,7 @@ pub const Parser = struct {
                 self.errorNote(tok.loc, "expected attribute name, found {s}", .{Token.Tag.symbol(tok.tag)}, tok.loc, "attribute names can be identifiers or keywords", .{});
                 return error.UnexpectedToken;
             }
-            var val: ?*ast.Expr = null;
+            var val: ?*cst.Expr = null;
             if (self.current().tag == .eq) {
                 self.advance();
                 // Only literals or identifiers are allowed
@@ -173,7 +173,7 @@ pub const Parser = struct {
         return attrs;
     }
 
-    fn parseOptionalAttributes(self: *Parser) !?std.array_list.Managed(ast.Attribute) {
+    fn parseOptionalAttributes(self: *Parser) !?std.array_list.Managed(cst.Attribute) {
         if (self.current().tag == .at) {
             return try self.parseAttributesList();
         }
@@ -208,7 +208,7 @@ pub const Parser = struct {
         };
     }
 
-    inline fn toPrefixOp(tag: Token.Tag) ast.PrefixOp {
+    inline fn toPrefixOp(tag: Token.Tag) cst.PrefixOp {
         return switch (tag) {
             .plus => .plus,
             .minus => .minus,
@@ -282,7 +282,7 @@ pub const Parser = struct {
         };
     }
 
-    fn looksLikeCtorHead(self: *Parser, expr: *ast.Expr) bool {
+    fn looksLikeCtorHead(self: *Parser, expr: *cst.Expr) bool {
         return switch (expr.*) {
             // Type names and qualified paths: Foo{...}, pkg.Foo{...}, Event.Click{...}
             .Ident, .Field => true,
@@ -307,9 +307,9 @@ pub const Parser = struct {
         if (self.current().tag == .eos) self.advance();
     }
 
-    pub fn parse(self: *Parser) !ast.Program {
-        var decls = self.list(ast.Decl);
-        var pkg_decl: ?ast.PackageDecl = null;
+    pub fn parse(self: *Parser) !cst.Program {
+        var decls = self.list(cst.Decl);
+        var pkg_decl: ?cst.PackageDecl = null;
         if (self.current_token.tag == .keyword_package) {
             pkg_decl = self.parsePackageDecl() catch blk: {
                 // Assume a more specific diagnostic was already added at the error site
@@ -328,7 +328,7 @@ pub const Parser = struct {
         return .{ .decls = decls, .package = pkg_decl };
     }
 
-    fn parsePackageDecl(self: *Parser) !ast.PackageDecl {
+    fn parsePackageDecl(self: *Parser) !cst.PackageDecl {
         const loc = self.currentLoc();
         try self.expect(.keyword_package);
         const name = try self.expectIdent();
@@ -336,11 +336,11 @@ pub const Parser = struct {
         return .{ .name = name.bytes, .loc = loc };
     }
 
-    fn parseDecl(self: *Parser) anyerror!ast.Decl {
+    fn parseDecl(self: *Parser) anyerror!cst.Decl {
         const loc = self.currentLoc();
         const lhs = try self.parseExpr(0, .expr);
         var is_const = false;
-        var ty: ?*ast.Expr = null;
+        var ty: ?*cst.Expr = null;
         var is_assign = false;
 
         switch (self.current().tag) {
@@ -404,7 +404,7 @@ pub const Parser = struct {
         return .{ .lhs = lhs, .rhs = rhs, .ty = ty, .loc = loc, .is_const = is_const, .is_assign = is_assign };
     }
 
-    fn nud(self: *Parser, tag: Token.Tag, comptime mode: ParseMode) anyerror!*ast.Expr {
+    fn nud(self: *Parser, tag: Token.Tag, comptime mode: ParseMode) anyerror!*cst.Expr {
         // prefix
         switch (tag) {
             .plus, .minus, .b_and, .bang, .dotdot, .dotdoteq => {
@@ -413,8 +413,8 @@ pub const Parser = struct {
                 const op_kind = toPrefixOp(tag);
                 self.advance();
                 const rhs = try self.parseExpr(prefixBp(tag), mode);
-                const unary = ast.Prefix{ .op = op_kind, .right = rhs, .loc = op_loc };
-                return try self.alloc(ast.Expr, .{ .Prefix = unary });
+                const unary = cst.Prefix{ .op = op_kind, .right = rhs, .loc = op_loc };
+                return try self.alloc(cst.Expr, .{ .Prefix = unary });
             },
             .b_or => return try self.parseClosure(),
             .keyword_comptime => return try self.parseComptime(),
@@ -426,9 +426,9 @@ pub const Parser = struct {
 
         // literal
         if (isLiteralTag(tag)) {
-            const literal = ast.Literal{ .value = self.slice(self.current()), .loc = self.currentLoc(), .kind = tag };
+            const literal = cst.Literal{ .value = self.slice(self.current()), .loc = self.currentLoc(), .kind = tag };
             self.advance();
-            return try self.alloc(ast.Expr, .{ .Literal = literal });
+            return try self.alloc(cst.Expr, .{ .Literal = literal });
         }
 
         // others
@@ -455,9 +455,9 @@ pub const Parser = struct {
                 break :blk annotated;
             },
             .identifier => blk: {
-                const ident = ast.Ident{ .name = self.slice(self.current()), .loc = self.currentLoc() };
+                const ident = cst.Ident{ .name = self.slice(self.current()), .loc = self.currentLoc() };
                 self.advance();
-                break :blk try self.alloc(ast.Expr, .{ .Ident = ident });
+                break :blk try self.alloc(cst.Expr, .{ .Ident = ident });
             },
             .lsquare => try self.parseArrayLike(),
             .lparen => try self.parseParenExpr(),
@@ -465,19 +465,19 @@ pub const Parser = struct {
             .keyword_proc, .keyword_fn => try self.parseFunctionLike(self.current().tag, false, false),
             .keyword_extern => try self.parseExternDecl(),
             .keyword_any => blk: {
-                const any_type = ast.AnyType{ .loc = self.currentLoc() };
+                const any_type = cst.AnyType{ .loc = self.currentLoc() };
                 self.advance();
-                break :blk try self.alloc(ast.Expr, .{ .BuiltinType = .{ .Any = any_type } });
+                break :blk try self.alloc(cst.Expr, .{ .BuiltinType = .{ .Any = any_type } });
             },
             .keyword_type => blk: {
-                const type_type = ast.TypeType{ .loc = self.currentLoc() };
+                const type_type = cst.TypeType{ .loc = self.currentLoc() };
                 self.advance();
-                break :blk try self.alloc(ast.Expr, .{ .BuiltinType = .{ .Type = type_type } });
+                break :blk try self.alloc(cst.Expr, .{ .BuiltinType = .{ .Type = type_type } });
             },
             .keyword_noreturn => blk: {
-                const noreturn_type = ast.NoreturnType{ .loc = self.currentLoc() };
+                const noreturn_type = cst.NoreturnType{ .loc = self.currentLoc() };
                 self.advance();
-                break :blk try self.alloc(ast.Expr, .{ .BuiltinType = .{ .Noreturn = noreturn_type } });
+                break :blk try self.alloc(cst.Expr, .{ .BuiltinType = .{ .Noreturn = noreturn_type } });
             },
             .keyword_complex => try self.parseComplexType(),
             .keyword_simd => try self.parseSimdType(),
@@ -492,13 +492,13 @@ pub const Parser = struct {
                 const loc = self.currentLoc();
                 self.advance(); // "import"
                 const expr = try self.parseExpr(0, .expr);
-                break :blk try self.alloc(ast.Expr, .{ .Import = .{ .expr = expr, .loc = loc } });
+                break :blk try self.alloc(cst.Expr, .{ .Import = .{ .expr = expr, .loc = loc } });
             },
             .keyword_typeof => blk: {
                 const start = try self.beginKeywordParen(.keyword_typeof);
                 const expr = try self.parseExpr(0, .expr);
                 try self.endParen();
-                break :blk try self.alloc(ast.Expr, .{ .TypeOf = .{ .expr = expr, .loc = start } });
+                break :blk try self.alloc(cst.Expr, .{ .TypeOf = .{ .expr = expr, .loc = start } });
             },
             .keyword_async => blk: {
                 const loc = self.currentLoc();
@@ -507,7 +507,7 @@ pub const Parser = struct {
                     .keyword_proc, .keyword_fn => break :blk try self.parseFunctionLike(self.current().tag, false, true),
                     else => {
                         const body = try self.parseBlockExpr();
-                        break :blk try self.alloc(ast.Expr, .{ .Async = .{ .body = body, .loc = loc } });
+                        break :blk try self.alloc(cst.Expr, .{ .Async = .{ .body = body, .loc = loc } });
                     },
                 }
             },
@@ -519,7 +519,7 @@ pub const Parser = struct {
                 const break_token = self.current();
                 self.advance();
                 var label: ?[]const u8 = null;
-                var value: ?*ast.Expr = null;
+                var value: ?*cst.Expr = null;
                 if (self.current().tag == .colon) {
                     self.advance();
                     const name = try self.expectIdent();
@@ -528,40 +528,40 @@ pub const Parser = struct {
                 if (!self.isStmtTerminator()) {
                     value = try self.parseExpr(0, .expr);
                 }
-                const break_expr = ast.Break{ .loc = break_token.loc, .label = label, .value = value };
-                break :blk try self.alloc(ast.Expr, .{ .Break = break_expr });
+                const break_expr = cst.Break{ .loc = break_token.loc, .label = label, .value = value };
+                break :blk try self.alloc(cst.Expr, .{ .Break = break_expr });
             },
             .keyword_continue => blk: {
                 const continue_token = self.current();
                 self.advance();
-                const continue_expr = ast.Continue{ .loc = continue_token.loc };
-                break :blk try self.alloc(ast.Expr, .{ .Continue = continue_expr });
+                const continue_expr = cst.Continue{ .loc = continue_token.loc };
+                break :blk try self.alloc(cst.Expr, .{ .Continue = continue_expr });
             },
             .keyword_unreachable => blk: {
                 const unreachable_token = self.current();
                 self.advance();
-                const unreachable_expr = ast.Unreachable{ .loc = unreachable_token.loc };
-                break :blk try self.alloc(ast.Expr, .{ .Unreachable = unreachable_expr });
+                const unreachable_expr = cst.Unreachable{ .loc = unreachable_token.loc };
+                break :blk try self.alloc(cst.Expr, .{ .Unreachable = unreachable_expr });
             },
             .keyword_null => blk: {
                 const null_token = self.current();
                 self.advance();
-                const null_expr = ast.Null{ .loc = null_token.loc };
-                break :blk try self.alloc(ast.Expr, .{ .Null = null_expr });
+                const null_expr = cst.Null{ .loc = null_token.loc };
+                break :blk try self.alloc(cst.Expr, .{ .Null = null_expr });
             },
             .keyword_defer => blk: {
                 const defer_token = self.current();
                 self.advance();
                 const deferred = try self.parseExpr(0, .expr);
-                const defer_expr = ast.Defer{ .expr = deferred, .loc = defer_token.loc };
-                break :blk try self.alloc(ast.Expr, .{ .Defer = defer_expr });
+                const defer_expr = cst.Defer{ .expr = deferred, .loc = defer_token.loc };
+                break :blk try self.alloc(cst.Expr, .{ .Defer = defer_expr });
             },
             .keyword_errdefer => blk: {
                 const errdefer_token = self.current();
                 self.advance();
                 const deferred = try self.parseExpr(0, .expr);
-                const errdefer_expr = ast.ErrDefer{ .expr = deferred, .loc = errdefer_token.loc };
-                break :blk try self.alloc(ast.Expr, .{ .ErrDefer = errdefer_expr });
+                const errdefer_expr = cst.ErrDefer{ .expr = deferred, .loc = errdefer_token.loc };
+                break :blk try self.alloc(cst.Expr, .{ .ErrDefer = errdefer_expr });
             },
             else => {
                 const got = self.current();
@@ -571,7 +571,7 @@ pub const Parser = struct {
         };
     }
 
-    inline fn toInfixOp(tag: Token.Tag) ast.InfixOp {
+    inline fn toInfixOp(tag: Token.Tag) cst.InfixOp {
         return switch (tag) {
             .plus => .add,
             .minus => .sub,
@@ -623,7 +623,7 @@ pub const Parser = struct {
         };
     }
 
-    fn parseExpr(self: *Parser, min_bp: u8, comptime mode: ParseMode) !*ast.Expr {
+    fn parseExpr(self: *Parser, min_bp: u8, comptime mode: ParseMode) !*cst.Expr {
         var left = try self.nud(self.current().tag, mode);
 
         while (true) {
@@ -643,7 +643,7 @@ pub const Parser = struct {
                     if (tag == .bang and mode != .type) {
                         const loc = self.currentLoc();
                         self.advance();
-                        left = try self.alloc(ast.Expr, .{ .ErrUnwrap = .{ .expr = left, .loc = loc } });
+                        left = try self.alloc(cst.Expr, .{ .ErrUnwrap = .{ .expr = left, .loc = loc } });
                         continue;
                     }
 
@@ -679,7 +679,7 @@ pub const Parser = struct {
                 const loc = self.currentLoc();
                 self.advance();
                 const right = try self.parseExpr(r_bp, mode);
-                left = try self.alloc(ast.Expr, .{ .Infix = .{ .op = toInfixOp(tag), .left = left, .right = right, .loc = loc } });
+                left = try self.alloc(cst.Expr, .{ .Infix = .{ .op = toInfixOp(tag), .left = left, .right = right, .loc = loc } });
                 continue;
             }
 
@@ -693,9 +693,9 @@ pub const Parser = struct {
     // Common element parsers
     //=================================================================
 
-    fn parseStructLiteral(self: *Parser) anyerror!*ast.Expr {
+    fn parseStructLiteral(self: *Parser) anyerror!*cst.Expr {
         const struct_start = self.currentLoc();
-        var entries = self.list(ast.StructFieldValue);
+        var entries = self.list(cst.StructFieldValue);
         while (self.current().tag != .rcurly and self.current().tag != .eof) {
             const field_tok = self.current();
             var field_name: ?[]const u8 = null;
@@ -709,19 +709,19 @@ pub const Parser = struct {
             if (!self.consumeIf(.comma)) break;
         }
         try self.expect(.rcurly);
-        const struct_lit = ast.StructLiteral{ .fields = entries, .loc = struct_start };
-        return self.alloc(ast.Expr, .{ .Struct = struct_lit });
+        const struct_lit = cst.StructLiteral{ .fields = entries, .loc = struct_start };
+        return self.alloc(cst.Expr, .{ .Struct = struct_lit });
     }
 
-    fn parseIndex(self: *Parser, collection: *ast.Expr) anyerror!*ast.Expr {
+    fn parseIndex(self: *Parser, collection: *cst.Expr) anyerror!*cst.Expr {
         const index_start = self.currentLoc();
         const index = try self.parseExpr(0, .expr);
         try self.expect(.rsquare);
-        const index_expr = ast.Index{ .collection = collection, .index = index, .loc = index_start };
-        return self.alloc(ast.Expr, .{ .Index = index_expr });
+        const index_expr = cst.Index{ .collection = collection, .index = index, .loc = index_start };
+        return self.alloc(cst.Expr, .{ .Index = index_expr });
     }
 
-    fn parseField(self: *Parser, parent: *ast.Expr) anyerror!*ast.Expr {
+    fn parseField(self: *Parser, parent: *cst.Expr) anyerror!*cst.Expr {
         const field_token = self.current();
         var is_tuple = false;
         switch (self.current().tag) {
@@ -736,12 +736,12 @@ pub const Parser = struct {
                 return error.UnexpectedToken;
             },
         }
-        const field = ast.Field{ .parent = parent, .field = self.slice(field_token), .is_tuple = is_tuple, .loc = field_token.loc };
-        return self.alloc(ast.Expr, .{ .Field = field });
+        const field = cst.Field{ .parent = parent, .field = self.slice(field_token), .is_tuple = is_tuple, .loc = field_token.loc };
+        return self.alloc(cst.Expr, .{ .Field = field });
     }
 
-    fn parseCommaExprListUntil(self: *Parser, comptime end_tag: Token.Tag) !std.array_list.Managed(*ast.Expr) {
-        var items = self.list(*ast.Expr);
+    fn parseCommaExprListUntil(self: *Parser, comptime end_tag: Token.Tag) !std.array_list.Managed(*cst.Expr) {
+        var items = self.list(*cst.Expr);
         if (self.current().tag != end_tag) {
             while (true) {
                 const arg = try self.parseExpr(0, .expr);
@@ -753,14 +753,14 @@ pub const Parser = struct {
         return items;
     }
 
-    fn parseCall(self: *Parser, callee: *ast.Expr) anyerror!*ast.Expr {
+    fn parseCall(self: *Parser, callee: *cst.Expr) anyerror!*cst.Expr {
         const args = try self.parseCommaExprListUntil(.rparen);
-        const call = ast.Call{ .callee = callee, .args = args, .loc = self.currentLoc() };
-        return self.alloc(ast.Expr, .{ .Call = call });
+        const call = cst.Call{ .callee = callee, .args = args, .loc = self.currentLoc() };
+        return self.alloc(cst.Expr, .{ .Call = call });
     }
 
-    fn finishParsingExprList(self: *Parser, comptime end_tag: Token.Tag, first_element: *ast.Expr) !std.array_list.Managed(*ast.Expr) {
-        var elements = self.list(*ast.Expr);
+    fn finishParsingExprList(self: *Parser, comptime end_tag: Token.Tag, first_element: *cst.Expr) !std.array_list.Managed(*cst.Expr) {
+        var elements = self.list(*cst.Expr);
         try elements.append(first_element);
         while (self.current().tag != end_tag and self.current().tag != .eof) {
             const elem = try self.parseExpr(0, .expr);
@@ -775,13 +775,13 @@ pub const Parser = struct {
     // Statements / blocks
     //=================================================================
 
-    inline fn parseDeref(self: *Parser, expr: *ast.Expr) !*ast.Expr {
+    inline fn parseDeref(self: *Parser, expr: *cst.Expr) !*cst.Expr {
         const loc = self.currentLoc();
         // Current token was .dotstar, already consumed by caller.
-        return self.alloc(ast.Expr, .{ .Deref = .{ .expr = expr, .loc = loc } });
+        return self.alloc(cst.Expr, .{ .Deref = .{ .expr = expr, .loc = loc } });
     }
 
-    inline fn parsePostfixAfterDot(self: *Parser, left: *ast.Expr) anyerror!*ast.Expr {
+    inline fn parsePostfixAfterDot(self: *Parser, left: *cst.Expr) anyerror!*cst.Expr {
         return switch (self.current().tag) {
             .keyword_await => try self.parseAwait(left),
             .caret, .b_or, .percent, .question => try self.parseCastSigil(left),
@@ -789,19 +789,19 @@ pub const Parser = struct {
         };
     }
 
-    fn parseCastParen(self: *Parser, expr: *ast.Expr) anyerror!*ast.Expr {
+    fn parseCastParen(self: *Parser, expr: *cst.Expr) anyerror!*cst.Expr {
         const loc = self.currentLoc();
         // Current token was .dot_lparen, already consumed by caller.
         // Parse a type until ')'
         const ty = try self.parseExpr(0, .type);
         try self.expect(.rparen);
-        return self.alloc(ast.Expr, .{ .Cast = .{ .expr = expr, .ty = ty, .kind = .normal, .loc = loc } });
+        return self.alloc(cst.Expr, .{ .Cast = .{ .expr = expr, .ty = ty, .kind = .normal, .loc = loc } });
     }
 
-    fn parseCastSigil(self: *Parser, expr: *ast.Expr) anyerror!*ast.Expr {
+    fn parseCastSigil(self: *Parser, expr: *cst.Expr) anyerror!*cst.Expr {
         const loc = self.currentLoc();
         const op_tag = self.current().tag;
-        const kind: ast.CastKind = switch (op_tag) {
+        const kind: cst.CastKind = switch (op_tag) {
             .caret => .bitcast,
             .b_or => .saturate,
             .percent => .wrap,
@@ -810,31 +810,31 @@ pub const Parser = struct {
         };
         self.advance();
         const ty = try self.parseExpr(0, .type);
-        return self.alloc(ast.Expr, .{ .Cast = .{ .expr = expr, .ty = ty, .kind = kind, .loc = loc } });
+        return self.alloc(cst.Expr, .{ .Cast = .{ .expr = expr, .ty = ty, .kind = kind, .loc = loc } });
     }
 
-    inline fn parseAwait(self: *Parser, expr: *ast.Expr) !*ast.Expr {
+    inline fn parseAwait(self: *Parser, expr: *cst.Expr) !*cst.Expr {
         const loc = self.currentLoc();
         try self.expect(.keyword_await);
-        return self.alloc(ast.Expr, .{ .Await = .{ .expr = expr, .loc = loc } });
+        return self.alloc(cst.Expr, .{ .Await = .{ .expr = expr, .loc = loc } });
     }
 
-    inline fn parseReturn(self: *Parser) !*ast.Expr {
+    inline fn parseReturn(self: *Parser) !*cst.Expr {
         const return_token = self.current();
         self.advance();
-        var value: ?*ast.Expr = null;
+        var value: ?*cst.Expr = null;
         if (!self.isStmtTerminator()) {
             value = try self.parseExpr(0, .expr);
         }
         if (!self.isStmtTerminator()) {
             try self.expect(.eos);
         }
-        const return_expr = ast.Return{ .value = value, .loc = return_token.loc };
-        return self.alloc(ast.Expr, .{ .Return = return_expr });
+        const return_expr = cst.Return{ .value = value, .loc = return_token.loc };
+        return self.alloc(cst.Expr, .{ .Return = return_expr });
     }
 
-    fn parseBlock(self: *Parser) !ast.Block {
-        var items = self.list(ast.Decl);
+    fn parseBlock(self: *Parser) !cst.Block {
+        var items = self.list(cst.Decl);
         const loc = try self.beginBrace();
         while (self.current().tag != .rcurly and self.current().tag != .eof) {
             const stmt = self.parseDecl() catch {
@@ -848,12 +848,12 @@ pub const Parser = struct {
         return .{ .items = items, .loc = loc };
     }
 
-    fn parseBlockExpr(self: *Parser) !*ast.Expr {
+    fn parseBlockExpr(self: *Parser) !*cst.Expr {
         const block = try self.parseBlock();
-        return self.alloc(ast.Expr, .{ .Block = block });
+        return self.alloc(cst.Expr, .{ .Block = block });
     }
 
-    inline fn parseExprOrBlock(self: *Parser) anyerror!*ast.Expr {
+    inline fn parseExprOrBlock(self: *Parser) anyerror!*cst.Expr {
         if (self.current().tag == .lcurly) {
             return try self.parseBlockExpr();
         } else {
@@ -861,10 +861,10 @@ pub const Parser = struct {
         }
     }
 
-    fn parseClosure(self: *Parser) !*ast.Expr {
+    fn parseClosure(self: *Parser) !*cst.Expr {
         const closure_start = self.currentLoc();
         try self.expect(.b_or);
-        var params = self.list(ast.Param);
+        var params = self.list(cst.Param);
         if (self.current().tag != .b_or) {
             const p = infixBp(.b_or).?; // {.l_bp, .r_bp}
             const r_bp = p[1];
@@ -873,8 +873,8 @@ pub const Parser = struct {
                 const param_start = self.currentLoc();
                 // Parse parameter pattern; do not consume '|' as bitwise-or.
                 const pat_expr = try self.parseExpr(barrier, .expr_no_struct);
-                var ty: ?*ast.Expr = null;
-                var value: ?*ast.Expr = null;
+                var ty: ?*cst.Expr = null;
+                var value: ?*cst.Expr = null;
                 if (self.current().tag == .colon) {
                     self.advance();
                     // Parse type but prevent consuming the closing '|' as bitwise-or.
@@ -898,8 +898,8 @@ pub const Parser = struct {
         }
         try self.expect(.b_or);
 
-        var return_type: ?*ast.Expr = null;
-        var body: *ast.Expr = undefined;
+        var return_type: ?*cst.Expr = null;
+        var body: *cst.Expr = undefined;
         if (self.current().tag == .lcurly) {
             body = try self.parseBlockExpr();
         } else {
@@ -915,48 +915,48 @@ pub const Parser = struct {
             }
         }
 
-        const closure = ast.Closure{ .params = params, .result_ty = return_type, .body = body, .loc = closure_start };
-        return self.alloc(ast.Expr, .{ .Closure = closure });
+        const closure = cst.Closure{ .params = params, .result_ty = return_type, .body = body, .loc = closure_start };
+        return self.alloc(cst.Expr, .{ .Closure = closure });
     }
 
-    fn parseCatchExpr(self: *Parser, expr: *ast.Expr) anyerror!*ast.Expr {
+    fn parseCatchExpr(self: *Parser, expr: *cst.Expr) anyerror!*cst.Expr {
         const catch_loc = self.currentLoc();
-        var binding: ?ast.Ident = null;
+        var binding: ?cst.Ident = null;
         if (self.current().tag == .b_or) {
             self.advance();
             const name = try self.expectIdent();
-            binding = ast.Ident{ .name = name.bytes, .loc = name.loc };
+            binding = cst.Ident{ .name = name.bytes, .loc = name.loc };
             try self.expect(.b_or);
         }
-        const handler: *ast.Expr = try self.parseExprOrBlock();
-        const catch_expr = ast.Catch{ .expr = expr, .binding = binding, .handler = handler, .loc = catch_loc };
-        return self.alloc(ast.Expr, .{ .Catch = catch_expr });
+        const handler: *cst.Expr = try self.parseExprOrBlock();
+        const catch_expr = cst.Catch{ .expr = expr, .binding = binding, .handler = handler, .loc = catch_loc };
+        return self.alloc(cst.Expr, .{ .Catch = catch_expr });
     }
 
-    fn parseIfExpr(self: *Parser) !*ast.Expr {
+    fn parseIfExpr(self: *Parser) !*cst.Expr {
         const if_start = self.currentLoc();
         self.advance(); // "if"
         const condition = try self.parseExpr(0, .expr_no_struct);
         const then_block = try self.parseBlock();
-        var else_block: ?*ast.Expr = null;
+        var else_block: ?*cst.Expr = null;
         if (self.current().tag == .keyword_else) {
             self.advance();
             else_block = try self.parseExprOrBlock();
         }
-        const if_expr = ast.If{
+        const if_expr = cst.If{
             .cond = condition,
             .then_block = then_block,
             .else_block = else_block,
             .loc = if_start,
         };
-        return try self.alloc(ast.Expr, .{ .If = if_expr });
+        return try self.alloc(cst.Expr, .{ .If = if_expr });
     }
 
-    fn parseWhileExpr(self: *Parser) !*ast.Expr {
+    fn parseWhileExpr(self: *Parser) !*cst.Expr {
         const while_start = self.currentLoc();
         self.advance(); // "while"
-        var condition: ?*ast.Expr = null;
-        var pattern: ?*ast.Pattern = null;
+        var condition: ?*cst.Expr = null;
+        var pattern: ?*cst.Pattern = null;
         switch (self.current().tag) {
             .keyword_is => {
                 self.advance();
@@ -970,7 +970,7 @@ pub const Parser = struct {
             },
         }
         const body = try self.parseBlock();
-        const while_expr = ast.While{
+        const while_expr = cst.While{
             .cond = condition,
             .pattern = pattern,
             .body = body,
@@ -978,10 +978,10 @@ pub const Parser = struct {
             .is_pattern = false,
             .label = null,
         };
-        return try self.alloc(ast.Expr, .{ .While = while_expr });
+        return try self.alloc(cst.Expr, .{ .While = while_expr });
     }
 
-    fn parseLabeledLoop(self: *Parser, label_name: []const u8) anyerror!*ast.Expr {
+    fn parseLabeledLoop(self: *Parser, label_name: []const u8) anyerror!*cst.Expr {
         return switch (self.current().tag) {
             .keyword_for => blk: {
                 var loop = try self.parseForExpr();
@@ -1008,34 +1008,34 @@ pub const Parser = struct {
         };
     }
 
-    fn parseForExpr(self: *Parser) !*ast.Expr {
+    fn parseForExpr(self: *Parser) !*cst.Expr {
         const for_start = self.currentLoc();
         self.advance(); // "for"
         const pattern = try self.parsePattern();
         try self.expect(.keyword_in);
         const iterable = try self.parseExpr(0, .expr_no_struct);
         const body = try self.parseBlock();
-        const for_expr = ast.For{
+        const for_expr = cst.For{
             .pattern = pattern,
             .iterable = iterable,
             .body = body,
             .loc = for_start,
         };
-        return try self.alloc(ast.Expr, .{ .For = for_expr });
+        return try self.alloc(cst.Expr, .{ .For = for_expr });
     }
 
-    fn parseMatchExpr(self: *Parser) !*ast.Expr {
+    fn parseMatchExpr(self: *Parser) !*cst.Expr {
         const start = self.currentLoc();
         self.advance(); // "match"
 
         const scrutinee = try self.parseExpr(0, .expr_no_struct);
 
         try self.expect(.lcurly);
-        var arms = self.list(ast.MatchArm);
+        var arms = self.list(cst.MatchArm);
         while (self.current().tag != .rcurly and self.current().tag != .eof) {
             const pat_expr = try self.parsePattern();
 
-            var guard: ?*ast.Expr = null;
+            var guard: ?*cst.Expr = null;
             if (self.current().tag == .keyword_if) {
                 self.advance();
                 guard = try self.parseExpr(0, .expr_no_struct);
@@ -1043,7 +1043,7 @@ pub const Parser = struct {
 
             try self.expect(.fatarrow);
 
-            const body: *ast.Expr = try self.parseExprOrBlock();
+            const body: *cst.Expr = try self.parseExprOrBlock();
 
             _ = self.consumeIf(.comma);
 
@@ -1051,40 +1051,40 @@ pub const Parser = struct {
         }
         try self.expect(.rcurly);
 
-        return try self.alloc(ast.Expr, .{ .Match = .{ .expr = scrutinee, .arms = arms, .loc = start } });
+        return try self.alloc(cst.Expr, .{ .Match = .{ .expr = scrutinee, .arms = arms, .loc = start } });
     }
 
     //=================================================================
     // Patterns
     // =================================================================
 
-    fn parsePattern(self: *Parser) !*ast.Pattern {
+    fn parsePattern(self: *Parser) !*cst.Pattern {
         return try self.parsePatOr();
     }
 
-    fn parsePatOr(self: *Parser) !*ast.Pattern {
+    fn parsePatOr(self: *Parser) !*cst.Pattern {
         const current_loc = self.currentLoc();
         const first = try self.parsePatRange();
         if (self.current().tag != .b_or) return first; // '|' token; you already use .b_or for '|'
 
-        var alts = self.list(*ast.Pattern);
+        var alts = self.list(*cst.Pattern);
         try alts.append(first);
         while (self.current().tag == .b_or) {
             self.advance();
             try alts.append(try self.parsePatRange());
         }
-        const or_pat = ast.OrPattern{ .loc = current_loc, .alts = alts };
-        return try self.alloc(ast.Pattern, .{ .Or = or_pat });
+        const or_pat = cst.OrPattern{ .loc = current_loc, .alts = alts };
+        return try self.alloc(cst.Pattern, .{ .Or = or_pat });
     }
 
-    fn parsePatRange(self: *Parser) !*ast.Pattern {
+    fn parsePatRange(self: *Parser) !*cst.Pattern {
         // Handle prefix/open ranges first:  ..X  or  ..=X
         if (self.current().tag == .dotdot or self.current().tag == .dotdoteq) {
             const start_loc = self.currentLoc();
             const incl = (self.current().tag == .dotdoteq);
             self.advance();
             const end = try self.parseConstExprForRangeEnd();
-            return try self.alloc(ast.Pattern, .{ .Range = .{
+            return try self.alloc(cst.Pattern, .{ .Range = .{
                 .loc = start_loc,
                 .start = null,
                 .end = end,
@@ -1103,7 +1103,7 @@ pub const Parser = struct {
 
             const rhs = try self.parseConstExprForRangeEnd();
             const lhs_expr = try self.patternToConstExpr(left); // convert left pattern to a const expr
-            return try self.alloc(ast.Pattern, .{ .Range = .{
+            return try self.alloc(cst.Pattern, .{ .Range = .{
                 .loc = loc,
                 .start = lhs_expr,
                 .end = rhs,
@@ -1114,14 +1114,14 @@ pub const Parser = struct {
         return left;
     }
 
-    fn patternToConstExpr(self: *Parser, pat: *ast.Pattern) !*ast.Expr {
+    fn patternToConstExpr(self: *Parser, pat: *cst.Pattern) !*cst.Expr {
         return switch (pat.*) {
             .Literal => |lit_expr_ptr| lit_expr_ptr, // you already store the literal as an *ast.Expr
             .Path => |p| try self.pathToConstExpr(p.segments),
             .Binding => |b| blk: {
                 // Turn binding name into an expr; the checker can complain if it's not const.
-                const ident = ast.Ident{ .name = b.name, .loc = b.loc };
-                break :blk try self.alloc(ast.Expr, .{ .Ident = ident });
+                const ident = cst.Ident{ .name = b.name, .loc = b.loc };
+                break :blk try self.alloc(cst.Expr, .{ .Ident = ident });
             },
             .Wildcard => {
                 self.errorNote(self.currentLoc(), "'_' is not valid as a constant in a range pattern", .{}, null, "use a literal, constant path, or a binding name", .{});
@@ -1135,7 +1135,7 @@ pub const Parser = struct {
         };
     }
 
-    fn patternToBindingName(self: *Parser, pat: *ast.Pattern) ![]const u8 {
+    fn patternToBindingName(self: *Parser, pat: *cst.Pattern) ![]const u8 {
         return switch (pat.*) {
             .Binding => pat.Binding.name,
             .Path => blk: {
@@ -1167,7 +1167,7 @@ pub const Parser = struct {
         };
     }
 
-    fn parsePatAt(self: *Parser) !*ast.Pattern {
+    fn parsePatAt(self: *Parser) !*cst.Pattern {
         // binding '@' pattern: IDENT '@' subpattern
         // But IDENT alone might be a Path/Binding; we need a lookahead.
         const p = try self.parsePatPrimary();
@@ -1179,18 +1179,18 @@ pub const Parser = struct {
             const sub = try self.parsePatAt(); // right-assoc
             // Extract binder name if `p` is a simple Path/Binding; otherwise checker will error
             const name = try self.patternToBindingName(p);
-            const at = ast.AtPattern{ .loc = current_loc, .binder = name, .pattern = sub };
-            return try self.alloc(ast.Pattern, .{ .At = at });
+            const at = cst.AtPattern{ .loc = current_loc, .binder = name, .pattern = sub };
+            return try self.alloc(cst.Pattern, .{ .At = at });
         }
         return p;
     }
 
-    fn parsePatPrimary(self: *Parser) !*ast.Pattern {
+    fn parsePatPrimary(self: *Parser) !*cst.Pattern {
         switch (self.current().tag) {
             // .underscore_like => { /* see note below */ },
             .char_literal, .string_literal, .raw_string_literal, .byte_literal, .byte_char_literal, .byte_string_literal, .raw_byte_string_literal, .integer_literal, .float_literal, .keyword_true, .keyword_false => {
                 const lit = try self.nud(self.current().tag, .expr_no_struct); // reuse literal expr nud
-                return try self.alloc(ast.Pattern, .{ .Literal = lit });
+                return try self.alloc(cst.Pattern, .{ .Literal = lit });
             },
             // .star => { // *pat
             //     self.advance();
@@ -1204,13 +1204,13 @@ pub const Parser = struct {
                 const incl = (self.current().tag == .dotdoteq);
                 self.advance();
                 const end = try self.parseConstExprForRangeEnd();
-                const range = ast.RangePattern{
+                const range = cst.RangePattern{
                     .loc = start_loc,
                     .start = null,
                     .end = end,
                     .inclusive_right = incl,
                 };
-                return try self.alloc(ast.Pattern, .{ .Range = range });
+                return try self.alloc(cst.Pattern, .{ .Range = range });
             },
             .identifier => return try self.parsePathishPattern(),
             else => {
@@ -1227,10 +1227,10 @@ pub const Parser = struct {
         }
     }
 
-    fn parseTuplePattern(self: *Parser) anyerror!*ast.Pattern {
+    fn parseTuplePattern(self: *Parser) anyerror!*cst.Pattern {
         const loc = self.currentLoc();
         try self.expect(.lparen);
-        var elems = self.list(*ast.Pattern);
+        var elems = self.list(*cst.Pattern);
         if (self.current().tag != .rparen) {
             while (true) {
                 try elems.append(try self.parsePattern());
@@ -1238,13 +1238,13 @@ pub const Parser = struct {
             }
         }
         try self.expect(.rparen);
-        const tuple_pat = ast.TuplePattern{ .loc = loc, .elems = elems };
-        return try self.alloc(ast.Pattern, .{ .Tuple = tuple_pat });
+        const tuple_pat = cst.TuplePattern{ .loc = loc, .elems = elems };
+        return try self.alloc(cst.Pattern, .{ .Tuple = tuple_pat });
     }
 
-    fn parsePathishPattern(self: *Parser) anyerror!*ast.Pattern {
+    fn parsePathishPattern(self: *Parser) anyerror!*cst.Pattern {
         // Collect a dotted path: Foo.Bar.Baz
-        var segs = self.list(ast.Ident);
+        var segs = self.list(cst.Ident);
         while (true) {
             const tok = self.current();
             try self.expect(.identifier);
@@ -1259,7 +1259,7 @@ pub const Parser = struct {
             .lparen => { // tuple/variant data
                 const loc = self.currentLoc();
                 self.advance();
-                var elems = self.list(*ast.Pattern);
+                var elems = self.list(*cst.Pattern);
                 if (self.current().tag != .rparen) {
                     while (true) {
                         try elems.append(try self.parsePattern());
@@ -1271,12 +1271,12 @@ pub const Parser = struct {
                     // Could be tuple pattern without a variant; but in Rust, plain tuple pattern has no head.
                     // In practice, treat as VariantTuple and let checker resolve head=path
                 }
-                const tuple_pat = ast.VariantTuplePattern{ .loc = loc, .path = path, .elems = elems };
-                return try self.alloc(ast.Pattern, .{ .VariantTuple = tuple_pat });
+                const tuple_pat = cst.VariantTuplePattern{ .loc = loc, .path = path, .elems = elems };
+                return try self.alloc(cst.Pattern, .{ .VariantTuple = tuple_pat });
             },
             .lcurly => { // struct/variant struct data; supports {..., ..}
                 self.advance();
-                var fields = self.list(ast.StructPatternField);
+                var fields = self.list(cst.StructPatternField);
                 var has_rest = false;
                 const pat_loc = self.currentLoc();
                 while (self.current().tag != .rcurly and self.current().tag != .eof) {
@@ -1291,14 +1291,14 @@ pub const Parser = struct {
                     const name = self.slice(name_tok);
                     const loc = name_tok.loc;
 
-                    var pat: *ast.Pattern = undefined;
+                    var pat: *cst.Pattern = undefined;
                     if (self.current().tag == .colon) {
                         self.advance();
                         pat = try self.parsePattern();
                     } else {
                         // field shorthand: `name` == bind name
                         pat = try self.alloc(
-                            ast.Pattern,
+                            cst.Pattern,
                             .{ .Binding = .{ .loc = loc, .name = name } },
                         );
                     }
@@ -1309,7 +1309,7 @@ pub const Parser = struct {
                 try self.expect(.rcurly);
                 // disambiguation left to checker: path may be a struct type or enum variant
                 return try self.alloc(
-                    ast.Pattern,
+                    cst.Pattern,
                     .{ .VariantStruct = .{ .loc = pat_loc, .path = path, .fields = fields, .has_rest = has_rest } },
                 );
             },
@@ -1319,7 +1319,7 @@ pub const Parser = struct {
                 self.advance();
                 const rhs = try self.parseConstExprForRangeEnd();
                 const start_expr = try self.pathToConstExpr(path);
-                return try self.alloc(ast.Pattern, .{ .Range = .{
+                return try self.alloc(cst.Pattern, .{ .Range = .{
                     .loc = loc,
                     .start = start_expr,
                     .end = rhs,
@@ -1329,27 +1329,27 @@ pub const Parser = struct {
             else => {
                 // bare identifier/path: binding or const-path pattern; let checker decide
                 if (path.items.len == 1 and std.mem.eql(u8, path.items[0].name, "_")) {
-                    return try self.alloc(ast.Pattern, .{ .Wildcard = .{ .loc = path.items[0].loc } });
+                    return try self.alloc(cst.Pattern, .{ .Wildcard = .{ .loc = path.items[0].loc } });
                 }
                 // default to Binding; checker can upgrade to const-path pattern if name resolves to a const
                 if (path.items.len == 1) {
-                    return try self.alloc(ast.Pattern, .{
+                    return try self.alloc(cst.Pattern, .{
                         .Binding = .{ .name = path.items[0].name, .loc = path.items[0].loc },
                     });
                 }
-                return try self.alloc(ast.Pattern, .{
+                return try self.alloc(cst.Pattern, .{
                     .Path = .{ .segments = path, .loc = path.items[0].loc },
                 });
             },
         }
     }
 
-    fn parseSlicePattern(self: *Parser) anyerror!*ast.Pattern {
+    fn parseSlicePattern(self: *Parser) anyerror!*cst.Pattern {
         try self.expect(.lsquare);
-        var elems = self.list(*ast.Pattern);
+        var elems = self.list(*cst.Pattern);
         var has_rest = false;
         var rest_index: usize = 0;
-        var rest_binding: ?*ast.Pattern = null;
+        var rest_binding: ?*cst.Pattern = null;
         const loc = self.currentLoc();
 
         if (self.current().tag != .rsquare) {
@@ -1367,7 +1367,7 @@ pub const Parser = struct {
                         self.advance();
                         if (!std.mem.eql(u8, name, "_")) {
                             rest_binding = try self.alloc(
-                                ast.Pattern,
+                                cst.Pattern,
                                 .{ .Binding = .{ .name = name, .loc = name_tok.loc } },
                             );
                         }
@@ -1382,7 +1382,7 @@ pub const Parser = struct {
         }
 
         try self.expect(.rsquare);
-        return try self.alloc(ast.Pattern, .{
+        return try self.alloc(cst.Pattern, .{
             .Slice = .{
                 .loc = loc,
                 .elems = elems,
@@ -1393,17 +1393,17 @@ pub const Parser = struct {
         });
     }
 
-    fn parseConstExprForRangeEnd(self: *Parser) !*ast.Expr {
+    fn parseConstExprForRangeEnd(self: *Parser) !*cst.Expr {
         // use normal expr, semantic checker will ensure "const evaluable" and no side effects
         return self.parseExpr(0, .expr_no_struct);
     }
 
-    fn pathToConstExpr(self: *Parser, path: std.array_list.Managed(ast.Ident)) !*ast.Expr {
+    fn pathToConstExpr(self: *Parser, path: std.array_list.Managed(cst.Ident)) !*cst.Expr {
         // Build an ast.Expr Ident/Field chain from the path for the checker to resolve.
-        var expr: *ast.Expr = try self.alloc(ast.Expr, .{ .Ident = path.items[0] });
+        var expr: *cst.Expr = try self.alloc(cst.Expr, .{ .Ident = path.items[0] });
         var i: usize = 1;
         while (i < path.items.len) : (i += 1) {
-            expr = try self.alloc(ast.Expr, .{ .Field = .{
+            expr = try self.alloc(cst.Expr, .{ .Field = .{
                 .parent = expr,
                 .field = path.items[i].name,
                 .is_tuple = false,
@@ -1417,7 +1417,7 @@ pub const Parser = struct {
     // Types (building blocks)
     //=================================================================
 
-    fn parseStructField(self: *Parser) !ast.StructField {
+    fn parseStructField(self: *Parser) !cst.StructField {
         const start = self.currentLoc();
         // Optional visibility modifier (currently ignored in AST)
         if (self.current().tag == .keyword_pub) {
@@ -1431,8 +1431,8 @@ pub const Parser = struct {
         return .{ .name = name.bytes, .ty = ty, .value = value, .loc = start, .attrs = field_attrs };
     }
 
-    fn parseStructFieldList(self: *Parser, end_tag: Token.Tag) !std.array_list.Managed(ast.StructField) {
-        var fields = self.list(ast.StructField);
+    fn parseStructFieldList(self: *Parser, end_tag: Token.Tag) !std.array_list.Managed(cst.StructField) {
+        var fields = self.list(cst.StructField);
         while (self.current().tag != end_tag and self.current().tag != .eof) {
             try fields.append(try self.parseStructField());
             if (!self.consumeIf(.comma)) break;
@@ -1445,19 +1445,19 @@ pub const Parser = struct {
         self: *Parser,
         comptime tag: Token.Tag,
         comptime is_extern: bool,
-    ) !*ast.Expr {
+    ) !*cst.Expr {
         const struct_start = self.currentLoc();
         self.advance(); // "struct" / "union"
         try self.expect(.lcurly);
         const fields = try self.parseStructFieldList(.rcurly);
-        const struct_type = ast.StructLikeType{ .is_extern = is_extern, .fields = fields, .loc = struct_start };
+        const struct_type = cst.StructLikeType{ .is_extern = is_extern, .fields = fields, .loc = struct_start };
         if (tag == .keyword_struct) {
-            return self.alloc(ast.Expr, .{ .BuiltinType = .{ .Struct = struct_type } });
+            return self.alloc(cst.Expr, .{ .BuiltinType = .{ .Struct = struct_type } });
         }
-        return self.alloc(ast.Expr, .{ .BuiltinType = .{ .Union = struct_type } });
+        return self.alloc(cst.Expr, .{ .BuiltinType = .{ .Union = struct_type } });
     }
 
-    inline fn parsePointerType(self: *Parser) !*ast.Expr {
+    inline fn parsePointerType(self: *Parser) !*cst.Expr {
         const start_token = self.current();
         self.advance(); // "*"
         var is_const = false;
@@ -1466,63 +1466,63 @@ pub const Parser = struct {
             self.advance();
         }
         const elem_type = try self.parseExpr(0, .type);
-        const ptr_type = ast.PointerType{ .elem = elem_type, .is_const = is_const, .loc = start_token.loc };
-        return try self.alloc(ast.Expr, .{ .BuiltinType = .{ .Pointer = ptr_type } });
+        const ptr_type = cst.PointerType{ .elem = elem_type, .is_const = is_const, .loc = start_token.loc };
+        return try self.alloc(cst.Expr, .{ .BuiltinType = .{ .Pointer = ptr_type } });
     }
 
-    inline fn parseOptionalType(self: *Parser) !*ast.Expr {
+    inline fn parseOptionalType(self: *Parser) !*cst.Expr {
         const start_token = self.current();
         self.advance(); // "?"
         const elem_type = try self.parseExpr(0, .type);
-        const opt_type = ast.UnaryType{ .elem = elem_type, .loc = start_token.loc };
-        return try self.alloc(ast.Expr, .{ .BuiltinType = .{ .Optional = opt_type } });
+        const opt_type = cst.UnaryType{ .elem = elem_type, .loc = start_token.loc };
+        return try self.alloc(cst.Expr, .{ .BuiltinType = .{ .Optional = opt_type } });
     }
 
-    inline fn parseComplexType(self: *Parser) !*ast.Expr {
+    inline fn parseComplexType(self: *Parser) !*cst.Expr {
         const start = try self.beginKeywordParen(.keyword_complex);
         const elem_type = try self.parseExpr(0, .type);
         try self.endParen();
-        const complex_type = ast.ComplexType{ .elem = elem_type, .loc = start };
-        return try self.alloc(ast.Expr, .{ .BuiltinType = .{ .Complex = complex_type } });
+        const complex_type = cst.ComplexType{ .elem = elem_type, .loc = start };
+        return try self.alloc(cst.Expr, .{ .BuiltinType = .{ .Complex = complex_type } });
     }
 
-    inline fn parseSimdType(self: *Parser) !*ast.Expr {
+    inline fn parseSimdType(self: *Parser) !*cst.Expr {
         const start = try self.beginKeywordParen(.keyword_simd);
         const elem_type = try self.parseExpr(0, .type);
         try self.expect(.comma);
         const size_expr = try self.parseExpr(0, .expr);
         try self.endParen();
-        const simd_type = ast.SimdType{ .elem = elem_type, .lanes = size_expr, .loc = start };
-        return try self.alloc(ast.Expr, .{ .BuiltinType = .{ .Simd = simd_type } });
+        const simd_type = cst.SimdType{ .elem = elem_type, .lanes = size_expr, .loc = start };
+        return try self.alloc(cst.Expr, .{ .BuiltinType = .{ .Simd = simd_type } });
     }
 
-    inline fn parseTensorType(self: *Parser) !*ast.Expr {
+    inline fn parseTensorType(self: *Parser) !*cst.Expr {
         const start = try self.beginKeywordParen(.keyword_tensor);
         const first = try self.parseExpr(0, .expr);
         try self.expect(.comma);
         var shape = try self.finishParsingExprList(.rparen, first);
         const elem_type = shape.pop().?;
-        const tensor_type = ast.TensorType{ .elem = elem_type, .shape = shape, .loc = start };
-        return try self.alloc(ast.Expr, .{ .BuiltinType = .{ .Tensor = tensor_type } });
+        const tensor_type = cst.TensorType{ .elem = elem_type, .shape = shape, .loc = start };
+        return try self.alloc(cst.Expr, .{ .BuiltinType = .{ .Tensor = tensor_type } });
     }
 
     //=================================================================
     // Array-like / Map (type or literal)
     //=================================================================
 
-    fn parseMapTypeOrLiteral(self: *Parser, key_expr: *ast.Expr, start_loc: Loc) !*ast.Expr {
+    fn parseMapTypeOrLiteral(self: *Parser, key_expr: *cst.Expr, start_loc: Loc) !*cst.Expr {
         // caller consumed ":" already
         const value_type = try self.parseExpr(0, .type);
         return switch (self.current().tag) {
             .rsquare => blk: {
                 try self.expect(.rsquare);
-                const map_type = ast.MapType{ .key = key_expr, .value = value_type, .loc = start_loc };
-                break :blk try self.alloc(ast.Expr, .{ .BuiltinType = .{ .MapType = map_type } });
+                const map_type = cst.MapType{ .key = key_expr, .value = value_type, .loc = start_loc };
+                break :blk try self.alloc(cst.Expr, .{ .BuiltinType = .{ .MapType = map_type } });
             },
             .comma => blk: {
                 // literal form: [key: value, ...]
                 self.advance();
-                var entries = self.list(ast.KeyValue);
+                var entries = self.list(cst.KeyValue);
                 try entries.append(.{ .key = key_expr, .value = value_type, .loc = start_loc });
                 while (self.current().tag != .rsquare and self.current().tag != .eof) {
                     const k = try self.parseExpr(0, .expr);
@@ -1532,8 +1532,8 @@ pub const Parser = struct {
                     if (!self.consumeIf(.comma)) break;
                 }
                 try self.expect(.rsquare);
-                const map = ast.Map{ .entries = entries, .loc = start_loc };
-                break :blk try self.alloc(ast.Expr, .{ .Map = map });
+                const map = cst.Map{ .entries = entries, .loc = start_loc };
+                break :blk try self.alloc(cst.Expr, .{ .Map = map });
             },
             else => {
                 self.errorNote(
@@ -1549,7 +1549,7 @@ pub const Parser = struct {
         };
     }
 
-    fn parseArrayLike(self: *Parser) !*ast.Expr {
+    fn parseArrayLike(self: *Parser) !*cst.Expr {
         const start_token = self.current();
         self.advance(); // "["
 
@@ -1559,13 +1559,13 @@ pub const Parser = struct {
                 self.advance(); // "]"
                 switch (self.current().tag) {
                     .eos, .rcurly, .rparen, .rsquare, .comma, .colon => {
-                        const array = ast.Array{ .elems = self.list(*ast.Expr), .loc = start_token.loc };
-                        break :blk try self.alloc(ast.Expr, .{ .Array = array });
+                        const array = cst.Array{ .elems = self.list(*cst.Expr), .loc = start_token.loc };
+                        break :blk try self.alloc(cst.Expr, .{ .Array = array });
                     },
                     else => {
                         const elem_type = try self.parseExpr(0, .type);
-                        const slice_type = ast.UnaryType{ .elem = elem_type, .loc = start_token.loc };
-                        break :blk try self.alloc(ast.Expr, .{ .BuiltinType = .{ .Slice = slice_type } });
+                        const slice_type = cst.UnaryType{ .elem = elem_type, .loc = start_token.loc };
+                        break :blk try self.alloc(cst.Expr, .{ .BuiltinType = .{ .Slice = slice_type } });
                     },
                 }
             },
@@ -1575,8 +1575,8 @@ pub const Parser = struct {
                 self.advance();
                 try self.expect(.rsquare);
                 const elem_type = try self.parseExpr(0, .type);
-                const dyn_array_type = ast.UnaryType{ .elem = elem_type, .loc = start_token.loc };
-                break :blk try self.alloc(ast.Expr, .{ .BuiltinType = .{ .DynArray = dyn_array_type } });
+                const dyn_array_type = cst.UnaryType{ .elem = elem_type, .loc = start_token.loc };
+                break :blk try self.alloc(cst.Expr, .{ .BuiltinType = .{ .DynArray = dyn_array_type } });
             },
 
             // starts with expression -> could be sized array type "[N]T", map "[K:V]" / map literal, or array literal "[a, b, ...]"
@@ -1587,8 +1587,8 @@ pub const Parser = struct {
                         // "[N]T" (array type)
                         self.advance();
                         const elem_type = try self.parseExpr(0, .type);
-                        const array_type = ast.ArrayType{ .elem = elem_type, .size = first_expr, .loc = start_token.loc };
-                        break :blk try self.alloc(ast.Expr, .{ .BuiltinType = .{ .Array = array_type } });
+                        const array_type = cst.ArrayType{ .elem = elem_type, .size = first_expr, .loc = start_token.loc };
+                        break :blk try self.alloc(cst.Expr, .{ .BuiltinType = .{ .Array = array_type } });
                     },
                     .colon => {
                         // map type or literal "[K:V]" or "[k:v, ...]"
@@ -1599,8 +1599,8 @@ pub const Parser = struct {
                         // array literal "[a, b, ...]"
                         self.advance();
                         const elements = try self.finishParsingExprList(.rsquare, first_expr);
-                        const array = ast.Array{ .elems = elements, .loc = start_token.loc };
-                        break :blk try self.alloc(ast.Expr, .{ .Array = array });
+                        const array = cst.Array{ .elems = elements, .loc = start_token.loc };
+                        break :blk try self.alloc(cst.Expr, .{ .Array = array });
                     },
                     else => {
                         self.errorNote(
@@ -1618,23 +1618,23 @@ pub const Parser = struct {
         };
     }
 
-    fn parseParenExpr(self: *Parser) !*ast.Expr {
+    fn parseParenExpr(self: *Parser) !*cst.Expr {
         const start_token = self.current();
         self.advance(); // "("
         return switch (self.current().tag) {
             .rparen => blk: {
                 // empty tuple "()"
                 self.advance();
-                const tuple = ast.Tuple{ .elems = self.list(*ast.Expr), .loc = start_token.loc };
-                break :blk try self.alloc(ast.Expr, .{ .Tuple = tuple });
+                const tuple = cst.Tuple{ .elems = self.list(*cst.Expr), .loc = start_token.loc };
+                break :blk try self.alloc(cst.Expr, .{ .Tuple = tuple });
             },
             else => blk: {
                 const expr = try self.parseExpr(0, .expr);
                 if (self.current().tag == .comma) {
                     self.advance();
                     const elements = try self.finishParsingExprList(.rparen, expr);
-                    const tuple = ast.Tuple{ .elems = elements, .loc = start_token.loc };
-                    break :blk try self.alloc(ast.Expr, .{ .Tuple = tuple });
+                    const tuple = cst.Tuple{ .elems = elements, .loc = start_token.loc };
+                    break :blk try self.alloc(cst.Expr, .{ .Tuple = tuple });
                 } else {
                     try self.expect(.rparen);
                     break :blk expr;
@@ -1647,14 +1647,14 @@ pub const Parser = struct {
     // Functions
     //=================================================================
 
-    inline fn parseOptionalReturnType(self: *Parser) !?*ast.Expr {
+    inline fn parseOptionalReturnType(self: *Parser) !?*cst.Expr {
         return switch (self.current().tag) {
             .lcurly, .eos => null,
             else => try self.parseExpr(0, .type),
         };
     }
 
-    fn parseExternDecl(self: *Parser) !*ast.Expr {
+    fn parseExternDecl(self: *Parser) !*cst.Expr {
         self.advance(); // "extern"
         switch (self.current().tag) {
             .keyword_async => {
@@ -1692,18 +1692,18 @@ pub const Parser = struct {
         }
     }
 
-    fn parseFunctionLike(self: *Parser, tag: Token.Tag, comptime is_extern: bool, is_async: bool) !*ast.Expr {
+    fn parseFunctionLike(self: *Parser, tag: Token.Tag, comptime is_extern: bool, is_async: bool) !*cst.Expr {
         const start_token = self.current();
         self.advance(); // "proc" or "fn"
         try self.expect(.lparen);
 
-        var params = self.list(ast.Param);
+        var params = self.list(cst.Param);
         while (self.current().tag != .rparen and self.current().tag != .eof) {
             const param_start = self.currentLoc();
             const param_attrs = try self.parseOptionalAttributes();
-            var pat: ?*ast.Expr = try self.parseExpr(0, .expr);
-            var ty: *ast.Expr = undefined;
-            var value: ?*ast.Expr = null;
+            var pat: ?*cst.Expr = try self.parseExpr(0, .expr);
+            var ty: *cst.Expr = undefined;
+            var value: ?*cst.Expr = null;
 
             if (self.current().tag == .colon) {
                 self.advance();
@@ -1733,9 +1733,9 @@ pub const Parser = struct {
         }
         try self.expect(.rparen);
 
-        const return_type: ?*ast.Expr = try self.parseOptionalReturnType();
+        const return_type: ?*cst.Expr = try self.parseOptionalReturnType();
 
-        var body: ?ast.Block = null;
+        var body: ?cst.Block = null;
         var raw_asm: ?[]const u8 = null;
         if (self.current().tag == .lcurly) {
             body = try self.parseBlock();
@@ -1746,7 +1746,7 @@ pub const Parser = struct {
             self.advance();
         }
 
-        const func = ast.Function{
+        const func = cst.Function{
             .is_proc = (tag == .keyword_proc),
             .params = params,
             .result_ty = return_type,
@@ -1757,42 +1757,42 @@ pub const Parser = struct {
             .is_extern = is_extern,
             .raw_asm = raw_asm,
         };
-        return try self.alloc(ast.Expr, .{ .Function = func });
+        return try self.alloc(cst.Expr, .{ .Function = func });
     }
 
     //=================================================================
     // Metaprogramming: comptime, code, insert, mlir
     //=================================================================
 
-    fn parseComptime(self: *Parser) !*ast.Expr {
+    fn parseComptime(self: *Parser) !*cst.Expr {
         self.advance(); // "comptime"
         if (self.current().tag == .lcurly) {
             const blk = try self.parseBlock();
-            return try self.alloc(ast.Expr, .{ .Comptime = .{ .Block = blk } });
+            return try self.alloc(cst.Expr, .{ .Comptime = .{ .Block = blk } });
         } else {
             const expr = try self.parseExpr(0, .expr);
-            return try self.alloc(ast.Expr, .{ .Comptime = .{ .Expr = expr } });
+            return try self.alloc(cst.Expr, .{ .Comptime = .{ .Expr = expr } });
         }
     }
 
-    fn parseCodeBlock(self: *Parser) !*ast.Expr {
+    fn parseCodeBlock(self: *Parser) !*cst.Expr {
         const start = self.currentLoc();
         self.advance(); // "code"
         const blk = try self.parseBlock();
-        return try self.alloc(ast.Expr, .{ .Code = .{ .block = blk, .loc = start } });
+        return try self.alloc(cst.Expr, .{ .Code = .{ .block = blk, .loc = start } });
     }
 
-    fn parseInsert(self: *Parser) !*ast.Expr {
+    fn parseInsert(self: *Parser) !*cst.Expr {
         const start = self.currentLoc();
         self.advance(); // "insert"
         const expr = try self.parseExpr(0, .expr);
-        return try self.alloc(ast.Expr, .{ .Insert = .{ .expr = expr, .loc = start } });
+        return try self.alloc(cst.Expr, .{ .Insert = .{ .expr = expr, .loc = start } });
     }
 
-    fn parseMlir(self: *Parser) !*ast.Expr {
+    fn parseMlir(self: *Parser) !*cst.Expr {
         const start = self.currentLoc();
         self.advance(); // "mlir"
-        var kind: ast.MlirKind = .Module;
+        var kind: cst.MlirKind = .Module;
         switch (self.current().tag) {
             .identifier => {
                 const kw = self.slice(self.current());
@@ -1813,18 +1813,18 @@ pub const Parser = struct {
         const tok = self.current();
         const raw = self.slice(tok);
         try self.expect(.mlir_content);
-        return try self.alloc(ast.Expr, .{ .Mlir = .{ .kind = kind, .text = raw, .loc = start } });
+        return try self.alloc(cst.Expr, .{ .Mlir = .{ .kind = kind, .text = raw, .loc = start } });
     }
 
     //=================================================================
     // Enums / Variants
     //=================================================================
 
-    inline fn parseEnumType(self: *Parser, comptime is_extern: bool) !*ast.Expr {
+    inline fn parseEnumType(self: *Parser, comptime is_extern: bool) !*cst.Expr {
         const enum_start = self.currentLoc();
         self.advance(); // "enum"
 
-        var backing_type: ?*ast.Expr = null;
+        var backing_type: ?*cst.Expr = null;
         if (self.current().tag == .lparen) {
             self.advance();
             backing_type = try self.parseExpr(0, .type);
@@ -1833,7 +1833,7 @@ pub const Parser = struct {
 
         try self.expect(.lcurly);
 
-        var fields = self.list(ast.EnumField);
+        var fields = self.list(cst.EnumField);
         while (self.current().tag != .rcurly and self.current().tag != .eof) {
             const field_start = self.currentLoc();
             const field_attrs = try self.parseOptionalAttributes();
@@ -1844,25 +1844,25 @@ pub const Parser = struct {
         }
 
         try self.expect(.rcurly);
-        const enum_type = ast.EnumType{ .is_extern = is_extern, .fields = fields, .discriminant = backing_type, .loc = enum_start, .attrs = null };
-        return self.alloc(ast.Expr, .{ .BuiltinType = .{ .Enum = enum_type } });
+        const enum_type = cst.EnumType{ .is_extern = is_extern, .fields = fields, .discriminant = backing_type, .loc = enum_start, .attrs = null };
+        return self.alloc(cst.Expr, .{ .BuiltinType = .{ .Enum = enum_type } });
     }
 
-    inline fn parseErrorType(self: *Parser) !*ast.Expr {
+    inline fn parseErrorType(self: *Parser) !*cst.Expr {
         return self.parseVariantLikeType(true);
     }
 
-    inline fn parseVariantType(self: *Parser) !*ast.Expr {
+    inline fn parseVariantType(self: *Parser) !*cst.Expr {
         return self.parseVariantLikeType(false);
     }
 
-    fn parseVariantLikeType(self: *Parser, comptime is_error: bool) !*ast.Expr {
+    fn parseVariantLikeType(self: *Parser, comptime is_error: bool) !*cst.Expr {
         // Rust-like enum with payloads
         const variant_start = self.currentLoc();
         self.advance(); // "variant"
         try self.expect(.lcurly);
 
-        var fields = self.list(ast.VariantField);
+        var fields = self.list(cst.VariantField);
 
         while (self.current().tag != .rcurly and self.current().tag != .eof) {
             const case_start = self.currentLoc();
@@ -1874,7 +1874,7 @@ pub const Parser = struct {
                 .lparen => {
                     // Tuple-like payload
                     self.advance();
-                    var types = self.list(*ast.Expr);
+                    var types = self.list(*cst.Expr);
                     if (self.current().tag != .rparen) {
                         while (true) {
                             try types.append(try self.parseExpr(0, .type));
@@ -1905,9 +1905,9 @@ pub const Parser = struct {
         }
 
         try self.expect(.rcurly);
-        const variant_type = ast.VariantLikeType{ .fields = fields, .loc = variant_start };
+        const variant_type = cst.VariantLikeType{ .fields = fields, .loc = variant_start };
         if (is_error)
-            return self.alloc(ast.Expr, .{ .BuiltinType = .{ .Error = variant_type } });
-        return self.alloc(ast.Expr, .{ .BuiltinType = .{ .Variant = variant_type } });
+            return self.alloc(cst.Expr, .{ .BuiltinType = .{ .Error = variant_type } });
+        return self.alloc(cst.Expr, .{ .BuiltinType = .{ .Variant = variant_type } });
     }
 };

@@ -24,13 +24,26 @@ pub fn main() !void {
     defer diags.deinit();
 
     var parser = compiler.parser.Parser.init(allocator, source0, &diags);
-    const ast = try parser.parse();
+    var cst_program = try parser.parse();
 
+    // Run checker/desugarer stage
+    // Run pipeline: lower (with future desugaring), bind, check, type
+    var pl = compiler.pipeline.Pipeline.init(allocator, &diags);
+    var result = try pl.run(&cst_program);
+
+    // Print AST, HIR, and Symbols for visibility
     var buffer: [1024]u8 = undefined;
     var writer = std.fs.File.stdout().writer(&buffer);
     var out = &writer.interface;
-    var printer = compiler.ast.AstPrinter.init(out);
-    try printer.print(&ast);
+    var cst_printer = compiler.cst.CstPrinter.init(out);
+    try cst_printer.print(&cst_program);
+    var ast_printer = compiler.ast.AstPrinter.init(out);
+    try ast_printer.print(&result.hir);
+    var sym_printer = compiler.symbols.SymPrinter.init(out);
+    if (result.binder) |b| {
+        var binder_mut = b;
+        try sym_printer.printTop(&binder_mut.symtab);
+    }
     try out.flush();
 
     // Emit diagnostics after parsing
