@@ -1756,7 +1756,16 @@ pub const Parser = struct {
             raw_asm = self.slice(tok);
             self.advance();
         }
-
+        // if last type is keyword_any, then function is variadic (C-style ...)
+        var is_variadic = false;
+        if (params.items.len > 0) {
+            const last_param = params.items[params.items.len - 1];
+            if (last_param.ty.?.* == .BuiltinType) {
+                if (last_param.ty.?.BuiltinType == .Any) {
+                    is_variadic = true;
+                }
+            }
+        }
         const func = cst.Function{
             .is_proc = (tag == .keyword_proc),
             .params = params,
@@ -1764,7 +1773,7 @@ pub const Parser = struct {
             .body = body,
             .loc = start_token.loc,
             .is_async = is_async,
-            .is_variadic = false, // TODO: i could just use  "any" as last param type
+            .is_variadic = is_variadic,
             .is_extern = is_extern,
             .raw_asm = raw_asm,
         };

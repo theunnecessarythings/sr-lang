@@ -13,3 +13,4 @@ pub const types = @import("types.zig");
 pub const tir = @import("tir.zig");
 pub const lower_tir = @import("lower_tir.zig");
 pub const mlir_codegen = @import("mlir_codegen.zig");
+pub const compile = @import("compile.zig");

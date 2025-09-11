@@ -24,7 +24,7 @@ function_pointer :: fn(i32) bool
 inferred :: any
 
 // SIMD vector type (4 x f32)
-simd_vec :: simd(4, f32)
+simd_vec :: simd(f32, 4)
 
 // Tensor type (2x3 matrix of i32)
 tensor_mat :: tensor(2, 3, i32)

@@ -18,7 +18,9 @@ pub const TypeKind = enum(u8) {
     U64,
     F32,
     F64,
+    Usize,
     String, // convenience builtin (slice of u8)
+    Any,
     Ptr,
     Slice,
     Array,
@@ -41,7 +43,9 @@ pub const Type = union(TypeKind) {
     U64: void,
     F32: void,
     F64: void,
+    Usize: void,
     String: void,
+    Any: void,
     Ptr: struct { elem: TypeId, is_const: bool = false },
     Slice: struct { elem: TypeId },
     Array: struct { elem: TypeId, len: usize },
@@ -102,7 +106,9 @@ pub const TypeArena = struct {
             .U64 => try writer.print("u64", .{}),
             .F32 => try writer.print("f32", .{}),
             .F64 => try writer.print("f64", .{}),
+            .Usize => try writer.print("usize", .{}),
             .String => try writer.print("string", .{}),
+            .Any => try writer.print("any", .{}),
             .Ptr => |p| {
                 try writer.print("*", .{});
                 try self.fmt(p.elem, writer);
@@ -152,7 +158,7 @@ pub const TypeArena = struct {
 fn typeEq(a: Type, b: Type) bool {
     if (@as(TypeKind, a) != @as(TypeKind, b)) return false;
     return switch (a) {
-        .Void, .Bool, .I8, .I16, .I32, .I64, .U8, .U16, .U32, .U64, .F32, .F64, .String => true,
+        .Void, .Bool, .I8, .I16, .I32, .I64, .U8, .U16, .U32, .U64, .F32, .F64, .Usize, .String, .Any => true,
         .Ptr => |pa| blk: {
             const pb = b.Ptr;
             break :blk pa.elem == pb.elem and pa.is_const == pb.is_const;

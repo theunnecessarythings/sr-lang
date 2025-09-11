@@ -12,8 +12,8 @@
   AstNode *ast_root = NULL;
 %}
 
-// %glr-parser
-%define lr.type ielr 
+%glr-parser
+// %define lr.type ielr 
 %define parse.error verbose
 %define parse.trace
 %locations
@@ -108,7 +108,7 @@
   structPatternEtCetera_opt structPatternFields structPatternField_list structPatternField
   structPatternEtCetera tupleStructPattern tupleStructItems_opt tupleStructItems
   tuplePattern tuplePatList tuplePatternItems_opt tuplePatternItems groupedPattern slicePattern patternNoTopAlt_noRest patternWithoutRange_noRest
-  slicePatternItems_opt slicePatternItems pathPattern
+  slicePatternItems_opt slicePatternItems pathPattern dotted_path
   type_ typeAtom type_exprable parenthesizedType tupleType tupleTypeTail_opt
   arrayType dynamicArrayType sliceType mapType optionalType errorType structType
   structTypeTail_opt structFields_opt structFields structField_list structField PUB_opt
@@ -139,7 +139,7 @@ program
   ;
 
 packageDecl_opt
-  : /* empty */         { $$ = NULL; }
+  : /* empty */          %empty { $$ = NULL; }
   | packageDecl         { $$ = $1; }
   ;
 
@@ -149,7 +149,7 @@ packageDecl
   ;
 
 declarations_opt
-  : /* empty */                     { $$ = NULL; }
+  : /* empty */                      %empty { $$ = NULL; }
   | declarations_opt declaration    { $$ = decl_list_append($1, $2); }
   ;
 
@@ -178,7 +178,7 @@ varDecl
   ;
 
 type_opt
-  : /* empty */ { $$ = NULL; }
+  : /* empty */  %empty { $$ = NULL; }
   | type_       { $$ = $1; }
   ;
 
@@ -201,7 +201,7 @@ expressionStatement
   ;
 
 EOS_opt
-  : /* empty */ { $$ = NULL; }
+  : /* empty */  %empty { $$ = NULL; }
   | EOS         { $$ = NULL; }
   ;
 
@@ -224,7 +224,7 @@ attribute
   ;
 
 attrs_opt
-  : /* empty */            { $$ = NULL; }
+  : /* empty */             %empty { $$ = NULL; }
   | attrs_opt attr         { $$ = attr_list_append($1, $2); }
   ;
 
@@ -276,7 +276,7 @@ catch_expr
   ;
 
 catchBinder_opt
-  : /* empty */                      { $$ = NULL; }
+  : /* empty */                       %empty { $$ = NULL; }
   | B_OR identifier B_OR             { $$ = $2; }
   ;
 
@@ -406,32 +406,32 @@ primary_expr
   ;
 
 attribute_opt
-  : /* empty */  { $$ = NULL; }
+  : /* empty */   %empty { $$ = NULL; }
   | attribute    { $$ = $1; }
   ;
 
 collectionBody_opt
-  : /* empty */      { $$ = NULL; }
+  : /* empty */       %empty { $$ = NULL; }
   | collectionBody   { $$ = $1; }
   ;
 
 tupleElements_opt
-  : /* empty */   { $$ = NULL; }
+  : /* empty */    %empty { $$ = NULL; }
   | tupleElements { $$ = $1; }
   ;
 
 expression_opt
-  : /* empty */  { $$ = NULL; }
+  : /* empty */   %empty { $$ = NULL; }
   | expression   { $$ = $1; }
   ;
 
 label_opt
-  : /* empty */  { $$ = NULL; }
+  : /* empty */   %empty { $$ = NULL; }
   | label        { $$ = $1; }
   ;
 
 callParams_opt
-  : /* empty */  { $$ = NULL; }
+  : /* empty */   %empty { $$ = NULL; }
   | callParams   { $$ = $1; }
   ;
 
@@ -442,7 +442,7 @@ attr_block_expr
   ;
 
 attribute_opt_list
-  : /* empty */                           { $$ = NULL; }
+  : /* empty */                            %empty { $$ = NULL; }
   | attribute_opt_list attribute          { $$ = attr_list_append($1, $2); }
   ;
 
@@ -495,22 +495,22 @@ functionQualifiers
   ;
 
 ASYNC_opt
-  : /* empty */  { $$ = NULL; }
+  : /* empty */   %empty { $$ = NULL; }
   | ASYNC        { $$ = async_qualifier(ZL); }
   ;
 
 extern_opt
-  : /* empty */            { $$ = NULL; }
+  : /* empty */             %empty { $$ = NULL; }
   | EXTERN abi_opt         { $$ = extern_qualifier($2, ZL); }
   ;
 
 abi_opt
-  : /* empty */  { $$ = NULL; }
+  : /* empty */   %empty { $$ = NULL; }
   | abi          { $$ = $1; }
   ;
 
 functionParameters_opt
-  : /* empty */          { $$ = NULL; }
+  : /* empty */           %empty { $$ = NULL; }
   | functionParameters   { $$ = $1; }
   ;
 
@@ -533,7 +533,7 @@ functionParam
   ;
 
 COMPTIME_opt
-  : /* empty */ { $$ = NULL; }
+  : /* empty */  %empty { $$ = NULL; }
   | COMPTIME    { $$ = comptime_qualifier(ZL); }
   ;
 
@@ -545,7 +545,7 @@ functionParamPattern
   ;
 
 eqExpr_opt
-  : /* empty */          { $$ = NULL; }
+  : /* empty */           %empty { $$ = NULL; }
   | EQ expression        { $$ = eq_expr($2, ZL); }
   ;
 
@@ -573,7 +573,7 @@ blockExpression
   ;
 
 statements_opt
-  : /* empty */   { $$ = NULL; }
+  : /* empty */    %empty { $$ = NULL; }
   | statements    { $$ = $1; }
   ;
 
@@ -597,7 +597,7 @@ collectionBody
   ;
 
 collectionTail_opt
-  : /* empty */   { $$ = NULL; }
+  : /* empty */    %empty { $$ = NULL; }
   | restOfMap     { $$ = $1; }
   | restOfArray   { $$ = $1; }
   ;
@@ -608,7 +608,7 @@ restOfMap
   ;
 
 mapElement_seq_opt
-  : /* empty */               { $$ = NULL; }
+  : /* empty */                %empty { $$ = NULL; }
   | mapElement_seq COMMA_opt  { $$ = $1; }
   ;
 
@@ -664,8 +664,21 @@ structExpression
   : structExprStruct   { $$ = $1; }
   ;
 
+dotted_path
+  : identifier DOT identifier
+    { $$ = path_append(path_single($1, ZL), $3); }
+  | dotted_path DOT identifier
+    { $$ = path_append($1, $3); }
+  ;
+
 structExprStruct
-  : path LCURLYBRACE attribute_opt structStructTail_opt RCURLYBRACE
+  : identifier   LCURLYBRACE attribute_opt structStructTail_opt RCURLYBRACE
+    {
+      AstNode* fields = NULL; AstNode* base = NULL;
+      if ($4 && $4->type == NODE_STRUCT_FIELD_LIST) fields = $4; else base = $4;
+      $$ = struct_expression(path_single($1, ZL), $3, fields, base, ZL);
+    }
+  | dotted_path  LCURLYBRACE attribute_opt structStructTail_opt RCURLYBRACE
     {
       AstNode* fields = NULL; AstNode* base = NULL;
       if ($4 && $4->type == NODE_STRUCT_FIELD_LIST) fields = $4; else base = $4;
@@ -674,7 +687,7 @@ structExprStruct
   ;
 
 structStructTail_opt
-  : /* empty */          { $$ = NULL; }
+  : /* empty */           %empty { $$ = NULL; }
   | structExprFields     { $$ = $1; }
   | structBase           { $$ = $1; }
   ;
@@ -685,7 +698,7 @@ structExprFields
   ;
 
 structExprFieldsTail_opt
-  : /* empty */                 { $$ = NULL; }
+  : /* empty */                  %empty { $$ = NULL; }
   | COMMA structBase            { $$ = $2; }
   | COMMA_opt                   { $$ = NULL; }
   ;
@@ -718,9 +731,13 @@ enumerationVariantExpression
 //   ;
 
 enumExprStruct
-  : path LCURLYBRACE enumExprField_list COMMA_opt RCURLYBRACE
+  : identifier  LCURLYBRACE enumExprField_list COMMA_opt RCURLYBRACE
+    { $$ = enum_variant_expression(path_single($1, ZL), $3, ZL); }
+  | dotted_path LCURLYBRACE enumExprField_list COMMA_opt RCURLYBRACE
     { $$ = enum_variant_expression($1, $3, ZL); }
-  | path LCURLYBRACE RCURLYBRACE
+  | identifier  LCURLYBRACE RCURLYBRACE
+    { $$ = enum_variant_expression(path_single($1, ZL), NULL, ZL); }
+  | dotted_path LCURLYBRACE RCURLYBRACE
     { $$ = enum_variant_expression($1, NULL, ZL); }
   ;
 
@@ -755,7 +772,7 @@ closureExpression
   ;
 
 closureParameters_opt
-  : /* empty */         { $$ = NULL; }
+  : /* empty */          %empty { $$ = NULL; }
   | closureParameters   { $$ = $1; }
   ;
 
@@ -774,7 +791,7 @@ closureParam
   ;
 
 typeAnn_opt
-  : /* empty */     { $$ = NULL; }
+  : /* empty */      %empty { $$ = NULL; }
   | COLON type_     { $$ = type_annotation($2, ZL); }
   ;
 
@@ -788,7 +805,7 @@ loopExpression
   ;
 
 loopLabel_opt
-  : /* empty */ { $$ = NULL; }
+  : /* empty */  %empty { $$ = NULL; }
   | loopLabel   { $$ = $1; }
   ;
 
@@ -846,13 +863,13 @@ mlirExpression
   ;
 
 mlirHead_opt
-  : /* empty */   { $$ = NULL; }
+  : /* empty */    %empty { $$ = NULL; }
   | TYPE          { $$ = type_path(path_single(identifier_node("type", ZL), ZL), ZL); }
   | identifier    { $$ = $1; }
   ;
 
 mlirBody_opt
-  : /* empty */  { $$ = NULL; }
+  : /* empty */   %empty { $$ = NULL; }
   ;
 
 asmExpression
@@ -873,7 +890,7 @@ ifExpression
   ;
 
 elseTail_opt
-  : /* empty */           { $$ = NULL; }
+  : /* empty */            %empty { $$ = NULL; }
   | ELSE blockExpression  { $$ = $2; }
   | ELSE ifExpression     { $$ = $2; }
   ;
@@ -884,7 +901,7 @@ matchExpression
   ;
 
 matchArms_opt
-  : /* empty */  { $$ = NULL; }
+  : /* empty */   %empty { $$ = NULL; }
   | matchArms    { $$ = $1; }
   ;
 
@@ -905,7 +922,7 @@ matchArm
   ;
 
 matchArmGuard_opt
-  : /* empty */     { $$ = NULL; }
+  : /* empty */      %empty { $$ = NULL; }
   | IF expression   { $$ = match_guard($2, ZL); }
   ;
 
@@ -919,7 +936,7 @@ pattern
   ;
 
 patternAltTail_opt
-  : /* empty */                                  { $$ = NULL; }
+  : /* empty */                                   %empty { $$ = NULL; }
   | patternAltTail_opt B_OR patternNoTopAlt      { $$ = ($1 ? binary_expr($1, $3, OP_BOR, ZL) : $3); }
   ;
 
@@ -959,7 +976,7 @@ literalPattern
   ;
 
 MINUS_opt
-  : /* empty */ { $$ = 0; }
+  : /* empty */  %empty { $$ = 0; }
   | MINUS       { $$ = 1; }
   ;
 
@@ -969,7 +986,7 @@ identifierPattern
   ;
 
 atTail_opt
-  : /* empty */     { $$ = NULL; }
+  : /* empty */      %empty { $$ = NULL; }
   | AT pattern      { $$ = $2; }
   ;
 
@@ -1022,7 +1039,7 @@ structPattern
 //   ;
 
 structPatternElements_opt
-  : /* empty */            { $$ = NULL; }
+  : /* empty */             %empty { $$ = NULL; }
   | structPatternElements  { $$ = $1; }
   ;
 
@@ -1034,12 +1051,12 @@ structPatternElements
   ;
 
 structPatEtcTail_opt
-  : /* empty */                       { $$ = NULL; }
+  : /* empty */                        %empty { $$ = NULL; }
   | COMMA structPatternEtCetera_opt   { $$ = $2; }
   ;
 
 structPatternEtCetera_opt
-  : /* empty */          { $$ = NULL; }
+  : /* empty */           %empty { $$ = NULL; }
   | structPatternEtCetera{ $$ = $1; }
   ;
 
@@ -1066,12 +1083,14 @@ structPatternEtCetera
   ;
 
 tupleStructPattern
-  : path LPAREN tupleStructItems_opt RPAREN
+  : identifier  LPAREN tupleStructItems_opt RPAREN
+    { $$ = pattern_tuple_struct(path_single($1, ZL), $3, ZL); }
+  | dotted_path LPAREN tupleStructItems_opt RPAREN
     { $$ = pattern_tuple_struct($1, $3, ZL); }
   ;
 
 tupleStructItems_opt
-  : /* empty */          { $$ = NULL; }
+  : /* empty */           %empty { $$ = NULL; }
   | tupleStructItems     { $$ = $1; }
   ;
 
@@ -1085,7 +1104,7 @@ tuplePattern
   ;
 
 tuplePatternItems_opt
-  : /* empty */         { $$ = NULL; }
+  : /* empty */          %empty { $$ = NULL; }
   | tuplePatternItems   { $$ = $1; }
   ;
 
@@ -1137,7 +1156,7 @@ slicePattern
   ;
 
 slicePatternItems_opt
-  : /* empty */       { $$ = NULL; }
+  : /* empty */        %empty { $$ = NULL; }
   | slicePatternItems { $$ = $1; }
   ;
 
@@ -1231,7 +1250,7 @@ tupleType
   ;
 
 tupleTypeTail_opt
-  : /* empty */                                    { $$ = NULL; }
+  : /* empty */                                     %empty { $$ = NULL; }
   | type_ COMMA type_list COMMA_opt
     { AstNode* list = type_tuple_append(NULL, $1);
       AstNode* cur = $3;
@@ -1280,13 +1299,13 @@ structType
   ;
 
 structTypeTail_opt
-  : /* empty */  { $$ = NULL; }
+  : /* empty */   %empty { $$ = NULL; }
   | LCURLYBRACE structFields_opt declarations_opt RCURLYBRACE
     { $$ = type_struct($2, $3, ZL); }
   ;
 
 structFields_opt
-  : /* empty */  { $$ = NULL; }
+  : /* empty */   %empty { $$ = NULL; }
   | structFields { $$ = $1; }
   ;
 
@@ -1305,7 +1324,7 @@ structField
   ;
 
 PUB_opt
-  : /* empty */  { $$ = NULL; }
+  : /* empty */   %empty { $$ = NULL; }
   | PUB          { $$ = (AstNode*)1; }
   ;
 
@@ -1315,12 +1334,12 @@ enumType
   ;
 
 parenthesizedType_opt
-  : /* empty */      { $$ = NULL; }
+  : /* empty */       %empty { $$ = NULL; }
   | parenthesizedType{ $$ = $1; }
   ;
 
 enumItems_opt
-  : /* empty */  { $$ = NULL; }
+  : /* empty */   %empty { $$ = NULL; }
   | enumItems    { $$ = $1; }
   ;
 
@@ -1339,7 +1358,7 @@ enumItem
   ;
 
 enumItemTail_opt
-  : /* empty */             { $$ = NULL; }
+  : /* empty */              %empty { $$ = NULL; }
   | enumItemDiscriminant    { $$ = $1; }
   ;
 
@@ -1349,7 +1368,7 @@ variantType
   ;
 
 variantItems_opt
-  : /* empty */  { $$ = NULL; }
+  : /* empty */   %empty { $$ = NULL; }
   | variantItems { $$ = $1; }
   ;
 
@@ -1368,7 +1387,7 @@ variantItem
   ;
 
 variantBody_opt
-  : /* empty */     { $$ = NULL; }
+  : /* empty */      %empty { $$ = NULL; }
   | enumItemStruct  { $$ = $1; }
   | enumItemTuple   { $$ = $1; }
   | enumItemDiscriminant { $$ = $1; }
@@ -1389,7 +1408,7 @@ enumItemDiscriminant
   ;
 
 tupleFields_opt
-  : /* empty */   { $$ = NULL; }
+  : /* empty */    %empty { $$ = NULL; }
   | tupleFields   { $$ = $1; }
   ;
 
@@ -1445,7 +1464,7 @@ rawPointerType
   ;
 
 CONST_opt
-  : /* empty */  { $$ = NULL; }
+  : /* empty */   %empty { $$ = NULL; }
   | CONST        { $$ = (AstNode*)1; }
   ;
 
@@ -1464,7 +1483,7 @@ abi
   ;
 
 functionParametersMaybeNamedVariadic_opt
-  : /* empty */                         { $$ = NULL; }
+  : /* empty */                          %empty { $$ = NULL; }
   | functionParametersMaybeNamedVariadic{ $$ = $1; }
   ;
 
@@ -1488,7 +1507,7 @@ maybeNamedParam
   ;
 
 maybeName_opt
-  : /* empty */                 { $$ = (MaybeName){ NULL, 0 }; }
+  : /* empty */                  %empty { $$ = (MaybeName){ NULL, 0 }; }
   | identifier COLON            { $$ = (MaybeName){ $1, 0 }; }
   | UNDERSCORE COLON            { $$ = (MaybeName){ NULL, 1 }; }
   ;
@@ -1538,7 +1557,7 @@ type_list
   ;
 
 COMMA_opt
-  : /* empty */ { $$ = NULL; }
+  : /* empty */  %empty { $$ = NULL; }
   | COMMA       { $$ = NULL; }
   ;
 

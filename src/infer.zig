@@ -38,21 +38,34 @@ pub const Typer = struct {
         return .{ .allocator = allocator, .diags = diags, .symtab = symtab, .top_decls = std.StringHashMap(*ast.Decl).init(allocator) };
     }
 
+    var t_bool: types.TypeId = 0;
+    var t_i32: types.TypeId = 0;
+    var t_u32: types.TypeId = 0;
+    var t_f64: types.TypeId = 0;
+    var t_string: types.TypeId = 0;
+    var t_void: types.TypeId = 0;
+    var t_any: types.TypeId = 0;
+
+    fn typeFromIdentifier(id: []const u8) anyerror!?types.TypeId {
+        if (std.mem.eql(u8, id, "bool")) return t_bool;
+        if (std.mem.eql(u8, id, "i32")) return t_i32;
+        if (std.mem.eql(u8, id, "u32")) return t_u32;
+        if (std.mem.eql(u8, id, "f64")) return t_f64;
+        if (std.mem.eql(u8, id, "string")) return t_string;
+        if (std.mem.eql(u8, id, "void")) return t_void;
+        return null;
+    }
+
     pub fn run(self: *Typer, program: *ast.Unit) !TypeInfo {
         var info = TypeInfo.init(self.allocator);
 
-        // Seed a few primitive type handles
-        const t_bool = try info.arena.mk(.{ .Bool = {} });
-        const t_i32 = try info.arena.mk(.{ .I32 = {} });
-        const t_u32 = try info.arena.mk(.{ .U32 = {} });
-        const t_f64 = try info.arena.mk(.{ .F64 = {} });
-        const t_string = try info.arena.mk(.{ .String = {} });
-        _ = t_bool;
-        _ = t_i32;
-        _ = t_u32;
-        _ = t_f64;
-        _ = t_string;
-
+        t_bool = try info.arena.mk(.{ .Bool = {} });
+        t_i32 = try info.arena.mk(.{ .I32 = {} });
+        t_u32 = try info.arena.mk(.{ .U32 = {} });
+        t_f64 = try info.arena.mk(.{ .F64 = {} });
+        t_string = try info.arena.mk(.{ .String = {} });
+        t_void = try info.arena.mk(.{ .Void = {} });
+        t_any = try info.arena.mk(.{ .Any = {} });
         // Build simple top-level name map for identifiers
         for (program.decls.items) |*d| if (d.binding) |pat| if (bindingName(pat)) |name| {
             _ = self.top_decls.put(name, d) catch {};
@@ -90,7 +103,7 @@ pub const Typer = struct {
     }
 
     fn typeOfExpr(self: *Typer, info: *TypeInfo, e: *const ast.Expr) anyerror!?types.TypeId {
-        return switch (e.*) {
+        const ty = switch (e.*) {
             // literals
             .IntLit => |_| try info.arena.mk(.{ .I32 = {} }),
             .FloatLit => |_| try info.arena.mk(.{ .F64 = {} }),
@@ -133,12 +146,17 @@ pub const Typer = struct {
                         } else break :blk_fn null;
                     } else break :blk_fn null;
                 }
+                var result_ty_id: types.TypeId = t_void;
                 if (fnc.result_ty) |rt| {
                     if (try self.typeFromTypeExpr(info, rt)) |rid| {
-                        const fnty = try info.arena.mk(.{ .Function = .{ .params = param_buf, .result = rid, .is_variadic = fnc.is_variadic } });
-                        break :blk_fn fnty;
-                    } else break :blk_fn null;
-                } else break :blk_fn null;
+                        result_ty_id = rid;
+                    } else {
+                        break :blk_fn null;
+                    }
+                }
+
+                const fnty = try info.arena.mk(.{ .Function = .{ .params = param_buf, .result = result_ty_id, .is_variadic = fnc.is_variadic } });
+                break :blk_fn fnty;
             },
 
             // identifiers: resolve to top-level decl if available
@@ -260,7 +278,6 @@ pub const Typer = struct {
             .InfixLogicalAnd => |b| blk_land: {
                 const lt = try self.typeOfExpr(info, b.left);
                 const rt = try self.typeOfExpr(info, b.right);
-                const t_bool = try info.arena.mk(.{ .Bool = {} });
                 if (lt) |lty| {
                     if (lty != t_bool) {
                         _ = self.diags.addError(self.exprLoc(b.left), "left operand of 'and' must be bool", .{}) catch {};
@@ -276,7 +293,6 @@ pub const Typer = struct {
             .InfixLogicalOr => |b| blk_lor: {
                 const lt = try self.typeOfExpr(info, b.left);
                 const rt = try self.typeOfExpr(info, b.right);
-                const t_bool = try info.arena.mk(.{ .Bool = {} });
                 if (lt) |lty| {
                     if (lty != t_bool) {
                         _ = self.diags.addError(self.exprLoc(b.left), "left operand of 'or' must be bool", .{}) catch {};
@@ -372,7 +388,6 @@ pub const Typer = struct {
             .If => |iff| blk_if: {
                 const ct = try self.typeOfExpr(info, iff.cond);
                 if (ct) |cid| {
-                    const t_bool = try info.arena.mk(.{ .Bool = {} });
                     if (cid != t_bool) _ = self.diags.addError(self.exprLoc(iff.cond), "if condition must be bool", .{}) catch {};
                 }
                 // attempt to infer from branches if both present
@@ -392,7 +407,6 @@ pub const Typer = struct {
                 if (w.cond) |c| {
                     const ct = try self.typeOfExpr(info, c);
                     if (ct) |cid| {
-                        const t_bool = try info.arena.mk(.{ .Bool = {} });
                         if (cid != t_bool) _ = self.diags.addError(self.exprLoc(c), "while condition must be bool", .{}) catch {};
                     }
                 }
@@ -446,11 +460,26 @@ pub const Typer = struct {
             // builtin type in expr position has no runtime type
             .Type => |_| null,
         };
+
+        if (try ty) |tid| {
+            std.debug.print(
+                "inferred expr type: {s}({}) -> {}\n",
+                .{ @tagName(e.*), @intFromPtr(e), tid },
+            );
+            try info.expr_types.put(e, tid);
+        } else {
+            _ = self.diags.addError(self.exprLoc(e), "could not infer expression type", .{}) catch {};
+        }
+        return ty;
     }
 
     fn typeFromTypeExpr(self: *Typer, info: *TypeInfo, e: *const ast.Expr) anyerror!?types.TypeId {
         // placeholder: symbol resolution hooks will use self later
-        return switch (e.*) {
+        const ty = switch (e.*) {
+            .Identifier => |id| blk_ident: {
+                if (try typeFromIdentifier(id.name)) |tid| break :blk_ident tid;
+                break :blk_ident null;
+            },
             .Type => |*bt| try self.typeFromBuiltin(info, @constCast(bt)),
             .TupleLit => |t| blk: {
                 var elems = try self.allocator.alloc(types.TypeId, t.elems.items.len);
@@ -471,15 +500,30 @@ pub const Typer = struct {
                         } else break :blk null;
                     } else break :blk null;
                 }
+                var result_ty_id: types.TypeId = t_void;
                 if (fnc.result_ty) |rt| {
                     if (try self.typeFromTypeExpr(info, rt)) |rid| {
-                        const fnty = try info.arena.mk(.{ .Function = .{ .params = param_buf, .result = rid, .is_variadic = fnc.is_variadic } });
-                        break :blk fnty;
-                    } else break :blk null;
-                } else break :blk null;
+                        result_ty_id = rid;
+                    } else {
+                        break :blk null;
+                    }
+                }
+
+                const fnty = try info.arena.mk(.{ .Function = .{
+                    .params = param_buf,
+                    .result = result_ty_id,
+                    .is_variadic = fnc.is_variadic,
+                } });
+                break :blk fnty;
             },
             else => null,
         };
+        if (ty) |tid| {
+            try info.expr_types.put(e, tid);
+        } else {
+            _ = self.diags.addError(self.exprLoc(e), "could not resolve type expression", .{}) catch {};
+        }
+        return ty;
     }
 
     fn typeFromBuiltin(self: *Typer, info: *TypeInfo, b: *ast.BuiltinType) anyerror!?types.TypeId {
@@ -535,7 +579,7 @@ pub const Typer = struct {
             .Complex => |_| null,
             .Tensor => |_| null,
             .Type => |_| null,
-            .Any => |_| null,
+            .Any => |_| t_any,
             .Noreturn => |_| null,
         };
     }
@@ -729,7 +773,6 @@ pub const Typer = struct {
                 for (p.args.items) |arg| try self.visitExpr(info, arg);
             },
             .PostfixAwait => |p| try self.visitExpr(info, p.expr),
-            // .CastNormal, .CastBit, .CastSaturate, .CastWrap, .CastChecked => |c| try self.visitExpr(info, c.expr),
             .CastNormal => |c| {
                 try self.visitExpr(info, c.expr);
                 _ = try self.typeFromTypeExpr(info, c.ty);
@@ -876,7 +919,10 @@ test "infer: decl annotation vs initializer mismatch" {
     // Expect at least one error due to mismatch
     var has_err = false;
     for (diags.messages.items) |m| {
-        if (m.severity == .err) { has_err = true; break; }
+        if (m.severity == .err) {
+            has_err = true;
+            break;
+        }
     }
     try std.testing.expect(has_err);
 }

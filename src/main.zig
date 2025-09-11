@@ -1,10 +1,6 @@
 const std = @import("std");
 const compiler = @import("compiler");
 
-const c = @cImport({
-    @cInclude("mlir-c/IR.h");
-});
-
 pub fn main() !void {
     var args = std.process.args();
     const exec = args.next();
@@ -51,7 +47,14 @@ pub fn main() !void {
     // Run checker/desugarer stage
     // Run pipeline: lower (with future desugaring), bind, check, type
     var pl = compiler.pipeline.Pipeline.init(allocator, &diags);
-    var result = try pl.run(&cst_program);
+    var result = pl.run(&cst_program) catch |err| {
+        // Emit diagnostics after parsing
+        var err_buf: [1024]u8 = undefined;
+        var err_writer = std.fs.File.stderr().writer(&err_buf);
+        try diags.emitStyled(source0, &err_writer.interface, file_arg, true);
+        try err_writer.interface.flush();
+        return err;
+    };
 
     // Print AST, HIR, and Symbols for visibility
     var buffer: [1024]u8 = undefined;
@@ -70,15 +73,15 @@ pub fn main() !void {
         try sym_printer.printTop(&binder_mut.symtab);
     }
     try out.flush();
-
-    // MLIR emission if requested
-    if (emit_mlir or run_mlir) {
-        try compiler.mlir_codegen.emitModule(&result.hir, mlir_path);
-    }
+    var tir_printer = compiler.tir.Printer.init(out, &result.type_info.?.arena);
+    try tir_printer.printModule(&result.module);
+    try out.flush();
 
     // Emit diagnostics after parsing
     var err_buf: [1024]u8 = undefined;
     var err_writer = std.fs.File.stderr().writer(&err_buf);
     try diags.emitStyled(source0, &err_writer.interface, file_arg, true);
     try err_writer.interface.flush();
+
+    compiler.compile.run();
 }
