@@ -1,6 +1,6 @@
 printf :: extern proc(*void, any) i32
 
 main :: proc() {
-    printf("Hello, world!".(*void))
+    printf("Hello, world!\n".(*void))
 }
 

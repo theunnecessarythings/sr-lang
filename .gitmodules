@@ -1,0 +1,3 @@
+[submodule "docs/website"]
+	path = docs/website
+	url = https://github.com/theunnecessarythings/sr-lang-docs

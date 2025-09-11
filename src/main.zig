@@ -171,7 +171,7 @@ fn process_file(
             allocator.destroy(type_info);
         }
         result.module.deinit();
-        result.mlir_module.destroy();
+        result.gen.?.deinit();
     }
 
     try diags.emitStyled(source0, err_writer, filename, !cli_args.no_color);
@@ -285,4 +285,3 @@ pub fn main() !void {
         },
     }
 }
-

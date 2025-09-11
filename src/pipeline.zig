@@ -18,6 +18,7 @@ pub const Result = struct {
     type_info: ?*infer.TypeInfo,
     module: tir.Module,
     mlir_module: mlir.Module,
+    gen: ?mlir_codegen.TirLlvmGen,
 };
 
 pub const Pipeline = struct {
@@ -60,7 +61,6 @@ pub const Pipeline = struct {
 
         // 6) MLIR Codegen from TIR to MLIR
         var gen = mlir_codegen.TirLlvmGen.init(self.allocator);
-        defer gen.deinit();
         var mlir_module = try gen.emitModule(&mod, &type_info.arena);
 
         // 7) Run MLIR Passes to optimize and lower to LLVM dialect
@@ -78,6 +78,7 @@ pub const Pipeline = struct {
             .module = mod,
             .binder = binder,
             .type_info = type_info,
+            .gen = gen,
         };
     }
 };
