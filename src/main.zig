@@ -94,12 +94,13 @@ fn process_file(
     if (cli_args.subcommand == .check) {
         var lower_pass = compiler.lower.Lower.init(allocator, &diags);
         var hir = try lower_pass.run(&cst_program);
-        var binder = compiler.bind.Binder.init(allocator);
-        defer binder.deinit();
-        try binder.run(&hir);
+
         var chk = compiler.checker.Checker.init(allocator, &diags);
         defer chk.deinit();
         try chk.run(&hir);
+        var printer = compiler.ast.AstPrinter.init(out_writer);
+        try printer.print(&hir);
+        try out_writer.flush();
 
         try diags.emitStyled(source0, err_writer, filename, !cli_args.no_color);
         if (diags.anyErrors()) {
@@ -115,6 +116,7 @@ fn process_file(
         var hir = try lower_pass.run(&cst_program);
         var ast_printer = compiler.ast.AstPrinter.init(out_writer);
         try ast_printer.print(&hir);
+        try out_writer.flush();
         return;
     }
 
@@ -122,13 +124,11 @@ fn process_file(
     if (cli_args.subcommand == .tir) {
         var lower_pass = compiler.lower.Lower.init(allocator, &diags);
         var hir = try lower_pass.run(&cst_program);
-        var binder = compiler.bind.Binder.init(allocator);
-        defer binder.deinit();
-        try binder.run(&hir);
+
         var chk = compiler.checker.Checker.init(allocator, &diags);
         defer chk.deinit();
         try chk.run(&hir);
-        var typer = compiler.infer.Typer.init(allocator, &diags, &binder.symtab);
+        var typer = compiler.infer.Typer.init(allocator, &diags);
         const type_info = try allocator.create(compiler.infer.TypeInfo);
         type_info.* = typer.run(&hir) catch {
             try diags.addError(cst_program.decls.items[0].loc, "type inference failed", .{});
@@ -163,9 +163,7 @@ fn process_file(
     defer {
         // Deinit pipeline result components
         // result.hir.deinit();
-        if (result.binder) |*binder| {
-            binder.deinit();
-        }
+
         if (result.type_info) |type_info| {
             type_info.deinit();
             allocator.destroy(type_info);

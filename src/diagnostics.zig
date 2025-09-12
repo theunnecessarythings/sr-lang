@@ -160,6 +160,7 @@ pub const Diagnostics = struct {
 
             try writer.print("\n", .{});
         }
+        try writer.flush();
     }
 
     const LineCol = struct { line: usize, col: usize, line_start: usize, line_end: usize };

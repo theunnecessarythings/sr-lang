@@ -644,6 +644,7 @@ pub const Printer = struct {
         // Functions
         for (m.functions.items) |*f| try self.printFunction(f);
         try self.w.print(")\n", .{});
+        try self.w.flush();
     }
 
     fn printFunction(self: *@This(), f: *const Function) !void {
@@ -887,4 +888,3 @@ pub const Printer = struct {
         try self.w.print("{s} %{d}", .{ opname, u.value });
     }
 };
-

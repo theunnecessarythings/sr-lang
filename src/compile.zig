@@ -1,18 +1,19 @@
 const std = @import("std");
 const mlir = @import("mlir_bindings.zig");
 
-pub fn run_passes(context: *mlir.Context, module: *mlir.Module, print_ir: bool) void {
+pub fn run_passes(context: *mlir.Context, module: *mlir.Module, print_ir: bool) !void {
     const pm = mlir.c.mlirPassManagerCreate(context.handle);
     defer mlir.c.mlirPassManagerDestroy(pm);
 
-    const pipeline = "cse,sccp,loop-invariant-code-motion," ++ "finalize-memref-to-llvm," ++ "convert-scf-to-cf," ++
-        "convert-func-to-llvm," ++ "convert-cf-to-llvm," ++ "canonicalize," ++ "cse";
+    // const pipeline = "cse,sccp,loop-invariant-code-motion," ++ "finalize-memref-to-llvm," ++ "convert-scf-to-cf," ++
+    // "convert-func-to-llvm," ++ "convert-cf-to-llvm," ++ "canonicalize," ++ "cse";
+    const pipeline = "canonicalize,cse";
     const op_pm = mlir.c.mlirPassManagerGetAsOpPassManager(pm);
     var result = mlir.c.mlirOpPassManagerAddPipeline(op_pm, mlir.c.mlirStringRefCreateFromCString(@ptrCast(pipeline)), callback, null);
 
     if (mlir.c.mlirLogicalResultIsFailure(result)) {
         std.debug.print("Failed to create pass pipeline\n", .{});
-        return;
+        return error.PassPipelineCreationFailed;
     }
 
     // Run the pass manager on the module
@@ -20,7 +21,7 @@ pub fn run_passes(context: *mlir.Context, module: *mlir.Module, print_ir: bool) 
 
     if (mlir.c.mlirLogicalResultIsFailure(result)) {
         std.debug.print("Pass manager failed\n", .{});
-        return;
+        return error.PassManagerFailed;
     }
 
     // Print the module
@@ -53,7 +54,7 @@ pub fn runJit(module: mlir.c.MlirModule) void {
     }
 }
 
-pub fn convert_to_llvm_ir(module: mlir.c.MlirModule, print_ir: bool) void {
+pub fn convert_to_llvm_ir(module: mlir.c.MlirModule, print_ir: bool) !void {
     _ = mlir.c.LLVMInitializeNativeTarget();
     _ = mlir.c.LLVMInitializeNativeAsmPrinter();
     _ = mlir.c.LLVMInitializeNativeAsmParser();
@@ -74,7 +75,7 @@ pub fn convert_to_llvm_ir(module: mlir.c.MlirModule, print_ir: bool) void {
     if (mlir.c.LLVMGetTargetFromTriple(targetTriple[0..], &target, &err) != 0) {
         std.debug.print("Error finding target: {s}\n", .{err});
         mlir.c.LLVMDisposeMessage(err);
-        return;
+        return error.TargetNotFound;
     }
 
     const targetMachine = mlir.c.LLVMCreateTargetMachine(target, targetTriple, cpu, features, mlir.c.LLVMCodeGenLevelDefault, mlir.c.LLVMRelocPIC, mlir.c.LLVMCodeModelDefault);
@@ -98,13 +99,13 @@ pub fn convert_to_llvm_ir(module: mlir.c.MlirModule, print_ir: bool) void {
     if (mlir.c.LLVMGetTargetFromTriple(mlir.c.LLVMGetDefaultTargetTriple(), &target, &err) != 0) {
         std.debug.print("Error finding target: {s}\n", .{err});
         mlir.c.LLVMDisposeMessage(err);
-        return;
+        return error.TargetNotFound;
     }
     const objectFileName = "zig-out/output.o";
     if (mlir.c.LLVMTargetMachineEmitToFile(targetMachine, llvmIR, objectFileName, mlir.c.LLVMObjectFile, &err) != 0) {
         std.debug.print("Error emitting object file: {s}\n", .{err});
         mlir.c.LLVMDisposeMessage(err);
-        return;
+        return error.ObjectFileEmissionFailed;
     }
 
     // Link object file and run executable

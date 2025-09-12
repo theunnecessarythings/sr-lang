@@ -20,39 +20,25 @@ pub const c = @cImport({
 
 pub fn SmallVector(comptime T: type, comptime N: usize) type {
     return struct {
-        /// Stores up to N elements inline. Only used when `len <= N`.
         inlineStorage: [N]T,
-
-        /// Heap-allocated storage when size > N.
-        /// Always `null` if we're only using inline storage.
-        heapStorage: ?[]T,
-
-        /// Current number of elements stored.
+        heapStorage: ?[]T, // valid only when cap > N
         len: usize,
-
-        /// Current allocated capacity (in element count).
-        /// - If <= N, we’re using inlineStorage only.
-        /// - If > N, we’re using heapStorage with capacity elements.
         cap: usize,
-
-        /// allocator
         alloc: std.mem.Allocator,
 
         const Self = @This();
-        /// Creates a new empty SmallVector.
+
         pub fn init(alloc: std.mem.Allocator) Self {
-            return Self{
-                .inlineStorage = undefined, // we do not individually init T
+            return .{
+                .inlineStorage = undefined,
                 .heapStorage = null,
                 .len = 0,
-                .cap = N, // we start with “capacity = N” (inline).
+                .cap = N,
                 .alloc = alloc,
             };
         }
 
-        /// Destroys the SmallVector, freeing any heap allocation if present.
         pub fn deinit(self: *Self) void {
-            // If we are using heap storage, free it.
             if (self.cap > N) {
                 self.alloc.free(self.heapStorage.?);
             }
@@ -61,153 +47,134 @@ pub fn SmallVector(comptime T: type, comptime N: usize) type {
             self.cap = 0;
         }
 
-        /// Returns the current number of elements.
-        pub fn size(self: *Self) usize {
+        // ---- views ----
+        pub fn sliceConst(self: *const Self) []const T {
+            return if (self.cap <= N)
+                self.inlineStorage[0..self.len]
+            else
+                self.heapStorage.?[0..self.len];
+        }
+        pub fn slice(self: *Self) []T {
+            return if (self.cap <= N)
+                self.inlineStorage[0..self.len]
+            else
+                self.heapStorage.?[0..self.len];
+        }
+
+        pub fn size(self: *const Self) usize {
             return self.len;
         }
-
-        /// Returns the current capacity (number of elements that can fit without reallocation).
-        pub fn capacity(self: *Self) usize {
+        pub fn capacity(self: *const Self) usize {
             return self.cap;
         }
-
-        /// Checks if empty.
-        pub fn isEmpty(self: *Self) bool {
+        pub fn isEmpty(self: *const Self) bool {
             return self.len == 0;
         }
 
-        /// Returns a pointer to the start of the element storage.
-        pub fn data(self: *Self) []const T {
-            if (self.cap <= N) {
-                // inline
-                return self.inlineStorage[0..self.len];
-            } else {
-                return self.heapStorage.?[0..self.len];
-            }
+        pub fn atConst(self: *const Self, i: usize) T {
+            std.debug.assert(i < self.len);
+            return self.sliceConst()[i];
         }
-
-        /// Gets a reference to the element at index i.
         pub fn atRef(self: *Self, i: usize) *T {
             std.debug.assert(i < self.len);
-            const buf = self.data();
-            return @constCast(&buf[i]);
+            return &self.slice()[i];
         }
 
-        /// Gets the element at index i.
-        pub fn at(self: *Self, i: usize) T {
-            std.debug.assert(i < self.len);
-            const buf = self.data();
-            return buf[i];
-        }
-
-        /// Clears all elements (length = 0), does not free heapStorage.
         pub fn clear(self: *Self) void {
             self.len = 0;
         }
 
-        /// Push a new element to the end. Copies the element by value.
-        pub fn push(self: *Self, value: T) void {
-            if (self.len < self.cap) {
-                // We have capacity in the current storage.
-                if (self.cap <= N) {
-                    // Inline
-                    self.inlineStorage[self.len] = value;
-                } else {
-                    // Heap
-                    self.heapStorage.?[self.len] = value;
-                }
-                self.len += 1;
-                return;
+        // Geometric growth: 2×, at least N, at least needed
+        fn nextCap(self: *const Self, needed: usize) usize {
+            var cap = if (self.cap < N) N else self.cap;
+            if (cap < needed) {
+                while (cap < needed) : (cap *= 2) {}
             }
+            return cap;
+        }
 
-            // Need to grow
-            self.grow(self.len + 1);
-            // Now we definitely have capacity
-            if (self.cap <= N) {
-                self.inlineStorage[self.len] = value;
-            } else {
-                self.heapStorage.?[self.len] = value;
-            }
+        fn bufConst(self: *const Self) []const T {
+            return if (self.cap <= N) self.inlineStorage[0..self.cap] else self.heapStorage.?;
+        }
+        fn buf(self: *Self) []T {
+            return if (self.cap <= N) self.inlineStorage[0..self.cap] else self.heapStorage.?;
+        }
+
+        pub fn push(self: *Self, value: T) void {
+            if (self.len == self.cap) self.grow(self.nextCap(self.len + 1));
+            self.buf()[self.len] = value; // write into capacity buffer
             self.len += 1;
         }
 
-        /// Pops the last element, returning it by value.
+        pub fn pushSlice(self: *Self, src: []const T) void {
+            if (src.len == 0) return;
+            const need = self.len + src.len;
+            if (need > self.cap) self.grow(self.nextCap(need));
+            const b = self.buf();
+            std.mem.copy(T, b[self.len..need], src);
+            self.len = need;
+        }
+
         pub fn popBack(self: *Self) T {
             std.debug.assert(self.len > 0);
-            const i = self.len - 1;
-            const val = if (self.cap <= N)
-                self.inlineStorage[i]
-            else
-                self.heapStorage.?[i];
-
-            self.len = i;
+            const b = if (self.cap <= N) self.inlineStorage[0..self.len] else self.heapStorage.?[0..self.len];
+            const val = b[self.len - 1];
+            self.len -= 1;
             return val;
         }
 
-        pub fn pushSlice(self: *Self, slice: []const T) void {
-            self.reserve(self.len + slice.len);
-            for (slice) |elem| {
-                self.push(elem);
-            }
-        }
-
-        /// Reserves capacity for at least `newCap` elements, potentially reallocating.
-        /// If `newCap <= N`, does nothing. If `newCap > self.cap`, we reallocate.
         pub fn reserve(self: *Self, newCap: usize) void {
-            if (newCap <= self.cap) return;
-
-            // We definitely need to grow. Let's do at least doubling or newCap, whichever is bigger:
-            var grownCap = if (self.cap < N) N else self.cap;
-            while (grownCap < newCap) : (grownCap *= 2) {}
-
-            self.grow(grownCap);
+            if (newCap > self.cap) self.grow(self.nextCap(newCap));
         }
 
-        /// Actually does the reallocation.
         fn grow(self: *Self, newCap: usize) void {
             if (newCap <= N) {
-                // No dynamic allocation needed, just do inline. Might be unusual if we are
-                // switching from a dynamic to inline, but let's keep it minimal.
+                // switch to inline (rare; mainly defensive)
                 if (self.cap > N) {
-                    // We have a heap allocation we should copy back inline and free.
-                    const oldPtr = self.heapStorage orelse unreachable;
-                    // Copy existing elements
-                    for (0..self.len) |i| {
-                        self.inlineStorage[i] = oldPtr[i];
-                    }
-                    // free
-                    self.alloc.free(oldPtr);
+                    const old = self.heapStorage.?;
+                    // copy back to inline
+                    @memcpy(self.inlineStorage[0..self.len], old[0..self.len]);
+                    self.alloc.free(old);
+                    self.heapStorage = null;
                 }
-                self.heapStorage = null;
                 self.cap = N;
                 return;
             }
 
-            // newCap > N => we want dynamic
-            // allocate new space
-            const newPtr = self.alloc.alloc(T, newCap) catch @panic("Allocation failure in SmallVector.grow");
-
-            // Move existing elements over
-            const oldLen = self.len;
-            const oldCap = self.cap;
-            if (oldCap <= N) {
-                // was inline
-                for (0..oldLen) |i| {
-                    newPtr[i] = self.inlineStorage[i];
-                }
+            // allocate new heap buffer
+            var newBuf = self.alloc.alloc(T, newCap) catch @panic("SmallVector.grow: OOM");
+            // copy from current storage
+            if (self.cap <= N) {
+                @memcpy(newBuf[0..self.len], self.inlineStorage[0..self.len]);
             } else {
-                // was dynamic
-                const oldPtr = self.heapStorage orelse unreachable;
-                for (0..oldLen) |i| {
-                    newPtr[i] = oldPtr[i];
-                }
-                // free old
-                self.alloc.free(oldPtr);
+                const old = self.heapStorage.?;
+                @memcpy(newBuf[0..self.len], old[0..self.len]);
+                self.alloc.free(old);
             }
-
-            // update
-            self.heapStorage = newPtr;
+            self.heapStorage = newBuf;
             self.cap = newCap;
+        }
+
+        // ----- optional: explicit ownership helpers -----
+
+        /// Moves ownership into `dst` and leaves `self` empty.
+        pub fn moveTo(self: *Self, dst: *Self) void {
+            // Beware: shallow move of allocator; that’s what you had.
+            dst.* = self.*;
+            // poison self to avoid double free
+            self.heapStorage = null;
+            self.len = 0;
+            self.cap = N;
+        }
+
+        /// Clones contents into a new vector (deep copy).
+        pub fn clone(self: *const Self, alloc: std.mem.Allocator) Self {
+            var out = Self.init(alloc);
+            if (self.len > 0) {
+                out.reserve(self.len);
+                out.pushSlice(self.sliceConst());
+            }
+            return out;
         }
     };
 }
@@ -462,7 +429,7 @@ pub const Location = struct {
         return Location{ .handle = c.mlirLocationFusedGet(
             ctx.handle,
             @intCast(locs.len),
-            @ptrCast(locs.data()),
+            @ptrCast(locs.slice()),
             metadata.handle,
         ) };
     }
@@ -547,7 +514,7 @@ pub const OperationState = struct {
         for (results) |t| {
             tmp.push(t.handle);
         }
-        c.mlirOperationStateAddResults(&self.state, @intCast(tmp.len), @ptrCast(tmp.data()));
+        c.mlirOperationStateAddResults(&self.state, @intCast(tmp.len), @ptrCast(tmp.slice()));
     }
 
     pub fn addOperands(self: *OperationState, operands: []const Value) void {
@@ -555,7 +522,7 @@ pub const OperationState = struct {
         for (operands) |v| {
             tmp.push(v.handle);
         }
-        c.mlirOperationStateAddOperands(&self.state, @intCast(tmp.len), @ptrCast(tmp.data()));
+        c.mlirOperationStateAddOperands(&self.state, @intCast(tmp.len), @ptrCast(tmp.slice()));
     }
 
     pub fn addOwnedRegions(self: *OperationState, regions: []const Region) void {
@@ -563,7 +530,7 @@ pub const OperationState = struct {
         for (regions) |r| {
             tmp.push(r.handle);
         }
-        c.mlirOperationStateAddOwnedRegions(&self.state, @intCast(tmp.len), @ptrCast(tmp.data()));
+        c.mlirOperationStateAddOwnedRegions(&self.state, @intCast(tmp.len), @ptrCast(tmp.slice()));
     }
 
     pub fn addSuccessors(self: *OperationState, successors: []const Block) void {
@@ -571,7 +538,7 @@ pub const OperationState = struct {
         for (successors) |b| {
             tmp.push(b.handle);
         }
-        c.mlirOperationStateAddSuccessors(&self.state, @intCast(tmp.len), @ptrCast(tmp.data()));
+        c.mlirOperationStateAddSuccessors(&self.state, @intCast(tmp.len), @ptrCast(tmp.slice()));
     }
 
     pub fn addAttributes(self: *OperationState, attrs: []const NamedAttribute) void {
@@ -579,7 +546,7 @@ pub const OperationState = struct {
         for (attrs) |na| {
             tmp.push(na.inner);
         }
-        c.mlirOperationStateAddAttributes(&self.state, @intCast(tmp.len), @ptrCast(tmp.data()));
+        c.mlirOperationStateAddAttributes(&self.state, @intCast(tmp.len), @ptrCast(tmp.slice()));
     }
 
     pub fn enableResultTypeInference(self: *OperationState) void {
@@ -781,7 +748,7 @@ pub const Operation = struct {
         for (operands) |v| {
             tmp.push(v.handle);
         }
-        c.mlirOperationSetOperands(self.handle, @intCast(tmp.len), @ptrCast(tmp.data()));
+        c.mlirOperationSetOperands(self.handle, @intCast(tmp.len), @ptrCast(tmp.slice()));
     }
 
     pub fn getNumResults(self: *Operation) usize {
@@ -1289,7 +1256,7 @@ pub const ExecutionEngine = struct {
             }
 
             return ExecutionEngine{
-                .handle = c.mlirExecutionEngineCreate(module.handle, optLevel, @intCast(sharedLibPaths.len), @ptrCast(tmpPaths.data()), enableObjectDump),
+                .handle = c.mlirExecutionEngineCreate(module.handle, optLevel, @intCast(sharedLibPaths.len), @ptrCast(tmpPaths.slice()), enableObjectDump),
             };
         }
     }
@@ -1447,7 +1414,7 @@ pub const Attribute = struct {
                 tmp.push(e.handle);
             }
             return Attribute{
-                .handle = c.mlirArrayAttrGet(ctx.handle, @intCast(elements.len), @ptrCast(tmp.data())),
+                .handle = c.mlirArrayAttrGet(ctx.handle, @intCast(elements.len), @ptrCast(tmp.slice())),
             };
         }
     }
@@ -1482,7 +1449,7 @@ pub const Attribute = struct {
                 tmp.push(na.inner);
             }
             return Attribute{
-                .handle = c.mlirDictionaryAttrGet(ctx.handle, @intCast(elements.len), @ptrCast(tmp.data())),
+                .handle = c.mlirDictionaryAttrGet(ctx.handle, @intCast(elements.len), @ptrCast(tmp.slice())),
             };
         }
     }
@@ -1672,7 +1639,7 @@ pub const Attribute = struct {
                 tmp.push(r.handle);
             }
             return Attribute{
-                .handle = c.mlirSymbolRefAttrGet(ctx.handle, symbol.inner, @intCast(references.len), @ptrCast(tmp.data())),
+                .handle = c.mlirSymbolRefAttrGet(ctx.handle, symbol.inner, @intCast(references.len), @ptrCast(tmp.slice())),
             };
         }
     }
@@ -1814,7 +1781,7 @@ pub const Attribute = struct {
             }
 
             return Attribute{
-                .handle = c.mlirDenseBoolArrayGet(ctx.handle, @intCast(vals.len), @ptrCast(tmp.data())),
+                .handle = c.mlirDenseBoolArrayGet(ctx.handle, @intCast(vals.len), @ptrCast(tmp.slice())),
             };
         }
     }
@@ -1829,7 +1796,7 @@ pub const Attribute = struct {
                 tmp.push(v);
             }
             return Attribute{
-                .handle = c.mlirDenseI8ArrayGet(ctx.handle, @intCast(vals.len), @ptrCast(tmp.data())),
+                .handle = c.mlirDenseI8ArrayGet(ctx.handle, @intCast(vals.len), @ptrCast(tmp.slice())),
             };
         }
     }
@@ -1844,7 +1811,7 @@ pub const Attribute = struct {
                 tmp.push(v);
             }
             return Attribute{
-                .handle = c.mlirDenseI16ArrayGet(ctx.handle, @intCast(vals.len), @ptrCast(tmp.data())),
+                .handle = c.mlirDenseI16ArrayGet(ctx.handle, @intCast(vals.len), @ptrCast(tmp.slice())),
             };
         }
     }
@@ -1871,7 +1838,7 @@ pub const Attribute = struct {
             }
 
             return Attribute{
-                .handle = c.mlirDenseI64ArrayGet(ctx.handle, @intCast(vals.len), @ptrCast(tmp.data())),
+                .handle = c.mlirDenseI64ArrayGet(ctx.handle, @intCast(vals.len), @ptrCast(tmp.slice())),
             };
         }
     }
@@ -1887,7 +1854,7 @@ pub const Attribute = struct {
             }
 
             return Attribute{
-                .handle = c.mlirDenseF32ArrayGet(ctx.handle, @intCast(vals.len), @ptrCast(tmp.data())),
+                .handle = c.mlirDenseF32ArrayGet(ctx.handle, @intCast(vals.len), @ptrCast(tmp.slice())),
             };
         }
     }
@@ -1902,7 +1869,7 @@ pub const Attribute = struct {
                 tmp.push(v);
             }
             return Attribute{
-                .handle = c.mlirDenseF64ArrayGet(ctx.handle, @intCast(vals.len), @ptrCast(tmp.data())),
+                .handle = c.mlirDenseF64ArrayGet(ctx.handle, @intCast(vals.len), @ptrCast(tmp.slice())),
             };
         }
     }
@@ -1982,7 +1949,7 @@ pub const Attribute = struct {
                 tmp.push(e.handle);
             }
             return Attribute{
-                .handle = c.mlirDenseElementsAttrGet(shapedType.handle, @intCast(elements.len), @ptrCast(tmp.data())),
+                .handle = c.mlirDenseElementsAttrGet(shapedType.handle, @intCast(elements.len), @ptrCast(tmp.slice())),
             };
         }
     }
@@ -2615,7 +2582,7 @@ pub const Type = struct {
         return c.mlirTypeIsNull(self.handle);
     }
 
-    pub fn equal(self: *Type, other: Type) bool {
+    pub fn equal(self: *const Type, other: Type) bool {
         return c.mlirTypeEqual(self.handle, other.handle);
     }
 

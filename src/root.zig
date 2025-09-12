@@ -6,7 +6,6 @@ pub const checker = @import("checker.zig");
 pub const ast = @import("ast.zig");
 pub const lower = @import("lower.zig");
 pub const symbols = @import("symbols.zig");
-pub const bind = @import("bind.zig");
 pub const infer = @import("infer.zig");
 pub const pipeline = @import("pipeline.zig");
 pub const types = @import("types.zig");

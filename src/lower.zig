@@ -264,27 +264,29 @@ pub const Lower = struct {
     }
 
     fn lowerStmtFromDecl(self: *Lower, d: *const cst.Decl) !ast.Statement {
-        if (d.is_const) {
+        // Declaration forms:
+        //  - top-level const (::) already uses is_const
+        //  - local define (:=) has lhs != null but is_assign == false
+        if (d.is_const or (d.lhs != null and !d.is_assign)) {
             const td = try self.lowerTopDecl(d);
             return .{ .Decl = td };
         }
 
-        if (d.is_assign or d.lhs != null) {
-            // Treat as assignment when we have a lhs in a block context
-            const left = if (d.lhs) |l| try self.lowerExpr(l) else try self.lowerExpr(d.rhs);
+        // Plain assignment (=)
+        if (d.is_assign) {
+            // '=' must have an LHS
+            const left = try self.lowerExpr(d.lhs.?);
             const right = try self.lowerExpr(d.rhs);
             return .{ .Assign = .{ .left = left, .right = right, .loc = d.loc } };
         }
 
-        // Expression or statement-like RHS
-        // Desugar compound assignments like a += b into Assign{ left=a, right=a + b }
+        // Compound-assign desugaring (a += b, etc.)
         if (d.rhs.* == .Infix) {
             const i = d.rhs.Infix;
-            if (try self.tryLowerCompoundAssign(&i)) |stmt| {
-                return stmt;
-            }
+            if (try self.tryLowerCompoundAssign(&i)) |stmt| return stmt;
         }
 
+        // Statement-like RHS (return/break/…)
         switch (d.rhs.*) {
             .Return => |r| return .{ .Return = .{ .value = if (r.value) |v| try self.lowerExpr(v) else null, .loc = r.loc } },
             .Break => |b| return .{ .Break = .{ .loc = b.loc, .label = b.label, .value = if (b.value) |v| try self.lowerExpr(v) else null } },
@@ -295,6 +297,8 @@ pub const Lower = struct {
             .Insert => |ins| return .{ .Insert = .{ .expr = try self.lowerExpr(ins.expr), .loc = ins.loc } },
             else => {},
         }
+
+        // Expression statement fallback
         const expr_ptr = try self.lowerExpr(d.rhs);
         return .{ .Expr = expr_ptr.* };
     }

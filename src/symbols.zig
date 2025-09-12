@@ -1,12 +1,19 @@
 const std = @import("std");
 const Loc = @import("lexer.zig").Token.Loc;
+const ast = @import("ast.zig");
 
 pub const SymbolKind = enum { Var, Const, Function, Type, Param, Field };
+
+pub const SymbolOrigin = union(enum) {
+    Decl: *ast.Decl,
+    Param: *ast.Param,
+};
 
 pub const Symbol = struct {
     name: []const u8,
     kind: SymbolKind,
     loc: Loc,
+    origin: SymbolOrigin,
 };
 
 pub const Scope = struct {
@@ -65,7 +72,7 @@ pub const SymbolTable = struct {
     }
 
     pub fn pop(self: *SymbolTable) void {
-        if (self.scopes.popOrNull()) |scope| {
+        if (self.scopes.pop()) |scope| {
             scope.deinit();
             self.allocator.destroy(scope);
         }
@@ -79,7 +86,9 @@ pub const SymbolTable = struct {
 pub const SymPrinter = struct {
     out: *std.io.Writer,
 
-    pub fn init(writer: *std.io.Writer) SymPrinter { return .{ .out = writer }; }
+    pub fn init(writer: *std.io.Writer) SymPrinter {
+        return .{ .out = writer };
+    }
 
     pub fn printTop(self: *SymPrinter, symbols: *SymbolTable) !void {
         try self.out.print("(Symbols\n", .{});
@@ -100,5 +109,6 @@ pub const SymPrinter = struct {
             }
         }
         try self.out.print(")\n", .{});
+        try self.out.flush();
     }
 };

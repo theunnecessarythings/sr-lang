@@ -230,8 +230,8 @@ pub const LowerTir = struct {
                 if (ret.value) |ve| {
                     const v = try self.lowerExpr(ctx, ve);
                     // is_err?  -> run errdefers conditionally
-                    const is_err = try self.call1(ctx, "builtin.err.is_err", self.bool_t, v);
-                    try self.runAllDefersBeforeReturn(ctx, is_err);
+                    // const is_err = try self.call1(ctx, "builtin.err.is_err", self.bool_t, v);
+                    // try self.runAllDefersBeforeReturn(ctx, is_err);
                     self.builder.ret(ctx.current_block, v);
                 } else {
                     // void return: only normal defers run
@@ -1638,4 +1638,3 @@ const FunctionContext = struct {
         return null;
     }
 };
-
