@@ -16,7 +16,7 @@ pub const Parser = struct {
     const ParseMode = enum { expr, type, expr_no_struct };
 
     pub fn init(allocator: std.mem.Allocator, source: [:0]const u8, diags: *Diagnostics) Parser {
-        var lexer = Lexer.init(source);
+        var lexer = Lexer.init(source, .semi);
         const current_token = lexer.next();
         const next_token = lexer.next();
         return .{ .allocator = allocator, .source = source, .lexer = lexer, .current_token = current_token, .next_token = next_token, .diags = diags };
@@ -196,7 +196,7 @@ pub const Parser = struct {
 
     inline fn isLiteralTag(tag: Token.Tag) bool {
         return switch (tag) {
-            .char_literal, .string_literal, .raw_string_literal, .byte_literal, .byte_char_literal, .byte_string_literal, .raw_byte_string_literal, .raw_asm_block, .integer_literal, .float_literal, .imaginary_literal, .keyword_true, .keyword_false => true,
+            .char_literal, .string_literal, .raw_string_literal, .raw_asm_block, .integer_literal, .float_literal, .imaginary_literal, .keyword_true, .keyword_false => true,
             else => false,
         };
     }
@@ -263,7 +263,7 @@ pub const Parser = struct {
             .lsquare,
             .lcurly,
             .dot,
-            .dot_lparen,
+            .dotlparen,
             .dotdot,
             .dotstar,
             .dotdoteq,
@@ -657,7 +657,7 @@ pub const Parser = struct {
                             .lparen => try self.parseCall(left),
                             .lsquare => try self.parseIndex(left),
                             .dot => try self.parsePostfixAfterDot(left),
-                            .dot_lparen => try self.parseCastParen(left),
+                            .dotlparen => try self.parseCastParen(left),
                             .lcurly => try self.parseStructLiteral(),
                             .dotstar => try self.parseDeref(left),
                             .question => try self.parseOptionalUnwrap(left),
@@ -1199,7 +1199,7 @@ pub const Parser = struct {
     fn parsePatPrimary(self: *Parser) !*cst.Pattern {
         switch (self.current().tag) {
             // .underscore_like => { /* see note below */ },
-            .char_literal, .string_literal, .raw_string_literal, .byte_literal, .byte_char_literal, .byte_string_literal, .raw_byte_string_literal, .integer_literal, .float_literal, .keyword_true, .keyword_false => {
+            .char_literal, .string_literal, .raw_string_literal, .integer_literal, .float_literal, .keyword_true, .keyword_false => {
                 const lit = try self.nud(self.current().tag, .expr_no_struct); // reuse literal expr nud
                 return try self.alloc(cst.Pattern, .{ .Literal = lit });
             },

@@ -562,47 +562,6 @@ pub const Lower = struct {
                 const content = lit.value[prefix_len .. lit.value.len - suffix_len];
                 break :blk ast.Expr{ .StringLit = .{ .value = content, .loc = lit.loc } };
             },
-            .byte_string_literal => blk: {
-                // Remove leading b" and trailing "
-                const quoted_str = lit.value;
-                const inner_str = quoted_str[2 .. quoted_str.len - 1]; // "b" + "
-
-                var unescaped_list = List(u8).init(self.allocator);
-                var i: usize = 0;
-                while (i < inner_str.len) : (i += 1) {
-                    if (inner_str[i] == '\\') {
-                        i += 1;
-                        if (i >= inner_str.len) {
-                            try unescaped_list.append('\\');
-                            break;
-                        }
-                        switch (inner_str[i]) {
-                            'n' => try unescaped_list.append('\n'),
-                            't' => try unescaped_list.append('\t'),
-                            'r' => try unescaped_list.append('\r'),
-                            '\\' => try unescaped_list.append('\\'),
-                            '"' => try unescaped_list.append('"'),
-                            '\'' => try unescaped_list.append('"'),
-                            '0' => try unescaped_list.append(0),
-                            else => {
-                                try unescaped_list.append('\\');
-                                try unescaped_list.append(inner_str[i]);
-                            },
-                        }
-                    } else {
-                        try unescaped_list.append(inner_str[i]);
-                    }
-                }
-                const unescaped_str = try unescaped_list.toOwnedSlice();
-                break :blk ast.Expr{ .StringLit = .{ .value = unescaped_str, .loc = lit.loc } };
-            },
-            .raw_byte_string_literal => blk: {
-                // Raw byte strings: br#"..."#
-                const prefix_len = 3; // "br#"
-                const suffix_len = 1; // "#"
-                const content = lit.value[prefix_len .. lit.value.len - suffix_len];
-                break :blk ast.Expr{ .StringLit = .{ .value = content, .loc = lit.loc } };
-            },
             .char_literal => blk: {
                 // Remove leading/trailing quotes
                 const quoted_char = lit.value;
@@ -629,32 +588,6 @@ pub const Lower = struct {
                 } else {
                     // Handle error: invalid char literal format
                     // For now, default to '?' or similar
-                    char_val = '?';
-                }
-                break :blk ast.Expr{ .CharLit = .{ .value = char_val, .loc = lit.loc } };
-            },
-            .byte_char_literal => blk: {
-                // Remove leading b' and trailing '
-                const quoted_char = lit.value;
-                const inner_char_str = quoted_char[2 .. quoted_char.len - 1]; // "b" + '''
-
-                var char_val: u8 = undefined;
-                if (inner_char_str.len == 1) {
-                    char_val = inner_char_str[0];
-                } else if (inner_char_str.len == 2 and inner_char_str[0] == '\\') {
-                    switch (inner_char_str[1]) {
-                        'n' => char_val = 10,
-                        't' => char_val = 9,
-                        'r' => char_val = 13,
-                        '\\' => char_val = 92, // '\'
-                        '"' => char_val = 34, // '"'
-                        '\'' => char_val = 39, // '''
-                        '0' => char_val = 0,
-                        else => {
-                            char_val = inner_char_str[1];
-                        },
-                    }
-                } else {
                     char_val = '?';
                 }
                 break :blk ast.Expr{ .CharLit = .{ .value = char_val, .loc = lit.loc } };

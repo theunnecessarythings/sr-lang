@@ -27,6 +27,7 @@ const CliArgs = struct {
         ast,
         tir,
         help,
+        lex,
         unknown,
     };
 };
@@ -82,6 +83,18 @@ fn process_file(
 
     if (cli_args.verbose) {
         try err_writer.print("Compiling {s}...\n", .{filename});
+    }
+
+    if (cli_args.subcommand == .lex) {
+        var lexer = compiler.lexer.Tokenizer.init(source0, .semi);
+        while (true) {
+            const token = lexer.next();
+            if (token.tag == .eof) break;
+            const lexeme = source0[token.loc.start..token.loc.end];
+            try out_writer.print("{}({},{}) `{s}`\n", .{ token.tag, token.loc.start, token.loc.end, lexeme });
+        }
+        try out_writer.flush();
+        return;
     }
 
     var diags = compiler.diagnostics.Diagnostics.init(allocator);
@@ -236,6 +249,8 @@ pub fn main() !void {
                     cli_args.subcommand = .ast;
                 } else if (std.mem.eql(u8, arg, "tir")) {
                     cli_args.subcommand = .tir;
+                } else if (std.mem.eql(u8, arg, "lex")) {
+                    cli_args.subcommand = .lex;
                 } else if (std.mem.eql(u8, arg, "help")) {
                     cli_args.subcommand = .help;
                 } else {
@@ -273,7 +288,7 @@ pub fn main() !void {
         .help => {
             try printUsage(out_writer, exec_name);
         },
-        .compile, .run, .check, .ast, .tir => {
+        .compile, .run, .check, .ast, .tir, .lex => {
             if (cli_args.filename == null) {
                 try writer.print("{s}Error:{s} Missing source file for '{s}' command.\n", .{ Colors.red, Colors.reset, @tagName(cli_args.subcommand) });
                 try printUsage(writer, exec_name);
