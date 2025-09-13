@@ -1046,7 +1046,7 @@ pub const Tokenizer = struct {
                         self.advance();
                         result.tag = .raw_identifier;
                     },
-                    else => result.tag = .invalid,
+                    else => result.tag = .raw_identifier,
                 }
             },
             .string_literal => {

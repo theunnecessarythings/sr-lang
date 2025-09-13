@@ -47,6 +47,17 @@ test "identifiers" {
     });
 }
 
+test "raw identifier" {
+    try testSingle("r#foo", &.{.raw_identifier});
+    try testSingle("r#while r#f r#comptime r#struct r##return", &.{
+        .raw_identifier,
+        .raw_identifier,
+        .raw_identifier,
+        .raw_identifier,
+        .raw_identifier,
+    });
+}
+
 test "keywords" {
     try testSingle("align and any asm async await break catch comptime code complex const continue dyn defer else enum errdefer error export extern false fn for if in is insert import match mlir noreturn null opaque or orelse package proc pub return linksection simd struct threadlocal tensor test true type typeof union undefined unreachable variant while", &.{
         .keyword_align, .keyword_and, .keyword_any, .keyword_asm, .keyword_async, .keyword_await, .keyword_break, .keyword_catch, .keyword_comptime, .keyword_code, .keyword_complex, .keyword_const, .keyword_continue, .keyword_dyn, .keyword_defer, .keyword_else, .keyword_enum, .keyword_errdefer, .keyword_error, .keyword_export, .keyword_extern, .keyword_false, .keyword_fn, .keyword_for, .keyword_if, .keyword_in, .keyword_is, .keyword_insert, .keyword_import, .keyword_match, .keyword_mlir, .keyword_noreturn, .keyword_null, .keyword_opaque, .keyword_or, .keyword_orelse, .keyword_package, .keyword_proc, .keyword_pub, .keyword_return, .keyword_linksection, .keyword_simd, .keyword_struct, .keyword_threadlocal, .keyword_tensor, .keyword_test, .keyword_true, .keyword_type, .keyword_typeof, .keyword_union, .keyword_undefined, .keyword_unreachable, .keyword_variant, .keyword_while,
@@ -279,6 +290,7 @@ test "range literals" {
     try testSingle("0x00...0x09", &.{ .integer_literal, .dotdotdot, .integer_literal });
     try testSingle("0b00...0b11", &.{ .integer_literal, .dotdotdot, .integer_literal });
     try testSingle("0o00...0o11", &.{ .integer_literal, .dotdotdot, .integer_literal });
+    try testSingle("0o00..=0o11", &.{ .integer_literal, .dotdoteq, .integer_literal });
 }
 
 test "number literals decimal" {
@@ -647,9 +659,27 @@ test "ASI: string literal then newline inserts" {
     try testSemi("\"hi\"\nfoo\n", &.{ .string_literal, .eos, .identifier, .eos });
 }
 
+test "ASI: eof after comment" {
+    try testSemi("// comment\n", &.{});
+}
+
+test "block comment" {
+    try testSingle(
+        \\/* block comment */
+        \\fn main() void {}
+    , &.{
+        .keyword_fn, .identifier, .lparen, .rparen, .identifier, .lcurly, .rcurly,
+    });
+}
+
 test "asm block" {
     try testSingle(
         \\asm { mov eax, 1 }
+    , &.{
+        .keyword_asm, .raw_asm_block,
+    });
+    try testSingle(
+        \\asm { mov \\, eax, 1, "sada", 'a' }
     , &.{
         .keyword_asm, .raw_asm_block,
     });
@@ -658,6 +688,10 @@ test "asm block" {
 test "mlir block" {
     try testSingle(
         \\mlir { func @main() -> i32 { return 0 : i32 } }
+    , &.{ .keyword_mlir, .mlir_content });
+    // skip escaped
+    try testSingle(
+        \\mlir { func \@main() -> i32 { return 0 : i32 } }
     , &.{ .keyword_mlir, .mlir_content });
 }
 

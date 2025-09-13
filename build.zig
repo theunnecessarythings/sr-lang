@@ -96,8 +96,10 @@ pub fn build(b: *std.Build) void {
             },
         }),
     });
+    exe_tests.use_llvm = true;
 
     const run_exe_tests = b.addRunArtifact(exe_tests);
+    b.installArtifact(exe_tests);
 
     const test_step = b.step("test", "Run tests");
     test_step.dependOn(&run_mod_tests.step);
