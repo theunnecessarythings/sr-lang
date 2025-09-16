@@ -1,0 +1,1651 @@
+const std = @import("std");
+const dod = @import("cst_v2.zig");
+const ArrayList = std.array_list.Managed;
+
+pub const Index = dod.Index;
+pub const SentinelIndex = dod.SentinelIndex;
+pub const RangeOf = dod.RangeOf;
+pub const OptRangeOf = dod.OptRangeOf;
+pub const Pool = dod.Pool;
+pub const Table = dod.Table;
+pub const StoreIndex = dod.StoreIndex;
+pub const StringInterner = dod.StringInterner;
+pub const LocStore = dod.LocStore;
+pub const StrId = dod.StrId;
+pub const LocId = dod.LocId;
+pub const OptStrId = dod.OptStrId;
+pub const OptLocId = dod.OptLocId;
+pub const MlirKind = dod.MlirKind;
+pub const CastKind = dod.CastKind;
+
+pub const ExprTag = struct {};
+pub const DeclTag = struct {};
+pub const StmtTag = struct {};
+pub const AttrTag = struct {};
+pub const ParamTag = struct {};
+pub const StructFieldTag = struct {};
+pub const EnumFieldTag = struct {};
+pub const VariantFieldTag = struct {};
+pub const KeyValueTag = struct {};
+pub const MatchArmTag = struct {};
+pub const StructFieldValueTag = struct {};
+pub const PathSegTag = struct {};
+pub const PatternTag = struct {};
+pub const PatternFieldTag = struct {};
+
+pub const ExprId = Index(ExprTag);
+pub const DeclId = Index(DeclTag);
+pub const StmtId = Index(StmtTag);
+pub const AttributeId = Index(AttrTag);
+pub const ParamId = Index(ParamTag);
+pub const StructFieldId = Index(StructFieldTag);
+pub const EnumFieldId = Index(EnumFieldTag);
+pub const VariantFieldId = Index(VariantFieldTag);
+pub const KeyValueId = Index(KeyValueTag);
+pub const MatchArmId = Index(MatchArmTag);
+pub const StructFieldValueId = Index(StructFieldValueTag);
+pub const PathSegId = Index(PathSegTag);
+pub const PatternId = Index(PatternTag);
+pub const PatFieldId = Index(PatternFieldTag);
+
+pub const OptExprId = SentinelIndex(ExprTag);
+pub const OptStmtId = SentinelIndex(StmtTag);
+pub const OptDeclId = SentinelIndex(DeclTag);
+pub const OptParamId = SentinelIndex(ParamTag);
+pub const OptPatternId = SentinelIndex(PatternTag);
+
+pub const RangeExpr = RangeOf(ExprId);
+pub const RangeStmt = RangeOf(StmtId);
+pub const RangeDecl = RangeOf(DeclId);
+pub const RangeParam = RangeOf(ParamId);
+pub const RangeAttr = RangeOf(AttributeId);
+pub const RangeField = RangeOf(StructFieldId);
+pub const RangeEnumField = RangeOf(EnumFieldId);
+pub const RangeVariantField = RangeOf(VariantFieldId);
+pub const RangeKeyValue = RangeOf(KeyValueId);
+pub const RangeStructFieldValue = RangeOf(StructFieldValueId);
+pub const RangeMatchArm = RangeOf(MatchArmId);
+pub const RangePat = RangeOf(PatternId);
+pub const RangePathSeg = RangeOf(PathSegId);
+pub const RangePatField = RangeOf(PatFieldId);
+
+pub const OptRangeExpr = OptRangeOf(ExprId);
+pub const OptRangeStmt = OptRangeOf(StmtId);
+pub const OptRangeDecl = OptRangeOf(DeclId);
+pub const OptRangeAttr = OptRangeOf(AttributeId);
+pub const OptRangeField = OptRangeOf(StructFieldId);
+pub const OptRangePat = OptRangeOf(PatternId);
+
+pub const LiteralKind = enum(u8) { int, float, bool, string, char };
+pub const UnaryOp = enum(u8) { plus, minus, address_of, logical_not };
+pub const BinaryOp = enum(u8) {
+    add,
+    sub,
+    mul,
+    div,
+    mod,
+    shl,
+    shr,
+    bit_and,
+    bit_or,
+    bit_xor,
+    eq,
+    neq,
+    lt,
+    lte,
+    gt,
+    gte,
+    logical_and,
+    logical_or,
+    @"orelse",
+};
+pub const VariantPayloadKind = enum(u2) { none, tuple, @"struct" };
+
+pub const Unit = struct {
+    decls: RangeDecl,
+    package_name: OptStrId,
+    package_loc: OptLocId,
+
+    pub fn empty() Unit {
+        return .{
+            .decls = RangeDecl.empty(),
+            .package_name = OptStrId.none(),
+            .package_loc = OptLocId.none(),
+        };
+    }
+};
+
+pub const ExprKind = enum(u16) {
+    Literal,
+    Ident,
+    Unary,
+    Binary,
+    Range,
+    Deref,
+    ArrayLit,
+    TupleLit,
+    MapLit,
+    Call,
+    IndexAccess,
+    FieldAccess,
+    StructLit,
+    VariantLit,
+    EnumLit,
+    FunctionLit,
+    Block,
+    ComptimeBlock,
+    CodeBlock,
+    AsyncBlock,
+    MlirBlock,
+    Insert,
+    Return,
+    If,
+    While,
+    For,
+    Match,
+    Break,
+    Continue,
+    Unreachable,
+    NullLit,
+    UndefLit,
+    Defer,
+    ErrDefer,
+    ErrUnwrap,
+    OptionalUnwrap,
+    Await,
+    Closure,
+    Cast,
+    Catch,
+    Import,
+    TypeOf,
+    TupleType,
+    ArrayType,
+    DynArrayType,
+    MapType,
+    SliceType,
+    OptionalType,
+    ErrorSetType,
+    ErrorType,
+    StructType,
+    EnumType,
+    VariantType,
+    UnionType,
+    PointerType,
+    SimdType,
+    ComplexType,
+    TensorType,
+    TypeType,
+    AnyType,
+    NoreturnType,
+};
+
+pub const Rows = struct {
+    pub const Literal = struct {
+        kind: LiteralKind,
+        value: OptStrId,
+        bool_value: bool,
+        char_value: u32,
+        loc: LocId,
+    };
+    pub const Ident = struct { name: StrId, loc: LocId };
+    pub const Unary = struct { expr: ExprId, op: UnaryOp, loc: LocId };
+    pub const Binary = struct { left: ExprId, right: ExprId, op: BinaryOp, wrap: bool, saturate: bool, loc: LocId };
+    pub const Range = struct { start: OptExprId, end: OptExprId, inclusive_right: bool, loc: LocId };
+    pub const Deref = struct { expr: ExprId, loc: LocId };
+    pub const ArrayLit = struct { elems: RangeExpr, loc: LocId };
+    pub const TupleLit = struct { elems: RangeExpr, loc: LocId };
+    pub const MapLit = struct { entries: RangeKeyValue, loc: LocId };
+    pub const KeyValue = struct { key: ExprId, value: ExprId, loc: LocId };
+    pub const Call = struct { callee: ExprId, args: RangeExpr, loc: LocId };
+    pub const IndexAccess = struct { collection: ExprId, index: ExprId, loc: LocId };
+    pub const FieldAccess = struct { parent: ExprId, field: StrId, is_tuple: bool, loc: LocId };
+    pub const StructFieldValue = struct { name: OptStrId, value: ExprId, loc: LocId };
+    pub const StructLit = struct { fields: RangeStructFieldValue, loc: LocId };
+    pub const VariantLit = struct { name: StrId, value: OptExprId, loc: LocId };
+    pub const EnumLit = struct { name: StrId, value: OptExprId, loc: LocId };
+
+    pub const FnFlags = packed struct(u8) { is_proc: bool, is_async: bool, is_variadic: bool, is_extern: bool, _pad: u4 = 0 };
+
+    pub const FunctionLit = struct {
+        params: RangeParam,
+        result_ty: OptExprId,
+        body: OptExprId,
+        raw_asm: OptStrId,
+        attrs: OptRangeAttr,
+        flags: FnFlags,
+        loc: LocId,
+    };
+
+    pub const Block = struct { items: RangeStmt, loc: LocId };
+    pub const ComptimeBlock = struct { block: ExprId, loc: LocId };
+    pub const CodeBlock = struct { block: ExprId, loc: LocId };
+    pub const AsyncBlock = struct { body: ExprId, loc: LocId };
+    pub const MlirBlock = struct { kind: MlirKind, text: StrId, loc: LocId };
+    pub const Insert = struct { expr: ExprId, loc: LocId };
+
+    pub const Return = struct { value: OptExprId, loc: LocId };
+    pub const If = struct { cond: ExprId, then_block: ExprId, else_block: OptExprId, loc: LocId };
+    pub const While = struct {
+        cond: OptExprId,
+        pattern: OptPatternId,
+        body: ExprId,
+        is_pattern: bool,
+        label: OptStrId,
+        loc: LocId,
+    };
+    pub const For = struct { pattern: PatternId, iterable: ExprId, body: ExprId, label: OptStrId, loc: LocId };
+    pub const Match = struct { expr: ExprId, arms: RangeMatchArm, loc: LocId };
+    pub const MatchArm = struct { pattern: PatternId, guard: OptExprId, body: ExprId, loc: LocId };
+
+    pub const Break = struct { label: OptStrId, value: OptExprId, loc: LocId };
+    pub const Continue = struct { loc: LocId };
+    pub const Unreachable = struct { loc: LocId };
+    pub const NullLit = struct { loc: LocId };
+    pub const UndefLit = struct { loc: LocId };
+    pub const Defer = struct { expr: ExprId, loc: LocId };
+    pub const ErrDefer = struct { expr: ExprId, loc: LocId };
+    pub const ErrUnwrap = struct { expr: ExprId, loc: LocId };
+    pub const OptionalUnwrap = struct { expr: ExprId, loc: LocId };
+    pub const Await = struct { expr: ExprId, loc: LocId };
+    pub const Closure = struct { params: RangeParam, result_ty: OptExprId, body: ExprId, loc: LocId };
+    pub const Cast = struct { expr: ExprId, ty: ExprId, kind: CastKind, loc: LocId };
+    pub const Catch = struct { expr: ExprId, binding_name: OptStrId, binding_loc: OptLocId, handler: ExprId, loc: LocId };
+    pub const Import = struct { expr: ExprId, loc: LocId };
+    pub const TypeOf = struct { expr: ExprId, loc: LocId };
+
+    pub const Param = struct { pat: OptPatternId, ty: OptExprId, value: OptExprId, attrs: OptRangeAttr, loc: LocId };
+    pub const Attribute = struct { name: StrId, value: OptExprId, loc: LocId };
+
+    pub const DeclFlags = packed struct(u8) { is_const: bool, _pad: u7 = 0 };
+    pub const Decl = struct { pattern: OptPatternId, value: ExprId, ty: OptExprId, flags: DeclFlags, loc: LocId };
+
+    pub const TupleType = struct { elems: RangeExpr, loc: LocId };
+    pub const ArrayType = struct { elem: ExprId, size: ExprId, loc: LocId };
+    pub const DynArrayType = struct { elem: ExprId, loc: LocId };
+    pub const MapType = struct { key: ExprId, value: ExprId, loc: LocId };
+    pub const SliceType = struct { elem: ExprId, loc: LocId };
+    pub const OptionalType = struct { elem: ExprId, loc: LocId };
+    pub const ErrorSetType = struct { err: ExprId, value: ExprId, loc: LocId };
+
+    pub const StructField = struct { name: StrId, ty: ExprId, value: OptExprId, attrs: OptRangeAttr, loc: LocId };
+    pub const StructType = struct { fields: RangeField, is_extern: bool, attrs: OptRangeAttr, loc: LocId };
+
+    pub const EnumField = struct { name: StrId, value: OptExprId, attrs: OptRangeAttr, loc: LocId };
+    pub const EnumType = struct { fields: RangeEnumField, discriminant: OptExprId, is_extern: bool, attrs: OptRangeAttr, loc: LocId };
+
+    pub const VariantField = struct {
+        name: StrId,
+        payload_kind: VariantPayloadKind,
+        payload_elems: OptRangeExpr,
+        payload_fields: OptRangeField,
+        value: OptExprId,
+        attrs: OptRangeAttr,
+        loc: LocId,
+    };
+    pub const VariantType = struct { fields: RangeVariantField, loc: LocId };
+    pub const ErrorType = VariantType;
+
+    pub const UnionType = struct { fields: RangeField, is_extern: bool, attrs: OptRangeAttr, loc: LocId };
+
+    pub const PointerType = struct { elem: ExprId, is_const: bool, loc: LocId };
+    pub const SimdType = struct { elem: ExprId, lanes: ExprId, loc: LocId };
+    pub const ComplexType = struct { elem: ExprId, loc: LocId };
+    pub const TensorType = struct { elem: ExprId, shape: RangeExpr, loc: LocId };
+    pub const TypeType = struct { loc: LocId };
+    pub const AnyType = struct { loc: LocId };
+    pub const NoreturnType = struct { loc: LocId };
+};
+
+inline fn RowT(comptime K: ExprKind) type {
+    return @field(Rows, @tagName(K));
+}
+
+pub const StmtKind = enum(u8) {
+    Expr,
+    Decl,
+    Assign,
+    Insert,
+    Return,
+    Break,
+    Continue,
+    Unreachable,
+    Defer,
+    ErrDefer,
+};
+
+pub const StmtRows = struct {
+    pub const Expr = struct { expr: ExprId };
+    pub const Decl = struct { decl: DeclId };
+    pub const Assign = struct { left: ExprId, right: ExprId, loc: LocId };
+    pub const Insert = Rows.Insert;
+    pub const Return = Rows.Return;
+    pub const Break = Rows.Break;
+    pub const Continue = Rows.Continue;
+    pub const Unreachable = Rows.Unreachable;
+    pub const Defer = Rows.Defer;
+    pub const ErrDefer = Rows.ErrDefer;
+};
+
+inline fn StmtRowT(comptime K: StmtKind) type {
+    return @field(StmtRows, @tagName(K));
+}
+
+pub const PatternKind = enum(u16) {
+    Wildcard,
+    Literal,
+    Path,
+    Binding,
+    Tuple,
+    Slice,
+    Struct,
+    VariantTuple,
+    VariantStruct,
+    Range,
+    Or,
+    At,
+};
+
+pub const PatRows = struct {
+    pub const Wildcard = struct { loc: LocId };
+    pub const Literal = struct { expr: ExprId, loc: LocId };
+
+    pub const PathSeg = struct { name: StrId, by_ref: bool, is_mut: bool, loc: LocId };
+    pub const Path = struct { segments: RangePathSeg, loc: LocId };
+
+    pub const Binding = struct { name: StrId, by_ref: bool, is_mut: bool, loc: LocId };
+
+    pub const Tuple = struct { elems: RangePat, loc: LocId };
+
+    pub const Slice = struct {
+        elems: RangePat,
+        has_rest: bool,
+        rest_index: u32,
+        rest_binding: OptPatternId,
+        loc: LocId,
+    };
+
+    pub const StructField = struct { name: StrId, pattern: PatternId, loc: LocId };
+
+    pub const Struct = struct {
+        path: RangePathSeg,
+        fields: RangePatField,
+        has_rest: bool,
+        loc: LocId,
+    };
+
+    pub const VariantTuple = struct {
+        path: RangePathSeg,
+        elems: RangePat,
+        loc: LocId,
+    };
+
+    pub const VariantStruct = struct {
+        path: RangePathSeg,
+        fields: RangePatField,
+        has_rest: bool,
+        loc: LocId,
+    };
+
+    pub const Range = struct { start: OptExprId, end: OptExprId, inclusive_right: bool, loc: LocId };
+    pub const Or = struct { alts: RangePat, loc: LocId };
+    pub const At = struct { binder: StrId, pattern: PatternId, loc: LocId };
+};
+
+inline fn PatRowT(comptime K: PatternKind) type {
+    return @field(PatRows, @tagName(K));
+}
+
+pub const ExprStore = struct {
+    gpa: std.mem.Allocator,
+    index: StoreIndex(ExprKind) = .{},
+
+    Literal: Table(Rows.Literal) = .{},
+    Ident: Table(Rows.Ident) = .{},
+    Unary: Table(Rows.Unary) = .{},
+    Binary: Table(Rows.Binary) = .{},
+    Range: Table(Rows.Range) = .{},
+    Deref: Table(Rows.Deref) = .{},
+
+    ArrayLit: Table(Rows.ArrayLit) = .{},
+    TupleLit: Table(Rows.TupleLit) = .{},
+    MapLit: Table(Rows.MapLit) = .{},
+    KeyValue: Table(Rows.KeyValue) = .{},
+
+    Call: Table(Rows.Call) = .{},
+    IndexAccess: Table(Rows.IndexAccess) = .{},
+    FieldAccess: Table(Rows.FieldAccess) = .{},
+
+    StructFieldValue: Table(Rows.StructFieldValue) = .{},
+    StructLit: Table(Rows.StructLit) = .{},
+    VariantLit: Table(Rows.VariantLit) = .{},
+    EnumLit: Table(Rows.EnumLit) = .{},
+
+    FunctionLit: Table(Rows.FunctionLit) = .{},
+    Block: Table(Rows.Block) = .{},
+    ComptimeBlock: Table(Rows.ComptimeBlock) = .{},
+    CodeBlock: Table(Rows.CodeBlock) = .{},
+    AsyncBlock: Table(Rows.AsyncBlock) = .{},
+    MlirBlock: Table(Rows.MlirBlock) = .{},
+    Insert: Table(Rows.Insert) = .{},
+
+    Return: Table(Rows.Return) = .{},
+    If: Table(Rows.If) = .{},
+    While: Table(Rows.While) = .{},
+    For: Table(Rows.For) = .{},
+    Match: Table(Rows.Match) = .{},
+    MatchArm: Table(Rows.MatchArm) = .{},
+
+    Break: Table(Rows.Break) = .{},
+    Continue: Table(Rows.Continue) = .{},
+    Unreachable: Table(Rows.Unreachable) = .{},
+    NullLit: Table(Rows.NullLit) = .{},
+    UndefLit: Table(Rows.UndefLit) = .{},
+    Defer: Table(Rows.Defer) = .{},
+    ErrDefer: Table(Rows.ErrDefer) = .{},
+    ErrUnwrap: Table(Rows.ErrUnwrap) = .{},
+    OptionalUnwrap: Table(Rows.OptionalUnwrap) = .{},
+    Await: Table(Rows.Await) = .{},
+    Closure: Table(Rows.Closure) = .{},
+    Cast: Table(Rows.Cast) = .{},
+    Catch: Table(Rows.Catch) = .{},
+    Import: Table(Rows.Import) = .{},
+    TypeOf: Table(Rows.TypeOf) = .{},
+
+    TupleType: Table(Rows.TupleType) = .{},
+    ArrayType: Table(Rows.ArrayType) = .{},
+    DynArrayType: Table(Rows.DynArrayType) = .{},
+    MapType: Table(Rows.MapType) = .{},
+    SliceType: Table(Rows.SliceType) = .{},
+    OptionalType: Table(Rows.OptionalType) = .{},
+    ErrorSetType: Table(Rows.ErrorSetType) = .{},
+
+    StructField: Table(Rows.StructField) = .{},
+    StructType: Table(Rows.StructType) = .{},
+
+    EnumField: Table(Rows.EnumField) = .{},
+    EnumType: Table(Rows.EnumType) = .{},
+
+    VariantField: Table(Rows.VariantField) = .{},
+    VariantType: Table(Rows.VariantType) = .{},
+    ErrorType: Table(Rows.ErrorType) = .{},
+    UnionType: Table(Rows.UnionType) = .{},
+    PointerType: Table(Rows.PointerType) = .{},
+    SimdType: Table(Rows.SimdType) = .{},
+    ComplexType: Table(Rows.ComplexType) = .{},
+    TensorType: Table(Rows.TensorType) = .{},
+    TypeType: Table(Rows.TypeType) = .{},
+    AnyType: Table(Rows.AnyType) = .{},
+    NoreturnType: Table(Rows.NoreturnType) = .{},
+
+    Param: Table(Rows.Param) = .{},
+    Attribute: Table(Rows.Attribute) = .{},
+    Decl: Table(Rows.Decl) = .{},
+
+    expr_pool: Pool(ExprId) = .{},
+    decl_pool: Pool(DeclId) = .{},
+    param_pool: Pool(ParamId) = .{},
+    attr_pool: Pool(AttributeId) = .{},
+    sfv_pool: Pool(StructFieldValueId) = .{},
+    kv_pool: Pool(KeyValueId) = .{},
+    arm_pool: Pool(MatchArmId) = .{},
+    sfield_pool: Pool(StructFieldId) = .{},
+    efield_pool: Pool(EnumFieldId) = .{},
+    vfield_pool: Pool(VariantFieldId) = .{},
+
+    strs: StringInterner,
+    locs: LocStore = .{},
+
+    pub fn init(gpa: std.mem.Allocator) ExprStore {
+        return .{ .gpa = gpa, .strs = StringInterner.init(gpa) };
+    }
+
+    pub fn deinit(self: *@This()) void {
+        const gpa = self.gpa;
+
+        self.index.deinit(gpa);
+
+        inline for (@typeInfo(ExprKind).@"enum".fields) |f| {
+            @field(self, f.name).deinit(gpa);
+        }
+
+        self.StructFieldValue.deinit(gpa);
+        self.KeyValue.deinit(gpa);
+        self.MatchArm.deinit(gpa);
+        self.Param.deinit(gpa);
+        self.Attribute.deinit(gpa);
+        self.Decl.deinit(gpa);
+        self.StructField.deinit(gpa);
+        self.EnumField.deinit(gpa);
+        self.VariantField.deinit(gpa);
+
+        self.expr_pool.deinit(gpa);
+        self.decl_pool.deinit(gpa);
+        self.param_pool.deinit(gpa);
+        self.attr_pool.deinit(gpa);
+        self.sfv_pool.deinit(gpa);
+        self.kv_pool.deinit(gpa);
+        self.arm_pool.deinit(gpa);
+        self.sfield_pool.deinit(gpa);
+        self.efield_pool.deinit(gpa);
+        self.vfield_pool.deinit(gpa);
+
+        self.strs.deinit();
+        self.locs.deinit(gpa);
+    }
+
+    pub fn add(self: *@This(), comptime K: ExprKind, row: RowT(K)) ExprId {
+        const tbl: *Table(RowT(K)) = &@field(self, @tagName(K));
+        const idx = tbl.add(self.gpa, row);
+        return self.index.newId(self.gpa, K, idx, ExprId);
+    }
+
+    pub fn get(self: *const @This(), comptime K: ExprKind, id: ExprId) RowT(K) {
+        std.debug.assert(self.index.kinds.items[id.toRaw()] == K);
+        const row_idx = self.index.rows.items[id.toRaw()];
+        const tbl: *const Table(RowT(K)) = &@field(self, @tagName(K));
+        return tbl.get(row_idx);
+    }
+
+    pub fn addKeyValue(self: *@This(), row: Rows.KeyValue) KeyValueId {
+        const idx = self.KeyValue.add(self.gpa, row);
+        return KeyValueId.fromRaw(idx);
+    }
+
+    pub fn addStructFieldValue(self: *@This(), row: Rows.StructFieldValue) StructFieldValueId {
+        const idx = self.StructFieldValue.add(self.gpa, row);
+        return StructFieldValueId.fromRaw(idx);
+    }
+
+    pub fn addMatchArm(self: *@This(), row: Rows.MatchArm) MatchArmId {
+        const idx = self.MatchArm.add(self.gpa, row);
+        return MatchArmId.fromRaw(idx);
+    }
+
+    pub fn addParam(self: *@This(), row: Rows.Param) ParamId {
+        const idx = self.Param.add(self.gpa, row);
+        return ParamId.fromRaw(idx);
+    }
+
+    pub fn addAttribute(self: *@This(), row: Rows.Attribute) AttributeId {
+        const idx = self.Attribute.add(self.gpa, row);
+        return AttributeId.fromRaw(idx);
+    }
+
+    pub fn addDecl(self: *@This(), row: Rows.Decl) DeclId {
+        const idx = self.Decl.add(self.gpa, row);
+        return DeclId.fromRaw(idx);
+    }
+
+    pub fn addStructField(self: *@This(), row: Rows.StructField) StructFieldId {
+        const idx = self.StructField.add(self.gpa, row);
+        return StructFieldId.fromRaw(idx);
+    }
+
+    pub fn addEnumField(self: *@This(), row: Rows.EnumField) EnumFieldId {
+        const idx = self.EnumField.add(self.gpa, row);
+        return EnumFieldId.fromRaw(idx);
+    }
+
+    pub fn addVariantField(self: *@This(), row: Rows.VariantField) VariantFieldId {
+        const idx = self.VariantField.add(self.gpa, row);
+        return VariantFieldId.fromRaw(idx);
+    }
+};
+
+pub const StmtStore = struct {
+    gpa: std.mem.Allocator,
+    index: StoreIndex(StmtKind) = .{},
+
+    Expr: Table(StmtRows.Expr) = .{},
+    Decl: Table(StmtRows.Decl) = .{},
+    Assign: Table(StmtRows.Assign) = .{},
+    Insert: Table(StmtRows.Insert) = .{},
+    Return: Table(StmtRows.Return) = .{},
+    Break: Table(StmtRows.Break) = .{},
+    Continue: Table(StmtRows.Continue) = .{},
+    Unreachable: Table(StmtRows.Unreachable) = .{},
+    Defer: Table(StmtRows.Defer) = .{},
+    ErrDefer: Table(StmtRows.ErrDefer) = .{},
+
+    stmt_pool: Pool(StmtId) = .{},
+
+    pub fn init(gpa: std.mem.Allocator) StmtStore {
+        return .{ .gpa = gpa };
+    }
+
+    pub fn deinit(self: *@This()) void {
+        const gpa = self.gpa;
+
+        self.index.deinit(gpa);
+        inline for (@typeInfo(StmtKind).@"enum".fields) |f| {
+            @field(self, f.name).deinit(gpa);
+        }
+        self.stmt_pool.deinit(gpa);
+    }
+
+    pub fn add(self: *@This(), comptime K: StmtKind, row: StmtRowT(K)) StmtId {
+        const tbl: *Table(StmtRowT(K)) = &@field(self, @tagName(K));
+        const idx = tbl.add(self.gpa, row);
+        return self.index.newId(self.gpa, K, idx, StmtId);
+    }
+
+    pub fn get(self: *const @This(), comptime K: StmtKind, id: StmtId) StmtRowT(K) {
+        std.debug.assert(self.index.kinds.items[id.toRaw()] == K);
+        const row_idx = self.index.rows.items[id.toRaw()];
+        const tbl: *const Table(StmtRowT(K)) = &@field(self, @tagName(K));
+        return tbl.get(row_idx);
+    }
+};
+
+pub const PatternStore = struct {
+    gpa: std.mem.Allocator,
+    index: StoreIndex(PatternKind) = .{},
+
+    Wildcard: Table(PatRows.Wildcard) = .{},
+    Literal: Table(PatRows.Literal) = .{},
+    PathSeg: Table(PatRows.PathSeg) = .{},
+    Path: Table(PatRows.Path) = .{},
+    Binding: Table(PatRows.Binding) = .{},
+    Tuple: Table(PatRows.Tuple) = .{},
+    Slice: Table(PatRows.Slice) = .{},
+    StructField: Table(PatRows.StructField) = .{},
+    Struct: Table(PatRows.Struct) = .{},
+    VariantTuple: Table(PatRows.VariantTuple) = .{},
+    VariantStruct: Table(PatRows.VariantStruct) = .{},
+    Range: Table(PatRows.Range) = .{},
+    Or: Table(PatRows.Or) = .{},
+    At: Table(PatRows.At) = .{},
+
+    pat_pool: Pool(PatternId) = .{},
+    seg_pool: Pool(PathSegId) = .{},
+    field_pool: Pool(PatFieldId) = .{},
+
+    pub fn init(gpa: std.mem.Allocator) PatternStore {
+        return .{ .gpa = gpa };
+    }
+
+    pub fn deinit(self: *@This()) void {
+        const gpa = self.gpa;
+
+        self.index.deinit(gpa);
+        inline for (@typeInfo(PatternKind).@"enum".fields) |f| {
+            @field(self, f.name).deinit(gpa);
+        }
+
+        self.PathSeg.deinit(gpa);
+        self.StructField.deinit(gpa);
+
+        self.pat_pool.deinit(gpa);
+        self.seg_pool.deinit(gpa);
+        self.field_pool.deinit(gpa);
+    }
+
+    pub fn add(self: *@This(), comptime K: PatternKind, row: PatRowT(K)) PatternId {
+        const tbl: *Table(PatRowT(K)) = &@field(self, @tagName(K));
+        const idx = tbl.add(self.gpa, row);
+        return self.index.newId(self.gpa, K, idx, PatternId);
+    }
+
+    pub fn get(self: *const @This(), comptime K: PatternKind, id: PatternId) PatRowT(K) {
+        std.debug.assert(self.index.kinds.items[id.toRaw()] == K);
+        const row_idx = self.index.rows.items[id.toRaw()];
+        const tbl: *const Table(PatRowT(K)) = &@field(self, @tagName(K));
+        return tbl.get(row_idx);
+    }
+
+    pub fn addPathSeg(self: *@This(), row: PatRows.PathSeg) PathSegId {
+        const idx = self.PathSeg.add(self.gpa, row);
+        return PathSegId.fromRaw(idx);
+    }
+
+    pub fn addPatField(self: *@This(), row: PatRows.StructField) PatFieldId {
+        const idx = self.StructField.add(self.gpa, row);
+        return PatFieldId.fromRaw(idx);
+    }
+};
+
+pub const Ast = struct {
+    gpa: std.mem.Allocator,
+    unit: Unit,
+    exprs: ExprStore,
+    stmts: StmtStore,
+    pats: PatternStore,
+
+    pub fn init(gpa: std.mem.Allocator) Ast {
+        return .{
+            .gpa = gpa,
+            .unit = Unit.empty(),
+            .exprs = ExprStore.init(gpa),
+            .stmts = StmtStore.init(gpa),
+            .pats = PatternStore.init(gpa),
+        };
+    }
+
+    pub fn deinit(self: *@This()) void {
+        self.exprs.deinit();
+        self.stmts.deinit();
+        self.pats.deinit();
+    }
+};
+
+pub const AstPrinter = struct {
+    writer: ArrayList(u8).Writer,
+    indent: usize = 0,
+
+    exprs: *const ExprStore,
+    stmts: *const StmtStore,
+    pats: *const PatternStore,
+
+    pub fn init(writer: anytype, exprs: *const ExprStore, stmts: *const StmtStore, pats: *const PatternStore) AstPrinter {
+        return .{ .writer = writer, .exprs = exprs, .stmts = stmts, .pats = pats };
+    }
+
+    fn ws(self: *AstPrinter) anyerror!void {
+        var i: usize = 0;
+        while (i < self.indent) : (i += 1) try self.writer.writeByte(' ');
+    }
+
+    fn open(self: *AstPrinter, comptime head: []const u8, args: anytype) anyerror!void {
+        try self.ws();
+        try self.writer.print(head, args);
+        try self.writer.writeAll("\n");
+        self.indent += 2;
+    }
+
+    fn close(self: *AstPrinter) anyerror!void {
+        self.indent = if (self.indent >= 2) self.indent - 2 else 0;
+        try self.ws();
+        try self.writer.writeAll(")\n");
+    }
+
+    fn leaf(self: *AstPrinter, comptime fmt: []const u8, args: anytype) anyerror!void {
+        try self.ws();
+        try self.writer.print(fmt, args);
+        try self.writer.writeAll("\n");
+    }
+
+    inline fn s(self: *const AstPrinter, id: StrId) []const u8 {
+        return self.exprs.strs.get(id);
+    }
+
+    pub fn printUnit(self: *AstPrinter, unit: *const Unit) anyerror!void {
+        try self.open("(unit", .{});
+        if (!unit.package_name.isNone()) {
+            try self.leaf("(package \"{s}\")", .{self.s(unit.package_name.unwrap())});
+        } else {
+            try self.leaf("(package null)", .{});
+        }
+
+        const decl_ids = self.exprs.decl_pool.slice(unit.decls);
+        for (decl_ids) |did| try self.printDecl(did);
+        try self.close();
+    }
+
+    fn printDecl(self: *AstPrinter, id: DeclId) anyerror!void {
+        const row = self.exprs.Decl.get(id.toRaw());
+        try self.open("(decl is_const={})", .{row.flags.is_const});
+
+        if (!row.pattern.isNone()) {
+            try self.open("(pattern", .{});
+            try self.printPattern(row.pattern.unwrap());
+            try self.close();
+        }
+
+        if (!row.ty.isNone()) {
+            try self.open("(type", .{});
+            try self.printExpr(row.ty.unwrap());
+            try self.close();
+        }
+
+        try self.open("(value", .{});
+        try self.printExpr(row.value);
+        try self.close();
+
+        try self.close();
+    }
+
+    fn printStmt(self: *AstPrinter, id: StmtId) anyerror!void {
+        const kind = self.stmts.index.kinds.items[id.toRaw()];
+        return switch (kind) {
+            .Expr => {
+                const row = self.stmts.get(.Expr, id);
+                try self.open("(expr_stmt", .{});
+                try self.printExpr(row.expr);
+                try self.close();
+            },
+            .Decl => {
+                const row = self.stmts.get(.Decl, id);
+                try self.printDecl(row.decl);
+            },
+            .Assign => {
+                const row = self.stmts.get(.Assign, id);
+                try self.open("(assign", .{});
+                try self.open("(left", .{});
+                try self.printExpr(row.left);
+                try self.close();
+                try self.open("(right", .{});
+                try self.printExpr(row.right);
+                try self.close();
+                try self.close();
+            },
+            .Insert => {
+                const row = self.stmts.get(.Insert, id);
+                try self.open("(insert", .{});
+                try self.printExpr(row.expr);
+                try self.close();
+            },
+            .Return => {
+                const row = self.stmts.get(.Return, id);
+                try self.open("(return", .{});
+                if (!row.value.isNone()) {
+                    try self.open("(value", .{});
+                    try self.printExpr(row.value.unwrap());
+                    try self.close();
+                }
+                try self.close();
+            },
+            .Break => {
+                const row = self.stmts.get(.Break, id);
+                try self.open("(break", .{});
+                if (!row.label.isNone()) try self.leaf("label=\"{s}\"", .{self.s(row.label.unwrap())});
+                if (!row.value.isNone()) {
+                    try self.open("(value", .{});
+                    try self.printExpr(row.value.unwrap());
+                    try self.close();
+                }
+                try self.close();
+            },
+            .Continue => {
+                _ = self.stmts.get(.Continue, id);
+                try self.leaf("(continue)", .{});
+            },
+            .Unreachable => {
+                _ = self.stmts.get(.Unreachable, id);
+                try self.leaf("(unreachable)", .{});
+            },
+            .Defer => {
+                const row = self.stmts.get(.Defer, id);
+                try self.open("(defer", .{});
+                try self.printExpr(row.expr);
+                try self.close();
+            },
+            .ErrDefer => {
+                const row = self.stmts.get(.ErrDefer, id);
+                try self.open("(errdefer", .{});
+                try self.printExpr(row.expr);
+                try self.close();
+            },
+        };
+    }
+
+    pub fn printExpr(self: *AstPrinter, id: ExprId) anyerror!void {
+        const kind = self.exprs.index.kinds.items[id.toRaw()];
+        switch (kind) {
+            .Literal => {
+                const node = self.exprs.get(.Literal, id);
+                switch (node.kind) {
+                    .int, .float, .string => {
+                        const text = self.s(node.value.unwrap());
+                        try self.leaf("(literal kind={s} \"{s}\")", .{@tagName(node.kind), text});
+                    },
+                    .bool => try self.leaf("(literal kind=bool {})", .{node.bool_value}),
+                    .char => try self.leaf("(literal kind=char {d})", .{node.char_value}),
+                }
+            },
+            .Ident => {
+                const node = self.exprs.get(.Ident, id);
+                try self.leaf("(ident \"{s}\")", .{self.s(node.name)});
+            },
+            .Unary => {
+                const node = self.exprs.get(.Unary, id);
+                try self.open("(unary op={s}", .{@tagName(node.op)});
+                try self.printExpr(node.expr);
+                try self.close();
+            },
+            .Binary => {
+                const node = self.exprs.get(.Binary, id);
+                try self.open("(binary op={s} wrap={} saturate={})", .{ @tagName(node.op), node.wrap, node.saturate });
+                try self.printExpr(node.left);
+                try self.printExpr(node.right);
+                try self.close();
+            },
+            .Range => {
+                const node = self.exprs.get(.Range, id);
+                try self.open("(range inclusive_right={})", .{node.inclusive_right});
+                if (!node.start.isNone()) try self.printExpr(node.start.unwrap());
+                if (!node.end.isNone()) try self.printExpr(node.end.unwrap());
+                try self.close();
+            },
+            .Deref => {
+                const node = self.exprs.get(.Deref, id);
+                try self.open("(deref", .{});
+                try self.printExpr(node.expr);
+                try self.close();
+            },
+            .ArrayLit => {
+                const node = self.exprs.get(.ArrayLit, id);
+                try self.printExprRange("array", node.elems);
+            },
+            .TupleLit => {
+                const node = self.exprs.get(.TupleLit, id);
+                try self.printExprRange("tuple", node.elems);
+            },
+            .MapLit => {
+                const node = self.exprs.get(.MapLit, id);
+                try self.open("(map", .{});
+                const entries = self.exprs.kv_pool.slice(node.entries);
+                for (entries) |kv_id| {
+                    const kv = self.exprs.KeyValue.get(kv_id.toRaw());
+                    try self.open("(entry", .{});
+                    try self.open("(key", .{});
+                    try self.printExpr(kv.key);
+                    try self.close();
+                    try self.open("(value", .{});
+                    try self.printExpr(kv.value);
+                    try self.close();
+                    try self.close();
+                }
+                try self.close();
+            },
+            .Call => {
+                const node = self.exprs.get(.Call, id);
+                try self.open("(call", .{});
+                try self.open("(callee", .{});
+                try self.printExpr(node.callee);
+                try self.close();
+                try self.printExprRange("args", node.args);
+                try self.close();
+            },
+            .IndexAccess => {
+                const node = self.exprs.get(.IndexAccess, id);
+                try self.open("(index", .{});
+                try self.open("(collection", .{});
+                try self.printExpr(node.collection);
+                try self.close();
+                try self.open("(expr", .{});
+                try self.printExpr(node.index);
+                try self.close();
+                try self.close();
+            },
+            .FieldAccess => {
+                const node = self.exprs.get(.FieldAccess, id);
+                try self.open("(field name=\"{s}\" is_tuple={})", .{ self.s(node.field), node.is_tuple });
+                try self.printExpr(node.parent);
+                try self.close();
+            },
+            .StructLit => {
+                const node = self.exprs.get(.StructLit, id);
+                try self.open("(struct_literal", .{});
+                const fields = self.exprs.sfv_pool.slice(node.fields);
+                for (fields) |fid| {
+                    const field = self.exprs.StructFieldValue.get(fid.toRaw());
+                    try self.open("(field", .{});
+                    if (!field.name.isNone())
+                        try self.leaf("name=\"{s}\"", .{self.s(field.name.unwrap())})
+                    else
+                        try self.leaf("name=null", .{});
+                    try self.open("(value", .{});
+                    try self.printExpr(field.value);
+                    try self.close();
+                    try self.close();
+                }
+                try self.close();
+            },
+            .VariantLit => {
+                const node = self.exprs.get(.VariantLit, id);
+                try self.open("(variant_literal name=\"{s}\"", .{self.s(node.name)});
+                if (!node.value.isNone()) {
+                    try self.open("(value", .{});
+                    try self.printExpr(node.value.unwrap());
+                    try self.close();
+                }
+                try self.close();
+            },
+            .EnumLit => {
+                const node = self.exprs.get(.EnumLit, id);
+                try self.open("(enum_literal name=\"{s}\"", .{self.s(node.name)});
+                if (!node.value.isNone()) {
+                    try self.open("(value", .{});
+                    try self.printExpr(node.value.unwrap());
+                    try self.close();
+                }
+                try self.close();
+            },
+            .FunctionLit => {
+                const node = self.exprs.get(.FunctionLit, id);
+                try self.open("({s}", .{if (node.flags.is_proc) "procedure" else "function"});
+                if (node.flags.is_async) try self.leaf("(async)", .{});
+                if (node.flags.is_variadic) try self.leaf("(variadic)", .{});
+                if (node.flags.is_extern) try self.leaf("(extern)", .{});
+                if (!node.attrs.isNone()) try self.printAttrs(node.attrs);
+                try self.printParams(node.params);
+                if (!node.result_ty.isNone()) {
+                    try self.open("(result", .{});
+                    try self.printExpr(node.result_ty.unwrap());
+                    try self.close();
+                }
+                if (!node.body.isNone()) {
+                    try self.open("(body", .{});
+                    try self.printExpr(node.body.unwrap());
+                    try self.close();
+                } else if (!node.raw_asm.isNone()) {
+                    try self.leaf("(asm \"{s}\")", .{self.s(node.raw_asm.unwrap())});
+                }
+                try self.close();
+            },
+            .Block => {
+                const node = self.exprs.get(.Block, id);
+                try self.open("(block", .{});
+                const stmts = self.stmts.stmt_pool.slice(node.items);
+                for (stmts) |sid| try self.printStmt(sid);
+                try self.close();
+            },
+            .ComptimeBlock => {
+                const node = self.exprs.get(.ComptimeBlock, id);
+                try self.open("(comptime_block", .{});
+                try self.printExpr(node.block);
+                try self.close();
+            },
+            .CodeBlock => {
+                const node = self.exprs.get(.CodeBlock, id);
+                try self.open("(code_block", .{});
+                try self.printExpr(node.block);
+                try self.close();
+            },
+            .AsyncBlock => {
+                const node = self.exprs.get(.AsyncBlock, id);
+                try self.open("(async_block", .{});
+                try self.printExpr(node.body);
+                try self.close();
+            },
+            .MlirBlock => {
+                const node = self.exprs.get(.MlirBlock, id);
+                try self.leaf("(mlir kind={s} \"{s}\")", .{ @tagName(node.kind), self.s(node.text) });
+            },
+            .Insert => {
+                const node = self.exprs.get(.Insert, id);
+                try self.open("(insert", .{});
+                try self.printExpr(node.expr);
+                try self.close();
+            },
+            .Return => {
+                const node = self.exprs.get(.Return, id);
+                try self.open("(return", .{});
+                if (!node.value.isNone()) {
+                    try self.open("(value", .{});
+                    try self.printExpr(node.value.unwrap());
+                    try self.close();
+                }
+                try self.close();
+            },
+            .If => {
+                const node = self.exprs.get(.If, id);
+                try self.open("(if", .{});
+                try self.open("(cond", .{});
+                try self.printExpr(node.cond);
+                try self.close();
+                try self.open("(then", .{});
+                try self.printExpr(node.then_block);
+                try self.close();
+                if (!node.else_block.isNone()) {
+                    try self.open("(else", .{});
+                    try self.printExpr(node.else_block.unwrap());
+                    try self.close();
+                }
+                try self.close();
+            },
+            .While => {
+                const node = self.exprs.get(.While, id);
+                try self.open("(while is_pattern={})", .{node.is_pattern});
+                if (!node.label.isNone()) try self.leaf("label=\"{s}\"", .{self.s(node.label.unwrap())});
+                if (!node.pattern.isNone()) {
+                    try self.open("(pattern", .{});
+                    try self.printPattern(node.pattern.unwrap());
+                    try self.close();
+                }
+                if (!node.cond.isNone()) {
+                    try self.open("(cond", .{});
+                    try self.printExpr(node.cond.unwrap());
+                    try self.close();
+                }
+                try self.open("(body", .{});
+                try self.printExpr(node.body);
+                try self.close();
+                try self.close();
+            },
+            .For => {
+                const node = self.exprs.get(.For, id);
+                try self.open("(for", .{});
+                try self.open("(pattern", .{});
+                try self.printPattern(node.pattern);
+                try self.close();
+                try self.open("(iterable", .{});
+                try self.printExpr(node.iterable);
+                try self.close();
+                try self.open("(body", .{});
+                try self.printExpr(node.body);
+                try self.close();
+                if (!node.label.isNone()) try self.leaf("label=\"{s}\"", .{self.s(node.label.unwrap())});
+                try self.close();
+            },
+            .Match => {
+                const node = self.exprs.get(.Match, id);
+                try self.open("(match", .{});
+                try self.open("(expr", .{});
+                try self.printExpr(node.expr);
+                try self.close();
+                const arms = self.exprs.arm_pool.slice(node.arms);
+                for (arms) |aid| {
+                    const arm = self.exprs.MatchArm.get(aid.toRaw());
+                    try self.open("(arm", .{});
+                    try self.open("(pattern", .{});
+                    try self.printPattern(arm.pattern);
+                    try self.close();
+                    if (!arm.guard.isNone()) {
+                        try self.open("(guard", .{});
+                        try self.printExpr(arm.guard.unwrap());
+                        try self.close();
+                    }
+                    try self.open("(body", .{});
+                    try self.printExpr(arm.body);
+                    try self.close();
+                    try self.close();
+                }
+                try self.close();
+            },
+            .Break => {
+                const node = self.exprs.get(.Break, id);
+                try self.open("(break", .{});
+                if (!node.label.isNone()) try self.leaf("label=\"{s}\"", .{self.s(node.label.unwrap())});
+                if (!node.value.isNone()) {
+                    try self.open("(value", .{});
+                    try self.printExpr(node.value.unwrap());
+                    try self.close();
+                }
+                try self.close();
+            },
+            .Continue => {
+                _ = self.exprs.get(.Continue, id);
+                try self.leaf("(continue)", .{});
+            },
+            .Unreachable => {
+                _ = self.exprs.get(.Unreachable, id);
+                try self.leaf("(unreachable)", .{});
+            },
+            .NullLit => {
+                _ = self.exprs.get(.NullLit, id);
+                try self.leaf("(null)", .{});
+            },
+            .UndefLit => {
+                _ = self.exprs.get(.UndefLit, id);
+                try self.leaf("(undef)", .{});
+            },
+            .Defer => {
+                const node = self.exprs.get(.Defer, id);
+                try self.open("(defer", .{});
+                try self.printExpr(node.expr);
+                try self.close();
+            },
+            .ErrDefer => {
+                const node = self.exprs.get(.ErrDefer, id);
+                try self.open("(errdefer", .{});
+                try self.printExpr(node.expr);
+                try self.close();
+            },
+            .ErrUnwrap => {
+                const node = self.exprs.get(.ErrUnwrap, id);
+                try self.open("(error_unwrap", .{});
+                try self.printExpr(node.expr);
+                try self.close();
+            },
+            .OptionalUnwrap => {
+                const node = self.exprs.get(.OptionalUnwrap, id);
+                try self.open("(optional_unwrap", .{});
+                try self.printExpr(node.expr);
+                try self.close();
+            },
+            .Await => {
+                const node = self.exprs.get(.Await, id);
+                try self.open("(await", .{});
+                try self.printExpr(node.expr);
+                try self.close();
+            },
+            .Closure => {
+                const node = self.exprs.get(.Closure, id);
+                try self.open("(closure", .{});
+                try self.printParams(node.params);
+                if (!node.result_ty.isNone()) {
+                    try self.open("(result", .{});
+                    try self.printExpr(node.result_ty.unwrap());
+                    try self.close();
+                }
+                try self.open("(body", .{});
+                try self.printExpr(node.body);
+                try self.close();
+                try self.close();
+            },
+            .Cast => {
+                const node = self.exprs.get(.Cast, id);
+                try self.open("(cast kind={s}", .{@tagName(node.kind)});
+                try self.open("(expr", .{});
+                try self.printExpr(node.expr);
+                try self.close();
+                try self.open("(type", .{});
+                try self.printExpr(node.ty);
+                try self.close();
+                try self.close();
+            },
+            .Catch => {
+                const node = self.exprs.get(.Catch, id);
+                try self.open("(catch", .{});
+                try self.open("(expr", .{});
+                try self.printExpr(node.expr);
+                try self.close();
+                if (!node.binding_name.isNone()) try self.leaf("binding=\"{s}\"", .{self.s(node.binding_name.unwrap())});
+                try self.open("(handler", .{});
+                try self.printExpr(node.handler);
+                try self.close();
+                try self.close();
+            },
+            .Import => {
+                const node = self.exprs.get(.Import, id);
+                try self.open("(import", .{});
+                try self.open("(expr", .{});
+                try self.printExpr(node.expr);
+                try self.close();
+                try self.close();
+            },
+            .TypeOf => {
+                const node = self.exprs.get(.TypeOf, id);
+                try self.open("(typeof", .{});
+                try self.open("(expr", .{});
+                try self.printExpr(node.expr);
+                try self.close();
+                try self.close();
+            },
+            .TupleType => {
+                const node = self.exprs.get(.TupleType, id);
+                try self.printExprRange("tuple_type", node.elems);
+            },
+            .ArrayType => {
+                const node = self.exprs.get(.ArrayType, id);
+                try self.open("(array_type", .{});
+                try self.open("(elem", .{});
+                try self.printExpr(node.elem);
+                try self.close();
+                try self.open("(size", .{});
+                try self.printExpr(node.size);
+                try self.close();
+                try self.close();
+            },
+            .DynArrayType => {
+                const node = self.exprs.get(.DynArrayType, id);
+                try self.open("(dyn_array_type", .{});
+                try self.open("(elem", .{});
+                try self.printExpr(node.elem);
+                try self.close();
+                try self.close();
+            },
+            .MapType => {
+                const node = self.exprs.get(.MapType, id);
+                try self.open("(map_type", .{});
+                try self.open("(key", .{});
+                try self.printExpr(node.key);
+                try self.close();
+                try self.open("(value", .{});
+                try self.printExpr(node.value);
+                try self.close();
+                try self.close();
+            },
+            .SliceType => {
+                const node = self.exprs.get(.SliceType, id);
+                try self.open("(slice_type", .{});
+                try self.open("(elem", .{});
+                try self.printExpr(node.elem);
+                try self.close();
+                try self.close();
+            },
+            .OptionalType => {
+                const node = self.exprs.get(.OptionalType, id);
+                try self.open("(optional_type", .{});
+                try self.open("(elem", .{});
+                try self.printExpr(node.elem);
+                try self.close();
+                try self.close();
+            },
+            .ErrorSetType => {
+                const node = self.exprs.get(.ErrorSetType, id);
+                try self.open("(error_set_type", .{});
+                try self.open("(err", .{});
+                try self.printExpr(node.err);
+                try self.close();
+                try self.open("(value", .{});
+                try self.printExpr(node.value);
+                try self.close();
+                try self.close();
+            },
+            .ErrorType => {
+                const node = self.exprs.get(.ErrorType, id);
+                try self.open("(error_type", .{});
+                const fields = self.exprs.vfield_pool.slice(node.fields);
+                for (fields) |vid| try self.printVariantField(vid);
+                try self.close();
+            },
+            .StructType => {
+                const node = self.exprs.get(.StructType, id);
+                try self.open("(struct_type is_extern={})", .{node.is_extern});
+                if (!node.attrs.isNone()) try self.printAttrs(node.attrs);
+                const fields = self.exprs.sfield_pool.slice(node.fields);
+                for (fields) |fid| try self.printStructField(fid);
+                try self.close();
+            },
+            .EnumType => {
+                const node = self.exprs.get(.EnumType, id);
+                try self.open("(enum_type is_extern={})", .{node.is_extern});
+                if (!node.attrs.isNone()) try self.printAttrs(node.attrs);
+                if (!node.discriminant.isNone()) {
+                    try self.open("(discriminant", .{});
+                    try self.printExpr(node.discriminant.unwrap());
+                    try self.close();
+                }
+                const fields = self.exprs.efield_pool.slice(node.fields);
+                for (fields) |eid| {
+                    const field = self.exprs.EnumField.get(eid.toRaw());
+                    try self.open("(field name=\"{s}\"", .{self.s(field.name)});
+                    if (!field.attrs.isNone()) try self.printAttrs(field.attrs);
+                    if (!field.value.isNone()) {
+                        try self.open("(value", .{});
+                        try self.printExpr(field.value.unwrap());
+                        try self.close();
+                    }
+                    try self.close();
+                }
+                try self.close();
+            },
+            .VariantType => {
+                const node = self.exprs.get(.VariantType, id);
+                try self.open("(variant_type", .{});
+                const fields = self.exprs.vfield_pool.slice(node.fields);
+                for (fields) |vid| try self.printVariantField(vid);
+                try self.close();
+            },
+            .UnionType => {
+                const node = self.exprs.get(.UnionType, id);
+                try self.open("(union_type is_extern={})", .{node.is_extern});
+                if (!node.attrs.isNone()) try self.printAttrs(node.attrs);
+                const fields = self.exprs.sfield_pool.slice(node.fields);
+                for (fields) |fid| try self.printStructField(fid);
+                try self.close();
+            },
+            .PointerType => {
+                const node = self.exprs.get(.PointerType, id);
+                try self.open("(pointer_type is_const={})", .{node.is_const});
+                try self.open("(elem", .{});
+                try self.printExpr(node.elem);
+                try self.close();
+                try self.close();
+            },
+            .SimdType => {
+                const node = self.exprs.get(.SimdType, id);
+                try self.open("(simd_type", .{});
+                try self.open("(elem", .{});
+                try self.printExpr(node.elem);
+                try self.close();
+                try self.open("(lanes", .{});
+                try self.printExpr(node.lanes);
+                try self.close();
+                try self.close();
+            },
+            .ComplexType => {
+                const node = self.exprs.get(.ComplexType, id);
+                try self.open("(complex_type", .{});
+                try self.open("(elem", .{});
+                try self.printExpr(node.elem);
+                try self.close();
+                try self.close();
+            },
+            .TensorType => {
+                const node = self.exprs.get(.TensorType, id);
+                try self.open("(tensor_type", .{});
+                try self.open("(elem", .{});
+                try self.printExpr(node.elem);
+                try self.close();
+                try self.printExprRange("shape", node.shape);
+                try self.close();
+            },
+            .TypeType => {
+                _ = self.exprs.get(.TypeType, id);
+                try self.leaf("(type)", .{});
+            },
+            .AnyType => {
+                _ = self.exprs.get(.AnyType, id);
+                try self.leaf("(any)", .{});
+            },
+            .NoreturnType => {
+                _ = self.exprs.get(.NoreturnType, id);
+                try self.leaf("(noreturn)", .{});
+            },
+            
+        }
+    }
+
+    fn printExprRange(self: *AstPrinter, comptime name: []const u8, r: RangeOf(ExprId)) anyerror!void {
+        try self.open("(" ++ name, .{});
+        const ids = self.exprs.expr_pool.slice(r);
+        for (ids) |eid| try self.printExpr(eid);
+        try self.close();
+    }
+
+    fn printAttrs(self: *AstPrinter, opt_r: OptRangeAttr) anyerror!void {
+        if (opt_r.isNone()) return;
+        const r = opt_r.asRange();
+        const attrs = self.exprs.attr_pool.slice(r);
+        if (attrs.len == 0) return;
+
+        try self.open("(attributes", .{});
+        for (attrs) |aid| {
+            const attr = self.exprs.Attribute.get(aid.toRaw());
+            if (attr.value.isNone()) {
+                try self.leaf("(attr name=\"{s}\")", .{self.s(attr.name)});
+            } else {
+                try self.open("(attr name=\"{s}\"", .{self.s(attr.name)});
+                try self.open("(value", .{});
+                try self.printExpr(attr.value.unwrap());
+                try self.close();
+                try self.close();
+            }
+        }
+        try self.close();
+    }
+
+    fn printParams(self: *AstPrinter, r: RangeOf(ParamId)) anyerror!void {
+        const params = self.exprs.param_pool.slice(r);
+        for (params) |pid| {
+            const param = self.exprs.Param.get(pid.toRaw());
+            try self.open("(param", .{});
+            if (!param.attrs.isNone()) try self.printAttrs(param.attrs);
+            if (!param.pat.isNone()) {
+                try self.open("(pattern", .{});
+                try self.printPattern(param.pat.unwrap());
+                try self.close();
+            }
+            if (!param.ty.isNone()) {
+                try self.open("(type", .{});
+                try self.printExpr(param.ty.unwrap());
+                try self.close();
+            }
+            if (!param.value.isNone()) {
+                try self.open("(value", .{});
+                try self.printExpr(param.value.unwrap());
+                try self.close();
+            }
+            try self.close();
+        }
+    }
+
+    fn printStructField(self: *AstPrinter, id: StructFieldId) anyerror!void {
+        const field = self.exprs.StructField.get(id.toRaw());
+        try self.open("(field name=\"{s}\"", .{self.s(field.name)});
+        if (!field.attrs.isNone()) try self.printAttrs(field.attrs);
+        try self.open("(type", .{});
+        try self.printExpr(field.ty);
+        try self.close();
+        if (!field.value.isNone()) {
+            try self.open("(value", .{});
+            try self.printExpr(field.value.unwrap());
+            try self.close();
+        }
+        try self.close();
+    }
+
+    fn printVariantField(self: *AstPrinter, id: VariantFieldId) anyerror!void {
+        const field = self.exprs.VariantField.get(id.toRaw());
+        try self.open("(field name=\"{s}\"", .{self.s(field.name)});
+        if (!field.attrs.isNone()) try self.printAttrs(field.attrs);
+        switch (field.payload_kind) {
+            .none => {},
+            .tuple => {
+                std.debug.assert(!field.payload_elems.isNone());
+                try self.printExprRange("tuple", field.payload_elems.asRange());
+            },
+            .@"struct" => {
+                std.debug.assert(!field.payload_fields.isNone());
+                try self.open("(struct", .{});
+                const payload_fields = self.exprs.sfield_pool.slice(field.payload_fields.asRange());
+                for (payload_fields) |fid| try self.printStructField(fid);
+                try self.close();
+            },
+        }
+        if (!field.value.isNone()) {
+            try self.open("(value", .{});
+            try self.printExpr(field.value.unwrap());
+            try self.close();
+        }
+        try self.close();
+    }
+
+    pub fn printPattern(self: *AstPrinter, id: PatternId) anyerror!void {
+        const kind = self.pats.index.kinds.items[id.toRaw()];
+        switch (kind) {
+            .Wildcard => try self.leaf("(wildcard)", .{}),
+            .Literal => {
+                const node = self.pats.get(.Literal, id);
+                try self.open("(literal", .{});
+                try self.printExpr(node.expr);
+                try self.close();
+            },
+            .Path => {
+                const node = self.pats.get(.Path, id);
+                try self.open("(path", .{});
+                const segs = self.pats.seg_pool.slice(node.segments);
+                for (segs) |sid| {
+                    const seg = self.pats.PathSeg.get(sid.toRaw());
+                    try self.leaf("(seg \"{s}\" by_ref={} is_mut={})", .{ self.s(seg.name), seg.by_ref, seg.is_mut });
+                }
+                try self.close();
+            },
+            .Binding => {
+                const node = self.pats.get(.Binding, id);
+                try self.leaf("(binding name=\"{s}\" by_ref={} is_mut={})", .{ self.s(node.name), node.by_ref, node.is_mut });
+            },
+            .Tuple => {
+                const node = self.pats.get(.Tuple, id);
+                try self.open("(tuple", .{});
+                const elems = self.pats.pat_pool.slice(node.elems);
+                for (elems) |pid| try self.printPattern(pid);
+                try self.close();
+            },
+            .Slice => {
+                const node = self.pats.get(.Slice, id);
+                try self.open("(slice has_rest={} rest_index={})", .{ node.has_rest, node.rest_index });
+                const elems = self.pats.pat_pool.slice(node.elems);
+                for (elems) |pid| try self.printPattern(pid);
+                if (!node.rest_binding.isNone()) {
+                    try self.open("(rest", .{});
+                    try self.printPattern(node.rest_binding.unwrap());
+                    try self.close();
+                }
+                try self.close();
+            },
+            .Struct => {
+                const node = self.pats.get(.Struct, id);
+                try self.open("(struct has_rest={})", .{node.has_rest});
+                try self.printPatternPath(node.path);
+                const fields = self.pats.field_pool.slice(node.fields);
+                for (fields) |fid| try self.printPatternField(fid);
+                try self.close();
+            },
+            .VariantTuple => {
+                const node = self.pats.get(.VariantTuple, id);
+                try self.open("(variant_tuple", .{});
+                try self.printPatternPath(node.path);
+                const elems = self.pats.pat_pool.slice(node.elems);
+                for (elems) |pid| try self.printPattern(pid);
+                try self.close();
+            },
+            .VariantStruct => {
+                const node = self.pats.get(.VariantStruct, id);
+                try self.open("(variant_struct has_rest={})", .{node.has_rest});
+                try self.printPatternPath(node.path);
+                const fields = self.pats.field_pool.slice(node.fields);
+                for (fields) |fid| try self.printPatternField(fid);
+                try self.close();
+            },
+            .Range => {
+                const node = self.pats.get(.Range, id);
+                try self.open("(range inclusive_right={})", .{node.inclusive_right});
+                if (!node.start.isNone()) try self.printExpr(node.start.unwrap());
+                if (!node.end.isNone()) try self.printExpr(node.end.unwrap());
+                try self.close();
+            },
+            .Or => {
+                const node = self.pats.get(.Or, id);
+                try self.open("(or", .{});
+                const alts = self.pats.pat_pool.slice(node.alts);
+                for (alts) |pid| try self.printPattern(pid);
+                try self.close();
+            },
+            .At => {
+                const node = self.pats.get(.At, id);
+                try self.open("(at binder=\"{s}\"", .{self.s(node.binder)});
+                try self.printPattern(node.pattern);
+                try self.close();
+            },
+        }
+    }
+
+    fn printPatternPath(self: *AstPrinter, path: RangeOf(PathSegId)) anyerror!void {
+        const segs = self.pats.seg_pool.slice(path);
+        if (segs.len == 0) return;
+        try self.open("(path", .{});
+        for (segs) |sid| {
+            const seg = self.pats.PathSeg.get(sid.toRaw());
+            try self.leaf("(seg \"{s}\" by_ref={} is_mut={})", .{ self.s(seg.name), seg.by_ref, seg.is_mut });
+        }
+        try self.close();
+    }
+
+    fn printPatternField(self: *AstPrinter, id: PatFieldId) anyerror!void {
+        const field = self.pats.StructField.get(id.toRaw());
+        try self.open("(field name=\"{s}\"", .{self.s(field.name)});
+        try self.printPattern(field.pattern);
+        try self.close();
+    }
+};
+
+comptime {
+    for (@typeInfo(ExprKind).@"enum".fields) |f| {
+        _ = @field(Rows, f.name);
+    }
+    for (@typeInfo(StmtKind).@"enum".fields) |f| {
+        _ = @field(StmtRows, f.name);
+    }
+    for (@typeInfo(PatternKind).@"enum".fields) |f| {
+        _ = @field(PatRows, f.name);
+    }
+    std.debug.assert(@sizeOf(ExprId) == 4);
+    std.debug.assert(@sizeOf(StmtId) == 4);
+    std.debug.assert(@sizeOf(PatternId) == 4);
+    std.debug.assert(@sizeOf(StrId) == 4);
+    std.debug.assert(@sizeOf(LocId) == 4);
+}

@@ -15,3 +15,5 @@ pub const mlir_codegen = @import("mlir_codegen.zig");
 pub const compile = @import("compile.zig");
 pub const parser_v2 = @import("parser_v2.zig");
 pub const cst_v2 = @import("cst_v2.zig");
+pub const ast_v2 = @import("ast_v2.zig");
+pub const lower_v2 = @import("lower_v2.zig");
