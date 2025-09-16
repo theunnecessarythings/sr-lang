@@ -1,6 +1,6 @@
 const std = @import("std");
 const dod = @import("cst_v2.zig");
-const types = @import("types.zig");
+const types = @import("types_v2.zig");
 
 // Typed IR (TIR) — DOD v2
 // Columnar stores with typed indices and contiguous pools.
@@ -128,7 +128,42 @@ pub const RangeGepIndex = dod.RangeOf(GepIndexId);
 pub const RangeStructFieldInit = dod.RangeOf(StructFieldInitId);
 
 inline fn RowT(comptime K: OpKind) type {
-    return @field(Rows, @tagName(K));
+    return switch (K) {
+        .ConstInt => Rows.ConstInt,
+        .ConstFloat => Rows.ConstFloat,
+        .ConstBool => Rows.ConstBool,
+        .ConstString => Rows.ConstString,
+        .ConstNull => Rows.ConstNull,
+        .ConstUndef => Rows.ConstUndef,
+
+        .Add, .Sub, .Mul, .Div, .Mod, .Shl, .Shr, .BitAnd, .BitOr, .BitXor,
+        .LogicalAnd, .LogicalOr,
+        .CmpEq, .CmpNe, .CmpLt, .CmpLe, .CmpGt, .CmpGe => Rows.Bin2,
+
+        .LogicalNot => Rows.Un1,
+
+        .CastNormal, .CastBit, .CastSaturate, .CastWrap, .CastChecked => Rows.Un1,
+
+        .Alloca => Rows.Alloca,
+        .Load => Rows.Load,
+        .Store => Rows.Store,
+        .Gep => Rows.Gep,
+
+        .TupleMake => Rows.TupleMake,
+        .ArrayMake => Rows.ArrayMake,
+        .StructMake => Rows.StructMake,
+        .ExtractElem => Rows.ExtractElem,
+        .InsertElem => Rows.InsertElem,
+        .ExtractField => Rows.ExtractField,
+        .InsertField => Rows.InsertField,
+
+        .Index => Rows.Index,
+        .AddressOf => Rows.AddressOf,
+
+        .Select => Rows.Select,
+
+        .Call => Rows.Call,
+    };
 }
 inline fn TermRowT(comptime K: TermKind) type {
     return @field(Rows, @tagName(K));
@@ -323,13 +358,13 @@ pub const FuncStore = struct {
 
 pub const TIR = struct {
     gpa: std.mem.Allocator,
-    type_arena: *types.TypeArena,
+    type_store: *types.TypeStore,
     instrs: InstrStore,
     terms: TermStore,
     funcs: FuncStore,
 
-    pub fn init(gpa: std.mem.Allocator, arena: *types.TypeArena) TIR {
-        return .{ .gpa = gpa, .type_arena = arena, .instrs = InstrStore.init(gpa), .terms = TermStore.init(gpa), .funcs = FuncStore.init(gpa) };
+    pub fn init(gpa: std.mem.Allocator, store: *types.TypeStore) TIR {
+        return .{ .gpa = gpa, .type_store = store, .instrs = InstrStore.init(gpa), .terms = TermStore.init(gpa), .funcs = FuncStore.init(gpa) };
     }
     pub fn deinit(self: *@This()) void {
         self.instrs.deinit();

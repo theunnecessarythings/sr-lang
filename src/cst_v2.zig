@@ -185,35 +185,59 @@ pub const LocStore = struct {
 ////////////////////////////////////////////////////////////////
 
 pub fn Table(comptime T: type) type {
-    return struct {
-        list: std.MultiArrayList(T) = .{},
+    const is_empty_struct = std.meta.fields(T).len == 0;
+    if (is_empty_struct) {
+        return struct {
+            len: u32 = 0,
 
-        pub fn add(self: *@This(), gpa: std.mem.Allocator, row: T) u32 {
-            const idx: u32 = @intCast(self.list.len);
-            _ = self.list.addOne(gpa) catch @panic("OOM");
-            self.list.set(idx, row);
-            return idx;
-        }
-        pub fn get(self: *const @This(), idx: u32) T {
-            return self.list.get(idx);
-        }
-
-        fn ReturnType(comptime field: []const u8) type {
-            inline for (std.meta.fields(T)) |f| {
-                if (std.mem.eql(u8, f.name, field))
-                    return f.type;
+            pub fn add(self: *@This(), gpa: std.mem.Allocator, row: T) u32 {
+                _ = gpa; _ = row;
+                const idx = self.len;
+                self.len += 1;
+                return idx;
             }
-        }
-        pub fn col(self: *@This(), comptime field_name: []const u8) []ReturnType(field_name) {
-            const F = @TypeOf(self.list).Field;
-            const idx = std.meta.fieldIndex(T, field_name) orelse
-                @compileError("No such field: " ++ field_name);
-            return self.list.items(@as(F, @enumFromInt(idx)));
-        }
-        pub fn deinit(self: *@This(), gpa: std.mem.Allocator) void {
-            self.list.deinit(gpa);
-        }
-    };
+            pub fn get(self: *const @This(), idx: u32) T {
+                _ = self; _ = idx;
+                return .{};
+            }
+            pub fn deinit(self: *@This(), gpa: std.mem.Allocator) void { _ = self; _ = gpa; }
+            fn ReturnType(comptime field: []const u8) type { _ = field; return void; }
+            pub fn col(self: *@This(), comptime field_name: []const u8) []ReturnType(field_name) {
+                _ = self;
+                @compileError("col() not supported for empty row tables");
+            }
+        };
+    } else {
+        return struct {
+            list: std.MultiArrayList(T) = .{},
+
+            pub fn add(self: *@This(), gpa: std.mem.Allocator, row: T) u32 {
+                const idx: u32 = @intCast(self.list.len);
+                _ = self.list.addOne(gpa) catch @panic("OOM");
+                self.list.set(idx, row);
+                return idx;
+            }
+            pub fn get(self: *const @This(), idx: u32) T {
+                return self.list.get(idx);
+            }
+
+            fn ReturnType(comptime field: []const u8) type {
+                inline for (std.meta.fields(T)) |f| {
+                    if (std.mem.eql(u8, f.name, field))
+                        return f.type;
+                }
+            }
+            pub fn col(self: *@This(), comptime field_name: []const u8) []ReturnType(field_name) {
+                const F = @TypeOf(self.list).Field;
+                const idx = std.meta.fieldIndex(T, field_name) orelse
+                    @compileError("No such field: " ++ field_name);
+                return self.list.items(@as(F, @enumFromInt(idx)));
+            }
+            pub fn deinit(self: *@This(), gpa: std.mem.Allocator) void {
+                self.list.deinit(gpa);
+            }
+        };
+    }
 }
 
 ////////////////////////////////////////////////////////////////
