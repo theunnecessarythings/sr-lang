@@ -48,6 +48,8 @@ test "identifiers" {
 }
 
 test "raw identifier" {
+    try testSingle("r#", &.{.invalid});
+    try testSingle("r#-", &.{.invalid});
     try testSingle("r#foo", &.{.raw_identifier});
     try testSingle("r#while r#f r#comptime r#struct r##return", &.{
         .raw_identifier,
@@ -114,6 +116,12 @@ test "newline in string literal" {
         \\"
         \\"
     , &.{ .invalid, .invalid });
+}
+
+test "raw strings" {
+    try testSingle("r\"raw\"", &.{.raw_string_literal});
+    try testSingle("r#\"hash\"#", &.{.raw_string_literal});
+    try testSingle("r#\"oops", &.{.invalid});
 }
 
 test "code point literal with unicode escapes" {
@@ -592,7 +600,7 @@ test "invalid tabs and carriage returns" {
     try testSingle("//! \r\n", &.{.container_doc_comment});
 
     try testSingle("\tif\tmatch\t", &.{ .keyword_if, .keyword_match });
-    try testSingle("\rif\rmatch\r", &.{ .keyword_if, .keyword_match });
+    try testSingle("\rif\rmatch\r", &.{.invalid});
 }
 
 fn testSemi(source: [:0]const u8, expected: []const lex.Token.Tag) !void {
@@ -670,6 +678,7 @@ test "block comment" {
     , &.{
         .keyword_fn, .identifier, .lparen, .rparen, .identifier, .lcurly, .rcurly,
     });
+    try testSingle("/*\x00*/", &.{.invalid});
 }
 
 test "asm block" {
@@ -742,5 +751,11 @@ test "printf call emits closing rparen" {
         .identifier, .lparen,
         .identifier, .dotlparen, .star, .identifier, .rparen, // closes .dotlparen
         .comma, .identifier, .rparen, .eos, // closes printf(
+    });
+}
+
+test "/*/*" {
+    try testSingle("/*/*", &.{
+        .invalid,
     });
 }

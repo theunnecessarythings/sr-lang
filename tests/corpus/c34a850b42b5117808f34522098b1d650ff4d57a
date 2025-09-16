@@ -1,0 +1,4 @@
+printf :: extern proc `roc(*void, any) i6return a + b
+}
+
+maprintin f::

@@ -104,4 +104,21 @@ pub fn build(b: *std.Build) void {
     const test_step = b.step("test", "Run tests");
     test_step.dependOn(&run_mod_tests.step);
     test_step.dependOn(&run_exe_tests.step);
+
+    const fuzz_lib = b.addLibrary(.{
+        .name = "fuzzer",
+        .use_llvm = true,
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/fuzzer.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "compiler", .module = mod },
+            },
+        }),
+    });
+    fuzz_lib.root_module.stack_check = false;
+    const fuzz_step = b.step("fuzz", "Build the fuzzer");
+    fuzz_step.dependOn(&fuzz_lib.step);
+    b.installArtifact(fuzz_lib);
 }

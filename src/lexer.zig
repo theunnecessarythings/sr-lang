@@ -375,6 +375,7 @@ pub const Tokenizer = struct {
     last_tag: Token.Tag = .invalid,
     mlir_pending: bool = false,
     asm_pending: bool = false,
+    raw_string_hashes: usize = 0,
 
     pub fn init(source: [:0]const u8, mode: Mode) Tokenizer {
         return .{
@@ -422,6 +423,7 @@ pub const Tokenizer = struct {
         doc_comment_start,
         doc_comment,
         expect_newline,
+        block_comment_start,
         block_comment,
 
         identifier,
@@ -429,6 +431,7 @@ pub const Tokenizer = struct {
         char_literal,
         string_literal,
         string_literal_slash,
+        raw_string_literal,
         char_literal_slash,
 
         int,
@@ -474,15 +477,21 @@ pub const Tokenizer = struct {
             .rsquare,
             .rcurly,
 
+            .dotstar,
+            .question,
+            .bang,
+
             // keywords that end statements
             .keyword_true,
             .keyword_false,
             .keyword_null,
             .keyword_undefined,
             .keyword_return,
+            .keyword_noreturn,
             .keyword_break,
             .keyword_continue,
             .keyword_unreachable,
+            .keyword_await,
 
             .raw_asm_block,
             .mlir_content,
@@ -594,13 +603,29 @@ pub const Tokenizer = struct {
                         result.loc.start = self.index;
                         continue :state .start;
                     },
-                    '\n', '\r' => {
+                    '\n' => {
                         self.advance();
                         if (self.mode == .semi and self.shouldInsertSemi()) {
                             result.tag = .eos;
                         } else {
                             result.loc.start = self.index;
                             continue :state .start;
+                        }
+                    },
+                    '\r' => {
+                        self.advance();
+                        if (self.curr() == '\n') {
+                            self.advance();
+                            if (self.mode == .semi and self.shouldInsertSemi()) {
+                                result.tag = .eos;
+                            } else {
+                                result.loc.start = self.index;
+                                continue :state .start;
+                            }
+                        } else if (self.index == self.buffer.len) {
+                            result.tag = .invalid;
+                        } else {
+                            continue :state .invalid;
                         }
                     },
                     'a'...'q', 's'...'z', 'A'...'Z', '_' => continue :state .identifier,
@@ -611,10 +636,31 @@ pub const Tokenizer = struct {
                     },
                     'r' => {
                         const next_char = if (self.index + 1 < self.buffer.len) self.buffer[self.index + 1] else 0;
-                        if (next_char == '#') {
+                        if (next_char == '"') {
+                            result.tag = .raw_string_literal;
                             self.advance(); // 'r'
-                            self.advance(); // '#'
-                            continue :state .raw_identifier;
+                            self.advance(); // '"'
+                            self.raw_string_hashes = 0;
+                            continue :state .raw_string_literal;
+                        } else if (next_char == '#') {
+                            var idx = self.index + 1;
+                            while (idx < self.buffer.len and self.buffer[idx] == '#') idx += 1;
+                            const hash_count = idx - (self.index + 1);
+                            if (hash_count > 0 and idx < self.buffer.len and self.buffer[idx] == '"') {
+                                result.tag = .raw_string_literal;
+                                self.advance(); // 'r'
+                                var consumed: usize = 0;
+                                while (consumed < hash_count) : (consumed += 1) {
+                                    self.advance();
+                                }
+                                self.advance(); // '"'
+                                self.raw_string_hashes = hash_count;
+                                continue :state .raw_string_literal;
+                            } else {
+                                self.advance(); // 'r'
+                                self.advance(); // '#'
+                                continue :state .raw_identifier;
+                            }
                         } else continue :state .identifier;
                     },
                     '\'' => {
@@ -676,7 +722,7 @@ pub const Tokenizer = struct {
                         self.advance();
                     },
                     '/' => continue :state .line_comment_start,
-                    '*' => continue :state .block_comment,
+                    '*' => continue :state .block_comment_start,
                     else => result.tag = .slash,
                 }
             },
@@ -981,13 +1027,17 @@ pub const Tokenizer = struct {
                 }
             },
 
+            .block_comment_start => {
+                self.advance(); // consume the '*'
+                continue :state .block_comment;
+            },
             .block_comment => {
-                self.advance();
-                switch (self.curr()) {
-                    0 => if (self.index == self.buffer.len) {
-                        result.tag = .invalid;
-                    } else {
-                        continue :state .block_comment;
+                const c = self.curr();
+                switch (c) {
+                    0 => {
+                        if (self.index == self.buffer.len) {
+                            result.tag = .invalid;
+                        } else continue :state .invalid;
                     },
                     '*' => {
                         self.advance();
@@ -995,9 +1045,16 @@ pub const Tokenizer = struct {
                             self.advance();
                             result.loc.start = self.index;
                             continue :state .start;
-                        } else continue :state .block_comment;
+                        }
+                        continue :state .block_comment;
                     },
-                    else => continue :state .block_comment,
+                    0x01...0x09, 0x0b...0x0c, 0x0e...0x1f, 0x7f => {
+                        continue :state .invalid;
+                    },
+                    else => {
+                        self.advance();
+                        continue :state .block_comment;
+                    },
                 }
             },
             .expect_newline => {
@@ -1039,14 +1096,57 @@ pub const Tokenizer = struct {
                 }
             },
             .raw_identifier => {
-                self.advance();
-                switch (self.curr()) {
-                    'a'...'z', 'A'...'Z', '0'...'9', '_' => continue :state .raw_identifier,
-                    '#' => {
-                        self.advance();
+                const body_len = self.index - (result.loc.start + 2);
+                if (self.index == self.buffer.len) {
+                    if (body_len > 0) {
                         result.tag = .raw_identifier;
+                    } else {
+                        result.tag = .invalid;
+                    }
+                } else switch (self.curr()) {
+                    'a'...'z', 'A'...'Z', '0'...'9', '_', '#' => {
+                        self.advance();
+                        continue :state .raw_identifier;
                     },
-                    else => result.tag = .raw_identifier,
+                    else => {
+                        if (body_len > 0) {
+                            result.tag = .raw_identifier;
+                        } else {
+                            continue :state .invalid;
+                        }
+                    },
+                }
+            },
+            .raw_string_literal => {
+                const c = self.curr();
+                switch (c) {
+                    0 => {
+                        if (self.index == self.buffer.len) {
+                            result.tag = .invalid;
+                        } else continue :state .invalid;
+                    },
+                    '"' => {
+                        var idx = self.index + 1;
+                        var remaining = self.raw_string_hashes;
+                        while (remaining > 0 and idx < self.buffer.len and self.buffer[idx] == '#') : (remaining -= 1) idx += 1;
+                        if (remaining == 0) {
+                            self.advance();
+                            var consumed: usize = 0;
+                            while (consumed < self.raw_string_hashes) : (consumed += 1) {
+                                if (self.curr() != '#') break;
+                                self.advance();
+                            }
+                            self.raw_string_hashes = 0;
+                            result.tag = .raw_string_literal;
+                        } else {
+                            self.advance();
+                            continue :state .raw_string_literal;
+                        }
+                    },
+                    else => {
+                        self.advance();
+                        continue :state .raw_string_literal;
+                    },
                 }
             },
             .string_literal => {

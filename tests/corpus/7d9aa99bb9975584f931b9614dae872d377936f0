@@ -1,0 +1,4 @@
+printf :: extern proc `roc(*void, any) eturn a + b
+}
+
+maprintin f::
