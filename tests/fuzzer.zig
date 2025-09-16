@@ -3,6 +3,9 @@ const std = @import("std");
 const lexer = compiler.lexer;
 const parser_v2 = compiler.parser_v2;
 const diagnostics = compiler.diagnostics;
+const lower_v2 = compiler.lower_v2;
+const ast_v2 = compiler.ast_v2;
+const checker_v2 = compiler.checker_v2;
 
 fn testLexer(data: []const u8) !void {
     const source0 = try std.heap.page_allocator.dupeZ(u8, data);
@@ -84,5 +87,73 @@ pub export fn fuzz_parser(ptr: [*]const u8, len: usize) callconv(.c) void {
     const data = ptr[0..len];
     _ = testParser(data) catch |err| {
         std.debug.panic("parser failed: {}\n", .{err});
+    };
+}
+
+fn testLower(data: []const u8) !void {
+    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer arena.deinit();
+    const gpa = arena.allocator();
+
+    const source0 = try gpa.dupeZ(u8, data);
+    var diags = diagnostics.Diagnostics.init(gpa);
+    defer diags.deinit();
+
+    var parser = parser_v2.Parser.init(gpa, source0, &diags);
+    var tree = parser.parse() catch |err| switch (err) {
+        error.UnexpectedToken => return, // invalid input is fine for fuzzing
+        error.OutOfMemory => std.debug.panic("parser OOM", .{}),
+        else => std.debug.panic("parser failed: {}", .{err}),
+    };
+    defer tree.deinit();
+
+    var lower = lower_v2.LowerV2.init(gpa, &tree);
+    var a = try lower.run();
+    defer a.deinit();
+
+    // Optionally, touch the AST to exercise printers
+    var sink = std.array_list.Managed(u8).init(gpa);
+    defer sink.deinit();
+    var printer = ast_v2.AstPrinter.init(sink.writer(), &a.exprs, &a.stmts, &a.pats);
+    try printer.printUnit(&a.unit);
+}
+
+pub export fn fuzz_lower(ptr: [*]const u8, len: usize) callconv(.c) void {
+    const data = ptr[0..len];
+    _ = testLower(data) catch |err| {
+        std.debug.panic("lower_v2 failed: {}\n", .{err});
+    };
+}
+
+fn testChecker(data: []const u8) !void {
+    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer arena.deinit();
+    const gpa = arena.allocator();
+
+    const source0 = try gpa.dupeZ(u8, data);
+    var diags = diagnostics.Diagnostics.init(gpa);
+    defer diags.deinit();
+
+    var parser = parser_v2.Parser.init(gpa, source0, &diags);
+    var c = parser.parse() catch |err| switch (err) {
+        error.UnexpectedToken => return, // invalid input is fine for fuzzing
+        error.OutOfMemory => std.debug.panic("parser OOM", .{}),
+        else => std.debug.panic("parser failed: {}", .{err}),
+    };
+    defer c.deinit();
+
+    var lower = lower_v2.LowerV2.init(gpa, &c);
+    var a = try lower.run();
+    defer a.deinit();
+
+    var chk = checker_v2.CheckerV2.init(gpa, &diags);
+    defer chk.deinit();
+    try chk.run(&a);
+}
+
+pub export fn fuzz_checker(ptr: [*]const u8, len: usize) callconv(.c) void {
+    const data = ptr[0..len];
+    _ = testChecker(data) catch |err| {
+        std.debug.panic("checker_v2 failed: {}\n", .{err});
     };
 }
