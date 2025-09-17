@@ -39,6 +39,12 @@ pub const TypeKind = enum(u8) {
     Tuple,
     Function,
     Struct,
+    // Extended kinds used by CheckerV2
+    Enum,
+    Variant,
+    ErrorSet,
+    Future,
+    TypeType,
 };
 
 pub const Rows = struct {
@@ -66,6 +72,12 @@ pub const Rows = struct {
     pub const Function = struct { params: RangeType, result: TypeId, is_variadic: bool };
     pub const Field = struct { name: StrId, ty: TypeId };
     pub const Struct = struct { fields: RangeField };
+    // New rows
+    pub const Enum = struct { decl: u32 };
+    pub const Variant = struct { payload: TypeId };
+    pub const ErrorSet = struct { payload: ?TypeId };
+    pub const Future = struct { payload: ?TypeId };
+    pub const TypeType = struct { of: TypeId };
 };
 
 inline fn RowT(comptime K: TypeKind) type {
@@ -101,6 +113,11 @@ pub const TypeStore = struct {
     Function: Table(Rows.Function) = .{},
     Field: Table(Rows.Field) = .{},
     Struct: Table(Rows.Struct) = .{},
+    Enum: Table(Rows.Enum) = .{},
+    Variant: Table(Rows.Variant) = .{},
+    ErrorSet: Table(Rows.ErrorSet) = .{},
+    Future: Table(Rows.Future) = .{},
+    TypeType: Table(Rows.TypeType) = .{},
 
     type_pool: Pool(TypeId) = .{},
     field_pool: Pool(FieldId) = .{},
@@ -266,6 +283,26 @@ pub const TypeStore = struct {
         const r = self.type_pool.pushMany(self.gpa, params);
         return self.add(.Function, .{ .params = r, .result = result, .is_variadic = is_variadic });
     }
+    pub fn mkEnum(self: *@This(), decl_raw: u32) TypeId {
+        if (self.findEnum(decl_raw)) |id| return id;
+        return self.add(.Enum, .{ .decl = decl_raw });
+    }
+    pub fn mkVariant(self: *@This(), payload: TypeId) TypeId {
+        if (self.findVariant(payload)) |id| return id;
+        return self.add(.Variant, .{ .payload = payload });
+    }
+    pub fn mkErrorSet(self: *@This(), payload: ?TypeId) TypeId {
+        if (self.findErrorSet(payload)) |id| return id;
+        return self.add(.ErrorSet, .{ .payload = payload });
+    }
+    pub fn mkFuture(self: *@This(), payload: ?TypeId) TypeId {
+        if (self.findFuture(payload)) |id| return id;
+        return self.add(.Future, .{ .payload = payload });
+    }
+    pub fn mkTypeType(self: *@This(), of: TypeId) TypeId {
+        if (self.findTypeType(of)) |id| return id;
+        return self.add(.TypeType, .{ .of = of });
+    }
     pub const StructFieldArg = struct { name: []const u8, ty: TypeId };
     pub fn mkStruct(self: *@This(), fields: []const StructFieldArg) TypeId {
         // Build interning key arrays
@@ -334,6 +371,45 @@ pub const TypeStore = struct {
                 var i: usize = 0;
                 while (i < ids.len) : (i += 1) if (ids[i].toRaw() != key.p[i].toRaw()) return false;
                 return true;
+            }
+        });
+    }
+    fn findEnum(self: *const @This(), decl_raw: u32) ?TypeId {
+        return self.findMatch(.Enum, decl_raw, struct {
+            fn eq(_: *const TypeStore, row: Rows.Enum, key: u32) bool {
+                return row.decl == key;
+            }
+        });
+    }
+    fn findVariant(self: *const @This(), payload: TypeId) ?TypeId {
+        return self.findMatch(.Variant, payload, struct {
+            fn eq(_: *const TypeStore, row: Rows.Variant, key: TypeId) bool {
+                return row.payload.toRaw() == key.toRaw();
+            }
+        });
+    }
+    fn findErrorSet(self: *const @This(), payload: ?TypeId) ?TypeId {
+        return self.findMatch(.ErrorSet, payload, struct {
+            fn eq(_: *const TypeStore, row: Rows.ErrorSet, key: ?TypeId) bool {
+                if (row.payload == null and key == null) return true;
+                if (row.payload == null or key == null) return false;
+                return row.payload.?.toRaw() == key.?.toRaw();
+            }
+        });
+    }
+    fn findFuture(self: *const @This(), payload: ?TypeId) ?TypeId {
+        return self.findMatch(.Future, payload, struct {
+            fn eq(_: *const TypeStore, row: Rows.Future, key: ?TypeId) bool {
+                if (row.payload == null and key == null) return true;
+                if (row.payload == null or key == null) return false;
+                return row.payload.?.toRaw() == key.?.toRaw();
+            }
+        });
+    }
+    fn findTypeType(self: *const @This(), of: TypeId) ?TypeId {
+        return self.findMatch(.TypeType, of, struct {
+            fn eq(_: *const TypeStore, row: Rows.TypeType, key: TypeId) bool {
+                return row.of.toRaw() == key.toRaw();
             }
         });
     }
@@ -456,6 +532,40 @@ pub const TypeStore = struct {
                     try self.fmt(f.ty, w);
                 }
                 try w.print(" }", .{});
+            },
+            .Enum => {
+                const r = self.Enum.get(row_idx);
+                try w.print("enum@{}", .{r.decl});
+            },
+            .Variant => {
+                const r = self.Variant.get(row_idx);
+                try w.print("variant(", .{});
+                try self.fmt(r.payload, w);
+                try w.print(")", .{});
+            },
+            .ErrorSet => {
+                const r = self.ErrorSet.get(row_idx);
+                try w.print("error", .{});
+                if (r.payload) |p| {
+                    try w.print("(", .{});
+                    try self.fmt(p, w);
+                    try w.print(")", .{});
+                }
+            },
+            .Future => {
+                const r = self.Future.get(row_idx);
+                try w.print("future", .{});
+                if (r.payload) |p| {
+                    try w.print("(", .{});
+                    try self.fmt(p, w);
+                    try w.print(")", .{});
+                }
+            },
+            .TypeType => {
+                const r = self.TypeType.get(row_idx);
+                try w.print("type(", .{});
+                try self.fmt(r.of, w);
+                try w.print(")", .{});
             },
         }
     }

@@ -1233,7 +1233,11 @@ pub const Tokenizer = struct {
             .int_period => {
                 self.advance();
                 const c = self.curr();
-                if (c == 'i') {
+                // If the previous token was a standalone '.', we're in a field access like '.1.0'.
+                // Do not merge the following '.' into a float; keep this token as an integer literal.
+                if (self.last_tag == .dot) {
+                    self.index -= 1;
+                } else if (c == 'i') {
                     self.index -= 1;
                 } else switch (c) {
                     '_', 'a'...'d', 'f'...'o', 'q'...'z', 'A'...'D', 'F'...'O', 'Q'...'Z', '0'...'9' => {
