@@ -2,7 +2,7 @@ const compiler = @import("compiler");
 const std = @import("std");
 const lexer = compiler.lexer;
 const parser_v2 = compiler.parser_v2;
-const diagnostics = compiler.diagnostics;
+const diagnostics = compiler.diagnostics_v2;
 const lower_v2 = compiler.lower_v2;
 const ast_v2 = compiler.ast_v2;
 const checker_v2 = compiler.checker_v2;
@@ -149,7 +149,7 @@ fn testChecker(data: []const u8) !void {
 
     var chk = checker_v2.CheckerV2.init(gpa, &diags);
     defer chk.deinit();
-    try chk.run(&a);
+    _ = try chk.run(&a);
 }
 
 pub export fn fuzz_checker(ptr: [*]const u8, len: usize) callconv(.c) void {

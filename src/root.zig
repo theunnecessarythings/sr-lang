@@ -2,6 +2,7 @@ pub const parser = @import("parser.zig");
 pub const lexer = @import("lexer.zig");
 pub const cst = @import("cst.zig");
 pub const diagnostics = @import("diagnostics.zig");
+pub const diagnostics_v2 = @import("diagnostics_v2.zig");
 pub const checker = @import("checker.zig");
 pub const checker_v2 = @import("checker_v2.zig");
 pub const ast = @import("ast.zig");

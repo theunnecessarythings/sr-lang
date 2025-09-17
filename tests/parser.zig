@@ -3,7 +3,7 @@ const testing = std.testing;
 const compiler = @import("compiler");
 const cst = compiler.cst_v2;
 const Parser = compiler.parser_v2.Parser;
-const Diagnostics = compiler.diagnostics.Diagnostics;
+const Diagnostics = compiler.diagnostics_v2.Diagnostics;
 
 fn parseProgramFromText(gpa: std.mem.Allocator, src: [:0]const u8) !cst.CST {
     var diags = Diagnostics.init(gpa);
@@ -13,8 +13,8 @@ fn parseProgramFromText(gpa: std.mem.Allocator, src: [:0]const u8) !cst.CST {
     errdefer ast.deinit();
     if (diags.count() != 0) {
         std.debug.print(
-            "Errors during parsing: {s}\n",
-            .{diags.messages.items[0].message},
+            "Errors during parsing: {}\n",
+            .{diags.messages.items[0]},
         );
     }
     try testing.expectEqual(@as(usize, 0), diags.count());

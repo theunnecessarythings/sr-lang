@@ -168,9 +168,11 @@ fn process_file(
     }
 
     // Full compilation pipeline for 'compile' and 'run'
-    var pl = compiler.pipeline.Pipeline.init(allocator, &diags);
+    var diags_v2 = compiler.diagnostics_v2.Diagnostics.init(allocator);
+    defer diags_v2.deinit();
+    var pl = compiler.pipeline.Pipeline.init(allocator, &diags_v2);
     // Parse v2 CST for v2 pipeline
-    var parser2 = compiler.parser_v2.Parser.init(allocator, source0, &diags);
+    var parser2 = compiler.parser_v2.Parser.init(allocator, source0, &diags_v2);
     var cst_program_v2 = try parser2.parse();
     var result = pl.run(&cst_program_v2) catch |err| {
         try diags.emitStyled(source0, err_writer, filename, !cli_args.no_color);

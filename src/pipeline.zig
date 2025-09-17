@@ -9,7 +9,7 @@ const infer = @import("infer_v2.zig");
 const mlir_codegen_v2 = @import("mlir_codegen_v2.zig");
 const mlir = @import("mlir_bindings.zig");
 const compile = @import("compile.zig");
-const Diagnostics = @import("diagnostics.zig").Diagnostics;
+const Diagnostics = @import("diagnostics_v2.zig").Diagnostics;
 
 pub const Result = struct {
     hir: ast.Ast,
@@ -32,16 +32,11 @@ pub const Pipeline = struct {
         var lower_pass = lower.LowerV2.init(self.allocator, program);
         var hir = try lower_pass.run();
 
-        // 2) Checker pass over AST v2
+        // 2) Checker now includes type inference
         var chk = checker.CheckerV2.init(self.allocator, self.diags);
         defer chk.deinit();
-        try chk.run(&hir);
-
-        // 3) Type inference v2
-        var typer = infer.TyperV2.init(self.allocator, self.diags);
-        const tmp_info = try typer.run(&hir);
         const type_info = try self.allocator.create(infer.TypeInfoV2);
-        type_info.* = tmp_info;
+        type_info.* = try chk.run(&hir);
 
         // 4) Lower from AST v2 to TIR v2
         var tir_lowerer = lower_tir.LowerTirV2.init(self.allocator, type_info);

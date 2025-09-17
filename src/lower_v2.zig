@@ -667,6 +667,13 @@ pub const LowerV2 = struct {
                 }
                 break :blk self.out.exprs.add(.Literal, .{ .kind = .char, .value = ast.OptStrId.none(), .bool_value = false, .char_value = ch, .loc = loc });
             },
+            5 => blk_im: {
+                // imaginary literal like 2i -> treat as integer literal "2" for typing
+                const s = self.src.exprs.strs.get(lit.value);
+                const trimmed: []const u8 = if (s.len > 0 and s[s.len - 1] == 'i') s[0 .. s.len - 1] else s;
+                const sid = self.out.exprs.strs.intern(trimmed);
+                break :blk_im self.out.exprs.add(.Literal, .{ .kind = .int, .value = ast.OptStrId.some(sid), .bool_value = false, .char_value = 0, .loc = loc });
+            },
             6 => self.out.exprs.add(.Literal, .{ .kind = .bool, .value = ast.OptStrId.none(), .bool_value = true, .char_value = 0, .loc = loc }),
             7 => self.out.exprs.add(.Literal, .{ .kind = .bool, .value = ast.OptStrId.none(), .bool_value = false, .char_value = 0, .loc = loc }),
             else => self.out.exprs.add(.Literal, .{ .kind = .string, .value = ast.OptStrId.some(self.mapStr(lit.value)), .bool_value = false, .char_value = 0, .loc = loc }),

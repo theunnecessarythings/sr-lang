@@ -4,7 +4,7 @@ const compiler = @import("compiler");
 
 const cst = compiler.cst_v2;
 const Parser = compiler.parser_v2.Parser;
-const Diagnostics = compiler.diagnostics.Diagnostics;
+const Diagnostics = compiler.diagnostics_v2.Diagnostics;
 const lower_v2 = compiler.lower_v2;
 const ast_v2 = compiler.ast_v2;
 
@@ -67,7 +67,7 @@ test "lower v2: match with guard" {
         \\  1 | 2 if cond => { y = 1; },
         \\  x              => { y = 0; },
         \\}
-        ;
+    ;
     var res = try lowerProgramFromText(gpa, src);
     defer res.cst.deinit();
     defer res.ast.deinit();
@@ -93,3 +93,4 @@ test "lower v2: full success example" {
     defer gpa.free(s);
     try testing.expect(s.len > 0);
 }
+

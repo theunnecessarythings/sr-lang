@@ -3,7 +3,8 @@ const Lexer = @import("lexer.zig").Tokenizer;
 const Token = @import("lexer.zig").Token;
 const Loc = Token.Loc;
 const cst = @import("cst_v2.zig");
-const Diagnostics = @import("diagnostics.zig").Diagnostics;
+const diag = @import("diagnostics_v2.zig");
+const Diagnostics = diag.Diagnostics;
 const List = std.ArrayList;
 
 pub const Parser = struct {
@@ -56,7 +57,13 @@ pub const Parser = struct {
     }
     inline fn expect(self: *Parser, tag: Token.Tag) !void {
         if (self.cur.tag != tag) {
-            self.errorNote(self.cur.loc, "expected {s}, found {s}", .{ Token.Tag.symbol(tag), Token.Tag.symbol(self.cur.tag) }, self.cur.loc, "unexpected token here", .{});
+            self.errorNote(
+                self.cur.loc,
+                .unexpected_token,
+                .{ tag, self.cur.tag },
+                self.cur.loc,
+                .unexpected_token_here,
+            );
             return error.UnexpectedToken;
         }
         self.advance();
@@ -77,17 +84,16 @@ pub const Parser = struct {
     inline fn errorNote(
         self: *Parser,
         loc: Loc,
-        comptime fmt: []const u8,
+        comptime error_code: diag.DiagnosticCode,
         args: anytype,
         note_loc: ?Loc,
-        comptime note_fmt: []const u8,
-        note_args: anytype,
+        comptime note_code: diag.NoteCode,
     ) void {
         const before = self.diags.count();
-        _ = self.diags.addError(loc, fmt, args) catch {};
+        _ = self.diags.addError(loc, error_code, args) catch {};
         if (self.diags.count() > before) {
             const idx = self.diags.count() - 1;
-            _ = self.diags.attachNote(idx, note_loc, note_fmt, note_args) catch {};
+            _ = self.diags.attachNote(idx, note_loc, note_code) catch {};
         }
     }
 
@@ -396,7 +402,7 @@ pub const Parser = struct {
                         flags.is_const = true;
                     },
                     else => {
-                        self.errorNote(self.cur.loc, "expected '=' or '::' after type in declaration, found {s}", .{Token.Tag.symbol(self.cur.tag)}, self.cur.loc, "did you mean '=' before the initializer?", .{});
+                        self.errorNote(self.cur.loc, .expected_type_in_declaration, .{self.cur.tag}, self.cur.loc, .did_you_mean_equal);
                         self.sync(.eos);
                         return error.UnexpectedToken;
                     },
@@ -588,7 +594,7 @@ pub const Parser = struct {
             },
             else => {
                 const got = self.cur;
-                self.errorNote(self.cur.loc, "unexpected token in expression: {s}", .{Token.Tag.symbol(tag)}, got.loc, "this token cannot start or continue an expression here", .{});
+                self.errorNote(self.cur.loc, .unexpected_token_in_expression, .{tag}, got.loc, .token_cannot_start_expression);
                 self.sync(.eos);
                 return error.UnexpectedToken;
             },
@@ -636,7 +642,7 @@ pub const Parser = struct {
                             .keyword_catch => try self.parseCatchExpr(left),
                             else => {
                                 const got = self.cur;
-                                self.errorNote(self.cur.loc, "unexpected postfix operator: {s}", .{Token.Tag.symbol(tag)}, got.loc, "this operator cannot be used here", .{});
+                                self.errorNote(self.cur.loc, .unexpected_postfix_operator, .{tag}, got.loc, .operator_cannot_be_used_here);
                                 self.sync(.eos);
                                 return error.UnexpectedToken;
                             },
@@ -722,7 +728,7 @@ pub const Parser = struct {
                 self.advance();
             },
             else => {
-                self.errorNote(self.cur.loc, "expected identifier or integer after '.', found {s}", .{Token.Tag.symbol(tok.tag)}, tok.loc, "use a field name like .foo or a tuple index like .0", .{});
+                self.errorNote(self.cur.loc, .expected_field_name_or_index, .{tok.tag}, tok.loc, .expected_field_name_or_index_note);
                 self.sync(.eos);
                 return error.UnexpectedToken;
             },
@@ -890,7 +896,7 @@ pub const Parser = struct {
                 if (self.cur.tag == .b_or) break;
 
                 const got = self.cur;
-                self.errorNote(self.cur.loc, "expected ',' or '|' after closure parameter, found {s}", .{Token.Tag.symbol(got.tag)}, got.loc, "separate parameters with ',' and end the list with '|'", .{});
+                self.errorNote(self.cur.loc, .expected_closure_param_separator, .{got.tag}, got.loc, .separate_parameters);
                 self.sync(.b_or);
                 return error.UnexpectedToken;
             }
@@ -1091,11 +1097,10 @@ pub const Parser = struct {
                 const got = self.cur;
                 self.errorNote(
                     self.cur.loc,
-                    "expected 'for' or 'while' after label, found {s}",
-                    .{Token.Tag.symbol(got.tag)},
+                    .expected_loop_after_label,
+                    .{got.tag},
                     got.loc,
-                    "labeled loops: label: for ... {{ ... }} or label: while ... {{ ... }}",
-                    .{},
+                    .labeled_loops,
                 );
                 self.sync(.eos);
                 return error.UnexpectedToken;
@@ -1179,12 +1184,12 @@ pub const Parser = struct {
                 break :blk self.cst.exprs.add(.Ident, .{ .name = row.name, .loc = row.loc });
             },
             .Wildcard => {
-                self.errorNote(self.cur.loc, "'_' is not valid as a constant in a range pattern", .{}, null, "use a literal, constant path, or a binding name", .{});
+                self.errorNote(self.cur.loc, .underscore_not_const_in_range_pattern, .{}, null, .use_literal_constant_or_binding);
                 self.sync(.eos);
                 return error.UnexpectedToken;
             },
             else => {
-                self.errorNote(self.cur.loc, "left side of a range pattern must be const-like", .{}, null, "use a literal, constant path, or a simple binding", .{});
+                self.errorNote(self.cur.loc, .left_side_not_const_like_in_range_pattern, .{}, null, .use_literal_constant_or_simple_binding);
                 self.sync(.eos);
                 return error.UnexpectedToken;
             },
@@ -1205,12 +1210,12 @@ pub const Parser = struct {
                     const seg0 = self.cst.pats.PathSeg.get(ids[0].toRaw()); // row lookup
                     break :blk seg0.name; // StrId
                 }
-                self.errorNote(self.cur.loc, "only simple identifier paths can be used as binding names in '@' patterns", .{}, null, "use a single identifier without dots", .{});
+                self.errorNote(self.cur.loc, .invalid_binding_name_in_at_pattern, .{}, null, .use_single_identifier);
                 return error.InvalidPatternForBinding;
             },
 
             else => {
-                self.errorNote(self.cur.loc, "only simple identifier paths can be used as binding names in '@' patterns", .{}, null, "use a single identifier without dots", .{});
+                self.errorNote(self.cur.loc, .invalid_binding_name_in_at_pattern, .{}, null, .use_single_identifier);
                 return error.InvalidPatternForBinding;
             },
         };
@@ -1252,7 +1257,7 @@ pub const Parser = struct {
             },
             .identifier => return try self.parsePathishPattern(),
             else => {
-                self.errorNote(self.cur.loc, "unexpected token in pattern: {s}", .{Token.Tag.symbol(self.cur.tag)}, null, "this token cannot start a pattern", .{});
+                self.errorNote(self.cur.loc, .unexpected_token_in_pattern, .{self.cur.tag}, null, .token_cannot_start_pattern);
                 self.sync(.eos);
                 return error.UnexpectedToken;
             },
@@ -1606,7 +1611,7 @@ pub const Parser = struct {
         try self.expect(.rparen);
 
         if (items.items.len == 0) {
-            self.errorNote(self.cur.loc, "expected at least one argument to 'tensor', found none", .{}, null, "provide the element type as the last argument, and shape dimensions before it", .{});
+            self.errorNote(self.cur.loc, .tensor_missing_arguments, .{}, null, .provide_element_type_last);
             self.sync(.eos);
             return error.UnexpectedToken;
         }
@@ -1645,7 +1650,7 @@ pub const Parser = struct {
                 name_bytes = lx;
                 self.advance();
             } else {
-                self.errorNote(tok.loc, "expected attribute name, found {s}", .{Token.Tag.symbol(tok.tag)}, tok.loc, "attribute names can be identifiers or keywords", .{});
+                self.errorNote(tok.loc, .expected_attribute_name, .{tok.tag}, tok.loc, .attribute_names_identifiers_or_keywords);
                 self.sync(.rsquare);
                 return error.UnexpectedToken;
             }
@@ -1728,11 +1733,10 @@ pub const Parser = struct {
             else => {
                 self.errorNote(
                     self.cur.loc,
-                    "expected ']' or ',' in map type/literal, found {s}",
-                    .{Token.Tag.symbol(self.cur.tag)},
+                    .expected_map_type_or_literal_continuation,
+                    .{self.cur.tag},
                     null,
-                    "use ']' to end a map type or ',' to separate key-value pairs in a map literal",
-                    .{},
+                    .expected_map_type_or_literal_continuation_note,
                 );
                 self.sync(.eos);
                 return error.UnexpectedToken;
@@ -1813,11 +1817,10 @@ pub const Parser = struct {
                     else => {
                         self.errorNote(
                             self.cur.loc,
-                            "expected ']', ':', or ',' in array-like, found {s}",
-                            .{Token.Tag.symbol(self.cur.tag)},
+                            .expected_array_like_continuation,
+                            .{self.cur.tag},
                             null,
-                            "use ']' to end an array type or literal, ':' for a map type/literal, or ',' to separate elements in an array literal",
-                            .{},
+                            .expected_array_type_or_literal_continuation,
                         );
                         self.sync(.eos);
                         return error.UnexpectedToken;
@@ -1849,11 +1852,10 @@ pub const Parser = struct {
             } else {
                 self.errorNote(
                     tok.loc,
-                    "expected attribute name, found {s}",
-                    .{Token.Tag.symbol(tok.tag)},
+                    .expected_attribute_name,
+                    .{tok.tag},
                     tok.loc,
-                    "attribute names can be identifiers or keywords",
-                    .{},
+                    .attribute_names_identifiers_or_keywords,
                 );
                 self.sync(.rsquare);
                 return error.UnexpectedToken;
@@ -1870,11 +1872,10 @@ pub const Parser = struct {
                 } else {
                     self.errorNote(
                         self.cur.loc,
-                        "expected literal or identifier after '=', found {s}",
-                        .{Token.Tag.symbol(t)},
+                        .expected_attribute_value,
+                        .{t},
                         self.cur.loc,
-                        "attribute values must be literals or identifiers",
-                        .{},
+                        .attribute_values_literals_or_identifiers,
                     );
                     self.sync(.rsquare);
                     return error.UnexpectedToken;
@@ -1990,11 +1991,10 @@ pub const Parser = struct {
                     else => {
                         self.errorNote(
                             self.cur.loc,
-                            "expected 'proc' or 'fn' after 'extern async', found {s}",
-                            .{Token.Tag.symbol(self.cur.tag)},
+                            .expected_extern_async_function,
+                            .{self.cur.tag},
                             null,
-                            "use 'extern async proc' or 'extern async fn'",
-                            .{},
+                            .use_extern_async_proc_or_fn,
                         );
                         self.sync(.eos);
                         return error.UnexpectedToken;
@@ -2008,11 +2008,10 @@ pub const Parser = struct {
             else => {
                 self.errorNote(
                     self.cur.loc,
-                    "expected 'proc', 'fn', or a type after 'extern', found {s}",
-                    .{Token.Tag.symbol(self.cur.tag)},
+                    .expected_extern_declaration,
+                    .{self.cur.tag},
                     null,
-                    "use 'extern proc', 'extern fn', or 'extern struct/enum/union'",
-                    .{},
+                    .use_extern_proc_fn_or_type,
                 );
                 self.sync(.eos);
                 return error.UnexpectedToken;
@@ -2060,11 +2059,10 @@ pub const Parser = struct {
             } else {
                 self.errorNote(
                     self.cur.loc,
-                    "expected ':', ',', or ')' after parameter, found {s}",
-                    .{Token.Tag.symbol(self.cur.tag)},
+                    .expected_parameter_type_or_end,
+                    .{self.cur.tag},
                     null,
-                    "use ':' to specify a type, or ',' / ')' to end the parameter",
-                    .{},
+                    .use_colon_for_type_or_comma_or_paren,
                 );
                 self.sync(.eos);
                 return error.UnexpectedToken;

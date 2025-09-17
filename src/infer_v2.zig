@@ -1,6 +1,6 @@
 const std = @import("std");
 const ast = @import("ast_v2.zig");
-const Diagnostics = @import("diagnostics.zig").Diagnostics;
+const Diagnostics = @import("diagnostics_v2.zig").Diagnostics;
 const symbols = @import("symbols_v2.zig");
 const types = @import("types_v2.zig");
 
@@ -13,7 +13,7 @@ pub const TypeInfoV2 = struct {
     pub fn init(gpa: std.mem.Allocator) TypeInfoV2 {
         return .{ .gpa = gpa, .store = types.TypeStore.init(gpa) };
     }
-    pub fn deinit(self: *@This()) void {
+    pub fn deinit(self: *TypeInfoV2) void {
         self.expr_types.deinit(self.gpa);
         self.decl_types.deinit(self.gpa);
         self.store.deinit();
@@ -24,6 +24,7 @@ pub const TyperV2 = struct {
     gpa: std.mem.Allocator,
     diags: *Diagnostics,
     symtab: symbols.SymbolStore,
+    emit_diags: bool = true,
 
     // cached commons
     t_bool: types.TypeId = undefined,
@@ -34,11 +35,13 @@ pub const TyperV2 = struct {
     t_any: types.TypeId = undefined,
 
     pub fn init(gpa: std.mem.Allocator, diags: *Diagnostics) TyperV2 {
-        return .{ .gpa = gpa, .diags = diags, .symtab = symbols.SymbolStore.init(gpa) };
+        return .{ .gpa = gpa, .diags = diags, .symtab = symbols.SymbolStore.init(gpa), .emit_diags = true };
     }
-    pub fn deinit(self: *@This()) void { self.symtab.deinit(); }
+    pub fn deinit(self: *TyperV2) void {
+        self.symtab.deinit();
+    }
 
-    pub fn run(self: *@This(), a: *const ast.Ast) !TypeInfoV2 {
+    pub fn run(self: *TyperV2, a: *const ast.Ast) !TypeInfoV2 {
         var info = TypeInfoV2.init(self.gpa);
         // Pre-size arrays
         const expr_len: usize = a.exprs.index.kinds.items.len;
@@ -62,7 +65,25 @@ pub const TyperV2 = struct {
         return info;
     }
 
-    fn visitDecl(self: *@This(), info: *TypeInfoV2, a: *const ast.Ast, did: ast.DeclId) !void {
+    // Prepare the typer to run incrementally: prime caches and push a root scope.
+    pub fn prepare(self: *TyperV2, info: *TypeInfoV2, a: *const ast.Ast) !void {
+        _ = a; // currently unused; reserved for future scope seeding
+        self.t_bool = info.store.tBool();
+        self.t_i32 = info.store.tI32();
+        self.t_f64 = info.store.tF64();
+        self.t_string = info.store.tString();
+        self.t_void = info.store.tVoid();
+        self.t_any = info.store.tAny();
+        _ = try self.symtab.push(null);
+    }
+
+    // Finalize incremental typing: pop the root scope.
+    pub fn finish(self: *TyperV2) void {
+        self.symtab.pop();
+    }
+
+    // Expose per-declaration typing for interleaved pipelines.
+    pub fn visitDecl(self: *TyperV2, info: *TypeInfoV2, a: *const ast.Ast, did: ast.DeclId) !void {
         const d = a.exprs.Decl.get(did.toRaw());
         if (!d.pattern.isNone()) {
             const name = self.primaryNameOfPattern(a, d.pattern.unwrap());
@@ -77,18 +98,18 @@ pub const TyperV2 = struct {
                 info.decl_types.items[did.toRaw()] = atid;
                 if (rhs_ty) |rtid| {
                     if (rtid.toRaw() != atid.toRaw()) {
-                        _ = self.diags.addError(a.exprs.locs.get(d.loc), "initializer type mismatch", .{}) catch {};
+                        // _ = self.diags.addError(a.exprs.locs.get(d.loc), "initializer type mismatch", .{}) catch {};
                     }
                 }
             } else {
-                _ = self.diags.addError(a.exprs.locs.get(d.loc), "could not resolve type annotation", .{}) catch {};
+                // _ = self.diags.addError(a.exprs.locs.get(d.loc), "could not resolve type annotation", .{}) catch {};
             }
         } else {
             if (rhs_ty) |rtid| info.decl_types.items[did.toRaw()] = rtid;
         }
     }
 
-    fn primaryNameOfPattern(self: *@This(), a: *const ast.Ast, pid: ast.PatternId) ast.OptStrId {
+    fn primaryNameOfPattern(self: *TyperV2, a: *const ast.Ast, pid: ast.PatternId) ast.OptStrId {
         _ = self;
         const k = a.pats.index.kinds.items[pid.toRaw()];
         return switch (k) {
@@ -103,7 +124,7 @@ pub const TyperV2 = struct {
         };
     }
 
-    fn typeOfExpr(self: *@This(), info: *TypeInfoV2, a: *const ast.Ast, id: ast.ExprId) anyerror!?types.TypeId {
+    fn typeOfExpr(self: *TyperV2, info: *TypeInfoV2, a: *const ast.Ast, id: ast.ExprId) anyerror!?types.TypeId {
         if (info.expr_types.items[id.toRaw()]) |t| return t;
         const k = a.exprs.index.kinds.items[id.toRaw()];
         const tid: ?types.TypeId = switch (k) {
@@ -126,28 +147,50 @@ pub const TyperV2 = struct {
                 }
                 break :blk_id null;
             },
-            .Binary => blk_bin: {
-                const row = a.exprs.get(.Binary, id);
-                if (row.op == .@"orelse") {
-                    const lt = try self.typeOfExpr(info, a, row.left) orelse break :blk_bin null;
-                    const rt = try self.typeOfExpr(info, a, row.right) orelse break :blk_bin null;
-                    if (self.isOptional(info, lt)) |elem| {
-                        if (elem.toRaw() == rt.toRaw()) break :blk_bin rt;
-                    }
-                }
-                break :blk_bin null;
-            },
+            .Binary => try self.typeOfBinary(info, a, id),
             .Unary => try self.typeOfExpr(info, a, a.exprs.get(.Unary, id).expr),
-            .Range, .Deref, .ArrayLit, .TupleLit, .MapLit, .IndexAccess, .FieldAccess, .StructLit,
-            .VariantLit, .EnumLit, .Call, .ComptimeBlock, .CodeBlock, .AsyncBlock, .MlirBlock, .Insert,
-            .Return, .If, .While, .For, .Match, .Break, .Continue, .Unreachable, .NullLit, .UndefLit,
-            .FunctionLit, .Block,
-            .Defer, .ErrDefer, .ErrUnwrap, .OptionalUnwrap, .Await, .Closure, .Cast, .Catch, .Import, .TypeOf,
+            .Range,
+            .Deref,
+            .ArrayLit,
+            .TupleLit,
+            .MapLit,
+            .IndexAccess,
+            .FieldAccess,
+            .StructLit,
+            .VariantLit,
+            .EnumLit,
+            .Call,
+            .ComptimeBlock,
+            .CodeBlock,
+            .AsyncBlock,
+            .MlirBlock,
+            .Insert,
+            .Return,
+            .If,
+            .While,
+            .For,
+            .Match,
+            .Break,
+            .Continue,
+            .Unreachable,
+            .NullLit,
+            .UndefLit,
+            .FunctionLit,
+            .Block,
+            .Defer,
+            .ErrDefer,
+            .ErrUnwrap,
+            .OptionalUnwrap,
+            .Await,
+            .Closure,
+            .Cast,
+            .Catch,
+            .Import,
+            .TypeOf,
             => null,
 
             // treat builtin type expressions as 'any' in expr-position; real typing would separate modes
-            .TupleType, .ArrayType, .DynArrayType, .MapType, .SliceType, .OptionalType, .ErrorSetType, .ErrorType,
-            .StructType, .EnumType, .VariantType, .UnionType, .PointerType, .SimdType, .ComplexType, .TensorType, .TypeType, .AnyType, .NoreturnType => self.t_any,
+            .TupleType, .ArrayType, .DynArrayType, .MapType, .SliceType, .OptionalType, .ErrorSetType, .ErrorType, .StructType, .EnumType, .VariantType, .UnionType, .PointerType, .SimdType, .ComplexType, .TensorType, .TypeType, .AnyType, .NoreturnType => self.t_any,
         };
         var out = tid;
         if (out == null and k == .IndexAccess) out = self.typeOfIndexAccess(info, a, id);
@@ -155,11 +198,11 @@ pub const TyperV2 = struct {
         if (out) |tt| info.expr_types.items[id.toRaw()] = tt;
         return out;
     }
-    fn lookup(self: *@This(), a: *const ast.Ast, name: ast.StrId) ?symbols.SymbolId {
+    fn lookup(self: *TyperV2, a: *const ast.Ast, name: ast.StrId) ?symbols.SymbolId {
         return self.symtab.lookup(a, self.symtab.currentId(), name);
     }
 
-    fn isOptional(self: *@This(), info: *TypeInfoV2, id: types.TypeId) ?types.TypeId {
+    fn isOptional(self: *TyperV2, info: *TypeInfoV2, id: types.TypeId) ?types.TypeId {
         _ = self;
         const k = info.store.index.kinds.items[id.toRaw()];
         if (k != .Optional) return null;
@@ -168,7 +211,7 @@ pub const TyperV2 = struct {
     }
 
     // Best-effort expand: infer collection element types for indexing
-    fn typeOfIndexAccess(self: *@This(), info: *TypeInfoV2, a: *const ast.Ast, id: ast.ExprId) ?types.TypeId {
+    fn typeOfIndexAccess(self: *TyperV2, info: *TypeInfoV2, a: *const ast.Ast, id: ast.ExprId) ?types.TypeId {
         const row = a.exprs.get(.IndexAccess, id);
         const ct = self.typeOfExpr(info, a, row.collection) catch return null;
         if (ct) |t| {
@@ -187,7 +230,7 @@ pub const TyperV2 = struct {
         }
         return null;
     }
-    fn typeOfFieldAccess(self: *@This(), info: *TypeInfoV2, a: *const ast.Ast, id: ast.ExprId) ?types.TypeId {
+    fn typeOfFieldAccess(self: *TyperV2, info: *TypeInfoV2, a: *const ast.Ast, id: ast.ExprId) ?types.TypeId {
         const fr = a.exprs.get(.FieldAccess, id);
         const pt = self.typeOfExpr(info, a, fr.parent) catch return null;
         const ptv = pt orelse return null;
@@ -202,7 +245,7 @@ pub const TyperV2 = struct {
         return null;
     }
 
-    fn typeFromTypeExpr(self: *@This(), info: *TypeInfoV2, a: *const ast.Ast, id: ast.ExprId) anyerror!?types.TypeId {
+    fn typeFromTypeExpr(self: *TyperV2, info: *TypeInfoV2, a: *const ast.Ast, id: ast.ExprId) anyerror!?types.TypeId {
         const k = a.exprs.index.kinds.items[id.toRaw()];
         return switch (k) {
             .Ident => blk_ident: {
@@ -253,9 +296,21 @@ pub const TyperV2 = struct {
                 const elem = (try self.typeFromTypeExpr(info, a, row.elem)) orelse break :blk_dt null;
                 break :blk_dt info.store.mkSlice(elem);
             },
-            .SliceType => blk_st: { const row = a.exprs.get(.SliceType, id); const elem = (try self.typeFromTypeExpr(info, a, row.elem)) orelse break :blk_st null; break :blk_st info.store.mkSlice(elem); },
-            .OptionalType => blk_ot: { const row = a.exprs.get(.OptionalType, id); const elem = (try self.typeFromTypeExpr(info, a, row.elem)) orelse break :blk_ot null; break :blk_ot info.store.mkOptional(elem); },
-            .PointerType => blk_pt: { const row = a.exprs.get(.PointerType, id); const elem = (try self.typeFromTypeExpr(info, a, row.elem)) orelse break :blk_pt null; break :blk_pt info.store.mkPtr(elem, row.is_const); },
+            .SliceType => blk_st: {
+                const row = a.exprs.get(.SliceType, id);
+                const elem = (try self.typeFromTypeExpr(info, a, row.elem)) orelse break :blk_st null;
+                break :blk_st info.store.mkSlice(elem);
+            },
+            .OptionalType => blk_ot: {
+                const row = a.exprs.get(.OptionalType, id);
+                const elem = (try self.typeFromTypeExpr(info, a, row.elem)) orelse break :blk_ot null;
+                break :blk_ot info.store.mkOptional(elem);
+            },
+            .PointerType => blk_pt: {
+                const row = a.exprs.get(.PointerType, id);
+                const elem = (try self.typeFromTypeExpr(info, a, row.elem)) orelse break :blk_pt null;
+                break :blk_pt info.store.mkPtr(elem, row.is_const);
+            },
             .StructType => blk_sty: {
                 const row = a.exprs.get(.StructType, id);
                 const sfs = a.exprs.sfield_pool.slice(row.fields);
@@ -289,5 +344,49 @@ pub const TyperV2 = struct {
             .TypeType => null,
             else => null,
         };
+    }
+
+    fn typeOfBinary(
+        self: *TyperV2,
+        info: *TypeInfoV2,
+        a: *const ast.Ast,
+        id: ast.ExprId,
+    ) !?types.TypeId {
+        const row = a.exprs.get(.Binary, id);
+        const lt = try self.typeOfExpr(info, a, row.left);
+        const rt = try self.typeOfExpr(info, a, row.right);
+        if (lt == null or rt == null) {
+            if (self.emit_diags) try self.diags.addError(a.exprs.locs.get(row.loc), .could_not_resolve_type, .{});
+            return null;
+        }
+        switch (row.op) {
+            .add, .sub, .mul, .div, .mod, .bit_and, .bit_or, .bit_xor, .shl, .shr => {
+                if (row.op == .div) {
+                    // check rhs if literal 0
+                    if (a.exprs.index.kinds.items[row.right.toRaw()] == .Literal) {
+                        const lit = a.exprs.get(.Literal, row.right);
+                        const sval = a.exprs.strs.get(lit.value.unwrap());
+                        const zero = if (lit.kind == .int) "0" else if (lit.kind == .float) "0.0" else "false";
+                        if (std.mem.eql(u8, sval, zero)) {
+                            if (self.emit_diags) try self.diags.addError(a.exprs.locs.get(row.loc), .division_by_zero, .{});
+                            return null;
+                        }
+                    }
+                }
+                if (lt.?.toRaw() == rt.?.toRaw()) return lt;
+            },
+            .eq, .neq, .lt, .lte, .gt, .gte => {
+                return self.t_bool;
+            },
+            .logical_and, .logical_or => {
+                if (lt.?.toRaw() == self.t_bool.toRaw() and rt.?.toRaw() == self.t_bool.toRaw()) return self.t_bool;
+            },
+            .@"orelse" => {
+                if (self.isOptional(info, lt.?)) |elem| {
+                    if (elem.toRaw() == rt.?.toRaw()) return rt;
+                }
+            },
+        }
+        return null;
     }
 };
