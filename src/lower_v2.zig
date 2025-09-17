@@ -439,7 +439,8 @@ pub const LowerV2 = struct {
             },
             .StructLit => blk: {
                 const r = self.src.exprs.get(.StructLit, id);
-                break :blk self.out.exprs.add(.StructLit, .{ .fields = try self.lowerStructFieldValues(r.fields), .loc = self.mapLoc(r.loc) });
+                const ty = if (!r.ty.isNone()) ast.OptExprId.some(try self.lowerExpr(r.ty.unwrap())) else ast.OptExprId.none();
+                break :blk self.out.exprs.add(.StructLit, .{ .fields = try self.lowerStructFieldValues(r.fields), .ty = ty, .loc = self.mapLoc(r.loc) });
             },
             .Function => blk: {
                 const f = self.src.exprs.get(.Function, id);

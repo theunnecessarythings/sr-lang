@@ -705,7 +705,7 @@ pub const Parser = struct {
         try self.expect(.rcurly);
 
         const fields_range = self.cst.exprs.sfv_pool.pushMany(self.gpa, sfv_ids.items);
-        return self.cst.exprs.add(.StructLit, .{ .fields = fields_range, .loc = loc });
+        return self.cst.exprs.add(.StructLit, .{ .fields = fields_range, .ty = cst.OptExprId.none(), .loc = loc });
     }
 
     fn parseIndex(self: *Parser, collection: cst.ExprId) anyerror!cst.ExprId {
