@@ -346,13 +346,36 @@ pub const CheckerV3 = struct {
             .Range => tid = try self.checkRange(info, a, id),
 
             // still default to any for the following kinds (can be implemented later)
-            .VariantLit => {
-                std.debug.print("VariantLit expr {d}\n", .{id.toRaw()});
-                tid = self.t_any;
-            },
-            .EnumLit, .Call, .ComptimeBlock, .CodeBlock, .AsyncBlock, .MlirBlock, .Insert, .Return, .If, .While, .For, .Match, .Break, .Continue, .Unreachable, .UndefLit => tid = self.t_any,
+            .Deref => tid = try self.checkDeref(info, a, id),
+            .VariantLit => tid = try self.checkVariantLit(info, a, id),
+            .EnumLit => tid = try self.checkEnumLit(info, a, id, expect),
+            .Call => tid = try self.checkCall(info, a, id),
+            .ComptimeBlock => tid = try self.checkComptimeBlock(info, a, id),
+            .CodeBlock => tid = try self.checkCodeBlock(info, a, id, expect),
+            .AsyncBlock => tid = try self.checkAsyncBlock(info, a, id, expect),
+            .MlirBlock => tid = try self.checkMlirBlock(info, a, id, expect),
+            .Insert => tid = try self.checkInsert(info, a, id),
+            .Return => tid = try self.checkReturn(info, a, id),
+            .If => tid = try self.checkIf(info, a, id, expect),
+            .While => tid = try self.checkWhile(info, a, id),
+            .For => tid = try self.checkFor(info, a, id),
+            .Match => tid = try self.checkMatch(info, a, id, expect),
+            .Break => tid = try self.checkBreak(info, a, id),
+            .Continue => tid = try self.checkContinue(info, a, id),
+            .Unreachable => tid = try self.checkUnreachable(info, a, id),
+            .UndefLit => tid = self.t_any,
 
-            .Block, .Defer, .ErrDefer, .ErrUnwrap, .OptionalUnwrap, .Await, .Closure, .Cast, .Catch, .Import, .TypeOf => std.debug.panic("TODO: checkExpr kind not implemented: {}", .{k}),
+            .Block => tid = try self.checkBlock(info, a, id, expect),
+            .Defer => tid = try self.checkDefer(info, a, id),
+            .ErrDefer => tid = try self.checkErrDefer(info, a, id),
+            .ErrUnwrap => tid = try self.checkErrUnwrap(info, a, id),
+            .OptionalUnwrap => tid = try self.checkOptionalUnwrap(info, a, id),
+            .Await => tid = try self.checkAwait(info, a, id),
+            .Closure => tid = try self.checkClosure(info, a, id, expect),
+            .Cast => tid = try self.checkCast(info, a, id),
+            .Catch => tid = try self.checkCatch(info, a, id),
+            .Import => tid = try self.checkImport(info, a, id),
+            .TypeOf => tid = try self.checkTypeOf(info, a, id),
 
             .NullLit => {
                 if (expect.map) |exp| {
@@ -397,7 +420,6 @@ pub const CheckerV3 = struct {
                 }
                 tid = resolved orelse self.t_any;
             },
-            else => std.debug.panic("TODO: checkExpr kind not implemented: {}", .{k}),
         }
 
         if (expect.map) |exp| {
@@ -439,6 +461,20 @@ pub const CheckerV3 = struct {
             if (!srow.origin_decl.isNone()) if (info.decl_types.items[srow.origin_decl.unwrap().toRaw()]) |dt| return dt;
         }
         return null;
+    }
+
+    fn checkDeref(self: *CheckerV3, info: *infer.TypeInfoV2, a: *const ast.Ast, id: ast.ExprId) !?types.TypeId {
+        const row = a.exprs.get(.Deref, id);
+        const ptr_ty_opt = try self.checkExpr(info, a, row.expr, expectNone());
+        if (ptr_ty_opt == null) return null;
+        const ptr_ty = ptr_ty_opt.?;
+        const kind = info.store.index.kinds.items[ptr_ty.toRaw()];
+        if (kind != .Ptr) {
+            try self.diags.addError(a.exprs.locs.get(row.loc), .deref_non_pointer, .{});
+            return null;
+        }
+        const ptr_row = info.store.Ptr.get(info.store.index.rows.items[ptr_ty.toRaw()]);
+        return ptr_row.elem;
     }
 
     fn checkBinary(self: *CheckerV3, info: *infer.TypeInfoV2, a: *const ast.Ast, id: ast.ExprId) !?types.TypeId {
@@ -866,9 +902,357 @@ pub const CheckerV3 = struct {
         return info.store.mkSlice(info.store.tUsize());
     }
 
-    // =========================================================
-    // Struct literal checks (moved out of visitDecl)
-    // =========================================================
+    fn checkVariantLit(self: *CheckerV3, info: *infer.TypeInfoV2, a: *const ast.Ast, id: ast.ExprId) !?types.TypeId {
+        const vl = a.exprs.get(.VariantLit, id);
+        if (vl.payload.isNone()) return self.t_any;
+        const pt = try self.checkExpr(info, a, vl.payload.unwrap(), expectNone());
+        if (pt == null) return null;
+        return info.store.mkVariant(pt.?);
+    }
+
+    fn checkEnumLit(self: *CheckerV3, info: *infer.TypeInfoV2, a: *const ast.Ast, id: ast.ExprId, expect: Expectation) !?types.TypeId {
+        const el = a.exprs.get(.EnumLit, id);
+        const enum_decl = self.enumDeclByExpr(a, el.enum_type) orelse {
+            try self.diags.addError(a.exprs.locs.get(el.loc), .could_not_resolve_type, .{});
+            return null;
+        };
+        const decl = a.exprs.Decl.get(enum_decl.toRaw());
+        const en = a.exprs.get(.EnumType, decl.value);
+        const fields = a.exprs.efield_pool.slice(en.fields);
+        var found = false;
+        var field_ty: ?types.TypeId = null;
+        var i: usize = 0;
+        while (i < fields.len) : (i += 1) {
+            const ef = a.exprs.EnumField.get(fields[i].toRaw());
+            if (std.mem.eql(u8, a.exprs.strs.get(ef.name), a.exprs.strs.get(el.field))) {
+                found = true;
+                field_ty = if (!ef.payload.isNone()) (try self.typeFromTypeExpr(info, a, ef.payload.unwrap())) else info.store.tVoid();
+                break;
+            }
+        }
+        if (!found) {
+            try self.diags.addError(a.exprs.locs.get(el.loc), .unknown_enum_tag, .{});
+            return null;
+        }
+        if (el.payload.isNone()) {
+            if (field_ty == null or field_ty.?.toRaw() != info.store.tVoid().toRaw()) {
+                try self.diags.addError(a.exprs.locs.get(el.loc), .enum_tag_payload_mismatch, .{});
+                return null;
+            }
+        } else {
+            if (field_ty == null) {
+                try self.diags.addError(a.exprs.locs.get(el.loc), .enum_tag_payload_mismatch, .{});
+                return null;
+            }
+            const pt = try self.checkExpr(info, a, el.payload.?, expectTy(field_ty.?));
+            if (pt == null or !self.assignable(info, pt.?, field_ty.?, false)) {
+                try self.diags.addError(a.exprs.locs.get(el.loc), .enum_tag_payload_mismatch, .{});
+                return null;
+            }
+        }
+        if (expect.enum_decl) |ed| {
+            if (ed.toRaw() != enum_decl.toRaw()) {
+                try self.diags.addError(a.exprs.locs.get(el.loc), .enum_tag_type_mismatch, .{});
+                return null;
+            }
+        }
+        return info.store.mkEnum(enum_decl);
+    }
+
+    fn checkCall(self: *CheckerV3, info: *infer.TypeInfoV2, a: *const ast.Ast, id: ast.ExprId, expect: Expectation) !?types.TypeId {
+        _ = expect;
+        const cr = a.exprs.get(.Call, id);
+        const ft = try self.checkExpr(info, a, cr.func, expectNone());
+        if (ft == null) return null;
+        const f = ft.?;
+        const fk = info.store.index.kinds.items[f.toRaw()];
+        if (fk != .Function) {
+            try self.diags.addError(a.exprs.locs.get(cr.loc), .call_non_function, .{});
+            return null;
+        }
+        const fr = info.store.Function.get(info.store.index.rows.items[f.toRaw()]);
+        const args = a.exprs.expr_pool.slice(cr.args);
+        if (!fr.is_variadic) {
+            if (args.len != fr.params.len) {
+                try self.diags.addError(a.exprs.locs.get(cr.loc), .function_arity_mismatch, .{});
+                return null;
+            }
+        } else {
+            if (args.len < fr.params.len) {
+                try self.diags.addError(a.exprs.locs.get(cr.loc), .function_arity_mismatch, .{});
+                return null;
+            }
+        }
+        var i: usize = 0;
+        while (i < args.len) : (i += 1) {
+            const at = try self.checkExpr(info, a, args[i], expectNone());
+            if (at == null) return null;
+            const atid = at.?;
+            const ptid = if (i < fr.params.len) fr.params[i] else fr.params[fr.params.len - 1];
+            if (!self.assignable(info, atid, ptid, true)) {
+                try self.diags.addError(a.exprs.locs.get(cr.loc), .type_annotation_mismatch, .{});
+                return null;
+            }
+        }
+        return fr.result;
+    }
+
+    fn checkComptimeBlock(self: *CheckerV3, info: *infer.TypeInfoV2, a: *const ast.Ast, id: ast.ExprId) !?types.TypeId {
+        const cb = a.exprs.get(.ComptimeBlock, id);
+        var last_ty: ?types.TypeId = null;
+        const exprs = a.exprs.expr_pool.slice(cb.exprs);
+        var i: usize = 0;
+        while (i < exprs.len) : (i += 1) {
+            last_ty = try self.checkExpr(info, a, exprs[i], expectNone());
+            if (last_ty == null) return null;
+            i += 1;
+        }
+        if (last_ty == null) return info.store.tVoid();
+        return last_ty;
+    }
+
+    fn checkAsyncBlock(self: *CheckerV3, info: *infer.TypeInfoV2, a: *const ast.Ast, id: ast.ExprId) !?types.TypeId {
+        const ab = a.exprs.get(.AsyncBlock, id);
+        var last_ty: ?types.TypeId = null;
+        const exprs = a.exprs.expr_pool.slice(ab.exprs);
+        var i: usize = 0;
+        while (i < exprs.len) : (i += 1) {
+            last_ty = try self.checkExpr(info, a, exprs[i], expectNone());
+            if (last_ty == null) return null;
+            i += 1;
+        }
+        if (last_ty == null) return info.store.tVoid();
+        return info.store.mkFuture(last_ty.?);
+    }
+
+    fn checkMlirBlock(self: *CheckerV3, info: *infer.TypeInfoV2, a: *const ast.Ast, id: ast.ExprId) !?types.TypeId {
+        const mb = a.exprs.get(.MlirBlock, id);
+        var last_ty: ?types.TypeId = null;
+        const exprs = a.exprs.expr_pool.slice(mb.exprs);
+        var i: usize = 0;
+        while (i < exprs.len) : (i += 1) {
+            last_ty = try self.checkExpr(info, a, exprs[i], expectNone());
+            if (last_ty == null) return null;
+            i += 1;
+        }
+        if (last_ty == null) return info.store.tVoid();
+        return last_ty;
+    }
+
+    fn checkInsert(self: *CheckerV3, info: *infer.TypeInfoV2, a: *const ast.Ast, id: ast.ExprId) !?types.TypeId {
+        _ = a;
+        _ = id;
+        _ = info;
+        _ = self;
+    }
+
+    fn checkReturn(self: *CheckerV3, info: *infer.TypeInfoV2, a: *const ast.Ast, id: ast.ExprId) !?types.TypeId {
+        const rr = a.exprs.get(.Return, id);
+        if (rr.expr.isNone()) return info.store.tVoid();
+        const et = try self.checkExpr(info, a, rr.expr.?, expectNone());
+        return et;
+    }
+
+    fn checkIf(self: *CheckerV3, info: *infer.TypeInfoV2, a: *const ast.Ast, id: ast.ExprId) !?types.TypeId {
+        const ir = a.exprs.get(.If, id);
+        const cond = try self.checkExpr(info, a, ir.cond, expectNone());
+        if (cond == null or cond.?.toRaw() != self.t_bool.toRaw()) {
+            try self.diags.addError(a.exprs.locs.get(ir.loc), .if_condition_not_bool, .{});
+            return null;
+        }
+        var then_ty: ?types.TypeId = null;
+        if (!ir.then_branch.isNone()) {
+            then_ty = try self.checkExpr(info, a, ir.then_branch.?, expectNone());
+            if (then_ty == null) return null;
+        }
+        var else_ty: ?types.TypeId = null;
+        if (!ir.else_branch.isNone()) {
+            else_ty = try self.checkExpr(info, a, ir.else_branch.?, expectNone());
+            if (else_ty == null) return null;
+        }
+        if (then_ty == null and else_ty == null) return info.store.tVoid();
+        if (then_ty == null) return else_ty;
+        if (else_ty == null) return then_ty;
+        if (then_ty.?.toRaw() == else_ty.?.toRaw()) return then_ty;
+        return info.store.tAny();
+    }
+
+    fn checkWhile(self: *CheckerV3, info: *infer.TypeInfoV2, a: *const ast.Ast, id: ast.ExprId) !?types.TypeId {
+        const wr = a.exprs.get(.While, id);
+        const cond = try self.checkExpr(info, a, wr.cond, expectNone());
+        if (cond == null or cond.?.toRaw() != self.t_bool.toRaw()) {
+            try self.diags.addError(a.exprs.locs.get(wr.loc), .while_condition_not_bool, .{});
+            return null;
+        }
+        if (!wr.body.isNone()) {
+            const bt = try self.checkExpr(info, a, wr.body.?, expectNone());
+            if (bt == null) return null;
+        }
+        return info.store.tVoid();
+    }
+
+    fn checkMatch(self: *CheckerV3, info: *infer.TypeInfoV2, a: *const ast.Ast, id: ast.ExprId) !?types.TypeId {
+        const mr = a.exprs.get(.Match, id);
+        const mt = try self.checkExpr(info, a, mr.expr, expectNone());
+        if (mt == null) return null;
+        var result_ty: ?types.TypeId = null;
+        const arms = a.exprs.match_arm_pool.slice(mr.arms);
+        var i: usize = 0;
+        while (i < arms.len) : (i += 1) {
+            const arm = a.exprs.MatchArm.get(arms[i].toRaw());
+            if (!self.checkPattern(info, a, arm.pattern, mt.?, false)) {
+                try self.diags.addError(a.exprs.locs.get(arm.loc), .pattern_type_mismatch, .{});
+                return null;
+            }
+            const at = try self.checkExpr(info, a, arm.body, expectNone());
+            if (at == null) return null;
+            if (result_ty == null) result_ty = at else if (result_ty.?.toRaw() != at.?.toRaw()) {
+                result_ty = info.store.tAny();
+            }
+            i += 1;
+        }
+        if (result_ty == null) return info.store.tVoid();
+        return result_ty;
+    }
+
+    fn checkBreak(self: *CheckerV3, info: *infer.TypeInfoV2, a: *const ast.Ast, id: ast.ExprId) !?types.TypeId {
+        _ = a;
+        _ = id;
+        _ = self;
+        return info.store.tVoid();
+    }
+
+    fn checkContinue(self: *CheckerV3, info: *infer.TypeInfoV2, a: *const ast.Ast, id: ast.ExprId) !?types.TypeId {
+        _ = a;
+        _ = id;
+        _ = self;
+        return info.store.tVoid();
+    }
+
+    fn checkDefer(self: *CheckerV3, info: *infer.TypeInfoV2, a: *const ast.Ast, id: ast.ExprId) !?types.TypeId {
+        const dr = a.exprs.get(.Defer, id);
+        const dt = try self.checkExpr(info, a, dr.expr, expectNone());
+        if (dt == null) return null;
+        return info.store.tVoid();
+    }
+
+    fn checkErrDefer(self: *CheckerV3, info: *infer.TypeInfoV2, a: *const ast.Ast, id: ast.ExprId) !?types.TypeId {
+        const edr = a.exprs.get(.ErrDefer, id);
+        const edt = try self.checkExpr(info, a, edr.expr, expectNone());
+        if (edt == null) return null;
+        return info.store.tVoid();
+    }
+
+    fn checkErrUnwrap(self: *CheckerV3, info: *infer.TypeInfoV2, a: *const ast.Ast, id: ast.ExprId) !?types.TypeId {
+        const eur = a.exprs.get(.ErrUnwrap, id);
+        const et = try self.checkExpr(info, a, eur.expr, expectNone());
+        if (et == null) return null;
+        if (info.store.index.kinds.items[et.?.toRaw()] != .ErrorSet) {
+            try self.diags.addError(a.exprs.locs.get(eur.loc), .err_unwrap_non_error_set, .{});
+            return null;
+        }
+        const er = info.store.ErrorSet.get(info.store.index.rows.items[et.?.toRaw()]);
+        if (er.payload.isNone()) return info.store.tVoid();
+        return er.payload.?;
+    }
+
+    fn checkOptionalUnwrap(self: *CheckerV3, info: *infer.TypeInfoV2, a: *const ast.Ast, id: ast.ExprId) !?types.TypeId {
+        const our = a.exprs.get(.OptionalUnwrap, id);
+        const ot = try self.checkExpr(info, a, our.expr, expectNone());
+        if (ot == null) return null;
+        if (info.store.index.kinds.items[ot.?.toRaw()] != .Optional) {
+            try self.diags.addError(a.exprs.locs.get(our.loc), .optional_unwrap_non_optional, .{});
+            return null;
+        }
+        const ore = info.store.Optional.get(info.store.index.rows.items[ot.?.toRaw()]);
+        if (ore.payload.isNone()) return info.store.tVoid();
+        return ore.payload.?;
+    }
+
+    fn checkAwait(self: *CheckerV3, info: *infer.TypeInfoV2, a: *const ast.Ast, id: ast.ExprId) !?types.TypeId {
+        const ar = a.exprs.get(.Await, id);
+        const at = try self.checkExpr(info, a, ar.expr, expectNone());
+        if (at == null) return null;
+        if (info.store.index.kinds.items[at.?.toRaw()] != .Future) {
+            try self.diags.addError(a.exprs.locs.get(ar.loc), .await_non_future, .{});
+            return null;
+        }
+        const fr = info.store.Future.get(info.store.index.rows.items[at.?.toRaw()]);
+        if (fr.payload.isNone()) return info.store.tVoid();
+        return fr.payload.?;
+    }
+
+    fn checkClosure(self: *CheckerV3, info: *infer.TypeInfoV2, a: *const ast.Ast, id: ast.ExprId, expect: Expectation) !?types.TypeId {
+        const cr = a.exprs.get(.Closure, id);
+        const params = a.exprs.param_pool.slice(cr.params);
+        var param_tys = try info.store.allocator.alloc(types.TypeId, params.len);
+        var i: usize = 0;
+        while (i < params.len) : (i += 1) {
+            const p = a.exprs.Param.get(params[i].toRaw());
+            if (p.ty.isNone()) {
+                try self.diags.addError(a.exprs.locs.get(p.loc), .missing_param_type_annotation, .{});
+                return null;
+            }
+            const pt = try self.typeFromTypeExpr(info, a, p.ty.?);
+            if (pt == null) return null;
+            param_tys[i] = pt.?;
+        }
+        const body_ty = if (!cr.body.isNone()) (try self.checkExpr(info, a, cr.body.?, expectNone())) else info.store.tVoid();
+        if (body_ty == null) return null;
+        const fty = info.store.mkFunction(param_tys, body_ty.?, false);
+        if (expect.ty) |et| {
+            if (!self.assignable(info, fty, et, true)) {
+                try self.diags.addError(a.exprs.locs.get(cr.loc), .type_annotation_mismatch, .{});
+                return null;
+            }
+        }
+        return fty;
+    }
+
+    fn checkCast(self: *CheckerV3, info: *infer.TypeInfoV2, a: *const ast.Ast, id: ast.ExprId) !?types.TypeId {
+        const cr = a.exprs.get(.Cast, id);
+        const et = try self.typeFromTypeExpr(info, a, cr.to) orelse {
+            try self.diags.addError(a.exprs.locs.get(cr.loc), .could_not_resolve_type, .{});
+            return null;
+        };
+        const vt = try self.checkExpr(info, a, cr.expr, expectNone());
+        if (vt == null) return null;
+        if (!self.castable(info, vt.?, et)) {
+            try self.diags.addError(a.exprs.locs.get(cr.loc), .invalid_cast, .{});
+            return null;
+        }
+        return et;
+    }
+
+    fn checkCatch(self: *CheckerV3, info: *infer.TypeInfoV2, a: *const ast.Ast, id: ast.ExprId) !?types.TypeId {
+        const cr = a.exprs.get(.Catch, id);
+        const vt = try self.checkExpr(info, a, cr.expr, expectNone());
+        if (vt == null) return null;
+        if (info.store.index.kinds.items[vt.?.toRaw()] != .ErrorSet) {
+            try self.diags.addError(a.exprs.locs.get(cr.loc), .catch_non_error_set, .{});
+            return null;
+        }
+        const er = info.store.ErrorSet.get(info.store.index.rows.items[vt.?.toRaw()]);
+        if (er.payload.isNone()) return info.store.tVoid();
+        return er.payload.?;
+    }
+
+    fn checkImport(self: *CheckerV3, info: *infer.TypeInfoV2, a: *const ast.Ast, id: ast.ExprId) !?types.TypeId {
+        _ = a;
+        _ = id;
+        _ = info;
+        return self.t_any;
+    }
+
+    fn checkTypeOf(self: *CheckerV3, info: *infer.TypeInfoV2, a: *const ast.Ast, id: ast.ExprId) !?types.TypeId {
+        const tr = a.exprs.get(.TypeOf, id);
+        const tt = try self.typeFromTypeExpr(info, a, tr.ty) orelse {
+            try self.diags.addError(a.exprs.locs.get(tr.loc), .could_not_resolve_type, .{});
+            return null;
+        };
+        return info.store.mkTypeType(tt);
+    }
+
     fn checkStructLit(self: *CheckerV3, info: *infer.TypeInfoV2, a: *const ast.Ast, id: ast.ExprId, expect: Expectation) !?types.TypeId {
         const sl = a.exprs.get(.StructLit, id);
         const lit_fields = a.exprs.sfv_pool.slice(sl.fields);
