@@ -17,8 +17,28 @@ pub const StoreIndex = dod.StoreIndex;
 pub const StrId = dod.StrId;
 
 pub const TypeKind = enum(u8) {
-    Void, Bool, I8, I16, I32, I64, U8, U16, U32, U64, F32, F64, Usize, String, Any,
-    Ptr, Slice, Array, Optional, Tuple, Function, Struct,
+    Void,
+    Bool,
+    I8,
+    I16,
+    I32,
+    I64,
+    U8,
+    U16,
+    U32,
+    U64,
+    F32,
+    F64,
+    Usize,
+    String,
+    Any,
+    Ptr,
+    Slice,
+    Array,
+    Optional,
+    Tuple,
+    Function,
+    Struct,
 };
 
 pub const Rows = struct {
@@ -48,7 +68,9 @@ pub const Rows = struct {
     pub const Struct = struct { fields: RangeField };
 };
 
-inline fn RowT(comptime K: TypeKind) type { return @field(Rows, @tagName(K)); }
+inline fn RowT(comptime K: TypeKind) type {
+    return @field(Rows, @tagName(K));
+}
 
 pub const TypeStore = struct {
     gpa: std.mem.Allocator,
@@ -132,20 +154,90 @@ pub const TypeStore = struct {
         self.t_void = id;
         return id;
     }
-    pub fn tBool(self: *@This()) TypeId { if (self.t_bool) |id| return id; const id = self.add(.Bool, .{}); self.t_bool = id; return id; }
-    pub fn tI8(self: *@This()) TypeId { if (self.t_i8) |id| return id; const id = self.add(.I8, .{}); self.t_i8 = id; return id; }
-    pub fn tI16(self: *@This()) TypeId { if (self.t_i16) |id| return id; const id = self.add(.I16, .{}); self.t_i16 = id; return id; }
-    pub fn tI32(self: *@This()) TypeId { if (self.t_i32) |id| return id; const id = self.add(.I32, .{}); self.t_i32 = id; return id; }
-    pub fn tI64(self: *@This()) TypeId { if (self.t_i64) |id| return id; const id = self.add(.I64, .{}); self.t_i64 = id; return id; }
-    pub fn tU8(self: *@This()) TypeId { if (self.t_u8) |id| return id; const id = self.add(.U8, .{}); self.t_u8 = id; return id; }
-    pub fn tU16(self: *@This()) TypeId { if (self.t_u16) |id| return id; const id = self.add(.U16, .{}); self.t_u16 = id; return id; }
-    pub fn tU32(self: *@This()) TypeId { if (self.t_u32) |id| return id; const id = self.add(.U32, .{}); self.t_u32 = id; return id; }
-    pub fn tU64(self: *@This()) TypeId { if (self.t_u64) |id| return id; const id = self.add(.U64, .{}); self.t_u64 = id; return id; }
-    pub fn tF32(self: *@This()) TypeId { if (self.t_f32) |id| return id; const id = self.add(.F32, .{}); self.t_f32 = id; return id; }
-    pub fn tF64(self: *@This()) TypeId { if (self.t_f64) |id| return id; const id = self.add(.F64, .{}); self.t_f64 = id; return id; }
-    pub fn tUsize(self: *@This()) TypeId { if (self.t_usize) |id| return id; const id = self.add(.Usize, .{}); self.t_usize = id; return id; }
-    pub fn tString(self: *@This()) TypeId { if (self.t_string) |id| return id; const id = self.add(.String, .{}); self.t_string = id; return id; }
-    pub fn tAny(self: *@This()) TypeId { if (self.t_any) |id| return id; const id = self.add(.Any, .{}); self.t_any = id; return id; }
+    pub fn tBool(self: *@This()) TypeId {
+        if (self.t_bool) |id| return id;
+        const id = self.add(.Bool, .{});
+        self.t_bool = id;
+        return id;
+    }
+    pub fn tI8(self: *@This()) TypeId {
+        if (self.t_i8) |id| return id;
+        const id = self.add(.I8, .{});
+        self.t_i8 = id;
+        return id;
+    }
+    pub fn tI16(self: *@This()) TypeId {
+        if (self.t_i16) |id| return id;
+        const id = self.add(.I16, .{});
+        self.t_i16 = id;
+        return id;
+    }
+    pub fn tI32(self: *@This()) TypeId {
+        if (self.t_i32) |id| return id;
+        const id = self.add(.I32, .{});
+        self.t_i32 = id;
+        return id;
+    }
+    pub fn tI64(self: *@This()) TypeId {
+        if (self.t_i64) |id| return id;
+        const id = self.add(.I64, .{});
+        self.t_i64 = id;
+        return id;
+    }
+    pub fn tU8(self: *@This()) TypeId {
+        if (self.t_u8) |id| return id;
+        const id = self.add(.U8, .{});
+        self.t_u8 = id;
+        return id;
+    }
+    pub fn tU16(self: *@This()) TypeId {
+        if (self.t_u16) |id| return id;
+        const id = self.add(.U16, .{});
+        self.t_u16 = id;
+        return id;
+    }
+    pub fn tU32(self: *@This()) TypeId {
+        if (self.t_u32) |id| return id;
+        const id = self.add(.U32, .{});
+        self.t_u32 = id;
+        return id;
+    }
+    pub fn tU64(self: *@This()) TypeId {
+        if (self.t_u64) |id| return id;
+        const id = self.add(.U64, .{});
+        self.t_u64 = id;
+        return id;
+    }
+    pub fn tF32(self: *@This()) TypeId {
+        if (self.t_f32) |id| return id;
+        const id = self.add(.F32, .{});
+        self.t_f32 = id;
+        return id;
+    }
+    pub fn tF64(self: *@This()) TypeId {
+        if (self.t_f64) |id| return id;
+        const id = self.add(.F64, .{});
+        self.t_f64 = id;
+        return id;
+    }
+    pub fn tUsize(self: *@This()) TypeId {
+        if (self.t_usize) |id| return id;
+        const id = self.add(.Usize, .{});
+        self.t_usize = id;
+        return id;
+    }
+    pub fn tString(self: *@This()) TypeId {
+        if (self.t_string) |id| return id;
+        const id = self.add(.String, .{});
+        self.t_string = id;
+        return id;
+    }
+    pub fn tAny(self: *@This()) TypeId {
+        if (self.t_any) |id| return id;
+        const id = self.add(.Any, .{});
+        self.t_any = id;
+        return id;
+    }
 
     // ---- constructors with interning (linear dedup) ----
     pub fn mkPtr(self: *@This(), elem: TypeId, is_const: bool) TypeId {
@@ -192,22 +284,34 @@ pub const TypeStore = struct {
     // ---- finders ----
     fn findPtr(self: *const @This(), elem: TypeId, is_const: bool) ?TypeId {
         return self.findMatch(.Ptr, struct { e: TypeId, c: bool }{ .e = elem, .c = is_const }, struct {
-            fn eq(s: *const TypeStore, row: Rows.Ptr, key: anytype) bool { _ = s; return row.elem.toRaw() == key.e.toRaw() and row.is_const == key.c; }
+            fn eq(s: *const TypeStore, row: Rows.Ptr, key: anytype) bool {
+                _ = s;
+                return row.elem.toRaw() == key.e.toRaw() and row.is_const == key.c;
+            }
         });
     }
     fn findSlice(self: *const @This(), elem: TypeId) ?TypeId {
         return self.findMatch(.Slice, elem, struct {
-            fn eq(s: *const TypeStore, row: Rows.Slice, key: TypeId) bool { _ = s; return row.elem.toRaw() == key.toRaw(); }
+            fn eq(s: *const TypeStore, row: Rows.Slice, key: TypeId) bool {
+                _ = s;
+                return row.elem.toRaw() == key.toRaw();
+            }
         });
     }
     fn findArray(self: *const @This(), elem: TypeId, len: usize) ?TypeId {
         return self.findMatch(.Array, struct { e: TypeId, l: usize }{ .e = elem, .l = len }, struct {
-            fn eq(s: *const TypeStore, row: Rows.Array, key: anytype) bool { _ = s; return row.elem.toRaw() == key.e.toRaw() and row.len == key.l; }
+            fn eq(s: *const TypeStore, row: Rows.Array, key: anytype) bool {
+                _ = s;
+                return row.elem.toRaw() == key.e.toRaw() and row.len == key.l;
+            }
         });
     }
     fn findOptional(self: *const @This(), elem: TypeId) ?TypeId {
         return self.findMatch(.Optional, elem, struct {
-            fn eq(s: *const TypeStore, row: Rows.Optional, key: TypeId) bool { _ = s; return row.elem.toRaw() == key.toRaw(); }
+            fn eq(s: *const TypeStore, row: Rows.Optional, key: TypeId) bool {
+                _ = s;
+                return row.elem.toRaw() == key.toRaw();
+            }
         });
     }
     fn findTuple(self: *const @This(), elems: []const TypeId) ?TypeId {
@@ -241,7 +345,10 @@ pub const TypeStore = struct {
         var tys = self.gpa.alloc(TypeId, fields.len) catch @panic("OOM");
         defer self.gpa.free(tys);
         var i: usize = 0;
-        while (i < fields.len) : (i += 1) { names[i] = fields[i].name; tys[i] = fields[i].ty; }
+        while (i < fields.len) : (i += 1) {
+            names[i] = fields[i].name;
+            tys[i] = fields[i].ty;
+        }
         const key_val = key_names_and_tys{ .names = names, .tys = tys };
         return self.findMatch(.Struct, key_val, struct {
             fn eq(s: *const TypeStore, row: Rows.Struct, k: anytype) bool {
@@ -298,9 +405,21 @@ pub const TypeStore = struct {
                 try w.print("*", .{});
                 try self.fmt(r.elem, w);
             },
-            .Slice => { const r = self.Slice.get(row_idx); try w.print("[]", .{}); try self.fmt(r.elem, w); },
-            .Array => { const r = self.Array.get(row_idx); try w.print("[{}]", .{r.len}); try self.fmt(r.elem, w); },
-            .Optional => { const r = self.Optional.get(row_idx); try w.print("?", .{}); try self.fmt(r.elem, w); },
+            .Slice => {
+                const r = self.Slice.get(row_idx);
+                try w.print("[]", .{});
+                try self.fmt(r.elem, w);
+            },
+            .Array => {
+                const r = self.Array.get(row_idx);
+                try w.print("[{}]", .{r.len});
+                try self.fmt(r.elem, w);
+            },
+            .Optional => {
+                const r = self.Optional.get(row_idx);
+                try w.print("?", .{});
+                try self.fmt(r.elem, w);
+            },
             .Tuple => {
                 const r = self.Tuple.get(row_idx);
                 try w.print("(", .{});

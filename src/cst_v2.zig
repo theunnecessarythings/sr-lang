@@ -191,17 +191,25 @@ pub fn Table(comptime T: type) type {
             len: u32 = 0,
 
             pub fn add(self: *@This(), gpa: std.mem.Allocator, row: T) u32 {
-                _ = gpa; _ = row;
+                _ = gpa;
+                _ = row;
                 const idx = self.len;
                 self.len += 1;
                 return idx;
             }
             pub fn get(self: *const @This(), idx: u32) T {
-                _ = self; _ = idx;
+                _ = self;
+                _ = idx;
                 return .{};
             }
-            pub fn deinit(self: *@This(), gpa: std.mem.Allocator) void { _ = self; _ = gpa; }
-            fn ReturnType(comptime field: []const u8) type { _ = field; return void; }
+            pub fn deinit(self: *@This(), gpa: std.mem.Allocator) void {
+                _ = self;
+                _ = gpa;
+            }
+            fn ReturnType(comptime field: []const u8) type {
+                _ = field;
+                return void;
+            }
             pub fn col(self: *@This(), comptime field_name: []const u8) []ReturnType(field_name) {
                 _ = self;
                 @compileError("col() not supported for empty row tables");
@@ -438,7 +446,7 @@ pub const Rows = struct {
 
     // ---------- struct literal ----------
     pub const StructFieldValue = struct { name: OptStrId, value: ExprId, loc: LocId };
-    pub const StructLit = struct { fields: RangeOf(StructFieldValueId), loc: LocId };
+    pub const StructLit = struct { fields: RangeOf(StructFieldValueId), ty: OptExprId, loc: LocId };
 
     // ---------- function / block ----------
     pub const FnFlags = packed struct(u8) { is_proc: bool, is_async: bool, is_variadic: bool, is_extern: bool, _pad: u4 = 0 };

@@ -200,7 +200,7 @@ pub const Rows = struct {
     pub const IndexAccess = struct { collection: ExprId, index: ExprId, loc: LocId };
     pub const FieldAccess = struct { parent: ExprId, field: StrId, is_tuple: bool, loc: LocId };
     pub const StructFieldValue = struct { name: OptStrId, value: ExprId, loc: LocId };
-    pub const StructLit = struct { fields: RangeStructFieldValue, loc: LocId };
+    pub const StructLit = struct { fields: RangeStructFieldValue, ty: OptExprId, loc: LocId };
     pub const VariantLit = struct { name: StrId, value: OptExprId, loc: LocId };
     pub const EnumLit = struct { name: StrId, value: OptExprId, loc: LocId };
 
@@ -886,7 +886,7 @@ pub const AstPrinter = struct {
                 switch (node.kind) {
                     .int, .float, .string => {
                         const text = self.s(node.value.unwrap());
-                        try self.leaf("(literal kind={s} \"{s}\")", .{@tagName(node.kind), text});
+                        try self.leaf("(literal kind={s} \"{s}\")", .{ @tagName(node.kind), text });
                     },
                     .bool => try self.leaf("(literal kind=bool {})", .{node.bool_value}),
                     .char => try self.leaf("(literal kind=char {d})", .{node.char_value}),
@@ -1425,7 +1425,6 @@ pub const AstPrinter = struct {
                 _ = self.exprs.get(.NoreturnType, id);
                 try self.leaf("(noreturn)", .{});
             },
-            
         }
     }
 
