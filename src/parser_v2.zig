@@ -220,6 +220,30 @@ pub const Parser = struct {
         };
     }
 
+    fn isTypeStart(_: *const Parser, tag: Token.Tag) bool {
+        return switch (tag) {
+            .identifier,
+            .star,
+            .question,
+            .lsquare,
+            .lparen,
+            .keyword_any,
+            .keyword_type,
+            .keyword_noreturn,
+            .keyword_struct,
+            .keyword_union,
+            .keyword_enum,
+            .keyword_variant,
+            .keyword_error,
+            .keyword_simd,
+            .keyword_tensor,
+            .keyword_proc,
+            .keyword_fn,
+            => true,
+            else => false,
+        };
+    }
+
     fn toPrefixOp(_: *const Parser, t: Token.Tag) cst.PrefixOp {
         return switch (t) {
             .plus => .plus,
@@ -396,10 +420,27 @@ pub const Parser = struct {
                 const ty_id = try self.parseExpr(0, .type);
                 ty_opt = cst.OptExprId.some(ty_id);
                 switch (self.cur.tag) {
-                    .eq => self.advance(),
+                    .eq => {
+                        self.advance();
+                        rhs_id = try self.parseExpr(0, .expr);
+                        try self.expect(.eos);
+                        lhs_opt = cst.OptExprId.some(lhs_or_rhs);
+                    },
                     .colon => {
                         self.advance();
                         flags.is_const = true;
+                        rhs_id = try self.parseExpr(0, .expr);
+                        try self.expect(.eos);
+                        lhs_opt = cst.OptExprId.some(lhs_or_rhs);
+                    },
+                    .eos, .rcurly, .eof => {
+                        // Allow type-only declaration: synthesize 'undefined' initializer
+                        // to let later phases run and diagnose type issues (e.g., array size).
+                        _ = self.consumeIf(.eos);
+                        const u_loc = self.toLocId(self.cur.loc);
+                        const undef_id = self.cst.exprs.add(.Undefined, .{ .loc = u_loc });
+                        rhs_id = undef_id;
+                        lhs_opt = cst.OptExprId.some(lhs_or_rhs);
                     },
                     else => {
                         self.errorNote(self.cur.loc, .expected_type_in_declaration, .{self.cur.tag}, self.cur.loc, .did_you_mean_equal);
@@ -407,9 +448,6 @@ pub const Parser = struct {
                         return error.UnexpectedToken;
                     },
                 }
-                rhs_id = try self.parseExpr(0, .expr);
-                try self.expect(.eos);
-                lhs_opt = cst.OptExprId.some(lhs_or_rhs);
             },
             .eq => { // x = rhs
                 self.advance();
@@ -480,7 +518,7 @@ pub const Parser = struct {
             },
 
             // grouping / collections / blocks
-            .lsquare => try self.parseArrayLike(),
+            .lsquare => try self.parseArrayLike(mode),
             .lparen => try self.parseParenExpr(),
             .lcurly => try self.parseBlockExpr(),
 
@@ -636,7 +674,7 @@ pub const Parser = struct {
                             .lsquare => try self.parseIndex(left),
                             .dot => try self.parsePostfixAfterDot(left),
                             .dotlparen => try self.parseCastParen(left),
-                            .lcurly => try self.parseStructLiteral(),
+                            .lcurly => try self.parseStructLiteralWithHead(left),
                             .dotstar => try self.parseDeref(left),
                             .question => try self.parseOptionalUnwrap(left),
                             .keyword_catch => try self.parseCatchExpr(left),
@@ -706,6 +744,41 @@ pub const Parser = struct {
 
         const fields_range = self.cst.exprs.sfv_pool.pushMany(self.gpa, sfv_ids.items);
         return self.cst.exprs.add(.StructLit, .{ .fields = fields_range, .ty = cst.OptExprId.none(), .loc = loc });
+    }
+
+    fn parseStructLiteralWithHead(self: *Parser, head: cst.ExprId) !cst.ExprId {
+        // Current token is '{' (already consumed by caller switch advance)
+        const loc = self.toLocId(self.cur.loc);
+
+        var sfv_ids: List(cst.StructFieldValueId) = .empty;
+        defer sfv_ids.deinit(self.gpa);
+
+        while (self.cur.tag != .rcurly and self.cur.tag != .eof) {
+            const field_tok = self.cur;
+            var name_opt = cst.OptStrId.none();
+            if (self.cur.tag == .identifier) {
+                name_opt = cst.OptStrId.some(self.intern(self.slice(field_tok)));
+                self.advance();
+                try self.expect(.colon);
+            }
+
+            const value = try self.parseExpr(0, .expr);
+            const entry_loc = self.toLocId(field_tok.loc);
+
+            const sfv_row: cst.Rows.StructFieldValue = .{
+                .name = name_opt,
+                .value = value,
+                .loc = entry_loc,
+            };
+            const sfv_id = self.cst.exprs.addStructFieldValue(sfv_row);
+            try sfv_ids.append(self.gpa, sfv_id);
+
+            if (!self.consumeIf(.comma)) break;
+        }
+        try self.expect(.rcurly);
+
+        const fields_range = self.cst.exprs.sfv_pool.pushMany(self.gpa, sfv_ids.items);
+        return self.cst.exprs.add(.StructLit, .{ .fields = fields_range, .ty = cst.OptExprId.some(head), .loc = loc });
     }
 
     fn parseIndex(self: *Parser, collection: cst.ExprId) anyerror!cst.ExprId {
@@ -1744,7 +1817,7 @@ pub const Parser = struct {
         };
     }
 
-    fn parseArrayLike(self: *Parser) !cst.ExprId {
+    fn parseArrayLike(self: *Parser, comptime mode: ParseMode) !cst.ExprId {
         const lbrack_tok = self.cur;
         const start_loc = self.toLocId(lbrack_tok.loc);
         self.advance(); // "["
@@ -1753,17 +1826,18 @@ pub const Parser = struct {
             // "[]T" slice type OR "[]" empty array literal
             .rsquare => blk: {
                 self.advance(); // "]"
-                switch (self.cur.tag) {
-                    .eos, .rcurly, .rparen, .rsquare, .comma, .colon => {
-                        // "[]" => Array literal (empty)
-                        const empty = cst.RangeOf(cst.ExprId).empty();
-                        break :blk self.cst.exprs.add(.ArrayLit, .{ .elems = empty, .loc = start_loc });
-                    },
-                    else => {
-                        // "[]T" => SliceType
-                        const elem = try self.parseExpr(0, .type);
-                        break :blk self.cst.exprs.add(.SliceType, .{ .elem = elem, .loc = start_loc });
-                    },
+                if (mode != .type and self.isTypeStart(self.cur.tag)) {
+                    // []T => slice type in expression context when followed by a type
+                    const elem = try self.parseExpr(0, .type);
+                    break :blk self.cst.exprs.add(.SliceType, .{ .elem = elem, .loc = start_loc });
+                } else if (mode == .type) {
+                    // []T => slice type in type context
+                    const elem = try self.parseExpr(0, .type);
+                    break :blk self.cst.exprs.add(.SliceType, .{ .elem = elem, .loc = start_loc });
+                } else {
+                    // [] => empty array literal in expression context
+                    const empty = cst.RangeOf(cst.ExprId).empty();
+                    break :blk self.cst.exprs.add(.ArrayLit, .{ .elems = empty, .loc = start_loc });
                 }
             },
 
@@ -1783,14 +1857,23 @@ pub const Parser = struct {
                 const first = try self.parseExpr(0, .expr);
                 switch (self.cur.tag) {
                     .rsquare => {
-                        // "[N]T" (sized array type)
                         self.advance();
-                        const elem = try self.parseExpr(0, .type);
-                        break :blk self.cst.exprs.add(.ArrayType, .{
-                            .elem = elem,
-                            .size = first,
-                            .loc = start_loc,
-                        });
+                        if (mode != .type and self.isTypeStart(self.cur.tag)) {
+                            // [N]T in expression context → treat as array type
+                            const elem = try self.parseExpr(0, .type);
+                            break :blk self.cst.exprs.add(.ArrayType, .{ .elem = elem, .size = first, .loc = start_loc });
+                        } else if (mode == .type) {
+                            // [N]T in type context → array type
+                            const elem = try self.parseExpr(0, .type);
+                            break :blk self.cst.exprs.add(.ArrayType, .{ .elem = elem, .size = first, .loc = start_loc });
+                        } else {
+                            // [x] in expression context → single-element array literal
+                            var items: List(cst.ExprId) = .empty;
+                            defer items.deinit(self.gpa);
+                            try items.append(self.gpa, first);
+                            const elems = self.cst.exprs.expr_pool.pushMany(self.gpa, items.items);
+                            break :blk self.cst.exprs.add(.ArrayLit, .{ .elems = elems, .loc = start_loc });
+                        }
                     },
                     .colon => {
                         // map type or literal "[K:V]" or "[k:v, ...]"
