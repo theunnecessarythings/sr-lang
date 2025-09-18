@@ -381,10 +381,19 @@ pub const Parser = struct {
         var rhs_id = lhs_or_rhs;
 
         switch (self.cur.tag) {
-            .coloncolon => { // constant: x :: rhs
+            .coloncolon => { // constant: x :: (type)? (= rhs)?
                 self.advance();
                 flags.is_const = true;
-                rhs_id = try self.parseExpr(0, .expr);
+                const first = try self.parseExpr(0, .expr);
+                if (self.cur.tag == .eq) {
+                    // typed const: x :: T = rhs
+                    self.advance();
+                    ty_opt = cst.OptExprId.some(first);
+                    rhs_id = try self.parseExpr(0, .expr);
+                } else {
+                    // const value: x :: rhs
+                    rhs_id = first;
+                }
                 try self.expect(.eos);
                 lhs_opt = cst.OptExprId.some(lhs_or_rhs);
             },
@@ -655,19 +664,28 @@ pub const Parser = struct {
                     if (tag == .lcurly and (mode == .type or mode == .expr_no_struct)) break;
                     if (tag == .lcurly and !self.looksLikeCtorHead(left)) break;
 
-                    // SPECIAL-CASE: for '!' in expr modes, always take postfix unwrap.
+                    // SPECIAL-CASE: for '!' in expr modes
+                    // If next token looks like a type start, let infix handle error-union (T ! E)
+                    // Otherwise, treat as postfix error unwrap.
                     if (tag == .bang and mode != .type) {
-                        const loc = self.toLocId(self.cur.loc);
-                        self.advance();
-                        left = self.cst.exprs.add(.ErrUnwrap, .{ .expr = left, .loc = loc });
-                        continue;
+                        if (self.isTypeStart(self.nxt.tag)) {
+                            // do not consume here; infix phase will handle
+                        } else {
+                            const loc = self.toLocId(self.cur.loc);
+                            self.advance();
+                            left = self.cst.exprs.add(.ErrUnwrap, .{ .expr = left, .loc = loc });
+                            continue;
+                        }
                     }
 
                     // Range postfix still defers to infix when it’s actually x..y or x..=y
                     const prefer_postfix_for_range = (tag == .dotdot or tag == .dotdoteq);
                     const should_let_infix_win = prefer_postfix_for_range and !self.nextIsTerminator();
 
-                    if (!should_let_infix_win) {
+                    // Special-case: skip postfix consumption for '!' when used as infix error-union in expr mode
+                    if (tag == .bang and mode != .type and self.isTypeStart(self.nxt.tag)) {
+                        // Do nothing here; the infix phase below will consume and build error_union
+                    } else if (!should_let_infix_win) {
                         self.advance();
                         left = switch (tag) {
                             .lparen => try self.parseCall(left),
@@ -691,8 +709,9 @@ pub const Parser = struct {
             }
             // ---------- Infix ----------
             if (self.infixBp(tag)) |bp| {
-                // Only allow infix '!' in *type* mode (error-union like `T ! E`)
-                if (tag == .bang and mode != .type) break;
+                // Allow infix '!' as error-union in type mode,
+                // or in expr mode when the next token begins a type.
+                if (tag == .bang and !(mode == .type or self.isTypeStart(self.nxt.tag))) break;
                 const l_bp, const r_bp = bp;
                 if (l_bp < min_bp) break;
 

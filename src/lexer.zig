@@ -492,6 +492,8 @@ pub const Tokenizer = struct {
             .keyword_continue,
             .keyword_unreachable,
             .keyword_await,
+            .keyword_type,
+            .keyword_any,
 
             .raw_asm_block,
             .mlir_content,

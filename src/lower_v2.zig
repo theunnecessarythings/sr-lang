@@ -737,6 +737,9 @@ pub const LowerV2 = struct {
             }
         };
 
+        if (i.op == .error_union) {
+            return self.out.exprs.add(.ErrorSetType, .{ .err = R, .value = L, .loc = loc });
+        }
         if (map_bin.m(i.op)) |mm| {
             return self.out.exprs.add(.Binary, .{ .left = L, .right = R, .op = mm.op, .wrap = mm.wrap, .saturate = mm.sat, .loc = loc });
         }

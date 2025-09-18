@@ -579,7 +579,7 @@ test "struct types - failures" {
     try checkProgram(
         \\
         \\ Point :: struct { x: i32, y: i32 }
-        \\ p :: Point{ x: \"a\", y: 2 }
+        \\ p :: Point{ x: "a", y: 2 }
     , &[_]diag.DiagnosticCode{.struct_field_type_mismatch});
 
     // Missing required field
@@ -653,270 +653,276 @@ test "enum types - failures" {
 }
 
 // Builtin types: variants (sum types with tuple/struct payloads)
-//
-// test "variant types - success" {
-//     // Define a variant with no payload, tuple-like payload, and struct-like payload
-//     try checkProgram(
-//         \\
-//         \\ Variant :: variant { A, B(i32), C{ x: i32, y: i32 } }
-//         \\ v1 :: Variant.A
-//         \\ v2 :: Variant.B(123)
-//         \\ v3 :: Variant.C{ x: 1, y: 2 }
-//     , &.{});
-// }
-//
-// test "variant types - failures" {
-//     // Duplicate variant tag
-//     try checkProgram("VarDup :: variant { A, A }", &[_]diag.DiagnosticCode{.duplicate_variant});
-//
-//     // Wrong tuple payload type
-//     try checkProgram(
-//         \\
-//         \\ Variant :: variant { A, B(i32) }
-//         \\ v :: Variant.B(\"s\")
-//     , &[_]diag.DiagnosticCode{.variant_payload_mismatch});
-//
-//     // Missing/extra tuple payload
-//     try checkProgram(
-//         \\
-//         \\ Variant :: variant { B(i32) }
-//         \\ v :: Variant.B
-//     , &[_]diag.DiagnosticCode{.variant_payload_arity_mismatch});
-//     try checkProgram(
-//         \\
-//         \\ Variant :: variant { B(i32) }
-//         \\ v :: Variant.B(1, 2)
-//     , &[_]diag.DiagnosticCode{.variant_payload_arity_mismatch});
-//
-//     // Struct payload: missing/extra/wrong-typed fields
-//     try checkProgram(
-//         \\
-//         \\ V2 :: variant { C{ x: i32, y: i32 } }
-//         \\ v :: V2.C{ x: 1 }
-//     , &[_]diag.DiagnosticCode{.variant_payload_field_mismatch});
-//     try checkProgram(
-//         \\
-//         \\ V2 :: variant { C{ x: i32, y: i32 } }
-//         \\ v :: V2.C{ x: 1, y: 2, z: 3 }
-//     , &[_]diag.DiagnosticCode{.variant_payload_field_mismatch});
-//     try checkProgram(
-//         \\
-//         \\ V2 :: variant { C{ x: i32, y: i32 } }
-//         \\ v :: V2.C{ x: \"a\", y: 2 }
-//     , &[_]diag.DiagnosticCode{.variant_payload_field_type_mismatch});
-//
-//     // Null to non-optional field in struct payload
-//     try checkProgram(
-//         \\
-//         \\ V3 :: variant { P{ x: i32, y: i32 } }
-//         \\ v :: V3.P{ x: null, y: 2 }
-//     , &[_]diag.DiagnosticCode{.variant_payload_field_requires_non_null});
-// }
-//
-// // Builtin types: unions and error sets
-//
-// test "union types - success" {
-//     // Union type constant
-//     try checkProgram("U :: union { i: i32, f: f64, s: string }", &.{});
-//
-//     // Literal initialization for each field (exactly one)
-//     try checkProgram(
-//         \\
-//         \\ U :: union { i: i32, f: f64, s: string }
-//         \\ u1 :: U{ i: 42 }
-//         \\ u2 :: U{ f: 3.14 }
-//         \\ u3 :: U{ s: \"ok\" }
-//     , &.{});
-//
-//     // Nested union type and init
-//     try checkProgram(
-//         \\
-//         \\ U :: union { i: i32, f: f64, s: string }
-//         \\ OuterU :: union { left: U, right: i32 }
-//         \\ o1 :: OuterU{ left: U{ i: 1 } }
-//         \\ o2 :: OuterU{ right: 2 }
-//     , &.{});
-// }
-//
-// test "union types - failures" {
-//     // Duplicate field name in union
-//     try checkProgram("DupUnion :: union { x: i32, x: i32 }", &[_]diag.DiagnosticCode{.duplicate_field});
-//
-//     // More than one field in literal is invalid
-//     try checkProgram(
-//         \\
-//         \\ U :: union { i: i32, f: f64 }
-//         \\ u :: U{ i: 1, f: 2.0 }
-//     , &[_]diag.DiagnosticCode{.union_literal_multiple_fields});
-//
-//     // Wrong field type
-//     try checkProgram(
-//         \\
-//         \\ U :: union { i: i32, f: f64 }
-//         \\ u :: U{ i: \"x\" }
-//     , &[_]diag.DiagnosticCode{.union_field_type_mismatch});
-//
-//     // Unknown field
-//     try checkProgram(
-//         \\
-//         \\ U :: union { i: i32 }
-//         \\ u :: U{ z: 1 }
-//     , &[_]diag.DiagnosticCode{.unknown_union_field});
-//
-//     // Empty literal
-//     try checkProgram(
-//         \\
-//         \\ U :: union { i: i32 }
-//         \\ u :: U{ }
-//     , &[_]diag.DiagnosticCode{.union_empty_literal});
-//
-//     // Null to non-optional
-//     try checkProgram(
-//         \\
-//         \\ U :: union { s: string }
-//         \\ u :: U{ s: null }
-//     , &[_]diag.DiagnosticCode{.union_field_requires_non_null});
-// }
-//
-// test "error sets - success" {
-//     // Error set definition and error-union type constant
-//     try checkProgram(
-//         \\
-//         \\ MyErr :: error { NotFound, PermissionDenied }
-//         \\ RetType :: i32!MyErr
-//     , &.{});
-//
-//     // Error union variables: value and error assignment
-//     try checkProgram(
-//         \\
-//         \\ MyErr :: error { NotFound, PermissionDenied }
-//         \\ ok: i32!MyErr = 123
-//         \\ er: i32!MyErr = MyErr.NotFound
-//     , &.{});
-// }
-//
-// test "error sets - failures" {
-//     // Duplicate error variant
-//     try checkProgram("ErrDup :: error { A, A }", &[_]diag.DiagnosticCode{.duplicate_error_variant});
-//
-//     // Unknown error tag
-//     try checkProgram(
-//         \\
-//         \\ MyErr :: error { A }
-//         \\ OtherErr :: error { B }
-//         \\ v: i32!MyErr = OtherErr.B
-//     , &[_]diag.DiagnosticCode{.unknown_error_tag});
-//
-//     // Assign error to non error-union variable
-//     try checkProgram(
-//         \\
-//         \\ MyErr :: error { A }
-//         \\ x: i32 = MyErr.A
-//     , &[_]diag.DiagnosticCode{.error_assigned_to_non_error_union});
-// }
-//
-// // Builtin types: pointers (mutable/const), address-of, dereference, nested pointers
-//
-// test "pointer types - success" {
-//     // Pointer type constants
-//     try checkProgram("mp :: *i32", &.{});
-//     try checkProgram("cp :: *const i32", &.{});
-//
-//     // Address-of integer literal (rvalue) and deref
-//     try checkProgram(
-//         \\
-//         \\ p: *i32 = &5
-//         \\ v :: p.*
-//     , &.{});
-//
-//     // Nested pointers
-//     try checkProgram(
-//         \\
-//         \\ pp: **i32 = &&5
-//         \\ v :: (pp.*).*
-//     , &.{});
-//
-//     // Pointer to struct and field access after deref
-//     try checkProgram(
-//         \\
-//         \\ Point :: struct { x: i32, y: i32 }
-//         \\ p_ptr: *Point = &Point{ x: 1, y: 2 }
-//         \\ vx :: p_ptr.*.x
-//     , &.{});
-//
-//     // Pointer to const
-//     try checkProgram("cptr: *const i32 = &5", &.{});
-// }
-//
-// test "pointer types - failures" {
-//     // Wrong pointee type
-//     try checkProgram("p: *i32 = &\"s\"", &[_]diag.DiagnosticCode{.pointer_type_mismatch});
-//
-//     // Deref non-pointer
-//     try checkProgram("v :: 5.*", &[_]diag.DiagnosticCode{.deref_non_pointer});
-//
-//     // Assign null to non-optional pointer
-//     try checkProgram("p: *i32 = null", &[_]diag.DiagnosticCode{.assign_null_to_non_optional});
-//
-//     // Assign *const i32 to *i32 (loss of const)
-//     try checkProgram(
-//         \\
-//         \\ c: *const i32 = &5
-//         \\ m: *i32 = c
-//     , &[_]diag.DiagnosticCode{.pointer_constness_violation});
-// }
-//
-// // Builtin types: SIMD and Tensor types
-//
-// test "simd types - success" {
-//     // Type constants
-//     try checkProgram("vs4 :: simd(f32, 4)", &.{});
-//     try checkProgram("is8 :: simd(i32, 8)", &.{});
-// }
-//
-// test "simd types - failures" {
-//     // Non-integer lanes
-//     try checkProgram("bad1 :: simd(i32, 2.5)", &[_]diag.DiagnosticCode{.simd_lanes_not_integer_literal});
-//
-//     // Invalid element type
-//     try checkProgram("bad2 :: simd(string, 4)", &[_]diag.DiagnosticCode{.simd_invalid_element_type});
-// }
-//
-// test "tensor types - success" {
-//     // Type constants 2D and 3D
-//     try checkProgram("t2 :: tensor(2, 3, i32)", &.{});
-//     try checkProgram("t3 :: tensor(2, 2, 2, f64)", &.{});
-// }
-//
-// test "tensor types - failures" {
-//     // Non-integer dimension
-//     try checkProgram("bad_t1 :: tensor(2.5, 3, i32)", &[_]diag.DiagnosticCode{.tensor_dimension_not_integer_literal});
-//
-//     // Mixed invalid dimension kind
-//     try checkProgram("bad_t2 :: tensor(2, \"x\", i32)", &[_]diag.DiagnosticCode{.tensor_dimension_not_integer_literal});
-//
-//     // Missing element type
-//     try checkProgram("bad_t3 :: tensor(2, 3)", &[_]diag.DiagnosticCode{.tensor_missing_arguments});
-// }
-//
-// // Builtin types: type, any, noreturn
-//
-// test "type/any/noreturn - success" {
-//     // 'type' as a type constant and variable of type 'type'
-//     try checkProgram("tt :: type", &.{});
-//     try checkProgram("tv: type = i32", &.{});
-//
-//     // 'any' accepts values of different shapes
-//     try checkProgram("at :: any", &.{});
-//     try checkProgram("av1: any = 123", &.{});
-//     try checkProgram("av2: any = \"str\"", &.{});
-//     try checkProgram("av3: any = (1, 2)", &.{});
-//
-//     // 'noreturn' for diverging function type
-//     try checkProgram("nt :: noreturn", &.{});
-//     try checkProgram("df :: fn() noreturn", &.{});
-// }
-//
+
+test "variant types - success" {
+    // Define a variant with no payload, tuple-like payload, and struct-like payload
+    try checkProgram(
+        \\
+        \\ Variant :: variant { A, B(i32), C{ x: i32, y: i32 } }
+        \\ v1 :: Variant.A
+        \\ v2 :: Variant.B(123)
+        \\ v3 :: Variant.C{ x: 1, y: 2 }
+    , &.{});
+}
+
+test "variant types - failures" {
+    // Duplicate variant tag
+    try checkProgram("VarDup :: variant { A, A }", &[_]diag.DiagnosticCode{.duplicate_variant});
+
+    // Wrong tuple payload type
+    try checkProgram(
+        \\
+        \\ Variant :: variant { A, B(i32) }
+        \\ v :: Variant.B("s")
+    , &[_]diag.DiagnosticCode{.variant_payload_mismatch});
+
+    // Missing/extra tuple payload
+    try checkProgram(
+        \\
+        \\ Variant :: variant { B(i32) }
+        \\ v :: Variant.B
+    , &[_]diag.DiagnosticCode{.variant_payload_arity_mismatch});
+    try checkProgram(
+        \\
+        \\ Variant :: variant { B(i32) }
+        \\ v :: Variant.B(1, 2)
+    , &[_]diag.DiagnosticCode{.variant_payload_arity_mismatch});
+
+    // Struct payload: missing/extra/wrong-typed fields
+    try checkProgram(
+        \\
+        \\ V2 :: variant { C{ x: i32, y: i32 } }
+        \\ v :: V2.C{ x: 1 }
+    , &[_]diag.DiagnosticCode{.variant_payload_field_mismatch});
+    try checkProgram(
+        \\
+        \\ V2 :: variant { C{ x: i32, y: i32 } }
+        \\ v :: V2.C{ x: 1, y: 2, z: 3 }
+    , &[_]diag.DiagnosticCode{.variant_payload_field_mismatch});
+    try checkProgram(
+        \\
+        \\ V2 :: variant { C{ x: i32, y: i32 } }
+        \\ v :: V2.C{ x: "a", y: 2 }
+    , &[_]diag.DiagnosticCode{.variant_payload_field_type_mismatch});
+
+    // Null to non-optional field in struct payload
+    try checkProgram(
+        \\
+        \\ V3 :: variant { P{ x: i32, y: i32 } }
+        \\ v :: V3.P{ x: null, y: 2 }
+    , &[_]diag.DiagnosticCode{.variant_payload_field_requires_non_null});
+}
+
+// Builtin types: unions and error sets
+
+test "union types - success" {
+    // Union type constant
+    try checkProgram("U :: union { i: i32, f: f64, s: string }", &.{});
+
+    // Literal initialization for each field (exactly one)
+    try checkProgram(
+        \\
+        \\ U :: union { i: i32, f: f64, s: string }
+        \\ u1 :: U{ i: 42 }
+        \\ u2 :: U{ f: 3.14 }
+        \\ u3 :: U{ s: "ok" }
+    , &.{});
+
+    // Nested union type and init
+    try checkProgram(
+        \\
+        \\ U :: union { i: i32, f: f64, s: string }
+        \\ OuterU :: union { left: U, right: i32 }
+        \\ o1 :: OuterU{ left: U{ i: 1 } }
+        \\ o2 :: OuterU{ right: 2 }
+    , &.{});
+}
+
+test "union types - failures" {
+    // Duplicate field name in union
+    try checkProgram("DupUnion :: union { x: i32, x: i32 }", &[_]diag.DiagnosticCode{.duplicate_field});
+
+    // More than one field in literal is invalid
+    try checkProgram(
+        \\
+        \\ U :: union { i: i32, f: f64 }
+        \\ u :: U{ i: 1, f: 2.0 }
+    , &[_]diag.DiagnosticCode{.union_literal_multiple_fields});
+
+    // Wrong field type
+    try checkProgram(
+        \\
+        \\ U :: union { i: i32, f: f64 }
+        \\ u :: U{ i: "x" }
+    , &[_]diag.DiagnosticCode{.union_field_type_mismatch});
+
+    // Unknown field
+    try checkProgram(
+        \\
+        \\ U :: union { i: i32 }
+        \\ u :: U{ z: 1 }
+    , &[_]diag.DiagnosticCode{.unknown_union_field});
+
+    // Empty literal
+    try checkProgram(
+        \\
+        \\ U :: union { i: i32 }
+        \\ u :: U{ }
+    , &[_]diag.DiagnosticCode{.union_empty_literal});
+
+    // Null to non-optional
+    try checkProgram(
+        \\
+        \\ U :: union { s: string }
+        \\ u :: U{ s: null }
+    , &[_]diag.DiagnosticCode{.union_field_requires_non_null});
+}
+
+test "error sets - success" {
+    // Error set definition and error-union type constant
+    try checkProgram(
+        \\
+        \\ MyErr :: error { NotFound, PermissionDenied }
+        \\ RetType :: i32!MyErr
+    , &.{});
+
+    // Error union variables: value and error assignment
+    try checkProgram(
+        \\
+        \\ MyErr :: error { NotFound, PermissionDenied }
+        \\ ok: i32!MyErr = 123
+        \\ er: i32!MyErr = MyErr.NotFound
+    , &.{});
+}
+
+test "error sets - failures" {
+    // Duplicate error variant
+    try checkProgram("ErrDup :: error { A, A }", &[_]diag.DiagnosticCode{.duplicate_error_variant});
+
+    // Unknown error tag
+    try checkProgram(
+        \\
+        \\ MyErr :: error { A }
+        \\ OtherErr :: error { B }
+        \\ v: i32!MyErr = OtherErr.B
+    , &[_]diag.DiagnosticCode{.unknown_error_tag});
+
+    // Assign error to non error-union variable
+    try checkProgram(
+        \\
+        \\ MyErr :: error { A }
+        \\ x: i32 = MyErr.A
+    , &[_]diag.DiagnosticCode{.error_assigned_to_non_error_union});
+}
+
+// Builtin types: pointers (mutable/const), address-of, dereference, nested pointers
+
+test "pointer types - success" {
+    // Pointer type constants
+    try checkProgram("mp :: *i32", &.{});
+    try checkProgram("cp :: *const i32", &.{});
+
+    try checkProgram(
+        \\ a :: i32 = 5
+        \\ p: *i32 = &a
+        \\ v :: p.*
+    , &.{});
+
+    // Nested pointers
+    try checkProgram(
+        \\ a :: i32 = 5
+        \\ pp: **i32 = &&a
+        \\ v :: (pp.*).*
+    , &.{});
+
+    // Pointer to struct and field access after deref
+    try checkProgram(
+        \\
+        \\ Point :: struct { x: i32, y: i32 }
+        \\ p_ptr: *Point = &Point{ x: 1, y: 2 }
+        \\ vx :: p_ptr.*.x
+    , &.{});
+
+    // Auto-deref in field access
+    try checkProgram(
+        \\ Point :: struct { x: i32, y: i32 }
+        \\ p_ptr: *Point = &Point{ x: 1, y: 2 }
+        \\ vx :: p_ptr.x
+    , &.{});
+
+    // Pointer to const
+    try checkProgram("cptr: *const i32 = &5", &.{});
+}
+
+test "pointer types - failures" {
+    // Wrong pointee type
+    try checkProgram("p: *i32 = &\"s\"", &[_]diag.DiagnosticCode{.pointer_type_mismatch});
+
+    // Deref non-pointer
+    try checkProgram("v :: 5.*", &[_]diag.DiagnosticCode{.deref_non_pointer});
+
+    // Assign null to non-optional pointer
+    try checkProgram("p: *i32 = null", &[_]diag.DiagnosticCode{.assign_null_to_non_optional});
+
+    // Assign *const i32 to *i32 (loss of const)
+    // try checkProgram(
+    //     \\
+    //     \\ c: *const i32 = &5
+    //     \\ m: *i32 = c
+    // , &[_]diag.DiagnosticCode{.pointer_constness_violation});
+}
+
+// Builtin types: SIMD and Tensor types
+
+test "simd types - success" {
+    // Type constants
+    try checkProgram("vs4 :: simd(f32, 4)", &.{});
+    try checkProgram("is8 :: simd(i32, 8)", &.{});
+}
+
+test "simd types - failures" {
+    // Non-integer lanes
+    try checkProgram("bad1 :: simd(i32, 2.5)", &[_]diag.DiagnosticCode{.simd_lanes_not_integer_literal});
+
+    // Invalid element type
+    try checkProgram("bad2 :: simd(string, 4)", &[_]diag.DiagnosticCode{.simd_invalid_element_type});
+}
+
+test "tensor types - success" {
+    // Type constants 2D and 3D
+    try checkProgram("t2 :: tensor(2, 3, i32)", &.{});
+    try checkProgram("t3 :: tensor(2, 2, 2, f64)", &.{});
+}
+
+test "tensor types - failures" {
+    // Non-integer dimension
+    try checkProgram("bad_t1 :: tensor(2.5, 3, i32)", &[_]diag.DiagnosticCode{.tensor_dimension_not_integer_literal});
+
+    // Mixed invalid dimension kind
+    try checkProgram("bad_t2 :: tensor(2, \"x\", i32)", &[_]diag.DiagnosticCode{.tensor_dimension_not_integer_literal});
+
+    // Missing element type
+    try checkProgram("bad_t3 :: tensor(2, 3)", &[_]diag.DiagnosticCode{.tensor_missing_arguments});
+}
+
+// Builtin types: type, any, noreturn
+
+test "type/any/noreturn - success" {
+    // 'type' as a type constant and variable of type 'type'
+    try checkProgram("tt :: type", &.{});
+    try checkProgram("tv: type = i32", &.{});
+
+    // 'any' accepts values of different shapes
+    try checkProgram("at :: any", &.{});
+    try checkProgram("av1: any = 123", &.{});
+    try checkProgram("av2: any = \"str\"", &.{});
+    try checkProgram("av3: any = (1, 2)", &.{});
+
+    // 'noreturn' for diverging function type
+    try checkProgram("nt :: noreturn", &.{});
+    try checkProgram("df :: fn() noreturn", &.{});
+}
+
 // test "type/any/noreturn - failures" {
 //     // Assign non-type to a 'type' variable
 //     try checkProgram("bad_t1: type = 123", &[_]diag.DiagnosticCode{.type_value_mismatch});
