@@ -1098,9 +1098,16 @@ pub const Tokenizer = struct {
                 }
             },
             .raw_identifier => {
-                const body_len = self.index - (result.loc.start + 2);
+                // Token starts at 'r' and is followed by one or more '#'.
+                // The identifier body begins after the last '#'.
+                var body_start = result.loc.start + 1; // start after 'r'
+                var hashes: usize = 0;
+                while (body_start + hashes < self.buffer.len and self.buffer[body_start + hashes] == '#') : (hashes += 1) {}
+                body_start += hashes;
+                const body_len = if (self.index > body_start) self.index - body_start else 0;
                 if (self.index == self.buffer.len) {
-                    if (body_len > 0) {
+                    if (hashes > 0 and body_len > 0) {
+                        // Accept any non-empty body after at least one '#'
                         result.tag = .raw_identifier;
                     } else {
                         result.tag = .invalid;
@@ -1111,7 +1118,8 @@ pub const Tokenizer = struct {
                         continue :state .raw_identifier;
                     },
                     else => {
-                        if (body_len > 0) {
+                        if (hashes > 0 and body_len > 0) {
+                            // Accept any non-empty body after at least one '#'
                             result.tag = .raw_identifier;
                         } else {
                             continue :state .invalid;

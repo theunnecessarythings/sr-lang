@@ -223,6 +223,7 @@ pub const Parser = struct {
     fn isTypeStart(_: *const Parser, tag: Token.Tag) bool {
         return switch (tag) {
             .identifier,
+            .raw_identifier,
             .star,
             .question,
             .lsquare,
@@ -458,7 +459,7 @@ pub const Parser = struct {
                     },
                 }
             },
-            .eq => { // x = rhs
+            .eq => { // x = rhs (assignment; LHS may be lvalue expression)
                 self.advance();
                 flags.is_assign = true;
                 rhs_id = try self.parseExpr(0, .expr);
@@ -519,7 +520,7 @@ pub const Parser = struct {
             .at => try self.parseAnnotated(mode),
 
             // name / primary
-            .identifier => blk: {
+            .identifier, .raw_identifier => blk: {
                 const loc = self.toLocId(self.cur.loc);
                 const name = self.intern(self.slice(self.cur));
                 self.advance();
@@ -740,7 +741,7 @@ pub const Parser = struct {
         while (self.cur.tag != .rcurly and self.cur.tag != .eof) {
             const field_tok = self.cur;
             var name_opt = cst.OptStrId.none();
-            if (self.cur.tag == .identifier) {
+            if (self.cur.tag == .identifier or self.cur.tag == .raw_identifier) {
                 name_opt = cst.OptStrId.some(self.intern(self.slice(field_tok)));
                 self.advance();
                 try self.expect(.colon);
@@ -775,7 +776,7 @@ pub const Parser = struct {
         while (self.cur.tag != .rcurly and self.cur.tag != .eof) {
             const field_tok = self.cur;
             var name_opt = cst.OptStrId.none();
-            if (self.cur.tag == .identifier) {
+            if (self.cur.tag == .identifier or self.cur.tag == .raw_identifier) {
                 name_opt = cst.OptStrId.some(self.intern(self.slice(field_tok)));
                 self.advance();
                 try self.expect(.colon);
@@ -814,7 +815,7 @@ pub const Parser = struct {
         var is_tuple = false;
 
         switch (tok.tag) {
-            .identifier => self.advance(),
+            .identifier, .raw_identifier => self.advance(),
             .integer_literal => {
                 is_tuple = true;
                 self.advance();
@@ -1599,7 +1600,10 @@ pub const Parser = struct {
 
         const field_attrs = try self.parseOptionalAttributesRange(); // DOD version below
         const name_tok = self.cur;
-        try self.expect(.identifier);
+        switch (self.cur.tag) {
+            .identifier, .raw_identifier => self.advance(),
+            else => try self.expect(.identifier),
+        }
         const name = self.slice(name_tok);
         try self.expect(.colon);
 

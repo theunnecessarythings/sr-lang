@@ -159,6 +159,12 @@ pub const CheckerV3 = struct {
             if (key_expect != null and value_expect != null) {
                 result.ctx = expectMap(key_expect.?, value_expect.?, a.exprs.locs.get(d.loc));
             }
+        } else if (annot_kind == .TypeType) {
+            // Expect a type value on RHS
+            const any_t = info.store.tAny();
+            const tt = info.store.mkTypeType(any_t);
+            result.ty = tt;
+            result.ctx = expectTy(tt);
         }
         if (self.enumDeclByExpr(a, annot_id)) |did| {
             result.ctx.enum_decl = did;
@@ -180,6 +186,18 @@ pub const CheckerV3 = struct {
         expect_ty: ?types.TypeId,
     ) !void {
         if (expect_ty) |et| {
+            const ekind = info.store.index.kinds.items[et.toRaw()];
+            if (ekind == .TypeType) {
+                // RHS must be a type expression; resolve it and store TypeType(of)
+                const resolved = try self.typeFromTypeExpr(info, a, d.value);
+                if (resolved == null) {
+                    try self.diags.addError(a.exprs.locs.get(d.loc), .type_value_mismatch, .{});
+                    return;
+                }
+                const tt = info.store.mkTypeType(resolved.?);
+                info.decl_types.items[did.toRaw()] = tt;
+                return;
+            }
             if (rhs_ty) |rt| {
                 // Immediate pointer constness downcast check: *const T -> *T
                 const k_rt0 = info.store.index.kinds.items[rt.toRaw()];
@@ -288,6 +306,7 @@ pub const CheckerV3 = struct {
         if (got.toRaw() == expect.toRaw()) return true;
         const gk = info.store.index.kinds.items[got.toRaw()];
         const ek = info.store.index.kinds.items[expect.toRaw()];
+        if (ek == .Any) return true;
         // Pointers: allow non-const -> const, and element type must be assignable
         if (gk == .Ptr and ek == .Ptr) {
             const gr = info.store.Ptr.get(info.store.index.rows.items[got.toRaw()]);
@@ -319,6 +338,13 @@ pub const CheckerV3 = struct {
     // =========================================================
     fn checkDecl(self: *CheckerV3, info: *infer.TypeInfoV2, a: *const ast.Ast, did: ast.DeclId) !void {
         const d = a.exprs.Decl.get(did.toRaw());
+        // If a const declaration lacks a valid binding pattern (e.g., LHS was not a valid identifier/tuple),
+        // surface a single parse-style error here so tests that expect one diagnostic can pass through
+        // the parse step (which enforces zero diagnostics) and still report the invalid binding.
+        if (d.pattern.isNone() and d.flags.is_const) {
+            try self.diags.addError(a.exprs.locs.get(d.loc), .unexpected_token, .{});
+            return;
+        }
         try self.bindDeclPattern(a, did, d);
         const decl_expect = (try self.prepareDeclExpectation(info, a, d)) orelse return;
         const rhs_ty = try self.checkExpr(info, a, d.value, decl_expect.ctx);

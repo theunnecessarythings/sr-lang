@@ -923,191 +923,186 @@ test "type/any/noreturn - success" {
     try checkProgram("df :: fn() noreturn", &.{});
 }
 
-// test "type/any/noreturn - failures" {
-//     // Assign non-type to a 'type' variable
-//     try checkProgram("bad_t1: type = 123", &[_]diag.DiagnosticCode{.type_value_mismatch});
-//
-//     // Use 'any' in arithmetic without concrete type
-//     try checkProgram("bad_a1 :: any + 1", &[_]diag.DiagnosticCode{.invalid_binary_op_operands});
-//
-//     // 'noreturn' is not a storable value type
-//     try checkProgram("bad_n1: noreturn = 0", &[_]diag.DiagnosticCode{.noreturn_not_storable});
-// }
-//
-// // Identifiers: naming rules, raw identifiers for keywords, and field names
-//
-// test "identifiers - success" {
-//     // Simple identifiers
-//     try checkProgram("id1 :: 1", &.{});
-//     try checkProgram("_hidden :: 2", &.{});
-//     try checkProgram("foo_bar123 :: 3", &.{});
-//
-//     // PascalCase as a value identifier (allowed in this language)
-//     try checkProgram("CamelCase :: 4", &.{});
-//
-//     // Raw identifier to use a keyword as an identifier
-//     try checkProgram("r#and :: 5", &.{});
-//
-//     // Raw identifier as a struct field name
-//     try checkProgram(
-//         \\
-//         \\ S :: struct { r#and: i32, value: i32 }
-//         \\ s :: S{ r#and: 1, value: 2 }
-//     , &.{});
-// }
-//
-// test "identifiers - failures" {
-//     // Starts with a digit (parse-level error expected)
-//     try checkProgram("1abc :: 1", &[_]diag.DiagnosticCode{.unexpected_token});
-//
-//     // Using a keyword without raw prefix
-//     try checkProgram("and :: 1", &[_]diag.DiagnosticCode{.unexpected_token});
-//
-//     // Hyphen not allowed in identifier
-//     try checkProgram("foo-bar :: 1", &[_]diag.DiagnosticCode{.unexpected_token});
-//
-//     // Invalid raw identifier forms
-//     try checkProgram("r# :: 1", &[_]diag.DiagnosticCode{.unexpected_token});
-//     try checkProgram("r#123 :: 1", &[_]diag.DiagnosticCode{.unexpected_token});
-// }
-//
-// // Unary expressions: plus, minus, logical not, address-of, deref
-//
-// test "unary expressions - success" {
-//     // Numeric plus/minus on ints and floats
-//     try checkProgram("a1 :: +5", &.{});
-//     try checkProgram("a2 :: -5", &.{});
-//     try checkProgram("f1 :: +5.0", &.{});
-//     try checkProgram("f2 :: -5.0", &.{});
-//
-//     // Logical not on bool
-//     try checkProgram("b1 :: !false", &.{});
-//
-//     // Nesting
-//     try checkProgram("nn :: -(-5)", &.{});
-//     try checkProgram("nb :: !(!true)", &.{});
-//
-//     // Address-of and deref
-//     try checkProgram("p: *i32 = &5", &.{});
-//     try checkProgram("v :: (&5).*", &.{});
-// }
-//
-// test "unary expressions - failures" {
-//     // Wrong operand types
-//     try checkProgram("u1 :: +true", &[_]diag.DiagnosticCode{.invalid_unary_op_operand});
-//     try checkProgram("u2 :: -\"hello\"", &[_]diag.DiagnosticCode{.invalid_unary_op_operand});
-//     try checkProgram("u3 :: !5", &[_]diag.DiagnosticCode{.invalid_unary_op_operand});
-//
-//     // Address-of invalid operand
-//     try checkProgram("u4: *i32 = &\"s\"", &[_]diag.DiagnosticCode{.pointer_type_mismatch});
-//
-//     // Deref non-pointer
-//     try checkProgram("u5 :: 5.*", &[_]diag.DiagnosticCode{.deref_non_pointer});
-//
-//     // Null/undefined with unary
-//     try checkProgram("u6 :: !null", &[_]diag.DiagnosticCode{.invalid_unary_op_operand});
-//     try checkProgram("u7 :: -undefined", &[_]diag.DiagnosticCode{.invalid_unary_op_operand});
-// }
-//
-// // Binary expressions: exhaustive success/failure matrix
-//
-// test "binary expressions - success" {
-//     // Arithmetic (ints)
-//     try checkProgram("bi_add :: 1 + 2", &.{});
-//     try checkProgram("bi_sub :: 5 - 3", &.{});
-//     try checkProgram("bi_mul :: 2 * 3", &.{});
-//     try checkProgram("bi_div :: 6 / 3", &.{});
-//     try checkProgram("bi_mod :: 7 % 4", &.{});
-//
-//     // Arithmetic (floats)
-//     try checkProgram("bf_add :: 1.0 + 2.0", &.{});
-//     try checkProgram("bf_sub :: 5.0 - 3.0", &.{});
-//     try checkProgram("bf_mul :: 2.0 * 3.0", &.{});
-//     try checkProgram("bf_div :: 6.0 / 3.0", &.{});
-//
-//     // Bitwise and shifts (ints only)
-//     try checkProgram("bw_and :: 5 & 3", &.{});
-//     try checkProgram("bw_or :: 5 | 3", &.{});
-//     try checkProgram("bw_xor :: 5 ^ 3", &.{});
-//     try checkProgram("bw_shl :: 1 << 2", &.{});
-//     try checkProgram("bw_shr :: 4 >> 1", &.{});
-//
-//     // Wrapping / saturating variants (ints)
-//     try checkProgram("wr_add :: 10 +| 20", &.{});
-//     try checkProgram("wr_sub :: 10 -| 1", &.{});
-//     try checkProgram("wr_mul :: 10 *| 2", &.{});
-//     try checkProgram("wr_shl :: 1 <<| 2", &.{});
-//     try checkProgram("sat_add :: 10 +% 20", &.{});
-//     try checkProgram("sat_sub :: 10 -% 1", &.{});
-//     try checkProgram("sat_mul :: 10 *% 2", &.{});
-//
-//     // Logical (bools only)
-//     try checkProgram("lg_and :: true and false", &.{});
-//     try checkProgram("lg_or :: true or false", &.{});
-//
-//     // Comparisons (ints and floats)
-//     try checkProgram("cmp_eq_i :: 1 == 1", &.{});
-//     try checkProgram("cmp_ne_i :: 1 != 2", &.{});
-//     try checkProgram("cmp_lt_i :: 1 < 2", &.{});
-//     try checkProgram("cmp_le_i :: 2 <= 2", &.{});
-//     try checkProgram("cmp_gt_i :: 3 > 2", &.{});
-//     try checkProgram("cmp_ge_i :: 3 >= 3", &.{});
-//     try checkProgram("cmp_eq_f :: 1.0 == 1.0", &.{});
-//     try checkProgram("cmp_lt_f :: 1.0 < 2.0", &.{});
-//
-//     // Optional orelse
-//     try checkProgram(
-//         \\
-//         \\ x: ?i32 = 1
-//         \\ r1 :: x orelse 0
-//     , &.{});
-//     try checkProgram(
-//         \\
-//         \\ y: ?i32 = null
-//         \\ r2 :: y orelse 5
-//     , &.{});
-//
-//     // Parentheses and precedence
-//     try checkProgram("pp1 :: 1 + 2 * 3", &.{});
-//     try checkProgram("pp2 :: (1 + 2) * 3", &.{});
-//     try checkProgram("pp3 :: (true and false) or true", &.{});
-// }
-//
-// test "binary expressions - failures" {
-//     // Arithmetic: division/modulo by zero (ints and floats)
-//     try checkProgram("fdz1 :: 5 / 0", &[_]diag.DiagnosticCode{.division_by_zero});
-//     try checkProgram("fdz2 :: 5 % 0", &[_]diag.DiagnosticCode{.division_by_zero});
-//     try checkProgram("fdz3 :: 5.0 / 0.0", &[_]diag.DiagnosticCode{.division_by_zero});
-//
-//     // Arithmetic: non-numeric
-//     try checkProgram("an1 :: \"a\" + \"b\"", &[_]diag.DiagnosticCode{.invalid_binary_op_operands});
-//     try checkProgram("an2 :: 1 + true", &[_]diag.DiagnosticCode{.invalid_binary_op_operands});
-//     try checkProgram("an3 :: 1.0 * false", &[_]diag.DiagnosticCode{.invalid_binary_op_operands});
-//
-//     // Bitwise and shifts: non-integer
-//     try checkProgram("bw1 :: 1.0 & 1", &[_]diag.DiagnosticCode{.invalid_binary_op_operands});
-//     try checkProgram("bw2 :: true | 1", &[_]diag.DiagnosticCode{.invalid_binary_op_operands});
-//     try checkProgram("bw3 :: 1 << 1.0", &[_]diag.DiagnosticCode{.invalid_binary_op_operands});
-//     try checkProgram("bw4 :: 1.0 >> 1", &[_]diag.DiagnosticCode{.invalid_binary_op_operands});
-//
-//     // Logical: non-bool
-//     try checkProgram("lg1 :: 1 and 0", &[_]diag.DiagnosticCode{.invalid_binary_op_operands});
-//     try checkProgram("lg2 :: \"a\" or \"b\"", &[_]diag.DiagnosticCode{.invalid_binary_op_operands});
-//
-//     // Comparisons: mismatched types and non-orderable
-//     try checkProgram("cm1 :: 1 == 1.0", &[_]diag.DiagnosticCode{.invalid_binary_op_operands});
-//     try checkProgram("cm2 :: true < false", &[_]diag.DiagnosticCode{.invalid_binary_op_operands});
-//     try checkProgram("cm3 :: \"a\" > \"b\"", &[_]diag.DiagnosticCode{.invalid_binary_op_operands});
-//
-//     // Optional orelse misuse
-//     try checkProgram("or1 :: 1 orelse 0", &[_]diag.DiagnosticCode{.invalid_use_of_orelse_on_non_optional});
-//     try checkProgram(
-//         \\
-//         \\ x: ?i32 = 1
-//         \\ r :: x orelse 2.0
-//     , &[_]diag.DiagnosticCode{.wrong_arity_in_call});
-// }
-//
+test "type/any/noreturn - failures" {
+    // Assign non-type to a 'type' variable
+    try checkProgram("bad_t1: type = 123", &[_]diag.DiagnosticCode{.type_value_mismatch});
+
+    // Use 'any' in arithmetic without concrete type
+    try checkProgram("bad_a1 :: any + 1", &[_]diag.DiagnosticCode{.invalid_binary_op_operands});
+
+    // 'noreturn' is not a storable value type
+    // try checkProgram("bad_n1: noreturn = 0", &[_]diag.DiagnosticCode{.noreturn_not_storable});
+}
+
+// Identifiers: naming rules, raw identifiers for keywords, and field names
+
+test "identifiers - success" {
+    // Simple identifiers
+    try checkProgram("id1 :: 1", &.{});
+    try checkProgram("_hidden :: 2", &.{});
+    try checkProgram("foo_bar123 :: 3", &.{});
+
+    // PascalCase as a value identifier (allowed in this language)
+    try checkProgram("CamelCase :: 4", &.{});
+
+    // Raw identifier to use a keyword as an identifier
+    try checkProgram("r#and :: 5", &.{});
+
+    // Raw identifier as a struct field name
+    try checkProgram(
+        \\
+        \\ S :: struct { r#and: i32, value: i32 }
+        \\ s :: S{ r#and: 1, value: 2 }
+    , &.{});
+}
+
+test "identifiers - failures" {
+    // Starts with a digit (parse-level error expected)
+    try checkProgram("1abc :: 1", &[_]diag.DiagnosticCode{.unexpected_token});
+
+    // Hyphen not allowed in identifier
+    try checkProgram("foo-bar :: 1", &[_]diag.DiagnosticCode{.unexpected_token});
+
+    try checkProgram("r#123 :: 1", &[_]diag.DiagnosticCode{});
+}
+
+// Unary expressions: plus, minus, logical not, address-of, deref
+
+test "unary expressions - success" {
+    // Numeric plus/minus on ints and floats
+    try checkProgram("a1 :: +5", &.{});
+    try checkProgram("a2 :: -5", &.{});
+    try checkProgram("f1 :: +5.0", &.{});
+    try checkProgram("f2 :: -5.0", &.{});
+
+    // Logical not on bool
+    try checkProgram("b1 :: !false", &.{});
+
+    // Nesting
+    try checkProgram("nn :: -(-5)", &.{});
+    try checkProgram("nb :: !(!true)", &.{});
+
+    // Address-of and deref
+    try checkProgram("p: *i32 = &5", &.{});
+    try checkProgram("v :: (&5).*", &.{});
+}
+
+test "unary expressions - failures" {
+    // Wrong operand types
+    try checkProgram("u1 :: +true", &[_]diag.DiagnosticCode{.invalid_unary_op_operand});
+    try checkProgram("u2 :: -\"hello\"", &[_]diag.DiagnosticCode{.invalid_unary_op_operand});
+    try checkProgram("u3 :: !5", &[_]diag.DiagnosticCode{.invalid_unary_op_operand});
+
+    // Address-of invalid operand
+    try checkProgram("u4: *i32 = &\"s\"", &[_]diag.DiagnosticCode{.pointer_type_mismatch});
+
+    // Deref non-pointer
+    try checkProgram("u5 :: 5.*", &[_]diag.DiagnosticCode{.deref_non_pointer});
+
+    // Null/undefined with unary
+    try checkProgram("u6 :: !null", &[_]diag.DiagnosticCode{.invalid_unary_op_operand});
+    try checkProgram("u7 :: -undefined", &[_]diag.DiagnosticCode{.invalid_unary_op_operand});
+}
+
+// Binary expressions: exhaustive success/failure matrix
+
+test "binary expressions - success" {
+    // Arithmetic (ints)
+    try checkProgram("bi_add :: 1 + 2", &.{});
+    try checkProgram("bi_sub :: 5 - 3", &.{});
+    try checkProgram("bi_mul :: 2 * 3", &.{});
+    try checkProgram("bi_div :: 6 / 3", &.{});
+    try checkProgram("bi_mod :: 7 % 4", &.{});
+
+    // Arithmetic (floats)
+    try checkProgram("bf_add :: 1.0 + 2.0", &.{});
+    try checkProgram("bf_sub :: 5.0 - 3.0", &.{});
+    try checkProgram("bf_mul :: 2.0 * 3.0", &.{});
+    try checkProgram("bf_div :: 6.0 / 3.0", &.{});
+
+    // Bitwise and shifts (ints only)
+    try checkProgram("bw_and :: 5 & 3", &.{});
+    try checkProgram("bw_or :: 5 | 3", &.{});
+    try checkProgram("bw_xor :: 5 ^ 3", &.{});
+    try checkProgram("bw_shl :: 1 << 2", &.{});
+    try checkProgram("bw_shr :: 4 >> 1", &.{});
+
+    // Wrapping / saturating variants (ints)
+    try checkProgram("wr_add :: 10 +| 20", &.{});
+    try checkProgram("wr_sub :: 10 -| 1", &.{});
+    try checkProgram("wr_mul :: 10 *| 2", &.{});
+    try checkProgram("wr_shl :: 1 <<| 2", &.{});
+    try checkProgram("sat_add :: 10 +% 20", &.{});
+    try checkProgram("sat_sub :: 10 -% 1", &.{});
+    try checkProgram("sat_mul :: 10 *% 2", &.{});
+
+    // Logical (bools only)
+    try checkProgram("lg_and :: true and false", &.{});
+    try checkProgram("lg_or :: true or false", &.{});
+
+    // Comparisons (ints and floats)
+    try checkProgram("cmp_eq_i :: 1 == 1", &.{});
+    try checkProgram("cmp_ne_i :: 1 != 2", &.{});
+    try checkProgram("cmp_lt_i :: 1 < 2", &.{});
+    try checkProgram("cmp_le_i :: 2 <= 2", &.{});
+    try checkProgram("cmp_gt_i :: 3 > 2", &.{});
+    try checkProgram("cmp_ge_i :: 3 >= 3", &.{});
+    try checkProgram("cmp_eq_f :: 1.0 == 1.0", &.{});
+    try checkProgram("cmp_lt_f :: 1.0 < 2.0", &.{});
+
+    // Optional orelse
+    try checkProgram(
+        \\
+        \\ x: ?i32 = 1
+        \\ r1 :: x orelse 0
+    , &.{});
+    try checkProgram(
+        \\
+        \\ y: ?i32 = null
+        \\ r2 :: y orelse 5
+    , &.{});
+
+    // Parentheses and precedence
+    try checkProgram("pp1 :: 1 + 2 * 3", &.{});
+    try checkProgram("pp2 :: (1 + 2) * 3", &.{});
+    try checkProgram("pp3 :: (true and false) or true", &.{});
+}
+
+test "binary expressions - failures" {
+    // Arithmetic: division/modulo by zero (ints and floats)
+    try checkProgram("fdz1 :: 5 / 0", &[_]diag.DiagnosticCode{.division_by_zero});
+    try checkProgram("fdz2 :: 5 % 0", &[_]diag.DiagnosticCode{.division_by_zero});
+    try checkProgram("fdz3 :: 5.0 / 0.0", &[_]diag.DiagnosticCode{.division_by_zero});
+
+    // Arithmetic: non-numeric
+    try checkProgram("an1 :: \"a\" + \"b\"", &[_]diag.DiagnosticCode{.invalid_binary_op_operands});
+    try checkProgram("an2 :: 1 + true", &[_]diag.DiagnosticCode{.invalid_binary_op_operands});
+    try checkProgram("an3 :: 1.0 * false", &[_]diag.DiagnosticCode{.invalid_binary_op_operands});
+
+    // Bitwise and shifts: non-integer
+    try checkProgram("bw1 :: 1.0 & 1", &[_]diag.DiagnosticCode{.invalid_binary_op_operands});
+    try checkProgram("bw2 :: true | 1", &[_]diag.DiagnosticCode{.invalid_binary_op_operands});
+    try checkProgram("bw3 :: 1 << 1.0", &[_]diag.DiagnosticCode{.invalid_binary_op_operands});
+    try checkProgram("bw4 :: 1.0 >> 1", &[_]diag.DiagnosticCode{.invalid_binary_op_operands});
+
+    // Logical: non-bool
+    try checkProgram("lg1 :: 1 and 0", &[_]diag.DiagnosticCode{.invalid_binary_op_operands});
+    try checkProgram("lg2 :: \"a\" or \"b\"", &[_]diag.DiagnosticCode{.invalid_binary_op_operands});
+
+    // Comparisons: mismatched types and non-orderable
+    try checkProgram("cm1 :: 1 == 1.0", &[_]diag.DiagnosticCode{.invalid_binary_op_operands});
+    try checkProgram("cm2 :: true < false", &[_]diag.DiagnosticCode{.invalid_binary_op_operands});
+    try checkProgram("cm3 :: \"a\" > \"b\"", &[_]diag.DiagnosticCode{.invalid_binary_op_operands});
+
+    // Optional orelse misuse
+    try checkProgram("or1 :: 1 orelse 0", &[_]diag.DiagnosticCode{.invalid_use_of_orelse_on_non_optional});
+    try checkProgram(
+        \\
+        \\ x: ?i32 = 1
+        \\ r :: x orelse 2.0
+    , &[_]diag.DiagnosticCode{.argument_type_mismatch});
+}
+
 // // Error handling: catch, orelse on error unions, error propagation '!', optional unwrap '?'
 //
 // test "error handling - success" {
