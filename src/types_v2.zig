@@ -1,20 +1,36 @@
 const std = @import("std");
-const dod = @import("cst_v2.zig");
+const cst = @import("cst_v2.zig");
 
 // DOD Type Store
 pub const TypeTag = struct {};
 pub const FieldTag = struct {};
 
-pub const TypeId = dod.Index(TypeTag);
-pub const FieldId = dod.Index(FieldTag);
-pub const RangeType = dod.RangeOf(TypeId);
-pub const RangeField = dod.RangeOf(FieldId);
+pub const TypeId = cst.Index(TypeTag);
+pub const FieldId = cst.Index(FieldTag);
+pub const RangeType = cst.RangeOf(TypeId);
+pub const RangeField = cst.RangeOf(FieldId);
 
-pub const StringInterner = dod.StringInterner;
-pub const Table = dod.Table;
-pub const Pool = dod.Pool;
-pub const StoreIndex = dod.StoreIndex;
-pub const StrId = dod.StrId;
+pub const StringInterner = cst.StringInterner;
+pub const Table = cst.Table;
+pub const Pool = cst.Pool;
+pub const StoreIndex = cst.StoreIndex;
+pub const StrId = cst.StrId;
+
+pub const TypeInfoV2 = struct {
+    gpa: std.mem.Allocator,
+    store: TypeStore,
+    expr_types: std.ArrayListUnmanaged(?TypeId) = .{},
+    decl_types: std.ArrayListUnmanaged(?TypeId) = .{},
+
+    pub fn init(gpa: std.mem.Allocator) TypeInfoV2 {
+        return .{ .gpa = gpa, .store = TypeStore.init(gpa) };
+    }
+    pub fn deinit(self: *TypeInfoV2) void {
+        self.expr_types.deinit(self.gpa);
+        self.decl_types.deinit(self.gpa);
+        self.store.deinit();
+    }
+};
 
 pub const TypeKind = enum(u8) {
     Void,
@@ -39,11 +55,9 @@ pub const TypeKind = enum(u8) {
     Tuple,
     Function,
     Struct,
-    // Extended kinds used by CheckerV2
     Enum,
     Variant,
     ErrorSet,
-    Future,
     TypeType,
 };
 
@@ -76,7 +90,6 @@ pub const Rows = struct {
     pub const Enum = struct { decl: u32 };
     pub const Variant = struct { payload: TypeId };
     pub const ErrorSet = struct { payload: ?TypeId };
-    pub const Future = struct { payload: ?TypeId };
     pub const TypeType = struct { of: TypeId };
 };
 
@@ -116,7 +129,6 @@ pub const TypeStore = struct {
     Enum: Table(Rows.Enum) = .{},
     Variant: Table(Rows.Variant) = .{},
     ErrorSet: Table(Rows.ErrorSet) = .{},
-    Future: Table(Rows.Future) = .{},
     TypeType: Table(Rows.TypeType) = .{},
 
     type_pool: Pool(TypeId) = .{},
@@ -143,7 +155,7 @@ pub const TypeStore = struct {
     pub fn init(gpa: std.mem.Allocator) TypeStore {
         return .{ .gpa = gpa, .strs = StringInterner.init(gpa) };
     }
-    pub fn deinit(self: *@This()) void {
+    pub fn deinit(self: *TypeStore) void {
         const gpa = self.gpa;
         self.index.deinit(gpa);
         inline for (@typeInfo(TypeKind).@"enum".fields) |f| @field(self, f.name).deinit(gpa);
@@ -153,103 +165,103 @@ pub const TypeStore = struct {
         self.strs.deinit();
     }
 
-    pub fn add(self: *@This(), comptime K: TypeKind, row: RowT(K)) TypeId {
+    pub fn add(self: *TypeStore, comptime K: TypeKind, row: RowT(K)) TypeId {
         const tbl: *Table(RowT(K)) = &@field(self, @tagName(K));
         const idx = tbl.add(self.gpa, row);
         return self.index.newId(self.gpa, K, idx, TypeId);
     }
 
-    pub fn addField(self: *@This(), row: Rows.Field) FieldId {
+    pub fn addField(self: *TypeStore, row: Rows.Field) FieldId {
         const idx = self.Field.add(self.gpa, row);
         return FieldId.fromRaw(idx);
     }
 
     // ---- builtin constructors (interned once) ----
-    pub fn tVoid(self: *@This()) TypeId {
+    pub fn tVoid(self: *TypeStore) TypeId {
         if (self.t_void) |id| return id;
         const id = self.add(.Void, .{});
         self.t_void = id;
         return id;
     }
-    pub fn tBool(self: *@This()) TypeId {
+    pub fn tBool(self: *TypeStore) TypeId {
         if (self.t_bool) |id| return id;
         const id = self.add(.Bool, .{});
         self.t_bool = id;
         return id;
     }
-    pub fn tI8(self: *@This()) TypeId {
+    pub fn tI8(self: *TypeStore) TypeId {
         if (self.t_i8) |id| return id;
         const id = self.add(.I8, .{});
         self.t_i8 = id;
         return id;
     }
-    pub fn tI16(self: *@This()) TypeId {
+    pub fn tI16(self: *TypeStore) TypeId {
         if (self.t_i16) |id| return id;
         const id = self.add(.I16, .{});
         self.t_i16 = id;
         return id;
     }
-    pub fn tI32(self: *@This()) TypeId {
+    pub fn tI32(self: *TypeStore) TypeId {
         if (self.t_i32) |id| return id;
         const id = self.add(.I32, .{});
         self.t_i32 = id;
         return id;
     }
-    pub fn tI64(self: *@This()) TypeId {
+    pub fn tI64(self: *TypeStore) TypeId {
         if (self.t_i64) |id| return id;
         const id = self.add(.I64, .{});
         self.t_i64 = id;
         return id;
     }
-    pub fn tU8(self: *@This()) TypeId {
+    pub fn tU8(self: *TypeStore) TypeId {
         if (self.t_u8) |id| return id;
         const id = self.add(.U8, .{});
         self.t_u8 = id;
         return id;
     }
-    pub fn tU16(self: *@This()) TypeId {
+    pub fn tU16(self: *TypeStore) TypeId {
         if (self.t_u16) |id| return id;
         const id = self.add(.U16, .{});
         self.t_u16 = id;
         return id;
     }
-    pub fn tU32(self: *@This()) TypeId {
+    pub fn tU32(self: *TypeStore) TypeId {
         if (self.t_u32) |id| return id;
         const id = self.add(.U32, .{});
         self.t_u32 = id;
         return id;
     }
-    pub fn tU64(self: *@This()) TypeId {
+    pub fn tU64(self: *TypeStore) TypeId {
         if (self.t_u64) |id| return id;
         const id = self.add(.U64, .{});
         self.t_u64 = id;
         return id;
     }
-    pub fn tF32(self: *@This()) TypeId {
+    pub fn tF32(self: *TypeStore) TypeId {
         if (self.t_f32) |id| return id;
         const id = self.add(.F32, .{});
         self.t_f32 = id;
         return id;
     }
-    pub fn tF64(self: *@This()) TypeId {
+    pub fn tF64(self: *TypeStore) TypeId {
         if (self.t_f64) |id| return id;
         const id = self.add(.F64, .{});
         self.t_f64 = id;
         return id;
     }
-    pub fn tUsize(self: *@This()) TypeId {
+    pub fn tUsize(self: *TypeStore) TypeId {
         if (self.t_usize) |id| return id;
         const id = self.add(.Usize, .{});
         self.t_usize = id;
         return id;
     }
-    pub fn tString(self: *@This()) TypeId {
+    pub fn tString(self: *TypeStore) TypeId {
         if (self.t_string) |id| return id;
         const id = self.add(.String, .{});
         self.t_string = id;
         return id;
     }
-    pub fn tAny(self: *@This()) TypeId {
+    pub fn tAny(self: *TypeStore) TypeId {
         if (self.t_any) |id| return id;
         const id = self.add(.Any, .{});
         self.t_any = id;
@@ -257,54 +269,51 @@ pub const TypeStore = struct {
     }
 
     // ---- constructors with interning (linear dedup) ----
-    pub fn mkPtr(self: *@This(), elem: TypeId, is_const: bool) TypeId {
+    pub fn mkPtr(self: *TypeStore, elem: TypeId, is_const: bool) TypeId {
         if (self.findPtr(elem, is_const)) |id| return id;
         return self.add(.Ptr, .{ .elem = elem, .is_const = is_const });
     }
-    pub fn mkSlice(self: *@This(), elem: TypeId) TypeId {
+    pub fn mkSlice(self: *TypeStore, elem: TypeId) TypeId {
         if (self.findSlice(elem)) |id| return id;
         return self.add(.Slice, .{ .elem = elem });
     }
-    pub fn mkArray(self: *@This(), elem: TypeId, len: usize) TypeId {
+    pub fn mkArray(self: *TypeStore, elem: TypeId, len: usize) TypeId {
         if (self.findArray(elem, len)) |id| return id;
         return self.add(.Array, .{ .elem = elem, .len = len });
     }
-    pub fn mkOptional(self: *@This(), elem: TypeId) TypeId {
+    pub fn mkOptional(self: *TypeStore, elem: TypeId) TypeId {
         if (self.findOptional(elem)) |id| return id;
         return self.add(.Optional, .{ .elem = elem });
     }
-    pub fn mkTuple(self: *@This(), elems: []const TypeId) TypeId {
+    pub fn mkTuple(self: *TypeStore, elems: []const TypeId) TypeId {
         if (self.findTuple(elems)) |id| return id;
         const r = self.type_pool.pushMany(self.gpa, elems);
         return self.add(.Tuple, .{ .elems = r });
     }
-    pub fn mkFunction(self: *@This(), params: []const TypeId, result: TypeId, is_variadic: bool) TypeId {
+    pub fn mkFunction(self: *TypeStore, params: []const TypeId, result: TypeId, is_variadic: bool) TypeId {
         if (self.findFunction(params, result, is_variadic)) |id| return id;
         const r = self.type_pool.pushMany(self.gpa, params);
         return self.add(.Function, .{ .params = r, .result = result, .is_variadic = is_variadic });
     }
-    pub fn mkEnum(self: *@This(), decl_raw: u32) TypeId {
+    pub fn mkEnum(self: *TypeStore, decl_raw: u32) TypeId {
         if (self.findEnum(decl_raw)) |id| return id;
         return self.add(.Enum, .{ .decl = decl_raw });
     }
-    pub fn mkVariant(self: *@This(), payload: TypeId) TypeId {
+    pub fn mkVariant(self: *TypeStore, payload: TypeId) TypeId {
         if (self.findVariant(payload)) |id| return id;
         return self.add(.Variant, .{ .payload = payload });
     }
-    pub fn mkErrorSet(self: *@This(), payload: ?TypeId) TypeId {
+    pub fn mkErrorSet(self: *TypeStore, payload: ?TypeId) TypeId {
         if (self.findErrorSet(payload)) |id| return id;
         return self.add(.ErrorSet, .{ .payload = payload });
     }
-    pub fn mkFuture(self: *@This(), payload: ?TypeId) TypeId {
-        if (self.findFuture(payload)) |id| return id;
-        return self.add(.Future, .{ .payload = payload });
-    }
-    pub fn mkTypeType(self: *@This(), of: TypeId) TypeId {
+
+    pub fn mkTypeType(self: *TypeStore, of: TypeId) TypeId {
         if (self.findTypeType(of)) |id| return id;
         return self.add(.TypeType, .{ .of = of });
     }
     pub const StructFieldArg = struct { name: []const u8, ty: TypeId };
-    pub fn mkStruct(self: *@This(), fields: []const StructFieldArg) TypeId {
+    pub fn mkStruct(self: *TypeStore, fields: []const StructFieldArg) TypeId {
         // Build interning key arrays
         if (self.findStruct(fields)) |id| return id;
         var ids = self.gpa.alloc(FieldId, fields.len) catch @panic("OOM");
@@ -319,7 +328,7 @@ pub const TypeStore = struct {
     }
 
     // ---- finders ----
-    fn findPtr(self: *const @This(), elem: TypeId, is_const: bool) ?TypeId {
+    fn findPtr(self: *const TypeStore, elem: TypeId, is_const: bool) ?TypeId {
         return self.findMatch(.Ptr, struct { e: TypeId, c: bool }{ .e = elem, .c = is_const }, struct {
             fn eq(s: *const TypeStore, row: Rows.Ptr, key: anytype) bool {
                 _ = s;
@@ -327,7 +336,7 @@ pub const TypeStore = struct {
             }
         });
     }
-    fn findSlice(self: *const @This(), elem: TypeId) ?TypeId {
+    fn findSlice(self: *const TypeStore, elem: TypeId) ?TypeId {
         return self.findMatch(.Slice, elem, struct {
             fn eq(s: *const TypeStore, row: Rows.Slice, key: TypeId) bool {
                 _ = s;
@@ -335,7 +344,7 @@ pub const TypeStore = struct {
             }
         });
     }
-    fn findArray(self: *const @This(), elem: TypeId, len: usize) ?TypeId {
+    fn findArray(self: *const TypeStore, elem: TypeId, len: usize) ?TypeId {
         return self.findMatch(.Array, struct { e: TypeId, l: usize }{ .e = elem, .l = len }, struct {
             fn eq(s: *const TypeStore, row: Rows.Array, key: anytype) bool {
                 _ = s;
@@ -343,7 +352,7 @@ pub const TypeStore = struct {
             }
         });
     }
-    fn findOptional(self: *const @This(), elem: TypeId) ?TypeId {
+    fn findOptional(self: *const TypeStore, elem: TypeId) ?TypeId {
         return self.findMatch(.Optional, elem, struct {
             fn eq(s: *const TypeStore, row: Rows.Optional, key: TypeId) bool {
                 _ = s;
@@ -351,7 +360,7 @@ pub const TypeStore = struct {
             }
         });
     }
-    fn findTuple(self: *const @This(), elems: []const TypeId) ?TypeId {
+    fn findTuple(self: *const TypeStore, elems: []const TypeId) ?TypeId {
         return self.findMatch(.Tuple, elems, struct {
             fn eq(s: *const TypeStore, row: Rows.Tuple, key: []const TypeId) bool {
                 const ids = s.type_pool.slice(row.elems);
@@ -362,7 +371,7 @@ pub const TypeStore = struct {
             }
         });
     }
-    fn findFunction(self: *const @This(), params: []const TypeId, result: TypeId, is_variadic: bool) ?TypeId {
+    fn findFunction(self: *const TypeStore, params: []const TypeId, result: TypeId, is_variadic: bool) ?TypeId {
         return self.findMatch(.Function, struct { p: []const TypeId, r: TypeId, v: bool }{ .p = params, .r = result, .v = is_variadic }, struct {
             fn eq(s: *const TypeStore, row: Rows.Function, key: anytype) bool {
                 if (row.result.toRaw() != key.r.toRaw() or row.is_variadic != key.v) return false;
@@ -374,21 +383,21 @@ pub const TypeStore = struct {
             }
         });
     }
-    fn findEnum(self: *const @This(), decl_raw: u32) ?TypeId {
+    fn findEnum(self: *const TypeStore, decl_raw: u32) ?TypeId {
         return self.findMatch(.Enum, decl_raw, struct {
             fn eq(_: *const TypeStore, row: Rows.Enum, key: u32) bool {
                 return row.decl == key;
             }
         });
     }
-    fn findVariant(self: *const @This(), payload: TypeId) ?TypeId {
+    fn findVariant(self: *const TypeStore, payload: TypeId) ?TypeId {
         return self.findMatch(.Variant, payload, struct {
             fn eq(_: *const TypeStore, row: Rows.Variant, key: TypeId) bool {
                 return row.payload.toRaw() == key.toRaw();
             }
         });
     }
-    fn findErrorSet(self: *const @This(), payload: ?TypeId) ?TypeId {
+    fn findErrorSet(self: *const TypeStore, payload: ?TypeId) ?TypeId {
         return self.findMatch(.ErrorSet, payload, struct {
             fn eq(_: *const TypeStore, row: Rows.ErrorSet, key: ?TypeId) bool {
                 if (row.payload == null and key == null) return true;
@@ -397,23 +406,15 @@ pub const TypeStore = struct {
             }
         });
     }
-    fn findFuture(self: *const @This(), payload: ?TypeId) ?TypeId {
-        return self.findMatch(.Future, payload, struct {
-            fn eq(_: *const TypeStore, row: Rows.Future, key: ?TypeId) bool {
-                if (row.payload == null and key == null) return true;
-                if (row.payload == null or key == null) return false;
-                return row.payload.?.toRaw() == key.?.toRaw();
-            }
-        });
-    }
-    fn findTypeType(self: *const @This(), of: TypeId) ?TypeId {
+
+    fn findTypeType(self: *const TypeStore, of: TypeId) ?TypeId {
         return self.findMatch(.TypeType, of, struct {
             fn eq(_: *const TypeStore, row: Rows.TypeType, key: TypeId) bool {
                 return row.of.toRaw() == key.toRaw();
             }
         });
     }
-    fn findStruct(self: *const @This(), fields: []const StructFieldArg) ?TypeId {
+    fn findStruct(self: *const TypeStore, fields: []const StructFieldArg) ?TypeId {
         // Compare by name + type sequence
         const key_names_and_tys = struct { names: []const []const u8, tys: []const TypeId };
         var names = self.gpa.alloc([]const u8, fields.len) catch @panic("OOM");
@@ -441,7 +442,7 @@ pub const TypeStore = struct {
         });
     }
 
-    fn findMatch(self: *const @This(), comptime K: TypeKind, key: anytype, comptime Helper: type) ?TypeId {
+    fn findMatch(self: *const TypeStore, comptime K: TypeKind, key: anytype, comptime Helper: type) ?TypeId {
         // Scan all types and find first matching row of kind K
         const kinds = self.index.kinds.items;
         const rows = self.index.rows.items;
@@ -457,7 +458,7 @@ pub const TypeStore = struct {
     }
 
     // ---- formatting ----
-    pub fn fmt(self: *const @This(), id: TypeId, w: anytype) !void {
+    pub fn fmt(self: *const TypeStore, id: TypeId, w: anytype) !void {
         const k = self.index.kinds.items[id.toRaw()];
         const row_idx = self.index.rows.items[id.toRaw()];
         switch (k) {
@@ -546,15 +547,6 @@ pub const TypeStore = struct {
             .ErrorSet => {
                 const r = self.ErrorSet.get(row_idx);
                 try w.print("error", .{});
-                if (r.payload) |p| {
-                    try w.print("(", .{});
-                    try self.fmt(p, w);
-                    try w.print(")", .{});
-                }
-            },
-            .Future => {
-                const r = self.Future.get(row_idx);
-                try w.print("future", .{});
                 if (r.payload) |p| {
                     try w.print("(", .{});
                     try self.fmt(p, w);

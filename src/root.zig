@@ -10,7 +10,6 @@ pub const lower = @import("lower.zig");
 pub const symbols = @import("symbols.zig");
 pub const symbols_v2 = @import("symbols_v2.zig");
 pub const infer = @import("infer.zig");
-pub const infer_v2 = @import("infer_v2.zig");
 pub const pipeline = @import("pipeline.zig");
 pub const types = @import("types.zig");
 pub const types_v2 = @import("types_v2.zig");

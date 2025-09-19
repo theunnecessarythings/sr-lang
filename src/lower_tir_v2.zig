@@ -1,19 +1,18 @@
 const std = @import("std");
 const ast = @import("ast_v2.zig");
 const tir = @import("tir_v2.zig");
-const infer_v2 = @import("infer_v2.zig");
-const types_v2 = @import("types_v2.zig");
+const types = @import("types_v2.zig");
 
 const StrId = @import("cst_v2.zig").StrId;
 const OptStrId = @import("cst_v2.zig").OptStrId;
 
 pub const LowerTirV2 = struct {
     gpa: std.mem.Allocator,
-    info: *infer_v2.TypeInfoV2,
+    info: *types.TypeInfoV2,
     // Simple loop stack to support break/continue in While/For
     loop_stack: std.ArrayListUnmanaged(LoopCtx) = .{},
 
-    pub fn init(gpa: std.mem.Allocator, info: *infer_v2.TypeInfoV2) LowerTirV2 {
+    pub fn init(gpa: std.mem.Allocator, info: *types.TypeInfoV2) LowerTirV2 {
         return .{ .gpa = gpa, .info = info };
     }
 
@@ -744,7 +743,7 @@ pub const LowerTirV2 = struct {
     }
 
     // Compute the value of a block expression: evaluate last expression or return undef of expected type
-    fn lowerBlockExprValue(self: *@This(), a: *const ast.Ast, env: *Env, f: *Builder.FunctionFrame, blk: *Builder.BlockFrame, block_expr: ast.ExprId, expected_ty: types_v2.TypeId) anyerror!tir.ValueId {
+    fn lowerBlockExprValue(self: *@This(), a: *const ast.Ast, env: *Env, f: *Builder.FunctionFrame, blk: *Builder.BlockFrame, block_expr: ast.ExprId, expected_ty: types.TypeId) anyerror!tir.ValueId {
         if (a.exprs.index.kinds.items[block_expr.toRaw()] != .Block) {
             // Not a block; just lower as expression
             return self.lowerExpr(a, env, f, blk, block_expr);
@@ -826,10 +825,10 @@ pub const LowerTirV2 = struct {
         }
     }
 
-    fn getExprType(self: *const @This(), id: ast.ExprId) ?types_v2.TypeId {
+    fn getExprType(self: *const @This(), id: ast.ExprId) ?types.TypeId {
         return self.info.expr_types.items[id.toRaw()];
     }
-    fn getDeclType(self: *const @This(), did: ast.DeclId) ?types_v2.TypeId {
+    fn getDeclType(self: *const @This(), did: ast.DeclId) ?types.TypeId {
         return self.info.decl_types.items[did.toRaw()];
     }
 
@@ -841,7 +840,7 @@ pub const LowerTirV2 = struct {
         };
     }
 
-    fn bindPattern(self: *@This(), a: *const ast.Ast, env: *Env, f: *Builder.FunctionFrame, blk: *Builder.BlockFrame, pid: ast.PatternId, value: tir.ValueId, vty: types_v2.TypeId) !void {
+    fn bindPattern(self: *@This(), a: *const ast.Ast, env: *Env, f: *Builder.FunctionFrame, blk: *Builder.BlockFrame, pid: ast.PatternId, value: tir.ValueId, vty: types.TypeId) !void {
         const k = a.pats.index.kinds.items[pid.toRaw()];
         switch (k) {
             .Binding => {
@@ -853,7 +852,7 @@ pub const LowerTirV2 = struct {
                 const elems = a.pats.pat_pool.slice(row.elems);
                 var i: usize = 0;
                 // Try to use tuple element types if available
-                var etys: []const types_v2.TypeId = &[_]types_v2.TypeId{};
+                var etys: []const types.TypeId = &[_]types.TypeId{};
                 const vk = self.info.store.index.kinds.items[vty.toRaw()];
                 if (vk == .Tuple) {
                     const vrow = self.info.store.Tuple.get(self.info.store.index.rows.items[vty.toRaw()]);
@@ -895,7 +894,7 @@ const LoopCtx = struct {
     has_result: bool = false,
     join_block: tir.BlockId = tir.BlockId.fromRaw(0),
     res_param: tir.ValueId = tir.ValueId.fromRaw(0),
-    res_ty: types_v2.TypeId = undefined,
+    res_ty: types.TypeId = undefined,
     // defers to run when exiting loop via break/continue
     defer_len_at_entry: u32 = 0,
 };
@@ -904,7 +903,9 @@ const Env = struct {
     map: std.StringHashMapUnmanaged(ValueBinding) = .{},
     defers: std.ArrayListUnmanaged(DeferEntry) = .{},
     marks: std.ArrayListUnmanaged(u32) = .{},
-    fn init(_: std.mem.Allocator) Env { return .{ .map = .{} }; }
+    fn init(_: std.mem.Allocator) Env {
+        return .{ .map = .{} };
+    }
     fn deinit(self: *@This(), gpa: std.mem.Allocator) void {
         self.map.deinit(gpa);
         self.defers.deinit(gpa);
@@ -981,11 +982,11 @@ const Builder = struct {
     const TermSlot = struct { value: usize };
     const SwitchDest = struct { dest: tir.BlockId, args: []const tir.ValueId };
 
-    pub fn beginFunction(self: *@This(), name: StrId, result: types_v2.TypeId) !FunctionFrame {
+    pub fn beginFunction(self: *@This(), name: StrId, result: types.TypeId) !FunctionFrame {
         const idx = self.t.funcs.Function.add(self.gpa, .{ .name = name, .params = tir.RangeParam.empty(), .result = result, .blocks = tir.RangeBlock.empty() });
         return .{ .builder = self, .id = tir.FuncId.fromRaw(idx) };
     }
-    pub fn addParam(self: *@This(), f: *FunctionFrame, name: ?StrId, ty: types_v2.TypeId) !tir.ValueId {
+    pub fn addParam(self: *@This(), f: *FunctionFrame, name: ?StrId, ty: types.TypeId) !tir.ValueId {
         const vid = self.freshValue();
         const pid_u32 = self.t.funcs.Param.add(self.gpa, .{ .value = vid, .name = if (name) |n| OptStrId.some(n) else OptStrId.none(), .ty = ty });
         try f.param_ids.append(self.gpa, tir.ParamId.fromRaw(pid_u32));
@@ -1022,50 +1023,50 @@ const Builder = struct {
     }
 
     // ---- instruction helpers ----
-    fn constInt(self: *@This(), blk: *BlockFrame, ty: types_v2.TypeId, v: i64) tir.ValueId {
+    fn constInt(self: *@This(), blk: *BlockFrame, ty: types.TypeId, v: i64) tir.ValueId {
         const vid = self.freshValue();
         const iid = self.t.instrs.add(.ConstInt, tir.Rows.ConstInt{ .result = vid, .ty = ty, .value = v });
         blk.instrs.append(self.gpa, iid) catch @panic("OOM");
         return vid;
     }
-    fn constFloat(self: *@This(), blk: *BlockFrame, ty: types_v2.TypeId, v: f64) tir.ValueId {
+    fn constFloat(self: *@This(), blk: *BlockFrame, ty: types.TypeId, v: f64) tir.ValueId {
         const vid = self.freshValue();
         const iid = self.t.instrs.add(.ConstFloat, tir.Rows.ConstFloat{ .result = vid, .ty = ty, .value = v });
         blk.instrs.append(self.gpa, iid) catch @panic("OOM");
         return vid;
     }
-    fn constBool(self: *@This(), blk: *BlockFrame, ty: types_v2.TypeId, v: bool) tir.ValueId {
+    fn constBool(self: *@This(), blk: *BlockFrame, ty: types.TypeId, v: bool) tir.ValueId {
         const vid = self.freshValue();
         const iid = self.t.instrs.add(.ConstBool, tir.Rows.ConstBool{ .result = vid, .ty = ty, .value = v });
         blk.instrs.append(self.gpa, iid) catch @panic("OOM");
         return vid;
     }
-    fn constString(self: *@This(), blk: *BlockFrame, ty: types_v2.TypeId, s: []const u8) tir.ValueId {
+    fn constString(self: *@This(), blk: *BlockFrame, ty: types.TypeId, s: []const u8) tir.ValueId {
         const sid = self.t.instrs.strs.intern(s);
         const vid = self.freshValue();
         const iid = self.t.instrs.add(.ConstString, tir.Rows.ConstString{ .result = vid, .ty = ty, .text = sid });
         blk.instrs.append(self.gpa, iid) catch @panic("OOM");
         return vid;
     }
-    fn load(self: *@This(), blk: *BlockFrame, ty: types_v2.TypeId, ptr: tir.ValueId, al: u32) tir.ValueId {
+    fn load(self: *@This(), blk: *BlockFrame, ty: types.TypeId, ptr: tir.ValueId, al: u32) tir.ValueId {
         const vid = self.freshValue();
         const iid = self.t.instrs.add(.Load, tir.Rows.Load{ .result = vid, .ty = ty, .ptr = ptr, .@"align" = al });
         blk.instrs.append(self.gpa, iid) catch @panic("OOM");
         return vid;
     }
-    fn store(self: *@This(), blk: *BlockFrame, ty: types_v2.TypeId, ptr: tir.ValueId, value: tir.ValueId, al: u32) tir.InstrId {
+    fn store(self: *@This(), blk: *BlockFrame, ty: types.TypeId, ptr: tir.ValueId, value: tir.ValueId, al: u32) tir.InstrId {
         const vid = self.freshValue();
         const iid = self.t.instrs.add(.Store, .{ .result = vid, .ty = ty, .ptr = ptr, .value = value, .@"align" = al });
         blk.instrs.append(self.gpa, iid) catch @panic("OOM");
         return iid;
     }
-    fn alloca(self: *@This(), blk: *BlockFrame, ty: types_v2.TypeId, count: tir.OptValueId, al: u32) tir.ValueId {
+    fn alloca(self: *@This(), blk: *BlockFrame, ty: types.TypeId, count: tir.OptValueId, al: u32) tir.ValueId {
         const vid = self.freshValue();
         const iid = self.t.instrs.add(.Alloca, tir.Rows.Alloca{ .result = vid, .ty = ty, .count = count, .@"align" = al });
         blk.instrs.append(self.gpa, iid) catch @panic("OOM");
         return vid;
     }
-    fn bin(self: *@This(), blk: *BlockFrame, comptime k: tir.OpKind, ty: types_v2.TypeId, l: tir.ValueId, r: tir.ValueId) tir.ValueId {
+    fn bin(self: *@This(), blk: *BlockFrame, comptime k: tir.OpKind, ty: types.TypeId, l: tir.ValueId, r: tir.ValueId) tir.ValueId {
         const vid = self.freshValue();
         const iid = self.t.instrs.add(k, tir.Rows.Bin2{ .result = vid, .ty = ty, .lhs = l, .rhs = r });
         blk.instrs.append(self.gpa, iid) catch @panic("OOM");
@@ -1078,14 +1079,14 @@ const Builder = struct {
         blk.instrs.append(self.gpa, iid) catch @panic("OOM");
         return vid;
     }
-    fn call(self: *@This(), blk: *BlockFrame, ty: types_v2.TypeId, callee: StrId, args: []const tir.ValueId) tir.ValueId {
+    fn call(self: *@This(), blk: *BlockFrame, ty: types.TypeId, callee: StrId, args: []const tir.ValueId) tir.ValueId {
         const r = self.t.instrs.val_list_pool.pushMany(self.gpa, args);
         const vid = self.freshValue();
         const iid = self.t.instrs.add(.Call, tir.Rows.Call{ .result = vid, .ty = ty, .callee = callee, .args = r });
         blk.instrs.append(self.gpa, iid) catch @panic("OOM");
         return vid;
     }
-    fn indexOp(self: *@This(), blk: *BlockFrame, ty: types_v2.TypeId, base: tir.ValueId, idx: tir.ValueId) tir.ValueId {
+    fn indexOp(self: *@This(), blk: *BlockFrame, ty: types.TypeId, base: tir.ValueId, idx: tir.ValueId) tir.ValueId {
         const vid = self.freshValue();
         const iid = self.t.instrs.add(.Index, tir.Rows.Index{ .result = vid, .ty = ty, .base = base, .index = idx });
         blk.instrs.append(self.gpa, iid) catch @panic("OOM");
@@ -1094,33 +1095,33 @@ const Builder = struct {
     fn intern(self: *@This(), s: []const u8) StrId {
         return self.t.instrs.strs.intern(s);
     }
-    fn un1(self: *@This(), blk: *BlockFrame, comptime k: tir.OpKind, ty: types_v2.TypeId, v: tir.ValueId) tir.ValueId {
+    fn un1(self: *@This(), blk: *BlockFrame, comptime k: tir.OpKind, ty: types.TypeId, v: tir.ValueId) tir.ValueId {
         const vid = self.freshValue();
         const iid = self.t.instrs.add(k, tir.Rows.Un1{ .result = vid, .ty = ty, .value = v });
         blk.instrs.append(self.gpa, iid) catch @panic("OOM");
         return vid;
     }
-    fn constNull(self: *@This(), blk: *BlockFrame, ty: types_v2.TypeId) tir.ValueId {
+    fn constNull(self: *@This(), blk: *BlockFrame, ty: types.TypeId) tir.ValueId {
         const vid = self.freshValue();
         const iid = self.t.instrs.add(.ConstNull, tir.Rows.ConstNull{ .result = vid, .ty = ty });
         blk.instrs.append(self.gpa, iid) catch @panic("OOM");
         return vid;
     }
-    fn tupleMake(self: *@This(), blk: *BlockFrame, ty: types_v2.TypeId, elems: []const tir.ValueId) tir.ValueId {
+    fn tupleMake(self: *@This(), blk: *BlockFrame, ty: types.TypeId, elems: []const tir.ValueId) tir.ValueId {
         const r = self.t.instrs.value_pool.pushMany(self.gpa, elems);
         const vid = self.freshValue();
         const iid = self.t.instrs.add(.TupleMake, tir.Rows.TupleMake{ .result = vid, .ty = ty, .elems = r });
         blk.instrs.append(self.gpa, iid) catch @panic("OOM");
         return vid;
     }
-    fn arrayMake(self: *@This(), blk: *BlockFrame, ty: types_v2.TypeId, elems: []const tir.ValueId) tir.ValueId {
+    fn arrayMake(self: *@This(), blk: *BlockFrame, ty: types.TypeId, elems: []const tir.ValueId) tir.ValueId {
         const r = self.t.instrs.value_pool.pushMany(self.gpa, elems);
         const vid = self.freshValue();
         const iid = self.t.instrs.add(.ArrayMake, tir.Rows.ArrayMake{ .result = vid, .ty = ty, .elems = r });
         blk.instrs.append(self.gpa, iid) catch @panic("OOM");
         return vid;
     }
-    fn structMake(self: *@This(), blk: *BlockFrame, ty: types_v2.TypeId, fields: []const tir.Rows.StructFieldInit) tir.ValueId {
+    fn structMake(self: *@This(), blk: *BlockFrame, ty: types.TypeId, fields: []const tir.Rows.StructFieldInit) tir.ValueId {
         var ids = self.gpa.alloc(tir.StructFieldInitId, fields.len) catch @panic("OOM");
         defer self.gpa.free(ids);
         var i: usize = 0;
@@ -1134,44 +1135,44 @@ const Builder = struct {
         blk.instrs.append(self.gpa, iid) catch @panic("OOM");
         return vid;
     }
-    fn extractElem(self: *@This(), blk: *BlockFrame, ty: types_v2.TypeId, agg: tir.ValueId, index: u32) tir.ValueId {
+    fn extractElem(self: *@This(), blk: *BlockFrame, ty: types.TypeId, agg: tir.ValueId, index: u32) tir.ValueId {
         const vid = self.freshValue();
         const iid = self.t.instrs.add(.ExtractElem, tir.Rows.ExtractElem{ .result = vid, .ty = ty, .agg = agg, .index = index });
         blk.instrs.append(self.gpa, iid) catch @panic("OOM");
         return vid;
     }
-    fn insertElem(self: *@This(), blk: *BlockFrame, ty: types_v2.TypeId, agg: tir.ValueId, index: u32, value: tir.ValueId) tir.ValueId {
+    fn insertElem(self: *@This(), blk: *BlockFrame, ty: types.TypeId, agg: tir.ValueId, index: u32, value: tir.ValueId) tir.ValueId {
         const vid = self.freshValue();
         const iid = self.t.instrs.add(.InsertElem, tir.Rows.InsertElem{ .result = vid, .ty = ty, .agg = agg, .index = index, .value = value });
         blk.instrs.append(self.gpa, iid) catch @panic("OOM");
         return vid;
     }
-    fn extractField(self: *@This(), blk: *BlockFrame, ty: types_v2.TypeId, agg: tir.ValueId, index: u32) tir.ValueId {
+    fn extractField(self: *@This(), blk: *BlockFrame, ty: types.TypeId, agg: tir.ValueId, index: u32) tir.ValueId {
         const vid = self.freshValue();
         const iid = self.t.instrs.add(.ExtractField, tir.Rows.ExtractField{ .result = vid, .ty = ty, .agg = agg, .index = index, .name = OptStrId.none() });
         blk.instrs.append(self.gpa, iid) catch @panic("OOM");
         return vid;
     }
-    fn addressOf(self: *@This(), blk: *BlockFrame, ty: types_v2.TypeId, v: tir.ValueId) tir.ValueId {
+    fn addressOf(self: *@This(), blk: *BlockFrame, ty: types.TypeId, v: tir.ValueId) tir.ValueId {
         const vid = self.freshValue();
         const iid = self.t.instrs.add(.AddressOf, tir.Rows.AddressOf{ .result = vid, .ty = ty, .value = v });
         blk.instrs.append(self.gpa, iid) catch @panic("OOM");
         return vid;
     }
-    fn cast(self: *@This(), blk: *BlockFrame, comptime k: tir.OpKind, ty: types_v2.TypeId, v: tir.ValueId) tir.ValueId {
+    fn cast(self: *@This(), blk: *BlockFrame, comptime k: tir.OpKind, ty: types.TypeId, v: tir.ValueId) tir.ValueId {
         const vid = self.freshValue();
         const iid = self.t.instrs.add(k, tir.Rows.Un1{ .result = vid, .ty = ty, .value = v });
         blk.instrs.append(self.gpa, iid) catch @panic("OOM");
         return vid;
     }
-    pub fn addBlockParam(self: *@This(), blk: *BlockFrame, name: ?[]const u8, ty: types_v2.TypeId) !tir.ValueId {
+    pub fn addBlockParam(self: *@This(), blk: *BlockFrame, name: ?[]const u8, ty: types.TypeId) !tir.ValueId {
         const vid = self.freshValue();
         const sid = if (name) |n| OptStrId.some(self.intern(n)) else OptStrId.none();
         const pid = self.t.funcs.Param.add(self.gpa, .{ .value = vid, .name = sid, .ty = ty });
         try blk.params.append(self.gpa, tir.ParamId.fromRaw(pid));
         return vid;
     }
-    pub fn addGlobal(self: *@This(), name: StrId, ty: types_v2.TypeId) tir.GlobalId {
+    pub fn addGlobal(self: *@This(), name: StrId, ty: types.TypeId) tir.GlobalId {
         const idx = self.t.funcs.Global.add(self.gpa, .{ .name = name, .ty = ty });
         return tir.GlobalId.fromRaw(idx);
     }
@@ -1191,7 +1192,7 @@ const Builder = struct {
         const tid = self.t.terms.add(.CondBr, .{ .cond = cond, .then_edge = te, .else_edge = ee });
         blk.term = .{ .value = tid.toRaw() };
     }
-    fn constUndef(self: *@This(), blk: *BlockFrame, ty: types_v2.TypeId) tir.ValueId {
+    fn constUndef(self: *@This(), blk: *BlockFrame, ty: types.TypeId) tir.ValueId {
         const vid = self.freshValue();
         const iid = self.t.instrs.add(.ConstUndef, tir.Rows.ConstUndef{ .result = vid, .ty = ty });
         blk.instrs.append(self.gpa, iid) catch @panic("OOM");
@@ -1239,7 +1240,7 @@ const Builder = struct {
         const id = self.t.instrs.GepIndex.add(self.gpa, .{ .Value = val });
         return tir.GepIndexId.fromRaw(id);
     }
-    fn gep(self: *@This(), blk: *BlockFrame, ty: types_v2.TypeId, base: tir.ValueId, idxs: []const tir.GepIndexId) tir.ValueId {
+    fn gep(self: *@This(), blk: *BlockFrame, ty: types.TypeId, base: tir.ValueId, idxs: []const tir.GepIndexId) tir.ValueId {
         const r = self.t.instrs.gep_pool.pushMany(self.gpa, idxs);
         const vid = self.freshValue();
         const iid = self.t.instrs.add(.Gep, tir.Rows.Gep{ .result = vid, .ty = ty, .base = base, .indices = r });

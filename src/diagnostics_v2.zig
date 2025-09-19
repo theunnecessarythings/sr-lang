@@ -129,6 +129,8 @@ pub const DiagnosticCode = enum {
     purity_violation,
     struct_field_requires_non_null,
     invalid_index_type,
+    argument_count_mismatch,
+    unknown_function,
 };
 
 pub fn diagnosticMessageFmt(code: DiagnosticCode) []const u8 {
@@ -250,6 +252,8 @@ pub fn diagnosticMessageFmt(code: DiagnosticCode) []const u8 {
         .purity_violation => "pure function violated purity constraints",
         .struct_field_requires_non_null => "struct field requires a non-null value",
         .invalid_index_type => "invalid index type",
+        .argument_count_mismatch => "argument count does not match parameter count",
+        .unknown_function => "unknown function",
     };
 }
 

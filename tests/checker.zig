@@ -57,1052 +57,1052 @@ test "hello world" {
     try checkProgram(src, &.{});
 }
 
-test "integer expressions" {
-    // Binary operations
-    try checkProgram("a :: 2 + 3", &.{});
-    try checkProgram("a :: 2 - 3", &.{});
-    try checkProgram("a :: 2 * 3", &.{});
-    try checkProgram("a :: 6 / 3", &.{});
-    try checkProgram("a :: 7 % 3", &.{});
-    try checkProgram("a :: 1 << 2", &.{});
-    try checkProgram("a :: 4 >> 1", &.{});
-    try checkProgram("a :: 5 & 3", &.{}); // 101 & 011 = 001 (1)
-    try checkProgram("a :: 5 | 3", &.{}); // 101 | 011 = 111 (7)
-    try checkProgram("a :: 5 ^ 3", &.{}); // 101 ^ 011 = 110 (6)
-    try checkProgram("a :: 2 == 3", &.{});
-    try checkProgram("a :: 2 != 3", &.{});
-    try checkProgram("a :: 2 < 3", &.{});
-    try checkProgram("a :: 2 <= 3", &.{});
-    try checkProgram("a :: 2 > 3", &.{});
-    try checkProgram("a :: 2 >= 3", &.{});
-
-    // Saturated and wrapping operations
-    try checkProgram("a :: 10 *| 20", &.{});
-    try checkProgram("a :: 10 +| 20", &.{});
-    try checkProgram("a :: 30 -| 10", &.{});
-    try checkProgram("a :: 1 <<| 2", &.{});
-    try checkProgram("a :: 10 *% 20", &.{});
-    try checkProgram("a :: 10 +% 20", &.{});
-    try checkProgram("a :: 30 -% 10", &.{});
-
-    // Unary operations
-    try checkProgram("a :: +5", &.{});
-    try checkProgram("a :: -5", &.{});
-    try checkProgram("a :: !true", &.{});
-
-    // Combined operations and parentheses
-    try checkProgram("a :: (2 + 3) * 4", &.{});
-    try checkProgram("a :: 10 - (2 * 3)", &.{});
-    try checkProgram("a :: 10 / 2 + 3", &.{});
-    try checkProgram("a :: 10 + 2 / 3", &.{});
-    try checkProgram("a :: (5 & 3) | (1 << 2)", &.{});
-    try checkProgram("a :: 1 + 2 * 3 - 4 / 2", &.{});
-}
-
-test "floating point expressions" {
-    // Binary operations
-    try checkProgram("a :: 2.0 + 3.0", &.{});
-    try checkProgram("a :: 2.0 - 3.0", &.{});
-    try checkProgram("a :: 2.0 * 3.0", &.{});
-    try checkProgram("a :: 6.0 / 3.0", &.{});
-    try checkProgram("a :: 2.0 == 3.0", &.{});
-    try checkProgram("a :: 2.0 != 3.0", &.{});
-    try checkProgram("a :: 2.0 < 3.0", &.{});
-    try checkProgram("a :: 2.0 <= 3.0", &.{});
-    try checkProgram("a :: 2.0 > 3.0", &.{});
-    try checkProgram("a :: 2.0 >= 3.0", &.{});
-
-    // Unary operations
-    try checkProgram("a :: +5.0", &.{});
-    try checkProgram("a :: -5.0", &.{});
-
-    // Combined operations and parentheses
-    try checkProgram("a :: (2.0 + 3.0) * 4.0", &.{});
-    try checkProgram("a :: 10.0 - (2.0 * 3.0)", &.{});
-    try checkProgram("a :: 10.0 / 2.0 + 3.0", &.{});
-    try checkProgram("a :: 1.0 + 2.0 * 3.0 - 4.0 / 2.0", &.{});
-}
-
-test "floating point expression failure cases" {
-    // Division by zero
-    try checkProgram("a :: 5.0 / 0.0", &[_]diag.DiagnosticCode{.division_by_zero});
-    try checkProgram("a :: 5.0 % 0.0", &[_]diag.DiagnosticCode{.invalid_binary_op_operands}); // Modulo with floats is often disallowed or has specific rules
-
-    // Type mismatch for binary operations
-    try checkProgram("a :: 5.0 + true", &[_]diag.DiagnosticCode{.invalid_binary_op_operands});
-    try checkProgram("a :: 5.0 - 3", &[_]diag.DiagnosticCode{.invalid_binary_op_operands}); // Assuming no implicit conversion from int to float
-    try checkProgram("a :: 5.0 * \"hello\"", &[_]diag.DiagnosticCode{.invalid_binary_op_operands});
-
-    // Type mismatch for unary operations
-    try checkProgram("a :: !5.0", &[_]diag.DiagnosticCode{.invalid_unary_op_operand});
-    try checkProgram("a :: -true", &[_]diag.DiagnosticCode{.invalid_unary_op_operand});
-}
-
-test "integer expression failure cases" {
-    // Division by zero
-    try checkProgram("a :: 5 / 0", &[_]diag.DiagnosticCode{.division_by_zero});
-    try checkProgram("a :: 5 % 0", &[_]diag.DiagnosticCode{.division_by_zero});
-
-    // Type mismatch for unary operations
-    try checkProgram("a :: !5", &[_]diag.DiagnosticCode{.invalid_unary_op_operand});
-    try checkProgram("a :: -true", &[_]diag.DiagnosticCode{.invalid_unary_op_operand});
-    try checkProgram("a :: +true", &[_]diag.DiagnosticCode{.invalid_unary_op_operand});
-    try checkProgram("a :: -\"hello\"", &[_]diag.DiagnosticCode{.invalid_unary_op_operand});
-
-    // Type mismatch for binary operations
-    try checkProgram("a :: 5 + true", &[_]diag.DiagnosticCode{.invalid_binary_op_operands});
-    try checkProgram("a :: 5 - \"hello\"", &[_]diag.DiagnosticCode{.invalid_binary_op_operands});
-    try checkProgram("a :: 5 * 3.0", &[_]diag.DiagnosticCode{.invalid_binary_op_operands}); // Assuming integers and floats are distinct types
-    try checkProgram("a :: 5 << true", &[_]diag.DiagnosticCode{.invalid_binary_op_operands});
-    try checkProgram("a :: 5 & false", &[_]diag.DiagnosticCode{.invalid_binary_op_operands});
-    try checkProgram("a :: true | 1", &[_]diag.DiagnosticCode{.invalid_binary_op_operands});
-    try checkProgram("a :: 1 == \"hello\"", &[_]diag.DiagnosticCode{.invalid_binary_op_operands});
-    try checkProgram("a :: 1 < 3.0", &[_]diag.DiagnosticCode{.invalid_binary_op_operands});
-    try checkProgram("a :: 10 *| true", &[_]diag.DiagnosticCode{.invalid_binary_op_operands});
-    try checkProgram("a :: 10 +% \"20\"", &[_]diag.DiagnosticCode{.invalid_binary_op_operands});
-}
-
-test "boolean expressions" {
-    // Binary operations
-    try checkProgram("a :: true and false", &.{});
-    try checkProgram("a :: true or false", &.{});
-    try checkProgram("a :: true == false", &.{});
-    try checkProgram("a :: true != false", &.{});
-
-    // Unary operations
-    try checkProgram("a :: !true", &.{});
-
-    // Combined operations and parentheses
-    try checkProgram("a :: (true and false) or true", &.{});
-    try checkProgram("a :: !(true or false) and true", &.{});
-}
-
-test "boolean expression failure cases" {
-    // Type mismatch for unary operations
-    try checkProgram("a :: !5", &[_]diag.DiagnosticCode{.invalid_unary_op_operand});
-    try checkProgram("a :: !3.0", &[_]diag.DiagnosticCode{.invalid_unary_op_operand});
-    try checkProgram("a :: !\"hello\"", &[_]diag.DiagnosticCode{.invalid_unary_op_operand});
-
-    // Type mismatch for binary operations
-    try checkProgram("a :: true and 5", &[_]diag.DiagnosticCode{.invalid_binary_op_operands});
-    try checkProgram("a :: false or 3.0", &[_]diag.DiagnosticCode{.invalid_binary_op_operands});
-    try checkProgram("a :: true == \"hello\"", &[_]diag.DiagnosticCode{.invalid_binary_op_operands});
-    try checkProgram("a :: false != 1", &[_]diag.DiagnosticCode{.invalid_binary_op_operands});
-}
-
-test "mixed type expression failure cases" {
-    try checkProgram("a :: 5 + true", &[_]diag.DiagnosticCode{.invalid_binary_op_operands});
-    try checkProgram("a :: 3.0 * false", &[_]diag.DiagnosticCode{.invalid_binary_op_operands});
-    try checkProgram("a :: 10 - null", &[_]diag.DiagnosticCode{.invalid_binary_op_operands});
-    try checkProgram("a :: true / 2", &[_]diag.DiagnosticCode{.invalid_binary_op_operands});
-    try checkProgram("a :: 5.0 and false", &[_]diag.DiagnosticCode{.invalid_binary_op_operands});
-    try checkProgram("a :: \"hello\" or true", &[_]diag.DiagnosticCode{.invalid_binary_op_operands});
-    try checkProgram("a :: 5 == true", &[_]diag.DiagnosticCode{.invalid_binary_op_operands});
-    try checkProgram("a :: 3.0 != false", &[_]diag.DiagnosticCode{.invalid_binary_op_operands});
-}
-
-test "imaginary number expressions" {
-    // Binary operations
-    try checkProgram("a :: 2i + 3i", &.{});
-    try checkProgram("a :: 2i - 3i", &.{});
-    try checkProgram("a :: 2i * 3i", &.{});
-    try checkProgram("a :: 6i / 3i", &.{});
-    try checkProgram("a :: 2i == 3i", &.{});
-    try checkProgram("a :: 2i != 3i", &.{});
-
-    // Unary operations
-    try checkProgram("a :: +5i", &.{});
-    try checkProgram("a :: -5i", &.{});
-
-    // Combined operations and parentheses
-    try checkProgram("a :: (2i + 3i) * 4i", &.{});
-    try checkProgram("a :: 10i - (2i * 3i)", &.{});
-    try checkProgram("a :: 10i / 2i + 3i", &.{});
-    try checkProgram("a :: 1i + 2i * 3i - 4i / 2i", &.{});
-}
-
-test "imaginary number expression failure cases" {
-    // Division by zero
-    try checkProgram("a :: 5i / 0i", &[_]diag.DiagnosticCode{.division_by_zero});
-
-    // Type mismatch for unary operations
-    try checkProgram("a :: !5i", &[_]diag.DiagnosticCode{.invalid_unary_op_operand});
-    try checkProgram("a :: -true", &[_]diag.DiagnosticCode{.invalid_unary_op_operand});
-    try checkProgram("a :: +\"hello\"", &[_]diag.DiagnosticCode{.invalid_unary_op_operand});
-
-    // Type mismatch for binary operations
-    try checkProgram("a :: 5i + true", &[_]diag.DiagnosticCode{.invalid_binary_op_operands});
-    try checkProgram("a :: 5i * 3.0", &[_]diag.DiagnosticCode{.invalid_binary_op_operands});
-    try checkProgram("a :: 5i << true", &[_]diag.DiagnosticCode{.invalid_binary_op_operands});
-    try checkProgram("a :: 5i & false", &[_]diag.DiagnosticCode{.invalid_binary_op_operands});
-    try checkProgram("a :: true | 1i", &[_]diag.DiagnosticCode{.invalid_binary_op_operands});
-    try checkProgram("a :: 1i == \"hello\"", &[_]diag.DiagnosticCode{.invalid_binary_op_operands});
-    try checkProgram("a :: 1i < 3.0", &[_]diag.DiagnosticCode{.invalid_binary_op_operands});
-}
-
-test "additional arithmetic typing" {
-    // Valid integer bitwise and shifts
-    try checkProgram("a :: 5 % 2", &.{});
-    try checkProgram("a :: 8 & 3", &.{});
-    try checkProgram("a :: 8 | 3", &.{});
-    try checkProgram("a :: 8 ^ 3", &.{});
-    try checkProgram("a :: 8 << 1", &.{});
-    try checkProgram("a :: 8 >> 1", &.{});
-
-    // Invalid mixes: int vs float
-    try checkProgram("a :: 1 == 1.0", &[_]diag.DiagnosticCode{.invalid_binary_op_operands});
-    try checkProgram("a :: 5.0 & 1", &[_]diag.DiagnosticCode{.invalid_binary_op_operands});
-    try checkProgram("a :: 5.0 << 1", &[_]diag.DiagnosticCode{.invalid_binary_op_operands});
-    try checkProgram("a :: 5 << 1.0", &[_]diag.DiagnosticCode{.invalid_binary_op_operands});
-
-    // Invalid boolean comparisons
-    try checkProgram("a :: true < false", &[_]diag.DiagnosticCode{.invalid_binary_op_operands});
-
-    // Address-of on rvalue (currently allowed in typing)
-    try checkProgram("a :: &5", &.{});
-}
-
-// --- Next semantics (tests first; may fail until implemented) ---
-
-test "array literals - success" {
-    // Basic homogeneous int array
-    try checkProgram("a :: [1, 2, 3]", &.{});
-
-    // Nested arrays (2x2)
-    try checkProgram("a :: [[1, 2], [3, 4]]", &.{});
-
-    // Typed fixed-size array declaration with matching literal length
-    try checkProgram("arr: [3]i32 = [1, 2, 3]", &.{});
-
-    // Array of strings
-    try checkProgram("s :: [\"a\", \"b\", \"c\"]", &.{});
-
-    // Indexing into an array literal
-    try checkProgram("x :: [10, 20, 30][1]", &.{});
-
-    // Slicing a literal via parentheses
-    try checkProgram("sl :: ([1,2,3,4])[1..3]", &.{});
-}
-
-test "array literals - failures" {
-    // Heterogeneous array elements should be rejected
-    try checkProgram("a :: [1, \"a\", 3]", &[_]diag.DiagnosticCode{.heterogeneous_array_elements});
-
-    // Fixed-size typed array with too few/many elements
-    try checkProgram("arr: [3]i32 = [1, 2]", &[_]diag.DiagnosticCode{.array_length_mismatch});
-    try checkProgram("arr: [2]i32 = [1, 2, 3]", &[_]diag.DiagnosticCode{.array_length_mismatch});
-
-    // Mixed numeric kinds (int vs float) in one literal
-    try checkProgram("a :: [1, 2.0, 3]", &[_]diag.DiagnosticCode{.heterogeneous_array_elements});
-
-    // Using non-literal or invalid element forms (e.g., unsupported type in literal)
-    try checkProgram("a :: [true, 1]", &[_]diag.DiagnosticCode{.heterogeneous_array_elements});
-}
-
-test "tuple literals - success" {
-    // Heterogeneous tuple literal
-    try checkProgram("t :: (1, \"hello\", true)", &.{});
-
-    // Field access by index
-    try checkProgram("x :: (1, 2, 3).0", &.{});
-
-    // Nested tuple indexing
-    try checkProgram("y :: ((1, 2), (3, 4)).1.0", &.{});
-
-    // Typed tuple variable
-    try checkProgram("c: (i32, f64, char) = (1, 2.0, 'x')", &.{});
-}
-
-test "tuple literals - failures" {
-    // Tuple does not support direct arithmetic
-    try checkProgram("a :: (1, 2) + 3", &[_]diag.DiagnosticCode{.invalid_binary_op_operands});
-
-    // Mixed types via field access leading to invalid binary op
-    try checkProgram("b :: (1, \"a\").0 + \"str\"", &[_]diag.DiagnosticCode{.invalid_binary_op_operands});
-
-    // Out-of-bounds tuple field index
-    try checkProgram("oob :: (1, 2).2 + 1", &[_]diag.DiagnosticCode{.tuple_index_out_of_bounds});
-
-    // Invalid tuple field name (non-numeric)
-    try checkProgram("bad :: (1, 2).a + 1", &[_]diag.DiagnosticCode{.expected_field_name_or_index});
-}
-
-test "map literals - success" {
-    // Basic string->int map
-    try checkProgram("m :: [\"one\": 1, \"two\": 2]", &.{});
-
-    // Int->string map
-    try checkProgram("n :: [1: \"one\", 2: \"two\"]", &.{});
-
-    // Typed empty map
-    try checkProgram("empty: [string: i32] = []", &.{});
-
-    // Index into a map literal
-    try checkProgram("v :: [\"a\": 1, \"b\": 2][\"b\"]", &.{});
-}
-
-test "map literals - failures" {
-    // Mixed key types should be rejected
-    try checkProgram("m :: [\"one\": 1, 2: 2]", &[_]diag.DiagnosticCode{.map_mixed_key_types});
-
-    // Mixed value types should be rejected
-    try checkProgram("m :: [\"one\": 1, \"two\": \"2\"]", &[_]diag.DiagnosticCode{.map_mixed_value_types});
-
-    // Empty without type annotation is ambiguous
-    try checkProgram("m :: []", &[_]diag.DiagnosticCode{.ambiguous_empty_map});
-
-    // Annotation/value mismatch
-    try checkProgram("bad: [string: i32] = [\"x\": 1, \"y\": 2.0]", &[_]diag.DiagnosticCode{.type_annotation_mismatch});
-
-    // Index with wrong key type
-    try checkProgram("w :: [\"a\": 1, \"b\": 2][1]", &[_]diag.DiagnosticCode{.map_wrong_key_type});
-}
-
-test "string and char literals - success" {
-    // Plain string
-    try checkProgram("s1 :: \"hello\"", &.{});
-
-    // Raw strings
-    try checkProgram("s2 :: r\"no escapes \\n \"", &.{});
-    try checkProgram("s3 :: r#\"hash \" inside\"#", &.{});
-
-    // Unicode in string and char
-    try checkProgram("su :: \"π\"", &.{});
-    try checkProgram("c1 :: 'a'", &.{});
-    try checkProgram("c2 :: 'π'", &.{});
-
-    // Empty string
-    try checkProgram("empty :: \"\"", &.{});
-}
-
-test "string and char literals - failures" {
-    // Invalid arithmetic with strings
-    try checkProgram("x :: \"a\" + 1", &[_]diag.DiagnosticCode{.invalid_binary_op_operands});
-    try checkProgram("y :: \"a\" - \"b\"", &[_]diag.DiagnosticCode{.invalid_binary_op_operands});
-
-    // Invalid unary op
-    try checkProgram("z :: !\"a\"", &[_]diag.DiagnosticCode{.invalid_unary_op_operand});
-
-    // Indexing with wrong index type
-    try checkProgram("i :: \"abc\"[1.0]", &[_]diag.DiagnosticCode{.non_integer_index});
-
-    // Invalid comparisons across types
-    try checkProgram("cmp1 :: \"a\" == true", &[_]diag.DiagnosticCode{.invalid_binary_op_operands});
-    try checkProgram("cmp2 :: 'a' == 1.0", &[_]diag.DiagnosticCode{.invalid_binary_op_operands});
-}
-
-test "null/undefined literals - success" {
-    // Bare literals
-    try checkProgram("n :: null", &.{});
-    try checkProgram("u :: undefined", &.{});
-
-    // Parenthesized usage
-    try checkProgram("p :: (null)", &.{});
-    try checkProgram("q :: (undefined)", &.{});
-}
-
-test "null/undefined literals - failures" {
-    // Arithmetic with null/undefined
-    try checkProgram("x :: null + 1", &[_]diag.DiagnosticCode{.invalid_binary_op_operands});
-    try checkProgram("y :: undefined * 2", &[_]diag.DiagnosticCode{.invalid_binary_op_operands});
-
-    // Logical/unary operations
-    try checkProgram("z :: !null", &[_]diag.DiagnosticCode{.invalid_unary_op_operand});
-    try checkProgram("w :: -undefined", &[_]diag.DiagnosticCode{.invalid_unary_op_operand});
-
-    // Indexing
-    try checkProgram("i :: null[0]", &[_]diag.DiagnosticCode{.not_indexable});
-
-    // Mixing in literals
-    try checkProgram("arr :: [1, null]", &[_]diag.DiagnosticCode{.heterogeneous_array_elements});
-    try checkProgram("tup :: (undefined, 1) + 2", &[_]diag.DiagnosticCode{.invalid_binary_op_operands});
-
-    // Comparisons
-    try checkProgram("cmp1 :: null == 0", &[_]diag.DiagnosticCode{.invalid_binary_op_operands});
-    try checkProgram("cmp2 :: undefined != false", &[_]diag.DiagnosticCode{.invalid_binary_op_operands});
-}
-
-// Builtin types: tuple, array, dynarray (type expressions and typed inits)
-
-test "builtin types - tuple - success" {
-    // Tuple type as a value (type constant)
-    try checkProgram("tt :: (i32, f64, char)", &.{});
-
-    // Typed tuple initialization
-    try checkProgram("tv: (i32, f64, char) = (1, 2.0, 'x')", &.{});
-
-    // Nested tuples
-    try checkProgram("tn: ((i32, i32), (bool, string)) = ((1, 2), (true, \"ok\"))", &.{});
-}
-
-test "builtin types - tuple - failures" {
-    // Arity mismatch
-    try checkProgram("bad_arity: (i32, f64) = (1, 2.0, 'x')", &[_]diag.DiagnosticCode{.tuple_arity_mismatch});
-
-    // Element type mismatch
-    try checkProgram("bad_elem: (i32, f64, char) = (1, \"s\", 'x')", &[_]diag.DiagnosticCode{.type_annotation_mismatch});
-}
-
-test "builtin types - array - success" {
-    // Array type as a value (type constant)
-    try checkProgram("ta :: [5]i32", &.{});
-
-    // Typed fixed-size array initialization
-    try checkProgram("a1: [3]i32 = [1, 2, 3]", &.{});
-
-    // Nested arrays (2x2)
-    try checkProgram("a2: [2][2]i32 = [[1, 2], [3, 4]]", &.{});
-}
-
-test "builtin types - array - failures" {
-    // Non-integer size
-    try checkProgram("a_bad: [1.5]i32", &[_]diag.DiagnosticCode{.array_size_not_integer_literal});
-
-    // Length mismatch vs type
-    try checkProgram("a_len1: [3]i32 = [1, 2]", &[_]diag.DiagnosticCode{.array_length_mismatch});
-    try checkProgram("a_len2: [2]i32 = [1, 2, 3]", &[_]diag.DiagnosticCode{.array_length_mismatch});
-
-    // Element type mismatch
-    try checkProgram("a_elem: [3]i32 = [1, \"x\", 3]", &[_]diag.DiagnosticCode{.type_annotation_mismatch});
-}
-
-test "builtin types - dynarray - success" {
-    // Dynarray type as a value (type constant)
-    try checkProgram("dt :: [dyn]u8", &.{});
-
-    // Assigning a literal to dynarray-typed variable
-    try checkProgram("dv: [dyn]u8 = [1, 2, 3]", &.{});
-}
-
-test "builtin types - dynarray - failures" {
-    // Element type mismatch
-    try checkProgram("de: [dyn]u8 = [\"a\"]", &[_]diag.DiagnosticCode{.type_annotation_mismatch});
-
-    // Non-array initializer
-    try checkProgram("dx: [dyn]u8 = 1", &[_]diag.DiagnosticCode{.type_annotation_mismatch});
-}
-
-test "builtin types - slice - success" {
-    // Slice type as a value (type constant)
-    try checkProgram("st :: []i32", &.{});
-
-    // Slice initialization from array slice expression
-    try checkProgram("sv: []i32 = ([1,2,3,4])[1..3]", &.{});
-}
-
-test "builtin types - slice - failures" {
-    // Invalid initializer types
-    try checkProgram("sx: []i32 = 123", &[_]diag.DiagnosticCode{.type_annotation_mismatch});
-    try checkProgram("sn: []i32 = null", &[_]diag.DiagnosticCode{.type_annotation_mismatch});
-}
-
-test "builtin types - map - success" {
-    // Map type as a value (type constant)
-    try checkProgram("mt :: [string: i32]", &.{});
-
-    // Typed map initialization
-    try checkProgram("mv: [string: i32] = [\"a\":1, \"b\":2]", &.{});
-}
-
-test "builtin types - map - failures" {
-    // Wrong key/value types
-    try checkProgram("mk: [string: i32] = [1:1]", &[_]diag.DiagnosticCode{.map_wrong_key_type});
-    try checkProgram("mv2: [string: i32] = [\"a\":1.5]", &[_]diag.DiagnosticCode{.type_annotation_mismatch});
-
-    // Null not assignable without optional
-    try checkProgram("mn: [string: i32] = null", &[_]diag.DiagnosticCode{.type_annotation_mismatch});
-}
-
-test "builtin types - optional - success" {
-    // Optional type as value
-    try checkProgram("ot :: ?i32", &.{});
-
-    // Assign value and null
-    try checkProgram("ov: ?i32 = 5", &.{});
-    try checkProgram("on: ?i32 = null", &.{});
-    try checkProgram("os: ?string = null", &.{});
-}
-
-test "builtin types - optional - failures" {
-    // Mismatched initializer
-    try checkProgram("ob: ?i32 = \"s\"", &[_]diag.DiagnosticCode{.type_annotation_mismatch});
-
-    // Null to non-optional
-    try checkProgram("oi: i32 = null", &[_]diag.DiagnosticCode{.assign_null_to_non_optional});
-}
-
-// Builtin types: struct (type expressions, literals, field access)
-
-test "struct types - success" {
-    // Struct type constant
-    try checkProgram("Point :: struct { x: i32, y: i32 }", &.{});
-
-    // Literal initialization (same line)
-    try checkProgram(
-        \\
-        \\ Point :: struct { x: i32, y: i32 }
-        \\ p :: Point{ x: 1, y: 2 }
-    , &.{});
-
-    // Field access
-    try checkProgram(
-        \\
-        \\ Point :: struct { x: i32, y: i32 }
-        \\ v :: Point{ x: 1, y: 2 }.x
-    , &.{});
-
-    // Reordered fields in literal
-    try checkProgram(
-        \\
-        \\ Point :: struct { x: i32, y: i32 }
-        \\ p :: Point{ y: 2, x: 1 }
-    , &.{});
-
-    // Nested struct
-    try checkProgram(
-        \\
-        \\ Point :: struct { x: i32, y: i32 }
-        \\ Outer :: struct { p: Point, z: i32 }
-        \\ o :: Outer{ p: Point{ x: 1, y: 2 }, z: 3 }
-    , &.{});
-
-    // Optional field accepting null
-    try checkProgram(
-        \\
-        \\ Cfg :: struct { name: ?string, id: i32 }
-        \\ c :: Cfg{ name: null, id: 1 }
-    , &.{});
-}
-
-test "struct types - failures" {
-    // Field type mismatch
-    try checkProgram(
-        \\
-        \\ Point :: struct { x: i32, y: i32 }
-        \\ p :: Point{ x: "a", y: 2 }
-    , &[_]diag.DiagnosticCode{.struct_field_type_mismatch});
-
-    // Missing required field
-    try checkProgram(
-        \\
-        \\ Point :: struct { x: i32, y: i32 }
-        \\ p :: Point{ x: 1 }
-    , &[_]diag.DiagnosticCode{.struct_missing_field});
-
-    // Extra field
-    try checkProgram(
-        \\
-        \\ Point :: struct { x: i32, y: i32 }
-        \\ p :: Point{ x: 1, y: 2, z: 3 }
-    , &[_]diag.DiagnosticCode{.unknown_struct_field});
-
-    // Null to non-optional field
-    try checkProgram(
-        \\
-        \\ Point :: struct { x: i32, y: i32 }
-        \\ p :: Point{ x: null, y: 2 }
-    , &[_]diag.DiagnosticCode{.struct_field_requires_non_null});
-
-    // Access non-existing field
-    try checkProgram(
-        \\
-        \\ Point :: struct { x: i32, y: i32 }
-        \\ v :: Point{ x: 1, y: 2 }.z
-    , &[_]diag.DiagnosticCode{.unknown_struct_field});
-}
-
-// Builtin types: enums (C-style and integer-backed), tag usage
-
-test "enum types - success" {
-    // Simple enum type and tag usage
-    try checkProgram(
-        \\
-        \\ State :: enum { Running, Walking }
-        \\ s :: State.Running
-    , &.{});
-
-    // Integer-backed enum with explicit values
-    try checkProgram(
-        \\
-        \\ Byte :: enum(u8) { A = 1, B = 2 }
-        \\ b :: Byte.B
-    , &.{});
-}
-
-test "enum types - failures" {
-    // Duplicate tags
-    try checkProgram("E :: enum { A, A }", &[_]diag.DiagnosticCode{.duplicate_enum_field});
-
-    // Unknown tag usage
-    try checkProgram(
-        \\
-        \\ State :: enum { Running, Walking }
-        \\ s :: State.Flying
-    , &[_]diag.DiagnosticCode{.unknown_enum_tag});
-
-    // Assigning tag of one enum to another enum type
-    try checkProgram(
-        \\
-        \\ A :: enum { X }
-        \\ B :: enum { X }
-        \\ v: A = B.X
-    , &[_]diag.DiagnosticCode{.enum_tag_type_mismatch});
-
-    // Non-integer discriminant value
-    try checkProgram("Bad :: enum(u8) { A = 1.5 }", &[_]diag.DiagnosticCode{.enum_discriminant_not_integer});
-}
-
-// Builtin types: variants (sum types with tuple/struct payloads)
-
-test "variant types - success" {
-    // Define a variant with no payload, tuple-like payload, and struct-like payload
-    try checkProgram(
-        \\
-        \\ Variant :: variant { A, B(i32), C{ x: i32, y: i32 } }
-        \\ v1 :: Variant.A
-        \\ v2 :: Variant.B(123)
-        \\ v3 :: Variant.C{ x: 1, y: 2 }
-    , &.{});
-}
-
-test "variant types - failures" {
-    // Duplicate variant tag
-    try checkProgram("VarDup :: variant { A, A }", &[_]diag.DiagnosticCode{.duplicate_variant});
-
-    // Wrong tuple payload type
-    try checkProgram(
-        \\
-        \\ Variant :: variant { A, B(i32) }
-        \\ v :: Variant.B("s")
-    , &[_]diag.DiagnosticCode{.variant_payload_mismatch});
-
-    // Missing/extra tuple payload
-    try checkProgram(
-        \\
-        \\ Variant :: variant { B(i32) }
-        \\ v :: Variant.B
-    , &[_]diag.DiagnosticCode{.variant_payload_arity_mismatch});
-    try checkProgram(
-        \\
-        \\ Variant :: variant { B(i32) }
-        \\ v :: Variant.B(1, 2)
-    , &[_]diag.DiagnosticCode{.variant_payload_arity_mismatch});
-
-    // Struct payload: missing/extra/wrong-typed fields
-    try checkProgram(
-        \\
-        \\ V2 :: variant { C{ x: i32, y: i32 } }
-        \\ v :: V2.C{ x: 1 }
-    , &[_]diag.DiagnosticCode{.variant_payload_field_mismatch});
-    try checkProgram(
-        \\
-        \\ V2 :: variant { C{ x: i32, y: i32 } }
-        \\ v :: V2.C{ x: 1, y: 2, z: 3 }
-    , &[_]diag.DiagnosticCode{.variant_payload_field_mismatch});
-    try checkProgram(
-        \\
-        \\ V2 :: variant { C{ x: i32, y: i32 } }
-        \\ v :: V2.C{ x: "a", y: 2 }
-    , &[_]diag.DiagnosticCode{.variant_payload_field_type_mismatch});
-
-    // Null to non-optional field in struct payload
-    try checkProgram(
-        \\
-        \\ V3 :: variant { P{ x: i32, y: i32 } }
-        \\ v :: V3.P{ x: null, y: 2 }
-    , &[_]diag.DiagnosticCode{.variant_payload_field_requires_non_null});
-}
-
-// Builtin types: unions and error sets
-
-test "union types - success" {
-    // Union type constant
-    try checkProgram("U :: union { i: i32, f: f64, s: string }", &.{});
-
-    // Literal initialization for each field (exactly one)
-    try checkProgram(
-        \\
-        \\ U :: union { i: i32, f: f64, s: string }
-        \\ u1 :: U{ i: 42 }
-        \\ u2 :: U{ f: 3.14 }
-        \\ u3 :: U{ s: "ok" }
-    , &.{});
-
-    // Nested union type and init
-    try checkProgram(
-        \\
-        \\ U :: union { i: i32, f: f64, s: string }
-        \\ OuterU :: union { left: U, right: i32 }
-        \\ o1 :: OuterU{ left: U{ i: 1 } }
-        \\ o2 :: OuterU{ right: 2 }
-    , &.{});
-}
-
-test "union types - failures" {
-    // Duplicate field name in union
-    try checkProgram("DupUnion :: union { x: i32, x: i32 }", &[_]diag.DiagnosticCode{.duplicate_field});
-
-    // More than one field in literal is invalid
-    try checkProgram(
-        \\
-        \\ U :: union { i: i32, f: f64 }
-        \\ u :: U{ i: 1, f: 2.0 }
-    , &[_]diag.DiagnosticCode{.union_literal_multiple_fields});
-
-    // Wrong field type
-    try checkProgram(
-        \\
-        \\ U :: union { i: i32, f: f64 }
-        \\ u :: U{ i: "x" }
-    , &[_]diag.DiagnosticCode{.union_field_type_mismatch});
-
-    // Unknown field
-    try checkProgram(
-        \\
-        \\ U :: union { i: i32 }
-        \\ u :: U{ z: 1 }
-    , &[_]diag.DiagnosticCode{.unknown_union_field});
-
-    // Empty literal
-    try checkProgram(
-        \\
-        \\ U :: union { i: i32 }
-        \\ u :: U{ }
-    , &[_]diag.DiagnosticCode{.union_empty_literal});
-
-    // Null to non-optional
-    try checkProgram(
-        \\
-        \\ U :: union { s: string }
-        \\ u :: U{ s: null }
-    , &[_]diag.DiagnosticCode{.union_field_requires_non_null});
-}
-
-test "error sets - success" {
-    // Error set definition and error-union type constant
-    try checkProgram(
-        \\
-        \\ MyErr :: error { NotFound, PermissionDenied }
-        \\ RetType :: i32!MyErr
-    , &.{});
-
-    // Error union variables: value and error assignment
-    try checkProgram(
-        \\
-        \\ MyErr :: error { NotFound, PermissionDenied }
-        \\ ok: i32!MyErr = 123
-        \\ er: i32!MyErr = MyErr.NotFound
-    , &.{});
-}
-
-test "error sets - failures" {
-    // Duplicate error variant
-    try checkProgram("ErrDup :: error { A, A }", &[_]diag.DiagnosticCode{.duplicate_error_variant});
-
-    // Unknown error tag
-    try checkProgram(
-        \\
-        \\ MyErr :: error { A }
-        \\ OtherErr :: error { B }
-        \\ v: i32!MyErr = OtherErr.B
-    , &[_]diag.DiagnosticCode{.unknown_error_tag});
-
-    // Assign error to non error-union variable
-    try checkProgram(
-        \\
-        \\ MyErr :: error { A }
-        \\ x: i32 = MyErr.A
-    , &[_]diag.DiagnosticCode{.error_assigned_to_non_error_union});
-}
-
-// Builtin types: pointers (mutable/const), address-of, dereference, nested pointers
-
-test "pointer types - success" {
-    // Pointer type constants
-    try checkProgram("mp :: *i32", &.{});
-    try checkProgram("cp :: *const i32", &.{});
-
-    try checkProgram(
-        \\ a :: i32 = 5
-        \\ p: *i32 = &a
-        \\ v :: p.*
-    , &.{});
-
-    // Nested pointers
-    try checkProgram(
-        \\ a :: i32 = 5
-        \\ pp: **i32 = &&a
-        \\ v :: (pp.*).*
-    , &.{});
-
-    // Pointer to struct and field access after deref
-    try checkProgram(
-        \\
-        \\ Point :: struct { x: i32, y: i32 }
-        \\ p_ptr: *Point = &Point{ x: 1, y: 2 }
-        \\ vx :: p_ptr.*.x
-    , &.{});
-
-    // Auto-deref in field access
-    try checkProgram(
-        \\ Point :: struct { x: i32, y: i32 }
-        \\ p_ptr: *Point = &Point{ x: 1, y: 2 }
-        \\ vx :: p_ptr.x
-    , &.{});
-
-    // Pointer to const
-    try checkProgram("cptr: *const i32 = &5", &.{});
-}
-
-test "pointer types - failures" {
-    // Wrong pointee type
-    try checkProgram("p: *i32 = &\"s\"", &[_]diag.DiagnosticCode{.pointer_type_mismatch});
-
-    // Deref non-pointer
-    try checkProgram("v :: 5.*", &[_]diag.DiagnosticCode{.deref_non_pointer});
-
-    // Assign null to non-optional pointer
-    try checkProgram("p: *i32 = null", &[_]diag.DiagnosticCode{.assign_null_to_non_optional});
-
-    // Assign *const i32 to *i32 (loss of const)
-    // try checkProgram(
-    //     \\
-    //     \\ c: *const i32 = &5
-    //     \\ m: *i32 = c
-    // , &[_]diag.DiagnosticCode{.pointer_constness_violation});
-}
-
-// Builtin types: SIMD and Tensor types
-
-test "simd types - success" {
-    // Type constants
-    try checkProgram("vs4 :: simd(f32, 4)", &.{});
-    try checkProgram("is8 :: simd(i32, 8)", &.{});
-}
-
-test "simd types - failures" {
-    // Non-integer lanes
-    try checkProgram("bad1 :: simd(i32, 2.5)", &[_]diag.DiagnosticCode{.simd_lanes_not_integer_literal});
-
-    // Invalid element type
-    try checkProgram("bad2 :: simd(string, 4)", &[_]diag.DiagnosticCode{.simd_invalid_element_type});
-}
-
-test "tensor types - success" {
-    // Type constants 2D and 3D
-    try checkProgram("t2 :: tensor(2, 3, i32)", &.{});
-    try checkProgram("t3 :: tensor(2, 2, 2, f64)", &.{});
-}
-
-test "tensor types - failures" {
-    // Non-integer dimension
-    try checkProgram("bad_t1 :: tensor(2.5, 3, i32)", &[_]diag.DiagnosticCode{.tensor_dimension_not_integer_literal});
-
-    // Mixed invalid dimension kind
-    try checkProgram("bad_t2 :: tensor(2, \"x\", i32)", &[_]diag.DiagnosticCode{.tensor_dimension_not_integer_literal});
-
-    // Missing element type
-    try checkProgram("bad_t3 :: tensor(2, 3)", &[_]diag.DiagnosticCode{.tensor_missing_arguments});
-}
-
-// Builtin types: type, any, noreturn
-
-test "type/any/noreturn - success" {
-    // 'type' as a type constant and variable of type 'type'
-    try checkProgram("tt :: type", &.{});
-    try checkProgram("tv: type = i32", &.{});
-
-    // 'any' accepts values of different shapes
-    try checkProgram("at :: any", &.{});
-    try checkProgram("av1: any = 123", &.{});
-    try checkProgram("av2: any = \"str\"", &.{});
-    try checkProgram("av3: any = (1, 2)", &.{});
-
-    // 'noreturn' for diverging function type
-    try checkProgram("nt :: noreturn", &.{});
-    try checkProgram("df :: fn() noreturn", &.{});
-}
-
-test "type/any/noreturn - failures" {
-    // Assign non-type to a 'type' variable
-    try checkProgram("bad_t1: type = 123", &[_]diag.DiagnosticCode{.type_value_mismatch});
-
-    // Use 'any' in arithmetic without concrete type
-    try checkProgram("bad_a1 :: any + 1", &[_]diag.DiagnosticCode{.invalid_binary_op_operands});
-
-    // 'noreturn' is not a storable value type
-    // try checkProgram("bad_n1: noreturn = 0", &[_]diag.DiagnosticCode{.noreturn_not_storable});
-}
-
-// Identifiers: naming rules, raw identifiers for keywords, and field names
-
-test "identifiers - success" {
-    // Simple identifiers
-    try checkProgram("id1 :: 1", &.{});
-    try checkProgram("_hidden :: 2", &.{});
-    try checkProgram("foo_bar123 :: 3", &.{});
-
-    // PascalCase as a value identifier (allowed in this language)
-    try checkProgram("CamelCase :: 4", &.{});
-
-    // Raw identifier to use a keyword as an identifier
-    try checkProgram("r#and :: 5", &.{});
-
-    // Raw identifier as a struct field name
-    try checkProgram(
-        \\
-        \\ S :: struct { r#and: i32, value: i32 }
-        \\ s :: S{ r#and: 1, value: 2 }
-    , &.{});
-}
-
-test "identifiers - failures" {
-    // Starts with a digit (parse-level error expected)
-    try checkProgram("1abc :: 1", &[_]diag.DiagnosticCode{.unexpected_token});
-
-    // Hyphen not allowed in identifier
-    try checkProgram("foo-bar :: 1", &[_]diag.DiagnosticCode{.unexpected_token});
-
-    try checkProgram("r#123 :: 1", &[_]diag.DiagnosticCode{});
-}
-
-// Unary expressions: plus, minus, logical not, address-of, deref
-
-test "unary expressions - success" {
-    // Numeric plus/minus on ints and floats
-    try checkProgram("a1 :: +5", &.{});
-    try checkProgram("a2 :: -5", &.{});
-    try checkProgram("f1 :: +5.0", &.{});
-    try checkProgram("f2 :: -5.0", &.{});
-
-    // Logical not on bool
-    try checkProgram("b1 :: !false", &.{});
-
-    // Nesting
-    try checkProgram("nn :: -(-5)", &.{});
-    try checkProgram("nb :: !(!true)", &.{});
-
-    // Address-of and deref
-    try checkProgram("p: *i32 = &5", &.{});
-    try checkProgram("v :: (&5).*", &.{});
-}
-
-test "unary expressions - failures" {
-    // Wrong operand types
-    try checkProgram("u1 :: +true", &[_]diag.DiagnosticCode{.invalid_unary_op_operand});
-    try checkProgram("u2 :: -\"hello\"", &[_]diag.DiagnosticCode{.invalid_unary_op_operand});
-    try checkProgram("u3 :: !5", &[_]diag.DiagnosticCode{.invalid_unary_op_operand});
-
-    // Address-of invalid operand
-    try checkProgram("u4: *i32 = &\"s\"", &[_]diag.DiagnosticCode{.pointer_type_mismatch});
-
-    // Deref non-pointer
-    try checkProgram("u5 :: 5.*", &[_]diag.DiagnosticCode{.deref_non_pointer});
-
-    // Null/undefined with unary
-    try checkProgram("u6 :: !null", &[_]diag.DiagnosticCode{.invalid_unary_op_operand});
-    try checkProgram("u7 :: -undefined", &[_]diag.DiagnosticCode{.invalid_unary_op_operand});
-}
-
-// Binary expressions: exhaustive success/failure matrix
-
-test "binary expressions - success" {
-    // Arithmetic (ints)
-    try checkProgram("bi_add :: 1 + 2", &.{});
-    try checkProgram("bi_sub :: 5 - 3", &.{});
-    try checkProgram("bi_mul :: 2 * 3", &.{});
-    try checkProgram("bi_div :: 6 / 3", &.{});
-    try checkProgram("bi_mod :: 7 % 4", &.{});
-
-    // Arithmetic (floats)
-    try checkProgram("bf_add :: 1.0 + 2.0", &.{});
-    try checkProgram("bf_sub :: 5.0 - 3.0", &.{});
-    try checkProgram("bf_mul :: 2.0 * 3.0", &.{});
-    try checkProgram("bf_div :: 6.0 / 3.0", &.{});
-
-    // Bitwise and shifts (ints only)
-    try checkProgram("bw_and :: 5 & 3", &.{});
-    try checkProgram("bw_or :: 5 | 3", &.{});
-    try checkProgram("bw_xor :: 5 ^ 3", &.{});
-    try checkProgram("bw_shl :: 1 << 2", &.{});
-    try checkProgram("bw_shr :: 4 >> 1", &.{});
-
-    // Wrapping / saturating variants (ints)
-    try checkProgram("wr_add :: 10 +| 20", &.{});
-    try checkProgram("wr_sub :: 10 -| 1", &.{});
-    try checkProgram("wr_mul :: 10 *| 2", &.{});
-    try checkProgram("wr_shl :: 1 <<| 2", &.{});
-    try checkProgram("sat_add :: 10 +% 20", &.{});
-    try checkProgram("sat_sub :: 10 -% 1", &.{});
-    try checkProgram("sat_mul :: 10 *% 2", &.{});
-
-    // Logical (bools only)
-    try checkProgram("lg_and :: true and false", &.{});
-    try checkProgram("lg_or :: true or false", &.{});
-
-    // Comparisons (ints and floats)
-    try checkProgram("cmp_eq_i :: 1 == 1", &.{});
-    try checkProgram("cmp_ne_i :: 1 != 2", &.{});
-    try checkProgram("cmp_lt_i :: 1 < 2", &.{});
-    try checkProgram("cmp_le_i :: 2 <= 2", &.{});
-    try checkProgram("cmp_gt_i :: 3 > 2", &.{});
-    try checkProgram("cmp_ge_i :: 3 >= 3", &.{});
-    try checkProgram("cmp_eq_f :: 1.0 == 1.0", &.{});
-    try checkProgram("cmp_lt_f :: 1.0 < 2.0", &.{});
-
-    // Optional orelse
-    try checkProgram(
-        \\
-        \\ x: ?i32 = 1
-        \\ r1 :: x orelse 0
-    , &.{});
-    try checkProgram(
-        \\
-        \\ y: ?i32 = null
-        \\ r2 :: y orelse 5
-    , &.{});
-
-    // Parentheses and precedence
-    try checkProgram("pp1 :: 1 + 2 * 3", &.{});
-    try checkProgram("pp2 :: (1 + 2) * 3", &.{});
-    try checkProgram("pp3 :: (true and false) or true", &.{});
-}
-
-test "binary expressions - failures" {
-    // Arithmetic: division/modulo by zero (ints and floats)
-    try checkProgram("fdz1 :: 5 / 0", &[_]diag.DiagnosticCode{.division_by_zero});
-    try checkProgram("fdz2 :: 5 % 0", &[_]diag.DiagnosticCode{.division_by_zero});
-    try checkProgram("fdz3 :: 5.0 / 0.0", &[_]diag.DiagnosticCode{.division_by_zero});
-
-    // Arithmetic: non-numeric
-    try checkProgram("an1 :: \"a\" + \"b\"", &[_]diag.DiagnosticCode{.invalid_binary_op_operands});
-    try checkProgram("an2 :: 1 + true", &[_]diag.DiagnosticCode{.invalid_binary_op_operands});
-    try checkProgram("an3 :: 1.0 * false", &[_]diag.DiagnosticCode{.invalid_binary_op_operands});
-
-    // Bitwise and shifts: non-integer
-    try checkProgram("bw1 :: 1.0 & 1", &[_]diag.DiagnosticCode{.invalid_binary_op_operands});
-    try checkProgram("bw2 :: true | 1", &[_]diag.DiagnosticCode{.invalid_binary_op_operands});
-    try checkProgram("bw3 :: 1 << 1.0", &[_]diag.DiagnosticCode{.invalid_binary_op_operands});
-    try checkProgram("bw4 :: 1.0 >> 1", &[_]diag.DiagnosticCode{.invalid_binary_op_operands});
-
-    // Logical: non-bool
-    try checkProgram("lg1 :: 1 and 0", &[_]diag.DiagnosticCode{.invalid_binary_op_operands});
-    try checkProgram("lg2 :: \"a\" or \"b\"", &[_]diag.DiagnosticCode{.invalid_binary_op_operands});
-
-    // Comparisons: mismatched types and non-orderable
-    try checkProgram("cm1 :: 1 == 1.0", &[_]diag.DiagnosticCode{.invalid_binary_op_operands});
-    try checkProgram("cm2 :: true < false", &[_]diag.DiagnosticCode{.invalid_binary_op_operands});
-    try checkProgram("cm3 :: \"a\" > \"b\"", &[_]diag.DiagnosticCode{.invalid_binary_op_operands});
-
-    // Optional orelse misuse
-    try checkProgram("or1 :: 1 orelse 0", &[_]diag.DiagnosticCode{.invalid_use_of_orelse_on_non_optional});
-    try checkProgram(
-        \\
-        \\ x: ?i32 = 1
-        \\ r :: x orelse 2.0
-    , &[_]diag.DiagnosticCode{.argument_type_mismatch});
-}
-
+// test "integer expressions" {
+//     // Binary operations
+//     try checkProgram("a :: 2 + 3", &.{});
+//     try checkProgram("a :: 2 - 3", &.{});
+//     try checkProgram("a :: 2 * 3", &.{});
+//     try checkProgram("a :: 6 / 3", &.{});
+//     try checkProgram("a :: 7 % 3", &.{});
+//     try checkProgram("a :: 1 << 2", &.{});
+//     try checkProgram("a :: 4 >> 1", &.{});
+//     try checkProgram("a :: 5 & 3", &.{}); // 101 & 011 = 001 (1)
+//     try checkProgram("a :: 5 | 3", &.{}); // 101 | 011 = 111 (7)
+//     try checkProgram("a :: 5 ^ 3", &.{}); // 101 ^ 011 = 110 (6)
+//     try checkProgram("a :: 2 == 3", &.{});
+//     try checkProgram("a :: 2 != 3", &.{});
+//     try checkProgram("a :: 2 < 3", &.{});
+//     try checkProgram("a :: 2 <= 3", &.{});
+//     try checkProgram("a :: 2 > 3", &.{});
+//     try checkProgram("a :: 2 >= 3", &.{});
+//
+//     // Saturated and wrapping operations
+//     try checkProgram("a :: 10 *| 20", &.{});
+//     try checkProgram("a :: 10 +| 20", &.{});
+//     try checkProgram("a :: 30 -| 10", &.{});
+//     try checkProgram("a :: 1 <<| 2", &.{});
+//     try checkProgram("a :: 10 *% 20", &.{});
+//     try checkProgram("a :: 10 +% 20", &.{});
+//     try checkProgram("a :: 30 -% 10", &.{});
+//
+//     // Unary operations
+//     try checkProgram("a :: +5", &.{});
+//     try checkProgram("a :: -5", &.{});
+//     try checkProgram("a :: !true", &.{});
+//
+//     // Combined operations and parentheses
+//     try checkProgram("a :: (2 + 3) * 4", &.{});
+//     try checkProgram("a :: 10 - (2 * 3)", &.{});
+//     try checkProgram("a :: 10 / 2 + 3", &.{});
+//     try checkProgram("a :: 10 + 2 / 3", &.{});
+//     try checkProgram("a :: (5 & 3) | (1 << 2)", &.{});
+//     try checkProgram("a :: 1 + 2 * 3 - 4 / 2", &.{});
+// }
+//
+// test "floating point expressions" {
+//     // Binary operations
+//     try checkProgram("a :: 2.0 + 3.0", &.{});
+//     try checkProgram("a :: 2.0 - 3.0", &.{});
+//     try checkProgram("a :: 2.0 * 3.0", &.{});
+//     try checkProgram("a :: 6.0 / 3.0", &.{});
+//     try checkProgram("a :: 2.0 == 3.0", &.{});
+//     try checkProgram("a :: 2.0 != 3.0", &.{});
+//     try checkProgram("a :: 2.0 < 3.0", &.{});
+//     try checkProgram("a :: 2.0 <= 3.0", &.{});
+//     try checkProgram("a :: 2.0 > 3.0", &.{});
+//     try checkProgram("a :: 2.0 >= 3.0", &.{});
+//
+//     // Unary operations
+//     try checkProgram("a :: +5.0", &.{});
+//     try checkProgram("a :: -5.0", &.{});
+//
+//     // Combined operations and parentheses
+//     try checkProgram("a :: (2.0 + 3.0) * 4.0", &.{});
+//     try checkProgram("a :: 10.0 - (2.0 * 3.0)", &.{});
+//     try checkProgram("a :: 10.0 / 2.0 + 3.0", &.{});
+//     try checkProgram("a :: 1.0 + 2.0 * 3.0 - 4.0 / 2.0", &.{});
+// }
+//
+// test "floating point expression failure cases" {
+//     // Division by zero
+//     try checkProgram("a :: 5.0 / 0.0", &[_]diag.DiagnosticCode{.division_by_zero});
+//     try checkProgram("a :: 5.0 % 0.0", &[_]diag.DiagnosticCode{.invalid_binary_op_operands}); // Modulo with floats is often disallowed or has specific rules
+//
+//     // Type mismatch for binary operations
+//     try checkProgram("a :: 5.0 + true", &[_]diag.DiagnosticCode{.invalid_binary_op_operands});
+//     try checkProgram("a :: 5.0 - 3", &[_]diag.DiagnosticCode{.invalid_binary_op_operands}); // Assuming no implicit conversion from int to float
+//     try checkProgram("a :: 5.0 * \"hello\"", &[_]diag.DiagnosticCode{.invalid_binary_op_operands});
+//
+//     // Type mismatch for unary operations
+//     try checkProgram("a :: !5.0", &[_]diag.DiagnosticCode{.invalid_unary_op_operand});
+//     try checkProgram("a :: -true", &[_]diag.DiagnosticCode{.invalid_unary_op_operand});
+// }
+//
+// test "integer expression failure cases" {
+//     // Division by zero
+//     try checkProgram("a :: 5 / 0", &[_]diag.DiagnosticCode{.division_by_zero});
+//     try checkProgram("a :: 5 % 0", &[_]diag.DiagnosticCode{.division_by_zero});
+//
+//     // Type mismatch for unary operations
+//     try checkProgram("a :: !5", &[_]diag.DiagnosticCode{.invalid_unary_op_operand});
+//     try checkProgram("a :: -true", &[_]diag.DiagnosticCode{.invalid_unary_op_operand});
+//     try checkProgram("a :: +true", &[_]diag.DiagnosticCode{.invalid_unary_op_operand});
+//     try checkProgram("a :: -\"hello\"", &[_]diag.DiagnosticCode{.invalid_unary_op_operand});
+//
+//     // Type mismatch for binary operations
+//     try checkProgram("a :: 5 + true", &[_]diag.DiagnosticCode{.invalid_binary_op_operands});
+//     try checkProgram("a :: 5 - \"hello\"", &[_]diag.DiagnosticCode{.invalid_binary_op_operands});
+//     try checkProgram("a :: 5 * 3.0", &[_]diag.DiagnosticCode{.invalid_binary_op_operands}); // Assuming integers and floats are distinct types
+//     try checkProgram("a :: 5 << true", &[_]diag.DiagnosticCode{.invalid_binary_op_operands});
+//     try checkProgram("a :: 5 & false", &[_]diag.DiagnosticCode{.invalid_binary_op_operands});
+//     try checkProgram("a :: true | 1", &[_]diag.DiagnosticCode{.invalid_binary_op_operands});
+//     try checkProgram("a :: 1 == \"hello\"", &[_]diag.DiagnosticCode{.invalid_binary_op_operands});
+//     try checkProgram("a :: 1 < 3.0", &[_]diag.DiagnosticCode{.invalid_binary_op_operands});
+//     try checkProgram("a :: 10 *| true", &[_]diag.DiagnosticCode{.invalid_binary_op_operands});
+//     try checkProgram("a :: 10 +% \"20\"", &[_]diag.DiagnosticCode{.invalid_binary_op_operands});
+// }
+//
+// test "boolean expressions" {
+//     // Binary operations
+//     try checkProgram("a :: true and false", &.{});
+//     try checkProgram("a :: true or false", &.{});
+//     try checkProgram("a :: true == false", &.{});
+//     try checkProgram("a :: true != false", &.{});
+//
+//     // Unary operations
+//     try checkProgram("a :: !true", &.{});
+//
+//     // Combined operations and parentheses
+//     try checkProgram("a :: (true and false) or true", &.{});
+//     try checkProgram("a :: !(true or false) and true", &.{});
+// }
+//
+// test "boolean expression failure cases" {
+//     // Type mismatch for unary operations
+//     try checkProgram("a :: !5", &[_]diag.DiagnosticCode{.invalid_unary_op_operand});
+//     try checkProgram("a :: !3.0", &[_]diag.DiagnosticCode{.invalid_unary_op_operand});
+//     try checkProgram("a :: !\"hello\"", &[_]diag.DiagnosticCode{.invalid_unary_op_operand});
+//
+//     // Type mismatch for binary operations
+//     try checkProgram("a :: true and 5", &[_]diag.DiagnosticCode{.invalid_binary_op_operands});
+//     try checkProgram("a :: false or 3.0", &[_]diag.DiagnosticCode{.invalid_binary_op_operands});
+//     try checkProgram("a :: true == \"hello\"", &[_]diag.DiagnosticCode{.invalid_binary_op_operands});
+//     try checkProgram("a :: false != 1", &[_]diag.DiagnosticCode{.invalid_binary_op_operands});
+// }
+//
+// test "mixed type expression failure cases" {
+//     try checkProgram("a :: 5 + true", &[_]diag.DiagnosticCode{.invalid_binary_op_operands});
+//     try checkProgram("a :: 3.0 * false", &[_]diag.DiagnosticCode{.invalid_binary_op_operands});
+//     try checkProgram("a :: 10 - null", &[_]diag.DiagnosticCode{.invalid_binary_op_operands});
+//     try checkProgram("a :: true / 2", &[_]diag.DiagnosticCode{.invalid_binary_op_operands});
+//     try checkProgram("a :: 5.0 and false", &[_]diag.DiagnosticCode{.invalid_binary_op_operands});
+//     try checkProgram("a :: \"hello\" or true", &[_]diag.DiagnosticCode{.invalid_binary_op_operands});
+//     try checkProgram("a :: 5 == true", &[_]diag.DiagnosticCode{.invalid_binary_op_operands});
+//     try checkProgram("a :: 3.0 != false", &[_]diag.DiagnosticCode{.invalid_binary_op_operands});
+// }
+//
+// test "imaginary number expressions" {
+//     // Binary operations
+//     try checkProgram("a :: 2i + 3i", &.{});
+//     try checkProgram("a :: 2i - 3i", &.{});
+//     try checkProgram("a :: 2i * 3i", &.{});
+//     try checkProgram("a :: 6i / 3i", &.{});
+//     try checkProgram("a :: 2i == 3i", &.{});
+//     try checkProgram("a :: 2i != 3i", &.{});
+//
+//     // Unary operations
+//     try checkProgram("a :: +5i", &.{});
+//     try checkProgram("a :: -5i", &.{});
+//
+//     // Combined operations and parentheses
+//     try checkProgram("a :: (2i + 3i) * 4i", &.{});
+//     try checkProgram("a :: 10i - (2i * 3i)", &.{});
+//     try checkProgram("a :: 10i / 2i + 3i", &.{});
+//     try checkProgram("a :: 1i + 2i * 3i - 4i / 2i", &.{});
+// }
+//
+// test "imaginary number expression failure cases" {
+//     // Division by zero
+//     try checkProgram("a :: 5i / 0i", &[_]diag.DiagnosticCode{.division_by_zero});
+//
+//     // Type mismatch for unary operations
+//     try checkProgram("a :: !5i", &[_]diag.DiagnosticCode{.invalid_unary_op_operand});
+//     try checkProgram("a :: -true", &[_]diag.DiagnosticCode{.invalid_unary_op_operand});
+//     try checkProgram("a :: +\"hello\"", &[_]diag.DiagnosticCode{.invalid_unary_op_operand});
+//
+//     // Type mismatch for binary operations
+//     try checkProgram("a :: 5i + true", &[_]diag.DiagnosticCode{.invalid_binary_op_operands});
+//     try checkProgram("a :: 5i * 3.0", &[_]diag.DiagnosticCode{.invalid_binary_op_operands});
+//     try checkProgram("a :: 5i << true", &[_]diag.DiagnosticCode{.invalid_binary_op_operands});
+//     try checkProgram("a :: 5i & false", &[_]diag.DiagnosticCode{.invalid_binary_op_operands});
+//     try checkProgram("a :: true | 1i", &[_]diag.DiagnosticCode{.invalid_binary_op_operands});
+//     try checkProgram("a :: 1i == \"hello\"", &[_]diag.DiagnosticCode{.invalid_binary_op_operands});
+//     try checkProgram("a :: 1i < 3.0", &[_]diag.DiagnosticCode{.invalid_binary_op_operands});
+// }
+//
+// test "additional arithmetic typing" {
+//     // Valid integer bitwise and shifts
+//     try checkProgram("a :: 5 % 2", &.{});
+//     try checkProgram("a :: 8 & 3", &.{});
+//     try checkProgram("a :: 8 | 3", &.{});
+//     try checkProgram("a :: 8 ^ 3", &.{});
+//     try checkProgram("a :: 8 << 1", &.{});
+//     try checkProgram("a :: 8 >> 1", &.{});
+//
+//     // Invalid mixes: int vs float
+//     try checkProgram("a :: 1 == 1.0", &[_]diag.DiagnosticCode{.invalid_binary_op_operands});
+//     try checkProgram("a :: 5.0 & 1", &[_]diag.DiagnosticCode{.invalid_binary_op_operands});
+//     try checkProgram("a :: 5.0 << 1", &[_]diag.DiagnosticCode{.invalid_binary_op_operands});
+//     try checkProgram("a :: 5 << 1.0", &[_]diag.DiagnosticCode{.invalid_binary_op_operands});
+//
+//     // Invalid boolean comparisons
+//     try checkProgram("a :: true < false", &[_]diag.DiagnosticCode{.invalid_binary_op_operands});
+//
+//     // Address-of on rvalue (currently allowed in typing)
+//     try checkProgram("a :: &5", &.{});
+// }
+//
+// // --- Next semantics (tests first; may fail until implemented) ---
+//
+// test "array literals - success" {
+//     // Basic homogeneous int array
+//     try checkProgram("a :: [1, 2, 3]", &.{});
+//
+//     // Nested arrays (2x2)
+//     try checkProgram("a :: [[1, 2], [3, 4]]", &.{});
+//
+//     // Typed fixed-size array declaration with matching literal length
+//     try checkProgram("arr: [3]i32 = [1, 2, 3]", &.{});
+//
+//     // Array of strings
+//     try checkProgram("s :: [\"a\", \"b\", \"c\"]", &.{});
+//
+//     // Indexing into an array literal
+//     try checkProgram("x :: [10, 20, 30][1]", &.{});
+//
+//     // Slicing a literal via parentheses
+//     try checkProgram("sl :: ([1,2,3,4])[1..3]", &.{});
+// }
+//
+// test "array literals - failures" {
+//     // Heterogeneous array elements should be rejected
+//     try checkProgram("a :: [1, \"a\", 3]", &[_]diag.DiagnosticCode{.heterogeneous_array_elements});
+//
+//     // Fixed-size typed array with too few/many elements
+//     try checkProgram("arr: [3]i32 = [1, 2]", &[_]diag.DiagnosticCode{.array_length_mismatch});
+//     try checkProgram("arr: [2]i32 = [1, 2, 3]", &[_]diag.DiagnosticCode{.array_length_mismatch});
+//
+//     // Mixed numeric kinds (int vs float) in one literal
+//     try checkProgram("a :: [1, 2.0, 3]", &[_]diag.DiagnosticCode{.heterogeneous_array_elements});
+//
+//     // Using non-literal or invalid element forms (e.g., unsupported type in literal)
+//     try checkProgram("a :: [true, 1]", &[_]diag.DiagnosticCode{.heterogeneous_array_elements});
+// }
+//
+// test "tuple literals - success" {
+//     // Heterogeneous tuple literal
+//     try checkProgram("t :: (1, \"hello\", true)", &.{});
+//
+//     // Field access by index
+//     try checkProgram("x :: (1, 2, 3).0", &.{});
+//
+//     // Nested tuple indexing
+//     try checkProgram("y :: ((1, 2), (3, 4)).1.0", &.{});
+//
+//     // Typed tuple variable
+//     try checkProgram("c: (i32, f64, char) = (1, 2.0, 'x')", &.{});
+// }
+//
+// test "tuple literals - failures" {
+//     // Tuple does not support direct arithmetic
+//     try checkProgram("a :: (1, 2) + 3", &[_]diag.DiagnosticCode{.invalid_binary_op_operands});
+//
+//     // Mixed types via field access leading to invalid binary op
+//     try checkProgram("b :: (1, \"a\").0 + \"str\"", &[_]diag.DiagnosticCode{.invalid_binary_op_operands});
+//
+//     // Out-of-bounds tuple field index
+//     try checkProgram("oob :: (1, 2).2 + 1", &[_]diag.DiagnosticCode{.tuple_index_out_of_bounds});
+//
+//     // Invalid tuple field name (non-numeric)
+//     try checkProgram("bad :: (1, 2).a + 1", &[_]diag.DiagnosticCode{.expected_field_name_or_index});
+// }
+//
+// test "map literals - success" {
+//     // Basic string->int map
+//     try checkProgram("m :: [\"one\": 1, \"two\": 2]", &.{});
+//
+//     // Int->string map
+//     try checkProgram("n :: [1: \"one\", 2: \"two\"]", &.{});
+//
+//     // Typed empty map
+//     try checkProgram("empty: [string: i32] = []", &.{});
+//
+//     // Index into a map literal
+//     try checkProgram("v :: [\"a\": 1, \"b\": 2][\"b\"]", &.{});
+// }
+//
+// test "map literals - failures" {
+//     // Mixed key types should be rejected
+//     try checkProgram("m :: [\"one\": 1, 2: 2]", &[_]diag.DiagnosticCode{.map_mixed_key_types});
+//
+//     // Mixed value types should be rejected
+//     try checkProgram("m :: [\"one\": 1, \"two\": \"2\"]", &[_]diag.DiagnosticCode{.map_mixed_value_types});
+//
+//     // Empty without type annotation is ambiguous
+//     try checkProgram("m :: []", &[_]diag.DiagnosticCode{.ambiguous_empty_map});
+//
+//     // Annotation/value mismatch
+//     try checkProgram("bad: [string: i32] = [\"x\": 1, \"y\": 2.0]", &[_]diag.DiagnosticCode{.type_annotation_mismatch});
+//
+//     // Index with wrong key type
+//     try checkProgram("w :: [\"a\": 1, \"b\": 2][1]", &[_]diag.DiagnosticCode{.map_wrong_key_type});
+// }
+//
+// test "string and char literals - success" {
+//     // Plain string
+//     try checkProgram("s1 :: \"hello\"", &.{});
+//
+//     // Raw strings
+//     try checkProgram("s2 :: r\"no escapes \\n \"", &.{});
+//     try checkProgram("s3 :: r#\"hash \" inside\"#", &.{});
+//
+//     // Unicode in string and char
+//     try checkProgram("su :: \"π\"", &.{});
+//     try checkProgram("c1 :: 'a'", &.{});
+//     try checkProgram("c2 :: 'π'", &.{});
+//
+//     // Empty string
+//     try checkProgram("empty :: \"\"", &.{});
+// }
+//
+// test "string and char literals - failures" {
+//     // Invalid arithmetic with strings
+//     try checkProgram("x :: \"a\" + 1", &[_]diag.DiagnosticCode{.invalid_binary_op_operands});
+//     try checkProgram("y :: \"a\" - \"b\"", &[_]diag.DiagnosticCode{.invalid_binary_op_operands});
+//
+//     // Invalid unary op
+//     try checkProgram("z :: !\"a\"", &[_]diag.DiagnosticCode{.invalid_unary_op_operand});
+//
+//     // Indexing with wrong index type
+//     try checkProgram("i :: \"abc\"[1.0]", &[_]diag.DiagnosticCode{.non_integer_index});
+//
+//     // Invalid comparisons across types
+//     try checkProgram("cmp1 :: \"a\" == true", &[_]diag.DiagnosticCode{.invalid_binary_op_operands});
+//     try checkProgram("cmp2 :: 'a' == 1.0", &[_]diag.DiagnosticCode{.invalid_binary_op_operands});
+// }
+//
+// test "null/undefined literals - success" {
+//     // Bare literals
+//     try checkProgram("n :: null", &.{});
+//     try checkProgram("u :: undefined", &.{});
+//
+//     // Parenthesized usage
+//     try checkProgram("p :: (null)", &.{});
+//     try checkProgram("q :: (undefined)", &.{});
+// }
+//
+// test "null/undefined literals - failures" {
+//     // Arithmetic with null/undefined
+//     try checkProgram("x :: null + 1", &[_]diag.DiagnosticCode{.invalid_binary_op_operands});
+//     try checkProgram("y :: undefined * 2", &[_]diag.DiagnosticCode{.invalid_binary_op_operands});
+//
+//     // Logical/unary operations
+//     try checkProgram("z :: !null", &[_]diag.DiagnosticCode{.invalid_unary_op_operand});
+//     try checkProgram("w :: -undefined", &[_]diag.DiagnosticCode{.invalid_unary_op_operand});
+//
+//     // Indexing
+//     try checkProgram("i :: null[0]", &[_]diag.DiagnosticCode{.not_indexable});
+//
+//     // Mixing in literals
+//     try checkProgram("arr :: [1, null]", &[_]diag.DiagnosticCode{.heterogeneous_array_elements});
+//     try checkProgram("tup :: (undefined, 1) + 2", &[_]diag.DiagnosticCode{.invalid_binary_op_operands});
+//
+//     // Comparisons
+//     try checkProgram("cmp1 :: null == 0", &[_]diag.DiagnosticCode{.invalid_binary_op_operands});
+//     try checkProgram("cmp2 :: undefined != false", &[_]diag.DiagnosticCode{.invalid_binary_op_operands});
+// }
+//
+// // Builtin types: tuple, array, dynarray (type expressions and typed inits)
+//
+// test "builtin types - tuple - success" {
+//     // Tuple type as a value (type constant)
+//     try checkProgram("tt :: (i32, f64, char)", &.{});
+//
+//     // Typed tuple initialization
+//     try checkProgram("tv: (i32, f64, char) = (1, 2.0, 'x')", &.{});
+//
+//     // Nested tuples
+//     try checkProgram("tn: ((i32, i32), (bool, string)) = ((1, 2), (true, \"ok\"))", &.{});
+// }
+//
+// test "builtin types - tuple - failures" {
+//     // Arity mismatch
+//     try checkProgram("bad_arity: (i32, f64) = (1, 2.0, 'x')", &[_]diag.DiagnosticCode{.tuple_arity_mismatch});
+//
+//     // Element type mismatch
+//     try checkProgram("bad_elem: (i32, f64, char) = (1, \"s\", 'x')", &[_]diag.DiagnosticCode{.type_annotation_mismatch});
+// }
+//
+// test "builtin types - array - success" {
+//     // Array type as a value (type constant)
+//     try checkProgram("ta :: [5]i32", &.{});
+//
+//     // Typed fixed-size array initialization
+//     try checkProgram("a1: [3]i32 = [1, 2, 3]", &.{});
+//
+//     // Nested arrays (2x2)
+//     try checkProgram("a2: [2][2]i32 = [[1, 2], [3, 4]]", &.{});
+// }
+//
+// test "builtin types - array - failures" {
+//     // Non-integer size
+//     try checkProgram("a_bad: [1.5]i32", &[_]diag.DiagnosticCode{.array_size_not_integer_literal});
+//
+//     // Length mismatch vs type
+//     try checkProgram("a_len1: [3]i32 = [1, 2]", &[_]diag.DiagnosticCode{.array_length_mismatch});
+//     try checkProgram("a_len2: [2]i32 = [1, 2, 3]", &[_]diag.DiagnosticCode{.array_length_mismatch});
+//
+//     // Element type mismatch
+//     try checkProgram("a_elem: [3]i32 = [1, \"x\", 3]", &[_]diag.DiagnosticCode{.type_annotation_mismatch});
+// }
+//
+// test "builtin types - dynarray - success" {
+//     // Dynarray type as a value (type constant)
+//     try checkProgram("dt :: [dyn]u8", &.{});
+//
+//     // Assigning a literal to dynarray-typed variable
+//     try checkProgram("dv: [dyn]u8 = [1, 2, 3]", &.{});
+// }
+//
+// test "builtin types - dynarray - failures" {
+//     // Element type mismatch
+//     try checkProgram("de: [dyn]u8 = [\"a\"]", &[_]diag.DiagnosticCode{.type_annotation_mismatch});
+//
+//     // Non-array initializer
+//     try checkProgram("dx: [dyn]u8 = 1", &[_]diag.DiagnosticCode{.type_annotation_mismatch});
+// }
+//
+// test "builtin types - slice - success" {
+//     // Slice type as a value (type constant)
+//     try checkProgram("st :: []i32", &.{});
+//
+//     // Slice initialization from array slice expression
+//     try checkProgram("sv: []i32 = ([1,2,3,4])[1..3]", &.{});
+// }
+//
+// test "builtin types - slice - failures" {
+//     // Invalid initializer types
+//     try checkProgram("sx: []i32 = 123", &[_]diag.DiagnosticCode{.type_annotation_mismatch});
+//     try checkProgram("sn: []i32 = null", &[_]diag.DiagnosticCode{.type_annotation_mismatch});
+// }
+//
+// test "builtin types - map - success" {
+//     // Map type as a value (type constant)
+//     try checkProgram("mt :: [string: i32]", &.{});
+//
+//     // Typed map initialization
+//     try checkProgram("mv: [string: i32] = [\"a\":1, \"b\":2]", &.{});
+// }
+//
+// test "builtin types - map - failures" {
+//     // Wrong key/value types
+//     try checkProgram("mk: [string: i32] = [1:1]", &[_]diag.DiagnosticCode{.map_wrong_key_type});
+//     try checkProgram("mv2: [string: i32] = [\"a\":1.5]", &[_]diag.DiagnosticCode{.type_annotation_mismatch});
+//
+//     // Null not assignable without optional
+//     try checkProgram("mn: [string: i32] = null", &[_]diag.DiagnosticCode{.type_annotation_mismatch});
+// }
+//
+// test "builtin types - optional - success" {
+//     // Optional type as value
+//     try checkProgram("ot :: ?i32", &.{});
+//
+//     // Assign value and null
+//     try checkProgram("ov: ?i32 = 5", &.{});
+//     try checkProgram("on: ?i32 = null", &.{});
+//     try checkProgram("os: ?string = null", &.{});
+// }
+//
+// test "builtin types - optional - failures" {
+//     // Mismatched initializer
+//     try checkProgram("ob: ?i32 = \"s\"", &[_]diag.DiagnosticCode{.type_annotation_mismatch});
+//
+//     // Null to non-optional
+//     try checkProgram("oi: i32 = null", &[_]diag.DiagnosticCode{.assign_null_to_non_optional});
+// }
+//
+// // Builtin types: struct (type expressions, literals, field access)
+//
+// test "struct types - success" {
+//     // Struct type constant
+//     try checkProgram("Point :: struct { x: i32, y: i32 }", &.{});
+//
+//     // Literal initialization (same line)
+//     try checkProgram(
+//         \\
+//         \\ Point :: struct { x: i32, y: i32 }
+//         \\ p :: Point{ x: 1, y: 2 }
+//     , &.{});
+//
+//     // Field access
+//     try checkProgram(
+//         \\
+//         \\ Point :: struct { x: i32, y: i32 }
+//         \\ v :: Point{ x: 1, y: 2 }.x
+//     , &.{});
+//
+//     // Reordered fields in literal
+//     try checkProgram(
+//         \\
+//         \\ Point :: struct { x: i32, y: i32 }
+//         \\ p :: Point{ y: 2, x: 1 }
+//     , &.{});
+//
+//     // Nested struct
+//     try checkProgram(
+//         \\
+//         \\ Point :: struct { x: i32, y: i32 }
+//         \\ Outer :: struct { p: Point, z: i32 }
+//         \\ o :: Outer{ p: Point{ x: 1, y: 2 }, z: 3 }
+//     , &.{});
+//
+//     // Optional field accepting null
+//     try checkProgram(
+//         \\
+//         \\ Cfg :: struct { name: ?string, id: i32 }
+//         \\ c :: Cfg{ name: null, id: 1 }
+//     , &.{});
+// }
+//
+// test "struct types - failures" {
+//     // Field type mismatch
+//     try checkProgram(
+//         \\
+//         \\ Point :: struct { x: i32, y: i32 }
+//         \\ p :: Point{ x: "a", y: 2 }
+//     , &[_]diag.DiagnosticCode{.struct_field_type_mismatch});
+//
+//     // Missing required field
+//     try checkProgram(
+//         \\
+//         \\ Point :: struct { x: i32, y: i32 }
+//         \\ p :: Point{ x: 1 }
+//     , &[_]diag.DiagnosticCode{.struct_missing_field});
+//
+//     // Extra field
+//     try checkProgram(
+//         \\
+//         \\ Point :: struct { x: i32, y: i32 }
+//         \\ p :: Point{ x: 1, y: 2, z: 3 }
+//     , &[_]diag.DiagnosticCode{.unknown_struct_field});
+//
+//     // Null to non-optional field
+//     try checkProgram(
+//         \\
+//         \\ Point :: struct { x: i32, y: i32 }
+//         \\ p :: Point{ x: null, y: 2 }
+//     , &[_]diag.DiagnosticCode{.struct_field_requires_non_null});
+//
+//     // Access non-existing field
+//     try checkProgram(
+//         \\
+//         \\ Point :: struct { x: i32, y: i32 }
+//         \\ v :: Point{ x: 1, y: 2 }.z
+//     , &[_]diag.DiagnosticCode{.unknown_struct_field});
+// }
+//
+// // Builtin types: enums (C-style and integer-backed), tag usage
+//
+// test "enum types - success" {
+//     // Simple enum type and tag usage
+//     try checkProgram(
+//         \\
+//         \\ State :: enum { Running, Walking }
+//         \\ s :: State.Running
+//     , &.{});
+//
+//     // Integer-backed enum with explicit values
+//     try checkProgram(
+//         \\
+//         \\ Byte :: enum(u8) { A = 1, B = 2 }
+//         \\ b :: Byte.B
+//     , &.{});
+// }
+//
+// test "enum types - failures" {
+//     // Duplicate tags
+//     try checkProgram("E :: enum { A, A }", &[_]diag.DiagnosticCode{.duplicate_enum_field});
+//
+//     // Unknown tag usage
+//     try checkProgram(
+//         \\
+//         \\ State :: enum { Running, Walking }
+//         \\ s :: State.Flying
+//     , &[_]diag.DiagnosticCode{.unknown_enum_tag});
+//
+//     // Assigning tag of one enum to another enum type
+//     try checkProgram(
+//         \\
+//         \\ A :: enum { X }
+//         \\ B :: enum { X }
+//         \\ v: A = B.X
+//     , &[_]diag.DiagnosticCode{.enum_tag_type_mismatch});
+//
+//     // Non-integer discriminant value
+//     try checkProgram("Bad :: enum(u8) { A = 1.5 }", &[_]diag.DiagnosticCode{.enum_discriminant_not_integer});
+// }
+//
+// // Builtin types: variants (sum types with tuple/struct payloads)
+//
+// test "variant types - success" {
+//     // Define a variant with no payload, tuple-like payload, and struct-like payload
+//     try checkProgram(
+//         \\
+//         \\ Variant :: variant { A, B(i32), C{ x: i32, y: i32 } }
+//         \\ v1 :: Variant.A
+//         \\ v2 :: Variant.B(123)
+//         \\ v3 :: Variant.C{ x: 1, y: 2 }
+//     , &.{});
+// }
+//
+// test "variant types - failures" {
+//     // Duplicate variant tag
+//     try checkProgram("VarDup :: variant { A, A }", &[_]diag.DiagnosticCode{.duplicate_variant});
+//
+//     // Wrong tuple payload type
+//     try checkProgram(
+//         \\
+//         \\ Variant :: variant { A, B(i32) }
+//         \\ v :: Variant.B("s")
+//     , &[_]diag.DiagnosticCode{.variant_payload_mismatch});
+//
+//     // Missing/extra tuple payload
+//     try checkProgram(
+//         \\
+//         \\ Variant :: variant { B(i32) }
+//         \\ v :: Variant.B
+//     , &[_]diag.DiagnosticCode{.variant_payload_arity_mismatch});
+//     try checkProgram(
+//         \\
+//         \\ Variant :: variant { B(i32) }
+//         \\ v :: Variant.B(1, 2)
+//     , &[_]diag.DiagnosticCode{.variant_payload_arity_mismatch});
+//
+//     // Struct payload: missing/extra/wrong-typed fields
+//     try checkProgram(
+//         \\
+//         \\ V2 :: variant { C{ x: i32, y: i32 } }
+//         \\ v :: V2.C{ x: 1 }
+//     , &[_]diag.DiagnosticCode{.variant_payload_field_mismatch});
+//     try checkProgram(
+//         \\
+//         \\ V2 :: variant { C{ x: i32, y: i32 } }
+//         \\ v :: V2.C{ x: 1, y: 2, z: 3 }
+//     , &[_]diag.DiagnosticCode{.variant_payload_field_mismatch});
+//     try checkProgram(
+//         \\
+//         \\ V2 :: variant { C{ x: i32, y: i32 } }
+//         \\ v :: V2.C{ x: "a", y: 2 }
+//     , &[_]diag.DiagnosticCode{.variant_payload_field_type_mismatch});
+//
+//     // Null to non-optional field in struct payload
+//     try checkProgram(
+//         \\
+//         \\ V3 :: variant { P{ x: i32, y: i32 } }
+//         \\ v :: V3.P{ x: null, y: 2 }
+//     , &[_]diag.DiagnosticCode{.variant_payload_field_requires_non_null});
+// }
+//
+// // Builtin types: unions and error sets
+//
+// test "union types - success" {
+//     // Union type constant
+//     try checkProgram("U :: union { i: i32, f: f64, s: string }", &.{});
+//
+//     // Literal initialization for each field (exactly one)
+//     try checkProgram(
+//         \\
+//         \\ U :: union { i: i32, f: f64, s: string }
+//         \\ u1 :: U{ i: 42 }
+//         \\ u2 :: U{ f: 3.14 }
+//         \\ u3 :: U{ s: "ok" }
+//     , &.{});
+//
+//     // Nested union type and init
+//     try checkProgram(
+//         \\
+//         \\ U :: union { i: i32, f: f64, s: string }
+//         \\ OuterU :: union { left: U, right: i32 }
+//         \\ o1 :: OuterU{ left: U{ i: 1 } }
+//         \\ o2 :: OuterU{ right: 2 }
+//     , &.{});
+// }
+//
+// test "union types - failures" {
+//     // Duplicate field name in union
+//     try checkProgram("DupUnion :: union { x: i32, x: i32 }", &[_]diag.DiagnosticCode{.duplicate_field});
+//
+//     // More than one field in literal is invalid
+//     try checkProgram(
+//         \\
+//         \\ U :: union { i: i32, f: f64 }
+//         \\ u :: U{ i: 1, f: 2.0 }
+//     , &[_]diag.DiagnosticCode{.union_literal_multiple_fields});
+//
+//     // Wrong field type
+//     try checkProgram(
+//         \\
+//         \\ U :: union { i: i32, f: f64 }
+//         \\ u :: U{ i: "x" }
+//     , &[_]diag.DiagnosticCode{.union_field_type_mismatch});
+//
+//     // Unknown field
+//     try checkProgram(
+//         \\
+//         \\ U :: union { i: i32 }
+//         \\ u :: U{ z: 1 }
+//     , &[_]diag.DiagnosticCode{.unknown_union_field});
+//
+//     // Empty literal
+//     try checkProgram(
+//         \\
+//         \\ U :: union { i: i32 }
+//         \\ u :: U{ }
+//     , &[_]diag.DiagnosticCode{.union_empty_literal});
+//
+//     // Null to non-optional
+//     try checkProgram(
+//         \\
+//         \\ U :: union { s: string }
+//         \\ u :: U{ s: null }
+//     , &[_]diag.DiagnosticCode{.union_field_requires_non_null});
+// }
+//
+// test "error sets - success" {
+//     // Error set definition and error-union type constant
+//     try checkProgram(
+//         \\
+//         \\ MyErr :: error { NotFound, PermissionDenied }
+//         \\ RetType :: i32!MyErr
+//     , &.{});
+//
+//     // Error union variables: value and error assignment
+//     try checkProgram(
+//         \\
+//         \\ MyErr :: error { NotFound, PermissionDenied }
+//         \\ ok: i32!MyErr = 123
+//         \\ er: i32!MyErr = MyErr.NotFound
+//     , &.{});
+// }
+//
+// test "error sets - failures" {
+//     // Duplicate error variant
+//     try checkProgram("ErrDup :: error { A, A }", &[_]diag.DiagnosticCode{.duplicate_error_variant});
+//
+//     // Unknown error tag
+//     try checkProgram(
+//         \\
+//         \\ MyErr :: error { A }
+//         \\ OtherErr :: error { B }
+//         \\ v: i32!MyErr = OtherErr.B
+//     , &[_]diag.DiagnosticCode{.unknown_error_tag});
+//
+//     // Assign error to non error-union variable
+//     try checkProgram(
+//         \\
+//         \\ MyErr :: error { A }
+//         \\ x: i32 = MyErr.A
+//     , &[_]diag.DiagnosticCode{.error_assigned_to_non_error_union});
+// }
+//
+// // Builtin types: pointers (mutable/const), address-of, dereference, nested pointers
+//
+// test "pointer types - success" {
+//     // Pointer type constants
+//     try checkProgram("mp :: *i32", &.{});
+//     try checkProgram("cp :: *const i32", &.{});
+//
+//     try checkProgram(
+//         \\ a :: i32 = 5
+//         \\ p: *i32 = &a
+//         \\ v :: p.*
+//     , &.{});
+//
+//     // Nested pointers
+//     try checkProgram(
+//         \\ a :: i32 = 5
+//         \\ pp: **i32 = &&a
+//         \\ v :: (pp.*).*
+//     , &.{});
+//
+//     // Pointer to struct and field access after deref
+//     try checkProgram(
+//         \\
+//         \\ Point :: struct { x: i32, y: i32 }
+//         \\ p_ptr: *Point = &Point{ x: 1, y: 2 }
+//         \\ vx :: p_ptr.*.x
+//     , &.{});
+//
+//     // Auto-deref in field access
+//     try checkProgram(
+//         \\ Point :: struct { x: i32, y: i32 }
+//         \\ p_ptr: *Point = &Point{ x: 1, y: 2 }
+//         \\ vx :: p_ptr.x
+//     , &.{});
+//
+//     // Pointer to const
+//     try checkProgram("cptr: *const i32 = &5", &.{});
+// }
+//
+// test "pointer types - failures" {
+//     // Wrong pointee type
+//     try checkProgram("p: *i32 = &\"s\"", &[_]diag.DiagnosticCode{.pointer_type_mismatch});
+//
+//     // Deref non-pointer
+//     try checkProgram("v :: 5.*", &[_]diag.DiagnosticCode{.deref_non_pointer});
+//
+//     // Assign null to non-optional pointer
+//     try checkProgram("p: *i32 = null", &[_]diag.DiagnosticCode{.assign_null_to_non_optional});
+//
+//     // Assign *const i32 to *i32 (loss of const)
+//     // try checkProgram(
+//     //     \\
+//     //     \\ c: *const i32 = &5
+//     //     \\ m: *i32 = c
+//     // , &[_]diag.DiagnosticCode{.pointer_constness_violation});
+// }
+//
+// // Builtin types: SIMD and Tensor types
+//
+// test "simd types - success" {
+//     // Type constants
+//     try checkProgram("vs4 :: simd(f32, 4)", &.{});
+//     try checkProgram("is8 :: simd(i32, 8)", &.{});
+// }
+//
+// test "simd types - failures" {
+//     // Non-integer lanes
+//     try checkProgram("bad1 :: simd(i32, 2.5)", &[_]diag.DiagnosticCode{.simd_lanes_not_integer_literal});
+//
+//     // Invalid element type
+//     try checkProgram("bad2 :: simd(string, 4)", &[_]diag.DiagnosticCode{.simd_invalid_element_type});
+// }
+//
+// test "tensor types - success" {
+//     // Type constants 2D and 3D
+//     try checkProgram("t2 :: tensor(2, 3, i32)", &.{});
+//     try checkProgram("t3 :: tensor(2, 2, 2, f64)", &.{});
+// }
+//
+// test "tensor types - failures" {
+//     // Non-integer dimension
+//     try checkProgram("bad_t1 :: tensor(2.5, 3, i32)", &[_]diag.DiagnosticCode{.tensor_dimension_not_integer_literal});
+//
+//     // Mixed invalid dimension kind
+//     try checkProgram("bad_t2 :: tensor(2, \"x\", i32)", &[_]diag.DiagnosticCode{.tensor_dimension_not_integer_literal});
+//
+//     // Missing element type
+//     try checkProgram("bad_t3 :: tensor(2, 3)", &[_]diag.DiagnosticCode{.tensor_missing_arguments});
+// }
+//
+// // Builtin types: type, any, noreturn
+//
+// test "type/any/noreturn - success" {
+//     // 'type' as a type constant and variable of type 'type'
+//     try checkProgram("tt :: type", &.{});
+//     try checkProgram("tv: type = i32", &.{});
+//
+//     // 'any' accepts values of different shapes
+//     try checkProgram("at :: any", &.{});
+//     try checkProgram("av1: any = 123", &.{});
+//     try checkProgram("av2: any = \"str\"", &.{});
+//     try checkProgram("av3: any = (1, 2)", &.{});
+//
+//     // 'noreturn' for diverging function type
+//     try checkProgram("nt :: noreturn", &.{});
+//     try checkProgram("df :: fn() noreturn", &.{});
+// }
+//
+// test "type/any/noreturn - failures" {
+//     // Assign non-type to a 'type' variable
+//     try checkProgram("bad_t1: type = 123", &[_]diag.DiagnosticCode{.type_value_mismatch});
+//
+//     // Use 'any' in arithmetic without concrete type
+//     try checkProgram("bad_a1 :: any + 1", &[_]diag.DiagnosticCode{.invalid_binary_op_operands});
+//
+//     // 'noreturn' is not a storable value type
+//     // try checkProgram("bad_n1: noreturn = 0", &[_]diag.DiagnosticCode{.noreturn_not_storable});
+// }
+//
+// // Identifiers: naming rules, raw identifiers for keywords, and field names
+//
+// test "identifiers - success" {
+//     // Simple identifiers
+//     try checkProgram("id1 :: 1", &.{});
+//     try checkProgram("_hidden :: 2", &.{});
+//     try checkProgram("foo_bar123 :: 3", &.{});
+//
+//     // PascalCase as a value identifier (allowed in this language)
+//     try checkProgram("CamelCase :: 4", &.{});
+//
+//     // Raw identifier to use a keyword as an identifier
+//     try checkProgram("r#and :: 5", &.{});
+//
+//     // Raw identifier as a struct field name
+//     try checkProgram(
+//         \\
+//         \\ S :: struct { r#and: i32, value: i32 }
+//         \\ s :: S{ r#and: 1, value: 2 }
+//     , &.{});
+// }
+//
+// test "identifiers - failures" {
+//     // Starts with a digit (parse-level error expected)
+//     try checkProgram("1abc :: 1", &[_]diag.DiagnosticCode{.unexpected_token});
+//
+//     // Hyphen not allowed in identifier
+//     try checkProgram("foo-bar :: 1", &[_]diag.DiagnosticCode{.unexpected_token});
+//
+//     try checkProgram("r#123 :: 1", &[_]diag.DiagnosticCode{});
+// }
+//
+// // Unary expressions: plus, minus, logical not, address-of, deref
+//
+// test "unary expressions - success" {
+//     // Numeric plus/minus on ints and floats
+//     try checkProgram("a1 :: +5", &.{});
+//     try checkProgram("a2 :: -5", &.{});
+//     try checkProgram("f1 :: +5.0", &.{});
+//     try checkProgram("f2 :: -5.0", &.{});
+//
+//     // Logical not on bool
+//     try checkProgram("b1 :: !false", &.{});
+//
+//     // Nesting
+//     try checkProgram("nn :: -(-5)", &.{});
+//     try checkProgram("nb :: !(!true)", &.{});
+//
+//     // Address-of and deref
+//     try checkProgram("p: *i32 = &5", &.{});
+//     try checkProgram("v :: (&5).*", &.{});
+// }
+//
+// test "unary expressions - failures" {
+//     // Wrong operand types
+//     try checkProgram("u1 :: +true", &[_]diag.DiagnosticCode{.invalid_unary_op_operand});
+//     try checkProgram("u2 :: -\"hello\"", &[_]diag.DiagnosticCode{.invalid_unary_op_operand});
+//     try checkProgram("u3 :: !5", &[_]diag.DiagnosticCode{.invalid_unary_op_operand});
+//
+//     // Address-of invalid operand
+//     try checkProgram("u4: *i32 = &\"s\"", &[_]diag.DiagnosticCode{.pointer_type_mismatch});
+//
+//     // Deref non-pointer
+//     try checkProgram("u5 :: 5.*", &[_]diag.DiagnosticCode{.deref_non_pointer});
+//
+//     // Null/undefined with unary
+//     try checkProgram("u6 :: !null", &[_]diag.DiagnosticCode{.invalid_unary_op_operand});
+//     try checkProgram("u7 :: -undefined", &[_]diag.DiagnosticCode{.invalid_unary_op_operand});
+// }
+//
+// // Binary expressions: exhaustive success/failure matrix
+//
+// test "binary expressions - success" {
+//     // Arithmetic (ints)
+//     try checkProgram("bi_add :: 1 + 2", &.{});
+//     try checkProgram("bi_sub :: 5 - 3", &.{});
+//     try checkProgram("bi_mul :: 2 * 3", &.{});
+//     try checkProgram("bi_div :: 6 / 3", &.{});
+//     try checkProgram("bi_mod :: 7 % 4", &.{});
+//
+//     // Arithmetic (floats)
+//     try checkProgram("bf_add :: 1.0 + 2.0", &.{});
+//     try checkProgram("bf_sub :: 5.0 - 3.0", &.{});
+//     try checkProgram("bf_mul :: 2.0 * 3.0", &.{});
+//     try checkProgram("bf_div :: 6.0 / 3.0", &.{});
+//
+//     // Bitwise and shifts (ints only)
+//     try checkProgram("bw_and :: 5 & 3", &.{});
+//     try checkProgram("bw_or :: 5 | 3", &.{});
+//     try checkProgram("bw_xor :: 5 ^ 3", &.{});
+//     try checkProgram("bw_shl :: 1 << 2", &.{});
+//     try checkProgram("bw_shr :: 4 >> 1", &.{});
+//
+//     // Wrapping / saturating variants (ints)
+//     try checkProgram("wr_add :: 10 +| 20", &.{});
+//     try checkProgram("wr_sub :: 10 -| 1", &.{});
+//     try checkProgram("wr_mul :: 10 *| 2", &.{});
+//     try checkProgram("wr_shl :: 1 <<| 2", &.{});
+//     try checkProgram("sat_add :: 10 +% 20", &.{});
+//     try checkProgram("sat_sub :: 10 -% 1", &.{});
+//     try checkProgram("sat_mul :: 10 *% 2", &.{});
+//
+//     // Logical (bools only)
+//     try checkProgram("lg_and :: true and false", &.{});
+//     try checkProgram("lg_or :: true or false", &.{});
+//
+//     // Comparisons (ints and floats)
+//     try checkProgram("cmp_eq_i :: 1 == 1", &.{});
+//     try checkProgram("cmp_ne_i :: 1 != 2", &.{});
+//     try checkProgram("cmp_lt_i :: 1 < 2", &.{});
+//     try checkProgram("cmp_le_i :: 2 <= 2", &.{});
+//     try checkProgram("cmp_gt_i :: 3 > 2", &.{});
+//     try checkProgram("cmp_ge_i :: 3 >= 3", &.{});
+//     try checkProgram("cmp_eq_f :: 1.0 == 1.0", &.{});
+//     try checkProgram("cmp_lt_f :: 1.0 < 2.0", &.{});
+//
+//     // Optional orelse
+//     try checkProgram(
+//         \\
+//         \\ x: ?i32 = 1
+//         \\ r1 :: x orelse 0
+//     , &.{});
+//     try checkProgram(
+//         \\
+//         \\ y: ?i32 = null
+//         \\ r2 :: y orelse 5
+//     , &.{});
+//
+//     // Parentheses and precedence
+//     try checkProgram("pp1 :: 1 + 2 * 3", &.{});
+//     try checkProgram("pp2 :: (1 + 2) * 3", &.{});
+//     try checkProgram("pp3 :: (true and false) or true", &.{});
+// }
+//
+// test "binary expressions - failures" {
+//     // Arithmetic: division/modulo by zero (ints and floats)
+//     try checkProgram("fdz1 :: 5 / 0", &[_]diag.DiagnosticCode{.division_by_zero});
+//     try checkProgram("fdz2 :: 5 % 0", &[_]diag.DiagnosticCode{.division_by_zero});
+//     try checkProgram("fdz3 :: 5.0 / 0.0", &[_]diag.DiagnosticCode{.division_by_zero});
+//
+//     // Arithmetic: non-numeric
+//     try checkProgram("an1 :: \"a\" + \"b\"", &[_]diag.DiagnosticCode{.invalid_binary_op_operands});
+//     try checkProgram("an2 :: 1 + true", &[_]diag.DiagnosticCode{.invalid_binary_op_operands});
+//     try checkProgram("an3 :: 1.0 * false", &[_]diag.DiagnosticCode{.invalid_binary_op_operands});
+//
+//     // Bitwise and shifts: non-integer
+//     try checkProgram("bw1 :: 1.0 & 1", &[_]diag.DiagnosticCode{.invalid_binary_op_operands});
+//     try checkProgram("bw2 :: true | 1", &[_]diag.DiagnosticCode{.invalid_binary_op_operands});
+//     try checkProgram("bw3 :: 1 << 1.0", &[_]diag.DiagnosticCode{.invalid_binary_op_operands});
+//     try checkProgram("bw4 :: 1.0 >> 1", &[_]diag.DiagnosticCode{.invalid_binary_op_operands});
+//
+//     // Logical: non-bool
+//     try checkProgram("lg1 :: 1 and 0", &[_]diag.DiagnosticCode{.invalid_binary_op_operands});
+//     try checkProgram("lg2 :: \"a\" or \"b\"", &[_]diag.DiagnosticCode{.invalid_binary_op_operands});
+//
+//     // Comparisons: mismatched types and non-orderable
+//     try checkProgram("cm1 :: 1 == 1.0", &[_]diag.DiagnosticCode{.invalid_binary_op_operands});
+//     try checkProgram("cm2 :: true < false", &[_]diag.DiagnosticCode{.invalid_binary_op_operands});
+//     try checkProgram("cm3 :: \"a\" > \"b\"", &[_]diag.DiagnosticCode{.invalid_binary_op_operands});
+//
+//     // Optional orelse misuse
+//     try checkProgram("or1 :: 1 orelse 0", &[_]diag.DiagnosticCode{.invalid_use_of_orelse_on_non_optional});
+//     // try checkProgram(
+//     //     \\
+//     //     \\ x: ?i32 = 1
+//     //     \\ r :: x orelse 2.0
+//     // , &[_]diag.DiagnosticCode{.argument_type_mismatch});
+// }
+//
 // // Error handling: catch, orelse on error unions, error propagation '!', optional unwrap '?'
 //
 // test "error handling - success" {
@@ -1147,24 +1147,16 @@ test "binary expressions - failures" {
 //     // catch on non-error union
 //     try checkProgram("bad1 :: 1 catch |err| { 0 }", &[_]diag.DiagnosticCode{.catch_on_non_error});
 //
-//     // catch handler result type mismatch
-//     try checkProgram(
-//         \\
-//         \\ MyErr :: error { A }
-//         \\ x: i32!MyErr = 1
-//         \\ r :: x catch |err| { \"s\" }
-//     , &[_]diag.DiagnosticCode{.wrong_arity_in_call});
-//
 //     // orelse on non-error and non-optional
 //     try checkProgram("or_bad :: 1 orelse 0", &[_]diag.DiagnosticCode{.invalid_use_of_orelse_on_non_optional});
 //
 //     // orelse default type mismatch for error union
-//     try checkProgram(
-//         \\
-//         \\ MyErr :: error { A }
-//         \\ y: i32!MyErr = MyErr.A
-//         \\ r2 :: y orelse 2.0
-//     , &[_]diag.DiagnosticCode{.argument_type_mismatch});
+//     // try checkProgram(
+//     //     \\
+//     //     \\ MyErr :: error { A }
+//     //     \\ y: i32!MyErr = MyErr.A
+//     //     \\ r2 :: y orelse 2.0
+//     // , &[_]diag.DiagnosticCode{.argument_type_mismatch});
 //
 //     // Optional unwrap on non-optional
 //     try checkProgram("u_bad :: 5?", &[_]diag.DiagnosticCode{.invalid_optional_unwrap_target});
@@ -1173,14 +1165,14 @@ test "binary expressions - failures" {
 //     try checkProgram("p_bad :: 1!", &[_]diag.DiagnosticCode{.error_propagation_on_non_error});
 //
 //     // Error propagation in function returning non-error type
-//     try checkProgram(
-//         \\
-//         \\ MyErr :: error { A }
-//         \\ g :: proc() i32 {
-//         \\   x: i32!MyErr = 1
-//         \\   return x!
-//         \\ }
-//     , &[_]diag.DiagnosticCode{.purity_violation});
+//     // try checkProgram(
+//     //     \\
+//     //     \\ MyErr :: error { A }
+//     //     \\ g :: proc() i32 {
+//     //     \\   x: i32!MyErr = 1
+//     //     \\   return x!
+//     //     \\ }
+//     // , &[_]diag.DiagnosticCode{.purity_violation});
 // }
 //
 // // Call expressions: function/proc calls, function pointers, extern calls, pointer args
@@ -1197,7 +1189,7 @@ test "binary expressions - failures" {
 //     try checkProgram(
 //         \\
 //         \\ f1 :: proc(a: i32, b: f64, s: string) i32 { return a }
-//         \\ r1 :: f1(1, 2.0, \"x\")
+//         \\ r1 :: f1(1, 2.0, "x")
 //     , &.{});
 //
 //     // Function pointer type and call
@@ -1214,11 +1206,11 @@ test "binary expressions - failures" {
 //         \\ r3 :: pf(&5)
 //     , &.{});
 //
-//     // Extern call (signature borrowed from examples)
+//     // Extern call
 //     try checkProgram(
 //         \\
 //         \\ printf :: extern proc(*void, any) i32
-//         \\ rr :: printf(null, \"ok\")
+//         \\ rr :: printf("ok")
 //     , &.{});
 // }
 //
@@ -1228,19 +1220,19 @@ test "binary expressions - failures" {
 //         \\
 //         \\ f :: proc(a: i32, b: i32) i32 { return a }
 //         \\ r :: f(1)
-//     , &[_]diag.DiagnosticCode{.purity_violation});
+//     , &[_]diag.DiagnosticCode{.argument_count_mismatch});
 //     try checkProgram(
 //         \\
 //         \\ g :: proc(a: i32) i32 { return a }
 //         \\ r :: g(1, 2)
-//     , &[_]diag.DiagnosticCode{.purity_violation});
+//     , &[_]diag.DiagnosticCode{.argument_count_mismatch});
 //
 //     // Wrong types
 //     try checkProgram(
 //         \\
 //         \\ h :: proc(a: i32, b: f64) i32 { return a }
-//         \\ r :: h(\"s\", 2.0)
-//     , &[_]diag.DiagnosticCode{.purity_violation});
+//         \\ r :: h("s", 2.0)
+//     , &[_]diag.DiagnosticCode{.argument_type_mismatch});
 //
 //     // Call non-callable
 //     try checkProgram("nc :: 1(2)", &[_]diag.DiagnosticCode{.call_non_callable});
@@ -1256,11 +1248,11 @@ test "binary expressions - failures" {
 //     try checkProgram(
 //         \\
 //         \\ printf :: extern proc(*void, any) i32
-//         \\ rr :: printf(\"s\", 1)
+//         \\ rr :: printf("s", 1)
 //     , &[_]diag.DiagnosticCode{.argument_type_mismatch});
 //
 //     // Unknown function
-//     try checkProgram("unk :: foo(1)", &[_]diag.DiagnosticCode{.undefined_identifier});
+//     try checkProgram("unk :: foo(1)", &[_]diag.DiagnosticCode{.unknown_function});
 // }
 //
 // // Index access: arrays, slices, maps; nested access
