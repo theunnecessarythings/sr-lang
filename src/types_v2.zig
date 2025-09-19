@@ -46,11 +46,16 @@ pub const TypeKind = enum(u8) {
     F32,
     F64,
     Usize,
+    Complex,
+    Tensor,
+    Simd,
     String,
     Any,
     Ptr,
     Slice,
     Array,
+    DynArray,
+    Map,
     Optional,
     Tuple,
     Function,
@@ -78,15 +83,20 @@ pub const Rows = struct {
     pub const String = struct {};
     pub const Any = struct {};
 
+    pub const Complex = struct { elem: TypeId };
+    pub const Tensor = struct { elem: TypeId, rank: u8, dims: [4]usize };
+    pub const Simd = struct { elem: TypeId, lanes: u16 };
+
     pub const Ptr = struct { elem: TypeId, is_const: bool };
     pub const Slice = struct { elem: TypeId };
     pub const Array = struct { elem: TypeId, len: usize };
+    pub const DynArray = struct { elem: TypeId };
+    pub const Map = struct { key: TypeId, value: TypeId };
     pub const Optional = struct { elem: TypeId };
     pub const Tuple = struct { elems: RangeType };
     pub const Function = struct { params: RangeType, result: TypeId, is_variadic: bool };
     pub const Field = struct { name: StrId, ty: TypeId };
     pub const Struct = struct { fields: RangeField };
-    // New rows
     pub const Enum = struct { decl: u32 };
     pub const Variant = struct { payload: TypeId };
     pub const ErrorSet = struct { payload: ?TypeId };
@@ -118,9 +128,15 @@ pub const TypeStore = struct {
     String: Table(Rows.String) = .{},
     Any: Table(Rows.Any) = .{},
 
+    Complex: Table(Rows.Complex) = .{},
+    Tensor: Table(Rows.Tensor) = .{},
+    Simd: Table(Rows.Simd) = .{},
+
     Ptr: Table(Rows.Ptr) = .{},
     Slice: Table(Rows.Slice) = .{},
     Array: Table(Rows.Array) = .{},
+    DynArray: Table(Rows.DynArray) = .{},
+    Map: Table(Rows.Map) = .{},
     Optional: Table(Rows.Optional) = .{},
     Tuple: Table(Rows.Tuple) = .{},
     Function: Table(Rows.Function) = .{},
@@ -281,6 +297,14 @@ pub const TypeStore = struct {
         if (self.findArray(elem, len)) |id| return id;
         return self.add(.Array, .{ .elem = elem, .len = len });
     }
+    pub fn mkDynArray(self: *TypeStore, elem: TypeId) TypeId {
+        if (self.findDynArray(elem)) |id| return id;
+        return self.add(.DynArray, .{ .elem = elem });
+    }
+    pub fn mkMap(self: *TypeStore, key: TypeId, value: TypeId) TypeId {
+        if (self.findMap(key, value)) |id| return id;
+        return self.add(.Map, .{ .key = key, .value = value });
+    }
     pub fn mkOptional(self: *TypeStore, elem: TypeId) TypeId {
         if (self.findOptional(elem)) |id| return id;
         return self.add(.Optional, .{ .elem = elem });
@@ -344,11 +368,27 @@ pub const TypeStore = struct {
             }
         });
     }
+    fn findDynArray(self: *const TypeStore, elem: TypeId) ?TypeId {
+        return self.findMatch(.DynArray, elem, struct {
+            fn eq(s: *const TypeStore, row: Rows.DynArray, key: TypeId) bool {
+                _ = s;
+                return row.elem.toRaw() == key.toRaw();
+            }
+        });
+    }
     fn findArray(self: *const TypeStore, elem: TypeId, len: usize) ?TypeId {
         return self.findMatch(.Array, struct { e: TypeId, l: usize }{ .e = elem, .l = len }, struct {
             fn eq(s: *const TypeStore, row: Rows.Array, key: anytype) bool {
                 _ = s;
                 return row.elem.toRaw() == key.e.toRaw() and row.len == key.l;
+            }
+        });
+    }
+    fn findMap(self: *const TypeStore, key: TypeId, value: TypeId) ?TypeId {
+        return self.findMatch(.Map, struct { k: TypeId, v: TypeId }{ .k = key, .v = value }, struct {
+            fn eq(s: *const TypeStore, row: Rows.Map, k: anytype) bool {
+                _ = s;
+                return row.key.toRaw() == k.k.toRaw() and row.value.toRaw() == k.v.toRaw();
             }
         });
     }
@@ -477,6 +517,28 @@ pub const TypeStore = struct {
             .Usize => try w.print("usize", .{}),
             .String => try w.print("string", .{}),
             .Any => try w.print("any", .{}),
+            .Complex => {
+                const r = self.Complex.get(row_idx);
+                try w.print("complex@", .{});
+                try self.fmt(r.elem, w);
+            },
+            .Tensor => {
+                const r = self.Tensor.get(row_idx);
+                try w.print("tensor{}@", .{r.rank});
+                try self.fmt(r.elem, w);
+                try w.print("[", .{});
+                var i: u8 = 0;
+                while (i < r.rank) : (i += 1) {
+                    if (i != 0) try w.print(" x ", .{});
+                    try w.print("{}", .{r.dims[i]});
+                }
+                try w.print("]", .{});
+            },
+            .Simd => {
+                const r = self.Simd.get(row_idx);
+                try w.print("simd{}@", .{r.lanes});
+                try self.fmt(r.elem, w);
+            },
             .Ptr => {
                 const r = self.Ptr.get(row_idx);
                 try w.print("*", .{});
@@ -490,6 +552,11 @@ pub const TypeStore = struct {
             .Array => {
                 const r = self.Array.get(row_idx);
                 try w.print("[{}]", .{r.len});
+                try self.fmt(r.elem, w);
+            },
+            .DynArray => {
+                const r = self.DynArray.get(row_idx);
+                try w.print("dyn[]", .{});
                 try self.fmt(r.elem, w);
             },
             .Optional => {
@@ -507,6 +574,13 @@ pub const TypeStore = struct {
                     try self.fmt(ids[i], w);
                 }
                 try w.print(")", .{});
+            },
+            .Map => {
+                const r = self.Map.get(row_idx);
+                try w.print("map[", .{});
+                try self.fmt(r.key, w);
+                try w.print("] ", .{});
+                try self.fmt(r.value, w);
             },
             .Function => {
                 const r = self.Function.get(row_idx);

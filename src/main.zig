@@ -29,6 +29,7 @@ const CliArgs = struct {
         help,
         lex,
         unknown,
+        repl,
     };
 };
 
@@ -66,6 +67,59 @@ fn printUsage(writer: anytype, exec_name: []const u8) !void {
         },
     );
     try writer.flush();
+}
+
+fn repl(
+    allocator: std.mem.Allocator,
+    err_writer: anytype,
+    out_writer: anytype,
+) !void {
+    try err_writer.print("{s}Welcome to the REPL! Type your code and press Ctrl-D to evaluate.{s}\n", .{ Colors.green, Colors.reset });
+    var in_buf: [4096]u8 = undefined;
+
+    var stdin = std.fs.File.stdin().readerStreaming(&in_buf);
+    var source_lines = std.ArrayList([]const u8){};
+    defer source_lines.deinit(allocator);
+
+    while (true) {
+        try err_writer.print("{s}>>> {s}", .{ Colors.blue, Colors.reset });
+        try err_writer.flush();
+        const line = stdin.interface.takeDelimiterExclusive('\n') catch |err| switch (err) {
+            error.EndOfStream => break, // clean EOF
+            else => return err,
+        };
+        if (line.len == 0) continue; // Ignore empty lines
+        try source_lines.append(allocator, line);
+    }
+    const source = try std.mem.concatWithSentinel(allocator, u8, source_lines.items, 0);
+    defer allocator.free(source);
+    var diags = compiler.diagnostics_v2.Diagnostics.init(allocator);
+    defer diags.deinit();
+    var parser = compiler.parser_v2.Parser.init(allocator, source, &diags);
+    var cst_program = try parser.parse();
+    var lower_pass = compiler.lower_v2.LowerV2.init(allocator, &cst_program);
+    var hir = try lower_pass.run();
+    // print AST
+    var out = std.array_list.Managed(u8).init(allocator);
+    defer out.deinit();
+    var ast_printer = compiler.ast_v2.AstPrinter.init(
+        out.writer(),
+        &hir.exprs,
+        &hir.stmts,
+        &hir.pats,
+    );
+
+    try ast_printer.printUnit(&hir.unit);
+    std.debug.print(
+        "{s}Abstract Syntax Tree (AST){s}\n{s}",
+        .{ Colors.bold, Colors.cyan, out.items },
+    );
+    try out_writer.flush();
+    var chk = compiler.checker_v2.CheckerV2.init(allocator, &diags);
+    defer chk.deinit();
+    try chk.run(&hir);
+    // print Diagnostics
+    try diags.emitStyled(source, err_writer, "REPL Input", true);
 }
 
 fn process_file(
@@ -253,6 +307,8 @@ pub fn main() !void {
                     cli_args.subcommand = .lex;
                 } else if (std.mem.eql(u8, arg, "help")) {
                     cli_args.subcommand = .help;
+                } else if (std.mem.eql(u8, arg, "repl")) {
+                    cli_args.subcommand = .repl;
                 } else {
                     // Assume it's a filename if no subcommand yet
                     cli_args.filename = arg;
@@ -296,5 +352,6 @@ pub fn main() !void {
             }
             try process_file(gpa, cli_args.filename.?, &cli_args, writer, out_writer);
         },
+        .repl => try repl(gpa, writer, out_writer),
     }
 }

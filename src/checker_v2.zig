@@ -7,13 +7,7 @@ const symbols = @import("symbols_v2.zig");
 const types = @import("types_v2.zig");
 const TypeInfoV2 = types.TypeInfoV2;
 
-/// ------------------------------------------------------------
-/// CheckerV3 — refactor of the previous CheckerV2
-///  - Node-specific checks (no more giant visitDecl).
-///  - Small helpers for assignability / optionals / zero checks.
-///  - Reuses TypeStore from types.zig (no duplicate type tables).
-/// ------------------------------------------------------------
-pub const CheckerV2 = CheckerV3; // alias for compatibility
+pub const CheckerV2 = CheckerV3;
 pub const CheckerV3 = struct {
     gpa: std.mem.Allocator,
     diags: *Diagnostics,
@@ -39,18 +33,6 @@ pub const CheckerV3 = struct {
         self.func_stack.deinit(self.gpa);
         self.loop_stack.deinit(self.gpa);
         self.symtab.deinit();
-    }
-
-    fn checkBlock(self: *CheckerV3, a: *const ast.Ast, id: ast.ExprId, expect: Expectation) !?types.TypeId {
-        _ = expect;
-        const br = a.exprs.get(.Block, id);
-        const stmts = a.stmts.stmt_pool.slice(br.items);
-        var i: usize = 0;
-        while (i < stmts.len) : (i += 1) {
-            try self.checkStmt(a, stmts[i]);
-        }
-        // Block statements currently yield void
-        return self.type_info.store.tVoid();
     }
 
     pub fn run(self: *CheckerV3, a: *const ast.Ast) !void {
@@ -274,7 +256,7 @@ pub const CheckerV3 = struct {
     // --------- type helpers
     fn isNumericKind(_: *const CheckerV3, k: types.TypeKind) bool {
         return switch (k) {
-            .I8, .I16, .I32, .I64, .U8, .U16, .U32, .U64, .F32, .F64, .Usize => true,
+            .I8, .I16, .I32, .I64, .U8, .U16, .U32, .U64, .F32, .F64, .Usize, .Tensor, .Simd, .Complex => true,
             else => false,
         };
     }
@@ -284,60 +266,146 @@ pub const CheckerV3 = struct {
             else => false,
         };
     }
+
     fn isOptional(self: *CheckerV3, id: types.TypeId) ?types.TypeId {
         const k = self.type_info.store.index.kinds.items[id.toRaw()];
         if (k != .Optional) return null;
-        const row = self.type_info.store.Optional.get(self.type_info.store.index.rows.items[id.toRaw()]);
-        return row.elem;
+        const opt = self.type_info.store.Optional.get(self.type_info.store.index.rows.items[id.toRaw()]);
+        return opt.elem;
     }
-    fn assignable(self: *CheckerV3, got: types.TypeId, expect: types.TypeId, allow_numeric_coerce: bool) bool {
+
+    fn assignable(self: *CheckerV3, got: types.TypeId, expect: types.TypeId) bool {
         if (got.toRaw() == expect.toRaw()) return true;
-        const gk = self.type_info.store.index.kinds.items[got.toRaw()];
-        const ek = self.type_info.store.index.kinds.items[expect.toRaw()];
-        if (ek == .Any) return true;
-        // no special-casing: do not treat string as a pointer implicitly
-        // Pointers: allow non-const -> const, and element type must be assignable
-        if (gk == .Ptr and ek == .Ptr) {
-            const gr = self.type_info.store.Ptr.get(self.type_info.store.index.rows.items[got.toRaw()]);
-            const er = self.type_info.store.Ptr.get(self.type_info.store.index.rows.items[expect.toRaw()]);
-            const const_ok = (er.is_const or (!er.is_const and !gr.is_const));
-            return const_ok and self.assignable(gr.elem, er.elem, false);
+        const got_kind = self.type_info.store.index.kinds.items[got.toRaw()];
+        const expected_kind = self.type_info.store.index.kinds.items[expect.toRaw()];
+        if (expected_kind == .Any) return true;
+
+        switch (expected_kind) {
+            .Array => {
+                if (got_kind != .Array) return false;
+                const expected_ty = self.type_info.store.Array.get(self.type_info.store.index.rows.items[expect.toRaw()]);
+                const got_ty = self.type_info.store.Array.get(self.type_info.store.index.rows.items[got.toRaw()]);
+                const elem_ok = self.assignable(got_ty.elem, expected_ty.elem);
+                const size_ok = expected_ty.len == got_ty.len;
+                return elem_ok and size_ok;
+            },
+            .DynArray => {
+                if (got_kind != .Array) return false;
+                const expected_ty = self.type_info.store.DynArray.get(self.type_info.store.index.rows.items[expect.toRaw()]);
+                const got_ty = self.type_info.store.DynArray.get(self.type_info.store.index.rows.items[got.toRaw()]);
+                return self.assignable(got_ty.elem, expected_ty.elem);
+            },
+            .Tuple => {
+                if (got_kind != .Tuple) return false;
+                const expected_ty = self.type_info.store.Tuple.get(self.type_info.store.index.rows.items[expect.toRaw()]);
+                const got_ty = self.type_info.store.Tuple.get(self.type_info.store.index.rows.items[got.toRaw()]);
+                if (expected_ty.elems.len != got_ty.elems.len) return false;
+                const got_elems = self.type_info.store.type_pool.slice(got_ty.elems);
+                const expected_elems = self.type_info.store.type_pool.slice(expected_ty.elems);
+                for (expected_elems, 0..) |et, i| {
+                    const gt = got_elems[i];
+                    if (!self.assignable(gt, et)) return false;
+                }
+                return true;
+            },
+            .Map => {
+                if (got_kind == .Array) {
+                    const got_ty = self.type_info.store.Array.get(self.type_info.store.index.rows.items[got.toRaw()]);
+                    if (got_ty.len != 0) return false;
+                    return true; // empty array can be assigned to any map type
+                }
+                if (got_kind != .Map) return false;
+                const expected_ty = self.type_info.store.Map.get(self.type_info.store.index.rows.items[expect.toRaw()]);
+                const got_ty = self.type_info.store.Map.get(self.type_info.store.index.rows.items[got.toRaw()]);
+                const key_ok = self.assignable(got_ty.key, expected_ty.key);
+                const value_ok = self.assignable(got_ty.value, expected_ty.value);
+                return key_ok and value_ok;
+            },
+            .I8, .I16, .I32, .I64, .U8, .U16, .U32, .U64, .Usize => {
+                if (!self.isIntegerKind(got_kind)) return false;
+                return true;
+            },
+            .F32, .F64 => {
+                if (got_kind != .F32 and got_kind != .F64) return false;
+                return true;
+            },
+            else => {},
         }
-        // Error-union assignability:
-        if (ek == .ErrorSet) {
-            const er = self.type_info.store.ErrorSet.get(self.type_info.store.index.rows.items[expect.toRaw()]);
-            // assigning error value to error-union
-            if (gk == .ErrorSet) {
-                const gr = self.type_info.store.ErrorSet.get(self.type_info.store.index.rows.items[got.toRaw()]);
-                if (gr.payload == null) return true;
-                // both are error-union types; require identical
-                return got.toRaw() == expect.toRaw();
-            }
-            // assigning underlying value to error-union
-            if (er.payload) |pv| {
-                if (got.toRaw() == pv.toRaw()) return true;
-            }
-        }
-        if (!allow_numeric_coerce) return false;
-        return self.isNumericKind(gk) and self.isNumericKind(ek);
+
+        // if (got_kind == .Ptr and expected_kind == .Ptr) {
+        //     const gr = self.type_info.store.Ptr.get(self.type_info.store.index.rows.items[got.toRaw()]);
+        //     const er = self.type_info.store.Ptr.get(self.type_info.store.index.rows.items[expect.toRaw()]);
+        //     const const_ok = (er.is_const or (!er.is_const and !gr.is_const));
+        //     return const_ok and self.assignable(gr.elem, er.elem);
+        // }
+        // // Error-union assignability:
+        // if (expected_kind == .ErrorSet) {
+        //     const er = self.type_info.store.ErrorSet.get(self.type_info.store.index.rows.items[expect.toRaw()]);
+        //     // assigning error value to error-union
+        //     if (got_kind == .ErrorSet) {
+        //         const gr = self.type_info.store.ErrorSet.get(self.type_info.store.index.rows.items[got.toRaw()]);
+        //         if (gr.payload == null) return true;
+        //         // both are error-union types; require identical
+        //         return got.toRaw() == expect.toRaw();
+        //     }
+        //     // assigning underlying value to error-union
+        //     if (er.payload) |pv| {
+        //         if (got.toRaw() == pv.toRaw()) return true;
+        //     }
+        // }
+        return false;
     }
 
     // =========================================================
     // Declarations & Statements
     // =========================================================
-    fn checkDecl(self: *CheckerV3, a: *const ast.Ast, did: ast.DeclId) !void {
-        const d = a.exprs.Decl.get(did.toRaw());
-        // If a const declaration lacks a valid binding pattern (e.g., LHS was not a valid identifier/tuple),
-        // surface a single parse-style error here so tests that expect one diagnostic can pass through
-        // the parse step (which enforces zero diagnostics) and still report the invalid binding.
-        if (d.pattern.isNone() and d.flags.is_const) {
-            try self.diags.addError(a.exprs.locs.get(d.loc), .unexpected_token, .{});
+    fn checkDecl(self: *CheckerV3, a: *const ast.Ast, decl_id: ast.DeclId) !void {
+        const decl = a.exprs.Decl.get(decl_id.toRaw());
+        if (decl.pattern.isNone()) {
+            try self.diags.addError(a.exprs.locs.get(decl.loc), .unexpected_token, .{});
             return;
         }
-        try self.bindDeclPattern(a, did, d);
-        const decl_expect = (try self.prepareDeclExpectation(a, d)) orelse return;
-        const rhs_ty = try self.checkExpr(a, d.value, decl_expect.ctx);
-        try self.finalizeDeclType(a, did, d, rhs_ty, decl_expect.ty);
+        try self.bindDeclPattern(a, decl_id, decl);
+        const expect_ty = if (decl.ty.isNone())
+            null
+        else
+            try self.typeFromTypeExpr(a, decl.ty.unwrap());
+        const rhs_ty = try self.checkExpr(a, decl.value, expectNone());
+        if (rhs_ty == null)
+            return;
+        try self.tryTypeCoercion(a, decl_id, rhs_ty.?, expect_ty);
+    }
+
+    fn tryTypeCoercion(
+        self: *CheckerV2,
+        a: *const ast.Ast,
+        decl: ast.DeclId,
+        rhs_ty: types.TypeId,
+        expect_ty: ?types.TypeId,
+    ) !void {
+        if (expect_ty == null) {
+            // Some degenerate cases where we don't infer from RHS
+            const rhs_kind = self.type_info.store.index.kinds.items[rhs_ty.toRaw()];
+            switch (rhs_kind) {
+                .Array => {
+                    const arr = self.type_info.store.Array.get(self.type_info.store.index.rows.items[rhs_ty.toRaw()]);
+                    if (arr.len == 0) {
+                        try self.diags.addError(a.exprs.locs.get(a.exprs.Decl.get(decl.toRaw()).loc), .cannot_infer_type_from_empty_array, .{});
+                        return;
+                    }
+                },
+                else => {
+                    // infer from RHS
+                    self.type_info.decl_types.items[decl.toRaw()] = rhs_ty;
+                },
+            }
+        } else if (!self.assignable(rhs_ty, expect_ty.?)) {
+            const d = a.exprs.Decl.get(decl.toRaw());
+            try self.diags.addError(a.exprs.locs.get(d.loc), .type_annotation_mismatch, .{});
+        } else {
+            self.type_info.decl_types.items[decl.toRaw()] = expect_ty.?;
+            self.type_info.expr_types.items[a.exprs.Decl.get(decl.toRaw()).value.toRaw()] = expect_ty.?; // also update RHS expr type
+        }
     }
 
     fn checkStmt(self: *CheckerV3, a: *const ast.Ast, sid: ast.StmtId) !void {
@@ -354,7 +422,7 @@ pub const CheckerV3 = struct {
                 const row = a.stmts.get(.Assign, sid);
                 const lt = try self.checkExpr(a, row.left, expectNone());
                 const rt = try self.checkExpr(a, row.right, if (lt) |lt_ty| expectTy(lt_ty) else expectNone());
-                if (lt != null and rt != null and !self.assignable(rt.?, lt.?, true)) {
+                if (lt != null and rt != null and !self.assignable(rt.?, lt.?)) {
                     try self.diags.addError(a.exprs.locs.get(row.loc), .type_annotation_mismatch, .{});
                 }
             },
@@ -416,9 +484,9 @@ pub const CheckerV3 = struct {
             .Binary => tid = try self.checkBinary(a, id),
             .Unary => tid = try self.checkUnary(a, id),
             .FunctionLit => tid = try self.checkFunctionLit(a, id),
-            .ArrayLit => tid = try self.checkArrayLit(a, id, expect),
-            .TupleLit => tid = try self.checkTupleLit(a, id, expect),
-            .MapLit => tid = try self.checkMapLit(a, id, expect),
+            .ArrayLit => tid = try self.checkArrayLit(a, id),
+            .TupleLit => tid = try self.checkTupleLit(a, id),
+            .MapLit => tid = try self.checkMapLit(a, id),
             .IndexAccess => tid = self.checkIndexAccess(a, id),
             .FieldAccess => tid = self.checkFieldAccess(a, id, expect),
             .StructLit => tid = try self.checkStructLit(a, id, expect),
@@ -455,32 +523,7 @@ pub const CheckerV3 = struct {
             .Catch => tid = try self.checkCatch(a, id),
             .Import => tid = try self.checkImport(a, id),
             .TypeOf => tid = try self.checkTypeOf(a, id),
-
-            .NullLit => {
-                if (expect.map) |exp| {
-                    try self.diags.addError(exp.loc, .type_annotation_mismatch, .{});
-                    return null;
-                }
-                if (expect.ty) |et| {
-                    const inner = self.isOptional(et);
-                    if (inner != null) {
-                        tid = et;
-                    } else {
-                        if (expect.suppress_null_assign) {
-                            tid = self.type_info.store.mkOptional(self.type_info.store.tAny());
-                        } else {
-                            const loc = a.exprs.locs.get(a.exprs.get(.NullLit, id).loc);
-                            const kind = self.type_info.store.index.kinds.items[et.toRaw()];
-                            switch (kind) {
-                                .Ptr => try self.diags.addError(loc, .assign_null_to_non_optional, .{}),
-                                .Slice, .Array, .Struct, .Tuple, .Function => try self.diags.addError(loc, .type_annotation_mismatch, .{}),
-                                else => try self.diags.addError(loc, .assign_null_to_non_optional, .{}),
-                            }
-                            return null;
-                        }
-                    }
-                } else tid = self.type_info.store.mkOptional(self.type_info.store.tAny());
-            },
+            .NullLit => tid = self.type_info.store.mkOptional(self.type_info.store.tAny()),
 
             .TupleType, .ArrayType, .DynArrayType, .MapType, .SliceType, .OptionalType, .ErrorSetType, .ErrorType, .StructType, .EnumType, .VariantType, .UnionType, .PointerType, .SimdType, .ComplexType, .TensorType, .TypeType, .AnyType, .NoreturnType => {
                 var array_size_invalid = false;
@@ -502,23 +545,23 @@ pub const CheckerV3 = struct {
             },
         }
 
-        if (expect.map) |exp| {
-            switch (k) {
-                .MapLit => {},
-                .ArrayLit => {
-                    const arr = a.exprs.get(.ArrayLit, id);
-                    if (a.exprs.expr_pool.slice(arr.elems).len != 0) {
-                        try self.diags.addError(exp.loc, .type_annotation_mismatch, .{});
-                        return null;
-                    }
-                },
-                .NullLit => {},
-                else => {
-                    try self.diags.addError(exp.loc, .type_annotation_mismatch, .{});
-                    return null;
-                },
-            }
-        }
+        // if (expect.map) |exp| {
+        //     switch (k) {
+        //         .MapLit => {},
+        //         .ArrayLit => {
+        //             const arr = a.exprs.get(.ArrayLit, id);
+        //             if (a.exprs.expr_pool.slice(arr.elems).len != 0) {
+        //                 try self.diags.addError(exp.loc, .type_annotation_mismatch, .{});
+        //                 return null;
+        //             }
+        //         },
+        //         .NullLit => {},
+        //         else => {
+        //             try self.diags.addError(exp.loc, .type_annotation_mismatch, .{});
+        //             return null;
+        //         },
+        //     }
+        // }
 
         if (tid) |t| self.type_info.expr_types.items[id.toRaw()] = t;
         return tid;
@@ -557,94 +600,76 @@ pub const CheckerV3 = struct {
         return ptr_row.elem;
     }
 
-    fn checkBinary(self: *CheckerV3, a: *const ast.Ast, id: ast.ExprId) !?types.TypeId {
-        const row = a.exprs.get(.Binary, id);
-        var lt = try self.checkExpr(a, row.left, expectNone());
-        const rt = try self.checkExpr(a, row.right, expectNone());
-        // Try to recover left type for 'orelse' when unresolved: use declared type of identifier
-        if (lt == null and row.op == .@"orelse") {
-            if (a.exprs.index.kinds.items[row.left.toRaw()] == .Ident) {
-                const idr = a.exprs.get(.Ident, row.left);
-                if (self.lookup(a, idr.name)) |sid| {
-                    const srow = self.symtab.syms.get(sid.toRaw());
-                    if (!srow.origin_decl.isNone()) {
-                        const od = srow.origin_decl.unwrap();
-                        // Prefer resolved type if present
-                        if (self.type_info.decl_types.items[od.toRaw()]) |dt| {
-                            lt = dt;
-                        } else {
-                            // Fall back to annotated type, if any
-                            const drow = a.exprs.Decl.get(od.toRaw());
-                            if (!drow.ty.isNone()) {
-                                const aty = try self.typeFromTypeExpr(a, drow.ty.unwrap());
-                                if (aty) |t| lt = t;
-                            }
-                        }
-                    }
-                }
-            }
+    fn checkBlock(self: *CheckerV3, a: *const ast.Ast, id: ast.ExprId, expect: Expectation) !?types.TypeId {
+        _ = expect;
+        const br = a.exprs.get(.Block, id);
+        const stmts = a.stmts.stmt_pool.slice(br.items);
+        var i: usize = 0;
+        while (i < stmts.len) : (i += 1) {
+            try self.checkStmt(a, stmts[i]);
         }
+        // Block statements currently yield void
+        return self.type_info.store.tVoid();
+    }
+
+    fn checkBinary(self: *CheckerV3, a: *const ast.Ast, id: ast.ExprId) !?types.TypeId {
+        const bin: ast.Rows.Binary = a.exprs.get(.Binary, id);
+        const lt = try self.checkExpr(a, bin.left, expectNone());
+        const rt = try self.checkExpr(a, bin.right, expectNone());
         if (lt == null or rt == null) return null;
 
         const l = lt.?;
         const r = rt.?;
-        const lk = self.type_info.store.index.kinds.items[l.toRaw()];
-        const rk = self.type_info.store.index.kinds.items[r.toRaw()];
+        const lhs_kind = self.type_info.store.index.kinds.items[l.toRaw()];
+        const rhs_kind = self.type_info.store.index.kinds.items[r.toRaw()];
 
-        switch (row.op) {
+        switch (bin.op) {
             .add, .sub, .mul, .div, .mod, .bit_and, .bit_or, .bit_xor, .shl, .shr => {
-                if (row.op == .div) try self.checkDivByZero(a, row.right, a.exprs.locs.get(row.loc));
-                if (row.op == .mod) {
-                    const left_is_float = switch (lk) {
+                if (bin.op == .div) try self.checkDivByZero(a, bin.right, a.exprs.locs.get(bin.loc));
+                if (bin.op == .mod) {
+                    const left_is_float = switch (lhs_kind) {
                         .F32, .F64 => true,
                         else => false,
                     };
-                    const right_is_float = switch (rk) {
+                    const right_is_float = switch (rhs_kind) {
                         .F32, .F64 => true,
                         else => false,
                     };
                     if (left_is_float or right_is_float) {
-                        try self.diags.addError(a.exprs.locs.get(row.loc), .invalid_binary_op_operands, .{});
+                        try self.diags.addError(a.exprs.locs.get(bin.loc), .invalid_binary_op_operands, .{});
                         return null;
                     }
-                    if (self.isIntegerKind(lk) and self.isIntegerKind(rk))
-                        try self.checkIntZeroLiteral(a, row.right, a.exprs.locs.get(row.loc));
+                    if (self.isIntegerKind(lhs_kind) and self.isIntegerKind(rhs_kind))
+                        try self.checkIntZeroLiteral(a, bin.right, a.exprs.locs.get(bin.loc));
                 }
-                const both_numeric = self.isNumericKind(lk) and self.isNumericKind(rk);
-                const both_integer = self.isIntegerKind(lk) and self.isIntegerKind(rk);
-                const same = l.toRaw() == r.toRaw();
-                const ok = (both_numeric and (row.op == .add or row.op == .sub or row.op == .mul or row.op == .div) and same) or (both_integer and (row.op == .mod or row.op == .bit_and or row.op == .bit_or or row.op == .bit_xor or row.op == .shl or row.op == .shr) and same);
-                if (ok) return lt;
-                try self.diags.addError(a.exprs.locs.get(row.loc), .invalid_binary_op_operands, .{});
+                if (!self.isNumericKind(lhs_kind) or !self.isNumericKind(rhs_kind)) {
+                    try self.diags.addError(a.exprs.locs.get(bin.loc), .invalid_binary_op_operands, .{});
+                    return null;
+                }
+                if (l.toRaw() == r.toRaw()) return l;
+                try self.diags.addError(a.exprs.locs.get(bin.loc), .invalid_binary_op_operands, .{});
                 return null;
             },
             .eq, .neq, .lt, .lte, .gt, .gte => {
-                if (l.toRaw() == r.toRaw()) {
-                    if (row.op == .eq or row.op == .neq) return self.type_info.store.tBool();
-                    if (self.isNumericKind(lk)) return self.type_info.store.tBool();
-                }
-                try self.diags.addError(a.exprs.locs.get(row.loc), .invalid_binary_op_operands, .{});
+                if (l.toRaw() == r.toRaw())
+                    return self.type_info.store.tBool();
+                try self.diags.addError(a.exprs.locs.get(bin.loc), .invalid_binary_op_operands, .{});
                 return null;
             },
             .logical_and, .logical_or => {
-                if (l.toRaw() == self.type_info.store.tBool().toRaw() and r.toRaw() == self.type_info.store.tBool().toRaw()) return self.type_info.store.tBool();
-                try self.diags.addError(a.exprs.locs.get(row.loc), .invalid_binary_op_operands, .{});
+                if (l.toRaw() == self.type_info.store.tBool().toRaw() and
+                    r.toRaw() == self.type_info.store.tBool().toRaw())
+                    return self.type_info.store.tBool();
+                try self.diags.addError(a.exprs.locs.get(bin.loc), .invalid_binary_op_operands, .{});
                 return null;
             },
             .@"orelse" => {
                 if (self.isOptional(l)) |elem| {
                     if (elem.toRaw() == r.toRaw()) return rt;
-                    try self.diags.addError(a.exprs.locs.get(row.loc), .argument_type_mismatch, .{});
+                    try self.diags.addError(a.exprs.locs.get(bin.loc), .invalid_binary_op_operands, .{});
                     return null;
                 }
-                // Error unions are not optionals; using 'orelse' on them is invalid.
-                // Tests currently expect argument_type_mismatch here.
-                const lk2 = self.type_info.store.index.kinds.items[l.toRaw()];
-                if (lk2 == .ErrorSet) {
-                    try self.diags.addError(a.exprs.locs.get(row.loc), .argument_type_mismatch, .{});
-                    return null;
-                }
-                try self.diags.addError(a.exprs.locs.get(row.loc), .invalid_use_of_orelse_on_non_optional, .{});
+                try self.diags.addError(a.exprs.locs.get(bin.loc), .invalid_use_of_orelse_on_non_optional, .{});
                 return null;
             },
         }
@@ -652,22 +677,22 @@ pub const CheckerV3 = struct {
     }
 
     fn checkUnary(self: *CheckerV3, a: *const ast.Ast, id: ast.ExprId) !?types.TypeId {
-        const ur = a.exprs.get(.Unary, id);
-        const et = try self.checkExpr(a, ur.expr, expectNone());
-        if (et == null) return null;
-        const t = et.?;
-        const tk = self.type_info.store.index.kinds.items[t.toRaw()];
-        switch (ur.op) {
+        const unary_expr = a.exprs.get(.Unary, id);
+        const expr_ty = try self.checkExpr(a, unary_expr.expr, expectNone());
+        if (expr_ty == null) return null;
+        const t = expr_ty.?;
+        const type_kind = self.type_info.store.index.kinds.items[t.toRaw()];
+        switch (unary_expr.op) {
             .plus, .minus => {
-                if (!self.isNumericKind(tk)) {
-                    try self.diags.addError(a.exprs.locs.get(ur.loc), .invalid_unary_op_operand, .{});
+                if (!self.isNumericKind(type_kind)) {
+                    try self.diags.addError(a.exprs.locs.get(unary_expr.loc), .invalid_unary_op_operand, .{});
                     return null;
                 }
                 return t;
             },
             .logical_not => {
                 if (t.toRaw() != self.type_info.store.tBool().toRaw()) {
-                    try self.diags.addError(a.exprs.locs.get(ur.loc), .invalid_unary_op_operand, .{});
+                    try self.diags.addError(a.exprs.locs.get(unary_expr.loc), .invalid_unary_op_operand, .{});
                     return null;
                 }
                 return self.type_info.store.tBool();
@@ -696,34 +721,9 @@ pub const CheckerV3 = struct {
         return self.type_info.store.mkFunction(pbuf, res.?, fnr.flags.is_variadic);
     }
 
-    fn checkTupleLit(self: *CheckerV3, a: *const ast.Ast, id: ast.ExprId, expect: Expectation) !?types.TypeId {
-        const row = a.exprs.get(.TupleLit, id);
-        const elems = a.exprs.expr_pool.slice(row.elems);
-
-        if (expect.ty) |et| {
-            if (self.type_info.store.index.kinds.items[et.toRaw()] == .Tuple) {
-                const at = self.type_info.store.Tuple.get(self.type_info.store.index.rows.items[et.toRaw()]);
-                const a_elems = self.type_info.store.type_pool.slice(at.elems);
-                if (a_elems.len != elems.len) {
-                    try self.diags.addError(a.exprs.locs.get(row.loc), .tuple_arity_mismatch, .{});
-                    return null;
-                }
-                var ok = true;
-                var i: usize = 0;
-                while (i < elems.len) : (i += 1) {
-                    const got = try self.checkExpr(a, elems[i], expectTy(a_elems[i]));
-                    if (got == null or !self.assignable(got.?, a_elems[i], false)) {
-                        ok = false;
-                        break;
-                    }
-                }
-                if (!ok) {
-                    try self.diags.addError(a.exprs.locs.get(row.loc), .type_annotation_mismatch, .{});
-                    return null;
-                }
-                return et;
-            }
-        }
+    fn checkTupleLit(self: *CheckerV3, a: *const ast.Ast, id: ast.ExprId) !?types.TypeId {
+        const tuple_lit = a.exprs.get(.TupleLit, id);
+        const elems = a.exprs.expr_pool.slice(tuple_lit.elems);
 
         var tbuf = try self.gpa.alloc(types.TypeId, elems.len);
         defer self.gpa.free(tbuf);
@@ -736,136 +736,57 @@ pub const CheckerV3 = struct {
         return self.type_info.store.mkTuple(tbuf);
     }
 
-    fn checkArrayLit(self: *CheckerV3, a: *const ast.Ast, id: ast.ExprId, expect: Expectation) !?types.TypeId {
-        const row = a.exprs.get(.ArrayLit, id);
-        const elems = a.exprs.expr_pool.slice(row.elems);
-
-        if (expect.map) |_| {
-            if (elems.len == 0) return null;
-            try self.diags.addError(a.exprs.locs.get(row.loc), .type_annotation_mismatch, .{});
-            return null;
-        }
-
-        // With a concrete expected array/slice element type, enforce elements (and length for arrays).
-        if (expect.ty) |et| {
-            switch (self.type_info.store.index.kinds.items[et.toRaw()]) {
-                .Array => {
-                    const er = self.type_info.store.Array.get(self.type_info.store.index.rows.items[et.toRaw()]);
-                    if (er.len != elems.len) {
-                        try self.diags.addError(a.exprs.locs.get(row.loc), .array_length_mismatch, .{});
-                        return null;
-                    }
-                    var i: usize = 0;
-                    var ok = true;
-                    while (i < elems.len) : (i += 1) {
-                        const gt = try self.checkExpr(a, elems[i], expectTySuppressNull(er.elem));
-                        if (gt == null or !self.assignable(gt.?, er.elem, true)) {
-                            ok = false;
-                            break;
-                        }
-                    }
-                    if (!ok) {
-                        try self.diags.addError(a.exprs.locs.get(row.loc), .type_annotation_mismatch, .{});
-                        return null;
-                    }
-                    return et;
-                },
-                .Slice => {
-                    const er = self.type_info.store.Slice.get(self.type_info.store.index.rows.items[et.toRaw()]);
-                    var i: usize = 0;
-                    var ok = true;
-                    while (i < elems.len) : (i += 1) {
-                        const gt = try self.checkExpr(a, elems[i], expectTySuppressNull(er.elem));
-                        if (gt == null or !self.assignable(gt.?, er.elem, true)) {
-                            ok = false;
-                            break;
-                        }
-                    }
-                    if (!ok) {
-                        try self.diags.addError(a.exprs.locs.get(row.loc), .type_annotation_mismatch, .{});
-                        return null;
-                    }
-                    return et;
-                },
-                else => {},
-            }
-        }
-
-        if (elems.len == 0) {
-            // unannotated [] is ambiguous (could be map init in this language)
-            try self.diags.addError(a.exprs.locs.get(row.loc), .ambiguous_empty_map, .{});
-            return null;
-        }
+    fn checkArrayLit(
+        self: *CheckerV3,
+        a: *const ast.Ast,
+        id: ast.ExprId,
+    ) !?types.TypeId {
+        const array_lit = a.exprs.get(.ArrayLit, id);
+        const elems = a.exprs.expr_pool.slice(array_lit.elems);
 
         // infer from first element, homogeneous requirement
+        if (elems.len == 0) {
+            return self.type_info.store.mkArray(self.type_info.store.tAny(), 0);
+        }
         const first_ty = (try self.checkExpr(a, elems[0], expectNone())) orelse return null;
         var i: usize = 1;
         while (i < elems.len) : (i += 1) {
             const ety = try self.checkExpr(a, elems[i], expectTySuppressNull(first_ty));
             if (ety == null or ety.?.toRaw() != first_ty.toRaw()) {
-                try self.diags.addError(a.exprs.locs.get(row.loc), .heterogeneous_array_elements, .{});
+                try self.diags.addError(a.exprs.locs.get(array_lit.loc), .heterogeneous_array_elements, .{});
                 return null;
             }
         }
         return self.type_info.store.mkArray(first_ty, elems.len);
     }
 
-    fn checkMapLit(self: *CheckerV3, a: *const ast.Ast, id: ast.ExprId, expect: Expectation) !?types.TypeId {
+    fn checkMapLit(self: *CheckerV3, a: *const ast.Ast, id: ast.ExprId) !?types.TypeId {
         const row = a.exprs.get(.MapLit, id);
         const kvs = a.exprs.kv_pool.slice(row.entries);
 
-        if (expect.map) |exp| {
-            var saw_key_mismatch = false;
-            var saw_value_mismatch = false;
-            var i: usize = 0;
-            while (i < kvs.len) : (i += 1) {
-                const kv = a.exprs.KeyValue.get(kvs[i].toRaw());
-                const kt = try self.checkExpr(a, kv.key, expectNone());
-                if (!saw_key_mismatch) {
-                    if (kt == null or !self.assignable(kt.?, exp.key, false)) {
-                        saw_key_mismatch = true;
-                    }
-                }
-                const vt = try self.checkExpr(a, kv.value, expectTySuppressNull(exp.value));
-                if (!saw_value_mismatch) {
-                    if (vt == null or !self.assignable(vt.?, exp.value, false)) {
-                        saw_value_mismatch = true;
-                    }
-                }
-                if (saw_key_mismatch and saw_value_mismatch) {
-                    break;
-                }
-            }
-            if (saw_key_mismatch) {
-                try self.diags.addError(a.exprs.locs.get(row.loc), .map_wrong_key_type, .{});
-            }
-            if (saw_value_mismatch) {
-                try self.diags.addError(a.exprs.locs.get(row.loc), .type_annotation_mismatch, .{});
-            }
-            return null;
+        if (kvs.len == 0) {
+            return self.type_info.store.mkMap(self.type_info.store.tAny(), self.type_info.store.tAny());
         }
+        const first = a.exprs.KeyValue.get(kvs[0].toRaw());
+        const key_ty = try self.checkExpr(a, first.key, expectNone());
+        const val_ty = try self.checkExpr(a, first.value, expectNone());
+        if (key_ty == null or val_ty == null) return null;
 
-        var key_ty: ?types.TypeId = null;
-        var val_ty: ?types.TypeId = null;
-        var i: usize = 0;
+        var i: usize = 1;
         while (i < kvs.len) : (i += 1) {
             const kv = a.exprs.KeyValue.get(kvs[i].toRaw());
             const kt = try self.checkExpr(a, kv.key, expectNone());
             const vt = try self.checkExpr(a, kv.value, expectNone());
-            if (kt != null) {
-                if (key_ty == null) key_ty = kt else if (key_ty.?.toRaw() != kt.?.toRaw()) {
-                    try self.diags.addError(a.exprs.locs.get(row.loc), .map_mixed_key_types, .{});
-                    break;
-                }
+            if (kt == null or kt.?.toRaw() != key_ty.?.toRaw()) {
+                try self.diags.addError(a.exprs.locs.get(row.loc), .map_mixed_key_types, .{});
+                return null;
             }
-            if (vt != null) {
-                if (val_ty == null) val_ty = vt else if (val_ty.?.toRaw() != vt.?.toRaw()) {
-                    try self.diags.addError(a.exprs.locs.get(row.loc), .map_mixed_value_types, .{});
-                    break;
-                }
+            if (vt == null or vt.?.toRaw() != val_ty.?.toRaw()) {
+                try self.diags.addError(a.exprs.locs.get(row.loc), .map_mixed_value_types, .{});
+                return null;
             }
         }
-        return null; // construction deferred, just do checks
+        return self.type_info.store.mkMap(key_ty.?, val_ty.?);
     }
 
     fn checkIndexAccess(self: *CheckerV3, a: *const ast.Ast, id: ast.ExprId) ?types.TypeId {
@@ -1175,7 +1096,7 @@ pub const CheckerV3 = struct {
                     }
                 }
             }
-            if (!self.assignable(atid, ptid, true)) {
+            if (!self.assignable(atid, ptid)) {
                 try self.diags.addError(a.exprs.locs.get(cr.loc), .argument_type_mismatch, .{});
                 return null;
             }
@@ -1416,7 +1337,7 @@ pub const CheckerV3 = struct {
         if (body_ty == null) return null;
         const fty = self.type_info.store.mkFunction(param_tys, body_ty.?, false);
         if (expect.ty) |et| {
-            if (!self.assignable(fty, et, true)) {
+            if (!self.assignable(fty, et)) {
                 try self.diags.addError(a.exprs.locs.get(cr.loc), .type_annotation_mismatch, .{});
                 return null;
             }
@@ -1674,7 +1595,7 @@ pub const CheckerV3 = struct {
                                 return null;
                             };
                             const at = try self.checkExpr(a, args[j], expectTy(et));
-                            if (at == null or !self.assignable(at.?, et, false)) {
+                            if (at == null or !self.assignable(at.?, et)) {
                                 try self.diags.addError(a.exprs.locs.get(fr.loc), .variant_payload_mismatch, .{});
                                 return null;
                             }
@@ -2036,7 +1957,7 @@ pub const CheckerV3 = struct {
             try self.diags.addError(loc, .union_field_type_mismatch, .{});
             return;
         };
-        if (!self.assignable(got, exp_ty.?, false)) {
+        if (!self.assignable(got, exp_ty.?)) {
             try self.diags.addError(loc, .union_field_type_mismatch, .{});
             return;
         }
@@ -2087,6 +2008,12 @@ pub const CheckerV3 = struct {
                 while (i < ids.len) : (i += 1) buf[i] = (try self.typeFromTypeExpr(a, ids[i])) orelse break :blk_ttl null;
                 break :blk_ttl self.type_info.store.mkTuple(buf);
             },
+            .MapType => blk_mt: {
+                const row = a.exprs.get(.MapType, id);
+                const key = (try self.typeFromTypeExpr(a, row.key)) orelse break :blk_mt null;
+                const val = (try self.typeFromTypeExpr(a, row.value)) orelse break :blk_mt null;
+                break :blk_mt self.type_info.store.mkMap(key, val);
+            },
             .ArrayType => blk_at: {
                 const row = a.exprs.get(.ArrayType, id);
                 const elem = (try self.typeFromTypeExpr(a, row.elem)) orelse break :blk_at null;
@@ -2095,14 +2022,17 @@ pub const CheckerV3 = struct {
                     const lit = a.exprs.get(.Literal, row.size);
                     if (lit.kind == .int and !lit.value.isNone()) {
                         len_val = std.fmt.parseInt(usize, a.exprs.strs.get(lit.value.unwrap()), 10) catch 0;
-                    } else return error.InvalidArraySize;
+                    } else {
+                        try self.diags.addError(a.exprs.locs.get(row.loc), .array_size_not_integer_literal, .{});
+                        return null;
+                    }
                 } else return error.InvalidArraySize;
                 break :blk_at self.type_info.store.mkArray(elem, len_val);
             },
             .DynArrayType => blk_dt: {
                 const row = a.exprs.get(.DynArrayType, id);
                 const elem = (try self.typeFromTypeExpr(a, row.elem)) orelse break :blk_dt null;
-                break :blk_dt self.type_info.store.mkSlice(elem);
+                break :blk_dt self.type_info.store.mkDynArray(elem);
             },
             .SliceType => blk_st: {
                 const row = a.exprs.get(.SliceType, id);

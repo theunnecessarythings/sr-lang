@@ -83,7 +83,7 @@ pub const DiagnosticCode = enum {
     tuple_index_out_of_bounds,
     map_mixed_key_types,
     map_mixed_value_types,
-    ambiguous_empty_map,
+    cannot_infer_type_from_empty_array,
     type_annotation_mismatch,
     map_wrong_key_type,
     non_integer_index,
@@ -131,6 +131,7 @@ pub const DiagnosticCode = enum {
     invalid_index_type,
     argument_count_mismatch,
     unknown_function,
+    expected_pattern_on_decl_lhs,
 };
 
 pub fn diagnosticMessageFmt(code: DiagnosticCode) []const u8 {
@@ -206,7 +207,7 @@ pub fn diagnosticMessageFmt(code: DiagnosticCode) []const u8 {
         .tuple_index_out_of_bounds => "tuple field index out of bounds",
         .map_mixed_key_types => "map literal has mixed key types",
         .map_mixed_value_types => "map literal has mixed value types",
-        .ambiguous_empty_map => "empty map literal is ambiguous without a type annotation",
+        .cannot_infer_type_from_empty_array => "cannot infer type from empty array literal; add a type annotation",
         .type_annotation_mismatch => "initializer does not match the annotated type",
         .map_wrong_key_type => "map index has wrong key type",
         .non_integer_index => "array index must be an integer",
@@ -254,6 +255,7 @@ pub fn diagnosticMessageFmt(code: DiagnosticCode) []const u8 {
         .invalid_index_type => "invalid index type",
         .argument_count_mismatch => "argument count does not match parameter count",
         .unknown_function => "unknown function",
+        .expected_pattern_on_decl_lhs => "lhs of decl should be a pattern",
     };
 }
 
@@ -446,7 +448,7 @@ pub const Diagnostics = struct {
                 sev_str,
                 if (color) Colors.reset else "",
                 if (color) Colors.bold else "",
-                m.message,
+                diagnosticMessageFmt(m.code),
             });
 
             // Location line
@@ -482,12 +484,12 @@ pub const Diagnostics = struct {
                 .{ gutterPad(width), Colors.cyan, Colors.reset },
             );
             var i: usize = 0;
-            while (i < caret_start) : (i += 1) try writer.print(" ", .{{}});
+            while (i < caret_start) : (i += 1) try writer.print(" ", .{});
             if (color) try writer.print("{s}", .{sev_col});
             i = 0;
-            while (i < span) : (i += 1) try writer.print("^", .{{}});
+            while (i < span) : (i += 1) try writer.print("^", .{});
             if (color) try writer.print("{s}", .{Colors.reset});
-            try writer.print("\n", .{{}});
+            try writer.print("\n", .{});
 
             // Notes
             for (m.notes.items) |n| {
@@ -497,7 +499,7 @@ pub const Diagnostics = struct {
                         gutterPad(width),
                         if (color) Colors.blue else "",
                         if (color) Colors.reset else "",
-                        n.message,
+                        diagnosticNoteFmt(n.code),
                         if (color) Colors.cyan else "",
                         nlc.line + 1,
                         nlc.col + 1,
@@ -508,12 +510,12 @@ pub const Diagnostics = struct {
                         gutterPad(width),
                         if (color) Colors.blue else "",
                         if (color) Colors.reset else "",
-                        n.message,
+                        diagnosticNoteFmt(n.code),
                     });
                 }
             }
 
-            try writer.print("\n", .{{}});
+            try writer.print("\n", .{});
         }
         try writer.flush();
     }
