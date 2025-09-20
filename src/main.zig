@@ -89,19 +89,46 @@ fn repl(
             else => return err,
         };
         if (line.len == 0) continue; // Ignore empty lines
-        try source_lines.append(allocator, line);
+        try source_lines.append(allocator, try allocator.dupe(u8, line));
+        try source_lines.append(allocator, "\n");
     }
     const source = try std.mem.concatWithSentinel(allocator, u8, source_lines.items, 0);
+    std.debug.print("{s}Input source:{s}\n{s}\n", .{ Colors.bold, Colors.reset, source });
+    var tokens = std.array_list.Managed(compiler.lexer.Token).init(allocator);
+    defer tokens.deinit();
+    var lexer = compiler.lexer.Tokenizer.init(source, .semi);
+    while (true) {
+        const token = lexer.next();
+        try tokens.append(token);
+        if (token.tag == .eof) break;
+    }
+    for (tokens.items) |t| {
+        const lexeme = source[t.loc.start..t.loc.end];
+        try out_writer.print("{}({},{}) `{s}`\n", .{ t.tag, t.loc.start, t.loc.end, lexeme });
+    }
+    try out_writer.flush();
     defer allocator.free(source);
     var diags = compiler.diagnostics_v2.Diagnostics.init(allocator);
     defer diags.deinit();
     var parser = compiler.parser_v2.Parser.init(allocator, source, &diags);
     var cst_program = try parser.parse();
+
+    var out = std.array_list.Managed(u8).init(allocator);
+    defer out.deinit();
+    var cst_printer = compiler.cst_v2.DodPrinter.init(
+        out.writer(),
+        &cst_program.exprs,
+        &cst_program.pats,
+    );
+    try cst_printer.printProgram(&cst_program.program);
+    std.debug.print(
+        "{s}Concrete Syntax Tree (CST){s}\n{s}",
+        .{ Colors.bold, Colors.green, out.items },
+    );
+    out.clearRetainingCapacity();
     var lower_pass = compiler.lower_v2.LowerV2.init(allocator, &cst_program);
     var hir = try lower_pass.run();
     // print AST
-    var out = std.array_list.Managed(u8).init(allocator);
-    defer out.deinit();
     var ast_printer = compiler.ast_v2.AstPrinter.init(
         out.writer(),
         &hir.exprs,
@@ -115,9 +142,9 @@ fn repl(
         .{ Colors.bold, Colors.cyan, out.items },
     );
     try out_writer.flush();
-    var chk = compiler.checker_v2.CheckerV2.init(allocator, &diags);
+    var chk = compiler.checker_v2.CheckerV2.init(allocator, &diags, &hir);
     defer chk.deinit();
-    try chk.run(&hir);
+    try chk.run();
     // print Diagnostics
     try diags.emitStyled(source, err_writer, "REPL Input", true);
 }

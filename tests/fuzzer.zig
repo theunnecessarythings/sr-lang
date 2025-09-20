@@ -147,9 +147,9 @@ fn testChecker(data: []const u8) !void {
     var a = try lower.run();
     defer a.deinit();
 
-    var chk = checker_v2.CheckerV2.init(gpa, &diags);
+    var chk = checker_v2.CheckerV2.init(gpa, &diags, &a);
     defer chk.deinit();
-    _ = try chk.run(&a);
+    _ = try chk.run();
 }
 
 pub export fn fuzz_checker(ptr: [*]const u8, len: usize) callconv(.c) void {

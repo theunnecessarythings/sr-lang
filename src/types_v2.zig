@@ -64,6 +64,7 @@ pub const TypeKind = enum(u8) {
     Variant,
     ErrorSet,
     TypeType,
+    Noreturn,
 };
 
 pub const Rows = struct {
@@ -82,6 +83,7 @@ pub const Rows = struct {
     pub const Usize = struct {};
     pub const String = struct {};
     pub const Any = struct {};
+    pub const Noreturn = struct {};
 
     pub const Complex = struct { elem: TypeId };
     pub const Tensor = struct { elem: TypeId, rank: u8, dims: [4]usize };
@@ -127,6 +129,7 @@ pub const TypeStore = struct {
     Usize: Table(Rows.Usize) = .{},
     String: Table(Rows.String) = .{},
     Any: Table(Rows.Any) = .{},
+    Noreturn: Table(Rows.Noreturn) = .{},
 
     Complex: Table(Rows.Complex) = .{},
     Tensor: Table(Rows.Tensor) = .{},
@@ -167,6 +170,8 @@ pub const TypeStore = struct {
     t_usize: ?TypeId = null,
     t_string: ?TypeId = null,
     t_any: ?TypeId = null,
+    t_type: ?TypeId = null,
+    t_noreturn: ?TypeId = null,
 
     pub fn init(gpa: std.mem.Allocator) TypeStore {
         return .{ .gpa = gpa, .strs = StringInterner.init(gpa) };
@@ -281,6 +286,18 @@ pub const TypeStore = struct {
         if (self.t_any) |id| return id;
         const id = self.add(.Any, .{});
         self.t_any = id;
+        return id;
+    }
+    pub fn tType(self: *TypeStore) TypeId {
+        if (self.t_type) |id| return id;
+        const id = self.add(.TypeType, .{ .of = self.tAny() });
+        self.t_type = id;
+        return id;
+    }
+    pub fn tNoReturn(self: *TypeStore) TypeId {
+        if (self.t_noreturn) |id| return id;
+        const id = self.add(.Noreturn, .{});
+        self.t_noreturn = id;
         return id;
     }
 
@@ -517,6 +534,7 @@ pub const TypeStore = struct {
             .Usize => try w.print("usize", .{}),
             .String => try w.print("string", .{}),
             .Any => try w.print("any", .{}),
+            .Noreturn => try w.print("noreturn", .{}),
             .Complex => {
                 const r = self.Complex.get(row_idx);
                 try w.print("complex@", .{});

@@ -385,16 +385,7 @@ pub const Parser = struct {
             .coloncolon => { // constant: x :: (type)? (= rhs)?
                 self.advance();
                 flags.is_const = true;
-                const first = try self.parseExpr(0, .expr);
-                if (self.cur.tag == .eq) {
-                    // typed const: x :: T = rhs
-                    self.advance();
-                    ty_opt = cst.OptExprId.some(first);
-                    rhs_id = try self.parseExpr(0, .expr);
-                } else {
-                    // const value: x :: rhs
-                    rhs_id = first;
-                }
+                rhs_id = try self.parseExpr(0, .expr);
                 try self.expect(.eos);
                 lhs_opt = cst.OptExprId.some(lhs_or_rhs);
             },
@@ -741,7 +732,7 @@ pub const Parser = struct {
         while (self.cur.tag != .rcurly and self.cur.tag != .eof) {
             const field_tok = self.cur;
             var name_opt = cst.OptStrId.none();
-            if (self.cur.tag == .identifier or self.cur.tag == .raw_identifier) {
+            if ((self.cur.tag == .identifier or self.cur.tag == .raw_identifier) and self.nxt.tag == .colon) {
                 name_opt = cst.OptStrId.some(self.intern(self.slice(field_tok)));
                 self.advance();
                 try self.expect(.colon);
@@ -776,7 +767,7 @@ pub const Parser = struct {
         while (self.cur.tag != .rcurly and self.cur.tag != .eof) {
             const field_tok = self.cur;
             var name_opt = cst.OptStrId.none();
-            if (self.cur.tag == .identifier or self.cur.tag == .raw_identifier) {
+            if ((self.cur.tag == .identifier or self.cur.tag == .raw_identifier) and self.nxt.tag == .colon) {
                 name_opt = cst.OptStrId.some(self.intern(self.slice(field_tok)));
                 self.advance();
                 try self.expect(.colon);

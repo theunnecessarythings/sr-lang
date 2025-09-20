@@ -33,10 +33,10 @@ pub const Pipeline = struct {
         var hir = try lower_pass.run();
 
         // 2) Checker now includes type inference
-        var chk = checker.CheckerV2.init(self.allocator, self.diags);
+        var chk = checker.CheckerV2.init(self.allocator, self.diags, &hir);
         defer chk.deinit();
         const type_info = try self.allocator.create(types.TypeInfoV2);
-        type_info.* = try chk.runWithTypes(&hir);
+        type_info.* = try chk.runWithTypes();
 
         // 4) Lower from AST v2 to TIR v2
         var tir_lowerer = lower_tir.LowerTirV2.init(self.allocator, type_info);

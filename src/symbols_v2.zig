@@ -11,7 +11,13 @@ pub const SymbolId = dod.Index(SymTag);
 pub const ScopeId = dod.Index(ScopeTag);
 pub const RangeSym = dod.RangeOf(SymbolId);
 
-pub const SymbolRow = struct { name: ast.StrId, kind: SymbolKind, loc: ast.LocId, origin_decl: ast.OptDeclId, origin_param: ast.OptParamId };
+pub const SymbolRow = struct {
+    name: ast.StrId,
+    kind: SymbolKind,
+    loc: ast.LocId,
+    origin_decl: ast.OptDeclId,
+    origin_param: ast.OptParamId,
+};
 pub const ScopeRow = struct { parent: dod.SentinelIndex(ScopeTag), symbols: RangeSym };
 
 pub const SymbolStore = struct {
@@ -23,8 +29,10 @@ pub const SymbolStore = struct {
     // active scope stack (for building ranges)
     stack: std.ArrayListUnmanaged(struct { id: ScopeId, list: std.ArrayListUnmanaged(SymbolId) }) = .{},
 
-    pub fn init(gpa: std.mem.Allocator) SymbolStore { return .{ .gpa = gpa }; }
-    pub fn deinit(self: *@This()) void {
+    pub fn init(gpa: std.mem.Allocator) SymbolStore {
+        return .{ .gpa = gpa };
+    }
+    pub fn deinit(self: *SymbolStore) void {
         const gpa = self.gpa;
         for (self.stack.items) |*it| it.list.deinit(gpa);
         self.stack.deinit(gpa);
@@ -33,12 +41,12 @@ pub const SymbolStore = struct {
         self.sym_pool.deinit(gpa);
     }
 
-    pub fn push(self: *@This(), parent: ?ScopeId) !ScopeId {
+    pub fn push(self: *SymbolStore, parent: ?ScopeId) !ScopeId {
         const sid = ScopeId.fromRaw(self.scopes.add(self.gpa, .{ .parent = if (parent) |p| dod.SentinelIndex(ScopeTag).some(p) else dod.SentinelIndex(ScopeTag).none(), .symbols = RangeSym.empty() }));
         try self.stack.append(self.gpa, .{ .id = sid, .list = .{} });
         return sid;
     }
-    pub fn pop(self: *@This()) void {
+    pub fn pop(self: *SymbolStore) void {
         const gpa = self.gpa;
         if (self.stack.items.len == 0) return;
         var frame = self.stack.items[self.stack.items.len - 1];
@@ -49,27 +57,91 @@ pub const SymbolStore = struct {
         self.scopes.list.set(frame.id.toRaw(), scope);
         frame.list.deinit(gpa);
     }
-    pub fn currentId(self: *const @This()) ScopeId { return self.stack.items[self.stack.items.len - 1].id; }
+    pub fn currentId(self: *const SymbolStore) ScopeId {
+        return self.stack.items[self.stack.items.len - 1].id;
+    }
 
-    pub fn declare(self: *@This(), sym: SymbolRow) !SymbolId {
+    pub fn print(self: *const SymbolStore, a: *const ast.Ast, comptime indent: usize) void {
+        var buffer: [128]u8 = undefined;
+        const indent_str_slice = buffer[0..indent];
+        @memset(indent_str_slice, ' ');
+        const indent_str = indent_str_slice;
+
+        std.debug.print("{s}SymbolStore:\n", .{indent_str});
+
+        const scope_indent_str_slice = buffer[0 .. indent + 2];
+        @memset(scope_indent_str_slice, ' ');
+        const scope_indent_str = scope_indent_str_slice;
+
+        const sym_indent_str_slice = buffer[0 .. indent + 4];
+        @memset(sym_indent_str_slice, ' ');
+        const sym_indent_str = sym_indent_str_slice;
+
+        const num_scopes = self.scopes.list.len;
+        for (0..num_scopes) |i| {
+            const scope = self.scopes.get(@intCast(i));
+            const scope_id = ScopeId.fromRaw(@intCast(i));
+            const parent_to_print: ?ScopeId = if (scope.parent.isNone()) null else scope.parent.unwrap();
+            std.debug.print("{s}Scope({d}) parent: {?}\n", .{ scope_indent_str, i, parent_to_print });
+
+            // Check if scope is on the stack
+            var on_stack = false;
+            for (self.stack.items) |frame| {
+                if (frame.id.toRaw() == scope_id.toRaw()) {
+                    on_stack = true;
+                    for (frame.list.items) |sym_id| {
+                        const row = self.syms.get(sym_id.toRaw());
+                        const name = a.exprs.strs.get(row.name);
+                        std.debug.print("{s}{s}: {s} (loc={d})\n", .{ sym_indent_str, @tagName(row.kind), name, row.loc.toRaw() });
+                    }
+                    break;
+                }
+            }
+
+            if (!on_stack) {
+                const ids = self.sym_pool.slice(scope.symbols);
+                for (ids) |sym_id| {
+                    const row = self.syms.get(sym_id.toRaw());
+                    const name = a.exprs.strs.get(row.name);
+                    std.debug.print("{s}{s}: {s} (loc={d})\n", .{ sym_indent_str, @tagName(row.kind), name, row.loc.toRaw() });
+                }
+            }
+        }
+    }
+
+    pub fn declare(self: *SymbolStore, sym: SymbolRow) !SymbolId {
         const id = SymbolId.fromRaw(self.syms.add(self.gpa, sym));
         var frame_ptr = &self.stack.items[self.stack.items.len - 1];
         try frame_ptr.list.append(self.gpa, id);
         return id;
     }
 
-    pub fn lookup(self: *const @This(), a: *const ast.Ast, scope_id: ScopeId, name: ast.StrId) ?SymbolId {
+    pub fn lookup(self: *const SymbolStore, a: *const ast.Ast, scope_id: ScopeId, name: ast.StrId) ?SymbolId {
         _ = a;
         // linear search current scope and parents
         var sid_opt: dod.SentinelIndex(ScopeTag) = dod.SentinelIndex(ScopeTag).some(scope_id);
         while (!sid_opt.isNone()) {
             const sid = sid_opt.unwrap();
             const srow = self.scopes.get(sid.toRaw());
+
+            // Search symbols in the finalized pool for this scope
             const ids = self.sym_pool.slice(srow.symbols);
             for (ids) |sym_id| {
                 const row = self.syms.get(sym_id.toRaw());
                 if (row.name.toRaw() == name.toRaw()) return sym_id;
             }
+
+            // Also search symbols for this scope if it's on the stack
+            for (self.stack.items) |frame| {
+                if (frame.id.toRaw() == sid.toRaw()) {
+                    for (frame.list.items) |sym_id| {
+                        const row = self.syms.get(sym_id.toRaw());
+                        if (row.name.toRaw() == name.toRaw()) return sym_id;
+                    }
+                    break; // Found the scope on the stack, no need to check other frames for this sid
+                }
+            }
+
             sid_opt = srow.parent;
         }
         return null;
