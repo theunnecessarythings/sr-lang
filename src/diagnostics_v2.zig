@@ -108,10 +108,13 @@ pub const DiagnosticCode = enum {
     pointer_type_mismatch,
     expected_array_type,
     expected_map_type,
+    expected_struct_type,
     expected_tuple_type,
     expected_pointer_type,
     expected_integer_type,
     expected_float_type,
+    struct_field_count_mismatch,
+    struct_field_name_mismatch,
     deref_non_pointer,
     pointer_constness_violation,
     simd_invalid_element_type,
@@ -138,6 +141,7 @@ pub const DiagnosticCode = enum {
     argument_count_mismatch,
     unknown_function,
     expected_pattern_on_decl_lhs,
+    missing_field_name_in_struct_literal,
 };
 
 pub fn diagnosticMessageFmt(code: DiagnosticCode) []const u8 {
@@ -145,12 +149,15 @@ pub fn diagnosticMessageFmt(code: DiagnosticCode) []const u8 {
         .unexpected_token => "unexpected token: {s}",
         .expected_identifier => "expected identifier, found {s}",
         .expected_array_type => "expected array type, found {s}",
+        .expected_struct_type => "expected struct type, found {s}",
         .expected_map_type => "expected map type, found {s}",
         .expected_tuple_type => "expected tuple type, found {s}",
         .expected_pointer_type => "expected pointer type, found {s}",
         .expected_integer_type => "expected integer type, found {s}",
         .expected_float_type => "expected float type, found {s}",
         .expected_type_in_declaration => "expected '=' or '::' after type in declaration, found {s}",
+        .struct_field_count_mismatch => "struct literal has wrong number of fields",
+        .struct_field_name_mismatch => "struct literal has incorrect field name",
         .unexpected_token_in_expression => "unexpected token in expression: {s}",
         .unexpected_postfix_operator => "unexpected postfix operator: {s}",
         .expected_field_name_or_index => "expected identifier or integer after '.', found {s}",
@@ -268,6 +275,7 @@ pub fn diagnosticMessageFmt(code: DiagnosticCode) []const u8 {
         .argument_count_mismatch => "argument count does not match parameter count",
         .unknown_function => "unknown function",
         .expected_pattern_on_decl_lhs => "lhs of decl should be a pattern",
+        .missing_field_name_in_struct_literal => "missing field name in struct literal",
     };
 }
 

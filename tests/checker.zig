@@ -535,102 +535,102 @@ test "builtin types - optional - failures" {
 
 // Builtin types: struct (type expressions, literals, field access)
 
-// test "struct types - success" {
-//     // Struct type constant
-//     try checkProgram("Point :: struct { x: i32, y: i32 }", &.{});
-//
-//     // Literal initialization (same line)
-//     try checkProgram(
-//         \\
-//         \\ Point :: struct { x: i32, y: i32 }
-//         \\ p :: Point{ x: 1, y: 2 }
-//     , &.{});
-//
-//     // Field access
-//     try checkProgram(
-//         \\
-//         \\ Point :: struct { x: i32, y: i32 }
-//         \\ v :: Point{ x: 1, y: 2 }.x
-//     , &.{});
-//
-//     // Reordered fields in literal
-//     try checkProgram(
-//         \\
-//         \\ Point :: struct { x: i32, y: i32 }
-//         \\ p :: Point{ y: 2, x: 1 }
-//     , &.{});
-//
-//     // Nested struct
-//     try checkProgram(
-//         \\
-//         \\ Point :: struct { x: i32, y: i32 }
-//         \\ Outer :: struct { p: Point, z: i32 }
-//         \\ o :: Outer{ p: Point{ x: 1, y: 2 }, z: 3 }
-//     , &.{});
-//
-//     // Optional field accepting null
-//     try checkProgram(
-//         \\
-//         \\ Cfg :: struct { name: ?string, id: i32 }
-//         \\ c :: Cfg{ name: null, id: 1 }
-//     , &.{});
-// }
-//
-// test "struct types - failures" {
-//     // Field type mismatch
-//     try checkProgram(
-//         \\
-//         \\ Point :: struct { x: i32, y: i32 }
-//         \\ p :: Point{ x: "a", y: 2 }
-//     , &[_]diag.DiagnosticCode{.struct_field_type_mismatch});
-//
-//     // Missing required field
-//     try checkProgram(
-//         \\
-//         \\ Point :: struct { x: i32, y: i32 }
-//         \\ p :: Point{ x: 1 }
-//     , &[_]diag.DiagnosticCode{.struct_missing_field});
-//
-//     // Extra field
-//     try checkProgram(
-//         \\
-//         \\ Point :: struct { x: i32, y: i32 }
-//         \\ p :: Point{ x: 1, y: 2, z: 3 }
-//     , &[_]diag.DiagnosticCode{.unknown_struct_field});
-//
-//     // Null to non-optional field
-//     try checkProgram(
-//         \\
-//         \\ Point :: struct { x: i32, y: i32 }
-//         \\ p :: Point{ x: null, y: 2 }
-//     , &[_]diag.DiagnosticCode{.struct_field_requires_non_null});
-//
-//     // Access non-existing field
-//     try checkProgram(
-//         \\
-//         \\ Point :: struct { x: i32, y: i32 }
-//         \\ v :: Point{ x: 1, y: 2 }.z
-//     , &[_]diag.DiagnosticCode{.unknown_struct_field});
-// }
-//
-// // Builtin types: enums (C-style and integer-backed), tag usage
-//
-// test "enum types - success" {
-//     // Simple enum type and tag usage
-//     try checkProgram(
-//         \\
-//         \\ State :: enum { Running, Walking }
-//         \\ s :: State.Running
-//     , &.{});
-//
-//     // Integer-backed enum with explicit values
-//     try checkProgram(
-//         \\
-//         \\ Byte :: enum(u8) { A = 1, B = 2 }
-//         \\ b :: Byte.B
-//     , &.{});
-// }
-//
+test "struct types - success" {
+    // Struct type constant
+    try checkProgram("Point :: struct { x: i32, y: i32 }", &.{});
+
+    // Literal initialization (same line)
+    try checkProgram(
+        \\
+        \\ Point :: struct { x: i32, y: i32 }
+        \\ p :: Point{ x: 1, y: 2 }
+    , &.{});
+
+    // Field access
+    try checkProgram(
+        \\
+        \\ Point :: struct { x: i32, y: i32 }
+        \\ v :: Point{ x: 1, y: 2 }.x
+    , &.{});
+
+    // Reordered fields in literal
+    try checkProgram(
+        \\
+        \\ Point :: struct { x: i32, y: i32 }
+        \\ p :: Point{ y: 2, x: 1 }
+    , &.{});
+
+    // Nested struct
+    try checkProgram(
+        \\
+        \\ Point :: struct { x: i32, y: i32 }
+        \\ Outer :: struct { p: Point, z: i32 }
+        \\ o :: Outer{ p: Point{ x: 1, y: 2 }, z: 3 }
+    , &.{});
+
+    // Optional field accepting null
+    try checkProgram(
+        \\
+        \\ Cfg :: struct { name: ?string, id: i32 }
+        \\ c :: Cfg{ name: null, id: 1 }
+    , &.{});
+}
+
+test "struct types - failures" {
+    // Field type mismatch
+    try checkProgram(
+        \\
+        \\ Point :: struct { x: i32, y: i32 }
+        \\ p :: Point{ x: "a", y: 2 }
+    , &[_]diag.DiagnosticCode{.struct_field_type_mismatch});
+
+    // Missing required field
+    try checkProgram(
+        \\
+        \\ Point :: struct { x: i32, y: i32 }
+        \\ p :: Point{ x: 1 }
+    , &[_]diag.DiagnosticCode{.struct_missing_field});
+
+    // Extra field
+    try checkProgram(
+        \\
+        \\ Point :: struct { x: i32, y: i32 }
+        \\ p :: Point{ x: 1, y: 2, z: 3 }
+    , &[_]diag.DiagnosticCode{.unknown_struct_field});
+
+    // Null to non-optional field
+    try checkProgram(
+        \\
+        \\ Point :: struct { x: i32, y: i32 }
+        \\ p :: Point{ x: null, y: 2 }
+    , &[_]diag.DiagnosticCode{.struct_field_type_mismatch});
+
+    // Access non-existing field
+    try checkProgram(
+        \\
+        \\ Point :: struct { x: i32, y: i32 }
+        \\ v :: Point{ x: 1, y: 2 }.z
+    , &[_]diag.DiagnosticCode{.unknown_struct_field});
+}
+
+// Builtin types: enums (C-style and integer-backed), tag usage
+
+test "enum types - success" {
+    // Simple enum type and tag usage
+    try checkProgram(
+        \\
+        \\ State :: enum { Running, Walking }
+        \\ s :: State.Running
+    , &.{});
+
+    // Integer-backed enum with explicit values
+    try checkProgram(
+        \\
+        \\ Byte :: enum(u8) { A = 1, B = 2 }
+        \\ b :: Byte.B
+    , &.{});
+}
+
 // test "enum types - failures" {
 //     // Duplicate tags
 //     try checkProgram("E :: enum { A, A }", &[_]diag.DiagnosticCode{.duplicate_enum_field});
