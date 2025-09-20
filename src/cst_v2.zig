@@ -761,12 +761,14 @@ pub const ExprStore = struct {
     vfield_pool: Pool(VariantFieldId) = .{},
 
     // Infra
-    strs: StringInterner,
+    strs: *StringInterner,
     locs: LocStore = .{},
 
     // ----- lifecycle -----
     pub fn init(gpa: std.mem.Allocator) ExprStore {
-        return .{ .gpa = gpa, .strs = StringInterner.init(gpa) };
+        const interner = gpa.create(StringInterner) catch @panic("OOM");
+        interner.* = StringInterner.init(gpa);
+        return .{ .gpa = gpa, .strs = interner };
     }
     pub fn deinit(self: *@This()) void {
         const gpa = self.gpa;
@@ -799,8 +801,9 @@ pub const ExprStore = struct {
         self.efield_pool.deinit(gpa);
         self.vfield_pool.deinit(gpa);
 
-        self.strs.deinit();
         self.locs.deinit(gpa);
+        self.strs.deinit();
+        gpa.destroy(self.strs);
     }
 
     pub fn add(self: *@This(), comptime K: ExprKind, row: RowT(K)) ExprId {

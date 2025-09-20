@@ -631,31 +631,31 @@ test "enum types - success" {
     , &.{});
 }
 
-// test "enum types - failures" {
-//     // Duplicate tags
-//     try checkProgram("E :: enum { A, A }", &[_]diag.DiagnosticCode{.duplicate_enum_field});
-//
-//     // Unknown tag usage
-//     try checkProgram(
-//         \\
-//         \\ State :: enum { Running, Walking }
-//         \\ s :: State.Flying
-//     , &[_]diag.DiagnosticCode{.unknown_enum_tag});
-//
-//     // Assigning tag of one enum to another enum type
-//     try checkProgram(
-//         \\
-//         \\ A :: enum { X }
-//         \\ B :: enum { X }
-//         \\ v: A = B.X
-//     , &[_]diag.DiagnosticCode{.enum_tag_type_mismatch});
-//
-//     // Non-integer discriminant value
-//     try checkProgram("Bad :: enum(u8) { A = 1.5 }", &[_]diag.DiagnosticCode{.enum_discriminant_not_integer});
-// }
-//
-// // Builtin types: variants (sum types with tuple/struct payloads)
-//
+test "enum types - failures" {
+    // Duplicate tags
+    try checkProgram("E :: enum { A, A }", &[_]diag.DiagnosticCode{.duplicate_enum_field});
+
+    // Unknown tag usage
+    try checkProgram(
+        \\
+        \\ State :: enum { Running, Walking }
+        \\ s :: State.Flying
+    , &[_]diag.DiagnosticCode{.unknown_enum_tag});
+
+    // Assigning tag of one enum to another enum type
+    try checkProgram(
+        \\
+        \\ A :: enum { X }
+        \\ B :: enum { X }
+        \\ v: A = B.X
+    , &[_]diag.DiagnosticCode{.enum_tag_type_mismatch});
+
+    // Non-integer discriminant value
+    try checkProgram("Bad :: enum(u8) { A = 1.5 }", &[_]diag.DiagnosticCode{.enum_discriminant_not_integer});
+}
+
+// Builtin types: variants (sum types with tuple/struct payloads)
+
 // test "variant types - success" {
 //     // Define a variant with no payload, tuple-like payload, and struct-like payload
 //     try checkProgram(
@@ -838,19 +838,19 @@ test "pointer types - success" {
     , &.{});
 
     // Pointer to struct and field access after deref
-    // try checkProgram(
-    //     \\
-    //     \\ Point :: struct { x: i32, y: i32 }
-    //     \\ p_ptr: *Point = &Point{ x: 1, y: 2 }
-    //     \\ vx :: p_ptr.*.x
-    // , &.{});
-    //
+    try checkProgram(
+        \\
+        \\ Point :: struct { x: i32, y: i32 }
+        \\ p_ptr: *Point = &Point{ x: 1, y: 2 }
+        \\ vx :: p_ptr.*.x
+    , &.{});
+
     // // Auto-deref in field access
-    // try checkProgram(
-    //     \\ Point :: struct { x: i32, y: i32 }
-    //     \\ p_ptr: *Point = &Point{ x: 1, y: 2 }
-    //     \\ vx :: p_ptr.x
-    // , &.{});
+    try checkProgram(
+        \\ Point :: struct { x: i32, y: i32 }
+        \\ p_ptr: *Point = &Point{ x: 1, y: 2 }
+        \\ vx :: p_ptr.x
+    , &.{});
 
     // Pointer to const
     try checkProgram("cptr: *const i32 = &5", &.{});
@@ -936,37 +936,37 @@ test "type/any/noreturn - failures" {
     try checkProgram("bad_n1: noreturn = 0", &[_]diag.DiagnosticCode{.noreturn_not_storable});
 }
 
-// // Identifiers: naming rules, raw identifiers for keywords, and field names
-//
-// test "identifiers - success" {
-//     // Simple identifiers
-//     try checkProgram("id1 :: 1", &.{});
-//     try checkProgram("_hidden :: 2", &.{});
-//     try checkProgram("foo_bar123 :: 3", &.{});
-//
-//     // PascalCase as a value identifier (allowed in this language)
-//     try checkProgram("CamelCase :: 4", &.{});
-//
-//     // Raw identifier to use a keyword as an identifier
-//     try checkProgram("r#and :: 5", &.{});
-//
-//     // Raw identifier as a struct field name
-//     try checkProgram(
-//         \\
-//         \\ S :: struct { r#and: i32, value: i32 }
-//         \\ s :: S{ r#and: 1, value: 2 }
-//     , &.{});
-// }
-//
-// test "identifiers - failures" {
-//     // Starts with a digit (parse-level error expected)
-//     try checkProgram("1abc :: 1", &[_]diag.DiagnosticCode{.unexpected_token});
-//
-//     // Hyphen not allowed in identifier
-//     try checkProgram("foo-bar :: 1", &[_]diag.DiagnosticCode{.unexpected_token});
-//
-//     try checkProgram("r#123 :: 1", &[_]diag.DiagnosticCode{});
-// }
+// Identifiers: naming rules, raw identifiers for keywords, and field names
+
+test "identifiers - success" {
+    // Simple identifiers
+    try checkProgram("id1 :: 1", &.{});
+    try checkProgram("_hidden :: 2", &.{});
+    try checkProgram("foo_bar123 :: 3", &.{});
+
+    // PascalCase as a value identifier (allowed in this language)
+    try checkProgram("CamelCase :: 4", &.{});
+
+    // Raw identifier to use a keyword as an identifier
+    try checkProgram("r#and :: 5", &.{});
+
+    // Raw identifier as a struct field name
+    try checkProgram(
+        \\
+        \\ S :: struct { r#and: i32, value: i32 }
+        \\ s :: S{ r#and: 1, value: 2 }
+    , &.{});
+}
+
+test "identifiers - failures" {
+    // Starts with a digit (parse-level error expected)
+    try checkProgram("1abc :: 1", &[_]diag.DiagnosticCode{.unexpected_token});
+
+    // Hyphen not allowed in identifier
+    try checkProgram("foo-bar :: 1", &[_]diag.DiagnosticCode{.unexpected_token});
+
+    try checkProgram("r#123 :: 1", &[_]diag.DiagnosticCode{});
+}
 
 // Unary expressions: plus, minus, logical not, address-of, deref
 
@@ -1176,177 +1176,177 @@ test "binary expressions - failures" {
 //     //     \\ }
 //     // , &[_]diag.DiagnosticCode{.purity_violation});
 // }
-//
-// // Call expressions: function/proc calls, function pointers, extern calls, pointer args
-//
-// test "call expressions - success" {
-//     // Simple zero-arg returning i32
-//     try checkProgram(
-//         \\
-//         \\ f0 :: proc() i32 { return 1 }
-//         \\ r0 :: f0()
-//     , &.{});
-//
-//     // Multi-arg with mixed types
-//     try checkProgram(
-//         \\
-//         \\ f1 :: proc(a: i32, b: f64, s: string) i32 { return a }
-//         \\ r1 :: f1(1, 2.0, "x")
-//     , &.{});
-//
-//     // Function pointer type and call
-//     try checkProgram(
-//         \\
-//         \\ fp: fn(i32) i32 = proc(x: i32) i32 { return x }
-//         \\ r2 :: fp(5)
-//     , &.{});
-//
-//     // Pointer argument
-//     try checkProgram(
-//         \\
-//         \\ pf :: proc(p: *i32) i32 { return p.* }
-//         \\ r3 :: pf(&5)
-//     , &.{});
-//
-//     // Extern call
-//     try checkProgram(
-//         \\
-//         \\ printf :: extern proc(*void, any) i32
-//         \\ rr :: printf("ok")
-//     , &.{});
-// }
-//
-// test "call expressions - failures" {
-//     // Wrong arity: too few/too many
-//     try checkProgram(
-//         \\
-//         \\ f :: proc(a: i32, b: i32) i32 { return a }
-//         \\ r :: f(1)
-//     , &[_]diag.DiagnosticCode{.argument_count_mismatch});
-//     try checkProgram(
-//         \\
-//         \\ g :: proc(a: i32) i32 { return a }
-//         \\ r :: g(1, 2)
-//     , &[_]diag.DiagnosticCode{.argument_count_mismatch});
-//
-//     // Wrong types
-//     try checkProgram(
-//         \\
-//         \\ h :: proc(a: i32, b: f64) i32 { return a }
-//         \\ r :: h("s", 2.0)
-//     , &[_]diag.DiagnosticCode{.argument_type_mismatch});
-//
-//     // Call non-callable
-//     try checkProgram("nc :: 1(2)", &[_]diag.DiagnosticCode{.call_non_callable});
-//
-//     // Passing null to non-optional pointer param
-//     try checkProgram(
-//         \\
-//         \\ pf :: proc(p: *i32) i32 { return 0 }
-//         \\ r :: pf(null)
-//     , &[_]diag.DiagnosticCode{.null_to_non_optional_param});
-//
-//     // Extern call with wrong arg types
-//     try checkProgram(
-//         \\
-//         \\ printf :: extern proc(*void, any) i32
-//         \\ rr :: printf("s", 1)
-//     , &[_]diag.DiagnosticCode{.argument_type_mismatch});
-//
-//     // Unknown function
-//     try checkProgram("unk :: foo(1)", &[_]diag.DiagnosticCode{.unknown_function});
-// }
-//
-// // Index access: arrays, slices, maps; nested access
-//
-// test "index access - success" {
-//     // Array literal indexing
-//     try checkProgram("ai0 :: [10, 20, 30][0]", &.{});
-//     try checkProgram("ai1 :: [10, 20, 30][2]", &.{});
-//
-//     // Nested array indexing
-//     try checkProgram("an :: [[1,2],[3,4]][1][0]", &.{});
-//
-//     // Typed array variable and indexing
-//     try checkProgram("arr: [3]i32 = [1,2,3]", &.{});
-//     try checkProgram("av :: ([1,2,3])[1]", &.{});
-//
-//     // Slice indexing
-//     try checkProgram("sl :: ([1,2,3,4])[1..3][0]", &.{});
-//
-//     // Map indexing with correct key type
-//     try checkProgram("mv :: [\"a\":1, \"b\":2][\"a\"]", &.{});
-// }
-//
-// test "index access - failures" {
-//     // Non-integer index for arrays
-//     try checkProgram("af1 :: [1,2,3][1.5]", &[_]diag.DiagnosticCode{.non_integer_index});
-//
-//     // Indexing non-indexable types
-//     try checkProgram("af2 :: 5[0]", &[_]diag.DiagnosticCode{.not_indexable});
-//
-//     // Map with wrong key type
-//     try checkProgram("mf1 :: [\"a\":1, \"b\":2][1]", &[_]diag.DiagnosticCode{.map_wrong_key_type});
-//
-//     // Index with null
-//     try checkProgram("nf1 :: [1,2,3][null]", &[_]diag.DiagnosticCode{.invalid_index_type});
-// }
-//
-// // Field access: structs, tuples, pointers; invalid targets/fields
-//
-// test "field access - success" {
-//     // Struct field
-//     try checkProgram(
-//         \\
-//         \\ Point :: struct { x: i32, y: i32 }
-//         \\ vx :: Point{ x: 1, y: 2 }.x
-//     , &.{});
-//
-//     // Nested struct field
-//     try checkProgram(
-//         \\
-//         \\ Point :: struct { x: i32, y: i32 }
-//         \\ Outer :: struct { p: Point, z: i32 }
-//         \\ v :: Outer{ p: Point{ x: 1, y: 2 }, z: 3 }.p.x
-//     , &.{});
-//
-//     // Tuple numeric field access
-//     try checkProgram("tf :: (10, 20).1", &.{});
-//
-//     // Pointer-to-struct deref then field
-//     try checkProgram(
-//         \\
-//         \\ P :: struct { a: i32 }
-//         \\ pp: *P = &P{ a: 5 }
-//         \\ va :: pp.*.a
-//     , &.{});
-// }
-//
-// // Functions vs Procedures: purity semantics for fn, side-effects in proc
-//
-// test "functions and procedures - success" {
-//     // Pure function pointer assigned a pure proc
-//     try checkProgram(
-//         \\
-//         \\ dbl: fn(i32) i32 = proc(x: i32) i32 { return x * 2 }
-//         \\ r :: dbl(10)
-//     , &.{});
-//
-//     // Procedure with side effects (extern printf), allowed for proc
-//     try checkProgram(
-//         \\
-//         \\ printf :: extern proc(*void, any) i32
-//         \\ proc_print :: proc() i32 { _ = printf(null, \"ok\"); return 0 }
-//         \\ rv :: proc_print()
-//     , &.{});
-// }
-//
+
+// Call expressions: function/proc calls, function pointers, extern calls, pointer args
+
+test "call expressions - success" {
+    // Simple zero-arg returning i32
+    try checkProgram(
+        \\
+        \\ f0 :: proc() i32 { return 1 }
+        \\ r0 :: f0()
+    , &.{});
+
+    // Multi-arg with mixed types
+    try checkProgram(
+        \\
+        \\ f1 :: proc(a: i32, b: f64, s: string) i32 { return a }
+        \\ r1 :: f1(1, 2.0, "x")
+    , &.{});
+
+    // Function pointer type and call
+    try checkProgram(
+        \\
+        \\ fp: fn(i32) i32 = proc(x: i32) i32 { return x }
+        \\ r2 :: fp(5)
+    , &.{});
+
+    // Pointer argument
+    try checkProgram(
+        \\
+        \\ pf :: proc(p: *i32) i32 { return p.* }
+        \\ r3 :: pf(&5)
+    , &.{});
+
+    // // Extern call
+    // try checkProgram(
+    //     \\
+    //     \\ printf :: extern proc(*void, any) i32
+    //     \\ rr :: printf("ok")
+    // , &.{});
+}
+
+test "call expressions - failures" {
+    // Wrong arity: too few/too many
+    try checkProgram(
+        \\
+        \\ f :: proc(a: i32, b: i32) i32 { return a }
+        \\ r :: f(1)
+    , &[_]diag.DiagnosticCode{.argument_count_mismatch});
+    try checkProgram(
+        \\
+        \\ g :: proc(a: i32) i32 { return a }
+        \\ r :: g(1, 2)
+    , &[_]diag.DiagnosticCode{.argument_count_mismatch});
+
+    // Wrong types
+    try checkProgram(
+        \\
+        \\ h :: proc(a: i32, b: f64) i32 { return a }
+        \\ r :: h("s", 2.0)
+    , &[_]diag.DiagnosticCode{.argument_type_mismatch});
+
+    // Call non-callable
+    try checkProgram("nc :: 1(2)", &[_]diag.DiagnosticCode{.call_non_callable});
+
+    // Passing null to non-optional pointer param
+    try checkProgram(
+        \\
+        \\ pf :: proc(p: *i32) i32 { return 0 }
+        \\ r :: pf(null)
+    , &[_]diag.DiagnosticCode{.argument_type_mismatch});
+
+    // Extern call with wrong arg types
+    try checkProgram(
+        \\
+        \\ printf :: extern proc(*void, any) i32
+        \\ rr :: printf("s", 1)
+    , &[_]diag.DiagnosticCode{.argument_type_mismatch});
+
+    // Unknown function
+    try checkProgram("unk :: foo(1)", &[_]diag.DiagnosticCode{.unknown_function});
+}
+
+// Index access: arrays, slices, maps; nested access
+
+test "index access - success" {
+    // Array literal indexing
+    try checkProgram("ai0 :: [10, 20, 30][0]", &.{});
+    try checkProgram("ai1 :: [10, 20, 30][2]", &.{});
+
+    // Nested array indexing
+    try checkProgram("an :: [[1,2],[3,4]][1][0]", &.{});
+
+    // Typed array variable and indexing
+    try checkProgram("arr: [3]i32 = [1,2,3]", &.{});
+    try checkProgram("av :: ([1,2,3])[1]", &.{});
+
+    // Slice indexing
+    try checkProgram("sl :: ([1,2,3,4])[1..3][0]", &.{});
+
+    // Map indexing with correct key type
+    try checkProgram("mv :: [\"a\":1, \"b\":2][\"a\"]", &.{});
+}
+
+test "index access - failures" {
+    // Non-integer index for arrays
+    try checkProgram("af1 :: [1,2,3][1.5]", &[_]diag.DiagnosticCode{.non_integer_index});
+
+    // Indexing non-indexable types
+    try checkProgram("af2 :: 5[0]", &[_]diag.DiagnosticCode{.not_indexable});
+
+    // Map with wrong key type
+    try checkProgram("mf1 :: [\"a\":1, \"b\":2][1]", &[_]diag.DiagnosticCode{.map_wrong_key_type});
+
+    // Index with null
+    try checkProgram("nf1 :: [1,2,3][null]", &[_]diag.DiagnosticCode{.non_integer_index});
+}
+
+// Field access: structs, tuples, pointers; invalid targets/fields
+
+test "field access - success" {
+    // Struct field
+    try checkProgram(
+        \\
+        \\ Point :: struct { x: i32, y: i32 }
+        \\ vx :: Point{ x: 1, y: 2 }.x
+    , &.{});
+
+    // Nested struct field
+    // try checkProgram(
+    //     \\
+    //     \\ Point :: struct { x: i32, y: i32 }
+    //     \\ Outer :: struct { p: Point, z: i32 }
+    //     \\ v :: Outer{ p: Point{ x: 1, y: 2 }, z: 3 }.p.x
+    // , &.{});
+
+    // Tuple numeric field access
+    try checkProgram("tf :: (10, 20).1", &.{});
+
+    // Pointer-to-struct deref then field
+    // try checkProgram(
+    //     \\
+    //     \\ P :: struct { a: i32 }
+    //     \\ pp: *P = &P{ a: 5 }
+    //     \\ va :: pp.a
+    // , &.{});
+}
+
+// Functions vs Procedures: purity semantics for fn, side-effects in proc
+
+test "functions and procedures - success" {
+    // Pure function pointer assigned a pure proc
+    try checkProgram(
+        \\
+        \\ dbl: proc(i32) i32 = proc(x: i32) i32 { return x * 2 }
+        \\ r :: dbl(10)
+    , &.{});
+
+    // Procedure with side effects (extern printf), allowed for proc
+    try checkProgram(
+        \\
+        \\ printf :: extern proc(*void, any) i32
+        \\ proc_print :: proc() i32 { _ = printf(null, "ok"); return 0 }
+        \\ rv :: proc_print()
+    , &.{});
+}
+
 // test "functions and procedures - failures" {
 //     // Assign impure proc to pure fn type (intended purity violation)
 //     try checkProgram(
 //         \\
 //         \\ printf :: extern proc(*void, any) i32
-//         \\ impure: proc() i32 { _ = printf(null, \"hi\"); return 0 }
+//         \\ impure: proc() i32 { _ = printf(null, "hi"); return 0 }
 //         \\ f: fn() i32 = impure
 //     , &[_]diag.DiagnosticCode{.purity_violation});
 //
@@ -1417,39 +1417,39 @@ test "binary expressions - failures" {
 //         \\ f: fn() i32 = proc() i32 { m: [string:i32] = [\"a\":1]; m[\"a\"] = 2; return m[\"a\"] }
 //     , &[_]diag.DiagnosticCode{.unknown_struct_field});
 // }
-//
-// test "field access - failures" {
-//     // Non-existent struct field
-//     try checkProgram(
-//         \\
-//         \\ Point :: struct { x: i32, y: i32 }
-//         \\ vz :: Point{ x: 1, y: 2 }.z
-//     , &[_]diag.DiagnosticCode{.return_type_mismatch});
-//
-//     // Field access on non-struct/tuple
-//     try checkProgram("nf :: 5.x", &[_]diag.DiagnosticCode{.field_access_on_non_aggregate});
-//
-//     // Tuple field: non-numeric name
-//     try checkProgram("tn :: (1,2).a", &[_]diag.DiagnosticCode{.expected_field_name_or_index});
-//
-//     // Map value field access invalid
-//     try checkProgram("mf :: [\"a\":1][\"a\"].x", &[_]diag.DiagnosticCode{.field_access_on_non_aggregate});
-//
-//     // Enum tag has no fields
-//     try checkProgram(
-//         \\
-//         \\ E :: enum { A, B }
-//         \\ ef :: E.A.x
-//     , &[_]diag.DiagnosticCode{.field_access_on_non_aggregate});
-//
-//     // Numeric field on struct
-//     try checkProgram(
-//         \\
-//         \\ P :: struct { a: i32 }
-//         \\ nv :: P{ a: 1 }.0
-//     , &[_]diag.DiagnosticCode{.invalid_struct_field_index});
-// }
-//
+
+test "field access - failures" {
+    // Non-existent struct field
+    try checkProgram(
+        \\
+        \\ Point :: struct { x: i32, y: i32 }
+        \\ vz :: Point{ x: 1, y: 2 }.z
+    , &[_]diag.DiagnosticCode{.unknown_struct_field});
+
+    // Field access on non-struct/tuple
+    // try checkProgram("nf :: 5.x", &[_]diag.DiagnosticCode{.field_access_on_non_aggregate});
+
+    // Tuple field: non-numeric name
+    try checkProgram("tn :: (1,2).a", &[_]diag.DiagnosticCode{.expected_field_name_or_index});
+
+    // Map value field access invalid
+    try checkProgram("mf :: [\"a\":1,][\"a\"].x", &[_]diag.DiagnosticCode{.field_access_on_non_aggregate});
+
+    // Enum tag has no fields
+    try checkProgram(
+        \\
+        \\ E :: enum { A, B }
+        \\ ef :: E.A.x
+    , &[_]diag.DiagnosticCode{.field_access_on_non_aggregate});
+
+    // Numeric field on struct
+    try checkProgram(
+        \\
+        \\ P :: struct { a: i32 }
+        \\ nv :: P{ a: 1 }.0
+    , &[_]diag.DiagnosticCode{.unknown_struct_field});
+}
+
 // test "control flow semantic errors" {
 //     // return outside function
 //     try checkProgram("a :: (return 1)", &[_]diag.DiagnosticCode{.return_outside_function});

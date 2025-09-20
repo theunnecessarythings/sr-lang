@@ -119,6 +119,6 @@ test "full success test" {
 
     const src0 = try gpa.dupeZ(u8, src);
     defer gpa.free(src0);
-    var ast = try parseProgramFromText(gpa, src0);
-    defer ast.deinit();
+    var result = try parseProgramFromText(gpa, src0);
+    defer result.deinit();
 }

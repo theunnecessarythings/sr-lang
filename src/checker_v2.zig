@@ -25,14 +25,14 @@ pub const CheckerV3 = struct {
     pub fn init(
         gpa: std.mem.Allocator,
         diags: *Diagnostics,
-        unit: *const ast.Ast,
+        unit: *ast.Ast,
     ) CheckerV3 {
         return .{
             .gpa = gpa,
             .diags = diags,
             .ast_unit = unit,
             .symtab = symbols.SymbolStore.init(gpa),
-            .type_info = TypeInfoV2.init(gpa),
+            .type_info = types.TypeInfoV2.init(gpa, unit.exprs.strs),
         };
     }
     pub fn deinit(self: *CheckerV3) void {
@@ -460,15 +460,15 @@ pub const CheckerV3 = struct {
             .TupleLit => try self.checkTupleLit(id),
             .MapLit => try self.checkMapLit(id),
             .IndexAccess => self.checkIndexAccess(id),
-            .FieldAccess => self.checkFieldAccess(id, expect),
+            .FieldAccess => self.checkFieldAccess(id),
             .StructLit => try self.checkStructLit(id),
             .Range => try self.checkRange(id),
 
             // still default to any for the following kinds (can be implemented later)
             .Deref => try self.checkDeref(id),
-            .VariantLit => try self.checkVariantLit(id),
-            .EnumLit => try self.checkEnumLit(id, expect),
-            .Call => try self.checkCall(id, expect),
+            .VariantLit => unreachable,
+            .EnumLit => unreachable,
+            .Call => try self.checkCall(id),
             .ComptimeBlock => try self.checkComptimeBlock(id),
             .CodeBlock => try self.checkCodeBlock(id, expect),
             .AsyncBlock => try self.checkAsyncBlock(id),
@@ -739,7 +739,7 @@ pub const CheckerV3 = struct {
         const index_expr = self.ast_unit.exprs.get(.IndexAccess, id);
         const col_ty = self.checkExpr(index_expr.collection, expectNone()) catch
             return null;
-
+        if (col_ty == null) return null;
         const col_kind = self.type_info.store.index.kinds.items[col_ty.?.toRaw()];
         switch (col_kind) {
             .Array => {
@@ -760,6 +760,24 @@ pub const CheckerV3 = struct {
                 const r = self.type_info.store.Array.get(self.type_info.store.index.rows.items[col_ty.?.toRaw()]);
                 return r.elem;
             },
+            .Slice => {
+                const idx_kind = self.ast_unit.exprs.index.kinds.items[index_expr.index.toRaw()];
+                if (idx_kind == .Range) {
+                    _ = self.checkExpr(index_expr.index, expectNone()) catch return null;
+                    const r = self.type_info.store.Slice.get(self.type_info.store.index.rows.items[col_ty.?.toRaw()]);
+                    return self.type_info.store.mkSlice(r.elem);
+                }
+
+                const it = self.checkExpr(index_expr.index, expectNone()) catch return null;
+                if (it) |iid| {
+                    if (!self.isIntegerKind(self.type_info.store.index.kinds.items[iid.toRaw()])) {
+                        _ = self.diags.addError(self.ast_unit.exprs.locs.get(index_expr.loc), .non_integer_index, .{}) catch {};
+                        return null;
+                    }
+                }
+                const r = self.type_info.store.Slice.get(self.type_info.store.index.rows.items[col_ty.?.toRaw()]);
+                return r.elem;
+            },
             .Map => {
                 const m = self.type_info.store.Map.get(self.type_info.store.index.rows.items[col_ty.?.toRaw()]);
                 const it = self.checkExpr(index_expr.index, expectNone()) catch return null;
@@ -771,24 +789,7 @@ pub const CheckerV3 = struct {
                 }
                 return m.value;
             },
-            // .Slice => {
-            //     const idx_kind = self.ast_unit.exprs.index.kinds.items[index_expr.index.toRaw()];
-            //     if (idx_kind == .Range) {
-            //         _ = self.checkExpr(index_expr.index, expectNone()) catch return null;
-            //         const r = self.type_info.store.Slice.get(self.type_info.store.index.rows.items[col_ty.?.toRaw()]);
-            //         return self.type_info.store.mkSlice(r.elem);
-            //     }
-            //
-            //     const it = self.checkExpr(index_expr.index, expectNone()) catch return null;
-            //     if (it) |iid| {
-            //         if (!self.isIntegerKind(self.type_info.store.index.kinds.items[iid.toRaw()])) {
-            //             _ = self.diags.addError(self.ast_unit.exprs.locs.get(index_expr.loc), .non_integer_index, .{}) catch {};
-            //             return null;
-            //         }
-            //     }
-            //     const r = self.type_info.store.Slice.get(self.type_info.store.index.rows.items[col_ty.?.toRaw()]);
-            //     return r.elem;
-            // },
+
             .String => {
                 const it = self.checkExpr(index_expr.index, expectNone()) catch return null;
                 if (it) |iid| {
@@ -806,125 +807,87 @@ pub const CheckerV3 = struct {
         return null;
     }
 
-    fn checkFieldAccess(self: *CheckerV3, id: ast.ExprId, expect: Expectation) ?types.TypeId {
-        const fr = self.ast_unit.exprs.get(.FieldAccess, id);
-        const enum_decl_opt = if (!fr.is_tuple) self.enumDeclByExpr(fr.parent) else null;
-        const variant_decl_opt = if (!fr.is_tuple) self.variantDeclByExpr(fr.parent) else null;
-        const pt = self.checkExpr(fr.parent, expectNone()) catch return null;
-        if (pt == null) {
-            // Try struct typed literal context
-            // if (!fr.is_tuple and self.ast_unit.exprs.index.kinds.items[fr.parent.toRaw()] == .StructLit) {
-            //     return self.structFieldTypeFromLiteralContext(fr);
-            // }
-            if (enum_decl_opt) |did| {
-                return self.handleEnumFieldAccess(fr, expect, did);
-            }
-            if (variant_decl_opt) |vdid| {
-                // Accessing a variant tag without constructor: only ok for no-payload cases
-                const decl = self.ast_unit.exprs.Decl.get(vdid.toRaw());
-                const is_error = (self.ast_unit.exprs.index.kinds.items[decl.value.toRaw()] == .ErrorType);
-                const vt = if (!is_error) self.ast_unit.exprs.get(.VariantType, decl.value) else self.ast_unit.exprs.get(.ErrorType, decl.value);
-                const fields = self.ast_unit.exprs.vfield_pool.slice(vt.fields);
+    fn checkFieldAccess(self: *CheckerV3, id: ast.ExprId) ?types.TypeId {
+        const field_expr = self.ast_unit.exprs.get(.FieldAccess, id);
+        const parent_ty = self.checkExpr(field_expr.parent, expectNone()) catch return null;
+        if (parent_ty == null) return null;
+        var ty = parent_ty.?;
+        const kind = self.type_info.store.index.kinds.items[ty.toRaw()];
+        switch (kind) {
+            .Struct => {
+                const struct_row = self.type_info.store.Struct.get(self.type_info.store.index.rows.items[ty.toRaw()]);
+                const fields = self.type_info.store.field_pool.slice(struct_row.fields);
                 var i: usize = 0;
                 while (i < fields.len) : (i += 1) {
-                    const vf = self.ast_unit.exprs.VariantField.get(fields[i].toRaw());
-                    if (std.mem.eql(u8, self.ast_unit.exprs.strs.get(vf.name), self.ast_unit.exprs.strs.get(fr.field))) {
-                        if (is_error) {
-                            if (expect.error_decl) |ed| {
-                                if (ed.toRaw() != vdid.toRaw()) {
-                                    _ = self.diags.addError(self.ast_unit.exprs.locs.get(fr.loc), .unknown_error_tag, .{}) catch {};
-                                    return null;
-                                }
-                            }
-                        }
-                        switch (vf.payload_kind) {
-                            .none => return self.type_info.store.mkErrorSet(null),
-                            .tuple, .@"struct" => {
-                                _ = self.diags.addError(self.ast_unit.exprs.locs.get(fr.loc), .variant_payload_arity_mismatch, .{}) catch {};
-                                return null;
-                            },
-                        }
+                    const field = self.type_info.store.Field.get(fields[i].toRaw());
+                    if (field.name.toRaw() == field_expr.field.toRaw()) {
+                        return field.ty;
                     }
                 }
-                if (is_error) {
-                    _ = self.diags.addError(self.ast_unit.exprs.locs.get(fr.loc), .unknown_error_tag, .{}) catch {};
+                _ = self.diags.addError(self.ast_unit.exprs.locs.get(field_expr.loc), .unknown_struct_field, .{}) catch {};
+                return null;
+            },
+            .Tuple => {
+                const tuple_row = self.type_info.store.Tuple.get(self.type_info.store.index.rows.items[ty.toRaw()]);
+                const fields = self.type_info.store.type_pool.slice(tuple_row.elems);
+                const index = std.fmt.parseInt(usize, self.ast_unit.exprs.strs.get(field_expr.field), 10) catch {
+                    _ = self.diags.addError(self.ast_unit.exprs.locs.get(field_expr.loc), .expected_field_name_or_index, .{}) catch {};
+                    return null;
+                };
+                if (index >= fields.len) {
+                    _ = self.diags.addError(self.ast_unit.exprs.locs.get(field_expr.loc), .tuple_index_out_of_bounds, .{}) catch {};
+                    return null;
+                }
+                return fields[index];
+            },
+            .Ptr => {
+                const ptr_row = self.type_info.store.Ptr.get(self.type_info.store.index.rows.items[ty.toRaw()]);
+                ty = ptr_row.elem;
+                const inner_kind = self.type_info.store.index.kinds.items[ty.toRaw()];
+                if (inner_kind == .Struct) {
+                    const struct_row = self.type_info.store.Struct.get(self.type_info.store.index.rows.items[ty.toRaw()]);
+                    const fields = self.type_info.store.field_pool.slice(struct_row.fields);
+                    var i: usize = 0;
+                    while (i < fields.len) : (i += 1) {
+                        const field = self.type_info.store.Field.get(fields[i].toRaw());
+                        if (field.name.toRaw() == field_expr.field.toRaw()) {
+                            return field.ty;
+                        }
+                    }
+                    _ = self.diags.addError(self.ast_unit.exprs.locs.get(field_expr.loc), .unknown_struct_field, .{}) catch {};
+                    return null;
                 } else {
-                    _ = self.diags.addError(self.ast_unit.exprs.locs.get(fr.loc), .unknown_enum_tag, .{}) catch {};
+                    _ = self.diags.addError(self.ast_unit.exprs.locs.get(field_expr.loc), .field_access_on_non_aggregate, .{}) catch {};
+                    return null;
                 }
-                return null;
-            }
-            return null;
-        }
-        var t = pt.?;
-        if (self.type_info.store.index.kinds.items[t.toRaw()] == .Ptr)
-            t = self.type_info.store.Ptr.get(self.type_info.store.index.rows.items[t.toRaw()]).elem;
-
-        if (enum_decl_opt != null and t.toRaw() == self.type_info.store.tAny().toRaw()) {
-            return self.handleEnumFieldAccess(fr, expect, enum_decl_opt.?);
-        }
-        if (variant_decl_opt != null and t.toRaw() == self.type_info.store.tAny().toRaw()) {
-            // Same as above: plain tag access on variant context
-            const vdid = variant_decl_opt.?;
-            const decl = self.ast_unit.exprs.Decl.get(vdid.toRaw());
-            const is_error = (self.ast_unit.exprs.index.kinds.items[decl.value.toRaw()] == .ErrorType);
-            const vt = if (!is_error) self.ast_unit.exprs.get(.VariantType, decl.value) else self.ast_unit.exprs.get(.ErrorType, decl.value);
-            const fields = self.ast_unit.exprs.vfield_pool.slice(vt.fields);
-            var i: usize = 0;
-            while (i < fields.len) : (i += 1) {
-                const vf = self.ast_unit.exprs.VariantField.get(fields[i].toRaw());
-                if (std.mem.eql(u8, self.ast_unit.exprs.strs.get(vf.name), self.ast_unit.exprs.strs.get(fr.field))) {
-                    if (is_error) {
-                        if (expect.error_decl) |ed| {
-                            if (ed.toRaw() != vdid.toRaw()) {
-                                _ = self.diags.addError(self.ast_unit.exprs.locs.get(fr.loc), .unknown_error_tag, .{}) catch {};
-                                return null;
-                            }
+            },
+            .TypeType => {
+                const tt = self.type_info.store.TypeType.get(self.type_info.store.index.rows.items[ty.toRaw()]);
+                ty = tt.of;
+                const inner_kind = self.type_info.store.index.kinds.items[ty.toRaw()];
+                if (inner_kind == .Enum) {
+                    const enum_ty = self.type_info.store.Enum.get(self.type_info.store.index.rows.items[ty.toRaw()]);
+                    const enum_members = self.type_info.store.enum_member_pool.slice(enum_ty.members);
+                    var i: usize = 0;
+                    while (i < enum_members.len) : (i += 1) {
+                        const member = self.type_info.store.EnumMember.get(enum_members[i].toRaw());
+                        if (member.name.toRaw() == field_expr.field.toRaw()) {
+                            return ty;
                         }
                     }
-                    switch (vf.payload_kind) {
-                        .none => return self.type_info.store.mkErrorSet(null),
-                        .tuple, .@"struct" => {
-                            _ = self.diags.addError(self.ast_unit.exprs.locs.get(fr.loc), .variant_payload_arity_mismatch, .{}) catch {};
-                            return null;
-                        },
-                    }
+                    _ = self.diags.addError(self.ast_unit.exprs.locs.get(field_expr.loc), .unknown_enum_tag, .{}) catch {};
+                    return null;
+                } else {
+                    _ = self.diags.addError(self.ast_unit.exprs.locs.get(field_expr.loc), .field_access_on_non_aggregate, .{}) catch {};
+                    return null;
                 }
-            }
-            if (is_error) {
-                _ = self.diags.addError(self.ast_unit.exprs.locs.get(fr.loc), .unknown_error_tag, .{}) catch {};
-            } else {
-                _ = self.diags.addError(self.ast_unit.exprs.locs.get(fr.loc), .unknown_enum_tag, .{}) catch {};
-            }
-            return null;
-        }
-
-        if (self.type_info.store.index.kinds.items[t.toRaw()] == .Tuple) {
-            if (fr.is_tuple) {
-                const rowt = self.type_info.store.Tuple.get(self.type_info.store.index.rows.items[t.toRaw()]);
-                const idx = std.fmt.parseInt(usize, self.ast_unit.exprs.strs.get(fr.field), 10) catch return null;
-                const ids = self.type_info.store.type_pool.slice(rowt.elems);
-                if (idx < ids.len) return ids[idx];
-                _ = self.diags.addError(self.ast_unit.exprs.locs.get(fr.loc), .tuple_index_out_of_bounds, .{}) catch {};
+            },
+            else => {
+                std.debug.print("Field access on non-aggregate type: {}\n", .{kind});
+                _ = self.diags.addError(self.ast_unit.exprs.locs.get(field_expr.loc), .field_access_on_non_aggregate, .{}) catch {};
                 return null;
-            } else {
-                _ = self.diags.addError(self.ast_unit.exprs.locs.get(fr.loc), .expected_field_name_or_index, .{}) catch {};
-                return null;
-            }
+            },
         }
-        if (self.type_info.store.index.kinds.items[t.toRaw()] == .Struct) {
-            const rowt = self.type_info.store.Struct.get(self.type_info.store.index.rows.items[t.toRaw()]);
-            const fids = self.type_info.store.field_pool.slice(rowt.fields);
-            var i: usize = 0;
-            while (i < fids.len) : (i += 1) {
-                const f = self.type_info.store.Field.get(fids[i].toRaw());
-                if (std.mem.eql(u8, self.type_info.store.strs.get(f.name), self.ast_unit.exprs.strs.get(fr.field))) {
-                    return f.ty;
-                }
-            }
-            _ = self.diags.addError(self.ast_unit.exprs.locs.get(fr.loc), .unknown_struct_field, .{}) catch {};
-            return null;
-        }
-        return null;
     }
 
     fn checkRange(self: *CheckerV3, id: ast.ExprId) !?types.TypeId {
@@ -946,63 +909,81 @@ pub const CheckerV3 = struct {
         return self.type_info.store.mkSlice(self.type_info.store.tUsize());
     }
 
-    fn checkVariantLit(self: *CheckerV3, id: ast.ExprId) !?types.TypeId {
-        const vl = self.ast_unit.exprs.get(.VariantLit, id);
-        if (vl.value.isNone()) return self.type_info.store.tAny();
-        const pt = try self.checkExpr(vl.value.unwrap(), expectNone());
-        if (pt == null) return null;
-        return self.type_info.store.mkVariant(pt.?);
+    fn checkStructLit(self: *CheckerV3, id: ast.ExprId) !?types.TypeId {
+        const struct_lit = self.ast_unit.exprs.get(.StructLit, id);
+        const lit_fields = self.ast_unit.exprs.sfv_pool.slice(struct_lit.fields);
+        var buf = try self.type_info.store.gpa.alloc(types.TypeStore.StructFieldArg, lit_fields.len);
+        defer self.type_info.store.gpa.free(buf);
+        var i: usize = 0;
+        while (i < lit_fields.len) : (i += 1) {
+            const f = self.ast_unit.exprs.StructFieldValue.get(lit_fields[i].toRaw());
+            const ft = try self.checkExpr(f.value, expectNone()) orelse return null;
+            if (f.name.isNone()) {
+                // Positional field. We can't handle this yet.
+                return null;
+            }
+            buf[i] = .{ .name = self.ast_unit.exprs.strs.get(f.name.unwrap()), .ty = ft };
+        }
+        const struct_ty = self.type_info.store.mkStruct(buf);
+        if (struct_lit.ty.isNone()) {
+            return struct_ty;
+        }
+        const lit_ty = struct_lit.ty.unwrap();
+        const expect_ty = try self.typeFromTypeExpr(lit_ty) orelse {
+            try self.diags.addError(self.ast_unit.exprs.locs.get(struct_lit.loc), .could_not_resolve_type, .{});
+            return null;
+        };
+        const is_assignable = self.assignable(struct_ty, expect_ty);
+        switch (is_assignable) {
+            .success => {},
+            .struct_field_count_mismatch => {
+                try self.diags.addError(self.ast_unit.exprs.locs.get(struct_lit.loc), .struct_missing_field, .{});
+                return null;
+            },
+            .unknown_struct_field => {
+                try self.diags.addError(self.ast_unit.exprs.locs.get(struct_lit.loc), .unknown_struct_field, .{});
+                return null;
+            },
+            else => {
+                try self.diags.addError(self.ast_unit.exprs.locs.get(struct_lit.loc), .struct_field_type_mismatch, .{});
+                return null;
+            },
+        }
+        return expect_ty;
     }
 
-    fn checkEnumLit(self: *CheckerV3, id: ast.ExprId, expect: Expectation) !?types.TypeId {
-        // In the current lowering, enum tags appear as FieldAccess, not EnumLit.
-        // Accept and yield 'any' here to compile; real enum typing happens via FieldAccess.
-        _ = expect;
-        _ = id;
-        return self.type_info.store.tAny();
-    }
-
-    fn checkCall(self: *CheckerV3, id: ast.ExprId, expect: Expectation) !?types.TypeId {
-        _ = expect;
-        const cr = self.ast_unit.exprs.get(.Call, id);
-        // const callee_kind = self.ast_unit.exprs.index.kinds.items[cr.callee.toRaw()];
-        // if (callee_kind == .FieldAccess) {
-        //     const fr = self.ast_unit.exprs.get(.FieldAccess, cr.callee);
-        //     if (self.variantDeclByExpr(fr.parent)) |_| {
-        //         const args = self.ast_unit.exprs.expr_pool.slice(cr.args);
-        //         return try self.handleVariantCtorCall(fr, args);
-        //     }
-        // }
-        const ft = try self.checkExpr(cr.callee, expectNone());
-        if (ft == null) {
+    fn checkCall(self: *CheckerV3, id: ast.ExprId) !?types.TypeId {
+        const call_expr = self.ast_unit.exprs.get(.Call, id);
+        const func_ty = try self.checkExpr(call_expr.callee, expectNone());
+        if (func_ty == null) {
             // If the callee is an unresolved identifier in the current scope, report unknown_function.
-            if (self.ast_unit.exprs.index.kinds.items[cr.callee.toRaw()] == .Ident) {
-                const idr = self.ast_unit.exprs.get(.Ident, cr.callee);
+            if (self.ast_unit.exprs.index.kinds.items[call_expr.callee.toRaw()] == .Ident) {
+                const idr = self.ast_unit.exprs.get(.Ident, call_expr.callee);
                 if (self.lookup(idr.name) == null) {
-                    try self.diags.addError(self.ast_unit.exprs.locs.get(cr.loc), .unknown_function, .{});
+                    try self.diags.addError(self.ast_unit.exprs.locs.get(call_expr.loc), .unknown_function, .{});
                 }
             }
             return null;
         }
-        const f = ft.?;
-        const fk = self.type_info.store.index.kinds.items[f.toRaw()];
-        if (fk != .Function) {
-            try self.diags.addError(self.ast_unit.exprs.locs.get(cr.loc), .call_non_callable, .{});
+        const func_id = func_ty.?;
+        const func_kind = self.type_info.store.index.kinds.items[func_id.toRaw()];
+        if (func_kind != .Function) {
+            try self.diags.addError(self.ast_unit.exprs.locs.get(call_expr.loc), .call_non_callable, .{});
             return null;
         }
-        const fr = self.type_info.store.Function.get(self.type_info.store.index.rows.items[f.toRaw()]);
-        const param_ids = self.type_info.store.type_pool.slice(fr.params);
-        const args = self.ast_unit.exprs.expr_pool.slice(cr.args);
-        if (!fr.is_variadic) {
+        const func = self.type_info.store.Function.get(self.type_info.store.index.rows.items[func_id.toRaw()]);
+        const param_ids = self.type_info.store.type_pool.slice(func.params);
+        const args = self.ast_unit.exprs.expr_pool.slice(call_expr.args);
+        if (!func.is_variadic) {
             if (args.len != param_ids.len) {
-                try self.diags.addError(self.ast_unit.exprs.locs.get(cr.loc), .argument_count_mismatch, .{});
+                try self.diags.addError(self.ast_unit.exprs.locs.get(call_expr.loc), .argument_count_mismatch, .{});
                 return null;
             }
         } else {
             // Variadic: last formal is a sentinel (e.g., 'any'), and may be omitted.
             const min_required = if (param_ids.len == 0) 0 else param_ids.len - 1;
             if (args.len < min_required) {
-                try self.diags.addError(self.ast_unit.exprs.locs.get(cr.loc), .argument_count_mismatch, .{});
+                try self.diags.addError(self.ast_unit.exprs.locs.get(call_expr.loc), .argument_count_mismatch, .{});
                 return null;
             }
         }
@@ -1011,35 +992,19 @@ pub const CheckerV3 = struct {
             const at = try self.checkExpr(args[i], expectNone());
             if (at == null) return null;
             const atid = at.?;
-            const ptid = if (!fr.is_variadic)
+            const ptid = if (!func.is_variadic)
                 (if (i < param_ids.len) param_ids[i] else param_ids[param_ids.len - 1])
             else blk: {
                 // For variadic, fixed params are all but the last; everything after uses the last formal's type.
                 const fixed = if (param_ids.len == 0) 0 else param_ids.len - 1;
                 break :blk if (i < fixed) param_ids[i] else param_ids[param_ids.len - 1];
             };
-            // Special-case: passing 'null' to a non-optional pointer parameter
-            if (self.ast_unit.exprs.index.kinds.items[args[i].toRaw()] == .NullLit) {
-                const pk = self.type_info.store.index.kinds.items[ptid.toRaw()];
-                if (pk == .Ptr) {
-                    try self.diags.addError(self.ast_unit.exprs.locs.get(cr.loc), .null_to_non_optional_param, .{});
-                    return null;
-                }
-                if (pk == .Optional) {
-                    const pr = self.type_info.store.Optional.get(self.type_info.store.index.rows.items[ptid.toRaw()]);
-                    const inner_k = self.type_info.store.index.kinds.items[pr.elem.toRaw()];
-                    if (inner_k == .Ptr) {
-                        // ok: null allowed for optional pointer
-                        continue;
-                    }
-                }
-            }
             if (self.assignable(atid, ptid) != .success) {
-                try self.diags.addError(self.ast_unit.exprs.locs.get(cr.loc), .argument_type_mismatch, .{});
+                try self.diags.addError(self.ast_unit.exprs.locs.get(call_expr.loc), .argument_type_mismatch, .{});
                 return null;
             }
         }
-        return fr.result;
+        return func.result;
     }
 
     fn checkCodeBlock(self: *CheckerV3, id: ast.ExprId, expect: Expectation) !?types.TypeId {
@@ -1317,51 +1282,6 @@ pub const CheckerV3 = struct {
         };
         return self.type_info.store.mkTypeType(tt);
     }
-
-    fn checkStructLit(self: *CheckerV3, id: ast.ExprId) !?types.TypeId {
-        const struct_lit = self.ast_unit.exprs.get(.StructLit, id);
-        const lit_fields = self.ast_unit.exprs.sfv_pool.slice(struct_lit.fields);
-        var buf = try self.type_info.store.gpa.alloc(types.TypeStore.StructFieldArg, lit_fields.len);
-        defer self.type_info.store.gpa.free(buf);
-        var i: usize = 0;
-        while (i < lit_fields.len) : (i += 1) {
-            const f = self.ast_unit.exprs.StructFieldValue.get(lit_fields[i].toRaw());
-            const ft = try self.checkExpr(f.value, expectNone()) orelse return null;
-            if (f.name.isNone()) {
-                // Positional field. We can't handle this yet.
-                return null;
-            }
-            buf[i] = .{ .name = self.ast_unit.exprs.strs.get(f.name.unwrap()), .ty = ft };
-        }
-        const struct_ty = self.type_info.store.mkStruct(buf);
-        if (struct_lit.ty.isNone()) {
-            return struct_ty;
-        }
-        const lit_ty = struct_lit.ty.unwrap();
-        const expect_ty = try self.typeFromTypeExpr(lit_ty) orelse {
-            try self.diags.addError(self.ast_unit.exprs.locs.get(struct_lit.loc), .could_not_resolve_type, .{});
-            return null;
-        };
-        const is_assignable = self.assignable(struct_ty, expect_ty);
-        switch (is_assignable) {
-            .success => {},
-            .struct_field_count_mismatch => {
-                try self.diags.addError(self.ast_unit.exprs.locs.get(struct_lit.loc), .struct_missing_field, .{});
-                return null;
-            },
-            .unknown_struct_field => {
-                try self.diags.addError(self.ast_unit.exprs.locs.get(struct_lit.loc), .unknown_struct_field, .{});
-                return null;
-            },
-            else => {
-                try self.diags.addError(self.ast_unit.exprs.locs.get(struct_lit.loc), .struct_field_type_mismatch, .{});
-                return null;
-            },
-        }
-        return expect_ty;
-    }
-
-    // const ExpectedStructField = struct { name: []const u8, ty: types.TypeId };
 
     fn enumDeclByExpr(self: *CheckerV3, expr: ast.ExprId) ?ast.DeclId {
         const kind = self.ast_unit.exprs.index.kinds.items[expr.toRaw()];
@@ -1707,32 +1627,51 @@ pub const CheckerV3 = struct {
             .EnumType => blk_en: {
                 const row = self.ast_unit.exprs.get(.EnumType, id);
                 const efs = self.ast_unit.exprs.efield_pool.slice(row.fields);
-                var seen = std.StringHashMapUnmanaged(void){};
+
+                const tag_ty = if (row.discriminant.isNone())
+                    self.type_info.store.tI32()
+                else
+                    (try self.typeFromTypeExpr(row.discriminant.unwrap())) orelse return null;
+
+                var member_buf = try self.gpa.alloc(types.TypeStore.EnumMemberArg, efs.len);
+                defer self.gpa.free(member_buf);
+
+                var seen = std.AutoArrayHashMapUnmanaged(u32, void){};
                 defer seen.deinit(self.gpa);
+
+                var next_value: u64 = 0;
                 var i: usize = 0;
                 while (i < efs.len) : (i += 1) {
-                    const ef = self.ast_unit.exprs.EnumField.get(efs[i].toRaw());
-                    const name = self.ast_unit.exprs.strs.get(ef.name);
-                    const gop = try seen.getOrPut(self.gpa, name);
+                    const enum_field = self.ast_unit.exprs.EnumField.get(efs[i].toRaw());
+                    const name = self.ast_unit.exprs.strs.get(enum_field.name);
+
+                    const gop = try seen.getOrPut(self.gpa, enum_field.name.toRaw());
                     if (gop.found_existing) {
-                        try self.diags.addError(self.ast_unit.exprs.locs.get(ef.loc), .duplicate_enum_field, .{});
+                        try self.diags.addError(self.ast_unit.exprs.locs.get(enum_field.loc), .duplicate_enum_field, .{});
                         return null;
                     }
-                    if (!ef.value.isNone()) {
-                        const val_id = ef.value.unwrap();
+
+                    var current_value: u64 = next_value;
+                    if (!enum_field.value.isNone()) {
+                        const val_id = enum_field.value.unwrap();
                         const val_kind = self.ast_unit.exprs.index.kinds.items[val_id.toRaw()];
                         if (val_kind != .Literal) {
-                            try self.diags.addError(self.ast_unit.exprs.locs.get(ef.loc), .enum_discriminant_not_integer, .{});
+                            try self.diags.addError(self.ast_unit.exprs.locs.get(enum_field.loc), .enum_discriminant_not_integer, .{});
                             return null;
                         }
                         const lit = self.ast_unit.exprs.get(.Literal, val_id);
-                        if (lit.kind != .int) {
-                            try self.diags.addError(self.ast_unit.exprs.locs.get(ef.loc), .enum_discriminant_not_integer, .{});
+                        if (lit.kind != .int or lit.value.isNone()) {
+                            try self.diags.addError(self.ast_unit.exprs.locs.get(enum_field.loc), .enum_discriminant_not_integer, .{});
                             return null;
                         }
+                        const val_str = self.ast_unit.exprs.strs.get(lit.value.unwrap());
+                        current_value = try std.fmt.parseInt(u64, val_str, 10);
                     }
+
+                    member_buf[i] = .{ .name = name, .value = current_value };
+                    next_value = current_value + 1;
                 }
-                break :blk_en null;
+                break :blk_en self.type_info.store.mkEnum(member_buf, tag_ty);
             },
             .ErrorType => blk_err: {
                 const row = self.ast_unit.exprs.get(.ErrorType, id);
@@ -1759,8 +1698,12 @@ pub const CheckerV3 = struct {
             .VariantType => blk_var: {
                 const row = self.ast_unit.exprs.get(.VariantType, id);
                 const vfs = self.ast_unit.exprs.vfield_pool.slice(row.fields);
+                var case_buf = try self.gpa.alloc(types.TypeStore.StructFieldArg, vfs.len);
+                defer self.gpa.free(case_buf);
+
                 var seen = std.StringHashMapUnmanaged(void){};
                 defer seen.deinit(self.gpa);
+
                 var i: usize = 0;
                 while (i < vfs.len) : (i += 1) {
                     const vf = self.ast_unit.exprs.VariantField.get(vfs[i].toRaw());
@@ -1770,31 +1713,43 @@ pub const CheckerV3 = struct {
                         try self.diags.addError(self.ast_unit.exprs.locs.get(vf.loc), .duplicate_variant, .{});
                         return null;
                     }
-                    switch (vf.payload_kind) {
-                        .none => {},
-                        .tuple => {
-                            if (!vf.payload_elems.isNone()) {
-                                const elems = self.ast_unit.exprs.expr_pool.slice(vf.payload_elems.asRange());
-                                var j: usize = 0;
-                                while (j < elems.len) : (j += 1) {
-                                    _ = try self.typeFromTypeExpr(elems[j]);
-                                }
+
+                    const payload_ty = switch (vf.payload_kind) {
+                        .none => self.type_info.store.tVoid(),
+                        .tuple => blk_tuple: {
+                            if (vf.payload_elems.isNone()) {
+                                break :blk_tuple self.type_info.store.tVoid();
                             }
-                        },
-                        .@"struct" => {
-                            if (!vf.payload_fields.isNone()) {
-                                const fields = self.ast_unit.exprs.sfield_pool.slice(vf.payload_fields.asRange());
-                                var j: usize = 0;
-                                while (j < fields.len) : (j += 1) {
-                                    const sf = self.ast_unit.exprs.StructField.get(fields[j].toRaw());
-                                    const ft = try self.typeFromTypeExpr(sf.ty);
-                                    if (ft == null) return null;
-                                }
+                            const elems = self.ast_unit.exprs.expr_pool.slice(vf.payload_elems.asRange());
+                            var elem_buf = try self.gpa.alloc(types.TypeId, elems.len);
+                            defer self.gpa.free(elem_buf);
+                            var j: usize = 0;
+                            while (j < elems.len) : (j += 1) {
+                                elem_buf[j] = (try self.typeFromTypeExpr(elems[j])) orelse return null;
                             }
+                            break :blk_tuple self.type_info.store.mkTuple(elem_buf);
                         },
-                    }
+                        .@"struct" => blk_struct: {
+                            if (vf.payload_fields.isNone()) {
+                                break :blk_struct self.type_info.store.tVoid();
+                            }
+                            const fields = self.ast_unit.exprs.sfield_pool.slice(vf.payload_fields.asRange());
+                            var field_buf = try self.gpa.alloc(types.TypeStore.StructFieldArg, fields.len);
+                            defer self.gpa.free(field_buf);
+                            var j: usize = 0;
+                            while (j < fields.len) : (j += 1) {
+                                const sf = self.ast_unit.exprs.StructField.get(fields[j].toRaw());
+                                field_buf[j] = .{
+                                    .name = self.ast_unit.exprs.strs.get(sf.name),
+                                    .ty = (try self.typeFromTypeExpr(sf.ty)) orelse return null,
+                                };
+                            }
+                            break :blk_struct self.type_info.store.mkStruct(field_buf);
+                        },
+                    };
+                    case_buf[i] = .{ .name = name, .ty = payload_ty };
                 }
-                break :blk_var null;
+                break :blk_var self.type_info.store.mkVariant(case_buf);
             },
             .UnionType => blk_un: {
                 const row = self.ast_unit.exprs.get(.UnionType, id);

@@ -10,7 +10,7 @@ pub const LowerV2 = struct {
     out: ast.Ast,
 
     pub fn init(gpa: std.mem.Allocator, src: *const cst.CST) LowerV2 {
-        return .{ .gpa = gpa, .src = src, .out = ast.Ast.init(gpa) };
+        return .{ .gpa = gpa, .src = src, .out = ast.Ast.init(gpa, src.exprs.strs) };
     }
 
     pub fn deinit(self: *LowerV2) void {
@@ -38,9 +38,8 @@ pub const LowerV2 = struct {
     }
 
     // ---------------- Infra: id/loc/range helpers ----------------
-    fn mapStr(self: *LowerV2, s: cst.StrId) ast.StrId {
-        const text = self.src.exprs.strs.get(s);
-        return self.out.exprs.strs.intern(text);
+    fn mapStr(_: *LowerV2, s: cst.StrId) ast.StrId {
+        return ast.StrId.fromRaw(s.toRaw());
     }
     fn mapOptStr(self: *LowerV2, s: cst.OptStrId) ast.OptStrId {
         if (s.isNone()) return ast.OptStrId.none();

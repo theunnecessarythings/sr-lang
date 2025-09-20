@@ -27,7 +27,7 @@ pub const Pipeline = struct {
         return .{ .allocator = allocator, .diags = diags };
     }
 
-    pub fn run(self: *Pipeline, program: *const cst.CST) !Result {
+    pub fn run(self: *Pipeline, program: *cst.CST) !Result {
         // 1) Lower from CST v2 to AST v2
         var lower_pass = lower.LowerV2.init(self.allocator, program);
         var hir = try lower_pass.run();

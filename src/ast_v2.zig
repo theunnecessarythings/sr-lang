@@ -492,11 +492,11 @@ pub const ExprStore = struct {
     efield_pool: Pool(EnumFieldId) = .{},
     vfield_pool: Pool(VariantFieldId) = .{},
 
-    strs: StringInterner,
+    strs: *StringInterner,
     locs: LocStore = .{},
 
-    pub fn init(gpa: std.mem.Allocator) ExprStore {
-        return .{ .gpa = gpa, .strs = StringInterner.init(gpa) };
+    pub fn init(gpa: std.mem.Allocator, strs: *StringInterner) ExprStore {
+        return .{ .gpa = gpa, .strs = strs };
     }
 
     pub fn deinit(self: *@This()) void {
@@ -529,7 +529,6 @@ pub const ExprStore = struct {
         self.efield_pool.deinit(gpa);
         self.vfield_pool.deinit(gpa);
 
-        self.strs.deinit();
         self.locs.deinit(gpa);
     }
 
@@ -711,11 +710,11 @@ pub const Ast = struct {
     stmts: StmtStore,
     pats: PatternStore,
 
-    pub fn init(gpa: std.mem.Allocator) Ast {
+    pub fn init(gpa: std.mem.Allocator, interner: *StringInterner) Ast {
         return .{
             .gpa = gpa,
             .unit = Unit.empty(),
-            .exprs = ExprStore.init(gpa),
+            .exprs = ExprStore.init(gpa, interner),
             .stmts = StmtStore.init(gpa),
             .pats = PatternStore.init(gpa),
         };

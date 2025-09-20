@@ -7,6 +7,9 @@ pub const FieldTag = struct {};
 
 pub const TypeId = cst.Index(TypeTag);
 pub const FieldId = cst.Index(FieldTag);
+pub const EnumMemberTag = struct {};
+pub const EnumMemberId = cst.Index(EnumMemberTag);
+pub const RangeEnumMember = cst.RangeOf(EnumMemberId);
 pub const RangeType = cst.RangeOf(TypeId);
 pub const RangeField = cst.RangeOf(FieldId);
 
@@ -22,8 +25,8 @@ pub const TypeInfoV2 = struct {
     expr_types: std.ArrayListUnmanaged(?TypeId) = .{},
     decl_types: std.ArrayListUnmanaged(?TypeId) = .{},
 
-    pub fn init(gpa: std.mem.Allocator) TypeInfoV2 {
-        return .{ .gpa = gpa, .store = TypeStore.init(gpa) };
+    pub fn init(gpa: std.mem.Allocator, interner: *StringInterner) TypeInfoV2 {
+        return .{ .gpa = gpa, .store = TypeStore.init(gpa, interner) };
     }
     pub fn deinit(self: *TypeInfoV2) void {
         self.expr_types.deinit(self.gpa);
@@ -98,9 +101,10 @@ pub const Rows = struct {
     pub const Tuple = struct { elems: RangeType };
     pub const Function = struct { params: RangeType, result: TypeId, is_variadic: bool };
     pub const Field = struct { name: StrId, ty: TypeId };
+    pub const EnumMember = struct { name: StrId, value: u64 };
     pub const Struct = struct { fields: RangeField };
-    pub const Enum = struct { decl: u32 };
-    pub const Variant = struct { payload: TypeId };
+    pub const Enum = struct { members: RangeEnumMember, tag_type: TypeId };
+    pub const Variant = struct { variants: RangeField };
     pub const ErrorSet = struct { payload: ?TypeId };
     pub const TypeType = struct { of: TypeId };
 };
@@ -146,13 +150,15 @@ pub const TypeStore = struct {
     Field: Table(Rows.Field) = .{},
     Struct: Table(Rows.Struct) = .{},
     Enum: Table(Rows.Enum) = .{},
+    EnumMember: Table(Rows.EnumMember) = .{},
     Variant: Table(Rows.Variant) = .{},
     ErrorSet: Table(Rows.ErrorSet) = .{},
     TypeType: Table(Rows.TypeType) = .{},
 
     type_pool: Pool(TypeId) = .{},
     field_pool: Pool(FieldId) = .{},
-    strs: StringInterner,
+    enum_member_pool: Pool(EnumMemberId) = .{},
+    strs: *StringInterner,
 
     // cached builtins
     t_void: ?TypeId = null,
@@ -173,17 +179,18 @@ pub const TypeStore = struct {
     t_type: ?TypeId = null,
     t_noreturn: ?TypeId = null,
 
-    pub fn init(gpa: std.mem.Allocator) TypeStore {
-        return .{ .gpa = gpa, .strs = StringInterner.init(gpa) };
+    pub fn init(gpa: std.mem.Allocator, strs: *StringInterner) TypeStore {
+        return .{ .gpa = gpa, .strs = strs };
     }
     pub fn deinit(self: *TypeStore) void {
         const gpa = self.gpa;
         self.index.deinit(gpa);
         inline for (@typeInfo(TypeKind).@"enum".fields) |f| @field(self, f.name).deinit(gpa);
         self.Field.deinit(gpa);
+        self.EnumMember.deinit(gpa);
         self.type_pool.deinit(gpa);
         self.field_pool.deinit(gpa);
-        self.strs.deinit();
+        self.enum_member_pool.deinit(gpa);
     }
 
     pub fn add(self: *TypeStore, comptime K: TypeKind, row: RowT(K)) TypeId {
@@ -195,6 +202,11 @@ pub const TypeStore = struct {
     pub fn addField(self: *TypeStore, row: Rows.Field) FieldId {
         const idx = self.Field.add(self.gpa, row);
         return FieldId.fromRaw(idx);
+    }
+
+    pub fn addEnumMember(self: *TypeStore, row: Rows.EnumMember) EnumMemberId {
+        const idx = self.EnumMember.add(self.gpa, row);
+        return EnumMemberId.fromRaw(idx);
     }
 
     // ---- builtin constructors (interned once) ----
@@ -336,13 +348,30 @@ pub const TypeStore = struct {
         const r = self.type_pool.pushMany(self.gpa, params);
         return self.add(.Function, .{ .params = r, .result = result, .is_variadic = is_variadic });
     }
-    pub fn mkEnum(self: *TypeStore, decl_raw: u32) TypeId {
-        if (self.findEnum(decl_raw)) |id| return id;
-        return self.add(.Enum, .{ .decl = decl_raw });
+    pub const EnumMemberArg = struct { name: []const u8, value: u64 };
+    pub fn mkEnum(self: *TypeStore, members: []const EnumMemberArg, tag_type: TypeId) TypeId {
+        if (self.findEnum(members, tag_type)) |id| return id;
+        var ids = self.gpa.alloc(EnumMemberId, members.len) catch @panic("OOM");
+        defer self.gpa.free(ids);
+        var i: usize = 0;
+        while (i < members.len) : (i += 1) {
+            const mid = self.addEnumMember(.{ .name = self.strs.intern(members[i].name), .value = members[i].value });
+            ids[i] = mid;
+        }
+        const r = self.enum_member_pool.pushMany(self.gpa, ids);
+        return self.add(.Enum, .{ .members = r, .tag_type = tag_type });
     }
-    pub fn mkVariant(self: *TypeStore, payload: TypeId) TypeId {
-        if (self.findVariant(payload)) |id| return id;
-        return self.add(.Variant, .{ .payload = payload });
+    pub fn mkVariant(self: *TypeStore, variants: []const StructFieldArg) TypeId {
+        if (self.findVariant(variants)) |id| return id;
+        var ids = self.gpa.alloc(FieldId, variants.len) catch @panic("OOM");
+        defer self.gpa.free(ids);
+        var i: usize = 0;
+        while (i < variants.len) : (i += 1) {
+            const fid = self.addField(.{ .name = self.strs.intern(variants[i].name), .ty = variants[i].ty });
+            ids[i] = fid;
+        }
+        const r = self.field_pool.pushMany(self.gpa, ids);
+        return self.add(.Variant, .{ .variants = r });
     }
     pub fn mkErrorSet(self: *TypeStore, payload: ?TypeId) TypeId {
         if (self.findErrorSet(payload)) |id| return id;
@@ -440,17 +469,47 @@ pub const TypeStore = struct {
             }
         });
     }
-    fn findEnum(self: *const TypeStore, decl_raw: u32) ?TypeId {
-        return self.findMatch(.Enum, decl_raw, struct {
-            fn eq(_: *const TypeStore, row: Rows.Enum, key: u32) bool {
-                return row.decl == key;
+    fn findEnum(self: *const TypeStore, members: []const EnumMemberArg, tag_type: TypeId) ?TypeId {
+        return self.findMatch(.Enum, .{ .m = members, .t = tag_type }, struct {
+            fn eq(s: *const TypeStore, row: Rows.Enum, key: anytype) bool {
+                if (row.tag_type.toRaw() != key.t.toRaw()) return false;
+                const ids = s.enum_member_pool.slice(row.members);
+                if (ids.len != key.m.len) return false;
+                var i: usize = 0;
+                while (i < ids.len) : (i += 1) {
+                    const member = s.EnumMember.get(ids[i].toRaw());
+                    const key_member = key.m[i];
+                    if (member.value != key_member.value) return false;
+                    if (!std.mem.eql(u8, s.strs.get(member.name), key_member.name)) return false;
+                }
+                return true;
             }
         });
     }
-    fn findVariant(self: *const TypeStore, payload: TypeId) ?TypeId {
-        return self.findMatch(.Variant, payload, struct {
-            fn eq(_: *const TypeStore, row: Rows.Variant, key: TypeId) bool {
-                return row.payload.toRaw() == key.toRaw();
+    fn findVariant(self: *const TypeStore, variants: []const StructFieldArg) ?TypeId {
+        // Compare by name + type sequence
+        const key_names_and_tys = struct { names: []const []const u8, tys: []const TypeId };
+        var names = self.gpa.alloc([]const u8, variants.len) catch @panic("OOM");
+        defer self.gpa.free(names);
+        var tys = self.gpa.alloc(TypeId, variants.len) catch @panic("OOM");
+        defer self.gpa.free(tys);
+        var i: usize = 0;
+        while (i < variants.len) : (i += 1) {
+            names[i] = variants[i].name;
+            tys[i] = variants[i].ty;
+        }
+        const key_val = key_names_and_tys{ .names = names, .tys = tys };
+        return self.findMatch(.Variant, key_val, struct {
+            fn eq(s: *const TypeStore, row: Rows.Variant, k: anytype) bool {
+                const ids = s.field_pool.slice(row.variants);
+                if (ids.len != k.names.len) return false;
+                var j: usize = 0;
+                while (j < ids.len) : (j += 1) {
+                    const f = s.Field.get(ids[j].toRaw());
+                    if (!std.mem.eql(u8, s.strs.get(f.name), k.names[j])) return false;
+                    if (f.ty.toRaw() != k.tys[j].toRaw()) return false;
+                }
+                return true;
             }
         });
     }
@@ -628,13 +687,30 @@ pub const TypeStore = struct {
             },
             .Enum => {
                 const r = self.Enum.get(row_idx);
-                try w.print("enum@{}", .{r.decl});
+                try w.print("enum(", .{});
+                try self.fmt(r.tag_type, w);
+                try w.print(") {{ ", .{});
+                const ids = self.enum_member_pool.slice(r.members);
+                var i: usize = 0;
+                while (i < ids.len) : (i += 1) {
+                    if (i != 0) try w.print(", ", .{});
+                    const member = self.EnumMember.get(ids[i].toRaw());
+                    try w.print("{s} = {}", .{ self.strs.get(member.name), member.value });
+                }
+                try w.print(" }}", .{});
             },
             .Variant => {
                 const r = self.Variant.get(row_idx);
-                try w.print("variant(", .{});
-                try self.fmt(r.payload, w);
-                try w.print(")", .{});
+                try w.print("variant {{ ", .{});
+                const ids = self.field_pool.slice(r.variants);
+                var i: usize = 0;
+                while (i < ids.len) : (i += 1) {
+                    if (i != 0) try w.print(", ", .{});
+                    const f = self.Field.get(ids[i].toRaw());
+                    try w.print("{s}: ", .{self.strs.get(f.name)});
+                    try self.fmt(f.ty, w);
+                }
+                try w.print(" }}", .{});
             },
             .ErrorSet => {
                 const r = self.ErrorSet.get(row_idx);
