@@ -797,25 +797,25 @@ test "error sets - success" {
     , &.{});
 }
 
-// test "error sets - failures" {
-//     // Duplicate error variant
-//     try checkProgram("ErrDup :: error { A, A }", &[_]diag.DiagnosticCode{.duplicate_error_variant});
-//
-//     // Unknown error tag
-//     try checkProgram(
-//         \\
-//         \\ MyErr :: error { A }
-//         \\ OtherErr :: error { B }
-//         \\ v: i32!MyErr = OtherErr.B
-//     , &[_]diag.DiagnosticCode{.unknown_error_tag});
-//
-//     // Assign error to non error-union variable
-//     try checkProgram(
-//         \\
-//         \\ MyErr :: error { A }
-//         \\ x: i32 = MyErr.A
-//     , &[_]diag.DiagnosticCode{.error_assigned_to_non_error_union});
-// }
+test "error sets - failures" {
+    // Duplicate error variant
+    try checkProgram("ErrDup :: error { A, A }", &[_]diag.DiagnosticCode{.duplicate_error_variant});
+
+    // Unknown error tag
+    try checkProgram(
+        \\
+        \\ MyErr :: error { A }
+        \\ OtherErr :: error { B }
+        \\ v: i32!MyErr = OtherErr.B
+    , &[_]diag.DiagnosticCode{.unknown_error_tag});
+
+    // Assign error to non error-union variable
+    try checkProgram(
+        \\
+        \\ MyErr :: error { A }
+        \\ x: i32 = MyErr.A
+    , &[_]diag.DiagnosticCode{.error_assigned_to_non_error_union});
+}
 
 // Builtin types: pointers (mutable/const), address-of, dereference, nested pointers
 
