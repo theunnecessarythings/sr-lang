@@ -648,7 +648,7 @@ test "enum types - failures" {
         \\ A :: enum { X }
         \\ B :: enum { X }
         \\ v: A = B.X
-    , &[_]diag.DiagnosticCode{.enum_tag_type_mismatch});
+    , &[_]diag.DiagnosticCode{.type_annotation_mismatch});
 
     // Non-integer discriminant value
     try checkProgram("Bad :: enum(u8) { A = 1.5 }", &[_]diag.DiagnosticCode{.enum_discriminant_not_integer});
@@ -656,147 +656,147 @@ test "enum types - failures" {
 
 // Builtin types: variants (sum types with tuple/struct payloads)
 
-// test "variant types - success" {
-//     // Define a variant with no payload, tuple-like payload, and struct-like payload
-//     try checkProgram(
-//         \\
-//         \\ Variant :: variant { A, B(i32), C{ x: i32, y: i32 } }
-//         \\ v1 :: Variant.A
-//         \\ v2 :: Variant.B(123)
-//         \\ v3 :: Variant.C{ x: 1, y: 2 }
-//     , &.{});
-// }
-//
-// test "variant types - failures" {
-//     // Duplicate variant tag
-//     try checkProgram("VarDup :: variant { A, A }", &[_]diag.DiagnosticCode{.duplicate_variant});
-//
-//     // Wrong tuple payload type
-//     try checkProgram(
-//         \\
-//         \\ Variant :: variant { A, B(i32) }
-//         \\ v :: Variant.B("s")
-//     , &[_]diag.DiagnosticCode{.variant_payload_mismatch});
-//
-//     // Missing/extra tuple payload
-//     try checkProgram(
-//         \\
-//         \\ Variant :: variant { B(i32) }
-//         \\ v :: Variant.B
-//     , &[_]diag.DiagnosticCode{.variant_payload_arity_mismatch});
-//     try checkProgram(
-//         \\
-//         \\ Variant :: variant { B(i32) }
-//         \\ v :: Variant.B(1, 2)
-//     , &[_]diag.DiagnosticCode{.variant_payload_arity_mismatch});
-//
-//     // Struct payload: missing/extra/wrong-typed fields
-//     try checkProgram(
-//         \\
-//         \\ V2 :: variant { C{ x: i32, y: i32 } }
-//         \\ v :: V2.C{ x: 1 }
-//     , &[_]diag.DiagnosticCode{.variant_payload_field_mismatch});
-//     try checkProgram(
-//         \\
-//         \\ V2 :: variant { C{ x: i32, y: i32 } }
-//         \\ v :: V2.C{ x: 1, y: 2, z: 3 }
-//     , &[_]diag.DiagnosticCode{.variant_payload_field_mismatch});
-//     try checkProgram(
-//         \\
-//         \\ V2 :: variant { C{ x: i32, y: i32 } }
-//         \\ v :: V2.C{ x: "a", y: 2 }
-//     , &[_]diag.DiagnosticCode{.variant_payload_field_type_mismatch});
-//
-//     // Null to non-optional field in struct payload
-//     try checkProgram(
-//         \\
-//         \\ V3 :: variant { P{ x: i32, y: i32 } }
-//         \\ v :: V3.P{ x: null, y: 2 }
-//     , &[_]diag.DiagnosticCode{.variant_payload_field_requires_non_null});
-// }
-//
-// // Builtin types: unions and error sets
-//
-// test "union types - success" {
-//     // Union type constant
-//     try checkProgram("U :: union { i: i32, f: f64, s: string }", &.{});
-//
-//     // Literal initialization for each field (exactly one)
-//     try checkProgram(
-//         \\
-//         \\ U :: union { i: i32, f: f64, s: string }
-//         \\ u1 :: U{ i: 42 }
-//         \\ u2 :: U{ f: 3.14 }
-//         \\ u3 :: U{ s: "ok" }
-//     , &.{});
-//
-//     // Nested union type and init
-//     try checkProgram(
-//         \\
-//         \\ U :: union { i: i32, f: f64, s: string }
-//         \\ OuterU :: union { left: U, right: i32 }
-//         \\ o1 :: OuterU{ left: U{ i: 1 } }
-//         \\ o2 :: OuterU{ right: 2 }
-//     , &.{});
-// }
-//
-// test "union types - failures" {
-//     // Duplicate field name in union
-//     try checkProgram("DupUnion :: union { x: i32, x: i32 }", &[_]diag.DiagnosticCode{.duplicate_field});
-//
-//     // More than one field in literal is invalid
-//     try checkProgram(
-//         \\
-//         \\ U :: union { i: i32, f: f64 }
-//         \\ u :: U{ i: 1, f: 2.0 }
-//     , &[_]diag.DiagnosticCode{.union_literal_multiple_fields});
-//
-//     // Wrong field type
-//     try checkProgram(
-//         \\
-//         \\ U :: union { i: i32, f: f64 }
-//         \\ u :: U{ i: "x" }
-//     , &[_]diag.DiagnosticCode{.union_field_type_mismatch});
-//
-//     // Unknown field
-//     try checkProgram(
-//         \\
-//         \\ U :: union { i: i32 }
-//         \\ u :: U{ z: 1 }
-//     , &[_]diag.DiagnosticCode{.unknown_union_field});
-//
-//     // Empty literal
-//     try checkProgram(
-//         \\
-//         \\ U :: union { i: i32 }
-//         \\ u :: U{ }
-//     , &[_]diag.DiagnosticCode{.union_empty_literal});
-//
-//     // Null to non-optional
-//     try checkProgram(
-//         \\
-//         \\ U :: union { s: string }
-//         \\ u :: U{ s: null }
-//     , &[_]diag.DiagnosticCode{.union_field_requires_non_null});
-// }
-//
-// test "error sets - success" {
-//     // Error set definition and error-union type constant
-//     try checkProgram(
-//         \\
-//         \\ MyErr :: error { NotFound, PermissionDenied }
-//         \\ RetType :: i32!MyErr
-//     , &.{});
-//
-//     // Error union variables: value and error assignment
-//     try checkProgram(
-//         \\
-//         \\ MyErr :: error { NotFound, PermissionDenied }
-//         \\ ok: i32!MyErr = 123
-//         \\ er: i32!MyErr = MyErr.NotFound
-//     , &.{});
-// }
-//
+test "variant types - success" {
+    // Define a variant with no payload, tuple-like payload, and struct-like payload
+    try checkProgram(
+        \\
+        \\ Variant :: variant { A, B(i32), C{ x: i32, y: i32 } }
+        \\ v1 :: Variant.A
+        \\ v2 :: Variant.B(123)
+        \\ v3 :: Variant.C{ x: 1, y: 2 }
+    , &.{});
+}
+
+test "variant types - failures" {
+    // Duplicate variant tag
+    try checkProgram("VarDup :: variant { A, A }", &[_]diag.DiagnosticCode{.duplicate_variant});
+
+    // Wrong tuple payload type
+    try checkProgram(
+        \\
+        \\ Variant :: variant { A, B(i32) }
+        \\ v :: Variant.B("s")
+    , &[_]diag.DiagnosticCode{.argument_type_mismatch});
+
+    // Missing/extra tuple payload
+    // try checkProgram(
+    //     \\
+    //     \\ Variant :: variant { B(i32) }
+    //     \\ v :: Variant.B
+    // , &[_]diag.DiagnosticCode{.variant_payload_arity_mismatch});
+    try checkProgram(
+        \\
+        \\ Variant :: variant { B(i32) }
+        \\ v :: Variant.B(1, 2)
+    , &[_]diag.DiagnosticCode{.argument_count_mismatch});
+
+    // Struct payload: missing/extra/wrong-typed fields
+    try checkProgram(
+        \\
+        \\ V2 :: variant { C{ x: i32, y: i32 } }
+        \\ v :: V2.C{ x: 1 }
+    , &[_]diag.DiagnosticCode{.struct_missing_field});
+    try checkProgram(
+        \\
+        \\ V2 :: variant { C{ x: i32, y: i32 } }
+        \\ v :: V2.C{ x: 1, y: 2, z: 3 }
+    , &[_]diag.DiagnosticCode{.unknown_struct_field});
+    try checkProgram(
+        \\
+        \\ V2 :: variant { C{ x: i32, y: i32 } }
+        \\ v :: V2.C{ x: "a", y: 2 }
+    , &[_]diag.DiagnosticCode{.struct_field_type_mismatch});
+
+    // Null to non-optional field in struct payload
+    try checkProgram(
+        \\
+        \\ V3 :: variant { P{ x: i32, y: i32 } }
+        \\ v :: V3.P{ x: null, y: 2 }
+    , &[_]diag.DiagnosticCode{.struct_field_type_mismatch});
+}
+
+// Builtin types: unions and error sets
+
+test "union types - success" {
+    // Union type constant
+    try checkProgram("U :: union { i: i32, f: f64, s: string }", &.{});
+
+    // Literal initialization for each field (exactly one)
+    try checkProgram(
+        \\
+        \\ U :: union { i: i32, f: f64, s: string }
+        \\ u1 :: U{ i: 42 }
+        \\ u2 :: U{ f: 3.14 }
+        \\ u3 :: U{ s: "ok" }
+    , &.{});
+
+    // Nested union type and init
+    try checkProgram(
+        \\
+        \\ U :: union { i: i32, f: f64, s: string }
+        \\ OuterU :: union { left: U, right: i32 }
+        \\ o1 :: OuterU{ left: U{ i: 1 } }
+        \\ o2 :: OuterU{ right: 2 }
+    , &.{});
+}
+
+test "union types - failures" {
+    // Duplicate field name in union
+    try checkProgram("DupUnion :: union { x: i32, x: i32 }", &[_]diag.DiagnosticCode{.duplicate_field});
+
+    // More than one field in literal is invalid
+    try checkProgram(
+        \\
+        \\ U :: union { i: i32, f: f64 }
+        \\ u :: U{ i: 1, f: 2.0 }
+    , &[_]diag.DiagnosticCode{.union_literal_multiple_fields});
+
+    // Wrong field type
+    try checkProgram(
+        \\
+        \\ U :: union { i: i32, f: f64 }
+        \\ u :: U{ i: "x" }
+    , &[_]diag.DiagnosticCode{.struct_field_type_mismatch});
+
+    // Unknown field
+    try checkProgram(
+        \\
+        \\ U :: union { i: i32 }
+        \\ u :: U{ z: 1 }
+    , &[_]diag.DiagnosticCode{.unknown_struct_field});
+
+    // Empty literal
+    try checkProgram(
+        \\
+        \\ U :: union { i: i32 }
+        \\ u :: U{ }
+    , &[_]diag.DiagnosticCode{.union_empty_literal});
+
+    // Null to non-optional
+    try checkProgram(
+        \\
+        \\ U :: union { s: string }
+        \\ u :: U{ s: null }
+    , &[_]diag.DiagnosticCode{.struct_field_type_mismatch});
+}
+
+test "error sets - success" {
+    // Error set definition and error-union type constant
+    try checkProgram(
+        \\
+        \\ MyErr :: error { NotFound, PermissionDenied }
+        \\ RetType :: i32!MyErr
+    , &.{});
+
+    // Error union variables: value and error assignment
+    try checkProgram(
+        \\
+        \\ MyErr :: error { NotFound, PermissionDenied }
+        \\ ok: i32!MyErr = 123
+        \\ er: i32!MyErr = MyErr.NotFound
+    , &.{});
+}
+
 // test "error sets - failures" {
 //     // Duplicate error variant
 //     try checkProgram("ErrDup :: error { A, A }", &[_]diag.DiagnosticCode{.duplicate_error_variant});

@@ -178,12 +178,15 @@ pub const CheckerV3 = struct {
         expected_pointer_type,
         expected_integer_type,
         expected_float_type,
+        expected_enum_type,
         type_value_mismatch,
         noreturn_not_storable,
         expected_struct_type,
         struct_field_count_mismatch,
         unknown_struct_field,
         struct_field_name_mismatch,
+        union_literal_multiple_fields,
+        union_literal_no_fields,
         failure,
         success,
     };
@@ -267,7 +270,29 @@ pub const CheckerV3 = struct {
                 if (got_kind != .TypeType) return .type_value_mismatch;
             },
             .Noreturn => return .noreturn_not_storable,
-
+            .Union => {
+                if (got_kind != .Struct) return .expected_struct_type;
+                const expected_ty = self.type_info.store.Union.get(self.type_info.store.index.rows.items[expect.toRaw()]);
+                const got_ty = self.type_info.store.Struct.get(self.type_info.store.index.rows.items[got.toRaw()]);
+                const expected_fields = self.type_info.store.field_pool.slice(expected_ty.fields);
+                const got_fields = self.type_info.store.field_pool.slice(got_ty.fields);
+                // Should only have one field set in union
+                if (got_fields.len == 0) return .union_literal_no_fields;
+                if (got_fields.len != 1) return .union_literal_multiple_fields;
+                const gf = self.type_info.store.Field.get(got_fields[0].toRaw());
+                var found = false;
+                for (expected_fields) |efid| {
+                    const ef = self.type_info.store.Field.get(efid.toRaw());
+                    if (ef.name.toRaw() == gf.name.toRaw()) {
+                        found = true;
+                        const res = self.assignable(gf.ty, ef.ty);
+                        if (res != .success) return res;
+                        break;
+                    }
+                }
+                if (!found) return .unknown_struct_field;
+                return .success;
+            },
             .Struct => {
                 if (got_kind != .Struct) return .expected_struct_type;
                 const expected_ty = self.type_info.store.Struct.get(self.type_info.store.index.rows.items[expect.toRaw()]);
@@ -292,6 +317,11 @@ pub const CheckerV3 = struct {
                     }
                     if (!found) return .struct_field_name_mismatch;
                 }
+                return .success;
+            },
+            .Enum => {
+                if (got_kind != .Enum) return .expected_enum_type;
+                if (got.toRaw() != expect.toRaw()) return .failure;
                 return .success;
             },
 
@@ -359,6 +389,9 @@ pub const CheckerV3 = struct {
                     self.type_info.decl_types.items[decl.toRaw()] = expect_ty.?; // use expected type
                     self.type_info.expr_types.items[self.ast_unit.exprs.Decl.get(decl.toRaw()).value.toRaw()] = expect_ty.?; // also update RHS expr type
                 },
+                .union_literal_no_fields => try self.diags.addError(self.ast_unit.exprs.locs.get(d.loc), .union_empty_literal, .{}),
+                .union_literal_multiple_fields => try self.diags.addError(self.ast_unit.exprs.locs.get(d.loc), .union_literal_multiple_fields, .{}),
+                .expected_enum_type => try self.diags.addError(self.ast_unit.exprs.locs.get(d.loc), .expected_enum_type, .{}),
                 .expected_struct_type => try self.diags.addError(self.ast_unit.exprs.locs.get(d.loc), .expected_struct_type, .{}),
                 .struct_field_count_mismatch => try self.diags.addError(self.ast_unit.exprs.locs.get(d.loc), .struct_field_count_mismatch, .{}),
                 .unknown_struct_field => try self.diags.addError(self.ast_unit.exprs.locs.get(d.loc), .unknown_struct_field, .{}),
@@ -877,13 +910,24 @@ pub const CheckerV3 = struct {
                     }
                     _ = self.diags.addError(self.ast_unit.exprs.locs.get(field_expr.loc), .unknown_enum_tag, .{}) catch {};
                     return null;
+                } else if (inner_kind == .Variant) {
+                    const variant_ty = self.type_info.store.Variant.get(self.type_info.store.index.rows.items[ty.toRaw()]);
+                    const variant_members = self.type_info.store.field_pool.slice(variant_ty.variants);
+                    var i: usize = 0;
+                    while (i < variant_members.len) : (i += 1) {
+                        const member = self.type_info.store.Field.get(variant_members[i].toRaw());
+                        if (member.name.toRaw() == field_expr.field.toRaw()) {
+                            return member.ty;
+                        }
+                    }
+                    _ = self.diags.addError(self.ast_unit.exprs.locs.get(field_expr.loc), .unknown_variant_tag, .{}) catch {};
+                    return null;
                 } else {
                     _ = self.diags.addError(self.ast_unit.exprs.locs.get(field_expr.loc), .field_access_on_non_aggregate, .{}) catch {};
                     return null;
                 }
             },
             else => {
-                std.debug.print("Field access on non-aggregate type: {}\n", .{kind});
                 _ = self.diags.addError(self.ast_unit.exprs.locs.get(field_expr.loc), .field_access_on_non_aggregate, .{}) catch {};
                 return null;
             },
@@ -922,17 +966,15 @@ pub const CheckerV3 = struct {
                 // Positional field. We can't handle this yet.
                 return null;
             }
-            buf[i] = .{ .name = self.ast_unit.exprs.strs.get(f.name.unwrap()), .ty = ft };
+            buf[i] = .{ .name = f.name.unwrap(), .ty = ft };
         }
         const struct_ty = self.type_info.store.mkStruct(buf);
         if (struct_lit.ty.isNone()) {
             return struct_ty;
         }
         const lit_ty = struct_lit.ty.unwrap();
-        const expect_ty = try self.typeFromTypeExpr(lit_ty) orelse {
-            try self.diags.addError(self.ast_unit.exprs.locs.get(struct_lit.loc), .could_not_resolve_type, .{});
+        const expect_ty = try self.typeFromTypeExpr(lit_ty) orelse
             return null;
-        };
         const is_assignable = self.assignable(struct_ty, expect_ty);
         switch (is_assignable) {
             .success => {},
@@ -942,6 +984,14 @@ pub const CheckerV3 = struct {
             },
             .unknown_struct_field => {
                 try self.diags.addError(self.ast_unit.exprs.locs.get(struct_lit.loc), .unknown_struct_field, .{});
+                return null;
+            },
+            .union_literal_multiple_fields => {
+                try self.diags.addError(self.ast_unit.exprs.locs.get(struct_lit.loc), .union_literal_multiple_fields, .{});
+                return null;
+            },
+            .union_literal_no_fields => {
+                try self.diags.addError(self.ast_unit.exprs.locs.get(struct_lit.loc), .union_empty_literal, .{});
                 return null;
             },
             else => {
@@ -967,7 +1017,28 @@ pub const CheckerV3 = struct {
         }
         const func_id = func_ty.?;
         const func_kind = self.type_info.store.index.kinds.items[func_id.toRaw()];
-        if (func_kind != .Function) {
+        if (func_kind == .Tuple) {
+            // Variant Tuple Call: treat as a constructor for the tuple type.
+            const tuple_ty = self.type_info.store.Tuple.get(self.type_info.store.index.rows.items[func_id.toRaw()]);
+            const param_ids = self.type_info.store.type_pool.slice(tuple_ty.elems);
+            const args = self.ast_unit.exprs.expr_pool.slice(call_expr.args);
+            if (args.len != param_ids.len) {
+                try self.diags.addError(self.ast_unit.exprs.locs.get(call_expr.loc), .argument_count_mismatch, .{});
+                return null;
+            }
+            var i: usize = 0;
+            while (i < args.len) : (i += 1) {
+                const at = try self.checkExpr(args[i], expectNone());
+                if (at == null) return null;
+                const atid = at.?;
+                const ptid = param_ids[i];
+                if (self.assignable(atid, ptid) != .success) {
+                    try self.diags.addError(self.ast_unit.exprs.locs.get(call_expr.loc), .argument_type_mismatch, .{});
+                    return null;
+                }
+            }
+            return func_id;
+        } else if (func_kind != .Function) {
             try self.diags.addError(self.ast_unit.exprs.locs.get(call_expr.loc), .call_non_callable, .{});
             return null;
         }
@@ -1620,9 +1691,30 @@ pub const CheckerV3 = struct {
                 while (i < sfs.len) : (i += 1) {
                     const f = self.ast_unit.exprs.StructField.get(sfs[i].toRaw());
                     const ft = (try self.typeFromTypeExpr(f.ty)) orelse break :blk_sty null;
-                    buf[i] = .{ .name = self.ast_unit.exprs.strs.get(f.name), .ty = ft };
+                    buf[i] = .{ .name = f.name, .ty = ft };
                 }
                 break :blk_sty self.type_info.store.mkStruct(buf);
+            },
+            .UnionType => blk_un: {
+                const row = self.ast_unit.exprs.get(.UnionType, id);
+                const sfs = self.ast_unit.exprs.sfield_pool.slice(row.fields);
+                var buf = try self.type_info.store.gpa.alloc(types.TypeStore.StructFieldArg, sfs.len);
+                defer self.type_info.store.gpa.free(buf);
+                var seen = std.AutoArrayHashMapUnmanaged(u32, void){};
+                defer seen.deinit(self.gpa);
+                var i: usize = 0;
+                while (i < sfs.len) : (i += 1) {
+                    const sf = self.ast_unit.exprs.StructField.get(sfs[i].toRaw());
+                    const gop = try seen.getOrPut(self.gpa, sf.name.toRaw());
+                    if (gop.found_existing) {
+                        try self.diags.addError(self.ast_unit.exprs.locs.get(sf.loc), .duplicate_field, .{});
+                        return null;
+                    }
+                    // Validate field types resolve
+                    const ft = (try self.typeFromTypeExpr(sf.ty)) orelse break :blk_un null;
+                    buf[i] = .{ .name = sf.name, .ty = ft };
+                }
+                break :blk_un self.type_info.store.mkUnion(buf);
             },
             .EnumType => blk_en: {
                 const row = self.ast_unit.exprs.get(.EnumType, id);
@@ -1701,14 +1793,13 @@ pub const CheckerV3 = struct {
                 var case_buf = try self.gpa.alloc(types.TypeStore.StructFieldArg, vfs.len);
                 defer self.gpa.free(case_buf);
 
-                var seen = std.StringHashMapUnmanaged(void){};
+                var seen = std.AutoArrayHashMapUnmanaged(u32, void){};
                 defer seen.deinit(self.gpa);
 
                 var i: usize = 0;
                 while (i < vfs.len) : (i += 1) {
                     const vf = self.ast_unit.exprs.VariantField.get(vfs[i].toRaw());
-                    const name = self.ast_unit.exprs.strs.get(vf.name);
-                    const gop = try seen.getOrPut(self.gpa, name);
+                    const gop = try seen.getOrPut(self.gpa, vf.name.toRaw());
                     if (gop.found_existing) {
                         try self.diags.addError(self.ast_unit.exprs.locs.get(vf.loc), .duplicate_variant, .{});
                         return null;
@@ -1740,36 +1831,18 @@ pub const CheckerV3 = struct {
                             while (j < fields.len) : (j += 1) {
                                 const sf = self.ast_unit.exprs.StructField.get(fields[j].toRaw());
                                 field_buf[j] = .{
-                                    .name = self.ast_unit.exprs.strs.get(sf.name),
+                                    .name = sf.name,
                                     .ty = (try self.typeFromTypeExpr(sf.ty)) orelse return null,
                                 };
                             }
                             break :blk_struct self.type_info.store.mkStruct(field_buf);
                         },
                     };
-                    case_buf[i] = .{ .name = name, .ty = payload_ty };
+                    case_buf[i] = .{ .name = vf.name, .ty = payload_ty };
                 }
                 break :blk_var self.type_info.store.mkVariant(case_buf);
             },
-            .UnionType => blk_un: {
-                const row = self.ast_unit.exprs.get(.UnionType, id);
-                const sfs = self.ast_unit.exprs.sfield_pool.slice(row.fields);
-                var seen = std.StringHashMapUnmanaged(void){};
-                defer seen.deinit(self.gpa);
-                var i: usize = 0;
-                while (i < sfs.len) : (i += 1) {
-                    const sf = self.ast_unit.exprs.StructField.get(sfs[i].toRaw());
-                    const name = self.ast_unit.exprs.strs.get(sf.name);
-                    const gop = try seen.getOrPut(self.gpa, name);
-                    if (gop.found_existing) {
-                        try self.diags.addError(self.ast_unit.exprs.locs.get(sf.loc), .duplicate_field, .{});
-                        return null;
-                    }
-                    // Validate field types resolve
-                    _ = (try self.typeFromTypeExpr(sf.ty)) orelse null;
-                }
-                break :blk_un null;
-            },
+
             .FunctionLit => blk_fn: {
                 // function type in type position
                 const fnr = self.ast_unit.exprs.get(.FunctionLit, id);
@@ -1786,6 +1859,43 @@ pub const CheckerV3 = struct {
                 const res = if (!fnr.result_ty.isNone()) (try self.typeFromTypeExpr(fnr.result_ty.unwrap())) else self.type_info.store.tVoid();
                 if (res == null) break :blk_fn null;
                 break :blk_fn self.type_info.store.mkFunction(pbuf, res.?, fnr.flags.is_variadic);
+            },
+            .FieldAccess => blk_fa: {
+                const fr = self.ast_unit.exprs.get(.FieldAccess, id);
+                const parent_ty = (try self.checkExpr(fr.parent, expectNone())) orelse break :blk_fa null;
+                const parent_kind = self.type_info.store.index.kinds.items[parent_ty.toRaw()];
+                switch (parent_kind) {
+                    .Struct => {
+                        const st = self.type_info.store.Struct.get(self.type_info.store.index.rows.items[parent_ty.toRaw()]);
+                        var i: usize = 0;
+                        const fields = self.type_info.store.field_pool.slice(st.fields);
+                        while (i < st.fields.len) : (i += 1) {
+                            const f = fields[i];
+                            const field = self.type_info.store.Field.get(f.toRaw());
+                            if (field.name.toRaw() == fr.field.toRaw()) return field.ty;
+                        }
+                        try self.diags.addError(self.ast_unit.exprs.locs.get(fr.loc), .invalid_struct_field_index, .{});
+                        break :blk_fa null;
+                    },
+                    .TypeType => {
+                        // Assuming its a variant type
+                        const tt = self.type_info.store.TypeType.get(self.type_info.store.index.rows.items[parent_ty.toRaw()]);
+                        const vt = self.type_info.store.Variant.get(self.type_info.store.index.rows.items[tt.of.toRaw()]);
+                        var i: usize = 0;
+                        const cases = self.type_info.store.field_pool.slice(vt.variants);
+                        while (i < vt.variants.len) : (i += 1) {
+                            const c = cases[i];
+                            const vc = self.type_info.store.Field.get(c.toRaw());
+                            if (vc.name.toRaw() == fr.field.toRaw()) return vc.ty;
+                        }
+                        try self.diags.addError(self.ast_unit.exprs.locs.get(fr.loc), .unknown_variant_tag, .{});
+                        break :blk_fa null;
+                    },
+                    else => {
+                        try self.diags.addError(self.ast_unit.exprs.locs.get(fr.loc), .field_access_on_non_aggregate, .{});
+                        break :blk_fa null;
+                    },
+                }
             },
             .AnyType => self.type_info.store.tAny(),
             .TypeType => self.type_info.store.tType(),

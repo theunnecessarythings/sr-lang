@@ -63,8 +63,10 @@ pub const TypeKind = enum(u8) {
     Tuple,
     Function,
     Struct,
+    Union,
     Enum,
     Variant,
+    Error,
     ErrorSet,
     TypeType,
     Noreturn,
@@ -103,8 +105,10 @@ pub const Rows = struct {
     pub const Field = struct { name: StrId, ty: TypeId };
     pub const EnumMember = struct { name: StrId, value: u64 };
     pub const Struct = struct { fields: RangeField };
+    pub const Union = struct { fields: RangeField };
     pub const Enum = struct { members: RangeEnumMember, tag_type: TypeId };
     pub const Variant = struct { variants: RangeField };
+    pub const Error = struct { variants: RangeField };
     pub const ErrorSet = struct { payload: ?TypeId };
     pub const TypeType = struct { of: TypeId };
 };
@@ -149,9 +153,11 @@ pub const TypeStore = struct {
     Function: Table(Rows.Function) = .{},
     Field: Table(Rows.Field) = .{},
     Struct: Table(Rows.Struct) = .{},
+    Union: Table(Rows.Union) = .{},
     Enum: Table(Rows.Enum) = .{},
     EnumMember: Table(Rows.EnumMember) = .{},
     Variant: Table(Rows.Variant) = .{},
+    Error: Table(Rows.Error) = .{},
     ErrorSet: Table(Rows.ErrorSet) = .{},
     TypeType: Table(Rows.TypeType) = .{},
 
@@ -350,7 +356,6 @@ pub const TypeStore = struct {
     }
     pub const EnumMemberArg = struct { name: []const u8, value: u64 };
     pub fn mkEnum(self: *TypeStore, members: []const EnumMemberArg, tag_type: TypeId) TypeId {
-        if (self.findEnum(members, tag_type)) |id| return id;
         var ids = self.gpa.alloc(EnumMemberId, members.len) catch @panic("OOM");
         defer self.gpa.free(ids);
         var i: usize = 0;
@@ -367,7 +372,7 @@ pub const TypeStore = struct {
         defer self.gpa.free(ids);
         var i: usize = 0;
         while (i < variants.len) : (i += 1) {
-            const fid = self.addField(.{ .name = self.strs.intern(variants[i].name), .ty = variants[i].ty });
+            const fid = self.addField(.{ .name = variants[i].name, .ty = variants[i].ty });
             ids[i] = fid;
         }
         const r = self.field_pool.pushMany(self.gpa, ids);
@@ -382,7 +387,7 @@ pub const TypeStore = struct {
         if (self.findTypeType(of)) |id| return id;
         return self.add(.TypeType, .{ .of = of });
     }
-    pub const StructFieldArg = struct { name: []const u8, ty: TypeId };
+    pub const StructFieldArg = struct { name: StrId, ty: TypeId };
     pub fn mkStruct(self: *TypeStore, fields: []const StructFieldArg) TypeId {
         // Build interning key arrays
         if (self.findStruct(fields)) |id| return id;
@@ -390,11 +395,33 @@ pub const TypeStore = struct {
         defer self.gpa.free(ids);
         var i: usize = 0;
         while (i < fields.len) : (i += 1) {
-            const fid = self.addField(.{ .name = self.strs.intern(fields[i].name), .ty = fields[i].ty });
+            const fid = self.addField(.{ .name = fields[i].name, .ty = fields[i].ty });
             ids[i] = fid;
         }
         const r = self.field_pool.pushMany(self.gpa, ids);
         return self.add(.Struct, .{ .fields = r });
+    }
+    pub fn mkUnion(self: *TypeStore, fields: []const StructFieldArg) TypeId {
+        var ids = self.gpa.alloc(FieldId, fields.len) catch @panic("OOM");
+        defer self.gpa.free(ids);
+        var i: usize = 0;
+        while (i < fields.len) : (i += 1) {
+            const fid = self.addField(.{ .name = fields[i].name, .ty = fields[i].ty });
+            ids[i] = fid;
+        }
+        const r = self.field_pool.pushMany(self.gpa, ids);
+        return self.add(.Union, .{ .fields = r });
+    }
+    pub fn mkError(self: *TypeStore, fields: []const StructFieldArg) TypeId {
+        var ids = self.gpa.alloc(FieldId, fields.len) catch @panic("OOM");
+        defer self.gpa.free(ids);
+        var i: usize = 0;
+        while (i < fields.len) : (i += 1) {
+            const fid = self.addField(.{ .name = fields[i].name, .ty = fields[i].ty });
+            ids[i] = fid;
+        }
+        const r = self.field_pool.pushMany(self.gpa, ids);
+        return self.add(.Error, .{ .variants = r });
     }
 
     // ---- finders ----
@@ -469,27 +496,11 @@ pub const TypeStore = struct {
             }
         });
     }
-    fn findEnum(self: *const TypeStore, members: []const EnumMemberArg, tag_type: TypeId) ?TypeId {
-        return self.findMatch(.Enum, .{ .m = members, .t = tag_type }, struct {
-            fn eq(s: *const TypeStore, row: Rows.Enum, key: anytype) bool {
-                if (row.tag_type.toRaw() != key.t.toRaw()) return false;
-                const ids = s.enum_member_pool.slice(row.members);
-                if (ids.len != key.m.len) return false;
-                var i: usize = 0;
-                while (i < ids.len) : (i += 1) {
-                    const member = s.EnumMember.get(ids[i].toRaw());
-                    const key_member = key.m[i];
-                    if (member.value != key_member.value) return false;
-                    if (!std.mem.eql(u8, s.strs.get(member.name), key_member.name)) return false;
-                }
-                return true;
-            }
-        });
-    }
+
     fn findVariant(self: *const TypeStore, variants: []const StructFieldArg) ?TypeId {
         // Compare by name + type sequence
-        const key_names_and_tys = struct { names: []const []const u8, tys: []const TypeId };
-        var names = self.gpa.alloc([]const u8, variants.len) catch @panic("OOM");
+        const key_names_and_tys = struct { names: []const StrId, tys: []const TypeId };
+        var names = self.gpa.alloc(StrId, variants.len) catch @panic("OOM");
         defer self.gpa.free(names);
         var tys = self.gpa.alloc(TypeId, variants.len) catch @panic("OOM");
         defer self.gpa.free(tys);
@@ -506,7 +517,7 @@ pub const TypeStore = struct {
                 var j: usize = 0;
                 while (j < ids.len) : (j += 1) {
                     const f = s.Field.get(ids[j].toRaw());
-                    if (!std.mem.eql(u8, s.strs.get(f.name), k.names[j])) return false;
+                    if (f.name.toRaw() != k.names[j].toRaw()) return false;
                     if (f.ty.toRaw() != k.tys[j].toRaw()) return false;
                 }
                 return true;
@@ -532,8 +543,8 @@ pub const TypeStore = struct {
     }
     fn findStruct(self: *const TypeStore, fields: []const StructFieldArg) ?TypeId {
         // Compare by name + type sequence
-        const key_names_and_tys = struct { names: []const []const u8, tys: []const TypeId };
-        var names = self.gpa.alloc([]const u8, fields.len) catch @panic("OOM");
+        const key_names_and_tys = struct { names: []const StrId, tys: []const TypeId };
+        var names = self.gpa.alloc(StrId, fields.len) catch @panic("OOM");
         defer self.gpa.free(names);
         var tys = self.gpa.alloc(TypeId, fields.len) catch @panic("OOM");
         defer self.gpa.free(tys);
@@ -550,7 +561,7 @@ pub const TypeStore = struct {
                 var j: usize = 0;
                 while (j < ids.len) : (j += 1) {
                     const f = s.Field.get(ids[j].toRaw());
-                    if (!std.mem.eql(u8, s.strs.get(f.name), k.names[j])) return false;
+                    if (f.name.toRaw() != k.names[j].toRaw()) return false;
                     if (f.ty.toRaw() != k.tys[j].toRaw()) return false;
                 }
                 return true;
