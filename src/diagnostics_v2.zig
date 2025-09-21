@@ -11,6 +11,7 @@ pub const Severity = enum {
 pub const DiagnosticCode = enum {
     unexpected_token,
     expected_identifier,
+    invalid_float_literal,
     expected_type_in_declaration,
     unexpected_token_in_expression,
     unexpected_postfix_operator,
@@ -145,11 +146,17 @@ pub const DiagnosticCode = enum {
     unknown_function,
     expected_pattern_on_decl_lhs,
     missing_field_name_in_struct_literal,
+    // New pattern-related diagnostics
+    pattern_type_mismatch,
+    empty_path_pattern,
+    unknown_type_in_path,
+    unsupported_pattern_type,
 };
 
 pub fn diagnosticMessageFmt(code: DiagnosticCode) []const u8 {
     return switch (code) {
         .unexpected_token => "unexpected token: {s}",
+        .invalid_float_literal => "invalid float literal: {s}",
         .expected_identifier => "expected identifier, found {s}",
         .expected_array_type => "expected array type, found {s}",
         .expected_struct_type => "expected struct type, found {s}",
@@ -282,6 +289,10 @@ pub fn diagnosticMessageFmt(code: DiagnosticCode) []const u8 {
         .unknown_function => "unknown function",
         .expected_pattern_on_decl_lhs => "lhs of decl should be a pattern",
         .missing_field_name_in_struct_literal => "missing field name in struct literal",
+        .pattern_type_mismatch => "pattern type does not match value type",
+        .empty_path_pattern => "empty path pattern",
+        .unknown_type_in_path => "unknown type in path pattern",
+        .unsupported_pattern_type => "unsupported pattern type",
     };
 }
 

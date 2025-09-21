@@ -109,7 +109,7 @@ pub const Rows = struct {
     pub const Enum = struct { members: RangeEnumMember, tag_type: TypeId };
     pub const Variant = struct { variants: RangeField };
     pub const Error = struct { variants: RangeField };
-    pub const ErrorSet = struct { payload: ?TypeId };
+    pub const ErrorSet = struct { value_ty: TypeId, error_ty: TypeId };
     pub const TypeType = struct { of: TypeId };
 };
 
@@ -378,11 +378,10 @@ pub const TypeStore = struct {
         const r = self.field_pool.pushMany(self.gpa, ids);
         return self.add(.Variant, .{ .variants = r });
     }
-    pub fn mkErrorSet(self: *TypeStore, payload: ?TypeId) TypeId {
-        if (self.findErrorSet(payload)) |id| return id;
-        return self.add(.ErrorSet, .{ .payload = payload });
+    pub fn mkErrorSet(self: *TypeStore, value_ty: TypeId, error_ty: TypeId) TypeId {
+        if (self.findErrorSet(value_ty, error_ty)) |id| return id;
+        return self.add(.ErrorSet, .{ .value_ty = value_ty, .error_ty = error_ty });
     }
-
     pub fn mkTypeType(self: *TypeStore, of: TypeId) TypeId {
         if (self.findTypeType(of)) |id| return id;
         return self.add(.TypeType, .{ .of = of });
@@ -524,12 +523,11 @@ pub const TypeStore = struct {
             }
         });
     }
-    fn findErrorSet(self: *const TypeStore, payload: ?TypeId) ?TypeId {
-        return self.findMatch(.ErrorSet, payload, struct {
-            fn eq(_: *const TypeStore, row: Rows.ErrorSet, key: ?TypeId) bool {
-                if (row.payload == null and key == null) return true;
-                if (row.payload == null or key == null) return false;
-                return row.payload.?.toRaw() == key.?.toRaw();
+    fn findErrorSet(self: *const TypeStore, value_ty: TypeId, error_ty: TypeId) ?TypeId {
+        return self.findMatch(.ErrorSet, struct { v: TypeId, e: TypeId }{ .v = value_ty, .e = error_ty }, struct {
+            fn eq(s: *const TypeStore, row: Rows.ErrorSet, k: anytype) bool {
+                _ = s;
+                return row.value_ty.toRaw() == k.v.toRaw() and row.error_ty.toRaw() == k.e.toRaw();
             }
         });
     }
