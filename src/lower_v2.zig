@@ -1,16 +1,27 @@
 const std = @import("std");
 const cst = @import("cst_v2.zig");
 const ast = @import("ast_v2.zig");
+const diagnostics = @import("diagnostics_v2.zig");
 
 // Lowering from CST v2 (DOD) to AST v2 (DOD)
 pub const LowerV2 = struct {
     gpa: std.mem.Allocator,
     src: *const cst.CST,
+    diags: *diagnostics.Diagnostics,
 
     out: ast.Ast,
 
-    pub fn init(gpa: std.mem.Allocator, src: *const cst.CST) LowerV2 {
-        return .{ .gpa = gpa, .src = src, .out = ast.Ast.init(gpa, src.exprs.strs) };
+    pub fn init(
+        gpa: std.mem.Allocator,
+        src: *const cst.CST,
+        diags: *diagnostics.Diagnostics,
+    ) LowerV2 {
+        return .{
+            .gpa = gpa,
+            .src = src,
+            .out = ast.Ast.init(gpa, src.exprs.strs),
+            .diags = diags,
+        };
     }
 
     pub fn deinit(self: *LowerV2) void {
@@ -890,7 +901,12 @@ pub const LowerV2 = struct {
                 const range = self.out.pats.pat_pool.pushMany(self.gpa, out_ids);
                 break :blk self.out.pats.add(.Tuple, .{ .elems = range, .loc = self.mapLoc(t.loc) });
             },
-            else => null,
+            inline else => |x| {
+                const loc_id = self.mapLoc(self.src.exprs.get(x, id).loc);
+                const loc = self.out.exprs.locs.get(loc_id);
+                try self.diags.addError(loc, .expected_pattern_on_decl_lhs, .{});
+                return null;
+            },
         };
     }
 };

@@ -8,10 +8,12 @@ const Diagnostics = compiler.diagnostics_v2.Diagnostics;
 const lower_v2 = compiler.lower_v2;
 const ast_v2 = compiler.ast_v2;
 
-fn parseProgramFromText(gpa: std.mem.Allocator, src: [:0]const u8) !cst.CST {
-    var diags = Diagnostics.init(gpa);
-    defer diags.deinit();
-    var parser = Parser.init(gpa, src, &diags);
+fn parseProgramFromText(
+    gpa: std.mem.Allocator,
+    src: [:0]const u8,
+    diags: *compiler.diagnostics_v2.Diagnostics,
+) !cst.CST {
+    var parser = Parser.init(gpa, src, diags);
     var prog = try parser.parse();
     errdefer prog.deinit();
     try testing.expectEqual(@as(usize, 0), diags.count());
@@ -19,9 +21,11 @@ fn parseProgramFromText(gpa: std.mem.Allocator, src: [:0]const u8) !cst.CST {
 }
 
 fn lowerProgramFromText(gpa: std.mem.Allocator, src: [:0]const u8) !struct { cst: cst.CST, ast: ast_v2.Ast } {
-    var c = try parseProgramFromText(gpa, src);
+    var diags = Diagnostics.init(gpa);
+    defer diags.deinit();
+    var c = try parseProgramFromText(gpa, src, &diags);
     errdefer c.deinit();
-    var lower = lower_v2.LowerV2.init(gpa, &c);
+    var lower = lower_v2.LowerV2.init(gpa, &c, &diags);
     const a = try lower.run();
     // do not lower.deinit(); ownership of a stays with caller
     return .{ .cst = c, .ast = a };

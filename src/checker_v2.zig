@@ -70,7 +70,10 @@ pub const CheckerV3 = struct {
     fn bindDeclPattern(self: *CheckerV3, did: ast.DeclId, d: ast.Rows.Decl) !void {
         if (d.pattern.isNone()) return;
         const name_opt = self.primaryNameOfPattern(d.pattern.unwrap());
-        if (name_opt.isNone()) return;
+        if (name_opt.isNone()) {
+            try self.diags.addError(self.ast_unit.exprs.locs.get(d.loc), .invalid_binding_name_in_at_pattern, .{});
+            return;
+        }
         _ = try self.symtab.declare(.{
             .name = name_opt.unwrap(),
             .kind = .Var,
@@ -146,6 +149,34 @@ pub const CheckerV3 = struct {
         return switch (k) {
             .I8, .I16, .I32, .I64, .U8, .U16, .U32, .U64, .Usize => true,
             else => false,
+        };
+    }
+
+    fn typeSize(self: *CheckerV3, ty_id: types.TypeId) ?usize {
+        const k = self.type_info.store.index.kinds.items[ty_id.toRaw()];
+        return switch (k) {
+            .I8, .U8 => 1,
+            .I16, .U16 => 2,
+            .I32, .U32, .F32 => 4,
+            .I64, .U64, .F64, .Usize => 8, // Assuming usize is 8 bytes for 64-bit
+            .Bool => 1, // Typically 1 byte
+            .Ptr => 8, // Assuming 64-bit pointers
+            .Void => 0, // No size
+            .Any => null, // Unknown size
+            .String => null, // Dynamic size
+            .Array => {
+                const arr = self.type_info.store.Array.get(self.type_info.store.index.rows.items[ty_id.toRaw()]);
+                const elem_size = self.typeSize(arr.elem) orelse return null;
+                return elem_size * arr.len;
+            },
+            .Slice => 16, // Pointer + length (assuming 64-bit)
+            .Optional => {
+                const opt = self.type_info.store.Optional.get(self.type_info.store.index.rows.items[ty_id.toRaw()]);
+                const elem_size = self.typeSize(opt.elem) orelse return null;
+                return elem_size + 1; // Element size + 1 byte for discriminant
+            },
+            // TODO: Implement for other aggregate types like Struct, Tuple, Union, etc.
+            else => null, // Unknown or complex size
         };
     }
 
@@ -350,19 +381,15 @@ pub const CheckerV3 = struct {
     // =========================================================
     fn checkDecl(self: *CheckerV3, decl_id: ast.DeclId) !void {
         const decl = self.ast_unit.exprs.Decl.get(decl_id.toRaw());
-        if (decl.pattern.isNone()) {
-            try self.diags.addError(self.ast_unit.exprs.locs.get(decl.loc), .unexpected_token, .{});
-            return;
-        }
         try self.bindDeclPattern(decl_id, decl);
         const expect_ty = if (decl.ty.isNone())
             null
         else
             try self.typeFromTypeExpr(decl.ty.unwrap());
         const rhs_ty = try self.checkExpr(decl.value);
-        const rhs_kind = if (rhs_ty != null) self.type_info.store.index.kinds.items[rhs_ty.?.toRaw()] else null;
-        const expect_kind = if (expect_ty != null) self.type_info.store.index.kinds.items[expect_ty.?.toRaw()] else null;
-        std.debug.print("Decl @ {d}, expect={?}, rhs={?}\n", .{ decl.loc.toRaw(), expect_kind, rhs_kind });
+        // const rhs_kind = if (rhs_ty != null) self.type_info.store.index.kinds.items[rhs_ty.?.toRaw()] else null;
+        // const expect_kind = if (expect_ty != null) self.type_info.store.index.kinds.items[expect_ty.?.toRaw()] else null;
+        // std.debug.print("Decl @ {d}, expect={?}, rhs={?}\n", .{ decl.loc.toRaw(), expect_kind, rhs_kind });
         if (rhs_ty == null)
             return;
         try self.tryTypeCoercion(decl_id, rhs_ty.?, expect_ty);
@@ -555,7 +582,14 @@ pub const CheckerV3 = struct {
     fn checkLiteral(self: *CheckerV3, id: ast.ExprId) !?types.TypeId {
         const lit = self.ast_unit.exprs.get(.Literal, id);
         return switch (lit.kind) {
-            .int => self.type_info.store.tI64(),
+            .int => blk: {
+                const s = self.ast_unit.exprs.strs.get(lit.value.unwrap());
+                if (std.fmt.parseInt(i64, s, 10) catch null == null) {
+                    try self.diags.addError(self.ast_unit.exprs.locs.get(lit.loc), .invalid_integer_literal, .{});
+                    return null;
+                }
+                break :blk self.type_info.store.tI64();
+            },
             .float => blk: {
                 // try parsing the float literal
                 const s = self.ast_unit.exprs.strs.get(lit.value.unwrap());
@@ -1293,7 +1327,15 @@ pub const CheckerV3 = struct {
         if (it == null) return null;
         const kind = self.type_info.store.index.kinds.items[it.?.toRaw()];
         switch (kind) {
-            .Array, .Slice, .String => {},
+            .Array, .Slice => {
+                const elem_ty = if (kind == .Array)
+                    self.type_info.store.Array.get(self.type_info.store.index.rows.items[it.?.toRaw()]).elem
+                else
+                    self.type_info.store.Slice.get(self.type_info.store.index.rows.items[it.?.toRaw()]).elem;
+                if (!try self.checkPattern(fr.pattern, elem_ty, true)) {
+                    return null;
+                }
+            },
             else => {
                 std.debug.print("For loop iterable type kind: {}\n", .{kind});
                 try self.diags.addError(self.ast_unit.exprs.locs.get(fr.loc), .non_iterable_in_for, .{});
@@ -1348,7 +1390,7 @@ pub const CheckerV3 = struct {
                 const pattern_loc = self.ast_unit.exprs.locs.get(tp.loc);
                 const value_kind = self.type_info.store.index.kinds.items[value_ty.toRaw()];
                 if (value_kind != .Tuple) {
-                    try self.diags.addError(pattern_loc, .pattern_type_mismatch, .{});
+                    try self.diags.addError(pattern_loc, .pattern_shape_mismatch, .{});
                     return false;
                 }
                 const value_tuple_ty = self.type_info.store.Tuple.get(self.type_info.store.index.rows.items[value_ty.toRaw()]);
@@ -1641,7 +1683,16 @@ pub const CheckerV3 = struct {
     }
 
     fn checkErrDefer(self: *CheckerV3, errdefer_expr: ast.Rows.ErrDefer) !?types.TypeId {
-        if (!self.inFunction()) try self.diags.addError(self.ast_unit.exprs.locs.get(errdefer_expr.loc), .errdefer_outside_function, .{});
+        if (!self.inFunction()) {
+            try self.diags.addError(self.ast_unit.exprs.locs.get(errdefer_expr.loc), .errdefer_outside_function, .{});
+            return null;
+        }
+        // get current function's error set type
+        const current_func = self.currentFunc().?;
+        if (!current_func.has_result or self.type_info.store.index.kinds.items[current_func.result.toRaw()] != .ErrorSet) {
+            try self.diags.addError(self.ast_unit.exprs.locs.get(errdefer_expr.loc), .errdefer_in_non_error_function, .{});
+            return null;
+        }
         const edt = try self.checkExpr(errdefer_expr.expr);
         if (edt == null) return null;
         return self.type_info.store.tVoid();
@@ -1707,16 +1758,60 @@ pub const CheckerV3 = struct {
 
     fn checkCast(self: *CheckerV3, id: ast.ExprId) !?types.TypeId {
         const cr = self.ast_unit.exprs.get(.Cast, id);
-        const et = try self.typeFromTypeExpr(cr.expr) orelse {
-            try self.diags.addError(self.ast_unit.exprs.locs.get(cr.loc), .could_not_resolve_type, .{});
+        const et = try self.typeFromTypeExpr(cr.ty) orelse {
+            try self.diags.addError(self.ast_unit.exprs.locs.get(cr.loc), .cast_target_not_type, .{});
             return null;
         };
         const vt = try self.checkExpr(cr.expr);
         if (vt == null) return null;
-        if (!self.castable(vt.?, et)) {
-            try self.diags.addError(self.ast_unit.exprs.locs.get(cr.loc), .invalid_checked_cast, .{});
-            return null;
+        const vk = self.type_info.store.index.kinds.items[vt.?.toRaw()];
+        const ek = self.type_info.store.index.kinds.items[et.toRaw()];
+
+        switch (cr.kind) {
+            .normal => {
+                // A normal cast allows assignable types or types that are generally castable (e.g., numeric to numeric, pointer to pointer)
+                if (self.assignable(vt.?, et) != .success and !self.castable(vt.?, et)) {
+                    try self.diags.addError(self.ast_unit.exprs.locs.get(cr.loc), .invalid_cast, .{});
+                    return null;
+                }
+            },
+            .bitcast => {
+                const is_src_int = self.isIntegerKind(vk);
+                const is_dest_int = self.isIntegerKind(ek);
+                const is_src_float = (vk == .F32 or vk == .F64);
+                const is_dest_float = (ek == .F32 or ek == .F64);
+
+                if ((is_src_int and is_dest_int) or (is_src_float and is_dest_float)) {
+                    // Allow bitcast between integers or between floats
+                    // (size differences handled by runtime, not type checker)
+                    // No error needed here.
+                } else if (vk == .Ptr and ek == .Ptr) {
+                    // Allow bitcast between pointers
+                    // No error needed here.
+                } else {
+                    // Disallow bitcast between integer and float, or other incompatible types
+                    try self.diags.addError(self.ast_unit.exprs.locs.get(cr.loc), .invalid_bitcast, .{});
+                    return null;
+                }
+            },
+            .saturate, .wrap => {
+                // Saturating and wrapping casts are for numeric types only.
+                if (!self.isNumericKind(vk) or !self.isNumericKind(ek)) {
+                    try self.diags.addError(self.ast_unit.exprs.locs.get(cr.loc), .numeric_cast_on_non_numeric, .{});
+                    return null;
+                }
+            },
+            .checked => {
+                // Checked casts are similar to normal casts but might imply runtime checks.
+                // For type checking, we can use the same rules as 'normal' for now,
+                // but with a specific error message if it fails.
+                if (self.assignable(vt.?, et) != .success and !self.castable(vt.?, et)) {
+                    try self.diags.addError(self.ast_unit.exprs.locs.get(cr.loc), .invalid_checked_cast, .{});
+                    return null;
+                }
+            },
         }
+
         return et;
     }
 
@@ -2106,8 +2201,8 @@ pub const CheckerV3 = struct {
                 // function type in type position
                 const fnr = self.ast_unit.exprs.get(.FunctionLit, id);
                 const params = self.ast_unit.exprs.param_pool.slice(fnr.params);
-                var pbuf = try self.type_info.store.gpa.alloc(types.TypeId, params.len);
-                defer self.type_info.store.gpa.free(pbuf);
+                var pbuf = try self.gpa.alloc(types.TypeId, params.len);
+                defer self.gpa.free(pbuf);
                 var i: usize = 0;
                 while (i < params.len) : (i += 1) {
                     const p = self.ast_unit.exprs.Param.get(params[i].toRaw());

@@ -29,7 +29,7 @@ pub const Pipeline = struct {
 
     pub fn run(self: *Pipeline, program: *cst.CST) !Result {
         // 1) Lower from CST v2 to AST v2
-        var lower_pass = lower.LowerV2.init(self.allocator, program);
+        var lower_pass = lower.LowerV2.init(self.allocator, program, self.diags);
         var hir = try lower_pass.run();
 
         // 2) Checker now includes type inference

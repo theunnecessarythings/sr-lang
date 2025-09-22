@@ -108,7 +108,7 @@ fn testLower(data: []const u8) !void {
     };
     defer tree.deinit();
 
-    var lower = lower_v2.LowerV2.init(gpa, &tree);
+    var lower = lower_v2.LowerV2.init(gpa, &tree, &diags);
     var a = try lower.run();
     defer a.deinit();
 
@@ -143,7 +143,7 @@ fn testChecker(data: []const u8) !void {
     };
     defer c.deinit();
 
-    var lower = lower_v2.LowerV2.init(gpa, &c);
+    var lower = lower_v2.LowerV2.init(gpa, &c, &diags);
     var a = try lower.run();
     defer a.deinit();
 

@@ -18,6 +18,13 @@ fn checkProgram(src: [:0]const u8, expected: []const diag.DiagnosticCode) !void 
     var cst = try parser.parse();
     defer cst.deinit();
     if (diags.count() != 0) {
+        // print tokens for debugging
+        var tokenizer = compiler.lexer.Tokenizer.init(src, .semi);
+        while (true) {
+            const token = tokenizer.next();
+            if (token.tag == .eof) break;
+            std.debug.print("Token: {any}\n", .{token.tag});
+        }
         std.debug.print(
             "Errors during parsing: {}\n",
             .{diags.messages.items[0].code},
@@ -26,7 +33,7 @@ fn checkProgram(src: [:0]const u8, expected: []const diag.DiagnosticCode) !void 
     try testing.expectEqual(0, diags.count());
 
     // Step 2: Lower to AST
-    var lower = Lower.init(gpa, &cst);
+    var lower = Lower.init(gpa, &cst, &diags);
     defer lower.deinit();
     var ast = try lower.run();
 
@@ -966,10 +973,10 @@ test "identifiers - success" {
 
 test "identifiers - failures" {
     // Starts with a digit (parse-level error expected)
-    try checkProgram("1abc :: 1", &[_]diag.DiagnosticCode{.unexpected_token});
+    try checkProgram("1abc :: 1", &[_]diag.DiagnosticCode{.expected_pattern_on_decl_lhs});
 
     // Hyphen not allowed in identifier
-    try checkProgram("foo-bar :: 1", &[_]diag.DiagnosticCode{.unexpected_token});
+    try checkProgram("foo-bar :: 1", &[_]diag.DiagnosticCode{.expected_pattern_on_decl_lhs});
 
     try checkProgram("r#123 :: 1", &[_]diag.DiagnosticCode{});
 }
@@ -1781,7 +1788,7 @@ test "while is - failures" {
         \\ f :: proc() {
         \\   while is (a, b) := 1 { }
         \\ }
-    , &[_]diag.DiagnosticCode{.pattern_type_mismatch});
+    , &[_]diag.DiagnosticCode{.pattern_shape_mismatch});
 }
 
 // Focused: Labeled while loops
@@ -1896,7 +1903,7 @@ test "for loops - failures" {
     , &[_]diag.DiagnosticCode{.pattern_shape_mismatch});
 }
 
-// // Focused: Patterns (declarations, match, for)
+// Focused: Patterns (declarations, match, for)
 //
 // test "patterns - declarations - success" {
 //     // Tuple destructuring
@@ -1909,7 +1916,7 @@ test "for loops - failures" {
 //     try checkProgram(
 //         \\
 //         \\ Point :: struct { x: i32, y: i32 }
-//         \\ (Point{ x: x, y: y }) :: Point{ x: 1, y: 2 }
+//         \\ Point{ x: x, y: y } :: Point{ x: 1, y: 2 }
 //     , &.{});
 //
 //     // Slice with rest binding
@@ -1998,37 +2005,37 @@ test "for loops - failures" {
 //         \\ r :: match v { Variant.B(a, b) => { } }
 //     , &[_]diag.DiagnosticCode{.pattern_shape_mismatch});
 // }
-//
-// test "patterns - for loops - success" {
-//     // Destructure tuple elements from an array of tuples
-//     try checkProgram(
-//         \\
-//         \\ main :: proc() {
-//         \\   for (x, y) in [(1,2), (3,4)] { }
-//         \\ }
-//     , &.{});
-//
-//     // Binding with slice rest in loop over array
-//     try checkProgram(
-//         \\
-//         \\ main :: proc() {
-//         \\   for [a, ..rest] in [1,2,3] { }
-//         \\ }
-//     , &.{});
-// }
-//
-// test "patterns - for loops - failures" {
-//     // Pattern shape mismatch
-//     try checkProgram(
-//         \\
-//         \\ main :: proc() {
-//         \\   for (a, b) in [1,2,3] { }
-//         \\ }
-//     , &[_]diag.DiagnosticCode{.pattern_shape_mismatch});
-// }
-//
-// // Focused: Match expressions
-//
+
+test "patterns - for loops - success" {
+    // Destructure tuple elements from an array of tuples
+    try checkProgram(
+        \\
+        \\ main :: proc() {
+        \\   for (x, y) in [(1,2), (3,4)] { }
+        \\ }
+    , &.{});
+
+    // Binding with slice rest in loop over array
+    // try checkProgram(
+    //     \\
+    //     \\ main :: proc() {
+    //     \\   for [a, ..rest] in [1,2,3] { }
+    //     \\ }
+    // , &.{});
+}
+
+test "patterns - for loops - failures" {
+    // Pattern shape mismatch
+    try checkProgram(
+        \\
+        \\ main :: proc() {
+        \\   for (a, b) in [1,2,3] { }
+        \\ }
+    , &[_]diag.DiagnosticCode{.pattern_shape_mismatch});
+}
+
+// Focused: Match expressions
+
 // test "match expressions - success" {
 //     // Empty arms
 //     try checkProgram(
@@ -2191,176 +2198,201 @@ test "for loops - failures" {
 //         \\ r :: match x { _ => { }, 2 => { } }
 //     , &[_]diag.DiagnosticCode{.unreachable_match_arm});
 // }
-//
-// // Focused: defer and errdefer
-//
-// test "defer - success" {
-//     // Basic defer inside void proc
-//     try checkProgram(
-//         \\
-//         \\ cleanup :: proc() { }
-//         \\ main :: proc() { defer cleanup() }
-//     , &.{});
-//
-//     // Multiple defers and nested block
-//     try checkProgram(
-//         \\
-//         \\ a :: proc() { }
-//         \\ b :: proc() { }
-//         \\ f :: proc() {
-//         \\   defer a()
-//         \\   { defer b() }
-//         \\ }
-//     , &.{});
-//
-//     // Defer inside loop
-//     try checkProgram(
-//         \\
-//         \\ c :: proc() { }
-//         \\ g :: proc() {
-//         \\   while true { defer c(); break }
-//         \\ }
-//     , &.{});
-// }
-//
-// test "errdefer - success" {
-//     // errdefer inside a function returning error union
-//     try checkProgram(
-//         \\
-//         \\ MyErr :: error { A }
-//         \\ cleanup :: proc() { }
-//         \\ f :: proc() i32!MyErr {
-//         \\   errdefer cleanup()
-//         \\   return 1
-//         \\ }
-//     , &.{});
-//
-//     // errdefer combined with early error return
-//     try checkProgram(
-//         \\
-//         \\ MyErr :: error { A }
-//         \\ tidy :: proc() { }
-//         \\ g :: proc() i32!MyErr {
-//         \\   errdefer tidy()
-//         \\   return MyErr.A
-//         \\ }
-//     , &.{});
-// }
-//
-// test "defer/errdefer - failures" {
-//     // errdefer in a void-returning function
-//     try checkProgram(
-//         \\
-//         \\ bad :: proc() { errdefer 1 }
-//     , &[_]diag.DiagnosticCode{.errdefer_in_non_error_function});
-//
-//     // errdefer in a non-error function with return type
-//     try checkProgram(
-//         \\
-//         \\ bad2 :: proc() i32 { errdefer 1; return 0 }
-//     , &[_]diag.DiagnosticCode{.errdefer_in_non_error_function});
-// }
-//
-// // Focused: Break with values and labeled forms
-//
-// test "break with values - success" {
-//     // Use break with value to yield from a labeled while-expression
-//     try checkProgram("x :: (L: while true { break L 42 })", &.{});
-//
-//     // Nested loops: break outer without value
-//     try checkProgram(
-//         \\
-//         \\ main :: proc() {
-//         \\   outer: while true {
-//         \\     while true { break outer }
-//         \\   }
-//         \\ }
-//     , &.{});
-// }
-//
-// test "break with values - failures" {
-//     // Using mismatched types in distinct break values for the same loop result
-//     try checkProgram(
-//         \\
-//         \\ y :: (L: while true { if true { break L 1 } else { break L 2.0 } })
-//     , &[_]diag.DiagnosticCode{.loop_break_value_type_conflict});
-//
-//     // Assigning loop result to typed var with incompatible break value type
-//     try checkProgram(
-//         \\
-//         \\ z: i32 = (L: while true { break L 2.5 })
-//     , &[_]diag.DiagnosticCode{.assignment_type_mismatch});
-// }
-//
-// // Focused: Continue
-//
-// test "continue - success" {
-//     // Plain continue inside a loop
-//     try checkProgram(
-//         \\
-//         \\ main :: proc() {
-//         \\   while true { continue; break }
-//         \\ }
-//     , &.{});
-// }
-//
-// // Focused: Labeled break with values inside for-loops
-//
-// test "labeled break values in for - success" {
-//     // Loop expression yields via labeled break
-//     try checkProgram("x :: (L: for i in [1,2] { break L 7 })", &.{});
-//
-//     // Assign to typed var
-//     try checkProgram("y: i32 = (L: for i in [1,2] { break L 3 })", &.{});
-// }
-//
-// test "labeled break values in for - failures" {
-//     // Inconsistent break value types across branches
-//     try checkProgram(
-//         \\
-//         \\ z :: (L: for i in [1,2] { if i == 1 { break L 1 } else { break L 2.0 } })
-//     , &[_]diag.DiagnosticCode{.loop_break_value_type_conflict});
-//
-//     // Assigning result to incompatible typed var
-//     try checkProgram(
-//         \\
-//         \\ w: i32 = (L: for i in [1,2] { break L 2.5 })
-//     , &[_]diag.DiagnosticCode{.assignment_type_mismatch});
-// }
-//
-// // Focused: Break values in branches
-//
-// test "break values in branches - success" {
-//     // While branch breaks with consistent type
-//     try checkProgram("v :: (L: while true { if true { break L 1 } else { break L 2 } })", &.{});
-//
-//     // For branch breaks with consistent type
-//     try checkProgram("u :: (L: for i in [1] { if true { break L 4 } else { break L 5 } })", &.{});
-// }
-//
-// test "break values in branches - failures" {
-//     // While branch inconsistent types
-//     try checkProgram("q :: (L: while true { if true { break L 1 } else { break L 2.0 } })", &[_]diag.DiagnosticCode{.loop_break_value_type_conflict});
-//
-//     // For branch inconsistent types
-//     try checkProgram("r :: (L: for i in [1] { if true { break L 1.0 } else { break L 2 } })", &[_]diag.DiagnosticCode{.loop_break_value_type_conflict});
-// }
-//
-// // Focused: Unreachable after unconditional break
-//
-// test "unreachable after break - failures" {
-//     // Expression after break inside loop expression
-//     try checkProgram("bad :: (L: while true { break L 1; 2 })", &[_]diag.DiagnosticCode{.unreachable_code_after_break});
-//
-//     // Return after unconditional break in function
-//     try checkProgram(
-//         \\
-//         \\ main :: proc() i32 {
-//         \\   L: while true { break L 1; return 2 }
-//         \\ }
-//     , &[_]diag.DiagnosticCode{.unreachable_code_after_break});
-// }
-//
+
+// Focused: defer and errdefer
+
+test "defer - success" {
+    // Basic defer inside void proc
+    try checkProgram(
+        \\
+        \\ cleanup :: proc() { }
+        \\ main :: proc() { defer cleanup() }
+    , &.{});
+
+    // Multiple defers and nested block
+    try checkProgram(
+        \\
+        \\ a :: proc() { }
+        \\ b :: proc() { }
+        \\ f :: proc() {
+        \\   defer a()
+        \\   { defer b() }
+        \\ }
+    , &.{});
+
+    // Defer inside loop
+    try checkProgram(
+        \\
+        \\ c :: proc() { }
+        \\ g :: proc() {
+        \\   while true { defer c(); break }
+        \\ }
+    , &.{});
+}
+
+test "errdefer - success" {
+    // errdefer inside a function returning error union
+    try checkProgram(
+        \\
+        \\ MyErr :: error { A }
+        \\ cleanup :: proc() { }
+        \\ f :: proc() i32!MyErr {
+        \\   errdefer cleanup()
+        \\   return 1
+        \\ }
+    , &.{});
+
+    // errdefer combined with early error return
+    try checkProgram(
+        \\
+        \\ MyErr :: error { A }
+        \\ tidy :: proc() { }
+        \\ g :: proc() i32!MyErr {
+        \\   errdefer tidy()
+        \\   return MyErr.A
+        \\ }
+    , &.{});
+}
+
+test "defer/errdefer - failures" {
+    // errdefer in a void-returning function
+    try checkProgram(
+        \\bad :: proc() { 
+        \\errdefer 1 
+        \\}
+    ,
+        &[_]diag.DiagnosticCode{.errdefer_in_non_error_function},
+    );
+
+    // errdefer in a non-error function with return type
+    try checkProgram(
+        \\bad2 :: proc() i32 { 
+        \\ errdefer 1
+        \\ return 0
+        \\}
+    ,
+        &[_]diag.DiagnosticCode{.errdefer_in_non_error_function},
+    );
+}
+
+// Focused: Break with values and labeled forms
+
+test "break with values - success" {
+    // Use break with value to yield from a labeled while-expression
+    try checkProgram(
+        \\x :: L: while true {
+        \\ break L 42 
+        \\}
+    , &.{});
+
+    // Nested loops: break outer without value
+    try checkProgram(
+        \\
+        \\ main :: proc() {
+        \\   outer: while true {
+        \\     while true { break outer }
+        \\   }
+        \\ }
+    , &.{});
+}
+
+test "break with values - failures" {
+    // Using mismatched types in distinct break values for the same loop result
+    try checkProgram(
+        \\
+        \\ y :: (L: while true { if true { break L 1 } else { break L 2.0 } })
+    , &[_]diag.DiagnosticCode{.if_branch_type_mismatch});
+
+    // Assigning loop result to typed var with incompatible break value type
+    try checkProgram(
+        \\
+        \\ z: i32 = (L: while true { break L 2.5 })
+    , &[_]diag.DiagnosticCode{.expected_integer_type});
+}
+
+// Focused: Continue
+
+test "continue - success" {
+    // Plain continue inside a loop
+    try checkProgram(
+        \\
+        \\ main :: proc() {
+        \\   while true { continue; break }
+        \\ }
+    , &.{});
+}
+
+// Focused: Labeled break with values inside for-loops
+
+test "labeled break values in for - success" {
+    // Loop expression yields via labeled break
+    try checkProgram("x :: (L: for i in [1,2] { break L 7 })", &.{});
+
+    // Assign to typed var
+    try checkProgram("y: i32 = (L: for i in [1,2] { break L 3 })", &.{});
+}
+
+test "labeled break values in for - failures" {
+    // Inconsistent break value types across branches
+    try checkProgram(
+        \\ z :: (L: for i in [1,2] { if i == 1 { break L 1 } else { break L 2.0 } })
+    , &[_]diag.DiagnosticCode{.loop_break_value_type_conflict});
+
+    // Assigning result to incompatible typed var
+    try checkProgram(
+        \\
+        \\ w: i32 = (L: for i in [1,2] { break L 2.5 })
+    , &[_]diag.DiagnosticCode{.assignment_type_mismatch});
+}
+
+// Focused: Break values in branches
+
+test "break values in branches - success" {
+    // While branch breaks with consistent type
+    try checkProgram("v :: (L: while true { if true { break L 1 } else { break L 2 } })", &.{});
+
+    // For branch breaks with consistent type
+    try checkProgram("u :: (L: for i in [1] { if true { break L 4 } else { break L 5 } })", &.{});
+}
+
+test "break values in branches - failures" {
+    // While branch inconsistent types
+    try checkProgram(
+        \\q :: L: while true { 
+        \\  if true { 
+        \\    break L 1
+        \\  } else { 
+        \\    break L 2.0 
+        \\  }
+        \\}
+    , &[_]diag.DiagnosticCode{.if_branch_type_mismatch});
+
+    // For branch inconsistent types
+    try checkProgram(
+        \\r :: (L: for i in [1] { if true { break L 1.0 } else { break L 2 } })
+    , &[_]diag.DiagnosticCode{.if_branch_type_mismatch});
+}
+
+// Focused: Unreachable after unconditional break
+
+test "unreachable after break - failures" {
+    // Expression after break inside loop expression
+    try checkProgram(
+        \\bad :: L: while true { 
+        \\  break L 1
+        \\  2 
+        \\}
+    , &[_]diag.DiagnosticCode{.unreachable_code_after_break});
+
+    // Return after unconditional break in function
+    try checkProgram(
+        \\
+        \\ main :: proc() i32 {
+        \\   L: while true { break L 1; return 2 }
+        \\ }
+    , &[_]diag.DiagnosticCode{.unreachable_code_after_break});
+}
+
 // // Focused: Async/Await
 //
 // test "async/await - success" {
@@ -2440,38 +2472,38 @@ test "for loops - failures" {
 //         \\ bad2 :: |a: i32| i32 { return 1.0 }
 //     , &[_]diag.DiagnosticCode{.return_type_mismatch});
 // }
-//
-// // Focused: Cast expressions
-//
-// test "cast expressions - success" {
-//     // Normal cast via .(Type)
-//     try checkProgram("a :: 1.(f64)", &.{});
-//     try checkProgram("b :: 2.0.(i32)", &.{});
-//
-//     // Bitcast with '^' (same-size types assumed)
-//     try checkProgram("c :: 1 ^ u32", &.{});
-//
-//     // Saturating cast with '|'
-//     try checkProgram("d :: 300 | u8", &.{});
-//
-//     // Wrapping cast with '%'
-//     try checkProgram("e :: -1 % u32", &.{});
-//
-//     // Checked cast with '?'
-//     try checkProgram("f :: 1 ? i32", &.{});
-// }
-//
-// test "cast expressions - failures" {
-//     // Cast to non-type expression
-//     try checkProgram("x :: 1.(1 + 2)", &[_]diag.DiagnosticCode{.cast_target_not_type});
-//
-//     // Bitcast between incompatible sizes/kinds
-//     try checkProgram("y :: 1 ^ f64", &[_]diag.DiagnosticCode{.invalid_bitcast});
-//
-//     // Checked cast that cannot succeed
-//     try checkProgram("z :: \"s\" ? i32", &[_]diag.DiagnosticCode{.invalid_checked_cast});
-// }
-//
+
+// Focused: Cast expressions
+
+test "cast expressions - success" {
+    // Normal cast via .(Type)
+    try checkProgram("a :: 1.(f64)", &.{});
+    try checkProgram("b :: 2.0.(i32)", &.{});
+
+    // Bitcast with '^' (same-size types assumed)
+    try checkProgram("c :: 1.^u32", &.{});
+
+    // Saturating cast with '|'
+    try checkProgram("d :: 300.|u8", &.{});
+
+    // Wrapping cast with '%'
+    try checkProgram("e :: -1.% u32", &.{});
+
+    // Checked cast with '?'
+    try checkProgram("f :: 1.? i32", &.{});
+}
+
+test "cast expressions - failures" {
+    // Cast to non-type expression
+    try checkProgram("x :: 1.(1 + 2)", &[_]diag.DiagnosticCode{.cast_target_not_type});
+
+    // Bitcast between incompatible sizes/kinds
+    try checkProgram("y :: 1.^f64", &[_]diag.DiagnosticCode{.invalid_bitcast});
+
+    // Checked cast that cannot succeed
+    try checkProgram("z :: \"s\".?i32", &[_]diag.DiagnosticCode{.invalid_checked_cast});
+}
+
 // // Focused: Import statements
 //
 // test "import statements - success" {

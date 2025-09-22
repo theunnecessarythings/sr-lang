@@ -1,6 +1,7 @@
 const std = @import("std");
 const ast = @import("ast_v2.zig");
 const dod = @import("cst_v2.zig");
+const types = @import("types_v2.zig");
 
 pub const SymbolKind = enum { Var, Const, Function, Type, Param, Field };
 

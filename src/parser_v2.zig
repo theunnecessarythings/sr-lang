@@ -396,26 +396,6 @@ pub const Parser = struct {
                 lhs_opt = cst.OptExprId.some(lhs_or_rhs);
             },
             .colon => { // x : T (=|::) rhs
-                const lhs_ty = self.cst.exprs.index.kinds.items[rhs_id.toRaw()];
-                const next = self.nxt.tag;
-                // Special case: labeled loop
-                if (lhs_ty == .Ident and (next == .keyword_for or next == .keyword_while)) {
-                    const label = self.cst.exprs.get(.Ident, rhs_id).name;
-                    const lbl = cst.OptStrId.some(label);
-                    self.advance(); // consume ':'
-                    const loop_expr = try self.parseLabeledLoop(lbl);
-                    if (self.cur.tag != .rcurly and self.cur.tag != .eof) {
-                        try self.expect(.eos);
-                    }
-                    const row = cst.Rows.Decl{
-                        .lhs = lhs_opt,
-                        .rhs = loop_expr,
-                        .ty = ty_opt,
-                        .flags = flags,
-                        .loc = loc,
-                    };
-                    return self.cst.exprs.addDeclRow(row);
-                }
 
                 self.advance();
                 const ty_id = try self.parseExpr(0, .type);
@@ -515,6 +495,12 @@ pub const Parser = struct {
                 const loc = self.toLocId(self.cur.loc);
                 const name = self.intern(self.slice(self.cur));
                 self.advance();
+                const next = self.nxt.tag;
+                // Special case: labeled loop
+                if (self.cur.tag == .colon and (next == .keyword_for or next == .keyword_while)) {
+                    self.advance();
+                    break :blk try self.parseLabeledLoop(cst.OptStrId.some(name));
+                }
                 break :blk self.cst.exprs.add(.Ident, .{ .name = name, .loc = loc });
             },
 

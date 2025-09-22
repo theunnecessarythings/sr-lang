@@ -126,7 +126,7 @@ fn repl(
         .{ Colors.bold, Colors.green, out.items },
     );
     out.clearRetainingCapacity();
-    var lower_pass = compiler.lower_v2.LowerV2.init(allocator, &cst_program);
+    var lower_pass = compiler.lower_v2.LowerV2.init(allocator, &cst_program, &diags);
     var hir = try lower_pass.run();
     // print AST
     var ast_printer = compiler.ast_v2.AstPrinter.init(
