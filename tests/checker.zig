@@ -41,6 +41,7 @@ fn checkProgram(src: [:0]const u8, expected: []const diag.DiagnosticCode) !void 
     var checker = Checker.init(gpa, &diags, &ast);
     defer checker.deinit();
     _ = try checker.run();
+    defer checker.type_info.deinit();
 
     testing.expectEqual(expected.len, diags.count()) catch |err| {
         std.debug.print("Expected {} diagnostics, but got {}.\n", .{ expected.len, diags.count() });

@@ -111,28 +111,31 @@ pub const StrTag = struct {};
 pub const StrId = Index(StrTag);
 
 pub const StringInterner = struct {
-    arena: std.heap.ArenaAllocator,
+    gpa: std.mem.Allocator,
     map: std.StringHashMapUnmanaged(StrId) = .{},
     buf: std.ArrayListUnmanaged(u8) = .{},
     off: std.ArrayListUnmanaged(u32) = .{},
 
     pub fn init(gpa: std.mem.Allocator) StringInterner {
-        var si: StringInterner = .{ .arena = std.heap.ArenaAllocator.init(gpa) };
+        var si: StringInterner = .{ .gpa = gpa };
         // sentinel offset so id 0 maps to [0..off[1])
-        si.off.append(si.arena.allocator(), 0) catch @panic("OOM");
+        si.off.append(si.gpa, 0) catch @panic("OOM");
         return si;
     }
 
     pub fn deinit(self: *StringInterner) void {
-        const a = self.arena.allocator();
-        self.map.deinit(a);
-        self.buf.deinit(a);
-        self.off.deinit(a);
-        self.arena.deinit(); // frees everything at once
+        // remove keys from map, then deinit all
+        var key_iter = self.map.keyIterator();
+        while (key_iter.next()) |key| {
+            self.gpa.free(key.*);
+        }
+
+        self.map.deinit(self.gpa);
+        self.buf.deinit(self.gpa);
+        self.off.deinit(self.gpa);
     }
 
     pub fn intern(self: *StringInterner, s: []const u8) StrId {
-        const a = self.arena.allocator();
 
         // Fast path: already interned
         if (self.map.get(s)) |existing| return existing;
@@ -141,14 +144,14 @@ pub const StringInterner = struct {
         const id = StrId.fromRaw(@intCast(self.off.items.len - 1));
 
         // Commit bytes for id→string table
-        self.buf.appendSlice(a, s) catch @panic("OOM");
-        self.off.append(a, @intCast(self.buf.items.len)) catch @panic("OOM");
+        self.buf.appendSlice(self.gpa, s) catch @panic("OOM");
+        self.off.append(self.gpa, @intCast(self.buf.items.len)) catch @panic("OOM");
 
         // Stable key for hashmap: duplicate s into arena
-        const key_copy = a.dupe(u8, s) catch @panic("OOM");
+        const key_copy = self.gpa.dupe(u8, s) catch @panic("OOM");
 
         // Insert into map
-        const gop = self.map.getOrPut(a, key_copy) catch @panic("OOM");
+        const gop = self.map.getOrPut(self.gpa, key_copy) catch @panic("OOM");
         // Because we did a .get() above, this should be a fresh slot
         if (gop.found_existing) return gop.value_ptr.*; // defensive
         gop.value_ptr.* = id;

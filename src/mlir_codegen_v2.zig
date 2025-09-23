@@ -36,6 +36,7 @@ pub const MlirCodegen = struct {
         op: mlir.Operation,
         is_variadic: bool,
         n_formals: usize, // number of MLIR formals actually in the type (after dropping tail any)
+        ret_type: mlir.Type,
     };
 
     // ------------------------------------------------------------
@@ -205,7 +206,7 @@ pub const MlirCodegen = struct {
             .build();
         var body = self.module.getBody();
         body.appendOwnedOperation(func_op);
-        _ = try self.func_syms.put(func_name, .{ .op = func_op, .is_variadic = is_variadic, .n_formals = mlir_n_formals });
+        _ = try self.func_syms.put(func_name, .{ .op = func_op, .is_variadic = is_variadic, .n_formals = mlir_n_formals, .ret_type = ret_ty });
     }
 
     fn emitFunctionBody(self: *MlirCodegen, f_id: tir.FuncId, t: *const tir.TIR, store: *types.TypeStore) !void {
@@ -801,12 +802,34 @@ pub const MlirCodegen = struct {
         switch (kind) {
             .Return => {
                 const p = t.terms.get(.Return, term_id);
+                var func_op = self.cur_block.?.getParentOperation();
+                const func_name_attr = func_op.getInherentAttributeByName(mlir.StringRef.from("sym_name"));
+                var func_name_ref = func_name_attr.stringAttrGetValue();
+                const func_name = func_name_ref.toSlice();
+                const finfo = self.func_syms.get(func_name).?;
+                const ret_mlir_type = finfo.ret_type;
+
                 const op = if (!p.value.isNone()) blk: {
                     const v = self.value_map.get(p.value.unwrap()).?;
-                    break :blk OpBuilder.init("llvm.return", self.loc).builder()
-                        .add_operands(&.{v})
-                        .build();
-                } else OpBuilder.init("llvm.return", self.loc).builder().build();
+                    if (ret_mlir_type.equal(self.void_ty)) {
+                        // Function returns void, but TIR has a value. This indicates an inconsistency.
+                        // For now, we\'ll generate a void return, but this should ideally be caught earlier.
+                        std.debug.print("Warning: Function with void return type has a return instruction with a value. Ignoring the value.\n", .{});
+                        break :blk OpBuilder.init("llvm.return", self.loc).builder().add_results(&.{}).build();
+                    } else {
+                        break :blk OpBuilder.init("llvm.return", self.loc).builder()
+                            .add_operands(&.{v})
+                            .add_results(&.{}) // Explicitly no results
+                            .build();
+                    }
+                } else blk: {
+                    if (!ret_mlir_type.equal(self.void_ty)) {
+                        // Function has a non-void return type but TIR return instruction has no value.
+                        // This is an error.
+                        std.debug.panic("Function with non-void return type has a return instruction with no value", .{});
+                    }
+                    break :blk OpBuilder.init("llvm.return", self.loc).builder().add_results(&.{}).build();
+                };
                 self.append(op);
             },
 
@@ -1208,7 +1231,7 @@ pub const MlirCodegen = struct {
             .build();
         var body = self.module.getBody();
         body.appendOwnedOperation(func_op);
-        const info: FuncInfo = .{ .op = func_op, .is_variadic = true, .n_formals = arg_tys.len };
+        const info: FuncInfo = .{ .op = func_op, .is_variadic = true, .n_formals = arg_tys.len, .ret_type = ret_ty };
         _ = try self.func_syms.put(name, info);
         return info;
     }

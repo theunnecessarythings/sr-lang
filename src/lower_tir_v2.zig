@@ -94,7 +94,7 @@ pub const LowerTirV2 = struct {
         }
 
         // If no terminator, add void return
-        if (blk.term.value == 0) {
+        if (blk.term.isNone()) {
             try b.setReturn(&blk, tir.OptValueId.none());
         }
 
@@ -196,7 +196,8 @@ pub const LowerTirV2 = struct {
             .Return => {
                 const r = a.stmts.get(.Return, sid);
                 // run normal defers (ignore err-only for now)
-                var j: isize = @as(isize, @intCast(env.defers.items.len)) - 1;
+                var j: isize = @intCast(env.defers.items.len);
+                j -= 1;
                 while (j >= 0) : (j -= 1) {
                     const ent = env.defers.items[@intCast(j)];
                     if (!ent.is_err) {
@@ -205,38 +206,38 @@ pub const LowerTirV2 = struct {
                 }
                 if (!r.value.isNone()) {
                     const v = try self.lowerExpr(a, env, f, blk, r.value.unwrap());
-                    // If we have err-defer entries, run them conditionally based on builtin.err.is_err(v)
-                    var has_err_defer = false;
-                    for (env.defers.items) |ent2| {
-                        if (ent2.is_err) {
-                            has_err_defer = true;
-                            break;
-                        }
-                    }
-                    if (has_err_defer) {
-                        var then_blk = try f.builder.beginBlock(f);
-                        var cont_blk = try f.builder.beginBlock(f);
-                        const is_err_name = f.builder.intern("builtin.err.is_err");
-                        const is_err = blk.builder.call(blk, self.info.store.tBool(), is_err_name, &.{v});
-                        try f.builder.condBr(blk, is_err, then_blk.id, &.{}, cont_blk.id, &.{});
-                        // then: run err-only defers, then return
-                        var kk: isize = @as(isize, @intCast(env.defers.items.len)) - 1;
-                        while (kk >= 0) : (kk -= 1) {
-                            const ent3 = env.defers.items[@intCast(kk)];
-                            if (ent3.is_err) _ = try self.lowerExpr(a, env, f, &then_blk, ent3.expr);
-                        }
-                        try f.builder.setReturnVal(&then_blk, v);
-                        try f.builder.endBlock(f, then_blk);
-                        // else: return directly
-                        try f.builder.setReturnVal(&cont_blk, v);
-                        blk.* = cont_blk;
-                    } else {
-                        try f.builder.setReturnVal(blk, v);
-                    }
+                    // // If we have err-defer entries, run them conditionally based on builtin.err.is_err(v)
+                    // var has_err_defer = false;
+                    // for (env.defers.items) |ent2| {
+                    //     if (ent2.is_err) {
+                    //         has_err_defer = true;
+                    //         break;
+                    //     }
+                    // }
+                    // if (has_err_defer) {
+                    //     var then_blk = try f.builder.beginBlock(f);
+                    //     var cont_blk = try f.builder.beginBlock(f);
+                    //     const is_err_name = f.builder.intern("builtin.err.is_err");
+                    //     const is_err = blk.builder.call(blk, self.info.store.tBool(), is_err_name, &.{v});
+                    //     try f.builder.condBr(blk, is_err, then_blk.id, &.{}, cont_blk.id, &.{});
+                    //     // then: run err-only defers, then return
+                    //     var kk: isize = @as(isize, @intCast(env.defers.items.len)) - 1;
+                    //     while (kk >= 0) : (kk -= 1) {
+                    //         const ent3 = env.defers.items[@intCast(kk)];
+                    //         if (ent3.is_err) _ = try self.lowerExpr(a, env, f, &then_blk, ent3.expr);
+                    //     }
+                    //     try f.builder.setReturnVal(&then_blk, v);
+                    //     try f.builder.endBlock(f, then_blk);
+                    //     // else: return directly
+                    //     try f.builder.setReturnVal(&cont_blk, v);
+                    //     blk.* = cont_blk;
+                    // }
+                    try f.builder.setReturnVal(blk, v);
                 } else {
                     try f.builder.setReturnVoid(blk);
                 }
             },
+
             .Unreachable => {
                 try f.builder.setUnreachable(blk);
             },
@@ -442,7 +443,7 @@ pub const LowerTirV2 = struct {
                 // else: optionally bind error and evaluate handler
                 // For now, skip binding; name is available in row.binding_name
                 try self.lowerExprAsStmtList(a, env, f, &else_blk, row.handler);
-                if (else_blk.term.value == 0) {
+                if (else_blk.term.isNone()) {
                     const hv = try self.lowerBlockExprValue(a, env, f, &else_blk, row.handler, res_ty);
                     try f.builder.br(&else_blk, join_blk.id, &.{hv});
                 }
@@ -463,7 +464,7 @@ pub const LowerTirV2 = struct {
                 // then arm value
                 var then_val: tir.ValueId = undefined;
                 try self.lowerExprAsStmtList(a, env, f, &then_blk, row.then_block);
-                if (then_blk.term.value == 0) {
+                if (then_blk.term.isNone()) {
                     // If the then block did not end in a terminator, compute a value
                     then_val = try self.lowerBlockExprValue(a, env, f, &then_blk, row.then_block, res_ty);
                     try f.builder.br(&then_blk, join_blk.id, &.{then_val});
@@ -472,12 +473,12 @@ pub const LowerTirV2 = struct {
                 var else_val: tir.ValueId = undefined;
                 if (!row.else_block.isNone()) {
                     try self.lowerExprAsStmtList(a, env, f, &else_blk, row.else_block.unwrap());
-                    if (else_blk.term.value == 0) {
+                    if (else_blk.term.isNone()) {
                         else_val = try self.lowerBlockExprValue(a, env, f, &else_blk, row.else_block.unwrap(), res_ty);
                         try f.builder.br(&else_blk, join_blk.id, &.{else_val});
                     }
                 } else {
-                    if (else_blk.term.value == 0) {
+                    if (else_blk.term.isNone()) {
                         // No else: pass undef of result type
                         else_val = f.builder.constUndef(&else_blk, res_ty);
                         try f.builder.br(&else_blk, join_blk.id, &.{else_val});
@@ -588,7 +589,7 @@ pub const LowerTirV2 = struct {
                     i = 0;
                     while (i < arms.len) : (i += 1) {
                         try self.lowerExprAsStmtList(a, env, f, &bodies[i], a.exprs.MatchArm.get(arms[i].toRaw()).body);
-                        if (bodies[i].term.value == 0) {
+                        if (bodies[i].term.isNone()) {
                             const v = try self.lowerBlockExprValue(a, env, f, &bodies[i], a.exprs.MatchArm.get(arms[i].toRaw()).body, res_ty);
                             try f.builder.br(&bodies[i], join_blk.id, &.{v});
                         }
@@ -619,7 +620,7 @@ pub const LowerTirV2 = struct {
                         }
                         try f.builder.condBr(&test_blk, final_ok, body_blk.id, &.{}, next_blk.id, &.{});
                         try self.lowerExprAsStmtList(a, env, f, &body_blk, arm.body);
-                        if (body_blk.term.value == 0) {
+                        if (body_blk.term.isNone()) {
                             const v = try self.lowerBlockExprValue(a, env, f, &body_blk, arm.body, res_ty);
                             try f.builder.br(&body_blk, join_blk.id, &.{v});
                         }
@@ -654,7 +655,7 @@ pub const LowerTirV2 = struct {
                     .defer_len_at_entry = @intCast(env.defers.items.len),
                 });
                 try self.lowerExprAsStmtList(a, env, f, &body, row.body);
-                if (body.term.value == 0) try f.builder.br(&body, header.id, &.{});
+                if (body.term.isNone()) try f.builder.br(&body, header.id, &.{});
                 try f.builder.endBlock(f, header);
                 try f.builder.endBlock(f, body);
                 // exit -> join undef
@@ -695,7 +696,7 @@ pub const LowerTirV2 = struct {
                     try f.builder.condBr(&header, cond, body.id, &.{}, exit_blk.id, &.{});
                     // body
                     try self.lowerExprAsStmtList(a, env, f, &body, row.body);
-                    if (body.term.value == 0) {
+                    if (body.term.isNone()) {
                         const one = blk.builder.constInt(&body, idx_ty, 1);
                         const next_i = blk.builder.bin(&body, .Add, idx_ty, idx_param, one);
                         try f.builder.br(&body, header.id, &.{next_i});
@@ -717,7 +718,7 @@ pub const LowerTirV2 = struct {
                     // bind pattern to element
                     try self.bindPattern(a, env, f, &body, row.pattern, elem, elem_ty);
                     try self.lowerExprAsStmtList(a, env, f, &body, row.body);
-                    if (body.term.value == 0) {
+                    if (body.term.isNone()) {
                         const one = blk.builder.constInt(&body, idx_ty, 1);
                         const next_i = blk.builder.bin(&body, .Add, idx_ty, idx_param, one);
                         try f.builder.br(&body, header.id, &.{next_i});
@@ -962,13 +963,10 @@ const Builder = struct {
         id: tir.BlockId,
         instrs: std.ArrayListUnmanaged(tir.InstrId) = .{},
         params: std.ArrayListUnmanaged(tir.ParamId) = .{},
-        term: TermSlot = .{ .value = 0 },
+        term: tir.OptTermId = .none(),
         pub fn deinit(self: *@This(), gpa: std.mem.Allocator) void {
             self.instrs.deinit(gpa);
             self.params.deinit(gpa);
-        }
-        fn termId(self: *const @This()) tir.TermId {
-            return tir.TermId.fromRaw(@intCast(self.term.value));
         }
     };
     const TermSlot = struct { value: usize };
@@ -997,7 +995,7 @@ const Builder = struct {
         var row = self.t.funcs.Block.get(blk.id.toRaw());
         row.instrs = instr_range;
         row.params = param_range;
-        row.term = blk.termId();
+        row.term = blk.term.unwrap();
         self.t.funcs.Block.list.set(blk.id.toRaw(), row);
         var tmp = blk;
         tmp.deinit(self.gpa);
@@ -1177,13 +1175,13 @@ const Builder = struct {
     pub fn br(self: *@This(), blk: *BlockFrame, dest: tir.BlockId, args: []const tir.ValueId) !void {
         const e = self.edge(dest, args);
         const tid = self.t.terms.add(.Br, .{ .edge = e });
-        blk.term = .{ .value = tid.toRaw() };
+        blk.term = tir.OptTermId.some(tid);
     }
     pub fn condBr(self: *@This(), blk: *BlockFrame, cond: tir.ValueId, then_dest: tir.BlockId, then_args: []const tir.ValueId, else_dest: tir.BlockId, else_args: []const tir.ValueId) !void {
         const te = self.edge(then_dest, then_args);
         const ee = self.edge(else_dest, else_args);
         const tid = self.t.terms.add(.CondBr, .{ .cond = cond, .then_edge = te, .else_edge = ee });
-        blk.term = .{ .value = tid.toRaw() };
+        blk.term = tir.OptTermId.some(tid);
     }
     fn constUndef(self: *@This(), blk: *BlockFrame, ty: types.TypeId) tir.ValueId {
         const vid = self.freshValue();
@@ -1193,7 +1191,7 @@ const Builder = struct {
     }
     fn setReturn(self: *@This(), blk: *BlockFrame, value: tir.OptValueId) !void {
         const tid = self.t.terms.add(.Return, .{ .value = value });
-        blk.term = .{ .value = tid.toRaw() };
+        blk.term = tir.OptTermId.some(tid);
     }
     pub fn setReturnVal(self: *@This(), blk: *BlockFrame, v: tir.ValueId) !void {
         return self.setReturn(blk, tir.OptValueId.some(v));
@@ -1203,7 +1201,7 @@ const Builder = struct {
     }
     pub fn setUnreachable(self: *@This(), blk: *BlockFrame) !void {
         const tid = self.t.terms.add(.Unreachable, .{});
-        blk.term = .{ .value = tid.toRaw() };
+        blk.term = tir.OptTermId.some(tid);
     }
 
     // SwitchInt helper
@@ -1221,7 +1219,7 @@ const Builder = struct {
         const crange = self.t.terms.case_pool.pushMany(self.gpa, case_ids);
         const def_e = self.edge(default_dest, default_args);
         const tid = self.t.terms.add(.SwitchInt, .{ .scrut = scrut, .cases = crange, .default_edge = def_e });
-        blk.term = .{ .value = tid.toRaw() };
+        blk.term = tir.OptTermId.some(tid);
     }
 
     // GEP helpers

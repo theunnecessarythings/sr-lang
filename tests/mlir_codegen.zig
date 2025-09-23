@@ -42,6 +42,7 @@ fn checkProgram(src: [:0]const u8, expected: []const diag.DiagnosticCode) !void 
     var checker = Checker.init(gpa, &diags, &ast);
     defer checker.deinit();
     _ = try checker.run();
+    defer checker.type_info.deinit();
 
     testing.expectEqual(0, diags.count()) catch |err| {
         for (diags.messages.items) |msg| {
@@ -54,6 +55,12 @@ fn checkProgram(src: [:0]const u8, expected: []const diag.DiagnosticCode) !void 
     defer lower_tir.deinit();
     var tir = try lower_tir.run(&ast);
     defer tir.deinit();
+
+    var mlir_gen = compiler.mlir_codegen_v2.MlirCodegen.init(gpa);
+    defer mlir_gen.deinit();
+    var mlir_module = try mlir_gen.emitModule(&tir, tir.type_store);
+
+    _ = try compiler.compile.run_passes(&mlir_gen.ctx, &mlir_module, false);
 
     _ = expected;
 }

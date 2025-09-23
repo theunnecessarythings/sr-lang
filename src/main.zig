@@ -144,6 +144,7 @@ fn repl(
     try out_writer.flush();
     var chk = compiler.checker_v2.CheckerV2.init(allocator, &diags, &hir);
     defer chk.deinit();
+    defer chk.type_info.deinit();
     try chk.run();
     // print Diagnostics
     try diags.emitStyled(source, err_writer, "REPL Input", true);
@@ -160,6 +161,23 @@ fn repl(
         .{ Colors.bold, Colors.yellow, out.items },
     );
     try out_writer.flush();
+
+    // mlir codegen
+    var codegen = compiler.mlir_codegen_v2.MlirCodegen.init(allocator);
+    defer codegen.deinit();
+    var mlir_module = codegen.emitModule(&tir, tir.type_store) catch {
+        try err_writer.print("{s}Error:{s} MLIR code generation failed.\n", .{ Colors.red, Colors.reset });
+        return error.CompilationFailed;
+    };
+    std.debug.print(
+        "{s}{s}MLIR Module\n",
+        .{ Colors.bold, Colors.green },
+    );
+    const op = mlir_module.getOperation();
+    op.dump();
+    std.debug.print("{s}\n", .{Colors.reset});
+
+    try compiler.compile.run_passes(&codegen.ctx, &mlir_module, true);
 }
 
 fn process_file(

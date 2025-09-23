@@ -37,6 +37,7 @@ pub const Pipeline = struct {
         defer chk.deinit();
         const type_info = try self.allocator.create(types.TypeInfoV2);
         type_info.* = try chk.runWithTypes();
+        defer type_info.deinit();
 
         // 4) Lower from AST v2 to TIR v2
         var tir_lowerer = lower_tir.LowerTirV2.init(self.allocator, type_info);

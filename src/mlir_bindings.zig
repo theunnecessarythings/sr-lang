@@ -834,7 +834,7 @@ pub const Operation = struct {
         };
     }
 
-    pub fn dump(self: *Operation) void {
+    pub fn dump(self: *const Operation) void {
         c.mlirOperationDump(self.handle);
     }
 

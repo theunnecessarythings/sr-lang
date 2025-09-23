@@ -21,6 +21,7 @@ pub const FuncId = dod.Index(FuncTag);
 pub const BlockId = dod.Index(BlockTag);
 pub const InstrId = dod.Index(InstrTag);
 pub const TermId = dod.Index(TermTag);
+pub const OptTermId = dod.SentinelIndex(TermTag);
 pub const ParamId = dod.Index(ParamTag);
 pub const GlobalId = dod.Index(GlobalTag);
 pub const EdgeId = dod.Index(EdgeTag);
@@ -290,7 +291,6 @@ pub const InstrStore = struct {
         self.gep_pool.deinit(gpa);
         self.sfi_pool.deinit(gpa);
         self.val_list_pool.deinit(gpa);
-        self.strs.deinit();
     }
 
     pub fn add(self: *@This(), comptime K: OpKind, row: RowT(K)) InstrId {
@@ -456,7 +456,6 @@ pub const TirPrinter = struct {
         }
         // Functions
         const funcs = self.tir.funcs.func_pool.data.items;
-        std.debug.print("Functions: {}\n", .{funcs.len});
         for (funcs) |fid| try self.printFunc(fid);
         try self.close();
     }

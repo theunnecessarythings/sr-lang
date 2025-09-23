@@ -616,7 +616,6 @@ pub const CheckerV3 = struct {
             if (!srow.origin_param.isNone()) {
                 const pid = srow.origin_param.unwrap();
                 const p = self.ast_unit.exprs.Param.get(pid.toRaw());
-                std.debug.print("Ident @ {d}, param={s}, ty={}\n", .{ row.loc.toRaw(), self.ast_unit.exprs.strs.get(srow.name), p.ty });
                 if (!p.ty.isNone()) {
                     const pt = (try self.typeFromTypeExpr(p.ty.unwrap())) orelse return null;
                     return pt;
@@ -1339,7 +1338,6 @@ pub const CheckerV3 = struct {
                 }
             },
             else => {
-                std.debug.print("For loop iterable type kind: {}\n", .{kind});
                 try self.diags.addError(self.ast_unit.exprs.locs.get(fr.loc), .non_iterable_in_for, .{});
                 return null;
             },
