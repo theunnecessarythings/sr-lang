@@ -16,6 +16,10 @@ pub const LowerTirV2 = struct {
         return .{ .gpa = gpa, .info = info };
     }
 
+    pub fn deinit(self: *LowerTirV2) void {
+        self.loop_stack.deinit(self.gpa);
+    }
+
     pub fn run(self: *@This(), a: *const ast.Ast) !tir.TIR {
         var t = tir.TIR.init(self.gpa, &self.info.store);
         var b = Builder.init(self.gpa, &t);
@@ -41,8 +45,7 @@ pub const LowerTirV2 = struct {
         if (!d.pattern.isNone()) {
             const nm = self.bindingNameOfPattern(a, d.pattern.unwrap()) orelse return;
             const ty = self.getDeclType(did) orelse return;
-            const sid = b.intern(a.exprs.strs.get(nm));
-            _ = b.addGlobal(sid, ty);
+            _ = b.addGlobal(nm, ty);
         }
     }
 
@@ -52,8 +55,7 @@ pub const LowerTirV2 = struct {
         if (self.info.store.index.kinds.items[fid.toRaw()] != .Function) return;
         const fnty = self.info.store.Function.get(self.info.store.index.rows.items[fid.toRaw()]);
 
-        const fname = b.intern(a.exprs.strs.get(name));
-        var f = try b.beginFunction(fname, fnty.result);
+        var f = try b.beginFunction(name, fnty.result);
 
         const fnr = a.exprs.get(.FunctionLit, fun_eid);
         // Params
@@ -320,12 +322,7 @@ pub const LowerTirV2 = struct {
                 while (i < fids.len) : (i += 1) {
                     const sfv = a.exprs.StructFieldValue.get(fids[i].toRaw());
                     const v = try self.lowerExpr(a, env, f, blk, sfv.value);
-                    var name_opt = OptStrId.none();
-                    if (!sfv.name.isNone()) {
-                        const nm = a.exprs.strs.get(sfv.name.unwrap());
-                        name_opt = OptStrId.some(blk.builder.intern(nm));
-                    }
-                    fields[i] = .{ .index = @intCast(i), .name = name_opt, .value = v };
+                    fields[i] = .{ .index = @intCast(i), .name = sfv.name, .value = v };
                 }
                 return blk.builder.structMake(blk, ty, fields);
             },
@@ -495,8 +492,7 @@ pub const LowerTirV2 = struct {
                 const row = a.exprs.get(.Call, id);
                 const callee_k = a.exprs.index.kinds.items[row.callee.toRaw()];
                 if (callee_k != .Ident) return error.OutOfMemory;
-                const name = a.exprs.strs.get(a.exprs.get(.Ident, row.callee).name);
-                const sname = f.builder.intern(name);
+                const sname = a.exprs.get(.Ident, row.callee).name;
                 const args_ids = a.exprs.expr_pool.slice(row.args);
                 var vals = try self.gpa.alloc(tir.ValueId, args_ids.len);
                 defer self.gpa.free(vals);
@@ -947,10 +943,6 @@ const Builder = struct {
         self.next_value += 1;
         return id;
     }
-    // no-op duplicate; remove
-    fn globalName(self: *@This(), s: []const u8) StrId {
-        return self.intern(s);
-    }
 
     pub const FunctionFrame = struct {
         builder: *Builder,
@@ -1020,6 +1012,7 @@ const Builder = struct {
         self.t.funcs.Function.list.set(f.id.toRaw(), row);
         var tmp = f;
         tmp.deinit(self.gpa);
+        _ = self.t.funcs.func_pool.push(self.gpa, f.id);
     }
 
     // ---- instruction helpers ----

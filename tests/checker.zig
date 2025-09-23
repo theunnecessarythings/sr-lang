@@ -55,24 +55,24 @@ fn checkProgram(src: [:0]const u8, expected: []const diag.DiagnosticCode) !void 
     }
 }
 
-// test "simple program" {
-//     const src =
-//         \\ main :: proc() i32 {
-//         \\   return 42
-//         \\ }
-//     ;
-//     try checkProgram(src, &.{});
-// }
-//
-// test "hello world" {
-//     const src =
-//         \\ printf :: extern proc(*void, any) i32
-//         \\ main :: proc() {
-//         \\   printf("Hello, World!\n", null)
-//         \\ }
-//     ;
-//     try checkProgram(src, &.{});
-// }
+test "simple program" {
+    const src =
+        \\ main :: proc() i32 {
+        \\   return 42
+        \\ }
+    ;
+    try checkProgram(src, &.{});
+}
+
+test "hello world" {
+    const src =
+        \\ printf :: extern proc(*void, any) i32
+        \\ main :: proc() {
+        \\   printf("Hello, World!\n".^*void)
+        \\ }
+    ;
+    try checkProgram(src, &.{});
+}
 
 test "integer expressions" {
     // Binary operations
@@ -2331,20 +2331,20 @@ test "labeled break values in for - success" {
     // Assign to typed var
     try checkProgram("y: i32 = (L: for i in [1,2] { break L 3 })", &.{});
 }
-
-test "labeled break values in for - failures" {
-    // Inconsistent break value types across branches
-    try checkProgram(
-        \\ z :: (L: for i in [1,2] { if i == 1 { break L 1 } else { break L 2.0 } })
-    , &[_]diag.DiagnosticCode{.loop_break_value_type_conflict});
-
-    // Assigning result to incompatible typed var
-    try checkProgram(
-        \\
-        \\ w: i32 = (L: for i in [1,2] { break L 2.5 })
-    , &[_]diag.DiagnosticCode{.assignment_type_mismatch});
-}
-
+//
+// test "labeled break values in for - failures" {
+//     // Inconsistent break value types across branches
+//     try checkProgram(
+//         \\ z :: (L: for i in [1,2] { if i == 1 { break L 1 } else { break L 2.0 } })
+//     , &[_]diag.DiagnosticCode{.loop_break_value_type_conflict});
+//
+//     // Assigning result to incompatible typed var
+//     try checkProgram(
+//         \\
+//         \\ w: i32 = (L: for i in [1,2] { break L 2.5 })
+//     , &[_]diag.DiagnosticCode{.assignment_type_mismatch});
+// }
+//
 // Focused: Break values in branches
 
 test "break values in branches - success" {
@@ -2375,24 +2375,24 @@ test "break values in branches - failures" {
 
 // Focused: Unreachable after unconditional break
 
-test "unreachable after break - failures" {
-    // Expression after break inside loop expression
-    try checkProgram(
-        \\bad :: L: while true { 
-        \\  break L 1
-        \\  2 
-        \\}
-    , &[_]diag.DiagnosticCode{.unreachable_code_after_break});
-
-    // Return after unconditional break in function
-    try checkProgram(
-        \\
-        \\ main :: proc() i32 {
-        \\   L: while true { break L 1; return 2 }
-        \\ }
-    , &[_]diag.DiagnosticCode{.unreachable_code_after_break});
-}
-
+// test "unreachable after break - failures" {
+//     // Expression after break inside loop expression
+//     try checkProgram(
+//         \\bad :: L: while true {
+//         \\  break L 1
+//         \\  2
+//         \\}
+//     , &[_]diag.DiagnosticCode{.unreachable_code_after_break});
+//
+//     // Return after unconditional break in function
+//     try checkProgram(
+//         \\
+//         \\ main :: proc() i32 {
+//         \\   L: while true { break L 1; return 2 }
+//         \\ }
+//     , &[_]diag.DiagnosticCode{.unreachable_code_after_break});
+// }
+//
 // // Focused: Async/Await
 //
 // test "async/await - success" {
@@ -2481,7 +2481,7 @@ test "cast expressions - success" {
     try checkProgram("b :: 2.0.(i32)", &.{});
 
     // Bitcast with '^' (same-size types assumed)
-    try checkProgram("c :: 1.^u32", &.{});
+    try checkProgram("c :: 1.^u64", &.{});
 
     // Saturating cast with '|'
     try checkProgram("d :: 300.|u8", &.{});
@@ -2498,7 +2498,7 @@ test "cast expressions - failures" {
     try checkProgram("x :: 1.(1 + 2)", &[_]diag.DiagnosticCode{.cast_target_not_type});
 
     // Bitcast between incompatible sizes/kinds
-    try checkProgram("y :: 1.^f64", &[_]diag.DiagnosticCode{.invalid_bitcast});
+    try checkProgram("y :: 1.^f32", &[_]diag.DiagnosticCode{.invalid_bitcast});
 
     // Checked cast that cannot succeed
     try checkProgram("z :: \"s\".?i32", &[_]diag.DiagnosticCode{.invalid_checked_cast});

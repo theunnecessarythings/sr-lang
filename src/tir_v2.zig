@@ -51,19 +51,48 @@ pub const OpKind = enum(u16) {
     ConstNull,
     ConstUndef,
     // Arithmetic/Bitwise/Logic
-    Add, Sub, Mul, Div, Mod, Shl, Shr, BitAnd, BitOr, BitXor,
-    LogicalAnd, LogicalOr, LogicalNot,
+    Add,
+    Sub,
+    Mul,
+    Div,
+    Mod,
+    Shl,
+    Shr,
+    BitAnd,
+    BitOr,
+    BitXor,
+    LogicalAnd,
+    LogicalOr,
+    LogicalNot,
     // Comparisons (bool result)
-    CmpEq, CmpNe, CmpLt, CmpLe, CmpGt, CmpGe,
+    CmpEq,
+    CmpNe,
+    CmpLt,
+    CmpLe,
+    CmpGt,
+    CmpGe,
     // Casts
-    CastNormal, CastBit, CastSaturate, CastWrap, CastChecked,
+    CastNormal,
+    CastBit,
+    CastSaturate,
+    CastWrap,
+    CastChecked,
     // Memory
-    Alloca, Load, Store, Gep,
+    Alloca,
+    Load,
+    Store,
+    Gep,
     // Aggregates
-    TupleMake, ArrayMake, StructMake,
-    ExtractElem, InsertElem, ExtractField, InsertField,
+    TupleMake,
+    ArrayMake,
+    StructMake,
+    ExtractElem,
+    InsertElem,
+    ExtractField,
+    InsertField,
     // Indexing/Pointers
-    Index, AddressOf,
+    Index,
+    AddressOf,
     // Control/Data
     Select,
     // Calls
@@ -88,8 +117,12 @@ pub const Rows = struct {
     pub const Load = struct { result: ValueId, ty: types.TypeId, ptr: ValueId, @"align": u32 };
     pub const Store = struct { result: ValueId, ty: types.TypeId, ptr: ValueId, value: ValueId, @"align": u32 };
     pub const GepIndex = union(enum) { Const: i64, Value: ValueId };
-    pub const Gep = struct { result: ValueId, ty: types.TypeId, base: ValueId, // pointer
-        indices: RangeGepIndex };
+    pub const Gep = struct {
+        result: ValueId,
+        ty: types.TypeId,
+        base: ValueId, // pointer
+        indices: RangeGepIndex,
+    };
 
     pub const TupleMake = struct { result: ValueId, ty: types.TypeId, elems: RangeValue };
     pub const ArrayMake = struct { result: ValueId, ty: types.TypeId, elems: RangeValue };
@@ -136,9 +169,7 @@ inline fn RowT(comptime K: OpKind) type {
         .ConstNull => Rows.ConstNull,
         .ConstUndef => Rows.ConstUndef,
 
-        .Add, .Sub, .Mul, .Div, .Mod, .Shl, .Shr, .BitAnd, .BitOr, .BitXor,
-        .LogicalAnd, .LogicalOr,
-        .CmpEq, .CmpNe, .CmpLt, .CmpLe, .CmpGt, .CmpGe => Rows.Bin2,
+        .Add, .Sub, .Mul, .Div, .Mod, .Shl, .Shr, .BitAnd, .BitOr, .BitXor, .LogicalAnd, .LogicalOr, .CmpEq, .CmpNe, .CmpLt, .CmpLe, .CmpGt, .CmpGe => Rows.Bin2,
 
         .LogicalNot => Rows.Un1,
 
@@ -241,10 +272,10 @@ pub const InstrStore = struct {
     sfi_pool: Pool(StructFieldInitId) = .{},
     val_list_pool: Pool(ValueId) = .{},
 
-    strs: StringInterner,
+    strs: *StringInterner,
 
-    pub fn init(gpa: std.mem.Allocator) InstrStore {
-        return .{ .gpa = gpa, .strs = StringInterner.init(gpa) };
+    pub fn init(gpa: std.mem.Allocator, interner: *StringInterner) InstrStore {
+        return .{ .gpa = gpa, .strs = interner };
     }
     pub fn deinit(self: *@This()) void {
         const gpa = self.gpa;
@@ -364,11 +395,305 @@ pub const TIR = struct {
     funcs: FuncStore,
 
     pub fn init(gpa: std.mem.Allocator, store: *types.TypeStore) TIR {
-        return .{ .gpa = gpa, .type_store = store, .instrs = InstrStore.init(gpa), .terms = TermStore.init(gpa), .funcs = FuncStore.init(gpa) };
+        return .{ .gpa = gpa, .type_store = store, .instrs = InstrStore.init(gpa, store.strs), .terms = TermStore.init(gpa), .funcs = FuncStore.init(gpa) };
     }
     pub fn deinit(self: *@This()) void {
         self.instrs.deinit();
         self.terms.deinit();
         self.funcs.deinit();
+    }
+};
+
+const ArrayList = std.array_list.Managed;
+pub const TirPrinter = struct {
+    writer: ArrayList(u8).Writer,
+    indent: usize = 0,
+
+    tir: *const TIR,
+    pub fn init(writer: anytype, tir: *const TIR) TirPrinter {
+        return .{ .writer = writer, .tir = tir };
+    }
+
+    fn ws(self: *TirPrinter) anyerror!void {
+        var i: usize = 0;
+        while (i < self.indent) : (i += 1) try self.writer.writeByte(' ');
+    }
+
+    fn open(self: *TirPrinter, comptime head: []const u8, args: anytype) anyerror!void {
+        try self.ws();
+        try self.writer.print(head, args);
+        try self.writer.writeAll("\n");
+        self.indent += 2;
+    }
+
+    fn close(self: *TirPrinter) anyerror!void {
+        self.indent = if (self.indent >= 2) self.indent - 2 else 0;
+        try self.ws();
+        try self.writer.writeAll(")\n");
+    }
+
+    fn leaf(self: *TirPrinter, comptime fmt: []const u8, args: anytype) anyerror!void {
+        try self.ws();
+        try self.writer.print(fmt, args);
+        try self.writer.writeAll("\n");
+    }
+
+    inline fn s(self: *const TirPrinter, id: StrId) []const u8 {
+        return self.tir.instrs.strs.get(id);
+    }
+
+    pub fn print(self: *TirPrinter) anyerror!void {
+        try self.open("(tir", .{});
+        // Globals
+        const globals = self.tir.funcs.global_pool.data.items;
+        if (globals.len > 0) {
+            try self.open("(globals", .{});
+            for (globals) |gid| {
+                const g = self.tir.funcs.Global.get(gid.toRaw());
+                try self.leaf("(global name=\"{s}\" type={})", .{ self.s(g.name), g.ty });
+            }
+            try self.close();
+        }
+        // Functions
+        const funcs = self.tir.funcs.func_pool.data.items;
+        std.debug.print("Functions: {}\n", .{funcs.len});
+        for (funcs) |fid| try self.printFunc(fid);
+        try self.close();
+    }
+
+    fn printFunc(self: *TirPrinter, id: FuncId) anyerror!void {
+        const func = self.tir.funcs.Function.get(id.toRaw());
+        try self.open("(function name=\"{s}\" result={})", .{ self.s(func.name), func.result });
+        // Params
+        const params = self.tir.funcs.param_pool.slice(func.params);
+        if (params.len > 0) {
+            try self.open("(params", .{});
+            for (params) |pid| {
+                const p = self.tir.funcs.Param.get(pid.toRaw());
+                try self.leaf("(param name={s} type={})", .{ if (p.name.isNone()) "null" else self.s(p.name.unwrap()), p.ty });
+            }
+            try self.close();
+        }
+        // Blocks
+        const blocks = self.tir.funcs.block_pool.slice(func.blocks);
+        for (blocks) |bid| try self.printBlock(bid);
+        try self.close();
+    }
+
+    fn printBlock(self: *TirPrinter, id: BlockId) anyerror!void {
+        const block = self.tir.funcs.Block.get(id.toRaw());
+        try self.open("(block", .{});
+        // Params
+        const params = self.tir.funcs.param_pool.slice(block.params);
+        if (params.len > 0) {
+            try self.open("(params", .{});
+            for (params) |pid| {
+                const p = self.tir.funcs.Param.get(pid.toRaw());
+                try self.leaf("(param name={s} type={})", .{ if (p.name.isNone()) "null" else self.s(p.name.unwrap()), p.ty });
+            }
+            try self.close();
+        }
+        // Instrs
+        const instrs = self.tir.instrs.instr_pool.slice(block.instrs);
+        for (instrs) |iid| try self.printInstr(iid);
+        // Term
+        try self.open("(terminator", .{});
+        const term_id = block.term;
+        const term_kind = self.tir.terms.index.kinds.items[term_id.toRaw()];
+        switch (term_kind) {
+            .Return => {
+                const row = self.tir.terms.get(.Return, term_id);
+                if (!row.value.isNone()) {
+                    try self.leaf("(return value={})", .{row.value.unwrap().toRaw()});
+                } else {
+                    try self.leaf("(return)", .{});
+                }
+            },
+            .Br => {
+                const row = self.tir.terms.get(.Br, term_id);
+                const edge = self.tir.terms.Edge.get(row.edge.toRaw());
+                try self.leaf("(br dest=block_{})", .{edge.dest.toRaw()});
+            },
+            .CondBr => {
+                const row = self.tir.terms.get(.CondBr, term_id);
+                const then_edge = self.tir.terms.Edge.get(row.then_edge.toRaw());
+                const else_edge = self.tir.terms.Edge.get(row.else_edge.toRaw());
+                try self.leaf("(cond_br cond={} then=block_{} else=block_{})", .{ row.cond.toRaw(), then_edge.dest.toRaw(), else_edge.dest.toRaw() });
+            },
+            .SwitchInt => {
+                const row = self.tir.terms.get(.SwitchInt, term_id);
+                const cases = self.tir.terms.case_pool.slice(row.cases);
+                const default_edge = self.tir.terms.Edge.get(row.default_edge.toRaw());
+                try self.open("(switch_int scrut={} default=block_{})", .{ row.scrut.toRaw(), default_edge.dest.toRaw() });
+                for (cases) |cid| {
+                    const c = self.tir.terms.Case.get(cid.toRaw());
+                    const edge = self.tir.terms.Edge.get(c.edge.toRaw());
+                    try self.leaf("(case value={} dest=block_{})", .{ c.value, edge.dest.toRaw() });
+                }
+                try self.close();
+            },
+            .Unreachable => {
+                _ = self.tir.terms.get(.Unreachable, term_id);
+                try self.leaf("(unreachable)", .{});
+            },
+        }
+        try self.close(); // terminator
+        try self.close(); // block
+    }
+
+    pub fn printInstr(self: *TirPrinter, id: InstrId) anyerror!void {
+        const kind = self.tir.instrs.index.kinds.items[id.toRaw()];
+        switch (kind) {
+            .ConstInt => {
+                const row = self.tir.instrs.get(.ConstInt, id);
+                try self.leaf("(instr id={} op=ConstInt value={} type={})", .{ id.toRaw(), row.value, row.ty });
+            },
+            .ConstFloat => {
+                const row = self.tir.instrs.get(.ConstFloat, id);
+                try self.leaf("(instr id={} op=ConstFloat value={} type={})", .{ id.toRaw(), row.value, row.ty });
+            },
+            .ConstBool => {
+                const row = self.tir.instrs.get(.ConstBool, id);
+                try self.leaf("(instr id={} op=ConstBool value={} type={})", .{ id.toRaw(), row.value, row.ty });
+            },
+            .ConstString => {
+                const row = self.tir.instrs.get(.ConstString, id);
+                try self.leaf("(instr id={} op=ConstString value=\"{s}\" type={})", .{ id.toRaw(), self.s(row.text), row.ty });
+            },
+            .ConstNull => {
+                const row = self.tir.instrs.get(.ConstNull, id);
+                try self.leaf("(instr id={} op=ConstNull type={})", .{ id.toRaw(), row.ty });
+            },
+            .ConstUndef => {
+                const row = self.tir.instrs.get(.ConstUndef, id);
+                try self.leaf("(instr id={} op=ConstUndef type={})", .{ id.toRaw(), row.ty });
+            },
+            inline .Add, .Sub, .Mul, .Div, .Mod, .Shl, .Shr, .BitAnd, .BitOr, .BitXor, .LogicalAnd, .LogicalOr, .CmpEq, .CmpNe, .CmpLt, .CmpLe, .CmpGt, .CmpGe => |x| {
+                const row = self.tir.instrs.get(x, id);
+                try self.leaf("(instr id={} op={s} lhs={} rhs={} result={} type={})", .{ id.toRaw(), @tagName(kind), row.lhs.toRaw(), row.rhs.toRaw(), row.result.toRaw(), row.ty });
+            },
+            .LogicalNot => {
+                const row = self.tir.instrs.get(.LogicalNot, id);
+                try self.leaf("(instr id={} op=LogicalNot value={} result={} type={})", .{ id.toRaw(), row.value.toRaw(), row.result.toRaw(), row.ty });
+            },
+            inline .CastNormal, .CastBit, .CastSaturate, .CastWrap, .CastChecked => |x| {
+                const row = self.tir.instrs.get(x, id);
+                try self.leaf("(instr id={} op={s} value={} result={} type={})", .{ id.toRaw(), @tagName(kind), row.value.toRaw(), row.result.toRaw(), row.ty });
+            },
+            .Alloca => {
+                const row = self.tir.instrs.get(.Alloca, id);
+                if (!row.count.isNone()) {
+                    try self.leaf("(instr id={} op=Alloca count={} align={} result={} type={})", .{ id.toRaw(), row.count.unwrap().toRaw(), row.@"align", row.result.toRaw(), row.ty });
+                } else {
+                    try self.leaf("(instr id={} op=Alloca count=null align={} result={} type={})", .{ id.toRaw(), row.@"align", row.result.toRaw(), row.ty });
+                }
+            },
+            .Load => {
+                const row = self.tir.instrs.get(.Load, id);
+                try self.leaf("(instr id={} op=Load ptr={} align={} result={} type={})", .{ id.toRaw(), row.ptr.toRaw(), row.@"align", row.result.toRaw(), row.ty });
+            },
+            .Store => {
+                const row = self.tir.instrs.get(.Store, id);
+                try self.leaf("(instr id={} op=Store ptr={} value={} align={})", .{ id.toRaw(), row.ptr.toRaw(), row.value.toRaw(), row.@"align" });
+            },
+            .Gep => {
+                const row = self.tir.instrs.get(.Gep, id);
+                const indices = self.tir.instrs.gep_pool.slice(row.indices);
+                try self.open("(instr id={} op=Gep base={} result={} type={} indices=[", .{ id.toRaw(), row.base.toRaw(), row.result.toRaw(), row.ty });
+                for (indices) |gid| {
+                    const g = self.tir.instrs.GepIndex.get(gid.toRaw());
+                    switch (g) {
+                        .Const => try self.leaf("  (const {})", .{g.Const}),
+                        .Value => try self.leaf("  (value {})", .{g.Value.toRaw()}),
+                    }
+                }
+                try self.leaf("])", .{});
+                try self.close();
+            },
+            .TupleMake => {
+                const row = self.tir.instrs.get(.TupleMake, id);
+                const elems = self.tir.instrs.value_pool.slice(row.elems);
+                try self.open("(instr id={} op=TupleMake result={} type={} elems=[", .{ id.toRaw(), row.result.toRaw(), row.ty });
+                for (elems) |vid| try self.leaf("  {}", .{vid.toRaw()});
+                try self.leaf("])", .{});
+                try self.close();
+            },
+            .ArrayMake => {
+                const row = self.tir.instrs.get(.ArrayMake, id);
+                const elems = self.tir.instrs.value_pool.slice(row.elems);
+                try self.open("(instr id={} op=ArrayMake result={} type={} elems=[", .{ id.toRaw(), row.result.toRaw(), row.ty });
+                for (elems) |vid| try self.leaf("  {}", .{vid.toRaw()});
+                try self.leaf("])", .{});
+                try self.close();
+            },
+            .StructMake => {
+                const row = self.tir.instrs.get(.StructMake, id);
+                const fields = self.tir.instrs.sfi_pool.slice(row.fields);
+                try self.open("(instr id={} op=StructMake result={} type={} fields=[", .{ id.toRaw(), row.result.toRaw(), row.ty });
+                for (fields) |sfid| {
+                    const sf = self.tir.instrs.StructFieldInit.get(sfid.toRaw());
+                    try self.leaf("  (field index={} name={s} value={})", .{ sf.index, if (sf.name.isNone()) "null" else self.s(sf.name.unwrap()), sf.value.toRaw() });
+                }
+                try self.leaf("])", .{});
+                try self.close();
+            },
+            .ExtractElem => {
+                const row = self.tir.instrs.get(.ExtractElem, id);
+                try self.leaf("(instr id={} op=ExtractElem agg={} index={} result={} type={})", .{
+                    id.toRaw(),
+                    row.agg.toRaw(),
+                    row.index,
+                    row.result.toRaw(),
+                    row.ty,
+                });
+            },
+            .InsertElem => {
+                const row = self.tir.instrs.get(.InsertElem, id);
+                try self.leaf("(instr id={} op=InsertElem agg={} index={} value={} result={} type={})", .{ id.toRaw(), row.agg.toRaw(), row.index, row.value.toRaw(), row.result.toRaw(), row.ty });
+            },
+            .ExtractField => {
+                const row = self.tir.instrs.get(.ExtractField, id);
+                try self.leaf("(instr id={} op=ExtractField agg={} index={} name={s} result={} type={})", .{
+                    id.toRaw(),
+                    row.agg.toRaw(),
+                    row.index,
+                    if (row.name.isNone()) "null" else self.s(row.name.unwrap()),
+                    row.result.toRaw(),
+                    row.ty,
+                });
+            },
+            .InsertField => {
+                const row = self.tir.instrs.get(.InsertField, id);
+                try self.leaf("(instr id={} op=InsertField agg={} index={} value={} name={s} result={} type={})", .{
+                    id.toRaw(),
+                    row.agg.toRaw(),
+                    row.index,
+                    row.value.toRaw(),
+                    if (row.name.isNone()) "null" else self.s(row.name.unwrap()),
+                    row.result.toRaw(),
+                    row.ty,
+                });
+            },
+            .Index => {
+                const row = self.tir.instrs.get(.Index, id);
+                try self.leaf("(instr id={} op=Index base={} index={} result={} type={})", .{ id.toRaw(), row.base.toRaw(), row.index.toRaw(), row.result.toRaw(), row.ty });
+            },
+            .AddressOf => {
+                const row = self.tir.instrs.get(.AddressOf, id);
+                try self.leaf("(instr id={} op=AddressOf value={} result={} type={})", .{ id.toRaw(), row.value.toRaw(), row.result.toRaw(), row.ty });
+            },
+            .Select => {
+                const row = self.tir.instrs.get(.Select, id);
+                try self.leaf("(instr id={} op=Select cond={} then={} else={} result={} type={})", .{ id.toRaw(), row.cond.toRaw(), row.then_value.toRaw(), row.else_value.toRaw(), row.result.toRaw(), row.ty });
+            },
+            .Call => {
+                const row = self.tir.instrs.get(.Call, id);
+                const args = self.tir.instrs.value_pool.slice(row.args);
+                try self.open("(instr id={} op=Call callee=\"{s}\" result={} type={} args=[", .{ id.toRaw(), self.s(row.callee), row.result.toRaw(), row.ty });
+                for (args) |vid| try self.leaf("  {}", .{vid.toRaw()});
+                try self.leaf("])", .{});
+                try self.close();
+            },
+        }
     }
 };

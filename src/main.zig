@@ -147,6 +147,19 @@ fn repl(
     try chk.run();
     // print Diagnostics
     try diags.emitStyled(source, err_writer, "REPL Input", true);
+
+    var lower_tir = compiler.lower_tir_v2.LowerTirV2.init(allocator, &chk.type_info);
+    defer lower_tir.deinit();
+    var tir = try lower_tir.run(&hir);
+    defer tir.deinit();
+    out.clearRetainingCapacity();
+    var tir_printer = compiler.tir_v2.TirPrinter.init(out.writer(), &tir);
+    try tir_printer.print();
+    std.debug.print(
+        "{s}Typed Intermediate Representation (TIR){s}\n{s}",
+        .{ Colors.bold, Colors.yellow, out.items },
+    );
+    try out_writer.flush();
 }
 
 fn process_file(

@@ -5,4 +5,5 @@ test "all" {
     _ = @import("parser.zig");
     _ = @import("lower_v2.zig");
     _ = @import("checker.zig");
+    _ = @import("lower_tir.zig");
 }

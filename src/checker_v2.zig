@@ -42,8 +42,7 @@ pub const CheckerV3 = struct {
     }
 
     pub fn run(self: *CheckerV3) !void {
-        var info = try self.runWithTypes();
-        info.deinit();
+        _ = try self.runWithTypes();
     }
 
     pub fn runWithTypes(self: *CheckerV3) !TypeInfoV2 {
@@ -163,7 +162,7 @@ pub const CheckerV3 = struct {
             .Ptr => 8, // Assuming 64-bit pointers
             .Void => 0, // No size
             .Any => null, // Unknown size
-            .String => null, // Dynamic size
+            .String => 8, // Assuming string is a pointer (8 bytes) for 64-bit (TODO: more complex)
             .Array => {
                 const arr = self.type_info.store.Array.get(self.type_info.store.index.rows.items[ty_id.toRaw()]);
                 const elem_size = self.typeSize(arr.elem) orelse return null;
@@ -778,12 +777,15 @@ pub const CheckerV3 = struct {
             try self.bindParamPattern(params[i], p);
         }
 
+        const fn_ty = self.type_info.store.mkFunction(pbuf, res.?, fnr.flags.is_variadic);
+        self.type_info.expr_types.items[id.toRaw()] = fn_ty;
+
         try self.pushFunc(res.?, !fnr.result_ty.isNone());
         defer self.popFunc();
         if (!fnr.body.isNone()) {
             _ = try self.checkExpr(fnr.body.unwrap());
         }
-        return self.type_info.store.mkFunction(pbuf, res.?, fnr.flags.is_variadic);
+        return fn_ty;
     }
 
     fn checkTupleLit(self: *CheckerV3, id: ast.ExprId) !?types.TypeId {
@@ -1776,20 +1778,13 @@ pub const CheckerV3 = struct {
                 }
             },
             .bitcast => {
-                const is_src_int = self.isIntegerKind(vk);
-                const is_dest_int = self.isIntegerKind(ek);
-                const is_src_float = (vk == .F32 or vk == .F64);
-                const is_dest_float = (ek == .F32 or ek == .F64);
-
-                if ((is_src_int and is_dest_int) or (is_src_float and is_dest_float)) {
-                    // Allow bitcast between integers or between floats
-                    // (size differences handled by runtime, not type checker)
-                    // No error needed here.
-                } else if (vk == .Ptr and ek == .Ptr) {
-                    // Allow bitcast between pointers
-                    // No error needed here.
-                } else {
-                    // Disallow bitcast between integer and float, or other incompatible types
+                const gsize = self.typeSize(vt.?);
+                const tsize = self.typeSize(et);
+                if (gsize == null or tsize == null) {
+                    try self.diags.addError(self.ast_unit.exprs.locs.get(cr.loc), .invalid_bitcast, .{});
+                    return null;
+                }
+                if (gsize.? != tsize.?) {
                     try self.diags.addError(self.ast_unit.exprs.locs.get(cr.loc), .invalid_bitcast, .{});
                     return null;
                 }
