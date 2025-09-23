@@ -16,7 +16,7 @@ pub const Result = struct {
     type_info: *types.TypeInfoV2,
     module: tir.TIR,
     mlir_module: mlir.Module,
-    gen: mlir_codegen_v2.TirLlvmGenV2,
+    gen: mlir_codegen_v2.MlirCodegen,
 };
 
 pub const Pipeline = struct {
@@ -43,7 +43,7 @@ pub const Pipeline = struct {
         const mod = try tir_lowerer.run(&hir);
 
         // 5) MLIR Codegen v2 from TIR v2 to MLIR
-        var gen = mlir_codegen_v2.TirLlvmGenV2.init(self.allocator);
+        var gen = mlir_codegen_v2.MlirCodegen.init(self.allocator);
         var mlir_module = try gen.emitModule(&mod, &type_info.store);
         var op = mlir_module.getOperation();
         op.dump();

@@ -199,6 +199,15 @@ pub const TypeStore = struct {
         self.enum_member_pool.deinit(gpa);
     }
 
+    pub fn getKind(self: *const TypeStore, id: TypeId) TypeKind {
+        return self.index.kinds.items[id.toRaw()];
+    }
+
+    pub fn get(self: *const TypeStore, comptime K: TypeKind, id: TypeId) RowT(K) {
+        const tbl: *const Table(RowT(K)) = &@field(self, @tagName(K));
+        return tbl.get(self.index.rows.items[id.toRaw()]);
+    }
+
     pub fn add(self: *TypeStore, comptime K: TypeKind, row: RowT(K)) TypeId {
         const tbl: *Table(RowT(K)) = &@field(self, @tagName(K));
         const idx = tbl.add(self.gpa, row);
