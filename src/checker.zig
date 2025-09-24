@@ -22,6 +22,10 @@ pub const Checker = struct {
     warned_comptime: bool = false,
     warned_code: bool = false,
 
+    // Current loop pattern context for binding type inference inside loop bodies
+    current_loop_pat: ast.OptPatternId = ast.OptPatternId.none(),
+    current_loop_subject_ty: ?types.TypeId = null,
+
     pub fn init(
         gpa: std.mem.Allocator,
         diags: *Diagnostics,
@@ -77,7 +81,12 @@ pub const Checker = struct {
         require_pure: bool,
         locals: std.AutoArrayHashMapUnmanaged(u32, void) = .{},
     };
-    const LoopCtx = struct { label: ast.OptStrId };
+    const LoopCtx = struct {
+        label: ast.OptStrId,
+        result_ty: ?types.TypeId = null,
+    };
+
+    
 
     fn bindDeclPattern(self: *Checker, did: ast.DeclId, d: ast.Rows.Decl) !void {
         if (d.pattern.isNone()) return;
@@ -165,7 +174,7 @@ pub const Checker = struct {
     }
 
     fn pushLoop(self: *Checker, label: ast.OptStrId) !void {
-        try self.loop_stack.append(self.gpa, .{ .label = label });
+        try self.loop_stack.append(self.gpa, .{ .label = label, .result_ty = null });
     }
     fn popLoop(self: *Checker) void {
         if (self.loop_stack.items.len > 0) _ = self.loop_stack.pop();
@@ -187,6 +196,19 @@ pub const Checker = struct {
 
     fn lookup(self: *Checker, name: ast.StrId) ?symbols.SymbolId {
         return self.symtab.lookup(self.ast_unit, self.symtab.currentId(), name);
+    }
+
+    fn loopCtxForLabel(self: *Checker, opt_label: ast.OptStrId) ?*LoopCtx {
+        if (self.loop_stack.items.len == 0) return null;
+        const want: ?u32 = if (!opt_label.isNone()) opt_label.unwrap().toRaw() else null;
+        var i: isize = @as(isize, @intCast(self.loop_stack.items.len)) - 1;
+        while (i >= 0) : (i -= 1) {
+            const idx: usize = @intCast(i);
+            const lc = &self.loop_stack.items[idx];
+            if (want == null) return lc;
+            if (!lc.label.isNone() and lc.label.unwrap().toRaw() == want.?) return lc;
+        }
+        return null;
     }
 
     fn primaryNameOfPattern(self: *Checker, pid: ast.PatternId) ast.OptStrId {
@@ -713,8 +735,20 @@ pub const Checker = struct {
                 const row = self.ast_unit.stmts.get(.Break, sid);
                 if (!self.inLoop())
                     try self.diags.addError(self.ast_unit.exprs.locs.get(row.loc), .break_outside_loop, .{});
-                if (!row.value.isNone())
-                    _ = try self.checkExpr(row.value.unwrap());
+                if (!row.value.isNone()) {
+                    const vt = try self.checkExpr(row.value.unwrap());
+                    if (vt == null) return null;
+                    if (self.loopCtxForLabel(row.label)) |ctx| {
+                        if (ctx.result_ty) |rt| {
+                            if (rt.toRaw() != vt.?.toRaw()) {
+                                try self.diags.addError(self.ast_unit.exprs.locs.get(row.loc), .loop_break_value_type_conflict, .{});
+                                return null;
+                            }
+                        } else {
+                            ctx.result_ty = vt.?;
+                        }
+                    }
+                }
             },
             .Continue => {
                 const row = self.ast_unit.stmts.get(.Continue, sid);
@@ -979,6 +1013,11 @@ pub const Checker = struct {
                     return self.type_info.store.tAny();
                 }
             }
+            // Loop-pattern-originated symbol? Infer from current loop pattern context if available
+            if (self.current_loop_subject_ty != null and !self.current_loop_pat.isNone()) {
+                const bt = self.bindingTypeInPattern(self.current_loop_pat.unwrap(), row.name, self.current_loop_subject_ty.?);
+                if (bt) |btid| return btid;
+            }
         }
         return null;
     }
@@ -1072,27 +1111,172 @@ pub const Checker = struct {
 
         if (stmts.len == 0) return self.type_info.store.tVoid();
         const value_required = self.isValueReq();
+        var after_break: bool = false;
         if (!value_required) {
             // Statement context: just type-check children, no value produced
             while (i < stmts.len) : (i += 1) {
+                if (after_break) {
+                    const loc = self.stmtLoc(stmts[i]);
+                    try self.diags.addError(loc, .unreachable_code_after_break, .{});
+                    return null;
+                }
                 _ = try self.checkStmt(stmts[i]);
+                // Track unconditional break at top-level in this block
+                const sk = self.ast_unit.stmts.index.kinds.items[stmts[i].toRaw()];
+                if (sk == .Break) after_break = true else if (sk == .Expr) {
+                    const se = self.ast_unit.stmts.get(.Expr, stmts[i]).expr;
+                    if (self.ast_unit.exprs.index.kinds.items[se.toRaw()] == .Break) after_break = true;
+                }
             }
             return self.type_info.store.tVoid();
         }
         // Value context: the last line must be an expression to produce a value
         while (i < stmts.len - 1) : (i += 1) {
+            if (after_break) {
+                const loc = self.stmtLoc(stmts[i]);
+                try self.diags.addError(loc, .unreachable_code_after_break, .{});
+                return null;
+            }
             _ = try self.checkStmt(stmts[i]);
+            const sk = self.ast_unit.stmts.index.kinds.items[stmts[i].toRaw()];
+            if (sk == .Break) after_break = true else if (sk == .Expr) {
+                const se = self.ast_unit.stmts.get(.Expr, stmts[i]).expr;
+                if (self.ast_unit.exprs.index.kinds.items[se.toRaw()] == .Break) after_break = true;
+            }
         }
         // If last is an expression, evaluate it in value context directly
         const last = stmts[stmts.len - 1];
         const last_kind = self.ast_unit.stmts.index.kinds.items[last.toRaw()];
         if (last_kind == .Expr) {
+            if (after_break) {
+                const loc = self.stmtLoc(last);
+                try self.diags.addError(loc, .unreachable_code_after_break, .{});
+                return null;
+            }
             const row = self.ast_unit.stmts.get(.Expr, last);
             return try self.checkExpr(row.expr);
         }
         // Otherwise, type-check the statement and treat as void
+        if (after_break) {
+            const loc = self.stmtLoc(last);
+            try self.diags.addError(loc, .unreachable_code_after_break, .{});
+            return null;
+        }
         _ = try self.checkStmt(last);
         return self.type_info.store.tVoid();
+    }
+
+    fn stmtLoc(self: *Checker, sid: ast.StmtId) Loc {
+        return switch (self.ast_unit.stmts.index.kinds.items[sid.toRaw()]) {
+            .Expr => blk: {
+                const row = self.ast_unit.stmts.get(.Expr, sid);
+                break :blk self.exprLoc(row.expr);
+            },
+            .Decl => blk2: {
+                const row = self.ast_unit.stmts.get(.Decl, sid);
+                const d = self.ast_unit.exprs.Decl.get(row.decl.toRaw());
+                break :blk2 self.ast_unit.exprs.locs.get(d.loc);
+            },
+            .Assign => blk3: {
+                const row = self.ast_unit.stmts.get(.Assign, sid);
+                break :blk3 self.ast_unit.exprs.locs.get(row.loc);
+            },
+            .Insert => blk4: {
+                const row = self.ast_unit.stmts.get(.Insert, sid);
+                break :blk4 self.ast_unit.exprs.locs.get(row.loc);
+            },
+            .Return => blk5: {
+                const row = self.ast_unit.stmts.get(.Return, sid);
+                break :blk5 self.ast_unit.exprs.locs.get(row.loc);
+            },
+            .Break => blk6: {
+                const row = self.ast_unit.stmts.get(.Break, sid);
+                break :blk6 self.ast_unit.exprs.locs.get(row.loc);
+            },
+            .Continue => blk7: {
+                const row = self.ast_unit.stmts.get(.Continue, sid);
+                break :blk7 self.ast_unit.exprs.locs.get(row.loc);
+            },
+            .Unreachable => blk8: {
+                const row = self.ast_unit.stmts.get(.Unreachable, sid);
+                break :blk8 self.ast_unit.exprs.locs.get(row.loc);
+            },
+            .Defer => blk9: {
+                const row = self.ast_unit.stmts.get(.Defer, sid);
+                break :blk9 self.ast_unit.exprs.locs.get(row.loc);
+            },
+            .ErrDefer => blk10: {
+                const row = self.ast_unit.stmts.get(.ErrDefer, sid);
+                break :blk10 self.ast_unit.exprs.locs.get(row.loc);
+            },
+        };
+    }
+
+    fn exprLoc(self: *Checker, eid: ast.ExprId) Loc {
+        const k = self.ast_unit.exprs.index.kinds.items[eid.toRaw()];
+        return switch (k) {
+            .Literal => self.ast_unit.exprs.locs.get(self.ast_unit.exprs.get(.Literal, eid).loc),
+            .Ident => self.ast_unit.exprs.locs.get(self.ast_unit.exprs.get(.Ident, eid).loc),
+            .Binary => self.ast_unit.exprs.locs.get(self.ast_unit.exprs.get(.Binary, eid).loc),
+            .Unary => self.ast_unit.exprs.locs.get(self.ast_unit.exprs.get(.Unary, eid).loc),
+            .FunctionLit => self.ast_unit.exprs.locs.get(self.ast_unit.exprs.get(.FunctionLit, eid).loc),
+            .Deref => self.ast_unit.exprs.locs.get(self.ast_unit.exprs.get(.Deref, eid).loc),
+            .ArrayLit => self.ast_unit.exprs.locs.get(self.ast_unit.exprs.get(.ArrayLit, eid).loc),
+            .TupleLit => self.ast_unit.exprs.locs.get(self.ast_unit.exprs.get(.TupleLit, eid).loc),
+            .MapLit => self.ast_unit.exprs.locs.get(self.ast_unit.exprs.get(.MapLit, eid).loc),
+            .IndexAccess => self.ast_unit.exprs.locs.get(self.ast_unit.exprs.get(.IndexAccess, eid).loc),
+            .FieldAccess => self.ast_unit.exprs.locs.get(self.ast_unit.exprs.get(.FieldAccess, eid).loc),
+            .StructLit => self.ast_unit.exprs.locs.get(self.ast_unit.exprs.get(.StructLit, eid).loc),
+            .VariantLit => self.ast_unit.exprs.locs.get(self.ast_unit.exprs.get(.VariantLit, eid).loc),
+            .EnumLit => self.ast_unit.exprs.locs.get(self.ast_unit.exprs.get(.EnumLit, eid).loc),
+            .Range => self.ast_unit.exprs.locs.get(self.ast_unit.exprs.get(.Range, eid).loc),
+            .Call => self.ast_unit.exprs.locs.get(self.ast_unit.exprs.get(.Call, eid).loc),
+            .ComptimeBlock => self.ast_unit.exprs.locs.get(self.ast_unit.exprs.get(.ComptimeBlock, eid).loc),
+            .Block => self.ast_unit.exprs.locs.get(self.ast_unit.exprs.get(.Block, eid).loc),
+            .CodeBlock => self.ast_unit.exprs.locs.get(self.ast_unit.exprs.get(.CodeBlock, eid).loc),
+            .AsyncBlock => self.ast_unit.exprs.locs.get(self.ast_unit.exprs.get(.AsyncBlock, eid).loc),
+            .MlirBlock => self.ast_unit.exprs.locs.get(self.ast_unit.exprs.get(.MlirBlock, eid).loc),
+            .Insert => self.ast_unit.exprs.locs.get(self.ast_unit.exprs.get(.Insert, eid).loc),
+            .Return => self.ast_unit.exprs.locs.get(self.ast_unit.exprs.get(.Return, eid).loc),
+            .If => self.ast_unit.exprs.locs.get(self.ast_unit.exprs.get(.If, eid).loc),
+            .While => self.ast_unit.exprs.locs.get(self.ast_unit.exprs.get(.While, eid).loc),
+            .For => self.ast_unit.exprs.locs.get(self.ast_unit.exprs.get(.For, eid).loc),
+            .Match => self.ast_unit.exprs.locs.get(self.ast_unit.exprs.get(.Match, eid).loc),
+            .Break => self.ast_unit.exprs.locs.get(self.ast_unit.exprs.get(.Break, eid).loc),
+            .Continue => self.ast_unit.exprs.locs.get(self.ast_unit.exprs.get(.Continue, eid).loc),
+            .Unreachable => self.ast_unit.exprs.locs.get(self.ast_unit.exprs.get(.Unreachable, eid).loc),
+            .NullLit => self.ast_unit.exprs.locs.get(self.ast_unit.exprs.get(.NullLit, eid).loc),
+            .UndefLit => self.ast_unit.exprs.locs.get(self.ast_unit.exprs.get(.UndefLit, eid).loc),
+            .Defer => self.ast_unit.exprs.locs.get(self.ast_unit.exprs.get(.Defer, eid).loc),
+            .ErrDefer => self.ast_unit.exprs.locs.get(self.ast_unit.exprs.get(.ErrDefer, eid).loc),
+            .ErrUnwrap => self.ast_unit.exprs.locs.get(self.ast_unit.exprs.get(.ErrUnwrap, eid).loc),
+            .OptionalUnwrap => self.ast_unit.exprs.locs.get(self.ast_unit.exprs.get(.OptionalUnwrap, eid).loc),
+            .Await => self.ast_unit.exprs.locs.get(self.ast_unit.exprs.get(.Await, eid).loc),
+            .Closure => self.ast_unit.exprs.locs.get(self.ast_unit.exprs.get(.Closure, eid).loc),
+            .Cast => self.ast_unit.exprs.locs.get(self.ast_unit.exprs.get(.Cast, eid).loc),
+            .Catch => self.ast_unit.exprs.locs.get(self.ast_unit.exprs.get(.Catch, eid).loc),
+            .Import => self.ast_unit.exprs.locs.get(self.ast_unit.exprs.get(.Import, eid).loc),
+            .TypeOf => self.ast_unit.exprs.locs.get(self.ast_unit.exprs.get(.TypeOf, eid).loc),
+            .TupleType => self.ast_unit.exprs.locs.get(self.ast_unit.exprs.get(.TupleType, eid).loc),
+            .ArrayType => self.ast_unit.exprs.locs.get(self.ast_unit.exprs.get(.ArrayType, eid).loc),
+            .DynArrayType => self.ast_unit.exprs.locs.get(self.ast_unit.exprs.get(.DynArrayType, eid).loc),
+            .MapType => self.ast_unit.exprs.locs.get(self.ast_unit.exprs.get(.MapType, eid).loc),
+            .SliceType => self.ast_unit.exprs.locs.get(self.ast_unit.exprs.get(.SliceType, eid).loc),
+            .OptionalType => self.ast_unit.exprs.locs.get(self.ast_unit.exprs.get(.OptionalType, eid).loc),
+            .ErrorSetType => self.ast_unit.exprs.locs.get(self.ast_unit.exprs.get(.ErrorSetType, eid).loc),
+            .StructType => self.ast_unit.exprs.locs.get(self.ast_unit.exprs.get(.StructType, eid).loc),
+            .EnumType => self.ast_unit.exprs.locs.get(self.ast_unit.exprs.get(.EnumType, eid).loc),
+            .VariantType => self.ast_unit.exprs.locs.get(self.ast_unit.exprs.get(.VariantType, eid).loc),
+            .ErrorType => self.ast_unit.exprs.locs.get(self.ast_unit.exprs.get(.ErrorType, eid).loc),
+            .UnionType => self.ast_unit.exprs.locs.get(self.ast_unit.exprs.get(.UnionType, eid).loc),
+            .PointerType => self.ast_unit.exprs.locs.get(self.ast_unit.exprs.get(.PointerType, eid).loc),
+            .SimdType => self.ast_unit.exprs.locs.get(self.ast_unit.exprs.get(.SimdType, eid).loc),
+            .ComplexType => self.ast_unit.exprs.locs.get(self.ast_unit.exprs.get(.ComplexType, eid).loc),
+            .TensorType => self.ast_unit.exprs.locs.get(self.ast_unit.exprs.get(.TensorType, eid).loc),
+            .TypeType => self.ast_unit.exprs.locs.get(self.ast_unit.exprs.get(.TypeType, eid).loc),
+            .AnyType => self.ast_unit.exprs.locs.get(self.ast_unit.exprs.get(.AnyType, eid).loc),
+            .NoreturnType => self.ast_unit.exprs.locs.get(self.ast_unit.exprs.get(.NoreturnType, eid).loc),
+        };
     }
 
     fn checkBinary(self: *Checker, id: ast.ExprId) !?types.TypeId {
@@ -1400,6 +1584,15 @@ pub const Checker = struct {
 
     fn checkFieldAccess(self: *Checker, id: ast.ExprId) ?types.TypeId {
         const field_expr = self.ast_unit.exprs.get(.FieldAccess, id);
+        // Special-case: module member access via import "path".member
+        if (self.ast_unit.exprs.index.kinds.items[field_expr.parent.toRaw()] == .Import) {
+            if (self.importHasMember(field_expr.parent, field_expr.field)) {
+                return self.type_info.store.tAny();
+            } else {
+                _ = self.diags.addError(self.ast_unit.exprs.locs.get(field_expr.loc), .unknown_struct_field, .{}) catch {};
+                return null;
+            }
+        }
         const parent_ty = self.checkExpr(field_expr.parent) catch return null;
         if (parent_ty == null) return null;
         var ty = parent_ty.?;
@@ -1513,6 +1706,56 @@ pub const Checker = struct {
             },
         }
     }
+
+    fn importHasMember(self: *Checker, import_eid: ast.ExprId, member: ast.StrId) bool {
+        const ir = self.ast_unit.exprs.get(.Import, import_eid);
+        const ek = self.ast_unit.exprs.index.kinds.items[ir.expr.toRaw()];
+        if (ek != .Literal) return false;
+        const lit = self.ast_unit.exprs.get(.Literal, ir.expr);
+        if (lit.kind != .string or lit.value.isNone()) return false;
+        var path = self.ast_unit.exprs.strs.get(lit.value.unwrap());
+        // Trim quotes if present
+        if (path.len >= 2 and path[0] == '"' and path[path.len - 1] == '"') {
+            path = path[1 .. path.len - 1];
+        }
+        const target = self.ast_unit.exprs.strs.get(member);
+        // Try candidates: path, path + ".sr", path + "/main.sr"
+        if (self.fileHasTopDecl(path, target)) return true;
+        var buf1: [1024]u8 = undefined;
+        const with_ext = std.fmt.bufPrint(&buf1, "{s}.sr", .{path}) catch path;
+        if (self.fileHasTopDecl(with_ext, target)) return true;
+        var buf2: [1024]u8 = undefined;
+        const with_main = std.fmt.bufPrint(&buf2, "{s}/main.sr", .{path}) catch path;
+        if (self.fileHasTopDecl(with_main, target)) return true;
+        return false;
+    }
+
+    fn fileHasTopDecl(self: *Checker, abs_or_rel: []const u8, name: []const u8) bool {
+        var cwd = std.fs.cwd();
+        const content = cwd.readFileAlloc(self.gpa, abs_or_rel, 1 << 20) catch return false;
+        defer self.gpa.free(content);
+        var it = std.mem.splitScalar(u8, content, '\n');
+        while (it.next()) |line| {
+            var l = std.mem.trim(u8, line, " \t\r");
+            if (l.len == 0) continue;
+            // skip comment lines starting with //
+            if (l.len >= 2 and l[0] == '/' and l[1] == '/') continue;
+            // match identifier at start followed by optional spaces then '::'
+            var i: usize = 0;
+            if (!(std.ascii.isAlphabetic(l[0]) or l[0] == '_')) continue;
+            i += 1;
+            while (i < l.len and (std.ascii.isAlphanumeric(l[i]) or l[i] == '_')) : (i += 1) {}
+            const ident = l[0..i];
+            var j = i;
+            while (j < l.len and (l[j] == ' ' or l[j] == '\t')) : (j += 1) {}
+            if (j + 1 < l.len and l[j] == ':' and l[j + 1] == ':') {
+                if (std.mem.eql(u8, ident, name)) return true;
+            }
+        }
+        return false;
+    }
+
+    // no-op helpers removed
 
     fn checkRange(self: *Checker, id: ast.ExprId) !?types.TypeId {
         const rr = self.ast_unit.exprs.get(.Range, id);
@@ -2061,13 +2304,26 @@ pub const Checker = struct {
             if (!try self.checkPattern(wr.pattern.unwrap(), expr_ty.?, true)) {
                 return null;
             }
+            // Set loop pattern context for identifier type inference within body
+            self.current_loop_pat = wr.pattern;
+            self.current_loop_subject_ty = expr_ty.?;
         }
         // Infinite loop
         else if (wr.cond.isNone() and wr.pattern.isNone()) {} else unreachable;
 
         try self.pushLoop(wr.label);
         defer self.popLoop();
-        return self.checkExpr(wr.body);
+        defer {
+            self.current_loop_pat = ast.OptPatternId.none();
+            self.current_loop_subject_ty = null;
+        }
+        const body_ty = try self.checkExpr(wr.body);
+        // If loop used as a value, return the loop's result type (set by labeled breaks)
+        if (self.isValueReq()) {
+            const lc = self.loopCtxForLabel(wr.label);
+            if (lc) |ctx| return ctx.result_ty;
+        }
+        return body_ty;
     }
 
     fn checkMatch(self: *Checker, id: ast.ExprId) !?types.TypeId {
@@ -2473,6 +2729,9 @@ pub const Checker = struct {
                 if (!try self.checkPattern(fr.pattern, subject_ty, true)) {
                     return null;
                 }
+                // Set loop pattern context for identifier type inference within body
+                self.current_loop_pat = ast.OptPatternId.some(fr.pattern);
+                self.current_loop_subject_ty = subject_ty;
             },
             else => {
                 try self.diags.addError(self.ast_unit.exprs.locs.get(fr.loc), .non_iterable_in_for, .{});
@@ -2482,7 +2741,17 @@ pub const Checker = struct {
         // Body must type-check
         try self.pushLoop(fr.label);
         defer self.popLoop();
-        return self.checkExpr(fr.body);
+        defer {
+            self.current_loop_pat = ast.OptPatternId.none();
+            self.current_loop_subject_ty = null;
+        }
+        const body_ty = try self.checkExpr(fr.body);
+        // If loop used as a value, return the loop's result type (set by labeled breaks)
+        if (self.isValueReq()) {
+            const lc = self.loopCtxForLabel(fr.label);
+            if (lc) |ctx| return ctx.result_ty;
+        }
+        return body_ty;
     }
 
     fn checkPattern(self: *Checker, pid: ast.PatternId, value_ty: types.TypeId, top_level: bool) !bool {
@@ -2975,8 +3244,31 @@ pub const Checker = struct {
     }
 
     fn checkBreak(self: *Checker, id: ast.ExprId) !?types.TypeId {
-        _ = id;
-        return self.type_info.store.tVoid();
+        const br = self.ast_unit.exprs.get(.Break, id);
+        if (!self.inLoop()) {
+            try self.diags.addError(self.ast_unit.exprs.locs.get(br.loc), .break_outside_loop, .{});
+            return null;
+        }
+        var val_ty: ?types.TypeId = null;
+        if (!br.value.isNone()) {
+            val_ty = try self.checkExpr(br.value.unwrap());
+            if (val_ty == null) return null;
+        }
+        if (self.loopCtxForLabel(br.label)) |ctx| {
+            if (!br.value.isNone()) {
+                if (ctx.result_ty) |rt| {
+                    if (val_ty.?.toRaw() != rt.toRaw()) {
+                        try self.diags.addError(self.ast_unit.exprs.locs.get(br.loc), .loop_break_value_type_conflict, .{});
+                        return null;
+                    }
+                } else ctx.result_ty = val_ty.?;
+                return val_ty;
+            } else {
+                // unlabeled/valueless break in value position yields void
+                return self.type_info.store.tVoid();
+            }
+        }
+        return null;
     }
 
     fn checkContinue(self: *Checker, id: ast.ExprId) !?types.TypeId {
@@ -3148,17 +3440,33 @@ pub const Checker = struct {
     }
 
     fn checkImport(self: *Checker, id: ast.ExprId) !?types.TypeId {
-        _ = id;
+        const ir = self.ast_unit.exprs.get(.Import, id);
+        const k = self.ast_unit.exprs.index.kinds.items[ir.expr.toRaw()];
+        if (k != .Literal) {
+            try self.diags.addError(self.ast_unit.exprs.locs.get(ir.loc), .invalid_import_operand, .{});
+            return null;
+        }
+        const lit = self.ast_unit.exprs.get(.Literal, ir.expr);
+        if (lit.kind != .string or lit.value.isNone()) {
+            try self.diags.addError(self.ast_unit.exprs.locs.get(ir.loc), .invalid_import_operand, .{});
+            return null;
+        }
+        // Successful import expression is a module value; keep it as 'any' for now.
         return self.type_info.store.tAny();
     }
 
     fn checkTypeOf(self: *Checker, id: ast.ExprId) !?types.TypeId {
         const tr = self.ast_unit.exprs.get(.TypeOf, id);
-        const tt = try self.typeFromTypeExpr(tr.expr) orelse {
-            try self.diags.addError(self.ast_unit.exprs.locs.get(tr.loc), .could_not_resolve_type, .{});
-            return null;
-        };
-        return self.type_info.store.mkTypeType(tt);
+        // typeof should accept value expressions; get their type directly.
+        if (try self.checkExpr(tr.expr)) |et| {
+            return self.type_info.store.mkTypeType(et);
+        }
+        // As a fallback, allow typeof on a type expression (yielding that type).
+        if (try self.typeFromTypeExpr(tr.expr)) |tt| {
+            return self.type_info.store.mkTypeType(tt);
+        }
+        try self.diags.addError(self.ast_unit.exprs.locs.get(tr.loc), .could_not_resolve_type, .{});
+        return null;
     }
 
     // =========================================================

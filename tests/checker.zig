@@ -1812,7 +1812,7 @@ test "labeled while - success" {
         \\
         \\ main :: proc() {
         \\   outer: while true {
-        \\     break outer
+        \\     break :outer
         \\   }
         \\ }
     , &.{});
@@ -1832,7 +1832,7 @@ test "labeled while - success" {
         \\
         \\ main :: proc() {
         \\   L: while is (a,b) := (1,2) {
-        \\     break L
+        \\     break :L
         \\   }
         \\ }
     , &.{});
@@ -1893,7 +1893,7 @@ test "for loops - success" {
     try checkProgram(
         \\
         \\ main :: proc() {
-        \\   Outer: for i in [1,2,3] { break Outer }
+        \\   Outer: for i in [1,2,3] { break :Outer }
         \\ }
     , &.{});
 }
@@ -2223,7 +2223,7 @@ test "break with values - success" {
     // Use break with value to yield from a labeled while-expression
     try checkProgram(
         \\x :: L: while true {
-        \\ break L 42
+        \\ break :L 42
         \\}
     , &.{});
 
@@ -2232,7 +2232,7 @@ test "break with values - success" {
         \\
         \\ main :: proc() {
         \\   outer: while true {
-        \\     while true { break outer }
+        \\     while true { break :outer }
         \\   }
         \\ }
     , &.{});
@@ -2242,13 +2242,13 @@ test "break with values - failures" {
     // Using mismatched types in distinct break values for the same loop result
     try checkProgram(
         \\
-        \\ y :: (L: while true { if true { break L 1 } else { break L 2.0 } })
-    , &[_]diag.DiagnosticCode{.if_branch_type_mismatch});
+        \\ y :: (L: while true { if true { break :L 1 } else { break :L 2.0 } })
+    , &[_]diag.DiagnosticCode{.loop_break_value_type_conflict});
 
     // Assigning loop result to typed var with incompatible break value type
     try checkProgram(
         \\
-        \\ z: i32 = (L: while true { break L 2.5 })
+        \\ z: i32 = (L: while true { break :L 2.5 })
     , &[_]diag.DiagnosticCode{.expected_integer_type});
 }
 
@@ -2268,33 +2268,33 @@ test "continue - success" {
 
 test "labeled break values in for - success" {
     // Loop expression yields via labeled break
-    try checkProgram("x :: (L: for i in [1,2] { break L 7 })", &.{});
+    try checkProgram("x :: (L: for i in [1,2] { break :L 7 })", &.{});
 
     // Assign to typed var
-    try checkProgram("y: i32 = (L: for i in [1,2] { break L 3 })", &.{});
+    try checkProgram("y: i32 = (L: for i in [1,2] { break :L 3 })", &.{});
 }
-//
-// test "labeled break values in for - failures" {
-//     // Inconsistent break value types across branches
-//     try checkProgram(
-//         \\ z :: (L: for i in [1,2] { if i == 1 { break L 1 } else { break L 2.0 } })
-//     , &[_]diag.DiagnosticCode{.loop_break_value_type_conflict});
-//
-//     // Assigning result to incompatible typed var
-//     try checkProgram(
-//         \\
-//         \\ w: i32 = (L: for i in [1,2] { break L 2.5 })
-//     , &[_]diag.DiagnosticCode{.assignment_type_mismatch});
-// }
-//
+
+test "labeled break values in for - failures" {
+    // Inconsistent break value types across branches
+    try checkProgram(
+        \\ z :: (L: for i in [1,2] { if i == 1 { break :L 1 } else { break :L 2.0 } })
+    , &[_]diag.DiagnosticCode{.loop_break_value_type_conflict});
+
+    // Assigning result to incompatible typed var
+    try checkProgram(
+        \\
+        \\ w: i32 = (L: for i in [1,2] { break :L 2.5 })
+    , &[_]diag.DiagnosticCode{.expected_integer_type});
+}
+
 // Focused: Break values in branches
 
 test "break values in branches - success" {
     // While branch breaks with consistent type
-    try checkProgram("v :: (L: while true { if true { break L 1 } else { break L 2 } })", &.{});
+    try checkProgram("v :: (L: while true { if true { break :L 1 } else { break :L 2 } })", &.{});
 
     // For branch breaks with consistent type
-    try checkProgram("u :: (L: for i in [1] { if true { break L 4 } else { break L 5 } })", &.{});
+    try checkProgram("u :: (L: for i in [1] { if true { break :L 4 } else { break :L 5 } })", &.{});
 }
 
 test "break values in branches - failures" {
@@ -2302,39 +2302,39 @@ test "break values in branches - failures" {
     try checkProgram(
         \\q :: L: while true {
         \\  if true {
-        \\    break L 1
+        \\    break :L 1
         \\  } else {
-        \\    break L 2.0
+        \\    break :L 2.0
         \\  }
         \\}
-    , &[_]diag.DiagnosticCode{.if_branch_type_mismatch});
+    , &[_]diag.DiagnosticCode{.loop_break_value_type_conflict});
 
     // For branch inconsistent types
     try checkProgram(
-        \\r :: (L: for i in [1] { if true { break L 1.0 } else { break L 2 } })
-    , &[_]diag.DiagnosticCode{.if_branch_type_mismatch});
+        \\r :: (L: for i in [1] { if true { break :L 1.0 } else { break :L 2 } })
+    , &[_]diag.DiagnosticCode{.loop_break_value_type_conflict});
 }
 
 // Focused: Unreachable after unconditional break
 
-// test "unreachable after break - failures" {
-//     // Expression after break inside loop expression
-//     try checkProgram(
-//         \\bad :: L: while true {
-//         \\  break L 1
-//         \\  2
-//         \\}
-//     , &[_]diag.DiagnosticCode{.unreachable_code_after_break});
-//
-//     // Return after unconditional break in function
-//     try checkProgram(
-//         \\
-//         \\ main :: proc() i32 {
-//         \\   L: while true { break L 1; return 2 }
-//         \\ }
-//     , &[_]diag.DiagnosticCode{.unreachable_code_after_break});
-// }
-//
+test "unreachable after break - failures" {
+    // Expression after break inside loop expression
+    try checkProgram(
+        \\bad :: L: while true {
+        \\  break :L 1
+        \\  2
+        \\}
+    , &[_]diag.DiagnosticCode{.unreachable_code_after_break});
+
+    // Return after unconditional break in function
+    try checkProgram(
+        \\
+        \\ main :: proc() i32 {
+        \\   L: while true { break :L 1; return 2 }
+        \\ }
+    , &[_]diag.DiagnosticCode{.unreachable_code_after_break});
+}
+
 // // Focused: Async/Await
 //
 // test "async/await - success" {
@@ -2691,35 +2691,35 @@ test "patterns - match - failures" {
     , &[_]diag.DiagnosticCode{.pattern_shape_mismatch});
 }
 
-// // Focused: Import statements
-//
-// test "import statements - success" {
-//     // String literal path
-//     try checkProgram("m :: import \"std/io\"", &.{});
-//
-//     // Import with field access
-//     try checkProgram("n :: (import \"pkg\").util", &.{});
-// }
-//
-// test "import statements - failures" {
-//     // Import non-path value (number)
-//     try checkProgram("bad :: import 123", &[_]diag.DiagnosticCode{.invalid_import_operand});
-//
-//     // Import of boolean
-//     try checkProgram("bad2 :: import true", &[_]diag.DiagnosticCode{.invalid_import_operand});
-// }
-//
-// // Focused: typeof expressions
-//
-// test "typeof - success" {
-//     // Basic typeof on literals and expressions
-//     try checkProgram("t1 :: typeof(1)", &.{});
-//     try checkProgram("t2 :: typeof(true and false)", &.{});
-//     try checkProgram("t3 :: typeof((1 + 2) * 3)", &.{});
-// }
-//
-// // Focused: asm blocks attached to functions
-//
+// Focused: Import statements
+
+test "import statements - success" {
+    // String literal path
+    try checkProgram("m :: import \"examples/hello\"", &.{});
+
+    // Import with field access
+    try checkProgram("add :: (import \"examples/hello\").add", &.{});
+}
+
+test "import statements - failures" {
+    // Import non-path value (number)
+    try checkProgram("bad :: import 123", &[_]diag.DiagnosticCode{.invalid_import_operand});
+
+    // Import of boolean
+    try checkProgram("bad2 :: import true", &[_]diag.DiagnosticCode{.invalid_import_operand});
+}
+
+// Focused: typeof expressions
+
+test "typeof - success" {
+    // Basic typeof on literals and expressions
+    try checkProgram("t1 :: typeof(1)", &.{});
+    try checkProgram("t2 :: typeof(true and false)", &.{});
+    try checkProgram("t3 :: typeof((1 + 2) * 3)", &.{});
+}
+
+// Focused: asm blocks attached to functions
+
 // test "asm blocks - success" {
 //     // Void proc with asm body
 //     try checkProgram(
