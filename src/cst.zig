@@ -624,10 +624,10 @@ pub const PatRows = struct {
 };
 
 // Resolve the concrete row type for an ExprKind or PatternKind at comptime.
-inline fn RowT(comptime K: ExprKind) type {
+pub inline fn RowT(comptime K: ExprKind) type {
     return @field(Rows, @tagName(K));
 }
-inline fn PatRowT(comptime K: PatternKind) type {
+pub inline fn PatRowT(comptime K: PatternKind) type {
     return @field(PatRows, @tagName(K));
 }
 

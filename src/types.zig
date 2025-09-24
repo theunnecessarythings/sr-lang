@@ -101,7 +101,7 @@ pub const Rows = struct {
     pub const Map = struct { key: TypeId, value: TypeId };
     pub const Optional = struct { elem: TypeId };
     pub const Tuple = struct { elems: RangeType };
-    pub const Function = struct { params: RangeType, result: TypeId, is_variadic: bool };
+    pub const Function = struct { params: RangeType, result: TypeId, is_variadic: bool, is_pure: bool };
     pub const Field = struct { name: StrId, ty: TypeId };
     pub const EnumMember = struct { name: StrId, value: u64 };
     pub const Struct = struct { fields: RangeField };
@@ -358,10 +358,10 @@ pub const TypeStore = struct {
         const r = self.type_pool.pushMany(self.gpa, elems);
         return self.add(.Tuple, .{ .elems = r });
     }
-    pub fn mkFunction(self: *TypeStore, params: []const TypeId, result: TypeId, is_variadic: bool) TypeId {
-        if (self.findFunction(params, result, is_variadic)) |id| return id;
+    pub fn mkFunction(self: *TypeStore, params: []const TypeId, result: TypeId, is_variadic: bool, is_pure: bool) TypeId {
+        if (self.findFunction(params, result, is_variadic, is_pure)) |id| return id;
         const r = self.type_pool.pushMany(self.gpa, params);
-        return self.add(.Function, .{ .params = r, .result = result, .is_variadic = is_variadic });
+        return self.add(.Function, .{ .params = r, .result = result, .is_variadic = is_variadic, .is_pure = is_pure });
     }
     pub const EnumMemberArg = struct { name: []const u8, value: u64 };
     pub fn mkEnum(self: *TypeStore, members: []const EnumMemberArg, tag_type: TypeId) TypeId {
@@ -492,10 +492,10 @@ pub const TypeStore = struct {
             }
         });
     }
-    fn findFunction(self: *const TypeStore, params: []const TypeId, result: TypeId, is_variadic: bool) ?TypeId {
-        return self.findMatch(.Function, struct { p: []const TypeId, r: TypeId, v: bool }{ .p = params, .r = result, .v = is_variadic }, struct {
+    fn findFunction(self: *const TypeStore, params: []const TypeId, result: TypeId, is_variadic: bool, is_pure: bool) ?TypeId {
+        return self.findMatch(.Function, struct { p: []const TypeId, r: TypeId, v: bool, pure: bool }{ .p = params, .r = result, .v = is_variadic, .pure = is_pure }, struct {
             fn eq(s: *const TypeStore, row: Rows.Function, key: anytype) bool {
-                if (row.result.toRaw() != key.r.toRaw() or row.is_variadic != key.v) return false;
+                if (row.result.toRaw() != key.r.toRaw() or row.is_variadic != key.v or row.is_pure != key.pure) return false;
                 const ids = s.type_pool.slice(row.params);
                 if (ids.len != key.p.len) return false;
                 var i: usize = 0;
@@ -679,7 +679,12 @@ pub const TypeStore = struct {
             },
             .Function => {
                 const r = self.Function.get(row_idx);
-                try w.print("fn(", .{});
+                // print kind as 'fn' for pure, 'proc' otherwise
+                if (r.is_pure) {
+                    try w.print("fn(", .{});
+                } else {
+                    try w.print("proc(", .{});
+                }
                 const ids = self.type_pool.slice(r.params);
                 var i: usize = 0;
                 while (i < ids.len) : (i += 1) {

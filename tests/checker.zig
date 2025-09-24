@@ -1361,73 +1361,86 @@ test "functions and procedures - failures" {
         \\ impure :: proc() i32 { _ = printf("hi".^*void); return 0 }
         \\ f: fn() i32 : impure
     , &[_]diag.DiagnosticCode{.type_annotation_mismatch});
-
-    // Use of catch inside a pure function (intended as impurity)
-    // try checkProgram(
-    //     \\
-    //     \\ MyErr :: error { A }
-    //     \\ f :: fn() i32 { x: i32!MyErr = 1; return (x catch { 0 }) }
-    // , &[_]diag.DiagnosticCode{.unknown_struct_field});
 }
 
-test "functions - purity success" {
+test "functions - purity failures" {
+    // Calling a proc from a fn
     try checkProgram(
         \\
-        \\ add: fn(i32, i32) i32 = proc(a: i32, b: i32) i32 { return a + b }
-        \\ twice: fn(i32) i32 = proc(x: i32) i32 { return add(x, x) }
-        \\ r :: twice(10)
-    , &.{});
-}
+        \\ printf :: extern proc(*void, any) i32
+        \\ f : fn() i32 :  proc() i32 { _ = printf("hi".^*void); return 0 }
+    , &[_]diag.DiagnosticCode{.type_annotation_mismatch});
 
-// test "functions - purity failures" {
-//     // Calling a proc from a fn
-//     try checkProgram(
-//         \\
-//         \\ printf :: extern proc(*void, any) i32
-//         \\ f: fn() i32 = proc() i32 { _ = printf(null, \"hi\"); return 0 }
-//     , &[_]diag.DiagnosticCode{.error_propagation_mismatched_function_result});
-//
-//     // Defer/errdefer inside fn
-//     try checkProgram(
-//         \\
-//         \\ f: fn() i32 = proc() i32 { defer 1; return 0 }
-//     , &[_]diag.DiagnosticCode{.defer_outside_function});
-//     try checkProgram(
-//         \\
-//         \\ g: fn() i32 = proc() i32 { errdefer 1; return 0 }
-//     , &[_]diag.DiagnosticCode{.errdefer_outside_function});
-//
-//     // Global mutation inside fn
-//     try checkProgram(
-//         \\
-//         \\ G: i32 = 0
-//         \\ f: fn() i32 = proc() i32 { G = 1; return G }
-//     , &[_]diag.DiagnosticCode{.purity_violation});
-//
-//     // Local mutation inside fn (assignment)
-//     try checkProgram(
-//         \\
-//         \\ f: fn() i32 = proc() i32 { x: i32 = 0; x = 1; return x }
-//     , &[_]diag.DiagnosticCode{.purity_violation});
-//
-//     // Pointer mutation inside fn
-//     try checkProgram(
-//         \\
-//         \\ f: fn(*i32) i32 = proc(p: *i32) i32 { p.* = 3; return p.* }
-//     , &[_]diag.DiagnosticCode{.purity_violation});
-//
-//     // Array element mutation inside fn
-//     try checkProgram(
-//         \\
-//         \\ f: fn() i32 = proc() i32 { a: [3]i32 = [1,2,3]; a[0] = 9; return a[0] }
-//     , &[_]diag.DiagnosticCode{.purity_violation});
-//
-//     // Map element update inside fn
-//     try checkProgram(
-//         \\
-//         \\ f: fn() i32 = proc() i32 { m: [string:i32] = [\"a\":1]; m[\"a\"] = 2; return m[\"a\"] }
-//     , &[_]diag.DiagnosticCode{.unknown_struct_field});
-// }
+    // Global mutation inside fn
+    try checkProgram(
+        \\
+        \\ G: i32 = 0
+        \\ f :: fn() i32 { G = 1; return G }
+    , &[_]diag.DiagnosticCode{.purity_violation});
+
+    // Local mutation inside fn (assignment)
+    try checkProgram(
+        \\
+        \\ f :: fn() i32 { x: i32 = 0; x = 1; return x }
+    , &[_]diag.DiagnosticCode{});
+
+    // Pointer mutation inside fn
+    try checkProgram(
+        \\
+        \\ f :: fn(p: *i32) i32 { p.* = 3; return p.* }
+    , &[_]diag.DiagnosticCode{.purity_violation});
+
+    // Local pointer mutation inside fn
+    try checkProgram(
+        \\
+        \\ f :: fn() i32 { 
+        \\     v : i32 = 0
+        \\     p : *i32 = &v
+        \\     p.* = 3
+        \\     return p.*
+        \\ }
+    , &[_]diag.DiagnosticCode{});
+
+    // Array element mutation inside fn
+    try checkProgram(
+        \\
+        \\ f :: fn() i32 {
+        \\  a: [3]i32 = [1,2,3]
+        \\  a[0] = 9
+        \\  return a[0]
+        \\ }
+    , &[_]diag.DiagnosticCode{});
+
+    // Map element update inside fn
+    try checkProgram(
+        \\
+        \\ f :: fn() i32 { m: [string:i32] = ["a":1]; m["a"] = 2; return m["a"] }
+    , &[_]diag.DiagnosticCode{});
+
+    // Param Array element mutation fn (not alloed)
+    try checkProgram(
+        \\
+        \\ f :: fn(a: [3]i32) i32 { a[0] = 9; return a[0] }
+    , &[_]diag.DiagnosticCode{.purity_violation});
+
+    // Param Map element mutation fn (not alloed)
+    try checkProgram(
+        \\ f :: fn(m: [string:i32]) i32 { m["a"] = 2; return m["a"] }
+    , &[_]diag.DiagnosticCode{.purity_violation});
+
+    // Extern proc call inside fn
+    try checkProgram(
+        \\ printf :: extern proc(*void, any) i32
+        \\ f :: fn() i32 { _ = printf("hi".^*void); return 0 }
+    , &[_]diag.DiagnosticCode{.purity_violation});
+
+    // proc call inside fn
+    try checkProgram(
+        \\      
+        \\ p :: proc() i32 { return 1 }
+        \\ f :: fn() i32 { return p() }
+    , &[_]diag.DiagnosticCode{.purity_violation});
+}
 
 test "field access - failures" {
     // Non-existent struct field
@@ -1642,12 +1655,12 @@ test "if expressions - success" {
     , &.{});
 
     // Complex boolean condition
-    // try checkProgram(
-    //     \\
-    //     \\ main :: proc() {
-    //     \\   if (true and !false) or (false and true) { }
-    //     \\ }
-    // , &.{});
+    try checkProgram(
+        \\
+        \\ main :: proc() {
+        \\   if (true and !false) or (false and true) { }
+        \\ }
+    , &.{});
 }
 
 test "if expressions - failures" {

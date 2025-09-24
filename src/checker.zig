@@ -17,6 +17,7 @@ pub const Checker = struct {
 
     func_stack: std.ArrayListUnmanaged(FunctionCtx) = .{},
     loop_stack: std.ArrayListUnmanaged(LoopCtx) = .{},
+    value_ctx: std.ArrayListUnmanaged(bool) = .{},
     warned_meta: bool = false,
     warned_comptime: bool = false,
     warned_code: bool = false,
@@ -37,6 +38,7 @@ pub const Checker = struct {
     pub fn deinit(self: *Checker) void {
         self.func_stack.deinit(self.gpa);
         self.loop_stack.deinit(self.gpa);
+        self.value_ctx.deinit(self.gpa);
         self.symtab.deinit();
     }
 
@@ -62,7 +64,13 @@ pub const Checker = struct {
     }
 
     // --------- context
-    const FunctionCtx = struct { result: types.TypeId, has_result: bool };
+    const FunctionCtx = struct {
+        result: types.TypeId,
+        has_result: bool,
+        pure: bool,
+        require_pure: bool,
+        locals: std.AutoArrayHashMapUnmanaged(u32, void) = .{},
+    };
     const LoopCtx = struct { label: ast.OptStrId };
 
     fn bindDeclPattern(self: *Checker, did: ast.DeclId, d: ast.Rows.Decl) !void {
@@ -94,11 +102,15 @@ pub const Checker = struct {
         });
     }
 
-    fn pushFunc(self: *Checker, result_ty: types.TypeId, has_result: bool) !void {
-        try self.func_stack.append(self.gpa, .{ .result = result_ty, .has_result = has_result });
+    fn pushFunc(self: *Checker, result_ty: types.TypeId, has_result: bool, require_pure: bool) !void {
+        try self.func_stack.append(self.gpa, .{ .result = result_ty, .has_result = has_result, .pure = true, .require_pure = require_pure });
     }
     fn popFunc(self: *Checker) void {
-        if (self.func_stack.items.len > 0) _ = self.func_stack.pop();
+        if (self.func_stack.items.len > 0) {
+            var ctx = &self.func_stack.items[self.func_stack.items.len - 1];
+            ctx.locals.deinit(self.gpa);
+            _ = self.func_stack.pop();
+        }
     }
     fn inFunction(self: *const Checker) bool {
         return self.func_stack.items.len > 0;
@@ -116,6 +128,17 @@ pub const Checker = struct {
     }
     fn inLoop(self: *const Checker) bool {
         return self.loop_stack.items.len > 0;
+    }
+
+    fn pushValueReq(self: *Checker, v: bool) !void {
+        try self.value_ctx.append(self.gpa, v);
+    }
+    fn popValueReq(self: *Checker) void {
+        if (self.value_ctx.items.len > 0) _ = self.value_ctx.pop();
+    }
+    fn isValueReq(self: *const Checker) bool {
+        if (self.value_ctx.items.len == 0) return true; // default: value required
+        return self.value_ctx.items[self.value_ctx.items.len - 1];
     }
 
     fn lookup(self: *Checker, name: ast.StrId) ?symbols.SymbolId {
@@ -359,6 +382,22 @@ pub const Checker = struct {
                 if (got.toRaw() != expect.toRaw()) return .failure;
                 return .success;
             },
+            .Function => {
+                if (got_kind != .Function) return .failure;
+                const efn = self.type_info.store.Function.get(self.type_info.store.index.rows.items[expect.toRaw()]);
+                const gfn = self.type_info.store.Function.get(self.type_info.store.index.rows.items[got.toRaw()]);
+                if (efn.is_variadic != gfn.is_variadic) return .failure;
+                const eparams = self.type_info.store.type_pool.slice(efn.params);
+                const gparams = self.type_info.store.type_pool.slice(gfn.params);
+                if (eparams.len != gparams.len) return .failure;
+                var i: usize = 0;
+                while (i < eparams.len) : (i += 1) {
+                    if (eparams[i].toRaw() != gparams[i].toRaw()) return .failure;
+                }
+                if (efn.result.toRaw() != gfn.result.toRaw()) return .failure;
+                if (efn.is_pure and !gfn.is_pure) return .failure;
+                return .success;
+            },
             .ErrorSet => {
                 const expected_ty = self.type_info.store.ErrorSet.get(self.type_info.store.index.rows.items[expect.toRaw()]);
                 if (got_kind == .Error) {
@@ -460,11 +499,20 @@ pub const Checker = struct {
         switch (self.ast_unit.stmts.index.kinds.items[sid.toRaw()]) {
             .Expr => {
                 const row = self.ast_unit.stmts.get(.Expr, sid);
-                return try self.checkExpr(row.expr);
+                // Statement expression: no value required
+                try self.pushValueReq(false);
+                defer self.popValueReq();
+                _ = try self.checkExpr(row.expr);
+                return null;
             },
             .Decl => {
                 const row = self.ast_unit.stmts.get(.Decl, sid);
                 try self.checkDecl(row.decl);
+                if (self.inFunction()) {
+                    // record local decl for purity tracking
+                    const idx = self.func_stack.items.len - 1;
+                    _ = self.func_stack.items[idx].locals.put(self.gpa, row.decl.toRaw(), {}) catch {};
+                }
             },
             .Assign => {
                 const row = self.ast_unit.stmts.get(.Assign, sid);
@@ -472,6 +520,20 @@ pub const Checker = struct {
                 const rt = try self.checkExpr(row.right);
                 if (lt != null and rt != null and (self.assignable(rt.?, lt.?) != .success)) {
                     try self.diags.addError(self.ast_unit.exprs.locs.get(row.loc), .type_annotation_mismatch, .{});
+                }
+                // Purity: assignment writes inside pure functions are allowed only to locals
+                if (self.inFunction()) {
+                    const fctx = self.currentFunc().?;
+                    if (fctx.require_pure) {
+                        const root = self.lvalueRootKind(row.left);
+                        switch (root) {
+                            .LocalDecl => {},
+                            .Param, .NonLocalDecl, .Unknown => {
+                                try self.diags.addError(self.ast_unit.exprs.locs.get(row.loc), .purity_violation, .{});
+                                self.func_stack.items[self.func_stack.items.len - 1].pure = false;
+                            },
+                        }
+                    }
                 }
             },
             .Insert => {
@@ -671,10 +733,28 @@ pub const Checker = struct {
         defer self.symtab.pop();
 
         if (stmts.len == 0) return self.type_info.store.tVoid();
+        const value_required = self.isValueReq();
+        if (!value_required) {
+            // Statement context: just type-check children, no value produced
+            while (i < stmts.len) : (i += 1) {
+                _ = try self.checkStmt(stmts[i]);
+            }
+            return self.type_info.store.tVoid();
+        }
+        // Value context: the last line must be an expression to produce a value
         while (i < stmts.len - 1) : (i += 1) {
             _ = try self.checkStmt(stmts[i]);
         }
-        return self.checkStmt(stmts[stmts.len - 1]);
+        // If last is an expression, evaluate it in value context directly
+        const last = stmts[stmts.len - 1];
+        const last_kind = self.ast_unit.stmts.index.kinds.items[last.toRaw()];
+        if (last_kind == .Expr) {
+            const row = self.ast_unit.stmts.get(.Expr, last);
+            return try self.checkExpr(row.expr);
+        }
+        // Otherwise, type-check the statement and treat as void
+        _ = try self.checkStmt(last);
+        return self.type_info.store.tVoid();
     }
 
     fn checkBinary(self: *Checker, id: ast.ExprId) !?types.TypeId {
@@ -797,15 +877,25 @@ pub const Checker = struct {
             try self.bindParamPattern(params[i], p);
         }
 
-        const fn_ty = self.type_info.store.mkFunction(pbuf, res.?, fnr.flags.is_variadic);
-        self.type_info.expr_types.items[id.toRaw()] = fn_ty;
+        // Temporarily record a function type (purity will be finalized after body analysis)
+        const temp_ty = self.type_info.store.mkFunction(pbuf, res.?, fnr.flags.is_variadic, true);
+        self.type_info.expr_types.items[id.toRaw()] = temp_ty;
 
-        try self.pushFunc(res.?, !fnr.result_ty.isNone());
+        try self.pushFunc(res.?, !fnr.result_ty.isNone(), !fnr.flags.is_proc);
         defer self.popFunc();
         if (!fnr.body.isNone()) {
+            // Function bodies are in statement context: no value required from the block
+            try self.pushValueReq(false);
+            defer self.popValueReq();
             _ = try self.checkExpr(fnr.body.unwrap());
         }
-        return fn_ty;
+        // Determine purity: 'fn' is pure by definition; 'proc' purity inferred from body
+        const ctx = self.currentFunc().?;
+        // Extern procs are considered impure; otherwise proc purity comes from body analysis.
+        const is_pure = if (fnr.flags.is_proc) (ctx.pure and !fnr.flags.is_extern) else true;
+        const final_ty = self.type_info.store.mkFunction(pbuf, res.?, fnr.flags.is_variadic, is_pure);
+        self.type_info.expr_types.items[id.toRaw()] = final_ty;
+        return final_ty;
     }
 
     fn checkTupleLit(self: *Checker, id: ast.ExprId) !?types.TypeId {
@@ -1147,7 +1237,10 @@ pub const Checker = struct {
                     var ci: usize = 0;
                     while (ci < cases.len) : (ci += 1) {
                         const c = self.type_info.store.Field.get(cases[ci].toRaw());
-                        if (c.name.toRaw() == fr.field.toRaw()) { found = c.ty; break; }
+                        if (c.name.toRaw() == fr.field.toRaw()) {
+                            found = c.ty;
+                            break;
+                        }
                     }
                     if (found == null) {
                         try self.diags.addError(self.ast_unit.exprs.locs.get(call_expr.loc), .unknown_variant_tag, .{});
@@ -1198,7 +1291,10 @@ pub const Checker = struct {
                     var ei: usize = 0;
                     while (ei < cases.len) : (ei += 1) {
                         const c = self.type_info.store.Field.get(cases[ei].toRaw());
-                        if (c.name.toRaw() == fr.field.toRaw()) { found = c.ty; break; }
+                        if (c.name.toRaw() == fr.field.toRaw()) {
+                            found = c.ty;
+                            break;
+                        }
                     }
                     if (found == null) {
                         try self.diags.addError(self.ast_unit.exprs.locs.get(call_expr.loc), .unknown_error_tag, .{});
@@ -1274,7 +1370,10 @@ pub const Checker = struct {
                     var ci: usize = 0;
                     while (ci < cases.len) : (ci += 1) {
                         const c = self.type_info.store.Field.get(cases[ci].toRaw());
-                        if (c.name.toRaw() == fr.field.toRaw()) { found = c.ty; break; }
+                        if (c.name.toRaw() == fr.field.toRaw()) {
+                            found = c.ty;
+                            break;
+                        }
                     }
                     if (found == null) {
                         try self.diags.addError(self.ast_unit.exprs.locs.get(call_expr.loc), .unknown_variant_tag, .{});
@@ -1325,7 +1424,10 @@ pub const Checker = struct {
                     var ei: usize = 0;
                     while (ei < cases.len) : (ei += 1) {
                         const c = self.type_info.store.Field.get(cases[ei].toRaw());
-                        if (c.name.toRaw() == fr.field.toRaw()) { found = c.ty; break; }
+                        if (c.name.toRaw() == fr.field.toRaw()) {
+                            found = c.ty;
+                            break;
+                        }
                     }
                     if (found == null) {
                         try self.diags.addError(self.ast_unit.exprs.locs.get(call_expr.loc), .unknown_error_tag, .{});
@@ -1398,6 +1500,55 @@ pub const Checker = struct {
             return null;
         }
         const func = self.type_info.store.Function.get(self.type_info.store.index.rows.items[func_id.toRaw()]);
+        // Purity bookkeeping: mark current function impure when calling an impure/proc callee
+        if (self.inFunction()) {
+            var mark_impure = !func.is_pure;
+            if (!mark_impure and self.ast_unit.exprs.index.kinds.items[call_expr.callee.toRaw()] == .Ident) {
+                const idr = self.ast_unit.exprs.get(.Ident, call_expr.callee);
+                if (self.lookup(idr.name)) |sid_sym| {
+                    const sym = self.symtab.syms.get(sid_sym.toRaw());
+                    if (!sym.origin_decl.isNone()) {
+                        const did = sym.origin_decl.unwrap();
+                        const drow = self.ast_unit.exprs.Decl.get(did.toRaw());
+                        const vk = self.ast_unit.exprs.index.kinds.items[drow.value.toRaw()];
+                        if (vk == .FunctionLit) {
+                            const fl = self.ast_unit.exprs.get(.FunctionLit, drow.value);
+                            if (fl.flags.is_proc or fl.flags.is_extern) mark_impure = true;
+                        }
+                    }
+                }
+            }
+            if (mark_impure) {
+                const idx = self.func_stack.items.len - 1;
+                self.func_stack.items[idx].pure = false;
+            }
+        }
+        // Purity: disallow such calls inside a required-pure function
+        if (self.inFunction()) {
+            const fctx = self.currentFunc().?;
+            if (fctx.require_pure) {
+                var violate = !func.is_pure;
+                if (!violate and self.ast_unit.exprs.index.kinds.items[call_expr.callee.toRaw()] == .Ident) {
+                    const idr = self.ast_unit.exprs.get(.Ident, call_expr.callee);
+                    if (self.lookup(idr.name)) |sid_sym| {
+                        const sym = self.symtab.syms.get(sid_sym.toRaw());
+                        if (!sym.origin_decl.isNone()) {
+                            const did = sym.origin_decl.unwrap();
+                            const drow = self.ast_unit.exprs.Decl.get(did.toRaw());
+                            const vk = self.ast_unit.exprs.index.kinds.items[drow.value.toRaw()];
+                            if (vk == .FunctionLit) {
+                                const fl = self.ast_unit.exprs.get(.FunctionLit, drow.value);
+                                if (fl.flags.is_proc or fl.flags.is_extern) violate = true;
+                            }
+                        }
+                    }
+                }
+                if (violate) {
+                    try self.diags.addError(self.ast_unit.exprs.locs.get(call_expr.loc), .purity_violation, .{});
+                    return null;
+                }
+            }
+        }
         const param_ids = self.type_info.store.type_pool.slice(func.params);
         const args = self.ast_unit.exprs.expr_pool.slice(call_expr.args);
         if (!func.is_variadic) {
@@ -1507,16 +1658,24 @@ pub const Checker = struct {
             try self.diags.addError(self.ast_unit.exprs.locs.get(if_expr.loc), .non_boolean_condition, .{});
             return null;
         }
-        const then_ty = try self.checkExpr(if_expr.then_block);
-        var else_ty: ?types.TypeId = null;
-        if (!if_expr.else_block.isNone()) {
-            else_ty = try self.checkExpr(if_expr.else_block.unwrap());
+        const value_required = self.isValueReq();
+        if (!value_required) {
+            // Statement context: type-check branches, no else required
+            _ = try self.checkExpr(if_expr.then_block);
+            if (!if_expr.else_block.isNone()) {
+                _ = try self.checkExpr(if_expr.else_block.unwrap());
+            }
+            return self.type_info.store.tVoid();
         }
-        if (then_ty != null and else_ty == null) {
+        // Value context: else required, and branches must match
+        const then_ty = try self.checkExpr(if_expr.then_block);
+        if (then_ty == null) return null;
+        if (if_expr.else_block.isNone()) {
             try self.diags.addError(self.ast_unit.exprs.locs.get(if_expr.loc), .if_expression_requires_else, .{});
             return null;
         }
-        if (else_ty == null or then_ty == null) return null;
+        const else_ty = try self.checkExpr(if_expr.else_block.unwrap());
+        if (else_ty == null) return null;
         if (then_ty.?.toRaw() != else_ty.?.toRaw()) {
             try self.diags.addError(self.ast_unit.exprs.locs.get(if_expr.loc), .if_branch_type_mismatch, .{});
             return null;
@@ -2021,7 +2180,7 @@ pub const Checker = struct {
         }
         const body_ty = try self.checkExpr(cr.body);
         if (body_ty == null) return null;
-        const fty = self.type_info.store.mkFunction(param_tys, body_ty.?, false);
+        const fty = self.type_info.store.mkFunction(param_tys, body_ty.?, false, true);
         // if (expect.ty) |et| {
         //     if (self.assignable(fty, et) != .success) {
         //         try self.diags.addError(self.ast_unit.exprs.locs.get(cr.loc), .type_annotation_mismatch, .{});
@@ -2480,7 +2639,8 @@ pub const Checker = struct {
                 }
                 const res = if (!fnr.result_ty.isNone()) (try self.typeFromTypeExpr(fnr.result_ty.unwrap())) else self.type_info.store.tVoid();
                 if (res == null) break :blk_fn null;
-                break :blk_fn self.type_info.store.mkFunction(pbuf, res.?, fnr.flags.is_variadic);
+                const is_pure = !fnr.flags.is_proc;
+                break :blk_fn self.type_info.store.mkFunction(pbuf, res.?, fnr.flags.is_variadic, is_pure);
             },
             .FieldAccess => blk_fa: {
                 const fr = self.ast_unit.exprs.get(.FieldAccess, id);
@@ -2577,6 +2737,44 @@ pub const Checker = struct {
                 const sval = self.ast_unit.exprs.strs.get(lit.value.unwrap());
                 if (std.mem.eql(u8, sval, "0")) try self.diags.addError(loc, .division_by_zero, .{});
             }
+        }
+    }
+
+    const LvalueRootKind = enum { LocalDecl, Param, NonLocalDecl, Unknown };
+    fn lvalueRootKind(self: *Checker, expr: ast.ExprId) LvalueRootKind {
+        const kind = self.ast_unit.exprs.index.kinds.items[expr.toRaw()];
+        switch (kind) {
+            .Ident => {
+                const idr = self.ast_unit.exprs.get(.Ident, expr);
+                // Discard assignment '_' is considered local
+                if (std.mem.eql(u8, self.ast_unit.exprs.strs.get(idr.name), "_")) return .LocalDecl;
+                if (self.lookup(idr.name)) |sid_sym| {
+                    const sym = self.symtab.syms.get(sid_sym.toRaw());
+                    if (!sym.origin_param.isNone()) return .Param;
+                    if (!sym.origin_decl.isNone()) {
+                        const did = sym.origin_decl.unwrap();
+                        if (self.inFunction()) {
+                            const fctx = self.currentFunc().?;
+                            return if (fctx.locals.contains(did.toRaw())) .LocalDecl else .NonLocalDecl;
+                        }
+                        return .NonLocalDecl;
+                    }
+                }
+                return .Unknown;
+            },
+            .Deref => {
+                const dr = self.ast_unit.exprs.get(.Deref, expr);
+                return self.lvalueRootKind(dr.expr);
+            },
+            .FieldAccess => {
+                const fr = self.ast_unit.exprs.get(.FieldAccess, expr);
+                return self.lvalueRootKind(fr.parent);
+            },
+            .IndexAccess => {
+                const ir = self.ast_unit.exprs.get(.IndexAccess, expr);
+                return self.lvalueRootKind(ir.collection);
+            },
+            else => return .Unknown,
         }
     }
 };

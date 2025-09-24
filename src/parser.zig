@@ -31,7 +31,7 @@ pub const Parser = struct {
             .cur = cur,
             .nxt = nxt,
             .diags = diags,
-            .cst = cst.CST.init(gpa),
+            .cst = .init(gpa),
         };
     }
 
@@ -135,6 +135,12 @@ pub const Parser = struct {
             .comma, .rsquare, .rparen, .rcurly, .eos, .eof => true,
             else => false,
         };
+    }
+    inline fn addExpr(self: *Parser, comptime kind: cst.ExprKind, value: cst.RowT(kind)) cst.ExprId {
+        return self.cst.exprs.add(kind, value);
+    }
+    inline fn addPat(self: *Parser, comptime kind: cst.PatternKind, value: cst.PatRowT(kind)) cst.PatternId {
+        return self.cst.pats.add(kind, value);
     }
 
     // ===============================================================
@@ -315,14 +321,18 @@ pub const Parser = struct {
         };
     }
 
+    inline fn exprGet(self: *const Parser, comptime kind: cst.ExprKind, id: cst.ExprId) cst.RowT(kind) {
+        return self.cst.exprs.get(kind, id);
+    }
+
     fn looksLikeCtorHead(self: *Parser, id: cst.ExprId) bool {
         const kind = self.cst.exprs.index.kinds.items[id.toRaw()];
         return switch (kind) {
             .Ident, .FieldAccess => true,
-            .Call => self.looksLikeCtorHead(self.cst.exprs.get(.Call, id).callee),
-            .IndexAccess => self.looksLikeCtorHead(self.cst.exprs.get(.IndexAccess, id).collection),
+            .Call => self.looksLikeCtorHead(self.exprGet(.Call, id).callee),
+            .IndexAccess => self.looksLikeCtorHead(self.exprGet(.IndexAccess, id).collection),
             .Tuple => blk: {
-                const t = self.cst.exprs.get(.Tuple, id);
+                const t = self.exprGet(.Tuple, id);
                 if (t.elems.len != 1) break :blk false;
                 const only = self.cst.exprs.expr_pool.slice(t.elems)[0];
                 break :blk self.looksLikeCtorHead(only);
@@ -335,10 +345,6 @@ pub const Parser = struct {
     // Parsing
     //=================================================================
     fn sync(self: *Parser, comptime tag: Token.Tag) void {
-        // while (self.cur.tag != .eos and self.cur.tag != .rcurly and self.cur.tag != .eof) {
-        //     self.advance();
-        // }
-        // if (self.cur.tag == .eos) self.advance();
         while (self.cur.tag != tag and self.cur.tag != .eof) {
             self.advance();
         }
@@ -357,8 +363,8 @@ pub const Parser = struct {
             try self.expect(.identifier);
             const pkg_name = self.intern(self.slice(name_tok));
             try self.expect(.eos);
-            self.cst.program.package_name = cst.OptStrId.some(pkg_name);
-            self.cst.program.package_loc = cst.OptLocId.some(self.toLocId(start));
+            self.cst.program.package_name = .some(pkg_name);
+            self.cst.program.package_loc = .some(self.toLocId(start));
         }
 
         // Top-level declarations
@@ -387,41 +393,41 @@ pub const Parser = struct {
                 flags.is_const = true;
                 rhs_id = try self.parseExpr(0, .expr);
                 try self.expect(.eos);
-                lhs_opt = cst.OptExprId.some(lhs_or_rhs);
+                lhs_opt = .some(lhs_or_rhs);
             },
             .coloneq => { // x := rhs
                 self.advance();
                 rhs_id = try self.parseExpr(0, .expr);
                 try self.expect(.eos);
-                lhs_opt = cst.OptExprId.some(lhs_or_rhs);
+                lhs_opt = .some(lhs_or_rhs);
             },
             .colon => { // x : T (=|::) rhs
 
                 self.advance();
                 const ty_id = try self.parseExpr(0, .type);
-                ty_opt = cst.OptExprId.some(ty_id);
+                ty_opt = .some(ty_id);
                 switch (self.cur.tag) {
                     .eq => {
                         self.advance();
                         rhs_id = try self.parseExpr(0, .expr);
                         try self.expect(.eos);
-                        lhs_opt = cst.OptExprId.some(lhs_or_rhs);
+                        lhs_opt = .some(lhs_or_rhs);
                     },
                     .colon => {
                         self.advance();
                         flags.is_const = true;
                         rhs_id = try self.parseExpr(0, .expr);
                         try self.expect(.eos);
-                        lhs_opt = cst.OptExprId.some(lhs_or_rhs);
+                        lhs_opt = .some(lhs_or_rhs);
                     },
                     .eos, .rcurly, .eof => {
                         // Allow type-only declaration: synthesize 'undefined' initializer
                         // to let later phases run and diagnose type issues (e.g., array size).
                         _ = self.consumeIf(.eos);
                         const u_loc = self.toLocId(self.cur.loc);
-                        const undef_id = self.cst.exprs.add(.Undefined, .{ .loc = u_loc });
+                        const undef_id = self.addExpr(.Undefined, .{ .loc = u_loc });
                         rhs_id = undef_id;
-                        lhs_opt = cst.OptExprId.some(lhs_or_rhs);
+                        lhs_opt = .some(lhs_or_rhs);
                     },
                     else => {
                         self.errorNote(self.cur.loc, .expected_type_in_declaration, .{self.cur.tag}, self.cur.loc, .did_you_mean_equal);
@@ -435,7 +441,7 @@ pub const Parser = struct {
                 flags.is_assign = true;
                 rhs_id = try self.parseExpr(0, .expr);
                 try self.expect(.eos);
-                lhs_opt = cst.OptExprId.some(lhs_or_rhs);
+                lhs_opt = .some(lhs_or_rhs);
             },
             .eos, .rcurly, .eof => {
                 // expression statement: treat as decl { lhs: none, rhs: expr }
@@ -464,7 +470,7 @@ pub const Parser = struct {
                 const op = self.toPrefixOp(tag);
                 self.advance();
                 const rhs = try self.parseExpr(self.prefixBp(tag), mode);
-                return self.cst.exprs.add(.Prefix, .{ .right = rhs, .op = op, .loc = loc });
+                return self.addExpr(.Prefix, .{ .right = rhs, .op = op, .loc = loc });
             },
             .b_or => return try self.parseClosure(),
             .keyword_comptime => return try self.parseComptime(),
@@ -480,7 +486,7 @@ pub const Parser = struct {
             const value = self.intern(self.slice(self.cur));
             const tag_small: u16 = self.litSmall(tag);
             self.advance();
-            return self.cst.exprs.add(.Literal, .{ .value = value, .tag_small = tag_small, .loc = loc });
+            return self.addExpr(.Literal, .{ .value = value, .tag_small = tag_small, .loc = loc });
         }
 
         // -------- everything else --------
@@ -499,9 +505,9 @@ pub const Parser = struct {
                 // Special case: labeled loop
                 if (self.cur.tag == .colon and (next == .keyword_for or next == .keyword_while)) {
                     self.advance();
-                    break :blk try self.parseLabeledLoop(cst.OptStrId.some(name));
+                    break :blk try self.parseLabeledLoop(.some(name));
                 }
-                break :blk self.cst.exprs.add(.Ident, .{ .name = name, .loc = loc });
+                break :blk self.addExpr(.Ident, .{ .name = name, .loc = loc });
             },
 
             // grouping / collections / blocks
@@ -517,17 +523,17 @@ pub const Parser = struct {
             .keyword_any => blk: {
                 const loc = self.toLocId(self.cur.loc);
                 self.advance();
-                break :blk self.cst.exprs.add(.AnyType, .{ .loc = loc });
+                break :blk self.addExpr(.AnyType, .{ .loc = loc });
             },
             .keyword_type => blk: {
                 const loc = self.toLocId(self.cur.loc);
                 self.advance();
-                break :blk self.cst.exprs.add(.TypeType, .{ .loc = loc });
+                break :blk self.addExpr(.TypeType, .{ .loc = loc });
             },
             .keyword_noreturn => blk: {
                 const loc = self.toLocId(self.cur.loc);
                 self.advance();
-                break :blk self.cst.exprs.add(.NoreturnType, .{ .loc = loc });
+                break :blk self.addExpr(.NoreturnType, .{ .loc = loc });
             },
             .keyword_complex => try self.parseComplexType(),
             .keyword_simd => try self.parseSimdType(),
@@ -544,13 +550,13 @@ pub const Parser = struct {
                 const loc = self.toLocId(self.cur.loc);
                 self.advance(); // 'import'
                 const e = try self.parseExpr(0, .expr);
-                break :blk self.cst.exprs.add(.Import, .{ .expr = e, .loc = loc });
+                break :blk self.addExpr(.Import, .{ .expr = e, .loc = loc });
             },
             .keyword_typeof => blk: {
                 const start = try self.beginKeywordParen(.keyword_typeof);
                 const e = try self.parseExpr(0, .expr);
                 try self.endParen();
-                break :blk self.cst.exprs.add(.TypeOf, .{ .expr = e, .loc = self.toLocId(start) });
+                break :blk self.addExpr(.TypeOf, .{ .expr = e, .loc = self.toLocId(start) });
             },
             .keyword_async => blk: {
                 const loc = self.toLocId(self.cur.loc);
@@ -559,7 +565,7 @@ pub const Parser = struct {
                     .keyword_proc, .keyword_fn => break :blk try self.parseFunctionLike(self.cur.tag, false, true),
                     else => {
                         const body = try self.parseBlockExpr();
-                        break :blk self.cst.exprs.add(.Async, .{ .body = body, .loc = loc });
+                        break :blk self.addExpr(.Async, .{ .body = body, .loc = loc });
                     },
                 }
             },
@@ -578,44 +584,44 @@ pub const Parser = struct {
                     self.advance();
                     const name = self.cur;
                     try self.expect(.identifier);
-                    label = cst.OptStrId.some(self.intern(self.slice(name)));
+                    label = .some(self.intern(self.slice(name)));
                 }
                 if (!self.isStmtTerminator()) {
-                    value = cst.OptExprId.some(try self.parseExpr(0, .expr));
+                    value = .some(try self.parseExpr(0, .expr));
                 }
-                break :blk self.cst.exprs.add(.Break, .{ .label = label, .value = value, .loc = loc });
+                break :blk self.addExpr(.Break, .{ .label = label, .value = value, .loc = loc });
             },
             .keyword_continue => blk: {
                 const loc = self.toLocId(self.cur.loc);
                 self.advance();
-                break :blk self.cst.exprs.add(.Continue, .{ .loc = loc });
+                break :blk self.addExpr(.Continue, .{ .loc = loc });
             },
             .keyword_unreachable => blk: {
                 const loc = self.toLocId(self.cur.loc);
                 self.advance();
-                break :blk self.cst.exprs.add(.Unreachable, .{ .loc = loc });
+                break :blk self.addExpr(.Unreachable, .{ .loc = loc });
             },
             .keyword_null => blk: {
                 const loc = self.toLocId(self.cur.loc);
                 self.advance();
-                break :blk self.cst.exprs.add(.Null, .{ .loc = loc });
+                break :blk self.addExpr(.Null, .{ .loc = loc });
             },
             .keyword_undefined => blk: {
                 const loc = self.toLocId(self.cur.loc);
                 self.advance();
-                break :blk self.cst.exprs.add(.Undefined, .{ .loc = loc });
+                break :blk self.addExpr(.Undefined, .{ .loc = loc });
             },
             .keyword_defer => blk: {
                 const loc = self.toLocId(self.cur.loc);
                 self.advance();
                 const e = try self.parseExpr(0, .expr);
-                break :blk self.cst.exprs.add(.Defer, .{ .expr = e, .loc = loc });
+                break :blk self.addExpr(.Defer, .{ .expr = e, .loc = loc });
             },
             .keyword_errdefer => blk: {
                 const loc = self.toLocId(self.cur.loc);
                 self.advance();
                 const e = try self.parseExpr(0, .expr);
-                break :blk self.cst.exprs.add(.ErrDefer, .{ .expr = e, .loc = loc });
+                break :blk self.addExpr(.ErrDefer, .{ .expr = e, .loc = loc });
             },
             else => {
                 const got = self.cur;
@@ -651,7 +657,7 @@ pub const Parser = struct {
                         } else {
                             const loc = self.toLocId(self.cur.loc);
                             self.advance();
-                            left = self.cst.exprs.add(.ErrUnwrap, .{ .expr = left, .loc = loc });
+                            left = self.addExpr(.ErrUnwrap, .{ .expr = left, .loc = loc });
                             continue;
                         }
                     }
@@ -697,7 +703,7 @@ pub const Parser = struct {
                 const op = self.toInfixOp(tag);
                 self.advance();
                 const right = try self.parseExpr(r_bp, mode);
-                left = self.cst.exprs.add(.Infix, .{ .op = op, .left = left, .right = right, .loc = loc });
+                left = self.addExpr(.Infix, .{ .op = op, .left = left, .right = right, .loc = loc });
                 continue;
             }
 
@@ -719,7 +725,7 @@ pub const Parser = struct {
             const field_tok = self.cur;
             var name_opt = cst.OptStrId.none();
             if ((self.cur.tag == .identifier or self.cur.tag == .raw_identifier) and self.nxt.tag == .colon) {
-                name_opt = cst.OptStrId.some(self.intern(self.slice(field_tok)));
+                name_opt = .some(self.intern(self.slice(field_tok)));
                 self.advance();
                 try self.expect(.colon);
             }
@@ -740,7 +746,7 @@ pub const Parser = struct {
         try self.expect(.rcurly);
 
         const fields_range = self.cst.exprs.sfv_pool.pushMany(self.gpa, sfv_ids.items);
-        return self.cst.exprs.add(.StructLit, .{ .fields = fields_range, .ty = cst.OptExprId.none(), .loc = loc });
+        return self.addExpr(.StructLit, .{ .fields = fields_range, .ty = cst.OptExprId.none(), .loc = loc });
     }
 
     fn parseStructLiteralWithHead(self: *Parser, head: cst.ExprId) !cst.ExprId {
@@ -754,7 +760,7 @@ pub const Parser = struct {
             const field_tok = self.cur;
             var name_opt = cst.OptStrId.none();
             if ((self.cur.tag == .identifier or self.cur.tag == .raw_identifier) and self.nxt.tag == .colon) {
-                name_opt = cst.OptStrId.some(self.intern(self.slice(field_tok)));
+                name_opt = .some(self.intern(self.slice(field_tok)));
                 self.advance();
                 try self.expect(.colon);
             }
@@ -775,7 +781,7 @@ pub const Parser = struct {
         try self.expect(.rcurly);
 
         const fields_range = self.cst.exprs.sfv_pool.pushMany(self.gpa, sfv_ids.items);
-        return self.cst.exprs.add(.StructLit, .{ .fields = fields_range, .ty = cst.OptExprId.some(head), .loc = loc });
+        return self.addExpr(.StructLit, .{ .fields = fields_range, .ty = cst.OptExprId.some(head), .loc = loc });
     }
 
     fn parseIndex(self: *Parser, collection: cst.ExprId) anyerror!cst.ExprId {
@@ -783,7 +789,7 @@ pub const Parser = struct {
         const loc = self.toLocId(self.cur.loc);
         const index = try self.parseExpr(0, .expr);
         try self.expect(.rsquare);
-        return self.cst.exprs.add(.IndexAccess, .{ .collection = collection, .index = index, .loc = loc });
+        return self.addExpr(.IndexAccess, .{ .collection = collection, .index = index, .loc = loc });
     }
 
     fn parseField(self: *Parser, parent: cst.ExprId) !cst.ExprId {
@@ -806,7 +812,7 @@ pub const Parser = struct {
 
         const loc = self.toLocId(tok.loc);
         const name = self.intern(self.slice(tok));
-        return self.cst.exprs.add(.FieldAccess, .{ .parent = parent, .field = name, .is_tuple = is_tuple, .loc = loc });
+        return self.addExpr(.FieldAccess, .{ .parent = parent, .field = name, .is_tuple = is_tuple, .loc = loc });
     }
 
     // Parse a comma-separated list of expressions until `end_tag`,
@@ -829,7 +835,7 @@ pub const Parser = struct {
     fn parseCall(self: *Parser, callee: cst.ExprId) !cst.ExprId {
         const loc = self.toLocId(self.cur.loc);
         const args = try self.parseCommaExprListUntil(.rparen);
-        return self.cst.exprs.add(.Call, .{ .callee = callee, .args = args, .loc = loc });
+        return self.addExpr(.Call, .{ .callee = callee, .args = args, .loc = loc });
     }
 
     // ================================
@@ -838,12 +844,12 @@ pub const Parser = struct {
 
     inline fn parseDeref(self: *Parser, expr: cst.ExprId) !cst.ExprId {
         const loc = self.toLocId(self.cur.loc); // '. *' already consumed
-        return self.cst.exprs.add(.Deref, .{ .expr = expr, .loc = loc });
+        return self.addExpr(.Deref, .{ .expr = expr, .loc = loc });
     }
 
     inline fn parseOptionalUnwrap(self: *Parser, expr: cst.ExprId) !cst.ExprId {
         const loc = self.toLocId(self.cur.loc); // '?' already consumed
-        return self.cst.exprs.add(.OptionalUnwrap, .{ .expr = expr, .loc = loc });
+        return self.addExpr(.OptionalUnwrap, .{ .expr = expr, .loc = loc });
     }
 
     inline fn parsePostfixAfterDot(self: *Parser, left: cst.ExprId) anyerror!cst.ExprId {
@@ -858,7 +864,7 @@ pub const Parser = struct {
         const loc = self.toLocId(self.cur.loc); // '.(' already consumed
         const ty = try self.parseExpr(0, .type);
         try self.expect(.rparen);
-        return self.cst.exprs.add(.Cast, .{ .expr = expr, .ty = ty, .kind = .normal, .loc = loc });
+        return self.addExpr(.Cast, .{ .expr = expr, .ty = ty, .kind = .normal, .loc = loc });
     }
 
     fn parseCastSigil(self: *Parser, expr: cst.ExprId) anyerror!cst.ExprId {
@@ -872,13 +878,13 @@ pub const Parser = struct {
         };
         self.advance();
         const ty = try self.parseExpr(0, .type);
-        return self.cst.exprs.add(.Cast, .{ .expr = expr, .ty = ty, .kind = kind, .loc = loc });
+        return self.addExpr(.Cast, .{ .expr = expr, .ty = ty, .kind = kind, .loc = loc });
     }
 
     inline fn parseAwait(self: *Parser, expr: cst.ExprId) !cst.ExprId {
         const loc = self.toLocId(self.cur.loc);
         try self.expect(.keyword_await);
-        return self.cst.exprs.add(.Await, .{ .expr = expr, .loc = loc });
+        return self.addExpr(.Await, .{ .expr = expr, .loc = loc });
     }
 
     inline fn parseReturn(self: *Parser) !cst.ExprId {
@@ -887,12 +893,12 @@ pub const Parser = struct {
         self.advance(); // 'return'
         var value: cst.OptExprId = cst.OptExprId.none();
         if (!self.isStmtTerminator()) {
-            value = cst.OptExprId.some(try self.parseExpr(0, .expr));
+            value = .some(try self.parseExpr(0, .expr));
         }
         if (!self.isStmtTerminator()) {
             try self.expect(.eos);
         }
-        return self.cst.exprs.add(.Return, .{ .value = value, .loc = loc });
+        return self.addExpr(.Return, .{ .value = value, .loc = loc });
     }
 
     // Make block emit a Block expr directly.
@@ -911,7 +917,7 @@ pub const Parser = struct {
         try self.endBrace();
 
         const range = self.cst.exprs.decl_pool.pushMany(self.gpa, decl_ids.items);
-        return self.cst.exprs.add(.Block, .{ .items = range, .loc = self.toLocId(brace_loc) });
+        return self.addExpr(.Block, .{ .items = range, .loc = self.toLocId(brace_loc) });
     }
 
     fn parseBlockExpr(self: *Parser) !cst.ExprId {
@@ -941,23 +947,23 @@ pub const Parser = struct {
                 const p_loc = self.toLocId(self.cur.loc);
                 const pat_expr = try self.parseExpr(barrier, .expr_no_struct);
 
-                var ty_opt: cst.OptExprId = cst.OptExprId.none();
-                var val_opt: cst.OptExprId = cst.OptExprId.none();
+                var ty_opt: cst.OptExprId = .none();
+                var val_opt: cst.OptExprId = .none();
 
                 if (self.cur.tag == .colon) {
                     self.advance();
-                    ty_opt = cst.OptExprId.some(try self.parseExpr(barrier, .type));
+                    ty_opt = .some(try self.parseExpr(barrier, .type));
                 }
                 if (self.cur.tag == .eq) {
                     self.advance();
-                    val_opt = cst.OptExprId.some(try self.parseExpr(0, .expr));
+                    val_opt = .some(try self.parseExpr(0, .expr));
                 }
 
                 const pid = self.cst.exprs.addParamRow(.{
-                    .pat = cst.OptExprId.some(pat_expr),
+                    .pat = .some(pat_expr),
                     .ty = ty_opt,
                     .value = val_opt,
-                    .attrs = cst.OptRangeAttr.none(),
+                    .attrs = .none(),
                     .loc = p_loc,
                 });
                 try param_ids.append(self.gpa, pid);
@@ -973,7 +979,7 @@ pub const Parser = struct {
         }
         try self.expect(.b_or);
 
-        var result_ty: cst.OptExprId = cst.OptExprId.none();
+        var result_ty: cst.OptExprId = .none();
         var body: cst.ExprId = undefined;
 
         if (self.cur.tag == .lcurly) {
@@ -981,7 +987,7 @@ pub const Parser = struct {
         } else {
             const ty_or_body = try self.parseExpr(0, .type);
             if (self.cur.tag == .lcurly) {
-                result_ty = cst.OptExprId.some(ty_or_body);
+                result_ty = .some(ty_or_body);
                 body = try self.parseBlock();
             } else {
                 body = ty_or_body; // expression-bodied closure
@@ -989,7 +995,7 @@ pub const Parser = struct {
         }
 
         const params_range = self.cst.exprs.param_pool.pushMany(self.gpa, param_ids.items);
-        return self.cst.exprs.add(.Closure, .{
+        return self.addExpr(.Closure, .{
             .params = params_range,
             .result_ty = result_ty,
             .body = body,
@@ -1000,8 +1006,8 @@ pub const Parser = struct {
     // -------------------- catch postfix --------------------
     fn parseCatchExpr(self: *Parser, expr: cst.ExprId) !cst.ExprId {
         const loc = self.toLocId(self.cur.loc); // 'catch' was consumed by caller
-        var b_name: cst.OptStrId = cst.OptStrId.none();
-        var b_loc: cst.OptLocId = cst.OptLocId.none();
+        var b_name: cst.OptStrId = .none();
+        var b_loc: cst.OptLocId = .none();
 
         if (self.cur.tag == .b_or) {
             self.advance();
@@ -1009,13 +1015,13 @@ pub const Parser = struct {
             const name_loc = self.toLocId(name_tok.loc);
             try self.expect(.identifier);
             const name = self.slice(name_tok);
-            b_name = cst.OptStrId.some(self.intern(name));
-            b_loc = cst.OptLocId.some(name_loc);
+            b_name = .some(self.intern(name));
+            b_loc = .some(name_loc);
             try self.expect(.b_or);
         }
 
         const handler = try self.parseExprOrBlock();
-        return self.cst.exprs.add(.Catch, .{
+        return self.addExpr(.Catch, .{
             .expr = expr,
             .binding_name = b_name,
             .binding_loc = b_loc,
@@ -1031,12 +1037,12 @@ pub const Parser = struct {
         const cond = try self.parseExpr(0, .expr_no_struct);
         const then_block = try self.parseBlock();
 
-        var else_opt: cst.OptExprId = cst.OptExprId.none();
+        var else_opt: cst.OptExprId = .none();
         if (self.cur.tag == .keyword_else) {
             self.advance();
-            else_opt = cst.OptExprId.some(try self.parseExprOrBlock());
+            else_opt = .some(try self.parseExprOrBlock());
         }
-        return self.cst.exprs.add(.If, .{
+        return self.addExpr(.If, .{
             .cond = cond,
             .then_block = then_block,
             .else_block = else_opt,
@@ -1048,8 +1054,8 @@ pub const Parser = struct {
         const w_loc = self.toLocId(self.cur.loc);
         self.advance(); // "while"
 
-        var cond_opt: cst.OptExprId = cst.OptExprId.none();
-        var pat_opt: cst.SentinelIndex(cst.PatTag) = cst.SentinelIndex(cst.PatTag).none();
+        var cond_opt: cst.OptExprId = .none();
+        var pat_opt: cst.SentinelIndex(cst.PatTag) = .none();
         var is_pat: bool = false;
 
         switch (self.cur.tag) {
@@ -1058,20 +1064,20 @@ pub const Parser = struct {
                 const pat = try self.parsePattern();
                 try self.expect(.coloneq);
                 const cond = try self.parseExpr(0, .expr_no_struct);
-                cond_opt = cst.OptExprId.some(cond);
-                pat_opt = cst.SentinelIndex(cst.PatTag).some(pat);
+                cond_opt = .some(cond);
+                pat_opt = .some(pat);
                 is_pat = true;
             },
             .lcurly => {
                 // forever loop: no condition
             },
             else => {
-                cond_opt = cst.OptExprId.some(try self.parseExpr(0, .expr_no_struct));
+                cond_opt = .some(try self.parseExpr(0, .expr_no_struct));
             },
         }
 
         const body = try self.parseBlock();
-        return self.cst.exprs.add(.While, .{
+        return self.addExpr(.While, .{
             .cond = cond_opt,
             .pattern = pat_opt,
             .body = body,
@@ -1082,7 +1088,7 @@ pub const Parser = struct {
     }
 
     fn parseWhileExpr(self: *Parser) !cst.ExprId {
-        return self.parseWhileExprWithLabel(cst.OptStrId.none());
+        return self.parseWhileExprWithLabel(.none());
     }
 
     fn parseMatchExpr(self: *Parser) !cst.ExprId {
@@ -1093,7 +1099,7 @@ pub const Parser = struct {
 
         // Collect arm ids, then commit them contiguously into the arm_pool.
         var tmp_arms: List(cst.MatchArmId) = .empty;
-        defer tmp_arms.deinit(self.cst.exprs.gpa);
+        defer tmp_arms.deinit(self.gpa);
 
         while (self.cur.tag != .rcurly and self.cur.tag != .eof) {
             const pat_id = try self.parsePattern(); // PatternId
@@ -1102,7 +1108,7 @@ pub const Parser = struct {
             if (self.cur.tag == .keyword_if) {
                 self.advance();
                 const gexpr = try self.parseExpr(0, .expr_no_struct);
-                guard_opt = cst.OptExprId.some(gexpr);
+                guard_opt = .some(gexpr);
             }
             try self.expect(.fatarrow);
 
@@ -1118,17 +1124,17 @@ pub const Parser = struct {
                 .loc = self.toLocId(self.cur.loc),
             };
             const arm_id = self.cst.exprs.addMatchArmRow(arm_row);
-            try tmp_arms.append(self.cst.exprs.gpa, arm_id);
+            try tmp_arms.append(self.gpa, arm_id);
         }
 
         try self.expect(.rcurly);
 
         // Commit arm ids into a contiguous range in the arm_pool.
         const arms_range: cst.RangeOf(cst.MatchArmId) =
-            self.cst.exprs.arm_pool.pushMany(self.cst.exprs.gpa, tmp_arms.items);
+            self.cst.exprs.arm_pool.pushMany(self.gpa, tmp_arms.items);
 
         // Build the Match expr.
-        const match_id = self.cst.exprs.add(.Match, .{
+        const match_id = self.addExpr(.Match, .{
             .expr = scrutinee,
             .arms = arms_range,
             .loc = self.toLocId(start_loc_tok.loc),
@@ -1145,7 +1151,7 @@ pub const Parser = struct {
         const it = try self.parseExpr(0, .expr_no_struct);
         const body = try self.parseBlock();
 
-        return self.cst.exprs.add(.For, .{
+        return self.addExpr(.For, .{
             .pattern = pat,
             .iterable = it,
             .body = body,
@@ -1155,7 +1161,7 @@ pub const Parser = struct {
     }
 
     fn parseForExpr(self: *Parser) !cst.ExprId {
-        return self.parseForExprWithLabel(cst.OptStrId.none());
+        return self.parseForExprWithLabel(.none());
     }
 
     // label: for/while ...
@@ -1199,7 +1205,7 @@ pub const Parser = struct {
             try alts.append(self.gpa, try self.parsePatRange());
         }
         const alts_range = self.cst.pats.pat_pool.pushMany(self.gpa, alts.items);
-        return self.cst.pats.add(.Or, .{ .alts = alts_range, .loc = loc });
+        return self.addPat(.Or, .{ .alts = alts_range, .loc = loc });
     }
 
     fn parsePatRange(self: *Parser) !cst.PatternId {
@@ -1209,9 +1215,9 @@ pub const Parser = struct {
             const inclusive = (self.cur.tag == .dotdoteq);
             self.advance();
             const end_expr = try self.parseConstExprForRangeEnd();
-            return self.cst.pats.add(.Range, .{
-                .start = cst.OptExprId.none(),
-                .end = cst.OptExprId.some(end_expr),
+            return self.addPat(.Range, .{
+                .start = .none(),
+                .end = .some(end_expr),
                 .inclusive_right = inclusive,
                 .loc = loc,
             });
@@ -1229,9 +1235,9 @@ pub const Parser = struct {
             const rhs = try self.parseConstExprForRangeEnd();
             const lhs_expr = try self.patternToConstExpr(left);
 
-            return self.cst.pats.add(.Range, .{
-                .start = cst.OptExprId.some(lhs_expr),
-                .end = cst.OptExprId.some(rhs),
+            return self.addPat(.Range, .{
+                .start = .some(lhs_expr),
+                .end = .some(rhs),
                 .inclusive_right = inclusive,
                 .loc = loc,
             });
@@ -1251,7 +1257,7 @@ pub const Parser = struct {
             },
             .Binding => blk: {
                 const row = self.cst.pats.get(.Binding, pat);
-                break :blk self.cst.exprs.add(.Ident, .{ .name = row.name, .loc = row.loc });
+                break :blk self.addExpr(.Ident, .{ .name = row.name, .loc = row.loc });
             },
             .Wildcard => {
                 self.errorNote(self.cur.loc, .underscore_not_const_in_range_pattern, .{}, null, .use_literal_constant_or_binding);
@@ -1299,7 +1305,7 @@ pub const Parser = struct {
             self.advance();
             const sub = try self.parsePatAt(); // right-assoc
             const binder = try self.patternToBindingName(p);
-            return self.cst.pats.add(.At, .{ .binder = binder, .pattern = sub, .loc = loc });
+            return self.addPat(.At, .{ .binder = binder, .pattern = sub, .loc = loc });
         }
         return p;
     }
@@ -1309,7 +1315,7 @@ pub const Parser = struct {
             .char_literal, .string_literal, .raw_string_literal, .integer_literal, .float_literal, .keyword_true, .keyword_false => {
                 const lit_expr = try self.nud(self.cur.tag, .expr_no_struct); // will consume token
                 const loc = self.toLocId(self.cur.loc);
-                return self.cst.pats.add(.Literal, .{ .expr = lit_expr, .loc = loc });
+                return self.addPat(.Literal, .{ .expr = lit_expr, .loc = loc });
             },
             .lparen => return try self.parseTuplePattern(),
             .lsquare => return try self.parseSlicePattern(), // use your DOD version
@@ -1318,9 +1324,9 @@ pub const Parser = struct {
                 const inclusive = (self.cur.tag == .dotdoteq);
                 self.advance();
                 const end_expr = try self.parseConstExprForRangeEnd();
-                return self.cst.pats.add(.Range, .{
-                    .start = cst.OptExprId.none(),
-                    .end = cst.OptExprId.some(end_expr),
+                return self.addPat(.Range, .{
+                    .start = .none(),
+                    .end = .some(end_expr),
                     .inclusive_right = inclusive,
                     .loc = loc,
                 });
@@ -1350,7 +1356,7 @@ pub const Parser = struct {
         try self.expect(.rparen);
 
         const range = self.cst.pats.pat_pool.pushMany(self.gpa, elems.items);
-        return self.cst.pats.add(.Tuple, .{ .elems = range, .loc = self.toLocId(loc_tok) });
+        return self.addPat(.Tuple, .{ .elems = range, .loc = self.toLocId(loc_tok) });
     }
 
     fn parsePathishPattern(self: *Parser) anyerror!cst.PatternId {
@@ -1390,7 +1396,7 @@ pub const Parser = struct {
                 try self.expect(.rparen);
 
                 const elems_range = self.cst.pats.pat_pool.pushMany(self.gpa, elems.items);
-                return self.cst.pats.add(.VariantTuple, .{
+                return self.addPat(.VariantTuple, .{
                     .path = path_range,
                     .elems = elems_range,
                     .loc = self.toLocId(loc_tok),
@@ -1422,7 +1428,7 @@ pub const Parser = struct {
                         self.advance();
                         p = try self.parsePattern();
                     } else {
-                        p = self.cst.pats.add(.Binding, .{ .name = name, .by_ref = false, .is_mut = false, .loc = nloc });
+                        p = self.addPat(.Binding, .{ .name = name, .by_ref = false, .is_mut = false, .loc = nloc });
                     }
 
                     const pf = self.cst.pats.addPatField(.{ .name = name, .pattern = p, .loc = nloc });
@@ -1433,7 +1439,7 @@ pub const Parser = struct {
                 try self.expect(.rcurly);
 
                 const fields_range = self.cst.pats.field_pool.pushMany(self.gpa, fields.items);
-                return self.cst.pats.add(.VariantStruct, .{
+                return self.addPat(.VariantStruct, .{
                     .path = path_range,
                     .fields = fields_range,
                     .has_rest = has_rest,
@@ -1446,9 +1452,9 @@ pub const Parser = struct {
                 self.advance();
                 const rhs = try self.parseConstExprForRangeEnd();
                 const start_expr = try self.pathToConstExpr(path_range);
-                return self.cst.pats.add(.Range, .{
-                    .start = cst.OptExprId.some(start_expr),
-                    .end = cst.OptExprId.some(rhs),
+                return self.addPat(.Range, .{
+                    .start = .some(start_expr),
+                    .end = .some(rhs),
                     .inclusive_right = inclusive,
                     .loc = loc,
                 });
@@ -1460,16 +1466,16 @@ pub const Parser = struct {
                     const seg_row = self.cst.pats.PathSeg.get(seg_ids_slice[0].toRaw()); // FIX
                     const seg_name_bytes = self.cst.exprs.strs.get(seg_row.name);
                     if (std.mem.eql(u8, seg_name_bytes, "_")) {
-                        return self.cst.pats.add(.Wildcard, .{ .loc = seg_row.loc });
+                        return self.addPat(.Wildcard, .{ .loc = seg_row.loc });
                     }
-                    return self.cst.pats.add(.Binding, .{
+                    return self.addPat(.Binding, .{
                         .name = seg_row.name,
                         .by_ref = false,
                         .is_mut = false,
                         .loc = seg_row.loc,
                     });
                 }
-                return self.cst.pats.add(.Path, .{ .segments = path_range, .loc = self.toLocId(first_loc) });
+                return self.addPat(.Path, .{ .segments = path_range, .loc = self.toLocId(first_loc) });
             },
         }
     }
@@ -1485,7 +1491,7 @@ pub const Parser = struct {
 
         var has_rest: bool = false;
         var rest_index: u32 = 0;
-        var rest_binding: cst.SentinelIndex(cst.PatTag) = cst.SentinelIndex(cst.PatTag).none();
+        var rest_binding: cst.SentinelIndex(cst.PatTag) = .none();
         const loc = self.toLocId(self.cur.loc);
 
         if (self.cur.tag != .rsquare) {
@@ -1502,13 +1508,13 @@ pub const Parser = struct {
                         const name_bytes = self.slice(name_tok);
                         self.advance();
                         if (!std.mem.eql(u8, name_bytes, "_")) {
-                            const bind_id = self.cst.pats.add(.Binding, .{
+                            const bind_id = self.addPat(.Binding, .{
                                 .name = self.intern(name_bytes),
                                 .by_ref = false,
                                 .is_mut = false,
                                 .loc = self.toLocId(name_tok.loc),
                             });
-                            rest_binding = cst.SentinelIndex(cst.PatTag).some(bind_id);
+                            rest_binding = .some(bind_id);
                         }
                     }
 
@@ -1523,7 +1529,7 @@ pub const Parser = struct {
         try self.expect(.rsquare);
 
         const elems_range = self.cst.pats.pat_pool.pushMany(self.gpa, elems.items);
-        return self.cst.pats.add(.Slice, .{
+        return self.addPat(.Slice, .{
             .elems = elems_range,
             .has_rest = has_rest,
             .rest_index = rest_index,
@@ -1548,7 +1554,7 @@ pub const Parser = struct {
 
         // first segment → Ident
         const first = self.cst.pats.PathSeg.get(ids[0].toRaw());
-        var e = self.cst.exprs.add(.Ident, .{
+        var e = self.addExpr(.Ident, .{
             .name = first.name, // StrId already
             .loc = first.loc, // LocId already
         });
@@ -1557,7 +1563,7 @@ pub const Parser = struct {
         var i: usize = 1;
         while (i < ids.len) : (i += 1) {
             const seg = self.cst.pats.PathSeg.get(ids[i].toRaw());
-            e = self.cst.exprs.add(.FieldAccess, .{
+            e = self.addExpr(.FieldAccess, .{
                 .parent = e,
                 .field = seg.name, // StrId
                 .is_tuple = false,
@@ -1617,9 +1623,9 @@ pub const Parser = struct {
         const fields = try self.parseStructFieldList(.rcurly);
 
         return if (tag == .keyword_struct)
-            self.cst.exprs.add(.StructType, .{ .fields = fields, .is_extern = is_extern, .attrs = cst.OptRangeAttr.none(), .loc = loc })
+            self.addExpr(.StructType, .{ .fields = fields, .is_extern = is_extern, .attrs = cst.OptRangeAttr.none(), .loc = loc })
         else
-            self.cst.exprs.add(.UnionType, .{ .fields = fields, .is_extern = is_extern, .attrs = cst.OptRangeAttr.none(), .loc = loc });
+            self.addExpr(.UnionType, .{ .fields = fields, .is_extern = is_extern, .attrs = cst.OptRangeAttr.none(), .loc = loc });
     }
 
     //==============================================================
@@ -1636,7 +1642,7 @@ pub const Parser = struct {
         }
 
         const elem = try self.parseExpr(0, .type);
-        return self.cst.exprs.add(.PointerType, .{
+        return self.addExpr(.PointerType, .{
             .elem = elem,
             .is_const = is_const,
             .loc = self.toLocId(tok.loc),
@@ -1647,14 +1653,14 @@ pub const Parser = struct {
         const tok = self.cur;
         self.advance(); // "?"
         const elem = try self.parseExpr(0, .type);
-        return self.cst.exprs.add(.OptionalType, .{ .elem = elem, .loc = self.toLocId(tok.loc) });
+        return self.addExpr(.OptionalType, .{ .elem = elem, .loc = self.toLocId(tok.loc) });
     }
 
     fn parseComplexType(self: *Parser) !cst.ExprId {
         const start = try self.beginKeywordParen(.keyword_complex);
         const elem = try self.parseExpr(0, .type);
         try self.endParen();
-        return self.cst.exprs.add(.ComplexType, .{ .elem = elem, .loc = self.toLocId(start) });
+        return self.addExpr(.ComplexType, .{ .elem = elem, .loc = self.toLocId(start) });
     }
 
     fn parseSimdType(self: *Parser) !cst.ExprId {
@@ -1663,7 +1669,7 @@ pub const Parser = struct {
         try self.expect(.comma);
         const lanes = try self.parseExpr(0, .expr);
         try self.endParen();
-        return self.cst.exprs.add(.SimdType, .{ .elem = elem, .lanes = lanes, .loc = self.toLocId(start) });
+        return self.addExpr(.SimdType, .{ .elem = elem, .lanes = lanes, .loc = self.toLocId(start) });
     }
 
     fn parseTensorType(self: *Parser) !cst.ExprId {
@@ -1691,20 +1697,20 @@ pub const Parser = struct {
         const elem = items.pop().?; // lcst is element type
 
         const shape_range = self.cst.exprs.expr_pool.pushMany(self.gpa, items.items);
-        return self.cst.exprs.add(.TensorType, .{ .elem = elem, .shape = shape_range, .loc = self.toLocId(start) });
+        return self.addExpr(.TensorType, .{ .elem = elem, .shape = shape_range, .loc = self.toLocId(start) });
     }
 
     inline fn parseOptionalInitializer(self: *Parser, comptime mode: ParseMode) !cst.OptExprId {
         if (self.cur.tag == .eq) {
             self.advance();
-            return cst.OptExprId.some(try self.parseExpr(0, mode));
+            return .some(try self.parseExpr(0, mode));
         }
-        return cst.OptExprId.none();
+        return .none();
     }
 
     // Parse @[ ... ] into Attribute rows; return OptRangeAttr.
     fn parseOptionalAttributesRange(self: *Parser) !cst.OptRangeAttr {
-        if (self.cur.tag != .at) return cst.OptRangeAttr.none();
+        if (self.cur.tag != .at) return .none();
 
         try self.expect(.at);
         try self.expect(.lsquare);
@@ -1728,12 +1734,12 @@ pub const Parser = struct {
                 return error.UnexpectedToken;
             }
 
-            var val: cst.OptExprId = cst.OptExprId.none();
+            var val: cst.OptExprId = .none();
             if (self.cur.tag == .eq) {
                 self.advance();
                 // Keep your original restriction (literal or ident) if you like;
                 // or accept any expr. Here we accept any expr:
-                val = cst.OptExprId.some(try self.parseExpr(0, .expr));
+                val = .some(try self.parseExpr(0, .expr));
             }
 
             const id = self.cst.exprs.addAttrRow(.{
@@ -1748,7 +1754,7 @@ pub const Parser = struct {
 
         try self.expect(.rsquare);
         const range = self.cst.exprs.attr_pool.pushMany(self.gpa, ids.items);
-        return cst.OptRangeAttr.some(range);
+        return .some(range);
     }
 
     //=================================================================
@@ -1763,7 +1769,7 @@ pub const Parser = struct {
             .rsquare => blk: {
                 try self.expect(.rsquare);
                 // [K:V] => MapType
-                break :blk self.cst.exprs.add(.MapType, .{
+                break :blk self.addExpr(.MapType, .{
                     .key = key_expr,
                     .value = value_expr,
                     .loc = start_loc,
@@ -1801,7 +1807,7 @@ pub const Parser = struct {
                 try self.expect(.rsquare);
 
                 const entries = self.cst.exprs.kv_pool.pushMany(self.gpa, kv_ids.items);
-                break :blk self.cst.exprs.add(.MapLit, .{ .entries = entries, .loc = start_loc });
+                break :blk self.addExpr(.MapLit, .{ .entries = entries, .loc = start_loc });
             },
             else => {
                 self.errorNote(
@@ -1829,15 +1835,14 @@ pub const Parser = struct {
                 if (mode != .type and self.isTypeStart(self.cur.tag)) {
                     // []T => slice type in expression context when followed by a type
                     const elem = try self.parseExpr(0, .type);
-                    break :blk self.cst.exprs.add(.SliceType, .{ .elem = elem, .loc = start_loc });
+                    break :blk self.addExpr(.SliceType, .{ .elem = elem, .loc = start_loc });
                 } else if (mode == .type) {
                     // []T => slice type in type context
                     const elem = try self.parseExpr(0, .type);
-                    break :blk self.cst.exprs.add(.SliceType, .{ .elem = elem, .loc = start_loc });
+                    break :blk self.addExpr(.SliceType, .{ .elem = elem, .loc = start_loc });
                 } else {
                     // [] => empty array literal in expression context
-                    const empty = cst.RangeOf(cst.ExprId).empty();
-                    break :blk self.cst.exprs.add(.ArrayLit, .{ .elems = empty, .loc = start_loc });
+                    break :blk self.addExpr(.ArrayLit, .{ .elems = .empty(), .loc = start_loc });
                 }
             },
 
@@ -1846,7 +1851,7 @@ pub const Parser = struct {
                 self.advance();
                 try self.expect(.rsquare);
                 const elem = try self.parseExpr(0, .type);
-                break :blk self.cst.exprs.add(.DynArrayType, .{ .elem = elem, .loc = start_loc });
+                break :blk self.addExpr(.DynArrayType, .{ .elem = elem, .loc = start_loc });
             },
 
             // starts with expression -> could be:
@@ -1861,18 +1866,18 @@ pub const Parser = struct {
                         if (mode != .type and self.isTypeStart(self.cur.tag)) {
                             // [N]T in expression context → treat as array type
                             const elem = try self.parseExpr(0, .type);
-                            break :blk self.cst.exprs.add(.ArrayType, .{ .elem = elem, .size = first, .loc = start_loc });
+                            break :blk self.addExpr(.ArrayType, .{ .elem = elem, .size = first, .loc = start_loc });
                         } else if (mode == .type) {
                             // [N]T in type context → array type
                             const elem = try self.parseExpr(0, .type);
-                            break :blk self.cst.exprs.add(.ArrayType, .{ .elem = elem, .size = first, .loc = start_loc });
+                            break :blk self.addExpr(.ArrayType, .{ .elem = elem, .size = first, .loc = start_loc });
                         } else {
                             // [x] in expression context → single-element array literal
                             var items: List(cst.ExprId) = .empty;
                             defer items.deinit(self.gpa);
                             try items.append(self.gpa, first);
                             const elems = self.cst.exprs.expr_pool.pushMany(self.gpa, items.items);
-                            break :blk self.cst.exprs.add(.ArrayLit, .{ .elems = elems, .loc = start_loc });
+                            break :blk self.addExpr(.ArrayLit, .{ .elems = elems, .loc = start_loc });
                         }
                     },
                     .colon => {
@@ -1895,7 +1900,7 @@ pub const Parser = struct {
                         try self.expect(.rsquare);
 
                         const elems = self.cst.exprs.expr_pool.pushMany(self.gpa, items.items);
-                        break :blk self.cst.exprs.add(.ArrayLit, .{ .elems = elems, .loc = start_loc });
+                        break :blk self.addExpr(.ArrayLit, .{ .elems = elems, .loc = start_loc });
                     },
                     else => {
                         self.errorNote(
@@ -1927,10 +1932,10 @@ pub const Parser = struct {
             const tok = self.cur;
             var name_id: cst.StrId = undefined;
             if (tok.tag == .identifier) {
-                name_id = self.cst.exprs.strs.intern(self.slice(tok));
+                name_id = self.intern(self.slice(tok));
                 self.advance();
             } else if (Token.Tag.lexeme(tok.tag)) |lx| {
-                name_id = self.cst.exprs.strs.intern(lx);
+                name_id = self.intern(lx);
                 self.advance();
             } else {
                 self.errorNote(
@@ -1945,13 +1950,13 @@ pub const Parser = struct {
             }
 
             // optional = value (only literal or ident allowed, same as original)
-            var value_opt: cst.OptExprId = cst.OptExprId.none();
+            var value_opt: cst.OptExprId = .none();
             if (self.cur.tag == .eq) {
                 self.advance();
                 const t = self.cur.tag;
                 if (self.isLiteralTag(t) or t == .identifier) {
                     const v = try self.parseExpr(0, .expr);
-                    value_opt = cst.OptExprId.some(v);
+                    value_opt = .some(v);
                 } else {
                     self.errorNote(
                         self.cur.loc,
@@ -1978,7 +1983,7 @@ pub const Parser = struct {
         try self.expect(.rsquare);
 
         return if (ids.items.len == 0)
-            cst.RangeOf(cst.AttributeId).empty()
+            .empty()
         else
             self.cst.exprs.attr_pool.pushMany(self.gpa, ids.items);
     }
@@ -1986,9 +1991,9 @@ pub const Parser = struct {
     fn parseOptionalAttributes(self: *Parser) !cst.OptRangeAttr {
         if (self.cur.tag == .at) {
             const r = try self.parseAttributesList();
-            return cst.OptRangeAttr.some(r);
+            return .some(r);
         }
-        return cst.OptRangeAttr.none();
+        return .none();
     }
 
     fn parseAnnotated(self: *Parser, comptime mode: ParseMode) !cst.ExprId {
@@ -2021,8 +2026,7 @@ pub const Parser = struct {
             .rparen => blk: {
                 // empty tuple "()"
                 self.advance();
-                const empty = cst.RangeOf(cst.ExprId).empty();
-                break :blk self.cst.exprs.add(.Tuple, .{ .elems = empty, .is_type = false, .loc = loc });
+                break :blk self.addExpr(.Tuple, .{ .elems = .empty(), .is_type = false, .loc = loc });
             },
             else => blk: {
                 const first = try self.parseExpr(0, .expr);
@@ -2040,7 +2044,7 @@ pub const Parser = struct {
                     try self.expect(.rparen);
 
                     const elems = self.cst.exprs.expr_pool.pushMany(self.gpa, items.items);
-                    break :blk self.cst.exprs.add(.Tuple, .{ .elems = elems, .is_type = false, .loc = loc });
+                    break :blk self.addExpr(.Tuple, .{ .elems = elems, .is_type = false, .loc = loc });
                 } else {
                     // parenthesized expression: just return inner
                     try self.expect(.rparen);
@@ -2056,10 +2060,10 @@ pub const Parser = struct {
 
     inline fn parseOptionalReturnType(self: *Parser) !cst.OptExprId {
         return switch (self.cur.tag) {
-            .lcurly, .eos => cst.OptExprId.none(),
+            .lcurly, .eos => .none(),
             else => blk: {
                 const ty = try self.parseExpr(0, .type);
-                break :blk cst.OptExprId.some(ty);
+                break :blk .some(ty);
             },
         };
     }
@@ -2112,33 +2116,33 @@ pub const Parser = struct {
         var param_ids: List(cst.ParamId) = .empty;
         defer param_ids.deinit(self.gpa);
 
-        var lcst_param_ty: cst.OptExprId = cst.OptExprId.none();
+        var lcst_param_ty: cst.OptExprId = .none();
 
         while (self.cur.tag != .rparen and self.cur.tag != .eof) {
             const param_loc = self.toLocId(self.cur.loc);
 
-            const attr_range: cst.OptRangeAttr = try self.parseOptionalAttributes(); // DOD: returns OptRangeAttr
+            const attr_range = try self.parseOptionalAttributes(); // DOD: returns OptRangeAttr
 
             // Start by parsing something expr-like; it may be a pattern or a bare type.
             const pat_expr = try self.parseExpr(0, .expr);
-            var pat_opt: cst.OptExprId = cst.OptExprId.some(pat_expr);
-            var ty_opt: cst.OptExprId = cst.OptExprId.none();
-            var val_opt: cst.OptExprId = cst.OptExprId.none();
+            var pat_opt: cst.OptExprId = .some(pat_expr);
+            var ty_opt: cst.OptExprId = .none();
+            var val_opt: cst.OptExprId = .none();
 
             if (self.cur.tag == .colon) {
                 // name: Type [= default]
                 self.advance();
                 const ty = try self.parseExpr(0, .type);
-                ty_opt = cst.OptExprId.some(ty);
+                ty_opt = .some(ty);
                 if (self.cur.tag == .eq) {
                     self.advance();
                     const v = try self.parseExpr(0, .expr);
-                    val_opt = cst.OptExprId.some(v);
+                    val_opt = .some(v);
                 }
             } else if (self.cur.tag == .comma or self.cur.tag == .rparen) {
                 // Bare type param: treat the parsed node as the type, no pattern.
-                ty_opt = cst.OptExprId.some(pat_expr);
-                pat_opt = cst.OptExprId.none();
+                ty_opt = .some(pat_expr);
+                pat_opt = .none();
             } else {
                 self.errorNote(
                     self.cur.loc,
@@ -2170,20 +2174,20 @@ pub const Parser = struct {
 
         const result_ty = try self.parseOptionalReturnType();
 
-        var body_opt: cst.OptExprId = cst.OptExprId.none();
-        var raw_asm_opt: cst.OptStrId = cst.OptStrId.none();
+        var body_opt: cst.OptExprId = .none();
+        var raw_asm_opt: cst.OptStrId = .none();
 
         if (self.cur.tag == .lcurly) {
             const body_expr = try self.parseBlockExpr();
-            body_opt = cst.OptExprId.some(body_expr);
+            body_opt = .some(body_expr);
         } else if (self.cur.tag == .keyword_asm) {
             self.advance(); // "asm"
             const tok = self.cur;
             try self.expect(.raw_asm_block);
             const raw = self.slice(tok);
             self.advance();
-            const s = self.cst.exprs.strs.intern(raw);
-            raw_asm_opt = cst.OptStrId.some(s);
+            const s = self.intern(raw);
+            raw_asm_opt = .some(s);
         }
 
         // Variadic if the lcst param type is `Any`.
@@ -2206,12 +2210,12 @@ pub const Parser = struct {
             .is_extern = is_extern,
         };
 
-        return self.cst.exprs.add(.Function, .{
+        return self.addExpr(.Function, .{
             .params = params_range,
             .result_ty = result_ty,
             .body = body_opt,
             .raw_asm = raw_asm_opt,
-            .attrs = cst.OptRangeAttr.none(), // may be attached later via '@[...] <fn>'
+            .attrs = .none(), // may be attached later via '@[...] <fn>'
             .flags = flags,
             .loc = start_loc,
         });
@@ -2226,10 +2230,10 @@ pub const Parser = struct {
         self.advance(); // "comptime"
         if (self.cur.tag == .lcurly) {
             const blk = try self.parseBlockExpr();
-            return self.cst.exprs.add(.Comptime, .{ .payload = blk, .is_block = true, .loc = loc });
+            return self.addExpr(.Comptime, .{ .payload = blk, .is_block = true, .loc = loc });
         } else {
             const e = try self.parseExpr(0, .expr);
-            return self.cst.exprs.add(.Comptime, .{ .payload = e, .is_block = false, .loc = loc });
+            return self.addExpr(.Comptime, .{ .payload = e, .is_block = false, .loc = loc });
         }
     }
 
@@ -2237,14 +2241,14 @@ pub const Parser = struct {
         const loc = self.toLocId(self.cur.loc);
         self.advance(); // "code"
         const blk = try self.parseBlockExpr();
-        return self.cst.exprs.add(.Code, .{ .block = blk, .loc = loc });
+        return self.addExpr(.Code, .{ .block = blk, .loc = loc });
     }
 
     fn parseInsert(self: *Parser) !cst.ExprId {
         const loc = self.toLocId(self.cur.loc);
         self.advance(); // "insert"
         const e = try self.parseExpr(0, .expr);
-        return self.cst.exprs.add(.Insert, .{ .expr = e, .loc = loc });
+        return self.addExpr(.Insert, .{ .expr = e, .loc = loc });
     }
 
     fn parseMlir(self: *Parser) !cst.ExprId {
@@ -2274,8 +2278,8 @@ pub const Parser = struct {
         const raw = self.slice(tok);
         try self.expect(.mlir_content);
 
-        const text_id = self.cst.exprs.strs.intern(raw);
-        return self.cst.exprs.add(.Mlir, .{ .kind = kind, .text = text_id, .loc = loc });
+        const text_id = self.intern(raw);
+        return self.addExpr(.Mlir, .{ .kind = kind, .text = text_id, .loc = loc });
     }
 
     //=================================================================
@@ -2286,11 +2290,11 @@ pub const Parser = struct {
         const start_loc = self.toLocId(self.cur.loc);
         self.advance(); // "enum"
 
-        var backing: cst.OptExprId = cst.OptExprId.none();
+        var backing: cst.OptExprId = .none();
         if (self.cur.tag == .lparen) {
             self.advance();
             const b = try self.parseExpr(0, .type);
-            backing = cst.OptExprId.some(b);
+            backing = .some(b);
             try self.expect(.rparen);
         }
 
@@ -2305,7 +2309,7 @@ pub const Parser = struct {
             const tok = self.cur;
             try self.expect(.identifier);
             const nm = self.slice(tok);
-            const name_id = self.cst.exprs.strs.intern(nm);
+            const name_id = self.intern(nm);
             const val = try self.parseOptionalInitializer(.expr);
 
             const fid = self.cst.exprs.addEnumFieldRow(.{
@@ -2326,11 +2330,11 @@ pub const Parser = struct {
         else
             self.cst.exprs.efield_pool.pushMany(self.gpa, field_ids.items);
 
-        return self.cst.exprs.add(.EnumType, .{
+        return self.addExpr(.EnumType, .{
             .fields = fields_range,
             .discriminant = backing,
             .is_extern = is_extern,
-            .attrs = cst.OptRangeAttr.none(), // attach via '@' before if needed
+            .attrs = .none(), // attach via '@' before if needed
             .loc = start_loc,
         });
     }
@@ -2359,7 +2363,7 @@ pub const Parser = struct {
             const nm_tok = self.cur;
             try self.expect(.identifier);
             const nm = self.slice(nm_tok);
-            const name_id = self.cst.exprs.strs.intern(nm);
+            const name_id = self.intern(nm);
 
             switch (self.cur.tag) {
                 .lparen => {
@@ -2386,7 +2390,7 @@ pub const Parser = struct {
                         .name = name_id,
                         .ty_tag = .Tuple,
                         .tuple_elems = tuple_range,
-                        .struct_fields = cst.RangeOf(cst.StructFieldId).empty(),
+                        .struct_fields = .empty(),
                         .value = value,
                         .attrs = attrs,
                         .loc = case_loc,
@@ -2405,7 +2409,7 @@ pub const Parser = struct {
                     const id = self.cst.exprs.addVariantFieldRow(.{
                         .name = name_id,
                         .ty_tag = .Struct,
-                        .tuple_elems = cst.RangeOf(cst.ExprId).empty(),
+                        .tuple_elems = .empty(),
                         .struct_fields = struct_fields,
                         .value = value,
                         .attrs = attrs,
@@ -2421,8 +2425,8 @@ pub const Parser = struct {
                     const id = self.cst.exprs.addVariantFieldRow(.{
                         .name = name_id,
                         .ty_tag = .none,
-                        .tuple_elems = cst.RangeOf(cst.ExprId).empty(),
-                        .struct_fields = cst.RangeOf(cst.StructFieldId).empty(),
+                        .tuple_elems = .empty(),
+                        .struct_fields = .empty(),
                         .value = value,
                         .attrs = attrs,
                         .loc = case_loc,
@@ -2442,34 +2446,8 @@ pub const Parser = struct {
             self.cst.exprs.vfield_pool.pushMany(self.gpa, vfield_ids.items);
 
         if (is_error) {
-            return self.cst.exprs.add(.ErrorType, .{ .fields = fields, .loc = start_loc });
+            return self.addExpr(.ErrorType, .{ .fields = fields, .loc = start_loc });
         }
-        return self.cst.exprs.add(.VariantLikeType, .{ .fields = fields, .loc = start_loc });
+        return self.addExpr(.VariantLikeType, .{ .fields = fields, .loc = start_loc });
     }
 };
-
-const testing = std.testing;
-
-test "hello world" {
-    const src =
-        \\main::proc () i32 {
-        \\   return 42;
-        \\}
-    ;
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena.deinit();
-    const gpa = arena.allocator();
-    var diags = Diagnostics.init(gpa);
-    defer diags.deinit();
-    var parser = Parser.init(gpa, src, &diags);
-    const ast = try parser.parse();
-
-    var buf = std.array_list.Managed(u8).init(gpa);
-    defer buf.deinit();
-    const w = buf.writer();
-    var printer = cst.DodPrinter.init(w, &ast.exprs, &ast.pats);
-    try printer.printProgram(&ast.program);
-    const out = try buf.toOwnedSlice();
-    std.debug.print("{s}\n", .{out});
-    defer gpa.free(out);
-}
