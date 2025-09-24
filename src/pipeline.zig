@@ -43,8 +43,10 @@ pub const Pipeline = struct {
         var tir_lowerer = lower_tir.LowerTirV2.init(self.allocator, type_info);
         const mod = try tir_lowerer.run(&hir);
 
+        const mlir_ctx = compile.initMLIR(self.allocator);
+
         // 5) MLIR Codegen v2 from TIR v2 to MLIR
-        var gen = mlir_codegen_v2.MlirCodegen.init(self.allocator);
+        var gen = mlir_codegen_v2.MlirCodegen.init(self.allocator, mlir_ctx);
         var mlir_module = try gen.emitModule(&mod, &type_info.store);
         var op = mlir_module.getOperation();
         op.dump();

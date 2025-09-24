@@ -988,7 +988,7 @@ comptime {
 
 /// LISP-style pretty printer for the DOD AST / IR.
 pub const DodPrinter = struct {
-    writer: ArrayList(u8).Writer,
+    writer: *std.io.Writer,
     indent: usize = 0,
 
     exprs: *const ExprStore,

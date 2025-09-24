@@ -112,10 +112,10 @@ fn testLower(data: []const u8) !void {
     var a = try lower.run();
     defer a.deinit();
 
-    // Optionally, touch the AST to exercise printers
-    var sink = std.array_list.Managed(u8).init(gpa);
-    defer sink.deinit();
-    var printer = ast_v2.AstPrinter.init(sink.writer(), &a.exprs, &a.stmts, &a.pats);
+    var buffer: [1024]u8 = undefined;
+    var sink = std.fs.File.stdout().writer(&buffer);
+    const writer = &sink.interface;
+    var printer = ast_v2.AstPrinter.init(writer, &a.exprs, &a.stmts, &a.pats);
     try printer.printUnit(&a.unit);
 }
 

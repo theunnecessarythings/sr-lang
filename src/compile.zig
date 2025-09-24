@@ -1,6 +1,19 @@
 const std = @import("std");
 const mlir = @import("mlir_bindings.zig");
 
+pub fn initMLIR(alloc: std.mem.Allocator) mlir.Context {
+    mlir.setGlobalAlloc(alloc);
+    var mlir_context = mlir.Context.create();
+    const registry = mlir.DialectRegistry.create();
+    mlir.registerAllDialects(registry);
+    mlir.registerAllPasses();
+    mlir.registerAllLLVMTranslations(mlir_context);
+
+    mlir_context.appendDialectRegistry(registry);
+    mlir_context.loadAllAvailableDialects();
+    return mlir_context;
+}
+
 pub fn run_passes(context: *mlir.Context, module: *mlir.Module, print_ir: bool) !void {
     const pm = mlir.c.mlirPassManagerCreate(context.handle);
     defer mlir.c.mlirPassManagerDestroy(pm);

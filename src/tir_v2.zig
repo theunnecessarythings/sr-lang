@@ -404,9 +404,8 @@ pub const TIR = struct {
     }
 };
 
-const ArrayList = std.array_list.Managed;
 pub const TirPrinter = struct {
-    writer: ArrayList(u8).Writer,
+    writer: *std.io.Writer,
     indent: usize = 0,
 
     tir: *const TIR,
@@ -687,7 +686,7 @@ pub const TirPrinter = struct {
             },
             .Call => {
                 const row = self.tir.instrs.get(.Call, id);
-                const args = self.tir.instrs.value_pool.slice(row.args);
+                const args = self.tir.instrs.val_list_pool.slice(row.args);
                 try self.open("(instr id={} op=Call callee=\"{s}\" result={} type={} args=[", .{ id.toRaw(), self.s(row.callee), row.result.toRaw(), row.ty });
                 for (args) |vid| try self.leaf("  {}", .{vid.toRaw()});
                 try self.leaf("])", .{});

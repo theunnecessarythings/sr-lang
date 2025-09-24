@@ -728,7 +728,7 @@ pub const Ast = struct {
 };
 
 pub const AstPrinter = struct {
-    writer: ArrayList(u8).Writer,
+    writer: *std.io.Writer,
     indent: usize = 0,
 
     exprs: *const ExprStore,

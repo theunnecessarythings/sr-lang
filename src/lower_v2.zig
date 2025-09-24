@@ -65,6 +65,65 @@ pub const LowerV2 = struct {
         return ast.OptLocId.some(self.mapLoc(l.unwrap()));
     }
 
+    fn unescapeString(self: *LowerV2, quoted_str: []const u8) !ast.StrId {
+        const inner_str = quoted_str[1 .. quoted_str.len - 1];
+
+        var unescaped_list = std.array_list.Managed(u8).init(self.gpa);
+        defer unescaped_list.deinit();
+
+        var i: usize = 0;
+        while (i < inner_str.len) : (i += 1) {
+            if (inner_str[i] == '\\') {
+                i += 1;
+                if (i >= inner_str.len) {
+                    try unescaped_list.append('\\');
+                    break;
+                }
+                switch (inner_str[i]) {
+                    'n' => try unescaped_list.append('\n'),
+                    't' => try unescaped_list.append('\t'),
+                    'r' => try unescaped_list.append('\r'),
+                    '\\' => try unescaped_list.append('\\'),
+                    '"' => try unescaped_list.append('"'),
+                    '\'' => try unescaped_list.append('\''),
+                    '0' => try unescaped_list.append(0),
+                    else => {
+                        try unescaped_list.append('\\');
+                        try unescaped_list.append(inner_str[i]);
+                    },
+                }
+            } else {
+                try unescaped_list.append(inner_str[i]);
+            }
+        }
+        return self.out.exprs.strs.intern(try unescaped_list.toOwnedSlice());
+    }
+
+    fn unescapeChar(_: *LowerV2, quoted_char: []const u8) !u32 {
+        const inner_char_str = quoted_char[1 .. quoted_char.len - 1];
+
+        var char_val: u32 = undefined;
+        if (inner_char_str.len == 1) {
+            char_val = inner_char_str[0];
+        } else if (inner_char_str.len == 2 and inner_char_str[0] == '\\') {
+            switch (inner_char_str[1]) {
+                'n' => char_val = 10,
+                't' => char_val = 9,
+                'r' => char_val = 13,
+                '\\' => char_val = 92,
+                '"' => char_val = 34,
+                '\'' => char_val = 39,
+                '0' => char_val = 0,
+                else => {
+                    char_val = inner_char_str[1];
+                },
+            }
+        } else {
+            char_val = '?'; // Indicate error or unhandled case
+        }
+        return char_val;
+    }
+
     fn mapAttrRange(self: *LowerV2, r: cst.OptRangeAttr) !ast.OptRangeAttr {
         if (r.isNone()) return ast.OptRangeAttr.none();
         const rr = r.asRange();
@@ -666,17 +725,9 @@ pub const LowerV2 = struct {
         return switch (lit.tag_small) {
             1 => self.out.exprs.add(.Literal, .{ .kind = .int, .value = ast.OptStrId.some(self.mapStr(lit.value)), .bool_value = false, .char_value = 0, .loc = loc }),
             2 => self.out.exprs.add(.Literal, .{ .kind = .float, .value = ast.OptStrId.some(self.mapStr(lit.value)), .bool_value = false, .char_value = 0, .loc = loc }),
-            3 => self.out.exprs.add(.Literal, .{ .kind = .string, .value = ast.OptStrId.some(self.mapStr(lit.value)), .bool_value = false, .char_value = 0, .loc = loc }),
             4 => blk: {
-                // character literal; extract first codepoint if possible from source string
-                const s = self.src.exprs.strs.get(lit.value);
-                var ch: u32 = 0;
-                // naive: assume like 'x' or escaped; best-effort
-                if (s.len >= 3) {
-                    // take first byte inside quotes
-                    ch = s[1];
-                }
-                break :blk self.out.exprs.add(.Literal, .{ .kind = .char, .value = ast.OptStrId.none(), .bool_value = false, .char_value = ch, .loc = loc });
+                const unescaped_char_val = try self.unescapeChar(self.src.exprs.strs.get(lit.value));
+                break :blk self.out.exprs.add(.Literal, .{ .kind = .char, .value = ast.OptStrId.none(), .bool_value = false, .char_value = unescaped_char_val, .loc = loc });
             },
             5 => blk_im: {
                 // imaginary literal like 2i -> treat as integer literal "2" for typing
@@ -687,7 +738,12 @@ pub const LowerV2 = struct {
             },
             6 => self.out.exprs.add(.Literal, .{ .kind = .bool, .value = ast.OptStrId.none(), .bool_value = true, .char_value = 0, .loc = loc }),
             7 => self.out.exprs.add(.Literal, .{ .kind = .bool, .value = ast.OptStrId.none(), .bool_value = false, .char_value = 0, .loc = loc }),
-            else => self.out.exprs.add(.Literal, .{ .kind = .string, .value = ast.OptStrId.some(self.mapStr(lit.value)), .bool_value = false, .char_value = 0, .loc = loc }),
+            else => blk: {
+                // fallback: treat as string
+                const str = self.src.exprs.strs.get(lit.value);
+                const unescaped = try self.unescapeString(str);
+                break :blk self.out.exprs.add(.Literal, .{ .kind = .string, .value = ast.OptStrId.some(unescaped), .bool_value = false, .char_value = 0, .loc = loc });
+            },
         };
     }
 

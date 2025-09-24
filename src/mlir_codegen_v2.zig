@@ -1,6 +1,7 @@
 const std = @import("std");
 const mlir = @import("mlir_bindings.zig");
 const tir = @import("tir_v2.zig");
+const compile = @import("compile.zig");
 const types = @import("types_v2.zig");
 
 const Allocator = std.mem.Allocator;
@@ -91,8 +92,7 @@ pub const MlirCodegen = struct {
     // ------------------------------------------------------------
     // Init / Deinit
     // ------------------------------------------------------------
-    pub fn init(gpa: Allocator) MlirCodegen {
-        const ctx = initMLIR(gpa);
+    pub fn init(gpa: Allocator, ctx: mlir.Context) MlirCodegen {
         const loc = mlir.Location.unknownGet(ctx);
         const module = mlir.Module.createEmpty(loc);
         const void_ty = mlir.Type{ .handle = mlir.c.mlirLLVMVoidTypeGet(ctx.handle) };
@@ -116,26 +116,12 @@ pub const MlirCodegen = struct {
         };
     }
 
-    fn initMLIR(alloc: std.mem.Allocator) mlir.Context {
-        mlir.setGlobalAlloc(alloc);
-        var mlir_context = mlir.Context.create();
-        const registry = mlir.DialectRegistry.create();
-        mlir.registerAllDialects(registry);
-        mlir.registerAllPasses();
-        mlir.registerAllLLVMTranslations(mlir_context);
-
-        mlir_context.appendDialectRegistry(registry);
-        mlir_context.loadAllAvailableDialects();
-        return mlir_context;
-    }
-
     pub fn deinit(self: *MlirCodegen) void {
         self.func_syms.deinit();
         self.str_pool.deinit();
         self.block_map.deinit();
         self.value_map.deinit();
         self.module.destroy();
-        self.ctx.destroy();
     }
 
     // ------------------------------------------------------------
@@ -1243,6 +1229,7 @@ pub const MlirCodegen = struct {
         const esc = try self.escapeForMlirString(text);
         defer self.gpa.free(esc);
         const name = try std.fmt.allocPrint(self.gpa, "str_{d}", .{self.str_pool.count()});
+        defer self.gpa.free(name);
         const glb_src = try std.fmt.allocPrint(
             self.gpa,
             "llvm.mlir.global internal constant @{s}(\"{s}\\00\") {{addr_space = 0:i32}}",
