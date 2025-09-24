@@ -108,12 +108,12 @@ fn repl(
     }
     try out_writer.flush();
     defer allocator.free(source);
-    var diags = compiler.diagnostics_v2.Diagnostics.init(allocator);
+    var diags = compiler.diagnostics.Diagnostics.init(allocator);
     defer diags.deinit();
-    var parser = compiler.parser_v2.Parser.init(allocator, source, &diags);
+    var parser = compiler.parser.Parser.init(allocator, source, &diags);
     var cst_program = try parser.parse();
 
-    var cst_printer = compiler.cst_v2.DodPrinter.init(
+    var cst_printer = compiler.cst.DodPrinter.init(
         out_writer,
         &cst_program.exprs,
         &cst_program.pats,
@@ -124,10 +124,10 @@ fn repl(
     );
     try cst_printer.printProgram(&cst_program.program);
 
-    var lower_pass = compiler.lower_v2.LowerV2.init(allocator, &cst_program, &diags);
+    var lower_pass = compiler.lower.Lower.init(allocator, &cst_program, &diags);
     var hir = try lower_pass.run();
     // print AST
-    var ast_printer = compiler.ast_v2.AstPrinter.init(
+    var ast_printer = compiler.ast.AstPrinter.init(
         out_writer,
         &hir.exprs,
         &hir.stmts,
@@ -139,18 +139,18 @@ fn repl(
     );
     try ast_printer.printUnit(&hir.unit);
     try out_writer.flush();
-    var chk = compiler.checker_v2.CheckerV2.init(allocator, &diags, &hir);
+    var chk = compiler.checker.Checker.init(allocator, &diags, &hir);
     defer chk.deinit();
     defer chk.type_info.deinit();
     try chk.run();
     // print Diagnostics
     try diags.emitStyled(source, err_writer, "REPL Input", true);
 
-    var lower_tir = compiler.lower_tir_v2.LowerTirV2.init(allocator, &chk.type_info);
+    var lower_tir = compiler.lower_tir.LowerTir.init(allocator, &chk.type_info);
     defer lower_tir.deinit();
     var tir = try lower_tir.run(&hir);
     defer tir.deinit();
-    var tir_printer = compiler.tir_v2.TirPrinter.init(out_writer, &tir);
+    var tir_printer = compiler.tir.TirPrinter.init(out_writer, &tir);
     std.debug.print(
         "{s}Typed Intermediate Representation (TIR){s}\n",
         .{ Colors.bold, Colors.yellow },
@@ -162,7 +162,7 @@ fn repl(
     const ctx = compiler.compile.initMLIR(allocator);
 
     // mlir codegen
-    var codegen = compiler.mlir_codegen_v2.MlirCodegen.init(allocator, ctx);
+    var codegen = compiler.mlir_codegen.MlirCodegen.init(allocator, ctx);
     defer codegen.deinit();
     var mlir_module = codegen.emitModule(&tir, tir.type_store) catch {
         try err_writer.print("{s}Error:{s} MLIR code generation failed.\n", .{ Colors.red, Colors.reset });
@@ -208,21 +208,21 @@ fn process_file(
         return;
     }
 
-    var diags = compiler.diagnostics_v2.Diagnostics.init(allocator);
+    var diags = compiler.diagnostics.Diagnostics.init(allocator);
     defer diags.deinit();
 
-    var parser = compiler.parser_v2.Parser.init(allocator, source0, &diags);
+    var parser = compiler.parser.Parser.init(allocator, source0, &diags);
     var cst_program = try parser.parse();
 
     // For 'check' command, stop after semantic checks
     if (cli_args.subcommand == .check) {
-        var lower_pass = compiler.lower_v2.LowerV2.init(allocator, &cst_program, &diags);
+        var lower_pass = compiler.lower.Lower.init(allocator, &cst_program, &diags);
         var hir = try lower_pass.run();
 
-        var chk = compiler.checker_v2.CheckerV2.init(allocator, &diags, &hir);
+        var chk = compiler.checker.Checker.init(allocator, &diags, &hir);
         defer chk.deinit();
         try chk.run();
-        var printer = compiler.ast_v2.AstPrinter.init(out_writer, &hir.exprs, &hir.stmts, &hir.pats);
+        var printer = compiler.ast.AstPrinter.init(out_writer, &hir.exprs, &hir.stmts, &hir.pats);
         try printer.printUnit(&hir.unit);
         try out_writer.flush();
 
@@ -236,9 +236,9 @@ fn process_file(
 
     // For 'ast' command, print AST and exit
     if (cli_args.subcommand == .ast) {
-        var lower_pass = compiler.lower_v2.LowerV2.init(allocator, &cst_program, &diags);
+        var lower_pass = compiler.lower.Lower.init(allocator, &cst_program, &diags);
         var hir = try lower_pass.run();
-        var ast_printer = compiler.ast_v2.AstPrinter.init(
+        var ast_printer = compiler.ast.AstPrinter.init(
             out_writer,
             &hir.exprs,
             &hir.stmts,
@@ -251,18 +251,18 @@ fn process_file(
 
     // For 'tir' command, print TIR and exit
     if (cli_args.subcommand == .tir) {
-        var lower_pass = compiler.lower_v2.LowerV2.init(allocator, &cst_program, &diags);
+        var lower_pass = compiler.lower.Lower.init(allocator, &cst_program, &diags);
         var hir = try lower_pass.run();
 
-        var chk = compiler.checker_v2.CheckerV2.init(allocator, &diags, &hir);
+        var chk = compiler.checker.Checker.init(allocator, &diags, &hir);
         defer chk.deinit();
         try chk.run();
 
-        var lower_tir = compiler.lower_tir_v2.LowerTirV2.init(allocator, &chk.type_info);
+        var lower_tir = compiler.lower_tir.LowerTir.init(allocator, &chk.type_info);
         defer lower_tir.deinit();
         var tir = try lower_tir.run(&hir);
         defer tir.deinit();
-        var tir_printer = compiler.tir_v2.TirPrinter.init(out_writer, &tir);
+        var tir_printer = compiler.tir.TirPrinter.init(out_writer, &tir);
         try tir_printer.print();
         try out_writer.flush();
 
@@ -270,11 +270,8 @@ fn process_file(
     }
 
     // Full compilation pipeline for 'compile' and 'run'
-    var diags_v2 = compiler.diagnostics_v2.Diagnostics.init(allocator);
-    defer diags_v2.deinit();
-    var pl = compiler.pipeline.Pipeline.init(allocator, &diags_v2);
-    // Parse v2 CST for v2 pipeline
-    var parser2 = compiler.parser_v2.Parser.init(allocator, source0, &diags_v2);
+    var pl = compiler.pipeline.Pipeline.init(allocator, &diags);
+    var parser2 = compiler.parser.Parser.init(allocator, source0, &diags);
     var cst_program_v2 = try parser2.parse();
     var result = pl.run(&cst_program_v2) catch |err| {
         try diags.emitStyled(source0, err_writer, filename, !cli_args.no_color);

@@ -1,12 +1,13 @@
 const std = @import("std");
 const mlir = @import("mlir_bindings.zig");
 const tir = @import("tir.zig");
+const compile = @import("compile.zig");
 const types = @import("types.zig");
 
 const Allocator = std.mem.Allocator;
 const ArrayList = std.array_list.Managed;
 
-pub const TirLlvmGen = struct {
+pub const MlirCodegen = struct {
     gpa: Allocator,
     ctx: mlir.Context,
     loc: mlir.Location,
@@ -20,7 +21,7 @@ pub const TirLlvmGen = struct {
     i64_ty: mlir.Type,
     f32_ty: mlir.Type,
     f64_ty: mlir.Type,
-    llvm_ptr_ty: mlir.Type, // opaque: !llvm.ptr<0>
+    llvm_ptr_ty: mlir.Type, // opaque: !llvm.ptr
 
     // per-module caches
     func_syms: std.StringHashMap(FuncInfo),
@@ -36,6 +37,7 @@ pub const TirLlvmGen = struct {
         op: mlir.Operation,
         is_variadic: bool,
         n_formals: usize, // number of MLIR formals actually in the type (after dropping tail any)
+        ret_type: mlir.Type,
     };
 
     // ------------------------------------------------------------
@@ -90,8 +92,7 @@ pub const TirLlvmGen = struct {
     // ------------------------------------------------------------
     // Init / Deinit
     // ------------------------------------------------------------
-    pub fn init(gpa: Allocator) TirLlvmGen {
-        const ctx = initMLIR(gpa);
+    pub fn init(gpa: Allocator, ctx: mlir.Context) MlirCodegen {
         const loc = mlir.Location.unknownGet(ctx);
         const module = mlir.Module.createEmpty(loc);
         const void_ty = mlir.Type{ .handle = mlir.c.mlirLLVMVoidTypeGet(ctx.handle) };
@@ -115,39 +116,28 @@ pub const TirLlvmGen = struct {
         };
     }
 
-    fn initMLIR(alloc: std.mem.Allocator) mlir.Context {
-        mlir.setGlobalAlloc(alloc);
-        var mlir_context = mlir.Context.create();
-        const registry = mlir.DialectRegistry.create();
-        mlir.registerAllDialects(registry);
-        mlir.registerAllPasses();
-        mlir.registerAllLLVMTranslations(mlir_context);
-
-        mlir_context.appendDialectRegistry(registry);
-        mlir_context.loadAllAvailableDialects();
-        return mlir_context;
-    }
-
-    pub fn deinit(self: *TirLlvmGen) void {
+    pub fn deinit(self: *MlirCodegen) void {
         self.func_syms.deinit();
         self.str_pool.deinit();
         self.block_map.deinit();
         self.value_map.deinit();
         self.module.destroy();
-        self.ctx.destroy();
     }
 
     // ------------------------------------------------------------
     // Public entry
     // ------------------------------------------------------------
-    pub fn emitModule(self: *TirLlvmGen, tm: *const tir.Module, arena: *types.TypeArena) !mlir.Module {
+    pub fn emitModule(self: *MlirCodegen, t: *const tir.TIR, store: *types.TypeStore) !mlir.Module {
+        const func_ids = t.funcs.func_pool.data.items;
         // Declare/define functions
-        for (tm.functions.items) |*f| {
-            try self.emitFunctionHeader(f, arena);
+        for (func_ids) |func_id| {
+            try self.emitFunctionHeader(func_id, t, store);
         }
-        for (tm.functions.items) |*f| {
-            if (f.blocks.items.len != 0) {
-                try self.emitFunctionBody(f, arena);
+        for (func_ids) |func_id| {
+            const func_row = t.funcs.Function.get(func_id.toRaw());
+            const block_ids = t.funcs.block_pool.slice(func_row.blocks);
+            if (block_ids.len > 0) {
+                try self.emitFunctionBody(func_id, t, store);
             }
         }
         return self.module;
@@ -156,35 +146,43 @@ pub const TirLlvmGen = struct {
     // ------------------------------------------------------------
     // Functions
     // ------------------------------------------------------------
-    fn emitFunctionHeader(self: *TirLlvmGen, f: *const tir.Function, arena: *types.TypeArena) !void {
+    fn emitFunctionHeader(self: *MlirCodegen, f_id: tir.FuncId, t: *const tir.TIR, store: *types.TypeStore) !void {
+        const f = t.funcs.Function.get(f_id.toRaw());
+        const params = t.funcs.param_pool.slice(f.params);
+
         // Build LLVM function type. If last TIR param is `Any`, drop it from MLIR type and set vararg=true.
-        var param_tys = try self.gpa.alloc(mlir.Type, f.params.items.len);
+        var param_tys = try self.gpa.alloc(mlir.Type, params.len);
         defer self.gpa.free(param_tys);
         var mlir_n_formals: usize = 0;
         var is_variadic = false;
 
-        if (f.params.items.len > 0) {
-            const last_ty = f.params.items[f.params.items.len - 1].ty;
-            if (self.typeIsAny(arena, last_ty)) {
+        if (params.len > 0) {
+            const last_param_row = t.funcs.Param.get(params[params.len - 1].toRaw());
+            const last_ty = last_param_row.ty;
+            if (self.typeIsAny(store, last_ty)) {
                 is_variadic = true;
                 // copy all but last
-                for (f.params.items[0 .. f.params.items.len - 1], 0..) |p, i| {
-                    param_tys[i] = try self.llvmTypeOf(arena, p.ty);
+                for (params[0 .. params.len - 1], 0..) |p_id, i| {
+                    const p = t.funcs.Param.get(p_id.toRaw());
+                    param_tys[i] = try self.llvmTypeOf(store, p.ty);
                 }
-                mlir_n_formals = f.params.items.len - 1;
+                mlir_n_formals = params.len - 1;
             } else {
-                for (f.params.items, 0..) |p, i| {
-                    param_tys[i] = try self.llvmTypeOf(arena, p.ty);
+                for (params, 0..) |p_id, i| {
+                    const p = t.funcs.Param.get(p_id.toRaw());
+                    param_tys[i] = try self.llvmTypeOf(store, p.ty);
                 }
-                mlir_n_formals = f.params.items.len;
+                mlir_n_formals = params.len;
             }
         }
-        const ret_ty = try self.llvmTypeOf(arena, f.result);
+        const ret_ty = try self.llvmTypeOf(store, f.result);
         const fn_ty = mlir.LLVM.getLLVMFunctionType(ret_ty, param_tys[0..mlir_n_formals], is_variadic);
+
+        const func_name = t.instrs.strs.get(f.name);
 
         // Create llvm.func @name
         const attrs = [_]mlir.NamedAttribute{
-            self.named("sym_name", self.strAttr(f.name)),
+            self.named("sym_name", self.strAttr(func_name)),
             self.named("function_type", mlir.Attribute.typeAttrGet(fn_ty)),
         };
         const region = mlir.Region.create(); // empty now; body added later if defined
@@ -194,27 +192,31 @@ pub const TirLlvmGen = struct {
             .build();
         var body = self.module.getBody();
         body.appendOwnedOperation(func_op);
-        _ = try self.func_syms.put(f.name, .{ .op = func_op, .is_variadic = is_variadic, .n_formals = mlir_n_formals });
+        _ = try self.func_syms.put(func_name, .{ .op = func_op, .is_variadic = is_variadic, .n_formals = mlir_n_formals, .ret_type = ret_ty });
     }
 
-    fn emitFunctionBody(self: *TirLlvmGen, f: *const tir.Function, arena: *types.TypeArena) !void {
+    fn emitFunctionBody(self: *MlirCodegen, f_id: tir.FuncId, t: *const tir.TIR, store: *types.TypeStore) !void {
         // ---- reset per-function state
         self.block_map.clearRetainingCapacity();
         self.value_map.clearRetainingCapacity();
         self.cur_region = null;
         self.cur_block = null;
 
-        const finfo = self.func_syms.get(f.name).?;
+        const f = t.funcs.Function.get(f_id.toRaw());
+        const func_name = t.instrs.strs.get(f.name);
+        const finfo = self.func_syms.get(func_name).?;
         var func_op = finfo.op;
         var region = func_op.getRegion(0);
 
         const n_formals = finfo.n_formals;
+        const params = t.funcs.param_pool.slice(f.params);
 
         // ---- entry block arg types come from the *function params* (drop trailing Any)
         var entry_arg_tys = try self.gpa.alloc(mlir.Type, n_formals);
         defer self.gpa.free(entry_arg_tys);
-        for (f.params.items[0..n_formals], 0..) |p, i| {
-            entry_arg_tys[i] = try self.llvmTypeOf(arena, p.ty);
+        for (params[0..n_formals], 0..) |p_id, i| {
+            const p = t.funcs.Param.get(p_id.toRaw());
+            entry_arg_tys[i] = try self.llvmTypeOf(store, p.ty);
         }
 
         const entry_locs = try self.gpa.alloc(mlir.Location, n_formals);
@@ -226,82 +228,130 @@ pub const TirLlvmGen = struct {
         self.cur_region = region;
         self.cur_block = entry_block;
 
+        const blocks = t.funcs.block_pool.slice(f.blocks);
+
         // ---- map the real entry block id
-        if (f.blocks.items.len > 0) {
-            const entry_bid = f.blocks.items[0].id;
+        if (blocks.len > 0) {
+            const entry_bid = blocks[0];
             try self.block_map.put(entry_bid, entry_block);
         }
 
         // ---- seed value_map with *param ValueIds* -> MLIR entry args
         try self.value_map.ensureTotalCapacity(@intCast(n_formals));
-        for (f.params.items[0..n_formals], 0..) |p, i| {
-            try self.value_map.put(p.id, entry_block.getArgument(i));
+        for (params[0..n_formals], 0..) |p_id, i| {
+            const p = t.funcs.Param.get(p_id.toRaw());
+            try self.value_map.put(p.value, entry_block.getArgument(i));
         }
 
         // ---- create remaining MLIR blocks with their block params (if any)
-        if (f.blocks.items.len > 1) {
-            for (f.blocks.items[1..]) |*bb| {
-                const m = bb.params.items.len;
+        if (blocks.len > 1) {
+            for (blocks[1..]) |b_id| {
+                const bb = t.funcs.Block.get(b_id.toRaw());
+                const b_params = t.funcs.param_pool.slice(bb.params);
+                const m = b_params.len;
                 var arg_tys = try self.gpa.alloc(mlir.Type, m);
                 defer self.gpa.free(arg_tys);
                 var arg_locs = try self.gpa.alloc(mlir.Location, m);
                 defer self.gpa.free(arg_locs);
 
-                for (bb.params.items, 0..) |bp, i| {
-                    arg_tys[i] = try self.llvmTypeOf(arena, bp.ty);
+                for (b_params, 0..) |bp_id, i| {
+                    const bp = t.funcs.Param.get(bp_id.toRaw());
+                    arg_tys[i] = try self.llvmTypeOf(store, bp.ty);
                     arg_locs[i] = self.loc;
                 }
 
                 const b = mlir.Block.create(arg_tys, arg_locs);
                 region.appendOwnedBlock(b);
-                try self.block_map.put(bb.id, b);
+                try self.block_map.put(b_id, b);
             }
         }
 
         // ---- emit each TIR block
-        for (f.blocks.items) |*bb| {
-            var mblock = self.block_map.get(bb.id).?;
+        for (blocks) |b_id| {
+            var mblock = self.block_map.get(b_id).?;
             self.cur_block = mblock;
+            const bb = t.funcs.Block.get(b_id.toRaw());
 
             // map block params (if any) for this block
-            for (bb.params.items, 0..) |bp, i| {
-                try self.value_map.put(bp.id, mblock.getArgument(i));
+            const b_params = t.funcs.param_pool.slice(bb.params);
+            for (b_params, 0..) |bp_id, i| {
+                const bp = t.funcs.Param.get(bp_id.toRaw());
+                try self.value_map.put(bp.value, mblock.getArgument(i));
             }
 
             // non-terminator instructions
-            for (bb.instrs.items) |*ins| {
-                const v = try self.emitInstr(ins, arena);
-                try self.value_map.put(ins.result, v);
+            const instrs = t.instrs.instr_pool.slice(bb.instrs);
+            for (instrs) |ins_id| {
+                const v = try self.emitInstr(ins_id, t, store);
+                const result_id = self.getInstrResultId(t, ins_id);
+                if (result_id) |rid| {
+                    try self.value_map.put(rid, v);
+                }
             }
 
             // terminator
-            if (bb.term) |t| try self.emitTerminator(&t);
+            try self.emitTerminator(bb.term, t, store);
+        }
+    }
+
+    fn getInstrResultId(self: *MlirCodegen, t: *const tir.TIR, id: tir.InstrId) ?tir.ValueId {
+        _ = self;
+        const K = t.instrs.index.kinds.items[id.toRaw()];
+        switch (K) {
+            .ConstInt => return t.instrs.get(.ConstInt, id).result,
+            .ConstFloat => return t.instrs.get(.ConstFloat, id).result,
+            .ConstBool => return t.instrs.get(.ConstBool, id).result,
+            .ConstString => return t.instrs.get(.ConstString, id).result,
+            .ConstNull => return t.instrs.get(.ConstNull, id).result,
+            .ConstUndef => return t.instrs.get(.ConstUndef, id).result,
+            inline .Add, .Sub, .Mul, .Div, .Mod, .Shl, .Shr, .BitAnd, .BitOr, .BitXor, .LogicalAnd, .LogicalOr, .CmpEq, .CmpNe, .CmpLt, .CmpLe, .CmpGt, .CmpGe => |k| return t.instrs.get(k, id).result,
+            .LogicalNot => return t.instrs.get(.LogicalNot, id).result,
+            inline .CastNormal, .CastBit, .CastSaturate, .CastWrap, .CastChecked => |k| return t.instrs.get(k, id).result,
+            .Alloca => return t.instrs.get(.Alloca, id).result,
+            .Load => return t.instrs.get(.Load, id).result,
+            .Store => return null,
+            .Gep => return t.instrs.get(.Gep, id).result,
+            .TupleMake => return t.instrs.get(.TupleMake, id).result,
+            .ArrayMake => return t.instrs.get(.ArrayMake, id).result,
+            .StructMake => return t.instrs.get(.StructMake, id).result,
+            .ExtractElem => return t.instrs.get(.ExtractElem, id).result,
+            .InsertElem => return t.instrs.get(.InsertElem, id).result,
+            .ExtractField => return t.instrs.get(.ExtractField, id).result,
+            .InsertField => return t.instrs.get(.InsertField, id).result,
+            .Index => return t.instrs.get(.Index, id).result,
+            .AddressOf => return t.instrs.get(.AddressOf, id).result,
+            .Select => return t.instrs.get(.Select, id).result,
+            .Call => return t.instrs.get(.Call, id).result,
         }
     }
 
     // ------------------------------------------------------------
     // Instructions
     // ------------------------------------------------------------
-    fn emitInstr(self: *TirLlvmGen, ins: *const tir.Instr, arena: *types.TypeArena) !mlir.Value {
-        return switch (ins.tag) {
-
+    fn emitInstr(self: *MlirCodegen, ins_id: tir.InstrId, t: *const tir.TIR, store: *types.TypeStore) !mlir.Value {
+        const kind = t.instrs.index.kinds.items[ins_id.toRaw()];
+        return switch (kind) {
             // -------------------- Constants --------------------
             .ConstInt => blk: {
-                const ty = try self.llvmTypeOf(arena, ins.ty);
-                const v = self.constInt(ty, ins.payload.ConstInt);
+                const p = t.instrs.get(.ConstInt, ins_id);
+                const ty = try self.llvmTypeOf(store, p.ty);
+                const v = self.constInt(ty, p.value);
                 break :blk v;
             },
             .ConstFloat => blk: {
-                const ty = try self.llvmTypeOf(arena, ins.ty);
-                const v = self.constFloat(ty, ins.payload.ConstFloat);
+                const p = t.instrs.get(.ConstFloat, ins_id);
+                const ty = try self.llvmTypeOf(store, p.ty);
+                const v = self.constFloat(ty, p.value);
                 break :blk v;
             },
             .ConstBool => blk: {
-                const v = self.constBool(ins.payload.ConstBool);
+                const p = t.instrs.get(.ConstBool, ins_id);
+                const v = self.constBool(p.value);
                 break :blk v;
             },
             .ConstNull => blk: {
-                const ty = try self.llvmTypeOf(arena, ins.ty); // should be !llvm.ptr
+                const p = t.instrs.get(.ConstNull, ins_id);
+                const ty = try self.llvmTypeOf(store, p.ty); // should be !llvm.ptr
                 var op = OpBuilder.init("llvm.mlir.null", self.loc).builder()
                     .add_results(&.{ty})
                     .build();
@@ -309,7 +359,8 @@ pub const TirLlvmGen = struct {
                 break :blk op.getResult(0);
             },
             .ConstUndef => blk: {
-                const ty = try self.llvmTypeOf(arena, ins.ty);
+                const p = t.instrs.get(.ConstUndef, ins_id);
+                const ty = try self.llvmTypeOf(store, p.ty);
                 var op = OpBuilder.init("llvm.mlir.undef", self.loc).builder()
                     .add_results(&.{ty})
                     .build();
@@ -317,19 +368,22 @@ pub const TirLlvmGen = struct {
                 break :blk op.getResult(0);
             },
             .ConstString => blk: {
-                var op = try self.constStringPtr(ins.payload.ConstString);
+                const p = t.instrs.get(.ConstString, ins_id);
+                const str_text = t.instrs.strs.get(p.text);
+                var op = try self.constStringPtr(str_text);
                 break :blk op.getResult(0);
             },
 
             // -------------------- Arithmetic / Bitwise --------------------
-            .Add => try self.binArith("llvm.add", "llvm.fadd", ins.payload.Add, ins, arena),
-            .Sub => try self.binArith("llvm.sub", "llvm.fsub", ins.payload.Sub, ins, arena),
-            .Mul => try self.binArith("llvm.mul", "llvm.fmul", ins.payload.Mul, ins, arena),
+            .Add => try self.binArith("llvm.add", "llvm.fadd", t.instrs.get(.Add, ins_id), store),
+            .Sub => try self.binArith("llvm.sub", "llvm.fsub", t.instrs.get(.Sub, ins_id), store),
+            .Mul => try self.binArith("llvm.mul", "llvm.fmul", t.instrs.get(.Mul, ins_id), store),
             .Div => blk: {
-                var lhs = self.value_map.get(ins.payload.Div.lhs).?;
-                const rhs = self.value_map.get(ins.payload.Div.rhs).?;
-                const ty = try self.llvmTypeOf(arena, ins.ty);
-                const name = if (self.isFloatType(lhs.getType())) "llvm.fdiv" else if (self.isUnsigned(arena, ins.ty)) "llvm.udiv" else "llvm.sdiv";
+                const p = t.instrs.get(.Div, ins_id);
+                var lhs = self.value_map.get(p.lhs).?;
+                const rhs = self.value_map.get(p.rhs).?;
+                const ty = try self.llvmTypeOf(store, p.ty);
+                const name = if (self.isFloatType(lhs.getType())) "llvm.fdiv" else if (self.isUnsigned(store, p.ty)) "llvm.udiv" else "llvm.sdiv";
                 var op = OpBuilder.init(name, self.loc).builder()
                     .add_operands(&.{ lhs, rhs })
                     .add_results(&.{ty})
@@ -339,10 +393,11 @@ pub const TirLlvmGen = struct {
             },
 
             .Mod => blk: {
-                var lhs = self.value_map.get(ins.payload.Mod.lhs).?;
-                const rhs = self.value_map.get(ins.payload.Mod.rhs).?;
-                const ty = try self.llvmTypeOf(arena, ins.ty);
-                const name = if (self.isFloatType(lhs.getType())) "llvm.frem" else if (self.isUnsigned(arena, ins.ty)) "llvm.urem" else "llvm.srem";
+                const p = t.instrs.get(.Mod, ins_id);
+                var lhs = self.value_map.get(p.lhs).?;
+                const rhs = self.value_map.get(p.rhs).?;
+                const ty = try self.llvmTypeOf(store, p.ty);
+                const name = if (self.isFloatType(lhs.getType())) "llvm.frem" else if (self.isUnsigned(store, p.ty)) "llvm.urem" else "llvm.srem";
                 var op = OpBuilder.init(name, self.loc).builder()
                     .add_operands(&.{ lhs, rhs })
                     .add_results(&.{ty})
@@ -352,10 +407,10 @@ pub const TirLlvmGen = struct {
             },
 
             .Shl => blk: {
-                const p = ins.payload.Shl;
+                const p = t.instrs.get(.Shl, ins_id);
                 const lhs = self.value_map.get(p.lhs).?;
                 const rhs = self.value_map.get(p.rhs).?;
-                const ty = try self.llvmTypeOf(arena, ins.ty);
+                const ty = try self.llvmTypeOf(store, p.ty);
                 var op = OpBuilder.init("llvm.shl", self.loc).builder()
                     .add_operands(&.{ lhs, rhs })
                     .add_results(&.{ty})
@@ -364,11 +419,11 @@ pub const TirLlvmGen = struct {
                 break :blk op.getResult(0);
             },
             .Shr => blk: {
-                const p = ins.payload.Shr;
+                const p = t.instrs.get(.Shr, ins_id);
                 const lhs = self.value_map.get(p.lhs).?;
                 const rhs = self.value_map.get(p.rhs).?;
-                const ty = try self.llvmTypeOf(arena, ins.ty);
-                const name = if (self.isUnsigned(arena, ins.ty)) "llvm.lshr" else "llvm.ashr";
+                const ty = try self.llvmTypeOf(store, p.ty);
+                const name = if (self.isUnsigned(store, p.ty)) "llvm.lshr" else "llvm.ashr";
                 var op = OpBuilder.init(name, self.loc).builder()
                     .add_operands(&.{ lhs, rhs })
                     .add_results(&.{ty})
@@ -377,15 +432,16 @@ pub const TirLlvmGen = struct {
                 break :blk op.getResult(0);
             },
 
-            .BitAnd => try self.binBit("llvm.and", ins.payload.BitAnd, ins, arena),
-            .BitOr => try self.binBit("llvm.or", ins.payload.BitOr, ins, arena),
-            .BitXor => try self.binBit("llvm.xor", ins.payload.BitXor, ins, arena),
+            .BitAnd => try self.binBit("llvm.and", t.instrs.get(.BitAnd, ins_id), store),
+            .BitOr => try self.binBit("llvm.or", t.instrs.get(.BitOr, ins_id), store),
+            .BitXor => try self.binBit("llvm.xor", t.instrs.get(.BitXor, ins_id), store),
 
             // -------------------- Logical --------------------
-            .LogicalAnd => try self.binBit("llvm.and", ins.payload.LogicalAnd, ins, arena),
-            .LogicalOr => try self.binBit("llvm.or", ins.payload.LogicalOr, ins, arena),
+            .LogicalAnd => try self.binBit("llvm.and", t.instrs.get(.LogicalAnd, ins_id), store),
+            .LogicalOr => try self.binBit("llvm.or", t.instrs.get(.LogicalOr, ins_id), store),
             .LogicalNot => blk: {
-                const v = self.value_map.get(ins.payload.LogicalNot.value).?;
+                const p = t.instrs.get(.LogicalNot, ins_id);
+                const v = self.value_map.get(p.value).?;
                 const one = self.constBool(true);
                 var op = OpBuilder.init("llvm.xor", self.loc).builder()
                     .add_operands(&.{ v, one })
@@ -396,12 +452,18 @@ pub const TirLlvmGen = struct {
             },
 
             // -------------------- Comparisons --------------------
-            .CmpEq, .CmpNe, .CmpLt, .CmpLe, .CmpGt, .CmpGe => try self.emitCmp(ins, arena),
+            .CmpEq => try self.emitCmp("eq", "eq", "oeq", t.instrs.get(.CmpEq, ins_id)),
+            .CmpNe => try self.emitCmp("ne", "ne", "one", t.instrs.get(.CmpNe, ins_id)),
+            .CmpLt => try self.emitCmp("ult", "slt", "olt", t.instrs.get(.CmpLt, ins_id)),
+            .CmpLe => try self.emitCmp("ule", "sle", "ole", t.instrs.get(.CmpLe, ins_id)),
+            .CmpGt => try self.emitCmp("ugt", "sgt", "ogt", t.instrs.get(.CmpGt, ins_id)),
+            .CmpGe => try self.emitCmp("uge", "sge", "oge", t.instrs.get(.CmpGe, ins_id)),
 
             // -------------------- Casts (minimal) --------------------
             .CastBit => blk: {
-                const to_ty = try self.llvmTypeOf(arena, ins.ty);
-                const from_v = self.value_map.get(ins.payload.CastBit.value).?;
+                const p = t.instrs.get(.CastBit, ins_id);
+                const to_ty = try self.llvmTypeOf(store, p.ty);
+                const from_v = self.value_map.get(p.value).?;
                 var op = OpBuilder.init("llvm.bitcast", self.loc).builder()
                     .add_operands(&.{from_v})
                     .add_results(&.{to_ty})
@@ -411,8 +473,9 @@ pub const TirLlvmGen = struct {
             },
 
             .CastNormal => blk: {
-                const to_ty = try self.llvmTypeOf(arena, ins.ty);
-                var from_v = self.value_map.get(ins.payload.CastNormal.value).?;
+                const p = t.instrs.get(.CastNormal, ins_id);
+                const to_ty = try self.llvmTypeOf(store, p.ty);
+                var from_v = self.value_map.get(p.value).?;
                 var from_ty = from_v.getType();
 
                 const from_is_int = from_ty.isAInteger();
@@ -436,17 +499,17 @@ pub const TirLlvmGen = struct {
                         else if (fw > tw)
                             OpBuilder.init("llvm.trunc", self.loc).builder()
                                 .add_operands(&.{from_v}).add_results(&.{to_ty}).build()
-                        else if (self.isSignedInt(arena, ins.ty))
+                        else if (self.isSignedInt(store, p.ty))
                             OpBuilder.init("llvm.sext", self.loc).builder()
                                 .add_operands(&.{from_v}).add_results(&.{to_ty}).build()
                         else
                             OpBuilder.init("llvm.zext", self.loc).builder()
                                 .add_operands(&.{from_v}).add_results(&.{to_ty}).build();
                     } else if (from_is_int and to_is_f)
-                        OpBuilder.init(if (self.isSignedInt(arena, ins.ty)) "llvm.sitofp" else "llvm.uitofp", self.loc).builder()
+                        OpBuilder.init(if (self.isSignedInt(store, p.ty)) "llvm.sitofp" else "llvm.uitofp", self.loc).builder()
                             .add_operands(&.{from_v}).add_results(&.{to_ty}).build()
                     else if (from_is_f and to_is_int)
-                        OpBuilder.init(if (self.isSignedInt(arena, ins.ty)) "llvm.fptosi" else "llvm.fptoui", self.loc).builder()
+                        OpBuilder.init(if (self.isSignedInt(store, p.ty)) "llvm.fptosi" else "llvm.fptoui", self.loc).builder()
                             .add_operands(&.{from_v}).add_results(&.{to_ty}).build()
                     else if (from_is_f and to_is_f) blk3: {
                         const fw = try intOrFloatWidth(from_ty);
@@ -470,21 +533,25 @@ pub const TirLlvmGen = struct {
 
             // -------------------- Memory --------------------
             .Alloca => blk: {
+                const p = t.instrs.get(.Alloca, ins_id);
                 // TIR: result type is a pointer; elem type = pointee
-                const resT = self.llvmTypeOf(arena, ins.ty) catch self.llvm_ptr_ty;
+                const resT = self.llvmTypeOf(store, p.ty) catch self.llvm_ptr_ty;
                 _ = resT;
 
                 // Find pointee type for elem_type attribute
                 var elem_ty: mlir.Type = self.i8_ty;
-                switch (arena.get(ins.ty)) {
-                    .Ptr => |p| elem_ty = try self.llvmTypeOf(arena, p.elem),
+                switch (store.getKind(p.ty)) {
+                    .Ptr => {
+                        const ptr_ty = store.get(.Ptr, p.ty);
+                        elem_ty = try self.llvmTypeOf(store, ptr_ty.elem);
+                    },
                     else => {}, // fallback; shouldn't really happen for Alloca
                 }
 
                 // Count operand: use provided value or default to 1
                 var count_v: mlir.Value = undefined;
-                if (ins.payload.Alloca.count) |cvid| {
-                    count_v = self.value_map.get(cvid).?;
+                if (!p.count.isNone()) {
+                    count_v = self.value_map.get(p.count.unwrap()).?;
                 } else {
                     count_v = self.llvmConstI64(1);
                 }
@@ -492,12 +559,6 @@ pub const TirLlvmGen = struct {
                 var attrs = [_]mlir.NamedAttribute{
                     self.named("elem_type", mlir.Attribute.typeAttrGet(elem_ty)),
                 };
-
-                // Optional alignment attribute if you want it:
-                // if (ins.payload.Alloca.@"align" != 0) {
-                //     const a = mlir.Attribute.integerAttrGet(self.i64_ty, ins.payload.Alloca.@"align");
-                //     // You'll need a small DynamicArray if you add attrs dynamically.
-                // }
 
                 var alloca = OpBuilder.init("llvm.alloca", self.loc).builder()
                     .add_operands(&.{count_v}) // REQUIRED operand
@@ -509,8 +570,9 @@ pub const TirLlvmGen = struct {
             },
 
             .Load => blk: {
-                const ptr = self.value_map.get(ins.payload.Load.ptr).?;
-                const res_ty = try self.llvmTypeOf(arena, ins.ty);
+                const p = t.instrs.get(.Load, ins_id);
+                const ptr = self.value_map.get(p.ptr).?;
+                const res_ty = try self.llvmTypeOf(store, p.ty);
                 var load = OpBuilder.init("llvm.load", self.loc).builder()
                     .add_operands(&.{ptr}) // address
                     .add_results(&.{res_ty}) // loaded value type
@@ -520,8 +582,9 @@ pub const TirLlvmGen = struct {
             },
 
             .Store => blk: {
-                const v = self.value_map.get(ins.payload.Store.value).?;
-                const ptr = self.value_map.get(ins.payload.Store.ptr).?;
+                const p = t.instrs.get(.Store, ins_id);
+                const v = self.value_map.get(p.value).?;
+                const ptr = self.value_map.get(p.ptr).?;
                 const st = OpBuilder.init("llvm.store", self.loc).builder()
                     .add_operands(&.{ v, ptr }) // (value, address)
                     .build();
@@ -529,36 +592,31 @@ pub const TirLlvmGen = struct {
                 break :blk mlir.Value.empty();
             },
             .Gep => blk: {
-                const p = ins.payload.Gep;
+                const p = t.instrs.get(.Gep, ins_id);
                 const base = self.value_map.get(p.base).?;
-                // base type must be Ptr{elem = E}
-                const base_tid = blk2: {
-                    // Find TIR type of base value through `ins.ty`? (GEP result is also a ptr)
-                    // We need pointee from the *base* value; carry it via arena.get(..)
-                    // If you can’t read the base type directly here, you likely recorded it in TIR.
-                    // Assuming base’s type is Ptr{elem=E}: use E below.
-                    // If you don’t have a side-table for ValueId->TypeId, add one; for now:
-                    break :blk2 null;
-                };
-                _ = base_tid;
-                // If you *do* have ValueId -> TypeId side table, use it.
-                // For now we derive element type from the result pointer (ins.ty == Ptr<something>)
-                const resT = arena.get(ins.ty);
-                if (@as(types.TypeKind, resT) != .Ptr) return error.CompileError;
-                // op needs the *base* elem_type, not the final one; safest is to walk backwards:
-                // However, for most common patterns it’s OK to use the base’s pointee.
-                // If you can’t read base’s pointee, using result’s pointee also works in many cases.
-                const elem_mlir = try self.llvmTypeOf(arena, resT.Ptr.elem);
+                const resT = store.type_pool.data.items[p.ty.toRaw()];
+                if (store.getKind(resT) != .Ptr) return error.CompileError;
+                const res_ty = store.get(.Ptr, p.ty);
+                const elem_mlir = try self.llvmTypeOf(store, res_ty.elem);
+                const index_ids = t.instrs.gep_pool.slice(p.indices);
+                var indices_data = try self.gpa.alloc(tir.Rows.GepIndex, index_ids.len);
+                defer self.gpa.free(indices_data);
 
-                const v = try self.emitGep(base, elem_mlir, p.indices);
+                for (index_ids, 0..) |id, i| {
+                    indices_data[i] = t.instrs.GepIndex.get(id.toRaw());
+                }
+
+                const v = try self.emitGep(base, elem_mlir, indices_data, t);
                 break :blk v;
             },
 
             // -------------------- Aggregates --------------------
             .TupleMake => blk: {
-                const tup_ty = try self.llvmTypeOf(arena, ins.ty);
+                const p = t.instrs.get(.TupleMake, ins_id);
+                const tup_ty = try self.llvmTypeOf(store, p.ty);
                 var acc = self.undefOf(tup_ty);
-                for (ins.payload.TupleMake.elems, 0..) |vid, i| {
+                const elems = t.instrs.val_list_pool.slice(p.elems);
+                for (elems, 0..) |vid, i| {
                     const v = self.value_map.get(vid).?;
                     acc = self.insertAt(acc, v, &.{@as(i64, @intCast(i))});
                 }
@@ -566,9 +624,11 @@ pub const TirLlvmGen = struct {
             },
 
             .ArrayMake => blk: {
-                const arr_ty = try self.llvmTypeOf(arena, ins.ty);
+                const p = t.instrs.get(.ArrayMake, ins_id);
+                const arr_ty = try self.llvmTypeOf(store, p.ty);
                 var acc = self.undefOf(arr_ty);
-                for (ins.payload.ArrayMake.elems, 0..) |vid, i| {
+                const elems = t.instrs.val_list_pool.slice(p.elems);
+                for (elems, 0..) |vid, i| {
                     const v = self.value_map.get(vid).?;
                     acc = self.insertAt(acc, v, &.{@as(i64, @intCast(i))});
                 }
@@ -576,9 +636,12 @@ pub const TirLlvmGen = struct {
             },
 
             .StructMake => blk: {
-                const st_ty = try self.llvmTypeOf(arena, ins.ty);
+                const p = t.instrs.get(.StructMake, ins_id);
+                const st_ty = try self.llvmTypeOf(store, p.ty);
                 var acc = self.undefOf(st_ty);
-                for (ins.payload.StructMake.fields) |f| {
+                const fields = t.instrs.sfi_pool.slice(p.fields);
+                for (fields) |f_id| {
+                    const f = t.instrs.StructFieldInit.get(f_id.toRaw());
                     const v = self.value_map.get(f.value).?;
                     acc = self.insertAt(acc, v, &.{@as(i64, @intCast(f.index))});
                 }
@@ -586,15 +649,15 @@ pub const TirLlvmGen = struct {
             },
 
             .ExtractElem => blk: {
-                const p = ins.payload.ExtractElem;
+                const p = t.instrs.get(.ExtractElem, ins_id);
                 const agg = self.value_map.get(p.agg).?;
-                const res_ty = try self.llvmTypeOf(arena, ins.ty);
+                const res_ty = try self.llvmTypeOf(store, p.ty);
                 const v = self.extractAt(agg, res_ty, &.{@as(i64, @intCast(p.index))});
                 break :blk v;
             },
 
             .InsertElem => blk: {
-                const p = ins.payload.InsertElem;
+                const p = t.instrs.get(.InsertElem, ins_id);
                 const agg = self.value_map.get(p.agg).?;
                 const val = self.value_map.get(p.value).?;
                 const v = self.insertAt(agg, val, &.{@as(i64, @intCast(p.index))});
@@ -602,15 +665,15 @@ pub const TirLlvmGen = struct {
             },
 
             .ExtractField => blk: {
-                const p = ins.payload.ExtractField;
+                const p = t.instrs.get(.ExtractField, ins_id);
                 const agg = self.value_map.get(p.agg).?;
-                const res_ty = try self.llvmTypeOf(arena, ins.ty);
+                const res_ty = try self.llvmTypeOf(store, p.ty);
                 const v = self.extractAt(agg, res_ty, &.{@as(i64, @intCast(p.index))});
                 break :blk v;
             },
 
             .InsertField => blk: {
-                const p = ins.payload.InsertField;
+                const p = t.instrs.get(.InsertField, ins_id);
                 const agg = self.value_map.get(p.agg).?;
                 const val = self.value_map.get(p.value).?;
                 const v = self.insertAt(agg, val, &.{@as(i64, @intCast(p.index))});
@@ -619,67 +682,58 @@ pub const TirLlvmGen = struct {
 
             // -------------------- Pointers/Indexing --------------------
             .AddressOf => blk: {
-                var v = self.value_map.get(ins.payload.AddressOf.value).?;
-                // If it is already a pointer, just forward it.
+                const p = t.instrs.get(.AddressOf, ins_id);
+                var v = self.value_map.get(p.value).?;
                 if (mlir.LLVM.isLLVMPointerType(v.getType())) break :blk v;
-                return error.NotImplemented; // taking address of SSA value needs an alloca+store lowering
+                return error.NotImplemented;
             },
             .Index => blk: {
-                const idx = ins.payload.Index;
-                const base = self.value_map.get(idx.base).?;
-                const iv = self.value_map.get(idx.index).?;
-                _ = iv;
-                // Result is Ptr<elem>; elem_type should be the pointee of base
-                // Use result’s pointee — matches Ptr<elem> in TIR
-                const resT = arena.get(ins.ty);
-                if (@as(types.TypeKind, resT) != .Ptr) return error.CompileError;
-                const elem_mlir = try self.llvmTypeOf(arena, resT.Ptr.elem);
+                const p = t.instrs.get(.Index, ins_id);
+                const base = self.value_map.get(p.base).?;
+                const gep_type_kind = store.index.kinds.items[p.ty.toRaw()];
+                if (gep_type_kind != .Ptr) return error.CompileError;
+                const ptr_row = store.get(.Ptr, p.ty);
+                const elem_mlir = try self.llvmTypeOf(store, ptr_row.elem);
 
-                // single dynamic index
-                const v = try self.emitGep(base, elem_mlir, &.{.{ .Value = idx.index }});
+                const v = try self.emitGep(base, elem_mlir, &.{.{ .Value = p.index }}, t);
                 break :blk v;
             },
 
             // -------------------- Control/Data --------------------
             .Select => blk: {
-                const p = ins.payload.Select;
+                const p = t.instrs.get(.Select, ins_id);
                 const c = self.value_map.get(p.cond).?;
-                const t = self.value_map.get(p.then_value).?;
-                const e = self.value_map.get(p.else_value).?;
-                const ty = try self.llvmTypeOf(arena, ins.ty);
+                const tv = self.value_map.get(p.then_value).?;
+                const ev = self.value_map.get(p.else_value).?;
+                const ty = try self.llvmTypeOf(store, p.ty);
                 var op = OpBuilder.init("llvm.select", self.loc).builder()
-                    .add_operands(&.{ c, t, e })
+                    .add_operands(&.{ c, tv, ev })
                     .add_results(&.{ty})
                     .build();
                 self.append(op);
                 break :blk op.getResult(0);
             },
             .Call => blk: {
-                const callee_name = ins.payload.Call.callee;
-                const finfo = self.func_syms.get(callee_name) orelse try self.ensureDeclFromCall(ins, arena);
+                const p = t.instrs.get(.Call, ins_id);
+                const callee_name = t.instrs.strs.get(p.callee);
+                const finfo = self.func_syms.get(callee_name) orelse try self.ensureDeclFromCall(ins_id, t, store);
 
-                // Collect operands
-                var args = try self.gpa.alloc(mlir.Value, ins.payload.Call.args.len);
+                const args_slice = t.instrs.val_list_pool.slice(p.args);
+                var args = try self.gpa.alloc(mlir.Value, args_slice.len);
                 defer self.gpa.free(args);
-                for (ins.payload.Call.args, 0..) |vid, i| args[i] = self.value_map.get(vid).?;
+                for (args_slice, 0..) |vid, i| args[i] = self.value_map.get(vid).?;
 
-                const ret_ty = try self.llvmTypeOf(arena, ins.ty);
+                const ret_ty = try self.llvmTypeOf(store, p.ty);
 
                 var attrs = ArrayList(mlir.NamedAttribute).init(self.gpa);
                 defer attrs.deinit();
 
-                // callee
                 try attrs.append(self.named("callee", mlir.Attribute.flatSymbolRefAttrGet(self.ctx, mlir.StringRef.from(callee_name))));
-
-                // ALWAYS: segment sizes for operands (N args, 0 bundles)
                 const seg = mlir.Attribute.denseI32ArrayGet(self.ctx, &[_]i32{ @intCast(args.len), 0 });
                 try attrs.append(self.named("operandSegmentSizes", seg));
-
-                // ALWAYS: op_bundle_sizes must exist; empty when you have no bundles
                 const empty_bundles = mlir.Attribute.denseI32ArrayGet(self.ctx, &[_]i32{});
                 try attrs.append(self.named("op_bundle_sizes", empty_bundles));
 
-                // Only for variadic callees: tell LLVM the *actual* call signature at this site
                 if (finfo.is_variadic) {
                     var arg_tys = try self.gpa.alloc(mlir.Type, args.len);
                     defer self.gpa.free(arg_tys);
@@ -700,58 +754,24 @@ pub const TirLlvmGen = struct {
         };
     }
 
-    fn emitCmp(self: *TirLlvmGen, ins: *const tir.Instr, arena: *types.TypeArena) !mlir.Value {
-        var lhs = self.value_map.get(switch (ins.tag) {
-            .CmpEq => ins.payload.CmpEq.lhs,
-            .CmpNe => ins.payload.CmpNe.lhs,
-            .CmpLt => ins.payload.CmpLt.lhs,
-            .CmpLe => ins.payload.CmpLe.lhs,
-            .CmpGt => ins.payload.CmpGt.lhs,
-            .CmpGe => ins.payload.CmpGe.lhs,
-            else => unreachable,
-        }).?;
-        const rhs = self.value_map.get(switch (ins.tag) {
-            .CmpEq => ins.payload.CmpEq.rhs,
-            .CmpNe => ins.payload.CmpNe.rhs,
-            .CmpLt => ins.payload.CmpLt.rhs,
-            .CmpLe => ins.payload.CmpLe.rhs,
-            .CmpGt => ins.payload.CmpGt.rhs,
-            .CmpGe => ins.payload.CmpGe.rhs,
-            else => unreachable,
-        }).?;
+    fn emitCmp(self: *MlirCodegen, pred_u: []const u8, pred_s: []const u8, pred_f: []const u8, p: tir.Rows.Bin2) !mlir.Value {
+        var lhs = self.value_map.get(p.lhs).?;
+        const rhs = self.value_map.get(p.rhs).?;
 
         const lty = lhs.getType();
         const is_float = lty.isAFloat();
 
         if (is_float) {
-            const pred = switch (ins.tag) {
-                .CmpEq => "oeq",
-                .CmpNe => "one",
-                .CmpLt => "olt",
-                .CmpLe => "ole",
-                .CmpGt => "ogt",
-                .CmpGe => "oge",
-                else => unreachable,
-            };
             var op = OpBuilder.init("llvm.fcmp", self.loc).builder()
                 .add_operands(&.{ lhs, rhs })
                 .add_results(&.{self.i1_ty})
-                .add_attributes(&.{self.named("predicate", self.strAttr(pred))})
+                .add_attributes(&.{self.named("predicate", self.strAttr(pred_f))})
                 .build();
             self.append(op);
             return op.getResult(0);
         } else {
-            // ints: sign matters for order comparisons
-            const unsigned = !self.isSignedInt(arena, ins.ty); // if you track per-operand type use that
-            const pred = switch (ins.tag) {
-                .CmpEq => "eq",
-                .CmpNe => "ne",
-                .CmpLt => if (unsigned) "ult" else "slt",
-                .CmpLe => if (unsigned) "ule" else "sle",
-                .CmpGt => if (unsigned) "ugt" else "sgt",
-                .CmpGe => if (unsigned) "uge" else "sge",
-                else => unreachable,
-            };
+            const unsigned = true;
+            const pred = if (unsigned) pred_u else pred_s;
             var op = OpBuilder.init("llvm.icmp", self.loc).builder()
                 .add_operands(&.{ lhs, rhs })
                 .add_results(&.{self.i1_ty})
@@ -762,69 +782,60 @@ pub const TirLlvmGen = struct {
         }
     }
 
-    fn emitInstrCall(self: *TirLlvmGen, ins: *const tir.Instr, arena: *types.TypeArena) !mlir.Value {
-        const callee_name = ins.payload.Call.callee;
-        const finfo = self.func_syms.get(callee_name) orelse try self.ensureDeclFromCall(ins, arena);
+    fn emitTerminator(self: *MlirCodegen, term_id: tir.TermId, t: *const tir.TIR, store: *types.TypeStore) !void {
+        _ = store;
+        const kind = t.terms.index.kinds.items[term_id.toRaw()];
+        switch (kind) {
+            .Return => {
+                const p = t.terms.get(.Return, term_id);
+                var func_op = self.cur_block.?.getParentOperation();
+                const func_name_attr = func_op.getInherentAttributeByName(mlir.StringRef.from("sym_name"));
+                var func_name_ref = func_name_attr.stringAttrGetValue();
+                const func_name = func_name_ref.toSlice();
+                const finfo = self.func_syms.get(func_name).?;
+                const ret_mlir_type = finfo.ret_type;
 
-        var args = try self.gpa.alloc(mlir.Value, ins.payload.Call.args.len);
-        defer self.gpa.free(args);
-        for (ins.payload.Call.args, 0..) |vid, i| args[i] = self.value_map.get(vid).?;
-
-        const ret_ty = try self.llvmTypeOf(arena, ins.ty);
-        var attrs = ArrayList(mlir.NamedAttribute).init(self.gpa);
-        defer attrs.deinit();
-
-        try attrs.append(self.named("callee", mlir.Attribute.flatSymbolRefAttrGet(self.ctx, mlir.StringRef.from(callee_name))));
-
-        if (finfo.is_variadic) {
-            var arg_tys = try self.gpa.alloc(mlir.Type, args.len);
-            defer self.gpa.free(arg_tys);
-            for (args, 0..) |*a, i| arg_tys[i] = a.getType();
-            const var_fty = mlir.LLVM.getLLVMFunctionType(ret_ty, arg_tys, true);
-            try attrs.append(self.named("var_callee_type", mlir.Attribute.typeAttrGet(var_fty)));
-            const seg = mlir.Attribute.denseI32ArrayGet(self.ctx, &[_]i32{ @intCast(args.len), 0 });
-            try attrs.append(self.named("operandSegmentSizes", seg));
-            try attrs.append(self.named("op_bundle_sizes", mlir.Attribute.parseGet(self.ctx, mlir.StringRef.from("array<i32>"))));
-        }
-
-        const call = OpBuilder.init("llvm.call", self.loc).builder()
-            .add_operands(args)
-            .add_results(if (self.void_ty.equal(ret_ty)) &.{} else &.{ret_ty})
-            .add_attributes(attrs.items)
-            .build();
-        self.append(call);
-        return if (call.getNumResults() == 0) mlir.Value.empty() else call.getResult(0);
-    }
-
-    fn emitTerminator(self: *TirLlvmGen, term: *const tir.Terminator) !void {
-        switch (term.*) {
-            .Return => |rv_opt| {
-                const op = if (rv_opt) |vid| blk: {
-                    const v = self.value_map.get(vid).?;
-                    break :blk OpBuilder.init("llvm.return", self.loc).builder()
-                        .add_operands(&.{v})
-                        .build();
-                } else OpBuilder.init("llvm.return", self.loc).builder().build();
+                const op = if (!p.value.isNone()) blk: {
+                    const v = self.value_map.get(p.value.unwrap()).?;
+                    if (ret_mlir_type.equal(self.void_ty)) {
+                        // Function returns void, but TIR has a value. This indicates an inconsistency.
+                        // For now, we\'ll generate a void return, but this should ideally be caught earlier.
+                        std.debug.print("Warning: Function with void return type has a return instruction with a value. Ignoring the value.\n", .{});
+                        break :blk OpBuilder.init("llvm.return", self.loc).builder().add_results(&.{}).build();
+                    } else {
+                        break :blk OpBuilder.init("llvm.return", self.loc).builder()
+                            .add_operands(&.{v})
+                            .add_results(&.{}) // Explicitly no results
+                            .build();
+                    }
+                } else blk: {
+                    if (!ret_mlir_type.equal(self.void_ty)) {
+                        // Function has a non-void return type but TIR return instruction has no value.
+                        // This is an error.
+                        std.debug.panic("Function with non-void return type has a return instruction with no value", .{});
+                    }
+                    break :blk OpBuilder.init("llvm.return", self.loc).builder().add_results(&.{}).build();
+                };
                 self.append(op);
             },
 
-            .Br => |edge| {
+            .Br => |edge_p| {
+                _ = edge_p;
+                const p = t.terms.get(.Br, term_id);
+                const edge = t.terms.Edge.get(p.edge.toRaw());
                 var dest = self.block_map.get(edge.dest).?;
-                const dest_n = dest.getNumArguments();
-                std.debug.assert(dest_n == edge.args.len); // or return a typed error
+                const args = t.instrs.val_list_pool.slice(edge.args);
+                std.debug.assert(dest.getNumArguments() == args.len);
 
-                // Small stack buffer to dodge heap allocs on common cases
                 var small: [4]mlir.Value = undefined;
-                var argv: []mlir.Value = if (edge.args.len <= small.len) small[0..edge.args.len] else try self.gpa.alloc(mlir.Value, edge.args.len);
+                var argv: []mlir.Value = if (args.len <= small.len) small[0..args.len] else try self.gpa.alloc(mlir.Value, args.len);
                 defer if (argv.ptr != &small) self.gpa.free(argv);
 
-                // Collect & (optionally) fix-up types
-                for (edge.args, 0..) |avid, i| {
+                for (args, 0..) |avid, i| {
                     var v = self.value_map.get(avid).?;
                     var want_arg = dest.getArgument(i);
                     const want = want_arg.getType();
                     if (!v.getType().equal(want)) {
-                        // If both are pointers, bitcast; otherwise, signal mismatch.
                         if (self.isLlvmPtr(v.getType()) and self.isLlvmPtr(want)) {
                             var bc = OpBuilder.init("llvm.bitcast", self.loc).builder()
                                 .add_operands(&.{v})
@@ -833,7 +844,6 @@ pub const TirLlvmGen = struct {
                             self.append(bc);
                             v = bc.getResult(0);
                         } else {
-                            // You can make this a proper error if you prefer.
                             @panic("branch arg type mismatch");
                         }
                     }
@@ -847,14 +857,20 @@ pub const TirLlvmGen = struct {
                 self.append(br);
             },
 
-            .CondBr => |cb| {
-                const cond = self.value_map.get(cb.cond).?;
-                const tdest = self.block_map.get(cb.then_edge.dest).?;
-                const edest = self.block_map.get(cb.else_edge.dest).?;
+            .CondBr => |cb_p| {
+                _ = cb_p;
+                const p = t.terms.get(.CondBr, term_id);
+                const cond = self.value_map.get(p.cond).?;
+                const then_edge = t.terms.Edge.get(p.then_edge.toRaw());
+                const else_edge = t.terms.Edge.get(p.else_edge.toRaw());
+                const tdest = self.block_map.get(then_edge.dest).?;
+                const edest = self.block_map.get(else_edge.dest).?;
 
-                // flatten operands: [cond, thenArgs..., elseArgs...]
-                const n_then = cb.then_edge.args.len;
-                const n_else = cb.else_edge.args.len;
+                const then_args = t.instrs.val_list_pool.slice(then_edge.args);
+                const else_args = t.instrs.val_list_pool.slice(else_edge.args);
+
+                const n_then = then_args.len;
+                const n_else = else_args.len;
                 const total = 1 + n_then + n_else;
 
                 var ops = try self.gpa.alloc(mlir.Value, total);
@@ -862,11 +878,11 @@ pub const TirLlvmGen = struct {
                 ops[0] = cond;
 
                 var k: usize = 1;
-                for (cb.then_edge.args) |vid| {
+                for (then_args) |vid| {
                     ops[k] = self.value_map.get(vid).?;
                     k += 1;
                 }
-                for (cb.else_edge.args) |vid| {
+                for (else_args) |vid| {
                     ops[k] = self.value_map.get(vid).?;
                     k += 1;
                 }
@@ -883,22 +899,24 @@ pub const TirLlvmGen = struct {
                 self.append(br);
             },
 
-            .SwitchInt => |sw| {
-                // Lower to a chain of icmp+cond_br blocks
-                var scrut = self.value_map.get(sw.scrut).?;
-                const default_dest = self.block_map.get(sw.default_dest).?;
+            .SwitchInt => |sw_p| {
+                _ = sw_p;
+                const p = t.terms.get(.SwitchInt, term_id);
+                var scrut = self.value_map.get(p.scrut).?;
+                const default_edge = t.terms.Edge.get(p.default_edge.toRaw());
+                const default_dest = self.block_map.get(default_edge.dest).?;
+                const default_args = t.instrs.val_list_pool.slice(default_edge.args);
 
-                // Prepare default args now
-                const ndef = sw.default_args.len;
+                const ndef = default_args.len;
                 const def_ops = if (ndef == 0) &[_]mlir.Value{} else blk: {
                     const buf = try self.gpa.alloc(mlir.Value, ndef);
-                    defer self.gpa.free(buf);
-                    for (sw.default_args, 0..) |vid, i| buf[i] = self.value_map.get(vid).?;
+                    for (default_args, 0..) |vid, i| buf[i] = self.value_map.get(vid).?;
                     break :blk buf;
                 };
+                defer if (ndef > 0) self.gpa.free(def_ops);
 
-                // If no cases, just branch to default
-                if (sw.cases.len == 0) {
+                const cases = t.terms.case_pool.slice(p.cases);
+                if (cases.len == 0) {
                     const br = OpBuilder.init("llvm.br", self.loc).builder()
                         .add_operands(def_ops)
                         .add_successors(&.{default_dest})
@@ -907,26 +925,20 @@ pub const TirLlvmGen = struct {
                     return;
                 }
 
-                // We'll create N-1 "next test" blocks
                 var next_block: ?mlir.Block = null;
 
-                for (sw.cases, 0..) |c, idx| {
-                    // For the first case, emit in the current block;
-                    // for subsequent cases, emit in a fresh block and fallthrough from previous.
+                for (cases, 0..) |c_id, idx| {
                     if (idx != 0) {
                         const nb = mlir.Block.create(&.{}, &.{});
                         self.cur_region.?.appendOwnedBlock(nb);
-                        // link previous false edge to this new block
-                        const prev = next_block.?;
-                        _ = prev;
+                        _ = next_block.?;
                         self.cur_block = nb;
                         next_block = nb;
                     } else {
-                        // mark the first "next block" (for chaining) as current block
                         next_block = self.cur_block.?;
                     }
 
-                    // compare scrut == case_value
+                    const c = t.terms.Case.get(c_id.toRaw());
                     const c_ty = scrut.getType();
                     const case_val = self.constInt(c_ty, @bitCast(c.value));
 
@@ -937,24 +949,23 @@ pub const TirLlvmGen = struct {
                         .build();
                     self.append(icmp);
 
-                    // true edge args
-                    const nt = c.args.len;
+                    const case_edge = t.terms.Edge.get(c.edge.toRaw());
+                    const case_args = t.instrs.val_list_pool.slice(case_edge.args);
+                    const nt = case_args.len;
                     const t_ops = if (nt == 0) &[_]mlir.Value{} else blk: {
                         const buf = try self.gpa.alloc(mlir.Value, nt);
-                        defer self.gpa.free(buf);
-                        for (c.args, 0..) |vid, i| buf[i] = self.value_map.get(vid).?;
+                        for (case_args, 0..) |vid, i| buf[i] = self.value_map.get(vid).?;
                         break :blk buf;
                     };
+                    defer if (nt > 0) self.gpa.free(t_ops);
 
-                    // false successor: either next test block (new) or default
-                    const false_is_last = (idx + 1 == sw.cases.len);
+                    const false_is_last = (idx + 1 == cases.len);
                     const false_dest = if (false_is_last) default_dest else blk: {
                         const nb = mlir.Block.create(&.{}, &.{});
                         self.cur_region.?.appendOwnedBlock(nb);
                         break :blk nb;
                     };
 
-                    // Build operands: [cond, then..., else...]
                     const total = 1 + nt + (if (false_is_last) ndef else 0);
                     var ops = try self.gpa.alloc(mlir.Value, total);
                     defer self.gpa.free(ops);
@@ -974,7 +985,7 @@ pub const TirLlvmGen = struct {
                     const seg = mlir.Attribute.denseI32ArrayGet(self.ctx, &[_]i32{
                         1, @intCast(nt), @intCast(if (false_is_last) ndef else 0),
                     });
-                    const tdest = self.block_map.get(c.dest).?;
+                    const tdest = self.block_map.get(case_edge.dest).?;
                     const condbr = OpBuilder.init("llvm.cond_br", self.loc).builder()
                         .add_operands(ops)
                         .add_successors(&.{ tdest, false_dest })
@@ -983,7 +994,6 @@ pub const TirLlvmGen = struct {
                     self.append(condbr);
 
                     if (!false_is_last) {
-                        // continue emitting in false_dest
                         self.cur_block = false_dest;
                         next_block = false_dest;
                     }
@@ -997,10 +1007,16 @@ pub const TirLlvmGen = struct {
         }
     }
 
-    fn emitGep(self: *TirLlvmGen, base: mlir.Value, elem_ty: mlir.Type, idxs: []const tir.Instr.GepIndex) !mlir.Value {
+    fn emitGep(
+        self: *MlirCodegen,
+        base: mlir.Value,
+        elem_ty: mlir.Type,
+        idxs: []const tir.Rows.GepIndex,
+        t: *const tir.TIR,
+    ) !mlir.Value {
+        _ = t;
         const dyn_min = std.math.minInt(i32);
 
-        // gather dynamic operands and raw constant indices
         var dyn = try self.gpa.alloc(mlir.Value, idxs.len);
         defer self.gpa.free(dyn);
         var raw = try self.gpa.alloc(i32, idxs.len);
@@ -1038,10 +1054,10 @@ pub const TirLlvmGen = struct {
     // ------------------------------------------------------------
     // Helpers
     // ------------------------------------------------------------
-    fn append(self: *TirLlvmGen, op: mlir.Operation) void {
+    fn append(self: *MlirCodegen, op: mlir.Operation) void {
         self.cur_block.?.appendOwnedOperation(op);
     }
-    fn named(self: *const TirLlvmGen, name: []const u8, attr: mlir.Attribute) mlir.NamedAttribute {
+    fn named(self: *const MlirCodegen, name: []const u8, attr: mlir.Attribute) mlir.NamedAttribute {
         return .{
             .inner = .{
                 .name = mlir.c.mlirIdentifierGet(self.ctx.handle, mlir.StringRef.from(name).inner),
@@ -1049,19 +1065,19 @@ pub const TirLlvmGen = struct {
             },
         };
     }
-    fn strAttr(self: *const TirLlvmGen, s: []const u8) mlir.Attribute {
+    fn strAttr(self: *const MlirCodegen, s: []const u8) mlir.Attribute {
         return mlir.Attribute.stringAttrGet(self.ctx, mlir.StringRef.from(s));
     }
-    fn intAttr(self: *const TirLlvmGen, ty: mlir.Type, val: i64) mlir.Attribute {
+    fn intAttr(self: *const MlirCodegen, ty: mlir.Type, val: i64) mlir.Attribute {
         _ = self;
         return mlir.Attribute.integerAttrGet(ty, val);
     }
 
-    fn isLlvmPtr(self: *const TirLlvmGen, ty: mlir.Type) bool {
+    fn isLlvmPtr(self: *const MlirCodegen, ty: mlir.Type) bool {
         return ty.equal(self.llvm_ptr_ty);
     }
 
-    fn llvmConstI64(self: *TirLlvmGen, x: i64) mlir.Value {
+    fn llvmConstI64(self: *MlirCodegen, x: i64) mlir.Value {
         const val = mlir.Attribute.integerAttrGet(self.i64_ty, x);
         var op = OpBuilder.init("llvm.mlir.constant", self.loc).builder()
             .add_results(&.{self.i64_ty})
@@ -1071,7 +1087,7 @@ pub const TirLlvmGen = struct {
         return op.getResult(0);
     }
 
-    fn undefOf(self: *TirLlvmGen, ty: mlir.Type) mlir.Value {
+    fn undefOf(self: *MlirCodegen, ty: mlir.Type) mlir.Value {
         var op = OpBuilder.init("llvm.mlir.undef", self.loc).builder()
             .add_results(&.{ty})
             .build();
@@ -1079,7 +1095,7 @@ pub const TirLlvmGen = struct {
         return op.getResult(0);
     }
 
-    fn insertAt(self: *TirLlvmGen, agg: mlir.Value, val: mlir.Value, pos: []const i64) mlir.Value {
+    fn insertAt(self: *MlirCodegen, agg: mlir.Value, val: mlir.Value, pos: []const i64) mlir.Value {
         var agg_l = agg;
         const pos_attr = mlir.Attribute.denseI64ArrayGet(self.ctx, pos);
         var op = OpBuilder.init("llvm.insertvalue", self.loc).builder()
@@ -1091,7 +1107,7 @@ pub const TirLlvmGen = struct {
         return op.getResult(0);
     }
 
-    fn extractAt(self: *TirLlvmGen, agg: mlir.Value, res_ty: mlir.Type, pos: []const i64) mlir.Value {
+    fn extractAt(self: *MlirCodegen, agg: mlir.Value, res_ty: mlir.Type, pos: []const i64) mlir.Value {
         const pos_attr = mlir.Attribute.denseI64ArrayGet(self.ctx, pos);
         var op = OpBuilder.init("llvm.extractvalue", self.loc).builder()
             .add_operands(&.{agg})
@@ -1102,7 +1118,7 @@ pub const TirLlvmGen = struct {
         return op.getResult(0);
     }
 
-    fn constInt(self: *TirLlvmGen, ty: mlir.Type, v: i64) mlir.Value {
+    fn constInt(self: *MlirCodegen, ty: mlir.Type, v: i64) mlir.Value {
         var op = OpBuilder.init("llvm.mlir.constant", self.loc).builder()
             .add_results(&.{ty})
             .add_attributes(&.{self.named("value", mlir.Attribute.integerAttrGet(ty, v))})
@@ -1111,7 +1127,7 @@ pub const TirLlvmGen = struct {
         return op.getResult(0);
     }
 
-    fn constFloat(self: *TirLlvmGen, ty: mlir.Type, v: f64) mlir.Value {
+    fn constFloat(self: *MlirCodegen, ty: mlir.Type, v: f64) mlir.Value {
         const attr = mlir.Attribute.floatAttrDoubleGet(self.ctx, ty, v);
         var op = OpBuilder.init("llvm.mlir.constant", self.loc).builder()
             .add_results(&.{ty})
@@ -1121,26 +1137,25 @@ pub const TirLlvmGen = struct {
         return op.getResult(0);
     }
 
-    fn constBool(self: *TirLlvmGen, v: bool) mlir.Value {
+    fn constBool(self: *MlirCodegen, v: bool) mlir.Value {
         return self.constInt(self.i1_ty, if (v) 1 else 0);
     }
 
-    // NOTE: best-effort until we wire exact unsigned types from `types`
-    fn isUnsigned(self: *TirLlvmGen, arena: *types.TypeArena, ty: types.TypeId) bool {
+    fn isUnsigned(self: *MlirCodegen, store: *types.TypeStore, ty: types.TypeId) bool {
         _ = self;
-        return switch (arena.get(ty)) {
+        return switch (store.getKind(ty)) {
             .Usize => true,
-            .U32, .U64 => true, // if you have these tags; harmless if not present
+            .U32, .U64 => true,
             else => false,
         };
     }
 
-    fn isFloatType(self: *TirLlvmGen, t: mlir.Type) bool {
+    fn isFloatType(self: *MlirCodegen, t: mlir.Type) bool {
         _ = self;
         return t.isAFloat();
     }
 
-    fn isIntType(self: *TirLlvmGen, t: mlir.Type) bool {
+    fn isIntType(self: *MlirCodegen, t: mlir.Type) bool {
         _ = self;
         return t.isAInteger();
     }
@@ -1151,10 +1166,10 @@ pub const TirLlvmGen = struct {
         return error.NotIntOrFloat;
     }
 
-    fn binBit(self: *TirLlvmGen, name: []const u8, p: tir.Instr.Bin2, ins: *const tir.Instr, arena: *types.TypeArena) !mlir.Value {
+    fn binBit(self: *MlirCodegen, name: []const u8, p: tir.Rows.Bin2, store: *types.TypeStore) !mlir.Value {
         const lhs = self.value_map.get(p.lhs).?;
         const rhs = self.value_map.get(p.rhs).?;
-        const ty = try self.llvmTypeOf(arena, ins.ty);
+        const ty = try self.llvmTypeOf(store, p.ty);
         var op = OpBuilder.init(name, self.loc).builder()
             .add_operands(&.{ lhs, rhs })
             .add_results(&.{ty})
@@ -1163,10 +1178,10 @@ pub const TirLlvmGen = struct {
         return op.getResult(0);
     }
 
-    fn binArith(self: *TirLlvmGen, intName: []const u8, floatName: []const u8, p: tir.Instr.Bin2, ins: *const tir.Instr, arena: *types.TypeArena) !mlir.Value {
+    fn binArith(self: *MlirCodegen, intName: []const u8, floatName: []const u8, p: tir.Rows.Bin2, store: *types.TypeStore) !mlir.Value {
         var lhs = self.value_map.get(p.lhs).?;
         const rhs = self.value_map.get(p.rhs).?;
-        const ty = try self.llvmTypeOf(arena, ins.ty);
+        const ty = try self.llvmTypeOf(store, p.ty);
         const name = if (self.isFloatType(lhs.getType())) floatName else intName;
         var op = OpBuilder.init(name, self.loc).builder()
             .add_operands(&.{ lhs, rhs })
@@ -1176,34 +1191,21 @@ pub const TirLlvmGen = struct {
         return op.getResult(0);
     }
 
-    fn blockArgType(self: *const TirLlvmGen, func_op: *mlir.Operation, idx: usize) mlir.Type {
-        _ = idx;
-        // Pull from function_type attribute
-        const fnty_attr = func_op.getInherentAttributeByName(mlir.StringRef.from("function_type"));
-        const fnty = mlir.Attribute.typeAttrGetValue(fnty_attr);
-        // llvm.func types are LLVM function types; query param type from it is non-trivial via C-API,
-        // but for creating entry block we only need the original types we computed earlier.
-        // We recorded n_formals and we know they’re opaque pointers/ints; using ptr type for safety:
-        // However, we pass exact types from header creation path via our cached computation,
-        // so fallback to opaque ptr here (shouldn’t be hit for hello-world).
-        _ = fnty;
-        return self.llvm_ptr_ty;
-    }
-
-    fn ensureDeclFromCall(self: *TirLlvmGen, ins: *const tir.Instr, arena: *types.TypeArena) !FuncInfo {
-        // Create a declaration purely from the callsite (used if callee wasn’t in the TIR function list)
-        var args = try self.gpa.alloc(mlir.Value, ins.payload.Call.args.len);
+    fn ensureDeclFromCall(self: *MlirCodegen, ins_id: tir.InstrId, t: *const tir.TIR, store: *types.TypeStore) !FuncInfo {
+        const p = t.instrs.get(.Call, ins_id);
+        const args_slice = t.instrs.val_list_pool.slice(p.args);
+        var args = try self.gpa.alloc(mlir.Value, args_slice.len);
         defer self.gpa.free(args);
-        var arg_tys = try self.gpa.alloc(mlir.Type, ins.payload.Call.args.len);
+        var arg_tys = try self.gpa.alloc(mlir.Type, args_slice.len);
         defer self.gpa.free(arg_tys);
-        for (ins.payload.Call.args, 0..) |vid, i| {
+        for (args_slice, 0..) |vid, i| {
             var v = self.value_map.get(vid).?;
             args[i] = v;
             arg_tys[i] = v.getType();
         }
-        const ret_ty = try self.llvmTypeOf(arena, ins.ty);
+        const ret_ty = try self.llvmTypeOf(store, p.ty);
         const fn_ty = mlir.LLVM.getLLVMFunctionType(ret_ty, arg_tys, true);
-        const name = ins.payload.Call.callee;
+        const name = t.instrs.strs.get(p.callee);
         const attrs = [_]mlir.NamedAttribute{
             self.named("sym_name", self.strAttr(name)),
             self.named("function_type", mlir.Attribute.typeAttrGet(fn_ty)),
@@ -1215,19 +1217,19 @@ pub const TirLlvmGen = struct {
             .build();
         var body = self.module.getBody();
         body.appendOwnedOperation(func_op);
-        const info: FuncInfo = .{ .op = func_op, .is_variadic = true, .n_formals = arg_tys.len };
+        const info: FuncInfo = .{ .op = func_op, .is_variadic = true, .n_formals = arg_tys.len, .ret_type = ret_ty };
         _ = try self.func_syms.put(name, info);
         return info;
     }
 
-    fn constStringPtr(self: *TirLlvmGen, text: []const u8) !mlir.Operation {
-        // Pool `llvm.mlir.global` with nul terminator, then addr_of + gep 0,0 -> !llvm.ptr
+    fn constStringPtr(self: *MlirCodegen, text: []const u8) !mlir.Operation {
         if (self.str_pool.get(text)) |*g| {
             return self.addrOfFirstChar(@constCast(g));
         }
         const esc = try self.escapeForMlirString(text);
         defer self.gpa.free(esc);
         const name = try std.fmt.allocPrint(self.gpa, "str_{d}", .{self.str_pool.count()});
+        defer self.gpa.free(name);
         const glb_src = try std.fmt.allocPrint(
             self.gpa,
             "llvm.mlir.global internal constant @{s}(\"{s}\\00\") {{addr_space = 0:i32}}",
@@ -1241,8 +1243,7 @@ pub const TirLlvmGen = struct {
         return self.addrOfFirstChar(&global_op);
     }
 
-    fn addrOfFirstChar(self: *TirLlvmGen, global_op: *mlir.Operation) !mlir.Operation {
-        // llvm.mlir.addressof @name : !llvm.ptr
+    fn addrOfFirstChar(self: *MlirCodegen, global_op: *mlir.Operation) !mlir.Operation {
         const name_attr = global_op.getInherentAttributeByName(mlir.StringRef.from("sym_name"));
         const gsym = mlir.Attribute.flatSymbolRefAttrGet(self.ctx, mlir.Attribute.stringAttrGetValue(name_attr));
         var addr = OpBuilder.init("llvm.mlir.addressof", self.loc).builder()
@@ -1250,7 +1251,6 @@ pub const TirLlvmGen = struct {
             .add_attributes(&.{self.named("global_name", gsym)})
             .build();
         self.append(addr);
-        // gep 0,0 with elem_type = !llvm.array<N x i8>
         const value_attr = global_op.getInherentAttributeByName(mlir.StringRef.from("value"));
         var lit = mlir.Attribute.stringAttrGetValue(value_attr);
         const n: usize = lit.length() + 1; // +1 nul
@@ -1267,7 +1267,7 @@ pub const TirLlvmGen = struct {
         return gep;
     }
 
-    fn escapeForMlirString(self: *TirLlvmGen, s: []const u8) ![]u8 {
+    fn escapeForMlirString(self: *MlirCodegen, s: []const u8) ![]u8 {
         var out = ArrayList(u8).init(self.gpa);
         for (s) |c| {
             switch (c) {
@@ -1282,17 +1282,17 @@ pub const TirLlvmGen = struct {
         return out.toOwnedSlice();
     }
 
-    fn typeIsAny(self: *TirLlvmGen, arena: *types.TypeArena, ty: types.TypeId) bool {
+    fn typeIsAny(self: *MlirCodegen, store: *types.TypeStore, ty: types.TypeId) bool {
         _ = self;
-        return switch (arena.get(ty)) {
+        return switch (store.getKind(ty)) {
             .Any => true,
             else => false,
         };
     }
 
-    fn intWidth(self: *TirLlvmGen, arena: *types.TypeArena, ty: types.TypeId) u32 {
+    fn intWidth(self: *MlirCodegen, store: *types.TypeStore, ty: types.TypeId) u32 {
         _ = self;
-        return switch (arena.get(ty)) {
+        return switch (store.getKind(ty)) {
             .I8, .U8 => 8,
             .I16, .U16 => 16,
             .I32, .U32 => 32,
@@ -1302,16 +1302,16 @@ pub const TirLlvmGen = struct {
         };
     }
 
-    fn isSignedInt(self: *TirLlvmGen, arena: *types.TypeArena, ty: types.TypeId) bool {
+    fn isSignedInt(self: *MlirCodegen, store: *types.TypeStore, ty: types.TypeId) bool {
         _ = self;
-        return switch (arena.get(ty)) {
+        return switch (store.getKind(ty)) {
             .I8, .I16, .I32, .I64 => true,
             else => false,
         };
     }
 
-    fn llvmTypeOf(self: *TirLlvmGen, arena: *types.TypeArena, ty: types.TypeId) !mlir.Type {
-        return switch (arena.get(ty)) {
+    fn llvmTypeOf(self: *MlirCodegen, store: *types.TypeStore, ty: types.TypeId) !mlir.Type {
+        return switch (store.getKind(ty)) {
             .Void => self.void_ty,
             .Bool => self.i1_ty,
 
@@ -1324,54 +1324,59 @@ pub const TirLlvmGen = struct {
             .F64 => self.f64_ty,
             .Usize => self.i64_ty,
 
-            // current choice: string as ptr-to-u8 (fits your Hello World)
             .String => self.llvm_ptr_ty,
 
-            .Any => self.llvm_ptr_ty, // safe placeholder for now
+            .Any => self.llvm_ptr_ty,
 
-            .Ptr => self.llvm_ptr_ty, // opaque pointers on master
+            .Ptr => self.llvm_ptr_ty,
 
-            // Slice => struct { ptr, usize }
-            .Slice => |s| blk: {
-                const elem_ty = try self.llvmTypeOf(arena, s.elem);
+            .Slice => blk: {
+                const slice_ty = store.get(.Slice, ty);
+                const elem_ty = try self.llvmTypeOf(store, slice_ty.elem);
                 _ = elem_ty;
                 const fields = [_]mlir.Type{ self.llvm_ptr_ty, self.i64_ty };
-                // (elem_ty isn’t encoded in the slice layout; if you want it, carry as opaque ptr)
                 break :blk mlir.LLVM.getLLVMStructTypeLiteral(self.ctx, &fields, false);
             },
 
-            .Array => |a| blk: {
-                const e = try self.llvmTypeOf(arena, a.elem);
-                break :blk mlir.LLVM.getLLVMArrayType(e, @intCast(a.len));
+            .Array => blk: {
+                const arr_ty = store.get(.Array, ty);
+                const e = try self.llvmTypeOf(store, arr_ty.elem);
+                const len = self.intWidth(store, arr_ty.elem);
+                break :blk mlir.LLVM.getLLVMArrayType(e, len);
             },
 
-            // Optional<T> => { i1, T }
-            .Optional => |o| blk: {
-                const inner = try self.llvmTypeOf(arena, o.elem);
+            .Optional => blk: {
+                const opt_ty = store.get(.Optional, ty);
+                const inner = try self.llvmTypeOf(store, opt_ty.elem);
                 const fields = [_]mlir.Type{ self.i1_ty, inner };
                 break :blk mlir.LLVM.getLLVMStructTypeLiteral(self.ctx, &fields, false);
             },
 
-            // Tuple => literal struct
-            .Tuple => |t| blk: {
-                const n = t.elems.len;
+            .Tuple => blk: {
+                const tup_ty = store.get(.Tuple, ty);
+                const n = tup_ty.elems.len;
                 var buf = try self.gpa.alloc(mlir.Type, n);
                 defer self.gpa.free(buf);
-                for (t.elems, 0..) |eid, i| buf[i] = try self.llvmTypeOf(arena, eid);
+                const elems = store.type_pool.slice(tup_ty.elems);
+                for (elems, 0..) |eid, i| buf[i] = try self.llvmTypeOf(store, eid);
                 break :blk mlir.LLVM.getLLVMStructTypeLiteral(self.ctx, buf, false);
             },
 
-            // Function types aren’t first-class for now -> ptr
             .Function => self.llvm_ptr_ty,
 
-            // Struct => literal struct (field order)
-            .Struct => |st| blk: {
-                const n = st.fields.len;
+            .Struct => blk: {
+                const st_ty = store.get(.Struct, ty);
+                const n = st_ty.fields.len;
                 var buf = try self.gpa.alloc(mlir.Type, n);
                 defer self.gpa.free(buf);
-                for (st.fields, 0..) |f, i| buf[i] = try self.llvmTypeOf(arena, f.ty);
+                const fields = store.field_pool.slice(st_ty.fields);
+                for (fields, 0..) |f, i| {
+                    const field = store.Field.get(f.toRaw());
+                    buf[i] = try self.llvmTypeOf(store, field.ty);
+                }
                 break :blk mlir.LLVM.getLLVMStructTypeLiteral(self.ctx, buf, false);
             },
+            else => std.debug.panic("unhandled type: {}", .{ty}),
         };
     }
 };

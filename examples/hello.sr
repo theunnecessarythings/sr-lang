@@ -1,12 +1,13 @@
 printf :: extern proc(*void, any) i32
 
-add :: proc(a: i32, b: i32) i32 {
+add :: proc(a: i64, b: i64) i64 {
     return a + b
 }
 
 main :: proc() {
     fmt := "%d\n"
     r := add(40, 2)
-    printf(fmt.(*void), r)
+    printf("Hello, World!\n".^*void)
+    printf(fmt.^*void, r)
 }
 

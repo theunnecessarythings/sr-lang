@@ -1,9 +1,9 @@
 const std = @import("std");
 const testing = std.testing;
 const compiler = @import("compiler");
-const cst = compiler.cst_v2;
-const Parser = compiler.parser_v2.Parser;
-const Diagnostics = compiler.diagnostics_v2.Diagnostics;
+const cst = compiler.cst;
+const Parser = compiler.parser.Parser;
+const Diagnostics = compiler.diagnostics.Diagnostics;
 
 fn parseProgramFromText(gpa: std.mem.Allocator, src: [:0]const u8) !cst.CST {
     var diags = Diagnostics.init(gpa);

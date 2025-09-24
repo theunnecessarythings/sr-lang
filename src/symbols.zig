@@ -1,114 +1,150 @@
 const std = @import("std");
-const Loc = @import("lexer.zig").Token.Loc;
 const ast = @import("ast.zig");
+const dod = @import("cst.zig");
+const types = @import("types.zig");
 
 pub const SymbolKind = enum { Var, Const, Function, Type, Param, Field };
 
-pub const SymbolOrigin = union(enum) {
-    Decl: *ast.Decl,
-    Param: *ast.Param,
-};
+pub const SymTag = struct {};
+pub const ScopeTag = struct {};
 
-pub const Symbol = struct {
-    name: []const u8,
+pub const SymbolId = dod.Index(SymTag);
+pub const ScopeId = dod.Index(ScopeTag);
+pub const RangeSym = dod.RangeOf(SymbolId);
+
+pub const SymbolRow = struct {
+    name: ast.StrId,
     kind: SymbolKind,
-    loc: Loc,
-    origin: SymbolOrigin,
+    loc: ast.LocId,
+    origin_decl: ast.OptDeclId,
+    origin_param: ast.OptParamId,
 };
+pub const ScopeRow = struct { parent: dod.SentinelIndex(ScopeTag), symbols: RangeSym };
 
-pub const Scope = struct {
-    allocator: std.mem.Allocator,
-    parent: ?*Scope,
-    table: std.StringHashMap(Symbol),
+pub const SymbolStore = struct {
+    gpa: std.mem.Allocator,
+    syms: dod.Table(SymbolRow) = .{},
+    scopes: dod.Table(ScopeRow) = .{},
+    sym_pool: dod.Pool(SymbolId) = .{},
 
-    pub fn init(allocator: std.mem.Allocator, parent: ?*Scope) Scope {
-        return .{ .allocator = allocator, .parent = parent, .table = std.StringHashMap(Symbol).init(allocator) };
+    // active scope stack (for building ranges)
+    stack: std.ArrayListUnmanaged(struct { id: ScopeId, list: std.ArrayListUnmanaged(SymbolId) }) = .{},
+
+    pub fn init(gpa: std.mem.Allocator) SymbolStore {
+        return .{ .gpa = gpa };
+    }
+    pub fn deinit(self: *SymbolStore) void {
+        const gpa = self.gpa;
+        for (self.stack.items) |*it| it.list.deinit(gpa);
+        self.stack.deinit(gpa);
+        self.syms.deinit(gpa);
+        self.scopes.deinit(gpa);
+        self.sym_pool.deinit(gpa);
     }
 
-    pub fn deinit(self: *Scope) void {
-        self.table.deinit();
+    pub fn push(self: *SymbolStore, parent: ?ScopeId) !ScopeId {
+        const sid = ScopeId.fromRaw(self.scopes.add(self.gpa, .{ .parent = if (parent) |p| dod.SentinelIndex(ScopeTag).some(p) else dod.SentinelIndex(ScopeTag).none(), .symbols = RangeSym.empty() }));
+        try self.stack.append(self.gpa, .{ .id = sid, .list = .{} });
+        return sid;
+    }
+    pub fn pop(self: *SymbolStore) void {
+        const gpa = self.gpa;
+        if (self.stack.items.len == 0) return;
+        var frame = self.stack.items[self.stack.items.len - 1];
+        self.stack.items.len -= 1;
+        const range = self.sym_pool.pushMany(gpa, frame.list.items);
+        var scope = self.scopes.get(frame.id.toRaw());
+        scope.symbols = range;
+        self.scopes.list.set(frame.id.toRaw(), scope);
+        frame.list.deinit(gpa);
+    }
+    pub fn currentId(self: *const SymbolStore) ScopeId {
+        return self.stack.items[self.stack.items.len - 1].id;
     }
 
-    pub fn declare(self: *Scope, sym: Symbol) !void {
-        try self.table.put(sym.name, sym);
-    }
+    pub fn print(self: *const SymbolStore, a: *const ast.Ast, comptime indent: usize) void {
+        var buffer: [128]u8 = undefined;
+        const indent_str_slice = buffer[0..indent];
+        @memset(indent_str_slice, ' ');
+        const indent_str = indent_str_slice;
 
-    pub fn lookup(self: *Scope, name: []const u8) ?Symbol {
-        var s: ?*Scope = self;
-        while (s) |scope| {
-            if (scope.table.get(name)) |sym| return sym;
-            s = scope.parent;
-        }
-        return null;
-    }
-};
+        std.debug.print("{s}SymbolStore:\n", .{indent_str});
 
-pub const SymbolTable = struct {
-    allocator: std.mem.Allocator,
-    scopes: std.ArrayListUnmanaged(*Scope),
+        const scope_indent_str_slice = buffer[0 .. indent + 2];
+        @memset(scope_indent_str_slice, ' ');
+        const scope_indent_str = scope_indent_str_slice;
 
-    pub fn init(allocator: std.mem.Allocator) SymbolTable {
-        return .{ .allocator = allocator, .scopes = .{} };
-    }
+        const sym_indent_str_slice = buffer[0 .. indent + 4];
+        @memset(sym_indent_str_slice, ' ');
+        const sym_indent_str = sym_indent_str_slice;
 
-    pub fn deinit(self: *SymbolTable) void {
-        // Pop and free allocated scopes
-        var i: usize = self.scopes.items.len;
-        while (i > 0) {
-            i -= 1;
-            const s = self.scopes.items[i];
-            s.deinit();
-            self.allocator.destroy(s);
-        }
-        self.scopes.deinit(self.allocator);
-    }
+        const num_scopes = self.scopes.list.len;
+        for (0..num_scopes) |i| {
+            const scope = self.scopes.get(@intCast(i));
+            const scope_id = ScopeId.fromRaw(@intCast(i));
+            const parent_to_print: ?ScopeId = if (scope.parent.isNone()) null else scope.parent.unwrap();
+            std.debug.print("{s}Scope({d}) parent: {?}\n", .{ scope_indent_str, i, parent_to_print });
 
-    pub fn push(self: *SymbolTable) !*Scope {
-        const parent = if (self.scopes.items.len > 0) self.scopes.items[self.scopes.items.len - 1] else null;
-        const scope = try self.allocator.create(Scope);
-        scope.* = Scope.init(self.allocator, parent);
-        try self.scopes.append(self.allocator, scope);
-        return scope;
-    }
+            // Check if scope is on the stack
+            var on_stack = false;
+            for (self.stack.items) |frame| {
+                if (frame.id.toRaw() == scope_id.toRaw()) {
+                    on_stack = true;
+                    for (frame.list.items) |sym_id| {
+                        const row = self.syms.get(sym_id.toRaw());
+                        const name = a.exprs.strs.get(row.name);
+                        std.debug.print("{s}{s}: {s} (loc={d})\n", .{ sym_indent_str, @tagName(row.kind), name, row.loc.toRaw() });
+                    }
+                    break;
+                }
+            }
 
-    pub fn pop(self: *SymbolTable) void {
-        if (self.scopes.pop()) |scope| {
-            scope.deinit();
-            self.allocator.destroy(scope);
-        }
-    }
-
-    pub fn current(self: *SymbolTable) *Scope {
-        return self.scopes.items[self.scopes.items.len - 1];
-    }
-};
-
-pub const SymPrinter = struct {
-    out: *std.io.Writer,
-
-    pub fn init(writer: *std.io.Writer) SymPrinter {
-        return .{ .out = writer };
-    }
-
-    pub fn printTop(self: *SymPrinter, symbols: *SymbolTable) !void {
-        try self.out.print("(Symbols\n", .{});
-        if (symbols.scopes.items.len > 0) {
-            const root = symbols.scopes.items[0];
-            var it = root.table.iterator();
-            while (it.next()) |entry| {
-                const sym = entry.value_ptr.*;
-                const kind = switch (sym.kind) {
-                    .Var => "var",
-                    .Const => "const",
-                    .Function => "fn",
-                    .Type => "type",
-                    .Param => "param",
-                    .Field => "field",
-                };
-                try self.out.print("  (sym {s} kind={s} loc=[{d},{d}])\n", .{ sym.name, kind, sym.loc.start, sym.loc.end });
+            if (!on_stack) {
+                const ids = self.sym_pool.slice(scope.symbols);
+                for (ids) |sym_id| {
+                    const row = self.syms.get(sym_id.toRaw());
+                    const name = a.exprs.strs.get(row.name);
+                    std.debug.print("{s}{s}: {s} (loc={d})\n", .{ sym_indent_str, @tagName(row.kind), name, row.loc.toRaw() });
+                }
             }
         }
-        try self.out.print(")\n", .{});
-        try self.out.flush();
+    }
+
+    pub fn declare(self: *SymbolStore, sym: SymbolRow) !SymbolId {
+        const id = SymbolId.fromRaw(self.syms.add(self.gpa, sym));
+        var frame_ptr = &self.stack.items[self.stack.items.len - 1];
+        try frame_ptr.list.append(self.gpa, id);
+        return id;
+    }
+
+    pub fn lookup(self: *const SymbolStore, a: *const ast.Ast, scope_id: ScopeId, name: ast.StrId) ?SymbolId {
+        _ = a;
+        // linear search current scope and parents
+        var sid_opt: dod.SentinelIndex(ScopeTag) = dod.SentinelIndex(ScopeTag).some(scope_id);
+        while (!sid_opt.isNone()) {
+            const sid = sid_opt.unwrap();
+            const srow = self.scopes.get(sid.toRaw());
+
+            // Search symbols in the finalized pool for this scope
+            const ids = self.sym_pool.slice(srow.symbols);
+            for (ids) |sym_id| {
+                const row = self.syms.get(sym_id.toRaw());
+                if (row.name.toRaw() == name.toRaw()) return sym_id;
+            }
+
+            // Also search symbols for this scope if it's on the stack
+            for (self.stack.items) |frame| {
+                if (frame.id.toRaw() == sid.toRaw()) {
+                    for (frame.list.items) |sym_id| {
+                        const row = self.syms.get(sym_id.toRaw());
+                        if (row.name.toRaw() == name.toRaw()) return sym_id;
+                    }
+                    break; // Found the scope on the stack, no need to check other frames for this sid
+                }
+            }
+
+            sid_opt = srow.parent;
+        }
+        return null;
     }
 };

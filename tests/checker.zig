@@ -1,11 +1,11 @@
 const std = @import("std");
 const testing = std.testing;
 const compiler = @import("compiler");
-const CST = compiler.cst_v2.CST;
-const Parser = compiler.parser_v2.Parser;
-const Lower = compiler.lower_v2.LowerV2;
-const Checker = compiler.checker_v2.CheckerV2;
-const diag = compiler.diagnostics_v2;
+const CST = compiler.cst.CST;
+const Parser = compiler.parser.Parser;
+const Lower = compiler.lower.Lower;
+const Checker = compiler.checker.Checker;
+const diag = compiler.diagnostics;
 
 const gpa = testing.allocator;
 

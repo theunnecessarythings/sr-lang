@@ -1,12 +1,11 @@
 const compiler = @import("compiler");
 const std = @import("std");
 const lexer = compiler.lexer;
-const parser_v2 = compiler.parser_v2;
-const diagnostics = compiler.diagnostics_v2;
-const lower_v2 = compiler.lower_v2;
-const ast_v2 = compiler.ast_v2;
-const checker_v2 = compiler.checker_v2;
-const infer_v2 = compiler.infer_v2;
+const parser = compiler.parser;
+const diagnostics = compiler.diagnostics;
+const lower = compiler.lower;
+const ast = compiler.ast;
+const checker = compiler.checker;
 
 fn testLexer(data: []const u8) !void {
     const source0 = try std.heap.page_allocator.dupeZ(u8, data);
@@ -68,8 +67,8 @@ fn testParser(data: []const u8) !void {
     var diags = diagnostics.Diagnostics.init(gpa);
     defer diags.deinit();
 
-    var parser = parser_v2.Parser.init(gpa, source0, &diags);
-    var tree = parser.parse() catch |err| switch (err) {
+    var parser_mod = parser.Parser.init(gpa, source0, &diags);
+    var tree = parser_mod.parse() catch |err| switch (err) {
         error.UnexpectedToken => {
             try std.testing.expect(diags.anyErrors());
             return;
@@ -81,7 +80,7 @@ fn testParser(data: []const u8) !void {
 
     // if (diags.anyErrors()) return;
 
-    try std.testing.expectEqual(lexer.Token.Tag.eof, parser.cur.tag);
+    try std.testing.expectEqual(lexer.Token.Tag.eof, parser_mod.cur.tag);
 }
 
 pub export fn fuzz_parser(ptr: [*]const u8, len: usize) callconv(.c) void {
@@ -100,29 +99,29 @@ fn testLower(data: []const u8) !void {
     var diags = diagnostics.Diagnostics.init(gpa);
     defer diags.deinit();
 
-    var parser = parser_v2.Parser.init(gpa, source0, &diags);
-    var tree = parser.parse() catch |err| switch (err) {
+    var parser_mod = parser.Parser.init(gpa, source0, &diags);
+    var tree = parser_mod.parse() catch |err| switch (err) {
         error.UnexpectedToken => return, // invalid input is fine for fuzzing
         error.OutOfMemory => std.debug.panic("parser OOM", .{}),
         else => std.debug.panic("parser failed: {}", .{err}),
     };
     defer tree.deinit();
 
-    var lower = lower_v2.LowerV2.init(gpa, &tree, &diags);
-    var a = try lower.run();
+    var lower_mod = lower.Lower.init(gpa, &tree, &diags);
+    var a = try lower_mod.run();
     defer a.deinit();
 
     var buffer: [1024]u8 = undefined;
     var sink = std.fs.File.stdout().writer(&buffer);
     const writer = &sink.interface;
-    var printer = ast_v2.AstPrinter.init(writer, &a.exprs, &a.stmts, &a.pats);
+    var printer = ast.AstPrinter.init(writer, &a.exprs, &a.stmts, &a.pats);
     try printer.printUnit(&a.unit);
 }
 
 pub export fn fuzz_lower(ptr: [*]const u8, len: usize) callconv(.c) void {
     const data = ptr[0..len];
     _ = testLower(data) catch |err| {
-        std.debug.panic("lower_v2 failed: {}\n", .{err});
+        std.debug.panic("lower failed: {}\n", .{err});
     };
 }
 
@@ -135,19 +134,19 @@ fn testChecker(data: []const u8) !void {
     var diags = diagnostics.Diagnostics.init(gpa);
     defer diags.deinit();
 
-    var parser = parser_v2.Parser.init(gpa, source0, &diags);
-    var c = parser.parse() catch |err| switch (err) {
+    var parser_mod = parser.Parser.init(gpa, source0, &diags);
+    var c = parser_mod.parse() catch |err| switch (err) {
         error.UnexpectedToken => return, // invalid input is fine for fuzzing
         error.OutOfMemory => std.debug.panic("parser OOM", .{}),
         else => std.debug.panic("parser failed: {}", .{err}),
     };
     defer c.deinit();
 
-    var lower = lower_v2.LowerV2.init(gpa, &c, &diags);
-    var a = try lower.run();
+    var lower_mod = lower.Lower.init(gpa, &c, &diags);
+    var a = try lower_mod.run();
     defer a.deinit();
 
-    var chk = checker_v2.CheckerV2.init(gpa, &diags, &a);
+    var chk = checker.Checker.init(gpa, &diags, &a);
     defer chk.deinit();
     _ = try chk.run();
 }
@@ -155,6 +154,6 @@ fn testChecker(data: []const u8) !void {
 pub export fn fuzz_checker(ptr: [*]const u8, len: usize) callconv(.c) void {
     const data = ptr[0..len];
     _ = testChecker(data) catch |err| {
-        std.debug.panic("checker_v2 failed: {}\n", .{err});
+        std.debug.panic("checker failed: {}\n", .{err});
     };
 }

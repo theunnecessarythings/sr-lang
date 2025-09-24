@@ -97,6 +97,10 @@ pub fn build(b: *std.Build) void {
         }),
     });
     exe_tests.use_llvm = true;
+    linkMLIR(b, exe_tests) catch |err| {
+        std.debug.print("Error linking MLIR for tests: {}\n", .{err});
+        @panic("Failed to link MLIR for tests");
+    };
 
     const run_exe_tests = b.addRunArtifact(exe_tests);
     b.installArtifact(exe_tests);

@@ -3,1638 +3,1239 @@ const ast = @import("ast.zig");
 const tir = @import("tir.zig");
 const types = @import("types.zig");
 
-const Allocator = std.mem.Allocator;
-const ArrayList = std.array_list.Managed;
-const AutoHashMap = std.AutoHashMap;
-const StringHashMap = std.StringHashMap;
-
-const LowerError = error{
-    UnsupportedAstNode,
-    SemanticError, // e.g. variable not found or missing type
-    OutOfMemory,
-};
-
-var g_lambda_counter: usize = 0;
+const StrId = @import("cst.zig").StrId;
+const OptStrId = @import("cst.zig").OptStrId;
 
 pub const LowerTir = struct {
-    allocator: Allocator,
-    type_arena: *types.TypeArena,
-    expr_types: *AutoHashMap(*const ast.Expr, types.TypeId),
-    decl_types: *AutoHashMap(*const ast.Decl, types.TypeId),
-    module: tir.Module,
-    builder: tir.Builder,
-    void_t: types.TypeId,
-    bool_t: types.TypeId,
-    usize_t: ?types.TypeId = null,
-    string_t: ?types.TypeId = null,
+    gpa: std.mem.Allocator,
+    info: *types.TypeInfo,
+    // Simple loop stack to support break/continue in While/For
+    loop_stack: std.ArrayListUnmanaged(LoopCtx) = .{},
 
-    pub fn init(
-        self: *LowerTir,
-        allocator: Allocator,
-        arena: *types.TypeArena,
-        expr_map: *AutoHashMap(*const ast.Expr, types.TypeId),
-        decl_map: *AutoHashMap(*const ast.Decl, types.TypeId),
-    ) anyerror!void {
-        const void_t = try arena.mk(.{ .Void = {} });
-        const bool_t = try arena.mk(.{ .Bool = {} });
-        self.* = .{
-            .allocator = allocator,
-            .type_arena = arena,
-            .expr_types = expr_map,
-            .decl_types = decl_map,
-            .module = tir.Module.init(allocator, arena),
-            .builder = undefined,
-            .void_t = void_t,
-            .bool_t = bool_t,
-        };
-        self.usize_t = self.tryMkUsize();
-        self.string_t = self.tryMkString();
-        self.builder = tir.Builder.init(allocator, &self.module);
+    pub fn init(gpa: std.mem.Allocator, info: *types.TypeInfo) LowerTir {
+        return .{ .gpa = gpa, .info = info };
     }
 
     pub fn deinit(self: *LowerTir) void {
-        self.module.deinit();
+        self.loop_stack.deinit(self.gpa);
     }
 
-    pub fn run(self: *LowerTir, unit: *const ast.Unit) anyerror!tir.Module {
-        // package decl omitted for now; wire into output module metadata if needed
-        for (unit.decls.items) |*decl| {
-            try self.lowerTopLevelDecl(decl);
-        }
-        return self.module;
+    pub fn run(self: *@This(), a: *const ast.Ast) !tir.TIR {
+        var t = tir.TIR.init(self.gpa, &self.info.store);
+        var b = Builder.init(self.gpa, &t);
+
+        // Lower top-level decls: functions and globals
+        const decls = a.exprs.decl_pool.slice(a.unit.decls);
+        for (decls) |did| try self.lowerTopDecl(a, &b, did);
+
+        return t;
     }
 
-    //==========================================================================
-    // Top level: functions & globals
-    //==========================================================================
-    fn lowerTopLevelDecl(self: *LowerTir, decl: *const ast.Decl) anyerror!void {
-        if (decl.binding) |pat| {
-            switch (pat.*) {
-                .Binding => |bind| {
-                    if (decl.value.* == .FunctionLit) {
-                        try self.lowerFunction(bind.name, decl);
-                        return;
-                    }
-                    // Non-function top-level => global (no initializer yet)
-                    const ty = self.decl_types.get(decl) orelse return LowerError.SemanticError;
-                    try self.module.globals.append(.{
-                        .name = bind.name,
-                        .ty = ty,
-                    });
-                },
-                // Support destructuring into multiple globals later as needed.
-                else => return LowerError.UnsupportedAstNode,
+    fn lowerTopDecl(self: *@This(), a: *const ast.Ast, b: *Builder, did: ast.DeclId) !void {
+        const d = a.exprs.Decl.get(did.toRaw());
+        const kind = a.exprs.index.kinds.items[d.value.toRaw()];
+        if (kind == .FunctionLit and !a.exprs.get(.FunctionLit, d.value).flags.is_extern) {
+            const name = if (!d.pattern.isNone()) self.bindingNameOfPattern(a, d.pattern.unwrap()) else null;
+            if (name) |nm| {
+                try self.lowerFunction(a, b, nm, d.value);
             }
-        } else {
-            // Unnamed top-level value? Could be a bare call/expr at module init time.
-            // Leave unsupported for now.
-            return LowerError.UnsupportedAstNode;
-        }
-    }
-
-    fn lowerFunction(self: *LowerTir, name: []const u8, fun_decl: *const ast.Decl) anyerror!void {
-        const fun_expr = fun_decl.value;
-        const fun = &fun_expr.FunctionLit;
-
-        // Type from checker
-        const fn_ty_id = self.expr_types.get(fun_expr) orelse return LowerError.SemanticError;
-        const fn_ty = self.type_arena.get(fn_ty_id).Function;
-
-        // Create TIR function
-        const f = try self.builder.addFunction(name, fn_ty.result);
-        // Always add formal parameters (even for externs), but do not emit blocks for extern/no-body.
-        for (fun.params.items, 0..) |p, i| {
-            _ = try self.builder.addFuncParam(f, extractParamName(p), fn_ty.params[i]);
-        }
-
-        // Extern or no body: declare only — no blocks/terminator.
-        if (fun.is_extern or fun.body == null) {
             return;
         }
-
-        // ====== Lower function body ======
-        // Prepare entry block (for allocas etc.)
-        const entry = try self.builder.addBlock(f);
-        var fn_ctx = FunctionContext.init(self.allocator, &self.builder, f, entry, self.type_arena, self.void_t, self.bool_t);
-        try fn_ctx.pushScope();
-        defer fn_ctx.deinit();
-
-        // Bind params in the entry block (spill for `mut`/`ref` when needed)
-        for (fun.params.items, 0..) |p, i| {
-            const p_ty = fn_ty.params[i];
-            const param_id = f.params.items[i].id; // already added above            // Bind pattern
-            if (p.pat) |pat| {
-                switch (pat.*) {
-                    .Binding => |bind| {
-                        if (bind.is_mut) {
-                            const ptr_ty = try self.mkPointer(p_ty);
-                            const slot = try self.builder.alloca(entry, ptr_ty, null, 0);
-                            _ = try self.builder.store(entry, self.void_t, slot, param_id, 0);
-                            try fn_ctx.bindMut(bind.name, slot);
-                        } else if (bind.by_ref) {
-                            // by_ref: assume parameter is already a pointer or we pass address
-                            try fn_ctx.bindMut(bind.name, param_id);
-                        } else {
-                            try fn_ctx.bindImm(bind.name, param_id);
-                        }
-                    },
-                    .Tuple => |tp| {
-                        // Destructure tuple param value into locals (immutable by default)
-                        try self.bindTuplePattern(&fn_ctx, .{ .value = param_id, .is_ptr = false }, p_ty, &tp);
-                    },
-                    else => return LowerError.UnsupportedAstNode,
-                }
-            }
-        }
-        const body = fun.body.?;
-        try self.lowerBlockStmts(&fn_ctx, &body);
-        // fallthrough out of function body: run all defers (normal), then implicit ret if void
-        try self.runDefersToDepth(&fn_ctx, 0, false);
-        if (f.result == self.void_t and entry.term == null and fn_ctx.current_block.term == null) {
-            self.builder.retVoid(fn_ctx.current_block);
+        // Global: only record type for now
+        if (!d.pattern.isNone()) {
+            const nm = self.bindingNameOfPattern(a, d.pattern.unwrap()) orelse return;
+            const ty = self.getDeclType(did) orelse return;
+            _ = b.addGlobal(nm, ty);
         }
     }
 
-    //==========================================================================
-    // Statements
-    //==========================================================================
-    fn lowerBlockStmts(self: *LowerTir, ctx: *FunctionContext, blk: *const ast.Block) anyerror!void {
-        // Track if we saw a return to avoid accidental fallthrough.
-        var terminated = false;
+    fn lowerFunction(self: *@This(), a: *const ast.Ast, b: *Builder, name: StrId, fun_eid: ast.ExprId) !void {
+        const fid = self.getExprType(fun_eid) orelse return;
+        // Expect a function type
+        if (self.info.store.index.kinds.items[fid.toRaw()] != .Function) return;
+        const fnty = self.info.store.Function.get(self.info.store.index.rows.items[fid.toRaw()]);
 
-        for (blk.items.items) |*stmt| {
-            if (terminated) break;
-            terminated = try self.lowerStmt(ctx, stmt);
+        var f = try b.beginFunction(name, fnty.result);
+
+        const fnr = a.exprs.get(.FunctionLit, fun_eid);
+        // Params
+        const params = a.exprs.param_pool.slice(fnr.params);
+        var i: usize = 0;
+        while (i < params.len) : (i += 1) {
+            const p = a.exprs.Param.get(params[i].toRaw());
+            const pty = self.info.store.type_pool.slice(fnty.params)[i];
+            const pname = if (!p.pat.isNone()) self.bindingNameOfPattern(a, p.pat.unwrap()) else null;
+            _ = try b.addParam(&f, pname, pty);
         }
 
-        if (!terminated) {
-            // Implicit return for void functions is OK; otherwise type checker should have flagged it.
-            if (ctx.func.result == self.void_t) {
-                self.builder.retVoid(ctx.current_block);
+        // Entry block
+        var blk = try b.beginBlock(&f);
+        var env = Env.init(self.gpa);
+        defer env.deinit(self.gpa);
+
+        // Bind params in env
+        i = 0;
+        const param_vals = f.param_vals.items;
+        while (i < params.len) : (i += 1) {
+            const p = a.exprs.Param.get(params[i].toRaw());
+            if (!p.pat.isNone()) {
+                const pname = self.bindingNameOfPattern(a, p.pat.unwrap()) orelse continue;
+                try env.bind(self.gpa, a, pname, .{ .value = param_vals[i], .is_slot = false });
             }
+        }
+
+        // Body is an ExprId to a Block
+        if (!fnr.body.isNone()) {
+            const body_id = fnr.body.unwrap();
+            // function-level defer scope
+            try env.pushScope(self.gpa);
+            try self.lowerExprAsStmtList(a, &env, &f, &blk, body_id);
+            _ = env.popScope();
+        }
+
+        // If no terminator, add void return
+        if (blk.term.isNone()) {
+            try b.setReturn(&blk, tir.OptValueId.none());
+        }
+
+        try b.endBlock(&f, blk);
+        try b.endFunction(f);
+    }
+
+    fn lowerExprAsStmtList(self: *@This(), a: *const ast.Ast, env: *Env, f: *Builder.FunctionFrame, blk: *Builder.BlockFrame, id: ast.ExprId) !void {
+        if (a.exprs.index.kinds.items[id.toRaw()] == .Block) {
+            const b = a.exprs.get(.Block, id);
+            const stmts = a.stmts.stmt_pool.slice(b.items);
+            try env.pushScope(self.gpa);
+            for (stmts) |sid| try self.lowerStmt(a, env, f, blk, sid);
+            _ = env.popScope();
+        } else {
+            // Single expression statement
+            _ = try self.lowerExpr(a, env, f, blk, id);
         }
     }
 
-    /// Returns true if this statement ended the current block (return/br/unreachable).
-    fn lowerStmt(self: *LowerTir, ctx: *FunctionContext, stmt: *const ast.Statement) anyerror!bool {
-        const b = ctx.current_block;
-        switch (stmt.*) {
-            .Defer => |d| {
-                try ctx.addDefer(d.expr, false);
-                return false;
+    fn lowerStmt(self: *@This(), a: *const ast.Ast, env: *Env, f: *Builder.FunctionFrame, blk: *Builder.BlockFrame, sid: ast.StmtId) !void {
+        const k = a.stmts.index.kinds.items[sid.toRaw()];
+        switch (k) {
+            .Expr => {
+                const e = a.stmts.get(.Expr, sid).expr;
+                _ = try self.lowerExpr(a, env, f, blk, e);
             },
-            .ErrDefer => |d| {
-                try ctx.addDefer(d.expr, true);
-                return false;
+            .Defer => {
+                const d = a.stmts.get(.Defer, sid);
+                try env.defers.append(self.gpa, .{ .expr = d.expr, .is_err = false });
             },
-
-            .Expr => |*e| {
-                _ = try self.lowerExpr(ctx, e);
-                return false;
+            .ErrDefer => {
+                const d = a.stmts.get(.ErrDefer, sid);
+                try env.defers.append(self.gpa, .{ .expr = d.expr, .is_err = true });
             },
-            .Decl => |d| {
-                // Lower initializer
-                const value_id = try self.lowerExpr(ctx, d.value);
-                const value_ty = self.expr_types.get(d.value) orelse return LowerError.SemanticError;
-
-                if (d.binding) |pat| {
-                    switch (pat.*) {
-                        .Binding => |bind| {
-                            if (d.is_const) {
-                                try ctx.bindImm(bind.name, value_id);
-                            } else {
-                                // Mutable local -> stack slot + store
-                                const ptr_ty = try self.mkPointer(value_ty);
-                                const slot = try self.builder.alloca(b, ptr_ty, null, 0);
-                                _ = try self.builder.store(b, self.void_t, slot, value_id, 0);
-                                try ctx.bindMut(bind.name, slot);
-                            }
-                        },
-                        .Tuple => |tp| {
-                            // Destructure tuple into (possibly) multiple locals – for now immutable
-                            try self.bindTuplePattern(ctx, .{ .value = value_id, .is_ptr = false }, value_ty, &tp);
-                        },
-                        else => return LowerError.UnsupportedAstNode,
+            .Break => {
+                const br = a.stmts.get(.Break, sid);
+                // find nearest loop; ignore label for now except if provided and matches
+                var target: ?LoopCtx = null;
+                var i: isize = @as(isize, @intCast(self.loop_stack.items.len)) - 1;
+                while (i >= 0) : (i -= 1) {
+                    const lc = self.loop_stack.items[@intCast(i)];
+                    if (br.label.isNone() or (lc.label != null and std.mem.eql(u8, lc.label.?, a.exprs.strs.get(br.label.unwrap())))) {
+                        target = lc;
+                        break;
                     }
                 }
-                return false;
-            },
-            .Assign => |as| {
-                // Compute lvalue pointer and rvalue then store
-                const lhs_ptr = try self.lowerAddress(ctx, as.left);
-                const rhs_val = try self.lowerExpr(ctx, as.right);
-                _ = try self.builder.store(b, self.void_t, lhs_ptr, rhs_val, 0);
-                return false;
-            },
-            .Return => |ret| {
-                if (ret.value) |ve| {
-                    const v = try self.lowerExpr(ctx, ve);
-                    // is_err?  -> run errdefers conditionally
-                    // const is_err = try self.call1(ctx, "builtin.err.is_err", self.bool_t, v);
-                    // try self.runAllDefersBeforeReturn(ctx, is_err);
-                    self.builder.ret(ctx.current_block, v);
-                } else {
-                    // void return: only normal defers run
-                    try self.runAllDefersBeforeReturn(ctx, null);
-                    self.builder.retVoid(ctx.current_block);
-                }
-                return true;
-            },
-            .Break => |brk| {
-                // Find loop target and run defers for intervening scopes (normal-only).
-                const tgt = ctx.findLoop(brk.label) orelse return LowerError.SemanticError;
-                try self.runDefersToDepth(ctx, tgt.scope_depth, false);
-                // break value (or undef) to loop join param
-                const v = if (brk.value) |ve|
-                    try self.lowerExpr(ctx, ve)
-                else
-                    try self.builder.constUndef(ctx.current_block, tgt.result_ty);
-                try self.builder.br(ctx.current_block, tgt.join_block.id, &.{v});
-                return true;
-            },
-            .Continue => |_| {
-                const tgt = ctx.findLoop(null) orelse return LowerError.SemanticError;
-                try self.runDefersToDepth(ctx, tgt.scope_depth, false);
-                try self.builder.br(ctx.current_block, tgt.continue_block.id, &.{});
-                return true;
-            },
-            .Unreachable => |_| {
-                self.builder.unreachableOp(b);
-                return true;
-            },
-            .Insert => |_| return LowerError.UnsupportedAstNode,
-        }
-    }
-
-    //==========================================================================
-    // Expressions
-    //==========================================================================
-    fn lowerExpr(self: *LowerTir, ctx: *FunctionContext, expr: *const ast.Expr) anyerror!tir.ValueId {
-        const b = ctx.current_block;
-        const ty = self.getExprType(expr) orelse return LowerError.SemanticError;
-
-        switch (expr.*) {
-            .Range => |r| {
-                // Build a first-class range value
-                const start_v = if (r.start) |s| try self.lowerExpr(ctx, s) else try self.builder.constUndef(b, ty);
-                const end_v = if (r.end) |e| try self.lowerExpr(ctx, e) else try self.builder.constUndef(b, ty);
-                const incl = try self.builder.constBool(b, self.bool_t, r.inclusive_right);
-                var args = [_]tir.ValueId{ start_v, end_v, incl };
-                return self.builder.call(b, ty, "builtin.range.make", args[0..]);
-            },
-            // ----- Basic literals -----
-            .IntLit => |lit| {
-                const v = try std.fmt.parseInt(i64, lit.value, 0);
-                return self.builder.constInt(b, ty, v);
-            },
-            .FloatLit => |lit| {
-                const v = try std.fmt.parseFloat(f64, lit.value);
-                return self.builder.constFloat(b, ty, v);
-            },
-            .BoolLit => |lit| return self.builder.constBool(b, ty, lit.value),
-            .StringLit => |lit| return self.builder.constString(b, ty, lit.value),
-            .CharLit => |lit| {
-                // represent char as int
-                return self.builder.constInt(b, ty, @as(i64, @intCast(lit.value)));
-            },
-            .NullLit => |_| return self.builder.constNull(b, ty),
-            .UndefLit => |_| return self.builder.constUndef(b, ty),
-
-            // ----- Identifiers -----
-            .Identifier => |ident| {
-                const vb = ctx.lookup(ident.name) orelse return LowerError.SemanticError;
-                return try self.valueOfVar(ctx, vb, ty);
-            },
-
-            // ----- Builtin Type literal (meta) -----
-            .Type => |_| return LowerError.UnsupportedAstNode,
-
-            // ----- Composite literals -----
-            .TupleLit => |tl| {
-                var vals = try self.tmpVals(tir.ValueId, tl.elems.items.len);
-                defer self.allocator.free(vals);
-
-                for (tl.elems.items, 0..) |e, i|
-                    vals[i] = try self.lowerExpr(ctx, e);
-
-                return self.builder.tupleMake(b, ty, vals);
-            },
-            .ArrayLit => |al| {
-                var vals = try self.tmpVals(tir.ValueId, al.elems.items.len);
-                defer self.allocator.free(vals);
-
-                for (al.elems.items, 0..) |e, i|
-                    vals[i] = try self.lowerExpr(ctx, e);
-
-                return self.builder.arrayMake(b, ty, vals);
-            },
-            .StructLit => |sl| {
-                var fields = try self.tmpVals(tir.Instr.StructFieldInit, sl.fields.items.len);
-                defer self.allocator.free(fields);
-
-                for (sl.fields.items, 0..) |f, i| {
-                    const fv = try self.lowerExpr(ctx, f.value);
-                    fields[i] = .{ .index = @intCast(i), .name = f.name, .value = fv };
-                }
-                return self.builder.structMake(b, ty, fields);
-            },
-            .MapLit => |ml| {
-                // Build from key/value arrays via builtin.map.from_kv
-                var kvs = try self.tmpVals(tir.ValueId, ml.entries.items.len * 2);
-                defer self.allocator.free(kvs);
-                var j: usize = 0;
-                for (ml.entries.items) |kv| {
-                    kvs[j] = try self.lowerExpr(ctx, kv.key);
-                    j += 1;
-                    kvs[j] = try self.lowerExpr(ctx, kv.value);
-                    j += 1;
-                }
-                return self.builder.call(b, ty, "builtin.map.from_kv", kvs);
-            },
-            .VariantLit => |vl| {
-                const tag_s = try self.constStr(ctx, vl.name);
-                const payload = if (vl.value) |vex| try self.lowerExpr(ctx, vex) else try self.builder.constUndef(b, self.void_t);
-                return self.builder.call(b, ty, "builtin.variant.make", &.{ tag_s, payload });
-            },
-            .EnumLit => |el| {
-                const name_s = try self.constStr(ctx, el.name);
-                const payload = if (el.value) |vex| try self.lowerExpr(ctx, vex) else try self.builder.constUndef(b, self.void_t);
-                return self.builder.call(b, ty, "builtin.enum.make", &.{ name_s, payload });
-            },
-
-            // ----- Prefix -----
-            .UnaryPlus => |u| {
-                // no-op
-                return self.lowerExpr(ctx, u.right);
-            },
-            .UnaryMinus => |u| {
-                const v = try self.lowerExpr(ctx, u.right);
-                // 0 - x
-                const zero = try self.zeroConst(ctx, ty);
-                return self.builder.sub(b, ty, zero, v);
-            },
-            .AddressOf => |u| {
-                const ptr = try self.lowerAddress(ctx, u.right);
-                return ptr;
-            },
-            .LogicalNot => |u| {
-                const v = try self.lowerExpr(ctx, u.right);
-                return self.builder.lNot(b, ty, v);
-            },
-
-            // ----- Infix -----
-            .InfixAdd => |op| return self.binOp(ctx, ty, op.left, op.right, .Add),
-            .InfixSub => |op| return self.binOp(ctx, ty, op.left, op.right, .Sub),
-            .InfixMul => |op| return self.binOp(ctx, ty, op.left, op.right, .Mul),
-            .InfixDiv => |op| return self.binOp(ctx, ty, op.left, op.right, .Div),
-            .InfixMod => |op| return self.binOp(ctx, ty, op.left, op.right, .Mod),
-            .InfixShl => |op| return self.binOp(ctx, ty, op.left, op.right, .Shl),
-            .InfixShr => |op| return self.binOp(ctx, ty, op.left, op.right, .Shr),
-            .InfixBitAnd => |op| return self.binOp(ctx, ty, op.left, op.right, .BitAnd),
-            .InfixBitOr => |op| return self.binOp(ctx, ty, op.left, op.right, .BitOr),
-            .InfixBitXor => |op| return self.binOp(ctx, ty, op.left, op.right, .BitXor),
-
-            .InfixEq => |op| return self.cmpOp(ctx, op.left, op.right, .CmpEq),
-            .InfixNeq => |op| return self.cmpOp(ctx, op.left, op.right, .CmpNe),
-            .InfixLt => |op| return self.cmpOp(ctx, op.left, op.right, .CmpLt),
-            .InfixLte => |op| return self.cmpOp(ctx, op.left, op.right, .CmpLe),
-            .InfixGt => |op| return self.cmpOp(ctx, op.left, op.right, .CmpGt),
-            .InfixGte => |op| return self.cmpOp(ctx, op.left, op.right, .CmpGe),
-
-            // Logical And/Or – emitted as ops (no short-circuit CFG here)
-            // Logical And/Or – now lowered with short-circuit CFG and block params
-            .InfixLogicalAnd => |op| {
-                return self.lowerLogicalAnd(ctx, op.left, op.right);
-            },
-            .InfixLogicalOr => |op| {
-                return self.lowerLogicalOr(ctx, op.left, op.right);
-            },
-
-            // Optionals / Errors:
-            .InfixOrelse => |op| {
-                return self.lowerOrelse(ctx, op.left, op.right, ty);
-            },
-            .InfixCatch => |op| {
-                return self.lowerCatch(ctx, &op, ty);
-            },
-
-            // ----- Postfix -----
-            .PostfixErrorUnwrap => |pe| {
-                const v = try self.lowerExpr(ctx, pe.expr);
-                // builtin.err.unwrap : panics (or traps) on error; result type is success payload type `ty`
-                return self.call1(ctx, "builtin.err.unwrap", ty, v);
-            },
-            .PostfixOptionalUnwrap => |po| {
-                const v = try self.lowerExpr(ctx, po.expr);
-                // builtin.opt.expect : traps if None; returns inner
-                return self.call1(ctx, "builtin.opt.expect", ty, v);
-            },
-            .PostfixDeref => |pd| {
-                // *expr : load
-                const ptr = try self.lowerExpr(ctx, pd.expr);
-                return self.builder.load(b, ty, ptr, 0);
-            },
-            .PostfixIndex => |ix| {
-                // If base is pointer/slice and you want an lvalue, use lowerAddress(); otherwise value load path:
-                const base_val = try self.lowerExpr(ctx, ix.collection);
-                const idx_val = try self.lowerExpr(ctx, ix.index);
-                return self.builder.index(b, ty, base_val, idx_val);
-            },
-            .PostfixField => |pf| {
-                // Extract field from value aggregate
-                const base = try self.lowerExpr(ctx, pf.parent);
-                var field_index: u32 = 0;
-                if (pf.is_tuple) {
-                    // Tuple-style ".0", ".1", ...
-                    field_index = try self.parseTupleIndex(pf.field);
-                } else {
-                    const base_ty = self.getExprType(pf.parent) orelse return LowerError.SemanticError;
-                    field_index = try self.resolveStructFieldIndex(base_ty, pf.field);
-                }
-                return self.builder.extractField(b, ty, base, field_index, pf.field);
-            },
-            .PostfixCall => |call| {
-                var callee_name: []const u8 = undefined;
-                switch (call.callee.*) {
-                    .Identifier => callee_name = call.callee.Identifier.name,
-                    .FunctionLit => {
-                        callee_name = try self.materializeFunctionLiteral(ctx, &call.callee.FunctionLit);
-                    },
-                    .Closure => {
-                        // capture-less closure becomes a function; if captures exist, we pass them as extra params at the front
-                        callee_name = try self.materializeClosure(ctx, &call.callee.Closure);
-                    },
-                    else => return LowerError.UnsupportedAstNode,
-                }
-                var args = ArrayList(tir.ValueId).init(self.allocator);
-                defer args.deinit();
-                for (call.args.items) |arg_expr| try args.append(try self.lowerExpr(ctx, arg_expr));
-                return self.builder.call(b, ty, callee_name, args.items);
-            },
-            .PostfixAwait => |pa| {
-                const fut = try self.lowerExpr(ctx, pa.expr);
-                return self.call1(ctx, "builtin.async.await", ty, fut);
-            },
-
-            // ----- Casts -----
-            .CastNormal => |c| {
-                const v = try self.lowerExpr(ctx, c.expr);
-                return self.builder.castNormal(b, ty, v);
-            },
-            .CastBit => |c| {
-                const v = try self.lowerExpr(ctx, c.expr);
-                return self.builder.castBit(b, ty, v);
-            },
-            .CastSaturate => |c| {
-                const v = try self.lowerExpr(ctx, c.expr);
-                return self.builder.castSaturate(b, ty, v);
-            },
-            .CastWrap => |c| {
-                const v = try self.lowerExpr(ctx, c.expr);
-                return self.builder.castWrap(b, ty, v);
-            },
-            .CastChecked => |c| {
-                const v = try self.lowerExpr(ctx, c.expr);
-                return self.builder.castChecked(b, ty, v);
-            },
-
-            // ----- Control flow as expressions -----
-            .If => |iff| return self.lowerIfExpr(ctx, &iff, ty),
-            .While => |w| return self.lowerWhileExpr(ctx, &w, ty),
-            .For => |fr| return self.lowerForExpr(ctx, &fr, ty),
-            .Match => |mm| {
-                return self.lowerMatchExpr(ctx, &mm, ty);
-            }, // ----- Blocks / misc -----
-            .Block => |bb| return self.lowerBlockExpr(ctx, &bb, ty),
-            .ComptimeBlock => |cb| {
-                // Treat as normal block at runtime lowering
-                return self.lowerBlockExpr(ctx, &cb.block, ty);
-            },
-            .CodeBlock => |cb| {
-                // Same as normal block (user-level meaning already resolved during checking)
-                return self.lowerBlockExpr(ctx, &cb.block, ty);
-            },
-            .MlirBlock => |mb| {
-                // Opaque bridge: builtin.mlir.exec(kind, text) -> ty
-                const kind_s: []const u8 = switch (mb.kind) {
-                    .Module => "module",
-                    .Type => "type",
-                    .Attribute => "attribute",
-                    .Operation => "operation",
-                };
-                const text_v = try self.builder.constString(b, try self.requireStringType(), mb.text);
-                const kind_v = try self.builder.constString(b, try self.requireStringType(), kind_s);
-                var args = [_]tir.ValueId{ kind_v, text_v };
-                return self.builder.call(b, ty, "builtin.mlir.exec", args[0..]);
-            },
-            .AsyncBlock => |ab| {
-                // Spawn a lambda returning the value of ab.body
-                const fn_name = try self.materializeThunkOfExpr(ctx, ab.body, "async.lambda");
-                _ = fn_name;
-                var args = [_]tir.ValueId{};
-                return self.builder.call(b, ty, "builtin.async.spawn", args[0..]); // assumes callee captured by symbol, backend can read it
-            },
-            .Closure => {
-                // Return a function symbol (no direct function values in TIR).
-                // We materialize the closure as a named function and return undef of its type (call sites handle it).
-                _ = try self.materializeClosure(ctx, &expr.Closure);
-                return self.builder.constUndef(b, ty);
-            },
-            // ----- Function literal as expression -----
-            .FunctionLit => |_| {
-                // Materialize a named function symbol; TIR has no first-class function values,
-                // so we return an undef of the function type and rely on call sites to use the symbol.
-                _ = try self.materializeFunctionLiteral(ctx, &expr.FunctionLit);
-                return self.builder.constUndef(b, ty);
-            },
-            .Import => |_| {
-                // Lower as opaque import() call returning requested type
-                var args = [_]tir.ValueId{};
-                return self.builder.call(b, ty, "builtin.import", args[0..]);
-            },
-            .TypeOf => |to| {
-                // Return a compile-time type object via builtin.typeof(expr)
-                const v = try self.lowerExpr(ctx, to.expr);
-                return self.builder.call(b, ty, "builtin.typeof", &.{v});
-            },
-        }
-    }
-
-    // --- scopes & defers -----------------------------------------------------
-    fn runAllDefersBeforeReturn(self: *LowerTir, ctx: *FunctionContext, is_err_opt: ?tir.ValueId) anyerror!void {
-        // Run from innermost scope to root
-        while (ctx.scopes.items.len > 0) {
-            const depth = ctx.scopes.items.len - 1;
-            try self.runDefersInScope(ctx, depth, is_err_opt);
-            ctx.popScope();
-        }
-    }
-
-    fn runDefersToDepth(self: *LowerTir, ctx: *FunctionContext, target_depth: usize, is_err: bool) anyerror!void {
-        // Pop scopes until we reach target_depth, executing normal defers (and NOT errdefers)
-        while (ctx.scopes.items.len > target_depth) {
-            const depth = ctx.scopes.items.len - 1;
-            try self.runDefersInScope(ctx, depth, if (is_err) null else null);
-            ctx.popScope();
-        }
-    }
-
-    //==========================================================================
-    // Helpers (values, addresses, patterns, control)
-    //==========================================================================
-
-    fn getExprType(self: *LowerTir, e: *const ast.Expr) ?types.TypeId {
-        return self.expr_types.get(e);
-    }
-
-    fn tryMkUsize(self: *LowerTir) ?types.TypeId {
-        _ = self;
-        return null;
-    }
-    fn tryMkString(self: *LowerTir) ?types.TypeId {
-        _ = self;
-        // if your arena has a canonical String
-        return null;
-    }
-    fn requireStringType(self: *LowerTir) anyerror!types.TypeId {
-        if (self.string_t) |t| return t;
-        return try self.type_arena.mk(.{ .String = {} });
-    }
-
-    fn guessStringType(self: *LowerTir) anyerror!types.TypeId {
-        // Replace with your canonical string type (e.g., slice[u8] const)
-        // Fallback to any/opaque pointer if needed.
-        // For now we assume TypeArena provides String.
-        return try self.type_arena.mk(.{ .String = {} });
-    }
-
-    fn call1(self: *LowerTir, ctx: *FunctionContext, callee: []const u8, ty: types.TypeId, a0: tir.ValueId) anyerror!tir.ValueId {
-        var args = [_]tir.ValueId{a0};
-        return self.builder.call(ctx.current_block, ty, callee, args[0..]);
-    }
-    fn call2(self: *LowerTir, ctx: *FunctionContext, callee: []const u8, ty: types.TypeId, a0: tir.ValueId, a1: tir.ValueId) anyerror!tir.ValueId {
-        var args = [_]tir.ValueId{ a0, a1 };
-        return self.builder.call(ctx.current_block, ty, callee, args[0..]);
-    }
-    fn constStr(self: *LowerTir, ctx: *FunctionContext, s: []const u8) anyerror!tir.ValueId {
-        const st = try self.requireStringType();
-        return self.builder.constString(ctx.current_block, st, s);
-    }
-
-    fn parseTupleIndex(_: *LowerTir, s: []const u8) anyerror!u32 {
-        // parse ".0", ".1", etc. Caller guarantees tuple-style
-        if (s.len == 0) return LowerError.SemanticError;
-        return @intCast(try std.fmt.parseInt(u32, s, 10));
-    }
-
-    fn mkPointer(self: *LowerTir, elem: types.TypeId) anyerror!types.TypeId {
-        // Adjust to your real pointer constructor in `types.zig`
-        return try self.type_arena.mk(.{ .Ptr = .{ .elem = elem, .is_const = false } });
-    }
-
-    // Run defers in a given scope depth (0..len-1), honoring err-only via is_err_opt.
-    fn runDefersInScope(self: *LowerTir, ctx: *FunctionContext, depth: usize, is_err_opt: ?tir.ValueId) anyerror!void {
-        const scope = &ctx.scopes.items[depth];
-        if (scope.defers.items.len == 0) return;
-        // Execute in LIFO
-        var i: isize = @intCast(scope.defers.items.len - 1);
-        while (i >= 0) : (i -= 1) {
-            const ent = scope.defers.items[@intCast(i)];
-            if (!ent.is_err_only) {
-                _ = try self.lowerExpr(ctx, ent.expr);
-            } else {
-                if (is_err_opt) |is_err| {
-                    // cond run
-                    const then_b = try self.builder.addBlock(ctx.func);
-                    const cont_b = try self.builder.addBlock(ctx.func);
-                    try self.builder.condBr(ctx.current_block, is_err, then_b.id, &.{}, cont_b.id, &.{});
-                    ctx.current_block = then_b;
-                    _ = try self.lowerExpr(ctx, ent.expr);
-                    try self.builder.br(ctx.current_block, cont_b.id, &.{});
-                    ctx.current_block = cont_b;
-                } else {
-                    // not an error path -> skip
-                }
-            }
-        }
-    }
-
-    // ----- Optionals -----
-    fn lowerOrelse(self: *LowerTir, ctx: *FunctionContext, lhs_e: *const ast.Expr, rhs_e: *const ast.Expr, result_ty: types.TypeId) anyerror!tir.ValueId {
-        const b = ctx.current_block;
-        const lhs = try self.lowerExpr(ctx, lhs_e);
-        const is_some = try self.call1(ctx, "builtin.opt.is_some", self.bool_t, lhs);
-
-        const then_b = try self.builder.addBlock(ctx.func);
-        const else_b = try self.builder.addBlock(ctx.func);
-        const join_b = try self.builder.addBlock(ctx.func);
-        const res = try self.builder.addBlockParam(join_b, "orelse.res", result_ty);
-
-        try self.builder.condBr(b, is_some, then_b.id, &.{}, else_b.id, &.{});
-        // then: unwrap
-        ctx.current_block = then_b;
-        const unwrapped = try self.call1(ctx, "builtin.opt.unwrap", result_ty, lhs);
-        try self.builder.br(ctx.current_block, join_b.id, &.{unwrapped});
-        // else: rhs
-        ctx.current_block = else_b;
-        const rv = try self.lowerExpr(ctx, rhs_e);
-        try self.builder.br(ctx.current_block, join_b.id, &.{rv});
-        // join
-        ctx.current_block = join_b;
-        return res;
-    }
-
-    // ----- Errors -----
-    fn lowerCatch(self: *LowerTir, ctx: *FunctionContext, op: *const ast.InfixCatch, result_ty: types.TypeId) anyerror!tir.ValueId {
-        const b = ctx.current_block;
-        const lhs = try self.lowerExpr(ctx, op.left);
-        const is_ok = try self.call1(ctx, "builtin.err.is_ok", self.bool_t, lhs);
-
-        const then_b = try self.builder.addBlock(ctx.func);
-        const else_b = try self.builder.addBlock(ctx.func);
-        const join_b = try self.builder.addBlock(ctx.func);
-        const res = try self.builder.addBlockParam(join_b, "catch.res", result_ty);
-
-        try self.builder.condBr(b, is_ok, then_b.id, &.{}, else_b.id, &.{});
-        // then: unwrap ok
-        ctx.current_block = then_b;
-        const okv = try self.call1(ctx, "builtin.err.unwrap_ok", result_ty, lhs);
-        try self.builder.br(ctx.current_block, join_b.id, &.{okv});
-        // else: bind error and eval rhs
-        ctx.current_block = else_b;
-        var rhs_res: tir.ValueId = undefined;
-        if (op.binding) |idn| {
-            const errv = try self.call1(ctx, "builtin.err.unwrap_err", try self.type_arena.mk(.{ .Any = {} }), lhs);
-            try ctx.bindImm(idn.name, errv);
-            rhs_res = try self.lowerExpr(ctx, op.right);
-        } else {
-            rhs_res = try self.lowerExpr(ctx, op.right);
-        }
-        try self.builder.br(ctx.current_block, join_b.id, &.{rhs_res});
-        // join
-        ctx.current_block = join_b;
-        return res;
-    }
-
-    fn zeroConst(self: *LowerTir, ctx: *FunctionContext, ty: types.TypeId) anyerror!tir.ValueId {
-        // naive: use const_undef replaced by cast-saturate? For now int/float/bool best-effort:
-        // Prefer a proper "zero" factory from types if you have one.
-        const b = ctx.current_block;
-        const kind = self.type_arena.get(ty);
-        // Simple heuristic
-        if (@hasField(@TypeOf(kind), "Int")) return self.builder.constInt(b, ty, 0);
-        if (@hasField(@TypeOf(kind), "Float")) return self.builder.constFloat(b, ty, 0.0);
-        if (ty == self.bool_t) return self.builder.constBool(b, ty, false);
-        return self.builder.constUndef(b, ty);
-    }
-
-    fn tmpVals(self: *LowerTir, comptime T: type, n: usize) anyerror![]T {
-        return self.allocator.alloc(T, n);
-    }
-
-    fn binOp(self: *LowerTir, ctx: *FunctionContext, ty: types.TypeId, l: *const ast.Expr, r: *const ast.Expr, tag: tir.InstrTag) anyerror!tir.ValueId {
-        const b = ctx.current_block;
-        const lv = try self.lowerExpr(ctx, l);
-        const rv = try self.lowerExpr(ctx, r);
-        return switch (tag) {
-            .Add => self.builder.add(b, ty, lv, rv),
-            .Sub => self.builder.sub(b, ty, lv, rv),
-            .Mul => self.builder.mul(b, ty, lv, rv),
-            .Div => self.builder.div(b, ty, lv, rv),
-            .Mod => self.builder.modulo(b, ty, lv, rv),
-            .Shl => self.builder.shl(b, ty, lv, rv),
-            .Shr => self.builder.shr(b, ty, lv, rv),
-            .BitAnd => self.builder.bitAnd(b, ty, lv, rv),
-            .BitOr => self.builder.bitOr(b, ty, lv, rv),
-            .BitXor => self.builder.bitXor(b, ty, lv, rv),
-            else => LowerError.UnsupportedAstNode,
-        };
-    }
-
-    fn binLogic(self: *LowerTir, ctx: *FunctionContext, l: *const ast.Expr, r: *const ast.Expr, tag: tir.InstrTag) anyerror!tir.ValueId {
-        const b = ctx.current_block;
-        const lv = try self.lowerExpr(ctx, l);
-        const rv = try self.lowerExpr(ctx, r);
-        return switch (tag) {
-            .LogicalAnd => self.builder.lAnd(b, self.bool_t, lv, rv),
-            .LogicalOr => self.builder.lOr(b, self.bool_t, lv, rv),
-            else => LowerError.UnsupportedAstNode,
-        };
-    }
-
-    fn cmpOp(self: *LowerTir, ctx: *FunctionContext, l: *const ast.Expr, r: *const ast.Expr, tag: tir.InstrTag) anyerror!tir.ValueId {
-        const b = ctx.current_block;
-        const lv = try self.lowerExpr(ctx, l);
-        const rv = try self.lowerExpr(ctx, r);
-        return switch (tag) {
-            .CmpEq => self.builder.cmpEq(b, self.bool_t, lv, rv),
-            .CmpNe => self.builder.cmpNe(b, self.bool_t, lv, rv),
-            .CmpLt => self.builder.cmpLt(b, self.bool_t, lv, rv),
-            .CmpLe => self.builder.cmpLe(b, self.bool_t, lv, rv),
-            .CmpGt => self.builder.cmpGt(b, self.bool_t, lv, rv),
-            .CmpGe => self.builder.cmpGe(b, self.bool_t, lv, rv),
-            else => LowerError.UnsupportedAstNode,
-        };
-    }
-
-    // ----- Short-circuit logical AND -----
-    fn lowerLogicalAnd(self: *LowerTir, ctx: *FunctionContext, left: *const ast.Expr, right: *const ast.Expr) anyerror!tir.ValueId {
-        const l = try self.lowerExpr(ctx, left);
-
-        const rhs_b = try self.builder.addBlock(ctx.func);
-        const join_b = try self.builder.addBlock(ctx.func);
-        const res = try self.builder.addBlockParam(join_b, "land.res", self.bool_t);
-
-        // if (!l) goto join(false) else goto rhs
-        const false_v = try self.builder.constBool(ctx.current_block, self.bool_t, false);
-        try self.builder.condBr(ctx.current_block, l, rhs_b.id, &.{}, join_b.id, &.{false_v});
-
-        // rhs: compute r, jump join(r)
-        ctx.current_block = rhs_b;
-        const r = try self.lowerExpr(ctx, right);
-        try self.builder.br(ctx.current_block, join_b.id, &.{r});
-
-        ctx.current_block = join_b;
-        return res;
-    }
-
-    // ----- Short-circuit logical OR -----
-    fn lowerLogicalOr(self: *LowerTir, ctx: *FunctionContext, left: *const ast.Expr, right: *const ast.Expr) anyerror!tir.ValueId {
-        const l = try self.lowerExpr(ctx, left);
-
-        const rhs_b = try self.builder.addBlock(ctx.func);
-        const join_b = try self.builder.addBlock(ctx.func);
-        const res = try self.builder.addBlockParam(join_b, "lor.res", self.bool_t);
-
-        // if (l) goto join(true) else goto rhs
-        const true_v = try self.builder.constBool(ctx.current_block, self.bool_t, true);
-        try self.builder.condBr(ctx.current_block, l, join_b.id, &.{true_v}, rhs_b.id, &.{});
-
-        // rhs: compute r, jump join(r)
-        ctx.current_block = rhs_b;
-        const r = try self.lowerExpr(ctx, right);
-        try self.builder.br(ctx.current_block, join_b.id, &.{r});
-
-        ctx.current_block = join_b;
-        return res;
-    }
-
-    fn bindPatternToValue(self: *LowerTir, ctx: *FunctionContext, pat: *const ast.Pattern, value: tir.ValueId, value_ty: types.TypeId) anyerror!void {
-        const b = ctx.current_block;
-        switch (pat.*) {
-            .Path => {}, // no binding
-            .Binding => |bind| {
-                if (bind.is_mut or bind.by_ref) {
-                    const ptr_ty = try self.mkPointer(value_ty);
-                    const slot = try self.builder.alloca(b, ptr_ty, null, 0);
-                    _ = try self.builder.store(b, self.void_t, slot, value, 0);
-                    try ctx.bindMut(bind.name, slot);
-                } else try ctx.bindImm(bind.name, value);
-            },
-            .Wildcard => {},
-            .Tuple => |tp| {
-                for (tp.elems.items, 0..) |subp, i| {
-                    const elem_ty = value_ty; // TODO: refine via types
-                    const ev = try self.builder.extractElem(b, elem_ty, value, @intCast(i));
-                    try self.bindPatternToValue(ctx, subp, ev, elem_ty);
-                }
-            },
-            .Struct => |sp| {
-                for (sp.fields.items) |f| {
-                    const idx = try self.resolveStructFieldIndex(value_ty, f.name);
-                    const fv = try self.builder.extractField(b, value_ty, value, idx, f.name);
-                    try self.bindPatternToValue(ctx, f.pattern, fv, value_ty);
-                }
-            },
-            else => return LowerError.UnsupportedAstNode,
-        }
-    }
-    fn bindVariantTuple(self: *LowerTir, ctx: *FunctionContext, vp: *const ast.VariantTuplePattern, scrut: tir.ValueId, scrut_ty: types.TypeId) anyerror!void {
-        _ = scrut_ty;
-        // tuple payload
-        const tup = try self.builder.call(ctx.current_block, self.void_t, "builtin.variant.get_tuple", &.{scrut});
-        for (vp.elems.items, 0..) |pe, i| {
-            const ev = try self.builder.extractElem(ctx.current_block, self.void_t, tup, @intCast(i));
-            try self.bindPatternToValue(ctx, pe, ev, self.void_t);
-        }
-    }
-    fn bindVariantStruct(self: *LowerTir, ctx: *FunctionContext, vp: *const ast.VariantStructPattern, scrut: tir.ValueId, scrut_ty: types.TypeId) anyerror!void {
-        _ = scrut_ty;
-        for (vp.fields.items) |f| {
-            const val = try self.builder.call(ctx.current_block, self.void_t, "builtin.variant.get_field", &.{ scrut, try self.constStr(ctx, f.name) });
-            try self.bindPatternToValue(ctx, f.pattern, val, self.void_t);
-        }
-    }
-    const Rvalue = struct { value: tir.ValueId, is_ptr: bool };
-
-    /// Get a pointer (lvalue address) for an expression used on the left of an assignment or for `&`.
-    fn lowerAddress(self: *LowerTir, ctx: *FunctionContext, e: *const ast.Expr) anyerror!tir.ValueId {
-        const b = ctx.current_block;
-        switch (e.*) {
-            .Identifier => |id| {
-                const vb = ctx.lookup(id.name) orelse return LowerError.SemanticError;
-                switch (vb.kind) {
-                    // .Imm => return LowerError.SemanticError, // cannot take address of rvalue (unless you choose to spill)
-                    .Imm => {
-                        // spill to a fresh slot to take address
-                        const ety = self.getExprType(e) orelse return LowerError.SemanticError;
-                        const ptr_ty = try self.mkPointer(ety);
-                        const slot = try self.builder.alloca(b, ptr_ty, null, 0);
-                        _ = try self.builder.store(b, self.void_t, slot, vb.v, 0);
-                        return slot;
-                    },
-                    .Ptr => return vb.v,
-                }
-            },
-            .PostfixDeref => |pd| {
-                // address-of (*p) == p
-                return try self.lowerExpr(ctx, pd.expr);
-            },
-            .PostfixField => |pf| {
-                // address into struct field: gep base_ptr, fieldIndex
-                // For simplicity, compute base address first (if we have a pointer), else spill base to a slot and then gep.
-                const base_val = try self.lowerExpr(ctx, pf.parent);
-                // If we only have a value, spill:
-                const base_ty = self.getExprType(pf.parent) orelse return LowerError.SemanticError;
-                const ptr_ty = try self.mkPointer(base_ty);
-                const slot = try self.builder.alloca(b, ptr_ty, null, 0);
-                _ = try self.builder.store(b, self.void_t, slot, base_val, 0);
-
-                // TODO: consult types to compute the actual field index:
-                const fld_index: u32 = try self.resolveStructFieldIndex(base_ty, pf.field);
-
-                var idxs = try self.tmpVals(tir.Instr.GepIndex, 1 + 0);
-                defer self.allocator.free(idxs);
-                idxs[0] = .{ .Const = @intCast(fld_index) };
-                const res_ptr_ty = ptr_ty; // same pointer base; real impl refines type
-                return self.builder.gep(b, res_ptr_ty, slot, idxs);
-            },
-            .PostfixIndex => |ix| {
-                // address of element: gep base_ptr, index
-                const coll_val = try self.lowerExpr(ctx, ix.collection);
-                const idx_val = try self.lowerExpr(ctx, ix.index);
-
-                // As above, if collection is not a pointer, spill to slot.
-                const coll_ty = self.getExprType(ix.collection) orelse return LowerError.SemanticError;
-                const coll_ptr_ty = try self.mkPointer(coll_ty);
-                const slot = try self.builder.alloca(b, coll_ptr_ty, null, 0);
-                _ = try self.builder.store(b, self.void_t, slot, coll_val, 0);
-
-                var idxs = try self.tmpVals(tir.Instr.GepIndex, 1);
-                defer self.allocator.free(idxs);
-                idxs[0] = .{ .Value = idx_val };
-                const res_ptr_ty = coll_ptr_ty;
-                return self.builder.gep(b, res_ptr_ty, slot, idxs);
-            },
-            else => return LowerError.UnsupportedAstNode,
-        }
-    }
-
-    fn valueOfVar(self: *LowerTir, ctx: *FunctionContext, v: VarBinding, expected_ty: types.TypeId) anyerror!tir.ValueId {
-        const b = ctx.current_block;
-        switch (v.kind) {
-            .Imm => return v.v,
-            .Ptr => return self.builder.load(b, expected_ty, v.v, 0),
-        }
-    }
-
-    /// Best-effort: fetch element type of a tuple type id.
-    fn tupleElemType(self: *LowerTir, tuple_ty: types.TypeId, index: usize) ?types.TypeId {
-        const T = self.type_arena.get(tuple_ty);
-        // Adjust this to your actual `types.Type` representation.
-        if (@hasField(@TypeOf(T), "Tuple")) {
-            if (index < T.Tuple.elems.len) return T.Tuple.elems[index];
-        }
-        return null;
-    }
-
-    /// Destructure a tuple pattern from an rvalue (not pointer here).
-    fn bindTuplePattern(self: *LowerTir, ctx: *FunctionContext, from: Rvalue, tuple_ty: types.TypeId, tp: *const ast.TuplePattern) anyerror!void {
-        const b = ctx.current_block;
-        for (tp.elems.items, 0..) |pe, i| {
-            const elem_ty = self.tupleElemType(tuple_ty, i) orelse self.void_t; // best-effort
-            const v = try self.builder.extractElem(b, elem_ty, from.value, @intCast(i));
-            switch (pe.*) {
-                .Binding => |bind| {
-                    if (bind.is_mut or bind.by_ref) {
-                        // Spill into stack slot
-                        const ptr_ty = try self.mkPointer(elem_ty);
-                        const slot = try self.builder.alloca(b, ptr_ty, null, 0);
-                        _ = try self.builder.store(b, self.void_t, slot, v, 0);
-                        try ctx.bindMut(bind.name, slot);
+                if (target) |lc| {
+                    // run normal defers from current down to loop entry
+                    var j: isize = @as(isize, @intCast(env.defers.items.len)) - 1;
+                    while (j >= 0 and @as(u32, @intCast(j)) >= lc.defer_len_at_entry) : (j -= 1) {
+                        const ent = env.defers.items[@intCast(j)];
+                        if (!ent.is_err) _ = try self.lowerExpr(a, env, f, blk, ent.expr);
+                    }
+                    if (lc.has_result) {
+                        const v = if (!br.value.isNone()) try self.lowerExpr(a, env, f, blk, br.value.unwrap()) else f.builder.constUndef(blk, lc.res_ty);
+                        try f.builder.br(blk, lc.join_block, &.{v});
                     } else {
-                        try ctx.bindImm(bind.name, v);
+                        try f.builder.br(blk, lc.break_block, &.{});
                     }
-                },
-                .Wildcard => {}, // ignore
-                else => return LowerError.UnsupportedAstNode,
-            }
-        }
-    }
-
-    // ----- Block as expression -----
-    fn lowerBlockExpr(self: *LowerTir, ctx: *FunctionContext, blk: *const ast.Block, ty: types.TypeId) anyerror!tir.ValueId {
-        // Evaluate statements; if last statement is an expression, return it; otherwise void/undef
-        var last_value: ?tir.ValueId = null;
-        var terminated = false;
-
-        for (blk.items.items, 0..) |*stmt, idx| {
-            if (terminated) break;
-
-            switch (stmt.*) {
-                .Expr => |*e| {
-                    last_value = try self.lowerExpr(ctx, e);
-                },
-                else => {
-                    terminated = try self.lowerStmt(ctx, stmt);
-                    if (terminated) break;
-                    // If not an expression stmt, clear last_value unless it's the final position
-                    if (idx != blk.items.items.len - 1) last_value = null;
-                },
-            }
-        }
-
-        if (last_value) |v| return v;
-        // Fallback
-        return self.builder.constUndef(ctx.current_block, ty);
-    }
-
-    fn lowerWhileExpr(self: *LowerTir, ctx: *FunctionContext, w: *const ast.While, result_ty: types.TypeId) anyerror!tir.ValueId {
-        const entry_b = ctx.current_block;
-        const header_b = try self.builder.addBlock(ctx.func);
-        const body_b = try self.builder.addBlock(ctx.func);
-        const exit_b = try self.builder.addBlock(ctx.func);
-        const join_b = try self.builder.addBlock(ctx.func);
-        const res_param = try self.builder.addBlockParam(join_b, "while.res", result_ty);
-        // Enter loop:
-        try self.builder.br(entry_b, header_b.id, &.{});
-
-        // Register loop target (for labeled break/continue with values)
-        try ctx.pushLoop(w.label, exit_b, header_b, join_b, res_param, result_ty);
-
-        // header: evaluate cond or pattern
-        ctx.current_block = header_b;
-        var cond_v: tir.ValueId = undefined;
-        if (w.is_pattern and w.pattern != null) {
-            // Evaluate expression and test pattern each trip
-            if (w.cond == null) return LowerError.SemanticError;
-            const sv = try self.lowerExpr(ctx, w.cond.?);
-            const test_cond = try self.condFromPattern(ctx, w.pattern.?, sv) orelse return LowerError.UnsupportedAstNode;
-            cond_v = test_cond;
-            // Stash the scrutinee into a temp slot so body can bind it
-            const scrut_ty = self.getExprType(w.cond.?) orelse return LowerError.SemanticError;
-            const ptr_ty = try self.mkPointer(scrut_ty);
-            const slot = try self.builder.alloca(header_b, ptr_ty, null, 0);
-            _ = try self.builder.store(header_b, self.void_t, slot, sv, 0);
-            // Jump either to body (will load/bind) or to exit
-            try self.builder.condBr(ctx.current_block, cond_v, body_b.id, &.{}, exit_b.id, &.{});
-            // body: load and bind pattern then run body block
-            ctx.current_block = body_b;
-            const sv_loaded = try self.builder.load(body_b, scrut_ty, slot, 0);
-            try self.bindPatternToValue(ctx, w.pattern.?, sv_loaded, scrut_ty);
-        } else {
-            // Regular while(cond)
-            if (w.cond) |ce|
-                cond_v = try self.lowerExpr(ctx, ce)
-            else
-                cond_v = try self.builder.constBool(header_b, self.bool_t, true);
-            try self.builder.condBr(ctx.current_block, cond_v, body_b.id, &.{}, exit_b.id, &.{});
-            ctx.current_block = body_b;
-        }
-        // body:
-        try self.lowerBlockStmts(ctx, &w.body);
-        // If body didn't terminate, go back to header
-        if (ctx.current_block.term == null) {
-            try self.builder.br(ctx.current_block, header_b.id, &.{});
-        }
-
-        // exit
-        ctx.popLoop();
-        // exit -> join with undef result (if not via `break value`)
-        ctx.current_block = exit_b;
-        const uv = try self.builder.constUndef(exit_b, result_ty);
-        try self.builder.br(exit_b, join_b.id, &.{uv});
-        // land
-        ctx.current_block = join_b;
-        return res_param;
-    }
-
-    // ----- For expression over integer ranges only -----
-    fn lowerForExpr(self: *LowerTir, ctx: *FunctionContext, fr: *const ast.For, result_ty: types.TypeId) anyerror!tir.ValueId {
-        const it_ty = self.getExprType(fr.iterable) orelse return LowerError.SemanticError;
-
-        const b_entry = ctx.current_block;
-        const header_b = try self.builder.addBlock(ctx.func);
-        const body_b = try self.builder.addBlock(ctx.func);
-        const exit_b = try self.builder.addBlock(ctx.func);
-        const join_b = try self.builder.addBlock(ctx.func);
-        const res_param = try self.builder.addBlockParam(join_b, "for.res", result_ty);
-
-        // loop control
-        try ctx.pushLoop(fr.label, exit_b, header_b, join_b, res_param, result_ty);
-
-        if (fr.iterable.* == .Range) {
-            // ---------------- Range-based for ----------------
-            const rg = fr.iterable.Range;
-            if (rg.start == null or rg.end == null) return LowerError.SemanticError;
-            const start_v = try self.lowerExpr(ctx, rg.start.?);
-            const end_v = try self.lowerExpr(ctx, rg.end.?);
-            const idx_ty = self.getExprType(rg.start.?) orelse return LowerError.SemanticError;
-
-            const idx_param = try self.builder.addBlockParam(header_b, "i", idx_ty);
-            // enter with i = start
-            try self.builder.br(b_entry, header_b.id, &.{start_v});
-            // header compare
-            ctx.current_block = header_b;
-            const cond = if (rg.inclusive_right)
-                try self.builder.cmpLe(header_b, self.bool_t, idx_param, end_v)
-            else
-                try self.builder.cmpLt(header_b, self.bool_t, idx_param, end_v);
-            try self.builder.condBr(ctx.current_block, cond, body_b.id, &.{}, exit_b.id, &.{});
-            // body: bind pattern to i
-            ctx.current_block = body_b;
-            try self.bindPatternToValue(ctx, fr.pattern, idx_param, idx_ty);
-            try self.lowerBlockStmts(ctx, &fr.body);
-            if (ctx.current_block.term == null) {
-                const one = try self.builder.constInt(ctx.current_block, idx_ty, 1);
-                const i_next = try self.builder.add(ctx.current_block, idx_ty, idx_param, one);
-                try self.builder.br(ctx.current_block, header_b.id, &.{i_next});
-            }
-        } else {
-            // ---------------- Array/Slice-based for via index ----------------
-            const arr = try self.lowerExpr(ctx, fr.iterable);
-            // len = builtin.len(arr) : usize
-            const idx_ty = self.usize_t orelse (try self.type_arena.mk(.{ .Usize = {} }));
-            const len = try self.builder.call(b_entry, idx_ty, "builtin.len", &.{arr});
-            const zero = try self.builder.constInt(b_entry, idx_ty, 0);
-            // header param i:usize, entry jump i=0
-            const idx_param = try self.builder.addBlockParam(header_b, "i", idx_ty);
-            try self.builder.br(b_entry, header_b.id, &.{zero});
-            // header: i < len ?
-            ctx.current_block = header_b;
-            const cond = try self.builder.cmpLt(header_b, self.bool_t, idx_param, len);
-            try self.builder.condBr(ctx.current_block, cond, body_b.id, &.{}, exit_b.id, &.{});
-            // body: elem = arr[i]
-            ctx.current_block = body_b;
-            const elem_ty = tyElemFromIterable: {
-                break :tyElemFromIterable it_ty; // best-effort
-            };
-            const elem = try self.builder.index(body_b, elem_ty, arr, idx_param);
-            try self.bindPatternToValue(ctx, fr.pattern, elem, elem_ty);
-            try self.lowerBlockStmts(ctx, &fr.body);
-            if (ctx.current_block.term == null) {
-                const one = try self.builder.constInt(ctx.current_block, idx_ty, 1);
-                const i_next = try self.builder.add(ctx.current_block, idx_ty, idx_param, one);
-                try self.builder.br(ctx.current_block, header_b.id, &.{i_next});
-            }
-        }
-        ctx.popLoop();
-        // exit -> join undef (unless `break value` already passed a concrete one)
-        ctx.current_block = exit_b;
-        const uv = try self.builder.constUndef(exit_b, result_ty);
-        try self.builder.br(exit_b, join_b.id, &.{uv});
-        ctx.current_block = join_b;
-        return res_param;
-    }
-
-    // ----- Match expression -----
-    fn lowerMatchExpr(self: *LowerTir, ctx: *FunctionContext, mm: *const ast.Match, result_ty: types.TypeId) anyerror!tir.ValueId {
-        const scrut = try self.lowerExpr(ctx, mm.expr);
-        const scrut_ty = self.getExprType(mm.expr) orelse return LowerError.SemanticError;
-
-        // Join with result param
-        const join_b = try self.builder.addBlock(ctx.func);
-        const res = try self.builder.addBlockParam(join_b, "match.res", result_ty);
-
-        // We'll build a chain of tests (no Switch if guards are present).
-        var cur = ctx.current_block;
-        var next_b: ?*tir.Block = null;
-
-        // For each arm except last, create test->arm->next chain
-        for (mm.arms.items, 0..) |arm, i| {
-            const is_last = (i + 1 == mm.arms.items.len);
-
-            if (!is_last) {
-                next_b = try self.builder.addBlock(ctx.func);
-            } else {
-                next_b = null;
-            }
-
-            // Build condition from pattern (+ optional guard)
-            const pat_cond = try self.condFromPattern(ctx, arm.pattern, scrut);
-            if (pat_cond == null) return LowerError.UnsupportedAstNode;
-            var cond_v = pat_cond.?;
-
-            if (arm.guard) |gexpr| {
-                // cond = cond && guard
-                const g = try self.lowerExpr(ctx, gexpr);
-                cond_v = try self.builder.lAnd(cur, self.bool_t, cond_v, g);
-            }
-
-            const arm_b = try self.builder.addBlock(ctx.func);
-            if (next_b) |nb| {
-                try self.builder.condBr(cur, cond_v, arm_b.id, &.{}, nb.id, &.{});
-            } else {
-                // last arm: cond true -> arm; false -> (error)
-                // If there's no final wildcard arm, it's a semantic error earlier; we still create a default path returning undef.
-                const def_b = try self.builder.addBlock(ctx.func);
-                try self.builder.condBr(cur, cond_v, arm_b.id, &.{}, def_b.id, &.{});
-                // default: jump join with undef
-                ctx.current_block = def_b;
-                const uv = try self.builder.constUndef(def_b, result_ty);
-                try self.builder.br(def_b, join_b.id, &.{uv});
-            }
-
-            // arm body -> value -> join
-            ctx.current_block = arm_b;
-            // Create an arm-local scope for defers inside the arm
-            try ctx.pushScope();
-            try self.bindPatternToValue(ctx, arm.pattern, scrut, scrut_ty);
-            const v = try self.lowerExpr(ctx, arm.body);
-            try self.runDefersToDepth(ctx, ctx.scopes.items.len - 1, false);
-            ctx.popScope();
-            try self.builder.br(ctx.current_block, join_b.id, &.{v});
-
-            // advance
-            if (next_b) |nb| cur = nb;
-        }
-
-        // land
-        ctx.current_block = join_b;
-        return res;
-    }
-
-    // Try to infer element type from an iterable type id; best-effort.
-    fn tyElemFromIterable(self: *LowerTir, it_ty: types.TypeId) types.TypeId {
-        const T = self.type_arena.get(it_ty);
-        // Adjust to your real type union names/fields:
-        if (@hasField(@TypeOf(T), "Slice")) return T.Slice.elem;
-        if (@hasField(@TypeOf(T), "DynArray")) return T.DynArray.elem;
-        if (@hasField(@TypeOf(T), "Array")) return T.Array.elem;
-        if (@hasField(@TypeOf(T), "MapType")) return T.MapType.value;
-        // fallback
-        return it_ty;
-    }
-
-    /// Build a boolean condition that "scrut matches pattern".
-    /// Supports:
-    ///  - Literal(int/char/bool/string best-effort via equality)
-    ///  - RangePattern (.. / ..=)
-    ///  - OrPattern (|) combining supported subpatterns
-    ///  - Wildcard (_)
-    ///  - Binding (always true)
-    ///  - Path (via builtin.path.match)
-    ///  - Struct / Tuple / Slice (elementwise)
-    ///  - VariantTuple / VariantStruct via builtin.variant.*
-    fn condFromPattern(self: *LowerTir, ctx: *FunctionContext, pat: *const ast.Pattern, scrut: tir.ValueId) anyerror!?tir.ValueId {
-        const b = ctx.current_block;
-        switch (pat.*) {
-            .Wildcard => {
-                return try self.builder.constBool(b, self.bool_t, true);
-            },
-            .Binding => {
-                // always matches
-                return try self.builder.constBool(b, self.bool_t, true);
-            },
-            .Literal => |pexpr_ptr| {
-                const pt = self.getExprType(pexpr_ptr) orelse return null;
-                switch (pexpr_ptr.*) {
-                    .IntLit => {
-                        const iv = try std.fmt.parseInt(i64, pexpr_ptr.IntLit.value, 0);
-                        const lit_v = try self.builder.constInt(b, pt, iv);
-                        return try self.builder.cmpEq(b, self.bool_t, scrut, lit_v);
-                    },
-                    .BoolLit => {
-                        const lit_v = try self.builder.constBool(b, pt, pexpr_ptr.BoolLit.value);
-                        return try self.builder.cmpEq(b, self.bool_t, scrut, lit_v);
-                    },
-                    .CharLit => {
-                        const lit_v = try self.builder.constInt(b, pt, @intCast(pexpr_ptr.CharLit.value));
-                        return try self.builder.cmpEq(b, self.bool_t, scrut, lit_v);
-                    },
-                    .StringLit => {
-                        const lit_v = try self.builder.constString(b, try self.requireStringType(), pexpr_ptr.StringLit.value);
-                        return try self.call2(ctx, "builtin.eq", self.bool_t, scrut, lit_v);
-                    },
-                    else => return null,
+                } else {
+                    return error.OutOfMemory; // no loop context
                 }
             },
-            .Range => |rp| {
-                if (rp.start == null or rp.end == null) return null;
-                const st = try self.lowerExpr(ctx, rp.start.?);
-                const ed = try self.lowerExpr(ctx, rp.end.?);
-                const ge = try self.builder.cmpGe(b, self.bool_t, scrut, st);
-                const le_or_lt = if (rp.inclusive_right)
-                    try self.builder.cmpLe(b, self.bool_t, scrut, ed)
-                else
-                    try self.builder.cmpLt(b, self.bool_t, scrut, ed);
-                return try self.builder.lAnd(b, self.bool_t, ge, le_or_lt);
+            .Continue => {
+                const lc = if (self.loop_stack.items.len > 0) self.loop_stack.items[self.loop_stack.items.len - 1] else return error.OutOfMemory;
+                // run normal defers from current down to loop entry
+                var j: isize = @as(isize, @intCast(env.defers.items.len)) - 1;
+                while (j >= 0 and @as(u32, @intCast(j)) >= lc.defer_len_at_entry) : (j -= 1) {
+                    const ent = env.defers.items[@intCast(j)];
+                    if (!ent.is_err) _ = try self.lowerExpr(a, env, f, blk, ent.expr);
+                }
+                try f.builder.br(blk, lc.continue_block, &.{});
             },
-            .Or => |alts| {
-                if (alts.alts.items.len == 0) return null;
-                // If alts introduce bindings, we would need to bind post-branch; unsupported for now.
-                var acc: ?tir.ValueId = null;
-                for (alts.alts.items) |subp| {
-                    const c = try self.condFromPattern(ctx, subp, scrut) orelse return null;
-                    acc = if (acc) |a|
-                        try self.builder.lOr(b, self.bool_t, a, c)
+            .Decl => {
+                const drow = a.stmts.get(.Decl, sid);
+                const d = a.exprs.Decl.get(drow.decl.toRaw());
+                const val = try self.lowerExpr(a, env, f, blk, d.value);
+                if (!d.pattern.isNone()) {
+                    const nm = self.bindingNameOfPattern(a, d.pattern.unwrap()) orelse return;
+                    if (d.flags.is_const) {
+                        try env.bind(self.gpa, a, nm, .{ .value = val, .is_slot = false });
+                    } else {
+                        const vty = self.getExprType(d.value) orelse return;
+                        const slot_ty = self.info.store.mkPtr(vty, false);
+                        const slot = f.builder.alloca(blk, slot_ty, tir.OptValueId.none(), 0);
+                        _ = f.builder.store(blk, vty, slot, val, 0);
+                        try env.bind(self.gpa, a, nm, .{ .value = slot, .is_slot = true });
+                    }
+                }
+            },
+            .Assign => {
+                const as = a.stmts.get(.Assign, sid);
+                const lhs_ptr = try self.lowerAddress(a, env, f, blk, as.left);
+                const rhs = try self.lowerExpr(a, env, f, blk, as.right);
+                const rty = self.getExprType(as.right) orelse return;
+                _ = f.builder.store(blk, rty, lhs_ptr, rhs, 0);
+            },
+            .Return => {
+                const r = a.stmts.get(.Return, sid);
+                // run normal defers (ignore err-only for now)
+                var j: isize = @intCast(env.defers.items.len);
+                j -= 1;
+                while (j >= 0) : (j -= 1) {
+                    const ent = env.defers.items[@intCast(j)];
+                    if (!ent.is_err) {
+                        _ = try self.lowerExpr(a, env, f, blk, ent.expr);
+                    }
+                }
+                if (!r.value.isNone()) {
+                    const v = try self.lowerExpr(a, env, f, blk, r.value.unwrap());
+                    // // If we have err-defer entries, run them conditionally based on builtin.err.is_err(v)
+                    // var has_err_defer = false;
+                    // for (env.defers.items) |ent2| {
+                    //     if (ent2.is_err) {
+                    //         has_err_defer = true;
+                    //         break;
+                    //     }
+                    // }
+                    // if (has_err_defer) {
+                    //     var then_blk = try f.builder.beginBlock(f);
+                    //     var cont_blk = try f.builder.beginBlock(f);
+                    //     const is_err_name = f.builder.intern("builtin.err.is_err");
+                    //     const is_err = blk.builder.call(blk, self.info.store.tBool(), is_err_name, &.{v});
+                    //     try f.builder.condBr(blk, is_err, then_blk.id, &.{}, cont_blk.id, &.{});
+                    //     // then: run err-only defers, then return
+                    //     var kk: isize = @as(isize, @intCast(env.defers.items.len)) - 1;
+                    //     while (kk >= 0) : (kk -= 1) {
+                    //         const ent3 = env.defers.items[@intCast(kk)];
+                    //         if (ent3.is_err) _ = try self.lowerExpr(a, env, f, &then_blk, ent3.expr);
+                    //     }
+                    //     try f.builder.setReturnVal(&then_blk, v);
+                    //     try f.builder.endBlock(f, then_blk);
+                    //     // else: return directly
+                    //     try f.builder.setReturnVal(&cont_blk, v);
+                    //     blk.* = cont_blk;
+                    // }
+                    try f.builder.setReturnVal(blk, v);
+                } else {
+                    try f.builder.setReturnVoid(blk);
+                }
+            },
+
+            .Unreachable => {
+                try f.builder.setUnreachable(blk);
+            },
+            else => {},
+        }
+    }
+
+    fn lowerExpr(self: *@This(), a: *const ast.Ast, env: *Env, f: *Builder.FunctionFrame, blk: *Builder.BlockFrame, id: ast.ExprId) anyerror!tir.ValueId {
+        const k = a.exprs.index.kinds.items[id.toRaw()];
+        switch (k) {
+            .Literal => {
+                const lit = a.exprs.get(.Literal, id);
+                const ty = self.getExprType(id) orelse return error.OutOfMemory;
+                return switch (lit.kind) {
+                    .int => blk.builder.constInt(blk, ty, try std.fmt.parseInt(i64, a.exprs.strs.get(lit.value.unwrap()), 10)),
+                    .float => blk.builder.constFloat(blk, ty, try std.fmt.parseFloat(f64, a.exprs.strs.get(lit.value.unwrap()))),
+                    .bool => blk.builder.constBool(blk, ty, lit.bool_value),
+                    .string => blk.builder.constString(blk, ty, a.exprs.strs.get(lit.value.unwrap())),
+                    .char => blk.builder.constInt(blk, ty, @as(i64, @intCast(lit.char_value))),
+                };
+            },
+            .NullLit => {
+                const ty = self.getExprType(id) orelse return error.OutOfMemory;
+                return blk.builder.constNull(blk, ty);
+            },
+            .UndefLit => {
+                const ty = self.getExprType(id) orelse return error.OutOfMemory;
+                return blk.builder.constUndef(blk, ty);
+            },
+            .Unary => {
+                const row = a.exprs.get(.Unary, id);
+                const ty = self.getExprType(id) orelse return error.OutOfMemory;
+                const v = try self.lowerExpr(a, env, f, blk, row.expr);
+                return switch (row.op) {
+                    .plus => v,
+                    .minus => blk.builder.bin(blk, .Sub, ty, blk.builder.constInt(blk, ty, 0), v),
+                    .logical_not => blk.builder.un1(blk, .LogicalNot, self.info.store.tBool(), v),
+                    .address_of => blk.builder.addressOf(blk, self.info.store.mkPtr(ty, false), v),
+                };
+            },
+            .Range => {
+                const row = a.exprs.get(.Range, id);
+                const ty = self.getExprType(id) orelse return error.OutOfMemory;
+                const start_v = if (!row.start.isNone()) try self.lowerExpr(a, env, f, blk, row.start.unwrap()) else blk.builder.constUndef(blk, ty);
+                const end_v = if (!row.end.isNone()) try self.lowerExpr(a, env, f, blk, row.end.unwrap()) else blk.builder.constUndef(blk, ty);
+                const incl = blk.builder.constBool(blk, self.info.store.tBool(), row.inclusive_right);
+                const make = blk.builder.intern("builtin.range.make");
+                return blk.builder.call(blk, ty, make, &.{ start_v, end_v, incl });
+            },
+            .Deref => {
+                const ty = self.getExprType(id) orelse return error.OutOfMemory;
+                const row = a.exprs.get(.Deref, id);
+                const ptr = try self.lowerExpr(a, env, f, blk, row.expr);
+                return blk.builder.load(blk, ty, ptr, 0);
+            },
+            .TupleLit => {
+                const row = a.exprs.get(.TupleLit, id);
+                const ty = self.getExprType(id) orelse return error.OutOfMemory;
+                const ids = a.exprs.expr_pool.slice(row.elems);
+                var vals = try self.gpa.alloc(tir.ValueId, ids.len);
+                defer self.gpa.free(vals);
+                var i: usize = 0;
+                while (i < ids.len) : (i += 1) vals[i] = try self.lowerExpr(a, env, f, blk, ids[i]);
+                return blk.builder.tupleMake(blk, ty, vals);
+            },
+            .ArrayLit => {
+                const row = a.exprs.get(.ArrayLit, id);
+                const ty = self.getExprType(id) orelse return error.OutOfMemory;
+                const ids = a.exprs.expr_pool.slice(row.elems);
+                var vals = try self.gpa.alloc(tir.ValueId, ids.len);
+                defer self.gpa.free(vals);
+                var i: usize = 0;
+                while (i < ids.len) : (i += 1) vals[i] = try self.lowerExpr(a, env, f, blk, ids[i]);
+                return blk.builder.arrayMake(blk, ty, vals);
+            },
+            .StructLit => {
+                const row = a.exprs.get(.StructLit, id);
+                const ty = self.getExprType(id) orelse return error.OutOfMemory;
+                const fids = a.exprs.sfv_pool.slice(row.fields);
+                var fields = try self.gpa.alloc(tir.Rows.StructFieldInit, fids.len);
+                defer self.gpa.free(fields);
+                var i: usize = 0;
+                while (i < fids.len) : (i += 1) {
+                    const sfv = a.exprs.StructFieldValue.get(fids[i].toRaw());
+                    const v = try self.lowerExpr(a, env, f, blk, sfv.value);
+                    fields[i] = .{ .index = @intCast(i), .name = sfv.name, .value = v };
+                }
+                return blk.builder.structMake(blk, ty, fields);
+            },
+            .MapLit => {
+                const row = a.exprs.get(.MapLit, id);
+                const ty = self.getExprType(id) orelse return error.OutOfMemory;
+                const kv_ids = a.exprs.kv_pool.slice(row.entries);
+                var vals = try self.gpa.alloc(tir.ValueId, kv_ids.len * 2);
+                defer self.gpa.free(vals);
+                var j: usize = 0;
+                for (kv_ids) |kid| {
+                    const kv = a.exprs.KeyValue.get(kid.toRaw());
+                    vals[j] = try self.lowerExpr(a, env, f, blk, kv.key);
+                    j += 1;
+                    vals[j] = try self.lowerExpr(a, env, f, blk, kv.value);
+                    j += 1;
+                }
+                const make = blk.builder.intern("builtin.map.from_kv");
+                return blk.builder.call(blk, ty, make, vals);
+            },
+            .IndexAccess => {
+                const row = a.exprs.get(.IndexAccess, id);
+                const ty = self.getExprType(id) orelse return error.OutOfMemory;
+                const base = try self.lowerExpr(a, env, f, blk, row.collection);
+                const idx = try self.lowerExpr(a, env, f, blk, row.index);
+                return blk.builder.indexOp(blk, ty, base, idx);
+            },
+            .FieldAccess => {
+                const row = a.exprs.get(.FieldAccess, id);
+                const ty = self.getExprType(id) orelse return error.OutOfMemory;
+                const base = try self.lowerExpr(a, env, f, blk, row.parent);
+                if (row.is_tuple) {
+                    const idx = try std.fmt.parseInt(u32, a.exprs.strs.get(row.field), 10);
+                    return blk.builder.extractElem(blk, ty, base, idx);
+                } else {
+                    // best-effort: field index unresolved -> use 0
+                    return blk.builder.extractField(blk, ty, base, 0);
+                }
+            },
+            .Block => {
+                const res_ty = self.getExprType(id) orelse self.info.store.tVoid();
+                return try self.lowerBlockExprValue(a, env, f, blk, id, res_ty);
+            },
+            .Ident => {
+                const row = a.exprs.get(.Ident, id);
+                const name = a.exprs.strs.get(row.name);
+                const bnd = env.lookup(name) orelse return error.OutOfMemory;
+                if (bnd.is_slot) {
+                    const ety = self.getExprType(id) orelse return error.OutOfMemory;
+                    return blk.builder.load(blk, ety, bnd.value, 0);
+                } else return bnd.value;
+            },
+            .Binary => {
+                const row = a.exprs.get(.Binary, id);
+                const ty = self.getExprType(id) orelse return error.OutOfMemory;
+                const l = try self.lowerExpr(a, env, f, blk, row.left);
+                const r = try self.lowerExpr(a, env, f, blk, row.right);
+                return switch (row.op) {
+                    .add => blk.builder.bin(blk, .Add, ty, l, r),
+                    .sub => blk.builder.bin(blk, .Sub, ty, l, r),
+                    .mul => blk.builder.bin(blk, .Mul, ty, l, r),
+                    .div => blk.builder.bin(blk, .Div, ty, l, r),
+                    .mod => blk.builder.bin(blk, .Mod, ty, l, r),
+                    .shl => blk.builder.bin(blk, .Shl, ty, l, r),
+                    .shr => blk.builder.bin(blk, .Shr, ty, l, r),
+                    .bit_and => blk.builder.bin(blk, .BitAnd, ty, l, r),
+                    .bit_or => blk.builder.bin(blk, .BitOr, ty, l, r),
+                    .bit_xor => blk.builder.bin(blk, .BitXor, ty, l, r),
+                    .eq => blk.builder.binBool(blk, .CmpEq, l, r),
+                    .neq => blk.builder.binBool(blk, .CmpNe, l, r),
+                    .lt => blk.builder.binBool(blk, .CmpLt, l, r),
+                    .lte => blk.builder.binBool(blk, .CmpLe, l, r),
+                    .gt => blk.builder.binBool(blk, .CmpGt, l, r),
+                    .gte => blk.builder.binBool(blk, .CmpGe, l, r),
+                    .logical_and => blk.builder.binBool(blk, .LogicalAnd, l, r),
+                    .logical_or => blk.builder.binBool(blk, .LogicalOr, l, r),
+                    .@"orelse" => blk: {
+                        // optional-or-else: if lhs is some -> unwrap, else rhs
+                        // Build CFG: then=unwrap(lhs), else=rhs, join with result param
+                        var then_blk = try f.builder.beginBlock(f);
+                        var else_blk = try f.builder.beginBlock(f);
+                        var join_blk = try f.builder.beginBlock(f);
+                        const s_is_some = f.builder.intern("builtin.opt.is_some");
+                        const cond_v = blk.builder.call(blk, self.info.store.tBool(), s_is_some, &.{l});
+                        try f.builder.condBr(blk, cond_v, then_blk.id, &.{}, else_blk.id, &.{});
+                        const res_ty = ty;
+                        const res_param = try f.builder.addBlockParam(&join_blk, null, res_ty);
+                        // then: unwrap
+                        const s_unwrap = f.builder.intern("builtin.opt.unwrap");
+                        const unwrapped = blk.builder.call(&then_blk, res_ty, s_unwrap, &.{l});
+                        try f.builder.br(&then_blk, join_blk.id, &.{unwrapped});
+                        // else: rhs (already computed)
+                        try f.builder.br(&else_blk, join_blk.id, &.{r});
+                        try f.builder.endBlock(f, then_blk);
+                        try f.builder.endBlock(f, else_blk);
+                        blk.* = join_blk;
+                        break :blk res_param;
+                    },
+                };
+            },
+            .Catch => {
+                const row = a.exprs.get(.Catch, id);
+                // if ok(expr) then unwrap_ok(expr) else { bind err?; handler }
+                var then_blk = try f.builder.beginBlock(f);
+                var else_blk = try f.builder.beginBlock(f);
+                var join_blk = try f.builder.beginBlock(f);
+                const lhs = try self.lowerExpr(a, env, f, blk, row.expr);
+                const s_is_ok = f.builder.intern("builtin.err.is_ok");
+                const is_ok = blk.builder.call(blk, self.info.store.tBool(), s_is_ok, &.{lhs});
+                try f.builder.condBr(blk, is_ok, then_blk.id, &.{}, else_blk.id, &.{});
+                const res_ty = self.getExprType(id) orelse self.info.store.tVoid();
+                const res_param = try f.builder.addBlockParam(&join_blk, null, res_ty);
+                // then: unwrap ok
+                const s_unwrap_ok = f.builder.intern("builtin.err.unwrap_ok");
+                const okv = blk.builder.call(&then_blk, res_ty, s_unwrap_ok, &.{lhs});
+                try f.builder.br(&then_blk, join_blk.id, &.{okv});
+                // else: optionally bind error and evaluate handler
+                // For now, skip binding; name is available in row.binding_name
+                try self.lowerExprAsStmtList(a, env, f, &else_blk, row.handler);
+                if (else_blk.term.isNone()) {
+                    const hv = try self.lowerBlockExprValue(a, env, f, &else_blk, row.handler, res_ty);
+                    try f.builder.br(&else_blk, join_blk.id, &.{hv});
+                }
+                try f.builder.endBlock(f, then_blk);
+                try f.builder.endBlock(f, else_blk);
+                blk.* = join_blk;
+                return res_param;
+            },
+            .If => {
+                const row = a.exprs.get(.If, id);
+                var then_blk = try f.builder.beginBlock(f);
+                var else_blk = try f.builder.beginBlock(f);
+                var join_blk = try f.builder.beginBlock(f);
+                const cond_v = try self.lowerExpr(a, env, f, blk, row.cond);
+                try f.builder.condBr(blk, cond_v, then_blk.id, &.{}, else_blk.id, &.{});
+                const res_ty = self.getExprType(id) orelse self.info.store.tVoid();
+                const res_param = try f.builder.addBlockParam(&join_blk, null, res_ty);
+                // then arm value
+                var then_val: tir.ValueId = undefined;
+                try self.lowerExprAsStmtList(a, env, f, &then_blk, row.then_block);
+                if (then_blk.term.isNone()) {
+                    // If the then block did not end in a terminator, compute a value
+                    then_val = try self.lowerBlockExprValue(a, env, f, &then_blk, row.then_block, res_ty);
+                    try f.builder.br(&then_blk, join_blk.id, &.{then_val});
+                }
+                // else arm value (if present)
+                var else_val: tir.ValueId = undefined;
+                if (!row.else_block.isNone()) {
+                    try self.lowerExprAsStmtList(a, env, f, &else_blk, row.else_block.unwrap());
+                    if (else_blk.term.isNone()) {
+                        else_val = try self.lowerBlockExprValue(a, env, f, &else_blk, row.else_block.unwrap(), res_ty);
+                        try f.builder.br(&else_blk, join_blk.id, &.{else_val});
+                    }
+                } else {
+                    if (else_blk.term.isNone()) {
+                        // No else: pass undef of result type
+                        else_val = f.builder.constUndef(&else_blk, res_ty);
+                        try f.builder.br(&else_blk, join_blk.id, &.{else_val});
+                    }
+                }
+                try f.builder.endBlock(f, then_blk);
+                try f.builder.endBlock(f, else_blk);
+                blk.* = join_blk;
+                return res_param;
+            },
+            .Call => {
+                const row = a.exprs.get(.Call, id);
+                const callee_k = a.exprs.index.kinds.items[row.callee.toRaw()];
+                if (callee_k != .Ident) return error.OutOfMemory;
+                const sname = a.exprs.get(.Ident, row.callee).name;
+                const args_ids = a.exprs.expr_pool.slice(row.args);
+                var vals = try self.gpa.alloc(tir.ValueId, args_ids.len);
+                defer self.gpa.free(vals);
+                var j: usize = 0;
+                while (j < args_ids.len) : (j += 1) vals[j] = try self.lowerExpr(a, env, f, blk, args_ids[j]);
+                const ty = self.getExprType(id) orelse return error.OutOfMemory;
+                return blk.builder.call(blk, ty, sname, vals);
+            },
+            .Cast => {
+                const row = a.exprs.get(.Cast, id);
+                const ty = self.getExprType(id) orelse return error.OutOfMemory;
+                const v = try self.lowerExpr(a, env, f, blk, row.expr);
+                return switch (row.kind) {
+                    .normal => blk.builder.cast(blk, .CastNormal, ty, v),
+                    .bitcast => blk.builder.cast(blk, .CastBit, ty, v),
+                    .saturate => blk.builder.cast(blk, .CastSaturate, ty, v),
+                    .wrap => blk.builder.cast(blk, .CastWrap, ty, v),
+                    .checked => blk.builder.cast(blk, .CastChecked, ty, v),
+                };
+            },
+            .OptionalUnwrap => {
+                const row = a.exprs.get(.OptionalUnwrap, id);
+                const ty = self.getExprType(id) orelse return error.OutOfMemory;
+                const v = try self.lowerExpr(a, env, f, blk, row.expr);
+                const unwrap = blk.builder.intern("builtin.opt.unwrap");
+                return blk.builder.call(blk, ty, unwrap, &.{v});
+            },
+            .ErrUnwrap => {
+                const row = a.exprs.get(.ErrUnwrap, id);
+                const ty = self.getExprType(id) orelse return error.OutOfMemory;
+                const v = try self.lowerExpr(a, env, f, blk, row.expr);
+                const unwrap_ok = blk.builder.intern("builtin.err.unwrap_ok");
+                return blk.builder.call(blk, ty, unwrap_ok, &.{v});
+            },
+            .Match => {
+                const row = a.exprs.get(.Match, id);
+                const scrut = try self.lowerExpr(a, env, f, blk, row.expr);
+                const res_ty = self.getExprType(id) orelse self.info.store.tVoid();
+                var join_blk = try f.builder.beginBlock(f);
+                const res_param = try f.builder.addBlockParam(&join_blk, null, res_ty);
+                const arms = a.exprs.arm_pool.slice(row.arms);
+                if (arms.len == 0) return blk.builder.constUndef(blk, res_ty);
+                // detect literal-int only match (no guards)
+                var all_int = true;
+                var values_buf = self.gpa.alloc(u64, arms.len) catch @panic("OOM");
+                defer self.gpa.free(values_buf);
+                var i: usize = 0;
+                while (i < arms.len) : (i += 1) {
+                    const arm = a.exprs.MatchArm.get(arms[i].toRaw());
+                    if (!arm.guard.isNone()) {
+                        all_int = false;
+                        break;
+                    }
+                    const pk = a.pats.index.kinds.items[arm.pattern.toRaw()];
+                    if (pk != .Literal) {
+                        all_int = false;
+                        break;
+                    }
+                    const pr = a.pats.get(.Literal, arm.pattern);
+                    if (a.exprs.index.kinds.items[pr.expr.toRaw()] != .Literal) {
+                        all_int = false;
+                        break;
+                    }
+                    const lit = a.exprs.get(.Literal, pr.expr);
+                    if (lit.kind != .int or lit.value.isNone()) {
+                        all_int = false;
+                        break;
+                    }
+                    values_buf[i] = std.fmt.parseInt(u64, a.exprs.strs.get(lit.value.unwrap()), 10) catch {
+                        all_int = false;
+                        break;
+                    };
+                }
+                if (all_int) {
+                    // build body blocks
+                    var dests = self.gpa.alloc(Builder.SwitchDest, arms.len) catch @panic("OOM");
+                    defer self.gpa.free(dests);
+                    var bodies = try self.gpa.alloc(@TypeOf(try f.builder.beginBlock(f)), arms.len);
+                    defer self.gpa.free(bodies);
+                    i = 0;
+                    while (i < arms.len) : (i += 1) bodies[i] = try f.builder.beginBlock(f);
+                    // default next block
+                    var def_blk = try f.builder.beginBlock(f);
+                    // emit switch
+                    try f.builder.switchInt(blk, scrut, values_buf, blk: {
+                        i = 0;
+                        while (i < arms.len) : (i += 1) {
+                            dests[i] = .{ .dest = bodies[i].id, .args = &.{} };
+                        }
+                        break :blk dests;
+                    }, def_blk.id, &.{});
+                    // bodies -> join
+                    i = 0;
+                    while (i < arms.len) : (i += 1) {
+                        try self.lowerExprAsStmtList(a, env, f, &bodies[i], a.exprs.MatchArm.get(arms[i].toRaw()).body);
+                        if (bodies[i].term.isNone()) {
+                            const v = try self.lowerBlockExprValue(a, env, f, &bodies[i], a.exprs.MatchArm.get(arms[i].toRaw()).body, res_ty);
+                            try f.builder.br(&bodies[i], join_blk.id, &.{v});
+                        }
+                        try f.builder.endBlock(f, bodies[i]);
+                    }
+                    // default -> undef -> join
+                    const uv = f.builder.constUndef(&def_blk, res_ty);
+                    try f.builder.br(&def_blk, join_blk.id, &.{uv});
+                    try f.builder.endBlock(f, def_blk);
+                    blk.* = join_blk;
+                    return res_param;
+                } else {
+                    // fallback chained tests with guards
+                    var cur_blk = blk.*;
+                    i = 0;
+                    while (i < arms.len) : (i += 1) {
+                        const arm_id = arms[i];
+                        const arm = a.exprs.MatchArm.get(arm_id.toRaw());
+                        var test_blk = try f.builder.beginBlock(f);
+                        var body_blk = try f.builder.beginBlock(f);
+                        const next_blk = if (i + 1 < arms.len) try f.builder.beginBlock(f) else join_blk;
+                        try f.builder.br(&cur_blk, test_blk.id, &.{});
+                        const pat_ok = try self.matchPattern(a, env, f, &test_blk, arm.pattern, scrut);
+                        var final_ok = pat_ok;
+                        if (!arm.guard.isNone()) {
+                            const g = try self.lowerExpr(a, env, f, &test_blk, arm.guard.unwrap());
+                            final_ok = test_blk.builder.binBool(&test_blk, .LogicalAnd, final_ok, g);
+                        }
+                        try f.builder.condBr(&test_blk, final_ok, body_blk.id, &.{}, next_blk.id, &.{});
+                        try self.lowerExprAsStmtList(a, env, f, &body_blk, arm.body);
+                        if (body_blk.term.isNone()) {
+                            const v = try self.lowerBlockExprValue(a, env, f, &body_blk, arm.body, res_ty);
+                            try f.builder.br(&body_blk, join_blk.id, &.{v});
+                        }
+                        try f.builder.endBlock(f, test_blk);
+                        try f.builder.endBlock(f, body_blk);
+                        cur_blk = next_blk;
+                    }
+                    blk.* = join_blk;
+                    return res_param;
+                }
+            },
+            .While => {
+                const row = a.exprs.get(.While, id);
+                var header = try f.builder.beginBlock(f);
+                var body = try f.builder.beginBlock(f);
+                var exit_blk = try f.builder.beginBlock(f);
+                var join_blk = try f.builder.beginBlock(f);
+                const res_ty = self.getExprType(id) orelse self.info.store.tVoid();
+                const res_param = try f.builder.addBlockParam(&join_blk, null, res_ty);
+                try f.builder.br(blk, header.id, &.{});
+                const cond_v = if (!row.cond.isNone()) try self.lowerExpr(a, env, f, &header, row.cond.unwrap()) else f.builder.constBool(&header, self.info.store.tBool(), true);
+                try f.builder.condBr(&header, cond_v, body.id, &.{}, exit_blk.id, &.{});
+                // push loop context for break/continue with result join
+                try self.loop_stack.append(self.gpa, .{
+                    .label = if (!row.label.isNone()) a.exprs.strs.get(row.label.unwrap()) else null,
+                    .continue_block = header.id,
+                    .break_block = exit_blk.id,
+                    .has_result = true,
+                    .join_block = join_blk.id,
+                    .res_param = res_param,
+                    .res_ty = res_ty,
+                    .defer_len_at_entry = @intCast(env.defers.items.len),
+                });
+                try self.lowerExprAsStmtList(a, env, f, &body, row.body);
+                if (body.term.isNone()) try f.builder.br(&body, header.id, &.{});
+                try f.builder.endBlock(f, header);
+                try f.builder.endBlock(f, body);
+                // exit -> join undef
+                const uv = f.builder.constUndef(&exit_blk, res_ty);
+                try f.builder.br(&exit_blk, join_blk.id, &.{uv});
+                try f.builder.endBlock(f, exit_blk);
+                _ = self.loop_stack.pop();
+                blk.* = join_blk;
+                return res_param;
+            },
+            .For => {
+                const row = a.exprs.get(.For, id);
+                // Blocks
+                var header = try f.builder.beginBlock(f);
+                var body = try f.builder.beginBlock(f);
+                var exit_blk = try f.builder.beginBlock(f);
+                var join_blk = try f.builder.beginBlock(f);
+                const res_ty = self.getExprType(id) orelse self.info.store.tVoid();
+                const res_param = try f.builder.addBlockParam(&join_blk, null, res_ty);
+
+                // loop context
+                try self.loop_stack.append(self.gpa, .{ .label = if (!row.label.isNone()) a.exprs.strs.get(row.label.unwrap()) else null, .continue_block = header.id, .break_block = exit_blk.id });
+
+                // Range-based or collection-based
+                if (a.exprs.index.kinds.items[row.iterable.toRaw()] == .Range) {
+                    const rg = a.exprs.get(.Range, row.iterable);
+                    if (rg.start.isNone() or rg.end.isNone()) return error.OutOfMemory;
+                    const start_v = try self.lowerExpr(a, env, f, blk, rg.start.unwrap());
+                    const end_v = try self.lowerExpr(a, env, f, blk, rg.end.unwrap());
+                    const idx_ty = self.getExprType(rg.start.unwrap()) orelse return error.OutOfMemory;
+                    const idx_param = try f.builder.addBlockParam(&header, null, idx_ty);
+                    try f.builder.br(blk, header.id, &.{start_v});
+                    // header cond
+                    const cond = if (rg.inclusive_right)
+                        blk.builder.binBool(&header, .CmpLe, idx_param, end_v)
                     else
-                        c;
+                        blk.builder.binBool(&header, .CmpLt, idx_param, end_v);
+                    try f.builder.condBr(&header, cond, body.id, &.{}, exit_blk.id, &.{});
+                    // body
+                    try self.lowerExprAsStmtList(a, env, f, &body, row.body);
+                    if (body.term.isNone()) {
+                        const one = blk.builder.constInt(&body, idx_ty, 1);
+                        const next_i = blk.builder.bin(&body, .Add, idx_ty, idx_param, one);
+                        try f.builder.br(&body, header.id, &.{next_i});
+                    }
+                } else {
+                    // collection-based via index
+                    const arr_v = try self.lowerExpr(a, env, f, blk, row.iterable);
+                    const idx_ty = self.info.store.tUsize();
+                    const s_len = f.builder.intern("builtin.len");
+                    const len_v = blk.builder.call(blk, idx_ty, s_len, &.{arr_v});
+                    const zero = blk.builder.constInt(blk, idx_ty, 0);
+                    const idx_param = try f.builder.addBlockParam(&header, null, idx_ty);
+                    try f.builder.br(blk, header.id, &.{zero});
+                    const cond = blk.builder.binBool(&header, .CmpLt, idx_param, len_v);
+                    try f.builder.condBr(&header, cond, body.id, &.{}, exit_blk.id, &.{});
+                    // body: element = arr[idx]
+                    const elem_ty = self.info.store.tAny();
+                    const elem = blk.builder.indexOp(&body, elem_ty, arr_v, idx_param);
+                    // bind pattern to element
+                    try self.bindPattern(a, env, f, &body, row.pattern, elem, elem_ty);
+                    try self.lowerExprAsStmtList(a, env, f, &body, row.body);
+                    if (body.term.isNone()) {
+                        const one = blk.builder.constInt(&body, idx_ty, 1);
+                        const next_i = blk.builder.bin(&body, .Add, idx_ty, idx_param, one);
+                        try f.builder.br(&body, header.id, &.{next_i});
+                    }
                 }
-                return acc;
+                // pop loop
+                _ = self.loop_stack.pop();
+                // exit -> join with undef if no value
+                const uv = blk.builder.constUndef(&exit_blk, res_ty);
+                try f.builder.br(&exit_blk, join_blk.id, &.{uv});
+                try f.builder.endBlock(f, header);
+                try f.builder.endBlock(f, body);
+                try f.builder.endBlock(f, exit_blk);
+                blk.* = join_blk;
+                return res_param;
             },
-            .At => |ap| {
-                // binder @ pat  -> same condition as inner pattern
-                return try self.condFromPattern(ctx, ap.pattern, scrut);
-            },
-            .Path => |pp| {
-                // test symbolic path (e.g., Enum.Tag) equality on scrut
-                const path_s = try self.constPathToString(ctx, &pp);
-                return try self.builder.call(b, self.bool_t, "builtin.path.match", &.{ scrut, path_s });
-            },
-            .Struct => |sp| {
-                var acc: ?tir.ValueId = null;
-                // All fields must match
-                for (sp.fields.items) |f| {
-                    // extract subvalue and test recursively
-
-                    const whole_ty = self.void_t; // best-effort
-                    const idx = try self.resolveStructFieldIndex(whole_ty, f.name);
-                    const sub = try self.builder.extractField(b, whole_ty, scrut, idx, f.name);
-                    const c = try self.condFromPattern(ctx, f.pattern, sub) orelse return null;
-                    acc = if (acc) |a| try self.builder.lAnd(b, self.bool_t, a, c) else c;
-                }
-                return acc orelse try self.builder.constBool(b, self.bool_t, true);
-            },
-            .Tuple => |tp| {
-                var acc: ?tir.ValueId = null;
-                for (tp.elems.items, 0..) |subp, i| {
-                    const sub = try self.builder.extractElem(b, self.void_t, scrut, @intCast(i));
-                    const c = try self.condFromPattern(ctx, subp, sub) orelse return null;
-                    acc = if (acc) |a| try self.builder.lAnd(b, self.bool_t, a, c) else c;
-                }
-                return acc orelse try self.builder.constBool(b, self.bool_t, true);
-            },
-            .Slice => |sp| {
-                // Match prefix elements (ignoring rest if has_rest)
-                if (sp.has_rest) {
-                    // Only check provided fixed elements
-                }
-                var acc: ?tir.ValueId = null;
-                for (sp.elems.items, 0..) |subp, i| {
-                    const idx_ty = self.usize_t orelse (try self.type_arena.mk(.{ .Usize = {} }));
-                    const idxv = try self.builder.constInt(b, idx_ty, @intCast(i));
-                    const sub = try self.builder.index(b, self.void_t, scrut, idxv);
-                    const c = try self.condFromPattern(ctx, subp, sub) orelse return null;
-                    acc = if (acc) |a| try self.builder.lAnd(b, self.bool_t, a, c) else c;
-                }
-                return acc orelse try self.builder.constBool(b, self.bool_t, true);
-            },
-            .VariantTuple => |vp| {
-                // Check tag matches (via last segment name)
-                const tag = vp.path.items[vp.path.items.len - 1].name;
-                const tag_s = try self.constStr(ctx, tag);
-                const tag_ok = try self.builder.call(b, self.bool_t, "builtin.variant.tag_is", &.{ scrut, tag_s });
-                // Then check tuple payload elements
-                const tpl = try self.builder.call(b, self.void_t, "builtin.variant.get_tuple", &.{scrut});
-                var acc: tir.ValueId = tag_ok;
-                for (vp.elems.items, 0..) |pe, i| {
-                    const ev = try self.builder.extractElem(b, self.void_t, tpl, @intCast(i));
-                    const c = try self.condFromPattern(ctx, pe, ev) orelse return null;
-                    acc = try self.builder.lAnd(b, self.bool_t, acc, c);
-                }
-                return acc;
-            },
-            .VariantStruct => |vp| {
-                const tag = vp.path.items[vp.path.items.len - 1].name;
-                const tag_s = try self.constStr(ctx, tag);
-                const tag_ok = try self.builder.call(b, self.bool_t, "builtin.variant.tag_is", &.{ scrut, tag_s });
-                var acc: tir.ValueId = tag_ok;
-                for (vp.fields.items) |f| {
-                    const fv = try self.builder.call(b, self.void_t, "builtin.variant.get_field", &.{ scrut, try self.constStr(ctx, f.name) });
-                    const c = try self.condFromPattern(ctx, f.pattern, fv) orelse return null;
-                    acc = try self.builder.lAnd(b, self.bool_t, acc, c);
-                }
-                return acc;
-            },
+            else => return error.OutOfMemory,
         }
     }
 
-    // ----- If as expression with block params (phi) -----
-    fn lowerIfExpr(self: *LowerTir, ctx: *FunctionContext, iff: *const ast.If, result_ty: types.TypeId) anyerror!tir.ValueId {
-        const cond_v = try self.lowerExpr(ctx, iff.cond);
-
-        const then_b = try self.builder.addBlock(ctx.func);
-        const else_b = try self.builder.addBlock(ctx.func);
-        const join_b = try self.builder.addBlock(ctx.func);
-
-        // Join block has a param carrying the chosen value
-        const join_param = try self.builder.addBlockParam(join_b, "if.res", result_ty);
-
-        // branch
-        try self.builder.condBr(ctx.current_block, cond_v, then_b.id, &.{}, else_b.id, &.{});
-
-        // then
-        ctx.current_block = then_b;
-        const then_v = try self.lowerBlockExpr(ctx, &iff.then_block, result_ty);
-        try self.builder.br(ctx.current_block, join_b.id, &.{then_v});
-
-        // else
-        ctx.current_block = else_b;
-        var else_v: tir.ValueId = undefined;
-        if (iff.else_block) |else_expr| {
-            else_v = try self.lowerExpr(ctx, else_expr);
+    // Compute the value of a block expression: evaluate last expression or return undef of expected type
+    fn lowerBlockExprValue(self: *@This(), a: *const ast.Ast, env: *Env, f: *Builder.FunctionFrame, blk: *Builder.BlockFrame, block_expr: ast.ExprId, expected_ty: types.TypeId) anyerror!tir.ValueId {
+        if (a.exprs.index.kinds.items[block_expr.toRaw()] != .Block) {
+            // Not a block; just lower as expression
+            return self.lowerExpr(a, env, f, blk, block_expr);
+        }
+        const b = a.exprs.get(.Block, block_expr);
+        const stmts = a.stmts.stmt_pool.slice(b.items);
+        if (stmts.len == 0) return f.builder.constUndef(blk, expected_ty);
+        // Run all but last as statements
+        var i: usize = 0;
+        while (i + 1 < stmts.len) : (i += 1) {
+            try self.lowerStmt(a, env, f, blk, stmts[i]);
+        }
+        const last = stmts[stmts.len - 1];
+        const lk = a.stmts.index.kinds.items[last.toRaw()];
+        if (lk == .Expr) {
+            const le = a.stmts.get(.Expr, last).expr;
+            return self.lowerExpr(a, env, f, blk, le);
         } else {
-            else_v = try self.builder.constUndef(else_b, result_ty);
+            try self.lowerStmt(a, env, f, blk, last);
+            return f.builder.constUndef(blk, expected_ty);
         }
-        try self.builder.br(ctx.current_block, join_b.id, &.{else_v});
-
-        // join
-        ctx.current_block = join_b;
-        return join_param;
     }
 
-    // Lower function literal to a named function and return its symbol name.
-    fn materializeFunctionLiteral(self: *LowerTir, ctx: *FunctionContext, fun: *const ast.FunctionLit) anyerror![]const u8 {
-        _ = ctx;
-        // Synthesize a private symbol
-        var buf: [64]u8 = undefined;
-        const name = try std.fmt.bufPrint(&buf, "__lambda${}", .{g_lambda_counter});
-        g_lambda_counter += 1;
-
-        // Determine type & result
-        const fn_ty_id = self.expr_types.get(@ptrCast(fun)) orelse return LowerError.SemanticError;
-        const fn_ty = self.type_arena.get(fn_ty_id).Function;
-        const f = try self.builder.addFunction(name, fn_ty.result);
-
-        // params
-        for (fun.params.items, 0..) |p, i| {
-            _ = try self.builder.addFuncParam(f, extractParamName(p), fn_ty.params[i]);
+    fn lowerAddress(self: *@This(), a: *const ast.Ast, env: *Env, f: *Builder.FunctionFrame, blk: *Builder.BlockFrame, id: ast.ExprId) anyerror!tir.ValueId {
+        const k = a.exprs.index.kinds.items[id.toRaw()];
+        switch (k) {
+            .Ident => {
+                const row = a.exprs.get(.Ident, id);
+                const name = a.exprs.strs.get(row.name);
+                const bnd = env.lookup(name) orelse return error.OutOfMemory;
+                if (bnd.is_slot) return bnd.value;
+                // take address of immutable -> alloca+store then return slot
+                const ety = self.getExprType(id) orelse return error.OutOfMemory;
+                const slot_ty = self.info.store.mkPtr(ety, false);
+                const slot = f.builder.alloca(blk, slot_ty, tir.OptValueId.none(), 0);
+                _ = f.builder.store(blk, ety, slot, bnd.value, 0);
+                return slot;
+            },
+            .FieldAccess => {
+                const row = a.exprs.get(.FieldAccess, id);
+                const parent_ptr = try self.lowerAddress(a, env, f, blk, row.parent);
+                var pty = self.getExprType(row.parent) orelse return error.OutOfMemory;
+                // unwrap pointer type for element lookup
+                if (self.info.store.index.kinds.items[pty.toRaw()] == .Ptr) {
+                    const prow = self.info.store.Ptr.get(self.info.store.index.rows.items[pty.toRaw()]);
+                    pty = prow.elem;
+                }
+                var idx_val: u32 = 0;
+                if (row.is_tuple) {
+                    idx_val = try std.fmt.parseInt(u32, a.exprs.strs.get(row.field), 10);
+                } else {
+                    if (self.info.store.index.kinds.items[pty.toRaw()] == .Struct) {
+                        const srow = self.info.store.Struct.get(self.info.store.index.rows.items[pty.toRaw()]);
+                        const fids = self.info.store.field_pool.slice(srow.fields);
+                        const target = a.exprs.strs.get(row.field);
+                        var i: u32 = 0;
+                        while (i < fids.len) : (i += 1) {
+                            const fr = self.info.store.Field.get(fids[i].toRaw());
+                            if (std.mem.eql(u8, self.info.store.strs.get(fr.name), target)) {
+                                idx_val = i;
+                                break;
+                            }
+                        }
+                    } else idx_val = 0;
+                }
+                const idx = blk.builder.gepConst(idx_val);
+                const rty = self.info.store.mkPtr(self.getExprType(id) orelse return error.OutOfMemory, false);
+                return blk.builder.gep(blk, rty, parent_ptr, &.{idx});
+            },
+            .IndexAccess => {
+                const row = a.exprs.get(.IndexAccess, id);
+                const base_ptr = try self.lowerAddress(a, env, f, blk, row.collection);
+                const idx_v = try self.lowerExpr(a, env, f, blk, row.index);
+                const idx = blk.builder.gepValue(idx_v);
+                const rty = self.info.store.mkPtr(self.getExprType(id) orelse return error.OutOfMemory, false);
+                return blk.builder.gep(blk, rty, base_ptr, &.{idx});
+            },
+            else => return error.OutOfMemory,
         }
-        const entry = try self.builder.addBlock(f);
-        var inner = FunctionContext.init(self.allocator, &self.builder, f, entry, self.type_arena, self.void_t, self.bool_t);
-        defer inner.deinit();
-        // bind parameters into inner scope
-        for (f.params.items, 0..) |pp, i| {
-            try inner.bindImm(pp.name orelse try std.fmt.allocPrint(self.allocator, "arg{}", .{i}), pp.id);
-        }
-        if (fun.body) |body| try self.lowerBlockStmts(&inner, &body) else self.builder.retVoid(entry);
-        return try self.dup(name);
     }
 
-    // Lower closure similarly; naive capture: find free names and pass as extra params (TODO).
-    fn materializeClosure(self: *LowerTir, ctx: *FunctionContext, clos: *const ast.Closure) anyerror![]const u8 {
-        _ = ctx;
-        var buf: [64]u8 = undefined;
-        const name = try std.fmt.bufPrint(&buf, "__closure${}", .{g_lambda_counter});
-        g_lambda_counter += 1;
-        const fn_ty_id = self.expr_types.get(@ptrCast(clos)) orelse return LowerError.SemanticError;
-        const fn_ty = self.type_arena.get(fn_ty_id).Function;
-        const f = try self.builder.addFunction(name, fn_ty.result);
-        // params
-        for (clos.params.items, 0..) |p, i| {
-            _ = try self.builder.addFuncParam(f, extractParamName(p), fn_ty.params[i]);
-        }
-        const entry = try self.builder.addBlock(f);
-        var inner = FunctionContext.init(self.allocator, &self.builder, f, entry, self.type_arena, self.void_t, self.bool_t);
-        defer inner.deinit();
-        for (f.params.items, 0..) |pp, i| {
-            try inner.bindImm(pp.name orelse try std.fmt.allocPrint(self.allocator, "arg{}", .{i}), pp.id);
-        }
-        // body is a single expression
-        const rv = try self.lowerExpr(&inner, clos.body);
-        self.builder.ret(entry, rv);
-        return try self.dup(name);
+    fn getExprType(self: *const @This(), id: ast.ExprId) ?types.TypeId {
+        return self.info.expr_types.items[id.toRaw()];
+    }
+    fn getDeclType(self: *const @This(), did: ast.DeclId) ?types.TypeId {
+        return self.info.decl_types.items[did.toRaw()];
     }
 
-    fn materializeThunkOfExpr(self: *LowerTir, ctx: *FunctionContext, expr: *const ast.Expr, base: []const u8) anyerror![]const u8 {
-        _ = ctx;
-        var buf: [64]u8 = undefined;
-        const name = try std.fmt.bufPrint(&buf, "{s}${}", .{ base, g_lambda_counter });
-        g_lambda_counter += 1;
-        // result type = type(expr)
-        const res_ty = self.getExprType(expr) orelse return LowerError.SemanticError;
-        const f = try self.builder.addFunction(name, res_ty);
-        const entry = try self.builder.addBlock(f);
-        var inner = FunctionContext.init(self.allocator, &self.builder, f, entry, self.type_arena, self.void_t, self.bool_t);
-        defer inner.deinit();
-        const rv = try self.lowerExpr(&inner, expr);
-        self.builder.ret(entry, rv);
-        return try self.dup(name);
-    }
-
-    fn constPathToString(self: *LowerTir, ctx: *FunctionContext, pp: *const ast.PathPattern) anyerror!tir.ValueId {
-        // Serialize segments "a::b::C" -> string
-        var buf = ArrayList(u8).init(self.allocator);
-        defer buf.deinit();
-        for (pp.segments.items, 0..) |seg, i| {
-            if (i != 0) try buf.appendSlice("::");
-            try buf.appendSlice(seg.name);
-        }
-        return self.builder.constString(ctx.current_block, try self.requireStringType(), buf.items);
-    }
-
-    fn dup(self: *LowerTir, s: []const u8) anyerror![]const u8 {
-        const mem = try self.allocator.alloc(u8, s.len);
-        std.mem.copyForwards(u8, mem, s);
-        return mem;
-    }
-
-    // Basic placeholder: compute field index by name.
-    // TODO: Replace with a real lookup using `types.zig` metadata.
-    fn resolveStructFieldIndex(self: *LowerTir, _struct_ty: types.TypeId, _name: []const u8) anyerror!u32 {
-        _ = self;
-        _ = _struct_ty;
-        _ = _name;
-        // Without type metadata, fall back to 0 to keep lowering flowing.
-        // Callers should ensure correctness later in codegen/verifier.
-        return 0;
-    }
-
-    //==========================================================================
-    // Tiny utilities
-    //==========================================================================
-
-    fn extractParamName(p: ast.Param) ?[]const u8 {
-        if (p.pat) |pat| {
-            return switch (pat.*) {
-                .Binding => pat.Binding.name,
-                else => null,
-            };
-        }
-        return null;
-    }
-};
-
-//==============================================================================
-// FunctionContext & Var bindings
-//==============================================================================
-
-const VarKind = enum { Imm, Ptr };
-
-const VarBinding = struct {
-    kind: VarKind,
-    v: tir.ValueId,
-};
-
-const LoopTarget = struct {
-    label: ?[]const u8,
-    break_block: *tir.Block, // raw exit block (pre-join)
-    continue_block: *tir.Block, // backedge header
-    join_block: *tir.Block, // value join for loop-as-expression
-    join_param: tir.ValueId, // result parameter
-    result_ty: types.TypeId,
-    scope_depth: usize, // scope height when loop began
-};
-
-const DeferEntry = struct { expr: *const ast.Expr, is_err_only: bool };
-const Scope = struct { defers: ArrayList(DeferEntry) };
-
-const FunctionContext = struct {
-    allocator: Allocator,
-    builder: *tir.Builder,
-    func: *tir.Function,
-    current_block: *tir.Block,
-    type_arena: *types.TypeArena,
-    void_t: types.TypeId,
-    bool_t: types.TypeId,
-    bindings: StringHashMap(VarBinding),
-    loop_stack: ArrayList(LoopTarget),
-    scopes: ArrayList(Scope),
-
-    fn init(
-        allocator: Allocator,
-        builder: *tir.Builder,
-        func: *tir.Function,
-        entry: *tir.Block,
-        type_arena: *types.TypeArena,
-        void_t: types.TypeId,
-        bool_t: types.TypeId,
-    ) FunctionContext {
-        return .{
-            .allocator = allocator,
-            .builder = builder,
-            .func = func,
-            .current_block = entry,
-            .type_arena = type_arena,
-            .void_t = void_t,
-            .bool_t = bool_t,
-            .bindings = StringHashMap(VarBinding).init(allocator),
-            .loop_stack = ArrayList(LoopTarget).init(allocator),
-            .scopes = ArrayList(Scope).init(allocator),
+    fn bindingNameOfPattern(_: *const @This(), a: *const ast.Ast, pid: ast.PatternId) ?StrId {
+        const k = a.pats.index.kinds.items[pid.toRaw()];
+        return switch (k) {
+            .Binding => a.pats.get(.Binding, pid).name,
+            else => null,
         };
     }
 
-    fn deinit(self: *FunctionContext) void {
-        self.bindings.deinit();
-        self.loop_stack.deinit();
-        for (self.scopes.items) |*s| s.defers.deinit();
-        self.scopes.deinit();
-    }
-
-    fn bindImm(self: *FunctionContext, name: []const u8, v: tir.ValueId) anyerror!void {
-        try self.bindings.put(name, .{ .kind = .Imm, .v = v });
-    }
-    fn bindMut(self: *FunctionContext, name: []const u8, ptr: tir.ValueId) anyerror!void {
-        try self.bindings.put(name, .{ .kind = .Ptr, .v = ptr });
-    }
-    fn lookup(self: *FunctionContext, name: []const u8) ?VarBinding {
-        return self.bindings.get(name);
-    }
-
-    fn pushLoop(
-        self: *FunctionContext,
-        label: ?[]const u8,
-        break_b: *tir.Block,
-        cont_b: *tir.Block,
-        join_b: *tir.Block,
-        join_param: tir.ValueId,
-        result_ty: types.TypeId,
-    ) anyerror!void {
-        try self.loop_stack.append(.{
-            .label = label,
-            .break_block = break_b,
-            .continue_block = cont_b,
-            .join_block = join_b,
-            .join_param = join_param,
-            .result_ty = result_ty,
-            .scope_depth = self.scopes.items.len,
-        });
-    }
-    fn popLoop(self: *FunctionContext) void {
-        _ = self.loop_stack.pop();
-    }
-
-    // ---- scope & defer management ----
-    fn pushScope(self: *FunctionContext) anyerror!void {
-        const s = Scope{ .defers = ArrayList(DeferEntry).init(self.allocator) };
-        try self.scopes.append(s);
-    }
-    fn popScope(self: *FunctionContext) void {
-        const s = self.scopes.pop();
-        s.?.defers.deinit();
-    }
-    fn addDefer(self: *FunctionContext, expr: *const ast.Expr, is_err_only: bool) anyerror!void {
-        if (self.scopes.items.len == 0) {
-            // ensure we always have a scope (shouldn't happen if callers pushScope)
-            try self.pushScope();
+    fn bindPattern(self: *@This(), a: *const ast.Ast, env: *Env, f: *Builder.FunctionFrame, blk: *Builder.BlockFrame, pid: ast.PatternId, value: tir.ValueId, vty: types.TypeId) !void {
+        const k = a.pats.index.kinds.items[pid.toRaw()];
+        switch (k) {
+            .Binding => {
+                const nm = a.pats.get(.Binding, pid).name;
+                try env.bind(self.gpa, a, nm, .{ .value = value, .is_slot = false });
+            },
+            .Tuple => {
+                const row = a.pats.get(.Tuple, pid);
+                const elems = a.pats.pat_pool.slice(row.elems);
+                var i: usize = 0;
+                // Try to use tuple element types if available
+                var etys: []const types.TypeId = &[_]types.TypeId{};
+                const vk = self.info.store.index.kinds.items[vty.toRaw()];
+                if (vk == .Tuple) {
+                    const vrow = self.info.store.Tuple.get(self.info.store.index.rows.items[vty.toRaw()]);
+                    etys = self.info.store.type_pool.slice(vrow.elems);
+                }
+                while (i < elems.len) : (i += 1) {
+                    const ety = if (i < etys.len) etys[i] else self.info.store.tAny();
+                    const ev = blk.builder.extractElem(blk, ety, value, @intCast(i));
+                    try self.bindPattern(a, env, f, blk, elems[i], ev, ety);
+                }
+            },
+            else => {
+                // Fallback: bind nothing; full pattern space handled in later sweep
+            },
         }
-        const top = &self.scopes.items[self.scopes.items.len - 1];
-        try top.defers.append(.{ .expr = expr, .is_err_only = is_err_only });
+    }
+    fn matchPattern(self: *@This(), a: *const ast.Ast, env: *Env, f: *Builder.FunctionFrame, blk: *Builder.BlockFrame, pid: ast.PatternId, scrut: tir.ValueId) !tir.ValueId {
+        // env used via lowerExpr in some branches
+        const k = a.pats.index.kinds.items[pid.toRaw()];
+        switch (k) {
+            .Wildcard => return blk.builder.constBool(blk, self.info.store.tBool(), true),
+            .Literal => {
+                const pr = a.pats.get(.Literal, pid);
+                const litv = try self.lowerExpr(a, env, f, blk, pr.expr);
+                return blk.builder.binBool(blk, .CmpEq, scrut, litv);
+            },
+            .Binding, .Path, .Tuple, .Slice, .Struct, .VariantTuple, .VariantStruct, .Range, .Or, .At => {
+                return blk.builder.constBool(blk, self.info.store.tBool(), true);
+            },
+        }
+    }
+};
+
+const LoopCtx = struct {
+    label: ?[]const u8,
+    continue_block: tir.BlockId,
+    break_block: tir.BlockId,
+    // expression result join (optional)
+    has_result: bool = false,
+    join_block: tir.BlockId = tir.BlockId.fromRaw(0),
+    res_param: tir.ValueId = tir.ValueId.fromRaw(0),
+    res_ty: types.TypeId = undefined,
+    // defers to run when exiting loop via break/continue
+    defer_len_at_entry: u32 = 0,
+};
+
+const Env = struct {
+    map: std.StringHashMapUnmanaged(ValueBinding) = .{},
+    defers: std.ArrayListUnmanaged(DeferEntry) = .{},
+    marks: std.ArrayListUnmanaged(u32) = .{},
+    fn init(_: std.mem.Allocator) Env {
+        return .{ .map = .{} };
+    }
+    fn deinit(self: *@This(), gpa: std.mem.Allocator) void {
+        self.map.deinit(gpa);
+        self.defers.deinit(gpa);
+        self.marks.deinit(gpa);
+    }
+    fn bind(self: *@This(), gpa: std.mem.Allocator, a: *const ast.Ast, name: StrId, vb: ValueBinding) !void {
+        const s = a.exprs.strs.get(name);
+        try self.map.put(gpa, s, vb);
+    }
+    fn lookup(self: *@This(), s: []const u8) ?ValueBinding {
+        return self.map.get(s);
+    }
+    fn pushScope(self: *@This(), gpa: std.mem.Allocator) !void {
+        try self.marks.append(gpa, @intCast(self.defers.items.len));
+    }
+    fn popScope(self: *@This()) u32 {
+        if (self.marks.items.len == 0) return 0;
+        const mark = self.marks.items[self.marks.items.len - 1];
+        self.marks.items.len -= 1;
+        self.defers.items.len = mark;
+        return mark;
+    }
+};
+
+const ValueBinding = struct { value: tir.ValueId, is_slot: bool };
+const DeferEntry = struct { expr: ast.ExprId, is_err: bool };
+
+const Builder = struct {
+    gpa: std.mem.Allocator,
+    t: *tir.TIR,
+    next_value: u32 = 0,
+
+    pub fn init(gpa: std.mem.Allocator, t: *tir.TIR) Builder {
+        return .{ .gpa = gpa, .t = t };
     }
 
-    fn findLoop(self: *FunctionContext, label: ?[]const u8) ?*LoopTarget {
-        if (label == null) {
-            if (self.loop_stack.items.len == 0) return null;
-            return &self.loop_stack.items[self.loop_stack.items.len - 1];
+    fn freshValue(self: *@This()) tir.ValueId {
+        const id = tir.ValueId.fromRaw(self.next_value);
+        self.next_value += 1;
+        return id;
+    }
+
+    pub const FunctionFrame = struct {
+        builder: *Builder,
+        id: tir.FuncId,
+        param_vals: std.ArrayListUnmanaged(tir.ValueId) = .{},
+        param_ids: std.ArrayListUnmanaged(tir.ParamId) = .{},
+        blocks: std.ArrayListUnmanaged(tir.BlockId) = .{},
+        pub fn deinit(self: *@This(), gpa: std.mem.Allocator) void {
+            self.param_vals.deinit(gpa);
+            self.param_ids.deinit(gpa);
+            self.blocks.deinit(gpa);
         }
-        const l = label.?;
-        var i: isize = @intCast(self.loop_stack.items.len - 1);
-        while (i >= 0) : (i -= 1) {
-            if (self.loop_stack.items[@intCast(i)].label) |lb| {
-                if (std.mem.eql(u8, lb, l)) return &self.loop_stack.items[@intCast(i)];
-            }
+    };
+
+    pub const BlockFrame = struct {
+        builder: *Builder,
+        id: tir.BlockId,
+        instrs: std.ArrayListUnmanaged(tir.InstrId) = .{},
+        params: std.ArrayListUnmanaged(tir.ParamId) = .{},
+        term: tir.OptTermId = .none(),
+        pub fn deinit(self: *@This(), gpa: std.mem.Allocator) void {
+            self.instrs.deinit(gpa);
+            self.params.deinit(gpa);
         }
-        return null;
+    };
+    const TermSlot = struct { value: usize };
+    const SwitchDest = struct { dest: tir.BlockId, args: []const tir.ValueId };
+
+    pub fn beginFunction(self: *@This(), name: StrId, result: types.TypeId) !FunctionFrame {
+        const idx = self.t.funcs.Function.add(self.gpa, .{ .name = name, .params = tir.RangeParam.empty(), .result = result, .blocks = tir.RangeBlock.empty() });
+        return .{ .builder = self, .id = tir.FuncId.fromRaw(idx) };
+    }
+    pub fn addParam(self: *@This(), f: *FunctionFrame, name: ?StrId, ty: types.TypeId) !tir.ValueId {
+        const vid = self.freshValue();
+        const pid_u32 = self.t.funcs.Param.add(self.gpa, .{ .value = vid, .name = if (name) |n| OptStrId.some(n) else OptStrId.none(), .ty = ty });
+        try f.param_ids.append(self.gpa, tir.ParamId.fromRaw(pid_u32));
+        try f.param_vals.append(self.gpa, vid);
+        return vid;
+    }
+    pub fn beginBlock(self: *@This(), f: *FunctionFrame) !BlockFrame {
+        const idx = self.t.funcs.Block.add(self.gpa, .{ .params = tir.RangeParam.empty(), .instrs = tir.RangeInstr.empty(), .term = tir.TermId.fromRaw(0) });
+        const bid = tir.BlockId.fromRaw(idx);
+        try f.blocks.append(self.gpa, bid);
+        return .{ .builder = self, .id = bid };
+    }
+    pub fn endBlock(self: *@This(), f: *FunctionFrame, blk: BlockFrame) !void {
+        const instr_range = self.t.instrs.instr_pool.pushMany(self.gpa, blk.instrs.items);
+        const param_range = self.t.funcs.param_pool.pushMany(self.gpa, blk.params.items);
+        var row = self.t.funcs.Block.get(blk.id.toRaw());
+        row.instrs = instr_range;
+        row.params = param_range;
+        row.term = blk.term.unwrap();
+        self.t.funcs.Block.list.set(blk.id.toRaw(), row);
+        var tmp = blk;
+        tmp.deinit(self.gpa);
+        _ = f;
+    }
+    pub fn endFunction(self: *@This(), f: FunctionFrame) !void {
+        const prange = self.t.funcs.param_pool.pushMany(self.gpa, f.param_ids.items);
+        const brange = self.t.funcs.block_pool.pushMany(self.gpa, f.blocks.items);
+        var row = self.t.funcs.Function.get(f.id.toRaw());
+        row.params = prange;
+        row.blocks = brange;
+        self.t.funcs.Function.list.set(f.id.toRaw(), row);
+        var tmp = f;
+        tmp.deinit(self.gpa);
+        _ = self.t.funcs.func_pool.push(self.gpa, f.id);
+    }
+
+    // ---- instruction helpers ----
+    fn constInt(self: *@This(), blk: *BlockFrame, ty: types.TypeId, v: i64) tir.ValueId {
+        const vid = self.freshValue();
+        const iid = self.t.instrs.add(.ConstInt, tir.Rows.ConstInt{ .result = vid, .ty = ty, .value = v });
+        blk.instrs.append(self.gpa, iid) catch @panic("OOM");
+        return vid;
+    }
+    fn constFloat(self: *@This(), blk: *BlockFrame, ty: types.TypeId, v: f64) tir.ValueId {
+        const vid = self.freshValue();
+        const iid = self.t.instrs.add(.ConstFloat, tir.Rows.ConstFloat{ .result = vid, .ty = ty, .value = v });
+        blk.instrs.append(self.gpa, iid) catch @panic("OOM");
+        return vid;
+    }
+    fn constBool(self: *@This(), blk: *BlockFrame, ty: types.TypeId, v: bool) tir.ValueId {
+        const vid = self.freshValue();
+        const iid = self.t.instrs.add(.ConstBool, tir.Rows.ConstBool{ .result = vid, .ty = ty, .value = v });
+        blk.instrs.append(self.gpa, iid) catch @panic("OOM");
+        return vid;
+    }
+    fn constString(self: *@This(), blk: *BlockFrame, ty: types.TypeId, s: []const u8) tir.ValueId {
+        const sid = self.t.instrs.strs.intern(s);
+        const vid = self.freshValue();
+        const iid = self.t.instrs.add(.ConstString, tir.Rows.ConstString{ .result = vid, .ty = ty, .text = sid });
+        blk.instrs.append(self.gpa, iid) catch @panic("OOM");
+        return vid;
+    }
+    fn load(self: *@This(), blk: *BlockFrame, ty: types.TypeId, ptr: tir.ValueId, al: u32) tir.ValueId {
+        const vid = self.freshValue();
+        const iid = self.t.instrs.add(.Load, tir.Rows.Load{ .result = vid, .ty = ty, .ptr = ptr, .@"align" = al });
+        blk.instrs.append(self.gpa, iid) catch @panic("OOM");
+        return vid;
+    }
+    fn store(self: *@This(), blk: *BlockFrame, ty: types.TypeId, ptr: tir.ValueId, value: tir.ValueId, al: u32) tir.InstrId {
+        const vid = self.freshValue();
+        const iid = self.t.instrs.add(.Store, .{ .result = vid, .ty = ty, .ptr = ptr, .value = value, .@"align" = al });
+        blk.instrs.append(self.gpa, iid) catch @panic("OOM");
+        return iid;
+    }
+    fn alloca(self: *@This(), blk: *BlockFrame, ty: types.TypeId, count: tir.OptValueId, al: u32) tir.ValueId {
+        const vid = self.freshValue();
+        const iid = self.t.instrs.add(.Alloca, tir.Rows.Alloca{ .result = vid, .ty = ty, .count = count, .@"align" = al });
+        blk.instrs.append(self.gpa, iid) catch @panic("OOM");
+        return vid;
+    }
+    fn bin(self: *@This(), blk: *BlockFrame, comptime k: tir.OpKind, ty: types.TypeId, l: tir.ValueId, r: tir.ValueId) tir.ValueId {
+        const vid = self.freshValue();
+        const iid = self.t.instrs.add(k, tir.Rows.Bin2{ .result = vid, .ty = ty, .lhs = l, .rhs = r });
+        blk.instrs.append(self.gpa, iid) catch @panic("OOM");
+        return vid;
+    }
+    fn binBool(self: *@This(), blk: *BlockFrame, comptime k: tir.OpKind, l: tir.ValueId, r: tir.ValueId) tir.ValueId {
+        const bty = self.t.type_store.tBool();
+        const vid = self.freshValue();
+        const iid = self.t.instrs.add(k, tir.Rows.Bin2{ .result = vid, .ty = bty, .lhs = l, .rhs = r });
+        blk.instrs.append(self.gpa, iid) catch @panic("OOM");
+        return vid;
+    }
+    fn call(self: *@This(), blk: *BlockFrame, ty: types.TypeId, callee: StrId, args: []const tir.ValueId) tir.ValueId {
+        const r = self.t.instrs.val_list_pool.pushMany(self.gpa, args);
+        const vid = self.freshValue();
+        const iid = self.t.instrs.add(.Call, tir.Rows.Call{ .result = vid, .ty = ty, .callee = callee, .args = r });
+        blk.instrs.append(self.gpa, iid) catch @panic("OOM");
+        return vid;
+    }
+    fn indexOp(self: *@This(), blk: *BlockFrame, ty: types.TypeId, base: tir.ValueId, idx: tir.ValueId) tir.ValueId {
+        const vid = self.freshValue();
+        const iid = self.t.instrs.add(.Index, tir.Rows.Index{ .result = vid, .ty = ty, .base = base, .index = idx });
+        blk.instrs.append(self.gpa, iid) catch @panic("OOM");
+        return vid;
+    }
+    fn intern(self: *@This(), s: []const u8) StrId {
+        return self.t.instrs.strs.intern(s);
+    }
+    fn un1(self: *@This(), blk: *BlockFrame, comptime k: tir.OpKind, ty: types.TypeId, v: tir.ValueId) tir.ValueId {
+        const vid = self.freshValue();
+        const iid = self.t.instrs.add(k, tir.Rows.Un1{ .result = vid, .ty = ty, .value = v });
+        blk.instrs.append(self.gpa, iid) catch @panic("OOM");
+        return vid;
+    }
+    fn constNull(self: *@This(), blk: *BlockFrame, ty: types.TypeId) tir.ValueId {
+        const vid = self.freshValue();
+        const iid = self.t.instrs.add(.ConstNull, tir.Rows.ConstNull{ .result = vid, .ty = ty });
+        blk.instrs.append(self.gpa, iid) catch @panic("OOM");
+        return vid;
+    }
+    fn tupleMake(self: *@This(), blk: *BlockFrame, ty: types.TypeId, elems: []const tir.ValueId) tir.ValueId {
+        const r = self.t.instrs.value_pool.pushMany(self.gpa, elems);
+        const vid = self.freshValue();
+        const iid = self.t.instrs.add(.TupleMake, tir.Rows.TupleMake{ .result = vid, .ty = ty, .elems = r });
+        blk.instrs.append(self.gpa, iid) catch @panic("OOM");
+        return vid;
+    }
+    fn arrayMake(self: *@This(), blk: *BlockFrame, ty: types.TypeId, elems: []const tir.ValueId) tir.ValueId {
+        const r = self.t.instrs.value_pool.pushMany(self.gpa, elems);
+        const vid = self.freshValue();
+        const iid = self.t.instrs.add(.ArrayMake, tir.Rows.ArrayMake{ .result = vid, .ty = ty, .elems = r });
+        blk.instrs.append(self.gpa, iid) catch @panic("OOM");
+        return vid;
+    }
+    fn structMake(self: *@This(), blk: *BlockFrame, ty: types.TypeId, fields: []const tir.Rows.StructFieldInit) tir.ValueId {
+        var ids = self.gpa.alloc(tir.StructFieldInitId, fields.len) catch @panic("OOM");
+        defer self.gpa.free(ids);
+        var i: usize = 0;
+        while (i < fields.len) : (i += 1) {
+            const idx = self.t.instrs.StructFieldInit.add(self.gpa, fields[i]);
+            ids[i] = tir.StructFieldInitId.fromRaw(idx);
+        }
+        const r = self.t.instrs.sfi_pool.pushMany(self.gpa, ids);
+        const vid = self.freshValue();
+        const iid = self.t.instrs.add(.StructMake, tir.Rows.StructMake{ .result = vid, .ty = ty, .fields = r });
+        blk.instrs.append(self.gpa, iid) catch @panic("OOM");
+        return vid;
+    }
+    fn extractElem(self: *@This(), blk: *BlockFrame, ty: types.TypeId, agg: tir.ValueId, index: u32) tir.ValueId {
+        const vid = self.freshValue();
+        const iid = self.t.instrs.add(.ExtractElem, tir.Rows.ExtractElem{ .result = vid, .ty = ty, .agg = agg, .index = index });
+        blk.instrs.append(self.gpa, iid) catch @panic("OOM");
+        return vid;
+    }
+    fn insertElem(self: *@This(), blk: *BlockFrame, ty: types.TypeId, agg: tir.ValueId, index: u32, value: tir.ValueId) tir.ValueId {
+        const vid = self.freshValue();
+        const iid = self.t.instrs.add(.InsertElem, tir.Rows.InsertElem{ .result = vid, .ty = ty, .agg = agg, .index = index, .value = value });
+        blk.instrs.append(self.gpa, iid) catch @panic("OOM");
+        return vid;
+    }
+    fn extractField(self: *@This(), blk: *BlockFrame, ty: types.TypeId, agg: tir.ValueId, index: u32) tir.ValueId {
+        const vid = self.freshValue();
+        const iid = self.t.instrs.add(.ExtractField, tir.Rows.ExtractField{ .result = vid, .ty = ty, .agg = agg, .index = index, .name = OptStrId.none() });
+        blk.instrs.append(self.gpa, iid) catch @panic("OOM");
+        return vid;
+    }
+    fn addressOf(self: *@This(), blk: *BlockFrame, ty: types.TypeId, v: tir.ValueId) tir.ValueId {
+        const vid = self.freshValue();
+        const iid = self.t.instrs.add(.AddressOf, tir.Rows.AddressOf{ .result = vid, .ty = ty, .value = v });
+        blk.instrs.append(self.gpa, iid) catch @panic("OOM");
+        return vid;
+    }
+    fn cast(self: *@This(), blk: *BlockFrame, comptime k: tir.OpKind, ty: types.TypeId, v: tir.ValueId) tir.ValueId {
+        const vid = self.freshValue();
+        const iid = self.t.instrs.add(k, tir.Rows.Un1{ .result = vid, .ty = ty, .value = v });
+        blk.instrs.append(self.gpa, iid) catch @panic("OOM");
+        return vid;
+    }
+    pub fn addBlockParam(self: *@This(), blk: *BlockFrame, name: ?[]const u8, ty: types.TypeId) !tir.ValueId {
+        const vid = self.freshValue();
+        const sid = if (name) |n| OptStrId.some(self.intern(n)) else OptStrId.none();
+        const pid = self.t.funcs.Param.add(self.gpa, .{ .value = vid, .name = sid, .ty = ty });
+        try blk.params.append(self.gpa, tir.ParamId.fromRaw(pid));
+        return vid;
+    }
+    pub fn addGlobal(self: *@This(), name: StrId, ty: types.TypeId) tir.GlobalId {
+        const idx = self.t.funcs.Global.add(self.gpa, .{ .name = name, .ty = ty });
+        return tir.GlobalId.fromRaw(idx);
+    }
+    fn edge(self: *@This(), dest: tir.BlockId, args: []const tir.ValueId) tir.EdgeId {
+        const r = self.t.instrs.value_pool.pushMany(self.gpa, args);
+        const eid = self.t.terms.Edge.add(self.gpa, .{ .dest = dest, .args = r });
+        return tir.EdgeId.fromRaw(eid);
+    }
+    pub fn br(self: *@This(), blk: *BlockFrame, dest: tir.BlockId, args: []const tir.ValueId) !void {
+        const e = self.edge(dest, args);
+        const tid = self.t.terms.add(.Br, .{ .edge = e });
+        blk.term = tir.OptTermId.some(tid);
+    }
+    pub fn condBr(self: *@This(), blk: *BlockFrame, cond: tir.ValueId, then_dest: tir.BlockId, then_args: []const tir.ValueId, else_dest: tir.BlockId, else_args: []const tir.ValueId) !void {
+        const te = self.edge(then_dest, then_args);
+        const ee = self.edge(else_dest, else_args);
+        const tid = self.t.terms.add(.CondBr, .{ .cond = cond, .then_edge = te, .else_edge = ee });
+        blk.term = tir.OptTermId.some(tid);
+    }
+    fn constUndef(self: *@This(), blk: *BlockFrame, ty: types.TypeId) tir.ValueId {
+        const vid = self.freshValue();
+        const iid = self.t.instrs.add(.ConstUndef, tir.Rows.ConstUndef{ .result = vid, .ty = ty });
+        blk.instrs.append(self.gpa, iid) catch @panic("OOM");
+        return vid;
+    }
+    fn setReturn(self: *@This(), blk: *BlockFrame, value: tir.OptValueId) !void {
+        const tid = self.t.terms.add(.Return, .{ .value = value });
+        blk.term = tir.OptTermId.some(tid);
+    }
+    pub fn setReturnVal(self: *@This(), blk: *BlockFrame, v: tir.ValueId) !void {
+        return self.setReturn(blk, tir.OptValueId.some(v));
+    }
+    pub fn setReturnVoid(self: *@This(), blk: *BlockFrame) !void {
+        return self.setReturn(blk, tir.OptValueId.none());
+    }
+    pub fn setUnreachable(self: *@This(), blk: *BlockFrame) !void {
+        const tid = self.t.terms.add(.Unreachable, .{});
+        blk.term = tir.OptTermId.some(tid);
+    }
+
+    // SwitchInt helper
+    pub fn switchInt(self: *@This(), blk: *BlockFrame, scrut: tir.ValueId, case_vals: []const u64, case_dests: []const SwitchDest, default_dest: tir.BlockId, default_args: []const tir.ValueId) !void {
+        std.debug.assert(case_vals.len == case_dests.len);
+        // build cases
+        var case_ids = self.gpa.alloc(tir.CaseId, case_vals.len) catch @panic("OOM");
+        defer self.gpa.free(case_ids);
+        var i: usize = 0;
+        while (i < case_vals.len) : (i += 1) {
+            const e = self.edge(case_dests[i].dest, case_dests[i].args);
+            const cid = self.t.terms.Case.add(self.gpa, .{ .value = case_vals[i], .edge = e });
+            case_ids[i] = tir.CaseId.fromRaw(cid);
+        }
+        const crange = self.t.terms.case_pool.pushMany(self.gpa, case_ids);
+        const def_e = self.edge(default_dest, default_args);
+        const tid = self.t.terms.add(.SwitchInt, .{ .scrut = scrut, .cases = crange, .default_edge = def_e });
+        blk.term = tir.OptTermId.some(tid);
+    }
+
+    // GEP helpers
+    fn gepConst(self: *@This(), v: i64) tir.GepIndexId {
+        const id = self.t.instrs.GepIndex.add(self.gpa, .{ .Const = v });
+        return tir.GepIndexId.fromRaw(id);
+    }
+    fn gepValue(self: *@This(), val: tir.ValueId) tir.GepIndexId {
+        const id = self.t.instrs.GepIndex.add(self.gpa, .{ .Value = val });
+        return tir.GepIndexId.fromRaw(id);
+    }
+    fn gep(self: *@This(), blk: *BlockFrame, ty: types.TypeId, base: tir.ValueId, idxs: []const tir.GepIndexId) tir.ValueId {
+        const r = self.t.instrs.gep_pool.pushMany(self.gpa, idxs);
+        const vid = self.freshValue();
+        const iid = self.t.instrs.add(.Gep, tir.Rows.Gep{ .result = vid, .ty = ty, .base = base, .indices = r });
+        blk.instrs.append(self.gpa, iid) catch @panic("OOM");
+        return vid;
     }
 };
