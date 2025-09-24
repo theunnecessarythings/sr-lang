@@ -198,6 +198,7 @@ pub const Checker = struct {
         expected_integer_type,
         expected_float_type,
         expected_enum_type,
+        map_wrong_key_type,
         type_value_mismatch,
         noreturn_not_storable,
         expected_struct_type,
@@ -226,6 +227,12 @@ pub const Checker = struct {
         }
 
         switch (expected_kind) {
+            .Slice => {
+                if (got_kind != .Slice) return .failure;
+                const expected_ty = self.type_info.store.Slice.get(self.type_info.store.index.rows.items[expect.toRaw()]);
+                const got_ty = self.type_info.store.Slice.get(self.type_info.store.index.rows.items[got.toRaw()]);
+                return self.assignable(got_ty.elem, expected_ty.elem);
+            },
             .Array => {
                 if (got_kind != .Array) return .expected_array_type;
                 const expected_ty = self.type_info.store.Array.get(self.type_info.store.index.rows.items[expect.toRaw()]);
@@ -270,7 +277,7 @@ pub const Checker = struct {
                 const got_ty = self.type_info.store.Map.get(self.type_info.store.index.rows.items[got.toRaw()]);
                 const key_ok = self.assignable(got_ty.key, expected_ty.key);
                 const value_ok = self.assignable(got_ty.value, expected_ty.value);
-                if (key_ok != .success) return key_ok;
+                if (key_ok != .success) return .map_wrong_key_type;
                 if (value_ok != .success) return value_ok;
                 return .success;
             },
@@ -423,6 +430,7 @@ pub const Checker = struct {
                     self.type_info.decl_types.items[decl.toRaw()] = expect_ty.?; // use expected type
                     self.type_info.expr_types.items[self.ast_unit.exprs.Decl.get(decl.toRaw()).value.toRaw()] = expect_ty.?; // also update RHS expr type
                 },
+                .map_wrong_key_type => try self.diags.addError(self.ast_unit.exprs.locs.get(d.loc), .map_wrong_key_type, .{}),
                 .union_literal_no_fields => try self.diags.addError(self.ast_unit.exprs.locs.get(d.loc), .union_empty_literal, .{}),
                 .union_literal_multiple_fields => try self.diags.addError(self.ast_unit.exprs.locs.get(d.loc), .union_literal_multiple_fields, .{}),
                 .expected_enum_type => try self.diags.addError(self.ast_unit.exprs.locs.get(d.loc), .expected_enum_type, .{}),
@@ -566,10 +574,24 @@ pub const Checker = struct {
             .TypeOf => try self.checkTypeOf(id),
             .NullLit => self.type_info.store.mkOptional(self.type_info.store.tAny()),
 
-            .TupleType, .ArrayType, .DynArrayType, .MapType, .SliceType, .OptionalType, .ErrorSetType, .ErrorType, .StructType, .EnumType, .VariantType, .UnionType, .PointerType, .SimdType, .ComplexType, .TensorType, .TypeType, .AnyType, .NoreturnType => blk: {
+            .TupleType, .ArrayType, .DynArrayType, .SliceType, .OptionalType, .ErrorSetType, .ErrorType, .StructType, .EnumType, .VariantType, .UnionType, .PointerType, .SimdType, .ComplexType, .TensorType, .TypeType, .AnyType, .NoreturnType => blk: {
                 const ty = try self.typeFromTypeExpr(id);
                 if (ty == null) break :blk null;
                 break :blk self.type_info.store.mkTypeType(ty.?);
+            },
+            .MapType => blk_mt_expr: {
+                // Try to interpret as a type expression first
+                const row = self.ast_unit.exprs.get(.MapType, id);
+                const key_ty = try self.typeFromTypeExpr(row.key);
+                const val_ty = try self.typeFromTypeExpr(row.value);
+                if (key_ty != null and val_ty != null) {
+                    break :blk_mt_expr self.type_info.store.mkTypeType(self.type_info.store.mkMap(key_ty.?, val_ty.?));
+                }
+                // If not valid types, interpret operands as value expressions and produce a map value type
+                const key_vt = try self.checkExpr(row.key);
+                const val_vt = try self.checkExpr(row.value);
+                if (key_vt == null or val_vt == null) break :blk_mt_expr null;
+                break :blk_mt_expr self.type_info.store.mkMap(key_vt.?, val_vt.?);
             },
         };
 
@@ -990,6 +1012,7 @@ pub const Checker = struct {
                     while (i < enum_members.len) : (i += 1) {
                         const member = self.type_info.store.EnumMember.get(enum_members[i].toRaw());
                         if (member.name.toRaw() == field_expr.field.toRaw()) {
+                            // Enum tag yields value of the enum type
                             return ty;
                         }
                     }
@@ -1002,7 +1025,16 @@ pub const Checker = struct {
                     while (i < variant_members.len) : (i += 1) {
                         const member = self.type_info.store.Field.get(variant_members[i].toRaw());
                         if (member.name.toRaw() == field_expr.field.toRaw()) {
-                            return member.ty;
+                            // In value position, selecting a variant tag without constructing:
+                            // - If the payload is void, it yields a value of the variant type (tag only)
+                            // - If the payload is non-void, it's a missing payload arity error
+                            const pk = self.type_info.store.index.kinds.items[member.ty.toRaw()];
+                            if (pk == .Void) {
+                                return ty; // tag value of the variant type
+                            } else {
+                                _ = self.diags.addError(self.ast_unit.exprs.locs.get(field_expr.loc), .variant_payload_arity_mismatch, .{}) catch {};
+                                return null;
+                            }
                         }
                     }
                     _ = self.diags.addError(self.ast_unit.exprs.locs.get(field_expr.loc), .unknown_variant_tag, .{}) catch {};
@@ -1101,6 +1133,119 @@ pub const Checker = struct {
 
     fn checkCall(self: *Checker, id: ast.ExprId) !?types.TypeId {
         const call_expr = self.ast_unit.exprs.get(.Call, id);
+        // Handle variant/error tag constructors before evaluating callee expression.
+        if (self.ast_unit.exprs.index.kinds.items[call_expr.callee.toRaw()] == .FieldAccess) {
+            const fr = self.ast_unit.exprs.get(.FieldAccess, call_expr.callee);
+            // Resolve the parent in type-space
+            const parent_ty = try self.typeFromTypeExpr(fr.parent) orelse null;
+            if (parent_ty) |pty| {
+                const pk = self.type_info.store.index.kinds.items[pty.toRaw()];
+                if (pk == .Variant) {
+                    const vt = self.type_info.store.Variant.get(self.type_info.store.index.rows.items[pty.toRaw()]);
+                    const cases = self.type_info.store.field_pool.slice(vt.variants);
+                    var found: ?types.TypeId = null;
+                    var ci: usize = 0;
+                    while (ci < cases.len) : (ci += 1) {
+                        const c = self.type_info.store.Field.get(cases[ci].toRaw());
+                        if (c.name.toRaw() == fr.field.toRaw()) { found = c.ty; break; }
+                    }
+                    if (found == null) {
+                        try self.diags.addError(self.ast_unit.exprs.locs.get(call_expr.loc), .unknown_variant_tag, .{});
+                        return null;
+                    }
+                    const payload_ty = found.?;
+                    const args = self.ast_unit.exprs.expr_pool.slice(call_expr.args);
+                    const pkind = self.type_info.store.index.kinds.items[payload_ty.toRaw()];
+                    switch (pkind) {
+                        .Void => {
+                            if (args.len != 0) {
+                                try self.diags.addError(self.ast_unit.exprs.locs.get(call_expr.loc), .argument_count_mismatch, .{});
+                                return null;
+                            }
+                            return pty;
+                        },
+                        .Tuple => {
+                            const tup = self.type_info.store.Tuple.get(self.type_info.store.index.rows.items[payload_ty.toRaw()]);
+                            const param_ids = self.type_info.store.type_pool.slice(tup.elems);
+                            if (args.len < param_ids.len) {
+                                try self.diags.addError(self.ast_unit.exprs.locs.get(call_expr.loc), .variant_payload_arity_mismatch, .{});
+                                return null;
+                            }
+                            if (args.len > param_ids.len) {
+                                try self.diags.addError(self.ast_unit.exprs.locs.get(call_expr.loc), .argument_count_mismatch, .{});
+                                return null;
+                            }
+                            var ai: usize = 0;
+                            while (ai < args.len) : (ai += 1) {
+                                const at = try self.checkExpr(args[ai]);
+                                if (at == null) return null;
+                                if (self.assignable(at.?, param_ids[ai]) != .success) {
+                                    try self.diags.addError(self.ast_unit.exprs.locs.get(call_expr.loc), .argument_type_mismatch, .{});
+                                    return null;
+                                }
+                            }
+                            return pty;
+                        },
+                        else => {
+                            try self.diags.addError(self.ast_unit.exprs.locs.get(call_expr.loc), .call_non_callable, .{});
+                            return null;
+                        },
+                    }
+                } else if (pk == .Error) {
+                    const et = self.type_info.store.Error.get(self.type_info.store.index.rows.items[pty.toRaw()]);
+                    const cases = self.type_info.store.field_pool.slice(et.variants);
+                    var found: ?types.TypeId = null;
+                    var ei: usize = 0;
+                    while (ei < cases.len) : (ei += 1) {
+                        const c = self.type_info.store.Field.get(cases[ei].toRaw());
+                        if (c.name.toRaw() == fr.field.toRaw()) { found = c.ty; break; }
+                    }
+                    if (found == null) {
+                        try self.diags.addError(self.ast_unit.exprs.locs.get(call_expr.loc), .unknown_error_tag, .{});
+                        return null;
+                    }
+                    const payload_ty = found.?;
+                    const args = self.ast_unit.exprs.expr_pool.slice(call_expr.args);
+                    const pkind = self.type_info.store.index.kinds.items[payload_ty.toRaw()];
+                    switch (pkind) {
+                        .Void => {
+                            if (args.len != 0) {
+                                try self.diags.addError(self.ast_unit.exprs.locs.get(call_expr.loc), .argument_count_mismatch, .{});
+                                return null;
+                            }
+                            return pty;
+                        },
+                        .Tuple => {
+                            const tup = self.type_info.store.Tuple.get(self.type_info.store.index.rows.items[payload_ty.toRaw()]);
+                            const param_ids = self.type_info.store.type_pool.slice(tup.elems);
+                            if (args.len < param_ids.len) {
+                                try self.diags.addError(self.ast_unit.exprs.locs.get(call_expr.loc), .variant_payload_arity_mismatch, .{});
+                                return null;
+                            }
+                            if (args.len > param_ids.len) {
+                                try self.diags.addError(self.ast_unit.exprs.locs.get(call_expr.loc), .argument_count_mismatch, .{});
+                                return null;
+                            }
+                            var ai2: usize = 0;
+                            while (ai2 < args.len) : (ai2 += 1) {
+                                const at = try self.checkExpr(args[ai2]);
+                                if (at == null) return null;
+                                if (self.assignable(at.?, param_ids[ai2]) != .success) {
+                                    try self.diags.addError(self.ast_unit.exprs.locs.get(call_expr.loc), .argument_type_mismatch, .{});
+                                    return null;
+                                }
+                            }
+                            return pty;
+                        },
+                        else => {
+                            try self.diags.addError(self.ast_unit.exprs.locs.get(call_expr.loc), .call_non_callable, .{});
+                            return null;
+                        },
+                    }
+                }
+            }
+        }
+
         const func_ty = try self.checkExpr(call_expr.callee);
         if (func_ty == null) {
             // If the callee is an unresolved identifier in the current scope, report unknown_function.
@@ -1114,6 +1259,119 @@ pub const Checker = struct {
         }
         const func_id = func_ty.?;
         const func_kind = self.type_info.store.index.kinds.items[func_id.toRaw()];
+
+        // Variant tag constructor call: (Type).Tag(args...)
+        if (self.ast_unit.exprs.index.kinds.items[call_expr.callee.toRaw()] == .FieldAccess) {
+            const fr = self.ast_unit.exprs.get(.FieldAccess, call_expr.callee);
+            // Resolve the parent in type-space
+            const parent_ty = try self.typeFromTypeExpr(fr.parent) orelse null;
+            if (parent_ty) |pty| {
+                const pk = self.type_info.store.index.kinds.items[pty.toRaw()];
+                if (pk == .Variant) {
+                    const vt = self.type_info.store.Variant.get(self.type_info.store.index.rows.items[pty.toRaw()]);
+                    const cases = self.type_info.store.field_pool.slice(vt.variants);
+                    var found: ?types.TypeId = null;
+                    var ci: usize = 0;
+                    while (ci < cases.len) : (ci += 1) {
+                        const c = self.type_info.store.Field.get(cases[ci].toRaw());
+                        if (c.name.toRaw() == fr.field.toRaw()) { found = c.ty; break; }
+                    }
+                    if (found == null) {
+                        try self.diags.addError(self.ast_unit.exprs.locs.get(call_expr.loc), .unknown_variant_tag, .{});
+                        return null;
+                    }
+                    const payload_ty = found.?;
+                    const args = self.ast_unit.exprs.expr_pool.slice(call_expr.args);
+                    const pkind = self.type_info.store.index.kinds.items[payload_ty.toRaw()];
+                    switch (pkind) {
+                        .Void => {
+                            if (args.len != 0) {
+                                try self.diags.addError(self.ast_unit.exprs.locs.get(call_expr.loc), .argument_count_mismatch, .{});
+                                return null;
+                            }
+                            return pty;
+                        },
+                        .Tuple => {
+                            const tup = self.type_info.store.Tuple.get(self.type_info.store.index.rows.items[payload_ty.toRaw()]);
+                            const param_ids = self.type_info.store.type_pool.slice(tup.elems);
+                            if (args.len < param_ids.len) {
+                                try self.diags.addError(self.ast_unit.exprs.locs.get(call_expr.loc), .variant_payload_arity_mismatch, .{});
+                                return null;
+                            }
+                            if (args.len > param_ids.len) {
+                                try self.diags.addError(self.ast_unit.exprs.locs.get(call_expr.loc), .argument_count_mismatch, .{});
+                                return null;
+                            }
+                            var ai: usize = 0;
+                            while (ai < args.len) : (ai += 1) {
+                                const at = try self.checkExpr(args[ai]);
+                                if (at == null) return null;
+                                if (self.assignable(at.?, param_ids[ai]) != .success) {
+                                    try self.diags.addError(self.ast_unit.exprs.locs.get(call_expr.loc), .argument_type_mismatch, .{});
+                                    return null;
+                                }
+                            }
+                            return pty;
+                        },
+                        else => {
+                            try self.diags.addError(self.ast_unit.exprs.locs.get(call_expr.loc), .call_non_callable, .{});
+                            return null;
+                        },
+                    }
+                } else if (pk == .Error) {
+                    const et = self.type_info.store.Error.get(self.type_info.store.index.rows.items[pty.toRaw()]);
+                    const cases = self.type_info.store.field_pool.slice(et.variants);
+                    var found: ?types.TypeId = null;
+                    var ei: usize = 0;
+                    while (ei < cases.len) : (ei += 1) {
+                        const c = self.type_info.store.Field.get(cases[ei].toRaw());
+                        if (c.name.toRaw() == fr.field.toRaw()) { found = c.ty; break; }
+                    }
+                    if (found == null) {
+                        try self.diags.addError(self.ast_unit.exprs.locs.get(call_expr.loc), .unknown_error_tag, .{});
+                        return null;
+                    }
+                    const payload_ty = found.?;
+                    const args = self.ast_unit.exprs.expr_pool.slice(call_expr.args);
+                    const pkind = self.type_info.store.index.kinds.items[payload_ty.toRaw()];
+                    switch (pkind) {
+                        .Void => {
+                            if (args.len != 0) {
+                                try self.diags.addError(self.ast_unit.exprs.locs.get(call_expr.loc), .argument_count_mismatch, .{});
+                                return null;
+                            }
+                            return pty;
+                        },
+                        .Tuple => {
+                            const tup = self.type_info.store.Tuple.get(self.type_info.store.index.rows.items[payload_ty.toRaw()]);
+                            const param_ids = self.type_info.store.type_pool.slice(tup.elems);
+                            if (args.len < param_ids.len) {
+                                try self.diags.addError(self.ast_unit.exprs.locs.get(call_expr.loc), .variant_payload_arity_mismatch, .{});
+                                return null;
+                            }
+                            if (args.len > param_ids.len) {
+                                try self.diags.addError(self.ast_unit.exprs.locs.get(call_expr.loc), .argument_count_mismatch, .{});
+                                return null;
+                            }
+                            var ai2: usize = 0;
+                            while (ai2 < args.len) : (ai2 += 1) {
+                                const at = try self.checkExpr(args[ai2]);
+                                if (at == null) return null;
+                                if (self.assignable(at.?, param_ids[ai2]) != .success) {
+                                    try self.diags.addError(self.ast_unit.exprs.locs.get(call_expr.loc), .argument_type_mismatch, .{});
+                                    return null;
+                                }
+                            }
+                            return pty;
+                        },
+                        else => {
+                            try self.diags.addError(self.ast_unit.exprs.locs.get(call_expr.loc), .call_non_callable, .{});
+                            return null;
+                        },
+                    }
+                }
+            }
+        }
         if (func_kind == .Tuple) {
             // Variant Tuple Call: treat as a constructor for the tuple type.
             const tuple_ty = self.type_info.store.Tuple.get(self.type_info.store.index.rows.items[func_id.toRaw()]);
@@ -1706,6 +1964,24 @@ pub const Checker = struct {
             return null;
         }
         const er = self.type_info.store.ErrorSet.get(self.type_info.store.index.rows.items[et.?.toRaw()]);
+
+        // Ensure we are inside a function whose result type is also an error set (to allow propagation)
+        if (!self.inFunction()) {
+            try self.diags.addError(self.ast_unit.exprs.locs.get(eur.loc), .error_propagation_mismatched_function_result, .{});
+            return null;
+        }
+        const fctx = self.currentFunc().?;
+        const fk = self.type_info.store.index.kinds.items[fctx.result.toRaw()];
+        if (fk != .ErrorSet) {
+            try self.diags.addError(self.ast_unit.exprs.locs.get(eur.loc), .error_propagation_mismatched_function_result, .{});
+            return null;
+        }
+        // Optional: verify error/value types compatibility between operand and function result
+        const fr = self.type_info.store.ErrorSet.get(self.type_info.store.index.rows.items[fctx.result.toRaw()]);
+        if (self.assignable(er.error_ty, fr.error_ty) != .success or self.assignable(er.value_ty, fr.value_ty) != .success) {
+            try self.diags.addError(self.ast_unit.exprs.locs.get(eur.loc), .error_propagation_mismatched_function_result, .{});
+            return null;
+        }
         return er.value_ty;
     }
 

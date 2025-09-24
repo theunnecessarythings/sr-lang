@@ -503,7 +503,7 @@ test "builtin types - slice - success" {
     try checkProgram("st :: []i32", &.{});
 
     // Slice initialization from array slice expression
-    // try checkProgram("sv: []i32 = ([1,2,3,4])[1..3]", &.{});
+    try checkProgram("sv: []i32 = ([1,2,3,4])[1..3]", &.{});
 }
 
 test "builtin types - slice - failures" {
@@ -522,8 +522,8 @@ test "builtin types - map - success" {
 
 test "builtin types - map - failures" {
     // Wrong key/value types
-    // try checkProgram("mk: [string: i32] = [1:1]", &[_]diag.DiagnosticCode{.map_wrong_key_type});
-    // try checkProgram("mv2: [string: i32] = [\"a\":1.5]", &[_]diag.DiagnosticCode{.type_annotation_mismatch});
+    try checkProgram("mk: [string: i32] = [1:1]", &[_]diag.DiagnosticCode{.map_wrong_key_type});
+    try checkProgram("mv2: [string: i32] = [\"a\":1.5]", &[_]diag.DiagnosticCode{.expected_integer_type});
 
     // Null not assignable without optional
     try checkProgram("mn: [string: i32] = null", &[_]diag.DiagnosticCode{.assign_null_to_non_optional});
@@ -693,11 +693,11 @@ test "variant types - failures" {
     , &[_]diag.DiagnosticCode{.argument_type_mismatch});
 
     // Missing/extra tuple payload
-    // try checkProgram(
-    //     \\
-    //     \\ Variant :: variant { B(i32) }
-    //     \\ v :: Variant.B
-    // , &[_]diag.DiagnosticCode{.variant_payload_arity_mismatch});
+    try checkProgram(
+        \\
+        \\ Variant :: variant { B(i32) }
+        \\ v :: Variant.B
+    , &[_]diag.DiagnosticCode{.variant_payload_arity_mismatch});
     try checkProgram(
         \\
         \\ Variant :: variant { B(i32) }
@@ -1180,14 +1180,14 @@ test "error handling - failures" {
     try checkProgram("p_bad :: 1!", &[_]diag.DiagnosticCode{.error_propagation_on_non_error});
 
     // Error propagation in function returning non-error type
-    // try checkProgram(
-    //     \\
-    //     \\ MyErr :: error { A }
-    //     \\ g :: proc() i32 {
-    //     \\   x: i32!MyErr = 1
-    //     \\   return x!
-    //     \\ }
-    // , &[_]diag.DiagnosticCode{.purity_violation});
+    try checkProgram(
+        \\
+        \\ MyErr :: error { A }
+        \\ g :: proc() i32 {
+        \\   x: i32!MyErr = 1
+        \\   return x!
+        \\ }
+    , &[_]diag.DiagnosticCode{.error_propagation_mismatched_function_result});
 }
 
 // Call expressions: function/proc calls, function pointers, extern calls, pointer args
@@ -1221,12 +1221,12 @@ test "call expressions - success" {
         \\ r3 :: pf(&5)
     , &.{});
 
-    // // Extern call
-    // try checkProgram(
-    //     \\
-    //     \\ printf :: extern proc(*void, any) i32
-    //     \\ rr :: printf("ok")
-    // , &.{});
+    // Extern call
+    try checkProgram(
+        \\
+        \\ printf :: extern proc(*void, any) i32
+        \\ rr :: printf("ok".^*void)
+    , &.{});
 }
 
 test "call expressions - failures" {
@@ -1346,30 +1346,29 @@ test "functions and procedures - success" {
     , &.{});
 
     // Procedure with side effects (extern printf), allowed for proc
-    // try checkProgram(
-    //     \\
-    //     \\ printf :: extern proc(*void, any) i32
-    //     \\ proc_print :: proc() i32 { _ = printf("ok"); return 0 }
-    //     \\ rv :: proc_print()
-    // , &.{});
+    try checkProgram(
+        \\
+        \\ printf :: extern proc(*void, any) i32
+        \\ proc_print :: proc() i32 { _ = printf("ok".^*void); return 0 }
+        \\ rv :: proc_print()
+    , &.{});
 }
 
-// test "functions and procedures - failures" {
-// Assign impure proc to pure fn type (intended purity violation)
-// try checkProgram(
-//     \\
-//     \\ printf :: extern proc(*void, any) i32
-//     \\ impure: proc() i32 { _ = printf(null, "hi"); return 0 }
-//     \\ f: fn() i32 = impure
-// , &[_]diag.DiagnosticCode{.purity_violation});
+test "functions and procedures - failures" {
+    try checkProgram(
+        \\
+        \\ printf :: extern proc(*void, any) i32
+        \\ impure :: proc() i32 { _ = printf("hi".^*void); return 0 }
+        \\ f: fn() i32 : impure
+    , &[_]diag.DiagnosticCode{.type_annotation_mismatch});
 
-// Use of catch inside a pure function (intended as impurity)
-//     try checkProgram(
-//         \\
-//         \\ MyErr :: error { A }
-//         \\ f: fn() i32 = proc() i32 { x: i32!MyErr = 1; return (x catch { 0 }) }
-//     , &[_]diag.DiagnosticCode{.unknown_struct_field});
-// }
+    // Use of catch inside a pure function (intended as impurity)
+    // try checkProgram(
+    //     \\
+    //     \\ MyErr :: error { A }
+    //     \\ f :: fn() i32 { x: i32!MyErr = 1; return (x catch { 0 }) }
+    // , &[_]diag.DiagnosticCode{.unknown_struct_field});
+}
 
 test "functions - purity success" {
     try checkProgram(
