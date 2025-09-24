@@ -925,6 +925,35 @@ pub const Lower = struct {
         return self.out.pats.pat_pool.pushMany(self.gpa, out_ids);
     }
 
+    fn pathSegsFromTypeExpr(self: *Lower, id: cst.ExprId) !ast.RangePathSeg {
+        var segs: std.ArrayList(ast.PathSegId) = .empty;
+        defer segs.deinit(self.gpa);
+
+        try self.collectPathSegs(id, &segs);
+        return self.out.pats.seg_pool.pushMany(self.gpa, segs.items);
+    }
+    fn collectPathSegs(self: *Lower, id: cst.ExprId, segs: *std.ArrayList(ast.PathSegId)) anyerror!void {
+        const kind = self.src.exprs.index.kinds.items[id.toRaw()];
+        switch (kind) {
+            .Ident => {
+                const r = self.src.exprs.get(.Ident, id);
+                const mapped: ast.PatRows.PathSeg = .{ .name = self.mapStr(r.name), .by_ref = false, .is_mut = false, .loc = self.mapLoc(r.loc) };
+                const pid = ast.PathSegId.fromRaw(self.out.pats.PathSeg.add(self.gpa, mapped));
+                try segs.append(self.gpa, pid);
+            },
+            .FieldAccess => {
+                const r = self.src.exprs.get(.FieldAccess, id);
+                try self.collectPathSegs(r.parent, segs);
+                const mapped: ast.PatRows.PathSeg = .{ .name = self.mapStr(r.field), .by_ref = false, .is_mut = false, .loc = self.mapLoc(r.loc) };
+                const pid = ast.PathSegId.fromRaw(self.out.pats.PathSeg.add(self.gpa, mapped));
+                try segs.append(self.gpa, pid);
+            },
+            else => {
+                // Fallback: ignore non-path-like types (produce empty path)
+            },
+        }
+    }
+
     fn lowerOptionalPatternFromExpr(self: *Lower, e: cst.OptExprId) !ast.OptPatternId {
         if (e.isNone()) return ast.OptPatternId.none();
         if (try self.patternFromExpr(e.unwrap())) |pid| return ast.OptPatternId.some(pid);
@@ -943,6 +972,49 @@ pub const Lower = struct {
                     break :blk self.out.pats.add(.Binding, .{ .name = self.mapStr(r.name), .by_ref = false, .is_mut = false, .loc = self.mapLoc(r.loc) });
                 }
             },
+            .ArrayLit => blk: {
+                const a = self.src.exprs.get(.ArrayLit, id);
+                const xs = self.src.exprs.expr_pool.slice(a.elems);
+                var elem_pats = try self.gpa.alloc(ast.PatternId, xs.len);
+                defer self.gpa.free(elem_pats);
+                var has_rest = false;
+                var rest_idx: u32 = 0;
+                var rest_pat: ast.OptPatternId = ast.OptPatternId.none();
+                var out_i: usize = 0;
+                var i: usize = 0;
+                while (i < xs.len) : (i += 1) {
+                    const ek = self.src.exprs.index.kinds.items[xs[i].toRaw()];
+                    if (ek == .Prefix) {
+                        const p = self.src.exprs.get(.Prefix, xs[i]);
+                        if (p.op == .range) {
+                            const sub = try self.patternFromExpr(p.right) orelse return null;
+                            if (has_rest) {
+                                // Multiple rest segments are invalid in slice patterns
+                                const loc_id = self.mapLoc(p.loc);
+                                const loc = self.out.exprs.locs.get(loc_id);
+                                try self.diags.addError(loc, .pattern_shape_mismatch, .{});
+                                return null;
+                            }
+                            has_rest = true;
+                            rest_idx = @intCast(out_i);
+                            rest_pat = ast.OptPatternId.some(sub);
+                            continue;
+                        }
+                    }
+                    const sub = try self.patternFromExpr(xs[i]) orelse return null;
+                    elem_pats[out_i] = sub;
+                    out_i += 1;
+                }
+                const range = self.out.pats.pat_pool.pushMany(self.gpa, elem_pats[0..out_i]);
+                const mapped: ast.PatRows.Slice = .{
+                    .elems = range,
+                    .has_rest = has_rest,
+                    .rest_index = rest_idx,
+                    .rest_binding = rest_pat,
+                    .loc = self.mapLoc(a.loc),
+                };
+                break :blk self.out.pats.add(.Slice, mapped);
+            },
             .Tuple => blk: {
                 const t = self.src.exprs.get(.Tuple, id);
                 var out_ids = try self.gpa.alloc(ast.PatternId, t.elems.len);
@@ -955,6 +1027,32 @@ pub const Lower = struct {
                 }
                 const range = self.out.pats.pat_pool.pushMany(self.gpa, out_ids);
                 break :blk self.out.pats.add(.Tuple, .{ .elems = range, .loc = self.mapLoc(t.loc) });
+            },
+            .StructLit => blk: {
+                // Convert a struct-literal-shaped LHS into a struct pattern
+                const s = self.src.exprs.get(.StructLit, id);
+                const fields = self.src.exprs.sfv_pool.slice(s.fields);
+                var out_ids = try self.gpa.alloc(ast.PatFieldId, fields.len);
+                defer self.gpa.free(out_ids);
+                var i: usize = 0;
+                while (i < fields.len) : (i += 1) {
+                    const f = self.src.exprs.StructFieldValue.get(fields[i].toRaw());
+                    if (f.name.isNone()) return null; // positional fields in patterns not yet supported
+                    const sub = try self.patternFromExpr(f.value) orelse return null;
+                    const mapped: ast.PatRows.StructField = .{ .name = self.mapStr(f.name.unwrap()), .pattern = sub, .loc = self.mapLoc(f.loc) };
+                    out_ids[i] = ast.PatFieldId.fromRaw(self.out.pats.StructField.add(self.gpa, mapped));
+                }
+                const range = self.out.pats.field_pool.pushMany(self.gpa, out_ids);
+                // Build path from the annotated type on the struct literal, if present
+                var path_range: ast.RangePathSeg = undefined;
+                if (!s.ty.isNone()) {
+                    path_range = try self.pathSegsFromTypeExpr(s.ty.unwrap());
+                } else {
+                    // empty path
+                    const empty: []const ast.PathSegId = &[_]ast.PathSegId{};
+                    path_range = self.out.pats.seg_pool.pushMany(self.gpa, empty);
+                }
+                break :blk self.out.pats.add(.Struct, .{ .path = path_range, .fields = range, .has_rest = false, .loc = self.mapLoc(s.loc) });
             },
             inline else => |x| {
                 const loc_id = self.mapLoc(self.src.exprs.get(x, id).loc);

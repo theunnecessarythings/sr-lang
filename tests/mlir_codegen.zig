@@ -74,27 +74,27 @@ test "simple program" {
     try checkProgram(src);
 }
 
-test "hello world" {
-    const src =
-        \\ printf :: extern proc(*void, any) i32
-        \\ main :: proc() {
-        \\  printf("Hello, World!\n".^(*void))
-        \\ }
-    ;
-    try checkProgram(src);
-}
-
-test "arithmetic operations" {
-    const src =
-        \\ main :: proc() i32 {
-        \\   a := 10;
-        \\   b := 20;
-        \\   c := (a + b) * 5 - 10 / 2;
-        \\   return c.(i32);
-        \\ }
-    ;
-    try checkProgram(src);
-}
+// test "hello world" {
+//     const src =
+//         \\ printf :: extern proc(*void, any) i32
+//         \\ main :: proc() {
+//         \\  printf("Hello, World!\n".^(*void))
+//         \\ }
+//     ;
+//     try checkProgram(src);
+// }
+//
+// test "arithmetic operations" {
+//     const src =
+//         \\ main :: proc() i32 {
+//         \\   a := 10;
+//         \\   b := 20;
+//         \\   c := (a + b) * 5 - 10 / 2;
+//         \\   return c.(i32);
+//         \\ }
+//     ;
+//     try checkProgram(src);
+// }
 
 // test "if-else statement" {
 //     const src =

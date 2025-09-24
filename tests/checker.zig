@@ -1393,7 +1393,7 @@ test "functions - purity failures" {
     // Local pointer mutation inside fn
     try checkProgram(
         \\
-        \\ f :: fn() i32 { 
+        \\ f :: fn() i32 {
         \\     v : i32 = 0
         \\     p : *i32 = &v
         \\     p.* = 3
@@ -1436,7 +1436,7 @@ test "functions - purity failures" {
 
     // proc call inside fn
     try checkProgram(
-        \\      
+        \\
         \\ p :: proc() i32 { return 1 }
         \\ f :: fn() i32 { return p() }
     , &[_]diag.DiagnosticCode{.purity_violation});
@@ -1917,107 +1917,36 @@ test "for loops - failures" {
 }
 
 // Focused: Patterns (declarations, match, for)
-//
-// test "patterns - declarations - success" {
-//     // Tuple destructuring
-//     try checkProgram("(x, y) :: (1, 2)", &.{});
-//
-//     // Nested tuple destructuring
-//     try checkProgram("(a, (b, c)) :: (1, (2, 3))", &.{});
-//
-//     // Struct destructuring
-//     try checkProgram(
-//         \\
-//         \\ Point :: struct { x: i32, y: i32 }
-//         \\ Point{ x: x, y: y } :: Point{ x: 1, y: 2 }
-//     , &.{});
-//
-//     // Slice with rest binding
-//     try checkProgram("([x, y, ..rest]) :: [1, 2, 3, 4]", &.{});
-// }
-//
-// test "patterns - declarations - failures" {
-//     // Tuple arity mismatch
-//     try checkProgram("(x, y) :: (1, 2, 3)", &[_]diag.DiagnosticCode{.tuple_arity_mismatch});
-//
-//     // Struct field mismatch
-//     try checkProgram(
-//         \\
-//         \\ Point :: struct { x: i32, y: i32 }
-//         \\ (Point{ x: a, z: b }) :: Point{ x: 1, y: 2 }
-//     , &[_]diag.DiagnosticCode{.struct_pattern_field_mismatch});
-// }
-//
-// test "patterns - match - success" {
-//     // Wildcard, binding, and literal
-//     try checkProgram(
-//         \\
-//         \\ x :: 2
-//         \\ r :: match x { 1 => { }, _ => { } }
-//     , &.{});
-//
-//     // Enum path patterns and bindings
-//     try checkProgram(
-//         \\
-//         \\ Variant :: variant { A, B(i32), C{ x: i32, y: i32 } }
-//         \\ v :: Variant.B(1)
-//         \\ r :: match v { Variant.A => { }, Variant.B(n) => { }, Variant.C{ x: a, y: b } => { } }
-//     , &.{});
-//
-//     // Tuple pattern
-//     try checkProgram(
-//         \\
-//         \\ t :: (1, 2)
-//         \\ r :: match t { (a, b) => { } }
-//     , &.{});
-//
-//     // Struct pattern
-//     try checkProgram(
-//         \\
-//         \\ Point :: struct { x: i32, y: i32 }
-//         \\ p :: Point{ x: 1, y: 2 }
-//         \\ r :: match p { Point{ x: a, y: b } => { } }
-//     , &.{});
-//
-//     // Or-pattern
-//     try checkProgram(
-//         \\
-//         \\ x :: 1
-//         \\ r :: match x { 0 | 1 => { }, _ => { } }
-//     , &.{});
-//
-//     // At-pattern: binder @ subpattern
-//     try checkProgram(
-//         \\
-//         \\ x :: 5
-//         \\ r :: match x { y @ 5 => { } }
-//     , &.{});
-// }
-//
-// test "patterns - match - failures" {
-//     // Tuple pattern vs non-tuple subject
-//     try checkProgram(
-//         \\
-//         \\ x :: 1
-//         \\ r :: match x { (a, b) => { } }
-//     , &[_]diag.DiagnosticCode{.pattern_shape_mismatch});
-//
-//     // Struct field mismatch
-//     try checkProgram(
-//         \\
-//         \\ Point :: struct { x: i32, y: i32 }
-//         \\ p :: Point{ x: 1, y: 2 }
-//         \\ r :: match p { Point{ x: a, z: b } => { } }
-//     , &[_]diag.DiagnosticCode{.variant_payload_arity_mismatch});
-//
-//     // Variant payload arity/type mismatch
-//     try checkProgram(
-//         \\
-//         \\ Variant :: variant { A, B(i32) }
-//         \\ v :: Variant.B(1)
-//         \\ r :: match v { Variant.B(a, b) => { } }
-//     , &[_]diag.DiagnosticCode{.pattern_shape_mismatch});
-// }
+
+test "patterns - declarations - success" {
+    // Tuple destructuring
+    try checkProgram("(x, y) :: (1, 2)", &.{});
+
+    // Nested tuple destructuring
+    try checkProgram("(a, (b, c)) :: (1, (2, 3))", &.{});
+
+    // Struct destructuring
+    try checkProgram(
+        \\
+        \\ Point :: struct { x: i32, y: i32 }
+        \\ Point{ x: x, y: y } :: Point{ x: 1, y: 2 }
+    , &.{});
+
+    // Slice with rest binding
+    try checkProgram("([x, y, ..rest]) :: [1, 2, 3, 4]", &.{});
+}
+
+test "patterns - declarations - failures" {
+    // Tuple arity mismatch
+    try checkProgram("(x, y) :: (1, 2, 3)", &[_]diag.DiagnosticCode{.tuple_arity_mismatch});
+
+    // Struct field mismatch
+    try checkProgram(
+        \\
+        \\ Point :: struct { x: i32, y: i32 }
+        \\ Point{ x: a, z: b } :: Point{ x: 1, y: 2 }
+    , &[_]diag.DiagnosticCode{.struct_pattern_field_mismatch});
+}
 
 test "patterns - for loops - success" {
     // Destructure tuple elements from an array of tuples
@@ -2029,12 +1958,12 @@ test "patterns - for loops - success" {
     , &.{});
 
     // Binding with slice rest in loop over array
-    // try checkProgram(
-    //     \\
-    //     \\ main :: proc() {
-    //     \\   for [a, ..rest] in [1,2,3] { }
-    //     \\ }
-    // , &.{});
+    try checkProgram(
+        \\
+        \\ main :: proc() {
+        \\   for [a, ..rest] in [1,2,3] { }
+        \\ }
+    , &.{});
 }
 
 test "patterns - for loops - failures" {
@@ -2049,168 +1978,168 @@ test "patterns - for loops - failures" {
 
 // Focused: Match expressions
 
-// test "match expressions - success" {
-//     // Empty arms
-//     try checkProgram(
-//         \\
-//         \\ x :: 1
-//         \\ r :: match x { }
-//     , &.{});
-//
-//     // Literal arms with wildcard default
-//     try checkProgram(
-//         \\
-//         \\ x :: 2
-//         \\ r :: match x { 1 => { }, 2 => { }, _ => { } }
-//     , &.{});
-//
-//     // With guards
-//     try checkProgram(
-//         \\
-//         \\ x :: 3
-//         \\ r :: match x { y @ 3 if y == 3 => { }, _ => { } }
-//     , &.{});
-//
-//     // Or-pattern
-//     try checkProgram(
-//         \\
-//         \\ x :: 1
-//         \\ r :: match x { 0 | 1 => { }, _ => { } }
-//     , &.{});
-//
-//     // Tuple and struct patterns
-//     try checkProgram(
-//         \\
-//         \\ T :: (1, 2)
-//         \\ r :: match T { (a, b) => { } }
-//     , &.{});
-//     try checkProgram(
-//         \\
-//         \\ Point :: struct { x: i32, y: i32 }
-//         \\ p :: Point{ x: 1, y: 2 }
-//         \\ r :: match p { Point{ x: a, y: b } => { } }
-//     , &.{});
-//
-//     // Variant patterns with payloads
-//     try checkProgram(
-//         \\
-//         \\ V :: variant { A, B(i32), C{ x: i32 } }
-//         \\ v :: V.C{ x: 1 }
-//         \\ r :: match v { V.A => { }, V.B(n) => { }, V.C{ x: a } => { } }
-//     , &.{});
-//
-//     // Range patterns (exclusive/inclusive)
-//     try checkProgram(
-//         \\
-//         \\ x :: 5
-//         \\ r :: match x { 0..5 => { }, 6..=10 => { }, _ => { } }
-//     , &.{});
-// }
-//
-// test "match expressions - failures" {
-//     // Tuple pattern on scalar
-//     try checkProgram(
-//         \\
-//         \\ x :: 1
-//         \\ r :: match x { (a, b) => { } }
-//     , &[_]diag.DiagnosticCode{.pattern_shape_mismatch});
-//
-//     // Tuple arity mismatch vs subject tuple
-//     try checkProgram(
-//         \\
-//         \\ T :: (1, 2)
-//         \\ r :: match T { (a, b, c) => { } }
-//     , &[_]diag.DiagnosticCode{.tuple_arity_mismatch});
-//
-//     // Struct field mismatch
-//     try checkProgram(
-//         \\
-//         \\ Point :: struct { x: i32, y: i32 }
-//         \\ p :: Point{ x: 1, y: 2 }
-//         \\ r :: match p { Point{ x: a, z: b } => { } }
-//     , &[_]diag.DiagnosticCode{.struct_pattern_field_mismatch});
-//
-//     // Variant payload mismatch
-//     try checkProgram(
-//         \\
-//         \\ V :: variant { A, B(i32) }
-//         \\ v :: V.B(1)
-//         \\ r :: match v { V.B(a, b) => { } }
-//     , &[_]diag.DiagnosticCode{.variant_payload_mismatch});
-// }
-//
-// // Focused: Match exhaustiveness and overlap (Rust-like semantics)
-//
-// test "match exhaustiveness - success" {
-//     // Bool exhaustive without wildcard
-//     try checkProgram(
-//         \\
-//         \\ b :: true
-//         \\ r :: match b { true => { }, false => { } }
-//     , &.{});
-//
-//     // Enum exhaustive: all variants handled
-//     try checkProgram(
-//         \\
-//         \\ E :: enum { A, B, C }
-//         \\ e :: E.A
-//         \\ r :: match e { E.A => { }, E.B => { }, E.C => { } }
-//     , &.{});
-//
-//     // Wildcard makes it exhaustive
-//     try checkProgram(
-//         \\
-//         \\ x :: 10
-//         \\ r :: match x { 0..5 => { }, _ => { } }
-//     , &.{});
-// }
-//
-// test "match exhaustiveness - failures" {
-//     // Bool non-exhaustive
-//     try checkProgram(
-//         \\
-//         \\ b :: true
-//         \\ r :: match b { true => { } }
-//     , &[_]diag.DiagnosticCode{.non_exhaustive_match});
-//
-//     // Enum missing one variant
-//     try checkProgram(
-//         \\
-//         \\ E :: enum { A, B }
-//         \\ e :: E.A
-//         \\ r :: match e { E.A => { } }
-//     , &[_]diag.DiagnosticCode{.non_exhaustive_match});
-//
-//     // Guarded wildcard alone is not exhaustive
-//     try checkProgram(
-//         \\
-//         \\ x :: 1
-//         \\ r :: match x { _ if true => { } }
-//     , &[_]diag.DiagnosticCode{.non_exhaustive_match});
-// }
-//
-// test "match overlap/unreachable - failures" {
-//     // Duplicate literal arm
-//     try checkProgram(
-//         \\
-//         \\ x :: 1
-//         \\ r :: match x { 1 => { }, 1 => { } }
-//     , &[_]diag.DiagnosticCode{.overlapping_match_arm});
-//
-//     // Overlapping ranges
-//     try checkProgram(
-//         \\
-//         \\ x :: 3
-//         \\ r :: match x { 0..5 => { }, 3..10 => { } }
-//     , &[_]diag.DiagnosticCode{.overlapping_match_arm});
-//
-//     // Unreachable after wildcard
-//     try checkProgram(
-//         \\
-//         \\ x :: 2
-//         \\ r :: match x { _ => { }, 2 => { } }
-//     , &[_]diag.DiagnosticCode{.unreachable_match_arm});
-// }
+test "match expressions - success" {
+    // Empty arms
+    try checkProgram(
+        \\
+        \\ x :: 1
+        \\ r :: match x { }
+    , &.{});
+
+    // Literal arms with wildcard default
+    try checkProgram(
+        \\
+        \\ x :: 2
+        \\ r :: match x { 1 => { }, 2 => { }, _ => { }, }
+    , &.{});
+
+    // With guards
+    try checkProgram(
+        \\
+        \\ x :: 3
+        \\ r :: match x { y @ 3 if y == 3 => { }, _ => { }, }
+    , &.{});
+
+    // Or-pattern
+    try checkProgram(
+        \\
+        \\ x :: 1
+        \\ r :: match x { 0 | 1 => { }, _ => { }, }
+    , &.{});
+
+    // Tuple and struct patterns
+    try checkProgram(
+        \\
+        \\ T :: (1, 2)
+        \\ r :: match T { (a, b) => { }, }
+    , &.{});
+    try checkProgram(
+        \\
+        \\ Point :: struct { x: i32, y: i32 }
+        \\ p :: Point{ x: 1, y: 2 }
+        \\ r :: match p { Point{ x: a, y: b } => { }, }
+    , &.{});
+
+    // Variant patterns with payloads
+    try checkProgram(
+        \\
+        \\ V :: variant { A, B(i32), C{ x: i32 } }
+        \\ v :: V.C{ x: 1 }
+        \\ r :: match v { V.A => { }, V.B(n) => { }, V.C{ x: a } => { }, }
+    , &.{});
+
+    // Range patterns (exclusive/inclusive)
+    try checkProgram(
+        \\
+        \\ x :: 5
+        \\ r :: match x { 0..5 => { }, 6..=10 => { }, _ => { }, }
+    , &.{});
+}
+
+test "match expressions - failures" {
+    // Tuple pattern on scalar
+    try checkProgram(
+        \\
+        \\ x :: 1
+        \\ r :: match x { (a, b) => { }, }
+    , &[_]diag.DiagnosticCode{.pattern_shape_mismatch});
+
+    // Tuple arity mismatch vs subject tuple
+    try checkProgram(
+        \\
+        \\ T :: (1, 2)
+        \\ r :: match T { (a, b, c) => { }, }
+    , &[_]diag.DiagnosticCode{.pattern_shape_mismatch});
+
+    // Struct field mismatch
+    try checkProgram(
+        \\
+        \\ Point :: struct { x: i32, y: i32 }
+        \\ p :: Point{ x: 1, y: 2 }
+        \\ r :: match p { Point{ x: a, z: b } => { }, }
+    , &[_]diag.DiagnosticCode{.struct_pattern_field_mismatch});
+
+    // Variant payload mismatch
+    try checkProgram(
+        \\
+        \\ V :: variant { A, B(i32) }
+        \\ v :: V.B(1)
+        \\ r :: match v { V.B(a, b) => { }, }
+    , &[_]diag.DiagnosticCode{.pattern_shape_mismatch});
+}
+
+// Focused: Match exhaustiveness and overlap (Rust-like semantics)
+
+test "match exhaustiveness - success" {
+    // Bool exhaustive without wildcard
+    try checkProgram(
+        \\
+        \\ b :: true
+        \\ r :: match b { true => { }, false => { }, }
+    , &.{});
+
+    // Enum exhaustive: all variants handled
+    try checkProgram(
+        \\
+        \\ E :: enum { A, B, C }
+        \\ e :: E.A
+        \\ r :: match e { E.A => { }, E.B => { }, E.C => { }, }
+    , &.{});
+
+    // Wildcard makes it exhaustive
+    try checkProgram(
+        \\
+        \\ x :: 10
+        \\ r :: match x { 0..5 => { }, _ => { }, }
+    , &.{});
+}
+
+test "match exhaustiveness - failures" {
+    // Bool non-exhaustive
+    try checkProgram(
+        \\
+        \\ b :: true
+        \\ r :: match b { true => { },}
+    , &[_]diag.DiagnosticCode{.non_exhaustive_match});
+
+    // Enum missing one variant
+    try checkProgram(
+        \\
+        \\ E :: enum { A, B }
+        \\ e :: E.A
+        \\ r :: match e { E.A => { }, }
+    , &[_]diag.DiagnosticCode{.non_exhaustive_match});
+
+    // Guarded wildcard alone is not exhaustive
+    try checkProgram(
+        \\
+        \\ x :: 1
+        \\ r :: match x { _ if true => { }, }
+    , &[_]diag.DiagnosticCode{.non_exhaustive_match});
+}
+
+test "match overlap/unreachable - failures" {
+    // Duplicate literal arm
+    try checkProgram(
+        \\
+        \\ x :: 1
+        \\ r :: match x { 1 => { }, 1 => { }, }
+    , &[_]diag.DiagnosticCode{.overlapping_match_arm});
+
+    // Overlapping ranges
+    try checkProgram(
+        \\
+        \\ x :: 3
+        \\ r :: match x { 0..5 => { }, 3..10 => { }, }
+    , &[_]diag.DiagnosticCode{.overlapping_match_arm});
+
+    // Unreachable after wildcard
+    try checkProgram(
+        \\
+        \\ x :: 2
+        \\ r :: match x { _ => { }, 2 => { }, }
+    , &[_]diag.DiagnosticCode{.unreachable_match_arm});
+}
 
 // Focused: defer and errdefer
 
@@ -2270,8 +2199,8 @@ test "errdefer - success" {
 test "defer/errdefer - failures" {
     // errdefer in a void-returning function
     try checkProgram(
-        \\bad :: proc() { 
-        \\errdefer 1 
+        \\bad :: proc() {
+        \\errdefer 1
         \\}
     ,
         &[_]diag.DiagnosticCode{.errdefer_in_non_error_function},
@@ -2279,7 +2208,7 @@ test "defer/errdefer - failures" {
 
     // errdefer in a non-error function with return type
     try checkProgram(
-        \\bad2 :: proc() i32 { 
+        \\bad2 :: proc() i32 {
         \\ errdefer 1
         \\ return 0
         \\}
@@ -2294,7 +2223,7 @@ test "break with values - success" {
     // Use break with value to yield from a labeled while-expression
     try checkProgram(
         \\x :: L: while true {
-        \\ break L 42 
+        \\ break L 42
         \\}
     , &.{});
 
@@ -2371,11 +2300,11 @@ test "break values in branches - success" {
 test "break values in branches - failures" {
     // While branch inconsistent types
     try checkProgram(
-        \\q :: L: while true { 
-        \\  if true { 
+        \\q :: L: while true {
+        \\  if true {
         \\    break L 1
-        \\  } else { 
-        \\    break L 2.0 
+        \\  } else {
+        \\    break L 2.0
         \\  }
         \\}
     , &[_]diag.DiagnosticCode{.if_branch_type_mismatch});
@@ -2515,6 +2444,251 @@ test "cast expressions - failures" {
 
     // Checked cast that cannot succeed
     try checkProgram("z :: \"s\".?i32", &[_]diag.DiagnosticCode{.invalid_checked_cast});
+}
+
+// Focused: Patterns — slice rest with Rust-like middle rest
+
+test "patterns - slice rest - success" {
+    // Middle rest on fixed array
+    try checkProgram("[a, ..rest, b] :: [1, 2, 3]", &.{});
+
+    // Rest at end on fixed array
+    try checkProgram("[a, ..rest] :: [1, 2, 3]", &.{});
+
+    // Rest at start on slice/dynarray
+    try checkProgram(
+        \\
+        \\ arr: []i32 = ([1, 2, 3])[0..3]
+        \\ [..rest, a] :: arr
+    , &.{});
+}
+
+test "patterns - slice rest - failures" {
+    // Too many explicit elements with rest for fixed array (as per our rule)
+    try checkProgram("[a, ..rest, b, c] :: [1, 2, 3]", &[_]diag.DiagnosticCode{.pattern_shape_mismatch});
+}
+
+// Focused: Patterns — comprehensive coverage (declarations, assignments, params, match)
+
+test "patterns - declarations - additional success" {
+    // Tuple: flat and nested
+    try checkProgram("(a, b) :: (1, 2)", &.{});
+    try checkProgram("(a, (b, c)) :: (1, (2, 3))", &.{});
+
+    // Struct: flat, nested
+    try checkProgram(
+        \\
+        \\ Point :: struct { x: i32, y: i32 }
+        \\ Point{ x: px, y: py } :: Point{ x: 1, y: 2 }
+    , &.{});
+
+    try checkProgram(
+        \\
+        \\ Point :: struct { x: i32, y: i32 }
+        \\ Rect  :: struct { tl: Point, br: Point }
+        \\ Rect{ tl: Point{ x: ax, y: ay }, br: Point{ x: bx, y: by } } ::
+        \\   Rect{ tl: Point{ x: 1, y: 2 }, br: Point{ x: 3, y: 4 } }
+    , &.{});
+
+    // Slice/array: exact arity and rest-at-end
+    try checkProgram("[x, y] :: [1, 2]", &.{});
+    try checkProgram("[x, ..rest] :: [1, 2, 3]", &.{});
+    try checkProgram("[..rest] :: [1, 2]", &.{});
+
+    // Ignore bindings
+    try checkProgram("(_, _) :: (1, 2)", &.{});
+}
+
+test "patterns - declarations - additional failures" {
+    // Tuple arity mismatch (too many)
+    try checkProgram("(x, y) :: (1, 2, 3)", &[_]diag.DiagnosticCode{.tuple_arity_mismatch});
+
+    // Tuple arity mismatch (too few)
+    try checkProgram("(x, y, z) :: (1, 2)", &[_]diag.DiagnosticCode{.tuple_arity_mismatch});
+
+    // Struct field mismatch (unknown field in pattern)
+    try checkProgram(
+        \\
+        \\ Point :: struct { x: i32, y: i32 }
+        \\ Point{ x: a, z: b } :: Point{ x: 1, y: 2 }
+    , &[_]diag.DiagnosticCode{.struct_pattern_field_mismatch});
+
+    // Slice rest not at end
+    try checkProgram("[a, ..rest, b] :: [1, 2, 3]", &[_]diag.DiagnosticCode{});
+
+    // Multiple rests in slice pattern
+    try checkProgram("[..r1, ..r2] :: [1, 2]", &[_]diag.DiagnosticCode{.pattern_shape_mismatch});
+
+    // Fixed array arity mismatch without rest
+    try checkProgram("[a, b, c] :: [1, 2]", &[_]diag.DiagnosticCode{.pattern_shape_mismatch});
+}
+
+test "patterns - assignments - success" {
+    // Tuple assignment into existing bindings
+    try checkProgram(
+        \\
+        \\ main :: proc() {
+        \\   x := 0; y := 0;
+        \\   (x, y) = (1, 2)
+        \\ }
+    , &.{});
+
+    // Struct assignment into existing bindings
+    try checkProgram(
+        \\
+        \\ Point :: struct { x: i32, y: i32 }
+        \\ main :: proc() {
+        \\   x := 0; y := 0;
+        \\   Point{ x: x, y: y } = Point{ x: 1, y: 2 }
+        \\ }
+    , &.{});
+
+    // Slice assignment with rest into existing bindings
+    try checkProgram(
+        \\
+        \\ main :: proc() {
+        \\   a := 0
+        \\   rest : []i32 = ([0])[0..1]
+        \\   [a, ..rest] = [1, 2, 3]
+        \\ }
+    , &.{});
+}
+
+test "patterns - assignments - failures" {
+    // Pattern/value shape mismatch
+    try checkProgram(
+        \\
+        \\ main :: proc() {
+        \\   x := 0; y := 0;
+        \\   (x, y) = 1
+        \\ }
+    , &[_]diag.DiagnosticCode{.pattern_shape_mismatch});
+}
+
+test "patterns - function params - success" {
+    // Tuple param pattern with explicit tuple type
+    try checkProgram(
+        \\
+        \\ sum :: proc((a, b): (i32, i32)) i32 { return a + b }
+    , &.{});
+
+    // Nested tuple param pattern
+    try checkProgram(
+        \\
+        \\ f :: proc((a, (b, c)): (i32, (i32, i32))) i32 { return a + b + c }
+    , &.{});
+
+    // Struct param pattern with explicit type
+    try checkProgram(
+        \\
+        \\ Point :: struct { x: i32, y: i32 }
+        \\ getx :: proc(Point{ x: x, y: _ }: Point) i32 { return x }
+    , &.{});
+}
+
+test "patterns - function params - failures" {
+    // Shape mismatch between param pattern type and use-site destructure
+    try checkProgram(
+        \\
+        \\ f :: proc((a, b): (i32, i32, i32)) i32 { return a + b }
+    , &[_]diag.DiagnosticCode{.tuple_arity_mismatch});
+}
+
+test "patterns - match - success" {
+    // Literals, wildcard, binding
+    try checkProgram(
+        \\
+        \\ x :: 2
+        \\ r :: match x { 1 => { }, _ => { }, }
+    , &.{});
+
+    // Tuple pattern
+    try checkProgram(
+        \\
+        \\ t :: (1, 2)
+        \\ r :: match t { (a, b) => { }, }
+    , &.{});
+
+    // Struct pattern
+    try checkProgram(
+        \\
+        \\ Point :: struct { x: i32, y: i32 }
+        \\ p :: Point{ x: 1, y: 2 }
+        \\ r :: match p { Point{ x: a, y: b } => { }, }
+    , &.{});
+
+    // Enum tags
+    try checkProgram(
+        \\
+        \\ State :: enum { Running, Walking }
+        \\ s :: State.Running
+        \\ r :: match s { State.Running => { }, State.Walking => { }, }
+    , &.{});
+
+    // Variants: tag-only, tuple payload, struct payload
+    try checkProgram(
+        \\
+        \\ V :: variant { A, B(i32), C{ x: i32, y: i32 } }
+        \\ v1 :: V.A
+        \\ v2 :: V.B(1)
+        \\ v3 :: V.C{ x: 1, y: 2 }
+        \\ _  :: match v1 { V.A => { }, _ => { }, }
+        \\ _  :: match v2 { V.B(n) => { }, _ => { }, }
+        \\ _  :: match v3 { V.C{ x: a, y: b } => { }, _ => { }, }
+    , &.{});
+
+    // Or-pattern and at-pattern
+    try checkProgram(
+        \\
+        \\ x :: 1
+        \\ r :: match x { 0 | 1 => { }, _ => { }, }
+    , &.{});
+
+    try checkProgram(
+        \\
+        \\ x :: 5
+        \\ r :: match x { y @ 5 => { }, }
+    , &.{});
+
+    // Slice with rest pattern in match
+    try checkProgram(
+        \\
+        \\ xs :: [1, 2, 3]
+        \\ r :: match xs { [a, ..rest] => { }, }
+    , &.{});
+}
+
+test "patterns - match - failures" {
+    // Tuple pattern vs non-tuple subject
+    try checkProgram(
+        \\
+        \\ x :: 1
+        \\ r :: match x { (a, b) => { }, }
+    , &[_]diag.DiagnosticCode{.pattern_shape_mismatch});
+
+    // Struct field mismatch in pattern
+    try checkProgram(
+        \\
+        \\ Point :: struct { x: i32, y: i32 }
+        \\ p :: Point{ x: 1, y: 2 }
+        \\ r :: match p { Point{ x: a, z: b } => { }, }
+    , &[_]diag.DiagnosticCode{.struct_pattern_field_mismatch});
+
+    // Variant payload arity/type mismatch in pattern
+    try checkProgram(
+        \\
+        \\ V :: variant { A, B(i32) }
+        \\ v :: V.B(1)
+        \\ r :: match v { V.B(a, b) => { }, }
+    , &[_]diag.DiagnosticCode{.pattern_shape_mismatch});
+
+    // Enum does not support payload-style pattern
+    try checkProgram(
+        \\
+        \\ State :: enum { Running, Walking }
+        \\ s :: State.Running
+        \\ r :: match s { State.Running(x) => { }, }
+    , &[_]diag.DiagnosticCode{.pattern_shape_mismatch});
 }
 
 // // Focused: Import statements
