@@ -8,6 +8,8 @@ const types = @import("types.zig");
 const TypeInfo = types.TypeInfo;
 const ImportResolver = @import("import_resolver.zig").ImportResolver;
 const ModuleEntry = @import("import_resolver.zig").ModuleEntry;
+const pattern_matching = @import("check_pattern_matching.zig");
+const check_types = @import("check_types.zig");
 
 pub const Checker = struct {
     gpa: std.mem.Allocator,
@@ -83,21 +85,6 @@ pub const Checker = struct {
         return self.type_info;
     }
 
-    inline fn ensureExprSlot(self: *Checker, id: ast.ExprId) !void {
-        const idx = id.toRaw();
-        if (idx >= self.type_info.expr_types.items.len) {
-            const need: usize = idx + 1 - self.type_info.expr_types.items.len;
-            try self.type_info.expr_types.appendNTimes(self.gpa, null, need);
-        }
-    }
-    inline fn ensureDeclSlot(self: *Checker, did: ast.DeclId) !void {
-        const idx = did.toRaw();
-        if (idx >= self.type_info.decl_types.items.len) {
-            const need: usize = idx + 1 - self.type_info.decl_types.items.len;
-            try self.type_info.decl_types.appendNTimes(self.gpa, null, need);
-        }
-    }
-
     // --------- context
     const FunctionCtx = struct {
         result: types.TypeId,
@@ -113,69 +100,12 @@ pub const Checker = struct {
 
     fn bindDeclPattern(self: *Checker, did: ast.DeclId, d: ast.Rows.Decl) !void {
         if (d.pattern.isNone()) return;
-        try self.declareBindingsInPattern(d.pattern.unwrap(), d.loc, .{ .decl = did });
+        try pattern_matching.declareBindingsInPattern(self, d.pattern.unwrap(), d.loc, .{ .decl = did });
     }
 
     fn bindParamPattern(self: *Checker, pid: ast.ParamId, p: ast.Rows.Param) !void {
         if (p.pat.isNone()) return;
-        try self.declareBindingsInPattern(p.pat.unwrap(), p.loc, .{ .param = pid });
-    }
-
-    const BindingOrigin = union(enum) { decl: ast.DeclId, param: ast.ParamId };
-    fn declareBindingsInPattern(self: *Checker, pid: ast.PatternId, loc: ast.LocId, origin: BindingOrigin) !void {
-        const k = self.ast_unit.pats.index.kinds.items[pid.toRaw()];
-        switch (k) {
-            .Binding => {
-                const b = self.ast_unit.pats.get(.Binding, pid);
-                const row: symbols.SymbolRow = switch (origin) {
-                    .decl => |did| .{
-                        .name = b.name,
-                        .kind = .Var,
-                        .loc = loc,
-                        .origin_decl = ast.OptDeclId.some(did),
-                        .origin_param = ast.OptParamId.none(),
-                    },
-                    .param => |par| .{
-                        .name = b.name,
-                        .kind = .Param,
-                        .loc = loc,
-                        .origin_decl = ast.OptDeclId.none(),
-                        .origin_param = ast.OptParamId.some(par),
-                    },
-                };
-                _ = try self.symtab.declare(row);
-                // If nested pattern under binding exists, declare inner bindings as well
-                // if (!b.pattern.isNone()) try self.declareBindingsInPattern(b.pattern.unwrap(), loc, origin);
-            },
-            .Wildcard => {},
-            .Tuple => {
-                const tp = self.ast_unit.pats.get(.Tuple, pid);
-                const elems = self.ast_unit.pats.pat_pool.slice(tp.elems);
-                for (elems) |eid| try self.declareBindingsInPattern(eid, loc, origin);
-            },
-            .Struct => {
-                const sp = self.ast_unit.pats.get(.Struct, pid);
-                const fields = self.ast_unit.pats.field_pool.slice(sp.fields);
-                for (fields) |fid| {
-                    const f = self.ast_unit.pats.StructField.get(fid.toRaw());
-                    try self.declareBindingsInPattern(f.pattern, loc, origin);
-                }
-            },
-            .Slice => {
-                const ap = self.ast_unit.pats.get(.Slice, pid);
-                const elems = self.ast_unit.pats.pat_pool.slice(ap.elems);
-                for (elems) |eid| try self.declareBindingsInPattern(eid, loc, origin);
-                if (ap.has_rest and !ap.rest_binding.isNone()) {
-                    try self.declareBindingsInPattern(ap.rest_binding.unwrap(), loc, origin);
-                }
-            },
-            .Path => {
-                // Paths in patterns are heads (e.g., Type/Constructor) or constants, not bindings.
-                // Do not declare any symbol for path segments here.
-            },
-            .Literal => {},
-            else => {},
-        }
+        try pattern_matching.declareBindingsInPattern(self, p.pat.unwrap(), p.loc, .{ .param = pid });
     }
 
     fn pushFunc(self: *Checker, result_ty: types.TypeId, has_result: bool, require_pure: bool) !void {
@@ -212,12 +142,12 @@ pub const Checker = struct {
     fn popValueReq(self: *Checker) void {
         if (self.value_ctx.items.len > 0) _ = self.value_ctx.pop();
     }
-    fn isValueReq(self: *const Checker) bool {
+    pub fn isValueReq(self: *const Checker) bool {
         if (self.value_ctx.items.len == 0) return true; // default: value required
         return self.value_ctx.items[self.value_ctx.items.len - 1];
     }
 
-    fn lookup(self: *Checker, name: ast.StrId) ?symbols.SymbolId {
+    pub fn lookup(self: *Checker, name: ast.StrId) ?symbols.SymbolId {
         return self.symtab.lookup(self.ast_unit, self.symtab.currentId(), name);
     }
 
@@ -232,69 +162,6 @@ pub const Checker = struct {
             if (!lc.label.isNone() and lc.label.unwrap().toRaw() == want.?) return lc;
         }
         return null;
-    }
-
-    fn primaryNameOfPattern(self: *Checker, pid: ast.PatternId) ast.OptStrId {
-        const k = self.ast_unit.pats.index.kinds.items[pid.toRaw()];
-        return switch (k) {
-            .Binding => ast.OptStrId.some(self.ast_unit.pats.get(.Binding, pid).name),
-            .Path => blk: {
-                const p = self.ast_unit.pats.get(.Path, pid);
-                const segs = self.ast_unit.pats.seg_pool.slice(p.segments);
-                if (segs.len == 0) break :blk ast.OptStrId.none();
-                break :blk ast.OptStrId.some(self.ast_unit.pats.PathSeg.get(segs[segs.len - 1].toRaw()).name);
-            },
-            else => ast.OptStrId.none(),
-        };
-    }
-
-    // --------- type helpers
-    fn isNumericKind(_: *const Checker, k: types.TypeKind) bool {
-        return switch (k) {
-            .I8, .I16, .I32, .I64, .U8, .U16, .U32, .U64, .F32, .F64, .Usize, .Tensor, .Simd, .Complex => true,
-            else => false,
-        };
-    }
-    fn isIntegerKind(_: *const Checker, k: types.TypeKind) bool {
-        return switch (k) {
-            .I8, .I16, .I32, .I64, .U8, .U16, .U32, .U64, .Usize => true,
-            else => false,
-        };
-    }
-
-    fn typeSize(self: *Checker, ty_id: types.TypeId) ?usize {
-        const k = self.type_info.store.index.kinds.items[ty_id.toRaw()];
-        return switch (k) {
-            .I8, .U8 => 1,
-            .I16, .U16 => 2,
-            .I32, .U32, .F32 => 4,
-            .I64, .U64, .F64, .Usize => 8, // Assuming usize is 8 bytes for 64-bit
-            .Bool => 1, // Typically 1 byte
-            .Ptr => 8, // Assuming 64-bit pointers
-            .Void => 0, // No size
-            .Any => null, // Unknown size
-            .String => 8, // Assuming string is a pointer (8 bytes) for 64-bit (TODO: more complex)
-            .Array => {
-                const arr = self.type_info.store.Array.get(self.type_info.store.index.rows.items[ty_id.toRaw()]);
-                const elem_size = self.typeSize(arr.elem) orelse return null;
-                return elem_size * arr.len;
-            },
-            .Slice => 16, // Pointer + length (assuming 64-bit)
-            .Optional => {
-                const opt = self.type_info.store.Optional.get(self.type_info.store.index.rows.items[ty_id.toRaw()]);
-                const elem_size = self.typeSize(opt.elem) orelse return null;
-                return elem_size + 1; // Element size + 1 byte for discriminant
-            },
-            // TODO: Implement for other aggregate types like Struct, Tuple, Union, etc.
-            else => null, // Unknown or complex size
-        };
-    }
-
-    fn isOptional(self: *Checker, id: types.TypeId) ?types.TypeId {
-        const k = self.type_info.store.index.kinds.items[id.toRaw()];
-        if (k != .Optional) return null;
-        const opt = self.type_info.store.Optional.get(self.type_info.store.index.rows.items[id.toRaw()]);
-        return opt.elem;
     }
 
     const AssignErrors = enum {
@@ -323,7 +190,7 @@ pub const Checker = struct {
         success,
     };
 
-    fn assignable(self: *Checker, got: types.TypeId, expect: types.TypeId) AssignErrors {
+    pub fn assignable(self: *Checker, got: types.TypeId, expect: types.TypeId) AssignErrors {
         if (got.toRaw() == expect.toRaw()) return .success;
         const got_kind = self.type_info.store.index.kinds.items[got.toRaw()];
         const expected_kind = self.type_info.store.index.kinds.items[expect.toRaw()];
@@ -496,7 +363,7 @@ pub const Checker = struct {
                 }
             },
             .I8, .I16, .I32, .I64, .U8, .U16, .U32, .U64, .Usize => {
-                if (!self.isIntegerKind(got_kind)) return .expected_integer_type;
+                if (!check_types.isIntegerKind(self, got_kind)) return .expected_integer_type;
                 return .success;
             },
             .F32, .F64 => {
@@ -518,7 +385,7 @@ pub const Checker = struct {
         const expect_ty = if (decl.ty.isNone())
             null
         else
-            try self.typeFromTypeExpr(decl.ty.unwrap());
+            try check_types.typeFromTypeExpr(self, decl.ty.unwrap());
         // Initializers must be evaluated in value context even inside statement blocks
         try self.pushValueReq(true);
         const rhs_ty = try self.checkExpr(decl.value);
@@ -530,7 +397,7 @@ pub const Checker = struct {
             return;
         // If LHS is a pattern, ensure the RHS type matches the pattern's shape.
         if (!decl.pattern.isNone()) {
-            const shape_ok = self.checkPatternShapeForDecl(decl.pattern.unwrap(), rhs_ty.?);
+            const shape_ok = pattern_matching.checkPatternShapeForDecl(self, decl.pattern.unwrap(), rhs_ty.?);
             switch (shape_ok) {
                 .ok => {},
                 .tuple_arity_mismatch => {
@@ -548,89 +415,6 @@ pub const Checker = struct {
             }
         }
         try self.tryTypeCoercion(decl_id, rhs_ty.?, expect_ty);
-    }
-
-    const PatternShapeCheck = enum { ok, tuple_arity_mismatch, struct_field_mismatch, shape_mismatch };
-    fn checkPatternShapeForDecl(self: *Checker, pid: ast.PatternId, value_ty: types.TypeId) PatternShapeCheck {
-        const pkind = self.type_info.store.index.kinds.items[value_ty.toRaw()];
-        const k = self.ast_unit.pats.index.kinds.items[pid.toRaw()];
-        switch (k) {
-            .Wildcard, .Binding => return .ok,
-            .Tuple => {
-                if (pkind != .Tuple) return .shape_mismatch;
-                const tp = self.type_info.store.Tuple.get(self.type_info.store.index.rows.items[value_ty.toRaw()]);
-                const vals = self.type_info.store.type_pool.slice(tp.elems);
-                const pt = self.ast_unit.pats.get(.Tuple, pid);
-                const elems = self.ast_unit.pats.pat_pool.slice(pt.elems);
-                if (elems.len != vals.len) return .tuple_arity_mismatch;
-                var i: usize = 0;
-                while (i < elems.len) : (i += 1) {
-                    const res = self.checkPatternShapeForDecl(elems[i], vals[i]);
-                    if (res != .ok) return res;
-                }
-                return .ok;
-            },
-            .Struct => {
-                if (pkind != .Struct) return .shape_mismatch;
-                const sv = self.type_info.store.Struct.get(self.type_info.store.index.rows.items[value_ty.toRaw()]);
-                const vfields = self.type_info.store.field_pool.slice(sv.fields);
-                const sp = self.ast_unit.pats.get(.Struct, pid);
-                const pfields = self.ast_unit.pats.field_pool.slice(sp.fields);
-                // every pattern field must exist by name
-                var i: usize = 0;
-                while (i < pfields.len) : (i += 1) {
-                    const pf = self.ast_unit.pats.StructField.get(pfields[i].toRaw());
-                    var found: ?types.TypeId = null;
-                    var j: usize = 0;
-                    while (j < vfields.len) : (j += 1) {
-                        const vf = self.type_info.store.Field.get(vfields[j].toRaw());
-                        if (vf.name.toRaw() == pf.name.toRaw()) {
-                            found = vf.ty;
-                            break;
-                        }
-                    }
-                    if (found == null) return .struct_field_mismatch;
-                    const res = self.checkPatternShapeForDecl(pf.pattern, found.?);
-                    if (res != .ok) return res;
-                }
-                return .ok;
-            },
-            .Slice => {
-                // Accept array/slice/dynarray; recurse on element patterns
-                if (pkind != .Array and pkind != .Slice and pkind != .DynArray) return .shape_mismatch;
-                const elem_ty: types.TypeId = switch (pkind) {
-                    .Array => self.type_info.store.Array.get(self.type_info.store.index.rows.items[value_ty.toRaw()]).elem,
-                    .Slice => self.type_info.store.Slice.get(self.type_info.store.index.rows.items[value_ty.toRaw()]).elem,
-                    .DynArray => self.type_info.store.DynArray.get(self.type_info.store.index.rows.items[value_ty.toRaw()]).elem,
-                    else => unreachable,
-                };
-                const sl = self.ast_unit.pats.get(.Slice, pid);
-                const elems = self.ast_unit.pats.pat_pool.slice(sl.elems);
-                // Fixed-size array arity check
-                if (pkind == .Array) {
-                    const arr = self.type_info.store.Array.get(self.type_info.store.index.rows.items[value_ty.toRaw()]);
-                    if (sl.has_rest) {
-                        // With rest anywhere (Rust-like), only require explicit elements <= length
-                        if (elems.len >= arr.len) return .shape_mismatch;
-                    } else {
-                        if (elems.len != arr.len) return .shape_mismatch;
-                    }
-                }
-                // Check explicit element subpatterns against element type
-                for (elems) |eid| {
-                    const res = self.checkPatternShapeForDecl(eid, elem_ty);
-                    if (res != .ok) return res;
-                }
-                if (sl.has_rest and !sl.rest_binding.isNone()) {
-                    // rest binding gets slice<elem_ty>
-                    const rest_res = self.checkPatternShapeForDecl(sl.rest_binding.unwrap(), self.type_info.store.mkSlice(elem_ty));
-                    if (rest_res != .ok) return rest_res;
-                }
-                return .ok;
-            },
-            .Path, .Literal => return .ok,
-            else => return .ok,
-        }
     }
 
     fn tryTypeCoercion(
@@ -718,7 +502,7 @@ pub const Checker = struct {
                     const rv_ty = try self.checkExpr(row.right);
                     self.popValueReq();
                     if (rv_ty != null) {
-                        const shape_ok = self.checkPatternShapeForAssignExpr(row.left, rv_ty.?);
+                        const shape_ok = pattern_matching.checkPatternShapeForAssignExpr(self, row.left, rv_ty.?);
                         switch (shape_ok) {
                             .ok => {},
                             .tuple_arity_mismatch => try self.diags.addError(self.ast_unit.exprs.locs.get(row.loc), .tuple_arity_mismatch, .{}),
@@ -803,106 +587,10 @@ pub const Checker = struct {
         return null;
     }
 
-    const PatternExprShapeCheck = PatternShapeCheck;
-    fn checkPatternShapeForAssignExpr(self: *Checker, expr: ast.ExprId, value_ty: types.TypeId) PatternExprShapeCheck {
-        const vk = self.type_info.store.index.kinds.items[value_ty.toRaw()];
-        const k = self.ast_unit.exprs.index.kinds.items[expr.toRaw()];
-        switch (k) {
-            .Ident => return .ok,
-            .TupleLit => {
-                if (vk != .Tuple) return .shape_mismatch;
-                const tl = self.ast_unit.exprs.get(.TupleLit, expr);
-                const elems = self.ast_unit.exprs.expr_pool.slice(tl.elems);
-                const trow = self.type_info.store.Tuple.get(self.type_info.store.index.rows.items[value_ty.toRaw()]);
-                const tys = self.type_info.store.type_pool.slice(trow.elems);
-                if (elems.len != tys.len) return .tuple_arity_mismatch;
-                var i: usize = 0;
-                while (i < elems.len) : (i += 1) {
-                    const res = self.checkPatternShapeForAssignExpr(elems[i], tys[i]);
-                    if (res != .ok) return res;
-                }
-                return .ok;
-            },
-            .StructLit => {
-                if (vk != .Struct) return .shape_mismatch;
-                const sv = self.type_info.store.Struct.get(self.type_info.store.index.rows.items[value_ty.toRaw()]);
-                const vfields = self.type_info.store.field_pool.slice(sv.fields);
-                const sl = self.ast_unit.exprs.get(.StructLit, expr);
-                const pfields = self.ast_unit.exprs.sfv_pool.slice(sl.fields);
-                var i: usize = 0;
-                while (i < pfields.len) : (i += 1) {
-                    const pf = self.ast_unit.exprs.StructFieldValue.get(pfields[i].toRaw());
-                    if (pf.name.isNone()) return .shape_mismatch;
-                    var fty: ?types.TypeId = null;
-                    var j: usize = 0;
-                    while (j < vfields.len) : (j += 1) {
-                        const vf = self.type_info.store.Field.get(vfields[j].toRaw());
-                        if (vf.name.toRaw() == pf.name.unwrap().toRaw()) {
-                            fty = vf.ty;
-                            break;
-                        }
-                    }
-                    if (fty == null) return .struct_field_mismatch;
-                    const res = self.checkPatternShapeForAssignExpr(pf.value, fty.?);
-                    if (res != .ok) return res;
-                }
-                return .ok;
-            },
-            .ArrayLit => {
-                if (vk != .Array and vk != .Slice and vk != .DynArray) return .shape_mismatch;
-                const elem_ty: types.TypeId = switch (vk) {
-                    .Array => self.type_info.store.Array.get(self.type_info.store.index.rows.items[value_ty.toRaw()]).elem,
-                    .Slice => self.type_info.store.Slice.get(self.type_info.store.index.rows.items[value_ty.toRaw()]).elem,
-                    .DynArray => self.type_info.store.DynArray.get(self.type_info.store.index.rows.items[value_ty.toRaw()]).elem,
-                    else => unreachable,
-                };
-                const al = self.ast_unit.exprs.get(.ArrayLit, expr);
-                const elems = self.ast_unit.exprs.expr_pool.slice(al.elems);
-                var has_rest = false;
-                var rest_index: usize = 0;
-                var i: usize = 0;
-                while (i < elems.len) : (i += 1) {
-                    const ek = self.ast_unit.exprs.index.kinds.items[elems[i].toRaw()];
-                    if (ek == .Range) {
-                        if (has_rest) return .shape_mismatch; // multiple rest
-                        has_rest = true;
-                        rest_index = i;
-                        // rest binding type check: expect slice<elem_ty> — handled via recursion below
-                        continue;
-                    }
-                    const res = self.checkPatternShapeForAssignExpr(elems[i], elem_ty);
-                    if (res != .ok) return res;
-                }
-                if (vk == .Array) {
-                    const arr = self.type_info.store.Array.get(self.type_info.store.index.rows.items[value_ty.toRaw()]);
-                    if (has_rest) {
-                        if (elems.len - 1 > arr.len) return .shape_mismatch; // minus the rest placeholder
-                    } else {
-                        if (elems.len != arr.len) return .shape_mismatch;
-                    }
-                }
-                // If there is a rest binding, ensure it is a binding/wildcard shape
-                if (has_rest) {
-                    const r = self.ast_unit.exprs.get(.ArrayLit, expr);
-                    const es = self.ast_unit.exprs.expr_pool.slice(r.elems);
-                    const rest_expr = es[rest_index];
-                    const rr = self.ast_unit.exprs.get(.Range, rest_expr);
-                    if (!rr.end.isNone()) {
-                        const binder_kind = self.ast_unit.exprs.index.kinds.items[rr.end.unwrap().toRaw()];
-                        if (binder_kind != .Ident) return .shape_mismatch;
-                    }
-                }
-                return .ok;
-            },
-            else => return .shape_mismatch,
-        }
-    }
-
     // =========================================================
     // Expressions
     // =========================================================
-    fn checkExpr(self: *Checker, id: ast.ExprId) anyerror!?types.TypeId {
-        try self.ensureExprSlot(id);
+    pub fn checkExpr(self: *Checker, id: ast.ExprId) anyerror!?types.TypeId {
         if (self.type_info.expr_types.items[id.toRaw()]) |cached| return cached;
         const k = self.ast_unit.exprs.index.kinds.items[id.toRaw()];
 
@@ -937,7 +625,7 @@ pub const Checker = struct {
             .If => try self.checkIf(id),
             .While => try self.checkWhile(id),
             .For => try self.checkFor(id),
-            .Match => try self.checkMatch(id),
+            .Match => try pattern_matching.checkMatch(self, id),
             .Break => try self.checkBreak(id),
             .Continue => try self.checkContinue(id),
             .Unreachable => try self.checkUnreachable(id),
@@ -959,19 +647,19 @@ pub const Checker = struct {
             .Cast => try self.checkCast(id),
             .Catch => try self.checkCatch(id),
             .Import => try self.checkImport(id),
-            .TypeOf => try self.checkTypeOf(id),
+            .TypeOf => try check_types.checkTypeOf(self, id),
             .NullLit => self.type_info.store.mkOptional(self.type_info.store.tAny()),
 
             .TupleType, .ArrayType, .DynArrayType, .SliceType, .OptionalType, .ErrorSetType, .ErrorType, .StructType, .EnumType, .VariantType, .UnionType, .PointerType, .SimdType, .ComplexType, .TensorType, .TypeType, .AnyType, .NoreturnType => blk: {
-                const ty = try self.typeFromTypeExpr(id);
+                const ty = try check_types.typeFromTypeExpr(self, id);
                 if (ty == null) break :blk null;
                 break :blk self.type_info.store.mkTypeType(ty.?);
             },
             .MapType => blk_mt_expr: {
                 // Try to interpret as a type expression first
                 const row = self.ast_unit.exprs.get(.MapType, id);
-                const key_ty = try self.typeFromTypeExpr(row.key);
-                const val_ty = try self.typeFromTypeExpr(row.value);
+                const key_ty = try check_types.typeFromTypeExpr(self, row.key);
+                const val_ty = try check_types.typeFromTypeExpr(self, row.value);
                 if (key_ty != null and val_ty != null) {
                     break :blk_mt_expr self.type_info.store.mkTypeType(self.type_info.store.mkMap(key_ty.?, val_ty.?));
                 }
@@ -1028,7 +716,7 @@ pub const Checker = struct {
                         // Fallback: check rhs now
                         break :blk (try self.checkExpr(drow.value)) orelse return null;
                     };
-                    const bt = self.bindingTypeInPattern(drow.pattern.unwrap(), row.name, rhs_ty);
+                    const bt = pattern_matching.bindingTypeInPattern(self, drow.pattern.unwrap(), row.name, rhs_ty);
                     if (bt) |btid| return btid;
                 }
                 if (self.type_info.decl_types.items[did.toRaw()]) |dt| return dt;
@@ -1038,10 +726,10 @@ pub const Checker = struct {
                 const pid = srow.origin_param.unwrap();
                 const p = self.ast_unit.exprs.Param.get(pid.toRaw());
                 if (!p.ty.isNone()) {
-                    const pt = (try self.typeFromTypeExpr(p.ty.unwrap())) orelse return null;
+                    const pt = (try check_types.typeFromTypeExpr(self, p.ty.unwrap())) orelse return null;
                     if (!p.pat.isNone()) {
                         // If this param had a pattern, compute binding type from pattern and param type
-                        if (self.bindingTypeInPattern(p.pat.unwrap(), row.name, pt)) |bt| return bt;
+                        if (pattern_matching.bindingTypeInPattern(self, p.pat.unwrap(), row.name, pt)) |bt| return bt;
                     }
                     return pt;
                 } else {
@@ -1051,91 +739,11 @@ pub const Checker = struct {
             }
             // Loop-pattern-originated symbol? Infer from current loop pattern context if available
             if (self.current_loop_subject_ty != null and !self.current_loop_pat.isNone()) {
-                const bt = self.bindingTypeInPattern(self.current_loop_pat.unwrap(), row.name, self.current_loop_subject_ty.?);
+                const bt = pattern_matching.bindingTypeInPattern(self, self.current_loop_pat.unwrap(), row.name, self.current_loop_subject_ty.?);
                 if (bt) |btid| return btid;
             }
         }
         return null;
-    }
-
-    fn bindingTypeInPattern(self: *Checker, pid: ast.PatternId, name: ast.StrId, value_ty: types.TypeId) ?types.TypeId {
-        const pk = self.type_info.store.index.kinds.items[value_ty.toRaw()];
-        const k = self.ast_unit.pats.index.kinds.items[pid.toRaw()];
-        switch (k) {
-            .Binding => {
-                const b = self.ast_unit.pats.get(.Binding, pid);
-                if (b.name.toRaw() == name.toRaw()) return value_ty;
-                return null;
-            },
-            .Wildcard => return null,
-            .Tuple => {
-                if (pk != .Tuple) return null;
-                const tp = self.type_info.store.Tuple.get(self.type_info.store.index.rows.items[value_ty.toRaw()]);
-                const elems_ty = self.type_info.store.type_pool.slice(tp.elems);
-                const pp = self.ast_unit.pats.get(.Tuple, pid);
-                const elems = self.ast_unit.pats.pat_pool.slice(pp.elems);
-                if (elems.len != elems_ty.len) return null;
-                var i: usize = 0;
-                while (i < elems.len) : (i += 1) {
-                    if (self.bindingTypeInPattern(elems[i], name, elems_ty[i])) |bt| return bt;
-                }
-                return null;
-            },
-            .Struct => {
-                if (pk != .Struct) return null;
-                const st = self.type_info.store.Struct.get(self.type_info.store.index.rows.items[value_ty.toRaw()]);
-                const fields_ty = self.type_info.store.field_pool.slice(st.fields);
-                const sp = self.ast_unit.pats.get(.Struct, pid);
-                const fields = self.ast_unit.pats.field_pool.slice(sp.fields);
-                for (fields) |fid| {
-                    const pf = self.ast_unit.pats.StructField.get(fid.toRaw());
-                    var i: usize = 0;
-                    while (i < fields_ty.len) : (i += 1) {
-                        const tf = self.type_info.store.Field.get(fields_ty[i].toRaw());
-                        if (tf.name.toRaw() == pf.name.toRaw()) {
-                            if (self.bindingTypeInPattern(pf.pattern, name, tf.ty)) |bt| return bt;
-                            break;
-                        }
-                    }
-                }
-                return null;
-            },
-            .Slice => {
-                if (pk != .Array and pk != .Slice and pk != .DynArray) return null;
-                // For now, map all element-pattern bindings to the element type
-                const elem_ty: types.TypeId = switch (pk) {
-                    .Array => self.type_info.store.Array.get(self.type_info.store.index.rows.items[value_ty.toRaw()]).elem,
-                    .Slice => self.type_info.store.Slice.get(self.type_info.store.index.rows.items[value_ty.toRaw()]).elem,
-                    .DynArray => self.type_info.store.DynArray.get(self.type_info.store.index.rows.items[value_ty.toRaw()]).elem,
-                    else => return null,
-                };
-                const sl = self.ast_unit.pats.get(.Slice, pid);
-                const elems = self.ast_unit.pats.pat_pool.slice(sl.elems);
-                for (elems) |eid| if (self.bindingTypeInPattern(eid, name, elem_ty)) |bt| return bt;
-                if (sl.has_rest and !sl.rest_binding.isNone()) {
-                    // Rest binding receives a slice of element type
-                    const rest_ty = self.type_info.store.mkSlice(elem_ty);
-                    if (self.bindingTypeInPattern(sl.rest_binding.unwrap(), name, rest_ty)) |bt| return bt;
-                }
-                return null;
-            },
-            .Path, .Literal => return null,
-            else => return null,
-        }
-    }
-
-    fn checkDeref(self: *Checker, id: ast.ExprId) !?types.TypeId {
-        const row = self.ast_unit.exprs.get(.Deref, id);
-        const ptr_ty_opt = try self.checkExpr(row.expr);
-        if (ptr_ty_opt == null) return null;
-        const ptr_ty = ptr_ty_opt.?;
-        const kind = self.type_info.store.index.kinds.items[ptr_ty.toRaw()];
-        if (kind != .Ptr) {
-            try self.diags.addError(self.ast_unit.exprs.locs.get(row.loc), .deref_non_pointer, .{});
-            return null;
-        }
-        const ptr_row = self.type_info.store.Ptr.get(self.type_info.store.index.rows.items[ptr_ty.toRaw()]);
-        return ptr_row.elem;
     }
 
     fn checkBlock(self: *Checker, id: ast.ExprId) !?types.TypeId {
@@ -1146,7 +754,7 @@ pub const Checker = struct {
         defer self.symtab.pop();
 
         if (stmts.len == 0) return self.type_info.store.tVoid();
-                    const value_required = self.isValueReq();
+        const value_required = self.isValueReq();
         var after_break: bool = false;
         if (!value_required) {
             // Statement context: just type-check children, no value produced
@@ -1251,67 +859,7 @@ pub const Checker = struct {
     fn exprLoc(self: *Checker, eid: ast.ExprId) Loc {
         const k = self.ast_unit.exprs.index.kinds.items[eid.toRaw()];
         return switch (k) {
-            .Literal => self.ast_unit.exprs.locs.get(self.ast_unit.exprs.get(.Literal, eid).loc),
-            .Ident => self.ast_unit.exprs.locs.get(self.ast_unit.exprs.get(.Ident, eid).loc),
-            .Binary => self.ast_unit.exprs.locs.get(self.ast_unit.exprs.get(.Binary, eid).loc),
-            .Unary => self.ast_unit.exprs.locs.get(self.ast_unit.exprs.get(.Unary, eid).loc),
-            .FunctionLit => self.ast_unit.exprs.locs.get(self.ast_unit.exprs.get(.FunctionLit, eid).loc),
-            .Deref => self.ast_unit.exprs.locs.get(self.ast_unit.exprs.get(.Deref, eid).loc),
-            .ArrayLit => self.ast_unit.exprs.locs.get(self.ast_unit.exprs.get(.ArrayLit, eid).loc),
-            .TupleLit => self.ast_unit.exprs.locs.get(self.ast_unit.exprs.get(.TupleLit, eid).loc),
-            .MapLit => self.ast_unit.exprs.locs.get(self.ast_unit.exprs.get(.MapLit, eid).loc),
-            .IndexAccess => self.ast_unit.exprs.locs.get(self.ast_unit.exprs.get(.IndexAccess, eid).loc),
-            .FieldAccess => self.ast_unit.exprs.locs.get(self.ast_unit.exprs.get(.FieldAccess, eid).loc),
-            .StructLit => self.ast_unit.exprs.locs.get(self.ast_unit.exprs.get(.StructLit, eid).loc),
-            .VariantLit => self.ast_unit.exprs.locs.get(self.ast_unit.exprs.get(.VariantLit, eid).loc),
-            .EnumLit => self.ast_unit.exprs.locs.get(self.ast_unit.exprs.get(.EnumLit, eid).loc),
-            .Range => self.ast_unit.exprs.locs.get(self.ast_unit.exprs.get(.Range, eid).loc),
-            .Call => self.ast_unit.exprs.locs.get(self.ast_unit.exprs.get(.Call, eid).loc),
-            .ComptimeBlock => self.ast_unit.exprs.locs.get(self.ast_unit.exprs.get(.ComptimeBlock, eid).loc),
-            .Block => self.ast_unit.exprs.locs.get(self.ast_unit.exprs.get(.Block, eid).loc),
-            .CodeBlock => self.ast_unit.exprs.locs.get(self.ast_unit.exprs.get(.CodeBlock, eid).loc),
-            .AsyncBlock => self.ast_unit.exprs.locs.get(self.ast_unit.exprs.get(.AsyncBlock, eid).loc),
-            .MlirBlock => self.ast_unit.exprs.locs.get(self.ast_unit.exprs.get(.MlirBlock, eid).loc),
-            .Insert => self.ast_unit.exprs.locs.get(self.ast_unit.exprs.get(.Insert, eid).loc),
-            .Return => self.ast_unit.exprs.locs.get(self.ast_unit.exprs.get(.Return, eid).loc),
-            .If => self.ast_unit.exprs.locs.get(self.ast_unit.exprs.get(.If, eid).loc),
-            .While => self.ast_unit.exprs.locs.get(self.ast_unit.exprs.get(.While, eid).loc),
-            .For => self.ast_unit.exprs.locs.get(self.ast_unit.exprs.get(.For, eid).loc),
-            .Match => self.ast_unit.exprs.locs.get(self.ast_unit.exprs.get(.Match, eid).loc),
-            .Break => self.ast_unit.exprs.locs.get(self.ast_unit.exprs.get(.Break, eid).loc),
-            .Continue => self.ast_unit.exprs.locs.get(self.ast_unit.exprs.get(.Continue, eid).loc),
-            .Unreachable => self.ast_unit.exprs.locs.get(self.ast_unit.exprs.get(.Unreachable, eid).loc),
-            .NullLit => self.ast_unit.exprs.locs.get(self.ast_unit.exprs.get(.NullLit, eid).loc),
-            .UndefLit => self.ast_unit.exprs.locs.get(self.ast_unit.exprs.get(.UndefLit, eid).loc),
-            .Defer => self.ast_unit.exprs.locs.get(self.ast_unit.exprs.get(.Defer, eid).loc),
-            .ErrDefer => self.ast_unit.exprs.locs.get(self.ast_unit.exprs.get(.ErrDefer, eid).loc),
-            .ErrUnwrap => self.ast_unit.exprs.locs.get(self.ast_unit.exprs.get(.ErrUnwrap, eid).loc),
-            .OptionalUnwrap => self.ast_unit.exprs.locs.get(self.ast_unit.exprs.get(.OptionalUnwrap, eid).loc),
-            .Await => self.ast_unit.exprs.locs.get(self.ast_unit.exprs.get(.Await, eid).loc),
-            .Closure => self.ast_unit.exprs.locs.get(self.ast_unit.exprs.get(.Closure, eid).loc),
-            .Cast => self.ast_unit.exprs.locs.get(self.ast_unit.exprs.get(.Cast, eid).loc),
-            .Catch => self.ast_unit.exprs.locs.get(self.ast_unit.exprs.get(.Catch, eid).loc),
-            .Import => self.ast_unit.exprs.locs.get(self.ast_unit.exprs.get(.Import, eid).loc),
-            .TypeOf => self.ast_unit.exprs.locs.get(self.ast_unit.exprs.get(.TypeOf, eid).loc),
-            .TupleType => self.ast_unit.exprs.locs.get(self.ast_unit.exprs.get(.TupleType, eid).loc),
-            .ArrayType => self.ast_unit.exprs.locs.get(self.ast_unit.exprs.get(.ArrayType, eid).loc),
-            .DynArrayType => self.ast_unit.exprs.locs.get(self.ast_unit.exprs.get(.DynArrayType, eid).loc),
-            .MapType => self.ast_unit.exprs.locs.get(self.ast_unit.exprs.get(.MapType, eid).loc),
-            .SliceType => self.ast_unit.exprs.locs.get(self.ast_unit.exprs.get(.SliceType, eid).loc),
-            .OptionalType => self.ast_unit.exprs.locs.get(self.ast_unit.exprs.get(.OptionalType, eid).loc),
-            .ErrorSetType => self.ast_unit.exprs.locs.get(self.ast_unit.exprs.get(.ErrorSetType, eid).loc),
-            .StructType => self.ast_unit.exprs.locs.get(self.ast_unit.exprs.get(.StructType, eid).loc),
-            .EnumType => self.ast_unit.exprs.locs.get(self.ast_unit.exprs.get(.EnumType, eid).loc),
-            .VariantType => self.ast_unit.exprs.locs.get(self.ast_unit.exprs.get(.VariantType, eid).loc),
-            .ErrorType => self.ast_unit.exprs.locs.get(self.ast_unit.exprs.get(.ErrorType, eid).loc),
-            .UnionType => self.ast_unit.exprs.locs.get(self.ast_unit.exprs.get(.UnionType, eid).loc),
-            .PointerType => self.ast_unit.exprs.locs.get(self.ast_unit.exprs.get(.PointerType, eid).loc),
-            .SimdType => self.ast_unit.exprs.locs.get(self.ast_unit.exprs.get(.SimdType, eid).loc),
-            .ComplexType => self.ast_unit.exprs.locs.get(self.ast_unit.exprs.get(.ComplexType, eid).loc),
-            .TensorType => self.ast_unit.exprs.locs.get(self.ast_unit.exprs.get(.TensorType, eid).loc),
-            .TypeType => self.ast_unit.exprs.locs.get(self.ast_unit.exprs.get(.TypeType, eid).loc),
-            .AnyType => self.ast_unit.exprs.locs.get(self.ast_unit.exprs.get(.AnyType, eid).loc),
-            .NoreturnType => self.ast_unit.exprs.locs.get(self.ast_unit.exprs.get(.NoreturnType, eid).loc),
+            inline else => |x| self.ast_unit.exprs.locs.get(self.ast_unit.exprs.get(x, eid).loc),
         };
     }
 
@@ -1342,10 +890,10 @@ pub const Checker = struct {
                         try self.diags.addError(self.ast_unit.exprs.locs.get(bin.loc), .invalid_binary_op_operands, .{});
                         return null;
                     }
-                    if (self.isIntegerKind(lhs_kind) and self.isIntegerKind(rhs_kind))
+                    if (check_types.isIntegerKind(self, lhs_kind) and check_types.isIntegerKind(self, rhs_kind))
                         try self.checkIntZeroLiteral(bin.right, self.ast_unit.exprs.locs.get(bin.loc));
                 }
-                if (!self.isNumericKind(lhs_kind) or !self.isNumericKind(rhs_kind)) {
+                if (!check_types.isNumericKind(self, lhs_kind) or !check_types.isNumericKind(self, rhs_kind)) {
                     try self.diags.addError(self.ast_unit.exprs.locs.get(bin.loc), .invalid_binary_op_operands, .{});
                     return null;
                 }
@@ -1354,7 +902,7 @@ pub const Checker = struct {
                 return null;
             },
             .eq, .neq, .lt, .lte, .gt, .gte => {
-                const both_numeric = self.isNumericKind(lhs_kind) and self.isNumericKind(rhs_kind);
+                const both_numeric = check_types.isNumericKind(self, lhs_kind) and check_types.isNumericKind(self, rhs_kind);
                 const both_bool = lhs_kind == .Bool and rhs_kind == .Bool;
                 if (l.toRaw() != r.toRaw() or !(both_numeric or both_bool)) {
                     try self.diags.addError(self.ast_unit.exprs.locs.get(bin.loc), .invalid_binary_op_operands, .{});
@@ -1370,7 +918,7 @@ pub const Checker = struct {
                 return null;
             },
             .@"orelse" => {
-                if (self.isOptional(l)) |elem| {
+                if (check_types.isOptional(self, l)) |elem| {
                     if (self.assignable(elem, r) == .success) {
                         return elem;
                     } else return {
@@ -1393,7 +941,7 @@ pub const Checker = struct {
         const type_kind = self.type_info.store.index.kinds.items[t.toRaw()];
         switch (unary_expr.op) {
             .plus, .minus => {
-                if (!self.isNumericKind(type_kind)) {
+                if (!check_types.isNumericKind(self, type_kind)) {
                     try self.diags.addError(self.ast_unit.exprs.locs.get(unary_expr.loc), .invalid_unary_op_operand, .{});
                     return null;
                 }
@@ -1414,7 +962,7 @@ pub const Checker = struct {
     fn checkFunctionLit(self: *Checker, id: ast.ExprId) !?types.TypeId {
         const fnr = self.ast_unit.exprs.get(.FunctionLit, id);
         const res = if (!fnr.result_ty.isNone())
-            (try self.typeFromTypeExpr(fnr.result_ty.unwrap()))
+            (try check_types.typeFromTypeExpr(self, fnr.result_ty.unwrap()))
         else
             self.type_info.store.tVoid();
         const params = self.ast_unit.exprs.param_pool.slice(fnr.params);
@@ -1427,10 +975,10 @@ pub const Checker = struct {
         while (i < params.len) : (i += 1) {
             const p = self.ast_unit.exprs.Param.get(params[i].toRaw());
             if (!p.ty.isNone()) {
-                const pt = (try self.typeFromTypeExpr(p.ty.unwrap())) orelse return null;
+                const pt = (try check_types.typeFromTypeExpr(self, p.ty.unwrap())) orelse return null;
                 // If parameter uses a pattern, ensure its shape matches the annotated type
                 if (!p.pat.isNone()) {
-                    const shape_ok = self.checkPatternShapeForDecl(p.pat.unwrap(), pt);
+                    const shape_ok = pattern_matching.checkPatternShapeForDecl(self, p.pat.unwrap(), pt);
                     switch (shape_ok) {
                         .ok => {},
                         .tuple_arity_mismatch => {
@@ -1567,7 +1115,7 @@ pub const Checker = struct {
             .String => {
                 const it = self.checkExpr(index_expr.index) catch return null;
                 if (it) |iid| {
-                    if (!self.isIntegerKind(self.type_info.store.index.kinds.items[iid.toRaw()])) {
+                    if (!check_types.isIntegerKind(self, self.type_info.store.index.kinds.items[iid.toRaw()])) {
                         _ = self.diags.addError(self.ast_unit.exprs.locs.get(index_expr.loc), .non_integer_index, .{}) catch {};
                         return null;
                     }
@@ -1601,7 +1149,7 @@ pub const Checker = struct {
         }
         const it = self.checkExpr(idx_expr) catch return null;
         if (it) |iid| {
-            if (!self.isIntegerKind(self.type_info.store.index.kinds.items[iid.toRaw()])) {
+            if (!check_types.isIntegerKind(self, self.type_info.store.index.kinds.items[iid.toRaw()])) {
                 _ = self.diags.addError(loc, .non_integer_index, .{}) catch {};
                 return null;
             }
@@ -1785,57 +1333,9 @@ pub const Checker = struct {
         const me = res.resolve(self.import_base_dir, path) catch return null;
         const target = self.ast_unit.exprs.strs.get(member);
         if (me.syms.get(target)) |ty| {
-            return self.translateType(&me.type_info.store, &self.type_info.store, ty);
+            return check_types.translateType(self, &me.type_info.store, &self.type_info.store, ty);
         }
         return null;
-    }
-
-    fn translateType(self: *Checker, src: *types.TypeStore, dst: *types.TypeStore, ty: types.TypeId) types.TypeId {
-        const k = src.getKind(ty);
-        return switch (k) {
-            .Void => dst.tVoid(),
-            .Bool => dst.tBool(),
-            .I8 => dst.tI8(), .I16 => dst.tI16(), .I32 => dst.tI32(), .I64 => dst.tI64(),
-            .U8 => dst.tU8(), .U16 => dst.tU16(), .U32 => dst.tU32(), .U64 => dst.tU64(),
-            .F32 => dst.tF32(), .F64 => dst.tF64(),
-            .Usize => dst.tUsize(),
-            .String => dst.tString(),
-            .Any => dst.tAny(),
-            .Noreturn => dst.tNoReturn(),
-            .Struct => blk: {
-                const sr = src.get(.Struct, ty);
-                const sfields = src.field_pool.slice(sr.fields);
-                var buf = dst.gpa.alloc(types.TypeStore.StructFieldArg, sfields.len) catch @panic("OOM");
-                defer dst.gpa.free(buf);
-                var i: usize = 0;
-                while (i < sfields.len) : (i += 1) {
-                    const f = src.Field.get(sfields[i].toRaw());
-                    buf[i] = .{ .name = f.name, .ty = self.translateType(src, dst, f.ty) };
-                }
-                break :blk dst.mkStruct(buf);
-            },
-            .Ptr => blk: {
-                const pr = src.get(.Ptr, ty);
-                const et = self.translateType(src, dst, pr.elem);
-                break :blk dst.mkPtr(et, pr.is_const);
-            },
-            .Optional => blk: {
-                const opt_row = src.get(.Optional, ty);
-                const et = self.translateType(src, dst, opt_row.elem);
-                break :blk dst.mkOptional(et);
-            },
-            .Function => blk: {
-                const fr = src.get(.Function, ty);
-                const params_src = src.type_pool.slice(fr.params);
-                var buf = dst.gpa.alloc(types.TypeId, params_src.len) catch @panic("OOM");
-                defer dst.gpa.free(buf);
-                var i: usize = 0;
-                while (i < params_src.len) : (i += 1) buf[i] = self.translateType(src, dst, params_src[i]);
-                const res_t = self.translateType(src, dst, fr.result);
-                break :blk dst.mkFunction(buf, res_t, fr.is_variadic, fr.is_pure);
-            },
-            else => dst.tAny(),
-        };
     }
 
     fn importMemberType(self: *Checker, import_eid: ast.ExprId, member: ast.StrId) ?types.TypeId {
@@ -1882,14 +1382,14 @@ pub const Checker = struct {
         const rr = self.ast_unit.exprs.get(.Range, id);
         if (!rr.start.isNone()) {
             const st = try self.checkExpr(rr.start.unwrap());
-            if (st == null or !self.isIntegerKind(self.type_info.store.index.kinds.items[st.?.toRaw()])) {
+            if (st == null or !check_types.isIntegerKind(self, self.type_info.store.index.kinds.items[st.?.toRaw()])) {
                 try self.diags.addError(self.ast_unit.exprs.locs.get(rr.loc), .non_integer_index, .{});
                 return null;
             }
         }
         if (!rr.end.isNone()) {
             const et = try self.checkExpr(rr.end.unwrap());
-            if (et == null or !self.isIntegerKind(self.type_info.store.index.kinds.items[et.?.toRaw()])) {
+            if (et == null or !check_types.isIntegerKind(self, self.type_info.store.index.kinds.items[et.?.toRaw()])) {
                 try self.diags.addError(self.ast_unit.exprs.locs.get(rr.loc), .non_integer_index, .{});
                 return null;
             }
@@ -1917,7 +1417,7 @@ pub const Checker = struct {
             return struct_ty;
         }
         const lit_ty = struct_lit.ty.unwrap();
-        const expect_ty = try self.typeFromTypeExpr(lit_ty) orelse
+        const expect_ty = try check_types.typeFromTypeExpr(self, lit_ty) orelse
             return null;
         const is_assignable = self.assignable(struct_ty, expect_ty);
         switch (is_assignable) {
@@ -1944,6 +1444,20 @@ pub const Checker = struct {
             },
         }
         return expect_ty;
+    }
+
+    fn checkDeref(self: *Checker, id: ast.ExprId) !?types.TypeId {
+        const row = self.ast_unit.exprs.get(.Deref, id);
+        const ptr_ty_opt = try self.checkExpr(row.expr);
+        if (ptr_ty_opt == null) return null;
+        const ptr_ty = ptr_ty_opt.?;
+        const kind = self.type_info.store.index.kinds.items[ptr_ty.toRaw()];
+        if (kind != .Ptr) {
+            try self.diags.addError(self.ast_unit.exprs.locs.get(row.loc), .deref_non_pointer, .{});
+            return null;
+        }
+        const ptr_row = self.type_info.store.Ptr.get(self.type_info.store.index.rows.items[ptr_ty.toRaw()]);
+        return ptr_row.elem;
     }
 
     fn checkCall(self: *Checker, id: ast.ExprId) !?types.TypeId {
@@ -1998,7 +1512,7 @@ pub const Checker = struct {
         if (self.ast_unit.exprs.index.kinds.items[call_expr.callee.toRaw()] == .FieldAccess) {
             const fr = self.ast_unit.exprs.get(.FieldAccess, call_expr.callee);
             // Resolve the parent in type-space
-            const parent_ty = try self.typeFromTypeExpr(fr.parent) orelse null;
+            const parent_ty = try check_types.typeFromTypeExpr(self, fr.parent) orelse null;
             if (parent_ty) |pty| {
                 const pk = self.type_info.store.index.kinds.items[pty.toRaw()];
                 if (pk == .Variant) {
@@ -2131,7 +1645,7 @@ pub const Checker = struct {
         if (self.ast_unit.exprs.index.kinds.items[call_expr.callee.toRaw()] == .FieldAccess) {
             const fr = self.ast_unit.exprs.get(.FieldAccess, call_expr.callee);
             // Resolve the parent in type-space
-            const parent_ty = try self.typeFromTypeExpr(fr.parent) orelse null;
+            const parent_ty = try check_types.typeFromTypeExpr(self, fr.parent) orelse null;
             if (parent_ty) |pty| {
                 const pk = self.type_info.store.index.kinds.items[pty.toRaw()];
                 if (pk == .Variant) {
@@ -2475,7 +1989,7 @@ pub const Checker = struct {
         else if (!wr.cond.isNone() and !wr.pattern.isNone()) {
             const expr_ty = try self.checkExpr(wr.cond.unwrap());
             if (expr_ty == null) return null;
-            if (!try self.checkPattern(wr.pattern.unwrap(), expr_ty.?, true)) {
+            if (!try pattern_matching.checkPattern(self, wr.pattern.unwrap(), expr_ty.?, true)) {
                 return null;
             }
             // Set loop pattern context for identifier type inference within body
@@ -2500,384 +2014,6 @@ pub const Checker = struct {
         return body_ty;
     }
 
-    fn checkMatch(self: *Checker, id: ast.ExprId) !?types.TypeId {
-        const mr = self.ast_unit.exprs.get(.Match, id);
-        const subj_ty_opt = try self.checkExpr(mr.expr);
-        if (subj_ty_opt == null) return null;
-        const subj_ty = subj_ty_opt.?;
-        const subj_kind = self.type_info.store.index.kinds.items[subj_ty.toRaw()];
-        const value_required = self.isValueReq();
-        var result_ty: ?types.TypeId = null;
-
-        // Exhaustiveness tracking (simple domains)
-        var covered_true: bool = false;
-        var covered_false: bool = false;
-        var has_unguarded_wildcard: bool = false;
-        var has_guarded_wildcard: bool = false;
-        var bool_domain: bool = true; // all unguarded arms recognizable as bool-tag patterns
-        var enum_domain: bool = true; // all unguarded arms recognizable as enum-tag patterns
-        var unguarded_count: usize = 0;
-        var enum_total: usize = 0;
-        var enum_covered = std.AutoArrayHashMapUnmanaged(u32, void){};
-        defer enum_covered.deinit(self.gpa);
-        if (subj_kind == .Enum) {
-            const er = self.type_info.store.Enum.get(self.type_info.store.index.rows.items[subj_ty.toRaw()]);
-            enum_total = self.type_info.store.enum_member_pool.slice(er.members).len;
-        }
-
-        // Minimal immediate detection for integer overlap/unreachable (unguarded only)
-        const is_int_subj = self.isIntegerKind(subj_kind);
-        var int_seen_wildcard = false;
-        var int_lit_set = std.AutoArrayHashMapUnmanaged(i64, void){};
-        defer int_lit_set.deinit(self.gpa);
-        var int_ranges = std.ArrayListUnmanaged(struct { a: i64, b: i64 }){};
-        defer int_ranges.deinit(self.gpa);
-
-        const arms = self.ast_unit.exprs.arm_pool.slice(mr.arms);
-        var i: usize = 0;
-        while (i < arms.len) : (i += 1) {
-            const arm = self.ast_unit.exprs.MatchArm.get(arms[i].toRaw());
-
-            // Validate pattern against subject type using existing pattern checker.
-            const ok = try self.checkPattern(arm.pattern, subj_ty, false);
-            if (!ok) {
-                if (arms.len == 1) {
-                    const pk = self.ast_unit.pats.index.kinds.items[arm.pattern.toRaw()];
-                    const loc = self.ast_unit.exprs.locs.get(arm.loc);
-                    if (pk == .Struct or pk == .VariantStruct) {
-                        try self.diags.addError(loc, .struct_pattern_field_mismatch, .{});
-                    } else {
-                        try self.diags.addError(loc, .pattern_shape_mismatch, .{});
-                    }
-                    return null;
-                } else continue;
-            }
-
-            // Guard must be boolean if present.
-            if (!arm.guard.isNone()) {
-                const gty = try self.checkExpr(arm.guard.unwrap());
-                if (gty == null) return null;
-                if (gty.?.toRaw() != self.type_info.store.tBool().toRaw()) {
-                    try self.diags.addError(self.ast_unit.exprs.locs.get(arm.loc), .non_boolean_condition, .{});
-                    return null;
-                }
-                // Track guarded wildcard for exhaustiveness info
-                if (self.patternCoversWildcard(arm.pattern)) has_guarded_wildcard = true;
-            } else {
-                // Immediate overlap/unreachable detection for integer subjects, unguarded arms only
-                if (is_int_subj) {
-                    const loc = self.ast_unit.exprs.locs.get(arm.loc);
-                    if (self.patternCoversWildcard(arm.pattern)) {
-                        int_seen_wildcard = true;
-                    } else {
-                        if (int_seen_wildcard) {
-                            try self.diags.addError(loc, .unreachable_match_arm, .{});
-                            return null;
-                        }
-                        if (self.patternIntLiteral(arm.pattern)) |lit| {
-                            if (int_lit_set.contains(lit)) {
-                                try self.diags.addError(loc, .overlapping_match_arm, .{});
-                                return null;
-                            }
-                            var ri: usize = 0;
-                            while (ri < int_ranges.items.len) : (ri += 1) {
-                                const r = int_ranges.items[ri];
-                                if (lit >= r.a and lit <= r.b) {
-                                    try self.diags.addError(loc, .overlapping_match_arm, .{});
-                                    return null;
-                                }
-                            }
-                            _ = try int_lit_set.put(self.gpa, lit, {});
-                        } else if (try self.patternIntRange(arm.pattern)) |rr| {
-                            var rj: usize = 0;
-                            while (rj < int_ranges.items.len) : (rj += 1) {
-                                const r = int_ranges.items[rj];
-                                if (!(rr.b < r.a or rr.a > r.b)) {
-                                    try self.diags.addError(loc, .overlapping_match_arm, .{});
-                                    return null;
-                                }
-                            }
-                            var it = int_lit_set.iterator();
-                            while (it.next()) |entry| {
-                                const v = entry.key_ptr.*;
-                                if (v >= rr.a and v <= rr.b) {
-                                    try self.diags.addError(loc, .overlapping_match_arm, .{});
-                                    return null;
-                                }
-                            }
-                            try int_ranges.append(self.gpa, .{ .a = rr.a, .b = rr.b });
-                        }
-                    }
-                }
-                // Track unguarded arms for exhaustiveness analysis
-                unguarded_count += 1;
-                switch (subj_kind) {
-                    .Bool => {
-                        if (self.patternCoversWildcard(arm.pattern)) {
-                            has_unguarded_wildcard = true;
-                        } else {
-                            const t = self.patternCoversBoolValue(arm.pattern, true);
-                            const f = self.patternCoversBoolValue(arm.pattern, false);
-                            covered_true = covered_true or t;
-                            covered_false = covered_false or f;
-                            if (!(t or f)) bool_domain = false;
-                        }
-                    },
-                    .Enum => {
-                        if (self.patternCoversWildcard(arm.pattern)) {
-                            has_unguarded_wildcard = true;
-                        } else {
-                            self.recordEnumTagsCovered(arm.pattern, subj_ty, &enum_covered) catch {};
-                            if (!self.isEnumTagPattern(arm.pattern, subj_ty)) enum_domain = false;
-                        }
-                    },
-                    else => {
-                        if (self.patternCoversWildcard(arm.pattern)) has_unguarded_wildcard = true;
-                    },
-                }
-            }
-
-            // Check body and unify result when match is used as a value.
-            const body_ty = try self.checkExpr(arm.body);
-            if (!value_required) continue;
-            if (body_ty == null) return null;
-            if (result_ty == null) {
-                result_ty = body_ty;
-            } else if (result_ty.?.toRaw() != body_ty.?.toRaw()) {
-                // Reuse if-branch mismatch diagnostic for now.
-                try self.diags.addError(self.ast_unit.exprs.locs.get(mr.loc), .if_branch_type_mismatch, .{});
-                return null;
-            }
-        }
-
-        // Exhaustiveness post-pass (limited domains)
-        var non_exhaustive = false;
-        switch (subj_kind) {
-            .Bool => {
-                if (bool_domain and !has_unguarded_wildcard and !(covered_true and covered_false)) non_exhaustive = true;
-            },
-            .Enum => {
-                if (enum_domain and !has_unguarded_wildcard and enum_total != 0 and enum_covered.count() < enum_total) non_exhaustive = true;
-            },
-            else => {
-                // No domain coverage; but a purely guarded wildcard does not make it exhaustive
-                if (unguarded_count == 0 and has_guarded_wildcard) non_exhaustive = true;
-            },
-        }
-        if (non_exhaustive) {
-            try self.diags.addError(self.ast_unit.exprs.locs.get(mr.loc), .non_exhaustive_match, .{});
-            return null;
-        }
-
-        if (!value_required) return self.type_info.store.tVoid();
-        return result_ty;
-    }
-
-    // OLD_MATCH_IMPL (commented out intentionally during rewrite):
-    // const mr = self.ast_unit.exprs.get(.Match, id);
-    // const mt = try self.checkExpr(mr.expr);
-    // if (mt == null) return null;
-    // var result_ty: ?types.TypeId = null;
-    // const arms = self.ast_unit.exprs.arm_pool.slice(mr.arms);
-    // var i: usize = 0;
-    // const subj_kind = self.type_info.store.index.kinds.items[mt.?.toRaw()];
-    // var covered_true: bool = false;
-    // var covered_false: bool = false;
-    // var has_unguarded_wildcard: bool = false;
-    // var has_guarded_wildcard: bool = false;
-    // var bool_domain: bool = true;
-    // var enum_domain: bool = true;
-    // var unguarded_count: usize = 0;
-    // var enum_total: usize = 0;
-    // var enum_covered = std.AutoArrayHashMapUnmanaged(u32, void){};
-    // defer enum_covered.deinit(self.gpa);
-    // if (subj_kind == .Enum) {
-    //     const er = self.type_info.store.Enum.get(self.type_info.store.index.rows.items[mt.?.toRaw()]);
-    //     enum_total = self.type_info.store.enum_member_pool.slice(er.members).len;
-    // }
-    // var arm_patterns = std.ArrayListUnmanaged(struct { guard: bool, loc: Loc, pid: ast.PatternId }){};
-    // defer arm_patterns.deinit(self.gpa);
-    // // Immediate overlap/unreachable tracking for integer subjects ... (omitted)
-
-    fn patternIntLiteral(self: *Checker, pid: ast.PatternId) ?i64 {
-        const k = self.ast_unit.pats.index.kinds.items[pid.toRaw()];
-        if (k != .Literal) return null;
-        const lp = self.ast_unit.pats.get(.Literal, pid);
-        if (self.ast_unit.exprs.index.kinds.items[lp.expr.toRaw()] != .Literal) return null;
-        const lit = self.ast_unit.exprs.get(.Literal, lp.expr);
-        if (lit.kind != .int or lit.value.isNone()) return null;
-        const s = self.ast_unit.exprs.strs.get(lit.value.unwrap());
-        return std.fmt.parseInt(i64, s, 10) catch null;
-    }
-
-    fn patternIntRange(self: *Checker, pid: ast.PatternId) !?struct { a: i64, b: i64 } {
-        const k = self.ast_unit.pats.index.kinds.items[pid.toRaw()];
-        if (k != .Range) return null;
-        const rp = self.ast_unit.pats.get(.Range, pid);
-        if (rp.start.isNone() or rp.end.isNone()) return null;
-        const sid = rp.start.unwrap();
-        const eid = rp.end.unwrap();
-        if (self.ast_unit.exprs.index.kinds.items[sid.toRaw()] != .Literal) return null;
-        if (self.ast_unit.exprs.index.kinds.items[eid.toRaw()] != .Literal) return null;
-        const sl = self.ast_unit.exprs.get(.Literal, sid);
-        const el = self.ast_unit.exprs.get(.Literal, eid);
-        if (sl.kind != .int or sl.value.isNone()) return null;
-        if (el.kind != .int or el.value.isNone()) return null;
-        const ss = self.ast_unit.exprs.strs.get(sl.value.unwrap());
-        const es = self.ast_unit.exprs.strs.get(el.value.unwrap());
-        const a: i64 = std.fmt.parseInt(i64, ss, 10) catch return null;
-        const b_raw: i64 = std.fmt.parseInt(i64, es, 10) catch return null;
-        const b: i64 = if (rp.inclusive_right) b_raw else b_raw - 1;
-        return .{ .a = a, .b = b };
-    }
-
-    fn patternCoversWildcard(self: *Checker, pid: ast.PatternId) bool {
-        const k = self.ast_unit.pats.index.kinds.items[pid.toRaw()];
-        return switch (k) {
-            .Wildcard => true,
-            .Or => blk: {
-                const op = self.ast_unit.pats.get(.Or, pid);
-                const alts = self.ast_unit.pats.pat_pool.slice(op.alts);
-                for (alts) |aid| if (self.patternCoversWildcard(aid)) break :blk true;
-                break :blk false;
-            },
-            .At => self.patternCoversWildcard(self.ast_unit.pats.get(.At, pid).pattern),
-            else => false,
-        };
-    }
-
-    fn patternCoversBoolValue(self: *Checker, pid: ast.PatternId, val: bool) bool {
-        const k = self.ast_unit.pats.index.kinds.items[pid.toRaw()];
-        return switch (k) {
-            .Binding => blk_b: {
-                const b = self.ast_unit.pats.get(.Binding, pid);
-                const s = self.ast_unit.exprs.strs.get(b.name);
-                if (std.mem.eql(u8, s, "true")) break :blk_b val == true;
-                if (std.mem.eql(u8, s, "false")) break :blk_b val == false;
-                break :blk_b false;
-            },
-            .Path => blk_p: {
-                const pp = self.ast_unit.pats.get(.Path, pid);
-                const segs = self.ast_unit.pats.seg_pool.slice(pp.segments);
-                if (segs.len == 0) break :blk_p false;
-                const last = self.ast_unit.pats.PathSeg.get(segs[segs.len - 1].toRaw());
-                const s = self.ast_unit.exprs.strs.get(last.name);
-                if (std.mem.eql(u8, s, "true")) break :blk_p val == true;
-                if (std.mem.eql(u8, s, "false")) break :blk_p val == false;
-                break :blk_p false;
-            },
-            .Literal => blk: {
-                const lp = self.ast_unit.pats.get(.Literal, pid);
-                const kind = self.ast_unit.exprs.index.kinds.items[lp.expr.toRaw()];
-                if (kind != .Literal) break :blk false;
-                const lit = self.ast_unit.exprs.get(.Literal, lp.expr);
-                if (lit.kind != .bool) break :blk false;
-                break :blk (lit.bool_value == val);
-            },
-            .Or => blk2: {
-                const op = self.ast_unit.pats.get(.Or, pid);
-                const alts = self.ast_unit.pats.pat_pool.slice(op.alts);
-                for (alts) |aid| if (self.patternCoversBoolValue(aid, val)) break :blk2 true;
-                break :blk2 false;
-            },
-            .At => self.patternCoversBoolValue(self.ast_unit.pats.get(.At, pid).pattern, val),
-            else => false,
-        };
-    }
-
-    fn recordEnumTagsCovered(self: *Checker, pid: ast.PatternId, enum_ty: types.TypeId, out: *std.AutoArrayHashMapUnmanaged(u32, void)) !void {
-        const k = self.ast_unit.pats.index.kinds.items[pid.toRaw()];
-        switch (k) {
-            .Path => {
-                const pp = self.ast_unit.pats.get(.Path, pid);
-                const segs = self.ast_unit.pats.seg_pool.slice(pp.segments);
-                if (segs.len == 0) return;
-                const last = self.ast_unit.pats.PathSeg.get(segs[segs.len - 1].toRaw());
-                const er = self.type_info.store.Enum.get(self.type_info.store.index.rows.items[enum_ty.toRaw()]);
-                const members = self.type_info.store.enum_member_pool.slice(er.members);
-                for (members) |mid| {
-                    const m = self.type_info.store.EnumMember.get(mid.toRaw());
-                    if (m.name.toRaw() == last.name.toRaw()) {
-                        _ = try out.put(self.gpa, m.name.toRaw(), {});
-                        break;
-                    }
-                }
-            },
-            .Or => {
-                const op = self.ast_unit.pats.get(.Or, pid);
-                const alts = self.ast_unit.pats.pat_pool.slice(op.alts);
-                for (alts) |aid| try self.recordEnumTagsCovered(aid, enum_ty, out);
-            },
-            .At => try self.recordEnumTagsCovered(self.ast_unit.pats.get(.At, pid).pattern, enum_ty, out),
-            else => {},
-        }
-    }
-
-    fn isBoolPattern(self: *Checker, pid: ast.PatternId) bool {
-        const k = self.ast_unit.pats.index.kinds.items[pid.toRaw()];
-        return switch (k) {
-            .Wildcard => true,
-            .Literal => self.patternCoversBoolValue(pid, true) or self.patternCoversBoolValue(pid, false),
-            .Or => blk: {
-                const op = self.ast_unit.pats.get(.Or, pid);
-                const alts = self.ast_unit.pats.pat_pool.slice(op.alts);
-                for (alts) |aid| if (!self.isBoolPattern(aid)) break :blk false;
-                break :blk true;
-            },
-            .At => self.isBoolPattern(self.ast_unit.pats.get(.At, pid).pattern),
-            else => false,
-        };
-    }
-
-    fn isEnumTagPattern(self: *Checker, pid: ast.PatternId, enum_ty: types.TypeId) bool {
-        const k = self.ast_unit.pats.index.kinds.items[pid.toRaw()];
-        return switch (k) {
-            .Wildcard => true,
-            .Path => blk: {
-                const pp = self.ast_unit.pats.get(.Path, pid);
-                const segs = self.ast_unit.pats.seg_pool.slice(pp.segments);
-                if (segs.len == 0) break :blk false;
-                const last = self.ast_unit.pats.PathSeg.get(segs[segs.len - 1].toRaw());
-                const er = self.type_info.store.Enum.get(self.type_info.store.index.rows.items[enum_ty.toRaw()]);
-                const members = self.type_info.store.enum_member_pool.slice(er.members);
-                for (members) |mid| {
-                    const m = self.type_info.store.EnumMember.get(mid.toRaw());
-                    if (m.name.toRaw() == last.name.toRaw()) break :blk true;
-                }
-                break :blk false;
-            },
-            .Or => blk2: {
-                const op = self.ast_unit.pats.get(.Or, pid);
-                const alts = self.ast_unit.pats.pat_pool.slice(op.alts);
-                for (alts) |aid| if (!self.isEnumTagPattern(aid, enum_ty)) break :blk2 false;
-                break :blk2 true;
-            },
-            .At => self.isEnumTagPattern(self.ast_unit.pats.get(.At, pid).pattern, enum_ty),
-            else => false,
-        };
-    }
-
-    fn structPatternFieldsMatch(self: *Checker, pid: ast.PatternId, value_ty: types.TypeId) bool {
-        if (self.type_info.store.index.kinds.items[value_ty.toRaw()] != .Struct) return false;
-        const sp = self.ast_unit.pats.get(.Struct, pid);
-        const value_struct_ty = self.type_info.store.Struct.get(self.type_info.store.index.rows.items[value_ty.toRaw()]);
-        const pattern_fields = self.ast_unit.pats.field_pool.slice(sp.fields);
-        const value_fields = self.type_info.store.field_pool.slice(value_struct_ty.fields);
-        for (pattern_fields) |pat_field_id| {
-            const pat_field = self.ast_unit.pats.StructField.get(pat_field_id.toRaw());
-            var found = false;
-            for (value_fields) |val_field_id| {
-                const val_field = self.type_info.store.Field.get(val_field_id.toRaw());
-                if (pat_field.name.toRaw() == val_field.name.toRaw()) {
-                    found = true;
-                    break;
-                }
-            }
-            if (!found) return false;
-        }
-        return true;
-    }
-
     fn checkUnreachable(self: *Checker, id: ast.ExprId) !?types.TypeId {
         _ = id;
         return self.type_info.store.tAny();
@@ -2900,7 +2036,7 @@ pub const Checker = struct {
                     else
                         self.type_info.store.DynArray.get(self.type_info.store.index.rows.items[it.?.toRaw()]).elem,
                 };
-                if (!try self.checkPattern(fr.pattern, subject_ty, true)) {
+                if (!try pattern_matching.checkPattern(self, fr.pattern, subject_ty, true)) {
                     return null;
                 }
                 // Set loop pattern context for identifier type inference within body
@@ -2926,477 +2062,6 @@ pub const Checker = struct {
             if (lc) |ctx| return ctx.result_ty;
         }
         return body_ty;
-    }
-
-    fn checkPattern(self: *Checker, pid: ast.PatternId, value_ty: types.TypeId, top_level: bool) !bool {
-        const emit = top_level;
-        const k = self.ast_unit.pats.index.kinds.items[pid.toRaw()];
-
-        switch (k) {
-            .Or => {
-                const op = self.ast_unit.pats.get(.Or, pid);
-                const alts = self.ast_unit.pats.pat_pool.slice(op.alts);
-                for (alts) |aid| {
-                    if (try self.checkPattern(aid, value_ty, false)) return true;
-                }
-                return false;
-            },
-            .At => {
-                const ap = self.ast_unit.pats.get(.At, pid);
-                // Bind the name to the value (capture)
-                _ = try self.symtab.declare(.{
-                    .name = ap.binder,
-                    .kind = .Var,
-                    .loc = ap.loc,
-                    .origin_decl = ast.OptDeclId.none(),
-                    .origin_param = ast.OptParamId.none(),
-                });
-                return try self.checkPattern(ap.pattern, value_ty, false);
-            },
-            .Range => {
-                // For now: allow only integer-typed subjects; assume range matches
-                const knd = self.type_info.store.index.kinds.items[value_ty.toRaw()];
-                const is_int = switch (knd) {
-                    .I8, .I16, .I32, .I64, .U8, .U16, .U32, .U64, .Usize => true,
-                    else => false,
-                };
-                return is_int;
-            },
-            .VariantTuple => {
-                const vt_pat = self.ast_unit.pats.get(.VariantTuple, pid);
-                const value_kind = self.type_info.store.index.kinds.items[value_ty.toRaw()];
-                if (value_kind != .Variant and value_kind != .Error) return false;
-                const cases = if (value_kind == .Variant)
-                    self.type_info.store.field_pool.slice(self.type_info.store.Variant.get(self.type_info.store.index.rows.items[value_ty.toRaw()]).variants)
-                else
-                    self.type_info.store.field_pool.slice(self.type_info.store.Error.get(self.type_info.store.index.rows.items[value_ty.toRaw()]).variants);
-                const segs = self.ast_unit.pats.seg_pool.slice(vt_pat.path);
-                if (segs.len == 0) return false;
-                const last = self.ast_unit.pats.PathSeg.get(segs[segs.len - 1].toRaw());
-                var payload_ty: ?types.TypeId = null;
-                for (cases) |fid| {
-                    const f = self.type_info.store.Field.get(fid.toRaw());
-                    if (f.name.toRaw() == last.name.toRaw()) {
-                        payload_ty = f.ty;
-                        break;
-                    }
-                }
-                if (payload_ty == null) return false;
-                const pk = self.type_info.store.index.kinds.items[payload_ty.?.toRaw()];
-                const elems = self.ast_unit.pats.pat_pool.slice(vt_pat.elems);
-                if (pk == .Void) {
-                    // No payload expected
-                    return elems.len == 0;
-                }
-                if (pk != .Tuple) return false;
-                const tup = self.type_info.store.Tuple.get(self.type_info.store.index.rows.items[payload_ty.?.toRaw()]);
-                const tys = self.type_info.store.type_pool.slice(tup.elems);
-                if (elems.len != tys.len) return false;
-                for (elems, 0..) |eid, i| {
-                    if (!(try self.checkPattern(eid, tys[i], false))) return false;
-                }
-                return true;
-            },
-            .Path => {
-                // Handle enum tags and variant/error tag-only patterns (no payload)
-                const pp = self.ast_unit.pats.get(.Path, pid);
-                const segs = self.ast_unit.pats.seg_pool.slice(pp.segments);
-                if (segs.len == 0) return false;
-                const last = self.ast_unit.pats.PathSeg.get(segs[segs.len - 1].toRaw());
-                const vk = self.type_info.store.index.kinds.items[value_ty.toRaw()];
-                switch (vk) {
-                    .Enum => {
-                        const er = self.type_info.store.Enum.get(self.type_info.store.index.rows.items[value_ty.toRaw()]);
-                        const members = self.type_info.store.enum_member_pool.slice(er.members);
-                        for (members) |mid| {
-                            const m = self.type_info.store.EnumMember.get(mid.toRaw());
-                            if (m.name.toRaw() == last.name.toRaw()) return true;
-                        }
-                        return false;
-                    },
-                    .Variant, .Error => {
-                        const cases = if (vk == .Variant)
-                            self.type_info.store.field_pool.slice(self.type_info.store.Variant.get(self.type_info.store.index.rows.items[value_ty.toRaw()]).variants)
-                        else
-                            self.type_info.store.field_pool.slice(self.type_info.store.Error.get(self.type_info.store.index.rows.items[value_ty.toRaw()]).variants);
-                        for (cases) |fid| {
-                            const f = self.type_info.store.Field.get(fid.toRaw());
-                            if (f.name.toRaw() == last.name.toRaw()) {
-                                const ft_k = self.type_info.store.index.kinds.items[f.ty.toRaw()];
-                                return ft_k == .Void; // tag-only allowed only when payload is void
-                            }
-                        }
-                        return false;
-                    },
-                    else => return false,
-                }
-            },
-            .VariantStruct => {
-                const vs_pat = self.ast_unit.pats.get(.VariantStruct, pid);
-                const value_kind = self.type_info.store.index.kinds.items[value_ty.toRaw()];
-                if (value_kind != .Variant and value_kind != .Error) {
-                    // If the subject is a struct, treat VariantStruct pattern like a Struct pattern (path as type name)
-                    if (value_kind == .Struct) {
-                        const st = self.type_info.store.Struct.get(self.type_info.store.index.rows.items[value_ty.toRaw()]);
-                        const value_fields = self.type_info.store.field_pool.slice(st.fields);
-                        const pat_fields = self.ast_unit.pats.field_pool.slice(vs_pat.fields);
-                        for (pat_fields) |pfid| {
-                            const pf = self.ast_unit.pats.StructField.get(pfid.toRaw());
-                            var found: bool = false;
-                            for (value_fields) |vfid| {
-                                const vf = self.type_info.store.Field.get(vfid.toRaw());
-                                if (vf.name.toRaw() == pf.name.toRaw()) {
-                                    found = true;
-                                    break;
-                                }
-                            }
-                            if (!found) return false;
-                        }
-                        return true;
-                    }
-                    return false;
-                }
-                const cases = if (value_kind == .Variant)
-                    self.type_info.store.field_pool.slice(self.type_info.store.Variant.get(self.type_info.store.index.rows.items[value_ty.toRaw()]).variants)
-                else
-                    self.type_info.store.field_pool.slice(self.type_info.store.Error.get(self.type_info.store.index.rows.items[value_ty.toRaw()]).variants);
-                const segs = self.ast_unit.pats.seg_pool.slice(vs_pat.path);
-                if (segs.len == 0) return false;
-                const last = self.ast_unit.pats.PathSeg.get(segs[segs.len - 1].toRaw());
-                var payload_ty: ?types.TypeId = null;
-                for (cases) |fid| {
-                    const f = self.type_info.store.Field.get(fid.toRaw());
-                    if (f.name.toRaw() == last.name.toRaw()) {
-                        payload_ty = f.ty;
-                        break;
-                    }
-                }
-                if (payload_ty == null) return false;
-                const pk = self.type_info.store.index.kinds.items[payload_ty.?.toRaw()];
-                if (pk == .Void) return vs_pat.fields.len == 0;
-                if (pk != .Struct) return false;
-                const st = self.type_info.store.Struct.get(self.type_info.store.index.rows.items[payload_ty.?.toRaw()]);
-                const value_fields = self.type_info.store.field_pool.slice(st.fields);
-                const pat_fields = self.ast_unit.pats.field_pool.slice(vs_pat.fields);
-                for (pat_fields) |pfid| {
-                    const pf = self.ast_unit.pats.StructField.get(pfid.toRaw());
-                    var found: ?types.TypeId = null;
-                    for (value_fields) |vfid| {
-                        const vf = self.type_info.store.Field.get(vfid.toRaw());
-                        if (vf.name.toRaw() == pf.name.toRaw()) {
-                            found = vf.ty;
-                            break;
-                        }
-                    }
-                    if (found == null) return false;
-                    if (!(try self.checkPattern(pf.pattern, found.?, false))) return false;
-                }
-                return true;
-            },
-            .Binding => {
-                const bp = self.ast_unit.pats.get(.Binding, pid);
-                // Declare the bound name in the symbol table
-                _ = try self.symtab.declare(.{
-                    .name = bp.name,
-                    .kind = .Var, // Or appropriate kind
-                    .loc = bp.loc,
-                    .origin_decl = ast.OptDeclId.none(),
-                    .origin_param = ast.OptParamId.none(),
-                });
-                // If there's a sub-pattern, check it recursively
-                // if (!bp.pattern.isNone()) {
-                //     return self.checkPattern(bp.pattern.unwrap(), value_ty, top_level);
-                // }
-                return true;
-            },
-            .Wildcard => return true,
-            .Literal => {
-                const lp = self.ast_unit.pats.get(.Literal, pid);
-                const pattern_loc = self.ast_unit.exprs.locs.get(lp.loc);
-                const lit_expr_id = lp.expr;
-                const lit_ty = (try self.checkExpr(lit_expr_id)) orelse return false;
-                if (self.assignable(value_ty, lit_ty) != .success) {
-                    try self.diags.addError(pattern_loc, .pattern_type_mismatch, .{});
-                    return false;
-                }
-                // TODO: For literal patterns, if not top_level, we might need to check the actual value for equality.
-                // This would involve evaluating the literal expression and comparing it with the value being matched.
-                // For now, only type compatibility is checked.
-                return true;
-            },
-            .Tuple => {
-                const tp = self.ast_unit.pats.get(.Tuple, pid);
-                const pattern_loc = self.ast_unit.exprs.locs.get(tp.loc);
-                const value_kind = self.type_info.store.index.kinds.items[value_ty.toRaw()];
-                if (value_kind != .Tuple) {
-                    if (emit) try self.diags.addError(pattern_loc, .pattern_shape_mismatch, .{});
-                    return false;
-                }
-                const value_tuple_ty = self.type_info.store.Tuple.get(self.type_info.store.index.rows.items[value_ty.toRaw()]);
-                const pattern_elems = self.ast_unit.pats.pat_pool.slice(tp.elems);
-                const value_elems = self.type_info.store.type_pool.slice(value_tuple_ty.elems);
-
-                if (pattern_elems.len != value_elems.len) {
-                    if (emit) try self.diags.addError(pattern_loc, .tuple_arity_mismatch, .{});
-                    return false;
-                }
-
-                for (pattern_elems, 0..) |pat_elem_id, i| {
-                    if (!(try self.checkPattern(pat_elem_id, value_elems[i], false))) {
-                        return false;
-                    }
-                }
-                return true;
-            },
-            .Slice => {
-                const ap = self.ast_unit.pats.get(.Slice, pid);
-                const pattern_loc = self.ast_unit.exprs.locs.get(ap.loc);
-                const value_kind = self.type_info.store.index.kinds.items[value_ty.toRaw()];
-                if (value_kind != .Array and value_kind != .Slice and value_kind != .DynArray) {
-                    if (emit) try self.diags.addError(pattern_loc, .pattern_type_mismatch, .{});
-                    return false;
-                }
-                const elem_ty: types.TypeId = switch (value_kind) {
-                    .Array => self.type_info.store.Array.get(self.type_info.store.index.rows.items[value_ty.toRaw()]).elem,
-                    .Slice => self.type_info.store.Slice.get(self.type_info.store.index.rows.items[value_ty.toRaw()]).elem,
-                    .DynArray => self.type_info.store.DynArray.get(self.type_info.store.index.rows.items[value_ty.toRaw()]).elem,
-                    else => unreachable,
-                };
-                const pattern_elems = self.ast_unit.pats.pat_pool.slice(ap.elems);
-                if (value_kind == .Array) {
-                    const arr = self.type_info.store.Array.get(self.type_info.store.index.rows.items[value_ty.toRaw()]);
-                    if (ap.has_rest) {
-                        if (pattern_elems.len > arr.len) return false;
-                    } else {
-                        if (pattern_elems.len != arr.len) return false;
-                    }
-                }
-                for (pattern_elems, 0..) |pat_elem_id, i| {
-                    if (ap.has_rest and i == ap.rest_index) {
-                        // Rest placeholder: optionally a binding, which is validated below
-                        continue;
-                    }
-                    if (!(try self.checkPattern(pat_elem_id, elem_ty, false))) return false;
-                }
-                if (ap.has_rest and !ap.rest_binding.isNone()) {
-                    if (!(try self.checkPattern(ap.rest_binding.unwrap(), self.type_info.store.mkSlice(elem_ty), false))) return false;
-                }
-                return true;
-            },
-            // (duplicate Path handler removed)
-            .Struct => {
-                const sp = self.ast_unit.pats.get(.Struct, pid);
-                const pattern_loc = self.ast_unit.exprs.locs.get(sp.loc);
-                const value_kind = self.type_info.store.index.kinds.items[value_ty.toRaw()];
-                if (value_kind != .Struct) {
-                    if (emit) try self.diags.addError(pattern_loc, .pattern_type_mismatch, .{});
-                    return false;
-                }
-                const value_struct_ty = self.type_info.store.Struct.get(self.type_info.store.index.rows.items[value_ty.toRaw()]);
-                const pattern_fields = self.ast_unit.pats.field_pool.slice(sp.fields);
-                const value_fields = self.type_info.store.field_pool.slice(value_struct_ty.fields);
-
-                // For each pattern field, find a matching field in the value type and check recursively
-                for (pattern_fields) |pat_field_id| {
-                    const pat_field = self.ast_unit.pats.StructField.get(pat_field_id.toRaw());
-                    var found_match = false;
-                    for (value_fields) |val_field_id| {
-                        const val_field = self.type_info.store.Field.get(val_field_id.toRaw());
-                        if (pat_field.name.toRaw() == val_field.name.toRaw()) {
-                            found_match = true;
-                            if (!(try self.checkPattern(pat_field.pattern, val_field.ty, false))) {
-                                return false;
-                            }
-                            break;
-                        }
-                    }
-                    if (!found_match) {
-                        if (emit) try self.diags.addError(pattern_loc, .struct_pattern_field_mismatch, .{});
-                        return false;
-                    }
-                }
-                return true;
-            },
-            // .Enum => {
-            //     const ep = self.ast_unit.pats.get(.Enum, pid);
-            //     const pattern_loc = self.ast_unit.exprs.locs.get(ep.loc);
-            //     const value_kind = self.type_info.store.index.kinds.items[value_ty.toRaw()];
-            //     if (value_kind != .Enum) {
-            //         try self.diags.addError(pattern_loc, .pattern_type_mismatch, .{});
-            //         return false;
-            //     }
-            //     const value_enum_ty = self.type_info.store.Enum.get(self.type_info.store.index.rows.items[value_ty.toRaw()]);
-            //     const pattern_tag_name = self.ast_unit.exprs.strs.get(ep.tag);
-            //
-            //     var found_tag = false;
-            //     for (self.type_info.store.enum_member_pool.slice(value_enum_ty.members)) |member_id| {
-            //         const member = self.type_info.store.EnumMember.get(member_id.toRaw());
-            //         if (std.mem.eql(u8, pattern_tag_name, member.name)) {
-            //             found_tag = true;
-            //             break;
-            //         }
-            //     }
-            //     if (!found_tag) {
-            //         try self.diags.addError(pattern_loc, .unknown_enum_tag, .{});
-            //         return false;
-            //     }
-            //     // Enum patterns don't have sub-patterns for their values, just the tag.
-            //     return true;
-            // },
-            // .Variant => {
-            //     const vp = self.ast_unit.pats.get(.Variant, pid);
-            //     const pattern_loc = self.ast_unit.exprs.locs.get(vp.loc);
-            //     const value_kind = self.type_info.store.index.kinds.items[value_ty.toRaw()];
-            //     if (value_kind != .Variant) {
-            //         try self.diags.addError(pattern_loc, .pattern_type_mismatch, .{});
-            //         return false;
-            //     }
-            //     const value_variant_ty = self.type_info.store.Variant.get(self.type_info.store.index.rows.items[value_ty.toRaw()]);
-            //     const pattern_tag_name = self.ast_unit.exprs.strs.get(vp.tag);
-            //
-            //     var found_tag_and_matched_payload = false;
-            //     for (self.type_info.store.field_pool.slice(value_variant_ty.variants)) |variant_field_id| {
-            //         const variant_field = self.type_info.store.Field.get(variant_field_id.toRaw());
-            //         if (std.mem.eql(u8, pattern_tag_name, self.ast_unit.exprs.strs.get(variant_field.name))) {
-            //             // Found the matching variant tag
-            //             if (!vp.pattern.isNone()) {
-            //                 // If there's a payload pattern, check it against the variant's payload type
-            //                 if (try self.checkPattern(vp.pattern.unwrap(), variant_field.ty, false)) {
-            //                     found_tag_and_matched_payload = true;
-            //                 }
-            //             } else {
-            //                 // No payload pattern, just tag match is enough
-            //                 found_tag_and_matched_payload = true;
-            //             }
-            //             break;
-            //         }
-            //     }
-            //     if (!found_tag_and_matched_payload) {
-            //         try self.diags.addError(pattern_loc, .unknown_variant_tag, .{});
-            //         return false;
-            //     }
-            //     return true;
-            // },
-            // .Path => {
-            //     const pp = self.ast_unit.pats.get(.Path, pid);
-            //     const pattern_loc = self.ast_unit.exprs.locs.get(pp.loc);
-            //     const segments = self.ast_unit.pats.seg_pool.slice(pp.segments);
-            //     if (segments.len == 0) {
-            //         try self.diags.addError(pattern_loc, .empty_path_pattern, .{});
-            //         return false;
-            //     }
-            //
-            //     // Resolve the path to a type or a specific enum/variant member
-            //     // This is a simplified approach; a full implementation would involve symbol resolution
-            //     // across modules/scopes. For now, assume it refers to an enum or variant member.
-            //
-            //     // Get the type of the first segment (e.g., `Enum` in `Enum.Member`)
-            //     const first_seg_name = self.ast_unit.pats.PathSeg.get(segments[0].toRaw()).name;
-            //     const first_seg_str = self.ast_unit.exprs.strs.get(first_seg_name);
-            //
-            //     // Try to resolve the first segment as a type
-            //     // This is a very basic lookup, a real compiler would have a more robust type resolution system
-            //     var current_ty: ?types.TypeId = blk: {
-            //         if (std.mem.eql(u8, first_seg_str, "bool")) break :blk self.type_info.store.tBool();
-            //         if (std.mem.eql(u8, first_seg_str, "i8")) break :blk self.type_info.store.tI8();
-            //         if (std.mem.eql(u8, first_seg_str, "i16")) break :blk self.type_info.store.tI16();
-            //         if (std.mem.eql(u8, first_seg_str, "i32")) break :blk self.type_info.store.tI32();
-            //         if (std.mem.eql(u8, first_seg_str, "i64")) break :blk self.type_info.store.tI64();
-            //         if (std.mem.eql(u8, first_seg_str, "u8")) break :blk self.type_info.store.tU8();
-            //         if (std.mem.eql(u8, first_seg_str, "u16")) break :blk self.type_info.store.tU16();
-            //         if (std.mem.eql(u8, first_seg_str, "u32")) break :blk self.type_info.store.tU32();
-            //         if (std.mem.eql(u8, first_seg_str, "u64")) break :blk self.type_info.store.tU64();
-            //         if (std.mem.eql(u8, first_seg_str, "f32")) break :blk self.type_info.store.tF32();
-            //         if (std.mem.eql(u8, first_seg_str, "f64")) break :blk self.type_info.store.tF64();
-            //         if (std.mem.eql(u8, first_seg_str, "usize")) break :blk self.type_info.store.tUsize();
-            //         if (std.mem.eql(u8, first_seg_str, "char")) break :blk self.type_info.store.tU32();
-            //         if (std.mem.eql(u8, first_seg_str, "string")) break :blk self.type_info.store.tString();
-            //         if (std.mem.eql(u8, first_seg_str, "void")) break :blk self.type_info.store.tVoid();
-            //         if (std.mem.eql(u8, first_seg_str, "any")) break :blk self.type_info.store.tAny();
-            //
-            //         if (self.lookup(first_seg_name)) |sid| {
-            //             const sym = self.symtab.syms.get(sid.toRaw());
-            //             if (!sym.origin_decl.isNone()) {
-            //                 if (self.type_info.decl_types.items[sym.origin_decl.unwrap().toRaw()]) |ty| {
-            //                     if (self.type_info.store.index.kinds.items[ty.toRaw()] == .TypeType) {
-            //                         const tt = self.type_info.store.TypeType.get(self.type_info.store.index.rows.items[ty.toRaw()]);
-            //                         break :blk tt.of;
-            //                     } else {
-            //                         break :blk ty;
-            //                     }
-            //                 }
-            //             }
-            //         }
-            //         break :blk null;
-            //     };
-            //
-            //     if (current_ty == null) {
-            //         try self.diags.addError(pattern_loc, .unknown_type_in_path, .{});
-            //         return false;
-            //     }
-            //
-            //     // Traverse the rest of the path
-            //     var i: usize = 1;
-            //     while (i < segments.len) : (i += 1) {
-            //         const seg = self.ast_unit.pats.PathSeg.get(segments[i].toRaw());
-            //         const current_kind = self.type_info.store.index.kinds.items[current_ty.?.toRaw()];
-            //
-            //         if (current_kind == .Enum) {
-            //             const enum_ty = self.type_info.store.Enum.get(self.type_info.store.index.rows.items[current_ty.?.toRaw()]);
-            //             var found_member = false;
-            //             for (self.type_info.store.enum_member_pool.slice(enum_ty.members)) |member_id| {
-            //                 const member = self.type_info.store.EnumMember.get(member_id.toRaw());
-            //                 if (seg.name.toRaw() == member.name.toRaw()) {
-            //                     // The path refers to an enum member. The type of the path pattern is the enum itself.
-            //                     // So, we check if the value_ty is assignable to the enum type.
-            //                     if (self.assignable(value_ty, current_ty.?) != .success) {
-            //                         try self.diags.addError(pattern_loc, .pattern_type_mismatch, .{});
-            //                         return false;
-            //                     }
-            //                     found_member = true;
-            //                     break;
-            //                 }
-            //             }
-            //             if (!found_member) {
-            //                 try self.diags.addError(pattern_loc, .unknown_enum_tag, .{});
-            //                 return false;
-            //             }
-            //             return true; // Path fully resolved to an enum member
-            //         } else if (current_kind == .Variant) {
-            //             const variant_ty = self.type_info.store.Variant.get(self.type_info.store.index.rows.items[current_ty.?.toRaw()]);
-            //             var found_case = false;
-            //             for (self.type_info.store.field_pool.slice(variant_ty.variants)) |variant_field_id| {
-            //                 const variant_field = self.type_info.store.Field.get(variant_field_id.toRaw());
-            //                 if (seg.name.toRaw() == variant_field.name.toRaw()) {
-            //                     // The path refers to a variant case. The type of the path pattern is the variant itself.
-            //                     // So, we check if the value_ty is assignable to the variant type.
-            //                     if (self.assignable(value_ty, current_ty.?) != .success) {
-            //                         try self.diags.addError(pattern_loc, .pattern_type_mismatch, .{});
-            //                         return false;
-            //                     }
-            //                     found_case = true;
-            //                     break;
-            //                 }
-            //             }
-            //             if (!found_case) {
-            //                 try self.diags.addError(pattern_loc, .unknown_variant_tag, .{});
-            //                 return false;
-            //             }
-            //             return true; // Path fully resolved to a variant case
-            //         } else {
-            //             try self.diags.addError(pattern_loc, .field_access_on_non_aggregate, .{});
-            //             return false;
-            //         }
-            //     }
-            //     // If we reached here, it means the path was just a single identifier that resolved to a type.
-            //     // In this case, the pattern matches if the value_ty is assignable to the resolved type.
-            //     if (self.assignable(value_ty, current_ty.?) != .success) {
-            //         try self.diags.addError(pattern_loc, .pattern_type_mismatch, .{});
-            //         return false;
-            //     }
-            //     return true;
-            // },
-        }
     }
 
     fn castable(self: *Checker, got: types.TypeId, expect: types.TypeId) bool {
@@ -3533,7 +2198,7 @@ pub const Checker = struct {
                 try self.diags.addError(self.ast_unit.exprs.locs.get(p.loc), .type_annotation_mismatch, .{});
                 return null;
             }
-            const pt = try self.typeFromTypeExpr(p.ty.unwrap());
+            const pt = try check_types.typeFromTypeExpr(self, p.ty.unwrap());
             if (pt == null) return null;
             param_tys[i] = pt.?;
         }
@@ -3551,7 +2216,7 @@ pub const Checker = struct {
 
     fn checkCast(self: *Checker, id: ast.ExprId) !?types.TypeId {
         const cr = self.ast_unit.exprs.get(.Cast, id);
-        const et = try self.typeFromTypeExpr(cr.ty) orelse {
+        const et = try check_types.typeFromTypeExpr(self, cr.ty) orelse {
             try self.diags.addError(self.ast_unit.exprs.locs.get(cr.loc), .cast_target_not_type, .{});
             return null;
         };
@@ -3569,8 +2234,8 @@ pub const Checker = struct {
                 }
             },
             .bitcast => {
-                const gsize = self.typeSize(vt.?);
-                const tsize = self.typeSize(et);
+                const gsize = check_types.typeSize(self, vt.?);
+                const tsize = check_types.typeSize(self, et);
                 if (gsize == null or tsize == null) {
                     try self.diags.addError(self.ast_unit.exprs.locs.get(cr.loc), .invalid_bitcast, .{});
                     return null;
@@ -3582,7 +2247,7 @@ pub const Checker = struct {
             },
             .saturate, .wrap => {
                 // Saturating and wrapping casts are for numeric types only.
-                if (!self.isNumericKind(vk) or !self.isNumericKind(ek)) {
+                if (!check_types.isNumericKind(self, vk) or !check_types.isNumericKind(self, ek)) {
                     try self.diags.addError(self.ast_unit.exprs.locs.get(cr.loc), .numeric_cast_on_non_numeric, .{});
                     return null;
                 }
@@ -3641,472 +2306,6 @@ pub const Checker = struct {
         }
         // Successful import expression is a module value; keep it as 'any' for now.
         return self.type_info.store.tAny();
-    }
-
-    fn checkTypeOf(self: *Checker, id: ast.ExprId) !?types.TypeId {
-        const tr = self.ast_unit.exprs.get(.TypeOf, id);
-        // typeof should accept value expressions; get their type directly.
-        if (try self.checkExpr(tr.expr)) |et| {
-            return self.type_info.store.mkTypeType(et);
-        }
-        // As a fallback, allow typeof on a type expression (yielding that type).
-        if (try self.typeFromTypeExpr(tr.expr)) |tt| {
-            return self.type_info.store.mkTypeType(tt);
-        }
-        try self.diags.addError(self.ast_unit.exprs.locs.get(tr.loc), .could_not_resolve_type, .{});
-        return null;
-    }
-
-    // =========================================================
-    // Type expressions
-    // =========================================================
-    fn typeFromTypeExpr(self: *Checker, id: ast.ExprId) anyerror!?types.TypeId {
-        const k = self.ast_unit.exprs.index.kinds.items[id.toRaw()];
-        return switch (k) {
-            .Ident => blk_ident: {
-                const name = self.ast_unit.exprs.get(.Ident, id).name;
-                const s = self.ast_unit.exprs.strs.get(name);
-                if (std.mem.eql(u8, s, "bool")) break :blk_ident self.type_info.store.tBool();
-                if (std.mem.eql(u8, s, "i8")) break :blk_ident self.type_info.store.tI8();
-                if (std.mem.eql(u8, s, "i16")) break :blk_ident self.type_info.store.tI16();
-                if (std.mem.eql(u8, s, "i32")) break :blk_ident self.type_info.store.tI32();
-                if (std.mem.eql(u8, s, "i64")) break :blk_ident self.type_info.store.tI64();
-                if (std.mem.eql(u8, s, "u8")) break :blk_ident self.type_info.store.tU8();
-                if (std.mem.eql(u8, s, "u16")) break :blk_ident self.type_info.store.tU16();
-                if (std.mem.eql(u8, s, "u32")) break :blk_ident self.type_info.store.tU32();
-                if (std.mem.eql(u8, s, "u64")) break :blk_ident self.type_info.store.tU64();
-                if (std.mem.eql(u8, s, "f32")) break :blk_ident self.type_info.store.tF32();
-                if (std.mem.eql(u8, s, "f64")) break :blk_ident self.type_info.store.tF64();
-                if (std.mem.eql(u8, s, "usize")) break :blk_ident self.type_info.store.tUsize();
-                if (std.mem.eql(u8, s, "char")) break :blk_ident self.type_info.store.tU32();
-                if (std.mem.eql(u8, s, "string")) break :blk_ident self.type_info.store.tString();
-                if (std.mem.eql(u8, s, "void")) break :blk_ident self.type_info.store.tVoid();
-                if (std.mem.eql(u8, s, "any")) break :blk_ident self.type_info.store.tAny();
-
-                if (self.lookup(name)) |sid| {
-                    const sym = self.symtab.syms.get(sid.toRaw());
-                    if (!sym.origin_decl.isNone()) {
-                        const did = sym.origin_decl.unwrap();
-                        if (self.type_info.decl_types.items[did.toRaw()]) |ty| {
-                            if (self.type_info.store.index.kinds.items[ty.toRaw()] == .TypeType) {
-                                const tt = self.type_info.store.TypeType.get(self.type_info.store.index.rows.items[ty.toRaw()]);
-                                return tt.of;
-                            }
-                            return ty;
-                        }
-                        // Lazy resolve: if the declaration's RHS is a type expression, resolve it now.
-                        const drow = self.ast_unit.exprs.Decl.get(did.toRaw());
-                        const rhs_ty = try self.typeFromTypeExpr(drow.value);
-                        if (rhs_ty) |rt| {
-                            // Record as a type constant for future queries
-                            const tt = self.type_info.store.mkTypeType(rt);
-                            self.type_info.decl_types.items[did.toRaw()] = tt;
-                            return rt;
-                        }
-                    }
-                }
-
-                break :blk_ident null;
-            },
-            .TupleType => blk_tt: {
-                const row = self.ast_unit.exprs.get(.TupleType, id);
-                const ids = self.ast_unit.exprs.expr_pool.slice(row.elems);
-                var buf = try self.type_info.store.gpa.alloc(types.TypeId, ids.len);
-                defer self.type_info.store.gpa.free(buf);
-                var i: usize = 0;
-                while (i < ids.len) : (i += 1) buf[i] = (try self.typeFromTypeExpr(ids[i])) orelse break :blk_tt null;
-                break :blk_tt self.type_info.store.mkTuple(buf);
-            },
-            .TupleLit => blk_ttl: {
-                const row = self.ast_unit.exprs.get(.TupleLit, id);
-                const ids = self.ast_unit.exprs.expr_pool.slice(row.elems);
-                var buf = try self.type_info.store.gpa.alloc(types.TypeId, ids.len);
-                defer self.type_info.store.gpa.free(buf);
-                var i: usize = 0;
-                while (i < ids.len) : (i += 1) buf[i] = (try self.typeFromTypeExpr(ids[i])) orelse break :blk_ttl null;
-                break :blk_ttl self.type_info.store.mkTuple(buf);
-            },
-            .MapType => blk_mt: {
-                const row = self.ast_unit.exprs.get(.MapType, id);
-                const key = (try self.typeFromTypeExpr(row.key)) orelse break :blk_mt null;
-                const val = (try self.typeFromTypeExpr(row.value)) orelse break :blk_mt null;
-                break :blk_mt self.type_info.store.mkMap(key, val);
-            },
-            .ArrayType => blk_at: {
-                const row = self.ast_unit.exprs.get(.ArrayType, id);
-                const elem = (try self.typeFromTypeExpr(row.elem)) orelse break :blk_at null;
-                var len_val: usize = 0;
-                if (self.ast_unit.exprs.index.kinds.items[row.size.toRaw()] == .Literal) {
-                    const lit = self.ast_unit.exprs.get(.Literal, row.size);
-                    if (lit.kind == .int and !lit.value.isNone()) {
-                        len_val = std.fmt.parseInt(usize, self.ast_unit.exprs.strs.get(lit.value.unwrap()), 10) catch 0;
-                    } else {
-                        try self.diags.addError(self.ast_unit.exprs.locs.get(row.loc), .array_size_not_integer_literal, .{});
-                        return null;
-                    }
-                } else return error.InvalidArraySize;
-                break :blk_at self.type_info.store.mkArray(elem, len_val);
-            },
-            .DynArrayType => blk_dt: {
-                const row = self.ast_unit.exprs.get(.DynArrayType, id);
-                const elem = (try self.typeFromTypeExpr(row.elem)) orelse break :blk_dt null;
-                break :blk_dt self.type_info.store.mkDynArray(elem);
-            },
-            .SliceType => blk_st: {
-                const row = self.ast_unit.exprs.get(.SliceType, id);
-                const elem = (try self.typeFromTypeExpr(row.elem)) orelse break :blk_st null;
-                break :blk_st self.type_info.store.mkSlice(elem);
-            },
-            .OptionalType => blk_ot: {
-                const row = self.ast_unit.exprs.get(.OptionalType, id);
-                const elem = (try self.typeFromTypeExpr(row.elem)) orelse break :blk_ot null;
-                break :blk_ot self.type_info.store.mkOptional(elem);
-            },
-            .PointerType => blk_pt: {
-                const row = self.ast_unit.exprs.get(.PointerType, id);
-                const elem = (try self.typeFromTypeExpr(row.elem)) orelse break :blk_pt null;
-                break :blk_pt self.type_info.store.mkPtr(elem, row.is_const);
-            },
-            .SimdType => blk_simd: {
-                const row = self.ast_unit.exprs.get(.SimdType, id);
-                // element type must be numeric (int or float)
-                const elem_ty = (try self.typeFromTypeExpr(row.elem)) orelse break :blk_simd null;
-                const ek = self.type_info.store.index.kinds.items[elem_ty.toRaw()];
-                if (!self.isNumericKind(ek)) {
-                    try self.diags.addError(self.ast_unit.exprs.locs.get(row.loc), .simd_invalid_element_type, .{});
-                    break :blk_simd null;
-                }
-                // lanes must be an integer literal
-                const lk = self.ast_unit.exprs.index.kinds.items[row.lanes.toRaw()];
-                if (lk != .Literal) {
-                    try self.diags.addError(self.ast_unit.exprs.locs.get(row.loc), .simd_lanes_not_integer_literal, .{});
-                    break :blk_simd null;
-                }
-                const lit = self.ast_unit.exprs.get(.Literal, row.lanes);
-                if (lit.kind != .int) {
-                    try self.diags.addError(self.ast_unit.exprs.locs.get(row.loc), .simd_lanes_not_integer_literal, .{});
-                    break :blk_simd null;
-                }
-                // Accept the type (we don't model concrete simd in TypeStore yet)
-                break :blk_simd self.type_info.store.tAny();
-            },
-            .TensorType => blk_tensor: {
-                const row = self.ast_unit.exprs.get(.TensorType, id);
-                // Validate shape dimensions are integer literals
-                const dims = self.ast_unit.exprs.expr_pool.slice(row.shape);
-                var i: usize = 0;
-                while (i < dims.len) : (i += 1) {
-                    const dk = self.ast_unit.exprs.index.kinds.items[dims[i].toRaw()];
-                    if (dk != .Literal) {
-                        try self.diags.addError(self.ast_unit.exprs.locs.get(row.loc), .tensor_dimension_not_integer_literal, .{});
-                        break :blk_tensor null;
-                    }
-                    const dl = self.ast_unit.exprs.get(.Literal, dims[i]);
-                    if (dl.kind != .int) {
-                        try self.diags.addError(self.ast_unit.exprs.locs.get(row.loc), .tensor_dimension_not_integer_literal, .{});
-                        break :blk_tensor null;
-                    }
-                }
-                // Validate element type present and resolvable
-                const ety = try self.typeFromTypeExpr(row.elem);
-                if (ety == null) {
-                    try self.diags.addError(self.ast_unit.exprs.locs.get(row.loc), .tensor_missing_arguments, .{});
-                    break :blk_tensor null;
-                }
-                break :blk_tensor self.type_info.store.tAny();
-            },
-            .StructType => blk_sty: {
-                const row = self.ast_unit.exprs.get(.StructType, id);
-                const sfs = self.ast_unit.exprs.sfield_pool.slice(row.fields);
-                var buf = try self.type_info.store.gpa.alloc(types.TypeStore.StructFieldArg, sfs.len);
-                defer self.type_info.store.gpa.free(buf);
-                var seen = std.AutoArrayHashMapUnmanaged(u32, void){};
-                defer seen.deinit(self.gpa);
-                var i: usize = 0;
-                while (i < sfs.len) : (i += 1) {
-                    const f = self.ast_unit.exprs.StructField.get(sfs[i].toRaw());
-                    const gop = try seen.getOrPut(self.gpa, f.name.toRaw());
-                    if (gop.found_existing) {
-                        try self.diags.addError(self.ast_unit.exprs.locs.get(f.loc), .duplicate_field, .{});
-                        return null;
-                    }
-                    const ft = (try self.typeFromTypeExpr(f.ty)) orelse break :blk_sty null;
-                    buf[i] = .{ .name = f.name, .ty = ft };
-                }
-                break :blk_sty self.type_info.store.mkStruct(buf);
-            },
-            .UnionType => blk_un: {
-                const row = self.ast_unit.exprs.get(.UnionType, id);
-                const sfs = self.ast_unit.exprs.sfield_pool.slice(row.fields);
-                var buf = try self.type_info.store.gpa.alloc(types.TypeStore.StructFieldArg, sfs.len);
-                defer self.type_info.store.gpa.free(buf);
-                var seen = std.AutoArrayHashMapUnmanaged(u32, void){};
-                defer seen.deinit(self.gpa);
-                var i: usize = 0;
-                while (i < sfs.len) : (i += 1) {
-                    const sf = self.ast_unit.exprs.StructField.get(sfs[i].toRaw());
-                    const gop = try seen.getOrPut(self.gpa, sf.name.toRaw());
-                    if (gop.found_existing) {
-                        try self.diags.addError(self.ast_unit.exprs.locs.get(sf.loc), .duplicate_field, .{});
-                        return null;
-                    }
-                    // Validate field types resolve
-                    const ft = (try self.typeFromTypeExpr(sf.ty)) orelse break :blk_un null;
-                    buf[i] = .{ .name = sf.name, .ty = ft };
-                }
-                break :blk_un self.type_info.store.mkUnion(buf);
-            },
-            .EnumType => blk_en: {
-                const row = self.ast_unit.exprs.get(.EnumType, id);
-                const efs = self.ast_unit.exprs.efield_pool.slice(row.fields);
-
-                const tag_ty = if (row.discriminant.isNone())
-                    self.type_info.store.tI32()
-                else
-                    (try self.typeFromTypeExpr(row.discriminant.unwrap())) orelse return null;
-
-                var member_buf = try self.gpa.alloc(types.TypeStore.EnumMemberArg, efs.len);
-                defer self.gpa.free(member_buf);
-
-                var seen = std.AutoArrayHashMapUnmanaged(u32, void){};
-                defer seen.deinit(self.gpa);
-
-                var next_value: u64 = 0;
-                var i: usize = 0;
-                while (i < efs.len) : (i += 1) {
-                    const enum_field = self.ast_unit.exprs.EnumField.get(efs[i].toRaw());
-                    const name = self.ast_unit.exprs.strs.get(enum_field.name);
-
-                    const gop = try seen.getOrPut(self.gpa, enum_field.name.toRaw());
-                    if (gop.found_existing) {
-                        try self.diags.addError(self.ast_unit.exprs.locs.get(enum_field.loc), .duplicate_enum_field, .{});
-                        return null;
-                    }
-
-                    var current_value: u64 = next_value;
-                    if (!enum_field.value.isNone()) {
-                        const val_id = enum_field.value.unwrap();
-                        const val_kind = self.ast_unit.exprs.index.kinds.items[val_id.toRaw()];
-                        if (val_kind != .Literal) {
-                            try self.diags.addError(self.ast_unit.exprs.locs.get(enum_field.loc), .enum_discriminant_not_integer, .{});
-                            return null;
-                        }
-                        const lit = self.ast_unit.exprs.get(.Literal, val_id);
-                        if (lit.kind != .int or lit.value.isNone()) {
-                            try self.diags.addError(self.ast_unit.exprs.locs.get(enum_field.loc), .enum_discriminant_not_integer, .{});
-                            return null;
-                        }
-                        const val_str = self.ast_unit.exprs.strs.get(lit.value.unwrap());
-                        const parsed = std.fmt.parseInt(u64, val_str, 10) catch {
-                            try self.diags.addError(self.ast_unit.exprs.locs.get(enum_field.loc), .invalid_integer_literal, .{});
-                            return null;
-                        };
-                        current_value = parsed;
-                    }
-
-                    member_buf[i] = .{ .name = name, .value = current_value };
-                    next_value = current_value + 1;
-                }
-                break :blk_en self.type_info.store.mkEnum(member_buf, tag_ty);
-            },
-            .ErrorType => blk_err: {
-                const row = self.ast_unit.exprs.get(.ErrorType, id);
-                const vfs = self.ast_unit.exprs.vfield_pool.slice(row.fields);
-                var case_buf = try self.gpa.alloc(types.TypeStore.StructFieldArg, vfs.len);
-                defer self.gpa.free(case_buf);
-
-                var seen = std.AutoArrayHashMapUnmanaged(u32, void){};
-                defer seen.deinit(self.gpa);
-
-                var i: usize = 0;
-                while (i < vfs.len) : (i += 1) {
-                    const vf = self.ast_unit.exprs.VariantField.get(vfs[i].toRaw());
-                    const gop = try seen.getOrPut(self.gpa, vf.name.toRaw());
-                    if (gop.found_existing) {
-                        try self.diags.addError(self.ast_unit.exprs.locs.get(vf.loc), .duplicate_error_variant, .{});
-                        return null;
-                    }
-
-                    const payload_ty = switch (vf.payload_kind) {
-                        .none => self.type_info.store.tVoid(),
-                        .tuple => blk_tuple: {
-                            if (vf.payload_elems.isNone()) {
-                                break :blk_tuple self.type_info.store.tVoid();
-                            }
-                            const elems = self.ast_unit.exprs.expr_pool.slice(vf.payload_elems.asRange());
-                            var elem_buf = try self.gpa.alloc(types.TypeId, elems.len);
-                            defer self.gpa.free(elem_buf);
-                            var j: usize = 0;
-                            while (j < elems.len) : (j += 1) {
-                                elem_buf[j] = (try self.typeFromTypeExpr(elems[j])) orelse return null;
-                            }
-                            break :blk_tuple self.type_info.store.mkTuple(elem_buf);
-                        },
-                        .@"struct" => blk_struct: {
-                            if (vf.payload_fields.isNone()) {
-                                break :blk_struct self.type_info.store.tVoid();
-                            }
-                            const fields = self.ast_unit.exprs.sfield_pool.slice(vf.payload_fields.asRange());
-                            var field_buf = try self.gpa.alloc(types.TypeStore.StructFieldArg, fields.len);
-                            defer self.gpa.free(field_buf);
-                            var j: usize = 0;
-                            while (j < fields.len) : (j += 1) {
-                                const sf = self.ast_unit.exprs.StructField.get(fields[j].toRaw());
-                                field_buf[j] = .{
-                                    .name = sf.name,
-                                    .ty = (try self.typeFromTypeExpr(sf.ty)) orelse return null,
-                                };
-                            }
-                            break :blk_struct self.type_info.store.mkStruct(field_buf);
-                        },
-                    };
-                    case_buf[i] = .{ .name = vf.name, .ty = payload_ty };
-                }
-                break :blk_err self.type_info.store.mkError(case_buf);
-            },
-            .ErrorSetType => blk_est: {
-                const row = self.ast_unit.exprs.get(.ErrorSetType, id);
-                const val_ty = try self.typeFromTypeExpr(row.value);
-                const err_ty = try self.typeFromTypeExpr(row.err);
-                if (val_ty == null or err_ty == null) break :blk_est null;
-                break :blk_est self.type_info.store.mkErrorSet(val_ty.?, err_ty.?);
-            },
-            .VariantType => blk_var: {
-                const row = self.ast_unit.exprs.get(.VariantType, id);
-                const vfs = self.ast_unit.exprs.vfield_pool.slice(row.fields);
-                var case_buf = try self.gpa.alloc(types.TypeStore.StructFieldArg, vfs.len);
-                defer self.gpa.free(case_buf);
-
-                var seen = std.AutoArrayHashMapUnmanaged(u32, void){};
-                defer seen.deinit(self.gpa);
-
-                var i: usize = 0;
-                while (i < vfs.len) : (i += 1) {
-                    const vf = self.ast_unit.exprs.VariantField.get(vfs[i].toRaw());
-                    const gop = try seen.getOrPut(self.gpa, vf.name.toRaw());
-                    if (gop.found_existing) {
-                        try self.diags.addError(self.ast_unit.exprs.locs.get(vf.loc), .duplicate_variant, .{});
-                        return null;
-                    }
-
-                    const payload_ty = switch (vf.payload_kind) {
-                        .none => self.type_info.store.tVoid(),
-                        .tuple => blk_tuple: {
-                            if (vf.payload_elems.isNone()) {
-                                break :blk_tuple self.type_info.store.tVoid();
-                            }
-                            const elems = self.ast_unit.exprs.expr_pool.slice(vf.payload_elems.asRange());
-                            var elem_buf = try self.gpa.alloc(types.TypeId, elems.len);
-                            defer self.gpa.free(elem_buf);
-                            var j: usize = 0;
-                            while (j < elems.len) : (j += 1) {
-                                elem_buf[j] = (try self.typeFromTypeExpr(elems[j])) orelse return null;
-                            }
-                            break :blk_tuple self.type_info.store.mkTuple(elem_buf);
-                        },
-                        .@"struct" => blk_struct: {
-                            if (vf.payload_fields.isNone()) {
-                                break :blk_struct self.type_info.store.tVoid();
-                            }
-                            const fields = self.ast_unit.exprs.sfield_pool.slice(vf.payload_fields.asRange());
-                            var field_buf = try self.gpa.alloc(types.TypeStore.StructFieldArg, fields.len);
-                            defer self.gpa.free(field_buf);
-                            var j: usize = 0;
-                            while (j < fields.len) : (j += 1) {
-                                const sf = self.ast_unit.exprs.StructField.get(fields[j].toRaw());
-                                field_buf[j] = .{
-                                    .name = sf.name,
-                                    .ty = (try self.typeFromTypeExpr(sf.ty)) orelse return null,
-                                };
-                            }
-                            break :blk_struct self.type_info.store.mkStruct(field_buf);
-                        },
-                    };
-                    case_buf[i] = .{ .name = vf.name, .ty = payload_ty };
-                }
-                break :blk_var self.type_info.store.mkVariant(case_buf);
-            },
-
-            .FunctionLit => blk_fn: {
-                // function type in type position
-                const fnr = self.ast_unit.exprs.get(.FunctionLit, id);
-                const params = self.ast_unit.exprs.param_pool.slice(fnr.params);
-                var pbuf = try self.gpa.alloc(types.TypeId, params.len);
-                defer self.gpa.free(pbuf);
-                var i: usize = 0;
-                while (i < params.len) : (i += 1) {
-                    const p = self.ast_unit.exprs.Param.get(params[i].toRaw());
-                    if (p.ty.isNone()) break :blk_fn null;
-                    const pt = (try self.typeFromTypeExpr(p.ty.unwrap())) orelse break :blk_fn null;
-                    pbuf[i] = pt;
-                }
-                const res = if (!fnr.result_ty.isNone()) (try self.typeFromTypeExpr(fnr.result_ty.unwrap())) else self.type_info.store.tVoid();
-                if (res == null) break :blk_fn null;
-                const is_pure = !fnr.flags.is_proc;
-                break :blk_fn self.type_info.store.mkFunction(pbuf, res.?, fnr.flags.is_variadic, is_pure);
-            },
-            .FieldAccess => blk_fa: {
-                const fr = self.ast_unit.exprs.get(.FieldAccess, id);
-                const parent_ty = (try self.typeFromTypeExpr(fr.parent)) orelse break :blk_fa null;
-                const parent_kind = self.type_info.store.index.kinds.items[parent_ty.toRaw()];
-                switch (parent_kind) {
-                    .Struct => {
-                        const st = self.type_info.store.Struct.get(self.type_info.store.index.rows.items[parent_ty.toRaw()]);
-                        const fields = self.type_info.store.field_pool.slice(st.fields);
-                        var i: usize = 0;
-                        while (i < fields.len) : (i += 1) {
-                            const f = fields[i];
-                            const field = self.type_info.store.Field.get(f.toRaw());
-                            if (field.name.toRaw() == fr.field.toRaw()) return field.ty;
-                        }
-                        try self.diags.addError(self.ast_unit.exprs.locs.get(fr.loc), .unknown_struct_field, .{});
-                        break :blk_fa null;
-                    },
-                    // NEW: handle Variant directly (e.g., V2.C in type position).
-                    .Variant => {
-                        const vt = self.type_info.store.Variant.get(self.type_info.store.index.rows.items[parent_ty.toRaw()]);
-                        const cases = self.type_info.store.field_pool.slice(vt.variants);
-                        var i: usize = 0;
-                        while (i < cases.len) : (i += 1) {
-                            const vc = self.type_info.store.Field.get(cases[i].toRaw());
-                            if (vc.name.toRaw() == fr.field.toRaw()) {
-                                // Return the payload type of the chosen variant (struct/tuple/void).
-                                return vc.ty;
-                            }
-                        }
-                        try self.diags.addError(self.ast_unit.exprs.locs.get(fr.loc), .unknown_variant_tag, .{});
-                        break :blk_fa null;
-                    },
-                    .TypeType => {
-                        // Back-compat in case a type value ever appears here:
-                        const tt = self.type_info.store.TypeType.get(self.type_info.store.index.rows.items[parent_ty.toRaw()]);
-                        const inner_kind = self.type_info.store.index.kinds.items[tt.of.toRaw()];
-                        if (inner_kind == .Variant) {
-                            const vt = self.type_info.store.Variant.get(self.type_info.store.index.rows.items[tt.of.toRaw()]);
-                            const cases = self.type_info.store.field_pool.slice(vt.variants);
-                            var i: usize = 0;
-                            while (i < cases.len) : (i += 1) {
-                                const vc = self.type_info.store.Field.get(cases[i].toRaw());
-                                if (vc.name.toRaw() == fr.field.toRaw()) return vc.ty;
-                            }
-                            try self.diags.addError(self.ast_unit.exprs.locs.get(fr.loc), .unknown_variant_tag, .{});
-                            break :blk_fa null;
-                        } else {
-                            try self.diags.addError(self.ast_unit.exprs.locs.get(fr.loc), .field_access_on_non_aggregate, .{});
-                            break :blk_fa null;
-                        }
-                    },
-                    else => {
-                        try self.diags.addError(self.ast_unit.exprs.locs.get(fr.loc), .field_access_on_non_aggregate, .{});
-                        break :blk_fa null;
-                    },
-                }
-            },
-            .AnyType => self.type_info.store.tAny(),
-            .TypeType => self.type_info.store.tType(),
-            .NoreturnType => self.type_info.store.tNoReturn(),
-            else => null,
-        };
     }
 
     // =========================================================
