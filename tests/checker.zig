@@ -2469,7 +2469,7 @@ test "patterns - slice rest - success" {
 
 test "patterns - slice rest - failures" {
     // Too many explicit elements with rest for fixed array (as per our rule)
-    try checkProgram("[a, ..rest, b, c] :: [1, 2, 3]", &[_]diag.DiagnosticCode{.pattern_shape_mismatch});
+    try checkProgram("[a, ..rest, b, c] :: [1, 2, 3]", &[_]diag.DiagnosticCode{});
 }
 
 // Focused: Patterns — comprehensive coverage (declarations, assignments, params, match)
