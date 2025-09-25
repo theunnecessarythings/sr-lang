@@ -1597,12 +1597,32 @@ pub const Checker = struct {
     fn checkFieldAccess(self: *Checker, id: ast.ExprId) ?types.TypeId {
         const field_expr = self.ast_unit.exprs.get(.FieldAccess, id);
         // Special-case: module member access via import "path".member
-        if (self.ast_unit.exprs.index.kinds.items[field_expr.parent.toRaw()] == .Import) {
+        const parent_kind = self.ast_unit.exprs.index.kinds.items[field_expr.parent.toRaw()];
+        if (parent_kind == .Import) {
             if (self.importHasMember(field_expr.parent, field_expr.field)) {
                 return self.type_info.store.tAny();
             } else {
                 _ = self.diags.addError(self.ast_unit.exprs.locs.get(field_expr.loc), .unknown_struct_field, .{}) catch {};
                 return null;
+            }
+        }
+        // Also allow module access when parent is an identifier bound to an import declaration
+        if (parent_kind == .Ident) {
+            const idr = self.ast_unit.exprs.get(.Ident, field_expr.parent);
+            if (self.lookup(idr.name)) |sid_sym| {
+                const sym = self.symtab.syms.get(sid_sym.toRaw());
+                if (!sym.origin_decl.isNone()) {
+                    const did = sym.origin_decl.unwrap();
+                    const drow = self.ast_unit.exprs.Decl.get(did.toRaw());
+                    if (self.ast_unit.exprs.index.kinds.items[drow.value.toRaw()] == .Import) {
+                        if (self.importHasMember(drow.value, field_expr.field)) {
+                            return self.type_info.store.tAny();
+                        } else {
+                            _ = self.diags.addError(self.ast_unit.exprs.locs.get(field_expr.loc), .unknown_struct_field, .{}) catch {};
+                            return null;
+                        }
+                    }
+                }
             }
         }
         const parent_ty = self.checkExpr(field_expr.parent) catch return null;
@@ -1839,6 +1859,30 @@ pub const Checker = struct {
 
     fn checkCall(self: *Checker, id: ast.ExprId) !?types.TypeId {
         const call_expr = self.ast_unit.exprs.get(.Call, id);
+        // Allow calling module members: (Ident).field(...)
+        if (self.ast_unit.exprs.index.kinds.items[call_expr.callee.toRaw()] == .FieldAccess) {
+            const fr = self.ast_unit.exprs.get(.FieldAccess, call_expr.callee);
+            if (self.ast_unit.exprs.index.kinds.items[fr.parent.toRaw()] == .Ident) {
+                // If parent ident is a binding to an import, accept call and treat as void for now
+                const idr = self.ast_unit.exprs.get(.Ident, fr.parent);
+                if (self.lookup(idr.name)) |sid_sym| {
+                    const sym = self.symtab.syms.get(sid_sym.toRaw());
+                    if (!sym.origin_decl.isNone()) {
+                        const did = sym.origin_decl.unwrap();
+                        const drow = self.ast_unit.exprs.Decl.get(did.toRaw());
+                        if (self.ast_unit.exprs.index.kinds.items[drow.value.toRaw()] == .Import) {
+                            // Check arguments to populate expr types (no signature checking yet)
+                            const args = self.ast_unit.exprs.expr_pool.slice(call_expr.args);
+                            for (args) |aid| {
+                                _ = try self.checkExpr(aid);
+                            }
+                            // TODO: We could check args count/types by peeking imported module signature.
+                            return self.type_info.store.tVoid();
+                        }
+                    }
+                }
+            }
+        }
         // Handle variant/error tag constructors before evaluating callee expression.
         if (self.ast_unit.exprs.index.kinds.items[call_expr.callee.toRaw()] == .FieldAccess) {
             const fr = self.ast_unit.exprs.get(.FieldAccess, call_expr.callee);

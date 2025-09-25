@@ -189,6 +189,7 @@ fn process_file(
     cli_args: *CliArgs,
     err_writer: anytype,
     out_writer: anytype,
+    link_args: []const []const u8,
 ) !void {
     var file = try std.fs.cwd().openFile(filename, .{});
     const source = try file.readToEndAlloc(allocator, (try file.stat()).size);
@@ -283,7 +284,10 @@ fn process_file(
     var pl = compiler.pipeline.Pipeline.init(allocator, &diags);
     var parser2 = compiler.parser.Parser.init(allocator, source0, &diags);
     var cst_program_v2 = try parser2.parse();
-    var result = pl.run(&cst_program_v2) catch |err| {
+    // Use new pipeline that resolves imports and appends codegen
+    // Base dir is the directory of the input filename for relative imports
+    const base_dir = std.fs.path.dirname(filename) orelse ".";
+    var result = pl.runWithImports(&cst_program_v2, base_dir, link_args) catch |err| {
         try diags.emitStyled(source0, err_writer, filename, !cli_args.no_color);
         return err; // Propagate pipeline errors
     };
@@ -324,6 +328,9 @@ pub fn main() !void {
     var buffer: [1024]u8 = undefined;
     var err = std.fs.File.stderr().writer(&buffer);
     var writer = &err.interface;
+
+    var link_args_list: std.ArrayList([]const u8) = .empty;
+    defer link_args_list.deinit(gpa);
 
     while (args_iter.next()) |arg| {
         if (std.mem.startsWith(u8, arg, "--")) {
@@ -371,10 +378,21 @@ pub fn main() !void {
                 cli_args.filename = arg;
                 filename_found = true;
             } else {
-                // Too many positional arguments
-                try writer.print("{s}Error:{s} Too many arguments.\n", .{ Colors.red, Colors.reset });
-                try printUsage(writer, exec_name);
-                std.process.exit(1);
+                // Treat additional args as linker args if they look like -l/-L or -Wl,
+                if (std.mem.startsWith(u8, arg, "-l") or std.mem.startsWith(u8, arg, "-L") or std.mem.startsWith(u8, arg, "-Wl,")) {
+                    try link_args_list.append(gpa, arg);
+                } else if (std.mem.eql(u8, arg, "-l") or std.mem.eql(u8, arg, "-L")) {
+                    if (args_iter.next()) |next| {
+                        const combined = try std.fmt.allocPrint(gpa, "{s}{s}", .{ arg, next });
+                        try link_args_list.append(gpa, combined);
+                    } else {
+                        try writer.print("{s}Error:{s} Missing value after '{s}'.\n", .{ Colors.red, Colors.reset, arg });
+                        std.process.exit(1);
+                    }
+                } else {
+                    // Unknown extra arg, keep warning but continue
+                    try writer.print("{s}Warning:{s} Ignoring extra argument '{s}'.\n", .{ Colors.yellow, Colors.reset, arg });
+                }
             }
         }
     }
@@ -388,7 +406,7 @@ pub fn main() !void {
             if (cli_args.filename) |filename| {
                 // If only a filename is provided without a subcommand, default to 'compile'
                 cli_args.subcommand = .compile;
-                try process_file(gpa, filename, &cli_args, writer, out_writer);
+                try process_file(gpa, filename, &cli_args, writer, out_writer, link_args_list.items);
             } else {
                 try printUsage(writer, exec_name);
                 std.process.exit(1);
@@ -403,7 +421,7 @@ pub fn main() !void {
                 try printUsage(writer, exec_name);
                 std.process.exit(1);
             }
-            try process_file(gpa, cli_args.filename.?, &cli_args, writer, out_writer);
+            try process_file(gpa, cli_args.filename.?, &cli_args, writer, out_writer, link_args_list.items);
         },
         .repl => try repl(gpa, writer, out_writer),
     }

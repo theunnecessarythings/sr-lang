@@ -492,8 +492,14 @@ pub const LowerTir = struct {
             .Call => {
                 const row = a.exprs.get(.Call, id);
                 const callee_k = a.exprs.index.kinds.items[row.callee.toRaw()];
-                if (callee_k != .Ident) return error.OutOfMemory;
-                const sname = a.exprs.get(.Ident, row.callee).name;
+                var sname: StrId = undefined;
+                if (callee_k == .Ident) {
+                    sname = a.exprs.get(.Ident, row.callee).name;
+                } else if (callee_k == .FieldAccess) {
+                    const fr = a.exprs.get(.FieldAccess, row.callee);
+                    // Treat calls like module.func(...) as calling global symbol 'func'
+                    sname = fr.field;
+                } else return error.OutOfMemory;
                 const args_ids = a.exprs.expr_pool.slice(row.args);
                 var vals = try self.gpa.alloc(tir.ValueId, args_ids.len);
                 defer self.gpa.free(vals);

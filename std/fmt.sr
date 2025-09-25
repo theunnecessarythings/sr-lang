@@ -1,0 +1,105 @@
+// Minimal formatting utilities for numbers, booleans, and strings.
+
+io  :: import "std/io"
+mem :: import "std/mem"
+
+// Convert signed 64-bit integer to decimal into buffer; returns length
+itoa_i64 :: proc(n: i64, buf: *u8, cap: usize) usize {
+    if (cap == 0) { return 0 }
+    if (n == 0) { buf[0] = '0'; return 1 }
+    neg := n < 0
+    u: u64 = if (neg) (0 - n).^u64 else n.^u64
+    i: usize = 0
+    while (u > 0 and i < cap) {
+        digit := (u % 10).^u8
+        buf[i] = '0' + digit
+        u = u / 10
+        i = i + 1
+    }
+    if (neg and i < cap) { buf[i] = '-'; i = i + 1 }
+    // reverse digits
+    j: usize = 0
+    while (j + 1 < i - j) {
+        tmp := buf[j]
+        buf[j] = buf[i - 1 - j]
+        buf[i - 1 - j] = tmp
+        j = j + 1
+    }
+    return i
+}
+
+// Convert unsigned 64-bit integer to decimal into buffer; returns length
+itoa_u64 :: proc(n: u64, buf: *u8, cap: usize) usize {
+    if (cap == 0) { return 0 }
+    if (n == 0) { buf[0] = '0'; return 1 }
+    i: usize = 0
+    while (n > 0 and i < cap) {
+        digit := (n % 10).^u8
+        buf[i] = '0' + digit
+        n = n / 10
+        i = i + 1
+    }
+    // reverse digits
+    j: usize = 0
+    while (j + 1 < i - j) {
+        tmp := buf[j]
+        buf[j] = buf[i - 1 - j]
+        buf[i - 1 - j] = tmp
+        j = j + 1
+    }
+    return i
+}
+
+// Convert unsigned 64-bit to lowercase hex (no 0x prefix)
+itoa_hex_u64 :: proc(n: u64, buf: *u8, cap: usize) usize {
+    if (cap == 0) { return 0 }
+    if (n == 0) { buf[0] = '0'; return 1 }
+    hex := "0123456789abcdef".^*u8
+    i: usize = 0
+    while (n > 0 and i < cap) {
+        v := (n & 0xF).^u8
+        buf[i] = hex[v]
+        n = n >> 4
+        i = i + 1
+    }
+    // reverse
+    j: usize = 0
+    while (j + 1 < i - j) {
+        tmp := buf[j]
+        buf[j] = buf[i - 1 - j]
+        buf[i - 1 - j] = tmp
+        j = j + 1
+    }
+    return i
+}
+
+// Writer helpers
+write_i64 :: proc(w: *io.Writer, n: i64) void {
+    tmp: [32]u8
+    len := itoa_i64(n, (&tmp[0]).^*u8, 32)
+    _ = io.write_all(w, (&tmp[0]).^*u8, len)
+}
+
+write_u64 :: proc(w: *io.Writer, n: u64) void {
+    tmp: [32]u8
+    len := itoa_u64(n, (&tmp[0]).^*u8, 32)
+    _ = io.write_all(w, (&tmp[0]).^*u8, len)
+}
+
+write_hex_u64 :: proc(w: *io.Writer, n: u64) void {
+    tmp: [32]u8
+    len := itoa_hex_u64(n, (&tmp[0]).^*u8, 32)
+    _ = io.write_all(w, (&tmp[0]).^*u8, len)
+}
+
+write_bool :: proc(w: *io.Writer, b: bool) void {
+    if (b) { _ = io.write_all(w, "true".^*u8, 4) } else { _ = io.write_all(w, "false".^*u8, 5) }
+}
+
+write_str :: proc(w: *io.Writer, s: string) void {
+    _ = io.write_all(w, s.^*u8, rt_strlen(s.^*u8))
+}
+
+// runtime helper
+rt_strlen :: extern proc(*u8) usize
+

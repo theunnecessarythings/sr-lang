@@ -69,6 +69,18 @@ pub fn build(b: *std.Build) void {
         @panic("Failed to link MLIR");
     };
 
+    // Build and install the runtime library (C ABI exports for generated programs)
+    const runtime_lib = b.addLibrary(.{
+        .name = "sr_runtime",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("runtime/runtime.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    runtime_lib.root_module.link_libc = true;
+    b.installArtifact(runtime_lib);
+
     b.installArtifact(exe);
 
     const run_step = b.step("run", "Run the app");
@@ -76,6 +88,8 @@ pub fn build(b: *std.Build) void {
     run_step.dependOn(&run_cmd.step);
 
     run_cmd.step.dependOn(b.getInstallStep());
+    // Ensure runtime library is built/installed before running compiler (which links against it)
+    run_cmd.step.dependOn(&runtime_lib.step);
 
     if (b.args) |args| {
         run_cmd.addArgs(args);

@@ -1,0 +1,12 @@
+io  :: import "std/io"
+env :: import "std/env"
+
+main :: proc() {
+    if (env.get("HOME")?) |p| {
+        io.print0("HOME=\n")
+        io.printf("%s\n".^*void, p.^*void)
+    } else {
+        io.println0("HOME not set")
+    }
+}
+

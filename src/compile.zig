@@ -67,7 +67,7 @@ pub fn runJit(module: mlir.c.MlirModule) void {
     }
 }
 
-pub fn convert_to_llvm_ir(module: mlir.c.MlirModule, print_ir: bool) !void {
+pub fn convert_to_llvm_ir(module: mlir.c.MlirModule, print_ir: bool, link_args: []const []const u8) !void {
     _ = mlir.c.LLVMInitializeNativeTarget();
     _ = mlir.c.LLVMInitializeNativeAsmPrinter();
     _ = mlir.c.LLVMInitializeNativeAsmParser();
@@ -126,8 +126,19 @@ pub fn convert_to_llvm_ir(module: mlir.c.MlirModule, print_ir: bool) !void {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    const argv = &[_][]const u8{ "clang", "-O2", "-o", "zig-out/output_program", "zig-out/output.o" };
-    var child = std.process.Child.init(argv, allocator);
+    var args: std.ArrayList([]const u8) = .empty;
+    defer args.deinit(allocator);
+    try args.append(allocator, "clang");
+    try args.append(allocator, "-O2");
+    try args.append(allocator, "-o");
+    try args.append(allocator, "zig-out/output_program");
+    try args.append(allocator, "zig-out/output.o");
+    // Link the language runtime (static)
+    try args.append(allocator, "zig-out/lib/libsr_runtime.a");
+    // Append user-provided link args (e.g., -L/usr/local/lib, -lraylib)
+    for (link_args) |la| try args.append(allocator, la);
+
+    var child = std.process.Child.init(args.items, allocator);
     child.spawn() catch unreachable;
     _ = child.wait() catch unreachable;
 }

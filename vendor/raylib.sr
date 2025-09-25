@@ -1,0 +1,424 @@
+// Raylib v5.x bindings (hand-written subset; extend as needed)
+// NOTE: Externs follow C ABI; for string-taking APIs, convenience wrappers accept `string`.
+
+// ------------------------------------------------------------
+// Basic Types
+// ------------------------------------------------------------
+
+Vector2 :: struct { x: f32, y: f32 }
+Vector3 :: struct { x: f32, y: f32, z: f32 }
+Vector4 :: struct { x: f32, y: f32, z: f32, w: f32 }
+Quaternion :: Vector4
+
+Matrix :: struct {
+    m0: f32,  m4: f32,  m8: f32,  m12: f32,
+    m1: f32,  m5: f32,  m9: f32,  m13: f32,
+    m2: f32,  m6: f32,  m10: f32, m14: f32,
+    m3: f32,  m7: f32,  m11: f32, m15: f32,
+}
+
+Color :: struct { r: u8, g: u8, b: u8, a: u8 }
+
+Rectangle :: struct { x: f32, y: f32, width: f32, height: f32 }
+
+Image :: struct { data: *void, width: i32, height: i32, mipmaps: i32, format: i32 }
+
+Texture :: struct { id: u32, width: i32, height: i32, mipmaps: i32, format: i32 }
+Texture2D :: Texture
+TextureCubemap :: Texture
+
+RenderTexture :: struct { id: u32, texture: Texture, depth: Texture }
+RenderTexture2D :: RenderTexture
+
+NPatchInfo :: struct { source: Rectangle, left: i32, top: i32, right: i32, bottom: i32, layout: i32 }
+
+GlyphInfo :: struct { value: i32, offsetX: i32, offsetY: i32, advanceX: i32, image: Image }
+
+Font :: struct { baseSize: i32, glyphCount: i32, glyphPadding: i32, texture: Texture2D, recs: *Rectangle, glyphs: *GlyphInfo }
+
+Camera3D :: struct { position: Vector3, target: Vector3, up: Vector3, fovy: f32, projection: i32 }
+Camera :: Camera3D
+Camera2D :: struct { offset: Vector2, target: Vector2, rotation: f32, zoom: f32 }
+
+Mesh :: struct {
+    vertexCount: i32, triangleCount: i32,
+    vertices: *f32, texcoords: *f32, texcoords2: *f32, normals: *f32, tangents: *f32,
+    colors: *u8, indices: *u16,
+    animVertices: *f32, animNormals: *f32, boneIds: *u8, boneWeights: *f32,
+    boneMatrices: *Matrix, boneCount: i32,
+    vaoId: u32, vboId: *u32,
+}
+
+Shader :: struct { id: u32, locs: *i32 }
+
+MaterialMap :: struct { texture: Texture2D, color: Color, value: f32 }
+Material :: struct { shader: Shader, maps: *MaterialMap, params: [4]f32 }
+
+Transform :: struct { translation: Vector3, rotation: Quaternion, scale: Vector3 }
+BoneInfo :: struct { name: [32]i8, parent: i32 }
+
+Model :: struct {
+    transform: Matrix,
+    meshCount: i32, materialCount: i32, meshes: *Mesh, materials: *Material, meshMaterial: *i32,
+    boneCount: i32, bones: *BoneInfo, bindPose: *Transform,
+}
+
+ModelAnimation :: struct { boneCount: i32, frameCount: i32, bones: *BoneInfo, framePoses: **Transform, name: [32]i8 }
+
+Ray :: struct { position: Vector3, direction: Vector3 }
+RayCollision :: struct { hit: bool, distance: f32, point: Vector3, normal: Vector3 }
+BoundingBox :: struct { min: Vector3, max: Vector3 }
+
+Wave :: struct { frameCount: u32, sampleRate: u32, sampleSize: u32, channels: u32, data: *void }
+AudioStream :: struct { buffer: *void, processor: *void, sampleRate: u32, sampleSize: u32, channels: u32 }
+Sound :: struct { stream: AudioStream, frameCount: u32 }
+Music :: struct { stream: AudioStream, frameCount: u32, looping: bool, ctxType: i32, ctxData: *void }
+
+VrDeviceInfo :: struct {
+    hResolution: i32, vResolution: i32, hScreenSize: f32, vScreenSize: f32,
+    eyeToScreenDistance: f32, lensSeparationDistance: f32, interpupillaryDistance: f32,
+    lensDistortionValues: [4]f32, chromaAbCorrection: [4]f32,
+}
+
+VrStereoConfig :: struct {
+    projection: [2]Matrix, viewOffset: [2]Matrix,
+    leftLensCenter: [2]f32, rightLensCenter: [2]f32,
+    leftScreenCenter: [2]f32, rightScreenCenter: [2]f32,
+    scale: [2]f32, scaleIn: [2]f32,
+}
+
+FilePathList :: struct { capacity: u32, count: u32, paths: **i8 }
+
+// ------------------------------------------------------------
+// Selected Enums & Flags (extend as needed)
+// ------------------------------------------------------------
+
+ConfigFlags :: enum {
+    FLAG_VSYNC_HINT = 0x00000040,
+    FLAG_FULLSCREEN_MODE = 0x00000002,
+    FLAG_WINDOW_RESIZABLE = 0x00000004,
+    FLAG_WINDOW_UNDECORATED = 0x00000008,
+    FLAG_WINDOW_HIDDEN = 0x00000080,
+    FLAG_WINDOW_ALWAYS_RUN = 0x00000100,
+}
+
+KeyboardKey :: enum {
+    KEY_NULL = 0,
+    KEY_ESCAPE = 256,
+    KEY_ENTER = 257,
+    KEY_TAB = 258,
+    KEY_BACKSPACE = 259,
+    KEY_SPACE = 32,
+    KEY_LEFT = 263, KEY_RIGHT = 262, KEY_UP = 265, KEY_DOWN = 264,
+    KEY_A = 65, KEY_B = 66, KEY_C = 67, KEY_D = 68, KEY_E = 69, KEY_F = 70,
+    KEY_G = 71, KEY_H = 72, KEY_I = 73, KEY_J = 74, KEY_K = 75, KEY_L = 76,
+    KEY_M = 77, KEY_N = 78, KEY_O = 79, KEY_P = 80, KEY_Q = 81, KEY_R = 82,
+    KEY_S = 83, KEY_T = 84, KEY_U = 85, KEY_V = 86, KEY_W = 87, KEY_X = 88, KEY_Y = 89, KEY_Z = 90,
+}
+
+MouseButton :: enum { MOUSE_BUTTON_LEFT = 0, MOUSE_BUTTON_RIGHT = 1, MOUSE_BUTTON_MIDDLE = 2 }
+
+PixelFormat :: enum {
+    PIXELFORMAT_UNCOMPRESSED_GRAYSCALE = 1,
+    PIXELFORMAT_UNCOMPRESSED_GRAY_ALPHA = 2,
+    PIXELFORMAT_UNCOMPRESSED_R5G6B5 = 3,
+    PIXELFORMAT_UNCOMPRESSED_R8G8B8 = 4,
+    PIXELFORMAT_UNCOMPRESSED_R5G5B5A1 = 5,
+    PIXELFORMAT_UNCOMPRESSED_R4G4B4A4 = 6,
+    PIXELFORMAT_UNCOMPRESSED_R8G8B8A8 = 7,
+}
+
+// ------------------------------------------------------------
+// Colors (subset)
+// ------------------------------------------------------------
+WHITE :: Color = Color{ 255, 255, 255, 255 }
+BLACK :: Color = Color{ 0, 0, 0, 255 }
+RED   :: Color = Color{ 230, 41, 55, 255 }
+GREEN :: Color = Color{ 0, 228, 48, 255 }
+BLUE  :: Color = Color{ 0, 121, 241, 255 }
+RAYWHITE :: Color = Color{ 245, 245, 245, 255 }
+
+// ------------------------------------------------------------
+// Core: Window, Timing, Input
+// ------------------------------------------------------------
+
+SetConfigFlags :: extern proc(u32) void
+InitWindow :: extern proc(i32, i32, *void) void
+CloseWindow :: extern proc() void
+WindowShouldClose :: extern proc() bool
+IsWindowReady :: extern proc() bool
+IsWindowFullscreen :: extern proc() bool
+IsWindowHidden :: extern proc() bool
+IsWindowMinimized :: extern proc() bool
+IsWindowMaximized :: extern proc() bool
+IsWindowFocused :: extern proc() bool
+IsWindowResized :: extern proc() bool
+IsWindowState :: extern proc(u32) bool
+SetWindowState :: extern proc(u32) void
+ClearWindowState :: extern proc(u32) void
+ToggleFullscreen :: extern proc() void
+ToggleBorderlessWindowed :: extern proc() void
+MaximizeWindow :: extern proc() void
+MinimizeWindow :: extern proc() void
+RestoreWindow :: extern proc() void
+SetWindowIcon :: extern proc(Image) void
+SetWindowIcons :: extern proc(*Image, i32) void
+SetWindowTitle :: extern proc(*void) void
+SetWindowPosition :: extern proc(i32, i32) void
+SetWindowMonitor :: extern proc(i32) void
+SetWindowMinSize :: extern proc(i32, i32) void
+SetWindowMaxSize :: extern proc(i32, i32) void
+SetWindowSize :: extern proc(i32, i32) void
+SetWindowOpacity :: extern proc(f32) void
+SetWindowFocused :: extern proc() void
+GetWindowHandle :: extern proc() *void
+GetScreenWidth :: extern proc() i32
+GetScreenHeight :: extern proc() i32
+GetRenderWidth :: extern proc() i32
+GetRenderHeight :: extern proc() i32
+GetMonitorCount :: extern proc() i32
+GetCurrentMonitor :: extern proc() i32
+GetMonitorPosition :: extern proc(i32) Vector2
+GetMonitorWidth :: extern proc(i32) i32
+GetMonitorHeight :: extern proc(i32) i32
+SetTargetFPS :: extern proc(i32) void
+GetFrameTime :: extern proc() f32
+
+IsKeyPressed :: extern proc(i32) bool
+IsKeyPressedRepeat :: extern proc(i32) bool
+IsKeyDown :: extern proc(i32) bool
+IsKeyReleased :: extern proc(i32) bool
+IsKeyUp :: extern proc(i32) bool
+GetKeyPressed :: extern proc() i32
+GetCharPressed :: extern proc() i32
+GetKeyName :: extern proc(i32) *i8
+SetExitKey :: extern proc(i32) void
+
+// string overloads
+init_window :: proc(w: i32, h: i32, title: string) void { InitWindow(w, h, title.^*void) }
+set_window_title :: proc(title: string) void { SetWindowTitle(title.^*void) }
+
+// ------------------------------------------------------------
+// Drawing
+// ------------------------------------------------------------
+
+BeginDrawing :: extern proc() void
+EndDrawing :: extern proc() void
+ClearBackground :: extern proc(Color) void
+DrawText :: extern proc(*void, i32, i32, i32, Color) void
+
+draw_text :: proc(s: string, x: i32, y: i32, size: i32, c: Color) void { DrawText(s.^*void, x, y, size, c) }
+
+// ------------------------------------------------------------
+// Textures & Images (selected)
+// ------------------------------------------------------------
+
+LoadTexture :: extern proc(*void) Texture2D
+UnloadTexture :: extern proc(Texture2D) void
+DrawTexture :: extern proc(Texture2D, i32, i32, Color) void
+LoadImage :: extern proc(*void) Image
+UnloadImage :: extern proc(Image) void
+ImageFormat :: extern proc(*Image, i32) void
+ExportImage :: extern proc(Image, *void) bool
+
+load_texture :: proc(path: string) Texture2D { return LoadTexture(path.^*void) }
+load_image :: proc(path: string) Image { return LoadImage(path.^*void) }
+export_image :: proc(img: Image, path: string) bool { return ExportImage(img, path.^*void) }
+
+// ------------------------------------------------------------
+// Mouse, Touch, Gestures
+// ------------------------------------------------------------
+IsMouseButtonPressed :: extern proc(i32) bool
+IsMouseButtonDown :: extern proc(i32) bool
+IsMouseButtonReleased :: extern proc(i32) bool
+IsMouseButtonUp :: extern proc(i32) bool
+GetMouseX :: extern proc() i32
+GetMouseY :: extern proc() i32
+GetMousePosition :: extern proc() Vector2
+GetMouseDelta :: extern proc() Vector2
+SetMousePosition :: extern proc(i32, i32) void
+SetMouseOffset :: extern proc(i32, i32) void
+SetMouseScale :: extern proc(f32, f32) void
+GetMouseWheelMove :: extern proc() f32
+GetMouseWheelMoveV :: extern proc() Vector2
+SetMouseCursor :: extern proc(i32) void
+
+GetTouchX :: extern proc() i32
+GetTouchY :: extern proc() i32
+GetTouchPosition :: extern proc(i32) Vector2
+GetTouchPointId :: extern proc(i32) i32
+GetTouchPointCount :: extern proc() i32
+
+SetGesturesEnabled :: extern proc(u32) void
+IsGestureDetected :: extern proc(u32) bool
+GetGestureDetected :: extern proc() i32
+GetGestureHoldDuration :: extern proc() f32
+GetGestureDragVector :: extern proc() Vector2
+GetGestureDragAngle :: extern proc() f32
+GetGesturePinchVector :: extern proc() Vector2
+GetGesturePinchAngle :: extern proc() f32
+
+// ------------------------------------------------------------
+// Text: Fonts and drawing extended
+// ------------------------------------------------------------
+LoadFont :: extern proc(*void) Font
+LoadFontEx :: extern proc(*void, i32, *i32, i32) Font
+UnloadFont :: extern proc(Font) void
+DrawTextEx :: extern proc(Font, *void, Vector2, f32, f32, Color) void
+MeasureText :: extern proc(*void, i32) i32
+MeasureTextEx :: extern proc(Font, *void, f32, f32) Vector2
+GetGlyphIndex :: extern proc(Font, i32) i32
+GetGlyphInfo :: extern proc(Font, i32) GlyphInfo
+GetGlyphAtlasRec :: extern proc(Font, i32) Rectangle
+
+load_font :: proc(path: string) Font { return LoadFont(path.^*void) }
+load_font_ex :: proc(path: string, fontSize: i32, codepoints: *i32, count: i32) Font { return LoadFontEx(path.^*void, fontSize, codepoints, count) }
+draw_text_ex :: proc(font: Font, text: string, pos: Vector2, size: f32, spacing: f32, tint: Color) void { DrawTextEx(font, text.^*void, pos, size, spacing, tint) }
+measure_text :: proc(text: string, fontSize: i32) i32 { return MeasureText(text.^*void, fontSize) }
+measure_text_ex :: proc(font: Font, text: string, size: f32, spacing: f32) Vector2 { return MeasureTextEx(font, text.^*void, size, spacing) }
+
+
+// ------------------------------------------------------------
+// Shapes (selected)
+// ------------------------------------------------------------
+
+DrawPixel :: extern proc(i32, i32, Color) void
+DrawLine :: extern proc(i32, i32, i32, i32, Color) void
+DrawRectangle :: extern proc(i32, i32, i32, i32, Color) void
+DrawCircle :: extern proc(i32, i32, f32, Color) void
+
+// ------------------------------------------------------------
+// Camera2D helpers
+// ------------------------------------------------------------
+BeginMode2D :: extern proc(Camera2D) void
+EndMode2D :: extern proc() void
+
+// Camera3D update
+UpdateCamera :: extern proc(*Camera, i32) void
+UpdateCameraPro :: extern proc(*Camera, Vector3, Vector3, f32) void
+
+// ------------------------------------------------------------
+// Audio (selected)
+// ------------------------------------------------------------
+InitAudioDevice :: extern proc() void
+CloseAudioDevice :: extern proc() void
+IsAudioDeviceReady :: extern proc() bool
+
+LoadSound :: extern proc(*void) Sound
+UnloadSound :: extern proc(Sound) void
+PlaySound :: extern proc(Sound) void
+
+load_sound :: proc(path: string) Sound { return LoadSound(path.^*void) }
+
+// ------------------------------------------------------------
+// Models and 3D drawing (selected)
+// ------------------------------------------------------------
+LoadModel :: extern proc(*void) Model
+UnloadModel :: extern proc(Model) void
+DrawModel :: extern proc(Model, Vector3, f32, Color) void
+DrawModelEx :: extern proc(Model, Vector3, Vector3, f32, Vector3, Color) void
+
+load_model :: proc(path: string) Model { return LoadModel(path.^*void) }
+
+// ------------------------------------------------------------
+// Shaders (selected)
+// ------------------------------------------------------------
+LoadShader :: extern proc(*void, *void) Shader
+UnloadShader :: extern proc(Shader) void
+GetShaderLocation :: extern proc(Shader, *void) i32
+SetShaderValue :: extern proc(Shader, i32, *void, i32) void
+SetShaderValueMatrix :: extern proc(Shader, i32, Matrix) void
+SetShaderValueTexture :: extern proc(Shader, i32, Texture2D) void
+
+load_shader :: proc(vsPath: string, fsPath: string) Shader { return LoadShader(vsPath.^*void, fsPath.^*void) }
+get_shader_location :: proc(sh: Shader, name: string) i32 { return GetShaderLocation(sh, name.^*void) }
+
+// ------------------------------------------------------------
+// Filesystem and Paths
+// ------------------------------------------------------------
+FileExists :: extern proc(*void) bool
+DirectoryExists :: extern proc(*void) bool
+IsFileExtension :: extern proc(*void, *void) bool
+GetFileExtension :: extern proc(*void) *i8
+GetFileName :: extern proc(*void) *i8
+GetFileNameWithoutExt :: extern proc(*void) *i8
+GetDirectoryPath :: extern proc(*void) *i8
+GetPrevDirectoryPath :: extern proc(*void) *i8
+GetWorkingDirectory :: extern proc() *i8
+GetApplicationDirectory :: extern proc() *i8
+ChangeDirectory :: extern proc(*void) bool
+IsPathFile :: extern proc(*void) bool
+
+// File data
+LoadFileData :: extern proc(*void, *i32) *u8
+UnloadFileData :: extern proc(*u8) void
+SaveFileData :: extern proc(*void, *void, i32) bool
+ExportDataAsCode :: extern proc(*u8, i32, *void) bool
+LoadFileText :: extern proc(*void) *i8
+UnloadFileText :: extern proc(*i8) void
+SaveFileText :: extern proc(*void, *i8) bool
+
+// Dropped files
+LoadDroppedFiles :: extern proc() FilePathList
+UnloadDroppedFiles :: extern proc(FilePathList) void
+GetFileModTime :: extern proc(*void) i64
+
+// Memory utilities (for freeing data returned by some APIs)
+MemAlloc :: extern proc(u32) *void
+MemRealloc :: extern proc(*void, u32) *void
+MemFree :: extern proc(*void) void
+
+// Compression/Encoding
+CompressData :: extern proc(*u8, i32, *i32) *u8
+DecompressData :: extern proc(*u8, i32, *i32) *u8
+EncodeDataBase64 :: extern proc(*u8, i32, *i32) *i8
+DecodeDataBase64 :: extern proc(*u8, *i32) *u8
+ComputeCRC32 :: extern proc(*u8, i32) u32
+ComputeMD5 :: extern proc(*u8, i32) *u32 // returns pointer to static int[4]
+ComputeSHA1 :: extern proc(*u8, i32) *u32 // returns pointer to static int[5]
+
+// Convenience wrappers
+file_exists :: proc(path: string) bool { return FileExists(path.^*void) }
+dir_exists :: proc(path: string) bool { return DirectoryExists(path.^*void) }
+is_file_extension :: proc(path: string, ext: string) bool { return IsFileExtension(path.^*void, ext.^*void) }
+get_file_extension :: proc(path: string) *i8 { return GetFileExtension(path.^*void) }
+get_file_name :: proc(path: string) *i8 { return GetFileName(path.^*void) }
+get_file_name_wo_ext :: proc(path: string) *i8 { return GetFileNameWithoutExt(path.^*void) }
+get_directory_path :: proc(path: string) *i8 { return GetDirectoryPath(path.^*void) }
+get_prev_directory_path :: proc(path: string) *i8 { return GetPrevDirectoryPath(path.^*void) }
+change_directory :: proc(path: string) bool { return ChangeDirectory(path.^*void) }
+is_path_file :: proc(path: string) bool { return IsPathFile(path.^*void) }
+load_file_text :: proc(path: string) *i8 { return LoadFileText(path.^*void) }
+save_file_text :: proc(path: string, text: *i8) bool { return SaveFileText(path.^*void, text) }
+
+// ------------------------------------------------------------
+// Text codepoints and strings utilities
+// ------------------------------------------------------------
+LoadUTF8 :: extern proc(*i32, i32) *i8
+UnloadUTF8 :: extern proc(*i8) void
+LoadCodepoints :: extern proc(*void, *i32) *i32
+UnloadCodepoints :: extern proc(*i32) void
+GetCodepointCount :: extern proc(*void) i32
+GetCodepoint :: extern proc(*void, *i32) i32
+GetCodepointNext :: extern proc(*void, *i32) i32
+GetCodepointPrevious :: extern proc(*void, *i32) i32
+CodepointToUTF8 :: extern proc(i32, *i32) *i8
+
+TextCopy :: extern proc(*i8, *void) i32
+TextIsEqual :: extern proc(*void, *void) bool
+TextLength :: extern proc(*void) u32
+TextFormat :: extern proc(*void, any) *i8
+TextSubtext :: extern proc(*void, i32, i32) *i8
+TextReplace :: extern proc(*void, *void, *void) *i8
+TextInsert :: extern proc(*void, *void, i32) *i8
+TextJoin :: extern proc(**i8, i32, *void) **i8
+TextSplit :: extern proc(*void, i8, *i32) **i8
+TextAppend :: extern proc(*i8, *void, *i32) void
+TextFindIndex :: extern proc(*void, *void) i32
+TextToUpper :: extern proc(*void) *i8
+TextToLower :: extern proc(*void) *i8
+TextToPascal :: extern proc(*void) *i8
+
+text_length :: proc(s: string) u32 { return TextLength(s.^*void) }
+text_is_equal :: proc(a: string, b: string) bool { return TextIsEqual(a.^*void, b.^*void) }
+text_subtext :: proc(s: string, pos: i32, len: i32) *i8 { return TextSubtext(s.^*void, pos, len) }
