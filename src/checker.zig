@@ -496,7 +496,10 @@ pub const Checker = struct {
             null
         else
             try self.typeFromTypeExpr(decl.ty.unwrap());
+        // Initializers must be evaluated in value context even inside statement blocks
+        try self.pushValueReq(true);
         const rhs_ty = try self.checkExpr(decl.value);
+        self.popValueReq();
         // const rhs_kind = if (rhs_ty != null) self.type_info.store.index.kinds.items[rhs_ty.?.toRaw()] else null;
         // const expect_kind = if (expect_ty != null) self.type_info.store.index.kinds.items[expect_ty.?.toRaw()] else null;
         // std.debug.print("Decl @ {d}, expect={?}, rhs={?}\n", .{ decl.loc.toRaw(), expect_kind, rhs_kind });
@@ -687,7 +690,10 @@ pub const Checker = struct {
                 // Pattern-shaped LHS support: tuple/struct/array destructuring
                 const lkind = self.ast_unit.exprs.index.kinds.items[row.left.toRaw()];
                 if (lkind == .TupleLit or lkind == .StructLit or lkind == .ArrayLit) {
+                    // RHS of assignment should be checked in value context
+                    try self.pushValueReq(true);
                     const rv_ty = try self.checkExpr(row.right);
+                    self.popValueReq();
                     if (rv_ty != null) {
                         const shape_ok = self.checkPatternShapeForAssignExpr(row.left, rv_ty.?);
                         switch (shape_ok) {
@@ -699,7 +705,10 @@ pub const Checker = struct {
                     }
                 } else {
                     const lt = try self.checkExpr(row.left);
+                    // RHS of assignment should be checked in value context
+                    try self.pushValueReq(true);
                     const rt = try self.checkExpr(row.right);
+                    self.popValueReq();
                     if (lt != null and rt != null and (self.assignable(rt.?, lt.?) != .success)) {
                         try self.diags.addError(self.ast_unit.exprs.locs.get(row.loc), .type_annotation_mismatch, .{});
                     }
@@ -736,7 +745,10 @@ pub const Checker = struct {
                 if (!self.inLoop())
                     try self.diags.addError(self.ast_unit.exprs.locs.get(row.loc), .break_outside_loop, .{});
                 if (!row.value.isNone()) {
+                    // Break value must be computed in value context
+                    try self.pushValueReq(true);
                     const vt = try self.checkExpr(row.value.unwrap());
+                    self.popValueReq();
                     if (vt == null) return null;
                     if (self.loopCtxForLabel(row.label)) |ctx| {
                         if (ctx.result_ty) |rt| {
@@ -2244,8 +2256,13 @@ pub const Checker = struct {
         const expect_ty = current_func.result;
         const ret_val_ty = if (rr.value.isNone())
             self.type_info.store.tVoid()
-        else
-            try self.checkExpr(rr.value.unwrap());
+        else blk: {
+            // Return value must be evaluated in value context even in statement bodies
+            try self.pushValueReq(true);
+            const t = try self.checkExpr(rr.value.unwrap());
+            self.popValueReq();
+            break :blk t;
+        };
         // check if the return value type matches the expected return type
         if (ret_val_ty == null) return null;
         if (self.assignable(ret_val_ty.?, expect_ty) != .success) {
@@ -3436,6 +3453,20 @@ pub const Checker = struct {
             return null;
         }
         const er = self.type_info.store.ErrorSet.get(self.type_info.store.index.rows.items[vt.?.toRaw()]);
+        const value_required = self.isValueReq();
+        // Always type-check the handler body
+        const ht = try self.checkExpr(cr.handler);
+        if (ht == null) return null;
+        if (!value_required) {
+            // Used as a statement: no value produced
+            return self.type_info.store.tVoid();
+        }
+        // In value position, ensure handler yields the value type of the error set
+        if (self.assignable(ht.?, er.value_ty) != .success) {
+            // Reuse if-branch mismatch diagnostic for now
+            try self.diags.addError(self.ast_unit.exprs.locs.get(cr.loc), .if_branch_type_mismatch, .{});
+            return null;
+        }
         return er.value_ty;
     }
 

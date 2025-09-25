@@ -145,6 +145,10 @@ fn repl(
     try chk.run();
     // print Diagnostics
     try diags.emitStyled(source, err_writer, "REPL Input", true);
+    if (diags.anyErrors()) {
+        // Do not proceed to TIR/codegen if semantic errors were found
+        return;
+    }
 
     var lower_tir = compiler.lower_tir.LowerTir.init(allocator, &chk.type_info);
     defer lower_tir.deinit();
@@ -257,6 +261,12 @@ fn process_file(
         var chk = compiler.checker.Checker.init(allocator, &diags, &hir);
         defer chk.deinit();
         try chk.run();
+
+        // If checker reported errors, emit and stop before lowering to TIR
+        try diags.emitStyled(source0, err_writer, filename, !cli_args.no_color);
+        if (diags.anyErrors()) {
+            return error.CompilationFailed;
+        }
 
         var lower_tir = compiler.lower_tir.LowerTir.init(allocator, &chk.type_info);
         defer lower_tir.deinit();

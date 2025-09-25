@@ -796,7 +796,17 @@ pub const MlirCodegen = struct {
                 const ret_mlir_type = finfo.ret_type;
 
                 const op = if (!p.value.isNone()) blk: {
-                    const v = self.value_map.get(p.value.unwrap()).?;
+                    const v_opt = self.value_map.get(p.value.unwrap());
+                    var v: mlir.Value = undefined;
+                    if (v_opt) |vv| {
+                        v = vv;
+                    } else {
+                        // Fallback: if the return value is a block param and wasn't mapped, use the first block argument
+                        // (common for join blocks with a single result parameter)
+                        const argc = self.cur_block.?.getNumArguments();
+                        std.debug.assert(argc > 0);
+                        v = self.cur_block.?.getArgument(0);
+                    }
                     if (ret_mlir_type.equal(self.void_ty)) {
                         // Function returns void, but TIR has a value. This indicates an inconsistency.
                         // For now, we\'ll generate a void return, but this should ideally be caught earlier.
@@ -824,7 +834,7 @@ pub const MlirCodegen = struct {
                 const p = t.terms.get(.Br, term_id);
                 const edge = t.terms.Edge.get(p.edge.toRaw());
                 var dest = self.block_map.get(edge.dest).?;
-                const args = t.instrs.val_list_pool.slice(edge.args);
+                const args = t.instrs.value_pool.slice(edge.args);
                 std.debug.assert(dest.getNumArguments() == args.len);
 
                 var small: [4]mlir.Value = undefined;
@@ -866,8 +876,8 @@ pub const MlirCodegen = struct {
                 const tdest = self.block_map.get(then_edge.dest).?;
                 const edest = self.block_map.get(else_edge.dest).?;
 
-                const then_args = t.instrs.val_list_pool.slice(then_edge.args);
-                const else_args = t.instrs.val_list_pool.slice(else_edge.args);
+                const then_args = t.instrs.value_pool.slice(then_edge.args);
+                const else_args = t.instrs.value_pool.slice(else_edge.args);
 
                 const n_then = then_args.len;
                 const n_else = else_args.len;
@@ -905,7 +915,7 @@ pub const MlirCodegen = struct {
                 var scrut = self.value_map.get(p.scrut).?;
                 const default_edge = t.terms.Edge.get(p.default_edge.toRaw());
                 const default_dest = self.block_map.get(default_edge.dest).?;
-                const default_args = t.instrs.val_list_pool.slice(default_edge.args);
+                const default_args = t.instrs.value_pool.slice(default_edge.args);
 
                 const ndef = default_args.len;
                 const def_ops = if (ndef == 0) &[_]mlir.Value{} else blk: {
@@ -950,7 +960,7 @@ pub const MlirCodegen = struct {
                     self.append(icmp);
 
                     const case_edge = t.terms.Edge.get(c.edge.toRaw());
-                    const case_args = t.instrs.val_list_pool.slice(case_edge.args);
+                    const case_args = t.instrs.value_pool.slice(case_edge.args);
                     const nt = case_args.len;
                     const t_ops = if (nt == 0) &[_]mlir.Value{} else blk: {
                         const buf = try self.gpa.alloc(mlir.Value, nt);
@@ -1349,6 +1359,13 @@ pub const MlirCodegen = struct {
                 const opt_ty = store.get(.Optional, ty);
                 const inner = try self.llvmTypeOf(store, opt_ty.elem);
                 const fields = [_]mlir.Type{ self.i1_ty, inner };
+                break :blk mlir.LLVM.getLLVMStructTypeLiteral(self.ctx, &fields, false);
+            },
+
+            .ErrorSet => blk: {
+                const es = store.get(.ErrorSet, ty);
+                const val = try self.llvmTypeOf(store, es.value_ty);
+                const fields = [_]mlir.Type{ self.i1_ty, val };
                 break :blk mlir.LLVM.getLLVMStructTypeLiteral(self.ctx, &fields, false);
             },
 

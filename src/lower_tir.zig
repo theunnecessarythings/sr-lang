@@ -618,7 +618,12 @@ pub const LowerTir = struct {
                             const g = try self.lowerExpr(a, env, f, &test_blk, arm.guard.unwrap());
                             final_ok = test_blk.builder.binBool(&test_blk, .LogicalAnd, final_ok, g);
                         }
-                        try f.builder.condBr(&test_blk, final_ok, body_blk.id, &.{}, next_blk.id, &.{});
+                        // If this is the last arm (next is join), ensure else edge passes a value to the join.
+                        const else_args = if (next_blk.id.toRaw() == join_blk.id.toRaw()) blk_args: {
+                            const uv = f.builder.constUndef(&test_blk, res_ty);
+                            break :blk_args &.{uv};
+                        } else &.{};
+                        try f.builder.condBr(&test_blk, final_ok, body_blk.id, &.{}, next_blk.id, else_args);
                         try self.lowerExprAsStmtList(a, env, f, &body_blk, arm.body);
                         if (body_blk.term.isNone()) {
                             const v = try self.lowerBlockExprValue(a, env, f, &body_blk, arm.body, res_ty);
