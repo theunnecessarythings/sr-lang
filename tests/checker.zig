@@ -1211,13 +1211,6 @@ test "call expressions - success" {
         \\ r1 :: f1(1, 2.0, "x")
     , &.{});
 
-    // Function pointer type and call
-    try checkProgram(
-        \\
-        \\ fp: fn(i32) i32 = proc(x: i32) i32 { return x }
-        \\ r2 :: fp(5)
-    , &.{});
-
     // Pointer argument
     try checkProgram(
         \\

@@ -20,28 +20,23 @@ pub fn isIntegerKind(_: *const Checker, k: types.TypeKind) bool {
 pub fn typeSize(self: *Checker, ty_id: types.TypeId) ?usize {
     const k = self.type_info.store.index.kinds.items[ty_id.toRaw()];
     return switch (k) {
-        .I8, .U8 => 1,
+        .I8, .U8, .Bool => 1,
         .I16, .U16 => 2,
         .I32, .U32, .F32 => 4,
-        .I64, .U64, .F64, .Usize => 8, // Assuming usize is 8 bytes for 64-bit
-        .Bool => 1, // Typically 1 byte
-        .Ptr => 8, // Assuming 64-bit pointers
-        .Void => 0, // No size
-        .Any => null, // Unknown size
-        .String => 8, // Assuming string is a pointer (8 bytes) for 64-bit (TODO: more complex)
-        .Array => {
+        .I64, .U64, .F64, .Usize => 8, // best-effort default for 64-bit targets
+        .Ptr => 8, // best-effort default for 64-bit targets
+        .Void => 0,
+        .Any => null, // unknown by definition
+        .String => 8, // best-effort: pointer-like handle; real impl is more complex
+        .Slice => 16, // best-effort: ptr + len on 64-bit
+        .Array => blk: {
             const arr = self.type_info.store.Array.get(self.type_info.store.index.rows.items[ty_id.toRaw()]);
             const elem_size = typeSize(self, arr.elem) orelse return null;
-            return elem_size * arr.len;
+            break :blk std.math.mul(usize, elem_size, arr.len) catch return null;
         },
-        .Slice => 16, // Pointer + length (assuming 64-bit)
-        .Optional => {
-            const opt = self.type_info.store.Optional.get(self.type_info.store.index.rows.items[ty_id.toRaw()]);
-            const elem_size = typeSize(self, opt.elem) orelse return null;
-            return elem_size + 1; // Element size + 1 byte for discriminant
-        },
-        // TODO: Implement for other aggregate types like Struct, Tuple, Union, etc.
-        else => null, // Unknown or complex size
+        // Optional/Struct/Tuple/Union/Map/Error/Variant/ErrorSet/Simd/Tensor:
+        // ABI/padding/representation are not modeled here yet.
+        else => null,
     };
 }
 
@@ -69,6 +64,17 @@ pub fn checkTypeOf(self: *Checker, id: ast.ExprId) !?types.TypeId {
 // =========================================================
 // Type expressions
 // =========================================================
+fn variantPayloadType(self: *Checker, variant_ty: types.TypeId, tag: ast.StrId) ?types.TypeId {
+    const vt = self.type_info.store.Variant.get(self.type_info.store.index.rows.items[variant_ty.toRaw()]);
+    const cases = self.type_info.store.field_pool.slice(vt.variants);
+    var i: usize = 0;
+    while (i < cases.len) : (i += 1) {
+        const vc = self.type_info.store.Field.get(cases[i].toRaw());
+        if (vc.name.toRaw() == tag.toRaw()) return vc.ty;
+    }
+    return null;
+}
+
 pub fn typeFromTypeExpr(self: *Checker, id: ast.ExprId) anyerror!?types.TypeId {
     const k = self.ast_unit.exprs.index.kinds.items[id.toRaw()];
     return switch (k) {
@@ -178,25 +184,27 @@ pub fn typeFromTypeExpr(self: *Checker, id: ast.ExprId) anyerror!?types.TypeId {
         },
         .SimdType => blk_simd: {
             const row = self.ast_unit.exprs.get(.SimdType, id);
-            // element type must be numeric (int or float)
             const elem_ty = (try typeFromTypeExpr(self, row.elem)) orelse break :blk_simd null;
             const ek = self.type_info.store.index.kinds.items[elem_ty.toRaw()];
             if (!isNumericKind(self, ek)) {
                 try self.diags.addError(self.ast_unit.exprs.locs.get(row.loc), .simd_invalid_element_type, .{});
                 break :blk_simd null;
             }
-            // lanes must be an integer literal
             const lk = self.ast_unit.exprs.index.kinds.items[row.lanes.toRaw()];
             if (lk != .Literal) {
                 try self.diags.addError(self.ast_unit.exprs.locs.get(row.loc), .simd_lanes_not_integer_literal, .{});
                 break :blk_simd null;
             }
             const lit = self.ast_unit.exprs.get(.Literal, row.lanes);
-            if (lit.kind != .int) {
+            if (lit.kind != .int or lit.value.isNone()) {
                 try self.diags.addError(self.ast_unit.exprs.locs.get(row.loc), .simd_lanes_not_integer_literal, .{});
                 break :blk_simd null;
             }
-            // Accept the type (we don't model concrete simd in TypeStore yet)
+            const lanes_val = std.fmt.parseInt(usize, self.ast_unit.exprs.strs.get(lit.value.unwrap()), 10) catch 0;
+            if (lanes_val == 0) {
+                try self.diags.addError(self.ast_unit.exprs.locs.get(row.loc), .simd_lanes_not_integer_literal, .{});
+                break :blk_simd null;
+            }
             break :blk_simd self.type_info.store.tAny();
         },
         .TensorType => blk_tensor: {
@@ -265,6 +273,7 @@ pub fn typeFromTypeExpr(self: *Checker, id: ast.ExprId) anyerror!?types.TypeId {
             }
             break :blk_un self.type_info.store.mkUnion(buf);
         },
+
         .EnumType => blk_en: {
             const row = self.ast_unit.exprs.get(.EnumType, id);
             const efs = self.ast_unit.exprs.efield_pool.slice(row.fields);
@@ -273,6 +282,13 @@ pub fn typeFromTypeExpr(self: *Checker, id: ast.ExprId) anyerror!?types.TypeId {
                 self.type_info.store.tI32()
             else
                 (try typeFromTypeExpr(self, row.discriminant.unwrap())) orelse return null;
+
+            // Ensure the tag type is an integer.
+            const tk = self.type_info.store.index.kinds.items[tag_ty.toRaw()];
+            if (!isIntegerKind(self, tk)) {
+                try self.diags.addError(self.ast_unit.exprs.locs.get(row.loc), .enum_discriminant_not_integer, .{});
+                break :blk_en null;
+            }
 
             var member_buf = try self.gpa.alloc(types.TypeStore.EnumMemberArg, efs.len);
             defer self.gpa.free(member_buf);
@@ -284,7 +300,6 @@ pub fn typeFromTypeExpr(self: *Checker, id: ast.ExprId) anyerror!?types.TypeId {
             var i: usize = 0;
             while (i < efs.len) : (i += 1) {
                 const enum_field = self.ast_unit.exprs.EnumField.get(efs[i].toRaw());
-                const name = self.ast_unit.exprs.strs.get(enum_field.name);
 
                 const gop = try seen.getOrPut(self.gpa, enum_field.name.toRaw());
                 if (gop.found_existing) {
@@ -313,7 +328,7 @@ pub fn typeFromTypeExpr(self: *Checker, id: ast.ExprId) anyerror!?types.TypeId {
                     current_value = parsed;
                 }
 
-                member_buf[i] = .{ .name = name, .value = current_value };
+                member_buf[i] = .{ .name = enum_field.name, .value = current_value };
                 next_value = current_value + 1;
             }
             break :blk_en self.type_info.store.mkEnum(member_buf, tag_ty);
@@ -471,39 +486,10 @@ pub fn typeFromTypeExpr(self: *Checker, id: ast.ExprId) anyerror!?types.TypeId {
                     try self.diags.addError(self.ast_unit.exprs.locs.get(fr.loc), .unknown_struct_field, .{});
                     break :blk_fa null;
                 },
-                // NEW: handle Variant directly (e.g., V2.C in type position).
                 .Variant => {
-                    const vt = self.type_info.store.Variant.get(self.type_info.store.index.rows.items[parent_ty.toRaw()]);
-                    const cases = self.type_info.store.field_pool.slice(vt.variants);
-                    var i: usize = 0;
-                    while (i < cases.len) : (i += 1) {
-                        const vc = self.type_info.store.Field.get(cases[i].toRaw());
-                        if (vc.name.toRaw() == fr.field.toRaw()) {
-                            // Return the payload type of the chosen variant (struct/tuple/void).
-                            return vc.ty;
-                        }
-                    }
+                    if (variantPayloadType(self, parent_ty, fr.field)) |pt| return pt;
                     try self.diags.addError(self.ast_unit.exprs.locs.get(fr.loc), .unknown_variant_tag, .{});
                     break :blk_fa null;
-                },
-                .TypeType => {
-                    // Back-compat in case a type value ever appears here:
-                    const tt = self.type_info.store.TypeType.get(self.type_info.store.index.rows.items[parent_ty.toRaw()]);
-                    const inner_kind = self.type_info.store.index.kinds.items[tt.of.toRaw()];
-                    if (inner_kind == .Variant) {
-                        const vt = self.type_info.store.Variant.get(self.type_info.store.index.rows.items[tt.of.toRaw()]);
-                        const cases = self.type_info.store.field_pool.slice(vt.variants);
-                        var i: usize = 0;
-                        while (i < cases.len) : (i += 1) {
-                            const vc = self.type_info.store.Field.get(cases[i].toRaw());
-                            if (vc.name.toRaw() == fr.field.toRaw()) return vc.ty;
-                        }
-                        try self.diags.addError(self.ast_unit.exprs.locs.get(fr.loc), .unknown_variant_tag, .{});
-                        break :blk_fa null;
-                    } else {
-                        try self.diags.addError(self.ast_unit.exprs.locs.get(fr.loc), .field_access_on_non_aggregate, .{});
-                        break :blk_fa null;
-                    }
                 },
                 else => {
                     try self.diags.addError(self.ast_unit.exprs.locs.get(fr.loc), .field_access_on_non_aggregate, .{});
@@ -537,6 +523,49 @@ pub fn translateType(self: *Checker, src: *types.TypeStore, dst: *types.TypeStor
         .String => dst.tString(),
         .Any => dst.tAny(),
         .Noreturn => dst.tNoReturn(),
+
+        .Ptr => blk: {
+            const pr = src.get(.Ptr, ty);
+            const et = translateType(self, src, dst, pr.elem);
+            break :blk dst.mkPtr(et, pr.is_const);
+        },
+        .Optional => blk: {
+            const pr = src.get(.Optional, ty);
+            const et = translateType(self, src, dst, pr.elem);
+            break :blk dst.mkOptional(et);
+        },
+        .Array => blk: {
+            const ar = src.get(.Array, ty);
+            const et = translateType(self, src, dst, ar.elem);
+            break :blk dst.mkArray(et, ar.len);
+        },
+        .DynArray => blk: {
+            const dr = src.get(.DynArray, ty);
+            const et = translateType(self, src, dst, dr.elem);
+            break :blk dst.mkDynArray(et);
+        },
+        .Slice => blk: {
+            const sr_ = src.get(.Slice, ty);
+            const et = translateType(self, src, dst, sr_.elem);
+            break :blk dst.mkSlice(et);
+        },
+        .Map => blk: {
+            const mr = src.get(.Map, ty);
+            const kt = translateType(self, src, dst, mr.key);
+            const vt = translateType(self, src, dst, mr.value);
+            break :blk dst.mkMap(kt, vt);
+        },
+        .Tuple => blk: {
+            const tr = src.get(.Tuple, ty);
+            const src_elems = src.type_pool.slice(tr.elems);
+            var buf = dst.gpa.alloc(types.TypeId, src_elems.len) catch @panic("OOM");
+            defer dst.gpa.free(buf);
+            var i: usize = 0;
+            while (i < src_elems.len) : (i += 1) {
+                buf[i] = translateType(self, src, dst, src_elems[i]);
+            }
+            break :blk dst.mkTuple(buf);
+        },
         .Struct => blk: {
             const sr = src.get(.Struct, ty);
             const sfields = src.field_pool.slice(sr.fields);
@@ -549,15 +578,60 @@ pub fn translateType(self: *Checker, src: *types.TypeStore, dst: *types.TypeStor
             }
             break :blk dst.mkStruct(buf);
         },
-        .Ptr => blk: {
-            const pr = src.get(.Ptr, ty);
-            const et = translateType(self, src, dst, pr.elem);
-            break :blk dst.mkPtr(et, pr.is_const);
+        .Union => blk: {
+            const ur = src.get(.Union, ty);
+            const ufields = src.field_pool.slice(ur.fields);
+            var buf = dst.gpa.alloc(types.TypeStore.StructFieldArg, ufields.len) catch @panic("OOM");
+            defer dst.gpa.free(buf);
+            var i: usize = 0;
+            while (i < ufields.len) : (i += 1) {
+                const f = src.Field.get(ufields[i].toRaw());
+                buf[i] = .{ .name = f.name, .ty = translateType(self, src, dst, f.ty) };
+            }
+            break :blk dst.mkUnion(buf);
         },
-        .Optional => blk: {
-            const opt_row = src.get(.Optional, ty);
-            const et = translateType(self, src, dst, opt_row.elem);
-            break :blk dst.mkOptional(et);
+        .Enum => blk: {
+            const er = src.get(.Enum, ty);
+            const members = src.enum_member_pool.slice(er.members);
+            var buf = dst.gpa.alloc(types.TypeStore.EnumMemberArg, members.len) catch @panic("OOM");
+            defer dst.gpa.free(buf);
+            var i: usize = 0;
+            while (i < members.len) : (i += 1) {
+                const m = src.EnumMember.get(members[i].toRaw());
+                buf[i] = .{ .name = m.name, .value = m.value };
+            }
+            const tag = translateType(self, src, dst, er.tag_type);
+            break :blk dst.mkEnum(buf, tag);
+        },
+        .Variant => blk: {
+            const vr = src.get(.Variant, ty);
+            const cases = src.field_pool.slice(vr.variants);
+            var buf = dst.gpa.alloc(types.TypeStore.StructFieldArg, cases.len) catch @panic("OOM");
+            defer dst.gpa.free(buf);
+            var i: usize = 0;
+            while (i < cases.len) : (i += 1) {
+                const c = src.Field.get(cases[i].toRaw());
+                buf[i] = .{ .name = c.name, .ty = translateType(self, src, dst, c.ty) };
+            }
+            break :blk dst.mkVariant(buf);
+        },
+        .Error => blk: {
+            const er = src.get(.Error, ty);
+            const cases = src.field_pool.slice(er.variants);
+            var buf = dst.gpa.alloc(types.TypeStore.StructFieldArg, cases.len) catch @panic("OOM");
+            defer dst.gpa.free(buf);
+            var i: usize = 0;
+            while (i < cases.len) : (i += 1) {
+                const c = src.Field.get(cases[i].toRaw());
+                buf[i] = .{ .name = c.name, .ty = translateType(self, src, dst, c.ty) };
+            }
+            break :blk dst.mkError(buf);
+        },
+        .ErrorSet => blk: {
+            const es = src.get(.ErrorSet, ty);
+            const v = translateType(self, src, dst, es.value_ty);
+            const e = translateType(self, src, dst, es.error_ty);
+            break :blk dst.mkErrorSet(v, e);
         },
         .Function => blk: {
             const fr = src.get(.Function, ty);
@@ -569,6 +643,8 @@ pub fn translateType(self: *Checker, src: *types.TypeStore, dst: *types.TypeStor
             const res_t = translateType(self, src, dst, fr.result);
             break :blk dst.mkFunction(buf, res_t, fr.is_variadic, fr.is_pure);
         },
+
+        // Simd/Tensor/Complex/etc. not fully modeled in dst store yet:
         else => dst.tAny(),
     };
 }

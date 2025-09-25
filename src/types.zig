@@ -363,13 +363,13 @@ pub const TypeStore = struct {
         const r = self.type_pool.pushMany(self.gpa, params);
         return self.add(.Function, .{ .params = r, .result = result, .is_variadic = is_variadic, .is_pure = is_pure });
     }
-    pub const EnumMemberArg = struct { name: []const u8, value: u64 };
+    pub const EnumMemberArg = struct { name: StrId, value: u64 };
     pub fn mkEnum(self: *TypeStore, members: []const EnumMemberArg, tag_type: TypeId) TypeId {
         var ids = self.gpa.alloc(EnumMemberId, members.len) catch @panic("OOM");
         defer self.gpa.free(ids);
         var i: usize = 0;
         while (i < members.len) : (i += 1) {
-            const mid = self.addEnumMember(.{ .name = self.strs.intern(members[i].name), .value = members[i].value });
+            const mid = self.addEnumMember(.{ .name = members[i].name, .value = members[i].value });
             ids[i] = mid;
         }
         const r = self.enum_member_pool.pushMany(self.gpa, ids);

@@ -34,6 +34,26 @@ pub const Checker = struct {
     current_loop_pat: ast.OptPatternId = ast.OptPatternId.none(),
     current_loop_subject_ty: ?types.TypeId = null,
 
+    // --------- tiny helpers (readability & consistency) ----------
+    inline fn typeKind(self: *const Checker, t: types.TypeId) types.TypeKind {
+        return self.type_info.store.index.kinds.items[t.toRaw()];
+    }
+    inline fn trow(self: *const Checker, t: types.TypeId) u32 {
+        return self.type_info.store.index.rows.items[t.toRaw()];
+    }
+    inline fn tEq(_: *const Checker, a: types.TypeId, b: types.TypeId) bool {
+        return a.toRaw() == b.toRaw();
+    }
+    inline fn exprLocFromId(self: *Checker, eid: ast.ExprId) Loc {
+        const k = self.ast_unit.exprs.index.kinds.items[eid.toRaw()];
+        return switch (k) {
+            inline else => |x| self.exprLoc(self.ast_unit.exprs.get(x, eid)),
+        };
+    }
+    inline fn exprLoc(self: *const Checker, expr: anytype) Loc {
+        return self.ast_unit.exprs.locs.get(expr.loc);
+    }
+
     pub fn init(
         gpa: std.mem.Allocator,
         diags: *Diagnostics,
@@ -47,10 +67,12 @@ pub const Checker = struct {
             .type_info = types.TypeInfo.init(gpa, unit.exprs.strs),
         };
     }
+
     pub fn setImportResolver(self: *Checker, r: *ImportResolver, base_dir: []const u8) void {
         self.import_resolver = r;
         self.import_base_dir = base_dir;
     }
+
     pub fn deinit(self: *Checker) void {
         self.func_stack.deinit(self.gpa);
         self.loop_stack.deinit(self.gpa);
@@ -82,6 +104,8 @@ pub const Checker = struct {
         for (decl_ids) |did| {
             try self.checkDecl(did);
         }
+        // Returning a copy-by-value is fine as long as callers treat it as BORROWED.
+        // Prefer exposing a &TypeInfo accessor in the long run.
         return self.type_info;
     }
 
@@ -191,15 +215,15 @@ pub const Checker = struct {
     };
 
     pub fn assignable(self: *Checker, got: types.TypeId, expect: types.TypeId) AssignErrors {
-        if (got.toRaw() == expect.toRaw()) return .success;
-        const got_kind = self.type_info.store.index.kinds.items[got.toRaw()];
-        const expected_kind = self.type_info.store.index.kinds.items[expect.toRaw()];
+        if (self.tEq(got, expect)) return .success;
+        const got_kind = self.typeKind(got);
+        const expected_kind = self.typeKind(expect);
         if (expected_kind == .Any or got_kind == .Any) return .success;
 
         // Assigning `null` (modeled as Optional(Any)) to a non-optional target should error clearly.
         if (got_kind == .Optional and expected_kind != .Optional) {
-            const got_opt = self.type_info.store.Optional.get(self.type_info.store.index.rows.items[got.toRaw()]);
-            const elem_kind = self.type_info.store.index.kinds.items[got_opt.elem.toRaw()];
+            const got_opt = self.type_info.store.Optional.get(self.trow(got));
+            const elem_kind = self.typeKind(got_opt.elem);
             if (elem_kind == .Any) return .assign_null_to_non_optional;
             // Implicit unwrap from Optional(T) -> T is not permitted.
             return .failure;
@@ -208,29 +232,42 @@ pub const Checker = struct {
         switch (expected_kind) {
             .Slice => {
                 if (got_kind != .Slice) return .failure;
-                const expected_ty = self.type_info.store.Slice.get(self.type_info.store.index.rows.items[expect.toRaw()]);
-                const got_ty = self.type_info.store.Slice.get(self.type_info.store.index.rows.items[got.toRaw()]);
+                const expected_ty = self.type_info.store.Slice.get(self.trow(expect));
+                const got_ty = self.type_info.store.Slice.get(self.trow(got));
                 return self.assignable(got_ty.elem, expected_ty.elem);
             },
             .Array => {
                 if (got_kind != .Array) return .expected_array_type;
-                const expected_ty = self.type_info.store.Array.get(self.type_info.store.index.rows.items[expect.toRaw()]);
-                const got_ty = self.type_info.store.Array.get(self.type_info.store.index.rows.items[got.toRaw()]);
+                const expected_ty = self.type_info.store.Array.get(self.trow(expect));
+                const got_ty = self.type_info.store.Array.get(self.trow(got));
                 const elem_ok = self.assignable(got_ty.elem, expected_ty.elem);
                 if (expected_ty.len != got_ty.len)
                     return .array_length_mismatch;
                 return elem_ok;
             },
             .DynArray => {
-                if (got_kind != .Array) return .expected_array_type;
-                const expected_ty = self.type_info.store.DynArray.get(self.type_info.store.index.rows.items[expect.toRaw()]);
-                const got_ty = self.type_info.store.Array.get(self.type_info.store.index.rows.items[got.toRaw()]);
-                return self.assignable(got_ty.elem, expected_ty.elem);
+                // BUGFIX: allow assigning from DynArray itself AND from Array/Slice (element-compatible).
+                const expected_ty = self.type_info.store.DynArray.get(self.trow(expect));
+                switch (got_kind) {
+                    .DynArray => {
+                        const got_ty = self.type_info.store.DynArray.get(self.trow(got));
+                        return self.assignable(got_ty.elem, expected_ty.elem);
+                    },
+                    .Array => {
+                        const got_ty = self.type_info.store.Array.get(self.trow(got));
+                        return self.assignable(got_ty.elem, expected_ty.elem);
+                    },
+                    .Slice => {
+                        const got_ty = self.type_info.store.Slice.get(self.trow(got));
+                        return self.assignable(got_ty.elem, expected_ty.elem);
+                    },
+                    else => return .expected_array_type,
+                }
             },
             .Tuple => {
                 if (got_kind != .Tuple) return .expected_tuple_type;
-                const expected_ty = self.type_info.store.Tuple.get(self.type_info.store.index.rows.items[expect.toRaw()]);
-                const got_ty = self.type_info.store.Tuple.get(self.type_info.store.index.rows.items[got.toRaw()]);
+                const expected_ty = self.type_info.store.Tuple.get(self.trow(expect));
+                const got_ty = self.type_info.store.Tuple.get(self.trow(got));
                 if (expected_ty.elems.len != got_ty.elems.len) return .tuple_arity_mismatch;
                 const got_elems = self.type_info.store.type_pool.slice(got_ty.elems);
                 const expected_elems = self.type_info.store.type_pool.slice(expected_ty.elems);
@@ -242,18 +279,15 @@ pub const Checker = struct {
                 return .success;
             },
             .Map => {
+                // Allow "empty array" sugar to coerce to any map type.
                 if (got_kind == .Array) {
-                    const got_ty = self.type_info.store.Array.get(self.type_info.store.index.rows.items[got.toRaw()]);
+                    const got_ty = self.type_info.store.Array.get(self.trow(got));
                     if (got_ty.len != 0) return .expected_map_type;
-                    return .success; // empty array can be assigned to any map type
+                    return .success;
                 }
-
-                // Could be a degenerate case, single key value pair that looks like a map type
-                if (got_kind == .TypeType) {}
                 if (got_kind != .Map) return .expected_map_type;
-
-                const expected_ty = self.type_info.store.Map.get(self.type_info.store.index.rows.items[expect.toRaw()]);
-                const got_ty = self.type_info.store.Map.get(self.type_info.store.index.rows.items[got.toRaw()]);
+                const expected_ty = self.type_info.store.Map.get(self.trow(expect));
+                const got_ty = self.type_info.store.Map.get(self.trow(got));
                 const key_ok = self.assignable(got_ty.key, expected_ty.key);
                 const value_ok = self.assignable(got_ty.value, expected_ty.value);
                 if (key_ok != .success) return .map_wrong_key_type;
@@ -261,17 +295,17 @@ pub const Checker = struct {
                 return .success;
             },
             .Optional => {
-                const expected_ty = self.type_info.store.Optional.get(self.type_info.store.index.rows.items[expect.toRaw()]);
+                const expected_ty = self.type_info.store.Optional.get(self.trow(expect));
                 if (got_kind == .Optional) {
-                    const got_ty = self.type_info.store.Optional.get(self.type_info.store.index.rows.items[got.toRaw()]);
+                    const got_ty = self.type_info.store.Optional.get(self.trow(got));
                     return self.assignable(got_ty.elem, expected_ty.elem);
                 }
                 return self.assignable(got, expected_ty.elem);
             },
             .Ptr => {
                 if (got_kind != .Ptr) return .expected_pointer_type;
-                const expected_ty = self.type_info.store.Ptr.get(self.type_info.store.index.rows.items[expect.toRaw()]);
-                const got_ty = self.type_info.store.Ptr.get(self.type_info.store.index.rows.items[got.toRaw()]);
+                const expected_ty = self.type_info.store.Ptr.get(self.trow(expect));
+                const got_ty = self.type_info.store.Ptr.get(self.trow(got));
                 if (!expected_ty.is_const and got_ty.is_const) {
                     return .pointer_constness_mismatch;
                 }
@@ -286,8 +320,8 @@ pub const Checker = struct {
             .Noreturn => return .noreturn_not_storable,
             .Union => {
                 if (got_kind != .Struct) return .expected_struct_type;
-                const expected_ty = self.type_info.store.Union.get(self.type_info.store.index.rows.items[expect.toRaw()]);
-                const got_ty = self.type_info.store.Struct.get(self.type_info.store.index.rows.items[got.toRaw()]);
+                const expected_ty = self.type_info.store.Union.get(self.trow(expect));
+                const got_ty = self.type_info.store.Struct.get(self.trow(got));
                 const expected_fields = self.type_info.store.field_pool.slice(expected_ty.fields);
                 const got_fields = self.type_info.store.field_pool.slice(got_ty.fields);
                 // Should only have one field set in union
@@ -309,8 +343,8 @@ pub const Checker = struct {
             },
             .Struct => {
                 if (got_kind != .Struct) return .expected_struct_type;
-                const expected_ty = self.type_info.store.Struct.get(self.type_info.store.index.rows.items[expect.toRaw()]);
-                const got_ty = self.type_info.store.Struct.get(self.type_info.store.index.rows.items[got.toRaw()]);
+                const expected_ty = self.type_info.store.Struct.get(self.trow(expect));
+                const got_ty = self.type_info.store.Struct.get(self.trow(got));
                 const expected_fields = self.type_info.store.field_pool.slice(expected_ty.fields);
                 const got_fields = self.type_info.store.field_pool.slice(got_ty.fields);
                 if (expected_fields.len < got_fields.len) return .unknown_struct_field;
@@ -335,27 +369,27 @@ pub const Checker = struct {
             },
             .Enum => {
                 if (got_kind != .Enum) return .expected_enum_type;
-                if (got.toRaw() != expect.toRaw()) return .failure;
+                if (!self.tEq(got, expect)) return .failure;
                 return .success;
             },
             .Function => {
                 if (got_kind != .Function) return .failure;
-                const efn = self.type_info.store.Function.get(self.type_info.store.index.rows.items[expect.toRaw()]);
-                const gfn = self.type_info.store.Function.get(self.type_info.store.index.rows.items[got.toRaw()]);
+                const efn = self.type_info.store.Function.get(self.trow(expect));
+                const gfn = self.type_info.store.Function.get(self.trow(got));
                 if (efn.is_variadic != gfn.is_variadic) return .failure;
                 const eparams = self.type_info.store.type_pool.slice(efn.params);
                 const gparams = self.type_info.store.type_pool.slice(gfn.params);
                 if (eparams.len != gparams.len) return .failure;
                 var i: usize = 0;
                 while (i < eparams.len) : (i += 1) {
-                    if (eparams[i].toRaw() != gparams[i].toRaw()) return .failure;
+                    if (!self.tEq(eparams[i], gparams[i])) return .failure;
                 }
-                if (efn.result.toRaw() != gfn.result.toRaw()) return .failure;
+                if (!self.tEq(efn.result, gfn.result)) return .failure;
                 if (efn.is_pure and !gfn.is_pure) return .failure;
                 return .success;
             },
             .ErrorSet => {
-                const expected_ty = self.type_info.store.ErrorSet.get(self.type_info.store.index.rows.items[expect.toRaw()]);
+                const expected_ty = self.type_info.store.ErrorSet.get(self.trow(expect));
                 if (got_kind == .Error) {
                     return self.assignable(got, expected_ty.error_ty);
                 } else {
@@ -382,38 +416,39 @@ pub const Checker = struct {
     fn checkDecl(self: *Checker, decl_id: ast.DeclId) !void {
         const decl = self.ast_unit.exprs.Decl.get(decl_id.toRaw());
         try self.bindDeclPattern(decl_id, decl);
+
         const expect_ty = if (decl.ty.isNone())
             null
         else
             try check_types.typeFromTypeExpr(self, decl.ty.unwrap());
+
         // Initializers must be evaluated in value context even inside statement blocks
         try self.pushValueReq(true);
         const rhs_ty = try self.checkExpr(decl.value);
         self.popValueReq();
-        // const rhs_kind = if (rhs_ty != null) self.type_info.store.index.kinds.items[rhs_ty.?.toRaw()] else null;
-        // const expect_kind = if (expect_ty != null) self.type_info.store.index.kinds.items[expect_ty.?.toRaw()] else null;
-        // std.debug.print("Decl @ {d}, expect={?}, rhs={?}\n", .{ decl.loc.toRaw(), expect_kind, rhs_kind });
-        if (rhs_ty == null)
-            return;
+
+        if (rhs_ty == null) return;
+
         // If LHS is a pattern, ensure the RHS type matches the pattern's shape.
         if (!decl.pattern.isNone()) {
             const shape_ok = pattern_matching.checkPatternShapeForDecl(self, decl.pattern.unwrap(), rhs_ty.?);
             switch (shape_ok) {
                 .ok => {},
                 .tuple_arity_mismatch => {
-                    try self.diags.addError(self.ast_unit.exprs.locs.get(decl.loc), .tuple_arity_mismatch, .{});
+                    try self.diags.addError(self.exprLoc(decl), .tuple_arity_mismatch, .{});
                     return;
                 },
                 .struct_field_mismatch => {
-                    try self.diags.addError(self.ast_unit.exprs.locs.get(decl.loc), .struct_pattern_field_mismatch, .{});
+                    try self.diags.addError(self.exprLoc(decl), .struct_pattern_field_mismatch, .{});
                     return;
                 },
                 .shape_mismatch => {
-                    try self.diags.addError(self.ast_unit.exprs.locs.get(decl.loc), .pattern_shape_mismatch, .{});
+                    try self.diags.addError(self.exprLoc(decl), .pattern_shape_mismatch, .{});
                     return;
                 },
             }
         }
+
         try self.tryTypeCoercion(decl_id, rhs_ty.?, expect_ty);
     }
 
@@ -425,12 +460,12 @@ pub const Checker = struct {
     ) !void {
         if (expect_ty == null) {
             // Some degenerate cases where we don't infer from RHS
-            const rhs_kind = self.type_info.store.index.kinds.items[rhs_ty.toRaw()];
+            const rhs_kind = self.typeKind(rhs_ty);
             switch (rhs_kind) {
                 .Array => {
-                    const arr = self.type_info.store.Array.get(self.type_info.store.index.rows.items[rhs_ty.toRaw()]);
+                    const arr = self.type_info.store.Array.get(self.trow(rhs_ty));
                     if (arr.len == 0) {
-                        try self.diags.addError(self.ast_unit.exprs.locs.get(self.ast_unit.exprs.Decl.get(decl.toRaw()).loc), .cannot_infer_type_from_empty_array, .{});
+                        try self.diags.addError(self.exprLoc(self.ast_unit.exprs.Decl.get(decl.toRaw())), .cannot_infer_type_from_empty_array, .{});
                         return;
                     }
                 },
@@ -444,31 +479,32 @@ pub const Checker = struct {
             const d = self.ast_unit.exprs.Decl.get(decl.toRaw());
             switch (is_assignable) {
                 .success => {
-                    self.type_info.decl_types.items[decl.toRaw()] = expect_ty.?; // use expected type
-                    self.type_info.expr_types.items[self.ast_unit.exprs.Decl.get(decl.toRaw()).value.toRaw()] = expect_ty.?; // also update RHS expr type
+                    // Use expected type and also update RHS expr type for consistency.
+                    self.type_info.decl_types.items[decl.toRaw()] = expect_ty.?;
+                    self.type_info.expr_types.items[d.value.toRaw()] = expect_ty.?;
                 },
-                .map_wrong_key_type => try self.diags.addError(self.ast_unit.exprs.locs.get(d.loc), .map_wrong_key_type, .{}),
-                .union_literal_no_fields => try self.diags.addError(self.ast_unit.exprs.locs.get(d.loc), .union_empty_literal, .{}),
-                .union_literal_multiple_fields => try self.diags.addError(self.ast_unit.exprs.locs.get(d.loc), .union_literal_multiple_fields, .{}),
-                .expected_enum_type => try self.diags.addError(self.ast_unit.exprs.locs.get(d.loc), .expected_enum_type, .{}),
-                .expected_struct_type => try self.diags.addError(self.ast_unit.exprs.locs.get(d.loc), .expected_struct_type, .{}),
-                .struct_field_count_mismatch => try self.diags.addError(self.ast_unit.exprs.locs.get(d.loc), .struct_field_count_mismatch, .{}),
-                .unknown_struct_field => try self.diags.addError(self.ast_unit.exprs.locs.get(d.loc), .unknown_struct_field, .{}),
-                .struct_field_name_mismatch => try self.diags.addError(self.ast_unit.exprs.locs.get(d.loc), .struct_field_name_mismatch, .{}),
-                .noreturn_not_storable => try self.diags.addError(self.ast_unit.exprs.locs.get(d.loc), .noreturn_not_storable, .{}),
-                .type_value_mismatch => try self.diags.addError(self.ast_unit.exprs.locs.get(d.loc), .type_value_mismatch, .{}),
-                .array_length_mismatch => try self.diags.addError(self.ast_unit.exprs.locs.get(d.loc), .array_length_mismatch, .{}),
-                .tuple_arity_mismatch => try self.diags.addError(self.ast_unit.exprs.locs.get(d.loc), .tuple_arity_mismatch, .{}),
-                .assign_null_to_non_optional => try self.diags.addError(self.ast_unit.exprs.locs.get(d.loc), .assign_null_to_non_optional, .{}),
-                .pointer_type_mismatch => try self.diags.addError(self.ast_unit.exprs.locs.get(d.loc), .pointer_type_mismatch, .{}),
-                .pointer_constness_mismatch => try self.diags.addError(self.ast_unit.exprs.locs.get(d.loc), .pointer_constness_violation, .{}),
-                .expected_array_type => try self.diags.addError(self.ast_unit.exprs.locs.get(d.loc), .expected_array_type, .{}),
-                .expected_tuple_type => try self.diags.addError(self.ast_unit.exprs.locs.get(d.loc), .expected_tuple_type, .{}),
-                .expected_map_type => try self.diags.addError(self.ast_unit.exprs.locs.get(d.loc), .expected_map_type, .{}),
-                .expected_pointer_type => try self.diags.addError(self.ast_unit.exprs.locs.get(d.loc), .expected_pointer_type, .{}),
-                .expected_integer_type => try self.diags.addError(self.ast_unit.exprs.locs.get(d.loc), .expected_integer_type, .{}),
-                .expected_float_type => try self.diags.addError(self.ast_unit.exprs.locs.get(d.loc), .expected_float_type, .{}),
-                .failure => try self.diags.addError(self.ast_unit.exprs.locs.get(d.loc), .type_annotation_mismatch, .{}),
+                .map_wrong_key_type => try self.diags.addError(self.exprLoc(d), .map_wrong_key_type, .{}),
+                .union_literal_no_fields => try self.diags.addError(self.exprLoc(d), .union_empty_literal, .{}),
+                .union_literal_multiple_fields => try self.diags.addError(self.exprLoc(d), .union_literal_multiple_fields, .{}),
+                .expected_enum_type => try self.diags.addError(self.exprLoc(d), .expected_enum_type, .{}),
+                .expected_struct_type => try self.diags.addError(self.exprLoc(d), .expected_struct_type, .{}),
+                .struct_field_count_mismatch => try self.diags.addError(self.exprLoc(d), .struct_field_count_mismatch, .{}),
+                .unknown_struct_field => try self.diags.addError(self.exprLoc(d), .unknown_struct_field, .{}),
+                .struct_field_name_mismatch => try self.diags.addError(self.exprLoc(d), .struct_field_name_mismatch, .{}),
+                .noreturn_not_storable => try self.diags.addError(self.exprLoc(d), .noreturn_not_storable, .{}),
+                .type_value_mismatch => try self.diags.addError(self.exprLoc(d), .type_value_mismatch, .{}),
+                .array_length_mismatch => try self.diags.addError(self.exprLoc(d), .array_length_mismatch, .{}),
+                .tuple_arity_mismatch => try self.diags.addError(self.exprLoc(d), .tuple_arity_mismatch, .{}),
+                .assign_null_to_non_optional => try self.diags.addError(self.exprLoc(d), .assign_null_to_non_optional, .{}),
+                .pointer_type_mismatch => try self.diags.addError(self.exprLoc(d), .pointer_type_mismatch, .{}),
+                .pointer_constness_mismatch => try self.diags.addError(self.exprLoc(d), .pointer_constness_violation, .{}),
+                .expected_array_type => try self.diags.addError(self.exprLoc(d), .expected_array_type, .{}),
+                .expected_tuple_type => try self.diags.addError(self.exprLoc(d), .expected_tuple_type, .{}),
+                .expected_map_type => try self.diags.addError(self.exprLoc(d), .expected_map_type, .{}),
+                .expected_pointer_type => try self.diags.addError(self.exprLoc(d), .expected_pointer_type, .{}),
+                .expected_integer_type => try self.diags.addError(self.exprLoc(d), .expected_integer_type, .{}),
+                .expected_float_type => try self.diags.addError(self.exprLoc(d), .expected_float_type, .{}),
+                .failure => try self.diags.addError(self.exprLoc(d), .type_annotation_mismatch, .{}),
             }
         }
     }
@@ -476,59 +512,59 @@ pub const Checker = struct {
     fn checkStmt(self: *Checker, sid: ast.StmtId) !?types.TypeId {
         switch (self.ast_unit.stmts.index.kinds.items[sid.toRaw()]) {
             .Expr => {
-                const row = self.ast_unit.stmts.get(.Expr, sid);
+                const expr = self.ast_unit.stmts.get(.Expr, sid);
                 // Statement expression: no value required
                 try self.pushValueReq(false);
                 defer self.popValueReq();
-                _ = try self.checkExpr(row.expr);
+                _ = try self.checkExpr(expr.expr);
                 return null;
             },
             .Decl => {
-                const row = self.ast_unit.stmts.get(.Decl, sid);
-                try self.checkDecl(row.decl);
+                const stmt = self.ast_unit.stmts.get(.Decl, sid);
+                try self.checkDecl(stmt.decl);
                 if (self.inFunction()) {
                     // record local decl for purity tracking
                     const idx = self.func_stack.items.len - 1;
-                    _ = self.func_stack.items[idx].locals.put(self.gpa, row.decl.toRaw(), {}) catch {};
+                    _ = self.func_stack.items[idx].locals.put(self.gpa, stmt.decl.toRaw(), {}) catch {};
                 }
             },
             .Assign => {
-                const row = self.ast_unit.stmts.get(.Assign, sid);
+                const stmt = self.ast_unit.stmts.get(.Assign, sid);
                 // Pattern-shaped LHS support: tuple/struct/array destructuring
-                const lkind = self.ast_unit.exprs.index.kinds.items[row.left.toRaw()];
+                const lkind = self.ast_unit.exprs.index.kinds.items[stmt.left.toRaw()];
                 if (lkind == .TupleLit or lkind == .StructLit or lkind == .ArrayLit) {
                     // RHS of assignment should be checked in value context
                     try self.pushValueReq(true);
-                    const rv_ty = try self.checkExpr(row.right);
+                    const rv_ty = try self.checkExpr(stmt.right);
                     self.popValueReq();
                     if (rv_ty != null) {
-                        const shape_ok = pattern_matching.checkPatternShapeForAssignExpr(self, row.left, rv_ty.?);
+                        const shape_ok = pattern_matching.checkPatternShapeForAssignExpr(self, stmt.left, rv_ty.?);
                         switch (shape_ok) {
                             .ok => {},
-                            .tuple_arity_mismatch => try self.diags.addError(self.ast_unit.exprs.locs.get(row.loc), .tuple_arity_mismatch, .{}),
-                            .struct_field_mismatch => try self.diags.addError(self.ast_unit.exprs.locs.get(row.loc), .struct_pattern_field_mismatch, .{}),
-                            .shape_mismatch => try self.diags.addError(self.ast_unit.exprs.locs.get(row.loc), .pattern_shape_mismatch, .{}),
+                            .tuple_arity_mismatch => try self.diags.addError(self.exprLoc(stmt), .tuple_arity_mismatch, .{}),
+                            .struct_field_mismatch => try self.diags.addError(self.exprLoc(stmt), .struct_pattern_field_mismatch, .{}),
+                            .shape_mismatch => try self.diags.addError(self.exprLoc(stmt), .pattern_shape_mismatch, .{}),
                         }
                     }
                 } else {
-                    const lt = try self.checkExpr(row.left);
+                    const lt = try self.checkExpr(stmt.left);
                     // RHS of assignment should be checked in value context
                     try self.pushValueReq(true);
-                    const rt = try self.checkExpr(row.right);
+                    const rt = try self.checkExpr(stmt.right);
                     self.popValueReq();
                     if (lt != null and rt != null and (self.assignable(rt.?, lt.?) != .success)) {
-                        try self.diags.addError(self.ast_unit.exprs.locs.get(row.loc), .type_annotation_mismatch, .{});
+                        try self.diags.addError(self.exprLoc(stmt), .type_annotation_mismatch, .{});
                     }
                 }
                 // Purity: assignment writes inside pure functions are allowed only to locals
                 if (self.inFunction()) {
                     const fctx = self.currentFunc().?;
                     if (fctx.require_pure) {
-                        const root = self.lvalueRootKind(row.left);
+                        const root = self.lvalueRootKind(stmt.left);
                         switch (root) {
                             .LocalDecl => {},
                             .Param, .NonLocalDecl, .Unknown => {
-                                try self.diags.addError(self.ast_unit.exprs.locs.get(row.loc), .purity_violation, .{});
+                                try self.diags.addError(self.exprLoc(stmt), .purity_violation, .{});
                                 self.func_stack.items[self.func_stack.items.len - 1].pure = false;
                             },
                         }
@@ -538,7 +574,7 @@ pub const Checker = struct {
             .Insert => {
                 const row = self.ast_unit.stmts.get(.Insert, sid);
                 if (!self.warned_meta) {
-                    _ = self.diags.addNote(self.ast_unit.exprs.locs.get(row.loc), .checker_insert_not_expanded, .{}) catch {};
+                    _ = self.diags.addNote(self.exprLoc(row), .checker_insert_not_expanded, .{}) catch {};
                     self.warned_meta = true;
                 }
                 _ = try self.checkExpr(row.expr);
@@ -550,7 +586,7 @@ pub const Checker = struct {
             .Break => {
                 const row = self.ast_unit.stmts.get(.Break, sid);
                 if (!self.inLoop())
-                    try self.diags.addError(self.ast_unit.exprs.locs.get(row.loc), .break_outside_loop, .{});
+                    try self.diags.addError(self.exprLoc(row), .break_outside_loop, .{});
                 if (!row.value.isNone()) {
                     // Break value must be computed in value context
                     try self.pushValueReq(true);
@@ -560,7 +596,7 @@ pub const Checker = struct {
                     if (self.loopCtxForLabel(row.label)) |ctx| {
                         if (ctx.result_ty) |rt| {
                             if (rt.toRaw() != vt.?.toRaw()) {
-                                try self.diags.addError(self.ast_unit.exprs.locs.get(row.loc), .loop_break_value_type_conflict, .{});
+                                try self.diags.addError(self.exprLoc(row), .loop_break_value_type_conflict, .{});
                                 return null;
                             }
                         } else {
@@ -572,7 +608,7 @@ pub const Checker = struct {
             .Continue => {
                 const row = self.ast_unit.stmts.get(.Continue, sid);
                 if (!self.inLoop())
-                    try self.diags.addError(self.ast_unit.exprs.locs.get(row.loc), .continue_outside_loop, .{});
+                    try self.diags.addError(self.exprLoc(row), .continue_outside_loop, .{});
             },
             .Unreachable => {},
             .Defer => {
@@ -681,7 +717,7 @@ pub const Checker = struct {
             .int => blk: {
                 const s = self.ast_unit.exprs.strs.get(lit.value.unwrap());
                 if (std.fmt.parseInt(i64, s, 10) catch null == null) {
-                    try self.diags.addError(self.ast_unit.exprs.locs.get(lit.loc), .invalid_integer_literal, .{});
+                    try self.diags.addError(self.exprLoc(lit), .invalid_integer_literal, .{});
                     return null;
                 }
                 break :blk self.type_info.store.tI64();
@@ -690,7 +726,7 @@ pub const Checker = struct {
                 // try parsing the float literal
                 const s = self.ast_unit.exprs.strs.get(lit.value.unwrap());
                 if (std.fmt.parseFloat(f64, s) catch null == null) {
-                    try self.diags.addError(self.ast_unit.exprs.locs.get(lit.loc), .invalid_float_literal, .{});
+                    try self.diags.addError(self.exprLoc(lit), .invalid_float_literal, .{});
                     return null;
                 }
                 break :blk self.type_info.store.tF64();
@@ -814,52 +850,45 @@ pub const Checker = struct {
         return switch (self.ast_unit.stmts.index.kinds.items[sid.toRaw()]) {
             .Expr => blk: {
                 const row = self.ast_unit.stmts.get(.Expr, sid);
-                break :blk self.exprLoc(row.expr);
+                break :blk self.exprLocFromId(row.expr);
             },
             .Decl => blk2: {
                 const row = self.ast_unit.stmts.get(.Decl, sid);
                 const d = self.ast_unit.exprs.Decl.get(row.decl.toRaw());
-                break :blk2 self.ast_unit.exprs.locs.get(d.loc);
+                break :blk2 self.exprLoc(d);
             },
             .Assign => blk3: {
                 const row = self.ast_unit.stmts.get(.Assign, sid);
-                break :blk3 self.ast_unit.exprs.locs.get(row.loc);
+                break :blk3 self.exprLoc(row);
             },
             .Insert => blk4: {
                 const row = self.ast_unit.stmts.get(.Insert, sid);
-                break :blk4 self.ast_unit.exprs.locs.get(row.loc);
+                break :blk4 self.exprLoc(row);
             },
             .Return => blk5: {
                 const row = self.ast_unit.stmts.get(.Return, sid);
-                break :blk5 self.ast_unit.exprs.locs.get(row.loc);
+                break :blk5 self.exprLoc(row);
             },
             .Break => blk6: {
                 const row = self.ast_unit.stmts.get(.Break, sid);
-                break :blk6 self.ast_unit.exprs.locs.get(row.loc);
+                break :blk6 self.exprLoc(row);
             },
             .Continue => blk7: {
                 const row = self.ast_unit.stmts.get(.Continue, sid);
-                break :blk7 self.ast_unit.exprs.locs.get(row.loc);
+                break :blk7 self.exprLoc(row);
             },
             .Unreachable => blk8: {
                 const row = self.ast_unit.stmts.get(.Unreachable, sid);
-                break :blk8 self.ast_unit.exprs.locs.get(row.loc);
+                break :blk8 self.exprLoc(row);
             },
             .Defer => blk9: {
                 const row = self.ast_unit.stmts.get(.Defer, sid);
-                break :blk9 self.ast_unit.exprs.locs.get(row.loc);
+                break :blk9 self.exprLoc(row);
             },
             .ErrDefer => blk10: {
                 const row = self.ast_unit.stmts.get(.ErrDefer, sid);
-                break :blk10 self.ast_unit.exprs.locs.get(row.loc);
+                break :blk10 self.exprLoc(row);
             },
-        };
-    }
-
-    fn exprLoc(self: *Checker, eid: ast.ExprId) Loc {
-        const k = self.ast_unit.exprs.index.kinds.items[eid.toRaw()];
-        return switch (k) {
-            inline else => |x| self.ast_unit.exprs.locs.get(self.ast_unit.exprs.get(x, eid).loc),
         };
     }
 
@@ -871,12 +900,12 @@ pub const Checker = struct {
 
         const l = lt.?;
         const r = rt.?;
-        const lhs_kind = self.type_info.store.index.kinds.items[l.toRaw()];
-        const rhs_kind = self.type_info.store.index.kinds.items[r.toRaw()];
+        const lhs_kind = self.typeKind(l);
+        const rhs_kind = self.typeKind(r);
 
         switch (bin.op) {
             .add, .sub, .mul, .div, .mod, .bit_and, .bit_or, .bit_xor, .shl, .shr => {
-                if (bin.op == .div) try self.checkDivByZero(bin.right, self.ast_unit.exprs.locs.get(bin.loc));
+                if (bin.op == .div) try self.checkDivByZero(bin.right, self.exprLoc(bin));
                 if (bin.op == .mod) {
                     const left_is_float = switch (lhs_kind) {
                         .F32, .F64 => true,
@@ -887,25 +916,31 @@ pub const Checker = struct {
                         else => false,
                     };
                     if (left_is_float or right_is_float) {
-                        try self.diags.addError(self.ast_unit.exprs.locs.get(bin.loc), .invalid_binary_op_operands, .{});
+                        try self.diags.addError(self.exprLoc(bin), .invalid_binary_op_operands, .{});
                         return null;
                     }
                     if (check_types.isIntegerKind(self, lhs_kind) and check_types.isIntegerKind(self, rhs_kind))
-                        try self.checkIntZeroLiteral(bin.right, self.ast_unit.exprs.locs.get(bin.loc));
+                        try self.checkIntZeroLiteral(bin.right, self.exprLoc(bin));
                 }
                 if (!check_types.isNumericKind(self, lhs_kind) or !check_types.isNumericKind(self, rhs_kind)) {
-                    try self.diags.addError(self.ast_unit.exprs.locs.get(bin.loc), .invalid_binary_op_operands, .{});
+                    try self.diags.addError(self.exprLoc(bin), .invalid_binary_op_operands, .{});
                     return null;
                 }
                 if (l.toRaw() == r.toRaw()) return l;
-                try self.diags.addError(self.ast_unit.exprs.locs.get(bin.loc), .invalid_binary_op_operands, .{});
+                try self.diags.addError(self.exprLoc(bin), .invalid_binary_op_operands, .{});
                 return null;
             },
             .eq, .neq, .lt, .lte, .gt, .gte => {
-                const both_numeric = check_types.isNumericKind(self, lhs_kind) and check_types.isNumericKind(self, rhs_kind);
-                const both_bool = lhs_kind == .Bool and rhs_kind == .Bool;
-                if (l.toRaw() != r.toRaw() or !(both_numeric or both_bool)) {
-                    try self.diags.addError(self.ast_unit.exprs.locs.get(bin.loc), .invalid_binary_op_operands, .{});
+                const both_ints = check_types.isIntegerKind(self, lhs_kind) and check_types.isIntegerKind(self, rhs_kind);
+                const both_floats = (lhs_kind == .F32 or lhs_kind == .F64) and (rhs_kind == .F32 or rhs_kind == .F64);
+                const both_bools = lhs_kind == .Bool and rhs_kind == .Bool;
+
+                // We avoid implicit *value* coercions. For comparisons, we accept same-class operands:
+                //   - int ? int (any width/sign)
+                //   - float ? float (F32/F64 mixed ok)
+                //   - bool ? bool
+                if (!(both_ints or both_floats or both_bools)) {
+                    try self.diags.addError(self.exprLoc(bin), .invalid_binary_op_operands, .{});
                     return null;
                 }
                 return self.type_info.store.tBool();
@@ -914,7 +949,7 @@ pub const Checker = struct {
                 if (l.toRaw() == self.type_info.store.tBool().toRaw() and
                     r.toRaw() == self.type_info.store.tBool().toRaw())
                     return self.type_info.store.tBool();
-                try self.diags.addError(self.ast_unit.exprs.locs.get(bin.loc), .invalid_binary_op_operands, .{});
+                try self.diags.addError(self.exprLoc(bin), .invalid_binary_op_operands, .{});
                 return null;
             },
             .@"orelse" => {
@@ -922,11 +957,11 @@ pub const Checker = struct {
                     if (self.assignable(elem, r) == .success) {
                         return elem;
                     } else return {
-                        try self.diags.addError(self.ast_unit.exprs.locs.get(bin.loc), .invalid_binary_op_operands, .{});
+                        try self.diags.addError(self.exprLoc(bin), .invalid_binary_op_operands, .{});
                         return null;
                     };
                 }
-                try self.diags.addError(self.ast_unit.exprs.locs.get(bin.loc), .invalid_use_of_orelse_on_non_optional, .{});
+                try self.diags.addError(self.exprLoc(bin), .invalid_use_of_orelse_on_non_optional, .{});
                 return null;
             },
         }
@@ -938,11 +973,11 @@ pub const Checker = struct {
         const expr_ty = try self.checkExpr(unary_expr.expr);
         if (expr_ty == null) return null;
         const t = expr_ty.?;
-        const type_kind = self.type_info.store.index.kinds.items[t.toRaw()];
+        const type_kind = self.typeKind(t);
         switch (unary_expr.op) {
             .plus, .minus => {
                 if (!check_types.isNumericKind(self, type_kind)) {
-                    try self.diags.addError(self.ast_unit.exprs.locs.get(unary_expr.loc), .invalid_unary_op_operand, .{});
+                    try self.diags.addError(self.exprLoc(unary_expr), .invalid_unary_op_operand, .{});
                     return null;
                 }
                 return t;
@@ -950,7 +985,7 @@ pub const Checker = struct {
             .logical_not => {
                 // Accept bool or any
                 if (t.toRaw() != self.type_info.store.tBool().toRaw() and t.toRaw() != self.type_info.store.tAny().toRaw()) {
-                    try self.diags.addError(self.ast_unit.exprs.locs.get(unary_expr.loc), .invalid_unary_op_operand, .{});
+                    try self.diags.addError(self.exprLoc(unary_expr), .invalid_unary_op_operand, .{});
                     return null;
                 }
                 return self.type_info.store.tBool();
@@ -982,15 +1017,15 @@ pub const Checker = struct {
                     switch (shape_ok) {
                         .ok => {},
                         .tuple_arity_mismatch => {
-                            try self.diags.addError(self.ast_unit.exprs.locs.get(fnr.loc), .tuple_arity_mismatch, .{});
+                            try self.diags.addError(self.exprLoc(fnr), .tuple_arity_mismatch, .{});
                             return null;
                         },
                         .struct_field_mismatch => {
-                            try self.diags.addError(self.ast_unit.exprs.locs.get(fnr.loc), .struct_pattern_field_mismatch, .{});
+                            try self.diags.addError(self.exprLoc(fnr), .struct_pattern_field_mismatch, .{});
                             return null;
                         },
                         .shape_mismatch => {
-                            try self.diags.addError(self.ast_unit.exprs.locs.get(fnr.loc), .pattern_shape_mismatch, .{});
+                            try self.diags.addError(self.exprLoc(fnr), .pattern_shape_mismatch, .{});
                             return null;
                         },
                     }
@@ -1016,10 +1051,8 @@ pub const Checker = struct {
             defer self.popValueReq();
             _ = try self.checkExpr(fnr.body.unwrap());
         }
-        // Determine purity: 'fn' is pure by definition; 'proc' purity inferred from body
-        const ctx = self.currentFunc().?;
         // Extern procs are considered impure; otherwise proc purity comes from body analysis.
-        const is_pure = if (fnr.flags.is_proc) (ctx.pure and !fnr.flags.is_extern) else true;
+        const is_pure = if (fnr.flags.is_proc) false else true;
         const final_ty = self.type_info.store.mkFunction(pbuf, res.?, fnr.flags.is_variadic, is_pure);
         self.type_info.expr_types.items[id.toRaw()] = final_ty;
         return final_ty;
@@ -1056,7 +1089,7 @@ pub const Checker = struct {
         while (i < elems.len) : (i += 1) {
             const ety = try self.checkExpr(elems[i]);
             if (ety == null or ety.?.toRaw() != first_ty.toRaw()) {
-                try self.diags.addError(self.ast_unit.exprs.locs.get(array_lit.loc), .heterogeneous_array_elements, .{});
+                try self.diags.addError(self.exprLoc(array_lit), .heterogeneous_array_elements, .{});
                 return null;
             }
         }
@@ -1081,11 +1114,11 @@ pub const Checker = struct {
             const kt = try self.checkExpr(kv.key);
             const vt = try self.checkExpr(kv.value);
             if (kt == null or kt.?.toRaw() != key_ty.?.toRaw()) {
-                try self.diags.addError(self.ast_unit.exprs.locs.get(row.loc), .map_mixed_key_types, .{});
+                try self.diags.addError(self.exprLoc(row), .map_mixed_key_types, .{});
                 return null;
             }
             if (vt == null or vt.?.toRaw() != val_ty.?.toRaw()) {
-                try self.diags.addError(self.ast_unit.exprs.locs.get(row.loc), .map_mixed_value_types, .{});
+                try self.diags.addError(self.exprLoc(row), .map_mixed_value_types, .{});
                 return null;
             }
         }
@@ -1097,15 +1130,15 @@ pub const Checker = struct {
         const col_ty = self.checkExpr(index_expr.collection) catch
             return null;
         if (col_ty == null) return null;
-        const col_kind = self.type_info.store.index.kinds.items[col_ty.?.toRaw()];
+        const col_kind = self.typeKind(col_ty.?);
         switch (col_kind) {
-            .Array, .Slice => return self.indexElemTypeFromArrayLike(col_ty.?, index_expr.index, self.ast_unit.exprs.locs.get(index_expr.loc)),
+            .Array, .Slice => return self.indexElemTypeFromArrayLike(col_ty.?, index_expr.index, self.exprLoc(index_expr)),
             .Map => {
                 const m = self.type_info.store.Map.get(self.type_info.store.index.rows.items[col_ty.?.toRaw()]);
                 const it = self.checkExpr(index_expr.index) catch return null;
                 if (it) |iid| {
                     if (iid.toRaw() != m.key.toRaw()) {
-                        _ = self.diags.addError(self.ast_unit.exprs.locs.get(index_expr.loc), .map_wrong_key_type, .{}) catch {};
+                        _ = self.diags.addError(self.exprLoc(index_expr), .map_wrong_key_type, .{}) catch {};
                         return null;
                     }
                 }
@@ -1115,22 +1148,22 @@ pub const Checker = struct {
             .String => {
                 const it = self.checkExpr(index_expr.index) catch return null;
                 if (it) |iid| {
-                    if (!check_types.isIntegerKind(self, self.type_info.store.index.kinds.items[iid.toRaw()])) {
-                        _ = self.diags.addError(self.ast_unit.exprs.locs.get(index_expr.loc), .non_integer_index, .{}) catch {};
+                    if (!check_types.isIntegerKind(self, self.typeKind(iid))) {
+                        _ = self.diags.addError(self.exprLoc(index_expr), .non_integer_index, .{}) catch {};
                         return null;
                     }
                 }
                 return self.type_info.store.tU8();
             },
             else => {
-                _ = self.diags.addError(self.ast_unit.exprs.locs.get(index_expr.loc), .not_indexable, .{}) catch {};
+                _ = self.diags.addError(self.exprLoc(index_expr), .not_indexable, .{}) catch {};
             },
         }
         return null;
     }
 
     fn indexElemTypeFromArrayLike(self: *Checker, col_ty: types.TypeId, idx_expr: ast.ExprId, loc: Loc) ?types.TypeId {
-        const col_kind = self.type_info.store.index.kinds.items[col_ty.toRaw()];
+        const col_kind = self.typeKind(col_ty);
         std.debug.assert(col_kind == .Array or col_kind == .Slice);
         const idx_kind = self.ast_unit.exprs.index.kinds.items[idx_expr.toRaw()];
         if (idx_kind == .Range) {
@@ -1149,7 +1182,7 @@ pub const Checker = struct {
         }
         const it = self.checkExpr(idx_expr) catch return null;
         if (it) |iid| {
-            if (!check_types.isIntegerKind(self, self.type_info.store.index.kinds.items[iid.toRaw()])) {
+            if (!check_types.isIntegerKind(self, self.typeKind(iid))) {
                 _ = self.diags.addError(loc, .non_integer_index, .{}) catch {};
                 return null;
             }
@@ -1176,7 +1209,7 @@ pub const Checker = struct {
                 if (self.importMemberType(field_expr.parent, field_expr.field)) |mt| return mt;
             } else {
                 if (self.importHasMember(field_expr.parent, field_expr.field)) return self.type_info.store.tAny();
-                _ = self.diags.addError(self.ast_unit.exprs.locs.get(field_expr.loc), .unknown_struct_field, .{}) catch {};
+                _ = self.diags.addError(self.exprLoc(field_expr), .unknown_struct_field, .{}) catch {};
                 return null;
             }
         }
@@ -1194,7 +1227,7 @@ pub const Checker = struct {
                         } else if (self.importHasMember(drow.value, field_expr.field)) {
                             return self.type_info.store.tAny();
                         }
-                        _ = self.diags.addError(self.ast_unit.exprs.locs.get(field_expr.loc), .unknown_struct_field, .{}) catch {};
+                        _ = self.diags.addError(self.exprLoc(field_expr), .unknown_struct_field, .{}) catch {};
                         return null;
                     }
                 }
@@ -1203,7 +1236,7 @@ pub const Checker = struct {
         const parent_ty = self.checkExpr(field_expr.parent) catch return null;
         if (parent_ty == null) return null;
         var ty = parent_ty.?;
-        const kind = self.type_info.store.index.kinds.items[ty.toRaw()];
+        const kind = self.typeKind(ty);
         switch (kind) {
             .Struct => {
                 const struct_row = self.type_info.store.Struct.get(self.type_info.store.index.rows.items[ty.toRaw()]);
@@ -1215,18 +1248,18 @@ pub const Checker = struct {
                         return field.ty;
                     }
                 }
-                _ = self.diags.addError(self.ast_unit.exprs.locs.get(field_expr.loc), .unknown_struct_field, .{}) catch {};
+                _ = self.diags.addError(self.exprLoc(field_expr), .unknown_struct_field, .{}) catch {};
                 return null;
             },
             .Tuple => {
                 const tuple_row = self.type_info.store.Tuple.get(self.type_info.store.index.rows.items[ty.toRaw()]);
                 const fields = self.type_info.store.type_pool.slice(tuple_row.elems);
                 const index = std.fmt.parseInt(usize, self.ast_unit.exprs.strs.get(field_expr.field), 10) catch {
-                    _ = self.diags.addError(self.ast_unit.exprs.locs.get(field_expr.loc), .expected_field_name_or_index, .{}) catch {};
+                    _ = self.diags.addError(self.exprLoc(field_expr), .expected_field_name_or_index, .{}) catch {};
                     return null;
                 };
                 if (index >= fields.len) {
-                    _ = self.diags.addError(self.ast_unit.exprs.locs.get(field_expr.loc), .tuple_index_out_of_bounds, .{}) catch {};
+                    _ = self.diags.addError(self.exprLoc(field_expr), .tuple_index_out_of_bounds, .{}) catch {};
                     return null;
                 }
                 return fields[index];
@@ -1234,7 +1267,7 @@ pub const Checker = struct {
             .Ptr => {
                 const ptr_row = self.type_info.store.Ptr.get(self.type_info.store.index.rows.items[ty.toRaw()]);
                 ty = ptr_row.elem;
-                const inner_kind = self.type_info.store.index.kinds.items[ty.toRaw()];
+                const inner_kind = self.typeKind(ty);
                 if (inner_kind == .Struct) {
                     const struct_row = self.type_info.store.Struct.get(self.type_info.store.index.rows.items[ty.toRaw()]);
                     const fields = self.type_info.store.field_pool.slice(struct_row.fields);
@@ -1245,17 +1278,17 @@ pub const Checker = struct {
                             return field.ty;
                         }
                     }
-                    _ = self.diags.addError(self.ast_unit.exprs.locs.get(field_expr.loc), .unknown_struct_field, .{}) catch {};
+                    _ = self.diags.addError(self.exprLoc(field_expr), .unknown_struct_field, .{}) catch {};
                     return null;
                 } else {
-                    _ = self.diags.addError(self.ast_unit.exprs.locs.get(field_expr.loc), .field_access_on_non_aggregate, .{}) catch {};
+                    _ = self.diags.addError(self.exprLoc(field_expr), .field_access_on_non_aggregate, .{}) catch {};
                     return null;
                 }
             },
             .TypeType => {
                 const tt = self.type_info.store.TypeType.get(self.type_info.store.index.rows.items[ty.toRaw()]);
                 ty = tt.of;
-                const inner_kind = self.type_info.store.index.kinds.items[ty.toRaw()];
+                const inner_kind = self.typeKind(ty);
                 if (inner_kind == .Enum) {
                     const enum_ty = self.type_info.store.Enum.get(self.type_info.store.index.rows.items[ty.toRaw()]);
                     const enum_members = self.type_info.store.enum_member_pool.slice(enum_ty.members);
@@ -1267,7 +1300,7 @@ pub const Checker = struct {
                             return ty;
                         }
                     }
-                    _ = self.diags.addError(self.ast_unit.exprs.locs.get(field_expr.loc), .unknown_enum_tag, .{}) catch {};
+                    _ = self.diags.addError(self.exprLoc(field_expr), .unknown_enum_tag, .{}) catch {};
                     return null;
                 } else if (inner_kind == .Variant) {
                     const variant_ty = self.type_info.store.Variant.get(self.type_info.store.index.rows.items[ty.toRaw()]);
@@ -1279,16 +1312,16 @@ pub const Checker = struct {
                             // In value position, selecting a variant tag without constructing:
                             // - If the payload is void, it yields a value of the variant type (tag only)
                             // - If the payload is non-void, it's a missing payload arity error
-                            const pk = self.type_info.store.index.kinds.items[member.ty.toRaw()];
+                            const pk = self.typeKind(member.ty);
                             if (pk == .Void) {
                                 return ty; // tag value of the variant type
                             } else {
-                                _ = self.diags.addError(self.ast_unit.exprs.locs.get(field_expr.loc), .variant_payload_arity_mismatch, .{}) catch {};
+                                _ = self.diags.addError(self.exprLoc(field_expr), .variant_payload_arity_mismatch, .{}) catch {};
                                 return null;
                             }
                         }
                     }
-                    _ = self.diags.addError(self.ast_unit.exprs.locs.get(field_expr.loc), .unknown_variant_tag, .{}) catch {};
+                    _ = self.diags.addError(self.exprLoc(field_expr), .unknown_variant_tag, .{}) catch {};
                     return null;
                 } else if (inner_kind == .Error) {
                     const variant_ty = self.type_info.store.Error.get(self.type_info.store.index.rows.items[ty.toRaw()]);
@@ -1300,15 +1333,15 @@ pub const Checker = struct {
                             return ty;
                         }
                     }
-                    _ = self.diags.addError(self.ast_unit.exprs.locs.get(field_expr.loc), .unknown_error_tag, .{}) catch {};
+                    _ = self.diags.addError(self.exprLoc(field_expr), .unknown_error_tag, .{}) catch {};
                     return null;
                 } else {
-                    _ = self.diags.addError(self.ast_unit.exprs.locs.get(field_expr.loc), .field_access_on_non_aggregate, .{}) catch {};
+                    _ = self.diags.addError(self.exprLoc(field_expr), .field_access_on_non_aggregate, .{}) catch {};
                     return null;
                 }
             },
             else => {
-                _ = self.diags.addError(self.ast_unit.exprs.locs.get(field_expr.loc), .field_access_on_non_aggregate, .{}) catch {};
+                _ = self.diags.addError(self.exprLoc(field_expr), .field_access_on_non_aggregate, .{}) catch {};
                 return null;
             },
         }
@@ -1357,16 +1390,18 @@ pub const Checker = struct {
         defer self.gpa.free(content);
         var it = std.mem.splitScalar(u8, content, '\n');
         while (it.next()) |line| {
-            var l = std.mem.trim(u8, line, " \t\r");
+            const l = std.mem.trim(u8, line, " \t\r");
             if (l.len == 0) continue;
             // skip comment lines starting with //
             if (l.len >= 2 and l[0] == '/' and l[1] == '/') continue;
+
             // match identifier at start followed by optional spaces then '::'
             var i: usize = 0;
             if (!(std.ascii.isAlphabetic(l[0]) or l[0] == '_')) continue;
             i += 1;
             while (i < l.len and (std.ascii.isAlphanumeric(l[i]) or l[i] == '_')) : (i += 1) {}
             const ident = l[0..i];
+
             var j = i;
             while (j < l.len and (l[j] == ' ' or l[j] == '\t')) : (j += 1) {}
             if (j + 1 < l.len and l[j] == ':' and l[j + 1] == ':') {
@@ -1382,15 +1417,15 @@ pub const Checker = struct {
         const rr = self.ast_unit.exprs.get(.Range, id);
         if (!rr.start.isNone()) {
             const st = try self.checkExpr(rr.start.unwrap());
-            if (st == null or !check_types.isIntegerKind(self, self.type_info.store.index.kinds.items[st.?.toRaw()])) {
-                try self.diags.addError(self.ast_unit.exprs.locs.get(rr.loc), .non_integer_index, .{});
+            if (st == null or !check_types.isIntegerKind(self, self.typeKind(st.?))) {
+                try self.diags.addError(self.exprLoc(rr), .non_integer_index, .{});
                 return null;
             }
         }
         if (!rr.end.isNone()) {
             const et = try self.checkExpr(rr.end.unwrap());
-            if (et == null or !check_types.isIntegerKind(self, self.type_info.store.index.kinds.items[et.?.toRaw()])) {
-                try self.diags.addError(self.ast_unit.exprs.locs.get(rr.loc), .non_integer_index, .{});
+            if (et == null or !check_types.isIntegerKind(self, self.typeKind(et.?))) {
+                try self.diags.addError(self.exprLoc(rr), .non_integer_index, .{});
                 return null;
             }
         }
@@ -1423,23 +1458,23 @@ pub const Checker = struct {
         switch (is_assignable) {
             .success => {},
             .struct_field_count_mismatch => {
-                try self.diags.addError(self.ast_unit.exprs.locs.get(struct_lit.loc), .struct_missing_field, .{});
+                try self.diags.addError(self.exprLoc(struct_lit), .struct_missing_field, .{});
                 return null;
             },
             .unknown_struct_field => {
-                try self.diags.addError(self.ast_unit.exprs.locs.get(struct_lit.loc), .unknown_struct_field, .{});
+                try self.diags.addError(self.exprLoc(struct_lit), .unknown_struct_field, .{});
                 return null;
             },
             .union_literal_multiple_fields => {
-                try self.diags.addError(self.ast_unit.exprs.locs.get(struct_lit.loc), .union_literal_multiple_fields, .{});
+                try self.diags.addError(self.exprLoc(struct_lit), .union_literal_multiple_fields, .{});
                 return null;
             },
             .union_literal_no_fields => {
-                try self.diags.addError(self.ast_unit.exprs.locs.get(struct_lit.loc), .union_empty_literal, .{});
+                try self.diags.addError(self.exprLoc(struct_lit), .union_empty_literal, .{});
                 return null;
             },
             else => {
-                try self.diags.addError(self.ast_unit.exprs.locs.get(struct_lit.loc), .struct_field_type_mismatch, .{});
+                try self.diags.addError(self.exprLoc(struct_lit), .struct_field_type_mismatch, .{});
                 return null;
             },
         }
@@ -1451,428 +1486,283 @@ pub const Checker = struct {
         const ptr_ty_opt = try self.checkExpr(row.expr);
         if (ptr_ty_opt == null) return null;
         const ptr_ty = ptr_ty_opt.?;
-        const kind = self.type_info.store.index.kinds.items[ptr_ty.toRaw()];
+        const kind = self.typeKind(ptr_ty);
         if (kind != .Ptr) {
-            try self.diags.addError(self.ast_unit.exprs.locs.get(row.loc), .deref_non_pointer, .{});
+            try self.diags.addError(self.exprLoc(row), .deref_non_pointer, .{});
             return null;
         }
         const ptr_row = self.type_info.store.Ptr.get(self.type_info.store.index.rows.items[ptr_ty.toRaw()]);
         return ptr_row.elem;
     }
 
-    fn checkCall(self: *Checker, id: ast.ExprId) !?types.TypeId {
-        const call_expr = self.ast_unit.exprs.get(.Call, id);
-        // Module member call: (Import or Ident-of-import).field(...)
-        if (self.ast_unit.exprs.index.kinds.items[call_expr.callee.toRaw()] == .FieldAccess) {
-            const fr = self.ast_unit.exprs.get(.FieldAccess, call_expr.callee);
-            const pk = self.ast_unit.exprs.index.kinds.items[fr.parent.toRaw()];
-            var fty_opt: ?types.TypeId = null;
-            if (pk == .Import) {
-                fty_opt = self.importMemberType(fr.parent, fr.field);
-            } else if (pk == .Ident) {
-                const idr = self.ast_unit.exprs.get(.Ident, fr.parent);
-                if (self.lookup(idr.name)) |sid_sym| {
-                    const sym = self.symtab.syms.get(sid_sym.toRaw());
-                    if (!sym.origin_decl.isNone()) {
-                        const did = sym.origin_decl.unwrap();
-                        const drow = self.ast_unit.exprs.Decl.get(did.toRaw());
-                        if (self.ast_unit.exprs.index.kinds.items[drow.value.toRaw()] == .Import) {
-                            fty_opt = self.importMemberType(drow.value, fr.field);
-                        }
+    // =========================
+    // Calls & related helpers
+    // =========================
+
+    fn resolveImportedMemberType(self: *Checker, fr: ast.Rows.FieldAccess) ?types.TypeId {
+        // Case 1: direct module value: (import "x").foo(...)
+        const pk = self.ast_unit.exprs.index.kinds.items[fr.parent.toRaw()];
+        if (pk == .Import) return self.importMemberType(fr.parent, fr.field);
+
+        // Case 2: 'ident' bound to an import declaration
+        if (pk == .Ident) {
+            const idr = self.ast_unit.exprs.get(.Ident, fr.parent);
+            if (self.lookup(idr.name)) |sid_sym| {
+                const sym = self.symtab.syms.get(sid_sym.toRaw());
+                if (!sym.origin_decl.isNone()) {
+                    const did = sym.origin_decl.unwrap();
+                    const drow = self.ast_unit.exprs.Decl.get(did.toRaw());
+                    if (self.ast_unit.exprs.index.kinds.items[drow.value.toRaw()] == .Import) {
+                        return self.importMemberType(drow.value, fr.field);
                     }
                 }
-            }
-            if (fty_opt) |fty| {
-                if (self.type_info.store.getKind(fty) != .Function) {
-                    try self.diags.addError(self.ast_unit.exprs.locs.get(call_expr.loc), .call_non_callable, .{});
-                    return null;
-                }
-                const func = self.type_info.store.get(.Function, fty);
-                const param_ids = self.type_info.store.type_pool.slice(func.params);
-                const args = self.ast_unit.exprs.expr_pool.slice(call_expr.args);
-                if (!func.is_variadic and args.len != param_ids.len) {
-                    try self.diags.addError(self.ast_unit.exprs.locs.get(call_expr.loc), .argument_count_mismatch, .{});
-                    return null;
-                }
-                const fixed = if (param_ids.len == 0) 0 else if (func.is_variadic) param_ids.len - 1 else param_ids.len;
-                var i: usize = 0;
-                while (i < args.len) : (i += 1) {
-                    const at = try self.checkExpr(args[i]);
-                    if (at == null) return null;
-                    const pt = if (i < fixed) param_ids[i] else param_ids[fixed];
-                    if (self.assignable(at.?, pt) != .success) {
-                        try self.diags.addError(self.ast_unit.exprs.locs.get(call_expr.loc), .argument_type_mismatch, .{});
-                        return null;
-                    }
-                }
-                return func.result;
             }
         }
-        // Handle variant/error tag constructors before evaluating callee expression.
-        if (self.ast_unit.exprs.index.kinds.items[call_expr.callee.toRaw()] == .FieldAccess) {
-            const fr = self.ast_unit.exprs.get(.FieldAccess, call_expr.callee);
-            // Resolve the parent in type-space
-            const parent_ty = try check_types.typeFromTypeExpr(self, fr.parent) orelse null;
-            if (parent_ty) |pty| {
-                const pk = self.type_info.store.index.kinds.items[pty.toRaw()];
-                if (pk == .Variant) {
-                    const vt = self.type_info.store.Variant.get(self.type_info.store.index.rows.items[pty.toRaw()]);
-                    const cases = self.type_info.store.field_pool.slice(vt.variants);
-                    var found: ?types.TypeId = null;
-                    var ci: usize = 0;
-                    while (ci < cases.len) : (ci += 1) {
-                        const c = self.type_info.store.Field.get(cases[ci].toRaw());
-                        if (c.name.toRaw() == fr.field.toRaw()) {
-                            found = c.ty;
-                            break;
-                        }
-                    }
-                    if (found == null) {
-                        try self.diags.addError(self.ast_unit.exprs.locs.get(call_expr.loc), .unknown_variant_tag, .{});
+        return null;
+    }
+
+    fn resolveTagPayloadType(self: *Checker, parent_ty: types.TypeId, tag: ast.StrId) ?types.TypeId {
+        const pk = self.trow(parent_ty);
+        switch (pk) {
+            .Variant => {
+                const vt = self.type_info.store.Variant.get(self.type_info.store.index.rows.items[parent_ty.toRaw()]);
+                const cases = self.type_info.store.field_pool.slice(vt.variants);
+                for (cases) |fid| {
+                    const f = self.type_info.store.Field.get(fid.toRaw());
+                    if (f.name.toRaw() == tag.toRaw()) return f.ty;
+                }
+            },
+            .Error => {
+                const et = self.type_info.store.Error.get(self.type_info.store.index.rows.items[parent_ty.toRaw()]);
+                const cases = self.type_info.store.field_pool.slice(et.variants);
+                for (cases) |fid| {
+                    const f = self.type_info.store.Field.get(fid.toRaw());
+                    if (f.name.toRaw() == tag.toRaw()) return f.ty;
+                }
+            },
+            else => {},
+        }
+        return null;
+    }
+
+    /// Handles `(Type).Tag(args...)` where `Type` is a Variant or Error.
+    /// Supports payload kinds: Void, Tuple, Struct (new).
+    fn checkTagConstructorCall(
+        self: *Checker,
+        parent_ty: types.TypeId,
+        tag: ast.StrId,
+        args: []const ast.ExprId,
+        loc: Loc,
+    ) !?types.TypeId {
+        const pk = self.typeKind(parent_ty);
+        if (pk != .Variant and pk != .Error) return null;
+
+        // Load tag table
+        const cases = if (pk == .Variant)
+            self.type_info.store.field_pool.slice(self.type_info.store.Variant.get(self.type_info.store.index.rows.items[parent_ty.toRaw()]).variants)
+        else
+            self.type_info.store.field_pool.slice(self.type_info.store.Error.get(self.type_info.store.index.rows.items[parent_ty.toRaw()]).variants);
+
+        // Find the tag & payload type
+        var payload_ty_opt: ?types.TypeId = null;
+        for (cases) |cid| {
+            const c = self.type_info.store.Field.get(cid.toRaw());
+            if (c.name.toRaw() == tag.toRaw()) {
+                payload_ty_opt = c.ty;
+                break;
+            }
+        }
+        if (payload_ty_opt == null) {
+            if (pk == .Variant) {
+                try self.diags.addError(loc, .unknown_variant_tag, .{});
+            } else {
+                try self.diags.addError(loc, .unknown_error_tag, .{});
+            }
+            return null;
+        }
+
+        const payload_ty = payload_ty_opt.?;
+        const payload_kind = self.typeKind(payload_ty);
+
+        switch (payload_kind) {
+            .Void => {
+                // Tag-only: must have zero args
+                if (args.len != 0) {
+                    try self.diags.addError(loc, .argument_count_mismatch, .{});
+                    return null;
+                }
+                return parent_ty;
+            },
+            .Tuple => {
+                // Exact arity, per-element type check
+                const tup = self.type_info.store.Tuple.get(self.type_info.store.index.rows.items[payload_ty.toRaw()]);
+                const params = self.type_info.store.type_pool.slice(tup.elems);
+
+                if (args.len != params.len) {
+                    // IMPORTANT: only one arity diagnostic
+                    try self.diags.addError(loc, .argument_count_mismatch, .{});
+                    return null;
+                }
+
+                var i: usize = 0;
+                while (i < args.len) : (i += 1) {
+                    const at = try self.checkExpr(args[i]) orelse return null;
+                    if (self.assignable(at, params[i]) != .success) {
+                        // IMPORTANT: only one type diagnostic
+                        try self.diags.addError(loc, .argument_type_mismatch, .{});
                         return null;
-                    }
-                    const payload_ty = found.?;
-                    const args = self.ast_unit.exprs.expr_pool.slice(call_expr.args);
-                    const pkind = self.type_info.store.index.kinds.items[payload_ty.toRaw()];
-                    switch (pkind) {
-                        .Void => {
-                            if (args.len != 0) {
-                                try self.diags.addError(self.ast_unit.exprs.locs.get(call_expr.loc), .argument_count_mismatch, .{});
-                                return null;
-                            }
-                            return pty;
-                        },
-                        .Tuple => {
-                            const tup = self.type_info.store.Tuple.get(self.type_info.store.index.rows.items[payload_ty.toRaw()]);
-                            const param_ids = self.type_info.store.type_pool.slice(tup.elems);
-                            if (args.len < param_ids.len) {
-                                try self.diags.addError(self.ast_unit.exprs.locs.get(call_expr.loc), .variant_payload_arity_mismatch, .{});
-                                return null;
-                            }
-                            if (args.len > param_ids.len) {
-                                try self.diags.addError(self.ast_unit.exprs.locs.get(call_expr.loc), .argument_count_mismatch, .{});
-                                return null;
-                            }
-                            var ai: usize = 0;
-                            while (ai < args.len) : (ai += 1) {
-                                const at = try self.checkExpr(args[ai]);
-                                if (at == null) return null;
-                                if (self.assignable(at.?, param_ids[ai]) != .success) {
-                                    try self.diags.addError(self.ast_unit.exprs.locs.get(call_expr.loc), .argument_type_mismatch, .{});
-                                    return null;
-                                }
-                            }
-                            return pty;
-                        },
-                        else => {
-                            try self.diags.addError(self.ast_unit.exprs.locs.get(call_expr.loc), .call_non_callable, .{});
-                            return null;
-                        },
-                    }
-                } else if (pk == .Error) {
-                    const et = self.type_info.store.Error.get(self.type_info.store.index.rows.items[pty.toRaw()]);
-                    const cases = self.type_info.store.field_pool.slice(et.variants);
-                    var found: ?types.TypeId = null;
-                    var ei: usize = 0;
-                    while (ei < cases.len) : (ei += 1) {
-                        const c = self.type_info.store.Field.get(cases[ei].toRaw());
-                        if (c.name.toRaw() == fr.field.toRaw()) {
-                            found = c.ty;
-                            break;
-                        }
-                    }
-                    if (found == null) {
-                        try self.diags.addError(self.ast_unit.exprs.locs.get(call_expr.loc), .unknown_error_tag, .{});
-                        return null;
-                    }
-                    const payload_ty = found.?;
-                    const args = self.ast_unit.exprs.expr_pool.slice(call_expr.args);
-                    const pkind = self.type_info.store.index.kinds.items[payload_ty.toRaw()];
-                    switch (pkind) {
-                        .Void => {
-                            if (args.len != 0) {
-                                try self.diags.addError(self.ast_unit.exprs.locs.get(call_expr.loc), .argument_count_mismatch, .{});
-                                return null;
-                            }
-                            return pty;
-                        },
-                        .Tuple => {
-                            const tup = self.type_info.store.Tuple.get(self.type_info.store.index.rows.items[payload_ty.toRaw()]);
-                            const param_ids = self.type_info.store.type_pool.slice(tup.elems);
-                            if (args.len < param_ids.len) {
-                                try self.diags.addError(self.ast_unit.exprs.locs.get(call_expr.loc), .variant_payload_arity_mismatch, .{});
-                                return null;
-                            }
-                            if (args.len > param_ids.len) {
-                                try self.diags.addError(self.ast_unit.exprs.locs.get(call_expr.loc), .argument_count_mismatch, .{});
-                                return null;
-                            }
-                            var ai2: usize = 0;
-                            while (ai2 < args.len) : (ai2 += 1) {
-                                const at = try self.checkExpr(args[ai2]);
-                                if (at == null) return null;
-                                if (self.assignable(at.?, param_ids[ai2]) != .success) {
-                                    try self.diags.addError(self.ast_unit.exprs.locs.get(call_expr.loc), .argument_type_mismatch, .{});
-                                    return null;
-                                }
-                            }
-                            return pty;
-                        },
-                        else => {
-                            try self.diags.addError(self.ast_unit.exprs.locs.get(call_expr.loc), .call_non_callable, .{});
-                            return null;
-                        },
                     }
                 }
+                return parent_ty;
+            },
+            else => {
+                // Non-void, non-tuple payloads (e.g. struct) are not callable: use literals like Type.Tag{...}
+                try self.diags.addError(loc, .call_non_callable, .{});
+                return null;
+            },
+        }
+    }
+
+    fn checkCall(self: *Checker, id: ast.ExprId) !?types.TypeId {
+        const call_expr = self.ast_unit.exprs.get(.Call, id);
+        const call_loc = self.exprLoc(call_expr);
+        const callee_kind = self.ast_unit.exprs.index.kinds.items[call_expr.callee.toRaw()];
+        const args = self.ast_unit.exprs.expr_pool.slice(call_expr.args);
+
+        // Fast path A: module member call — resolve from import without evaluating callee.
+        if (callee_kind == .FieldAccess) {
+            const fr = self.ast_unit.exprs.get(.FieldAccess, call_expr.callee);
+
+            if (self.resolveImportedMemberType(fr)) |fty| {
+                const fk = self.typeKind(fty);
+                if (fk != .Function) {
+                    try self.diags.addError(call_loc, .call_non_callable, .{});
+                    return null;
+                }
+                const fnrow = self.type_info.store.Function.get(self.type_info.store.index.rows.items[fty.toRaw()]);
+                const params = self.type_info.store.type_pool.slice(fnrow.params);
+
+                if (!fnrow.is_variadic and args.len != params.len) {
+                    try self.diags.addError(call_loc, .argument_count_mismatch, .{});
+                    return null;
+                }
+                const fixed = if (params.len == 0) 0 else if (fnrow.is_variadic) params.len - 1 else params.len;
+
+                var i: usize = 0;
+                while (i < args.len) : (i += 1) {
+                    const at = try self.checkExpr(args[i]) orelse return null;
+                    const pt = if (i < fixed) params[i] else params[fixed];
+                    if (self.assignable(at, pt) != .success) {
+                        try self.diags.addError(call_loc, .argument_type_mismatch, .{});
+                        return null;
+                    }
+                }
+                return fnrow.result;
+            }
+
+            // Fast path B: (Type).Tag(...) for Variant/Error constructors — handle ONCE and return.
+            if (try check_types.typeFromTypeExpr(self, fr.parent)) |pty| {
+                const pk = self.typeKind(pty);
+                if (pk == .Variant or pk == .Error) {
+                    // This single call either returns a type (success) or null after emitting exactly one diagnostic.
+                    return try self.checkTagConstructorCall(pty, fr.field, args, call_loc);
+                }
+                // If parent is a type but not Variant/Error, fall through to general evaluation.
             }
         }
 
-        const func_ty = try self.checkExpr(call_expr.callee);
-        if (func_ty == null) {
-            // If the callee is an unresolved identifier in the current scope, report unknown_function.
-            if (self.ast_unit.exprs.index.kinds.items[call_expr.callee.toRaw()] == .Ident) {
+        // General case: the callee is a value expression.
+        const func_ty_opt = try self.checkExpr(call_expr.callee);
+        if (func_ty_opt == null) {
+            if (callee_kind == .Ident) {
                 const idr = self.ast_unit.exprs.get(.Ident, call_expr.callee);
                 if (self.lookup(idr.name) == null) {
-                    try self.diags.addError(self.ast_unit.exprs.locs.get(call_expr.loc), .unknown_function, .{});
+                    try self.diags.addError(call_loc, .unknown_function, .{});
                 }
             }
             return null;
         }
-        const func_id = func_ty.?;
-        const func_kind = self.type_info.store.index.kinds.items[func_id.toRaw()];
+        const func_ty = func_ty_opt.?;
+        const func_kind = self.typeKind(func_ty);
 
-        // Variant tag constructor call: (Type).Tag(args...)
-        if (self.ast_unit.exprs.index.kinds.items[call_expr.callee.toRaw()] == .FieldAccess) {
-            const fr = self.ast_unit.exprs.get(.FieldAccess, call_expr.callee);
-            // Resolve the parent in type-space
-            const parent_ty = try check_types.typeFromTypeExpr(self, fr.parent) orelse null;
-            if (parent_ty) |pty| {
-                const pk = self.type_info.store.index.kinds.items[pty.toRaw()];
-                if (pk == .Variant) {
-                    const vt = self.type_info.store.Variant.get(self.type_info.store.index.rows.items[pty.toRaw()]);
-                    const cases = self.type_info.store.field_pool.slice(vt.variants);
-                    var found: ?types.TypeId = null;
-                    var ci: usize = 0;
-                    while (ci < cases.len) : (ci += 1) {
-                        const c = self.type_info.store.Field.get(cases[ci].toRaw());
-                        if (c.name.toRaw() == fr.field.toRaw()) {
-                            found = c.ty;
-                            break;
-                        }
-                    }
-                    if (found == null) {
-                        try self.diags.addError(self.ast_unit.exprs.locs.get(call_expr.loc), .unknown_variant_tag, .{});
-                        return null;
-                    }
-                    const payload_ty = found.?;
-                    const args = self.ast_unit.exprs.expr_pool.slice(call_expr.args);
-                    const pkind = self.type_info.store.index.kinds.items[payload_ty.toRaw()];
-                    switch (pkind) {
-                        .Void => {
-                            if (args.len != 0) {
-                                try self.diags.addError(self.ast_unit.exprs.locs.get(call_expr.loc), .argument_count_mismatch, .{});
-                                return null;
-                            }
-                            return pty;
-                        },
-                        .Tuple => {
-                            const tup = self.type_info.store.Tuple.get(self.type_info.store.index.rows.items[payload_ty.toRaw()]);
-                            const param_ids = self.type_info.store.type_pool.slice(tup.elems);
-                            if (args.len < param_ids.len) {
-                                try self.diags.addError(self.ast_unit.exprs.locs.get(call_expr.loc), .variant_payload_arity_mismatch, .{});
-                                return null;
-                            }
-                            if (args.len > param_ids.len) {
-                                try self.diags.addError(self.ast_unit.exprs.locs.get(call_expr.loc), .argument_count_mismatch, .{});
-                                return null;
-                            }
-                            var ai: usize = 0;
-                            while (ai < args.len) : (ai += 1) {
-                                const at = try self.checkExpr(args[ai]);
-                                if (at == null) return null;
-                                if (self.assignable(at.?, param_ids[ai]) != .success) {
-                                    try self.diags.addError(self.ast_unit.exprs.locs.get(call_expr.loc), .argument_type_mismatch, .{});
-                                    return null;
-                                }
-                            }
-                            return pty;
-                        },
-                        else => {
-                            try self.diags.addError(self.ast_unit.exprs.locs.get(call_expr.loc), .call_non_callable, .{});
-                            return null;
-                        },
-                    }
-                } else if (pk == .Error) {
-                    const et = self.type_info.store.Error.get(self.type_info.store.index.rows.items[pty.toRaw()]);
-                    const cases = self.type_info.store.field_pool.slice(et.variants);
-                    var found: ?types.TypeId = null;
-                    var ei: usize = 0;
-                    while (ei < cases.len) : (ei += 1) {
-                        const c = self.type_info.store.Field.get(cases[ei].toRaw());
-                        if (c.name.toRaw() == fr.field.toRaw()) {
-                            found = c.ty;
-                            break;
-                        }
-                    }
-                    if (found == null) {
-                        try self.diags.addError(self.ast_unit.exprs.locs.get(call_expr.loc), .unknown_error_tag, .{});
-                        return null;
-                    }
-                    const payload_ty = found.?;
-                    const args = self.ast_unit.exprs.expr_pool.slice(call_expr.args);
-                    const pkind = self.type_info.store.index.kinds.items[payload_ty.toRaw()];
-                    switch (pkind) {
-                        .Void => {
-                            if (args.len != 0) {
-                                try self.diags.addError(self.ast_unit.exprs.locs.get(call_expr.loc), .argument_count_mismatch, .{});
-                                return null;
-                            }
-                            return pty;
-                        },
-                        .Tuple => {
-                            const tup = self.type_info.store.Tuple.get(self.type_info.store.index.rows.items[payload_ty.toRaw()]);
-                            const param_ids = self.type_info.store.type_pool.slice(tup.elems);
-                            if (args.len < param_ids.len) {
-                                try self.diags.addError(self.ast_unit.exprs.locs.get(call_expr.loc), .variant_payload_arity_mismatch, .{});
-                                return null;
-                            }
-                            if (args.len > param_ids.len) {
-                                try self.diags.addError(self.ast_unit.exprs.locs.get(call_expr.loc), .argument_count_mismatch, .{});
-                                return null;
-                            }
-                            var ai2: usize = 0;
-                            while (ai2 < args.len) : (ai2 += 1) {
-                                const at = try self.checkExpr(args[ai2]);
-                                if (at == null) return null;
-                                if (self.assignable(at.?, param_ids[ai2]) != .success) {
-                                    try self.diags.addError(self.ast_unit.exprs.locs.get(call_expr.loc), .argument_type_mismatch, .{});
-                                    return null;
-                                }
-                            }
-                            return pty;
-                        },
-                        else => {
-                            try self.diags.addError(self.ast_unit.exprs.locs.get(call_expr.loc), .call_non_callable, .{});
-                            return null;
-                        },
-                    }
-                }
-            }
-        }
+        // Tuple-as-constructor: `(T0,T1,..)(a0,a1,..)` -> construct the tuple type.
         if (func_kind == .Tuple) {
-            // Variant Tuple Call: treat as a constructor for the tuple type.
-            const tuple_ty = self.type_info.store.Tuple.get(self.type_info.store.index.rows.items[func_id.toRaw()]);
-            const param_ids = self.type_info.store.type_pool.slice(tuple_ty.elems);
-            const args = self.ast_unit.exprs.expr_pool.slice(call_expr.args);
-            if (args.len != param_ids.len) {
-                try self.diags.addError(self.ast_unit.exprs.locs.get(call_expr.loc), .argument_count_mismatch, .{});
+            const tup = self.type_info.store.Tuple.get(self.type_info.store.index.rows.items[func_ty.toRaw()]);
+            const params = self.type_info.store.type_pool.slice(tup.elems);
+            if (args.len != params.len) {
+                try self.diags.addError(call_loc, .argument_count_mismatch, .{});
                 return null;
             }
             var i: usize = 0;
             while (i < args.len) : (i += 1) {
-                const at = try self.checkExpr(args[i]);
-                if (at == null) return null;
-                const atid = at.?;
-                const ptid = param_ids[i];
-                if (self.assignable(atid, ptid) != .success) {
-                    try self.diags.addError(self.ast_unit.exprs.locs.get(call_expr.loc), .argument_type_mismatch, .{});
+                const at = try self.checkExpr(args[i]) orelse return null;
+                if (self.assignable(at, params[i]) != .success) {
+                    try self.diags.addError(call_loc, .argument_type_mismatch, .{});
                     return null;
                 }
             }
-            return func_id;
-        } else if (func_kind != .Function) {
-            try self.diags.addError(self.ast_unit.exprs.locs.get(call_expr.loc), .call_non_callable, .{});
+            return func_ty;
+        }
+
+        if (func_kind != .Function) {
+            try self.diags.addError(call_loc, .call_non_callable, .{});
             return null;
         }
-        const func = self.type_info.store.Function.get(self.type_info.store.index.rows.items[func_id.toRaw()]);
-        // Purity bookkeeping: mark current function impure when calling an impure/proc callee
+
+        // Purity bookkeeping / enforcement
+        const fnrow = self.type_info.store.Function.get(self.type_info.store.index.rows.items[func_ty.toRaw()]);
         if (self.inFunction()) {
-            var mark_impure = !func.is_pure;
-            if (!mark_impure and self.ast_unit.exprs.index.kinds.items[call_expr.callee.toRaw()] == .Ident) {
-                const idr = self.ast_unit.exprs.get(.Ident, call_expr.callee);
-                if (self.lookup(idr.name)) |sid_sym| {
-                    const sym = self.symtab.syms.get(sid_sym.toRaw());
-                    if (!sym.origin_decl.isNone()) {
-                        const did = sym.origin_decl.unwrap();
-                        const drow = self.ast_unit.exprs.Decl.get(did.toRaw());
-                        const vk = self.ast_unit.exprs.index.kinds.items[drow.value.toRaw()];
-                        if (vk == .FunctionLit) {
-                            const fl = self.ast_unit.exprs.get(.FunctionLit, drow.value);
-                            if (fl.flags.is_proc or fl.flags.is_extern) mark_impure = true;
-                        }
-                    }
-                }
+            const fctx = self.currentFunc().?;
+            if (fctx.require_pure and !fnrow.is_pure) {
+                try self.diags.addError(call_loc, .purity_violation, .{});
+                return null;
             }
-            if (mark_impure) {
+            if (!fnrow.is_pure) {
                 const idx = self.func_stack.items.len - 1;
                 self.func_stack.items[idx].pure = false;
             }
         }
-        // Purity: disallow such calls inside a required-pure function
-        if (self.inFunction()) {
-            const fctx = self.currentFunc().?;
-            if (fctx.require_pure) {
-                var violate = !func.is_pure;
-                if (!violate and self.ast_unit.exprs.index.kinds.items[call_expr.callee.toRaw()] == .Ident) {
-                    const idr = self.ast_unit.exprs.get(.Ident, call_expr.callee);
-                    if (self.lookup(idr.name)) |sid_sym| {
-                        const sym = self.symtab.syms.get(sid_sym.toRaw());
-                        if (!sym.origin_decl.isNone()) {
-                            const did = sym.origin_decl.unwrap();
-                            const drow = self.ast_unit.exprs.Decl.get(did.toRaw());
-                            const vk = self.ast_unit.exprs.index.kinds.items[drow.value.toRaw()];
-                            if (vk == .FunctionLit) {
-                                const fl = self.ast_unit.exprs.get(.FunctionLit, drow.value);
-                                if (fl.flags.is_proc or fl.flags.is_extern) violate = true;
-                            }
-                        }
-                    }
-                }
-                if (violate) {
-                    try self.diags.addError(self.ast_unit.exprs.locs.get(call_expr.loc), .purity_violation, .{});
-                    return null;
-                }
-            }
-        }
-        const param_ids = self.type_info.store.type_pool.slice(func.params);
-        const args = self.ast_unit.exprs.expr_pool.slice(call_expr.args);
-        if (!func.is_variadic) {
-            if (args.len != param_ids.len) {
-                try self.diags.addError(self.ast_unit.exprs.locs.get(call_expr.loc), .argument_count_mismatch, .{});
+
+        // Arity & argument type checks
+        const params = self.type_info.store.type_pool.slice(fnrow.params);
+        if (!fnrow.is_variadic) {
+            if (args.len != params.len) {
+                try self.diags.addError(call_loc, .argument_count_mismatch, .{});
                 return null;
             }
         } else {
-            // Variadic: last formal is a sentinel (e.g., 'any'), and may be omitted.
-            const min_required = if (param_ids.len == 0) 0 else param_ids.len - 1;
+            const min_required = if (params.len == 0) 0 else params.len - 1;
             if (args.len < min_required) {
-                try self.diags.addError(self.ast_unit.exprs.locs.get(call_expr.loc), .argument_count_mismatch, .{});
+                try self.diags.addError(call_loc, .argument_count_mismatch, .{});
                 return null;
             }
         }
+
         var i: usize = 0;
         while (i < args.len) : (i += 1) {
-            const at = try self.checkExpr(args[i]);
-            if (at == null) return null;
-            const atid = at.?;
-            const ptid = if (!func.is_variadic)
-                (if (i < param_ids.len) param_ids[i] else param_ids[param_ids.len - 1])
+            const at = try self.checkExpr(args[i]) orelse return null;
+            const pt = if (!fnrow.is_variadic)
+                (if (i < params.len) params[i] else params[params.len - 1])
             else blk: {
-                // For variadic, fixed params are all but the last; everything after uses the last formal's type.
-                const fixed = if (param_ids.len == 0) 0 else param_ids.len - 1;
-                break :blk if (i < fixed) param_ids[i] else param_ids[param_ids.len - 1];
+                const fixed = if (params.len == 0) 0 else params.len - 1;
+                break :blk if (i < fixed) params[i] else params[params.len - 1];
             };
-            if (self.assignable(atid, ptid) != .success) {
-                try self.diags.addError(self.ast_unit.exprs.locs.get(call_expr.loc), .argument_type_mismatch, .{});
+            if (self.assignable(at, pt) != .success) {
+                try self.diags.addError(call_loc, .argument_type_mismatch, .{});
                 return null;
             }
         }
-        return func.result;
+        return fnrow.result;
     }
+
+    // =========================
+    // Blocks, Return & Control
+    // =========================
 
     fn checkCodeBlock(self: *Checker, id: ast.ExprId) !?types.TypeId {
         const cb = self.ast_unit.exprs.get(.CodeBlock, id);
         if (!self.warned_code) {
-            _ = self.diags.addNote(self.ast_unit.exprs.locs.get(cb.loc), .checker_code_block_not_executed, .{}) catch {};
+            _ = self.diags.addNote(self.exprLoc(cb), .checker_code_block_not_executed, .{}) catch {};
             self.warned_code = true;
         }
         return try self.checkExpr(cb.block);
@@ -1881,23 +1771,21 @@ pub const Checker = struct {
     fn checkComptimeBlock(self: *Checker, id: ast.ExprId) !?types.TypeId {
         const cb = self.ast_unit.exprs.get(.ComptimeBlock, id);
         if (!self.warned_comptime) {
-            _ = self.diags.addNote(self.ast_unit.exprs.locs.get(cb.loc), .checker_comptime_not_executed, .{}) catch {};
+            _ = self.diags.addNote(self.exprLoc(cb), .checker_comptime_not_executed, .{}) catch {};
             self.warned_comptime = true;
         }
-        const t = try self.checkExpr(cb.block);
-        if (t == null) return null;
-        return t;
+        return try self.checkExpr(cb.block);
     }
 
     fn checkAsyncBlock(self: *Checker, id: ast.ExprId) !?types.TypeId {
         _ = id;
-        // Treat async blocks as opaque for typing
+        // Treat async blocks as opaque for typing.
         return self.type_info.store.tAny();
     }
 
     fn checkMlirBlock(self: *Checker, id: ast.ExprId) !?types.TypeId {
         _ = id;
-        // Treat mlir blocks as opaque for typing
+        // Treat mlir blocks as opaque for typing.
         return self.type_info.store.tAny();
     }
 
@@ -1908,66 +1796,61 @@ pub const Checker = struct {
     }
 
     fn checkReturn(self: *Checker, rr: ast.Rows.Return) !?types.TypeId {
-        // get the expected return type from the current function context
         if (self.func_stack.items.len == 0) {
-            try self.diags.addError(self.ast_unit.exprs.locs.get(rr.loc), .return_outside_function, .{});
+            try self.diags.addError(self.exprLoc(rr), .return_outside_function, .{});
             return null;
         }
         const current_func = self.func_stack.items[self.func_stack.items.len - 1];
+
         if (current_func.has_result and rr.value.isNone()) {
-            try self.diags.addError(self.ast_unit.exprs.locs.get(rr.loc), .missing_return_value, .{});
+            try self.diags.addError(self.exprLoc(rr), .missing_return_value, .{});
             return null;
         }
         if (!current_func.has_result and !rr.value.isNone()) {
-            try self.diags.addError(self.ast_unit.exprs.locs.get(rr.loc), .return_value_in_void_function, .{});
+            try self.diags.addError(self.exprLoc(rr), .return_value_in_void_function, .{});
             return null;
         }
+
         const expect_ty = current_func.result;
-        const ret_val_ty = if (rr.value.isNone())
-            self.type_info.store.tVoid()
-        else blk: {
-            // Return value must be evaluated in value context even in statement bodies
+        const ret_ty = if (rr.value.isNone()) self.type_info.store.tVoid() else blk: {
             try self.pushValueReq(true);
             const t = try self.checkExpr(rr.value.unwrap());
             self.popValueReq();
             break :blk t;
         };
-        // check if the return value type matches the expected return type
-        if (ret_val_ty == null) return null;
-        if (self.assignable(ret_val_ty.?, expect_ty) != .success) {
-            try self.diags.addError(self.ast_unit.exprs.locs.get(rr.loc), .return_type_mismatch, .{});
+        if (ret_ty == null) return null;
+
+        if (self.assignable(ret_ty.?, expect_ty) != .success) {
+            try self.diags.addError(self.exprLoc(rr), .return_type_mismatch, .{});
             return null;
         }
-        return ret_val_ty;
+        return ret_ty;
     }
 
     fn checkIf(self: *Checker, id: ast.ExprId) !?types.TypeId {
         const if_expr = self.ast_unit.exprs.get(.If, id);
         const cond = try self.checkExpr(if_expr.cond);
         if (cond == null or cond.?.toRaw() != self.type_info.store.tBool().toRaw()) {
-            try self.diags.addError(self.ast_unit.exprs.locs.get(if_expr.loc), .non_boolean_condition, .{});
+            try self.diags.addError(self.exprLoc(if_expr), .non_boolean_condition, .{});
             return null;
         }
+
         const value_required = self.isValueReq();
         if (!value_required) {
-            // Statement context: type-check branches, no else required
             _ = try self.checkExpr(if_expr.then_block);
-            if (!if_expr.else_block.isNone()) {
-                _ = try self.checkExpr(if_expr.else_block.unwrap());
-            }
+            if (!if_expr.else_block.isNone()) _ = try self.checkExpr(if_expr.else_block.unwrap());
             return self.type_info.store.tVoid();
         }
-        // Value context: else required, and branches must match
-        const then_ty = try self.checkExpr(if_expr.then_block);
-        if (then_ty == null) return null;
+
+        const then_ty = try self.checkExpr(if_expr.then_block) orelse return null;
         if (if_expr.else_block.isNone()) {
-            try self.diags.addError(self.ast_unit.exprs.locs.get(if_expr.loc), .if_expression_requires_else, .{});
+            try self.diags.addError(self.exprLoc(if_expr), .if_expression_requires_else, .{});
             return null;
         }
-        const else_ty = try self.checkExpr(if_expr.else_block.unwrap());
-        if (else_ty == null) return null;
-        if (then_ty.?.toRaw() != else_ty.?.toRaw()) {
-            try self.diags.addError(self.ast_unit.exprs.locs.get(if_expr.loc), .if_branch_type_mismatch, .{});
+        const else_ty = try self.checkExpr(if_expr.else_block.unwrap()) orelse return null;
+
+        if (then_ty.toRaw() != else_ty.toRaw()) {
+            try self.diags.addError(self.exprLoc(if_expr), .if_branch_type_mismatch, .{});
             return null;
         }
         return then_ty;
@@ -1975,29 +1858,26 @@ pub const Checker = struct {
 
     fn checkWhile(self: *Checker, id: ast.ExprId) !?types.TypeId {
         const wr = self.ast_unit.exprs.get(.While, id);
-        // C-like while loop
+
         if (!wr.cond.isNone() and wr.pattern.isNone()) {
-            const cond = try self.checkExpr(wr.cond.unwrap());
-            if (cond == null) return null;
-            const ct = cond.?;
-            if (ct.toRaw() != self.type_info.store.tBool().toRaw() and ct.toRaw() != self.type_info.store.tAny().toRaw()) {
-                try self.diags.addError(self.ast_unit.exprs.locs.get(wr.loc), .non_boolean_condition, .{});
+            // C-like while loop
+            const cond_ty = try self.checkExpr(wr.cond.unwrap()) orelse return null;
+            const ck = self.typeKind(cond_ty);
+            if (ck != .Bool and ck != .Any) {
+                try self.diags.addError(self.exprLoc(wr), .non_boolean_condition, .{});
                 return null;
             }
-        }
-        // Pattern-matching while loop
-        else if (!wr.cond.isNone() and !wr.pattern.isNone()) {
-            const expr_ty = try self.checkExpr(wr.cond.unwrap());
-            if (expr_ty == null) return null;
-            if (!try pattern_matching.checkPattern(self, wr.pattern.unwrap(), expr_ty.?, true)) {
+        } else if (!wr.cond.isNone() and !wr.pattern.isNone()) {
+            // Pattern-matching while
+            const subj_ty = try self.checkExpr(wr.cond.unwrap()) orelse return null;
+            if (!(try pattern_matching.checkPattern(self, wr.pattern.unwrap(), subj_ty, true))) {
                 return null;
             }
-            // Set loop pattern context for identifier type inference within body
             self.current_loop_pat = wr.pattern;
-            self.current_loop_subject_ty = expr_ty.?;
-        }
-        // Infinite loop
-        else if (wr.cond.isNone() and wr.pattern.isNone()) {} else unreachable;
+            self.current_loop_subject_ty = subj_ty;
+        } else if (wr.cond.isNone() and wr.pattern.isNone()) {
+            // Infinite loop: ok
+        } else unreachable;
 
         try self.pushLoop(wr.label);
         defer self.popLoop();
@@ -2005,11 +1885,11 @@ pub const Checker = struct {
             self.current_loop_pat = ast.OptPatternId.none();
             self.current_loop_subject_ty = null;
         }
+
         const body_ty = try self.checkExpr(wr.body);
-        // If loop used as a value, return the loop's result type (set by labeled breaks)
+
         if (self.isValueReq()) {
-            const lc = self.loopCtxForLabel(wr.label);
-            if (lc) |ctx| return ctx.result_ty;
+            if (self.loopCtxForLabel(wr.label)) |ctx| return ctx.result_ty;
         }
         return body_ty;
     }
@@ -2021,83 +1901,92 @@ pub const Checker = struct {
 
     fn checkFor(self: *Checker, id: ast.ExprId) !?types.TypeId {
         const fr = self.ast_unit.exprs.get(.For, id);
-        const it = try self.checkExpr(fr.iterable);
-        if (it == null) return null;
-        const kind = self.type_info.store.index.kinds.items[it.?.toRaw()];
+        const it = try self.checkExpr(fr.iterable) orelse return null;
+        const kind = self.typeKind(it);
+
         switch (kind) {
             .Array, .Slice, .DynArray => {
                 const pat_kind = self.ast_unit.pats.index.kinds.items[fr.pattern.toRaw()];
                 const subject_ty: types.TypeId = switch (pat_kind) {
-                    .Slice => it.?,
-                    else => if (kind == .Array)
-                        self.type_info.store.Array.get(self.type_info.store.index.rows.items[it.?.toRaw()]).elem
-                    else if (kind == .Slice)
-                        self.type_info.store.Slice.get(self.type_info.store.index.rows.items[it.?.toRaw()]).elem
-                    else
-                        self.type_info.store.DynArray.get(self.type_info.store.index.rows.items[it.?.toRaw()]).elem,
+                    .Slice => it,
+                    else => switch (kind) {
+                        .Array => self.type_info.store.Array.get(self.type_info.store.index.rows.items[it.toRaw()]).elem,
+                        .Slice => self.type_info.store.Slice.get(self.type_info.store.index.rows.items[it.toRaw()]).elem,
+                        .DynArray => self.type_info.store.DynArray.get(self.type_info.store.index.rows.items[it.toRaw()]).elem,
+                        else => unreachable,
+                    },
                 };
-                if (!try pattern_matching.checkPattern(self, fr.pattern, subject_ty, true)) {
+                if (!(try pattern_matching.checkPattern(self, fr.pattern, subject_ty, true))) {
                     return null;
                 }
-                // Set loop pattern context for identifier type inference within body
                 self.current_loop_pat = ast.OptPatternId.some(fr.pattern);
                 self.current_loop_subject_ty = subject_ty;
             },
             else => {
-                try self.diags.addError(self.ast_unit.exprs.locs.get(fr.loc), .non_iterable_in_for, .{});
+                try self.diags.addError(self.exprLoc(fr), .non_iterable_in_for, .{});
                 return null;
             },
         }
-        // Body must type-check
+
         try self.pushLoop(fr.label);
         defer self.popLoop();
         defer {
             self.current_loop_pat = ast.OptPatternId.none();
             self.current_loop_subject_ty = null;
         }
+
         const body_ty = try self.checkExpr(fr.body);
-        // If loop used as a value, return the loop's result type (set by labeled breaks)
         if (self.isValueReq()) {
-            const lc = self.loopCtxForLabel(fr.label);
-            if (lc) |ctx| return ctx.result_ty;
+            if (self.loopCtxForLabel(fr.label)) |ctx| return ctx.result_ty;
         }
         return body_ty;
     }
 
+    // =========================
+    // Casts, Catch, Optionals
+    // =========================
+
     fn castable(self: *Checker, got: types.TypeId, expect: types.TypeId) bool {
         if (got.toRaw() == expect.toRaw()) return true;
-        const gk = self.type_info.store.index.kinds.items[got.toRaw()];
-        const ek = self.type_info.store.index.kinds.items[expect.toRaw()];
-        // Allow numeric casts
-        const num_ok = switch (gk) {
-            .I8, .I16, .I32, .I64, .U8, .U16, .U32, .U64, .F32, .F64, .Usize => true,
-            else => false,
-        } and switch (ek) {
-            .I8, .I16, .I32, .I64, .U8, .U16, .U32, .U64, .F32, .F64, .Usize => true,
-            else => false,
-        };
+        const gk = self.typeKind(got);
+        const ek = self.typeKind(expect);
+
+        // Numeric <-> numeric (no implicit *value* coercion, but casts allowed)
+        const num_ok =
+            switch (gk) {
+                .I8, .I16, .I32, .I64, .U8, .U16, .U32, .U64, .F32, .F64, .Usize => true,
+                else => false,
+            } and
+            switch (ek) {
+                .I8, .I16, .I32, .I64, .U8, .U16, .U32, .U64, .F32, .F64, .Usize => true,
+                else => false,
+            };
         if (num_ok) return true;
-        // Allow pointer-to-pointer casts
+
+        // Pointer-to-pointer
         if (gk == .Ptr and ek == .Ptr) return true;
+
         return false;
     }
 
     fn checkBreak(self: *Checker, id: ast.ExprId) !?types.TypeId {
         const br = self.ast_unit.exprs.get(.Break, id);
         if (!self.inLoop()) {
-            try self.diags.addError(self.ast_unit.exprs.locs.get(br.loc), .break_outside_loop, .{});
+            try self.diags.addError(self.exprLoc(br), .break_outside_loop, .{});
             return null;
         }
+
         var val_ty: ?types.TypeId = null;
         if (!br.value.isNone()) {
             val_ty = try self.checkExpr(br.value.unwrap());
             if (val_ty == null) return null;
         }
+
         if (self.loopCtxForLabel(br.label)) |ctx| {
             if (!br.value.isNone()) {
                 if (ctx.result_ty) |rt| {
                     if (val_ty.?.toRaw() != rt.toRaw()) {
-                        try self.diags.addError(self.ast_unit.exprs.locs.get(br.loc), .loop_break_value_type_conflict, .{});
+                        try self.diags.addError(self.exprLoc(br), .loop_break_value_type_conflict, .{});
                         return null;
                     }
                 } else ctx.result_ty = val_ty.?;
@@ -2116,53 +2005,51 @@ pub const Checker = struct {
     }
 
     fn checkDefer(self: *Checker, defer_expr: ast.Rows.Defer) !?types.TypeId {
-        if (!self.inFunction()) try self.diags.addError(self.ast_unit.exprs.locs.get(defer_expr.loc), .defer_outside_function, .{});
-        const dt = try self.checkExpr(defer_expr.expr);
-        if (dt == null) return null;
+        if (!self.inFunction()) {
+            try self.diags.addError(self.exprLoc(defer_expr), .defer_outside_function, .{});
+        }
+        _ = try self.checkExpr(defer_expr.expr);
         return self.type_info.store.tVoid();
     }
 
     fn checkErrDefer(self: *Checker, errdefer_expr: ast.Rows.ErrDefer) !?types.TypeId {
         if (!self.inFunction()) {
-            try self.diags.addError(self.ast_unit.exprs.locs.get(errdefer_expr.loc), .errdefer_outside_function, .{});
+            try self.diags.addError(self.exprLoc(errdefer_expr), .errdefer_outside_function, .{});
             return null;
         }
-        // get current function's error set type
         const current_func = self.currentFunc().?;
-        if (!current_func.has_result or self.type_info.store.index.kinds.items[current_func.result.toRaw()] != .ErrorSet) {
-            try self.diags.addError(self.ast_unit.exprs.locs.get(errdefer_expr.loc), .errdefer_in_non_error_function, .{});
+        if (!current_func.has_result or self.typeKind(current_func.result) != .ErrorSet) {
+            try self.diags.addError(self.exprLoc(errdefer_expr), .errdefer_in_non_error_function, .{});
             return null;
         }
-        const edt = try self.checkExpr(errdefer_expr.expr);
-        if (edt == null) return null;
+        _ = try self.checkExpr(errdefer_expr.expr) orelse return null;
         return self.type_info.store.tVoid();
     }
 
     fn checkErrUnwrap(self: *Checker, id: ast.ExprId) !?types.TypeId {
         const eur = self.ast_unit.exprs.get(.ErrUnwrap, id);
-        const et = try self.checkExpr(eur.expr);
-        if (et == null) return null;
-        if (self.type_info.store.index.kinds.items[et.?.toRaw()] != .ErrorSet) {
-            try self.diags.addError(self.ast_unit.exprs.locs.get(eur.loc), .error_propagation_on_non_error, .{});
+        const et = try self.checkExpr(eur.expr) orelse return null;
+        if (self.typeKind(et) != .ErrorSet) {
+            try self.diags.addError(self.exprLoc(eur), .error_propagation_on_non_error, .{});
             return null;
         }
-        const er = self.type_info.store.ErrorSet.get(self.type_info.store.index.rows.items[et.?.toRaw()]);
+        const er = self.type_info.store.ErrorSet.get(self.type_info.store.index.rows.items[et.toRaw()]);
 
-        // Ensure we are inside a function whose result type is also an error set (to allow propagation)
         if (!self.inFunction()) {
-            try self.diags.addError(self.ast_unit.exprs.locs.get(eur.loc), .error_propagation_mismatched_function_result, .{});
+            try self.diags.addError(self.exprLoc(eur), .error_propagation_mismatched_function_result, .{});
             return null;
         }
         const fctx = self.currentFunc().?;
-        const fk = self.type_info.store.index.kinds.items[fctx.result.toRaw()];
+        const fk = self.typeKind(fctx.result);
         if (fk != .ErrorSet) {
-            try self.diags.addError(self.ast_unit.exprs.locs.get(eur.loc), .error_propagation_mismatched_function_result, .{});
+            try self.diags.addError(self.exprLoc(eur), .error_propagation_mismatched_function_result, .{});
             return null;
         }
-        // Optional: verify error/value types compatibility between operand and function result
+
+        // Ensure the error/value halves align with the function result type
         const fr = self.type_info.store.ErrorSet.get(self.type_info.store.index.rows.items[fctx.result.toRaw()]);
         if (self.assignable(er.error_ty, fr.error_ty) != .success or self.assignable(er.value_ty, fr.value_ty) != .success) {
-            try self.diags.addError(self.ast_unit.exprs.locs.get(eur.loc), .error_propagation_mismatched_function_result, .{});
+            try self.diags.addError(self.exprLoc(eur), .error_propagation_mismatched_function_result, .{});
             return null;
         }
         return er.value_ty;
@@ -2170,123 +2057,100 @@ pub const Checker = struct {
 
     fn checkOptionalUnwrap(self: *Checker, id: ast.ExprId) !?types.TypeId {
         const our = self.ast_unit.exprs.get(.OptionalUnwrap, id);
-        const ot = try self.checkExpr(our.expr);
-        if (ot == null) return null;
-        if (self.type_info.store.index.kinds.items[ot.?.toRaw()] != .Optional) {
-            try self.diags.addError(self.ast_unit.exprs.locs.get(our.loc), .invalid_optional_unwrap_target, .{});
+        const ot = try self.checkExpr(our.expr) orelse return null;
+        if (self.typeKind(ot) != .Optional) {
+            try self.diags.addError(self.exprLoc(our), .invalid_optional_unwrap_target, .{});
             return null;
         }
-        const ore = self.type_info.store.Optional.get(self.type_info.store.index.rows.items[ot.?.toRaw()]);
+        const ore = self.type_info.store.Optional.get(self.type_info.store.index.rows.items[ot.toRaw()]);
         return ore.elem;
     }
 
     fn checkAwait(self: *Checker, id: ast.ExprId) !?types.TypeId {
         _ = id;
-        // Await is a no-op in the checker
         return self.type_info.store.tAny();
     }
 
     fn checkClosure(self: *Checker, id: ast.ExprId) !?types.TypeId {
         const cr = self.ast_unit.exprs.get(.Closure, id);
         const params = self.ast_unit.exprs.param_pool.slice(cr.params);
+
         var param_tys = try self.type_info.store.gpa.alloc(types.TypeId, params.len);
         defer self.type_info.store.gpa.free(param_tys);
+
         var i: usize = 0;
         while (i < params.len) : (i += 1) {
             const p = self.ast_unit.exprs.Param.get(params[i].toRaw());
             if (p.ty.isNone()) {
-                try self.diags.addError(self.ast_unit.exprs.locs.get(p.loc), .type_annotation_mismatch, .{});
+                try self.diags.addError(self.exprLoc(p), .type_annotation_mismatch, .{});
                 return null;
             }
-            const pt = try check_types.typeFromTypeExpr(self, p.ty.unwrap());
-            if (pt == null) return null;
-            param_tys[i] = pt.?;
+            const pt = try check_types.typeFromTypeExpr(self, p.ty.unwrap()) orelse return null;
+            param_tys[i] = pt;
         }
-        const body_ty = try self.checkExpr(cr.body);
-        if (body_ty == null) return null;
-        const fty = self.type_info.store.mkFunction(param_tys, body_ty.?, false, true);
-        // if (expect.ty) |et| {
-        //     if (self.assignable(fty, et) != .success) {
-        //         try self.diags.addError(self.ast_unit.exprs.locs.get(cr.loc), .type_annotation_mismatch, .{});
-        //         return null;
-        //     }
-        // }
-        return fty;
+
+        const body_ty = try self.checkExpr(cr.body) orelse return null;
+        // Closures are always pure function *types* (no side-effect tracking here).
+        return self.type_info.store.mkFunction(param_tys, body_ty, false, true);
     }
 
     fn checkCast(self: *Checker, id: ast.ExprId) !?types.TypeId {
         const cr = self.ast_unit.exprs.get(.Cast, id);
         const et = try check_types.typeFromTypeExpr(self, cr.ty) orelse {
-            try self.diags.addError(self.ast_unit.exprs.locs.get(cr.loc), .cast_target_not_type, .{});
+            try self.diags.addError(self.exprLoc(cr), .cast_target_not_type, .{});
             return null;
         };
-        const vt = try self.checkExpr(cr.expr);
-        if (vt == null) return null;
-        const vk = self.type_info.store.index.kinds.items[vt.?.toRaw()];
-        const ek = self.type_info.store.index.kinds.items[et.toRaw()];
+        const vt = try self.checkExpr(cr.expr) orelse return null;
+
+        const vk = self.typeKind(vt);
+        const ek = self.typeKind(et);
 
         switch (cr.kind) {
             .normal => {
-                // A normal cast allows assignable types or types that are generally castable (e.g., numeric to numeric, pointer to pointer)
-                if (self.assignable(vt.?, et) != .success and !self.castable(vt.?, et)) {
-                    try self.diags.addError(self.ast_unit.exprs.locs.get(cr.loc), .invalid_cast, .{});
+                if (self.assignable(vt, et) != .success and !self.castable(vt, et)) {
+                    try self.diags.addError(self.exprLoc(cr), .invalid_cast, .{});
                     return null;
                 }
             },
             .bitcast => {
-                const gsize = check_types.typeSize(self, vt.?);
+                const gsize = check_types.typeSize(self, vt);
                 const tsize = check_types.typeSize(self, et);
-                if (gsize == null or tsize == null) {
-                    try self.diags.addError(self.ast_unit.exprs.locs.get(cr.loc), .invalid_bitcast, .{});
-                    return null;
-                }
-                if (gsize.? != tsize.?) {
-                    try self.diags.addError(self.ast_unit.exprs.locs.get(cr.loc), .invalid_bitcast, .{});
+                if (gsize == null or tsize == null or gsize.? != tsize.?) {
+                    try self.diags.addError(self.exprLoc(cr), .invalid_bitcast, .{});
                     return null;
                 }
             },
             .saturate, .wrap => {
-                // Saturating and wrapping casts are for numeric types only.
                 if (!check_types.isNumericKind(self, vk) or !check_types.isNumericKind(self, ek)) {
-                    try self.diags.addError(self.ast_unit.exprs.locs.get(cr.loc), .numeric_cast_on_non_numeric, .{});
+                    try self.diags.addError(self.exprLoc(cr), .numeric_cast_on_non_numeric, .{});
                     return null;
                 }
             },
             .checked => {
-                // Checked casts are similar to normal casts but might imply runtime checks.
-                // For type checking, we can use the same rules as 'normal' for now,
-                // but with a specific error message if it fails.
-                if (self.assignable(vt.?, et) != .success and !self.castable(vt.?, et)) {
-                    try self.diags.addError(self.ast_unit.exprs.locs.get(cr.loc), .invalid_checked_cast, .{});
+                if (self.assignable(vt, et) != .success and !self.castable(vt, et)) {
+                    try self.diags.addError(self.exprLoc(cr), .invalid_checked_cast, .{});
                     return null;
                 }
             },
         }
-
         return et;
     }
 
     fn checkCatch(self: *Checker, id: ast.ExprId) !?types.TypeId {
         const cr = self.ast_unit.exprs.get(.Catch, id);
-        const vt = try self.checkExpr(cr.expr);
-        if (vt == null) return null;
-        if (self.type_info.store.index.kinds.items[vt.?.toRaw()] != .ErrorSet) {
-            try self.diags.addError(self.ast_unit.exprs.locs.get(cr.loc), .catch_on_non_error, .{});
+        const vt = try self.checkExpr(cr.expr) orelse return null;
+        if (self.typeKind(vt) != .ErrorSet) {
+            try self.diags.addError(self.exprLoc(cr), .catch_on_non_error, .{});
             return null;
         }
-        const er = self.type_info.store.ErrorSet.get(self.type_info.store.index.rows.items[vt.?.toRaw()]);
+        const er = self.type_info.store.ErrorSet.get(self.type_info.store.index.rows.items[vt.toRaw()]);
         const value_required = self.isValueReq();
-        // Always type-check the handler body
-        const ht = try self.checkExpr(cr.handler);
-        if (ht == null) return null;
-        if (!value_required) {
-            // Used as a statement: no value produced
-            return self.type_info.store.tVoid();
-        }
-        // In value position, ensure handler yields the value type of the error set
-        if (self.assignable(ht.?, er.value_ty) != .success) {
-            // Reuse if-branch mismatch diagnostic for now
-            try self.diags.addError(self.ast_unit.exprs.locs.get(cr.loc), .if_branch_type_mismatch, .{});
+
+        const ht = try self.checkExpr(cr.handler) orelse return null;
+        if (!value_required) return self.type_info.store.tVoid();
+
+        if (self.assignable(ht, er.value_ty) != .success) {
+            try self.diags.addError(self.exprLoc(cr), .if_branch_type_mismatch, .{});
             return null;
         }
         return er.value_ty;
@@ -2296,56 +2160,56 @@ pub const Checker = struct {
         const ir = self.ast_unit.exprs.get(.Import, id);
         const k = self.ast_unit.exprs.index.kinds.items[ir.expr.toRaw()];
         if (k != .Literal) {
-            try self.diags.addError(self.ast_unit.exprs.locs.get(ir.loc), .invalid_import_operand, .{});
+            try self.diags.addError(self.exprLoc(ir), .invalid_import_operand, .{});
             return null;
         }
         const lit = self.ast_unit.exprs.get(.Literal, ir.expr);
         if (lit.kind != .string or lit.value.isNone()) {
-            try self.diags.addError(self.ast_unit.exprs.locs.get(ir.loc), .invalid_import_operand, .{});
+            try self.diags.addError(self.exprLoc(ir), .invalid_import_operand, .{});
             return null;
         }
-        // Successful import expression is a module value; keep it as 'any' for now.
+        // Imported module is an opaque value to the checker for now.
         return self.type_info.store.tAny();
     }
 
-    // =========================================================
+    // =========================
     // Misc helpers
-    // =========================================================
+    // =========================
+
     fn checkDivByZero(self: *Checker, rhs: ast.ExprId, loc: Loc) !void {
-        if (self.ast_unit.exprs.index.kinds.items[rhs.toRaw()] == .Literal) {
-            const lit = self.ast_unit.exprs.get(.Literal, rhs);
-            switch (lit.kind) {
-                .int => {
-                    if (!lit.value.isNone()) {
-                        const sval = self.ast_unit.exprs.strs.get(lit.value.unwrap());
-                        if (std.mem.eql(u8, sval, "0")) try self.diags.addError(loc, .division_by_zero, .{});
-                    }
-                },
-                .float => {
-                    if (!lit.value.isNone()) {
-                        const sval = self.ast_unit.exprs.strs.get(lit.value.unwrap());
-                        const f = std.fmt.parseFloat(f64, sval) catch 1.0;
-                        if (f == 0.0) try self.diags.addError(loc, .division_by_zero, .{});
-                    }
-                },
-                else => {},
-            }
+        if (self.ast_unit.exprs.index.kinds.items[rhs.toRaw()] != .Literal) return;
+        const lit = self.ast_unit.exprs.get(.Literal, rhs);
+        switch (lit.kind) {
+            .int => {
+                if (!lit.value.isNone() and std.mem.eql(u8, self.ast_unit.exprs.strs.get(lit.value.unwrap()), "0")) {
+                    try self.diags.addError(loc, .division_by_zero, .{});
+                }
+            },
+            .float => {
+                if (!lit.value.isNone()) {
+                    const s = self.ast_unit.exprs.strs.get(lit.value.unwrap());
+                    const f = std.fmt.parseFloat(f64, s) catch 1.0;
+                    if (f == 0.0) try self.diags.addError(loc, .division_by_zero, .{});
+                }
+            },
+            else => {},
         }
     }
+
     fn checkIntZeroLiteral(self: *Checker, rhs: ast.ExprId, loc: Loc) !void {
-        if (self.ast_unit.exprs.index.kinds.items[rhs.toRaw()] == .Literal) {
-            const lit = self.ast_unit.exprs.get(.Literal, rhs);
-            if (lit.kind == .int and !lit.value.isNone()) {
-                const sval = self.ast_unit.exprs.strs.get(lit.value.unwrap());
-                if (std.mem.eql(u8, sval, "0")) try self.diags.addError(loc, .division_by_zero, .{});
+        if (self.ast_unit.exprs.index.kinds.items[rhs.toRaw()] != .Literal) return;
+        const lit = self.ast_unit.exprs.get(.Literal, rhs);
+        if (lit.kind == .int and !lit.value.isNone()) {
+            if (std.mem.eql(u8, self.ast_unit.exprs.strs.get(lit.value.unwrap()), "0")) {
+                try self.diags.addError(loc, .division_by_zero, .{});
             }
         }
     }
 
     const LvalueRootKind = enum { LocalDecl, Param, NonLocalDecl, Unknown };
     fn lvalueRootKind(self: *Checker, expr: ast.ExprId) LvalueRootKind {
-        const kind = self.ast_unit.exprs.index.kinds.items[expr.toRaw()];
-        switch (kind) {
+        const k = self.ast_unit.exprs.index.kinds.items[expr.toRaw()];
+        switch (k) {
             .Ident => {
                 const idr = self.ast_unit.exprs.get(.Ident, expr);
                 // Discard assignment '_' is considered local
