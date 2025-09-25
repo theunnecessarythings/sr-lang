@@ -11,6 +11,11 @@ pub const LowerTir = struct {
     info: *types.TypeInfo,
     // Simple loop stack to support break/continue in While/For
     loop_stack: std.ArrayListUnmanaged(LoopCtx) = .{},
+    // Mapping: module ident name -> prefix for mangling
+    module_prefix: std.StringHashMapUnmanaged([]const u8) = .{},
+    // Optional import resolver for materializing imported constants
+    import_resolver: ?*@import("import_resolver.zig").ImportResolver = null,
+    import_base_dir: []const u8 = ".",
 
     pub fn init(gpa: std.mem.Allocator, info: *types.TypeInfo) LowerTir {
         return .{ .gpa = gpa, .info = info };
@@ -18,6 +23,16 @@ pub const LowerTir = struct {
 
     pub fn deinit(self: *LowerTir) void {
         self.loop_stack.deinit(self.gpa);
+        // free stored prefixes
+        var it = self.module_prefix.valueIterator();
+        while (it.next()) |p| self.gpa.free(p.*);
+        self.module_prefix.deinit(self.gpa);
+        // no-op
+    }
+
+    pub fn setImportResolver(self: *@This(), r: *@import("import_resolver.zig").ImportResolver, base_dir: []const u8) void {
+        self.import_resolver = r;
+        self.import_base_dir = base_dir;
     }
 
     pub fn run(self: *@This(), a: *const ast.Ast) !tir.TIR {
@@ -29,6 +44,17 @@ pub const LowerTir = struct {
         for (decls) |did| try self.lowerTopDecl(a, &b, did);
 
         return t;
+    }
+
+    pub fn setModulePrefix(self: *@This(), name: []const u8, prefix: []const u8) !void {
+        const key = try self.gpa.dupe(u8, name);
+        const val = try self.gpa.dupe(u8, prefix);
+        const gop = try self.module_prefix.getOrPut(self.gpa, key);
+        if (gop.found_existing) {
+            self.gpa.free(key);
+            self.gpa.free(gop.value_ptr.*);
+        }
+        gop.value_ptr.* = val;
     }
 
     fn lowerTopDecl(self: *@This(), a: *const ast.Ast, b: *Builder, did: ast.DeclId) !void {
@@ -107,7 +133,58 @@ pub const LowerTir = struct {
             const b = a.exprs.get(.Block, id);
             const stmts = a.stmts.stmt_pool.slice(b.items);
             try env.pushScope(self.gpa);
-            for (stmts) |sid| try self.lowerStmt(a, env, f, blk, sid);
+            for (stmts) |sid| {
+                const sk = a.stmts.index.kinds.items[sid.toRaw()];
+                if (sk == .Expr) {
+                    const e = a.stmts.get(.Expr, sid).expr;
+                    if (a.exprs.index.kinds.items[e.toRaw()] == .Call) {
+                        const cr = a.exprs.get(.Call, e);
+                        if (a.exprs.index.kinds.items[cr.callee.toRaw()] == .FieldAccess) {
+                            const fr = a.exprs.get(.FieldAccess, cr.callee);
+                            if (a.exprs.index.kinds.items[fr.parent.toRaw()] == .Ident) {
+                                // Resolve callee name (possibly mangled)
+                                const mod_name = a.exprs.strs.get(a.exprs.get(.Ident, fr.parent).name);
+                                var callee_name: StrId = fr.field;
+                                if (self.module_prefix.get(mod_name)) |pref| {
+                                    const fn_name = a.exprs.strs.get(fr.field);
+                                    const first = if (fn_name.len > 0) fn_name[0] else '_';
+                                    const is_extern_like = (first >= 'A' and first <= 'Z');
+                                    if (!is_extern_like) {
+                                        const m = std.fmt.allocPrint(self.gpa, "{s}_{s}", .{ pref, fn_name }) catch @panic("OOM");
+                                        defer self.gpa.free(m);
+                                        callee_name = f.builder.intern(m);
+                                    }
+                                }
+                                // Lower args
+                                const args_ids = a.exprs.expr_pool.slice(cr.args);
+                                var vals = try self.gpa.alloc(tir.ValueId, args_ids.len);
+                                defer self.gpa.free(vals);
+                                var ai: usize = 0;
+                                while (ai < args_ids.len) : (ai += 1) vals[ai] = try self.lowerExpr(a, env, f, blk, args_ids[ai]);
+                                // Heuristic: downcast integer literal args to i32 when wider
+                                ai = 0;
+                                while (ai < args_ids.len) : (ai += 1) {
+                                    const gid = args_ids[ai];
+                                    if (a.exprs.index.kinds.items[gid.toRaw()] == .Literal) {
+                                        const lit = a.exprs.get(.Literal, gid);
+                                        if (lit.kind == .int) {
+                                            const got = self.getExprType(gid) orelse continue;
+                                            const kind_got = self.info.store.index.kinds.items[got.toRaw()];
+                                            if (kind_got == .I64 or kind_got == .U64) {
+                                                vals[ai] = blk.builder.cast(blk, .CastNormal, self.info.store.tI32(), vals[ai]);
+                                            }
+                                        }
+                                    }
+                                }
+                                const ty = self.getExprType(e) orelse self.info.store.tVoid();
+                                _ = blk.builder.call(blk, ty, callee_name, vals);
+                                continue;
+                            }
+                        }
+                    }
+                }
+                try self.lowerStmt(a, env, f, blk, sid);
+            }
             _ = env.popScope();
         } else {
             // Single expression statement
@@ -250,13 +327,12 @@ pub const LowerTir = struct {
         switch (k) {
             .Literal => {
                 const lit = a.exprs.get(.Literal, id);
-                const ty = self.getExprType(id) orelse return error.OutOfMemory;
                 return switch (lit.kind) {
-                    .int => blk.builder.constInt(blk, ty, try std.fmt.parseInt(i64, a.exprs.strs.get(lit.value.unwrap()), 10)),
-                    .float => blk.builder.constFloat(blk, ty, try std.fmt.parseFloat(f64, a.exprs.strs.get(lit.value.unwrap()))),
-                    .bool => blk.builder.constBool(blk, ty, lit.bool_value),
-                    .string => blk.builder.constString(blk, ty, a.exprs.strs.get(lit.value.unwrap())),
-                    .char => blk.builder.constInt(blk, ty, @as(i64, @intCast(lit.char_value))),
+                    .int => blk.builder.constInt(blk, self.info.store.tI64(), try std.fmt.parseInt(i64, a.exprs.strs.get(lit.value.unwrap()), 10)),
+                    .float => blk.builder.constFloat(blk, self.info.store.tF64(), try std.fmt.parseFloat(f64, a.exprs.strs.get(lit.value.unwrap()))),
+                    .bool => blk.builder.constBool(blk, self.info.store.tBool(), lit.bool_value),
+                    .string => blk.builder.constString(blk, self.info.store.tString(), a.exprs.strs.get(lit.value.unwrap())),
+                    .char => blk.builder.constInt(blk, self.info.store.tU32(), @as(i64, @intCast(lit.char_value))),
                 };
             },
             .NullLit => {
@@ -354,6 +430,17 @@ pub const LowerTir = struct {
             .FieldAccess => {
                 const row = a.exprs.get(.FieldAccess, id);
                 const ty = self.getExprType(id) orelse return error.OutOfMemory;
+                // Special-case: module member access like ident_import.member
+                if (a.exprs.index.kinds.items[row.parent.toRaw()] == .Ident) {
+                    const idr = a.exprs.get(.Ident, row.parent);
+                    const name = a.exprs.strs.get(idr.name);
+                    if (self.findTopLevelImportByName(a, name)) |imp_decl| {
+                        if (self.import_resolver) |res| {
+                            if (self.materializeImportedConst(res, a, imp_decl, row.field, ty, blk)) |vv| return vv;
+                        }
+                        return blk.builder.constUndef(blk, ty);
+                    }
+                }
                 const base = try self.lowerExpr(a, env, f, blk, row.parent);
                 if (row.is_tuple) {
                     const idx = try std.fmt.parseInt(u32, a.exprs.strs.get(row.field), 10);
@@ -370,7 +457,19 @@ pub const LowerTir = struct {
             .Ident => {
                 const row = a.exprs.get(.Ident, id);
                 const name = a.exprs.strs.get(row.name);
-                const bnd = env.lookup(name) orelse return error.OutOfMemory;
+                const bnd = blk: {
+                    if (env.lookup(name)) |v| break :blk v;
+                    // Fallback: allow referencing top-level decls by name within the same module
+                    if (self.findTopLevelDeclByName(a, name)) |did| {
+                        const d = a.exprs.Decl.get(did.toRaw());
+                        // cache lowered value in a synthetic immutable slot for this block scope
+                        const val = try self.lowerExpr(a, env, f, blk, d.value);
+                        // place into a local slot only if addressable later; otherwise bind as value
+                        try env.bind(self.gpa, a, row.name, .{ .value = val, .is_slot = false });
+                        break :blk env.lookup(name).?;
+                    }
+                    return error.CompileError;
+                };
                 if (bnd.is_slot) {
                     const ety = self.getExprType(id) orelse return error.OutOfMemory;
                     return blk.builder.load(blk, ety, bnd.value, 0);
@@ -459,6 +558,10 @@ pub const LowerTir = struct {
                 var join_blk = try f.builder.beginBlock(f);
                 const cond_v = try self.lowerExpr(a, env, f, blk, row.cond);
                 try f.builder.condBr(blk, cond_v, then_blk.id, &.{}, else_blk.id, &.{});
+                {
+                    const old_if_entry = blk.*;
+                    try f.builder.endBlock(f, old_if_entry);
+                }
                 const res_ty = self.getExprType(id) orelse self.info.store.tVoid();
                 const res_param = try f.builder.addBlockParam(&join_blk, null, res_ty);
                 // then arm value
@@ -498,14 +601,67 @@ pub const LowerTir = struct {
                 } else if (callee_k == .FieldAccess) {
                     const fr = a.exprs.get(.FieldAccess, row.callee);
                     // Treat calls like module.func(...) as calling global symbol 'func'
-                    sname = fr.field;
+                    // If parent is an identifier bound to an import, apply mangling prefix if available
+                    if (a.exprs.index.kinds.items[fr.parent.toRaw()] == .Ident) {
+                        const mod_name = a.exprs.strs.get(a.exprs.get(.Ident, fr.parent).name);
+                        if (self.module_prefix.get(mod_name)) |pref| {
+                            const fn_name = a.exprs.strs.get(fr.field);
+                            const first = if (fn_name.len > 0) fn_name[0] else '_';
+                            const is_extern_like = (first >= 'A' and first <= 'Z');
+                            if (is_extern_like) {
+                                // Likely an extern from the vendored C API; do not mangle
+                                sname = fr.field;
+                            } else {
+                                const m = std.fmt.allocPrint(self.gpa, "{s}_{s}", .{ pref, fn_name }) catch @panic("OOM");
+                                defer self.gpa.free(m);
+                                sname = f.builder.intern(m);
+                            }
+                        } else {
+                            sname = fr.field;
+                        }
+                    } else {
+                        sname = fr.field;
+                    }
                 } else return error.OutOfMemory;
                 const args_ids = a.exprs.expr_pool.slice(row.args);
                 var vals = try self.gpa.alloc(tir.ValueId, args_ids.len);
                 defer self.gpa.free(vals);
                 var j: usize = 0;
                 while (j < args_ids.len) : (j += 1) vals[j] = try self.lowerExpr(a, env, f, blk, args_ids[j]);
-                const ty = self.getExprType(id) orelse return error.OutOfMemory;
+                // Best-effort: coerce argument values to the callee's parameter types when available
+                if (self.getExprType(row.callee)) |cal_ty| {
+                    if (self.info.store.index.kinds.items[cal_ty.toRaw()] == .Function) {
+                        const fr2 = self.info.store.Function.get(self.info.store.index.rows.items[cal_ty.toRaw()]);
+                        const param_tys = self.info.store.type_pool.slice(fr2.params);
+                        var fixed: usize = param_tys.len;
+                        if (fr2.is_variadic and fixed > 0) fixed -= 1;
+                        var ai: usize = 0;
+                        while (ai < vals.len and ai < fixed) : (ai += 1) {
+                            const want = param_tys[ai];
+                            const got = self.getExprType(args_ids[ai]) orelse continue;
+                            if (want.toRaw() != got.toRaw()) {
+                                vals[ai] = blk.builder.cast(blk, .CastNormal, want, vals[ai]);
+                            }
+                        }
+                    }
+                } else if (callee_k == .FieldAccess) {
+                    // Heuristic for vendored wrappers: downcast integer literal args to i32
+                    var ai2: usize = 0;
+                    while (ai2 < vals.len) : (ai2 += 1) {
+                        const gid = args_ids[ai2];
+                        if (a.exprs.index.kinds.items[gid.toRaw()] == .Literal) {
+                            const lit = a.exprs.get(.Literal, gid);
+                            if (lit.kind == .int) {
+                                const got = self.getExprType(gid) orelse continue;
+                                const kind_got = self.info.store.index.kinds.items[got.toRaw()];
+                                if (kind_got == .I64 or kind_got == .U64) {
+                                    vals[ai2] = blk.builder.cast(blk, .CastNormal, self.info.store.tI32(), vals[ai2]);
+                                }
+                            }
+                        }
+                    }
+                }
+                const ty = self.getExprType(id) orelse self.info.store.tVoid();
                 return blk.builder.call(blk, ty, sname, vals);
             },
             .Cast => {
@@ -652,6 +808,10 @@ pub const LowerTir = struct {
                 const res_ty = self.getExprType(id) orelse self.info.store.tVoid();
                 const res_param = try f.builder.addBlockParam(&join_blk, null, res_ty);
                 try f.builder.br(blk, header.id, &.{});
+                {
+                    const old_entry = blk.*;
+                    try f.builder.endBlock(f, old_entry);
+                }
                 const cond_v = if (!row.cond.isNone()) try self.lowerExpr(a, env, f, &header, row.cond.unwrap()) else f.builder.constBool(&header, self.info.store.tBool(), true);
                 try f.builder.condBr(&header, cond_v, body.id, &.{}, exit_blk.id, &.{});
                 // push loop context for break/continue with result join
@@ -781,17 +941,37 @@ pub const LowerTir = struct {
             .Ident => {
                 const row = a.exprs.get(.Ident, id);
                 const name = a.exprs.strs.get(row.name);
-                const bnd = env.lookup(name) orelse return error.OutOfMemory;
-                if (bnd.is_slot) return bnd.value;
+                var bnd = env.lookup(name);
+                if (bnd == null) {
+                    // Allow taking address of top-level decl by name by lowering it into a local slot
+                    if (self.findTopLevelDeclByName(a, name)) |did| {
+                        const d = a.exprs.Decl.get(did.toRaw());
+                        const ety = self.getExprType(d.value) orelse return error.OutOfMemory;
+                        const slot_ty = self.info.store.mkPtr(ety, false);
+                        const slot = f.builder.alloca(blk, slot_ty, tir.OptValueId.none(), 0);
+                        const val = try self.lowerExpr(a, env, f, blk, d.value);
+                        _ = f.builder.store(blk, ety, slot, val, 0);
+                        try env.bind(self.gpa, a, row.name, .{ .value = slot, .is_slot = true });
+                        bnd = env.lookup(name);
+                    }
+                }
+                const binding = bnd orelse return error.CompileError;
+                if (binding.is_slot) return binding.value;
                 // take address of immutable -> alloca+store then return slot
                 const ety = self.getExprType(id) orelse return error.OutOfMemory;
                 const slot_ty = self.info.store.mkPtr(ety, false);
                 const slot = f.builder.alloca(blk, slot_ty, tir.OptValueId.none(), 0);
-                _ = f.builder.store(blk, ety, slot, bnd.value, 0);
+                _ = f.builder.store(blk, ety, slot, binding.value, 0);
                 return slot;
             },
             .FieldAccess => {
                 const row = a.exprs.get(.FieldAccess, id);
+                // Address of imported module member is not supported; treat as compile error
+                if (a.exprs.index.kinds.items[row.parent.toRaw()] == .Ident) {
+                    const idr = a.exprs.get(.Ident, row.parent);
+                    const name = a.exprs.strs.get(idr.name);
+                    if (self.findTopLevelImportByName(a, name)) |_| return error.CompileError;
+                }
                 const parent_ptr = try self.lowerAddress(a, env, f, blk, row.parent);
                 var pty = self.getExprType(row.parent) orelse return error.OutOfMemory;
                 // unwrap pointer type for element lookup
@@ -833,11 +1013,108 @@ pub const LowerTir = struct {
         }
     }
 
+    fn findTopLevelDeclByName(_: *const @This(), a: *const ast.Ast, name: []const u8) ?ast.DeclId {
+        const decls = a.exprs.decl_pool.slice(a.unit.decls);
+        var i: usize = 0;
+        while (i < decls.len) : (i += 1) {
+            const d = a.exprs.Decl.get(decls[i].toRaw());
+            if (d.pattern.isNone()) continue;
+            const pid = d.pattern.unwrap();
+            const pk = a.pats.index.kinds.items[pid.toRaw()];
+            if (pk != .Binding) continue;
+            const b = a.pats.get(.Binding, pid);
+            if (std.mem.eql(u8, a.exprs.strs.get(b.name), name)) return decls[i];
+        }
+        return null;
+    }
+
+    fn findTopLevelImportByName(self: *const @This(), a: *const ast.Ast, name: []const u8) ?ast.DeclId {
+        const did = self.findTopLevelDeclByName(a, name) orelse return null;
+        const d = a.exprs.Decl.get(did.toRaw());
+        return if (a.exprs.index.kinds.items[d.value.toRaw()] == .Import) did else null;
+    }
+
+    fn materializeImportedConst(self: *@This(), res: *@import("import_resolver.zig").ImportResolver, a: *const ast.Ast, imp_decl: ast.DeclId, member: StrId, expected_ty: types.TypeId, blk: *Builder.BlockFrame) ?tir.ValueId {
+        // Get import path from decl
+        const d = a.exprs.Decl.get(imp_decl.toRaw());
+        const ir = a.exprs.get(.Import, d.value);
+        if (a.exprs.index.kinds.items[ir.expr.toRaw()] != .Literal) return null;
+        const lit = a.exprs.get(.Literal, ir.expr);
+        if (lit.value.isNone()) return null;
+        var s_full = a.exprs.strs.get(lit.value.unwrap());
+        if (s_full.len >= 2 and s_full[0] == '"' and s_full[s_full.len - 1] == '"') s_full = s_full[1 .. s_full.len - 1];
+
+        const me = res.resolve(self.import_base_dir, s_full) catch return null;
+        // Find member decl by name
+        const want = a.exprs.strs.get(member);
+        const decls = me.ast.exprs.decl_pool.slice(me.ast.unit.decls);
+        var i: usize = 0;
+        while (i < decls.len) : (i += 1) {
+            const d2 = me.ast.exprs.Decl.get(decls[i].toRaw());
+            if (d2.pattern.isNone()) continue;
+            const pid = d2.pattern.unwrap();
+            const pk = me.ast.pats.index.kinds.items[pid.toRaw()];
+            if (pk != .Binding) continue;
+            const b = me.ast.pats.get(.Binding, pid);
+            const nm = me.ast.exprs.strs.get(b.name);
+            if (std.mem.eql(u8, nm, want)) {
+                // Lower value expression with the expected type shape
+                return self.lowerImportedExprValue(me, d2.value, expected_ty, blk);
+            }
+        }
+        return null;
+    }
+
+    fn lowerImportedExprValue(self: *@This(), me: *@import("import_resolver.zig").ModuleEntry, eid: ast.ExprId, expected_ty: types.TypeId, blk: *Builder.BlockFrame) ?tir.ValueId {
+        const kinds = me.ast.exprs.index.kinds.items;
+        switch (kinds[eid.toRaw()]) {
+            .StructLit => {
+                if (self.info.store.getKind(expected_ty) != .Struct) return null;
+                const row = me.ast.exprs.get(.StructLit, eid);
+                const sfields = me.ast.exprs.sfv_pool.slice(row.fields);
+                const st = self.info.store.get(.Struct, expected_ty);
+                const exp_fields = self.info.store.field_pool.slice(st.fields);
+                var fields = self.gpa.alloc(tir.Rows.StructFieldInit, exp_fields.len) catch return null;
+                var j: usize = 0;
+                while (j < exp_fields.len) : (j += 1) {
+                    const f = self.info.store.Field.get(exp_fields[j].toRaw());
+                    const src_idx = if (j < sfields.len) j else sfields.len - 1;
+                    const sfv = me.ast.exprs.StructFieldValue.get(sfields[src_idx].toRaw());
+                    const vv = self.lowerImportedExprValue(me, sfv.value, f.ty, blk) orelse {
+                        self.gpa.free(fields);
+                        return null;
+                    };
+                    fields[j] = .{ .index = @intCast(j), .name = OptStrId.none(), .value = vv };
+                }
+                const v = blk.builder.structMake(blk, expected_ty, fields);
+                self.gpa.free(fields);
+                return v;
+            },
+            .Literal => {
+                const lit = me.ast.exprs.get(.Literal, eid);
+                const s = if (!lit.value.isNone()) me.ast.exprs.strs.get(lit.value.unwrap()) else "";
+                const k = self.info.store.getKind(expected_ty);
+                switch (k) {
+                    .U8 => return blk.builder.constInt(blk, expected_ty, std.fmt.parseInt(i64, s, 10) catch 0),
+                    .U16, .U32, .U64, .I8, .I16, .I32, .I64 => return blk.builder.constInt(blk, expected_ty, std.fmt.parseInt(i64, s, 10) catch 0),
+                    .Bool => return blk.builder.constBool(blk, expected_ty, lit.bool_value),
+                    .String => return blk.builder.constString(blk, expected_ty, s),
+                    else => return null,
+                }
+            },
+            else => return null,
+        }
+    }
+
     fn getExprType(self: *const @This(), id: ast.ExprId) ?types.TypeId {
-        return self.info.expr_types.items[id.toRaw()];
+        const i = id.toRaw();
+        if (i >= self.info.expr_types.items.len) return null;
+        return self.info.expr_types.items[i];
     }
     fn getDeclType(self: *const @This(), did: ast.DeclId) ?types.TypeId {
-        return self.info.decl_types.items[did.toRaw()];
+        const i = did.toRaw();
+        if (i >= self.info.decl_types.items.len) return null;
+        return self.info.decl_types.items[i];
     }
 
     fn bindingNameOfPattern(_: *const @This(), a: *const ast.Ast, pid: ast.PatternId) ?StrId {

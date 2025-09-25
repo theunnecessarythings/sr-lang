@@ -11,11 +11,11 @@ const Diagnostics = @import("diagnostics.zig").Diagnostics;
 
 pub const ModuleEntry = struct {
     path: []u8,
-    source: []u8,
     cst: cst.CST,
     ast: ast.Ast,
     type_info: *types.TypeInfo,
     tir: tir.TIR,
+    syms: std.StringHashMap(types.TypeId), // name -> TypeId (in this module's TypeStore)
 };
 
 pub const ImportResolver = struct {
@@ -29,13 +29,16 @@ pub const ImportResolver = struct {
     pub fn deinit(self: *ImportResolver) void {
         var it = self.cache.valueIterator();
         while (it.next()) |m| {
+            // free symmap keys
+            var kit = m.syms.keyIterator();
+            while (kit.next()) |k| self.gpa.free(k.*);
+            m.syms.deinit();
             m.cst.deinit();
             m.ast.deinit();
             m.type_info.deinit();
             self.gpa.destroy(m.type_info);
             m.tir.deinit();
             self.gpa.free(m.path);
-            self.gpa.free(m.source);
         }
         self.cache.deinit();
     }
@@ -107,8 +110,10 @@ pub const ImportResolver = struct {
         defer file.close();
         const stat = try file.stat();
         const source = try file.readToEndAlloc(self.gpa, stat.size);
-        // Null-terminate for lexer expectations
-        const source0 = try self.gpa.dupeZ(u8, source);
+        defer self.gpa.free(source);
+        // Null-terminate for lexer expectations (ephemeral)
+        const source0 = try std.mem.concatWithSentinel(self.gpa, u8, &.{ source }, 0);
+        defer self.gpa.free(source0);
 
         // Parse
         var p = parser.Parser.init(self.gpa, source0, self.diags);
@@ -125,13 +130,41 @@ pub const ImportResolver = struct {
         var lt = lower_tir.LowerTir.init(self.gpa, ti);
         const t = try lt.run(&a);
 
+        // Build exported symbol table (binding name -> type)
+        var symmap = std.StringHashMap(types.TypeId).init(self.gpa);
+        const decls = a.exprs.decl_pool.slice(a.unit.decls);
+        var i: usize = 0;
+        while (i < decls.len) : (i += 1) {
+            const drow = a.exprs.Decl.get(decls[i].toRaw());
+            if (drow.pattern.isNone()) continue;
+            const pid = drow.pattern.unwrap();
+            const pk = a.pats.index.kinds.items[pid.toRaw()];
+            if (pk != .Binding) continue;
+            const b = a.pats.get(.Binding, pid);
+            const name_s = a.exprs.strs.get(b.name);
+            const key = try self.gpa.dupe(u8, name_s);
+            var ty: ?types.TypeId = ti.decl_types.items[decls[i].toRaw()];
+            if (ty == null) ty = ti.expr_types.items[drow.value.toRaw()];
+            if (ty) |tval| {
+                const gop = try symmap.getOrPut(key);
+                if (gop.found_existing) {
+                    self.gpa.free(key);
+                    gop.value_ptr.* = tval; // last-wins
+                } else {
+                    gop.value_ptr.* = tval;
+                }
+            } else {
+                self.gpa.free(key);
+            }
+        }
+
         var entry = ModuleEntry{
             .path = full,
-            .source = source0,
             .cst = c,
             .ast = a,
             .type_info = ti,
             .tir = t,
+            .syms = symmap,
         };
         const gop = try self.cache.getOrPut(entry.path);
         if (!gop.found_existing) {
@@ -144,7 +177,10 @@ pub const ImportResolver = struct {
             self.gpa.destroy(entry.type_info);
             entry.tir.deinit();
             self.gpa.free(entry.path);
-            self.gpa.free(entry.source);
+            // free symmap keys
+            var kit2 = symmap.keyIterator();
+            while (kit2.next()) |k| self.gpa.free(k.*);
+            symmap.deinit();
         }
         return @constCast(gop.value_ptr);
     }

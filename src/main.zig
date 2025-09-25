@@ -226,6 +226,11 @@ fn process_file(
 
         var chk = compiler.checker.Checker.init(allocator, &diags, &hir);
         defer chk.deinit();
+        // Provide import resolver for module-aware type checking
+        var res = compiler.import_resolver.ImportResolver.init(allocator, &diags);
+        defer res.deinit();
+        const base_dir = std.fs.path.dirname(filename) orelse ".";
+        chk.setImportResolver(&res, base_dir);
         try chk.run();
         var printer = compiler.ast.AstPrinter.init(out_writer, &hir.exprs, &hir.stmts, &hir.pats);
         try printer.printUnit(&hir.unit);

@@ -6,12 +6,18 @@ const Loc = @import("lexer.zig").Token.Loc;
 const symbols = @import("symbols.zig");
 const types = @import("types.zig");
 const TypeInfo = types.TypeInfo;
+const ImportResolver = @import("import_resolver.zig").ImportResolver;
+const ModuleEntry = @import("import_resolver.zig").ModuleEntry;
 
 pub const Checker = struct {
     gpa: std.mem.Allocator,
     diags: *Diagnostics,
     ast_unit: *const ast.Ast,
     type_info: TypeInfo,
+
+    // Optional import resolver for module member resolution
+    import_resolver: ?*ImportResolver = null,
+    import_base_dir: []const u8 = ".",
 
     symtab: symbols.SymbolStore = undefined,
 
@@ -38,6 +44,10 @@ pub const Checker = struct {
             .symtab = symbols.SymbolStore.init(gpa),
             .type_info = types.TypeInfo.init(gpa, unit.exprs.strs),
         };
+    }
+    pub fn setImportResolver(self: *Checker, r: *ImportResolver, base_dir: []const u8) void {
+        self.import_resolver = r;
+        self.import_base_dir = base_dir;
     }
     pub fn deinit(self: *Checker) void {
         self.func_stack.deinit(self.gpa);
@@ -73,6 +83,21 @@ pub const Checker = struct {
         return self.type_info;
     }
 
+    inline fn ensureExprSlot(self: *Checker, id: ast.ExprId) !void {
+        const idx = id.toRaw();
+        if (idx >= self.type_info.expr_types.items.len) {
+            const need: usize = idx + 1 - self.type_info.expr_types.items.len;
+            try self.type_info.expr_types.appendNTimes(self.gpa, null, need);
+        }
+    }
+    inline fn ensureDeclSlot(self: *Checker, did: ast.DeclId) !void {
+        const idx = did.toRaw();
+        if (idx >= self.type_info.decl_types.items.len) {
+            const need: usize = idx + 1 - self.type_info.decl_types.items.len;
+            try self.type_info.decl_types.appendNTimes(self.gpa, null, need);
+        }
+    }
+
     // --------- context
     const FunctionCtx = struct {
         result: types.TypeId,
@@ -85,8 +110,6 @@ pub const Checker = struct {
         label: ast.OptStrId,
         result_ty: ?types.TypeId = null,
     };
-
-    
 
     fn bindDeclPattern(self: *Checker, did: ast.DeclId, d: ast.Rows.Decl) !void {
         if (d.pattern.isNone()) return;
@@ -879,6 +902,7 @@ pub const Checker = struct {
     // Expressions
     // =========================================================
     fn checkExpr(self: *Checker, id: ast.ExprId) anyerror!?types.TypeId {
+        try self.ensureExprSlot(id);
         if (self.type_info.expr_types.items[id.toRaw()]) |cached| return cached;
         const k = self.ast_unit.exprs.index.kinds.items[id.toRaw()];
 
@@ -1122,7 +1146,7 @@ pub const Checker = struct {
         defer self.symtab.pop();
 
         if (stmts.len == 0) return self.type_info.store.tVoid();
-        const value_required = self.isValueReq();
+                    const value_required = self.isValueReq();
         var after_break: bool = false;
         if (!value_required) {
             // Statement context: just type-check children, no value produced
@@ -1376,7 +1400,8 @@ pub const Checker = struct {
                 return t;
             },
             .logical_not => {
-                if (t.toRaw() != self.type_info.store.tBool().toRaw()) {
+                // Accept bool or any
+                if (t.toRaw() != self.type_info.store.tBool().toRaw() and t.toRaw() != self.type_info.store.tAny().toRaw()) {
                     try self.diags.addError(self.ast_unit.exprs.locs.get(unary_expr.loc), .invalid_unary_op_operand, .{});
                     return null;
                 }
@@ -1599,9 +1624,10 @@ pub const Checker = struct {
         // Special-case: module member access via import "path".member
         const parent_kind = self.ast_unit.exprs.index.kinds.items[field_expr.parent.toRaw()];
         if (parent_kind == .Import) {
-            if (self.importHasMember(field_expr.parent, field_expr.field)) {
-                return self.type_info.store.tAny();
+            if (self.import_resolver) |_| {
+                if (self.importMemberType(field_expr.parent, field_expr.field)) |mt| return mt;
             } else {
+                if (self.importHasMember(field_expr.parent, field_expr.field)) return self.type_info.store.tAny();
                 _ = self.diags.addError(self.ast_unit.exprs.locs.get(field_expr.loc), .unknown_struct_field, .{}) catch {};
                 return null;
             }
@@ -1615,12 +1641,13 @@ pub const Checker = struct {
                     const did = sym.origin_decl.unwrap();
                     const drow = self.ast_unit.exprs.Decl.get(did.toRaw());
                     if (self.ast_unit.exprs.index.kinds.items[drow.value.toRaw()] == .Import) {
-                        if (self.importHasMember(drow.value, field_expr.field)) {
+                        if (self.import_resolver) |_| {
+                            if (self.importMemberType(drow.value, field_expr.field)) |mt| return mt;
+                        } else if (self.importHasMember(drow.value, field_expr.field)) {
                             return self.type_info.store.tAny();
-                        } else {
-                            _ = self.diags.addError(self.ast_unit.exprs.locs.get(field_expr.loc), .unknown_struct_field, .{}) catch {};
-                            return null;
                         }
+                        _ = self.diags.addError(self.ast_unit.exprs.locs.get(field_expr.loc), .unknown_struct_field, .{}) catch {};
+                        return null;
                     }
                 }
             }
@@ -1744,22 +1771,84 @@ pub const Checker = struct {
         const ek = self.ast_unit.exprs.index.kinds.items[ir.expr.toRaw()];
         if (ek != .Literal) return false;
         const lit = self.ast_unit.exprs.get(.Literal, ir.expr);
-        if (lit.kind != .string or lit.value.isNone()) return false;
+        if (lit.value.isNone()) return false;
         var path = self.ast_unit.exprs.strs.get(lit.value.unwrap());
-        // Trim quotes if present
         if (path.len >= 2 and path[0] == '"' and path[path.len - 1] == '"') {
             path = path[1 .. path.len - 1];
         }
-        const target = self.ast_unit.exprs.strs.get(member);
-        // Try candidates: path, path + ".sr", path + "/main.sr"
-        if (self.fileHasTopDecl(path, target)) return true;
-        var buf1: [1024]u8 = undefined;
-        const with_ext = std.fmt.bufPrint(&buf1, "{s}.sr", .{path}) catch path;
-        if (self.fileHasTopDecl(with_ext, target)) return true;
-        var buf2: [1024]u8 = undefined;
-        const with_main = std.fmt.bufPrint(&buf2, "{s}/main.sr", .{path}) catch path;
-        if (self.fileHasTopDecl(with_main, target)) return true;
+        if (self.import_resolver) |res| return self.importMemberTypeByPath(res, path, member) != null;
+        // fallback: no resolver
         return false;
+    }
+
+    fn importMemberTypeByPath(self: *Checker, res: *ImportResolver, path: []const u8, member: ast.StrId) ?types.TypeId {
+        const me = res.resolve(self.import_base_dir, path) catch return null;
+        const target = self.ast_unit.exprs.strs.get(member);
+        if (me.syms.get(target)) |ty| {
+            return self.translateType(&me.type_info.store, &self.type_info.store, ty);
+        }
+        return null;
+    }
+
+    fn translateType(self: *Checker, src: *types.TypeStore, dst: *types.TypeStore, ty: types.TypeId) types.TypeId {
+        const k = src.getKind(ty);
+        return switch (k) {
+            .Void => dst.tVoid(),
+            .Bool => dst.tBool(),
+            .I8 => dst.tI8(), .I16 => dst.tI16(), .I32 => dst.tI32(), .I64 => dst.tI64(),
+            .U8 => dst.tU8(), .U16 => dst.tU16(), .U32 => dst.tU32(), .U64 => dst.tU64(),
+            .F32 => dst.tF32(), .F64 => dst.tF64(),
+            .Usize => dst.tUsize(),
+            .String => dst.tString(),
+            .Any => dst.tAny(),
+            .Noreturn => dst.tNoReturn(),
+            .Struct => blk: {
+                const sr = src.get(.Struct, ty);
+                const sfields = src.field_pool.slice(sr.fields);
+                var buf = dst.gpa.alloc(types.TypeStore.StructFieldArg, sfields.len) catch @panic("OOM");
+                defer dst.gpa.free(buf);
+                var i: usize = 0;
+                while (i < sfields.len) : (i += 1) {
+                    const f = src.Field.get(sfields[i].toRaw());
+                    buf[i] = .{ .name = f.name, .ty = self.translateType(src, dst, f.ty) };
+                }
+                break :blk dst.mkStruct(buf);
+            },
+            .Ptr => blk: {
+                const pr = src.get(.Ptr, ty);
+                const et = self.translateType(src, dst, pr.elem);
+                break :blk dst.mkPtr(et, pr.is_const);
+            },
+            .Optional => blk: {
+                const opt_row = src.get(.Optional, ty);
+                const et = self.translateType(src, dst, opt_row.elem);
+                break :blk dst.mkOptional(et);
+            },
+            .Function => blk: {
+                const fr = src.get(.Function, ty);
+                const params_src = src.type_pool.slice(fr.params);
+                var buf = dst.gpa.alloc(types.TypeId, params_src.len) catch @panic("OOM");
+                defer dst.gpa.free(buf);
+                var i: usize = 0;
+                while (i < params_src.len) : (i += 1) buf[i] = self.translateType(src, dst, params_src[i]);
+                const res_t = self.translateType(src, dst, fr.result);
+                break :blk dst.mkFunction(buf, res_t, fr.is_variadic, fr.is_pure);
+            },
+            else => dst.tAny(),
+        };
+    }
+
+    fn importMemberType(self: *Checker, import_eid: ast.ExprId, member: ast.StrId) ?types.TypeId {
+        if (self.import_resolver == null) return null;
+        const res = self.import_resolver.?;
+        const ir = self.ast_unit.exprs.get(.Import, import_eid);
+        const ek = self.ast_unit.exprs.index.kinds.items[ir.expr.toRaw()];
+        if (ek != .Literal) return null;
+        const lit = self.ast_unit.exprs.get(.Literal, ir.expr);
+        if (lit.value.isNone()) return null;
+        var path = self.ast_unit.exprs.strs.get(lit.value.unwrap());
+        if (path.len >= 2 and path[0] == '"' and path[path.len - 1] == '"') path = path[1 .. path.len - 1];
+        return self.importMemberTypeByPath(res, path, member);
     }
 
     fn fileHasTopDecl(self: *Checker, abs_or_rel: []const u8, name: []const u8) bool {
@@ -1859,11 +1948,14 @@ pub const Checker = struct {
 
     fn checkCall(self: *Checker, id: ast.ExprId) !?types.TypeId {
         const call_expr = self.ast_unit.exprs.get(.Call, id);
-        // Allow calling module members: (Ident).field(...)
+        // Module member call: (Import or Ident-of-import).field(...)
         if (self.ast_unit.exprs.index.kinds.items[call_expr.callee.toRaw()] == .FieldAccess) {
             const fr = self.ast_unit.exprs.get(.FieldAccess, call_expr.callee);
-            if (self.ast_unit.exprs.index.kinds.items[fr.parent.toRaw()] == .Ident) {
-                // If parent ident is a binding to an import, accept call and treat as void for now
+            const pk = self.ast_unit.exprs.index.kinds.items[fr.parent.toRaw()];
+            var fty_opt: ?types.TypeId = null;
+            if (pk == .Import) {
+                fty_opt = self.importMemberType(fr.parent, fr.field);
+            } else if (pk == .Ident) {
                 const idr = self.ast_unit.exprs.get(.Ident, fr.parent);
                 if (self.lookup(idr.name)) |sid_sym| {
                     const sym = self.symtab.syms.get(sid_sym.toRaw());
@@ -1871,16 +1963,35 @@ pub const Checker = struct {
                         const did = sym.origin_decl.unwrap();
                         const drow = self.ast_unit.exprs.Decl.get(did.toRaw());
                         if (self.ast_unit.exprs.index.kinds.items[drow.value.toRaw()] == .Import) {
-                            // Check arguments to populate expr types (no signature checking yet)
-                            const args = self.ast_unit.exprs.expr_pool.slice(call_expr.args);
-                            for (args) |aid| {
-                                _ = try self.checkExpr(aid);
-                            }
-                            // TODO: We could check args count/types by peeking imported module signature.
-                            return self.type_info.store.tVoid();
+                            fty_opt = self.importMemberType(drow.value, fr.field);
                         }
                     }
                 }
+            }
+            if (fty_opt) |fty| {
+                if (self.type_info.store.getKind(fty) != .Function) {
+                    try self.diags.addError(self.ast_unit.exprs.locs.get(call_expr.loc), .call_non_callable, .{});
+                    return null;
+                }
+                const func = self.type_info.store.get(.Function, fty);
+                const param_ids = self.type_info.store.type_pool.slice(func.params);
+                const args = self.ast_unit.exprs.expr_pool.slice(call_expr.args);
+                if (!func.is_variadic and args.len != param_ids.len) {
+                    try self.diags.addError(self.ast_unit.exprs.locs.get(call_expr.loc), .argument_count_mismatch, .{});
+                    return null;
+                }
+                const fixed = if (param_ids.len == 0) 0 else if (func.is_variadic) param_ids.len - 1 else param_ids.len;
+                var i: usize = 0;
+                while (i < args.len) : (i += 1) {
+                    const at = try self.checkExpr(args[i]);
+                    if (at == null) return null;
+                    const pt = if (i < fixed) param_ids[i] else param_ids[fixed];
+                    if (self.assignable(at.?, pt) != .success) {
+                        try self.diags.addError(self.ast_unit.exprs.locs.get(call_expr.loc), .argument_type_mismatch, .{});
+                        return null;
+                    }
+                }
+                return func.result;
             }
         }
         // Handle variant/error tag constructors before evaluating callee expression.
@@ -2353,7 +2464,9 @@ pub const Checker = struct {
         // C-like while loop
         if (!wr.cond.isNone() and wr.pattern.isNone()) {
             const cond = try self.checkExpr(wr.cond.unwrap());
-            if (cond == null or cond.?.toRaw() != self.type_info.store.tBool().toRaw()) {
+            if (cond == null) return null;
+            const ct = cond.?;
+            if (ct.toRaw() != self.type_info.store.tBool().toRaw() and ct.toRaw() != self.type_info.store.tAny().toRaw()) {
                 try self.diags.addError(self.ast_unit.exprs.locs.get(wr.loc), .non_boolean_condition, .{});
                 return null;
             }
@@ -3784,7 +3897,11 @@ pub const Checker = struct {
                             return null;
                         }
                         const val_str = self.ast_unit.exprs.strs.get(lit.value.unwrap());
-                        current_value = try std.fmt.parseInt(u64, val_str, 10);
+                        const parsed = std.fmt.parseInt(u64, val_str, 10) catch {
+                            try self.diags.addError(self.ast_unit.exprs.locs.get(enum_field.loc), .invalid_integer_literal, .{});
+                            return null;
+                        };
+                        current_value = parsed;
                     }
 
                     member_buf[i] = .{ .name = name, .value = current_value };

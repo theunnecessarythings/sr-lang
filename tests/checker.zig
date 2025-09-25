@@ -40,6 +40,10 @@ fn checkProgram(src: [:0]const u8, expected: []const diag.DiagnosticCode) !void 
     // Step 3: Type Check
     var checker = Checker.init(gpa, &diags, &ast);
     defer checker.deinit();
+    // Use ImportResolver so imports in tests resolve like the real pipeline
+    var resolver = compiler.import_resolver.ImportResolver.init(gpa, &diags);
+    defer resolver.deinit();
+    checker.setImportResolver(&resolver, ".");
     _ = try checker.run();
     defer checker.type_info.deinit();
 

@@ -179,6 +179,8 @@ pub const MlirCodegen = struct {
         const fn_ty = mlir.LLVM.getLLVMFunctionType(ret_ty, param_tys[0..mlir_n_formals], is_variadic);
 
         const func_name = t.instrs.strs.get(f.name);
+        // If already declared (e.g., from a prior call site), skip redeclaration
+        if (self.func_syms.contains(func_name)) return;
 
         // Create llvm.func @name
         const attrs = [_]mlir.NamedAttribute{
@@ -1216,6 +1218,12 @@ pub const MlirCodegen = struct {
         const ret_ty = try self.llvmTypeOf(store, p.ty);
         const fn_ty = mlir.LLVM.getLLVMFunctionType(ret_ty, arg_tys, true);
         const name = t.instrs.strs.get(p.callee);
+        // If the callee name is a mangled imported function (m$...), it will be defined later
+        // when that module is emitted. Avoid emitting a provisional declaration with a mismatched
+        // signature; just return a lightweight FuncInfo for call attribute decisions.
+        if (std.mem.startsWith(u8, name, "m$")) {
+            return .{ .op = self.module.getOperation(), .is_variadic = false, .n_formals = args_slice.len, .ret_type = ret_ty };
+        }
         const attrs = [_]mlir.NamedAttribute{
             self.named("sym_name", self.strAttr(name)),
             self.named("function_type", mlir.Attribute.typeAttrGet(fn_ty)),

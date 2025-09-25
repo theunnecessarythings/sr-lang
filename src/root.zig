@@ -13,3 +13,4 @@ pub const cst = @import("cst.zig");
 pub const tir = @import("tir.zig");
 pub const ast = @import("ast.zig");
 pub const lower = @import("lower.zig");
+pub const import_resolver = @import("import_resolver.zig");

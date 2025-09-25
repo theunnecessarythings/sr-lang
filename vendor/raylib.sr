@@ -94,12 +94,12 @@ FilePathList :: struct { capacity: u32, count: u32, paths: **i8 }
 // ------------------------------------------------------------
 
 ConfigFlags :: enum {
-    FLAG_VSYNC_HINT = 0x00000040,
-    FLAG_FULLSCREEN_MODE = 0x00000002,
-    FLAG_WINDOW_RESIZABLE = 0x00000004,
-    FLAG_WINDOW_UNDECORATED = 0x00000008,
-    FLAG_WINDOW_HIDDEN = 0x00000080,
-    FLAG_WINDOW_ALWAYS_RUN = 0x00000100,
+    FLAG_VSYNC_HINT = 64,
+    FLAG_FULLSCREEN_MODE = 2,
+    FLAG_WINDOW_RESIZABLE = 4,
+    FLAG_WINDOW_UNDECORATED = 8,
+    FLAG_WINDOW_HIDDEN = 128,
+    FLAG_WINDOW_ALWAYS_RUN = 256,
 }
 
 KeyboardKey :: enum {
@@ -131,12 +131,12 @@ PixelFormat :: enum {
 // ------------------------------------------------------------
 // Colors (subset)
 // ------------------------------------------------------------
-WHITE :: Color = Color{ 255, 255, 255, 255 }
-BLACK :: Color = Color{ 0, 0, 0, 255 }
-RED   :: Color = Color{ 230, 41, 55, 255 }
-GREEN :: Color = Color{ 0, 228, 48, 255 }
-BLUE  :: Color = Color{ 0, 121, 241, 255 }
-RAYWHITE :: Color = Color{ 245, 245, 245, 255 }
+WHITE :: Color{ r: 255, g: 255, b: 255, a: 255 }
+BLACK :: Color{ r: 0, g: 0, b: 0, a: 255 }
+RED   :: Color{ r: 230, g: 41, b: 55, a: 255 }
+GREEN :: Color{ r: 0, g: 228, b: 48, a: 255 }
+BLUE  :: Color{ r: 0, g: 121, b: 241, a: 255 }
+RAYWHITE :: Color{ r: 245, g: 245, b: 245, a: 255 }
 
 // ------------------------------------------------------------
 // Core: Window, Timing, Input
@@ -207,7 +207,9 @@ EndDrawing :: extern proc() void
 ClearBackground :: extern proc(Color) void
 DrawText :: extern proc(*void, i32, i32, i32, Color) void
 
-draw_text :: proc(s: string, x: i32, y: i32, size: i32, c: Color) void { DrawText(s.^*void, x, y, size, c) }
+draw_text :: proc(s: string, x: i32, y: i32, size: i32, c: Color) { 
+    DrawText(s.^*void, x, y, size, c)
+}
 
 // ------------------------------------------------------------
 // Textures & Images (selected)
