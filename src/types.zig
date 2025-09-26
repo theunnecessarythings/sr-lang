@@ -1,5 +1,6 @@
 const std = @import("std");
 const cst = @import("cst.zig");
+const ast = @import("ast.zig");
 
 // DOD Type Store
 pub const TypeTag = struct {};
@@ -24,6 +25,7 @@ pub const TypeInfo = struct {
     store: TypeStore,
     expr_types: std.ArrayListUnmanaged(?TypeId) = .{},
     decl_types: std.ArrayListUnmanaged(?TypeId) = .{},
+    field_index_for_expr: std.AutoArrayHashMapUnmanaged(u32, u32) = .{},
 
     pub fn init(gpa: std.mem.Allocator, interner: *StringInterner) TypeInfo {
         return .{ .gpa = gpa, .store = TypeStore.init(gpa, interner) };
@@ -31,7 +33,35 @@ pub const TypeInfo = struct {
     pub fn deinit(self: *TypeInfo) void {
         self.expr_types.deinit(self.gpa);
         self.decl_types.deinit(self.gpa);
+        self.field_index_for_expr.deinit(self.gpa);
         self.store.deinit();
+    }
+
+    /// Ensure we have room up to (and including) `expr_id.toRaw()`
+    pub fn ensureExpr(self: *TypeInfo, gpa: std.mem.Allocator, expr_id: ast.ExprId) !void {
+        const need = expr_id.toRaw() + 1;
+
+        if (self.expr_types.items.len < need) {
+            try self.expr_types.ensureTotalCapacity(gpa, need);
+            while (self.expr_types.items.len < need) self.expr_types.appendAssumeCapacity(self.store.tVoid()); // or any sentinel
+        }
+        if (self.field_index_for_expr.items.len < need) {
+            try self.field_index_for_expr.ensureTotalCapacity(gpa, need);
+            while (self.field_index_for_expr.items.len < need) self.field_index_for_expr.appendAssumeCapacity(0xFFFF_FFFF);
+        }
+    }
+
+    pub fn setExprType(self: *TypeInfo, expr_id: ast.ExprId, ty: TypeId) void {
+        self.expr_types.items[expr_id.toRaw()] = ty;
+    }
+
+    pub fn setFieldIndex(self: *TypeInfo, expr_id: ast.ExprId, idx: u32) !void {
+        try self.field_index_for_expr.put(self.gpa, expr_id.toRaw(), idx);
+    }
+
+    pub fn getFieldIndex(self: *const TypeInfo, expr_id: ast.ExprId) ?u32 {
+        const v = self.field_index_for_expr.get(expr_id.toRaw()) orelse 0xFFFF_FFFF;
+        return if (v == 0xFFFF_FFFF) null else v;
     }
 };
 

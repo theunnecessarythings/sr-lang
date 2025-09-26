@@ -296,7 +296,7 @@ pub const Rows = struct {
     pub const NoreturnType = struct { loc: LocId };
 };
 
-inline fn RowT(comptime K: ExprKind) type {
+pub inline fn RowT(comptime K: ExprKind) type {
     return @field(Rows, @tagName(K));
 }
 
@@ -326,7 +326,7 @@ pub const StmtRows = struct {
     pub const ErrDefer = Rows.ErrDefer;
 };
 
-inline fn StmtRowT(comptime K: StmtKind) type {
+pub inline fn StmtRowT(comptime K: StmtKind) type {
     return @field(StmtRows, @tagName(K));
 }
 

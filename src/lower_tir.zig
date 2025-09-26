@@ -1,5 +1,6 @@
 const std = @import("std");
 const ast = @import("ast.zig");
+const cst = @import("cst.zig");
 const tir = @import("tir.zig");
 const types = @import("types.zig");
 
@@ -9,10 +10,13 @@ const OptStrId = @import("cst.zig").OptStrId;
 pub const LowerTir = struct {
     gpa: std.mem.Allocator,
     info: *types.TypeInfo,
-    // Simple loop stack to support break/continue in While/For
+
+    // Simple loop stack to support break/continue in While/For (+ value loops)
     loop_stack: std.ArrayListUnmanaged(LoopCtx) = .{},
-    // Mapping: module ident name -> prefix for mangling
+
+    // Mapping: module ident name -> prefix for mangling (module.func -> prefix_func)
     module_prefix: std.StringHashMapUnmanaged([]const u8) = .{},
+
     // Optional import resolver for materializing imported constants
     import_resolver: ?*@import("import_resolver.zig").ImportResolver = null,
     import_base_dir: []const u8 = ".",
@@ -23,11 +27,9 @@ pub const LowerTir = struct {
 
     pub fn deinit(self: *LowerTir) void {
         self.loop_stack.deinit(self.gpa);
-        // free stored prefixes
         var it = self.module_prefix.valueIterator();
         while (it.next()) |p| self.gpa.free(p.*);
         self.module_prefix.deinit(self.gpa);
-        // no-op
     }
 
     pub fn setImportResolver(self: *@This(), r: *@import("import_resolver.zig").ImportResolver, base_dir: []const u8) void {
@@ -57,6 +59,44 @@ pub const LowerTir = struct {
         gop.value_ptr.* = val;
     }
 
+    // ============================
+    // Utilities / common helpers
+    // ============================
+
+    const LowerMode = enum { rvalue, lvalue_addr };
+
+    fn undef(_: *@This(), blk: *Builder.BlockFrame, ty: types.TypeId) tir.ValueId {
+        return blk.builder.constUndef(blk, ty);
+    }
+    fn boolConst(self: *@This(), blk: *Builder.BlockFrame, v: bool) tir.ValueId {
+        return blk.builder.constBool(blk, self.info.store.tBool(), v);
+    }
+
+    /// Insert an explicit coercion that realizes what the checker proved assignable/castable.
+    fn emitCoerce(self: *@This(), blk: *Builder.BlockFrame, v: tir.ValueId, got: types.TypeId, want: types.TypeId) tir.ValueId {
+        if (got.toRaw() == want.toRaw()) return v;
+
+        const gk = self.info.store.index.kinds.items[got.toRaw()];
+        const wk = self.info.store.index.kinds.items[want.toRaw()];
+
+        const is_num = switch (gk) {
+            .I8, .I16, .I32, .I64, .U8, .U16, .U32, .U64, .Usize, .F32, .F64 => true,
+            else => false,
+        };
+        const is_num_w = switch (wk) {
+            .I8, .I16, .I32, .I64, .U8, .U16, .U32, .U64, .Usize, .F32, .F64 => true,
+            else => false,
+        };
+        if (is_num and is_num_w) return blk.builder.cast(blk, .CastNormal, want, v);
+        if (gk == .Ptr and wk == .Ptr) return blk.builder.cast(blk, .CastBit, want, v);
+        // Any/compatible assignable: use Normal cast as a materialization
+        return blk.builder.cast(blk, .CastNormal, want, v);
+    }
+
+    // ============================
+    // Top-level lowering
+    // ============================
+
     fn lowerTopDecl(self: *@This(), a: *const ast.Ast, b: *Builder, did: ast.DeclId) !void {
         const d = a.exprs.Decl.get(did.toRaw());
         const kind = a.exprs.index.kinds.items[d.value.toRaw()];
@@ -67,7 +107,7 @@ pub const LowerTir = struct {
             }
             return;
         }
-        // Global: only record type for now
+        // Global: record type
         if (!d.pattern.isNone()) {
             const nm = self.bindingNameOfPattern(a, d.pattern.unwrap()) orelse return;
             const ty = self.getDeclType(did) orelse return;
@@ -77,7 +117,6 @@ pub const LowerTir = struct {
 
     fn lowerFunction(self: *@This(), a: *const ast.Ast, b: *Builder, name: StrId, fun_eid: ast.ExprId) !void {
         const fid = self.getExprType(fun_eid) orelse return;
-        // Expect a function type
         if (self.info.store.index.kinds.items[fid.toRaw()] != .Function) return;
         const fnty = self.info.store.Function.get(self.info.store.index.rows.items[fid.toRaw()]);
 
@@ -94,12 +133,12 @@ pub const LowerTir = struct {
             _ = try b.addParam(&f, pname, pty);
         }
 
-        // Entry block
+        // Entry block + env
         var blk = try b.beginBlock(&f);
         var env = Env.init(self.gpa);
         defer env.deinit(self.gpa);
 
-        // Bind params in env
+        // Bind params
         i = 0;
         const param_vals = f.param_vals.items;
         while (i < params.len) : (i += 1) {
@@ -110,16 +149,14 @@ pub const LowerTir = struct {
             }
         }
 
-        // Body is an ExprId to a Block
+        // Body
         if (!fnr.body.isNone()) {
             const body_id = fnr.body.unwrap();
-            // function-level defer scope
             try env.pushScope(self.gpa);
             try self.lowerExprAsStmtList(a, &env, &f, &blk, body_id);
             _ = env.popScope();
         }
 
-        // If no terminator, add void return
         if (blk.term.isNone()) {
             try b.setReturn(&blk, tir.OptValueId.none());
         }
@@ -128,67 +165,18 @@ pub const LowerTir = struct {
         try b.endFunction(f);
     }
 
+    // Lower a block or expression as a list of statements (ignores resulting value)
     fn lowerExprAsStmtList(self: *@This(), a: *const ast.Ast, env: *Env, f: *Builder.FunctionFrame, blk: *Builder.BlockFrame, id: ast.ExprId) !void {
         if (a.exprs.index.kinds.items[id.toRaw()] == .Block) {
             const b = a.exprs.get(.Block, id);
             const stmts = a.stmts.stmt_pool.slice(b.items);
             try env.pushScope(self.gpa);
             for (stmts) |sid| {
-                const sk = a.stmts.index.kinds.items[sid.toRaw()];
-                if (sk == .Expr) {
-                    const e = a.stmts.get(.Expr, sid).expr;
-                    if (a.exprs.index.kinds.items[e.toRaw()] == .Call) {
-                        const cr = a.exprs.get(.Call, e);
-                        if (a.exprs.index.kinds.items[cr.callee.toRaw()] == .FieldAccess) {
-                            const fr = a.exprs.get(.FieldAccess, cr.callee);
-                            if (a.exprs.index.kinds.items[fr.parent.toRaw()] == .Ident) {
-                                // Resolve callee name (possibly mangled)
-                                const mod_name = a.exprs.strs.get(a.exprs.get(.Ident, fr.parent).name);
-                                var callee_name: StrId = fr.field;
-                                if (self.module_prefix.get(mod_name)) |pref| {
-                                    const fn_name = a.exprs.strs.get(fr.field);
-                                    const first = if (fn_name.len > 0) fn_name[0] else '_';
-                                    const is_extern_like = (first >= 'A' and first <= 'Z');
-                                    if (!is_extern_like) {
-                                        const m = std.fmt.allocPrint(self.gpa, "{s}_{s}", .{ pref, fn_name }) catch @panic("OOM");
-                                        defer self.gpa.free(m);
-                                        callee_name = f.builder.intern(m);
-                                    }
-                                }
-                                // Lower args
-                                const args_ids = a.exprs.expr_pool.slice(cr.args);
-                                var vals = try self.gpa.alloc(tir.ValueId, args_ids.len);
-                                defer self.gpa.free(vals);
-                                var ai: usize = 0;
-                                while (ai < args_ids.len) : (ai += 1) vals[ai] = try self.lowerExpr(a, env, f, blk, args_ids[ai]);
-                                // Heuristic: downcast integer literal args to i32 when wider
-                                ai = 0;
-                                while (ai < args_ids.len) : (ai += 1) {
-                                    const gid = args_ids[ai];
-                                    if (a.exprs.index.kinds.items[gid.toRaw()] == .Literal) {
-                                        const lit = a.exprs.get(.Literal, gid);
-                                        if (lit.kind == .int) {
-                                            const got = self.getExprType(gid) orelse continue;
-                                            const kind_got = self.info.store.index.kinds.items[got.toRaw()];
-                                            if (kind_got == .I64 or kind_got == .U64) {
-                                                vals[ai] = blk.builder.cast(blk, .CastNormal, self.info.store.tI32(), vals[ai]);
-                                            }
-                                        }
-                                    }
-                                }
-                                const ty = self.getExprType(e) orelse self.info.store.tVoid();
-                                _ = blk.builder.call(blk, ty, callee_name, vals);
-                                continue;
-                            }
-                        }
-                    }
-                }
                 try self.lowerStmt(a, env, f, blk, sid);
             }
             _ = env.popScope();
         } else {
-            // Single expression statement
-            _ = try self.lowerExpr(a, env, f, blk, id);
+            _ = try self.lowerExpr(a, env, f, blk, id, null, .rvalue);
         }
     }
 
@@ -197,7 +185,7 @@ pub const LowerTir = struct {
         switch (k) {
             .Expr => {
                 const e = a.stmts.get(.Expr, sid).expr;
-                _ = try self.lowerExpr(a, env, f, blk, e);
+                _ = try self.lowerExpr(a, env, f, blk, e, null, .rvalue);
             },
             .Defer => {
                 const d = a.stmts.get(.Defer, sid);
@@ -209,7 +197,6 @@ pub const LowerTir = struct {
             },
             .Break => {
                 const br = a.stmts.get(.Break, sid);
-                // find nearest loop; ignore label for now except if provided and matches
                 var target: ?LoopCtx = null;
                 var i: isize = @as(isize, @intCast(self.loop_stack.items.len)) - 1;
                 while (i >= 0) : (i -= 1) {
@@ -224,32 +211,32 @@ pub const LowerTir = struct {
                     var j: isize = @as(isize, @intCast(env.defers.items.len)) - 1;
                     while (j >= 0 and @as(u32, @intCast(j)) >= lc.defer_len_at_entry) : (j -= 1) {
                         const ent = env.defers.items[@intCast(j)];
-                        if (!ent.is_err) _ = try self.lowerExpr(a, env, f, blk, ent.expr);
+                        if (!ent.is_err) _ = try self.lowerExpr(a, env, f, blk, ent.expr, null, .rvalue);
                     }
                     if (lc.has_result) {
-                        const v = if (!br.value.isNone()) try self.lowerExpr(a, env, f, blk, br.value.unwrap()) else f.builder.constUndef(blk, lc.res_ty);
+                        const v = if (!br.value.isNone())
+                            try self.lowerExpr(a, env, f, blk, br.value.unwrap(), lc.res_ty, .rvalue)
+                        else
+                            f.builder.constUndef(blk, lc.res_ty);
                         try f.builder.br(blk, lc.join_block, &.{v});
                     } else {
                         try f.builder.br(blk, lc.break_block, &.{});
                     }
-                } else {
-                    return error.OutOfMemory; // no loop context
-                }
+                } else return error.LoweringBug;
             },
             .Continue => {
-                const lc = if (self.loop_stack.items.len > 0) self.loop_stack.items[self.loop_stack.items.len - 1] else return error.OutOfMemory;
-                // run normal defers from current down to loop entry
+                const lc = if (self.loop_stack.items.len > 0) self.loop_stack.items[self.loop_stack.items.len - 1] else return error.LoweringBug;
                 var j: isize = @as(isize, @intCast(env.defers.items.len)) - 1;
                 while (j >= 0 and @as(u32, @intCast(j)) >= lc.defer_len_at_entry) : (j -= 1) {
                     const ent = env.defers.items[@intCast(j)];
-                    if (!ent.is_err) _ = try self.lowerExpr(a, env, f, blk, ent.expr);
+                    if (!ent.is_err) _ = try self.lowerExpr(a, env, f, blk, ent.expr, null, .rvalue);
                 }
                 try f.builder.br(blk, lc.continue_block, &.{});
             },
             .Decl => {
                 const drow = a.stmts.get(.Decl, sid);
                 const d = a.exprs.Decl.get(drow.decl.toRaw());
-                const val = try self.lowerExpr(a, env, f, blk, d.value);
+                const val = try self.lowerExpr(a, env, f, blk, d.value, self.getExprType(d.value), .rvalue);
                 if (!d.pattern.isNone()) {
                     const nm = self.bindingNameOfPattern(a, d.pattern.unwrap()) orelse return;
                     if (d.flags.is_const) {
@@ -265,56 +252,53 @@ pub const LowerTir = struct {
             },
             .Assign => {
                 const as = a.stmts.get(.Assign, sid);
-                const lhs_ptr = try self.lowerAddress(a, env, f, blk, as.left);
-                const rhs = try self.lowerExpr(a, env, f, blk, as.right);
-                const rty = self.getExprType(as.right) orelse return;
+                const lhs_ptr = try self.lowerExpr(a, env, f, blk, as.left, null, .lvalue_addr);
+                const rhs = try self.lowerExpr(a, env, f, blk, as.right, self.getExprType(as.left), .rvalue);
+                const rty = self.getExprType(as.left) orelse return error.LoweringBug;
                 _ = f.builder.store(blk, rty, lhs_ptr, rhs, 0);
             },
             .Return => {
                 const r = a.stmts.get(.Return, sid);
-                // run normal defers (ignore err-only for now)
+                // run normal defers (ignore err-only for now – handled below when needed)
                 var j: isize = @intCast(env.defers.items.len);
                 j -= 1;
                 while (j >= 0) : (j -= 1) {
                     const ent = env.defers.items[@intCast(j)];
-                    if (!ent.is_err) {
-                        _ = try self.lowerExpr(a, env, f, blk, ent.expr);
-                    }
+                    if (!ent.is_err) _ = try self.lowerExpr(a, env, f, blk, ent.expr, null, .rvalue);
                 }
+
                 if (!r.value.isNone()) {
-                    const v = try self.lowerExpr(a, env, f, blk, r.value.unwrap());
-                    // // If we have err-defer entries, run them conditionally based on builtin.err.is_err(v)
-                    // var has_err_defer = false;
-                    // for (env.defers.items) |ent2| {
-                    //     if (ent2.is_err) {
-                    //         has_err_defer = true;
-                    //         break;
-                    //     }
-                    // }
-                    // if (has_err_defer) {
-                    //     var then_blk = try f.builder.beginBlock(f);
-                    //     var cont_blk = try f.builder.beginBlock(f);
-                    //     const is_err_name = f.builder.intern("builtin.err.is_err");
-                    //     const is_err = blk.builder.call(blk, self.info.store.tBool(), is_err_name, &.{v});
-                    //     try f.builder.condBr(blk, is_err, then_blk.id, &.{}, cont_blk.id, &.{});
-                    //     // then: run err-only defers, then return
-                    //     var kk: isize = @as(isize, @intCast(env.defers.items.len)) - 1;
-                    //     while (kk >= 0) : (kk -= 1) {
-                    //         const ent3 = env.defers.items[@intCast(kk)];
-                    //         if (ent3.is_err) _ = try self.lowerExpr(a, env, f, &then_blk, ent3.expr);
-                    //     }
-                    //     try f.builder.setReturnVal(&then_blk, v);
-                    //     try f.builder.endBlock(f, then_blk);
-                    //     // else: return directly
-                    //     try f.builder.setReturnVal(&cont_blk, v);
-                    //     blk.* = cont_blk;
-                    // }
-                    try f.builder.setReturnVal(blk, v);
+                    const frow = f.builder.t.funcs.Function.get(f.id.toRaw());
+                    const expect = frow.result;
+                    const v_raw = try self.lowerExpr(a, env, f, blk, r.value.unwrap(), expect, .rvalue);
+                    var v = v_raw;
+                    if (self.getExprType(r.value.unwrap())) |got| {
+                        v = self.emitCoerce(blk, v_raw, got, expect);
+                    }
+                    // Minimal errdefer: if function returns ErrorSet, run err-only defers when v carries an error
+                    if (self.info.store.index.kinds.items[expect.toRaw()] == .ErrorSet) {
+                        var then_blk = try f.builder.beginBlock(f);
+                        var cont_blk = try f.builder.beginBlock(f);
+                        const is_err_name = f.builder.intern("builtin.err.is_err");
+                        const is_err = blk.builder.call(blk, self.info.store.tBool(), is_err_name, &.{v});
+                        try f.builder.condBr(blk, is_err, then_blk.id, &.{}, cont_blk.id, &.{});
+                        // run err-only defers in reverse
+                        var ki: isize = @as(isize, @intCast(env.defers.items.len)) - 1;
+                        while (ki >= 0) : (ki -= 1) {
+                            const ent = env.defers.items[@intCast(ki)];
+                            if (ent.is_err) _ = try self.lowerExpr(a, env, f, &then_blk, ent.expr, null, .rvalue);
+                        }
+                        try f.builder.setReturnVal(&then_blk, v);
+                        try f.builder.endBlock(f, then_blk);
+                        try f.builder.setReturnVal(&cont_blk, v);
+                        blk.* = cont_blk;
+                    } else {
+                        try f.builder.setReturnVal(blk, v);
+                    }
                 } else {
                     try f.builder.setReturnVoid(blk);
                 }
             },
-
             .Unreachable => {
                 try f.builder.setUnreachable(blk);
             },
@@ -322,175 +306,387 @@ pub const LowerTir = struct {
         }
     }
 
-    fn lowerExpr(self: *@This(), a: *const ast.Ast, env: *Env, f: *Builder.FunctionFrame, blk: *Builder.BlockFrame, id: ast.ExprId) anyerror!tir.ValueId {
+    // ============================
+    // Expressions
+    // ============================
+
+    const CalleeInfo = struct {
+        name: StrId,
+        fty: ?types.TypeId,
+    };
+
+    fn resolveCallee(self: *@This(), a: *const ast.Ast, f: *Builder.FunctionFrame, row: ast.Rows.Call) CalleeInfo {
+        const ck = a.exprs.index.kinds.items[row.callee.toRaw()];
+        if (ck == .Ident) {
+            const nm = a.exprs.get(.Ident, row.callee).name;
+            return .{ .name = nm, .fty = self.getExprType(row.callee) };
+        }
+        if (ck == .FieldAccess) {
+            const fr = a.exprs.get(.FieldAccess, row.callee);
+            if (a.exprs.index.kinds.items[fr.parent.toRaw()] == .Ident) {
+                const mod_name = a.exprs.strs.get(a.exprs.get(.Ident, fr.parent).name);
+                if (self.module_prefix.get(mod_name)) |pref| {
+                    const fn_name = a.exprs.strs.get(fr.field);
+                    const first = if (fn_name.len > 0) fn_name[0] else '_';
+                    const is_extern_like = (first >= 'A' and first <= 'Z');
+                    if (!is_extern_like) {
+                        const m = std.fmt.allocPrint(self.gpa, "{s}_{s}", .{ pref, fn_name }) catch @panic("OOM");
+                        defer self.gpa.free(m);
+                        return .{ .name = f.builder.intern(m), .fty = self.getExprType(row.callee) };
+                    }
+                }
+            }
+            return .{ .name = a.exprs.get(.FieldAccess, row.callee).field, .fty = self.getExprType(row.callee) };
+        }
+        return .{ .name = f.builder.intern("<indirect>"), .fty = self.getExprType(row.callee) };
+    }
+
+    fn lowerCall(self: *@This(), a: *const ast.Ast, env: *Env, f: *Builder.FunctionFrame, blk: *Builder.BlockFrame, id: ast.ExprId, expected: ?types.TypeId) !tir.ValueId {
+        const row = a.exprs.get(.Call, id);
+        const callee = self.resolveCallee(a, f, row);
+
+        // Lower args
+        const arg_ids = a.exprs.expr_pool.slice(row.args);
+        var vals = try self.gpa.alloc(tir.ValueId, arg_ids.len);
+        defer self.gpa.free(vals);
+        var i: usize = 0;
+        while (i < arg_ids.len) : (i += 1) {
+            vals[i] = try self.lowerExpr(a, env, f, blk, arg_ids[i], null, .rvalue);
+        }
+
+        // Coerce fixed args to param types if we know them
+        if (callee.fty) |fty| {
+            if (self.info.store.index.kinds.items[fty.toRaw()] == .Function) {
+                const fr2 = self.info.store.Function.get(self.info.store.index.rows.items[fty.toRaw()]);
+                const param_tys = self.info.store.type_pool.slice(fr2.params);
+                var fixed: usize = param_tys.len;
+                if (fr2.is_variadic and fixed > 0) fixed -= 1;
+                i = 0;
+                while (i < vals.len and i < fixed) : (i += 1) {
+                    const want = param_tys[i];
+                    const got = self.getExprType(arg_ids[i]) orelse want;
+                    if (want.toRaw() != got.toRaw()) {
+                        vals[i] = self.emitCoerce(blk, vals[i], got, want);
+                    }
+                }
+            }
+        }
+
+        const ret_ty = expected orelse (self.getExprType(id) orelse self.info.store.tVoid());
+        return blk.builder.call(blk, ret_ty, callee.name, vals);
+    }
+
+    fn lowerExpr(
+        self: *@This(),
+        a: *const ast.Ast,
+        env: *Env,
+        f: *Builder.FunctionFrame,
+        blk: *Builder.BlockFrame,
+        id: ast.ExprId,
+        expected_ty: ?types.TypeId,
+        mode: LowerMode,
+    ) anyerror!tir.ValueId {
         const k = a.exprs.index.kinds.items[id.toRaw()];
+
         switch (k) {
             .Literal => {
                 const lit = a.exprs.get(.Literal, id);
-                return switch (lit.kind) {
-                    .int => blk.builder.constInt(blk, self.info.store.tI64(), try std.fmt.parseInt(i64, a.exprs.strs.get(lit.value.unwrap()), 10)),
-                    .float => blk.builder.constFloat(blk, self.info.store.tF64(), try std.fmt.parseFloat(f64, a.exprs.strs.get(lit.value.unwrap()))),
-                    .bool => blk.builder.constBool(blk, self.info.store.tBool(), lit.bool_value),
-                    .string => blk.builder.constString(blk, self.info.store.tString(), a.exprs.strs.get(lit.value.unwrap())),
-                    .char => blk.builder.constInt(blk, self.info.store.tU32(), @as(i64, @intCast(lit.char_value))),
+                const ty0 = self.getExprType(id) orelse return error.LoweringBug;
+                const v = switch (lit.kind) {
+                    .int => blk.builder.constInt(blk, ty0, try std.fmt.parseInt(i64, a.exprs.strs.get(lit.value.unwrap()), 10)),
+                    .float => blk.builder.constFloat(blk, ty0, try std.fmt.parseFloat(f64, a.exprs.strs.get(lit.value.unwrap()))),
+                    .bool => blk.builder.constBool(blk, ty0, lit.bool_value),
+                    .string => blk.builder.constString(blk, ty0, a.exprs.strs.get(lit.value.unwrap())),
+                    .char => blk.builder.constInt(blk, ty0, @as(i64, @intCast(lit.char_value))),
                 };
+                if (expected_ty) |want| return self.emitCoerce(blk, v, ty0, want);
+                return v;
             },
             .NullLit => {
-                const ty = self.getExprType(id) orelse return error.OutOfMemory;
-                return blk.builder.constNull(blk, ty);
+                const ty0 = self.getExprType(id) orelse return error.LoweringBug;
+                const v = blk.builder.constNull(blk, ty0);
+                if (expected_ty) |want| return self.emitCoerce(blk, v, ty0, want);
+                return v;
             },
             .UndefLit => {
-                const ty = self.getExprType(id) orelse return error.OutOfMemory;
-                return blk.builder.constUndef(blk, ty);
+                const ty0 = self.getExprType(id) orelse return error.LoweringBug;
+                const v = blk.builder.constUndef(blk, ty0);
+                if (expected_ty) |want| return self.emitCoerce(blk, v, ty0, want);
+                return v;
             },
             .Unary => {
                 const row = a.exprs.get(.Unary, id);
-                const ty = self.getExprType(id) orelse return error.OutOfMemory;
-                const v = try self.lowerExpr(a, env, f, blk, row.expr);
-                return switch (row.op) {
-                    .plus => v,
-                    .minus => blk.builder.bin(blk, .Sub, ty, blk.builder.constInt(blk, ty, 0), v),
-                    .logical_not => blk.builder.un1(blk, .LogicalNot, self.info.store.tBool(), v),
-                    .address_of => blk.builder.addressOf(blk, self.info.store.mkPtr(ty, false), v),
-                };
+                if (row.op == .address_of or mode == .lvalue_addr) {
+                    // compute address of the operand
+                    const ety = self.getExprType(row.expr) orelse return error.LoweringBug;
+                    // When user asked address-of explicitly, produce pointer type
+                    if (row.op == .address_of) {
+                        const v = try self.lowerExpr(a, env, f, blk, row.expr, ety, .rvalue);
+                        return blk.builder.addressOf(blk, self.info.store.mkPtr(ety, false), v);
+                    }
+                    // lvalue address request falls through to .Ident/.FieldAccess/.IndexAccess implementations
+                }
+                // rvalue unary
+                const ty0 = self.getExprType(id) orelse return error.LoweringBug;
+                const v0 = try self.lowerExpr(a, env, f, blk, row.expr, null, .rvalue);
+                const v =
+                    switch (row.op) {
+                        .plus => v0,
+                        .minus => blk.builder.bin(blk, .Sub, ty0, blk.builder.constInt(blk, ty0, 0), v0),
+                        .logical_not => blk.builder.un1(blk, .LogicalNot, self.info.store.tBool(), v0),
+                        .address_of => unreachable, // handled above
+                    };
+                if (expected_ty) |want| return self.emitCoerce(blk, v, ty0, want);
+                return v;
             },
             .Range => {
                 const row = a.exprs.get(.Range, id);
-                const ty = self.getExprType(id) orelse return error.OutOfMemory;
-                const start_v = if (!row.start.isNone()) try self.lowerExpr(a, env, f, blk, row.start.unwrap()) else blk.builder.constUndef(blk, ty);
-                const end_v = if (!row.end.isNone()) try self.lowerExpr(a, env, f, blk, row.end.unwrap()) else blk.builder.constUndef(blk, ty);
+                const ty0 = self.getExprType(id) orelse return error.LoweringBug;
+                const start_v = if (!row.start.isNone()) try self.lowerExpr(a, env, f, blk, row.start.unwrap(), null, .rvalue) else blk.builder.constUndef(blk, ty0);
+                const end_v = if (!row.end.isNone()) try self.lowerExpr(a, env, f, blk, row.end.unwrap(), null, .rvalue) else blk.builder.constUndef(blk, ty0);
                 const incl = blk.builder.constBool(blk, self.info.store.tBool(), row.inclusive_right);
                 const make = blk.builder.intern("builtin.range.make");
-                return blk.builder.call(blk, ty, make, &.{ start_v, end_v, incl });
+                const v = blk.builder.call(blk, ty0, make, &.{ start_v, end_v, incl });
+                if (expected_ty) |want| return self.emitCoerce(blk, v, ty0, want);
+                return v;
             },
             .Deref => {
-                const ty = self.getExprType(id) orelse return error.OutOfMemory;
+                if (mode == .lvalue_addr) {
+                    // address of deref target is the pointer value itself
+                    const row = a.exprs.get(.Deref, id);
+                    return try self.lowerExpr(a, env, f, blk, row.expr, null, .rvalue);
+                }
+                const ty0 = self.getExprType(id) orelse return error.LoweringBug;
                 const row = a.exprs.get(.Deref, id);
-                const ptr = try self.lowerExpr(a, env, f, blk, row.expr);
-                return blk.builder.load(blk, ty, ptr, 0);
+                const ptr = try self.lowerExpr(a, env, f, blk, row.expr, null, .rvalue);
+                const v = blk.builder.load(blk, ty0, ptr, 0);
+                if (expected_ty) |want| return self.emitCoerce(blk, v, ty0, want);
+                return v;
             },
             .TupleLit => {
                 const row = a.exprs.get(.TupleLit, id);
-                const ty = self.getExprType(id) orelse return error.OutOfMemory;
+                const ty0 = self.getExprType(id) orelse return error.LoweringBug;
                 const ids = a.exprs.expr_pool.slice(row.elems);
                 var vals = try self.gpa.alloc(tir.ValueId, ids.len);
                 defer self.gpa.free(vals);
                 var i: usize = 0;
-                while (i < ids.len) : (i += 1) vals[i] = try self.lowerExpr(a, env, f, blk, ids[i]);
-                return blk.builder.tupleMake(blk, ty, vals);
+                while (i < ids.len) : (i += 1) {
+                    // coerce element to tuple element type if known
+                    var expect_elem = self.info.store.tAny();
+                    const vk = self.info.store.index.kinds.items[ty0.toRaw()];
+                    if (vk == .Tuple) {
+                        const trow = self.info.store.Tuple.get(self.info.store.index.rows.items[ty0.toRaw()]);
+                        const elems = self.info.store.type_pool.slice(trow.elems);
+                        if (i < elems.len) expect_elem = elems[i];
+                    }
+                    vals[i] = try self.lowerExpr(a, env, f, blk, ids[i], expect_elem, .rvalue);
+                }
+                const v = blk.builder.tupleMake(blk, ty0, vals);
+                if (expected_ty) |want| return self.emitCoerce(blk, v, ty0, want);
+                return v;
             },
             .ArrayLit => {
                 const row = a.exprs.get(.ArrayLit, id);
-                const ty = self.getExprType(id) orelse return error.OutOfMemory;
+                const ty0 = self.getExprType(id) orelse return error.LoweringBug;
                 const ids = a.exprs.expr_pool.slice(row.elems);
                 var vals = try self.gpa.alloc(tir.ValueId, ids.len);
                 defer self.gpa.free(vals);
                 var i: usize = 0;
-                while (i < ids.len) : (i += 1) vals[i] = try self.lowerExpr(a, env, f, blk, ids[i]);
-                return blk.builder.arrayMake(blk, ty, vals);
+                var expect_elem = self.info.store.tAny();
+                const vk = self.info.store.index.kinds.items[ty0.toRaw()];
+                if (vk == .Array) expect_elem = self.info.store.Array.get(self.info.store.index.rows.items[ty0.toRaw()]).elem;
+                while (i < ids.len) : (i += 1) vals[i] = try self.lowerExpr(a, env, f, blk, ids[i], expect_elem, .rvalue);
+                const v = blk.builder.arrayMake(blk, ty0, vals);
+                if (expected_ty) |want| return self.emitCoerce(blk, v, ty0, want);
+                return v;
             },
             .StructLit => {
                 const row = a.exprs.get(.StructLit, id);
-                const ty = self.getExprType(id) orelse return error.OutOfMemory;
+                const ty0 = self.getExprType(id) orelse return error.LoweringBug;
                 const fids = a.exprs.sfv_pool.slice(row.fields);
                 var fields = try self.gpa.alloc(tir.Rows.StructFieldInit, fids.len);
                 defer self.gpa.free(fields);
                 var i: usize = 0;
+                // Determine expected field types if available
+                var field_ids: []const cst.Index(types.FieldTag) = &[_]cst.Index(types.FieldTag){};
+                if (self.info.store.index.kinds.items[ty0.toRaw()] == .Struct) {
+                    const srow = self.info.store.Struct.get(self.info.store.index.rows.items[ty0.toRaw()]);
+                    field_ids = self.info.store.field_pool.slice(srow.fields);
+                }
                 while (i < fids.len) : (i += 1) {
                     const sfv = a.exprs.StructFieldValue.get(fids[i].toRaw());
-                    const v = try self.lowerExpr(a, env, f, blk, sfv.value);
+                    const want = if (i < field_ids.len) self.info.store.Field.get(field_ids[i].toRaw()).ty else self.info.store.tAny();
+                    const v = try self.lowerExpr(a, env, f, blk, sfv.value, want, .rvalue);
                     fields[i] = .{ .index = @intCast(i), .name = sfv.name, .value = v };
                 }
-                return blk.builder.structMake(blk, ty, fields);
+                const v = blk.builder.structMake(blk, ty0, fields);
+                if (expected_ty) |want| return self.emitCoerce(blk, v, ty0, want);
+                return v;
             },
             .MapLit => {
                 const row = a.exprs.get(.MapLit, id);
-                const ty = self.getExprType(id) orelse return error.OutOfMemory;
+                const ty0 = self.getExprType(id) orelse return error.LoweringBug;
                 const kv_ids = a.exprs.kv_pool.slice(row.entries);
                 var vals = try self.gpa.alloc(tir.ValueId, kv_ids.len * 2);
                 defer self.gpa.free(vals);
                 var j: usize = 0;
                 for (kv_ids) |kid| {
                     const kv = a.exprs.KeyValue.get(kid.toRaw());
-                    vals[j] = try self.lowerExpr(a, env, f, blk, kv.key);
+                    // best-effort: use expected key/value if map type is known
+                    var key_want = self.info.store.tAny();
+                    var val_want = self.info.store.tAny();
+                    const mk = self.info.store.index.kinds.items[ty0.toRaw()];
+                    if (mk == .Map) {
+                        const mr = self.info.store.Map.get(self.info.store.index.rows.items[ty0.toRaw()]);
+                        key_want = mr.key;
+                        val_want = mr.value;
+                    }
+                    vals[j] = try self.lowerExpr(a, env, f, blk, kv.key, key_want, .rvalue);
                     j += 1;
-                    vals[j] = try self.lowerExpr(a, env, f, blk, kv.value);
+                    vals[j] = try self.lowerExpr(a, env, f, blk, kv.value, val_want, .rvalue);
                     j += 1;
                 }
                 const make = blk.builder.intern("builtin.map.from_kv");
-                return blk.builder.call(blk, ty, make, vals);
+                const v = blk.builder.call(blk, ty0, make, vals);
+                if (expected_ty) |want| return self.emitCoerce(blk, v, ty0, want);
+                return v;
             },
             .IndexAccess => {
-                const row = a.exprs.get(.IndexAccess, id);
-                const ty = self.getExprType(id) orelse return error.OutOfMemory;
-                const base = try self.lowerExpr(a, env, f, blk, row.collection);
-                const idx = try self.lowerExpr(a, env, f, blk, row.index);
-                return blk.builder.indexOp(blk, ty, base, idx);
+                if (mode == .lvalue_addr) {
+                    const row = a.exprs.get(.IndexAccess, id);
+                    const base_ptr = try self.lowerExpr(a, env, f, blk, row.collection, null, .lvalue_addr);
+                    const idx_v = try self.lowerExpr(a, env, f, blk, row.index, self.info.store.tUsize(), .rvalue);
+                    const idx = blk.builder.gepValue(idx_v);
+                    const rty = self.info.store.mkPtr(self.getExprType(id) orelse return error.LoweringBug, false);
+                    return blk.builder.gep(blk, rty, base_ptr, &.{idx});
+                } else {
+                    const row = a.exprs.get(.IndexAccess, id);
+                    const ty0 = self.getExprType(id) orelse return error.LoweringBug;
+                    const base = try self.lowerExpr(a, env, f, blk, row.collection, null, .rvalue);
+                    const idx = try self.lowerExpr(a, env, f, blk, row.index, self.info.store.tUsize(), .rvalue);
+                    const v = blk.builder.indexOp(blk, ty0, base, idx);
+                    if (expected_ty) |want| return self.emitCoerce(blk, v, ty0, want);
+                    return v;
+                }
             },
             .FieldAccess => {
                 const row = a.exprs.get(.FieldAccess, id);
-                const ty = self.getExprType(id) orelse return error.OutOfMemory;
-                // Special-case: module member access like ident_import.member
-                if (a.exprs.index.kinds.items[row.parent.toRaw()] == .Ident) {
+                // Imported module member constant materialization (rvalue only)
+                if (mode == .rvalue and a.exprs.index.kinds.items[row.parent.toRaw()] == .Ident) {
                     const idr = a.exprs.get(.Ident, row.parent);
                     const name = a.exprs.strs.get(idr.name);
                     if (self.findTopLevelImportByName(a, name)) |imp_decl| {
                         if (self.import_resolver) |res| {
-                            if (self.materializeImportedConst(res, a, imp_decl, row.field, ty, blk)) |vv| return vv;
+                            const ty0 = self.getExprType(id) orelse return error.LoweringBug;
+                            if (self.materializeImportedConst(res, a, imp_decl, row.field, ty0, blk)) |vv| {
+                                if (expected_ty) |want| return self.emitCoerce(blk, vv, ty0, want);
+                                return vv;
+                            }
                         }
-                        return blk.builder.constUndef(blk, ty);
+                        // fallthrough to undef if unresolved
+                        const ty0 = self.getExprType(id) orelse return error.LoweringBug;
+                        const v = blk.builder.constUndef(blk, ty0);
+                        if (expected_ty) |want| return self.emitCoerce(blk, v, ty0, want);
+                        return v;
                     }
                 }
-                const base = try self.lowerExpr(a, env, f, blk, row.parent);
-                if (row.is_tuple) {
-                    const idx = try std.fmt.parseInt(u32, a.exprs.strs.get(row.field), 10);
-                    return blk.builder.extractElem(blk, ty, base, idx);
+
+                // Use checker-resolved field index for both address and value paths.
+                const resolved_idx = self.info.getFieldIndex(id) orelse return error.LoweringBug;
+                if (mode == .lvalue_addr) {
+                    const parent_ptr = try self.lowerExpr(a, env, f, blk, row.parent, null, .lvalue_addr);
+                    const elem_ty = self.getExprType(id) orelse return error.LoweringBug;
+                    // If parent is a pointer to an aggregate, we GEP through the pointer.
+                    // We rely on the checker to have validated that GEP is legal here.
+                    const idx = blk.builder.gepConst(@intCast(resolved_idx));
+                    const rptr_ty = self.info.store.mkPtr(elem_ty, false);
+                    return blk.builder.gep(blk, rptr_ty, parent_ptr, &.{idx});
                 } else {
-                    // best-effort: field index unresolved -> use 0
-                    return blk.builder.extractField(blk, ty, base, 0);
+                    const ty0 = self.getExprType(id) orelse return error.LoweringBug;
+                    const parent_ty = self.getExprType(row.parent) orelse return error.LoweringBug;
+                    const base = try self.lowerExpr(a, env, f, blk, row.parent, null, .rvalue);
+                    // Choose the correct extractor based on the *value* kind of the parent.
+                    const pk = self.info.store.index.kinds.items[parent_ty.toRaw()];
+                    const v =
+                        if (pk == .Tuple)
+                            blk.builder.extractElem(blk, ty0, base, resolved_idx)
+                        else
+                            blk.builder.extractField(blk, ty0, base, resolved_idx);
+                    if (expected_ty) |want| return self.emitCoerce(blk, v, ty0, want);
+                    return v;
                 }
             },
             .Block => {
-                const res_ty = self.getExprType(id) orelse self.info.store.tVoid();
+                const res_ty = expected_ty orelse (self.getExprType(id) orelse self.info.store.tVoid());
                 return try self.lowerBlockExprValue(a, env, f, blk, id, res_ty);
             },
             .Ident => {
                 const row = a.exprs.get(.Ident, id);
                 const name = a.exprs.strs.get(row.name);
-                const bnd = blk: {
-                    if (env.lookup(name)) |v| break :blk v;
-                    // Fallback: allow referencing top-level decls by name within the same module
-                    if (self.findTopLevelDeclByName(a, name)) |did| {
-                        const d = a.exprs.Decl.get(did.toRaw());
-                        // cache lowered value in a synthetic immutable slot for this block scope
-                        const val = try self.lowerExpr(a, env, f, blk, d.value);
-                        // place into a local slot only if addressable later; otherwise bind as value
-                        try env.bind(self.gpa, a, row.name, .{ .value = val, .is_slot = false });
-                        break :blk env.lookup(name).?;
+                if (mode == .lvalue_addr) {
+                    var bnd = env.lookup(name);
+                    if (bnd == null) {
+                        if (self.findTopLevelDeclByName(a, name)) |did| {
+                            const d = a.exprs.Decl.get(did.toRaw());
+                            const ety = self.getExprType(d.value) orelse return error.LoweringBug;
+                            const slot_ty = self.info.store.mkPtr(ety, false);
+                            const slot = f.builder.alloca(blk, slot_ty, tir.OptValueId.none(), 0);
+                            const val = try self.lowerExpr(a, env, f, blk, d.value, ety, .rvalue);
+                            _ = f.builder.store(blk, ety, slot, val, 0);
+                            try env.bind(self.gpa, a, row.name, .{ .value = slot, .is_slot = true });
+                            bnd = env.lookup(name);
+                        }
                     }
-                    return error.CompileError;
-                };
-                if (bnd.is_slot) {
-                    const ety = self.getExprType(id) orelse return error.OutOfMemory;
-                    return blk.builder.load(blk, ety, bnd.value, 0);
-                } else return bnd.value;
+                    const binding = bnd orelse return error.LoweringBug;
+                    if (binding.is_slot) return binding.value;
+                    const ety2 = self.getExprType(id) orelse return error.LoweringBug;
+                    const slot_ty2 = self.info.store.mkPtr(ety2, false);
+                    const slot2 = f.builder.alloca(blk, slot_ty2, tir.OptValueId.none(), 0);
+                    _ = f.builder.store(blk, ety2, slot2, binding.value, 0);
+                    try env.bind(self.gpa, a, row.name, .{ .value = slot2, .is_slot = true });
+                    return slot2;
+                } else {
+                    const bnd = blk: {
+                        if (env.lookup(name)) |v| break :blk v;
+                        if (self.findTopLevelDeclByName(a, name)) |did| {
+                            const d = a.exprs.Decl.get(did.toRaw());
+                            const val = try self.lowerExpr(a, env, f, blk, d.value, self.getExprType(d.value), .rvalue);
+                            try env.bind(self.gpa, a, row.name, .{ .value = val, .is_slot = false });
+                            break :blk env.lookup(name).?;
+                        }
+                        return error.LoweringBug;
+                    };
+                    if (bnd.is_slot) {
+                        const ety = self.getExprType(id) orelse return error.LoweringBug;
+                        var v = blk.builder.load(blk, ety, bnd.value, 0);
+                        if (expected_ty) |want| v = self.emitCoerce(blk, v, ety, want);
+                        return v;
+                    } else {
+                        var v = bnd.value;
+                        if (expected_ty) |want| {
+                            const got = self.getExprType(id) orelse want;
+                            v = self.emitCoerce(blk, v, got, want);
+                        }
+                        return v;
+                    }
+                }
             },
             .Binary => {
                 const row = a.exprs.get(.Binary, id);
-                const ty = self.getExprType(id) orelse return error.OutOfMemory;
-                const l = try self.lowerExpr(a, env, f, blk, row.left);
-                const r = try self.lowerExpr(a, env, f, blk, row.right);
-                return switch (row.op) {
-                    .add => blk.builder.bin(blk, .Add, ty, l, r),
-                    .sub => blk.builder.bin(blk, .Sub, ty, l, r),
-                    .mul => blk.builder.bin(blk, .Mul, ty, l, r),
-                    .div => blk.builder.bin(blk, .Div, ty, l, r),
-                    .mod => blk.builder.bin(blk, .Mod, ty, l, r),
-                    .shl => blk.builder.bin(blk, .Shl, ty, l, r),
-                    .shr => blk.builder.bin(blk, .Shr, ty, l, r),
-                    .bit_and => blk.builder.bin(blk, .BitAnd, ty, l, r),
-                    .bit_or => blk.builder.bin(blk, .BitOr, ty, l, r),
-                    .bit_xor => blk.builder.bin(blk, .BitXor, ty, l, r),
+                const ty0 = self.getExprType(id) orelse self.info.store.tVoid();
+                const l = try self.lowerExpr(a, env, f, blk, row.left, null, .rvalue);
+                const r = try self.lowerExpr(a, env, f, blk, row.right, null, .rvalue);
+                const v = switch (row.op) {
+                    .add => blk.builder.bin(blk, .Add, ty0, l, r),
+                    .sub => blk.builder.bin(blk, .Sub, ty0, l, r),
+                    .mul => blk.builder.bin(blk, .Mul, ty0, l, r),
+                    .div => blk.builder.bin(blk, .Div, ty0, l, r),
+                    .mod => blk.builder.bin(blk, .Mod, ty0, l, r),
+                    .shl => blk.builder.bin(blk, .Shl, ty0, l, r),
+                    .shr => blk.builder.bin(blk, .Shr, ty0, l, r),
+                    .bit_and => blk.builder.bin(blk, .BitAnd, ty0, l, r),
+                    .bit_or => blk.builder.bin(blk, .BitOr, ty0, l, r),
+                    .bit_xor => blk.builder.bin(blk, .BitXor, ty0, l, r),
                     .eq => blk.builder.binBool(blk, .CmpEq, l, r),
                     .neq => blk.builder.binBool(blk, .CmpNe, l, r),
                     .lt => blk.builder.binBool(blk, .CmpLt, l, r),
@@ -500,50 +696,70 @@ pub const LowerTir = struct {
                     .logical_and => blk.builder.binBool(blk, .LogicalAnd, l, r),
                     .logical_or => blk.builder.binBool(blk, .LogicalOr, l, r),
                     .@"orelse" => blk: {
-                        // optional-or-else: if lhs is some -> unwrap, else rhs
-                        // Build CFG: then=unwrap(lhs), else=rhs, join with result param
+                        // optional-or-else
                         var then_blk = try f.builder.beginBlock(f);
                         var else_blk = try f.builder.beginBlock(f);
                         var join_blk = try f.builder.beginBlock(f);
                         const s_is_some = f.builder.intern("builtin.opt.is_some");
                         const cond_v = blk.builder.call(blk, self.info.store.tBool(), s_is_some, &.{l});
                         try f.builder.condBr(blk, cond_v, then_blk.id, &.{}, else_blk.id, &.{});
-                        const res_ty = ty;
+                        const res_ty = expected_ty orelse ty0;
                         const res_param = try f.builder.addBlockParam(&join_blk, null, res_ty);
                         // then: unwrap
                         const s_unwrap = f.builder.intern("builtin.opt.unwrap");
-                        const unwrapped = blk.builder.call(&then_blk, res_ty, s_unwrap, &.{l});
+                        var unwrapped = blk.builder.call(&then_blk, res_ty, s_unwrap, &.{l});
+                        if (expected_ty) |want| {
+                            const got = self.getExprType(row.left) orelse res_ty;
+                            unwrapped = self.emitCoerce(&then_blk, unwrapped, got, want);
+                        }
                         try f.builder.br(&then_blk, join_blk.id, &.{unwrapped});
-                        // else: rhs (already computed)
-                        try f.builder.br(&else_blk, join_blk.id, &.{r});
+                        // else: rhs
+                        var rhs_v = r;
+                        if (expected_ty) |want| {
+                            const gotr = self.getExprType(row.right) orelse want;
+                            rhs_v = self.emitCoerce(&else_blk, rhs_v, gotr, want);
+                        }
+                        try f.builder.br(&else_blk, join_blk.id, &.{rhs_v});
                         try f.builder.endBlock(f, then_blk);
                         try f.builder.endBlock(f, else_blk);
                         blk.* = join_blk;
                         break :blk res_param;
                     },
                 };
+                if (expected_ty) |want| {
+                    // comparisons already bool; arithmetic already ty0
+                    if (self.info.store.index.kinds.items[ty0.toRaw()] != .Void)
+                        return self.emitCoerce(blk, v, ty0, want);
+                }
+                return v;
             },
             .Catch => {
                 const row = a.exprs.get(.Catch, id);
-                // if ok(expr) then unwrap_ok(expr) else { bind err?; handler }
                 var then_blk = try f.builder.beginBlock(f);
                 var else_blk = try f.builder.beginBlock(f);
                 var join_blk = try f.builder.beginBlock(f);
-                const lhs = try self.lowerExpr(a, env, f, blk, row.expr);
+                const lhs = try self.lowerExpr(a, env, f, blk, row.expr, null, .rvalue);
                 const s_is_ok = f.builder.intern("builtin.err.is_ok");
                 const is_ok = blk.builder.call(blk, self.info.store.tBool(), s_is_ok, &.{lhs});
                 try f.builder.condBr(blk, is_ok, then_blk.id, &.{}, else_blk.id, &.{});
-                const res_ty = self.getExprType(id) orelse self.info.store.tVoid();
+                const res_ty = expected_ty orelse (self.getExprType(id) orelse self.info.store.tVoid());
                 const res_param = try f.builder.addBlockParam(&join_blk, null, res_ty);
                 // then: unwrap ok
                 const s_unwrap_ok = f.builder.intern("builtin.err.unwrap_ok");
-                const okv = blk.builder.call(&then_blk, res_ty, s_unwrap_ok, &.{lhs});
+                var okv = blk.builder.call(&then_blk, res_ty, s_unwrap_ok, &.{lhs});
+                if (expected_ty) |want| {
+                    const got = self.getExprType(row.expr) orelse res_ty;
+                    okv = self.emitCoerce(&then_blk, okv, got, want);
+                }
                 try f.builder.br(&then_blk, join_blk.id, &.{okv});
-                // else: optionally bind error and evaluate handler
-                // For now, skip binding; name is available in row.binding_name
+                // else: handler
                 try self.lowerExprAsStmtList(a, env, f, &else_blk, row.handler);
                 if (else_blk.term.isNone()) {
-                    const hv = try self.lowerBlockExprValue(a, env, f, &else_blk, row.handler, res_ty);
+                    var hv = try self.lowerBlockExprValue(a, env, f, &else_blk, row.handler, res_ty);
+                    if (expected_ty) |want| {
+                        const got = self.getExprType(row.handler) orelse res_ty;
+                        hv = self.emitCoerce(&else_blk, hv, got, want);
+                    }
                     try f.builder.br(&else_blk, join_blk.id, &.{hv});
                 }
                 try f.builder.endBlock(f, then_blk);
@@ -556,35 +772,39 @@ pub const LowerTir = struct {
                 var then_blk = try f.builder.beginBlock(f);
                 var else_blk = try f.builder.beginBlock(f);
                 var join_blk = try f.builder.beginBlock(f);
-                const cond_v = try self.lowerExpr(a, env, f, blk, row.cond);
+                const cond_v = try self.lowerExpr(a, env, f, blk, row.cond, self.info.store.tBool(), .rvalue);
                 try f.builder.condBr(blk, cond_v, then_blk.id, &.{}, else_blk.id, &.{});
                 {
                     const old_if_entry = blk.*;
                     try f.builder.endBlock(f, old_if_entry);
                 }
-                const res_ty = self.getExprType(id) orelse self.info.store.tVoid();
+                const res_ty = expected_ty orelse (self.getExprType(id) orelse self.info.store.tVoid());
                 const res_param = try f.builder.addBlockParam(&join_blk, null, res_ty);
-                // then arm value
-                var then_val: tir.ValueId = undefined;
+                // then arm
                 try self.lowerExprAsStmtList(a, env, f, &then_blk, row.then_block);
                 if (then_blk.term.isNone()) {
-                    // If the then block did not end in a terminator, compute a value
-                    then_val = try self.lowerBlockExprValue(a, env, f, &then_blk, row.then_block, res_ty);
+                    var then_val = try self.lowerBlockExprValue(a, env, f, &then_blk, row.then_block, res_ty);
+                    if (expected_ty) |want| {
+                        const got = self.getExprType(row.then_block) orelse res_ty;
+                        then_val = self.emitCoerce(&then_blk, then_val, got, want);
+                    }
                     try f.builder.br(&then_blk, join_blk.id, &.{then_val});
                 }
-                // else arm value (if present)
-                var else_val: tir.ValueId = undefined;
+                // else arm
                 if (!row.else_block.isNone()) {
                     try self.lowerExprAsStmtList(a, env, f, &else_blk, row.else_block.unwrap());
                     if (else_blk.term.isNone()) {
-                        else_val = try self.lowerBlockExprValue(a, env, f, &else_blk, row.else_block.unwrap(), res_ty);
+                        var else_val = try self.lowerBlockExprValue(a, env, f, &else_blk, row.else_block.unwrap(), res_ty);
+                        if (expected_ty) |want| {
+                            const got = self.getExprType(row.else_block.unwrap()) orelse res_ty;
+                            else_val = self.emitCoerce(&else_blk, else_val, got, want);
+                        }
                         try f.builder.br(&else_blk, join_blk.id, &.{else_val});
                     }
                 } else {
                     if (else_blk.term.isNone()) {
-                        // No else: pass undef of result type
-                        else_val = f.builder.constUndef(&else_blk, res_ty);
-                        try f.builder.br(&else_blk, join_blk.id, &.{else_val});
+                        const uv = f.builder.constUndef(&else_blk, res_ty);
+                        try f.builder.br(&else_blk, join_blk.id, &.{uv});
                     }
                 }
                 try f.builder.endBlock(f, then_blk);
@@ -593,111 +813,49 @@ pub const LowerTir = struct {
                 return res_param;
             },
             .Call => {
-                const row = a.exprs.get(.Call, id);
-                const callee_k = a.exprs.index.kinds.items[row.callee.toRaw()];
-                var sname: StrId = undefined;
-                if (callee_k == .Ident) {
-                    sname = a.exprs.get(.Ident, row.callee).name;
-                } else if (callee_k == .FieldAccess) {
-                    const fr = a.exprs.get(.FieldAccess, row.callee);
-                    // Treat calls like module.func(...) as calling global symbol 'func'
-                    // If parent is an identifier bound to an import, apply mangling prefix if available
-                    if (a.exprs.index.kinds.items[fr.parent.toRaw()] == .Ident) {
-                        const mod_name = a.exprs.strs.get(a.exprs.get(.Ident, fr.parent).name);
-                        if (self.module_prefix.get(mod_name)) |pref| {
-                            const fn_name = a.exprs.strs.get(fr.field);
-                            const first = if (fn_name.len > 0) fn_name[0] else '_';
-                            const is_extern_like = (first >= 'A' and first <= 'Z');
-                            if (is_extern_like) {
-                                // Likely an extern from the vendored C API; do not mangle
-                                sname = fr.field;
-                            } else {
-                                const m = std.fmt.allocPrint(self.gpa, "{s}_{s}", .{ pref, fn_name }) catch @panic("OOM");
-                                defer self.gpa.free(m);
-                                sname = f.builder.intern(m);
-                            }
-                        } else {
-                            sname = fr.field;
-                        }
-                    } else {
-                        sname = fr.field;
-                    }
-                } else return error.OutOfMemory;
-                const args_ids = a.exprs.expr_pool.slice(row.args);
-                var vals = try self.gpa.alloc(tir.ValueId, args_ids.len);
-                defer self.gpa.free(vals);
-                var j: usize = 0;
-                while (j < args_ids.len) : (j += 1) vals[j] = try self.lowerExpr(a, env, f, blk, args_ids[j]);
-                // Best-effort: coerce argument values to the callee's parameter types when available
-                if (self.getExprType(row.callee)) |cal_ty| {
-                    if (self.info.store.index.kinds.items[cal_ty.toRaw()] == .Function) {
-                        const fr2 = self.info.store.Function.get(self.info.store.index.rows.items[cal_ty.toRaw()]);
-                        const param_tys = self.info.store.type_pool.slice(fr2.params);
-                        var fixed: usize = param_tys.len;
-                        if (fr2.is_variadic and fixed > 0) fixed -= 1;
-                        var ai: usize = 0;
-                        while (ai < vals.len and ai < fixed) : (ai += 1) {
-                            const want = param_tys[ai];
-                            const got = self.getExprType(args_ids[ai]) orelse continue;
-                            if (want.toRaw() != got.toRaw()) {
-                                vals[ai] = blk.builder.cast(blk, .CastNormal, want, vals[ai]);
-                            }
-                        }
-                    }
-                } else if (callee_k == .FieldAccess) {
-                    // Heuristic for vendored wrappers: downcast integer literal args to i32
-                    var ai2: usize = 0;
-                    while (ai2 < vals.len) : (ai2 += 1) {
-                        const gid = args_ids[ai2];
-                        if (a.exprs.index.kinds.items[gid.toRaw()] == .Literal) {
-                            const lit = a.exprs.get(.Literal, gid);
-                            if (lit.kind == .int) {
-                                const got = self.getExprType(gid) orelse continue;
-                                const kind_got = self.info.store.index.kinds.items[got.toRaw()];
-                                if (kind_got == .I64 or kind_got == .U64) {
-                                    vals[ai2] = blk.builder.cast(blk, .CastNormal, self.info.store.tI32(), vals[ai2]);
-                                }
-                            }
-                        }
-                    }
-                }
-                const ty = self.getExprType(id) orelse self.info.store.tVoid();
-                return blk.builder.call(blk, ty, sname, vals);
+                return self.lowerCall(a, env, f, blk, id, expected_ty);
             },
             .Cast => {
                 const row = a.exprs.get(.Cast, id);
-                const ty = self.getExprType(id) orelse return error.OutOfMemory;
-                const v = try self.lowerExpr(a, env, f, blk, row.expr);
-                return switch (row.kind) {
-                    .normal => blk.builder.cast(blk, .CastNormal, ty, v),
-                    .bitcast => blk.builder.cast(blk, .CastBit, ty, v),
-                    .saturate => blk.builder.cast(blk, .CastSaturate, ty, v),
-                    .wrap => blk.builder.cast(blk, .CastWrap, ty, v),
-                    .checked => blk.builder.cast(blk, .CastChecked, ty, v),
+                const ty0 = self.getExprType(id) orelse return error.LoweringBug;
+                const v = try self.lowerExpr(a, env, f, blk, row.expr, null, .rvalue);
+                const out = switch (row.kind) {
+                    .normal => blk.builder.cast(blk, .CastNormal, ty0, v),
+                    .bitcast => blk.builder.cast(blk, .CastBit, ty0, v),
+                    .saturate => blk.builder.cast(blk, .CastSaturate, ty0, v),
+                    .wrap => blk.builder.cast(blk, .CastWrap, ty0, v),
+                    .checked => blk.builder.cast(blk, .CastChecked, ty0, v),
                 };
+                if (expected_ty) |want| return self.emitCoerce(blk, out, ty0, want);
+                return out;
             },
             .OptionalUnwrap => {
                 const row = a.exprs.get(.OptionalUnwrap, id);
-                const ty = self.getExprType(id) orelse return error.OutOfMemory;
-                const v = try self.lowerExpr(a, env, f, blk, row.expr);
+                const ty0 = self.getExprType(id) orelse return error.LoweringBug;
+                const v = try self.lowerExpr(a, env, f, blk, row.expr, null, .rvalue);
                 const unwrap = blk.builder.intern("builtin.opt.unwrap");
-                return blk.builder.call(blk, ty, unwrap, &.{v});
+                const out = blk.builder.call(blk, ty0, unwrap, &.{v});
+                if (expected_ty) |want| return self.emitCoerce(blk, out, ty0, want);
+                return out;
             },
             .ErrUnwrap => {
                 const row = a.exprs.get(.ErrUnwrap, id);
-                const ty = self.getExprType(id) orelse return error.OutOfMemory;
-                const v = try self.lowerExpr(a, env, f, blk, row.expr);
+                const ty0 = self.getExprType(id) orelse return error.LoweringBug;
+                const v = try self.lowerExpr(a, env, f, blk, row.expr, null, .rvalue);
                 const unwrap_ok = blk.builder.intern("builtin.err.unwrap_ok");
-                return blk.builder.call(blk, ty, unwrap_ok, &.{v});
+                const out = blk.builder.call(blk, ty0, unwrap_ok, &.{v});
+                if (expected_ty) |want| return self.emitCoerce(blk, out, ty0, want);
+                return out;
             },
             .Match => {
                 const row = a.exprs.get(.Match, id);
-                const scrut = try self.lowerExpr(a, env, f, blk, row.expr);
-                const res_ty = self.getExprType(id) orelse self.info.store.tVoid();
+                const scrut = try self.lowerExpr(a, env, f, blk, row.expr, null, .rvalue);
+                const res_ty = expected_ty orelse (self.getExprType(id) orelse self.info.store.tVoid());
                 var join_blk = try f.builder.beginBlock(f);
                 const res_param = try f.builder.addBlockParam(&join_blk, null, res_ty);
                 const arms = a.exprs.arm_pool.slice(row.arms);
                 if (arms.len == 0) return blk.builder.constUndef(blk, res_ty);
+
                 // detect literal-int only match (no guards)
                 var all_int = true;
                 var values_buf = self.gpa.alloc(u64, arms.len) catch @panic("OOM");
@@ -729,42 +887,37 @@ pub const LowerTir = struct {
                         break;
                     };
                 }
+
                 if (all_int) {
-                    // build body blocks
                     var dests = self.gpa.alloc(Builder.SwitchDest, arms.len) catch @panic("OOM");
                     defer self.gpa.free(dests);
                     var bodies = try self.gpa.alloc(@TypeOf(try f.builder.beginBlock(f)), arms.len);
                     defer self.gpa.free(bodies);
                     i = 0;
                     while (i < arms.len) : (i += 1) bodies[i] = try f.builder.beginBlock(f);
-                    // default next block
                     var def_blk = try f.builder.beginBlock(f);
-                    // emit switch
                     try f.builder.switchInt(blk, scrut, values_buf, blk: {
                         i = 0;
-                        while (i < arms.len) : (i += 1) {
-                            dests[i] = .{ .dest = bodies[i].id, .args = &.{} };
-                        }
+                        while (i < arms.len) : (i += 1) dests[i] = .{ .dest = bodies[i].id, .args = &.{} };
                         break :blk dests;
                     }, def_blk.id, &.{});
-                    // bodies -> join
                     i = 0;
                     while (i < arms.len) : (i += 1) {
-                        try self.lowerExprAsStmtList(a, env, f, &bodies[i], a.exprs.MatchArm.get(arms[i].toRaw()).body);
+                        const arm = a.exprs.MatchArm.get(arms[i].toRaw());
+                        try self.lowerExprAsStmtList(a, env, f, &bodies[i], arm.body);
                         if (bodies[i].term.isNone()) {
-                            const v = try self.lowerBlockExprValue(a, env, f, &bodies[i], a.exprs.MatchArm.get(arms[i].toRaw()).body, res_ty);
+                            var v = try self.lowerBlockExprValue(a, env, f, &bodies[i], arm.body, res_ty);
+                            v = self.emitCoerce(&bodies[i], v, self.getExprType(arm.body) orelse res_ty, res_ty);
                             try f.builder.br(&bodies[i], join_blk.id, &.{v});
                         }
                         try f.builder.endBlock(f, bodies[i]);
                     }
-                    // default -> undef -> join
                     const uv = f.builder.constUndef(&def_blk, res_ty);
                     try f.builder.br(&def_blk, join_blk.id, &.{uv});
                     try f.builder.endBlock(f, def_blk);
                     blk.* = join_blk;
                     return res_param;
                 } else {
-                    // fallback chained tests with guards
                     var cur_blk = blk.*;
                     i = 0;
                     while (i < arms.len) : (i += 1) {
@@ -777,18 +930,19 @@ pub const LowerTir = struct {
                         const pat_ok = try self.matchPattern(a, env, f, &test_blk, arm.pattern, scrut);
                         var final_ok = pat_ok;
                         if (!arm.guard.isNone()) {
-                            const g = try self.lowerExpr(a, env, f, &test_blk, arm.guard.unwrap());
+                            const g = try self.lowerExpr(a, env, f, &test_blk, arm.guard.unwrap(), self.info.store.tBool(), .rvalue);
                             final_ok = test_blk.builder.binBool(&test_blk, .LogicalAnd, final_ok, g);
                         }
-                        // If this is the last arm (next is join), ensure else edge passes a value to the join.
                         const else_args = if (next_blk.id.toRaw() == join_blk.id.toRaw()) blk_args: {
                             const uv = f.builder.constUndef(&test_blk, res_ty);
                             break :blk_args &.{uv};
                         } else &.{};
                         try f.builder.condBr(&test_blk, final_ok, body_blk.id, &.{}, next_blk.id, else_args);
+                        // on success: destructure pattern bindings (after match)
                         try self.lowerExprAsStmtList(a, env, f, &body_blk, arm.body);
                         if (body_blk.term.isNone()) {
-                            const v = try self.lowerBlockExprValue(a, env, f, &body_blk, arm.body, res_ty);
+                            var v = try self.lowerBlockExprValue(a, env, f, &body_blk, arm.body, res_ty);
+                            v = self.emitCoerce(&body_blk, v, self.getExprType(arm.body) orelse res_ty, res_ty);
                             try f.builder.br(&body_blk, join_blk.id, &.{v});
                         }
                         try f.builder.endBlock(f, test_blk);
@@ -805,16 +959,15 @@ pub const LowerTir = struct {
                 var body = try f.builder.beginBlock(f);
                 var exit_blk = try f.builder.beginBlock(f);
                 var join_blk = try f.builder.beginBlock(f);
-                const res_ty = self.getExprType(id) orelse self.info.store.tVoid();
+                const res_ty = expected_ty orelse (self.getExprType(id) orelse self.info.store.tVoid());
                 const res_param = try f.builder.addBlockParam(&join_blk, null, res_ty);
                 try f.builder.br(blk, header.id, &.{});
                 {
                     const old_entry = blk.*;
                     try f.builder.endBlock(f, old_entry);
                 }
-                const cond_v = if (!row.cond.isNone()) try self.lowerExpr(a, env, f, &header, row.cond.unwrap()) else f.builder.constBool(&header, self.info.store.tBool(), true);
+                const cond_v = if (!row.cond.isNone()) try self.lowerExpr(a, env, f, &header, row.cond.unwrap(), self.info.store.tBool(), .rvalue) else f.builder.constBool(&header, self.info.store.tBool(), true);
                 try f.builder.condBr(&header, cond_v, body.id, &.{}, exit_blk.id, &.{});
-                // push loop context for break/continue with result join
                 try self.loop_stack.append(self.gpa, .{
                     .label = if (!row.label.isNone()) a.exprs.strs.get(row.label.unwrap()) else null,
                     .continue_block = header.id,
@@ -829,7 +982,6 @@ pub const LowerTir = struct {
                 if (body.term.isNone()) try f.builder.br(&body, header.id, &.{});
                 try f.builder.endBlock(f, header);
                 try f.builder.endBlock(f, body);
-                // exit -> join undef
                 const uv = f.builder.constUndef(&exit_blk, res_ty);
                 try f.builder.br(&exit_blk, join_blk.id, &.{uv});
                 try f.builder.endBlock(f, exit_blk);
@@ -839,33 +991,39 @@ pub const LowerTir = struct {
             },
             .For => {
                 const row = a.exprs.get(.For, id);
-                // Blocks
                 var header = try f.builder.beginBlock(f);
                 var body = try f.builder.beginBlock(f);
                 var exit_blk = try f.builder.beginBlock(f);
                 var join_blk = try f.builder.beginBlock(f);
-                const res_ty = self.getExprType(id) orelse self.info.store.tVoid();
+                const res_ty = expected_ty orelse (self.getExprType(id) orelse self.info.store.tVoid());
                 const res_param = try f.builder.addBlockParam(&join_blk, null, res_ty);
 
-                // loop context
-                try self.loop_stack.append(self.gpa, .{ .label = if (!row.label.isNone()) a.exprs.strs.get(row.label.unwrap()) else null, .continue_block = header.id, .break_block = exit_blk.id });
+                try self.loop_stack.append(self.gpa, .{
+                    .label = if (!row.label.isNone()) a.exprs.strs.get(row.label.unwrap()) else null,
+                    .continue_block = header.id,
+                    .break_block = exit_blk.id,
+                    .has_result = true,
+                    .join_block = join_blk.id,
+                    .res_param = res_param,
+                    .res_ty = res_ty,
+                    .defer_len_at_entry = @intCast(env.defers.items.len),
+                });
 
-                // Range-based or collection-based
                 if (a.exprs.index.kinds.items[row.iterable.toRaw()] == .Range) {
                     const rg = a.exprs.get(.Range, row.iterable);
-                    if (rg.start.isNone() or rg.end.isNone()) return error.OutOfMemory;
-                    const start_v = try self.lowerExpr(a, env, f, blk, rg.start.unwrap());
-                    const end_v = try self.lowerExpr(a, env, f, blk, rg.end.unwrap());
-                    const idx_ty = self.getExprType(rg.start.unwrap()) orelse return error.OutOfMemory;
+                    if (rg.start.isNone() or rg.end.isNone()) return error.LoweringBug;
+                    const start_v = try self.lowerExpr(a, env, f, blk, rg.start.unwrap(), null, .rvalue);
+                    const end_v = try self.lowerExpr(a, env, f, blk, rg.end.unwrap(), null, .rvalue);
+                    const idx_ty = self.getExprType(rg.start.unwrap()) orelse return error.LoweringBug;
                     const idx_param = try f.builder.addBlockParam(&header, null, idx_ty);
                     try f.builder.br(blk, header.id, &.{start_v});
-                    // header cond
                     const cond = if (rg.inclusive_right)
                         blk.builder.binBool(&header, .CmpLe, idx_param, end_v)
                     else
                         blk.builder.binBool(&header, .CmpLt, idx_param, end_v);
                     try f.builder.condBr(&header, cond, body.id, &.{}, exit_blk.id, &.{});
-                    // body
+                    // bind pattern (range just yields index)
+                    try self.bindPattern(a, env, f, &body, row.pattern, idx_param, idx_ty);
                     try self.lowerExprAsStmtList(a, env, f, &body, row.body);
                     if (body.term.isNone()) {
                         const one = blk.builder.constInt(&body, idx_ty, 1);
@@ -873,8 +1031,7 @@ pub const LowerTir = struct {
                         try f.builder.br(&body, header.id, &.{next_i});
                     }
                 } else {
-                    // collection-based via index
-                    const arr_v = try self.lowerExpr(a, env, f, blk, row.iterable);
+                    const arr_v = try self.lowerExpr(a, env, f, blk, row.iterable, null, .rvalue);
                     const idx_ty = self.info.store.tUsize();
                     const s_len = f.builder.intern("builtin.len");
                     const len_v = blk.builder.call(blk, idx_ty, s_len, &.{arr_v});
@@ -884,9 +1041,13 @@ pub const LowerTir = struct {
                     const cond = blk.builder.binBool(&header, .CmpLt, idx_param, len_v);
                     try f.builder.condBr(&header, cond, body.id, &.{}, exit_blk.id, &.{});
                     // body: element = arr[idx]
-                    const elem_ty = self.info.store.tAny();
+                    // Try to get element type from iterable type
+                    var elem_ty = self.info.store.tAny();
+                    if (self.getExprType(row.iterable)) |it_ty| {
+                        const ik = self.info.store.index.kinds.items[it_ty.toRaw()];
+                        if (ik == .Array) elem_ty = self.info.store.Array.get(self.info.store.index.rows.items[it_ty.toRaw()]).elem else if (ik == .Slice) elem_ty = self.info.store.Slice.get(self.info.store.index.rows.items[it_ty.toRaw()]).elem else if (ik == .DynArray) elem_ty = self.info.store.DynArray.get(self.info.store.index.rows.items[it_ty.toRaw()]).elem;
+                    }
                     const elem = blk.builder.indexOp(&body, elem_ty, arr_v, idx_param);
-                    // bind pattern to element
                     try self.bindPattern(a, env, f, &body, row.pattern, elem, elem_ty);
                     try self.lowerExprAsStmtList(a, env, f, &body, row.body);
                     if (body.term.isNone()) {
@@ -895,9 +1056,7 @@ pub const LowerTir = struct {
                         try f.builder.br(&body, header.id, &.{next_i});
                     }
                 }
-                // pop loop
                 _ = self.loop_stack.pop();
-                // exit -> join with undef if no value
                 const uv = blk.builder.constUndef(&exit_blk, res_ty);
                 try f.builder.br(&exit_blk, join_blk.id, &.{uv});
                 try f.builder.endBlock(f, header);
@@ -906,20 +1065,23 @@ pub const LowerTir = struct {
                 blk.* = join_blk;
                 return res_param;
             },
-            else => return error.OutOfMemory,
+            .Import => {
+                // Lowered as 'any' module value (opaque); create undef of the checker type
+                const ty0 = self.getExprType(id) orelse self.info.store.tAny();
+                return blk.builder.constUndef(blk, ty0);
+            },
+            else => return error.LoweringBug,
         }
     }
 
-    // Compute the value of a block expression: evaluate last expression or return undef of expected type
+    // Compute the value of a block expression (value position)
     fn lowerBlockExprValue(self: *@This(), a: *const ast.Ast, env: *Env, f: *Builder.FunctionFrame, blk: *Builder.BlockFrame, block_expr: ast.ExprId, expected_ty: types.TypeId) anyerror!tir.ValueId {
         if (a.exprs.index.kinds.items[block_expr.toRaw()] != .Block) {
-            // Not a block; just lower as expression
-            return self.lowerExpr(a, env, f, blk, block_expr);
+            return self.lowerExpr(a, env, f, blk, block_expr, expected_ty, .rvalue);
         }
         const b = a.exprs.get(.Block, block_expr);
         const stmts = a.stmts.stmt_pool.slice(b.items);
         if (stmts.len == 0) return f.builder.constUndef(blk, expected_ty);
-        // Run all but last as statements
         var i: usize = 0;
         while (i + 1 < stmts.len) : (i += 1) {
             try self.lowerStmt(a, env, f, blk, stmts[i]);
@@ -928,90 +1090,16 @@ pub const LowerTir = struct {
         const lk = a.stmts.index.kinds.items[last.toRaw()];
         if (lk == .Expr) {
             const le = a.stmts.get(.Expr, last).expr;
-            return self.lowerExpr(a, env, f, blk, le);
+            return self.lowerExpr(a, env, f, blk, le, expected_ty, .rvalue);
         } else {
             try self.lowerStmt(a, env, f, blk, last);
             return f.builder.constUndef(blk, expected_ty);
         }
     }
 
-    fn lowerAddress(self: *@This(), a: *const ast.Ast, env: *Env, f: *Builder.FunctionFrame, blk: *Builder.BlockFrame, id: ast.ExprId) anyerror!tir.ValueId {
-        const k = a.exprs.index.kinds.items[id.toRaw()];
-        switch (k) {
-            .Ident => {
-                const row = a.exprs.get(.Ident, id);
-                const name = a.exprs.strs.get(row.name);
-                var bnd = env.lookup(name);
-                if (bnd == null) {
-                    // Allow taking address of top-level decl by name by lowering it into a local slot
-                    if (self.findTopLevelDeclByName(a, name)) |did| {
-                        const d = a.exprs.Decl.get(did.toRaw());
-                        const ety = self.getExprType(d.value) orelse return error.OutOfMemory;
-                        const slot_ty = self.info.store.mkPtr(ety, false);
-                        const slot = f.builder.alloca(blk, slot_ty, tir.OptValueId.none(), 0);
-                        const val = try self.lowerExpr(a, env, f, blk, d.value);
-                        _ = f.builder.store(blk, ety, slot, val, 0);
-                        try env.bind(self.gpa, a, row.name, .{ .value = slot, .is_slot = true });
-                        bnd = env.lookup(name);
-                    }
-                }
-                const binding = bnd orelse return error.CompileError;
-                if (binding.is_slot) return binding.value;
-                // take address of immutable -> alloca+store then return slot
-                const ety = self.getExprType(id) orelse return error.OutOfMemory;
-                const slot_ty = self.info.store.mkPtr(ety, false);
-                const slot = f.builder.alloca(blk, slot_ty, tir.OptValueId.none(), 0);
-                _ = f.builder.store(blk, ety, slot, binding.value, 0);
-                return slot;
-            },
-            .FieldAccess => {
-                const row = a.exprs.get(.FieldAccess, id);
-                // Address of imported module member is not supported; treat as compile error
-                if (a.exprs.index.kinds.items[row.parent.toRaw()] == .Ident) {
-                    const idr = a.exprs.get(.Ident, row.parent);
-                    const name = a.exprs.strs.get(idr.name);
-                    if (self.findTopLevelImportByName(a, name)) |_| return error.CompileError;
-                }
-                const parent_ptr = try self.lowerAddress(a, env, f, blk, row.parent);
-                var pty = self.getExprType(row.parent) orelse return error.OutOfMemory;
-                // unwrap pointer type for element lookup
-                if (self.info.store.index.kinds.items[pty.toRaw()] == .Ptr) {
-                    const prow = self.info.store.Ptr.get(self.info.store.index.rows.items[pty.toRaw()]);
-                    pty = prow.elem;
-                }
-                var idx_val: u32 = 0;
-                if (row.is_tuple) {
-                    idx_val = try std.fmt.parseInt(u32, a.exprs.strs.get(row.field), 10);
-                } else {
-                    if (self.info.store.index.kinds.items[pty.toRaw()] == .Struct) {
-                        const srow = self.info.store.Struct.get(self.info.store.index.rows.items[pty.toRaw()]);
-                        const fids = self.info.store.field_pool.slice(srow.fields);
-                        const target = a.exprs.strs.get(row.field);
-                        var i: u32 = 0;
-                        while (i < fids.len) : (i += 1) {
-                            const fr = self.info.store.Field.get(fids[i].toRaw());
-                            if (std.mem.eql(u8, self.info.store.strs.get(fr.name), target)) {
-                                idx_val = i;
-                                break;
-                            }
-                        }
-                    } else idx_val = 0;
-                }
-                const idx = blk.builder.gepConst(idx_val);
-                const rty = self.info.store.mkPtr(self.getExprType(id) orelse return error.OutOfMemory, false);
-                return blk.builder.gep(blk, rty, parent_ptr, &.{idx});
-            },
-            .IndexAccess => {
-                const row = a.exprs.get(.IndexAccess, id);
-                const base_ptr = try self.lowerAddress(a, env, f, blk, row.collection);
-                const idx_v = try self.lowerExpr(a, env, f, blk, row.index);
-                const idx = blk.builder.gepValue(idx_v);
-                const rty = self.info.store.mkPtr(self.getExprType(id) orelse return error.OutOfMemory, false);
-                return blk.builder.gep(blk, rty, base_ptr, &.{idx});
-            },
-            else => return error.OutOfMemory,
-        }
-    }
+    // ============================
+    // Import materialization
+    // ============================
 
     fn findTopLevelDeclByName(_: *const @This(), a: *const ast.Ast, name: []const u8) ?ast.DeclId {
         const decls = a.exprs.decl_pool.slice(a.unit.decls);
@@ -1027,7 +1115,6 @@ pub const LowerTir = struct {
         }
         return null;
     }
-
     fn findTopLevelImportByName(self: *const @This(), a: *const ast.Ast, name: []const u8) ?ast.DeclId {
         const did = self.findTopLevelDeclByName(a, name) orelse return null;
         const d = a.exprs.Decl.get(did.toRaw());
@@ -1035,7 +1122,6 @@ pub const LowerTir = struct {
     }
 
     fn materializeImportedConst(self: *@This(), res: *@import("import_resolver.zig").ImportResolver, a: *const ast.Ast, imp_decl: ast.DeclId, member: StrId, expected_ty: types.TypeId, blk: *Builder.BlockFrame) ?tir.ValueId {
-        // Get import path from decl
         const d = a.exprs.Decl.get(imp_decl.toRaw());
         const ir = a.exprs.get(.Import, d.value);
         if (a.exprs.index.kinds.items[ir.expr.toRaw()] != .Literal) return null;
@@ -1058,7 +1144,6 @@ pub const LowerTir = struct {
             const b = me.ast.pats.get(.Binding, pid);
             const nm = me.ast.exprs.strs.get(b.name);
             if (std.mem.eql(u8, nm, want)) {
-                // Lower value expression with the expected type shape
                 return self.lowerImportedExprValue(me, d2.value, expected_ty, blk);
             }
         }
@@ -1095,8 +1180,7 @@ pub const LowerTir = struct {
                 const s = if (!lit.value.isNone()) me.ast.exprs.strs.get(lit.value.unwrap()) else "";
                 const k = self.info.store.getKind(expected_ty);
                 switch (k) {
-                    .U8 => return blk.builder.constInt(blk, expected_ty, std.fmt.parseInt(i64, s, 10) catch 0),
-                    .U16, .U32, .U64, .I8, .I16, .I32, .I64 => return blk.builder.constInt(blk, expected_ty, std.fmt.parseInt(i64, s, 10) catch 0),
+                    .U8, .U16, .U32, .U64, .I8, .I16, .I32, .I64 => return blk.builder.constInt(blk, expected_ty, std.fmt.parseInt(i64, s, 10) catch 0),
                     .Bool => return blk.builder.constBool(blk, expected_ty, lit.bool_value),
                     .String => return blk.builder.constString(blk, expected_ty, s),
                     else => return null,
@@ -1105,6 +1189,10 @@ pub const LowerTir = struct {
             else => return null,
         }
     }
+
+    // ============================
+    // Misc helpers
+    // ============================
 
     fn getExprType(self: *const @This(), id: ast.ExprId) ?types.TypeId {
         const i = id.toRaw();
@@ -1136,7 +1224,6 @@ pub const LowerTir = struct {
                 const row = a.pats.get(.Tuple, pid);
                 const elems = a.pats.pat_pool.slice(row.elems);
                 var i: usize = 0;
-                // Try to use tuple element types if available
                 var etys: []const types.TypeId = &[_]types.TypeId{};
                 const vk = self.info.store.index.kinds.items[vty.toRaw()];
                 if (vk == .Tuple) {
@@ -1149,19 +1236,17 @@ pub const LowerTir = struct {
                     try self.bindPattern(a, env, f, blk, elems[i], ev, ety);
                 }
             },
-            else => {
-                // Fallback: bind nothing; full pattern space handled in later sweep
-            },
+            else => {},
         }
     }
+
     fn matchPattern(self: *@This(), a: *const ast.Ast, env: *Env, f: *Builder.FunctionFrame, blk: *Builder.BlockFrame, pid: ast.PatternId, scrut: tir.ValueId) !tir.ValueId {
-        // env used via lowerExpr in some branches
         const k = a.pats.index.kinds.items[pid.toRaw()];
         switch (k) {
             .Wildcard => return blk.builder.constBool(blk, self.info.store.tBool(), true),
             .Literal => {
                 const pr = a.pats.get(.Literal, pid);
-                const litv = try self.lowerExpr(a, env, f, blk, pr.expr);
+                const litv = try self.lowerExpr(a, env, f, blk, pr.expr, null, .rvalue);
                 return blk.builder.binBool(blk, .CmpEq, scrut, litv);
             },
             .Binding, .Path, .Tuple, .Slice, .Struct, .VariantTuple, .VariantStruct, .Range, .Or, .At => {
@@ -1171,16 +1256,18 @@ pub const LowerTir = struct {
     }
 };
 
+// ============================
+// Context structs
+// ============================
+
 const LoopCtx = struct {
     label: ?[]const u8,
     continue_block: tir.BlockId,
     break_block: tir.BlockId,
-    // expression result join (optional)
     has_result: bool = false,
     join_block: tir.BlockId = tir.BlockId.fromRaw(0),
     res_param: tir.ValueId = tir.ValueId.fromRaw(0),
     res_ty: types.TypeId = undefined,
-    // defers to run when exiting loop via break/continue
     defer_len_at_entry: u32 = 0,
 };
 
@@ -1188,6 +1275,7 @@ const Env = struct {
     map: std.StringHashMapUnmanaged(ValueBinding) = .{},
     defers: std.ArrayListUnmanaged(DeferEntry) = .{},
     marks: std.ArrayListUnmanaged(u32) = .{},
+
     fn init(_: std.mem.Allocator) Env {
         return .{ .map = .{} };
     }
@@ -1217,6 +1305,10 @@ const Env = struct {
 
 const ValueBinding = struct { value: tir.ValueId, is_slot: bool };
 const DeferEntry = struct { expr: ast.ExprId, is_err: bool };
+
+// ============================
+// Builder facade over TIR
+// ============================
 
 const Builder = struct {
     gpa: std.mem.Allocator,
@@ -1257,7 +1349,6 @@ const Builder = struct {
             self.params.deinit(gpa);
         }
     };
-    const TermSlot = struct { value: usize };
     const SwitchDest = struct { dest: tir.BlockId, args: []const tir.ValueId };
 
     pub fn beginFunction(self: *@This(), name: StrId, result: types.TypeId) !FunctionFrame {
@@ -1492,10 +1583,8 @@ const Builder = struct {
         blk.term = tir.OptTermId.some(tid);
     }
 
-    // SwitchInt helper
     pub fn switchInt(self: *@This(), blk: *BlockFrame, scrut: tir.ValueId, case_vals: []const u64, case_dests: []const SwitchDest, default_dest: tir.BlockId, default_args: []const tir.ValueId) !void {
         std.debug.assert(case_vals.len == case_dests.len);
-        // build cases
         var case_ids = self.gpa.alloc(tir.CaseId, case_vals.len) catch @panic("OOM");
         defer self.gpa.free(case_ids);
         var i: usize = 0;
@@ -1527,3 +1616,4 @@ const Builder = struct {
         return vid;
     }
 };
+
