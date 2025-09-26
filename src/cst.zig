@@ -768,10 +768,8 @@ pub const ExprStore = struct {
     locs: LocStore = .{},
 
     // ----- lifecycle -----
-    pub fn init(gpa: std.mem.Allocator) ExprStore {
-        const interner = gpa.create(StringInterner) catch @panic("OOM");
-        interner.* = StringInterner.init(gpa);
-        return .{ .gpa = gpa, .strs = interner };
+    pub fn init(gpa: std.mem.Allocator, strs: *StringInterner) ExprStore {
+        return .{ .gpa = gpa, .strs = strs };
     }
     pub fn deinit(self: *@This()) void {
         const gpa = self.gpa;
@@ -805,8 +803,6 @@ pub const ExprStore = struct {
         self.vfield_pool.deinit(gpa);
 
         self.locs.deinit(gpa);
-        self.strs.deinit();
-        gpa.destroy(self.strs);
     }
 
     pub fn add(self: *@This(), comptime K: ExprKind, row: RowT(K)) ExprId {
@@ -897,8 +893,10 @@ pub const PatternStore = struct {
     seg_pool: Pool(PathSegId) = .{},
     field_pool: Pool(PatFieldId) = .{},
 
-    pub fn init(gpa: std.mem.Allocator) PatternStore {
-        return .{ .gpa = gpa };
+    strs: *StringInterner,
+
+    pub fn init(gpa: std.mem.Allocator, strs: *StringInterner) PatternStore {
+        return .{ .gpa = gpa, .strs = strs };
     }
     pub fn deinit(self: *@This()) void {
         const gpa = self.gpa;
@@ -951,18 +949,22 @@ pub const CST = struct {
     exprs: ExprStore,
     pats: PatternStore,
     program: ProgramDO,
+    interner: *StringInterner,
 
-    pub fn init(gpa: std.mem.Allocator) CST {
+    pub fn init(gpa: std.mem.Allocator, interner: *StringInterner) CST {
         return .{
             .gpa = gpa,
-            .exprs = ExprStore.init(gpa),
-            .pats = PatternStore.init(gpa),
+            .exprs = ExprStore.init(gpa, interner),
+            .pats = PatternStore.init(gpa, interner),
             .program = .{ .top_decls = RangeOf(DeclId).empty(), .package_name = OptStrId.none(), .package_loc = OptLocId.none() },
+            .interner = interner,
         };
     }
     pub fn deinit(self: *@This()) void {
         self.exprs.deinit();
         self.pats.deinit();
+        self.interner.deinit();
+        self.gpa.destroy(self.interner);
     }
 };
 

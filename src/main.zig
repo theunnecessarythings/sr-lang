@@ -81,6 +81,9 @@ fn repl(
     var source_lines = std.ArrayList([]const u8){};
     defer source_lines.deinit(allocator);
 
+    var interner = compiler.ast.StringInterner.init(allocator);
+    defer interner.deinit();
+
     while (true) {
         try err_writer.print("{s}>>> {s}", .{ Colors.blue, Colors.reset });
         try err_writer.flush();
@@ -110,7 +113,7 @@ fn repl(
     defer allocator.free(source);
     var diags = compiler.diagnostics.Diagnostics.init(allocator);
     defer diags.deinit();
-    var parser = compiler.parser.Parser.init(allocator, source, &diags);
+    var parser = compiler.parser.Parser.init(allocator, source, &diags, &interner);
     var cst_program = try parser.parse();
 
     var cst_printer = compiler.cst.DodPrinter.init(
@@ -150,7 +153,7 @@ fn repl(
         return;
     }
 
-    var lower_tir = compiler.lower_tir.LowerTir.init(allocator, &chk.type_info);
+    var lower_tir = compiler.lower_tir.LowerTir.init(allocator, &chk.type_info, &interner);
     defer lower_tir.deinit();
     var tir = try lower_tir.run(&hir);
     defer tir.deinit();
@@ -196,6 +199,8 @@ fn process_file(
     const source0 = try allocator.dupeZ(u8, source);
     defer allocator.free(source0);
     defer allocator.free(source);
+    var interner = compiler.ast.StringInterner.init(allocator);
+    defer interner.deinit();
 
     if (cli_args.verbose) {
         try err_writer.print("Compiling {s}...\n", .{filename});
@@ -216,7 +221,7 @@ fn process_file(
     var diags = compiler.diagnostics.Diagnostics.init(allocator);
     defer diags.deinit();
 
-    var parser = compiler.parser.Parser.init(allocator, source0, &diags);
+    var parser = compiler.parser.Parser.init(allocator, source0, &diags, &interner);
     var cst_program = try parser.parse();
 
     // For 'check' command, stop after semantic checks
@@ -274,7 +279,7 @@ fn process_file(
             return error.CompilationFailed;
         }
 
-        var lower_tir = compiler.lower_tir.LowerTir.init(allocator, &chk.type_info);
+        var lower_tir = compiler.lower_tir.LowerTir.init(allocator, &chk.type_info, &interner);
         defer lower_tir.deinit();
         var tir = try lower_tir.run(&hir);
         defer tir.deinit();
@@ -287,7 +292,7 @@ fn process_file(
 
     // Full compilation pipeline for 'compile' and 'run'
     var pl = compiler.pipeline.Pipeline.init(allocator, &diags);
-    var parser2 = compiler.parser.Parser.init(allocator, source0, &diags);
+    var parser2 = compiler.parser.Parser.init(allocator, source0, &diags, &interner);
     var cst_program_v2 = try parser2.parse();
     // Use new pipeline that resolves imports and appends codegen
     // Base dir is the directory of the input filename for relative imports

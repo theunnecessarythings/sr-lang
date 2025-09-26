@@ -13,8 +13,11 @@ fn checkProgram(src: [:0]const u8, expected: []const diag.DiagnosticCode) !void 
     var diags = diag.Diagnostics.init(gpa);
     defer diags.deinit();
 
+    var interner = compiler.ast.StringInterner.init(gpa);
+    defer interner.deinit();
+
     // Step 1: Parse
-    var parser = Parser.init(gpa, src, &diags);
+    var parser = Parser.init(gpa, src, &diags, &interner);
     var cst = try parser.parse();
     defer cst.deinit();
     if (diags.count() != 0) {

@@ -1,4 +1,5 @@
 const std = @import("std");
+
 const parser = @import("parser.zig");
 const cst = @import("cst.zig");
 const ast = @import("ast.zig");
@@ -10,181 +11,168 @@ const tir = @import("tir.zig");
 const Diagnostics = @import("diagnostics.zig").Diagnostics;
 
 pub const ModuleEntry = struct {
+    /// Absolute, canonical (realpath) to the root source file of this module.
     path: []u8,
+
     cst: cst.CST,
     ast: ast.Ast,
     type_info: *types.TypeInfo,
     tir: tir.TIR,
-    syms: std.StringHashMap(types.TypeId), // name -> TypeId (in this module's TypeStore)
+
+    /// Exported symbols: binding name -> TypeId (from this module's TypeStore).
+    syms: std.StringHashMap(types.TypeId),
+
+    /// Arena that owns this module’s CST/AST/etc. Keep separate from the global allocator.
+    arena: std.heap.ArenaAllocator,
+
+    pub fn deinit(self: *ModuleEntry, gpa: std.mem.Allocator) void {
+        // The symmap keys are duped on gpa, so free them explicitly.
+        var kit = self.syms.keyIterator();
+        while (kit.next()) |k| gpa.free(k.*);
+        self.syms.deinit();
+
+        self.cst.deinit();
+        self.ast.deinit();
+
+        self.type_info.deinit();
+        gpa.destroy(self.type_info);
+
+        self.tir.deinit();
+
+        gpa.free(self.path);
+
+        self.arena.deinit();
+    }
 };
 
 pub const ImportResolver = struct {
     gpa: std.mem.Allocator,
     diags: *Diagnostics,
+
+    /// Canonical absolute file path -> ModuleEntry (owned by this map).
     cache: std.StringHashMap(ModuleEntry),
 
+    /// In-flight resolutions to prevent import cycles.
+    in_progress: std.StringHashMap(void),
+
+    config: Config,
+
+    pub const Config = struct {
+        /// Roots searched when the import is not absolute and not clearly relative.
+        roots: []const []const u8 = &.{ "std", "vendor", "examples" },
+
+        /// Candidate filenames to try when the import resolves to a directory.
+        main_filenames: []const []const u8 = &.{"main.sr"},
+
+        /// Extensions auto-appended if the import has no extension.
+        exts: []const []const u8 = &.{".sr"},
+    };
+
     pub fn init(gpa: std.mem.Allocator, diags: *Diagnostics) ImportResolver {
-        return .{ .gpa = gpa, .diags = diags, .cache = std.StringHashMap(ModuleEntry).init(gpa) };
+        return .{
+            .gpa = gpa,
+            .diags = diags,
+            .cache = std.StringHashMap(ModuleEntry).init(gpa),
+            .in_progress = std.StringHashMap(void).init(gpa),
+            .config = .{},
+        };
     }
+
     pub fn deinit(self: *ImportResolver) void {
         var it = self.cache.valueIterator();
-        while (it.next()) |m| {
-            // free symmap keys
-            var kit = m.syms.keyIterator();
-            while (kit.next()) |k| self.gpa.free(k.*);
-            m.syms.deinit();
-            m.cst.deinit();
-            m.ast.deinit();
-            m.type_info.deinit();
-            self.gpa.destroy(m.type_info);
-            m.tir.deinit();
-            self.gpa.free(m.path);
-        }
+        while (it.next()) |entry| entry.deinit(self.gpa);
         self.cache.deinit();
+        self.in_progress.deinit();
     }
 
-    fn canonPath(self: *ImportResolver, base_dir: []const u8, raw: []const u8) ![]u8 {
-        // If absolute, or repo-relative (std/, vendor/, examples/), use directly; else join with base_dir
-        var tmp: std.ArrayList(u8) = .empty;
-        errdefer tmp.deinit(self.gpa);
-        if (raw.len > 0 and raw[0] == '/') {
-            try tmp.appendSlice(self.gpa, raw);
-        } else if (std.mem.startsWith(u8, raw, "std/") or std.mem.startsWith(u8, raw, "vendor/") or std.mem.startsWith(u8, raw, "examples/")) {
-            try tmp.appendSlice(self.gpa, raw);
-        } else {
-            if (base_dir.len > 0) {
-                try tmp.appendSlice(self.gpa, base_dir);
-                if (base_dir[base_dir.len - 1] != '/') try tmp.append(self.gpa, '/');
-            }
-            try tmp.appendSlice(self.gpa, raw);
-        }
-        // Try variants: as-is, with .sr, with /main.sr, and search in std/, vendor/, examples/
-        const cwd = std.fs.cwd();
-        const as_is = try tmp.toOwnedSlice(self.gpa);
-        if (cwd.access(as_is, .{})) |_| {
-            return as_is;
-        } else |_| {}
-        // with .sr
-        const with_ext = try std.fmt.allocPrint(self.gpa, "{s}.sr", .{as_is});
-        if (cwd.access(with_ext, .{})) |_| {
-            self.gpa.free(as_is);
-            return with_ext;
-        } else |_| self.gpa.free(with_ext);
-        // with /main.sr
-        const with_main = try std.fmt.allocPrint(self.gpa, "{s}/main.sr", .{as_is});
-        if (cwd.access(with_main, .{})) |_| {
-            self.gpa.free(as_is);
-            return with_main;
-        } else |_| self.gpa.free(with_main);
-        // search roots
-        const roots = [_][]const u8{ "std/", "vendor/", "examples/" };
-        for (roots) |r| {
-            const p1 = try std.fmt.allocPrint(self.gpa, "{s}{s}", .{ r, raw });
-            if (cwd.access(p1, .{})) |_| {
-                self.gpa.free(as_is);
-                return p1;
-            } else |_| self.gpa.free(p1);
-            const p2 = try std.fmt.allocPrint(self.gpa, "{s}{s}.sr", .{ r, raw });
-            if (cwd.access(p2, .{})) |_| {
-                self.gpa.free(as_is);
-                return p2;
-            } else |_| self.gpa.free(p2);
-            const p3 = try std.fmt.allocPrint(self.gpa, "{s}{s}/main.sr", .{ r, raw });
-            if (cwd.access(p3, .{})) |_| {
-                self.gpa.free(as_is);
-                return p3;
-            } else |_| self.gpa.free(p3);
-        }
-        // fallback to as_is (will likely error when opening)
-        return as_is;
+    pub fn setConfig(self: *ImportResolver, cfg: Config) void {
+        self.config = cfg;
     }
 
-    pub fn resolve(self: *ImportResolver, base_dir: []const u8, import_path: []const u8) !*ModuleEntry {
-        const full = try self.canonPath(base_dir, import_path);
-        if (self.cache.get(full)) |entry| {
-            self.gpa.free(full);
+    /// Resolve `import_path` relative to `base_dir` (the importing file’s directory).
+    /// Returns a cached `ModuleEntry` pointer.
+    pub fn resolve(
+        self: *ImportResolver,
+        base_dir: []const u8,
+        import_path: []const u8,
+        interner: *ast.StringInterner,
+    ) !*ModuleEntry {
+        // 1) Canonicalize to an absolute real path (or best-effort canonical string)
+        const abs_real = try self.canonPath(base_dir, import_path);
+        defer self.gpa.free(abs_real);
+
+        // 2) Cache hit?
+        if (self.cache.get(abs_real)) |entry| {
             return @constCast(&entry);
         }
-        // Read file
-        var file = try std.fs.cwd().openFile(full, .{});
+
+        // 3) Cycle check
+        self.in_progress.putNoClobber(abs_real, {}) catch {
+            // _ = self.diags.addError(..., .circular_import, .{}) catch {};
+            return error.CircularImport;
+        };
+        defer _ = self.in_progress.remove(abs_real);
+
+        // 4) Open & read
+        var file = try std.fs.cwd().openFile(abs_real, .{});
         defer file.close();
         const stat = try file.stat();
-        const source = try file.readToEndAlloc(self.gpa, stat.size);
-        defer self.gpa.free(source);
-        // Null-terminate for lexer expectations (ephemeral)
-        const source0 = try std.mem.concatWithSentinel(self.gpa, u8, &.{ source }, 0);
-        defer self.gpa.free(source0);
 
-        // Parse
-        var p = parser.Parser.init(self.gpa, source0, self.diags);
+        // 5) Module-local arena for CST/AST/etc
+        var arena = std.heap.ArenaAllocator.init(self.gpa);
+        errdefer arena.deinit();
+        const aalloc = arena.allocator();
+
+        const source = try file.readToEndAlloc(aalloc, stat.size);
+        // Lexer expects sentinel-terminated buffer
+        const source0 = try std.mem.concatWithSentinel(aalloc, u8, &.{source}, 0);
+
+        // 6) Parse -> CST
+        var p = parser.Parser.init(aalloc, source0, self.diags, interner);
         var c = try p.parse();
-        // Lower
-        var low = lower.Lower.init(self.gpa, &c, self.diags);
+
+        // 7) Lower CST -> AST
+        var low = lower.Lower.init(aalloc, &c, self.diags);
         var a = try low.run();
-        // Check
-        var chk = checker.Checker.init(self.gpa, self.diags, &a);
+
+        // 8) Type check
+        var chk = checker.Checker.init(aalloc, self.diags, &a);
         defer chk.deinit();
+
         const ti = try self.gpa.create(types.TypeInfo);
         ti.* = try chk.runWithTypes();
-        // Lower TIR
-        var lt = lower_tir.LowerTir.init(self.gpa, ti);
+
+        // 9) Lower -> TIR
+        var lt = lower_tir.LowerTir.init(self.gpa, ti, interner);
         const t = try lt.run(&a);
 
-        // Build exported symbol table (binding name -> type)
+        // 10) Build export table
         var symmap = std.StringHashMap(types.TypeId).init(self.gpa);
-        const decls = a.exprs.decl_pool.slice(a.unit.decls);
-        var i: usize = 0;
-        while (i < decls.len) : (i += 1) {
-            const drow = a.exprs.Decl.get(decls[i].toRaw());
-            if (drow.pattern.isNone()) continue;
-            const pid = drow.pattern.unwrap();
-            const pk = a.pats.index.kinds.items[pid.toRaw()];
-            if (pk != .Binding) continue;
-            const b = a.pats.get(.Binding, pid);
-            const name_s = a.exprs.strs.get(b.name);
-            const key = try self.gpa.dupe(u8, name_s);
-            var ty: ?types.TypeId = ti.decl_types.items[decls[i].toRaw()];
-            if (ty == null) ty = ti.expr_types.items[drow.value.toRaw()];
-            if (ty) |tval| {
-                const gop = try symmap.getOrPut(key);
-                if (gop.found_existing) {
-                    self.gpa.free(key);
-                    gop.value_ptr.* = tval; // last-wins
-                } else {
-                    gop.value_ptr.* = tval;
-                }
-            } else {
-                self.gpa.free(key);
-            }
-        }
+        try self.buildExports(&symmap, &a, ti);
 
+        // 11) Install into cache
         var entry = ModuleEntry{
-            .path = full,
+            .path = try self.gpa.dupe(u8, abs_real),
             .cst = c,
             .ast = a,
             .type_info = ti,
             .tir = t,
             .syms = symmap,
+            .arena = arena,
         };
+
         const gop = try self.cache.getOrPut(entry.path);
         if (!gop.found_existing) {
             gop.value_ptr.* = entry;
+            return @constCast(gop.value_ptr);
         } else {
-            // already exists; clean up
-            entry.cst.deinit();
-            entry.ast.deinit();
-            entry.type_info.deinit();
-            self.gpa.destroy(entry.type_info);
-            entry.tir.deinit();
-            self.gpa.free(entry.path);
-            // free symmap keys
-            var kit2 = symmap.keyIterator();
-            while (kit2.next()) |k| self.gpa.free(k.*);
-            symmap.deinit();
+            // Shouldn't happen (we checked earlier), but keep it safe.
+            entry.deinit(self.gpa);
+            return @constCast(gop.value_ptr);
         }
-        return @constCast(gop.value_ptr);
     }
 
+    /// Collect raw import strings from an AST (e.g. for prefetching).
     pub fn collectImportsFromAst(self: *ImportResolver, a: *const ast.Ast, out_list: *std.ArrayList([]const u8)) !void {
         const kinds = a.exprs.index.kinds.items;
         var i: usize = 0;
@@ -197,12 +185,174 @@ pub const ImportResolver = struct {
                     const lit = a.exprs.get(.Literal, ir.expr);
                     if (lit.kind == .string and !lit.value.isNone()) {
                         const s = a.exprs.strs.get(lit.value.unwrap());
-                        // trim quotes if any
+                        // trim surrounding quotes if present
                         const imp = if (s.len >= 2 and s[0] == '"' and s[s.len - 1] == '"') s[1 .. s.len - 1] else s;
                         try out_list.append(self.gpa, try self.gpa.dupe(u8, imp));
                     }
                 }
             }
         }
+    }
+
+    // ---------------- internals ----------------
+
+    fn buildExports(self: *ImportResolver, symmap: *std.StringHashMap(types.TypeId), a: *const ast.Ast, ti: *types.TypeInfo) !void {
+        const decls = a.exprs.decl_pool.slice(a.unit.decls);
+        var i: usize = 0;
+        while (i < decls.len) : (i += 1) {
+            const drow = a.exprs.Decl.get(decls[i].toRaw());
+            if (drow.pattern.isNone()) continue;
+
+            const pid = drow.pattern.unwrap();
+            const pk = a.pats.index.kinds.items[pid.toRaw()];
+            if (pk != .Binding) continue;
+
+            const b = a.pats.get(.Binding, pid);
+            const name_s = a.exprs.strs.get(b.name);
+            const key = try self.gpa.dupe(u8, name_s);
+
+            var ty_opt: ?types.TypeId = null;
+            if (decls[i].toRaw() < ti.decl_types.items.len)
+                ty_opt = ti.decl_types.items[decls[i].toRaw()];
+            if (ty_opt == null and drow.value.toRaw() < ti.expr_types.items.len)
+                ty_opt = ti.expr_types.items[drow.value.toRaw()];
+
+            if (ty_opt) |tval| {
+                const gop = try symmap.getOrPut(key);
+                if (gop.found_existing) {
+                    self.gpa.free(key);
+                    gop.value_ptr.* = tval; // last-wins
+                } else {
+                    gop.value_ptr.* = tval;
+                }
+            } else {
+                self.gpa.free(key);
+            }
+        }
+    }
+
+    fn hasAnyExt(path: []const u8, exts: []const []const u8) bool {
+        for (exts) |e| {
+            if (std.mem.endsWith(u8, path, e)) return true;
+        }
+        return false;
+    }
+
+    inline fn push(list: *std.ArrayList([]const u8), gpa: std.mem.Allocator, s: []const u8) !void {
+        try list.append(gpa, try gpa.dupe(u8, s));
+    }
+
+    fn canonPath(self: *ImportResolver, base_dir: []const u8, raw_in: []const u8) ![]u8 {
+        // Build a list of candidate paths, then pick the first that exists.
+        var candidates: std.ArrayList([]const u8) = .empty;
+        defer {
+            for (candidates.items) |c| self.gpa.free(c);
+            candidates.deinit(self.gpa);
+        }
+
+        const is_abs = raw_in.len > 0 and (raw_in[0] == '/' or
+            (raw_in.len >= 3 and raw_in[1] == ':' and (raw_in[2] == '\\' or raw_in[2] == '/'))); // win compat
+
+        const looks_rooted = blk: {
+            for (self.config.roots) |r| {
+                if (std.mem.startsWith(u8, raw_in, r)) break :blk true;
+                const with_slash = std.fmt.allocPrint(self.gpa, "{s}/", .{r}) catch "";
+                defer if (with_slash.len != 0) self.gpa.free(with_slash);
+                if (with_slash.len != 0 and std.mem.startsWith(u8, raw_in, with_slash)) break :blk true;
+            }
+            break :blk false;
+        };
+
+        // a) absolute / rooted as given
+        if (is_abs or looks_rooted) {
+            try push(&candidates, self.gpa, raw_in);
+            if (!hasAnyExt(raw_in, self.config.exts)) {
+                for (self.config.exts) |e| {
+                    const temp_str = try std.fmt.allocPrint(self.gpa, "{s}{s}", .{ raw_in, e });
+                    defer self.gpa.free(temp_str);
+                    try push(&candidates, self.gpa, temp_str);
+                }
+            }
+            for (self.config.main_filenames) |mf| {
+                const temp_str = try std.fmt.allocPrint(self.gpa, "{s}/{s}", .{ raw_in, mf });
+                defer self.gpa.free(temp_str);
+                try push(&candidates, self.gpa, temp_str);
+            }
+        } else {
+            // b) relative to base_dir
+            if (base_dir.len == 0) {
+                try push(&candidates, self.gpa, raw_in);
+            } else {
+                const temp_str = try std.fmt.allocPrint(self.gpa, "{s}/{s}", .{ base_dir, raw_in });
+                defer self.gpa.free(temp_str);
+                try push(&candidates, self.gpa, temp_str);
+            }
+
+            const last = candidates.items[candidates.items.len - 1];
+            if (!hasAnyExt(last, self.config.exts)) {
+                for (self.config.exts) |e| {
+                    const temp_str = try std.fmt.allocPrint(self.gpa, "{s}{s}", .{ last, e });
+                    defer self.gpa.free(temp_str);
+                    try push(&candidates, self.gpa, temp_str);
+                }
+            }
+            for (self.config.main_filenames) |mf| {
+                const temp_str = try std.fmt.allocPrint(self.gpa, "{s}/{s}", .{ last, mf });
+                defer self.gpa.free(temp_str);
+                try push(&candidates, self.gpa, temp_str);
+            }
+
+            // c) search roots/<raw>
+            for (self.config.roots) |r| {
+                const base = try std.fmt.allocPrint(self.gpa, "{s}/{s}", .{ r, raw_in });
+                defer self.gpa.free(base);
+
+                try push(&candidates, self.gpa, base);
+                if (!hasAnyExt(base, self.config.exts)) {
+                    for (self.config.exts) |e| {
+                        const temp_str = try std.fmt.allocPrint(self.gpa, "{s}{s}", .{ base, e });
+                        defer self.gpa.free(temp_str);
+                        try push(&candidates, self.gpa, temp_str);
+                    }
+                }
+                for (self.config.main_filenames) |mf| {
+                    const temp_str = try std.fmt.allocPrint(self.gpa, "{s}/{s}", .{ base, mf });
+                    defer self.gpa.free(temp_str);
+                    try push(&candidates, self.gpa, temp_str);
+                }
+            }
+        }
+
+        // Pick the first that exists, then canonicalize via realpath.
+        const cwd = std.fs.cwd();
+        var i: usize = 0;
+        while (i < candidates.items.len) : (i += 1) {
+            if (cwd.access(candidates.items[i], .{})) |_| {
+                const canonical = cwd.realpathAlloc(self.gpa, candidates.items[i]) catch |e| switch (e) {
+                    error.FileNotFound, error.AccessDenied => continue,
+                    else => return e,
+                };
+                return canonical;
+            } else |_| {}
+        }
+
+        // If none exist, compose a stable fallback path and try to realpath it; if that fails, just return it duped.
+        var tmp: std.ArrayList(u8) = .empty;
+        defer tmp.deinit(self.gpa);
+
+        if (is_abs or looks_rooted) {
+            try tmp.appendSlice(self.gpa, raw_in);
+        } else if (base_dir.len > 0) {
+            try tmp.appendSlice(self.gpa, base_dir);
+            if (base_dir[base_dir.len - 1] != '/') try tmp.append(self.gpa, '/');
+            try tmp.appendSlice(self.gpa, raw_in);
+        } else {
+            try tmp.appendSlice(self.gpa, raw_in);
+        }
+
+        return cwd.realpathAlloc(self.gpa, tmp.items) catch |e| switch (e) {
+            error.FileNotFound, error.AccessDenied => try self.gpa.dupe(u8, tmp.items),
+            else => return e,
+        };
     }
 };

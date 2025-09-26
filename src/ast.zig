@@ -659,8 +659,10 @@ pub const PatternStore = struct {
     seg_pool: Pool(PathSegId) = .{},
     field_pool: Pool(PatFieldId) = .{},
 
-    pub fn init(gpa: std.mem.Allocator) PatternStore {
-        return .{ .gpa = gpa };
+    strs: *StringInterner,
+
+    pub fn init(gpa: std.mem.Allocator, strs: *StringInterner) PatternStore {
+        return .{ .gpa = gpa, .strs = strs };
     }
 
     pub fn deinit(self: *@This()) void {
@@ -716,7 +718,7 @@ pub const Ast = struct {
             .unit = Unit.empty(),
             .exprs = ExprStore.init(gpa, interner),
             .stmts = StmtStore.init(gpa),
-            .pats = PatternStore.init(gpa),
+            .pats = PatternStore.init(gpa, interner),
         };
     }
 

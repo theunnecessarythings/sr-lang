@@ -6,9 +6,12 @@ fn lowerToTir(gpa: std.mem.Allocator, src: []const u8) !compiler.tir.TIR {
     var diags = compiler.diagnostics.Diagnostics.init(gpa);
     defer diags.deinit();
 
+    var interner = compiler.ast.StringInterner.init(gpa);
+    defer interner.deinit();
+
     const src0 = try std.mem.concatWithSentinel(gpa, u8, &.{src}, 0);
     defer gpa.free(src0);
-    var parser = compiler.parser.Parser.init(gpa, src0, &diags);
+    var parser = compiler.parser.Parser.init(gpa, src0, &diags, &interner);
     var cst = try parser.parse();
 
     var lower1 = compiler.lower.Lower.init(gpa, &cst, &diags);
@@ -19,7 +22,7 @@ fn lowerToTir(gpa: std.mem.Allocator, src: []const u8) !compiler.tir.TIR {
     try chk.run();
     if (diags.anyErrors()) return error.SemanticErrors;
 
-    var lt = compiler.lower_tir.LowerTir.init(gpa, &chk.type_info);
+    var lt = compiler.lower_tir.LowerTir.init(gpa, &chk.type_info, &interner);
     defer lt.deinit();
     return try lt.run(&hir);
 }

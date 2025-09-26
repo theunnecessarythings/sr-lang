@@ -1391,7 +1391,7 @@ pub const Checker = struct {
     }
 
     fn importMemberTypeByPath(self: *Checker, res: *ImportResolver, path: []const u8, member: ast.StrId) ?types.TypeId {
-        const me = res.resolve(self.import_base_dir, path) catch return null;
+        const me = res.resolve(self.import_base_dir, path, self.ast_unit.exprs.strs) catch return null;
         const target = self.getStr(member);
         if (me.syms.get(target)) |ty| {
             return check_types.translateType(self, &me.type_info.store, &self.type_info.store, ty);

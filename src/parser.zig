@@ -20,7 +20,12 @@ pub const Parser = struct {
     const ParseMode = enum { expr, type, expr_no_struct };
 
     // ---------- lifecycle ----------
-    pub fn init(gpa: std.mem.Allocator, source: [:0]const u8, diags: *Diagnostics) Parser {
+    pub fn init(
+        gpa: std.mem.Allocator,
+        source: [:0]const u8,
+        diags: *Diagnostics,
+        interner: *cst.StringInterner,
+    ) Parser {
         var lex = Lexer.init(source, .semi);
         const cur = lex.next();
         const nxt = lex.next();
@@ -31,7 +36,7 @@ pub const Parser = struct {
             .cur = cur,
             .nxt = nxt,
             .diags = diags,
-            .cst = .init(gpa),
+            .cst = .init(gpa, interner),
         };
     }
 

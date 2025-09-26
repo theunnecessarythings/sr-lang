@@ -10,6 +10,7 @@ const OptStrId = @import("cst.zig").OptStrId;
 pub const LowerTir = struct {
     gpa: std.mem.Allocator,
     info: *types.TypeInfo,
+    interner: *ast.StringInterner,
 
     // Simple loop stack to support break/continue in While/For (+ value loops)
     loop_stack: std.ArrayListUnmanaged(LoopCtx) = .{},
@@ -21,8 +22,12 @@ pub const LowerTir = struct {
     import_resolver: ?*@import("import_resolver.zig").ImportResolver = null,
     import_base_dir: []const u8 = ".",
 
-    pub fn init(gpa: std.mem.Allocator, info: *types.TypeInfo) LowerTir {
-        return .{ .gpa = gpa, .info = info };
+    pub fn init(
+        gpa: std.mem.Allocator,
+        info: *types.TypeInfo,
+        interner: *ast.StringInterner,
+    ) LowerTir {
+        return .{ .gpa = gpa, .info = info, .interner = interner };
     }
 
     pub fn deinit(self: *LowerTir) void {
@@ -1130,7 +1135,7 @@ pub const LowerTir = struct {
         var s_full = a.exprs.strs.get(lit.value.unwrap());
         if (s_full.len >= 2 and s_full[0] == '"' and s_full[s_full.len - 1] == '"') s_full = s_full[1 .. s_full.len - 1];
 
-        const me = res.resolve(self.import_base_dir, s_full) catch return null;
+        const me = res.resolve(self.import_base_dir, s_full, self.interner) catch return null;
         // Find member decl by name
         const want = a.exprs.strs.get(member);
         const decls = me.ast.exprs.decl_pool.slice(me.ast.unit.decls);
@@ -1616,4 +1621,3 @@ const Builder = struct {
         return vid;
     }
 };
-

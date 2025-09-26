@@ -8,7 +8,9 @@ const Diagnostics = compiler.diagnostics.Diagnostics;
 fn parseProgramFromText(gpa: std.mem.Allocator, src: [:0]const u8) !cst.CST {
     var diags = Diagnostics.init(gpa);
     defer diags.deinit();
-    var parser = Parser.init(gpa, src, &diags);
+    var interner = compiler.ast.StringInterner.init(gpa);
+    defer interner.deinit();
+    var parser = Parser.init(gpa, src, &diags, &interner);
     var ast = try parser.parse();
     errdefer ast.deinit();
     if (diags.count() != 0) {

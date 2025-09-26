@@ -66,7 +66,12 @@ pub const Pipeline = struct {
     }
 
     // Run with import resolution: loads imported modules and appends their codegen into one MLIR module
-    pub fn runWithImports(self: *Pipeline, program: *cst.CST, base_dir: []const u8, link_args: []const []const u8) !Result {
+    pub fn runWithImports(
+        self: *Pipeline,
+        program: *cst.CST,
+        base_dir: []const u8,
+        link_args: []const []const u8,
+    ) !Result {
         var lower_pass = lower.Lower.init(self.allocator, program, self.diags);
         var hir = try lower_pass.run();
 
@@ -90,7 +95,7 @@ pub const Pipeline = struct {
             ap.printUnit(&hir.unit) catch {};
         }
 
-        var tir_lowerer = lower_tir.LowerTir.init(self.allocator, type_info);
+        var tir_lowerer = lower_tir.LowerTir.init(self.allocator, type_info, program.interner);
         // Compute module name -> prefix from root AST for mangling and install into lowerer
         var name_to_prefix = std.StringHashMap([]const u8).init(self.allocator);
         defer {
@@ -130,7 +135,7 @@ pub const Pipeline = struct {
         defer seen.deinit();
         for (imports.items) |imp| {
             if ((try seen.getOrPut(imp)).found_existing) continue;
-            const me = try resolver.resolve(base_dir, imp);
+            const me = try resolver.resolve(base_dir, imp, program.interner);
             // Apply name mangling to imported module functions (and their internal calls)
             const pref = name_to_prefix.get(imp) orelse computePrefix(self.allocator, imp) catch @panic("OOM");
             try mangleTIR(self.allocator, &me.tir, me.tir.instrs.strs, pref);

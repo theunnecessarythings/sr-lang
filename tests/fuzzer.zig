@@ -63,11 +63,14 @@ fn testParser(data: []const u8) !void {
     defer arena.deinit();
     const gpa = arena.allocator();
 
+    var interner = compiler.ast.StringInterner.init(gpa);
+    defer interner.deinit();
+
     const source0 = try gpa.dupeZ(u8, data);
     var diags = diagnostics.Diagnostics.init(gpa);
     defer diags.deinit();
 
-    var parser_mod = parser.Parser.init(gpa, source0, &diags);
+    var parser_mod = parser.Parser.init(gpa, source0, &diags, &interner);
     var tree = parser_mod.parse() catch |err| switch (err) {
         error.UnexpectedToken => {
             try std.testing.expect(diags.anyErrors());
@@ -94,12 +97,14 @@ fn testLower(data: []const u8) !void {
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer arena.deinit();
     const gpa = arena.allocator();
+    var interner = compiler.ast.StringInterner.init(gpa);
+    defer interner.deinit();
 
     const source0 = try gpa.dupeZ(u8, data);
     var diags = diagnostics.Diagnostics.init(gpa);
     defer diags.deinit();
 
-    var parser_mod = parser.Parser.init(gpa, source0, &diags);
+    var parser_mod = parser.Parser.init(gpa, source0, &diags, &interner);
     var tree = parser_mod.parse() catch |err| switch (err) {
         error.UnexpectedToken => return, // invalid input is fine for fuzzing
         error.OutOfMemory => std.debug.panic("parser OOM", .{}),
@@ -130,11 +135,14 @@ fn testChecker(data: []const u8) !void {
     defer arena.deinit();
     const gpa = arena.allocator();
 
+    var interner = compiler.ast.StringInterner.init(gpa);
+    defer interner.deinit();
+
     const source0 = try gpa.dupeZ(u8, data);
     var diags = diagnostics.Diagnostics.init(gpa);
     defer diags.deinit();
 
-    var parser_mod = parser.Parser.init(gpa, source0, &diags);
+    var parser_mod = parser.Parser.init(gpa, source0, &diags, &interner);
     var c = parser_mod.parse() catch |err| switch (err) {
         error.UnexpectedToken => return, // invalid input is fine for fuzzing
         error.OutOfMemory => std.debug.panic("parser OOM", .{}),
