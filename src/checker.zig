@@ -791,6 +791,7 @@ pub const Checker = struct {
                 if (bt) |btid| return btid;
             }
         }
+        try self.diags.addError(self.exprLoc(row), .undefined_identifier, .{});
         return null;
     }
 

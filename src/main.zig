@@ -431,7 +431,10 @@ pub fn main() !void {
                 try printUsage(writer, exec_name);
                 std.process.exit(1);
             }
-            try process_file(gpa, cli_args.filename.?, &cli_args, writer, out_writer, link_args_list.items);
+            process_file(gpa, cli_args.filename.?, &cli_args, writer, out_writer, link_args_list.items) catch |e| {
+                try writer.flush();
+                return e;
+            };
         },
         .repl => try repl(gpa, writer, out_writer),
     }

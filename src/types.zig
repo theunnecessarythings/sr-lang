@@ -727,7 +727,7 @@ pub const TypeStore = struct {
             },
             .Struct => {
                 const r = self.Struct.get(row_idx);
-                try w.print("struct { ", .{});
+                try w.print("struct {{ ", .{});
                 const ids = self.field_pool.slice(r.fields);
                 var i: usize = 0;
                 while (i < ids.len) : (i += 1) {
@@ -736,7 +736,7 @@ pub const TypeStore = struct {
                     try w.print("{s}: ", .{self.strs.get(f.name)});
                     try self.fmt(f.ty, w);
                 }
-                try w.print(" }", .{});
+                try w.print(" }}", .{});
             },
             .Enum => {
                 const r = self.Enum.get(row_idx);
@@ -765,14 +765,40 @@ pub const TypeStore = struct {
                 }
                 try w.print(" }}", .{});
             },
+            .Error => {
+                const r = self.Error.get(row_idx);
+                try w.print("error {{ ", .{});
+                const ids = self.field_pool.slice(r.variants);
+                var i: usize = 0;
+                while (i < ids.len) : (i += 1) {
+                    if (i != 0) try w.print(", ", .{});
+                    const f = self.Field.get(ids[i].toRaw());
+                    try w.print("{s}: ", .{self.strs.get(f.name)});
+                    try self.fmt(f.ty, w);
+                }
+                try w.print(" }}", .{});
+            },
+            .Union => {
+                const r = self.Union.get(row_idx);
+                try w.print("union {{ ", .{});
+                const ids = self.field_pool.slice(r.fields);
+                var i: usize = 0;
+                while (i < ids.len) : (i += 1) {
+                    if (i != 0) try w.print(", ", .{});
+                    const f = self.Field.get(ids[i].toRaw());
+                    try w.print("{s}: ", .{self.strs.get(f.name)});
+                    try self.fmt(f.ty, w);
+                }
+                try w.print(" }}", .{});
+            },
             .ErrorSet => {
                 const r = self.ErrorSet.get(row_idx);
                 try w.print("error", .{});
-                if (r.payload) |p| {
-                    try w.print("(", .{});
-                    try self.fmt(p, w);
-                    try w.print(")", .{});
-                }
+                try w.print("(", .{});
+                try self.fmt(r.error_ty, w);
+                try w.print(", ", .{});
+                try self.fmt(r.value_ty, w);
+                try w.print(")", .{});
             },
             .TypeType => {
                 const r = self.TypeType.get(row_idx);

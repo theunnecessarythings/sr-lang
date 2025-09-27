@@ -780,6 +780,7 @@ pub const AstPrinter = struct {
         const decl_ids = self.exprs.decl_pool.slice(unit.decls);
         for (decl_ids) |did| try self.printDecl(did);
         try self.close();
+        try self.writer.flush();
     }
 
     fn printDecl(self: *AstPrinter, id: DeclId) anyerror!void {

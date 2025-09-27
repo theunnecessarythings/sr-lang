@@ -29,42 +29,6 @@ pub const Pipeline = struct {
         return .{ .allocator = allocator, .diags = diags };
     }
 
-    pub fn run(self: *Pipeline, program: *cst.CST) !Result {
-        // 1) Lower from CST v2 to AST v2
-        var lower_pass = lower.Lower.init(self.allocator, program, self.diags);
-        var hir = try lower_pass.run();
-
-        // 2) Checker now includes type inference
-        var chk = checker.Checker.init(self.allocator, self.diags, &hir);
-        defer chk.deinit();
-        const type_info = try self.allocator.create(types.TypeInfo);
-        type_info.* = try chk.runWithTypes();
-        defer type_info.deinit();
-
-        // 4) Lower from AST v2 to TIR v2
-        var dummy_resolver = ImportResolver.init(self.allocator, self.diags);
-        defer dummy_resolver.deinit();
-        var tir_lowerer = lower_tir.LowerTir.init(self.allocator, type_info);
-        tir_lowerer.setImportResolver(&dummy_resolver, ".");
-        const mod = try tir_lowerer.run(&hir);
-
-        const mlir_ctx = compile.initMLIR(self.allocator);
-
-        // 5) MLIR Codegen v2 from TIR v2 to MLIR
-        var gen = mlir_codegen.MlirCodegen.init(self.allocator, mlir_ctx);
-        var mlir_module = try gen.emitModule(&mod, &type_info.store);
-        var op = mlir_module.getOperation();
-        op.dump();
-
-        // 6) Run MLIR Passes (same)
-        try compile.run_passes(&gen.ctx, &mlir_module, true);
-
-        // 7) Convert to LLVM IR and print
-        try compile.convert_to_llvm_ir(mlir_module.handle, true, &.{});
-
-        return .{ .hir = hir, .type_info = type_info, .module = mod, .mlir_module = mlir_module, .gen = gen };
-    }
-
     // Run with import resolution: loads imported modules and appends their codegen into one MLIR module
     pub fn runWithImports(
         self: *Pipeline,
@@ -153,6 +117,7 @@ pub const Pipeline = struct {
         }
 
         // finalize: print and pass pipeline + LLVM IR
+        std.debug.print("Generated MLIR module:\n", .{});
         var op = mlir_module.getOperation();
         op.dump();
         try compile.run_passes(&gen.ctx, &mlir_module, true);

@@ -70,6 +70,16 @@ pub const LowerTir = struct {
 
     const LowerMode = enum { rvalue, lvalue_addr };
 
+    fn isVoid(self: *const @This(), ty: types.TypeId) bool {
+        return self.info.store.index.kinds.items[ty.toRaw()] == .Void;
+    }
+
+    // Produce an undef that is never-void; if asked for void, give Any instead.
+    fn safeUndef(self: *@This(), blk: *Builder.BlockFrame, ty: types.TypeId) tir.ValueId {
+        if (self.isVoid(ty)) return blk.builder.constUndef(blk, self.info.store.tAny());
+        return blk.builder.constUndef(blk, ty);
+    }
+
     fn undef(_: *@This(), blk: *Builder.BlockFrame, ty: types.TypeId) tir.ValueId {
         return blk.builder.constUndef(blk, ty);
     }
@@ -125,7 +135,7 @@ pub const LowerTir = struct {
         if (self.info.store.index.kinds.items[fid.toRaw()] != .Function) return;
         const fnty = self.info.store.Function.get(self.info.store.index.rows.items[fid.toRaw()]);
 
-        var f = try b.beginFunction(name, fnty.result);
+        var f = try b.beginFunction(name, fnty.result, fnty.is_variadic);
 
         const fnr = a.exprs.get(.FunctionLit, fun_eid);
         // Params
@@ -398,11 +408,11 @@ pub const LowerTir = struct {
                 const lit = a.exprs.get(.Literal, id);
                 const ty0 = self.getExprType(id) orelse return error.LoweringBug;
                 const v = switch (lit.kind) {
-                    .int => blk.builder.constInt(blk, ty0, try std.fmt.parseInt(i64, a.exprs.strs.get(lit.value.unwrap()), 10)),
+                    .int => blk.builder.constInt(blk, ty0, try std.fmt.parseInt(u64, a.exprs.strs.get(lit.value.unwrap()), 10)),
                     .float => blk.builder.constFloat(blk, ty0, try std.fmt.parseFloat(f64, a.exprs.strs.get(lit.value.unwrap()))),
                     .bool => blk.builder.constBool(blk, ty0, lit.bool_value),
                     .string => blk.builder.constString(blk, ty0, a.exprs.strs.get(lit.value.unwrap())),
-                    .char => blk.builder.constInt(blk, ty0, @as(i64, @intCast(lit.char_value))),
+                    .char => blk.builder.constInt(blk, ty0, @as(u64, lit.char_value)),
                 };
                 if (expected_ty) |want| return self.emitCoerce(blk, v, ty0, want);
                 return v;
@@ -738,84 +748,140 @@ pub const LowerTir = struct {
                 }
                 return v;
             },
+
             .Catch => {
                 const row = a.exprs.get(.Catch, id);
-                var then_blk = try f.builder.beginBlock(f);
-                var else_blk = try f.builder.beginBlock(f);
-                var join_blk = try f.builder.beginBlock(f);
+
+                const out_ty_guess = expected_ty orelse (self.getExprType(id) orelse self.info.store.tVoid());
+                const produce_value = (expected_ty != null) and !self.isVoid(out_ty_guess);
+
                 const lhs = try self.lowerExpr(a, env, f, blk, row.expr, null, .rvalue);
                 const s_is_ok = f.builder.intern("builtin.err.is_ok");
-                const is_ok = blk.builder.call(blk, self.info.store.tBool(), s_is_ok, &.{lhs});
-                try f.builder.condBr(blk, is_ok, then_blk.id, &.{}, else_blk.id, &.{});
-                const res_ty = expected_ty orelse (self.getExprType(id) orelse self.info.store.tVoid());
-                const res_param = try f.builder.addBlockParam(&join_blk, null, res_ty);
-                // then: unwrap ok
-                const s_unwrap_ok = f.builder.intern("builtin.err.unwrap_ok");
-                var okv = blk.builder.call(&then_blk, res_ty, s_unwrap_ok, &.{lhs});
-                if (expected_ty) |want| {
-                    const got = self.getExprType(row.expr) orelse res_ty;
-                    okv = self.emitCoerce(&then_blk, okv, got, want);
-                }
-                try f.builder.br(&then_blk, join_blk.id, &.{okv});
-                // else: handler
-                try self.lowerExprAsStmtList(a, env, f, &else_blk, row.handler);
-                if (else_blk.term.isNone()) {
-                    var hv = try self.lowerBlockExprValue(a, env, f, &else_blk, row.handler, res_ty);
+
+                var then_blk = try f.builder.beginBlock(f); // ok path
+                var else_blk = try f.builder.beginBlock(f); // handler path
+
+                if (produce_value) {
+                    var join_blk = try f.builder.beginBlock(f);
+                    const res_ty = out_ty_guess;
+                    const res_param = try f.builder.addBlockParam(&join_blk, null, res_ty);
+
+                    const is_ok = blk.builder.call(blk, self.info.store.tBool(), s_is_ok, &.{lhs});
+                    try f.builder.condBr(blk, is_ok, then_blk.id, &.{}, else_blk.id, &.{});
+
+                    // then: unwrap ok(value)
+                    const s_unwrap_ok = f.builder.intern("builtin.err.unwrap_ok");
+                    var okv = blk.builder.call(&then_blk, res_ty, s_unwrap_ok, &.{lhs});
                     if (expected_ty) |want| {
-                        const got = self.getExprType(row.handler) orelse res_ty;
-                        hv = self.emitCoerce(&else_blk, hv, got, want);
+                        const got = self.getExprType(row.expr) orelse res_ty;
+                        okv = self.emitCoerce(&then_blk, okv, got, want);
                     }
-                    try f.builder.br(&else_blk, join_blk.id, &.{hv});
+                    try f.builder.br(&then_blk, join_blk.id, &.{okv});
+
+                    // else: run handler (block/list); fallthrough value to join
+                    try self.lowerExprAsStmtList(a, env, f, &else_blk, row.handler);
+                    if (else_blk.term.isNone()) {
+                        var hv = try self.lowerBlockExprValue(a, env, f, &else_blk, row.handler, res_ty);
+                        if (expected_ty) |want| {
+                            const got = self.getExprType(row.handler) orelse res_ty;
+                            hv = self.emitCoerce(&else_blk, hv, got, want);
+                        }
+                        try f.builder.br(&else_blk, join_blk.id, &.{hv});
+                    }
+
+                    try f.builder.endBlock(f, then_blk);
+                    try f.builder.endBlock(f, else_blk);
+                    blk.* = join_blk;
+                    return res_param;
+                } else {
+                    // No value: conditionally run handler, then continue
+                    const exit_blk = try f.builder.beginBlock(f);
+                    const is_ok = blk.builder.call(blk, self.info.store.tBool(), s_is_ok, &.{lhs});
+                    try f.builder.condBr(blk, is_ok, then_blk.id, &.{}, else_blk.id, &.{});
+
+                    // then: nothing to do, jump to exit
+                    if (then_blk.term.isNone()) try f.builder.br(&then_blk, exit_blk.id, &.{});
+                    try f.builder.endBlock(f, then_blk);
+
+                    // else: execute handler as stmt
+                    try self.lowerExprAsStmtList(a, env, f, &else_blk, row.handler);
+                    if (else_blk.term.isNone()) try f.builder.br(&else_blk, exit_blk.id, &.{});
+                    try f.builder.endBlock(f, else_blk);
+
+                    blk.* = exit_blk;
+                    return self.safeUndef(blk, self.info.store.tAny());
                 }
-                try f.builder.endBlock(f, then_blk);
-                try f.builder.endBlock(f, else_blk);
-                blk.* = join_blk;
-                return res_param;
             },
             .If => {
                 const row = a.exprs.get(.If, id);
                 var then_blk = try f.builder.beginBlock(f);
                 var else_blk = try f.builder.beginBlock(f);
-                var join_blk = try f.builder.beginBlock(f);
+
+                const out_ty_guess = expected_ty orelse (self.getExprType(id) orelse self.info.store.tVoid());
+                const produce_value = (expected_ty != null) and !self.isVoid(out_ty_guess);
+
                 const cond_v = try self.lowerExpr(a, env, f, blk, row.cond, self.info.store.tBool(), .rvalue);
-                try f.builder.condBr(blk, cond_v, then_blk.id, &.{}, else_blk.id, &.{});
-                {
-                    const old_if_entry = blk.*;
-                    try f.builder.endBlock(f, old_if_entry);
-                }
-                const res_ty = expected_ty orelse (self.getExprType(id) orelse self.info.store.tVoid());
-                const res_param = try f.builder.addBlockParam(&join_blk, null, res_ty);
-                // then arm
-                try self.lowerExprAsStmtList(a, env, f, &then_blk, row.then_block);
-                if (then_blk.term.isNone()) {
-                    var then_val = try self.lowerBlockExprValue(a, env, f, &then_blk, row.then_block, res_ty);
-                    if (expected_ty) |want| {
-                        const got = self.getExprType(row.then_block) orelse res_ty;
-                        then_val = self.emitCoerce(&then_blk, then_val, got, want);
+
+                if (produce_value) {
+                    var join_blk = try f.builder.beginBlock(f);
+                    const res_ty = out_ty_guess;
+                    const res_param = try f.builder.addBlockParam(&join_blk, null, res_ty);
+
+                    try f.builder.condBr(blk, cond_v, then_blk.id, &.{}, else_blk.id, &.{});
+                    {
+                        const old = blk.*;
+                        try f.builder.endBlock(f, old);
                     }
-                    try f.builder.br(&then_blk, join_blk.id, &.{then_val});
-                }
-                // else arm
-                if (!row.else_block.isNone()) {
-                    try self.lowerExprAsStmtList(a, env, f, &else_blk, row.else_block.unwrap());
-                    if (else_blk.term.isNone()) {
-                        var else_val = try self.lowerBlockExprValue(a, env, f, &else_blk, row.else_block.unwrap(), res_ty);
-                        if (expected_ty) |want| {
-                            const got = self.getExprType(row.else_block.unwrap()) orelse res_ty;
-                            else_val = self.emitCoerce(&else_blk, else_val, got, want);
+
+                    // then
+                    try self.lowerExprAsStmtList(a, env, f, &then_blk, row.then_block);
+                    if (then_blk.term.isNone()) {
+                        var v_then = try self.lowerBlockExprValue(a, env, f, &then_blk, row.then_block, res_ty);
+                        if (expected_ty) |want| v_then = self.emitCoerce(&then_blk, v_then, self.getExprType(row.then_block) orelse res_ty, want);
+                        try f.builder.br(&then_blk, join_blk.id, &.{v_then});
+                    }
+
+                    // else
+                    if (!row.else_block.isNone()) {
+                        try self.lowerExprAsStmtList(a, env, f, &else_blk, row.else_block.unwrap());
+                        if (else_blk.term.isNone()) {
+                            var v_else = try self.lowerBlockExprValue(a, env, f, &else_blk, row.else_block.unwrap(), res_ty);
+                            if (expected_ty) |want| v_else = self.emitCoerce(&else_blk, v_else, self.getExprType(row.else_block.unwrap()) orelse res_ty, want);
+                            try f.builder.br(&else_blk, join_blk.id, &.{v_else});
                         }
-                        try f.builder.br(&else_blk, join_blk.id, &.{else_val});
+                    } else {
+                        if (else_blk.term.isNone()) {
+                            const uv = self.safeUndef(&else_blk, res_ty);
+                            try f.builder.br(&else_blk, join_blk.id, &.{uv});
+                        }
                     }
+
+                    try f.builder.endBlock(f, then_blk);
+                    try f.builder.endBlock(f, else_blk);
+                    blk.* = join_blk;
+                    return res_param;
                 } else {
-                    if (else_blk.term.isNone()) {
-                        const uv = f.builder.constUndef(&else_blk, res_ty);
-                        try f.builder.br(&else_blk, join_blk.id, &.{uv});
+                    // statement-position if: no value, no phi
+                    const exit_blk = try f.builder.beginBlock(f);
+                    try f.builder.condBr(blk, cond_v, then_blk.id, &.{}, else_blk.id, &.{});
+                    {
+                        const old = blk.*;
+                        try f.builder.endBlock(f, old);
                     }
+
+                    try self.lowerExprAsStmtList(a, env, f, &then_blk, row.then_block);
+                    if (then_blk.term.isNone()) try f.builder.br(&then_blk, exit_blk.id, &.{});
+                    try f.builder.endBlock(f, then_blk);
+
+                    if (!row.else_block.isNone()) {
+                        try self.lowerExprAsStmtList(a, env, f, &else_blk, row.else_block.unwrap());
+                    }
+                    if (else_blk.term.isNone()) try f.builder.br(&else_blk, exit_blk.id, &.{});
+                    try f.builder.endBlock(f, else_blk);
+
+                    blk.* = exit_blk;
+                    return self.safeUndef(blk, self.info.store.tAny());
                 }
-                try f.builder.endBlock(f, then_blk);
-                try f.builder.endBlock(f, else_blk);
-                blk.* = join_blk;
-                return res_param;
             },
             .Call => {
                 return self.lowerCall(a, env, f, blk, id, expected_ty);
@@ -852,60 +918,93 @@ pub const LowerTir = struct {
                 if (expected_ty) |want| return self.emitCoerce(blk, out, ty0, want);
                 return out;
             },
+
             .Match => {
                 const row = a.exprs.get(.Match, id);
+
+                // Scrutinee value
                 const scrut = try self.lowerExpr(a, env, f, blk, row.expr, null, .rvalue);
+
+                // Result type of the whole match
                 const res_ty = expected_ty orelse (self.getExprType(id) orelse self.info.store.tVoid());
+
+                // Join block (phi-like param carries the match result)
                 var join_blk = try f.builder.beginBlock(f);
                 const res_param = try f.builder.addBlockParam(&join_blk, null, res_ty);
-                const arms = a.exprs.arm_pool.slice(row.arms);
-                if (arms.len == 0) return blk.builder.constUndef(blk, res_ty);
 
-                // detect literal-int only match (no guards)
+                const arms = a.exprs.arm_pool.slice(row.arms);
+                if (arms.len == 0) {
+                    // No arms -> produce undef and just "return" the block param so callers can use it.
+                    // We keep the contract that the caller’s current block becomes join_blk.
+                    const uv = f.builder.constUndef(blk, res_ty);
+                    try f.builder.br(blk, join_blk.id, &.{uv});
+                    blk.* = join_blk;
+                    return res_param;
+                }
+
+                // -------- Try the "all literal int patterns with no guards" fast path --------
                 var all_int = true;
-                var values_buf = self.gpa.alloc(u64, arms.len) catch @panic("OOM");
-                defer self.gpa.free(values_buf);
+                var values = try self.gpa.alloc(u64, arms.len);
+                defer self.gpa.free(values);
+
                 var i: usize = 0;
                 while (i < arms.len) : (i += 1) {
                     const arm = a.exprs.MatchArm.get(arms[i].toRaw());
+
+                    // No guards
                     if (!arm.guard.isNone()) {
                         all_int = false;
                         break;
                     }
+
+                    // Pattern must be a literal expr with int value
                     const pk = a.pats.index.kinds.items[arm.pattern.toRaw()];
                     if (pk != .Literal) {
                         all_int = false;
                         break;
                     }
-                    const pr = a.pats.get(.Literal, arm.pattern);
-                    if (a.exprs.index.kinds.items[pr.expr.toRaw()] != .Literal) {
+                    const plit = a.pats.get(.Literal, arm.pattern);
+                    if (a.exprs.index.kinds.items[plit.expr.toRaw()] != .Literal) {
                         all_int = false;
                         break;
                     }
-                    const lit = a.exprs.get(.Literal, pr.expr);
+                    const lit = a.exprs.get(.Literal, plit.expr);
                     if (lit.kind != .int or lit.value.isNone()) {
                         all_int = false;
                         break;
                     }
-                    values_buf[i] = std.fmt.parseInt(u64, a.exprs.strs.get(lit.value.unwrap()), 10) catch {
+
+                    const s = a.exprs.strs.get(lit.value.unwrap());
+                    const v = std.fmt.parseInt(u64, s, 10) catch {
                         all_int = false;
                         break;
                     };
+                    values[i] = v;
                 }
 
                 if (all_int) {
-                    var dests = self.gpa.alloc(Builder.SwitchDest, arms.len) catch @panic("OOM");
-                    defer self.gpa.free(dests);
+                    // Build case dest blocks and default
+                    var case_dests = try self.gpa.alloc(Builder.SwitchDest, arms.len);
+                    defer self.gpa.free(case_dests);
+
                     var bodies = try self.gpa.alloc(@TypeOf(try f.builder.beginBlock(f)), arms.len);
                     defer self.gpa.free(bodies);
+
                     i = 0;
-                    while (i < arms.len) : (i += 1) bodies[i] = try f.builder.beginBlock(f);
-                    var def_blk = try f.builder.beginBlock(f);
-                    try f.builder.switchInt(blk, scrut, values_buf, blk: {
+                    while (i < arms.len) : (i += 1) {
+                        bodies[i] = try f.builder.beginBlock(f);
+                    }
+                    var default_blk = try f.builder.beginBlock(f);
+
+                    try f.builder.switchInt(blk, scrut, values, blk: {
                         i = 0;
-                        while (i < arms.len) : (i += 1) dests[i] = .{ .dest = bodies[i].id, .args = &.{} };
-                        break :blk dests;
-                    }, def_blk.id, &.{});
+                        while (i < arms.len) : (i += 1) {
+                            case_dests[i] = .{ .dest = bodies[i].id, .args = &.{} };
+                        }
+                        break :blk case_dests;
+                    }, default_blk.id, &.{});
+
+                    // Fill out each body; no pattern bindings to create in this fast path
                     i = 0;
                     while (i < arms.len) : (i += 1) {
                         const arm = a.exprs.MatchArm.get(arms[i].toRaw());
@@ -917,158 +1016,354 @@ pub const LowerTir = struct {
                         }
                         try f.builder.endBlock(f, bodies[i]);
                     }
-                    const uv = f.builder.constUndef(&def_blk, res_ty);
-                    try f.builder.br(&def_blk, join_blk.id, &.{uv});
-                    try f.builder.endBlock(f, def_blk);
-                    blk.* = join_blk;
-                    return res_param;
-                } else {
-                    var cur_blk = blk.*;
-                    i = 0;
-                    while (i < arms.len) : (i += 1) {
-                        const arm_id = arms[i];
-                        const arm = a.exprs.MatchArm.get(arm_id.toRaw());
-                        var test_blk = try f.builder.beginBlock(f);
-                        var body_blk = try f.builder.beginBlock(f);
-                        const next_blk = if (i + 1 < arms.len) try f.builder.beginBlock(f) else join_blk;
-                        try f.builder.br(&cur_blk, test_blk.id, &.{});
-                        const pat_ok = try self.matchPattern(a, env, f, &test_blk, arm.pattern, scrut);
-                        var final_ok = pat_ok;
-                        if (!arm.guard.isNone()) {
-                            const g = try self.lowerExpr(a, env, f, &test_blk, arm.guard.unwrap(), self.info.store.tBool(), .rvalue);
-                            final_ok = test_blk.builder.binBool(&test_blk, .LogicalAnd, final_ok, g);
-                        }
-                        const else_args = if (next_blk.id.toRaw() == join_blk.id.toRaw()) blk_args: {
-                            const uv = f.builder.constUndef(&test_blk, res_ty);
-                            break :blk_args &.{uv};
-                        } else &.{};
-                        try f.builder.condBr(&test_blk, final_ok, body_blk.id, &.{}, next_blk.id, else_args);
-                        // on success: destructure pattern bindings (after match)
-                        try self.lowerExprAsStmtList(a, env, f, &body_blk, arm.body);
-                        if (body_blk.term.isNone()) {
-                            var v = try self.lowerBlockExprValue(a, env, f, &body_blk, arm.body, res_ty);
-                            v = self.emitCoerce(&body_blk, v, self.getExprType(arm.body) orelse res_ty, res_ty);
-                            try f.builder.br(&body_blk, join_blk.id, &.{v});
-                        }
-                        try f.builder.endBlock(f, test_blk);
-                        try f.builder.endBlock(f, body_blk);
-                        cur_blk = next_blk;
-                    }
+
+                    const uv = f.builder.constUndef(&default_blk, res_ty);
+                    try f.builder.br(&default_blk, join_blk.id, &.{uv});
+                    try f.builder.endBlock(f, default_blk);
+
                     blk.* = join_blk;
                     return res_param;
                 }
+
+                // -------- General path: chained tests with optional guards --------
+                // We create (test -> body -> next) for each arm, falling through to the
+                // next arm if the test (pattern && guard) fails.
+                var cur = blk.*;
+
+                i = 0;
+                while (i < arms.len) : (i += 1) {
+                    const arm_id = arms[i];
+                    const arm = a.exprs.MatchArm.get(arm_id.toRaw());
+
+                    var test_blk = try f.builder.beginBlock(f);
+                    var body_blk = try f.builder.beginBlock(f);
+                    // The "next" block is either a fresh block (if more arms remain) or the join block.
+                    const next_blk = if (i + 1 < arms.len) try f.builder.beginBlock(f) else join_blk;
+
+                    // Jump from current to test
+                    try f.builder.br(&cur, test_blk.id, &.{});
+
+                    // Run pattern test
+                    var ok = try self.matchPattern(a, env, f, &test_blk, arm.pattern, scrut);
+
+                    // Optional guard: ok = ok && guard
+                    if (!arm.guard.isNone()) {
+                        const g = try self.lowerExpr(a, env, f, &test_blk, arm.guard.unwrap(), self.info.store.tBool(), .rvalue);
+                        ok = test_blk.builder.binBool(&test_blk, .LogicalAnd, ok, g);
+                    }
+
+                    // If this is the last arm and it fails, produce undef for the join
+                    const else_args = if (next_blk.id.toRaw() == join_blk.id.toRaw()) blkargs: {
+                        const uv = f.builder.constUndef(&test_blk, res_ty);
+                        break :blkargs &.{uv};
+                    } else &.{};
+
+                    try f.builder.condBr(&test_blk, ok, body_blk.id, &.{}, next_blk.id, else_args);
+
+                    // On success: bind pattern variables (using the original scrutinee)
+                    // We attempt to pass the best type we know for scrutinee to bindPattern.
+                    const scrut_ty = self.getExprType(row.expr) orelse self.info.store.tAny();
+                    try self.bindPattern(a, env, f, &body_blk, arm.pattern, scrut, scrut_ty);
+
+                    // Body lowering
+                    try self.lowerExprAsStmtList(a, env, f, &body_blk, arm.body);
+                    if (body_blk.term.isNone()) {
+                        var v2 = try self.lowerBlockExprValue(a, env, f, &body_blk, arm.body, res_ty);
+                        v2 = self.emitCoerce(&body_blk, v2, self.getExprType(arm.body) orelse res_ty, res_ty);
+                        try f.builder.br(&body_blk, join_blk.id, &.{v2});
+                    }
+
+                    // Close blocks and advance
+                    try f.builder.endBlock(f, test_blk);
+                    try f.builder.endBlock(f, body_blk);
+                    cur = next_blk;
+                }
+
+                // Current becomes the join
+                blk.* = join_blk;
+                return res_param;
             },
             .While => {
                 const row = a.exprs.get(.While, id);
                 var header = try f.builder.beginBlock(f);
                 var body = try f.builder.beginBlock(f);
-                var exit_blk = try f.builder.beginBlock(f);
-                var join_blk = try f.builder.beginBlock(f);
-                const res_ty = expected_ty orelse (self.getExprType(id) orelse self.info.store.tVoid());
-                const res_param = try f.builder.addBlockParam(&join_blk, null, res_ty);
-                try f.builder.br(blk, header.id, &.{});
-                {
-                    const old_entry = blk.*;
-                    try f.builder.endBlock(f, old_entry);
+
+                const out_ty_guess = expected_ty orelse (self.getExprType(id) orelse self.info.store.tVoid());
+                const produce_value = (expected_ty != null) and !self.isVoid(out_ty_guess);
+
+                if (produce_value) {
+                    var exit_blk = try f.builder.beginBlock(f);
+                    var join_blk = try f.builder.beginBlock(f);
+                    const res_ty = out_ty_guess;
+                    const res_param = try f.builder.addBlockParam(&join_blk, null, res_ty);
+
+                    try f.builder.br(blk, header.id, &.{});
+                    {
+                        const old = blk.*;
+                        try f.builder.endBlock(f, old);
+                    }
+
+                    const cond_v = if (!row.cond.isNone())
+                        try self.lowerExpr(a, env, f, &header, row.cond.unwrap(), self.info.store.tBool(), .rvalue)
+                    else
+                        f.builder.constBool(&header, self.info.store.tBool(), true);
+
+                    try f.builder.condBr(&header, cond_v, body.id, &.{}, exit_blk.id, &.{});
+
+                    try self.loop_stack.append(self.gpa, .{
+                        .label = if (!row.label.isNone()) a.exprs.strs.get(row.label.unwrap()) else null,
+                        .continue_block = header.id,
+                        .break_block = exit_blk.id,
+                        .has_result = true,
+                        .join_block = join_blk.id,
+                        .res_param = res_param,
+                        .res_ty = res_ty,
+                        .defer_len_at_entry = @intCast(env.defers.items.len),
+                    });
+
+                    try self.lowerExprAsStmtList(a, env, f, &body, row.body);
+                    if (body.term.isNone()) try f.builder.br(&body, header.id, &.{});
+                    try f.builder.endBlock(f, header);
+                    try f.builder.endBlock(f, body);
+
+                    const uv = self.safeUndef(&exit_blk, res_ty);
+                    try f.builder.br(&exit_blk, join_blk.id, &.{uv});
+                    try f.builder.endBlock(f, exit_blk);
+
+                    _ = self.loop_stack.pop();
+                    blk.* = join_blk;
+                    return res_param;
+                } else {
+                    // statement-position while: classic 3-block loop
+                    const exit_blk = try f.builder.beginBlock(f);
+
+                    try f.builder.br(blk, header.id, &.{});
+                    {
+                        const old = blk.*;
+                        try f.builder.endBlock(f, old);
+                    }
+
+                    const cond_v = if (!row.cond.isNone())
+                        try self.lowerExpr(a, env, f, &header, row.cond.unwrap(), self.info.store.tBool(), .rvalue)
+                    else
+                        f.builder.constBool(&header, self.info.store.tBool(), true);
+
+                    try f.builder.condBr(&header, cond_v, body.id, &.{}, exit_blk.id, &.{});
+
+                    try self.loop_stack.append(self.gpa, .{
+                        .label = if (!row.label.isNone()) a.exprs.strs.get(row.label.unwrap()) else null,
+                        .continue_block = header.id,
+                        .break_block = exit_blk.id,
+                        .has_result = false, // << no value loop
+                        .defer_len_at_entry = @intCast(env.defers.items.len),
+                    });
+
+                    try self.lowerExprAsStmtList(a, env, f, &body, row.body);
+                    if (body.term.isNone()) try f.builder.br(&body, header.id, &.{});
+                    try f.builder.endBlock(f, header);
+                    try f.builder.endBlock(f, body);
+
+                    _ = self.loop_stack.pop();
+                    blk.* = exit_blk;
+                    return self.safeUndef(blk, self.info.store.tAny());
                 }
-                const cond_v = if (!row.cond.isNone()) try self.lowerExpr(a, env, f, &header, row.cond.unwrap(), self.info.store.tBool(), .rvalue) else f.builder.constBool(&header, self.info.store.tBool(), true);
-                try f.builder.condBr(&header, cond_v, body.id, &.{}, exit_blk.id, &.{});
-                try self.loop_stack.append(self.gpa, .{
-                    .label = if (!row.label.isNone()) a.exprs.strs.get(row.label.unwrap()) else null,
-                    .continue_block = header.id,
-                    .break_block = exit_blk.id,
-                    .has_result = true,
-                    .join_block = join_blk.id,
-                    .res_param = res_param,
-                    .res_ty = res_ty,
-                    .defer_len_at_entry = @intCast(env.defers.items.len),
-                });
-                try self.lowerExprAsStmtList(a, env, f, &body, row.body);
-                if (body.term.isNone()) try f.builder.br(&body, header.id, &.{});
-                try f.builder.endBlock(f, header);
-                try f.builder.endBlock(f, body);
-                const uv = f.builder.constUndef(&exit_blk, res_ty);
-                try f.builder.br(&exit_blk, join_blk.id, &.{uv});
-                try f.builder.endBlock(f, exit_blk);
-                _ = self.loop_stack.pop();
-                blk.* = join_blk;
-                return res_param;
             },
             .For => {
                 const row = a.exprs.get(.For, id);
+
+                // Decide if this for-expression needs to produce a value
+                const out_ty_guess = expected_ty orelse (self.getExprType(id) orelse self.info.store.tVoid());
+                const produce_value = (expected_ty != null) and !self.isVoid(out_ty_guess);
+
+                // Common blocks
                 var header = try f.builder.beginBlock(f);
                 var body = try f.builder.beginBlock(f);
-                var exit_blk = try f.builder.beginBlock(f);
-                var join_blk = try f.builder.beginBlock(f);
-                const res_ty = expected_ty orelse (self.getExprType(id) orelse self.info.store.tVoid());
-                const res_param = try f.builder.addBlockParam(&join_blk, null, res_ty);
 
-                try self.loop_stack.append(self.gpa, .{
-                    .label = if (!row.label.isNone()) a.exprs.strs.get(row.label.unwrap()) else null,
-                    .continue_block = header.id,
-                    .break_block = exit_blk.id,
-                    .has_result = true,
-                    .join_block = join_blk.id,
-                    .res_param = res_param,
-                    .res_ty = res_ty,
-                    .defer_len_at_entry = @intCast(env.defers.items.len),
-                });
+                if (produce_value) {
+                    // value-producing for
+                    var exit_blk = try f.builder.beginBlock(f);
+                    var join_blk = try f.builder.beginBlock(f);
+                    const res_ty = out_ty_guess;
+                    const res_param = try f.builder.addBlockParam(&join_blk, null, res_ty);
 
-                if (a.exprs.index.kinds.items[row.iterable.toRaw()] == .Range) {
-                    const rg = a.exprs.get(.Range, row.iterable);
-                    if (rg.start.isNone() or rg.end.isNone()) return error.LoweringBug;
-                    const start_v = try self.lowerExpr(a, env, f, blk, rg.start.unwrap(), null, .rvalue);
-                    const end_v = try self.lowerExpr(a, env, f, blk, rg.end.unwrap(), null, .rvalue);
-                    const idx_ty = self.getExprType(rg.start.unwrap()) orelse return error.LoweringBug;
-                    const idx_param = try f.builder.addBlockParam(&header, null, idx_ty);
-                    try f.builder.br(blk, header.id, &.{start_v});
-                    const cond = if (rg.inclusive_right)
-                        blk.builder.binBool(&header, .CmpLe, idx_param, end_v)
-                    else
-                        blk.builder.binBool(&header, .CmpLt, idx_param, end_v);
-                    try f.builder.condBr(&header, cond, body.id, &.{}, exit_blk.id, &.{});
-                    // bind pattern (range just yields index)
-                    try self.bindPattern(a, env, f, &body, row.pattern, idx_param, idx_ty);
-                    try self.lowerExprAsStmtList(a, env, f, &body, row.body);
-                    if (body.term.isNone()) {
-                        const one = blk.builder.constInt(&body, idx_ty, 1);
-                        const next_i = blk.builder.bin(&body, .Add, idx_ty, idx_param, one);
-                        try f.builder.br(&body, header.id, &.{next_i});
+                    try self.loop_stack.append(self.gpa, .{
+                        .label = if (!row.label.isNone()) a.exprs.strs.get(row.label.unwrap()) else null,
+                        .continue_block = header.id,
+                        .break_block = exit_blk.id,
+                        .has_result = true,
+                        .join_block = join_blk.id,
+                        .res_param = res_param,
+                        .res_ty = res_ty,
+                        .defer_len_at_entry = @intCast(env.defers.items.len),
+                    });
+
+                    if (a.exprs.index.kinds.items[row.iterable.toRaw()] == .Range) {
+                        // for i in start..end
+                        const rg = a.exprs.get(.Range, row.iterable);
+                        if (rg.start.isNone() or rg.end.isNone()) return error.LoweringBug;
+
+                        const start_v = try self.lowerExpr(a, env, f, blk, rg.start.unwrap(), null, .rvalue);
+                        const end_v = try self.lowerExpr(a, env, f, blk, rg.end.unwrap(), null, .rvalue);
+                        const idx_ty = self.getExprType(rg.start.unwrap()) orelse return error.LoweringBug;
+
+                        const idx_param = try f.builder.addBlockParam(&header, null, idx_ty);
+                        try f.builder.br(blk, header.id, &.{start_v});
+                        {
+                            const old = blk.*;
+                            try f.builder.endBlock(f, old);
+                        }
+
+                        const cond = if (rg.inclusive_right)
+                            blk.builder.binBool(&header, .CmpLe, idx_param, end_v)
+                        else
+                            blk.builder.binBool(&header, .CmpLt, idx_param, end_v);
+                        try f.builder.condBr(&header, cond, body.id, &.{}, exit_blk.id, &.{});
+
+                        // bind loop pattern (just the index)
+                        try self.bindPattern(a, env, f, &body, row.pattern, idx_param, idx_ty);
+                        try self.lowerExprAsStmtList(a, env, f, &body, row.body);
+                        if (body.term.isNone()) {
+                            const one = blk.builder.constInt(&body, idx_ty, 1);
+                            const next_i = blk.builder.bin(&body, .Add, idx_ty, idx_param, one);
+                            try f.builder.br(&body, header.id, &.{next_i});
+                        }
+
+                        try f.builder.endBlock(f, header);
+                        try f.builder.endBlock(f, body);
+                    } else {
+                        // for x in iterable
+                        const arr_v = try self.lowerExpr(a, env, f, blk, row.iterable, null, .rvalue);
+                        const idx_ty = self.info.store.tUsize();
+                        const s_len = f.builder.intern("builtin.len");
+                        const len_v = blk.builder.call(blk, idx_ty, s_len, &.{arr_v});
+
+                        const zero = blk.builder.constInt(blk, idx_ty, 0);
+                        const idx_param = try f.builder.addBlockParam(&header, null, idx_ty);
+
+                        try f.builder.br(blk, header.id, &.{zero});
+                        {
+                            const old = blk.*;
+                            try f.builder.endBlock(f, old);
+                        }
+
+                        const cond = blk.builder.binBool(&header, .CmpLt, idx_param, len_v);
+                        try f.builder.condBr(&header, cond, body.id, &.{}, exit_blk.id, &.{});
+
+                        // Determine element type
+                        var elem_ty = self.info.store.tAny();
+                        if (self.getExprType(row.iterable)) |it_ty| {
+                            const ik = self.info.store.index.kinds.items[it_ty.toRaw()];
+                            if (ik == .Array) elem_ty = self.info.store.Array.get(self.info.store.index.rows.items[it_ty.toRaw()]).elem else if (ik == .Slice) elem_ty = self.info.store.Slice.get(self.info.store.index.rows.items[it_ty.toRaw()]).elem else if (ik == .DynArray) elem_ty = self.info.store.DynArray.get(self.info.store.index.rows.items[it_ty.toRaw()]).elem;
+                        }
+
+                        const elem = blk.builder.indexOp(&body, elem_ty, arr_v, idx_param);
+                        try self.bindPattern(a, env, f, &body, row.pattern, elem, elem_ty);
+
+                        try self.lowerExprAsStmtList(a, env, f, &body, row.body);
+                        if (body.term.isNone()) {
+                            const one = blk.builder.constInt(&body, idx_ty, 1);
+                            const next_i = blk.builder.bin(&body, .Add, idx_ty, idx_param, one);
+                            try f.builder.br(&body, header.id, &.{next_i});
+                        }
+
+                        try f.builder.endBlock(f, header);
+                        try f.builder.endBlock(f, body);
                     }
+
+                    // Exit -> join with a safe undef of the result type
+                    const uv = self.safeUndef(&exit_blk, res_ty);
+                    try f.builder.br(&exit_blk, join_blk.id, &.{uv});
+                    try f.builder.endBlock(f, exit_blk);
+
+                    _ = self.loop_stack.pop();
+                    blk.* = join_blk;
+                    return res_param;
                 } else {
-                    const arr_v = try self.lowerExpr(a, env, f, blk, row.iterable, null, .rvalue);
-                    const idx_ty = self.info.store.tUsize();
-                    const s_len = f.builder.intern("builtin.len");
-                    const len_v = blk.builder.call(blk, idx_ty, s_len, &.{arr_v});
-                    const zero = blk.builder.constInt(blk, idx_ty, 0);
-                    const idx_param = try f.builder.addBlockParam(&header, null, idx_ty);
-                    try f.builder.br(blk, header.id, &.{zero});
-                    const cond = blk.builder.binBool(&header, .CmpLt, idx_param, len_v);
-                    try f.builder.condBr(&header, cond, body.id, &.{}, exit_blk.id, &.{});
-                    // body: element = arr[idx]
-                    // Try to get element type from iterable type
-                    var elem_ty = self.info.store.tAny();
-                    if (self.getExprType(row.iterable)) |it_ty| {
-                        const ik = self.info.store.index.kinds.items[it_ty.toRaw()];
-                        if (ik == .Array) elem_ty = self.info.store.Array.get(self.info.store.index.rows.items[it_ty.toRaw()]).elem else if (ik == .Slice) elem_ty = self.info.store.Slice.get(self.info.store.index.rows.items[it_ty.toRaw()]).elem else if (ik == .DynArray) elem_ty = self.info.store.DynArray.get(self.info.store.index.rows.items[it_ty.toRaw()]).elem;
+                    // statement-position for (no value)
+                    const exit_blk = try f.builder.beginBlock(f);
+
+                    // Loop stack entry (no value carried)
+                    try self.loop_stack.append(self.gpa, .{
+                        .label = if (!row.label.isNone()) a.exprs.strs.get(row.label.unwrap()) else null,
+                        .continue_block = header.id,
+                        .break_block = exit_blk.id,
+                        .has_result = false,
+                        .defer_len_at_entry = @intCast(env.defers.items.len),
+                    });
+
+                    if (a.exprs.index.kinds.items[row.iterable.toRaw()] == .Range) {
+                        const rg = a.exprs.get(.Range, row.iterable);
+                        if (rg.start.isNone() or rg.end.isNone()) return error.LoweringBug;
+
+                        const start_v = try self.lowerExpr(a, env, f, blk, rg.start.unwrap(), null, .rvalue);
+                        const end_v = try self.lowerExpr(a, env, f, blk, rg.end.unwrap(), null, .rvalue);
+                        const idx_ty = self.getExprType(rg.start.unwrap()) orelse return error.LoweringBug;
+
+                        const idx_param = try f.builder.addBlockParam(&header, null, idx_ty);
+                        try f.builder.br(blk, header.id, &.{start_v});
+                        {
+                            const old = blk.*;
+                            try f.builder.endBlock(f, old);
+                        }
+
+                        const cond = if (rg.inclusive_right)
+                            blk.builder.binBool(&header, .CmpLe, idx_param, end_v)
+                        else
+                            blk.builder.binBool(&header, .CmpLt, idx_param, end_v);
+                        try f.builder.condBr(&header, cond, body.id, &.{}, exit_blk.id, &.{});
+
+                        try self.bindPattern(a, env, f, &body, row.pattern, idx_param, idx_ty);
+                        try self.lowerExprAsStmtList(a, env, f, &body, row.body);
+
+                        if (body.term.isNone()) {
+                            const one = blk.builder.constInt(&body, idx_ty, 1);
+                            const next_i = blk.builder.bin(&body, .Add, idx_ty, idx_param, one);
+                            try f.builder.br(&body, header.id, &.{next_i});
+                        }
+
+                        try f.builder.endBlock(f, header);
+                        try f.builder.endBlock(f, body);
+                    } else {
+                        const arr_v = try self.lowerExpr(a, env, f, blk, row.iterable, null, .rvalue);
+                        const idx_ty = self.info.store.tUsize();
+                        const s_len = f.builder.intern("builtin.len");
+                        const len_v = blk.builder.call(blk, idx_ty, s_len, &.{arr_v});
+
+                        const zero = blk.builder.constInt(blk, idx_ty, 0);
+                        const idx_param = try f.builder.addBlockParam(&header, null, idx_ty);
+
+                        try f.builder.br(blk, header.id, &.{zero});
+                        {
+                            const old = blk.*;
+                            try f.builder.endBlock(f, old);
+                        }
+
+                        const cond = blk.builder.binBool(&header, .CmpLt, idx_param, len_v);
+                        try f.builder.condBr(&header, cond, body.id, &.{}, exit_blk.id, &.{});
+
+                        var elem_ty = self.info.store.tAny();
+                        if (self.getExprType(row.iterable)) |it_ty| {
+                            const ik = self.info.store.index.kinds.items[it_ty.toRaw()];
+                            if (ik == .Array) elem_ty = self.info.store.Array.get(self.info.store.index.rows.items[it_ty.toRaw()]).elem else if (ik == .Slice) elem_ty = self.info.store.Slice.get(self.info.store.index.rows.items[it_ty.toRaw()]).elem else if (ik == .DynArray) elem_ty = self.info.store.DynArray.get(self.info.store.index.rows.items[it_ty.toRaw()]).elem;
+                        }
+                        const elem = blk.builder.indexOp(&body, elem_ty, arr_v, idx_param);
+                        try self.bindPattern(a, env, f, &body, row.pattern, elem, elem_ty);
+
+                        try self.lowerExprAsStmtList(a, env, f, &body, row.body);
+                        if (body.term.isNone()) {
+                            const one = blk.builder.constInt(&body, idx_ty, 1);
+                            const next_i = blk.builder.bin(&body, .Add, idx_ty, idx_param, one);
+                            try f.builder.br(&body, header.id, &.{next_i});
+                        }
+
+                        try f.builder.endBlock(f, header);
+                        try f.builder.endBlock(f, body);
                     }
-                    const elem = blk.builder.indexOp(&body, elem_ty, arr_v, idx_param);
-                    try self.bindPattern(a, env, f, &body, row.pattern, elem, elem_ty);
-                    try self.lowerExprAsStmtList(a, env, f, &body, row.body);
-                    if (body.term.isNone()) {
-                        const one = blk.builder.constInt(&body, idx_ty, 1);
-                        const next_i = blk.builder.bin(&body, .Add, idx_ty, idx_param, one);
-                        try f.builder.br(&body, header.id, &.{next_i});
-                    }
+
+                    _ = self.loop_stack.pop();
+                    blk.* = exit_blk;
+                    return self.safeUndef(blk, self.info.store.tAny());
                 }
-                _ = self.loop_stack.pop();
-                const uv = blk.builder.constUndef(&exit_blk, res_ty);
-                try f.builder.br(&exit_blk, join_blk.id, &.{uv});
-                try f.builder.endBlock(f, header);
-                try f.builder.endBlock(f, body);
-                try f.builder.endBlock(f, exit_blk);
-                blk.* = join_blk;
-                return res_param;
             },
             .Import => {
                 // Lowered as 'any' module value (opaque); create undef of the checker type
@@ -1086,7 +1381,7 @@ pub const LowerTir = struct {
         }
         const b = a.exprs.get(.Block, block_expr);
         const stmts = a.stmts.stmt_pool.slice(b.items);
-        if (stmts.len == 0) return f.builder.constUndef(blk, expected_ty);
+        if (stmts.len == 0) return self.safeUndef(blk, expected_ty);
         var i: usize = 0;
         while (i + 1 < stmts.len) : (i += 1) {
             try self.lowerStmt(a, env, f, blk, stmts[i]);
@@ -1098,7 +1393,7 @@ pub const LowerTir = struct {
             return self.lowerExpr(a, env, f, blk, le, expected_ty, .rvalue);
         } else {
             try self.lowerStmt(a, env, f, blk, last);
-            return f.builder.constUndef(blk, expected_ty);
+            return self.safeUndef(blk, expected_ty);
         }
     }
 
@@ -1185,7 +1480,7 @@ pub const LowerTir = struct {
                 const s = if (!lit.value.isNone()) me.ast.exprs.strs.get(lit.value.unwrap()) else "";
                 const k = self.info.store.getKind(expected_ty);
                 switch (k) {
-                    .U8, .U16, .U32, .U64, .I8, .I16, .I32, .I64 => return blk.builder.constInt(blk, expected_ty, std.fmt.parseInt(i64, s, 10) catch 0),
+                    .U8, .U16, .U32, .U64, .I8, .I16, .I32, .I64 => return blk.builder.constInt(blk, expected_ty, std.fmt.parseInt(u64, s, 10) catch 0),
                     .Bool => return blk.builder.constBool(blk, expected_ty, lit.bool_value),
                     .String => return blk.builder.constString(blk, expected_ty, s),
                     else => return null,
@@ -1356,8 +1651,8 @@ const Builder = struct {
     };
     const SwitchDest = struct { dest: tir.BlockId, args: []const tir.ValueId };
 
-    pub fn beginFunction(self: *@This(), name: StrId, result: types.TypeId) !FunctionFrame {
-        const idx = self.t.funcs.Function.add(self.gpa, .{ .name = name, .params = tir.RangeParam.empty(), .result = result, .blocks = tir.RangeBlock.empty() });
+    pub fn beginFunction(self: *@This(), name: StrId, result: types.TypeId, is_variadic: bool) !FunctionFrame {
+        const idx = self.t.funcs.Function.add(self.gpa, .{ .name = name, .params = tir.RangeParam.empty(), .result = result, .blocks = tir.RangeBlock.empty(), .is_variadic = is_variadic });
         return .{ .builder = self, .id = tir.FuncId.fromRaw(idx) };
     }
     pub fn addParam(self: *@This(), f: *FunctionFrame, name: ?StrId, ty: types.TypeId) !tir.ValueId {
@@ -1398,7 +1693,7 @@ const Builder = struct {
     }
 
     // ---- instruction helpers ----
-    fn constInt(self: *@This(), blk: *BlockFrame, ty: types.TypeId, v: i64) tir.ValueId {
+    fn constInt(self: *@This(), blk: *BlockFrame, ty: types.TypeId, v: u64) tir.ValueId {
         const vid = self.freshValue();
         const iid = self.t.instrs.add(.ConstInt, tir.Rows.ConstInt{ .result = vid, .ty = ty, .value = v });
         blk.instrs.append(self.gpa, iid) catch @panic("OOM");
@@ -1549,7 +1844,9 @@ const Builder = struct {
     }
     pub fn addGlobal(self: *@This(), name: StrId, ty: types.TypeId) tir.GlobalId {
         const idx = self.t.funcs.Global.add(self.gpa, .{ .name = name, .ty = ty });
-        return tir.GlobalId.fromRaw(idx);
+        const gid = tir.GlobalId.fromRaw(idx);
+        _ = self.t.funcs.global_pool.push(self.gpa, gid);
+        return gid;
     }
     fn edge(self: *@This(), dest: tir.BlockId, args: []const tir.ValueId) tir.EdgeId {
         const r = self.t.instrs.value_pool.pushMany(self.gpa, args);
@@ -1567,12 +1864,16 @@ const Builder = struct {
         const tid = self.t.terms.add(.CondBr, .{ .cond = cond, .then_edge = te, .else_edge = ee });
         blk.term = tir.OptTermId.some(tid);
     }
+
     fn constUndef(self: *@This(), blk: *BlockFrame, ty: types.TypeId) tir.ValueId {
+        // Disallow void undef
+        std.debug.assert(self.t.type_store.getKind(ty) != .Void);
         const vid = self.freshValue();
         const iid = self.t.instrs.add(.ConstUndef, tir.Rows.ConstUndef{ .result = vid, .ty = ty });
         blk.instrs.append(self.gpa, iid) catch @panic("OOM");
         return vid;
     }
+
     fn setReturn(self: *@This(), blk: *BlockFrame, value: tir.OptValueId) !void {
         const tid = self.t.terms.add(.Return, .{ .value = value });
         blk.term = tir.OptTermId.some(tid);
@@ -1605,7 +1906,7 @@ const Builder = struct {
     }
 
     // GEP helpers
-    fn gepConst(self: *@This(), v: i64) tir.GepIndexId {
+    fn gepConst(self: *@This(), v: u64) tir.GepIndexId {
         const id = self.t.instrs.GepIndex.add(self.gpa, .{ .Const = v });
         return tir.GepIndexId.fromRaw(id);
     }

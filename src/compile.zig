@@ -20,7 +20,7 @@ pub fn run_passes(context: *mlir.Context, module: *mlir.Module, print_ir: bool) 
 
     // const pipeline = "cse,sccp,loop-invariant-code-motion," ++ "finalize-memref-to-llvm," ++ "convert-scf-to-cf," ++
     // "convert-func-to-llvm," ++ "convert-cf-to-llvm," ++ "canonicalize," ++ "cse";
-    const pipeline = "canonicalize,cse";
+    const pipeline = "convert-arith-to-llvm,convert-func-to-llvm,convert-cf-to-llvm,canonicalize,cse";
     const op_pm = mlir.c.mlirPassManagerGetAsOpPassManager(pm);
     var result = mlir.c.mlirOpPassManagerAddPipeline(op_pm, mlir.c.mlirStringRefCreateFromCString(@ptrCast(pipeline)), callback, null);
 
@@ -39,6 +39,7 @@ pub fn run_passes(context: *mlir.Context, module: *mlir.Module, print_ir: bool) 
 
     // Print the module
     if (print_ir) {
+        std.debug.print("Transformed MLIR Module:\n", .{});
         var op = module.getOperation();
         op.dump();
     }

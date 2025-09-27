@@ -2,7 +2,7 @@ const std = @import("std");
 const dod = @import("cst.zig");
 const types = @import("types.zig");
 
-// Typed IR (TIR) — DOD v2
+// Typed IR (TIR)
 // Columnar stores with typed indices and contiguous pools.
 
 pub const ValueTag = struct {};
@@ -107,7 +107,7 @@ pub const Rows = struct {
     pub const Bin2 = struct { result: ValueId, ty: types.TypeId, lhs: ValueId, rhs: ValueId };
     pub const Un1 = struct { result: ValueId, ty: types.TypeId, value: ValueId };
 
-    pub const ConstInt = struct { result: ValueId, ty: types.TypeId, value: i64 };
+    pub const ConstInt = struct { result: ValueId, ty: types.TypeId, value: u64 };
     pub const ConstFloat = struct { result: ValueId, ty: types.TypeId, value: f64 };
     pub const ConstBool = struct { result: ValueId, ty: types.TypeId, value: bool };
     pub const ConstString = struct { result: ValueId, ty: types.TypeId, text: StrId };
@@ -117,7 +117,7 @@ pub const Rows = struct {
     pub const Alloca = struct { result: ValueId, ty: types.TypeId, count: OptValueId, @"align": u32 };
     pub const Load = struct { result: ValueId, ty: types.TypeId, ptr: ValueId, @"align": u32 };
     pub const Store = struct { result: ValueId, ty: types.TypeId, ptr: ValueId, value: ValueId, @"align": u32 };
-    pub const GepIndex = union(enum) { Const: i64, Value: ValueId };
+    pub const GepIndex = union(enum) { Const: u64, Value: ValueId };
     pub const Gep = struct {
         result: ValueId,
         ty: types.TypeId,
@@ -354,7 +354,7 @@ pub const TermStore = struct {
 pub const FuncRows = struct {
     pub const Param = struct { value: ValueId, name: dod.OptStrId, ty: types.TypeId };
     pub const Block = struct { params: RangeParam, instrs: RangeInstr, term: TermId };
-    pub const Function = struct { name: StrId, params: RangeParam, result: types.TypeId, blocks: RangeBlock };
+    pub const Function = struct { name: StrId, params: RangeParam, result: types.TypeId, blocks: RangeBlock, is_variadic: bool };
     pub const Global = struct { name: StrId, ty: types.TypeId };
 };
 
@@ -413,6 +413,19 @@ pub const TirPrinter = struct {
         return .{ .writer = writer, .tir = tir };
     }
 
+    const TypeFmt = struct {
+        store: *const types.TypeStore,
+        ty: types.TypeId,
+
+        pub fn format(self: @This(), w: anytype) !void {
+            try self.store.fmt(self.ty, w);
+        }
+    };
+
+    inline fn tf(self: *const TirPrinter, ty: types.TypeId) TypeFmt {
+        return .{ .store = self.tir.type_store, .ty = ty };
+    }
+
     fn ws(self: *TirPrinter) anyerror!void {
         var i: usize = 0;
         while (i < self.indent) : (i += 1) try self.writer.writeByte(' ');
@@ -449,7 +462,7 @@ pub const TirPrinter = struct {
             try self.open("(globals", .{});
             for (globals) |gid| {
                 const g = self.tir.funcs.Global.get(gid.toRaw());
-                try self.leaf("(global name=\"{s}\" type={})", .{ self.s(g.name), g.ty });
+                try self.leaf("(global name=\"{s}\" type={f})", .{ self.s(g.name), self.tf(g.ty) });
             }
             try self.close();
         }
@@ -457,18 +470,19 @@ pub const TirPrinter = struct {
         const funcs = self.tir.funcs.func_pool.data.items;
         for (funcs) |fid| try self.printFunc(fid);
         try self.close();
+        try self.writer.flush();
     }
 
     fn printFunc(self: *TirPrinter, id: FuncId) anyerror!void {
         const func = self.tir.funcs.Function.get(id.toRaw());
-        try self.open("(function name=\"{s}\" result={})", .{ self.s(func.name), func.result });
+        try self.open("(function name=\"{s}\" result={f})", .{ self.s(func.name), self.tf(func.result) });
         // Params
         const params = self.tir.funcs.param_pool.slice(func.params);
         if (params.len > 0) {
             try self.open("(params", .{});
             for (params) |pid| {
                 const p = self.tir.funcs.Param.get(pid.toRaw());
-                try self.leaf("(param name={s} type={})", .{ if (p.name.isNone()) "null" else self.s(p.name.unwrap()), p.ty });
+                try self.leaf("(param name={s} type={f})", .{ if (p.name.isNone()) "null" else self.s(p.name.unwrap()), self.tf(p.ty) });
             }
             try self.close();
         }
@@ -487,7 +501,7 @@ pub const TirPrinter = struct {
             try self.open("(params", .{});
             for (params) |pid| {
                 const p = self.tir.funcs.Param.get(pid.toRaw());
-                try self.leaf("(param name={s} type={})", .{ if (p.name.isNone()) "null" else self.s(p.name.unwrap()), p.ty });
+                try self.leaf("(param name={s} type={f})", .{ if (p.name.isNone()) "null" else self.s(p.name.unwrap()), self.tf(p.ty) });
             }
             try self.close();
         }
@@ -544,51 +558,51 @@ pub const TirPrinter = struct {
         switch (kind) {
             .ConstInt => {
                 const row = self.tir.instrs.get(.ConstInt, id);
-                try self.leaf("(instr id={} op=ConstInt value={} type={})", .{ id.toRaw(), row.value, row.ty });
+                try self.leaf("(instr id={} op=ConstInt value={} type={f})", .{ id.toRaw(), row.value, self.tf(row.ty) });
             },
             .ConstFloat => {
                 const row = self.tir.instrs.get(.ConstFloat, id);
-                try self.leaf("(instr id={} op=ConstFloat value={} type={})", .{ id.toRaw(), row.value, row.ty });
+                try self.leaf("(instr id={} op=ConstFloat value={} type={f})", .{ id.toRaw(), row.value, self.tf(row.ty) });
             },
             .ConstBool => {
                 const row = self.tir.instrs.get(.ConstBool, id);
-                try self.leaf("(instr id={} op=ConstBool value={} type={})", .{ id.toRaw(), row.value, row.ty });
+                try self.leaf("(instr id={} op=ConstBool value={} type={f})", .{ id.toRaw(), row.value, self.tf(row.ty) });
             },
             .ConstString => {
                 const row = self.tir.instrs.get(.ConstString, id);
-                try self.leaf("(instr id={} op=ConstString value=\"{s}\" type={})", .{ id.toRaw(), self.s(row.text), row.ty });
+                try self.leaf("(instr id={} op=ConstString value=\"{s}\" type={f})", .{ id.toRaw(), self.s(row.text), self.tf(row.ty) });
             },
             .ConstNull => {
                 const row = self.tir.instrs.get(.ConstNull, id);
-                try self.leaf("(instr id={} op=ConstNull type={})", .{ id.toRaw(), row.ty });
+                try self.leaf("(instr id={} op=ConstNull type={f})", .{ id.toRaw(), self.tf(row.ty) });
             },
             .ConstUndef => {
                 const row = self.tir.instrs.get(.ConstUndef, id);
-                try self.leaf("(instr id={} op=ConstUndef type={})", .{ id.toRaw(), row.ty });
+                try self.leaf("(instr id={} op=ConstUndef type={f})", .{ id.toRaw(), self.tf(row.ty) });
             },
             inline .Add, .Sub, .Mul, .Div, .Mod, .Shl, .Shr, .BitAnd, .BitOr, .BitXor, .LogicalAnd, .LogicalOr, .CmpEq, .CmpNe, .CmpLt, .CmpLe, .CmpGt, .CmpGe => |x| {
                 const row = self.tir.instrs.get(x, id);
-                try self.leaf("(instr id={} op={s} lhs={} rhs={} result={} type={})", .{ id.toRaw(), @tagName(kind), row.lhs.toRaw(), row.rhs.toRaw(), row.result.toRaw(), row.ty });
+                try self.leaf("(instr id={} op={s} lhs={} rhs={} result={} type={f})", .{ id.toRaw(), @tagName(kind), row.lhs.toRaw(), row.rhs.toRaw(), row.result.toRaw(), self.tf(row.ty) });
             },
             .LogicalNot => {
                 const row = self.tir.instrs.get(.LogicalNot, id);
-                try self.leaf("(instr id={} op=LogicalNot value={} result={} type={})", .{ id.toRaw(), row.value.toRaw(), row.result.toRaw(), row.ty });
+                try self.leaf("(instr id={} op=LogicalNot value={} result={} type={f})", .{ id.toRaw(), row.value.toRaw(), row.result.toRaw(), self.tf(row.ty) });
             },
             inline .CastNormal, .CastBit, .CastSaturate, .CastWrap, .CastChecked => |x| {
                 const row = self.tir.instrs.get(x, id);
-                try self.leaf("(instr id={} op={s} value={} result={} type={})", .{ id.toRaw(), @tagName(kind), row.value.toRaw(), row.result.toRaw(), row.ty });
+                try self.leaf("(instr id={} op={s} value={} result={} type={f})", .{ id.toRaw(), @tagName(kind), row.value.toRaw(), row.result.toRaw(), self.tf(row.ty) });
             },
             .Alloca => {
                 const row = self.tir.instrs.get(.Alloca, id);
                 if (!row.count.isNone()) {
-                    try self.leaf("(instr id={} op=Alloca count={} align={} result={} type={})", .{ id.toRaw(), row.count.unwrap().toRaw(), row.@"align", row.result.toRaw(), row.ty });
+                    try self.leaf("(instr id={} op=Alloca count={} align={} result={} type={f})", .{ id.toRaw(), row.count.unwrap().toRaw(), row.@"align", row.result.toRaw(), self.tf(row.ty) });
                 } else {
-                    try self.leaf("(instr id={} op=Alloca count=null align={} result={} type={})", .{ id.toRaw(), row.@"align", row.result.toRaw(), row.ty });
+                    try self.leaf("(instr id={} op=Alloca count=null align={} result={} type={f})", .{ id.toRaw(), row.@"align", row.result.toRaw(), self.tf(row.ty) });
                 }
             },
             .Load => {
                 const row = self.tir.instrs.get(.Load, id);
-                try self.leaf("(instr id={} op=Load ptr={} align={} result={} type={})", .{ id.toRaw(), row.ptr.toRaw(), row.@"align", row.result.toRaw(), row.ty });
+                try self.leaf("(instr id={} op=Load ptr={} align={} result={} type={f})", .{ id.toRaw(), row.ptr.toRaw(), row.@"align", row.result.toRaw(), self.tf(row.ty) });
             },
             .Store => {
                 const row = self.tir.instrs.get(.Store, id);
@@ -597,7 +611,7 @@ pub const TirPrinter = struct {
             .Gep => {
                 const row = self.tir.instrs.get(.Gep, id);
                 const indices = self.tir.instrs.gep_pool.slice(row.indices);
-                try self.open("(instr id={} op=Gep base={} result={} type={} indices=[", .{ id.toRaw(), row.base.toRaw(), row.result.toRaw(), row.ty });
+                try self.open("(instr id={} op=Gep base={} result={} type={f} indices=[", .{ id.toRaw(), row.base.toRaw(), row.result.toRaw(), self.tf(row.ty) });
                 for (indices) |gid| {
                     const g = self.tir.instrs.GepIndex.get(gid.toRaw());
                     switch (g) {
@@ -611,7 +625,7 @@ pub const TirPrinter = struct {
             .TupleMake => {
                 const row = self.tir.instrs.get(.TupleMake, id);
                 const elems = self.tir.instrs.value_pool.slice(row.elems);
-                try self.open("(instr id={} op=TupleMake result={} type={} elems=[", .{ id.toRaw(), row.result.toRaw(), row.ty });
+                try self.open("(instr id={} op=TupleMake result={} type={f} elems=[", .{ id.toRaw(), row.result.toRaw(), self.tf(row.ty) });
                 for (elems) |vid| try self.leaf("  {}", .{vid.toRaw()});
                 try self.leaf("])", .{});
                 try self.close();
@@ -619,7 +633,7 @@ pub const TirPrinter = struct {
             .ArrayMake => {
                 const row = self.tir.instrs.get(.ArrayMake, id);
                 const elems = self.tir.instrs.value_pool.slice(row.elems);
-                try self.open("(instr id={} op=ArrayMake result={} type={} elems=[", .{ id.toRaw(), row.result.toRaw(), row.ty });
+                try self.open("(instr id={} op=ArrayMake result={} type={f} elems=[", .{ id.toRaw(), row.result.toRaw(), self.tf(row.ty) });
                 for (elems) |vid| try self.leaf("  {}", .{vid.toRaw()});
                 try self.leaf("])", .{});
                 try self.close();
@@ -627,7 +641,7 @@ pub const TirPrinter = struct {
             .StructMake => {
                 const row = self.tir.instrs.get(.StructMake, id);
                 const fields = self.tir.instrs.sfi_pool.slice(row.fields);
-                try self.open("(instr id={} op=StructMake result={} type={} fields=[", .{ id.toRaw(), row.result.toRaw(), row.ty });
+                try self.open("(instr id={} op=StructMake result={} type={f} fields=[", .{ id.toRaw(), row.result.toRaw(), self.tf(row.ty) });
                 for (fields) |sfid| {
                     const sf = self.tir.instrs.StructFieldInit.get(sfid.toRaw());
                     try self.leaf("  (field index={} name={s} value={})", .{ sf.index, if (sf.name.isNone()) "null" else self.s(sf.name.unwrap()), sf.value.toRaw() });
@@ -637,57 +651,57 @@ pub const TirPrinter = struct {
             },
             .ExtractElem => {
                 const row = self.tir.instrs.get(.ExtractElem, id);
-                try self.leaf("(instr id={} op=ExtractElem agg={} index={} result={} type={})", .{
+                try self.leaf("(instr id={} op=ExtractElem agg={} index={} result={} type={f})", .{
                     id.toRaw(),
                     row.agg.toRaw(),
                     row.index,
                     row.result.toRaw(),
-                    row.ty,
+                    self.tf(row.ty),
                 });
             },
             .InsertElem => {
                 const row = self.tir.instrs.get(.InsertElem, id);
-                try self.leaf("(instr id={} op=InsertElem agg={} index={} value={} result={} type={})", .{ id.toRaw(), row.agg.toRaw(), row.index, row.value.toRaw(), row.result.toRaw(), row.ty });
+                try self.leaf("(instr id={} op=InsertElem agg={} index={} value={} result={} type={f})", .{ id.toRaw(), row.agg.toRaw(), row.index, row.value.toRaw(), row.result.toRaw(), self.tf(row.ty) });
             },
             .ExtractField => {
                 const row = self.tir.instrs.get(.ExtractField, id);
-                try self.leaf("(instr id={} op=ExtractField agg={} index={} name={s} result={} type={})", .{
+                try self.leaf("(instr id={} op=ExtractField agg={} index={} name={s} result={} type={f})", .{
                     id.toRaw(),
                     row.agg.toRaw(),
                     row.index,
                     if (row.name.isNone()) "null" else self.s(row.name.unwrap()),
                     row.result.toRaw(),
-                    row.ty,
+                    self.tf(row.ty),
                 });
             },
             .InsertField => {
                 const row = self.tir.instrs.get(.InsertField, id);
-                try self.leaf("(instr id={} op=InsertField agg={} index={} value={} name={s} result={} type={})", .{
+                try self.leaf("(instr id={} op=InsertField agg={} index={} value={} name={s} result={} type={f})", .{
                     id.toRaw(),
                     row.agg.toRaw(),
                     row.index,
                     row.value.toRaw(),
                     if (row.name.isNone()) "null" else self.s(row.name.unwrap()),
                     row.result.toRaw(),
-                    row.ty,
+                    self.tf(row.ty),
                 });
             },
             .Index => {
                 const row = self.tir.instrs.get(.Index, id);
-                try self.leaf("(instr id={} op=Index base={} index={} result={} type={})", .{ id.toRaw(), row.base.toRaw(), row.index.toRaw(), row.result.toRaw(), row.ty });
+                try self.leaf("(instr id={} op=Index base={} index={} result={} type={f})", .{ id.toRaw(), row.base.toRaw(), row.index.toRaw(), row.result.toRaw(), self.tf(row.ty) });
             },
             .AddressOf => {
                 const row = self.tir.instrs.get(.AddressOf, id);
-                try self.leaf("(instr id={} op=AddressOf value={} result={} type={})", .{ id.toRaw(), row.value.toRaw(), row.result.toRaw(), row.ty });
+                try self.leaf("(instr id={} op=AddressOf value={} result={} type={f})", .{ id.toRaw(), row.value.toRaw(), row.result.toRaw(), self.tf(row.ty) });
             },
             .Select => {
                 const row = self.tir.instrs.get(.Select, id);
-                try self.leaf("(instr id={} op=Select cond={} then={} else={} result={} type={})", .{ id.toRaw(), row.cond.toRaw(), row.then_value.toRaw(), row.else_value.toRaw(), row.result.toRaw(), row.ty });
+                try self.leaf("(instr id={} op=Select cond={} then={} else={} result={} type={f})", .{ id.toRaw(), row.cond.toRaw(), row.then_value.toRaw(), row.else_value.toRaw(), row.result.toRaw(), self.tf(row.ty) });
             },
             .Call => {
                 const row = self.tir.instrs.get(.Call, id);
                 const args = self.tir.instrs.val_list_pool.slice(row.args);
-                try self.open("(instr id={} op=Call callee=\"{s}\" result={} type={} args=[", .{ id.toRaw(), self.s(row.callee), row.result.toRaw(), row.ty });
+                try self.open("(instr id={} op=Call callee=\"{s}\" result={} type={f} args=[", .{ id.toRaw(), self.s(row.callee), row.result.toRaw(), self.tf(row.ty) });
                 for (args) |vid| try self.leaf("  {}", .{vid.toRaw()});
                 try self.leaf("])", .{});
                 try self.close();

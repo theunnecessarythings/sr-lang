@@ -203,7 +203,7 @@ pub const StringRef = struct {
         return self.inner.length;
     }
 
-    pub fn toSlice(self: *StringRef) []const u8 {
+    pub fn toSlice(self: *const StringRef) []const u8 {
         return self.inner.data[0..self.inner.length];
     }
 };
@@ -701,7 +701,7 @@ pub const Operation = struct {
         return c.mlirOperationGetTypeID(self.handle);
     }
 
-    pub fn getName(self: *Operation) Identifier {
+    pub fn getName(self: *const Operation) Identifier {
         return Identifier{ .handle = c.mlirOperationGetName(self.handle) };
     }
 
@@ -1018,7 +1018,7 @@ pub const Block = struct {
         return Value{ .handle = c.mlirBlockInsertArgument(self.handle, @intCast(pos), ty.handle, loc.handle) };
     }
 
-    pub fn getArgument(self: *Block, pos: usize) Value {
+    pub fn getArgument(self: *const Block, pos: usize) Value {
         return Value{ .handle = c.mlirBlockGetArgument(self.handle, @intCast(pos)) };
     }
 
@@ -1073,7 +1073,7 @@ pub const Value = struct {
         return @intCast(c.mlirOpResultGetResultNumber(self.handle));
     }
 
-    pub fn getType(self: *Value) Type {
+    pub fn getType(self: *const Value) Type {
         return Type{ .handle = c.mlirValueGetType(self.handle) };
     }
 
@@ -1149,7 +1149,7 @@ pub const Identifier = struct {
         return c.mlirIdentifierEqual(self.handle, other.handle);
     }
 
-    pub fn str(self: *Identifier) StringRef {
+    pub fn str(self: *const Identifier) StringRef {
         return StringRef{ .inner = c.mlirIdentifierStr(self.handle) };
     }
 };
@@ -1362,7 +1362,7 @@ pub const Attribute = struct {
         c.mlirAttributePrint(self.handle, cb, userData);
     }
 
-    pub fn dump(self: *Attribute) void {
+    pub fn dump(self: *const Attribute) void {
         c.mlirAttributeDump(self.handle);
     }
 
