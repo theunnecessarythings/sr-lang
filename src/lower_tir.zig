@@ -409,6 +409,7 @@ pub const LowerTir = struct {
                 const ty0 = self.getExprType(id) orelse return error.LoweringBug;
                 const v = switch (lit.kind) {
                     .int => blk.builder.constInt(blk, ty0, try std.fmt.parseInt(u64, a.exprs.strs.get(lit.value.unwrap()), 10)),
+                    .imaginary => blk.builder.constInt(blk, ty0, 0), // TODO: complex number support
                     .float => blk.builder.constFloat(blk, ty0, try std.fmt.parseFloat(f64, a.exprs.strs.get(lit.value.unwrap()))),
                     .bool => blk.builder.constBool(blk, ty0, lit.bool_value),
                     .string => blk.builder.constString(blk, ty0, a.exprs.strs.get(lit.value.unwrap())),

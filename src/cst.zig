@@ -963,8 +963,6 @@ pub const CST = struct {
     pub fn deinit(self: *@This()) void {
         self.exprs.deinit();
         self.pats.deinit();
-        self.interner.deinit();
-        self.gpa.destroy(self.interner);
     }
 };
 

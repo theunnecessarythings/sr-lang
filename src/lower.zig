@@ -729,11 +729,10 @@ pub const Lower = struct {
                 break :blk self.ast_unit.exprs.add(.Literal, .{ .kind = .char, .value = ast.OptStrId.none(), .bool_value = false, .char_value = unescaped_char_val, .loc = loc });
             },
             5 => blk_im: {
-                // imaginary literal like 2i -> treat as integer literal "2" for typing
                 const s = self.cst_program.exprs.strs.get(lit.value);
                 const trimmed: []const u8 = if (s.len > 0 and s[s.len - 1] == 'i') s[0 .. s.len - 1] else s;
                 const sid = self.ast_unit.exprs.strs.intern(trimmed);
-                break :blk_im self.ast_unit.exprs.add(.Literal, .{ .kind = .int, .value = ast.OptStrId.some(sid), .bool_value = false, .char_value = 0, .loc = loc });
+                break :blk_im self.ast_unit.exprs.add(.Literal, .{ .kind = .imaginary, .value = ast.OptStrId.some(sid), .bool_value = false, .char_value = 0, .loc = loc });
             },
             6 => self.ast_unit.exprs.add(.Literal, .{ .kind = .bool, .value = ast.OptStrId.none(), .bool_value = true, .char_value = 0, .loc = loc }),
             7 => self.ast_unit.exprs.add(.Literal, .{ .kind = .bool, .value = ast.OptStrId.none(), .bool_value = false, .char_value = 0, .loc = loc }),

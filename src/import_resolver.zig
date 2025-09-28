@@ -31,14 +31,6 @@ pub const ModuleEntry = struct {
         while (kit.next()) |k| gpa.free(k.*);
         self.syms.deinit();
 
-        self.cst.deinit();
-        self.ast.deinit();
-
-        self.type_info.deinit();
-        gpa.destroy(self.type_info);
-
-        self.tir.deinit();
-
         gpa.free(self.path);
 
         self.arena.deinit();
@@ -174,22 +166,15 @@ pub const ImportResolver = struct {
 
     /// Collect raw import strings from an AST (e.g. for prefetching).
     pub fn collectImportsFromAst(self: *ImportResolver, a: *const ast.Ast, out_list: *std.ArrayList([]const u8)) !void {
-        const kinds = a.exprs.index.kinds.items;
-        var i: usize = 0;
-        while (i < kinds.len) : (i += 1) {
-            const k = kinds[i];
-            if (k == .Import) {
-                const ir = a.exprs.get(.Import, ast.ExprId.fromRaw(@intCast(i)));
-                const ek = a.exprs.index.kinds.items[ir.expr.toRaw()];
-                if (ek == .Literal) {
-                    const lit = a.exprs.get(.Literal, ir.expr);
-                    if (lit.kind == .string and !lit.value.isNone()) {
-                        const s = a.exprs.strs.get(lit.value.unwrap());
-                        // trim surrounding quotes if present
-                        const imp = if (s.len >= 2 and s[0] == '"' and s[s.len - 1] == '"') s[1 .. s.len - 1] else s;
-                        try out_list.append(self.gpa, try self.gpa.dupe(u8, imp));
-                    }
-                }
+        for (a.exprs.Import.list.items(.expr)) |expr| {
+            const ek = a.exprs.index.kinds.items[expr.toRaw()];
+            if (ek != .Literal) continue;
+            const lit = a.exprs.get(.Literal, expr);
+            if (lit.kind == .string and !lit.value.isNone()) {
+                const s = a.exprs.strs.get(lit.value.unwrap());
+                // trim surrounding quotes if present
+                const imp = if (s.len >= 2 and s[0] == '"' and s[s.len - 1] == '"') s[1 .. s.len - 1] else s;
+                try out_list.append(self.gpa, try self.gpa.dupe(u8, imp));
             }
         }
     }

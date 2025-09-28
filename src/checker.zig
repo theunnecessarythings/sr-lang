@@ -734,6 +734,14 @@ pub const Checker = struct {
                 }
                 break :blk self.type_info.store.tI64();
             },
+            .imaginary => blk: {
+                const s = self.getStr(lit.value.unwrap());
+                if (std.fmt.parseInt(i64, s, 10) catch null == null) {
+                    try self.diags.addError(self.exprLoc(lit), .invalid_integer_literal, .{});
+                    return null;
+                }
+                break :blk self.type_info.store.tI64(); // TODO: imaginary type
+            },
             .float => blk: {
                 // try parsing the float literal
                 const s = self.getStr(lit.value.unwrap());

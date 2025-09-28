@@ -48,19 +48,11 @@ pub const Pipeline = struct {
         chk.setImportResolver(&resolver, base_dir);
         const type_info = try self.allocator.create(types.TypeInfo);
         type_info.* = try chk.runWithTypes();
-
-        // Debug: print AST unit to verify statement order/content
-        {
-            var buf_ast: [1024]u8 = undefined;
-            var errw_ast = std.fs.File.stderr().writer(&buf_ast);
-            var w_ast = &errw_ast.interface;
-            var ap = ast.AstPrinter.init(w_ast, &hir.exprs, &hir.stmts, &hir.pats);
-            _ = w_ast.write("(debug) Root AST\n") catch {};
-            ap.printUnit(&hir.unit) catch {};
+        if (self.diags.anyErrors()) {
+            return error.TypeCheckFailed;
         }
 
         var tir_lowerer = lower_tir.LowerTir.init(self.allocator, type_info, program.interner);
-        // Compute module name -> prefix from root AST for mangling and install into lowerer
         var name_to_prefix = std.StringHashMap([]const u8).init(self.allocator);
         defer {
             var it = name_to_prefix.valueIterator();
@@ -74,19 +66,16 @@ pub const Pipeline = struct {
         }
         tir_lowerer.setImportResolver(&resolver, base_dir);
         const root_mod = try tir_lowerer.run(&hir);
-        // Debug: dump TIR of root module before MLIR emission
-        {
-            var buf: [1024]u8 = undefined;
-            var errw = std.fs.File.stderr().writer(&buf);
-            var writer = &errw.interface;
-            var tp = tir.TirPrinter.init(writer, &root_mod);
-            _ = writer.write("(debug) Root TIR\n") catch {};
-            tp.print() catch {};
+        if (self.diags.anyErrors()) {
+            return error.TirLoweringFailed;
         }
 
         const mlir_ctx = compile.initMLIR(self.allocator);
         var gen = mlir_codegen.MlirCodegen.init(self.allocator, mlir_ctx);
         var mlir_module = try gen.emitModule(&root_mod, &type_info.store);
+        if (self.diags.anyErrors()) {
+            return error.MlirCodegenFailed;
+        }
 
         // Resolve imports recursively and append their codegen (reuse resolver)
         var imports: std.ArrayList([]const u8) = .empty;
@@ -103,17 +92,11 @@ pub const Pipeline = struct {
             // Apply name mangling to imported module functions (and their internal calls)
             const pref = name_to_prefix.get(imp) orelse computePrefix(self.allocator, imp) catch @panic("OOM");
             try mangleTIR(self.allocator, &me.tir, me.tir.instrs.strs, pref);
-            // Debug: dump imported module TIR
-            {
-                var buf2: [1024]u8 = undefined;
-                var errw2 = std.fs.File.stderr().writer(&buf2);
-                var writer2 = &errw2.interface;
-                var tp2 = tir.TirPrinter.init(writer2, &me.tir);
-                _ = writer2.write("(debug) Imported TIR\n") catch {};
-                tp2.print() catch {};
-            }
             // append TIR into same generator (emit into same module)
             _ = try gen.emitModule(&me.tir, &me.type_info.store);
+            if (self.diags.anyErrors()) {
+                return error.MlirCodegenFailed;
+            }
         }
 
         // finalize: print and pass pipeline + LLVM IR
@@ -121,8 +104,13 @@ pub const Pipeline = struct {
         var op = mlir_module.getOperation();
         op.dump();
         try compile.run_passes(&gen.ctx, &mlir_module, true);
+        if (self.diags.anyErrors()) {
+            return error.MlirPassesFailed;
+        }
         try compile.convert_to_llvm_ir(mlir_module.handle, true, link_args);
-
+        if (self.diags.anyErrors()) {
+            return error.LLVMIRFailed;
+        }
         return .{ .hir = hir, .type_info = type_info, .module = root_mod, .mlir_module = mlir_module, .gen = gen };
     }
 };

@@ -30,42 +30,42 @@ const CliArgs = struct {
         lex,
         unknown,
         repl,
+        pretty_print,
+        json_ast,
+        server,
     };
 };
 
 // Function to print usage information
 fn printUsage(writer: anytype, exec_name: []const u8) !void {
     try writer.print(
-        "{s}Usage:{s} {s} <command> [options] <file>\n" ++
-            "\n" ++
-            "{s}Commands:{s}\n" ++
-            "  {s}compile{s} <file>      Compile a source file to an executable.\n" ++
-            "  {s}run{s} <file>         Compile and immediately run a source file.\n" ++
-            "  {s}check{s} <file>        Parse and perform semantic checks on a source file.\n" ++
-            "  {s}ast{s} <file>         Print the Abstract Syntax Tree (AST) of a source file.\n" ++
-            "  {s}tir{s} <file>         Print the Typed Intermediate Representation (TIR) of a source file.\n" ++
-            "  {s}help{s}               Display this help message.\n" ++
-            "\n" ++
-            "{s}Options:{s}\n" ++
-            "  {s}--output{s} <path>    Specify the output path for compiled executables.\n" ++
-            "  {s}--emit-mlir{s}        Emit MLIR IR to stdout during compilation.\n" ++
-            "  {s}--run-mlir{s}         Run MLIR JIT after compilation (for testing).\n" ++
-            "  {s}--no-color{s}         Disable colored output for diagnostics.\n" ++
-            "  {s}--verbose{s}          Enable verbose output.\n" ++
-            "\n",
-        .{
-            Colors.bold,  Colors.reset, exec_name,
-            Colors.bold,  Colors.reset, Colors.cyan,
-            Colors.reset, Colors.cyan,  Colors.reset,
-            Colors.cyan,  Colors.reset, Colors.cyan,
-            Colors.reset, Colors.cyan,  Colors.reset,
-            Colors.cyan,  Colors.reset, Colors.bold,
-            Colors.reset, Colors.cyan,  Colors.reset,
-            Colors.cyan,  Colors.reset, Colors.cyan,
-            Colors.reset, Colors.cyan,  Colors.reset,
-            Colors.cyan,  Colors.reset,
-        },
+        "{s}Usage:{s} {s} <command> [options] <file>\n\n",
+        .{ Colors.bold, Colors.reset, exec_name },
     );
+
+    try writer.print(
+        "{s}Commands:{s}\n",
+        .{ Colors.bold, Colors.reset },
+    );
+    try writer.print("  {s}compile{s} <file>      Compile a source file to an executable.\n", .{ Colors.cyan, Colors.reset });
+    try writer.print("  {s}run{s} <file>         Compile and immediately run a source file.\n", .{ Colors.cyan, Colors.reset });
+    try writer.print("  {s}check{s} <file>        Parse and perform semantic checks on a source file.\n", .{ Colors.cyan, Colors.reset });
+    try writer.print("  {s}ast{s} <file>         Print the Abstract Syntax Tree (AST) of a source file.\n", .{ Colors.cyan, Colors.reset });
+    try writer.print("  {s}tir{s} <file>         Print the Typed Intermediate Representation (TIR) of a source file.\n", .{ Colors.cyan, Colors.reset });
+    try writer.print("  {s}pretty-print{s} <file>  Format and print the source file.\n", .{ Colors.cyan, Colors.reset });
+    try writer.print("  {s}json-ast{s} <file>      Print the Abstract Syntax Tree (AST) of a source file as JSON.\n", .{ Colors.cyan, Colors.reset });
+    try writer.print("  {s}server{s}             Run a server for AST Explorer.\n", .{ Colors.cyan, Colors.reset });
+    try writer.print("  {s}help{s}               Display this help message.\n\n", .{ Colors.cyan, Colors.reset });
+
+    try writer.print(
+        "{s}Options:{s}\n",
+        .{ Colors.bold, Colors.reset },
+    );
+    try writer.print("  {s}--output{s} <path>    Specify the output path for compiled executables.\n", .{ Colors.cyan, Colors.reset });
+    try writer.print("  {s}--emit-mlir{s}        Emit MLIR IR to stdout during compilation.\n", .{ Colors.cyan, Colors.reset });
+    try writer.print("  {s}--run-mlir{s}         Run MLIR JIT after compilation (for testing).\n", .{ Colors.cyan, Colors.reset });
+    try writer.print("  {s}--no-color{s}         Disable colored output for diagnostics.\n", .{ Colors.cyan, Colors.reset });
+    try writer.print("  {s}--verbose{s}          Enable verbose output.\n\n", .{ Colors.cyan, Colors.reset });
     try writer.flush();
 }
 
@@ -186,6 +186,170 @@ fn repl(
     try compiler.compile.run_passes(&codegen.ctx, &mlir_module, true);
 }
 
+fn server(
+    allocator: std.mem.Allocator,
+    err_writer: anytype,
+) !void {
+    // Listen on localhost:8080 (can tweak if needed)
+    const addr = try std.net.Address.parseIp4("127.0.0.1", 8000);
+    var tcp = try addr.listen(.{ .reuse_address = true });
+    defer tcp.deinit();
+
+    std.debug.print("AST server listening on http://127.0.0.1:8000\n", .{});
+
+    accept_loop: while (true) {
+        const conn = tcp.accept() catch |e| {
+            std.debug.print("accept error: {s}\n", .{@errorName(e)});
+            continue :accept_loop;
+        };
+        defer conn.stream.close();
+
+        // HTTP over the accepted TCP stream (Zig 0.15.1 style: operate on I/O streams)
+        var recv_buf: [4096]u8 = undefined;
+        var send_buf: [4096]u8 = undefined;
+        var conn_reader = conn.stream.reader(&recv_buf);
+        var conn_writer = conn.stream.writer(&send_buf);
+        var http = std.http.Server.init(conn_reader.interface(), &conn_writer.interface);
+
+        request_loop: while (http.reader.state == .ready) {
+            var req = http.receiveHead() catch |err| switch (err) {
+                error.HttpConnectionClosing => break :request_loop,
+                else => {
+                    std.debug.print("receiveHead error: {s}\n", .{@errorName(err)});
+                    break :request_loop;
+                },
+            };
+
+            // Basic CORS / preflight support
+            if (req.head.method == .OPTIONS) {
+                try req.respond("", .{
+                    .status = .no_content,
+                    .extra_headers = &.{
+                        .{ .name = "access-control-allow-origin", .value = "*" },
+                        .{ .name = "access-control-allow-headers", .value = "content-type" },
+                        .{ .name = "access-control-allow-methods", .value = "POST, OPTIONS" },
+                    },
+                });
+                continue :request_loop;
+            }
+
+            if (req.head.method != .POST) {
+                try req.respond("Only POST is supported\n", .{
+                    .status = .method_not_allowed,
+                    .extra_headers = &.{
+                        .{ .name = "content-type", .value = "text/plain; charset=utf-8" },
+                        .{ .name = "access-control-allow-origin", .value = "*" },
+                    },
+                });
+                continue :request_loop;
+            }
+
+            // Read request body (source text)
+            var body_reader_buf: [4096]u8 = undefined;
+            var body_reader = req.readerExpectNone(&body_reader_buf);
+            const content_length = req.head.content_length orelse {
+                std.debug.print("Missing Content-Length\n", .{});
+                try req.respond("Missing Content-Length\n", .{
+                    .status = .length_required,
+                    .extra_headers = &.{
+                        .{ .name = "content-type", .value = "text/plain; charset=utf-8" },
+                        .{ .name = "access-control-allow-origin", .value = "*" },
+                    },
+                });
+                continue :request_loop;
+            };
+
+            const body = body_reader.readAlloc(allocator, content_length) catch |e| {
+                std.debug.print("read body error: {s}\n", .{@errorName(e)});
+                try req.respond("Failed to read body\n", .{
+                    .status = .bad_request,
+                    .extra_headers = &.{
+                        .{ .name = "content-type", .value = "text/plain; charset=utf-8" },
+                        .{ .name = "access-control-allow-origin", .value = "*" },
+                    },
+                });
+                continue :request_loop;
+            };
+            defer allocator.free(body);
+
+            // Null-terminate for the compiler pipeline
+            const source = try allocator.dupeZ(u8, body);
+            defer allocator.free(source);
+
+            // Initialize compiler machinery
+            var interner = compiler.ast.StringInterner.init(allocator);
+            defer interner.deinit();
+
+            var diags = compiler.diagnostics.Diagnostics.init(allocator);
+            defer diags.deinit();
+
+            // Parse → Lower (HIR)
+            var parser = compiler.parser.Parser.init(allocator, source, &diags, &interner);
+            var cst_program = parser.parse() catch |e| {
+                std.debug.print("Parser error: {s}\n", .{@errorName(e)});
+                try req.respond("Parser error\n", .{
+                    .status = .bad_request,
+                    .extra_headers = &.{
+                        .{ .name = "content-type", .value = "text/plain; charset=utf-8" },
+                        .{ .name = "access-control-allow-origin", .value = "*" },
+                    },
+                });
+                continue :request_loop;
+            };
+
+            var lower_pass = compiler.lower.Lower.init(allocator, &cst_program, &diags);
+            var hir = lower_pass.run() catch |e| {
+                std.debug.print("Lowering error: {s}\n", .{@errorName(e)});
+                try req.respond("Lowering error\n", .{
+                    .status = .bad_request,
+                    .extra_headers = &.{
+                        .{ .name = "content-type", .value = "text/plain; charset=utf-8" },
+                        .{ .name = "access-control-allow-origin", .value = "*" },
+                    },
+                });
+                continue :request_loop;
+            };
+
+            // If there are diagnostics, emit them to stderr and return 400
+            if (diags.anyErrors()) {
+                try diags.emitStyled(source, err_writer, "request", true);
+                try req.respond("Semantic errors\n", .{
+                    .status = .bad_request,
+                    .extra_headers = &.{
+                        .{ .name = "content-type", .value = "text/plain; charset=utf-8" },
+                        .{ .name = "access-control-allow-origin", .value = "*" },
+                    },
+                });
+                continue :request_loop;
+            }
+
+            // Print HIR as JSON into an allocating writer buffer
+            var json_buf: std.Io.Writer.Allocating = .init(allocator);
+            defer json_buf.deinit();
+
+            var json_printer = compiler.json_printer.JsonPrinter.init(
+                &json_buf.writer,
+                &hir.exprs,
+                &hir.stmts,
+                &hir.pats,
+            );
+            try json_printer.printUnit(&hir.unit);
+
+            const json = try json_buf.toOwnedSlice();
+            defer allocator.free(json);
+
+            // Respond with JSON
+            try req.respond(json, .{
+                .status = .ok,
+                .extra_headers = &.{
+                    .{ .name = "content-type", .value = "application/json" },
+                    .{ .name = "access-control-allow-origin", .value = "*" },
+                },
+            });
+        }
+    }
+}
+
 fn process_file(
     allocator: std.mem.Allocator,
     filename: []const u8,
@@ -224,6 +388,10 @@ fn process_file(
     var parser = compiler.parser.Parser.init(allocator, source0, &diags, &interner);
     var cst_program = try parser.parse();
 
+    // Provide import resolver for module-aware type checking
+    var resolver = compiler.import_resolver.ImportResolver.init(allocator, &diags);
+    defer resolver.deinit();
+
     // For 'check' command, stop after semantic checks
     if (cli_args.subcommand == .check) {
         var lower_pass = compiler.lower.Lower.init(allocator, &cst_program, &diags);
@@ -231,11 +399,8 @@ fn process_file(
 
         var chk = compiler.checker.Checker.init(allocator, &diags, &hir);
         defer chk.deinit();
-        // Provide import resolver for module-aware type checking
-        var res = compiler.import_resolver.ImportResolver.init(allocator, &diags);
-        defer res.deinit();
         const base_dir = std.fs.path.dirname(filename) orelse ".";
-        chk.setImportResolver(&res, base_dir);
+        chk.setImportResolver(&resolver, base_dir);
         try chk.run();
         var printer = compiler.ast.AstPrinter.init(out_writer, &hir.exprs, &hir.stmts, &hir.pats);
         try printer.printUnit(&hir.unit);
@@ -264,12 +429,43 @@ fn process_file(
         return;
     }
 
+    // For 'pretty-print' command, print formatted code and exit
+    if (cli_args.subcommand == .pretty_print) {
+        var lower_pass = compiler.lower.Lower.init(allocator, &cst_program, &diags);
+        var hir = try lower_pass.run();
+        var code_printer = compiler.ast.CodePrinter.init(
+            out_writer,
+            &hir.exprs,
+            &hir.stmts,
+            &hir.pats,
+        );
+        try code_printer.printUnit(&hir.unit);
+        try out_writer.flush();
+        return;
+    }
+
+    // For 'json-ast' command, print AST as JSON and exit
+    if (cli_args.subcommand == .json_ast) {
+        var lower_pass = compiler.lower.Lower.init(allocator, &cst_program, &diags);
+        var hir = try lower_pass.run();
+        var json_printer = compiler.json_printer.JsonPrinter.init(
+            out_writer,
+            &hir.exprs,
+            &hir.stmts,
+            &hir.pats,
+        );
+        try json_printer.printUnit(&hir.unit);
+        try out_writer.flush();
+        return;
+    }
+
     // For 'tir' command, print TIR and exit
     if (cli_args.subcommand == .tir) {
         var lower_pass = compiler.lower.Lower.init(allocator, &cst_program, &diags);
         var hir = try lower_pass.run();
 
         var chk = compiler.checker.Checker.init(allocator, &diags, &hir);
+        chk.setImportResolver(&resolver, std.fs.path.dirname(filename) orelse ".");
         defer chk.deinit();
         try chk.run();
 
@@ -280,6 +476,7 @@ fn process_file(
         }
 
         var lower_tir = compiler.lower_tir.LowerTir.init(allocator, &chk.type_info, &interner);
+        lower_tir.setImportResolver(&resolver, std.fs.path.dirname(filename) orelse ".");
         defer lower_tir.deinit();
         var tir = try lower_tir.run(&hir);
         defer tir.deinit();
@@ -379,6 +576,10 @@ pub fn main() !void {
                     cli_args.subcommand = .help;
                 } else if (std.mem.eql(u8, arg, "repl")) {
                     cli_args.subcommand = .repl;
+                } else if (std.mem.eql(u8, arg, "json-ast")) {
+                    cli_args.subcommand = .json_ast;
+                } else if (std.mem.eql(u8, arg, "server")) {
+                    cli_args.subcommand = .server;
                 } else {
                     // Assume it's a filename if no subcommand yet
                     cli_args.filename = arg;
@@ -425,7 +626,7 @@ pub fn main() !void {
         .help => {
             try printUsage(out_writer, exec_name);
         },
-        .compile, .run, .check, .ast, .tir, .lex => {
+        .compile, .run, .check, .ast, .tir, .lex, .pretty_print, .json_ast => {
             if (cli_args.filename == null) {
                 try writer.print("{s}Error:{s} Missing source file for '{s}' command.\n", .{ Colors.red, Colors.reset, @tagName(cli_args.subcommand) });
                 try printUsage(writer, exec_name);
@@ -437,5 +638,7 @@ pub fn main() !void {
             };
         },
         .repl => try repl(gpa, writer, out_writer),
+        .server => try server(gpa, writer),
     }
 }
+

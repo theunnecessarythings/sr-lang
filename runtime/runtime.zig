@@ -63,6 +63,16 @@ pub export fn rt_panic(ptr: [*]const u8, len: usize) callconv(.c) noreturn {
     std.process.exit(1);
 }
 
+pub export fn rt_abort() callconv(.c) noreturn {
+    std.process.exit(1);
+}
+
+pub export fn rt_assert(cond: bool, ptr: [*]const u8, len: usize) callconv(.c) void {
+    if (!cond) {
+        rt_panic(ptr, len);
+    }
+}
+
 // Return length of a NUL-terminated C string
 pub export fn rt_strlen(ptr: [*]const u8) callconv(.c) usize {
     return @intCast(c.strlen(@ptrCast(ptr)));
