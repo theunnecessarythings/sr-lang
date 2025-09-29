@@ -100,6 +100,7 @@ pub const Checker = struct {
         try self.context.type_info.expr_types.appendNTimes(self.gpa, null, expr_len);
         try self.context.type_info.decl_types.appendNTimes(self.gpa, null, decl_len);
 
+        // Add builtin symbols to the global scope
         _ = try self.symtab.push(null);
         defer self.symtab.pop();
 
@@ -113,9 +114,22 @@ pub const Checker = struct {
         for (decl_ids) |did| {
             try self.checkDecl(did);
         }
-        // Returning a copy-by-value is fine as long as callers treat it as BORROWED.
-        // Prefer exposing a &TypeInfo accessor in the long run.
         return self.context.type_info;
+    }
+
+    fn addBuiltinTypes(self: *Checker) !void {
+        _ = self;
+        // Add builtin types to the symbol tablea
+        // const unknown_loc = Loc{ .file = 0, .start = 0, .end = 0 };
+        // const unknown_loc_id = self.ast_unit.exprs.locs.add(self.gpa, unknown_loc);
+        // const ti32 = self.context.type_info.store.tI32();
+        // _ = try self.symtab.declare(.{
+        //     .name = self.ast_unit.exprs.strs.intern("i32"),
+        //     .kind = .Type,
+        //     .loc = unknown_loc_id,
+        //     .origin_decl = ast.OptDeclId.none(),
+        //     .origin_param = ast.OptParamId.none(),
+        // });
     }
 
     // --------- context
@@ -2207,7 +2221,7 @@ pub const Checker = struct {
                     try self.context.diags.addError(loc, .division_by_zero, .{});
                 }
             },
-            .float => {
+            .float, .imaginary => {
                 if (!lit.value.isNone()) {
                     const s = self.getStr(lit.value.unwrap());
                     const f = std.fmt.parseFloat(f64, s) catch 1.0;

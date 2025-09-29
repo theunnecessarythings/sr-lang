@@ -40,6 +40,8 @@ pub const Pipeline = struct {
         jit,
         exec,
         run,
+
+        repl,
     };
 
     pub fn init(allocator: std.mem.Allocator, context: *compile.Context) Pipeline {
@@ -49,12 +51,16 @@ pub const Pipeline = struct {
     // Run with import resolution: loads imported modules and appends their codegen into one MLIR module
     pub fn runWithImports(
         self: *Pipeline,
-        filename: []const u8,
+        filename_or_src: []const u8,
         link_args: []const []const u8,
         mode: Mode,
     ) anyerror!Result {
+        const filename = if (mode == .repl) "temp.sr" else filename_or_src;
         const file_id = try self.context.source_manager.add(filename);
-        const source = try self.context.source_manager.read(file_id);
+        const source = if (mode == .repl)
+            filename_or_src
+        else
+            try self.context.source_manager.read(file_id);
         defer self.allocator.free(source);
         const source0 = try self.allocator.dupeZ(u8, source);
 

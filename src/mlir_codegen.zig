@@ -172,7 +172,9 @@ pub const MlirCodegen = struct {
             if (store.getKind(g.ty) != .Function) continue;
 
             const fnty = store.get(.Function, g.ty);
-            const params_sr = store.type_pool.slice(fnty.params);
+            var params_sr = store.type_pool.slice(fnty.params);
+            if (fnty.is_variadic)
+                params_sr = params_sr[0 .. params_sr.len - 1]; // drop trailing Any for varargs
             const ret_sr = fnty.result;
 
             // Build lowered param list & arg attributes
@@ -1096,18 +1098,24 @@ pub const MlirCodegen = struct {
                 // Build llvm.call
 
                 const seg = mlir.Attribute.denseI32ArrayGet(self.mlir_ctx, &[_]i32{ @as(i32, @intCast(lowered_ops.items.len)), 0 });
-                const callAttrs = [_]mlir.NamedAttribute{
-                    self.named("callee", mlir.Attribute.flatSymbolRefAttrGet(self.mlir_ctx, mlir.StringRef.from(callee_name))),
-                    self.named("operand_segment_sizes", seg),
-                    self.named("op_bundle_sizes", mlir.Attribute.denseI32ArrayGet(self.mlir_ctx, &[_]i32{})),
-                };
+                // if variadic function, add var_callee_type attribute
+                var callAttrsList = ArrayList(mlir.NamedAttribute).init(self.gpa);
+                defer callAttrsList.deinit();
+                try callAttrsList.append(self.named("callee", mlir.Attribute.flatSymbolRefAttrGet(self.mlir_ctx, mlir.StringRef.from(callee_name))));
+                try callAttrsList.append(self.named("operand_segment_sizes", seg));
+                try callAttrsList.append(self.named("op_bundle_sizes", mlir.Attribute.denseI32ArrayGet(self.mlir_ctx, &[_]i32{})));
+
+                if (finfo.is_variadic) {
+                    const func_ty = finfo.op.getInherentAttributeByName(mlir.StringRef.from("function_type"));
+                    callAttrsList.append(self.named("var_callee_type", func_ty)) catch unreachable;
+                }
                 var call = OpBuilder.init("llvm.call", self.loc).builder()
                     .add_operands(lowered_ops.items)
                     .add_results(if (store.getKind(want_res_sr) == .Void or retClass.kind == .IndirectSRet)
                         &.{}
                     else
                         &.{finfo.ret_type})
-                    .add_attributes(&callAttrs)
+                    .add_attributes(callAttrsList.items)
                     .build();
                 self.append(call);
 

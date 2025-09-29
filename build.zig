@@ -135,6 +135,10 @@ pub fn build(b: *std.Build) void {
             },
         }),
     });
+    linkMLIR(b, fuzz_lib) catch |err| {
+        std.debug.print("Error linking MLIR for fuzzer: {}\n", .{err});
+        @panic("Failed to link MLIR for fuzzer");
+    };
     fuzz_lib.root_module.stack_check = false;
     const fuzz_step = b.step("fuzz", "Build the fuzzer");
     fuzz_step.dependOn(&fuzz_lib.step);

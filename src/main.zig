@@ -28,6 +28,7 @@ const CliArgs = struct {
         tir,
         help,
         lex,
+        mlir,
         unknown,
         repl,
         pretty_print,
@@ -100,7 +101,7 @@ fn repl(
     const source = try std.mem.concatWithSentinel(allocator, u8, source_lines.items, 0);
     std.debug.print("{s}Input source:{s}\n{s}\n", .{ Colors.bold, Colors.reset, source });
 
-    const result = try pipeline.runWithImports(source, &.{}, .jit); // Run the pipeline
+    const result = try pipeline.runWithImports(source, &.{}, .repl);
 
     // Print results based on the 'result' struct
     if (result.cst) |cst_program| {
@@ -286,6 +287,7 @@ fn process_file(
         .ast => .ast,
         .tir => .tir,
         .lex => .lex,
+        .mlir => .mlir,
         .pretty_print => .ast,
         .json_ast => .ast,
         else => unreachable,
@@ -353,17 +355,6 @@ fn process_file(
     if (cli_args.verbose) {
         try err_writer.print("{s}Compilation successful for {s}.{s}\n", .{ Colors.green, filename, Colors.reset });
     }
-
-    // If 'run' command, execute the compiled binary
-    if (cli_args.subcommand == .run) {
-        const output_path = cli_args.output_path orelse "zig-out/output_program"; // Default from compile.zig
-        var run_argv = [_][]const u8{output_path};
-        var child = std.process.Child.init(run_argv[0..], allocator);
-        if (cli_args.verbose) {
-            try err_writer.print("{s}Running {s}...{s}\n", .{ Colors.blue, output_path, Colors.reset });
-        }
-        _ = try child.spawnAndWait();
-    }
 }
 
 pub fn main() !void {
@@ -412,6 +403,10 @@ pub fn main() !void {
                     cli_args.subcommand = .ast;
                 } else if (std.mem.eql(u8, arg, "tir")) {
                     cli_args.subcommand = .tir;
+                } else if (std.mem.eql(u8, arg, "mlir")) {
+                    cli_args.subcommand = .mlir;
+                } else if (std.mem.eql(u8, arg, "pretty-print")) {
+                    cli_args.subcommand = .pretty_print;
                 } else if (std.mem.eql(u8, arg, "lex")) {
                     cli_args.subcommand = .lex;
                 } else if (std.mem.eql(u8, arg, "help")) {
@@ -468,7 +463,7 @@ pub fn main() !void {
         .help => {
             try printUsage(out_writer, exec_name);
         },
-        .compile, .run, .check, .ast, .tir, .lex, .pretty_print, .json_ast => {
+        .compile, .mlir, .run, .check, .ast, .tir, .lex, .pretty_print, .json_ast => {
             if (cli_args.filename == null) {
                 try writer.print("{s}Error:{s} Missing source file for '{s}' command.\n", .{ Colors.red, Colors.reset, @tagName(cli_args.subcommand) });
                 try printUsage(writer, exec_name);

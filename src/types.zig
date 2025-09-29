@@ -26,7 +26,6 @@ pub const TypeInfo = struct {
     expr_types: std.ArrayListUnmanaged(?TypeId) = .{},
     decl_types: std.ArrayListUnmanaged(?TypeId) = .{},
     field_index_for_expr: std.AutoArrayHashMapUnmanaged(u32, u32) = .{},
-    sym_types: std.AutoArrayHashMapUnmanaged(u32, TypeId) = .{},
 
     pub fn init(gpa: std.mem.Allocator, interner: *StringInterner) TypeInfo {
         return .{ .gpa = gpa, .store = TypeStore.init(gpa, interner) };
@@ -35,7 +34,6 @@ pub const TypeInfo = struct {
         self.expr_types.deinit(self.gpa);
         self.decl_types.deinit(self.gpa);
         self.field_index_for_expr.deinit(self.gpa);
-        self.sym_types.deinit(self.gpa);
         self.store.deinit();
     }
 
