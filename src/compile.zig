@@ -4,6 +4,7 @@ const cst = @import("cst.zig");
 const Diagnostics = @import("diagnostics.zig").Diagnostics;
 const ImportResolver = @import("import_resolver.zig").ImportResolver;
 const TypeInfo = @import("types.zig").TypeInfo;
+const TypeStore = @import("types.zig").TypeStore;
 
 pub const SourceManager = struct {
     gpa: std.mem.Allocator,
@@ -46,7 +47,7 @@ pub const Context = struct {
     diags: Diagnostics,
     interner: *cst.StringInterner,
     resolver: ImportResolver,
-    type_info: TypeInfo,
+    type_store: TypeStore,
 
     pub fn init(gpa: std.mem.Allocator) Context {
         const interner = gpa.create(cst.StringInterner) catch unreachable;
@@ -57,7 +58,7 @@ pub const Context = struct {
             .gpa = gpa,
             .source_manager = SourceManager{ .gpa = gpa },
             .resolver = ImportResolver.init(gpa),
-            .type_info = TypeInfo.init(gpa, interner),
+            .type_store = TypeStore.init(gpa, interner),
         };
     }
 
@@ -65,7 +66,7 @@ pub const Context = struct {
         self.source_manager.deinit();
         self.diags.deinit();
         self.interner.deinit();
-        self.type_info.deinit();
+        self.type_store.deinit();
         self.resolver.deinit();
         self.gpa.destroy(self.interner);
     }

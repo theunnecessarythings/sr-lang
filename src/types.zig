@@ -22,19 +22,18 @@ pub const StrId = cst.StrId;
 
 pub const TypeInfo = struct {
     gpa: std.mem.Allocator,
-    store: TypeStore,
+    store: *TypeStore,
     expr_types: std.ArrayListUnmanaged(?TypeId) = .{},
     decl_types: std.ArrayListUnmanaged(?TypeId) = .{},
     field_index_for_expr: std.AutoArrayHashMapUnmanaged(u32, u32) = .{},
 
-    pub fn init(gpa: std.mem.Allocator, interner: *StringInterner) TypeInfo {
-        return .{ .gpa = gpa, .store = TypeStore.init(gpa, interner) };
+    pub fn init(gpa: std.mem.Allocator, store: *TypeStore) TypeInfo {
+        return .{ .gpa = gpa, .store = store };
     }
     pub fn deinit(self: *TypeInfo) void {
         self.expr_types.deinit(self.gpa);
         self.decl_types.deinit(self.gpa);
         self.field_index_for_expr.deinit(self.gpa);
-        self.store.deinit();
     }
 
     /// Ensure we have room up to (and including) `expr_id.toRaw()`
@@ -43,7 +42,7 @@ pub const TypeInfo = struct {
 
         if (self.expr_types.items.len < need) {
             try self.expr_types.ensureTotalCapacity(gpa, need);
-            while (self.expr_types.items.len < need) self.expr_types.appendAssumeCapacity(self.store.tVoid()); // or any sentinel
+            while (self.expr_types.items.len < need) self.expr_types.appendAssumeCapacity(self.store.*.tVoid()); // or any sentinel
         }
         if (self.field_index_for_expr.items.len < need) {
             try self.field_index_for_expr.ensureTotalCapacity(gpa, need);

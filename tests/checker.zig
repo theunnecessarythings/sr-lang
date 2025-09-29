@@ -38,8 +38,10 @@ fn checkProgram(src: [:0]const u8, expected: []const diag.DiagnosticCode) !void 
     var ast = try lower.run();
 
     // Step 3: Type Check
+    var type_info = compiler.types.TypeInfo.init(gpa, &context.type_store);
+    defer type_info.deinit();
     var pipeline = compiler.pipeline.Pipeline.init(gpa, &context);
-    var checker = Checker.init(gpa, &ast, &context, &pipeline);
+    var checker = Checker.init(gpa, &ast, &context, &pipeline, &type_info);
     defer checker.deinit();
     _ = try checker.run();
 

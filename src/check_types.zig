@@ -18,7 +18,7 @@ pub fn isIntegerKind(_: *const Checker, k: types.TypeKind) bool {
 }
 
 pub fn typeSize(self: *Checker, ty_id: types.TypeId) ?usize {
-    const k = self.context.type_info.store.index.kinds.items[ty_id.toRaw()];
+    const k = self.context.type_store.index.kinds.items[ty_id.toRaw()];
     return switch (k) {
         .I8, .U8, .Bool => 1,
         .I16, .U16 => 2,
@@ -30,7 +30,7 @@ pub fn typeSize(self: *Checker, ty_id: types.TypeId) ?usize {
         .String => 8, // best-effort: pointer-like handle; real impl is more complex
         .Slice => 16, // best-effort: ptr + len on 64-bit
         .Array => blk: {
-            const arr = self.context.type_info.store.Array.get(self.context.type_info.store.index.rows.items[ty_id.toRaw()]);
+            const arr = self.context.type_store.Array.get(self.context.type_store.index.rows.items[ty_id.toRaw()]);
             const elem_size = typeSize(self, arr.elem) orelse return null;
             break :blk std.math.mul(usize, elem_size, arr.len) catch return null;
         },
@@ -41,9 +41,9 @@ pub fn typeSize(self: *Checker, ty_id: types.TypeId) ?usize {
 }
 
 pub fn isOptional(self: *Checker, id: types.TypeId) ?types.TypeId {
-    const k = self.context.type_info.store.index.kinds.items[id.toRaw()];
+    const k = self.context.type_store.index.kinds.items[id.toRaw()];
     if (k != .Optional) return null;
-    const opt = self.context.type_info.store.Optional.get(self.context.type_info.store.index.rows.items[id.toRaw()]);
+    const opt = self.context.type_store.Optional.get(self.context.type_store.index.rows.items[id.toRaw()]);
     return opt.elem;
 }
 
@@ -51,11 +51,11 @@ pub fn checkTypeOf(self: *Checker, id: ast.ExprId) !?types.TypeId {
     const tr = self.ast_unit.exprs.get(.TypeOf, id);
     // typeof should accept value expressions; get their type directly.
     if (try self.checkExpr(tr.expr)) |et| {
-        return self.context.type_info.store.mkTypeType(et);
+        return self.context.type_store.mkTypeType(et);
     }
     // As a fallback, allow typeof on a type expression (yielding that type).
     if (try typeFromTypeExpr(self, tr.expr)) |tt| {
-        return self.context.type_info.store.mkTypeType(tt);
+        return self.context.type_store.mkTypeType(tt);
     }
     try self.context.diags.addError(self.ast_unit.exprs.locs.get(tr.loc), .could_not_resolve_type, .{});
     return null;
@@ -65,11 +65,11 @@ pub fn checkTypeOf(self: *Checker, id: ast.ExprId) !?types.TypeId {
 // Type expressions
 // =========================================================
 fn variantPayloadType(self: *Checker, variant_ty: types.TypeId, tag: ast.StrId) ?types.TypeId {
-    const vt = self.context.type_info.store.Variant.get(self.context.type_info.store.index.rows.items[variant_ty.toRaw()]);
-    const cases = self.context.type_info.store.field_pool.slice(vt.variants);
+    const vt = self.context.type_store.Variant.get(self.context.type_store.index.rows.items[variant_ty.toRaw()]);
+    const cases = self.context.type_store.field_pool.slice(vt.variants);
     var i: usize = 0;
     while (i < cases.len) : (i += 1) {
-        const vc = self.context.type_info.store.Field.get(cases[i].toRaw());
+        const vc = self.context.type_store.Field.get(cases[i].toRaw());
         if (vc.name.toRaw() == tag.toRaw()) return vc.ty;
     }
     return null;
@@ -81,30 +81,30 @@ pub fn typeFromTypeExpr(self: *Checker, id: ast.ExprId) anyerror!?types.TypeId {
         .Ident => blk_ident: {
             const name = self.ast_unit.exprs.get(.Ident, id).name;
             const s = self.ast_unit.exprs.strs.get(name);
-            if (std.mem.eql(u8, s, "bool")) break :blk_ident self.context.type_info.store.tBool();
-            if (std.mem.eql(u8, s, "i8")) break :blk_ident self.context.type_info.store.tI8();
-            if (std.mem.eql(u8, s, "i16")) break :blk_ident self.context.type_info.store.tI16();
-            if (std.mem.eql(u8, s, "i32")) break :blk_ident self.context.type_info.store.tI32();
-            if (std.mem.eql(u8, s, "i64")) break :blk_ident self.context.type_info.store.tI64();
-            if (std.mem.eql(u8, s, "u8")) break :blk_ident self.context.type_info.store.tU8();
-            if (std.mem.eql(u8, s, "u16")) break :blk_ident self.context.type_info.store.tU16();
-            if (std.mem.eql(u8, s, "u32")) break :blk_ident self.context.type_info.store.tU32();
-            if (std.mem.eql(u8, s, "u64")) break :blk_ident self.context.type_info.store.tU64();
-            if (std.mem.eql(u8, s, "f32")) break :blk_ident self.context.type_info.store.tF32();
-            if (std.mem.eql(u8, s, "f64")) break :blk_ident self.context.type_info.store.tF64();
-            if (std.mem.eql(u8, s, "usize")) break :blk_ident self.context.type_info.store.tUsize();
-            if (std.mem.eql(u8, s, "char")) break :blk_ident self.context.type_info.store.tU32();
-            if (std.mem.eql(u8, s, "string")) break :blk_ident self.context.type_info.store.tString();
-            if (std.mem.eql(u8, s, "void")) break :blk_ident self.context.type_info.store.tVoid();
-            if (std.mem.eql(u8, s, "any")) break :blk_ident self.context.type_info.store.tAny();
+            if (std.mem.eql(u8, s, "bool")) break :blk_ident self.context.type_store.tBool();
+            if (std.mem.eql(u8, s, "i8")) break :blk_ident self.context.type_store.tI8();
+            if (std.mem.eql(u8, s, "i16")) break :blk_ident self.context.type_store.tI16();
+            if (std.mem.eql(u8, s, "i32")) break :blk_ident self.context.type_store.tI32();
+            if (std.mem.eql(u8, s, "i64")) break :blk_ident self.context.type_store.tI64();
+            if (std.mem.eql(u8, s, "u8")) break :blk_ident self.context.type_store.tU8();
+            if (std.mem.eql(u8, s, "u16")) break :blk_ident self.context.type_store.tU16();
+            if (std.mem.eql(u8, s, "u32")) break :blk_ident self.context.type_store.tU32();
+            if (std.mem.eql(u8, s, "u64")) break :blk_ident self.context.type_store.tU64();
+            if (std.mem.eql(u8, s, "f32")) break :blk_ident self.context.type_store.tF32();
+            if (std.mem.eql(u8, s, "f64")) break :blk_ident self.context.type_store.tF64();
+            if (std.mem.eql(u8, s, "usize")) break :blk_ident self.context.type_store.tUsize();
+            if (std.mem.eql(u8, s, "char")) break :blk_ident self.context.type_store.tU32();
+            if (std.mem.eql(u8, s, "string")) break :blk_ident self.context.type_store.tString();
+            if (std.mem.eql(u8, s, "void")) break :blk_ident self.context.type_store.tVoid();
+            if (std.mem.eql(u8, s, "any")) break :blk_ident self.context.type_store.tAny();
 
             if (self.lookup(name)) |sid| {
                 const sym = self.symtab.syms.get(sid.toRaw());
                 if (!sym.origin_decl.isNone()) {
                     const did = sym.origin_decl.unwrap();
-                    if (self.context.type_info.decl_types.items[did.toRaw()]) |ty| {
-                        if (self.context.type_info.store.index.kinds.items[ty.toRaw()] == .TypeType) {
-                            const tt = self.context.type_info.store.TypeType.get(self.context.type_info.store.index.rows.items[ty.toRaw()]);
+                    if (self.type_info.decl_types.items[did.toRaw()]) |ty| {
+                        if (self.context.type_store.index.kinds.items[ty.toRaw()] == .TypeType) {
+                            const tt = self.context.type_store.TypeType.get(self.context.type_store.index.rows.items[ty.toRaw()]);
                             return tt.of;
                         }
                         return ty;
@@ -114,8 +114,8 @@ pub fn typeFromTypeExpr(self: *Checker, id: ast.ExprId) anyerror!?types.TypeId {
                     const rhs_ty = try typeFromTypeExpr(self, drow.value);
                     if (rhs_ty) |rt| {
                         // Record as a type constant for future queries
-                        const tt = self.context.type_info.store.mkTypeType(rt);
-                        self.context.type_info.decl_types.items[did.toRaw()] = tt;
+                        const tt = self.context.type_store.mkTypeType(rt);
+                        self.type_info.decl_types.items[did.toRaw()] = tt;
                         return rt;
                     }
                 }
@@ -126,26 +126,26 @@ pub fn typeFromTypeExpr(self: *Checker, id: ast.ExprId) anyerror!?types.TypeId {
         .TupleType => blk_tt: {
             const row = self.ast_unit.exprs.get(.TupleType, id);
             const ids = self.ast_unit.exprs.expr_pool.slice(row.elems);
-            var buf = try self.context.type_info.store.gpa.alloc(types.TypeId, ids.len);
-            defer self.context.type_info.store.gpa.free(buf);
+            var buf = try self.context.type_store.gpa.alloc(types.TypeId, ids.len);
+            defer self.context.type_store.gpa.free(buf);
             var i: usize = 0;
             while (i < ids.len) : (i += 1) buf[i] = (try typeFromTypeExpr(self, ids[i])) orelse break :blk_tt null;
-            break :blk_tt self.context.type_info.store.mkTuple(buf);
+            break :blk_tt self.context.type_store.mkTuple(buf);
         },
         .TupleLit => blk_ttl: {
             const row = self.ast_unit.exprs.get(.TupleLit, id);
             const ids = self.ast_unit.exprs.expr_pool.slice(row.elems);
-            var buf = try self.context.type_info.store.gpa.alloc(types.TypeId, ids.len);
-            defer self.context.type_info.store.gpa.free(buf);
+            var buf = try self.context.type_store.gpa.alloc(types.TypeId, ids.len);
+            defer self.context.type_store.gpa.free(buf);
             var i: usize = 0;
             while (i < ids.len) : (i += 1) buf[i] = (try typeFromTypeExpr(self, ids[i])) orelse break :blk_ttl null;
-            break :blk_ttl self.context.type_info.store.mkTuple(buf);
+            break :blk_ttl self.context.type_store.mkTuple(buf);
         },
         .MapType => blk_mt: {
             const row = self.ast_unit.exprs.get(.MapType, id);
             const key = (try typeFromTypeExpr(self, row.key)) orelse break :blk_mt null;
             const val = (try typeFromTypeExpr(self, row.value)) orelse break :blk_mt null;
-            break :blk_mt self.context.type_info.store.mkMap(key, val);
+            break :blk_mt self.context.type_store.mkMap(key, val);
         },
         .ArrayType => blk_at: {
             const row = self.ast_unit.exprs.get(.ArrayType, id);
@@ -160,32 +160,32 @@ pub fn typeFromTypeExpr(self: *Checker, id: ast.ExprId) anyerror!?types.TypeId {
                     return null;
                 }
             } else return error.InvalidArraySize;
-            break :blk_at self.context.type_info.store.mkArray(elem, len_val);
+            break :blk_at self.context.type_store.mkArray(elem, len_val);
         },
         .DynArrayType => blk_dt: {
             const row = self.ast_unit.exprs.get(.DynArrayType, id);
             const elem = (try typeFromTypeExpr(self, row.elem)) orelse break :blk_dt null;
-            break :blk_dt self.context.type_info.store.mkDynArray(elem);
+            break :blk_dt self.context.type_store.mkDynArray(elem);
         },
         .SliceType => blk_st: {
             const row = self.ast_unit.exprs.get(.SliceType, id);
             const elem = (try typeFromTypeExpr(self, row.elem)) orelse break :blk_st null;
-            break :blk_st self.context.type_info.store.mkSlice(elem);
+            break :blk_st self.context.type_store.mkSlice(elem);
         },
         .OptionalType => blk_ot: {
             const row = self.ast_unit.exprs.get(.OptionalType, id);
             const elem = (try typeFromTypeExpr(self, row.elem)) orelse break :blk_ot null;
-            break :blk_ot self.context.type_info.store.mkOptional(elem);
+            break :blk_ot self.context.type_store.mkOptional(elem);
         },
         .PointerType => blk_pt: {
             const row = self.ast_unit.exprs.get(.PointerType, id);
             const elem = (try typeFromTypeExpr(self, row.elem)) orelse break :blk_pt null;
-            break :blk_pt self.context.type_info.store.mkPtr(elem, row.is_const);
+            break :blk_pt self.context.type_store.mkPtr(elem, row.is_const);
         },
         .SimdType => blk_simd: {
             const row = self.ast_unit.exprs.get(.SimdType, id);
             const elem_ty = (try typeFromTypeExpr(self, row.elem)) orelse break :blk_simd null;
-            const ek = self.context.type_info.store.index.kinds.items[elem_ty.toRaw()];
+            const ek = self.context.type_store.index.kinds.items[elem_ty.toRaw()];
             if (!isNumericKind(self, ek)) {
                 try self.context.diags.addError(self.ast_unit.exprs.locs.get(row.loc), .simd_invalid_element_type, .{});
                 break :blk_simd null;
@@ -205,7 +205,7 @@ pub fn typeFromTypeExpr(self: *Checker, id: ast.ExprId) anyerror!?types.TypeId {
                 try self.context.diags.addError(self.ast_unit.exprs.locs.get(row.loc), .simd_lanes_not_integer_literal, .{});
                 break :blk_simd null;
             }
-            break :blk_simd self.context.type_info.store.tAny();
+            break :blk_simd self.context.type_store.tAny();
         },
         .TensorType => blk_tensor: {
             const row = self.ast_unit.exprs.get(.TensorType, id);
@@ -230,13 +230,13 @@ pub fn typeFromTypeExpr(self: *Checker, id: ast.ExprId) anyerror!?types.TypeId {
                 try self.context.diags.addError(self.ast_unit.exprs.locs.get(row.loc), .tensor_missing_arguments, .{});
                 break :blk_tensor null;
             }
-            break :blk_tensor self.context.type_info.store.tAny();
+            break :blk_tensor self.context.type_store.tAny();
         },
         .StructType => blk_sty: {
             const row = self.ast_unit.exprs.get(.StructType, id);
             const sfs = self.ast_unit.exprs.sfield_pool.slice(row.fields);
-            var buf = try self.context.type_info.store.gpa.alloc(types.TypeStore.StructFieldArg, sfs.len);
-            defer self.context.type_info.store.gpa.free(buf);
+            var buf = try self.context.type_store.gpa.alloc(types.TypeStore.StructFieldArg, sfs.len);
+            defer self.context.type_store.gpa.free(buf);
             var seen = std.AutoArrayHashMapUnmanaged(u32, void){};
             defer seen.deinit(self.gpa);
             var i: usize = 0;
@@ -250,13 +250,13 @@ pub fn typeFromTypeExpr(self: *Checker, id: ast.ExprId) anyerror!?types.TypeId {
                 const ft = (try typeFromTypeExpr(self, f.ty)) orelse break :blk_sty null;
                 buf[i] = .{ .name = f.name, .ty = ft };
             }
-            break :blk_sty self.context.type_info.store.mkStruct(buf);
+            break :blk_sty self.context.type_store.mkStruct(buf);
         },
         .UnionType => blk_un: {
             const row = self.ast_unit.exprs.get(.UnionType, id);
             const sfs = self.ast_unit.exprs.sfield_pool.slice(row.fields);
-            var buf = try self.context.type_info.store.gpa.alloc(types.TypeStore.StructFieldArg, sfs.len);
-            defer self.context.type_info.store.gpa.free(buf);
+            var buf = try self.context.type_store.gpa.alloc(types.TypeStore.StructFieldArg, sfs.len);
+            defer self.context.type_store.gpa.free(buf);
             var seen = std.AutoArrayHashMapUnmanaged(u32, void){};
             defer seen.deinit(self.gpa);
             var i: usize = 0;
@@ -271,7 +271,7 @@ pub fn typeFromTypeExpr(self: *Checker, id: ast.ExprId) anyerror!?types.TypeId {
                 const ft = (try typeFromTypeExpr(self, sf.ty)) orelse break :blk_un null;
                 buf[i] = .{ .name = sf.name, .ty = ft };
             }
-            break :blk_un self.context.type_info.store.mkUnion(buf);
+            break :blk_un self.context.type_store.mkUnion(buf);
         },
 
         .EnumType => blk_en: {
@@ -279,12 +279,12 @@ pub fn typeFromTypeExpr(self: *Checker, id: ast.ExprId) anyerror!?types.TypeId {
             const efs = self.ast_unit.exprs.efield_pool.slice(row.fields);
 
             const tag_ty = if (row.discriminant.isNone())
-                self.context.type_info.store.tI32()
+                self.context.type_store.tI32()
             else
                 (try typeFromTypeExpr(self, row.discriminant.unwrap())) orelse return null;
 
             // Ensure the tag type is an integer.
-            const tk = self.context.type_info.store.index.kinds.items[tag_ty.toRaw()];
+            const tk = self.context.type_store.index.kinds.items[tag_ty.toRaw()];
             if (!isIntegerKind(self, tk)) {
                 try self.context.diags.addError(self.ast_unit.exprs.locs.get(row.loc), .enum_discriminant_not_integer, .{});
                 break :blk_en null;
@@ -331,7 +331,7 @@ pub fn typeFromTypeExpr(self: *Checker, id: ast.ExprId) anyerror!?types.TypeId {
                 member_buf[i] = .{ .name = enum_field.name, .value = current_value };
                 next_value = current_value + 1;
             }
-            break :blk_en self.context.type_info.store.mkEnum(member_buf, tag_ty);
+            break :blk_en self.context.type_store.mkEnum(member_buf, tag_ty);
         },
         .ErrorType => blk_err: {
             const row = self.ast_unit.exprs.get(.ErrorType, id);
@@ -352,10 +352,10 @@ pub fn typeFromTypeExpr(self: *Checker, id: ast.ExprId) anyerror!?types.TypeId {
                 }
 
                 const payload_ty = switch (vf.payload_kind) {
-                    .none => self.context.type_info.store.tVoid(),
+                    .none => self.context.type_store.tVoid(),
                     .tuple => blk_tuple: {
                         if (vf.payload_elems.isNone()) {
-                            break :blk_tuple self.context.type_info.store.tVoid();
+                            break :blk_tuple self.context.type_store.tVoid();
                         }
                         const elems = self.ast_unit.exprs.expr_pool.slice(vf.payload_elems.asRange());
                         var elem_buf = try self.gpa.alloc(types.TypeId, elems.len);
@@ -364,11 +364,11 @@ pub fn typeFromTypeExpr(self: *Checker, id: ast.ExprId) anyerror!?types.TypeId {
                         while (j < elems.len) : (j += 1) {
                             elem_buf[j] = (try typeFromTypeExpr(self, elems[j])) orelse return null;
                         }
-                        break :blk_tuple self.context.type_info.store.mkTuple(elem_buf);
+                        break :blk_tuple self.context.type_store.mkTuple(elem_buf);
                     },
                     .@"struct" => blk_struct: {
                         if (vf.payload_fields.isNone()) {
-                            break :blk_struct self.context.type_info.store.tVoid();
+                            break :blk_struct self.context.type_store.tVoid();
                         }
                         const fields = self.ast_unit.exprs.sfield_pool.slice(vf.payload_fields.asRange());
                         var field_buf = try self.gpa.alloc(types.TypeStore.StructFieldArg, fields.len);
@@ -381,19 +381,19 @@ pub fn typeFromTypeExpr(self: *Checker, id: ast.ExprId) anyerror!?types.TypeId {
                                 .ty = (try typeFromTypeExpr(self, sf.ty)) orelse return null,
                             };
                         }
-                        break :blk_struct self.context.type_info.store.mkStruct(field_buf);
+                        break :blk_struct self.context.type_store.mkStruct(field_buf);
                     },
                 };
                 case_buf[i] = .{ .name = vf.name, .ty = payload_ty };
             }
-            break :blk_err self.context.type_info.store.mkError(case_buf);
+            break :blk_err self.context.type_store.mkError(case_buf);
         },
         .ErrorSetType => blk_est: {
             const row = self.ast_unit.exprs.get(.ErrorSetType, id);
             const val_ty = try typeFromTypeExpr(self, row.value);
             const err_ty = try typeFromTypeExpr(self, row.err);
             if (val_ty == null or err_ty == null) break :blk_est null;
-            break :blk_est self.context.type_info.store.mkErrorSet(val_ty.?, err_ty.?);
+            break :blk_est self.context.type_store.mkErrorSet(val_ty.?, err_ty.?);
         },
         .VariantType => blk_var: {
             const row = self.ast_unit.exprs.get(.VariantType, id);
@@ -414,10 +414,10 @@ pub fn typeFromTypeExpr(self: *Checker, id: ast.ExprId) anyerror!?types.TypeId {
                 }
 
                 const payload_ty = switch (vf.payload_kind) {
-                    .none => self.context.type_info.store.tVoid(),
+                    .none => self.context.type_store.tVoid(),
                     .tuple => blk_tuple: {
                         if (vf.payload_elems.isNone()) {
-                            break :blk_tuple self.context.type_info.store.tVoid();
+                            break :blk_tuple self.context.type_store.tVoid();
                         }
                         const elems = self.ast_unit.exprs.expr_pool.slice(vf.payload_elems.asRange());
                         var elem_buf = try self.gpa.alloc(types.TypeId, elems.len);
@@ -426,11 +426,11 @@ pub fn typeFromTypeExpr(self: *Checker, id: ast.ExprId) anyerror!?types.TypeId {
                         while (j < elems.len) : (j += 1) {
                             elem_buf[j] = (try typeFromTypeExpr(self, elems[j])) orelse return null;
                         }
-                        break :blk_tuple self.context.type_info.store.mkTuple(elem_buf);
+                        break :blk_tuple self.context.type_store.mkTuple(elem_buf);
                     },
                     .@"struct" => blk_struct: {
                         if (vf.payload_fields.isNone()) {
-                            break :blk_struct self.context.type_info.store.tVoid();
+                            break :blk_struct self.context.type_store.tVoid();
                         }
                         const fields = self.ast_unit.exprs.sfield_pool.slice(vf.payload_fields.asRange());
                         var field_buf = try self.gpa.alloc(types.TypeStore.StructFieldArg, fields.len);
@@ -443,12 +443,12 @@ pub fn typeFromTypeExpr(self: *Checker, id: ast.ExprId) anyerror!?types.TypeId {
                                 .ty = (try typeFromTypeExpr(self, sf.ty)) orelse return null,
                             };
                         }
-                        break :blk_struct self.context.type_info.store.mkStruct(field_buf);
+                        break :blk_struct self.context.type_store.mkStruct(field_buf);
                     },
                 };
                 case_buf[i] = .{ .name = vf.name, .ty = payload_ty };
             }
-            break :blk_var self.context.type_info.store.mkVariant(case_buf);
+            break :blk_var self.context.type_store.mkVariant(case_buf);
         },
 
         .FunctionLit => blk_fn: {
@@ -464,23 +464,23 @@ pub fn typeFromTypeExpr(self: *Checker, id: ast.ExprId) anyerror!?types.TypeId {
                 const pt = (try typeFromTypeExpr(self, p.ty.unwrap())) orelse break :blk_fn null;
                 pbuf[i] = pt;
             }
-            const res = if (!fnr.result_ty.isNone()) (try typeFromTypeExpr(self, fnr.result_ty.unwrap())) else self.context.type_info.store.tVoid();
+            const res = if (!fnr.result_ty.isNone()) (try typeFromTypeExpr(self, fnr.result_ty.unwrap())) else self.context.type_store.tVoid();
             if (res == null) break :blk_fn null;
             const is_pure = !fnr.flags.is_proc;
-            break :blk_fn self.context.type_info.store.mkFunction(pbuf, res.?, fnr.flags.is_variadic, is_pure);
+            break :blk_fn self.context.type_store.mkFunction(pbuf, res.?, fnr.flags.is_variadic, is_pure);
         },
         .FieldAccess => blk_fa: {
             const fr = self.ast_unit.exprs.get(.FieldAccess, id);
             const parent_ty = (try typeFromTypeExpr(self, fr.parent)) orelse break :blk_fa null;
-            const parent_kind = self.context.type_info.store.index.kinds.items[parent_ty.toRaw()];
+            const parent_kind = self.context.type_store.index.kinds.items[parent_ty.toRaw()];
             switch (parent_kind) {
                 .Struct => {
-                    const st = self.context.type_info.store.Struct.get(self.context.type_info.store.index.rows.items[parent_ty.toRaw()]);
-                    const fields = self.context.type_info.store.field_pool.slice(st.fields);
+                    const st = self.context.type_store.Struct.get(self.context.type_store.index.rows.items[parent_ty.toRaw()]);
+                    const fields = self.context.type_store.field_pool.slice(st.fields);
                     var i: usize = 0;
                     while (i < fields.len) : (i += 1) {
                         const f = fields[i];
-                        const field = self.context.type_info.store.Field.get(f.toRaw());
+                        const field = self.context.type_store.Field.get(f.toRaw());
                         if (field.name.toRaw() == fr.field.toRaw()) return field.ty;
                     }
                     try self.context.diags.addError(self.ast_unit.exprs.locs.get(fr.loc), .unknown_struct_field, .{});
@@ -497,9 +497,9 @@ pub fn typeFromTypeExpr(self: *Checker, id: ast.ExprId) anyerror!?types.TypeId {
                 },
             }
         },
-        .AnyType => self.context.type_info.store.tAny(),
-        .TypeType => self.context.type_info.store.tType(),
-        .NoreturnType => self.context.type_info.store.tNoReturn(),
+        .AnyType => self.context.type_store.tAny(),
+        .TypeType => self.context.type_store.tType(),
+        .NoreturnType => self.context.type_store.tNoReturn(),
         else => null,
     };
 }

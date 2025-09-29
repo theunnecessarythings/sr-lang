@@ -140,14 +140,14 @@ pub const MlirCodegen = struct {
     // ----------------------------------------------------------------
     pub fn emitModule(self: *MlirCodegen, t: *const tir.TIR, context: *compile.Context) !mlir.Module {
         self.attachTargetInfo();
-        try self.emitExternDecls(t, &context.type_info.store);
+        try self.emitExternDecls(t, &context.type_store);
 
         const func_ids = t.funcs.func_pool.data.items;
-        for (func_ids) |fid| try self.emitFunctionHeader(fid, t, &context.type_info.store);
+        for (func_ids) |fid| try self.emitFunctionHeader(fid, t, &context.type_store);
         for (func_ids) |fid| {
             const row = t.funcs.Function.get(fid.toRaw());
             const blocks = t.funcs.block_pool.slice(row.blocks);
-            if (blocks.len > 0) try self.emitFunctionBody(fid, t, &context.type_info.store);
+            if (blocks.len > 0) try self.emitFunctionBody(fid, t, &context.type_store);
         }
         return self.module;
     }

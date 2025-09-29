@@ -103,7 +103,7 @@ pub const ImportResolver = struct {
 
         // 10) Build export table
         var symmap = std.StringHashMap(types.TypeId).init(self.gpa);
-        try self.buildExports(&symmap, &result.ast.?, &pipeline.context.type_info);
+        try self.buildExports(&symmap, &result.ast.?, result.type_info.?);
 
         // 11) Install into cache
         var entry = ModuleEntry{
