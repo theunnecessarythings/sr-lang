@@ -1,25 +1,25 @@
 const std = @import("std");
 const cst = @import("cst.zig");
 const ast = @import("ast.zig");
+const compile = @import("compile.zig");
 const diagnostics = @import("diagnostics.zig");
 
 pub const Lower = struct {
     gpa: std.mem.Allocator,
     cst_program: *const cst.CST,
-    diags: *diagnostics.Diagnostics,
-
     ast_unit: ast.Ast,
+    context: *compile.Context,
 
     pub fn init(
         gpa: std.mem.Allocator,
         program: *const cst.CST,
-        diags: *diagnostics.Diagnostics,
+        context: *compile.Context,
     ) Lower {
         return .{
             .gpa = gpa,
             .cst_program = program,
             .ast_unit = ast.Ast.init(gpa, program.interner),
-            .diags = diags,
+            .context = context,
         };
     }
 
@@ -991,7 +991,7 @@ pub const Lower = struct {
                                 // Multiple rest segments are invalid in slice patterns
                                 const loc_id = self.mapLoc(p.loc);
                                 const loc = self.ast_unit.exprs.locs.get(loc_id);
-                                try self.diags.addError(loc, .pattern_shape_mismatch, .{});
+                                try self.context.diags.addError(loc, .pattern_shape_mismatch, .{});
                                 return null;
                             }
                             has_rest = true;
@@ -1056,7 +1056,7 @@ pub const Lower = struct {
             inline else => |x| {
                 const loc_id = self.mapLoc(self.cst_program.exprs.get(x, id).loc);
                 const loc = self.ast_unit.exprs.locs.get(loc_id);
-                try self.diags.addError(loc, .expected_pattern_on_decl_lhs, .{});
+                try self.context.diags.addError(loc, .expected_pattern_on_decl_lhs, .{});
                 return null;
             },
         };

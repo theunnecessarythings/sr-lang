@@ -1,5 +1,75 @@
 const std = @import("std");
 const mlir = @import("mlir_bindings.zig");
+const cst = @import("cst.zig");
+const Diagnostics = @import("diagnostics.zig").Diagnostics;
+const ImportResolver = @import("import_resolver.zig").ImportResolver;
+const TypeInfo = @import("types.zig").TypeInfo;
+
+pub const SourceManager = struct {
+    gpa: std.mem.Allocator,
+    files: std.ArrayList([]const u8) = .empty,
+
+    pub fn deinit(self: *SourceManager) void {
+        self.files.deinit(self.gpa);
+    }
+
+    pub fn add(self: *SourceManager, file_path: []const u8) !u32 {
+        try self.files.append(self.gpa, file_path);
+        return @intCast(self.files.items.len - 1);
+    }
+
+    pub fn read(self: *SourceManager, index: u32) ![]const u8 {
+        const file_path = self.get(index) orelse return error.FileNotFound;
+        var file = try std.fs.cwd().openFile(file_path, .{});
+        defer file.close();
+        const file_size = try file.getEndPos();
+        const buffer = try self.gpa.alloc(u8, file_size);
+        const read_bytes = try file.readAll(buffer);
+        if (read_bytes != file_size) {
+            self.gpa.free(buffer);
+            return error.FileReadError;
+        }
+        return buffer;
+    }
+
+    pub fn get(self: *const SourceManager, index: u32) ?[]const u8 {
+        if (index < self.files.items.len) {
+            return self.files.items[index];
+        }
+        return null;
+    }
+};
+
+pub const Context = struct {
+    gpa: std.mem.Allocator,
+    source_manager: SourceManager,
+    diags: Diagnostics,
+    interner: *cst.StringInterner,
+    resolver: ImportResolver,
+    type_info: TypeInfo,
+
+    pub fn init(gpa: std.mem.Allocator) Context {
+        const interner = gpa.create(cst.StringInterner) catch unreachable;
+        interner.* = cst.StringInterner.init(gpa);
+        return .{
+            .diags = Diagnostics.init(gpa),
+            .interner = interner,
+            .gpa = gpa,
+            .source_manager = SourceManager{ .gpa = gpa },
+            .resolver = ImportResolver.init(gpa),
+            .type_info = TypeInfo.init(gpa, interner),
+        };
+    }
+
+    pub fn deinit(self: *Context) void {
+        self.source_manager.deinit();
+        self.diags.deinit();
+        self.interner.deinit();
+        self.type_info.deinit();
+        self.resolver.deinit();
+        self.gpa.destroy(self.interner);
+    }
+};
 
 pub fn initMLIR(alloc: std.mem.Allocator) mlir.Context {
     mlir.setGlobalAlloc(alloc);
@@ -14,12 +84,10 @@ pub fn initMLIR(alloc: std.mem.Allocator) mlir.Context {
     return mlir_context;
 }
 
-pub fn run_passes(context: *mlir.Context, module: *mlir.Module, print_ir: bool) !void {
+pub fn run_passes(context: *mlir.Context, module: *mlir.Module) !void {
     const pm = mlir.c.mlirPassManagerCreate(context.handle);
     defer mlir.c.mlirPassManagerDestroy(pm);
 
-    // const pipeline = "cse,sccp,loop-invariant-code-motion," ++ "finalize-memref-to-llvm," ++ "convert-scf-to-cf," ++
-    // "convert-func-to-llvm," ++ "convert-cf-to-llvm," ++ "canonicalize," ++ "cse";
     const pipeline = "convert-arith-to-llvm,convert-func-to-llvm,convert-cf-to-llvm,canonicalize,cse";
     const op_pm = mlir.c.mlirPassManagerGetAsOpPassManager(pm);
     var result = mlir.c.mlirOpPassManagerAddPipeline(op_pm, mlir.c.mlirStringRefCreateFromCString(@ptrCast(pipeline)), callback, null);
@@ -34,14 +102,8 @@ pub fn run_passes(context: *mlir.Context, module: *mlir.Module, print_ir: bool) 
 
     if (mlir.c.mlirLogicalResultIsFailure(result)) {
         std.debug.print("Pass manager failed\n", .{});
+        module.getOperation().dump();
         return error.PassManagerFailed;
-    }
-
-    // Print the module
-    if (print_ir) {
-        std.debug.print("Transformed MLIR Module:\n", .{});
-        var op = module.getOperation();
-        op.dump();
     }
 }
 
@@ -68,7 +130,13 @@ pub fn runJit(module: mlir.c.MlirModule) void {
     }
 }
 
-pub fn convert_to_llvm_ir(module: mlir.c.MlirModule, print_ir: bool, link_args: []const []const u8) !void {
+const Mode = enum {
+    llvm_ir,
+    llvm_passes,
+    compile,
+};
+
+pub fn convert_to_llvm_ir(module: mlir.c.MlirModule, print_ir: bool, link_args: []const []const u8, mode: Mode) !void {
     _ = mlir.c.LLVMInitializeNativeTarget();
     _ = mlir.c.LLVMInitializeNativeAsmPrinter();
     _ = mlir.c.LLVMInitializeNativeAsmParser();
@@ -78,6 +146,7 @@ pub fn convert_to_llvm_ir(module: mlir.c.MlirModule, print_ir: bool, link_args: 
 
     if (print_ir)
         mlir.c.LLVMDumpModule(llvmIR);
+    if (mode == .llvm_ir) return;
 
     const targetTriple = mlir.c.LLVMGetDefaultTargetTriple();
     const features = "";
@@ -115,6 +184,12 @@ pub fn convert_to_llvm_ir(module: mlir.c.MlirModule, print_ir: bool, link_args: 
         mlir.c.LLVMDisposeMessage(err);
         return error.TargetNotFound;
     }
+    if (print_ir) {
+        std.debug.print("Optimized LLVM IR:\n", .{});
+        mlir.c.LLVMDumpModule(llvmIR);
+    }
+    if (mode == .llvm_passes) return;
+
     const objectFileName = "zig-out/output.o";
     if (mlir.c.LLVMTargetMachineEmitToFile(targetMachine, llvmIR, objectFileName, mlir.c.LLVMObjectFile, &err) != 0) {
         std.debug.print("Error emitting object file: {s}\n", .{err});

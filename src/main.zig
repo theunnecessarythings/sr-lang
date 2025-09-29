@@ -1,5 +1,5 @@
 const std = @import("std");
-const compiler = @import("compiler");
+const lib = @import("compiler");
 
 const Colors = struct {
     pub const reset = "\x1b[0m";
@@ -75,14 +75,16 @@ fn repl(
     out_writer: anytype,
 ) !void {
     try err_writer.print("{s}Welcome to the REPL! Type your code and press Ctrl-D to evaluate.{s}\n", .{ Colors.green, Colors.reset });
+    var context = lib.compile.Context.init(allocator);
+    defer context.deinit();
+
+    var pipeline = lib.pipeline.Pipeline.init(allocator, &context);
+
     var in_buf: [4096]u8 = undefined;
 
     var stdin = std.fs.File.stdin().readerStreaming(&in_buf);
     var source_lines = std.ArrayList([]const u8){};
     defer source_lines.deinit(allocator);
-
-    var interner = compiler.ast.StringInterner.init(allocator);
-    defer interner.deinit();
 
     while (true) {
         try err_writer.print("{s}>>> {s}", .{ Colors.blue, Colors.reset });
@@ -97,93 +99,33 @@ fn repl(
     }
     const source = try std.mem.concatWithSentinel(allocator, u8, source_lines.items, 0);
     std.debug.print("{s}Input source:{s}\n{s}\n", .{ Colors.bold, Colors.reset, source });
-    var tokens = std.array_list.Managed(compiler.lexer.Token).init(allocator);
-    defer tokens.deinit();
-    var lexer = compiler.lexer.Tokenizer.init(source, .semi);
-    while (true) {
-        const token = lexer.next();
-        try tokens.append(token);
-        if (token.tag == .eof) break;
+
+    const result = try pipeline.runWithImports(source, &.{}, .jit); // Run the pipeline
+
+    // Print results based on the 'result' struct
+    if (result.cst) |cst_program| {
+        var cst_printer = lib.cst.DodPrinter.init(out_writer, &cst_program.exprs, &cst_program.pats);
+        std.debug.print("{s}Concrete Syntax Tree (CST){s}\n", .{ Colors.bold, Colors.green });
+        try cst_printer.printProgram(&cst_program.program);
     }
-    for (tokens.items) |t| {
-        const lexeme = source[t.loc.start..t.loc.end];
-        try out_writer.print("{}({},{}) `{s}`\n", .{ t.tag, t.loc.start, t.loc.end, lexeme });
+    if (result.ast) |hir| {
+        var ast_printer = lib.ast.AstPrinter.init(out_writer, &hir.exprs, &hir.stmts, &hir.pats);
+        std.debug.print("{s}Abstract Syntax Tree (AST){s}\n", .{ Colors.bold, Colors.cyan });
+        try ast_printer.printUnit(&hir.unit);
+    }
+    if (result.tir) |tir_mod| {
+        var tir_printer = lib.tir.TirPrinter.init(out_writer, &tir_mod);
+        std.debug.print("{s}Typed Intermediate Representation (TIR){s}\n", .{ Colors.bold, Colors.yellow });
+        try tir_printer.print();
+    }
+    if (result.mlir_module) |mlir_module| {
+        std.debug.print("{s}{s}MLIR Module\n", .{ Colors.bold, Colors.green });
+        var op = mlir_module.getOperation();
+        op.dump();
+        std.debug.print("{s}\n", .{Colors.reset});
     }
     try out_writer.flush();
     defer allocator.free(source);
-    var diags = compiler.diagnostics.Diagnostics.init(allocator);
-    defer diags.deinit();
-    var parser = compiler.parser.Parser.init(allocator, source, &diags, &interner);
-    var cst_program = try parser.parse();
-
-    var cst_printer = compiler.cst.DodPrinter.init(
-        out_writer,
-        &cst_program.exprs,
-        &cst_program.pats,
-    );
-    std.debug.print(
-        "{s}Concrete Syntax Tree (CST){s}\n",
-        .{ Colors.bold, Colors.green },
-    );
-    try cst_printer.printProgram(&cst_program.program);
-
-    var lower_pass = compiler.lower.Lower.init(allocator, &cst_program, &diags);
-    var hir = try lower_pass.run();
-    // print AST
-    var ast_printer = compiler.ast.AstPrinter.init(
-        out_writer,
-        &hir.exprs,
-        &hir.stmts,
-        &hir.pats,
-    );
-    std.debug.print(
-        "{s}Abstract Syntax Tree (AST){s}\n",
-        .{ Colors.bold, Colors.cyan },
-    );
-    try ast_printer.printUnit(&hir.unit);
-    try out_writer.flush();
-    var chk = compiler.checker.Checker.init(allocator, &diags, &hir);
-    defer chk.deinit();
-    defer chk.type_info.deinit();
-    try chk.run();
-    // print Diagnostics
-    try diags.emitStyled(source, err_writer, "REPL Input", true);
-    if (diags.anyErrors()) {
-        // Do not proceed to TIR/codegen if semantic errors were found
-        return;
-    }
-
-    var lower_tir = compiler.lower_tir.LowerTir.init(allocator, &chk.type_info, &interner);
-    defer lower_tir.deinit();
-    var tir = try lower_tir.run(&hir);
-    defer tir.deinit();
-    var tir_printer = compiler.tir.TirPrinter.init(out_writer, &tir);
-    std.debug.print(
-        "{s}Typed Intermediate Representation (TIR){s}\n",
-        .{ Colors.bold, Colors.yellow },
-    );
-    try tir_printer.print();
-
-    try out_writer.flush();
-
-    const ctx = compiler.compile.initMLIR(allocator);
-
-    // mlir codegen
-    var codegen = compiler.mlir_codegen.MlirCodegen.init(allocator, ctx);
-    defer codegen.deinit();
-    var mlir_module = codegen.emitModule(&tir, tir.type_store) catch {
-        try err_writer.print("{s}Error:{s} MLIR code generation failed.\n", .{ Colors.red, Colors.reset });
-        return error.CompilationFailed;
-    };
-    std.debug.print(
-        "{s}{s}MLIR Module\n",
-        .{ Colors.bold, Colors.green },
-    );
-    const op = mlir_module.getOperation();
-    op.dump();
-    std.debug.print("{s}\n", .{Colors.reset});
-
-    try compiler.compile.run_passes(&codegen.ctx, &mlir_module, true);
 }
 
 fn server(
@@ -276,43 +218,16 @@ fn server(
             const source = try allocator.dupeZ(u8, body);
             defer allocator.free(source);
 
-            // Initialize compiler machinery
-            var interner = compiler.ast.StringInterner.init(allocator);
-            defer interner.deinit();
+            var context = lib.compile.Context.init(allocator);
+            defer context.deinit();
 
-            var diags = compiler.diagnostics.Diagnostics.init(allocator);
-            defer diags.deinit();
+            var pipeline = lib.pipeline.Pipeline.init(allocator, &context); // Create pipeline here
 
-            // Parse → Lower (HIR)
-            var parser = compiler.parser.Parser.init(allocator, source, &diags, &interner);
-            var cst_program = parser.parse() catch |e| {
-                std.debug.print("Parser error: {s}\n", .{@errorName(e)});
-                try req.respond("Parser error\n", .{
-                    .status = .bad_request,
-                    .extra_headers = &.{
-                        .{ .name = "content-type", .value = "text/plain; charset=utf-8" },
-                        .{ .name = "access-control-allow-origin", .value = "*" },
-                    },
-                });
-                continue :request_loop;
-            };
-
-            var lower_pass = compiler.lower.Lower.init(allocator, &cst_program, &diags);
-            var hir = lower_pass.run() catch |e| {
-                std.debug.print("Lowering error: {s}\n", .{@errorName(e)});
-                try req.respond("Lowering error\n", .{
-                    .status = .bad_request,
-                    .extra_headers = &.{
-                        .{ .name = "content-type", .value = "text/plain; charset=utf-8" },
-                        .{ .name = "access-control-allow-origin", .value = "*" },
-                    },
-                });
-                continue :request_loop;
-            };
+            const result = try pipeline.runWithImports(source, &.{}, .ast); // Run the pipeline to AST
 
             // If there are diagnostics, emit them to stderr and return 400
-            if (diags.anyErrors()) {
-                try diags.emitStyled(source, err_writer, "request", true);
+            if (context.diags.anyErrors()) {
+                try context.diags.emitStyled(source, &context, err_writer, "request", true);
                 try req.respond("Semantic errors\n", .{
                     .status = .bad_request,
                     .extra_headers = &.{
@@ -327,13 +242,13 @@ fn server(
             var json_buf: std.Io.Writer.Allocating = .init(allocator);
             defer json_buf.deinit();
 
-            var json_printer = compiler.json_printer.JsonPrinter.init(
+            var json_printer = lib.json_printer.JsonPrinter.init(
                 &json_buf.writer,
-                &hir.exprs,
-                &hir.stmts,
-                &hir.pats,
+                &result.ast.?.exprs, // Use result.ast
+                &result.ast.?.stmts, // Use result.ast
+                &result.ast.?.pats, // Use result.ast
             );
-            try json_printer.printUnit(&hir.unit);
+            try json_printer.printUnit(&result.ast.?.unit); // Use result.ast
 
             const json = try json_buf.toOwnedSlice();
             defer allocator.free(json);
@@ -358,67 +273,35 @@ fn process_file(
     out_writer: anytype,
     link_args: []const []const u8,
 ) !void {
-    var file = try std.fs.cwd().openFile(filename, .{});
-    const source = try file.readToEndAlloc(allocator, (try file.stat()).size);
-    const source0 = try allocator.dupeZ(u8, source);
-    defer allocator.free(source0);
-    defer allocator.free(source);
-    var interner = compiler.ast.StringInterner.init(allocator);
-    defer interner.deinit();
+    var compiler_ctx = lib.compile.Context.init(allocator);
+    var pipeline = lib.pipeline.Pipeline.init(allocator, &compiler_ctx);
 
     if (cli_args.verbose) {
         try err_writer.print("Compiling {s}...\n", .{filename});
     }
-
-    if (cli_args.subcommand == .lex) {
-        var lexer = compiler.lexer.Tokenizer.init(source0, .semi);
-        while (true) {
-            const token = lexer.next();
-            if (token.tag == .eof) break;
-            const lexeme = source0[token.loc.start..token.loc.end];
-            try out_writer.print("{}({},{}) `{s}`\n", .{ token.tag, token.loc.start, token.loc.end, lexeme });
-        }
-        try out_writer.flush();
-        return;
-    }
-
-    var diags = compiler.diagnostics.Diagnostics.init(allocator);
-    defer diags.deinit();
-
-    var parser = compiler.parser.Parser.init(allocator, source0, &diags, &interner);
-    var cst_program = try parser.parse();
-
-    // Provide import resolver for module-aware type checking
-    var resolver = compiler.import_resolver.ImportResolver.init(allocator, &diags);
-    defer resolver.deinit();
+    const result = try pipeline.runWithImports(filename, link_args, switch (cli_args.subcommand) {
+        .compile => .exec,
+        .run => .run,
+        .check => .check,
+        .ast => .ast,
+        .tir => .tir,
+        .lex => .lex,
+        .pretty_print => .ast,
+        .json_ast => .ast,
+        else => unreachable,
+    });
 
     // For 'check' command, stop after semantic checks
     if (cli_args.subcommand == .check) {
-        var lower_pass = compiler.lower.Lower.init(allocator, &cst_program, &diags);
-        var hir = try lower_pass.run();
-
-        var chk = compiler.checker.Checker.init(allocator, &diags, &hir);
-        defer chk.deinit();
-        const base_dir = std.fs.path.dirname(filename) orelse ".";
-        chk.setImportResolver(&resolver, base_dir);
-        try chk.run();
-        var printer = compiler.ast.AstPrinter.init(out_writer, &hir.exprs, &hir.stmts, &hir.pats);
+        const hir = result.ast.?;
+        var printer = lib.ast.AstPrinter.init(out_writer, &hir.exprs, &hir.stmts, &hir.pats);
         try printer.printUnit(&hir.unit);
         try out_writer.flush();
-
-        try diags.emitStyled(source0, err_writer, filename, !cli_args.no_color);
-        if (diags.anyErrors()) {
-            return error.CompilationFailed;
-        }
-        try err_writer.print("{s}Checks passed for {s}.{s}\n", .{ Colors.green, filename, Colors.reset });
         return;
     }
-
-    // For 'ast' command, print AST and exit
     if (cli_args.subcommand == .ast) {
-        var lower_pass = compiler.lower.Lower.init(allocator, &cst_program, &diags);
-        var hir = try lower_pass.run();
-        var ast_printer = compiler.ast.AstPrinter.init(
+        const hir = result.ast.?;
+        var ast_printer = lib.ast.AstPrinter.init(
             out_writer,
             &hir.exprs,
             &hir.stmts,
@@ -431,9 +314,8 @@ fn process_file(
 
     // For 'pretty-print' command, print formatted code and exit
     if (cli_args.subcommand == .pretty_print) {
-        var lower_pass = compiler.lower.Lower.init(allocator, &cst_program, &diags);
-        var hir = try lower_pass.run();
-        var code_printer = compiler.ast.CodePrinter.init(
+        const hir = result.ast.?;
+        var code_printer = lib.ast.CodePrinter.init(
             out_writer,
             &hir.exprs,
             &hir.stmts,
@@ -446,9 +328,8 @@ fn process_file(
 
     // For 'json-ast' command, print AST as JSON and exit
     if (cli_args.subcommand == .json_ast) {
-        var lower_pass = compiler.lower.Lower.init(allocator, &cst_program, &diags);
-        var hir = try lower_pass.run();
-        var json_printer = compiler.json_printer.JsonPrinter.init(
+        const hir = result.ast.?;
+        var json_printer = lib.json_printer.JsonPrinter.init(
             out_writer,
             &hir.exprs,
             &hir.stmts,
@@ -461,51 +342,12 @@ fn process_file(
 
     // For 'tir' command, print TIR and exit
     if (cli_args.subcommand == .tir) {
-        var lower_pass = compiler.lower.Lower.init(allocator, &cst_program, &diags);
-        var hir = try lower_pass.run();
-
-        var chk = compiler.checker.Checker.init(allocator, &diags, &hir);
-        chk.setImportResolver(&resolver, std.fs.path.dirname(filename) orelse ".");
-        defer chk.deinit();
-        try chk.run();
-
-        // If checker reported errors, emit and stop before lowering to TIR
-        try diags.emitStyled(source0, err_writer, filename, !cli_args.no_color);
-        if (diags.anyErrors()) {
-            return error.CompilationFailed;
-        }
-
-        var lower_tir = compiler.lower_tir.LowerTir.init(allocator, &chk.type_info, &interner);
-        lower_tir.setImportResolver(&resolver, std.fs.path.dirname(filename) orelse ".");
-        defer lower_tir.deinit();
-        var tir = try lower_tir.run(&hir);
-        defer tir.deinit();
-        var tir_printer = compiler.tir.TirPrinter.init(out_writer, &tir);
+        const tir = result.tir.?;
+        var tir_printer = lib.tir.TirPrinter.init(out_writer, &tir);
         try tir_printer.print();
         try out_writer.flush();
 
         return;
-    }
-
-    // Full compilation pipeline for 'compile' and 'run'
-    var pl = compiler.pipeline.Pipeline.init(allocator, &diags);
-    var parser2 = compiler.parser.Parser.init(allocator, source0, &diags, &interner);
-    var cst_program_v2 = try parser2.parse();
-    // Use new pipeline that resolves imports and appends codegen
-    // Base dir is the directory of the input filename for relative imports
-    const base_dir = std.fs.path.dirname(filename) orelse ".";
-    var result = pl.runWithImports(&cst_program_v2, base_dir, link_args) catch |err| {
-        try diags.emitStyled(source0, err_writer, filename, !cli_args.no_color);
-        return err; // Propagate pipeline errors
-    };
-    defer {
-        result.module.deinit();
-        result.gen.deinit();
-    }
-
-    try diags.emitStyled(source0, err_writer, filename, !cli_args.no_color);
-    if (diags.anyErrors()) {
-        return error.CompilationFailed;
     }
 
     if (cli_args.verbose) {
@@ -641,4 +483,3 @@ pub fn main() !void {
         .server => try server(gpa, writer),
     }
 }
-

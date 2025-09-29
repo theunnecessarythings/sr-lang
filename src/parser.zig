@@ -3,8 +3,8 @@ const Lexer = @import("lexer.zig").Tokenizer;
 const Token = @import("lexer.zig").Token;
 const Loc = Token.Loc;
 const cst = @import("cst.zig");
+const compile = @import("compile.zig");
 const diag = @import("diagnostics.zig");
-const Diagnostics = diag.Diagnostics;
 const List = std.ArrayList;
 
 pub const Parser = struct {
@@ -13,9 +13,9 @@ pub const Parser = struct {
     lex: Lexer,
     cur: Token,
     nxt: Token,
-    diags: *Diagnostics,
 
     cst: cst.CST,
+    context: *compile.Context,
 
     const ParseMode = enum { expr, type, expr_no_struct };
 
@@ -23,10 +23,10 @@ pub const Parser = struct {
     pub fn init(
         gpa: std.mem.Allocator,
         source: [:0]const u8,
-        diags: *Diagnostics,
-        interner: *cst.StringInterner,
+        file_id: u32,
+        context: *compile.Context,
     ) Parser {
-        var lex = Lexer.init(source, .semi);
+        var lex = Lexer.init(source, file_id, .semi);
         const cur = lex.next();
         const nxt = lex.next();
         return .{
@@ -35,8 +35,8 @@ pub const Parser = struct {
             .lex = lex,
             .cur = cur,
             .nxt = nxt,
-            .diags = diags,
-            .cst = .init(gpa, interner),
+            .context = context,
+            .cst = .init(gpa, context.interner),
         };
     }
 
@@ -94,11 +94,11 @@ pub const Parser = struct {
         note_loc: ?Loc,
         comptime note_code: diag.NoteCode,
     ) void {
-        const before = self.diags.count();
-        _ = self.diags.addError(loc, error_code, args) catch {};
-        if (self.diags.count() > before) {
-            const idx = self.diags.count() - 1;
-            _ = self.diags.attachNote(idx, note_loc, note_code) catch {};
+        const before = self.context.diags.count();
+        _ = self.context.diags.addError(loc, error_code, args) catch {};
+        if (self.context.diags.count() > before) {
+            const idx = self.context.diags.count() - 1;
+            _ = self.context.diags.attachNote(idx, note_loc, note_code) catch {};
         }
     }
 

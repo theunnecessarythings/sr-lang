@@ -488,7 +488,7 @@ pub const Module = struct {
         }
     }
 
-    pub fn getOperation(self: *Module) Operation {
+    pub fn getOperation(self: *const Module) Operation {
         return Operation{ .handle = c.mlirModuleGetOperation(self.handle) };
     }
 
@@ -775,7 +775,7 @@ pub const Operation = struct {
         return c.mlirOperationHasInherentAttributeByName(self.handle, name.inner);
     }
 
-    pub fn getInherentAttributeByName(self: *Operation, name: StringRef) Attribute {
+    pub fn getInherentAttributeByName(self: *const Operation, name: StringRef) Attribute {
         return Attribute{
             .handle = c.mlirOperationGetInherentAttributeByName(self.handle, name.inner),
         };

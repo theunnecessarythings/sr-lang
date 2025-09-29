@@ -1,6 +1,7 @@
 const std = @import("std");
 const Loc = @import("lexer.zig").Token.Loc;
 const Tag = @import("lexer.zig").Token.Tag;
+const Context = @import("compile.zig").Context;
 
 pub const Severity = enum {
     err,
@@ -473,12 +474,16 @@ pub const Diagnostics = struct {
     }
 
     // Pretty-print diagnostics with source excerpt and caret span (unstyled)
-    pub fn emit(self: *Diagnostics, source: []const u8, writer: anytype, filename: []const u8) !void {
-        try self.emitStyled(source, writer, filename, true);
+    pub fn emit(self: *Diagnostics, source: []const u8, context: *Context, writer: anytype, filename: []const u8) !void {
+        try self.emitStyled(source, context, writer, filename, true);
     }
 
     // Pretty-print diagnostics Rust-like with optional ANSI colors
-    pub fn emitStyled(self: *Diagnostics, source: []const u8, writer: anytype, filename: []const u8, color: bool) !void {
+    pub fn emitStyled(self: *Diagnostics, source: []const u8, context: *Context, writer: anytype, filename: []const u8, color: bool) !void {
+        var source_map = std.AutoArrayHashMap(usize, []const u8).init(context.gpa);
+        defer source_map.deinit();
+        try source_map.put(0, source);
+
         for (self.messages.items) |m| {
             const sev_str = switch (m.severity) {
                 .err => "error",
@@ -500,8 +505,14 @@ pub const Diagnostics = struct {
                 diagnosticMessageFmt(m.code),
             });
 
+            const src = source_map.get(m.loc.file_id) orelse blk: {
+                const data = try context.source_manager.read(m.loc.file_id);
+                try source_map.put(m.loc.file_id, data);
+                break :blk data;
+            };
+
             // Location line
-            const lc = lineCol(source, m.loc.start);
+            const lc = lineCol(src, m.loc.start);
             try writer.print(" {s}--> {s}{s}{s}:{d}:{d}\n", .{
                 gutterPad(0),
                 if (color) Colors.cyan else "",
@@ -519,7 +530,7 @@ pub const Diagnostics = struct {
                 .{ gutterPad(width), if (color) Colors.cyan else "", if (color) Colors.reset else "" },
             );
             // Source line
-            const line_slice = source[lc.line_start..lc.line_end];
+            const line_slice = src[lc.line_start..lc.line_end];
             const num_pad = numPad(width, line_no);
             try writer.print(
                 "{s}{d} {s}▌{s} {s}\n",
@@ -543,7 +554,7 @@ pub const Diagnostics = struct {
             // Notes
             for (m.notes.items) |n| {
                 if (n.loc) |nl| {
-                    const nlc = lineCol(source, nl.start);
+                    const nlc = lineCol(src, nl.start);
                     try writer.print(" {s}= {s}note{s}: {s} (at {s}{d}:{d}{s})\n", .{
                         gutterPad(width),
                         if (color) Colors.blue else "",

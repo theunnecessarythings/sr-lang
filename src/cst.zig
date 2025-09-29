@@ -1,5 +1,6 @@
 const std = @import("std");
 const ArrayList = std.array_list.Managed;
+pub const FileId = u32; // Unique identifier for a source file.
 const Loc = @import("lexer.zig").Token.Loc;
 
 ////////////////////////////////////////////////////////////////
@@ -136,7 +137,6 @@ pub const StringInterner = struct {
     }
 
     pub fn intern(self: *StringInterner, s: []const u8) StrId {
-
         // Fast path: already interned
         if (self.map.get(s)) |existing| return existing;
 

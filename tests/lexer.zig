@@ -5,7 +5,7 @@ const Tag = lex.Token.Tag;
 
 const testing = std.testing;
 fn testSingle(source: [:0]const u8, expected: []const lex.Token.Tag) !void {
-    var lexer = lex.Tokenizer.init(source, .normal);
+    var lexer = lex.Tokenizer.init(source, 0, .normal);
     var i: usize = 0;
     while (true) {
         const tok = lexer.next();
@@ -604,7 +604,7 @@ test "invalid tabs and carriage returns" {
 }
 
 fn testSemi(source: [:0]const u8, expected: []const lex.Token.Tag) !void {
-    var lexer = lex.Tokenizer.init(source, .semi);
+    var lexer = lex.Tokenizer.init(source, 0, .semi);
     var i: usize = 0;
     while (true) {
         const tok = lexer.next();

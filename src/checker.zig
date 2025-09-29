@@ -10,15 +10,16 @@ const ImportResolver = @import("import_resolver.zig").ImportResolver;
 const ModuleEntry = @import("import_resolver.zig").ModuleEntry;
 const pattern_matching = @import("check_pattern_matching.zig");
 const check_types = @import("check_types.zig");
+const Context = @import("compile.zig").Context;
+
+const Pipeline = @import("pipeline.zig").Pipeline;
 
 pub const Checker = struct {
     gpa: std.mem.Allocator,
-    diags: *Diagnostics,
     ast_unit: *const ast.Ast,
-    type_info: TypeInfo,
+    context: *Context,
+    pipeline: *Pipeline,
 
-    // Optional import resolver for module member resolution
-    import_resolver: ?*ImportResolver = null,
     import_base_dir: []const u8 = ".",
 
     symtab: symbols.SymbolStore = undefined,
@@ -36,10 +37,10 @@ pub const Checker = struct {
 
     // --------- tiny helpers (readability & consistency) ----------
     inline fn typeKind(self: *const Checker, t: types.TypeId) types.TypeKind {
-        return self.type_info.store.index.kinds.items[t.toRaw()];
+        return self.context.type_info.store.index.kinds.items[t.toRaw()];
     }
     inline fn trow(self: *const Checker, t: types.TypeId) u32 {
-        return self.type_info.store.index.rows.items[t.toRaw()];
+        return self.context.type_info.store.index.rows.items[t.toRaw()];
     }
     inline fn tEq(_: *const Checker, a: types.TypeId, b: types.TypeId) bool {
         return a.toRaw() == b.toRaw();
@@ -68,21 +69,17 @@ pub const Checker = struct {
 
     pub fn init(
         gpa: std.mem.Allocator,
-        diags: *Diagnostics,
         unit: *ast.Ast,
+        context: *Context,
+        pipeline: *Pipeline,
     ) Checker {
         return .{
             .gpa = gpa,
-            .diags = diags,
             .ast_unit = unit,
             .symtab = symbols.SymbolStore.init(gpa),
-            .type_info = types.TypeInfo.init(gpa, unit.exprs.strs),
+            .context = context,
+            .pipeline = pipeline,
         };
-    }
-
-    pub fn setImportResolver(self: *Checker, r: *ImportResolver, base_dir: []const u8) void {
-        self.import_resolver = r;
-        self.import_base_dir = base_dir;
     }
 
     pub fn deinit(self: *Checker) void {
@@ -100,8 +97,8 @@ pub const Checker = struct {
         // pre-allocate type slots for all exprs & decls
         const expr_len: usize = self.ast_unit.exprs.index.kinds.items.len;
         const decl_len: usize = self.ast_unit.exprs.Decl.list.len;
-        try self.type_info.expr_types.appendNTimes(self.gpa, null, expr_len);
-        try self.type_info.decl_types.appendNTimes(self.gpa, null, decl_len);
+        try self.context.type_info.expr_types.appendNTimes(self.gpa, null, expr_len);
+        try self.context.type_info.decl_types.appendNTimes(self.gpa, null, decl_len);
 
         _ = try self.symtab.push(null);
         defer self.symtab.pop();
@@ -118,7 +115,7 @@ pub const Checker = struct {
         }
         // Returning a copy-by-value is fine as long as callers treat it as BORROWED.
         // Prefer exposing a &TypeInfo accessor in the long run.
-        return self.type_info;
+        return self.context.type_info;
     }
 
     // --------- context
@@ -234,7 +231,7 @@ pub const Checker = struct {
 
         // Assigning `null` (modeled as Optional(Any)) to a non-optional target should error clearly.
         if (got_kind == .Optional and expected_kind != .Optional) {
-            const got_opt = self.type_info.store.Optional.get(self.trow(got));
+            const got_opt = self.context.type_info.store.Optional.get(self.trow(got));
             const elem_kind = self.typeKind(got_opt.elem);
             if (elem_kind == .Any) return .assign_null_to_non_optional;
             // Implicit unwrap from Optional(T) -> T is not permitted.
@@ -244,14 +241,14 @@ pub const Checker = struct {
         switch (expected_kind) {
             .Slice => {
                 if (got_kind != .Slice) return .failure;
-                const expected_ty = self.type_info.store.Slice.get(self.trow(expect));
-                const got_ty = self.type_info.store.Slice.get(self.trow(got));
+                const expected_ty = self.context.type_info.store.Slice.get(self.trow(expect));
+                const got_ty = self.context.type_info.store.Slice.get(self.trow(got));
                 return self.assignable(got_ty.elem, expected_ty.elem);
             },
             .Array => {
                 if (got_kind != .Array) return .expected_array_type;
-                const expected_ty = self.type_info.store.Array.get(self.trow(expect));
-                const got_ty = self.type_info.store.Array.get(self.trow(got));
+                const expected_ty = self.context.type_info.store.Array.get(self.trow(expect));
+                const got_ty = self.context.type_info.store.Array.get(self.trow(got));
                 const elem_ok = self.assignable(got_ty.elem, expected_ty.elem);
                 if (expected_ty.len != got_ty.len)
                     return .array_length_mismatch;
@@ -259,18 +256,18 @@ pub const Checker = struct {
             },
             .DynArray => {
                 // BUGFIX: allow assigning from DynArray itself AND from Array/Slice (element-compatible).
-                const expected_ty = self.type_info.store.DynArray.get(self.trow(expect));
+                const expected_ty = self.context.type_info.store.DynArray.get(self.trow(expect));
                 switch (got_kind) {
                     .DynArray => {
-                        const got_ty = self.type_info.store.DynArray.get(self.trow(got));
+                        const got_ty = self.context.type_info.store.DynArray.get(self.trow(got));
                         return self.assignable(got_ty.elem, expected_ty.elem);
                     },
                     .Array => {
-                        const got_ty = self.type_info.store.Array.get(self.trow(got));
+                        const got_ty = self.context.type_info.store.Array.get(self.trow(got));
                         return self.assignable(got_ty.elem, expected_ty.elem);
                     },
                     .Slice => {
-                        const got_ty = self.type_info.store.Slice.get(self.trow(got));
+                        const got_ty = self.context.type_info.store.Slice.get(self.trow(got));
                         return self.assignable(got_ty.elem, expected_ty.elem);
                     },
                     else => return .expected_array_type,
@@ -278,11 +275,11 @@ pub const Checker = struct {
             },
             .Tuple => {
                 if (got_kind != .Tuple) return .expected_tuple_type;
-                const expected_ty = self.type_info.store.Tuple.get(self.trow(expect));
-                const got_ty = self.type_info.store.Tuple.get(self.trow(got));
+                const expected_ty = self.context.type_info.store.Tuple.get(self.trow(expect));
+                const got_ty = self.context.type_info.store.Tuple.get(self.trow(got));
                 if (expected_ty.elems.len != got_ty.elems.len) return .tuple_arity_mismatch;
-                const got_elems = self.type_info.store.type_pool.slice(got_ty.elems);
-                const expected_elems = self.type_info.store.type_pool.slice(expected_ty.elems);
+                const got_elems = self.context.type_info.store.type_pool.slice(got_ty.elems);
+                const expected_elems = self.context.type_info.store.type_pool.slice(expected_ty.elems);
                 for (expected_elems, 0..) |et, i| {
                     const gt = got_elems[i];
                     const res = self.assignable(gt, et);
@@ -293,13 +290,13 @@ pub const Checker = struct {
             .Map => {
                 // Allow "empty array" sugar to coerce to any map type.
                 if (got_kind == .Array) {
-                    const got_ty = self.type_info.store.Array.get(self.trow(got));
+                    const got_ty = self.context.type_info.store.Array.get(self.trow(got));
                     if (got_ty.len != 0) return .expected_map_type;
                     return .success;
                 }
                 if (got_kind != .Map) return .expected_map_type;
-                const expected_ty = self.type_info.store.Map.get(self.trow(expect));
-                const got_ty = self.type_info.store.Map.get(self.trow(got));
+                const expected_ty = self.context.type_info.store.Map.get(self.trow(expect));
+                const got_ty = self.context.type_info.store.Map.get(self.trow(got));
                 const key_ok = self.assignable(got_ty.key, expected_ty.key);
                 const value_ok = self.assignable(got_ty.value, expected_ty.value);
                 if (key_ok != .success) return .map_wrong_key_type;
@@ -307,17 +304,17 @@ pub const Checker = struct {
                 return .success;
             },
             .Optional => {
-                const expected_ty = self.type_info.store.Optional.get(self.trow(expect));
+                const expected_ty = self.context.type_info.store.Optional.get(self.trow(expect));
                 if (got_kind == .Optional) {
-                    const got_ty = self.type_info.store.Optional.get(self.trow(got));
+                    const got_ty = self.context.type_info.store.Optional.get(self.trow(got));
                     return self.assignable(got_ty.elem, expected_ty.elem);
                 }
                 return self.assignable(got, expected_ty.elem);
             },
             .Ptr => {
                 if (got_kind != .Ptr) return .expected_pointer_type;
-                const expected_ty = self.type_info.store.Ptr.get(self.trow(expect));
-                const got_ty = self.type_info.store.Ptr.get(self.trow(got));
+                const expected_ty = self.context.type_info.store.Ptr.get(self.trow(expect));
+                const got_ty = self.context.type_info.store.Ptr.get(self.trow(got));
                 if (!expected_ty.is_const and got_ty.is_const) {
                     return .pointer_constness_mismatch;
                 }
@@ -332,17 +329,17 @@ pub const Checker = struct {
             .Noreturn => return .noreturn_not_storable,
             .Union => {
                 if (got_kind != .Struct) return .expected_struct_type;
-                const expected_ty = self.type_info.store.Union.get(self.trow(expect));
-                const got_ty = self.type_info.store.Struct.get(self.trow(got));
-                const expected_fields = self.type_info.store.field_pool.slice(expected_ty.fields);
-                const got_fields = self.type_info.store.field_pool.slice(got_ty.fields);
+                const expected_ty = self.context.type_info.store.Union.get(self.trow(expect));
+                const got_ty = self.context.type_info.store.Struct.get(self.trow(got));
+                const expected_fields = self.context.type_info.store.field_pool.slice(expected_ty.fields);
+                const got_fields = self.context.type_info.store.field_pool.slice(got_ty.fields);
                 // Should only have one field set in union
                 if (got_fields.len == 0) return .union_literal_no_fields;
                 if (got_fields.len != 1) return .union_literal_multiple_fields;
-                const gf = self.type_info.store.Field.get(got_fields[0].toRaw());
+                const gf = self.context.type_info.store.Field.get(got_fields[0].toRaw());
                 var found = false;
                 for (expected_fields) |efid| {
-                    const ef = self.type_info.store.Field.get(efid.toRaw());
+                    const ef = self.context.type_info.store.Field.get(efid.toRaw());
                     if (ef.name.toRaw() == gf.name.toRaw()) {
                         found = true;
                         const res = self.assignable(gf.ty, ef.ty);
@@ -355,19 +352,19 @@ pub const Checker = struct {
             },
             .Struct => {
                 if (got_kind != .Struct) return .expected_struct_type;
-                const expected_ty = self.type_info.store.Struct.get(self.trow(expect));
-                const got_ty = self.type_info.store.Struct.get(self.trow(got));
-                const expected_fields = self.type_info.store.field_pool.slice(expected_ty.fields);
-                const got_fields = self.type_info.store.field_pool.slice(got_ty.fields);
+                const expected_ty = self.context.type_info.store.Struct.get(self.trow(expect));
+                const got_ty = self.context.type_info.store.Struct.get(self.trow(got));
+                const expected_fields = self.context.type_info.store.field_pool.slice(expected_ty.fields);
+                const got_fields = self.context.type_info.store.field_pool.slice(got_ty.fields);
                 if (expected_fields.len < got_fields.len) return .unknown_struct_field;
                 if (expected_fields.len > got_fields.len) return .struct_field_count_mismatch;
 
                 // Check fields by name, not by order.
                 for (expected_fields) |efid| {
-                    const ef = self.type_info.store.Field.get(efid.toRaw());
+                    const ef = self.context.type_info.store.Field.get(efid.toRaw());
                     var found = false;
                     for (got_fields) |gfid| {
-                        const gf = self.type_info.store.Field.get(gfid.toRaw());
+                        const gf = self.context.type_info.store.Field.get(gfid.toRaw());
                         if (ef.name.toRaw() == gf.name.toRaw()) {
                             found = true;
                             const res = self.assignable(gf.ty, ef.ty);
@@ -386,11 +383,11 @@ pub const Checker = struct {
             },
             .Function => {
                 if (got_kind != .Function) return .failure;
-                const efn = self.type_info.store.Function.get(self.trow(expect));
-                const gfn = self.type_info.store.Function.get(self.trow(got));
+                const efn = self.context.type_info.store.Function.get(self.trow(expect));
+                const gfn = self.context.type_info.store.Function.get(self.trow(got));
                 if (efn.is_variadic != gfn.is_variadic) return .failure;
-                const eparams = self.type_info.store.type_pool.slice(efn.params);
-                const gparams = self.type_info.store.type_pool.slice(gfn.params);
+                const eparams = self.context.type_info.store.type_pool.slice(efn.params);
+                const gparams = self.context.type_info.store.type_pool.slice(gfn.params);
                 if (eparams.len != gparams.len) return .failure;
                 var i: usize = 0;
                 while (i < eparams.len) : (i += 1) {
@@ -401,7 +398,7 @@ pub const Checker = struct {
                 return .success;
             },
             .ErrorSet => {
-                const expected_ty = self.type_info.store.ErrorSet.get(self.trow(expect));
+                const expected_ty = self.context.type_info.store.ErrorSet.get(self.trow(expect));
                 if (got_kind == .Error) {
                     return self.assignable(got, expected_ty.error_ty);
                 } else {
@@ -447,15 +444,15 @@ pub const Checker = struct {
             switch (shape_ok) {
                 .ok => {},
                 .tuple_arity_mismatch => {
-                    try self.diags.addError(self.exprLoc(decl), .tuple_arity_mismatch, .{});
+                    try self.context.diags.addError(self.exprLoc(decl), .tuple_arity_mismatch, .{});
                     return;
                 },
                 .struct_field_mismatch => {
-                    try self.diags.addError(self.exprLoc(decl), .struct_pattern_field_mismatch, .{});
+                    try self.context.diags.addError(self.exprLoc(decl), .struct_pattern_field_mismatch, .{});
                     return;
                 },
                 .shape_mismatch => {
-                    try self.diags.addError(self.exprLoc(decl), .pattern_shape_mismatch, .{});
+                    try self.context.diags.addError(self.exprLoc(decl), .pattern_shape_mismatch, .{});
                     return;
                 },
             }
@@ -475,15 +472,15 @@ pub const Checker = struct {
             const rhs_kind = self.typeKind(rhs_ty);
             switch (rhs_kind) {
                 .Array => {
-                    const arr = self.type_info.store.Array.get(self.trow(rhs_ty));
+                    const arr = self.context.type_info.store.Array.get(self.trow(rhs_ty));
                     if (arr.len == 0) {
-                        try self.diags.addError(self.exprLoc(self.ast_unit.exprs.Decl.get(decl.toRaw())), .cannot_infer_type_from_empty_array, .{});
+                        try self.context.diags.addError(self.exprLoc(self.ast_unit.exprs.Decl.get(decl.toRaw())), .cannot_infer_type_from_empty_array, .{});
                         return;
                     }
                 },
                 else => {
                     // infer from RHS
-                    self.type_info.decl_types.items[decl.toRaw()] = rhs_ty;
+                    self.context.type_info.decl_types.items[decl.toRaw()] = rhs_ty;
                 },
             }
         } else {
@@ -492,31 +489,31 @@ pub const Checker = struct {
             switch (is_assignable) {
                 .success => {
                     // Use expected type and also update RHS expr type for consistency.
-                    self.type_info.decl_types.items[decl.toRaw()] = expect_ty.?;
-                    self.type_info.expr_types.items[d.value.toRaw()] = expect_ty.?;
+                    self.context.type_info.decl_types.items[decl.toRaw()] = expect_ty.?;
+                    self.context.type_info.expr_types.items[d.value.toRaw()] = expect_ty.?;
                 },
-                .map_wrong_key_type => try self.diags.addError(self.exprLoc(d), .map_wrong_key_type, .{}),
-                .union_literal_no_fields => try self.diags.addError(self.exprLoc(d), .union_empty_literal, .{}),
-                .union_literal_multiple_fields => try self.diags.addError(self.exprLoc(d), .union_literal_multiple_fields, .{}),
-                .expected_enum_type => try self.diags.addError(self.exprLoc(d), .expected_enum_type, .{}),
-                .expected_struct_type => try self.diags.addError(self.exprLoc(d), .expected_struct_type, .{}),
-                .struct_field_count_mismatch => try self.diags.addError(self.exprLoc(d), .struct_field_count_mismatch, .{}),
-                .unknown_struct_field => try self.diags.addError(self.exprLoc(d), .unknown_struct_field, .{}),
-                .struct_field_name_mismatch => try self.diags.addError(self.exprLoc(d), .struct_field_name_mismatch, .{}),
-                .noreturn_not_storable => try self.diags.addError(self.exprLoc(d), .noreturn_not_storable, .{}),
-                .type_value_mismatch => try self.diags.addError(self.exprLoc(d), .type_value_mismatch, .{}),
-                .array_length_mismatch => try self.diags.addError(self.exprLoc(d), .array_length_mismatch, .{}),
-                .tuple_arity_mismatch => try self.diags.addError(self.exprLoc(d), .tuple_arity_mismatch, .{}),
-                .assign_null_to_non_optional => try self.diags.addError(self.exprLoc(d), .assign_null_to_non_optional, .{}),
-                .pointer_type_mismatch => try self.diags.addError(self.exprLoc(d), .pointer_type_mismatch, .{}),
-                .pointer_constness_mismatch => try self.diags.addError(self.exprLoc(d), .pointer_constness_violation, .{}),
-                .expected_array_type => try self.diags.addError(self.exprLoc(d), .expected_array_type, .{}),
-                .expected_tuple_type => try self.diags.addError(self.exprLoc(d), .expected_tuple_type, .{}),
-                .expected_map_type => try self.diags.addError(self.exprLoc(d), .expected_map_type, .{}),
-                .expected_pointer_type => try self.diags.addError(self.exprLoc(d), .expected_pointer_type, .{}),
-                .expected_integer_type => try self.diags.addError(self.exprLoc(d), .expected_integer_type, .{}),
-                .expected_float_type => try self.diags.addError(self.exprLoc(d), .expected_float_type, .{}),
-                .failure => try self.diags.addError(self.exprLoc(d), .type_annotation_mismatch, .{}),
+                .map_wrong_key_type => try self.context.diags.addError(self.exprLoc(d), .map_wrong_key_type, .{}),
+                .union_literal_no_fields => try self.context.diags.addError(self.exprLoc(d), .union_empty_literal, .{}),
+                .union_literal_multiple_fields => try self.context.diags.addError(self.exprLoc(d), .union_literal_multiple_fields, .{}),
+                .expected_enum_type => try self.context.diags.addError(self.exprLoc(d), .expected_enum_type, .{}),
+                .expected_struct_type => try self.context.diags.addError(self.exprLoc(d), .expected_struct_type, .{}),
+                .struct_field_count_mismatch => try self.context.diags.addError(self.exprLoc(d), .struct_field_count_mismatch, .{}),
+                .unknown_struct_field => try self.context.diags.addError(self.exprLoc(d), .unknown_struct_field, .{}),
+                .struct_field_name_mismatch => try self.context.diags.addError(self.exprLoc(d), .struct_field_name_mismatch, .{}),
+                .noreturn_not_storable => try self.context.diags.addError(self.exprLoc(d), .noreturn_not_storable, .{}),
+                .type_value_mismatch => try self.context.diags.addError(self.exprLoc(d), .type_value_mismatch, .{}),
+                .array_length_mismatch => try self.context.diags.addError(self.exprLoc(d), .array_length_mismatch, .{}),
+                .tuple_arity_mismatch => try self.context.diags.addError(self.exprLoc(d), .tuple_arity_mismatch, .{}),
+                .assign_null_to_non_optional => try self.context.diags.addError(self.exprLoc(d), .assign_null_to_non_optional, .{}),
+                .pointer_type_mismatch => try self.context.diags.addError(self.exprLoc(d), .pointer_type_mismatch, .{}),
+                .pointer_constness_mismatch => try self.context.diags.addError(self.exprLoc(d), .pointer_constness_violation, .{}),
+                .expected_array_type => try self.context.diags.addError(self.exprLoc(d), .expected_array_type, .{}),
+                .expected_tuple_type => try self.context.diags.addError(self.exprLoc(d), .expected_tuple_type, .{}),
+                .expected_map_type => try self.context.diags.addError(self.exprLoc(d), .expected_map_type, .{}),
+                .expected_pointer_type => try self.context.diags.addError(self.exprLoc(d), .expected_pointer_type, .{}),
+                .expected_integer_type => try self.context.diags.addError(self.exprLoc(d), .expected_integer_type, .{}),
+                .expected_float_type => try self.context.diags.addError(self.exprLoc(d), .expected_float_type, .{}),
+                .failure => try self.context.diags.addError(self.exprLoc(d), .type_annotation_mismatch, .{}),
             }
         }
     }
@@ -553,9 +550,9 @@ pub const Checker = struct {
                         const shape_ok = pattern_matching.checkPatternShapeForAssignExpr(self, stmt.left, rv_ty.?);
                         switch (shape_ok) {
                             .ok => {},
-                            .tuple_arity_mismatch => try self.diags.addError(self.exprLoc(stmt), .tuple_arity_mismatch, .{}),
-                            .struct_field_mismatch => try self.diags.addError(self.exprLoc(stmt), .struct_pattern_field_mismatch, .{}),
-                            .shape_mismatch => try self.diags.addError(self.exprLoc(stmt), .pattern_shape_mismatch, .{}),
+                            .tuple_arity_mismatch => try self.context.diags.addError(self.exprLoc(stmt), .tuple_arity_mismatch, .{}),
+                            .struct_field_mismatch => try self.context.diags.addError(self.exprLoc(stmt), .struct_pattern_field_mismatch, .{}),
+                            .shape_mismatch => try self.context.diags.addError(self.exprLoc(stmt), .pattern_shape_mismatch, .{}),
                         }
                     }
                 } else {
@@ -565,7 +562,7 @@ pub const Checker = struct {
                     const rt = try self.checkExpr(stmt.right);
                     self.popValueReq();
                     if (lt != null and rt != null and (self.assignable(rt.?, lt.?) != .success)) {
-                        try self.diags.addError(self.exprLoc(stmt), .type_annotation_mismatch, .{});
+                        try self.context.diags.addError(self.exprLoc(stmt), .type_annotation_mismatch, .{});
                     }
                 }
                 // Purity: assignment writes inside pure functions are allowed only to locals
@@ -576,7 +573,7 @@ pub const Checker = struct {
                         switch (root) {
                             .LocalDecl => {},
                             .Param, .NonLocalDecl, .Unknown => {
-                                try self.diags.addError(self.exprLoc(stmt), .purity_violation, .{});
+                                try self.context.diags.addError(self.exprLoc(stmt), .purity_violation, .{});
                                 self.func_stack.items[self.func_stack.items.len - 1].pure = false;
                             },
                         }
@@ -586,7 +583,7 @@ pub const Checker = struct {
             .Insert => {
                 const row = self.getStmt(.Insert, sid);
                 if (!self.warned_meta) {
-                    _ = self.diags.addNote(self.exprLoc(row), .checker_insert_not_expanded, .{}) catch {};
+                    _ = self.context.diags.addNote(self.exprLoc(row), .checker_insert_not_expanded, .{}) catch {};
                     self.warned_meta = true;
                 }
                 _ = try self.checkExpr(row.expr);
@@ -598,7 +595,7 @@ pub const Checker = struct {
             .Break => {
                 const row = self.getStmt(.Break, sid);
                 if (!self.inLoop())
-                    try self.diags.addError(self.exprLoc(row), .break_outside_loop, .{});
+                    try self.context.diags.addError(self.exprLoc(row), .break_outside_loop, .{});
                 if (!row.value.isNone()) {
                     // Break value must be computed in value context
                     try self.pushValueReq(true);
@@ -608,7 +605,7 @@ pub const Checker = struct {
                     if (self.loopCtxForLabel(row.label)) |ctx| {
                         if (ctx.result_ty) |rt| {
                             if (rt.toRaw() != vt.?.toRaw()) {
-                                try self.diags.addError(self.exprLoc(row), .loop_break_value_type_conflict, .{});
+                                try self.context.diags.addError(self.exprLoc(row), .loop_break_value_type_conflict, .{});
                                 return null;
                             }
                         } else {
@@ -620,7 +617,7 @@ pub const Checker = struct {
             .Continue => {
                 const row = self.getStmt(.Continue, sid);
                 if (!self.inLoop())
-                    try self.diags.addError(self.exprLoc(row), .continue_outside_loop, .{});
+                    try self.context.diags.addError(self.exprLoc(row), .continue_outside_loop, .{});
             },
             .Unreachable => {},
             .Defer => {
@@ -639,7 +636,7 @@ pub const Checker = struct {
     // Expressions
     // =========================================================
     pub fn checkExpr(self: *Checker, id: ast.ExprId) anyerror!?types.TypeId {
-        if (self.type_info.expr_types.items[id.toRaw()]) |cached| return cached;
+        if (self.context.type_info.expr_types.items[id.toRaw()]) |cached| return cached;
         const k = self.exprKind(id);
 
         const tid = switch (k) {
@@ -677,7 +674,7 @@ pub const Checker = struct {
             .Break => try self.checkBreak(id),
             .Continue => try self.checkContinue(id),
             .Unreachable => try self.checkUnreachable(id),
-            .UndefLit => self.type_info.store.tAny(),
+            .UndefLit => self.context.type_info.store.tAny(),
 
             .Block => try self.checkBlock(id),
             .Defer => blk: {
@@ -696,12 +693,12 @@ pub const Checker = struct {
             .Catch => try self.checkCatch(id),
             .Import => try self.checkImport(id),
             .TypeOf => try check_types.checkTypeOf(self, id),
-            .NullLit => self.type_info.store.mkOptional(self.type_info.store.tAny()),
+            .NullLit => self.context.type_info.store.mkOptional(self.context.type_info.store.tAny()),
 
             .TupleType, .ArrayType, .DynArrayType, .SliceType, .OptionalType, .ErrorSetType, .ErrorType, .StructType, .EnumType, .VariantType, .UnionType, .PointerType, .SimdType, .ComplexType, .TensorType, .TypeType, .AnyType, .NoreturnType => blk: {
                 const ty = try check_types.typeFromTypeExpr(self, id);
                 if (ty == null) break :blk null;
-                break :blk self.type_info.store.mkTypeType(ty.?);
+                break :blk self.context.type_info.store.mkTypeType(ty.?);
             },
             .MapType => blk_mt_expr: {
                 // Try to interpret as a type expression first
@@ -709,17 +706,17 @@ pub const Checker = struct {
                 const key_ty = try check_types.typeFromTypeExpr(self, row.key);
                 const val_ty = try check_types.typeFromTypeExpr(self, row.value);
                 if (key_ty != null and val_ty != null) {
-                    break :blk_mt_expr self.type_info.store.mkTypeType(self.type_info.store.mkMap(key_ty.?, val_ty.?));
+                    break :blk_mt_expr self.context.type_info.store.mkTypeType(self.context.type_info.store.mkMap(key_ty.?, val_ty.?));
                 }
                 // If not valid types, interpret operands as value expressions and produce a map value type
                 const key_vt = try self.checkExpr(row.key);
                 const val_vt = try self.checkExpr(row.value);
                 if (key_vt == null or val_vt == null) break :blk_mt_expr null;
-                break :blk_mt_expr self.type_info.store.mkMap(key_vt.?, val_vt.?);
+                break :blk_mt_expr self.context.type_info.store.mkMap(key_vt.?, val_vt.?);
             },
         };
 
-        if (tid) |t| self.type_info.expr_types.items[id.toRaw()] = t;
+        if (tid) |t| self.context.type_info.expr_types.items[id.toRaw()] = t;
         return tid;
     }
 
@@ -729,31 +726,31 @@ pub const Checker = struct {
             .int => blk: {
                 const s = self.getStr(lit.value.unwrap());
                 if (std.fmt.parseInt(i64, s, 10) catch null == null) {
-                    try self.diags.addError(self.exprLoc(lit), .invalid_integer_literal, .{});
+                    try self.context.diags.addError(self.exprLoc(lit), .invalid_integer_literal, .{});
                     return null;
                 }
-                break :blk self.type_info.store.tI64();
+                break :blk self.context.type_info.store.tI64();
             },
             .imaginary => blk: {
                 const s = self.getStr(lit.value.unwrap());
                 if (std.fmt.parseInt(i64, s, 10) catch null == null) {
-                    try self.diags.addError(self.exprLoc(lit), .invalid_integer_literal, .{});
+                    try self.context.diags.addError(self.exprLoc(lit), .invalid_integer_literal, .{});
                     return null;
                 }
-                break :blk self.type_info.store.tI64(); // TODO: imaginary type
+                break :blk self.context.type_info.store.tI64(); // TODO: imaginary type
             },
             .float => blk: {
                 // try parsing the float literal
                 const s = self.getStr(lit.value.unwrap());
                 if (std.fmt.parseFloat(f64, s) catch null == null) {
-                    try self.diags.addError(self.exprLoc(lit), .invalid_float_literal, .{});
+                    try self.context.diags.addError(self.exprLoc(lit), .invalid_float_literal, .{});
                     return null;
                 }
-                break :blk self.type_info.store.tF64();
+                break :blk self.context.type_info.store.tF64();
             },
-            .bool => self.type_info.store.tBool(),
-            .string => self.type_info.store.tString(),
-            .char => self.type_info.store.tU32(),
+            .bool => self.context.type_info.store.tBool(),
+            .string => self.context.type_info.store.tString(),
+            .char => self.context.type_info.store.tU32(),
         };
     }
     fn checkIdent(self: *Checker, id: ast.ExprId) !?types.TypeId {
@@ -767,15 +764,15 @@ pub const Checker = struct {
                 const drow = self.ast_unit.exprs.Decl.get(did.toRaw());
                 if (!drow.pattern.isNone()) {
                     const rhs_ty = blk: {
-                        if (self.type_info.expr_types.items[drow.value.toRaw()]) |t| break :blk t;
-                        if (self.type_info.decl_types.items[did.toRaw()]) |t| break :blk t;
+                        if (self.context.type_info.expr_types.items[drow.value.toRaw()]) |t| break :blk t;
+                        if (self.context.type_info.decl_types.items[did.toRaw()]) |t| break :blk t;
                         // Fallback: check rhs now
                         break :blk (try self.checkExpr(drow.value)) orelse return null;
                     };
                     const bt = pattern_matching.bindingTypeInPattern(self, drow.pattern.unwrap(), row.name, rhs_ty);
                     if (bt) |btid| return btid;
                 }
-                if (self.type_info.decl_types.items[did.toRaw()]) |dt| return dt;
+                if (self.context.type_info.decl_types.items[did.toRaw()]) |dt| return dt;
             }
             // Param-originated symbol?
             if (!srow.origin_param.isNone()) {
@@ -790,7 +787,7 @@ pub const Checker = struct {
                     return pt;
                 } else {
                     // Unannotated param: if pattern, try infer from callee usage later; default any
-                    return self.type_info.store.tAny();
+                    return self.context.type_info.store.tAny();
                 }
             }
             // Loop-pattern-originated symbol? Infer from current loop pattern context if available
@@ -799,7 +796,7 @@ pub const Checker = struct {
                 if (bt) |btid| return btid;
             }
         }
-        try self.diags.addError(self.exprLoc(row), .undefined_identifier, .{});
+        try self.context.diags.addError(self.exprLoc(row), .undefined_identifier, .{});
         return null;
     }
 
@@ -810,7 +807,7 @@ pub const Checker = struct {
         _ = try self.symtab.push(self.symtab.currentId());
         defer self.symtab.pop();
 
-        if (stmts.len == 0) return self.type_info.store.tVoid();
+        if (stmts.len == 0) return self.context.type_info.store.tVoid();
         const value_required = self.isValueReq();
         var after_break: bool = false;
         if (!value_required) {
@@ -818,7 +815,7 @@ pub const Checker = struct {
             while (i < stmts.len) : (i += 1) {
                 if (after_break) {
                     const loc = self.stmtLoc(stmts[i]);
-                    try self.diags.addError(loc, .unreachable_code_after_break, .{});
+                    try self.context.diags.addError(loc, .unreachable_code_after_break, .{});
                     return null;
                 }
                 _ = try self.checkStmt(stmts[i]);
@@ -829,13 +826,13 @@ pub const Checker = struct {
                     if (self.exprKind(se) == .Break) after_break = true;
                 }
             }
-            return self.type_info.store.tVoid();
+            return self.context.type_info.store.tVoid();
         }
         // Value context: the last line must be an expression to produce a value
         while (i < stmts.len - 1) : (i += 1) {
             if (after_break) {
                 const loc = self.stmtLoc(stmts[i]);
-                try self.diags.addError(loc, .unreachable_code_after_break, .{});
+                try self.context.diags.addError(loc, .unreachable_code_after_break, .{});
                 return null;
             }
             _ = try self.checkStmt(stmts[i]);
@@ -851,7 +848,7 @@ pub const Checker = struct {
         if (last_kind == .Expr) {
             if (after_break) {
                 const loc = self.stmtLoc(last);
-                try self.diags.addError(loc, .unreachable_code_after_break, .{});
+                try self.context.diags.addError(loc, .unreachable_code_after_break, .{});
                 return null;
             }
             const row = self.getStmt(.Expr, last);
@@ -860,11 +857,11 @@ pub const Checker = struct {
         // Otherwise, type-check the statement and treat as void
         if (after_break) {
             const loc = self.stmtLoc(last);
-            try self.diags.addError(loc, .unreachable_code_after_break, .{});
+            try self.context.diags.addError(loc, .unreachable_code_after_break, .{});
             return null;
         }
         _ = try self.checkStmt(last);
-        return self.type_info.store.tVoid();
+        return self.context.type_info.store.tVoid();
     }
 
     fn stmtLoc(self: *Checker, sid: ast.StmtId) Loc {
@@ -937,18 +934,18 @@ pub const Checker = struct {
                         else => false,
                     };
                     if (left_is_float or right_is_float) {
-                        try self.diags.addError(self.exprLoc(bin), .invalid_binary_op_operands, .{});
+                        try self.context.diags.addError(self.exprLoc(bin), .invalid_binary_op_operands, .{});
                         return null;
                     }
                     if (check_types.isIntegerKind(self, lhs_kind) and check_types.isIntegerKind(self, rhs_kind))
                         try self.checkIntZeroLiteral(bin.right, self.exprLoc(bin));
                 }
                 if (!check_types.isNumericKind(self, lhs_kind) or !check_types.isNumericKind(self, rhs_kind)) {
-                    try self.diags.addError(self.exprLoc(bin), .invalid_binary_op_operands, .{});
+                    try self.context.diags.addError(self.exprLoc(bin), .invalid_binary_op_operands, .{});
                     return null;
                 }
                 if (l.toRaw() == r.toRaw()) return l;
-                try self.diags.addError(self.exprLoc(bin), .invalid_binary_op_operands, .{});
+                try self.context.diags.addError(self.exprLoc(bin), .invalid_binary_op_operands, .{});
                 return null;
             },
             .eq, .neq, .lt, .lte, .gt, .gte => {
@@ -961,16 +958,16 @@ pub const Checker = struct {
                 //   - float ? float (F32/F64 mixed ok)
                 //   - bool ? bool
                 if (!(both_ints or both_floats or both_bools)) {
-                    try self.diags.addError(self.exprLoc(bin), .invalid_binary_op_operands, .{});
+                    try self.context.diags.addError(self.exprLoc(bin), .invalid_binary_op_operands, .{});
                     return null;
                 }
-                return self.type_info.store.tBool();
+                return self.context.type_info.store.tBool();
             },
             .logical_and, .logical_or => {
-                if (l.toRaw() == self.type_info.store.tBool().toRaw() and
-                    r.toRaw() == self.type_info.store.tBool().toRaw())
-                    return self.type_info.store.tBool();
-                try self.diags.addError(self.exprLoc(bin), .invalid_binary_op_operands, .{});
+                if (l.toRaw() == self.context.type_info.store.tBool().toRaw() and
+                    r.toRaw() == self.context.type_info.store.tBool().toRaw())
+                    return self.context.type_info.store.tBool();
+                try self.context.diags.addError(self.exprLoc(bin), .invalid_binary_op_operands, .{});
                 return null;
             },
             .@"orelse" => {
@@ -978,11 +975,11 @@ pub const Checker = struct {
                     if (self.assignable(elem, r) == .success) {
                         return elem;
                     } else return {
-                        try self.diags.addError(self.exprLoc(bin), .invalid_binary_op_operands, .{});
+                        try self.context.diags.addError(self.exprLoc(bin), .invalid_binary_op_operands, .{});
                         return null;
                     };
                 }
-                try self.diags.addError(self.exprLoc(bin), .invalid_use_of_orelse_on_non_optional, .{});
+                try self.context.diags.addError(self.exprLoc(bin), .invalid_use_of_orelse_on_non_optional, .{});
                 return null;
             },
         }
@@ -998,20 +995,20 @@ pub const Checker = struct {
         switch (unary_expr.op) {
             .plus, .minus => {
                 if (!check_types.isNumericKind(self, type_kind)) {
-                    try self.diags.addError(self.exprLoc(unary_expr), .invalid_unary_op_operand, .{});
+                    try self.context.diags.addError(self.exprLoc(unary_expr), .invalid_unary_op_operand, .{});
                     return null;
                 }
                 return t;
             },
             .logical_not => {
                 // Accept bool or any
-                if (t.toRaw() != self.type_info.store.tBool().toRaw() and t.toRaw() != self.type_info.store.tAny().toRaw()) {
-                    try self.diags.addError(self.exprLoc(unary_expr), .invalid_unary_op_operand, .{});
+                if (t.toRaw() != self.context.type_info.store.tBool().toRaw() and t.toRaw() != self.context.type_info.store.tAny().toRaw()) {
+                    try self.context.diags.addError(self.exprLoc(unary_expr), .invalid_unary_op_operand, .{});
                     return null;
                 }
-                return self.type_info.store.tBool();
+                return self.context.type_info.store.tBool();
             },
-            .address_of => return self.type_info.store.mkPtr(t, false),
+            .address_of => return self.context.type_info.store.mkPtr(t, false),
         }
     }
 
@@ -1020,7 +1017,7 @@ pub const Checker = struct {
         const res = if (!fnr.result_ty.isNone())
             (try check_types.typeFromTypeExpr(self, fnr.result_ty.unwrap()))
         else
-            self.type_info.store.tVoid();
+            self.context.type_info.store.tVoid();
         const params = self.ast_unit.exprs.param_pool.slice(fnr.params);
         var pbuf = try self.gpa.alloc(types.TypeId, params.len);
         defer self.gpa.free(pbuf);
@@ -1038,22 +1035,22 @@ pub const Checker = struct {
                     switch (shape_ok) {
                         .ok => {},
                         .tuple_arity_mismatch => {
-                            try self.diags.addError(self.exprLoc(fnr), .tuple_arity_mismatch, .{});
+                            try self.context.diags.addError(self.exprLoc(fnr), .tuple_arity_mismatch, .{});
                             return null;
                         },
                         .struct_field_mismatch => {
-                            try self.diags.addError(self.exprLoc(fnr), .struct_pattern_field_mismatch, .{});
+                            try self.context.diags.addError(self.exprLoc(fnr), .struct_pattern_field_mismatch, .{});
                             return null;
                         },
                         .shape_mismatch => {
-                            try self.diags.addError(self.exprLoc(fnr), .pattern_shape_mismatch, .{});
+                            try self.context.diags.addError(self.exprLoc(fnr), .pattern_shape_mismatch, .{});
                             return null;
                         },
                     }
                 }
                 pbuf[i] = pt;
             } else {
-                pbuf[i] = self.type_info.store.tAny();
+                pbuf[i] = self.context.type_info.store.tAny();
             }
             // store in symbol table
             try self.bindParamPattern(params[i], p);
@@ -1061,8 +1058,8 @@ pub const Checker = struct {
 
         // Temporarily record a function type (purity will be finalized after body analysis)
         if (res == null) return null;
-        const temp_ty = self.type_info.store.mkFunction(pbuf, res.?, fnr.flags.is_variadic, true);
-        self.type_info.expr_types.items[id.toRaw()] = temp_ty;
+        const temp_ty = self.context.type_info.store.mkFunction(pbuf, res.?, fnr.flags.is_variadic, true);
+        self.context.type_info.expr_types.items[id.toRaw()] = temp_ty;
 
         try self.pushFunc(res.?, !fnr.result_ty.isNone(), !fnr.flags.is_proc);
         defer self.popFunc();
@@ -1074,8 +1071,8 @@ pub const Checker = struct {
         }
         // Extern procs are considered impure; otherwise proc purity comes from body analysis.
         const is_pure = if (fnr.flags.is_proc) false else true;
-        const final_ty = self.type_info.store.mkFunction(pbuf, res.?, fnr.flags.is_variadic, is_pure);
-        self.type_info.expr_types.items[id.toRaw()] = final_ty;
+        const final_ty = self.context.type_info.store.mkFunction(pbuf, res.?, fnr.flags.is_variadic, is_pure);
+        self.context.type_info.expr_types.items[id.toRaw()] = final_ty;
         return final_ty;
     }
 
@@ -1091,7 +1088,7 @@ pub const Checker = struct {
             if (ety == null) return null;
             tbuf[i] = ety.?;
         }
-        return self.type_info.store.mkTuple(tbuf);
+        return self.context.type_info.store.mkTuple(tbuf);
     }
 
     fn checkArrayLit(
@@ -1103,18 +1100,18 @@ pub const Checker = struct {
 
         // infer from first element, homogeneous requirement
         if (elems.len == 0) {
-            return self.type_info.store.mkArray(self.type_info.store.tAny(), 0);
+            return self.context.type_info.store.mkArray(self.context.type_info.store.tAny(), 0);
         }
         const first_ty = (try self.checkExpr(elems[0])) orelse return null;
         var i: usize = 1;
         while (i < elems.len) : (i += 1) {
             const ety = try self.checkExpr(elems[i]);
             if (ety == null or ety.?.toRaw() != first_ty.toRaw()) {
-                try self.diags.addError(self.exprLoc(array_lit), .heterogeneous_array_elements, .{});
+                try self.context.diags.addError(self.exprLoc(array_lit), .heterogeneous_array_elements, .{});
                 return null;
             }
         }
-        return self.type_info.store.mkArray(first_ty, elems.len);
+        return self.context.type_info.store.mkArray(first_ty, elems.len);
     }
 
     fn checkMapLit(self: *Checker, id: ast.ExprId) !?types.TypeId {
@@ -1122,7 +1119,7 @@ pub const Checker = struct {
         const kvs = self.ast_unit.exprs.kv_pool.slice(row.entries);
 
         if (kvs.len == 0) {
-            return self.type_info.store.mkMap(self.type_info.store.tAny(), self.type_info.store.tAny());
+            return self.context.type_info.store.mkMap(self.context.type_info.store.tAny(), self.context.type_info.store.tAny());
         }
         const first = self.ast_unit.exprs.KeyValue.get(kvs[0].toRaw());
         const key_ty = try self.checkExpr(first.key);
@@ -1135,15 +1132,15 @@ pub const Checker = struct {
             const kt = try self.checkExpr(kv.key);
             const vt = try self.checkExpr(kv.value);
             if (kt == null or kt.?.toRaw() != key_ty.?.toRaw()) {
-                try self.diags.addError(self.exprLoc(row), .map_mixed_key_types, .{});
+                try self.context.diags.addError(self.exprLoc(row), .map_mixed_key_types, .{});
                 return null;
             }
             if (vt == null or vt.?.toRaw() != val_ty.?.toRaw()) {
-                try self.diags.addError(self.exprLoc(row), .map_mixed_value_types, .{});
+                try self.context.diags.addError(self.exprLoc(row), .map_mixed_value_types, .{});
                 return null;
             }
         }
-        return self.type_info.store.mkMap(key_ty.?, val_ty.?);
+        return self.context.type_info.store.mkMap(key_ty.?, val_ty.?);
     }
 
     fn checkIndexAccess(self: *Checker, id: ast.ExprId) ?types.TypeId {
@@ -1155,11 +1152,11 @@ pub const Checker = struct {
         switch (col_kind) {
             .Array, .Slice => return self.indexElemTypeFromArrayLike(col_ty.?, index_expr.index, self.exprLoc(index_expr)),
             .Map => {
-                const m = self.type_info.store.Map.get(self.trow(col_ty.?));
+                const m = self.context.type_info.store.Map.get(self.trow(col_ty.?));
                 const it = self.checkExpr(index_expr.index) catch return null;
                 if (it) |iid| {
                     if (iid.toRaw() != m.key.toRaw()) {
-                        _ = self.diags.addError(self.exprLoc(index_expr), .map_wrong_key_type, .{}) catch {};
+                        _ = self.context.diags.addError(self.exprLoc(index_expr), .map_wrong_key_type, .{}) catch {};
                         return null;
                     }
                 }
@@ -1170,14 +1167,14 @@ pub const Checker = struct {
                 const it = self.checkExpr(index_expr.index) catch return null;
                 if (it) |iid| {
                     if (!check_types.isIntegerKind(self, self.typeKind(iid))) {
-                        _ = self.diags.addError(self.exprLoc(index_expr), .non_integer_index, .{}) catch {};
+                        _ = self.context.diags.addError(self.exprLoc(index_expr), .non_integer_index, .{}) catch {};
                         return null;
                     }
                 }
-                return self.type_info.store.tU8();
+                return self.context.type_info.store.tU8();
             },
             else => {
-                _ = self.diags.addError(self.exprLoc(index_expr), .not_indexable, .{}) catch {};
+                _ = self.context.diags.addError(self.exprLoc(index_expr), .not_indexable, .{}) catch {};
             },
         }
         return null;
@@ -1191,12 +1188,12 @@ pub const Checker = struct {
             _ = self.checkExpr(idx_expr) catch return null; // validate range endpoints
             return switch (col_kind) {
                 .Array => blk: {
-                    const r = self.type_info.store.Array.get(self.trow(col_ty));
-                    break :blk self.type_info.store.mkSlice(r.elem);
+                    const r = self.context.type_info.store.Array.get(self.trow(col_ty));
+                    break :blk self.context.type_info.store.mkSlice(r.elem);
                 },
                 .Slice => blk2: {
-                    const r = self.type_info.store.Slice.get(self.trow(col_ty));
-                    break :blk2 self.type_info.store.mkSlice(r.elem);
+                    const r = self.context.type_info.store.Slice.get(self.trow(col_ty));
+                    break :blk2 self.context.type_info.store.mkSlice(r.elem);
                 },
                 else => unreachable,
             };
@@ -1204,17 +1201,17 @@ pub const Checker = struct {
         const it = self.checkExpr(idx_expr) catch return null;
         if (it) |iid| {
             if (!check_types.isIntegerKind(self, self.typeKind(iid))) {
-                _ = self.diags.addError(loc, .non_integer_index, .{}) catch {};
+                _ = self.context.diags.addError(loc, .non_integer_index, .{}) catch {};
                 return null;
             }
         }
         return switch (col_kind) {
             .Array => blk3: {
-                const r = self.type_info.store.Array.get(self.trow(col_ty));
+                const r = self.context.type_info.store.Array.get(self.trow(col_ty));
                 break :blk3 r.elem;
             },
             .Slice => blk4: {
-                const r = self.type_info.store.Slice.get(self.trow(col_ty));
+                const r = self.context.type_info.store.Slice.get(self.trow(col_ty));
                 break :blk4 r.elem;
             },
             else => unreachable,
@@ -1227,18 +1224,13 @@ pub const Checker = struct {
         // -------- Module member access via import "path".member --------
         const parent_kind = self.exprKind(field_expr.parent);
         if (parent_kind == .Import) {
-            if (self.import_resolver) |_| {
-                if (self.importMemberType(field_expr.parent, field_expr.field)) |mt| {
-                    // For imported members we don't currently expose a precise index
-                    // into a struct; do not set a field index here.
-                    return mt;
-                }
-            } else {
-                if (self.importHasMember(field_expr.parent, field_expr.field))
-                    return self.type_info.store.tAny();
-                _ = self.diags.addError(self.exprLoc(field_expr), .unknown_struct_field, .{}) catch {};
-                return null;
+            if (self.importMemberType(field_expr.parent, field_expr.field)) |mt| {
+                // For imported members we don\'t currently expose a precise index
+                // into a struct; do not set a field index here.
+                return mt;
             }
+            _ = self.context.diags.addError(self.exprLoc(field_expr), .unknown_struct_field, .{}) catch {};
+            return null;
         }
         // Also allow module access when parent is an identifier bound to an import declaration
         if (parent_kind == .Ident) {
@@ -1249,14 +1241,10 @@ pub const Checker = struct {
                     const did = sym.origin_decl.unwrap();
                     const drow = self.ast_unit.exprs.Decl.get(did.toRaw());
                     if (self.exprKind(drow.value) == .Import) {
-                        if (self.import_resolver) |_| {
-                            if (self.importMemberType(drow.value, field_expr.field)) |mt| {
-                                return mt;
-                            }
-                        } else if (self.importHasMember(drow.value, field_expr.field)) {
-                            return self.type_info.store.tAny();
+                        if (self.importMemberType(drow.value, field_expr.field)) |mt| {
+                            return mt;
                         }
-                        _ = self.diags.addError(self.exprLoc(field_expr), .unknown_struct_field, .{}) catch {};
+                        _ = self.context.diags.addError(self.exprLoc(field_expr), .unknown_struct_field, .{}) catch {};
                         return null;
                     }
                 }
@@ -1271,114 +1259,114 @@ pub const Checker = struct {
         const kind = self.typeKind(ty);
         switch (kind) {
             .Struct => {
-                const struct_row = self.type_info.store.Struct.get(self.trow(ty));
-                const fields = self.type_info.store.field_pool.slice(struct_row.fields);
+                const struct_row = self.context.type_info.store.Struct.get(self.trow(ty));
+                const fields = self.context.type_info.store.field_pool.slice(struct_row.fields);
                 var i: usize = 0;
                 while (i < fields.len) : (i += 1) {
-                    const f = self.type_info.store.Field.get(fields[i].toRaw());
+                    const f = self.context.type_info.store.Field.get(fields[i].toRaw());
                     if (f.name.toRaw() == field_expr.field.toRaw()) {
-                        try self.type_info.setFieldIndex(id, @intCast(i));
+                        try self.context.type_info.setFieldIndex(id, @intCast(i));
                         return f.ty;
                     }
                 }
-                _ = self.diags.addError(self.exprLoc(field_expr), .unknown_struct_field, .{}) catch {};
+                _ = self.context.diags.addError(self.exprLoc(field_expr), .unknown_struct_field, .{}) catch {};
                 return null;
             },
             .Tuple => {
-                const tuple_row = self.type_info.store.Tuple.get(self.trow(ty));
-                const elems = self.type_info.store.type_pool.slice(tuple_row.elems);
+                const tuple_row = self.context.type_info.store.Tuple.get(self.trow(ty));
+                const elems = self.context.type_info.store.type_pool.slice(tuple_row.elems);
                 const index = std.fmt.parseInt(usize, self.getStr(field_expr.field), 10) catch {
-                    _ = self.diags.addError(self.exprLoc(field_expr), .expected_field_name_or_index, .{}) catch {};
+                    _ = self.context.diags.addError(self.exprLoc(field_expr), .expected_field_name_or_index, .{}) catch {};
                     return null;
                 };
                 if (index >= elems.len) {
-                    _ = self.diags.addError(self.exprLoc(field_expr), .tuple_index_out_of_bounds, .{}) catch {};
+                    _ = self.context.diags.addError(self.exprLoc(field_expr), .tuple_index_out_of_bounds, .{}) catch {};
                     return null;
                 }
-                try self.type_info.setFieldIndex(id, @intCast(index));
+                try self.context.type_info.setFieldIndex(id, @intCast(index));
                 return elems[index];
             },
             .Ptr => {
-                const ptr_row = self.type_info.store.Ptr.get(self.trow(ty));
+                const ptr_row = self.context.type_info.store.Ptr.get(self.trow(ty));
                 ty = ptr_row.elem;
                 const inner_kind = self.typeKind(ty);
                 if (inner_kind == .Struct) {
-                    const struct_row = self.type_info.store.Struct.get(self.trow(ty));
-                    const fields = self.type_info.store.field_pool.slice(struct_row.fields);
+                    const struct_row = self.context.type_info.store.Struct.get(self.trow(ty));
+                    const fields = self.context.type_info.store.field_pool.slice(struct_row.fields);
                     var i: usize = 0;
                     while (i < fields.len) : (i += 1) {
-                        const f = self.type_info.store.Field.get(fields[i].toRaw());
+                        const f = self.context.type_info.store.Field.get(fields[i].toRaw());
                         if (f.name.toRaw() == field_expr.field.toRaw()) {
-                            try self.type_info.setFieldIndex(id, @intCast(i));
+                            try self.context.type_info.setFieldIndex(id, @intCast(i));
                             return f.ty;
                         }
                     }
-                    _ = self.diags.addError(self.exprLoc(field_expr), .unknown_struct_field, .{}) catch {};
+                    _ = self.context.diags.addError(self.exprLoc(field_expr), .unknown_struct_field, .{}) catch {};
                     return null;
                 }
-                _ = self.diags.addError(self.exprLoc(field_expr), .field_access_on_non_aggregate, .{}) catch {};
+                _ = self.context.diags.addError(self.exprLoc(field_expr), .field_access_on_non_aggregate, .{}) catch {};
                 return null;
             },
             .TypeType => {
-                const tt = self.type_info.store.TypeType.get(self.trow(ty));
+                const tt = self.context.type_info.store.TypeType.get(self.trow(ty));
                 ty = tt.of;
                 const inner_kind = self.typeKind(ty);
 
                 if (inner_kind == .Enum) {
-                    const en = self.type_info.store.Enum.get(self.trow(ty));
-                    const members = self.type_info.store.enum_member_pool.slice(en.members);
+                    const en = self.context.type_info.store.Enum.get(self.trow(ty));
+                    const members = self.context.type_info.store.enum_member_pool.slice(en.members);
                     var i: usize = 0;
                     while (i < members.len) : (i += 1) {
-                        const m = self.type_info.store.EnumMember.get(members[i].toRaw());
+                        const m = self.context.type_info.store.EnumMember.get(members[i].toRaw());
                         if (m.name.toRaw() == field_expr.field.toRaw()) {
                             // Selecting an enum tag as a value of the enum type.
-                            try self.type_info.setFieldIndex(id, @intCast(i));
+                            try self.context.type_info.setFieldIndex(id, @intCast(i));
                             return ty;
                         }
                     }
-                    _ = self.diags.addError(self.exprLoc(field_expr), .unknown_enum_tag, .{}) catch {};
+                    _ = self.context.diags.addError(self.exprLoc(field_expr), .unknown_enum_tag, .{}) catch {};
                     return null;
                 } else if (inner_kind == .Variant) {
-                    const vr = self.type_info.store.Variant.get(self.trow(ty));
-                    const variants = self.type_info.store.field_pool.slice(vr.variants);
+                    const vr = self.context.type_info.store.Variant.get(self.trow(ty));
+                    const variants = self.context.type_info.store.field_pool.slice(vr.variants);
                     var i: usize = 0;
                     while (i < variants.len) : (i += 1) {
-                        const v = self.type_info.store.Field.get(variants[i].toRaw());
+                        const v = self.context.type_info.store.Field.get(variants[i].toRaw());
                         if (v.name.toRaw() == field_expr.field.toRaw()) {
                             // In value position, selecting a variant *tag* without args:
                             // if payload is void => ok (value of the variant type)
                             // else => arity mismatch (should be constructed via call)
                             const pk = self.typeKind(v.ty);
                             if (pk == .Void) {
-                                try self.type_info.setFieldIndex(id, @intCast(i));
+                                try self.context.type_info.setFieldIndex(id, @intCast(i));
                                 return ty;
                             }
-                            _ = self.diags.addError(self.exprLoc(field_expr), .variant_payload_arity_mismatch, .{}) catch {};
+                            _ = self.context.diags.addError(self.exprLoc(field_expr), .variant_payload_arity_mismatch, .{}) catch {};
                             return null;
                         }
                     }
-                    _ = self.diags.addError(self.exprLoc(field_expr), .unknown_variant_tag, .{}) catch {};
+                    _ = self.context.diags.addError(self.exprLoc(field_expr), .unknown_variant_tag, .{}) catch {};
                     return null;
                 } else if (inner_kind == .Error) {
-                    const er = self.type_info.store.Error.get(self.trow(ty));
-                    const tags = self.type_info.store.field_pool.slice(er.variants);
+                    const er = self.context.type_info.store.Error.get(self.trow(ty));
+                    const tags = self.context.type_info.store.field_pool.slice(er.variants);
                     var i: usize = 0;
                     while (i < tags.len) : (i += 1) {
-                        const t = self.type_info.store.Field.get(tags[i].toRaw());
+                        const t = self.context.type_info.store.Field.get(tags[i].toRaw());
                         if (t.name.toRaw() == field_expr.field.toRaw()) {
-                            try self.type_info.setFieldIndex(id, @intCast(i));
+                            try self.context.type_info.setFieldIndex(id, @intCast(i));
                             return ty;
                         }
                     }
-                    _ = self.diags.addError(self.exprLoc(field_expr), .unknown_error_tag, .{}) catch {};
+                    _ = self.context.diags.addError(self.exprLoc(field_expr), .unknown_error_tag, .{}) catch {};
                     return null;
                 }
 
-                _ = self.diags.addError(self.exprLoc(field_expr), .field_access_on_non_aggregate, .{}) catch {};
+                _ = self.context.diags.addError(self.exprLoc(field_expr), .field_access_on_non_aggregate, .{}) catch {};
                 return null;
             },
             else => {
-                _ = self.diags.addError(self.exprLoc(field_expr), .field_access_on_non_aggregate, .{}) catch {};
+                _ = self.context.diags.addError(self.exprLoc(field_expr), .field_access_on_non_aggregate, .{}) catch {};
                 return null;
             },
         }
@@ -1394,23 +1382,20 @@ pub const Checker = struct {
         if (path.len >= 2 and path[0] == '"' and path[path.len - 1] == '"') {
             path = path[1 .. path.len - 1];
         }
-        if (self.import_resolver) |res| return self.importMemberTypeByPath(res, path, member) != null;
-        // fallback: no resolver
-        return false;
+        return self.importMemberTypeByPath(&self.context.resolver, path, member) != null;
     }
 
     fn importMemberTypeByPath(self: *Checker, res: *ImportResolver, path: []const u8, member: ast.StrId) ?types.TypeId {
-        const me = res.resolve(self.import_base_dir, path, self.ast_unit.exprs.strs) catch return null;
+        const me = res.resolve(self.import_base_dir, path, self.pipeline) catch return null;
         const target = self.getStr(member);
         if (me.syms.get(target)) |ty| {
-            return check_types.translateType(self, &me.type_info.store, &self.type_info.store, ty);
+            return ty;
         }
         return null;
     }
 
     fn importMemberType(self: *Checker, import_eid: ast.ExprId, member: ast.StrId) ?types.TypeId {
-        if (self.import_resolver == null) return null;
-        const res = self.import_resolver.?;
+        const res = &self.context.resolver;
         const ir = self.getExpr(.Import, import_eid);
         const ek = self.exprKind(ir.expr);
         if (ek != .Literal) return null;
@@ -1455,25 +1440,25 @@ pub const Checker = struct {
         if (!rr.start.isNone()) {
             const st = try self.checkExpr(rr.start.unwrap());
             if (st == null or !check_types.isIntegerKind(self, self.typeKind(st.?))) {
-                try self.diags.addError(self.exprLoc(rr), .non_integer_index, .{});
+                try self.context.diags.addError(self.exprLoc(rr), .non_integer_index, .{});
                 return null;
             }
         }
         if (!rr.end.isNone()) {
             const et = try self.checkExpr(rr.end.unwrap());
             if (et == null or !check_types.isIntegerKind(self, self.typeKind(et.?))) {
-                try self.diags.addError(self.exprLoc(rr), .non_integer_index, .{});
+                try self.context.diags.addError(self.exprLoc(rr), .non_integer_index, .{});
                 return null;
             }
         }
-        return self.type_info.store.mkSlice(self.type_info.store.tUsize());
+        return self.context.type_info.store.mkSlice(self.context.type_info.store.tUsize());
     }
 
     fn checkStructLit(self: *Checker, id: ast.ExprId) !?types.TypeId {
         const struct_lit = self.getExpr(.StructLit, id);
         const lit_fields = self.ast_unit.exprs.sfv_pool.slice(struct_lit.fields);
-        var buf = try self.type_info.store.gpa.alloc(types.TypeStore.StructFieldArg, lit_fields.len);
-        defer self.type_info.store.gpa.free(buf);
+        var buf = try self.context.type_info.store.gpa.alloc(types.TypeStore.StructFieldArg, lit_fields.len);
+        defer self.context.type_info.store.gpa.free(buf);
         var i: usize = 0;
         while (i < lit_fields.len) : (i += 1) {
             const f = self.ast_unit.exprs.StructFieldValue.get(lit_fields[i].toRaw());
@@ -1484,7 +1469,7 @@ pub const Checker = struct {
             }
             buf[i] = .{ .name = f.name.unwrap(), .ty = ft };
         }
-        const struct_ty = self.type_info.store.mkStruct(buf);
+        const struct_ty = self.context.type_info.store.mkStruct(buf);
         if (struct_lit.ty.isNone()) {
             return struct_ty;
         }
@@ -1495,23 +1480,23 @@ pub const Checker = struct {
         switch (is_assignable) {
             .success => {},
             .struct_field_count_mismatch => {
-                try self.diags.addError(self.exprLoc(struct_lit), .struct_missing_field, .{});
+                try self.context.diags.addError(self.exprLoc(struct_lit), .struct_missing_field, .{});
                 return null;
             },
             .unknown_struct_field => {
-                try self.diags.addError(self.exprLoc(struct_lit), .unknown_struct_field, .{});
+                try self.context.diags.addError(self.exprLoc(struct_lit), .unknown_struct_field, .{});
                 return null;
             },
             .union_literal_multiple_fields => {
-                try self.diags.addError(self.exprLoc(struct_lit), .union_literal_multiple_fields, .{});
+                try self.context.diags.addError(self.exprLoc(struct_lit), .union_literal_multiple_fields, .{});
                 return null;
             },
             .union_literal_no_fields => {
-                try self.diags.addError(self.exprLoc(struct_lit), .union_empty_literal, .{});
+                try self.context.diags.addError(self.exprLoc(struct_lit), .union_empty_literal, .{});
                 return null;
             },
             else => {
-                try self.diags.addError(self.exprLoc(struct_lit), .struct_field_type_mismatch, .{});
+                try self.context.diags.addError(self.exprLoc(struct_lit), .struct_field_type_mismatch, .{});
                 return null;
             },
         }
@@ -1525,10 +1510,10 @@ pub const Checker = struct {
         const ptr_ty = ptr_ty_opt.?;
         const kind = self.typeKind(ptr_ty);
         if (kind != .Ptr) {
-            try self.diags.addError(self.exprLoc(row), .deref_non_pointer, .{});
+            try self.context.diags.addError(self.exprLoc(row), .deref_non_pointer, .{});
             return null;
         }
-        const ptr_row = self.type_info.store.Ptr.get(self.trow(ptr_ty));
+        const ptr_row = self.context.type_info.store.Ptr.get(self.trow(ptr_ty));
         return ptr_row.elem;
     }
 
@@ -1562,18 +1547,18 @@ pub const Checker = struct {
         const pk = self.trow(parent_ty);
         switch (pk) {
             .Variant => {
-                const vt = self.type_info.store.Variant.get(self.trow(parent_ty));
-                const cases = self.type_info.store.field_pool.slice(vt.variants);
+                const vt = self.context.type_info.store.Variant.get(self.trow(parent_ty));
+                const cases = self.context.type_info.store.field_pool.slice(vt.variants);
                 for (cases) |fid| {
-                    const f = self.type_info.store.Field.get(fid.toRaw());
+                    const f = self.context.type_info.store.Field.get(fid.toRaw());
                     if (f.name.toRaw() == tag.toRaw()) return f.ty;
                 }
             },
             .Error => {
-                const et = self.type_info.store.Error.get(self.trow(parent_ty));
-                const cases = self.type_info.store.field_pool.slice(et.variants);
+                const et = self.context.type_info.store.Error.get(self.trow(parent_ty));
+                const cases = self.context.type_info.store.field_pool.slice(et.variants);
                 for (cases) |fid| {
-                    const f = self.type_info.store.Field.get(fid.toRaw());
+                    const f = self.context.type_info.store.Field.get(fid.toRaw());
                     if (f.name.toRaw() == tag.toRaw()) return f.ty;
                 }
             },
@@ -1596,14 +1581,14 @@ pub const Checker = struct {
 
         // Load tag table
         const cases = if (pk == .Variant)
-            self.type_info.store.field_pool.slice(self.type_info.store.Variant.get(self.trow(parent_ty)).variants)
+            self.context.type_info.store.field_pool.slice(self.context.type_info.store.Variant.get(self.trow(parent_ty)).variants)
         else
-            self.type_info.store.field_pool.slice(self.type_info.store.Error.get(self.trow(parent_ty)).variants);
+            self.context.type_info.store.field_pool.slice(self.context.type_info.store.Error.get(self.trow(parent_ty)).variants);
 
         // Find the tag & payload type
         var payload_ty_opt: ?types.TypeId = null;
         for (cases) |cid| {
-            const c = self.type_info.store.Field.get(cid.toRaw());
+            const c = self.context.type_info.store.Field.get(cid.toRaw());
             if (c.name.toRaw() == tag.toRaw()) {
                 payload_ty_opt = c.ty;
                 break;
@@ -1611,9 +1596,9 @@ pub const Checker = struct {
         }
         if (payload_ty_opt == null) {
             if (pk == .Variant) {
-                try self.diags.addError(loc, .unknown_variant_tag, .{});
+                try self.context.diags.addError(loc, .unknown_variant_tag, .{});
             } else {
-                try self.diags.addError(loc, .unknown_error_tag, .{});
+                try self.context.diags.addError(loc, .unknown_error_tag, .{});
             }
             return null;
         }
@@ -1625,19 +1610,19 @@ pub const Checker = struct {
             .Void => {
                 // Tag-only: must have zero args
                 if (args.len != 0) {
-                    try self.diags.addError(loc, .argument_count_mismatch, .{});
+                    try self.context.diags.addError(loc, .argument_count_mismatch, .{});
                     return null;
                 }
                 return parent_ty;
             },
             .Tuple => {
                 // Exact arity, per-element type check
-                const tup = self.type_info.store.Tuple.get(self.trow(payload_ty));
-                const params = self.type_info.store.type_pool.slice(tup.elems);
+                const tup = self.context.type_info.store.Tuple.get(self.trow(payload_ty));
+                const params = self.context.type_info.store.type_pool.slice(tup.elems);
 
                 if (args.len != params.len) {
                     // IMPORTANT: only one arity diagnostic
-                    try self.diags.addError(loc, .argument_count_mismatch, .{});
+                    try self.context.diags.addError(loc, .argument_count_mismatch, .{});
                     return null;
                 }
 
@@ -1646,7 +1631,7 @@ pub const Checker = struct {
                     const at = try self.checkExpr(args[i]) orelse return null;
                     if (self.assignable(at, params[i]) != .success) {
                         // IMPORTANT: only one type diagnostic
-                        try self.diags.addError(loc, .argument_type_mismatch, .{});
+                        try self.context.diags.addError(loc, .argument_type_mismatch, .{});
                         return null;
                     }
                 }
@@ -1654,7 +1639,7 @@ pub const Checker = struct {
             },
             else => {
                 // Non-void, non-tuple payloads (e.g. struct) are not callable: use literals like Type.Tag{...}
-                try self.diags.addError(loc, .call_non_callable, .{});
+                try self.context.diags.addError(loc, .call_non_callable, .{});
                 return null;
             },
         }
@@ -1673,14 +1658,14 @@ pub const Checker = struct {
             if (self.resolveImportedMemberType(fr)) |fty| {
                 const fk = self.typeKind(fty);
                 if (fk != .Function) {
-                    try self.diags.addError(call_loc, .call_non_callable, .{});
+                    try self.context.diags.addError(call_loc, .call_non_callable, .{});
                     return null;
                 }
-                const fnrow = self.type_info.store.Function.get(self.trow(fty));
-                const params = self.type_info.store.type_pool.slice(fnrow.params);
+                const fnrow = self.context.type_info.store.Function.get(self.trow(fty));
+                const params = self.context.type_info.store.type_pool.slice(fnrow.params);
 
                 if (!fnrow.is_variadic and args.len != params.len) {
-                    try self.diags.addError(call_loc, .argument_count_mismatch, .{});
+                    try self.context.diags.addError(call_loc, .argument_count_mismatch, .{});
                     return null;
                 }
                 const fixed = if (params.len == 0) 0 else if (fnrow.is_variadic) params.len - 1 else params.len;
@@ -1690,7 +1675,7 @@ pub const Checker = struct {
                     const at = try self.checkExpr(args[i]) orelse return null;
                     const pt = if (i < fixed) params[i] else params[fixed];
                     if (self.assignable(at, pt) != .success) {
-                        try self.diags.addError(call_loc, .argument_type_mismatch, .{});
+                        try self.context.diags.addError(call_loc, .argument_type_mismatch, .{});
                         return null;
                     }
                 }
@@ -1714,7 +1699,7 @@ pub const Checker = struct {
             if (callee_kind == .Ident) {
                 const idr = self.getExpr(.Ident, call_expr.callee);
                 if (self.lookup(idr.name) == null) {
-                    try self.diags.addError(call_loc, .unknown_function, .{});
+                    try self.context.diags.addError(call_loc, .unknown_function, .{});
                 }
             }
             return null;
@@ -1724,17 +1709,17 @@ pub const Checker = struct {
 
         // Tuple-as-constructor: `(T0,T1,..)(a0,a1,..)` -> construct the tuple type.
         if (func_kind == .Tuple) {
-            const tup = self.type_info.store.Tuple.get(self.trow(func_ty));
-            const params = self.type_info.store.type_pool.slice(tup.elems);
+            const tup = self.context.type_info.store.Tuple.get(self.trow(func_ty));
+            const params = self.context.type_info.store.type_pool.slice(tup.elems);
             if (args.len != params.len) {
-                try self.diags.addError(call_loc, .argument_count_mismatch, .{});
+                try self.context.diags.addError(call_loc, .argument_count_mismatch, .{});
                 return null;
             }
             var i: usize = 0;
             while (i < args.len) : (i += 1) {
                 const at = try self.checkExpr(args[i]) orelse return null;
                 if (self.assignable(at, params[i]) != .success) {
-                    try self.diags.addError(call_loc, .argument_type_mismatch, .{});
+                    try self.context.diags.addError(call_loc, .argument_type_mismatch, .{});
                     return null;
                 }
             }
@@ -1742,16 +1727,16 @@ pub const Checker = struct {
         }
 
         if (func_kind != .Function) {
-            try self.diags.addError(call_loc, .call_non_callable, .{});
+            try self.context.diags.addError(call_loc, .call_non_callable, .{});
             return null;
         }
 
         // Purity bookkeeping / enforcement
-        const fnrow = self.type_info.store.Function.get(self.trow(func_ty));
+        const fnrow = self.context.type_info.store.Function.get(self.trow(func_ty));
         if (self.inFunction()) {
             const fctx = self.currentFunc().?;
             if (fctx.require_pure and !fnrow.is_pure) {
-                try self.diags.addError(call_loc, .purity_violation, .{});
+                try self.context.diags.addError(call_loc, .purity_violation, .{});
                 return null;
             }
             if (!fnrow.is_pure) {
@@ -1761,16 +1746,16 @@ pub const Checker = struct {
         }
 
         // Arity & argument type checks
-        const params = self.type_info.store.type_pool.slice(fnrow.params);
+        const params = self.context.type_info.store.type_pool.slice(fnrow.params);
         if (!fnrow.is_variadic) {
             if (args.len != params.len) {
-                try self.diags.addError(call_loc, .argument_count_mismatch, .{});
+                try self.context.diags.addError(call_loc, .argument_count_mismatch, .{});
                 return null;
             }
         } else {
             const min_required = if (params.len == 0) 0 else params.len - 1;
             if (args.len < min_required) {
-                try self.diags.addError(call_loc, .argument_count_mismatch, .{});
+                try self.context.diags.addError(call_loc, .argument_count_mismatch, .{});
                 return null;
             }
         }
@@ -1785,7 +1770,7 @@ pub const Checker = struct {
                 break :blk if (i < fixed) params[i] else params[params.len - 1];
             };
             if (self.assignable(at, pt) != .success) {
-                try self.diags.addError(call_loc, .argument_type_mismatch, .{});
+                try self.context.diags.addError(call_loc, .argument_type_mismatch, .{});
                 return null;
             }
         }
@@ -1799,7 +1784,7 @@ pub const Checker = struct {
     fn checkCodeBlock(self: *Checker, id: ast.ExprId) !?types.TypeId {
         const cb = self.getExpr(.CodeBlock, id);
         if (!self.warned_code) {
-            _ = self.diags.addNote(self.exprLoc(cb), .checker_code_block_not_executed, .{}) catch {};
+            _ = self.context.diags.addNote(self.exprLoc(cb), .checker_code_block_not_executed, .{}) catch {};
             self.warned_code = true;
         }
         return try self.checkExpr(cb.block);
@@ -1808,7 +1793,7 @@ pub const Checker = struct {
     fn checkComptimeBlock(self: *Checker, id: ast.ExprId) !?types.TypeId {
         const cb = self.getExpr(.ComptimeBlock, id);
         if (!self.warned_comptime) {
-            _ = self.diags.addNote(self.exprLoc(cb), .checker_comptime_not_executed, .{}) catch {};
+            _ = self.context.diags.addNote(self.exprLoc(cb), .checker_comptime_not_executed, .{}) catch {};
             self.warned_comptime = true;
         }
         return try self.checkExpr(cb.block);
@@ -1817,39 +1802,39 @@ pub const Checker = struct {
     fn checkAsyncBlock(self: *Checker, id: ast.ExprId) !?types.TypeId {
         _ = id;
         // Treat async blocks as opaque for typing.
-        return self.type_info.store.tAny();
+        return self.context.type_info.store.tAny();
     }
 
     fn checkMlirBlock(self: *Checker, id: ast.ExprId) !?types.TypeId {
         _ = id;
         // Treat mlir blocks as opaque for typing.
-        return self.type_info.store.tAny();
+        return self.context.type_info.store.tAny();
     }
 
     fn checkInsert(self: *Checker, id: ast.ExprId) !?types.TypeId {
         const r = self.getExpr(.Insert, id);
         _ = try self.checkExpr(r.expr);
-        return self.type_info.store.tAny();
+        return self.context.type_info.store.tAny();
     }
 
     fn checkReturn(self: *Checker, rr: ast.Rows.Return) !?types.TypeId {
         if (self.func_stack.items.len == 0) {
-            try self.diags.addError(self.exprLoc(rr), .return_outside_function, .{});
+            try self.context.diags.addError(self.exprLoc(rr), .return_outside_function, .{});
             return null;
         }
         const current_func = self.func_stack.items[self.func_stack.items.len - 1];
 
         if (current_func.has_result and rr.value.isNone()) {
-            try self.diags.addError(self.exprLoc(rr), .missing_return_value, .{});
+            try self.context.diags.addError(self.exprLoc(rr), .missing_return_value, .{});
             return null;
         }
         if (!current_func.has_result and !rr.value.isNone()) {
-            try self.diags.addError(self.exprLoc(rr), .return_value_in_void_function, .{});
+            try self.context.diags.addError(self.exprLoc(rr), .return_value_in_void_function, .{});
             return null;
         }
 
         const expect_ty = current_func.result;
-        const ret_ty = if (rr.value.isNone()) self.type_info.store.tVoid() else blk: {
+        const ret_ty = if (rr.value.isNone()) self.context.type_info.store.tVoid() else blk: {
             try self.pushValueReq(true);
             const t = try self.checkExpr(rr.value.unwrap());
             self.popValueReq();
@@ -1858,7 +1843,7 @@ pub const Checker = struct {
         if (ret_ty == null) return null;
 
         if (self.assignable(ret_ty.?, expect_ty) != .success) {
-            try self.diags.addError(self.exprLoc(rr), .return_type_mismatch, .{});
+            try self.context.diags.addError(self.exprLoc(rr), .return_type_mismatch, .{});
             return null;
         }
         return ret_ty;
@@ -1867,8 +1852,8 @@ pub const Checker = struct {
     fn checkIf(self: *Checker, id: ast.ExprId) !?types.TypeId {
         const if_expr = self.getExpr(.If, id);
         const cond = try self.checkExpr(if_expr.cond);
-        if (cond == null or cond.?.toRaw() != self.type_info.store.tBool().toRaw()) {
-            try self.diags.addError(self.exprLoc(if_expr), .non_boolean_condition, .{});
+        if (cond == null or cond.?.toRaw() != self.context.type_info.store.tBool().toRaw()) {
+            try self.context.diags.addError(self.exprLoc(if_expr), .non_boolean_condition, .{});
             return null;
         }
 
@@ -1876,18 +1861,18 @@ pub const Checker = struct {
         if (!value_required) {
             _ = try self.checkExpr(if_expr.then_block);
             if (!if_expr.else_block.isNone()) _ = try self.checkExpr(if_expr.else_block.unwrap());
-            return self.type_info.store.tVoid();
+            return self.context.type_info.store.tVoid();
         }
 
         const then_ty = try self.checkExpr(if_expr.then_block) orelse return null;
         if (if_expr.else_block.isNone()) {
-            try self.diags.addError(self.exprLoc(if_expr), .if_expression_requires_else, .{});
+            try self.context.diags.addError(self.exprLoc(if_expr), .if_expression_requires_else, .{});
             return null;
         }
         const else_ty = try self.checkExpr(if_expr.else_block.unwrap()) orelse return null;
 
         if (then_ty.toRaw() != else_ty.toRaw()) {
-            try self.diags.addError(self.exprLoc(if_expr), .if_branch_type_mismatch, .{});
+            try self.context.diags.addError(self.exprLoc(if_expr), .if_branch_type_mismatch, .{});
             return null;
         }
         return then_ty;
@@ -1901,7 +1886,7 @@ pub const Checker = struct {
             const cond_ty = try self.checkExpr(wr.cond.unwrap()) orelse return null;
             const ck = self.typeKind(cond_ty);
             if (ck != .Bool and ck != .Any) {
-                try self.diags.addError(self.exprLoc(wr), .non_boolean_condition, .{});
+                try self.context.diags.addError(self.exprLoc(wr), .non_boolean_condition, .{});
                 return null;
             }
         } else if (!wr.cond.isNone() and !wr.pattern.isNone()) {
@@ -1933,7 +1918,7 @@ pub const Checker = struct {
 
     fn checkUnreachable(self: *Checker, id: ast.ExprId) !?types.TypeId {
         _ = id;
-        return self.type_info.store.tAny();
+        return self.context.type_info.store.tAny();
     }
 
     fn checkFor(self: *Checker, id: ast.ExprId) !?types.TypeId {
@@ -1947,9 +1932,9 @@ pub const Checker = struct {
                 const subject_ty: types.TypeId = switch (pat_kind) {
                     .Slice => it,
                     else => switch (kind) {
-                        .Array => self.type_info.store.Array.get(self.trow(it)).elem,
-                        .Slice => self.type_info.store.Slice.get(self.trow(it)).elem,
-                        .DynArray => self.type_info.store.DynArray.get(self.trow(it)).elem,
+                        .Array => self.context.type_info.store.Array.get(self.trow(it)).elem,
+                        .Slice => self.context.type_info.store.Slice.get(self.trow(it)).elem,
+                        .DynArray => self.context.type_info.store.DynArray.get(self.trow(it)).elem,
                         else => unreachable,
                     },
                 };
@@ -1960,7 +1945,7 @@ pub const Checker = struct {
                 self.current_loop_subject_ty = subject_ty;
             },
             else => {
-                try self.diags.addError(self.exprLoc(fr), .non_iterable_in_for, .{});
+                try self.context.diags.addError(self.exprLoc(fr), .non_iterable_in_for, .{});
                 return null;
             },
         }
@@ -2009,7 +1994,7 @@ pub const Checker = struct {
     fn checkBreak(self: *Checker, id: ast.ExprId) !?types.TypeId {
         const br = self.getExpr(.Break, id);
         if (!self.inLoop()) {
-            try self.diags.addError(self.exprLoc(br), .break_outside_loop, .{});
+            try self.context.diags.addError(self.exprLoc(br), .break_outside_loop, .{});
             return null;
         }
 
@@ -2023,14 +2008,14 @@ pub const Checker = struct {
             if (!br.value.isNone()) {
                 if (ctx.result_ty) |rt| {
                     if (val_ty.?.toRaw() != rt.toRaw()) {
-                        try self.diags.addError(self.exprLoc(br), .loop_break_value_type_conflict, .{});
+                        try self.context.diags.addError(self.exprLoc(br), .loop_break_value_type_conflict, .{});
                         return null;
                     }
                 } else ctx.result_ty = val_ty.?;
                 return val_ty;
             } else {
                 // unlabeled/valueless break in value position yields void
-                return self.type_info.store.tVoid();
+                return self.context.type_info.store.tVoid();
             }
         }
         return null;
@@ -2038,55 +2023,55 @@ pub const Checker = struct {
 
     fn checkContinue(self: *Checker, id: ast.ExprId) !?types.TypeId {
         _ = id;
-        return self.type_info.store.tVoid();
+        return self.context.type_info.store.tVoid();
     }
 
     fn checkDefer(self: *Checker, defer_expr: ast.Rows.Defer) !?types.TypeId {
         if (!self.inFunction()) {
-            try self.diags.addError(self.exprLoc(defer_expr), .defer_outside_function, .{});
+            try self.context.diags.addError(self.exprLoc(defer_expr), .defer_outside_function, .{});
         }
         _ = try self.checkExpr(defer_expr.expr);
-        return self.type_info.store.tVoid();
+        return self.context.type_info.store.tVoid();
     }
 
     fn checkErrDefer(self: *Checker, errdefer_expr: ast.Rows.ErrDefer) !?types.TypeId {
         if (!self.inFunction()) {
-            try self.diags.addError(self.exprLoc(errdefer_expr), .errdefer_outside_function, .{});
+            try self.context.diags.addError(self.exprLoc(errdefer_expr), .errdefer_outside_function, .{});
             return null;
         }
         const current_func = self.currentFunc().?;
         if (!current_func.has_result or self.typeKind(current_func.result) != .ErrorSet) {
-            try self.diags.addError(self.exprLoc(errdefer_expr), .errdefer_in_non_error_function, .{});
+            try self.context.diags.addError(self.exprLoc(errdefer_expr), .errdefer_in_non_error_function, .{});
             return null;
         }
         _ = try self.checkExpr(errdefer_expr.expr) orelse return null;
-        return self.type_info.store.tVoid();
+        return self.context.type_info.store.tVoid();
     }
 
     fn checkErrUnwrap(self: *Checker, id: ast.ExprId) !?types.TypeId {
         const eur = self.getExpr(.ErrUnwrap, id);
         const et = try self.checkExpr(eur.expr) orelse return null;
         if (self.typeKind(et) != .ErrorSet) {
-            try self.diags.addError(self.exprLoc(eur), .error_propagation_on_non_error, .{});
+            try self.context.diags.addError(self.exprLoc(eur), .error_propagation_on_non_error, .{});
             return null;
         }
-        const er = self.type_info.store.ErrorSet.get(self.trow(et));
+        const er = self.context.type_info.store.ErrorSet.get(self.trow(et));
 
         if (!self.inFunction()) {
-            try self.diags.addError(self.exprLoc(eur), .error_propagation_mismatched_function_result, .{});
+            try self.context.diags.addError(self.exprLoc(eur), .error_propagation_mismatched_function_result, .{});
             return null;
         }
         const fctx = self.currentFunc().?;
         const fk = self.typeKind(fctx.result);
         if (fk != .ErrorSet) {
-            try self.diags.addError(self.exprLoc(eur), .error_propagation_mismatched_function_result, .{});
+            try self.context.diags.addError(self.exprLoc(eur), .error_propagation_mismatched_function_result, .{});
             return null;
         }
 
         // Ensure the error/value halves align with the function result type
-        const fr = self.type_info.store.ErrorSet.get(self.trow(fctx.result));
+        const fr = self.context.type_info.store.ErrorSet.get(self.trow(fctx.result));
         if (self.assignable(er.error_ty, fr.error_ty) != .success or self.assignable(er.value_ty, fr.value_ty) != .success) {
-            try self.diags.addError(self.exprLoc(eur), .error_propagation_mismatched_function_result, .{});
+            try self.context.diags.addError(self.exprLoc(eur), .error_propagation_mismatched_function_result, .{});
             return null;
         }
         return er.value_ty;
@@ -2096,30 +2081,30 @@ pub const Checker = struct {
         const our = self.getExpr(.OptionalUnwrap, id);
         const ot = try self.checkExpr(our.expr) orelse return null;
         if (self.typeKind(ot) != .Optional) {
-            try self.diags.addError(self.exprLoc(our), .invalid_optional_unwrap_target, .{});
+            try self.context.diags.addError(self.exprLoc(our), .invalid_optional_unwrap_target, .{});
             return null;
         }
-        const ore = self.type_info.store.Optional.get(self.trow(ot));
+        const ore = self.context.type_info.store.Optional.get(self.trow(ot));
         return ore.elem;
     }
 
     fn checkAwait(self: *Checker, id: ast.ExprId) !?types.TypeId {
         _ = id;
-        return self.type_info.store.tAny();
+        return self.context.type_info.store.tAny();
     }
 
     fn checkClosure(self: *Checker, id: ast.ExprId) !?types.TypeId {
         const cr = self.getExpr(.Closure, id);
         const params = self.ast_unit.exprs.param_pool.slice(cr.params);
 
-        var param_tys = try self.type_info.store.gpa.alloc(types.TypeId, params.len);
-        defer self.type_info.store.gpa.free(param_tys);
+        var param_tys = try self.context.type_info.store.gpa.alloc(types.TypeId, params.len);
+        defer self.context.type_info.store.gpa.free(param_tys);
 
         var i: usize = 0;
         while (i < params.len) : (i += 1) {
             const p = self.ast_unit.exprs.Param.get(params[i].toRaw());
             if (p.ty.isNone()) {
-                try self.diags.addError(self.exprLoc(p), .type_annotation_mismatch, .{});
+                try self.context.diags.addError(self.exprLoc(p), .type_annotation_mismatch, .{});
                 return null;
             }
             const pt = try check_types.typeFromTypeExpr(self, p.ty.unwrap()) orelse return null;
@@ -2128,13 +2113,13 @@ pub const Checker = struct {
 
         const body_ty = try self.checkExpr(cr.body) orelse return null;
         // Closures are always pure function *types* (no side-effect tracking here).
-        return self.type_info.store.mkFunction(param_tys, body_ty, false, true);
+        return self.context.type_info.store.mkFunction(param_tys, body_ty, false, true);
     }
 
     fn checkCast(self: *Checker, id: ast.ExprId) !?types.TypeId {
         const cr = self.getExpr(.Cast, id);
         const et = try check_types.typeFromTypeExpr(self, cr.ty) orelse {
-            try self.diags.addError(self.exprLoc(cr), .cast_target_not_type, .{});
+            try self.context.diags.addError(self.exprLoc(cr), .cast_target_not_type, .{});
             return null;
         };
         const vt = try self.checkExpr(cr.expr) orelse return null;
@@ -2145,7 +2130,7 @@ pub const Checker = struct {
         switch (cr.kind) {
             .normal => {
                 if (self.assignable(vt, et) != .success and !self.castable(vt, et)) {
-                    try self.diags.addError(self.exprLoc(cr), .invalid_cast, .{});
+                    try self.context.diags.addError(self.exprLoc(cr), .invalid_cast, .{});
                     return null;
                 }
             },
@@ -2153,19 +2138,19 @@ pub const Checker = struct {
                 const gsize = check_types.typeSize(self, vt);
                 const tsize = check_types.typeSize(self, et);
                 if (gsize == null or tsize == null or gsize.? != tsize.?) {
-                    try self.diags.addError(self.exprLoc(cr), .invalid_bitcast, .{});
+                    try self.context.diags.addError(self.exprLoc(cr), .invalid_bitcast, .{});
                     return null;
                 }
             },
             .saturate, .wrap => {
                 if (!check_types.isNumericKind(self, vk) or !check_types.isNumericKind(self, ek)) {
-                    try self.diags.addError(self.exprLoc(cr), .numeric_cast_on_non_numeric, .{});
+                    try self.context.diags.addError(self.exprLoc(cr), .numeric_cast_on_non_numeric, .{});
                     return null;
                 }
             },
             .checked => {
                 if (self.assignable(vt, et) != .success and !self.castable(vt, et)) {
-                    try self.diags.addError(self.exprLoc(cr), .invalid_checked_cast, .{});
+                    try self.context.diags.addError(self.exprLoc(cr), .invalid_checked_cast, .{});
                     return null;
                 }
             },
@@ -2177,17 +2162,17 @@ pub const Checker = struct {
         const cr = self.getExpr(.Catch, id);
         const vt = try self.checkExpr(cr.expr) orelse return null;
         if (self.typeKind(vt) != .ErrorSet) {
-            try self.diags.addError(self.exprLoc(cr), .catch_on_non_error, .{});
+            try self.context.diags.addError(self.exprLoc(cr), .catch_on_non_error, .{});
             return null;
         }
-        const er = self.type_info.store.ErrorSet.get(self.trow(vt));
+        const er = self.context.type_info.store.ErrorSet.get(self.trow(vt));
         const value_required = self.isValueReq();
 
         const ht = try self.checkExpr(cr.handler) orelse return null;
-        if (!value_required) return self.type_info.store.tVoid();
+        if (!value_required) return self.context.type_info.store.tVoid();
 
         if (self.assignable(ht, er.value_ty) != .success) {
-            try self.diags.addError(self.exprLoc(cr), .if_branch_type_mismatch, .{});
+            try self.context.diags.addError(self.exprLoc(cr), .if_branch_type_mismatch, .{});
             return null;
         }
         return er.value_ty;
@@ -2197,16 +2182,16 @@ pub const Checker = struct {
         const ir = self.getExpr(.Import, id);
         const k = self.exprKind(ir.expr);
         if (k != .Literal) {
-            try self.diags.addError(self.exprLoc(ir), .invalid_import_operand, .{});
+            try self.context.diags.addError(self.exprLoc(ir), .invalid_import_operand, .{});
             return null;
         }
         const lit = self.getExpr(.Literal, ir.expr);
         if (lit.kind != .string or lit.value.isNone()) {
-            try self.diags.addError(self.exprLoc(ir), .invalid_import_operand, .{});
+            try self.context.diags.addError(self.exprLoc(ir), .invalid_import_operand, .{});
             return null;
         }
         // Imported module is an opaque value to the checker for now.
-        return self.type_info.store.tAny();
+        return self.context.type_info.store.tAny();
     }
 
     // =========================
@@ -2219,14 +2204,14 @@ pub const Checker = struct {
         switch (lit.kind) {
             .int => {
                 if (!lit.value.isNone() and std.mem.eql(u8, self.getStr(lit.value.unwrap()), "0")) {
-                    try self.diags.addError(loc, .division_by_zero, .{});
+                    try self.context.diags.addError(loc, .division_by_zero, .{});
                 }
             },
             .float => {
                 if (!lit.value.isNone()) {
                     const s = self.getStr(lit.value.unwrap());
                     const f = std.fmt.parseFloat(f64, s) catch 1.0;
-                    if (f == 0.0) try self.diags.addError(loc, .division_by_zero, .{});
+                    if (f == 0.0) try self.context.diags.addError(loc, .division_by_zero, .{});
                 }
             },
             else => {},
@@ -2238,7 +2223,7 @@ pub const Checker = struct {
         const lit = self.getExpr(.Literal, rhs);
         if (lit.kind == .int and !lit.value.isNone()) {
             if (std.mem.eql(u8, self.getStr(lit.value.unwrap()), "0")) {
-                try self.diags.addError(loc, .division_by_zero, .{});
+                try self.context.diags.addError(loc, .division_by_zero, .{});
             }
         }
     }

@@ -174,7 +174,7 @@ pub fn abiClassifyX64SysV(self: *MlirCodegen, store: *types.TypeStore, ty: types
     switch (store.getKind(ty)) {
         .Bool => return .{ .kind = .DirectScalar, .scalar0 = self.i1_ty, .size = 1, .alignment = 1 },
         .I8, .U8 => return .{ .kind = .DirectScalar, .scalar0 = self.i8_ty, .size = 1, .alignment = 1 },
-        .I16, .U16 => return .{ .kind = .DirectScalar, .scalar0 = mlir.Type.getSignlessIntegerType(self.ctx, 16), .size = 2, .alignment = 2 },
+        .I16, .U16 => return .{ .kind = .DirectScalar, .scalar0 = mlir.Type.getSignlessIntegerType(self.mlir_ctx, 16), .size = 2, .alignment = 2 },
         .I32, .U32 => return .{ .kind = .DirectScalar, .scalar0 = self.i32_ty, .size = 4, .alignment = 4 },
         .I64, .U64, .Usize => return .{ .kind = .DirectScalar, .scalar0 = self.i64_ty, .size = 8, .alignment = 8 },
         .F32 => return .{ .kind = .DirectScalar, .scalar0 = self.f32_ty, .size = 4, .alignment = 4 },
@@ -216,12 +216,12 @@ pub fn abiClassifyX64SysV(self: *MlirCodegen, store: *types.TypeStore, ty: types
     }
     if (sa.size <= 8) {
         const bits: u32 = @intCast(sa.size * 8);
-        const ity = mlir.Type.getSignlessIntegerType(self.ctx, bits);
+        const ity = mlir.Type.getSignlessIntegerType(self.mlir_ctx, bits);
         return .{ .kind = .DirectScalar, .scalar0 = ity, .size = sa.size };
     }
     // 8 < size <= 16: DirectPair
     const hiBits: u32 = @intCast(sa.size * 8 - 64);
     const i64t = self.i64_ty;
-    const hit = mlir.Type.getSignlessIntegerType(self.ctx, if (hiBits == 0) 64 else hiBits);
+    const hit = mlir.Type.getSignlessIntegerType(self.mlir_ctx, if (hiBits == 0) 64 else hiBits);
     return .{ .kind = .DirectPair, .scalar0 = i64t, .scalar1 = hit, .size = sa.size };
 }

@@ -10,7 +10,7 @@ const checker = compiler.checker;
 fn testLexer(data: []const u8) !void {
     const source0 = try std.heap.page_allocator.dupeZ(u8, data);
     defer std.heap.page_allocator.free(source0);
-    var tokenizer = lexer.Tokenizer.init(source0, .semi);
+    var tokenizer = lexer.Tokenizer.init(source0, 0, .semi);
     var tokenization_failed = false;
     while (true) {
         const token = tokenizer.next();
@@ -63,17 +63,16 @@ fn testParser(data: []const u8) !void {
     defer arena.deinit();
     const gpa = arena.allocator();
 
-    var interner = compiler.ast.StringInterner.init(gpa);
-    defer interner.deinit();
+    var context = compiler.compile.Context.init(gpa); // Create context
+    defer context.deinit();
 
     const source0 = try gpa.dupeZ(u8, data);
-    var diags = diagnostics.Diagnostics.init(gpa);
-    defer diags.deinit();
+    // diags and interner are now part of context, no need to create separately
 
-    var parser_mod = parser.Parser.init(gpa, source0, &diags, &interner);
+    var parser_mod = parser.Parser.init(gpa, source0, 0, &context); // Pass file_id and context
     var tree = parser_mod.parse() catch |err| switch (err) {
         error.UnexpectedToken => {
-            try std.testing.expect(diags.anyErrors());
+            try std.testing.expect(context.diags.anyErrors()); // Use context.diags
             return;
         },
         error.OutOfMemory => std.debug.panic("parser OOM", .{}),
@@ -81,7 +80,7 @@ fn testParser(data: []const u8) !void {
     };
     defer tree.deinit();
 
-    // if (diags.anyErrors()) return;
+    // if (context.diags.anyErrors()) return; // Use context.diags
 
     try std.testing.expectEqual(lexer.Token.Tag.eof, parser_mod.cur.tag);
 }
@@ -97,14 +96,14 @@ fn testLower(data: []const u8) !void {
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer arena.deinit();
     const gpa = arena.allocator();
-    var interner = compiler.ast.StringInterner.init(gpa);
-    defer interner.deinit();
+
+    var context = compiler.compile.Context.init(gpa); // Create context
+    defer context.deinit();
 
     const source0 = try gpa.dupeZ(u8, data);
-    var diags = diagnostics.Diagnostics.init(gpa);
-    defer diags.deinit();
+    // diags and interner are now part of context, no need to create separately
 
-    var parser_mod = parser.Parser.init(gpa, source0, &diags, &interner);
+    var parser_mod = parser.Parser.init(gpa, source0, 0, &context); // Pass file_id and context
     var tree = parser_mod.parse() catch |err| switch (err) {
         error.UnexpectedToken => return, // invalid input is fine for fuzzing
         error.OutOfMemory => std.debug.panic("parser OOM", .{}),
@@ -112,7 +111,7 @@ fn testLower(data: []const u8) !void {
     };
     defer tree.deinit();
 
-    var lower_mod = lower.Lower.init(gpa, &tree, &diags);
+    var lower_mod = lower.Lower.init(gpa, &tree, &context); // Pass context
     var a = try lower_mod.run();
     defer a.deinit();
 
@@ -135,14 +134,16 @@ fn testChecker(data: []const u8) !void {
     defer arena.deinit();
     const gpa = arena.allocator();
 
-    var interner = compiler.ast.StringInterner.init(gpa);
-    defer interner.deinit();
+    var context = compiler.compile.Context.init(gpa); // Create context
+    defer context.deinit();
+
+    // Create a dummy pipeline for the checker
+    var pipeline = compiler.pipeline.Pipeline.init(gpa, &context);
 
     const source0 = try gpa.dupeZ(u8, data);
-    var diags = diagnostics.Diagnostics.init(gpa);
-    defer diags.deinit();
+    // diags and interner are now part of context, no need to create separately
 
-    var parser_mod = parser.Parser.init(gpa, source0, &diags, &interner);
+    var parser_mod = parser.Parser.init(gpa, source0, 0, &context); // Pass file_id and context
     var c = parser_mod.parse() catch |err| switch (err) {
         error.UnexpectedToken => return, // invalid input is fine for fuzzing
         error.OutOfMemory => std.debug.panic("parser OOM", .{}),
@@ -150,11 +151,11 @@ fn testChecker(data: []const u8) !void {
     };
     defer c.deinit();
 
-    var lower_mod = lower.Lower.init(gpa, &c, &diags);
+    var lower_mod = lower.Lower.init(gpa, &c, &context); // Pass context
     var a = try lower_mod.run();
     defer a.deinit();
 
-    var chk = checker.Checker.init(gpa, &diags, &a);
+    var chk = checker.Checker.init(gpa, &a, &context, &pipeline); // Pass context and pipeline
     defer chk.deinit();
     _ = try chk.run();
 }

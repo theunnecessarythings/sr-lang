@@ -1,12 +1,27 @@
 const std = @import("std");
+const cst = @import("cst.zig"); // Import cst to get FileId
 
 pub const Token = struct {
     tag: Tag,
     loc: Loc,
 
     pub const Loc = struct {
+        file_id: cst.FileId,
         start: usize,
         end: usize,
+
+        pub fn init(file_id: cst.FileId, start: usize, end: usize) Loc {
+            return .{ .file_id = file_id, .start = start, .end = end };
+        }
+
+        pub fn merge(self: Loc, other: Loc) Loc {
+            std.debug.assert(self.file_id == other.file_id); // Spans must be from the same file to be merged.
+            return .{
+                .file_id = self.file_id,
+                .start = @min(self.start, other.start),
+                .end = @max(self.end, other.end),
+            };
+        }
     };
 
     pub const keywords = std.StaticStringMap(Tag).initComptime(.{
@@ -376,12 +391,14 @@ pub const Tokenizer = struct {
     mlir_pending: bool = false,
     asm_pending: bool = false,
     raw_string_hashes: usize = 0,
+    file_id: u32 = 0,
 
-    pub fn init(source: [:0]const u8, mode: Mode) Tokenizer {
+    pub fn init(source: [:0]const u8, file_id: u32, mode: Mode) Tokenizer {
         return .{
             .buffer = source,
             .index = if (std.mem.startsWith(u8, source, "\xEF\xBB\xBF")) 3 else 0,
             .mode = mode,
+            .file_id = file_id,
         };
     }
 
@@ -506,7 +523,7 @@ pub const Tokenizer = struct {
     pub fn next(self: *Tokenizer) Token {
         var result = Token{
             .tag = .invalid,
-            .loc = .{ .start = self.index, .end = self.index },
+            .loc = .{ .file_id = self.file_id, .start = self.index, .end = self.index },
         };
 
         var block_depth: usize = 0;
@@ -525,7 +542,7 @@ pub const Tokenizer = struct {
                             } else {
                                 return .{
                                     .tag = .eof,
-                                    .loc = .{ .start = self.index, .end = self.index },
+                                    .loc = .{ .file_id = self.file_id, .start = self.index, .end = self.index },
                                 };
                             }
                         } else continue :state .invalid;
@@ -951,7 +968,7 @@ pub const Tokenizer = struct {
                             if (self.mode == .semi and self.shouldInsertSemi()) {
                                 result.tag = .eos; // inserted semicolon at EOF after comment
                             } else {
-                                return .{ .tag = .eof, .loc = .{ .start = self.index, .end = self.index } };
+                                return .{ .tag = .eof, .loc = .{ .file_id = self.file_id, .start = self.index, .end = self.index } };
                             }
                         }
                     },
@@ -999,7 +1016,7 @@ pub const Tokenizer = struct {
                             if (self.mode == .semi and self.shouldInsertSemi()) {
                                 result.tag = .eos; // inserted semicolon at EOF after comment
                             } else {
-                                return .{ .tag = .eof, .loc = .{ .start = self.index, .end = self.index } };
+                                return .{ .tag = .eof, .loc = .{ .file_id = self.file_id, .start = self.index, .end = self.index } };
                             }
                         }
                     },

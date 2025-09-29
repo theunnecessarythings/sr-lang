@@ -2,29 +2,34 @@ const std = @import("std");
 const testing = std.testing;
 const compiler = @import("compiler");
 
-fn lowerToTir(gpa: std.mem.Allocator, src: []const u8) !compiler.tir.TIR {
-    var diags = compiler.diagnostics.Diagnostics.init(gpa);
-    defer diags.deinit();
+const Lowered = struct {
+    tir: compiler.tir.TIR,
+    context: compiler.compile.Context,
+};
 
-    var interner = compiler.ast.StringInterner.init(gpa);
-    defer interner.deinit();
+fn lowerToTir(gpa: std.mem.Allocator, src: []const u8) !Lowered {
+    var context = compiler.compile.Context.init(gpa); // Create context
 
     const src0 = try std.mem.concatWithSentinel(gpa, u8, &.{src}, 0);
     defer gpa.free(src0);
-    var parser = compiler.parser.Parser.init(gpa, src0, &diags, &interner);
+    var parser = compiler.parser.Parser.init(gpa, src0, 0, &context); // Pass file_id and context
     var cst = try parser.parse();
+    defer cst.deinit();
 
-    var lower1 = compiler.lower.Lower.init(gpa, &cst, &diags);
+    var lower1 = compiler.lower.Lower.init(gpa, &cst, &context); // Pass context
     var hir = try lower1.run();
+    defer hir.deinit();
 
-    var chk = compiler.checker.Checker.init(gpa, &diags, &hir);
+    var pipeline = compiler.pipeline.Pipeline.init(gpa, &context); // Create pipeline
+    var chk = compiler.checker.Checker.init(gpa, &hir, &context, &pipeline); // Pass context and pipeline
     defer chk.deinit();
     try chk.run();
-    if (diags.anyErrors()) return error.SemanticErrors;
+    if (context.diags.anyErrors()) return error.SemanticErrors; // Use context.diags
 
-    var lt = compiler.lower_tir.LowerTir.init(gpa, &chk.type_info, &interner);
+    var lt = compiler.lower_tir.LowerTir.init(gpa, &context, &pipeline); // Pass context and pipeline
     defer lt.deinit();
-    return try lt.run(&hir);
+    const tir_result = try lt.run(&hir);
+    return .{ .tir = tir_result, .context = context };
 }
 
 test "tir: if expression lowers to condBr + join" {
@@ -35,9 +40,10 @@ test "tir: if expression lowers to condBr + join" {
         \\   y
         \\ }
     ;
-    var t = try lowerToTir(std.heap.page_allocator, src);
-    defer t.deinit();
-    // Expect at least one CondBr term and at least one Return
+    var lowered = try lowerToTir(std.heap.page_allocator, src);
+    defer lowered.tir.deinit();
+    defer lowered.context.deinit();
+    const t = lowered.tir;
     var has_cond = false;
     var has_ret = false;
     const kinds = t.terms.index.kinds.items;
@@ -79,8 +85,10 @@ test "tir: labeled while break carries value to join" {
         \\   return res
         \\ }
     ;
-    var t = try lowerToTir(std.heap.page_allocator, src);
-    defer t.deinit();
+    var lowered = try lowerToTir(std.heap.page_allocator, src);
+    defer lowered.tir.deinit();
+    defer lowered.context.deinit();
+    var t = lowered.tir;
     // Should contain a Return with a value present
     const kinds = t.terms.index.kinds.items;
     var has_val_ret = false;
@@ -103,8 +111,10 @@ test "tir: direct call lowers with callee name" {
         \\ add :: fn(a: i32, b: i32) i32 { a + b }
         \\ f :: fn() i32 { add(1, 2) }
     ;
-    var t = try lowerToTir(std.heap.page_allocator, src);
-    defer t.deinit();
+    var lowered = try lowerToTir(std.heap.page_allocator, src);
+    defer lowered.tir.deinit();
+    defer lowered.context.deinit();
+    var t = lowered.tir;
     const ikinds = t.instrs.index.kinds.items;
     var found = false;
     var i: usize = 0;
@@ -128,8 +138,10 @@ test "tir: match bool fallback carries value to join" {
         \\   return match b { true => { 1 }, false => { 2 }, }
         \\ }
     ;
-    var t = try lowerToTir(std.heap.page_allocator, src);
-    defer t.deinit();
+    var lowered = try lowerToTir(std.heap.page_allocator, src);
+    defer lowered.tir.deinit();
+    defer lowered.context.deinit();
+    var t = lowered.tir;
 
     // Find the return block (should be the join) and assert it has one param
     const funcs = t.funcs.func_pool.data.items;
@@ -213,8 +225,10 @@ test "tir: if expression carries value to join" {
         \\   return y
         \\ }
     ;
-    var t = try lowerToTir(std.heap.page_allocator, src);
-    defer t.deinit();
+    var lowered = try lowerToTir(std.heap.page_allocator, src);
+    defer lowered.tir.deinit();
+    defer lowered.context.deinit();
+    var t = lowered.tir;
 
     // Find the return/join block
     const funcs = t.funcs.func_pool.data.items;
@@ -279,8 +293,10 @@ test "tir: match with guard carries value to join" {
         \\   return match b { true if false => { 1 }, _ => { 2 }, }
         \\ }
     ;
-    var t = try lowerToTir(std.heap.page_allocator, src);
-    defer t.deinit();
+    var lowered = try lowerToTir(std.heap.page_allocator, src);
+    defer lowered.tir.deinit();
+    defer lowered.context.deinit();
+    var t = lowered.tir;
 
     const funcs = t.funcs.func_pool.data.items;
     const f_id = funcs[0];

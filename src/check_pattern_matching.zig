@@ -6,22 +6,22 @@ const symbols = @import("symbols.zig");
 const check_types = @import("check_types.zig");
 
 inline fn tk(self: *Checker, ty: types.TypeId) types.TypeKind {
-    return self.type_info.store.index.kinds.items[ty.toRaw()];
+    return self.context.type_info.store.index.kinds.items[ty.toRaw()];
 }
 inline fn row(self: *Checker, ty: types.TypeId) u32 {
-    return self.type_info.store.index.rows.items[ty.toRaw()];
+    return self.context.type_info.store.index.rows.items[ty.toRaw()];
 }
 inline fn getVariantOrErrorCases(self: *Checker, ty: types.TypeId) []const types.FieldId {
     const k = tk(self, ty);
     return if (k == .Variant)
-        self.type_info.store.field_pool.slice(self.type_info.store.Variant.get(row(self, ty)).variants)
+        self.context.type_info.store.field_pool.slice(self.context.type_info.store.Variant.get(row(self, ty)).variants)
     else
-        self.type_info.store.field_pool.slice(self.type_info.store.Error.get(row(self, ty)).variants);
+        self.context.type_info.store.field_pool.slice(self.context.type_info.store.Error.get(row(self, ty)).variants);
 }
 inline fn findCasePayload(self: *Checker, ty: types.TypeId, case_name: ast.StrId) ?types.TypeId {
     const cases = getVariantOrErrorCases(self, ty);
     for (cases) |fid| {
-        const f = self.type_info.store.Field.get(fid.toRaw());
+        const f = self.context.type_info.store.Field.get(fid.toRaw());
         if (f.name.toRaw() == case_name.toRaw()) return f.ty;
     }
     return null;
@@ -200,8 +200,8 @@ pub fn checkPattern(
             if (pk == .Void) return elems.len == 0;
 
             if (pk != .Tuple) return false;
-            const tup = self.type_info.store.Tuple.get(row(self, payload_ty));
-            const tys = self.type_info.store.type_pool.slice(tup.elems);
+            const tup = self.context.type_info.store.Tuple.get(row(self, payload_ty));
+            const tys = self.context.type_info.store.type_pool.slice(tup.elems);
             if (elems.len != tys.len) return false;
 
             for (elems, 0..) |eid, i| {
@@ -219,10 +219,10 @@ pub fn checkPattern(
 
             switch (vk) {
                 .Enum => {
-                    const er = self.type_info.store.Enum.get(row(self, value_ty));
-                    const members = self.type_info.store.enum_member_pool.slice(er.members);
+                    const er = self.context.type_info.store.Enum.get(row(self, value_ty));
+                    const members = self.context.type_info.store.enum_member_pool.slice(er.members);
                     for (members) |mid| {
-                        const m = self.type_info.store.EnumMember.get(mid.toRaw());
+                        const m = self.context.type_info.store.EnumMember.get(mid.toRaw());
                         if (m.name.toRaw() == last.name.toRaw()) return true;
                     }
                     return false;
@@ -230,7 +230,7 @@ pub fn checkPattern(
                 .Variant, .Error => {
                     const cases = getVariantOrErrorCases(self, value_ty);
                     for (cases) |fid| {
-                        const f = self.type_info.store.Field.get(fid.toRaw());
+                        const f = self.context.type_info.store.Field.get(fid.toRaw());
                         if (f.name.toRaw() == last.name.toRaw()) {
                             // tag-only allowed only when payload is void
                             return tk(self, f.ty) == .Void;
@@ -248,15 +248,15 @@ pub fn checkPattern(
             // Struct sugar: allow `Type { ... }` against a struct value.
             if (vk != .Variant and vk != .Error) {
                 if (vk == .Struct) {
-                    const st = self.type_info.store.Struct.get(row(self, value_ty));
-                    const value_fields = self.type_info.store.field_pool.slice(st.fields);
+                    const st = self.context.type_info.store.Struct.get(row(self, value_ty));
+                    const value_fields = self.context.type_info.store.field_pool.slice(st.fields);
                     const pat_fields = self.ast_unit.pats.field_pool.slice(vs_pat.fields);
 
                     for (pat_fields) |pfid| {
                         const pf = self.ast_unit.pats.StructField.get(pfid.toRaw());
                         var found = false;
                         for (value_fields) |vfid| {
-                            const vf = self.type_info.store.Field.get(vfid.toRaw());
+                            const vf = self.context.type_info.store.Field.get(vfid.toRaw());
                             if (vf.name.toRaw() == pf.name.toRaw()) {
                                 found = true;
                                 break;
@@ -279,15 +279,15 @@ pub fn checkPattern(
             if (pk == .Void) return vs_pat.fields.len == 0;
             if (pk != .Struct) return false;
 
-            const st = self.type_info.store.Struct.get(row(self, payload_ty));
-            const value_fields = self.type_info.store.field_pool.slice(st.fields);
+            const st = self.context.type_info.store.Struct.get(row(self, payload_ty));
+            const value_fields = self.context.type_info.store.field_pool.slice(st.fields);
             const pat_fields = self.ast_unit.pats.field_pool.slice(vs_pat.fields);
 
             for (pat_fields) |pfid| {
                 const pf = self.ast_unit.pats.StructField.get(pfid.toRaw());
                 var fty: ?types.TypeId = null;
                 for (value_fields) |vfid| {
-                    const vf = self.type_info.store.Field.get(vfid.toRaw());
+                    const vf = self.context.type_info.store.Field.get(vfid.toRaw());
                     if (vf.name.toRaw() == pf.name.toRaw()) {
                         fty = vf.ty;
                         break;
@@ -326,7 +326,7 @@ pub fn checkPattern(
             const lit_ty = (try self.checkExpr(lit_expr_id)) orelse return false;
 
             if (self.assignable(value_ty, lit_ty) != .success) {
-                if (emit) try self.diags.addError(pattern_loc, .pattern_type_mismatch, .{});
+                if (emit) try self.context.diags.addError(pattern_loc, .pattern_type_mismatch, .{});
                 return false;
             }
             // Future: evaluate and compare values if not top-level.
@@ -336,15 +336,15 @@ pub fn checkPattern(
             const tp = self.ast_unit.pats.get(.Tuple, pid);
             const pattern_loc = self.ast_unit.exprs.locs.get(tp.loc);
             if (tk(self, value_ty) != .Tuple) {
-                if (emit) try self.diags.addError(pattern_loc, .pattern_shape_mismatch, .{});
+                if (emit) try self.context.diags.addError(pattern_loc, .pattern_shape_mismatch, .{});
                 return false;
             }
-            const value_tuple_ty = self.type_info.store.Tuple.get(row(self, value_ty));
+            const value_tuple_ty = self.context.type_info.store.Tuple.get(row(self, value_ty));
             const pattern_elems = self.ast_unit.pats.pat_pool.slice(tp.elems);
-            const value_elems = self.type_info.store.type_pool.slice(value_tuple_ty.elems);
+            const value_elems = self.context.type_info.store.type_pool.slice(value_tuple_ty.elems);
 
             if (pattern_elems.len != value_elems.len) {
-                if (emit) try self.diags.addError(pattern_loc, .tuple_arity_mismatch, .{});
+                if (emit) try self.context.diags.addError(pattern_loc, .tuple_arity_mismatch, .{});
                 return false;
             }
             for (pattern_elems, 0..) |pat_elem_id, i| {
@@ -357,20 +357,20 @@ pub fn checkPattern(
             const pattern_loc = self.ast_unit.exprs.locs.get(ap.loc);
             const vk = tk(self, value_ty);
             if (vk != .Array and vk != .Slice and vk != .DynArray) {
-                if (emit) try self.diags.addError(pattern_loc, .pattern_type_mismatch, .{});
+                if (emit) try self.context.diags.addError(pattern_loc, .pattern_type_mismatch, .{});
                 return false;
             }
 
             const elem_ty: types.TypeId = switch (vk) {
-                .Array => self.type_info.store.Array.get(row(self, value_ty)).elem,
-                .Slice => self.type_info.store.Slice.get(row(self, value_ty)).elem,
-                .DynArray => self.type_info.store.DynArray.get(row(self, value_ty)).elem,
+                .Array => self.context.type_info.store.Array.get(row(self, value_ty)).elem,
+                .Slice => self.context.type_info.store.Slice.get(row(self, value_ty)).elem,
+                .DynArray => self.context.type_info.store.DynArray.get(row(self, value_ty)).elem,
                 else => unreachable,
             };
 
             const pattern_elems = self.ast_unit.pats.pat_pool.slice(ap.elems);
             if (vk == .Array) {
-                const arr = self.type_info.store.Array.get(row(self, value_ty));
+                const arr = self.context.type_info.store.Array.get(row(self, value_ty));
                 // Allow rest to capture an empty slice; just require explicit <= length.
                 if (ap.has_rest) {
                     if (pattern_elems.len > arr.len) return false;
@@ -385,7 +385,7 @@ pub fn checkPattern(
             }
 
             if (ap.has_rest and !ap.rest_binding.isNone()) {
-                if (!(try checkPattern(self, ap.rest_binding.unwrap(), self.type_info.store.mkSlice(elem_ty), false)))
+                if (!(try checkPattern(self, ap.rest_binding.unwrap(), self.context.type_info.store.mkSlice(elem_ty), false)))
                     return false;
             }
             return true;
@@ -394,19 +394,19 @@ pub fn checkPattern(
             const sp = self.ast_unit.pats.get(.Struct, pid);
             const pattern_loc = self.ast_unit.exprs.locs.get(sp.loc);
             if (tk(self, value_ty) != .Struct) {
-                if (emit) try self.diags.addError(pattern_loc, .pattern_type_mismatch, .{});
+                if (emit) try self.context.diags.addError(pattern_loc, .pattern_type_mismatch, .{});
                 return false;
             }
-            const value_struct_ty = self.type_info.store.Struct.get(row(self, value_ty));
+            const value_struct_ty = self.context.type_info.store.Struct.get(row(self, value_ty));
             const pattern_fields = self.ast_unit.pats.field_pool.slice(sp.fields);
-            const value_fields = self.type_info.store.field_pool.slice(value_struct_ty.fields);
+            const value_fields = self.context.type_info.store.field_pool.slice(value_struct_ty.fields);
 
             for (pattern_fields) |pat_field_id| {
                 const pat_field = self.ast_unit.pats.StructField.get(pat_field_id.toRaw());
                 var match_ty: ?types.TypeId = null;
 
                 for (value_fields) |val_field_id| {
-                    const val_field = self.type_info.store.Field.get(val_field_id.toRaw());
+                    const val_field = self.context.type_info.store.Field.get(val_field_id.toRaw());
                     if (pat_field.name.toRaw() == val_field.name.toRaw()) {
                         match_ty = val_field.ty;
                         break;
@@ -414,7 +414,7 @@ pub fn checkPattern(
                 }
 
                 if (match_ty == null) {
-                    if (emit) try self.diags.addError(pattern_loc, .struct_pattern_field_mismatch, .{});
+                    if (emit) try self.context.diags.addError(pattern_loc, .struct_pattern_field_mismatch, .{});
                     return false;
                 }
                 if (!(try checkPattern(self, pat_field.pattern, match_ty.?, false))) return false;
@@ -446,8 +446,8 @@ pub fn checkMatch(self: *Checker, id: ast.ExprId) !?types.TypeId {
     var enum_covered = std.AutoArrayHashMapUnmanaged(u32, void){};
     defer enum_covered.deinit(self.gpa);
     if (subj_kind == .Enum) {
-        const er = self.type_info.store.Enum.get(row(self, subj_ty));
-        enum_total = self.type_info.store.enum_member_pool.slice(er.members).len;
+        const er = self.context.type_info.store.Enum.get(row(self, subj_ty));
+        enum_total = self.context.type_info.store.enum_member_pool.slice(er.members).len;
     }
 
     // Integer coverage (unguarded arms only)
@@ -469,9 +469,9 @@ pub fn checkMatch(self: *Checker, id: ast.ExprId) !?types.TypeId {
                 const pk = self.ast_unit.pats.index.kinds.items[arm.pattern.toRaw()];
                 const loc = self.ast_unit.exprs.locs.get(arm.loc);
                 if (pk == .Struct or pk == .VariantStruct) {
-                    try self.diags.addError(loc, .struct_pattern_field_mismatch, .{});
+                    try self.context.diags.addError(loc, .struct_pattern_field_mismatch, .{});
                 } else {
-                    try self.diags.addError(loc, .pattern_shape_mismatch, .{});
+                    try self.context.diags.addError(loc, .pattern_shape_mismatch, .{});
                 }
                 return null;
             }
@@ -483,8 +483,8 @@ pub fn checkMatch(self: *Checker, id: ast.ExprId) !?types.TypeId {
         if (!arm.guard.isNone()) {
             const gty = try self.checkExpr(arm.guard.unwrap());
             if (gty == null) return null;
-            if (gty.?.toRaw() != self.type_info.store.tBool().toRaw()) {
-                try self.diags.addError(self.ast_unit.exprs.locs.get(arm.loc), .non_boolean_condition, .{});
+            if (gty.?.toRaw() != self.context.type_info.store.tBool().toRaw()) {
+                try self.context.diags.addError(self.ast_unit.exprs.locs.get(arm.loc), .non_boolean_condition, .{});
                 return null;
             }
             if (patternCoversWildcard(self, arm.pattern)) has_guarded_wildcard = true;
@@ -500,20 +500,20 @@ pub fn checkMatch(self: *Checker, id: ast.ExprId) !?types.TypeId {
 
                 if (aset.wildcard) {
                     if (int_cov.wildcard) {
-                        try self.diags.addError(loc, .unreachable_match_arm, .{});
+                        try self.context.diags.addError(loc, .unreachable_match_arm, .{});
                         return null;
                     }
                     int_cov.wildcard = true; // later unguarded int arms are unreachable
                 } else if (!aset.non_int) {
                     if (int_cov.wildcard) {
-                        try self.diags.addError(loc, .unreachable_match_arm, .{});
+                        try self.context.diags.addError(loc, .unreachable_match_arm, .{});
                         return null;
                     }
                     // Points
                     var pi: usize = 0;
                     while (pi < aset.points.items.len) : (pi += 1) {
                         if (try coverAddPointDetectOverlap(self, &int_cov, aset.points.items[pi])) {
-                            try self.diags.addError(loc, .overlapping_match_arm, .{});
+                            try self.context.diags.addError(loc, .overlapping_match_arm, .{});
                             return null;
                         }
                     }
@@ -521,7 +521,7 @@ pub fn checkMatch(self: *Checker, id: ast.ExprId) !?types.TypeId {
                     var ri: usize = 0;
                     while (ri < aset.ranges.items.len) : (ri += 1) {
                         if (try coverAddRangeDetectOverlap(self, &int_cov, aset.ranges.items[ri])) {
-                            try self.diags.addError(loc, .overlapping_match_arm, .{});
+                            try self.context.diags.addError(loc, .overlapping_match_arm, .{});
                             return null;
                         }
                     }
@@ -565,7 +565,7 @@ pub fn checkMatch(self: *Checker, id: ast.ExprId) !?types.TypeId {
             result_ty = body_ty;
         } else if (result_ty.?.toRaw() != body_ty.?.toRaw()) {
             // Reuse if-branch mismatch diagnostic.
-            try self.diags.addError(self.ast_unit.exprs.locs.get(mr.loc), .if_branch_type_mismatch, .{});
+            try self.context.diags.addError(self.ast_unit.exprs.locs.get(mr.loc), .if_branch_type_mismatch, .{});
             return null;
         }
     }
@@ -587,11 +587,11 @@ pub fn checkMatch(self: *Checker, id: ast.ExprId) !?types.TypeId {
         },
     }
     if (non_exhaustive) {
-        try self.diags.addError(self.ast_unit.exprs.locs.get(mr.loc), .non_exhaustive_match, .{});
+        try self.context.diags.addError(self.ast_unit.exprs.locs.get(mr.loc), .non_exhaustive_match, .{});
         return null;
     }
 
-    if (!value_required) return self.type_info.store.tVoid();
+    if (!value_required) return self.context.type_info.store.tVoid();
     return result_ty;
 }
 
@@ -704,10 +704,10 @@ fn recordEnumTagsCovered(
             const segs = self.ast_unit.pats.seg_pool.slice(pp.segments);
             if (segs.len == 0) return;
             const last = self.ast_unit.pats.PathSeg.get(segs[segs.len - 1].toRaw());
-            const er = self.type_info.store.Enum.get(row(self, enum_ty));
-            const members = self.type_info.store.enum_member_pool.slice(er.members);
+            const er = self.context.type_info.store.Enum.get(row(self, enum_ty));
+            const members = self.context.type_info.store.enum_member_pool.slice(er.members);
             for (members) |mid| {
-                const m = self.type_info.store.EnumMember.get(mid.toRaw());
+                const m = self.context.type_info.store.EnumMember.get(mid.toRaw());
                 if (m.name.toRaw() == last.name.toRaw()) {
                     _ = try out.put(self.gpa, m.name.toRaw(), {});
                     break;
@@ -733,10 +733,10 @@ fn isEnumTagPattern(self: *Checker, pid: ast.PatternId, enum_ty: types.TypeId) b
             const segs = self.ast_unit.pats.seg_pool.slice(pp.segments);
             if (segs.len == 0) break :blk false;
             const last = self.ast_unit.pats.PathSeg.get(segs[segs.len - 1].toRaw());
-            const er = self.type_info.store.Enum.get(row(self, enum_ty));
-            const members = self.type_info.store.enum_member_pool.slice(er.members);
+            const er = self.context.type_info.store.Enum.get(row(self, enum_ty));
+            const members = self.context.type_info.store.enum_member_pool.slice(er.members);
             for (members) |mid| {
-                const m = self.type_info.store.EnumMember.get(mid.toRaw());
+                const m = self.context.type_info.store.EnumMember.get(mid.toRaw());
                 if (m.name.toRaw() == last.name.toRaw()) break :blk true;
             }
             break :blk false;
@@ -755,14 +755,14 @@ fn isEnumTagPattern(self: *Checker, pid: ast.PatternId, enum_ty: types.TypeId) b
 fn structPatternFieldsMatch(self: *Checker, pid: ast.PatternId, value_ty: types.TypeId) bool {
     if (tk(self, value_ty) != .Struct) return false;
     const sp = self.ast_unit.pats.get(.Struct, pid);
-    const value_struct_ty = self.type_info.store.Struct.get(row(self, value_ty));
+    const value_struct_ty = self.context.type_info.store.Struct.get(row(self, value_ty));
     const pattern_fields = self.ast_unit.pats.field_pool.slice(sp.fields);
-    const value_fields = self.type_info.store.field_pool.slice(value_struct_ty.fields);
+    const value_fields = self.context.type_info.store.field_pool.slice(value_struct_ty.fields);
     for (pattern_fields) |pat_field_id| {
         const pat_field = self.ast_unit.pats.StructField.get(pat_field_id.toRaw());
         var found = false;
         for (value_fields) |val_field_id| {
-            const val_field = self.type_info.store.Field.get(val_field_id.toRaw());
+            const val_field = self.context.type_info.store.Field.get(val_field_id.toRaw());
             if (pat_field.name.toRaw() == val_field.name.toRaw()) {
                 found = true;
                 break;
@@ -841,8 +841,8 @@ pub fn checkPatternShapeForDecl(self: *Checker, pid: ast.PatternId, value_ty: ty
 
         .Tuple => {
             if (pkind != .Tuple) return .shape_mismatch;
-            const tp = self.type_info.store.Tuple.get(row(self, value_ty));
-            const vals = self.type_info.store.type_pool.slice(tp.elems);
+            const tp = self.context.type_info.store.Tuple.get(row(self, value_ty));
+            const vals = self.context.type_info.store.type_pool.slice(tp.elems);
             const pt = self.ast_unit.pats.get(.Tuple, pid);
             const elems = self.ast_unit.pats.pat_pool.slice(pt.elems);
             if (elems.len != vals.len) return .tuple_arity_mismatch;
@@ -856,8 +856,8 @@ pub fn checkPatternShapeForDecl(self: *Checker, pid: ast.PatternId, value_ty: ty
 
         .Struct => {
             if (pkind != .Struct) return .shape_mismatch;
-            const sv = self.type_info.store.Struct.get(row(self, value_ty));
-            const vfields = self.type_info.store.field_pool.slice(sv.fields);
+            const sv = self.context.type_info.store.Struct.get(row(self, value_ty));
+            const vfields = self.context.type_info.store.field_pool.slice(sv.fields);
             const sp = self.ast_unit.pats.get(.Struct, pid);
             const pfields = self.ast_unit.pats.field_pool.slice(sp.fields);
 
@@ -868,7 +868,7 @@ pub fn checkPatternShapeForDecl(self: *Checker, pid: ast.PatternId, value_ty: ty
 
                 var j: usize = 0;
                 while (j < vfields.len) : (j += 1) {
-                    const vf = self.type_info.store.Field.get(vfields[j].toRaw());
+                    const vf = self.context.type_info.store.Field.get(vfields[j].toRaw());
                     if (vf.name.toRaw() == pf.name.toRaw()) {
                         fty = vf.ty;
                         break;
@@ -886,16 +886,16 @@ pub fn checkPatternShapeForDecl(self: *Checker, pid: ast.PatternId, value_ty: ty
             // Accept array/slice/dynarray; recurse on element patterns.
             if (pkind != .Array and pkind != .Slice and pkind != .DynArray) return .shape_mismatch;
             const elem_ty: types.TypeId = switch (pkind) {
-                .Array => self.type_info.store.Array.get(row(self, value_ty)).elem,
-                .Slice => self.type_info.store.Slice.get(row(self, value_ty)).elem,
-                .DynArray => self.type_info.store.DynArray.get(row(self, value_ty)).elem,
+                .Array => self.context.type_info.store.Array.get(row(self, value_ty)).elem,
+                .Slice => self.context.type_info.store.Slice.get(row(self, value_ty)).elem,
+                .DynArray => self.context.type_info.store.DynArray.get(row(self, value_ty)).elem,
                 else => unreachable,
             };
             const sl = self.ast_unit.pats.get(.Slice, pid);
             const elems = self.ast_unit.pats.pat_pool.slice(sl.elems);
 
             if (pkind == .Array) {
-                const arr = self.type_info.store.Array.get(row(self, value_ty));
+                const arr = self.context.type_info.store.Array.get(row(self, value_ty));
                 // Align with checkPattern: allow rest to capture empty.
                 if (sl.has_rest) {
                     if (elems.len > arr.len) return .shape_mismatch;
@@ -909,7 +909,7 @@ pub fn checkPatternShapeForDecl(self: *Checker, pid: ast.PatternId, value_ty: ty
                 if (res != .ok) return res;
             }
             if (sl.has_rest and !sl.rest_binding.isNone()) {
-                const rest_res = checkPatternShapeForDecl(self, sl.rest_binding.unwrap(), self.type_info.store.mkSlice(elem_ty));
+                const rest_res = checkPatternShapeForDecl(self, sl.rest_binding.unwrap(), self.context.type_info.store.mkSlice(elem_ty));
                 if (rest_res != .ok) return rest_res;
             }
             return .ok;
@@ -931,8 +931,8 @@ pub fn checkPatternShapeForAssignExpr(self: *Checker, expr: ast.ExprId, value_ty
             if (vk != .Tuple) return .shape_mismatch;
             const tl = self.ast_unit.exprs.get(.TupleLit, expr);
             const elems = self.ast_unit.exprs.expr_pool.slice(tl.elems);
-            const trow = self.type_info.store.Tuple.get(row(self, value_ty));
-            const tys = self.type_info.store.type_pool.slice(trow.elems);
+            const trow = self.context.type_info.store.Tuple.get(row(self, value_ty));
+            const tys = self.context.type_info.store.type_pool.slice(trow.elems);
             if (elems.len != tys.len) return .tuple_arity_mismatch;
             var i: usize = 0;
             while (i < elems.len) : (i += 1) {
@@ -944,8 +944,8 @@ pub fn checkPatternShapeForAssignExpr(self: *Checker, expr: ast.ExprId, value_ty
 
         .StructLit => {
             if (vk != .Struct) return .shape_mismatch;
-            const sv = self.type_info.store.Struct.get(row(self, value_ty));
-            const vfields = self.type_info.store.field_pool.slice(sv.fields);
+            const sv = self.context.type_info.store.Struct.get(row(self, value_ty));
+            const vfields = self.context.type_info.store.field_pool.slice(sv.fields);
             const sl = self.ast_unit.exprs.get(.StructLit, expr);
             const pfields = self.ast_unit.exprs.sfv_pool.slice(sl.fields);
 
@@ -957,7 +957,7 @@ pub fn checkPatternShapeForAssignExpr(self: *Checker, expr: ast.ExprId, value_ty
                 var fty: ?types.TypeId = null;
                 var j: usize = 0;
                 while (j < vfields.len) : (j += 1) {
-                    const vf = self.type_info.store.Field.get(vfields[j].toRaw());
+                    const vf = self.context.type_info.store.Field.get(vfields[j].toRaw());
                     if (vf.name.toRaw() == pf.name.unwrap().toRaw()) {
                         fty = vf.ty;
                         break;
@@ -974,9 +974,9 @@ pub fn checkPatternShapeForAssignExpr(self: *Checker, expr: ast.ExprId, value_ty
         .ArrayLit => {
             if (vk != .Array and vk != .Slice and vk != .DynArray) return .shape_mismatch;
             const elem_ty: types.TypeId = switch (vk) {
-                .Array => self.type_info.store.Array.get(row(self, value_ty)).elem,
-                .Slice => self.type_info.store.Slice.get(row(self, value_ty)).elem,
-                .DynArray => self.type_info.store.DynArray.get(row(self, value_ty)).elem,
+                .Array => self.context.type_info.store.Array.get(row(self, value_ty)).elem,
+                .Slice => self.context.type_info.store.Slice.get(row(self, value_ty)).elem,
+                .DynArray => self.context.type_info.store.DynArray.get(row(self, value_ty)).elem,
                 else => unreachable,
             };
 
@@ -1000,7 +1000,7 @@ pub fn checkPatternShapeForAssignExpr(self: *Checker, expr: ast.ExprId, value_ty
             }
 
             if (vk == .Array) {
-                const arr = self.type_info.store.Array.get(row(self, value_ty));
+                const arr = self.context.type_info.store.Array.get(row(self, value_ty));
                 if (has_rest) {
                     if (elems.len - 1 > arr.len) return .shape_mismatch; // minus the rest placeholder
                 } else {
@@ -1042,8 +1042,8 @@ pub fn bindingTypeInPattern(self: *Checker, pid: ast.PatternId, name: ast.StrId,
 
         .Tuple => {
             if (pk != .Tuple) return null;
-            const tp = self.type_info.store.Tuple.get(row(self, value_ty));
-            const elems_ty = self.type_info.store.type_pool.slice(tp.elems);
+            const tp = self.context.type_info.store.Tuple.get(row(self, value_ty));
+            const elems_ty = self.context.type_info.store.type_pool.slice(tp.elems);
             const pp = self.ast_unit.pats.get(.Tuple, pid);
             const elems = self.ast_unit.pats.pat_pool.slice(pp.elems);
             if (elems.len != elems_ty.len) return null;
@@ -1056,15 +1056,15 @@ pub fn bindingTypeInPattern(self: *Checker, pid: ast.PatternId, name: ast.StrId,
 
         .Struct => {
             if (pk != .Struct) return null;
-            const st = self.type_info.store.Struct.get(row(self, value_ty));
-            const fields_ty = self.type_info.store.field_pool.slice(st.fields);
+            const st = self.context.type_info.store.Struct.get(row(self, value_ty));
+            const fields_ty = self.context.type_info.store.field_pool.slice(st.fields);
             const sp = self.ast_unit.pats.get(.Struct, pid);
             const fields = self.ast_unit.pats.field_pool.slice(sp.fields);
             for (fields) |fid| {
                 const pf = self.ast_unit.pats.StructField.get(fid.toRaw());
                 var i: usize = 0;
                 while (i < fields_ty.len) : (i += 1) {
-                    const tf = self.type_info.store.Field.get(fields_ty[i].toRaw());
+                    const tf = self.context.type_info.store.Field.get(fields_ty[i].toRaw());
                     if (tf.name.toRaw() == pf.name.toRaw()) {
                         if (bindingTypeInPattern(self, pf.pattern, name, tf.ty)) |bt| return bt;
                         break;
@@ -1077,16 +1077,16 @@ pub fn bindingTypeInPattern(self: *Checker, pid: ast.PatternId, name: ast.StrId,
         .Slice => {
             if (pk != .Array and pk != .Slice and pk != .DynArray) return null;
             const elem_ty: types.TypeId = switch (pk) {
-                .Array => self.type_info.store.Array.get(row(self, value_ty)).elem,
-                .Slice => self.type_info.store.Slice.get(row(self, value_ty)).elem,
-                .DynArray => self.type_info.store.DynArray.get(row(self, value_ty)).elem,
+                .Array => self.context.type_info.store.Array.get(row(self, value_ty)).elem,
+                .Slice => self.context.type_info.store.Slice.get(row(self, value_ty)).elem,
+                .DynArray => self.context.type_info.store.DynArray.get(row(self, value_ty)).elem,
                 else => return null,
             };
             const sl = self.ast_unit.pats.get(.Slice, pid);
             const elems = self.ast_unit.pats.pat_pool.slice(sl.elems);
             for (elems) |eid| if (bindingTypeInPattern(self, eid, name, elem_ty)) |bt| return bt;
             if (sl.has_rest and !sl.rest_binding.isNone()) {
-                const rest_ty = self.type_info.store.mkSlice(elem_ty);
+                const rest_ty = self.context.type_info.store.mkSlice(elem_ty);
                 if (bindingTypeInPattern(self, sl.rest_binding.unwrap(), name, rest_ty)) |bt| return bt;
             }
             return null;

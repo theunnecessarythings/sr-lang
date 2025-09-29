@@ -1,10 +1,12 @@
 const std = @import("std");
-const cst = @import("cst.zig");
-const ast = @import("ast.zig");
-const tir = @import("tir.zig");
+const cst_mod = @import("cst.zig");
+const ast_mod = @import("ast.zig");
+const tir_mod = @import("tir.zig");
 const lower = @import("lower.zig");
 const lower_tir = @import("lower_tir.zig");
 const checker = @import("checker.zig");
+const Lexer = @import("lexer.zig").Tokenizer;
+const Parser = @import("parser.zig").Parser;
 const types = @import("types.zig");
 const mlir_codegen = @import("mlir_codegen.zig");
 const mlir = @import("mlir_bindings.zig");
@@ -14,104 +16,202 @@ const ImportResolver = @import("import_resolver.zig").ImportResolver;
 const ModuleEntry = @import("import_resolver.zig").ModuleEntry;
 
 pub const Result = struct {
-    hir: ast.Ast,
-    type_info: *types.TypeInfo,
-    module: tir.TIR,
-    mlir_module: mlir.Module,
-    gen: mlir_codegen.MlirCodegen,
+    cst: ?cst_mod.CST = null,
+    ast: ?ast_mod.Ast = null,
+    tir: ?tir_mod.TIR = null,
+    mlir_module: ?mlir.Module = null,
+    gen: ?mlir_codegen.MlirCodegen = null,
 };
 
 pub const Pipeline = struct {
     allocator: std.mem.Allocator,
-    diags: *Diagnostics,
+    context: *compile.Context,
 
-    pub fn init(allocator: std.mem.Allocator, diags: *Diagnostics) Pipeline {
-        return .{ .allocator = allocator, .diags = diags };
+    const Mode = enum {
+        lex,
+        parse,
+        ast,
+        check,
+        tir,
+        mlir,
+        passes,
+        llvm_ir,
+        llvm_passes,
+        jit,
+        exec,
+        run,
+    };
+
+    pub fn init(allocator: std.mem.Allocator, context: *compile.Context) Pipeline {
+        return .{ .allocator = allocator, .context = context };
     }
 
     // Run with import resolution: loads imported modules and appends their codegen into one MLIR module
     pub fn runWithImports(
         self: *Pipeline,
-        program: *cst.CST,
-        base_dir: []const u8,
+        filename: []const u8,
         link_args: []const []const u8,
-    ) !Result {
-        var lower_pass = lower.Lower.init(self.allocator, program, self.diags);
-        var hir = try lower_pass.run();
+        mode: Mode,
+    ) anyerror!Result {
+        const file_id = try self.context.source_manager.add(filename);
+        const source = try self.context.source_manager.read(file_id);
+        defer self.allocator.free(source);
+        const source0 = try self.allocator.dupeZ(u8, source);
 
-        // Set up a resolver up front so checker can use it for module typing
-        var resolver = ImportResolver.init(self.allocator, self.diags);
-        defer resolver.deinit();
-
-        var chk = checker.Checker.init(self.allocator, self.diags, &hir);
-        defer chk.deinit();
-        chk.setImportResolver(&resolver, base_dir);
-        const type_info = try self.allocator.create(types.TypeInfo);
-        type_info.* = try chk.runWithTypes();
-        if (self.diags.anyErrors()) {
-            return error.TypeCheckFailed;
+        var lexer = Lexer.init(source0, file_id, .semi);
+        if (mode == .lex) {
+            while (true) {
+                const token = lexer.next();
+                if (token.tag == .eof) break;
+                const lexeme = source0[token.loc.start..token.loc.end];
+                std.debug.print("{}({},{}) `{s}`\n", .{ token.tag, token.loc.start, token.loc.end, lexeme });
+            }
+            return .{};
         }
 
-        var tir_lowerer = lower_tir.LowerTir.init(self.allocator, type_info, program.interner);
+        var parser = Parser.init(self.allocator, source0, file_id, self.context);
+        const cst_program = try parser.parse();
+
+        var buffer: [4096]u8 = undefined;
+        var writer = std.fs.File.stdout().writer(&buffer);
+
+        if (self.context.diags.anyErrors()) {
+            try self.context.diags.emitStyled(source, self.context, &writer.interface, filename, true);
+            return error.ParseFailed;
+        }
+        if (mode == .parse) {
+            return .{ .cst = cst_program };
+        }
+
+        var lower_pass = lower.Lower.init(self.allocator, &cst_program, self.context);
+        var ast = try lower_pass.run();
+        if (self.context.diags.anyErrors()) {
+            try self.context.diags.emitStyled(source, self.context, &writer.interface, filename, true);
+            return error.LoweringFailed;
+        }
+        if (mode == .ast) {
+            return .{ .cst = cst_program, .ast = ast };
+        }
+
+        var chk = checker.Checker.init(self.allocator, &ast, self.context, self);
+        defer chk.deinit();
+        try chk.run();
+        if (self.context.diags.anyErrors()) {
+            try self.context.diags.emitStyled(source, self.context, &writer.interface, filename, true);
+            return error.TypeCheckFailed;
+        }
+        if (mode == .check) {
+            return .{ .cst = cst_program, .ast = ast };
+        }
+
+        var tir_lowerer = lower_tir.LowerTir.init(self.allocator, self.context, self);
+        defer tir_lowerer.deinit();
         var name_to_prefix = std.StringHashMap([]const u8).init(self.allocator);
         defer {
             var it = name_to_prefix.valueIterator();
             while (it.next()) |p| self.allocator.free(p.*);
             name_to_prefix.deinit();
         }
-        try computeModulePrefixes(self.allocator, &hir, &name_to_prefix);
+        try computeModulePrefixes(self.allocator, &ast, &name_to_prefix);
         var iter = name_to_prefix.iterator();
         while (iter.next()) |kv| {
             try tir_lowerer.setModulePrefix(kv.key_ptr.*, kv.value_ptr.*);
         }
-        tir_lowerer.setImportResolver(&resolver, base_dir);
-        const root_mod = try tir_lowerer.run(&hir);
-        if (self.diags.anyErrors()) {
+
+        const root_mod = try tir_lowerer.run(&ast);
+
+        if (self.context.diags.anyErrors()) {
+            try self.context.diags.emitStyled(source, self.context, &writer.interface, filename, true);
             return error.TirLoweringFailed;
+        }
+        if (mode == .tir) {
+            return .{ .cst = cst_program, .ast = ast, .tir = root_mod };
         }
 
         const mlir_ctx = compile.initMLIR(self.allocator);
-        var gen = mlir_codegen.MlirCodegen.init(self.allocator, mlir_ctx);
-        var mlir_module = try gen.emitModule(&root_mod, &type_info.store);
-        if (self.diags.anyErrors()) {
+        var gen = mlir_codegen.MlirCodegen.init(self.allocator, self.context, mlir_ctx);
+
+        // Resolve imports recursively and append their codegen (reuse resolver)
+        try self.resolveImports(&ast, &gen, &name_to_prefix, &self.context.resolver);
+
+        var mlir_module = try gen.emitModule(&root_mod, self.context);
+        if (self.context.diags.anyErrors()) {
+            try self.context.diags.emitStyled(source, self.context, &writer.interface, filename, true);
             return error.MlirCodegenFailed;
         }
+        if (mode == .mlir) {
+            std.debug.print("Generated MLIR module:\n", .{});
+            var op = mlir_module.getOperation();
+            op.dump();
+            return .{ .cst = cst_program, .ast = ast, .tir = root_mod, .mlir_module = mlir_module, .gen = gen };
+        }
 
+        try compile.run_passes(&gen.mlir_ctx, &mlir_module);
+        if (self.context.diags.anyErrors()) {
+            try self.context.diags.emitStyled(source, self.context, &writer.interface, filename, true);
+            return error.MlirPassesFailed;
+        }
+        if (mode == .passes) {
+            std.debug.print("Transformed MLIR module:\n", .{});
+            var op = mlir_module.getOperation();
+            op.dump();
+            return .{ .cst = cst_program, .ast = ast, .tir = root_mod, .mlir_module = mlir_module, .gen = gen };
+        }
+
+        try compile.convert_to_llvm_ir(mlir_module.handle, true, link_args, switch (mode) {
+            .llvm_ir => .llvm_ir,
+            .llvm_passes => .llvm_passes,
+            else => .compile,
+        });
+        if (self.context.diags.anyErrors()) {
+            try self.context.diags.emitStyled(source, self.context, &writer.interface, filename, true);
+            return error.LLVMIRFailed;
+        }
+        if (mode == .llvm_ir or mode == .llvm_passes) {
+            return .{ .cst = cst_program, .ast = ast, .tir = root_mod, .mlir_module = mlir_module, .gen = gen };
+        }
+
+        if (mode == .jit) {
+            compile.runJit(mlir_module.handle);
+            if (self.context.diags.anyErrors()) {
+                try self.context.diags.emitStyled(source, self.context, &writer.interface, filename, true);
+                return error.JITFailed;
+            }
+            return .{ .cst = cst_program, .ast = ast, .tir = root_mod, .mlir_module = mlir_module, .gen = gen };
+        }
+        // run
+        compile.run();
+        return .{ .ast = ast, .tir = root_mod, .mlir_module = mlir_module, .gen = gen, .cst = cst_program };
+    }
+
+    fn resolveImports(
+        self: *Pipeline,
+        ast: *ast_mod.Ast,
+        gen: *mlir_codegen.MlirCodegen,
+        name_to_prefix: *std.StringHashMap([]const u8),
+        resolver: *ImportResolver,
+    ) !void {
         // Resolve imports recursively and append their codegen (reuse resolver)
         var imports: std.ArrayList([]const u8) = .empty;
         defer {
             for (imports.items) |s| self.allocator.free(s);
             imports.deinit(self.allocator);
         }
-        try resolver.collectImportsFromAst(&hir, &imports);
+        try resolver.collectImportsFromAst(ast, &imports);
         var seen = std.StringHashMap(bool).init(self.allocator);
         defer seen.deinit();
         for (imports.items) |imp| {
             if ((try seen.getOrPut(imp)).found_existing) continue;
-            const me = try resolver.resolve(base_dir, imp, program.interner);
+            const me = try resolver.resolve(".", imp, self);
             // Apply name mangling to imported module functions (and their internal calls)
             const pref = name_to_prefix.get(imp) orelse computePrefix(self.allocator, imp) catch @panic("OOM");
             try mangleTIR(self.allocator, &me.tir, me.tir.instrs.strs, pref);
             // append TIR into same generator (emit into same module)
-            _ = try gen.emitModule(&me.tir, &me.type_info.store);
-            if (self.diags.anyErrors()) {
+            _ = try gen.emitModule(&me.tir, self.context);
+            if (self.context.diags.anyErrors()) {
                 return error.MlirCodegenFailed;
             }
         }
-
-        // finalize: print and pass pipeline + LLVM IR
-        std.debug.print("Generated MLIR module:\n", .{});
-        var op = mlir_module.getOperation();
-        op.dump();
-        try compile.run_passes(&gen.ctx, &mlir_module, true);
-        if (self.diags.anyErrors()) {
-            return error.MlirPassesFailed;
-        }
-        try compile.convert_to_llvm_ir(mlir_module.handle, true, link_args);
-        if (self.diags.anyErrors()) {
-            return error.LLVMIRFailed;
-        }
-        return .{ .hir = hir, .type_info = type_info, .module = root_mod, .mlir_module = mlir_module, .gen = gen };
     }
 };
 
@@ -126,7 +226,7 @@ fn computePrefix(gpa: std.mem.Allocator, imp: []const u8) ![]const u8 {
     return try buf.toOwnedSlice(gpa);
 }
 
-fn computeModulePrefixes(gpa: std.mem.Allocator, a: *const ast.Ast, out: *std.StringHashMap([]const u8)) !void {
+fn computeModulePrefixes(gpa: std.mem.Allocator, a: *const ast_mod.Ast, out: *std.StringHashMap([]const u8)) !void {
     const decls = a.exprs.decl_pool.slice(a.unit.decls);
     for (decls) |did| {
         const d = a.exprs.Decl.get(did.toRaw());
@@ -154,9 +254,9 @@ fn computeModulePrefixes(gpa: std.mem.Allocator, a: *const ast.Ast, out: *std.St
     }
 }
 
-fn mangleTIR(gpa: std.mem.Allocator, t: *tir.TIR, strs: *cst.StringInterner, prefix: []const u8) !void {
+fn mangleTIR(gpa: std.mem.Allocator, t: *tir_mod.TIR, strs: *cst_mod.StringInterner, prefix: []const u8) !void {
     // Map of old function name -> new name
-    var rename = std.AutoHashMap(cst.StrId, cst.StrId).init(gpa);
+    var rename = std.AutoHashMap(cst_mod.StrId, cst_mod.StrId).init(gpa);
     defer rename.deinit();
     // Gather functions and rename
     const funcs = t.funcs.func_pool.data.items;

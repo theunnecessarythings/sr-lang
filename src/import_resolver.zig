@@ -1,29 +1,27 @@
 const std = @import("std");
 
 const parser = @import("parser.zig");
-const cst = @import("cst.zig");
-const ast = @import("ast.zig");
+const cst_mod = @import("cst.zig");
+const ast_mod = @import("ast.zig");
 const lower = @import("lower.zig");
 const checker = @import("checker.zig");
 const types = @import("types.zig");
 const lower_tir = @import("lower_tir.zig");
-const tir = @import("tir.zig");
+const tir_mod = @import("tir.zig");
+const Pipeline = @import("pipeline.zig").Pipeline;
+const Context = @import("compile.zig").Context;
 const Diagnostics = @import("diagnostics.zig").Diagnostics;
 
 pub const ModuleEntry = struct {
     /// Absolute, canonical (realpath) to the root source file of this module.
     path: []u8,
 
-    cst: cst.CST,
-    ast: ast.Ast,
-    type_info: *types.TypeInfo,
-    tir: tir.TIR,
+    cst: cst_mod.CST,
+    ast: ast_mod.Ast,
+    tir: tir_mod.TIR,
 
     /// Exported symbols: binding name -> TypeId (from this module's TypeStore).
     syms: std.StringHashMap(types.TypeId),
-
-    /// Arena that owns this module’s CST/AST/etc. Keep separate from the global allocator.
-    arena: std.heap.ArenaAllocator,
 
     pub fn deinit(self: *ModuleEntry, gpa: std.mem.Allocator) void {
         // The symmap keys are duped on gpa, so free them explicitly.
@@ -32,14 +30,11 @@ pub const ModuleEntry = struct {
         self.syms.deinit();
 
         gpa.free(self.path);
-
-        self.arena.deinit();
     }
 };
 
 pub const ImportResolver = struct {
     gpa: std.mem.Allocator,
-    diags: *Diagnostics,
 
     /// Canonical absolute file path -> ModuleEntry (owned by this map).
     cache: std.StringHashMap(ModuleEntry),
@@ -60,10 +55,9 @@ pub const ImportResolver = struct {
         exts: []const []const u8 = &.{".sr"},
     };
 
-    pub fn init(gpa: std.mem.Allocator, diags: *Diagnostics) ImportResolver {
+    pub fn init(gpa: std.mem.Allocator) ImportResolver {
         return .{
             .gpa = gpa,
-            .diags = diags,
             .cache = std.StringHashMap(ModuleEntry).init(gpa),
             .in_progress = std.StringHashMap(void).init(gpa),
             .config = .{},
@@ -87,7 +81,7 @@ pub const ImportResolver = struct {
         self: *ImportResolver,
         base_dir: []const u8,
         import_path: []const u8,
-        interner: *ast.StringInterner,
+        pipeline: *Pipeline,
     ) !*ModuleEntry {
         // 1) Canonicalize to an absolute real path (or best-effort canonical string)
         const abs_real = try self.canonPath(base_dir, import_path);
@@ -105,52 +99,19 @@ pub const ImportResolver = struct {
         };
         defer _ = self.in_progress.remove(abs_real);
 
-        // 4) Open & read
-        var file = try std.fs.cwd().openFile(abs_real, .{});
-        defer file.close();
-        const stat = try file.stat();
-
-        // 5) Module-local arena for CST/AST/etc
-        var arena = std.heap.ArenaAllocator.init(self.gpa);
-        errdefer arena.deinit();
-        const aalloc = arena.allocator();
-
-        const source = try file.readToEndAlloc(aalloc, stat.size);
-        // Lexer expects sentinel-terminated buffer
-        const source0 = try std.mem.concatWithSentinel(aalloc, u8, &.{source}, 0);
-
-        // 6) Parse -> CST
-        var p = parser.Parser.init(aalloc, source0, self.diags, interner);
-        var c = try p.parse();
-
-        // 7) Lower CST -> AST
-        var low = lower.Lower.init(aalloc, &c, self.diags);
-        var a = try low.run();
-
-        // 8) Type check
-        var chk = checker.Checker.init(aalloc, self.diags, &a);
-        defer chk.deinit();
-
-        const ti = try self.gpa.create(types.TypeInfo);
-        ti.* = try chk.runWithTypes();
-
-        // 9) Lower -> TIR
-        var lt = lower_tir.LowerTir.init(self.gpa, ti, interner);
-        const t = try lt.run(&a);
+        var result = try pipeline.runWithImports(abs_real, &.{}, .tir);
 
         // 10) Build export table
         var symmap = std.StringHashMap(types.TypeId).init(self.gpa);
-        try self.buildExports(&symmap, &a, ti);
+        try self.buildExports(&symmap, &result.ast.?, &pipeline.context.type_info);
 
         // 11) Install into cache
         var entry = ModuleEntry{
             .path = try self.gpa.dupe(u8, abs_real),
-            .cst = c,
-            .ast = a,
-            .type_info = ti,
-            .tir = t,
+            .cst = result.cst.?,
+            .ast = result.ast.?,
+            .tir = result.tir.?,
             .syms = symmap,
-            .arena = arena,
         };
 
         const gop = try self.cache.getOrPut(entry.path);
@@ -165,7 +126,7 @@ pub const ImportResolver = struct {
     }
 
     /// Collect raw import strings from an AST (e.g. for prefetching).
-    pub fn collectImportsFromAst(self: *ImportResolver, a: *const ast.Ast, out_list: *std.ArrayList([]const u8)) !void {
+    pub fn collectImportsFromAst(self: *ImportResolver, a: *const ast_mod.Ast, out_list: *std.ArrayList([]const u8)) !void {
         for (a.exprs.Import.list.items(.expr)) |expr| {
             const ek = a.exprs.index.kinds.items[expr.toRaw()];
             if (ek != .Literal) continue;
@@ -181,7 +142,12 @@ pub const ImportResolver = struct {
 
     // ---------------- internals ----------------
 
-    fn buildExports(self: *ImportResolver, symmap: *std.StringHashMap(types.TypeId), a: *const ast.Ast, ti: *types.TypeInfo) !void {
+    fn buildExports(
+        self: *ImportResolver,
+        symmap: *std.StringHashMap(types.TypeId),
+        a: *const ast_mod.Ast,
+        ti: *const types.TypeInfo,
+    ) !void {
         const decls = a.exprs.decl_pool.slice(a.unit.decls);
         var i: usize = 0;
         while (i < decls.len) : (i += 1) {

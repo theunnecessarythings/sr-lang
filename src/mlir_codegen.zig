@@ -10,7 +10,8 @@ const ArrayList = std.array_list.Managed;
 
 pub const MlirCodegen = struct {
     gpa: Allocator,
-    ctx: mlir.Context,
+    context: *compile.Context,
+    mlir_ctx: mlir.Context,
     loc: mlir.Location,
     module: mlir.Module,
 
@@ -97,13 +98,14 @@ pub const MlirCodegen = struct {
     // ----------------------------------------------------------------
     // Init / Deinit
     // ----------------------------------------------------------------
-    pub fn init(gpa: Allocator, ctx: mlir.Context) MlirCodegen {
+    pub fn init(gpa: Allocator, context: *compile.Context, ctx: mlir.Context) MlirCodegen {
         const loc = mlir.Location.unknownGet(ctx);
         const module = mlir.Module.createEmpty(loc);
         const void_ty = mlir.Type{ .handle = mlir.c.mlirLLVMVoidTypeGet(ctx.handle) };
         return .{
             .gpa = gpa,
-            .ctx = ctx,
+            .context = context,
+            .mlir_ctx = ctx,
             .loc = loc,
             .module = module,
             .void_ty = void_ty,
@@ -136,16 +138,16 @@ pub const MlirCodegen = struct {
     // ----------------------------------------------------------------
     // Public entry
     // ----------------------------------------------------------------
-    pub fn emitModule(self: *MlirCodegen, t: *const tir.TIR, store: *types.TypeStore) !mlir.Module {
+    pub fn emitModule(self: *MlirCodegen, t: *const tir.TIR, context: *compile.Context) !mlir.Module {
         self.attachTargetInfo();
-        try self.emitExternDecls(t, store);
+        try self.emitExternDecls(t, &context.type_info.store);
 
         const func_ids = t.funcs.func_pool.data.items;
-        for (func_ids) |fid| try self.emitFunctionHeader(fid, t, store);
+        for (func_ids) |fid| try self.emitFunctionHeader(fid, t, &context.type_info.store);
         for (func_ids) |fid| {
             const row = t.funcs.Function.get(fid.toRaw());
             const blocks = t.funcs.block_pool.slice(row.blocks);
-            if (blocks.len > 0) try self.emitFunctionBody(fid, t, store);
+            if (blocks.len > 0) try self.emitFunctionBody(fid, t, &context.type_info.store);
         }
         return self.module;
     }
@@ -192,7 +194,7 @@ pub const MlirCodegen = struct {
                     // leading ptr arg with { llvm.sret = type(T), llvm.align = K }
                     lowered_params[n_args] = self.llvm_ptr_ty;
                     const stTy = try self.llvmTypeOf(store, ret_sr);
-                    const sretDict = mlir.Attribute.dictionaryAttrGet(self.ctx, &[_]mlir.NamedAttribute{
+                    const sretDict = mlir.Attribute.dictionaryAttrGet(self.mlir_ctx, &[_]mlir.NamedAttribute{
                         self.named("llvm.sret", mlir.Attribute.typeAttrGet(stTy)),
                         self.named("llvm.align", mlir.Attribute.integerAttrGet(self.i64_ty, retClass.alignment)),
                     });
@@ -205,7 +207,7 @@ pub const MlirCodegen = struct {
                 },
                 .DirectPair => {
                     // Return a literal LLVM struct of the two scalars
-                    const pairTy = mlir.LLVM.getLLVMStructTypeLiteral(self.ctx, &[_]mlir.Type{
+                    const pairTy = mlir.LLVM.getLLVMStructTypeLiteral(self.mlir_ctx, &[_]mlir.Type{
                         retClass.scalar0.?, retClass.scalar1.?,
                     }, false);
                     ret_type = pairTy;
@@ -220,7 +222,7 @@ pub const MlirCodegen = struct {
                     .IndirectByVal => {
                         lowered_params[n_args] = self.llvm_ptr_ty;
                         const stTy = try self.llvmTypeOf(store, psr);
-                        const byvalDict = mlir.Attribute.dictionaryAttrGet(self.ctx, &[_]mlir.NamedAttribute{
+                        const byvalDict = mlir.Attribute.dictionaryAttrGet(self.mlir_ctx, &[_]mlir.NamedAttribute{
                             self.named("llvm.byval", mlir.Attribute.typeAttrGet(stTy)),
                             self.named("llvm.align", mlir.Attribute.integerAttrGet(self.i64_ty, cls.alignment)),
                         });
@@ -229,15 +231,15 @@ pub const MlirCodegen = struct {
                     },
                     .DirectScalar => {
                         lowered_params[n_args] = cls.scalar0.?;
-                        argAttrs[n_args] = mlir.Attribute.dictionaryAttrGet(self.ctx, &.{});
+                        argAttrs[n_args] = mlir.Attribute.dictionaryAttrGet(self.mlir_ctx, &.{});
                         n_args += 1;
                     },
                     .DirectPair => {
                         lowered_params[n_args] = cls.scalar0.?;
-                        argAttrs[n_args] = mlir.Attribute.dictionaryAttrGet(self.ctx, &.{});
+                        argAttrs[n_args] = mlir.Attribute.dictionaryAttrGet(self.mlir_ctx, &.{});
                         n_args += 1;
                         lowered_params[n_args] = cls.scalar1.?;
-                        argAttrs[n_args] = mlir.Attribute.dictionaryAttrGet(self.ctx, &.{});
+                        argAttrs[n_args] = mlir.Attribute.dictionaryAttrGet(self.mlir_ctx, &.{});
                         n_args += 1;
                     },
                     else => unreachable,
@@ -250,7 +252,7 @@ pub const MlirCodegen = struct {
 
             if (self.func_syms.contains(name)) continue;
 
-            const argAttrsArray = mlir.Attribute.arrayAttrGet(self.ctx, argAttrs[0..n_args]);
+            const argAttrsArray = mlir.Attribute.arrayAttrGet(self.mlir_ctx, argAttrs[0..n_args]);
             const attrs = [_]mlir.NamedAttribute{
                 self.named("sym_name", self.strAttr(name)),
                 self.named("function_type", mlir.Attribute.typeAttrGet(fty)),
@@ -294,7 +296,7 @@ pub const MlirCodegen = struct {
         if (self.func_syms.contains(func_name)) return;
 
         // NOTE: language-defined functions here are assumed non-variadic
-        const fty = mlir.Type.getFunctionType(self.ctx, @intCast(param_tys.len), param_tys, @intCast(n_res), results[0..n_res]);
+        const fty = mlir.Type.getFunctionType(self.mlir_ctx, @intCast(param_tys.len), param_tys, @intCast(n_res), results[0..n_res]);
         const attrs = [_]mlir.NamedAttribute{
             self.named("sym_name", self.strAttr(func_name)),
             self.named("function_type", mlir.Attribute.typeAttrGet(fty)),
@@ -543,7 +545,7 @@ pub const MlirCodegen = struct {
             .IndirectSRet => {
                 lowered_params[n_args] = self.llvm_ptr_ty;
                 const stTy = try self.llvmTypeOf(store, ret_sr);
-                argAttrs[n_args] = mlir.Attribute.dictionaryAttrGet(self.ctx, &[_]mlir.NamedAttribute{
+                argAttrs[n_args] = mlir.Attribute.dictionaryAttrGet(self.mlir_ctx, &[_]mlir.NamedAttribute{
                     self.named("llvm.sret", mlir.Attribute.typeAttrGet(stTy)),
                     self.named("llvm.align", mlir.Attribute.integerAttrGet(self.i64_ty, retClass.alignment)),
                 });
@@ -552,7 +554,7 @@ pub const MlirCodegen = struct {
             },
             .DirectScalar => ret_type = retClass.scalar0.?,
             .DirectPair => {
-                const pairTy = mlir.LLVM.getLLVMStructTypeLiteral(self.ctx, &[_]mlir.Type{
+                const pairTy = mlir.LLVM.getLLVMStructTypeLiteral(self.mlir_ctx, &[_]mlir.Type{
                     retClass.scalar0.?, retClass.scalar1.?,
                 }, false);
                 ret_type = pairTy;
@@ -566,7 +568,7 @@ pub const MlirCodegen = struct {
                 .IndirectByVal => {
                     lowered_params[n_args] = self.llvm_ptr_ty;
                     const stTy = try self.llvmTypeOf(store, psr);
-                    argAttrs[n_args] = mlir.Attribute.dictionaryAttrGet(self.ctx, &[_]mlir.NamedAttribute{
+                    argAttrs[n_args] = mlir.Attribute.dictionaryAttrGet(self.mlir_ctx, &[_]mlir.NamedAttribute{
                         self.named("llvm.byval", mlir.Attribute.typeAttrGet(stTy)),
                         self.named("llvm.align", mlir.Attribute.integerAttrGet(self.i64_ty, cls.alignment)),
                     });
@@ -574,15 +576,15 @@ pub const MlirCodegen = struct {
                 },
                 .DirectScalar => {
                     lowered_params[n_args] = cls.scalar0.?;
-                    argAttrs[n_args] = mlir.Attribute.dictionaryAttrGet(self.ctx, &.{});
+                    argAttrs[n_args] = mlir.Attribute.dictionaryAttrGet(self.mlir_ctx, &.{});
                     n_args += 1;
                 },
                 .DirectPair => {
                     lowered_params[n_args] = cls.scalar0.?;
-                    argAttrs[n_args] = mlir.Attribute.dictionaryAttrGet(self.ctx, &.{});
+                    argAttrs[n_args] = mlir.Attribute.dictionaryAttrGet(self.mlir_ctx, &.{});
                     n_args += 1;
                     lowered_params[n_args] = cls.scalar1.?;
-                    argAttrs[n_args] = mlir.Attribute.dictionaryAttrGet(self.ctx, &.{});
+                    argAttrs[n_args] = mlir.Attribute.dictionaryAttrGet(self.mlir_ctx, &.{});
                     n_args += 1;
                 },
                 else => unreachable,
@@ -590,7 +592,7 @@ pub const MlirCodegen = struct {
         }
 
         const fty = mlir.LLVM.getLLVMFunctionType(ret_type, lowered_params[0..n_args], is_var);
-        const argAttrsArray = mlir.Attribute.arrayAttrGet(self.ctx, argAttrs[0..n_args]);
+        const argAttrsArray = mlir.Attribute.arrayAttrGet(self.mlir_ctx, argAttrs[0..n_args]);
         const attrs = [_]mlir.NamedAttribute{
             self.named("sym_name", self.strAttr(name)),
             self.named("function_type", mlir.Attribute.typeAttrGet(fty)),
@@ -990,7 +992,7 @@ pub const MlirCodegen = struct {
                 if (!isExternLL) {
                     // Internal call: unchanged (func.call)
                     const attrs = [_]mlir.NamedAttribute{
-                        self.named("callee", mlir.Attribute.flatSymbolRefAttrGet(self.ctx, mlir.StringRef.from(callee_name))),
+                        self.named("callee", mlir.Attribute.flatSymbolRefAttrGet(self.mlir_ctx, mlir.StringRef.from(callee_name))),
                     };
                     var call = OpBuilder.init("func.call", self.loc).builder()
                         .add_operands(src_vals)
@@ -1093,11 +1095,11 @@ pub const MlirCodegen = struct {
 
                 // Build llvm.call
 
-                const seg = mlir.Attribute.denseI32ArrayGet(self.ctx, &[_]i32{ @as(i32, @intCast(lowered_ops.items.len)), 0 });
+                const seg = mlir.Attribute.denseI32ArrayGet(self.mlir_ctx, &[_]i32{ @as(i32, @intCast(lowered_ops.items.len)), 0 });
                 const callAttrs = [_]mlir.NamedAttribute{
-                    self.named("callee", mlir.Attribute.flatSymbolRefAttrGet(self.ctx, mlir.StringRef.from(callee_name))),
+                    self.named("callee", mlir.Attribute.flatSymbolRefAttrGet(self.mlir_ctx, mlir.StringRef.from(callee_name))),
                     self.named("operand_segment_sizes", seg),
-                    self.named("op_bundle_sizes", mlir.Attribute.denseI32ArrayGet(self.ctx, &[_]i32{})),
+                    self.named("op_bundle_sizes", mlir.Attribute.denseI32ArrayGet(self.mlir_ctx, &[_]i32{})),
                 };
                 var call = OpBuilder.init("llvm.call", self.loc).builder()
                     .add_operands(lowered_ops.items)
@@ -1108,8 +1110,6 @@ pub const MlirCodegen = struct {
                     .add_attributes(&callAttrs)
                     .build();
                 self.append(call);
-                const attr = call.getInherentAttributeByName(mlir.StringRef.from("operand_segment_sizes"));
-                attr.dump();
 
                 // Reconstruct desired result (structural) from ABI return
                 if (store.getKind(want_res_sr) == .Void) break :blk mlir.Value.empty();
@@ -1147,13 +1147,13 @@ pub const MlirCodegen = struct {
                         var ex0 = OpBuilder.init("llvm.extractvalue", self.loc).builder()
                             .add_operands(&.{rv})
                             .add_results(&.{loTy})
-                            .add_attributes(&.{self.named("position", mlir.Attribute.denseI64ArrayGet(self.ctx, &[_]i64{0}))})
+                            .add_attributes(&.{self.named("position", mlir.Attribute.denseI64ArrayGet(self.mlir_ctx, &[_]i64{0}))})
                             .build();
                         self.append(ex0);
                         var ex1 = OpBuilder.init("llvm.extractvalue", self.loc).builder()
                             .add_operands(&.{rv})
                             .add_results(&.{hiTy})
-                            .add_attributes(&.{self.named("position", mlir.Attribute.denseI64ArrayGet(self.ctx, &[_]i64{1}))})
+                            .add_attributes(&.{self.named("position", mlir.Attribute.denseI64ArrayGet(self.mlir_ctx, &[_]i64{1}))})
                             .build();
                         self.append(ex1);
                         // write into tmp at offsets 0 and 8, then reload as structural
@@ -1284,7 +1284,7 @@ pub const MlirCodegen = struct {
                 @memcpy(ops[1 .. 1 + tbuf.len], tbuf);
                 @memcpy(ops[1 + tbuf.len ..], ebuf);
 
-                const seg = mlir.Attribute.denseI32ArrayGet(self.ctx, &[_]i32{ 1, @intCast(tbuf.len), @intCast(ebuf.len) });
+                const seg = mlir.Attribute.denseI32ArrayGet(self.mlir_ctx, &[_]i32{ 1, @intCast(tbuf.len), @intCast(ebuf.len) });
 
                 const br = OpBuilder.init("cf.cond_br", self.loc).builder()
                     .add_operands(ops)
@@ -1342,7 +1342,7 @@ pub const MlirCodegen = struct {
             .add_results(&.{self.llvm_ptr_ty})
             .add_attributes(&.{
                 self.named("elem_type", mlir.Attribute.typeAttrGet(elem_ty)),
-                self.named("rawConstantIndices", mlir.Attribute.denseI32ArrayGet(self.ctx, raw)),
+                self.named("rawConstantIndices", mlir.Attribute.denseI32ArrayGet(self.mlir_ctx, raw)),
             }).build();
         self.append(op);
         return op.getResult(0);
@@ -1381,13 +1381,13 @@ pub const MlirCodegen = struct {
     fn named(self: *const MlirCodegen, name: []const u8, attr: mlir.Attribute) mlir.NamedAttribute {
         return .{
             .inner = .{
-                .name = mlir.c.mlirIdentifierGet(self.ctx.handle, mlir.StringRef.from(name).inner),
+                .name = mlir.c.mlirIdentifierGet(self.mlir_ctx.handle, mlir.StringRef.from(name).inner),
                 .attribute = attr.handle,
             },
         };
     }
     fn strAttr(self: *const MlirCodegen, s: []const u8) mlir.Attribute {
-        return mlir.Attribute.stringAttrGet(self.ctx, mlir.StringRef.from(s));
+        return mlir.Attribute.stringAttrGet(self.mlir_ctx, mlir.StringRef.from(s));
     }
     fn intAttr(self: *const MlirCodegen, ty: mlir.Type, val: i64) mlir.Attribute {
         _ = self;
@@ -1423,7 +1423,7 @@ pub const MlirCodegen = struct {
     }
 
     fn insertAt(self: *MlirCodegen, agg: mlir.Value, val: mlir.Value, pos: []const i64) mlir.Value {
-        const pos_attr = mlir.Attribute.denseI64ArrayGet(self.ctx, pos);
+        const pos_attr = mlir.Attribute.denseI64ArrayGet(self.mlir_ctx, pos);
         var op = OpBuilder.init("llvm.insertvalue", self.loc).builder()
             // Builder expects (container, value)
             .add_operands(&.{ agg, val })
@@ -1435,7 +1435,7 @@ pub const MlirCodegen = struct {
     }
 
     fn extractAt(self: *MlirCodegen, agg: mlir.Value, res_ty: mlir.Type, pos: []const i64) mlir.Value {
-        const pos_attr = mlir.Attribute.denseI64ArrayGet(self.ctx, pos);
+        const pos_attr = mlir.Attribute.denseI64ArrayGet(self.mlir_ctx, pos);
         var op = OpBuilder.init("llvm.extractvalue", self.loc).builder()
             .add_operands(&.{agg})
             .add_results(&.{res_ty})
@@ -1465,7 +1465,7 @@ pub const MlirCodegen = struct {
 
     // Load iN from ptr + offset
     fn loadIntAt(self: *MlirCodegen, base: mlir.Value, bits: u32, offset: usize) mlir.Value {
-        const ity = mlir.Type.getSignlessIntegerType(self.ctx, bits);
+        const ity = mlir.Type.getSignlessIntegerType(self.mlir_ctx, bits);
         var p = base;
         if (offset != 0) {
             const offv = self.constInt(self.i64_ty, @intCast(offset));
@@ -1511,7 +1511,7 @@ pub const MlirCodegen = struct {
     }
 
     fn constFloat(self: *MlirCodegen, ty: mlir.Type, v: f64) mlir.Value {
-        const attr = mlir.Attribute.floatAttrDoubleGet(self.ctx, ty, v);
+        const attr = mlir.Attribute.floatAttrDoubleGet(self.mlir_ctx, ty, v);
         var op = OpBuilder.init("llvm.mlir.constant", self.loc).builder()
             .add_results(&.{ty})
             .add_attributes(&.{self.named("value", attr)}).build();
@@ -1703,7 +1703,7 @@ pub const MlirCodegen = struct {
         defer self.gpa.free(glb_src);
 
         var global_op = mlir.Operation.createParse(
-            self.ctx,
+            self.mlir_ctx,
             mlir.StringRef.from(glb_src),
             mlir.StringRef.from("llvm.mlir.global"),
         );
@@ -1717,7 +1717,7 @@ pub const MlirCodegen = struct {
     fn addrOfFirstCharLen(self: *MlirCodegen, global_op: *mlir.Operation, n_bytes: usize) !mlir.Operation {
         // &@global
         const name_attr = global_op.getInherentAttributeByName(mlir.StringRef.from("sym_name"));
-        const gsym = mlir.Attribute.flatSymbolRefAttrGet(self.ctx, mlir.Attribute.stringAttrGetValue(name_attr));
+        const gsym = mlir.Attribute.flatSymbolRefAttrGet(self.mlir_ctx, mlir.Attribute.stringAttrGetValue(name_attr));
 
         var addr = OpBuilder.init("llvm.mlir.addressof", self.loc).builder()
             .add_results(&.{self.llvm_ptr_ty})
@@ -1731,7 +1731,7 @@ pub const MlirCodegen = struct {
             .add_operands(&.{addr.getResult(0)})
             .add_results(&.{self.llvm_ptr_ty})
             .add_attributes(&.{
-                self.named("rawConstantIndices", mlir.Attribute.denseI32ArrayGet(self.ctx, &[_]i32{ 0, 0 })),
+                self.named("rawConstantIndices", mlir.Attribute.denseI32ArrayGet(self.mlir_ctx, &[_]i32{ 0, 0 })),
                 self.named("elem_type", mlir.Attribute.typeAttrGet(arr_ty)),
             })
             .build();
@@ -1880,10 +1880,10 @@ pub const MlirCodegen = struct {
             .Void => self.void_ty,
             .Bool => self.i1_ty,
 
-            .I8, .U8 => mlir.Type.getSignlessIntegerType(self.ctx, 8),
-            .I16, .U16 => mlir.Type.getSignlessIntegerType(self.ctx, 16),
-            .I32, .U32 => mlir.Type.getSignlessIntegerType(self.ctx, 32),
-            .I64, .U64 => mlir.Type.getSignlessIntegerType(self.ctx, 64),
+            .I8, .U8 => mlir.Type.getSignlessIntegerType(self.mlir_ctx, 8),
+            .I16, .U16 => mlir.Type.getSignlessIntegerType(self.mlir_ctx, 16),
+            .I32, .U32 => mlir.Type.getSignlessIntegerType(self.mlir_ctx, 32),
+            .I64, .U64 => mlir.Type.getSignlessIntegerType(self.mlir_ctx, 64),
 
             .F32 => self.f32_ty,
             .F64 => self.f64_ty,
@@ -1897,7 +1897,7 @@ pub const MlirCodegen = struct {
             .Slice => blk: {
                 // { ptr, len } (opaque ptr for data)
                 const fields = [_]mlir.Type{ self.llvm_ptr_ty, self.i64_ty };
-                break :blk mlir.LLVM.getLLVMStructTypeLiteral(self.ctx, &fields, false);
+                break :blk mlir.LLVM.getLLVMStructTypeLiteral(self.mlir_ctx, &fields, false);
             },
 
             .Array => blk: {
@@ -1910,14 +1910,14 @@ pub const MlirCodegen = struct {
                 const opt_ty = store.get(.Optional, ty);
                 const inner = try self.llvmTypeOf(store, opt_ty.elem);
                 const fields = [_]mlir.Type{ self.i1_ty, inner };
-                break :blk mlir.LLVM.getLLVMStructTypeLiteral(self.ctx, &fields, false);
+                break :blk mlir.LLVM.getLLVMStructTypeLiteral(self.mlir_ctx, &fields, false);
             },
 
             .ErrorSet => blk: {
                 const es = store.get(.ErrorSet, ty);
                 const val = try self.llvmTypeOf(store, es.value_ty);
                 const fields = [_]mlir.Type{ self.i1_ty, val };
-                break :blk mlir.LLVM.getLLVMStructTypeLiteral(self.ctx, &fields, false);
+                break :blk mlir.LLVM.getLLVMStructTypeLiteral(self.mlir_ctx, &fields, false);
             },
 
             .Tuple => blk: {
@@ -1927,7 +1927,7 @@ pub const MlirCodegen = struct {
                 defer self.gpa.free(buf);
                 const elems = store.type_pool.slice(tup_ty.elems);
                 for (elems, 0..) |eid, i| buf[i] = try self.llvmTypeOf(store, eid);
-                break :blk mlir.LLVM.getLLVMStructTypeLiteral(self.ctx, buf, false);
+                break :blk mlir.LLVM.getLLVMStructTypeLiteral(self.mlir_ctx, buf, false);
             },
 
             .Struct => blk: {
@@ -1940,7 +1940,7 @@ pub const MlirCodegen = struct {
                     const field = store.Field.get(f.toRaw());
                     buf[i] = try self.llvmTypeOf(store, field.ty);
                 }
-                break :blk mlir.LLVM.getLLVMStructTypeLiteral(self.ctx, buf, false);
+                break :blk mlir.LLVM.getLLVMStructTypeLiteral(self.mlir_ctx, buf, false);
             },
 
             else => std.debug.panic("unhandled type: {}", .{ty}),

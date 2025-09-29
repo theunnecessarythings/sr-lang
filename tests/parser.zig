@@ -4,27 +4,24 @@ const compiler = @import("compiler");
 const cst = compiler.cst;
 const Parser = compiler.parser.Parser;
 const Diagnostics = compiler.diagnostics.Diagnostics;
+const Context = compiler.compile.Context;
 
-fn parseProgramFromText(gpa: std.mem.Allocator, src: [:0]const u8) !cst.CST {
-    var diags = Diagnostics.init(gpa);
-    defer diags.deinit();
-    var interner = compiler.ast.StringInterner.init(gpa);
-    defer interner.deinit();
-    var parser = Parser.init(gpa, src, &diags, &interner);
+fn parseProgramFromText(gpa: std.mem.Allocator, context: *Context, src: [:0]const u8) !cst.CST {
+    var parser = Parser.init(gpa, src, 0, context); // Pass file_id and context
     var ast = try parser.parse();
     errdefer ast.deinit();
-    if (diags.count() != 0) {
+    if (context.diags.count() != 0) { // Use context.diags
         std.debug.print(
             "Errors during parsing: {}\n",
-            .{diags.messages.items[0]},
+            .{context.diags.messages.items[0]},
         );
     }
-    try testing.expectEqual(@as(usize, 0), diags.count());
+    try testing.expectEqual(@as(usize, 0), context.diags.count()); // Use context.diags
     return ast;
 }
 
-fn parseOneExpr(gpa: std.mem.Allocator, src: [:0]const u8) !struct { ast: cst.CST, id: cst.ExprId } {
-    var ast = try parseProgramFromText(gpa, src);
+fn parseOneExpr(gpa: std.mem.Allocator, context: *Context, src: [:0]const u8) !struct { ast: cst.CST, id: cst.ExprId } {
+    var ast = try parseProgramFromText(gpa, context, src);
     const decl_ids = ast.exprs.decl_pool.slice(ast.program.top_decls);
     try testing.expectEqual(@as(usize, 1), decl_ids.len);
 
@@ -53,7 +50,9 @@ fn expectInfix(ast: *const cst.CST, id: cst.ExprId, op: cst.InfixOp) !struct { l
 
 test "expr: precedence 1 + 2 * 3" {
     const gpa = testing.allocator;
-    var r = try parseOneExpr(gpa, "x = 1 + 2 * 3;");
+    var context = Context.init(gpa);
+    defer context.deinit();
+    var r = try parseOneExpr(gpa, &context, "x = 1 + 2 * 3;");
     defer r.ast.deinit();
 
     const ast = &r.ast;
@@ -68,11 +67,13 @@ test "expr: precedence 1 + 2 * 3" {
 
 test "expr: optional unwrap postfix vs range infix" {
     const gpa = testing.allocator;
-    var r1 = try parseOneExpr(gpa, "x = a?;");
+    var context = Context.init(gpa);
+    defer context.deinit();
+    var r1 = try parseOneExpr(gpa, &context, "x = a?;");
     defer r1.ast.deinit();
     try expectKind(&r1.ast, r1.id, .OptionalUnwrap);
 
-    var r2 = try parseOneExpr(gpa, "x = a..b;");
+    var r2 = try parseOneExpr(gpa, &context, "x = a..b;");
     defer r2.ast.deinit();
     const range = try expectInfix(&r2.ast, r2.id, .range);
     _ = range;
@@ -80,7 +81,9 @@ test "expr: optional unwrap postfix vs range infix" {
 
 test "expr: ctor-like struct literal Foo{a:1}" {
     const gpa = testing.allocator;
-    var r = try parseOneExpr(gpa, "Foo{ a: 1 };");
+    var context = Context.init(gpa);
+    defer context.deinit();
+    var r = try parseOneExpr(gpa, &context, "Foo{ a: 1 };");
     defer r.ast.deinit();
 
     try expectKind(&r.ast, r.id, .StructLit);
@@ -96,13 +99,15 @@ test "expr: ctor-like struct literal Foo{a:1}" {
 
 test "match with guard" {
     const gpa = testing.allocator;
+    var context = Context.init(gpa);
+    defer context.deinit();
     const src =
         \\match x {
         \\  1 | 2 if cond => { y = 1; },
         \\  x              => {y = 0; },
         \\}
     ;
-    var ast = try parseProgramFromText(gpa, src);
+    var ast = try parseProgramFromText(gpa, &context, src);
     defer ast.deinit();
 
     const decl_ids = ast.exprs.decl_pool.slice(ast.program.top_decls);
@@ -116,11 +121,13 @@ test "match with guard" {
 
 test "full success test" {
     const gpa = testing.allocator;
+    var context = Context.init(gpa);
+    defer context.deinit();
     const src = try std.fs.cwd().readFileAlloc(gpa, "examples/test_success.sr", 8192);
     defer gpa.free(src);
 
     const src0 = try gpa.dupeZ(u8, src);
     defer gpa.free(src0);
-    var result = try parseProgramFromText(gpa, src0);
+    var result = try parseProgramFromText(gpa, &context, src0);
     defer result.deinit();
 }
