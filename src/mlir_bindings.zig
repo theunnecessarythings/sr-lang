@@ -1350,7 +1350,7 @@ pub const Attribute = struct {
         return Dialect{ .handle = c.mlirAttributeGetDialect(self.handle) };
     }
 
-    pub fn isNull(self: *Attribute) bool {
+    pub fn isNull(self: *const Attribute) bool {
         return c.mlirAttributeIsNull(self.handle);
     }
 

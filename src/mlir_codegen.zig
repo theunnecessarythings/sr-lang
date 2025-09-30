@@ -457,6 +457,11 @@ pub const MlirCodegen = struct {
             .AddressOf => return t.instrs.get(.AddressOf, id).result,
             .Select => return t.instrs.get(.Select, id).result,
             .Call => return t.instrs.get(.Call, id).result,
+            .MlirBlock => {
+                const p = t.instrs.get(.MlirBlock, id);
+                if (p.result.isNone()) return null;
+                return p.result.unwrap();
+            },
             else => std.debug.panic("unhandled instruction kind, {}\n", .{K}),
         }
     }
@@ -489,6 +494,7 @@ pub const MlirCodegen = struct {
             .AddressOf => t.instrs.get(.AddressOf, id).ty,
             .Select => t.instrs.get(.Select, id).ty,
             .Call => t.instrs.get(.Call, id).ty,
+            .MlirBlock => t.instrs.get(.MlirBlock, id).ty,
             else => std.debug.panic("unhandled instruction kind, {}\n", .{K}),
         };
     }
@@ -939,8 +945,6 @@ pub const MlirCodegen = struct {
                 const p = t.instrs.get(.AddressOf, ins_id);
                 const v = self.value_map.get(p.value).?;
                 if (mlir.LLVM.isLLVMPointerType(v.getType())) break :blk v;
-                std.debug.print("AddressOf of non-pointer value\n", .{});
-                v.dump();
                 return error.NotImplemented;
             },
 
@@ -1184,6 +1188,102 @@ pub const MlirCodegen = struct {
                         break :blk ld3.getResult(0);
                     },
                     else => unreachable,
+                }
+            },
+            .MlirBlock => blk: {
+                const p = t.instrs.get(.MlirBlock, ins_id);
+                const mlir_text = t.instrs.strs.get(p.text);
+                const mlir_kind = p.kind;
+                const result_ty = try self.llvmTypeOf(store, p.ty);
+
+                switch (mlir_kind) {
+                    .Operation => {
+                        // Parse the MLIR text into an MLIR operation
+                        var op = mlir.Operation.createParse(
+                            self.mlir_ctx,
+                            mlir.StringRef.from(mlir_text[1 .. mlir_text.len - 1]), // strip surrounding {}
+                            mlir.StringRef.from("inline_mlir_op"),
+                        );
+                        if (op.isNull()) {
+                            std.debug.print("Error parsing inline MLIR operation: {s}\n", .{mlir_text});
+                            return error.MlirParseError;
+                        }
+                        self.append(op);
+                        // If the operation produces a single result, and we expect a value, return it.
+                        if (!p.result.isNone() and op.getNumResults() > 0) {
+                            break :blk op.getResult(0);
+                        } else {
+                            _ = result_ty; // Mark as unused
+                            break :blk mlir.Value.empty();
+                        }
+                    },
+                    .Module => {
+                        var parsed_module = mlir.Module.createParse(
+                            self.mlir_ctx,
+                            mlir.StringRef.from(mlir_text[1 .. mlir_text.len - 1]),
+                        );
+                        if (parsed_module.isNull()) {
+                            std.debug.print("Error parsing inline MLIR module: {s}\n", .{mlir_text});
+                            return error.MlirParseError;
+                        }
+                        // Merge the parsed module into the current module
+                        var parsed_module_body = parsed_module.getBody();
+                        parsed_module_body.detach();
+                        var current_op = parsed_module_body.getFirstOperation();
+                        while (!current_op.isNull()) {
+                            const next_op = current_op.getNextInBlock();
+
+                            const op_name_ref = current_op.getName().str();
+                            if (std.mem.eql(u8, op_name_ref.toSlice(), "func.func")) {
+                                const sym_name_attr = current_op.getInherentAttributeByName(mlir.StringRef.from("sym_name"));
+                                if (!sym_name_attr.isNull()) {
+                                    const sym_name = sym_name_attr.stringAttrGetValue().toSlice();
+                                    if (!self.func_syms.contains(sym_name)) {
+                                        const func_type_attr = current_op.getInherentAttributeByName(mlir.StringRef.from("function_type"));
+                                        const func_type = func_type_attr.typeAttrGetValue();
+                                        const n_formals = func_type.getFunctionNumInputs();
+                                        const n_results = func_type.getFunctionNumResults();
+                                        const ret_type = if (n_results == 1) func_type.getFunctionResult(0) else self.void_ty;
+
+                                        const info = FuncInfo{
+                                            .op = current_op,
+                                            .is_variadic = false, // func.func is not variadic in this context
+                                            .n_formals = @intCast(n_formals),
+                                            .ret_type = ret_type,
+                                        };
+                                        _ = try self.func_syms.put(sym_name, info);
+                                    }
+                                }
+                            }
+
+                            current_op.removeFromParent();
+                            var body = self.module.getBody();
+                            body.appendOwnedOperation(current_op);
+                            current_op = next_op;
+                        }
+                        parsed_module.destroy();
+                        break :blk mlir.Value.empty();
+                    },
+                    .Type => {
+                        // Parse the MLIR type
+                        var parsed_type = mlir.Type.parseGet(self.mlir_ctx, mlir.StringRef.from(mlir_text));
+                        if (parsed_type.isNull()) {
+                            std.debug.print("Error parsing inline MLIR type: {s}\n", .{mlir_text});
+                            return error.MlirParseError;
+                        }
+                        // Type declarations don't produce SSA values, so return empty.
+                        break :blk mlir.Value.empty();
+                    },
+                    .Attribute => {
+                        // Parse the MLIR attribute
+                        var parsed_attr = mlir.Attribute.parseGet(self.mlir_ctx, mlir.StringRef.from(mlir_text));
+                        if (parsed_attr.isNull()) {
+                            std.debug.print("Error parsing inline MLIR attribute: {s}\n", .{mlir_text});
+                            return error.MlirParseError;
+                        }
+                        // Attribute declarations don't produce SSA values, so return empty.
+                        break :blk mlir.Value.empty();
+                    },
                 }
             },
         };
@@ -1560,7 +1660,6 @@ pub const MlirCodegen = struct {
     fn intOrFloatWidth(t: mlir.Type) !u32 {
         if (t.isAInteger()) return t.getIntegerBitwidth();
         if (t.isAFloat()) return t.getFloatBitwidth();
-        t.dump();
         return error.NotIntOrFloat;
     }
 

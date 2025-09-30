@@ -1,5 +1,6 @@
 const std = @import("std");
 const dod = @import("cst.zig");
+const ast = @import("ast.zig");
 const types = @import("types.zig");
 
 // Typed IR (TIR)
@@ -98,6 +99,7 @@ pub const OpKind = enum(u16) {
     Select,
     // Calls
     Call,
+    MlirBlock,
 };
 
 pub const TermKind = enum(u8) { Return, Br, CondBr, SwitchInt, Unreachable };
@@ -141,6 +143,7 @@ pub const Rows = struct {
     pub const Select = struct { result: ValueId, ty: types.TypeId, cond: ValueId, then_value: ValueId, else_value: ValueId };
 
     pub const Call = struct { result: ValueId, ty: types.TypeId, callee: StrId, args: RangeValue };
+    pub const MlirBlock = struct { result: OptValueId, ty: types.TypeId, kind: ast.MlirKind, text: StrId };
 
     // Terminator rows
     pub const Return = struct { value: OptValueId };
@@ -195,6 +198,7 @@ inline fn RowT(comptime K: OpKind) type {
         .Select => Rows.Select,
 
         .Call => Rows.Call,
+        .MlirBlock => Rows.MlirBlock,
     };
 }
 inline fn TermRowT(comptime K: TermKind) type {
@@ -261,6 +265,7 @@ pub const InstrStore = struct {
     Select: Table(Rows.Select) = .{},
 
     Call: Table(Rows.Call) = .{},
+    MlirBlock: Table(Rows.MlirBlock) = .{},
 
     // aux tables
     GepIndex: Table(Rows.GepIndex) = .{},
@@ -704,6 +709,21 @@ pub const TirPrinter = struct {
                 try self.open("(instr id={} op=Call callee=\"{s}\" result={} type={f} args=[", .{ id.toRaw(), self.s(row.callee), row.result.toRaw(), self.tf(row.ty) });
                 for (args) |vid| try self.leaf("  {}", .{vid.toRaw()});
                 try self.leaf("])", .{});
+                try self.close();
+            },
+            .MlirBlock => {
+                const row = self.tir.instrs.get(.MlirBlock, id);
+                try self.open("(instr id={} op=MlirBlock kind={s} text=\"{s}\" type={f})", .{
+                    id.toRaw(),
+                    @tagName(row.kind),
+                    self.s(row.text),
+                    self.tf(row.ty),
+                });
+                if (!row.result.isNone()) {
+                    try self.leaf("  (result {})", .{row.result.unwrap().toRaw()});
+                } else {
+                    try self.leaf("  (result null)", .{});
+                }
                 try self.close();
             },
         }

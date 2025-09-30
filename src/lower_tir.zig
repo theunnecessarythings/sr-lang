@@ -138,9 +138,21 @@ pub const LowerTir = struct {
         if (self.context.type_store.index.kinds.items[fid.toRaw()] != .Function) return;
         const fnty = self.context.type_store.Function.get(self.context.type_store.index.rows.items[fid.toRaw()]);
 
+        const fnr = a.exprs.get(.FunctionLit, fun_eid);
+
+        if (!fnr.attrs.isNone()) {
+            const attrs = a.exprs.attr_pool.slice(fnr.attrs.asRange());
+            const mlir = a.exprs.strs.intern("mlir_fn");
+            for (attrs) |aid| {
+                const arow = a.exprs.Attribute.get(aid.toRaw());
+                if (arow.name.toRaw() == mlir.toRaw()) {
+                    return; // skip lowering this function
+                }
+            }
+        }
+
         var f = try b.beginFunction(name, fnty.result, fnty.is_variadic);
 
-        const fnr = a.exprs.get(.FunctionLit, fun_eid);
         // Params
         const params = a.exprs.param_pool.slice(fnr.params);
         var i: usize = 0;
@@ -451,7 +463,7 @@ pub const LowerTir = struct {
             while (j2 < vals.len) : (j2 += 1) {
                 const got = self.getExprType(arg_ids[j2]) orelse self.context.type_store.tAny();
                 if (self.isAny(got)) {
-                    const k = a.exprs.index.kinds.items[arg_ids[j].toRaw()];
+                    const k = a.exprs.index.kinds.items[arg_ids[j2].toRaw()];
                     const want: types.TypeId = switch (k) {
                         .Literal => blk: {
                             const lit = a.exprs.get(.Literal, arg_ids[j2]);
@@ -1717,6 +1729,13 @@ pub const LowerTir = struct {
             .EnumType => {
                 return self.lowerTypeExprOpaque(blk, id, expected_ty);
             },
+            .MlirBlock => {
+                const row = a.exprs.get(.MlirBlock, id);
+                const ty0 = self.getExprType(id) orelse self.context.type_store.tAny(); // MlirBlock is opaque, so it's Any
+                const result_id = f.builder.freshValue();
+                _ = f.builder.addMlirBlock(blk, result_id, ty0, row.kind, row.text);
+                return result_id;
+            },
             else => {
                 std.debug.print("lowerExpr: unhandled expr kind {}\n", .{expr_kind});
                 return error.LoweringBug;
@@ -2335,6 +2354,21 @@ const Builder = struct {
         const def_e = self.edge(default_dest, default_args);
         const tid = self.t.terms.add(.SwitchInt, .{ .scrut = scrut, .cases = crange, .default_edge = def_e });
         blk.term = tir.OptTermId.some(tid);
+    }
+
+    pub fn addCall(self: *Builder, blk: *BlockFrame, result: tir.ValueId, ty: types.TypeId, callee: tir.StrId, args: []const tir.ValueId) tir.InstrId {
+        const r = self.t.instrs.val_list_pool.pushMany(self.gpa, args);
+        const row: tir.Rows.Call = .{ .result = result, .ty = ty, .callee = callee, .args = r };
+        const id = self.t.instrs.add(.Call, row);
+        blk.instrs.append(self.gpa, id) catch @panic("OOM");
+        return id;
+    }
+
+    pub fn addMlirBlock(self: *Builder, blk: *BlockFrame, result: tir.ValueId, ty: types.TypeId, kind: ast.MlirKind, text: tir.StrId) tir.InstrId {
+        const row: tir.Rows.MlirBlock = .{ .result = .some(result), .ty = ty, .kind = kind, .text = text };
+        const id = self.t.instrs.add(.MlirBlock, row);
+        blk.instrs.append(self.gpa, id) catch @panic("OOM");
+        return id;
     }
 
     // GEP helpers

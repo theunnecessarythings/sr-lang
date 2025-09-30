@@ -25,6 +25,7 @@ const CliArgs = struct {
         run,
         check,
         ast,
+        cst,
         tir,
         help,
         lex,
@@ -52,6 +53,7 @@ fn printUsage(writer: anytype, exec_name: []const u8) !void {
     try writer.print("  {s}run{s} <file>         Compile and immediately run a source file.\n", .{ Colors.cyan, Colors.reset });
     try writer.print("  {s}check{s} <file>        Parse and perform semantic checks on a source file.\n", .{ Colors.cyan, Colors.reset });
     try writer.print("  {s}ast{s} <file>         Print the Abstract Syntax Tree (AST) of a source file.\n", .{ Colors.cyan, Colors.reset });
+    try writer.print("  {s}cst{s} <file>         Print the Concrete Syntax Tree (CST) of a source file.\n", .{ Colors.cyan, Colors.reset });
     try writer.print("  {s}tir{s} <file>         Print the Typed Intermediate Representation (TIR) of a source file.\n", .{ Colors.cyan, Colors.reset });
     try writer.print("  {s}pretty-print{s} <file>  Format and print the source file.\n", .{ Colors.cyan, Colors.reset });
     try writer.print("  {s}json-ast{s} <file>      Print the Abstract Syntax Tree (AST) of a source file as JSON.\n", .{ Colors.cyan, Colors.reset });
@@ -285,6 +287,7 @@ fn process_file(
         .run => .run,
         .check => .check,
         .ast => .ast,
+        .cst => .parse,
         .tir => .tir,
         .lex => .lex,
         .mlir => .mlir,
@@ -310,6 +313,13 @@ fn process_file(
             &hir.pats,
         );
         try ast_printer.printUnit(&hir.unit);
+        try out_writer.flush();
+        return;
+    }
+    if (cli_args.subcommand == .cst) {
+        const cst = result.cst.?;
+        var cst_printer = lib.cst.DodPrinter.init(out_writer, &cst.exprs, &cst.pats);
+        try cst_printer.printProgram(&cst.program);
         try out_writer.flush();
         return;
     }
@@ -401,6 +411,8 @@ pub fn main() !void {
                     cli_args.subcommand = .check;
                 } else if (std.mem.eql(u8, arg, "ast")) {
                     cli_args.subcommand = .ast;
+                } else if (std.mem.eql(u8, arg, "cst")) {
+                    cli_args.subcommand = .cst;
                 } else if (std.mem.eql(u8, arg, "tir")) {
                     cli_args.subcommand = .tir;
                 } else if (std.mem.eql(u8, arg, "mlir")) {
@@ -463,7 +475,7 @@ pub fn main() !void {
         .help => {
             try printUsage(out_writer, exec_name);
         },
-        .compile, .mlir, .run, .check, .ast, .tir, .lex, .pretty_print, .json_ast => {
+        .compile, .mlir, .run, .check, .ast, .cst, .tir, .lex, .pretty_print, .json_ast => {
             if (cli_args.filename == null) {
                 try writer.print("{s}Error:{s} Missing source file for '{s}' command.\n", .{ Colors.red, Colors.reset, @tagName(cli_args.subcommand) });
                 try printUsage(writer, exec_name);
