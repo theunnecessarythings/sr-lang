@@ -45,9 +45,44 @@ pub const LowerTir = struct {
         self.import_base_dir = base_dir;
     }
 
+    fn lowerGlobalMlir(self: *@This(), a: *const ast.Ast, b: *Builder) !void {
+        var global_mlir_decls: std.ArrayList(ast.DeclId) = .empty;
+        defer global_mlir_decls.deinit(self.gpa);
+
+        const decls = a.exprs.decl_pool.slice(a.unit.decls);
+        for (decls) |did| {
+            const d = a.exprs.Decl.get(did.toRaw());
+            const kind = a.exprs.index.kinds.items[d.value.toRaw()];
+            if (kind == .MlirBlock and d.pattern.isNone()) {
+                try global_mlir_decls.append(self.gpa, did);
+            }
+        }
+
+        if (global_mlir_decls.items.len == 0) return;
+
+        const name = b.intern("__sr_global_mlir_init");
+        var f = try b.beginFunction(name, self.context.type_store.tVoid(), false);
+        var blk = try b.beginBlock(&f);
+        var env = Env.init(self.gpa);
+        defer env.deinit(self.gpa);
+
+        for (global_mlir_decls.items) |did| {
+            const d = a.exprs.Decl.get(did.toRaw());
+            _ = try self.lowerExpr(a, &env, &f, &blk, d.value, null, .rvalue);
+        }
+
+        if (blk.term.isNone()) {
+            try b.setReturn(&blk, tir.OptValueId.none());
+        }
+        try b.endBlock(&f, blk);
+        try b.endFunction(f);
+    }
+
     pub fn run(self: *@This(), a: *const ast.Ast) !tir.TIR {
         var t = tir.TIR.init(self.gpa, &self.context.type_store);
         var b = Builder.init(self.gpa, &t);
+
+        try self.lowerGlobalMlir(a, &b);
 
         // Lower top-level decls: functions and globals
         const decls = a.exprs.decl_pool.slice(a.unit.decls);
@@ -118,6 +153,11 @@ pub const LowerTir = struct {
     fn lowerTopDecl(self: *@This(), a: *const ast.Ast, b: *Builder, did: ast.DeclId) !void {
         const d = a.exprs.Decl.get(did.toRaw());
         const kind = a.exprs.index.kinds.items[d.value.toRaw()];
+
+        if (kind == .MlirBlock and d.pattern.isNone()) {
+            return; // handled by lowerGlobalMlir
+        }
+
         if (kind == .FunctionLit and !a.exprs.get(.FunctionLit, d.value).flags.is_extern) {
             const name = if (!d.pattern.isNone()) self.bindingNameOfPattern(a, d.pattern.unwrap()) else null;
             if (name) |nm| {
