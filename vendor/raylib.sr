@@ -136,6 +136,9 @@ BLACK :: Color{ r: 0, g: 0, b: 0, a: 255 }
 RED   :: Color{ r: 230, g: 41, b: 55, a: 255 }
 GREEN :: Color{ r: 0, g: 228, b: 48, a: 255 }
 BLUE  :: Color{ r: 0, g: 121, b: 241, a: 255 }
+YELLOW :: Color{ r: 253, g: 249, b: 0, a: 255 }
+LIGHTGRAY :: Color{ r: 200, g: 200, b: 200, a: 255 }
+GRAY :: Color{ r: 130, g: 130, b: 130, a: 255 }
 RAYWHITE :: Color{ r: 245, g: 245, b: 245, a: 255 }
 
 // ------------------------------------------------------------
@@ -209,6 +212,8 @@ BeginDrawing :: extern proc() void
 EndDrawing :: extern proc() void
 ClearBackground :: extern proc(Color) void
 DrawText :: extern proc(*void, i64, i64, i64, Color) void
+DrawTriangleLines :: extern proc(Vector2, Vector2, Vector2, Color) void
+DrawCircleLines :: extern proc(i64, i64, f32, Color) void
 
 draw_text :: proc(s: string, x: i64, y: i64, size: i64, c: Color) { 
     DrawText(s.^*void, x, y, size, c)
@@ -416,7 +421,7 @@ CodepointToUTF8 :: extern proc(i64, *i64) *i8
 TextCopy :: extern proc(*i8, *void) i64
 TextIsEqual :: extern proc(*void, *void) bool
 TextLength :: extern proc(*void) u32
-TextFormat :: extern proc(*void, any) *i8
+TextFormat :: extern proc(*void, any) *void
 TextSubtext :: extern proc(*void, i64, i64) *i8
 TextReplace :: extern proc(*void, *void, *void) *i8
 TextInsert :: extern proc(*void, *void, i64) *i8

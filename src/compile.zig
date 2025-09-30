@@ -11,11 +11,14 @@ pub const SourceManager = struct {
     files: std.ArrayList([]const u8) = .empty,
 
     pub fn deinit(self: *SourceManager) void {
+        for (self.files.items) |file_path| {
+            self.gpa.free(file_path);
+        }
         self.files.deinit(self.gpa);
     }
 
     pub fn add(self: *SourceManager, file_path: []const u8) !u32 {
-        try self.files.append(self.gpa, file_path);
+        try self.files.append(self.gpa, try self.gpa.dupe(u8, file_path));
         return @intCast(self.files.items.len - 1);
     }
 
@@ -43,8 +46,8 @@ pub const SourceManager = struct {
 
 pub const Context = struct {
     gpa: std.mem.Allocator,
-    source_manager: SourceManager,
-    diags: Diagnostics,
+    source_manager: *SourceManager,
+    diags: *Diagnostics,
     interner: *cst.StringInterner,
     resolver: ImportResolver,
     type_store: TypeStore,
@@ -52,11 +55,15 @@ pub const Context = struct {
     pub fn init(gpa: std.mem.Allocator) Context {
         const interner = gpa.create(cst.StringInterner) catch unreachable;
         interner.* = cst.StringInterner.init(gpa);
+        const diags = gpa.create(Diagnostics) catch unreachable;
+        diags.* = Diagnostics.init(gpa);
+        const source_manager = gpa.create(SourceManager) catch unreachable;
+        source_manager.* = SourceManager{ .gpa = gpa };
         return .{
-            .diags = Diagnostics.init(gpa),
+            .diags = diags,
             .interner = interner,
             .gpa = gpa,
-            .source_manager = SourceManager{ .gpa = gpa },
+            .source_manager = source_manager,
             .resolver = ImportResolver.init(gpa),
             .type_store = TypeStore.init(gpa, interner),
         };
@@ -69,6 +76,8 @@ pub const Context = struct {
         self.type_store.deinit();
         self.resolver.deinit();
         self.gpa.destroy(self.interner);
+        self.gpa.destroy(self.diags);
+        self.gpa.destroy(self.source_manager);
     }
 };
 

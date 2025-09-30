@@ -32,9 +32,11 @@ pub const Checker = struct {
     warned_comptime: bool = false,
     warned_code: bool = false,
 
-    // Current loop pattern context for binding type inference inside loop bodies
-    current_loop_pat: ast.OptPatternId = ast.OptPatternId.none(),
-    current_loop_subject_ty: ?types.TypeId = null,
+    loop_binding_stack: std.ArrayListUnmanaged(LoopBindingCtx) = .{},
+    const LoopBindingCtx = struct {
+        pat: ast.OptPatternId,
+        subject_ty: types.TypeId,
+    };
 
     // --------- tiny helpers (readability & consistency) ----------
     inline fn typeKind(self: *const Checker, t: types.TypeId) types.TypeKind {
@@ -89,6 +91,7 @@ pub const Checker = struct {
         self.func_stack.deinit(self.gpa);
         self.loop_stack.deinit(self.gpa);
         self.value_ctx.deinit(self.gpa);
+        self.loop_binding_stack.deinit(self.gpa);
         self.symtab.deinit();
     }
 
@@ -184,6 +187,24 @@ pub const Checker = struct {
     }
     fn inLoop(self: *const Checker) bool {
         return self.loop_stack.items.len > 0;
+    }
+    inline fn pushLoopBinding(self: *Checker, pat: ast.OptPatternId, subj: types.TypeId) !void {
+        try self.loop_binding_stack.append(self.gpa, .{ .pat = pat, .subject_ty = subj });
+    }
+    inline fn popLoopBinding(self: *Checker) void {
+        if (self.loop_binding_stack.items.len > 0) _ = self.loop_binding_stack.pop();
+    }
+    inline fn bindingTypeFromActiveLoops(self: *Checker, name: ast.StrId) ?types.TypeId {
+        var i: isize = @as(isize, @intCast(self.loop_binding_stack.items.len)) - 1;
+        while (i >= 0) : (i -= 1) {
+            const ctx = self.loop_binding_stack.items[@intCast(i)];
+            if (!ctx.pat.isNone()) {
+                if (pattern_matching.bindingTypeInPattern(self, ctx.pat.unwrap(), name, ctx.subject_ty)) |bt| {
+                    return bt;
+                }
+            }
+        }
+        return null;
     }
 
     fn pushValueReq(self: *Checker, v: bool) !void {
@@ -807,11 +828,9 @@ pub const Checker = struct {
                     return self.context.type_store.tAny();
                 }
             }
+
             // Loop-pattern-originated symbol? Infer from current loop pattern context if available
-            if (self.current_loop_subject_ty != null and !self.current_loop_pat.isNone()) {
-                const bt = pattern_matching.bindingTypeInPattern(self, self.current_loop_pat.unwrap(), row.name, self.current_loop_subject_ty.?);
-                if (bt) |btid| return btid;
-            }
+            if (self.bindingTypeFromActiveLoops(row.name)) |btid| return btid;
         }
         try self.context.diags.addError(self.exprLoc(row), .undefined_identifier, .{});
         return null;
@@ -951,31 +970,32 @@ pub const Checker = struct {
                         else => false,
                     };
                     if (left_is_float or right_is_float) {
-                        try self.context.diags.addError(self.exprLoc(bin), .invalid_binary_op_operands, .{});
+                        try self.context.diags.addError(self.exprLoc(bin), .invalid_binary_op_operands, .{ bin.op, lhs_kind, rhs_kind });
                         return null;
                     }
                     if (check_types.isIntegerKind(self, lhs_kind) and check_types.isIntegerKind(self, rhs_kind))
                         try self.checkIntZeroLiteral(bin.right, self.exprLoc(bin));
                 }
                 if (!check_types.isNumericKind(self, lhs_kind) or !check_types.isNumericKind(self, rhs_kind)) {
-                    try self.context.diags.addError(self.exprLoc(bin), .invalid_binary_op_operands, .{});
+                    try self.context.diags.addError(self.exprLoc(bin), .invalid_binary_op_operands, .{ bin.op, lhs_kind, rhs_kind });
                     return null;
                 }
                 if (l.toRaw() == r.toRaw()) return l;
-                try self.context.diags.addError(self.exprLoc(bin), .invalid_binary_op_operands, .{});
+                try self.context.diags.addError(self.exprLoc(bin), .invalid_binary_op_operands, .{ bin.op, lhs_kind, rhs_kind });
                 return null;
             },
             .eq, .neq, .lt, .lte, .gt, .gte => {
                 const both_ints = check_types.isIntegerKind(self, lhs_kind) and check_types.isIntegerKind(self, rhs_kind);
                 const both_floats = (lhs_kind == .F32 or lhs_kind == .F64) and (rhs_kind == .F32 or rhs_kind == .F64);
                 const both_bools = lhs_kind == .Bool and rhs_kind == .Bool;
+                const both_same_enum = lhs_kind == .Enum and rhs_kind == .Enum and self.tEq(l, r);
 
                 // We avoid implicit *value* coercions. For comparisons, we accept same-class operands:
                 //   - int ? int (any width/sign)
                 //   - float ? float (F32/F64 mixed ok)
                 //   - bool ? bool
-                if (!(both_ints or both_floats or both_bools)) {
-                    try self.context.diags.addError(self.exprLoc(bin), .invalid_binary_op_operands, .{});
+                if (!(both_ints or both_floats or both_bools or both_same_enum)) {
+                    try self.context.diags.addError(self.exprLoc(bin), .invalid_binary_op_operands, .{ bin.op, lhs_kind, rhs_kind });
                     return null;
                 }
                 return self.context.type_store.tBool();
@@ -984,7 +1004,7 @@ pub const Checker = struct {
                 if (l.toRaw() == self.context.type_store.tBool().toRaw() and
                     r.toRaw() == self.context.type_store.tBool().toRaw())
                     return self.context.type_store.tBool();
-                try self.context.diags.addError(self.exprLoc(bin), .invalid_binary_op_operands, .{});
+                try self.context.diags.addError(self.exprLoc(bin), .invalid_binary_op_operands, .{ bin.op, lhs_kind, rhs_kind });
                 return null;
             },
             .@"orelse" => {
@@ -992,7 +1012,7 @@ pub const Checker = struct {
                     if (self.assignable(elem, r) == .success) {
                         return elem;
                     } else return {
-                        try self.context.diags.addError(self.exprLoc(bin), .invalid_binary_op_operands, .{});
+                        try self.context.diags.addError(self.exprLoc(bin), .invalid_binary_op_operands, .{ bin.op, lhs_kind, rhs_kind });
                         return null;
                     };
                 }
@@ -1010,7 +1030,7 @@ pub const Checker = struct {
         const t = expr_ty.?;
         const type_kind = self.typeKind(t);
         switch (unary_expr.op) {
-            .plus, .minus => {
+            .pos, .neg => {
                 if (!check_types.isNumericKind(self, type_kind)) {
                     try self.context.diags.addError(self.exprLoc(unary_expr), .invalid_unary_op_operand, .{});
                     return null;
@@ -1246,7 +1266,7 @@ pub const Checker = struct {
                 // into a struct; do not set a field index here.
                 return mt;
             }
-            _ = self.context.diags.addError(self.exprLoc(field_expr), .unknown_struct_field, .{}) catch {};
+            _ = self.context.diags.addError(self.exprLoc(field_expr), .unknown_module_field, .{}) catch {};
             return null;
         }
         // Also allow module access when parent is an identifier bound to an import declaration
@@ -1261,7 +1281,7 @@ pub const Checker = struct {
                         if (self.importMemberType(drow.value, field_expr.field)) |mt| {
                             return mt;
                         }
-                        _ = self.context.diags.addError(self.exprLoc(field_expr), .unknown_struct_field, .{}) catch {};
+                        _ = self.context.diags.addError(self.exprLoc(field_expr), .unknown_module_field, .{}) catch {};
                         return null;
                     }
                 }
@@ -1647,8 +1667,10 @@ pub const Checker = struct {
                 while (i < args.len) : (i += 1) {
                     const at = try self.checkExpr(args[i]) orelse return null;
                     if (self.assignable(at, params[i]) != .success) {
+                        const expected_kind = self.typeKind(params[i]);
+                        const actual_kind = self.typeKind(at);
                         // IMPORTANT: only one type diagnostic
-                        try self.context.diags.addError(loc, .argument_type_mismatch, .{});
+                        try self.context.diags.addError(loc, .argument_type_mismatch, .{ expected_kind, actual_kind });
                         return null;
                     }
                 }
@@ -1671,7 +1693,6 @@ pub const Checker = struct {
         // Fast path A: module member call — resolve from import without evaluating callee.
         if (callee_kind == .FieldAccess) {
             const fr = self.getExpr(.FieldAccess, call_expr.callee);
-            std.debug.print("Import member access: {s}\n", .{self.getStr(fr.field)});
             if (self.resolveImportedMemberType(fr)) |fty| {
                 const fk = self.typeKind(fty);
                 if (fk != .Function) {
@@ -1689,20 +1710,14 @@ pub const Checker = struct {
 
                 var i: usize = 0;
                 while (i < args.len) : (i += 1) {
-                    const ate_kind = self.exprKind(args[i]);
-                    std.debug.print(" Arg {d}: expr kind {}\n", .{ i, ate_kind });
                     const at = try self.checkExpr(args[i]) orelse return null;
                     const pt = if (i < fixed) params[i] else params[fixed];
                     // print types
-                    const at_kind = self.typeKind(at);
-                    const pt_kind = self.typeKind(pt);
-                    if (at_kind == .TypeType) {
-                        const at_tt = self.context.type_store.TypeType.get(self.trow(at));
-                        std.debug.print("    arg {d}: at Type({}) ", .{ i, self.typeKind(at_tt.of) });
-                    }
-                    std.debug.print("  arg {d}: at {} pt {}\n", .{ i, at_kind, pt_kind });
                     if (self.assignable(at, pt) != .success) {
-                        try self.context.diags.addError(call_loc, .argument_type_mismatch, .{});
+                        const expected_kind = self.typeKind(pt);
+                        const actual_kind = self.typeKind(at);
+                        const loc = self.exprLocFromId(args[i]);
+                        try self.context.diags.addError(loc, .argument_type_mismatch, .{ expected_kind, actual_kind });
                         return null;
                     }
                 }
@@ -1746,7 +1761,10 @@ pub const Checker = struct {
             while (i < args.len) : (i += 1) {
                 const at = try self.checkExpr(args[i]) orelse return null;
                 if (self.assignable(at, params[i]) != .success) {
-                    try self.context.diags.addError(call_loc, .argument_type_mismatch, .{});
+                    const expected_kind = self.typeKind(params[i]);
+                    const actual_kind = self.typeKind(at);
+                    const loc = self.exprLocFromId(args[i]);
+                    try self.context.diags.addError(loc, .argument_type_mismatch, .{ expected_kind, actual_kind });
                     return null;
                 }
             }
@@ -1797,7 +1815,10 @@ pub const Checker = struct {
                 break :blk if (i < fixed) params[i] else params[params.len - 1];
             };
             if (self.assignable(at, pt) != .success) {
-                try self.context.diags.addError(call_loc, .argument_type_mismatch, .{});
+                const expected_kind = self.typeKind(pt);
+                const actual_kind = self.typeKind(at);
+                const loc = self.exprLocFromId(args[i]);
+                try self.context.diags.addError(loc, .argument_type_mismatch, .{ expected_kind, actual_kind });
                 return null;
             }
         }
@@ -1922,17 +1943,15 @@ pub const Checker = struct {
             if (!(try pattern_matching.checkPattern(self, wr.pattern.unwrap(), subj_ty, true))) {
                 return null;
             }
-            self.current_loop_pat = wr.pattern;
-            self.current_loop_subject_ty = subj_ty;
+            try self.pushLoopBinding(wr.pattern, subj_ty);
         } else if (wr.cond.isNone() and wr.pattern.isNone()) {
             // Infinite loop: ok
         } else unreachable;
 
         try self.pushLoop(wr.label);
         defer self.popLoop();
-        defer {
-            self.current_loop_pat = ast.OptPatternId.none();
-            self.current_loop_subject_ty = null;
+        if (!wr.cond.isNone() and !wr.pattern.isNone()) {
+            defer self.popLoopBinding();
         }
 
         const body_ty = try self.checkExpr(wr.body);
@@ -1968,21 +1987,16 @@ pub const Checker = struct {
                 if (!(try pattern_matching.checkPattern(self, fr.pattern, subject_ty, true))) {
                     return null;
                 }
-                self.current_loop_pat = ast.OptPatternId.some(fr.pattern);
-                self.current_loop_subject_ty = subject_ty;
+                try self.pushLoopBinding(ast.OptPatternId.some(fr.pattern), subject_ty);
             },
             else => {
                 try self.context.diags.addError(self.exprLoc(fr), .non_iterable_in_for, .{});
                 return null;
             },
         }
-
         try self.pushLoop(fr.label);
         defer self.popLoop();
-        defer {
-            self.current_loop_pat = ast.OptPatternId.none();
-            self.current_loop_subject_ty = null;
-        }
+        defer self.popLoopBinding();
 
         const body_ty = try self.checkExpr(fr.body);
         if (self.isValueReq()) {
@@ -2217,6 +2231,13 @@ pub const Checker = struct {
             try self.context.diags.addError(self.exprLoc(ir), .invalid_import_operand, .{});
             return null;
         }
+        var path = self.getStr(lit.value.unwrap());
+        if (path.len >= 2 and path[0] == '"' and path[path.len - 1] == '"') {
+            path = path[1 .. path.len - 1];
+        }
+        _ = self.context.resolver.resolve(self.import_base_dir, path, self.pipeline) catch {
+            try self.context.diags.addError(self.exprLoc(lit), .import_not_found, .{});
+        };
         return self.context.type_store.tAny();
     }
 

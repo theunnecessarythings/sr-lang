@@ -1081,7 +1081,7 @@ pub const Value = struct {
         c.mlirValueSetType(self.handle, ty.handle);
     }
 
-    pub fn dump(self: *Value) void {
+    pub fn dump(self: *const Value) void {
         c.mlirValueDump(self.handle);
     }
 
@@ -2590,7 +2590,7 @@ pub const Type = struct {
         c.mlirTypePrint(self.handle, cb, userData);
     }
 
-    pub fn dump(self: *Type) void {
+    pub fn dump(self: *const Type) void {
         c.mlirTypeDump(self.handle);
     }
     /// Returns a special "null" (empty) type.

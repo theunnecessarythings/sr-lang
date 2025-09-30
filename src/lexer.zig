@@ -115,8 +115,8 @@ pub const Token = struct {
         bang,
         b_and,
         b_or,
-        shl,
-        shr,
+        ltlt,
+        gtgt,
         plus_equal,
         minus_equal,
         rarrow,
@@ -142,13 +142,13 @@ pub const Token = struct {
         minus_percent_equal,
         star_percent,
         star_percent_equal,
-        eq,
-        eqeq,
-        ne,
-        gt,
-        lt,
-        ge,
-        le,
+        equal,
+        equal_equal,
+        not_equal,
+        greater_than,
+        less_than,
+        greater_equal,
+        less_equal,
         at,
         dot,
         dotdot,
@@ -253,8 +253,8 @@ pub const Token = struct {
                 .bang => "!",
                 .b_and => "&",
                 .b_or => "|",
-                .shl => "<<",
-                .shr => ">>",
+                .ltlt => "<<",
+                .gtgt => ">>",
                 .plus_equal => "+=",
                 .minus_equal => "-=",
                 .rarrow => "->",
@@ -280,13 +280,13 @@ pub const Token = struct {
                 .minus_percent_equal => "-%=",
                 .star_percent => "*%",
                 .star_percent_equal => "*%=",
-                .eq => "=",
-                .eqeq => "==",
-                .ne => "!=",
-                .gt => ">",
-                .lt => "<",
-                .ge => ">=",
-                .le => "<=",
+                .equal => "=",
+                .equal_equal => "==",
+                .not_equal => "!=",
+                .greater_than => ">",
+                .less_than => "<",
+                .greater_equal => ">=",
+                .less_equal => "<=",
                 .at => "@",
                 .dot => ".",
                 .dotdot => "..",
@@ -766,7 +766,7 @@ pub const Tokenizer = struct {
             .bang => {
                 self.advance();
                 if (self.curr() == '=') {
-                    result.tag = .ne;
+                    result.tag = .not_equal;
                     self.advance();
                 } else {
                     result.tag = .bang;
@@ -795,10 +795,10 @@ pub const Tokenizer = struct {
                 switch (self.curr()) {
                     '<' => continue :state .langle_langle,
                     '=' => {
-                        result.tag = .le;
+                        result.tag = .less_equal;
                         self.advance();
                     },
-                    else => result.tag = .lt,
+                    else => result.tag = .less_than,
                 }
             },
             .rangle => {
@@ -806,24 +806,24 @@ pub const Tokenizer = struct {
                 switch (self.curr()) {
                     '>' => continue :state .rangle_rangle,
                     '=' => {
-                        result.tag = .ge;
+                        result.tag = .greater_equal;
                         self.advance();
                     },
-                    else => result.tag = .gt,
+                    else => result.tag = .greater_than,
                 }
             },
             .equal => {
                 self.advance();
                 switch (self.curr()) {
                     '=' => {
-                        result.tag = .eqeq;
+                        result.tag = .equal_equal;
                         self.advance();
                     },
                     '>' => {
                         result.tag = .fatarrow;
                         self.advance();
                     },
-                    else => result.tag = .eq,
+                    else => result.tag = .equal,
                 }
             },
             .dot => {
@@ -922,7 +922,7 @@ pub const Tokenizer = struct {
                 } else if (self.curr() == '|') {
                     continue :state .langle_langle_pipe;
                 } else {
-                    result.tag = .shl;
+                    result.tag = .ltlt;
                 }
             },
             .rangle_rangle => {
@@ -931,7 +931,7 @@ pub const Tokenizer = struct {
                     result.tag = .shr_equal;
                     self.advance();
                 } else {
-                    result.tag = .shr;
+                    result.tag = .gtgt;
                 }
             },
             .langle_langle_pipe => {

@@ -1,0 +1,8 @@
+PI :: 3.141592653589793
+TAU :: 6.283185307179586
+
+
+cos :: extern proc(x: f64) f64
+sin :: extern proc(x: f64) f64
+tan :: extern proc(x: f64) f64
+sqrt :: extern proc(x: f64) f64

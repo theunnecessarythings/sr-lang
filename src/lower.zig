@@ -466,8 +466,8 @@ pub const Lower = struct {
                         };
                         break :blk self.ast_unit.exprs.add(.Range, rr);
                     },
-                    .plus => break :blk self.ast_unit.exprs.add(.Unary, .{ .expr = try self.lowerExpr(p.right), .op = .plus, .loc = self.mapLoc(p.loc) }),
-                    .minus => break :blk self.ast_unit.exprs.add(.Unary, .{ .expr = try self.lowerExpr(p.right), .op = .minus, .loc = self.mapLoc(p.loc) }),
+                    .plus => break :blk self.ast_unit.exprs.add(.Unary, .{ .expr = try self.lowerExpr(p.right), .op = .pos, .loc = self.mapLoc(p.loc) }),
+                    .minus => break :blk self.ast_unit.exprs.add(.Unary, .{ .expr = try self.lowerExpr(p.right), .op = .neg, .loc = self.mapLoc(p.loc) }),
                     .address_of => break :blk self.ast_unit.exprs.add(.Unary, .{ .expr = try self.lowerExpr(p.right), .op = .address_of, .loc = self.mapLoc(p.loc) }),
                     .logical_not => break :blk self.ast_unit.exprs.add(.Unary, .{ .expr = try self.lowerExpr(p.right), .op = .logical_not, .loc = self.mapLoc(p.loc) }),
                 }

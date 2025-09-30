@@ -77,7 +77,7 @@ pub const OptRangeField = OptRangeOf(StructFieldId);
 pub const OptRangePat = OptRangeOf(PatternId);
 
 pub const LiteralKind = enum(u8) { int, float, bool, string, char, imaginary };
-pub const UnaryOp = enum(u8) { plus, minus, address_of, logical_not };
+pub const UnaryOp = enum(u8) { pos, neg, address_of, logical_not };
 pub const BinaryOp = enum(u8) {
     add,
     sub,
@@ -1811,8 +1811,8 @@ pub const CodePrinter = struct {
             .Unary => {
                 const node = self.exprs.get(.Unary, id);
                 const op_str = switch (node.op) {
-                    .plus => "+",
-                    .minus => "-",
+                    .pos => "+",
+                    .neg => "-",
                     .address_of => "&",
                     .logical_not => "!",
                 };

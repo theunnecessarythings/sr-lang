@@ -26,11 +26,11 @@ test "invalid" {
 
 test "operators and punctuations" {
     try testSingle("+ - * / % ^ ! & | << >> += -= -> *= /= %= ^= &= |= <<= >>= <<| <<|= +| +|= -| -|= *| *|=  +% +%= -% -%= *% *%= = == != > < >= <= @ . .. .* ... ..=  , ; : :: := => ? { } [ ] ( )", &.{
-        .plus,                .minus,          .star,               .slash,           .percent,     .caret,            .bang,        .b_and,           .b_or,         .shl,                .shr,
-        .plus_equal,          .minus_equal,    .rarrow,             .star_equal,      .slash_equal, .percent_equal,    .caret_equal, .and_equal,       .or_equal,     .shl_equal,          .shr_equal,
-        .shl_pipe,            .shl_pipe_equal, .plus_pipe,          .plus_pipe_equal, .minus_pipe,  .minus_pipe_equal, .star_pipe,   .star_pipe_equal, .plus_percent, .plus_percent_equal, .minus_percent,
-        .minus_percent_equal, .star_percent,   .star_percent_equal, .eq,              .eqeq,        .ne,               .gt,          .lt,              .ge,           .le,                 .at,
-        .dot,                 .dotdot,         .dotstar,            .dotdotdot,       .dotdoteq,    .comma,            .eos,         .colon,           .coloncolon,   .coloneq,            .fatarrow,
+        .plus,                .minus,          .star,               .slash,           .percent,     .caret,            .bang,         .b_and,           .b_or,          .ltlt,               .gtgt,
+        .plus_equal,          .minus_equal,    .rarrow,             .star_equal,      .slash_equal, .percent_equal,    .caret_equal,  .and_equal,       .or_equal,      .shl_equal,          .shr_equal,
+        .shl_pipe,            .shl_pipe_equal, .plus_pipe,          .plus_pipe_equal, .minus_pipe,  .minus_pipe_equal, .star_pipe,    .star_pipe_equal, .plus_percent,  .plus_percent_equal, .minus_percent,
+        .minus_percent_equal, .star_percent,   .star_percent_equal, .equal,           .equal_equal, .not_equal,        .greater_than, .less_than,       .greater_equal, .less_equal,         .at,
+        .dot,                 .dotdot,         .dotstar,            .dotdotdot,       .dotdoteq,    .comma,            .eos,          .colon,           .coloncolon,    .coloneq,            .fatarrow,
         .question,            .lcurly,         .rcurly,             .lsquare,         .rsquare,     .lparen,           .rparen,
     });
 }
@@ -229,11 +229,11 @@ test "illegal unicode codepoints" {
 }
 
 test "float literal e exponent" {
-    try testSingle("a = 4.94065645841246544177e-324;\n", &.{ .identifier, .eq, .float_literal, .eos });
+    try testSingle("a = 4.94065645841246544177e-324;\n", &.{ .identifier, .equal, .float_literal, .eos });
 }
 
 test "float literal p exponent" {
-    try testSingle("a = 0x1.a827999fcef32p+1022;\n", &.{ .identifier, .eq, .float_literal, .eos });
+    try testSingle("a = 0x1.a827999fcef32p+1022;\n", &.{ .identifier, .equal, .float_literal, .eos });
 }
 
 test "line comment and doc comment" {
@@ -535,7 +535,7 @@ test "number literals hexadecimal" {
 }
 
 test "saturating operators" {
-    try testSingle("<<", &.{.shl});
+    try testSingle("<<", &.{.ltlt});
     try testSingle("<<|", &.{.shl_pipe});
     try testSingle("<<|=", &.{.shl_pipe_equal});
 

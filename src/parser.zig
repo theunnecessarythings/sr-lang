@@ -67,7 +67,7 @@ pub const Parser = struct {
                 .unexpected_token,
                 .{ tag, self.cur.tag },
                 self.cur.loc,
-                .unexpected_token_here,
+                .token_cannot_start_expression,
             );
             return error.UnexpectedToken;
         }
@@ -198,9 +198,9 @@ pub const Parser = struct {
         return switch (tag) {
             .star, .slash, .percent, .star_pipe, .star_percent => .{ 80, 81 },
             .plus, .plus_pipe, .plus_percent, .minus, .minus_percent, .minus_pipe => .{ 70, 71 },
-            .shl, .shr, .shl_pipe => .{ 60, 61 },
-            .lt, .le, .gt, .ge => .{ 50, 51 },
-            .eqeq, .ne => .{ 45, 46 },
+            .ltlt, .gtgt, .shl_pipe => .{ 60, 61 },
+            .less_than, .less_equal, .greater_than, .greater_equal => .{ 50, 51 },
+            .equal_equal, .not_equal => .{ 45, 46 },
             .b_and => .{ 40, 41 },
             .caret => .{ 35, 36 },
             .b_or => .{ 30, 31 },
@@ -274,8 +274,8 @@ pub const Parser = struct {
             .star => .mul,
             .slash => .div,
             .percent => .mod,
-            .shl => .shl,
-            .shr => .shr,
+            .ltlt => .shl,
+            .gtgt => .shr,
             .star_pipe => .mul_sat,
             .plus_pipe => .add_sat,
             .minus_pipe => .sub_sat,
@@ -283,12 +283,12 @@ pub const Parser = struct {
             .star_percent => .mul_wrap,
             .plus_percent => .add_wrap,
             .minus_percent => .sub_wrap,
-            .lt => .lt,
-            .le => .lte,
-            .gt => .gt,
-            .ge => .gte,
-            .eqeq => .eq,
-            .ne => .neq,
+            .less_than => .lt,
+            .less_equal => .lte,
+            .greater_than => .gt,
+            .greater_equal => .gte,
+            .equal_equal => .eq,
+            .not_equal => .neq,
             .b_and => .b_and,
             .caret => .b_xor,
             .b_or => .b_or,
@@ -412,7 +412,7 @@ pub const Parser = struct {
                 const ty_id = try self.parseExpr(0, .type);
                 ty_opt = .some(ty_id);
                 switch (self.cur.tag) {
-                    .eq => {
+                    .equal => {
                         self.advance();
                         rhs_id = try self.parseExpr(0, .expr);
                         try self.expect(.eos);
@@ -441,7 +441,7 @@ pub const Parser = struct {
                     },
                 }
             },
-            .eq => { // x = rhs (assignment; LHS may be lvalue expression)
+            .equal => { // x = rhs (assignment; LHS may be lvalue expression)
                 self.advance();
                 flags.is_assign = true;
                 rhs_id = try self.parseExpr(0, .expr);
@@ -629,8 +629,8 @@ pub const Parser = struct {
                 break :blk self.addExpr(.ErrDefer, .{ .expr = e, .loc = loc });
             },
             else => {
-                const got = self.cur;
-                self.errorNote(self.cur.loc, .unexpected_token_in_expression, .{tag}, got.loc, .token_cannot_start_expression);
+                // const got = self.cur;
+                // self.errorNote(self.cur.loc, .unexpected_token_in_expression, .{tag}, got.loc, .token_cannot_start_expression);
                 self.sync(.eos);
                 return error.UnexpectedToken;
             },
@@ -959,7 +959,7 @@ pub const Parser = struct {
                     self.advance();
                     ty_opt = .some(try self.parseExpr(barrier, .type));
                 }
-                if (self.cur.tag == .eq) {
+                if (self.cur.tag == .equal) {
                     self.advance();
                     val_opt = .some(try self.parseExpr(0, .expr));
                 }
@@ -1706,7 +1706,7 @@ pub const Parser = struct {
     }
 
     inline fn parseOptionalInitializer(self: *Parser, comptime mode: ParseMode) !cst.OptExprId {
-        if (self.cur.tag == .eq) {
+        if (self.cur.tag == .equal) {
             self.advance();
             return .some(try self.parseExpr(0, mode));
         }
@@ -1740,7 +1740,7 @@ pub const Parser = struct {
             }
 
             var val: cst.OptExprId = .none();
-            if (self.cur.tag == .eq) {
+            if (self.cur.tag == .equal) {
                 self.advance();
                 // Keep your original restriction (literal or ident) if you like;
                 // or accept any expr. Here we accept any expr:
@@ -1956,7 +1956,7 @@ pub const Parser = struct {
 
             // optional = value (only literal or ident allowed, same as original)
             var value_opt: cst.OptExprId = .none();
-            if (self.cur.tag == .eq) {
+            if (self.cur.tag == .equal) {
                 self.advance();
                 const t = self.cur.tag;
                 if (self.isLiteralTag(t) or t == .identifier) {
@@ -2139,7 +2139,7 @@ pub const Parser = struct {
                 self.advance();
                 const ty = try self.parseExpr(0, .type);
                 ty_opt = .some(ty);
-                if (self.cur.tag == .eq) {
+                if (self.cur.tag == .equal) {
                     self.advance();
                     const v = try self.parseExpr(0, .expr);
                     val_opt = .some(v);

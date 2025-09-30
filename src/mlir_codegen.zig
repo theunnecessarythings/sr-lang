@@ -793,7 +793,10 @@ pub const MlirCodegen = struct {
                 self.append(op);
                 break :blk op.getResult(0);
             },
-            .CastSaturate, .CastWrap, .CastChecked => return error.NotImplemented,
+            .CastSaturate, .CastWrap, .CastChecked => {
+                std.debug.print("Cast kind not yet implemented: {}\n", .{kind});
+                return error.NotImplemented;
+            },
 
             // ------------- Memory -------------
             .Alloca => blk: {
@@ -847,7 +850,10 @@ pub const MlirCodegen = struct {
                 const p = t.instrs.get(.Gep, ins_id);
                 const base = self.value_map.get(p.base).?;
                 const res_ty_row = store.type_pool.data.items[p.ty.toRaw()];
-                if (store.getKind(res_ty_row) != .Ptr) return error.CompileError;
+                if (store.getKind(res_ty_row) != .Ptr) {
+                    std.debug.print("GEP result type is not a pointer: {}\n", .{store.getKind(res_ty_row)});
+                    return error.CompileError;
+                }
                 const ptr_row = store.get(.Ptr, p.ty);
                 const elem_mlir = try self.llvmTypeOf(store, ptr_row.elem);
 
@@ -933,6 +939,8 @@ pub const MlirCodegen = struct {
                 const p = t.instrs.get(.AddressOf, ins_id);
                 const v = self.value_map.get(p.value).?;
                 if (mlir.LLVM.isLLVMPointerType(v.getType())) break :blk v;
+                std.debug.print("AddressOf of non-pointer value\n", .{});
+                v.dump();
                 return error.NotImplemented;
             },
 
@@ -953,6 +961,7 @@ pub const MlirCodegen = struct {
                         const v = self.extractAt(base, res_ty, &.{@as(i64, @intCast(cval))});
                         break :blk v;
                     } else {
+                        std.debug.print("Dynamic index into in-SSA aggregate not yet implemented\n", .{});
                         return error.NotImplemented; // dynamic index into in-SSA aggregate
                     }
                 }
@@ -1551,6 +1560,7 @@ pub const MlirCodegen = struct {
     fn intOrFloatWidth(t: mlir.Type) !u32 {
         if (t.isAInteger()) return t.getIntegerBitwidth();
         if (t.isAFloat()) return t.getFloatBitwidth();
+        t.dump();
         return error.NotIntOrFloat;
     }
 
@@ -1951,7 +1961,12 @@ pub const MlirCodegen = struct {
                 break :blk mlir.LLVM.getLLVMStructTypeLiteral(self.mlir_ctx, buf, false);
             },
 
-            else => std.debug.panic("unhandled type: {}", .{ty}),
+            .Enum => blk: {
+                // TODO: usee backing integer type if specified
+                break :blk mlir.Type.getSignlessIntegerType(self.mlir_ctx, 32);
+            },
+
+            else => std.debug.panic("unhandled type: {}", .{store.getKind(ty)}),
         };
     }
 };

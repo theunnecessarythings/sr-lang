@@ -228,7 +228,7 @@ fn server(
 
             // If there are diagnostics, emit them to stderr and return 400
             if (context.diags.anyErrors()) {
-                try context.diags.emitStyled(source, &context, err_writer, "request", true);
+                try context.diags.emitStyled(&context, err_writer, true);
                 try req.respond("Semantic errors\n", .{
                     .status = .bad_request,
                     .extra_headers = &.{
