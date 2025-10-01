@@ -522,7 +522,115 @@ pub const Checker = struct {
                 },
             }
         } else {
-            const is_assignable = self.assignable(rhs_ty, expect_ty.?);
+            // Allow variant RHS written as V.C(...) or V.C{...} to type as the annotated variant.
+            var is_assignable = self.assignable(rhs_ty, expect_ty.?);
+            if (is_assignable == .failure) {
+                const ek = self.context.type_store.getKind(expect_ty.?);
+                if (ek == .Variant or ek == .Error) {
+                    const d = self.ast_unit.exprs.Decl.get(decl.toRaw());
+                    const vk = self.exprKind(d.value);
+                    if (vk == .Call) {
+                        const call = self.getExpr(.Call, d.value);
+                        var cur = call.callee;
+                        var last: ?ast.StrId = null;
+                        while (self.exprKind(cur) == .FieldAccess) {
+                            const fr = self.getExpr(.FieldAccess, cur);
+                            last = fr.field;
+                            cur = fr.parent;
+                        }
+                        if (last) |lname| {
+                            const cases = if (ek == .Variant)
+                                self.context.type_store.field_pool.slice(self.context.type_store.Variant.get(self.context.type_store.index.rows.items[expect_ty.?.toRaw()]).variants)
+                            else
+                                self.context.type_store.field_pool.slice(self.context.type_store.Error.get(self.context.type_store.index.rows.items[expect_ty.?.toRaw()]).variants);
+                            var pty: ?types.TypeId = null;
+                            for (cases) |fid| {
+                                const f = self.context.type_store.Field.get(fid.toRaw());
+                                if (f.name.toRaw() == lname.toRaw()) { pty = f.ty; break; }
+                            }
+                            if (pty) |pay_ty| {
+                                var ok = true;
+                                if (self.context.type_store.getKind(pay_ty) == .Tuple) {
+                                    const tr = self.context.type_store.get(.Tuple, pay_ty);
+                                    const tys = self.context.type_store.type_pool.slice(tr.elems);
+                                    const args = self.ast_unit.exprs.expr_pool.slice(call.args);
+                                    ok = (args.len == tys.len);
+                                    if (ok) {
+                                        for (args, 0..) |aid, i| {
+                                            const at = try self.checkExpr(aid) orelse return;
+                                            if (self.assignable(at, tys[i]) != .success) { ok = false; break; }
+                                        }
+                                    }
+                                } else if (self.context.type_store.getKind(pay_ty) == .Void) {
+                                    ok = self.ast_unit.exprs.expr_pool.slice(call.args).len == 0;
+                                } else {
+                                    // single payload
+                                    const args = self.ast_unit.exprs.expr_pool.slice(call.args);
+                                    ok = (args.len == 1);
+                                    if (ok) {
+                                        const at = try self.checkExpr(args[0]) orelse return;
+                                        ok = (self.assignable(at, pay_ty) == .success);
+                                    }
+                                }
+                                if (ok) {
+                                    // Treat RHS as the annotated variant type
+                                    self.type_info.expr_types.items[d.value.toRaw()] = expect_ty.?;
+                                    is_assignable = .success;
+                                }
+                            }
+                        }
+                    } else if (vk == .StructLit) {
+                        const sl = self.getExpr(.StructLit, d.value);
+                        if (!sl.ty.isNone()) {
+                            var cur = sl.ty.unwrap();
+                            var last: ?ast.StrId = null;
+                            while (self.exprKind(cur) == .FieldAccess) {
+                                const fr = self.getExpr(.FieldAccess, cur);
+                                last = fr.field;
+                                cur = fr.parent;
+                            }
+                            if (last) |lname| {
+                                const cases = if (ek == .Variant)
+                                    self.context.type_store.field_pool.slice(self.context.type_store.Variant.get(self.context.type_store.index.rows.items[expect_ty.?.toRaw()]).variants)
+                                else
+                                    self.context.type_store.field_pool.slice(self.context.type_store.Error.get(self.context.type_store.index.rows.items[expect_ty.?.toRaw()]).variants);
+                                var pty: ?types.TypeId = null;
+                                for (cases) |fid| {
+                                    const f = self.context.type_store.Field.get(fid.toRaw());
+                                    if (f.name.toRaw() == lname.toRaw()) { pty = f.ty; break; }
+                                }
+                                if (pty) |pay_ty| {
+                                    var ok = true;
+                                    if (self.context.type_store.getKind(pay_ty) == .Struct) {
+                                        const st = self.context.type_store.get(.Struct, pay_ty);
+                                        const tfields = self.context.type_store.field_pool.slice(st.fields);
+                                        const vfields = self.ast_unit.exprs.sfv_pool.slice(sl.fields);
+                                        for (vfields) |sfid| {
+                                            const sf = self.ast_unit.exprs.StructFieldValue.get(sfid.toRaw());
+                                            if (sf.name.isNone()) { ok = false; break; }
+                                            const nm = sf.name.unwrap();
+                                            var want: ?types.TypeId = null;
+                                            for (tfields) |tfid| {
+                                                const tf = self.context.type_store.Field.get(tfid.toRaw());
+                                                if (tf.name.toRaw() == nm.toRaw()) { want = tf.ty; break; }
+                                            }
+                                            if (want == null) { ok = false; break; }
+                                            const at = try self.checkExpr(sf.value) orelse return;
+                                            if (self.assignable(at, want.?) != .success) { ok = false; break; }
+                                        }
+                                    } else {
+                                        ok = false;
+                                    }
+                                    if (ok) {
+                                        self.type_info.expr_types.items[d.value.toRaw()] = expect_ty.?;
+                                        is_assignable = .success;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
             const d = self.ast_unit.exprs.Decl.get(decl.toRaw());
             switch (is_assignable) {
                 .success => {
@@ -693,7 +801,96 @@ pub const Checker = struct {
 
             // still default to any for the following kinds (can be implemented later)
             .Deref => try self.checkDeref(id),
-            .VariantLit => unreachable,
+            .VariantLit => blk: {
+                // Type a variant literal using available context when possible.
+                // Without an expected type, leave as Any for now.
+                const vl = self.getExpr(.VariantLit, id);
+                // Try to locate an expected type by scanning top-level decls that bind this expr as their RHS.
+                var expected_ty: ?types.TypeId = null;
+                {
+                    const decls = self.ast_unit.exprs.decl_pool.slice(self.ast_unit.unit.decls);
+                    var i: usize = 0;
+                    while (i < decls.len) : (i += 1) {
+                        const d = self.ast_unit.exprs.Decl.get(decls[i].toRaw());
+                        if (d.value.toRaw() == id.toRaw() and !d.ty.isNone()) {
+                            expected_ty = try check_types.typeFromTypeExpr(self, d.ty.unwrap());
+                            break;
+                        }
+                    }
+                }
+
+                if (expected_ty) |ety| {
+                const etyk = self.context.type_store.getKind(ety);
+                if (etyk == .Variant or etyk == .Error) {
+                        // Validate payload against the case type, if any.
+                        const cases = if (etyk == .Variant)
+                            self.context.type_store.field_pool.slice(self.context.type_store.Variant.get(self.context.type_store.index.rows.items[ety.toRaw()]).variants)
+                        else
+                            self.context.type_store.field_pool.slice(self.context.type_store.Error.get(self.context.type_store.index.rows.items[ety.toRaw()]).variants);
+                        var found = false;
+                        var payload_ty: types.TypeId = self.context.type_store.tVoid();
+                        for (cases) |fid| {
+                            const f = self.context.type_store.Field.get(fid.toRaw());
+                            if (f.name.toRaw() == vl.name.toRaw()) { found = true; payload_ty = f.ty; break; }
+                        }
+                        if (!found) break :blk null;
+
+                        // Check value shape
+                        if (!vl.value.isNone()) {
+                            const vexpr = vl.value.unwrap();
+                            const pk = self.context.type_store.getKind(payload_ty);
+                            if (pk == .Void) break :blk null; // payload not allowed
+                            if (pk == .Tuple) {
+                                const tr = self.context.type_store.get(.Tuple, payload_ty);
+                                const tys = self.context.type_store.type_pool.slice(tr.elems);
+                                if (self.exprKind(vexpr) == .TupleLit) {
+                                    const tl = self.getExpr(.TupleLit, vexpr);
+                                    const elems = self.ast_unit.exprs.expr_pool.slice(tl.elems);
+                                    if (elems.len != tys.len) break :blk null;
+                                    for (elems, 0..) |eid, i| {
+                                        const et = try self.checkExpr(eid) orelse break :blk null;
+                                        if (self.assignable(et, tys[i]) != .success) break :blk null;
+                                    }
+                                } else {
+                                    if (tys.len != 1) break :blk null;
+                                    const et = try self.checkExpr(vexpr) orelse break :blk null;
+                                    if (self.assignable(et, tys[0]) != .success) break :blk null;
+                                }
+                            } else if (pk == .Struct) {
+                                if (self.exprKind(vexpr) != .StructLit) break :blk null;
+                                const sl = self.getExpr(.StructLit, vexpr);
+                                const vfields = self.ast_unit.exprs.sfv_pool.slice(sl.fields);
+                                const st = self.context.type_store.get(.Struct, payload_ty);
+                                const tfields = self.context.type_store.field_pool.slice(st.fields);
+                                // For each provided field, check type.
+                                for (vfields) |sfid| {
+                                    const sf = self.ast_unit.exprs.StructFieldValue.get(sfid.toRaw());
+                                    if (sf.name.isNone()) break :blk null;
+                                    const sname = sf.name.unwrap();
+                                    var fty: ?types.TypeId = null;
+                                    for (tfields) |tfid| {
+                                        const tf = self.context.type_store.Field.get(tfid.toRaw());
+                                        if (tf.name.toRaw() == sname.toRaw()) { fty = tf.ty; break; }
+                                    }
+                                    if (fty == null) break :blk null;
+                                    const et = try self.checkExpr(sf.value) orelse break :blk null;
+                                    if (self.assignable(et, fty.?) != .success) break :blk null;
+                                }
+                            } else {
+                                // primitive payload
+                                const et = try self.checkExpr(vexpr) orelse break :blk null;
+                                if (self.assignable(et, payload_ty) != .success) break :blk null;
+                            }
+                        } else {
+                            // No payload provided; require void payload type
+                            if (self.context.type_store.getKind(payload_ty) != .Void) break :blk null;
+                        }
+                        break :blk ety;
+                    }
+                }
+                // Unknown context: treat as Any to keep flow; lower stages can error if needed.
+                break :blk self.context.type_store.tAny();
+            },
             .EnumLit => unreachable,
             .Call => try self.checkCall(id),
             .ComptimeBlock => try self.checkComptimeBlock(id),
@@ -772,7 +969,13 @@ pub const Checker = struct {
             .imaginary => blk: {
                 const s = self.getStr(lit.value.unwrap());
                 if (std.fmt.parseInt(i64, s, 10) catch null == null) {
-                    try self.context.diags.addError(self.exprLoc(lit), .invalid_integer_literal, .{});
+                    if (std.fmt.parseFloat(f64, s) catch null == null) {
+                        try self.context.diags.addError(self.exprLoc(lit), .invalid_imaginary_literal, .{});
+                        return null;
+                    } else {
+                        break :blk self.context.type_store.tF64();
+                    }
+                    try self.context.diags.addError(self.exprLoc(lit), .invalid_imaginary_literal, .{});
                     return null;
                 }
                 break :blk self.context.type_store.tI64(); // TODO: imaginary type

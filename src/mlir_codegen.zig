@@ -457,6 +457,7 @@ pub const MlirCodegen = struct {
             .AddressOf => return t.instrs.get(.AddressOf, id).result,
             .Select => return t.instrs.get(.Select, id).result,
             .Call => return t.instrs.get(.Call, id).result,
+            .VariantMake => return t.instrs.get(.VariantMake, id).result,
             .MlirBlock => {
                 const p = t.instrs.get(.MlirBlock, id);
                 if (p.result.isNone()) return null;
@@ -493,6 +494,7 @@ pub const MlirCodegen = struct {
             .AddressOf => t.instrs.get(.AddressOf, id).ty,
             .Select => t.instrs.get(.Select, id).ty,
             .Call => t.instrs.get(.Call, id).ty,
+            .VariantMake => t.instrs.get(.VariantMake, id).ty,
             .MlirBlock => t.instrs.get(.MlirBlock, id).ty,
         };
     }
@@ -936,6 +938,26 @@ pub const MlirCodegen = struct {
                 const val = self.value_map.get(p.value).?;
                 const v = self.insertAt(agg, val, &.{@as(i64, @intCast(p.index))});
                 break :blk v;
+            },
+
+            .VariantMake => blk: {
+                const p = t.instrs.get(.VariantMake, ins_id);
+                const var_ty = try self.llvmTypeOf(store, p.ty);
+                var acc = self.undefOf(var_ty);
+                // tag at index 0
+                const tag_val = self.llvmConstI32(@intCast(p.tag));
+                acc = self.insertAt(acc, tag_val, &.{0});
+                // payload pointer at index 1
+                var ptrv = self.undefOf(self.llvm_ptr_ty);
+                if (!p.payload.isNone()) {
+                    const pv = self.value_map.get(p.payload.unwrap()).?;
+                    const pty = try self.llvmTypeOf(store, p.payload_ty);
+                    ptrv = self.spillAgg(pv, pty, 8);
+                } else {
+                    ptrv = self.llvmNullPtr();
+                }
+                acc = self.insertAt(acc, ptrv, &.{1});
+                break :blk acc;
             },
 
             // ------------- Pointers/Indexing -------------
@@ -1539,6 +1561,24 @@ pub const MlirCodegen = struct {
         self.append(op);
         return op.getResult(0);
     }
+    fn llvmConstI32(self: *MlirCodegen, x: i32) mlir.Value {
+        const ty = mlir.Type.getSignlessIntegerType(self.mlir_ctx, 32);
+        const val = mlir.Attribute.integerAttrGet(ty, x);
+        var op = OpBuilder.init("llvm.mlir.constant", self.loc).builder()
+            .add_results(&.{ty})
+            .add_attributes(&.{self.named("value", val)}).build();
+        self.append(op);
+        return op.getResult(0);
+    }
+    fn llvmNullPtr(self: *MlirCodegen) mlir.Value {
+        // Create a null pointer via constant integer 0 casted to ptr
+        const zero = self.llvmConstI64(0);
+        var op = OpBuilder.init("llvm.inttoptr", self.loc).builder()
+            .add_operands(&.{zero})
+            .add_results(&.{self.llvm_ptr_ty}).build();
+        self.append(op);
+        return op.getResult(0);
+    }
 
     fn undefOf(self: *MlirCodegen, ty: mlir.Type) mlir.Value {
         var op = OpBuilder.init("llvm.mlir.undef", self.loc).builder()
@@ -2071,6 +2111,12 @@ pub const MlirCodegen = struct {
             .Enum => blk: {
                 // TODO: usee backing integer type if specified
                 break :blk mlir.Type.getSignlessIntegerType(self.mlir_ctx, 32);
+            },
+
+            .Variant => blk: {
+                // Represent variants as { i32 tag, ptr payload } for now.
+                const fields = [_]mlir.Type{ mlir.Type.getSignlessIntegerType(self.mlir_ctx, 32), self.llvm_ptr_ty };
+                break :blk mlir.LLVM.getLLVMStructTypeLiteral(self.mlir_ctx, &fields, false);
             },
 
             .TypeType => return self.llvm_ptr_ty,

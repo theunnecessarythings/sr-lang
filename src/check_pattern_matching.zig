@@ -817,6 +817,19 @@ pub fn declareBindingsInPattern(self: *Checker, pid: ast.PatternId, loc: ast.Loc
                 try declareBindingsInPattern(self, f.pattern, loc, origin);
             }
         },
+        .VariantTuple => {
+            const vt = self.ast_unit.pats.get(.VariantTuple, pid);
+            const elems = self.ast_unit.pats.pat_pool.slice(vt.elems);
+            for (elems) |eid| try declareBindingsInPattern(self, eid, loc, origin);
+        },
+        .VariantStruct => {
+            const vs = self.ast_unit.pats.get(.VariantStruct, pid);
+            const fields = self.ast_unit.pats.field_pool.slice(vs.fields);
+            for (fields) |fid| {
+                const f = self.ast_unit.pats.StructField.get(fid.toRaw());
+                try declareBindingsInPattern(self, f.pattern, loc, origin);
+            }
+        },
         .Slice => {
             const ap = self.ast_unit.pats.get(.Slice, pid);
             const elems = self.ast_unit.pats.pat_pool.slice(ap.elems);
@@ -1092,6 +1105,50 @@ pub fn bindingTypeInPattern(self: *Checker, pid: ast.PatternId, name: ast.StrId,
             return null;
         },
 
+        .VariantTuple => {
+            if (!(pk == .Variant or pk == .Error)) return null;
+            const vt = self.ast_unit.pats.get(.VariantTuple, pid);
+            const segs = self.ast_unit.pats.seg_pool.slice(vt.path);
+            if (segs.len == 0) return null;
+            const last = self.ast_unit.pats.PathSeg.get(segs[segs.len - 1].toRaw());
+            const pay = findCasePayload(self, value_ty, last.name) orelse return null;
+            const elems = self.ast_unit.pats.pat_pool.slice(vt.elems);
+            const pk2 = tk(self, pay);
+            if (pk2 == .Void) return null;
+            if (pk2 == .Tuple) {
+                const tr = self.context.type_store.Tuple.get(row(self, pay));
+                const tys = self.context.type_store.type_pool.slice(tr.elems);
+                if (tys.len != elems.len) return null;
+                for (elems, 0..) |eid, i| if (bindingTypeInPattern(self, eid, name, tys[i])) |bt| return bt;
+                return null;
+            } else {
+                if (elems.len != 1) return null;
+                return bindingTypeInPattern(self, elems[0], name, pay);
+            }
+        },
+        .VariantStruct => {
+            if (!(pk == .Variant or pk == .Error)) return null;
+            const vs = self.ast_unit.pats.get(.VariantStruct, pid);
+            const segs = self.ast_unit.pats.seg_pool.slice(vs.path);
+            if (segs.len == 0) return null;
+            const last = self.ast_unit.pats.PathSeg.get(segs[segs.len - 1].toRaw());
+            const pay = findCasePayload(self, value_ty, last.name) orelse return null;
+            if (tk(self, pay) != .Struct) return null;
+            const st = self.context.type_store.Struct.get(row(self, pay));
+            const tfields = self.context.type_store.field_pool.slice(st.fields);
+            const pfields = self.ast_unit.pats.field_pool.slice(vs.fields);
+            for (pfields) |pfid| {
+                const pf = self.ast_unit.pats.StructField.get(pfid.toRaw());
+                for (tfields) |tfid| {
+                    const tf = self.context.type_store.Field.get(tfid.toRaw());
+                    if (tf.name.toRaw() == pf.name.toRaw()) {
+                        if (bindingTypeInPattern(self, pf.pattern, name, tf.ty)) |bt| return bt;
+                        break;
+                    }
+                }
+            }
+            return null;
+        },
         .Path, .Literal => return null,
         else => return null,
     }

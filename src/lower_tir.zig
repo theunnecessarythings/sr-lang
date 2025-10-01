@@ -326,18 +326,13 @@ pub const LowerTir = struct {
             .Decl => {
                 const drow = a.stmts.get(.Decl, sid);
                 const d = a.exprs.Decl.get(drow.decl.toRaw());
-                const val = try self.lowerExpr(a, env, f, blk, d.value, self.getExprType(d.value), .rvalue);
+                const vty = self.getExprType(d.value) orelse self.context.type_store.tAny();
                 if (!d.pattern.isNone()) {
-                    const nm = self.bindingNameOfPattern(a, d.pattern.unwrap()) orelse return;
-                    if (d.flags.is_const) {
-                        try env.bind(self.gpa, a, nm, .{ .value = val, .is_slot = false });
-                    } else {
-                        const vty = self.getExprType(d.value) orelse return;
-                        const slot_ty = self.context.type_store.mkPtr(vty, false);
-                        const slot = f.builder.alloca(blk, slot_ty, tir.OptValueId.none(), 0);
-                        _ = f.builder.store(blk, vty, slot, val, 0);
-                        try env.bind(self.gpa, a, nm, .{ .value = slot, .is_slot = true });
-                    }
+                    // Destructure once for all names: bind as values for const, or slots for mut.
+                    try self.destructureDeclFromExpr(a, env, f, blk, d.pattern.unwrap(), d.value, vty, !d.flags.is_const);
+                } else {
+                    // No pattern: just evaluate for side-effects.
+                    _ = try self.lowerExpr(a, env, f, blk, d.value, vty, .rvalue);
                 }
             },
             .Assign => {
@@ -434,6 +429,63 @@ pub const LowerTir = struct {
     fn lowerCall(self: *@This(), a: *const ast.Ast, env: *Env, f: *Builder.FunctionFrame, blk: *Builder.BlockFrame, id: ast.ExprId, expected: ?types.TypeId) !tir.ValueId {
         const row = a.exprs.get(.Call, id);
         const callee = self.resolveCallee(a, f, row);
+
+        // Variant construction: if expected is a Variant/Error and callee is a path to a case, build VariantMake
+        if (expected) |ety| {
+            const k = self.context.type_store.getKind(ety);
+            if (k == .Variant or k == .Error) {
+                // Extract last segment from callee path (FieldAccess chain)
+                var cur = row.callee;
+                var last_name: ?StrId = null;
+                while (a.exprs.index.kinds.items[cur.toRaw()] == .FieldAccess) {
+                    const fr = a.exprs.get(.FieldAccess, cur);
+                    last_name = fr.field;
+                    cur = fr.parent;
+                }
+                if (last_name) |lname| {
+                    // Find case index and payload type
+                    const fields = if (k == .Variant)
+                        self.context.type_store.field_pool.slice(self.context.type_store.get(.Variant, ety).variants)
+                    else
+                        self.context.type_store.field_pool.slice(self.context.type_store.get(.Error, ety).variants);
+                    var tag_idx: u32 = 0;
+                    var payload_ty: types.TypeId = self.context.type_store.tVoid();
+                    var found = false;
+                    var i_f: usize = 0;
+                    while (i_f < fields.len) : (i_f += 1) {
+                        const fld = self.context.type_store.Field.get(fields[i_f].toRaw());
+                        if (fld.name.toRaw() == lname.toRaw()) { tag_idx = @intCast(i_f); payload_ty = fld.ty; found = true; break; }
+                    }
+                    if (found) {
+                        // Lower payload according to payload_ty
+                        const args = a.exprs.expr_pool.slice(row.args);
+                        var pay_v: tir.OptValueId = tir.OptValueId.none();
+                        if (self.context.type_store.getKind(payload_ty) == .Void) {
+                            // no payload
+                        } else if (self.context.type_store.getKind(payload_ty) == .Tuple) {
+                            const tr = self.context.type_store.get(.Tuple, payload_ty);
+                            const subtys = self.context.type_store.type_pool.slice(tr.elems);
+                            var elems = try self.gpa.alloc(tir.ValueId, subtys.len);
+                            defer self.gpa.free(elems);
+                            var j2: usize = 0;
+                            while (j2 < subtys.len) : (j2 += 1) {
+                                const arg_id = if (j2 < args.len) args[j2] else args[args.len - 1];
+                                elems[j2] = try self.lowerExpr(a, env, f, blk, arg_id, subtys[j2], .rvalue);
+                            }
+                            const tuple_v = blk.builder.tupleMake(blk, payload_ty, elems);
+                            pay_v = tir.OptValueId.some(tuple_v);
+                        } else {
+                            // single payload: take first arg
+                            if (args.len > 0) {
+                                const pv = try self.lowerExpr(a, env, f, blk, args[0], payload_ty, .rvalue);
+                                pay_v = tir.OptValueId.some(pv);
+                            }
+                        }
+                        return blk.builder.variantMake(blk, ety, tag_idx, pay_v, payload_ty);
+                    }
+                }
+            }
+        }
 
         // Try to get callee param types
         var param_tys: []const types.TypeId = &.{};
@@ -859,12 +911,9 @@ pub const LowerTir = struct {
                     if (bnd == null) {
                         if (self.findTopLevelDeclByName(a, name)) |did| {
                             const d = a.exprs.Decl.get(did.toRaw());
-                            const ety = self.getExprType(d.value) orelse return error.LoweringBug;
-                            const slot_ty = self.context.type_store.mkPtr(ety, false);
-                            const slot = f.builder.alloca(blk, slot_ty, tir.OptValueId.none(), 0);
-                            const val = try self.lowerExpr(a, env, f, blk, d.value, ety, .rvalue);
-                            _ = f.builder.store(blk, ety, slot, val, 0);
-                            try env.bind(self.gpa, a, row.name, .{ .value = slot, .is_slot = true });
+                            const dty = self.getExprType(d.value) orelse return error.LoweringBug;
+                            // Materialize the entire decl's pattern into the env (as slots for mut, values for const)
+                            try self.destructureDeclFromExpr(a, env, f, blk, d.pattern.unwrap(), d.value, dty, !d.flags.is_const);
                             bnd = env.lookup(name);
                         }
                     }
@@ -911,9 +960,9 @@ pub const LowerTir = struct {
                         // Top-level decl?
                         if (self.findTopLevelDeclByName(a, name)) |did| {
                             const d = a.exprs.Decl.get(did.toRaw());
-                            const dty = self.getExprType(d.value);
-                            const val = try self.lowerExpr(a, env, f, blk, d.value, dty, .rvalue);
-                            try env.bind(self.gpa, a, row.name, .{ .value = val, .is_slot = false });
+                            const dty = self.getExprType(d.value) orelse self.context.type_store.tAny();
+                            // Destructure and bind all names for this top-level decl; mutable -> slots.
+                            try self.destructureDeclFromExpr(a, env, f, blk, d.pattern.unwrap(), d.value, dty, !d.flags.is_const);
                             break :blk env.lookup(name).?;
                         }
 
@@ -1766,7 +1815,8 @@ pub const LowerTir = struct {
                 const ty0 = self.getExprType(id) orelse self.context.type_store.tAny();
                 return blk.builder.constUndef(blk, ty0);
             },
-            .VariantType, .EnumType => {
+            // No special VariantLit nodes expected in expressions after CST->AST; handled via struct/call forms.
+            .VariantType, .EnumType, .StructType => {
                 return self.lowerTypeExprOpaque(blk, id, expected_ty);
             },
             .MlirBlock => {
@@ -1822,19 +1872,77 @@ pub const LowerTir = struct {
     // Import materialization
     // ============================
 
-    fn findTopLevelDeclByName(_: *const @This(), a: *const ast.Ast, name: []const u8) ?ast.DeclId {
+    fn findTopLevelDeclByName(self: *const @This(), a: *const ast.Ast, name: []const u8) ?ast.DeclId {
         const decls = a.exprs.decl_pool.slice(a.unit.decls);
         var i: usize = 0;
         while (i < decls.len) : (i += 1) {
             const d = a.exprs.Decl.get(decls[i].toRaw());
             if (d.pattern.isNone()) continue;
             const pid = d.pattern.unwrap();
-            const pk = a.pats.index.kinds.items[pid.toRaw()];
-            if (pk != .Binding) continue;
-            const b = a.pats.get(.Binding, pid);
-            if (std.mem.eql(u8, a.exprs.strs.get(b.name), name)) return decls[i];
+            if (self.patternContainsName(a, pid, name)) return decls[i];
         }
         return null;
+    }
+
+    fn patternContainsName(self: *const @This(), a: *const ast.Ast, pid: ast.PatternId, name: []const u8) bool {
+        const pk = a.pats.index.kinds.items[pid.toRaw()];
+        switch (pk) {
+            .Binding => {
+                const b = a.pats.get(.Binding, pid);
+                return std.mem.eql(u8, a.exprs.strs.get(b.name), name);
+            },
+            .Tuple => {
+                const row = a.pats.get(.Tuple, pid);
+                const elems = a.pats.pat_pool.slice(row.elems);
+                for (elems) |eid| if (self.patternContainsName(a, eid, name)) return true;
+                return false;
+            },
+            .Struct => {
+                const row = a.pats.get(.Struct, pid);
+                const fields = a.pats.field_pool.slice(row.fields);
+                for (fields) |fid| {
+                    const frow = a.pats.StructField.get(fid.toRaw());
+                    if (self.patternContainsName(a, frow.pattern, name)) return true;
+                }
+                return false;
+            },
+            .VariantTuple => {
+                const row = a.pats.get(.VariantTuple, pid);
+                const elems = a.pats.pat_pool.slice(row.elems);
+                for (elems) |eid| if (self.patternContainsName(a, eid, name)) return true;
+                return false;
+            },
+            .VariantStruct => {
+                const row = a.pats.get(.VariantStruct, pid);
+                const fields = a.pats.field_pool.slice(row.fields);
+                for (fields) |fid| {
+                    const frow = a.pats.StructField.get(fid.toRaw());
+                    if (self.patternContainsName(a, frow.pattern, name)) return true;
+                }
+                return false;
+            },
+            .Slice => {
+                const row = a.pats.get(.Slice, pid);
+                const elems = a.pats.pat_pool.slice(row.elems);
+                for (elems) |eid| if (self.patternContainsName(a, eid, name)) return true;
+                if (!row.rest_binding.isNone()) {
+                    if (self.patternContainsName(a, row.rest_binding.unwrap(), name)) return true;
+                }
+                return false;
+            },
+            .Or => {
+                const row = a.pats.get(.Or, pid);
+                const alts = a.pats.pat_pool.slice(row.alts);
+                for (alts) |aid| if (self.patternContainsName(a, aid, name)) return true;
+                return false;
+            },
+            .At => {
+                const row = a.pats.get(.At, pid);
+                if (std.mem.eql(u8, a.exprs.strs.get(row.binder), name)) return true;
+                return self.patternContainsName(a, row.pattern, name);
+            },
+            else => return false,
+        }
     }
     fn findTopLevelImportByName(self: *const @This(), a: *const ast.Ast, name: []const u8) ?ast.DeclId {
         const did = self.findTopLevelDeclByName(a, name) orelse return null;
@@ -2016,6 +2124,313 @@ pub const LowerTir = struct {
         }
     }
 
+    // Destructure a declaration pattern and bind its sub-bindings either as values (const) or slots (mutable).
+    fn destructureDeclPattern(self: *@This(), a: *const ast.Ast, env: *Env, f: *Builder.FunctionFrame, blk: *Builder.BlockFrame, pid: ast.PatternId, value: tir.ValueId, vty: types.TypeId, to_slots: bool) !void {
+        const pk = a.pats.index.kinds.items[pid.toRaw()];
+        switch (pk) {
+            .Binding => {
+                const nm = a.pats.get(.Binding, pid).name;
+                if (to_slots) {
+                    const slot_ty = self.context.type_store.mkPtr(vty, false);
+                    const slot = f.builder.alloca(blk, slot_ty, tir.OptValueId.none(), 0);
+                    _ = f.builder.store(blk, vty, slot, value, 0);
+                    try env.bind(self.gpa, a, nm, .{ .value = slot, .is_slot = true });
+                } else {
+                    try env.bind(self.gpa, a, nm, .{ .value = value, .is_slot = false });
+                }
+            },
+            .Tuple => {
+                const row = a.pats.get(.Tuple, pid);
+                const elems = a.pats.pat_pool.slice(row.elems);
+                var etys: []const types.TypeId = &[_]types.TypeId{};
+                const vk = self.context.type_store.index.kinds.items[vty.toRaw()];
+                if (vk == .Tuple) {
+                    const vrow = self.context.type_store.Tuple.get(self.context.type_store.index.rows.items[vty.toRaw()]);
+                    etys = self.context.type_store.type_pool.slice(vrow.elems);
+                }
+                var i: usize = 0;
+                while (i < elems.len) : (i += 1) {
+                    const ety = if (i < etys.len) etys[i] else self.context.type_store.tAny();
+                    const ev = blk.builder.extractElem(blk, ety, value, @intCast(i));
+                    try self.destructureDeclPattern(a, env, f, blk, elems[i], ev, ety, to_slots);
+                }
+            },
+            .Struct => {
+                const row = a.pats.get(.Struct, pid);
+                const fields = a.pats.field_pool.slice(row.fields);
+                // If we know the struct type, build a name->(index, ty) map.
+                var idx_by_name: ?[]const types.FieldId = null;
+                if (self.context.type_store.getKind(vty) == .Struct) {
+                    const srow = self.context.type_store.get(.Struct, vty);
+                    idx_by_name = self.context.type_store.field_pool.slice(srow.fields);
+                }
+                for (fields) |fid| {
+                    const pf = a.pats.StructField.get(fid.toRaw());
+                    // Determine field type and extraction method
+                    var fty = self.context.type_store.tAny();
+                    var extracted: tir.ValueId = undefined;
+                    if (idx_by_name) |field_ids| {
+                        // scan for matching name
+                        var found = false;
+                        var j: usize = 0;
+                        while (j < field_ids.len) : (j += 1) {
+                            const stf = self.context.type_store.Field.get(field_ids[j].toRaw());
+                            if (stf.name.toRaw() == pf.name.toRaw()) {
+                                fty = stf.ty;
+                                extracted = blk.builder.extractField(blk, fty, value, @intCast(j));
+                                found = true;
+                                break;
+                            }
+                        }
+                        if (!found) {
+                            // name not present on this struct type; bind undef of Any
+                            extracted = self.undef(blk, fty);
+                        }
+                    } else {
+                        // Unknown layout; fall back to by-name extraction in IR
+                        extracted = blk.builder.extractFieldNamed(blk, fty, value, pf.name);
+                    }
+                    try self.destructureDeclPattern(a, env, f, blk, pf.pattern, extracted, fty, to_slots);
+                }
+            },
+            else => {
+                // Patterns not yet supported for declarations are ignored for now.
+            },
+        }
+    }
+
+    // Prefer destructuring directly from the source expression when available (avoids building temp tuples).
+    fn destructureDeclFromExpr(self: *@This(), a: *const ast.Ast, env: *Env, f: *Builder.FunctionFrame, blk: *Builder.BlockFrame, pid: ast.PatternId, src_expr: ast.ExprId, vty: types.TypeId, to_slots: bool) !void {
+        const pk = a.pats.index.kinds.items[pid.toRaw()];
+        switch (pk) {
+            .Binding => {
+                const val = try self.lowerExpr(a, env, f, blk, src_expr, vty, .rvalue);
+                return try self.destructureDeclPattern(a, env, f, blk, pid, val, vty, to_slots);
+            },
+            .Tuple => {
+                // If RHS is a tuple-literal, lower elements individually to avoid creating a temporary aggregate.
+                if (a.exprs.index.kinds.items[src_expr.toRaw()] == .TupleLit) {
+                    const row = a.pats.get(.Tuple, pid);
+                    const elems_pat = a.pats.pat_pool.slice(row.elems);
+                    const elr = a.exprs.get(.TupleLit, src_expr);
+                    const elems_expr = a.exprs.expr_pool.slice(elr.elems);
+                    var etys: []const types.TypeId = &[_]types.TypeId{};
+                    const vk = self.context.type_store.index.kinds.items[vty.toRaw()];
+                    if (vk == .Tuple) {
+                        const vrow = self.context.type_store.Tuple.get(self.context.type_store.index.rows.items[vty.toRaw()]);
+                        etys = self.context.type_store.type_pool.slice(vrow.elems);
+                    }
+                    const n = @min(elems_pat.len, elems_expr.len);
+                    var i: usize = 0;
+                    while (i < n) : (i += 1) {
+                        const ety = if (i < etys.len) etys[i] else self.context.type_store.tAny();
+                        try self.destructureDeclFromExpr(a, env, f, blk, elems_pat[i], elems_expr[i], ety, to_slots);
+                    }
+                    // If pattern has more elements than expr, fill remaining with undef of element type.
+                    while (i < elems_pat.len) : (i += 1) {
+                        const ety = if (i < etys.len) etys[i] else self.context.type_store.tAny();
+                        const uv = self.undef(blk, ety);
+                        try self.destructureDeclPattern(a, env, f, blk, elems_pat[i], uv, ety, to_slots);
+                    }
+                    return;
+                }
+                // Fallback: lower full expr once, then destructure via extracts.
+                const val = try self.lowerExpr(a, env, f, blk, src_expr, vty, .rvalue);
+                return try self.destructureDeclPattern(a, env, f, blk, pid, val, vty, to_slots);
+            },
+            .Struct => {
+                if (a.exprs.index.kinds.items[src_expr.toRaw()] == .StructLit) {
+                    const pr = a.pats.get(.Struct, pid);
+                    const pfields = a.pats.field_pool.slice(pr.fields);
+                    const sr = a.exprs.get(.StructLit, src_expr);
+                    const sfields = a.exprs.sfv_pool.slice(sr.fields);
+                    // compute field types if known
+                    var type_fields: []const types.FieldId = &[_]types.FieldId{};
+                    if (self.context.type_store.getKind(vty) == .Struct) {
+                        const srow = self.context.type_store.get(.Struct, vty);
+                        type_fields = self.context.type_store.field_pool.slice(srow.fields);
+                    }
+                    // For each pattern field, find matching expr field by name and destructure from its value expr.
+                    for (pfields) |pfid| {
+                        const pf = a.pats.StructField.get(pfid.toRaw());
+                        // find expr field by name
+                        var val_expr: ?ast.ExprId = null;
+                        for (sfields) |sfid| {
+                            const sf = a.exprs.StructFieldValue.get(sfid.toRaw());
+                            if (sf.name.toRaw() == pf.name.toRaw()) {
+                                val_expr = sf.value;
+                                break;
+                            }
+                        }
+                        var fty = self.context.type_store.tAny();
+                        // find field type by name if known
+                        for (type_fields) |tfid| {
+                            const tf = self.context.type_store.Field.get(tfid.toRaw());
+                            if (tf.name.toRaw() == pf.name.toRaw()) {
+                                fty = tf.ty;
+                                break;
+                            }
+                        }
+                        if (val_expr) |ve| {
+                            try self.destructureDeclFromExpr(a, env, f, blk, pf.pattern, ve, fty, to_slots);
+                        } else {
+                            // missing -> bind undef
+                            const uv = self.undef(blk, fty);
+                            try self.destructureDeclPattern(a, env, f, blk, pf.pattern, uv, fty, to_slots);
+                        }
+                    }
+                    return;
+                }
+                // fallback: lower whole expr and destructure by field extraction
+                const val = try self.lowerExpr(a, env, f, blk, src_expr, vty, .rvalue);
+                return try self.destructureDeclPattern(a, env, f, blk, pid, val, vty, to_slots);
+            },
+            .VariantTuple => {
+                // Handle call-form variant literal: V.C(arg1, arg2, ...)
+                const pr = a.pats.get(.VariantTuple, pid);
+                const p_segs = a.pats.seg_pool.slice(pr.path);
+                const case_name = a.pats.PathSeg.get(p_segs[p_segs.len - 1].toRaw()).name;
+                if (a.exprs.index.kinds.items[src_expr.toRaw()] == .Call) {
+                    const call = a.exprs.get(.Call, src_expr);
+                    // Extract last path segment from callee
+                    var callee_last: ?ast.StrId = null;
+                    var cur = call.callee;
+                    while (a.exprs.index.kinds.items[cur.toRaw()] == .FieldAccess) {
+                        const fr = a.exprs.get(.FieldAccess, cur);
+                        callee_last = fr.field;
+                        cur = fr.parent;
+                    }
+                    if (callee_last != null and callee_last.?.toRaw() == case_name.toRaw()) {
+                        // Use args directly
+                        const args = a.exprs.expr_pool.slice(call.args);
+                        var elem_tys: []const types.TypeId = &[_]types.TypeId{};
+                        if (self.context.type_store.getKind(vty) == .Variant) {
+                            const V = self.context.type_store.get(.Variant, vty);
+                            const fields = self.context.type_store.field_pool.slice(V.variants);
+                            var j: usize = 0;
+                            while (j < fields.len) : (j += 1) {
+                                const fld = self.context.type_store.Field.get(fields[j].toRaw());
+                                if (fld.name.toRaw() == case_name.toRaw() and self.context.type_store.getKind(fld.ty) == .Tuple) {
+                                    const tr = self.context.type_store.get(.Tuple, fld.ty);
+                                    elem_tys = self.context.type_store.type_pool.slice(tr.elems);
+                                    break;
+                                }
+                            }
+                        }
+                        const pelems = a.pats.pat_pool.slice(pr.elems);
+                        var i: usize = 0;
+                        const n = @min(pelems.len, args.len);
+                        while (i < n) : (i += 1) {
+                            const ety = if (i < elem_tys.len) elem_tys[i] else self.context.type_store.tAny();
+                            try self.destructureDeclFromExpr(a, env, f, blk, pelems[i], args[i], ety, to_slots);
+                        }
+                        while (i < pelems.len) : (i += 1) {
+                            const ety = if (i < elem_tys.len) elem_tys[i] else self.context.type_store.tAny();
+                            const uv = self.undef(blk, ety);
+                            try self.destructureDeclPattern(a, env, f, blk, pelems[i], uv, ety, to_slots);
+                        }
+                        return;
+                    }
+                }
+                // Fallback: cannot extract from a non-literal variant without dedicated ops; bind undefs to subpatterns.
+                const pelems = a.pats.pat_pool.slice(pr.elems);
+                var elem_tys: []const types.TypeId = &[_]types.TypeId{};
+                // Try fetch payload tuple element types by case name.
+                if (self.context.type_store.getKind(vty) == .Variant) {
+                    const V = self.context.type_store.get(.Variant, vty);
+                    const fields = self.context.type_store.field_pool.slice(V.variants);
+                    var j: usize = 0;
+                    while (j < fields.len) : (j += 1) {
+                        const fld = self.context.type_store.Field.get(fields[j].toRaw());
+                        if (fld.name.toRaw() == case_name.toRaw() and self.context.type_store.getKind(fld.ty) == .Tuple) {
+                            const tr = self.context.type_store.get(.Tuple, fld.ty);
+                            elem_tys = self.context.type_store.type_pool.slice(tr.elems);
+                            break;
+                        }
+                    }
+                }
+                var i: usize = 0;
+                while (i < pelems.len) : (i += 1) {
+                    const ety = if (i < elem_tys.len) elem_tys[i] else self.context.type_store.tAny();
+                    const uv = self.undef(blk, ety);
+                    try self.destructureDeclPattern(a, env, f, blk, pelems[i], uv, ety, to_slots);
+                }
+            },
+            .VariantStruct => {
+                const pr = a.pats.get(.VariantStruct, pid);
+                const segs = a.pats.seg_pool.slice(pr.path);
+                const case_name = a.pats.PathSeg.get(segs[segs.len - 1].toRaw()).name;
+                // Handle struct-literal with typed path: V.C{ ... }
+                if (a.exprs.index.kinds.items[src_expr.toRaw()] == .StructLit) {
+                    const sl = a.exprs.get(.StructLit, src_expr);
+                    if (!sl.ty.isNone()) {
+                        // Extract last segment from type path
+                        var cur = sl.ty.unwrap();
+                        var last_seg: ?ast.StrId = null;
+                        while (a.exprs.index.kinds.items[cur.toRaw()] == .FieldAccess) {
+                            const fr = a.exprs.get(.FieldAccess, cur);
+                            last_seg = fr.field;
+                            cur = fr.parent;
+                        }
+                        if (last_seg != null and last_seg.?.toRaw() == case_name.toRaw()) {
+                            // Compute field tys for this case if known
+                            var field_tys: []const types.FieldId = &[_]types.FieldId{};
+                            if (self.context.type_store.getKind(vty) == .Variant) {
+                                const V = self.context.type_store.get(.Variant, vty);
+                                const variants = self.context.type_store.field_pool.slice(V.variants);
+                                var j: usize = 0;
+                                while (j < variants.len) : (j += 1) {
+                                    const vf = self.context.type_store.Field.get(variants[j].toRaw());
+                                    if (vf.name.toRaw() == case_name.toRaw() and self.context.type_store.getKind(vf.ty) == .Struct) {
+                                        const sr = self.context.type_store.get(.Struct, vf.ty);
+                                        field_tys = self.context.type_store.field_pool.slice(sr.fields);
+                                        break;
+                                    }
+                                }
+                            }
+                            const pfields = a.pats.field_pool.slice(pr.fields);
+                            const sfields = a.exprs.sfv_pool.slice(sl.fields);
+                            for (pfields) |pfid| {
+                                const pf = a.pats.StructField.get(pfid.toRaw());
+                                // find matching expr field by name
+                                var val_expr: ?ast.ExprId = null;
+                                for (sfields) |sfid| {
+                                    const sf = a.exprs.StructFieldValue.get(sfid.toRaw());
+                                    if (sf.name.toRaw() == pf.name.toRaw()) { val_expr = sf.value; break; }
+                                }
+                                var fty = self.context.type_store.tAny();
+                                // lookup field type by name
+                                for (field_tys) |tfid| {
+                                    const tf = self.context.type_store.Field.get(tfid.toRaw());
+                                    if (tf.name.toRaw() == pf.name.toRaw()) { fty = tf.ty; break; }
+                                }
+                                if (val_expr) |ve2| {
+                                    try self.destructureDeclFromExpr(a, env, f, blk, pf.pattern, ve2, fty, to_slots);
+                                } else {
+                                    const uv = self.undef(blk, fty);
+                                    try self.destructureDeclPattern(a, env, f, blk, pf.pattern, uv, fty, to_slots);
+                                }
+                            }
+                            return;
+                        }
+                    }
+                }
+                // Fallback: cannot extract; bind undefs to subpatterns.
+                const pfields = a.pats.field_pool.slice(pr.fields);
+                for (pfields) |pfid| {
+                    const pf = a.pats.StructField.get(pfid.toRaw());
+                    const uv = self.undef(blk, self.context.type_store.tAny());
+                    try self.destructureDeclPattern(a, env, f, blk, pf.pattern, uv, self.context.type_store.tAny(), to_slots);
+                }
+            },
+            else => {
+                // Default: lower entire expr and bind.
+                const val = try self.lowerExpr(a, env, f, blk, src_expr, vty, .rvalue);
+                return try self.destructureDeclPattern(a, env, f, blk, pid, val, vty, to_slots);
+            },
+        }
+    }
+
     fn matchPattern(self: *@This(), a: *const ast.Ast, env: *Env, f: *Builder.FunctionFrame, blk: *Builder.BlockFrame, pid: ast.PatternId, scrut: tir.ValueId) !tir.ValueId {
         const k = a.pats.index.kinds.items[pid.toRaw()];
         switch (k) {
@@ -2086,7 +2501,7 @@ const DeferEntry = struct { expr: ast.ExprId, is_err: bool };
 // Builder facade over TIR
 // ============================
 
-const Builder = struct {
+    const Builder = struct {
     gpa: std.mem.Allocator,
     t: *tir.TIR,
     next_value: u32 = 0,
@@ -2299,21 +2714,27 @@ const Builder = struct {
         blk.instrs.append(self.gpa, iid) catch @panic("OOM");
         return vid;
     }
-    fn extractFieldNamed(self: *@This(), blk: *BlockFrame, ty: types.TypeId, agg: tir.ValueId, name: StrId) tir.ValueId {
-        const vid = self.freshValue();
-        const iid = self.t.instrs.add(
-            .ExtractField,
-            tir.Rows.ExtractField{
-                .result = vid,
-                .ty = ty,
-                .agg = agg,
-                .index = 0, // ignored when name is provided
-                .name = OptStrId.some(name),
-            },
-        );
-        blk.instrs.append(self.gpa, iid) catch @panic("OOM");
-        return vid;
-    }
+        fn extractFieldNamed(self: *@This(), blk: *BlockFrame, ty: types.TypeId, agg: tir.ValueId, name: StrId) tir.ValueId {
+            const vid = self.freshValue();
+            const iid = self.t.instrs.add(
+                .ExtractField,
+                tir.Rows.ExtractField{
+                    .result = vid,
+                    .ty = ty,
+                    .agg = agg,
+                    .index = 0, // ignored when name is provided
+                    .name = OptStrId.some(name),
+                },
+            );
+            blk.instrs.append(self.gpa, iid) catch @panic("OOM");
+            return vid;
+        }
+        fn variantMake(self: *@This(), blk: *BlockFrame, ty: types.TypeId, tag: u32, payload: tir.OptValueId, payload_ty: types.TypeId) tir.ValueId {
+            const vid = self.freshValue();
+            const iid = self.t.instrs.add(.VariantMake, tir.Rows.VariantMake{ .result = vid, .ty = ty, .tag = tag, .payload = payload, .payload_ty = payload_ty });
+            blk.instrs.append(self.gpa, iid) catch @panic("OOM");
+            return vid;
+        }
     fn addressOf(self: *@This(), blk: *BlockFrame, ty: types.TypeId, v: tir.ValueId) tir.ValueId {
         const vid = self.freshValue();
         const iid = self.t.instrs.add(.AddressOf, tir.Rows.AddressOf{ .result = vid, .ty = ty, .value = v });

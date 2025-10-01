@@ -72,6 +72,10 @@ fn abiSizeAlign(self: *MlirCodegen, store: *types.TypeStore, ty: types.TypeId) S
                 .allIntsOnly = e.allIntsOnly,
             };
         },
+        .Variant => {
+            // Treat variants as opaque aggregates passed indirectly.
+            return .{ .size = 24, .alignment = 8, .hasFloat = false, .allIntsOnly = true };
+        },
         .Optional => { // {i1, T}
             const O = store.get(.Optional, ty);
             const a_tag = SizeAlign{ .size = 1, .alignment = 1, .hasFloat = false, .allIntsOnly = true };
@@ -180,6 +184,10 @@ pub fn abiClassifyX64SysV(self: *MlirCodegen, store: *types.TypeStore, ty: types
         .F32 => return .{ .kind = .DirectScalar, .scalar0 = self.f32_ty, .size = 4, .alignment = 4 },
         .F64 => return .{ .kind = .DirectScalar, .scalar0 = self.f64_ty, .size = 8, .alignment = 8 },
         .Ptr, .Any, .String, .Function => return .{ .kind = .DirectScalar, .scalar0 = self.llvm_ptr_ty, .size = 8, .alignment = 8 },
+        .Variant => return if (isReturn)
+            .{ .kind = .IndirectSRet, .alignment = 8, .size = 24 }
+        else
+            .{ .kind = .IndirectByVal, .alignment = 8, .size = 24 },
         else => {},
     }
     const sa = abiSizeAlign(self, store, ty);

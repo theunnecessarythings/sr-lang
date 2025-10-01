@@ -1028,7 +1028,6 @@ pub const Lower = struct {
                 break :blk self.ast_unit.pats.add(.Tuple, .{ .elems = range, .loc = self.mapLoc(t.loc) });
             },
             .StructLit => blk: {
-                // Convert a struct-literal-shaped LHS into a struct pattern
                 const s = self.cst_program.exprs.get(.StructLit, id);
                 const fields = self.cst_program.exprs.sfv_pool.slice(s.fields);
                 var out_ids = try self.gpa.alloc(ast.PatFieldId, fields.len);
@@ -1036,22 +1035,43 @@ pub const Lower = struct {
                 var i: usize = 0;
                 while (i < fields.len) : (i += 1) {
                     const f = self.cst_program.exprs.StructFieldValue.get(fields[i].toRaw());
-                    if (f.name.isNone()) return null; // positional fields in patterns not yet supported
+                    if (f.name.isNone()) return null;
                     const sub = try self.patternFromExpr(f.value) orelse return null;
                     const mapped: ast.PatRows.StructField = .{ .name = self.mapStr(f.name.unwrap()), .pattern = sub, .loc = self.mapLoc(f.loc) };
                     out_ids[i] = ast.PatFieldId.fromRaw(self.ast_unit.pats.StructField.add(self.gpa, mapped));
                 }
                 const range = self.ast_unit.pats.field_pool.pushMany(self.gpa, out_ids);
-                // Build path from the annotated type on the struct literal, if present
-                var path_range: ast.RangePathSeg = undefined;
                 if (!s.ty.isNone()) {
-                    path_range = try self.pathSegsFromTypeExpr(s.ty.unwrap());
-                } else {
-                    // empty path
-                    const empty: []const ast.PathSegId = &[_]ast.PathSegId{};
-                    path_range = self.ast_unit.pats.seg_pool.pushMany(self.gpa, empty);
+                    const path = try self.pathSegsFromTypeExpr(s.ty.unwrap());
+                    const segs = self.ast_unit.pats.seg_pool.slice(path);
+                    if (segs.len >= 2) {
+                        break :blk self.ast_unit.pats.add(.VariantStruct, .{ .path = path, .fields = range, .has_rest = false, .loc = self.mapLoc(s.loc) });
+                    }
                 }
+                const empty: []const ast.PathSegId = &[_]ast.PathSegId{};
+                const path_range = self.ast_unit.pats.seg_pool.pushMany(self.gpa, empty);
                 break :blk self.ast_unit.pats.add(.Struct, .{ .path = path_range, .fields = range, .has_rest = false, .loc = self.mapLoc(s.loc) });
+            },
+            .Call => blk: {
+                // Treat a Call with a path-like callee as a variant-tuple pattern: Type.Case(arg1, arg2, ...)
+                const r = self.cst_program.exprs.get(.Call, id);
+                const path = try self.pathSegsFromTypeExpr(r.callee);
+                const args = self.cst_program.exprs.expr_pool.slice(r.args);
+                var pats = try self.gpa.alloc(ast.PatternId, args.len);
+                defer self.gpa.free(pats);
+                var i: usize = 0;
+                while (i < args.len) : (i += 1) {
+                    const sub = try self.patternFromExpr(args[i]) orelse return null;
+                    pats[i] = sub;
+                }
+                const pr = self.ast_unit.pats.pat_pool.pushMany(self.gpa, pats);
+                break :blk self.ast_unit.pats.add(.VariantTuple, .{ .path = path, .elems = pr, .loc = self.mapLoc(r.loc) });
+            },
+            .FieldAccess => blk: {
+                // Treat a path-like expression as a tag-only pattern (enum member or variant case without payload)
+                const r = self.cst_program.exprs.get(.FieldAccess, id);
+                const path = try self.pathSegsFromTypeExpr(id);
+                break :blk self.ast_unit.pats.add(.Path, .{ .segments = path, .loc = self.mapLoc(r.loc) });
             },
             inline else => |x| {
                 const loc_id = self.mapLoc(self.cst_program.exprs.get(x, id).loc);

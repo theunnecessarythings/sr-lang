@@ -100,6 +100,8 @@ pub const OpKind = enum(u16) {
     // Calls
     Call,
     MlirBlock,
+    // Variants
+    VariantMake,
 };
 
 pub const TermKind = enum(u8) { Return, Br, CondBr, SwitchInt, Unreachable };
@@ -144,6 +146,7 @@ pub const Rows = struct {
 
     pub const Call = struct { result: ValueId, ty: types.TypeId, callee: StrId, args: RangeValue };
     pub const MlirBlock = struct { result: OptValueId, ty: types.TypeId, kind: ast.MlirKind, text: StrId };
+    pub const VariantMake = struct { result: ValueId, ty: types.TypeId, tag: u32, payload: OptValueId, payload_ty: types.TypeId };
 
     // Terminator rows
     pub const Return = struct { value: OptValueId };
@@ -199,6 +202,7 @@ inline fn RowT(comptime K: OpKind) type {
 
         .Call => Rows.Call,
         .MlirBlock => Rows.MlirBlock,
+        .VariantMake => Rows.VariantMake,
     };
 }
 inline fn TermRowT(comptime K: TermKind) type {
@@ -266,6 +270,7 @@ pub const InstrStore = struct {
 
     Call: Table(Rows.Call) = .{},
     MlirBlock: Table(Rows.MlirBlock) = .{},
+    VariantMake: Table(Rows.VariantMake) = .{},
 
     // aux tables
     GepIndex: Table(Rows.GepIndex) = .{},
@@ -710,6 +715,17 @@ pub const TirPrinter = struct {
                 for (args) |vid| try self.leaf("  {}", .{vid.toRaw()});
                 try self.leaf("])", .{});
                 try self.close();
+            },
+            .VariantMake => {
+                const row = self.tir.instrs.get(.VariantMake, id);
+                try self.leaf("(instr id={} op=VariantMake tag={} payload={} result={} type={f} payload_ty={f})", .{
+                    id.toRaw(),
+                    row.tag,
+                    if (row.payload.isNone()) 0 else row.payload.unwrap().toRaw(),
+                    row.result.toRaw(),
+                    self.tf(row.ty),
+                    self.tf(row.payload_ty),
+                });
             },
             .MlirBlock => {
                 const row = self.tir.instrs.get(.MlirBlock, id);

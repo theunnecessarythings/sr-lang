@@ -76,6 +76,7 @@ pub const DiagnosticCode = enum {
     unexpected_token_in_expression, // payload: one (found)
     invalid_float_literal, // payload: one (offending token)
     invalid_integer_literal, // payload: one (offending token)
+    invalid_imaginary_literal, // payload: one (offending token)
     expected_attribute_name, // payload: one (found)
     expected_map_type_or_literal_continuation, // payload: one (found)
     expected_array_like_continuation, // payload: one (found)
@@ -266,8 +267,9 @@ pub fn diagnosticMessageFmt(code: DiagnosticCode) []const u8 {
         .expected_loop_after_label => "expected 'for' or 'while' after label, found {s}",
         .unexpected_postfix_operator => "unexpected postfix operator: {s}",
         .unexpected_token_in_expression => "unexpected token in expression: {s}",
-        .invalid_float_literal => "invalid float literal: {s}",
-        .invalid_integer_literal => "invalid integer literal: {s}",
+        .invalid_float_literal => "invalid float literal",
+        .invalid_integer_literal => "invalid integer literal",
+        .invalid_imaginary_literal => "invalid imaginary literal",
         .expected_attribute_name => "expected attribute name, found {s}",
         .expected_map_type_or_literal_continuation => "expected ']' or ',' in map type/literal, found {s}",
         .expected_array_like_continuation => "expected ']', ':', or ',' in array-like, found {s}",
