@@ -731,7 +731,7 @@ pub const Operation = struct {
         return @intCast(c.mlirOperationGetNumOperands(self.handle));
     }
 
-    pub fn getOperand(self: *Operation, pos: usize) Value {
+    pub fn getOperand(self: *const Operation, pos: usize) Value {
         return Value{ .handle = c.mlirOperationGetOperand(self.handle, @intCast(pos)) };
     }
 
@@ -838,7 +838,7 @@ pub const Operation = struct {
         c.mlirOperationDump(self.handle);
     }
 
-    pub fn verify(self: *Operation) bool {
+    pub fn verify(self: *const Operation) bool {
         return c.mlirOperationVerify(self.handle);
     }
 
@@ -1065,7 +1065,7 @@ pub const Value = struct {
         c.mlirBlockArgumentSetType(self.handle, ty.handle);
     }
 
-    pub fn opResultGetOwner(self: *Value) Operation {
+    pub fn opResultGetOwner(self: *const Value) Operation {
         return Operation{ .handle = c.mlirOpResultGetOwner(self.handle) };
     }
 

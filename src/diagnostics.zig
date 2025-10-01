@@ -248,6 +248,8 @@ pub const DiagnosticCode = enum {
     unexpected_after_expression, // payload: one (found)
     expected_comma_or_rparen, // payload: one (found)
     expected_colon_or_comma_in_param, // payload: one (found)
+
+    mlir_verification_failed,
 };
 
 pub fn diagnosticMessageFmt(code: DiagnosticCode) []const u8 {
@@ -438,6 +440,8 @@ pub fn diagnosticMessageFmt(code: DiagnosticCode) []const u8 {
         .unexpected_after_expression => "unexpected token after expression: {s}",
         .expected_comma_or_rparen => "expected ',' or ')', found {s}",
         .expected_colon_or_comma_in_param => "expected ':' (type) or ',' (next parameter), found {s}",
+
+        .mlir_verification_failed => "MLIR verification failed",
     };
 }
 

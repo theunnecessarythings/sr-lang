@@ -439,7 +439,7 @@ pub const MlirCodegen = struct {
             .ConstString => return t.instrs.get(.ConstString, id).result,
             .ConstNull => return t.instrs.get(.ConstNull, id).result,
             .ConstUndef => return t.instrs.get(.ConstUndef, id).result,
-            inline .Add, .Sub, .Mul, .Div, .Mod, .Shl, .Shr, .BitAnd, .BitOr, .BitXor, .CmpEq, .CmpNe, .CmpLt, .CmpLe, .CmpGt, .CmpGe => |k| return t.instrs.get(k, id).result,
+            inline .Add, .Sub, .Mul, .Div, .Mod, .Shl, .Shr, .BitAnd, .BitOr, .BitXor, .CmpEq, .CmpNe, .CmpLt, .CmpLe, .CmpGt, .CmpGe, .LogicalAnd, .LogicalOr => |k| return t.instrs.get(k, id).result,
             .LogicalNot => return t.instrs.get(.LogicalNot, id).result,
             inline .CastNormal, .CastBit, .CastSaturate, .CastWrap, .CastChecked => |k| return t.instrs.get(k, id).result,
             .Alloca => return t.instrs.get(.Alloca, id).result,
@@ -462,7 +462,6 @@ pub const MlirCodegen = struct {
                 if (p.result.isNone()) return null;
                 return p.result.unwrap();
             },
-            else => std.debug.panic("unhandled instruction kind, {}\n", .{K}),
         }
     }
 
@@ -476,7 +475,7 @@ pub const MlirCodegen = struct {
             .ConstString => t.instrs.get(.ConstString, id).ty,
             .ConstNull => t.instrs.get(.ConstNull, id).ty,
             .ConstUndef => t.instrs.get(.ConstUndef, id).ty,
-            inline .Add, .Sub, .Mul, .Div, .Mod, .Shl, .Shr, .BitAnd, .BitOr, .BitXor, .CmpEq, .CmpNe, .CmpLt, .CmpLe, .CmpGt, .CmpGe => |k| t.instrs.get(k, id).ty,
+            inline .Add, .Sub, .Mul, .Div, .Mod, .Shl, .Shr, .BitAnd, .BitOr, .BitXor, .CmpEq, .CmpNe, .CmpLt, .CmpLe, .CmpGt, .CmpGe, .LogicalAnd, .LogicalOr => |k| t.instrs.get(k, id).ty,
             .LogicalNot => t.instrs.get(.LogicalNot, id).ty,
             inline .CastNormal, .CastBit, .CastSaturate, .CastWrap, .CastChecked => |k| t.instrs.get(k, id).ty,
             .Alloca => t.instrs.get(.Alloca, id).ty,
@@ -495,7 +494,6 @@ pub const MlirCodegen = struct {
             .Select => t.instrs.get(.Select, id).ty,
             .Call => t.instrs.get(.Call, id).ty,
             .MlirBlock => t.instrs.get(.MlirBlock, id).ty,
-            else => std.debug.panic("unhandled instruction kind, {}\n", .{K}),
         };
     }
 
@@ -857,7 +855,7 @@ pub const MlirCodegen = struct {
                 const base = self.value_map.get(p.base).?;
                 const res_ty_row = store.type_pool.data.items[p.ty.toRaw()];
                 if (store.getKind(res_ty_row) != .Ptr) {
-                    std.debug.print("GEP result type is not a pointer: {}\n", .{store.getKind(res_ty_row)});
+                    std.debug.print("GEP instr {} result type is not a pointer: {}\n", .{ ins_id, store.getKind(res_ty_row) });
                     return error.CompileError;
                 }
                 const ptr_row = store.get(.Ptr, p.ty);
@@ -945,7 +943,7 @@ pub const MlirCodegen = struct {
                 const p = t.instrs.get(.AddressOf, ins_id);
                 const v = self.value_map.get(p.value).?;
                 if (mlir.LLVM.isLLVMPointerType(v.getType())) break :blk v;
-                return error.NotImplemented;
+                break :blk v.opResultGetOwner().getOperand(0);
             },
 
             .Index => blk: {
@@ -1487,10 +1485,20 @@ pub const MlirCodegen = struct {
         return self.isSignedInt(store, sr_ty);
     }
     fn arithCmpIPredAttr(self: *MlirCodegen, pred: []const u8) mlir.Attribute {
-        return self.strAttr(pred);
+        const val: i64 = if (std.mem.eql(u8, pred, "eq")) 0 else if (std.mem.eql(u8, pred, "ne")) 1 else if (std.mem.eql(u8, pred, "slt")) 2 else if (std.mem.eql(u8, pred, "sle")) 3 else if (std.mem.eql(u8, pred, "sgt")) 4 else if (std.mem.eql(u8, pred, "sge")) 5 else if (std.mem.eql(u8, pred, "ult")) 6 else if (std.mem.eql(u8, pred, "ule")) 7 else if (std.mem.eql(u8, pred, "ugt")) 8 else if (std.mem.eql(u8, pred, "uge")) 9 else unreachable;
+        return mlir.Attribute.integerAttrGet(self.i64_ty, val);
     }
     fn arithCmpFPredAttr(self: *MlirCodegen, pred: []const u8) mlir.Attribute {
-        return self.strAttr(pred);
+        const val: i64 = if (std.mem.eql(u8, pred, "false")) 0 else if (std.mem.eql(u8, pred, "oeq"))
+            1
+        else if (std.mem.eql(u8, pred, "ogt")) 2 else if (std.mem.eql(u8, pred, "oge"))
+            3
+        else if (std.mem.eql(u8, pred, "olt")) 4 else if (std.mem.eql(u8, pred, "ole")) 5 else if (std.mem.eql(u8, pred, "one")) 6 else if (std.mem.eql(u8, pred, "ord")) 7 else if (std.mem.eql(u8, pred, "ueq")) 8 else if (std.mem.eql(u8, pred, "ugt")) 9 else if (std.mem.eql(u8, pred, "uge")) 10 else if (std.mem.eql(u8, pred, "ult"))
+            11
+        else if (std.mem.eql(u8, pred, "ule")) 12 else if (std.mem.eql(u8, pred, "une"))
+            13
+        else if (std.mem.eql(u8, pred, "uno")) 14 else if (std.mem.eql(u8, pred, "true")) 15 else unreachable;
+        return mlir.Attribute.integerAttrGet(self.i64_ty, val);
     }
     fn append(self: *MlirCodegen, op: mlir.Operation) void {
         self.cur_block.?.appendOwnedOperation(op);
@@ -2065,6 +2073,7 @@ pub const MlirCodegen = struct {
                 break :blk mlir.Type.getSignlessIntegerType(self.mlir_ctx, 32);
             },
 
+            .TypeType => return self.llvm_ptr_ty,
             else => std.debug.panic("unhandled type: {}", .{store.getKind(ty)}),
         };
     }

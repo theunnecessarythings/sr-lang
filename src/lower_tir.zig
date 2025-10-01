@@ -1766,7 +1766,7 @@ pub const LowerTir = struct {
                 const ty0 = self.getExprType(id) orelse self.context.type_store.tAny();
                 return blk.builder.constUndef(blk, ty0);
             },
-            .EnumType => {
+            .VariantType, .EnumType => {
                 return self.lowerTypeExprOpaque(blk, id, expected_ty);
             },
             .MlirBlock => {
