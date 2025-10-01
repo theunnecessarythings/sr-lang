@@ -446,6 +446,7 @@ pub const MlirCodegen = struct {
             .Load => return t.instrs.get(.Load, id).result,
             .Store => return null,
             .Gep => return t.instrs.get(.Gep, id).result,
+            .ComplexMake => return t.instrs.get(.ComplexMake, id).result,
             .TupleMake => return t.instrs.get(.TupleMake, id).result,
             .ArrayMake => return t.instrs.get(.ArrayMake, id).result,
             .StructMake => return t.instrs.get(.StructMake, id).result,
@@ -458,6 +459,8 @@ pub const MlirCodegen = struct {
             .Select => return t.instrs.get(.Select, id).result,
             .Call => return t.instrs.get(.Call, id).result,
             .VariantMake => return t.instrs.get(.VariantMake, id).result,
+            .VariantTag => return t.instrs.get(.VariantTag, id).result,
+            .VariantPayloadPtr => return t.instrs.get(.VariantPayloadPtr, id).result,
             .MlirBlock => {
                 const p = t.instrs.get(.MlirBlock, id);
                 if (p.result.isNone()) return null;
@@ -483,6 +486,7 @@ pub const MlirCodegen = struct {
             .Load => t.instrs.get(.Load, id).ty,
             .Store => null,
             .Gep => t.instrs.get(.Gep, id).ty,
+            .ComplexMake => t.instrs.get(.ComplexMake, id).ty,
             .TupleMake => t.instrs.get(.TupleMake, id).ty,
             .ArrayMake => t.instrs.get(.ArrayMake, id).ty,
             .StructMake => t.instrs.get(.StructMake, id).ty,
@@ -495,6 +499,8 @@ pub const MlirCodegen = struct {
             .Select => t.instrs.get(.Select, id).ty,
             .Call => t.instrs.get(.Call, id).ty,
             .VariantMake => t.instrs.get(.VariantMake, id).ty,
+            .VariantTag => t.instrs.get(.VariantTag, id).ty,
+            .VariantPayloadPtr => t.instrs.get(.VariantPayloadPtr, id).ty,
             .MlirBlock => t.instrs.get(.MlirBlock, id).ty,
         };
     }
@@ -665,12 +671,62 @@ pub const MlirCodegen = struct {
             },
 
             // ------------- Arithmetic / bitwise (now arith.*) -------------
-            .Add => try self.binArith("llvm.add", "llvm.fadd", t.instrs.get(.Add, ins_id), store),
-            .Sub => try self.binArith("llvm.sub", "llvm.fsub", t.instrs.get(.Sub, ins_id), store),
-            .Mul => try self.binArith("llvm.mul", "llvm.fmul", t.instrs.get(.Mul, ins_id), store),
+            .Add => blk: {
+                const p = t.instrs.get(.Add, ins_id);
+                // If result SR type is Complex, use complex.add
+                if (store.getKind(p.ty) == .Complex) {
+                    const lhs = self.value_map.get(p.lhs).?;
+                    const rhs = self.value_map.get(p.rhs).?;
+                    const cty = try self.llvmTypeOf(store, p.ty);
+                    var op = OpBuilder.init("complex.add", self.loc).builder()
+                        .add_operands(&.{ lhs, rhs })
+                        .add_results(&.{cty}).build();
+                    self.append(op);
+                    break :blk op.getResult(0);
+                }
+                break :blk try self.binArith("llvm.add", "llvm.fadd", p, store);
+            },
+            .Sub => blk: {
+                const p = t.instrs.get(.Sub, ins_id);
+                if (store.getKind(p.ty) == .Complex) {
+                    const lhs = self.value_map.get(p.lhs).?;
+                    const rhs = self.value_map.get(p.rhs).?;
+                    const cty = try self.llvmTypeOf(store, p.ty);
+                    var op = OpBuilder.init("complex.sub", self.loc).builder()
+                        .add_operands(&.{ lhs, rhs })
+                        .add_results(&.{cty}).build();
+                    self.append(op);
+                    break :blk op.getResult(0);
+                }
+                break :blk try self.binArith("llvm.sub", "llvm.fsub", p, store);
+            },
+            .Mul => blk: {
+                const p = t.instrs.get(.Mul, ins_id);
+                if (store.getKind(p.ty) == .Complex) {
+                    const lhs = self.value_map.get(p.lhs).?;
+                    const rhs = self.value_map.get(p.rhs).?;
+                    const cty = try self.llvmTypeOf(store, p.ty);
+                    var op = OpBuilder.init("complex.mul", self.loc).builder()
+                        .add_operands(&.{ lhs, rhs })
+                        .add_results(&.{cty}).build();
+                    self.append(op);
+                    break :blk op.getResult(0);
+                }
+                break :blk try self.binArith("llvm.mul", "llvm.fmul", p, store);
+            },
 
             .Div => blk: {
                 const p = t.instrs.get(.Div, ins_id);
+                if (store.getKind(p.ty) == .Complex) {
+                    const lhs = self.value_map.get(p.lhs).?;
+                    const rhs = self.value_map.get(p.rhs).?;
+                    const cty = try self.llvmTypeOf(store, p.ty);
+                    var op = OpBuilder.init("complex.div", self.loc).builder()
+                        .add_operands(&.{ lhs, rhs })
+                        .add_results(&.{cty}).build();
+                    self.append(op);
+                    break :blk op.getResult(0);
+                }
                 const lhs = self.value_map.get(p.lhs).?;
                 const rhs = self.value_map.get(p.rhs).?;
                 const ty = try self.llvmTypeOf(store, p.ty);
@@ -742,6 +798,77 @@ pub const MlirCodegen = struct {
                 var from_v = self.value_map.get(p.value).?;
                 var from_ty = from_v.getType();
 
+                // Handle casts to Complex specially: build complex.create from components
+                if (store.getKind(p.ty) == .Complex) {
+                    const tgt = store.get(.Complex, p.ty);
+                    const elem_ty = try self.llvmTypeOf(store, tgt.elem);
+                    const src_sr = self.srTypeOfValue(t, p.value);
+                    const src_kind = store.getKind(src_sr);
+                    // If source is already complex
+                    if (src_kind == .Complex) {
+                        const src_c = store.get(.Complex, src_sr);
+                        const src_elem_ty = try self.llvmTypeOf(store, src_c.elem);
+                        if (src_elem_ty.equal(elem_ty)) break :blk from_v;
+                        // re/im -> cast -> complex.create
+                        var reop = OpBuilder.init("complex.re", self.loc).builder()
+                            .add_operands(&.{from_v}).add_results(&.{src_elem_ty}).build();
+                        self.append(reop);
+                        var imop = OpBuilder.init("complex.im", self.loc).builder()
+                            .add_operands(&.{from_v}).add_results(&.{src_elem_ty}).build();
+                        self.append(imop);
+                        const rew = try intOrFloatWidth(src_elem_ty);
+                        const tew = try intOrFloatWidth(elem_ty);
+                        var re_cast: mlir.Operation = if (rew == tew)
+                            reop
+                        else if (rew > tew)
+                            OpBuilder.init("llvm.fptrunc", self.loc).builder().add_operands(&.{reop.getResult(0)}).add_results(&.{elem_ty}).build()
+                        else
+                            OpBuilder.init("llvm.fpext", self.loc).builder().add_operands(&.{reop.getResult(0)}).add_results(&.{elem_ty}).build();
+                        if (re_cast.getNumResults() != 1) self.append(re_cast);
+                        var im_cast: mlir.Operation = if (rew == tew)
+                            imop
+                        else if (rew > tew)
+                            OpBuilder.init("llvm.fptrunc", self.loc).builder().add_operands(&.{imop.getResult(0)}).add_results(&.{elem_ty}).build()
+                        else
+                            OpBuilder.init("llvm.fpext", self.loc).builder().add_operands(&.{imop.getResult(0)}).add_results(&.{elem_ty}).build();
+                        if (im_cast.getNumResults() != 1) self.append(im_cast);
+                        var make = OpBuilder.init("complex.create", self.loc).builder()
+                            .add_operands(&.{ re_cast.getResult(0), im_cast.getResult(0) })
+                            .add_results(&.{to_ty}).build();
+                        self.append(make);
+                        break :blk make.getResult(0);
+                    }
+                    // Source is scalar numeric: cast to elem_ty then complex.create(re, 0)
+                    const src_is_int = from_ty.isAInteger();
+                    const src_is_f = from_ty.isAFloat();
+                    var re_val: mlir.Value = from_v;
+                    if (src_is_int and elem_ty.isAFloat()) {
+                        const from_signed = self.isSignedInt(store, src_sr);
+                        var op = OpBuilder.init(if (from_signed) "llvm.sitofp" else "llvm.uitofp", self.loc).builder()
+                            .add_operands(&.{from_v}).add_results(&.{elem_ty}).build();
+                        self.append(op);
+                        re_val = op.getResult(0);
+                    } else if (src_is_f and elem_ty.isAFloat()) {
+                        const fw = try intOrFloatWidth(from_ty);
+                        const tw = try intOrFloatWidth(elem_ty);
+                        if (fw != tw) {
+                            var op = OpBuilder.init(if (fw > tw) "llvm.fptrunc" else "llvm.fpext", self.loc).builder()
+                                .add_operands(&.{from_v}).add_results(&.{elem_ty}).build();
+                            self.append(op);
+                            re_val = op.getResult(0);
+                        } else {
+                            // same width float: bitcast not allowed; use arith + 0.0 to force type if needed
+                            re_val = from_v;
+                        }
+                    }
+                    const zero_im = self.constFloat(elem_ty, 0.0);
+                    var make = OpBuilder.init("complex.create", self.loc).builder()
+                        .add_operands(&.{ re_val, zero_im })
+                        .add_results(&.{to_ty}).build();
+                    self.append(make);
+                    break :blk make.getResult(0);
+                }
+
                 const from_is_int = from_ty.isAInteger();
                 const to_is_int = to_ty.isAInteger();
                 const from_is_f = from_ty.isAFloat();
@@ -811,7 +938,14 @@ pub const MlirCodegen = struct {
                 switch (store.getKind(p.ty)) {
                     .Ptr => {
                         const ptr_row = store.get(.Ptr, p.ty);
-                        elem_ty = try self.llvmTypeOf(store, ptr_row.elem);
+                        // Use storage representation for memory: Complex -> {elem, elem}
+                        if (store.getKind(ptr_row.elem) == .Complex) {
+                            const c = store.get(.Complex, ptr_row.elem);
+                            const ety = try self.llvmTypeOf(store, c.elem);
+                            elem_ty = mlir.LLVM.getLLVMStructTypeLiteral(self.mlir_ctx, &[_]mlir.Type{ ety, ety }, false);
+                        } else {
+                            elem_ty = try self.llvmTypeOf(store, ptr_row.elem);
+                        }
                     },
                     else => {},
                 }
@@ -834,22 +968,62 @@ pub const MlirCodegen = struct {
             .Load => blk: {
                 const p = t.instrs.get(.Load, ins_id);
                 const ptr = self.value_map.get(p.ptr).?;
-                const res_ty = try self.llvmTypeOf(store, p.ty);
-                var load = OpBuilder.init("llvm.load", self.loc).builder()
-                    .add_operands(&.{ptr})
-                    .add_results(&.{res_ty}).build();
-                self.append(load);
-                break :blk load.getResult(0);
+                if (store.getKind(p.ty) == .Complex) {
+                    const c = store.get(.Complex, p.ty);
+                    const elem_ty = try self.llvmTypeOf(store, c.elem);
+                    const storage_ty = mlir.LLVM.getLLVMStructTypeLiteral(self.mlir_ctx, &[_]mlir.Type{ elem_ty, elem_ty }, false);
+                    var ld = OpBuilder.init("llvm.load", self.loc).builder()
+                        .add_operands(&.{ptr})
+                        .add_results(&.{storage_ty}).build();
+                    self.append(ld);
+                    const agg = ld.getResult(0);
+                    const re = self.extractAt(agg, elem_ty, &.{0});
+                    const im = self.extractAt(agg, elem_ty, &.{1});
+                    const res_ty = try self.llvmTypeOf(store, p.ty);
+                    var mk = OpBuilder.init("complex.create", self.loc).builder()
+                        .add_operands(&.{ re, im })
+                        .add_results(&.{res_ty}).build();
+                    self.append(mk);
+                    break :blk mk.getResult(0);
+                } else {
+                    const res_ty = try self.llvmTypeOf(store, p.ty);
+                    var load = OpBuilder.init("llvm.load", self.loc).builder()
+                        .add_operands(&.{ptr})
+                        .add_results(&.{res_ty}).build();
+                    self.append(load);
+                    break :blk load.getResult(0);
+                }
             },
 
             .Store => blk: {
                 const p = t.instrs.get(.Store, ins_id);
                 const v = self.value_map.get(p.value).?;
                 const ptr = self.value_map.get(p.ptr).?;
-                const st = OpBuilder.init("llvm.store", self.loc).builder()
-                    .add_operands(&.{ v, ptr }).build();
-                self.append(st);
-                break :blk mlir.Value.empty();
+                const v_sr = self.srTypeOfValue(t, p.value);
+                if (store.getKind(v_sr) == .Complex) {
+                    const c = store.get(.Complex, v_sr);
+                    const elem_ty = try self.llvmTypeOf(store, c.elem);
+                    // Spill complex into {elem, elem}
+                    var reop = OpBuilder.init("complex.re", self.loc).builder()
+                        .add_operands(&.{v}).add_results(&.{elem_ty}).build();
+                    self.append(reop);
+                    var imop = OpBuilder.init("complex.im", self.loc).builder()
+                        .add_operands(&.{v}).add_results(&.{elem_ty}).build();
+                    self.append(imop);
+                    const storage_ty = mlir.LLVM.getLLVMStructTypeLiteral(self.mlir_ctx, &[_]mlir.Type{ elem_ty, elem_ty }, false);
+                    var acc = self.undefOf(storage_ty);
+                    acc = self.insertAt(acc, reop.getResult(0), &.{0});
+                    acc = self.insertAt(acc, imop.getResult(0), &.{1});
+                    const st = OpBuilder.init("llvm.store", self.loc).builder()
+                        .add_operands(&.{ acc, ptr }).build();
+                    self.append(st);
+                    break :blk mlir.Value.empty();
+                } else {
+                    const st = OpBuilder.init("llvm.store", self.loc).builder()
+                        .add_operands(&.{ v, ptr }).build();
+                    self.append(st);
+                    break :blk mlir.Value.empty();
+                }
             },
 
             .Gep => blk: {
@@ -908,6 +1082,17 @@ pub const MlirCodegen = struct {
                 }
                 break :blk acc;
             },
+            .ComplexMake => blk: {
+                const p = t.instrs.get(.ComplexMake, ins_id);
+                const cty = try self.llvmTypeOf(store, p.ty);
+                const re = self.value_map.get(p.re).?;
+                const im = self.value_map.get(p.im).?;
+                var op = OpBuilder.init("complex.create", self.loc).builder()
+                    .add_operands(&.{ re, im })
+                    .add_results(&.{cty}).build();
+                self.append(op);
+                break :blk op.getResult(0);
+            },
             .ExtractElem => blk: {
                 const p = t.instrs.get(.ExtractElem, ins_id);
                 const agg = self.value_map.get(p.agg).?;
@@ -928,6 +1113,28 @@ pub const MlirCodegen = struct {
                 const p = t.instrs.get(.ExtractField, ins_id);
                 const agg = self.value_map.get(p.agg).?;
                 const res_ty = try self.llvmTypeOf(store, p.ty);
+                // Special-case: Complex field access -> complex.re/complex.im
+                const parent_sr = self.srTypeOfValue(t, p.agg);
+                if (store.getKind(parent_sr) == .Complex) {
+                    var which_re: bool = false;
+                    var which_im: bool = false;
+                    if (!p.name.isNone()) {
+                        const nm = t.instrs.strs.get(p.name.unwrap());
+                        if (std.mem.eql(u8, nm, "real") or std.mem.eql(u8, nm, "re")) which_re = true;
+                        if (std.mem.eql(u8, nm, "imag") or std.mem.eql(u8, nm, "im")) which_im = true;
+                    } else {
+                        if (p.index == 0) which_re = true;
+                        if (p.index == 1) which_im = true;
+                    }
+                    if (which_re or which_im) {
+                        const opname = if (which_re) "complex.re" else "complex.im";
+                        var op = OpBuilder.init(opname, self.loc).builder()
+                            .add_operands(&.{agg})
+                            .add_results(&.{res_ty}).build();
+                        self.append(op);
+                        break :blk op.getResult(0);
+                    }
+                }
                 const v = self.extractAt(agg, res_ty, &.{@as(i64, @intCast(p.index))});
                 break :blk v;
             },
@@ -958,6 +1165,20 @@ pub const MlirCodegen = struct {
                 }
                 acc = self.insertAt(acc, ptrv, &.{1});
                 break :blk acc;
+            },
+            .VariantTag => blk: {
+                const p = t.instrs.get(.VariantTag, ins_id);
+                const v = self.value_map.get(p.value).?;
+                const i32ty = mlir.Type.getSignlessIntegerType(self.mlir_ctx, 32);
+                const tag = self.extractAt(v, i32ty, &.{0});
+                break :blk tag;
+            },
+            .VariantPayloadPtr => blk: {
+                const p = t.instrs.get(.VariantPayloadPtr, ins_id);
+                const v = self.value_map.get(p.value).?;
+                // Extract field 1 (payload pointer)
+                const ptr = self.extractAt(v, self.llvm_ptr_ty, &.{1});
+                break :blk ptr;
             },
 
             // ------------- Pointers/Indexing -------------
@@ -2069,6 +2290,11 @@ pub const MlirCodegen = struct {
                 const arr_ty = store.get(.Array, ty);
                 const e = try self.llvmTypeOf(store, arr_ty.elem);
                 break :blk mlir.LLVM.getLLVMArrayType(e, @intCast(arr_ty.len));
+            },
+            .Complex => blk: {
+                const c = store.get(.Complex, ty);
+                const elem = try self.llvmTypeOf(store, c.elem);
+                break :blk mlir.Type.getComplexType(elem);
             },
 
             .Optional => blk: {

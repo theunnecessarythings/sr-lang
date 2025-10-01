@@ -968,17 +968,13 @@ pub const Checker = struct {
             },
             .imaginary => blk: {
                 const s = self.getStr(lit.value.unwrap());
-                if (std.fmt.parseInt(i64, s, 10) catch null == null) {
-                    if (std.fmt.parseFloat(f64, s) catch null == null) {
-                        try self.context.diags.addError(self.exprLoc(lit), .invalid_imaginary_literal, .{});
-                        return null;
-                    } else {
-                        break :blk self.context.type_store.tF64();
-                    }
+                // Accept integer or float literal payload for imaginary; normalize to Complex(f64)
+                if ((std.fmt.parseInt(i64, s, 10) catch null) == null and (std.fmt.parseFloat(f64, s) catch null) == null) {
                     try self.context.diags.addError(self.exprLoc(lit), .invalid_imaginary_literal, .{});
                     return null;
                 }
-                break :blk self.context.type_store.tI64(); // TODO: imaginary type
+                const cty = self.context.type_store.add(.Complex, types.Rows.Complex{ .elem = self.context.type_store.tF64() });
+                break :blk cty;
             },
             .float => blk: {
                 // try parsing the float literal
@@ -1178,6 +1174,29 @@ pub const Checker = struct {
                     }
                     if (check_types.isIntegerKind(self, lhs_kind) and check_types.isIntegerKind(self, rhs_kind))
                         try self.checkIntZeroLiteral(bin.right, self.exprLoc(bin));
+                }
+                // Complex arithmetic: allow + - * / with Complex and with scalar numeric (promote scalar)
+                const lhs_is_complex = (lhs_kind == .Complex);
+                const rhs_is_complex = (rhs_kind == .Complex);
+                if (lhs_is_complex or rhs_is_complex) {
+                    // Only arithmetic ops allowed for Complex
+                    if (!(bin.op == .add or bin.op == .sub or bin.op == .mul or bin.op == .div)) {
+                        try self.context.diags.addError(self.exprLoc(bin), .invalid_binary_op_operands, .{ bin.op, lhs_kind, rhs_kind });
+                        return null;
+                    }
+                    if (lhs_is_complex and rhs_is_complex) {
+                        // Require same element type for now
+                        const lc = self.context.type_store.Complex.get(self.trow(l));
+                        const rc = self.context.type_store.Complex.get(self.trow(r));
+                        if (lc.elem.toRaw() == rc.elem.toRaw()) return l;
+                        try self.context.diags.addError(self.exprLoc(bin), .invalid_binary_op_operands, .{ bin.op, lhs_kind, rhs_kind });
+                        return null;
+                    }
+                    // One side complex, other side numeric scalar
+                    if (lhs_is_complex and check_types.isNumericKind(self, rhs_kind)) return l;
+                    if (rhs_is_complex and check_types.isNumericKind(self, lhs_kind)) return r;
+                    try self.context.diags.addError(self.exprLoc(bin), .invalid_binary_op_operands, .{ bin.op, lhs_kind, rhs_kind });
+                    return null;
                 }
                 if (!check_types.isNumericKind(self, lhs_kind) or !check_types.isNumericKind(self, rhs_kind)) {
                     try self.context.diags.addError(self.exprLoc(bin), .invalid_binary_op_operands, .{ bin.op, lhs_kind, rhs_kind });
@@ -1498,6 +1517,20 @@ pub const Checker = struct {
         var ty = parent_ty.?;
         const kind = self.typeKind(ty);
         switch (kind) {
+            .Complex => {
+                const comp = self.context.type_store.Complex.get(self.trow(ty));
+                const field_name = self.getStr(field_expr.field);
+                if (std.mem.eql(u8, field_name, "real") or std.mem.eql(u8, field_name, "re")) {
+                    try self.type_info.setFieldIndex(id, 0);
+                    return comp.elem;
+                }
+                if (std.mem.eql(u8, field_name, "imag") or std.mem.eql(u8, field_name, "im")) {
+                    try self.type_info.setFieldIndex(id, 1);
+                    return comp.elem;
+                }
+                _ = self.context.diags.addError(self.exprLoc(field_expr), .unknown_struct_field, .{}) catch {};
+                return null;
+            },
             .Struct => {
                 const struct_row = self.context.type_store.Struct.get(self.trow(ty));
                 const fields = self.context.type_store.field_pool.slice(struct_row.fields);
@@ -1530,6 +1563,18 @@ pub const Checker = struct {
                 const ptr_row = self.context.type_store.Ptr.get(self.trow(ty));
                 ty = ptr_row.elem;
                 const inner_kind = self.typeKind(ty);
+                if (inner_kind == .Complex) {
+                    const comp = self.context.type_store.Complex.get(self.trow(ty));
+                    const field_name = self.getStr(field_expr.field);
+                    if (std.mem.eql(u8, field_name, "real") or std.mem.eql(u8, field_name, "re")) {
+                        try self.type_info.setFieldIndex(id, 0);
+                        return comp.elem;
+                    }
+                    if (std.mem.eql(u8, field_name, "imag") or std.mem.eql(u8, field_name, "im")) {
+                        try self.type_info.setFieldIndex(id, 1);
+                        return comp.elem;
+                    }
+                }
                 if (inner_kind == .Struct) {
                     const struct_row = self.context.type_store.Struct.get(self.trow(ty));
                     const fields = self.context.type_store.field_pool.slice(struct_row.fields);

@@ -102,6 +102,10 @@ pub const OpKind = enum(u16) {
     MlirBlock,
     // Variants
     VariantMake,
+    VariantTag,
+    VariantPayloadPtr,
+    // Complex numbers
+    ComplexMake,
 };
 
 pub const TermKind = enum(u8) { Return, Br, CondBr, SwitchInt, Unreachable };
@@ -147,6 +151,9 @@ pub const Rows = struct {
     pub const Call = struct { result: ValueId, ty: types.TypeId, callee: StrId, args: RangeValue };
     pub const MlirBlock = struct { result: OptValueId, ty: types.TypeId, kind: ast.MlirKind, text: StrId };
     pub const VariantMake = struct { result: ValueId, ty: types.TypeId, tag: u32, payload: OptValueId, payload_ty: types.TypeId };
+    pub const VariantTag = struct { result: ValueId, ty: types.TypeId, value: ValueId };
+    pub const VariantPayloadPtr = struct { result: ValueId, ty: types.TypeId, value: ValueId };
+    pub const ComplexMake = struct { result: ValueId, ty: types.TypeId, re: ValueId, im: ValueId };
 
     // Terminator rows
     pub const Return = struct { value: OptValueId };
@@ -203,6 +210,9 @@ inline fn RowT(comptime K: OpKind) type {
         .Call => Rows.Call,
         .MlirBlock => Rows.MlirBlock,
         .VariantMake => Rows.VariantMake,
+        .VariantTag => Rows.VariantTag,
+        .VariantPayloadPtr => Rows.VariantPayloadPtr,
+        .ComplexMake => Rows.ComplexMake,
     };
 }
 inline fn TermRowT(comptime K: TermKind) type {
@@ -271,6 +281,9 @@ pub const InstrStore = struct {
     Call: Table(Rows.Call) = .{},
     MlirBlock: Table(Rows.MlirBlock) = .{},
     VariantMake: Table(Rows.VariantMake) = .{},
+    VariantTag: Table(Rows.VariantTag) = .{},
+    VariantPayloadPtr: Table(Rows.VariantPayloadPtr) = .{},
+    ComplexMake: Table(Rows.ComplexMake) = .{},
 
     // aux tables
     GepIndex: Table(Rows.GepIndex) = .{},
@@ -726,6 +739,18 @@ pub const TirPrinter = struct {
                     self.tf(row.ty),
                     self.tf(row.payload_ty),
                 });
+            },
+            .VariantTag => {
+                const row = self.tir.instrs.get(.VariantTag, id);
+                try self.leaf("(instr id={} op=VariantTag value={} result={} type={f})", .{ id.toRaw(), row.value.toRaw(), row.result.toRaw(), self.tf(row.ty) });
+            },
+            .VariantPayloadPtr => {
+                const row = self.tir.instrs.get(.VariantPayloadPtr, id);
+                try self.leaf("(instr id={} op=VariantPayloadPtr value={} result={} type={f})", .{ id.toRaw(), row.value.toRaw(), row.result.toRaw(), self.tf(row.ty) });
+            },
+            .ComplexMake => {
+                const row = self.tir.instrs.get(.ComplexMake, id);
+                try self.leaf("(instr id={} op=ComplexMake re={} im={} result={} type={f})", .{ id.toRaw(), row.re.toRaw(), row.im.toRaw(), row.result.toRaw(), self.tf(row.ty) });
             },
             .MlirBlock => {
                 const row = self.tir.instrs.get(.MlirBlock, id);

@@ -616,7 +616,20 @@ pub const LowerTir = struct {
                 const ty0 = self.getExprType(id) orelse (expected_ty orelse return error.LoweringBug);
                 const v = switch (lit.kind) {
                     .int => blk.builder.constInt(blk, ty0, try std.fmt.parseInt(u64, a.exprs.strs.get(lit.value.unwrap()), 10)),
-                    .imaginary => blk.builder.constInt(blk, ty0, 0), // TODO: complex number support
+                    .imaginary => blk: {
+                        // ty0 must be Complex(elem). Build from (re=0, im=value)
+                        const tk = self.context.type_store.getKind(ty0);
+                        if (tk != .Complex) break :blk blk.builder.constUndef(blk, ty0);
+                        const crow = self.context.type_store.get(.Complex, ty0);
+                        const elem = crow.elem;
+                        const s = a.exprs.strs.get(lit.value.unwrap());
+                        // Parse as f64 and cast to elem as needed
+                        const parsed = try std.fmt.parseFloat(f64, s);
+                        const re0 = blk.builder.constFloat(blk, elem, 0.0);
+                        const imv = blk.builder.constFloat(blk, elem, parsed);
+                        const cv = blk.builder.complexMake(blk, ty0, re0, imv);
+                        break :blk cv;
+                    },
                     .float => blk.builder.constFloat(blk, ty0, try std.fmt.parseFloat(f64, a.exprs.strs.get(lit.value.unwrap()))),
                     .bool => blk.builder.constBool(blk, ty0, lit.bool_value),
                     .string => blk.builder.constString(blk, ty0, a.exprs.strs.get(lit.value.unwrap())),
@@ -668,12 +681,18 @@ pub const LowerTir = struct {
                 const v = switch (row.op) {
                     .pos => v0,
                     .neg => blk: {
-                        // Use a zero that matches ty0’s *kind*
-                        const zero =
-                            if (self.isFloat(ty0))
-                                blk.builder.constFloat(blk, ty0, 0.0)
-                            else
-                                blk.builder.constInt(blk, ty0, 0);
+                        // Use a zero that matches ty0’s kind; if Complex, build complex(0,0)
+                        const zero = zblk: {
+                            const k = self.context.type_store.index.kinds.items[ty0.toRaw()];
+                            if (k == .Complex) {
+                                const crow = self.context.type_store.get(.Complex, ty0);
+                                const re0 = blk.builder.constFloat(blk, crow.elem, 0.0);
+                                const im0 = blk.builder.constFloat(blk, crow.elem, 0.0);
+                                break :zblk blk.builder.complexMake(blk, ty0, re0, im0);
+                            }
+                            if (self.isFloat(ty0)) break :zblk blk.builder.constFloat(blk, ty0, 0.0);
+                            break :zblk blk.builder.constInt(blk, ty0, 0);
+                        };
                         break :blk blk.builder.bin(blk, .Sub, ty0, zero, v0);
                     },
                     .logical_not => blk: {
@@ -1001,11 +1020,22 @@ pub const LowerTir = struct {
                 switch (row.op) {
                     // Arithmetic / bitwise -> both sides usually share the resulting numeric type.
                     .add, .sub, .mul, .div, .mod, .shl, .shr, .bit_and, .bit_or, .bit_xor => {
-                        const want = self.commonNumeric(self.getExprType(row.left), self.getExprType(row.right)) orelse (expected_ty orelse self.context.type_store.tI64());
-                        lhs_expect = want;
-                        rhs_expect = want;
-                        // If the checker didn't stamp a concrete result type (void/any), use `want`.
-                        if (op_ty == null or self.isVoid(op_ty.?) or self.isAny(op_ty.?)) op_ty = want;
+                        // If checker stamped Complex result, drive both operands to Complex
+                        if (op_ty) |t| if (self.context.type_store.index.kinds.items[t.toRaw()] == .Complex) {
+                            lhs_expect = t;
+                            rhs_expect = t;
+                        } else {
+                            const want = self.commonNumeric(self.getExprType(row.left), self.getExprType(row.right)) orelse (expected_ty orelse self.context.type_store.tI64());
+                            lhs_expect = want;
+                            rhs_expect = want;
+                            // If the checker didn't stamp a concrete result type (void/any), use `want`.
+                            if (op_ty == null or self.isVoid(op_ty.?) or self.isAny(op_ty.?)) op_ty = want;
+                        } else {
+                            const want = self.commonNumeric(self.getExprType(row.left), self.getExprType(row.right)) orelse (expected_ty orelse self.context.type_store.tI64());
+                            lhs_expect = want;
+                            rhs_expect = want;
+                            if (op_ty == null or self.isVoid(op_ty.?) or self.isAny(op_ty.?)) op_ty = want;
+                        }
                     },
 
                     // Comparisons: result is bool; operands should be comparable (prefer outer hint if any).
@@ -2729,9 +2759,28 @@ const DeferEntry = struct { expr: ast.ExprId, is_err: bool };
             blk.instrs.append(self.gpa, iid) catch @panic("OOM");
             return vid;
         }
+        fn complexMake(self: *@This(), blk: *BlockFrame, ty: types.TypeId, re: tir.ValueId, im: tir.ValueId) tir.ValueId {
+            const vid = self.freshValue();
+            const iid = self.t.instrs.add(.ComplexMake, tir.Rows.ComplexMake{ .result = vid, .ty = ty, .re = re, .im = im });
+            blk.instrs.append(self.gpa, iid) catch @panic("OOM");
+            return vid;
+        }
         fn variantMake(self: *@This(), blk: *BlockFrame, ty: types.TypeId, tag: u32, payload: tir.OptValueId, payload_ty: types.TypeId) tir.ValueId {
             const vid = self.freshValue();
             const iid = self.t.instrs.add(.VariantMake, tir.Rows.VariantMake{ .result = vid, .ty = ty, .tag = tag, .payload = payload, .payload_ty = payload_ty });
+            blk.instrs.append(self.gpa, iid) catch @panic("OOM");
+            return vid;
+        }
+        fn variantTag(self: *@This(), blk: *BlockFrame, value: tir.ValueId) tir.ValueId {
+            const vid = self.freshValue();
+            const ty = self.t.t.funcs.tstore.*.tI32();
+            const iid = self.t.instrs.add(.VariantTag, tir.Rows.VariantTag{ .result = vid, .ty = ty, .value = value });
+            blk.instrs.append(self.gpa, iid) catch @panic("OOM");
+            return vid;
+        }
+        fn variantPayloadPtr(self: *@This(), blk: *BlockFrame, result_ptr_ty: types.TypeId, value: tir.ValueId) tir.ValueId {
+            const vid = self.freshValue();
+            const iid = self.t.instrs.add(.VariantPayloadPtr, tir.Rows.VariantPayloadPtr{ .result = vid, .ty = result_ptr_ty, .value = value });
             blk.instrs.append(self.gpa, iid) catch @panic("OOM");
             return vid;
         }

@@ -98,7 +98,7 @@ pub fn run_passes(context: *mlir.Context, module: *mlir.Module) !void {
     const pm = mlir.c.mlirPassManagerCreate(context.handle);
     defer mlir.c.mlirPassManagerDestroy(pm);
 
-    const pipeline = "convert-arith-to-llvm,convert-func-to-llvm,convert-cf-to-llvm,canonicalize,cse";
+    const pipeline = "convert-arith-to-llvm,convert-complex-to-llvm,convert-func-to-llvm,convert-cf-to-llvm,canonicalize,cse";
     const op_pm = mlir.c.mlirPassManagerGetAsOpPassManager(pm);
     var result = mlir.c.mlirOpPassManagerAddPipeline(op_pm, mlir.c.mlirStringRefCreateFromCString(@ptrCast(pipeline)), callback, null);
 
