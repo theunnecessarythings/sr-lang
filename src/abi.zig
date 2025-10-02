@@ -60,6 +60,7 @@ fn abiSizeAlign(self: *MlirCodegen, store: *types.TypeStore, ty: types.TypeId) S
         .F64 => return .{ .size = 8, .alignment = 8, .hasFloat = true, .allIntsOnly = false },
 
         .Ptr, .Any, .String, .Function => return .{ .size = 8, .alignment = 8, .hasFloat = false, .allIntsOnly = true },
+        .Slice => return .{ .size = 16, .alignment = 8, .hasFloat = false, .allIntsOnly = true },
 
         .Array => {
             const A = store.get(.Array, ty);
@@ -183,7 +184,7 @@ pub fn abiClassifyX64SysV(self: *MlirCodegen, store: *types.TypeStore, ty: types
         .I64, .U64, .Usize => return .{ .kind = .DirectScalar, .scalar0 = self.i64_ty, .size = 8, .alignment = 8 },
         .F32 => return .{ .kind = .DirectScalar, .scalar0 = self.f32_ty, .size = 4, .alignment = 4 },
         .F64 => return .{ .kind = .DirectScalar, .scalar0 = self.f64_ty, .size = 8, .alignment = 8 },
-        .Ptr, .Any, .String, .Function => return .{ .kind = .DirectScalar, .scalar0 = self.llvm_ptr_ty, .size = 8, .alignment = 8 },
+        .Ptr, .Any, .String, .Function, .Map => return .{ .kind = .DirectScalar, .scalar0 = self.llvm_ptr_ty, .size = 8, .alignment = 8 },
         .Variant => return if (isReturn)
             .{ .kind = .IndirectSRet, .alignment = 8, .size = 24 }
         else

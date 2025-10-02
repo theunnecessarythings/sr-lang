@@ -106,6 +106,7 @@ pub const OpKind = enum(u16) {
     VariantPayloadPtr,
     // Complex numbers
     ComplexMake,
+    RangeMake,
 };
 
 pub const TermKind = enum(u8) { Return, Br, CondBr, SwitchInt, Unreachable };
@@ -154,6 +155,7 @@ pub const Rows = struct {
     pub const VariantTag = struct { result: ValueId, ty: types.TypeId, value: ValueId };
     pub const VariantPayloadPtr = struct { result: ValueId, ty: types.TypeId, value: ValueId };
     pub const ComplexMake = struct { result: ValueId, ty: types.TypeId, re: ValueId, im: ValueId };
+    pub const RangeMake = struct { result: ValueId, ty: types.TypeId, start: ValueId, end: ValueId, inclusive: ValueId };
 
     // Terminator rows
     pub const Return = struct { value: OptValueId };
@@ -213,6 +215,7 @@ inline fn RowT(comptime K: OpKind) type {
         .VariantTag => Rows.VariantTag,
         .VariantPayloadPtr => Rows.VariantPayloadPtr,
         .ComplexMake => Rows.ComplexMake,
+        .RangeMake => Rows.RangeMake,
     };
 }
 inline fn TermRowT(comptime K: TermKind) type {
@@ -284,6 +287,7 @@ pub const InstrStore = struct {
     VariantTag: Table(Rows.VariantTag) = .{},
     VariantPayloadPtr: Table(Rows.VariantPayloadPtr) = .{},
     ComplexMake: Table(Rows.ComplexMake) = .{},
+    RangeMake: Table(Rows.RangeMake) = .{},
 
     // aux tables
     GepIndex: Table(Rows.GepIndex) = .{},
@@ -660,6 +664,10 @@ pub const TirPrinter = struct {
                 for (elems) |vid| try self.leaf("  {}", .{vid.toRaw()});
                 try self.leaf("])", .{});
                 try self.close();
+            },
+            .RangeMake => {
+                const row = self.tir.instrs.get(.RangeMake, id);
+                try self.leaf("(instr id={} op=RangeMake start={} end={} inclusive={} result={} type={f})", .{ id.toRaw(), row.start.toRaw(), row.end.toRaw(), row.inclusive.toRaw(), row.result.toRaw(), self.tf(row.ty) });
             },
             .StructMake => {
                 const row = self.tir.instrs.get(.StructMake, id);

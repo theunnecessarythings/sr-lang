@@ -148,6 +148,7 @@ pub const Pipeline = struct {
         var mlir_module = try gen.emitModule(&root_mod, self.context);
         // verify module
         if (!mlir_module.getOperation().verify()) {
+            mlir_module.getOperation().dump();
             try self.context.diags.addError(.{ .file_id = file_id, .start = 0, .end = 0 }, .mlir_verification_failed, .{});
         }
         if (self.context.diags.anyErrors()) {

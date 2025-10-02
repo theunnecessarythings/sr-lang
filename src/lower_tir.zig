@@ -710,11 +710,12 @@ pub const LowerTir = struct {
             .Range => {
                 const row = a.exprs.get(.Range, id);
                 const ty0 = self.getExprType(id) orelse return error.LoweringBug;
-                const start_v = if (!row.start.isNone()) try self.lowerExpr(a, env, f, blk, row.start.unwrap(), null, .rvalue) else blk.builder.constUndef(blk, ty0);
-                const end_v = if (!row.end.isNone()) try self.lowerExpr(a, env, f, blk, row.end.unwrap(), null, .rvalue) else blk.builder.constUndef(blk, ty0);
+                const usize_ty = self.context.type_store.tUsize();
+                const start_v = if (!row.start.isNone()) try self.lowerExpr(a, env, f, blk, row.start.unwrap(), usize_ty, .rvalue) else blk.builder.constUndef(blk, usize_ty);
+                const end_v = if (!row.end.isNone()) try self.lowerExpr(a, env, f, blk, row.end.unwrap(), usize_ty, .rvalue) else blk.builder.constUndef(blk, usize_ty);
                 const incl = blk.builder.constBool(blk, self.context.type_store.tBool(), row.inclusive_right);
-                const make = blk.builder.intern("builtin.range.make");
-                const v = blk.builder.call(blk, ty0, make, &.{ start_v, end_v, incl });
+                // Materialize range as TIR RangeMake (typed as []usize)
+                const v = blk.builder.rangeMake(blk, ty0, start_v, end_v, incl);
                 if (expected_ty) |want| return self.emitCoerce(blk, v, ty0, want);
                 return v;
             },
@@ -749,7 +750,14 @@ pub const LowerTir = struct {
                     }
                     vals[i] = try self.lowerExpr(a, env, f, blk, ids[i], expect_elem, .rvalue);
                 }
-                const v = blk.builder.tupleMake(blk, ty0, vals);
+                // Lower tuple literals using struct construction with ordinal fields
+                var fields = try self.gpa.alloc(tir.Rows.StructFieldInit, vals.len);
+                defer self.gpa.free(fields);
+                var j: usize = 0;
+                while (j < vals.len) : (j += 1) {
+                    fields[j] = .{ .index = @intCast(j), .name = OptStrId.none(), .value = vals[j] };
+                }
+                const v = blk.builder.structMake(blk, ty0, fields);
                 if (expected_ty) |want| return self.emitCoerce(blk, v, ty0, want);
                 return v;
             },
@@ -825,7 +833,19 @@ pub const LowerTir = struct {
                 if (mode == .lvalue_addr) {
                     const row = a.exprs.get(.IndexAccess, id);
                     const base_ptr = try self.lowerExpr(a, env, f, blk, row.collection, null, .lvalue_addr);
-                    const idx_v = try self.lowerExpr(a, env, f, blk, row.index, self.context.type_store.tUsize(), .rvalue);
+                    // Prefer a usize constant for literal indices to avoid casts in TIR
+                    const idx_v = blk: {
+                        const ik = a.exprs.index.kinds.items[row.index.toRaw()];
+                        if (ik == .Literal) {
+                            const lit = a.exprs.get(.Literal, row.index);
+                            if (lit.kind == .int) {
+                                const s = a.exprs.strs.get(lit.value.unwrap());
+                                const uv = blk.builder.constInt(blk, self.context.type_store.tUsize(), try std.fmt.parseInt(u64, s, 10));
+                                break :blk uv;
+                            }
+                        }
+                        break :blk try self.lowerExpr(a, env, f, blk, row.index, self.context.type_store.tUsize(), .rvalue);
+                    };
                     const idx = blk.builder.gepValue(idx_v);
                     const rty = self.context.type_store.mkPtr(self.getExprType(id) orelse return error.LoweringBug, false);
                     return blk.builder.gep(blk, rty, base_ptr, &.{idx});
@@ -833,7 +853,27 @@ pub const LowerTir = struct {
                     const row = a.exprs.get(.IndexAccess, id);
                     const ty0 = self.getExprType(id) orelse return error.LoweringBug;
                     const base = try self.lowerExpr(a, env, f, blk, row.collection, null, .rvalue);
-                    const idx = try self.lowerExpr(a, env, f, blk, row.index, self.context.type_store.tUsize(), .rvalue);
+                    // If result is a slice, the index expression should be a range ([]usize);
+                    // otherwise, index is a single usize.
+                    const idx = blk: {
+                        const rk = self.context.type_store.index.kinds.items[ty0.toRaw()];
+                        if (rk == .Slice) {
+                            const want = self.context.type_store.mkSlice(self.context.type_store.tUsize());
+                            break :blk try self.lowerExpr(a, env, f, blk, row.index, want, .rvalue);
+                        } else {
+                            // Prefer a usize constant for literal indices to avoid casts in TIR
+                            const ik = a.exprs.index.kinds.items[row.index.toRaw()];
+                            if (ik == .Literal) {
+                                const lit = a.exprs.get(.Literal, row.index);
+                                if (lit.kind == .int) {
+                                    const s = a.exprs.strs.get(lit.value.unwrap());
+                                    const uv = blk.builder.constInt(blk, self.context.type_store.tUsize(), try std.fmt.parseInt(u64, s, 10));
+                                    break :blk uv;
+                                }
+                            }
+                            break :blk try self.lowerExpr(a, env, f, blk, row.index, self.context.type_store.tUsize(), .rvalue);
+                        }
+                    };
                     const v = blk.builder.indexOp(blk, ty0, base, idx);
                     if (expected_ty) |want| return self.emitCoerce(blk, v, ty0, want);
                     return v;
@@ -2680,6 +2720,12 @@ const DeferEntry = struct { expr: ast.ExprId, is_err: bool };
     fn indexOp(self: *@This(), blk: *BlockFrame, ty: types.TypeId, base: tir.ValueId, idx: tir.ValueId) tir.ValueId {
         const vid = self.freshValue();
         const iid = self.t.instrs.add(.Index, tir.Rows.Index{ .result = vid, .ty = ty, .base = base, .index = idx });
+        blk.instrs.append(self.gpa, iid) catch @panic("OOM");
+        return vid;
+    }
+    fn rangeMake(self: *@This(), blk: *BlockFrame, ty: types.TypeId, start: tir.ValueId, end: tir.ValueId, inclusive: tir.ValueId) tir.ValueId {
+        const vid = self.freshValue();
+        const iid = self.t.instrs.add(.RangeMake, tir.Rows.RangeMake{ .result = vid, .ty = ty, .start = start, .end = end, .inclusive = inclusive });
         blk.instrs.append(self.gpa, iid) catch @panic("OOM");
         return vid;
     }
