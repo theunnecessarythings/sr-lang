@@ -216,6 +216,7 @@ pub fn convert_to_llvm_ir(module: mlir.c.MlirModule, print_ir: bool, link_args: 
     defer args.deinit(allocator);
     try args.append(allocator, "clang");
     try args.append(allocator, "-O2");
+    try args.append(allocator, "-g");
     try args.append(allocator, "-o");
     try args.append(allocator, "zig-out/output_program");
     try args.append(allocator, "zig-out/output.o");

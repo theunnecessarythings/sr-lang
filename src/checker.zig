@@ -96,10 +96,6 @@ pub const Checker = struct {
     }
 
     pub fn run(self: *Checker) !void {
-        _ = try self.runWithTypes();
-    }
-
-    pub fn runWithTypes(self: *Checker) !*TypeInfo {
         // pre-allocate type slots for all exprs & decls
         const expr_len: usize = self.ast_unit.exprs.index.kinds.items.len;
         const decl_len: usize = self.ast_unit.exprs.Decl.list.len;
@@ -120,22 +116,6 @@ pub const Checker = struct {
         for (decl_ids) |did| {
             try self.checkDecl(did);
         }
-        return self.type_info;
-    }
-
-    fn addBuiltinTypes(self: *Checker) !void {
-        _ = self;
-        // Add builtin types to the symbol tablea
-        // const unknown_loc = Loc{ .file = 0, .start = 0, .end = 0 };
-        // const unknown_loc_id = self.ast_unit.exprs.locs.add(self.gpa, unknown_loc);
-        // const ti32 = self.context.type_store.tI32();
-        // _ = try self.symtab.declare(.{
-        //     .name = self.ast_unit.exprs.strs.intern("i32"),
-        //     .kind = .Type,
-        //     .loc = unknown_loc_id,
-        //     .origin_decl = ast.OptDeclId.none(),
-        //     .origin_param = ast.OptParamId.none(),
-        // });
     }
 
     // --------- context
@@ -235,12 +215,59 @@ pub const Checker = struct {
         return null;
     }
 
+    // =========================================================
+    // Declarations & Statements
+    // =========================================================
+    fn checkDecl(self: *Checker, decl_id: ast.DeclId) !void {
+        // pattern : expect_ty = value
+
+        const decl = self.ast_unit.exprs.Decl.get(decl_id.toRaw());
+        // Bind declaration pattern to symbol table
+        try self.bindDeclPattern(decl_id, decl);
+
+        // Expected type from type annotation (if any)
+        const expect_ty = if (decl.ty.isNone())
+            null
+        else
+            try check_types.typeFromTypeExpr(self, decl.ty.unwrap());
+
+        // Initializers must be evaluated in value context even inside statement blocks
+        try self.pushValueReq(true);
+        const rhs_ty = try self.checkExpr(decl.value);
+        self.popValueReq();
+
+        if (rhs_ty == null) return;
+
+        // Try to coerce value type to expected type (if any)
+        try self.tryTypeCoercion(decl_id, rhs_ty.?, expect_ty);
+
+        // If LHS is a pattern, ensure the RHS type matches the pattern's shape.
+        if (!decl.pattern.isNone()) {
+            const shape_ok = pattern_matching.checkPatternShapeForDecl(self, decl.pattern.unwrap(), rhs_ty.?);
+            switch (shape_ok) {
+                .ok => {},
+                .tuple_arity_mismatch => {
+                    try self.context.diags.addError(self.exprLoc(decl), .tuple_arity_mismatch, .{});
+                    return;
+                },
+                .struct_pattern_field_mismatch => {
+                    try self.context.diags.addError(self.exprLoc(decl), .struct_pattern_field_mismatch, .{});
+                    return;
+                },
+                .pattern_shape_mismatch => {
+                    try self.context.diags.addError(self.exprLoc(decl), .pattern_shape_mismatch, .{});
+                    return;
+                },
+            }
+        }
+    }
+
     const AssignErrors = enum {
         array_length_mismatch,
         tuple_arity_mismatch,
         assign_null_to_non_optional,
         pointer_type_mismatch,
-        pointer_constness_mismatch,
+        pointer_constness_violation,
         expected_array_type,
         expected_tuple_type,
         expected_map_type,
@@ -256,7 +283,7 @@ pub const Checker = struct {
         unknown_struct_field,
         struct_field_name_mismatch,
         union_literal_multiple_fields,
-        union_literal_no_fields,
+        union_empty_literal,
         failure,
         success,
     };
@@ -354,7 +381,7 @@ pub const Checker = struct {
                 const expected_ty = self.context.type_store.Ptr.get(self.trow(expect));
                 const got_ty = self.context.type_store.Ptr.get(self.trow(got));
                 if (!expected_ty.is_const and got_ty.is_const) {
-                    return .pointer_constness_mismatch;
+                    return .pointer_constness_violation;
                 }
                 if (self.assignable(got_ty.elem, expected_ty.elem) != .success) {
                     return .pointer_type_mismatch;
@@ -372,7 +399,7 @@ pub const Checker = struct {
                 const expected_fields = self.context.type_store.field_pool.slice(expected_ty.fields);
                 const got_fields = self.context.type_store.field_pool.slice(got_ty.fields);
                 // Should only have one field set in union
-                if (got_fields.len == 0) return .union_literal_no_fields;
+                if (got_fields.len == 0) return .union_empty_literal;
                 if (got_fields.len != 1) return .union_literal_multiple_fields;
                 const gf = self.context.type_store.Field.get(got_fields[0].toRaw());
                 var found = false;
@@ -451,216 +478,216 @@ pub const Checker = struct {
                 if (got_kind != .F32 and got_kind != .F64) return .expected_float_type;
                 return .success;
             },
-            else => {},
+            else => {
+                std.debug.print("Unhandled assignability check: expected kind {}\n", .{expected_kind});
+            },
         }
 
         return .failure;
     }
 
-    // =========================================================
-    // Declarations & Statements
-    // =========================================================
-    fn checkDecl(self: *Checker, decl_id: ast.DeclId) !void {
-        const decl = self.ast_unit.exprs.Decl.get(decl_id.toRaw());
-        try self.bindDeclPattern(decl_id, decl);
+    fn typeInferFromRHS(self: *Checker, decl: ast.DeclId, rhs_ty: types.TypeId) !void {
+        // Degenerate cases where we don't infer from RHS
+        const rhs_kind = self.typeKind(rhs_ty);
+        switch (rhs_kind) {
+            .Array => {
+                const arr = self.context.type_store.Array.get(self.trow(rhs_ty));
+                if (arr.len == 0)
+                    try self.context.diags.addError(
+                        self.exprLoc(self.ast_unit.exprs.Decl.get(decl.toRaw())),
+                        .cannot_infer_type_from_empty_array,
+                        .{},
+                    );
+            },
+            else => self.type_info.decl_types.items[decl.toRaw()] = rhs_ty,
+        }
+    }
 
-        const expect_ty = if (decl.ty.isNone())
-            null
-        else
-            try check_types.typeFromTypeExpr(self, decl.ty.unwrap());
+    fn tryCoerceVariantOrErrorLiteral(
+        self: *Checker,
+        expr_id: ast.ExprId,
+        expect_ty: types.TypeId,
+    ) !bool {
+        const value_kind = self.exprKind(expr_id);
+        return switch (value_kind) {
+            .Call => blk: { // Path 1: V.C(...) form
+                const call = self.getExpr(.Call, expr_id);
+                break :blk try self.tryCoerceCallLike(&call, expect_ty);
+            },
+            .StructLit => blk: { // Path 2: V.C{ ... } form
+                const struct_lit = self.getExpr(.StructLit, expr_id);
+                break :blk try self.tryCoerceStructLitLike(&struct_lit, expect_ty);
+            },
+            else => false,
+        };
+    }
 
-        // Initializers must be evaluated in value context even inside statement blocks
-        try self.pushValueReq(true);
-        const rhs_ty = try self.checkExpr(decl.value);
-        self.popValueReq();
-
-        if (rhs_ty == null) return;
-
-        // If LHS is a pattern, ensure the RHS type matches the pattern's shape.
-        if (!decl.pattern.isNone()) {
-            const shape_ok = pattern_matching.checkPatternShapeForDecl(self, decl.pattern.unwrap(), rhs_ty.?);
-            switch (shape_ok) {
-                .ok => {},
-                .tuple_arity_mismatch => {
-                    try self.context.diags.addError(self.exprLoc(decl), .tuple_arity_mismatch, .{});
-                    return;
-                },
-                .struct_field_mismatch => {
-                    try self.context.diags.addError(self.exprLoc(decl), .struct_pattern_field_mismatch, .{});
-                    return;
-                },
-                .shape_mismatch => {
-                    try self.context.diags.addError(self.exprLoc(decl), .pattern_shape_mismatch, .{});
-                    return;
-                },
+    fn tryCoerceCallLike(
+        self: *Checker,
+        call_like: *const ast.Rows.Call,
+        expect_ty: types.TypeId,
+    ) !bool {
+        var cur = call_like.callee;
+        var last: ?ast.StrId = null;
+        while (self.exprKind(cur) == .FieldAccess) {
+            const fr = self.getExpr(.FieldAccess, cur);
+            last = fr.field;
+            cur = fr.parent;
+        }
+        if (last) |lname| {
+            if (self.getPayloadTypeForCase(expect_ty, lname)) |pay_ty| {
+                return try self.checkCallArgsAgainstPayload(pay_ty, call_like);
             }
         }
+        return false;
+    }
 
-        try self.tryTypeCoercion(decl_id, rhs_ty.?, expect_ty);
+    fn tryCoerceStructLitLike(
+        self: *Checker,
+        sl: *const ast.Rows.StructLit,
+        expect_ty: types.TypeId,
+    ) !bool {
+        if (sl.ty.isNone()) return false;
+
+        var cur = sl.ty.unwrap();
+        var last: ?ast.StrId = null;
+        while (self.exprKind(cur) == .FieldAccess) {
+            const fr = self.getExpr(.FieldAccess, cur);
+            last = fr.field;
+            cur = fr.parent;
+        }
+        if (last) |lname| {
+            if (self.getPayloadTypeForCase(expect_ty, lname)) |pay_ty| {
+                return try self.checkStructLitAgainstPayload(pay_ty, sl);
+            }
+        }
+        return false;
+    }
+
+    fn getPayloadTypeForCase(
+        self: *Checker,
+        expect_ty: types.TypeId,
+        lname: ast.StrId,
+    ) ?types.TypeId {
+        const ek = self.context.type_store.getKind(expect_ty);
+        const cases = if (ek == .Variant)
+            self.context.type_store.field_pool.slice(self.context.type_store.Variant.get(self.context.type_store.index.rows.items[expect_ty.toRaw()]).variants)
+        else
+            self.context.type_store.field_pool.slice(self.context.type_store.Error.get(self.context.type_store.index.rows.items[expect_ty.toRaw()]).variants);
+
+        for (cases) |fid| {
+            const f = self.context.type_store.Field.get(fid.toRaw());
+            if (f.name.toRaw() == lname.toRaw()) return f.ty;
+        }
+        return null;
+    }
+
+    fn checkCallArgsAgainstPayload(
+        self: *Checker,
+        pay_ty: types.TypeId,
+        call: *const ast.Rows.Call,
+    ) !bool {
+        const k = self.context.type_store.getKind(pay_ty);
+
+        if (k == .Tuple) {
+            const tr = self.context.type_store.get(.Tuple, pay_ty);
+            const tys = self.context.type_store.type_pool.slice(tr.elems);
+            const args = self.ast_unit.exprs.expr_pool.slice(call.args);
+            if (args.len != tys.len) return false;
+
+            for (args, 0..) |aid, i| {
+                const at = try self.checkExpr(aid) orelse return false;
+                if (self.assignable(at, tys[i]) != .success) return false;
+            }
+            return true;
+        }
+
+        if (k == .Void) {
+            return self.ast_unit.exprs.expr_pool.slice(call.args).len == 0;
+        }
+
+        // Single payload
+        const args = self.ast_unit.exprs.expr_pool.slice(call.args);
+        if (args.len != 1) return false;
+
+        const at = try self.checkExpr(args[0]) orelse return false;
+        return (self.assignable(at, pay_ty) == .success);
+    }
+
+    fn checkStructLitAgainstPayload(
+        self: *Checker,
+        pay_ty: types.TypeId,
+        sl: *const ast.Rows.StructLit,
+    ) !bool {
+        if (self.context.type_store.getKind(pay_ty) != .Struct) return false;
+
+        const st = self.context.type_store.get(.Struct, pay_ty);
+        const tfields = self.context.type_store.field_pool.slice(st.fields);
+        const vfields = self.ast_unit.exprs.sfv_pool.slice(sl.fields);
+
+        for (vfields) |sfid| {
+            const sf = self.ast_unit.exprs.StructFieldValue.get(sfid.toRaw());
+            if (sf.name.isNone()) return false;
+
+            const nm = sf.name.unwrap();
+            var want: ?types.TypeId = null;
+
+            // Find matching target field
+            for (tfields) |tfid| {
+                const tf = self.context.type_store.Field.get(tfid.toRaw());
+                if (tf.name.toRaw() == nm.toRaw()) {
+                    want = tf.ty;
+                    break;
+                }
+            }
+            if (want == null) return false;
+
+            // Type-check value against target field type
+            const at = try self.checkExpr(sf.value) orelse return false;
+            if (self.assignable(at, want.?) != .success) return false;
+        }
+
+        return true;
     }
 
     fn tryTypeCoercion(
         self: *Checker,
-        decl: ast.DeclId,
+        decl_id: ast.DeclId,
         rhs_ty: types.TypeId,
         expect_ty: ?types.TypeId,
     ) !void {
         if (expect_ty == null) {
-            // Some degenerate cases where we don't infer from RHS
-            const rhs_kind = self.typeKind(rhs_ty);
-            switch (rhs_kind) {
-                .Array => {
-                    const arr = self.context.type_store.Array.get(self.trow(rhs_ty));
-                    if (arr.len == 0) {
-                        try self.context.diags.addError(self.exprLoc(self.ast_unit.exprs.Decl.get(decl.toRaw())), .cannot_infer_type_from_empty_array, .{});
-                        return;
-                    }
-                },
-                else => {
-                    // infer from RHS
-                    self.type_info.decl_types.items[decl.toRaw()] = rhs_ty;
-                },
-            }
-        } else {
-            // Allow variant RHS written as V.C(...) or V.C{...} to type as the annotated variant.
-            var is_assignable = self.assignable(rhs_ty, expect_ty.?);
-            if (is_assignable == .failure) {
-                const ek = self.context.type_store.getKind(expect_ty.?);
-                if (ek == .Variant or ek == .Error) {
-                    const d = self.ast_unit.exprs.Decl.get(decl.toRaw());
-                    const vk = self.exprKind(d.value);
-                    if (vk == .Call) {
-                        const call = self.getExpr(.Call, d.value);
-                        var cur = call.callee;
-                        var last: ?ast.StrId = null;
-                        while (self.exprKind(cur) == .FieldAccess) {
-                            const fr = self.getExpr(.FieldAccess, cur);
-                            last = fr.field;
-                            cur = fr.parent;
-                        }
-                        if (last) |lname| {
-                            const cases = if (ek == .Variant)
-                                self.context.type_store.field_pool.slice(self.context.type_store.Variant.get(self.context.type_store.index.rows.items[expect_ty.?.toRaw()]).variants)
-                            else
-                                self.context.type_store.field_pool.slice(self.context.type_store.Error.get(self.context.type_store.index.rows.items[expect_ty.?.toRaw()]).variants);
-                            var pty: ?types.TypeId = null;
-                            for (cases) |fid| {
-                                const f = self.context.type_store.Field.get(fid.toRaw());
-                                if (f.name.toRaw() == lname.toRaw()) { pty = f.ty; break; }
-                            }
-                            if (pty) |pay_ty| {
-                                var ok = true;
-                                if (self.context.type_store.getKind(pay_ty) == .Tuple) {
-                                    const tr = self.context.type_store.get(.Tuple, pay_ty);
-                                    const tys = self.context.type_store.type_pool.slice(tr.elems);
-                                    const args = self.ast_unit.exprs.expr_pool.slice(call.args);
-                                    ok = (args.len == tys.len);
-                                    if (ok) {
-                                        for (args, 0..) |aid, i| {
-                                            const at = try self.checkExpr(aid) orelse return;
-                                            if (self.assignable(at, tys[i]) != .success) { ok = false; break; }
-                                        }
-                                    }
-                                } else if (self.context.type_store.getKind(pay_ty) == .Void) {
-                                    ok = self.ast_unit.exprs.expr_pool.slice(call.args).len == 0;
-                                } else {
-                                    // single payload
-                                    const args = self.ast_unit.exprs.expr_pool.slice(call.args);
-                                    ok = (args.len == 1);
-                                    if (ok) {
-                                        const at = try self.checkExpr(args[0]) orelse return;
-                                        ok = (self.assignable(at, pay_ty) == .success);
-                                    }
-                                }
-                                if (ok) {
-                                    // Treat RHS as the annotated variant type
-                                    self.type_info.expr_types.items[d.value.toRaw()] = expect_ty.?;
-                                    is_assignable = .success;
-                                }
-                            }
-                        }
-                    } else if (vk == .StructLit) {
-                        const sl = self.getExpr(.StructLit, d.value);
-                        if (!sl.ty.isNone()) {
-                            var cur = sl.ty.unwrap();
-                            var last: ?ast.StrId = null;
-                            while (self.exprKind(cur) == .FieldAccess) {
-                                const fr = self.getExpr(.FieldAccess, cur);
-                                last = fr.field;
-                                cur = fr.parent;
-                            }
-                            if (last) |lname| {
-                                const cases = if (ek == .Variant)
-                                    self.context.type_store.field_pool.slice(self.context.type_store.Variant.get(self.context.type_store.index.rows.items[expect_ty.?.toRaw()]).variants)
-                                else
-                                    self.context.type_store.field_pool.slice(self.context.type_store.Error.get(self.context.type_store.index.rows.items[expect_ty.?.toRaw()]).variants);
-                                var pty: ?types.TypeId = null;
-                                for (cases) |fid| {
-                                    const f = self.context.type_store.Field.get(fid.toRaw());
-                                    if (f.name.toRaw() == lname.toRaw()) { pty = f.ty; break; }
-                                }
-                                if (pty) |pay_ty| {
-                                    var ok = true;
-                                    if (self.context.type_store.getKind(pay_ty) == .Struct) {
-                                        const st = self.context.type_store.get(.Struct, pay_ty);
-                                        const tfields = self.context.type_store.field_pool.slice(st.fields);
-                                        const vfields = self.ast_unit.exprs.sfv_pool.slice(sl.fields);
-                                        for (vfields) |sfid| {
-                                            const sf = self.ast_unit.exprs.StructFieldValue.get(sfid.toRaw());
-                                            if (sf.name.isNone()) { ok = false; break; }
-                                            const nm = sf.name.unwrap();
-                                            var want: ?types.TypeId = null;
-                                            for (tfields) |tfid| {
-                                                const tf = self.context.type_store.Field.get(tfid.toRaw());
-                                                if (tf.name.toRaw() == nm.toRaw()) { want = tf.ty; break; }
-                                            }
-                                            if (want == null) { ok = false; break; }
-                                            const at = try self.checkExpr(sf.value) orelse return;
-                                            if (self.assignable(at, want.?) != .success) { ok = false; break; }
-                                        }
-                                    } else {
-                                        ok = false;
-                                    }
-                                    if (ok) {
-                                        self.type_info.expr_types.items[d.value.toRaw()] = expect_ty.?;
-                                        is_assignable = .success;
-                                    }
-                                }
-                            }
-                        }
-                    }
+            try self.typeInferFromRHS(decl_id, rhs_ty);
+            return;
+        }
+
+        // First, check direct assignability
+        var is_assignable = self.assignable(rhs_ty, expect_ty.?);
+
+        const decl = self.ast_unit.exprs.Decl.get(decl_id.toRaw());
+
+        // If that failed, variant/error literals might be of the form V.C(...) or V.C{...}
+        if (is_assignable == .failure) {
+            const ek = self.context.type_store.getKind(expect_ty.?);
+            if (ek == .Variant or ek == .Error) {
+                if (try self.tryCoerceVariantOrErrorLiteral(decl.value, expect_ty.?)) {
+                    is_assignable = .success;
                 }
             }
-            const d = self.ast_unit.exprs.Decl.get(decl.toRaw());
-            switch (is_assignable) {
-                .success => {
-                    // Use expected type and also update RHS expr type for consistency.
-                    self.type_info.decl_types.items[decl.toRaw()] = expect_ty.?;
-                    self.type_info.expr_types.items[d.value.toRaw()] = expect_ty.?;
-                },
-                .map_wrong_key_type => try self.context.diags.addError(self.exprLoc(d), .map_wrong_key_type, .{}),
-                .union_literal_no_fields => try self.context.diags.addError(self.exprLoc(d), .union_empty_literal, .{}),
-                .union_literal_multiple_fields => try self.context.diags.addError(self.exprLoc(d), .union_literal_multiple_fields, .{}),
-                .expected_enum_type => try self.context.diags.addError(self.exprLoc(d), .expected_enum_type, .{}),
-                .expected_struct_type => try self.context.diags.addError(self.exprLoc(d), .expected_struct_type, .{}),
-                .struct_field_count_mismatch => try self.context.diags.addError(self.exprLoc(d), .struct_field_count_mismatch, .{}),
-                .unknown_struct_field => try self.context.diags.addError(self.exprLoc(d), .unknown_struct_field, .{}),
-                .struct_field_name_mismatch => try self.context.diags.addError(self.exprLoc(d), .struct_field_name_mismatch, .{}),
-                .noreturn_not_storable => try self.context.diags.addError(self.exprLoc(d), .noreturn_not_storable, .{}),
-                .type_value_mismatch => try self.context.diags.addError(self.exprLoc(d), .type_value_mismatch, .{}),
-                .array_length_mismatch => try self.context.diags.addError(self.exprLoc(d), .array_length_mismatch, .{}),
-                .tuple_arity_mismatch => try self.context.diags.addError(self.exprLoc(d), .tuple_arity_mismatch, .{}),
-                .assign_null_to_non_optional => try self.context.diags.addError(self.exprLoc(d), .assign_null_to_non_optional, .{}),
-                .pointer_type_mismatch => try self.context.diags.addError(self.exprLoc(d), .pointer_type_mismatch, .{}),
-                .pointer_constness_mismatch => try self.context.diags.addError(self.exprLoc(d), .pointer_constness_violation, .{}),
-                .expected_array_type => try self.context.diags.addError(self.exprLoc(d), .expected_array_type, .{}),
-                .expected_tuple_type => try self.context.diags.addError(self.exprLoc(d), .expected_tuple_type, .{}),
-                .expected_map_type => try self.context.diags.addError(self.exprLoc(d), .expected_map_type, .{}),
-                .expected_pointer_type => try self.context.diags.addError(self.exprLoc(d), .expected_pointer_type, .{}),
-                .expected_integer_type => try self.context.diags.addError(self.exprLoc(d), .expected_integer_type, .{}),
-                .expected_float_type => try self.context.diags.addError(self.exprLoc(d), .expected_float_type, .{}),
-                .failure => try self.context.diags.addError(self.exprLoc(d), .type_annotation_mismatch, .{}),
-            }
+        }
+
+        // Apply result (and corresponding diagnostics).
+        switch (is_assignable) {
+            .success => {
+                // Use expected type and also update RHS expr type for consistency.
+                self.type_info.decl_types.items[decl_id.toRaw()] = expect_ty.?;
+                self.type_info.expr_types.items[decl.value.toRaw()] = expect_ty.?;
+            },
+            .failure => try self.context.diags.addError(self.exprLoc(decl), .type_annotation_mismatch, .{}),
+            inline else => |x| {
+                const diag_code = @field(diag.DiagnosticCode, @tagName(x));
+                try self.context.diags.addError(self.exprLoc(decl), diag_code, .{});
+            },
         }
     }
 
@@ -696,9 +723,7 @@ pub const Checker = struct {
                         const shape_ok = pattern_matching.checkPatternShapeForAssignExpr(self, stmt.left, rv_ty.?);
                         switch (shape_ok) {
                             .ok => {},
-                            .tuple_arity_mismatch => try self.context.diags.addError(self.exprLoc(stmt), .tuple_arity_mismatch, .{}),
-                            .struct_field_mismatch => try self.context.diags.addError(self.exprLoc(stmt), .struct_pattern_field_mismatch, .{}),
-                            .shape_mismatch => try self.context.diags.addError(self.exprLoc(stmt), .pattern_shape_mismatch, .{}),
+                            inline else => |x| try self.context.diags.addError(self.exprLoc(stmt), @field(diag.DiagnosticCode, @tagName(x)), .{}),
                         }
                     }
                 } else {
@@ -712,17 +737,13 @@ pub const Checker = struct {
                     }
                 }
                 // Purity: assignment writes inside pure functions are allowed only to locals
-                if (self.inFunction()) {
-                    const fctx = self.currentFunc().?;
-                    if (fctx.require_pure) {
-                        const root = self.lvalueRootKind(stmt.left);
-                        switch (root) {
-                            .LocalDecl => {},
-                            .Param, .NonLocalDecl, .Unknown => {
-                                try self.context.diags.addError(self.exprLoc(stmt), .purity_violation, .{});
-                                self.func_stack.items[self.func_stack.items.len - 1].pure = false;
-                            },
-                        }
+                if (self.inFunction() and self.currentFunc().?.require_pure) {
+                    switch (self.lvalueRootKind(stmt.left)) {
+                        .LocalDecl => {},
+                        .Param, .NonLocalDecl, .Unknown => {
+                            try self.context.diags.addError(self.exprLoc(stmt), .purity_violation, .{});
+                            self.func_stack.items[self.func_stack.items.len - 1].pure = false;
+                        },
                     }
                 }
             },
@@ -766,14 +787,8 @@ pub const Checker = struct {
                     try self.context.diags.addError(self.exprLoc(row), .continue_outside_loop, .{});
             },
             .Unreachable => {},
-            .Defer => {
-                const row = self.getStmt(.Defer, sid);
-                _ = try self.checkDefer(row);
-            },
-            .ErrDefer => {
-                const row = self.getStmt(.ErrDefer, sid);
-                _ = try self.checkErrDefer(row);
-            },
+            .Defer => _ = try self.checkDefer(self.getStmt(.Defer, sid)),
+            .ErrDefer => _ = try self.checkErrDefer(self.getStmt(.ErrDefer, sid)),
         }
         return null;
     }
@@ -798,100 +813,7 @@ pub const Checker = struct {
             .FieldAccess => try self.checkFieldAccess(id),
             .StructLit => try self.checkStructLit(id),
             .Range => try self.checkRange(id),
-
-            // still default to any for the following kinds (can be implemented later)
             .Deref => try self.checkDeref(id),
-            .VariantLit => blk: {
-                // Type a variant literal using available context when possible.
-                // Without an expected type, leave as Any for now.
-                const vl = self.getExpr(.VariantLit, id);
-                // Try to locate an expected type by scanning top-level decls that bind this expr as their RHS.
-                var expected_ty: ?types.TypeId = null;
-                {
-                    const decls = self.ast_unit.exprs.decl_pool.slice(self.ast_unit.unit.decls);
-                    var i: usize = 0;
-                    while (i < decls.len) : (i += 1) {
-                        const d = self.ast_unit.exprs.Decl.get(decls[i].toRaw());
-                        if (d.value.toRaw() == id.toRaw() and !d.ty.isNone()) {
-                            expected_ty = try check_types.typeFromTypeExpr(self, d.ty.unwrap());
-                            break;
-                        }
-                    }
-                }
-
-                if (expected_ty) |ety| {
-                const etyk = self.context.type_store.getKind(ety);
-                if (etyk == .Variant or etyk == .Error) {
-                        // Validate payload against the case type, if any.
-                        const cases = if (etyk == .Variant)
-                            self.context.type_store.field_pool.slice(self.context.type_store.Variant.get(self.context.type_store.index.rows.items[ety.toRaw()]).variants)
-                        else
-                            self.context.type_store.field_pool.slice(self.context.type_store.Error.get(self.context.type_store.index.rows.items[ety.toRaw()]).variants);
-                        var found = false;
-                        var payload_ty: types.TypeId = self.context.type_store.tVoid();
-                        for (cases) |fid| {
-                            const f = self.context.type_store.Field.get(fid.toRaw());
-                            if (f.name.toRaw() == vl.name.toRaw()) { found = true; payload_ty = f.ty; break; }
-                        }
-                        if (!found) break :blk null;
-
-                        // Check value shape
-                        if (!vl.value.isNone()) {
-                            const vexpr = vl.value.unwrap();
-                            const pk = self.context.type_store.getKind(payload_ty);
-                            if (pk == .Void) break :blk null; // payload not allowed
-                            if (pk == .Tuple) {
-                                const tr = self.context.type_store.get(.Tuple, payload_ty);
-                                const tys = self.context.type_store.type_pool.slice(tr.elems);
-                                if (self.exprKind(vexpr) == .TupleLit) {
-                                    const tl = self.getExpr(.TupleLit, vexpr);
-                                    const elems = self.ast_unit.exprs.expr_pool.slice(tl.elems);
-                                    if (elems.len != tys.len) break :blk null;
-                                    for (elems, 0..) |eid, i| {
-                                        const et = try self.checkExpr(eid) orelse break :blk null;
-                                        if (self.assignable(et, tys[i]) != .success) break :blk null;
-                                    }
-                                } else {
-                                    if (tys.len != 1) break :blk null;
-                                    const et = try self.checkExpr(vexpr) orelse break :blk null;
-                                    if (self.assignable(et, tys[0]) != .success) break :blk null;
-                                }
-                            } else if (pk == .Struct) {
-                                if (self.exprKind(vexpr) != .StructLit) break :blk null;
-                                const sl = self.getExpr(.StructLit, vexpr);
-                                const vfields = self.ast_unit.exprs.sfv_pool.slice(sl.fields);
-                                const st = self.context.type_store.get(.Struct, payload_ty);
-                                const tfields = self.context.type_store.field_pool.slice(st.fields);
-                                // For each provided field, check type.
-                                for (vfields) |sfid| {
-                                    const sf = self.ast_unit.exprs.StructFieldValue.get(sfid.toRaw());
-                                    if (sf.name.isNone()) break :blk null;
-                                    const sname = sf.name.unwrap();
-                                    var fty: ?types.TypeId = null;
-                                    for (tfields) |tfid| {
-                                        const tf = self.context.type_store.Field.get(tfid.toRaw());
-                                        if (tf.name.toRaw() == sname.toRaw()) { fty = tf.ty; break; }
-                                    }
-                                    if (fty == null) break :blk null;
-                                    const et = try self.checkExpr(sf.value) orelse break :blk null;
-                                    if (self.assignable(et, fty.?) != .success) break :blk null;
-                                }
-                            } else {
-                                // primitive payload
-                                const et = try self.checkExpr(vexpr) orelse break :blk null;
-                                if (self.assignable(et, payload_ty) != .success) break :blk null;
-                            }
-                        } else {
-                            // No payload provided; require void payload type
-                            if (self.context.type_store.getKind(payload_ty) != .Void) break :blk null;
-                        }
-                        break :blk ety;
-                    }
-                }
-                // Unknown context: treat as Any to keep flow; lower stages can error if needed.
-                break :blk self.context.type_store.tAny();
-            },
-            .EnumLit => unreachable,
             .Call => try self.checkCall(id),
             .ComptimeBlock => try self.checkComptimeBlock(id),
             .CodeBlock => try self.checkCodeBlock(id),
@@ -912,14 +834,8 @@ pub const Checker = struct {
             .UndefLit => self.context.type_store.tAny(),
 
             .Block => try self.checkBlock(id),
-            .Defer => blk: {
-                const row = self.getExpr(.Defer, id);
-                break :blk try self.checkDefer(row);
-            },
-            .ErrDefer => blk: {
-                const row = self.getExpr(.ErrDefer, id);
-                break :blk try self.checkErrDefer(row);
-            },
+            .Defer => try self.checkDefer(self.getExpr(.Defer, id)),
+            .ErrDefer => try self.checkErrDefer(self.getExpr(.ErrDefer, id)),
             .ErrUnwrap => try self.checkErrUnwrap(id),
             .OptionalUnwrap => try self.checkOptionalUnwrap(id),
             .Await => try self.checkAwait(id),
@@ -1297,11 +1213,11 @@ pub const Checker = struct {
                             try self.context.diags.addError(self.exprLoc(fnr), .tuple_arity_mismatch, .{});
                             return null;
                         },
-                        .struct_field_mismatch => {
+                        .struct_pattern_field_mismatch => {
                             try self.context.diags.addError(self.exprLoc(fnr), .struct_pattern_field_mismatch, .{});
                             return null;
                         },
-                        .shape_mismatch => {
+                        .pattern_shape_mismatch => {
                             try self.context.diags.addError(self.exprLoc(fnr), .pattern_shape_mismatch, .{});
                             return null;
                         },
@@ -1776,7 +1692,7 @@ pub const Checker = struct {
                 try self.context.diags.addError(self.exprLoc(struct_lit), .union_literal_multiple_fields, .{});
                 return null;
             },
-            .union_literal_no_fields => {
+            .union_empty_literal => {
                 try self.context.diags.addError(self.exprLoc(struct_lit), .union_empty_literal, .{});
                 return null;
             },

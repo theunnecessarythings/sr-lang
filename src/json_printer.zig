@@ -345,28 +345,6 @@ pub const JsonPrinter = struct {
                 }
                 try self.stream.endArray();
             },
-            .VariantLit => {
-                const node = self.exprs.get(.VariantLit, id);
-                try self.printLoc(node.loc);
-                try self.stream.objectField("name");
-                try self.stream.write(self.s(node.name));
-                try self.stream.objectField("value");
-                if (!node.value.isNone())
-                    try self.printExpr(node.value.unwrap())
-                else
-                    try self.writeNull();
-            },
-            .EnumLit => {
-                const node = self.exprs.get(.EnumLit, id);
-                try self.printLoc(node.loc);
-                try self.stream.objectField("name");
-                try self.stream.write(self.s(node.name));
-                try self.stream.objectField("value");
-                if (!node.value.isNone())
-                    try self.printExpr(node.value.unwrap())
-                else
-                    try self.writeNull();
-            },
             .FunctionLit => {
                 const node = self.exprs.get(.FunctionLit, id);
                 try self.printLoc(node.loc);

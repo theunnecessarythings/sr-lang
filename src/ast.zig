@@ -129,8 +129,6 @@ pub const ExprKind = enum(u16) {
     IndexAccess,
     FieldAccess,
     StructLit,
-    VariantLit,
-    EnumLit,
     FunctionLit,
     Block,
     ComptimeBlock,
@@ -201,8 +199,6 @@ pub const Rows = struct {
     pub const FieldAccess = struct { parent: ExprId, field: StrId, is_tuple: bool, loc: LocId };
     pub const StructFieldValue = struct { name: OptStrId, value: ExprId, loc: LocId };
     pub const StructLit = struct { fields: RangeStructFieldValue, ty: OptExprId, loc: LocId };
-    pub const VariantLit = struct { name: StrId, value: OptExprId, loc: LocId };
-    pub const EnumLit = struct { name: StrId, value: OptExprId, loc: LocId };
 
     pub const FnFlags = packed struct(u8) { is_proc: bool, is_async: bool, is_variadic: bool, is_extern: bool, _pad: u4 = 0 };
 
@@ -417,8 +413,6 @@ pub const ExprStore = struct {
 
     StructFieldValue: Table(Rows.StructFieldValue) = .{},
     StructLit: Table(Rows.StructLit) = .{},
-    VariantLit: Table(Rows.VariantLit) = .{},
-    EnumLit: Table(Rows.EnumLit) = .{},
 
     FunctionLit: Table(Rows.FunctionLit) = .{},
     Block: Table(Rows.Block) = .{},
@@ -993,26 +987,6 @@ pub const AstPrinter = struct {
                     try self.open("(value", .{});
                     try self.printExpr(field.value);
                     try self.close();
-                    try self.close();
-                }
-                try self.close();
-            },
-            .VariantLit => {
-                const node = self.exprs.get(.VariantLit, id);
-                try self.open("(variant_literal name=\"{s}\"", .{self.s(node.name)});
-                if (!node.value.isNone()) {
-                    try self.open("(value", .{});
-                    try self.printExpr(node.value.unwrap());
-                    try self.close();
-                }
-                try self.close();
-            },
-            .EnumLit => {
-                const node = self.exprs.get(.EnumLit, id);
-                try self.open("(enum_literal name=\"{s}\"", .{self.s(node.name)});
-                if (!node.value.isNone()) {
-                    try self.open("(value", .{});
-                    try self.printExpr(node.value.unwrap());
                     try self.close();
                 }
                 try self.close();
@@ -1939,23 +1913,6 @@ pub const CodePrinter = struct {
                     try self.printExpr(field.value);
                 }
                 try self.printf("}}", .{});
-            },
-            .VariantLit => {
-                const node = self.exprs.get(.VariantLit, id);
-                try self.printf(".{s}", .{self.s(node.name)});
-                if (!node.value.isNone()) {
-                    try self.printf("(", .{});
-                    try self.printExpr(node.value.unwrap());
-                    try self.printf(")", .{});
-                }
-            },
-            .EnumLit => {
-                const node = self.exprs.get(.EnumLit, id);
-                try self.printf(".{s}", .{self.s(node.name)});
-                if (!node.value.isNone()) {
-                    try self.printf(" = ", .{});
-                    try self.printExpr(node.value.unwrap());
-                }
             },
             .FunctionLit => {
                 const node = self.exprs.get(.FunctionLit, id);

@@ -1,9 +1,10 @@
-const Checker = @import("checker.zig").Checker;
 const std = @import("std");
+
 const ast = @import("ast.zig");
-const types = @import("types.zig");
-const symbols = @import("symbols.zig");
 const check_types = @import("check_types.zig");
+const Checker = @import("checker.zig").Checker;
+const symbols = @import("symbols.zig");
+const types = @import("types.zig");
 
 inline fn tk(self: *Checker, ty: types.TypeId) types.TypeKind {
     return self.context.type_store.index.kinds.items[ty.toRaw()];
@@ -843,7 +844,7 @@ pub fn declareBindingsInPattern(self: *Checker, pid: ast.PatternId, loc: ast.Loc
     }
 }
 
-const PatternShapeCheck = enum { ok, tuple_arity_mismatch, struct_field_mismatch, shape_mismatch };
+const PatternShapeCheck = enum { ok, tuple_arity_mismatch, struct_pattern_field_mismatch, pattern_shape_mismatch };
 
 pub fn checkPatternShapeForDecl(self: *Checker, pid: ast.PatternId, value_ty: types.TypeId) PatternShapeCheck {
     const pkind = tk(self, value_ty);
@@ -853,7 +854,7 @@ pub fn checkPatternShapeForDecl(self: *Checker, pid: ast.PatternId, value_ty: ty
         .Wildcard, .Binding => return .ok,
 
         .Tuple => {
-            if (pkind != .Tuple) return .shape_mismatch;
+            if (pkind != .Tuple) return .pattern_shape_mismatch;
             const tp = self.context.type_store.Tuple.get(row(self, value_ty));
             const vals = self.context.type_store.type_pool.slice(tp.elems);
             const pt = self.ast_unit.pats.get(.Tuple, pid);
@@ -868,7 +869,7 @@ pub fn checkPatternShapeForDecl(self: *Checker, pid: ast.PatternId, value_ty: ty
         },
 
         .Struct => {
-            if (pkind != .Struct) return .shape_mismatch;
+            if (pkind != .Struct) return .pattern_shape_mismatch;
             const sv = self.context.type_store.Struct.get(row(self, value_ty));
             const vfields = self.context.type_store.field_pool.slice(sv.fields);
             const sp = self.ast_unit.pats.get(.Struct, pid);
@@ -887,7 +888,7 @@ pub fn checkPatternShapeForDecl(self: *Checker, pid: ast.PatternId, value_ty: ty
                         break;
                     }
                 }
-                if (fty == null) return .struct_field_mismatch;
+                if (fty == null) return .struct_pattern_field_mismatch;
 
                 const res = checkPatternShapeForDecl(self, pf.pattern, fty.?);
                 if (res != .ok) return res;
@@ -897,7 +898,7 @@ pub fn checkPatternShapeForDecl(self: *Checker, pid: ast.PatternId, value_ty: ty
 
         .Slice => {
             // Accept array/slice/dynarray; recurse on element patterns.
-            if (pkind != .Array and pkind != .Slice and pkind != .DynArray) return .shape_mismatch;
+            if (pkind != .Array and pkind != .Slice and pkind != .DynArray) return .pattern_shape_mismatch;
             const elem_ty: types.TypeId = switch (pkind) {
                 .Array => self.context.type_store.Array.get(row(self, value_ty)).elem,
                 .Slice => self.context.type_store.Slice.get(row(self, value_ty)).elem,
@@ -911,9 +912,9 @@ pub fn checkPatternShapeForDecl(self: *Checker, pid: ast.PatternId, value_ty: ty
                 const arr = self.context.type_store.Array.get(row(self, value_ty));
                 // Align with checkPattern: allow rest to capture empty.
                 if (sl.has_rest) {
-                    if (elems.len > arr.len) return .shape_mismatch;
+                    if (elems.len > arr.len) return .pattern_shape_mismatch;
                 } else {
-                    if (elems.len != arr.len) return .shape_mismatch;
+                    if (elems.len != arr.len) return .pattern_shape_mismatch;
                 }
             }
 
@@ -941,7 +942,7 @@ pub fn checkPatternShapeForAssignExpr(self: *Checker, expr: ast.ExprId, value_ty
         .Ident => return .ok,
 
         .TupleLit => {
-            if (vk != .Tuple) return .shape_mismatch;
+            if (vk != .Tuple) return .pattern_shape_mismatch;
             const tl = self.ast_unit.exprs.get(.TupleLit, expr);
             const elems = self.ast_unit.exprs.expr_pool.slice(tl.elems);
             const trow = self.context.type_store.Tuple.get(row(self, value_ty));
@@ -956,7 +957,7 @@ pub fn checkPatternShapeForAssignExpr(self: *Checker, expr: ast.ExprId, value_ty
         },
 
         .StructLit => {
-            if (vk != .Struct) return .shape_mismatch;
+            if (vk != .Struct) return .pattern_shape_mismatch;
             const sv = self.context.type_store.Struct.get(row(self, value_ty));
             const vfields = self.context.type_store.field_pool.slice(sv.fields);
             const sl = self.ast_unit.exprs.get(.StructLit, expr);
@@ -965,7 +966,7 @@ pub fn checkPatternShapeForAssignExpr(self: *Checker, expr: ast.ExprId, value_ty
             var i: usize = 0;
             while (i < pfields.len) : (i += 1) {
                 const pf = self.ast_unit.exprs.StructFieldValue.get(pfields[i].toRaw());
-                if (pf.name.isNone()) return .shape_mismatch;
+                if (pf.name.isNone()) return .pattern_shape_mismatch;
 
                 var fty: ?types.TypeId = null;
                 var j: usize = 0;
@@ -976,7 +977,7 @@ pub fn checkPatternShapeForAssignExpr(self: *Checker, expr: ast.ExprId, value_ty
                         break;
                     }
                 }
-                if (fty == null) return .struct_field_mismatch;
+                if (fty == null) return .struct_pattern_field_mismatch;
 
                 const res = checkPatternShapeForAssignExpr(self, pf.value, fty.?);
                 if (res != .ok) return res;
@@ -985,7 +986,7 @@ pub fn checkPatternShapeForAssignExpr(self: *Checker, expr: ast.ExprId, value_ty
         },
 
         .ArrayLit => {
-            if (vk != .Array and vk != .Slice and vk != .DynArray) return .shape_mismatch;
+            if (vk != .Array and vk != .Slice and vk != .DynArray) return .pattern_shape_mismatch;
             const elem_ty: types.TypeId = switch (vk) {
                 .Array => self.context.type_store.Array.get(row(self, value_ty)).elem,
                 .Slice => self.context.type_store.Slice.get(row(self, value_ty)).elem,
@@ -1003,7 +1004,7 @@ pub fn checkPatternShapeForAssignExpr(self: *Checker, expr: ast.ExprId, value_ty
             while (i < elems.len) : (i += 1) {
                 const ek = self.ast_unit.exprs.index.kinds.items[elems[i].toRaw()];
                 if (ek == .Range) {
-                    if (has_rest) return .shape_mismatch; // multiple rest segments
+                    if (has_rest) return .pattern_shape_mismatch; // multiple rest segments
                     has_rest = true;
                     rest_index = i;
                     continue; // validated below
@@ -1015,9 +1016,9 @@ pub fn checkPatternShapeForAssignExpr(self: *Checker, expr: ast.ExprId, value_ty
             if (vk == .Array) {
                 const arr = self.context.type_store.Array.get(row(self, value_ty));
                 if (has_rest) {
-                    if (elems.len - 1 > arr.len) return .shape_mismatch; // minus the rest placeholder
+                    if (elems.len - 1 > arr.len) return .pattern_shape_mismatch; // minus the rest placeholder
                 } else {
-                    if (elems.len != arr.len) return .shape_mismatch;
+                    if (elems.len != arr.len) return .pattern_shape_mismatch;
                 }
             }
 
@@ -1026,13 +1027,13 @@ pub fn checkPatternShapeForAssignExpr(self: *Checker, expr: ast.ExprId, value_ty
                 const rr = self.ast_unit.exprs.get(.Range, elems[rest_index]);
                 if (!rr.end.isNone()) {
                     const binder_kind = self.ast_unit.exprs.index.kinds.items[rr.end.unwrap().toRaw()];
-                    if (binder_kind != .Ident) return .shape_mismatch;
+                    if (binder_kind != .Ident) return .pattern_shape_mismatch;
                 }
             }
             return .ok;
         },
 
-        else => return .shape_mismatch,
+        else => return .pattern_shape_mismatch,
     }
 }
 

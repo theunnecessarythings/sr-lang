@@ -45,6 +45,10 @@ pub const Pipeline = struct {
         repl,
     };
 
+    const prelude = [_][]const u8{
+        "std/prelude.sr",
+    };
+
     pub fn init(allocator: std.mem.Allocator, context: *compile.Context) Pipeline {
         return .{ .allocator = allocator, .context = context };
     }
@@ -209,6 +213,7 @@ pub const Pipeline = struct {
     ) !void {
         // Resolve imports recursively and append their codegen (reuse resolver)
         var imports: std.ArrayList([]const u8) = .empty;
+        for (prelude) |p| try imports.append(self.allocator, try self.allocator.dupe(u8, p));
         defer {
             for (imports.items) |s| self.allocator.free(s);
             imports.deinit(self.allocator);
