@@ -188,7 +188,10 @@ pub fn checkPattern(
         .VariantTuple => {
             const vt_pat = self.ast_unit.pats.get(.VariantTuple, pid);
             const vk = tk(self, value_ty);
-            if (vk != .Variant and vk != .Error) return false;
+            if (vk != .Variant and vk != .Error) {
+                try self.context.diags.addError(self.ast_unit.exprs.locs.get(vt_pat.loc), .pattern_type_mismatch, .{});
+                return false;
+            }
 
             const segs = self.ast_unit.pats.seg_pool.slice(vt_pat.path);
             if (segs.len == 0) return false;
@@ -200,10 +203,16 @@ pub fn checkPattern(
             const elems = self.ast_unit.pats.pat_pool.slice(vt_pat.elems);
             if (pk == .Void) return elems.len == 0;
 
-            if (pk != .Tuple) return false;
+            if (pk != .Tuple) {
+                try self.context.diags.addError(self.ast_unit.exprs.locs.get(vt_pat.loc), .pattern_type_mismatch, .{});
+                return false;
+            }
             const tup = self.context.type_store.Tuple.get(row(self, payload_ty));
             const tys = self.context.type_store.type_pool.slice(tup.elems);
-            if (elems.len != tys.len) return false;
+            if (elems.len != tys.len) {
+                try self.context.diags.addError(self.ast_unit.exprs.locs.get(vt_pat.loc), .tuple_arity_mismatch, .{});
+                return false;
+            }
 
             for (elems, 0..) |eid, i| {
                 if (!(try checkPattern(self, eid, tys[i], false))) return false;
@@ -263,7 +272,10 @@ pub fn checkPattern(
                                 break;
                             }
                         }
-                        if (!found) return false;
+                        if (!found) {
+                            try self.context.diags.addError(self.ast_unit.exprs.locs.get(vs_pat.loc), .struct_pattern_field_mismatch, .{});
+                            return false;
+                        }
                     }
                     return true;
                 }
@@ -295,7 +307,10 @@ pub fn checkPattern(
                     }
                 }
                 if (fty == null) return false;
-                if (!(try checkPattern(self, pf.pattern, fty.?, false))) return false;
+                if (!(try checkPattern(self, pf.pattern, fty.?, false))) {
+                    try self.context.diags.addError(self.ast_unit.exprs.locs.get(vs_pat.loc), .struct_pattern_field_mismatch, .{});
+                    return false;
+                }
             }
             return true;
         },
@@ -462,22 +477,17 @@ pub fn checkMatch(self: *Checker, id: ast.ExprId) !?types.TypeId {
     while (i < arms.len) : (i += 1) {
         const arm = self.ast_unit.exprs.MatchArm.get(arms[i].toRaw());
 
+        try self.pushMatchBinding(arm.pattern, subj_ty);
+        defer self.popMatchBinding();
+
+        _ = try self.symtab.push(self.symtab.currentId());
+        defer self.symtab.pop();
+        try declareBindingsInPattern(self, arm.pattern, arm.loc, .anonymous);
+
         // Validate pattern against subject type.
-        const ok = try checkPattern(self, arm.pattern, subj_ty, false);
+        const ok = try checkPattern(self, arm.pattern, subj_ty, true);
         if (!ok) {
-            // Restore legacy behavior: only emit when there's a single arm.
-            if (arms.len == 1) {
-                const pk = self.ast_unit.pats.index.kinds.items[arm.pattern.toRaw()];
-                const loc = self.ast_unit.exprs.locs.get(arm.loc);
-                if (pk == .Struct or pk == .VariantStruct) {
-                    try self.context.diags.addError(loc, .struct_pattern_field_mismatch, .{});
-                } else {
-                    try self.context.diags.addError(loc, .pattern_shape_mismatch, .{});
-                }
-                return null;
-            }
-            // Multiple arms: silently skip invalid ones (as before).
-            continue;
+            return null;
         }
 
         // Guard must be boolean if present.
@@ -774,7 +784,7 @@ fn structPatternFieldsMatch(self: *Checker, pid: ast.PatternId, value_ty: types.
     return true;
 }
 
-pub const BindingOrigin = union(enum) { decl: ast.DeclId, param: ast.ParamId };
+pub const BindingOrigin = union(enum) { decl: ast.DeclId, param: ast.ParamId, anonymous };
 
 pub fn declareBindingsInPattern(self: *Checker, pid: ast.PatternId, loc: ast.LocId, origin: BindingOrigin) !void {
     const k = self.ast_unit.pats.index.kinds.items[pid.toRaw()];
@@ -795,6 +805,13 @@ pub fn declareBindingsInPattern(self: *Checker, pid: ast.PatternId, loc: ast.Loc
                     .loc = loc,
                     .origin_decl = ast.OptDeclId.none(),
                     .origin_param = ast.OptParamId.some(par),
+                },
+                .anonymous => .{
+                    .name = b.name,
+                    .kind = .Var,
+                    .loc = loc,
+                    .origin_decl = ast.OptDeclId.none(),
+                    .origin_param = ast.OptParamId.none(),
                 },
             };
             _ = try self.symtab.declare(rowv);
@@ -1053,6 +1070,12 @@ pub fn bindingTypeInPattern(self: *Checker, pid: ast.PatternId, name: ast.StrId,
             return null;
         },
         .Wildcard => return null,
+
+        .At => {
+            const at = self.ast_unit.pats.get(.At, pid);
+            if (at.binder.toRaw() == name.toRaw()) return value_ty;
+            return bindingTypeInPattern(self, at.pattern, name, value_ty);
+        },
 
         .Tuple => {
             if (pk != .Tuple) return null;

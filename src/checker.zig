@@ -33,8 +33,14 @@ pub const Checker = struct {
     warned_code: bool = false,
 
     loop_binding_stack: std.ArrayListUnmanaged(LoopBindingCtx) = .{},
+    match_binding_stack: std.ArrayListUnmanaged(MatchBindingCtx) = .{},
+
     const LoopBindingCtx = struct {
         pat: ast.OptPatternId,
+        subject_ty: types.TypeId,
+    };
+    const MatchBindingCtx = struct {
+        pat: ast.PatternId,
         subject_ty: types.TypeId,
     };
 
@@ -92,6 +98,7 @@ pub const Checker = struct {
         self.loop_stack.deinit(self.gpa);
         self.value_ctx.deinit(self.gpa);
         self.loop_binding_stack.deinit(self.gpa);
+        self.match_binding_stack.deinit(self.gpa);
         self.symtab.deinit();
     }
 
@@ -174,6 +181,24 @@ pub const Checker = struct {
     inline fn popLoopBinding(self: *Checker) void {
         if (self.loop_binding_stack.items.len > 0) _ = self.loop_binding_stack.pop();
     }
+
+    pub inline fn pushMatchBinding(self: *Checker, pat: ast.PatternId, subj: types.TypeId) !void {
+        try self.match_binding_stack.append(self.gpa, .{ .pat = pat, .subject_ty = subj });
+    }
+    pub inline fn popMatchBinding(self: *Checker) void {
+        if (self.match_binding_stack.items.len > 0) _ = self.match_binding_stack.pop();
+    }
+    inline fn bindingTypeFromActiveMatches(self: *Checker, name: ast.StrId) ?types.TypeId {
+        var i: isize = @as(isize, @intCast(self.match_binding_stack.items.len)) - 1;
+        while (i >= 0) : (i -= 1) {
+            const ctx = self.match_binding_stack.items[@intCast(i)];
+            if (pattern_matching.bindingTypeInPattern(self, ctx.pat, name, ctx.subject_ty)) |bt| {
+                return bt;
+            }
+        }
+        return null;
+    }
+
     inline fn bindingTypeFromActiveLoops(self: *Checker, name: ast.StrId) ?types.TypeId {
         var i: isize = @as(isize, @intCast(self.loop_binding_stack.items.len)) - 1;
         while (i >= 0) : (i -= 1) {
@@ -222,8 +247,6 @@ pub const Checker = struct {
         // pattern : expect_ty = value
 
         const decl = self.ast_unit.exprs.Decl.get(decl_id.toRaw());
-        // Bind declaration pattern to symbol table
-        try self.bindDeclPattern(decl_id, decl);
 
         // Expected type from type annotation (if any)
         const expect_ty = if (decl.ty.isNone())
@@ -238,11 +261,16 @@ pub const Checker = struct {
 
         if (rhs_ty == null) return;
 
+        // Bind declaration pattern to symbol table
+        // try self.bindDeclPattern(decl_id, decl);
+
         // Try to coerce value type to expected type (if any)
         try self.tryTypeCoercion(decl_id, rhs_ty.?, expect_ty);
 
         // If LHS is a pattern, ensure the RHS type matches the pattern's shape.
         if (!decl.pattern.isNone()) {
+            try pattern_matching.declareBindingsInPattern(self, decl.pattern.unwrap(), decl.loc, .{ .decl = decl_id });
+
             const shape_ok = pattern_matching.checkPatternShapeForDecl(self, decl.pattern.unwrap(), rhs_ty.?);
             switch (shape_ok) {
                 .ok => {},
@@ -390,6 +418,7 @@ pub const Checker = struct {
             },
             .TypeType => {
                 if (got_kind != .TypeType) return .type_value_mismatch;
+                return .success;
             },
             .Noreturn => return .noreturn_not_storable,
             .Union => {
@@ -478,9 +507,7 @@ pub const Checker = struct {
                 if (got_kind != .F32 and got_kind != .F64) return .expected_float_type;
                 return .success;
             },
-            else => {
-                std.debug.print("Unhandled assignability check: expected kind {}\n", .{expected_kind});
-            },
+            else => {},
         }
 
         return .failure;
@@ -712,6 +739,21 @@ pub const Checker = struct {
             },
             .Assign => {
                 const stmt = self.getStmt(.Assign, sid);
+
+                // Handle `_ = rhs` as a special discard operation.
+                if (self.exprKind(stmt.left) == .Ident) {
+                    const ident = self.getExpr(.Ident, stmt.left);
+                    const name = self.ast_unit.exprs.strs.get(ident.name);
+                    if (std.mem.eql(u8, name, "_")) {
+                        // Check the RHS for side effects, but discard the value.
+                        // The value of the expression is not required.
+                        try self.pushValueReq(false);
+                        _ = try self.checkExpr(stmt.right);
+                        self.popValueReq();
+                        return null;
+                    }
+                }
+
                 // Pattern-shaped LHS support: tuple/struct/array destructuring
                 const lkind = self.exprKind(stmt.left);
                 if (lkind == .TupleLit or lkind == .StructLit or lkind == .ArrayLit) {
@@ -884,13 +926,16 @@ pub const Checker = struct {
             },
             .imaginary => blk: {
                 const s = self.getStr(lit.value.unwrap());
-                // Accept integer or float literal payload for imaginary; normalize to Complex(f64)
-                if ((std.fmt.parseInt(i64, s, 10) catch null) == null and (std.fmt.parseFloat(f64, s) catch null) == null) {
+                var elem_ty: ?types.TypeId = null;
+                if (std.fmt.parseInt(i64, s, 10) catch null != null) {
+                    elem_ty = self.context.type_store.tI64();
+                } else if (std.fmt.parseFloat(f64, s) catch null != null) {
+                    elem_ty = self.context.type_store.tF64();
+                } else {
                     try self.context.diags.addError(self.exprLoc(lit), .invalid_imaginary_literal, .{});
                     return null;
                 }
-                const cty = self.context.type_store.add(.Complex, types.Rows.Complex{ .elem = self.context.type_store.tF64() });
-                break :blk cty;
+                break :blk self.context.type_store.add(.Complex, .{ .elem = elem_ty.? });
             },
             .float => blk: {
                 // try parsing the float literal
@@ -946,7 +991,11 @@ pub const Checker = struct {
 
             // Loop-pattern-originated symbol? Infer from current loop pattern context if available
             if (self.bindingTypeFromActiveLoops(row.name)) |btid| return btid;
+
+            if (self.bindingTypeFromActiveMatches(row.name)) |btid| return btid;
         }
+        if (try check_types.typeFromTypeExpr(self, id)) |ty|
+            return self.context.type_store.mkTypeType(ty);
         try self.context.diags.addError(self.exprLoc(row), .undefined_identifier, .{});
         return null;
     }
@@ -1017,47 +1066,13 @@ pub const Checker = struct {
 
     fn stmtLoc(self: *Checker, sid: ast.StmtId) Loc {
         return switch (self.ast_unit.stmts.index.kinds.items[sid.toRaw()]) {
-            .Expr => blk: {
-                const row = self.getStmt(.Expr, sid);
-                break :blk self.exprLocFromId(row.expr);
-            },
-            .Decl => blk2: {
+            .Expr => self.exprLocFromId(self.getStmt(.Expr, sid).expr),
+            .Decl => blk: {
                 const row = self.getStmt(.Decl, sid);
                 const d = self.ast_unit.exprs.Decl.get(row.decl.toRaw());
-                break :blk2 self.exprLoc(d);
+                break :blk self.exprLoc(d);
             },
-            .Assign => blk3: {
-                const row = self.getStmt(.Assign, sid);
-                break :blk3 self.exprLoc(row);
-            },
-            .Insert => blk4: {
-                const row = self.getStmt(.Insert, sid);
-                break :blk4 self.exprLoc(row);
-            },
-            .Return => blk5: {
-                const row = self.getStmt(.Return, sid);
-                break :blk5 self.exprLoc(row);
-            },
-            .Break => blk6: {
-                const row = self.getStmt(.Break, sid);
-                break :blk6 self.exprLoc(row);
-            },
-            .Continue => blk7: {
-                const row = self.getStmt(.Continue, sid);
-                break :blk7 self.exprLoc(row);
-            },
-            .Unreachable => blk8: {
-                const row = self.getStmt(.Unreachable, sid);
-                break :blk8 self.exprLoc(row);
-            },
-            .Defer => blk9: {
-                const row = self.getStmt(.Defer, sid);
-                break :blk9 self.exprLoc(row);
-            },
-            .ErrDefer => blk10: {
-                const row = self.getStmt(.ErrDefer, sid);
-                break :blk10 self.exprLoc(row);
-            },
+            inline else => |x| self.exprLoc(self.getStmt(x, sid)),
         };
     }
 
@@ -1109,8 +1124,14 @@ pub const Checker = struct {
                         return null;
                     }
                     // One side complex, other side numeric scalar
-                    if (lhs_is_complex and check_types.isNumericKind(self, rhs_kind)) return l;
-                    if (rhs_is_complex and check_types.isNumericKind(self, lhs_kind)) return r;
+                    if (lhs_is_complex and check_types.isNumericKind(self, rhs_kind)) {
+                        const lc = self.context.type_store.Complex.get(self.trow(l));
+                        if (lc.elem.toRaw() == r.toRaw()) return l;
+                    }
+                    if (rhs_is_complex and check_types.isNumericKind(self, lhs_kind)) {
+                        const rc = self.context.type_store.Complex.get(self.trow(r));
+                        if (rc.elem.toRaw() == l.toRaw()) return r;
+                    }
                     try self.context.diags.addError(self.exprLoc(bin), .invalid_binary_op_operands, .{ bin.op, lhs_kind, rhs_kind });
                     return null;
                 }
@@ -1126,13 +1147,19 @@ pub const Checker = struct {
                 const both_ints = check_types.isIntegerKind(self, lhs_kind) and check_types.isIntegerKind(self, rhs_kind);
                 const both_floats = (lhs_kind == .F32 or lhs_kind == .F64) and (rhs_kind == .F32 or rhs_kind == .F64);
                 const both_bools = lhs_kind == .Bool and rhs_kind == .Bool;
+                var both_complex = lhs_kind == .Complex and rhs_kind == .Complex;
+                if (both_complex) {
+                    const lc = self.context.type_store.Complex.get(self.trow(l));
+                    const rc = self.context.type_store.Complex.get(self.trow(r));
+                    both_complex = (lc.elem.toRaw() == rc.elem.toRaw());
+                }
                 const both_same_enum = lhs_kind == .Enum and rhs_kind == .Enum and self.tEq(l, r);
 
                 // We avoid implicit *value* coercions. For comparisons, we accept same-class operands:
                 //   - int ? int (any width/sign)
                 //   - float ? float (F32/F64 mixed ok)
                 //   - bool ? bool
-                if (!(both_ints or both_floats or both_bools or both_same_enum)) {
+                if (!(both_ints or both_floats or both_complex or both_bools or both_same_enum)) {
                     try self.context.diags.addError(self.exprLoc(bin), .invalid_binary_op_operands, .{ bin.op, lhs_kind, rhs_kind });
                     return null;
                 }
@@ -1252,6 +1279,10 @@ pub const Checker = struct {
     }
 
     fn checkTupleLit(self: *Checker, id: ast.ExprId) !?types.TypeId {
+        // try as type expr first
+        if (try check_types.typeFromTypeExpr(self, id)) |ty|
+            return self.context.type_store.mkTypeType(ty);
+
         const tuple_lit = self.getExpr(.TupleLit, id);
         const elems = self.ast_unit.exprs.expr_pool.slice(tuple_lit.elems);
 
@@ -1905,7 +1936,8 @@ pub const Checker = struct {
             if (callee_kind == .Ident) {
                 const idr = self.getExpr(.Ident, call_expr.callee);
                 if (self.lookup(idr.name) == null) {
-                    try self.context.diags.addError(call_loc, .unknown_function, .{});
+                    // already reported as undeclared identifier
+                    self.context.diags.messages.items[self.context.diags.messages.items.len - 1].code = .unknown_function;
                 }
             }
             return null;

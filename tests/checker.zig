@@ -1343,8 +1343,8 @@ test "functions and procedures - success" {
     // Procedure with side effects (extern printf), allowed for proc
     try checkProgram(
         \\
-        \\ printf :: extern proc(*void, any) i32
-        \\ proc_print :: proc() i32 { _ = printf("ok".^*void); return 0 }
+        \\ printf :: extern proc(string, any) i32
+        \\ proc_print :: proc() i32 { _ = printf("ok"); return 0 }
         \\ rv :: proc_print()
     , &.{});
 }
@@ -2044,7 +2044,7 @@ test "match expressions - failures" {
         \\
         \\ T :: (1, 2)
         \\ r :: match T { (a, b, c) => { }, }
-    , &[_]diag.DiagnosticCode{.pattern_shape_mismatch});
+    , &[_]diag.DiagnosticCode{.tuple_arity_mismatch});
 
     // Struct field mismatch
     try checkProgram(
@@ -2060,7 +2060,7 @@ test "match expressions - failures" {
         \\ V :: variant { A, B(i32) }
         \\ v :: V.B(1)
         \\ r :: match v { V.B(a, b) => { }, }
-    , &[_]diag.DiagnosticCode{.pattern_shape_mismatch});
+    , &[_]diag.DiagnosticCode{.tuple_arity_mismatch});
 }
 
 // Focused: Match exhaustiveness and overlap (Rust-like semantics)
@@ -2675,7 +2675,7 @@ test "patterns - match - failures" {
         \\ V :: variant { A, B(i32) }
         \\ v :: V.B(1)
         \\ r :: match v { V.B(a, b) => { }, }
-    , &[_]diag.DiagnosticCode{.pattern_shape_mismatch});
+    , &[_]diag.DiagnosticCode{.tuple_arity_mismatch});
 
     // Enum does not support payload-style pattern
     try checkProgram(
@@ -2683,7 +2683,7 @@ test "patterns - match - failures" {
         \\ State :: enum { Running, Walking }
         \\ s :: State.Running
         \\ r :: match s { State.Running(x) => { }, }
-    , &[_]diag.DiagnosticCode{.pattern_shape_mismatch});
+    , &[_]diag.DiagnosticCode{.pattern_type_mismatch});
 }
 
 // Focused: Import statements
