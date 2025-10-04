@@ -61,6 +61,11 @@ fn abiSizeAlign(self: *MlirCodegen, store: *types.TypeStore, ty: types.TypeId) S
 
         .Ptr, .Any, .String, .Function => return .{ .size = 8, .alignment = 8, .hasFloat = false, .allIntsOnly = true },
         .Slice => return .{ .size = 16, .alignment = 8, .hasFloat = false, .allIntsOnly = true },
+        .Enum => {
+            const E = store.get(.Enum, ty);
+            // Enums are represented as their discriminant type.
+            return abiSizeAlign(self, store, E.tag_type);
+        },
 
         .Array => {
             const A = store.get(.Array, ty);
@@ -134,7 +139,7 @@ fn abiSizeAlign(self: *MlirCodegen, store: *types.TypeStore, ty: types.TypeId) S
             var hasF = false;
             var intsOnly = true;
             for (fields) |fid| {
-                const f = store.Field.get(fid.toRaw());
+                const f = store.Field.get(fid);
                 const e = abiSizeAlign(self, store, f.ty);
                 off = std.mem.alignForward(usize, off, e.alignment);
                 off += e.size;
@@ -161,8 +166,8 @@ fn srIsTwoFloats(store: *types.TypeStore, ty: types.TypeId) bool {
         const S = store.get(.Struct, ty);
         if (S.fields.len != 2) return false;
         const fs = store.field_pool.slice(S.fields);
-        return srIsExactlyFloat(store, store.Field.get(fs[0].toRaw()).ty) and
-            srIsExactlyFloat(store, store.Field.get(fs[1].toRaw()).ty);
+        return srIsExactlyFloat(store, store.Field.get(fs[0]).ty) and
+            srIsExactlyFloat(store, store.Field.get(fs[1]).ty);
     }
     if (store.getKind(ty) == .Tuple) {
         const T = store.get(.Tuple, ty);

@@ -1288,7 +1288,7 @@ pub const Parser = struct {
                 // p.segments : RangeOf(PathSegId)
                 const ids = self.cst.pats.seg_pool.slice(p.segments); // []const PathSegId
                 if (ids.len == 1) {
-                    const seg0 = self.cst.pats.PathSeg.get(ids[0].toRaw()); // row lookup
+                    const seg0 = self.cst.pats.PathSeg.get(ids[0]); // row lookup
                     break :blk seg0.name; // StrId
                 }
                 self.errorNote(self.cur.loc, .invalid_binding_name_in_at_pattern, .{}, null, .use_single_identifier);
@@ -1468,7 +1468,7 @@ pub const Parser = struct {
                 // bare identifier/path: wildcard / binding / path
                 const seg_ids_slice = self.cst.pats.seg_pool.slice(path_range);
                 if (seg_ids_slice.len == 1) {
-                    const seg_row = self.cst.pats.PathSeg.get(seg_ids_slice[0].toRaw()); // FIX
+                    const seg_row = self.cst.pats.PathSeg.get(seg_ids_slice[0]); // FIX
                     const seg_name_bytes = self.cst.exprs.strs.get(seg_row.name);
                     if (std.mem.eql(u8, seg_name_bytes, "_")) {
                         return self.addPat(.Wildcard, .{ .loc = seg_row.loc });
@@ -1558,7 +1558,7 @@ pub const Parser = struct {
         std.debug.assert(ids.len >= 1);
 
         // first segment → Ident
-        const first = self.cst.pats.PathSeg.get(ids[0].toRaw());
+        const first = self.cst.pats.PathSeg.get(ids[0]);
         var e = self.addExpr(.Ident, .{
             .name = first.name, // StrId already
             .loc = first.loc, // LocId already
@@ -1567,7 +1567,7 @@ pub const Parser = struct {
         // remaining segments → FieldAccess chain
         var i: usize = 1;
         while (i < ids.len) : (i += 1) {
-            const seg = self.cst.pats.PathSeg.get(ids[i].toRaw());
+            const seg = self.cst.pats.PathSeg.get(ids[i]);
             e = self.addExpr(.FieldAccess, .{
                 .parent = e,
                 .field = seg.name, // StrId

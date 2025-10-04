@@ -131,15 +131,15 @@ pub const Lower = struct {
         defer self.gpa.free(out_ids);
         var i: usize = 0;
         while (i < items.len) : (i += 1) {
-            const row = self.cst_program.exprs.Attribute.get(items[i].toRaw());
+            const row = self.cst_program.exprs.Attribute.get(items[i]);
             const mapped: ast.Rows.Attribute = .{
                 .name = self.mapStr(row.name),
                 .value = if (!row.value.isNone()) ast.OptExprId.some(try self.lowerExpr(row.value.unwrap())) else ast.OptExprId.none(),
                 .loc = self.mapLoc(row.loc),
             };
-            out_ids[i] = ast.AttributeId.fromRaw(self.ast_unit.exprs.Attribute.add(self.gpa, mapped));
+            out_ids[i] = self.ast_unit.exprs.Attribute.add(self.gpa, mapped);
         }
-        return ast.OptRangeAttr.some(self.ast_unit.exprs.attr_pool.pushMany(self.gpa, out_ids));
+        return .some(self.ast_unit.exprs.attr_pool.pushMany(self.gpa, out_ids));
     }
 
     fn lowerParamRange(self: *Lower, r: cst.RangeOf(cst.ParamId)) !ast.RangeParam {
@@ -148,7 +148,7 @@ pub const Lower = struct {
         defer self.gpa.free(out_ids);
         var i: usize = 0;
         while (i < items.len) : (i += 1) {
-            const row = self.cst_program.exprs.Param.get(items[i].toRaw());
+            const row = self.cst_program.exprs.Param.get(items[i]);
             const mapped: ast.Rows.Param = .{
                 .pat = try self.lowerOptionalPatternFromExpr(row.pat),
                 .ty = if (!row.ty.isNone()) ast.OptExprId.some(try self.lowerExpr(row.ty.unwrap())) else ast.OptExprId.none(),
@@ -156,7 +156,7 @@ pub const Lower = struct {
                 .attrs = try self.mapAttrRange(row.attrs),
                 .loc = self.mapLoc(row.loc),
             };
-            out_ids[i] = ast.ParamId.fromRaw(self.ast_unit.exprs.Param.add(self.gpa, mapped));
+            out_ids[i] = self.ast_unit.exprs.Param.add(self.gpa, mapped);
         }
         return self.ast_unit.exprs.param_pool.pushMany(self.gpa, out_ids);
     }
@@ -167,9 +167,9 @@ pub const Lower = struct {
         defer self.gpa.free(out_ids);
         var i: usize = 0;
         while (i < items.len) : (i += 1) {
-            const kv = self.cst_program.exprs.KeyValue.get(items[i].toRaw());
+            const kv = self.cst_program.exprs.KeyValue.get(items[i]);
             const mapped: ast.Rows.KeyValue = .{ .key = try self.lowerExpr(kv.key), .value = try self.lowerExpr(kv.value), .loc = self.mapLoc(kv.loc) };
-            out_ids[i] = ast.KeyValueId.fromRaw(self.ast_unit.exprs.KeyValue.add(self.gpa, mapped));
+            out_ids[i] = self.ast_unit.exprs.KeyValue.add(self.gpa, mapped);
         }
         return self.ast_unit.exprs.kv_pool.pushMany(self.gpa, out_ids);
     }
@@ -180,9 +180,9 @@ pub const Lower = struct {
         defer self.gpa.free(out_ids);
         var i: usize = 0;
         while (i < items.len) : (i += 1) {
-            const f = self.cst_program.exprs.StructFieldValue.get(items[i].toRaw());
+            const f = self.cst_program.exprs.StructFieldValue.get(items[i]);
             const mapped: ast.Rows.StructFieldValue = .{ .name = if (!f.name.isNone()) ast.OptStrId.some(self.mapStr(f.name.unwrap())) else ast.OptStrId.none(), .value = try self.lowerExpr(f.value), .loc = self.mapLoc(f.loc) };
-            out_ids[i] = ast.StructFieldValueId.fromRaw(self.ast_unit.exprs.StructFieldValue.add(self.gpa, mapped));
+            out_ids[i] = self.ast_unit.exprs.StructFieldValue.add(self.gpa, mapped);
         }
         return self.ast_unit.exprs.sfv_pool.pushMany(self.gpa, out_ids);
     }
@@ -193,15 +193,15 @@ pub const Lower = struct {
         defer self.gpa.free(out_ids);
         var i: usize = 0;
         while (i < items.len) : (i += 1) {
-            const f = self.cst_program.exprs.StructField.get(items[i].toRaw());
+            const f = self.cst_program.exprs.StructField.get(items[i]);
             const mapped: ast.Rows.StructField = .{
                 .name = self.mapStr(f.name),
                 .ty = try self.lowerExpr(f.ty),
-                .value = if (!f.value.isNone()) ast.OptExprId.some(try self.lowerExpr(f.value.unwrap())) else ast.OptExprId.none(),
+                .value = if (!f.value.isNone()) .some(try self.lowerExpr(f.value.unwrap())) else .none(),
                 .attrs = try self.mapAttrRange(f.attrs),
                 .loc = self.mapLoc(f.loc),
             };
-            out_ids[i] = ast.StructFieldId.fromRaw(self.ast_unit.exprs.StructField.add(self.gpa, mapped));
+            out_ids[i] = self.ast_unit.exprs.StructField.add(self.gpa, mapped);
         }
         return self.ast_unit.exprs.sfield_pool.pushMany(self.gpa, out_ids);
     }
@@ -212,14 +212,14 @@ pub const Lower = struct {
         defer self.gpa.free(out_ids);
         var i: usize = 0;
         while (i < items.len) : (i += 1) {
-            const f = self.cst_program.exprs.EnumField.get(items[i].toRaw());
+            const f = self.cst_program.exprs.EnumField.get(items[i]);
             const mapped: ast.Rows.EnumField = .{
                 .name = self.mapStr(f.name),
-                .value = if (!f.value.isNone()) ast.OptExprId.some(try self.lowerExpr(f.value.unwrap())) else ast.OptExprId.none(),
+                .value = if (!f.value.isNone()) .some(try self.lowerExpr(f.value.unwrap())) else .none(),
                 .attrs = try self.mapAttrRange(f.attrs),
                 .loc = self.mapLoc(f.loc),
             };
-            out_ids[i] = ast.EnumFieldId.fromRaw(self.ast_unit.exprs.EnumField.add(self.gpa, mapped));
+            out_ids[i] = self.ast_unit.exprs.EnumField.add(self.gpa, mapped);
         }
         return self.ast_unit.exprs.efield_pool.pushMany(self.gpa, out_ids);
     }
@@ -230,7 +230,7 @@ pub const Lower = struct {
         defer self.gpa.free(out_ids);
         var i: usize = 0;
         while (i < items.len) : (i += 1) {
-            const f = self.cst_program.exprs.VariantField.get(items[i].toRaw());
+            const f = self.cst_program.exprs.VariantField.get(items[i]);
             const pk: ast.VariantPayloadKind = switch (f.ty_tag) {
                 .none => .none,
                 .Tuple => .tuple,
@@ -239,13 +239,13 @@ pub const Lower = struct {
             const mapped: ast.Rows.VariantField = .{
                 .name = self.mapStr(f.name),
                 .payload_kind = pk,
-                .payload_elems = if (f.ty_tag == .Tuple) ast.OptRangeExpr.some(try self.lowerExprRange(f.tuple_elems)) else ast.OptRangeExpr.none(),
-                .payload_fields = if (f.ty_tag == .Struct) ast.OptRangeField.some(try self.lowerStructFields(f.struct_fields)) else ast.OptRangeField.none(),
-                .value = if (!f.value.isNone()) ast.OptExprId.some(try self.lowerExpr(f.value.unwrap())) else ast.OptExprId.none(),
+                .payload_elems = if (f.ty_tag == .Tuple) .some(try self.lowerExprRange(f.tuple_elems)) else .none(),
+                .payload_fields = if (f.ty_tag == .Struct) .some(try self.lowerStructFields(f.struct_fields)) else .none(),
+                .value = if (!f.value.isNone()) .some(try self.lowerExpr(f.value.unwrap())) else .none(),
                 .attrs = try self.mapAttrRange(f.attrs),
                 .loc = self.mapLoc(f.loc),
             };
-            out_ids[i] = ast.VariantFieldId.fromRaw(self.ast_unit.exprs.VariantField.add(self.gpa, mapped));
+            out_ids[i] = self.ast_unit.exprs.VariantField.add(self.gpa, mapped);
         }
         return self.ast_unit.exprs.vfield_pool.pushMany(self.gpa, out_ids);
     }
@@ -270,15 +270,14 @@ pub const Lower = struct {
     }
 
     fn lowerTopDecl(self: *Lower, id: cst.DeclId) !ast.DeclId {
-        const d = self.cst_program.exprs.Decl.get(id.toRaw());
+        const d = self.cst_program.exprs.Decl.get(id);
         const pattern = try self.lowerOptionalPatternFromExpr(d.lhs);
         const value = try self.lowerExpr(d.rhs);
         const ty = if (!d.ty.isNone()) ast.OptExprId.some(try self.lowerExpr(d.ty.unwrap())) else ast.OptExprId.none();
         const decl_row: ast.Rows.Decl = .{ .pattern = pattern, .value = value, .ty = ty, .flags = .{ .is_const = d.flags.is_const }, .loc = self.mapLoc(d.loc) };
         const raw = self.ast_unit.exprs.Decl.add(self.gpa, decl_row);
-        const did = ast.DeclId.fromRaw(raw);
-        _ = self.ast_unit.exprs.decl_pool.push(self.gpa, did);
-        return did;
+        _ = self.ast_unit.exprs.decl_pool.push(self.gpa, raw);
+        return raw;
     }
 
     // ---------------- Statements & Blocks ----------------
@@ -299,7 +298,7 @@ pub const Lower = struct {
     }
 
     fn lowerStmtFromDecl(self: *Lower, id: cst.DeclId) !ast.StmtId {
-        const d = self.cst_program.exprs.Decl.get(id.toRaw());
+        const d = self.cst_program.exprs.Decl.get(id);
 
         // Declaration-like (const or define :=)
         if (d.flags.is_const or (!d.lhs.isNone() and !d.flags.is_assign)) {
@@ -818,14 +817,14 @@ pub const Lower = struct {
         defer self.gpa.free(out_ids);
         var i: usize = 0;
         while (i < items.len) : (i += 1) {
-            const a = self.cst_program.exprs.MatchArm.get(items[i].toRaw());
+            const a = self.cst_program.exprs.MatchArm.get(items[i]);
             const mapped: ast.Rows.MatchArm = .{
                 .pattern = try self.lowerPattern(a.pattern),
-                .guard = if (!a.guard.isNone()) ast.OptExprId.some(try self.lowerExpr(a.guard.unwrap())) else ast.OptExprId.none(),
+                .guard = if (!a.guard.isNone()) .some(try self.lowerExpr(a.guard.unwrap())) else .none(),
                 .body = try self.lowerExpr(a.body),
                 .loc = self.mapLoc(a.loc),
             };
-            out_ids[i] = ast.MatchArmId.fromRaw(self.ast_unit.exprs.MatchArm.add(self.gpa, mapped));
+            out_ids[i] = self.ast_unit.exprs.MatchArm.add(self.gpa, mapped);
         }
         return self.ast_unit.exprs.arm_pool.pushMany(self.gpa, out_ids);
     }
@@ -895,9 +894,9 @@ pub const Lower = struct {
         defer self.gpa.free(out_ids);
         var i: usize = 0;
         while (i < items.len) : (i += 1) {
-            const s = self.cst_program.pats.PathSeg.get(items[i].toRaw());
+            const s = self.cst_program.pats.PathSeg.get(items[i]);
             const mapped: ast.PatRows.PathSeg = .{ .name = self.mapStr(s.name), .by_ref = false, .is_mut = false, .loc = self.mapLoc(s.loc) };
-            out_ids[i] = ast.PathSegId.fromRaw(self.ast_unit.pats.PathSeg.add(self.gpa, mapped));
+            out_ids[i] = self.ast_unit.pats.PathSeg.add(self.gpa, mapped);
         }
         return self.ast_unit.pats.seg_pool.pushMany(self.gpa, out_ids);
     }
@@ -908,9 +907,9 @@ pub const Lower = struct {
         defer self.gpa.free(out_ids);
         var i: usize = 0;
         while (i < items.len) : (i += 1) {
-            const f = self.cst_program.pats.StructField.get(items[i].toRaw());
+            const f = self.cst_program.pats.StructField.get(items[i]);
             const mapped: ast.PatRows.StructField = .{ .name = self.mapStr(f.name), .pattern = try self.lowerPattern(f.pattern), .loc = self.mapLoc(f.loc) };
-            out_ids[i] = ast.PatFieldId.fromRaw(self.ast_unit.pats.StructField.add(self.gpa, mapped));
+            out_ids[i] = self.ast_unit.pats.StructField.add(self.gpa, mapped);
         }
         return self.ast_unit.pats.field_pool.pushMany(self.gpa, out_ids);
     }
@@ -937,14 +936,14 @@ pub const Lower = struct {
             .Ident => {
                 const r = self.cst_program.exprs.get(.Ident, id);
                 const mapped: ast.PatRows.PathSeg = .{ .name = self.mapStr(r.name), .by_ref = false, .is_mut = false, .loc = self.mapLoc(r.loc) };
-                const pid = ast.PathSegId.fromRaw(self.ast_unit.pats.PathSeg.add(self.gpa, mapped));
+                const pid = self.ast_unit.pats.PathSeg.add(self.gpa, mapped);
                 try segs.append(self.gpa, pid);
             },
             .FieldAccess => {
                 const r = self.cst_program.exprs.get(.FieldAccess, id);
                 try self.collectPathSegs(r.parent, segs);
                 const mapped: ast.PatRows.PathSeg = .{ .name = self.mapStr(r.field), .by_ref = false, .is_mut = false, .loc = self.mapLoc(r.loc) };
-                const pid = ast.PathSegId.fromRaw(self.ast_unit.pats.PathSeg.add(self.gpa, mapped));
+                const pid = self.ast_unit.pats.PathSeg.add(self.gpa, mapped);
                 try segs.append(self.gpa, pid);
             },
             else => {
@@ -1034,11 +1033,11 @@ pub const Lower = struct {
                 defer self.gpa.free(out_ids);
                 var i: usize = 0;
                 while (i < fields.len) : (i += 1) {
-                    const f = self.cst_program.exprs.StructFieldValue.get(fields[i].toRaw());
+                    const f = self.cst_program.exprs.StructFieldValue.get(fields[i]);
                     if (f.name.isNone()) return null;
                     const sub = try self.patternFromExpr(f.value) orelse return null;
                     const mapped: ast.PatRows.StructField = .{ .name = self.mapStr(f.name.unwrap()), .pattern = sub, .loc = self.mapLoc(f.loc) };
-                    out_ids[i] = ast.PatFieldId.fromRaw(self.ast_unit.pats.StructField.add(self.gpa, mapped));
+                    out_ids[i] = self.ast_unit.pats.StructField.add(self.gpa, mapped);
                 }
                 const range = self.ast_unit.pats.field_pool.pushMany(self.gpa, out_ids);
                 if (!s.ty.isNone()) {

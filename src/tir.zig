@@ -7,26 +7,20 @@ const types = @import("types.zig");
 // Columnar stores with typed indices and contiguous pools.
 
 pub const ValueTag = struct {};
-pub const FuncTag = struct {};
-pub const BlockTag = struct {};
 pub const InstrTag = struct {};
 pub const TermTag = struct {};
-pub const ParamTag = struct {};
-pub const GlobalTag = struct {};
-pub const EdgeTag = struct {};
-pub const CaseTag = struct {};
 
 pub const ValueId = dod.Index(ValueTag);
 pub const OptValueId = dod.SentinelIndex(ValueTag);
-pub const FuncId = dod.Index(FuncTag);
-pub const BlockId = dod.Index(BlockTag);
+pub const FuncId = dod.Index(FuncRows.Function);
+pub const BlockId = dod.Index(FuncRows.Block);
 pub const InstrId = dod.Index(InstrTag);
 pub const TermId = dod.Index(TermTag);
 pub const OptTermId = dod.SentinelIndex(TermTag);
-pub const ParamId = dod.Index(ParamTag);
-pub const GlobalId = dod.Index(GlobalTag);
-pub const EdgeId = dod.Index(EdgeTag);
-pub const CaseId = dod.Index(CaseTag);
+pub const ParamId = dod.Index(FuncRows.Param);
+pub const GlobalId = dod.Index(FuncRows.Global);
+pub const EdgeId = dod.Index(Rows.Edge);
+pub const CaseId = dod.Index(Rows.Case);
 
 pub const RangeValue = dod.RangeOf(ValueId);
 pub const RangeBlock = dod.RangeOf(BlockId);
@@ -84,6 +78,7 @@ pub const OpKind = enum(u16) {
     Load,
     Store,
     Gep,
+    GlobalAddr,
     // Aggregates
     TupleMake,
     ArrayMake,
@@ -146,6 +141,7 @@ pub const Rows = struct {
 
     pub const Index = struct { result: ValueId, ty: types.TypeId, base: ValueId, index: ValueId };
     pub const AddressOf = struct { result: ValueId, ty: types.TypeId, value: ValueId };
+    pub const GlobalAddr = struct { result: ValueId, ty: types.TypeId, name: StrId };
 
     pub const Select = struct { result: ValueId, ty: types.TypeId, cond: ValueId, then_value: ValueId, else_value: ValueId };
 
@@ -167,11 +163,8 @@ pub const Rows = struct {
     pub const Unreachable = struct {};
 };
 
-pub const GepIndexTag = struct {};
-pub const StructFieldInitTag = struct {};
-
-pub const GepIndexId = dod.Index(GepIndexTag);
-pub const StructFieldInitId = dod.Index(StructFieldInitTag);
+pub const GepIndexId = dod.Index(Rows.GepIndex);
+pub const StructFieldInitId = dod.Index(Rows.StructFieldInit);
 
 pub const RangeGepIndex = dod.RangeOf(GepIndexId);
 pub const RangeStructFieldInit = dod.RangeOf(StructFieldInitId);
@@ -195,6 +188,7 @@ inline fn RowT(comptime K: OpKind) type {
         .Load => Rows.Load,
         .Store => Rows.Store,
         .Gep => Rows.Gep,
+        .GlobalAddr => Rows.GlobalAddr,
 
         .TupleMake => Rows.TupleMake,
         .ArrayMake => Rows.ArrayMake,
@@ -266,6 +260,7 @@ pub const InstrStore = struct {
     Load: Table(Rows.Load) = .{},
     Store: Table(Rows.Store) = .{},
     Gep: Table(Rows.Gep) = .{},
+    GlobalAddr: Table(Rows.GlobalAddr) = .{},
 
     TupleMake: Table(Rows.TupleMake) = .{},
     ArrayMake: Table(Rows.ArrayMake) = .{},
@@ -323,14 +318,14 @@ pub const InstrStore = struct {
     pub fn add(self: *@This(), comptime K: OpKind, row: RowT(K)) InstrId {
         const tbl: *Table(RowT(K)) = &@field(self, @tagName(K));
         const idx = tbl.add(self.gpa, row);
-        return self.index.newId(self.gpa, K, idx, InstrId);
+        return self.index.newId(self.gpa, K, idx.toRaw(), InstrId);
     }
 
     pub fn get(self: *const @This(), comptime K: OpKind, id: InstrId) RowT(K) {
         std.debug.assert(self.index.kinds.items[id.toRaw()] == K);
         const row_idx = self.index.rows.items[id.toRaw()];
         const tbl: *const Table(RowT(K)) = &@field(self, @tagName(K));
-        return tbl.get(row_idx);
+        return tbl.get(.{ .index = row_idx });
     }
 };
 
@@ -368,13 +363,13 @@ pub const TermStore = struct {
     pub fn add(self: *@This(), comptime K: TermKind, row: TermRowT(K)) TermId {
         const tbl: *Table(TermRowT(K)) = &@field(self, @tagName(K));
         const idx = tbl.add(self.gpa, row);
-        return self.index.newId(self.gpa, K, idx, TermId);
+        return self.index.newId(self.gpa, K, idx.toRaw(), TermId);
     }
     pub fn get(self: *const @This(), comptime K: TermKind, id: TermId) TermRowT(K) {
         std.debug.assert(self.index.kinds.items[id.toRaw()] == K);
         const row_idx = self.index.rows.items[id.toRaw()];
         const tbl: *const Table(TermRowT(K)) = &@field(self, @tagName(K));
-        return tbl.get(row_idx);
+        return tbl.get(.{ .index = row_idx });
     }
 };
 
@@ -488,7 +483,7 @@ pub const TirPrinter = struct {
         if (globals.len > 0) {
             try self.open("(globals", .{});
             for (globals) |gid| {
-                const g = self.tir.funcs.Global.get(gid.toRaw());
+                const g = self.tir.funcs.Global.get(gid);
                 try self.leaf("(global name=\"{s}\" type={f})", .{ self.s(g.name), self.tf(g.ty) });
             }
             try self.close();
@@ -501,14 +496,14 @@ pub const TirPrinter = struct {
     }
 
     fn printFunc(self: *TirPrinter, id: FuncId) anyerror!void {
-        const func = self.tir.funcs.Function.get(id.toRaw());
+        const func = self.tir.funcs.Function.get(id);
         try self.open("(function name=\"{s}\" result={f})", .{ self.s(func.name), self.tf(func.result) });
         // Params
         const params = self.tir.funcs.param_pool.slice(func.params);
         if (params.len > 0) {
             try self.open("(params", .{});
             for (params) |pid| {
-                const p = self.tir.funcs.Param.get(pid.toRaw());
+                const p = self.tir.funcs.Param.get(pid);
                 try self.leaf("(param name={s} type={f})", .{ if (p.name.isNone()) "null" else self.s(p.name.unwrap()), self.tf(p.ty) });
             }
             try self.close();
@@ -520,14 +515,14 @@ pub const TirPrinter = struct {
     }
 
     fn printBlock(self: *TirPrinter, id: BlockId) anyerror!void {
-        const block = self.tir.funcs.Block.get(id.toRaw());
+        const block = self.tir.funcs.Block.get(id);
         try self.open("(block", .{});
         // Params
         const params = self.tir.funcs.param_pool.slice(block.params);
         if (params.len > 0) {
             try self.open("(params", .{});
             for (params) |pid| {
-                const p = self.tir.funcs.Param.get(pid.toRaw());
+                const p = self.tir.funcs.Param.get(pid);
                 try self.leaf("(param name={s} type={f})", .{ if (p.name.isNone()) "null" else self.s(p.name.unwrap()), self.tf(p.ty) });
             }
             try self.close();
@@ -550,23 +545,23 @@ pub const TirPrinter = struct {
             },
             .Br => {
                 const row = self.tir.terms.get(.Br, term_id);
-                const edge = self.tir.terms.Edge.get(row.edge.toRaw());
-                try self.leaf("(br dest=block_{})", .{edge.dest.toRaw()});
+                const edge = self.tir.terms.Edge.get(row.edge);
+                try self.leaf("(br dest=block_{})", .{edge.dest});
             },
             .CondBr => {
                 const row = self.tir.terms.get(.CondBr, term_id);
-                const then_edge = self.tir.terms.Edge.get(row.then_edge.toRaw());
-                const else_edge = self.tir.terms.Edge.get(row.else_edge.toRaw());
+                const then_edge = self.tir.terms.Edge.get(row.then_edge);
+                const else_edge = self.tir.terms.Edge.get(row.else_edge);
                 try self.leaf("(cond_br cond={} then=block_{} else=block_{})", .{ row.cond.toRaw(), then_edge.dest.toRaw(), else_edge.dest.toRaw() });
             },
             .SwitchInt => {
                 const row = self.tir.terms.get(.SwitchInt, term_id);
                 const cases = self.tir.terms.case_pool.slice(row.cases);
-                const default_edge = self.tir.terms.Edge.get(row.default_edge.toRaw());
+                const default_edge = self.tir.terms.Edge.get(row.default_edge);
                 try self.open("(switch_int scrut={} default=block_{})", .{ row.scrut.toRaw(), default_edge.dest.toRaw() });
                 for (cases) |cid| {
-                    const c = self.tir.terms.Case.get(cid.toRaw());
-                    const edge = self.tir.terms.Edge.get(c.edge.toRaw());
+                    const c = self.tir.terms.Case.get(cid);
+                    const edge = self.tir.terms.Edge.get(c.edge);
                     try self.leaf("(case value={} dest=block_{})", .{ c.value, edge.dest.toRaw() });
                 }
                 try self.close();
@@ -640,7 +635,7 @@ pub const TirPrinter = struct {
                 const indices = self.tir.instrs.gep_pool.slice(row.indices);
                 try self.open("(instr id={} op=Gep base={} result={} type={f} indices=[", .{ id.toRaw(), row.base.toRaw(), row.result.toRaw(), self.tf(row.ty) });
                 for (indices) |gid| {
-                    const g = self.tir.instrs.GepIndex.get(gid.toRaw());
+                    const g = self.tir.instrs.GepIndex.get(gid);
                     switch (g) {
                         .Const => try self.leaf("  (const {})", .{g.Const}),
                         .Value => try self.leaf("  (value {})", .{g.Value.toRaw()}),
@@ -648,6 +643,10 @@ pub const TirPrinter = struct {
                 }
                 try self.leaf("])", .{});
                 try self.close();
+            },
+            .GlobalAddr => {
+                const row = self.tir.instrs.get(.GlobalAddr, id);
+                try self.leaf("(instr id={} op=GlobalAddr name=\"{s}\" result={} type={f})", .{ id.toRaw(), self.s(row.name), row.result.toRaw(), self.tf(row.ty) });
             },
             .TupleMake => {
                 const row = self.tir.instrs.get(.TupleMake, id);
@@ -674,7 +673,7 @@ pub const TirPrinter = struct {
                 const fields = self.tir.instrs.sfi_pool.slice(row.fields);
                 try self.open("(instr id={} op=StructMake result={} type={f} fields=[", .{ id.toRaw(), row.result.toRaw(), self.tf(row.ty) });
                 for (fields) |sfid| {
-                    const sf = self.tir.instrs.StructFieldInit.get(sfid.toRaw());
+                    const sf = self.tir.instrs.StructFieldInit.get(sfid);
                     try self.leaf("  (field index={} name={s} value={})", .{ sf.index, if (sf.name.isNone()) "null" else self.s(sf.name.unwrap()), sf.value.toRaw() });
                 }
                 try self.leaf("])", .{});

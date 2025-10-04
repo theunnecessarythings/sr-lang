@@ -751,11 +751,11 @@ pub const Operation = struct {
         c.mlirOperationSetOperands(self.handle, @intCast(tmp.len), @ptrCast(tmp.slice()));
     }
 
-    pub fn getNumResults(self: *Operation) usize {
+    pub fn getNumResults(self: *const Operation) usize {
         return @intCast(c.mlirOperationGetNumResults(self.handle));
     }
 
-    pub fn getResult(self: *Operation, pos: usize) Value {
+    pub fn getResult(self: *const Operation, pos: usize) Value {
         return Value{ .handle = c.mlirOperationGetResult(self.handle, @intCast(pos)) };
     }
 

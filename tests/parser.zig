@@ -25,7 +25,7 @@ fn parseOneExpr(gpa: std.mem.Allocator, context: *Context, src: [:0]const u8) !s
     const decl_ids = ast.exprs.decl_pool.slice(ast.program.top_decls);
     try testing.expectEqual(@as(usize, 1), decl_ids.len);
 
-    const decl_row = ast.exprs.Decl.get(decl_ids[0].toRaw());
+    const decl_row = ast.exprs.Decl.get(decl_ids[0]);
     return .{ .ast = ast, .id = decl_row.rhs };
 }
 
@@ -91,7 +91,7 @@ test "expr: ctor-like struct literal Foo{a:1}" {
     const fields = r.ast.exprs.sfv_pool.slice(row.fields);
     try testing.expectEqual(@as(usize, 1), fields.len);
 
-    const frow = r.ast.exprs.StructFieldValue.get(fields[0].toRaw());
+    const frow = r.ast.exprs.StructFieldValue.get(fields[0]);
     const fname = r.ast.exprs.strs.get(frow.name.unwrap());
     try testing.expectEqualStrings("a", fname);
     try expectLit(&r.ast, frow.value, "1");
@@ -111,7 +111,7 @@ test "match with guard" {
     defer ast.deinit();
 
     const decl_ids = ast.exprs.decl_pool.slice(ast.program.top_decls);
-    const rhs = ast.exprs.Decl.get(decl_ids[0].toRaw()).rhs;
+    const rhs = ast.exprs.Decl.get(decl_ids[0]).rhs;
 
     try expectKind(&ast, rhs, .Match);
     const m = ast.exprs.get(.Match, rhs);

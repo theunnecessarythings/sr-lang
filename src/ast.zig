@@ -19,39 +19,28 @@ pub const MlirKind = dod.MlirKind;
 pub const CastKind = dod.CastKind;
 
 pub const ExprTag = struct {};
-pub const DeclTag = struct {};
 pub const StmtTag = struct {};
-pub const AttrTag = struct {};
-pub const ParamTag = struct {};
-pub const StructFieldTag = struct {};
-pub const EnumFieldTag = struct {};
-pub const VariantFieldTag = struct {};
-pub const KeyValueTag = struct {};
-pub const MatchArmTag = struct {};
-pub const StructFieldValueTag = struct {};
-pub const PathSegTag = struct {};
 pub const PatternTag = struct {};
-pub const PatternFieldTag = struct {};
 
 pub const ExprId = Index(ExprTag);
-pub const DeclId = Index(DeclTag);
+pub const DeclId = Index(Rows.Decl);
 pub const StmtId = Index(StmtTag);
-pub const AttributeId = Index(AttrTag);
-pub const ParamId = Index(ParamTag);
-pub const StructFieldId = Index(StructFieldTag);
-pub const EnumFieldId = Index(EnumFieldTag);
-pub const VariantFieldId = Index(VariantFieldTag);
-pub const KeyValueId = Index(KeyValueTag);
-pub const MatchArmId = Index(MatchArmTag);
-pub const StructFieldValueId = Index(StructFieldValueTag);
-pub const PathSegId = Index(PathSegTag);
+pub const AttributeId = Index(Rows.Attribute);
+pub const ParamId = Index(Rows.Param);
+pub const StructFieldId = Index(Rows.StructField);
+pub const EnumFieldId = Index(Rows.EnumField);
+pub const VariantFieldId = Index(Rows.VariantField);
+pub const KeyValueId = Index(Rows.KeyValue);
+pub const MatchArmId = Index(Rows.MatchArm);
+pub const StructFieldValueId = Index(Rows.StructFieldValue);
+pub const PathSegId = Index(PatRows.PathSeg);
 pub const PatternId = Index(PatternTag);
-pub const PatFieldId = Index(PatternFieldTag);
+pub const PatFieldId = Index(PatRows.StructField);
 
 pub const OptExprId = SentinelIndex(ExprTag);
 pub const OptStmtId = SentinelIndex(StmtTag);
-pub const OptDeclId = SentinelIndex(DeclTag);
-pub const OptParamId = SentinelIndex(ParamTag);
+pub const OptDeclId = SentinelIndex(Rows.Decl);
+pub const OptParamId = SentinelIndex(Rows.Param);
 pub const OptPatternId = SentinelIndex(PatternTag);
 
 pub const RangeExpr = RangeOf(ExprId);
@@ -529,59 +518,50 @@ pub const ExprStore = struct {
     pub fn add(self: *@This(), comptime K: ExprKind, row: RowT(K)) ExprId {
         const tbl: *Table(RowT(K)) = &@field(self, @tagName(K));
         const idx = tbl.add(self.gpa, row);
-        return self.index.newId(self.gpa, K, idx, ExprId);
+        return self.index.newId(self.gpa, K, idx.toRaw(), ExprId);
     }
 
     pub fn get(self: *const @This(), comptime K: ExprKind, id: ExprId) RowT(K) {
         std.debug.assert(self.index.kinds.items[id.toRaw()] == K);
         const row_idx = self.index.rows.items[id.toRaw()];
         const tbl: *const Table(RowT(K)) = &@field(self, @tagName(K));
-        return tbl.get(row_idx);
+        return tbl.get(.{ .index = row_idx });
     }
 
     pub fn addKeyValue(self: *@This(), row: Rows.KeyValue) KeyValueId {
-        const idx = self.KeyValue.add(self.gpa, row);
-        return KeyValueId.fromRaw(idx);
+        return self.KeyValue.add(self.gpa, row);
     }
 
     pub fn addStructFieldValue(self: *@This(), row: Rows.StructFieldValue) StructFieldValueId {
-        const idx = self.StructFieldValue.add(self.gpa, row);
-        return StructFieldValueId.fromRaw(idx);
+        return self.StructFieldValue.add(self.gpa, row);
     }
 
     pub fn addMatchArm(self: *@This(), row: Rows.MatchArm) MatchArmId {
-        const idx = self.MatchArm.add(self.gpa, row);
-        return MatchArmId.fromRaw(idx);
+        return self.MatchArm.add(self.gpa, row);
     }
 
     pub fn addParam(self: *@This(), row: Rows.Param) ParamId {
-        const idx = self.Param.add(self.gpa, row);
-        return ParamId.fromRaw(idx);
+        return self.Param.add(self.gpa, row);
     }
 
     pub fn addAttribute(self: *@This(), row: Rows.Attribute) AttributeId {
-        const idx = self.Attribute.add(self.gpa, row);
-        return AttributeId.fromRaw(idx);
+        return self.Attribute.add(self.gpa, row);
     }
 
     pub fn addDecl(self: *@This(), row: Rows.Decl) DeclId {
-        const idx = self.Decl.add(self.gpa, row);
-        return DeclId.fromRaw(idx);
+        return self.Decl.add(self.gpa, row);
     }
 
     pub fn addStructField(self: *@This(), row: Rows.StructField) StructFieldId {
-        const idx = self.StructField.add(self.gpa, row);
-        return StructFieldId.fromRaw(idx);
+        return self.StructField.add(self.gpa, row);
     }
 
     pub fn addEnumField(self: *@This(), row: Rows.EnumField) EnumFieldId {
-        const idx = self.EnumField.add(self.gpa, row);
-        return EnumFieldId.fromRaw(idx);
+        return self.EnumField.add(self.gpa, row);
     }
 
     pub fn addVariantField(self: *@This(), row: Rows.VariantField) VariantFieldId {
-        const idx = self.VariantField.add(self.gpa, row);
-        return VariantFieldId.fromRaw(idx);
+        return self.VariantField.add(self.gpa, row);
     }
 };
 
@@ -619,14 +599,14 @@ pub const StmtStore = struct {
     pub fn add(self: *@This(), comptime K: StmtKind, row: StmtRowT(K)) StmtId {
         const tbl: *Table(StmtRowT(K)) = &@field(self, @tagName(K));
         const idx = tbl.add(self.gpa, row);
-        return self.index.newId(self.gpa, K, idx, StmtId);
+        return self.index.newId(self.gpa, K, idx.toRaw(), StmtId);
     }
 
     pub fn get(self: *const @This(), comptime K: StmtKind, id: StmtId) StmtRowT(K) {
         std.debug.assert(self.index.kinds.items[id.toRaw()] == K);
         const row_idx = self.index.rows.items[id.toRaw()];
         const tbl: *const Table(StmtRowT(K)) = &@field(self, @tagName(K));
-        return tbl.get(row_idx);
+        return tbl.get(.{ .index = row_idx });
     }
 };
 
@@ -678,14 +658,14 @@ pub const PatternStore = struct {
     pub fn add(self: *@This(), comptime K: PatternKind, row: PatRowT(K)) PatternId {
         const tbl: *Table(PatRowT(K)) = &@field(self, @tagName(K));
         const idx = tbl.add(self.gpa, row);
-        return self.index.newId(self.gpa, K, idx, PatternId);
+        return self.index.newId(self.gpa, K, idx.toRaw(), PatternId);
     }
 
     pub fn get(self: *const @This(), comptime K: PatternKind, id: PatternId) PatRowT(K) {
         std.debug.assert(self.index.kinds.items[id.toRaw()] == K);
         const row_idx = self.index.rows.items[id.toRaw()];
         const tbl: *const Table(PatRowT(K)) = &@field(self, @tagName(K));
-        return tbl.get(row_idx);
+        return tbl.get(.{ .index = row_idx });
     }
 
     pub fn addPathSeg(self: *@This(), row: PatRows.PathSeg) PathSegId {
@@ -778,7 +758,7 @@ pub const AstPrinter = struct {
     }
 
     fn printDecl(self: *AstPrinter, id: DeclId) anyerror!void {
-        const row = self.exprs.Decl.get(id.toRaw());
+        const row = self.exprs.Decl.get(id);
         try self.open("(decl is_const={})", .{row.flags.is_const});
 
         if (!row.pattern.isNone()) {
@@ -935,7 +915,7 @@ pub const AstPrinter = struct {
                 try self.open("(map", .{});
                 const entries = self.exprs.kv_pool.slice(node.entries);
                 for (entries) |kv_id| {
-                    const kv = self.exprs.KeyValue.get(kv_id.toRaw());
+                    const kv = self.exprs.KeyValue.get(kv_id);
                     try self.open("(entry", .{});
                     try self.open("(key", .{});
                     try self.printExpr(kv.key);
@@ -978,7 +958,7 @@ pub const AstPrinter = struct {
                 try self.open("(struct_literal", .{});
                 const fields = self.exprs.sfv_pool.slice(node.fields);
                 for (fields) |fid| {
-                    const field = self.exprs.StructFieldValue.get(fid.toRaw());
+                    const field = self.exprs.StructFieldValue.get(fid);
                     try self.open("(field", .{});
                     if (!field.name.isNone())
                         try self.leaf("name=\"{s}\"", .{self.s(field.name.unwrap())})
@@ -1116,7 +1096,7 @@ pub const AstPrinter = struct {
                 try self.close();
                 const arms = self.exprs.arm_pool.slice(node.arms);
                 for (arms) |aid| {
-                    const arm = self.exprs.MatchArm.get(aid.toRaw());
+                    const arm = self.exprs.MatchArm.get(aid);
                     try self.open("(arm", .{});
                     try self.open("(pattern", .{});
                     try self.printPattern(arm.pattern);
@@ -1330,7 +1310,7 @@ pub const AstPrinter = struct {
                 }
                 const fields = self.exprs.efield_pool.slice(node.fields);
                 for (fields) |eid| {
-                    const field = self.exprs.EnumField.get(eid.toRaw());
+                    const field = self.exprs.EnumField.get(eid);
                     try self.open("(field name=\"{s}\"", .{self.s(field.name)});
                     if (!field.attrs.isNone()) try self.printAttrs(field.attrs);
                     if (!field.value.isNone()) {
@@ -1423,7 +1403,7 @@ pub const AstPrinter = struct {
 
         try self.open("(attributes", .{});
         for (attrs) |aid| {
-            const attr = self.exprs.Attribute.get(aid.toRaw());
+            const attr = self.exprs.Attribute.get(aid);
             if (attr.value.isNone()) {
                 try self.leaf("(attr name=\"{s}\")", .{self.s(attr.name)});
             } else {
@@ -1440,7 +1420,7 @@ pub const AstPrinter = struct {
     fn printParams(self: *AstPrinter, r: RangeOf(ParamId)) anyerror!void {
         const params = self.exprs.param_pool.slice(r);
         for (params) |pid| {
-            const param = self.exprs.Param.get(pid.toRaw());
+            const param = self.exprs.Param.get(pid);
             try self.open("(param", .{});
             if (!param.attrs.isNone()) try self.printAttrs(param.attrs);
             if (!param.pat.isNone()) {
@@ -1463,7 +1443,7 @@ pub const AstPrinter = struct {
     }
 
     fn printStructField(self: *AstPrinter, id: StructFieldId) anyerror!void {
-        const field = self.exprs.StructField.get(id.toRaw());
+        const field = self.exprs.StructField.get(id);
         try self.open("(field name=\"{s}\"", .{self.s(field.name)});
         if (!field.attrs.isNone()) try self.printAttrs(field.attrs);
         try self.open("(type", .{});
@@ -1478,7 +1458,7 @@ pub const AstPrinter = struct {
     }
 
     fn printVariantField(self: *AstPrinter, id: VariantFieldId) anyerror!void {
-        const field = self.exprs.VariantField.get(id.toRaw());
+        const field = self.exprs.VariantField.get(id);
         try self.open("(field name=\"{s}\"", .{self.s(field.name)});
         if (!field.attrs.isNone()) try self.printAttrs(field.attrs);
         switch (field.payload_kind) {
@@ -1518,7 +1498,7 @@ pub const AstPrinter = struct {
                 try self.open("(path", .{});
                 const segs = self.pats.seg_pool.slice(node.segments);
                 for (segs) |sid| {
-                    const seg = self.pats.PathSeg.get(sid.toRaw());
+                    const seg = self.pats.PathSeg.get(sid);
                     try self.leaf("(seg \"{s}\" by_ref={} is_mut={})", .{ self.s(seg.name), seg.by_ref, seg.is_mut });
                 }
                 try self.close();
@@ -1598,14 +1578,14 @@ pub const AstPrinter = struct {
         if (segs.len == 0) return;
         try self.open("(path", .{});
         for (segs) |sid| {
-            const seg = self.pats.PathSeg.get(sid.toRaw());
+            const seg = self.pats.PathSeg.get(sid);
             try self.leaf("(seg \"{s}\" by_ref={} is_mut={})", .{ self.s(seg.name), seg.by_ref, seg.is_mut });
         }
         try self.close();
     }
 
     fn printPatternField(self: *AstPrinter, id: PatFieldId) anyerror!void {
-        const field = self.pats.StructField.get(id.toRaw());
+        const field = self.pats.StructField.get(id);
         try self.open("(field name=\"{s}\"", .{self.s(field.name)});
         try self.printPattern(field.pattern);
         try self.close();
@@ -1666,7 +1646,7 @@ pub const CodePrinter = struct {
     }
 
     fn printDecl(self: *CodePrinter, id: DeclId) anyerror!void {
-        const row = self.exprs.Decl.get(id.toRaw());
+        const row = self.exprs.Decl.get(id);
 
         if (!row.pattern.isNone()) {
             try self.printPattern(row.pattern.unwrap());
@@ -1867,7 +1847,7 @@ pub const CodePrinter = struct {
                 const entries = self.exprs.kv_pool.slice(node.entries);
                 for (entries, 0..) |kv_id, i| {
                     if (i > 0) try self.printf(", ", .{});
-                    const kv = self.exprs.KeyValue.get(kv_id.toRaw());
+                    const kv = self.exprs.KeyValue.get(kv_id);
                     try self.printExpr(kv.key);
                     try self.printf(": ", .{});
                     try self.printExpr(kv.value);
@@ -1906,7 +1886,7 @@ pub const CodePrinter = struct {
                 const fields = self.exprs.sfv_pool.slice(node.fields);
                 for (fields, 0..) |fid, i| {
                     if (i > 0) try self.printf(", ", .{});
-                    const field = self.exprs.StructFieldValue.get(fid.toRaw());
+                    const field = self.exprs.StructFieldValue.get(fid);
                     if (!field.name.isNone()) {
                         try self.printf("{s}: ", .{self.s(field.name.unwrap())});
                     }
@@ -2037,7 +2017,7 @@ pub const CodePrinter = struct {
                 const arms = self.exprs.arm_pool.slice(node.arms);
                 for (arms, 0..) |aid, i| {
                     if (i > 0) try self.printf(",", .{});
-                    const arm = self.exprs.MatchArm.get(aid.toRaw());
+                    const arm = self.exprs.MatchArm.get(aid);
                     try self.newline();
                     self.indent += 4;
                     try self.ws();
@@ -2261,7 +2241,7 @@ pub const CodePrinter = struct {
                 if (fields.len > 0) {
                     self.indent += 4;
                     for (fields) |eid| {
-                        const field = self.exprs.EnumField.get(eid.toRaw());
+                        const field = self.exprs.EnumField.get(eid);
                         try self.newline();
                         try self.ws();
                         try self.printAttrs(field.attrs, .Before);
@@ -2381,7 +2361,7 @@ pub const CodePrinter = struct {
         try self.printf("@[", .{});
         for (attrs, 0..) |aid, i| {
             if (i > 0) try self.printf(", ", .{});
-            const attr = self.exprs.Attribute.get(aid.toRaw());
+            const attr = self.exprs.Attribute.get(aid);
             try self.ws();
             try self.printf("{s}", .{self.s(attr.name)});
             if (!attr.value.isNone()) {
@@ -2401,7 +2381,7 @@ pub const CodePrinter = struct {
         const params = self.exprs.param_pool.slice(r);
         for (params, 0..) |pid, i| {
             if (i > 0) try self.printf(", ", .{});
-            const param = self.exprs.Param.get(pid.toRaw());
+            const param = self.exprs.Param.get(pid);
             try self.printAttrs(param.attrs, .After);
             if (!param.pat.isNone()) {
                 try self.printPattern(param.pat.unwrap());
@@ -2420,7 +2400,7 @@ pub const CodePrinter = struct {
     }
 
     fn printStructField(self: *CodePrinter, id: StructFieldId) anyerror!void {
-        const field = self.exprs.StructField.get(id.toRaw());
+        const field = self.exprs.StructField.get(id);
         try self.printAttrs(field.attrs, .Before);
         try self.printf("{s}: ", .{self.s(field.name)});
         try self.printExpr(field.ty);
@@ -2431,7 +2411,7 @@ pub const CodePrinter = struct {
     }
 
     fn printVariantField(self: *CodePrinter, id: VariantFieldId) anyerror!void {
-        const field = self.exprs.VariantField.get(id.toRaw());
+        const field = self.exprs.VariantField.get(id);
         try self.printAttrs(field.attrs, .Before);
         try self.printf("{s}", .{self.s(field.name)});
         switch (field.payload_kind) {
@@ -2472,7 +2452,7 @@ pub const CodePrinter = struct {
                 const segs = self.pats.seg_pool.slice(node.segments);
                 for (segs, 0..) |sid, i| {
                     if (i > 0) try self.printf(".", .{});
-                    const seg = self.pats.PathSeg.get(sid.toRaw());
+                    const seg = self.pats.PathSeg.get(sid);
                     if (seg.by_ref) try self.printf("ref ", .{});
                     if (seg.is_mut) try self.printf("mut ", .{});
                     try self.printf("{s}", .{self.s(seg.name)});
@@ -2582,13 +2562,13 @@ pub const CodePrinter = struct {
         const segs = self.pats.seg_pool.slice(path);
         for (segs, 0..) |sid, i| {
             if (i > 0) try self.printf(".", .{});
-            const seg = self.pats.PathSeg.get(sid.toRaw());
+            const seg = self.pats.PathSeg.get(sid);
             try self.printf("{s}", .{self.s(seg.name)});
         }
     }
 
     fn printPatternField(self: *CodePrinter, id: PatFieldId) anyerror!void {
-        const field = self.pats.StructField.get(id.toRaw());
+        const field = self.pats.StructField.get(id);
         try self.printf("{s}: ", .{self.s(field.name)});
         try self.printPattern(field.pattern);
     }

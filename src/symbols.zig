@@ -5,11 +5,7 @@ const types = @import("types.zig");
 
 pub const SymbolKind = enum { Var, Const, Function, Type, Param, Field };
 
-pub const SymTag = struct {};
-pub const ScopeTag = struct {};
-
-pub const SymbolId = dod.Index(SymTag);
-pub const ScopeId = dod.Index(ScopeTag);
+pub const SymbolId = dod.Index(SymbolRow);
 pub const RangeSym = dod.RangeOf(SymbolId);
 
 pub const SymbolRow = struct {
@@ -19,7 +15,9 @@ pub const SymbolRow = struct {
     origin_decl: ast.OptDeclId,
     origin_param: ast.OptParamId,
 };
-pub const ScopeRow = struct { parent: dod.SentinelIndex(ScopeTag), symbols: RangeSym };
+pub const ScopeRow = struct { parent: dod.SentinelIndex(ScopeRow), symbols: RangeSym };
+
+pub const ScopeId = dod.Index(ScopeRow);
 
 pub const SymbolStore = struct {
     gpa: std.mem.Allocator,
@@ -43,7 +41,7 @@ pub const SymbolStore = struct {
     }
 
     pub fn push(self: *SymbolStore, parent: ?ScopeId) !ScopeId {
-        const sid = ScopeId.fromRaw(self.scopes.add(self.gpa, .{ .parent = if (parent) |p| dod.SentinelIndex(ScopeTag).some(p) else dod.SentinelIndex(ScopeTag).none(), .symbols = RangeSym.empty() }));
+        const sid = self.scopes.add(self.gpa, .{ .parent = if (parent) |p| .some(p) else .none(), .symbols = .empty() });
         try self.stack.append(self.gpa, .{ .id = sid, .list = .{} });
         return sid;
     }
@@ -53,7 +51,7 @@ pub const SymbolStore = struct {
         var frame = self.stack.items[self.stack.items.len - 1];
         self.stack.items.len -= 1;
         const range = self.sym_pool.pushMany(gpa, frame.list.items);
-        var scope = self.scopes.get(frame.id.toRaw());
+        var scope = self.scopes.get(frame.id);
         scope.symbols = range;
         self.scopes.list.set(frame.id.toRaw(), scope);
         frame.list.deinit(gpa);
@@ -111,7 +109,7 @@ pub const SymbolStore = struct {
     }
 
     pub fn declare(self: *SymbolStore, sym: SymbolRow) !SymbolId {
-        const id = SymbolId.fromRaw(self.syms.add(self.gpa, sym));
+        const id = self.syms.add(self.gpa, sym);
         var frame_ptr = &self.stack.items[self.stack.items.len - 1];
         try frame_ptr.list.append(self.gpa, id);
         return id;
@@ -120,15 +118,15 @@ pub const SymbolStore = struct {
     pub fn lookup(self: *const SymbolStore, a: *const ast.Ast, scope_id: ScopeId, name: ast.StrId) ?SymbolId {
         _ = a;
         // linear search current scope and parents
-        var sid_opt: dod.SentinelIndex(ScopeTag) = dod.SentinelIndex(ScopeTag).some(scope_id);
+        var sid_opt: dod.SentinelIndex(ScopeRow) = .some(scope_id);
         while (!sid_opt.isNone()) {
             const sid = sid_opt.unwrap();
-            const srow = self.scopes.get(sid.toRaw());
+            const srow = self.scopes.get(sid);
 
             // Search symbols in the finalized pool for this scope
             const ids = self.sym_pool.slice(srow.symbols);
             for (ids) |sym_id| {
-                const row = self.syms.get(sym_id.toRaw());
+                const row = self.syms.get(sym_id);
                 if (row.name.toRaw() == name.toRaw()) return sym_id;
             }
 
@@ -136,7 +134,7 @@ pub const SymbolStore = struct {
             for (self.stack.items) |frame| {
                 if (frame.id.toRaw() == sid.toRaw()) {
                     for (frame.list.items) |sym_id| {
-                        const row = self.syms.get(sym_id.toRaw());
+                        const row = self.syms.get(sym_id);
                         if (row.name.toRaw() == name.toRaw()) return sym_id;
                     }
                     break; // Found the scope on the stack, no need to check other frames for this sid

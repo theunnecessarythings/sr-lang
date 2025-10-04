@@ -39,7 +39,7 @@ pub const Pipeline = struct {
         llvm_ir,
         llvm_passes,
         jit,
-        exec,
+        compile,
         run,
 
         repl,
@@ -190,6 +190,9 @@ pub const Pipeline = struct {
         if (mode == .llvm_ir or mode == .llvm_passes) {
             return .{ .cst = cst_program, .ast = ast, .tir = root_mod, .mlir_module = mlir_module, .gen = gen, .type_info = type_info };
         }
+        if (mode == .compile) {
+            return .{ .cst = cst_program, .ast = ast, .tir = root_mod, .mlir_module = mlir_module, .gen = gen, .type_info = type_info };
+        }
 
         if (mode == .jit) {
             compile.runJit(mlir_module.handle);
@@ -250,7 +253,7 @@ fn computePrefix(gpa: std.mem.Allocator, imp: []const u8) ![]const u8 {
 fn computeModulePrefixes(gpa: std.mem.Allocator, a: *const ast_mod.Ast, out: *std.StringHashMap([]const u8)) !void {
     const decls = a.exprs.decl_pool.slice(a.unit.decls);
     for (decls) |did| {
-        const d = a.exprs.Decl.get(did.toRaw());
+        const d = a.exprs.Decl.get(did);
         if (a.exprs.index.kinds.items[d.value.toRaw()] != .Import) continue;
         if (d.pattern.isNone()) continue;
         const pid = d.pattern.unwrap();
@@ -282,7 +285,7 @@ fn mangleTIR(gpa: std.mem.Allocator, t: *tir_mod.TIR, strs: *cst_mod.StringInter
     // Gather functions and rename
     const funcs = t.funcs.func_pool.data.items;
     for (funcs) |fid| {
-        const row = t.funcs.Function.get(fid.toRaw());
+        const row = t.funcs.Function.get(fid);
         const old_name = row.name;
         const name_s = strs.get(old_name);
         const new_s = try std.fmt.allocPrint(gpa, "{s}_{s}", .{ prefix, name_s });
@@ -296,7 +299,7 @@ fn mangleTIR(gpa: std.mem.Allocator, t: *tir_mod.TIR, strs: *cst_mod.StringInter
     // Update call sites
     const blocks = t.funcs.block_pool.data.items;
     for (blocks) |bid| {
-        const b = t.funcs.Block.get(bid.toRaw());
+        const b = t.funcs.Block.get(bid);
         const instrs = t.instrs.instr_pool.slice(b.instrs);
         for (instrs) |iid| {
             const kind = t.instrs.index.kinds.items[iid.toRaw()];

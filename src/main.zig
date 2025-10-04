@@ -283,7 +283,7 @@ fn process_file(
         try err_writer.print("Compiling {s}...\n", .{filename});
     }
     const result = try pipeline.runWithImports(filename, link_args, switch (cli_args.subcommand) {
-        .compile => .exec,
+        .compile => .compile,
         .run => .run,
         .check => .check,
         .ast => .ast,

@@ -151,7 +151,7 @@ pub const ImportResolver = struct {
         const decls = a.exprs.decl_pool.slice(a.unit.decls);
         var i: usize = 0;
         while (i < decls.len) : (i += 1) {
-            const drow = a.exprs.Decl.get(decls[i].toRaw());
+            const drow = a.exprs.Decl.get(decls[i]);
             if (drow.pattern.isNone()) continue;
 
             const pid = drow.pattern.unwrap();

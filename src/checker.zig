@@ -116,7 +116,7 @@ pub const Checker = struct {
         const decl_ids = self.ast_unit.exprs.decl_pool.slice(self.ast_unit.unit.decls);
         // Pre-bind all top-level declaration patterns so forward references resolve.
         for (decl_ids) |did| {
-            const d = self.ast_unit.exprs.Decl.get(did.toRaw());
+            const d = self.ast_unit.exprs.Decl.get(did);
             try self.bindDeclPattern(did, d);
         }
         // Now type-check declarations with names available in scope
@@ -240,13 +240,20 @@ pub const Checker = struct {
         return null;
     }
 
+    // fn getNode(self: *Checker, )
+
     // =========================================================
     // Declarations & Statements
     // =========================================================
     fn checkDecl(self: *Checker, decl_id: ast.DeclId) !void {
         // pattern : expect_ty = value
 
-        const decl = self.ast_unit.exprs.Decl.get(decl_id.toRaw());
+        const decl = self.ast_unit.exprs.Decl.get(decl_id);
+
+        // Predeclare local bindings in the current scope so subsequent statements can reference them.
+        if (!decl.pattern.isNone()) {
+            try pattern_matching.declareBindingsInPattern(self, decl.pattern.unwrap(), decl.loc, .{ .decl = decl_id });
+        }
 
         // Expected type from type annotation (if any)
         const expect_ty = if (decl.ty.isNone())
@@ -269,8 +276,6 @@ pub const Checker = struct {
 
         // If LHS is a pattern, ensure the RHS type matches the pattern's shape.
         if (!decl.pattern.isNone()) {
-            try pattern_matching.declareBindingsInPattern(self, decl.pattern.unwrap(), decl.loc, .{ .decl = decl_id });
-
             const shape_ok = pattern_matching.checkPatternShapeForDecl(self, decl.pattern.unwrap(), rhs_ty.?);
             switch (shape_ok) {
                 .ok => {},
@@ -324,7 +329,7 @@ pub const Checker = struct {
 
         // Assigning `null` (modeled as Optional(Any)) to a non-optional target should error clearly.
         if (got_kind == .Optional and expected_kind != .Optional) {
-            const got_opt = self.context.type_store.Optional.get(self.trow(got));
+            const got_opt = self.context.type_store.get(.Optional, got);
             const elem_kind = self.typeKind(got_opt.elem);
             if (elem_kind == .Any) return .assign_null_to_non_optional;
             // Implicit unwrap from Optional(T) -> T is not permitted.
@@ -334,14 +339,14 @@ pub const Checker = struct {
         switch (expected_kind) {
             .Slice => {
                 if (got_kind != .Slice) return .failure;
-                const expected_ty = self.context.type_store.Slice.get(self.trow(expect));
-                const got_ty = self.context.type_store.Slice.get(self.trow(got));
+                const expected_ty = self.context.type_store.get(.Slice, expect);
+                const got_ty = self.context.type_store.get(.Slice, got);
                 return self.assignable(got_ty.elem, expected_ty.elem);
             },
             .Array => {
                 if (got_kind != .Array) return .expected_array_type;
-                const expected_ty = self.context.type_store.Array.get(self.trow(expect));
-                const got_ty = self.context.type_store.Array.get(self.trow(got));
+                const expected_ty = self.context.type_store.get(.Array, expect);
+                const got_ty = self.context.type_store.get(.Array, got);
                 const elem_ok = self.assignable(got_ty.elem, expected_ty.elem);
                 if (expected_ty.len != got_ty.len)
                     return .array_length_mismatch;
@@ -349,18 +354,18 @@ pub const Checker = struct {
             },
             .DynArray => {
                 // BUGFIX: allow assigning from DynArray itself AND from Array/Slice (element-compatible).
-                const expected_ty = self.context.type_store.DynArray.get(self.trow(expect));
+                const expected_ty = self.context.type_store.get(.DynArray, expect);
                 switch (got_kind) {
                     .DynArray => {
-                        const got_ty = self.context.type_store.DynArray.get(self.trow(got));
+                        const got_ty = self.context.type_store.get(.DynArray, got);
                         return self.assignable(got_ty.elem, expected_ty.elem);
                     },
                     .Array => {
-                        const got_ty = self.context.type_store.Array.get(self.trow(got));
+                        const got_ty = self.context.type_store.get(.Array, got);
                         return self.assignable(got_ty.elem, expected_ty.elem);
                     },
                     .Slice => {
-                        const got_ty = self.context.type_store.Slice.get(self.trow(got));
+                        const got_ty = self.context.type_store.get(.Slice, got);
                         return self.assignable(got_ty.elem, expected_ty.elem);
                     },
                     else => return .expected_array_type,
@@ -368,8 +373,8 @@ pub const Checker = struct {
             },
             .Tuple => {
                 if (got_kind != .Tuple) return .expected_tuple_type;
-                const expected_ty = self.context.type_store.Tuple.get(self.trow(expect));
-                const got_ty = self.context.type_store.Tuple.get(self.trow(got));
+                const expected_ty = self.context.type_store.get(.Tuple, expect);
+                const got_ty = self.context.type_store.get(.Tuple, got);
                 if (expected_ty.elems.len != got_ty.elems.len) return .tuple_arity_mismatch;
                 const got_elems = self.context.type_store.type_pool.slice(got_ty.elems);
                 const expected_elems = self.context.type_store.type_pool.slice(expected_ty.elems);
@@ -383,13 +388,13 @@ pub const Checker = struct {
             .Map => {
                 // Allow "empty array" sugar to coerce to any map type.
                 if (got_kind == .Array) {
-                    const got_ty = self.context.type_store.Array.get(self.trow(got));
+                    const got_ty = self.context.type_store.get(.Array, got);
                     if (got_ty.len != 0) return .expected_map_type;
                     return .success;
                 }
                 if (got_kind != .Map) return .expected_map_type;
-                const expected_ty = self.context.type_store.Map.get(self.trow(expect));
-                const got_ty = self.context.type_store.Map.get(self.trow(got));
+                const expected_ty = self.context.type_store.get(.Map, expect);
+                const got_ty = self.context.type_store.get(.Map, got);
                 const key_ok = self.assignable(got_ty.key, expected_ty.key);
                 const value_ok = self.assignable(got_ty.value, expected_ty.value);
                 if (key_ok != .success) return .map_wrong_key_type;
@@ -397,17 +402,17 @@ pub const Checker = struct {
                 return .success;
             },
             .Optional => {
-                const expected_ty = self.context.type_store.Optional.get(self.trow(expect));
+                const expected_ty = self.context.type_store.get(.Optional, expect);
                 if (got_kind == .Optional) {
-                    const got_ty = self.context.type_store.Optional.get(self.trow(got));
+                    const got_ty = self.context.type_store.get(.Optional, got);
                     return self.assignable(got_ty.elem, expected_ty.elem);
                 }
                 return self.assignable(got, expected_ty.elem);
             },
             .Ptr => {
                 if (got_kind != .Ptr) return .expected_pointer_type;
-                const expected_ty = self.context.type_store.Ptr.get(self.trow(expect));
-                const got_ty = self.context.type_store.Ptr.get(self.trow(got));
+                const expected_ty = self.context.type_store.get(.Ptr, expect);
+                const got_ty = self.context.type_store.get(.Ptr, got);
                 if (!expected_ty.is_const and got_ty.is_const) {
                     return .pointer_constness_violation;
                 }
@@ -423,17 +428,17 @@ pub const Checker = struct {
             .Noreturn => return .noreturn_not_storable,
             .Union => {
                 if (got_kind != .Struct) return .expected_struct_type;
-                const expected_ty = self.context.type_store.Union.get(self.trow(expect));
-                const got_ty = self.context.type_store.Struct.get(self.trow(got));
+                const expected_ty = self.context.type_store.get(.Union, expect);
+                const got_ty = self.context.type_store.get(.Struct, got);
                 const expected_fields = self.context.type_store.field_pool.slice(expected_ty.fields);
                 const got_fields = self.context.type_store.field_pool.slice(got_ty.fields);
                 // Should only have one field set in union
                 if (got_fields.len == 0) return .union_empty_literal;
                 if (got_fields.len != 1) return .union_literal_multiple_fields;
-                const gf = self.context.type_store.Field.get(got_fields[0].toRaw());
+                const gf = self.context.type_store.Field.get(got_fields[0]);
                 var found = false;
                 for (expected_fields) |efid| {
-                    const ef = self.context.type_store.Field.get(efid.toRaw());
+                    const ef = self.context.type_store.Field.get(efid);
                     if (ef.name.toRaw() == gf.name.toRaw()) {
                         found = true;
                         const res = self.assignable(gf.ty, ef.ty);
@@ -446,8 +451,8 @@ pub const Checker = struct {
             },
             .Struct => {
                 if (got_kind != .Struct) return .expected_struct_type;
-                const expected_ty = self.context.type_store.Struct.get(self.trow(expect));
-                const got_ty = self.context.type_store.Struct.get(self.trow(got));
+                const expected_ty = self.context.type_store.get(.Struct, expect);
+                const got_ty = self.context.type_store.get(.Struct, got);
                 const expected_fields = self.context.type_store.field_pool.slice(expected_ty.fields);
                 const got_fields = self.context.type_store.field_pool.slice(got_ty.fields);
                 if (expected_fields.len < got_fields.len) return .unknown_struct_field;
@@ -455,10 +460,10 @@ pub const Checker = struct {
 
                 // Check fields by name, not by order.
                 for (expected_fields) |efid| {
-                    const ef = self.context.type_store.Field.get(efid.toRaw());
+                    const ef = self.context.type_store.Field.get(efid);
                     var found = false;
                     for (got_fields) |gfid| {
-                        const gf = self.context.type_store.Field.get(gfid.toRaw());
+                        const gf = self.context.type_store.Field.get(gfid);
                         if (ef.name.toRaw() == gf.name.toRaw()) {
                             found = true;
                             const res = self.assignable(gf.ty, ef.ty);
@@ -477,8 +482,8 @@ pub const Checker = struct {
             },
             .Function => {
                 if (got_kind != .Function) return .failure;
-                const efn = self.context.type_store.Function.get(self.trow(expect));
-                const gfn = self.context.type_store.Function.get(self.trow(got));
+                const efn = self.context.type_store.get(.Function, expect);
+                const gfn = self.context.type_store.get(.Function, got);
                 if (efn.is_variadic != gfn.is_variadic) return .failure;
                 const eparams = self.context.type_store.type_pool.slice(efn.params);
                 const gparams = self.context.type_store.type_pool.slice(gfn.params);
@@ -492,7 +497,7 @@ pub const Checker = struct {
                 return .success;
             },
             .ErrorSet => {
-                const expected_ty = self.context.type_store.ErrorSet.get(self.trow(expect));
+                const expected_ty = self.context.type_store.get(.ErrorSet, expect);
                 if (got_kind == .Error) {
                     return self.assignable(got, expected_ty.error_ty);
                 } else {
@@ -518,10 +523,10 @@ pub const Checker = struct {
         const rhs_kind = self.typeKind(rhs_ty);
         switch (rhs_kind) {
             .Array => {
-                const arr = self.context.type_store.Array.get(self.trow(rhs_ty));
+                const arr = self.context.type_store.get(.Array, rhs_ty);
                 if (arr.len == 0)
                     try self.context.diags.addError(
-                        self.exprLoc(self.ast_unit.exprs.Decl.get(decl.toRaw())),
+                        self.exprLoc(self.ast_unit.exprs.Decl.get(decl)),
                         .cannot_infer_type_from_empty_array,
                         .{},
                     );
@@ -598,12 +603,12 @@ pub const Checker = struct {
     ) ?types.TypeId {
         const ek = self.context.type_store.getKind(expect_ty);
         const cases = if (ek == .Variant)
-            self.context.type_store.field_pool.slice(self.context.type_store.Variant.get(self.context.type_store.index.rows.items[expect_ty.toRaw()]).variants)
+            self.context.type_store.field_pool.slice(self.context.type_store.get(.Variant, expect_ty).variants)
         else
-            self.context.type_store.field_pool.slice(self.context.type_store.Error.get(self.context.type_store.index.rows.items[expect_ty.toRaw()]).variants);
+            self.context.type_store.field_pool.slice(self.context.type_store.get(.Error, expect_ty).variants);
 
         for (cases) |fid| {
-            const f = self.context.type_store.Field.get(fid.toRaw());
+            const f = self.context.type_store.Field.get(fid);
             if (f.name.toRaw() == lname.toRaw()) return f.ty;
         }
         return null;
@@ -653,7 +658,7 @@ pub const Checker = struct {
         const vfields = self.ast_unit.exprs.sfv_pool.slice(sl.fields);
 
         for (vfields) |sfid| {
-            const sf = self.ast_unit.exprs.StructFieldValue.get(sfid.toRaw());
+            const sf = self.ast_unit.exprs.StructFieldValue.get(sfid);
             if (sf.name.isNone()) return false;
 
             const nm = sf.name.unwrap();
@@ -661,7 +666,7 @@ pub const Checker = struct {
 
             // Find matching target field
             for (tfields) |tfid| {
-                const tf = self.context.type_store.Field.get(tfid.toRaw());
+                const tf = self.context.type_store.Field.get(tfid);
                 if (tf.name.toRaw() == nm.toRaw()) {
                     want = tf.ty;
                     break;
@@ -691,7 +696,7 @@ pub const Checker = struct {
         // First, check direct assignability
         var is_assignable = self.assignable(rhs_ty, expect_ty.?);
 
-        const decl = self.ast_unit.exprs.Decl.get(decl_id.toRaw());
+        const decl = self.ast_unit.exprs.Decl.get(decl_id);
 
         // If that failed, variant/error literals might be of the form V.C(...) or V.C{...}
         if (is_assignable == .failure) {
@@ -953,13 +958,18 @@ pub const Checker = struct {
     }
     fn checkIdent(self: *Checker, id: ast.ExprId) !?types.TypeId {
         const row = self.getExpr(.Ident, id);
+        // First try dynamic bindings from active loop/match contexts to support
+        // pattern-introduced names even if they were not declared in the symtab.
+        if (self.bindingTypeFromActiveLoops(row.name)) |btid_loop| return btid_loop;
+        if (self.bindingTypeFromActiveMatches(row.name)) |btid_match| return btid_match;
+
         if (self.lookup(row.name)) |sid| {
-            const srow = self.symtab.syms.get(sid.toRaw());
+            const srow = self.symtab.syms.get(sid);
             // Decl-originated symbol?
             if (!srow.origin_decl.isNone()) {
                 const did = srow.origin_decl.unwrap();
                 // If this decl had a pattern, compute binding type from pattern and RHS type
-                const drow = self.ast_unit.exprs.Decl.get(did.toRaw());
+                const drow = self.ast_unit.exprs.Decl.get(did);
                 if (!drow.pattern.isNone()) {
                     const rhs_ty = blk: {
                         if (self.type_info.expr_types.items[drow.value.toRaw()]) |t| break :blk t;
@@ -975,7 +985,7 @@ pub const Checker = struct {
             // Param-originated symbol?
             if (!srow.origin_param.isNone()) {
                 const pid = srow.origin_param.unwrap();
-                const p = self.ast_unit.exprs.Param.get(pid.toRaw());
+                const p = self.ast_unit.exprs.Param.get(pid);
                 if (!p.ty.isNone()) {
                     const pt = (try check_types.typeFromTypeExpr(self, p.ty.unwrap())) orelse return null;
                     if (!p.pat.isNone()) {
@@ -989,10 +999,10 @@ pub const Checker = struct {
                 }
             }
 
-            // Loop-pattern-originated symbol? Infer from current loop pattern context if available
-            if (self.bindingTypeFromActiveLoops(row.name)) |btid| return btid;
-
-            if (self.bindingTypeFromActiveMatches(row.name)) |btid| return btid;
+            // Fallback: plain binding introduced by pattern without origin info.
+            // Try to infer its type from active loop/match binding contexts.
+            if (self.bindingTypeFromActiveLoops(row.name)) |btid2| return btid2;
+            if (self.bindingTypeFromActiveMatches(row.name)) |btid2| return btid2;
         }
         if (try check_types.typeFromTypeExpr(self, id)) |ty|
             return self.context.type_store.mkTypeType(ty);
@@ -1069,7 +1079,7 @@ pub const Checker = struct {
             .Expr => self.exprLocFromId(self.getStmt(.Expr, sid).expr),
             .Decl => blk: {
                 const row = self.getStmt(.Decl, sid);
-                const d = self.ast_unit.exprs.Decl.get(row.decl.toRaw());
+                const d = self.ast_unit.exprs.Decl.get(row.decl);
                 break :blk self.exprLoc(d);
             },
             inline else => |x| self.exprLoc(self.getStmt(x, sid)),
@@ -1117,19 +1127,19 @@ pub const Checker = struct {
                     }
                     if (lhs_is_complex and rhs_is_complex) {
                         // Require same element type for now
-                        const lc = self.context.type_store.Complex.get(self.trow(l));
-                        const rc = self.context.type_store.Complex.get(self.trow(r));
+                        const lc = self.context.type_store.get(.Complex, l);
+                        const rc = self.context.type_store.get(.Complex, r);
                         if (lc.elem.toRaw() == rc.elem.toRaw()) return l;
                         try self.context.diags.addError(self.exprLoc(bin), .invalid_binary_op_operands, .{ bin.op, lhs_kind, rhs_kind });
                         return null;
                     }
                     // One side complex, other side numeric scalar
                     if (lhs_is_complex and check_types.isNumericKind(self, rhs_kind)) {
-                        const lc = self.context.type_store.Complex.get(self.trow(l));
+                        const lc = self.context.type_store.get(.Complex, l);
                         if (lc.elem.toRaw() == r.toRaw()) return l;
                     }
                     if (rhs_is_complex and check_types.isNumericKind(self, lhs_kind)) {
-                        const rc = self.context.type_store.Complex.get(self.trow(r));
+                        const rc = self.context.type_store.get(.Complex, r);
                         if (rc.elem.toRaw() == l.toRaw()) return r;
                     }
                     try self.context.diags.addError(self.exprLoc(bin), .invalid_binary_op_operands, .{ bin.op, lhs_kind, rhs_kind });
@@ -1149,8 +1159,8 @@ pub const Checker = struct {
                 const both_bools = lhs_kind == .Bool and rhs_kind == .Bool;
                 var both_complex = lhs_kind == .Complex and rhs_kind == .Complex;
                 if (both_complex) {
-                    const lc = self.context.type_store.Complex.get(self.trow(l));
-                    const rc = self.context.type_store.Complex.get(self.trow(r));
+                    const lc = self.context.type_store.get(.Complex, l);
+                    const rc = self.context.type_store.get(.Complex, r);
                     both_complex = (lc.elem.toRaw() == rc.elem.toRaw());
                 }
                 const both_same_enum = lhs_kind == .Enum and rhs_kind == .Enum and self.tEq(l, r);
@@ -1228,7 +1238,7 @@ pub const Checker = struct {
 
         var i: usize = 0;
         while (i < params.len) : (i += 1) {
-            const p = self.ast_unit.exprs.Param.get(params[i].toRaw());
+            const p = self.ast_unit.exprs.Param.get(params[i]);
             if (!p.ty.isNone()) {
                 const pt = (try check_types.typeFromTypeExpr(self, p.ty.unwrap())) orelse return null;
                 // If parameter uses a pattern, ensure its shape matches the annotated type
@@ -1327,14 +1337,14 @@ pub const Checker = struct {
         if (kvs.len == 0) {
             return self.context.type_store.mkMap(self.context.type_store.tAny(), self.context.type_store.tAny());
         }
-        const first = self.ast_unit.exprs.KeyValue.get(kvs[0].toRaw());
+        const first = self.ast_unit.exprs.KeyValue.get(kvs[0]);
         const key_ty = try self.checkExpr(first.key);
         const val_ty = try self.checkExpr(first.value);
         if (key_ty == null or val_ty == null) return null;
 
         var i: usize = 1;
         while (i < kvs.len) : (i += 1) {
-            const kv = self.ast_unit.exprs.KeyValue.get(kvs[i].toRaw());
+            const kv = self.ast_unit.exprs.KeyValue.get(kvs[i]);
             const kt = try self.checkExpr(kv.key);
             const vt = try self.checkExpr(kv.value);
             if (kt == null or kt.?.toRaw() != key_ty.?.toRaw()) {
@@ -1358,7 +1368,7 @@ pub const Checker = struct {
         switch (col_kind) {
             .Array, .Slice => return self.indexElemTypeFromArrayLike(col_ty.?, index_expr.index, self.exprLoc(index_expr)),
             .Map => {
-                const m = self.context.type_store.Map.get(self.trow(col_ty.?));
+                const m = self.context.type_store.get(.Map, col_ty.?);
                 const it = self.checkExpr(index_expr.index) catch return null;
                 if (it) |iid| {
                     if (iid.toRaw() != m.key.toRaw()) {
@@ -1394,11 +1404,11 @@ pub const Checker = struct {
             _ = self.checkExpr(idx_expr) catch return null; // validate range endpoints
             return switch (col_kind) {
                 .Array => blk: {
-                    const r = self.context.type_store.Array.get(self.trow(col_ty));
+                    const r = self.context.type_store.get(.Array, col_ty);
                     break :blk self.context.type_store.mkSlice(r.elem);
                 },
                 .Slice => blk2: {
-                    const r = self.context.type_store.Slice.get(self.trow(col_ty));
+                    const r = self.context.type_store.get(.Slice, col_ty);
                     break :blk2 self.context.type_store.mkSlice(r.elem);
                 },
                 else => unreachable,
@@ -1412,14 +1422,8 @@ pub const Checker = struct {
             }
         }
         return switch (col_kind) {
-            .Array => blk3: {
-                const r = self.context.type_store.Array.get(self.trow(col_ty));
-                break :blk3 r.elem;
-            },
-            .Slice => blk4: {
-                const r = self.context.type_store.Slice.get(self.trow(col_ty));
-                break :blk4 r.elem;
-            },
+            .Array => self.context.type_store.get(.Array, col_ty).elem,
+            .Slice => self.context.type_store.get(.Slice, col_ty).elem,
             else => unreachable,
         };
     }
@@ -1442,10 +1446,10 @@ pub const Checker = struct {
         if (parent_kind == .Ident) {
             const idr = self.getExpr(.Ident, field_expr.parent);
             if (self.lookup(idr.name)) |sid_sym| {
-                const sym = self.symtab.syms.get(sid_sym.toRaw());
+                const sym = self.symtab.syms.get(sid_sym);
                 if (!sym.origin_decl.isNone()) {
                     const did = sym.origin_decl.unwrap();
-                    const drow = self.ast_unit.exprs.Decl.get(did.toRaw());
+                    const drow = self.ast_unit.exprs.Decl.get(did);
                     if (self.exprKind(drow.value) == .Import) {
                         if (self.importMemberType(drow.value, field_expr.field)) |mt| {
                             return mt;
@@ -1465,7 +1469,7 @@ pub const Checker = struct {
         const kind = self.typeKind(ty);
         switch (kind) {
             .Complex => {
-                const comp = self.context.type_store.Complex.get(self.trow(ty));
+                const comp = self.context.type_store.get(.Complex, ty);
                 const field_name = self.getStr(field_expr.field);
                 if (std.mem.eql(u8, field_name, "real") or std.mem.eql(u8, field_name, "re")) {
                     try self.type_info.setFieldIndex(id, 0);
@@ -1479,11 +1483,11 @@ pub const Checker = struct {
                 return null;
             },
             .Struct => {
-                const struct_row = self.context.type_store.Struct.get(self.trow(ty));
+                const struct_row = self.context.type_store.get(.Struct, ty);
                 const fields = self.context.type_store.field_pool.slice(struct_row.fields);
                 var i: usize = 0;
                 while (i < fields.len) : (i += 1) {
-                    const f = self.context.type_store.Field.get(fields[i].toRaw());
+                    const f = self.context.type_store.Field.get(fields[i]);
                     if (f.name.toRaw() == field_expr.field.toRaw()) {
                         try self.type_info.setFieldIndex(id, @intCast(i));
                         return f.ty;
@@ -1493,7 +1497,7 @@ pub const Checker = struct {
                 return null;
             },
             .Tuple => {
-                const tuple_row = self.context.type_store.Tuple.get(self.trow(ty));
+                const tuple_row = self.context.type_store.get(.Tuple, ty);
                 const elems = self.context.type_store.type_pool.slice(tuple_row.elems);
                 const index = std.fmt.parseInt(usize, self.getStr(field_expr.field), 10) catch {
                     _ = self.context.diags.addError(self.exprLoc(field_expr), .expected_field_name_or_index, .{}) catch {};
@@ -1507,11 +1511,11 @@ pub const Checker = struct {
                 return elems[index];
             },
             .Ptr => {
-                const ptr_row = self.context.type_store.Ptr.get(self.trow(ty));
+                const ptr_row = self.context.type_store.get(.Ptr, ty);
                 ty = ptr_row.elem;
                 const inner_kind = self.typeKind(ty);
                 if (inner_kind == .Complex) {
-                    const comp = self.context.type_store.Complex.get(self.trow(ty));
+                    const comp = self.context.type_store.get(.Complex, ty);
                     const field_name = self.getStr(field_expr.field);
                     if (std.mem.eql(u8, field_name, "real") or std.mem.eql(u8, field_name, "re")) {
                         try self.type_info.setFieldIndex(id, 0);
@@ -1523,11 +1527,11 @@ pub const Checker = struct {
                     }
                 }
                 if (inner_kind == .Struct) {
-                    const struct_row = self.context.type_store.Struct.get(self.trow(ty));
+                    const struct_row = self.context.type_store.get(.Struct, ty);
                     const fields = self.context.type_store.field_pool.slice(struct_row.fields);
                     var i: usize = 0;
                     while (i < fields.len) : (i += 1) {
-                        const f = self.context.type_store.Field.get(fields[i].toRaw());
+                        const f = self.context.type_store.Field.get(fields[i]);
                         if (f.name.toRaw() == field_expr.field.toRaw()) {
                             try self.type_info.setFieldIndex(id, @intCast(i));
                             return f.ty;
@@ -1540,16 +1544,16 @@ pub const Checker = struct {
                 return null;
             },
             .TypeType => {
-                const tt = self.context.type_store.TypeType.get(self.trow(ty));
+                const tt = self.context.type_store.get(.TypeType, ty);
                 ty = tt.of;
                 const inner_kind = self.typeKind(ty);
 
                 if (inner_kind == .Enum) {
-                    const en = self.context.type_store.Enum.get(self.trow(ty));
+                    const en = self.context.type_store.get(.Enum, ty);
                     const members = self.context.type_store.enum_member_pool.slice(en.members);
                     var i: usize = 0;
                     while (i < members.len) : (i += 1) {
-                        const m = self.context.type_store.EnumMember.get(members[i].toRaw());
+                        const m = self.context.type_store.EnumMember.get(members[i]);
                         if (m.name.toRaw() == field_expr.field.toRaw()) {
                             // Selecting an enum tag as a value of the enum type.
                             try self.type_info.setFieldIndex(id, @intCast(i));
@@ -1559,11 +1563,11 @@ pub const Checker = struct {
                     _ = self.context.diags.addError(self.exprLoc(field_expr), .unknown_enum_tag, .{}) catch {};
                     return null;
                 } else if (inner_kind == .Variant) {
-                    const vr = self.context.type_store.Variant.get(self.trow(ty));
+                    const vr = self.context.type_store.get(.Variant, ty);
                     const variants = self.context.type_store.field_pool.slice(vr.variants);
                     var i: usize = 0;
                     while (i < variants.len) : (i += 1) {
-                        const v = self.context.type_store.Field.get(variants[i].toRaw());
+                        const v = self.context.type_store.Field.get(variants[i]);
                         if (v.name.toRaw() == field_expr.field.toRaw()) {
                             // In value position, selecting a variant *tag* without args:
                             // if payload is void => ok (value of the variant type)
@@ -1580,11 +1584,11 @@ pub const Checker = struct {
                     _ = self.context.diags.addError(self.exprLoc(field_expr), .unknown_variant_tag, .{}) catch {};
                     return null;
                 } else if (inner_kind == .Error) {
-                    const er = self.context.type_store.Error.get(self.trow(ty));
+                    const er = self.context.type_store.get(.Error, ty);
                     const tags = self.context.type_store.field_pool.slice(er.variants);
                     var i: usize = 0;
                     while (i < tags.len) : (i += 1) {
-                        const t = self.context.type_store.Field.get(tags[i].toRaw());
+                        const t = self.context.type_store.Field.get(tags[i]);
                         if (t.name.toRaw() == field_expr.field.toRaw()) {
                             try self.type_info.setFieldIndex(id, @intCast(i));
                             return ty;
@@ -1693,7 +1697,7 @@ pub const Checker = struct {
         defer self.context.type_store.gpa.free(buf);
         var i: usize = 0;
         while (i < lit_fields.len) : (i += 1) {
-            const f = self.ast_unit.exprs.StructFieldValue.get(lit_fields[i].toRaw());
+            const f = self.ast_unit.exprs.StructFieldValue.get(lit_fields[i]);
             const ft = try self.checkExpr(f.value) orelse return null;
             if (f.name.isNone()) {
                 // Positional field. We can't handle this yet.
@@ -1745,7 +1749,7 @@ pub const Checker = struct {
             try self.context.diags.addError(self.exprLoc(row), .deref_non_pointer, .{});
             return null;
         }
-        const ptr_row = self.context.type_store.Ptr.get(self.trow(ptr_ty));
+        const ptr_row = self.context.type_store.get(.Ptr, ptr_ty);
         return ptr_row.elem;
     }
 
@@ -1762,10 +1766,10 @@ pub const Checker = struct {
         if (pk == .Ident) {
             const idr = self.getExpr(.Ident, fr.parent);
             if (self.lookup(idr.name)) |sid_sym| {
-                const sym = self.symtab.syms.get(sid_sym.toRaw());
+                const sym = self.symtab.syms.get(sid_sym);
                 if (!sym.origin_decl.isNone()) {
                     const did = sym.origin_decl.unwrap();
-                    const drow = self.ast_unit.exprs.Decl.get(did.toRaw());
+                    const drow = self.ast_unit.exprs.Decl.get(did);
                     if (self.exprKind(drow.value) == .Import) {
                         return self.importMemberType(drow.value, fr.field);
                     }
@@ -1813,14 +1817,14 @@ pub const Checker = struct {
 
         // Load tag table
         const cases = if (pk == .Variant)
-            self.context.type_store.field_pool.slice(self.context.type_store.Variant.get(self.trow(parent_ty)).variants)
+            self.context.type_store.field_pool.slice(self.context.type_store.get(.Variant, parent_ty).variants)
         else
-            self.context.type_store.field_pool.slice(self.context.type_store.Error.get(self.trow(parent_ty)).variants);
+            self.context.type_store.field_pool.slice(self.context.type_store.get(.Error, parent_ty).variants);
 
         // Find the tag & payload type
         var payload_ty_opt: ?types.TypeId = null;
         for (cases) |cid| {
-            const c = self.context.type_store.Field.get(cid.toRaw());
+            const c = self.context.type_store.Field.get(cid);
             if (c.name.toRaw() == tag.toRaw()) {
                 payload_ty_opt = c.ty;
                 break;
@@ -1849,7 +1853,7 @@ pub const Checker = struct {
             },
             .Tuple => {
                 // Exact arity, per-element type check
-                const tup = self.context.type_store.Tuple.get(self.trow(payload_ty));
+                const tup = self.context.type_store.get(.Tuple, payload_ty);
                 const params = self.context.type_store.type_pool.slice(tup.elems);
 
                 if (args.len != params.len) {
@@ -1894,7 +1898,7 @@ pub const Checker = struct {
                     try self.context.diags.addError(call_loc, .call_non_callable, .{});
                     return null;
                 }
-                const fnrow = self.context.type_store.Function.get(self.trow(fty));
+                const fnrow = self.context.type_store.get(.Function, fty);
                 const params = self.context.type_store.type_pool.slice(fnrow.params);
 
                 if (!fnrow.is_variadic and args.len != params.len) {
@@ -1947,7 +1951,7 @@ pub const Checker = struct {
 
         // Tuple-as-constructor: `(T0,T1,..)(a0,a1,..)` -> construct the tuple type.
         if (func_kind == .Tuple) {
-            const tup = self.context.type_store.Tuple.get(self.trow(func_ty));
+            const tup = self.context.type_store.get(.Tuple, func_ty);
             const params = self.context.type_store.type_pool.slice(tup.elems);
             if (args.len != params.len) {
                 try self.context.diags.addError(call_loc, .argument_count_mismatch, .{});
@@ -1973,7 +1977,7 @@ pub const Checker = struct {
         }
 
         // Purity bookkeeping / enforcement
-        const fnrow = self.context.type_store.Function.get(self.trow(func_ty));
+        const fnrow = self.context.type_store.get(.Function, func_ty);
         if (self.inFunction()) {
             const fctx = self.currentFunc().?;
             if (fctx.require_pure and !fnrow.is_pure) {
@@ -2139,6 +2143,8 @@ pub const Checker = struct {
             if (!(try pattern_matching.checkPattern(self, wr.pattern.unwrap(), subj_ty, true))) {
                 return null;
             }
+            // Declare pattern bindings into the current (enclosing) scope so they persist after the loop
+            try pattern_matching.declareBindingsInPattern(self, wr.pattern.unwrap(), wr.loc, .anonymous);
             try self.pushLoopBinding(wr.pattern, subj_ty);
         } else if (wr.cond.isNone() and wr.pattern.isNone()) {
             // Infinite loop: ok
@@ -2146,8 +2152,9 @@ pub const Checker = struct {
 
         try self.pushLoop(wr.label);
         defer self.popLoop();
-        if (!wr.cond.isNone() and !wr.pattern.isNone()) {
-            defer self.popLoopBinding();
+        const need_pop_loop_binding = (!wr.cond.isNone() and !wr.pattern.isNone());
+        defer {
+            if (need_pop_loop_binding) self.popLoopBinding();
         }
 
         const body_ty = try self.checkExpr(wr.body);
@@ -2174,16 +2181,16 @@ pub const Checker = struct {
                 const subject_ty: types.TypeId = switch (pat_kind) {
                     .Slice => it,
                     else => switch (kind) {
-                        .Array => self.context.type_store.Array.get(self.trow(it)).elem,
-                        .Slice => self.context.type_store.Slice.get(self.trow(it)).elem,
-                        .DynArray => self.context.type_store.DynArray.get(self.trow(it)).elem,
+                        .Array => self.context.type_store.get(.Array, it).elem,
+                        .Slice => self.context.type_store.get(.Slice, it).elem,
+                        .DynArray => self.context.type_store.get(.DynArray, it).elem,
                         else => unreachable,
                     },
                 };
                 if (!(try pattern_matching.checkPattern(self, fr.pattern, subject_ty, true))) {
                     return null;
                 }
-                try self.pushLoopBinding(ast.OptPatternId.some(fr.pattern), subject_ty);
+                try self.pushLoopBinding(.some(fr.pattern), subject_ty);
             },
             else => {
                 try self.context.diags.addError(self.exprLoc(fr), .non_iterable_in_for, .{});
@@ -2292,7 +2299,7 @@ pub const Checker = struct {
             try self.context.diags.addError(self.exprLoc(eur), .error_propagation_on_non_error, .{});
             return null;
         }
-        const er = self.context.type_store.ErrorSet.get(self.trow(et));
+        const er = self.context.type_store.get(.ErrorSet, et);
 
         if (!self.inFunction()) {
             try self.context.diags.addError(self.exprLoc(eur), .error_propagation_mismatched_function_result, .{});
@@ -2306,7 +2313,7 @@ pub const Checker = struct {
         }
 
         // Ensure the error/value halves align with the function result type
-        const fr = self.context.type_store.ErrorSet.get(self.trow(fctx.result));
+        const fr = self.context.type_store.get(.ErrorSet, fctx.result);
         if (self.assignable(er.error_ty, fr.error_ty) != .success or self.assignable(er.value_ty, fr.value_ty) != .success) {
             try self.context.diags.addError(self.exprLoc(eur), .error_propagation_mismatched_function_result, .{});
             return null;
@@ -2321,7 +2328,7 @@ pub const Checker = struct {
             try self.context.diags.addError(self.exprLoc(our), .invalid_optional_unwrap_target, .{});
             return null;
         }
-        const ore = self.context.type_store.Optional.get(self.trow(ot));
+        const ore = self.context.type_store.get(.Optional, ot);
         return ore.elem;
     }
 
@@ -2339,7 +2346,7 @@ pub const Checker = struct {
 
         var i: usize = 0;
         while (i < params.len) : (i += 1) {
-            const p = self.ast_unit.exprs.Param.get(params[i].toRaw());
+            const p = self.ast_unit.exprs.Param.get(params[i]);
             if (p.ty.isNone()) {
                 try self.context.diags.addError(self.exprLoc(p), .type_annotation_mismatch, .{});
                 return null;
@@ -2402,7 +2409,7 @@ pub const Checker = struct {
             try self.context.diags.addError(self.exprLoc(cr), .catch_on_non_error, .{});
             return null;
         }
-        const er = self.context.type_store.ErrorSet.get(self.trow(vt));
+        const er = self.context.type_store.get(.ErrorSet, vt);
         const value_required = self.isValueReq();
 
         const ht = try self.checkExpr(cr.handler) orelse return null;
@@ -2480,7 +2487,7 @@ pub const Checker = struct {
                 // Discard assignment '_' is considered local
                 if (std.mem.eql(u8, self.getStr(idr.name), "_")) return .LocalDecl;
                 if (self.lookup(idr.name)) |sid_sym| {
-                    const sym = self.symtab.syms.get(sid_sym.toRaw());
+                    const sym = self.symtab.syms.get(sid_sym);
                     if (!sym.origin_param.isNone()) return .Param;
                     if (!sym.origin_decl.isNone()) {
                         const did = sym.origin_decl.unwrap();

@@ -30,7 +30,7 @@ pub fn typeSize(self: *Checker, ty_id: types.TypeId) ?usize {
         .String => 8, // best-effort: pointer-like handle; real impl is more complex
         .Slice => 16, // best-effort: ptr + len on 64-bit
         .Array => blk: {
-            const arr = self.context.type_store.Array.get(self.context.type_store.index.rows.items[ty_id.toRaw()]);
+            const arr = self.context.type_store.get(.Array, ty_id);
             const elem_size = typeSize(self, arr.elem) orelse return null;
             break :blk std.math.mul(usize, elem_size, arr.len) catch return null;
         },
@@ -43,8 +43,7 @@ pub fn typeSize(self: *Checker, ty_id: types.TypeId) ?usize {
 pub fn isOptional(self: *Checker, id: types.TypeId) ?types.TypeId {
     const k = self.context.type_store.index.kinds.items[id.toRaw()];
     if (k != .Optional) return null;
-    const opt = self.context.type_store.Optional.get(self.context.type_store.index.rows.items[id.toRaw()]);
-    return opt.elem;
+    return self.context.type_store.get(.Optional, id).elem;
 }
 
 pub fn checkTypeOf(self: *Checker, id: ast.ExprId) !?types.TypeId {
@@ -65,11 +64,11 @@ pub fn checkTypeOf(self: *Checker, id: ast.ExprId) !?types.TypeId {
 // Type expressions
 // =========================================================
 fn variantPayloadType(self: *Checker, variant_ty: types.TypeId, tag: ast.StrId) ?types.TypeId {
-    const vt = self.context.type_store.Variant.get(self.context.type_store.index.rows.items[variant_ty.toRaw()]);
+    const vt = self.context.type_store.get(.Variant, variant_ty);
     const cases = self.context.type_store.field_pool.slice(vt.variants);
     var i: usize = 0;
     while (i < cases.len) : (i += 1) {
-        const vc = self.context.type_store.Field.get(cases[i].toRaw());
+        const vc = self.context.type_store.Field.get(cases[i]);
         if (vc.name.toRaw() == tag.toRaw()) return vc.ty;
     }
     return null;
@@ -99,18 +98,18 @@ pub fn typeFromTypeExpr(self: *Checker, id: ast.ExprId) anyerror!?types.TypeId {
             if (std.mem.eql(u8, s, "any")) break :blk_ident self.context.type_store.tAny();
 
             if (self.lookup(name)) |sid| {
-                const sym = self.symtab.syms.get(sid.toRaw());
+                const sym = self.symtab.syms.get(sid);
                 if (!sym.origin_decl.isNone()) {
                     const did = sym.origin_decl.unwrap();
                     if (self.type_info.decl_types.items[did.toRaw()]) |ty| {
                         if (self.context.type_store.index.kinds.items[ty.toRaw()] == .TypeType) {
-                            const tt = self.context.type_store.TypeType.get(self.context.type_store.index.rows.items[ty.toRaw()]);
+                            const tt = self.context.type_store.get(.TypeType, ty);
                             return tt.of;
                         }
                         return ty;
                     }
                     // Lazy resolve: if the declaration's RHS is a type expression, resolve it now.
-                    const drow = self.ast_unit.exprs.Decl.get(did.toRaw());
+                    const drow = self.ast_unit.exprs.Decl.get(did);
                     const rhs_ty = try typeFromTypeExpr(self, drow.value);
                     if (rhs_ty) |rt| {
                         // Record as a type constant for future queries
@@ -241,7 +240,7 @@ pub fn typeFromTypeExpr(self: *Checker, id: ast.ExprId) anyerror!?types.TypeId {
             defer seen.deinit(self.gpa);
             var i: usize = 0;
             while (i < sfs.len) : (i += 1) {
-                const f = self.ast_unit.exprs.StructField.get(sfs[i].toRaw());
+                const f = self.ast_unit.exprs.StructField.get(sfs[i]);
                 const gop = try seen.getOrPut(self.gpa, f.name.toRaw());
                 if (gop.found_existing) {
                     try self.context.diags.addError(self.ast_unit.exprs.locs.get(f.loc), .duplicate_field, .{});
@@ -261,7 +260,7 @@ pub fn typeFromTypeExpr(self: *Checker, id: ast.ExprId) anyerror!?types.TypeId {
             defer seen.deinit(self.gpa);
             var i: usize = 0;
             while (i < sfs.len) : (i += 1) {
-                const sf = self.ast_unit.exprs.StructField.get(sfs[i].toRaw());
+                const sf = self.ast_unit.exprs.StructField.get(sfs[i]);
                 const gop = try seen.getOrPut(self.gpa, sf.name.toRaw());
                 if (gop.found_existing) {
                     try self.context.diags.addError(self.ast_unit.exprs.locs.get(sf.loc), .duplicate_field, .{});
@@ -299,7 +298,7 @@ pub fn typeFromTypeExpr(self: *Checker, id: ast.ExprId) anyerror!?types.TypeId {
             var next_value: u64 = 0;
             var i: usize = 0;
             while (i < efs.len) : (i += 1) {
-                const enum_field = self.ast_unit.exprs.EnumField.get(efs[i].toRaw());
+                const enum_field = self.ast_unit.exprs.EnumField.get(efs[i]);
 
                 const gop = try seen.getOrPut(self.gpa, enum_field.name.toRaw());
                 if (gop.found_existing) {
@@ -344,7 +343,7 @@ pub fn typeFromTypeExpr(self: *Checker, id: ast.ExprId) anyerror!?types.TypeId {
 
             var i: usize = 0;
             while (i < vfs.len) : (i += 1) {
-                const vf = self.ast_unit.exprs.VariantField.get(vfs[i].toRaw());
+                const vf = self.ast_unit.exprs.VariantField.get(vfs[i]);
                 const gop = try seen.getOrPut(self.gpa, vf.name.toRaw());
                 if (gop.found_existing) {
                     try self.context.diags.addError(self.ast_unit.exprs.locs.get(vf.loc), .duplicate_error_variant, .{});
@@ -375,7 +374,7 @@ pub fn typeFromTypeExpr(self: *Checker, id: ast.ExprId) anyerror!?types.TypeId {
                         defer self.gpa.free(field_buf);
                         var j: usize = 0;
                         while (j < fields.len) : (j += 1) {
-                            const sf = self.ast_unit.exprs.StructField.get(fields[j].toRaw());
+                            const sf = self.ast_unit.exprs.StructField.get(fields[j]);
                             field_buf[j] = .{
                                 .name = sf.name,
                                 .ty = (try typeFromTypeExpr(self, sf.ty)) orelse return null,
@@ -406,7 +405,7 @@ pub fn typeFromTypeExpr(self: *Checker, id: ast.ExprId) anyerror!?types.TypeId {
 
             var i: usize = 0;
             while (i < vfs.len) : (i += 1) {
-                const vf = self.ast_unit.exprs.VariantField.get(vfs[i].toRaw());
+                const vf = self.ast_unit.exprs.VariantField.get(vfs[i]);
                 const gop = try seen.getOrPut(self.gpa, vf.name.toRaw());
                 if (gop.found_existing) {
                     try self.context.diags.addError(self.ast_unit.exprs.locs.get(vf.loc), .duplicate_variant, .{});
@@ -437,7 +436,7 @@ pub fn typeFromTypeExpr(self: *Checker, id: ast.ExprId) anyerror!?types.TypeId {
                         defer self.gpa.free(field_buf);
                         var j: usize = 0;
                         while (j < fields.len) : (j += 1) {
-                            const sf = self.ast_unit.exprs.StructField.get(fields[j].toRaw());
+                            const sf = self.ast_unit.exprs.StructField.get(fields[j]);
                             field_buf[j] = .{
                                 .name = sf.name,
                                 .ty = (try typeFromTypeExpr(self, sf.ty)) orelse return null,
@@ -459,7 +458,7 @@ pub fn typeFromTypeExpr(self: *Checker, id: ast.ExprId) anyerror!?types.TypeId {
             defer self.gpa.free(pbuf);
             var i: usize = 0;
             while (i < params.len) : (i += 1) {
-                const p = self.ast_unit.exprs.Param.get(params[i].toRaw());
+                const p = self.ast_unit.exprs.Param.get(params[i]);
                 if (p.ty.isNone()) break :blk_fn null;
                 const pt = (try typeFromTypeExpr(self, p.ty.unwrap())) orelse break :blk_fn null;
                 pbuf[i] = pt;
@@ -475,12 +474,12 @@ pub fn typeFromTypeExpr(self: *Checker, id: ast.ExprId) anyerror!?types.TypeId {
             const parent_kind = self.context.type_store.index.kinds.items[parent_ty.toRaw()];
             switch (parent_kind) {
                 .Struct => {
-                    const st = self.context.type_store.Struct.get(self.context.type_store.index.rows.items[parent_ty.toRaw()]);
+                    const st = self.context.type_store.get(.Struct, parent_ty);
                     const fields = self.context.type_store.field_pool.slice(st.fields);
                     var i: usize = 0;
                     while (i < fields.len) : (i += 1) {
                         const f = fields[i];
-                        const field = self.context.type_store.Field.get(f.toRaw());
+                        const field = self.context.type_store.Field.get(f);
                         if (field.name.toRaw() == fr.field.toRaw()) return field.ty;
                     }
                     try self.context.diags.addError(self.ast_unit.exprs.locs.get(fr.loc), .unknown_struct_field, .{});

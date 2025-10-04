@@ -149,11 +149,11 @@ test "tir: match bool fallback carries value to join" {
     const funcs = t.funcs.func_pool.data.items;
     try testing.expect(funcs.len >= 1);
     const f_id = funcs[0];
-    const f = t.funcs.Function.get(f_id.toRaw());
+    const f = t.funcs.Function.get(f_id);
     const blocks = t.funcs.block_pool.slice(f.blocks);
     var join_bid: ?compiler.tir.BlockId = null;
     for (blocks) |bid| {
-        const bb = t.funcs.Block.get(bid.toRaw());
+        const bb = t.funcs.Block.get(bid);
         const term = bb.term;
         if (t.terms.index.kinds.items[term.toRaw()] == .Return) {
             const row = t.terms.get(.Return, term);
@@ -164,20 +164,20 @@ test "tir: match bool fallback carries value to join" {
         }
     }
     try testing.expect(join_bid != null);
-    const join_bb = t.funcs.Block.get(join_bid.?.toRaw());
+    const join_bb = t.funcs.Block.get(join_bid.?);
     const params = t.funcs.param_pool.slice(join_bb.params);
     try testing.expectEqual(@as(usize, 1), params.len);
 
     // Verify all edges targeting the join carry exactly one argument
     var ok = true;
     for (blocks) |bid| {
-        const bb = t.funcs.Block.get(bid.toRaw());
+        const bb = t.funcs.Block.get(bid);
         const term = bb.term;
         const k = t.terms.index.kinds.items[term.toRaw()];
         switch (k) {
             .Br => {
                 const br = t.terms.get(.Br, term);
-                const e = t.terms.Edge.get(br.edge.toRaw());
+                const e = t.terms.Edge.get(br.edge);
                 if (e.dest.toRaw() == join_bid.?.toRaw()) {
                     const args = t.instrs.value_pool.slice(e.args);
                     if (args.len != 1) ok = false;
@@ -185,8 +185,8 @@ test "tir: match bool fallback carries value to join" {
             },
             .CondBr => {
                 const cb = t.terms.get(.CondBr, term);
-                const te = t.terms.Edge.get(cb.then_edge.toRaw());
-                const ee = t.terms.Edge.get(cb.else_edge.toRaw());
+                const te = t.terms.Edge.get(cb.then_edge);
+                const ee = t.terms.Edge.get(cb.else_edge);
                 if (te.dest.toRaw() == join_bid.?.toRaw()) {
                     const args = t.instrs.value_pool.slice(te.args);
                     if (args.len != 1) ok = false;
@@ -198,15 +198,15 @@ test "tir: match bool fallback carries value to join" {
             },
             .SwitchInt => {
                 const sw = t.terms.get(.SwitchInt, term);
-                const def = t.terms.Edge.get(sw.default_edge.toRaw());
+                const def = t.terms.Edge.get(sw.default_edge);
                 if (def.dest.toRaw() == join_bid.?.toRaw()) {
                     const args = t.instrs.value_pool.slice(def.args);
                     if (args.len != 1) ok = false;
                 }
                 const cases = t.terms.case_pool.slice(sw.cases);
                 for (cases) |cid| {
-                    const c = t.terms.Case.get(cid.toRaw());
-                    const e = t.terms.Edge.get(c.edge.toRaw());
+                    const c = t.terms.Case.get(cid);
+                    const e = t.terms.Edge.get(c.edge);
                     if (e.dest.toRaw() == join_bid.?.toRaw()) {
                         const args = t.instrs.value_pool.slice(e.args);
                         if (args.len != 1) ok = false;
@@ -235,11 +235,11 @@ test "tir: if expression carries value to join" {
     // Find the return/join block
     const funcs = t.funcs.func_pool.data.items;
     const f_id = funcs[0];
-    const f = t.funcs.Function.get(f_id.toRaw());
+    const f = t.funcs.Function.get(f_id);
     const blocks = t.funcs.block_pool.slice(f.blocks);
     var join_bid: ?compiler.tir.BlockId = null;
     for (blocks) |bid| {
-        const bb = t.funcs.Block.get(bid.toRaw());
+        const bb = t.funcs.Block.get(bid);
         const term = bb.term;
         if (t.terms.index.kinds.items[term.toRaw()] == .Return) {
             const row = t.terms.get(.Return, term);
@@ -250,20 +250,20 @@ test "tir: if expression carries value to join" {
         }
     }
     try testing.expect(join_bid != null);
-    const join_bb = t.funcs.Block.get(join_bid.?.toRaw());
+    const join_bb = t.funcs.Block.get(join_bid.?);
     const params = t.funcs.param_pool.slice(join_bb.params);
     try testing.expectEqual(@as(usize, 1), params.len);
 
     // Verify all incoming edges to join carry one arg
     var ok = true;
     for (blocks) |bid| {
-        const bb = t.funcs.Block.get(bid.toRaw());
+        const bb = t.funcs.Block.get(bid);
         const term = bb.term;
         const k = t.terms.index.kinds.items[term.toRaw()];
         switch (k) {
             .Br => {
                 const br = t.terms.get(.Br, term);
-                const e = t.terms.Edge.get(br.edge.toRaw());
+                const e = t.terms.Edge.get(br.edge);
                 if (e.dest.toRaw() == join_bid.?.toRaw()) {
                     const args = t.instrs.value_pool.slice(e.args);
                     if (args.len != 1) ok = false;
@@ -271,8 +271,8 @@ test "tir: if expression carries value to join" {
             },
             .CondBr => {
                 const cb = t.terms.get(.CondBr, term);
-                const te = t.terms.Edge.get(cb.then_edge.toRaw());
-                const ee = t.terms.Edge.get(cb.else_edge.toRaw());
+                const te = t.terms.Edge.get(cb.then_edge);
+                const ee = t.terms.Edge.get(cb.else_edge);
                 if (te.dest.toRaw() == join_bid.?.toRaw()) {
                     const args = t.instrs.value_pool.slice(te.args);
                     if (args.len != 1) ok = false;
@@ -302,11 +302,11 @@ test "tir: match with guard carries value to join" {
 
     const funcs = t.funcs.func_pool.data.items;
     const f_id = funcs[0];
-    const f = t.funcs.Function.get(f_id.toRaw());
+    const f = t.funcs.Function.get(f_id);
     const blocks = t.funcs.block_pool.slice(f.blocks);
     var join_bid: ?compiler.tir.BlockId = null;
     for (blocks) |bid| {
-        const bb = t.funcs.Block.get(bid.toRaw());
+        const bb = t.funcs.Block.get(bid);
         const term = bb.term;
         if (t.terms.index.kinds.items[term.toRaw()] == .Return) {
             const row = t.terms.get(.Return, term);
@@ -317,19 +317,19 @@ test "tir: match with guard carries value to join" {
         }
     }
     try testing.expect(join_bid != null);
-    const join_bb = t.funcs.Block.get(join_bid.?.toRaw());
+    const join_bb = t.funcs.Block.get(join_bid.?);
     const params = t.funcs.param_pool.slice(join_bb.params);
     try testing.expectEqual(@as(usize, 1), params.len);
 
     var ok = true;
     for (blocks) |bid| {
-        const bb = t.funcs.Block.get(bid.toRaw());
+        const bb = t.funcs.Block.get(bid);
         const term = bb.term;
         const k = t.terms.index.kinds.items[term.toRaw()];
         switch (k) {
             .Br => {
                 const br = t.terms.get(.Br, term);
-                const e = t.terms.Edge.get(br.edge.toRaw());
+                const e = t.terms.Edge.get(br.edge);
                 if (e.dest.toRaw() == join_bid.?.toRaw()) {
                     const args = t.instrs.value_pool.slice(e.args);
                     if (args.len != 1) ok = false;
@@ -337,8 +337,8 @@ test "tir: match with guard carries value to join" {
             },
             .CondBr => {
                 const cb = t.terms.get(.CondBr, term);
-                const te = t.terms.Edge.get(cb.then_edge.toRaw());
-                const ee = t.terms.Edge.get(cb.else_edge.toRaw());
+                const te = t.terms.Edge.get(cb.then_edge);
+                const ee = t.terms.Edge.get(cb.else_edge);
                 if (te.dest.toRaw() == join_bid.?.toRaw()) {
                     const args = t.instrs.value_pool.slice(te.args);
                     if (args.len != 1) ok = false;
@@ -350,15 +350,15 @@ test "tir: match with guard carries value to join" {
             },
             .SwitchInt => {
                 const sw = t.terms.get(.SwitchInt, term);
-                const def = t.terms.Edge.get(sw.default_edge.toRaw());
+                const def = t.terms.Edge.get(sw.default_edge);
                 if (def.dest.toRaw() == join_bid.?.toRaw()) {
                     const args = t.instrs.value_pool.slice(def.args);
                     if (args.len != 1) ok = false;
                 }
                 const cases = t.terms.case_pool.slice(sw.cases);
                 for (cases) |cid| {
-                    const c = t.terms.Case.get(cid.toRaw());
-                    const e = t.terms.Edge.get(c.edge.toRaw());
+                    const c = t.terms.Case.get(cid);
+                    const e = t.terms.Edge.get(c.edge);
                     if (e.dest.toRaw() == join_bid.?.toRaw()) {
                         const args = t.instrs.value_pool.slice(e.args);
                         if (args.len != 1) ok = false;

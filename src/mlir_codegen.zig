@@ -145,7 +145,7 @@ pub const MlirCodegen = struct {
         const func_ids = t.funcs.func_pool.data.items;
         for (func_ids) |fid| try self.emitFunctionHeader(fid, t, &context.type_store);
         for (func_ids) |fid| {
-            const row = t.funcs.Function.get(fid.toRaw());
+            const row = t.funcs.Function.get(fid);
             const blocks = t.funcs.block_pool.slice(row.blocks);
             if (blocks.len > 0) try self.emitFunctionBody(fid, t, &context.type_store);
         }
@@ -168,7 +168,7 @@ pub const MlirCodegen = struct {
         const global_ids = t.funcs.global_pool.data.items;
 
         for (global_ids) |global_id| {
-            const g = t.funcs.Global.get(global_id.toRaw());
+            const g = t.funcs.Global.get(global_id);
             if (store.getKind(g.ty) != .Function) continue;
 
             const fnty = store.get(.Function, g.ty);
@@ -279,14 +279,14 @@ pub const MlirCodegen = struct {
     }
 
     fn emitFunctionHeader(self: *MlirCodegen, f_id: tir.FuncId, t: *const tir.TIR, store: *types.TypeStore) !void {
-        const f = t.funcs.Function.get(f_id.toRaw());
+        const f = t.funcs.Function.get(f_id);
         const params = t.funcs.param_pool.slice(f.params);
 
         var param_tys = try self.gpa.alloc(mlir.Type, params.len);
         defer self.gpa.free(param_tys);
 
         for (params, 0..) |p_id, i| {
-            const p = t.funcs.Param.get(p_id.toRaw());
+            const p = t.funcs.Param.get(p_id);
             param_tys[i] = try self.llvmTypeOf(store, p.ty);
         }
 
@@ -330,7 +330,7 @@ pub const MlirCodegen = struct {
         self.cur_region = null;
         self.cur_block = null;
 
-        const f = t.funcs.Function.get(f_id.toRaw());
+        const f = t.funcs.Function.get(f_id);
         const func_name = t.instrs.strs.get(f.name);
         const finfo = self.func_syms.get(func_name).?;
         var func_op = finfo.op;
@@ -343,7 +343,7 @@ pub const MlirCodegen = struct {
         var entry_arg_tys = try self.gpa.alloc(mlir.Type, n_formals);
         defer self.gpa.free(entry_arg_tys);
         for (params[0..n_formals], 0..) |p_id, i| {
-            const p = t.funcs.Param.get(p_id.toRaw());
+            const p = t.funcs.Param.get(p_id);
             entry_arg_tys[i] = try self.llvmTypeOf(store, p.ty);
         }
         const entry_locs = try self.gpa.alloc(mlir.Location, n_formals);
@@ -366,7 +366,7 @@ pub const MlirCodegen = struct {
         try self.value_map.ensureTotalCapacity(@intCast(n_formals));
         try self.val_types.ensureTotalCapacity(@intCast(n_formals));
         for (params[0..n_formals], 0..) |p_id, i| {
-            const p = t.funcs.Param.get(p_id.toRaw());
+            const p = t.funcs.Param.get(p_id);
             const v = entry_block.getArgument(i);
             try self.value_map.put(p.value, v);
             try self.val_types.put(p.value, p.ty);
@@ -375,7 +375,7 @@ pub const MlirCodegen = struct {
         // pre-create remaining blocks and map their params + SR types
         if (blocks.len > 1) {
             for (blocks[1..]) |b_id| {
-                const bb = t.funcs.Block.get(b_id.toRaw());
+                const bb = t.funcs.Block.get(b_id);
                 const b_params = t.funcs.param_pool.slice(bb.params);
                 const m = b_params.len;
 
@@ -384,7 +384,7 @@ pub const MlirCodegen = struct {
                 var arg_locs = try self.gpa.alloc(mlir.Location, m);
                 defer self.gpa.free(arg_locs);
                 for (b_params, 0..) |bp_id, i| {
-                    const bp = t.funcs.Param.get(bp_id.toRaw());
+                    const bp = t.funcs.Param.get(bp_id);
                     arg_tys[i] = try self.llvmTypeOf(store, bp.ty);
                     arg_locs[i] = self.loc;
                 }
@@ -399,12 +399,12 @@ pub const MlirCodegen = struct {
         for (blocks) |b_id| {
             var mblock = self.block_map.get(b_id).?;
             self.cur_block = mblock;
-            const bb = t.funcs.Block.get(b_id.toRaw());
+            const bb = t.funcs.Block.get(b_id);
 
             // map block params to SSA + SR types
             const b_params = t.funcs.param_pool.slice(bb.params);
             for (b_params, 0..) |bp_id, i| {
-                const bp = t.funcs.Param.get(bp_id.toRaw());
+                const bp = t.funcs.Param.get(bp_id);
                 const arg = mblock.getArgument(i);
                 try self.value_map.put(bp.value, arg);
                 try self.val_types.put(bp.value, bp.ty);
@@ -447,6 +447,7 @@ pub const MlirCodegen = struct {
             .Load => return t.instrs.get(.Load, id).result,
             .Store => return null,
             .Gep => return t.instrs.get(.Gep, id).result,
+            .GlobalAddr => return t.instrs.get(.GlobalAddr, id).result,
             .ComplexMake => return t.instrs.get(.ComplexMake, id).result,
             .TupleMake => return t.instrs.get(.TupleMake, id).result,
             .ArrayMake => return t.instrs.get(.ArrayMake, id).result,
@@ -487,6 +488,7 @@ pub const MlirCodegen = struct {
             .Load => t.instrs.get(.Load, id).ty,
             .Store => null,
             .Gep => t.instrs.get(.Gep, id).ty,
+            .GlobalAddr => t.instrs.get(.GlobalAddr, id).ty,
             .ComplexMake => t.instrs.get(.ComplexMake, id).ty,
             .TupleMake => t.instrs.get(.TupleMake, id).ty,
             .ArrayMake => t.instrs.get(.ArrayMake, id).ty,
@@ -524,7 +526,7 @@ pub const MlirCodegen = struct {
         var ret_sr: types.TypeId = types.TypeId.fromRaw(0);
 
         for (global_ids) |gid| {
-            const g = t.funcs.Global.get(gid.toRaw());
+            const g = t.funcs.Global.get(gid);
             if (store.getKind(g.ty) != .Function) continue;
             const sym = t.instrs.strs.get(g.name);
             if (!std.mem.eql(u8, sym, name)) continue;
@@ -797,145 +799,26 @@ pub const MlirCodegen = struct {
             .CastNormal => blk: {
                 const p = t.instrs.get(.CastNormal, ins_id);
                 const to_ty = try self.llvmTypeOf(store, p.ty);
-                var from_v = self.value_map.get(p.value).?;
-                var from_ty = from_v.getType();
-
-                // Handle casts to Complex specially: build complex.create from components
-                if (store.getKind(p.ty) == .Complex) {
-                    const tgt = store.get(.Complex, p.ty);
-                    const elem_ty = try self.llvmTypeOf(store, tgt.elem);
-                    const src_sr = self.srTypeOfValue(t, p.value);
-                    const src_kind = store.getKind(src_sr);
-                    // If source is already complex
-                    if (src_kind == .Complex) {
-                        const src_c = store.get(.Complex, src_sr);
-                        const src_elem_ty = try self.llvmTypeOf(store, src_c.elem);
-                        if (src_elem_ty.equal(elem_ty)) break :blk from_v;
-                        // re/im -> cast -> complex.create
-                        var reop = OpBuilder.init("complex.re", self.loc).builder()
-                            .add_operands(&.{from_v}).add_results(&.{src_elem_ty}).build();
-                        self.append(reop);
-                        var imop = OpBuilder.init("complex.im", self.loc).builder()
-                            .add_operands(&.{from_v}).add_results(&.{src_elem_ty}).build();
-                        self.append(imop);
-                        const rew = try intOrFloatWidth(src_elem_ty);
-                        const tew = try intOrFloatWidth(elem_ty);
-                        var re_cast: mlir.Operation = if (rew == tew)
-                            reop
-                        else if (rew > tew)
-                            OpBuilder.init("llvm.fptrunc", self.loc).builder().add_operands(&.{reop.getResult(0)}).add_results(&.{elem_ty}).build()
-                        else
-                            OpBuilder.init("llvm.fpext", self.loc).builder().add_operands(&.{reop.getResult(0)}).add_results(&.{elem_ty}).build();
-                        if (re_cast.getNumResults() != 1) self.append(re_cast);
-                        var im_cast: mlir.Operation = if (rew == tew)
-                            imop
-                        else if (rew > tew)
-                            OpBuilder.init("llvm.fptrunc", self.loc).builder().add_operands(&.{imop.getResult(0)}).add_results(&.{elem_ty}).build()
-                        else
-                            OpBuilder.init("llvm.fpext", self.loc).builder().add_operands(&.{imop.getResult(0)}).add_results(&.{elem_ty}).build();
-                        if (im_cast.getNumResults() != 1) self.append(im_cast);
-                        var make = OpBuilder.init("complex.create", self.loc).builder()
-                            .add_operands(&.{ re_cast.getResult(0), im_cast.getResult(0) })
-                            .add_results(&.{to_ty}).build();
-                        self.append(make);
-                        break :blk make.getResult(0);
-                    }
-                    // Source is scalar numeric: cast to elem_ty then complex.create(re, 0)
-                    const src_is_int = from_ty.isAInteger();
-                    const src_is_f = from_ty.isAFloat();
-                    var re_val: mlir.Value = from_v;
-                    if (src_is_int and elem_ty.isAFloat()) {
-                        const from_signed = self.isSignedInt(store, src_sr);
-                        var op = OpBuilder.init(if (from_signed) "llvm.sitofp" else "llvm.uitofp", self.loc).builder()
-                            .add_operands(&.{from_v}).add_results(&.{elem_ty}).build();
-                        self.append(op);
-                        re_val = op.getResult(0);
-                    } else if (src_is_f and elem_ty.isAFloat()) {
-                        const fw = try intOrFloatWidth(from_ty);
-                        const tw = try intOrFloatWidth(elem_ty);
-                        if (fw != tw) {
-                            var op = OpBuilder.init(if (fw > tw) "llvm.fptrunc" else "llvm.fpext", self.loc).builder()
-                                .add_operands(&.{from_v}).add_results(&.{elem_ty}).build();
-                            self.append(op);
-                            re_val = op.getResult(0);
-                        } else {
-                            // same width float: bitcast not allowed; use arith + 0.0 to force type if needed
-                            re_val = from_v;
-                        }
-                    }
-                    const zero_im = self.constFloat(elem_ty, 0.0);
-                    var make = OpBuilder.init("complex.create", self.loc).builder()
-                        .add_operands(&.{ re_val, zero_im })
-                        .add_results(&.{to_ty}).build();
-                    self.append(make);
-                    break :blk make.getResult(0);
-                }
-
-                // Special-case: ignore casts from aggregate slice to integer (artifact of range indexing coercion)
-                if (store.getKind(self.srTypeOfValue(t, p.value)) == .Slice and to_ty.isAInteger()) {
-                    break :blk self.constInt(to_ty, 0);
-                }
-
-                const from_is_int = from_ty.isAInteger();
-                const to_is_int = to_ty.isAInteger();
-                const from_is_f = from_ty.isAFloat();
-                const to_is_f = to_ty.isAFloat();
-                const from_is_ptr = mlir.LLVM.isLLVMPointerType(from_ty);
-                const to_is_ptr = mlir.LLVM.isLLVMPointerType(to_ty);
-
-                const fw = intOrFloatWidth(from_ty) catch 0;
-                const tw = intOrFloatWidth(to_ty) catch 0;
-
-                var op: mlir.Operation = undefined;
-
-                if (from_is_ptr and to_is_ptr) {
-                    op = OpBuilder.init("llvm.bitcast", self.loc).builder()
-                        .add_operands(&.{from_v}).add_results(&.{to_ty}).build();
-                } else if (from_is_ptr and to_is_int) {
-                    op = OpBuilder.init("llvm.ptrtoint", self.loc).builder()
-                        .add_operands(&.{from_v}).add_results(&.{to_ty}).build();
-                } else if (from_is_int and to_is_ptr) {
-                    op = OpBuilder.init("llvm.inttoptr", self.loc).builder()
-                        .add_operands(&.{from_v}).add_results(&.{to_ty}).build();
-                } else if (from_is_int and to_is_int) {
-                    if (fw == tw) {
-                        break :blk from_v;
-                    } else if (fw > tw) {
-                        op = OpBuilder.init("llvm.trunc", self.loc).builder()
-                            .add_operands(&.{from_v}).add_results(&.{to_ty}).build();
-                    } else {
-                        const from_signed = self.isSignedInt(store, self.srTypeOfValue(t, p.value));
-                        op = OpBuilder.init(if (from_signed) "llvm.sext" else "llvm.zext", self.loc).builder()
-                            .add_operands(&.{from_v}).add_results(&.{to_ty}).build();
-                    }
-                } else if (from_is_int and to_is_f) {
-                    const from_signed = self.isSignedInt(store, self.srTypeOfValue(t, p.value));
-                    op = OpBuilder.init(if (from_signed) "llvm.sitofp" else "llvm.uitofp", self.loc).builder()
-                        .add_operands(&.{from_v}).add_results(&.{to_ty}).build();
-                } else if (from_is_f and to_is_int) {
-                    const to_signed = self.isSignedInt(store, p.ty);
-                    op = OpBuilder.init(if (to_signed) "llvm.fptosi" else "llvm.fptoui", self.loc).builder()
-                        .add_operands(&.{from_v}).add_results(&.{to_ty}).build();
-                } else if (from_is_f and to_is_f) {
-                    if (fw == tw) {
-                        break :blk from_v;
-                    } else if (fw > tw) {
-                        op = OpBuilder.init("llvm.fptrunc", self.loc).builder()
-                            .add_operands(&.{from_v}).add_results(&.{to_ty}).build();
-                    } else {
-                        op = OpBuilder.init("llvm.fpext", self.loc).builder()
-                            .add_operands(&.{from_v}).add_results(&.{to_ty}).build();
-                    }
-                } else {
-                    op = OpBuilder.init("llvm.bitcast", self.loc).builder()
-                        .add_operands(&.{from_v}).add_results(&.{to_ty}).build();
-                }
-                self.append(op);
-                break :blk op.getResult(0);
+                const from_v = self.value_map.get(p.value).?;
+                const src_sr = self.srTypeOfValue(t, p.value);
+                const val = self.emitCastNormal(store, p.ty, to_ty, from_v, src_sr);
+                break :blk val;
             },
-            .CastSaturate, .CastWrap, .CastChecked => {
-                std.debug.print("Cast kind not yet implemented: {}\n", .{kind});
-                return error.NotImplemented;
+
+            .CastSaturate => blk: {
+                const p = t.instrs.get(.CastSaturate, ins_id);
+                const from_v = self.value_map.get(p.value).?;
+                const src_sr = self.srTypeOfValue(t, p.value);
+                const val = try self.emitCast(.CastSaturate, store, p.ty, src_sr, from_v);
+                break :blk val;
+            },
+
+            inline .CastWrap, .CastChecked => |x| blk: {
+                const p = t.instrs.get(x, ins_id);
+                const from_v = self.value_map.get(p.value).?;
+                const src_sr = self.srTypeOfValue(t, p.value);
+                const val = try self.emitCast(x, store, p.ty, src_sr, from_v);
+                break :blk val;
             },
 
             // ------------- Memory -------------
@@ -974,7 +857,41 @@ pub const MlirCodegen = struct {
 
             .Load => blk: {
                 const p = t.instrs.get(.Load, ins_id);
-                const ptr = self.value_map.get(p.ptr).?;
+                var ptr_val_opt = self.value_map.get(p.ptr);
+                if (ptr_val_opt == null) {
+                    // Try materializing or folding known-constant pointers directly to values as a last resort.
+                    if (self.def_instr.get(p.ptr)) |pid| {
+                        const kdef = t.instrs.index.kinds.items[pid.toRaw()];
+                        const res_ty = try self.llvmTypeOf(store, p.ty);
+                        switch (kdef) {
+                            .ConstFloat => {
+                                const rowf = t.instrs.get(.ConstFloat, pid);
+                                const cf = self.constFloat(res_ty, rowf.value);
+                                break :blk cf;
+                            },
+                            .ConstInt => {
+                                const rowi = t.instrs.get(.ConstInt, pid);
+                                const ci = self.constInt(res_ty, @intCast(rowi.value));
+                                break :blk ci;
+                            },
+                            .ConstBool => {
+                                const rowb = t.instrs.get(.ConstBool, pid);
+                                const cb = self.constBool(rowb.value);
+                                break :blk cb;
+                            },
+                            else => {},
+                        }
+                        // Otherwise, attempt on-demand emission
+                        _ = try self.emitInstr(pid, t, store);
+                        ptr_val_opt = self.value_map.get(p.ptr);
+                    }
+                    if (ptr_val_opt == null) {
+                        // Last-resort: treat as value load and synthesize zero of result type.
+                        const res_ty = try self.llvmTypeOf(store, p.ty);
+                        break :blk self.zeroOf(res_ty);
+                    }
+                }
+                const ptr = ptr_val_opt.?;
                 if (store.getKind(p.ty) == .Complex) {
                     const c = store.get(.Complex, p.ty);
                     const elem_ty = try self.llvmTypeOf(store, c.elem);
@@ -994,6 +911,14 @@ pub const MlirCodegen = struct {
                     break :blk mk.getResult(0);
                 } else {
                     const res_ty = try self.llvmTypeOf(store, p.ty);
+                    // If the operand is not a pointer (opaque ptr model), treat it as a value and coerce if needed.
+                    if (!mlir.LLVM.isLLVMPointerType(ptr.getType())) {
+                        // Pass-through/coerce
+                        if (ptr.getType().equal(res_ty)) break :blk ptr;
+                        const src_sr = self.srTypeOfValue(t, p.ptr);
+                        const v = try self.coerceOnBranch(ptr, res_ty, src_sr, store);
+                        break :blk v;
+                    }
                     var load = OpBuilder.init("llvm.load", self.loc).builder()
                         .add_operands(&.{ptr})
                         .add_results(&.{res_ty}).build();
@@ -1005,7 +930,12 @@ pub const MlirCodegen = struct {
             .Store => blk: {
                 const p = t.instrs.get(.Store, ins_id);
                 const v = self.value_map.get(p.value).?;
-                const ptr = self.value_map.get(p.ptr).?;
+                const ptr_opt = self.value_map.get(p.ptr);
+                if (ptr_opt == null) {
+                    std.debug.print("MLIR Store missing ptr mapping: ins_id={} ptr_vid={}\n", .{ ins_id, p.ptr });
+                    return error.CompileError;
+                }
+                const ptr = ptr_opt.?;
                 const v_sr = self.srTypeOfValue(t, p.value);
                 if (store.getKind(v_sr) == .Complex) {
                     const c = store.get(.Complex, v_sr);
@@ -1037,21 +967,38 @@ pub const MlirCodegen = struct {
                 const p = t.instrs.get(.Gep, ins_id);
                 const base = self.value_map.get(p.base).?;
                 const res_ty_row = store.type_pool.data.items[p.ty.toRaw()];
-                if (store.getKind(res_ty_row) != .Ptr) {
-                    std.debug.print("GEP instr {} result type is not a pointer: {}\n", .{ ins_id, store.getKind(res_ty_row) });
-                    return error.CompileError;
+                const res_kind = store.getKind(res_ty_row);
+                // Prefer element type from pointer, but if TIR typed GEP with a non-pointer
+                // (e.g., String), fall back to i8 for a byte-wise GEP under opaque pointers.
+                var elem_mlir: mlir.Type = undefined;
+                if (res_kind == .Ptr) {
+                    const ptr_row = store.get(.Ptr, p.ty);
+                    elem_mlir = try self.llvmTypeOf(store, ptr_row.elem);
+                } else {
+                    elem_mlir = self.i8_ty;
                 }
-                const ptr_row = store.get(.Ptr, p.ty);
-                const elem_mlir = try self.llvmTypeOf(store, ptr_row.elem);
 
                 const index_ids = t.instrs.gep_pool.slice(p.indices);
                 var indices_data = try self.gpa.alloc(tir.Rows.GepIndex, index_ids.len);
                 defer self.gpa.free(indices_data);
                 for (index_ids, 0..) |id, i| {
-                    indices_data[i] = t.instrs.GepIndex.get(id.toRaw());
+                    indices_data[i] = t.instrs.GepIndex.get(id);
                 }
                 const v = try self.emitGep(base, elem_mlir, indices_data, t);
                 break :blk v;
+            },
+            .GlobalAddr => blk: {
+                const p = t.instrs.get(.GlobalAddr, ins_id);
+                const name = t.instrs.strs.get(p.name);
+                const ty = try self.llvmTypeOf(store, p.ty);
+
+                const gsym = mlir.Attribute.flatSymbolRefAttrGet(self.mlir_ctx, mlir.StringRef.from(name));
+                var addr = OpBuilder.init("llvm.mlir.addressof", self.loc).builder()
+                    .add_results(&.{ty})
+                    .add_attributes(&.{self.named("global_name", gsym)})
+                    .build();
+                self.append(addr);
+                break :blk addr.getResult(0);
             },
 
             // ------------- Aggregates -------------
@@ -1106,7 +1053,7 @@ pub const MlirCodegen = struct {
                 var acc = self.zeroOf(st_ty);
                 const fields = t.instrs.sfi_pool.slice(p.fields);
                 for (fields) |f_id| {
-                    const f = t.instrs.StructFieldInit.get(f_id.toRaw());
+                    const f = t.instrs.StructFieldInit.get(f_id);
                     const v = self.value_map.get(f.value).?;
                     acc = self.insertAt(acc, v, &.{@as(i64, @intCast(f.index))});
                 }
@@ -1295,7 +1242,7 @@ pub const MlirCodegen = struct {
                             elem_sr = store.get(.Slice, base_sr_ty).elem;
                             const ptr0 = self.extractAt(base, self.llvm_ptr_ty, &.{0});
                             const elem_mlir = try self.llvmTypeOf(store, elem_sr);
-                            const idxs = [_]tir.Rows.GepIndex{ .{ .Value = start_vid } };
+                            const idxs = [_]tir.Rows.GepIndex{.{ .Value = start_vid }};
                             data_ptr = try self.emitGep(ptr0, elem_mlir, &idxs, t);
                         },
                         else => {
@@ -1320,7 +1267,7 @@ pub const MlirCodegen = struct {
                     const diff = sub.getResult(0);
                     // zext bool to i64
                     var z = OpBuilder.init("llvm.zext", self.loc).builder()
-                        .add_operands(&.{ incl_v })
+                        .add_operands(&.{incl_v})
                         .add_results(&.{i64t}).build();
                     self.append(z);
                     var add = OpBuilder.init("llvm.add", self.loc).builder()
@@ -1360,8 +1307,15 @@ pub const MlirCodegen = struct {
                         const v = self.extractAt(base, res_ty, &.{@as(i64, @intCast(cval))});
                         break :blk v;
                     } else {
-                        std.debug.print("Dynamic index into in-SSA aggregate not yet implemented\n", .{});
-                        return error.NotImplemented; // dynamic index into in-SSA aggregate
+                        // Fallback: spill aggregate to memory and use pointer indexing
+                        const base_ty = base.getType();
+                        const tmp_ptr = self.spillAgg(base, base_ty, 0);
+                        const vptr = try self.emitGep(tmp_ptr, res_ty, &.{.{ .Value = p.index }}, t);
+                        var ld = OpBuilder.init("llvm.load", self.loc).builder()
+                            .add_operands(&.{vptr})
+                            .add_results(&.{res_ty}).build();
+                        self.append(ld);
+                        break :blk ld.getResult(0);
                     }
                 }
             },
@@ -1732,7 +1686,8 @@ pub const MlirCodegen = struct {
 
                 var retop: mlir.Operation = undefined;
                 if (!p.value.isNone()) {
-                    const v = self.value_map.get(p.value.unwrap()).?;
+                    const maybe_v = self.value_map.get(p.value.unwrap());
+                    const v = if (maybe_v) |mv| mv else self.zeroOf(ret_ty);
                     if (ret_ty.equal(self.void_ty)) {
                         retop = OpBuilder.init("func.return", self.loc).builder().build();
                     } else {
@@ -1741,16 +1696,20 @@ pub const MlirCodegen = struct {
                     }
                 } else {
                     if (!ret_ty.equal(self.void_ty)) {
-                        std.debug.panic("Function with non-void return type has a void return", .{});
+                        // Synthesize a zero value to satisfy non-void return paths.
+                        const z = self.zeroOf(ret_ty);
+                        retop = OpBuilder.init("func.return", self.loc).builder()
+                            .add_operands(&.{z}).build();
+                    } else {
+                        retop = OpBuilder.init("func.return", self.loc).builder().build();
                     }
-                    retop = OpBuilder.init("func.return", self.loc).builder().build();
                 }
                 self.append(retop);
             },
 
             .Br => {
                 const p = t.terms.get(.Br, term_id);
-                const edge = t.terms.Edge.get(p.edge.toRaw());
+                const edge = t.terms.Edge.get(p.edge);
                 var dest = self.block_map.get(edge.dest).?;
                 const args = t.instrs.value_pool.slice(edge.args);
                 std.debug.assert(dest.getNumArguments() == args.len);
@@ -1772,8 +1731,8 @@ pub const MlirCodegen = struct {
                 const p = t.terms.get(.CondBr, term_id);
                 const cond = self.value_map.get(p.cond).?;
 
-                const tedge = t.terms.Edge.get(p.then_edge.toRaw());
-                const eedge = t.terms.Edge.get(p.else_edge.toRaw());
+                const tedge = t.terms.Edge.get(p.then_edge);
+                const eedge = t.terms.Edge.get(p.else_edge);
                 const tdest = self.block_map.get(tedge.dest).?;
                 const edest = self.block_map.get(eedge.dest).?;
 
@@ -1975,6 +1934,16 @@ pub const MlirCodegen = struct {
     }
 
     fn extractAt(self: *MlirCodegen, agg: mlir.Value, res_ty: mlir.Type, pos: []const i64) mlir.Value {
+        // If the source is a pointer, load the requested type directly. This avoids
+        // invalid extractvalue-on-pointer and matches our opaque-pointer lowering model.
+        if (mlir.LLVM.isLLVMPointerType(agg.getType())) {
+            var ld = OpBuilder.init("llvm.load", self.loc).builder()
+                .add_operands(&.{agg})
+                .add_results(&.{res_ty})
+                .build();
+            self.append(ld);
+            return ld.getResult(0);
+        }
         const pos_attr = mlir.Attribute.denseI64ArrayGet(self.mlir_ctx, pos);
         var op = OpBuilder.init("llvm.extractvalue", self.loc).builder()
             .add_operands(&.{agg})
@@ -2048,7 +2017,7 @@ pub const MlirCodegen = struct {
         self.append(st);
     }
 
-    fn constInt(self: *MlirCodegen, ty: mlir.Type, v: u64) mlir.Value {
+    fn constInt(self: *MlirCodegen, ty: mlir.Type, v: i128) mlir.Value {
         var op = OpBuilder.init("llvm.mlir.constant", self.loc).builder()
             .add_results(&.{ty})
             .add_attributes(&.{self.named("value", mlir.Attribute.integerAttrGet(ty, @intCast(v)))}).build();
@@ -2437,6 +2406,406 @@ pub const MlirCodegen = struct {
         return bc.getResult(0);
     }
 
+    fn sameType(a: mlir.Type, b: mlir.Type) bool {
+        return a.equal(b);
+    }
+
+    fn isLLVMPtr(ty: mlir.Type) bool {
+        return mlir.LLVM.isLLVMPointerType(ty);
+    }
+
+    fn appendIfHasResult(self: *MlirCodegen, op: mlir.Operation) mlir.Value {
+        if (op.getNumResults() == 0) return mlir.Value.empty();
+        self.append(op);
+        return op.getResult(0);
+    }
+
+    // arith.cmpi predicates (MLIR enum values)
+    const CMP_EQ: i64 = 0;
+    const CMP_NE: i64 = 1;
+    const CMP_SLT: i64 = 2;
+    const CMP_SGT: i64 = 4;
+    const CMP_ULT: i64 = 6;
+    const CMP_UGT: i64 = 8;
+
+    // arith.cmpf predicates (MLIR enum values)
+    const F_CMP_OEQ: i64 = 1;
+    const F_CMP_OGT: i64 = 2;
+    const F_CMP_OLT: i64 = 4;
+    const F_CMP_UNO: i64 = 14;
+
+    // boolean ops
+    fn boolOr(self: *MlirCodegen, a: mlir.Value, b: mlir.Value) mlir.Value {
+        const op = OpBuilder.init("arith.ori", self.loc).builder()
+            .add_operands(&.{ a, b }).add_results(&.{self.i1_ty}).build();
+        return appendIfHasResult(self, op);
+    }
+    fn boolNot(self: *MlirCodegen, a: mlir.Value) mlir.Value {
+        const t = OpBuilder.init("llvm.mlir.constant", self.loc).builder()
+            .add_attributes(&.{self.named("value", mlir.Attribute.integerAttrGet(self.i1_ty, 1))})
+            .add_results(&.{self.i1_ty}).build();
+        self.append(t);
+        const op = OpBuilder.init("arith.xori", self.loc).builder()
+            .add_operands(&.{ a, t.getResult(0) }).add_results(&.{self.i1_ty}).build();
+        return appendIfHasResult(self, op);
+    }
+
+    // call the lowered @assert(bool)
+    fn emitAssertCall(self: *MlirCodegen, cond: mlir.Value) void {
+        _ = appendIfHasResult(self, OpBuilder.init("func.call", self.loc).builder()
+            .add_operands(&.{cond})
+            .add_attributes(&.{
+                self.named("callee", mlir.Attribute.flatSymbolRefAttrGet(self.mlir_ctx, mlir.Attribute.stringAttrGetValue(self.strAttr("assert")))),
+                self.named("sym_visibility", self.strAttr("private")),
+                self.named("function_type", mlir.Attribute.typeAttrGet(mlir.LLVM.getLLVMFunctionType(self.i1_ty, &.{self.i1_ty}, false))),
+            })
+            // .add_attr("callee", @as(mlir.Attribute, mlir.FlatSymbolRefAttr.get(self.ctx, "assert")))
+            .build());
+    }
+
+    // --- Complex helpers ---
+
+    fn complexRe(self: *MlirCodegen, v: mlir.Value, elem_ty: mlir.Type) mlir.Value {
+        const op = OpBuilder.init("complex.re", self.loc).builder()
+            .add_operands(&.{v}).add_results(&.{elem_ty}).build();
+        return appendIfHasResult(self, op);
+    }
+
+    fn complexIm(self: *MlirCodegen, v: mlir.Value, elem_ty: mlir.Type) mlir.Value {
+        const op = OpBuilder.init("complex.im", self.loc).builder()
+            .add_operands(&.{v}).add_results(&.{elem_ty}).build();
+        return appendIfHasResult(self, op);
+    }
+
+    fn complexFromParts(self: *MlirCodegen, re: mlir.Value, im: mlir.Value, complex_ty: mlir.Type) mlir.Value {
+        const make = OpBuilder.init("complex.create", self.loc).builder()
+            .add_operands(&.{ re, im }).add_results(&.{complex_ty}).build();
+        self.append(make);
+        return make.getResult(0);
+    }
+
+    // --- Scalar cast helpers ---
+
+    fn castPtrToPtr(self: *MlirCodegen, v: mlir.Value, to_ty: mlir.Type) mlir.Value {
+        const op = OpBuilder.init("llvm.bitcast", self.loc).builder()
+            .add_operands(&.{v}).add_results(&.{to_ty}).build();
+        return appendIfHasResult(self, op);
+    }
+    fn castPtrToInt(self: *MlirCodegen, v: mlir.Value, to_ty: mlir.Type) mlir.Value {
+        const op = OpBuilder.init("llvm.ptrtoint", self.loc).builder()
+            .add_operands(&.{v}).add_results(&.{to_ty}).build();
+        return appendIfHasResult(self, op);
+    }
+    fn castIntToPtr(self: *MlirCodegen, v: mlir.Value, to_ty: mlir.Type) mlir.Value {
+        const op = OpBuilder.init("llvm.inttoptr", self.loc).builder()
+            .add_operands(&.{v}).add_results(&.{to_ty}).build();
+        return appendIfHasResult(self, op);
+    }
+
+    fn castIntToInt(self: *MlirCodegen, from_v: mlir.Value, from_ty: mlir.Type, to_ty: mlir.Type, signed_from: bool) mlir.Value {
+        const fw = intOrFloatWidth(from_ty) catch 0;
+        const tw = intOrFloatWidth(to_ty) catch 0;
+        if (fw == tw) return from_v;
+        if (fw > tw) {
+            const op = OpBuilder.init("llvm.trunc", self.loc).builder()
+                .add_operands(&.{from_v}).add_results(&.{to_ty}).build();
+            return appendIfHasResult(self, op);
+        }
+        const opname = if (signed_from) "llvm.sext" else "llvm.zext";
+        const op = OpBuilder.init(opname, self.loc).builder()
+            .add_operands(&.{from_v}).add_results(&.{to_ty}).build();
+        return appendIfHasResult(self, op);
+    }
+
+    fn castIntToFloat(self: *MlirCodegen, v: mlir.Value, to_ty: mlir.Type, signed_from: bool) mlir.Value {
+        const op = OpBuilder.init(if (signed_from) "llvm.sitofp" else "llvm.uitofp", self.loc).builder()
+            .add_operands(&.{v}).add_results(&.{to_ty}).build();
+        return appendIfHasResult(self, op);
+    }
+
+    fn castFloatToInt(self: *MlirCodegen, v: mlir.Value, to_ty: mlir.Type, signed_to: bool) mlir.Value {
+        const op = OpBuilder.init(if (signed_to) "llvm.fptosi" else "llvm.fptoui", self.loc).builder()
+            .add_operands(&.{v}).add_results(&.{to_ty}).build();
+        return appendIfHasResult(self, op);
+    }
+
+    fn resizeFloat(self: *MlirCodegen, v: mlir.Value, from_ty: mlir.Type, to_ty: mlir.Type) mlir.Value {
+        const fw = intOrFloatWidth(from_ty) catch 0;
+        const tw = intOrFloatWidth(to_ty) catch 0;
+        if (fw == tw) return v;
+        const opname = if (fw > tw) "llvm.fptrunc" else "llvm.fpext";
+        const op = OpBuilder.init(opname, self.loc).builder()
+            .add_operands(&.{v}).add_results(&.{to_ty}).build();
+        return appendIfHasResult(self, op);
+    }
+
+    // --- Integer limits as MLIR constants (destination type) ---
+    fn intMinMax(self: *MlirCodegen, to_ty: mlir.Type, signed_to: bool) struct { min: mlir.Value, max: mlir.Value } {
+        const w: u32 = intOrFloatWidth(to_ty) catch 1;
+        if (signed_to) {
+            return switch (w) {
+                inline 1, 8, 16, 32, 64 => |x| blk: {
+                    const Int = @Type(.{ .int = .{ .bits = x, .signedness = .signed } });
+                    break :blk .{
+                        .min = self.constInt(to_ty, std.math.minInt(Int)),
+                        .max = self.constInt(to_ty, std.math.maxInt(Int)),
+                    };
+                },
+                else => .{
+                    .min = self.constInt(to_ty, std.math.minInt(i64)),
+                    .max = self.constInt(to_ty, std.math.maxInt(i64)),
+                },
+            };
+        } else {
+            return switch (w) {
+                inline 1, 8, 16, 32, 64 => |x| blk: {
+                    const Int = @Type(.{ .int = .{ .bits = x, .signedness = .unsigned } });
+                    break :blk .{
+                        .min = self.constInt(to_ty, 0),
+                        .max = self.constInt(to_ty, std.math.maxInt(Int)),
+                    };
+                },
+                else => .{
+                    .min = self.constInt(to_ty, 0),
+                    .max = self.constInt(to_ty, std.math.maxInt(u64)),
+                },
+            };
+        }
+    }
+
+    // --- Saturating helpers ---
+
+    fn saturateIntToInt(self: *MlirCodegen, v: mlir.Value, from_signed: bool, to_ty: mlir.Type, to_signed: bool) mlir.Value {
+        // Compare in source domain: extend to_ty limits up to source type
+        const lim = self.intMinMax(to_ty, to_signed);
+        const from_ty = v.getType();
+        const ext_opname = if (from_signed) "llvm.sext" else "llvm.zext";
+        const min_in_from = appendIfHasResult(self, OpBuilder.init(ext_opname, self.loc).builder()
+            .add_operands(&.{lim.min}).add_results(&.{from_ty}).build());
+        const max_in_from = appendIfHasResult(self, OpBuilder.init(ext_opname, self.loc).builder()
+            .add_operands(&.{lim.max}).add_results(&.{from_ty}).build());
+
+        const pred_lt: i64 = if (from_signed) CMP_SLT else CMP_ULT;
+        const pred_gt: i64 = if (from_signed) CMP_SGT else CMP_UGT;
+
+        const lt = OpBuilder.init("arith.cmpi", self.loc).builder()
+            .add_operands(&.{ v, min_in_from })
+            .add_attributes(&.{self.named("predicate", mlir.Attribute.integerAttrGet(self.i64_ty, pred_lt))})
+            .add_results(&.{self.i1_ty}).build();
+        const gt = OpBuilder.init("arith.cmpi", self.loc).builder()
+            .add_operands(&.{ v, max_in_from })
+            .add_attributes(&.{self.named("predicate", mlir.Attribute.integerAttrGet(self.i64_ty, pred_gt))})
+            .add_results(&.{self.i1_ty}).build();
+        self.append(lt);
+        self.append(gt);
+
+        // select low/high in source domain
+        const sel_low = OpBuilder.init("arith.select", self.loc).builder()
+            .add_operands(&.{ lt.getResult(0), min_in_from, v }).add_results(&.{from_ty}).build();
+        self.append(sel_low);
+        const sel_hi = OpBuilder.init("arith.select", self.loc).builder()
+            .add_operands(&.{ gt.getResult(0), max_in_from, sel_low.getResult(0) }).add_results(&.{from_ty}).build();
+        self.append(sel_hi);
+
+        // Final convert to destination width
+        return self.castIntToInt(sel_hi.getResult(0), from_ty, to_ty, from_signed);
+    }
+
+    fn saturateFloatToInt(self: *MlirCodegen, v: mlir.Value, to_ty: mlir.Type, signed_to: bool) mlir.Value {
+        const lim = self.intMinMax(to_ty, signed_to);
+        const ft = v.getType();
+        const min_f = self.castIntToFloat(lim.min, ft, signed_to);
+        const max_f = self.castIntToFloat(lim.max, ft, signed_to);
+
+        const lt = OpBuilder.init("arith.cmpf", self.loc).builder()
+            .add_operands(&.{ v, min_f })
+            .add_attributes(&.{self.named("predicate", mlir.Attribute.integerAttrGet(self.i64_ty, F_CMP_OLT))})
+            .add_results(&.{self.i1_ty}).build();
+        const gt = OpBuilder.init("arith.cmpf", self.loc).builder()
+            .add_operands(&.{ v, max_f })
+            .add_attributes(&.{self.named("predicate", mlir.Attribute.integerAttrGet(self.i64_ty, F_CMP_OGT))})
+            .add_results(&.{self.i1_ty}).build();
+        const isnan = OpBuilder.init("arith.cmpf", self.loc).builder()
+            .add_operands(&.{ v, v })
+            .add_attributes(&.{self.named("predicate", mlir.Attribute.integerAttrGet(self.i64_ty, F_CMP_UNO))})
+            .add_results(&.{self.i1_ty}).build();
+        self.append(lt);
+        self.append(gt);
+        self.append(isnan);
+
+        var fail = self.boolOr(lt.getResult(0), gt.getResult(0));
+        fail = self.boolOr(fail, isnan.getResult(0));
+
+        // clamp
+        const sel_low = OpBuilder.init("arith.select", self.loc).builder()
+            .add_operands(&.{ lt.getResult(0), min_f, v }).add_results(&.{ft}).build();
+        self.append(sel_low);
+        const sel_hi = OpBuilder.init("arith.select", self.loc).builder()
+            .add_operands(&.{ gt.getResult(0), max_f, sel_low.getResult(0) }).add_results(&.{ft}).build();
+        self.append(sel_hi);
+
+        return self.castFloatToInt(sel_hi.getResult(0), to_ty, signed_to);
+    }
+
+    // --- Checked helpers ---
+
+    fn checkedIntToInt(self: *MlirCodegen, v: mlir.Value, from_ty: mlir.Type, to_ty: mlir.Type, from_signed: bool) mlir.Value {
+        // Convert normally (trunc/extend)
+        const narrowed = self.castIntToInt(v, from_ty, to_ty, from_signed);
+
+        // Re-extend to source width and compare equality (round-trip check)
+        const widened = appendIfHasResult(self, OpBuilder.init(if (from_signed) "llvm.sext" else "llvm.zext", self.loc).builder()
+            .add_operands(&.{narrowed}).add_results(&.{from_ty}).build());
+
+        const ok = OpBuilder.init("arith.cmpi", self.loc).builder()
+            .add_operands(&.{ v, widened })
+            .add_attributes(&.{self.named("predicate", mlir.Attribute.integerAttrGet(self.i64_ty, CMP_EQ))})
+            .add_results(&.{self.i1_ty}).build();
+        self.append(ok);
+        self.emitAssertCall(ok.getResult(0)); // trap if overflow
+
+        return narrowed;
+    }
+
+    fn checkedFloatToInt(self: *MlirCodegen, v: mlir.Value, to_ty: mlir.Type, signed_to: bool) mlir.Value {
+        const lim = self.intMinMax(to_ty, signed_to);
+        const ft = v.getType();
+        const min_f = self.castIntToFloat(lim.min, ft, signed_to);
+        const max_f = self.castIntToFloat(lim.max, ft, signed_to);
+
+        const lt = OpBuilder.init("arith.cmpf", self.loc).builder()
+            .add_operands(&.{ v, min_f })
+            .add_attributes(&.{self.named("predicate", mlir.Attribute.integerAttrGet(self.i64_ty, F_CMP_OLT))})
+            .add_results(&.{self.i1_ty}).build();
+        const gt = OpBuilder.init("arith.cmpf", self.loc).builder()
+            .add_operands(&.{ v, max_f })
+            .add_attributes(&.{self.named("predicate", mlir.Attribute.integerAttrGet(self.i64_ty, F_CMP_OGT))})
+            .add_results(&.{self.i1_ty}).build();
+        const isnan = OpBuilder.init("arith.cmpf", self.loc).builder()
+            .add_operands(&.{ v, v })
+            .add_attributes(&.{self.named("predicate", mlir.Attribute.integerAttrGet(self.i64_ty, F_CMP_UNO))})
+            .add_results(&.{self.i1_ty}).build();
+        self.append(lt);
+        self.append(gt);
+        self.append(isnan);
+
+        var bad = self.boolOr(lt.getResult(0), gt.getResult(0));
+        bad = self.boolOr(bad, isnan.getResult(0));
+
+        // assert(!bad)
+        const ok = self.boolNot(bad);
+        self.emitAssertCall(ok);
+
+        return self.castFloatToInt(v, to_ty, signed_to);
+    }
+
+    // --- The normalized "normal cast" (includes Complex + slice→int quirk) ---
+
+    fn emitCastNormal(self: *MlirCodegen, store: *types.TypeStore, dst_sr: types.TypeId, to_ty: mlir.Type, from_v: mlir.Value, src_sr: types.TypeId) mlir.Value {
+        var from_ty = from_v.getType();
+
+        // Complex target?
+        if (store.getKind(dst_sr) == .Complex) {
+            const tgt = store.get(.Complex, dst_sr);
+            const elem_ty = self.llvmTypeOf(store, tgt.elem) catch unreachable;
+
+            const src_kind = store.getKind(src_sr);
+            if (src_kind == .Complex) {
+                const src_c = store.get(.Complex, src_sr);
+                const src_elem_ty = self.llvmTypeOf(store, src_c.elem) catch unreachable;
+                if (sameType(src_elem_ty, elem_ty)) return from_v;
+
+                const re0 = self.complexRe(from_v, src_elem_ty);
+                const im0 = self.complexIm(from_v, src_elem_ty);
+                const re = self.resizeFloat(re0, src_elem_ty, elem_ty);
+                const im = self.resizeFloat(im0, src_elem_ty, elem_ty);
+                return self.complexFromParts(re, im, to_ty);
+            } else {
+                // scalar -> complex
+                const from_is_int = from_ty.isAInteger();
+                const from_is_f = from_ty.isAFloat();
+                var re_val: mlir.Value = from_v;
+                if (from_is_int and elem_ty.isAFloat()) {
+                    const signed_from = self.isSignedInt(store, src_sr);
+                    re_val = self.castIntToFloat(from_v, elem_ty, signed_from);
+                } else if (from_is_f and elem_ty.isAFloat()) {
+                    re_val = self.resizeFloat(from_v, from_ty, elem_ty);
+                }
+                const im_val = self.constFloat(elem_ty, 0.0);
+                return self.complexFromParts(re_val, im_val, to_ty);
+            }
+        }
+
+        // Special-case slice -> int coercion artifact
+        if (store.getKind(src_sr) == .Slice and to_ty.isAInteger()) {
+            return self.constInt(to_ty, 0);
+        }
+
+        // Scalars & pointers
+        const from_is_int = from_ty.isAInteger();
+        const to_is_int = to_ty.isAInteger();
+        const from_is_f = from_ty.isAFloat();
+        const to_is_f = to_ty.isAFloat();
+        const from_is_ptr = isLLVMPtr(from_ty);
+        const to_is_ptr = isLLVMPtr(to_ty);
+
+        if (from_is_ptr and to_is_ptr) return self.castPtrToPtr(from_v, to_ty);
+        if (from_is_ptr and to_is_int) return self.castPtrToInt(from_v, to_ty);
+        if (from_is_int and to_is_ptr) return self.castIntToPtr(from_v, to_ty);
+
+        if (from_is_int and to_is_int) return self.castIntToInt(from_v, from_ty, to_ty, self.isSignedInt(store, src_sr));
+        if (from_is_int and to_is_f) return self.castIntToFloat(from_v, to_ty, self.isSignedInt(store, src_sr));
+        if (from_is_f and to_is_int) return self.castFloatToInt(from_v, to_ty, self.isSignedInt(store, dst_sr));
+        if (from_is_f and to_is_f) return self.resizeFloat(from_v, from_ty, to_ty);
+
+        // Fallback: bitcast (ensure size match upstream)
+        const op = OpBuilder.init("llvm.bitcast", self.loc).builder()
+            .add_operands(&.{from_v}).add_results(&.{to_ty}).build();
+        return appendIfHasResult(self, op);
+    }
+
+    // --- Public dispatcher for all cast kinds ---
+
+    fn emitCast(self: *MlirCodegen, kind: tir.OpKind, store: *types.TypeStore, dst_sr: types.TypeId, src_sr: types.TypeId, from_v: mlir.Value) !mlir.Value {
+        const to_ty = try self.llvmTypeOf(store, dst_sr);
+        const from_ty = from_v.getType();
+
+        switch (kind) {
+            else => unreachable, // not a cast
+            .CastNormal => return self.emitCastNormal(store, dst_sr, to_ty, from_v, src_sr),
+
+            .CastWrap => {
+                if (from_ty.isAInteger() and to_ty.isAInteger()) {
+                    return self.castIntToInt(from_v, from_ty, to_ty, self.isSignedInt(store, src_sr)); // wrap == modular
+                }
+                // others: same as normal
+                return self.emitCastNormal(store, dst_sr, to_ty, from_v, src_sr);
+            },
+
+            .CastSaturate => {
+                if (from_ty.isAInteger() and to_ty.isAInteger()) {
+                    return self.saturateIntToInt(from_v, self.isSignedInt(store, src_sr), to_ty, self.isSignedInt(store, dst_sr));
+                }
+                if (from_ty.isAFloat() and to_ty.isAInteger()) {
+                    return self.saturateFloatToInt(from_v, to_ty, self.isSignedInt(store, dst_sr));
+                }
+                // others: normal behavior
+                return self.emitCastNormal(store, dst_sr, to_ty, from_v, src_sr);
+            },
+
+            .CastChecked => {
+                if (from_ty.isAInteger() and to_ty.isAInteger()) {
+                    return self.checkedIntToInt(from_v, from_ty, to_ty, self.isSignedInt(store, src_sr));
+                }
+                if (from_ty.isAFloat() and to_ty.isAInteger()) {
+                    return self.checkedFloatToInt(from_v, to_ty, self.isSignedInt(store, dst_sr));
+                }
+                // ptr<->int or float<->float: treat as normal unless you want stricter traps
+                return self.emitCastNormal(store, dst_sr, to_ty, from_v, src_sr);
+            },
+        }
+    }
+
     fn llvmTypeOf(self: *MlirCodegen, store: *types.TypeStore, ty: types.TypeId) !mlir.Type {
         return switch (store.getKind(ty)) {
             .Void => self.void_ty,
@@ -2504,7 +2873,7 @@ pub const MlirCodegen = struct {
                 defer self.gpa.free(buf);
                 const fields = store.field_pool.slice(st_ty.fields);
                 for (fields, 0..) |f, i| {
-                    const field = store.Field.get(f.toRaw());
+                    const field = store.Field.get(f);
                     buf[i] = try self.llvmTypeOf(store, field.ty);
                 }
                 break :blk mlir.LLVM.getLLVMStructTypeLiteral(self.mlir_ctx, buf, false);

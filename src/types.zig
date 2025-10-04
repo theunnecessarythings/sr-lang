@@ -4,12 +4,10 @@ const ast = @import("ast.zig");
 
 // DOD Type Store
 pub const TypeTag = struct {};
-pub const FieldTag = struct {};
 
 pub const TypeId = cst.Index(TypeTag);
-pub const FieldId = cst.Index(FieldTag);
-pub const EnumMemberTag = struct {};
-pub const EnumMemberId = cst.Index(EnumMemberTag);
+pub const FieldId = cst.Index(Rows.Field);
+pub const EnumMemberId = cst.Index(Rows.EnumMember);
 pub const RangeEnumMember = cst.RangeOf(EnumMemberId);
 pub const RangeType = cst.RangeOf(TypeId);
 pub const RangeField = cst.RangeOf(FieldId);
@@ -234,23 +232,21 @@ pub const TypeStore = struct {
 
     pub fn get(self: *const TypeStore, comptime K: TypeKind, id: TypeId) RowT(K) {
         const tbl: *const Table(RowT(K)) = &@field(self, @tagName(K));
-        return tbl.get(self.index.rows.items[id.toRaw()]);
+        return tbl.get(.{ .index = self.index.rows.items[id.toRaw()] });
     }
 
     pub fn add(self: *TypeStore, comptime K: TypeKind, row: RowT(K)) TypeId {
         const tbl: *Table(RowT(K)) = &@field(self, @tagName(K));
         const idx = tbl.add(self.gpa, row);
-        return self.index.newId(self.gpa, K, idx, TypeId);
+        return self.index.newId(self.gpa, K, idx.toRaw(), TypeId);
     }
 
     pub fn addField(self: *TypeStore, row: Rows.Field) FieldId {
-        const idx = self.Field.add(self.gpa, row);
-        return FieldId.fromRaw(idx);
+        return self.Field.add(self.gpa, row);
     }
 
     pub fn addEnumMember(self: *TypeStore, row: Rows.EnumMember) EnumMemberId {
-        const idx = self.EnumMember.add(self.gpa, row);
-        return EnumMemberId.fromRaw(idx);
+        return self.EnumMember.add(self.gpa, row);
     }
 
     // ---- builtin constructors (interned once) ----
@@ -559,7 +555,7 @@ pub const TypeStore = struct {
                 if (ids.len != k.names.len) return false;
                 var j: usize = 0;
                 while (j < ids.len) : (j += 1) {
-                    const f = s.Field.get(ids[j].toRaw());
+                    const f = s.Field.get(ids[j]);
                     if (f.name.toRaw() != k.names[j].toRaw()) return false;
                     if (f.ty.toRaw() != k.tys[j].toRaw()) return false;
                 }
@@ -602,7 +598,7 @@ pub const TypeStore = struct {
                 if (ids.len != k.names.len) return false;
                 var j: usize = 0;
                 while (j < ids.len) : (j += 1) {
-                    const f = s.Field.get(ids[j].toRaw());
+                    const f = s.Field.get(ids[j]);
                     if (f.name.toRaw() != k.names[j].toRaw()) return false;
                     if (f.ty.toRaw() != k.tys[j].toRaw()) return false;
                 }
@@ -620,7 +616,7 @@ pub const TypeStore = struct {
             if (kinds[i] != K) continue;
             const row_idx = rows[i];
             const tbl: *const Table(RowT(K)) = &@field(self, @tagName(K));
-            const row = tbl.get(row_idx);
+            const row = tbl.get(.{ .index = row_idx });
             if (Helper.eq(self, row, key)) return TypeId.fromRaw(@intCast(i));
         }
         return null;
