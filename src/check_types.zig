@@ -69,7 +69,7 @@ fn variantPayloadType(self: *Checker, variant_ty: types.TypeId, tag: ast.StrId) 
     var i: usize = 0;
     while (i < cases.len) : (i += 1) {
         const vc = self.context.type_store.Field.get(cases[i]);
-        if (vc.name.toRaw() == tag.toRaw()) return vc.ty;
+        if (vc.name.eq(tag)) return vc.ty;
     }
     return null;
 }

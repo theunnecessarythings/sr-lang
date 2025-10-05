@@ -1,18 +1,18 @@
 const std = @import("std");
+
 const ast = @import("ast.zig");
-const Diagnostics = @import("diagnostics.zig").Diagnostics;
+const check_types = @import("check_types.zig");
+const Context = @import("compile.zig").Context;
 const diag = @import("diagnostics.zig");
+const Diagnostics = @import("diagnostics.zig").Diagnostics;
+const ImportResolver = @import("import_resolver.zig").ImportResolver;
 const Loc = @import("lexer.zig").Token.Loc;
+const ModuleEntry = @import("import_resolver.zig").ModuleEntry;
+const pattern_matching = @import("check_pattern_matching.zig");
+const Pipeline = @import("pipeline.zig").Pipeline;
 const symbols = @import("symbols.zig");
 const types = @import("types.zig");
 const TypeInfo = types.TypeInfo;
-const ImportResolver = @import("import_resolver.zig").ImportResolver;
-const ModuleEntry = @import("import_resolver.zig").ModuleEntry;
-const pattern_matching = @import("check_pattern_matching.zig");
-const check_types = @import("check_types.zig");
-const Context = @import("compile.zig").Context;
-
-const Pipeline = @import("pipeline.zig").Pipeline;
 
 pub const Checker = struct {
     gpa: std.mem.Allocator,
@@ -45,14 +45,8 @@ pub const Checker = struct {
     };
 
     // --------- tiny helpers (readability & consistency) ----------
-    inline fn typeKind(self: *const Checker, t: types.TypeId) types.TypeKind {
+    pub inline fn typeKind(self: *const Checker, t: types.TypeId) types.TypeKind {
         return self.context.type_store.index.kinds.items[t.toRaw()];
-    }
-    inline fn trow(self: *const Checker, t: types.TypeId) u32 {
-        return self.context.type_store.index.rows.items[t.toRaw()];
-    }
-    inline fn tEq(_: *const Checker, a: types.TypeId, b: types.TypeId) bool {
-        return a.toRaw() == b.toRaw();
     }
     inline fn exprKind(self: *const Checker, eid: ast.ExprId) ast.ExprKind {
         return self.ast_unit.exprs.index.kinds.items[eid.toRaw()];
@@ -149,7 +143,12 @@ pub const Checker = struct {
     }
 
     fn pushFunc(self: *Checker, result_ty: types.TypeId, has_result: bool, require_pure: bool) !void {
-        try self.func_stack.append(self.gpa, .{ .result = result_ty, .has_result = has_result, .pure = true, .require_pure = require_pure });
+        try self.func_stack.append(self.gpa, .{
+            .result = result_ty,
+            .has_result = has_result,
+            .pure = true,
+            .require_pure = require_pure,
+        });
     }
     fn popFunc(self: *Checker) void {
         if (self.func_stack.items.len > 0) {
@@ -192,9 +191,8 @@ pub const Checker = struct {
         var i: isize = @as(isize, @intCast(self.match_binding_stack.items.len)) - 1;
         while (i >= 0) : (i -= 1) {
             const ctx = self.match_binding_stack.items[@intCast(i)];
-            if (pattern_matching.bindingTypeInPattern(self, ctx.pat, name, ctx.subject_ty)) |bt| {
+            if (pattern_matching.bindingTypeInPattern(self, ctx.pat, name, ctx.subject_ty)) |bt|
                 return bt;
-            }
         }
         return null;
     }
@@ -204,9 +202,8 @@ pub const Checker = struct {
         while (i >= 0) : (i -= 1) {
             const ctx = self.loop_binding_stack.items[@intCast(i)];
             if (!ctx.pat.isNone()) {
-                if (pattern_matching.bindingTypeInPattern(self, ctx.pat.unwrap(), name, ctx.subject_ty)) |bt| {
+                if (pattern_matching.bindingTypeInPattern(self, ctx.pat.unwrap(), name, ctx.subject_ty)) |bt|
                     return bt;
-                }
             }
         }
         return null;
@@ -240,14 +237,11 @@ pub const Checker = struct {
         return null;
     }
 
-    // fn getNode(self: *Checker, )
-
     // =========================================================
     // Declarations & Statements
     // =========================================================
     fn checkDecl(self: *Checker, decl_id: ast.DeclId) !void {
         // pattern : expect_ty = value
-
         const decl = self.ast_unit.exprs.Decl.get(decl_id);
 
         // Predeclare local bindings in the current scope so subsequent statements can reference them.
@@ -322,7 +316,7 @@ pub const Checker = struct {
     };
 
     pub fn assignable(self: *Checker, got: types.TypeId, expect: types.TypeId) AssignErrors {
-        if (self.tEq(got, expect)) return .success;
+        if (got.eq(expect)) return .success;
         const got_kind = self.typeKind(got);
         const expected_kind = self.typeKind(expect);
         if (expected_kind == .Any or got_kind == .Any) return .success;
@@ -477,7 +471,7 @@ pub const Checker = struct {
             },
             .Enum => {
                 if (got_kind != .Enum) return .expected_enum_type;
-                if (!self.tEq(got, expect)) return .failure;
+                if (!got.eq(expect)) return .failure;
                 return .success;
             },
             .Function => {
@@ -490,9 +484,9 @@ pub const Checker = struct {
                 if (eparams.len != gparams.len) return .failure;
                 var i: usize = 0;
                 while (i < eparams.len) : (i += 1) {
-                    if (!self.tEq(eparams[i], gparams[i])) return .failure;
+                    if (!eparams[i].eq(gparams[i])) return .failure;
                 }
-                if (!self.tEq(efn.result, gfn.result)) return .failure;
+                if (!efn.result.eq(gfn.result)) return .failure;
                 if (efn.is_pure and !gfn.is_pure) return .failure;
                 return .success;
             },
@@ -609,7 +603,7 @@ pub const Checker = struct {
 
         for (cases) |fid| {
             const f = self.context.type_store.Field.get(fid);
-            if (f.name.toRaw() == lname.toRaw()) return f.ty;
+            if (f.name.eq(lname)) return f.ty;
         }
         return null;
     }
@@ -667,7 +661,7 @@ pub const Checker = struct {
             // Find matching target field
             for (tfields) |tfid| {
                 const tf = self.context.type_store.Field.get(tfid);
-                if (tf.name.toRaw() == nm.toRaw()) {
+                if (tf.name.eq(nm)) {
                     want = tf.ty;
                     break;
                 }
@@ -723,6 +717,57 @@ pub const Checker = struct {
         }
     }
 
+    fn checkAssign(self: *Checker, stmt: *const ast.StmtRows.Assign) !void {
+        // Handle `_ = rhs` as a special discard operation.
+        if (self.exprKind(stmt.left) == .Ident) {
+            const ident = self.getExpr(.Ident, stmt.left);
+            const name = self.ast_unit.exprs.strs.get(ident.name);
+            if (std.mem.eql(u8, name, "_")) {
+                // Check the RHS for side effects, but discard the value.
+                // The value of the expression is not required.
+                try self.pushValueReq(false);
+                _ = try self.checkExpr(stmt.right);
+                self.popValueReq();
+                return;
+            }
+        }
+
+        // Pattern-shaped LHS support: tuple/struct/array destructuring
+        const lkind = self.exprKind(stmt.left);
+        if (lkind == .TupleLit or lkind == .StructLit or lkind == .ArrayLit) {
+            // RHS of assignment should be checked in value context
+            try self.pushValueReq(true);
+            const rv_ty = try self.checkExpr(stmt.right);
+            self.popValueReq();
+            if (rv_ty != null) {
+                const shape_ok = pattern_matching.checkPatternShapeForAssignExpr(self, stmt.left, rv_ty.?);
+                switch (shape_ok) {
+                    .ok => {},
+                    inline else => |x| try self.context.diags.addError(self.exprLoc(stmt), @field(diag.DiagnosticCode, @tagName(x)), .{}),
+                }
+            }
+        } else {
+            const lt = try self.checkExpr(stmt.left);
+            // RHS of assignment should be checked in value context
+            try self.pushValueReq(true);
+            const rt = try self.checkExpr(stmt.right);
+            self.popValueReq();
+            if (lt != null and rt != null and (self.assignable(rt.?, lt.?) != .success)) {
+                try self.context.diags.addError(self.exprLoc(stmt), .type_annotation_mismatch, .{});
+            }
+        }
+        // Purity: assignment writes inside pure functions are allowed only to locals
+        if (self.inFunction() and self.currentFunc().?.require_pure) {
+            switch (self.lvalueRootKind(stmt.left)) {
+                .LocalDecl => {},
+                .Param, .NonLocalDecl, .Unknown => {
+                    try self.context.diags.addError(self.exprLoc(stmt), .purity_violation, .{});
+                    self.func_stack.items[self.func_stack.items.len - 1].pure = false;
+                },
+            }
+        }
+    }
+
     fn checkStmt(self: *Checker, sid: ast.StmtId) !?types.TypeId {
         switch (self.ast_unit.stmts.index.kinds.items[sid.toRaw()]) {
             .Expr => {
@@ -742,58 +787,7 @@ pub const Checker = struct {
                     _ = self.func_stack.items[idx].locals.put(self.gpa, stmt.decl.toRaw(), {}) catch {};
                 }
             },
-            .Assign => {
-                const stmt = self.getStmt(.Assign, sid);
-
-                // Handle `_ = rhs` as a special discard operation.
-                if (self.exprKind(stmt.left) == .Ident) {
-                    const ident = self.getExpr(.Ident, stmt.left);
-                    const name = self.ast_unit.exprs.strs.get(ident.name);
-                    if (std.mem.eql(u8, name, "_")) {
-                        // Check the RHS for side effects, but discard the value.
-                        // The value of the expression is not required.
-                        try self.pushValueReq(false);
-                        _ = try self.checkExpr(stmt.right);
-                        self.popValueReq();
-                        return null;
-                    }
-                }
-
-                // Pattern-shaped LHS support: tuple/struct/array destructuring
-                const lkind = self.exprKind(stmt.left);
-                if (lkind == .TupleLit or lkind == .StructLit or lkind == .ArrayLit) {
-                    // RHS of assignment should be checked in value context
-                    try self.pushValueReq(true);
-                    const rv_ty = try self.checkExpr(stmt.right);
-                    self.popValueReq();
-                    if (rv_ty != null) {
-                        const shape_ok = pattern_matching.checkPatternShapeForAssignExpr(self, stmt.left, rv_ty.?);
-                        switch (shape_ok) {
-                            .ok => {},
-                            inline else => |x| try self.context.diags.addError(self.exprLoc(stmt), @field(diag.DiagnosticCode, @tagName(x)), .{}),
-                        }
-                    }
-                } else {
-                    const lt = try self.checkExpr(stmt.left);
-                    // RHS of assignment should be checked in value context
-                    try self.pushValueReq(true);
-                    const rt = try self.checkExpr(stmt.right);
-                    self.popValueReq();
-                    if (lt != null and rt != null and (self.assignable(rt.?, lt.?) != .success)) {
-                        try self.context.diags.addError(self.exprLoc(stmt), .type_annotation_mismatch, .{});
-                    }
-                }
-                // Purity: assignment writes inside pure functions are allowed only to locals
-                if (self.inFunction() and self.currentFunc().?.require_pure) {
-                    switch (self.lvalueRootKind(stmt.left)) {
-                        .LocalDecl => {},
-                        .Param, .NonLocalDecl, .Unknown => {
-                            try self.context.diags.addError(self.exprLoc(stmt), .purity_violation, .{});
-                            self.func_stack.items[self.func_stack.items.len - 1].pure = false;
-                        },
-                    }
-                }
-            },
+            .Assign => try self.checkAssign(&self.getStmt(.Assign, sid)),
             .Insert => {
                 const row = self.getStmt(.Insert, sid);
                 if (!self.warned_meta) {
@@ -806,28 +800,7 @@ pub const Checker = struct {
                 const row = self.getStmt(.Return, sid);
                 return try self.checkReturn(row);
             },
-            .Break => {
-                const row = self.getStmt(.Break, sid);
-                if (!self.inLoop())
-                    try self.context.diags.addError(self.exprLoc(row), .break_outside_loop, .{});
-                if (!row.value.isNone()) {
-                    // Break value must be computed in value context
-                    try self.pushValueReq(true);
-                    const vt = try self.checkExpr(row.value.unwrap());
-                    self.popValueReq();
-                    if (vt == null) return null;
-                    if (self.loopCtxForLabel(row.label)) |ctx| {
-                        if (ctx.result_ty) |rt| {
-                            if (rt.toRaw() != vt.?.toRaw()) {
-                                try self.context.diags.addError(self.exprLoc(row), .loop_break_value_type_conflict, .{});
-                                return null;
-                            }
-                        } else {
-                            ctx.result_ty = vt.?;
-                        }
-                    }
-                }
-            },
+            .Break => _ = try self.checkBreak(self.getStmt(.Break, sid)),
             .Continue => {
                 const row = self.getStmt(.Continue, sid);
                 if (!self.inLoop())
@@ -867,15 +840,12 @@ pub const Checker = struct {
             .AsyncBlock => try self.checkAsyncBlock(id),
             .MlirBlock => try self.checkMlirBlock(id),
             .Insert => try self.checkInsert(id),
-            .Return => blk: {
-                const row = self.getExpr(.Return, id);
-                break :blk try self.checkReturn(row);
-            },
+            .Return => try self.checkReturn(self.getExpr(.Return, id)),
             .If => try self.checkIf(id),
             .While => try self.checkWhile(id),
             .For => try self.checkFor(id),
             .Match => try pattern_matching.checkMatch(self, id),
-            .Break => try self.checkBreak(id),
+            .Break => try self.checkBreak(self.getExpr(.Break, id)),
             .Continue => try self.checkContinue(id),
             .Unreachable => try self.checkUnreachable(id),
             .UndefLit => self.context.type_store.tAny(),
@@ -923,7 +893,7 @@ pub const Checker = struct {
         return switch (lit.kind) {
             .int => blk: {
                 const s = self.getStr(lit.value.unwrap());
-                if (std.fmt.parseInt(i64, s, 10) catch null == null) {
+                if (std.fmt.parseInt(i64, s, @intCast(lit.char_value)) catch null == null) {
                     try self.context.diags.addError(self.exprLoc(lit), .invalid_integer_literal, .{});
                     return null;
                 }
@@ -1136,11 +1106,11 @@ pub const Checker = struct {
                     // One side complex, other side numeric scalar
                     if (lhs_is_complex and check_types.isNumericKind(self, rhs_kind)) {
                         const lc = self.context.type_store.get(.Complex, l);
-                        if (lc.elem.toRaw() == r.toRaw()) return l;
+                        if (lc.elem.eq(r)) return l;
                     }
                     if (rhs_is_complex and check_types.isNumericKind(self, lhs_kind)) {
                         const rc = self.context.type_store.get(.Complex, r);
-                        if (rc.elem.toRaw() == l.toRaw()) return r;
+                        if (rc.elem.eq(l)) return r;
                     }
                     try self.context.diags.addError(self.exprLoc(bin), .invalid_binary_op_operands, .{ bin.op, lhs_kind, rhs_kind });
                     return null;
@@ -1149,7 +1119,7 @@ pub const Checker = struct {
                     try self.context.diags.addError(self.exprLoc(bin), .invalid_binary_op_operands, .{ bin.op, lhs_kind, rhs_kind });
                     return null;
                 }
-                if (l.toRaw() == r.toRaw()) return l;
+                if (l.eq(r)) return l;
                 try self.context.diags.addError(self.exprLoc(bin), .invalid_binary_op_operands, .{ bin.op, lhs_kind, rhs_kind });
                 return null;
             },
@@ -1163,7 +1133,7 @@ pub const Checker = struct {
                     const rc = self.context.type_store.get(.Complex, r);
                     both_complex = (lc.elem.toRaw() == rc.elem.toRaw());
                 }
-                const both_same_enum = lhs_kind == .Enum and rhs_kind == .Enum and self.tEq(l, r);
+                const both_same_enum = lhs_kind == .Enum and rhs_kind == .Enum and l.eq(r);
 
                 // We avoid implicit *value* coercions. For comparisons, we accept same-class operands:
                 //   - int ? int (any width/sign)
@@ -1787,7 +1757,7 @@ pub const Checker = struct {
                 const cases = self.context.type_store.field_pool.slice(vt.variants);
                 for (cases) |fid| {
                     const f = self.context.type_store.Field.get(fid.toRaw());
-                    if (f.name.toRaw() == tag.toRaw()) return f.ty;
+                    if (f.name.eq(tag)) return f.ty;
                 }
             },
             .Error => {
@@ -1795,7 +1765,7 @@ pub const Checker = struct {
                 const cases = self.context.type_store.field_pool.slice(et.variants);
                 for (cases) |fid| {
                     const f = self.context.type_store.Field.get(fid.toRaw());
-                    if (f.name.toRaw() == tag.toRaw()) return f.ty;
+                    if (f.name.eq(tag)) return f.ty;
                 }
             },
             else => {},
@@ -1825,7 +1795,7 @@ pub const Checker = struct {
         var payload_ty_opt: ?types.TypeId = null;
         for (cases) |cid| {
             const c = self.context.type_store.Field.get(cid);
-            if (c.name.toRaw() == tag.toRaw()) {
+            if (c.name.eq(tag)) {
                 payload_ty_opt = c.ty;
                 break;
             }
@@ -2213,7 +2183,7 @@ pub const Checker = struct {
     // =========================
 
     fn castable(self: *Checker, got: types.TypeId, expect: types.TypeId) bool {
-        if (got.toRaw() == expect.toRaw()) return true;
+        if (got.eq(expect)) return true;
         const gk = self.typeKind(got);
         const ek = self.typeKind(expect);
 
@@ -2235,8 +2205,7 @@ pub const Checker = struct {
         return false;
     }
 
-    fn checkBreak(self: *Checker, id: ast.ExprId) !?types.TypeId {
-        const br = self.getExpr(.Break, id);
+    fn checkBreak(self: *Checker, br: ast.Rows.Break) !?types.TypeId {
         if (!self.inLoop()) {
             try self.context.diags.addError(self.exprLoc(br), .break_outside_loop, .{});
             return null;

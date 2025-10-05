@@ -476,10 +476,10 @@ pub const ExprStore = struct {
     vfield_pool: Pool(VariantFieldId) = .{},
 
     strs: *StringInterner,
-    locs: LocStore = .{},
+    locs: *const LocStore,
 
-    pub fn init(gpa: std.mem.Allocator, strs: *StringInterner) ExprStore {
-        return .{ .gpa = gpa, .strs = strs };
+    pub fn init(gpa: std.mem.Allocator, strs: *StringInterner, locs: *const LocStore) ExprStore {
+        return .{ .gpa = gpa, .strs = strs, .locs = locs };
     }
 
     pub fn deinit(self: *@This()) void {
@@ -511,8 +511,6 @@ pub const ExprStore = struct {
         self.sfield_pool.deinit(gpa);
         self.efield_pool.deinit(gpa);
         self.vfield_pool.deinit(gpa);
-
-        self.locs.deinit(gpa);
     }
 
     pub fn add(self: *@This(), comptime K: ExprKind, row: RowT(K)) ExprId {
@@ -686,11 +684,11 @@ pub const Ast = struct {
     stmts: StmtStore,
     pats: PatternStore,
 
-    pub fn init(gpa: std.mem.Allocator, interner: *StringInterner) Ast {
+    pub fn init(gpa: std.mem.Allocator, interner: *StringInterner, locs: *const LocStore) Ast {
         return .{
             .gpa = gpa,
             .unit = Unit.empty(),
-            .exprs = ExprStore.init(gpa, interner),
+            .exprs = ExprStore.init(gpa, interner, locs),
             .stmts = StmtStore.init(gpa),
             .pats = PatternStore.init(gpa, interner),
         };

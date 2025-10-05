@@ -86,7 +86,7 @@ pub const SymbolStore = struct {
             // Check if scope is on the stack
             var on_stack = false;
             for (self.stack.items) |frame| {
-                if (frame.id.toRaw() == scope_id.toRaw()) {
+                if (frame.id.eq(scope_id)) {
                     on_stack = true;
                     for (frame.list.items) |sym_id| {
                         const row = self.syms.get(sym_id.toRaw());
@@ -127,15 +127,15 @@ pub const SymbolStore = struct {
             const ids = self.sym_pool.slice(srow.symbols);
             for (ids) |sym_id| {
                 const row = self.syms.get(sym_id);
-                if (row.name.toRaw() == name.toRaw()) return sym_id;
+                if (row.name.eq(name)) return sym_id;
             }
 
             // Also search symbols for this scope if it's on the stack
             for (self.stack.items) |frame| {
-                if (frame.id.toRaw() == sid.toRaw()) {
+                if (frame.id.eq(sid)) {
                     for (frame.list.items) |sym_id| {
                         const row = self.syms.get(sym_id);
-                        if (row.name.toRaw() == name.toRaw()) return sym_id;
+                        if (row.name.eq(name)) return sym_id;
                     }
                     break; // Found the scope on the stack, no need to check other frames for this sid
                 }

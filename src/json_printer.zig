@@ -80,7 +80,7 @@ pub const JsonPrinter = struct {
     }
 
     fn printDecl(self: *JsonPrinter, id: ast.DeclId) anyerror!void {
-        const row = self.exprs.Decl.get(id.toRaw());
+        const row = self.exprs.Decl.get(id);
         try self.stream.beginObject();
         try self.stream.objectField("kind");
         try self.stream.write("Decl");
@@ -282,7 +282,7 @@ pub const JsonPrinter = struct {
                 try self.stream.beginArray();
                 const entries = self.exprs.kv_pool.slice(node.entries);
                 for (entries) |kv_id| {
-                    const kv = self.exprs.KeyValue.get(kv_id.toRaw());
+                    const kv = self.exprs.KeyValue.get(kv_id);
                     try self.stream.beginObject();
                     try self.printLoc(kv.loc);
                     try self.stream.objectField("key");
@@ -331,7 +331,7 @@ pub const JsonPrinter = struct {
                 try self.stream.beginArray();
                 const fields = self.exprs.sfv_pool.slice(node.fields);
                 for (fields) |fid| {
-                    const field = self.exprs.StructFieldValue.get(fid.toRaw());
+                    const field = self.exprs.StructFieldValue.get(fid);
                     try self.stream.beginObject();
                     try self.printLoc(field.loc);
                     try self.stream.objectField("name");
@@ -486,7 +486,7 @@ pub const JsonPrinter = struct {
                 try self.stream.beginArray();
                 const arms = self.exprs.arm_pool.slice(node.arms);
                 for (arms) |aid| {
-                    const arm = self.exprs.MatchArm.get(aid.toRaw());
+                    const arm = self.exprs.MatchArm.get(aid);
                     try self.stream.beginObject();
                     try self.printLoc(arm.loc);
                     try self.stream.objectField("pattern");
@@ -697,7 +697,7 @@ pub const JsonPrinter = struct {
                 try self.stream.beginArray();
                 const fields = self.exprs.efield_pool.slice(node.fields);
                 for (fields) |eid| {
-                    const field = self.exprs.EnumField.get(eid.toRaw());
+                    const field = self.exprs.EnumField.get(eid);
                     try self.stream.beginObject();
                     try self.printLoc(field.loc);
                     try self.stream.objectField("name");
@@ -775,7 +775,7 @@ pub const JsonPrinter = struct {
             try self.stream.beginArray();
             const attrs = self.exprs.attr_pool.slice(opt_r.asRange());
             for (attrs) |aid| {
-                const attr = self.exprs.Attribute.get(aid.toRaw());
+                const attr = self.exprs.Attribute.get(aid);
                 try self.stream.beginObject();
                 try self.printLoc(attr.loc);
                 try self.stream.objectField("name");
@@ -797,7 +797,7 @@ pub const JsonPrinter = struct {
         try self.stream.beginArray();
         const params = self.exprs.param_pool.slice(r);
         for (params) |pid| {
-            const param = self.exprs.Param.get(pid.toRaw());
+            const param = self.exprs.Param.get(pid);
             try self.stream.beginObject();
             try self.printLoc(param.loc);
             try self.stream.objectField("attrs");
@@ -823,7 +823,7 @@ pub const JsonPrinter = struct {
     }
 
     fn printStructField(self: *JsonPrinter, id: ast.StructFieldId) anyerror!void {
-        const field = self.exprs.StructField.get(id.toRaw());
+        const field = self.exprs.StructField.get(id);
         try self.stream.beginObject();
         try self.printLoc(field.loc);
         try self.stream.objectField("name");
@@ -848,7 +848,7 @@ pub const JsonPrinter = struct {
     }
 
     fn printVariantField(self: *JsonPrinter, id: ast.VariantFieldId) anyerror!void {
-        const field = self.exprs.VariantField.get(id.toRaw());
+        const field = self.exprs.VariantField.get(id);
         try self.stream.beginObject();
         try self.printLoc(field.loc);
         try self.stream.objectField("name");
@@ -1010,7 +1010,7 @@ pub const JsonPrinter = struct {
         try self.stream.beginArray();
         const segs = self.pats.seg_pool.slice(r);
         for (segs) |sid| {
-            const seg = self.pats.PathSeg.get(sid.toRaw());
+            const seg = self.pats.PathSeg.get(sid);
             try self.stream.beginObject();
             try self.printLoc(seg.loc);
             try self.stream.objectField("name");
@@ -1028,7 +1028,7 @@ pub const JsonPrinter = struct {
         try self.stream.beginArray();
         const fields = self.pats.field_pool.slice(r);
         for (fields) |fid| {
-            const field = self.pats.StructField.get(fid.toRaw());
+            const field = self.pats.StructField.get(fid);
             try self.stream.beginObject();
             try self.printLoc(field.loc);
             try self.stream.objectField("name");

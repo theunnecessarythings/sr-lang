@@ -476,7 +476,7 @@ pub const TypeStore = struct {
         return self.findMatch(.Slice, elem, struct {
             fn eq(s: *const TypeStore, row: Rows.Slice, key: TypeId) bool {
                 _ = s;
-                return row.elem.toRaw() == key.toRaw();
+                return row.elem.eq(key);
             }
         });
     }
@@ -484,7 +484,7 @@ pub const TypeStore = struct {
         return self.findMatch(.DynArray, elem, struct {
             fn eq(s: *const TypeStore, row: Rows.DynArray, key: TypeId) bool {
                 _ = s;
-                return row.elem.toRaw() == key.toRaw();
+                return row.elem.eq(key);
             }
         });
     }
@@ -508,7 +508,7 @@ pub const TypeStore = struct {
         return self.findMatch(.Optional, elem, struct {
             fn eq(s: *const TypeStore, row: Rows.Optional, key: TypeId) bool {
                 _ = s;
-                return row.elem.toRaw() == key.toRaw();
+                return row.elem.eq(key);
             }
         });
     }
@@ -575,7 +575,7 @@ pub const TypeStore = struct {
     fn findTypeType(self: *const TypeStore, of: TypeId) ?TypeId {
         return self.findMatch(.TypeType, of, struct {
             fn eq(_: *const TypeStore, row: Rows.TypeType, key: TypeId) bool {
-                return row.of.toRaw() == key.toRaw();
+                return row.of.eq(key);
             }
         });
     }
@@ -624,8 +624,7 @@ pub const TypeStore = struct {
 
     // ---- formatting ----
     pub fn fmt(self: *const TypeStore, id: TypeId, w: anytype) !void {
-        const k = self.index.kinds.items[id.toRaw()];
-        const row_idx = self.index.rows.items[id.toRaw()];
+        const k = self.getKind(id);
         switch (k) {
             .Void => try w.print("void", .{}),
             .Bool => try w.print("bool", .{}),
@@ -644,12 +643,12 @@ pub const TypeStore = struct {
             .Any => try w.print("any", .{}),
             .Noreturn => try w.print("noreturn", .{}),
             .Complex => {
-                const r = self.Complex.get(row_idx);
+                const r = self.get(.Complex, id);
                 try w.print("complex@", .{});
                 try self.fmt(r.elem, w);
             },
             .Tensor => {
-                const r = self.Tensor.get(row_idx);
+                const r = self.get(.Tensor, id);
                 try w.print("tensor{}@", .{r.rank});
                 try self.fmt(r.elem, w);
                 try w.print("[", .{});
@@ -661,37 +660,37 @@ pub const TypeStore = struct {
                 try w.print("]", .{});
             },
             .Simd => {
-                const r = self.Simd.get(row_idx);
+                const r = self.get(.Simd, id);
                 try w.print("simd{}@", .{r.lanes});
                 try self.fmt(r.elem, w);
             },
             .Ptr => {
-                const r = self.Ptr.get(row_idx);
+                const r = self.get(.Ptr, id);
                 try w.print("*", .{});
                 try self.fmt(r.elem, w);
             },
             .Slice => {
-                const r = self.Slice.get(row_idx);
+                const r = self.get(.Slice, id);
                 try w.print("[]", .{});
                 try self.fmt(r.elem, w);
             },
             .Array => {
-                const r = self.Array.get(row_idx);
+                const r = self.get(.Array, id);
                 try w.print("[{}]", .{r.len});
                 try self.fmt(r.elem, w);
             },
             .DynArray => {
-                const r = self.DynArray.get(row_idx);
+                const r = self.get(.DynArray, id);
                 try w.print("dyn[]", .{});
                 try self.fmt(r.elem, w);
             },
             .Optional => {
-                const r = self.Optional.get(row_idx);
+                const r = self.get(.Optional, id);
                 try w.print("?", .{});
                 try self.fmt(r.elem, w);
             },
             .Tuple => {
-                const r = self.Tuple.get(row_idx);
+                const r = self.get(.Tuple, id);
                 try w.print("(", .{});
                 const ids = self.type_pool.slice(r.elems);
                 var i: usize = 0;
@@ -702,14 +701,14 @@ pub const TypeStore = struct {
                 try w.print(")", .{});
             },
             .Map => {
-                const r = self.Map.get(row_idx);
+                const r = self.get(.Map, id);
                 try w.print("map[", .{});
                 try self.fmt(r.key, w);
                 try w.print("] ", .{});
                 try self.fmt(r.value, w);
             },
             .Function => {
-                const r = self.Function.get(row_idx);
+                const r = self.get(.Function, id);
                 // print kind as 'fn' for pure, 'proc' otherwise
                 if (r.is_pure) {
                     try w.print("fn(", .{});
@@ -727,20 +726,20 @@ pub const TypeStore = struct {
                 if (r.is_variadic) try w.print(" variadic", .{});
             },
             .Struct => {
-                const r = self.Struct.get(row_idx);
+                const r = self.get(.Struct, id);
                 try w.print("struct {{ ", .{});
                 const ids = self.field_pool.slice(r.fields);
                 var i: usize = 0;
                 while (i < ids.len) : (i += 1) {
                     if (i != 0) try w.print(", ", .{});
-                    const f = self.Field.get(ids[i].toRaw());
+                    const f = self.Field.get(ids[i]);
                     try w.print("{s}: ", .{self.strs.get(f.name)});
                     try self.fmt(f.ty, w);
                 }
                 try w.print(" }}", .{});
             },
             .Enum => {
-                const r = self.Enum.get(row_idx);
+                const r = self.get(.Enum, id);
                 try w.print("enum(", .{});
                 try self.fmt(r.tag_type, w);
                 try w.print(") {{ ", .{});
@@ -748,52 +747,52 @@ pub const TypeStore = struct {
                 var i: usize = 0;
                 while (i < ids.len) : (i += 1) {
                     if (i != 0) try w.print(", ", .{});
-                    const member = self.EnumMember.get(ids[i].toRaw());
+                    const member = self.EnumMember.get(ids[i]);
                     try w.print("{s} = {}", .{ self.strs.get(member.name), member.value });
                 }
                 try w.print(" }}", .{});
             },
             .Variant => {
-                const r = self.Variant.get(row_idx);
+                const r = self.get(.Variant, id);
                 try w.print("variant {{ ", .{});
                 const ids = self.field_pool.slice(r.variants);
                 var i: usize = 0;
                 while (i < ids.len) : (i += 1) {
                     if (i != 0) try w.print(", ", .{});
-                    const f = self.Field.get(ids[i].toRaw());
+                    const f = self.Field.get(ids[i]);
                     try w.print("{s}: ", .{self.strs.get(f.name)});
                     try self.fmt(f.ty, w);
                 }
                 try w.print(" }}", .{});
             },
             .Error => {
-                const r = self.Error.get(row_idx);
+                const r = self.get(.Error, id);
                 try w.print("error {{ ", .{});
                 const ids = self.field_pool.slice(r.variants);
                 var i: usize = 0;
                 while (i < ids.len) : (i += 1) {
                     if (i != 0) try w.print(", ", .{});
-                    const f = self.Field.get(ids[i].toRaw());
+                    const f = self.Field.get(ids[i]);
                     try w.print("{s}: ", .{self.strs.get(f.name)});
                     try self.fmt(f.ty, w);
                 }
                 try w.print(" }}", .{});
             },
             .Union => {
-                const r = self.Union.get(row_idx);
+                const r = self.get(.Union, id);
                 try w.print("union {{ ", .{});
                 const ids = self.field_pool.slice(r.fields);
                 var i: usize = 0;
                 while (i < ids.len) : (i += 1) {
                     if (i != 0) try w.print(", ", .{});
-                    const f = self.Field.get(ids[i].toRaw());
+                    const f = self.Field.get(ids[i]);
                     try w.print("{s}: ", .{self.strs.get(f.name)});
                     try self.fmt(f.ty, w);
                 }
                 try w.print(" }}", .{});
             },
             .ErrorSet => {
-                const r = self.ErrorSet.get(row_idx);
+                const r = self.get(.ErrorSet, id);
                 try w.print("error", .{});
                 try w.print("(", .{});
                 try self.fmt(r.error_ty, w);
@@ -802,7 +801,7 @@ pub const TypeStore = struct {
                 try w.print(")", .{});
             },
             .TypeType => {
-                const r = self.TypeType.get(row_idx);
+                const r = self.get(.TypeType, id);
                 try w.print("type(", .{});
                 try self.fmt(r.of, w);
                 try w.print(")", .{});

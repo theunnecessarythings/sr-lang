@@ -18,7 +18,7 @@ pub const Lower = struct {
         return .{
             .gpa = gpa,
             .cst_program = program,
-            .ast_unit = ast.Ast.init(gpa, program.interner),
+            .ast_unit = ast.Ast.init(gpa, program.interner, &program.exprs.locs),
             .context = context,
         };
     }
@@ -30,38 +30,14 @@ pub const Lower = struct {
     pub fn run(self: *Lower) !ast.Ast {
         var unit: ast.Unit = .empty();
 
-        // package info
-        if (!self.cst_program.program.package_name.isNone()) {
-            const name = self.mapStr(self.cst_program.program.package_name.unwrap());
-            unit.package_name = ast.OptStrId.some(name);
-        }
-        if (!self.cst_program.program.package_loc.isNone()) {
-            const loc = self.mapLoc(self.cst_program.program.package_loc.unwrap());
-            unit.package_loc = ast.OptLocId.some(loc);
-        }
+        unit.package_name = self.cst_program.program.package_name;
+        unit.package_loc = self.cst_program.program.package_loc;
 
         // top-level decls -> ast.decl_pool range
         unit.decls = try self.lowerTopDecls(self.cst_program.program.top_decls);
 
         self.ast_unit.unit = unit;
         return self.ast_unit;
-    }
-
-    // ---------------- Infra: id/loc/range helpers ----------------
-    fn mapStr(_: *Lower, s: cst.StrId) ast.StrId {
-        return ast.StrId.fromRaw(s.toRaw());
-    }
-    fn mapOptStr(self: *Lower, s: cst.OptStrId) ast.OptStrId {
-        if (s.isNone()) return ast.OptStrId.none();
-        return ast.OptStrId.some(self.mapStr(s.unwrap()));
-    }
-    fn mapLoc(self: *Lower, l: cst.LocId) ast.LocId {
-        const loc = self.cst_program.exprs.locs.get(l);
-        return self.ast_unit.exprs.locs.add(self.gpa, loc);
-    }
-    fn mapOptLoc(self: *Lower, l: cst.OptLocId) ast.OptLocId {
-        if (l.isNone()) return ast.OptLocId.none();
-        return ast.OptLocId.some(self.mapLoc(l.unwrap()));
     }
 
     fn unescapeString(self: *Lower, quoted_str: []const u8) !ast.StrId {
@@ -124,7 +100,7 @@ pub const Lower = struct {
     }
 
     fn mapAttrRange(self: *Lower, r: cst.OptRangeAttr) !ast.OptRangeAttr {
-        if (r.isNone()) return ast.OptRangeAttr.none();
+        if (r.isNone()) return .none();
         const rr = r.asRange();
         const items = self.cst_program.exprs.attr_pool.slice(rr);
         var out_ids = try self.gpa.alloc(ast.AttributeId, items.len);
@@ -133,9 +109,9 @@ pub const Lower = struct {
         while (i < items.len) : (i += 1) {
             const row = self.cst_program.exprs.Attribute.get(items[i]);
             const mapped: ast.Rows.Attribute = .{
-                .name = self.mapStr(row.name),
-                .value = if (!row.value.isNone()) ast.OptExprId.some(try self.lowerExpr(row.value.unwrap())) else ast.OptExprId.none(),
-                .loc = self.mapLoc(row.loc),
+                .name = row.name,
+                .value = if (!row.value.isNone()) .some(try self.lowerExpr(row.value.unwrap())) else .none(),
+                .loc = row.loc,
             };
             out_ids[i] = self.ast_unit.exprs.Attribute.add(self.gpa, mapped);
         }
@@ -151,10 +127,10 @@ pub const Lower = struct {
             const row = self.cst_program.exprs.Param.get(items[i]);
             const mapped: ast.Rows.Param = .{
                 .pat = try self.lowerOptionalPatternFromExpr(row.pat),
-                .ty = if (!row.ty.isNone()) ast.OptExprId.some(try self.lowerExpr(row.ty.unwrap())) else ast.OptExprId.none(),
-                .value = if (!row.value.isNone()) ast.OptExprId.some(try self.lowerExpr(row.value.unwrap())) else ast.OptExprId.none(),
+                .ty = if (!row.ty.isNone()) .some(try self.lowerExpr(row.ty.unwrap())) else .none(),
+                .value = if (!row.value.isNone()) .some(try self.lowerExpr(row.value.unwrap())) else .none(),
                 .attrs = try self.mapAttrRange(row.attrs),
-                .loc = self.mapLoc(row.loc),
+                .loc = row.loc,
             };
             out_ids[i] = self.ast_unit.exprs.Param.add(self.gpa, mapped);
         }
@@ -168,7 +144,11 @@ pub const Lower = struct {
         var i: usize = 0;
         while (i < items.len) : (i += 1) {
             const kv = self.cst_program.exprs.KeyValue.get(items[i]);
-            const mapped: ast.Rows.KeyValue = .{ .key = try self.lowerExpr(kv.key), .value = try self.lowerExpr(kv.value), .loc = self.mapLoc(kv.loc) };
+            const mapped: ast.Rows.KeyValue = .{
+                .key = try self.lowerExpr(kv.key),
+                .value = try self.lowerExpr(kv.value),
+                .loc = kv.loc,
+            };
             out_ids[i] = self.ast_unit.exprs.KeyValue.add(self.gpa, mapped);
         }
         return self.ast_unit.exprs.kv_pool.pushMany(self.gpa, out_ids);
@@ -181,7 +161,11 @@ pub const Lower = struct {
         var i: usize = 0;
         while (i < items.len) : (i += 1) {
             const f = self.cst_program.exprs.StructFieldValue.get(items[i]);
-            const mapped: ast.Rows.StructFieldValue = .{ .name = if (!f.name.isNone()) ast.OptStrId.some(self.mapStr(f.name.unwrap())) else ast.OptStrId.none(), .value = try self.lowerExpr(f.value), .loc = self.mapLoc(f.loc) };
+            const mapped: ast.Rows.StructFieldValue = .{
+                .name = if (!f.name.isNone()) .some(f.name.unwrap()) else .none(),
+                .value = try self.lowerExpr(f.value),
+                .loc = f.loc,
+            };
             out_ids[i] = self.ast_unit.exprs.StructFieldValue.add(self.gpa, mapped);
         }
         return self.ast_unit.exprs.sfv_pool.pushMany(self.gpa, out_ids);
@@ -195,11 +179,11 @@ pub const Lower = struct {
         while (i < items.len) : (i += 1) {
             const f = self.cst_program.exprs.StructField.get(items[i]);
             const mapped: ast.Rows.StructField = .{
-                .name = self.mapStr(f.name),
+                .name = f.name,
                 .ty = try self.lowerExpr(f.ty),
                 .value = if (!f.value.isNone()) .some(try self.lowerExpr(f.value.unwrap())) else .none(),
                 .attrs = try self.mapAttrRange(f.attrs),
-                .loc = self.mapLoc(f.loc),
+                .loc = f.loc,
             };
             out_ids[i] = self.ast_unit.exprs.StructField.add(self.gpa, mapped);
         }
@@ -214,10 +198,10 @@ pub const Lower = struct {
         while (i < items.len) : (i += 1) {
             const f = self.cst_program.exprs.EnumField.get(items[i]);
             const mapped: ast.Rows.EnumField = .{
-                .name = self.mapStr(f.name),
+                .name = f.name,
                 .value = if (!f.value.isNone()) .some(try self.lowerExpr(f.value.unwrap())) else .none(),
                 .attrs = try self.mapAttrRange(f.attrs),
-                .loc = self.mapLoc(f.loc),
+                .loc = f.loc,
             };
             out_ids[i] = self.ast_unit.exprs.EnumField.add(self.gpa, mapped);
         }
@@ -237,13 +221,13 @@ pub const Lower = struct {
                 .Struct => .@"struct",
             };
             const mapped: ast.Rows.VariantField = .{
-                .name = self.mapStr(f.name),
+                .name = f.name,
                 .payload_kind = pk,
                 .payload_elems = if (f.ty_tag == .Tuple) .some(try self.lowerExprRange(f.tuple_elems)) else .none(),
                 .payload_fields = if (f.ty_tag == .Struct) .some(try self.lowerStructFields(f.struct_fields)) else .none(),
                 .value = if (!f.value.isNone()) .some(try self.lowerExpr(f.value.unwrap())) else .none(),
                 .attrs = try self.mapAttrRange(f.attrs),
-                .loc = self.mapLoc(f.loc),
+                .loc = f.loc,
             };
             out_ids[i] = self.ast_unit.exprs.VariantField.add(self.gpa, mapped);
         }
@@ -273,8 +257,14 @@ pub const Lower = struct {
         const d = self.cst_program.exprs.Decl.get(id);
         const pattern = try self.lowerOptionalPatternFromExpr(d.lhs);
         const value = try self.lowerExpr(d.rhs);
-        const ty = if (!d.ty.isNone()) ast.OptExprId.some(try self.lowerExpr(d.ty.unwrap())) else ast.OptExprId.none();
-        const decl_row: ast.Rows.Decl = .{ .pattern = pattern, .value = value, .ty = ty, .flags = .{ .is_const = d.flags.is_const }, .loc = self.mapLoc(d.loc) };
+        const ty: ast.OptExprId = if (!d.ty.isNone()) .some(try self.lowerExpr(d.ty.unwrap())) else .none();
+        const decl_row: ast.Rows.Decl = .{
+            .pattern = pattern,
+            .value = value,
+            .ty = ty,
+            .flags = .{ .is_const = d.flags.is_const },
+            .loc = d.loc,
+        };
         const raw = self.ast_unit.exprs.Decl.add(self.gpa, decl_row);
         _ = self.ast_unit.exprs.decl_pool.push(self.gpa, raw);
         return raw;
@@ -284,7 +274,7 @@ pub const Lower = struct {
     fn lowerBlockExpr(self: *Lower, id: cst.ExprId) !ast.ExprId {
         const b = self.cst_program.exprs.get(.Block, id);
         const stmts_range = try self.lowerStmtRangeFromDecls(b.items);
-        const row: ast.Rows.Block = .{ .items = stmts_range, .loc = self.mapLoc(b.loc) };
+        const row: ast.Rows.Block = .{ .items = stmts_range, .loc = b.loc };
         return self.ast_unit.exprs.add(.Block, row);
     }
 
@@ -310,7 +300,7 @@ pub const Lower = struct {
         if (d.flags.is_assign) {
             const left = try self.lowerExpr(d.lhs.unwrap());
             const right = try self.lowerExpr(d.rhs);
-            return self.ast_unit.stmts.add(.Assign, .{ .left = left, .right = right, .loc = self.mapLoc(d.loc) });
+            return self.ast_unit.stmts.add(.Assign, .{ .left = left, .right = right, .loc = d.loc });
         }
 
         // Compound assigns desugaring: Infix at top-level
@@ -324,32 +314,41 @@ pub const Lower = struct {
         return switch (kind) {
             .Return => blk: {
                 const r = self.cst_program.exprs.get(.Return, d.rhs);
-                const val = if (!r.value.isNone()) ast.OptExprId.some(try self.lowerExpr(r.value.unwrap())) else ast.OptExprId.none();
-                break :blk self.ast_unit.stmts.add(.Return, .{ .value = val, .loc = self.mapLoc(r.loc) });
+                break :blk self.ast_unit.stmts.add(.Return, .{
+                    .value = if (!r.value.isNone()) .some(try self.lowerExpr(r.value.unwrap())) else .none(),
+                    .loc = r.loc,
+                });
             },
             .Insert => blk: {
                 const r = self.cst_program.exprs.get(.Insert, d.rhs);
-                break :blk self.ast_unit.stmts.add(.Insert, .{ .expr = try self.lowerExpr(r.expr), .loc = self.mapLoc(r.loc) });
+                break :blk self.ast_unit.stmts.add(.Insert, .{
+                    .expr = try self.lowerExpr(r.expr),
+                    .loc = r.loc,
+                });
             },
             .Break => blk: {
                 const r = self.cst_program.exprs.get(.Break, d.rhs);
-                break :blk self.ast_unit.stmts.add(.Break, .{ .label = self.mapOptStr(r.label), .value = if (!r.value.isNone()) ast.OptExprId.some(try self.lowerExpr(r.value.unwrap())) else ast.OptExprId.none(), .loc = self.mapLoc(r.loc) });
+                break :blk self.ast_unit.stmts.add(.Break, .{
+                    .label = r.label,
+                    .value = if (!r.value.isNone()) .some(try self.lowerExpr(r.value.unwrap())) else .none(),
+                    .loc = r.loc,
+                });
             },
             .Continue => blk: {
                 const r = self.cst_program.exprs.get(.Continue, d.rhs);
-                break :blk self.ast_unit.stmts.add(.Continue, .{ .loc = self.mapLoc(r.loc) });
+                break :blk self.ast_unit.stmts.add(.Continue, .{ .loc = r.loc });
             },
             .Unreachable => blk: {
                 const r = self.cst_program.exprs.get(.Unreachable, d.rhs);
-                break :blk self.ast_unit.stmts.add(.Unreachable, .{ .loc = self.mapLoc(r.loc) });
+                break :blk self.ast_unit.stmts.add(.Unreachable, .{ .loc = r.loc });
             },
             .Defer => blk: {
                 const r = self.cst_program.exprs.get(.Defer, d.rhs);
-                break :blk self.ast_unit.stmts.add(.Defer, .{ .expr = try self.lowerExpr(r.expr), .loc = self.mapLoc(r.loc) });
+                break :blk self.ast_unit.stmts.add(.Defer, .{ .expr = try self.lowerExpr(r.expr), .loc = r.loc });
             },
             .ErrDefer => blk: {
                 const r = self.cst_program.exprs.get(.ErrDefer, d.rhs);
-                break :blk self.ast_unit.stmts.add(.ErrDefer, .{ .expr = try self.lowerExpr(r.expr), .loc = self.mapLoc(r.loc) });
+                break :blk self.ast_unit.stmts.add(.ErrDefer, .{ .expr = try self.lowerExpr(r.expr), .loc = r.loc });
             },
             else => blk: {
                 const e = try self.lowerExpr(d.rhs);
@@ -362,10 +361,17 @@ pub const Lower = struct {
         const op = i.op;
         const L = try self.lowerExpr(i.left);
         const R = try self.lowerExpr(i.right);
-        const base_loc = self.mapLoc(i.loc);
+        const base_loc = i.loc;
         const mk = struct {
             fn bin(self_: *Lower, left: ast.ExprId, right: ast.ExprId, op2: ast.BinaryOp, wrap: bool, sat: bool, loc: ast.LocId) !ast.ExprId {
-                const row: ast.Rows.Binary = .{ .left = left, .right = right, .op = op2, .wrap = wrap, .saturate = sat, .loc = loc };
+                const row: ast.Rows.Binary = .{
+                    .left = left,
+                    .right = right,
+                    .op = op2,
+                    .wrap = wrap,
+                    .saturate = sat,
+                    .loc = loc,
+                };
                 return self_.ast_unit.exprs.add(.Binary, row);
             }
         };
@@ -449,7 +455,7 @@ pub const Lower = struct {
         return switch (kind) {
             .Ident => blk: {
                 const row = self.cst_program.exprs.get(.Ident, id);
-                const mapped: ast.Rows.Ident = .{ .name = self.mapStr(row.name), .loc = self.mapLoc(row.loc) };
+                const mapped: ast.Rows.Ident = .{ .name = row.name, .loc = row.loc };
                 break :blk self.ast_unit.exprs.add(.Ident, mapped);
             },
             .Literal => try self.lowerLiteral(id),
@@ -458,70 +464,128 @@ pub const Lower = struct {
                 switch (p.op) {
                     .range, .range_inclusive => {
                         const rr: ast.Rows.Range = .{
-                            .start = ast.OptExprId.none(),
-                            .end = ast.OptExprId.some(try self.lowerExpr(p.right)),
+                            .start = .none(),
+                            .end = .some(try self.lowerExpr(p.right)),
                             .inclusive_right = (p.op == .range_inclusive),
-                            .loc = self.mapLoc(p.loc),
+                            .loc = p.loc,
                         };
                         break :blk self.ast_unit.exprs.add(.Range, rr);
                     },
-                    .plus => break :blk self.ast_unit.exprs.add(.Unary, .{ .expr = try self.lowerExpr(p.right), .op = .pos, .loc = self.mapLoc(p.loc) }),
-                    .minus => break :blk self.ast_unit.exprs.add(.Unary, .{ .expr = try self.lowerExpr(p.right), .op = .neg, .loc = self.mapLoc(p.loc) }),
-                    .address_of => break :blk self.ast_unit.exprs.add(.Unary, .{ .expr = try self.lowerExpr(p.right), .op = .address_of, .loc = self.mapLoc(p.loc) }),
-                    .logical_not => break :blk self.ast_unit.exprs.add(.Unary, .{ .expr = try self.lowerExpr(p.right), .op = .logical_not, .loc = self.mapLoc(p.loc) }),
+                    .plus => break :blk self.ast_unit.exprs.add(.Unary, .{
+                        .expr = try self.lowerExpr(p.right),
+                        .op = .pos,
+                        .loc = p.loc,
+                    }),
+                    .minus => break :blk self.ast_unit.exprs.add(.Unary, .{
+                        .expr = try self.lowerExpr(p.right),
+                        .op = .neg,
+                        .loc = p.loc,
+                    }),
+                    .address_of => break :blk self.ast_unit.exprs.add(.Unary, .{
+                        .expr = try self.lowerExpr(p.right),
+                        .op = .address_of,
+                        .loc = p.loc,
+                    }),
+                    .logical_not => break :blk self.ast_unit.exprs.add(.Unary, .{
+                        .expr = try self.lowerExpr(p.right),
+                        .op = .logical_not,
+                        .loc = p.loc,
+                    }),
                 }
             },
             .Infix => try self.lowerInfix(id),
             .Deref => blk: {
                 const r = self.cst_program.exprs.get(.Deref, id);
-                break :blk self.ast_unit.exprs.add(.Deref, .{ .expr = try self.lowerExpr(r.expr), .loc = self.mapLoc(r.loc) });
+                break :blk self.ast_unit.exprs.add(.Deref, .{
+                    .expr = try self.lowerExpr(r.expr),
+                    .loc = r.loc,
+                });
             },
             .ArrayLit => blk: {
                 const r = self.cst_program.exprs.get(.ArrayLit, id);
-                break :blk self.ast_unit.exprs.add(.ArrayLit, .{ .elems = try self.lowerExprRange(r.elems), .loc = self.mapLoc(r.loc) });
+                break :blk self.ast_unit.exprs.add(.ArrayLit, .{
+                    .elems = try self.lowerExprRange(r.elems),
+                    .loc = r.loc,
+                });
             },
             .Tuple => blk: {
                 const r = self.cst_program.exprs.get(.Tuple, id);
                 if (r.is_type) {
-                    break :blk self.ast_unit.exprs.add(.TupleType, .{ .elems = try self.lowerExprRange(r.elems), .loc = self.mapLoc(r.loc) });
+                    break :blk self.ast_unit.exprs.add(.TupleType, .{
+                        .elems = try self.lowerExprRange(r.elems),
+                        .loc = r.loc,
+                    });
                 } else {
-                    break :blk self.ast_unit.exprs.add(.TupleLit, .{ .elems = try self.lowerExprRange(r.elems), .loc = self.mapLoc(r.loc) });
+                    break :blk self.ast_unit.exprs.add(.TupleLit, .{
+                        .elems = try self.lowerExprRange(r.elems),
+                        .loc = r.loc,
+                    });
                 }
             },
             .MapLit => blk: {
                 const r = self.cst_program.exprs.get(.MapLit, id);
-                break :blk self.ast_unit.exprs.add(.MapLit, .{ .entries = try self.lowerKeyValues(r.entries), .loc = self.mapLoc(r.loc) });
+                break :blk self.ast_unit.exprs.add(.MapLit, .{
+                    .entries = try self.lowerKeyValues(r.entries),
+                    .loc = r.loc,
+                });
             },
             .Call => blk: {
                 const r = self.cst_program.exprs.get(.Call, id);
-                break :blk self.ast_unit.exprs.add(.Call, .{ .callee = try self.lowerExpr(r.callee), .args = try self.lowerExprRange(r.args), .loc = self.mapLoc(r.loc) });
+                break :blk self.ast_unit.exprs.add(.Call, .{
+                    .callee = try self.lowerExpr(r.callee),
+                    .args = try self.lowerExprRange(r.args),
+                    .loc = r.loc,
+                });
             },
             .IndexAccess => blk: {
                 const r = self.cst_program.exprs.get(.IndexAccess, id);
-                break :blk self.ast_unit.exprs.add(.IndexAccess, .{ .collection = try self.lowerExpr(r.collection), .index = try self.lowerExpr(r.index), .loc = self.mapLoc(r.loc) });
+                break :blk self.ast_unit.exprs.add(.IndexAccess, .{
+                    .collection = try self.lowerExpr(r.collection),
+                    .index = try self.lowerExpr(r.index),
+                    .loc = r.loc,
+                });
             },
             .FieldAccess => blk: {
                 const r = self.cst_program.exprs.get(.FieldAccess, id);
-                break :blk self.ast_unit.exprs.add(.FieldAccess, .{ .parent = try self.lowerExpr(r.parent), .field = self.mapStr(r.field), .is_tuple = r.is_tuple, .loc = self.mapLoc(r.loc) });
+                break :blk self.ast_unit.exprs.add(.FieldAccess, .{
+                    .parent = try self.lowerExpr(r.parent),
+                    .field = r.field,
+                    .is_tuple = r.is_tuple,
+                    .loc = r.loc,
+                });
             },
             .StructLit => blk: {
                 const r = self.cst_program.exprs.get(.StructLit, id);
-                const ty = if (!r.ty.isNone()) ast.OptExprId.some(try self.lowerExpr(r.ty.unwrap())) else ast.OptExprId.none();
-                break :blk self.ast_unit.exprs.add(.StructLit, .{ .fields = try self.lowerStructFieldValues(r.fields), .ty = ty, .loc = self.mapLoc(r.loc) });
+                break :blk self.ast_unit.exprs.add(.StructLit, .{
+                    .fields = try self.lowerStructFieldValues(r.fields),
+                    .ty = if (!r.ty.isNone()) .some(try self.lowerExpr(r.ty.unwrap())) else .none(),
+                    .loc = r.loc,
+                });
             },
             .Function => blk: {
                 const f = self.cst_program.exprs.get(.Function, id);
                 const params = try self.lowerParamRange(f.params);
-                const result_ty = if (!f.result_ty.isNone()) ast.OptExprId.some(try self.lowerExpr(f.result_ty.unwrap())) else ast.OptExprId.none();
-                const body = if (!f.body.isNone()) ast.OptExprId.some(try self.lowerBlockExpr(f.body.unwrap())) else ast.OptExprId.none();
+                const result_ty: ast.OptExprId = if (!f.result_ty.isNone())
+                    .some(try self.lowerExpr(f.result_ty.unwrap()))
+                else
+                    .none();
+                const body: ast.OptExprId = if (!f.body.isNone())
+                    .some(try self.lowerBlockExpr(f.body.unwrap()))
+                else
+                    .none();
                 const row: ast.Rows.FunctionLit = .{
                     .params = params,
                     .result_ty = result_ty,
                     .body = body,
-                    .raw_asm = if (!f.raw_asm.isNone()) ast.OptStrId.some(self.mapStr(f.raw_asm.unwrap())) else ast.OptStrId.none(),
+                    .raw_asm = if (!f.raw_asm.isNone()) .some(f.raw_asm.unwrap()) else .none(),
                     .attrs = try self.mapAttrRange(f.attrs),
-                    .flags = .{ .is_proc = f.flags.is_proc, .is_async = f.flags.is_async, .is_variadic = f.flags.is_variadic, .is_extern = f.flags.is_extern },
-                    .loc = self.mapLoc(f.loc),
+                    .flags = .{
+                        .is_proc = f.flags.is_proc,
+                        .is_async = f.flags.is_async,
+                        .is_variadic = f.flags.is_variadic,
+                        .is_extern = f.flags.is_extern,
+                    },
+                    .loc = f.loc,
                 };
                 break :blk self.ast_unit.exprs.add(.FunctionLit, row);
             },
@@ -530,188 +594,324 @@ pub const Lower = struct {
                 const r = self.cst_program.exprs.get(.Comptime, id);
                 if (r.is_block) {
                     const b = try self.lowerBlockExpr(r.payload);
-                    break :blk self.ast_unit.exprs.add(.ComptimeBlock, .{ .block = b, .loc = self.mapLoc(r.loc) });
+                    break :blk self.ast_unit.exprs.add(.ComptimeBlock, .{ .block = b, .loc = r.loc });
                 } else {
                     // Wrap expression in a block(expr_stmt)
                     const e = try self.lowerExpr(r.payload);
                     const stmt = self.ast_unit.stmts.add(.Expr, .{ .expr = e });
                     const stmts = self.ast_unit.stmts.stmt_pool.pushMany(self.gpa, &[_]ast.StmtId{stmt});
-                    const blk_expr = self.ast_unit.exprs.add(.Block, .{ .items = stmts, .loc = self.mapLoc(r.loc) });
-                    break :blk self.ast_unit.exprs.add(.ComptimeBlock, .{ .block = blk_expr, .loc = self.mapLoc(r.loc) });
+                    const blk_expr = self.ast_unit.exprs.add(.Block, .{ .items = stmts, .loc = r.loc });
+                    break :blk self.ast_unit.exprs.add(.ComptimeBlock, .{ .block = blk_expr, .loc = r.loc });
                 }
             },
             .Code => blk: {
                 const r = self.cst_program.exprs.get(.Code, id);
                 const b = try self.lowerBlockExpr(r.block);
-                break :blk self.ast_unit.exprs.add(.CodeBlock, .{ .block = b, .loc = self.mapLoc(r.loc) });
+                break :blk self.ast_unit.exprs.add(.CodeBlock, .{ .block = b, .loc = r.loc });
             },
             .Insert => blk: {
                 const r = self.cst_program.exprs.get(.Insert, id);
-                break :blk self.ast_unit.exprs.add(.Insert, .{ .expr = try self.lowerExpr(r.expr), .loc = self.mapLoc(r.loc) });
+                break :blk self.ast_unit.exprs.add(.Insert, .{
+                    .expr = try self.lowerExpr(r.expr),
+                    .loc = r.loc,
+                });
             },
             .Mlir => blk: {
                 const r = self.cst_program.exprs.get(.Mlir, id);
-                break :blk self.ast_unit.exprs.add(.MlirBlock, .{ .kind = r.kind, .text = self.mapStr(r.text), .loc = self.mapLoc(r.loc) });
+                break :blk self.ast_unit.exprs.add(.MlirBlock, .{
+                    .kind = r.kind,
+                    .text = r.text,
+                    .loc = r.loc,
+                });
             },
             .Return => blk: {
                 const r = self.cst_program.exprs.get(.Return, id);
-                const val = if (!r.value.isNone()) ast.OptExprId.some(try self.lowerExpr(r.value.unwrap())) else ast.OptExprId.none();
-                break :blk self.ast_unit.exprs.add(.Return, .{ .value = val, .loc = self.mapLoc(r.loc) });
+                break :blk self.ast_unit.exprs.add(.Return, .{
+                    .value = if (!r.value.isNone()) .some(try self.lowerExpr(r.value.unwrap())) else .none(),
+                    .loc = r.loc,
+                });
             },
             .If => blk: {
                 const r = self.cst_program.exprs.get(.If, id);
-                break :blk self.ast_unit.exprs.add(.If, .{ .cond = try self.lowerExpr(r.cond), .then_block = try self.lowerBlockExpr(r.then_block), .else_block = if (!r.else_block.isNone()) ast.OptExprId.some(try self.lowerExpr(r.else_block.unwrap())) else ast.OptExprId.none(), .loc = self.mapLoc(r.loc) });
+                break :blk self.ast_unit.exprs.add(.If, .{
+                    .cond = try self.lowerExpr(r.cond),
+                    .then_block = try self.lowerBlockExpr(r.then_block),
+                    .else_block = if (!r.else_block.isNone()) .some(try self.lowerExpr(r.else_block.unwrap())) else .none(),
+                    .loc = r.loc,
+                });
             },
             .While => blk: {
                 const r = self.cst_program.exprs.get(.While, id);
-                break :blk self.ast_unit.exprs.add(.While, .{ .cond = if (!r.cond.isNone()) ast.OptExprId.some(try self.lowerExpr(r.cond.unwrap())) else ast.OptExprId.none(), .pattern = if (!r.pattern.isNone()) ast.OptPatternId.some(try self.lowerPattern(r.pattern.unwrap())) else ast.OptPatternId.none(), .body = try self.lowerBlockExpr(r.body), .is_pattern = r.is_pattern, .label = self.mapOptStr(r.label), .loc = self.mapLoc(r.loc) });
+                break :blk self.ast_unit.exprs.add(.While, .{
+                    .cond = if (!r.cond.isNone()) .some(try self.lowerExpr(r.cond.unwrap())) else .none(),
+                    .pattern = if (!r.pattern.isNone()) .some(try self.lowerPattern(r.pattern.unwrap())) else .none(),
+                    .body = try self.lowerBlockExpr(r.body),
+                    .is_pattern = r.is_pattern,
+                    .label = r.label,
+                    .loc = r.loc,
+                });
             },
             .For => blk: {
                 const r = self.cst_program.exprs.get(.For, id);
-                break :blk self.ast_unit.exprs.add(.For, .{ .pattern = try self.lowerPattern(r.pattern), .iterable = try self.lowerExpr(r.iterable), .body = try self.lowerBlockExpr(r.body), .label = self.mapOptStr(r.label), .loc = self.mapLoc(r.loc) });
+                break :blk self.ast_unit.exprs.add(.For, .{
+                    .pattern = try self.lowerPattern(r.pattern),
+                    .iterable = try self.lowerExpr(r.iterable),
+                    .body = try self.lowerBlockExpr(r.body),
+                    .label = r.label,
+                    .loc = r.loc,
+                });
             },
             .Match => blk: {
                 const r = self.cst_program.exprs.get(.Match, id);
                 const arms = try self.lowerMatchArms(r.arms);
-                break :blk self.ast_unit.exprs.add(.Match, .{ .expr = try self.lowerExpr(r.expr), .arms = arms, .loc = self.mapLoc(r.loc) });
+                break :blk self.ast_unit.exprs.add(.Match, .{
+                    .expr = try self.lowerExpr(r.expr),
+                    .arms = arms,
+                    .loc = r.loc,
+                });
             },
             .Break => blk: {
                 const r = self.cst_program.exprs.get(.Break, id);
-                break :blk self.ast_unit.exprs.add(.Break, .{ .label = self.mapOptStr(r.label), .value = if (!r.value.isNone()) ast.OptExprId.some(try self.lowerExpr(r.value.unwrap())) else ast.OptExprId.none(), .loc = self.mapLoc(r.loc) });
+                break :blk self.ast_unit.exprs.add(.Break, .{
+                    .label = r.label,
+                    .value = if (!r.value.isNone()) .some(try self.lowerExpr(r.value.unwrap())) else .none(),
+                    .loc = r.loc,
+                });
             },
             .Continue => blk: {
                 const r = self.cst_program.exprs.get(.Continue, id);
-                break :blk self.ast_unit.exprs.add(.Continue, .{ .loc = self.mapLoc(r.loc) });
+                break :blk self.ast_unit.exprs.add(.Continue, .{ .loc = r.loc });
             },
             .Unreachable => blk: {
                 const r = self.cst_program.exprs.get(.Unreachable, id);
-                break :blk self.ast_unit.exprs.add(.Unreachable, .{ .loc = self.mapLoc(r.loc) });
+                break :blk self.ast_unit.exprs.add(.Unreachable, .{ .loc = r.loc });
             },
             .Null => blk: {
                 const r = self.cst_program.exprs.get(.Null, id);
-                break :blk self.ast_unit.exprs.add(.NullLit, .{ .loc = self.mapLoc(r.loc) });
+                break :blk self.ast_unit.exprs.add(.NullLit, .{ .loc = r.loc });
             },
             .Undefined => blk: {
                 const r = self.cst_program.exprs.get(.Undefined, id);
-                break :blk self.ast_unit.exprs.add(.UndefLit, .{ .loc = self.mapLoc(r.loc) });
+                break :blk self.ast_unit.exprs.add(.UndefLit, .{ .loc = r.loc });
             },
             .Defer => blk: {
                 const r = self.cst_program.exprs.get(.Defer, id);
-                break :blk self.ast_unit.exprs.add(.Defer, .{ .expr = try self.lowerExpr(r.expr), .loc = self.mapLoc(r.loc) });
+                break :blk self.ast_unit.exprs.add(.Defer, .{
+                    .expr = try self.lowerExpr(r.expr),
+                    .loc = r.loc,
+                });
             },
             .ErrDefer => blk: {
                 const r = self.cst_program.exprs.get(.ErrDefer, id);
-                break :blk self.ast_unit.exprs.add(.ErrDefer, .{ .expr = try self.lowerExpr(r.expr), .loc = self.mapLoc(r.loc) });
+                break :blk self.ast_unit.exprs.add(.ErrDefer, .{
+                    .expr = try self.lowerExpr(r.expr),
+                    .loc = r.loc,
+                });
             },
             .ErrUnwrap => blk: {
                 const r = self.cst_program.exprs.get(.ErrUnwrap, id);
-                break :blk self.ast_unit.exprs.add(.ErrUnwrap, .{ .expr = try self.lowerExpr(r.expr), .loc = self.mapLoc(r.loc) });
+                break :blk self.ast_unit.exprs.add(.ErrUnwrap, .{
+                    .expr = try self.lowerExpr(r.expr),
+                    .loc = r.loc,
+                });
             },
             .OptionalUnwrap => blk: {
                 const r = self.cst_program.exprs.get(.OptionalUnwrap, id);
-                break :blk self.ast_unit.exprs.add(.OptionalUnwrap, .{ .expr = try self.lowerExpr(r.expr), .loc = self.mapLoc(r.loc) });
+                break :blk self.ast_unit.exprs.add(.OptionalUnwrap, .{
+                    .expr = try self.lowerExpr(r.expr),
+                    .loc = r.loc,
+                });
             },
             .Await => blk: {
                 const r = self.cst_program.exprs.get(.Await, id);
-                break :blk self.ast_unit.exprs.add(.Await, .{ .expr = try self.lowerExpr(r.expr), .loc = self.mapLoc(r.loc) });
+                break :blk self.ast_unit.exprs.add(.Await, .{
+                    .expr = try self.lowerExpr(r.expr),
+                    .loc = r.loc,
+                });
             },
             .Closure => blk: {
                 const r = self.cst_program.exprs.get(.Closure, id);
-                break :blk self.ast_unit.exprs.add(.Closure, .{ .params = try self.lowerParamRange(r.params), .result_ty = if (!r.result_ty.isNone()) ast.OptExprId.some(try self.lowerExpr(r.result_ty.unwrap())) else ast.OptExprId.none(), .body = try self.lowerExpr(r.body), .loc = self.mapLoc(r.loc) });
+                break :blk self.ast_unit.exprs.add(.Closure, .{
+                    .params = try self.lowerParamRange(r.params),
+                    .result_ty = if (!r.result_ty.isNone()) .some(try self.lowerExpr(r.result_ty.unwrap())) else .none(),
+                    .body = try self.lowerExpr(r.body),
+                    .loc = r.loc,
+                });
             },
             .Async => blk: {
                 const r = self.cst_program.exprs.get(.Async, id);
-                break :blk self.ast_unit.exprs.add(.AsyncBlock, .{ .body = try self.lowerExpr(r.body), .loc = self.mapLoc(r.loc) });
+                break :blk self.ast_unit.exprs.add(.AsyncBlock, .{
+                    .body = try self.lowerExpr(r.body),
+                    .loc = r.loc,
+                });
             },
             .Cast => blk: {
                 const r = self.cst_program.exprs.get(.Cast, id);
-                break :blk self.ast_unit.exprs.add(.Cast, .{ .expr = try self.lowerExpr(r.expr), .ty = try self.lowerExpr(r.ty), .kind = r.kind, .loc = self.mapLoc(r.loc) });
+                break :blk self.ast_unit.exprs.add(.Cast, .{
+                    .expr = try self.lowerExpr(r.expr),
+                    .ty = try self.lowerExpr(r.ty),
+                    .kind = r.kind,
+                    .loc = r.loc,
+                });
             },
             .Catch => blk: {
                 const r = self.cst_program.exprs.get(.Catch, id);
-                break :blk self.ast_unit.exprs.add(.Catch, .{ .expr = try self.lowerExpr(r.expr), .binding_name = self.mapOptStr(r.binding_name), .binding_loc = self.mapOptLoc(r.binding_loc), .handler = try self.lowerExpr(r.handler), .loc = self.mapLoc(r.loc) });
+                break :blk self.ast_unit.exprs.add(.Catch, .{
+                    .expr = try self.lowerExpr(r.expr),
+                    .binding_name = r.binding_name,
+                    .binding_loc = r.binding_loc,
+                    .handler = try self.lowerExpr(r.handler),
+                    .loc = r.loc,
+                });
             },
             .Import => blk: {
                 const r = self.cst_program.exprs.get(.Import, id);
-                break :blk self.ast_unit.exprs.add(.Import, .{ .expr = try self.lowerExpr(r.expr), .loc = self.mapLoc(r.loc) });
+                break :blk self.ast_unit.exprs.add(.Import, .{
+                    .expr = try self.lowerExpr(r.expr),
+                    .loc = r.loc,
+                });
             },
             .TypeOf => blk: {
                 const r = self.cst_program.exprs.get(.TypeOf, id);
-                break :blk self.ast_unit.exprs.add(.TypeOf, .{ .expr = try self.lowerExpr(r.expr), .loc = self.mapLoc(r.loc) });
+                break :blk self.ast_unit.exprs.add(.TypeOf, .{
+                    .expr = try self.lowerExpr(r.expr),
+                    .loc = r.loc,
+                });
             },
 
             // Types
             .ArrayType => blk: {
                 const t = self.cst_program.exprs.get(.ArrayType, id);
-                break :blk self.ast_unit.exprs.add(.ArrayType, .{ .elem = try self.lowerExpr(t.elem), .size = try self.lowerExpr(t.size), .loc = self.mapLoc(t.loc) });
+                break :blk self.ast_unit.exprs.add(.ArrayType, .{
+                    .elem = try self.lowerExpr(t.elem),
+                    .size = try self.lowerExpr(t.size),
+                    .loc = t.loc,
+                });
             },
             .DynArrayType => blk: {
                 const t = self.cst_program.exprs.get(.DynArrayType, id);
-                break :blk self.ast_unit.exprs.add(.DynArrayType, .{ .elem = try self.lowerExpr(t.elem), .loc = self.mapLoc(t.loc) });
+                break :blk self.ast_unit.exprs.add(.DynArrayType, .{
+                    .elem = try self.lowerExpr(t.elem),
+                    .loc = t.loc,
+                });
             },
             .MapType => blk: {
                 const t = self.cst_program.exprs.get(.MapType, id);
-                break :blk self.ast_unit.exprs.add(.MapType, .{ .key = try self.lowerExpr(t.key), .value = try self.lowerExpr(t.value), .loc = self.mapLoc(t.loc) });
+                break :blk self.ast_unit.exprs.add(.MapType, .{
+                    .key = try self.lowerExpr(t.key),
+                    .value = try self.lowerExpr(t.value),
+                    .loc = t.loc,
+                });
             },
             .SliceType => blk: {
                 const t = self.cst_program.exprs.get(.SliceType, id);
-                break :blk self.ast_unit.exprs.add(.SliceType, .{ .elem = try self.lowerExpr(t.elem), .loc = self.mapLoc(t.loc) });
+                break :blk self.ast_unit.exprs.add(.SliceType, .{
+                    .elem = try self.lowerExpr(t.elem),
+                    .loc = t.loc,
+                });
             },
             .OptionalType => blk: {
                 const t = self.cst_program.exprs.get(.OptionalType, id);
-                break :blk self.ast_unit.exprs.add(.OptionalType, .{ .elem = try self.lowerExpr(t.elem), .loc = self.mapLoc(t.loc) });
+                break :blk self.ast_unit.exprs.add(.OptionalType, .{
+                    .elem = try self.lowerExpr(t.elem),
+                    .loc = t.loc,
+                });
             },
             .ErrorSetType => blk: {
                 const t = self.cst_program.exprs.get(.ErrorSetType, id);
-                break :blk self.ast_unit.exprs.add(.ErrorSetType, .{ .err = try self.lowerExpr(t.err), .value = try self.lowerExpr(t.value), .loc = self.mapLoc(t.loc) });
+                break :blk self.ast_unit.exprs.add(.ErrorSetType, .{
+                    .err = try self.lowerExpr(t.err),
+                    .value = try self.lowerExpr(t.value),
+                    .loc = t.loc,
+                });
             },
             .StructType => blk: {
                 const t = self.cst_program.exprs.get(.StructType, id);
-                break :blk self.ast_unit.exprs.add(.StructType, .{ .fields = try self.lowerStructFields(t.fields), .is_extern = t.is_extern, .attrs = try self.mapAttrRange(t.attrs), .loc = self.mapLoc(t.loc) });
+                break :blk self.ast_unit.exprs.add(.StructType, .{
+                    .fields = try self.lowerStructFields(t.fields),
+                    .is_extern = t.is_extern,
+                    .attrs = try self.mapAttrRange(t.attrs),
+                    .loc = t.loc,
+                });
             },
             .EnumType => blk: {
                 const t = self.cst_program.exprs.get(.EnumType, id);
-                break :blk self.ast_unit.exprs.add(.EnumType, .{ .fields = try self.lowerEnumFields(t.fields), .discriminant = if (!t.discriminant.isNone()) ast.OptExprId.some(try self.lowerExpr(t.discriminant.unwrap())) else ast.OptExprId.none(), .is_extern = t.is_extern, .attrs = try self.mapAttrRange(t.attrs), .loc = self.mapLoc(t.loc) });
+                break :blk self.ast_unit.exprs.add(.EnumType, .{
+                    .fields = try self.lowerEnumFields(t.fields),
+                    .discriminant = if (!t.discriminant.isNone())
+                        .some(try self.lowerExpr(t.discriminant.unwrap()))
+                    else
+                        .none(),
+                    .is_extern = t.is_extern,
+                    .attrs = try self.mapAttrRange(t.attrs),
+                    .loc = t.loc,
+                });
             },
             .VariantLikeType => blk: {
                 const t = self.cst_program.exprs.get(.VariantLikeType, id);
-                break :blk self.ast_unit.exprs.add(.VariantType, .{ .fields = try self.lowerVariantFields(t.fields), .loc = self.mapLoc(t.loc) });
+                break :blk self.ast_unit.exprs.add(.VariantType, .{
+                    .fields = try self.lowerVariantFields(t.fields),
+                    .loc = t.loc,
+                });
             },
             .ErrorType => blk: {
                 const t = self.cst_program.exprs.get(.ErrorType, id);
-                break :blk self.ast_unit.exprs.add(.ErrorType, .{ .fields = try self.lowerVariantFields(t.fields), .loc = self.mapLoc(t.loc) });
+                break :blk self.ast_unit.exprs.add(.ErrorType, .{
+                    .fields = try self.lowerVariantFields(t.fields),
+                    .loc = t.loc,
+                });
             },
             .UnionType => blk: {
                 const t = self.cst_program.exprs.get(.UnionType, id);
-                break :blk self.ast_unit.exprs.add(.UnionType, .{ .fields = try self.lowerStructFields(t.fields), .is_extern = t.is_extern, .attrs = try self.mapAttrRange(t.attrs), .loc = self.mapLoc(t.loc) });
+                break :blk self.ast_unit.exprs.add(.UnionType, .{
+                    .fields = try self.lowerStructFields(t.fields),
+                    .is_extern = t.is_extern,
+                    .attrs = try self.mapAttrRange(t.attrs),
+                    .loc = t.loc,
+                });
             },
             .PointerType => blk: {
                 const t = self.cst_program.exprs.get(.PointerType, id);
-                break :blk self.ast_unit.exprs.add(.PointerType, .{ .elem = try self.lowerExpr(t.elem), .is_const = t.is_const, .loc = self.mapLoc(t.loc) });
+                break :blk self.ast_unit.exprs.add(.PointerType, .{
+                    .elem = try self.lowerExpr(t.elem),
+                    .is_const = t.is_const,
+                    .loc = t.loc,
+                });
             },
             .SimdType => blk: {
                 const t = self.cst_program.exprs.get(.SimdType, id);
-                break :blk self.ast_unit.exprs.add(.SimdType, .{ .elem = try self.lowerExpr(t.elem), .lanes = try self.lowerExpr(t.lanes), .loc = self.mapLoc(t.loc) });
+                break :blk self.ast_unit.exprs.add(.SimdType, .{
+                    .elem = try self.lowerExpr(t.elem),
+                    .lanes = try self.lowerExpr(t.lanes),
+                    .loc = t.loc,
+                });
             },
             .ComplexType => blk: {
                 const t = self.cst_program.exprs.get(.ComplexType, id);
-                break :blk self.ast_unit.exprs.add(.ComplexType, .{ .elem = try self.lowerExpr(t.elem), .loc = self.mapLoc(t.loc) });
+                break :blk self.ast_unit.exprs.add(.ComplexType, .{
+                    .elem = try self.lowerExpr(t.elem),
+                    .loc = t.loc,
+                });
             },
             .TensorType => blk: {
                 const t = self.cst_program.exprs.get(.TensorType, id);
-                break :blk self.ast_unit.exprs.add(.TensorType, .{ .elem = try self.lowerExpr(t.elem), .shape = try self.lowerExprRange(t.shape), .loc = self.mapLoc(t.loc) });
+                break :blk self.ast_unit.exprs.add(.TensorType, .{
+                    .elem = try self.lowerExpr(t.elem),
+                    .shape = try self.lowerExprRange(t.shape),
+                    .loc = t.loc,
+                });
             },
             .TypeType => blk: {
                 const t = self.cst_program.exprs.get(.TypeType, id);
-                break :blk self.ast_unit.exprs.add(.TypeType, .{ .loc = self.mapLoc(t.loc) });
+                break :blk self.ast_unit.exprs.add(.TypeType, .{ .loc = t.loc });
             },
             .AnyType => blk: {
                 const t = self.cst_program.exprs.get(.AnyType, id);
-                break :blk self.ast_unit.exprs.add(.AnyType, .{ .loc = self.mapLoc(t.loc) });
+                break :blk self.ast_unit.exprs.add(.AnyType, .{ .loc = t.loc });
             },
             .NoreturnType => blk: {
                 const t = self.cst_program.exprs.get(.NoreturnType, id);
-                break :blk self.ast_unit.exprs.add(.NoreturnType, .{ .loc = self.mapLoc(t.loc) });
+                break :blk self.ast_unit.exprs.add(.NoreturnType, .{ .loc = t.loc });
             },
         };
     }
@@ -719,27 +919,86 @@ pub const Lower = struct {
     fn lowerLiteral(self: *Lower, id: cst.ExprId) !ast.ExprId {
         const lit = self.cst_program.exprs.get(.Literal, id);
         // tag_small mapping: 1=int, 2=float, 3=string, 4=char, 5=imag, 6=true, 7=false
-        const loc = self.mapLoc(lit.loc);
+        const loc = lit.loc;
         return switch (lit.tag_small) {
-            1 => self.ast_unit.exprs.add(.Literal, .{ .kind = .int, .value = ast.OptStrId.some(self.mapStr(lit.value)), .bool_value = false, .char_value = 0, .loc = loc }),
-            2 => self.ast_unit.exprs.add(.Literal, .{ .kind = .float, .value = ast.OptStrId.some(self.mapStr(lit.value)), .bool_value = false, .char_value = 0, .loc = loc }),
+            1 => blk: {
+                // find integer base suffix
+                // e.g. 0b, 0o, 0x, or none (decimal)
+                const s = self.cst_program.exprs.strs.get(lit.value);
+                // NOTE: temp for now, store base in char_value
+                var base: u32 = 10;
+                if (s.len >= 2 and s[0] == '0') {
+                    const prefix = s[1];
+                    if (prefix == 'b' or prefix == 'B') {
+                        base = 2;
+                    } else if (prefix == 'o' or prefix == 'O') {
+                        base = 8;
+                    } else if (prefix == 'x' or prefix == 'X') {
+                        base = 16;
+                    }
+                }
+                break :blk self.ast_unit.exprs.add(.Literal, .{
+                    .kind = .int,
+                    .value = .some(lit.value),
+                    .bool_value = false,
+                    .char_value = base,
+                    .loc = loc,
+                });
+            },
+            2 => self.ast_unit.exprs.add(.Literal, .{
+                .kind = .float,
+                .value = .some(lit.value),
+                .bool_value = false,
+                .char_value = 0,
+                .loc = loc,
+            }),
             4 => blk: {
                 const unescaped_char_val = try self.unescapeChar(self.cst_program.exprs.strs.get(lit.value));
-                break :blk self.ast_unit.exprs.add(.Literal, .{ .kind = .char, .value = ast.OptStrId.none(), .bool_value = false, .char_value = unescaped_char_val, .loc = loc });
+                break :blk self.ast_unit.exprs.add(.Literal, .{
+                    .kind = .char,
+                    .value = .none(),
+                    .bool_value = false,
+                    .char_value = unescaped_char_val,
+                    .loc = loc,
+                });
             },
             5 => blk_im: {
                 const s = self.cst_program.exprs.strs.get(lit.value);
                 const trimmed: []const u8 = if (s.len > 0 and s[s.len - 1] == 'i') s[0 .. s.len - 1] else s;
                 const sid = self.ast_unit.exprs.strs.intern(trimmed);
-                break :blk_im self.ast_unit.exprs.add(.Literal, .{ .kind = .imaginary, .value = ast.OptStrId.some(sid), .bool_value = false, .char_value = 0, .loc = loc });
+                break :blk_im self.ast_unit.exprs.add(.Literal, .{
+                    .kind = .imaginary,
+                    .value = .some(sid),
+                    .bool_value = false,
+                    .char_value = 0,
+                    .loc = loc,
+                });
             },
-            6 => self.ast_unit.exprs.add(.Literal, .{ .kind = .bool, .value = ast.OptStrId.none(), .bool_value = true, .char_value = 0, .loc = loc }),
-            7 => self.ast_unit.exprs.add(.Literal, .{ .kind = .bool, .value = ast.OptStrId.none(), .bool_value = false, .char_value = 0, .loc = loc }),
+            6 => self.ast_unit.exprs.add(.Literal, .{
+                .kind = .bool,
+                .value = .none(),
+                .bool_value = true,
+                .char_value = 0,
+                .loc = loc,
+            }),
+            7 => self.ast_unit.exprs.add(.Literal, .{
+                .kind = .bool,
+                .value = .none(),
+                .bool_value = false,
+                .char_value = 0,
+                .loc = loc,
+            }),
             else => blk: {
                 // fallback: treat as string
                 const str = self.cst_program.exprs.strs.get(lit.value);
                 const unescaped = try self.unescapeString(str);
-                break :blk self.ast_unit.exprs.add(.Literal, .{ .kind = .string, .value = ast.OptStrId.some(unescaped), .bool_value = false, .char_value = 0, .loc = loc });
+                break :blk self.ast_unit.exprs.add(.Literal, .{
+                    .kind = .string,
+                    .value = .some(unescaped),
+                    .bool_value = false,
+                    .char_value = 0,
+                    .loc = loc,
+                });
             },
         };
     }
@@ -748,21 +1007,39 @@ pub const Lower = struct {
         const i = self.cst_program.exprs.get(.Infix, id);
         const L = try self.lowerExpr(i.left);
         const R = try self.lowerExpr(i.right);
-        const loc = self.mapLoc(i.loc);
+        const loc = i.loc;
 
         // ranges
         if (i.op == .range or i.op == .range_inclusive) {
-            return self.ast_unit.exprs.add(.Range, .{ .start = ast.OptExprId.some(L), .end = ast.OptExprId.some(R), .inclusive_right = (i.op == .range_inclusive), .loc = loc });
+            return self.ast_unit.exprs.add(.Range, .{
+                .start = .some(L),
+                .end = .some(R),
+                .inclusive_right = (i.op == .range_inclusive),
+                .loc = loc,
+            });
         }
 
         // error catch maps to Catch
         if (i.op == .error_catch) {
-            return self.ast_unit.exprs.add(.Catch, .{ .expr = L, .binding_name = ast.OptStrId.none(), .binding_loc = ast.OptLocId.none(), .handler = R, .loc = loc });
+            return self.ast_unit.exprs.add(.Catch, .{
+                .expr = L,
+                .binding_name = .none(),
+                .binding_loc = .none(),
+                .handler = R,
+                .loc = loc,
+            });
         }
 
         // orelse maps to Binary(op=orelse)
         if (i.op == .unwrap_orelse) {
-            return self.ast_unit.exprs.add(.Binary, .{ .left = L, .right = R, .op = .@"orelse", .wrap = false, .saturate = false, .loc = loc });
+            return self.ast_unit.exprs.add(.Binary, .{
+                .left = L,
+                .right = R,
+                .op = .@"orelse",
+                .wrap = false,
+                .saturate = false,
+                .loc = loc,
+            });
         }
 
         // arithmetic/bitwise/logical
@@ -804,11 +1081,25 @@ pub const Lower = struct {
             return self.ast_unit.exprs.add(.ErrorSetType, .{ .err = R, .value = L, .loc = loc });
         }
         if (map_bin.m(i.op)) |mm| {
-            return self.ast_unit.exprs.add(.Binary, .{ .left = L, .right = R, .op = mm.op, .wrap = mm.wrap, .saturate = mm.sat, .loc = loc });
+            return self.ast_unit.exprs.add(.Binary, .{
+                .left = L,
+                .right = R,
+                .op = mm.op,
+                .wrap = mm.wrap,
+                .saturate = mm.sat,
+                .loc = loc,
+            });
         }
 
         // fallback: treat as add
-        return self.ast_unit.exprs.add(.Binary, .{ .left = L, .right = R, .op = .add, .wrap = false, .saturate = false, .loc = loc });
+        return self.ast_unit.exprs.add(.Binary, .{
+            .left = L,
+            .right = R,
+            .op = .add,
+            .wrap = false,
+            .saturate = false,
+            .loc = loc,
+        });
     }
 
     fn lowerMatchArms(self: *Lower, r: cst.RangeOf(cst.MatchArmId)) !ast.RangeMatchArm {
@@ -822,7 +1113,7 @@ pub const Lower = struct {
                 .pattern = try self.lowerPattern(a.pattern),
                 .guard = if (!a.guard.isNone()) .some(try self.lowerExpr(a.guard.unwrap())) else .none(),
                 .body = try self.lowerExpr(a.body),
-                .loc = self.mapLoc(a.loc),
+                .loc = a.loc,
             };
             out_ids[i] = self.ast_unit.exprs.MatchArm.add(self.gpa, mapped);
         }
@@ -835,55 +1126,97 @@ pub const Lower = struct {
         return switch (kind) {
             .Wildcard => blk: {
                 const w = self.cst_program.pats.get(.Wildcard, id);
-                break :blk self.ast_unit.pats.add(.Wildcard, .{ .loc = self.mapLoc(w.loc) });
+                break :blk self.ast_unit.pats.add(.Wildcard, .{ .loc = w.loc });
             },
             .Literal => blk: {
                 const p = self.cst_program.pats.get(.Literal, id);
-                break :blk self.ast_unit.pats.add(.Literal, .{ .expr = try self.lowerExpr(p.expr), .loc = self.mapLoc(p.loc) });
+                break :blk self.ast_unit.pats.add(.Literal, .{
+                    .expr = try self.lowerExpr(p.expr),
+                    .loc = p.loc,
+                });
             },
             .Path => blk: {
                 const p = self.cst_program.pats.get(.Path, id);
                 const segs = try self.lowerPathSegs(p.segments);
-                break :blk self.ast_unit.pats.add(.Path, .{ .segments = segs, .loc = self.mapLoc(p.loc) });
+                break :blk self.ast_unit.pats.add(.Path, .{ .segments = segs, .loc = p.loc });
             },
             .Binding => blk: {
                 const b = self.cst_program.pats.get(.Binding, id);
-                break :blk self.ast_unit.pats.add(.Binding, .{ .name = self.mapStr(b.name), .by_ref = b.by_ref, .is_mut = b.is_mut, .loc = self.mapLoc(b.loc) });
+                break :blk self.ast_unit.pats.add(.Binding, .{
+                    .name = b.name,
+                    .by_ref = b.by_ref,
+                    .is_mut = b.is_mut,
+                    .loc = b.loc,
+                });
             },
             .Tuple => blk: {
                 const t = self.cst_program.pats.get(.Tuple, id);
                 const elems = try self.lowerPatRange(t.elems);
-                break :blk self.ast_unit.pats.add(.Tuple, .{ .elems = elems, .loc = self.mapLoc(t.loc) });
+                break :blk self.ast_unit.pats.add(.Tuple, .{ .elems = elems, .loc = t.loc });
             },
             .Slice => blk: {
                 const s = self.cst_program.pats.get(.Slice, id);
                 const elems = try self.lowerPatRange(s.elems);
-                const rest = if (!s.rest_binding.isNone()) ast.OptPatternId.some(try self.lowerPattern(s.rest_binding.unwrap())) else ast.OptPatternId.none();
-                break :blk self.ast_unit.pats.add(.Slice, .{ .elems = elems, .has_rest = s.has_rest, .rest_index = s.rest_index, .rest_binding = rest, .loc = self.mapLoc(s.loc) });
+                break :blk self.ast_unit.pats.add(.Slice, .{
+                    .elems = elems,
+                    .has_rest = s.has_rest,
+                    .rest_index = s.rest_index,
+                    .rest_binding = if (!s.rest_binding.isNone())
+                        .some(try self.lowerPattern(s.rest_binding.unwrap()))
+                    else
+                        .none(),
+                    .loc = s.loc,
+                });
             },
             .Struct => blk: {
                 const s = self.cst_program.pats.get(.Struct, id);
-                break :blk self.ast_unit.pats.add(.Struct, .{ .path = try self.lowerPathSegs(s.path), .fields = try self.lowerPatFields(s.fields), .has_rest = s.has_rest, .loc = self.mapLoc(s.loc) });
+                break :blk self.ast_unit.pats.add(.Struct, .{
+                    .path = try self.lowerPathSegs(s.path),
+                    .fields = try self.lowerPatFields(s.fields),
+                    .has_rest = s.has_rest,
+                    .loc = s.loc,
+                });
             },
             .VariantTuple => blk: {
                 const v = self.cst_program.pats.get(.VariantTuple, id);
-                break :blk self.ast_unit.pats.add(.VariantTuple, .{ .path = try self.lowerPathSegs(v.path), .elems = try self.lowerPatRange(v.elems), .loc = self.mapLoc(v.loc) });
+                break :blk self.ast_unit.pats.add(.VariantTuple, .{
+                    .path = try self.lowerPathSegs(v.path),
+                    .elems = try self.lowerPatRange(v.elems),
+                    .loc = v.loc,
+                });
             },
             .VariantStruct => blk: {
                 const v = self.cst_program.pats.get(.VariantStruct, id);
-                break :blk self.ast_unit.pats.add(.VariantStruct, .{ .path = try self.lowerPathSegs(v.path), .fields = try self.lowerPatFields(v.fields), .has_rest = v.has_rest, .loc = self.mapLoc(v.loc) });
+                break :blk self.ast_unit.pats.add(.VariantStruct, .{
+                    .path = try self.lowerPathSegs(v.path),
+                    .fields = try self.lowerPatFields(v.fields),
+                    .has_rest = v.has_rest,
+                    .loc = v.loc,
+                });
             },
             .Range => blk: {
                 const r = self.cst_program.pats.get(.Range, id);
-                break :blk self.ast_unit.pats.add(.Range, .{ .start = if (!r.start.isNone()) ast.OptExprId.some(try self.lowerExpr(r.start.unwrap())) else ast.OptExprId.none(), .end = if (!r.end.isNone()) ast.OptExprId.some(try self.lowerExpr(r.end.unwrap())) else ast.OptExprId.none(), .inclusive_right = r.inclusive_right, .loc = self.mapLoc(r.loc) });
+                break :blk self.ast_unit.pats.add(.Range, .{
+                    .start = if (!r.start.isNone()) .some(try self.lowerExpr(r.start.unwrap())) else .none(),
+                    .end = if (!r.end.isNone()) .some(try self.lowerExpr(r.end.unwrap())) else .none(),
+                    .inclusive_right = r.inclusive_right,
+                    .loc = r.loc,
+                });
             },
             .Or => blk: {
                 const o = self.cst_program.pats.get(.Or, id);
-                break :blk self.ast_unit.pats.add(.Or, .{ .alts = try self.lowerPatRange(o.alts), .loc = self.mapLoc(o.loc) });
+                break :blk self.ast_unit.pats.add(.Or, .{
+                    .alts = try self.lowerPatRange(o.alts),
+                    .loc = o.loc,
+                });
             },
             .At => blk: {
                 const a = self.cst_program.pats.get(.At, id);
-                break :blk self.ast_unit.pats.add(.At, .{ .binder = self.mapStr(a.binder), .pattern = try self.lowerPattern(a.pattern), .loc = self.mapLoc(a.loc) });
+                break :blk self.ast_unit.pats.add(.At, .{
+                    .binder = a.binder,
+                    .pattern = try self.lowerPattern(a.pattern),
+                    .loc = a.loc,
+                });
             },
         };
     }
@@ -895,7 +1228,12 @@ pub const Lower = struct {
         var i: usize = 0;
         while (i < items.len) : (i += 1) {
             const s = self.cst_program.pats.PathSeg.get(items[i]);
-            const mapped: ast.PatRows.PathSeg = .{ .name = self.mapStr(s.name), .by_ref = false, .is_mut = false, .loc = self.mapLoc(s.loc) };
+            const mapped: ast.PatRows.PathSeg = .{
+                .name = s.name,
+                .by_ref = false,
+                .is_mut = false,
+                .loc = s.loc,
+            };
             out_ids[i] = self.ast_unit.pats.PathSeg.add(self.gpa, mapped);
         }
         return self.ast_unit.pats.seg_pool.pushMany(self.gpa, out_ids);
@@ -908,7 +1246,11 @@ pub const Lower = struct {
         var i: usize = 0;
         while (i < items.len) : (i += 1) {
             const f = self.cst_program.pats.StructField.get(items[i]);
-            const mapped: ast.PatRows.StructField = .{ .name = self.mapStr(f.name), .pattern = try self.lowerPattern(f.pattern), .loc = self.mapLoc(f.loc) };
+            const mapped: ast.PatRows.StructField = .{
+                .name = f.name,
+                .pattern = try self.lowerPattern(f.pattern),
+                .loc = f.loc,
+            };
             out_ids[i] = self.ast_unit.pats.StructField.add(self.gpa, mapped);
         }
         return self.ast_unit.pats.field_pool.pushMany(self.gpa, out_ids);
@@ -935,14 +1277,24 @@ pub const Lower = struct {
         switch (kind) {
             .Ident => {
                 const r = self.cst_program.exprs.get(.Ident, id);
-                const mapped: ast.PatRows.PathSeg = .{ .name = self.mapStr(r.name), .by_ref = false, .is_mut = false, .loc = self.mapLoc(r.loc) };
+                const mapped: ast.PatRows.PathSeg = .{
+                    .name = r.name,
+                    .by_ref = false,
+                    .is_mut = false,
+                    .loc = r.loc,
+                };
                 const pid = self.ast_unit.pats.PathSeg.add(self.gpa, mapped);
                 try segs.append(self.gpa, pid);
             },
             .FieldAccess => {
                 const r = self.cst_program.exprs.get(.FieldAccess, id);
                 try self.collectPathSegs(r.parent, segs);
-                const mapped: ast.PatRows.PathSeg = .{ .name = self.mapStr(r.field), .by_ref = false, .is_mut = false, .loc = self.mapLoc(r.loc) };
+                const mapped: ast.PatRows.PathSeg = .{
+                    .name = r.field,
+                    .by_ref = false,
+                    .is_mut = false,
+                    .loc = r.loc,
+                };
                 const pid = self.ast_unit.pats.PathSeg.add(self.gpa, mapped);
                 try segs.append(self.gpa, pid);
             },
@@ -953,9 +1305,9 @@ pub const Lower = struct {
     }
 
     fn lowerOptionalPatternFromExpr(self: *Lower, e: cst.OptExprId) !ast.OptPatternId {
-        if (e.isNone()) return ast.OptPatternId.none();
-        if (try self.patternFromExpr(e.unwrap())) |pid| return ast.OptPatternId.some(pid);
-        return ast.OptPatternId.none();
+        if (e.isNone()) return .none();
+        if (try self.patternFromExpr(e.unwrap())) |pid| return .some(pid);
+        return .none();
     }
 
     fn patternFromExpr(self: *Lower, id: cst.ExprId) !?ast.PatternId {
@@ -965,9 +1317,14 @@ pub const Lower = struct {
                 const r = self.cst_program.exprs.get(.Ident, id);
                 const name = self.cst_program.exprs.strs.get(r.name);
                 if (std.mem.eql(u8, name, "_")) {
-                    break :blk self.ast_unit.pats.add(.Wildcard, .{ .loc = self.mapLoc(r.loc) });
+                    break :blk self.ast_unit.pats.add(.Wildcard, .{ .loc = r.loc });
                 } else {
-                    break :blk self.ast_unit.pats.add(.Binding, .{ .name = self.mapStr(r.name), .by_ref = false, .is_mut = false, .loc = self.mapLoc(r.loc) });
+                    break :blk self.ast_unit.pats.add(.Binding, .{
+                        .name = r.name,
+                        .by_ref = false,
+                        .is_mut = false,
+                        .loc = r.loc,
+                    });
                 }
             },
             .ArrayLit => blk: {
@@ -977,7 +1334,7 @@ pub const Lower = struct {
                 defer self.gpa.free(elem_pats);
                 var has_rest = false;
                 var rest_idx: u32 = 0;
-                var rest_pat: ast.OptPatternId = ast.OptPatternId.none();
+                var rest_pat: ast.OptPatternId = .none();
                 var out_i: usize = 0;
                 var i: usize = 0;
                 while (i < xs.len) : (i += 1) {
@@ -988,14 +1345,13 @@ pub const Lower = struct {
                             const sub = try self.patternFromExpr(p.right) orelse return null;
                             if (has_rest) {
                                 // Multiple rest segments are invalid in slice patterns
-                                const loc_id = self.mapLoc(p.loc);
-                                const loc = self.ast_unit.exprs.locs.get(loc_id);
+                                const loc = self.ast_unit.exprs.locs.get(p.loc);
                                 try self.context.diags.addError(loc, .pattern_shape_mismatch, .{});
                                 return null;
                             }
                             has_rest = true;
                             rest_idx = @intCast(out_i);
-                            rest_pat = ast.OptPatternId.some(sub);
+                            rest_pat = .some(sub);
                             continue;
                         }
                     }
@@ -1009,7 +1365,7 @@ pub const Lower = struct {
                     .has_rest = has_rest,
                     .rest_index = rest_idx,
                     .rest_binding = rest_pat,
-                    .loc = self.mapLoc(a.loc),
+                    .loc = a.loc,
                 };
                 break :blk self.ast_unit.pats.add(.Slice, mapped);
             },
@@ -1024,7 +1380,7 @@ pub const Lower = struct {
                     out_ids[i] = sub;
                 }
                 const range = self.ast_unit.pats.pat_pool.pushMany(self.gpa, out_ids);
-                break :blk self.ast_unit.pats.add(.Tuple, .{ .elems = range, .loc = self.mapLoc(t.loc) });
+                break :blk self.ast_unit.pats.add(.Tuple, .{ .elems = range, .loc = t.loc });
             },
             .StructLit => blk: {
                 const s = self.cst_program.exprs.get(.StructLit, id);
@@ -1036,7 +1392,11 @@ pub const Lower = struct {
                     const f = self.cst_program.exprs.StructFieldValue.get(fields[i]);
                     if (f.name.isNone()) return null;
                     const sub = try self.patternFromExpr(f.value) orelse return null;
-                    const mapped: ast.PatRows.StructField = .{ .name = self.mapStr(f.name.unwrap()), .pattern = sub, .loc = self.mapLoc(f.loc) };
+                    const mapped: ast.PatRows.StructField = .{
+                        .name = f.name.unwrap(),
+                        .pattern = sub,
+                        .loc = f.loc,
+                    };
                     out_ids[i] = self.ast_unit.pats.StructField.add(self.gpa, mapped);
                 }
                 const range = self.ast_unit.pats.field_pool.pushMany(self.gpa, out_ids);
@@ -1044,12 +1404,22 @@ pub const Lower = struct {
                     const path = try self.pathSegsFromTypeExpr(s.ty.unwrap());
                     const segs = self.ast_unit.pats.seg_pool.slice(path);
                     if (segs.len >= 2) {
-                        break :blk self.ast_unit.pats.add(.VariantStruct, .{ .path = path, .fields = range, .has_rest = false, .loc = self.mapLoc(s.loc) });
+                        break :blk self.ast_unit.pats.add(.VariantStruct, .{
+                            .path = path,
+                            .fields = range,
+                            .has_rest = false,
+                            .loc = s.loc,
+                        });
                     }
                 }
                 const empty: []const ast.PathSegId = &[_]ast.PathSegId{};
                 const path_range = self.ast_unit.pats.seg_pool.pushMany(self.gpa, empty);
-                break :blk self.ast_unit.pats.add(.Struct, .{ .path = path_range, .fields = range, .has_rest = false, .loc = self.mapLoc(s.loc) });
+                break :blk self.ast_unit.pats.add(.Struct, .{
+                    .path = path_range,
+                    .fields = range,
+                    .has_rest = false,
+                    .loc = s.loc,
+                });
             },
             .Call => blk: {
                 // Treat a Call with a path-like callee as a variant-tuple pattern: Type.Case(arg1, arg2, ...)
@@ -1064,16 +1434,20 @@ pub const Lower = struct {
                     pats[i] = sub;
                 }
                 const pr = self.ast_unit.pats.pat_pool.pushMany(self.gpa, pats);
-                break :blk self.ast_unit.pats.add(.VariantTuple, .{ .path = path, .elems = pr, .loc = self.mapLoc(r.loc) });
+                break :blk self.ast_unit.pats.add(.VariantTuple, .{
+                    .path = path,
+                    .elems = pr,
+                    .loc = r.loc,
+                });
             },
             .FieldAccess => blk: {
                 // Treat a path-like expression as a tag-only pattern (enum member or variant case without payload)
                 const r = self.cst_program.exprs.get(.FieldAccess, id);
                 const path = try self.pathSegsFromTypeExpr(id);
-                break :blk self.ast_unit.pats.add(.Path, .{ .segments = path, .loc = self.mapLoc(r.loc) });
+                break :blk self.ast_unit.pats.add(.Path, .{ .segments = path, .loc = r.loc });
             },
             inline else => |x| {
-                const loc_id = self.mapLoc(self.cst_program.exprs.get(x, id).loc);
+                const loc_id = self.cst_program.exprs.get(x, id).loc;
                 const loc = self.ast_unit.exprs.locs.get(loc_id);
                 try self.context.diags.addError(loc, .expected_pattern_on_decl_lhs, .{});
                 return null;

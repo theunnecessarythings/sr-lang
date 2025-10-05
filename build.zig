@@ -1,23 +1,7 @@
 const std = @import("std");
 
-fn linkMLIR(b: *std.Build, exe: *std.Build.Step.Compile) !void {
-    _ = b;
-    const MLIR_SRC = "/home/sreeraj/ubuntu/Documents/llvm-project"; // source tree
-    const MLIR_BUILD = "/home/sreeraj/ubuntu/Documents/llvm-project/build"; // build tree
-    const MLIR_LIB = MLIR_BUILD ++ "/lib";
-
-    // Headers for mlir-c
-    exe.root_module.addIncludePath(.{ .cwd_relative = MLIR_SRC ++ "/mlir/include" });
-    exe.root_module.addIncludePath(.{ .cwd_relative = MLIR_BUILD ++ "/tools/mlir/include" });
-    // Some LLVM headers needed transitively by C API
-    exe.root_module.addIncludePath(.{ .cwd_relative = MLIR_SRC ++ "/llvm/include" });
-    exe.root_module.addIncludePath(.{ .cwd_relative = MLIR_BUILD ++ "/include" });
-
-    // Library search path
-    exe.addLibraryPath(.{ .cwd_relative = MLIR_LIB });
-
-    const PATH = "/home/sreeraj/ubuntu/Documents/llvm-project/build/lib/";
-    const dir = try std.fs.cwd().openDir(PATH, .{ .iterate = true });
+fn linkMLIR(LLVM_HOME: []const u8, exe: *std.Build.Step.Compile) !void {
+    const dir = try std.fs.cwd().openDir(LLVM_HOME, .{ .iterate = true });
     var iter = dir.iterate();
     while (try iter.next()) |entry| {
         const name = entry.name;
@@ -37,8 +21,6 @@ fn linkMLIR(b: *std.Build, exe: *std.Build.Step.Compile) !void {
     exe.linkSystemLibrary("zstd");
     exe.linkLibCpp();
     exe.linkLibC();
-
-    exe.addRPath(.{ .cwd_relative = MLIR_LIB });
 }
 
 pub fn build(b: *std.Build) void {
@@ -50,7 +32,6 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
         .link_libc = true,
     });
-    mod.addIncludePath(b.path("grammar/"));
 
     const exe = b.addExecutable(.{
         .name = "sr_lang",
@@ -64,7 +45,9 @@ pub fn build(b: *std.Build) void {
         }),
     });
     exe.use_llvm = true;
-    linkMLIR(b, exe) catch |err| {
+
+    const LLVM_HOME_S = "/usr/local/lib";
+    linkMLIR(LLVM_HOME_S, exe) catch |err| {
         std.debug.print("Error linking MLIR: {}\n", .{err});
         @panic("Failed to link MLIR");
     };
@@ -111,7 +94,7 @@ pub fn build(b: *std.Build) void {
         }),
     });
     exe_tests.use_llvm = true;
-    linkMLIR(b, exe_tests) catch |err| {
+    linkMLIR(LLVM_HOME_S, exe_tests) catch |err| {
         std.debug.print("Error linking MLIR for tests: {}\n", .{err});
         @panic("Failed to link MLIR for tests");
     };
@@ -135,7 +118,7 @@ pub fn build(b: *std.Build) void {
             },
         }),
     });
-    linkMLIR(b, fuzz_lib) catch |err| {
+    linkMLIR(LLVM_HOME_S, fuzz_lib) catch |err| {
         std.debug.print("Error linking MLIR for fuzzer: {}\n", .{err});
         @panic("Failed to link MLIR for fuzzer");
     };
