@@ -143,6 +143,9 @@ pub const Pipeline = struct {
             return .{ .cst = cst_program, .ast = ast, .tir = root_mod, .type_info = type_info };
         }
 
+        // Print Types
+        type_info.print();
+
         const mlir_ctx = compile.initMLIR(self.allocator);
         var gen = mlir_codegen.MlirCodegen.init(self.allocator, self.context, mlir_ctx);
 

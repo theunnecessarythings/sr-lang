@@ -4066,17 +4066,17 @@ pub const LLVMComdat = enum(c_int) {
 
 /// MlirLLVMLinkage corresponds to the C enum MlirLLVMLinkage.
 pub const LLVMLinkage = enum(c_int) {
-    Private = 0,
-    Internal = 1,
-    AvailableExternally = 2,
-    Linkonce = 3,
-    Weak = 4,
-    Common = 5,
-    Appending = 6,
-    ExternWeak = 7,
-    LinkonceODR = 8,
-    WeakODR = 9,
-    External = 10,
+    External,
+    AvailableExternally,
+    Linkonce,
+    LinkonceODR,
+    Weak,
+    WeakODR,
+    Appending,
+    Internal,
+    Private,
+    ExternWeak,
+    Common,
 };
 
 /// MlirLLVMTypeEncoding corresponds to the C enum MlirLLVMTypeEncoding.
@@ -4301,7 +4301,7 @@ pub const LLVMAttributes = struct {
 
     /// Creates a LLVM Linkage attribute.
     pub fn getLLVMLinkageAttr(ctx: Context, linkage: LLVMLinkage) Attribute {
-        const attr = c.mlirLLVMLinkageAttrGet(ctx.handle, @intCast(linkage));
+        const attr = c.mlirLLVMLinkageAttrGet(ctx.handle, @intCast(@intFromEnum(linkage)));
         return Attribute{ .handle = attr };
     }
 

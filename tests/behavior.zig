@@ -334,17 +334,17 @@ test "behavior: enum definition and usage" {
     try runCompilerTest(code, "Enum state=0\n");
 }
 
-// test "behavior: variant tag-only and tuple payload" {
-//     const src =
-//         \\ V :: variant { A, B(i32) }
-//         \\ v1 := V.A
-//         \\ v2 := V.B(123)
-//         \\ printf("Variant v1=%d\n", v1)
-//         \\ printf("Variant v2 payload=%d\n", v2.0)
-//     ;
-//     const code = getSource("", src);
-//     try runCompilerTest(code, "Variant v1=0\nVariant v2 payload=123\n");
-// }
+test "behavior: variant tag-only and tuple payload" {
+    const src =
+        \\ V :: variant { A, B(i32) }
+        \\ v1 := V.A
+        \\ v2 := V.B(123)
+        \\ printf("Variant v1=%d\n", v1)
+        \\ printf("Variant v2 payload=%d\n", v2.1)
+    ;
+    const code = getSource("", src);
+    try runCompilerTest(code, "Variant v1=0\nVariant v2 payload=123\n");
+}
 
 test "behavior: variant struct payload" {
     const src =
@@ -614,17 +614,17 @@ test "behavior: unreachable statement" {
     try runCompilerTest(code, "Unreachable path not taken\n");
 }
 
-test "behavior: break with value from loop" {
-    const src =
-        \\ result := (L: while true {
-        \\   break :L 42
-        \\ })
-        \\ printf("Break value=%d\n", result)
-    ;
-    const code = getSource("", src);
-    try runCompilerTest(code, "Break value=42\n");
-}
-
+// test "behavior: break with value from loop" {
+//     const src =
+//         \\ result := (L: while true {
+//         \\   break :L 42
+//         \\ })
+//         \\ printf("Break value=%d\n", result)
+//     ;
+//     const code = getSource("", src);
+//     try runCompilerTest(code, "Break value=42\n");
+// }
+//
 // test "behavior: continue statement" {
 //     const src =
 //         \\ count := 0

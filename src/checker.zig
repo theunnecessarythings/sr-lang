@@ -1567,8 +1567,34 @@ pub const Checker = struct {
                     _ = self.context.diags.addError(self.exprLoc(field_expr), .unknown_error_tag, .{}) catch {};
                     return null;
                 }
-
                 _ = self.context.diags.addError(self.exprLoc(field_expr), .field_access_on_non_aggregate, .{}) catch {};
+                return null;
+            },
+            .Variant => {
+                const vty = self.context.type_store.get(.Variant, ty);
+                const variants = self.context.type_store.field_pool.slice(vty.variants);
+                if (field_expr.is_tuple) {
+                    const index = std.fmt.parseInt(usize, self.getStr(field_expr.field), 10) catch {
+                        _ = self.context.diags.addError(self.exprLoc(field_expr), .expected_field_name_or_index, .{}) catch {};
+                        return null;
+                    };
+                    if (index >= variants.len) {
+                        _ = self.context.diags.addError(self.exprLoc(field_expr), .tuple_index_out_of_bounds, .{}) catch {};
+                        return null;
+                    }
+                    try self.type_info.setFieldIndex(id, @intCast(index));
+                    const variant = self.context.type_store.Field.get(variants[index]);
+                    return variant.ty;
+                }
+                var i: usize = 0;
+                while (i < variants.len) : (i += 1) {
+                    const variant = self.context.type_store.Field.get(variants[i]);
+                    if (variant.name.eq(field_expr.field)) {
+                        try self.type_info.setFieldIndex(id, @intCast(i));
+                        return variant.ty;
+                    }
+                }
+                _ = self.context.diags.addError(self.exprLoc(field_expr), .unknown_variant_tag, .{}) catch {};
                 return null;
             },
             else => {

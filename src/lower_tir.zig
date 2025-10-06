@@ -9,6 +9,7 @@ const OptStrId = @import("cst.zig").OptStrId;
 const Context = @import("compile.zig").Context;
 const ImportResolver = @import("import_resolver.zig").ImportResolver;
 const Pipeline = @import("pipeline.zig").Pipeline;
+const Builder = tir.Builder;
 
 pub const LowerTir = struct {
     gpa: std.mem.Allocator,
@@ -114,15 +115,12 @@ pub const LowerTir = struct {
 
     // Produce an undef that is never-void; if asked for void, give Any instead.
     fn safeUndef(self: *LowerTir, blk: *Builder.BlockFrame, ty: types.TypeId) tir.ValueId {
-        if (self.isVoid(ty)) return blk.builder.constUndef(blk, self.context.type_store.tAny());
-        return blk.builder.constUndef(blk, ty);
+        if (self.isVoid(ty)) return blk.builder.tirValue(.ConstUndef, blk, self.context.type_store.tAny(), .{});
+        return blk.builder.tirValue(.ConstUndef, blk, ty, .{});
     }
 
     fn undef(_: *LowerTir, blk: *Builder.BlockFrame, ty: types.TypeId) tir.ValueId {
-        return blk.builder.constUndef(blk, ty);
-    }
-    fn boolConst(self: *LowerTir, blk: *Builder.BlockFrame, v: bool) tir.ValueId {
-        return blk.builder.constBool(blk, self.context.type_store.tBool(), v);
+        return blk.builder.tirValue(.ConstUndef, blk, ty, .{});
     }
 
     /// Insert an explicit coercion that realizes what the checker proved assignable/castable.
@@ -140,10 +138,10 @@ pub const LowerTir = struct {
             .I8, .I16, .I32, .I64, .U8, .U16, .U32, .U64, .Usize, .F32, .F64 => true,
             else => false,
         };
-        if (is_num and is_num_w) return blk.builder.cast(blk, .CastNormal, want, v);
-        if (gk == .Ptr and wk == .Ptr) return blk.builder.cast(blk, .CastBit, want, v);
+        if (is_num and is_num_w) return blk.builder.tirValue(.CastNormal, blk, want, .{ .value = v });
+        if (gk == .Ptr and wk == .Ptr) return blk.builder.tirValue(.CastBit, blk, want, .{ .value = v });
         // Any/compatible assignable: use Normal cast as a materialization
-        return blk.builder.cast(blk, .CastNormal, want, v);
+        return blk.builder.tirValue(.CastNormal, blk, want, .{ .value = v });
     }
 
     // ============================
@@ -270,6 +268,21 @@ pub const LowerTir = struct {
         env.defers.items.len = from;
     }
 
+    fn runDefersForLoopExit(
+        self: *LowerTir,
+        a: *const ast.Ast,
+        env: *Env,
+        f: *Builder.FunctionFrame,
+        blk: *Builder.BlockFrame,
+        lc: LoopCtx,
+    ) !void {
+        var j: isize = @as(isize, @intCast(env.defers.items.len)) - 1;
+        while (j >= 0 and @as(u32, @intCast(j)) >= lc.defer_len_at_entry) : (j -= 1) {
+            const ent = env.defers.items[@intCast(j)];
+            if (!ent.is_err) _ = try self.lowerExpr(a, env, f, blk, ent.expr, null, .rvalue);
+        }
+    }
+
     fn lowerBreak(
         self: *LowerTir,
         a: *const ast.Ast,
@@ -288,17 +301,12 @@ pub const LowerTir = struct {
             }
         }
         if (target) |lc| {
-            // run normal defers from current down to loop entry
-            var j: isize = @as(isize, @intCast(env.defers.items.len)) - 1;
-            while (j >= 0 and @as(u32, @intCast(j)) >= lc.defer_len_at_entry) : (j -= 1) {
-                const ent = env.defers.items[@intCast(j)];
-                if (!ent.is_err) _ = try self.lowerExpr(a, env, f, blk, ent.expr, null, .rvalue);
-            }
+            try self.runDefersForLoopExit(a, env, f, blk, lc);
             if (lc.has_result) {
                 const v = if (!br.value.isNone())
                     try self.lowerExpr(a, env, f, blk, br.value.unwrap(), lc.res_ty, .rvalue)
                 else
-                    f.builder.constUndef(blk, lc.res_ty);
+                    f.builder.tirValue(.ConstUndef, blk, lc.res_ty, .{});
                 try f.builder.br(blk, lc.join_block, &.{v});
             } else {
                 try f.builder.br(blk, lc.break_block, &.{});
@@ -309,11 +317,7 @@ pub const LowerTir = struct {
     fn lowerContinue(self: *LowerTir, a: *const ast.Ast, env: *Env, f: *Builder.FunctionFrame, blk: *Builder.BlockFrame, cid: ast.Rows.Continue) !void {
         _ = cid;
         const lc = if (self.loop_stack.items.len > 0) self.loop_stack.items[self.loop_stack.items.len - 1] else return error.LoweringBug;
-        var j: isize = @as(isize, @intCast(env.defers.items.len)) - 1;
-        while (j >= 0 and @as(u32, @intCast(j)) >= lc.defer_len_at_entry) : (j -= 1) {
-            const ent = env.defers.items[@intCast(j)];
-            if (!ent.is_err) _ = try self.lowerExpr(a, env, f, blk, ent.expr, null, .rvalue);
-        }
+        try self.runDefersForLoopExit(a, env, f, blk, lc);
         try f.builder.br(blk, lc.continue_block, &.{});
     }
 
@@ -392,7 +396,7 @@ pub const LowerTir = struct {
         const lhs_ptr = try self.lowerExpr(a, env, f, blk, as.left, null, .lvalue_addr);
         const rhs = try self.lowerExpr(a, env, f, blk, as.right, self.getExprType(as.left), .rvalue);
         const rty = self.getExprType(as.left) orelse return error.LoweringBug;
-        _ = f.builder.store(blk, rty, lhs_ptr, rhs, 0);
+        _ = f.builder.tirValue(.Store, blk, rty, .{ .ptr = lhs_ptr, .value = rhs, .@"align" = 0 });
     }
 
     fn lowerStmt(self: *LowerTir, a: *const ast.Ast, env: *Env, f: *Builder.FunctionFrame, blk: *Builder.BlockFrame, sid: ast.StmtId) !void {
@@ -453,7 +457,6 @@ pub const LowerTir = struct {
         ety: types.TypeId,
         k: types.TypeKind,
     ) !tir.ValueId {
-        // Extract last segment from callee path (FieldAccess chain)
         var cur = row.callee;
         var last_name: ?StrId = null;
         while (a.exprs.index.kinds.items[cur.toRaw()] == .FieldAccess) {
@@ -461,9 +464,8 @@ pub const LowerTir = struct {
             last_name = fr.field;
             cur = fr.parent;
         }
-        if (last_name != null) return error.LoweringBug;
+        if (last_name == null) return error.LoweringBug;
         const lname = last_name.?;
-        // Find case index and payload type
         const fields = if (k == .Variant)
             self.context.type_store.field_pool.slice(self.context.type_store.get(.Variant, ety).variants)
         else
@@ -471,42 +473,58 @@ pub const LowerTir = struct {
         var tag_idx: u32 = 0;
         var payload_ty: types.TypeId = self.context.type_store.tVoid();
         var found = false;
-        var i_f: usize = 0;
-        while (i_f < fields.len) : (i_f += 1) {
-            const fld = self.context.type_store.Field.get(fields[i_f]);
+        for (fields, 0..) |fld_id, i| {
+            const fld = self.context.type_store.Field.get(fld_id);
             if (fld.name.eq(lname)) {
-                tag_idx = @intCast(i_f);
+                tag_idx = @intCast(i);
                 payload_ty = fld.ty;
                 found = true;
                 break;
             }
         }
         if (!found) return error.LoweringBug;
-        // Lower payload according to payload_ty
+
         const args = a.exprs.expr_pool.slice(row.args);
-        var pay_v: tir.OptValueId = .none();
-        if (self.context.type_store.getKind(payload_ty) == .Void) {
-            // no payload
-        } else if (self.context.type_store.getKind(payload_ty) == .Tuple) {
-            const tr = self.context.type_store.get(.Tuple, payload_ty);
-            const subtys = self.context.type_store.type_pool.slice(tr.elems);
-            var elems = try self.gpa.alloc(tir.ValueId, subtys.len);
-            defer self.gpa.free(elems);
-            var j2: usize = 0;
-            while (j2 < subtys.len) : (j2 += 1) {
-                const arg_id = if (j2 < args.len) args[j2] else args[args.len - 1];
-                elems[j2] = try self.lowerExpr(a, env, f, blk, arg_id, subtys[j2], .rvalue);
-            }
-            const tuple_v = blk.builder.tupleMake(blk, payload_ty, elems);
-            pay_v = .some(tuple_v);
-        } else {
-            // single payload: take first arg
-            if (args.len > 0) {
-                const pv = try self.lowerExpr(a, env, f, blk, args[0], payload_ty, .rvalue);
-                pay_v = .some(pv);
-            }
+        const payload_kind = self.context.type_store.getKind(payload_ty);
+        const payload_val = switch (payload_kind) {
+            .Void => null,
+            .Tuple => blk: {
+                const tr = self.context.type_store.get(.Tuple, payload_ty);
+                const subtys = self.context.type_store.type_pool.slice(tr.elems);
+                var elems = try self.gpa.alloc(tir.ValueId, subtys.len);
+                defer self.gpa.free(elems);
+                for (subtys, 0..) |sty, i| {
+                    const arg_id = if (i < args.len) args[i] else args[args.len - 1];
+                    elems[i] = try self.lowerExpr(a, env, f, blk, arg_id, sty, .rvalue);
+                }
+                break :blk blk.builder.tupleMake(blk, payload_ty, elems);
+            },
+            else => try self.lowerExpr(a, env, f, blk, args[0], payload_ty, .rvalue),
+        };
+
+        const tag_val = blk.builder.tirValue(.ConstInt, blk, self.context.type_store.tI32(), .{ .value = tag_idx });
+
+        // Create StructFieldArg array for mkUnion
+        var union_fields_args = try self.gpa.alloc(types.TypeStore.StructFieldArg, fields.len);
+        defer self.gpa.free(union_fields_args);
+        for (fields, 0..) |fld_id, i| {
+            const fld = self.context.type_store.Field.get(fld_id);
+            union_fields_args[i] = .{ .name = fld.name, .ty = fld.ty };
         }
-        return blk.builder.variantMake(blk, ety, tag_idx, pay_v, payload_ty);
+        const union_ty = self.context.type_store.mkUnion(union_fields_args);
+
+        const union_val: tir.ValueId = if (payload_val) |pv|
+            blk.builder.tirValue(.UnionMake, blk, union_ty, .{
+                .field_index = tag_idx,
+                .value = pv,
+            })
+        else
+            blk.builder.tirValue(.ConstUndef, blk, union_ty, .{});
+
+        return blk.builder.structMake(blk, ety, &[_]tir.Rows.StructFieldInit{
+            .{ .index = 0, .name = .none(), .value = tag_val },
+            .{ .index = 1, .name = .none(), .value = union_val },
+        });
     }
 
     fn lowerCall(
@@ -622,25 +640,27 @@ pub const LowerTir = struct {
         // If the checker didn’t stamp a type, use the caller’s expected type.
         const ty0 = self.getExprType(id) orelse (expected_ty orelse return error.LoweringBug);
         const v = switch (lit.kind) {
-            .int => blk.builder.constInt(blk, ty0, try std.fmt.parseInt(u64, a.exprs.strs.get(lit.value.unwrap()), 10)),
+            .int => blk.builder.tirValue(.ConstInt, blk, ty0, .{
+                .value = try std.fmt.parseInt(u64, a.exprs.strs.get(lit.value.unwrap()), 10),
+            }),
             .imaginary => blk: {
                 // ty0 must be Complex(elem). Build from (re=0, im=value)
                 const tk = self.context.type_store.getKind(ty0);
-                if (tk != .Complex) break :blk blk.builder.constUndef(blk, ty0);
+                if (tk != .Complex) break :blk blk.builder.tirValue(.ConstUndef, blk, ty0, .{});
                 const crow = self.context.type_store.get(.Complex, ty0);
                 const elem = crow.elem;
                 const s = a.exprs.strs.get(lit.value.unwrap());
                 // Parse as f64 and cast to elem as needed
                 const parsed = try std.fmt.parseFloat(f64, s);
-                const re0 = blk.builder.constFloat(blk, elem, 0.0);
-                const imv = blk.builder.constFloat(blk, elem, parsed);
-                const cv = blk.builder.complexMake(blk, ty0, re0, imv);
+                const re0 = blk.builder.tirValue(.ConstFloat, blk, elem, .{ .value = 0.0 });
+                const imv = blk.builder.tirValue(.ConstFloat, blk, elem, .{ .value = parsed });
+                const cv = blk.builder.tirValue(.ComplexMake, blk, ty0, .{ .re = re0, .im = imv });
                 break :blk cv;
             },
-            .float => blk.builder.constFloat(blk, ty0, try std.fmt.parseFloat(f64, a.exprs.strs.get(lit.value.unwrap()))),
-            .bool => blk.builder.constBool(blk, ty0, lit.bool_value),
-            .string => blk.builder.constString(blk, ty0, a.exprs.strs.get(lit.value.unwrap())),
-            .char => blk.builder.constInt(blk, ty0, @as(u64, lit.char_value)),
+            .float => blk.builder.tirValue(.ConstFloat, blk, ty0, .{ .value = try std.fmt.parseFloat(f64, a.exprs.strs.get(lit.value.unwrap())) }),
+            .bool => blk.builder.tirValue(.ConstBool, blk, ty0, .{ .value = lit.bool_value }),
+            .string => blk.builder.tirValue(.ConstString, blk, ty0, .{ .text = lit.value.unwrap() }),
+            .char => blk.builder.tirValue(.ConstInt, blk, ty0, .{ .value = @as(u64, lit.char_value) }),
         };
         if (expected_ty) |want| return self.emitCoerce(blk, v, ty0, want);
         return v;
@@ -663,7 +683,7 @@ pub const LowerTir = struct {
             // When user asked address-of explicitly, produce pointer type
             if (row.op == .address_of) {
                 const v = try self.lowerExpr(a, env, f, blk, row.expr, ety, .rvalue);
-                return blk.builder.addressOf(blk, self.context.type_store.mkPtr(ety, false), v);
+                return blk.builder.tirValue(.AddressOf, blk, self.context.type_store.mkPtr(ety, false), .{ .value = v });
             }
             // lvalue address request falls through to .Ident/.FieldAccess/.IndexAccess implementations
         }
@@ -691,12 +711,13 @@ pub const LowerTir = struct {
                     const k = self.context.type_store.index.kinds.items[ty0.toRaw()];
                     if (k == .Complex) {
                         const crow = self.context.type_store.get(.Complex, ty0);
-                        const re0 = blk.builder.constFloat(blk, crow.elem, 0.0);
-                        const im0 = blk.builder.constFloat(blk, crow.elem, 0.0);
-                        break :zblk blk.builder.complexMake(blk, ty0, re0, im0);
+                        const re0 = blk.builder.tirValue(.ConstFloat, blk, crow.elem, .{ .value = 0.0 });
+                        const im0 = blk.builder.tirValue(.ConstFloat, blk, crow.elem, .{ .value = 0.0 });
+                        break :zblk blk.builder.tirValue(.ComplexMake, blk, ty0, .{ .re = re0, .im = im0 });
                     }
-                    if (self.isFloat(ty0)) break :zblk blk.builder.constFloat(blk, ty0, 0.0);
-                    break :zblk blk.builder.constInt(blk, ty0, 0);
+                    if (self.isFloat(ty0)) break :zblk blk.builder.tirValue(.ConstFloat, blk, ty0, .{ .value = 0.0 });
+                    // break :zblk blk.builder.tirValue(.ConstInt, blk, ty0, .{ .value = 0 });
+                    break :zblk blk.builder.tirValue(.ConstInt, blk, ty0, .{ .value = 0 });
                 };
                 break :blk blk.builder.bin(blk, .Sub, ty0, zero, v0);
             },
@@ -717,16 +738,16 @@ pub const LowerTir = struct {
         const row = a.exprs.get(.Range, id);
         const ty0 = self.getExprType(id) orelse return error.LoweringBug;
         const usize_ty = self.context.type_store.tUsize();
-        const start_v = if (!row.start.isNone()) try self.lowerExpr(a, env, f, blk, row.start.unwrap(), usize_ty, .rvalue) else blk.builder.constUndef(blk, usize_ty);
-        const end_v = if (!row.end.isNone()) try self.lowerExpr(a, env, f, blk, row.end.unwrap(), usize_ty, .rvalue) else blk.builder.constUndef(blk, usize_ty);
-        const incl = blk.builder.constBool(blk, self.context.type_store.tBool(), row.inclusive_right);
+        const start_v = if (!row.start.isNone()) try self.lowerExpr(a, env, f, blk, row.start.unwrap(), usize_ty, .rvalue) else blk.builder.tirValue(.ConstUndef, blk, usize_ty, .{});
+        const end_v = if (!row.end.isNone()) try self.lowerExpr(a, env, f, blk, row.end.unwrap(), usize_ty, .rvalue) else blk.builder.tirValue(.ConstUndef, blk, usize_ty, .{});
+        const incl = blk.builder.tirValue(.ConstBool, blk, self.context.type_store.tBool(), .{ .value = row.inclusive_right });
         // Materialize range as TIR RangeMake (typed as []usize)
         const v = blk.builder.rangeMake(blk, ty0, start_v, end_v, incl);
         if (expected_ty) |want| return self.emitCoerce(blk, v, ty0, want);
         return v;
     }
 
-    fn lowerDefer(
+    fn lowerDeref(
         self: *LowerTir,
         a: *const ast.Ast,
         env: *Env,
@@ -744,7 +765,7 @@ pub const LowerTir = struct {
         const ty0 = self.getExprType(id) orelse return error.LoweringBug;
         const row = a.exprs.get(.Deref, id);
         const ptr = try self.lowerExpr(a, env, f, blk, row.expr, null, .rvalue);
-        const v = blk.builder.load(blk, ty0, ptr, 0);
+        const v = blk.builder.tirValue(.Load, blk, ty0, .{ .ptr = ptr, .@"align" = 0 });
         if (expected_ty) |want| return self.emitCoerce(blk, v, ty0, want);
         return v;
     }
@@ -903,7 +924,9 @@ pub const LowerTir = struct {
                     const lit = a.exprs.get(.Literal, row.index);
                     if (lit.kind == .int) {
                         const s = a.exprs.strs.get(lit.value.unwrap());
-                        const uv = blk.builder.constInt(blk, self.context.type_store.tUsize(), try std.fmt.parseInt(u64, s, 10));
+                        const uv = blk.builder.tirValue(.ConstInt, blk, self.context.type_store.tUsize(), .{
+                            .value = try std.fmt.parseInt(u64, s, 10),
+                        });
                         break :blk uv;
                     }
                 }
@@ -930,7 +953,9 @@ pub const LowerTir = struct {
                         const lit = a.exprs.get(.Literal, row.index);
                         if (lit.kind == .int) {
                             const s = a.exprs.strs.get(lit.value.unwrap());
-                            const uv = blk.builder.constInt(blk, self.context.type_store.tUsize(), try std.fmt.parseInt(u64, s, 10));
+                            const uv = blk.builder.tirValue(.ConstInt, blk, self.context.type_store.tUsize(), .{
+                                .value = try std.fmt.parseInt(u64, s, 10),
+                            });
                             break :blk uv;
                         }
                     }
@@ -941,6 +966,96 @@ pub const LowerTir = struct {
             if (expected_ty) |want| return self.emitCoerce(blk, v, ty0, want);
             return v;
         }
+    }
+
+    fn lowerImportedModuleMember(self: *LowerTir, a: *const ast.Ast, blk: *Builder.BlockFrame, parent_id: ast.ExprId, field_name: StrId, expected_ty: ?types.TypeId) !?tir.ValueId {
+        const idr = a.exprs.get(.Ident, parent_id);
+        if (self.findTopLevelImportByName(a, idr.name)) |imp_decl| {
+            const ty0 = self.getExprType(parent_id) orelse (expected_ty orelse self.context.type_store.tAny());
+            if (self.materializeImportedConst(&self.context.resolver, a, imp_decl, field_name, ty0, blk, self.pipeline)) |vv| {
+                if (expected_ty) |want| return self.emitCoerce(blk, vv, ty0, want);
+                return vv;
+            }
+            const v = blk.builder.tirValue(.ConstUndef, blk, ty0, .{});
+            if (expected_ty) |want| return self.emitCoerce(blk, v, ty0, want);
+            return v;
+        }
+        return null;
+    }
+
+    fn lowerEnumMember(self: *LowerTir, _: *const ast.Ast, blk: *Builder.BlockFrame, id: ast.ExprId, parent_expr: ast.ExprId, expected_ty: ?types.TypeId) !?tir.ValueId {
+        const parent_ty = self.getExprType(parent_expr);
+        var is_enum_parent = false;
+        if (parent_ty) |ty| {
+            const parent_kind = self.context.type_store.getKind(ty);
+            is_enum_parent = parent_kind == .Enum;
+            if (!is_enum_parent and parent_kind == .TypeType) {
+                const tr = self.context.type_store.get(.TypeType, ty);
+                if (self.context.type_store.getKind(tr.of) == .Enum) {
+                    is_enum_parent = true;
+                }
+            }
+        }
+        if (is_enum_parent) {
+            const ty0 = self.getExprType(id) orelse (expected_ty orelse self.context.type_store.tAny());
+            const idx = self.type_info.getFieldIndex(id) orelse return error.LoweringBug; // enum members should be indexed by the checker
+            var ev = blk.builder.tirValue(.ConstInt, blk, ty0, .{ .value = @as(u64, @intCast(idx)) });
+            if (expected_ty) |want| ev = self.emitCoerce(blk, ev, ty0, want);
+            return ev;
+        }
+        return null;
+    }
+
+    fn lowerVariantTagLiteral(self: *LowerTir, _: *const ast.Ast, blk: *Builder.BlockFrame, parent_expr: ast.ExprId, field_name: StrId, expected_ty: ?types.TypeId) !?tir.ValueId {
+        const ty = self.getExprType(parent_expr) orelse return null;
+        const parent_kind = self.context.type_store.getKind(ty);
+        if (parent_kind != .TypeType) return null;
+
+        const tr = self.context.type_store.get(.TypeType, ty);
+        const of_kind = self.context.type_store.getKind(tr.of);
+        if (of_kind != .Variant and of_kind != .Error) return null;
+
+        const is_variant = of_kind == .Variant;
+        const fields = if (is_variant)
+            self.context.type_store.field_pool.slice(self.context.type_store.get(.Variant, tr.of).variants)
+        else
+            self.context.type_store.field_pool.slice(self.context.type_store.get(.Error, tr.of).variants);
+        var tag_idx: ?u32 = null;
+        var payload_ty: types.TypeId = self.context.type_store.tVoid();
+        for (fields, 0..) |fid, i| {
+            const frow = self.context.type_store.Field.get(fid);
+            if (frow.name.eq(field_name)) {
+                tag_idx = @intCast(i);
+                payload_ty = frow.ty;
+                break;
+            }
+        }
+        const ti = tag_idx orelse return error.LoweringBug; // variant members should be indexed by the checker
+        // Only allow tag-only if payload is void
+        if (self.context.type_store.getKind(payload_ty) != .Void) return null;
+
+        const vty = tr.of;
+        const tag_val = blk.builder.tirValue(.ConstInt, blk, self.context.type_store.tI32(), .{ .value = ti });
+        // vty needs to be a union type here
+
+        // Create StructFieldArg array for mkUnion
+        var union_fields_args = try self.gpa.alloc(types.TypeStore.StructFieldArg, fields.len);
+        defer self.gpa.free(union_fields_args);
+        for (fields, 0..) |fld_id, i| {
+            const fld = self.context.type_store.Field.get(fld_id);
+            union_fields_args[i] = .{ .name = fld.name, .ty = fld.ty };
+        }
+        const union_ty = self.context.type_store.mkUnion(union_fields_args);
+
+        const union_val = blk.builder.tirValue(.ConstUndef, blk, union_ty, .{});
+
+        const vv = blk.builder.structMake(blk, vty, &[_]tir.Rows.StructFieldInit{
+            .{ .index = 0, .name = .none(), .value = tag_val },
+            .{ .index = 1, .name = .none(), .value = union_val },
+        });
+
+        if (expected_ty) |want| return self.emitCoerce(blk, vv, vty, want);
+        return vv;
     }
 
     fn lowerFieldAccess(
@@ -957,15 +1072,7 @@ pub const LowerTir = struct {
 
         // ---------- 1) Imported module member (rvalue only) ----------
         if (mode == .rvalue and a.exprs.index.kinds.items[row.parent.toRaw()] == .Ident) {
-            const idr = a.exprs.get(.Ident, row.parent);
-            if (self.findTopLevelImportByName(a, idr.name)) |imp_decl| {
-                const ty0 = self.getExprType(id) orelse (expected_ty orelse self.context.type_store.tAny());
-                if (self.materializeImportedConst(&self.context.resolver, a, imp_decl, row.field, ty0, blk, self.pipeline)) |vv| {
-                    if (expected_ty) |want| return self.emitCoerce(blk, vv, ty0, want);
-                    return vv;
-                }
-                const v = blk.builder.constUndef(blk, ty0);
-                if (expected_ty) |want| return self.emitCoerce(blk, v, ty0, want);
+            if (try self.lowerImportedModuleMember(a, blk, row.parent, row.field, expected_ty)) |v| {
                 return v;
             }
         }
@@ -975,51 +1082,11 @@ pub const LowerTir = struct {
 
         // ---------- 2) EnumName.Member => constant ----------
         if (mode == .rvalue) {
-            const parent_ty = self.getExprType(row.parent);
-            var is_enum_parent = false;
-            if (parent_ty) |ty| {
-                const parent_kind = self.context.type_store.getKind(ty);
-                is_enum_parent = parent_kind == .Enum;
-                if (!is_enum_parent and parent_kind == .TypeType) {
-                    const tr = self.context.type_store.get(.TypeType, ty);
-                    if (self.context.type_store.getKind(tr.of) == .Enum) {
-                        is_enum_parent = true;
-                    }
-                    // Variant/Error tag-only literal: Type.Tag (payload must be void)
-                    if (!is_enum_parent and (self.context.type_store.getKind(tr.of) == .Variant or self.context.type_store.getKind(tr.of) == .Error)) {
-                        const is_variant = self.context.type_store.getKind(tr.of) == .Variant;
-                        const fields = if (is_variant)
-                            self.context.type_store.field_pool.slice(self.context.type_store.get(.Variant, tr.of).variants)
-                        else
-                            self.context.type_store.field_pool.slice(self.context.type_store.get(.Error, tr.of).variants);
-                        var tag_idx: ?u32 = null;
-                        var payload_ty: types.TypeId = self.context.type_store.tVoid();
-                        for (fields, 0..) |fid, i| {
-                            const frow = self.context.type_store.Field.get(fid);
-                            if (frow.name.toRaw() == row.field.toRaw()) {
-                                tag_idx = @intCast(i);
-                                payload_ty = frow.ty;
-                                break;
-                            }
-                        }
-                        if (tag_idx) |ti| {
-                            // Only allow tag-only if payload is void
-                            if (self.context.type_store.getKind(payload_ty) == .Void) {
-                                const vty = tr.of;
-                                const vv = blk.builder.variantMake(blk, vty, ti, tir.OptValueId.none(), payload_ty);
-                                if (expected_ty) |want| return self.emitCoerce(blk, vv, vty, want);
-                                return vv;
-                            }
-                        }
-                    }
-                }
+            if (try self.lowerEnumMember(a, blk, id, row.parent, expected_ty)) |v| {
+                return v;
             }
-            if (is_enum_parent) {
-                const ty0 = self.getExprType(id) orelse (expected_ty orelse self.context.type_store.tAny());
-                const idx = idx_maybe orelse return error.LoweringBug; // enum members should be indexed by the checker
-                var ev = blk.builder.constInt(blk, ty0, @intCast(idx));
-                if (expected_ty) |want| ev = self.emitCoerce(blk, ev, ty0, want);
-                return ev;
+            if (try self.lowerVariantTagLiteral(a, blk, row.parent, row.field, expected_ty)) |v| {
+                return v;
             }
         }
 
@@ -1045,7 +1112,10 @@ pub const LowerTir = struct {
 
         var v: tir.ValueId = undefined;
         if (idx_maybe) |resolved_idx| {
-            v = if (is_tuple)
+            const parent_kind = self.context.type_store.getKind(parent_ty_opt orelse self.context.type_store.tAny());
+            v = if (parent_kind == .Variant)
+                blk.builder.tirValue(.UnionField, blk, ty0, .{ .base = base, .field_index = resolved_idx })
+            else if (is_tuple)
                 blk.builder.extractElem(blk, ty0, base, resolved_idx)
             else
                 blk.builder.extractField(blk, ty0, base, resolved_idx);
@@ -1071,92 +1141,84 @@ pub const LowerTir = struct {
         mode: LowerMode,
     ) anyerror!tir.ValueId {
         const row = a.exprs.get(.Ident, id);
+        const name = row.name;
+
+        // Pre-lift a couple things we end up consulting a few times.
+        const expr_ty_opt = self.getExprType(id);
+        const did_opt = self.findTopLevelDeclByName(a, name);
+
+        // Helper: when an expected type is a pointer, use its element;
+        // otherwise fall back to the expression type (or Any).
+        const want_elem = blk: {
+            if (expected_ty) |want| {
+                if (self.context.type_store.getKind(want) == .Ptr)
+                    break :blk self.context.type_store.get(.Ptr, want).elem;
+            }
+            break :blk (expr_ty_opt orelse self.context.type_store.tAny());
+        };
 
         if (mode == .lvalue_addr) {
-            // If already in env as a slot, we're done.
-            if (env.lookup(row.name)) |bnd| {
-                if (bnd.is_slot) return bnd.value;
-            }
+            // 1) If it's already a slot, we're done.
+            if (env.lookup(name)) |bnd| if (bnd.is_slot) return bnd.value;
 
-            // Check for top-level (global) decl
-            if (self.findTopLevelDeclByName(a, row.name)) |did| {
+            // 2) If it's a top-level decl, bind its address as a slot and return.
+            if (did_opt) |did| {
                 const d = a.exprs.Decl.get(did);
                 const gty = self.getDeclType(did) orelse return error.LoweringBug;
                 const ptr_ty = self.context.type_store.mkPtr(gty, !d.flags.is_const);
-                const addr = blk.builder.globalAddr(blk, ptr_ty, row.name);
-                try env.bind(self.gpa, a, row.name, .{ .value = addr, .is_slot = true });
+                const addr = blk.builder.tirValue(.GlobalAddr, blk, ptr_ty, .{ .name = name });
+                try env.bind(self.gpa, a, name, .{ .value = addr, .is_slot = true });
                 return addr;
             }
 
-            // Not a global, must be a local value binding needing a slot.
-            if (env.lookup(row.name)) |bnd| {
-                const ety2 = self.getExprType(id) orelse blk: {
-                    if (expected_ty) |want| {
-                        if (self.context.type_store.getKind(want) == .Ptr) {
-                            const ptr = self.context.type_store.get(.Ptr, want);
-                            break :blk ptr.elem;
-                        }
-                    }
-                    break :blk self.context.type_store.tAny();
-                };
-                const slot_ty2 = self.context.type_store.mkPtr(ety2, false);
-                const slot2 = f.builder.alloca(blk, slot_ty2, tir.OptValueId.none(), 0);
-                var to_store = bnd.value;
-                if (expected_ty) |want| {
-                    if (self.context.type_store.getKind(want) == .Ptr) {
-                        const ptr = self.context.type_store.get(.Ptr, want);
-                        to_store = self.emitCoerce(blk, bnd.value, ety2, ptr.elem);
-                        _ = f.builder.store(blk, ptr.elem, slot2, to_store, 0);
-                    } else {
-                        to_store = self.emitCoerce(blk, bnd.value, ety2, ety2);
-                        _ = f.builder.store(blk, ety2, slot2, to_store, 0);
-                    }
-                } else {
-                    _ = f.builder.store(blk, ety2, slot2, to_store, 0);
-                }
-                try env.bind(self.gpa, a, row.name, .{ .value = slot2, .is_slot = true });
-                return slot2;
+            // 3) Otherwise it must be a local value binding that needs a slot.
+            if (env.lookup(name)) |bnd| {
+                const slot_ty = self.context.type_store.mkPtr(want_elem, false);
+                const slot = f.builder.tirValue(.Alloca, blk, slot_ty, .{ .count = tir.OptValueId.none(), .@"align" = 0 });
+
+                const src_ty = (expr_ty_opt orelse want_elem);
+                const to_store = self.emitCoerce(blk, bnd.value, src_ty, want_elem);
+                _ = f.builder.tirValue(.Store, blk, want_elem, .{ .ptr = slot, .value = to_store, .@"align" = 0 });
+
+                try env.bind(self.gpa, a, name, .{ .value = slot, .is_slot = true });
+                return slot;
             }
 
-            // Not found anywhere.
+            // 4) Nowhere to get it from.
             return error.LoweringBug;
-        } else { // rvalue
-            const bnd = blk: {
-                if (env.lookup(row.name)) |v| break :blk v;
-
-                // Top-level decl?
-                if (self.findTopLevelDeclByName(a, row.name)) |did| {
-                    const d = a.exprs.Decl.get(did);
-                    const gty = self.getDeclType(did) orelse return error.LoweringBug;
-                    const ptr_ty = self.context.type_store.mkPtr(gty, !d.flags.is_const);
-                    const addr = blk.builder.globalAddr(blk, ptr_ty, row.name);
-                    try env.bind(self.gpa, a, row.name, .{ .value = addr, .is_slot = true });
-                    break :blk env.lookup(row.name).?;
-                }
-
-                // Not a value binding or top-level decl (likely a type name or similar).
-                // Produce a safe placeholder instead of failing. This keeps lowering going,
-                // and callers will typically just use it as a type-operand or ignore it.
-                const ty0 = self.getExprType(id) orelse self.context.type_store.tAny();
-                const placeholder = self.safeUndef(blk, ty0);
-                try env.bind(self.gpa, a, row.name, .{ .value = placeholder, .is_slot = false });
-                break :blk env.lookup(row.name).?;
-            };
-
-            if (bnd.is_slot) {
-                const ety = self.getExprType(id) orelse (expected_ty orelse self.context.type_store.tAny());
-                var loaded = blk.builder.load(blk, ety, bnd.value, 0);
-                if (expected_ty) |want| loaded = self.emitCoerce(blk, loaded, ety, want);
-                return loaded;
-            } else {
-                var v = bnd.value;
-                if (expected_ty) |want| {
-                    const got = self.getExprType(id) orelse want;
-                    v = self.emitCoerce(blk, v, got, want);
-                }
-                return v;
-            }
         }
+
+        // ---- rvalue path -----------------------------------------------------
+
+        // Acquire or synthesize a binding once, then decide how to produce a value.
+        const bnd = env.lookup(name) orelse blk: {
+            if (did_opt) |did| {
+                const d = a.exprs.Decl.get(did);
+                const gty = self.getDeclType(did) orelse return error.LoweringBug;
+                const ptr_ty = self.context.type_store.mkPtr(gty, !d.flags.is_const);
+                const addr = blk.builder.tirValue(.GlobalAddr, blk, ptr_ty, .{ .name = name });
+                try env.bind(self.gpa, a, name, .{ .value = addr, .is_slot = true });
+                break :blk env.lookup(name).?;
+            }
+
+            // Not a value binding or top-level decl (likely a type name etc.).
+            // Bind a safe placeholder so downstream code can keep going.
+            const ty0 = expr_ty_opt orelse self.context.type_store.tAny();
+            const placeholder = self.safeUndef(blk, ty0);
+            try env.bind(self.gpa, a, name, .{ .value = placeholder, .is_slot = false });
+            break :blk env.lookup(name).?;
+        };
+
+        if (bnd.is_slot) {
+            const load_ty = expr_ty_opt orelse (expected_ty orelse self.context.type_store.tAny());
+            var loaded = blk.builder.tirValue(.Load, blk, load_ty, .{ .ptr = bnd.value, .@"align" = 0 });
+            if (expected_ty) |want| loaded = self.emitCoerce(blk, loaded, load_ty, want);
+            return loaded;
+        }
+
+        // Non-slot: coerce if a target type was requested.
+        const got_ty = expr_ty_opt orelse (expected_ty orelse self.context.type_store.tAny());
+        return if (expected_ty) |want| self.emitCoerce(blk, bnd.value, got_ty, want) else bnd.value;
     }
 
     fn lowerBinary(
@@ -1178,15 +1240,17 @@ pub const LowerTir = struct {
             // Arithmetic / bitwise -> both sides usually share the resulting numeric type.
             .add, .sub, .mul, .div, .mod, .shl, .shr, .bit_and, .bit_or, .bit_xor => {
                 // If checker stamped Complex result, drive both operands to Complex
-                if (op_ty) |t| if (self.context.type_store.index.kinds.items[t.toRaw()] == .Complex) {
-                    lhs_expect = t;
-                    rhs_expect = t;
-                } else {
-                    const want = self.commonNumeric(self.getExprType(row.left), self.getExprType(row.right)) orelse (expected_ty orelse self.context.type_store.tI64());
-                    lhs_expect = want;
-                    rhs_expect = want;
-                    // If the checker didn't stamp a concrete result type (void/any), use `want`.
-                    if (op_ty == null or self.isVoid(op_ty.?) or self.isAny(op_ty.?)) op_ty = want;
+                if (op_ty) |t| {
+                    if (self.context.type_store.index.kinds.items[t.toRaw()] == .Complex) {
+                        lhs_expect = t;
+                        rhs_expect = t;
+                    } else {
+                        const want = self.commonNumeric(self.getExprType(row.left), self.getExprType(row.right)) orelse (expected_ty orelse self.context.type_store.tI64());
+                        lhs_expect = want;
+                        rhs_expect = want;
+                        // If the checker didn't stamp a concrete result type (void/any), use `want`.
+                        if (op_ty == null or self.isVoid(op_ty.?) or self.isAny(op_ty.?)) op_ty = want;
+                    }
                 } else {
                     const want = self.commonNumeric(self.getExprType(row.left), self.getExprType(row.right)) orelse (expected_ty orelse self.context.type_store.tI64());
                     lhs_expect = want;
@@ -1453,11 +1517,11 @@ pub const LowerTir = struct {
         const ty0 = self.getExprType(id) orelse return error.LoweringBug;
         const v = try self.lowerExpr(a, env, f, blk, row.expr, null, .rvalue);
         const out = switch (row.kind) {
-            .normal => blk.builder.cast(blk, .CastNormal, ty0, v),
-            .bitcast => blk.builder.cast(blk, .CastBit, ty0, v),
-            .saturate => blk.builder.cast(blk, .CastSaturate, ty0, v),
-            .wrap => blk.builder.cast(blk, .CastWrap, ty0, v),
-            .checked => blk.builder.cast(blk, .CastChecked, ty0, v),
+            .normal => blk.builder.tirValue(.CastNormal, blk, ty0, .{ .value = v }),
+            .bitcast => blk.builder.tirValue(.CastBit, blk, ty0, .{ .value = v }),
+            .saturate => blk.builder.tirValue(.CastSaturate, blk, ty0, .{ .value = v }),
+            .wrap => blk.builder.tirValue(.CastWrap, blk, ty0, .{ .value = v }),
+            .checked => blk.builder.tirValue(.CastChecked, blk, ty0, .{ .value = v }),
         };
         if (expected_ty) |want| return self.emitCoerce(blk, out, ty0, want);
         return out;
@@ -1499,6 +1563,23 @@ pub const LowerTir = struct {
         return out;
     }
 
+    fn isAllIntMatch(_: *LowerTir, a: *const ast.Ast, arms_slice: []const ast.MatchArmId, values_buf: []u64) bool {
+        if (arms_slice.len != values_buf.len) return false;
+        for (arms_slice, 0..) |arm_id, i| {
+            const arm = a.exprs.MatchArm.get(arm_id);
+            if (!arm.guard.isNone()) return false;
+            const pk = a.pats.index.kinds.items[arm.pattern.toRaw()];
+            if (pk != .Literal) return false;
+            const plit = a.pats.get(.Literal, arm.pattern);
+            if (a.exprs.index.kinds.items[plit.expr.toRaw()] != .Literal) return false;
+            const lit = a.exprs.get(.Literal, plit.expr);
+            if (lit.kind != .int or lit.value.isNone()) return false;
+            const s = a.exprs.strs.get(lit.value.unwrap());
+            values_buf[i] = std.fmt.parseInt(u64, s, 10) catch return false;
+        }
+        return true;
+    }
+
     fn lowerMatch(
         self: *LowerTir,
         a: *const ast.Ast,
@@ -1533,48 +1614,17 @@ pub const LowerTir = struct {
                 return res_param;
             }
 
-            // -------- Try the "all literal int patterns with no guards" fast path --------
-            var all_int = true;
-            var values = try self.gpa.alloc(u64, arms.len);
+            const values = try self.gpa.alloc(u64, arms.len);
             defer self.gpa.free(values);
 
-            var i: usize = 0;
-            while (i < arms.len) : (i += 1) {
-                const arm = a.exprs.MatchArm.get(arms[i]);
-                if (!arm.guard.isNone()) {
-                    all_int = false;
-                    break;
-                }
-                const pk = a.pats.index.kinds.items[arm.pattern.toRaw()];
-                if (pk != .Literal) {
-                    all_int = false;
-                    break;
-                }
-                const plit = a.pats.get(.Literal, arm.pattern);
-                if (a.exprs.index.kinds.items[plit.expr.toRaw()] != .Literal) {
-                    all_int = false;
-                    break;
-                }
-                const lit = a.exprs.get(.Literal, plit.expr);
-                if (lit.kind != .int or lit.value.isNone()) {
-                    all_int = false;
-                    break;
-                }
-                const s = a.exprs.strs.get(lit.value.unwrap());
-                values[i] = std.fmt.parseInt(u64, s, 10) catch {
-                    all_int = false;
-                    break;
-                };
-            }
-
-            if (all_int) {
+            if (self.isAllIntMatch(a, arms, values)) {
                 var case_dests = try self.gpa.alloc(Builder.SwitchDest, arms.len);
                 defer self.gpa.free(case_dests);
 
                 var bodies = try self.gpa.alloc(@TypeOf(try f.builder.beginBlock(f)), arms.len);
                 defer self.gpa.free(bodies);
 
-                i = 0;
+                var i: usize = 0;
                 while (i < arms.len) : (i += 1) bodies[i] = try f.builder.beginBlock(f);
                 var default_blk = try f.builder.beginBlock(f);
 
@@ -1664,47 +1714,16 @@ pub const LowerTir = struct {
                 return self.safeUndef(blk, self.context.type_store.tAny());
             }
 
-            // Fast-path ints?
-            var all_int = true;
-            var values = try self.gpa.alloc(u64, arms.len);
+            const values = try self.gpa.alloc(u64, arms.len);
             defer self.gpa.free(values);
 
-            var i: usize = 0;
-            while (i < arms.len) : (i += 1) {
-                const arm = a.exprs.MatchArm.get(arms[i]);
-                if (!arm.guard.isNone()) {
-                    all_int = false;
-                    break;
-                }
-                const pk = a.pats.index.kinds.items[arm.pattern.toRaw()];
-                if (pk != .Literal) {
-                    all_int = false;
-                    break;
-                }
-                const plit = a.pats.get(.Literal, arm.pattern);
-                if (a.exprs.index.kinds.items[plit.expr.toRaw()] != .Literal) {
-                    all_int = false;
-                    break;
-                }
-                const lit = a.exprs.get(.Literal, plit.expr);
-                if (lit.kind != .int or lit.value.isNone()) {
-                    all_int = false;
-                    break;
-                }
-                const s = a.exprs.strs.get(lit.value.unwrap());
-                values[i] = std.fmt.parseInt(u64, s, 10) catch {
-                    all_int = false;
-                    break;
-                };
-            }
-
-            if (all_int) {
+            if (self.isAllIntMatch(a, arms, values)) {
                 var case_dests = try self.gpa.alloc(Builder.SwitchDest, arms.len);
                 defer self.gpa.free(case_dests);
                 var bodies = try self.gpa.alloc(@TypeOf(try f.builder.beginBlock(f)), arms.len);
                 defer self.gpa.free(bodies);
 
-                i = 0;
+                var i: usize = 0;
                 while (i < arms.len) : (i += 1) bodies[i] = try f.builder.beginBlock(f);
                 var default_blk = try f.builder.beginBlock(f);
 
@@ -1801,13 +1820,10 @@ pub const LowerTir = struct {
                 const subj_ty = self.getExprType(row.cond.unwrap()) orelse self.context.type_store.tAny();
                 const ok = try self.matchPattern(a, env, f, &header, row.pattern.unwrap(), subj, subj_ty);
                 try f.builder.condBr(&header, ok, body.id, &.{}, exit_blk.id, &.{});
-                // Bind pattern inside the body (names capture subject)
-                try self.bindPattern(a, env, f, &body, row.pattern.unwrap(), subj, subj_ty);
-            } else {
                 const cond_v = if (!row.cond.isNone())
                     try self.lowerExpr(a, env, f, &header, row.cond.unwrap(), self.context.type_store.tBool(), .rvalue)
                 else
-                    f.builder.constBool(&header, self.context.type_store.tBool(), true);
+                    f.builder.tirValue(.ConstBool, &header, self.context.type_store.tBool(), .{ .value = true });
                 try f.builder.condBr(&header, cond_v, body.id, &.{}, exit_blk.id, &.{});
             }
 
@@ -1855,7 +1871,7 @@ pub const LowerTir = struct {
                 const cond_v = if (!row.cond.isNone())
                     try self.lowerExpr(a, env, f, &header, row.cond.unwrap(), self.context.type_store.tBool(), .rvalue)
                 else
-                    f.builder.constBool(&header, self.context.type_store.tBool(), true);
+                    f.builder.tirValue(.ConstBool, &header, self.context.type_store.tBool(), .{ .value = true });
                 try f.builder.condBr(&header, cond_v, body.id, &.{}, exit_blk.id, &.{});
             }
 
@@ -1876,6 +1892,18 @@ pub const LowerTir = struct {
             blk.* = exit_blk;
             return self.safeUndef(blk, self.context.type_store.tAny());
         }
+    }
+
+    fn getIterableLen(self: *LowerTir, blk: *Builder.BlockFrame, iter_ty: types.TypeId, idx_ty: types.TypeId) !tir.ValueId {
+        const iter_ty_kind = self.context.type_store.index.kinds.items[iter_ty.toRaw()];
+        return switch (iter_ty_kind) {
+            .Array => blk: {
+                const at = self.context.type_store.get(.Array, iter_ty);
+                break :blk blk.builder.tirValue(.ConstInt, blk, idx_ty, .{ .value = @as(u64, @intCast(at.len)) });
+            },
+            .Slice, .DynArray => @panic("Not implemented"),
+            else => return error.LoweringBug,
+        };
     }
 
     fn lowerFor(
@@ -1941,7 +1969,7 @@ pub const LowerTir = struct {
                 try self.bindPattern(a, env, f, &body, row.pattern, idx_param, idx_ty);
                 try self.lowerExprAsStmtList(a, env, f, &body, row.body);
                 if (body.term.isNone()) {
-                    const one = blk.builder.constInt(&body, idx_ty, 1);
+                    const one = blk.builder.tirValue(.ConstInt, &body, idx_ty, .{ .value = 1 });
                     const next_i = blk.builder.bin(&body, .Add, idx_ty, idx_param, one);
                     try f.builder.br(&body, header.id, &.{next_i});
                 }
@@ -1953,17 +1981,9 @@ pub const LowerTir = struct {
                 const arr_v = try self.lowerExpr(a, env, f, blk, row.iterable, null, .rvalue);
                 const idx_ty = self.context.type_store.tUsize();
                 const iter_ty = self.getExprType(row.iterable) orelse return error.LoweringBug;
-                const iter_ty_kind = self.context.type_store.index.kinds.items[iter_ty.toRaw()];
-                const len_v = switch (iter_ty_kind) {
-                    .Array => blk: {
-                        const at = self.context.type_store.get(.Array, iter_ty);
-                        break :blk blk.builder.constInt(blk, idx_ty, @intCast(at.len));
-                    },
-                    .Slice, .DynArray => @panic("Not implemented"),
-                    else => return error.LoweringBug,
-                };
+                const len_v = try self.getIterableLen(blk, iter_ty, idx_ty);
 
-                const zero = blk.builder.constInt(blk, idx_ty, 0);
+                const zero = blk.builder.tirValue(.ConstInt, blk, idx_ty, .{ .value = 0 });
                 const idx_param = try f.builder.addBlockParam(&header, null, idx_ty);
 
                 try f.builder.br(blk, header.id, &.{zero});
@@ -1992,7 +2012,7 @@ pub const LowerTir = struct {
 
                 try self.lowerExprAsStmtList(a, env, f, &body, row.body);
                 if (body.term.isNone()) {
-                    const one = blk.builder.constInt(&body, idx_ty, 1);
+                    const one = blk.builder.tirValue(.ConstInt, &body, idx_ty, .{ .value = 1 });
                     const next_i = blk.builder.bin(&body, .Add, idx_ty, idx_param, one);
                     try f.builder.br(&body, header.id, &.{next_i});
                 }
@@ -2047,7 +2067,7 @@ pub const LowerTir = struct {
                 try self.lowerExprAsStmtList(a, env, f, &body, row.body);
 
                 if (body.term.isNone()) {
-                    const one = blk.builder.constInt(&body, idx_ty, 1);
+                    const one = blk.builder.tirValue(.ConstInt, &body, idx_ty, .{ .value = 1 });
                     const next_i = blk.builder.bin(&body, .Add, idx_ty, idx_param, one);
                     try f.builder.br(&body, header.id, &.{next_i});
                 }
@@ -2058,17 +2078,9 @@ pub const LowerTir = struct {
                 const arr_v = try self.lowerExpr(a, env, f, blk, row.iterable, null, .rvalue);
                 const idx_ty = self.context.type_store.tUsize();
                 const iter_ty = self.getExprType(row.iterable) orelse return error.LoweringBug;
-                const iter_ty_kind = self.context.type_store.index.kinds.items[iter_ty.toRaw()];
-                const len_v = switch (iter_ty_kind) {
-                    .Array => blk: {
-                        const at = self.context.type_store.get(.Array, iter_ty);
-                        break :blk blk.builder.constInt(blk, idx_ty, @intCast(at.len));
-                    },
-                    .Slice, .DynArray => @panic("Not implemented"),
-                    else => return error.LoweringBug,
-                };
+                const len_v = try self.getIterableLen(blk, iter_ty, idx_ty);
 
-                const zero = blk.builder.constInt(blk, idx_ty, 0);
+                const zero = blk.builder.tirValue(.ConstInt, blk, idx_ty, .{ .value = 0 });
                 const idx_param = try f.builder.addBlockParam(&header, null, idx_ty);
 
                 try f.builder.br(blk, header.id, &.{zero});
@@ -2095,7 +2107,7 @@ pub const LowerTir = struct {
 
                 try self.lowerExprAsStmtList(a, env, f, &body, row.body);
                 if (body.term.isNone()) {
-                    const one = blk.builder.constInt(&body, idx_ty, 1);
+                    const one = blk.builder.tirValue(.ConstInt, &body, idx_ty, .{ .value = 1 });
                     const next_i = blk.builder.bin(&body, .Add, idx_ty, idx_param, one);
                     try f.builder.br(&body, header.id, &.{next_i});
                 }
@@ -2132,13 +2144,13 @@ pub const LowerTir = struct {
             },
             .UndefLit => {
                 const ty0 = self.getExprType(id) orelse return error.LoweringBug;
-                const v = blk.builder.constUndef(blk, ty0);
+                const v = blk.builder.tirValue(.ConstUndef, blk, ty0, .{});
                 if (expected_ty) |want| return self.emitCoerce(blk, v, ty0, want);
                 return v;
             },
             .Unary => self.lowerUnary(a, env, f, blk, id, expected_ty, mode),
             .Range => self.lowerRange(a, env, f, blk, id, expected_ty),
-            .Deref => self.lowerDefer(a, env, f, blk, id, expected_ty, mode),
+            .Deref => self.lowerDeref(a, env, f, blk, id, expected_ty, mode),
             .TupleLit => self.lowerTupleLit(a, env, f, blk, id, expected_ty),
             .ArrayLit => self.lowerArrayLit(a, env, f, blk, id, expected_ty),
             .StructLit => self.lowerStructLit(a, env, f, blk, id, expected_ty),
@@ -2160,7 +2172,7 @@ pub const LowerTir = struct {
             .Match => self.lowerMatch(a, env, f, blk, id, expected_ty),
             .While => self.lowerWhile(a, env, f, blk, id, expected_ty),
             .For => self.lowerFor(a, env, f, blk, id, expected_ty),
-            .Import => blk.builder.constUndef(blk, self.getExprType(id) orelse self.context.type_store.tAny()),
+            .Import => blk.builder.tirValue(.ConstUndef, blk, self.getExprType(id) orelse self.context.type_store.tAny(), .{}),
             // No special VariantLit nodes expected in expressions after CST->AST; handled via struct/call forms.
             .VariantType, .EnumType, .StructType => self.lowerTypeExprOpaque(blk, id, expected_ty),
             .MlirBlock => {
@@ -2420,9 +2432,12 @@ pub const LowerTir = struct {
                 const s = if (!lit.value.isNone()) me.ast.exprs.strs.get(lit.value.unwrap()) else "";
                 const k = self.context.type_store.getKind(expected_ty);
                 switch (k) {
-                    .U8, .U16, .U32, .U64, .I8, .I16, .I32, .I64 => return blk.builder.constInt(blk, expected_ty, std.fmt.parseInt(u64, s, 10) catch 0),
-                    .Bool => return blk.builder.constBool(blk, expected_ty, lit.bool_value),
-                    .String => return blk.builder.constString(blk, expected_ty, s),
+                    .U8, .U16, .U32, .U64, .I8, .I16, .I32, .I64 => {
+                        const parsed = std.fmt.parseInt(i64, s, 10) catch return null;
+                        return blk.builder.tirValue(.ConstInt, blk, expected_ty, .{ .value = @as(u64, @intCast(parsed)) });
+                    },
+                    .Bool => return blk.builder.tirValue(.ConstBool, blk, expected_ty, .{ .value = lit.bool_value }),
+                    .String => return blk.builder.tirValue(.ConstString, blk, expected_ty, .{ .text = lit.value.unwrap() }),
                     else => return null,
                 }
             },
@@ -2436,13 +2451,20 @@ pub const LowerTir = struct {
 
     fn getExprType(self: *const LowerTir, id: ast.ExprId) ?types.TypeId {
         const i = id.toRaw();
-        if (i >= self.type_info.expr_types.items.len) return null;
+        std.debug.assert(i < self.type_info.expr_types.items.len);
         return self.type_info.expr_types.items[i];
     }
     fn getDeclType(self: *const LowerTir, did: ast.DeclId) ?types.TypeId {
         const i = did.toRaw();
-        if (i >= self.type_info.decl_types.items.len) return null;
+        std.debug.assert(i < self.type_info.decl_types.items.len);
         return self.type_info.decl_types.items[i];
+    }
+
+    fn getUnionTypeFromVariant(self: *const LowerTir, vty: types.TypeId) ?types.TypeId {
+        if (self.context.type_store.getKind(vty) != .Struct) return null;
+        const struct_fields = self.context.type_store.field_pool.slice(self.context.type_store.get(.Struct, vty).fields);
+        if (struct_fields.len != 2) return null;
+        return self.context.type_store.Field.get(struct_fields[1]).ty;
     }
 
     fn bindingNameOfPattern(_: *const LowerTir, a: *const ast.Ast, pid: ast.PatternId) ?StrId {
@@ -2476,6 +2498,40 @@ pub const LowerTir = struct {
                     try self.bindPattern(a, env, f, blk, elems[i], ev, ety);
                 }
             },
+            .VariantTuple => {
+                const pr = a.pats.get(.VariantTuple, pid);
+                const p_segs = a.pats.seg_pool.slice(pr.path);
+                const case_name = a.pats.PathSeg.get(p_segs[p_segs.len - 1]).name;
+                const tag_idx = self.tagIndexForCase(vty, case_name) orelse return;
+
+                const union_ty = self.getUnionTypeFromVariant(vty) orelse return;
+                const payload_struct = blk.builder.extractField(blk, union_ty, value, 1);
+
+                const pelems = a.pats.pat_pool.slice(pr.elems);
+                if (pelems.len > 0) {
+                    const payload_ptr = blk.builder.tirValue(.UnionFieldPtr, blk, self.context.type_store.mkPtr(union_ty, false), .{
+                        .base = payload_struct,
+                        .field_index = tag_idx,
+                    });
+                    const loaded_payload = blk.builder.tirValue(.Load, blk, union_ty, .{ .ptr = payload_ptr, .@"align" = 0 });
+
+                    // Bind sub-patterns to elements of the loaded payload
+                    const payload_ty_fields = self.context.type_store.field_pool.slice(self.context.type_store.get(.Union, union_ty).fields);
+                    const payload_ty = payload_ty_fields[tag_idx];
+                    const fld = self.context.type_store.Field.get(payload_ty);
+                    if (self.context.type_store.getKind(fld.ty) == .Tuple) {
+                        const tr = self.context.type_store.get(.Tuple, fld.ty);
+                        const subtys = self.context.type_store.type_pool.slice(tr.elems);
+                        for (pelems, 0..) |pelem, i| {
+                            const elem_ty = if (i < subtys.len) subtys[i] else self.context.type_store.tAny();
+                            const elem_val = blk.builder.extractElem(blk, elem_ty, loaded_payload, @intCast(i));
+                            try self.bindPattern(a, env, f, blk, pelem, elem_val, elem_ty);
+                        }
+                    } else {
+                        try self.bindPattern(a, env, f, blk, pelems[0], loaded_payload, fld.ty);
+                    }
+                }
+            },
             else => {},
             // else => @panic("Pattern kinds other than simple bindings and tuples not yet supported in bindPattern"),
         }
@@ -2489,8 +2545,8 @@ pub const LowerTir = struct {
                 const nm = a.pats.get(.Binding, pid).name;
                 if (to_slots) {
                     const slot_ty = self.context.type_store.mkPtr(vty, false);
-                    const slot = f.builder.alloca(blk, slot_ty, tir.OptValueId.none(), 0);
-                    _ = f.builder.store(blk, vty, slot, value, 0);
+                    const slot = f.builder.tirValue(.Alloca, blk, slot_ty, .{ .count = tir.OptValueId.none(), .@"align" = 0 });
+                    _ = f.builder.tirValue(.Store, blk, vty, .{ .ptr = slot, .value = value, .@"align" = 0 });
                     try env.bind(self.gpa, a, nm, .{ .value = slot, .is_slot = true });
                 } else {
                     try env.bind(self.gpa, a, nm, .{ .value = value, .is_slot = false });
@@ -2557,7 +2613,74 @@ pub const LowerTir = struct {
     }
 
     // Prefer destructuring directly from the source expression when available (avoids building temp tuples).
-    fn destructureDeclFromExpr(self: *LowerTir, a: *const ast.Ast, env: *Env, f: *Builder.FunctionFrame, blk: *Builder.BlockFrame, pid: ast.PatternId, src_expr: ast.ExprId, vty: types.TypeId, to_slots: bool) !void {
+    fn destructureDeclFromTupleLit(self: *LowerTir, a: *const ast.Ast, env: *Env, f: *Builder.FunctionFrame, blk: *Builder.BlockFrame, pid: ast.PatternId, src_expr: ast.ExprId, vty: types.TypeId, to_slots: bool) anyerror!void {
+        const row = a.pats.get(.Tuple, pid);
+        const elems_pat = a.pats.pat_pool.slice(row.elems);
+        const elr = a.exprs.get(.TupleLit, src_expr);
+        const elems_expr = a.exprs.expr_pool.slice(elr.elems);
+        var etys: []const types.TypeId = &[_]types.TypeId{};
+        const vk = self.context.type_store.index.kinds.items[vty.toRaw()];
+        if (vk == .Tuple) {
+            const vrow = self.context.type_store.get(.Tuple, vty);
+            etys = self.context.type_store.type_pool.slice(vrow.elems);
+        }
+        const n = @min(elems_pat.len, elems_expr.len);
+        var i: usize = 0;
+        while (i < n) : (i += 1) {
+            const ety = if (i < etys.len) etys[i] else self.context.type_store.tAny();
+            try self.destructureDeclFromExpr(a, env, f, blk, elems_pat[i], elems_expr[i], ety, to_slots);
+        }
+        // If pattern has more elements than expr, fill remaining with undef of element type.
+        while (i < elems_pat.len) : (i += 1) {
+            const ety = if (i < etys.len) etys[i] else self.context.type_store.tAny();
+            const uv = self.undef(blk, ety);
+            try self.destructureDeclPattern(a, env, f, blk, elems_pat[i], uv, ety, to_slots);
+        }
+    }
+
+    fn destructureDeclFromStructLit(self: *LowerTir, a: *const ast.Ast, env: *Env, f: *Builder.FunctionFrame, blk: *Builder.BlockFrame, pid: ast.PatternId, src_expr: ast.ExprId, vty: types.TypeId, to_slots: bool) !void {
+        const pr = a.pats.get(.Struct, pid);
+        const pfields = a.pats.field_pool.slice(pr.fields);
+        const sr = a.exprs.get(.StructLit, src_expr);
+        const sfields = a.exprs.sfv_pool.slice(sr.fields);
+        // compute field types if known
+        var type_fields: []const types.FieldId = &[_]types.FieldId{};
+        if (self.context.type_store.getKind(vty) == .Struct) {
+            const srow = self.context.type_store.get(.Struct, vty);
+            type_fields = self.context.type_store.field_pool.slice(srow.fields);
+        }
+        // For each pattern field, find matching expr field by name and destructure from its value expr.
+        for (pfields) |pfid| {
+            const pf = a.pats.StructField.get(pfid);
+            // find expr field by name
+            var val_expr: ?ast.ExprId = null;
+            for (sfields) |sfid| {
+                const sf = a.exprs.StructFieldValue.get(sfid);
+                if (sf.name.toRaw() == pf.name.toRaw()) {
+                    val_expr = sf.value;
+                    break;
+                }
+            }
+            var fty = self.context.type_store.tAny();
+            // find field type by name if known
+            for (type_fields) |tfid| {
+                const tf = self.context.type_store.Field.get(tfid);
+                if (tf.name.toRaw() == pf.name.toRaw()) {
+                    fty = tf.ty;
+                    break;
+                }
+            }
+            if (val_expr) |ve| {
+                try self.destructureDeclFromExpr(a, env, f, blk, pf.pattern, ve, fty, to_slots);
+            } else {
+                // missing -> bind undef
+                const uv = self.undef(blk, fty);
+                try self.destructureDeclPattern(a, env, f, blk, pf.pattern, uv, fty, to_slots);
+            }
+        }
+    }
+
+    fn destructureDeclFromExpr(self: *LowerTir, a: *const ast.Ast, env: *Env, f: *Builder.FunctionFrame, blk: *Builder.BlockFrame, pid: ast.PatternId, src_expr: ast.ExprId, vty: types.TypeId, to_slots: bool) anyerror!void {
         const pk = a.pats.index.kinds.items[pid.toRaw()];
         switch (pk) {
             .Binding => {
@@ -2567,28 +2690,7 @@ pub const LowerTir = struct {
             .Tuple => {
                 // If RHS is a tuple-literal, lower elements individually to avoid creating a temporary aggregate.
                 if (a.exprs.index.kinds.items[src_expr.toRaw()] == .TupleLit) {
-                    const row = a.pats.get(.Tuple, pid);
-                    const elems_pat = a.pats.pat_pool.slice(row.elems);
-                    const elr = a.exprs.get(.TupleLit, src_expr);
-                    const elems_expr = a.exprs.expr_pool.slice(elr.elems);
-                    var etys: []const types.TypeId = &[_]types.TypeId{};
-                    const vk = self.context.type_store.index.kinds.items[vty.toRaw()];
-                    if (vk == .Tuple) {
-                        const vrow = self.context.type_store.get(.Tuple, vty);
-                        etys = self.context.type_store.type_pool.slice(vrow.elems);
-                    }
-                    const n = @min(elems_pat.len, elems_expr.len);
-                    var i: usize = 0;
-                    while (i < n) : (i += 1) {
-                        const ety = if (i < etys.len) etys[i] else self.context.type_store.tAny();
-                        try self.destructureDeclFromExpr(a, env, f, blk, elems_pat[i], elems_expr[i], ety, to_slots);
-                    }
-                    // If pattern has more elements than expr, fill remaining with undef of element type.
-                    while (i < elems_pat.len) : (i += 1) {
-                        const ety = if (i < etys.len) etys[i] else self.context.type_store.tAny();
-                        const uv = self.undef(blk, ety);
-                        try self.destructureDeclPattern(a, env, f, blk, elems_pat[i], uv, ety, to_slots);
-                    }
+                    try self.destructureDeclFromTupleLit(a, env, f, blk, pid, src_expr, vty, to_slots);
                     return;
                 }
                 // Fallback: lower full expr once, then destructure via extracts.
@@ -2597,45 +2699,7 @@ pub const LowerTir = struct {
             },
             .Struct => {
                 if (a.exprs.index.kinds.items[src_expr.toRaw()] == .StructLit) {
-                    const pr = a.pats.get(.Struct, pid);
-                    const pfields = a.pats.field_pool.slice(pr.fields);
-                    const sr = a.exprs.get(.StructLit, src_expr);
-                    const sfields = a.exprs.sfv_pool.slice(sr.fields);
-                    // compute field types if known
-                    var type_fields: []const types.FieldId = &[_]types.FieldId{};
-                    if (self.context.type_store.getKind(vty) == .Struct) {
-                        const srow = self.context.type_store.get(.Struct, vty);
-                        type_fields = self.context.type_store.field_pool.slice(srow.fields);
-                    }
-                    // For each pattern field, find matching expr field by name and destructure from its value expr.
-                    for (pfields) |pfid| {
-                        const pf = a.pats.StructField.get(pfid);
-                        // find expr field by name
-                        var val_expr: ?ast.ExprId = null;
-                        for (sfields) |sfid| {
-                            const sf = a.exprs.StructFieldValue.get(sfid);
-                            if (sf.name.toRaw() == pf.name.toRaw()) {
-                                val_expr = sf.value;
-                                break;
-                            }
-                        }
-                        var fty = self.context.type_store.tAny();
-                        // find field type by name if known
-                        for (type_fields) |tfid| {
-                            const tf = self.context.type_store.Field.get(tfid);
-                            if (tf.name.toRaw() == pf.name.toRaw()) {
-                                fty = tf.ty;
-                                break;
-                            }
-                        }
-                        if (val_expr) |ve| {
-                            try self.destructureDeclFromExpr(a, env, f, blk, pf.pattern, ve, fty, to_slots);
-                        } else {
-                            // missing -> bind undef
-                            const uv = self.undef(blk, fty);
-                            try self.destructureDeclPattern(a, env, f, blk, pf.pattern, uv, fty, to_slots);
-                        }
-                    }
+                    try self.destructureDeclFromStructLit(a, env, f, blk, pid, src_expr, vty, to_slots);
                     return;
                 }
                 // fallback: lower whole expr and destructure by field extraction
@@ -2811,7 +2875,7 @@ pub const LowerTir = struct {
     fn matchPattern(self: *LowerTir, a: *const ast.Ast, env: *Env, f: *Builder.FunctionFrame, blk: *Builder.BlockFrame, pid: ast.PatternId, scrut: tir.ValueId, scrut_ty: types.TypeId) !tir.ValueId {
         const k = a.pats.index.kinds.items[pid.toRaw()];
         switch (k) {
-            .Wildcard => return blk.builder.constBool(blk, self.context.type_store.tBool(), true),
+            .Wildcard => return blk.builder.tirValue(.ConstBool, blk, self.context.type_store.tBool(), .{ .value = true }),
             .Literal => {
                 const pr = a.pats.get(.Literal, pid);
                 const litv = try self.lowerExpr(a, env, f, blk, pr.expr, null, .rvalue);
@@ -2820,42 +2884,47 @@ pub const LowerTir = struct {
             .VariantTuple => {
                 const vt = a.pats.get(.VariantTuple, pid);
                 const segs = a.pats.seg_pool.slice(vt.path);
-                if (segs.len == 0) return blk.builder.constBool(blk, self.context.type_store.tBool(), false);
+                if (segs.len == 0) return blk.builder.tirValue(.ConstBool, blk, self.context.type_store.tBool(), .{ .value = false });
                 const last = a.pats.PathSeg.get(segs[segs.len - 1]);
                 if (self.tagIndexForCase(scrut_ty, last.name)) |idx| {
-                    const tag = f.builder.variantTag(blk, scrut);
-                    const want = f.builder.constInt(blk, self.context.type_store.tI32(), @intCast(idx));
+                    const tag = blk.builder.extractField(blk, self.context.type_store.tI32(), scrut, 0);
+                    const want = f.builder.tirValue(
+                        .ConstInt,
+                        blk,
+                        self.context.type_store.tI32(),
+                        .{ .value = @as(u64, @intCast(idx)) },
+                    );
                     return blk.builder.binBool(blk, .CmpEq, tag, want);
                 }
-                return blk.builder.constBool(blk, self.context.type_store.tBool(), false);
+                return blk.builder.tirValue(.ConstBool, blk, self.context.type_store.tBool(), .{ .value = false });
             },
             .VariantStruct => {
                 const vs = a.pats.get(.VariantStruct, pid);
                 const segs = a.pats.seg_pool.slice(vs.path);
-                if (segs.len == 0) return blk.builder.constBool(blk, self.context.type_store.tBool(), false);
+                if (segs.len == 0) return blk.builder.tirValue(.ConstBool, blk, self.context.type_store.tBool(), .{ .value = false });
                 const last = a.pats.PathSeg.get(segs[segs.len - 1]);
                 if (self.tagIndexForCase(scrut_ty, last.name)) |idx| {
-                    const tag = f.builder.variantTag(blk, scrut);
-                    const want = f.builder.constInt(blk, self.context.type_store.tI32(), @intCast(idx));
+                    const tag = blk.builder.extractField(blk, self.context.type_store.tI32(), scrut, 0);
+                    const want = f.builder.tirValue(.ConstInt, blk, self.context.type_store.tI32(), .{ .value = @as(u64, @intCast(idx)) });
                     return blk.builder.binBool(blk, .CmpEq, tag, want);
                 }
-                return blk.builder.constBool(blk, self.context.type_store.tBool(), false);
+                return blk.builder.tirValue(.ConstBool, blk, self.context.type_store.tBool(), .{ .value = false });
             },
             .Path => {
                 // Tag-only variant pattern
                 const pp = a.pats.get(.Path, pid);
                 const segs = a.pats.seg_pool.slice(pp.segments);
-                if (segs.len == 0) return blk.builder.constBool(blk, self.context.type_store.tBool(), false);
+                if (segs.len == 0) return blk.builder.tirValue(.ConstBool, blk, self.context.type_store.tBool(), .{ .value = false });
                 const last = a.pats.PathSeg.get(segs[segs.len - 1]);
                 if (self.tagIndexForCase(scrut_ty, last.name)) |idx| {
-                    const tag = f.builder.variantTag(blk, scrut);
-                    const want = f.builder.constInt(blk, self.context.type_store.tI32(), @intCast(idx));
+                    const tag = blk.builder.extractField(blk, self.context.type_store.tI32(), scrut, 0);
+                    const want = f.builder.tirValue(.ConstInt, blk, self.context.type_store.tI32(), .{ .value = @as(u64, @intCast(idx)) });
                     return blk.builder.binBool(blk, .CmpEq, tag, want);
                 }
-                return blk.builder.constBool(blk, self.context.type_store.tBool(), false);
+                return blk.builder.tirValue(.ConstBool, blk, self.context.type_store.tBool(), .{ .value = false });
             },
             .Binding, .Tuple, .Slice, .Struct, .Range, .Or, .At => {
-                return blk.builder.constBool(blk, self.context.type_store.tBool(), true);
+                return blk.builder.tirValue(.ConstBool, blk, self.context.type_store.tBool(), .{ .value = true });
             },
         }
     }
@@ -2909,380 +2978,3 @@ const Env = struct {
 
 const ValueBinding = struct { value: tir.ValueId, is_slot: bool };
 const DeferEntry = struct { expr: ast.ExprId, is_err: bool };
-
-// ============================
-// Builder facade over TIR
-// ============================
-
-const Builder = struct {
-    gpa: std.mem.Allocator,
-    t: *tir.TIR,
-    next_value: u32 = 0,
-
-    pub fn init(gpa: std.mem.Allocator, t: *tir.TIR) Builder {
-        return .{ .gpa = gpa, .t = t };
-    }
-
-    fn freshValue(self: *Builder) tir.ValueId {
-        const id = tir.ValueId.fromRaw(self.next_value);
-        self.next_value += 1;
-        return id;
-    }
-
-    pub const FunctionFrame = struct {
-        builder: *Builder,
-        id: tir.FuncId,
-        param_vals: std.ArrayListUnmanaged(tir.ValueId) = .{},
-        param_ids: std.ArrayListUnmanaged(tir.ParamId) = .{},
-        blocks: std.ArrayListUnmanaged(tir.BlockId) = .{},
-        pub fn deinit(self: *FunctionFrame, gpa: std.mem.Allocator) void {
-            self.param_vals.deinit(gpa);
-            self.param_ids.deinit(gpa);
-            self.blocks.deinit(gpa);
-        }
-    };
-
-    pub const BlockFrame = struct {
-        builder: *Builder,
-        id: tir.BlockId,
-        instrs: std.ArrayListUnmanaged(tir.InstrId) = .{},
-        params: std.ArrayListUnmanaged(tir.ParamId) = .{},
-        term: tir.OptTermId = .none(),
-        pub fn deinit(self: *BlockFrame, gpa: std.mem.Allocator) void {
-            self.instrs.deinit(gpa);
-            self.params.deinit(gpa);
-        }
-    };
-    const SwitchDest = struct { dest: tir.BlockId, args: []const tir.ValueId };
-
-    pub fn beginFunction(self: *Builder, name: StrId, result: types.TypeId, is_variadic: bool) !FunctionFrame {
-        const idx = self.t.funcs.Function.add(self.gpa, .{ .name = name, .params = tir.RangeParam.empty(), .result = result, .blocks = tir.RangeBlock.empty(), .is_variadic = is_variadic });
-        return .{ .builder = self, .id = idx };
-    }
-    pub fn addParam(self: *Builder, f: *FunctionFrame, name: ?StrId, ty: types.TypeId) !tir.ValueId {
-        const vid = self.freshValue();
-        const pid_u32 = self.t.funcs.Param.add(self.gpa, .{ .value = vid, .name = if (name) |n| OptStrId.some(n) else OptStrId.none(), .ty = ty });
-        try f.param_ids.append(self.gpa, pid_u32);
-        try f.param_vals.append(self.gpa, vid);
-        return vid;
-    }
-    pub fn beginBlock(self: *Builder, f: *FunctionFrame) !BlockFrame {
-        const idx = self.t.funcs.Block.add(self.gpa, .{ .params = tir.RangeParam.empty(), .instrs = tir.RangeInstr.empty(), .term = tir.TermId.fromRaw(0) });
-        try f.blocks.append(self.gpa, idx);
-        return .{ .builder = self, .id = idx };
-    }
-    pub fn endBlock(self: *Builder, f: *FunctionFrame, blk: BlockFrame) !void {
-        const instr_range = self.t.instrs.instr_pool.pushMany(self.gpa, blk.instrs.items);
-        const param_range = self.t.funcs.param_pool.pushMany(self.gpa, blk.params.items);
-        var row = self.t.funcs.Block.get(blk.id);
-        row.instrs = instr_range;
-        row.params = param_range;
-        row.term = blk.term.unwrap();
-        self.t.funcs.Block.list.set(blk.id.toRaw(), row);
-        var tmp = blk;
-        tmp.deinit(self.gpa);
-        _ = f;
-    }
-    pub fn endFunction(self: *Builder, f: FunctionFrame) !void {
-        const prange = self.t.funcs.param_pool.pushMany(self.gpa, f.param_ids.items);
-        const brange = self.t.funcs.block_pool.pushMany(self.gpa, f.blocks.items);
-        var row = self.t.funcs.Function.get(f.id);
-        row.params = prange;
-        row.blocks = brange;
-        self.t.funcs.Function.list.set(f.id.toRaw(), row);
-        var tmp = f;
-        tmp.deinit(self.gpa);
-        _ = self.t.funcs.func_pool.push(self.gpa, f.id);
-    }
-
-    // ---- instruction helpers ----
-    fn constInt(self: *Builder, blk: *BlockFrame, ty: types.TypeId, v: u64) tir.ValueId {
-        const vid = self.freshValue();
-        const iid = self.t.instrs.add(.ConstInt, tir.Rows.ConstInt{ .result = vid, .ty = ty, .value = v });
-        blk.instrs.append(self.gpa, iid) catch @panic("OOM");
-        return vid;
-    }
-    fn globalAddr(self: *Builder, blk: *BlockFrame, ty: types.TypeId, name: StrId) tir.ValueId {
-        const vid = self.freshValue();
-        const instr_id = self.t.instrs.add(.GlobalAddr, tir.Rows.GlobalAddr{ .result = vid, .ty = ty, .name = name });
-        blk.instrs.append(self.gpa, instr_id) catch @panic("OOM");
-        return vid;
-    }
-    fn constFloat(self: *Builder, blk: *BlockFrame, ty: types.TypeId, v: f64) tir.ValueId {
-        const vid = self.freshValue();
-        const iid = self.t.instrs.add(.ConstFloat, tir.Rows.ConstFloat{ .result = vid, .ty = ty, .value = v });
-        blk.instrs.append(self.gpa, iid) catch @panic("OOM");
-        return vid;
-    }
-    fn constBool(self: *Builder, blk: *BlockFrame, ty: types.TypeId, v: bool) tir.ValueId {
-        const vid = self.freshValue();
-        const iid = self.t.instrs.add(.ConstBool, tir.Rows.ConstBool{ .result = vid, .ty = ty, .value = v });
-        blk.instrs.append(self.gpa, iid) catch @panic("OOM");
-        return vid;
-    }
-    fn constString(self: *Builder, blk: *BlockFrame, ty: types.TypeId, s: []const u8) tir.ValueId {
-        const sid = self.t.instrs.strs.intern(s);
-        const vid = self.freshValue();
-        const iid = self.t.instrs.add(.ConstString, tir.Rows.ConstString{ .result = vid, .ty = ty, .text = sid });
-        blk.instrs.append(self.gpa, iid) catch @panic("OOM");
-        return vid;
-    }
-    fn load(self: *Builder, blk: *BlockFrame, ty: types.TypeId, ptr: tir.ValueId, al: u32) tir.ValueId {
-        const vid = self.freshValue();
-        const iid = self.t.instrs.add(.Load, tir.Rows.Load{ .result = vid, .ty = ty, .ptr = ptr, .@"align" = al });
-        blk.instrs.append(self.gpa, iid) catch @panic("OOM");
-        return vid;
-    }
-    fn store(self: *Builder, blk: *BlockFrame, ty: types.TypeId, ptr: tir.ValueId, value: tir.ValueId, al: u32) tir.InstrId {
-        const vid = self.freshValue();
-        const iid = self.t.instrs.add(.Store, .{ .result = vid, .ty = ty, .ptr = ptr, .value = value, .@"align" = al });
-        blk.instrs.append(self.gpa, iid) catch @panic("OOM");
-        return iid;
-    }
-    fn alloca(self: *Builder, blk: *BlockFrame, ty: types.TypeId, count: tir.OptValueId, al: u32) tir.ValueId {
-        const vid = self.freshValue();
-        const iid = self.t.instrs.add(.Alloca, tir.Rows.Alloca{ .result = vid, .ty = ty, .count = count, .@"align" = al });
-        blk.instrs.append(self.gpa, iid) catch @panic("OOM");
-        return vid;
-    }
-    fn bin(self: *Builder, blk: *BlockFrame, comptime k: tir.OpKind, ty: types.TypeId, l: tir.ValueId, r: tir.ValueId) tir.ValueId {
-        const vid = self.freshValue();
-        const iid = self.t.instrs.add(k, tir.Rows.Bin2{ .result = vid, .ty = ty, .lhs = l, .rhs = r });
-        blk.instrs.append(self.gpa, iid) catch @panic("OOM");
-        return vid;
-    }
-    fn binBool(self: *Builder, blk: *BlockFrame, comptime k: tir.OpKind, l: tir.ValueId, r: tir.ValueId) tir.ValueId {
-        const bty = self.t.type_store.tBool();
-        const vid = self.freshValue();
-        const iid = self.t.instrs.add(k, tir.Rows.Bin2{ .result = vid, .ty = bty, .lhs = l, .rhs = r });
-        blk.instrs.append(self.gpa, iid) catch @panic("OOM");
-        return vid;
-    }
-    fn call(self: *Builder, blk: *BlockFrame, ty: types.TypeId, callee: StrId, args: []const tir.ValueId) tir.ValueId {
-        const r = self.t.instrs.val_list_pool.pushMany(self.gpa, args);
-        const vid = self.freshValue();
-        const iid = self.t.instrs.add(.Call, tir.Rows.Call{ .result = vid, .ty = ty, .callee = callee, .args = r });
-        blk.instrs.append(self.gpa, iid) catch @panic("OOM");
-        return vid;
-    }
-    fn indexOp(self: *Builder, blk: *BlockFrame, ty: types.TypeId, base: tir.ValueId, idx: tir.ValueId) tir.ValueId {
-        const vid = self.freshValue();
-        const iid = self.t.instrs.add(.Index, tir.Rows.Index{ .result = vid, .ty = ty, .base = base, .index = idx });
-        blk.instrs.append(self.gpa, iid) catch @panic("OOM");
-        return vid;
-    }
-    fn rangeMake(self: *Builder, blk: *BlockFrame, ty: types.TypeId, start: tir.ValueId, end: tir.ValueId, inclusive: tir.ValueId) tir.ValueId {
-        const vid = self.freshValue();
-        const iid = self.t.instrs.add(.RangeMake, tir.Rows.RangeMake{ .result = vid, .ty = ty, .start = start, .end = end, .inclusive = inclusive });
-        blk.instrs.append(self.gpa, iid) catch @panic("OOM");
-        return vid;
-    }
-    fn intern(self: *Builder, s: []const u8) StrId {
-        return self.t.instrs.strs.intern(s);
-    }
-    fn un1(self: *Builder, blk: *BlockFrame, comptime k: tir.OpKind, ty: types.TypeId, v: tir.ValueId) tir.ValueId {
-        const vid = self.freshValue();
-        const iid = self.t.instrs.add(k, tir.Rows.Un1{ .result = vid, .ty = ty, .value = v });
-        blk.instrs.append(self.gpa, iid) catch @panic("OOM");
-        return vid;
-    }
-    fn constNull(self: *Builder, blk: *BlockFrame, ty: types.TypeId) tir.ValueId {
-        const vid = self.freshValue();
-        const iid = self.t.instrs.add(.ConstNull, tir.Rows.ConstNull{ .result = vid, .ty = ty });
-        blk.instrs.append(self.gpa, iid) catch @panic("OOM");
-        return vid;
-    }
-    fn tupleMake(self: *Builder, blk: *BlockFrame, ty: types.TypeId, elems: []const tir.ValueId) tir.ValueId {
-        const r = self.t.instrs.value_pool.pushMany(self.gpa, elems);
-        const vid = self.freshValue();
-        const iid = self.t.instrs.add(.TupleMake, tir.Rows.TupleMake{ .result = vid, .ty = ty, .elems = r });
-        blk.instrs.append(self.gpa, iid) catch @panic("OOM");
-        return vid;
-    }
-    fn arrayMake(self: *Builder, blk: *BlockFrame, ty: types.TypeId, elems: []const tir.ValueId) tir.ValueId {
-        const r = self.t.instrs.value_pool.pushMany(self.gpa, elems);
-        const vid = self.freshValue();
-        const iid = self.t.instrs.add(.ArrayMake, tir.Rows.ArrayMake{ .result = vid, .ty = ty, .elems = r });
-        blk.instrs.append(self.gpa, iid) catch @panic("OOM");
-        return vid;
-    }
-    fn structMake(self: *Builder, blk: *BlockFrame, ty: types.TypeId, fields: []const tir.Rows.StructFieldInit) tir.ValueId {
-        var ids = self.gpa.alloc(tir.StructFieldInitId, fields.len) catch @panic("OOM");
-        defer self.gpa.free(ids);
-        var i: usize = 0;
-        while (i < fields.len) : (i += 1) {
-            ids[i] = self.t.instrs.StructFieldInit.add(self.gpa, fields[i]);
-        }
-        const r = self.t.instrs.sfi_pool.pushMany(self.gpa, ids);
-        const vid = self.freshValue();
-        const iid = self.t.instrs.add(.StructMake, tir.Rows.StructMake{ .result = vid, .ty = ty, .fields = r });
-        blk.instrs.append(self.gpa, iid) catch @panic("OOM");
-        return vid;
-    }
-    fn extractElem(self: *Builder, blk: *BlockFrame, ty: types.TypeId, agg: tir.ValueId, index: u32) tir.ValueId {
-        const vid = self.freshValue();
-        const iid = self.t.instrs.add(.ExtractElem, tir.Rows.ExtractElem{ .result = vid, .ty = ty, .agg = agg, .index = index });
-        blk.instrs.append(self.gpa, iid) catch @panic("OOM");
-        return vid;
-    }
-    fn insertElem(self: *Builder, blk: *BlockFrame, ty: types.TypeId, agg: tir.ValueId, index: u32, value: tir.ValueId) tir.ValueId {
-        const vid = self.freshValue();
-        const iid = self.t.instrs.add(.InsertElem, tir.Rows.InsertElem{ .result = vid, .ty = ty, .agg = agg, .index = index, .value = value });
-        blk.instrs.append(self.gpa, iid) catch @panic("OOM");
-        return vid;
-    }
-    fn extractField(self: *Builder, blk: *BlockFrame, ty: types.TypeId, agg: tir.ValueId, index: u32) tir.ValueId {
-        const vid = self.freshValue();
-        const iid = self.t.instrs.add(.ExtractField, tir.Rows.ExtractField{ .result = vid, .ty = ty, .agg = agg, .index = index, .name = OptStrId.none() });
-        blk.instrs.append(self.gpa, iid) catch @panic("OOM");
-        return vid;
-    }
-    fn extractFieldNamed(self: *Builder, blk: *BlockFrame, ty: types.TypeId, agg: tir.ValueId, name: StrId) tir.ValueId {
-        const vid = self.freshValue();
-        const iid = self.t.instrs.add(
-            .ExtractField,
-            tir.Rows.ExtractField{
-                .result = vid,
-                .ty = ty,
-                .agg = agg,
-                .index = 0, // ignored when name is provided
-                .name = OptStrId.some(name),
-            },
-        );
-        blk.instrs.append(self.gpa, iid) catch @panic("OOM");
-        return vid;
-    }
-    fn complexMake(self: *Builder, blk: *BlockFrame, ty: types.TypeId, re: tir.ValueId, im: tir.ValueId) tir.ValueId {
-        const vid = self.freshValue();
-        const iid = self.t.instrs.add(.ComplexMake, tir.Rows.ComplexMake{ .result = vid, .ty = ty, .re = re, .im = im });
-        blk.instrs.append(self.gpa, iid) catch @panic("OOM");
-        return vid;
-    }
-    fn variantMake(self: *Builder, blk: *BlockFrame, ty: types.TypeId, tag: u32, payload: tir.OptValueId, payload_ty: types.TypeId) tir.ValueId {
-        const vid = self.freshValue();
-        const iid = self.t.instrs.add(.VariantMake, tir.Rows.VariantMake{ .result = vid, .ty = ty, .tag = tag, .payload = payload, .payload_ty = payload_ty });
-        blk.instrs.append(self.gpa, iid) catch @panic("OOM");
-        return vid;
-    }
-    fn variantTag(self: *Builder, blk: *BlockFrame, value: tir.ValueId) tir.ValueId {
-        const vid = self.freshValue();
-        const ty = self.t.type_store.*.tI32();
-        const iid = self.t.instrs.add(.VariantTag, tir.Rows.VariantTag{ .result = vid, .ty = ty, .value = value });
-        blk.instrs.append(self.gpa, iid) catch @panic("OOM");
-        return vid;
-    }
-    fn variantPayloadPtr(self: *Builder, blk: *BlockFrame, result_ptr_ty: types.TypeId, value: tir.ValueId) tir.ValueId {
-        const vid = self.freshValue();
-        const iid = self.t.instrs.add(.VariantPayloadPtr, tir.Rows.VariantPayloadPtr{ .result = vid, .ty = result_ptr_ty, .value = value });
-        blk.instrs.append(self.gpa, iid) catch @panic("OOM");
-        return vid;
-    }
-    fn addressOf(self: *Builder, blk: *BlockFrame, ty: types.TypeId, v: tir.ValueId) tir.ValueId {
-        const vid = self.freshValue();
-        const iid = self.t.instrs.add(.AddressOf, tir.Rows.AddressOf{ .result = vid, .ty = ty, .value = v });
-        blk.instrs.append(self.gpa, iid) catch @panic("OOM");
-        return vid;
-    }
-    fn cast(self: *Builder, blk: *BlockFrame, comptime k: tir.OpKind, ty: types.TypeId, v: tir.ValueId) tir.ValueId {
-        const vid = self.freshValue();
-        const iid = self.t.instrs.add(k, tir.Rows.Un1{ .result = vid, .ty = ty, .value = v });
-        blk.instrs.append(self.gpa, iid) catch @panic("OOM");
-        return vid;
-    }
-    pub fn addBlockParam(self: *Builder, blk: *BlockFrame, name: ?[]const u8, ty: types.TypeId) !tir.ValueId {
-        const vid = self.freshValue();
-        const sid: OptStrId = if (name) |n| .some(self.intern(n)) else .none();
-        const pid = self.t.funcs.Param.add(self.gpa, .{ .value = vid, .name = sid, .ty = ty });
-        try blk.params.append(self.gpa, pid);
-        return vid;
-    }
-    pub fn addGlobal(self: *Builder, name: StrId, ty: types.TypeId) tir.GlobalId {
-        const idx = self.t.funcs.Global.add(self.gpa, .{ .name = name, .ty = ty });
-        _ = self.t.funcs.global_pool.push(self.gpa, idx);
-        return idx;
-    }
-    fn edge(self: *Builder, dest: tir.BlockId, args: []const tir.ValueId) tir.EdgeId {
-        const r = self.t.instrs.value_pool.pushMany(self.gpa, args);
-        return self.t.terms.Edge.add(self.gpa, .{ .dest = dest, .args = r });
-    }
-    pub fn br(self: *Builder, blk: *BlockFrame, dest: tir.BlockId, args: []const tir.ValueId) !void {
-        const e = self.edge(dest, args);
-        const tid = self.t.terms.add(.Br, .{ .edge = e });
-        blk.term = .some(tid);
-    }
-    pub fn condBr(self: *Builder, blk: *BlockFrame, cond: tir.ValueId, then_dest: tir.BlockId, then_args: []const tir.ValueId, else_dest: tir.BlockId, else_args: []const tir.ValueId) !void {
-        const te = self.edge(then_dest, then_args);
-        const ee = self.edge(else_dest, else_args);
-        const tid = self.t.terms.add(.CondBr, .{ .cond = cond, .then_edge = te, .else_edge = ee });
-        blk.term = tir.OptTermId.some(tid);
-    }
-
-    fn constUndef(self: *Builder, blk: *BlockFrame, ty: types.TypeId) tir.ValueId {
-        // Disallow void undef
-        std.debug.assert(self.t.type_store.getKind(ty) != .Void);
-        const vid = self.freshValue();
-        const iid = self.t.instrs.add(.ConstUndef, tir.Rows.ConstUndef{ .result = vid, .ty = ty });
-        blk.instrs.append(self.gpa, iid) catch @panic("OOM");
-        return vid;
-    }
-
-    fn setReturn(self: *Builder, blk: *BlockFrame, value: tir.OptValueId) !void {
-        const tid = self.t.terms.add(.Return, .{ .value = value });
-        blk.term = tir.OptTermId.some(tid);
-    }
-    pub fn setReturnVal(self: *Builder, blk: *BlockFrame, v: tir.ValueId) !void {
-        return self.setReturn(blk, tir.OptValueId.some(v));
-    }
-    pub fn setReturnVoid(self: *Builder, blk: *BlockFrame) !void {
-        return self.setReturn(blk, tir.OptValueId.none());
-    }
-    pub fn setUnreachable(self: *Builder, blk: *BlockFrame) !void {
-        const tid = self.t.terms.add(.Unreachable, .{});
-        blk.term = tir.OptTermId.some(tid);
-    }
-
-    pub fn switchInt(self: *Builder, blk: *BlockFrame, scrut: tir.ValueId, case_vals: []const u64, case_dests: []const SwitchDest, default_dest: tir.BlockId, default_args: []const tir.ValueId) !void {
-        std.debug.assert(case_vals.len == case_dests.len);
-        var case_ids = self.gpa.alloc(tir.CaseId, case_vals.len) catch @panic("OOM");
-        defer self.gpa.free(case_ids);
-        var i: usize = 0;
-        while (i < case_vals.len) : (i += 1) {
-            const e = self.edge(case_dests[i].dest, case_dests[i].args);
-            case_ids[i] = self.t.terms.Case.add(self.gpa, .{ .value = case_vals[i], .edge = e });
-        }
-        const crange = self.t.terms.case_pool.pushMany(self.gpa, case_ids);
-        const def_e = self.edge(default_dest, default_args);
-        const tid = self.t.terms.add(.SwitchInt, .{ .scrut = scrut, .cases = crange, .default_edge = def_e });
-        blk.term = .some(tid);
-    }
-
-    pub fn addCall(self: *Builder, blk: *BlockFrame, result: tir.ValueId, ty: types.TypeId, callee: tir.StrId, args: []const tir.ValueId) tir.InstrId {
-        const r = self.t.instrs.val_list_pool.pushMany(self.gpa, args);
-        const row: tir.Rows.Call = .{ .result = result, .ty = ty, .callee = callee, .args = r };
-        const id = self.t.instrs.add(.Call, row);
-        blk.instrs.append(self.gpa, id) catch @panic("OOM");
-        return id;
-    }
-
-    pub fn addMlirBlock(self: *Builder, blk: *BlockFrame, result: tir.ValueId, ty: types.TypeId, kind: ast.MlirKind, text: tir.StrId) tir.InstrId {
-        const row: tir.Rows.MlirBlock = .{ .result = .some(result), .ty = ty, .kind = kind, .text = text };
-        const id = self.t.instrs.add(.MlirBlock, row);
-        blk.instrs.append(self.gpa, id) catch @panic("OOM");
-        return id;
-    }
-
-    // GEP helpers
-    fn gepConst(self: *Builder, v: u64) tir.GepIndexId {
-        return self.t.instrs.GepIndex.add(self.gpa, .{ .Const = v });
-    }
-    fn gepValue(self: *Builder, val: tir.ValueId) tir.GepIndexId {
-        return self.t.instrs.GepIndex.add(self.gpa, .{ .Value = val });
-    }
-    fn gep(self: *Builder, blk: *BlockFrame, ty: types.TypeId, base: tir.ValueId, idxs: []const tir.GepIndexId) tir.ValueId {
-        const r = self.t.instrs.gep_pool.pushMany(self.gpa, idxs);
-        const vid = self.freshValue();
-        const iid = self.t.instrs.add(.Gep, tir.Rows.Gep{ .result = vid, .ty = ty, .base = base, .indices = r });
-        blk.instrs.append(self.gpa, iid) catch @panic("OOM");
-        return vid;
-    }
-};

@@ -169,112 +169,135 @@ pub const MlirCodegen = struct {
 
         for (global_ids) |global_id| {
             const g = t.funcs.Global.get(global_id);
-            if (store.getKind(g.ty) != .Function) continue;
+            const name = t.instrs.strs.get(g.name);
 
-            const fnty = store.get(.Function, g.ty);
-            var params_sr = store.type_pool.slice(fnty.params);
-            if (fnty.is_variadic)
-                params_sr = params_sr[0 .. params_sr.len - 1]; // drop trailing Any for varargs
-            const ret_sr = fnty.result;
+            if (store.getKind(g.ty) == .Function) {
+                // If already present, return it.
+                if (self.func_syms.contains(name)) continue;
 
-            // Build lowered param list & arg attributes
-            var lowered_params = try self.gpa.alloc(mlir.Type, params_sr.len + 1); // +1 for possible sret
-            defer self.gpa.free(lowered_params);
-            var argAttrs = try self.gpa.alloc(mlir.Attribute, params_sr.len + 1);
-            defer self.gpa.free(argAttrs);
+                const fnty = store.get(.Function, g.ty);
+                var params_sr = store.type_pool.slice(fnty.params);
+                if (fnty.is_variadic)
+                    params_sr = params_sr[0 .. params_sr.len - 1]; // drop trailing Any for varargs
+                const ret_sr = fnty.result;
 
-            var n_args: usize = 0;
+                // Build lowered param list & arg attributes
+                var lowered_params = try self.gpa.alloc(mlir.Type, params_sr.len + 1); // +1 for possible sret
+                defer self.gpa.free(lowered_params);
+                var argAttrs = try self.gpa.alloc(mlir.Attribute, params_sr.len + 1);
+                defer self.gpa.free(argAttrs);
 
-            // Return classification (may add leading sret)
-            const retClass = abi.abiClassifyX64SysV(self, store, ret_sr, true);
-            var ret_type: mlir.Type = self.void_ty;
+                var n_args: usize = 0;
 
-            if (store.getKind(ret_sr) == .Void) {
-                ret_type = self.void_ty;
-            } else switch (retClass.kind) {
-                .IndirectSRet => {
-                    // leading ptr arg with { llvm.sret = type(T), llvm.align = K }
-                    lowered_params[n_args] = self.llvm_ptr_ty;
-                    const stTy = try self.llvmTypeOf(store, ret_sr);
-                    const sretDict = mlir.Attribute.dictionaryAttrGet(self.mlir_ctx, &[_]mlir.NamedAttribute{
-                        self.named("llvm.sret", mlir.Attribute.typeAttrGet(stTy)),
-                        self.named("llvm.align", mlir.Attribute.integerAttrGet(self.i64_ty, retClass.alignment)),
-                    });
-                    argAttrs[n_args] = sretDict;
-                    n_args += 1;
+                // Return classification (may add leading sret)
+                const retClass = abi.abiClassifyX64SysV(self, store, ret_sr, true);
+                var ret_type: mlir.Type = self.void_ty;
+
+                if (store.getKind(ret_sr) == .Void) {
                     ret_type = self.void_ty;
-                },
-                .DirectScalar => {
-                    ret_type = retClass.scalar0.?;
-                },
-                .DirectPair => {
-                    // Return a literal LLVM struct of the two scalars
-                    const pairTy = mlir.LLVM.getLLVMStructTypeLiteral(self.mlir_ctx, &[_]mlir.Type{
-                        retClass.scalar0.?, retClass.scalar1.?,
-                    }, false);
-                    ret_type = pairTy;
-                },
-                else => unreachable,
-            }
-
-            // Params
-            for (params_sr) |psr| {
-                const cls = abi.abiClassifyX64SysV(self, store, psr, false);
-                switch (cls.kind) {
-                    .IndirectByVal => {
+                } else switch (retClass.kind) {
+                    .IndirectSRet => {
+                        // leading ptr arg with { llvm.sret = type(T), llvm.align = K }
                         lowered_params[n_args] = self.llvm_ptr_ty;
-                        const stTy = try self.llvmTypeOf(store, psr);
-                        const byvalDict = mlir.Attribute.dictionaryAttrGet(self.mlir_ctx, &[_]mlir.NamedAttribute{
-                            self.named("llvm.byval", mlir.Attribute.typeAttrGet(stTy)),
-                            self.named("llvm.align", mlir.Attribute.integerAttrGet(self.i64_ty, cls.alignment)),
+                        const stTy = try self.llvmTypeOf(store, ret_sr);
+                        const sretDict = mlir.Attribute.dictionaryAttrGet(self.mlir_ctx, &[_]mlir.NamedAttribute{
+                            self.named("llvm.sret", mlir.Attribute.typeAttrGet(stTy)),
+                            self.named("llvm.align", mlir.Attribute.integerAttrGet(self.i64_ty, retClass.alignment)),
                         });
-                        argAttrs[n_args] = byvalDict;
+                        argAttrs[n_args] = sretDict;
                         n_args += 1;
+                        ret_type = self.void_ty;
                     },
                     .DirectScalar => {
-                        lowered_params[n_args] = cls.scalar0.?;
-                        argAttrs[n_args] = mlir.Attribute.dictionaryAttrGet(self.mlir_ctx, &.{});
-                        n_args += 1;
+                        ret_type = retClass.scalar0.?;
                     },
                     .DirectPair => {
-                        lowered_params[n_args] = cls.scalar0.?;
-                        argAttrs[n_args] = mlir.Attribute.dictionaryAttrGet(self.mlir_ctx, &.{});
-                        n_args += 1;
-                        lowered_params[n_args] = cls.scalar1.?;
-                        argAttrs[n_args] = mlir.Attribute.dictionaryAttrGet(self.mlir_ctx, &.{});
-                        n_args += 1;
+                        // Return a literal LLVM struct of the two scalars
+                        const pairTy = mlir.LLVM.getLLVMStructTypeLiteral(self.mlir_ctx, &[_]mlir.Type{
+                            retClass.scalar0.?, retClass.scalar1.?,
+                        }, false);
+                        ret_type = pairTy;
                     },
                     else => unreachable,
                 }
+
+                // Params
+                for (params_sr) |psr| {
+                    const cls = abi.abiClassifyX64SysV(self, store, psr, false);
+                    switch (cls.kind) {
+                        .IndirectByVal => {
+                            lowered_params[n_args] = self.llvm_ptr_ty;
+                            const stTy = try self.llvmTypeOf(store, psr);
+                            const byvalDict = mlir.Attribute.dictionaryAttrGet(self.mlir_ctx, &[_]mlir.NamedAttribute{
+                                self.named("llvm.byval", mlir.Attribute.typeAttrGet(stTy)),
+                                self.named("llvm.align", mlir.Attribute.integerAttrGet(self.i64_ty, cls.alignment)),
+                            });
+                            argAttrs[n_args] = byvalDict;
+                            n_args += 1;
+                        },
+                        .DirectScalar => {
+                            lowered_params[n_args] = cls.scalar0.?;
+                            argAttrs[n_args] = mlir.Attribute.dictionaryAttrGet(self.mlir_ctx, &.{});
+                            n_args += 1;
+                        },
+                        .DirectPair => {
+                            lowered_params[n_args] = cls.scalar0.?;
+                            argAttrs[n_args] = mlir.Attribute.dictionaryAttrGet(self.mlir_ctx, &.{});
+                            n_args += 1;
+                            lowered_params[n_args] = cls.scalar1.?;
+                            argAttrs[n_args] = mlir.Attribute.dictionaryAttrGet(self.mlir_ctx, &.{});
+                            n_args += 1;
+                        },
+                        else => unreachable,
+                    }
+                }
+
+                // Build function type & op
+                const fty = mlir.LLVM.getLLVMFunctionType(ret_type, lowered_params[0..n_args], fnty.is_variadic);
+
+                const argAttrsArray = mlir.Attribute.arrayAttrGet(self.mlir_ctx, argAttrs[0..n_args]);
+                const attrs = [_]mlir.NamedAttribute{
+                    self.named("sym_name", self.strAttr(name)),
+                    self.named("function_type", mlir.Attribute.typeAttrGet(fty)),
+                    self.named("arg_attrs", argAttrsArray),
+                    self.named("sym_visibility", self.strAttr("private")),
+                };
+                const region = mlir.Region.create(); // extern: no body
+                const fnop = OpBuilder.init("llvm.func", self.loc).builder()
+                    .add_attributes(&attrs)
+                    .add_regions(&.{region})
+                    .build();
+                var body = self.module.getBody();
+                body.appendOwnedOperation(fnop);
+
+                _ = try self.func_syms.put(name, .{
+                    .op = fnop,
+                    .is_variadic = fnty.is_variadic,
+                    .n_formals = params_sr.len, // SR count, not lowered
+                    .ret_type = ret_type,
+                });
+            } else {
+                // Handle global variables
+                const var_mlir_ty = try self.llvmTypeOf(store, g.ty);
+
+                const attrs = [_]mlir.NamedAttribute{
+                    self.named("sym_name", self.strAttr(name)),
+                    self.named("global_type", mlir.Attribute.typeAttrGet(var_mlir_ty)),
+                    self.named("sym_visibility", self.strAttr("private")),
+                    self.named("linkage", mlir.LLVMAttributes.getLLVMLinkageAttr(
+                        self.mlir_ctx,
+                        mlir.LLVMLinkage.Internal,
+                    )),
+                };
+
+                const global_op = OpBuilder.init("llvm.mlir.global", self.loc).builder()
+                    .add_attributes(&attrs)
+                    .add_regions(&.{mlir.Region.create()})
+                    .build();
+
+                var body = self.module.getBody();
+                body.appendOwnedOperation(global_op);
             }
-
-            // Build function type & op
-            const fty = mlir.LLVM.getLLVMFunctionType(ret_type, lowered_params[0..n_args], fnty.is_variadic);
-            const name = t.instrs.strs.get(g.name);
-
-            if (self.func_syms.contains(name)) continue;
-
-            const argAttrsArray = mlir.Attribute.arrayAttrGet(self.mlir_ctx, argAttrs[0..n_args]);
-            const attrs = [_]mlir.NamedAttribute{
-                self.named("sym_name", self.strAttr(name)),
-                self.named("function_type", mlir.Attribute.typeAttrGet(fty)),
-                self.named("arg_attrs", argAttrsArray),
-                self.named("sym_visibility", self.strAttr("private")),
-            };
-            const region = mlir.Region.create(); // extern: no body
-            const fnop = OpBuilder.init("llvm.func", self.loc).builder()
-                .add_attributes(&attrs)
-                .add_regions(&.{region})
-                .build();
-            var body = self.module.getBody();
-            body.appendOwnedOperation(fnop);
-
-            _ = try self.func_syms.put(name, .{
-                .op = fnop,
-                .is_variadic = fnty.is_variadic,
-                .n_formals = params_sr.len, // SR count, not lowered
-                .ret_type = ret_type,
-            });
         }
     }
 
@@ -463,6 +486,9 @@ pub const MlirCodegen = struct {
             .VariantMake => return t.instrs.get(.VariantMake, id).result,
             .VariantTag => return t.instrs.get(.VariantTag, id).result,
             .VariantPayloadPtr => return t.instrs.get(.VariantPayloadPtr, id).result,
+            .UnionMake => return t.instrs.get(.UnionMake, id).result,
+            .UnionFieldPtr => return t.instrs.get(.UnionFieldPtr, id).result,
+            .UnionField => return t.instrs.get(.UnionField, id).result,
             .MlirBlock => {
                 const p = t.instrs.get(.MlirBlock, id);
                 if (p.result.isNone()) return null;
@@ -505,6 +531,9 @@ pub const MlirCodegen = struct {
             .VariantMake => t.instrs.get(.VariantMake, id).ty,
             .VariantTag => t.instrs.get(.VariantTag, id).ty,
             .VariantPayloadPtr => t.instrs.get(.VariantPayloadPtr, id).ty,
+            .UnionMake => t.instrs.get(.UnionMake, id).ty,
+            .UnionFieldPtr => t.instrs.get(.UnionFieldPtr, id).ty,
+            .UnionField => t.instrs.get(.UnionField, id).ty,
             .MlirBlock => t.instrs.get(.MlirBlock, id).ty,
         };
     }
@@ -528,8 +557,7 @@ pub const MlirCodegen = struct {
         for (global_ids) |gid| {
             const g = t.funcs.Global.get(gid);
             if (store.getKind(g.ty) != .Function) continue;
-            const sym = t.instrs.strs.get(g.name);
-            if (!std.mem.eql(u8, sym, name)) continue;
+            if (!g.name.eq(p.callee)) continue;
             const fnty = store.get(.Function, g.ty);
             is_var = fnty.is_variadic;
             params_sr = store.type_pool.slice(fnty.params);
@@ -966,18 +994,14 @@ pub const MlirCodegen = struct {
             .Gep => blk: {
                 const p = t.instrs.get(.Gep, ins_id);
                 const base = self.value_map.get(p.base).?;
-                const res_ty_row = store.type_pool.data.items[p.ty.toRaw()];
-                const res_kind = store.getKind(res_ty_row);
-                // Prefer element type from pointer, but if TIR typed GEP with a non-pointer
-                // (e.g., String), fall back to i8 for a byte-wise GEP under opaque pointers.
+                const pty_kind = store.getKind(p.ty);
                 var elem_mlir: mlir.Type = undefined;
-                if (res_kind == .Ptr) {
+                if (pty_kind == .Ptr) {
                     const ptr_row = store.get(.Ptr, p.ty);
                     elem_mlir = try self.llvmTypeOf(store, ptr_row.elem);
                 } else {
                     elem_mlir = self.i8_ty;
                 }
-
                 const index_ids = t.instrs.gep_pool.slice(p.indices);
                 var indices_data = try self.gpa.alloc(tir.Rows.GepIndex, index_ids.len);
                 defer self.gpa.free(indices_data);
@@ -1092,7 +1116,8 @@ pub const MlirCodegen = struct {
                 const res_ty = try self.llvmTypeOf(store, p.ty);
                 // Special-case: Complex field access -> complex.re/complex.im
                 const parent_sr = self.srTypeOfValue(t, p.agg);
-                if (store.getKind(parent_sr) == .Complex) {
+                const parent_kind = store.getKind(parent_sr);
+                if (parent_kind == .Complex) {
                     var which_re: bool = false;
                     var which_im: bool = false;
                     if (!p.name.isNone()) {
@@ -1128,19 +1153,24 @@ pub const MlirCodegen = struct {
                 const p = t.instrs.get(.VariantMake, ins_id);
                 const var_ty = try self.llvmTypeOf(store, p.ty);
                 var acc = self.undefOf(var_ty);
-                // tag at index 0
+
                 const tag_val = self.llvmConstI32(@intCast(p.tag));
                 acc = self.insertAt(acc, tag_val, &.{0});
-                // payload pointer at index 1
-                var ptrv = self.undefOf(self.llvm_ptr_ty);
+
                 if (!p.payload.isNone()) {
-                    const pv = self.value_map.get(p.payload.unwrap()).?;
-                    const pty = try self.llvmTypeOf(store, p.payload_ty);
-                    ptrv = self.spillAgg(pv, pty, 8);
-                } else {
-                    ptrv = self.llvmNullPtr();
+                    const payload_val_id = p.payload.unwrap();
+                    const payload_val = self.value_map.get(payload_val_id).?;
+
+                    const struct_ty = store.get(.Struct, p.ty);
+                    const union_field = store.field_pool.slice(struct_ty.fields)[1];
+                    const union_ty = store.Field.get(union_field).ty;
+                    const union_mlir_ty = try self.llvmTypeOf(store, union_ty);
+
+                    var union_acc = self.undefOf(union_mlir_ty);
+                    union_acc = self.insertAt(union_acc, payload_val, &.{0});
+                    acc = self.insertAt(acc, union_acc, &.{1});
                 }
-                acc = self.insertAt(acc, ptrv, &.{1});
+
                 break :blk acc;
             },
             .VariantTag => blk: {
@@ -1158,6 +1188,94 @@ pub const MlirCodegen = struct {
                 break :blk ptr;
             },
 
+            .UnionMake => blk: {
+                const p = t.instrs.get(.UnionMake, ins_id);
+
+                // MLIR type of the union "storage blob"
+                const u_mlir = try self.llvmTypeOf(store, p.ty);
+
+                // Figure out the chosen field type and coerce payload to it
+                var payload = self.value_map.get(p.value).?;
+                const urow = store.get(.Union, p.ty);
+                const f_ids = store.field_pool.slice(urow.fields);
+                const f_sr = store.Field.get(f_ids[@intCast(p.field_index)]).ty;
+                const f_mlir = try self.llvmTypeOf(store, f_sr);
+                if (!payload.getType().equal(f_mlir)) {
+                    payload = try self.coerceOnBranch(payload, f_mlir, self.srTypeOfValue(t, p.value), store);
+                }
+
+                // Materialize the union by writing the chosen field at offset 0
+                const tmp = self.spillAgg(self.undefOf(u_mlir), u_mlir, 0);
+                self.storeAt(tmp, payload, 0);
+
+                var ld = OpBuilder.init("llvm.load", self.loc).builder()
+                    .add_operands(&.{tmp})
+                    .add_results(&.{u_mlir}).build();
+                self.append(ld);
+                break :blk ld.getResult(0);
+            },
+            .UnionField => blk: {
+                const p = t.instrs.get(.UnionField, ins_id);
+
+                // Get a pointer to the union storage, even if we were given an SSA value.
+                var base = self.value_map.get(p.base).?;
+                var union_sr = self.srTypeOfValue(t, p.base);
+                var storage_ptr = base;
+
+                if (!self.isLlvmPtr(base.getType())) {
+                    // SSA value: spill to memory to get a pointer
+                    const u_mlir = try self.llvmTypeOf(store, union_sr);
+                    storage_ptr = self.spillAgg(base, u_mlir, 0);
+                } else if (store.getKind(union_sr) == .Ptr) {
+                    union_sr = store.get(.Ptr, union_sr).elem; // peel pointee SR type
+                }
+
+                // Desired field type
+                const urow = store.get(.Union, union_sr);
+                const f_ids = store.field_pool.slice(urow.fields);
+                const f_sr = store.Field.get(f_ids[@intCast(p.field_index)]).ty;
+                const f_mlir = try self.llvmTypeOf(store, f_sr);
+
+                // Reinterpret the same address as a pointer-to-field-type at offset 0.
+                // With opaque pointers in MLIR, use a zero-index GEP with the desired element type.
+                const idxs = [_]tir.Rows.GepIndex{.{ .Const = 0 }};
+                const fptr = try self.emitGep(storage_ptr, f_mlir, &idxs, t);
+                // load the field value from the pointer
+                const load_op = OpBuilder.init("llvm.load", self.loc).builder()
+                    .add_operands(&.{fptr})
+                    .add_results(&.{f_mlir}).build();
+                self.append(load_op);
+                break :blk load_op.getResult(0);
+            },
+
+            .UnionFieldPtr => blk: {
+                const p = t.instrs.get(.UnionFieldPtr, ins_id);
+
+                // Get a pointer to the union storage, even if we were given an SSA value.
+                var base = self.value_map.get(p.base).?;
+                var union_sr = self.srTypeOfValue(t, p.base);
+                var storage_ptr = base;
+
+                if (!self.isLlvmPtr(base.getType())) {
+                    // SSA value: spill to memory to get a pointer
+                    const u_mlir = try self.llvmTypeOf(store, union_sr);
+                    storage_ptr = self.spillAgg(base, u_mlir, 0);
+                } else if (store.getKind(union_sr) == .Ptr) {
+                    union_sr = store.get(.Ptr, union_sr).elem; // peel pointee SR type
+                }
+
+                // Desired field type
+                const urow = store.get(.Union, union_sr);
+                const f_ids = store.field_pool.slice(urow.fields);
+                const f_sr = store.Field.get(f_ids[@intCast(p.field_index)]).ty;
+                const f_mlir = try self.llvmTypeOf(store, f_sr);
+
+                // Reinterpret the same address as a pointer-to-field-type at offset 0.
+                // With opaque pointers in MLIR, use a zero-index GEP with the desired element type.
+                const idxs = [_]tir.Rows.GepIndex{.{ .Const = 0 }};
+                const fptr = try self.emitGep(storage_ptr, f_mlir, &idxs, t);
+                break :blk fptr;
+            },
             // ------------- Pointers/Indexing -------------
             .AddressOf => blk: {
                 const p = t.instrs.get(.AddressOf, ins_id);
@@ -2884,10 +3002,46 @@ pub const MlirCodegen = struct {
                 break :blk mlir.Type.getSignlessIntegerType(self.mlir_ctx, 32);
             },
 
+            .Union => blk: {
+                const un_ty = store.get(.Union, ty);
+                const n = un_ty.fields.len;
+                if (n == 0) break :blk mlir.LLVM.getLLVMStructTypeLiteral(self.mlir_ctx, &[_]mlir.Type{}, false);
+
+                var largest_field_ty: mlir.Type = self.i8_ty;
+                var max_size: u64 = 1;
+
+                const fields = store.field_pool.slice(un_ty.fields);
+                for (fields) |f| {
+                    const field = store.Field.get(f);
+                    const field_mlir_ty = try self.llvmTypeOf(store, field.ty);
+                    const sa = abi.abiSizeAlign(self, store, field.ty);
+                    const field_size = sa.size;
+                    if (field_size > max_size) {
+                        max_size = @intCast(field_size);
+                        largest_field_ty = field_mlir_ty;
+                    }
+                }
+
+                break :blk mlir.LLVM.getLLVMStructTypeLiteral(self.mlir_ctx, &[_]mlir.Type{largest_field_ty}, false);
+            },
+
             .Variant => blk: {
-                // Represent variants as { i32 tag, ptr payload } for now.
-                const fields = [_]mlir.Type{ mlir.Type.getSignlessIntegerType(self.mlir_ctx, 32), self.llvm_ptr_ty };
-                break :blk mlir.LLVM.getLLVMStructTypeLiteral(self.mlir_ctx, &fields, false);
+                const v_ty = store.get(.Variant, ty);
+                const n = v_ty.variants.len;
+                var payload_types = try self.gpa.alloc(types.TypeStore.StructFieldArg, n);
+                defer self.gpa.free(payload_types);
+
+                const fields = store.field_pool.slice(v_ty.variants);
+                for (fields, 0..) |f, i| {
+                    const field = store.Field.get(f);
+                    payload_types[i] = .{ .name = field.name, .ty = field.ty };
+                }
+
+                const union_ty = store.mkUnion(payload_types);
+                const union_mlir_ty = try self.llvmTypeOf(store, union_ty);
+
+                const fields_mlir = [_]mlir.Type{ self.i32_ty, union_mlir_ty };
+                break :blk mlir.LLVM.getLLVMStructTypeLiteral(self.mlir_ctx, &fields_mlir, false);
             },
 
             .TypeType => return self.llvm_ptr_ty,

@@ -34,6 +34,35 @@ pub const TypeInfo = struct {
         self.field_index_for_expr.deinit(self.gpa);
     }
 
+    pub fn print(self: *TypeInfo) void {
+        std.debug.print("TypeInfo:\n", .{});
+        std.debug.print(" Expr types:\n", .{});
+        var buffer: [1024]u8 = undefined;
+        var writer = std.fs.File.stdout().writer(&buffer);
+        for (self.expr_types.items, 0..) |value, i| {
+            writer.interface.print("  {}: ", .{i}) catch {};
+            if (value) |ty| {
+                self.store.fmt(ty, &writer.interface) catch {};
+            } else {
+                writer.interface.print("null", .{}) catch {};
+            }
+            writer.interface.print("\n", .{}) catch {};
+        }
+        writer.interface.flush() catch {};
+
+        std.debug.print("\n Decl types:\n", .{});
+        for (self.decl_types.items, 0..) |value, i| {
+            writer.interface.print("  {}: ", .{i}) catch {};
+            if (value) |ty| {
+                self.store.fmt(ty, &writer.interface) catch {};
+            } else {
+                writer.interface.print("null", .{}) catch {};
+            }
+            writer.interface.print("\n", .{}) catch {};
+        }
+        writer.interface.flush() catch {};
+    }
+
     /// Ensure we have room up to (and including) `expr_id.toRaw()`
     pub fn ensureExpr(self: *TypeInfo, gpa: std.mem.Allocator, expr_id: ast.ExprId) !void {
         const need = expr_id.toRaw() + 1;

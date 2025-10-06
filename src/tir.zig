@@ -99,6 +99,9 @@ pub const OpKind = enum(u16) {
     VariantMake,
     VariantTag,
     VariantPayloadPtr,
+    UnionMake,
+    UnionField,
+    UnionFieldPtr,
     // Complex numbers
     ComplexMake,
     RangeMake,
@@ -150,6 +153,9 @@ pub const Rows = struct {
     pub const VariantMake = struct { result: ValueId, ty: types.TypeId, tag: u32, payload: OptValueId, payload_ty: types.TypeId };
     pub const VariantTag = struct { result: ValueId, ty: types.TypeId, value: ValueId };
     pub const VariantPayloadPtr = struct { result: ValueId, ty: types.TypeId, value: ValueId };
+    pub const UnionMake = struct { result: ValueId, ty: types.TypeId, field_index: u32, value: ValueId };
+    pub const UnionField = struct { result: ValueId, ty: types.TypeId, base: ValueId, field_index: u32 };
+    pub const UnionFieldPtr = struct { result: ValueId, ty: types.TypeId, base: ValueId, field_index: u32 };
     pub const ComplexMake = struct { result: ValueId, ty: types.TypeId, re: ValueId, im: ValueId };
     pub const RangeMake = struct { result: ValueId, ty: types.TypeId, start: ValueId, end: ValueId, inclusive: ValueId };
 
@@ -208,6 +214,9 @@ inline fn RowT(comptime K: OpKind) type {
         .VariantMake => Rows.VariantMake,
         .VariantTag => Rows.VariantTag,
         .VariantPayloadPtr => Rows.VariantPayloadPtr,
+        .UnionMake => Rows.UnionMake,
+        .UnionField => Rows.UnionField,
+        .UnionFieldPtr => Rows.UnionFieldPtr,
         .ComplexMake => Rows.ComplexMake,
         .RangeMake => Rows.RangeMake,
     };
@@ -281,6 +290,9 @@ pub const InstrStore = struct {
     VariantMake: Table(Rows.VariantMake) = .{},
     VariantTag: Table(Rows.VariantTag) = .{},
     VariantPayloadPtr: Table(Rows.VariantPayloadPtr) = .{},
+    UnionMake: Table(Rows.UnionMake) = .{},
+    UnionField: Table(Rows.UnionField) = .{},
+    UnionFieldPtr: Table(Rows.UnionFieldPtr) = .{},
     ComplexMake: Table(Rows.ComplexMake) = .{},
     RangeMake: Table(Rows.RangeMake) = .{},
 
@@ -423,6 +435,303 @@ pub const TIR = struct {
         self.instrs.deinit();
         self.terms.deinit();
         self.funcs.deinit();
+    }
+};
+
+// ============================
+// Builder facade over TIR
+// ============================
+
+pub const Builder = struct {
+    gpa: std.mem.Allocator,
+    t: *TIR,
+    next_value: u32 = 0,
+
+    pub fn init(gpa: std.mem.Allocator, t: *TIR) Builder {
+        return .{ .gpa = gpa, .t = t };
+    }
+
+    pub fn freshValue(self: *Builder) ValueId {
+        const id = ValueId.fromRaw(self.next_value);
+        self.next_value += 1;
+        return id;
+    }
+
+    pub const FunctionFrame = struct {
+        builder: *Builder,
+        id: FuncId,
+        param_vals: std.ArrayListUnmanaged(ValueId) = .{},
+        param_ids: std.ArrayListUnmanaged(ParamId) = .{},
+        blocks: std.ArrayListUnmanaged(BlockId) = .{},
+        pub fn deinit(self: *FunctionFrame, gpa: std.mem.Allocator) void {
+            self.param_vals.deinit(gpa);
+            self.param_ids.deinit(gpa);
+            self.blocks.deinit(gpa);
+        }
+    };
+
+    pub const BlockFrame = struct {
+        builder: *Builder,
+        id: BlockId,
+        instrs: std.ArrayListUnmanaged(InstrId) = .{},
+        params: std.ArrayListUnmanaged(ParamId) = .{},
+        term: OptTermId = .none(),
+        pub fn deinit(self: *BlockFrame, gpa: std.mem.Allocator) void {
+            self.instrs.deinit(gpa);
+            self.params.deinit(gpa);
+        }
+    };
+    pub const SwitchDest = struct { dest: BlockId, args: []const ValueId };
+
+    pub fn beginFunction(self: *Builder, name: StrId, result: types.TypeId, is_variadic: bool) !FunctionFrame {
+        const idx = self.t.funcs.Function.add(self.gpa, .{ .name = name, .params = RangeParam.empty(), .result = result, .blocks = RangeBlock.empty(), .is_variadic = is_variadic });
+        return .{ .builder = self, .id = idx };
+    }
+
+    pub fn addParam(self: *Builder, f: *FunctionFrame, name: ?StrId, ty: types.TypeId) !ValueId {
+        const vid = self.freshValue();
+        const pid_u32 = self.t.funcs.Param.add(self.gpa, .{ .value = vid, .name = if (name) |n| .some(n) else .none(), .ty = ty });
+        try f.param_ids.append(self.gpa, pid_u32);
+        try f.param_vals.append(self.gpa, vid);
+        return vid;
+    }
+
+    pub fn beginBlock(self: *Builder, f: *FunctionFrame) !BlockFrame {
+        const idx = self.t.funcs.Block.add(self.gpa, .{ .params = .empty(), .instrs = .empty(), .term = TermId.fromRaw(0) });
+        try f.blocks.append(self.gpa, idx);
+        return .{ .builder = self, .id = idx };
+    }
+
+    pub fn endBlock(self: *Builder, f: *FunctionFrame, blk: BlockFrame) !void {
+        const instr_range = self.t.instrs.instr_pool.pushMany(self.gpa, blk.instrs.items);
+        const param_range = self.t.funcs.param_pool.pushMany(self.gpa, blk.params.items);
+        var row = self.t.funcs.Block.get(blk.id);
+        row.instrs = instr_range;
+        row.params = param_range;
+        row.term = blk.term.unwrap();
+        self.t.funcs.Block.list.set(blk.id.toRaw(), row);
+        var tmp = blk;
+        tmp.deinit(self.gpa);
+        _ = f;
+    }
+
+    pub fn endFunction(self: *Builder, f: FunctionFrame) !void {
+        const prange = self.t.funcs.param_pool.pushMany(self.gpa, f.param_ids.items);
+        const brange = self.t.funcs.block_pool.pushMany(self.gpa, f.blocks.items);
+        var row = self.t.funcs.Function.get(f.id);
+        row.params = prange;
+        row.blocks = brange;
+        self.t.funcs.Function.list.set(f.id.toRaw(), row);
+        var tmp = f;
+        tmp.deinit(self.gpa);
+        _ = self.t.funcs.func_pool.push(self.gpa, f.id);
+    }
+
+    // ---- instruction helpers ----
+    pub fn tirValue(self: *Builder, comptime kind: OpKind, blk: *BlockFrame, ty: types.TypeId, value: anytype) ValueId {
+        const vid = self.freshValue();
+        var v: RowT(kind) = undefined;
+        v.result = vid;
+        v.ty = ty;
+        inline for (@typeInfo(@TypeOf(value)).@"struct".fields) |f| {
+            @field(v, f.name) = @field(value, f.name);
+        }
+        const instr_id = self.t.instrs.add(kind, v);
+        blk.instrs.append(self.gpa, instr_id) catch @panic("OOM");
+        return vid;
+    }
+    pub fn bin(self: *Builder, blk: *BlockFrame, comptime k: OpKind, ty: types.TypeId, l: ValueId, r: ValueId) ValueId {
+        const vid = self.freshValue();
+        const iid = self.t.instrs.add(k, Rows.Bin2{ .result = vid, .ty = ty, .lhs = l, .rhs = r });
+        blk.instrs.append(self.gpa, iid) catch @panic("OOM");
+        return vid;
+    }
+    pub fn binBool(self: *Builder, blk: *BlockFrame, comptime k: OpKind, l: ValueId, r: ValueId) ValueId {
+        const bty = self.t.type_store.tBool();
+        const vid = self.freshValue();
+        const iid = self.t.instrs.add(k, Rows.Bin2{ .result = vid, .ty = bty, .lhs = l, .rhs = r });
+        blk.instrs.append(self.gpa, iid) catch @panic("OOM");
+        return vid;
+    }
+    pub fn call(self: *Builder, blk: *BlockFrame, ty: types.TypeId, callee: StrId, args: []const ValueId) ValueId {
+        const r = self.t.instrs.val_list_pool.pushMany(self.gpa, args);
+        const vid = self.freshValue();
+        const iid = self.t.instrs.add(.Call, Rows.Call{ .result = vid, .ty = ty, .callee = callee, .args = r });
+        blk.instrs.append(self.gpa, iid) catch @panic("OOM");
+        return vid;
+    }
+    pub fn indexOp(self: *Builder, blk: *BlockFrame, ty: types.TypeId, base: ValueId, idx: ValueId) ValueId {
+        const vid = self.freshValue();
+        const iid = self.t.instrs.add(.Index, Rows.Index{ .result = vid, .ty = ty, .base = base, .index = idx });
+        blk.instrs.append(self.gpa, iid) catch @panic("OOM");
+        return vid;
+    }
+    pub fn rangeMake(self: *Builder, blk: *BlockFrame, ty: types.TypeId, start: ValueId, end: ValueId, inclusive: ValueId) ValueId {
+        const vid = self.freshValue();
+        const iid = self.t.instrs.add(.RangeMake, Rows.RangeMake{ .result = vid, .ty = ty, .start = start, .end = end, .inclusive = inclusive });
+        blk.instrs.append(self.gpa, iid) catch @panic("OOM");
+        return vid;
+    }
+    pub fn intern(self: *Builder, s: []const u8) StrId {
+        return self.t.instrs.strs.intern(s);
+    }
+    pub fn un1(self: *Builder, blk: *BlockFrame, comptime k: OpKind, ty: types.TypeId, v: ValueId) ValueId {
+        const vid = self.freshValue();
+        const iid = self.t.instrs.add(k, Rows.Un1{ .result = vid, .ty = ty, .value = v });
+        blk.instrs.append(self.gpa, iid) catch @panic("OOM");
+        return vid;
+    }
+    pub fn constNull(self: *Builder, blk: *BlockFrame, ty: types.TypeId) ValueId {
+        const vid = self.freshValue();
+        const iid = self.t.instrs.add(.ConstNull, Rows.ConstNull{ .result = vid, .ty = ty });
+        blk.instrs.append(self.gpa, iid) catch @panic("OOM");
+        return vid;
+    }
+    pub fn tupleMake(self: *Builder, blk: *BlockFrame, ty: types.TypeId, elems: []const ValueId) ValueId {
+        const r = self.t.instrs.value_pool.pushMany(self.gpa, elems);
+        const vid = self.freshValue();
+        const iid = self.t.instrs.add(.TupleMake, Rows.TupleMake{ .result = vid, .ty = ty, .elems = r });
+        blk.instrs.append(self.gpa, iid) catch @panic("OOM");
+        return vid;
+    }
+    pub fn arrayMake(self: *Builder, blk: *BlockFrame, ty: types.TypeId, elems: []const ValueId) ValueId {
+        const r = self.t.instrs.value_pool.pushMany(self.gpa, elems);
+        const vid = self.freshValue();
+        const iid = self.t.instrs.add(.ArrayMake, Rows.ArrayMake{ .result = vid, .ty = ty, .elems = r });
+        blk.instrs.append(self.gpa, iid) catch @panic("OOM");
+        return vid;
+    }
+    pub fn structMake(self: *Builder, blk: *BlockFrame, ty: types.TypeId, fields: []const Rows.StructFieldInit) ValueId {
+        var ids = self.gpa.alloc(StructFieldInitId, fields.len) catch @panic("OOM");
+        defer self.gpa.free(ids);
+        var i: usize = 0;
+        while (i < fields.len) : (i += 1) {
+            ids[i] = self.t.instrs.StructFieldInit.add(self.gpa, fields[i]);
+        }
+        const r = self.t.instrs.sfi_pool.pushMany(self.gpa, ids);
+        const vid = self.freshValue();
+        const iid = self.t.instrs.add(.StructMake, Rows.StructMake{ .result = vid, .ty = ty, .fields = r });
+        blk.instrs.append(self.gpa, iid) catch @panic("OOM");
+        return vid;
+    }
+    pub fn extractElem(self: *Builder, blk: *BlockFrame, ty: types.TypeId, agg: ValueId, index: u32) ValueId {
+        const vid = self.freshValue();
+        const iid = self.t.instrs.add(.ExtractElem, Rows.ExtractElem{ .result = vid, .ty = ty, .agg = agg, .index = index });
+        blk.instrs.append(self.gpa, iid) catch @panic("OOM");
+        return vid;
+    }
+    pub fn insertElem(self: *Builder, blk: *BlockFrame, ty: types.TypeId, agg: ValueId, index: u32, value: ValueId) ValueId {
+        const vid = self.freshValue();
+        const iid = self.t.instrs.add(.InsertElem, Rows.InsertElem{ .result = vid, .ty = ty, .agg = agg, .index = index, .value = value });
+        blk.instrs.append(self.gpa, iid) catch @panic("OOM");
+        return vid;
+    }
+    pub fn extractField(self: *Builder, blk: *BlockFrame, ty: types.TypeId, agg: ValueId, index: u32) ValueId {
+        const vid = self.freshValue();
+        const iid = self.t.instrs.add(.ExtractField, Rows.ExtractField{ .result = vid, .ty = ty, .agg = agg, .index = index, .name = .none() });
+        blk.instrs.append(self.gpa, iid) catch @panic("OOM");
+        return vid;
+    }
+    pub fn extractFieldNamed(self: *Builder, blk: *BlockFrame, ty: types.TypeId, agg: ValueId, name: StrId) ValueId {
+        const vid = self.freshValue();
+        const iid = self.t.instrs.add(
+            .ExtractField,
+            Rows.ExtractField{
+                .result = vid,
+                .ty = ty,
+                .agg = agg,
+                .index = 0, // ignored when name is provided
+                .name = .some(name),
+            },
+        );
+        blk.instrs.append(self.gpa, iid) catch @panic("OOM");
+        return vid;
+    }
+    pub fn addBlockParam(self: *Builder, blk: *BlockFrame, name: ?[]const u8, ty: types.TypeId) !ValueId {
+        const vid = self.freshValue();
+        const sid: ast.OptStrId = if (name) |n| .some(self.intern(n)) else .none();
+        const pid = self.t.funcs.Param.add(self.gpa, .{ .value = vid, .name = sid, .ty = ty });
+        try blk.params.append(self.gpa, pid);
+        return vid;
+    }
+    pub fn addGlobal(self: *Builder, name: StrId, ty: types.TypeId) GlobalId {
+        const idx = self.t.funcs.Global.add(self.gpa, .{ .name = name, .ty = ty });
+        _ = self.t.funcs.global_pool.push(self.gpa, idx);
+        return idx;
+    }
+    pub fn edge(self: *Builder, dest: BlockId, args: []const ValueId) EdgeId {
+        const r = self.t.instrs.value_pool.pushMany(self.gpa, args);
+        return self.t.terms.Edge.add(self.gpa, .{ .dest = dest, .args = r });
+    }
+    pub fn br(self: *Builder, blk: *BlockFrame, dest: BlockId, args: []const ValueId) !void {
+        const e = self.edge(dest, args);
+        const tid = self.t.terms.add(.Br, .{ .edge = e });
+        blk.term = .some(tid);
+    }
+    pub fn condBr(self: *Builder, blk: *BlockFrame, cond: ValueId, then_dest: BlockId, then_args: []const ValueId, else_dest: BlockId, else_args: []const ValueId) !void {
+        const te = self.edge(then_dest, then_args);
+        const ee = self.edge(else_dest, else_args);
+        const tid = self.t.terms.add(.CondBr, .{ .cond = cond, .then_edge = te, .else_edge = ee });
+        blk.term = OptTermId.some(tid);
+    }
+    pub fn setReturn(self: *Builder, blk: *BlockFrame, value: OptValueId) !void {
+        const tid = self.t.terms.add(.Return, .{ .value = value });
+        blk.term = OptTermId.some(tid);
+    }
+    pub fn setReturnVal(self: *Builder, blk: *BlockFrame, v: ValueId) !void {
+        return self.setReturn(blk, OptValueId.some(v));
+    }
+    pub fn setReturnVoid(self: *Builder, blk: *BlockFrame) !void {
+        return self.setReturn(blk, OptValueId.none());
+    }
+    pub fn setUnreachable(self: *Builder, blk: *BlockFrame) !void {
+        const tid = self.t.terms.add(.Unreachable, .{});
+        blk.term = OptTermId.some(tid);
+    }
+
+    pub fn switchInt(self: *Builder, blk: *BlockFrame, scrut: ValueId, case_vals: []const u64, case_dests: []const SwitchDest, default_dest: BlockId, default_args: []const ValueId) !void {
+        std.debug.assert(case_vals.len == case_dests.len);
+        var case_ids = self.gpa.alloc(CaseId, case_vals.len) catch @panic("OOM");
+        defer self.gpa.free(case_ids);
+        var i: usize = 0;
+        while (i < case_vals.len) : (i += 1) {
+            const e = self.edge(case_dests[i].dest, case_dests[i].args);
+            case_ids[i] = self.t.terms.Case.add(self.gpa, .{ .value = case_vals[i], .edge = e });
+        }
+        const crange = self.t.terms.case_pool.pushMany(self.gpa, case_ids);
+        const def_e = self.edge(default_dest, default_args);
+        const tid = self.t.terms.add(.SwitchInt, .{ .scrut = scrut, .cases = crange, .default_edge = def_e });
+        blk.term = .some(tid);
+    }
+
+    pub fn addCall(self: *Builder, blk: *BlockFrame, result: ValueId, ty: types.TypeId, callee: StrId, args: []const ValueId) InstrId {
+        const r = self.t.instrs.val_list_pool.pushMany(self.gpa, args);
+        const row: Rows.Call = .{ .result = result, .ty = ty, .callee = callee, .args = r };
+        const id = self.t.instrs.add(.Call, row);
+        blk.instrs.append(self.gpa, id) catch @panic("OOM");
+        return id;
+    }
+
+    pub fn addMlirBlock(self: *Builder, blk: *BlockFrame, result: ValueId, ty: types.TypeId, kind: ast.MlirKind, text: StrId) InstrId {
+        const row: Rows.MlirBlock = .{ .result = .some(result), .ty = ty, .kind = kind, .text = text };
+        const id = self.t.instrs.add(.MlirBlock, row);
+        blk.instrs.append(self.gpa, id) catch @panic("OOM");
+        return id;
+    }
+
+    // GEP helpers
+    pub fn gepConst(self: *Builder, v: u64) GepIndexId {
+        return self.t.instrs.GepIndex.add(self.gpa, .{ .Const = v });
+    }
+    pub fn gepValue(self: *Builder, val: ValueId) GepIndexId {
+        return self.t.instrs.GepIndex.add(self.gpa, .{ .Value = val });
+    }
+    pub fn gep(self: *Builder, blk: *BlockFrame, ty: types.TypeId, base: ValueId, idxs: []const GepIndexId) ValueId {
+        const r = self.t.instrs.gep_pool.pushMany(self.gpa, idxs);
+        const vid = self.freshValue();
+        const iid = self.t.instrs.add(.Gep, Rows.Gep{ .result = vid, .ty = ty, .base = base, .indices = r });
+        blk.instrs.append(self.gpa, iid) catch @panic("OOM");
+        return vid;
     }
 };
 
@@ -754,6 +1063,18 @@ pub const TirPrinter = struct {
             .VariantPayloadPtr => {
                 const row = self.tir.instrs.get(.VariantPayloadPtr, id);
                 try self.leaf("(instr id={} op=VariantPayloadPtr value={} result={} type={f})", .{ id.toRaw(), row.value.toRaw(), row.result.toRaw(), self.tf(row.ty) });
+            },
+            .UnionMake => {
+                const row = self.tir.instrs.get(.UnionMake, id);
+                try self.leaf("(instr id={} op=UnionMake field_index={} value={} result={} type={f})", .{ id.toRaw(), row.field_index, row.value.toRaw(), row.result.toRaw(), self.tf(row.ty) });
+            },
+            .UnionField => {
+                const row = self.tir.instrs.get(.UnionField, id);
+                try self.leaf("(instr id={} op=UnionField base={} field_index={} result={} type={f})", .{ id.toRaw(), row.base.toRaw(), row.field_index, row.result.toRaw(), self.tf(row.ty) });
+            },
+            .UnionFieldPtr => {
+                const row = self.tir.instrs.get(.UnionFieldPtr, id);
+                try self.leaf("(instr id={} op=UnionFieldPtr base={} field_index={} result={} type={f})", .{ id.toRaw(), row.base.toRaw(), row.field_index, row.result.toRaw(), self.tf(row.ty) });
             },
             .ComplexMake => {
                 const row = self.tir.instrs.get(.ComplexMake, id);

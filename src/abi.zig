@@ -46,21 +46,21 @@ const SizeAlign = struct {
     allIntsOnly: bool,
 };
 
-fn abiSizeAlign(self: *MlirCodegen, store: *types.TypeStore, ty: types.TypeId) SizeAlign {
-    switch (store.getKind(ty)) {
-        .Void => return .{ .size = 0, .alignment = 1, .hasFloat = false, .allIntsOnly = true },
-        .Bool => return .{ .size = 1, .alignment = 1, .hasFloat = false, .allIntsOnly = true },
+pub fn abiSizeAlign(self: *MlirCodegen, store: *types.TypeStore, ty: types.TypeId) SizeAlign {
+    return switch (store.getKind(ty)) {
+        .Void => .{ .size = 0, .alignment = 1, .hasFloat = false, .allIntsOnly = true },
+        .Bool => .{ .size = 1, .alignment = 1, .hasFloat = false, .allIntsOnly = true },
 
-        .I8, .U8 => return .{ .size = 1, .alignment = 1, .hasFloat = false, .allIntsOnly = true },
-        .I16, .U16 => return .{ .size = 2, .alignment = 2, .hasFloat = false, .allIntsOnly = true },
-        .I32, .U32 => return .{ .size = 4, .alignment = 4, .hasFloat = false, .allIntsOnly = true },
-        .I64, .U64, .Usize => return .{ .size = 8, .alignment = 8, .hasFloat = false, .allIntsOnly = true },
+        .I8, .U8 => .{ .size = 1, .alignment = 1, .hasFloat = false, .allIntsOnly = true },
+        .I16, .U16 => .{ .size = 2, .alignment = 2, .hasFloat = false, .allIntsOnly = true },
+        .I32, .U32 => .{ .size = 4, .alignment = 4, .hasFloat = false, .allIntsOnly = true },
+        .I64, .U64, .Usize => .{ .size = 8, .alignment = 8, .hasFloat = false, .allIntsOnly = true },
 
-        .F32 => return .{ .size = 4, .alignment = 4, .hasFloat = true, .allIntsOnly = false },
-        .F64 => return .{ .size = 8, .alignment = 8, .hasFloat = true, .allIntsOnly = false },
+        .F32 => .{ .size = 4, .alignment = 4, .hasFloat = true, .allIntsOnly = false },
+        .F64 => .{ .size = 8, .alignment = 8, .hasFloat = true, .allIntsOnly = false },
 
-        .Ptr, .Any, .String, .Function => return .{ .size = 8, .alignment = 8, .hasFloat = false, .allIntsOnly = true },
-        .Slice => return .{ .size = 16, .alignment = 8, .hasFloat = false, .allIntsOnly = true },
+        .Ptr, .Any, .String, .Function => .{ .size = 8, .alignment = 8, .hasFloat = false, .allIntsOnly = true },
+        .Slice => .{ .size = 16, .alignment = 8, .hasFloat = false, .allIntsOnly = true },
         .Enum => {
             const E = store.get(.Enum, ty);
             // Enums are represented as their discriminant type.
@@ -71,16 +71,37 @@ fn abiSizeAlign(self: *MlirCodegen, store: *types.TypeStore, ty: types.TypeId) S
             const A = store.get(.Array, ty);
             const e = abiSizeAlign(self, store, A.elem);
             const stride = std.mem.alignForward(usize, e.size, e.alignment);
-            return .{
-                .size = stride * A.len,
-                .alignment = e.alignment,
-                .hasFloat = e.hasFloat,
-                .allIntsOnly = e.allIntsOnly,
-            };
+            return .{ .size = stride * A.len, .alignment = e.alignment, .hasFloat = e.hasFloat, .allIntsOnly = e.allIntsOnly };
         },
         .Variant => {
-            // Treat variants as opaque aggregates passed indirectly.
-            return .{ .size = 24, .alignment = 8, .hasFloat = false, .allIntsOnly = true };
+            const v_ty = store.get(.Variant, ty);
+            const n = v_ty.variants.len;
+            if (n == 0) return SizeAlign{ .size = 4, .alignment = 4, .hasFloat = false, .allIntsOnly = true };
+
+            var max_payload_size: usize = 0;
+            var max_payload_alignment: usize = 1;
+            var has_float = false;
+            var all_ints = true;
+
+            const fields = store.field_pool.slice(v_ty.variants);
+            for (fields) |f| {
+                const field = store.Field.get(f);
+                const sa = abiSizeAlign(self, store, field.ty);
+                if (sa.size > max_payload_size) {
+                    max_payload_size = sa.size;
+                }
+                if (sa.alignment > max_payload_alignment) {
+                    max_payload_alignment = sa.alignment;
+                }
+                has_float = has_float or sa.hasFloat;
+                all_ints = all_ints and sa.allIntsOnly;
+            }
+
+            const tag_size = 4;
+            const total_size = tag_size + max_payload_size;
+            const alignment = @max(4, max_payload_alignment);
+
+            return SizeAlign{ .size = total_size, .alignment = alignment, .hasFloat = has_float, .allIntsOnly = all_ints };
         },
         .Optional => { // {i1, T}
             const O = store.get(.Optional, ty);
@@ -151,7 +172,7 @@ fn abiSizeAlign(self: *MlirCodegen, store: *types.TypeStore, ty: types.TypeId) S
             return .{ .size = off, .alignment = al, .hasFloat = hasF, .allIntsOnly = intsOnly };
         },
         else => std.debug.panic("abiSizeAlign: unhandled SR kind {}", .{ty}),
-    }
+    };
 }
 
 // Simple FP pattern recognizers (for MVP SSE cases)
@@ -190,10 +211,10 @@ pub fn abiClassifyX64SysV(self: *MlirCodegen, store: *types.TypeStore, ty: types
         .F32 => return .{ .kind = .DirectScalar, .scalar0 = self.f32_ty, .size = 4, .alignment = 4 },
         .F64 => return .{ .kind = .DirectScalar, .scalar0 = self.f64_ty, .size = 8, .alignment = 8 },
         .Ptr, .Any, .String, .Function, .Map => return .{ .kind = .DirectScalar, .scalar0 = self.llvm_ptr_ty, .size = 8, .alignment = 8 },
-        .Variant => return if (isReturn)
-            .{ .kind = .IndirectSRet, .alignment = 8, .size = 24 }
-        else
-            .{ .kind = .IndirectByVal, .alignment = 8, .size = 24 },
+        .Variant => {
+            const sa = abiSizeAlign(self, store, ty);
+            return if (isReturn) .{ .kind = .IndirectSRet, .alignment = @intCast(sa.alignment), .size = sa.size } else .{ .kind = .IndirectByVal, .alignment = @intCast(sa.alignment), .size = sa.size };
+        },
         else => {},
     }
     const sa = abiSizeAlign(self, store, ty);
