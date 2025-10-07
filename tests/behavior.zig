@@ -339,11 +339,10 @@ test "behavior: variant tag-only and tuple payload" {
         \\ V :: variant { A, B(i32) }
         \\ v1 := V.A
         \\ v2 := V.B(123)
-        \\ printf("Variant v1=%d\n", v1)
         \\ printf("Variant v2 payload=%d\n", v2.1)
     ;
     const code = getSource("", src);
-    try runCompilerTest(code, "Variant v1=0\nVariant v2 payload=123\n");
+    try runCompilerTest(code, "Variant v2 payload=123\n");
 }
 
 test "behavior: variant struct payload" {

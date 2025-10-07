@@ -1591,6 +1591,9 @@ pub const Checker = struct {
                     const variant = self.context.type_store.Field.get(variants[i]);
                     if (variant.name.eq(field_expr.field)) {
                         try self.type_info.setFieldIndex(id, @intCast(i));
+                        // get variant payload type
+                        const ty_kind = self.typeKind(variant.ty);
+                        if (ty_kind == .Void) return self.context.type_store.tI32();
                         return variant.ty;
                     }
                 }

@@ -983,30 +983,37 @@ pub const LowerTir = struct {
         return null;
     }
 
-    fn lowerEnumMember(self: *LowerTir, _: *const ast.Ast, blk: *Builder.BlockFrame, id: ast.ExprId, parent_expr: ast.ExprId, expected_ty: ?types.TypeId) !?tir.ValueId {
-        const parent_ty = self.getExprType(parent_expr);
-        var is_enum_parent = false;
-        if (parent_ty) |ty| {
-            const parent_kind = self.context.type_store.getKind(ty);
-            is_enum_parent = parent_kind == .Enum;
-            if (!is_enum_parent and parent_kind == .TypeType) {
-                const tr = self.context.type_store.get(.TypeType, ty);
-                if (self.context.type_store.getKind(tr.of) == .Enum) {
-                    is_enum_parent = true;
-                }
-            }
+    fn lowerEnumMember(
+        self: *LowerTir,
+        _: *const ast.Ast,
+        blk: *Builder.BlockFrame,
+        id: ast.ExprId,
+        parent_expr: ast.ExprId,
+        expected_ty: ?types.TypeId,
+    ) !?tir.ValueId {
+        const parent_ty = self.getExprType(parent_expr) orelse return null;
+        const parent_kind = self.context.type_store.getKind(parent_ty);
+        if (parent_kind != .Enum and parent_kind != .TypeType) return null;
+        if (parent_kind == .TypeType) {
+            const tr = self.context.type_store.get(.TypeType, parent_ty);
+            const of_kind = self.context.type_store.getKind(tr.of);
+            if (of_kind != .Enum) return null;
         }
-        if (is_enum_parent) {
-            const ty0 = self.getExprType(id) orelse (expected_ty orelse self.context.type_store.tAny());
-            const idx = self.type_info.getFieldIndex(id) orelse return error.LoweringBug; // enum members should be indexed by the checker
-            var ev = blk.builder.tirValue(.ConstInt, blk, ty0, .{ .value = @as(u64, @intCast(idx)) });
-            if (expected_ty) |want| ev = self.emitCoerce(blk, ev, ty0, want);
-            return ev;
-        }
-        return null;
+        const ty0 = self.getExprType(id) orelse (expected_ty orelse self.context.type_store.tAny());
+        const idx = self.type_info.getFieldIndex(id) orelse return error.LoweringBug; // enum members should be indexed by the checker
+        var ev = blk.builder.tirValue(.ConstInt, blk, ty0, .{ .value = idx });
+        if (expected_ty) |want| ev = self.emitCoerce(blk, ev, ty0, want);
+        return ev;
     }
 
-    fn lowerVariantTagLiteral(self: *LowerTir, _: *const ast.Ast, blk: *Builder.BlockFrame, parent_expr: ast.ExprId, field_name: StrId, expected_ty: ?types.TypeId) !?tir.ValueId {
+    fn lowerVariantTagLiteral(
+        self: *LowerTir,
+        _: *const ast.Ast,
+        blk: *Builder.BlockFrame,
+        id: ast.ExprId,
+        parent_expr: ast.ExprId,
+        expected_ty: ?types.TypeId,
+    ) !?tir.ValueId {
         const ty = self.getExprType(parent_expr) orelse return null;
         const parent_kind = self.context.type_store.getKind(ty);
         if (parent_kind != .TypeType) return null;
@@ -1020,42 +1027,18 @@ pub const LowerTir = struct {
             self.context.type_store.field_pool.slice(self.context.type_store.get(.Variant, tr.of).variants)
         else
             self.context.type_store.field_pool.slice(self.context.type_store.get(.Error, tr.of).variants);
-        var tag_idx: ?u32 = null;
-        var payload_ty: types.TypeId = self.context.type_store.tVoid();
-        for (fields, 0..) |fid, i| {
-            const frow = self.context.type_store.Field.get(fid);
-            if (frow.name.eq(field_name)) {
-                tag_idx = @intCast(i);
-                payload_ty = frow.ty;
-                break;
-            }
-        }
-        const ti = tag_idx orelse return error.LoweringBug; // variant members should be indexed by the checker
-        // Only allow tag-only if payload is void
+        const tag_idx = self.type_info.getFieldIndex(id);
+        const payload_ty = if (tag_idx) |ti|
+            self.context.type_store.Field.get(fields[ti]).ty
+        else
+            return null;
+        const payload_kind = self.context.type_store.getKind(payload_ty);
+        if (payload_kind != .Void) return null; // only literal tags for no-payload cases
+        const ty0 = self.getExprType(id) orelse (expected_ty orelse self.context.type_store.tAny());
         if (self.context.type_store.getKind(payload_ty) != .Void) return null;
-
-        const vty = tr.of;
-        const tag_val = blk.builder.tirValue(.ConstInt, blk, self.context.type_store.tI32(), .{ .value = ti });
-        // vty needs to be a union type here
-
-        // Create StructFieldArg array for mkUnion
-        var union_fields_args = try self.gpa.alloc(types.TypeStore.StructFieldArg, fields.len);
-        defer self.gpa.free(union_fields_args);
-        for (fields, 0..) |fld_id, i| {
-            const fld = self.context.type_store.Field.get(fld_id);
-            union_fields_args[i] = .{ .name = fld.name, .ty = fld.ty };
-        }
-        const union_ty = self.context.type_store.mkUnion(union_fields_args);
-
-        const union_val = blk.builder.tirValue(.ConstUndef, blk, union_ty, .{});
-
-        const vv = blk.builder.structMake(blk, vty, &[_]tir.Rows.StructFieldInit{
-            .{ .index = 0, .name = .none(), .value = tag_val },
-            .{ .index = 1, .name = .none(), .value = union_val },
-        });
-
-        if (expected_ty) |want| return self.emitCoerce(blk, vv, vty, want);
-        return vv;
+        const tag_val = blk.builder.extractField(blk, self.context.type_store.tI32(), self.safeUndef(blk, ty), 0);
+        if (expected_ty) |want| return self.emitCoerce(blk, tag_val, ty0, want);
+        return tag_val;
     }
 
     fn lowerFieldAccess(
@@ -1085,9 +1068,9 @@ pub const LowerTir = struct {
             if (try self.lowerEnumMember(a, blk, id, row.parent, expected_ty)) |v| {
                 return v;
             }
-            if (try self.lowerVariantTagLiteral(a, blk, row.parent, row.field, expected_ty)) |v| {
-                return v;
-            }
+            // if (try self.lowerVariantTagLiteral(a, blk, id, row.parent, expected_ty)) |v| {
+            //     return v;
+            // }
         }
 
         // ---------- 3) Address path: must have an index (for GEP) ----------
@@ -1101,7 +1084,7 @@ pub const LowerTir = struct {
 
         // ---------- 4) Rvalue struct/tuple access ----------
         const ty0 = self.getExprType(id) orelse (expected_ty orelse self.context.type_store.tAny());
-        const base = try self.lowerExpr(a, env, f, blk, row.parent, null, .rvalue);
+        var base = try self.lowerExpr(a, env, f, blk, row.parent, null, .rvalue);
 
         // We only need the parent type to distinguish tuple vs struct; if unknown, assume non-tuple.
         const parent_ty_opt = self.getExprType(row.parent);
@@ -1113,9 +1096,63 @@ pub const LowerTir = struct {
         var v: tir.ValueId = undefined;
         if (idx_maybe) |resolved_idx| {
             const parent_kind = self.context.type_store.getKind(parent_ty_opt orelse self.context.type_store.tAny());
-            v = if (parent_kind == .Variant)
-                blk.builder.tirValue(.UnionField, blk, ty0, .{ .base = base, .field_index = resolved_idx })
-            else if (is_tuple)
+            v = if (parent_kind == .Variant) blk: {
+                const variants = self.context.type_store.get(.Variant, parent_ty_opt.?).variants;
+                const fields = self.context.type_store.field_pool.slice(variants);
+                var union_fields_args = try self.gpa.alloc(types.TypeStore.StructFieldArg, variants.len);
+                defer self.gpa.free(union_fields_args);
+                for (fields, 0..) |fld_id, i| {
+                    const fld = self.context.type_store.Field.get(fld_id);
+                    union_fields_args[i] = .{ .name = fld.name, .ty = fld.ty };
+                }
+                const union_ty = self.context.type_store.mkUnion(union_fields_args);
+                base = blk.builder.extractField(blk, union_ty, base, 1);
+                break :blk blk.builder.tirValue(.UnionField, blk, ty0, .{ .base = base, .field_index = resolved_idx });
+            } else if (parent_kind == .TypeType) blk: {
+                const of_ty = self.context.type_store.get(.TypeType, parent_ty_opt.?).of;
+                const of_kind = self.context.type_store.getKind(of_ty);
+                std.debug.assert(of_kind == .Variant or of_kind == .Error);
+
+                const fields = if (of_kind == .Variant)
+                    self.context.type_store.field_pool.slice(self.context.type_store.get(.Variant, of_ty).variants)
+                else
+                    self.context.type_store.field_pool.slice(self.context.type_store.get(.Error, of_ty).variants);
+
+                const field_id = fields[resolved_idx];
+                const field = self.context.type_store.Field.get(field_id);
+                const payload_ty = field.ty;
+
+                if (self.context.type_store.getKind(payload_ty) != .Void) {
+                    // This is a variant constructor with payload, which is function-like.
+                    // The expression type should be a function.
+                    // We can just return an undef of that function type.
+                    // The real work is done in `lowerCall`.
+                    break :blk self.safeUndef(blk, ty0);
+                }
+
+                // This is a void-payload variant case. Let's construct it.
+                const tag_val = blk.builder.tirValue(.ConstInt, blk, self.context.type_store.tI32(), .{ .value = resolved_idx });
+
+                var union_fields_args = try self.gpa.alloc(types.TypeStore.StructFieldArg, fields.len);
+                defer self.gpa.free(union_fields_args);
+                for (fields, 0..) |fld_id, i| {
+                    const fld = self.context.type_store.Field.get(fld_id);
+                    union_fields_args[i] = .{ .name = fld.name, .ty = fld.ty };
+                }
+                const union_ty = self.context.type_store.mkUnion(union_fields_args);
+
+                const union_val = blk.builder.tirValue(.ConstUndef, blk, union_ty, .{});
+
+                const v_res = blk.builder.structMake(blk, of_ty, &[_]tir.Rows.StructFieldInit{
+                    .{ .index = 0, .name = .none(), .value = tag_val },
+                    .{ .index = 1, .name = .none(), .value = union_val },
+                });
+
+                if (expected_ty) |want| {
+                    break :blk self.emitCoerce(blk, v_res, of_ty, want);
+                }
+                break :blk v_res;
+            } else if (is_tuple)
                 blk.builder.extractElem(blk, ty0, base, resolved_idx)
             else
                 blk.builder.extractField(blk, ty0, base, resolved_idx);
