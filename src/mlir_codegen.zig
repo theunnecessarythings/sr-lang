@@ -3007,22 +3007,18 @@ pub const MlirCodegen = struct {
                 const n = un_ty.fields.len;
                 if (n == 0) break :blk mlir.LLVM.getLLVMStructTypeLiteral(self.mlir_ctx, &[_]mlir.Type{}, false);
 
-                var largest_field_ty: mlir.Type = self.i8_ty;
-                var max_size: u64 = 1;
+                var max_size: u64 = 0;
 
                 const fields = store.field_pool.slice(un_ty.fields);
                 for (fields) |f| {
                     const field = store.Field.get(f);
-                    const field_mlir_ty = try self.llvmTypeOf(store, field.ty);
                     const sa = abi.abiSizeAlign(self, store, field.ty);
-                    const field_size = sa.size;
-                    if (field_size > max_size) {
-                        max_size = @intCast(field_size);
-                        largest_field_ty = field_mlir_ty;
+                    if (sa.size > max_size) {
+                        max_size = sa.size;
                     }
                 }
 
-                break :blk mlir.LLVM.getLLVMStructTypeLiteral(self.mlir_ctx, &[_]mlir.Type{largest_field_ty}, false);
+                break :blk mlir.LLVM.getLLVMArrayType(self.i8_ty, @intCast(max_size));
             },
 
             .Variant => blk: {

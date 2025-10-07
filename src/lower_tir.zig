@@ -843,26 +843,57 @@ pub const LowerTir = struct {
         expected_ty: ?types.TypeId,
     ) anyerror!tir.ValueId {
         const row = a.exprs.get(.StructLit, id);
-        // const ty0 = self.getExprType(id) orelse return error.LoweringBug;
         const ty0 = expected_ty orelse (self.getExprType(id) orelse self.context.type_store.tAny());
 
         const fids = a.exprs.sfv_pool.slice(row.fields);
         var fields = try self.gpa.alloc(tir.Rows.StructFieldInit, fids.len);
         defer self.gpa.free(fields);
-        var i: usize = 0;
-        // Determine expected field types if available
-        var field_ids: []const types.FieldId = &.{};
-        if (self.context.type_store.index.kinds.items[ty0.toRaw()] == .Struct) {
-            const srow = self.context.type_store.get(.Struct, ty0);
-            field_ids = self.context.type_store.field_pool.slice(srow.fields);
+
+        const ty0_kind = self.context.type_store.getKind(ty0);
+        var type_fields: []const types.FieldId = &.{};
+        if (ty0_kind == .Struct) {
+            type_fields = self.context.type_store.field_pool.slice(self.context.type_store.get(.Struct, ty0).fields);
+        } else if (ty0_kind == .Union) {
+            type_fields = self.context.type_store.field_pool.slice(self.context.type_store.get(.Union, ty0).fields);
         }
+
+        var i: usize = 0;
         while (i < fids.len) : (i += 1) {
             const sfv = a.exprs.StructFieldValue.get(fids[i]);
-            const want = if (i < field_ids.len) self.context.type_store.Field.get(field_ids[i]).ty else self.context.type_store.tAny();
-            const v = try self.lowerExpr(a, env, f, blk, sfv.value, want, .rvalue);
-            fields[i] = .{ .index = @intCast(i), .name = sfv.name, .value = v };
+
+            var field_idx: ?usize = null;
+            var want: types.TypeId = self.context.type_store.tAny();
+
+            if (!sfv.name.isNone()) {
+                const name_id = sfv.name.unwrap();
+                for (type_fields, 0..) |fid, j| {
+                    const fdef = self.context.type_store.Field.get(fid);
+                    if (fdef.name.eq(name_id)) {
+                        field_idx = j;
+                        want = fdef.ty;
+                        break;
+                    }
+                }
+            } else if (i < type_fields.len) {
+                // Positional field
+                field_idx = i;
+                want = self.context.type_store.Field.get(type_fields[i]).ty;
+            }
+
+            const v_val = try self.lowerExpr(a, env, f, blk, sfv.value, want, .rvalue);
+            const final_idx = field_idx orelse i;
+            fields[i] = .{ .index = @intCast(final_idx), .name = sfv.name, .value = v_val };
         }
-        const v = blk.builder.structMake(blk, ty0, fields);
+
+        const v = if (ty0_kind == .Union) blk: {
+            std.debug.assert(fields.len == 1);
+            const field = fields[0];
+            break :blk blk.builder.tirValue(.UnionMake, blk, ty0, .{
+                .field_index = field.index,
+                .value = field.value,
+            });
+        } else blk.builder.structMake(blk, ty0, fields);
+
         if (expected_ty) |want| return self.emitCoerce(blk, v, ty0, want);
         return v;
     }
@@ -1154,6 +1185,8 @@ pub const LowerTir = struct {
                 break :blk v_res;
             } else if (is_tuple)
                 blk.builder.extractElem(blk, ty0, base, resolved_idx)
+            else if (parent_kind == .Union)
+                blk.builder.tirValue(.UnionField, blk, ty0, .{ .base = base, .field_index = resolved_idx })
             else
                 blk.builder.extractField(blk, ty0, base, resolved_idx);
         } else {
@@ -2206,11 +2239,11 @@ pub const LowerTir = struct {
             .Cast => self.lowerCast(a, env, f, blk, id, expected_ty),
             .OptionalUnwrap => self.lowerOptionalUnwrap(a, env, f, blk, id, expected_ty),
             .ErrUnwrap => self.lowerErrUnwrap(a, env, f, blk, id, expected_ty),
+            .UnionType => self.lowerTypeExprOpaque(blk, id, expected_ty),
             .Match => self.lowerMatch(a, env, f, blk, id, expected_ty),
             .While => self.lowerWhile(a, env, f, blk, id, expected_ty),
             .For => self.lowerFor(a, env, f, blk, id, expected_ty),
             .Import => blk.builder.tirValue(.ConstUndef, blk, self.getExprType(id) orelse self.context.type_store.tAny(), .{}),
-            // No special VariantLit nodes expected in expressions after CST->AST; handled via struct/call forms.
             .VariantType, .EnumType, .StructType => self.lowerTypeExprOpaque(blk, id, expected_ty),
             .MlirBlock => {
                 const row = a.exprs.get(.MlirBlock, id);

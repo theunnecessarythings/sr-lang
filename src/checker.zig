@@ -1452,9 +1452,11 @@ pub const Checker = struct {
                 _ = self.context.diags.addError(self.exprLoc(field_expr), .unknown_struct_field, .{}) catch {};
                 return null;
             },
-            .Struct => {
-                const struct_row = self.context.type_store.get(.Struct, ty);
-                const fields = self.context.type_store.field_pool.slice(struct_row.fields);
+            .Struct, .Union => {
+                const fields = if (kind == .Struct)
+                    self.context.type_store.field_pool.slice(self.context.type_store.get(.Struct, ty).fields)
+                else
+                    self.context.type_store.field_pool.slice(self.context.type_store.get(.Union, ty).fields);
                 var i: usize = 0;
                 while (i < fields.len) : (i += 1) {
                     const f = self.context.type_store.Field.get(fields[i]);
