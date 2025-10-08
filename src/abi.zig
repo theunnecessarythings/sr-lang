@@ -103,6 +103,32 @@ pub fn abiSizeAlign(self: *MlirCodegen, store: *types.TypeStore, ty: types.TypeI
 
             return SizeAlign{ .size = total_size, .alignment = alignment, .hasFloat = has_float, .allIntsOnly = all_ints };
         },
+        .Error => {
+            const e_ty = store.get(.Error, ty);
+            const n = e_ty.variants.len;
+            if (n == 0) return SizeAlign{ .size = 4, .alignment = 4, .hasFloat = false, .allIntsOnly = true };
+
+            var max_payload_size: usize = 0;
+            var max_payload_alignment: usize = 1;
+            var has_float = false;
+            var all_ints = true;
+
+            const fields = store.field_pool.slice(e_ty.variants);
+            for (fields) |f| {
+                const field = store.Field.get(f);
+                const sa = abiSizeAlign(self, store, field.ty);
+                if (sa.size > max_payload_size) max_payload_size = sa.size;
+                if (sa.alignment > max_payload_alignment) max_payload_alignment = sa.alignment;
+                has_float = has_float or sa.hasFloat;
+                all_ints = all_ints and sa.allIntsOnly;
+            }
+
+            const tag_size = 4;
+            const total_size = tag_size + max_payload_size;
+            const alignment = @max(4, max_payload_alignment);
+
+            return SizeAlign{ .size = total_size, .alignment = alignment, .hasFloat = has_float, .allIntsOnly = all_ints };
+        },
         .Optional => { // {i1, T}
             const O = store.get(.Optional, ty);
             const a_tag = SizeAlign{ .size = 1, .alignment = 1, .hasFloat = false, .allIntsOnly = true };
@@ -120,19 +146,26 @@ pub fn abiSizeAlign(self: *MlirCodegen, store: *types.TypeStore, ty: types.TypeI
             off = std.mem.alignForward(usize, off, al);
             return .{ .size = off, .alignment = al, .hasFloat = v.hasFloat, .allIntsOnly = a_tag.allIntsOnly and v.allIntsOnly };
         },
-        .ErrorSet => { // {i1, V}
-            const E = store.get(.ErrorSet, ty);
-            const v = abiSizeAlign(self, store, E.value_ty);
+        .ErrorSet => {
+            const es = store.get(.ErrorSet, ty);
+            const ok_name = store.strs.intern("Ok");
+            const err_name = store.strs.intern("Err");
+            var union_fields = [_]types.TypeStore.StructFieldArg{
+                .{ .name = ok_name, .ty = es.value_ty },
+                .{ .name = err_name, .ty = es.error_ty },
+            };
+            const payload_union = store.mkUnion(&union_fields);
+            const payload = abiSizeAlign(self, store, payload_union);
+
             var off: usize = 0;
-            var al: usize = 1;
-            off = std.mem.alignForward(usize, off, 1);
-            off += 1;
-            al = @max(al, 1);
-            off = std.mem.alignForward(usize, off, v.alignment);
-            off += v.size;
-            al = @max(al, v.alignment);
+            var al: usize = 4;
+            off = std.mem.alignForward(usize, off, 4);
+            off += 4;
+            off = std.mem.alignForward(usize, off, payload.alignment);
+            off += payload.size;
+            al = @max(al, payload.alignment);
             off = std.mem.alignForward(usize, off, al);
-            return .{ .size = off, .alignment = al, .hasFloat = v.hasFloat, .allIntsOnly = v.allIntsOnly };
+            return .{ .size = off, .alignment = al, .hasFloat = payload.hasFloat, .allIntsOnly = payload.allIntsOnly };
         },
         .Tuple => {
             const T = store.get(.Tuple, ty);

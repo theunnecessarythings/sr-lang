@@ -2969,9 +2969,16 @@ pub const MlirCodegen = struct {
 
             .ErrorSet => blk: {
                 const es = store.get(.ErrorSet, ty);
-                const val = try self.llvmTypeOf(store, es.value_ty);
-                const fields = [_]mlir.Type{ self.i1_ty, val };
-                break :blk mlir.LLVM.getLLVMStructTypeLiteral(self.mlir_ctx, &fields, false);
+                const ok_name = store.strs.intern("Ok");
+                const err_name = store.strs.intern("Err");
+                var union_fields = [_]types.TypeStore.StructFieldArg{
+                    .{ .name = ok_name, .ty = es.value_ty },
+                    .{ .name = err_name, .ty = es.error_ty },
+                };
+                const payload_union = store.mkUnion(&union_fields);
+                const payload_mlir = try self.llvmTypeOf(store, payload_union);
+                const parts = [_]mlir.Type{ self.i32_ty, payload_mlir };
+                break :blk mlir.LLVM.getLLVMStructTypeLiteral(self.mlir_ctx, &parts, false);
             },
 
             .Tuple => blk: {
@@ -3019,6 +3026,27 @@ pub const MlirCodegen = struct {
                 }
 
                 break :blk mlir.LLVM.getLLVMArrayType(self.i8_ty, @intCast(max_size));
+            },
+
+            .Error => blk: {
+                const e_ty = store.get(.Error, ty);
+                const fields = store.field_pool.slice(e_ty.variants);
+                if (fields.len == 0) {
+                    const parts = [_]mlir.Type{ self.i32_ty };
+                    break :blk mlir.LLVM.getLLVMStructTypeLiteral(self.mlir_ctx, &parts, false);
+                }
+
+                var payload_types = try self.gpa.alloc(types.TypeStore.StructFieldArg, fields.len);
+                defer self.gpa.free(payload_types);
+                for (fields, 0..) |f, i| {
+                    const field = store.Field.get(f);
+                    payload_types[i] = .{ .name = field.name, .ty = field.ty };
+                }
+                const union_ty = store.mkUnion(payload_types);
+                const union_mlir_ty = try self.llvmTypeOf(store, union_ty);
+
+                const parts = [_]mlir.Type{ self.i32_ty, union_mlir_ty };
+                break :blk mlir.LLVM.getLLVMStructTypeLiteral(self.mlir_ctx, &parts, false);
             },
 
             .Variant => blk: {

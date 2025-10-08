@@ -736,10 +736,15 @@ pub const Builder = struct {
 };
 
 pub const TirPrinter = struct {
+    // Writes readable SSA with distinct namespaces:
+    //   fN = function, bN = block, iN = instr, vN = value, gN = global
+    // Example line:
+    //   (i12 v19 = Add lhs=v4 rhs=v7 : i32)
+
     writer: *std.io.Writer,
     indent: usize = 0,
-
     tir: *const TIR,
+
     pub fn init(writer: anytype, tir: *const TIR) TirPrinter {
         return .{ .writer = writer, .tir = tir };
     }
@@ -747,136 +752,226 @@ pub const TirPrinter = struct {
     const TypeFmt = struct {
         store: *const types.TypeStore,
         ty: types.TypeId,
-
         pub fn format(self: @This(), w: anytype) !void {
             try self.store.fmt(self.ty, w);
         }
     };
-
     inline fn tf(self: *const TirPrinter, ty: types.TypeId) TypeFmt {
         return .{ .store = self.tir.type_store, .ty = ty };
-    }
-
-    fn ws(self: *TirPrinter) anyerror!void {
-        var i: usize = 0;
-        while (i < self.indent) : (i += 1) try self.writer.writeByte(' ');
-    }
-
-    fn open(self: *TirPrinter, comptime head: []const u8, args: anytype) anyerror!void {
-        try self.ws();
-        try self.writer.print(head, args);
-        try self.writer.writeAll("\n");
-        self.indent += 2;
-    }
-
-    fn close(self: *TirPrinter) anyerror!void {
-        self.indent = if (self.indent >= 2) self.indent - 2 else 0;
-        try self.ws();
-        try self.writer.writeAll(")\n");
-    }
-
-    fn leaf(self: *TirPrinter, comptime fmt: []const u8, args: anytype) anyerror!void {
-        try self.ws();
-        try self.writer.print(fmt, args);
-        try self.writer.writeAll("\n");
     }
 
     inline fn s(self: *const TirPrinter, id: StrId) []const u8 {
         return self.tir.instrs.strs.get(id);
     }
 
-    pub fn print(self: *TirPrinter) anyerror!void {
+    fn ws(self: *TirPrinter) !void {
+        var i: usize = 0;
+        while (i < self.indent) : (i += 1) try self.writer.writeByte(' ');
+    }
+    fn open(self: *TirPrinter, comptime head: []const u8, args: anytype) !void {
+        try self.ws();
+        try self.writer.print(head, args);
+        try self.writer.writeAll("\n");
+        self.indent += 2;
+    }
+    fn close(self: *TirPrinter) !void {
+        self.indent = if (self.indent >= 2) self.indent - 2 else 0;
+        try self.ws();
+        try self.writer.writeAll(")\n");
+    }
+    fn leaf(self: *TirPrinter, comptime fmt: []const u8, args: anytype) !void {
+        try self.ws();
+        try self.writer.print(fmt, args);
+        try self.writer.writeAll("\n");
+    }
+
+    inline fn pv(self: *TirPrinter, v: ValueId) !void {
+        try self.writer.print("v{}", .{v.toRaw()});
+    }
+    inline fn pi(self: *TirPrinter, i: InstrId) !void {
+        try self.writer.print("i{}", .{i.toRaw()});
+    }
+    inline fn pb(self: *TirPrinter, b: BlockId) !void {
+        try self.writer.print("block_{}", .{b.toRaw()});
+    }
+    inline fn pg(self: *TirPrinter, g: GlobalId) !void {
+        try self.writer.print("g{}", .{g.toRaw()});
+    }
+
+    fn printValueList(self: *TirPrinter, vals: []const ValueId) !void {
+        try self.writer.writeAll("[");
+        var first = true;
+        for (vals) |v| {
+            if (!first) try self.writer.writeAll(", ");
+            first = false;
+            try self.pv(v);
+        }
+        try self.writer.writeAll("]");
+    }
+
+    fn printEdge(self: *TirPrinter, e: Rows.Edge) !void {
+        try self.writer.writeAll("dest=");
+        try self.pb(e.dest);
+        const args = self.tir.instrs.value_pool.slice(e.args);
+        if (args.len > 0) {
+            try self.writer.writeAll(" args=");
+            try self.printValueList(args);
+        }
+    }
+
+    pub fn print(self: *TirPrinter) !void {
         try self.open("(tir", .{});
+
         // Globals
         const globals = self.tir.funcs.global_pool.data.items;
         if (globals.len > 0) {
             try self.open("(globals", .{});
             for (globals) |gid| {
                 const g = self.tir.funcs.Global.get(gid);
-                try self.leaf("(global name=\"{s}\" type={f})", .{ self.s(g.name), self.tf(g.ty) });
+                try self.ws();
+                try self.pg(gid);
+                try self.writer.print(": (global name=\"{s}\" type={f})\n", .{ self.s(g.name), self.tf(g.ty) });
             }
             try self.close();
         }
+
         // Functions
         const funcs = self.tir.funcs.func_pool.data.items;
         for (funcs) |fid| try self.printFunc(fid);
+
         try self.close();
         try self.writer.flush();
     }
 
-    fn printFunc(self: *TirPrinter, id: FuncId) anyerror!void {
-        const func = self.tir.funcs.Function.get(id);
-        try self.open("(function name=\"{s}\" result={f})", .{ self.s(func.name), self.tf(func.result) });
-        // Params
-        const params = self.tir.funcs.param_pool.slice(func.params);
+    fn printFunc(self: *TirPrinter, fid: FuncId) !void {
+        const f = self.tir.funcs.Function.get(fid);
+        try self.open("(function ", .{});
+        try self.ws();
+        try self.writer.print("{s} ", .{self.s(f.name)});
+        try self.writer.print("result={f}", .{self.tf(f.result)});
+        if (f.is_variadic) try self.writer.writeAll(" variadic");
+        try self.writer.writeAll("\n");
+
+        // Params (function)
+        const params = self.tir.funcs.param_pool.slice(f.params);
         if (params.len > 0) {
             try self.open("(params", .{});
             for (params) |pid| {
                 const p = self.tir.funcs.Param.get(pid);
-                try self.leaf("(param name={s} type={f})", .{ if (p.name.isNone()) "null" else self.s(p.name.unwrap()), self.tf(p.ty) });
+                try self.ws();
+                try self.pv(p.value);
+                try self.writer.print(": {f}", .{self.tf(p.ty)});
+                if (!p.name.isNone()) try self.writer.print(" /* {s} */", .{self.s(p.name.unwrap())});
+                try self.writer.writeAll("\n");
             }
             try self.close();
         }
+
         // Blocks
-        const blocks = self.tir.funcs.block_pool.slice(func.blocks);
+        const blocks = self.tir.funcs.block_pool.slice(f.blocks);
         for (blocks) |bid| try self.printBlock(bid);
-        try self.close();
+
+        try self.close(); // function
     }
 
-    fn printBlock(self: *TirPrinter, id: BlockId) anyerror!void {
-        const block = self.tir.funcs.Block.get(id);
-        try self.open("(block", .{});
-        // Params
-        const params = self.tir.funcs.param_pool.slice(block.params);
+    fn printBlock(self: *TirPrinter, bid: BlockId) !void {
+        const b = self.tir.funcs.Block.get(bid);
+        try self.open("(block ", .{});
+        try self.ws();
+        try self.pb(bid);
+        try self.writer.writeAll("\n");
+
+        // Block params
+        const params = self.tir.funcs.param_pool.slice(b.params);
         if (params.len > 0) {
             try self.open("(params", .{});
             for (params) |pid| {
                 const p = self.tir.funcs.Param.get(pid);
-                try self.leaf("(param name={s} type={f})", .{ if (p.name.isNone()) "null" else self.s(p.name.unwrap()), self.tf(p.ty) });
+                try self.ws();
+                try self.pv(p.value);
+                try self.writer.print(": {f}", .{self.tf(p.ty)});
+                if (!p.name.isNone()) try self.writer.print(" /* {s} */", .{self.s(p.name.unwrap())});
+                try self.writer.writeAll("\n");
             }
             try self.close();
         }
+
         // Instrs
-        const instrs = self.tir.instrs.instr_pool.slice(block.instrs);
+        const instrs = self.tir.instrs.instr_pool.slice(b.instrs);
         for (instrs) |iid| try self.printInstr(iid);
-        // Term
+
+        // Terminator
         try self.open("(terminator", .{});
-        const term_id = block.term;
-        const term_kind = self.tir.terms.index.kinds.items[term_id.toRaw()];
-        switch (term_kind) {
+        const tid = b.term;
+        const tk = self.tir.terms.index.kinds.items[tid.toRaw()];
+        switch (tk) {
             .Return => {
-                const row = self.tir.terms.get(.Return, term_id);
-                if (!row.value.isNone()) {
-                    try self.leaf("(return value={})", .{row.value.unwrap().toRaw()});
-                } else {
+                const row = self.tir.terms.get(.Return, tid);
+                if (row.value.isNone()) {
                     try self.leaf("(return)", .{});
+                } else {
+                    try self.ws();
+                    try self.writer.writeAll("(return value=");
+                    try self.pv(row.value.unwrap());
+                    try self.writer.writeAll(")\n");
                 }
             },
             .Br => {
-                const row = self.tir.terms.get(.Br, term_id);
-                const edge = self.tir.terms.Edge.get(row.edge);
-                try self.leaf("(br dest=block_{})", .{edge.dest});
+                const row = self.tir.terms.get(.Br, tid);
+                const e = self.tir.terms.Edge.get(row.edge);
+                try self.ws();
+                try self.writer.writeAll("(br ");
+                try self.printEdge(e);
+                try self.writer.writeAll(")\n");
             },
             .CondBr => {
-                const row = self.tir.terms.get(.CondBr, term_id);
-                const then_edge = self.tir.terms.Edge.get(row.then_edge);
-                const else_edge = self.tir.terms.Edge.get(row.else_edge);
-                try self.leaf("(cond_br cond={} then=block_{} else=block_{})", .{ row.cond.toRaw(), then_edge.dest.toRaw(), else_edge.dest.toRaw() });
+                const row = self.tir.terms.get(.CondBr, tid);
+                const te = self.tir.terms.Edge.get(row.then_edge);
+                const ee = self.tir.terms.Edge.get(row.else_edge);
+                try self.ws();
+                try self.writer.writeAll("(cond_br cond=");
+                try self.pv(row.cond);
+                try self.writer.writeAll(" then=");
+                try self.pb(te.dest);
+                const targs = self.tir.terms.Edge.get(row.then_edge).args;
+                const eargs = self.tir.terms.Edge.get(row.else_edge).args;
+                const ta = self.tir.instrs.value_pool.slice(targs);
+                const ea = self.tir.instrs.value_pool.slice(eargs);
+                if (ta.len > 0) {
+                    try self.writer.writeAll(" args=");
+                    try self.printValueList(ta);
+                }
+                try self.writer.writeAll(" else=");
+                try self.pb(ee.dest);
+                if (ea.len > 0) {
+                    try self.writer.writeAll(" args=");
+                    try self.printValueList(ea);
+                }
+                try self.writer.writeAll(")\n");
             },
             .SwitchInt => {
-                const row = self.tir.terms.get(.SwitchInt, term_id);
+                const row = self.tir.terms.get(.SwitchInt, tid);
                 const cases = self.tir.terms.case_pool.slice(row.cases);
-                const default_edge = self.tir.terms.Edge.get(row.default_edge);
-                try self.open("(switch_int scrut={} default=block_{})", .{ row.scrut.toRaw(), default_edge.dest.toRaw() });
+                const def_edge = self.tir.terms.Edge.get(row.default_edge);
+                try self.open("(switch_int scrut=", .{});
+                try self.pv(row.scrut);
+                try self.writer.writeAll("\n");
                 for (cases) |cid| {
                     const c = self.tir.terms.Case.get(cid);
-                    const edge = self.tir.terms.Edge.get(c.edge);
-                    try self.leaf("(case value={} dest=block_{})", .{ c.value, edge.dest.toRaw() });
+                    const e = self.tir.terms.Edge.get(c.edge);
+                    try self.ws();
+                    try self.writer.print("(case value={} ", .{c.value});
+                    try self.printEdge(e);
+                    try self.writer.writeAll(")\n");
                 }
+                try self.ws();
+                try self.writer.writeAll("(default ");
+                try self.printEdge(def_edge);
+                try self.writer.writeAll(")\n");
                 try self.close();
             },
             .Unreachable => {
-                _ = self.tir.terms.get(.Unreachable, term_id);
+                _ = self.tir.terms.get(.Unreachable, tid);
                 try self.leaf("(unreachable)", .{});
             },
         }
@@ -884,214 +979,448 @@ pub const TirPrinter = struct {
         try self.close(); // block
     }
 
-    pub fn printInstr(self: *TirPrinter, id: InstrId) anyerror!void {
-        const kind = self.tir.instrs.index.kinds.items[id.toRaw()];
-        switch (kind) {
+    pub fn printInstr(self: *TirPrinter, iid: InstrId) !void {
+        const k = self.tir.instrs.index.kinds.items[iid.toRaw()];
+        switch (k) {
             .ConstInt => {
-                const row = self.tir.instrs.get(.ConstInt, id);
-                try self.leaf("(instr id={} op=ConstInt value={} type={f})", .{ id.toRaw(), row.value, self.tf(row.ty) });
+                const r = self.tir.instrs.get(.ConstInt, iid);
+                try self.ws();
+                try self.writer.writeByte('(');
+                try self.pi(iid);
+                try self.writer.writeAll(" ");
+                try self.pv(r.result);
+                try self.writer.print(" = ConstInt value={} : {f})\n", .{ r.value, self.tf(r.ty) });
             },
             .ConstFloat => {
-                const row = self.tir.instrs.get(.ConstFloat, id);
-                try self.leaf("(instr id={} op=ConstFloat value={} type={f})", .{ id.toRaw(), row.value, self.tf(row.ty) });
+                const r = self.tir.instrs.get(.ConstFloat, iid);
+                try self.ws();
+                try self.writer.writeByte('(');
+                try self.pi(iid);
+                try self.writer.writeAll(" ");
+                try self.pv(r.result);
+                try self.writer.print(" = ConstFloat value={} : {f})\n", .{ r.value, self.tf(r.ty) });
             },
             .ConstBool => {
-                const row = self.tir.instrs.get(.ConstBool, id);
-                try self.leaf("(instr id={} op=ConstBool value={} type={f})", .{ id.toRaw(), row.value, self.tf(row.ty) });
+                const r = self.tir.instrs.get(.ConstBool, iid);
+                try self.ws();
+                try self.writer.writeByte('(');
+                try self.pi(iid);
+                try self.writer.writeAll(" ");
+                try self.pv(r.result);
+                try self.writer.print(" = ConstBool value={} : {f})\n", .{ r.value, self.tf(r.ty) });
             },
             .ConstString => {
-                const row = self.tir.instrs.get(.ConstString, id);
-                try self.leaf("(instr id={} op=ConstString value=\"{s}\" type={f})", .{ id.toRaw(), self.s(row.text), self.tf(row.ty) });
+                const r = self.tir.instrs.get(.ConstString, iid);
+                try self.ws();
+                try self.writer.writeByte('(');
+                try self.pi(iid);
+                try self.writer.writeAll(" ");
+                try self.pv(r.result);
+                try self.writer.print(" = ConstString \"{s}\" : {f})\n", .{ self.s(r.text), self.tf(r.ty) });
             },
             .ConstNull => {
-                const row = self.tir.instrs.get(.ConstNull, id);
-                try self.leaf("(instr id={} op=ConstNull type={f})", .{ id.toRaw(), self.tf(row.ty) });
+                const r = self.tir.instrs.get(.ConstNull, iid);
+                try self.ws();
+                try self.writer.writeByte('(');
+                try self.pi(iid);
+                try self.writer.writeAll(" ");
+                try self.pv(r.result);
+                try self.writer.print(" = ConstNull : {f})\n", .{self.tf(r.ty)});
             },
             .ConstUndef => {
-                const row = self.tir.instrs.get(.ConstUndef, id);
-                try self.leaf("(instr id={} op=ConstUndef type={f})", .{ id.toRaw(), self.tf(row.ty) });
+                const r = self.tir.instrs.get(.ConstUndef, iid);
+                try self.ws();
+                try self.writer.writeByte('(');
+                try self.pi(iid);
+                try self.writer.writeAll(" ");
+                try self.pv(r.result);
+                try self.writer.print(" = ConstUndef : {f})\n", .{self.tf(r.ty)});
             },
-            inline .Add, .Sub, .Mul, .Div, .Mod, .Shl, .Shr, .BitAnd, .BitOr, .BitXor, .LogicalAnd, .LogicalOr, .CmpEq, .CmpNe, .CmpLt, .CmpLe, .CmpGt, .CmpGe => |x| {
-                const row = self.tir.instrs.get(x, id);
-                try self.leaf("(instr id={} op={s} lhs={} rhs={} result={} type={f})", .{ id.toRaw(), @tagName(kind), row.lhs.toRaw(), row.rhs.toRaw(), row.result.toRaw(), self.tf(row.ty) });
+
+            inline .Add, .Sub, .Mul, .Div, .Mod, .Shl, .Shr, .BitAnd, .BitOr, .BitXor, .LogicalAnd, .LogicalOr, .CmpEq, .CmpNe, .CmpLt, .CmpLe, .CmpGt, .CmpGe => |opk| {
+                const r = self.tir.instrs.get(opk, iid);
+                try self.ws();
+                try self.writer.writeByte('(');
+                try self.pi(iid);
+                try self.writer.writeAll(" ");
+                try self.pv(r.result);
+                try self.writer.print(" = {s} lhs=", .{@tagName(k)});
+                try self.pv(r.lhs);
+                try self.writer.writeAll(" rhs=");
+                try self.pv(r.rhs);
+                try self.writer.print(" : {f})\n", .{self.tf(r.ty)});
             },
+
             .LogicalNot => {
-                const row = self.tir.instrs.get(.LogicalNot, id);
-                try self.leaf("(instr id={} op=LogicalNot value={} result={} type={f})", .{ id.toRaw(), row.value.toRaw(), row.result.toRaw(), self.tf(row.ty) });
+                const r = self.tir.instrs.get(.LogicalNot, iid);
+                try self.ws();
+                try self.writer.writeByte('(');
+                try self.pi(iid);
+                try self.writer.writeAll(" ");
+                try self.pv(r.result);
+                try self.writer.writeAll(" = LogicalNot value=");
+                try self.pv(r.value);
+                try self.writer.print(" : {f})\n", .{self.tf(r.ty)});
             },
-            inline .CastNormal, .CastBit, .CastSaturate, .CastWrap, .CastChecked => |x| {
-                const row = self.tir.instrs.get(x, id);
-                try self.leaf("(instr id={} op={s} value={} result={} type={f})", .{ id.toRaw(), @tagName(kind), row.value.toRaw(), row.result.toRaw(), self.tf(row.ty) });
+
+            inline .CastNormal, .CastBit, .CastSaturate, .CastWrap, .CastChecked => |opk| {
+                const r = self.tir.instrs.get(opk, iid);
+                try self.ws();
+                try self.writer.writeByte('(');
+                try self.pi(iid);
+                try self.writer.writeAll(" ");
+                try self.pv(r.result);
+                try self.writer.print(" = {s} value=", .{@tagName(k)});
+                try self.pv(r.value);
+                try self.writer.print(" : {f})\n", .{self.tf(r.ty)});
             },
+
             .Alloca => {
-                const row = self.tir.instrs.get(.Alloca, id);
-                if (!row.count.isNone()) {
-                    try self.leaf("(instr id={} op=Alloca count={} align={} result={} type={f})", .{ id.toRaw(), row.count.unwrap().toRaw(), row.@"align", row.result.toRaw(), self.tf(row.ty) });
+                const r = self.tir.instrs.get(.Alloca, iid);
+                try self.ws();
+                try self.writer.writeByte('(');
+                try self.pi(iid);
+                try self.writer.writeAll(" ");
+                try self.pv(r.result);
+                try self.writer.print(" = Alloca align={} ", .{r.@"align"});
+                if (r.count.isNone()) {
+                    try self.writer.writeAll("count=null");
                 } else {
-                    try self.leaf("(instr id={} op=Alloca count=null align={} result={} type={f})", .{ id.toRaw(), row.@"align", row.result.toRaw(), self.tf(row.ty) });
+                    try self.writer.writeAll("count=");
+                    try self.pv(r.count.unwrap());
                 }
+                try self.writer.print(" : {f})\n", .{self.tf(r.ty)});
             },
             .Load => {
-                const row = self.tir.instrs.get(.Load, id);
-                try self.leaf("(instr id={} op=Load ptr={} align={} result={} type={f})", .{ id.toRaw(), row.ptr.toRaw(), row.@"align", row.result.toRaw(), self.tf(row.ty) });
+                const r = self.tir.instrs.get(.Load, iid);
+                try self.ws();
+                try self.writer.writeByte('(');
+                try self.pi(iid);
+                try self.writer.writeAll(" ");
+                try self.pv(r.result);
+                try self.writer.writeAll(" = Load ptr=");
+                try self.pv(r.ptr);
+                try self.writer.print(" align={} : {f})\n", .{ r.@"align", self.tf(r.ty) });
             },
             .Store => {
-                const row = self.tir.instrs.get(.Store, id);
-                try self.leaf("(instr id={} op=Store ptr={} value={} align={})", .{ id.toRaw(), row.ptr.toRaw(), row.value.toRaw(), row.@"align" });
+                const r = self.tir.instrs.get(.Store, iid);
+                try self.ws();
+                try self.writer.writeByte('(');
+                try self.pi(iid);
+                try self.writer.writeAll(" Store ptr=");
+                try self.pv(r.ptr);
+                try self.writer.writeAll(" value=");
+                try self.pv(r.value);
+                try self.writer.print(" align={})\n", .{r.@"align"});
             },
             .Gep => {
-                const row = self.tir.instrs.get(.Gep, id);
-                const indices = self.tir.instrs.gep_pool.slice(row.indices);
-                try self.open("(instr id={} op=Gep base={} result={} type={f} indices=[", .{ id.toRaw(), row.base.toRaw(), row.result.toRaw(), self.tf(row.ty) });
-                for (indices) |gid| {
+                const r = self.tir.instrs.get(.Gep, iid);
+                const idxs = self.tir.instrs.gep_pool.slice(r.indices);
+                try self.ws();
+                try self.writer.writeByte('(');
+                try self.pi(iid);
+                try self.writer.writeAll(" ");
+                try self.pv(r.result);
+                try self.writer.writeAll(" = Gep base=");
+                try self.pv(r.base);
+                try self.writer.writeAll(" indices=[");
+                var first = true;
+                for (idxs) |gid| {
+                    if (!first) try self.writer.writeAll(", ");
+                    first = false;
                     const g = self.tir.instrs.GepIndex.get(gid);
                     switch (g) {
-                        .Const => try self.leaf("  (const {})", .{g.Const}),
-                        .Value => try self.leaf("  (value {})", .{g.Value.toRaw()}),
+                        .Const => try self.writer.print("{}", .{g.Const}),
+                        .Value => {
+                            try self.pv(g.Value);
+                        },
                     }
                 }
-                try self.leaf("])", .{});
-                try self.close();
+                try self.writer.print("] : {f})\n", .{self.tf(r.ty)});
             },
             .GlobalAddr => {
-                const row = self.tir.instrs.get(.GlobalAddr, id);
-                try self.leaf("(instr id={} op=GlobalAddr name=\"{s}\" result={} type={f})", .{ id.toRaw(), self.s(row.name), row.result.toRaw(), self.tf(row.ty) });
+                const r = self.tir.instrs.get(.GlobalAddr, iid);
+                try self.ws();
+                try self.writer.writeByte('(');
+                try self.pi(iid);
+                try self.writer.writeAll(" ");
+                try self.pv(r.result);
+                try self.writer.print(" = GlobalAddr \"{s}\" : {f})\n", .{ self.s(r.name), self.tf(r.ty) });
             },
+
             .TupleMake => {
-                const row = self.tir.instrs.get(.TupleMake, id);
-                const elems = self.tir.instrs.value_pool.slice(row.elems);
-                try self.open("(instr id={} op=TupleMake result={} type={f} elems=[", .{ id.toRaw(), row.result.toRaw(), self.tf(row.ty) });
-                for (elems) |vid| try self.leaf("  {}", .{vid.toRaw()});
-                try self.leaf("])", .{});
-                try self.close();
+                const r = self.tir.instrs.get(.TupleMake, iid);
+                const elems = self.tir.instrs.value_pool.slice(r.elems);
+                try self.ws();
+                try self.writer.writeByte('(');
+                try self.pi(iid);
+                try self.writer.writeAll(" ");
+                try self.pv(r.result);
+                try self.writer.print(" = TupleMake elems=", .{});
+                try self.printValueList(elems);
+                try self.writer.print(" : {f})\n", .{self.tf(r.ty)});
             },
             .ArrayMake => {
-                const row = self.tir.instrs.get(.ArrayMake, id);
-                const elems = self.tir.instrs.value_pool.slice(row.elems);
-                try self.open("(instr id={} op=ArrayMake result={} type={f} elems=[", .{ id.toRaw(), row.result.toRaw(), self.tf(row.ty) });
-                for (elems) |vid| try self.leaf("  {}", .{vid.toRaw()});
-                try self.leaf("])", .{});
-                try self.close();
-            },
-            .RangeMake => {
-                const row = self.tir.instrs.get(.RangeMake, id);
-                try self.leaf("(instr id={} op=RangeMake start={} end={} inclusive={} result={} type={f})", .{ id.toRaw(), row.start.toRaw(), row.end.toRaw(), row.inclusive.toRaw(), row.result.toRaw(), self.tf(row.ty) });
+                const r = self.tir.instrs.get(.ArrayMake, iid);
+                const elems = self.tir.instrs.value_pool.slice(r.elems);
+                try self.ws();
+                try self.writer.writeByte('(');
+                try self.pi(iid);
+                try self.writer.writeAll(" ");
+                try self.pv(r.result);
+                try self.writer.print(" = ArrayMake elems=", .{});
+                try self.printValueList(elems);
+                try self.writer.print(" : {f})\n", .{self.tf(r.ty)});
             },
             .StructMake => {
-                const row = self.tir.instrs.get(.StructMake, id);
-                const fields = self.tir.instrs.sfi_pool.slice(row.fields);
-                try self.open("(instr id={} op=StructMake result={} type={f} fields=[", .{ id.toRaw(), row.result.toRaw(), self.tf(row.ty) });
+                const r = self.tir.instrs.get(.StructMake, iid);
+                const fields = self.tir.instrs.sfi_pool.slice(r.fields);
+                try self.ws();
+                try self.writer.writeByte('(');
+                try self.pi(iid);
+                try self.writer.writeAll(" ");
+                try self.pv(r.result);
+                try self.writer.print(" = StructMake fields=[", .{});
+                var first = true;
                 for (fields) |sfid| {
+                    if (!first) try self.writer.writeAll(", ");
+                    first = false;
                     const sf = self.tir.instrs.StructFieldInit.get(sfid);
-                    try self.leaf("  (field index={} name={s} value={})", .{ sf.index, if (sf.name.isNone()) "null" else self.s(sf.name.unwrap()), sf.value.toRaw() });
+                    try self.writer.print("(index={} name=", .{sf.index});
+                    if (sf.name.isNone()) try self.writer.writeAll("null") else try self.writer.print("\"{s}\"", .{self.s(sf.name.unwrap())});
+                    try self.writer.writeAll(" value=");
+                    try self.pv(sf.value);
+                    try self.writer.writeAll(")");
                 }
-                try self.leaf("])", .{});
-                try self.close();
+                try self.writer.print("] : {f})\n", .{self.tf(r.ty)});
             },
+
             .ExtractElem => {
-                const row = self.tir.instrs.get(.ExtractElem, id);
-                try self.leaf("(instr id={} op=ExtractElem agg={} index={} result={} type={f})", .{
-                    id.toRaw(),
-                    row.agg.toRaw(),
-                    row.index,
-                    row.result.toRaw(),
-                    self.tf(row.ty),
-                });
+                const r = self.tir.instrs.get(.ExtractElem, iid);
+                try self.ws();
+                try self.writer.writeByte('(');
+                try self.pi(iid);
+                try self.writer.writeAll(" ");
+                try self.pv(r.result);
+                try self.writer.print(" = ExtractElem agg=", .{});
+                try self.pv(r.agg);
+                try self.writer.print(" index={} : {f})\n", .{ r.index, self.tf(r.ty) });
             },
             .InsertElem => {
-                const row = self.tir.instrs.get(.InsertElem, id);
-                try self.leaf("(instr id={} op=InsertElem agg={} index={} value={} result={} type={f})", .{ id.toRaw(), row.agg.toRaw(), row.index, row.value.toRaw(), row.result.toRaw(), self.tf(row.ty) });
+                const r = self.tir.instrs.get(.InsertElem, iid);
+                try self.ws();
+                try self.writer.writeByte('(');
+                try self.pi(iid);
+                try self.writer.writeAll(" ");
+                try self.pv(r.result);
+                try self.writer.print(" = InsertElem agg=", .{});
+                try self.pv(r.agg);
+                try self.writer.print(" index={} value=", .{r.index});
+                try self.pv(r.value);
+                try self.writer.print(" : {f})\n", .{self.tf(r.ty)});
             },
             .ExtractField => {
-                const row = self.tir.instrs.get(.ExtractField, id);
-                try self.leaf("(instr id={} op=ExtractField agg={} index={} name={s} result={} type={f})", .{
-                    id.toRaw(),
-                    row.agg.toRaw(),
-                    row.index,
-                    if (row.name.isNone()) "null" else self.s(row.name.unwrap()),
-                    row.result.toRaw(),
-                    self.tf(row.ty),
-                });
+                const r = self.tir.instrs.get(.ExtractField, iid);
+                try self.ws();
+                try self.writer.writeByte('(');
+                try self.pi(iid);
+                try self.writer.writeAll(" ");
+                try self.pv(r.result);
+                try self.writer.print(" = ExtractField agg=", .{});
+                try self.pv(r.agg);
+                if (r.name.isNone()) {
+                    try self.writer.print(" index={} ", .{r.index});
+                } else {
+                    try self.writer.print(" name=\"{s}\" ", .{self.s(r.name.unwrap())});
+                }
+                try self.writer.print(": {f})\n", .{self.tf(r.ty)});
             },
             .InsertField => {
-                const row = self.tir.instrs.get(.InsertField, id);
-                try self.leaf("(instr id={} op=InsertField agg={} index={} value={} name={s} result={} type={f})", .{
-                    id.toRaw(),
-                    row.agg.toRaw(),
-                    row.index,
-                    row.value.toRaw(),
-                    if (row.name.isNone()) "null" else self.s(row.name.unwrap()),
-                    row.result.toRaw(),
-                    self.tf(row.ty),
-                });
+                const r = self.tir.instrs.get(.InsertField, iid);
+                try self.ws();
+                try self.writer.writeByte('(');
+                try self.pi(iid);
+                try self.writer.writeAll(" ");
+                try self.pv(r.result);
+                try self.writer.print(" = InsertField agg=", .{});
+                try self.pv(r.agg);
+                if (r.name.isNone()) {
+                    try self.writer.print(" index={} ", .{r.index});
+                } else {
+                    try self.writer.print(" name=\"{s}\" ", .{self.s(r.name.unwrap())});
+                }
+                try self.writer.writeAll("value=");
+                try self.pv(r.value);
+                try self.writer.print(" : {f})\n", .{self.tf(r.ty)});
             },
+
             .Index => {
-                const row = self.tir.instrs.get(.Index, id);
-                try self.leaf("(instr id={} op=Index base={} index={} result={} type={f})", .{ id.toRaw(), row.base.toRaw(), row.index.toRaw(), row.result.toRaw(), self.tf(row.ty) });
+                const r = self.tir.instrs.get(.Index, iid);
+                try self.ws();
+                try self.writer.writeByte('(');
+                try self.pi(iid);
+                try self.writer.writeAll(" ");
+                try self.pv(r.result);
+                try self.writer.writeAll(" = Index base=");
+                try self.pv(r.base);
+                try self.writer.writeAll(" index=");
+                try self.pv(r.index);
+                try self.writer.print(" : {f})\n", .{self.tf(r.ty)});
             },
             .AddressOf => {
-                const row = self.tir.instrs.get(.AddressOf, id);
-                try self.leaf("(instr id={} op=AddressOf value={} result={} type={f})", .{ id.toRaw(), row.value.toRaw(), row.result.toRaw(), self.tf(row.ty) });
+                const r = self.tir.instrs.get(.AddressOf, iid);
+                try self.ws();
+                try self.writer.writeByte('(');
+                try self.pi(iid);
+                try self.writer.writeAll(" ");
+                try self.pv(r.result);
+                try self.writer.writeAll(" = AddressOf value=");
+                try self.pv(r.value);
+                try self.writer.print(" : {f})\n", .{self.tf(r.ty)});
             },
+
             .Select => {
-                const row = self.tir.instrs.get(.Select, id);
-                try self.leaf("(instr id={} op=Select cond={} then={} else={} result={} type={f})", .{ id.toRaw(), row.cond.toRaw(), row.then_value.toRaw(), row.else_value.toRaw(), row.result.toRaw(), self.tf(row.ty) });
+                const r = self.tir.instrs.get(.Select, iid);
+                try self.ws();
+                try self.writer.writeByte('(');
+                try self.pi(iid);
+                try self.writer.writeAll(" ");
+                try self.pv(r.result);
+                try self.writer.writeAll(" = Select cond=");
+                try self.pv(r.cond);
+                try self.writer.writeAll(" then=");
+                try self.pv(r.then_value);
+                try self.writer.writeAll(" else=");
+                try self.pv(r.else_value);
+                try self.writer.print(" : {f})\n", .{self.tf(r.ty)});
             },
+
             .Call => {
-                const row = self.tir.instrs.get(.Call, id);
-                const args = self.tir.instrs.val_list_pool.slice(row.args);
-                try self.open("(instr id={} op=Call callee=\"{s}\" result={} type={f} args=[", .{ id.toRaw(), self.s(row.callee), row.result.toRaw(), self.tf(row.ty) });
-                for (args) |vid| try self.leaf("  {}", .{vid.toRaw()});
-                try self.leaf("])", .{});
-                try self.close();
+                const r = self.tir.instrs.get(.Call, iid);
+                const args = self.tir.instrs.val_list_pool.slice(r.args);
+                try self.ws();
+                try self.writer.writeByte('(');
+                try self.pi(iid);
+                try self.writer.writeAll(" ");
+                try self.pv(r.result);
+                try self.writer.print(" = Call \"{s}\" args=", .{self.s(r.callee)});
+                try self.printValueList(args);
+                try self.writer.print(" : {f})\n", .{self.tf(r.ty)});
             },
+
             .VariantMake => {
-                const row = self.tir.instrs.get(.VariantMake, id);
-                try self.leaf("(instr id={} op=VariantMake tag={} payload={} result={} type={f} payload_ty={f})", .{
-                    id.toRaw(),
-                    row.tag,
-                    if (row.payload.isNone()) 0 else row.payload.unwrap().toRaw(),
-                    row.result.toRaw(),
-                    self.tf(row.ty),
-                    self.tf(row.payload_ty),
-                });
+                const r = self.tir.instrs.get(.VariantMake, iid);
+                try self.ws();
+                try self.writer.writeByte('(');
+                try self.pi(iid);
+                try self.writer.writeAll(" ");
+                try self.pv(r.result);
+                try self.writer.print(" = VariantMake tag={} payload=", .{r.tag});
+                if (r.payload.isNone()) try self.writer.writeAll("null") else try self.pv(r.payload.unwrap());
+                try self.writer.print(" : {f} (payload_ty={f}))\n", .{ self.tf(r.ty), self.tf(r.payload_ty) });
             },
             .VariantTag => {
-                const row = self.tir.instrs.get(.VariantTag, id);
-                try self.leaf("(instr id={} op=VariantTag value={} result={} type={f})", .{ id.toRaw(), row.value.toRaw(), row.result.toRaw(), self.tf(row.ty) });
+                const r = self.tir.instrs.get(.VariantTag, iid);
+                try self.ws();
+                try self.writer.writeByte('(');
+                try self.pi(iid);
+                try self.writer.writeAll(" ");
+                try self.pv(r.result);
+                try self.writer.writeAll(" = VariantTag value=");
+                try self.pv(r.value);
+                try self.writer.print(" : {f})\n", .{self.tf(r.ty)});
             },
             .VariantPayloadPtr => {
-                const row = self.tir.instrs.get(.VariantPayloadPtr, id);
-                try self.leaf("(instr id={} op=VariantPayloadPtr value={} result={} type={f})", .{ id.toRaw(), row.value.toRaw(), row.result.toRaw(), self.tf(row.ty) });
+                const r = self.tir.instrs.get(.VariantPayloadPtr, iid);
+                try self.ws();
+                try self.writer.writeByte('(');
+                try self.pi(iid);
+                try self.writer.writeAll(" ");
+                try self.pv(r.result);
+                try self.writer.writeAll(" = VariantPayloadPtr value=");
+                try self.pv(r.value);
+                try self.writer.print(" : {f})\n", .{self.tf(r.ty)});
             },
+
             .UnionMake => {
-                const row = self.tir.instrs.get(.UnionMake, id);
-                try self.leaf("(instr id={} op=UnionMake field_index={} value={} result={} type={f})", .{ id.toRaw(), row.field_index, row.value.toRaw(), row.result.toRaw(), self.tf(row.ty) });
+                const r = self.tir.instrs.get(.UnionMake, iid);
+                try self.ws();
+                try self.writer.writeByte('(');
+                try self.pi(iid);
+                try self.writer.writeAll(" ");
+                try self.pv(r.result);
+                try self.writer.print(" = UnionMake field_index={} value=", .{r.field_index});
+                try self.pv(r.value);
+                try self.writer.print(" : {f})\n", .{self.tf(r.ty)});
             },
             .UnionField => {
-                const row = self.tir.instrs.get(.UnionField, id);
-                try self.leaf("(instr id={} op=UnionField base={} field_index={} result={} type={f})", .{ id.toRaw(), row.base.toRaw(), row.field_index, row.result.toRaw(), self.tf(row.ty) });
+                const r = self.tir.instrs.get(.UnionField, iid);
+                try self.ws();
+                try self.writer.writeByte('(');
+                try self.pi(iid);
+                try self.writer.writeAll(" ");
+                try self.pv(r.result);
+                try self.writer.writeAll(" = UnionField base=");
+                try self.pv(r.base);
+                try self.writer.print(" field_index={} : {f})\n", .{ r.field_index, self.tf(r.ty) });
             },
             .UnionFieldPtr => {
-                const row = self.tir.instrs.get(.UnionFieldPtr, id);
-                try self.leaf("(instr id={} op=UnionFieldPtr base={} field_index={} result={} type={f})", .{ id.toRaw(), row.base.toRaw(), row.field_index, row.result.toRaw(), self.tf(row.ty) });
+                const r = self.tir.instrs.get(.UnionFieldPtr, iid);
+                try self.ws();
+                try self.writer.writeByte('(');
+                try self.pi(iid);
+                try self.writer.writeAll(" ");
+                try self.pv(r.result);
+                try self.writer.writeAll(" = UnionFieldPtr base=");
+                try self.pv(r.base);
+                try self.writer.print(" field_index={} : {f})\n", .{ r.field_index, self.tf(r.ty) });
             },
+
             .ComplexMake => {
-                const row = self.tir.instrs.get(.ComplexMake, id);
-                try self.leaf("(instr id={} op=ComplexMake re={} im={} result={} type={f})", .{ id.toRaw(), row.re.toRaw(), row.im.toRaw(), row.result.toRaw(), self.tf(row.ty) });
+                const r = self.tir.instrs.get(.ComplexMake, iid);
+                try self.ws();
+                try self.writer.writeByte('(');
+                try self.pi(iid);
+                try self.writer.writeAll(" ");
+                try self.pv(r.result);
+                try self.writer.writeAll(" = ComplexMake re=");
+                try self.pv(r.re);
+                try self.writer.writeAll(" im=");
+                try self.pv(r.im);
+                try self.writer.print(" : {f})\n", .{self.tf(r.ty)});
             },
+
+            .RangeMake => {
+                const r = self.tir.instrs.get(.RangeMake, iid);
+                try self.ws();
+                try self.writer.writeByte('(');
+                try self.pi(iid);
+                try self.writer.writeAll(" ");
+                try self.pv(r.result);
+                try self.writer.writeAll(" = RangeMake start=");
+                try self.pv(r.start);
+                try self.writer.writeAll(" end=");
+                try self.pv(r.end);
+                try self.writer.writeAll(" inclusive=");
+                try self.pv(r.inclusive);
+                try self.writer.print(" : {f})\n", .{self.tf(r.ty)});
+            },
+
             .MlirBlock => {
-                const row = self.tir.instrs.get(.MlirBlock, id);
-                try self.open("(instr id={} op=MlirBlock kind={s} text=\"{s}\" type={f})", .{
-                    id.toRaw(),
-                    @tagName(row.kind),
-                    self.s(row.text),
-                    self.tf(row.ty),
+                const r = self.tir.instrs.get(.MlirBlock, iid);
+                try self.open("(MlirBlock ", .{});
+                try self.ws();
+                try self.pi(iid);
+                try self.writer.print(" kind={s} text=\"{s}\" : {f}\n", .{
+                    @tagName(r.kind), self.s(r.text), self.tf(r.ty),
                 });
-                if (!row.result.isNone()) {
-                    try self.leaf("  (result {})", .{row.result.unwrap().toRaw()});
+                if (!r.result.isNone()) {
+                    try self.ws();
+                    try self.writer.writeAll("result=");
+                    try self.pv(r.result.unwrap());
+                    try self.writer.writeAll("\n");
                 } else {
-                    try self.leaf("  (result null)", .{});
+                    try self.leaf("result=null", .{});
                 }
                 try self.close();
             },
