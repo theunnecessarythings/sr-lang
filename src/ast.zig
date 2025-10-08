@@ -169,9 +169,7 @@ pub const ExprKind = enum(u16) {
 pub const Rows = struct {
     pub const Literal = struct {
         kind: LiteralKind,
-        value: OptStrId,
-        bool_value: bool,
-        char_value: u32,
+        data: LiteralValue,
         loc: LocId,
     };
     pub const Ident = struct { name: StrId, loc: LocId };
@@ -379,6 +377,29 @@ pub const PatRows = struct {
 inline fn PatRowT(comptime K: PatternKind) type {
     return @field(PatRows, @tagName(K));
 }
+
+pub const LiteralInt = struct {
+    text: StrId,
+    value: u128,
+    base: u8,
+    valid: bool,
+};
+
+pub const LiteralFloat = struct {
+    text: StrId,
+    value: f64,
+    valid: bool,
+};
+
+pub const LiteralValue = union(enum) {
+    none,
+    bool: bool,
+    char: u32,
+    string: StrId,
+    int: LiteralInt,
+    float: LiteralFloat,
+    imaginary: LiteralFloat,
+};
 
 pub const ExprStore = struct {
     gpa: std.mem.Allocator,
@@ -858,16 +879,24 @@ pub const AstPrinter = struct {
             .Literal => {
                 const node = self.exprs.get(.Literal, id);
                 switch (node.kind) {
-                    .int, .float, .string => {
-                        const text = self.s(node.value.unwrap());
-                        try self.leaf("(literal kind={s} \"{s}\")", .{ @tagName(node.kind), text });
+                    .int => {
+                        const info = node.data.int;
+                        try self.leaf("(literal kind=int \"{s}\")", .{self.s(info.text)});
+                    },
+                    .float => {
+                        const info = node.data.float;
+                        try self.leaf("(literal kind=float \"{s}\")", .{self.s(info.text)});
+                    },
+                    .string => {
+                        const sid = node.data.string;
+                        try self.leaf("(literal kind=string \"{s}\")", .{self.s(sid)});
                     },
                     .imaginary => {
-                        const text = self.s(node.value.unwrap());
-                        try self.leaf("(literal kind=imaginary \"{s}i\")", .{text});
+                        const info = node.data.imaginary;
+                        try self.leaf("(literal kind=imaginary \"{s}i\")", .{self.s(info.text)});
                     },
-                    .bool => try self.leaf("(literal kind=bool {})", .{node.bool_value}),
-                    .char => try self.leaf("(literal kind=char {d})", .{node.char_value}),
+                    .bool => try self.leaf("(literal kind=bool {})", .{node.data.bool}),
+                    .char => try self.leaf("(literal kind=char {d})", .{node.data.char}),
                 }
             },
             .Ident => {
@@ -1735,23 +1764,28 @@ pub const CodePrinter = struct {
             .Literal => {
                 const node = self.exprs.get(.Literal, id);
                 switch (node.kind) {
-                    .int, .float => {
-                        const text = self.s(node.value.unwrap());
-                        try self.printf("{s}", .{text});
+                    .int => {
+                        const info = node.data.int;
+                        try self.printf("{s}", .{self.s(info.text)});
+                    },
+                    .float => {
+                        const info = node.data.float;
+                        try self.printf("{s}", .{self.s(info.text)});
                     },
                     .imaginary => {
-                        const text = self.s(node.value.unwrap());
-                        try self.printf("{s}i", .{text});
+                        const info = node.data.imaginary;
+                        try self.printf("{s}i", .{self.s(info.text)});
                     },
                     .string => {
-                        const text = self.s(node.value.unwrap());
+                        const sid = node.data.string;
+                        const text = self.s(sid);
                         try self.printf("\"", .{});
                         try std.zig.stringEscape(text, self.writer);
                         try self.printf("\"", .{});
                     },
-                    .bool => try self.printf("{}", .{node.bool_value}),
+                    .bool => try self.printf("{}", .{node.data.bool}),
                     .char => {
-                        const char_val: u8 = @truncate(node.char_value);
+                        const char_val: u8 = @truncate(node.data.char);
                         try self.printf("'{c}'", .{char_val});
                     },
                 }

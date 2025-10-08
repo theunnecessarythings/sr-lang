@@ -612,9 +612,15 @@ fn patternIntLiteral(self: *Checker, pid: ast.PatternId) ?i64 {
             const lp = self.ast_unit.pats.get(.Literal, pid);
             if (self.ast_unit.exprs.index.kinds.items[lp.expr.toRaw()] != .Literal) return null;
             const lit = self.ast_unit.exprs.get(.Literal, lp.expr);
-            if (lit.kind != .int or lit.value.isNone()) return null;
-            const s = self.ast_unit.exprs.strs.get(lit.value.unwrap());
-            return std.fmt.parseInt(i64, s, 10) catch null;
+            if (lit.kind != .int) return null;
+            const info = switch (lit.data) {
+                .int => |int_info| int_info,
+                else => return null,
+            };
+            if (!info.valid) return null;
+            const max_i64: u128 = @intCast(std.math.maxInt(i64));
+            if (info.value > max_i64) return null;
+            return @intCast(info.value);
         },
         .At => {
             const ap = self.ast_unit.pats.get(.At, pid);
@@ -636,12 +642,21 @@ fn patternIntRange(self: *Checker, pid: ast.PatternId) !?struct { a: i64, b: i64
             if (self.ast_unit.exprs.index.kinds.items[eid.toRaw()] != .Literal) return null;
             const sl = self.ast_unit.exprs.get(.Literal, sid);
             const el = self.ast_unit.exprs.get(.Literal, eid);
-            if (sl.kind != .int or sl.value.isNone()) return null;
-            if (el.kind != .int or el.value.isNone()) return null;
-            const ss = self.ast_unit.exprs.strs.get(sl.value.unwrap());
-            const es = self.ast_unit.exprs.strs.get(el.value.unwrap());
-            const a: i64 = std.fmt.parseInt(i64, ss, 10) catch return null;
-            const b_raw: i64 = std.fmt.parseInt(i64, es, 10) catch return null;
+            if (sl.kind != .int or el.kind != .int) return null;
+            const sa = switch (sl.data) {
+                .int => |int_info| int_info,
+                else => return null,
+            };
+            const sb = switch (el.data) {
+                .int => |int_info| int_info,
+                else => return null,
+            };
+            if (!sa.valid or !sb.valid) return null;
+            const max_i64: u128 = @intCast(std.math.maxInt(i64));
+            if (sa.value > max_i64) return null;
+            if (sb.value > max_i64) return null;
+            const a: i64 = @intCast(sa.value);
+            const b_raw: i64 = @intCast(sb.value);
             const b: i64 = if (rp.inclusive_right) b_raw else b_raw - 1;
             if (b < a) return null; // avoid empty/invalid ranges
             return .{ .a = a, .b = b };
@@ -688,7 +703,11 @@ fn patternCoversBoolValue(self: *Checker, pid: ast.PatternId, val: bool) bool {
             if (kind != .Literal) break :blk false;
             const lit = self.ast_unit.exprs.get(.Literal, lp.expr);
             if (lit.kind != .bool) break :blk false;
-            break :blk (lit.bool_value == val);
+            const lit_val = switch (lit.data) {
+                .bool => |b| b,
+                else => break :blk false,
+            };
+            break :blk (lit_val == val);
         },
         .Or => blk2: {
             const op = self.ast_unit.pats.get(.Or, pid);

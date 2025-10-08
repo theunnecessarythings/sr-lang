@@ -99,6 +99,70 @@ pub const Lower = struct {
         return char_val;
     }
 
+    fn parseIntLiteralText(self: *Lower, text: []const u8) !struct { value: u128, base: u8, valid: bool } {
+        if (text.len == 0) return .{ .value = 0, .base = 10, .valid = false };
+
+        var base: u8 = 10;
+        var digits = text;
+        if (digits.len >= 2 and digits[0] == '0') {
+            const prefix = digits[1];
+            switch (prefix) {
+                'b', 'B' => {
+                    base = 2;
+                    digits = digits[2..];
+                },
+                'o', 'O' => {
+                    base = 8;
+                    digits = digits[2..];
+                },
+                'x', 'X' => {
+                    base = 16;
+                    digits = digits[2..];
+                },
+                else => {},
+            }
+        }
+
+        var valid = digits.len != 0;
+
+        var buf: std.ArrayList(u8) = .empty;
+        defer buf.deinit(self.gpa);
+        for (digits) |c| {
+            if (c == '_') continue;
+            try buf.append(self.gpa, c);
+        }
+        if (buf.items.len == 0) valid = false;
+
+        var value: u128 = 0;
+        if (valid) {
+            value = std.fmt.parseInt(u128, buf.items, base) catch blk: {
+                valid = false;
+                break :blk 0;
+            };
+        }
+
+        return .{ .value = value, .base = base, .valid = valid };
+    }
+
+    fn parseFloatLiteralText(self: *Lower, text: []const u8) !struct { value: f64, valid: bool } {
+        if (text.len == 0) return .{ .value = 0.0, .valid = false };
+        var buf: std.ArrayList(u8) = .empty;
+        defer buf.deinit(self.gpa);
+        for (text) |c| {
+            if (c == '_') continue;
+            try buf.append(self.gpa, c);
+        }
+        var valid = buf.items.len != 0;
+        var value: f64 = 0.0;
+        if (valid) {
+            value = std.fmt.parseFloat(f64, buf.items) catch blk: {
+                valid = false;
+                break :blk 0.0;
+            };
+        }
+        return .{ .value = value, .valid = valid };
+    }
+
     fn mapAttrRange(self: *Lower, r: cst.OptRangeAttr) !ast.OptRangeAttr {
         if (r.isNone()) return .none();
         const rr = r.asRange();
@@ -922,70 +986,55 @@ pub const Lower = struct {
         const loc = lit.loc;
         return switch (lit.tag_small) {
             1 => blk: {
-                // find integer base suffix
-                // e.g. 0b, 0o, 0x, or none (decimal)
-                const s = self.cst_program.exprs.strs.get(lit.value);
-                // NOTE: temp for now, store base in char_value
-                var base: u32 = 10;
-                if (s.len >= 2 and s[0] == '0') {
-                    const prefix = s[1];
-                    if (prefix == 'b' or prefix == 'B') {
-                        base = 2;
-                    } else if (prefix == 'o' or prefix == 'O') {
-                        base = 8;
-                    } else if (prefix == 'x' or prefix == 'X') {
-                        base = 16;
-                    }
-                }
+                const text = self.cst_program.exprs.strs.get(lit.value);
+                const parsed = try self.parseIntLiteralText(text);
                 break :blk self.ast_unit.exprs.add(.Literal, .{
                     .kind = .int,
-                    .value = .some(lit.value),
-                    .bool_value = false,
-                    .char_value = base,
+                    .data = .{ .int = .{
+                        .text = lit.value,
+                        .value = parsed.value,
+                        .base = parsed.base,
+                        .valid = parsed.valid,
+                    } },
                     .loc = loc,
                 });
             },
-            2 => self.ast_unit.exprs.add(.Literal, .{
-                .kind = .float,
-                .value = .some(lit.value),
-                .bool_value = false,
-                .char_value = 0,
-                .loc = loc,
-            }),
+            2 => blk_float: {
+                const text = self.cst_program.exprs.strs.get(lit.value);
+                const parsed = try self.parseFloatLiteralText(text);
+                break :blk_float self.ast_unit.exprs.add(.Literal, .{
+                    .kind = .float,
+                    .data = .{ .float = .{ .text = lit.value, .value = parsed.value, .valid = parsed.valid } },
+                    .loc = loc,
+                });
+            },
             4 => blk: {
                 const unescaped_char_val = try self.unescapeChar(self.cst_program.exprs.strs.get(lit.value));
                 break :blk self.ast_unit.exprs.add(.Literal, .{
                     .kind = .char,
-                    .value = .none(),
-                    .bool_value = false,
-                    .char_value = unescaped_char_val,
+                    .data = .{ .char = unescaped_char_val },
                     .loc = loc,
                 });
             },
             5 => blk_im: {
                 const s = self.cst_program.exprs.strs.get(lit.value);
                 const trimmed: []const u8 = if (s.len > 0 and s[s.len - 1] == 'i') s[0 .. s.len - 1] else s;
+                const parsed = try self.parseFloatLiteralText(trimmed);
                 const sid = self.ast_unit.exprs.strs.intern(trimmed);
                 break :blk_im self.ast_unit.exprs.add(.Literal, .{
                     .kind = .imaginary,
-                    .value = .some(sid),
-                    .bool_value = false,
-                    .char_value = 0,
+                    .data = .{ .imaginary = .{ .text = sid, .value = parsed.value, .valid = parsed.valid } },
                     .loc = loc,
                 });
             },
             6 => self.ast_unit.exprs.add(.Literal, .{
                 .kind = .bool,
-                .value = .none(),
-                .bool_value = true,
-                .char_value = 0,
+                .data = .{ .bool = true },
                 .loc = loc,
             }),
             7 => self.ast_unit.exprs.add(.Literal, .{
                 .kind = .bool,
-                .value = .none(),
-                .bool_value = false,
-                .char_value = 0,
+                .data = .{ .bool = false },
                 .loc = loc,
             }),
             else => blk: {
@@ -994,9 +1043,7 @@ pub const Lower = struct {
                 const unescaped = try self.unescapeString(str);
                 break :blk self.ast_unit.exprs.add(.Literal, .{
                     .kind = .string,
-                    .value = .some(unescaped),
-                    .bool_value = false,
-                    .char_value = 0,
+                    .data = .{ .string = unescaped },
                     .loc = loc,
                 });
             },

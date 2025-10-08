@@ -198,19 +198,15 @@ pub const JsonPrinter = struct {
                 try self.printLoc(node.loc);
                 try self.stream.objectField("literal_kind");
                 try self.stream.write(@tagName(node.kind));
-                switch (node.kind) {
-                    .int, .float, .string, .imaginary => {
-                        try self.stream.objectField("value");
-                        try self.stream.write(self.s(node.value.unwrap()));
-                    },
-                    .bool => {
-                        try self.stream.objectField("value");
-                        try self.writeValue(node.bool_value);
-                    },
-                    .char => {
-                        try self.stream.objectField("value");
-                        try self.writeValue(node.char_value);
-                    },
+                try self.stream.objectField("value");
+                switch (node.data) {
+                    .none => try self.stream.write("null"),
+                    .bool => |b| try self.writeValue(b),
+                    .char => |c| try self.writeValue(c),
+                    .string => |sid| try self.stream.write(self.s(sid)),
+                    .int => |info| try self.writeValue(info.value),
+                    .float => |info| try self.writeValue(info.value),
+                    .imaginary => |info| try self.writeValue(info.value),
                 }
             },
             .Ident => {

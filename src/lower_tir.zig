@@ -43,14 +43,23 @@ pub const LowerTir = struct {
         const ty_kind = self.context.type_store.getKind(ty);
         return switch (ty_kind) {
             .I8, .I16, .I32, .I64, .U8, .U16, .U32, .U64, .Usize => blk: {
-                if (lit.kind != .int or lit.value.isNone()) break :blk null;
-                const text = a.exprs.strs.get(lit.value.unwrap());
-                const parsed = std.fmt.parseInt(i64, text, 10) catch return null;
-                break :blk tir.ConstInit{ .int = parsed };
+                if (lit.kind != .int) break :blk null;
+                const info = switch (lit.data) {
+                    .int => |int_info| int_info,
+                    else => return null,
+                };
+                if (!info.valid) break :blk null;
+                const max_i64: u128 = @intCast(std.math.maxInt(i64));
+                if (info.value > max_i64) break :blk null;
+                break :blk tir.ConstInit{ .int = @intCast(info.value) };
             },
             .Bool => blk: {
                 if (lit.kind != .bool) break :blk null;
-                break :blk tir.ConstInit{ .bool = lit.bool_value };
+                const value = switch (lit.data) {
+                    .bool => |b| b,
+                    else => return null,
+                };
+                break :blk tir.ConstInit{ .bool = value };
             },
             else => null,
         };
@@ -332,7 +341,7 @@ pub const LowerTir = struct {
                 try self.lowerStmt(a, env, f, blk, sid);
             }
             if (blk.term.isNone()) {
-                const slice = env.defers.items[start .. env.defers.items.len];
+                const slice = env.defers.items[start..env.defers.items.len];
                 if (slice.len > 0) try self.emitDefers(a, env, f, blk, slice, false);
             }
             env.defers.items.len = start;
@@ -497,7 +506,7 @@ pub const LowerTir = struct {
                 const br_cond = self.forceLocalCond(blk, is_err);
                 try f.builder.condBr(blk, br_cond, err_blk.id, &.{}, ok_blk.id, &.{});
 
-                const defer_slice = env.defers.items[defer_mark .. env.defers.items.len];
+                const defer_slice = env.defers.items[defer_mark..env.defers.items.len];
 
                 try self.emitDefers(a, env, f, &err_blk, defer_slice, true);
                 try self.emitDefers(a, env, f, &err_blk, defer_slice, false);
@@ -773,27 +782,52 @@ pub const LowerTir = struct {
         // If the checker didn’t stamp a type, use the caller’s expected type.
         const ty0 = self.getExprType(id) orelse (expected_ty orelse return error.LoweringBug);
         const v = switch (lit.kind) {
-            .int => blk.builder.tirValue(.ConstInt, blk, ty0, .{
-                .value = try std.fmt.parseInt(u64, a.exprs.strs.get(lit.value.unwrap()), 10),
-            }),
+            .int => blk: {
+                const info = switch (lit.data) {
+                    .int => |int_info| int_info,
+                    else => return error.LoweringBug,
+                };
+                if (!info.valid) return error.LoweringBug;
+                const value64 = std.math.cast(u64, info.value) orelse return error.LoweringBug;
+                break :blk blk.builder.tirValue(.ConstInt, blk, ty0, .{ .value = value64 });
+            },
             .imaginary => blk: {
                 // ty0 must be Complex(elem). Build from (re=0, im=value)
                 const tk = self.context.type_store.getKind(ty0);
                 if (tk != .Complex) break :blk blk.builder.tirValue(.ConstUndef, blk, ty0, .{});
                 const crow = self.context.type_store.get(.Complex, ty0);
                 const elem = crow.elem;
-                const s = a.exprs.strs.get(lit.value.unwrap());
-                // Parse as f64 and cast to elem as needed
-                const parsed = try std.fmt.parseFloat(f64, s);
+                const info = switch (lit.data) {
+                    .imaginary => |imag| imag,
+                    else => return error.LoweringBug,
+                };
+                if (!info.valid) return error.LoweringBug;
+                const parsed = info.value;
                 const re0 = blk.builder.tirValue(.ConstFloat, blk, elem, .{ .value = 0.0 });
                 const imv = blk.builder.tirValue(.ConstFloat, blk, elem, .{ .value = parsed });
                 const cv = blk.builder.tirValue(.ComplexMake, blk, ty0, .{ .re = re0, .im = imv });
                 break :blk cv;
             },
-            .float => blk.builder.tirValue(.ConstFloat, blk, ty0, .{ .value = try std.fmt.parseFloat(f64, a.exprs.strs.get(lit.value.unwrap())) }),
-            .bool => blk.builder.tirValue(.ConstBool, blk, ty0, .{ .value = lit.bool_value }),
-            .string => blk.builder.tirValue(.ConstString, blk, ty0, .{ .text = lit.value.unwrap() }),
-            .char => blk.builder.tirValue(.ConstInt, blk, ty0, .{ .value = @as(u64, lit.char_value) }),
+            .float => blk: {
+                const info = switch (lit.data) {
+                    .float => |float_info| float_info,
+                    else => return error.LoweringBug,
+                };
+                if (!info.valid) return error.LoweringBug;
+                break :blk blk.builder.tirValue(.ConstFloat, blk, ty0, .{ .value = info.value });
+            },
+            .bool => blk.builder.tirValue(.ConstBool, blk, ty0, .{ .value = switch (lit.data) {
+                .bool => |b| b,
+                else => return error.LoweringBug,
+            } }),
+            .string => blk.builder.tirValue(.ConstString, blk, ty0, .{ .text = switch (lit.data) {
+                .string => |sid| sid,
+                else => return error.LoweringBug,
+            } }),
+            .char => blk.builder.tirValue(.ConstInt, blk, ty0, .{ .value = std.math.cast(u64, switch (lit.data) {
+                .char => |codepoint| codepoint,
+                else => return error.LoweringBug,
+            }) orelse return error.LoweringBug }),
         };
         if (expected_ty) |want| return self.emitCoerce(blk, v, ty0, want);
         return v;
@@ -1087,9 +1121,14 @@ pub const LowerTir = struct {
                 if (ik == .Literal) {
                     const lit = a.exprs.get(.Literal, row.index);
                     if (lit.kind == .int) {
-                        const s = a.exprs.strs.get(lit.value.unwrap());
+                        const info = switch (lit.data) {
+                            .int => |int_info| int_info,
+                            else => return error.LoweringBug,
+                        };
+                        if (!info.valid) return error.LoweringBug;
+                        const value = std.math.cast(u64, info.value) orelse return error.LoweringBug;
                         const uv = blk.builder.tirValue(.ConstInt, blk, self.context.type_store.tUsize(), .{
-                            .value = try std.fmt.parseInt(u64, s, 10),
+                            .value = value,
                         });
                         break :blk uv;
                     }
@@ -1116,9 +1155,14 @@ pub const LowerTir = struct {
                     if (ik == .Literal) {
                         const lit = a.exprs.get(.Literal, row.index);
                         if (lit.kind == .int) {
-                            const s = a.exprs.strs.get(lit.value.unwrap());
+                            const info = switch (lit.data) {
+                                .int => |int_info| int_info,
+                                else => return error.LoweringBug,
+                            };
+                            if (!info.valid) return error.LoweringBug;
+                            const value = std.math.cast(u64, info.value) orelse return error.LoweringBug;
                             const uv = blk.builder.tirValue(.ConstInt, blk, self.context.type_store.tUsize(), .{
-                                .value = try std.fmt.parseInt(u64, s, 10),
+                                .value = value,
                             });
                             break :blk uv;
                         }
@@ -1834,9 +1878,14 @@ pub const LowerTir = struct {
             const plit = a.pats.get(.Literal, arm.pattern);
             if (a.exprs.index.kinds.items[plit.expr.toRaw()] != .Literal) return false;
             const lit = a.exprs.get(.Literal, plit.expr);
-            if (lit.kind != .int or lit.value.isNone()) return false;
-            const s = a.exprs.strs.get(lit.value.unwrap());
-            values_buf[i] = std.fmt.parseInt(u64, s, 10) catch return false;
+            if (lit.kind != .int) return false;
+            const info = switch (lit.data) {
+                .int => |int_info| int_info,
+                else => return false,
+            };
+            if (!info.valid) return false;
+            const value = std.math.cast(u64, info.value) orelse return false;
+            values_buf[i] = value;
         }
         return true;
     }
@@ -2684,9 +2733,12 @@ pub const LowerTir = struct {
         const ir = a.exprs.get(.Import, d.value);
         if (a.exprs.index.kinds.items[ir.expr.toRaw()] != .Literal) return null;
         const lit = a.exprs.get(.Literal, ir.expr);
-        if (lit.value.isNone()) return null;
-        var s_full = a.exprs.strs.get(lit.value.unwrap());
-        if (s_full.len >= 2 and s_full[0] == '"' and s_full[s_full.len - 1] == '"') s_full = s_full[1 .. s_full.len - 1];
+        if (lit.kind != .string) return null;
+        const sid = switch (lit.data) {
+            .string => |str_id| str_id,
+            else => return null,
+        };
+        const s_full = a.exprs.strs.get(sid);
 
         const me = res.resolve(self.import_base_dir, s_full, pipeline) catch return null;
         // Find member decl by name
@@ -2790,15 +2842,31 @@ pub const LowerTir = struct {
             },
             .Literal => {
                 const lit = me.ast.exprs.get(.Literal, eid);
-                const s = if (!lit.value.isNone()) me.ast.exprs.strs.get(lit.value.unwrap()) else "";
                 const k = self.context.type_store.getKind(expected_ty);
                 switch (k) {
                     .U8, .U16, .U32, .U64, .I8, .I16, .I32, .I64 => {
-                        const parsed = std.fmt.parseInt(i64, s, 10) catch return null;
-                        return blk.builder.tirValue(.ConstInt, blk, expected_ty, .{ .value = @as(u64, @intCast(parsed)) });
+                        const info = switch (lit.data) {
+                            .int => |int_info| int_info,
+                            else => return null,
+                        };
+                        if (!info.valid) return null;
+                        const value = std.math.cast(u64, info.value) orelse return null;
+                        return blk.builder.tirValue(.ConstInt, blk, expected_ty, .{ .value = value });
                     },
-                    .Bool => return blk.builder.tirValue(.ConstBool, blk, expected_ty, .{ .value = lit.bool_value }),
-                    .String => return blk.builder.tirValue(.ConstString, blk, expected_ty, .{ .text = lit.value.unwrap() }),
+                    .Bool => {
+                        const b = switch (lit.data) {
+                            .bool => |val| val,
+                            else => return null,
+                        };
+                        return blk.builder.tirValue(.ConstBool, blk, expected_ty, .{ .value = b });
+                    },
+                    .String => {
+                        const sid = switch (lit.data) {
+                            .string => |str_id| str_id,
+                            else => return null,
+                        };
+                        return blk.builder.tirValue(.ConstString, blk, expected_ty, .{ .text = sid });
+                    },
                     else => return null,
                 }
             },

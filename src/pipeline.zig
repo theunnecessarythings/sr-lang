@@ -266,10 +266,12 @@ fn computeModulePrefixes(gpa: std.mem.Allocator, a: *const ast_mod.Ast, out: *st
         const irr = a.exprs.get(.Import, d.value);
         if (a.exprs.index.kinds.items[irr.expr.toRaw()] != .Literal) continue;
         const lit = a.exprs.get(.Literal, irr.expr);
-        // literal must be string
-        // Older AST carries kind; guard if available
-        const s_full = a.exprs.strs.get(lit.value.unwrap());
-        const imp = if (s_full.len >= 2 and s_full[0] == '"' and s_full[s_full.len - 1] == '"') s_full[1 .. s_full.len - 1] else s_full;
+        if (lit.kind != .string) continue;
+        const sid = switch (lit.data) {
+            .string => |str_id| str_id,
+            else => continue,
+        };
+        const imp = a.exprs.strs.get(sid);
         const pref = try computePrefix(gpa, imp);
         const key = try gpa.dupe(u8, a.exprs.strs.get(bind.name));
         const gop = try out.getOrPut(key);

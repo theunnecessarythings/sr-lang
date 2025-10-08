@@ -131,11 +131,13 @@ pub const ImportResolver = struct {
             const ek = a.exprs.index.kinds.items[expr.toRaw()];
             if (ek != .Literal) continue;
             const lit = a.exprs.get(.Literal, expr);
-            if (lit.kind == .string and !lit.value.isNone()) {
-                const s = a.exprs.strs.get(lit.value.unwrap());
-                // trim surrounding quotes if present
-                const imp = if (s.len >= 2 and s[0] == '"' and s[s.len - 1] == '"') s[1 .. s.len - 1] else s;
-                try out_list.append(self.gpa, try self.gpa.dupe(u8, imp));
+            if (lit.kind == .string) {
+                const sid = switch (lit.data) {
+                    .string => |str_id| str_id,
+                    else => continue,
+                };
+                const s = a.exprs.strs.get(sid);
+                try out_list.append(self.gpa, try self.gpa.dupe(u8, s));
             }
         }
     }

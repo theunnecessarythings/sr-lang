@@ -152,8 +152,19 @@ pub fn typeFromTypeExpr(self: *Checker, id: ast.ExprId) anyerror!?types.TypeId {
             var len_val: usize = 0;
             if (self.ast_unit.exprs.index.kinds.items[row.size.toRaw()] == .Literal) {
                 const lit = self.ast_unit.exprs.get(.Literal, row.size);
-                if (lit.kind == .int and !lit.value.isNone()) {
-                    len_val = std.fmt.parseInt(usize, self.ast_unit.exprs.strs.get(lit.value.unwrap()), 10) catch 0;
+                if (lit.kind == .int) {
+                    const info = switch (lit.data) {
+                        .int => |int_info| int_info,
+                        else => return null,
+                    };
+                    if (!info.valid) {
+                        try self.context.diags.addError(self.ast_unit.exprs.locs.get(row.loc), .array_size_not_integer_literal, .{});
+                        return null;
+                    }
+                    len_val = std.math.cast(usize, info.value) orelse {
+                        try self.context.diags.addError(self.ast_unit.exprs.locs.get(row.loc), .array_size_not_integer_literal, .{});
+                        return null;
+                    };
                 } else {
                     try self.context.diags.addError(self.ast_unit.exprs.locs.get(row.loc), .array_size_not_integer_literal, .{});
                     return null;
@@ -195,11 +206,17 @@ pub fn typeFromTypeExpr(self: *Checker, id: ast.ExprId) anyerror!?types.TypeId {
                 break :blk_simd null;
             }
             const lit = self.ast_unit.exprs.get(.Literal, row.lanes);
-            if (lit.kind != .int or lit.value.isNone()) {
+            if (lit.kind != .int) {
                 try self.context.diags.addError(self.ast_unit.exprs.locs.get(row.loc), .simd_lanes_not_integer_literal, .{});
                 break :blk_simd null;
             }
-            const lanes_val = std.fmt.parseInt(usize, self.ast_unit.exprs.strs.get(lit.value.unwrap()), 10) catch 0;
+            const lanes_val = switch (lit.data) {
+                .int => |int_info| blk: {
+                    if (!int_info.valid) break :blk 0;
+                    break :blk std.math.cast(usize, int_info.value) orelse 0;
+                },
+                else => 0,
+            };
             if (lanes_val == 0) {
                 try self.context.diags.addError(self.ast_unit.exprs.locs.get(row.loc), .simd_lanes_not_integer_literal, .{});
                 break :blk_simd null;
@@ -219,6 +236,14 @@ pub fn typeFromTypeExpr(self: *Checker, id: ast.ExprId) anyerror!?types.TypeId {
                 }
                 const dl = self.ast_unit.exprs.get(.Literal, dims[i]);
                 if (dl.kind != .int) {
+                    try self.context.diags.addError(self.ast_unit.exprs.locs.get(row.loc), .tensor_dimension_not_integer_literal, .{});
+                    break :blk_tensor null;
+                }
+                const info = switch (dl.data) {
+                    .int => |int_info| int_info,
+                    else => return null,
+                };
+                if (!info.valid) {
                     try self.context.diags.addError(self.ast_unit.exprs.locs.get(row.loc), .tensor_dimension_not_integer_literal, .{});
                     break :blk_tensor null;
                 }
@@ -315,16 +340,29 @@ pub fn typeFromTypeExpr(self: *Checker, id: ast.ExprId) anyerror!?types.TypeId {
                         return null;
                     }
                     const lit = self.ast_unit.exprs.get(.Literal, val_id);
-                    if (lit.kind != .int or lit.value.isNone()) {
+                    if (lit.kind != .int) {
                         try self.context.diags.addError(self.ast_unit.exprs.locs.get(enum_field.loc), .enum_discriminant_not_integer, .{});
                         return null;
                     }
-                    const val_str = self.ast_unit.exprs.strs.get(lit.value.unwrap());
-                    const parsed = std.fmt.parseInt(u64, val_str, 10) catch {
-                        try self.context.diags.addError(self.ast_unit.exprs.locs.get(enum_field.loc), .invalid_integer_literal, .{});
-                        return null;
+                    const parsed = switch (lit.data) {
+                        .int => |int_info| blk: {
+                            if (!int_info.valid) {
+                                try self.context.diags.addError(self.ast_unit.exprs.locs.get(enum_field.loc), .invalid_integer_literal, .{});
+                                break :blk null;
+                            }
+                            const casted = std.math.cast(u64, int_info.value) orelse {
+                                try self.context.diags.addError(self.ast_unit.exprs.locs.get(enum_field.loc), .invalid_integer_literal, .{});
+                                break :blk null;
+                            };
+                            break :blk casted;
+                        },
+                        else => blk: {
+                            try self.context.diags.addError(self.ast_unit.exprs.locs.get(enum_field.loc), .enum_discriminant_not_integer, .{});
+                            break :blk null;
+                        },
                     };
-                    current_value = parsed;
+                    if (parsed == null) return null;
+                    current_value = parsed.?;
                 }
 
                 member_buf[i] = .{ .name = enum_field.name, .value = current_value };

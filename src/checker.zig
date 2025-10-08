@@ -915,30 +915,64 @@ pub const Checker = struct {
         const lit = self.getExpr(.Literal, id);
         return switch (lit.kind) {
             .int => blk: {
-                const s = self.getStr(lit.value.unwrap());
-                if (std.fmt.parseInt(i64, s, @intCast(lit.char_value)) catch null == null) {
+                const info = switch (lit.data) {
+                    .int => |int_info| int_info,
+                    else => return null,
+                };
+                if (!info.valid) {
+                    try self.context.diags.addError(self.exprLoc(lit), .invalid_integer_literal, .{});
+                    return null;
+                }
+                const max_i64: u128 = @intCast(std.math.maxInt(i64));
+                if (info.value > max_i64) {
                     try self.context.diags.addError(self.exprLoc(lit), .invalid_integer_literal, .{});
                     return null;
                 }
                 break :blk self.context.type_store.tI64();
             },
             .imaginary => blk: {
-                const s = self.getStr(lit.value.unwrap());
-                var elem_ty: ?types.TypeId = null;
-                if (std.fmt.parseInt(i64, s, 10) catch null != null) {
-                    elem_ty = self.context.type_store.tI64();
-                } else if (std.fmt.parseFloat(f64, s) catch null != null) {
-                    elem_ty = self.context.type_store.tF64();
-                } else {
+                const info = switch (lit.data) {
+                    .imaginary => |imag| imag,
+                    else => return null,
+                };
+                if (!info.valid) {
                     try self.context.diags.addError(self.exprLoc(lit), .invalid_imaginary_literal, .{});
                     return null;
                 }
-                break :blk self.context.type_store.add(.Complex, .{ .elem = elem_ty.? });
+                const text = self.getStr(info.text);
+                const has_float_marker = std.mem.indexOfAny(u8, text, ".eEpP") != null;
+                var is_int_literal = !has_float_marker;
+                if (is_int_literal) {
+                    var acc: u128 = 0;
+                    for (text) |c| {
+                        switch (c) {
+                            '_' => continue,
+                            '0'...'9' => {
+                                acc = acc * 10 + @as(u128, c - '0');
+                                if (acc > std.math.maxInt(i64)) {
+                                    is_int_literal = false;
+                                    break;
+                                }
+                            },
+                            else => {
+                                is_int_literal = false;
+                                break;
+                            },
+                        }
+                    }
+                }
+                const elem_ty = if (is_int_literal)
+                    self.context.type_store.tI64()
+                else
+                    self.context.type_store.tF64();
+                break :blk self.context.type_store.add(.Complex, .{ .elem = elem_ty });
             },
             .float => blk: {
-                // try parsing the float literal
-                const s = self.getStr(lit.value.unwrap());
-                if (std.fmt.parseFloat(f64, s) catch null == null) {
+                const info = switch (lit.data) {
+                    .float => |float_info| float_info,
+                    else => return null,
+                };
+                if (!info.valid) {
                     try self.context.diags.addError(self.exprLoc(lit), .invalid_float_literal, .{});
                     return null;
                 }
@@ -1643,11 +1677,12 @@ pub const Checker = struct {
         const ek = self.exprKind(ir.expr);
         if (ek != .Literal) return false;
         const lit = self.getExpr(.Literal, ir.expr);
-        if (lit.value.isNone()) return false;
-        var path = self.getStr(lit.value.unwrap());
-        if (path.len >= 2 and path[0] == '"' and path[path.len - 1] == '"') {
-            path = path[1 .. path.len - 1];
-        }
+        if (lit.kind != .string) return false;
+        const sid = switch (lit.data) {
+            .string => |str_id| str_id,
+            else => return false,
+        };
+        const path = self.getStr(sid);
         return self.importMemberTypeByPath(&self.context.resolver, path, member) != null;
     }
 
@@ -1666,9 +1701,12 @@ pub const Checker = struct {
         const ek = self.exprKind(ir.expr);
         if (ek != .Literal) return null;
         const lit = self.getExpr(.Literal, ir.expr);
-        if (lit.value.isNone()) return null;
-        var path = self.getStr(lit.value.unwrap());
-        if (path.len >= 2 and path[0] == '"' and path[path.len - 1] == '"') path = path[1 .. path.len - 1];
+        if (lit.kind != .string) return null;
+        const sid = switch (lit.data) {
+            .string => |str_id| str_id,
+            else => return null,
+        };
+        const path = self.getStr(sid);
         return self.importMemberTypeByPath(res, path, member);
     }
 
@@ -2474,14 +2512,18 @@ pub const Checker = struct {
             return null;
         }
         const lit = self.getExpr(.Literal, ir.expr);
-        if (lit.kind != .string or lit.value.isNone()) {
+        if (lit.kind != .string) {
             try self.context.diags.addError(self.exprLoc(ir), .invalid_import_operand, .{});
             return null;
         }
-        var path = self.getStr(lit.value.unwrap());
-        if (path.len >= 2 and path[0] == '"' and path[path.len - 1] == '"') {
-            path = path[1 .. path.len - 1];
-        }
+        const sid = switch (lit.data) {
+            .string => |str_id| str_id,
+            else => {
+                try self.context.diags.addError(self.exprLoc(ir), .invalid_import_operand, .{});
+                return null;
+            },
+        };
+        const path = self.getStr(sid);
         _ = self.context.resolver.resolve(self.import_base_dir, path, self.pipeline) catch {
             try self.context.diags.addError(self.exprLoc(lit), .import_not_found, .{});
         };
@@ -2497,16 +2539,23 @@ pub const Checker = struct {
         const lit = self.getExpr(.Literal, rhs);
         switch (lit.kind) {
             .int => {
-                if (!lit.value.isNone() and std.mem.eql(u8, self.getStr(lit.value.unwrap()), "0")) {
+                const info = switch (lit.data) {
+                    .int => |int_info| int_info,
+                    else => return,
+                };
+                if (!info.valid) return;
+                if (info.value == 0) {
                     try self.context.diags.addError(loc, .division_by_zero, .{});
                 }
             },
             .float, .imaginary => {
-                if (!lit.value.isNone()) {
-                    const s = self.getStr(lit.value.unwrap());
-                    const f = std.fmt.parseFloat(f64, s) catch 1.0;
-                    if (f == 0.0) try self.context.diags.addError(loc, .division_by_zero, .{});
-                }
+                const f = switch (lit.data) {
+                    .float => |float_info| float_info,
+                    .imaginary => |imag_info| imag_info,
+                    else => return,
+                };
+                if (!f.valid) return;
+                if (f.value == 0.0) try self.context.diags.addError(loc, .division_by_zero, .{});
             },
             else => {},
         }
@@ -2515,10 +2564,13 @@ pub const Checker = struct {
     fn checkIntZeroLiteral(self: *Checker, rhs: ast.ExprId, loc: Loc) !void {
         if (self.exprKind(rhs) != .Literal) return;
         const lit = self.getExpr(.Literal, rhs);
-        if (lit.kind == .int and !lit.value.isNone()) {
-            if (std.mem.eql(u8, self.getStr(lit.value.unwrap()), "0")) {
-                try self.context.diags.addError(loc, .division_by_zero, .{});
-            }
+        if (lit.kind == .int) {
+            const info = switch (lit.data) {
+                .int => |int_info| int_info,
+                else => return,
+            };
+            if (!info.valid) return;
+            if (info.value == 0) try self.context.diags.addError(loc, .division_by_zero, .{});
         }
     }
 
