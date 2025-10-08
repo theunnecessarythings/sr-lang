@@ -33,6 +33,7 @@ pub const Checker = struct {
     warned_code: bool = false,
 
     loop_binding_stack: std.ArrayListUnmanaged(LoopBindingCtx) = .{},
+    catch_binding_stack: std.ArrayListUnmanaged(CatchBindingCtx) = .{},
     match_binding_stack: std.ArrayListUnmanaged(MatchBindingCtx) = .{},
 
     const LoopBindingCtx = struct {
@@ -42,6 +43,10 @@ pub const Checker = struct {
     const MatchBindingCtx = struct {
         pat: ast.PatternId,
         subject_ty: types.TypeId,
+    };
+    const CatchBindingCtx = struct {
+        name: ast.StrId,
+        ty: types.TypeId,
     };
 
     // --------- tiny helpers (readability & consistency) ----------
@@ -93,6 +98,7 @@ pub const Checker = struct {
         self.value_ctx.deinit(self.gpa);
         self.loop_binding_stack.deinit(self.gpa);
         self.match_binding_stack.deinit(self.gpa);
+        self.catch_binding_stack.deinit(self.gpa);
         self.symtab.deinit();
     }
 
@@ -187,6 +193,23 @@ pub const Checker = struct {
     pub inline fn popMatchBinding(self: *Checker) void {
         if (self.match_binding_stack.items.len > 0) _ = self.match_binding_stack.pop();
     }
+
+    inline fn pushCatchBinding(self: *Checker, name: ast.StrId, ty: types.TypeId) !void {
+        try self.catch_binding_stack.append(self.gpa, .{ .name = name, .ty = ty });
+    }
+    inline fn popCatchBinding(self: *Checker) void {
+        if (self.catch_binding_stack.items.len > 0) _ = self.catch_binding_stack.pop();
+    }
+
+    inline fn bindingTypeFromActiveCatches(self: *Checker, name: ast.StrId) ?types.TypeId {
+        var i: isize = @as(isize, @intCast(self.catch_binding_stack.items.len)) - 1;
+        while (i >= 0) : (i -= 1) {
+            const ctx = self.catch_binding_stack.items[@intCast(i)];
+            if (ctx.name.eq(name)) return ctx.ty;
+        }
+        return null;
+    }
+
     inline fn bindingTypeFromActiveMatches(self: *Checker, name: ast.StrId) ?types.TypeId {
         var i: isize = @as(isize, @intCast(self.match_binding_stack.items.len)) - 1;
         while (i >= 0) : (i -= 1) {
@@ -930,6 +953,7 @@ pub const Checker = struct {
         const row = self.getExpr(.Ident, id);
         // First try dynamic bindings from active loop/match contexts to support
         // pattern-introduced names even if they were not declared in the symtab.
+        if (self.bindingTypeFromActiveCatches(row.name)) |btid_catch| return btid_catch;
         if (self.bindingTypeFromActiveLoops(row.name)) |btid_loop| return btid_loop;
         if (self.bindingTypeFromActiveMatches(row.name)) |btid_match| return btid_match;
 
@@ -1134,6 +1158,11 @@ pub const Checker = struct {
                     both_complex = (lc.elem.toRaw() == rc.elem.toRaw());
                 }
                 const both_same_enum = lhs_kind == .Enum and rhs_kind == .Enum and l.eq(r);
+                const both_same_error = lhs_kind == .Error and rhs_kind == .Error and l.eq(r);
+
+                if ((bin.op == .eq or bin.op == .neq) and both_same_error) {
+                    return self.context.type_store.tBool();
+                }
 
                 // We avoid implicit *value* coercions. For comparisons, we accept same-class operands:
                 //   - int ? int (any width/sign)
@@ -2403,23 +2432,38 @@ pub const Checker = struct {
     }
 
     fn checkCatch(self: *Checker, id: ast.ExprId) !?types.TypeId {
-        const cr = self.getExpr(.Catch, id);
-        const vt = try self.checkExpr(cr.expr) orelse return null;
-        if (self.typeKind(vt) != .ErrorSet) {
-            try self.context.diags.addError(self.exprLoc(cr), .catch_on_non_error, .{});
+        const row = self.getExpr(.Catch, id);
+        const lhs_ty = try self.checkExpr(row.expr);
+
+        if (lhs_ty == null) return null;
+
+        const lhs_kind = self.typeKind(lhs_ty.?);
+        if (lhs_kind != .ErrorSet) {
+            try self.context.diags.addError(self.exprLoc(row), .catch_on_non_error, .{});
             return null;
         }
-        const er = self.context.type_store.get(.ErrorSet, vt);
-        const value_required = self.isValueReq();
+        const es = self.context.type_store.get(.ErrorSet, lhs_ty.?);
 
-        const ht = try self.checkExpr(cr.handler) orelse return null;
-        if (!value_required) return self.context.type_store.tVoid();
+        // TODO: Support full patterns in `catch` expressions. This would require
+        // changing the AST and parser to use a pattern ID instead of just a binding name.
+        var handler_ty: ?types.TypeId = null;
+        if (!row.binding_name.isNone()) {
+            const name = row.binding_name.unwrap();
+            try self.pushCatchBinding(name, es.error_ty);
+            handler_ty = try self.checkExpr(row.handler);
+            self.popCatchBinding();
+        } else {
+            handler_ty = try self.checkExpr(row.handler);
+        }
 
-        if (self.assignable(ht, er.value_ty) != .success) {
-            try self.context.diags.addError(self.exprLoc(cr), .if_branch_type_mismatch, .{});
+        if (handler_ty == null) return null;
+
+        if (self.assignable(handler_ty.?, es.value_ty) != .success) {
+            try self.context.diags.addError(self.exprLoc(row), .catch_handler_type_mismatch, .{});
             return null;
         }
-        return er.value_ty;
+
+        return es.value_ty;
     }
 
     fn checkImport(self: *Checker, id: ast.ExprId) !?types.TypeId {

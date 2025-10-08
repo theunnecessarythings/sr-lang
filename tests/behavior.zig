@@ -355,18 +355,18 @@ test "behavior: variant struct payload" {
     try runCompilerTest(code, "Variant v x=10, y=20\n");
 }
 
-// test "behavior: union literal initialization" {
-//     const src =
-//         \\ U :: union { i: i32, f: f32 }
-//         \\ u1 := U{ i: 42 }
-//         \\ u2 := U{ f: 3.14 }
-//         \\ printf("Union u1 i=%d\n", u1.i)
-//         \\ printf("Union u2 f=%f\n", u2.f)
-//     ;
-//     const code = getSource("", src);
-//     try runCompilerTest(code, "Union u1 i=42\nUnion u2 f=3.140000\n");
-// }
-//
+test "behavior: union literal initialization" {
+    const src =
+        \\ U :: union { i: i32, f: f64 }
+        \\ u1 := U{ i: 42 }
+        \\ u2 := U{ f: 3.14 }
+        \\ printf("Union u1 i=%d\n", u1.i)
+        \\ printf("Union u2 f=%f\n", u2.f)
+    ;
+    const code = getSource("", src);
+    try runCompilerTest(code, "Union u1 i=42\nUnion u2 f=3.140000\n");
+}
+
 // test "behavior: error propagation and catch" {
 //     const globals =
 //         \\ MyErr :: error { NotFound }
@@ -427,22 +427,22 @@ test "behavior: wrapping cast" {
     const code = getSource("", src);
     try runCompilerTest(code, "U8 val=254, Wrapped add=3\n");
 }
-//
-// test "behavior: while is loop" {
-//     const src =
-//         \\ Option :: variant { None, Some(i32) }
-//         \\ maybe_value := Option.Some(42)
-//         \\ result := 0
-//         \\ while is Some(x) := maybe_value {
-//         \\   result = x
-//         \\   maybe_value = Option.None // Exit loop
-//         \\ }
-//         \\ printf("While is result=%d\n", result)
-//     ;
-//     const code = getSource("", src);
-//     try runCompilerTest(code, "While is result=42\n");
-// }
-//
+
+test "behavior: while is loop" {
+    const src =
+        \\ Option :: variant { None, Some(i32) }
+        \\ maybe_value := Option.Some(42)
+        \\ result := 0
+        \\ while is Some(x) := maybe_value {
+        \\   result = x
+        \\   maybe_value = Option.None // Exit loop
+        \\ }
+        \\ printf("While is result=%d\n", result)
+    ;
+    const code = getSource("", src);
+    try runCompilerTest(code, "While is result=42\n");
+}
+
 // test "behavior: match expression literals and wildcard" {
 //     const src =
 //         \\ x := 2

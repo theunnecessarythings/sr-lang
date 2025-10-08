@@ -466,10 +466,12 @@ pub const LowerTir = struct {
         }
         if (last_name == null) return error.LoweringBug;
         const lname = last_name.?;
+
         const fields = if (k == .Variant)
             self.context.type_store.field_pool.slice(self.context.type_store.get(.Variant, ety).variants)
         else
             self.context.type_store.field_pool.slice(self.context.type_store.get(.Error, ety).variants);
+
         var tag_idx: u32 = 0;
         var payload_ty: types.TypeId = self.context.type_store.tVoid();
         var found = false;
@@ -486,7 +488,8 @@ pub const LowerTir = struct {
 
         const args = a.exprs.expr_pool.slice(row.args);
         const payload_kind = self.context.type_store.getKind(payload_ty);
-        const payload_val = switch (payload_kind) {
+
+        const payload_val: ?tir.ValueId = switch (payload_kind) {
             .Void => null,
             .Tuple => blk: {
                 const tr = self.context.type_store.get(.Tuple, payload_ty);
@@ -502,9 +505,10 @@ pub const LowerTir = struct {
             else => try self.lowerExpr(a, env, f, blk, args[0], payload_ty, .rvalue),
         };
 
+        // tag (i32)
         const tag_val = blk.builder.tirValue(.ConstInt, blk, self.context.type_store.tI32(), .{ .value = tag_idx });
 
-        // Create StructFieldArg array for mkUnion
+        // union type for the payload field
         var union_fields_args = try self.gpa.alloc(types.TypeStore.StructFieldArg, fields.len);
         defer self.gpa.free(union_fields_args);
         for (fields, 0..) |fld_id, i| {
@@ -513,11 +517,9 @@ pub const LowerTir = struct {
         }
         const union_ty = self.context.type_store.mkUnion(union_fields_args);
 
+        // IMPORTANT: for void payload, do NOT call UnionMake (it would force an llvm.void store).
         const union_val: tir.ValueId = if (payload_val) |pv|
-            blk.builder.tirValue(.UnionMake, blk, union_ty, .{
-                .field_index = tag_idx,
-                .value = pv,
-            })
+            blk.builder.tirValue(.UnionMake, blk, union_ty, .{ .field_index = tag_idx, .value = pv })
         else
             blk.builder.tirValue(.ConstUndef, blk, union_ty, .{});
 
@@ -1084,40 +1086,35 @@ pub const LowerTir = struct {
     ) anyerror!tir.ValueId {
         const row = a.exprs.get(.FieldAccess, id);
 
-        // ---------- 1) Imported module member (rvalue only) ----------
+        // 1) imported module member (rvalue only)
         if (mode == .rvalue and a.exprs.index.kinds.items[row.parent.toRaw()] == .Ident) {
             if (try self.lowerImportedModuleMember(a, blk, row.parent, row.field, expected_ty)) |v| {
                 return v;
             }
         }
 
-        // Checker-resolved field index (if any)
         const idx_maybe = self.type_info.getFieldIndex(id);
 
-        // ---------- 2) EnumName.Member => constant ----------
+        // 2) EnumName.Member => constant (rvalue)
         if (mode == .rvalue) {
             if (try self.lowerEnumMember(a, blk, id, row.parent, expected_ty)) |v| {
                 return v;
             }
-            // if (try self.lowerVariantTagLiteral(a, blk, id, row.parent, expected_ty)) |v| {
-            //     return v;
-            // }
         }
 
-        // ---------- 3) Address path: must have an index (for GEP) ----------
+        // 3) address path (needs concrete field index)
         if (mode == .lvalue_addr) {
             const parent_ptr = try self.lowerExpr(a, env, f, blk, row.parent, null, .lvalue_addr);
             const elem_ty = self.getExprType(id) orelse return error.LoweringBug;
-            const idx = idx_maybe orelse return error.LoweringBug; // need concrete field index for lvalue
+            const idx = idx_maybe orelse return error.LoweringBug;
             const rptr_ty = self.context.type_store.mkPtr(elem_ty, false);
             return blk.builder.gep(blk, rptr_ty, parent_ptr, &.{blk.builder.gepConst(@intCast(idx))});
         }
 
-        // ---------- 4) Rvalue struct/tuple access ----------
+        // 4) rvalue extraction
         const ty0 = self.getExprType(id) orelse (expected_ty orelse self.context.type_store.tAny());
         var base = try self.lowerExpr(a, env, f, blk, row.parent, null, .rvalue);
 
-        // We only need the parent type to distinguish tuple vs struct; if unknown, assume non-tuple.
         const parent_ty_opt = self.getExprType(row.parent);
         const is_tuple = if (parent_ty_opt) |pt|
             self.context.type_store.index.kinds.items[pt.toRaw()] == .Tuple
@@ -1128,6 +1125,7 @@ pub const LowerTir = struct {
         if (idx_maybe) |resolved_idx| {
             const parent_kind = self.context.type_store.getKind(parent_ty_opt orelse self.context.type_store.tAny());
             v = if (parent_kind == .Variant) blk: {
+                // accessing the payload field out of a runtime variant value
                 const variants = self.context.type_store.get(.Variant, parent_ty_opt.?).variants;
                 const fields = self.context.type_store.field_pool.slice(variants);
                 var union_fields_args = try self.gpa.alloc(types.TypeStore.StructFieldArg, variants.len);
@@ -1140,6 +1138,7 @@ pub const LowerTir = struct {
                 base = blk.builder.extractField(blk, union_ty, base, 1);
                 break :blk blk.builder.tirValue(.UnionField, blk, ty0, .{ .base = base, .field_index = resolved_idx });
             } else if (parent_kind == .TypeType) blk: {
+                // VariantType.C  => construct the value (void payload must NOT use UnionMake)
                 const of_ty = self.context.type_store.get(.TypeType, parent_ty_opt.?).of;
                 const of_kind = self.context.type_store.getKind(of_ty);
                 std.debug.assert(of_kind == .Variant or of_kind == .Error);
@@ -1153,35 +1152,32 @@ pub const LowerTir = struct {
                 const field = self.context.type_store.Field.get(field_id);
                 const payload_ty = field.ty;
 
-                if (self.context.type_store.getKind(payload_ty) != .Void) {
-                    // This is a variant constructor with payload, which is function-like.
-                    // The expression type should be a function.
-                    // We can just return an undef of that function type.
-                    // The real work is done in `lowerCall`.
-                    break :blk self.safeUndef(blk, ty0);
-                }
-
-                // This is a void-payload variant case. Let's construct it.
                 const tag_val = blk.builder.tirValue(.ConstInt, blk, self.context.type_store.tI32(), .{ .value = resolved_idx });
 
                 var union_fields_args = try self.gpa.alloc(types.TypeStore.StructFieldArg, fields.len);
                 defer self.gpa.free(union_fields_args);
-                for (fields, 0..) |fld_id, i| {
-                    const fld = self.context.type_store.Field.get(fld_id);
-                    union_fields_args[i] = .{ .name = fld.name, .ty = fld.ty };
+                for (fields, 0..) |fld_id2, j2| {
+                    const fld2 = self.context.type_store.Field.get(fld_id2);
+                    union_fields_args[j2] = .{ .name = fld2.name, .ty = fld2.ty };
                 }
                 const union_ty = self.context.type_store.mkUnion(union_fields_args);
 
-                const union_val = blk.builder.tirValue(.ConstUndef, blk, union_ty, .{});
+                const union_val =
+                    if (self.context.type_store.getKind(payload_ty) == .Void)
+                        // ← fix: void payload => just undef union, no UnionMake
+                        blk.builder.tirValue(.ConstUndef, blk, union_ty, .{})
+                    else
+                        blk.builder.tirValue(.UnionMake, blk, union_ty, .{
+                            .field_index = resolved_idx,
+                            .value = self.undef(blk, payload_ty),
+                        });
 
                 const v_res = blk.builder.structMake(blk, of_ty, &[_]tir.Rows.StructFieldInit{
                     .{ .index = 0, .name = .none(), .value = tag_val },
                     .{ .index = 1, .name = .none(), .value = union_val },
                 });
 
-                if (expected_ty) |want| {
-                    break :blk self.emitCoerce(blk, v_res, of_ty, want);
-                }
+                if (expected_ty) |want| break :blk self.emitCoerce(blk, v_res, of_ty, want);
                 break :blk v_res;
             } else if (is_tuple)
                 blk.builder.extractElem(blk, ty0, base, resolved_idx)
@@ -1190,9 +1186,7 @@ pub const LowerTir = struct {
             else
                 blk.builder.extractField(blk, ty0, base, resolved_idx);
         } else {
-            // No index from the checker. Tuples have no names -> we must error.
             if (is_tuple) return error.LoweringBug;
-            // Struct: fall back to extraction by name (no need for parent_ty).
             v = blk.builder.extractFieldNamed(blk, ty0, base, row.field);
         }
 
@@ -1432,41 +1426,50 @@ pub const LowerTir = struct {
         expected_ty: ?types.TypeId,
     ) anyerror!tir.ValueId {
         const row = a.exprs.get(.Catch, id);
-
         const out_ty_guess = expected_ty orelse (self.getExprType(id) orelse self.context.type_store.tVoid());
         const produce_value = (expected_ty != null) and !self.isVoid(out_ty_guess);
 
         const lhs = try self.lowerExpr(a, env, f, blk, row.expr, null, .rvalue);
-        const s_is_ok = f.builder.intern("builtin.err.is_ok");
+        const es_ty = self.getExprType(row.expr).?;
+        const es = self.context.type_store.get(.ErrorSet, es_ty);
+
+        // An ErrorSet is a tagged union { tag, payload }, where tag=0 is OK, non-zero is Err.
+        const tag = blk.builder.extractField(blk, self.context.type_store.tI32(), lhs, 0);
+        const zero = blk.builder.tirValue(.ConstInt, blk, self.context.type_store.tI32(), .{ .value = 0 });
+        const is_ok = blk.builder.binBool(blk, .CmpEq, tag, zero);
 
         var then_blk = try f.builder.beginBlock(f); // ok path
-        var else_blk = try f.builder.beginBlock(f); // handler path
+        var else_blk = try f.builder.beginBlock(f); // err path
+
+        const payload_union_ty = self.context.type_store.mkUnion(&.{
+            .{ .name = f.builder.intern("Ok"), .ty = es.value_ty },
+            .{ .name = f.builder.intern("Err"), .ty = es.error_ty },
+        });
 
         if (produce_value) {
             var join_blk = try f.builder.beginBlock(f);
             const res_ty = out_ty_guess;
             const res_param = try f.builder.addBlockParam(&join_blk, null, res_ty);
 
-            const is_ok = blk.builder.call(blk, self.context.type_store.tBool(), s_is_ok, &.{lhs});
             try f.builder.condBr(blk, is_ok, then_blk.id, &.{}, else_blk.id, &.{});
 
-            // then: unwrap ok(value)
-            const s_unwrap_ok = f.builder.intern("builtin.err.unwrap_ok");
-            var okv = blk.builder.call(&then_blk, res_ty, s_unwrap_ok, &.{lhs});
-            if (expected_ty) |want| {
-                const got = self.getExprType(row.expr) orelse res_ty;
-                okv = self.emitCoerce(&then_blk, okv, got, want);
-            }
-            try f.builder.br(&then_blk, join_blk.id, &.{okv});
+            // then (ok) branch: unwrap value
+            const payload_union_ok = blk.builder.extractField(blk, payload_union_ty, lhs, 1);
+            const ok_val = blk.builder.tirValue(.UnionField, blk, es.value_ty, .{ .base = payload_union_ok, .field_index = 0 });
+            try f.builder.br(&then_blk, join_blk.id, &.{ok_val});
 
-            // else: run handler (block/list); fallthrough value to join
+            // else (err) branch: unwrap error and run handler
+            try env.pushScope(self.gpa); // Push scope for handler
+            const payload_union_err = blk.builder.extractField(blk, payload_union_ty, lhs, 1);
+            const err_val = blk.builder.tirValue(.UnionField, blk, es.error_ty, .{ .base = payload_union_err, .field_index = 1 });
+            if (!row.binding_name.isNone()) {
+                const name = row.binding_name.unwrap();
+                try env.bind(self.gpa, a, name, .{ .value = err_val, .is_slot = false });
+            }
             try self.lowerExprAsStmtList(a, env, f, &else_blk, row.handler);
+            _ = env.popScope(); // Pop scope after handler
             if (else_blk.term.isNone()) {
-                var hv = try self.lowerBlockExprValue(a, env, f, &else_blk, row.handler, res_ty);
-                if (expected_ty) |want| {
-                    const got = self.getExprType(row.handler) orelse res_ty;
-                    hv = self.emitCoerce(&else_blk, hv, got, want);
-                }
+                const hv = try self.lowerBlockExprValue(a, env, f, &else_blk, row.handler, res_ty);
                 try f.builder.br(&else_blk, join_blk.id, &.{hv});
             }
 
@@ -1477,7 +1480,6 @@ pub const LowerTir = struct {
         } else {
             // No value: conditionally run handler, then continue
             const exit_blk = try f.builder.beginBlock(f);
-            const is_ok = blk.builder.call(blk, self.context.type_store.tBool(), s_is_ok, &.{lhs});
             try f.builder.condBr(blk, is_ok, then_blk.id, &.{}, else_blk.id, &.{});
 
             // then: nothing to do, jump to exit
@@ -1485,7 +1487,15 @@ pub const LowerTir = struct {
             try f.builder.endBlock(f, then_blk);
 
             // else: execute handler as stmt
+            try env.pushScope(self.gpa); // Push scope for handler
+            const payload_union_err = blk.builder.extractField(blk, payload_union_ty, lhs, 1);
+            const err_val = blk.builder.tirValue(.UnionField, blk, es.error_ty, .{ .base = payload_union_err, .field_index = 1 });
+            if (!row.binding_name.isNone()) {
+                const name = row.binding_name.unwrap();
+                try env.bind(self.gpa, a, name, .{ .value = err_val, .is_slot = false });
+            }
             try self.lowerExprAsStmtList(a, env, f, &else_blk, row.handler);
+            _ = env.popScope(); // Pop scope after handler
             if (else_blk.term.isNone()) try f.builder.br(&else_blk, exit_blk.id, &.{});
             try f.builder.endBlock(f, else_blk);
 
@@ -1884,12 +1894,16 @@ pub const LowerTir = struct {
                 try f.builder.endBlock(f, old);
             }
 
-            // If this is a pattern-while, compute condition via pattern test.
             if (row.is_pattern and !row.pattern.isNone() and !row.cond.isNone()) {
                 const subj = try self.lowerExpr(a, env, f, &header, row.cond.unwrap(), null, .rvalue);
                 const subj_ty = self.getExprType(row.cond.unwrap()) orelse self.context.type_store.tAny();
+
                 const ok = try self.matchPattern(a, env, f, &header, row.pattern.unwrap(), subj, subj_ty);
                 try f.builder.condBr(&header, ok, body.id, &.{}, exit_blk.id, &.{});
+
+                // bind `x` etc. for the body
+                try self.bindPattern(a, env, f, &body, row.pattern.unwrap(), subj, subj_ty);
+            } else {
                 const cond_v = if (!row.cond.isNone())
                     try self.lowerExpr(a, env, f, &header, row.cond.unwrap(), self.context.type_store.tBool(), .rvalue)
                 else
@@ -1921,7 +1935,7 @@ pub const LowerTir = struct {
             blk.* = join_blk;
             return res_param;
         } else {
-            // statement-position while: classic 3-block loop
+            // statement-position while
             const exit_blk = try f.builder.beginBlock(f);
 
             try f.builder.br(blk, header.id, &.{});
@@ -1933,9 +1947,11 @@ pub const LowerTir = struct {
             if (row.is_pattern and !row.pattern.isNone() and !row.cond.isNone()) {
                 const subj = try self.lowerExpr(a, env, f, &header, row.cond.unwrap(), null, .rvalue);
                 const subj_ty = self.getExprType(row.cond.unwrap()) orelse self.context.type_store.tAny();
+
                 const ok = try self.matchPattern(a, env, f, &header, row.pattern.unwrap(), subj, subj_ty);
                 try f.builder.condBr(&header, ok, body.id, &.{}, exit_blk.id, &.{});
-                // Bind pattern variables for the loop body
+
+                // bind `x` etc. for the body
                 try self.bindPattern(a, env, f, &body, row.pattern.unwrap(), subj, subj_ty);
             } else {
                 const cond_v = if (!row.cond.isNone())
@@ -1949,7 +1965,7 @@ pub const LowerTir = struct {
                 .label = if (!row.label.isNone()) a.exprs.strs.get(row.label.unwrap()) else null,
                 .continue_block = header.id,
                 .break_block = exit_blk.id,
-                .has_result = false, // << no value loop
+                .has_result = false,
                 .defer_len_at_entry = @intCast(env.defers.items.len),
             });
 
@@ -2531,10 +2547,33 @@ pub const LowerTir = struct {
     }
 
     fn getUnionTypeFromVariant(self: *const LowerTir, vty: types.TypeId) ?types.TypeId {
-        if (self.context.type_store.getKind(vty) != .Struct) return null;
-        const struct_fields = self.context.type_store.field_pool.slice(self.context.type_store.get(.Struct, vty).fields);
-        if (struct_fields.len != 2) return null;
-        return self.context.type_store.Field.get(struct_fields[1]).ty;
+        const ts = &self.context.type_store;
+        const k = ts.getKind(vty);
+
+        if (k == .Variant or k == .Error) {
+            const fields = if (k == .Variant)
+                ts.field_pool.slice(ts.get(.Variant, vty).variants)
+            else
+                ts.field_pool.slice(ts.get(.Error, vty).variants);
+
+            var args = self.gpa.alloc(types.TypeStore.StructFieldArg, fields.len) catch return null;
+            defer self.gpa.free(args);
+
+            for (fields, 0..) |fid, i| {
+                const f = ts.Field.get(fid);
+                args[i] = .{ .name = f.name, .ty = f.ty };
+            }
+            return ts.mkUnion(args);
+        }
+
+        // Fallback if a legacy representation is ever seen.
+        if (k == .Struct) {
+            const sfields = ts.field_pool.slice(ts.get(.Struct, vty).fields);
+            if (sfields.len != 2) return null;
+            return ts.Field.get(sfields[1]).ty;
+        }
+
+        return null;
     }
 
     fn bindingNameOfPattern(_: *const LowerTir, a: *const ast.Ast, pid: ast.PatternId) ?StrId {
@@ -2545,7 +2584,16 @@ pub const LowerTir = struct {
         };
     }
 
-    fn bindPattern(self: *LowerTir, a: *const ast.Ast, env: *Env, f: *Builder.FunctionFrame, blk: *Builder.BlockFrame, pid: ast.PatternId, value: tir.ValueId, vty: types.TypeId) !void {
+    fn bindPattern(
+        self: *LowerTir,
+        a: *const ast.Ast,
+        env: *Env,
+        f: *Builder.FunctionFrame,
+        blk: *Builder.BlockFrame,
+        pid: ast.PatternId,
+        value: tir.ValueId,
+        vty: types.TypeId,
+    ) !void {
         const k = a.pats.index.kinds.items[pid.toRaw()];
         switch (k) {
             .Binding => {
@@ -2555,55 +2603,69 @@ pub const LowerTir = struct {
             .Tuple => {
                 const row = a.pats.get(.Tuple, pid);
                 const elems = a.pats.pat_pool.slice(row.elems);
-                var i: usize = 0;
-                var etys: []const types.TypeId = &[_]types.TypeId{};
-                const vk = self.context.type_store.index.kinds.items[vty.toRaw()];
-                if (vk == .Tuple) {
-                    const vrow = self.context.type_store.get(.Tuple, vty);
-                    etys = self.context.type_store.type_pool.slice(vrow.elems);
+                var elem_tys: []const types.TypeId = &.{};
+                if (self.context.type_store.getKind(vty) == .Tuple) {
+                    const tr = self.context.type_store.get(.Tuple, vty);
+                    elem_tys = self.context.type_store.type_pool.slice(tr.elems);
                 }
-                while (i < elems.len) : (i += 1) {
-                    const ety = if (i < etys.len) etys[i] else self.context.type_store.tAny();
+                for (elems, 0..) |pe, i| {
+                    const ety = if (i < elem_tys.len) elem_tys[i] else self.context.type_store.tAny();
                     const ev = blk.builder.extractElem(blk, ety, value, @intCast(i));
-                    try self.bindPattern(a, env, f, blk, elems[i], ev, ety);
+                    try self.bindPattern(a, env, f, blk, pe, ev, ety);
                 }
             },
             .VariantTuple => {
+                // Pattern like Some(x, y, ...)
                 const pr = a.pats.get(.VariantTuple, pid);
-                const p_segs = a.pats.seg_pool.slice(pr.path);
-                const case_name = a.pats.PathSeg.get(p_segs[p_segs.len - 1]).name;
+                const segs = a.pats.seg_pool.slice(pr.path);
+                if (segs.len == 0) return;
+                const case_name = a.pats.PathSeg.get(segs[segs.len - 1]).name;
+
                 const tag_idx = self.tagIndexForCase(vty, case_name) orelse return;
 
+                // Build the union type that sits at field #1 of the runtime variant value
                 const union_ty = self.getUnionTypeFromVariant(vty) orelse return;
-                const payload_struct = blk.builder.extractField(blk, union_ty, value, 1);
+
+                // Grab the union payload aggregate from the variant value
+                const union_agg = blk.builder.extractField(blk, union_ty, value, 1);
+
+                // Determine the concrete payload type for this case
+                const payload_fields = self.context.type_store.field_pool.slice(
+                    self.context.type_store.get(.Union, union_ty).fields,
+                );
+                const fld = self.context.type_store.Field.get(payload_fields[tag_idx]);
+                const payload_ty = fld.ty;
 
                 const pelems = a.pats.pat_pool.slice(pr.elems);
-                if (pelems.len > 0) {
-                    const payload_ptr = blk.builder.tirValue(.UnionFieldPtr, blk, self.context.type_store.mkPtr(union_ty, false), .{
-                        .base = payload_struct,
+
+                if (self.context.type_store.getKind(payload_ty) == .Tuple) {
+                    // Read the whole tuple payload value, then destructure
+                    const tuple_val = blk.builder.tirValue(.UnionField, blk, payload_ty, .{
+                        .base = union_agg,
                         .field_index = tag_idx,
                     });
-                    const loaded_payload = blk.builder.tirValue(.Load, blk, union_ty, .{ .ptr = payload_ptr, .@"align" = 0 });
 
-                    // Bind sub-patterns to elements of the loaded payload
-                    const payload_ty_fields = self.context.type_store.field_pool.slice(self.context.type_store.get(.Union, union_ty).fields);
-                    const payload_ty = payload_ty_fields[tag_idx];
-                    const fld = self.context.type_store.Field.get(payload_ty);
-                    if (self.context.type_store.getKind(fld.ty) == .Tuple) {
-                        const tr = self.context.type_store.get(.Tuple, fld.ty);
-                        const subtys = self.context.type_store.type_pool.slice(tr.elems);
-                        for (pelems, 0..) |pelem, i| {
-                            const elem_ty = if (i < subtys.len) subtys[i] else self.context.type_store.tAny();
-                            const elem_val = blk.builder.extractElem(blk, elem_ty, loaded_payload, @intCast(i));
-                            try self.bindPattern(a, env, f, blk, pelem, elem_val, elem_ty);
-                        }
-                    } else {
-                        try self.bindPattern(a, env, f, blk, pelems[0], loaded_payload, fld.ty);
+                    const tr = self.context.type_store.get(.Tuple, payload_ty);
+                    const subtys = self.context.type_store.type_pool.slice(tr.elems);
+
+                    for (pelems, 0..) |pe, i| {
+                        const ety = if (i < subtys.len) subtys[i] else self.context.type_store.tAny();
+                        const ev = blk.builder.extractElem(blk, ety, tuple_val, @intCast(i));
+                        try self.bindPattern(a, env, f, blk, pe, ev, ety);
+                    }
+                } else {
+                    // Single non-tuple payload
+                    const pv = blk.builder.tirValue(.UnionField, blk, payload_ty, .{
+                        .base = union_agg,
+                        .field_index = tag_idx,
+                    });
+                    if (pelems.len > 0) {
+                        try self.bindPattern(a, env, f, blk, pelems[0], pv, payload_ty);
                     }
                 }
             },
+            // Other pattern forms can be added as needed.
             else => {},
-            // else => @panic("Pattern kinds other than simple bindings and tuples not yet supported in bindPattern"),
         }
     }
 
