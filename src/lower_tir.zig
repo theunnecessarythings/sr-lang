@@ -1865,6 +1865,7 @@ pub const LowerTir = struct {
                 const next_blk = if (j + 1 < arms.len) try f.builder.beginBlock(f) else join_blk;
 
                 try f.builder.br(&cur, test_blk.id, &.{});
+                try f.builder.endBlock(f, cur);
 
                 // pattern test
                 const arm_scrut_ty = self.getExprType(row.expr) orelse self.context.type_store.tAny();
@@ -1880,7 +1881,7 @@ pub const LowerTir = struct {
                     break :blkargs &.{uv};
                 } else &.{};
 
-                const br_cond = self.forceLocalCond(blk, ok);
+                const br_cond = self.forceLocalCond(&test_blk, ok);
                 try f.builder.condBr(&test_blk, br_cond, body_blk.id, &.{}, next_blk.id, else_args);
 
                 // bind + body
@@ -1958,6 +1959,7 @@ pub const LowerTir = struct {
                 const next_blk = if (l + 1 < arms.len) try f.builder.beginBlock(f) else exit_blk;
 
                 try f.builder.br(&cur, test_blk.id, &.{});
+                try f.builder.endBlock(f, cur);
 
                 const arm_scrut_ty = self.getExprType(row.expr) orelse self.context.type_store.tAny();
                 var ok = try self.matchPattern(a, env, f, &test_blk, arm.pattern, scrut, arm_scrut_ty);
@@ -1966,7 +1968,7 @@ pub const LowerTir = struct {
                     ok = test_blk.builder.binBool(&test_blk, .LogicalAnd, ok, g);
                 }
 
-                const br_cond = self.forceLocalCond(blk, ok);
+                const br_cond = self.forceLocalCond(&test_blk, ok);
                 try f.builder.condBr(&test_blk, br_cond, body_blk.id, &.{}, next_blk.id, &.{});
 
                 const scrut_ty = self.getExprType(row.expr) orelse self.context.type_store.tAny();
@@ -2030,7 +2032,7 @@ pub const LowerTir = struct {
                 else
                     f.builder.tirValue(.ConstBool, &header, self.context.type_store.tBool(), .{ .value = true });
 
-                const br_cond = self.forceLocalCond(blk, cond_v);
+                const br_cond = self.forceLocalCond(&header, cond_v);
                 try f.builder.condBr(&header, br_cond, body.id, &.{}, exit_blk.id, &.{});
             }
 
@@ -2073,7 +2075,7 @@ pub const LowerTir = struct {
 
                 const ok = try self.matchPattern(a, env, f, &header, row.pattern.unwrap(), subj, subj_ty);
 
-                const br_cond = self.forceLocalCond(blk, ok);
+                const br_cond = self.forceLocalCond(&header, ok);
                 try f.builder.condBr(&header, br_cond, body.id, &.{}, exit_blk.id, &.{});
 
                 // bind `x` etc. for the body
@@ -2083,7 +2085,7 @@ pub const LowerTir = struct {
                     try self.lowerExpr(a, env, f, &header, row.cond.unwrap(), self.context.type_store.tBool(), .rvalue)
                 else
                     f.builder.tirValue(.ConstBool, &header, self.context.type_store.tBool(), .{ .value = true });
-                const br_cond = self.forceLocalCond(blk, cond_v);
+                const br_cond = self.forceLocalCond(&header, cond_v);
                 try f.builder.condBr(&header, br_cond, body.id, &.{}, exit_blk.id, &.{});
             }
 
@@ -2176,7 +2178,7 @@ pub const LowerTir = struct {
                 else
                     blk.builder.binBool(&header, .CmpLt, idx_param, end_v);
 
-                const br_cond = self.forceLocalCond(blk, cond);
+                const br_cond = self.forceLocalCond(&header, cond);
                 try f.builder.condBr(&header, br_cond, body.id, &.{}, exit_blk.id, &.{});
 
                 // bind loop pattern (just the index)
@@ -2207,7 +2209,7 @@ pub const LowerTir = struct {
                 }
 
                 const cond = blk.builder.binBool(&header, .CmpLt, idx_param, len_v);
-                const br_cond = self.forceLocalCond(blk, cond);
+                const br_cond = self.forceLocalCond(&header, cond);
                 try f.builder.condBr(&header, br_cond, body.id, &.{}, exit_blk.id, &.{});
 
                 // Determine element type
@@ -2277,7 +2279,7 @@ pub const LowerTir = struct {
                 else
                     blk.builder.binBool(&header, .CmpLt, idx_param, end_v);
 
-                const br_cond = self.forceLocalCond(blk, cond);
+                const br_cond = self.forceLocalCond(&header, cond);
                 try f.builder.condBr(&header, br_cond, body.id, &.{}, exit_blk.id, &.{});
 
                 try self.bindPattern(a, env, f, &body, row.pattern, idx_param, idx_ty);
@@ -2307,7 +2309,7 @@ pub const LowerTir = struct {
                 }
 
                 const cond = blk.builder.binBool(&header, .CmpLt, idx_param, len_v);
-                const br_cond = self.forceLocalCond(blk, cond);
+                const br_cond = self.forceLocalCond(&header, cond);
                 try f.builder.condBr(&header, br_cond, body.id, &.{}, exit_blk.id, &.{});
 
                 var elem_ty = self.context.type_store.tAny();
