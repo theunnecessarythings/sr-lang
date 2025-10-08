@@ -25,6 +25,37 @@ pub const LowerTir = struct {
 
     import_base_dir: []const u8 = ".",
 
+    const BindingSnapshot = struct {
+        name: ast.StrId,
+        prev: ?ValueBinding,
+    };
+
+    fn constInitFromLiteral(
+        self: *LowerTir,
+        a: *const ast.Ast,
+        expr: ast.ExprId,
+        ty: types.TypeId,
+    ) ?tir.ConstInit {
+        const kind = a.exprs.index.kinds.items[expr.toRaw()];
+        if (kind != .Literal) return null;
+        const lit = a.exprs.get(.Literal, expr);
+
+        const ty_kind = self.context.type_store.getKind(ty);
+        return switch (ty_kind) {
+            .I8, .I16, .I32, .I64, .U8, .U16, .U32, .U64, .Usize => blk: {
+                if (lit.kind != .int or lit.value.isNone()) break :blk null;
+                const text = a.exprs.strs.get(lit.value.unwrap());
+                const parsed = std.fmt.parseInt(i64, text, 10) catch return null;
+                break :blk tir.ConstInit{ .int = parsed };
+            },
+            .Bool => blk: {
+                if (lit.kind != .bool) break :blk null;
+                break :blk tir.ConstInit{ .bool = lit.bool_value };
+            },
+            else => null,
+        };
+    }
+
     pub fn init(
         gpa: std.mem.Allocator,
         context: *Context,
@@ -219,7 +250,11 @@ pub const LowerTir = struct {
         if (!d.pattern.isNone()) {
             const nm = self.bindingNameOfPattern(a, d.pattern.unwrap()) orelse return;
             const ty = self.getDeclType(did) orelse return;
-            _ = b.addGlobal(nm, ty);
+            if (self.constInitFromLiteral(a, d.value, ty)) |ci| {
+                _ = b.addGlobalWithInit(nm, ty, ci);
+            } else {
+                _ = b.addGlobal(nm, ty);
+            }
         }
     }
 
@@ -290,10 +325,12 @@ pub const LowerTir = struct {
         if (a.exprs.index.kinds.items[id.toRaw()] == .Block) {
             const b = a.exprs.get(.Block, id);
             const stmts = a.stmts.stmt_pool.slice(b.items);
+            const scope_mark: u32 = @intCast(env.defers.items.len);
             try env.pushScope(self.gpa);
             for (stmts) |sid| {
                 try self.lowerStmt(a, env, f, blk, sid);
             }
+            try self.runNormalDefersFrom(a, env, f, blk, scope_mark);
             _ = env.popScope();
         } else {
             _ = try self.lowerExpr(a, env, f, blk, id, null, .rvalue);
@@ -1869,11 +1906,7 @@ pub const LowerTir = struct {
 
                 // pattern test
                 const arm_scrut_ty = self.getExprType(row.expr) orelse self.context.type_store.tAny();
-                var ok = try self.matchPattern(a, env, f, &test_blk, arm.pattern, scrut, arm_scrut_ty);
-                if (!arm.guard.isNone()) {
-                    const g = try self.lowerExpr(a, env, f, &test_blk, arm.guard.unwrap(), self.context.type_store.tBool(), .rvalue);
-                    ok = test_blk.builder.binBool(&test_blk, .LogicalAnd, ok, g);
-                }
+                const ok = try self.matchPattern(a, env, f, &test_blk, arm.pattern, scrut, arm_scrut_ty);
 
                 // if last arm fails, feed an undef to the join
                 const else_args = if (next_blk.id.toRaw() == join_blk.id.toRaw()) blkargs: {
@@ -1881,8 +1914,33 @@ pub const LowerTir = struct {
                     break :blkargs &.{uv};
                 } else &.{};
 
-                const br_cond = self.forceLocalCond(&test_blk, ok);
-                try f.builder.condBr(&test_blk, br_cond, body_blk.id, &.{}, next_blk.id, else_args);
+                if (!arm.guard.isNone()) {
+                    var guard_blk = try f.builder.beginBlock(f);
+                    const br_cond = self.forceLocalCond(&test_blk, ok);
+                    try f.builder.condBr(&test_blk, br_cond, guard_blk.id, &.{}, next_blk.id, else_args);
+                    try f.builder.endBlock(f, test_blk);
+
+                    var binding_names = std.ArrayListUnmanaged(ast.StrId){};
+                    defer binding_names.deinit(self.gpa);
+                    try self.collectPatternBindings(a, arm.pattern, &binding_names);
+
+                    var saved = std.ArrayListUnmanaged(BindingSnapshot){};
+                    defer saved.deinit(self.gpa);
+                    for (binding_names.items) |name| {
+                        try saved.append(self.gpa, .{ .name = name, .prev = env.lookup(name) });
+                    }
+
+                    try self.bindPattern(a, env, f, &guard_blk, arm.pattern, scrut, arm_scrut_ty);
+                    const guard_val = try self.lowerExpr(a, env, f, &guard_blk, arm.guard.unwrap(), self.context.type_store.tBool(), .rvalue);
+                    const guard_cond = self.forceLocalCond(&guard_blk, guard_val);
+                    try self.restoreBindings(env, saved.items);
+                    try f.builder.condBr(&guard_blk, guard_cond, body_blk.id, &.{}, next_blk.id, else_args);
+                    try f.builder.endBlock(f, guard_blk);
+                } else {
+                    const br_cond = self.forceLocalCond(&test_blk, ok);
+                    try f.builder.condBr(&test_blk, br_cond, body_blk.id, &.{}, next_blk.id, else_args);
+                    try f.builder.endBlock(f, test_blk);
+                }
 
                 // bind + body
                 const scrut_ty = self.getExprType(row.expr) orelse self.context.type_store.tAny();
@@ -1895,7 +1953,6 @@ pub const LowerTir = struct {
                     try f.builder.br(&body_blk, join_blk.id, &.{v2});
                 }
 
-                try f.builder.endBlock(f, test_blk);
                 try f.builder.endBlock(f, body_blk);
                 cur = next_blk;
             }
@@ -1962,14 +2019,35 @@ pub const LowerTir = struct {
                 try f.builder.endBlock(f, cur);
 
                 const arm_scrut_ty = self.getExprType(row.expr) orelse self.context.type_store.tAny();
-                var ok = try self.matchPattern(a, env, f, &test_blk, arm.pattern, scrut, arm_scrut_ty);
-                if (!arm.guard.isNone()) {
-                    const g = try self.lowerExpr(a, env, f, &test_blk, arm.guard.unwrap(), self.context.type_store.tBool(), .rvalue);
-                    ok = test_blk.builder.binBool(&test_blk, .LogicalAnd, ok, g);
-                }
+                const ok = try self.matchPattern(a, env, f, &test_blk, arm.pattern, scrut, arm_scrut_ty);
 
-                const br_cond = self.forceLocalCond(&test_blk, ok);
-                try f.builder.condBr(&test_blk, br_cond, body_blk.id, &.{}, next_blk.id, &.{});
+                if (!arm.guard.isNone()) {
+                    var guard_blk = try f.builder.beginBlock(f);
+                    const br_cond = self.forceLocalCond(&test_blk, ok);
+                    try f.builder.condBr(&test_blk, br_cond, guard_blk.id, &.{}, next_blk.id, &.{});
+                    try f.builder.endBlock(f, test_blk);
+
+                    var binding_names = std.ArrayListUnmanaged(ast.StrId){};
+                    defer binding_names.deinit(self.gpa);
+                    try self.collectPatternBindings(a, arm.pattern, &binding_names);
+
+                    var saved = std.ArrayListUnmanaged(BindingSnapshot){};
+                    defer saved.deinit(self.gpa);
+                    for (binding_names.items) |name| {
+                        try saved.append(self.gpa, .{ .name = name, .prev = env.lookup(name) });
+                    }
+
+                    try self.bindPattern(a, env, f, &guard_blk, arm.pattern, scrut, arm_scrut_ty);
+                    const guard_val = try self.lowerExpr(a, env, f, &guard_blk, arm.guard.unwrap(), self.context.type_store.tBool(), .rvalue);
+                    const guard_cond = self.forceLocalCond(&guard_blk, guard_val);
+                    try self.restoreBindings(env, saved.items);
+                    try f.builder.condBr(&guard_blk, guard_cond, body_blk.id, &.{}, next_blk.id, &.{});
+                    try f.builder.endBlock(f, guard_blk);
+                } else {
+                    const br_cond = self.forceLocalCond(&test_blk, ok);
+                    try f.builder.condBr(&test_blk, br_cond, body_blk.id, &.{}, next_blk.id, &.{});
+                    try f.builder.endBlock(f, test_blk);
+                }
 
                 const scrut_ty = self.getExprType(row.expr) orelse self.context.type_store.tAny();
                 try self.bindPattern(a, env, f, &body_blk, arm.pattern, scrut, scrut_ty);
@@ -1977,7 +2055,6 @@ pub const LowerTir = struct {
                 try self.lowerExprAsStmtList(a, env, f, &body_blk, arm.body);
                 if (body_blk.term.isNone()) try f.builder.br(&body_blk, exit_blk.id, &.{});
 
-                try f.builder.endBlock(f, test_blk);
                 try f.builder.endBlock(f, body_blk);
                 cur = next_blk;
             }
@@ -2734,6 +2811,11 @@ pub const LowerTir = struct {
                 const nm = a.pats.get(.Binding, pid).name;
                 try env.bind(self.gpa, a, nm, .{ .value = value, .is_slot = false });
             },
+            .At => {
+                const at = a.pats.get(.At, pid);
+                try env.bind(self.gpa, a, at.binder, .{ .value = value, .is_slot = false });
+                try self.bindPattern(a, env, f, blk, at.pattern, value, vty);
+            },
             .Tuple => {
                 const row = a.pats.get(.Tuple, pid);
                 const elems = a.pats.pat_pool.slice(row.elems);
@@ -3209,6 +3291,10 @@ pub const LowerTir = struct {
                 }
                 return blk.builder.tirValue(.ConstBool, blk, self.context.type_store.tBool(), .{ .value = false });
             },
+            .At => {
+                const node = a.pats.get(.At, pid);
+                return try self.matchPattern(a, env, f, blk, node.pattern, scrut, scrut_ty);
+            },
             .VariantStruct => {
                 const vs = a.pats.get(.VariantStruct, pid);
                 const segs = a.pats.seg_pool.slice(vs.path);
@@ -3234,9 +3320,76 @@ pub const LowerTir = struct {
                 }
                 return blk.builder.tirValue(.ConstBool, blk, self.context.type_store.tBool(), .{ .value = false });
             },
-            .Binding, .Tuple, .Slice, .Struct, .Range, .Or, .At => {
+            .Binding, .Tuple, .Slice, .Struct, .Range, .Or => {
                 return blk.builder.tirValue(.ConstBool, blk, self.context.type_store.tBool(), .{ .value = true });
             },
+        }
+    }
+
+    fn collectPatternBindings(
+        self: *LowerTir,
+        a: *const ast.Ast,
+        pid: ast.PatternId,
+        list: *std.ArrayListUnmanaged(ast.StrId),
+    ) !void {
+        const kind = a.pats.index.kinds.items[pid.toRaw()];
+        switch (kind) {
+            .Binding => {
+                const nm = a.pats.get(.Binding, pid).name;
+                try list.append(self.gpa, nm);
+            },
+            .At => {
+                const node = a.pats.get(.At, pid);
+                try list.append(self.gpa, node.binder);
+                try self.collectPatternBindings(a, node.pattern, list);
+            },
+            .Tuple => {
+                const row = a.pats.get(.Tuple, pid);
+                const elems = a.pats.pat_pool.slice(row.elems);
+                for (elems) |child| try self.collectPatternBindings(a, child, list);
+            },
+            .Slice => {
+                const row = a.pats.get(.Slice, pid);
+                const elems = a.pats.pat_pool.slice(row.elems);
+                for (elems) |child| try self.collectPatternBindings(a, child, list);
+                if (!row.rest_binding.isNone())
+                    try self.collectPatternBindings(a, row.rest_binding.unwrap(), list);
+            },
+            .Struct => {
+                const row = a.pats.get(.Struct, pid);
+                const fields = a.pats.field_pool.slice(row.fields);
+                for (fields) |fid| {
+                    const pf = a.pats.StructField.get(fid);
+                    try self.collectPatternBindings(a, pf.pattern, list);
+                }
+            },
+            .VariantTuple => {
+                const row = a.pats.get(.VariantTuple, pid);
+                const elems = a.pats.pat_pool.slice(row.elems);
+                for (elems) |child| try self.collectPatternBindings(a, child, list);
+            },
+            .VariantStruct => {
+                const row = a.pats.get(.VariantStruct, pid);
+                const fields = a.pats.field_pool.slice(row.fields);
+                for (fields) |fid| {
+                    const pf = a.pats.StructField.get(fid);
+                    try self.collectPatternBindings(a, pf.pattern, list);
+                }
+            },
+            .Or => {
+                const row = a.pats.get(.Or, pid);
+                const alts = a.pats.pat_pool.slice(row.alts);
+                for (alts) |alt| try self.collectPatternBindings(a, alt, list);
+            },
+            else => {},
+        }
+    }
+
+    fn restoreBindings(self: *LowerTir, env: *Env, saved: []const BindingSnapshot) !void {
+        var i: usize = saved.len;
+        while (i > 0) : (i -= 1) {
+            const entry = saved[i - 1];
+            try env.restoreBinding(self.gpa, entry.name, entry.prev);
         }
     }
 };
@@ -3274,6 +3427,13 @@ const Env = struct {
     }
     fn lookup(self: *Env, s: ast.StrId) ?ValueBinding {
         return self.map.get(s);
+    }
+    fn restoreBinding(self: *Env, gpa: std.mem.Allocator, name: StrId, prev: ?ValueBinding) !void {
+        if (prev) |val| {
+            try self.map.put(gpa, name, val);
+        } else {
+            _ = self.map.swapRemove(name);
+        }
     }
     fn pushScope(self: *Env, gpa: std.mem.Allocator) !void {
         try self.marks.append(gpa, @intCast(self.defers.items.len));

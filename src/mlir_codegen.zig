@@ -280,18 +280,32 @@ pub const MlirCodegen = struct {
                 // Handle global variables
                 const var_mlir_ty = try self.llvmTypeOf(store, g.ty);
 
-                const attrs = [_]mlir.NamedAttribute{
-                    self.named("sym_name", self.strAttr(name)),
-                    self.named("global_type", mlir.Attribute.typeAttrGet(var_mlir_ty)),
-                    self.named("sym_visibility", self.strAttr("private")),
-                    self.named("linkage", mlir.LLVMAttributes.getLLVMLinkageAttr(
-                        self.mlir_ctx,
-                        mlir.LLVMLinkage.Internal,
-                    )),
-                };
+                var attr_buf: std.ArrayList(mlir.NamedAttribute) = .empty;
+                defer attr_buf.deinit(self.gpa);
 
+                try attr_buf.append(self.gpa, self.named("sym_name", self.strAttr(name)));
+                try attr_buf.append(self.gpa, self.named("global_type", mlir.Attribute.typeAttrGet(var_mlir_ty)));
+                try attr_buf.append(self.gpa, self.named("sym_visibility", self.strAttr("private")));
+                try attr_buf.append(self.gpa, self.named(
+                    "linkage",
+                    mlir.LLVMAttributes.getLLVMLinkageAttr(self.mlir_ctx, mlir.LLVMLinkage.Internal),
+                ));
+
+                switch (g.init) {
+                    .int => |val| {
+                        const attr = mlir.Attribute.integerAttrGet(var_mlir_ty, val);
+                        try attr_buf.append(self.gpa, self.named("value", attr));
+                    },
+                    .bool => |val| {
+                        const attr = mlir.Attribute.integerAttrGet(var_mlir_ty, if (val) 1 else 0);
+                        try attr_buf.append(self.gpa, self.named("value", attr));
+                    },
+                    else => {},
+                }
+
+                const attrs = attr_buf.items;
                 const global_op = OpBuilder.init("llvm.mlir.global", self.loc).builder()
-                    .add_attributes(&attrs)
+                    .add_attributes(attrs)
                     .add_regions(&.{mlir.Region.create()})
                     .build();
 
@@ -3032,7 +3046,7 @@ pub const MlirCodegen = struct {
                 const e_ty = store.get(.Error, ty);
                 const fields = store.field_pool.slice(e_ty.variants);
                 if (fields.len == 0) {
-                    const parts = [_]mlir.Type{ self.i32_ty };
+                    const parts = [_]mlir.Type{self.i32_ty};
                     break :blk mlir.LLVM.getLLVMStructTypeLiteral(self.mlir_ctx, &parts, false);
                 }
 

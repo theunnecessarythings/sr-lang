@@ -109,6 +109,13 @@ pub const OpKind = enum(u16) {
 
 pub const TermKind = enum(u8) { Return, Br, CondBr, SwitchInt, Unreachable };
 
+pub const ConstInit = union(enum) {
+    none,
+    int: i64,
+    bool: bool,
+    string: StrId,
+};
+
 pub const Rows = struct {
     // All rows that produce a value carry (result, ty)
     pub const Bin2 = struct { result: ValueId, ty: types.TypeId, lhs: ValueId, rhs: ValueId };
@@ -389,7 +396,7 @@ pub const FuncRows = struct {
     pub const Param = struct { value: ValueId, name: dod.OptStrId, ty: types.TypeId };
     pub const Block = struct { params: RangeParam, instrs: RangeInstr, term: TermId };
     pub const Function = struct { name: StrId, params: RangeParam, result: types.TypeId, blocks: RangeBlock, is_variadic: bool };
-    pub const Global = struct { name: StrId, ty: types.TypeId };
+    pub const Global = struct { name: StrId, ty: types.TypeId, init: ConstInit };
 };
 
 pub const FuncStore = struct {
@@ -655,7 +662,11 @@ pub const Builder = struct {
         return vid;
     }
     pub fn addGlobal(self: *Builder, name: StrId, ty: types.TypeId) GlobalId {
-        const idx = self.t.funcs.Global.add(self.gpa, .{ .name = name, .ty = ty });
+        return self.addGlobalWithInit(name, ty, .none);
+    }
+
+    pub fn addGlobalWithInit(self: *Builder, name: StrId, ty: types.TypeId, initial: ConstInit) GlobalId {
+        const idx = self.t.funcs.Global.add(self.gpa, .{ .name = name, .ty = ty, .init = initial });
         _ = self.t.funcs.global_pool.push(self.gpa, idx);
         return idx;
     }
@@ -830,7 +841,12 @@ pub const TirPrinter = struct {
                 const g = self.tir.funcs.Global.get(gid);
                 try self.ws();
                 try self.pg(gid);
-                try self.writer.print(": (global name=\"{s}\" type={f})\n", .{ self.s(g.name), self.tf(g.ty) });
+                switch (g.init) {
+                    .none => try self.writer.print(": (global name=\"{s}\" type={f})\n", .{ self.s(g.name), self.tf(g.ty) }),
+                    .int => |val| try self.writer.print(": (global name=\"{s}\" type={f} init=int({}))\n", .{ self.s(g.name), self.tf(g.ty), val }),
+                    .bool => |val| try self.writer.print(": (global name=\"{s}\" type={f} init=bool({}))\n", .{ self.s(g.name), self.tf(g.ty), val }),
+                    .string => |sid| try self.writer.print(": (global name=\"{s}\" type={f} init=string(\"{s}\"))\n", .{ self.s(g.name), self.tf(g.ty), self.s(sid) }),
+                }
             }
             try self.close();
         }
