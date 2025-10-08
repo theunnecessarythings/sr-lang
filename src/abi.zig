@@ -170,41 +170,57 @@ pub fn abiSizeAlign(self: *MlirCodegen, store: *types.TypeStore, ty: types.TypeI
         .Tuple => {
             const T = store.get(.Tuple, ty);
             const elems = store.type_pool.slice(T.elems);
-            var off: usize = 0;
-            var al: usize = 1;
+            var size: usize = 0;
+            var alignment: usize = 1;
             var hasF = false;
             var intsOnly = true;
             for (elems) |eId| {
                 const e = abiSizeAlign(self, store, eId);
-                off = std.mem.alignForward(usize, off, e.alignment);
-                off += e.size;
-                al = @max(al, e.alignment);
+                size = std.mem.alignForward(usize, size, e.alignment);
+                size += e.size;
+                alignment = @max(alignment, e.alignment);
                 hasF = hasF or e.hasFloat;
                 intsOnly = intsOnly and e.allIntsOnly;
             }
-            off = std.mem.alignForward(usize, off, al);
-            return .{ .size = off, .alignment = al, .hasFloat = hasF, .allIntsOnly = intsOnly };
+            size = std.mem.alignForward(usize, size, alignment);
+            return .{ .size = size, .alignment = alignment, .hasFloat = hasF, .allIntsOnly = intsOnly };
         },
         .Struct => {
             const S = store.get(.Struct, ty);
             const fields = store.field_pool.slice(S.fields);
-            var off: usize = 0;
-            var al: usize = 1;
+            var size: usize = 0;
+            var alignment: usize = 1;
             var hasF = false;
             var intsOnly = true;
             for (fields) |fid| {
-                const f = store.Field.get(fid);
-                const e = abiSizeAlign(self, store, f.ty);
-                off = std.mem.alignForward(usize, off, e.alignment);
-                off += e.size;
-                al = @max(al, e.alignment);
+                const e = abiSizeAlign(self, store, store.Field.get(fid).ty);
+                size = std.mem.alignForward(usize, size, e.alignment);
+                size += e.size;
+                alignment = @max(alignment, e.alignment);
                 hasF = hasF or e.hasFloat;
                 intsOnly = intsOnly and e.allIntsOnly;
             }
-            off = std.mem.alignForward(usize, off, al);
-            return .{ .size = off, .alignment = al, .hasFloat = hasF, .allIntsOnly = intsOnly };
+            size = std.mem.alignForward(usize, size, alignment);
+            return .{ .size = size, .alignment = alignment, .hasFloat = hasF, .allIntsOnly = intsOnly };
         },
-        else => std.debug.panic("abiSizeAlign: unhandled SR kind {}", .{ty}),
+        .Union => {
+            const U = store.get(.Union, ty);
+            const fields = store.field_pool.slice(U.fields);
+            var size: usize = 0;
+            var alignment: usize = 1;
+            var hasF = false;
+            var intsOnly = true;
+            for (fields) |fid| {
+                const e = abiSizeAlign(self, store, store.Field.get(fid).ty);
+                size = @max(size, e.size);
+                alignment = @max(alignment, e.alignment);
+                hasF = hasF or e.hasFloat;
+                intsOnly = intsOnly and e.allIntsOnly;
+            }
+            size = std.mem.alignForward(usize, size, alignment);
+            return .{ .size = size, .alignment = alignment, .hasFloat = hasF, .allIntsOnly = intsOnly };
+        },
+        else => std.debug.panic("abiSizeAlign: unhandled SR kind {} -> {}", .{ ty, store.getKind(ty) }),
     };
 }
 

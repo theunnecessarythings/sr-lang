@@ -325,12 +325,17 @@ pub const LowerTir = struct {
         if (a.exprs.index.kinds.items[id.toRaw()] == .Block) {
             const b = a.exprs.get(.Block, id);
             const stmts = a.stmts.stmt_pool.slice(b.items);
-            const scope_mark: u32 = @intCast(env.defers.items.len);
+            const start: u32 = @intCast(env.defers.items.len);
             try env.pushScope(self.gpa);
             for (stmts) |sid| {
+                if (!blk.term.isNone()) break;
                 try self.lowerStmt(a, env, f, blk, sid);
             }
-            try self.runNormalDefersFrom(a, env, f, blk, scope_mark);
+            if (blk.term.isNone()) {
+                const slice = env.defers.items[start .. env.defers.items.len];
+                if (slice.len > 0) try self.emitDefers(a, env, f, blk, slice, false);
+            }
+            env.defers.items.len = start;
             _ = env.popScope();
         } else {
             _ = try self.lowerExpr(a, env, f, blk, id, null, .rvalue);
@@ -355,6 +360,32 @@ pub const LowerTir = struct {
             }
         }
         env.defers.items.len = from;
+    }
+
+    fn hasErrDefersFrom(_: *LowerTir, env: *Env, from: u32) bool {
+        var i: usize = env.defers.items.len;
+        while (i > from) : (i -= 1) {
+            if (env.defers.items[i - 1].is_err) return true;
+        }
+        return false;
+    }
+
+    fn emitDefers(
+        self: *LowerTir,
+        a: *const ast.Ast,
+        env: *Env,
+        f: *Builder.FunctionFrame,
+        blk: *Builder.BlockFrame,
+        slice: []const DeferEntry,
+        want_err: bool,
+    ) !void {
+        var j: isize = @as(isize, @intCast(slice.len)) - 1;
+        while (j >= 0) : (j -= 1) {
+            const ent = slice[@intCast(j)];
+            if (ent.is_err == want_err) {
+                _ = try self.lowerExpr(a, env, f, blk, ent.expr, null, .rvalue);
+            }
+        }
     }
 
     fn runDefersForLoopExit(
@@ -407,7 +438,10 @@ pub const LowerTir = struct {
         _ = cid;
         const lc = if (self.loop_stack.items.len > 0) self.loop_stack.items[self.loop_stack.items.len - 1] else return error.LoweringBug;
         try self.runDefersForLoopExit(a, env, f, blk, lc);
-        try f.builder.br(blk, lc.continue_block, &.{});
+        switch (lc.continue_info) {
+            .none => try f.builder.br(blk, lc.continue_block, &.{}),
+            .range => |info| try f.builder.br(blk, info.update_block, &.{info.idx_value}),
+        }
     }
 
     fn lowerDecl(
@@ -439,13 +473,7 @@ pub const LowerTir = struct {
         sid: ast.StmtId,
     ) !void {
         const r = a.stmts.get(.Return, sid);
-        // run normal defers (ignore err-only for now – handled below when needed)
-        var j: isize = @intCast(env.defers.items.len);
-        j -= 1;
-        while (j >= 0) : (j -= 1) {
-            const ent = env.defers.items[@intCast(j)];
-            if (!ent.is_err) _ = try self.lowerExpr(a, env, f, blk, ent.expr, null, .rvalue);
-        }
+        const defer_mark: u32 = 0;
 
         if (!r.value.isNone()) {
             const frow = f.builder.t.funcs.Function.get(f.id);
@@ -457,41 +485,40 @@ pub const LowerTir = struct {
             }
 
             const expect_kind = self.context.type_store.index.kinds.items[expect.toRaw()];
-            var needs_err_cleanup = false;
-            if (expect_kind == .ErrorSet) {
-                var i: usize = env.defers.items.len;
-                while (i > 0) {
-                    i -= 1;
-                    if (env.defers.items[i].is_err) {
-                        needs_err_cleanup = true;
-                        break;
-                    }
-                }
-            }
+            const has_err_defers = expect_kind == .ErrorSet and self.hasErrDefersFrom(env, defer_mark);
 
-            // Minimal errdefer: only build the error-handling path when there are err-defer cleanups to run.
-            if (expect_kind == .ErrorSet and needs_err_cleanup) {
-                var then_blk = try f.builder.beginBlock(f);
-                var cont_blk = try f.builder.beginBlock(f);
-                const is_err_name = f.builder.intern("builtin.err.is_err");
-                const is_err = blk.builder.call(blk, self.context.type_store.tBool(), is_err_name, &.{v});
+            if (has_err_defers) {
+                var err_blk = try f.builder.beginBlock(f);
+                var ok_blk = try f.builder.beginBlock(f);
+                const tag_ty = self.context.type_store.tI32();
+                const tag = blk.builder.extractField(blk, tag_ty, v, 0);
+                const zero = blk.builder.tirValue(.ConstInt, blk, tag_ty, .{ .value = 0 });
+                const is_err = blk.builder.binBool(blk, .CmpNe, tag, zero);
                 const br_cond = self.forceLocalCond(blk, is_err);
-                try f.builder.condBr(blk, br_cond, then_blk.id, &.{}, cont_blk.id, &.{});
-                // run err-only defers in reverse
-                var ki: isize = @as(isize, @intCast(env.defers.items.len)) - 1;
-                while (ki >= 0) : (ki -= 1) {
-                    const ent = env.defers.items[@intCast(ki)];
-                    if (ent.is_err) _ = try self.lowerExpr(a, env, f, &then_blk, ent.expr, null, .rvalue);
-                }
-                try f.builder.setReturnVal(&then_blk, v);
-                try f.builder.endBlock(f, then_blk);
-                try f.builder.setReturnVal(&cont_blk, v);
-                blk.* = cont_blk;
+                try f.builder.condBr(blk, br_cond, err_blk.id, &.{}, ok_blk.id, &.{});
+
+                const defer_slice = env.defers.items[defer_mark .. env.defers.items.len];
+
+                try self.emitDefers(a, env, f, &err_blk, defer_slice, true);
+                try self.emitDefers(a, env, f, &err_blk, defer_slice, false);
+                try f.builder.setReturnVal(&err_blk, v);
+                try f.builder.endBlock(f, err_blk);
+
+                try self.emitDefers(a, env, f, &ok_blk, defer_slice, false);
+                try f.builder.setReturnVal(&ok_blk, v);
+                try f.builder.endBlock(f, ok_blk);
+
+                env.defers.items.len = defer_mark;
+                return;
             } else {
+                try self.runNormalDefersFrom(a, env, f, blk, defer_mark);
                 try f.builder.setReturnVal(blk, v);
+                return;
             }
         } else {
+            try self.runNormalDefersFrom(a, env, f, blk, defer_mark);
             try f.builder.setReturnVoid(blk);
+            return;
         }
     }
 
@@ -2244,6 +2271,15 @@ pub const LowerTir = struct {
                 const idx_ty = self.getExprType(rg.start.unwrap()) orelse return error.LoweringBug;
 
                 const idx_param = try f.builder.addBlockParam(&header, null, idx_ty);
+
+                var update_blk = try f.builder.beginBlock(f);
+                const update_param = try f.builder.addBlockParam(&update_blk, null, idx_ty);
+                const one_update = update_blk.builder.tirValue(.ConstInt, &update_blk, idx_ty, .{ .value = 1 });
+                const next_update = update_blk.builder.bin(&update_blk, .Add, idx_ty, update_param, one_update);
+                const update_block_id = update_blk.id;
+                try f.builder.br(&update_blk, header.id, &.{next_update});
+                try f.builder.endBlock(f, update_blk);
+
                 try f.builder.br(blk, header.id, &.{start_v});
                 {
                     const old = blk.*;
@@ -2258,14 +2294,15 @@ pub const LowerTir = struct {
                 const br_cond = self.forceLocalCond(&header, cond);
                 try f.builder.condBr(&header, br_cond, body.id, &.{}, exit_blk.id, &.{});
 
-                // bind loop pattern (just the index)
                 try self.bindPattern(a, env, f, &body, row.pattern, idx_param, idx_ty);
+
+                var lc = &self.loop_stack.items[self.loop_stack.items.len - 1];
+                lc.continue_block = update_block_id;
+                lc.continue_info = .{ .range = .{ .update_block = update_block_id, .idx_value = idx_param } };
+
                 try self.lowerExprAsStmtList(a, env, f, &body, row.body);
-                if (body.term.isNone()) {
-                    const one = blk.builder.tirValue(.ConstInt, &body, idx_ty, .{ .value = 1 });
-                    const next_i = blk.builder.bin(&body, .Add, idx_ty, idx_param, one);
-                    try f.builder.br(&body, header.id, &.{next_i});
-                }
+                if (body.term.isNone())
+                    try f.builder.br(&body, update_block_id, &.{idx_param});
 
                 try f.builder.endBlock(f, header);
                 try f.builder.endBlock(f, body);
@@ -2278,6 +2315,14 @@ pub const LowerTir = struct {
 
                 const zero = blk.builder.tirValue(.ConstInt, blk, idx_ty, .{ .value = 0 });
                 const idx_param = try f.builder.addBlockParam(&header, null, idx_ty);
+
+                var update_blk = try f.builder.beginBlock(f);
+                const update_param = try f.builder.addBlockParam(&update_blk, null, idx_ty);
+                const one_update = update_blk.builder.tirValue(.ConstInt, &update_blk, idx_ty, .{ .value = 1 });
+                const next_update = update_blk.builder.bin(&update_blk, .Add, idx_ty, update_param, one_update);
+                const update_block_id = update_blk.id;
+                try f.builder.br(&update_blk, header.id, &.{next_update});
+                try f.builder.endBlock(f, update_blk);
 
                 try f.builder.br(blk, header.id, &.{zero});
                 {
@@ -2304,12 +2349,13 @@ pub const LowerTir = struct {
                 const elem = blk.builder.indexOp(&body, elem_ty, arr_v, idx_param);
                 try self.bindPattern(a, env, f, &body, row.pattern, elem, elem_ty);
 
+                var lc2 = &self.loop_stack.items[self.loop_stack.items.len - 1];
+                lc2.continue_block = update_block_id;
+                lc2.continue_info = .{ .range = .{ .update_block = update_block_id, .idx_value = idx_param } };
+
                 try self.lowerExprAsStmtList(a, env, f, &body, row.body);
-                if (body.term.isNone()) {
-                    const one = blk.builder.tirValue(.ConstInt, &body, idx_ty, .{ .value = 1 });
-                    const next_i = blk.builder.bin(&body, .Add, idx_ty, idx_param, one);
-                    try f.builder.br(&body, header.id, &.{next_i});
-                }
+                if (body.term.isNone())
+                    try f.builder.br(&body, update_block_id, &.{idx_param});
 
                 try f.builder.endBlock(f, header);
                 try f.builder.endBlock(f, body);
@@ -2345,6 +2391,13 @@ pub const LowerTir = struct {
                 const idx_ty = self.getExprType(rg.start.unwrap()) orelse return error.LoweringBug;
 
                 const idx_param = try f.builder.addBlockParam(&header, null, idx_ty);
+                var update_blk = try f.builder.beginBlock(f);
+                const update_param = try f.builder.addBlockParam(&update_blk, null, idx_ty);
+                const one_update = update_blk.builder.tirValue(.ConstInt, &update_blk, idx_ty, .{ .value = 1 });
+                const next_update = update_blk.builder.bin(&update_blk, .Add, idx_ty, update_param, one_update);
+                const update_block_id = update_blk.id;
+                try f.builder.br(&update_blk, header.id, &.{next_update});
+                try f.builder.endBlock(f, update_blk);
                 try f.builder.br(blk, header.id, &.{start_v});
                 {
                     const old = blk.*;
@@ -2360,13 +2413,15 @@ pub const LowerTir = struct {
                 try f.builder.condBr(&header, br_cond, body.id, &.{}, exit_blk.id, &.{});
 
                 try self.bindPattern(a, env, f, &body, row.pattern, idx_param, idx_ty);
+
+                var lc = &self.loop_stack.items[self.loop_stack.items.len - 1];
+                lc.continue_block = update_block_id;
+                lc.continue_info = .{ .range = .{ .update_block = update_block_id, .idx_value = idx_param } };
+
                 try self.lowerExprAsStmtList(a, env, f, &body, row.body);
 
-                if (body.term.isNone()) {
-                    const one = blk.builder.tirValue(.ConstInt, &body, idx_ty, .{ .value = 1 });
-                    const next_i = blk.builder.bin(&body, .Add, idx_ty, idx_param, one);
-                    try f.builder.br(&body, header.id, &.{next_i});
-                }
+                if (body.term.isNone())
+                    try f.builder.br(&body, update_block_id, &.{idx_param});
 
                 try f.builder.endBlock(f, header);
                 try f.builder.endBlock(f, body);
@@ -2378,6 +2433,14 @@ pub const LowerTir = struct {
 
                 const zero = blk.builder.tirValue(.ConstInt, blk, idx_ty, .{ .value = 0 });
                 const idx_param = try f.builder.addBlockParam(&header, null, idx_ty);
+
+                var update_blk = try f.builder.beginBlock(f);
+                const update_param = try f.builder.addBlockParam(&update_blk, null, idx_ty);
+                const one_update = update_blk.builder.tirValue(.ConstInt, &update_blk, idx_ty, .{ .value = 1 });
+                const next_update = update_blk.builder.bin(&update_blk, .Add, idx_ty, update_param, one_update);
+                const update_block_id = update_blk.id;
+                try f.builder.br(&update_blk, header.id, &.{next_update});
+                try f.builder.endBlock(f, update_blk);
 
                 try f.builder.br(blk, header.id, &.{zero});
                 {
@@ -2402,12 +2465,13 @@ pub const LowerTir = struct {
                 const elem = blk.builder.indexOp(&body, elem_ty, arr_v, idx_param);
                 try self.bindPattern(a, env, f, &body, row.pattern, elem, elem_ty);
 
+                var lc2 = &self.loop_stack.items[self.loop_stack.items.len - 1];
+                lc2.continue_block = update_block_id;
+                lc2.continue_info = .{ .range = .{ .update_block = update_block_id, .idx_value = idx_param } };
+
                 try self.lowerExprAsStmtList(a, env, f, &body, row.body);
-                if (body.term.isNone()) {
-                    const one = blk.builder.tirValue(.ConstInt, &body, idx_ty, .{ .value = 1 });
-                    const next_i = blk.builder.bin(&body, .Add, idx_ty, idx_param, one);
-                    try f.builder.br(&body, header.id, &.{next_i});
-                }
+                if (body.term.isNone())
+                    try f.builder.br(&body, update_block_id, &.{idx_param});
 
                 try f.builder.endBlock(f, header);
                 try f.builder.endBlock(f, body);
@@ -3398,6 +3462,11 @@ pub const LowerTir = struct {
 // Context structs
 // ============================
 
+const ContinueInfo = union(enum) {
+    none,
+    range: struct { update_block: tir.BlockId, idx_value: tir.ValueId },
+};
+
 const LoopCtx = struct {
     label: ?[]const u8,
     continue_block: tir.BlockId,
@@ -3407,6 +3476,7 @@ const LoopCtx = struct {
     res_param: tir.ValueId = tir.ValueId.fromRaw(0),
     res_ty: types.TypeId = undefined,
     defer_len_at_entry: u32 = 0,
+    continue_info: ContinueInfo = .none,
 };
 
 const Env = struct {
