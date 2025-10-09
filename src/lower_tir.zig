@@ -3708,7 +3708,22 @@ pub const LowerTir = struct {
                     return blk.builder.binBool(blk, .CmpEq, len_val, required_val);
                 }
             },
-            .Binding, .Tuple, .Struct, .Range, .Or => {
+            .Or => {
+                const or_pat = a.pats.get(.Or, pid);
+                const alts = a.pats.pat_pool.slice(or_pat.alts);
+                if (alts.len == 0) {
+                    return blk.builder.tirValue(.ConstBool, blk, self.context.type_store.tBool(), .{ .value = false });
+                }
+
+                var result = try self.matchPattern(a, env, f, blk, alts[0], scrut, scrut_ty);
+                var i: usize = 1;
+                while (i < alts.len) : (i += 1) {
+                    const next_ok = try self.matchPattern(a, env, f, blk, alts[i], scrut, scrut_ty);
+                    result = blk.builder.binBool(blk, .LogicalOr, result, next_ok);
+                }
+                return result;
+            },
+            .Binding, .Tuple, .Struct, .Range => {
                 return blk.builder.tirValue(.ConstBool, blk, self.context.type_store.tBool(), .{ .value = true });
             },
         }

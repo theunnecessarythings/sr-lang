@@ -198,10 +198,12 @@ pub fn checkPattern(
             }
             }
 
+            var any_ok = false;
             for (alts) |aid| {
-                if (try checkPattern(self, aid, value_ty, false)) return true;
+                const is_ok = try checkPattern(self, aid, value_ty, false);
+                any_ok = any_ok or is_ok;
             }
-            return false;
+            return any_ok;
         },
         .At => {
             const ap = self.ast_unit.pats.get(.At, pid);
