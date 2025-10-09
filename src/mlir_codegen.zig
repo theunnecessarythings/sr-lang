@@ -696,10 +696,12 @@ pub const MlirCodegen = struct {
             .ConstNull => blk: {
                 const p = t.instrs.get(.ConstNull, ins_id);
                 const ty = try self.llvmTypeOf(store, p.ty);
-                var op = OpBuilder.init("llvm.mlir.null", self.loc).builder()
+                var zero = OpBuilder.init("llvm.mlir.zero", self.loc).builder()
                     .add_results(&.{ty}).build();
-                self.append(op);
-                break :blk op.getResult(0);
+                self.append(zero);
+                const flag = self.constBool(false);
+                const v = self.insertAt(zero.getResult(0), flag, &.{0});
+                break :blk v;
             },
             .ConstUndef => blk: {
                 const p = t.instrs.get(.ConstUndef, ins_id);
@@ -712,8 +714,15 @@ pub const MlirCodegen = struct {
             .ConstString => blk: {
                 const p = t.instrs.get(.ConstString, ins_id);
                 const str_text = t.instrs.strs.get(p.text);
-                var op = try self.constStringPtr(str_text);
-                break :blk op.getResult(0);
+                var ptr_op = try self.constStringPtr(str_text);
+                const ptr_val = ptr_op.getResult(0);
+                const len_val = self.llvmConstI64(@intCast(str_text.len));
+
+                const string_ty = try self.llvmTypeOf(store, p.ty);
+                var agg = self.undefOf(string_ty);
+                agg = self.insertAt(agg, ptr_val, &.{0});
+                agg = self.insertAt(agg, len_val, &.{1});
+                break :blk agg;
             },
 
             // ------------- Arithmetic / bitwise (now arith.*) -------------
@@ -2948,6 +2957,7 @@ pub const MlirCodegen = struct {
     fn llvmTypeOf(self: *MlirCodegen, store: *types.TypeStore, ty: types.TypeId) !mlir.Type {
         return switch (store.getKind(ty)) {
             .Void => self.void_ty,
+            .Noreturn => self.void_ty,
             .Bool => self.i1_ty,
 
             .I8, .U8 => mlir.Type.getSignlessIntegerType(self.mlir_ctx, 8),
@@ -2959,12 +2969,11 @@ pub const MlirCodegen = struct {
             .F64 => self.f64_ty,
             .Usize => self.i64_ty,
 
-            .String => self.llvm_ptr_ty,
             .Any => self.llvm_ptr_ty,
             .Function => self.llvm_ptr_ty,
             .Ptr => self.llvm_ptr_ty,
 
-            .Slice => blk: {
+            .String, .Slice => blk: {
                 // { ptr, len } (opaque ptr for data)
                 const fields = [_]mlir.Type{ self.llvm_ptr_ty, self.i64_ty };
                 break :blk mlir.LLVM.getLLVMStructTypeLiteral(self.mlir_ctx, &fields, false);

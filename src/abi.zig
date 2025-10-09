@@ -220,6 +220,9 @@ pub fn abiSizeAlign(self: *MlirCodegen, store: *types.TypeStore, ty: types.TypeI
             size = std.mem.alignForward(usize, size, alignment);
             return .{ .size = size, .alignment = alignment, .hasFloat = hasF, .allIntsOnly = intsOnly };
         },
+        .Noreturn => {
+            return .{ .size = 0, .alignment = 1, .hasFloat = false, .allIntsOnly = true };
+        },
         else => std.debug.panic("abiSizeAlign: unhandled SR kind {} -> {}", .{ ty, store.getKind(ty) }),
     };
 }
@@ -252,6 +255,7 @@ fn srIsTwoFloats(store: *types.TypeStore, ty: types.TypeId) bool {
 pub fn abiClassifyX64SysV(self: *MlirCodegen, store: *types.TypeStore, ty: types.TypeId, isReturn: bool) AbiClass {
     // Scalars: map 1:1, don't ABI-mangle
     switch (store.getKind(ty)) {
+        .Noreturn => return .{ .kind = .DirectScalar, .scalar0 = self.void_ty, .size = 0 },
         .Bool => return .{ .kind = .DirectScalar, .scalar0 = self.i1_ty, .size = 1, .alignment = 1 },
         .I8, .U8 => return .{ .kind = .DirectScalar, .scalar0 = self.i8_ty, .size = 1, .alignment = 1 },
         .I16, .U16 => return .{ .kind = .DirectScalar, .scalar0 = mlir.Type.getSignlessIntegerType(self.mlir_ctx, 16), .size = 2, .alignment = 2 },
@@ -259,7 +263,7 @@ pub fn abiClassifyX64SysV(self: *MlirCodegen, store: *types.TypeStore, ty: types
         .I64, .U64, .Usize => return .{ .kind = .DirectScalar, .scalar0 = self.i64_ty, .size = 8, .alignment = 8 },
         .F32 => return .{ .kind = .DirectScalar, .scalar0 = self.f32_ty, .size = 4, .alignment = 4 },
         .F64 => return .{ .kind = .DirectScalar, .scalar0 = self.f64_ty, .size = 8, .alignment = 8 },
-        .Ptr, .Any, .String, .Function, .Map => return .{ .kind = .DirectScalar, .scalar0 = self.llvm_ptr_ty, .size = 8, .alignment = 8 },
+        .Ptr, .Any, .Function, .Map => return .{ .kind = .DirectScalar, .scalar0 = self.llvm_ptr_ty, .size = 8, .alignment = 8 },
         .Variant => {
             const sa = abiSizeAlign(self, store, ty);
             return if (isReturn) .{ .kind = .IndirectSRet, .alignment = @intCast(sa.alignment), .size = sa.size } else .{ .kind = .IndirectByVal, .alignment = @intCast(sa.alignment), .size = sa.size };

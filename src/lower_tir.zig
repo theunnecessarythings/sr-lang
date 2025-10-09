@@ -1053,7 +1053,14 @@ pub const LowerTir = struct {
         expected_ty: ?types.TypeId,
     ) anyerror!tir.ValueId {
         const row = a.exprs.get(.StructLit, id);
-        const ty0 = expected_ty orelse (self.getExprType(id) orelse self.context.type_store.tAny());
+        var ty0 = expected_ty orelse (self.getExprType(id) orelse self.context.type_store.tAny());
+
+        if (self.context.type_store.getKind(ty0) == .Optional) {
+            const opt = self.context.type_store.get(.Optional, ty0);
+            if (self.context.type_store.getKind(opt.elem) == .Struct) {
+                ty0 = opt.elem;
+            }
+        }
 
         const fids = a.exprs.sfv_pool.slice(row.fields);
         var fields = try self.gpa.alloc(tir.Rows.StructFieldInit, fids.len);
@@ -1938,6 +1945,13 @@ pub const LowerTir = struct {
         try f.builder.br(&then_blk, join_blk.id, &.{unwrapped});
         try f.builder.endBlock(f, then_blk);
 
+        const panic_msg = "unwrap of null optional";
+        const panic_str = none_blk.builder.tirValue(.ConstString, &none_blk, self.context.type_store.tString(), .{ .text = f.builder.intern(panic_msg) });
+        const panic_fn = f.builder.intern("rt_panic");
+        const ptr_ty = self.context.type_store.mkPtr(self.context.type_store.tU8(), true);
+        const str_ptr = none_blk.builder.extractField(&none_blk, ptr_ty, panic_str, 0);
+        const str_len = none_blk.builder.extractField(&none_blk, self.context.type_store.tUsize(), panic_str, 1);
+        _ = none_blk.builder.call(&none_blk, self.context.type_store.tVoid(), panic_fn, &.{str_ptr, str_len});
         try f.builder.setUnreachable(&none_blk);
         try f.builder.endBlock(f, none_blk);
 
