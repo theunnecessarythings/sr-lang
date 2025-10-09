@@ -171,6 +171,7 @@ pub fn checkPattern(
                 try collectPatternBindings(self, alt_id, &alt_bindings);
 
                 if (first_bindings.items.len != alt_bindings.items.len) {
+                    std.debug.print("binding mismatch: first={}, alt_len={}\n", .{ first_bindings.items.len, alt_bindings.items.len });
                     try self.context.diags.addError(self.ast_unit.exprs.locs.get(op.loc), .or_pattern_binding_mismatch, .{});
                     return false;
                 }
@@ -187,13 +188,14 @@ pub fn checkPattern(
                             }
                             found = true;
                             break;
-                        }
-                    }
-                    if (!found) {
-                        try self.context.diags.addError(self.ast_unit.exprs.locs.get(op.loc), .or_pattern_binding_mismatch, .{});
-                        return false;
                     }
                 }
+                if (!found) {
+                    std.debug.print("binding name not found\n", .{});
+                    try self.context.diags.addError(self.ast_unit.exprs.locs.get(op.loc), .or_pattern_binding_mismatch, .{});
+                    return false;
+                }
+            }
             }
 
             for (alts) |aid| {
@@ -1163,6 +1165,7 @@ pub fn collectPatternBindings(self: *Checker, pid: ast.PatternId, list: *std.Arr
             const row = self.ast_unit.pats.get(.Or, pid);
             const alts = self.ast_unit.pats.pat_pool.slice(row.alts);
             for (alts) |alt| try collectPatternBindings(self, alt, list);
+            std.debug.print("collectPatternBindings Or len={}\n", .{alts.len});
         },
         else => {},
     }

@@ -2086,7 +2086,6 @@ pub const LowerTir = struct {
                 } else &.{};
 
                 var binding_names = std.ArrayListUnmanaged(ast.StrId){};
-                try check_pattern_matching.declareBindingsInPattern(self.chk, arm.pattern, arm.loc, .anonymous);
 
                 // Collect bindings for lowering
 

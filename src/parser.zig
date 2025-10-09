@@ -1352,13 +1352,23 @@ pub const Parser = struct {
         var elems: List(cst.PatternId) = .empty;
         defer elems.deinit(self.gpa);
 
+        var trailing_comma = false;
         if (self.cur.tag != .rparen) {
             while (true) {
                 try elems.append(self.gpa, try self.parsePattern());
-                if (!self.consumeIf(.comma)) break;
+                if (!self.consumeIf(.comma)) {
+                    trailing_comma = false;
+                    break;
+                }
+                trailing_comma = true;
+                if (self.cur.tag == .rparen) break;
             }
         }
         try self.expect(.rparen);
+
+        if (elems.items.len == 1 and !trailing_comma) {
+            return elems.items[0];
+        }
 
         const range = self.cst.pats.pat_pool.pushMany(self.gpa, elems.items);
         return self.addPat(.Tuple, .{ .elems = range, .loc = self.toLocId(loc_tok) });
