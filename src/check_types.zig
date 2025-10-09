@@ -120,6 +120,11 @@ pub fn typeFromTypeExpr(self: *Checker, id: ast.ExprId) anyerror!?types.TypeId {
                 }
             }
 
+            const name_str = self.getStr(name);
+            if (self.imported_symbols.get(name_str)) |ty| {
+                break :blk_ident ty;
+            }
+
             break :blk_ident null;
         },
         .TupleType => blk_tt: {

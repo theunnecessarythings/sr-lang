@@ -22,11 +22,13 @@ pub const Result = struct {
     mlir_module: ?mlir.Module = null,
     gen: ?mlir_codegen.MlirCodegen = null,
     type_info: ?*types.TypeInfo = null,
+    module_id: usize = 0,
 };
 
 pub const Pipeline = struct {
     allocator: std.mem.Allocator,
     context: *compile.Context,
+    next_module_id: usize = 1,
 
     const Mode = enum {
         lex,
@@ -62,6 +64,14 @@ pub const Pipeline = struct {
     ) anyerror!Result {
         const type_info = try self.allocator.create(types.TypeInfo);
         type_info.* = types.TypeInfo.init(self.allocator, &self.context.type_store);
+        var type_info_cleanup = true;
+        defer if (type_info_cleanup) {
+            type_info.deinit();
+            self.allocator.destroy(type_info);
+        };
+        const module_id = self.next_module_id;
+        self.next_module_id += 1;
+        type_info.setModule(module_id);
 
         const filename = if (mode == .repl) "temp.sr" else filename_or_src;
         const file_id = try self.context.source_manager.add(filename);
@@ -80,7 +90,8 @@ pub const Pipeline = struct {
                 const lexeme = source0[token.loc.start..token.loc.end];
                 std.debug.print("{}({},{}) `{s}`\n", .{ token.tag, token.loc.start, token.loc.end, lexeme });
             }
-            return .{ .type_info = type_info };
+            type_info_cleanup = false;
+            return .{ .type_info = type_info, .module_id = module_id };
         }
 
         var parser = Parser.init(self.allocator, source0, file_id, self.context);
@@ -94,17 +105,21 @@ pub const Pipeline = struct {
             return error.ParseFailed;
         }
         if (mode == .parse) {
-            return .{ .cst = cst_program, .type_info = type_info };
+            type_info_cleanup = false;
+            return .{ .cst = cst_program, .type_info = type_info, .module_id = module_id };
         }
 
         var lower_pass = lower.Lower.init(self.allocator, &cst_program, self.context);
         var ast = try lower_pass.run();
+        ast.module_id = module_id;
+        type_info.setModule(module_id);
         if (self.context.diags.anyErrors()) {
             try self.context.diags.emitStyled(self.context, &writer.interface, true);
             return error.LoweringFailed;
         }
         if (mode == .ast) {
-            return .{ .cst = cst_program, .ast = ast, .type_info = type_info };
+            type_info_cleanup = false;
+            return .{ .cst = cst_program, .ast = ast, .type_info = type_info, .module_id = module_id };
         }
 
         var chk = checker.Checker.init(self.allocator, &ast, self.context, self, type_info);
@@ -116,10 +131,11 @@ pub const Pipeline = struct {
             return error.TypeCheckFailed;
         }
         if (mode == .check) {
-            return .{ .cst = cst_program, .ast = ast, .type_info = type_info };
+            type_info_cleanup = false;
+            return .{ .cst = cst_program, .ast = ast, .type_info = type_info, .module_id = module_id };
         }
 
-        var tir_lowerer = lower_tir.LowerTir.init(self.allocator, self.context, self, type_info);
+        var tir_lowerer = lower_tir.LowerTir.init(self.allocator, self.context, self, type_info, module_id);
         defer tir_lowerer.deinit();
         var name_to_prefix = std.StringHashMap([]const u8).init(self.allocator);
         defer {
@@ -140,7 +156,8 @@ pub const Pipeline = struct {
             return error.TirLoweringFailed;
         }
         if (mode == .tir) {
-            return .{ .cst = cst_program, .ast = ast, .tir = root_mod, .type_info = type_info };
+            type_info_cleanup = false;
+            return .{ .cst = cst_program, .ast = ast, .tir = root_mod, .type_info = type_info, .module_id = module_id };
         }
 
         // Print Types
@@ -166,7 +183,8 @@ pub const Pipeline = struct {
             std.debug.print("Generated MLIR module:\n", .{});
             var op = mlir_module.getOperation();
             op.dump();
-            return .{ .cst = cst_program, .ast = ast, .tir = root_mod, .mlir_module = mlir_module, .gen = gen, .type_info = type_info };
+            type_info_cleanup = false;
+            return .{ .cst = cst_program, .ast = ast, .tir = root_mod, .mlir_module = mlir_module, .gen = gen, .type_info = type_info, .module_id = module_id };
         }
 
         try compile.run_passes(&gen.mlir_ctx, &mlir_module);
@@ -178,7 +196,8 @@ pub const Pipeline = struct {
             std.debug.print("Transformed MLIR module:\n", .{});
             var op = mlir_module.getOperation();
             op.dump();
-            return .{ .cst = cst_program, .ast = ast, .tir = root_mod, .mlir_module = mlir_module, .gen = gen, .type_info = type_info };
+            type_info_cleanup = false;
+            return .{ .cst = cst_program, .ast = ast, .tir = root_mod, .mlir_module = mlir_module, .gen = gen, .type_info = type_info, .module_id = module_id };
         }
 
         try compile.convert_to_llvm_ir(mlir_module.handle, true, link_args, switch (mode) {
@@ -191,10 +210,12 @@ pub const Pipeline = struct {
             return error.LLVMIRFailed;
         }
         if (mode == .llvm_ir or mode == .llvm_passes) {
-            return .{ .cst = cst_program, .ast = ast, .tir = root_mod, .mlir_module = mlir_module, .gen = gen, .type_info = type_info };
+            type_info_cleanup = false;
+            return .{ .cst = cst_program, .ast = ast, .tir = root_mod, .mlir_module = mlir_module, .gen = gen, .type_info = type_info, .module_id = module_id };
         }
         if (mode == .compile) {
-            return .{ .cst = cst_program, .ast = ast, .tir = root_mod, .mlir_module = mlir_module, .gen = gen, .type_info = type_info };
+            type_info_cleanup = false;
+            return .{ .cst = cst_program, .ast = ast, .tir = root_mod, .mlir_module = mlir_module, .gen = gen, .type_info = type_info, .module_id = module_id };
         }
 
         if (mode == .jit) {
@@ -203,11 +224,13 @@ pub const Pipeline = struct {
                 try self.context.diags.emitStyled(self.context, &writer.interface, true);
                 return error.JITFailed;
             }
-            return .{ .cst = cst_program, .ast = ast, .tir = root_mod, .mlir_module = mlir_module, .gen = gen, .type_info = type_info };
+            type_info_cleanup = false;
+            return .{ .cst = cst_program, .ast = ast, .tir = root_mod, .mlir_module = mlir_module, .gen = gen, .type_info = type_info, .module_id = module_id };
         }
         // run
         compile.run();
-        return .{ .ast = ast, .tir = root_mod, .mlir_module = mlir_module, .gen = gen, .cst = cst_program, .type_info = type_info };
+        type_info_cleanup = false;
+        return .{ .ast = ast, .tir = root_mod, .mlir_module = mlir_module, .gen = gen, .cst = cst_program, .type_info = type_info, .module_id = module_id };
     }
 
     fn resolveImports(

@@ -277,6 +277,7 @@ fn process_file(
     link_args: []const []const u8,
 ) !void {
     var compiler_ctx = lib.compile.Context.init(allocator);
+    defer compiler_ctx.deinit();
     var pipeline = lib.pipeline.Pipeline.init(allocator, &compiler_ctx);
 
     if (cli_args.verbose) {
@@ -295,6 +296,12 @@ fn process_file(
         .json_ast => .ast,
         else => unreachable,
     });
+    defer if (result.type_info) |ti| {
+        if (!compiler_ctx.resolver.ownsTypeInfo(ti)) {
+            ti.deinit();
+            allocator.destroy(ti);
+        }
+    };
 
     // For 'check' command, stop after semantic checks
     if (cli_args.subcommand == .check) {

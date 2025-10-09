@@ -700,6 +700,7 @@ pub const PatternStore = struct {
 
 pub const Ast = struct {
     gpa: std.mem.Allocator,
+    module_id: usize = 0,
     unit: Unit,
     exprs: ExprStore,
     stmts: StmtStore,
@@ -708,6 +709,7 @@ pub const Ast = struct {
     pub fn init(gpa: std.mem.Allocator, interner: *StringInterner, locs: *const LocStore) Ast {
         return .{
             .gpa = gpa,
+            .module_id = 0,
             .unit = Unit.empty(),
             .exprs = ExprStore.init(gpa, interner, locs),
             .stmts = StmtStore.init(gpa),

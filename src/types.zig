@@ -21,6 +21,7 @@ pub const StrId = cst.StrId;
 pub const TypeInfo = struct {
     gpa: std.mem.Allocator,
     store: *TypeStore,
+    module_id: usize = 0,
     expr_types: std.ArrayListUnmanaged(?TypeId) = .{},
     decl_types: std.ArrayListUnmanaged(?TypeId) = .{},
     field_index_for_expr: std.AutoArrayHashMapUnmanaged(u32, u32) = .{},
@@ -32,6 +33,10 @@ pub const TypeInfo = struct {
         self.expr_types.deinit(self.gpa);
         self.decl_types.deinit(self.gpa);
         self.field_index_for_expr.deinit(self.gpa);
+    }
+
+    pub fn setModule(self: *TypeInfo, module_id: usize) void {
+        self.module_id = module_id;
     }
 
     pub fn print(self: *TypeInfo) void {

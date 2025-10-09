@@ -19,6 +19,8 @@ pub const ModuleEntry = struct {
     cst: cst_mod.CST,
     ast: ast_mod.Ast,
     tir: tir_mod.TIR,
+    type_info: *types.TypeInfo,
+    module_id: usize,
 
     /// Exported symbols: binding name -> TypeId (from this module's TypeStore).
     syms: std.StringHashMap(types.TypeId),
@@ -29,6 +31,8 @@ pub const ModuleEntry = struct {
         while (kit.next()) |k| gpa.free(k.*);
         self.syms.deinit();
 
+        self.type_info.deinit();
+        gpa.destroy(self.type_info);
         gpa.free(self.path);
     }
 };
@@ -41,6 +45,9 @@ pub const ImportResolver = struct {
 
     /// In-flight resolutions to prevent import cycles.
     in_progress: std.StringHashMap(void),
+
+    /// Tracks which TypeInfo instances are owned by the resolver cache.
+    owned_type_infos: std.AutoHashMap(*types.TypeInfo, void),
 
     config: Config,
 
@@ -60,15 +67,20 @@ pub const ImportResolver = struct {
             .gpa = gpa,
             .cache = std.StringHashMap(ModuleEntry).init(gpa),
             .in_progress = std.StringHashMap(void).init(gpa),
+            .owned_type_infos = std.AutoHashMap(*types.TypeInfo, void).init(gpa),
             .config = .{},
         };
     }
 
     pub fn deinit(self: *ImportResolver) void {
         var it = self.cache.valueIterator();
-        while (it.next()) |entry| entry.deinit(self.gpa);
+        while (it.next()) |entry| {
+            _ = self.owned_type_infos.remove(entry.type_info);
+            entry.deinit(self.gpa);
+        }
         self.cache.deinit();
         self.in_progress.deinit();
+        self.owned_type_infos.deinit();
     }
 
     pub fn setConfig(self: *ImportResolver, cfg: Config) void {
@@ -111,18 +123,34 @@ pub const ImportResolver = struct {
             .cst = result.cst.?,
             .ast = result.ast.?,
             .tir = result.tir.?,
+            .type_info = result.type_info.?,
+            .module_id = result.module_id,
             .syms = symmap,
         };
 
-        const gop = try self.cache.getOrPut(entry.path);
+        self.owned_type_infos.put(entry.type_info, {}) catch |err| {
+            entry.deinit(self.gpa);
+            return err;
+        };
+
+        const gop = self.cache.getOrPut(entry.path) catch |err| {
+            _ = self.owned_type_infos.remove(entry.type_info);
+            entry.deinit(self.gpa);
+            return err;
+        };
         if (!gop.found_existing) {
             gop.value_ptr.* = entry;
             return @constCast(gop.value_ptr);
         } else {
             // Shouldn't happen (we checked earlier), but keep it safe.
             entry.deinit(self.gpa);
+            _ = self.owned_type_infos.remove(entry.type_info);
             return @constCast(gop.value_ptr);
         }
+    }
+
+    pub fn ownsTypeInfo(self: *const ImportResolver, ti: *const types.TypeInfo) bool {
+        return self.owned_type_infos.contains(@constCast(ti));
     }
 
     /// Collect raw import strings from an AST (e.g. for prefetching).
@@ -150,6 +178,7 @@ pub const ImportResolver = struct {
         a: *const ast_mod.Ast,
         ti: *const types.TypeInfo,
     ) !void {
+        std.debug.assert(ti.module_id == a.module_id);
         const decls = a.exprs.decl_pool.slice(a.unit.decls);
         var i: usize = 0;
         while (i < decls.len) : (i += 1) {

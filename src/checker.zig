@@ -20,6 +20,7 @@ pub const Checker = struct {
     context: *Context,
     pipeline: *Pipeline,
     type_info: *TypeInfo,
+    imported_symbols: std.StringHashMapUnmanaged(types.TypeId) = .{},
 
     import_base_dir: []const u8 = ".",
 
@@ -68,7 +69,7 @@ pub const Checker = struct {
     inline fn getStmt(self: *const Checker, comptime K: ast.StmtKind, id: ast.StmtId) ast.StmtRowT(K) {
         return self.ast_unit.stmts.get(K, id);
     }
-    inline fn getStr(self: *const Checker, sid: ast.StrId) []const u8 {
+    pub inline fn getStr(self: *const Checker, sid: ast.StrId) []const u8 {
         return self.ast_unit.exprs.strs.get(sid);
     }
     inline fn getExpr(self: *const Checker, comptime K: ast.ExprKind, id: ast.ExprId) ast.RowT(K) {
@@ -82,6 +83,11 @@ pub const Checker = struct {
         pipeline: *Pipeline,
         type_info: *TypeInfo,
     ) Checker {
+        if (type_info.module_id == 0) {
+            type_info.setModule(unit.module_id);
+        } else {
+            std.debug.assert(type_info.module_id == unit.module_id);
+        }
         return .{
             .gpa = gpa,
             .ast_unit = unit,
@@ -93,6 +99,9 @@ pub const Checker = struct {
     }
 
     pub fn deinit(self: *Checker) void {
+        var it = self.imported_symbols.keyIterator();
+        while (it.next()) |k| self.gpa.free(k.*);
+        self.imported_symbols.deinit(self.gpa);
         self.func_stack.deinit(self.gpa);
         self.loop_stack.deinit(self.gpa);
         self.value_ctx.deinit(self.gpa);
@@ -2524,9 +2533,24 @@ pub const Checker = struct {
             },
         };
         const path = self.getStr(sid);
-        _ = self.context.resolver.resolve(self.import_base_dir, path, self.pipeline) catch {
+        const module = self.context.resolver.resolve(self.import_base_dir, path, self.pipeline) catch {
             try self.context.diags.addError(self.exprLoc(lit), .import_not_found, .{});
+            return self.context.type_store.tAny();
         };
+        var it = module.syms.iterator();
+        while (it.next()) |kv| {
+            const name = kv.key_ptr.*;
+            const ty = kv.value_ptr.*;
+            const dup = self.gpa.dupe(u8, name) catch continue;
+            const gop = self.imported_symbols.getOrPut(self.gpa, dup) catch {
+                self.gpa.free(dup);
+                continue;
+            };
+            if (gop.found_existing) {
+                self.gpa.free(dup);
+            }
+            gop.value_ptr.* = ty;
+        }
         return self.context.type_store.tAny();
     }
 

@@ -16,6 +16,7 @@ pub const LowerTir = struct {
     context: *Context,
     pipeline: *Pipeline,
     type_info: *types.TypeInfo,
+    module_id: usize,
 
     // Simple loop stack to support break/continue in While/For (+ value loops)
     loop_stack: std.ArrayListUnmanaged(LoopCtx) = .{},
@@ -70,8 +71,10 @@ pub const LowerTir = struct {
         context: *Context,
         pipeline: *Pipeline,
         type_info: *types.TypeInfo,
+        module_id: usize,
     ) LowerTir {
-        return .{ .gpa = gpa, .context = context, .pipeline = pipeline, .type_info = type_info };
+        std.debug.assert(type_info.module_id == module_id);
+        return .{ .gpa = gpa, .context = context, .pipeline = pipeline, .type_info = type_info, .module_id = module_id };
     }
 
     pub fn deinit(self: *LowerTir) void {
@@ -2881,6 +2884,7 @@ pub const LowerTir = struct {
     fn getExprType(self: *const LowerTir, id: ast.ExprId) ?types.TypeId {
         const i = id.toRaw();
         std.debug.assert(i < self.type_info.expr_types.items.len);
+        std.debug.assert(self.type_info.module_id == self.module_id);
         return self.type_info.expr_types.items[i];
     }
     fn getDeclType(self: *const LowerTir, did: ast.DeclId) ?types.TypeId {
