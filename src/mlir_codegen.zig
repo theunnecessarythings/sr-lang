@@ -1151,6 +1151,13 @@ pub const MlirCodegen = struct {
                         break :blk op.getResult(0);
                     }
                 }
+                if (!p.name.isNone()) {
+                    const field_name = t.instrs.strs.get(p.name.unwrap());
+                    if (std.mem.eql(u8, field_name, "len")) {
+                        const v = self.extractAt(agg, res_ty, &.{@as(i64, @intCast(1))});
+                        break :blk v;
+                    }
+                }
                 const v = self.extractAt(agg, res_ty, &.{@as(i64, @intCast(p.index))});
                 break :blk v;
             },

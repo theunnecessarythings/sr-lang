@@ -158,6 +158,44 @@ pub fn checkPattern(
         .Or => {
             const op = self.ast_unit.pats.get(.Or, pid);
             const alts = self.ast_unit.pats.pat_pool.slice(op.alts);
+            if (alts.len == 0) return true;
+
+            // Check binding consistency
+            var first_bindings: std.ArrayList(ast.StrId) = .empty;
+            defer first_bindings.deinit(self.gpa);
+            try collectPatternBindings(self, alts[0], &first_bindings);
+
+            for (alts[1..]) |alt_id| {
+                var alt_bindings: std.ArrayList(ast.StrId) = .empty;
+                defer alt_bindings.deinit(self.gpa);
+                try collectPatternBindings(self, alt_id, &alt_bindings);
+
+                if (first_bindings.items.len != alt_bindings.items.len) {
+                    try self.context.diags.addError(self.ast_unit.exprs.locs.get(op.loc), .or_pattern_binding_mismatch, .{});
+                    return false;
+                }
+
+                for (first_bindings.items) |b1_name| {
+                    var found = false;
+                    for (alt_bindings.items) |b2_name| {
+                        if (std.mem.eql(u8, self.ast_unit.exprs.strs.get(b1_name), self.ast_unit.exprs.strs.get(b2_name))) {
+                            const b1_ty = bindingTypeInPattern(self, alts[0], b1_name, value_ty);
+                            const b2_ty = bindingTypeInPattern(self, alt_id, b2_name, value_ty);
+                            if (b1_ty == null or b2_ty == null or !b1_ty.?.eq(b2_ty.?)) {
+                                try self.context.diags.addError(self.ast_unit.exprs.locs.get(op.loc), .or_pattern_binding_type_mismatch, .{});
+                                return false;
+                            }
+                            found = true;
+                            break;
+                        }
+                    }
+                    if (!found) {
+                        try self.context.diags.addError(self.ast_unit.exprs.locs.get(op.loc), .or_pattern_binding_mismatch, .{});
+                        return false;
+                    }
+                }
+            }
+
             for (alts) |aid| {
                 if (try checkPattern(self, aid, value_ty, false)) return true;
             }
@@ -263,15 +301,19 @@ pub fn checkPattern(
 
                     for (pat_fields) |pfid| {
                         const pf = self.ast_unit.pats.StructField.get(pfid);
-                        var found = false;
+                        var fty: ?types.TypeId = null;
                         for (value_fields) |vfid| {
                             const vf = self.context.type_store.Field.get(vfid);
                             if (vf.name.toRaw() == pf.name.toRaw()) {
-                                found = true;
+                                fty = vf.ty;
                                 break;
                             }
                         }
-                        if (!found) {
+                        if (fty == null) {
+                            try self.context.diags.addError(self.ast_unit.exprs.locs.get(vs_pat.loc), .struct_pattern_field_mismatch, .{});
+                            return false;
+                        }
+                        if (!(try checkPattern(self, pf.pattern, fty.?, false))) {
                             try self.context.diags.addError(self.ast_unit.exprs.locs.get(vs_pat.loc), .struct_pattern_field_mismatch, .{});
                             return false;
                         }
@@ -1072,6 +1114,60 @@ pub fn checkPatternShapeForAssignExpr(self: *Checker, expr: ast.ExprId, value_ty
     }
 }
 
+pub fn collectPatternBindings(self: *Checker, pid: ast.PatternId, list: *std.ArrayList(ast.StrId)) !void {
+    const kind = self.ast_unit.pats.index.kinds.items[pid.toRaw()];
+    switch (kind) {
+        .Binding => {
+            const nm = self.ast_unit.pats.get(.Binding, pid).name;
+            try list.append(self.gpa, nm);
+        },
+        .At => {
+            const node = self.ast_unit.pats.get(.At, pid);
+            try list.append(self.gpa, node.binder);
+            try collectPatternBindings(self, node.pattern, list);
+        },
+        .Tuple => {
+            const row = self.ast_unit.pats.get(.Tuple, pid);
+            const elems = self.ast_unit.pats.pat_pool.slice(row.elems);
+            for (elems) |child| try collectPatternBindings(self, child, list);
+        },
+        .Slice => {
+            const row = self.ast_unit.pats.get(.Slice, pid);
+            const elems = self.ast_unit.pats.pat_pool.slice(row.elems);
+            for (elems) |child| try collectPatternBindings(self, child, list);
+            if (!row.rest_binding.isNone())
+                try collectPatternBindings(self, row.rest_binding.unwrap(), list);
+        },
+        .Struct => {
+            const row = self.ast_unit.pats.get(.Struct, pid);
+            const fields = self.ast_unit.pats.field_pool.slice(row.fields);
+            for (fields) |fid| {
+                const pf = self.ast_unit.pats.StructField.get(fid);
+                try collectPatternBindings(self, pf.pattern, list);
+            }
+        },
+        .VariantTuple => {
+            const row = self.ast_unit.pats.get(.VariantTuple, pid);
+            const elems = self.ast_unit.pats.pat_pool.slice(row.elems);
+            for (elems) |child| try collectPatternBindings(self, child, list);
+        },
+        .VariantStruct => {
+            const row = self.ast_unit.pats.get(.VariantStruct, pid);
+            const fields = self.ast_unit.pats.field_pool.slice(row.fields);
+            for (fields) |fid| {
+                const pf = self.ast_unit.pats.StructField.get(fid);
+                try collectPatternBindings(self, pf.pattern, list);
+            }
+        },
+        .Or => {
+            const row = self.ast_unit.pats.get(.Or, pid);
+            const alts = self.ast_unit.pats.pat_pool.slice(row.alts);
+            for (alts) |alt| try collectPatternBindings(self, alt, list);
+        },
+        else => {},
+    }
+}
+
 pub fn bindingTypeInPattern(self: *Checker, pid: ast.PatternId, name: ast.StrId, value_ty: types.TypeId) ?types.TypeId {
     const pk = self.typeKind(value_ty);
     const k = self.ast_unit.pats.index.kinds.items[pid.toRaw()];
@@ -1170,7 +1266,26 @@ pub fn bindingTypeInPattern(self: *Checker, pid: ast.PatternId, name: ast.StrId,
             }
         },
         .VariantStruct => {
-            if (!(pk == .Variant or pk == .Error)) return null;
+            if (!(pk == .Variant or pk == .Error)) {
+                if (pk == .Struct) {
+                    const st = self.context.type_store.get(.Struct, value_ty);
+                    const fields_ty = self.context.type_store.field_pool.slice(st.fields);
+                    const sp = self.ast_unit.pats.get(.VariantStruct, pid);
+                    const fields = self.ast_unit.pats.field_pool.slice(sp.fields);
+                    for (fields) |fid| {
+                        const pf = self.ast_unit.pats.StructField.get(fid);
+                        var i: usize = 0;
+                        while (i < fields_ty.len) : (i += 1) {
+                            const tf = self.context.type_store.Field.get(fields_ty[i]);
+                            if (tf.name.toRaw() == pf.name.toRaw()) {
+                                if (bindingTypeInPattern(self, pf.pattern, name, tf.ty)) |bt| return bt;
+                                break;
+                            }
+                        }
+                    }
+                }
+                return null;
+            }
             const vs = self.ast_unit.pats.get(.VariantStruct, pid);
             const segs = self.ast_unit.pats.seg_pool.slice(vs.path);
             if (segs.len == 0) return null;

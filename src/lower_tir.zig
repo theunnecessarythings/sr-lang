@@ -3,6 +3,8 @@ const ast = @import("ast.zig");
 const cst = @import("cst.zig");
 const tir = @import("tir.zig");
 const types = @import("types.zig");
+const check_pattern_matching = @import("check_pattern_matching.zig");
+const checker = @import("checker.zig");
 
 const StrId = @import("cst.zig").StrId;
 const OptStrId = @import("cst.zig").OptStrId;
@@ -17,6 +19,7 @@ pub const LowerTir = struct {
     pipeline: *Pipeline,
     type_info: *types.TypeInfo,
     module_id: usize,
+    chk: *checker.Checker,
 
     // Simple loop stack to support break/continue in While/For (+ value loops)
     loop_stack: std.ArrayListUnmanaged(LoopCtx) = .{},
@@ -72,9 +75,10 @@ pub const LowerTir = struct {
         pipeline: *Pipeline,
         type_info: *types.TypeInfo,
         module_id: usize,
+        chk: *checker.Checker,
     ) LowerTir {
         std.debug.assert(type_info.module_id == module_id);
-        return .{ .gpa = gpa, .context = context, .pipeline = pipeline, .type_info = type_info, .module_id = module_id };
+        return .{ .gpa = gpa, .context = context, .pipeline = pipeline, .type_info = type_info, .module_id = module_id, .chk = chk };
     }
 
     pub fn deinit(self: *LowerTir) void {
@@ -1300,6 +1304,24 @@ pub const LowerTir = struct {
     ) anyerror!tir.ValueId {
         const row = a.exprs.get(.FieldAccess, id);
 
+        const parent_ty_opt = self.getExprType(row.parent);
+        if (parent_ty_opt) |parent_ty| {
+            const parent_kind = self.context.type_store.getKind(parent_ty);
+            const field_name = a.exprs.strs.get(row.field);
+            if (std.mem.eql(u8, field_name, "len")) {
+                switch (parent_kind) {
+                    .Array, .Slice, .DynArray, .String => {
+                        const base = try self.lowerExpr(a, env, f, blk, row.parent, null, .rvalue);
+                        const ty0 = self.context.type_store.tUsize();
+                        const v = blk.builder.extractFieldNamed(blk, ty0, base, row.field);
+                        if (expected_ty) |want| return self.emitCoerce(blk, v, ty0, want);
+                        return v;
+                    },
+                    else => {},
+                }
+            }
+        }
+
         // 1) imported module member (rvalue only)
         if (mode == .rvalue and a.exprs.index.kinds.items[row.parent.toRaw()] == .Ident) {
             if (try self.lowerImportedModuleMember(a, blk, row.parent, row.field, expected_ty)) |v| {
@@ -1329,7 +1351,6 @@ pub const LowerTir = struct {
         const ty0 = self.getExprType(id) orelse (expected_ty orelse self.context.type_store.tAny());
         var base = try self.lowerExpr(a, env, f, blk, row.parent, null, .rvalue);
 
-        const parent_ty_opt = self.getExprType(row.parent);
         const is_tuple = if (parent_ty_opt) |pt|
             self.context.type_store.index.kinds.items[pt.toRaw()] == .Tuple
         else
@@ -2064,21 +2085,27 @@ pub const LowerTir = struct {
                     break :blkargs &.{uv};
                 } else &.{};
 
+                var binding_names = std.ArrayListUnmanaged(ast.StrId){};
+                try check_pattern_matching.declareBindingsInPattern(self.chk, arm.pattern, arm.loc, .anonymous);
+
+                // Collect bindings for lowering
+
+                try check_pattern_matching.collectPatternBindings(self.chk, arm.pattern, &binding_names);
+                defer binding_names.deinit(self.gpa);
+
+                var saved = std.ArrayListUnmanaged(BindingSnapshot){};
+                try saved.ensureTotalCapacity(self.gpa, binding_names.items.len);
+                defer saved.deinit(self.gpa);
+
+                for (binding_names.items) |name| {
+                    try saved.append(self.gpa, .{ .name = name, .prev = env.lookup(name) });
+                }
+
                 if (!arm.guard.isNone()) {
                     var guard_blk = try f.builder.beginBlock(f);
                     const br_cond = self.forceLocalCond(&test_blk, ok);
                     try f.builder.condBr(&test_blk, br_cond, guard_blk.id, &.{}, next_blk.id, else_args);
                     try f.builder.endBlock(f, test_blk);
-
-                    var binding_names = std.ArrayListUnmanaged(ast.StrId){};
-                    defer binding_names.deinit(self.gpa);
-                    try self.collectPatternBindings(a, arm.pattern, &binding_names);
-
-                    var saved = std.ArrayListUnmanaged(BindingSnapshot){};
-                    defer saved.deinit(self.gpa);
-                    for (binding_names.items) |name| {
-                        try saved.append(self.gpa, .{ .name = name, .prev = env.lookup(name) });
-                    }
 
                     try self.bindPattern(a, env, f, &guard_blk, arm.pattern, scrut, arm_scrut_ty);
                     const guard_val = try self.lowerExpr(a, env, f, &guard_blk, arm.guard.unwrap(), self.context.type_store.tBool(), .rvalue);
@@ -2096,12 +2123,13 @@ pub const LowerTir = struct {
                 const scrut_ty = self.getExprType(row.expr) orelse self.context.type_store.tAny();
                 try self.bindPattern(a, env, f, &body_blk, arm.pattern, scrut, scrut_ty);
 
-                try self.lowerExprAsStmtList(a, env, f, &body_blk, arm.body);
                 if (body_blk.term.isNone()) {
                     var v2 = try self.lowerBlockExprValue(a, env, f, &body_blk, arm.body, res_ty);
                     v2 = self.emitCoerce(&body_blk, v2, self.getExprType(arm.body) orelse res_ty, res_ty);
                     try f.builder.br(&body_blk, join_blk.id, &.{v2});
                 }
+
+                try self.restoreBindings(env, saved.items);
 
                 try f.builder.endBlock(f, body_blk);
                 cur = next_blk;
@@ -2179,7 +2207,7 @@ pub const LowerTir = struct {
 
                     var binding_names = std.ArrayListUnmanaged(ast.StrId){};
                     defer binding_names.deinit(self.gpa);
-                    try self.collectPatternBindings(a, arm.pattern, &binding_names);
+                    try check_pattern_matching.collectPatternBindings(self.chk, arm.pattern, &binding_names);
 
                     var saved = std.ArrayListUnmanaged(BindingSnapshot){};
                     defer saved.deinit(self.gpa);
@@ -3037,6 +3065,43 @@ pub const LowerTir = struct {
                     try self.bindPattern(a, env, f, blk, pe, ev, ety);
                 }
             },
+            .Slice => {
+                const sl = a.pats.get(.Slice, pid);
+                const elems = a.pats.pat_pool.slice(sl.elems);
+                const elem_ty = if (self.context.type_store.getKind(vty) == .Array)
+                    self.context.type_store.get(.Array, vty).elem
+                else if (self.context.type_store.getKind(vty) == .Slice)
+                    self.context.type_store.get(.Slice, vty).elem
+                else
+                    self.context.type_store.tAny();
+
+                for (elems, 0..) |pat_elem, i| {
+                    if (sl.has_rest and i == sl.rest_index) continue;
+                    const elem_val = blk.builder.indexOp(blk, elem_ty, value, blk.builder.tirValue(.ConstInt, blk, self.context.type_store.tUsize(), .{ .value = i }));
+                    try self.bindPattern(a, env, f, blk, pat_elem, elem_val, elem_ty);
+                }
+
+                if (sl.has_rest and !sl.rest_binding.isNone()) {
+                    const rest_pat = sl.rest_binding.unwrap();
+                    const slice_ty = self.context.type_store.mkSlice(elem_ty);
+                    const start = blk.builder.tirValue(.ConstInt, blk, self.context.type_store.tUsize(), .{ .value = sl.rest_index });
+
+                    var len_val: tir.ValueId = undefined;
+                    const vty_kind = self.context.type_store.getKind(vty);
+                    if (vty_kind == .Array) {
+                        const arr_ty = self.context.type_store.get(.Array, vty);
+                        len_val = blk.builder.tirValue(.ConstInt, blk, self.context.type_store.tUsize(), .{ .value = arr_ty.len });
+                    } else {
+                        len_val = blk.builder.extractFieldNamed(blk, self.context.type_store.tUsize(), value, f.builder.intern("len"));
+                    }
+
+                    const range_ty = self.context.type_store.mkSlice(self.context.type_store.tUsize());
+                    const inclusive = blk.builder.tirValue(.ConstBool, blk, self.context.type_store.tBool(), .{ .value = false });
+                    const range_val = blk.builder.rangeMake(blk, range_ty, start, len_val, inclusive);
+                    const rest_slice = blk.builder.indexOp(blk, slice_ty, value, range_val);
+                    try self.bindPattern(a, env, f, blk, rest_pat, rest_slice, slice_ty);
+                }
+            },
             .VariantTuple => {
                 // Pattern like Some(x, y, ...)
                 const pr = a.pats.get(.VariantTuple, pid);
@@ -3084,6 +3149,62 @@ pub const LowerTir = struct {
                     });
                     if (pelems.len > 0) {
                         try self.bindPattern(a, env, f, blk, pelems[0], pv, payload_ty);
+                    }
+                }
+            },
+            .VariantStruct => {
+                const vs = a.pats.get(.VariantStruct, pid);
+                const vk = self.context.type_store.getKind(vty);
+                if (vk == .Struct) {
+                    const pfields = a.pats.field_pool.slice(vs.fields);
+                    for (pfields) |pfid| {
+                        const pf = a.pats.StructField.get(pfid);
+                        const struct_ty = self.context.type_store.get(.Struct, vty);
+                        const sfields = self.context.type_store.field_pool.slice(struct_ty.fields);
+                        for (sfields, 0..) |sfid, i| {
+                            const sf = self.context.type_store.Field.get(sfid);
+                            if (sf.name.eq(pf.name)) {
+                                const field_val = blk.builder.extractField(blk, sf.ty, value, @intCast(i));
+                                try self.bindPattern(a, env, f, blk, pf.pattern, field_val, sf.ty);
+                                break;
+                            }
+                        }
+                    }
+                    return;
+                }
+
+                const segs = a.pats.seg_pool.slice(vs.path);
+                if (segs.len == 0) return;
+                const case_name = a.pats.PathSeg.get(segs[segs.len - 1]).name;
+
+                const tag_idx = self.tagIndexForCase(vty, case_name) orelse return;
+
+                const union_ty = self.getUnionTypeFromVariant(vty) orelse return;
+                const union_agg = blk.builder.extractField(blk, union_ty, value, 1);
+
+                const payload_fields = self.context.type_store.field_pool.slice(
+                    self.context.type_store.get(.Union, union_ty).fields,
+                );
+                const fld = self.context.type_store.Field.get(payload_fields[tag_idx]);
+                const payload_ty = fld.ty;
+
+                const struct_val = blk.builder.tirValue(.UnionField, blk, payload_ty, .{
+                    .base = union_agg,
+                    .field_index = tag_idx,
+                });
+
+                const pfields = a.pats.field_pool.slice(vs.fields);
+                for (pfields) |pfid| {
+                    const pf = a.pats.StructField.get(pfid);
+                    const struct_ty = self.context.type_store.get(.Struct, payload_ty);
+                    const sfields = self.context.type_store.field_pool.slice(struct_ty.fields);
+                    for (sfields, 0..) |sfid, i| {
+                        const sf = self.context.type_store.Field.get(sfid);
+                        if (sf.name.eq(pf.name)) {
+                            const field_val = blk.builder.extractField(blk, sf.ty, struct_val, @intCast(i));
+                            try self.bindPattern(a, env, f, blk, pf.pattern, field_val, sf.ty);
+                            break;
+                        }
                     }
                 }
             },
@@ -3454,6 +3575,18 @@ pub const LowerTir = struct {
         return null;
     }
 
+    fn enumMemberValue(self: *const LowerTir, enum_ty: types.TypeId, name: StrId) ?u64 {
+        const k = self.context.type_store.getKind(enum_ty);
+        if (k != .Enum) return null;
+        const er = self.context.type_store.get(.Enum, enum_ty);
+        const members = self.context.type_store.enum_member_pool.slice(er.members);
+        for (members, 0..) |mid, i| {
+            const m = self.context.type_store.EnumMember.get(mid);
+            if (m.name.eq(name)) return i;
+        }
+        return null;
+    }
+
     /// Ensure `cond` is defined in `blk` and is i1.
     /// This always emits a local SSA (CastNormal) in `blk`, even if the source is already a bool.
     fn forceLocalCond(self: *LowerTir, blk: *Builder.BlockFrame, cond: tir.ValueId) tir.ValueId {
@@ -3531,6 +3664,11 @@ pub const LowerTir = struct {
             },
             .VariantStruct => {
                 const vs = a.pats.get(.VariantStruct, pid);
+                const vk = self.context.type_store.getKind(scrut_ty);
+                if (vk == .Struct) {
+                    return blk.builder.tirValue(.ConstBool, blk, self.context.type_store.tBool(), .{ .value = true });
+                }
+
                 const segs = a.pats.seg_pool.slice(vs.path);
                 if (segs.len == 0) return blk.builder.tirValue(.ConstBool, blk, self.context.type_store.tBool(), .{ .value = false });
                 const last = a.pats.PathSeg.get(segs[segs.len - 1]);
@@ -3547,6 +3685,12 @@ pub const LowerTir = struct {
                 const segs = a.pats.seg_pool.slice(pp.segments);
                 if (segs.len == 0) return blk.builder.tirValue(.ConstBool, blk, self.context.type_store.tBool(), .{ .value = false });
                 const last = a.pats.PathSeg.get(segs[segs.len - 1]);
+
+                if (self.enumMemberValue(scrut_ty, last.name)) |val| {
+                    const want = f.builder.tirValue(.ConstInt, blk, scrut_ty, .{ .value = val });
+                    return blk.builder.binBool(blk, .CmpEq, scrut, want);
+                }
+
                 if (self.tagIndexForCase(scrut_ty, last.name)) |idx| {
                     const tag = blk.builder.extractField(blk, self.context.type_store.tI32(), scrut, 0);
                     const want = f.builder.tirValue(.ConstInt, blk, self.context.type_store.tI32(), .{ .value = @as(u64, @intCast(idx)) });
@@ -3554,68 +3698,20 @@ pub const LowerTir = struct {
                 }
                 return blk.builder.tirValue(.ConstBool, blk, self.context.type_store.tBool(), .{ .value = false });
             },
-            .Binding, .Tuple, .Slice, .Struct, .Range, .Or => {
+            .Slice => {
+                const sl = a.pats.get(.Slice, pid);
+                const required_len = sl.elems.len;
+                const len_val = blk.builder.extractFieldNamed(blk, self.context.type_store.tUsize(), scrut, f.builder.intern("len"));
+                const required_val = blk.builder.tirValue(.ConstInt, blk, self.context.type_store.tUsize(), .{ .value = required_len });
+                if (sl.has_rest) {
+                    return blk.builder.binBool(blk, .CmpGe, len_val, required_val);
+                } else {
+                    return blk.builder.binBool(blk, .CmpEq, len_val, required_val);
+                }
+            },
+            .Binding, .Tuple, .Struct, .Range, .Or => {
                 return blk.builder.tirValue(.ConstBool, blk, self.context.type_store.tBool(), .{ .value = true });
             },
-        }
-    }
-
-    fn collectPatternBindings(
-        self: *LowerTir,
-        a: *const ast.Ast,
-        pid: ast.PatternId,
-        list: *std.ArrayListUnmanaged(ast.StrId),
-    ) !void {
-        const kind = a.pats.index.kinds.items[pid.toRaw()];
-        switch (kind) {
-            .Binding => {
-                const nm = a.pats.get(.Binding, pid).name;
-                try list.append(self.gpa, nm);
-            },
-            .At => {
-                const node = a.pats.get(.At, pid);
-                try list.append(self.gpa, node.binder);
-                try self.collectPatternBindings(a, node.pattern, list);
-            },
-            .Tuple => {
-                const row = a.pats.get(.Tuple, pid);
-                const elems = a.pats.pat_pool.slice(row.elems);
-                for (elems) |child| try self.collectPatternBindings(a, child, list);
-            },
-            .Slice => {
-                const row = a.pats.get(.Slice, pid);
-                const elems = a.pats.pat_pool.slice(row.elems);
-                for (elems) |child| try self.collectPatternBindings(a, child, list);
-                if (!row.rest_binding.isNone())
-                    try self.collectPatternBindings(a, row.rest_binding.unwrap(), list);
-            },
-            .Struct => {
-                const row = a.pats.get(.Struct, pid);
-                const fields = a.pats.field_pool.slice(row.fields);
-                for (fields) |fid| {
-                    const pf = a.pats.StructField.get(fid);
-                    try self.collectPatternBindings(a, pf.pattern, list);
-                }
-            },
-            .VariantTuple => {
-                const row = a.pats.get(.VariantTuple, pid);
-                const elems = a.pats.pat_pool.slice(row.elems);
-                for (elems) |child| try self.collectPatternBindings(a, child, list);
-            },
-            .VariantStruct => {
-                const row = a.pats.get(.VariantStruct, pid);
-                const fields = a.pats.field_pool.slice(row.fields);
-                for (fields) |fid| {
-                    const pf = a.pats.StructField.get(fid);
-                    try self.collectPatternBindings(a, pf.pattern, list);
-                }
-            },
-            .Or => {
-                const row = a.pats.get(.Or, pid);
-                const alts = a.pats.pat_pool.slice(row.alts);
-                for (alts) |alt| try self.collectPatternBindings(a, alt, list);
-            },
-            else => {},
         }
     }
 

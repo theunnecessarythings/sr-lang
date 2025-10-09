@@ -1509,15 +1509,27 @@ pub const Checker = struct {
 
         var ty = parent_ty.?;
         const kind = self.typeKind(ty);
+
+        const field_name = self.getStr(field_expr.field);
+        if (std.mem.eql(u8, field_name, "len")) {
+            switch (kind) {
+                .Array, .Slice, .DynArray, .String => {
+                    try self.type_info.setFieldIndex(id, 1);
+                    return self.context.type_store.tUsize();
+                },
+                else => {},
+            }
+        }
+
         switch (kind) {
             .Complex => {
                 const comp = self.context.type_store.get(.Complex, ty);
-                const field_name = self.getStr(field_expr.field);
-                if (std.mem.eql(u8, field_name, "real") or std.mem.eql(u8, field_name, "re")) {
+                const field_name_inner = self.getStr(field_expr.field);
+                if (std.mem.eql(u8, field_name_inner, "real") or std.mem.eql(u8, field_name_inner, "re")) {
                     try self.type_info.setFieldIndex(id, 0);
                     return comp.elem;
                 }
-                if (std.mem.eql(u8, field_name, "imag") or std.mem.eql(u8, field_name, "im")) {
+                if (std.mem.eql(u8, field_name_inner, "imag") or std.mem.eql(u8, field_name_inner, "im")) {
                     try self.type_info.setFieldIndex(id, 1);
                     return comp.elem;
                 }
@@ -1560,12 +1572,12 @@ pub const Checker = struct {
                 const inner_kind = self.typeKind(ty);
                 if (inner_kind == .Complex) {
                     const comp = self.context.type_store.get(.Complex, ty);
-                    const field_name = self.getStr(field_expr.field);
-                    if (std.mem.eql(u8, field_name, "real") or std.mem.eql(u8, field_name, "re")) {
+                    const field_name_inner = self.getStr(field_expr.field);
+                    if (std.mem.eql(u8, field_name_inner, "real") or std.mem.eql(u8, field_name_inner, "re")) {
                         try self.type_info.setFieldIndex(id, 0);
                         return comp.elem;
                     }
-                    if (std.mem.eql(u8, field_name, "imag") or std.mem.eql(u8, field_name, "im")) {
+                    if (std.mem.eql(u8, field_name_inner, "imag") or std.mem.eql(u8, field_name_inner, "im")) {
                         try self.type_info.setFieldIndex(id, 1);
                         return comp.elem;
                     }

@@ -135,7 +135,7 @@ pub const Pipeline = struct {
             return .{ .cst = cst_program, .ast = ast, .type_info = type_info, .module_id = module_id };
         }
 
-        var tir_lowerer = lower_tir.LowerTir.init(self.allocator, self.context, self, type_info, module_id);
+        var tir_lowerer = lower_tir.LowerTir.init(self.allocator, self.context, self, type_info, module_id, &chk);
         defer tir_lowerer.deinit();
         var name_to_prefix = std.StringHashMap([]const u8).init(self.allocator);
         defer {
