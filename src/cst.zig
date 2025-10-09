@@ -482,7 +482,7 @@ pub const Rows = struct {
     pub const Match = struct { expr: ExprId, arms: RangeOf(MatchArmId), loc: LocId };
     pub const MatchArm = struct { pattern: Index(PatTag), guard: OptExprId, body: ExprId, loc: LocId };
     pub const Break = struct { label: OptStrId, value: OptExprId, loc: LocId };
-    pub const Continue = struct { loc: LocId };
+    pub const Continue = struct { label: OptStrId, loc: LocId };
     pub const Unreachable = struct { loc: LocId };
     pub const Null = struct { loc: LocId };
     pub const Undefined = struct { loc: LocId };
@@ -1278,8 +1278,12 @@ pub const DodPrinter = struct {
                 try self.close();
             },
             .Continue => {
-                _ = self.exprs.get(.Continue, id);
-                try self.leaf("(continue)", .{});
+                const n = self.exprs.get(.Continue, id);
+                if (n.label.isNone()) {
+                    try self.leaf("(continue)", .{});
+                } else {
+                    try self.leaf("(continue label=\"{s}\")", .{self.s(n.label.unwrap())});
+                }
             },
             .Unreachable => {
                 _ = self.exprs.get(.Unreachable, id);

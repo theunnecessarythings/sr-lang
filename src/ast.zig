@@ -221,7 +221,7 @@ pub const Rows = struct {
     pub const MatchArm = struct { pattern: PatternId, guard: OptExprId, body: ExprId, loc: LocId };
 
     pub const Break = struct { label: OptStrId, value: OptExprId, loc: LocId };
-    pub const Continue = struct { loc: LocId };
+    pub const Continue = struct { label: OptStrId, loc: LocId };
     pub const Unreachable = struct { loc: LocId };
     pub const NullLit = struct { loc: LocId };
     pub const UndefLit = struct { loc: LocId };

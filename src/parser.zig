@@ -599,7 +599,14 @@ pub const Parser = struct {
             .keyword_continue => blk: {
                 const loc = self.toLocId(self.cur.loc);
                 self.advance();
-                break :blk self.addExpr(.Continue, .{ .loc = loc });
+                var label = cst.OptStrId.none();
+                if (self.cur.tag == .colon) {
+                    self.advance();
+                    const name = self.cur;
+                    try self.expect(.identifier);
+                    label = .some(self.intern(self.slice(name)));
+                }
+                break :blk self.addExpr(.Continue, .{ .label = label, .loc = loc });
             },
             .keyword_unreachable => blk: {
                 const loc = self.toLocId(self.cur.loc);

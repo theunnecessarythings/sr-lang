@@ -400,7 +400,7 @@ pub const Lower = struct {
             },
             .Continue => blk: {
                 const r = self.cst_program.exprs.get(.Continue, d.rhs);
-                break :blk self.ast_unit.stmts.add(.Continue, .{ .loc = r.loc });
+                break :blk self.ast_unit.stmts.add(.Continue, .{ .label = r.label, .loc = r.loc });
             },
             .Unreachable => blk: {
                 const r = self.cst_program.exprs.get(.Unreachable, d.rhs);
@@ -744,7 +744,7 @@ pub const Lower = struct {
             },
             .Continue => blk: {
                 const r = self.cst_program.exprs.get(.Continue, id);
-                break :blk self.ast_unit.exprs.add(.Continue, .{ .loc = r.loc });
+                break :blk self.ast_unit.exprs.add(.Continue, .{ .loc = r.loc, .label = r.label });
             },
             .Unreachable => blk: {
                 const r = self.cst_program.exprs.get(.Unreachable, id);

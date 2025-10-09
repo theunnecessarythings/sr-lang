@@ -444,6 +444,19 @@ pub const LowerTir = struct {
         }
     }
 
+    fn loopCtxForLabel(self: *LowerTir, opt_label: ast.OptStrId) ?*LoopCtx {
+        if (self.loop_stack.items.len == 0) return null;
+        const want: ?u32 = if (!opt_label.isNone()) opt_label.unwrap().toRaw() else null;
+        var i: isize = @as(isize, @intCast(self.loop_stack.items.len)) - 1;
+        while (i >= 0) : (i -= 1) {
+            const idx: usize = @intCast(i);
+            const lc = &self.loop_stack.items[idx];
+            if (want == null) return lc;
+            if (!lc.label.isNone() and lc.label.unwrap().toRaw() == want.?) return lc;
+        }
+        return null;
+    }
+
     fn lowerBreak(
         self: *LowerTir,
         a: *const ast.Ast,
@@ -456,7 +469,7 @@ pub const LowerTir = struct {
         var i: isize = @as(isize, @intCast(self.loop_stack.items.len)) - 1;
         while (i >= 0) : (i -= 1) {
             const lc = self.loop_stack.items[@intCast(i)];
-            if (br.label.isNone() or (lc.label != null and std.mem.eql(u8, lc.label.?, a.exprs.strs.get(br.label.unwrap())))) {
+            if (br.label.isNone() or (!lc.label.isNone() and std.mem.eql(u8, a.exprs.strs.get(lc.label.unwrap()), a.exprs.strs.get(br.label.unwrap())))) {
                 target = lc;
                 break;
             }
@@ -467,7 +480,7 @@ pub const LowerTir = struct {
                 const v = if (!br.value.isNone())
                     try self.lowerExpr(a, env, f, blk, br.value.unwrap(), lc.res_ty, .rvalue)
                 else
-                    f.builder.tirValue(.ConstUndef, blk, lc.res_ty, .{});
+                    f.builder.tirValue(.ConstUndef, blk, lc.res_ty.?, .{});
                 try f.builder.br(blk, lc.join_block, &.{v});
             } else {
                 try f.builder.br(blk, lc.break_block, &.{});
@@ -476,9 +489,8 @@ pub const LowerTir = struct {
     }
 
     fn lowerContinue(self: *LowerTir, a: *const ast.Ast, env: *Env, f: *Builder.FunctionFrame, blk: *Builder.BlockFrame, cid: ast.Rows.Continue) !void {
-        _ = cid;
-        const lc = if (self.loop_stack.items.len > 0) self.loop_stack.items[self.loop_stack.items.len - 1] else return error.LoweringBug;
-        try self.runDefersForLoopExit(a, env, f, blk, lc);
+        const lc = self.loopCtxForLabel(cid.label) orelse return error.LoweringBug;
+        try self.runDefersForLoopExit(a, env, f, blk, lc.*);
         switch (lc.continue_info) {
             .none => try f.builder.br(blk, lc.continue_block, &.{}),
             .range => |info| try f.builder.br(blk, info.update_block, &.{info.idx_value}),
@@ -1951,7 +1963,7 @@ pub const LowerTir = struct {
         const ptr_ty = self.context.type_store.mkPtr(self.context.type_store.tU8(), true);
         const str_ptr = none_blk.builder.extractField(&none_blk, ptr_ty, panic_str, 0);
         const str_len = none_blk.builder.extractField(&none_blk, self.context.type_store.tUsize(), panic_str, 1);
-        _ = none_blk.builder.call(&none_blk, self.context.type_store.tVoid(), panic_fn, &.{str_ptr, str_len});
+        _ = none_blk.builder.call(&none_blk, self.context.type_store.tVoid(), panic_fn, &.{ str_ptr, str_len });
         try f.builder.setUnreachable(&none_blk);
         try f.builder.endBlock(f, none_blk);
 
@@ -2305,13 +2317,14 @@ pub const LowerTir = struct {
             }
 
             try self.loop_stack.append(self.gpa, .{
-                .label = if (!row.label.isNone()) a.exprs.strs.get(row.label.unwrap()) else null,
+                .label = row.label,
                 .continue_block = header.id,
                 .break_block = exit_blk.id,
                 .has_result = true,
                 .join_block = join_blk.id,
-                .res_param = res_param,
+                .res_param = .some(res_param),
                 .res_ty = res_ty,
+                .continue_info = .none,
                 .defer_len_at_entry = @intCast(env.defers.items.len),
             });
 
@@ -2358,10 +2371,14 @@ pub const LowerTir = struct {
             }
 
             try self.loop_stack.append(self.gpa, .{
-                .label = if (!row.label.isNone()) a.exprs.strs.get(row.label.unwrap()) else null,
+                .label = row.label,
                 .continue_block = header.id,
                 .break_block = exit_blk.id,
                 .has_result = false,
+                .join_block = exit_blk.id,
+                .res_ty = null,
+                .res_param = .none(),
+                .continue_info = .none,
                 .defer_len_at_entry = @intCast(env.defers.items.len),
             });
 
@@ -2413,18 +2430,17 @@ pub const LowerTir = struct {
             var join_blk = try f.builder.beginBlock(f);
             const res_ty = out_ty_guess;
             const res_param = try f.builder.addBlockParam(&join_blk, null, res_ty);
-
             try self.loop_stack.append(self.gpa, .{
-                .label = if (!row.label.isNone()) a.exprs.strs.get(row.label.unwrap()) else null,
+                .label = row.label,
                 .continue_block = header.id,
                 .break_block = exit_blk.id,
                 .has_result = true,
                 .join_block = join_blk.id,
-                .res_param = res_param,
+                .res_param = .some(res_param),
                 .res_ty = res_ty,
+                .continue_info = .none,
                 .defer_len_at_entry = @intCast(env.defers.items.len),
             });
-
             if (a.exprs.index.kinds.items[row.iterable.toRaw()] == .Range) {
                 // for i in start..end
                 const rg = a.exprs.get(.Range, row.iterable);
@@ -2539,10 +2555,14 @@ pub const LowerTir = struct {
 
             // Loop stack entry (no value carried)
             try self.loop_stack.append(self.gpa, .{
-                .label = if (!row.label.isNone()) a.exprs.strs.get(row.label.unwrap()) else null,
+                .label = row.label,
                 .continue_block = header.id,
                 .break_block = exit_blk.id,
                 .has_result = false,
+                .join_block = exit_blk.id,
+                .res_ty = null,
+                .res_param = .none(),
+                .continue_info = .none,
                 .defer_len_at_entry = @intCast(env.defers.items.len),
             });
 
@@ -3761,17 +3781,7 @@ const ContinueInfo = union(enum) {
     range: struct { update_block: tir.BlockId, idx_value: tir.ValueId },
 };
 
-const LoopCtx = struct {
-    label: ?[]const u8,
-    continue_block: tir.BlockId,
-    break_block: tir.BlockId,
-    has_result: bool = false,
-    join_block: tir.BlockId = tir.BlockId.fromRaw(0),
-    res_param: tir.ValueId = tir.ValueId.fromRaw(0),
-    res_ty: types.TypeId = undefined,
-    defer_len_at_entry: u32 = 0,
-    continue_info: ContinueInfo = .none,
-};
+const LoopCtx = struct { label: ast.OptStrId, break_block: tir.BlockId, continue_block: tir.BlockId, join_block: tir.BlockId, res_ty: ?types.TypeId, has_result: bool, res_param: tir.OptValueId, continue_info: ContinueInfo, defer_len_at_entry: u32 };
 
 const Env = struct {
     map: std.AutoArrayHashMapUnmanaged(ast.StrId, ValueBinding) = .{},
