@@ -219,6 +219,31 @@ pub const LowerTir = struct {
             // else fall through (e.g., Any → ErrorSet: let the generic path try)
         }
 
+        if (wk == .Optional) {
+            const opt = ts.get(.Optional, want);
+            const bool_ty = ts.tBool();
+
+            if (gk == .Optional) {
+                const got_opt = ts.get(.Optional, got);
+                if (got_opt.elem.eq(opt.elem)) return v;
+
+                const flag = blk.builder.extractField(blk, bool_ty, v, 0);
+                var payload = blk.builder.extractField(blk, got_opt.elem, v, 1);
+                payload = self.emitCoerce(blk, payload, got_opt.elem, opt.elem);
+                return blk.builder.structMake(blk, want, &[_]tir.Rows.StructFieldInit{
+                    .{ .index = 0, .name = .none(), .value = flag },
+                    .{ .index = 1, .name = .none(), .value = payload },
+                });
+            }
+
+            const payload = self.emitCoerce(blk, v, got, opt.elem);
+            const some_flag = blk.builder.tirValue(.ConstBool, blk, bool_ty, .{ .value = true });
+            return blk.builder.structMake(blk, want, &[_]tir.Rows.StructFieldInit{
+                .{ .index = 0, .name = .none(), .value = some_flag },
+                .{ .index = 1, .name = .none(), .value = payload },
+            });
+        }
+
         // Numeric ⇄ numeric
         const is_num_got = switch (gk) {
             .I8, .I16, .I32, .I64, .U8, .U16, .U32, .U64, .Usize, .F32, .F64 => true,
@@ -466,13 +491,14 @@ pub const LowerTir = struct {
     ) !void {
         const drow = a.stmts.get(.Decl, sid);
         const d = a.exprs.Decl.get(drow.decl);
-        const vty = self.getExprType(d.value) orelse self.context.type_store.tAny();
+        const value_ty = self.getExprType(d.value) orelse self.context.type_store.tAny();
+        const decl_ty = self.getDeclType(drow.decl) orelse value_ty;
         if (!d.pattern.isNone()) {
             // Destructure once for all names: bind as values for const, or slots for mut.
-            try self.destructureDeclFromExpr(a, env, f, blk, d.pattern.unwrap(), d.value, vty, !d.flags.is_const);
+            try self.destructureDeclFromExpr(a, env, f, blk, d.pattern.unwrap(), d.value, decl_ty, !d.flags.is_const);
         } else {
             // No pattern: just evaluate for side-effects.
-            _ = try self.lowerExpr(a, env, f, blk, d.value, vty, .rvalue);
+            _ = try self.lowerExpr(a, env, f, blk, d.value, decl_ty, .rvalue);
         }
     }
 
@@ -784,6 +810,15 @@ pub const LowerTir = struct {
         const lit = a.exprs.get(.Literal, id);
         // If the checker didn’t stamp a type, use the caller’s expected type.
         const ty0 = self.getExprType(id) orelse (expected_ty orelse return error.LoweringBug);
+        const base_ty = blk: {
+            const kind = self.context.type_store.index.kinds.items[ty0.toRaw()];
+            if (kind == .Optional) {
+                const opt = self.context.type_store.get(.Optional, ty0);
+                break :blk opt.elem;
+            }
+            break :blk ty0;
+        };
+
         const v = switch (lit.kind) {
             .int => blk: {
                 const info = switch (lit.data) {
@@ -792,13 +827,13 @@ pub const LowerTir = struct {
                 };
                 if (!info.valid) return error.LoweringBug;
                 const value64 = std.math.cast(u64, info.value) orelse return error.LoweringBug;
-                break :blk blk.builder.tirValue(.ConstInt, blk, ty0, .{ .value = value64 });
+                break :blk blk.builder.tirValue(.ConstInt, blk, base_ty, .{ .value = value64 });
             },
             .imaginary => blk: {
                 // ty0 must be Complex(elem). Build from (re=0, im=value)
-                const tk = self.context.type_store.getKind(ty0);
+                const tk = self.context.type_store.getKind(base_ty);
                 if (tk != .Complex) break :blk blk.builder.tirValue(.ConstUndef, blk, ty0, .{});
-                const crow = self.context.type_store.get(.Complex, ty0);
+                const crow = self.context.type_store.get(.Complex, base_ty);
                 const elem = crow.elem;
                 const info = switch (lit.data) {
                     .imaginary => |imag| imag,
@@ -808,7 +843,7 @@ pub const LowerTir = struct {
                 const parsed = info.value;
                 const re0 = blk.builder.tirValue(.ConstFloat, blk, elem, .{ .value = 0.0 });
                 const imv = blk.builder.tirValue(.ConstFloat, blk, elem, .{ .value = parsed });
-                const cv = blk.builder.tirValue(.ComplexMake, blk, ty0, .{ .re = re0, .im = imv });
+                const cv = blk.builder.tirValue(.ComplexMake, blk, base_ty, .{ .re = re0, .im = imv });
                 break :blk cv;
             },
             .float => blk: {
@@ -817,22 +852,23 @@ pub const LowerTir = struct {
                     else => return error.LoweringBug,
                 };
                 if (!info.valid) return error.LoweringBug;
-                break :blk blk.builder.tirValue(.ConstFloat, blk, ty0, .{ .value = info.value });
+                break :blk blk.builder.tirValue(.ConstFloat, blk, base_ty, .{ .value = info.value });
             },
-            .bool => blk.builder.tirValue(.ConstBool, blk, ty0, .{ .value = switch (lit.data) {
+            .bool => blk.builder.tirValue(.ConstBool, blk, base_ty, .{ .value = switch (lit.data) {
                 .bool => |b| b,
                 else => return error.LoweringBug,
             } }),
-            .string => blk.builder.tirValue(.ConstString, blk, ty0, .{ .text = switch (lit.data) {
+            .string => blk.builder.tirValue(.ConstString, blk, base_ty, .{ .text = switch (lit.data) {
                 .string => |sid| sid,
                 else => return error.LoweringBug,
             } }),
-            .char => blk.builder.tirValue(.ConstInt, blk, ty0, .{ .value = std.math.cast(u64, switch (lit.data) {
+            .char => blk.builder.tirValue(.ConstInt, blk, base_ty, .{ .value = std.math.cast(u64, switch (lit.data) {
                 .char => |codepoint| codepoint,
                 else => return error.LoweringBug,
             }) orelse return error.LoweringBug }),
         };
-        if (expected_ty) |want| return self.emitCoerce(blk, v, ty0, want);
+        const want_ty = expected_ty orelse ty0;
+        if (!want_ty.eq(base_ty)) return self.emitCoerce(blk, v, base_ty, want_ty);
         return v;
     }
 
@@ -1587,17 +1623,23 @@ pub const LowerTir = struct {
                 var then_blk = try f.builder.beginBlock(f);
                 var else_blk = try f.builder.beginBlock(f);
                 var join_blk = try f.builder.beginBlock(f);
-                const s_is_some = f.builder.intern("builtin.opt.is_some");
-                const cond_v = blk.builder.call(blk, self.context.type_store.tBool(), s_is_some, &.{l});
-                const br_cond = self.forceLocalCond(blk, cond_v);
-                try f.builder.condBr(blk, br_cond, then_blk.id, &.{}, else_blk.id, &.{});
+                const opt_src_ty = self.getExprType(row.left) orelse return error.LoweringBug;
+                if (self.context.type_store.index.kinds.items[opt_src_ty.toRaw()] != .Optional)
+                    return error.LoweringBug;
+                const opt_info = self.context.type_store.get(.Optional, opt_src_ty);
+                const bool_ty = self.context.type_store.tBool();
+                const flag = blk.builder.extractField(blk, bool_ty, l, 0);
+                const payload = blk.builder.extractField(blk, opt_info.elem, l, 1);
+                const then_param = try f.builder.addBlockParam(&then_blk, null, opt_info.elem);
                 const res_ty = expected_ty orelse ty0;
                 const res_param = try f.builder.addBlockParam(&join_blk, null, res_ty);
-                const s_unwrap = f.builder.intern("builtin.opt.unwrap");
-                var unwrapped = blk.builder.call(&then_blk, res_ty, s_unwrap, &.{l});
+                try f.builder.condBr(blk, flag, then_blk.id, &.{payload}, else_blk.id, &.{});
+                const orig_blk = blk.*;
+                try f.builder.endBlock(f, orig_blk);
+
+                var unwrapped = then_param;
                 if (expected_ty) |want| {
-                    const got = self.getExprType(row.left) orelse res_ty;
-                    unwrapped = self.emitCoerce(&then_blk, unwrapped, got, want);
+                    unwrapped = self.emitCoerce(&then_blk, unwrapped, opt_info.elem, want);
                 }
                 try f.builder.br(&then_blk, join_blk.id, &.{unwrapped});
                 var rhs_v = r;
@@ -1845,12 +1887,41 @@ pub const LowerTir = struct {
         expected_ty: ?types.TypeId,
     ) anyerror!tir.ValueId {
         const row = a.exprs.get(.OptionalUnwrap, id);
-        const ty0 = self.getExprType(id) orelse return error.LoweringBug;
-        const v = try self.lowerExpr(a, env, f, blk, row.expr, null, .rvalue);
-        const unwrap = blk.builder.intern("builtin.opt.unwrap");
-        const out = blk.builder.call(blk, ty0, unwrap, &.{v});
-        if (expected_ty) |want| return self.emitCoerce(blk, out, ty0, want);
-        return out;
+        const elem_ty = self.getExprType(id) orelse return error.LoweringBug;
+        const opt_ty = self.getExprType(row.expr) orelse return error.LoweringBug;
+        if (self.context.type_store.index.kinds.items[opt_ty.toRaw()] != .Optional)
+            return error.LoweringBug;
+        const opt_info = self.context.type_store.get(.Optional, opt_ty);
+
+        const opt_val = try self.lowerExpr(a, env, f, blk, row.expr, null, .rvalue);
+        const bool_ty = self.context.type_store.tBool();
+        const flag = blk.builder.extractField(blk, bool_ty, opt_val, 0);
+        const payload = blk.builder.extractField(blk, opt_info.elem, opt_val, 1);
+
+        var then_blk = try f.builder.beginBlock(f);
+        var none_blk = try f.builder.beginBlock(f);
+        var join_blk = try f.builder.beginBlock(f);
+
+        const then_param = try f.builder.addBlockParam(&then_blk, null, opt_info.elem);
+        const res_ty = expected_ty orelse elem_ty;
+        const res_param = try f.builder.addBlockParam(&join_blk, null, res_ty);
+
+        try f.builder.condBr(blk, flag, then_blk.id, &.{payload}, none_blk.id, &.{});
+        const orig_blk = blk.*;
+        try f.builder.endBlock(f, orig_blk);
+
+        var unwrapped = then_param;
+        if (expected_ty) |want| {
+            unwrapped = self.emitCoerce(&then_blk, unwrapped, elem_ty, want);
+        }
+        try f.builder.br(&then_blk, join_blk.id, &.{unwrapped});
+        try f.builder.endBlock(f, then_blk);
+
+        try f.builder.setUnreachable(&none_blk);
+        try f.builder.endBlock(f, none_blk);
+
+        blk.* = join_blk;
+        return res_param;
     }
 
     fn lowerErrUnwrap(
@@ -3164,31 +3235,58 @@ pub const LowerTir = struct {
         }
     }
 
-    fn destructureDeclFromExpr(self: *LowerTir, a: *const ast.Ast, env: *Env, f: *Builder.FunctionFrame, blk: *Builder.BlockFrame, pid: ast.PatternId, src_expr: ast.ExprId, vty: types.TypeId, to_slots: bool) anyerror!void {
+    fn destructureDeclFromExpr(
+        self: *LowerTir,
+        a: *const ast.Ast,
+        env: *Env,
+        f: *Builder.FunctionFrame,
+        blk: *Builder.BlockFrame,
+        pid: ast.PatternId,
+        src_expr: ast.ExprId,
+        target_ty: types.TypeId,
+        to_slots: bool,
+    ) anyerror!void {
         const pk = a.pats.index.kinds.items[pid.toRaw()];
+        const target_kind = self.context.type_store.index.kinds.items[target_ty.toRaw()];
+        const src_ty_opt = self.getExprType(src_expr);
+        const src_default_ty = src_ty_opt orelse target_ty;
+        const vty = if (target_kind == .Any) src_default_ty else target_ty;
         switch (pk) {
             .Binding => {
-                const val = try self.lowerExpr(a, env, f, blk, src_expr, vty, .rvalue);
-                return try self.destructureDeclPattern(a, env, f, blk, pid, val, vty, to_slots);
+                const src_ty = src_ty_opt orelse target_ty;
+                const eff_ty = if (target_kind == .Any) src_ty else target_ty;
+                const raw = try self.lowerExpr(a, env, f, blk, src_expr, eff_ty, .rvalue);
+                const val = if (!src_ty.eq(eff_ty)) self.emitCoerce(blk, raw, src_ty, eff_ty) else raw;
+                return try self.destructureDeclPattern(a, env, f, blk, pid, val, eff_ty, to_slots);
             },
             .Tuple => {
                 // If RHS is a tuple-literal, lower elements individually to avoid creating a temporary aggregate.
                 if (a.exprs.index.kinds.items[src_expr.toRaw()] == .TupleLit) {
-                    try self.destructureDeclFromTupleLit(a, env, f, blk, pid, src_expr, vty, to_slots);
+                    const src_ty = src_ty_opt orelse target_ty;
+                    const eff_ty = if (target_kind == .Any) src_ty else target_ty;
+                    try self.destructureDeclFromTupleLit(a, env, f, blk, pid, src_expr, eff_ty, to_slots);
                     return;
                 }
                 // Fallback: lower full expr once, then destructure via extracts.
-                const val = try self.lowerExpr(a, env, f, blk, src_expr, vty, .rvalue);
-                return try self.destructureDeclPattern(a, env, f, blk, pid, val, vty, to_slots);
+                const src_ty = src_ty_opt orelse target_ty;
+                const eff_ty = if (target_kind == .Any) src_ty else target_ty;
+                const raw = try self.lowerExpr(a, env, f, blk, src_expr, eff_ty, .rvalue);
+                const val = if (!src_ty.eq(eff_ty)) self.emitCoerce(blk, raw, src_ty, eff_ty) else raw;
+                return try self.destructureDeclPattern(a, env, f, blk, pid, val, eff_ty, to_slots);
             },
             .Struct => {
                 if (a.exprs.index.kinds.items[src_expr.toRaw()] == .StructLit) {
-                    try self.destructureDeclFromStructLit(a, env, f, blk, pid, src_expr, vty, to_slots);
+                    const src_ty = src_ty_opt orelse target_ty;
+                    const eff_ty = if (target_kind == .Any) src_ty else target_ty;
+                    try self.destructureDeclFromStructLit(a, env, f, blk, pid, src_expr, eff_ty, to_slots);
                     return;
                 }
                 // fallback: lower whole expr and destructure by field extraction
-                const val = try self.lowerExpr(a, env, f, blk, src_expr, vty, .rvalue);
-                return try self.destructureDeclPattern(a, env, f, blk, pid, val, vty, to_slots);
+                const src_ty = src_ty_opt orelse target_ty;
+                const eff_ty = if (target_kind == .Any) src_ty else target_ty;
+                const raw = try self.lowerExpr(a, env, f, blk, src_expr, eff_ty, .rvalue);
+                const val = if (!src_ty.eq(eff_ty)) self.emitCoerce(blk, raw, src_ty, eff_ty) else raw;
+                return try self.destructureDeclPattern(a, env, f, blk, pid, val, eff_ty, to_slots);
             },
             .VariantTuple => {
                 // Handle call-form variant literal: V.C(arg1, arg2, ...)
@@ -3360,8 +3458,8 @@ pub const LowerTir = struct {
     /// This always emits a local SSA (CastNormal) in `blk`, even if the source is already a bool.
     fn forceLocalCond(self: *LowerTir, blk: *Builder.BlockFrame, cond: tir.ValueId) tir.ValueId {
         const tBool = self.context.type_store.tBool();
-        // Emit a no-op CastNormal to anchor `cond` in this block.
-        return blk.builder.tirValue(.CastNormal, blk, tBool, .{ .value = cond });
+        // Emit a bitcast to anchor `cond` in this block without changing its representation.
+        return blk.builder.tirValue(.CastBit, blk, tBool, .{ .value = cond });
     }
 
     fn isVariantLike(self: *const LowerTir, ty: types.TypeId) bool {

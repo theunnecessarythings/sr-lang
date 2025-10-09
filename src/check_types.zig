@@ -120,11 +120,6 @@ pub fn typeFromTypeExpr(self: *Checker, id: ast.ExprId) anyerror!?types.TypeId {
                 }
             }
 
-            const name_str = self.getStr(name);
-            if (self.imported_symbols.get(name_str)) |ty| {
-                break :blk_ident ty;
-            }
-
             break :blk_ident null;
         },
         .TupleType => blk_tt: {
@@ -513,6 +508,42 @@ pub fn typeFromTypeExpr(self: *Checker, id: ast.ExprId) anyerror!?types.TypeId {
         },
         .FieldAccess => blk_fa: {
             const fr = self.ast_unit.exprs.get(.FieldAccess, id);
+            const parent_expr_kind = self.ast_unit.exprs.index.kinds.items[fr.parent.toRaw()];
+
+            if (parent_expr_kind == .Import) {
+                if (self.importMemberType(fr.parent, fr.field)) |mt| {
+                    const mt_kind = self.context.type_store.index.kinds.items[mt.toRaw()];
+                    break :blk_fa if (mt_kind == .TypeType)
+                        self.context.type_store.get(.TypeType, mt).of
+                    else
+                        mt;
+                }
+                try self.context.diags.addError(self.ast_unit.exprs.locs.get(fr.loc), .unknown_module_field, .{});
+                break :blk_fa null;
+            }
+
+            if (parent_expr_kind == .Ident) {
+                const idr = self.ast_unit.exprs.get(.Ident, fr.parent);
+                if (self.lookup(idr.name)) |sid_sym| {
+                    const sym = self.symtab.syms.get(sid_sym);
+                    if (!sym.origin_decl.isNone()) {
+                        const did = sym.origin_decl.unwrap();
+                        const drow = self.ast_unit.exprs.Decl.get(did);
+                        if (self.ast_unit.exprs.index.kinds.items[drow.value.toRaw()] == .Import) {
+                            if (self.importMemberType(drow.value, fr.field)) |mt| {
+                                const mt_kind = self.context.type_store.index.kinds.items[mt.toRaw()];
+                                break :blk_fa if (mt_kind == .TypeType)
+                                    self.context.type_store.get(.TypeType, mt).of
+                                else
+                                    mt;
+                            }
+                            try self.context.diags.addError(self.ast_unit.exprs.locs.get(fr.loc), .unknown_module_field, .{});
+                            break :blk_fa null;
+                        }
+                    }
+                }
+            }
+
             const parent_ty = (try typeFromTypeExpr(self, fr.parent)) orelse break :blk_fa null;
             const parent_kind = self.context.type_store.index.kinds.items[parent_ty.toRaw()];
             switch (parent_kind) {

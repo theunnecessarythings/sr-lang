@@ -173,6 +173,7 @@ pub const Pipeline = struct {
         // verify module
         if (!mlir_module.getOperation().verify()) {
             mlir_module.getOperation().dump();
+            _ = mlir_module.getOperation().verify();
             try self.context.diags.addError(.{ .file_id = file_id, .start = 0, .end = 0 }, .mlir_verification_failed, .{});
         }
         if (self.context.diags.anyErrors()) {

@@ -1704,7 +1704,7 @@ pub const Checker = struct {
         return null;
     }
 
-    fn importMemberType(self: *Checker, import_eid: ast.ExprId, member: ast.StrId) ?types.TypeId {
+    pub fn importMemberType(self: *Checker, import_eid: ast.ExprId, member: ast.StrId) ?types.TypeId {
         const res = &self.context.resolver;
         const ir = self.getExpr(.Import, import_eid);
         const ek = self.exprKind(ir.expr);
@@ -1787,8 +1787,12 @@ pub const Checker = struct {
             return struct_ty;
         }
         const lit_ty = struct_lit.ty.unwrap();
-        const expect_ty = try check_types.typeFromTypeExpr(self, lit_ty) orelse
+        const expect_ty = blk: {
+            if (try check_types.typeFromTypeExpr(self, lit_ty)) |resolved|
+                break :blk resolved;
+            try self.context.diags.addError(self.exprLocFromId(lit_ty), .undefined_identifier, .{});
             return null;
+        };
         const is_assignable = self.assignable(struct_ty, expect_ty);
         switch (is_assignable) {
             .success => {},
@@ -2533,24 +2537,10 @@ pub const Checker = struct {
             },
         };
         const path = self.getStr(sid);
-        const module = self.context.resolver.resolve(self.import_base_dir, path, self.pipeline) catch {
+        _ = self.context.resolver.resolve(self.import_base_dir, path, self.pipeline) catch {
             try self.context.diags.addError(self.exprLoc(lit), .import_not_found, .{});
             return self.context.type_store.tAny();
         };
-        var it = module.syms.iterator();
-        while (it.next()) |kv| {
-            const name = kv.key_ptr.*;
-            const ty = kv.value_ptr.*;
-            const dup = self.gpa.dupe(u8, name) catch continue;
-            const gop = self.imported_symbols.getOrPut(self.gpa, dup) catch {
-                self.gpa.free(dup);
-                continue;
-            };
-            if (gop.found_existing) {
-                self.gpa.free(dup);
-            }
-            gop.value_ptr.* = ty;
-        }
         return self.context.type_store.tAny();
     }
 
