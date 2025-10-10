@@ -4,7 +4,9 @@ const ast = @import("ast.zig");
 const types = @import("types.zig");
 
 pub const ComptimeApi = struct {
-    print: *const fn (format: [*c]const u8, ...) callconv(.c) void,
+    context: ?*anyopaque,
+    print: *const fn (context: ?*anyopaque, format: [*c]const u8, ...) callconv(.c) void,
+    get_type_by_name: *const fn (context: ?*anyopaque, name: [*c]const u8) callconv(.c) u32,
 };
 
 // Typed IR (TIR)
@@ -98,6 +100,7 @@ pub const OpKind = enum(u16) {
     Select,
     // Calls
     Call,
+    IndirectCall,
     MlirBlock,
     // Variants
     VariantMake,
@@ -140,6 +143,7 @@ pub const Rows = struct {
         result: ValueId,
         ty: types.TypeId,
         base: ValueId, // pointer
+        base_ty: types.TypeId,
         indices: RangeGepIndex,
     };
 
@@ -160,6 +164,7 @@ pub const Rows = struct {
     pub const Select = struct { result: ValueId, ty: types.TypeId, cond: ValueId, then_value: ValueId, else_value: ValueId };
 
     pub const Call = struct { result: ValueId, ty: types.TypeId, callee: StrId, args: RangeValue };
+    pub const IndirectCall = struct { result: ValueId, ty: types.TypeId, callee: ValueId, args: RangeValue };
     pub const MlirBlock = struct { result: OptValueId, ty: types.TypeId, kind: ast.MlirKind, text: StrId, args: RangeValue };
     pub const VariantMake = struct { result: ValueId, ty: types.TypeId, tag: u32, payload: OptValueId, payload_ty: types.TypeId };
     pub const VariantTag = struct { result: ValueId, ty: types.TypeId, value: ValueId };
@@ -221,6 +226,7 @@ inline fn RowT(comptime K: OpKind) type {
         .Select => Rows.Select,
 
         .Call => Rows.Call,
+        .IndirectCall => Rows.IndirectCall,
         .MlirBlock => Rows.MlirBlock,
         .VariantMake => Rows.VariantMake,
         .VariantTag => Rows.VariantTag,
@@ -297,6 +303,7 @@ pub const InstrStore = struct {
     Select: Table(Rows.Select) = .{},
 
     Call: Table(Rows.Call) = .{},
+    IndirectCall: Table(Rows.IndirectCall) = .{},
     MlirBlock: Table(Rows.MlirBlock) = .{},
     VariantMake: Table(Rows.VariantMake) = .{},
     VariantTag: Table(Rows.VariantTag) = .{},
@@ -571,6 +578,13 @@ pub const Builder = struct {
         blk.instrs.append(self.gpa, iid) catch @panic("OOM");
         return vid;
     }
+    pub fn indirectCall(self: *Builder, blk: *BlockFrame, ty: types.TypeId, callee: ValueId, args: []const ValueId) ValueId {
+        const r = self.t.instrs.val_list_pool.pushMany(self.gpa, args);
+        const vid = self.freshValue();
+        const iid = self.t.instrs.add(.IndirectCall, Rows.IndirectCall{ .result = vid, .ty = ty, .callee = callee, .args = r });
+        blk.instrs.append(self.gpa, iid) catch @panic("OOM");
+        return vid;
+    }
     pub fn indexOp(self: *Builder, blk: *BlockFrame, ty: types.TypeId, base: ValueId, idx: ValueId) ValueId {
         const vid = self.freshValue();
         const iid = self.t.instrs.add(.Index, Rows.Index{ .result = vid, .ty = ty, .base = base, .index = idx });
@@ -741,10 +755,10 @@ pub const Builder = struct {
     pub fn gepValue(self: *Builder, val: ValueId) GepIndexId {
         return self.t.instrs.GepIndex.add(self.gpa, .{ .Value = val });
     }
-    pub fn gep(self: *Builder, blk: *BlockFrame, ty: types.TypeId, base: ValueId, idxs: []const GepIndexId) ValueId {
+    pub fn gep(self: *Builder, blk: *BlockFrame, ty: types.TypeId, base: ValueId, base_ty: types.TypeId, idxs: []const GepIndexId) ValueId {
         const r = self.t.instrs.gep_pool.pushMany(self.gpa, idxs);
         const vid = self.freshValue();
-        const iid = self.t.instrs.add(.Gep, Rows.Gep{ .result = vid, .ty = ty, .base = base, .indices = r });
+        const iid = self.t.instrs.add(.Gep, Rows.Gep{ .result = vid, .ty = ty, .base = base, .base_ty = base_ty, .indices = r });
         blk.instrs.append(self.gpa, iid) catch @panic("OOM");
         return vid;
     }
@@ -1324,6 +1338,21 @@ pub const TirPrinter = struct {
                 try self.writer.writeAll(" ");
                 try self.pv(r.result);
                 try self.writer.print(" = Call \"{s}\" args=", .{self.s(r.callee)});
+                try self.printValueList(args);
+                try self.writer.print(" : {f})\n", .{self.tf(r.ty)});
+            },
+
+            .IndirectCall => {
+                const r = self.tir.instrs.get(.IndirectCall, iid);
+                const args = self.tir.instrs.val_list_pool.slice(r.args);
+                try self.ws();
+                try self.writer.writeByte('(');
+                try self.pi(iid);
+                try self.writer.writeAll(" ");
+                try self.pv(r.result);
+                try self.writer.print(" = IndirectCall callee=", .{});
+                try self.pv(r.callee);
+                try self.writer.writeAll(" args=");
                 try self.printValueList(args);
                 try self.writer.print(" : {f})\n", .{self.tf(r.ty)});
             },

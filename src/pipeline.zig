@@ -161,7 +161,7 @@ pub const Pipeline = struct {
         }
 
         // Print Types
-        type_info.print();
+        // type_info.print();
 
         const mlir_ctx = compile.initMLIR(self.allocator);
         var gen = mlir_codegen.MlirCodegen.init(self.allocator, self.context, mlir_ctx);

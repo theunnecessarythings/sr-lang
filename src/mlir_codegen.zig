@@ -508,6 +508,7 @@ pub const MlirCodegen = struct {
             .AddressOf => return t.instrs.get(.AddressOf, id).result,
             .Select => return t.instrs.get(.Select, id).result,
             .Call => return t.instrs.get(.Call, id).result,
+            .IndirectCall => return t.instrs.get(.IndirectCall, id).result,
             .VariantMake => return t.instrs.get(.VariantMake, id).result,
             .VariantTag => return t.instrs.get(.VariantTag, id).result,
             .VariantPayloadPtr => return t.instrs.get(.VariantPayloadPtr, id).result,
@@ -553,6 +554,7 @@ pub const MlirCodegen = struct {
             .AddressOf => t.instrs.get(.AddressOf, id).ty,
             .Select => t.instrs.get(.Select, id).ty,
             .Call => t.instrs.get(.Call, id).ty,
+            .IndirectCall => t.instrs.get(.IndirectCall, id).ty,
             .VariantMake => t.instrs.get(.VariantMake, id).ty,
             .VariantTag => t.instrs.get(.VariantTag, id).ty,
             .VariantPayloadPtr => t.instrs.get(.VariantPayloadPtr, id).ty,
@@ -1028,21 +1030,13 @@ pub const MlirCodegen = struct {
             .Gep => blk: {
                 const p = t.instrs.get(.Gep, ins_id);
                 const base = self.value_map.get(p.base).?;
-                const pty_kind = store.getKind(p.ty);
-                var elem_mlir: mlir.Type = undefined;
-                if (pty_kind == .Ptr) {
-                    const ptr_row = store.get(.Ptr, p.ty);
-                    elem_mlir = try self.llvmTypeOf(store, ptr_row.elem);
-                } else {
-                    elem_mlir = self.i8_ty;
-                }
                 const index_ids = t.instrs.gep_pool.slice(p.indices);
                 var indices_data = try self.gpa.alloc(tir.Rows.GepIndex, index_ids.len);
                 defer self.gpa.free(indices_data);
                 for (index_ids, 0..) |id, i| {
                     indices_data[i] = t.instrs.GepIndex.get(id);
                 }
-                const v = try self.emitGep(base, elem_mlir, indices_data, t);
+                const v = try self.emitGep(base, p.base_ty, indices_data, t, store);
                 break :blk v;
             },
             .GlobalAddr => blk: {
@@ -1280,7 +1274,7 @@ pub const MlirCodegen = struct {
                 // Reinterpret the same address as a pointer-to-field-type at offset 0.
                 // With opaque pointers in MLIR, use a zero-index GEP with the desired element type.
                 const idxs = [_]tir.Rows.GepIndex{.{ .Const = 0 }};
-                const fptr = try self.emitGep(storage_ptr, f_mlir, &idxs, t);
+                const fptr = try self.emitGep(storage_ptr, f_sr, &idxs, t, store);
                 // load the field value from the pointer
                 const load_op = OpBuilder.init("llvm.load", self.loc).builder()
                     .add_operands(&.{fptr})
@@ -1306,15 +1300,14 @@ pub const MlirCodegen = struct {
                 }
 
                 // Desired field type
-                const urow = store.get(.Union, union_sr);
-                const f_ids = store.field_pool.slice(urow.fields);
-                const f_sr = store.Field.get(f_ids[@intCast(p.field_index)]).ty;
-                const f_mlir = try self.llvmTypeOf(store, f_sr);
+                //  const urow = store.get(.Union, union_sr);
+                //  const f_ids = store.field_pool.slice(urow.fields);
+                // const f_sr = store.Field.get(f_ids[@intCast(p.field_index)]).ty;
 
                 // Reinterpret the same address as a pointer-to-field-type at offset 0.
                 // With opaque pointers in MLIR, use a zero-index GEP with the desired element type.
                 const idxs = [_]tir.Rows.GepIndex{.{ .Const = 0 }};
-                const fptr = try self.emitGep(storage_ptr, f_mlir, &idxs, t);
+                const fptr = try self.emitGep(storage_ptr, union_sr, &idxs, t, store);
                 break :blk fptr;
             },
             // ------------- Pointers/Indexing -------------
@@ -1393,16 +1386,14 @@ pub const MlirCodegen = struct {
                                 .{ .Const = 0 },
                                 .{ .Value = start_vid },
                             };
-                            // For pointer-to-array, elem_type in GEP must be the array type
-                            data_ptr = try self.emitGep(base_ptr, arr_mlir, &idxs, t);
+                            data_ptr = try self.emitGep(base_ptr, base_sr_ty, &idxs, t, store);
                         },
                         .Slice => {
                             // Base is already a slice: extract ptr and compute ptr + start
                             elem_sr = store.get(.Slice, base_sr_ty).elem;
                             const ptr0 = self.extractAt(base, self.llvm_ptr_ty, &.{0});
-                            const elem_mlir = try self.llvmTypeOf(store, elem_sr);
                             const idxs = [_]tir.Rows.GepIndex{.{ .Value = start_vid }};
-                            data_ptr = try self.emitGep(ptr0, elem_mlir, &idxs, t);
+                            data_ptr = try self.emitGep(ptr0, base_sr_ty, &idxs, t, store);
                         },
                         else => {
                             // Unsupported base; return zero slice
@@ -1444,9 +1435,9 @@ pub const MlirCodegen = struct {
 
                 // Indexing into a slice value (in-SSA): extract ptr and load *(ptr+idx)
                 if (!self.isLlvmPtr(base.getType()) and store.getKind(base_sr_ty) == .Slice and res_sr_kind != .Slice) {
-                    const elem_mlir = res_ty; // result type is the element type
+                    // const elem_mlir = res_ty; // result type is the element type
                     const ptr0 = self.extractAt(base, self.llvm_ptr_ty, &.{0});
-                    const vptr = try self.emitGep(ptr0, elem_mlir, &.{.{ .Value = p.index }}, t);
+                    const vptr = try self.emitGep(ptr0, base_sr_ty, &.{.{ .Value = p.index }}, t, store);
                     var ld = OpBuilder.init("llvm.load", self.loc).builder()
                         .add_operands(&.{vptr})
                         .add_results(&.{res_ty}).build();
@@ -1455,7 +1446,7 @@ pub const MlirCodegen = struct {
                 }
 
                 if (self.isLlvmPtr(base.getType())) {
-                    const vptr = try self.emitGep(base, res_ty, &.{.{ .Value = p.index }}, t);
+                    const vptr = try self.emitGep(base, base_sr_ty, &.{.{ .Value = p.index }}, t, store);
                     var ld = OpBuilder.init("llvm.load", self.loc).builder()
                         .add_operands(&.{vptr})
                         .add_results(&.{res_ty}).build();
@@ -1465,7 +1456,7 @@ pub const MlirCodegen = struct {
                     // Always spill aggregate to memory and use pointer indexing for arrays
                     const base_ty = base.getType();
                     const tmp_ptr = self.spillAgg(base, base_ty, 0);
-                    const vptr = try self.emitGep(tmp_ptr, res_ty, &.{.{ .Value = p.index }}, t);
+                    const vptr = try self.emitGep(tmp_ptr, base_sr_ty, &.{.{ .Value = p.index }}, t, store);
                     var ld = OpBuilder.init("llvm.load", self.loc).builder()
                         .add_operands(&.{vptr})
                         .add_results(&.{res_ty}).build();
@@ -1484,6 +1475,35 @@ pub const MlirCodegen = struct {
                 break :blk self.arithSelect(c, tv, ev, ty);
             },
 
+            .IndirectCall => blk: {
+                const p = t.instrs.get(.IndirectCall, ins_id);
+                const callee = self.value_map.get(p.callee).?;
+                const args_slice = t.instrs.val_list_pool.slice(p.args);
+                var ops = try self.gpa.alloc(mlir.Value, 1 + args_slice.len);
+                defer self.gpa.free(ops);
+                ops[0] = callee;
+                for (args_slice, 0..) |vid, i| {
+                    ops[i + 1] = self.value_map.get(vid).?;
+                }
+
+                const ret_ty = try self.llvmTypeOf(store, p.ty);
+                const has_res = !ret_ty.equal(self.void_ty);
+
+                var callAttrsList = ArrayList(mlir.NamedAttribute).init(self.gpa);
+
+                defer callAttrsList.deinit();
+
+                try callAttrsList.append(self.named("operand_segment_sizes", mlir.Attribute.denseI32ArrayGet(self.mlir_ctx, &[_]i32{ @as(i32, @intCast(args_slice.len + 1)), 0 })));
+
+                try callAttrsList.append(self.named("op_bundle_sizes", mlir.Attribute.denseI32ArrayGet(self.mlir_ctx, &[_]i32{})));
+
+                var call = OpBuilder.init("llvm.call", self.loc).builder()
+                    .add_operands(ops)
+                    .add_results(if (has_res) &.{ret_ty} else &.{}).add_attributes(callAttrsList.items)
+                    .build();
+                self.append(call);
+                break :blk if (has_res) call.getResult(0) else mlir.Value.empty();
+            },
             .Call => blk: {
                 const p = t.instrs.get(.Call, ins_id);
                 const callee_name = t.instrs.strs.get(p.callee);
@@ -1986,43 +2006,60 @@ pub const MlirCodegen = struct {
     fn emitGep(
         self: *MlirCodegen,
         base: mlir.Value,
-        elem_ty: mlir.Type,
+        base_ty: types.TypeId,
         idxs: []const tir.Rows.GepIndex,
         t: *const tir.TIR,
+        store: *types.TypeStore,
     ) !mlir.Value {
         _ = t;
+
         const dyn_min = std.math.minInt(i32);
 
         var dyn = try self.gpa.alloc(mlir.Value, idxs.len);
+
         defer self.gpa.free(dyn);
+
         var raw = try self.gpa.alloc(i32, idxs.len);
+
         defer self.gpa.free(raw);
 
         var ndyn: usize = 0;
+
         for (idxs, 0..) |g, i| {
             switch (g) {
                 .Const => |c| raw[i] = @intCast(c),
+
                 .Value => |vid| {
                     raw[i] = dyn_min;
+
                     dyn[ndyn] = self.value_map.get(vid).?;
+
                     ndyn += 1;
                 },
             }
         }
 
         var ops = try self.gpa.alloc(mlir.Value, 1 + ndyn);
+
         defer self.gpa.free(ops);
+
         ops[0] = base;
+
         for (dyn[0..ndyn], 0..) |v, i| ops[1 + i] = v;
+
+        const elem_ty = try self.llvmTypeOf(store, base_ty);
 
         var op = OpBuilder.init("llvm.getelementptr", self.loc).builder()
             .add_operands(ops)
             .add_results(&.{self.llvm_ptr_ty})
             .add_attributes(&.{
                 self.named("elem_type", mlir.Attribute.typeAttrGet(elem_ty)),
+
                 self.named("rawConstantIndices", mlir.Attribute.denseI32ArrayGet(self.mlir_ctx, raw)),
             }).build();
+
         self.append(op);
+
         return op.getResult(0);
     }
 
