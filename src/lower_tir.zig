@@ -32,6 +32,9 @@ pub const LowerTir = struct {
 
     import_base_dir: []const u8 = ".",
 
+    var g_mlir_inited: bool = false;
+    var g_mlir_ctx: mlir.Context = undefined;
+
     const BindingSnapshot = struct {
         name: ast.StrId,
         prev: ?ValueBinding,
@@ -768,27 +771,28 @@ pub const LowerTir = struct {
         defer tmp_tir.deinit();
         var tmp_builder = tir.Builder.init(self.gpa, &tmp_tir);
 
-        // 2. Create the thunk function `fn() -> i64`.
+        // 2. Create the thunk function `fn()` that returns the comptime value.
         const thunk_name = tmp_builder.intern("__comptime_thunk");
-        const thunk_ret_ty = self.context.type_store.tI64();
+        const thunk_ret_ty = self.getExprType(cb.block) orelse return error.LoweringBug;
         var thunk_fn = try tmp_builder.beginFunction(thunk_name, thunk_ret_ty, false);
         var thunk_blk = try tmp_builder.beginBlock(&thunk_fn);
 
         // 3. Lower the comptime block's AST into the thunk's TIR.
-        // We need a temporary env for this sub-compilation.
         var tmp_env = Env.init(self.gpa);
         defer tmp_env.deinit(self.gpa);
-        const result_val = try self.lowerExpr(a, &tmp_env, &thunk_fn, &thunk_blk, cb.block, thunk_ret_ty, .rvalue);
+        const result_val_id = try self.lowerExpr(a, &tmp_env, &thunk_fn, &thunk_blk, cb.block, thunk_ret_ty, .rvalue);
         if (thunk_blk.term.isNone()) {
-            try tmp_builder.setReturnVal(&thunk_blk, result_val);
+            try tmp_builder.setReturnVal(&thunk_blk, result_val_id);
         }
         try tmp_builder.endBlock(&thunk_fn, thunk_blk);
         try tmp_builder.endFunction(thunk_fn);
 
         // 4. Codegen the temporary TIR to MLIR.
-        var mlir_ctx = compile.initMLIR(self.gpa);
-        defer mlir_ctx.destroy();
-        var gen = mlir_codegen.MlirCodegen.init(self.gpa, self.context, mlir_ctx);
+        if (!g_mlir_inited) {
+            g_mlir_ctx = compile.initMLIR(self.gpa);
+            g_mlir_inited = true;
+        }
+        var gen = mlir_codegen.MlirCodegen.init(self.gpa, self.context, g_mlir_ctx);
         defer gen.deinit();
         var mlir_module = try gen.emitModule(&tmp_tir, self.context);
 
@@ -800,18 +804,38 @@ pub const LowerTir = struct {
         defer mlir.c.mlirExecutionEngineDestroy(engine);
 
         // 6. Invoke the JIT'd thunk.
-        var result: i64 = -1;
-        const thunk_fn_name = mlir.StringRef.from("__comptime_thunk");
-        const res_ptr: [*c]?*anyopaque = @ptrCast(@constCast(&[_]?*anyopaque{&result}));
-        const status = mlir.c.mlirExecutionEngineInvokePacked(engine, thunk_fn_name.inner, res_ptr);
-
-        if (mlir.c.mlirLogicalResultIsFailure(status)) {
-            // TODO: Add diagnostic
+        const thunk_fn_name_ref = mlir.StringRef.from("__comptime_thunk");
+        const func_ptr = mlir.c.mlirExecutionEngineLookup(engine, thunk_fn_name_ref.inner);
+        if (func_ptr == null) {
             return error.ComptimeExecutionFailed;
         }
 
-        // 7. Create a constant in the *original* TIR with the result.
-        return blk.builder.tirValue(.ConstInt, blk, thunk_ret_ty, .{ .value = @as(u64, @intCast(result)) });
+        const result_ty = self.getExprType(cb.block) orelse return error.LoweringBug;
+        const result_kind = self.context.type_store.getKind(result_ty);
+
+        return switch (result_kind) {
+            .I64, .U64 => blk_i: {
+                const ThunkFn = *const fn () callconv(.c) u64;
+                const typed_func_ptr: ThunkFn = @ptrCast(@alignCast(func_ptr));
+                const result = typed_func_ptr();
+                break :blk_i blk.builder.tirValue(.ConstInt, blk, result_ty, .{ .value = result });
+            },
+            .F64 => blk_f: {
+                const ThunkFn = *const fn () callconv(.c) f64;
+                const typed_func_ptr: ThunkFn = @ptrCast(@alignCast(func_ptr));
+                const result = typed_func_ptr();
+                break :blk_f blk.builder.tirValue(.ConstFloat, blk, result_ty, .{ .value = result });
+            },
+            .Bool => blk_b: {
+                const ThunkFn = *const fn () callconv(.c) bool;
+                const typed_func_ptr: ThunkFn = @ptrCast(@alignCast(func_ptr));
+                const result = typed_func_ptr();
+                break :blk_b blk.builder.tirValue(.ConstBool, blk, result_ty, .{ .value = result });
+            },
+            else => {
+                return error.UnsupportedComptimeType;
+            },
+        };
     }
 
     fn lowerCall(

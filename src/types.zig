@@ -19,7 +19,11 @@ pub const StoreIndex = cst.StoreIndex;
 pub const StrId = cst.StrId;
 
 pub const ComptimeValue = union(enum) {
+    Void,
     Int: u128,
+    Float: f64,
+    Bool: bool,
+    String: []const u8,
 };
 
 pub const TypeInfo = struct {

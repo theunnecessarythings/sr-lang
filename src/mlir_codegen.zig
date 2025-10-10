@@ -341,14 +341,19 @@ pub const MlirCodegen = struct {
 
         // NOTE: language-defined functions here are assumed non-variadic
         const fty = mlir.Type.getFunctionType(self.mlir_ctx, @intCast(param_tys.len), param_tys, @intCast(n_res), results[0..n_res]);
-        const attrs = [_]mlir.NamedAttribute{
-            self.named("sym_name", self.strAttr(func_name)),
-            self.named("function_type", mlir.Attribute.typeAttrGet(fty)),
-            self.named("llvm.emit_c_interface", mlir.Attribute.unitAttrGet(self.mlir_ctx)),
-        };
+
+        var attrs: std.ArrayList(mlir.NamedAttribute) = .empty;
+        defer attrs.deinit(self.gpa);
+
+        try attrs.append(self.gpa, self.named("sym_name", self.strAttr(func_name)));
+        try attrs.append(self.gpa, self.named("function_type", mlir.Attribute.typeAttrGet(fty)));
+
+        try attrs.append(self.gpa, self.named("sym_visibility", self.strAttr("public")));
+        try attrs.append(self.gpa, self.named("llvm.emit_c_interface", mlir.Attribute.unitAttrGet(self.mlir_ctx)));
+
         const region = mlir.Region.create();
         const fnop = OpBuilder.init("func.func", self.loc).builder()
-            .add_attributes(&attrs)
+            .add_attributes(attrs.items)
             .add_regions(&.{region})
             .build();
 
