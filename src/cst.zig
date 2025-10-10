@@ -459,7 +459,7 @@ pub const Rows = struct {
     pub const Comptime = struct { payload: ExprId, is_block: bool, loc: LocId };
     pub const Code = struct { block: ExprId, loc: LocId };
     pub const Insert = struct { expr: ExprId, loc: LocId };
-    pub const Mlir = struct { kind: MlirKind, text: StrId, loc: LocId };
+    pub const Mlir = struct { kind: MlirKind, text: StrId, args: OptRangeOf(ExprId), loc: LocId };
 
     // ---------- flow ----------
     pub const Return = struct { value: OptExprId, loc: LocId };

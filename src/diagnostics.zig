@@ -118,6 +118,7 @@ pub const DiagnosticCode = enum {
     noreturn_not_storable,
     type_value_mismatch,
     type_annotation_mismatch,
+    mlir_block_not_a_type,
 
     // Casts / conversions
     cast_target_not_type,
@@ -448,6 +449,7 @@ pub fn diagnosticMessageFmt(code: DiagnosticCode) []const u8 {
         .expected_colon_or_comma_in_param => "expected ':' (type) or ',' (next parameter), found {s}",
 
         .mlir_verification_failed => "MLIR verification failed",
+        .mlir_block_not_a_type => "MLIR block is not a type",
     };
 }
 

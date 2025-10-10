@@ -5,6 +5,7 @@ const tir = @import("tir.zig");
 const types = @import("types.zig");
 const check_pattern_matching = @import("check_pattern_matching.zig");
 const checker = @import("checker.zig");
+const mlir = @import("mlir_bindings.zig");
 
 const StrId = @import("cst.zig").StrId;
 const OptStrId = @import("cst.zig").OptStrId;
@@ -12,6 +13,7 @@ const Context = @import("compile.zig").Context;
 const ImportResolver = @import("import_resolver.zig").ImportResolver;
 const Pipeline = @import("pipeline.zig").Pipeline;
 const Builder = tir.Builder;
+
 
 pub const LowerTir = struct {
     gpa: std.mem.Allocator,
@@ -126,11 +128,45 @@ pub const LowerTir = struct {
         try b.endFunction(f);
     }
 
+    fn lowerMlirBlock(
+        self: *LowerTir,
+        a: *const ast.Ast,
+        env: *Env,
+        f: *Builder.FunctionFrame,
+        blk: *Builder.BlockFrame,
+        id: ast.ExprId,
+        expected_ty: ?types.TypeId,
+    ) !tir.ValueId {
+        const row = a.exprs.get(.MlirBlock, id);
+        const ty0 = self.getExprType(id) orelse (expected_ty orelse self.context.type_store.tAny());
+
+        // Lower args
+        const arg_ids = a.exprs.expr_pool.slice(row.args);
+        var arg_vals = try self.gpa.alloc(tir.ValueId, arg_ids.len);
+        defer self.gpa.free(arg_vals);
+        for (arg_ids, 0..) |arg_id, i| {
+            arg_vals[i] = try self.lowerExpr(a, env, f, blk, arg_id, null, .rvalue);
+        }
+        const args_range = blk.builder.t.instrs.value_pool.pushMany(self.gpa, arg_vals);
+
+        const result_id = blk.builder.freshValue();
+        const iid = blk.builder.t.instrs.add(.MlirBlock, .{
+            .result = .some(result_id),
+            .ty = ty0,
+            .kind = row.kind,
+            .text = row.text,
+            .args = args_range,
+        });
+        blk.instrs.append(self.gpa, iid) catch @panic("OOM");
+        return result_id;
+    }
+
     pub fn run(self: *LowerTir, a: *const ast.Ast) !tir.TIR {
         var t = tir.TIR.init(self.gpa, &self.context.type_store);
         var b = Builder.init(self.gpa, &t);
 
         try self.lowerGlobalMlir(a, &b);
+
 
         // Lower top-level decls: functions and globals
         const decls = a.exprs.decl_pool.slice(a.unit.decls);
@@ -138,6 +174,8 @@ pub const LowerTir = struct {
 
         return t;
     }
+
+
 
     pub fn setModulePrefix(self: *LowerTir, name: []const u8, prefix: []const u8) !void {
         const key = try self.gpa.dupe(u8, name);
@@ -308,10 +346,10 @@ pub const LowerTir = struct {
 
         if (!fnr.attrs.isNone()) {
             const attrs = a.exprs.attr_pool.slice(fnr.attrs.asRange());
-            const mlir = a.exprs.strs.intern("mlir_fn");
+            const mlir_fn_str = a.exprs.strs.intern("mlir_fn");
             for (attrs) |aid| {
                 const arow = a.exprs.Attribute.get(aid);
-                if (arow.name.eq(mlir)) {
+                if (arow.name.eq(mlir_fn_str)) {
                     return; // skip lowering this function
                 }
             }
@@ -2746,13 +2784,7 @@ pub const LowerTir = struct {
             .For => self.lowerFor(a, env, f, blk, id, expected_ty),
             .Import => blk.builder.tirValue(.ConstUndef, blk, self.getExprType(id) orelse self.context.type_store.tAny(), .{}),
             .VariantType, .EnumType, .StructType => self.lowerTypeExprOpaque(blk, id, expected_ty),
-            .MlirBlock => {
-                const row = a.exprs.get(.MlirBlock, id);
-                const ty0 = self.getExprType(id) orelse self.context.type_store.tAny(); // MlirBlock is opaque, so it's Any
-                const result_id = f.builder.freshValue();
-                _ = f.builder.addMlirBlock(blk, result_id, ty0, row.kind, row.text);
-                return result_id;
-            },
+            .MlirBlock => try self.lowerMlirBlock(a, env, f, blk, id, expected_ty),
             else => {
                 std.debug.print("lowerExpr: unhandled expr kind {}\n", .{expr_kind});
                 return error.LoweringBug;

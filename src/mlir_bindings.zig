@@ -1085,11 +1085,11 @@ pub const Value = struct {
         c.mlirValueDump(self.handle);
     }
 
-    pub fn print(self: *Value, cb: fn ([]const u8, anyopaque) callconv(.C) void, userData: anyopaque) void {
+    pub fn print(self: *const Value, cb: fn (c.MlirStringRef, ?*anyopaque) callconv(.c) void, userData: ?*anyopaque) void {
         c.mlirValuePrint(self.handle, cb, userData);
     }
 
-    pub fn printAsOperand(self: *Value, state: AsmState, cb: fn ([]const u8, anyopaque) callconv(.C) void, userData: anyopaque) void {
+    pub fn printAsOperand(self: *Value, state: AsmState, cb: fn ([]const u8, anyopaque) callconv(.c) void, userData: anyopaque) void {
         c.mlirValuePrintAsOperand(self.handle, state.handle, cb, userData);
     }
 

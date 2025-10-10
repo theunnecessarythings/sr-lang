@@ -95,6 +95,11 @@ pub const MlirCodegen = struct {
         }
     };
 
+    fn printCallback(s: mlir.c.MlirStringRef, user_data: ?*anyopaque) callconv(.c) void {
+        const writer: *std.io.Writer = @ptrCast(@alignCast(user_data.?));
+        _ = writer.writeAll(s.data[0..s.length]) catch {};
+    }
+
     // ----------------------------------------------------------------
     // Init / Deinit
     // ----------------------------------------------------------------
@@ -1684,9 +1689,62 @@ pub const MlirCodegen = struct {
             },
             .MlirBlock => blk: {
                 const p = t.instrs.get(.MlirBlock, ins_id);
-                const mlir_text = t.instrs.strs.get(p.text);
+                const mlir_text_raw = t.instrs.strs.get(p.text);
                 const mlir_kind = p.kind;
                 const result_ty = try self.llvmTypeOf(store, p.ty);
+
+                // NEW: handle arguments
+                const arg_vids = t.instrs.value_pool.slice(p.args);
+                var mlir_text_list: std.ArrayList(u8) = .empty;
+                defer mlir_text_list.deinit(self.gpa);
+
+                if (arg_vids.len > 0) {
+                    var arg_names: std.ArrayList([]const u8) = .empty;
+                    defer {
+                        for (arg_names.items) |item| self.gpa.free(item);
+                        arg_names.deinit(self.gpa);
+                    }
+
+                    for (arg_vids) |arg_vid| {
+                        const mlir_val = self.value_map.get(arg_vid).?;
+
+                        var str_buf: std.ArrayList(u8) = .empty;
+                        defer str_buf.deinit(self.gpa);
+                        var writer = str_buf.writer(self.gpa);
+                        mlir_val.print(printCallback, &writer);
+                        try arg_names.append(self.gpa, try str_buf.toOwnedSlice(self.gpa));
+                    }
+
+                    var writer = mlir_text_list.writer(self.gpa);
+
+                    var i: usize = 0;
+                    while (i < mlir_text_raw.len) {
+                        if (mlir_text_raw[i] == '%') {
+                            var j = i + 1;
+                            var num: u32 = 0;
+                            var num_len: u32 = 0;
+                            while (j < mlir_text_raw.len and std.ascii.isDigit(mlir_text_raw[j])) {
+                                num = num * 10 + (mlir_text_raw[j] - '0');
+                                num_len += 1;
+                                j += 1;
+                            }
+
+                            if (num_len > 0 and num < arg_names.items.len) {
+                                try writer.writeAll(arg_names.items[num]);
+                                i += num_len + 1;
+                            } else {
+                                try writer.writeByte(mlir_text_raw[i]);
+                                i += 1;
+                            }
+                        } else {
+                            try writer.writeByte(mlir_text_raw[i]);
+                            i += 1;
+                        }
+                    }
+                } else {
+                    try mlir_text_list.appendSlice(self.gpa, mlir_text_raw);
+                }
+                const mlir_text = mlir_text_list.items;
 
                 switch (mlir_kind) {
                     .Operation => {
@@ -1712,7 +1770,7 @@ pub const MlirCodegen = struct {
                     .Module => {
                         var parsed_module = mlir.Module.createParse(
                             self.mlir_ctx,
-                            mlir.StringRef.from(mlir_text[1 .. mlir_text.len - 1]),
+                            mlir.StringRef.from(mlir_text), // No stripping of braces
                         );
                         if (parsed_module.isNull()) {
                             std.debug.print("Error parsing inline MLIR module: {s}\n", .{mlir_text});

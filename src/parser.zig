@@ -2296,12 +2296,50 @@ pub const Parser = struct {
             else => {},
         }
 
-        const tok = self.cur;
-        const raw = self.slice(tok);
-        try self.expect(.mlir_content);
+        var args_range = cst.OptRangeOf(cst.ExprId).none();
+        if (self.cur.tag == .lparen) {
+            self.advance();
+            args_range = .some(try self.parseCommaExprListUntil(.rparen));
+        }
 
-        const text_id = self.intern(raw);
-        return self.addExpr(.Mlir, .{ .kind = kind, .text = text_id, .loc = loc });
+        if (self.cur.tag != .lcurly) {
+            try self.expect(.lcurly);
+        }
+        const lcurly_tok = self.cur;
+        const file_id = lcurly_tok.loc.file_id;
+        const start_index = lcurly_tok.loc.start; // include the opening brace in the slice
+        self.advance(); // consume '{'
+
+        var depth: usize = 1;
+        var end_index: usize = start_index; // will be set when we see the matching '}'
+        while (depth > 0) {
+            switch (self.cur.tag) {
+                .eof => {
+                    try self.expect(.rcurly);
+                    unreachable;
+                },
+                .lcurly => {
+                    depth += 1;
+                    self.advance();
+                },
+                .rcurly => {
+                    depth -= 1;
+                    end_index = self.cur.loc.end; // include the closing brace
+                    self.advance(); // consume '}'
+                    // If depth == 0, we break after consuming the matching '}'.
+                },
+                else => self.advance(),
+            }
+        }
+
+        // Build a "fake" token over the exact byte range so we can reuse `self.slice`.
+        const TokT = @TypeOf(self.cur); // same token type the parser already uses
+        const text_tok = TokT{
+            .tag = .invalid,
+            .loc = .{ .file_id = file_id, .start = start_index, .end = end_index },
+        };
+        const text = self.intern(self.slice(text_tok));
+        return self.addExpr(.Mlir, .{ .kind = kind, .text = text, .args = args_range, .loc = loc });
     }
 
     //=================================================================

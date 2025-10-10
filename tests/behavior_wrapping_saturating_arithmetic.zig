@@ -1,0 +1,47 @@
+const std = @import("std");
+const behavior = @import("behavior.zig");
+
+const getSource = behavior.getSource;
+const runCompilerTest = behavior.runCompilerTest;
+
+test "expressions_operators: wrapping addition" {
+    const src =
+        \\x: u8 = 250
+        \\y: u8 = 10
+        \\r := x +| y // Should wrap around
+        \\printf("Result: %d\n", r)
+    ;
+    const code = getSource("", src);
+    try runCompilerTest(code, "Result: 4\n"); // 250 + 10 = 260, 260 % 256 = 4
+}
+
+test "expressions_operators: wrapping add assignment" {
+    const src =
+        \\x: u8 = 250
+        \\x +|= 10.(u8)
+        \\printf("Result: %d\n", x)
+    ;
+    const code = getSource("", src);
+    try runCompilerTest(code, "Result: 4\n");
+}
+
+test "expressions_operators: saturating addition" {
+    const src =
+        \\x: u8 = 250
+        \\y: u8 = 10
+        \\r := x +% y // Should saturate at 255
+        \\printf("Result: %d\n", r)
+    ;
+    const code = getSource("", src);
+    try runCompilerTest(code, "Result: 255\n");
+}
+
+test "expressions_operators: saturating multiply assignment" {
+    const src =
+        \\x: u8 = 100
+        \\x *%= 3.(u8) // 100 * 3 = 300, should saturate at 255
+        \\printf("Result: %d\n", x)
+    ;
+    const code = getSource("", src);
+    try runCompilerTest(code, "Result: 255\n");
+}

@@ -203,7 +203,7 @@ pub const Rows = struct {
     pub const ComptimeBlock = struct { block: ExprId, loc: LocId };
     pub const CodeBlock = struct { block: ExprId, loc: LocId };
     pub const AsyncBlock = struct { body: ExprId, loc: LocId };
-    pub const MlirBlock = struct { kind: MlirKind, text: StrId, loc: LocId };
+    pub const MlirBlock = struct { kind: MlirKind, text: StrId, args: RangeExpr, loc: LocId };
     pub const Insert = struct { expr: ExprId, loc: LocId };
 
     pub const Return = struct { value: OptExprId, loc: LocId };
@@ -1990,7 +1990,17 @@ pub const CodePrinter = struct {
                     .Type => " type",
                     .Module => "",
                 };
-                try self.printf("mlir{s}{s} ", .{ k, self.s(node.text) });
+                try self.printf("mlir{s}", .{k});
+                const args = self.exprs.expr_pool.slice(node.args);
+                if (args.len > 0) {
+                    try self.printf("(", .{});
+                    for (args, 0..) |arg, i| {
+                        if (i > 0) try self.printf(", ", .{});
+                        try self.printExpr(arg);
+                    }
+                    try self.printf(")", .{});
+                }
+                try self.printf(" {{ {s} }}", .{self.s(node.text)});
             },
             .Insert => {
                 const node = self.exprs.get(.Insert, id);

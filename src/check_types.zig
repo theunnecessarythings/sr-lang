@@ -122,6 +122,17 @@ pub fn typeFromTypeExpr(self: *Checker, id: ast.ExprId) anyerror!?types.TypeId {
 
             break :blk_ident null;
         },
+        .MlirBlock => blk: {
+            const row = self.ast_unit.exprs.get(.MlirBlock, id);
+            if (row.kind == .Type) {
+                // For now, we'll just return tAny() for MLIR types.
+                // More sophisticated type resolution for MLIR types can be added later.
+                break :blk self.context.type_store.tAny();
+            } else {
+                try self.context.diags.addError(self.ast_unit.exprs.locs.get(row.loc), .mlir_block_not_a_type, .{});
+                break :blk null;
+            }
+        },
         .TupleType => blk_tt: {
             const row = self.ast_unit.exprs.get(.TupleType, id);
             const ids = self.ast_unit.exprs.expr_pool.slice(row.elems);

@@ -100,7 +100,6 @@ pub const Token = struct {
         string_literal,
         raw_string_literal,
         raw_asm_block,
-        mlir_content,
         integer_literal,
         float_literal,
         imaginary_literal,
@@ -150,6 +149,7 @@ pub const Token = struct {
         greater_equal,
         less_equal,
         at,
+        hash,
         dot,
         dotdot,
         dotstar,
@@ -288,6 +288,7 @@ pub const Token = struct {
                 .greater_equal => ">=",
                 .less_equal => "<=",
                 .at => "@",
+                .hash => "#",
                 .dot => ".",
                 .dotdot => "..",
                 .dotstar => ".*",
@@ -307,7 +308,6 @@ pub const Token = struct {
                 .lparen => "(",
                 .rparen => ")",
                 .raw_asm_block => "asm { ... }",
-                .mlir_content => "mlir { ... }",
                 .keyword_align => "align",
                 .keyword_and => "and",
                 .keyword_any => "any",
@@ -388,7 +388,6 @@ pub const Tokenizer = struct {
     index: usize,
     mode: Mode = .normal,
     last_tag: Token.Tag = .invalid,
-    mlir_pending: bool = false,
     asm_pending: bool = false,
     raw_string_hashes: usize = 0,
     file_id: u32 = 0,
@@ -457,7 +456,6 @@ pub const Tokenizer = struct {
         float,
         float_exponent,
 
-        mlir_block,
         asm_block,
 
         invalid,
@@ -513,7 +511,6 @@ pub const Tokenizer = struct {
             .keyword_any,
 
             .raw_asm_block,
-            .mlir_content,
             => true,
 
             else => false,
@@ -566,6 +563,10 @@ pub const Tokenizer = struct {
                         result.tag = .at;
                         self.advance();
                     },
+                    '#' => {
+                        result.tag = .hash;
+                        self.advance();
+                    },
                     ',' => {
                         result.tag = .comma;
                         self.advance();
@@ -581,14 +582,7 @@ pub const Tokenizer = struct {
                     '{' => {
                         result.tag = .lcurly;
                         self.advance();
-
-                        if (self.mlir_pending or self.last_tag == .keyword_mlir) {
-                            self.mlir_pending = false;
-                            block_depth = 1;
-                            in_string = false;
-                            quote = 0;
-                            continue :state .mlir_block;
-                        } else if (self.asm_pending or self.last_tag == .keyword_asm) {
+                        if (self.asm_pending or self.last_tag == .keyword_asm) {
                             self.asm_pending = false;
                             block_depth = 1;
                             in_string = false;
@@ -1105,7 +1099,6 @@ pub const Tokenizer = struct {
                     else => {
                         const ident = self.buffer[result.loc.start..self.index];
                         if (Token.getKeyword(ident)) |kw| {
-                            if (kw == .keyword_mlir) self.mlir_pending = true;
                             if (kw == .keyword_asm) self.asm_pending = true;
                             result.tag = kw;
                         } else {
@@ -1302,68 +1295,7 @@ pub const Tokenizer = struct {
                 }
             },
 
-            .mlir_block => {
-                switch (self.curr()) {
-                    0 => {
-                        if (self.index == self.buffer.len) {
-                            // unterminated block
-                            result.tag = .invalid;
-                        } else continue :state .invalid;
-                    },
-                    '\\' => {
-                        // Inside a string, skip escaped char
-                        if (in_string) {
-                            self.advance();
-                            if (self.curr() != 0) self.advance();
-                        } else {
-                            self.advance();
-                        }
-                        continue :state .mlir_block;
-                    },
-                    '"', '\'' => {
-                        const c = self.curr();
-                        if (!in_string) {
-                            in_string = true;
-                            quote = c;
-                        } else if (quote == c) {
-                            in_string = false;
-                        }
-                        self.advance();
-                        continue :state .mlir_block;
-                    },
-                    '{' => {
-                        if (!in_string) block_depth += 1;
-                        self.advance();
-                        continue :state .mlir_block;
-                    },
-                    '}' => {
-                        if (!in_string) {
-                            if (block_depth == 0) {
-                                // should not happen, but guard anyway
-                                result.tag = .invalid;
-                            } else {
-                                block_depth -= 1;
-                                self.advance(); // consume the closing '}'
-                                if (block_depth == 0) {
-                                    result.tag = .mlir_content;
-                                } else {
-                                    continue :state .mlir_block;
-                                }
-                            }
-                        } else {
-                            self.advance();
-                            continue :state .mlir_block;
-                        }
-                    },
-                    else => {
-                        self.advance();
-                        continue :state .mlir_block;
-                    },
-                }
-            },
-
             .asm_block => {
-                // Same logic as mlir_block but yields raw_asm_block
                 switch (self.curr()) {
                     0 => {
                         if (self.index == self.buffer.len) {

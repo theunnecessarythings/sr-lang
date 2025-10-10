@@ -682,9 +682,15 @@ pub const Lower = struct {
             },
             .Mlir => blk: {
                 const r = self.cst_program.exprs.get(.Mlir, id);
+                const args_range = if (r.args.isNone())
+                    ast.RangeExpr.empty()
+                else
+                    try self.lowerExprRange(r.args.asRange());
+
                 break :blk self.ast_unit.exprs.add(.MlirBlock, .{
                     .kind = r.kind,
                     .text = r.text,
+                    .args = args_range,
                     .loc = r.loc,
                 });
             },

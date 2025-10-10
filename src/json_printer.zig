@@ -406,6 +406,8 @@ pub const JsonPrinter = struct {
                 try self.stream.write(@tagName(node.kind));
                 try self.stream.objectField("text");
                 try self.stream.write(self.s(node.text));
+                try self.stream.objectField("args");
+                try self.printExprRange(node.args);
             },
             .Insert => {
                 const node = self.exprs.get(.Insert, id);

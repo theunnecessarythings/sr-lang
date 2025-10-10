@@ -156,7 +156,7 @@ pub const Rows = struct {
     pub const Select = struct { result: ValueId, ty: types.TypeId, cond: ValueId, then_value: ValueId, else_value: ValueId };
 
     pub const Call = struct { result: ValueId, ty: types.TypeId, callee: StrId, args: RangeValue };
-    pub const MlirBlock = struct { result: OptValueId, ty: types.TypeId, kind: ast.MlirKind, text: StrId };
+    pub const MlirBlock = struct { result: OptValueId, ty: types.TypeId, kind: ast.MlirKind, text: StrId, args: RangeValue };
     pub const VariantMake = struct { result: ValueId, ty: types.TypeId, tag: u32, payload: OptValueId, payload_ty: types.TypeId };
     pub const VariantTag = struct { result: ValueId, ty: types.TypeId, value: ValueId };
     pub const VariantPayloadPtr = struct { result: ValueId, ty: types.TypeId, value: ValueId };
@@ -1438,6 +1438,11 @@ pub const TirPrinter = struct {
                 } else {
                     try self.leaf("result=null", .{});
                 }
+                try self.ws();
+                try self.writer.writeAll("args=");
+                const args = self.tir.instrs.value_pool.slice(r.args);
+                try self.printValueList(args);
+                try self.writer.writeAll("\n");
                 try self.close();
             },
         }
