@@ -6,6 +6,8 @@ const ImportResolver = @import("import_resolver.zig").ImportResolver;
 const TypeInfo = @import("types.zig").TypeInfo;
 const TypeStore = @import("types.zig").TypeStore;
 
+var g_passes_registered: bool = false;
+
 pub const SourceManager = struct {
     gpa: std.mem.Allocator,
     files: std.ArrayList([]const u8) = .empty,
@@ -86,7 +88,10 @@ pub fn initMLIR(alloc: std.mem.Allocator) mlir.Context {
     var mlir_context = mlir.Context.create();
     const registry = mlir.DialectRegistry.create();
     mlir.registerAllDialects(registry);
-    mlir.registerAllPasses();
+    if (!g_passes_registered) {
+        mlir.registerAllPasses();
+        g_passes_registered = true;
+    }
     mlir.registerAllLLVMTranslations(mlir_context);
 
     mlir_context.appendDialectRegistry(registry);

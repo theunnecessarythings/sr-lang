@@ -9,6 +9,14 @@ const mlir = @import("mlir_bindings.zig");
 const compile = @import("compile.zig");
 const mlir_codegen = @import("mlir_codegen.zig");
 
+const ComptimeApi = tir.ComptimeApi;
+const ComptimeValue = types.ComptimeValue;
+
+fn comptime_print_impl(format: [*c]const u8, ...) callconv(.c) void {
+    // NOTE: This is a placeholder. Proper varargs handling is needed.
+    std.debug.print("comptime> {s}\n", .{@as([]const u8, std.mem.sliceTo(format, 0))});
+}
+
 const StrId = @import("cst.zig").StrId;
 const OptStrId = @import("cst.zig").OptStrId;
 const Context = @import("compile.zig").Context;
@@ -771,23 +779,44 @@ pub const LowerTir = struct {
         defer tmp_tir.deinit();
         var tmp_builder = tir.Builder.init(self.gpa, &tmp_tir);
 
-        // 2. Create the thunk function `fn()` that returns the comptime value.
+        // 2. Define the thunk signature: fn(api: *ComptimeApi, result: *ComptimeValue)
+        const ptr_ty = self.context.type_store.mkPtr(self.context.type_store.tU8(), false); // Use u8* as a generic pointer
         const thunk_name = tmp_builder.intern("__comptime_thunk");
-        const thunk_ret_ty = self.getExprType(cb.block) orelse return error.LoweringBug;
-        var thunk_fn = try tmp_builder.beginFunction(thunk_name, thunk_ret_ty, false);
+        var thunk_fn = try tmp_builder.beginFunction(thunk_name, self.context.type_store.tVoid(), false);
+        const api_ptr_val = try tmp_builder.addParam(&thunk_fn, tmp_builder.intern("api_ptr"), ptr_ty);
+        _ = api_ptr_val;
+        const result_ptr_val = try tmp_builder.addParam(&thunk_fn, tmp_builder.intern("result_ptr"), ptr_ty);
         var thunk_blk = try tmp_builder.beginBlock(&thunk_fn);
 
         // 3. Lower the comptime block's AST into the thunk's TIR.
         var tmp_env = Env.init(self.gpa);
         defer tmp_env.deinit(self.gpa);
-        const result_val_id = try self.lowerExpr(a, &tmp_env, &thunk_fn, &thunk_blk, cb.block, thunk_ret_ty, .rvalue);
+
+        const result_expr_ty = self.getExprType(cb.block) orelse return error.LoweringBug;
+        const result_val_id = try self.lowerExpr(a, &tmp_env, &thunk_fn, &thunk_blk, cb.block, result_expr_ty, .rvalue);
+
+        // 4. Store the result in the result pointer
+        const result_kind = self.context.type_store.getKind(result_expr_ty);
+
+        if (result_kind != .Void) {
+            const field_ty = switch (result_kind) {
+                .I64, .U64, .I32, .U32 => self.context.type_store.tI64(), // ComptimeValue uses u128, but we get i64 from JIT
+                .F64 => self.context.type_store.tF64(),
+                .Bool => self.context.type_store.tBool(),
+                else => return error.UnsupportedComptimeType,
+            };
+            const field_ptr_ty = self.context.type_store.mkPtr(field_ty, false);
+            const field_ptr = thunk_blk.builder.tirValue(.CastBit, &thunk_blk, field_ptr_ty, .{ .value = result_ptr_val });
+            _ = thunk_blk.builder.tirValue(.Store, &thunk_blk, field_ty, .{ .ptr = field_ptr, .value = result_val_id, .@"align" = 0 });
+        }
+
         if (thunk_blk.term.isNone()) {
-            try tmp_builder.setReturnVal(&thunk_blk, result_val_id);
+            try tmp_builder.setReturnVoid(&thunk_blk);
         }
         try tmp_builder.endBlock(&thunk_fn, thunk_blk);
         try tmp_builder.endFunction(thunk_fn);
 
-        // 4. Codegen the temporary TIR to MLIR.
+        // 5. Codegen the temporary TIR to MLIR.
         if (!g_mlir_inited) {
             g_mlir_ctx = compile.initMLIR(self.gpa);
             g_mlir_inited = true;
@@ -796,45 +825,42 @@ pub const LowerTir = struct {
         defer gen.deinit();
         var mlir_module = try gen.emitModule(&tmp_tir, self.context);
 
-        // 5. Run passes and JIT the module.
+        // 6. Run passes and JIT the module.
         try compile.run_passes(&gen.mlir_ctx, &mlir_module);
         _ = mlir.c.LLVMInitializeNativeTarget();
         _ = mlir.c.LLVMInitializeNativeAsmPrinter();
         const engine = mlir.c.mlirExecutionEngineCreate(mlir_module.handle, 2, 0, null, false);
         defer mlir.c.mlirExecutionEngineDestroy(engine);
 
-        // 6. Invoke the JIT'd thunk.
+        // 7. Register API symbols
+        const comptime_print_name = mlir.StringRef.from("comptime_print");
+        const comptime_print_ptr = @constCast(&comptime_print_impl);
+        mlir.c.mlirExecutionEngineRegisterSymbol(engine, comptime_print_name.inner, comptime_print_ptr);
+
+        // 8. Set up ComptimeApi and result value, then invoke the JIT'd thunk.
+        var comptime_api = ComptimeApi{
+            .print = comptime_print_impl,
+        };
+        var result_value: ComptimeValue = .Void;
+
         const thunk_fn_name_ref = mlir.StringRef.from("__comptime_thunk");
         const func_ptr = mlir.c.mlirExecutionEngineLookup(engine, thunk_fn_name_ref.inner);
         if (func_ptr == null) {
             return error.ComptimeExecutionFailed;
         }
 
-        const result_ty = self.getExprType(cb.block) orelse return error.LoweringBug;
-        const result_kind = self.context.type_store.getKind(result_ty);
+        const ThunkFn = *const fn (api_ptr: *ComptimeApi, result_ptr: *ComptimeValue) callconv(.c) void;
+        const typed_func_ptr: ThunkFn = @ptrCast(@alignCast(func_ptr));
+        typed_func_ptr(&comptime_api, &result_value);
 
-        return switch (result_kind) {
-            .I64, .U64 => blk_i: {
-                const ThunkFn = *const fn () callconv(.c) u64;
-                const typed_func_ptr: ThunkFn = @ptrCast(@alignCast(func_ptr));
-                const result = typed_func_ptr();
-                break :blk_i blk.builder.tirValue(.ConstInt, blk, result_ty, .{ .value = result });
-            },
-            .F64 => blk_f: {
-                const ThunkFn = *const fn () callconv(.c) f64;
-                const typed_func_ptr: ThunkFn = @ptrCast(@alignCast(func_ptr));
-                const result = typed_func_ptr();
-                break :blk_f blk.builder.tirValue(.ConstFloat, blk, result_ty, .{ .value = result });
-            },
-            .Bool => blk_b: {
-                const ThunkFn = *const fn () callconv(.c) bool;
-                const typed_func_ptr: ThunkFn = @ptrCast(@alignCast(func_ptr));
-                const result = typed_func_ptr();
-                break :blk_b blk.builder.tirValue(.ConstBool, blk, result_ty, .{ .value = result });
-            },
-            else => {
-                return error.UnsupportedComptimeType;
-            },
+        // 9. Convert the result back to a TIR constant.
+        const result_ty = self.getExprType(cb.block) orelse return error.LoweringBug;
+        return switch (result_value) {
+            .Int => |val| blk.builder.tirValue(.ConstInt, blk, result_ty, .{ .value = @as(u64, @intCast(val)) }),
+            .Float => |val| blk.builder.tirValue(.ConstFloat, blk, result_ty, .{ .value = val }),
+            .Bool => |val| blk.builder.tirValue(.ConstBool, blk, result_ty, .{ .value = val }),
+            .Void => blk.builder.tirValue(.ConstUndef, blk, self.context.type_store.tVoid(), .{}),
+            .String => |s| blk.builder.tirValue(.ConstString, blk, result_ty, .{ .text = blk.builder.intern(s) }),
         };
     }
 

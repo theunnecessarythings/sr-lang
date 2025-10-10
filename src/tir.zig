@@ -3,6 +3,10 @@ const dod = @import("cst.zig");
 const ast = @import("ast.zig");
 const types = @import("types.zig");
 
+pub const ComptimeApi = struct {
+    print: *const fn (format: [*c]const u8, ...) callconv(.c) void,
+};
+
 // Typed IR (TIR)
 // Columnar stores with typed indices and contiguous pools.
 
