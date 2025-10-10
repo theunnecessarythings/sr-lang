@@ -1634,6 +1634,32 @@ pub const LowerTir = struct {
         const l = try self.lowerExpr(a, env, f, blk, row.left, lhs_expect, .rvalue);
         const r = try self.lowerExpr(a, env, f, blk, row.right, rhs_expect, .rvalue);
 
+        // --- Handle Optional(T) == null or Optional(T) != null ---
+        const l_ty = self.getExprType(row.left) orelse return error.LoweringBug;
+        const r_ty = self.getExprType(row.right) orelse return error.LoweringBug;
+
+        const l_is_optional = self.context.type_store.getKind(l_ty) == .Optional;
+        const r_is_optional = self.context.type_store.getKind(r_ty) == .Optional;
+
+        const null_ty = self.context.type_store.mkOptional(self.context.type_store.tAny());
+
+        if ((row.op == .eq or row.op == .neq) and l_is_optional and r_is_optional) {
+            if (l_ty.eq(null_ty) or r_ty.eq(null_ty)) { // One of them is explicitly the null type
+                const optional_val = if (l_ty.eq(null_ty)) r else l; // The non-null optional
+
+                const bool_ty = self.context.type_store.tBool();
+                const flag = blk.builder.extractField(blk, bool_ty, optional_val, 0); // Extract is_some flag
+
+                const result = if (row.op == .eq)
+                    blk.builder.binBool(blk, .CmpEq, flag, blk.builder.tirValue(.ConstBool, blk, bool_ty, .{ .value = false })) // == null means flag == false
+                else
+                    blk.builder.binBool(blk, .CmpNe, flag, blk.builder.tirValue(.ConstBool, blk, bool_ty, .{ .value = false })); // != null means flag != false
+
+                return result;
+            }
+        }
+        // --- End Optional(T) == null or Optional(T) != null handling ---
+
         const ty0 = blk: {
             if (op_ty) |t| break :blk t;
             const want = self.commonNumeric(self.getExprType(row.left), self.getExprType(row.right)) orelse self.context.type_store.tI64();
@@ -3733,14 +3759,44 @@ pub const LowerTir = struct {
             },
             .Slice => {
                 const sl = a.pats.get(.Slice, pid);
-                const required_len = sl.elems.len;
-                const len_val = blk.builder.extractFieldNamed(blk, self.context.type_store.tUsize(), scrut, f.builder.intern("len"));
-                const required_val = blk.builder.tirValue(.ConstInt, blk, self.context.type_store.tUsize(), .{ .value = required_len });
-                if (sl.has_rest) {
-                    return blk.builder.binBool(blk, .CmpGe, len_val, required_val);
+                const elems = a.pats.pat_pool.slice(sl.elems);
+                const required_len = elems.len;
+
+                var len_val: tir.ValueId = undefined;
+                const scrut_ty_kind = self.context.type_store.getKind(scrut_ty);
+                if (scrut_ty_kind == .Array) {
+                    const arr_ty = self.context.type_store.get(.Array, scrut_ty);
+                    len_val = blk.builder.tirValue(.ConstInt, blk, self.context.type_store.tUsize(), .{ .value = arr_ty.len });
                 } else {
-                    return blk.builder.binBool(blk, .CmpEq, len_val, required_val);
+                    len_val = blk.builder.extractFieldNamed(blk, self.context.type_store.tUsize(), scrut, f.builder.intern("len"));
                 }
+                const required_val = blk.builder.tirValue(.ConstInt, blk, self.context.type_store.tUsize(), .{ .value = required_len });
+
+                var len_check_result: tir.ValueId = undefined;
+                if (sl.has_rest) {
+                    len_check_result = blk.builder.binBool(blk, .CmpGe, len_val, required_val);
+                } else {
+                    len_check_result = blk.builder.binBool(blk, .CmpEq, len_val, required_val);
+                }
+
+                var all_elements_match = blk.builder.tirValue(.ConstBool, blk, self.context.type_store.tBool(), .{ .value = true });
+
+                const elem_ty = if (self.context.type_store.getKind(scrut_ty) == .Array)
+                    self.context.type_store.get(.Array, scrut_ty).elem
+                else if (self.context.type_store.getKind(scrut_ty) == .Slice)
+                    self.context.type_store.get(.Slice, scrut_ty).elem
+                else
+                    self.context.type_store.tAny();
+
+                var i: usize = 0;
+                while (i < required_len) : (i += 1) {
+                    const pat_elem = elems[i];
+                    const elem_val = blk.builder.indexOp(blk, elem_ty, scrut, blk.builder.tirValue(.ConstInt, blk, self.context.type_store.tUsize(), .{ .value = i }));
+                    const elem_match = try self.matchPattern(a, env, f, blk, pat_elem, elem_val, elem_ty);
+                    all_elements_match = blk.builder.binBool(blk, .LogicalAnd, all_elements_match, elem_match);
+                }
+
+                return blk.builder.binBool(blk, .LogicalAnd, len_check_result, all_elements_match);
             },
             .Or => {
                 const or_pat = a.pats.get(.Or, pid);

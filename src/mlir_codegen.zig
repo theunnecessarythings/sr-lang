@@ -1451,20 +1451,15 @@ pub const MlirCodegen = struct {
                     self.append(ld);
                     break :blk ld.getResult(0);
                 } else {
-                    if (self.constIntOf(t, p.index)) |cval| {
-                        const v = self.extractAt(base, res_ty, &.{@as(i64, @intCast(cval))});
-                        break :blk v;
-                    } else {
-                        // Fallback: spill aggregate to memory and use pointer indexing
-                        const base_ty = base.getType();
-                        const tmp_ptr = self.spillAgg(base, base_ty, 0);
-                        const vptr = try self.emitGep(tmp_ptr, res_ty, &.{.{ .Value = p.index }}, t);
-                        var ld = OpBuilder.init("llvm.load", self.loc).builder()
-                            .add_operands(&.{vptr})
-                            .add_results(&.{res_ty}).build();
-                        self.append(ld);
-                        break :blk ld.getResult(0);
-                    }
+                    // Always spill aggregate to memory and use pointer indexing for arrays
+                    const base_ty = base.getType();
+                    const tmp_ptr = self.spillAgg(base, base_ty, 0);
+                    const vptr = try self.emitGep(tmp_ptr, res_ty, &.{.{ .Value = p.index }}, t);
+                    var ld = OpBuilder.init("llvm.load", self.loc).builder()
+                        .add_operands(&.{vptr})
+                        .add_results(&.{res_ty}).build();
+                    self.append(ld);
+                    break :blk ld.getResult(0);
                 }
             },
 
@@ -2942,14 +2937,78 @@ pub const MlirCodegen = struct {
             },
 
             .CastChecked => {
-                if (from_ty.isAInteger() and to_ty.isAInteger()) {
-                    return self.checkedIntToInt(from_v, from_ty, to_ty, self.isSignedInt(store, src_sr));
+                // const to_ty_mlir = to_ty;
+                const from_ty_mlir = from_v.getType();
+
+                // The result of a checked cast is always an Optional type.
+                const optional_mlir_ty = try self.llvmTypeOf(store, dst_sr);
+                const optional_elem_mlir_ty = try self.llvmTypeOf(store, store.get(.Optional, dst_sr).elem);
+
+                var cast_ok: mlir.Value = self.constBool(true);
+                var casted_val: mlir.Value = undefined;
+
+                if (from_ty_mlir.isAInteger() and optional_elem_mlir_ty.isAInteger()) {
+                    // Integer to Integer checked cast
+                    const fw = try intOrFloatWidth(from_ty_mlir);
+                    const tw = try intOrFloatWidth(optional_elem_mlir_ty);
+                    const from_signed = self.isSignedInt(store, src_sr);
+                    // const to_signed = self.isSignedInt(store, store.get(.Optional, dst_sr).elem);
+
+                    if (fw == tw) {
+                        casted_val = from_v;
+                    } else if (fw > tw) {
+                        // Truncation: check for overflow
+                        const narrowed = self.castIntToInt(from_v, from_ty_mlir, optional_elem_mlir_ty, from_signed);
+                        const widened = appendIfHasResult(self, OpBuilder.init(if (from_signed) "llvm.sext" else "llvm.zext", self.loc).builder()
+                            .add_operands(&.{narrowed}).add_results(&.{from_ty_mlir}).build());
+                        cast_ok = appendIfHasResult(self, OpBuilder.init("arith.cmpi", self.loc).builder()
+                            .add_operands(&.{ from_v, widened })
+                            .add_attributes(&.{self.named("predicate", mlir.Attribute.integerAttrGet(self.i64_ty, CMP_EQ))})
+                            .add_results(&.{self.i1_ty}).build());
+                        casted_val = narrowed;
+                    } else {
+                        // Extension: always succeeds
+                        casted_val = self.castIntToInt(from_v, from_ty_mlir, optional_elem_mlir_ty, from_signed);
+                    }
+                } else if (from_ty_mlir.isAFloat() and optional_elem_mlir_ty.isAInteger()) {
+                    // Float to Integer checked cast
+                    const lim = self.intMinMax(optional_elem_mlir_ty, self.isSignedInt(store, store.get(.Optional, dst_sr).elem));
+                    const ft = from_ty_mlir;
+                    const min_f = self.castIntToFloat(lim.min, ft, self.isSignedInt(store, store.get(.Optional, dst_sr).elem));
+                    const max_f = self.castIntToFloat(lim.max, ft, self.isSignedInt(store, store.get(.Optional, dst_sr).elem));
+
+                    const lt = appendIfHasResult(self, OpBuilder.init("arith.cmpf", self.loc).builder()
+                        .add_operands(&.{ from_v, min_f })
+                        .add_attributes(&.{self.named("predicate", mlir.Attribute.integerAttrGet(self.i64_ty, F_CMP_OLT))})
+                        .add_results(&.{self.i1_ty}).build());
+                    const gt = appendIfHasResult(self, OpBuilder.init("arith.cmpf", self.loc).builder()
+                        .add_operands(&.{ from_v, max_f })
+                        .add_attributes(&.{self.named("predicate", mlir.Attribute.integerAttrGet(self.i64_ty, F_CMP_OGT))})
+                        .add_results(&.{self.i1_ty}).build());
+                    const isnan = appendIfHasResult(self, OpBuilder.init("arith.cmpf", self.loc).builder()
+                        .add_operands(&.{ from_v, from_v })
+                        .add_attributes(&.{self.named("predicate", mlir.Attribute.integerAttrGet(self.i64_ty, F_CMP_UNO))})
+                        .add_results(&.{self.i1_ty}).build());
+
+                    var bad = self.boolOr(lt, gt);
+                    bad = self.boolOr(bad, isnan);
+                    cast_ok = self.boolNot(bad);
+
+                    casted_val = self.castFloatToInt(from_v, optional_elem_mlir_ty, self.isSignedInt(store, store.get(.Optional, dst_sr).elem));
+                } else {
+                    // For other types (ptr<->int, float<->float), treat as normal cast for now.
+                    // If it's a normal cast that would fail, then the checked cast should produce None.
+                    // This is a simplification; a more robust solution would involve more specific checks.
+                    casted_val = self.emitCastNormal(store, store.get(.Optional, dst_sr).elem, optional_elem_mlir_ty, from_v, src_sr);
+                    // Assume success for now, or add more complex checks if needed.
+                    cast_ok = self.constBool(true);
                 }
-                if (from_ty.isAFloat() and to_ty.isAInteger()) {
-                    return self.checkedFloatToInt(from_v, to_ty, self.isSignedInt(store, dst_sr));
-                }
-                // ptr<->int or float<->float: treat as normal unless you want stricter traps
-                return self.emitCastNormal(store, dst_sr, to_ty, from_v, src_sr);
+
+                // Construct the Optional struct
+                var result_optional = self.undefOf(optional_mlir_ty);
+                result_optional = self.insertAt(result_optional, cast_ok, &.{0});
+                result_optional = self.insertAt(result_optional, casted_val, &.{1});
+                return result_optional;
             },
         }
     }

@@ -1108,6 +1108,9 @@ pub const Checker = struct {
             return null;
         }
         _ = try self.checkStmt(last);
+        if (last_kind == .Break or last_kind == .Return) {
+            return self.context.type_store.tNoreturn();
+        }
         return self.context.type_store.tVoid();
     }
 
@@ -1203,6 +1206,16 @@ pub const Checker = struct {
                 const both_same_enum = lhs_kind == .Enum and rhs_kind == .Enum and l.eq(r);
                 const both_same_error = lhs_kind == .Error and rhs_kind == .Error and l.eq(r);
 
+                // Handle Optional(T) == null or Optional(T) != null
+                if ((bin.op == .eq or bin.op == .neq) and lhs_kind == .Optional and rhs_kind == .Optional) {
+                    const l_opt_elem_ty = self.context.type_store.get(.Optional, l).elem;
+                    const r_opt_elem_ty = self.context.type_store.get(.Optional, r).elem;
+
+                    if (self.typeKind(l_opt_elem_ty) == .Any or self.typeKind(r_opt_elem_ty) == .Any) {
+                        return self.context.type_store.tBool();
+                    }
+                }
+
                 if ((bin.op == .eq or bin.op == .neq) and both_same_error) {
                     return self.context.type_store.tBool();
                 }
@@ -1217,6 +1230,7 @@ pub const Checker = struct {
                 }
                 return self.context.type_store.tBool();
             },
+
             .logical_and, .logical_or => {
                 if (l.toRaw() == self.context.type_store.tBool().toRaw() and
                     r.toRaw() == self.context.type_store.tBool().toRaw())
@@ -2207,10 +2221,24 @@ pub const Checker = struct {
 
         const then_ty = try self.checkExpr(if_expr.then_block) orelse return null;
         if (if_expr.else_block.isNone()) {
+            if (self.typeKind(then_ty) == .Noreturn) {
+                return self.context.type_store.tNoreturn();
+            }
             try self.context.diags.addError(self.exprLoc(if_expr), .if_expression_requires_else, .{});
             return null;
         }
         const else_ty = try self.checkExpr(if_expr.else_block.unwrap()) orelse return null;
+
+        const then_is_noreturn = self.typeKind(then_ty) == .Noreturn;
+        const else_is_noreturn = self.typeKind(else_ty) == .Noreturn;
+
+        if (then_is_noreturn and else_is_noreturn) {
+            return self.context.type_store.tNoreturn();
+        } else if (then_is_noreturn) {
+            return else_ty;
+        } else if (else_is_noreturn) {
+            return then_ty;
+        }
 
         if (then_ty.toRaw() != else_ty.toRaw()) {
             try self.context.diags.addError(self.exprLoc(if_expr), .if_branch_type_mismatch, .{});
@@ -2489,6 +2517,7 @@ pub const Checker = struct {
                     try self.context.diags.addError(self.exprLoc(cr), .invalid_checked_cast, .{});
                     return null;
                 }
+                return self.context.type_store.mkOptional(et);
             },
         }
         return et;
