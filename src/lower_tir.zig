@@ -6,6 +6,8 @@ const types = @import("types.zig");
 const check_pattern_matching = @import("check_pattern_matching.zig");
 const checker = @import("checker.zig");
 const mlir = @import("mlir_bindings.zig");
+const compile = @import("compile.zig");
+const mlir_codegen = @import("mlir_codegen.zig");
 
 const StrId = @import("cst.zig").StrId;
 const OptStrId = @import("cst.zig").OptStrId;
@@ -13,7 +15,6 @@ const Context = @import("compile.zig").Context;
 const ImportResolver = @import("import_resolver.zig").ImportResolver;
 const Pipeline = @import("pipeline.zig").Pipeline;
 const Builder = tir.Builder;
-
 
 pub const LowerTir = struct {
     gpa: std.mem.Allocator,
@@ -167,15 +168,12 @@ pub const LowerTir = struct {
 
         try self.lowerGlobalMlir(a, &b);
 
-
         // Lower top-level decls: functions and globals
         const decls = a.exprs.decl_pool.slice(a.unit.decls);
         for (decls) |did| try self.lowerTopDecl(a, &b, did);
 
         return t;
     }
-
-
 
     pub fn setModulePrefix(self: *LowerTir, name: []const u8, prefix: []const u8) !void {
         const key = try self.gpa.dupe(u8, name);
@@ -750,6 +748,70 @@ pub const LowerTir = struct {
             .{ .index = 0, .name = .none(), .value = tag_val },
             .{ .index = 1, .name = .none(), .value = union_val },
         });
+    }
+
+    fn jitEvalComptimeBlock(
+        self: *LowerTir,
+        a: *const ast.Ast,
+        env: *Env,
+        f: *Builder.FunctionFrame,
+        blk: *Builder.BlockFrame,
+        id: ast.ExprId,
+    ) !tir.ValueId {
+        _ = env;
+        _ = f;
+
+        const cb = a.exprs.get(.ComptimeBlock, id);
+
+        // 1. Create a temporary TIR module for the thunk.
+        var tmp_tir = tir.TIR.init(self.gpa, &self.context.type_store);
+        defer tmp_tir.deinit();
+        var tmp_builder = tir.Builder.init(self.gpa, &tmp_tir);
+
+        // 2. Create the thunk function `fn() -> i64`.
+        const thunk_name = tmp_builder.intern("__comptime_thunk");
+        const thunk_ret_ty = self.context.type_store.tI64();
+        var thunk_fn = try tmp_builder.beginFunction(thunk_name, thunk_ret_ty, false);
+        var thunk_blk = try tmp_builder.beginBlock(&thunk_fn);
+
+        // 3. Lower the comptime block's AST into the thunk's TIR.
+        // We need a temporary env for this sub-compilation.
+        var tmp_env = Env.init(self.gpa);
+        defer tmp_env.deinit(self.gpa);
+        const result_val = try self.lowerExpr(a, &tmp_env, &thunk_fn, &thunk_blk, cb.block, thunk_ret_ty, .rvalue);
+        if (thunk_blk.term.isNone()) {
+            try tmp_builder.setReturnVal(&thunk_blk, result_val);
+        }
+        try tmp_builder.endBlock(&thunk_fn, thunk_blk);
+        try tmp_builder.endFunction(thunk_fn);
+
+        // 4. Codegen the temporary TIR to MLIR.
+        var mlir_ctx = compile.initMLIR(self.gpa);
+        defer mlir_ctx.destroy();
+        var gen = mlir_codegen.MlirCodegen.init(self.gpa, self.context, mlir_ctx);
+        defer gen.deinit();
+        var mlir_module = try gen.emitModule(&tmp_tir, self.context);
+
+        // 5. Run passes and JIT the module.
+        try compile.run_passes(&gen.mlir_ctx, &mlir_module);
+        _ = mlir.c.LLVMInitializeNativeTarget();
+        _ = mlir.c.LLVMInitializeNativeAsmPrinter();
+        const engine = mlir.c.mlirExecutionEngineCreate(mlir_module.handle, 2, 0, null, false);
+        defer mlir.c.mlirExecutionEngineDestroy(engine);
+
+        // 6. Invoke the JIT'd thunk.
+        var result: i64 = -1;
+        const thunk_fn_name = mlir.StringRef.from("__comptime_thunk");
+        const res_ptr: [*c]?*anyopaque = @ptrCast(@constCast(&[_]?*anyopaque{&result}));
+        const status = mlir.c.mlirExecutionEngineInvokePacked(engine, thunk_fn_name.inner, res_ptr);
+
+        if (mlir.c.mlirLogicalResultIsFailure(status)) {
+            // TODO: Add diagnostic
+            return error.ComptimeExecutionFailed;
+        }
+
+        // 7. Create a constant in the *original* TIR with the result.
+        return blk.builder.tirValue(.ConstInt, blk, thunk_ret_ty, .{ .value = @as(u64, @intCast(result)) });
     }
 
     fn lowerCall(
@@ -2784,7 +2846,16 @@ pub const LowerTir = struct {
             .For => self.lowerFor(a, env, f, blk, id, expected_ty),
             .Import => blk.builder.tirValue(.ConstUndef, blk, self.getExprType(id) orelse self.context.type_store.tAny(), .{}),
             .VariantType, .EnumType, .StructType => self.lowerTypeExprOpaque(blk, id, expected_ty),
-            .MlirBlock => try self.lowerMlirBlock(a, env, f, blk, id, expected_ty),
+            .CodeBlock => blk: {
+                const r = a.exprs.get(.CodeBlock, id);
+                _ = r;
+                // For now, treat as opaque and produce undef
+                const ty0 = self.getExprType(id) orelse self.context.type_store.tAny();
+                break :blk self.undef(blk, ty0);
+            },
+            .ComptimeBlock => blk: {
+                break :blk try self.jitEvalComptimeBlock(a, env, f, blk, id);
+            },
             else => {
                 std.debug.print("lowerExpr: unhandled expr kind {}\n", .{expr_kind});
                 return error.LoweringBug;

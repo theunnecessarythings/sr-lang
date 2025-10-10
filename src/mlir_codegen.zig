@@ -344,6 +344,7 @@ pub const MlirCodegen = struct {
         const attrs = [_]mlir.NamedAttribute{
             self.named("sym_name", self.strAttr(func_name)),
             self.named("function_type", mlir.Attribute.typeAttrGet(fty)),
+            self.named("llvm.emit_c_interface", mlir.Attribute.unitAttrGet(self.mlir_ctx)),
         };
         const region = mlir.Region.create();
         const fnop = OpBuilder.init("func.func", self.loc).builder()

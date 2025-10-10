@@ -867,7 +867,10 @@ pub const Checker = struct {
             .Range => try self.checkRange(id),
             .Deref => try self.checkDeref(id),
             .Call => try self.checkCall(id),
-            .ComptimeBlock => try self.checkComptimeBlock(id),
+            .ComptimeBlock => {
+                const cb = self.ast_unit.exprs.get(.ComptimeBlock, id);
+                return try self.checkExpr(cb.block);
+            },
             .CodeBlock => try self.checkCodeBlock(id),
             .AsyncBlock => try self.checkAsyncBlock(id),
             .MlirBlock => try self.checkMlirBlock(id),
@@ -2141,15 +2144,6 @@ pub const Checker = struct {
         if (!self.warned_code) {
             _ = self.context.diags.addNote(self.exprLoc(cb), .checker_code_block_not_executed, .{}) catch {};
             self.warned_code = true;
-        }
-        return try self.checkExpr(cb.block);
-    }
-
-    fn checkComptimeBlock(self: *Checker, id: ast.ExprId) !?types.TypeId {
-        const cb = self.getExpr(.ComptimeBlock, id);
-        if (!self.warned_comptime) {
-            _ = self.context.diags.addNote(self.exprLoc(cb), .checker_comptime_not_executed, .{}) catch {};
-            self.warned_comptime = true;
         }
         return try self.checkExpr(cb.block);
     }

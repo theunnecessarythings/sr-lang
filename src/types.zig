@@ -18,6 +18,10 @@ pub const Pool = cst.Pool;
 pub const StoreIndex = cst.StoreIndex;
 pub const StrId = cst.StrId;
 
+pub const ComptimeValue = union(enum) {
+    Int: u128,
+};
+
 pub const TypeInfo = struct {
     gpa: std.mem.Allocator,
     store: *TypeStore,
@@ -25,14 +29,20 @@ pub const TypeInfo = struct {
     expr_types: std.ArrayListUnmanaged(?TypeId) = .{},
     decl_types: std.ArrayListUnmanaged(?TypeId) = .{},
     field_index_for_expr: std.AutoArrayHashMapUnmanaged(u32, u32) = .{},
+    comptime_values: std.AutoArrayHashMapUnmanaged(ast.ExprId, ComptimeValue) = .{},
 
     pub fn init(gpa: std.mem.Allocator, store: *TypeStore) TypeInfo {
-        return .{ .gpa = gpa, .store = store };
+        return .{
+            .gpa = gpa,
+            .store = store,
+            .comptime_values = .{},
+        };
     }
     pub fn deinit(self: *TypeInfo) void {
         self.expr_types.deinit(self.gpa);
         self.decl_types.deinit(self.gpa);
         self.field_index_for_expr.deinit(self.gpa);
+        self.comptime_values.deinit(self.gpa);
     }
 
     pub fn setModule(self: *TypeInfo, module_id: usize) void {
