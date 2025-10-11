@@ -8,39 +8,7 @@ const checker = @import("checker.zig");
 const mlir = @import("mlir_bindings.zig");
 const compile = @import("compile.zig");
 const mlir_codegen = @import("mlir_codegen.zig");
-
-const ComptimeApi = tir.ComptimeApi;
-const ComptimeValue = types.ComptimeValue;
-
-fn comptime_print_impl(context: ?*anyopaque, format: [*c]const u8, ...) callconv(.c) void {
-    _ = context;
-    std.debug.print("comptime> {s}\n", .{@as([]const u8, std.mem.sliceTo(format, 0))});
-}
-
-fn get_type_by_name_impl(context: ?*anyopaque, name: [*c]const u8) callconv(.c) u32 {
-    const ctx: *Context = @ptrCast(@alignCast(context.?));
-    const name_slice = std.mem.sliceTo(name, 0);
-    const ts = &ctx.type_store;
-
-    if (std.mem.eql(u8, name_slice, "bool")) return ts.tBool().toRaw();
-    if (std.mem.eql(u8, name_slice, "i8")) return ts.tI8().toRaw();
-    if (std.mem.eql(u8, name_slice, "i16")) return ts.tI16().toRaw();
-    if (std.mem.eql(u8, name_slice, "i32")) return ts.tI32().toRaw();
-    if (std.mem.eql(u8, name_slice, "i64")) return ts.tI64().toRaw();
-    if (std.mem.eql(u8, name_slice, "u8")) return ts.tU8().toRaw();
-    if (std.mem.eql(u8, name_slice, "u16")) return ts.tU16().toRaw();
-    if (std.mem.eql(u8, name_slice, "u32")) return ts.tU32().toRaw();
-    if (std.mem.eql(u8, name_slice, "u64")) return ts.tU64().toRaw();
-    if (std.mem.eql(u8, name_slice, "f32")) return ts.tF32().toRaw();
-    if (std.mem.eql(u8, name_slice, "f64")) return ts.tF64().toRaw();
-    if (std.mem.eql(u8, name_slice, "usize")) return ts.tUsize().toRaw();
-    if (std.mem.eql(u8, name_slice, "char")) return ts.tU32().toRaw();
-    if (std.mem.eql(u8, name_slice, "string")) return ts.tString().toRaw();
-    if (std.mem.eql(u8, name_slice, "void")) return ts.tVoid().toRaw();
-    if (std.mem.eql(u8, name_slice, "any")) return ts.tAny().toRaw();
-
-    return ts.tVoid().toRaw(); // Return void if not found
-}
+const comp = @import("comptime.zig");
 
 const StrId = @import("cst.zig").StrId;
 const OptStrId = @import("cst.zig").OptStrId;
@@ -888,14 +856,13 @@ pub const LowerTir = struct {
 
         // 7. Set up ComptimeApi and result value, then invoke the JIT'd thunk.
 
-        var comptime_api = ComptimeApi{
+        var comptime_api = comp.ComptimeApi{
             .context = self.context,
-
-            .print = comptime_print_impl,
-
-            .get_type_by_name = get_type_by_name_impl,
+            .print = comp.comptime_print_impl,
+            .get_type_by_name = comp.get_type_by_name_impl,
+            .type_of = comp.type_of_impl,
         };
-        var result_value: ComptimeValue = .Void;
+        var result_value: comp.ComptimeValue = .Void;
 
         const thunk_fn_name_ref = mlir.StringRef.from("__comptime_thunk");
         const func_ptr = mlir.c.mlirExecutionEngineLookup(engine, thunk_fn_name_ref.inner);
@@ -903,7 +870,7 @@ pub const LowerTir = struct {
             return error.ComptimeExecutionFailed;
         }
 
-        const ThunkFn = *const fn (api_ptr: *ComptimeApi, result_ptr: *ComptimeValue) callconv(.c) void;
+        const ThunkFn = *const fn (api_ptr: *comp.ComptimeApi, result_ptr: *comp.ComptimeValue) callconv(.c) void;
         const typed_func_ptr: ThunkFn = @ptrCast(@alignCast(func_ptr));
         typed_func_ptr(&comptime_api, &result_value);
 
@@ -931,7 +898,10 @@ pub const LowerTir = struct {
         const callee = self.resolveCallee(a, f, row);
 
         const callee_name = a.exprs.strs.get(callee.name);
-        if (std.mem.eql(u8, callee_name, "get_type_by_name") or std.mem.eql(u8, callee_name, "comptime_print")) {
+        if (std.mem.eql(u8, callee_name, "get_type_by_name") or
+            std.mem.eql(u8, callee_name, "comptime_print") or
+            std.mem.eql(u8, callee_name, "type_of"))
+        {
             const api_ptr_bnd = env.lookup(f.builder.intern("comptime_api_ptr")) orelse return error.LoweringBug;
             const api_ptr = api_ptr_bnd.value;
 
@@ -942,6 +912,7 @@ pub const LowerTir = struct {
                 .{ .name = f.builder.intern("context"), .ty = ptr_ty },
                 .{ .name = f.builder.intern("print"), .ty = fn_ptr_ty },
                 .{ .name = f.builder.intern("get_type_by_name"), .ty = fn_ptr_ty },
+                .{ .name = f.builder.intern("type_of"), .ty = fn_ptr_ty },
             });
 
             const comptime_api_ptr_ty = self.context.type_store.mkPtr(comptime_api_struct_ty, false);
@@ -951,7 +922,7 @@ pub const LowerTir = struct {
 
             const ctx_ptr = blk.builder.tirValue(.Load, blk, ptr_ty, .{ .ptr = ctx_ptr_ptr, .@"align" = 0 });
 
-            const fn_ptr_idx: u64 = if (std.mem.eql(u8, callee_name, "comptime_print")) 1 else 2;
+            const fn_ptr_idx: u64 = if (std.mem.eql(u8, callee_name, "comptime_print")) 1 else if (std.mem.eql(u8, callee_name, "get_type_by_name")) 2 else 3;
 
             const fn_ptr_ptr = blk.builder.gep(blk, self.context.type_store.mkPtr(fn_ptr_ty, false), typed_api_ptr, &.{blk.builder.gepConst(fn_ptr_idx)});
             const fn_ptr = blk.builder.tirValue(.Load, blk, fn_ptr_ty, .{ .ptr = fn_ptr_ptr, .@"align" = 0 });
@@ -960,8 +931,16 @@ pub const LowerTir = struct {
             var all_args: std.ArrayList(tir.ValueId) = .empty;
             defer all_args.deinit(self.gpa);
             try all_args.append(self.gpa, ctx_ptr);
-            for (arg_ids) |arg_id| {
-                try all_args.append(self.gpa, try self.lowerExpr(a, env, f, blk, arg_id, null, .rvalue));
+            // For type_of, we need to pass the raw ExprId, not the lowered value.
+            if (std.mem.eql(u8, callee_name, "type_of")) {
+                // Ensure there's exactly one argument for type_of
+                std.debug.assert(arg_ids.len == 1);
+                const arg_type_id = self.getExprType(arg_ids[0]) orelse return error.LoweringBug;
+                try all_args.append(self.gpa, blk.builder.tirValue(.ConstInt, blk, self.context.type_store.tU32(), .{ .value = arg_type_id.toRaw() }));
+            } else {
+                for (arg_ids) |arg_id| {
+                    try all_args.append(self.gpa, try self.lowerExpr(a, env, f, blk, arg_id, null, .rvalue));
+                }
             }
 
             const ret_ty = self.getExprType(id) orelse self.context.type_store.tAny();

@@ -1,6 +1,7 @@
 const std = @import("std");
 const cst = @import("cst.zig");
 const ast = @import("ast.zig");
+const comp = @import("comptime.zig");
 
 // DOD Type Store
 pub const TypeTag = struct {};
@@ -18,14 +19,6 @@ pub const Pool = cst.Pool;
 pub const StoreIndex = cst.StoreIndex;
 pub const StrId = cst.StrId;
 
-pub const ComptimeValue = union(enum) {
-    Void,
-    Int: u128,
-    Float: f64,
-    Bool: bool,
-    String: []const u8,
-};
-
 pub const TypeInfo = struct {
     gpa: std.mem.Allocator,
     store: *TypeStore,
@@ -33,7 +26,7 @@ pub const TypeInfo = struct {
     expr_types: std.ArrayListUnmanaged(?TypeId) = .{},
     decl_types: std.ArrayListUnmanaged(?TypeId) = .{},
     field_index_for_expr: std.AutoArrayHashMapUnmanaged(u32, u32) = .{},
-    comptime_values: std.AutoArrayHashMapUnmanaged(ast.ExprId, ComptimeValue) = .{},
+    comptime_values: std.AutoArrayHashMapUnmanaged(ast.ExprId, comp.ComptimeValue) = .{},
 
     pub fn init(gpa: std.mem.Allocator, store: *TypeStore) TypeInfo {
         return .{
