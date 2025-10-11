@@ -148,7 +148,7 @@ pub const LowerTir = struct {
         if (global_mlir_decls.items.len == 0) return;
 
         const name = b.intern("__sr_global_mlir_init");
-        var f = try b.beginFunction(name, self.context.type_store.tVoid(), false);
+        var f = try b.beginFunction(name, self.context.type_store.tVoid(), false, .empty());
         var blk = try b.beginBlock(&f);
         var env = Env.init(self.gpa);
         defer env.deinit(self.gpa);
@@ -371,6 +371,25 @@ pub const LowerTir = struct {
         }
     }
 
+    fn lowerAttrs(
+        self: *LowerTir,
+        a: *const ast.Ast,
+        b: *Builder,
+        range: ast.OptRangeAttr,
+    ) !tir.RangeAttribute {
+        if (range.isNone()) return .empty();
+        const attrs = a.exprs.attr_pool.slice(range.asRange());
+        var attr_list: std.ArrayList(tir.AttributeId) = .empty;
+        defer attr_list.deinit(self.gpa);
+
+        for (attrs) |aid| {
+            const arow = a.exprs.Attribute.get(aid);
+            // const value = try self.lowerExpr(a, env, f, blk, arow.value, null, .rvalue);
+            try attr_list.append(self.gpa, b.t.instrs.Attribute.add(self.gpa, .{ .name = arow.name, .value = .none() }));
+        }
+        return b.t.instrs.attribute_pool.pushMany(self.gpa, attr_list.items);
+    }
+
     fn lowerFunction(self: *LowerTir, a: *const ast.Ast, b: *Builder, name: StrId, fun_eid: ast.ExprId) !void {
         const fid = self.getExprType(fun_eid) orelse return;
         if (self.context.type_store.index.kinds.items[fid.toRaw()] != .Function) return;
@@ -389,7 +408,8 @@ pub const LowerTir = struct {
             }
         }
 
-        var f = try b.beginFunction(name, fnty.result, fnty.is_variadic);
+        const attrs = try self.lowerAttrs(a, b, fnr.attrs);
+        var f = try b.beginFunction(name, fnty.result, fnty.is_variadic, attrs);
 
         // Params
         const params = a.exprs.param_pool.slice(fnr.params);
@@ -807,7 +827,15 @@ pub const LowerTir = struct {
         // 2. Define the thunk signature: fn(api: *ComptimeApi, result: *ComptimeValue)
         const ptr_ty = self.context.type_store.mkPtr(self.context.type_store.tU8(), false); // Use u8* as a generic pointer
         const thunk_name = tmp_builder.intern("__comptime_thunk");
-        var thunk_fn = try tmp_builder.beginFunction(thunk_name, self.context.type_store.tVoid(), false);
+
+        // add attr `llvm.emit_c_interface`
+        const attr_id = tmp_tir.instrs.Attribute.add(self.gpa, .{
+            .name = a.exprs.strs.intern("llvm.emit_c_interface"),
+            .value = .none(),
+        });
+        const attrs = tmp_tir.instrs.attribute_pool.pushMany(self.gpa, &.{attr_id});
+
+        var thunk_fn = try tmp_builder.beginFunction(thunk_name, self.context.type_store.tVoid(), false, attrs);
         const api_ptr_val = try tmp_builder.addParam(&thunk_fn, tmp_builder.intern("api_ptr"), ptr_ty);
         const result_ptr_val = try tmp_builder.addParam(&thunk_fn, tmp_builder.intern("result_ptr"), ptr_ty);
         var thunk_blk = try tmp_builder.beginBlock(&thunk_fn);
@@ -919,15 +947,13 @@ pub const LowerTir = struct {
             const comptime_api_ptr_ty = self.context.type_store.mkPtr(comptime_api_struct_ty, false);
             const typed_api_ptr = blk.builder.tirValue(.CastBit, blk, comptime_api_ptr_ty, .{ .value = api_ptr });
 
-                        const ctx_ptr_ptr = blk.builder.gep(blk, self.context.type_store.mkPtr(ptr_ty, false), typed_api_ptr, comptime_api_struct_ty, &.{blk.builder.gepConst(0), blk.builder.gepConst(0)});
+            const ctx_ptr_ptr = blk.builder.gep(blk, self.context.type_store.mkPtr(ptr_ty, false), typed_api_ptr, &.{blk.builder.gepConst(0)});
 
-                        const ctx_ptr = blk.builder.tirValue(.Load, blk, ptr_ty, .{ .ptr = ctx_ptr_ptr, .@"align" = 0 });
+            const ctx_ptr = blk.builder.tirValue(.Load, blk, ptr_ty, .{ .ptr = ctx_ptr_ptr, .@"align" = 0 });
 
-            
+            const fn_ptr_idx: u64 = if (std.mem.eql(u8, callee_name, "comptime_print")) 1 else 2;
 
-                        const fn_ptr_idx: u64 = if (std.mem.eql(u8, callee_name, "comptime_print")) 1 else 2;
-
-                        const fn_ptr_ptr = blk.builder.gep(blk, self.context.type_store.mkPtr(fn_ptr_ty, false), typed_api_ptr, comptime_api_struct_ty, &.{blk.builder.gepConst(0), blk.builder.gepConst(fn_ptr_idx)});
+            const fn_ptr_ptr = blk.builder.gep(blk, self.context.type_store.mkPtr(fn_ptr_ty, false), typed_api_ptr, &.{blk.builder.gepConst(fn_ptr_idx)});
             const fn_ptr = blk.builder.tirValue(.Load, blk, fn_ptr_ty, .{ .ptr = fn_ptr_ptr, .@"align" = 0 });
 
             const arg_ids = a.exprs.expr_pool.slice(row.args);
@@ -1413,10 +1439,9 @@ pub const LowerTir = struct {
                 }
                 break :blk try self.lowerExpr(a, env, f, blk, row.index, self.context.type_store.tUsize(), .rvalue);
             };
-            const collection_ty = self.getExprType(row.collection) orelse return error.LoweringBug;
             const idx = blk.builder.gepValue(idx_v);
             const rty = self.context.type_store.mkPtr(self.getExprType(id) orelse return error.LoweringBug, false);
-            return blk.builder.gep(blk, rty, base_ptr, collection_ty, &.{blk.builder.gepConst(0), idx});
+            return blk.builder.gep(blk, rty, base_ptr, &.{idx});
         } else {
             const row = a.exprs.get(.IndexAccess, id);
             const ty0 = self.getExprType(id) orelse return error.LoweringBug;
@@ -1577,11 +1602,10 @@ pub const LowerTir = struct {
         // 3) address path (needs concrete field index)
         if (mode == .lvalue_addr) {
             const parent_ptr = try self.lowerExpr(a, env, f, blk, row.parent, null, .lvalue_addr);
-            const parent_ty = self.getExprType(row.parent) orelse return error.LoweringBug;
             const elem_ty = self.getExprType(id) orelse return error.LoweringBug;
             const idx = idx_maybe orelse return error.LoweringBug;
             const rptr_ty = self.context.type_store.mkPtr(elem_ty, false);
-            return blk.builder.gep(blk, rptr_ty, parent_ptr, parent_ty, &.{blk.builder.gepConst(0), blk.builder.gepConst(@intCast(idx))});
+            return blk.builder.gep(blk, rptr_ty, parent_ptr, &.{blk.builder.gepConst(@intCast(idx))});
         }
 
         // 4) rvalue extraction

@@ -27,6 +27,7 @@ pub const ParamId = dod.Index(FuncRows.Param);
 pub const GlobalId = dod.Index(FuncRows.Global);
 pub const EdgeId = dod.Index(Rows.Edge);
 pub const CaseId = dod.Index(Rows.Case);
+pub const AttributeId = dod.Index(Rows.Attribute);
 
 pub const RangeValue = dod.RangeOf(ValueId);
 pub const RangeBlock = dod.RangeOf(BlockId);
@@ -36,6 +37,7 @@ pub const RangeEdge = dod.RangeOf(EdgeId);
 pub const RangeCase = dod.RangeOf(CaseId);
 pub const RangeFunc = dod.RangeOf(FuncId);
 pub const RangeGlobal = dod.RangeOf(GlobalId);
+pub const RangeAttribute = dod.RangeOf(AttributeId);
 
 pub const Pool = dod.Pool;
 pub const Table = dod.Table;
@@ -143,13 +145,14 @@ pub const Rows = struct {
         result: ValueId,
         ty: types.TypeId,
         base: ValueId, // pointer
-        base_ty: types.TypeId,
         indices: RangeGepIndex,
     };
 
     pub const TupleMake = struct { result: ValueId, ty: types.TypeId, elems: RangeValue };
     pub const ArrayMake = struct { result: ValueId, ty: types.TypeId, elems: RangeValue };
     pub const StructFieldInit = struct { index: u32, name: dod.OptStrId, value: ValueId };
+    pub const Attribute = struct { name: StrId, value: OptValueId };
+
     pub const StructMake = struct { result: ValueId, ty: types.TypeId, fields: RangeStructFieldInit };
 
     pub const ExtractElem = struct { result: ValueId, ty: types.TypeId, agg: ValueId, index: u32 };
@@ -317,12 +320,14 @@ pub const InstrStore = struct {
     // aux tables
     GepIndex: Table(Rows.GepIndex) = .{},
     StructFieldInit: Table(Rows.StructFieldInit) = .{},
+    Attribute: Table(Rows.Attribute) = .{},
 
     // pools
     instr_pool: Pool(InstrId) = .{},
     value_pool: Pool(ValueId) = .{},
     gep_pool: Pool(GepIndexId) = .{},
     sfi_pool: Pool(StructFieldInitId) = .{},
+    attribute_pool: Pool(AttributeId) = .{},
     val_list_pool: Pool(ValueId) = .{},
 
     strs: *StringInterner,
@@ -406,7 +411,14 @@ pub const TermStore = struct {
 pub const FuncRows = struct {
     pub const Param = struct { value: ValueId, name: dod.OptStrId, ty: types.TypeId };
     pub const Block = struct { params: RangeParam, instrs: RangeInstr, term: TermId };
-    pub const Function = struct { name: StrId, params: RangeParam, result: types.TypeId, blocks: RangeBlock, is_variadic: bool };
+    pub const Function = struct {
+        name: StrId,
+        params: RangeParam,
+        result: types.TypeId,
+        blocks: RangeBlock,
+        is_variadic: bool,
+        attrs: RangeAttribute,
+    };
     pub const Global = struct { name: StrId, ty: types.TypeId, init: ConstInit };
 };
 
@@ -501,8 +513,21 @@ pub const Builder = struct {
     };
     pub const SwitchDest = struct { dest: BlockId, args: []const ValueId };
 
-    pub fn beginFunction(self: *Builder, name: StrId, result: types.TypeId, is_variadic: bool) !FunctionFrame {
-        const idx = self.t.funcs.Function.add(self.gpa, .{ .name = name, .params = RangeParam.empty(), .result = result, .blocks = RangeBlock.empty(), .is_variadic = is_variadic });
+    pub fn beginFunction(
+        self: *Builder,
+        name: StrId,
+        result: types.TypeId,
+        is_variadic: bool,
+        attrs: RangeAttribute,
+    ) !FunctionFrame {
+        const idx = self.t.funcs.Function.add(self.gpa, .{
+            .name = name,
+            .params = RangeParam.empty(),
+            .result = result,
+            .blocks = RangeBlock.empty(),
+            .is_variadic = is_variadic,
+            .attrs = attrs,
+        });
         return .{ .builder = self, .id = idx };
     }
 
@@ -755,10 +780,10 @@ pub const Builder = struct {
     pub fn gepValue(self: *Builder, val: ValueId) GepIndexId {
         return self.t.instrs.GepIndex.add(self.gpa, .{ .Value = val });
     }
-    pub fn gep(self: *Builder, blk: *BlockFrame, ty: types.TypeId, base: ValueId, base_ty: types.TypeId, idxs: []const GepIndexId) ValueId {
+    pub fn gep(self: *Builder, blk: *BlockFrame, ty: types.TypeId, base: ValueId, idxs: []const GepIndexId) ValueId {
         const r = self.t.instrs.gep_pool.pushMany(self.gpa, idxs);
         const vid = self.freshValue();
-        const iid = self.t.instrs.add(.Gep, Rows.Gep{ .result = vid, .ty = ty, .base = base, .base_ty = base_ty, .indices = r });
+        const iid = self.t.instrs.add(.Gep, Rows.Gep{ .result = vid, .ty = ty, .base = base, .indices = r });
         blk.instrs.append(self.gpa, iid) catch @panic("OOM");
         return vid;
     }
