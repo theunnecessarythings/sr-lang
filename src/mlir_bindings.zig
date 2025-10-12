@@ -473,7 +473,7 @@ pub const Module = struct {
         return Context{ .handle = c.mlirModuleGetContext(self.handle) };
     }
 
-    pub fn getBody(self: *Module) Block {
+    pub fn getBody(self: *const Module) Block {
         return Block{ .handle = c.mlirModuleGetBody(self.handle) };
     }
 
@@ -717,7 +717,7 @@ pub const Operation = struct {
         return @intCast(c.mlirOperationGetNumRegions(self.handle));
     }
 
-    pub fn getRegion(self: *Operation, pos: usize) Region {
+    pub fn getRegion(self: *const Operation, pos: usize) Region {
         return Region{
             .handle = c.mlirOperationGetRegion(self.handle, @intCast(pos)),
         };
@@ -897,7 +897,7 @@ pub const Region = struct {
         return c.mlirRegionEqual(self.handle, other.handle);
     }
 
-    pub fn getFirstBlock(self: *Region) Block {
+    pub fn getFirstBlock(self: *const Region) Block {
         return Block{ .handle = c.mlirRegionGetFirstBlock(self.handle) };
     }
 
@@ -978,7 +978,7 @@ pub const Block = struct {
         return Block{ .handle = c.mlirBlockGetNextInRegion(self.handle) };
     }
 
-    pub fn getFirstOperation(self: *Block) Operation {
+    pub fn getFirstOperation(self: *const Block) Operation {
         return Operation{ .handle = c.mlirBlockGetFirstOperation(self.handle) };
     }
 
@@ -2586,7 +2586,7 @@ pub const Type = struct {
         return c.mlirTypeEqual(self.handle, other.handle);
     }
 
-    pub fn print(self: *Type, cb: fn (c.MlirStringRef, ?*anyopaque) callconv(.c) void, userData: ?*anyopaque) void {
+    pub fn print(self: *const Type, cb: fn (c.MlirStringRef, ?*anyopaque) callconv(.c) void, userData: ?*anyopaque) void {
         c.mlirTypePrint(self.handle, cb, userData);
     }
 

@@ -254,6 +254,7 @@ pub const DiagnosticCode = enum {
     expected_colon_or_comma_in_param, // payload: one (found)
 
     mlir_verification_failed,
+    mlir_parse_error,
 };
 
 pub fn diagnosticMessageFmt(code: DiagnosticCode) []const u8 {
@@ -450,6 +451,7 @@ pub fn diagnosticMessageFmt(code: DiagnosticCode) []const u8 {
 
         .mlir_verification_failed => "MLIR verification failed",
         .mlir_block_not_a_type => "MLIR block is not a type",
+        .mlir_parse_error => "failed to parse inline MLIR block",
     };
 }
 

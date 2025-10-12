@@ -38,6 +38,7 @@ pub const MlirCodegen = struct {
     // NEW: for correctness decisions (signedness, etc.)
     val_types: std.AutoHashMap(tir.ValueId, types.TypeId), // SR types of SSA values
     def_instr: std.AutoHashMap(tir.ValueId, tir.InstrId), // SSA def site
+    inline_mlir_counter: u32 = 0,
 
     pub const FuncInfo = struct {
         op: mlir.Operation,
@@ -1751,12 +1752,12 @@ pub const MlirCodegen = struct {
                 // NEW: handle arguments
                 const arg_vids = t.instrs.value_pool.slice(p.args);
                 if (mlir_kind == .Operation) {
-                    const expect_result = !p.result.isNone();
-                    const value = try self.emitInlineMlirOperation(mlir_text_raw, arg_vids, expect_result);
-                    if (expect_result) {
-                        break :blk value;
-                    } else {
+                    const result_ty = if (p.result.isNone()) self.void_ty else try self.llvmTypeOf(store, p.ty);
+                    const value = try self.emitInlineMlirOperation(mlir_text_raw, arg_vids, result_ty);
+                    if (p.result.isNone()) {
                         break :blk mlir.Value.empty();
+                    } else {
+                        break :blk value;
                     }
                 }
 
@@ -1903,121 +1904,111 @@ pub const MlirCodegen = struct {
         self: *MlirCodegen,
         mlir_text_raw: []const u8,
         arg_vids: []const tir.ValueId,
-        expect_result: bool,
+        result_ty: mlir.Type,
     ) !mlir.Value {
-        const body_text = std.mem.trim(u8, mlir_text_raw, " \t\r\n");
+        var arg_values = ArrayList(mlir.Value).init(self.gpa);
+        defer arg_values.deinit();
+        var arg_types = ArrayList(mlir.Type).init(self.gpa);
+        defer arg_types.deinit();
 
-        var arg_values: std.ArrayList(mlir.Value) = .empty;
-        defer arg_values.deinit(self.gpa);
+        try arg_values.ensureUnusedCapacity(arg_vids.len);
+        try arg_types.ensureUnusedCapacity(arg_vids.len);
 
-        var placeholder_names: std.ArrayList([]const u8) = .empty;
-        defer {
-            for (placeholder_names.items) |name| self.gpa.free(name);
-            placeholder_names.deinit(self.gpa);
+        for (arg_vids) |arg_vid| {
+            const arg_val = self.value_map.get(arg_vid).?;
+            try arg_values.append(arg_val);
+            try arg_types.append(arg_val.getType());
         }
 
-        var wrapper_text: std.ArrayList(u8) = .empty;
-        defer wrapper_text.deinit(self.gpa);
+        // 1. Generate unique function name
+        const func_name_buf = try std.fmt.allocPrint(self.gpa, "__sr_inline_mlir_{d}", .{self.inline_mlir_counter});
+        self.inline_mlir_counter += 1;
+        defer self.gpa.free(func_name_buf);
 
-        try wrapper_text.appendSlice(self.gpa, "\"sr.inline.wrapper\"() ({\n^bb0(");
+        // 2. Build the function string inside a module
+        var func_str = ArrayList(u8).init(self.gpa);
+        defer func_str.deinit();
+        var writer = func_str.writer();
 
-        for (arg_vids, 0..) |arg_vid, idx| {
-            const mlir_val = self.value_map.get(arg_vid).?;
-            try arg_values.append(self.gpa, mlir_val);
+        try writer.print("module {{\nfunc.func private @{s}(", .{func_name_buf});
+        for (arg_types.items, 0..) |*ty, i| {
+            if (i > 0) try writer.writeAll(", ");
+            try writer.print("%arg{d}: ", .{i});
+            var type_str_buf: std.ArrayList(u8) = .empty;
+            defer type_str_buf.deinit(self.gpa);
+            var sink = PrintBuffer{ .list = &type_str_buf, .allocator = self.gpa };
+            ty.print(printCallback, &sink);
+            try writer.writeAll(type_str_buf.items);
+        }
+        try writer.writeAll(")");
 
-            const placeholder = try std.fmt.allocPrint(self.gpa, "%inline_arg{d}", .{idx});
-            try placeholder_names.append(self.gpa, placeholder);
-
-            if (idx != 0) try wrapper_text.appendSlice(self.gpa, ", ");
-            try wrapper_text.appendSlice(self.gpa, placeholder_names.items[idx]);
-            try wrapper_text.appendSlice(self.gpa, ": ");
-
-            var type_buf: std.ArrayList(u8) = .empty;
-            defer type_buf.deinit(self.gpa);
-            var type_sink = PrintBuffer{ .list = &type_buf, .allocator = self.gpa };
-            var ty = mlir_val.getType();
-            ty.print(printCallback, &type_sink);
-            try wrapper_text.appendSlice(self.gpa, type_buf.items);
+        const has_result = !result_ty.equal(self.void_ty);
+        if (has_result) {
+            try writer.writeAll(" -> ");
+            var type_str_buf: std.ArrayList(u8) = .empty;
+            defer type_str_buf.deinit(self.gpa);
+            var sink = PrintBuffer{ .list = &type_str_buf, .allocator = self.gpa };
+            result_ty.print(printCallback, &sink);
+            try writer.writeAll(type_str_buf.items);
         }
 
-        try wrapper_text.appendSlice(self.gpa, "):\n");
+        try writer.writeAll(" {\n");
 
-        const body_start = wrapper_text.items.len;
-        var i: usize = 0;
-        while (i < body_text.len) {
-            if (body_text[i] == '%') {
-                var j = i + 1;
-                var num: usize = 0;
-                var has_digits = false;
-                while (j < body_text.len and std.ascii.isDigit(body_text[j])) {
-                    num = num * 10 + (body_text[j] - '0');
-                    has_digits = true;
-                    j += 1;
-                }
-
-                if (has_digits and num < placeholder_names.items.len) {
-                    try wrapper_text.appendSlice(self.gpa, placeholder_names.items[num]);
-                    i = j;
-                    continue;
-                }
-            }
-
-            try wrapper_text.append(self.gpa, body_text[i]);
-            i += 1;
+        if (has_result) {
+            try writer.writeAll("  %res = ");
+        } else {
+            try writer.writeAll("  ");
         }
+        try writer.writeAll(mlir_text_raw);
+        try writer.writeAll("\n");
 
-        if (wrapper_text.items.len == body_start or wrapper_text.items[wrapper_text.items.len - 1] != '\n') {
-            try wrapper_text.append(self.gpa, '\n');
+        if (has_result) {
+            try writer.writeAll("  func.return %res : ");
+            var type_str_buf: std.ArrayList(u8) = .empty;
+            defer type_str_buf.deinit(self.gpa);
+            var sink = PrintBuffer{ .list = &type_str_buf, .allocator = self.gpa };
+            result_ty.print(printCallback, &sink);
+            try writer.writeAll(type_str_buf.items);
+            try writer.writeAll("\n");
+        } else {
+            try writer.writeAll("  func.return\n");
         }
+        try writer.writeAll("}\n}"); // close func and module
 
-        try wrapper_text.appendSlice(self.gpa, "}) : () -> ()");
-
-        const wrapper_slice = wrapper_text.items;
-        var wrapper_op = mlir.Operation.createParse(
+        // 3. Parse the module containing the function
+        var parsed_module = mlir.Module.createParse(
             self.mlir_ctx,
-            mlir.StringRef.from(wrapper_slice),
-            mlir.StringRef.from("inline_mlir_op"),
+            mlir.StringRef.from(func_str.items),
         );
-        if (wrapper_op.isNull()) {
-            std.debug.print("Error parsing inline MLIR operation: {s}\n", .{wrapper_slice});
+        if (parsed_module.isNull()) {
+            std.debug.print("Error parsing inline MLIR func: {s}\n", .{func_str.items});
             return error.MlirParseError;
         }
-        defer wrapper_op.destroy();
+        defer parsed_module.destroy();
 
-        var region = wrapper_op.getRegion(0);
-        var block = region.getFirstBlock();
-        if (block.isNull()) {
-            std.debug.print("Error parsing inline MLIR operation body: {s}\n", .{wrapper_slice});
-            return error.MlirParseError;
+        var func_op = parsed_module.getBody().getFirstOperation();
+        func_op.removeFromParent();
+
+        // 4. Add the function to the current module
+        var body = self.module.getBody();
+        body.appendOwnedOperation(func_op);
+
+        // 5. Create a call to this new function
+        const attrs = [_]mlir.NamedAttribute{
+            self.named("callee", mlir.Attribute.flatSymbolRefAttrGet(self.mlir_ctx, mlir.StringRef.from(func_name_buf))),
+        };
+        var call = OpBuilder.init("func.call", self.loc).builder()
+            .add_operands(arg_values.items)
+            .add_results(if (has_result) &.{result_ty} else &.{}) //
+            .add_attributes(&attrs)
+            .build();
+        self.append(call);
+
+        if (has_result) {
+            return call.getResult(0);
+        } else {
+            return mlir.Value.empty();
         }
-
-        for (arg_values.items, 0..) |arg_val, idx| {
-            const block_arg = block.getArgument(idx);
-            mlir.Value.replaceAllUsesOfWith(block_arg, arg_val);
-        }
-
-        var current = block.getFirstOperation();
-        var last_result: ?mlir.Value = null;
-        while (!current.isNull()) {
-            const next = current.getNextInBlock();
-            current.removeFromParent();
-            self.append(current);
-            if (expect_result and current.getNumResults() > 0) {
-                last_result = current.getResult(0);
-            }
-            current = next;
-        }
-
-        if (expect_result) {
-            if (last_result) |v| {
-                return v;
-            } else {
-                std.debug.print("Inline MLIR operation expected a result but none was produced. Text: {s}\n", .{wrapper_slice});
-                return error.MlirParseError;
-            }
-        }
-
-        return mlir.Value.empty();
     }
 
     fn emitCmp(
