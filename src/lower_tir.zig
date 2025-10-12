@@ -398,6 +398,18 @@ pub const LowerTir = struct {
                 const fn_lit = a.exprs.get(.FunctionLit, d.value);
                 const params = a.exprs.param_pool.slice(fn_lit.params);
 
+                if (self.getDeclType(did)) |fn_ty| {
+                    if (self.context.type_store.getKind(fn_ty) == .Function) {
+                        const fn_ty_info = self.context.type_store.get(.Function, fn_ty);
+                        const param_tys = self.context.type_store.type_pool.slice(fn_ty_info.params);
+                        for (param_tys) |param_ty| {
+                            if (self.isAny(param_ty)) {
+                                return;
+                            }
+                        }
+                    }
+                }
+
                 var skip_params: usize = 0;
                 while (skip_params < params.len and a.exprs.Param.get(params[skip_params]).is_comptime) : (skip_params += 1) {}
 
@@ -500,6 +512,7 @@ pub const LowerTir = struct {
                         const const_val = try self.constValueFromComptime(&blk, vp.ty, vp.value);
                         try env.bind(self.gpa, a, binding.name, .{ .value = const_val, .ty = vp.ty, .is_slot = false });
                     },
+                    .runtime_param => {},
                 }
             }
         }
@@ -1256,15 +1269,14 @@ pub const LowerTir = struct {
                         var skip_params: usize = 0;
                         while (skip_params < params.len and a.exprs.Param.get(params[skip_params]).is_comptime) : (skip_params += 1) {}
 
+                        var binding_infos: std.ArrayList(monomorphize.BindingInfo) = .empty;
+                        defer {
+                            for (binding_infos.items) |*info| info.deinit(self.gpa);
+                            binding_infos.deinit(self.gpa);
+                        }
+
+                        var ok = true;
                         if (arg_ids.len >= skip_params) {
-
-                            var binding_infos = std.ArrayList(monomorphize.BindingInfo).init(self.gpa);
-                            defer {
-                                for (binding_infos.items) |*info| info.deinit(self.gpa);
-                                binding_infos.deinit();
-                            }
-
-                            var ok = true;
                             var idx: usize = 0;
                             while (idx < skip_params) : (idx += 1) {
                                 const param = a.exprs.Param.get(params[idx]);
@@ -1290,7 +1302,7 @@ pub const LowerTir = struct {
                                         ok = false;
                                         break;
                                     };
-                                    try binding_infos.append(monomorphize.BindingInfo.typeParam(pname, targ));
+                                    try binding_infos.append(self.gpa, monomorphize.BindingInfo.typeParam(pname, targ));
                                 } else {
                                     const comptime_val = self.evalComptimeExprValue(a, env, f, blk, arg_expr, param_ty) catch {
                                         ok = false;
@@ -1300,21 +1312,13 @@ pub const LowerTir = struct {
                                         ok = false;
                                         break;
                                     };
-                                    binding_infos.append(info) catch |err| {
+                                    binding_infos.append(self.gpa, info) catch |err| {
                                         info.deinit(self.gpa);
                                         return err;
                                     };
                                 }
                             }
                         }
-
-                        if (ok) {
-                            const original_args = arg_ids;
-                            var runtime_idx: usize = skip_params;
-                            while (runtime_idx < params.len and runtime_idx < original_args.len) : (runtime_idx += 1) {
-                                const param = a.exprs.Param.get(params[runtime_idx]);
-                                if (param.pat.isNone()) continue;
-                                const pname = self.bindingNameOfPattern(a, param.pat.unwrap()) orelse continue;
 
                         if (ok) {
                             const original_args = arg_ids;
@@ -1333,7 +1337,7 @@ pub const LowerTir = struct {
                                 const arg_ty = self.getExprType(original_args[runtime_idx]) orelse continue;
                                 if (self.isAny(arg_ty)) continue;
 
-                                try binding_infos.append(monomorphize.BindingInfo.runtimeParam(pname, arg_ty));
+                                try binding_infos.append(self.gpa, monomorphize.BindingInfo.runtimeParam(pname, arg_ty));
                             }
                         }
 
