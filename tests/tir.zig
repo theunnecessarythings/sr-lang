@@ -1,6 +1,7 @@
 const std = @import("std");
 const testing = std.testing;
 const compiler = @import("compiler");
+const types = compiler.types;
 
 const Lowered = struct {
     tir: compiler.tir.TIR,
@@ -157,8 +158,14 @@ test "tir: generic call monomorphizes with mangled callee" {
         \\ max :: fn(comptime T: type, a: T, b: T) T {
         \\   return if a > b { a } else { b };
         \\ }
-        \\ useMax :: fn(x: u64, y: u64) u64 {
-        \\   return max(u64, x, y);
+        \\ useMax :: fn(x: i32, y: i32) i32 {
+        \\   return max(i32, x, y);
+        \\ }
+        \\ cap :: fn(comptime T: type, comptime Limit: T, value: T) T {
+        \\   return if (value > Limit) Limit else value;
+        \\ }
+        \\ useCap :: fn(value: i32) i32 {
+        \\   return cap(i32, 42, value);
         \\ }
     ;
 
@@ -167,19 +174,55 @@ test "tir: generic call monomorphizes with mangled callee" {
     defer lowered.context.deinit();
     var t = lowered.tir;
 
-    const expected = "max_u64";
+    const expected = "max_i32";
 
     var has_specialized_fn = false;
+    var has_generic_max = false;
+    var max_fn_result_ty: ?types.TypeId = null;
+    var max_param_tys: [2]?types.TypeId = .{ null, null };
+    var cap_const_found = false;
+    const type_store = &lowered.context.type_store;
     const funcs = t.funcs.func_pool.data.items;
     for (funcs) |fid| {
         const frow = t.funcs.Function.get(fid);
         const fname = t.instrs.strs.get(frow.name);
+        if (std.mem.eql(u8, fname, "max")) {
+            has_generic_max = true;
+        }
         if (std.mem.eql(u8, fname, expected)) {
             has_specialized_fn = true;
-            break;
+            max_fn_result_ty = frow.result;
+            const params = t.funcs.param_pool.slice(frow.params);
+            if (params.len == 2) {
+                max_param_tys[0] = t.funcs.Param.get(params[0]).ty;
+                max_param_tys[1] = t.funcs.Param.get(params[1]).ty;
+            }
+        }
+        if (std.mem.startsWith(u8, fname, "cap_i32")) {
+            const blocks = t.funcs.block_pool.slice(frow.blocks);
+            for (blocks) |bid| {
+                const block_row = t.funcs.Block.get(bid);
+                const instrs = t.instrs.instr_pool.slice(block_row.instrs);
+                for (instrs) |iid| {
+                    const kind = t.instrs.index.kinds.items[iid.toRaw()];
+                    if (kind == .ConstInt) {
+                        const row_ci = t.instrs.get(.ConstInt, iid);
+                        if (row_ci.value == 42 and row_ci.ty.toRaw() == type_store.tI32().toRaw()) {
+                            cap_const_found = true;
+                            break;
+                        }
+                    }
+                }
+                if (cap_const_found) break;
+            }
         }
     }
     try testing.expect(has_specialized_fn);
+    try testing.expect(!has_generic_max);
+    try testing.expectEqual(type_store.tI32().toRaw(), (max_fn_result_ty orelse type_store.tAny()).toRaw());
+    try testing.expectEqual(type_store.tI32().toRaw(), (max_param_tys[0] orelse type_store.tAny()).toRaw());
+    try testing.expectEqual(type_store.tI32().toRaw(), (max_param_tys[1] orelse type_store.tAny()).toRaw());
+    try testing.expect(cap_const_found);
 
     const ikinds = t.instrs.index.kinds.items;
     var saw_specialized_call = false;
