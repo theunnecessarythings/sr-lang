@@ -78,7 +78,7 @@ pub const LowerTir = struct {
             i -= 1;
             const frame = &self.expr_type_override_stack.items[i];
             if (frame.map.get(expr.toRaw())) |entry| {
-                return entry.*;
+                return entry;
             }
         }
         return null;
@@ -1146,6 +1146,7 @@ pub const LowerTir = struct {
         ty: types.TypeId,
         value: comp.ComptimeValue,
     ) !tir.ValueId {
+        _ = self;
         return switch (value) {
             .Int => |val| blk: {
                 const casted = std.math.cast(u64, val) orelse return error.LoweringBug;
@@ -1305,6 +1306,15 @@ pub const LowerTir = struct {
                                     };
                                 }
                             }
+                        }
+
+                        if (ok) {
+                            const original_args = arg_ids;
+                            var runtime_idx: usize = skip_params;
+                            while (runtime_idx < params.len and runtime_idx < original_args.len) : (runtime_idx += 1) {
+                                const param = a.exprs.Param.get(params[runtime_idx]);
+                                if (param.pat.isNone()) continue;
+                                const pname = self.bindingNameOfPattern(a, param.pat.unwrap()) orelse continue;
 
                         if (ok) {
                             const original_args = arg_ids;
