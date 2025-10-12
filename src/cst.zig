@@ -504,6 +504,7 @@ pub const Rows = struct {
         ty: OptExprId,
         value: OptExprId,
         attrs: OptRangeAttr,
+        is_comptime: bool,
         loc: LocId,
     };
     pub const Attribute = struct { name: StrId, value: OptExprId, loc: LocId };
@@ -1899,6 +1900,7 @@ test "printer: function with attrs, one param, result type, empty body" {
         .ty = OptExprId.some(id_i32),
         .value = OptExprId.none(),
         .attrs = OptRangeAttr.none(),
+        .is_comptime = false,
         .loc = loc,
     });
     const params_r = exprs.param_pool.pushMany(gpa, &[_]ParamId{pid});

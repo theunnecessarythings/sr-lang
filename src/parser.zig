@@ -956,7 +956,13 @@ pub const Parser = struct {
             const barrier: u8 = r_bp + 1;
 
             while (true) {
-                const p_loc = self.toLocId(self.cur.loc);
+                const start_tok = self.cur;
+                var is_comptime = false;
+                if (self.cur.tag == .keyword_comptime) {
+                    is_comptime = true;
+                    self.advance();
+                }
+                const p_loc = self.toLocId(start_tok.loc);
                 const pat_expr = try self.parseExpr(barrier, .expr_no_struct);
 
                 var ty_opt: cst.OptExprId = .none();
@@ -976,6 +982,7 @@ pub const Parser = struct {
                     .ty = ty_opt,
                     .value = val_opt,
                     .attrs = .none(),
+                    .is_comptime = is_comptime,
                     .loc = p_loc,
                 });
                 try param_ids.append(self.gpa, pid);
@@ -2141,11 +2148,16 @@ pub const Parser = struct {
         var lcst_param_ty: cst.OptExprId = .none();
 
         while (self.cur.tag != .rparen and self.cur.tag != .eof) {
-            const param_loc = self.toLocId(self.cur.loc);
-
             const attr_range = try self.parseOptionalAttributes(); // DOD: returns OptRangeAttr
 
+            var is_comptime = false;
+            const param_loc = self.toLocId(self.cur.loc);
+
             // Start by parsing something expr-like; it may be a pattern or a bare type.
+            if (self.cur.tag == .keyword_comptime) {
+                is_comptime = true;
+                self.advance();
+            }
             const pat_expr = try self.parseExpr(0, .expr);
             var pat_opt: cst.OptExprId = .some(pat_expr);
             var ty_opt: cst.OptExprId = .none();
@@ -2185,6 +2197,7 @@ pub const Parser = struct {
                 .ty = ty_opt,
                 .value = val_opt,
                 .attrs = attr_range,
+                .is_comptime = is_comptime,
                 .loc = param_loc,
             });
             try param_ids.append(self.gpa, pid);

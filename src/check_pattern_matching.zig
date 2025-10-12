@@ -211,6 +211,7 @@ pub fn checkPattern(
             _ = try self.symtab.declare(.{
                 .name = ap.binder,
                 .kind = .Var,
+                .is_comptime = false,
                 .loc = ap.loc,
                 .origin_decl = ast.OptDeclId.none(),
                 .origin_param = ast.OptParamId.none(),
@@ -365,6 +366,7 @@ pub fn checkPattern(
             _ = try self.symtab.declare(.{
                 .name = bp.name,
                 .kind = .Var,
+                .is_comptime = false,
                 .loc = bp.loc,
                 .origin_decl = .none(),
                 .origin_param = .none(),
@@ -859,6 +861,7 @@ pub fn declareBindingsInPattern(self: *Checker, pid: ast.PatternId, loc: ast.Loc
                 .decl => |did| .{
                     .name = b.name,
                     .kind = .Var,
+                    .is_comptime = false,
                     .loc = loc,
                     .origin_decl = ast.OptDeclId.some(did),
                     .origin_param = ast.OptParamId.none(),
@@ -866,6 +869,7 @@ pub fn declareBindingsInPattern(self: *Checker, pid: ast.PatternId, loc: ast.Loc
                 .param => |par| .{
                     .name = b.name,
                     .kind = .Param,
+                    .is_comptime = self.ast_unit.exprs.Param.get(par).is_comptime,
                     .loc = loc,
                     .origin_decl = ast.OptDeclId.none(),
                     .origin_param = ast.OptParamId.some(par),
@@ -873,6 +877,7 @@ pub fn declareBindingsInPattern(self: *Checker, pid: ast.PatternId, loc: ast.Loc
                 .anonymous => .{
                     .name = b.name,
                     .kind = .Var,
+                    .is_comptime = false,
                     .loc = loc,
                     .origin_decl = ast.OptDeclId.none(),
                     .origin_param = ast.OptParamId.none(),

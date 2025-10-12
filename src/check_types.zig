@@ -96,6 +96,8 @@ pub fn typeFromTypeExpr(self: *Checker, id: ast.ExprId) anyerror!?types.TypeId {
             if (std.mem.eql(u8, s, "string")) break :blk_ident self.context.type_store.tString();
             if (std.mem.eql(u8, s, "void")) break :blk_ident self.context.type_store.tVoid();
             if (std.mem.eql(u8, s, "any")) break :blk_ident self.context.type_store.tAny();
+            if (std.mem.eql(u8, s, "type"))
+                break :blk_ident self.context.type_store.mkTypeType(self.context.type_store.tAny());
 
             if (self.lookup(name)) |sid| {
                 const sym = self.symtab.syms.get(sid);
@@ -117,6 +119,21 @@ pub fn typeFromTypeExpr(self: *Checker, id: ast.ExprId) anyerror!?types.TypeId {
                         self.type_info.decl_types.items[did.toRaw()] = tt;
                         return rt;
                     }
+                }
+                if (!sym.origin_param.isNone()) {
+                    const pid = sym.origin_param.unwrap();
+                    const param_row = self.ast_unit.exprs.Param.get(pid);
+                    if (!param_row.ty.isNone()) {
+                        const annotated = (try typeFromTypeExpr(self, param_row.ty.unwrap())) orelse return null;
+                        if (param_row.is_comptime) {
+                            if (self.context.type_store.getKind(annotated) == .TypeType) {
+                                return self.context.type_store.get(.TypeType, annotated).of;
+                            }
+                            return annotated;
+                        }
+                        return annotated;
+                    }
+                    return self.context.type_store.tAny();
                 }
             }
 

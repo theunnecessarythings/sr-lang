@@ -9,6 +9,7 @@ const mlir = @import("mlir_bindings.zig");
 const compile = @import("compile.zig");
 const mlir_codegen = @import("mlir_codegen.zig");
 const comp = @import("comptime.zig");
+const monomorphize = @import("monomorphize.zig");
 
 const StrId = @import("cst.zig").StrId;
 const OptStrId = @import("cst.zig").OptStrId;
@@ -30,6 +31,9 @@ pub const LowerTir = struct {
 
     // Mapping: module ident name -> prefix for mangling (module.func -> prefix_func)
     module_prefix: std.StringHashMapUnmanaged([]const u8) = .{},
+    module_call_cache: std.AutoHashMap(u64, StrId),
+    monomorphizer: monomorphize.Monomorphizer,
+    monomorph_context_stack: std.ArrayListUnmanaged(monomorphize.MonomorphizationContext) = .{},
 
     import_base_dir: []const u8 = ".",
 
@@ -85,7 +89,16 @@ pub const LowerTir = struct {
         chk: *checker.Checker,
     ) LowerTir {
         std.debug.assert(type_info.module_id == module_id);
-        return .{ .gpa = gpa, .context = context, .pipeline = pipeline, .type_info = type_info, .module_id = module_id, .chk = chk };
+        return .{
+            .gpa = gpa,
+            .context = context,
+            .pipeline = pipeline,
+            .type_info = type_info,
+            .module_id = module_id,
+            .chk = chk,
+            .module_call_cache = std.AutoHashMap(u64, StrId).init(gpa),
+            .monomorphizer = monomorphize.Monomorphizer.init(gpa),
+        };
     }
 
     pub fn deinit(self: *LowerTir) void {
@@ -93,6 +106,13 @@ pub const LowerTir = struct {
         var it = self.module_prefix.valueIterator();
         while (it.next()) |p| self.gpa.free(p.*);
         self.module_prefix.deinit(self.gpa);
+        self.module_call_cache.deinit();
+        while (self.monomorph_context_stack.items.len > 0) {
+            var ctx = self.monomorph_context_stack.pop().?;
+            ctx.deinit(self.gpa);
+        }
+        self.monomorph_context_stack.deinit(self.gpa);
+        self.monomorphizer.deinit();
     }
 
     pub fn setImportResolver(self: *LowerTir, r: *ImportResolver, base_dir: []const u8) void {
@@ -170,11 +190,15 @@ pub const LowerTir = struct {
         var t = tir.TIR.init(self.gpa, &self.context.type_store);
         var b = Builder.init(self.gpa, &t);
 
+        self.module_call_cache.clearRetainingCapacity();
+
         try self.lowerGlobalMlir(a, &b);
 
         // Lower top-level decls: functions and globals
         const decls = a.exprs.decl_pool.slice(a.unit.decls);
         for (decls) |did| try self.lowerTopDecl(a, &b, did);
+
+        try self.monomorphizer.run(self, a, &b, monomorphLowerCallback);
 
         return t;
     }
@@ -186,6 +210,9 @@ pub const LowerTir = struct {
         if (gop.found_existing) {
             self.gpa.free(key);
             self.gpa.free(gop.value_ptr.*);
+            gop.value_ptr.* = val;
+            self.module_call_cache.clearRetainingCapacity();
+            return;
         }
         gop.value_ptr.* = val;
     }
@@ -323,7 +350,7 @@ pub const LowerTir = struct {
         if (kind == .FunctionLit and !a.exprs.get(.FunctionLit, d.value).flags.is_extern) {
             const name = if (!d.pattern.isNone()) self.bindingNameOfPattern(a, d.pattern.unwrap()) else null;
             if (name) |nm| {
-                try self.lowerFunction(a, b, nm, d.value);
+                try self.lowerFunction(a, b, nm, d.value, null);
             }
             return;
         }
@@ -358,8 +385,18 @@ pub const LowerTir = struct {
         return b.t.instrs.attribute_pool.pushMany(self.gpa, attr_list.items);
     }
 
-    fn lowerFunction(self: *LowerTir, a: *const ast.Ast, b: *Builder, name: StrId, fun_eid: ast.ExprId) !void {
-        const fid = self.getExprType(fun_eid) orelse return;
+    fn lowerFunction(
+        self: *LowerTir,
+        a: *const ast.Ast,
+        b: *Builder,
+        name: StrId,
+        fun_eid: ast.ExprId,
+        ctx: ?*const monomorphize.MonomorphizationContext,
+    ) !void {
+        const fid = if (ctx) |c|
+            c.specialized_ty
+        else
+            (self.getExprType(fun_eid) orelse return);
         if (self.context.type_store.index.kinds.items[fid.toRaw()] != .Function) return;
         const fnty = self.context.type_store.get(.Function, fid);
 
@@ -382,11 +419,16 @@ pub const LowerTir = struct {
         // Params
         const params = a.exprs.param_pool.slice(fnr.params);
         var i: usize = 0;
+        const skip_params: usize = if (ctx) |c| c.skip_params else 0;
+        const runtime_param_tys = self.context.type_store.type_pool.slice(fnty.params);
+        var runtime_index: usize = 0;
         while (i < params.len) : (i += 1) {
+            if (i < skip_params) continue;
             const p = a.exprs.Param.get(params[i]);
-            const pty = self.context.type_store.type_pool.slice(fnty.params)[i];
+            const pty = runtime_param_tys[runtime_index];
             const pname = if (!p.pat.isNone()) self.bindingNameOfPattern(a, p.pat.unwrap()) else null;
             _ = try b.addParam(&f, pname, pty);
+            runtime_index += 1;
         }
 
         // Entry block + env
@@ -397,12 +439,15 @@ pub const LowerTir = struct {
         // Bind params
         i = 0;
         const param_vals = f.param_vals.items;
+        runtime_index = 0;
         while (i < params.len) : (i += 1) {
+            if (i < skip_params) continue;
             const p = a.exprs.Param.get(params[i]);
             if (!p.pat.isNone()) {
                 const pname = self.bindingNameOfPattern(a, p.pat.unwrap()) orelse continue;
-                try env.bind(self.gpa, a, pname, .{ .value = param_vals[i], .is_slot = false });
+                try env.bind(self.gpa, a, pname, .{ .value = param_vals[runtime_index], .is_slot = false });
             }
+            runtime_index += 1;
         }
 
         // Body
@@ -419,6 +464,47 @@ pub const LowerTir = struct {
 
         try b.endBlock(&f, blk);
         try b.endFunction(f);
+    }
+
+    fn lowerSpecializedFunction(
+        self: *LowerTir,
+        a: *const ast.Ast,
+        b: *Builder,
+        req: *const monomorphize.MonomorphizationRequest,
+    ) !void {
+        var ctx = try monomorphize.MonomorphizationContext.init(
+            self.gpa,
+            req.bindings,
+            req.type_args,
+            req.skip_params,
+            req.specialized_ty,
+        );
+        errdefer ctx.deinit(self.gpa);
+
+        self.monomorph_context_stack.append(self.gpa, ctx) catch |err| {
+            ctx.deinit(self.gpa);
+            return err;
+        };
+        defer {
+            var popped = self.monomorph_context_stack.pop();
+            if (popped) |*p|
+                p.deinit(self.gpa);
+        }
+
+        const active_ctx = &self.monomorph_context_stack.items[self.monomorph_context_stack.items.len - 1];
+        const decl = a.exprs.Decl.get(req.decl_id);
+        try self.lowerFunction(a, b, req.mangled_name, decl.value, active_ctx);
+    }
+
+    fn monomorphLowerCallback(
+        ctx: ?*anyopaque,
+        a: *const ast.Ast,
+        b: *Builder,
+        req: *const monomorphize.MonomorphizationRequest,
+    ) anyerror!void {
+        std.debug.assert(ctx != null);
+        const self: *LowerTir = @ptrCast(@alignCast(ctx.?));
+        try self.lowerSpecializedFunction(a, b, req);
     }
 
     // Lower a block or expression as a list of statements (ignores resulting value)
@@ -678,17 +764,75 @@ pub const LowerTir = struct {
         fty: ?types.TypeId,
     };
 
-    fn resolveCallee(self: *LowerTir, a: *const ast.Ast, f: *Builder.FunctionFrame, row: ast.Rows.Call) CalleeInfo {
+    fn resolveTypeArg(self: *LowerTir, expr: ast.ExprId) ?types.TypeId {
+        const ty = self.getExprType(expr) orelse return null;
+        if (self.context.type_store.getKind(ty) != .TypeType) return null;
+        return self.context.type_store.get(.TypeType, ty).of;
+    }
+
+    fn mangleMonomorphName(
+        self: *LowerTir,
+        base: StrId,
+        type_args: []const types.TypeId,
+    ) !StrId {
+        var buf: std.ArrayList(u8) = .empty;
+        defer buf.deinit(self.gpa);
+
+        try buf.appendSlice(self.gpa, self.context.type_store.strs.get(base));
+        for (type_args) |ty| {
+            try buf.append(self.gpa, '_');
+            const w = buf.writer(self.gpa);
+            try self.context.type_store.fmt(ty, w);
+        }
+
+        return self.context.type_store.strs.intern(buf.items);
+    }
+
+    fn moduleCallKey(alias: ast.StrId, field: StrId) u64 {
+        return (@as(u64, alias.toRaw()) << 32) | @as(u64, field.toRaw());
+    }
+
+    fn resolveModuleFieldCallee(
+        self: *LowerTir,
+        a: *const ast.Ast,
+        f: *Builder.FunctionFrame,
+        field_access: ast.ExprId,
+    ) !?StrId {
+        const fr = a.exprs.get(.FieldAccess, field_access);
+        const parent_kind = a.exprs.index.kinds.items[fr.parent.toRaw()];
+        if (parent_kind != .Ident) return null;
+
+        const ident = a.exprs.get(.Ident, fr.parent);
+        const alias_name = a.exprs.strs.get(ident.name);
+        const prefix = self.module_prefix.get(alias_name) orelse return null;
+
+        const key = moduleCallKey(ident.name, fr.field);
+        if (self.module_call_cache.get(key)) |existing| return existing;
+
+        const field_name = a.exprs.strs.get(fr.field);
+        const mangled = try std.fmt.allocPrint(self.gpa, "{s}_{s}", .{ prefix, field_name });
+        defer self.gpa.free(mangled);
+
+        const interned = f.builder.intern(mangled);
+        try self.module_call_cache.put(key, interned);
+        return interned;
+    }
+
+    fn resolveCallee(self: *LowerTir, a: *const ast.Ast, f: *Builder.FunctionFrame, row: ast.Rows.Call) !CalleeInfo {
         const ck = a.exprs.index.kinds.items[row.callee.toRaw()];
         if (ck == .Ident) {
             const nm = a.exprs.get(.Ident, row.callee).name;
             return .{ .name = nm, .fty = self.getExprType(row.callee) };
         }
-        if (ck == .FieldAccess)
+        if (ck == .FieldAccess) {
+            if (try self.resolveModuleFieldCallee(a, f, row.callee)) |mangled|
+                return .{ .name = mangled, .fty = self.getExprType(row.callee) };
+
             return .{
                 .name = a.exprs.get(.FieldAccess, row.callee).field,
                 .fty = self.getExprType(row.callee),
             };
+        }
         return .{ .name = f.builder.intern("<indirect>"), .fty = self.getExprType(row.callee) };
     }
 
@@ -895,9 +1039,9 @@ pub const LowerTir = struct {
         expected: ?types.TypeId,
     ) !tir.ValueId {
         const row = a.exprs.get(.Call, id);
-        const callee = self.resolveCallee(a, f, row);
+        var callee = try self.resolveCallee(a, f, row);
 
-        const callee_name = a.exprs.strs.get(callee.name);
+        var callee_name = a.exprs.strs.get(callee.name);
         if (std.mem.eql(u8, callee_name, "get_type_by_name") or
             std.mem.eql(u8, callee_name, "comptime_print") or
             std.mem.eql(u8, callee_name, "type_of"))
@@ -969,7 +1113,81 @@ pub const LowerTir = struct {
         }
 
         // Lower args with expected param types when available
-        const arg_ids = a.exprs.expr_pool.slice(row.args);
+        var arg_ids = a.exprs.expr_pool.slice(row.args);
+
+        if (callee.fty) |fty| {
+            if (self.context.type_store.index.kinds.items[fty.toRaw()] == .Function) {
+                if (self.findTopLevelDeclByName(a, callee.name)) |decl_id| {
+                    const decl = a.exprs.Decl.get(decl_id);
+                    const fn_lit = a.exprs.get(.FunctionLit, decl.value);
+                    const params = a.exprs.param_pool.slice(fn_lit.params);
+
+                    var skip_params: usize = 0;
+                    while (skip_params < params.len and a.exprs.Param.get(params[skip_params]).is_comptime) : (skip_params += 1) {}
+
+                    if (skip_params > 0 and arg_ids.len >= skip_params) {
+                        var type_args: std.ArrayList(types.TypeId) = .empty;
+                        defer type_args.deinit(self.gpa);
+                        var ok = true;
+                        var idx: usize = 0;
+                        while (idx < skip_params) : (idx += 1) {
+                            const targ = self.resolveTypeArg(arg_ids[idx]) orelse {
+                                ok = false;
+                                break;
+                            };
+                            type_args.append(self.gpa, targ) catch {
+                                ok = false;
+                                break;
+                            };
+                        }
+
+                        if (ok and type_args.items.len == skip_params) {
+                            var binding_infos = try self.gpa.alloc(monomorphize.BindingInfo, skip_params);
+                            defer self.gpa.free(binding_infos);
+                            var bi_ok = true;
+                            var bi_idx: usize = 0;
+                            while (bi_idx < skip_params) : (bi_idx += 1) {
+                                const param = a.exprs.Param.get(params[bi_idx]);
+                                if (param.pat.isNone()) {
+                                    bi_ok = false;
+                                    break;
+                                }
+                                const pname = self.bindingNameOfPattern(a, param.pat.unwrap()) orelse {
+                                    bi_ok = false;
+                                    break;
+                                };
+                                binding_infos[bi_idx] = .{ .name = pname };
+                            }
+
+                            if (bi_ok) {
+                                const mangled = try self.mangleMonomorphName(callee.name, type_args.items);
+                                const result = try self.monomorphizer.request(
+                                    &self.context.type_store,
+                                    callee.name,
+                                    decl_id,
+                                    fty,
+                                    type_args.items,
+                                    binding_infos,
+                                    skip_params,
+                                    mangled,
+                                );
+                                callee.name = result.mangled_name;
+                                callee.fty = result.specialized_ty;
+                                callee_name = self.context.type_store.strs.get(callee.name);
+                                arg_ids = arg_ids[skip_params..];
+
+                                const spec_info = self.context.type_store.get(.Function, result.specialized_ty);
+                                param_tys = self.context.type_store.type_pool.slice(spec_info.params);
+                                is_variadic = spec_info.is_variadic;
+                                fixed = param_tys.len;
+                                if (is_variadic and fixed > 0) fixed -= 1;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         var vals = try self.gpa.alloc(tir.ValueId, arg_ids.len);
         defer self.gpa.free(vals);
         var i: usize = 0;

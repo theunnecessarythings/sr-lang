@@ -194,6 +194,7 @@ pub const Lower = struct {
                 .ty = if (!row.ty.isNone()) .some(try self.lowerExpr(row.ty.unwrap())) else .none(),
                 .value = if (!row.value.isNone()) .some(try self.lowerExpr(row.value.unwrap())) else .none(),
                 .attrs = try self.mapAttrRange(row.attrs),
+                .is_comptime = row.is_comptime,
                 .loc = row.loc,
             };
             out_ids[i] = self.ast_unit.exprs.Param.add(self.gpa, mapped);

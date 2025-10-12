@@ -1034,6 +1034,9 @@ pub const Checker = struct {
                     }
                     return pt;
                 } else {
+                    if (p.is_comptime) {
+                        return self.context.type_store.mkTypeType(self.context.type_store.tAny());
+                    }
                     // Unannotated param: if pattern, try infer from callee usage later; default any
                     return self.context.type_store.tAny();
                 }
@@ -1189,6 +1192,15 @@ pub const Checker = struct {
                     return null;
                 }
                 if (!check_types.isNumericKind(self, lhs_kind) or !check_types.isNumericKind(self, rhs_kind)) {
+                    if (lhs_kind == .Any or rhs_kind == .Any) {
+                        if (lhs_kind == .Any and rhs_kind == .Any) {
+                            return self.context.type_store.tAny();
+                        }
+                        if (lhs_kind == .Any) {
+                            return r;
+                        }
+                        return l;
+                    }
                     try self.context.diags.addError(self.exprLoc(bin), .invalid_binary_op_operands, .{ bin.op, lhs_kind, rhs_kind });
                     return null;
                 }
@@ -1197,6 +1209,9 @@ pub const Checker = struct {
                 return null;
             },
             .eq, .neq, .lt, .lte, .gt, .gte => {
+                if (lhs_kind == .Any or rhs_kind == .Any) {
+                    return self.context.type_store.tBool();
+                }
                 const both_ints = check_types.isIntegerKind(self, lhs_kind) and check_types.isIntegerKind(self, rhs_kind);
                 const both_floats = (lhs_kind == .F32 or lhs_kind == .F64) and (rhs_kind == .F32 or rhs_kind == .F64);
                 const both_bools = lhs_kind == .Bool and rhs_kind == .Bool;
@@ -1321,7 +1336,10 @@ pub const Checker = struct {
                 }
                 pbuf[i] = pt;
             } else {
-                pbuf[i] = self.context.type_store.tAny();
+                pbuf[i] = if (p.is_comptime)
+                    self.context.type_store.mkTypeType(self.context.type_store.tAny())
+                else
+                    self.context.type_store.tAny();
             }
             // store in symbol table
             try self.bindParamPattern(params[i], p);

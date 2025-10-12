@@ -11,6 +11,7 @@ pub const RangeSym = dod.RangeOf(SymbolId);
 pub const SymbolRow = struct {
     name: ast.StrId,
     kind: SymbolKind,
+    is_comptime: bool,
     loc: ast.LocId,
     origin_decl: ast.OptDeclId,
     origin_param: ast.OptParamId,

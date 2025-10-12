@@ -236,7 +236,14 @@ pub const Rows = struct {
     pub const Import = struct { expr: ExprId, loc: LocId };
     pub const TypeOf = struct { expr: ExprId, loc: LocId };
 
-    pub const Param = struct { pat: OptPatternId, ty: OptExprId, value: OptExprId, attrs: OptRangeAttr, loc: LocId };
+    pub const Param = struct {
+        pat: OptPatternId,
+        ty: OptExprId,
+        value: OptExprId,
+        attrs: OptRangeAttr,
+        is_comptime: bool,
+        loc: LocId,
+    };
     pub const Attribute = struct { name: StrId, value: OptExprId, loc: LocId };
 
     pub const DeclFlags = packed struct(u8) { is_const: bool, _pad: u7 = 0 };
@@ -1452,6 +1459,7 @@ pub const AstPrinter = struct {
             const param = self.exprs.Param.get(pid);
             try self.open("(param", .{});
             if (!param.attrs.isNone()) try self.printAttrs(param.attrs);
+            if (param.is_comptime) try self.leaf("(comptime)", .{});
             if (!param.pat.isNone()) {
                 try self.open("(pattern", .{});
                 try self.printPattern(param.pat.unwrap());
@@ -2427,6 +2435,9 @@ pub const CodePrinter = struct {
             if (i > 0) try self.printf(", ", .{});
             const param = self.exprs.Param.get(pid);
             try self.printAttrs(param.attrs, .After);
+            if (param.is_comptime) {
+                try self.printf("comptime ", .{});
+            }
             if (!param.pat.isNone()) {
                 try self.printPattern(param.pat.unwrap());
             }
