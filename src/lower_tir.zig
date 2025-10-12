@@ -395,6 +395,7 @@ pub const LowerTir = struct {
         if (kind == .FunctionLit and !a.exprs.get(.FunctionLit, d.value).flags.is_extern) {
             const name = if (!d.pattern.isNone()) self.bindingNameOfPattern(a, d.pattern.unwrap()) else null;
             if (name) |nm| {
+                //        try self.lowerFunction(a, b, nm, d.value, null);
                 const fn_lit = a.exprs.get(.FunctionLit, d.value);
                 const params = a.exprs.param_pool.slice(fn_lit.params);
 
@@ -513,6 +514,7 @@ pub const LowerTir = struct {
             const p = a.exprs.Param.get(params[i]);
             if (!p.pat.isNone()) {
                 const pname = self.bindingNameOfPattern(a, p.pat.unwrap()) orelse continue;
+                // try env.bind(self.gpa, a, pname, .{ .value = param_vals[runtime_index], .is_slot = false });
                 const pty = runtime_param_tys[runtime_index];
                 try env.bind(self.gpa, a, pname, .{ .value = param_vals[runtime_index], .ty = pty, .is_slot = false });
             }
@@ -746,6 +748,7 @@ pub const LowerTir = struct {
         if (!r.value.isNone()) {
             const frow = f.builder.t.funcs.Function.get(f.id);
             const expect = frow.result;
+            //    const v_raw = try self.lowerExpr(a, env, f, blk, r.value.unwrap(), null, .rvalue);
             const want: ?types.TypeId = if (self.isVoid(expect)) null else expect;
             const v_raw = try self.lowerExpr(a, env, f, blk, r.value.unwrap(), want, .rvalue);
             var v = v_raw;
@@ -1041,6 +1044,7 @@ pub const LowerTir = struct {
 
         var tmp_env = Env.init(self.gpa);
         defer tmp_env.deinit(self.gpa);
+        // try tmp_env.bind(self.gpa, a, tmp_builder.intern("comptime_api_ptr"), .{ .value = api_ptr_val, .is_slot = false });
         try tmp_env.bind(self.gpa, a, tmp_builder.intern("comptime_api_ptr"), .{ .value = api_ptr_val, .ty = ptr_ty, .is_slot = false });
 
         const result_val_id = try self.lowerExpr(a, &tmp_env, &thunk_fn, &thunk_blk, expr, result_ty, .rvalue);

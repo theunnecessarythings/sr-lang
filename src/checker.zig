@@ -1300,10 +1300,6 @@ pub const Checker = struct {
 
     fn checkFunctionLit(self: *Checker, id: ast.ExprId) !?types.TypeId {
         const fnr = self.getExpr(.FunctionLit, id);
-        const res = if (!fnr.result_ty.isNone())
-            (try check_types.typeFromTypeExpr(self, fnr.result_ty.unwrap()))
-        else
-            self.context.type_store.tVoid();
         const params = self.ast_unit.exprs.param_pool.slice(fnr.params);
         var pbuf = try self.gpa.alloc(types.TypeId, params.len);
         defer self.gpa.free(pbuf);
@@ -1345,12 +1341,18 @@ pub const Checker = struct {
             try self.bindParamPattern(params[i], p);
         }
 
+        const res_opt: ?types.TypeId = if (!fnr.result_ty.isNone())
+            (try check_types.typeFromTypeExpr(self, fnr.result_ty.unwrap()))
+        else
+            self.context.type_store.tVoid();
+        if (res_opt == null) return null;
+        const res = res_opt.?;
+
         // Temporarily record a function type (purity will be finalized after body analysis)
-        if (res == null) return null;
-        const temp_ty = self.context.type_store.mkFunction(pbuf, res.?, fnr.flags.is_variadic, true);
+        const temp_ty = self.context.type_store.mkFunction(pbuf, res, fnr.flags.is_variadic, true);
         self.type_info.expr_types.items[id.toRaw()] = temp_ty;
 
-        try self.pushFunc(res.?, !fnr.result_ty.isNone(), !fnr.flags.is_proc);
+        try self.pushFunc(res, !fnr.result_ty.isNone(), !fnr.flags.is_proc);
         defer self.popFunc();
         if (!fnr.body.isNone()) {
             // Function bodies are in statement context: no value required from the block
@@ -1360,7 +1362,7 @@ pub const Checker = struct {
         }
         // Extern procs are considered impure; otherwise proc purity comes from body analysis.
         const is_pure = if (fnr.flags.is_proc) false else true;
-        const final_ty = self.context.type_store.mkFunction(pbuf, res.?, fnr.flags.is_variadic, is_pure);
+        const final_ty = self.context.type_store.mkFunction(pbuf, res, fnr.flags.is_variadic, is_pure);
         self.type_info.expr_types.items[id.toRaw()] = final_ty;
         return final_ty;
     }

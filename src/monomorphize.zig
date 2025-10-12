@@ -366,11 +366,12 @@ pub const Monomorphizer = struct {
 };
 
 fn resolveSpecializedType(
-    _ts: *types.TypeStore,
+    ts: *types.TypeStore,
     bindings: []const BindingInfo,
     a: *const ast.Ast,
     expr: ast.ExprId,
 ) ?types.TypeId {
+    _ = ts;
     const kind = a.exprs.index.kinds.items[expr.toRaw()];
     switch (kind) {
         .Ident => {
