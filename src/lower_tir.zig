@@ -78,7 +78,7 @@ pub const LowerTir = struct {
             i -= 1;
             const frame = &self.expr_type_override_stack.items[i];
             if (frame.map.get(expr.toRaw())) |entry| {
-                return entry.*;
+                return entry;
             }
         }
         return null;
@@ -882,6 +882,10 @@ pub const LowerTir = struct {
                     try self.context.type_store.fmt(ty, w);
                 },
                 .value_param => |vp| try self.appendMangleValue(&buf, vp.value),
+                .runtime_param => |ty| {
+                    const w = buf.writer(self.gpa);
+                    try self.context.type_store.fmt(ty, w);
+                },
             }
         }
 
@@ -1146,6 +1150,7 @@ pub const LowerTir = struct {
         ty: types.TypeId,
         value: comp.ComptimeValue,
     ) !tir.ValueId {
+        _ = self;
         return switch (value) {
             .Int => |val| blk: {
                 const casted = std.math.cast(u64, val) orelse return error.LoweringBug;
@@ -1248,19 +1253,19 @@ pub const LowerTir = struct {
             if (self.context.type_store.index.kinds.items[fty.toRaw()] == .Function) {
                 if (self.findTopLevelDeclByName(a, callee.name)) |decl_id| {
                     const decl = a.exprs.Decl.get(decl_id);
-                    const fn_lit = a.exprs.get(.FunctionLit, decl.value);
-                    const params = a.exprs.param_pool.slice(fn_lit.params);
+                    const base_kind = a.exprs.index.kinds.items[decl.value.toRaw()];
+                    if (base_kind != .FunctionLit) continue;
+
+                    const params = a.exprs.param_pool.slice(a.exprs.get(.FunctionLit, decl.value).params);
 
                     var skip_params: usize = 0;
                     while (skip_params < params.len and a.exprs.Param.get(params[skip_params]).is_comptime) : (skip_params += 1) {}
 
-                    if (skip_params > 0 and arg_ids.len >= skip_params) {
-                        var binding_infos = try self.gpa.alloc(monomorphize.BindingInfo, skip_params);
-                        var binding_count: usize = 0;
+                    if (arg_ids.len >= skip_params) {
+                        var binding_infos = std.ArrayList(monomorphize.BindingInfo).init(self.gpa);
                         defer {
-                            var j: usize = 0;
-                            while (j < binding_count) : (j += 1) binding_infos[j].deinit(self.gpa);
-                            self.gpa.free(binding_infos);
+                            for (binding_infos.items) |*info| info.deinit(self.gpa);
+                            binding_infos.deinit();
                         }
 
                         var ok = true;
@@ -1289,30 +1294,53 @@ pub const LowerTir = struct {
                                     ok = false;
                                     break;
                                 };
-                                binding_infos[idx] = monomorphize.BindingInfo.typeParam(pname, targ);
+                                try binding_infos.append(monomorphize.BindingInfo.typeParam(pname, targ));
                             } else {
                                 const comptime_val = self.evalComptimeExprValue(a, env, f, blk, arg_expr, param_ty) catch {
                                     ok = false;
                                     break;
                                 };
-                                binding_infos[idx] = monomorphize.BindingInfo.valueParam(self.gpa, pname, param_ty, comptime_val) catch {
+                                var info = monomorphize.BindingInfo.valueParam(self.gpa, pname, param_ty, comptime_val) catch {
                                     ok = false;
                                     break;
                                 };
+                                binding_infos.append(info) catch |err| {
+                                    info.deinit(self.gpa);
+                                    return err;
+                                };
                             }
-
-                            binding_count = idx + 1;
                         }
 
                         if (ok) {
-                            const mangled = try self.mangleMonomorphName(callee.name, binding_infos[0..binding_count]);
+                            const original_args = arg_ids;
+                            var runtime_idx: usize = skip_params;
+                            while (runtime_idx < params.len and runtime_idx < original_args.len) : (runtime_idx += 1) {
+                                const param = a.exprs.Param.get(params[runtime_idx]);
+                                if (param.pat.isNone()) continue;
+                                const pname = self.bindingNameOfPattern(a, param.pat.unwrap()) orelse continue;
+
+                                const param_ty = if (runtime_idx < param_tys.len)
+                                    param_tys[runtime_idx]
+                                else
+                                    self.context.type_store.tAny();
+                                if (!self.isAny(param_ty)) continue;
+
+                                const arg_ty = self.getExprType(original_args[runtime_idx]) orelse continue;
+                                if (self.isAny(arg_ty)) continue;
+
+                                try binding_infos.append(monomorphize.BindingInfo.runtimeParam(pname, arg_ty));
+                            }
+                        }
+
+                        if (ok and binding_infos.items.len > 0) {
+                            const mangled = try self.mangleMonomorphName(callee.name, binding_infos.items);
                             const result = try self.monomorphizer.request(
                                 a,
                                 &self.context.type_store,
                                 callee.name,
                                 decl_id,
                                 fty,
-                                binding_infos[0..binding_count],
+                                binding_infos.items,
                                 skip_params,
                                 mangled,
                             );

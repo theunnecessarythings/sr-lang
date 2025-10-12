@@ -29,6 +29,7 @@ pub const BindingInfo = struct {
     pub const Kind = union(enum) {
         type_param: types.TypeId,
         value_param: BindingValue,
+        runtime_param: types.TypeId,
     };
 
     pub fn typeParam(name: ast.StrId, ty: types.TypeId) BindingInfo {
@@ -37,6 +38,10 @@ pub const BindingInfo = struct {
 
     pub fn valueParam(gpa: std.mem.Allocator, name: ast.StrId, ty: types.TypeId, value: comp.ComptimeValue) !BindingInfo {
         return .{ .name = name, .kind = .{ .value_param = try BindingValue.init(gpa, ty, value) } };
+    }
+
+    pub fn runtimeParam(name: ast.StrId, ty: types.TypeId) BindingInfo {
+        return .{ .name = name, .kind = .{ .runtime_param = ty } };
     }
 
     pub fn deinit(self: *BindingInfo, gpa: std.mem.Allocator) void {
@@ -54,6 +59,7 @@ pub const BindingInfo = struct {
                 const cloned = try vp.clone(gpa);
                 break :blk .{ .name = self.name, .kind = .{ .value_param = cloned } };
             },
+            .runtime_param => |ty| BindingInfo.runtimeParam(self.name, ty),
         };
     }
 };
@@ -65,6 +71,7 @@ pub const Binding = struct {
     pub const Kind = union(enum) {
         type_param: types.TypeId,
         value_param: BindingValue,
+        runtime_param: types.TypeId,
     };
 
     fn fromInfo(info: BindingInfo, gpa: std.mem.Allocator) !Binding {
@@ -74,6 +81,7 @@ pub const Binding = struct {
                 const cloned = try vp.clone(gpa);
                 break :blk .{ .name = info.name, .kind = .{ .value_param = cloned } };
             },
+            .runtime_param => |ty| .{ .name = info.name, .kind = .{ .runtime_param = ty } },
         };
     }
 
@@ -148,6 +156,7 @@ pub const MonomorphizationContext = struct {
             return switch (b.kind) {
                 .type_param => |ty| ty,
                 .value_param => |_| null,
+                .runtime_param => |_| null,
             };
         }
         return null;
@@ -159,6 +168,18 @@ pub const MonomorphizationContext = struct {
             return switch (b.kind) {
                 .type_param => |_| null,
                 .value_param => |*vp| vp,
+                .runtime_param => |_| null,
+            };
+        }
+        return null;
+    }
+
+    pub fn lookupRuntimeParamType(self: *const MonomorphizationContext, name: ast.StrId) ?types.TypeId {
+        for (self.bindings) |b| {
+            if (!b.name.eq(name)) continue;
+            return switch (b.kind) {
+                .runtime_param => |ty| ty,
+                else => null,
             };
         }
         return null;
@@ -217,10 +238,10 @@ pub const Monomorphizer = struct {
             .Void => {},
             .Int => |v| hasher.update(std.mem.asBytes(&v)),
             .Float => |v| hasher.update(std.mem.asBytes(&v)),
-        .Bool => |v| {
-            const byte: u8 = if (v) 1 else 0;
-            hasher.update(std.mem.asBytes(&byte));
-        },
+            .Bool => |v| {
+                const byte: u8 = if (v) 1 else 0;
+                hasher.update(std.mem.asBytes(&byte));
+            },
             .String => |s| hasher.update(s),
         }
     }
@@ -241,6 +262,10 @@ pub const Monomorphizer = struct {
                     const ty_raw: u32 = vp.ty.toRaw();
                     hasher.update(std.mem.asBytes(&ty_raw));
                     hashComptimeValue(&hasher, vp.value);
+                },
+                .runtime_param => |ty| {
+                    const raw: u32 = ty.toRaw();
+                    hasher.update(std.mem.asBytes(&raw));
                 },
             }
         }
@@ -284,8 +309,6 @@ pub const Monomorphizer = struct {
             return .{ .mangled_name = cached.name, .specialized_ty = cached.specialized_ty };
         }
 
-        std.debug.assert(bindings.len == skip_params);
-
         const fn_kind = ts.get(.Function, fn_ty);
         const base_params = ts.type_pool.slice(fn_kind.params);
         std.debug.assert(skip_params <= base_params.len);
@@ -308,6 +331,12 @@ pub const Monomorphizer = struct {
             if (!param.ty.isNone()) {
                 specialized_ty = resolveSpecializedType(ts, bindings, a, param.ty.unwrap()) orelse base_ty;
             }
+            if (!param.pat.isNone()) {
+                if (bindingNameOfPattern(a, param.pat.unwrap())) |pname| {
+                    if (lookupRuntimeOverride(bindings, pname)) |override_ty|
+                        specialized_ty = override_ty;
+                }
+            }
             const k = ts.getKind(specialized_ty);
             runtime_params[idx] = if (k == .TypeType)
                 ts.get(.TypeType, specialized_ty).of
@@ -323,6 +352,12 @@ pub const Monomorphizer = struct {
             }
             break :blk fn_kind.result;
         };
+
+        if (ts.getKind(result_ty) == .Any) {
+            if (runtimeResultType(bindings)) |override| {
+                result_ty = override;
+            }
+        }
 
         if (ts.getKind(result_ty) == .TypeType) {
             result_ty = ts.get(.TypeType, result_ty).of;
@@ -381,10 +416,45 @@ fn resolveSpecializedType(
                 return switch (info.kind) {
                     .type_param => |ty| ty,
                     .value_param => |vp| vp.ty,
+                    .runtime_param => |_| null,
                 };
             }
             return null;
         },
         else => return null,
     }
+}
+
+fn lookupRuntimeOverride(bindings: []const BindingInfo, name: ast.StrId) ?types.TypeId {
+    for (bindings) |info| {
+        if (!info.name.eq(name)) continue;
+        switch (info.kind) {
+            .runtime_param => |ty| return ty,
+            else => {},
+        }
+    }
+    return null;
+}
+
+fn bindingNameOfPattern(a: *const ast.Ast, pid: ast.PatternId) ?ast.StrId {
+    const k = a.pats.index.kinds.items[pid.toRaw()];
+    return switch (k) {
+        .Binding => a.pats.get(.Binding, pid).name,
+        else => null,
+    };
+}
+
+fn runtimeResultType(bindings: []const BindingInfo) ?types.TypeId {
+    var candidate: ?types.TypeId = null;
+    for (bindings) |info| {
+        if (info.kind == .runtime_param) {
+            const ty = info.kind.runtime_param;
+            if (candidate) |existing| {
+                if (existing.toRaw() != ty.toRaw()) return null;
+            } else {
+                candidate = ty;
+            }
+        }
+    }
+    return candidate;
 }
