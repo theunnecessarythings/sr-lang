@@ -238,10 +238,10 @@ pub const Monomorphizer = struct {
             .Void => {},
             .Int => |v| hasher.update(std.mem.asBytes(&v)),
             .Float => |v| hasher.update(std.mem.asBytes(&v)),
-            .Bool => |v| {
-                const byte: u8 = if (v) 1 else 0;
-                hasher.update(std.mem.asBytes(&byte));
-            },
+        .Bool => |v| {
+            const byte: u8 = if (v) 1 else 0;
+            hasher.update(std.mem.asBytes(&byte));
+        },
             .String => |s| hasher.update(s),
         }
     }

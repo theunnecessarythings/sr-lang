@@ -395,7 +395,6 @@ pub const LowerTir = struct {
         if (kind == .FunctionLit and !a.exprs.get(.FunctionLit, d.value).flags.is_extern) {
             const name = if (!d.pattern.isNone()) self.bindingNameOfPattern(a, d.pattern.unwrap()) else null;
             if (name) |nm| {
-                //        try self.lowerFunction(a, b, nm, d.value, null);
                 const fn_lit = a.exprs.get(.FunctionLit, d.value);
                 const params = a.exprs.param_pool.slice(fn_lit.params);
 
@@ -514,7 +513,6 @@ pub const LowerTir = struct {
             const p = a.exprs.Param.get(params[i]);
             if (!p.pat.isNone()) {
                 const pname = self.bindingNameOfPattern(a, p.pat.unwrap()) orelse continue;
-                // try env.bind(self.gpa, a, pname, .{ .value = param_vals[runtime_index], .is_slot = false });
                 const pty = runtime_param_tys[runtime_index];
                 try env.bind(self.gpa, a, pname, .{ .value = param_vals[runtime_index], .ty = pty, .is_slot = false });
             }
@@ -748,7 +746,6 @@ pub const LowerTir = struct {
         if (!r.value.isNone()) {
             const frow = f.builder.t.funcs.Function.get(f.id);
             const expect = frow.result;
-            //    const v_raw = try self.lowerExpr(a, env, f, blk, r.value.unwrap(), null, .rvalue);
             const want: ?types.TypeId = if (self.isVoid(expect)) null else expect;
             const v_raw = try self.lowerExpr(a, env, f, blk, r.value.unwrap(), want, .rvalue);
             var v = v_raw;
@@ -1048,7 +1045,6 @@ pub const LowerTir = struct {
 
         var tmp_env = Env.init(self.gpa);
         defer tmp_env.deinit(self.gpa);
-        // try tmp_env.bind(self.gpa, a, tmp_builder.intern("comptime_api_ptr"), .{ .value = api_ptr_val, .is_slot = false });
         try tmp_env.bind(self.gpa, a, tmp_builder.intern("comptime_api_ptr"), .{ .value = api_ptr_val, .ty = ptr_ty, .is_slot = false });
 
         const result_val_id = try self.lowerExpr(a, &tmp_env, &thunk_fn, &thunk_blk, expr, result_ty, .rvalue);
@@ -1254,62 +1250,71 @@ pub const LowerTir = struct {
                 if (self.findTopLevelDeclByName(a, callee.name)) |decl_id| {
                     const decl = a.exprs.Decl.get(decl_id);
                     const base_kind = a.exprs.index.kinds.items[decl.value.toRaw()];
-                    if (base_kind != .FunctionLit) continue;
+                    if (base_kind == .FunctionLit) {
+                        const params = a.exprs.param_pool.slice(a.exprs.get(.FunctionLit, decl.value).params);
 
-                    const params = a.exprs.param_pool.slice(a.exprs.get(.FunctionLit, decl.value).params);
+                        var skip_params: usize = 0;
+                        while (skip_params < params.len and a.exprs.Param.get(params[skip_params]).is_comptime) : (skip_params += 1) {}
 
-                    var skip_params: usize = 0;
-                    while (skip_params < params.len and a.exprs.Param.get(params[skip_params]).is_comptime) : (skip_params += 1) {}
+                        if (arg_ids.len >= skip_params) {
 
-                    if (arg_ids.len >= skip_params) {
-                        var binding_infos = std.ArrayList(monomorphize.BindingInfo).init(self.gpa);
-                        defer {
-                            for (binding_infos.items) |*info| info.deinit(self.gpa);
-                            binding_infos.deinit();
-                        }
-
-                        var ok = true;
-                        var idx: usize = 0;
-                        while (idx < skip_params) : (idx += 1) {
-                            const param = a.exprs.Param.get(params[idx]);
-                            if (param.pat.isNone()) {
-                                ok = false;
-                                break;
+                            var binding_infos = std.ArrayList(monomorphize.BindingInfo).init(self.gpa);
+                            defer {
+                                for (binding_infos.items) |*info| info.deinit(self.gpa);
+                                binding_infos.deinit();
                             }
 
-                            const pname = self.bindingNameOfPattern(a, param.pat.unwrap()) orelse {
-                                ok = false;
-                                break;
-                            };
+                            var ok = true;
+                            var idx: usize = 0;
+                            while (idx < skip_params) : (idx += 1) {
+                                const param = a.exprs.Param.get(params[idx]);
+                                if (param.pat.isNone()) {
+                                    ok = false;
+                                    break;
+                                }
 
-                            const param_ty = if (idx < param_tys.len)
-                                param_tys[idx]
-                            else
-                                self.context.type_store.tAny();
-                            const arg_expr = arg_ids[idx];
-                            const param_kind = self.context.type_store.getKind(param_ty);
+                                const pname = self.bindingNameOfPattern(a, param.pat.unwrap()) orelse {
+                                    ok = false;
+                                    break;
+                                };
 
-                            if (param_kind == .TypeType) {
-                                const targ = self.resolveTypeArg(arg_expr) orelse {
-                                    ok = false;
-                                    break;
-                                };
-                                try binding_infos.append(monomorphize.BindingInfo.typeParam(pname, targ));
-                            } else {
-                                const comptime_val = self.evalComptimeExprValue(a, env, f, blk, arg_expr, param_ty) catch {
-                                    ok = false;
-                                    break;
-                                };
-                                var info = monomorphize.BindingInfo.valueParam(self.gpa, pname, param_ty, comptime_val) catch {
-                                    ok = false;
-                                    break;
-                                };
-                                binding_infos.append(info) catch |err| {
-                                    info.deinit(self.gpa);
-                                    return err;
-                                };
+                                const param_ty = if (idx < param_tys.len)
+                                    param_tys[idx]
+                                else
+                                    self.context.type_store.tAny();
+                                const arg_expr = arg_ids[idx];
+                                const param_kind = self.context.type_store.getKind(param_ty);
+
+                                if (param_kind == .TypeType) {
+                                    const targ = self.resolveTypeArg(arg_expr) orelse {
+                                        ok = false;
+                                        break;
+                                    };
+                                    try binding_infos.append(monomorphize.BindingInfo.typeParam(pname, targ));
+                                } else {
+                                    const comptime_val = self.evalComptimeExprValue(a, env, f, blk, arg_expr, param_ty) catch {
+                                        ok = false;
+                                        break;
+                                    };
+                                    var info = monomorphize.BindingInfo.valueParam(self.gpa, pname, param_ty, comptime_val) catch {
+                                        ok = false;
+                                        break;
+                                    };
+                                    binding_infos.append(info) catch |err| {
+                                        info.deinit(self.gpa);
+                                        return err;
+                                    };
+                                }
                             }
                         }
+
+                        if (ok) {
+                            const original_args = arg_ids;
+                            var runtime_idx: usize = skip_params;
+                            while (runtime_idx < params.len and runtime_idx < original_args.len) : (runtime_idx += 1) {
+                                const param = a.exprs.Param.get(params[runtime_idx]);
+                                if (param.pat.isNone()) continue;
+                                const pname = self.bindingNameOfPattern(a, param.pat.unwrap()) orelse continue;
 
                         if (ok) {
                             const original_args = arg_ids;
