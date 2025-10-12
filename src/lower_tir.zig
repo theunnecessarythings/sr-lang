@@ -34,6 +34,7 @@ pub const LowerTir = struct {
     module_call_cache: std.AutoHashMap(u64, StrId),
     monomorphizer: monomorphize.Monomorphizer,
     monomorph_context_stack: std.ArrayListUnmanaged(monomorphize.MonomorphizationContext) = .{},
+    expr_type_override_stack: std.ArrayListUnmanaged(ExprTypeOverrideFrame) = .{},
 
     import_base_dir: []const u8 = ".",
 
@@ -44,6 +45,44 @@ pub const LowerTir = struct {
         name: ast.StrId,
         prev: ?ValueBinding,
     };
+
+    const ExprTypeOverrideFrame = struct {
+        map: std.AutoArrayHashMapUnmanaged(u32, types.TypeId) = .{},
+
+        fn deinit(self: *ExprTypeOverrideFrame, gpa: std.mem.Allocator) void {
+            self.map.deinit(gpa);
+        }
+    };
+
+    fn pushExprTypeOverrideFrame(self: *LowerTir) !void {
+        try self.expr_type_override_stack.append(self.gpa, .{});
+    }
+
+    fn popExprTypeOverrideFrame(self: *LowerTir) void {
+        if (self.expr_type_override_stack.items.len == 0) return;
+        const idx = self.expr_type_override_stack.items.len - 1;
+        self.expr_type_override_stack.items[idx].deinit(self.gpa);
+        self.expr_type_override_stack.items.len -= 1;
+    }
+
+    fn noteExprType(self: *LowerTir, expr: ast.ExprId, ty: types.TypeId) !void {
+        if (self.expr_type_override_stack.items.len == 0) return;
+        if (self.isAny(ty)) return;
+        var frame = &self.expr_type_override_stack.items[self.expr_type_override_stack.items.len - 1];
+        try frame.map.put(self.gpa, expr.toRaw(), ty);
+    }
+
+    fn lookupExprTypeOverride(self: *const LowerTir, expr: ast.ExprId) ?types.TypeId {
+        var i: usize = self.expr_type_override_stack.items.len;
+        while (i > 0) {
+            i -= 1;
+            const frame = &self.expr_type_override_stack.items[i];
+            if (frame.map.get(expr.toRaw())) |entry| {
+                return entry.*;
+            }
+        }
+        return null;
+    }
 
     fn constInitFromLiteral(
         self: *LowerTir,
@@ -98,6 +137,7 @@ pub const LowerTir = struct {
             .chk = chk,
             .module_call_cache = std.AutoHashMap(u64, StrId).init(gpa),
             .monomorphizer = monomorphize.Monomorphizer.init(gpa),
+            .expr_type_override_stack = .{},
         };
     }
 
@@ -112,6 +152,11 @@ pub const LowerTir = struct {
             ctx.deinit(self.gpa);
         }
         self.monomorph_context_stack.deinit(self.gpa);
+        while (self.expr_type_override_stack.items.len > 0) {
+            self.expr_type_override_stack.items[self.expr_type_override_stack.items.len - 1].deinit(self.gpa);
+            self.expr_type_override_stack.items.len -= 1;
+        }
+        self.expr_type_override_stack.deinit(self.gpa);
         self.monomorphizer.deinit();
     }
 
@@ -350,7 +395,15 @@ pub const LowerTir = struct {
         if (kind == .FunctionLit and !a.exprs.get(.FunctionLit, d.value).flags.is_extern) {
             const name = if (!d.pattern.isNone()) self.bindingNameOfPattern(a, d.pattern.unwrap()) else null;
             if (name) |nm| {
-                try self.lowerFunction(a, b, nm, d.value, null);
+                const fn_lit = a.exprs.get(.FunctionLit, d.value);
+                const params = a.exprs.param_pool.slice(fn_lit.params);
+
+                var skip_params: usize = 0;
+                while (skip_params < params.len and a.exprs.Param.get(params[skip_params]).is_comptime) : (skip_params += 1) {}
+
+                if (skip_params == 0) {
+                    try self.lowerFunction(a, b, nm, d.value, null);
+                }
             }
             return;
         }
@@ -402,6 +455,9 @@ pub const LowerTir = struct {
 
         const fnr = a.exprs.get(.FunctionLit, fun_eid);
 
+        try self.pushExprTypeOverrideFrame();
+        defer self.popExprTypeOverrideFrame();
+
         if (!fnr.attrs.isNone()) {
             const attrs = a.exprs.attr_pool.slice(fnr.attrs.asRange());
             const mlir_fn_str = a.exprs.strs.intern("mlir_fn");
@@ -436,6 +492,18 @@ pub const LowerTir = struct {
         var env = Env.init(self.gpa);
         defer env.deinit(self.gpa);
 
+        if (ctx) |c| {
+            for (c.bindings) |binding| {
+                switch (binding.kind) {
+                    .type_param => {},
+                    .value_param => |vp| {
+                        const const_val = try self.constValueFromComptime(&blk, vp.ty, vp.value);
+                        try env.bind(self.gpa, a, binding.name, .{ .value = const_val, .ty = vp.ty, .is_slot = false });
+                    },
+                }
+            }
+        }
+
         // Bind params
         i = 0;
         const param_vals = f.param_vals.items;
@@ -445,7 +513,8 @@ pub const LowerTir = struct {
             const p = a.exprs.Param.get(params[i]);
             if (!p.pat.isNone()) {
                 const pname = self.bindingNameOfPattern(a, p.pat.unwrap()) orelse continue;
-                try env.bind(self.gpa, a, pname, .{ .value = param_vals[runtime_index], .is_slot = false });
+                const pty = runtime_param_tys[runtime_index];
+                try env.bind(self.gpa, a, pname, .{ .value = param_vals[runtime_index], .ty = pty, .is_slot = false });
             }
             runtime_index += 1;
         }
@@ -475,7 +544,6 @@ pub const LowerTir = struct {
         var ctx = try monomorphize.MonomorphizationContext.init(
             self.gpa,
             req.bindings,
-            req.type_args,
             req.skip_params,
             req.specialized_ty,
         );
@@ -678,10 +746,13 @@ pub const LowerTir = struct {
         if (!r.value.isNone()) {
             const frow = f.builder.t.funcs.Function.get(f.id);
             const expect = frow.result;
-            const v_raw = try self.lowerExpr(a, env, f, blk, r.value.unwrap(), null, .rvalue);
+            const want: ?types.TypeId = if (self.isVoid(expect)) null else expect;
+            const v_raw = try self.lowerExpr(a, env, f, blk, r.value.unwrap(), want, .rvalue);
             var v = v_raw;
-            if (self.getExprType(r.value.unwrap())) |got| {
-                v = self.emitCoerce(blk, v_raw, got, expect);
+            if (want == null) {
+                if (self.getExprType(r.value.unwrap())) |got| {
+                    v = self.emitCoerce(blk, v_raw, got, expect);
+                }
             }
 
             const expect_kind = self.context.type_store.index.kinds.items[expect.toRaw()];
@@ -770,19 +841,49 @@ pub const LowerTir = struct {
         return self.context.type_store.get(.TypeType, ty).of;
     }
 
+    fn appendMangleValue(
+        self: *LowerTir,
+        buf: *std.ArrayList(u8),
+        value: comp.ComptimeValue,
+    ) !void {
+        var w = buf.writer(self.gpa);
+        switch (value) {
+            .Int => |val| try w.print("i{}", .{val}),
+            .Float => |val| try w.print("f{d}", .{val}),
+            .Bool => |val| try w.print("{s}", .{if (val) "true" else "false"}),
+            .Void => try w.print("void", .{}),
+            .String => |s| {
+                try w.print("s{}_", .{s.len});
+                for (s) |ch| {
+                    const keep = std.ascii.isAlphanumeric(ch) or ch == '_';
+                    try buf.append(self.gpa, if (keep) ch else '_');
+                }
+            },
+        }
+    }
+
     fn mangleMonomorphName(
         self: *LowerTir,
         base: StrId,
-        type_args: []const types.TypeId,
+        bindings: []const monomorphize.BindingInfo,
     ) !StrId {
         var buf: std.ArrayList(u8) = .empty;
         defer buf.deinit(self.gpa);
 
         try buf.appendSlice(self.gpa, self.context.type_store.strs.get(base));
-        for (type_args) |ty| {
+        for (bindings) |info| {
             try buf.append(self.gpa, '_');
-            const w = buf.writer(self.gpa);
-            try self.context.type_store.fmt(ty, w);
+            switch (info.kind) {
+                .type_param => |ty| {
+                    const w = buf.writer(self.gpa);
+                    try self.context.type_store.fmt(ty, w);
+                },
+                .value_param => |vp| try self.appendMangleValue(&buf, vp.value),
+                .runtime_param => |ty| {
+                    const w = buf.writer(self.gpa);
+                    try self.context.type_store.fmt(ty, w);
+                },
+            }
         }
 
         return self.context.type_store.strs.intern(buf.items);
@@ -918,29 +1019,19 @@ pub const LowerTir = struct {
         });
     }
 
-    fn jitEvalComptimeBlock(
+    fn runComptimeExpr(
         self: *LowerTir,
         a: *const ast.Ast,
-        env: *Env,
-        f: *Builder.FunctionFrame,
-        blk: *Builder.BlockFrame,
-        id: ast.ExprId,
-    ) !tir.ValueId {
-        _ = env;
-        _ = f;
-
-        const cb = a.exprs.get(.ComptimeBlock, id);
-
-        // 1. Create a temporary TIR module for the thunk.
+        expr: ast.ExprId,
+        result_ty: types.TypeId,
+    ) !comp.ComptimeValue {
         var tmp_tir = tir.TIR.init(self.gpa, &self.context.type_store);
         defer tmp_tir.deinit();
         var tmp_builder = tir.Builder.init(self.gpa, &tmp_tir);
 
-        // 2. Define the thunk signature: fn(api: *ComptimeApi, result: *ComptimeValue)
-        const ptr_ty = self.context.type_store.mkPtr(self.context.type_store.tU8(), false); // Use u8* as a generic pointer
+        const ptr_ty = self.context.type_store.mkPtr(self.context.type_store.tU8(), false);
         const thunk_name = tmp_builder.intern("__comptime_thunk");
 
-        // add attr `llvm.emit_c_interface`
         const attr_id = tmp_tir.instrs.Attribute.add(self.gpa, .{
             .name = a.exprs.strs.intern("llvm.emit_c_interface"),
             .value = .none(),
@@ -952,21 +1043,16 @@ pub const LowerTir = struct {
         const result_ptr_val = try tmp_builder.addParam(&thunk_fn, tmp_builder.intern("result_ptr"), ptr_ty);
         var thunk_blk = try tmp_builder.beginBlock(&thunk_fn);
 
-        // 3. Lower the comptime block's AST into the thunk's TIR.
         var tmp_env = Env.init(self.gpa);
         defer tmp_env.deinit(self.gpa);
+        try tmp_env.bind(self.gpa, a, tmp_builder.intern("comptime_api_ptr"), .{ .value = api_ptr_val, .ty = ptr_ty, .is_slot = false });
 
-        try tmp_env.bind(self.gpa, a, tmp_builder.intern("comptime_api_ptr"), .{ .value = api_ptr_val, .is_slot = false });
+        const result_val_id = try self.lowerExpr(a, &tmp_env, &thunk_fn, &thunk_blk, expr, result_ty, .rvalue);
 
-        const result_expr_ty = self.getExprType(cb.block) orelse return error.LoweringBug;
-        const result_val_id = try self.lowerExpr(a, &tmp_env, &thunk_fn, &thunk_blk, cb.block, result_expr_ty, .rvalue);
-
-        // 4. Store the result in the result pointer
-        const result_kind = self.context.type_store.getKind(result_expr_ty);
-
+        const result_kind = self.context.type_store.getKind(result_ty);
         if (result_kind != .Void) {
             const field_ty = switch (result_kind) {
-                .I64, .U64, .I32, .U32 => self.context.type_store.tI64(), // ComptimeValue uses u128, but we get i64 from JIT
+                .I64, .U64, .I32, .U32 => self.context.type_store.tI64(),
                 .F64 => self.context.type_store.tF64(),
                 .Bool => self.context.type_store.tBool(),
                 else => return error.UnsupportedComptimeType,
@@ -982,7 +1068,6 @@ pub const LowerTir = struct {
         try tmp_builder.endBlock(&thunk_fn, thunk_blk);
         try tmp_builder.endFunction(thunk_fn);
 
-        // 5. Codegen the temporary TIR to MLIR.
         if (!g_mlir_inited) {
             g_mlir_ctx = compile.initMLIR(self.gpa);
             g_mlir_inited = true;
@@ -991,14 +1076,11 @@ pub const LowerTir = struct {
         defer gen.deinit();
         var mlir_module = try gen.emitModule(&tmp_tir, self.context);
 
-        // 6. Run passes and JIT the module.
         try compile.run_passes(&gen.mlir_ctx, &mlir_module);
         _ = mlir.c.LLVMInitializeNativeTarget();
         _ = mlir.c.LLVMInitializeNativeAsmPrinter();
         const engine = mlir.c.mlirExecutionEngineCreate(mlir_module.handle, 2, 0, null, false);
         defer mlir.c.mlirExecutionEngineDestroy(engine);
-
-        // 7. Set up ComptimeApi and result value, then invoke the JIT'd thunk.
 
         var comptime_api = comp.ComptimeApi{
             .context = self.context,
@@ -1010,22 +1092,69 @@ pub const LowerTir = struct {
 
         const thunk_fn_name_ref = mlir.StringRef.from("__comptime_thunk");
         const func_ptr = mlir.c.mlirExecutionEngineLookup(engine, thunk_fn_name_ref.inner);
-        if (func_ptr == null) {
-            return error.ComptimeExecutionFailed;
-        }
+        if (func_ptr == null) return error.ComptimeExecutionFailed;
 
         const ThunkFn = *const fn (api_ptr: *comp.ComptimeApi, result_ptr: *comp.ComptimeValue) callconv(.c) void;
         const typed_func_ptr: ThunkFn = @ptrCast(@alignCast(func_ptr));
         typed_func_ptr(&comptime_api, &result_value);
 
-        // 9. Convert the result back to a TIR constant.
+        return result_value;
+    }
+
+    fn jitEvalComptimeBlock(
+        self: *LowerTir,
+        a: *const ast.Ast,
+        env: *Env,
+        f: *Builder.FunctionFrame,
+        blk: *Builder.BlockFrame,
+        id: ast.ExprId,
+    ) !tir.ValueId {
+        _ = env;
+        _ = f;
+
+        const cb = a.exprs.get(.ComptimeBlock, id);
         const result_ty = self.getExprType(cb.block) orelse return error.LoweringBug;
-        return switch (result_value) {
+        const comptime_value = try self.runComptimeExpr(a, cb.block, result_ty);
+
+        return switch (comptime_value) {
             .Int => |val| blk.builder.tirValue(.ConstInt, blk, result_ty, .{ .value = @as(u64, @intCast(val)) }),
             .Float => |val| blk.builder.tirValue(.ConstFloat, blk, result_ty, .{ .value = val }),
             .Bool => |val| blk.builder.tirValue(.ConstBool, blk, result_ty, .{ .value = val }),
             .Void => blk.builder.tirValue(.ConstUndef, blk, self.context.type_store.tVoid(), .{}),
             .String => |s| blk.builder.tirValue(.ConstString, blk, result_ty, .{ .text = blk.builder.intern(s) }),
+        };
+    }
+
+    fn evalComptimeExprValue(
+        self: *LowerTir,
+        a: *const ast.Ast,
+        env: *Env,
+        f: *Builder.FunctionFrame,
+        blk: *Builder.BlockFrame,
+        expr: ast.ExprId,
+        result_ty: types.TypeId,
+    ) !comp.ComptimeValue {
+        _ = env;
+        _ = f;
+        _ = blk;
+        return self.runComptimeExpr(a, expr, result_ty);
+    }
+
+    fn constValueFromComptime(
+        self: *LowerTir,
+        blk: *Builder.BlockFrame,
+        ty: types.TypeId,
+        value: comp.ComptimeValue,
+    ) !tir.ValueId {
+        return switch (value) {
+            .Int => |val| blk: {
+                const casted = std.math.cast(u64, val) orelse return error.LoweringBug;
+                break :blk blk.builder.tirValue(.ConstInt, blk, ty, .{ .value = casted });
+            },
+            .Float => |val| blk.builder.tirValue(.ConstFloat, blk, ty, .{ .value = val }),
+            .Bool => |val| blk.builder.tirValue(.ConstBool, blk, ty, .{ .value = val }),
+            .Void => blk.builder.tirValue(.ConstUndef, blk, ty, .{}),
+            .String => |s| blk.builder.tirValue(.ConstString, blk, ty, .{ .text = blk.builder.intern(s) }),
         };
     }
 
@@ -1119,69 +1248,107 @@ pub const LowerTir = struct {
             if (self.context.type_store.index.kinds.items[fty.toRaw()] == .Function) {
                 if (self.findTopLevelDeclByName(a, callee.name)) |decl_id| {
                     const decl = a.exprs.Decl.get(decl_id);
-                    const fn_lit = a.exprs.get(.FunctionLit, decl.value);
-                    const params = a.exprs.param_pool.slice(fn_lit.params);
+                    const base_kind = a.exprs.index.kinds.items[decl.value.toRaw()];
+                    if (base_kind == .FunctionLit) {
+                        const params = a.exprs.param_pool.slice(a.exprs.get(.FunctionLit, decl.value).params);
 
-                    var skip_params: usize = 0;
-                    while (skip_params < params.len and a.exprs.Param.get(params[skip_params]).is_comptime) : (skip_params += 1) {}
+                        var skip_params: usize = 0;
+                        while (skip_params < params.len and a.exprs.Param.get(params[skip_params]).is_comptime) : (skip_params += 1) {}
 
-                    if (skip_params > 0 and arg_ids.len >= skip_params) {
-                        var type_args: std.ArrayList(types.TypeId) = .empty;
-                        defer type_args.deinit(self.gpa);
-                        var ok = true;
-                        var idx: usize = 0;
-                        while (idx < skip_params) : (idx += 1) {
-                            const targ = self.resolveTypeArg(arg_ids[idx]) orelse {
-                                ok = false;
-                                break;
-                            };
-                            type_args.append(self.gpa, targ) catch {
-                                ok = false;
-                                break;
-                            };
-                        }
+                        if (arg_ids.len >= skip_params) {
 
-                        if (ok and type_args.items.len == skip_params) {
-                            var binding_infos = try self.gpa.alloc(monomorphize.BindingInfo, skip_params);
-                            defer self.gpa.free(binding_infos);
-                            var bi_ok = true;
-                            var bi_idx: usize = 0;
-                            while (bi_idx < skip_params) : (bi_idx += 1) {
-                                const param = a.exprs.Param.get(params[bi_idx]);
+                            var binding_infos = std.ArrayList(monomorphize.BindingInfo).init(self.gpa);
+                            defer {
+                                for (binding_infos.items) |*info| info.deinit(self.gpa);
+                                binding_infos.deinit();
+                            }
+
+                            var ok = true;
+                            var idx: usize = 0;
+                            while (idx < skip_params) : (idx += 1) {
+                                const param = a.exprs.Param.get(params[idx]);
                                 if (param.pat.isNone()) {
-                                    bi_ok = false;
+                                    ok = false;
                                     break;
                                 }
+
                                 const pname = self.bindingNameOfPattern(a, param.pat.unwrap()) orelse {
-                                    bi_ok = false;
+                                    ok = false;
                                     break;
                                 };
-                                binding_infos[bi_idx] = .{ .name = pname };
+
+                                const param_ty = if (idx < param_tys.len)
+                                    param_tys[idx]
+                                else
+                                    self.context.type_store.tAny();
+                                const arg_expr = arg_ids[idx];
+                                const param_kind = self.context.type_store.getKind(param_ty);
+
+                                if (param_kind == .TypeType) {
+                                    const targ = self.resolveTypeArg(arg_expr) orelse {
+                                        ok = false;
+                                        break;
+                                    };
+                                    try binding_infos.append(monomorphize.BindingInfo.typeParam(pname, targ));
+                                } else {
+                                    const comptime_val = self.evalComptimeExprValue(a, env, f, blk, arg_expr, param_ty) catch {
+                                        ok = false;
+                                        break;
+                                    };
+                                    var info = monomorphize.BindingInfo.valueParam(self.gpa, pname, param_ty, comptime_val) catch {
+                                        ok = false;
+                                        break;
+                                    };
+                                    binding_infos.append(info) catch |err| {
+                                        info.deinit(self.gpa);
+                                        return err;
+                                    };
+                                }
                             }
 
-                            if (bi_ok) {
-                                const mangled = try self.mangleMonomorphName(callee.name, type_args.items);
-                                const result = try self.monomorphizer.request(
-                                    &self.context.type_store,
-                                    callee.name,
-                                    decl_id,
-                                    fty,
-                                    type_args.items,
-                                    binding_infos,
-                                    skip_params,
-                                    mangled,
-                                );
-                                callee.name = result.mangled_name;
-                                callee.fty = result.specialized_ty;
-                                callee_name = self.context.type_store.strs.get(callee.name);
-                                arg_ids = arg_ids[skip_params..];
+                        if (ok) {
+                            const original_args = arg_ids;
+                            var runtime_idx: usize = skip_params;
+                            while (runtime_idx < params.len and runtime_idx < original_args.len) : (runtime_idx += 1) {
+                                const param = a.exprs.Param.get(params[runtime_idx]);
+                                if (param.pat.isNone()) continue;
+                                const pname = self.bindingNameOfPattern(a, param.pat.unwrap()) orelse continue;
 
-                                const spec_info = self.context.type_store.get(.Function, result.specialized_ty);
-                                param_tys = self.context.type_store.type_pool.slice(spec_info.params);
-                                is_variadic = spec_info.is_variadic;
-                                fixed = param_tys.len;
-                                if (is_variadic and fixed > 0) fixed -= 1;
+                                const param_ty = if (runtime_idx < param_tys.len)
+                                    param_tys[runtime_idx]
+                                else
+                                    self.context.type_store.tAny();
+                                if (!self.isAny(param_ty)) continue;
+
+                                const arg_ty = self.getExprType(original_args[runtime_idx]) orelse continue;
+                                if (self.isAny(arg_ty)) continue;
+
+                                try binding_infos.append(monomorphize.BindingInfo.runtimeParam(pname, arg_ty));
                             }
+                        }
+
+                        if (ok and binding_infos.items.len > 0) {
+                            const mangled = try self.mangleMonomorphName(callee.name, binding_infos.items);
+                            const result = try self.monomorphizer.request(
+                                a,
+                                &self.context.type_store,
+                                callee.name,
+                                decl_id,
+                                fty,
+                                binding_infos.items,
+                                skip_params,
+                                mangled,
+                            );
+                            callee.name = result.mangled_name;
+                            callee.fty = result.specialized_ty;
+                            callee_name = self.context.type_store.strs.get(callee.name);
+                            arg_ids = arg_ids[skip_params..];
+
+                            const spec_info = self.context.type_store.get(.Function, result.specialized_ty);
+                            param_tys = self.context.type_store.type_pool.slice(spec_info.params);
+                            is_variadic = spec_info.is_variadic;
+                            fixed = param_tys.len;
+                            if (is_variadic and fixed > 0) fixed -= 1;
                         }
                     }
                 }
@@ -1233,7 +1400,7 @@ pub const LowerTir = struct {
 
         // Choose a concrete return type: expected → stamped → callee.fty.ret → void
         const ret_ty = blk: {
-            if (expected) |e| if (!self.isVoid(e)) break :blk e;
+            if (expected) |e| if (!self.isVoid(e) and !self.isAny(e)) break :blk e;
             if (self.getExprType(id)) |t| if (!self.isVoid(t) and !self.isAny(t)) break :blk t;
             if (callee.fty) |fty| {
                 if (self.context.type_store.index.kinds.items[fty.toRaw()] == .Function) {
@@ -1244,6 +1411,11 @@ pub const LowerTir = struct {
             }
             break :blk self.context.type_store.tVoid();
         };
+
+        if (!self.isAny(ret_ty)) {
+            self.type_info.setExprType(id, ret_ty);
+            try self.noteExprType(id, ret_ty);
+        }
 
         return blk.builder.call(blk, ret_ty, callee.name, vals);
     }
@@ -1901,8 +2073,15 @@ pub const LowerTir = struct {
         const name = row.name;
 
         // Pre-lift a couple things we end up consulting a few times.
-        const expr_ty_opt = self.getExprType(id);
+        var expr_ty_opt = self.getExprType(id);
         const did_opt = self.findTopLevelDeclByName(a, name);
+
+        if (self.monomorph_context_stack.items.len > 0) {
+            const ctx = &self.monomorph_context_stack.items[self.monomorph_context_stack.items.len - 1];
+            if (ctx.lookupType(name)) |bound_ty| {
+                expr_ty_opt = self.context.type_store.mkTypeType(bound_ty);
+            }
+        }
 
         // Helper: when an expected type is a pointer, use its element;
         // otherwise fall back to the expression type (or Any).
@@ -1924,7 +2103,7 @@ pub const LowerTir = struct {
                 const gty = self.getDeclType(did) orelse return error.LoweringBug;
                 const ptr_ty = self.context.type_store.mkPtr(gty, !d.flags.is_const);
                 const addr = blk.builder.tirValue(.GlobalAddr, blk, ptr_ty, .{ .name = name });
-                try env.bind(self.gpa, a, name, .{ .value = addr, .is_slot = true });
+                try env.bind(self.gpa, a, name, .{ .value = addr, .ty = gty, .is_slot = true });
                 return addr;
             }
 
@@ -1933,11 +2112,11 @@ pub const LowerTir = struct {
                 const slot_ty = self.context.type_store.mkPtr(want_elem, false);
                 const slot = f.builder.tirValue(.Alloca, blk, slot_ty, .{ .count = tir.OptValueId.none(), .@"align" = 0 });
 
-                const src_ty = (expr_ty_opt orelse want_elem);
+                const src_ty = if (expr_ty_opt) |ty| if (!self.isAny(ty)) ty else bnd.ty else bnd.ty;
                 const to_store = self.emitCoerce(blk, bnd.value, src_ty, want_elem);
                 _ = f.builder.tirValue(.Store, blk, want_elem, .{ .ptr = slot, .value = to_store, .@"align" = 0 });
 
-                try env.bind(self.gpa, a, name, .{ .value = slot, .is_slot = true });
+                try env.bind(self.gpa, a, name, .{ .value = slot, .ty = want_elem, .is_slot = true });
                 return slot;
             }
 
@@ -1954,7 +2133,7 @@ pub const LowerTir = struct {
                 const gty = self.getDeclType(did) orelse return error.LoweringBug;
                 const ptr_ty = self.context.type_store.mkPtr(gty, !d.flags.is_const);
                 const addr = blk.builder.tirValue(.GlobalAddr, blk, ptr_ty, .{ .name = name });
-                try env.bind(self.gpa, a, name, .{ .value = addr, .is_slot = true });
+                try env.bind(self.gpa, a, name, .{ .value = addr, .ty = gty, .is_slot = true });
                 break :blk env.lookup(name).?;
             }
 
@@ -1962,19 +2141,29 @@ pub const LowerTir = struct {
             // Bind a safe placeholder so downstream code can keep going.
             const ty0 = expr_ty_opt orelse self.context.type_store.tAny();
             const placeholder = self.safeUndef(blk, ty0);
-            try env.bind(self.gpa, a, name, .{ .value = placeholder, .is_slot = false });
+            try env.bind(self.gpa, a, name, .{ .value = placeholder, .ty = ty0, .is_slot = false });
             break :blk env.lookup(name).?;
         };
 
         if (bnd.is_slot) {
-            const load_ty = expr_ty_opt orelse (expected_ty orelse self.context.type_store.tAny());
+            const load_ty = if (expr_ty_opt) |ty|
+                if (!self.isAny(ty)) ty else bnd.ty
+            else if (expected_ty) |want|
+                want
+            else
+                bnd.ty;
             var loaded = blk.builder.tirValue(.Load, blk, load_ty, .{ .ptr = bnd.value, .@"align" = 0 });
             if (expected_ty) |want| loaded = self.emitCoerce(blk, loaded, load_ty, want);
             return loaded;
         }
 
         // Non-slot: coerce if a target type was requested.
-        const got_ty = expr_ty_opt orelse (expected_ty orelse self.context.type_store.tAny());
+        const got_ty = if (expr_ty_opt) |ty|
+            if (!self.isAny(ty)) ty else bnd.ty
+        else if (expected_ty) |want|
+            want
+        else
+            bnd.ty;
         return if (expected_ty) |want| self.emitCoerce(blk, bnd.value, got_ty, want) else bnd.value;
     }
 
@@ -2027,6 +2216,11 @@ pub const LowerTir = struct {
         }
         // --- end fast-path ---
 
+        const lhs_stamped = self.getExprType(row.left);
+        const rhs_stamped = self.getExprType(row.right);
+        const lhs_hint = try self.refineExprType(a, env, row.left, lhs_stamped);
+        const rhs_hint = try self.refineExprType(a, env, row.right, rhs_stamped);
+
         const stamped_result = self.getExprType(id);
         var lhs_expect: ?types.TypeId = null;
         var rhs_expect: ?types.TypeId = null;
@@ -2039,20 +2233,20 @@ pub const LowerTir = struct {
                         lhs_expect = t;
                         rhs_expect = t;
                     } else {
-                        const want = self.commonNumeric(self.getExprType(row.left), self.getExprType(row.right)) orelse (expected_ty orelse self.context.type_store.tI64());
+                        const want = self.commonNumeric(lhs_hint, rhs_hint) orelse (expected_ty orelse self.context.type_store.tI64());
                         lhs_expect = want;
                         rhs_expect = want;
                         if (op_ty == null or self.isVoid(op_ty.?) or self.isAny(op_ty.?)) op_ty = want;
                     }
                 } else {
-                    const want = self.commonNumeric(self.getExprType(row.left), self.getExprType(row.right)) orelse (expected_ty orelse self.context.type_store.tI64());
+                    const want = self.commonNumeric(lhs_hint, rhs_hint) orelse (expected_ty orelse self.context.type_store.tI64());
                     lhs_expect = want;
                     rhs_expect = want;
                     if (op_ty == null or self.isVoid(op_ty.?) or self.isAny(op_ty.?)) op_ty = want;
                 }
             },
             .eq, .neq, .lt, .lte, .gt, .gte => {
-                const want = self.commonNumeric(self.getExprType(row.left), self.getExprType(row.right)) orelse (self.getExprType(row.left) orelse self.getExprType(row.right));
+                const want = self.commonNumeric(lhs_hint, rhs_hint) orelse lhs_hint orelse rhs_hint;
                 lhs_expect = want;
                 rhs_expect = want;
                 op_ty = self.context.type_store.tBool();
@@ -2104,6 +2298,7 @@ pub const LowerTir = struct {
             const want = self.commonNumeric(self.getExprType(row.left), self.getExprType(row.right)) orelse self.context.type_store.tI64();
             break :blk want;
         };
+        try self.noteExprType(id, ty0);
 
         const v = switch (row.op) {
             .add => blk.builder.bin(blk, .Add, ty0, l, r),
@@ -2199,6 +2394,7 @@ pub const LowerTir = struct {
         if (produce_value) {
             var join_blk = try f.builder.beginBlock(f);
             const res_ty = out_ty_guess;
+            try self.noteExprType(id, res_ty);
             const res_param = try f.builder.addBlockParam(&join_blk, null, res_ty);
 
             const br_cond = self.forceLocalCond(blk, is_ok);
@@ -2226,7 +2422,7 @@ pub const LowerTir = struct {
             });
             if (!row.binding_name.isNone()) {
                 const name = row.binding_name.unwrap();
-                try env.bind(self.gpa, a, name, .{ .value = err_val, .is_slot = false });
+                try env.bind(self.gpa, a, name, .{ .value = err_val, .ty = es.error_ty, .is_slot = false });
             }
             try self.lowerExprAsStmtList(a, env, f, &else_blk, row.handler);
             _ = env.popScope(); // Pop scope after handler
@@ -2264,7 +2460,7 @@ pub const LowerTir = struct {
             });
             if (!row.binding_name.isNone()) {
                 const name = row.binding_name.unwrap();
-                try env.bind(self.gpa, a, name, .{ .value = err_val, .is_slot = false });
+                try env.bind(self.gpa, a, name, .{ .value = err_val, .ty = es.error_ty, .is_slot = false });
             }
             try self.lowerExprAsStmtList(a, env, f, &else_blk, row.handler);
             _ = env.popScope(); // Pop scope after handler
@@ -3144,6 +3340,8 @@ pub const LowerTir = struct {
     ) anyerror!tir.ValueId {
         const expr_kind = a.exprs.index.kinds.items[id.toRaw()];
 
+        _ = try self.refineExprType(a, env, id, self.getExprType(id));
+
         return switch (expr_kind) {
             .Literal => self.lowerLiteral(a, blk, id, expected_ty),
             .NullLit => {
@@ -3209,7 +3407,10 @@ pub const LowerTir = struct {
         }
         const b = a.exprs.get(.Block, block_expr);
         const stmts = a.stmts.stmt_pool.slice(b.items);
-        if (stmts.len == 0) return self.safeUndef(blk, expected_ty);
+        if (stmts.len == 0) {
+            try self.noteExprType(block_expr, expected_ty);
+            return self.safeUndef(blk, expected_ty);
+        }
 
         // Remember where this block's scope begins on the defer stack.
         const mark: u32 = @intCast(env.defers.items.len);
@@ -3224,6 +3425,7 @@ pub const LowerTir = struct {
             // Evaluate the last expression value-first, then run defers belonging to this block,
             // then return the computed value. This preserves the "defer runs at scope exit" rule.
             const v = try self.lowerExpr(a, env, f, blk, le, expected_ty, .rvalue);
+            try self.noteExprType(block_expr, expected_ty);
             // If the checker stamped a different type than expected, keep your existing
             // higher-level coercion behavior by not touching `v` here beyond scope-finalization.
             try self.runNormalDefersFrom(a, env, f, blk, mark);
@@ -3233,6 +3435,7 @@ pub const LowerTir = struct {
             // Natural fallthrough out of the block scope: run normal defers for this block.
             // Early exits (return/break/continue) won’t reach here and already run defers.
             try self.runNormalDefersFrom(a, env, f, blk, mark);
+            try self.noteExprType(block_expr, expected_ty);
             return self.safeUndef(blk, expected_ty);
         }
     }
@@ -3418,6 +3621,50 @@ pub const LowerTir = struct {
         return null;
     }
 
+    fn refineExprType(
+        self: *LowerTir,
+        a: *const ast.Ast,
+        env: *Env,
+        expr: ast.ExprId,
+        stamped: ?types.TypeId,
+    ) !?types.TypeId {
+        if (stamped) |ty| {
+            if (!self.isAny(ty)) {
+                try self.noteExprType(expr, ty);
+                return ty;
+            }
+        }
+
+        const kind = a.exprs.index.kinds.items[expr.toRaw()];
+        switch (kind) {
+            .Ident => {
+                const name = a.exprs.get(.Ident, expr).name;
+                if (env.lookup(name)) |bnd| {
+                    try self.noteExprType(expr, bnd.ty);
+                    return bnd.ty;
+                }
+
+                var i: usize = self.monomorph_context_stack.items.len;
+                while (i > 0) {
+                    i -= 1;
+                    const ctx = &self.monomorph_context_stack.items[i];
+                    if (ctx.lookupValue(name)) |vp| {
+                        try self.noteExprType(expr, vp.ty);
+                        return vp.ty;
+                    }
+                    if (ctx.lookupType(name)) |ty| {
+                        const type_ty = self.context.type_store.mkTypeType(ty);
+                        try self.noteExprType(expr, type_ty);
+                        return type_ty;
+                    }
+                }
+            },
+            else => {},
+        }
+
+        return stamped;
+    }
+
     fn lowerImportedExprValue(self: *LowerTir, me: *@import("import_resolver.zig").ModuleEntry, eid: ast.ExprId, expected_ty: types.TypeId, blk: *Builder.BlockFrame) ?tir.ValueId {
         const kinds = me.ast.exprs.index.kinds.items;
         switch (kinds[eid.toRaw()]) {
@@ -3482,6 +3729,7 @@ pub const LowerTir = struct {
     // ============================
 
     fn getExprType(self: *const LowerTir, id: ast.ExprId) ?types.TypeId {
+        if (self.lookupExprTypeOverride(id)) |override| return override;
         const i = id.toRaw();
         std.debug.assert(i < self.type_info.expr_types.items.len);
         std.debug.assert(self.type_info.module_id == self.module_id);
@@ -3545,11 +3793,11 @@ pub const LowerTir = struct {
         switch (k) {
             .Binding => {
                 const nm = a.pats.get(.Binding, pid).name;
-                try env.bind(self.gpa, a, nm, .{ .value = value, .is_slot = false });
+                try env.bind(self.gpa, a, nm, .{ .value = value, .ty = vty, .is_slot = false });
             },
             .At => {
                 const at = a.pats.get(.At, pid);
-                try env.bind(self.gpa, a, at.binder, .{ .value = value, .is_slot = false });
+                try env.bind(self.gpa, a, at.binder, .{ .value = value, .ty = vty, .is_slot = false });
                 try self.bindPattern(a, env, f, blk, at.pattern, value, vty);
             },
             .Tuple => {
@@ -3724,9 +3972,9 @@ pub const LowerTir = struct {
                     const slot_ty = self.context.type_store.mkPtr(vty, false);
                     const slot = f.builder.tirValue(.Alloca, blk, slot_ty, .{ .count = tir.OptValueId.none(), .@"align" = 0 });
                     _ = f.builder.tirValue(.Store, blk, vty, .{ .ptr = slot, .value = value, .@"align" = 0 });
-                    try env.bind(self.gpa, a, nm, .{ .value = slot, .is_slot = true });
+                    try env.bind(self.gpa, a, nm, .{ .value = slot, .ty = vty, .is_slot = true });
                 } else {
-                    try env.bind(self.gpa, a, nm, .{ .value = value, .is_slot = false });
+                    try env.bind(self.gpa, a, nm, .{ .value = value, .ty = vty, .is_slot = false });
                 }
             },
             .Tuple => {
@@ -3875,11 +4123,19 @@ pub const LowerTir = struct {
         const vty = if (target_kind == .Any) src_default_ty else target_ty;
         switch (pk) {
             .Binding => {
-                const src_ty = src_ty_opt orelse target_ty;
-                const eff_ty = if (target_kind == .Any) src_ty else target_ty;
-                const raw = try self.lowerExpr(a, env, f, blk, src_expr, eff_ty, .rvalue);
-                const val = if (!src_ty.eq(eff_ty)) self.emitCoerce(blk, raw, src_ty, eff_ty) else raw;
-                return try self.destructureDeclPattern(a, env, f, blk, pid, val, eff_ty, to_slots);
+                const guess_ty = src_ty_opt orelse target_ty;
+                const expect_ty = if (target_kind == .Any) guess_ty else target_ty;
+                var raw = try self.lowerExpr(a, env, f, blk, src_expr, expect_ty, .rvalue);
+
+                const refined = try self.refineExprType(a, env, src_expr, self.getExprType(src_expr));
+                const src_ty = refined orelse guess_ty;
+                const eff_ty = if (target_kind == .Any and !self.isAny(src_ty)) src_ty else target_ty;
+
+                if (!src_ty.eq(eff_ty)) {
+                    raw = self.emitCoerce(blk, raw, src_ty, eff_ty);
+                }
+
+                return try self.destructureDeclPattern(a, env, f, blk, pid, raw, eff_ty, to_slots);
             },
             .Tuple => {
                 // If RHS is a tuple-literal, lower elements individually to avoid creating a temporary aggregate.
@@ -4319,5 +4575,5 @@ const Env = struct {
     }
 };
 
-const ValueBinding = struct { value: tir.ValueId, is_slot: bool };
+const ValueBinding = struct { value: tir.ValueId, ty: types.TypeId, is_slot: bool };
 const DeferEntry = struct { expr: ast.ExprId, is_err: bool };
