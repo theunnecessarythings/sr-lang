@@ -34,6 +34,7 @@ pub const LowerTir = struct {
     module_call_cache: std.AutoHashMap(u64, StrId),
     monomorphizer: monomorphize.Monomorphizer,
     monomorph_context_stack: std.ArrayListUnmanaged(monomorphize.MonomorphizationContext) = .{},
+    expr_type_override_stack: std.ArrayListUnmanaged(ExprTypeOverrideFrame) = .{},
 
     import_base_dir: []const u8 = ".",
 
@@ -44,6 +45,44 @@ pub const LowerTir = struct {
         name: ast.StrId,
         prev: ?ValueBinding,
     };
+
+    const ExprTypeOverrideFrame = struct {
+        map: std.AutoArrayHashMapUnmanaged(u32, types.TypeId) = .{},
+
+        fn deinit(self: *ExprTypeOverrideFrame, gpa: std.mem.Allocator) void {
+            self.map.deinit(gpa);
+        }
+    };
+
+    fn pushExprTypeOverrideFrame(self: *LowerTir) !void {
+        try self.expr_type_override_stack.append(self.gpa, .{});
+    }
+
+    fn popExprTypeOverrideFrame(self: *LowerTir) void {
+        if (self.expr_type_override_stack.items.len == 0) return;
+        const idx = self.expr_type_override_stack.items.len - 1;
+        self.expr_type_override_stack.items[idx].deinit(self.gpa);
+        self.expr_type_override_stack.items.len -= 1;
+    }
+
+    fn noteExprType(self: *LowerTir, expr: ast.ExprId, ty: types.TypeId) !void {
+        if (self.expr_type_override_stack.items.len == 0) return;
+        if (self.isAny(ty)) return;
+        var frame = &self.expr_type_override_stack.items[self.expr_type_override_stack.items.len - 1];
+        try frame.map.put(self.gpa, expr.toRaw(), ty);
+    }
+
+    fn lookupExprTypeOverride(self: *const LowerTir, expr: ast.ExprId) ?types.TypeId {
+        var i: usize = self.expr_type_override_stack.items.len;
+        while (i > 0) {
+            i -= 1;
+            const frame = &self.expr_type_override_stack.items[i];
+            if (frame.map.get(expr.toRaw())) |entry| {
+                return entry.*;
+            }
+        }
+        return null;
+    }
 
     fn constInitFromLiteral(
         self: *LowerTir,
@@ -98,6 +137,7 @@ pub const LowerTir = struct {
             .chk = chk,
             .module_call_cache = std.AutoHashMap(u64, StrId).init(gpa),
             .monomorphizer = monomorphize.Monomorphizer.init(gpa),
+            .expr_type_override_stack = .{},
         };
     }
 
@@ -112,6 +152,11 @@ pub const LowerTir = struct {
             ctx.deinit(self.gpa);
         }
         self.monomorph_context_stack.deinit(self.gpa);
+        while (self.expr_type_override_stack.items.len > 0) {
+            self.expr_type_override_stack.items[self.expr_type_override_stack.items.len - 1].deinit(self.gpa);
+            self.expr_type_override_stack.items.len -= 1;
+        }
+        self.expr_type_override_stack.deinit(self.gpa);
         self.monomorphizer.deinit();
     }
 
@@ -410,6 +455,9 @@ pub const LowerTir = struct {
         const fnty = self.context.type_store.get(.Function, fid);
 
         const fnr = a.exprs.get(.FunctionLit, fun_eid);
+
+        try self.pushExprTypeOverrideFrame();
+        defer self.popExprTypeOverrideFrame();
 
         if (!fnr.attrs.isNone()) {
             const attrs = a.exprs.attr_pool.slice(fnr.attrs.asRange());
@@ -1098,7 +1146,6 @@ pub const LowerTir = struct {
         ty: types.TypeId,
         value: comp.ComptimeValue,
     ) !tir.ValueId {
-        _ = self;
         return switch (value) {
             .Int => |val| blk: {
                 const casted = std.math.cast(u64, val) orelse return error.LoweringBug;
@@ -1344,7 +1391,9 @@ pub const LowerTir = struct {
 
         if (!self.isAny(ret_ty)) {
             self.type_info.setExprType(id, ret_ty);
+            try self.noteExprType(id, ret_ty);
         }
+
         return blk.builder.call(blk, ret_ty, callee.name, vals);
     }
 
@@ -2144,6 +2193,11 @@ pub const LowerTir = struct {
         }
         // --- end fast-path ---
 
+        const lhs_stamped = self.getExprType(row.left);
+        const rhs_stamped = self.getExprType(row.right);
+        const lhs_hint = try self.refineExprType(a, env, row.left, lhs_stamped);
+        const rhs_hint = try self.refineExprType(a, env, row.right, rhs_stamped);
+
         const stamped_result = self.getExprType(id);
         var lhs_expect: ?types.TypeId = null;
         var rhs_expect: ?types.TypeId = null;
@@ -2156,20 +2210,20 @@ pub const LowerTir = struct {
                         lhs_expect = t;
                         rhs_expect = t;
                     } else {
-                        const want = self.commonNumeric(self.getExprType(row.left), self.getExprType(row.right)) orelse (expected_ty orelse self.context.type_store.tI64());
+                        const want = self.commonNumeric(lhs_hint, rhs_hint) orelse (expected_ty orelse self.context.type_store.tI64());
                         lhs_expect = want;
                         rhs_expect = want;
                         if (op_ty == null or self.isVoid(op_ty.?) or self.isAny(op_ty.?)) op_ty = want;
                     }
                 } else {
-                    const want = self.commonNumeric(self.getExprType(row.left), self.getExprType(row.right)) orelse (expected_ty orelse self.context.type_store.tI64());
+                    const want = self.commonNumeric(lhs_hint, rhs_hint) orelse (expected_ty orelse self.context.type_store.tI64());
                     lhs_expect = want;
                     rhs_expect = want;
                     if (op_ty == null or self.isVoid(op_ty.?) or self.isAny(op_ty.?)) op_ty = want;
                 }
             },
             .eq, .neq, .lt, .lte, .gt, .gte => {
-                const want = self.commonNumeric(self.getExprType(row.left), self.getExprType(row.right)) orelse (self.getExprType(row.left) orelse self.getExprType(row.right));
+                const want = self.commonNumeric(lhs_hint, rhs_hint) orelse lhs_hint orelse rhs_hint;
                 lhs_expect = want;
                 rhs_expect = want;
                 op_ty = self.context.type_store.tBool();
@@ -2221,6 +2275,7 @@ pub const LowerTir = struct {
             const want = self.commonNumeric(self.getExprType(row.left), self.getExprType(row.right)) orelse self.context.type_store.tI64();
             break :blk want;
         };
+        try self.noteExprType(id, ty0);
 
         const v = switch (row.op) {
             .add => blk.builder.bin(blk, .Add, ty0, l, r),
@@ -2316,6 +2371,7 @@ pub const LowerTir = struct {
         if (produce_value) {
             var join_blk = try f.builder.beginBlock(f);
             const res_ty = out_ty_guess;
+            try self.noteExprType(id, res_ty);
             const res_param = try f.builder.addBlockParam(&join_blk, null, res_ty);
 
             const br_cond = self.forceLocalCond(blk, is_ok);
@@ -3261,6 +3317,8 @@ pub const LowerTir = struct {
     ) anyerror!tir.ValueId {
         const expr_kind = a.exprs.index.kinds.items[id.toRaw()];
 
+        _ = try self.refineExprType(a, env, id, self.getExprType(id));
+
         return switch (expr_kind) {
             .Literal => self.lowerLiteral(a, blk, id, expected_ty),
             .NullLit => {
@@ -3326,7 +3384,10 @@ pub const LowerTir = struct {
         }
         const b = a.exprs.get(.Block, block_expr);
         const stmts = a.stmts.stmt_pool.slice(b.items);
-        if (stmts.len == 0) return self.safeUndef(blk, expected_ty);
+        if (stmts.len == 0) {
+            try self.noteExprType(block_expr, expected_ty);
+            return self.safeUndef(blk, expected_ty);
+        }
 
         // Remember where this block's scope begins on the defer stack.
         const mark: u32 = @intCast(env.defers.items.len);
@@ -3341,6 +3402,7 @@ pub const LowerTir = struct {
             // Evaluate the last expression value-first, then run defers belonging to this block,
             // then return the computed value. This preserves the "defer runs at scope exit" rule.
             const v = try self.lowerExpr(a, env, f, blk, le, expected_ty, .rvalue);
+            try self.noteExprType(block_expr, expected_ty);
             // If the checker stamped a different type than expected, keep your existing
             // higher-level coercion behavior by not touching `v` here beyond scope-finalization.
             try self.runNormalDefersFrom(a, env, f, blk, mark);
@@ -3350,6 +3412,7 @@ pub const LowerTir = struct {
             // Natural fallthrough out of the block scope: run normal defers for this block.
             // Early exits (return/break/continue) won’t reach here and already run defers.
             try self.runNormalDefersFrom(a, env, f, blk, mark);
+            try self.noteExprType(block_expr, expected_ty);
             return self.safeUndef(blk, expected_ty);
         }
     }
@@ -3535,6 +3598,50 @@ pub const LowerTir = struct {
         return null;
     }
 
+    fn refineExprType(
+        self: *LowerTir,
+        a: *const ast.Ast,
+        env: *Env,
+        expr: ast.ExprId,
+        stamped: ?types.TypeId,
+    ) !?types.TypeId {
+        if (stamped) |ty| {
+            if (!self.isAny(ty)) {
+                try self.noteExprType(expr, ty);
+                return ty;
+            }
+        }
+
+        const kind = a.exprs.index.kinds.items[expr.toRaw()];
+        switch (kind) {
+            .Ident => {
+                const name = a.exprs.get(.Ident, expr).name;
+                if (env.lookup(name)) |bnd| {
+                    try self.noteExprType(expr, bnd.ty);
+                    return bnd.ty;
+                }
+
+                var i: usize = self.monomorph_context_stack.items.len;
+                while (i > 0) {
+                    i -= 1;
+                    const ctx = &self.monomorph_context_stack.items[i];
+                    if (ctx.lookupValue(name)) |vp| {
+                        try self.noteExprType(expr, vp.ty);
+                        return vp.ty;
+                    }
+                    if (ctx.lookupType(name)) |ty| {
+                        const type_ty = self.context.type_store.mkTypeType(ty);
+                        try self.noteExprType(expr, type_ty);
+                        return type_ty;
+                    }
+                }
+            },
+            else => {},
+        }
+
+        return stamped;
+    }
+
     fn lowerImportedExprValue(self: *LowerTir, me: *@import("import_resolver.zig").ModuleEntry, eid: ast.ExprId, expected_ty: types.TypeId, blk: *Builder.BlockFrame) ?tir.ValueId {
         const kinds = me.ast.exprs.index.kinds.items;
         switch (kinds[eid.toRaw()]) {
@@ -3599,6 +3706,7 @@ pub const LowerTir = struct {
     // ============================
 
     fn getExprType(self: *const LowerTir, id: ast.ExprId) ?types.TypeId {
+        if (self.lookupExprTypeOverride(id)) |override| return override;
         const i = id.toRaw();
         std.debug.assert(i < self.type_info.expr_types.items.len);
         std.debug.assert(self.type_info.module_id == self.module_id);
@@ -3992,11 +4100,19 @@ pub const LowerTir = struct {
         const vty = if (target_kind == .Any) src_default_ty else target_ty;
         switch (pk) {
             .Binding => {
-                const src_ty = src_ty_opt orelse target_ty;
-                const eff_ty = if (target_kind == .Any) src_ty else target_ty;
-                const raw = try self.lowerExpr(a, env, f, blk, src_expr, eff_ty, .rvalue);
-                const val = if (!src_ty.eq(eff_ty)) self.emitCoerce(blk, raw, src_ty, eff_ty) else raw;
-                return try self.destructureDeclPattern(a, env, f, blk, pid, val, eff_ty, to_slots);
+                const guess_ty = src_ty_opt orelse target_ty;
+                const expect_ty = if (target_kind == .Any) guess_ty else target_ty;
+                var raw = try self.lowerExpr(a, env, f, blk, src_expr, expect_ty, .rvalue);
+
+                const refined = try self.refineExprType(a, env, src_expr, self.getExprType(src_expr));
+                const src_ty = refined orelse guess_ty;
+                const eff_ty = if (target_kind == .Any and !self.isAny(src_ty)) src_ty else target_ty;
+
+                if (!src_ty.eq(eff_ty)) {
+                    raw = self.emitCoerce(blk, raw, src_ty, eff_ty);
+                }
+
+                return try self.destructureDeclPattern(a, env, f, blk, pid, raw, eff_ty, to_slots);
             },
             .Tuple => {
                 // If RHS is a tuple-literal, lower elements individually to avoid creating a temporary aggregate.

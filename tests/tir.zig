@@ -177,6 +177,7 @@ test "tir: generic call monomorphizes with mangled callee" {
     const expected = "max_i32";
 
     var has_specialized_fn = false;
+    var has_generic_max = false;
     var max_fn_result_ty: ?types.TypeId = null;
     var max_param_tys: [2]?types.TypeId = .{ null, null };
     var cap_const_found = false;
@@ -185,6 +186,9 @@ test "tir: generic call monomorphizes with mangled callee" {
     for (funcs) |fid| {
         const frow = t.funcs.Function.get(fid);
         const fname = t.instrs.strs.get(frow.name);
+        if (std.mem.eql(u8, fname, "max")) {
+            has_generic_max = true;
+        }
         if (std.mem.eql(u8, fname, expected)) {
             has_specialized_fn = true;
             max_fn_result_ty = frow.result;
@@ -214,6 +218,7 @@ test "tir: generic call monomorphizes with mangled callee" {
         }
     }
     try testing.expect(has_specialized_fn);
+    try testing.expect(!has_generic_max);
     try testing.expectEqual(type_store.tI32().toRaw(), (max_fn_result_ty orelse type_store.tAny()).toRaw());
     try testing.expectEqual(type_store.tI32().toRaw(), (max_param_tys[0] orelse type_store.tAny()).toRaw());
     try testing.expectEqual(type_store.tI32().toRaw(), (max_param_tys[1] orelse type_store.tAny()).toRaw());
