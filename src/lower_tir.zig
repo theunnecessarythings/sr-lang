@@ -436,6 +436,18 @@ pub const LowerTir = struct {
         var env = Env.init(self.gpa);
         defer env.deinit(self.gpa);
 
+        if (ctx) |c| {
+            for (c.bindings) |binding| {
+                switch (binding.kind) {
+                    .type_param => {},
+                    .value_param => |vp| {
+                        const const_val = try self.constValueFromComptime(&blk, vp.ty, vp.value);
+                        try env.bind(self.gpa, a, binding.name, .{ .value = const_val, .is_slot = false });
+                    },
+                }
+            }
+        }
+
         // Bind params
         i = 0;
         const param_vals = f.param_vals.items;
@@ -475,7 +487,6 @@ pub const LowerTir = struct {
         var ctx = try monomorphize.MonomorphizationContext.init(
             self.gpa,
             req.bindings,
-            req.type_args,
             req.skip_params,
             req.specialized_ty,
         );
@@ -770,19 +781,45 @@ pub const LowerTir = struct {
         return self.context.type_store.get(.TypeType, ty).of;
     }
 
+    fn appendMangleValue(
+        self: *LowerTir,
+        buf: *std.ArrayList(u8),
+        value: comp.ComptimeValue,
+    ) !void {
+        var w = buf.writer(self.gpa);
+        switch (value) {
+            .Int => |val| try w.print("i{}", .{val}),
+            .Float => |val| try w.print("f{d}", .{val}),
+            .Bool => |val| try w.print("{s}", .{if (val) "true" else "false"}),
+            .Void => try w.print("void", .{}),
+            .String => |s| {
+                try w.print("s{}_", .{s.len});
+                for (s) |ch| {
+                    const keep = std.ascii.isAlphanumeric(ch) or ch == '_';
+                    try buf.append(self.gpa, if (keep) ch else '_');
+                }
+            },
+        }
+    }
+
     fn mangleMonomorphName(
         self: *LowerTir,
         base: StrId,
-        type_args: []const types.TypeId,
+        bindings: []const monomorphize.BindingInfo,
     ) !StrId {
         var buf: std.ArrayList(u8) = .empty;
         defer buf.deinit(self.gpa);
 
         try buf.appendSlice(self.gpa, self.context.type_store.strs.get(base));
-        for (type_args) |ty| {
+        for (bindings) |info| {
             try buf.append(self.gpa, '_');
-            const w = buf.writer(self.gpa);
-            try self.context.type_store.fmt(ty, w);
+            switch (info.kind) {
+                .type_param => |ty| {
+                    const w = buf.writer(self.gpa);
+                    try self.context.type_store.fmt(ty, w);
+                },
+                .value_param => |vp| try self.appendMangleValue(&buf, vp.value),
+            }
         }
 
         return self.context.type_store.strs.intern(buf.items);
@@ -918,29 +955,19 @@ pub const LowerTir = struct {
         });
     }
 
-    fn jitEvalComptimeBlock(
+    fn runComptimeExpr(
         self: *LowerTir,
         a: *const ast.Ast,
-        env: *Env,
-        f: *Builder.FunctionFrame,
-        blk: *Builder.BlockFrame,
-        id: ast.ExprId,
-    ) !tir.ValueId {
-        _ = env;
-        _ = f;
-
-        const cb = a.exprs.get(.ComptimeBlock, id);
-
-        // 1. Create a temporary TIR module for the thunk.
+        expr: ast.ExprId,
+        result_ty: types.TypeId,
+    ) !comp.ComptimeValue {
         var tmp_tir = tir.TIR.init(self.gpa, &self.context.type_store);
         defer tmp_tir.deinit();
         var tmp_builder = tir.Builder.init(self.gpa, &tmp_tir);
 
-        // 2. Define the thunk signature: fn(api: *ComptimeApi, result: *ComptimeValue)
-        const ptr_ty = self.context.type_store.mkPtr(self.context.type_store.tU8(), false); // Use u8* as a generic pointer
+        const ptr_ty = self.context.type_store.mkPtr(self.context.type_store.tU8(), false);
         const thunk_name = tmp_builder.intern("__comptime_thunk");
 
-        // add attr `llvm.emit_c_interface`
         const attr_id = tmp_tir.instrs.Attribute.add(self.gpa, .{
             .name = a.exprs.strs.intern("llvm.emit_c_interface"),
             .value = .none(),
@@ -952,21 +979,16 @@ pub const LowerTir = struct {
         const result_ptr_val = try tmp_builder.addParam(&thunk_fn, tmp_builder.intern("result_ptr"), ptr_ty);
         var thunk_blk = try tmp_builder.beginBlock(&thunk_fn);
 
-        // 3. Lower the comptime block's AST into the thunk's TIR.
         var tmp_env = Env.init(self.gpa);
         defer tmp_env.deinit(self.gpa);
-
         try tmp_env.bind(self.gpa, a, tmp_builder.intern("comptime_api_ptr"), .{ .value = api_ptr_val, .is_slot = false });
 
-        const result_expr_ty = self.getExprType(cb.block) orelse return error.LoweringBug;
-        const result_val_id = try self.lowerExpr(a, &tmp_env, &thunk_fn, &thunk_blk, cb.block, result_expr_ty, .rvalue);
+        const result_val_id = try self.lowerExpr(a, &tmp_env, &thunk_fn, &thunk_blk, expr, result_ty, .rvalue);
 
-        // 4. Store the result in the result pointer
-        const result_kind = self.context.type_store.getKind(result_expr_ty);
-
+        const result_kind = self.context.type_store.getKind(result_ty);
         if (result_kind != .Void) {
             const field_ty = switch (result_kind) {
-                .I64, .U64, .I32, .U32 => self.context.type_store.tI64(), // ComptimeValue uses u128, but we get i64 from JIT
+                .I64, .U64, .I32, .U32 => self.context.type_store.tI64(),
                 .F64 => self.context.type_store.tF64(),
                 .Bool => self.context.type_store.tBool(),
                 else => return error.UnsupportedComptimeType,
@@ -982,7 +1004,6 @@ pub const LowerTir = struct {
         try tmp_builder.endBlock(&thunk_fn, thunk_blk);
         try tmp_builder.endFunction(thunk_fn);
 
-        // 5. Codegen the temporary TIR to MLIR.
         if (!g_mlir_inited) {
             g_mlir_ctx = compile.initMLIR(self.gpa);
             g_mlir_inited = true;
@@ -991,14 +1012,11 @@ pub const LowerTir = struct {
         defer gen.deinit();
         var mlir_module = try gen.emitModule(&tmp_tir, self.context);
 
-        // 6. Run passes and JIT the module.
         try compile.run_passes(&gen.mlir_ctx, &mlir_module);
         _ = mlir.c.LLVMInitializeNativeTarget();
         _ = mlir.c.LLVMInitializeNativeAsmPrinter();
         const engine = mlir.c.mlirExecutionEngineCreate(mlir_module.handle, 2, 0, null, false);
         defer mlir.c.mlirExecutionEngineDestroy(engine);
-
-        // 7. Set up ComptimeApi and result value, then invoke the JIT'd thunk.
 
         var comptime_api = comp.ComptimeApi{
             .context = self.context,
@@ -1010,22 +1028,70 @@ pub const LowerTir = struct {
 
         const thunk_fn_name_ref = mlir.StringRef.from("__comptime_thunk");
         const func_ptr = mlir.c.mlirExecutionEngineLookup(engine, thunk_fn_name_ref.inner);
-        if (func_ptr == null) {
-            return error.ComptimeExecutionFailed;
-        }
+        if (func_ptr == null) return error.ComptimeExecutionFailed;
 
         const ThunkFn = *const fn (api_ptr: *comp.ComptimeApi, result_ptr: *comp.ComptimeValue) callconv(.c) void;
         const typed_func_ptr: ThunkFn = @ptrCast(@alignCast(func_ptr));
         typed_func_ptr(&comptime_api, &result_value);
 
-        // 9. Convert the result back to a TIR constant.
+        return result_value;
+    }
+
+    fn jitEvalComptimeBlock(
+        self: *LowerTir,
+        a: *const ast.Ast,
+        env: *Env,
+        f: *Builder.FunctionFrame,
+        blk: *Builder.BlockFrame,
+        id: ast.ExprId,
+    ) !tir.ValueId {
+        _ = env;
+        _ = f;
+
+        const cb = a.exprs.get(.ComptimeBlock, id);
         const result_ty = self.getExprType(cb.block) orelse return error.LoweringBug;
-        return switch (result_value) {
+        const comptime_value = try self.runComptimeExpr(a, cb.block, result_ty);
+
+        return switch (comptime_value) {
             .Int => |val| blk.builder.tirValue(.ConstInt, blk, result_ty, .{ .value = @as(u64, @intCast(val)) }),
             .Float => |val| blk.builder.tirValue(.ConstFloat, blk, result_ty, .{ .value = val }),
             .Bool => |val| blk.builder.tirValue(.ConstBool, blk, result_ty, .{ .value = val }),
             .Void => blk.builder.tirValue(.ConstUndef, blk, self.context.type_store.tVoid(), .{}),
             .String => |s| blk.builder.tirValue(.ConstString, blk, result_ty, .{ .text = blk.builder.intern(s) }),
+        };
+    }
+
+    fn evalComptimeExprValue(
+        self: *LowerTir,
+        a: *const ast.Ast,
+        env: *Env,
+        f: *Builder.FunctionFrame,
+        blk: *Builder.BlockFrame,
+        expr: ast.ExprId,
+        result_ty: types.TypeId,
+    ) !comp.ComptimeValue {
+        _ = env;
+        _ = f;
+        _ = blk;
+        return self.runComptimeExpr(a, expr, result_ty);
+    }
+
+    fn constValueFromComptime(
+        self: *LowerTir,
+        blk: *Builder.BlockFrame,
+        ty: types.TypeId,
+        value: comp.ComptimeValue,
+    ) !tir.ValueId {
+        _ = self;
+        return switch (value) {
+            .Int => |val| blk: {
+                const casted = std.math.cast(u64, val) orelse return error.LoweringBug;
+                break :blk blk.builder.tirValue(.ConstInt, blk, ty, .{ .value = casted });
+            },
+            .Float => |val| blk.builder.tirValue(.ConstFloat, blk, ty, .{ .value = val }),
+            .Bool => |val| blk.builder.tirValue(.ConstBool, blk, ty, .{ .value = val }),
+            .Void => blk.builder.tirValue(.ConstUndef, blk, ty, .{}),
+            .String => |s| blk.builder.tirValue(.ConstString, blk, ty, .{ .text = blk.builder.intern(s) }),
         };
     }
 
@@ -1126,62 +1192,77 @@ pub const LowerTir = struct {
                     while (skip_params < params.len and a.exprs.Param.get(params[skip_params]).is_comptime) : (skip_params += 1) {}
 
                     if (skip_params > 0 and arg_ids.len >= skip_params) {
-                        var type_args: std.ArrayList(types.TypeId) = .empty;
-                        defer type_args.deinit(self.gpa);
+                        var binding_infos = try self.gpa.alloc(monomorphize.BindingInfo, skip_params);
+                        var binding_count: usize = 0;
+                        defer {
+                            var j: usize = 0;
+                            while (j < binding_count) : (j += 1) binding_infos[j].deinit(self.gpa);
+                            self.gpa.free(binding_infos);
+                        }
+
                         var ok = true;
                         var idx: usize = 0;
                         while (idx < skip_params) : (idx += 1) {
-                            const targ = self.resolveTypeArg(arg_ids[idx]) orelse {
+                            const param = a.exprs.Param.get(params[idx]);
+                            if (param.pat.isNone()) {
                                 ok = false;
                                 break;
-                            };
-                            type_args.append(self.gpa, targ) catch {
-                                ok = false;
-                                break;
-                            };
-                        }
+                            }
 
-                        if (ok and type_args.items.len == skip_params) {
-                            var binding_infos = try self.gpa.alloc(monomorphize.BindingInfo, skip_params);
-                            defer self.gpa.free(binding_infos);
-                            var bi_ok = true;
-                            var bi_idx: usize = 0;
-                            while (bi_idx < skip_params) : (bi_idx += 1) {
-                                const param = a.exprs.Param.get(params[bi_idx]);
-                                if (param.pat.isNone()) {
-                                    bi_ok = false;
-                                    break;
-                                }
-                                const pname = self.bindingNameOfPattern(a, param.pat.unwrap()) orelse {
-                                    bi_ok = false;
+                            const pname = self.bindingNameOfPattern(a, param.pat.unwrap()) orelse {
+                                ok = false;
+                                break;
+                            };
+
+                            const param_ty = if (idx < param_tys.len)
+                                param_tys[idx]
+                            else
+                                self.context.type_store.tAny();
+                            const arg_expr = arg_ids[idx];
+                            const param_kind = self.context.type_store.getKind(param_ty);
+
+                            if (param_kind == .TypeType) {
+                                const targ = self.resolveTypeArg(arg_expr) orelse {
+                                    ok = false;
                                     break;
                                 };
-                                binding_infos[bi_idx] = .{ .name = pname };
+                                binding_infos[idx] = monomorphize.BindingInfo.typeParam(pname, targ);
+                            } else {
+                                const comptime_val = self.evalComptimeExprValue(a, env, f, blk, arg_expr, param_ty) catch {
+                                    ok = false;
+                                    break;
+                                };
+                                binding_infos[idx] = monomorphize.BindingInfo.valueParam(self.gpa, pname, param_ty, comptime_val) catch {
+                                    ok = false;
+                                    break;
+                                };
                             }
 
-                            if (bi_ok) {
-                                const mangled = try self.mangleMonomorphName(callee.name, type_args.items);
-                                const result = try self.monomorphizer.request(
-                                    &self.context.type_store,
-                                    callee.name,
-                                    decl_id,
-                                    fty,
-                                    type_args.items,
-                                    binding_infos,
-                                    skip_params,
-                                    mangled,
-                                );
-                                callee.name = result.mangled_name;
-                                callee.fty = result.specialized_ty;
-                                callee_name = self.context.type_store.strs.get(callee.name);
-                                arg_ids = arg_ids[skip_params..];
+                            binding_count = idx + 1;
+                        }
 
-                                const spec_info = self.context.type_store.get(.Function, result.specialized_ty);
-                                param_tys = self.context.type_store.type_pool.slice(spec_info.params);
-                                is_variadic = spec_info.is_variadic;
-                                fixed = param_tys.len;
-                                if (is_variadic and fixed > 0) fixed -= 1;
-                            }
+                        if (ok) {
+                            const mangled = try self.mangleMonomorphName(callee.name, binding_infos[0..binding_count]);
+                            const result = try self.monomorphizer.request(
+                                a,
+                                &self.context.type_store,
+                                callee.name,
+                                decl_id,
+                                fty,
+                                binding_infos[0..binding_count],
+                                skip_params,
+                                mangled,
+                            );
+                            callee.name = result.mangled_name;
+                            callee.fty = result.specialized_ty;
+                            callee_name = self.context.type_store.strs.get(callee.name);
+                            arg_ids = arg_ids[skip_params..];
+
+                            const spec_info = self.context.type_store.get(.Function, result.specialized_ty);
+                            param_tys = self.context.type_store.type_pool.slice(spec_info.params);
+                            is_variadic = spec_info.is_variadic;
+                            fixed = param_tys.len;
+                            if (is_variadic and fixed > 0) fixed -= 1;
                         }
                     }
                 }
@@ -1901,8 +1982,15 @@ pub const LowerTir = struct {
         const name = row.name;
 
         // Pre-lift a couple things we end up consulting a few times.
-        const expr_ty_opt = self.getExprType(id);
+        var expr_ty_opt = self.getExprType(id);
         const did_opt = self.findTopLevelDeclByName(a, name);
+
+        if (self.monomorph_context_stack.items.len > 0) {
+            const ctx = &self.monomorph_context_stack.items[self.monomorph_context_stack.items.len - 1];
+            if (ctx.lookupType(name)) |bound_ty| {
+                expr_ty_opt = self.context.type_store.mkTypeType(bound_ty);
+            }
+        }
 
         // Helper: when an expected type is a pointer, use its element;
         // otherwise fall back to the expression type (or Any).

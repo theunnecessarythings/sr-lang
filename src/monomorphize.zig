@@ -1,16 +1,111 @@
 const std = @import("std");
 const ast = @import("ast.zig");
+const comp = @import("comptime.zig");
 const types = @import("types.zig");
 const tir = @import("tir.zig");
 
+pub const BindingValue = struct {
+    ty: types.TypeId,
+    value: comp.ComptimeValue,
+
+    pub fn init(gpa: std.mem.Allocator, ty: types.TypeId, value: comp.ComptimeValue) !BindingValue {
+        return .{ .ty = ty, .value = try cloneComptimeValue(gpa, value) };
+    }
+
+    fn clone(self: BindingValue, gpa: std.mem.Allocator) !BindingValue {
+        return .{ .ty = self.ty, .value = try cloneComptimeValue(gpa, self.value) };
+    }
+
+    fn deinit(self: *BindingValue, gpa: std.mem.Allocator) void {
+        destroyComptimeValue(gpa, &self.value);
+        self.* = .{ .ty = types.TypeId.fromRaw(0), .value = .Void };
+    }
+};
+
 pub const BindingInfo = struct {
     name: ast.StrId,
+    kind: Kind,
+
+    pub const Kind = union(enum) {
+        type_param: types.TypeId,
+        value_param: BindingValue,
+    };
+
+    pub fn typeParam(name: ast.StrId, ty: types.TypeId) BindingInfo {
+        return .{ .name = name, .kind = .{ .type_param = ty } };
+    }
+
+    pub fn valueParam(gpa: std.mem.Allocator, name: ast.StrId, ty: types.TypeId, value: comp.ComptimeValue) !BindingInfo {
+        return .{ .name = name, .kind = .{ .value_param = try BindingValue.init(gpa, ty, value) } };
+    }
+
+    pub fn deinit(self: *BindingInfo, gpa: std.mem.Allocator) void {
+        switch (self.kind) {
+            .value_param => |*vp| vp.deinit(gpa),
+            else => {},
+        }
+        self.* = .{ .name = ast.StrId.fromRaw(0), .kind = .{ .type_param = types.TypeId.fromRaw(0) } };
+    }
+
+    fn clone(self: BindingInfo, gpa: std.mem.Allocator) !BindingInfo {
+        return switch (self.kind) {
+            .type_param => |ty| BindingInfo.typeParam(self.name, ty),
+            .value_param => |vp| blk: {
+                const cloned = try vp.clone(gpa);
+                break :blk .{ .name = self.name, .kind = .{ .value_param = cloned } };
+            },
+        };
+    }
 };
 
 pub const Binding = struct {
     name: ast.StrId,
-    ty: types.TypeId,
+    kind: Kind,
+
+    pub const Kind = union(enum) {
+        type_param: types.TypeId,
+        value_param: BindingValue,
+    };
+
+    fn fromInfo(info: BindingInfo, gpa: std.mem.Allocator) !Binding {
+        return switch (info.kind) {
+            .type_param => |ty| .{ .name = info.name, .kind = .{ .type_param = ty } },
+            .value_param => |vp| blk: {
+                const cloned = try vp.clone(gpa);
+                break :blk .{ .name = info.name, .kind = .{ .value_param = cloned } };
+            },
+        };
+    }
+
+    fn deinit(self: *Binding, gpa: std.mem.Allocator) void {
+        switch (self.kind) {
+            .value_param => |*vp| vp.deinit(gpa),
+            else => {},
+        }
+        self.* = .{ .name = ast.StrId.fromRaw(0), .kind = .{ .type_param = types.TypeId.fromRaw(0) } };
+    }
 };
+
+fn cloneComptimeValue(gpa: std.mem.Allocator, value: comp.ComptimeValue) !comp.ComptimeValue {
+    return switch (value) {
+        .Void => .Void,
+        .Int => |v| .{ .Int = v },
+        .Float => |v| .{ .Float = v },
+        .Bool => |v| .{ .Bool = v },
+        .String => |s| .{ .String = try gpa.dupe(u8, s) },
+    };
+}
+
+fn destroyComptimeValue(gpa: std.mem.Allocator, value: *comp.ComptimeValue) void {
+    switch (value.*) {
+        .String => |s| {
+            const mut: []u8 = @constCast(s);
+            gpa.free(mut);
+        },
+        else => {},
+    }
+    value.* = .Void;
+}
 
 pub const MonomorphizationContext = struct {
     bindings: []Binding,
@@ -20,14 +115,19 @@ pub const MonomorphizationContext = struct {
     pub fn init(
         gpa: std.mem.Allocator,
         infos: []const BindingInfo,
-        type_args: []const types.TypeId,
         skip_params: usize,
         specialized_ty: types.TypeId,
     ) !MonomorphizationContext {
-        std.debug.assert(infos.len == type_args.len);
         var bindings = try gpa.alloc(Binding, infos.len);
+        var initialized: usize = 0;
+        errdefer {
+            var j: usize = 0;
+            while (j < initialized) : (j += 1) bindings[j].deinit(gpa);
+            gpa.free(bindings);
+        }
         for (infos, 0..) |info, i| {
-            bindings[i] = .{ .name = info.name, .ty = type_args[i] };
+            bindings[i] = try Binding.fromInfo(info, gpa);
+            initialized = i + 1;
         }
         return .{
             .bindings = bindings,
@@ -37,8 +137,31 @@ pub const MonomorphizationContext = struct {
     }
 
     pub fn deinit(self: *MonomorphizationContext, gpa: std.mem.Allocator) void {
+        for (self.bindings) |*binding| binding.deinit(gpa);
         gpa.free(self.bindings);
         self.bindings = &[_]Binding{};
+    }
+
+    pub fn lookupType(self: *const MonomorphizationContext, name: ast.StrId) ?types.TypeId {
+        for (self.bindings) |b| {
+            if (!b.name.eq(name)) continue;
+            return switch (b.kind) {
+                .type_param => |ty| ty,
+                .value_param => |_| null,
+            };
+        }
+        return null;
+    }
+
+    pub fn lookupValue(self: *const MonomorphizationContext, name: ast.StrId) ?*const BindingValue {
+        for (self.bindings) |b| {
+            if (!b.name.eq(name)) continue;
+            return switch (b.kind) {
+                .type_param => |_| null,
+                .value_param => |*vp| vp,
+            };
+        }
+        return null;
     }
 };
 
@@ -47,7 +170,6 @@ pub const MonomorphizationRequest = struct {
     decl_id: ast.DeclId,
     mangled_name: ast.StrId,
     specialized_ty: types.TypeId,
-    type_args: []types.TypeId,
     bindings: []BindingInfo,
     skip_params: usize,
 };
@@ -90,50 +212,79 @@ pub const Monomorphizer = struct {
         self.cache.deinit();
     }
 
-    fn hashKey(base: ast.StrId, type_args: []const types.TypeId) u64 {
+    fn hashComptimeValue(hasher: *std.hash.Wyhash, value: comp.ComptimeValue) void {
+        switch (value) {
+            .Void => {},
+            .Int => |v| hasher.update(std.mem.asBytes(&v)),
+            .Float => |v| hasher.update(std.mem.asBytes(&v)),
+            .Bool => |v| {
+                const byte: u8 = if (v) 1 else 0;
+                hasher.update(std.mem.asBytes(&byte));
+            },
+            .String => |s| hasher.update(s),
+        }
+    }
+
+    fn hashKey(base: ast.StrId, bindings: []const BindingInfo) u64 {
         var hasher = std.hash.Wyhash.init(0);
         const base_raw: u32 = base.toRaw();
         hasher.update(std.mem.asBytes(&base_raw));
-        for (type_args) |ty| {
-            const raw: u32 = ty.toRaw();
-            hasher.update(std.mem.asBytes(&raw));
+        for (bindings) |info| {
+            const name_raw: u32 = info.name.toRaw();
+            hasher.update(std.mem.asBytes(&name_raw));
+            switch (info.kind) {
+                .type_param => |ty| {
+                    const raw: u32 = ty.toRaw();
+                    hasher.update(std.mem.asBytes(&raw));
+                },
+                .value_param => |vp| {
+                    const ty_raw: u32 = vp.ty.toRaw();
+                    hasher.update(std.mem.asBytes(&ty_raw));
+                    hashComptimeValue(&hasher, vp.value);
+                },
+            }
         }
         return hasher.final();
     }
 
-    fn dupTypes(self: *Monomorphizer, slice: []const types.TypeId) ![]types.TypeId {
-        return try self.gpa.dupe(types.TypeId, slice);
-    }
-
     fn dupBindings(self: *Monomorphizer, slice: []const BindingInfo) ![]BindingInfo {
-        return try self.gpa.dupe(BindingInfo, slice);
+        var out = try self.gpa.alloc(BindingInfo, slice.len);
+        var initialized: usize = 0;
+        errdefer {
+            var j: usize = 0;
+            while (j < initialized) : (j += 1) out[j].deinit(self.gpa);
+            self.gpa.free(out);
+        }
+        for (slice, 0..) |info, i| {
+            out[i] = try info.clone(self.gpa);
+            initialized = i + 1;
+        }
+        return out;
     }
 
     fn freeRequest(self: *Monomorphizer, req: *MonomorphizationRequest) void {
-        self.gpa.free(req.type_args);
+        for (req.bindings) |*info| info.deinit(self.gpa);
         self.gpa.free(req.bindings);
-        req.type_args = &[_]types.TypeId{};
         req.bindings = &[_]BindingInfo{};
     }
 
     pub fn request(
         self: *Monomorphizer,
+        a: *const ast.Ast,
         ts: *types.TypeStore,
         base_name: ast.StrId,
         decl_id: ast.DeclId,
         fn_ty: types.TypeId,
-        type_args: []const types.TypeId,
         bindings: []const BindingInfo,
         skip_params: usize,
         mangled_name: ast.StrId,
     ) !RequestResult {
-        const key = hashKey(base_name, type_args);
+        const key = hashKey(base_name, bindings);
         if (self.cache.get(key)) |cached| {
             return .{ .mangled_name = cached.name, .specialized_ty = cached.specialized_ty };
         }
 
-        std.debug.assert(type_args.len == skip_params);
-        std.debug.assert(bindings.len == type_args.len);
+        std.debug.assert(bindings.len == skip_params);
 
         const fn_kind = ts.get(.Function, fn_ty);
         const base_params = ts.type_pool.slice(fn_kind.params);
@@ -145,35 +296,51 @@ pub const Monomorphizer = struct {
 
         var idx: usize = 0;
         var i: usize = skip_params;
+        const decl = a.exprs.Decl.get(decl_id);
+        const fn_lit = a.exprs.get(.FunctionLit, decl.value);
+        const params = a.exprs.param_pool.slice(fn_lit.params);
+
         while (i < base_params.len) : (i += 1) {
-            const param_ty = base_params[i];
-            const k = ts.getKind(param_ty);
+            const base_ty = base_params[i];
+            const param_index = i;
+            const param = a.exprs.Param.get(params[param_index]);
+            var specialized_ty = base_ty;
+            if (!param.ty.isNone()) {
+                specialized_ty = resolveSpecializedType(ts, bindings, a, param.ty.unwrap()) orelse base_ty;
+            }
+            const k = ts.getKind(specialized_ty);
             runtime_params[idx] = if (k == .TypeType)
-                ts.get(.TypeType, param_ty).of
+                ts.get(.TypeType, specialized_ty).of
             else
-                param_ty;
+                specialized_ty;
             idx += 1;
         }
 
-        var result_ty = fn_kind.result;
+        var result_ty = blk: {
+            if (!fn_lit.result_ty.isNone()) {
+                if (resolveSpecializedType(ts, bindings, a, fn_lit.result_ty.unwrap())) |resolved|
+                    break :blk resolved;
+            }
+            break :blk fn_kind.result;
+        };
+
         if (ts.getKind(result_ty) == .TypeType) {
             result_ty = ts.get(.TypeType, result_ty).of;
         }
 
         const specialized_ty = ts.mkFunction(runtime_params, result_ty, fn_kind.is_variadic, fn_kind.is_pure);
 
-        const owned_types = try self.dupTypes(type_args);
-        errdefer self.gpa.free(owned_types);
-
         const owned_bindings = try self.dupBindings(bindings);
-        errdefer self.gpa.free(owned_bindings);
+        errdefer {
+            for (owned_bindings) |*info| info.deinit(self.gpa);
+            self.gpa.free(owned_bindings);
+        }
 
         try self.requests.append(self.gpa, .{
             .base_name = base_name,
             .decl_id = decl_id,
             .mangled_name = mangled_name,
             .specialized_ty = specialized_ty,
-            .type_args = owned_types,
             .bindings = owned_bindings,
             .skip_params = skip_params,
         });
@@ -197,3 +364,27 @@ pub const Monomorphizer = struct {
         }
     }
 };
+
+fn resolveSpecializedType(
+    ts: *types.TypeStore,
+    bindings: []const BindingInfo,
+    a: *const ast.Ast,
+    expr: ast.ExprId,
+) ?types.TypeId {
+    _ = ts;
+    const kind = a.exprs.index.kinds.items[expr.toRaw()];
+    switch (kind) {
+        .Ident => {
+            const name = a.exprs.get(.Ident, expr).name;
+            for (bindings) |info| {
+                if (!info.name.eq(name)) continue;
+                return switch (info.kind) {
+                    .type_param => |ty| ty,
+                    .value_param => |vp| vp.ty,
+                };
+            }
+            return null;
+        },
+        else => return null,
+    }
+}
