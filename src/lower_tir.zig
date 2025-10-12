@@ -1563,7 +1563,13 @@ pub const LowerTir = struct {
             if (self.isAny(ty0) or self.isVoid(ty0)) ty0 = self.context.type_store.tI64();
         }
 
-        var v0 = try self.lowerExpr(a, env, f, blk, row.expr, null, .rvalue);
+        const operand_expect: ?types.TypeId = switch (row.op) {
+            .pos, .neg => ty0,
+            .logical_not => self.context.type_store.tBool(),
+            .address_of => null,
+        };
+
+        var v0 = try self.lowerExpr(a, env, f, blk, row.expr, operand_expect, .rvalue);
 
         const v = switch (row.op) {
             .pos => v0,

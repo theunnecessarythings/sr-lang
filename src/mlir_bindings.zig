@@ -2586,7 +2586,7 @@ pub const Type = struct {
         return c.mlirTypeEqual(self.handle, other.handle);
     }
 
-    pub fn print(self: *Type, cb: fn (c.MlirStringRef, ?*anyopaque) callconv(.C) void, userData: ?*anyopaque) void {
+    pub fn print(self: *Type, cb: fn (c.MlirStringRef, ?*anyopaque) callconv(.c) void, userData: ?*anyopaque) void {
         c.mlirTypePrint(self.handle, cb, userData);
     }
 

@@ -95,9 +95,14 @@ pub const MlirCodegen = struct {
         }
     };
 
+    const PrintBuffer = struct {
+        list: *std.ArrayList(u8),
+        allocator: Allocator,
+    };
+
     fn printCallback(s: mlir.c.MlirStringRef, user_data: ?*anyopaque) callconv(.c) void {
-        const writer: *std.io.Writer = @ptrCast(@alignCast(user_data.?));
-        _ = writer.writeAll(s.data[0..s.length]) catch {};
+        const buf: *PrintBuffer = @ptrCast(@alignCast(user_data.?));
+        buf.list.appendSlice(buf.allocator, s.data[0..s.length]) catch {};
     }
 
     // ----------------------------------------------------------------
@@ -1742,10 +1747,19 @@ pub const MlirCodegen = struct {
                 const p = t.instrs.get(.MlirBlock, ins_id);
                 const mlir_text_raw = t.instrs.strs.get(p.text);
                 const mlir_kind = p.kind;
-                const result_ty = try self.llvmTypeOf(store, p.ty);
 
                 // NEW: handle arguments
                 const arg_vids = t.instrs.value_pool.slice(p.args);
+                if (mlir_kind == .Operation) {
+                    const expect_result = !p.result.isNone();
+                    const value = try self.emitInlineMlirOperation(mlir_text_raw, arg_vids, expect_result);
+                    if (expect_result) {
+                        break :blk value;
+                    } else {
+                        break :blk mlir.Value.empty();
+                    }
+                }
+
                 var mlir_text_list: std.ArrayList(u8) = .empty;
                 defer mlir_text_list.deinit(self.gpa);
 
@@ -1761,9 +1775,23 @@ pub const MlirCodegen = struct {
 
                         var str_buf: std.ArrayList(u8) = .empty;
                         defer str_buf.deinit(self.gpa);
-                        var writer = str_buf.writer(self.gpa);
-                        mlir_val.print(printCallback, &writer);
-                        try arg_names.append(self.gpa, try str_buf.toOwnedSlice(self.gpa));
+                        var sink = PrintBuffer{ .list = &str_buf, .allocator = self.gpa };
+                        mlir_val.print(printCallback, &sink);
+
+                        const owned = try str_buf.toOwnedSlice(self.gpa);
+                        var trimmed: []const u8 = owned;
+
+                        if (std.mem.indexOfScalar(u8, trimmed, '=')) |eq_idx| {
+                            trimmed = std.mem.trimRight(u8, trimmed[0..eq_idx], " \t\r\n");
+                        } else if (std.mem.indexOfScalar(u8, trimmed, ' ')) |sp_idx| {
+                            trimmed = std.mem.trimRight(u8, trimmed[0..sp_idx], " \t\r\n");
+                        }
+
+                        trimmed = std.mem.trimRight(u8, trimmed, " \t\r\n");
+
+                        const final = try self.gpa.dupe(u8, trimmed);
+                        self.gpa.free(owned);
+                        try arg_names.append(self.gpa, final);
                     }
 
                     var writer = mlir_text_list.writer(self.gpa);
@@ -1798,26 +1826,7 @@ pub const MlirCodegen = struct {
                 const mlir_text = mlir_text_list.items;
 
                 switch (mlir_kind) {
-                    .Operation => {
-                        // Parse the MLIR text into an MLIR operation
-                        var op = mlir.Operation.createParse(
-                            self.mlir_ctx,
-                            mlir.StringRef.from(mlir_text[1 .. mlir_text.len - 1]), // strip surrounding {}
-                            mlir.StringRef.from("inline_mlir_op"),
-                        );
-                        if (op.isNull()) {
-                            std.debug.print("Error parsing inline MLIR operation: {s}\n", .{mlir_text});
-                            return error.MlirParseError;
-                        }
-                        self.append(op);
-                        // If the operation produces a single result, and we expect a value, return it.
-                        if (!p.result.isNone() and op.getNumResults() > 0) {
-                            break :blk op.getResult(0);
-                        } else {
-                            _ = result_ty; // Mark as unused
-                            break :blk mlir.Value.empty();
-                        }
-                    },
+                    else => unreachable,
                     .Module => {
                         var parsed_module = mlir.Module.createParse(
                             self.mlir_ctx,
@@ -1888,6 +1897,127 @@ pub const MlirCodegen = struct {
                 }
             },
         };
+    }
+
+    fn emitInlineMlirOperation(
+        self: *MlirCodegen,
+        mlir_text_raw: []const u8,
+        arg_vids: []const tir.ValueId,
+        expect_result: bool,
+    ) !mlir.Value {
+        const body_text = std.mem.trim(u8, mlir_text_raw, " \t\r\n");
+
+        var arg_values: std.ArrayList(mlir.Value) = .empty;
+        defer arg_values.deinit(self.gpa);
+
+        var placeholder_names: std.ArrayList([]const u8) = .empty;
+        defer {
+            for (placeholder_names.items) |name| self.gpa.free(name);
+            placeholder_names.deinit(self.gpa);
+        }
+
+        var wrapper_text: std.ArrayList(u8) = .empty;
+        defer wrapper_text.deinit(self.gpa);
+
+        try wrapper_text.appendSlice(self.gpa, "\"sr.inline.wrapper\"() ({\n^bb0(");
+
+        for (arg_vids, 0..) |arg_vid, idx| {
+            const mlir_val = self.value_map.get(arg_vid).?;
+            try arg_values.append(self.gpa, mlir_val);
+
+            const placeholder = try std.fmt.allocPrint(self.gpa, "%inline_arg{d}", .{idx});
+            try placeholder_names.append(self.gpa, placeholder);
+
+            if (idx != 0) try wrapper_text.appendSlice(self.gpa, ", ");
+            try wrapper_text.appendSlice(self.gpa, placeholder_names.items[idx]);
+            try wrapper_text.appendSlice(self.gpa, ": ");
+
+            var type_buf: std.ArrayList(u8) = .empty;
+            defer type_buf.deinit(self.gpa);
+            var type_sink = PrintBuffer{ .list = &type_buf, .allocator = self.gpa };
+            var ty = mlir_val.getType();
+            ty.print(printCallback, &type_sink);
+            try wrapper_text.appendSlice(self.gpa, type_buf.items);
+        }
+
+        try wrapper_text.appendSlice(self.gpa, "):\n");
+
+        const body_start = wrapper_text.items.len;
+        var i: usize = 0;
+        while (i < body_text.len) {
+            if (body_text[i] == '%') {
+                var j = i + 1;
+                var num: usize = 0;
+                var has_digits = false;
+                while (j < body_text.len and std.ascii.isDigit(body_text[j])) {
+                    num = num * 10 + (body_text[j] - '0');
+                    has_digits = true;
+                    j += 1;
+                }
+
+                if (has_digits and num < placeholder_names.items.len) {
+                    try wrapper_text.appendSlice(self.gpa, placeholder_names.items[num]);
+                    i = j;
+                    continue;
+                }
+            }
+
+            try wrapper_text.append(self.gpa, body_text[i]);
+            i += 1;
+        }
+
+        if (wrapper_text.items.len == body_start or wrapper_text.items[wrapper_text.items.len - 1] != '\n') {
+            try wrapper_text.append(self.gpa, '\n');
+        }
+
+        try wrapper_text.appendSlice(self.gpa, "}) : () -> ()");
+
+        const wrapper_slice = wrapper_text.items;
+        var wrapper_op = mlir.Operation.createParse(
+            self.mlir_ctx,
+            mlir.StringRef.from(wrapper_slice),
+            mlir.StringRef.from("inline_mlir_op"),
+        );
+        if (wrapper_op.isNull()) {
+            std.debug.print("Error parsing inline MLIR operation: {s}\n", .{wrapper_slice});
+            return error.MlirParseError;
+        }
+        defer wrapper_op.destroy();
+
+        var region = wrapper_op.getRegion(0);
+        var block = region.getFirstBlock();
+        if (block.isNull()) {
+            std.debug.print("Error parsing inline MLIR operation body: {s}\n", .{wrapper_slice});
+            return error.MlirParseError;
+        }
+
+        for (arg_values.items, 0..) |arg_val, idx| {
+            const block_arg = block.getArgument(idx);
+            mlir.Value.replaceAllUsesOfWith(block_arg, arg_val);
+        }
+
+        var current = block.getFirstOperation();
+        var last_result: ?mlir.Value = null;
+        while (!current.isNull()) {
+            const next = current.getNextInBlock();
+            current.removeFromParent();
+            self.append(current);
+            if (expect_result and current.getNumResults() > 0) {
+                last_result = current.getResult(0);
+            }
+            current = next;
+        }
+
+        if (expect_result) {
+            if (last_result) |v| {
+                return v;
+            } else {
+                std.debug.print("Inline MLIR operation expected a result but none was produced. Text: {s}\n", .{wrapper_slice});
+                return error.MlirParseError;
+            }
+        }
+
+        return mlir.Value.empty();
     }
 
     fn emitCmp(
@@ -2625,7 +2755,7 @@ pub const MlirCodegen = struct {
 
     fn isAggregateKind(kind: types.TypeKind) bool {
         return switch (kind) {
-            .Struct, .Tuple, .Array, .Optional, .Union, .ErrorSet => true,
+            .Struct, .Tuple, .Array, .Optional, .Union, .ErrorSet, .Error => true,
             else => false,
         };
     }
@@ -2644,16 +2774,73 @@ pub const MlirCodegen = struct {
         if (!isAggregateKind(dst_kind) or !isAggregateKind(src_kind)) return null;
 
         switch (dst_kind) {
-            .Array => if (src_kind == .Array) return try self.copyArrayAggregate(store, dst_sr, dst_ty, src_val, src_sr, elem_coercer),
-            .Struct => if (src_kind == .Struct) return try self.copyStructAggregate(store, dst_sr, dst_ty, src_val, src_sr, elem_coercer),
-            .Tuple => if (src_kind == .Tuple) return try self.copyTupleAggregate(store, dst_sr, dst_ty, src_val, src_sr, elem_coercer),
-            .Optional => if (src_kind == .Optional) return try self.copyOptionalAggregate(store, dst_sr, dst_ty, src_val, src_sr, elem_coercer),
-            .Union => if (src_kind == .Union) return try self.copyUnionAggregate(store, dst_sr, dst_ty, src_val, src_sr),
-            .ErrorSet => if (src_kind == .ErrorSet) return try self.copyErrorSetAggregate(store, dst_sr, dst_ty, src_val, src_sr, elem_coercer),
+            .Array => if (src_kind == .Array)
+                return self.copyArrayAggregate(store, dst_sr, dst_ty, src_val, src_sr, elem_coercer),
+            .Struct => if (src_kind == .Struct)
+                return self.copyStructAggregate(store, dst_sr, dst_ty, src_val, src_sr, elem_coercer),
+            .Tuple => if (src_kind == .Tuple)
+                return self.copyTupleAggregate(store, dst_sr, dst_ty, src_val, src_sr, elem_coercer),
+            .Optional => if (src_kind == .Optional)
+                return self.copyOptionalAggregate(store, dst_sr, dst_ty, src_val, src_sr, elem_coercer),
+            .Union => if (src_kind == .Union)
+                return self.copyUnionAggregate(store, dst_sr, dst_ty, src_val, src_sr),
+            .ErrorSet => if (src_kind == .ErrorSet)
+                return self.copyErrorSetAggregate(store, dst_sr, dst_ty, src_val, src_sr, elem_coercer),
+            .Error => if (src_kind == .ErrorSet)
+                return self.copyErrorAggregate(store, dst_sr, dst_ty, src_val, src_sr, elem_coercer),
             else => {},
         }
 
         return null;
+    }
+
+    fn copyErrorAggregate(
+        self: *MlirCodegen,
+        store: *types.TypeStore,
+        dst_sr: types.TypeId,
+        dst_ty: mlir.Type,
+        src_val: mlir.Value,
+        src_sr: types.TypeId,
+        elem_coercer: AggregateElemCoercer,
+    ) anyerror!?mlir.Value {
+        const dst_info = store.get(.Error, dst_sr);
+        const src_info = store.get(.Error, src_sr);
+
+        const dst_variants = store.field_pool.slice(dst_info.variants);
+        const src_variants = store.field_pool.slice(src_info.variants);
+        if (dst_variants.len != src_variants.len) return null;
+
+        var dst_union_fields = try self.gpa.alloc(types.TypeStore.StructFieldArg, dst_variants.len);
+        defer self.gpa.free(dst_union_fields);
+        var src_union_fields = try self.gpa.alloc(types.TypeStore.StructFieldArg, src_variants.len);
+        defer self.gpa.free(src_union_fields);
+
+        for (dst_variants, 0..) |dst_field_id, i| {
+            const src_field_id = src_variants[i];
+            const dst_field = store.Field.get(dst_field_id);
+            const src_field = store.Field.get(src_field_id);
+            if (dst_field.name.toRaw() != src_field.name.toRaw()) return null;
+            dst_union_fields[i] = .{ .name = dst_field.name, .ty = dst_field.ty };
+            src_union_fields[i] = .{ .name = src_field.name, .ty = src_field.ty };
+        }
+
+        const dst_union_sr = store.mkUnion(dst_union_fields);
+        const src_union_sr = store.mkUnion(src_union_fields);
+        const dst_union_ty = try self.llvmTypeOf(store, dst_union_sr);
+        const src_union_ty = try self.llvmTypeOf(store, src_union_sr);
+
+        const tag = self.extractAt(src_val, self.i32_ty, &.{0});
+        const src_payload = self.extractAt(src_val, src_union_ty, &.{1});
+
+        var payload = try self.tryCopyAggregateValue(store, dst_union_sr, dst_union_ty, src_payload, src_union_sr, elem_coercer) orelse src_payload;
+        if (!payload.getType().equal(dst_union_ty)) {
+            payload = try elem_coercer(self, store, dst_union_sr, dst_union_ty, payload, src_union_sr);
+        }
+
+        var result = self.undefOf(dst_ty);
+        result = self.insertAt(result, tag, &.{0});
+        result = self.insertAt(result, payload, &.{1});
+        return result;
     }
 
     fn copyArrayAggregate(
@@ -2828,6 +3015,40 @@ pub const MlirCodegen = struct {
         return result;
     }
 
+    fn reinterpretAggregateViaSpill(
+        self: *MlirCodegen,
+        store: *types.TypeStore,
+        dst_sr: types.TypeId,
+        dst_ty: mlir.Type,
+        src_val: mlir.Value,
+        src_sr: types.TypeId,
+    ) anyerror!?mlir.Value {
+        if (dst_sr.toRaw() == 0 or src_sr.toRaw() == 0) return null;
+
+        const dst_kind = store.getKind(dst_sr);
+        const src_kind = store.getKind(src_sr);
+        if (!isAggregateKind(dst_kind) and !isAggregateKind(src_kind)) return null;
+
+        const dst_layout = abi.abiSizeAlign(self, store, dst_sr);
+        const src_layout = abi.abiSizeAlign(self, store, src_sr);
+
+        const src_ptr = self.spillAgg(src_val, src_val.getType(), 0);
+        const dst_init = self.zeroOf(dst_ty);
+        const dst_ptr = self.spillAgg(dst_init, dst_ty, 0);
+
+        const copy_len = if (dst_layout.size < src_layout.size) dst_layout.size else src_layout.size;
+        var i: usize = 0;
+        while (i < copy_len) : (i += 1) {
+            const byte = self.loadIntAt(src_ptr, 8, i);
+            self.storeAt(dst_ptr, byte, i);
+        }
+
+        var ld = OpBuilder.init("llvm.load", self.loc).builder()
+            .add_operands(&.{dst_ptr}).add_results(&.{dst_ty}).build();
+        self.append(ld);
+        return ld.getResult(0);
+    }
+
     fn coerceAggregateElementOnBranch(
         self: *MlirCodegen,
         store: *types.TypeStore,
@@ -2937,7 +3158,19 @@ pub const MlirCodegen = struct {
             return op.getResult(0);
         }
 
+        if (dst_sr_ty.toRaw() != 0 and src_sr_ty.toRaw() != 0) {
+            const dst_kind = store.getKind(dst_sr_ty);
+            const src_kind = store.getKind(src_sr_ty);
+
+            if (dst_kind == .Error and src_kind == .ErrorSet) {
+                return try self.errorSetToError(store, dst_sr_ty, want, src_sr_ty, v);
+            }
+        }
+
         if (try self.tryCopyAggregateValue(store, dst_sr_ty, want, v, src_sr_ty, coerceAggregateElementOnBranch)) |agg|
+            return agg;
+
+        if (try self.reinterpretAggregateViaSpill(store, dst_sr_ty, want, v, src_sr_ty)) |agg|
             return agg;
 
         // last resort (should be rare): bitcast
@@ -2945,6 +3178,43 @@ pub const MlirCodegen = struct {
             .add_operands(&.{v}).add_results(&.{want}).build();
         self.append(bc);
         return bc.getResult(0);
+    }
+
+    fn errorSetToError(
+        self: *MlirCodegen,
+        store: *types.TypeStore,
+        dst_err_sr: types.TypeId,
+        dst_err_ty: mlir.Type,
+        src_errset_sr: types.TypeId,
+        src_val: mlir.Value,
+    ) anyerror!mlir.Value {
+        const es = store.get(.ErrorSet, src_errset_sr);
+
+        const ok_name = store.strs.intern("Ok");
+        const err_name = store.strs.intern("Err");
+        var union_fields = [_]types.TypeStore.StructFieldArg{
+            .{ .name = ok_name, .ty = es.value_ty },
+            .{ .name = err_name, .ty = es.error_ty },
+        };
+
+        const union_sr = store.mkUnion(&union_fields);
+        const union_ty = try self.llvmTypeOf(store, union_sr);
+        const payload = self.extractAt(src_val, union_ty, &.{1});
+
+        const err_mlir = try self.llvmTypeOf(store, es.error_ty);
+        const union_ptr = self.spillAgg(payload, union_ty, 0);
+        const idxs = [_]tir.Rows.GepIndex{.{ .Const = 0 }};
+        const err_ptr = try self.emitGep(union_ptr, err_mlir, &idxs);
+        var load_op = OpBuilder.init("llvm.load", self.loc).builder()
+            .add_operands(&.{err_ptr}).add_results(&.{err_mlir}).build();
+        self.append(load_op);
+
+        var err_val = load_op.getResult(0);
+        if (!err_mlir.equal(dst_err_ty)) {
+            err_val = try self.coerceOnBranch(err_val, dst_err_ty, dst_err_sr, es.error_ty, store);
+        }
+
+        return err_val;
     }
 
     fn sameType(a: mlir.Type, b: mlir.Type) bool {
@@ -3305,6 +3575,9 @@ pub const MlirCodegen = struct {
         if (from_is_f and to_is_f) return self.resizeFloat(from_v, from_ty, to_ty);
 
         if (try self.tryCopyAggregateValue(store, dst_sr, to_ty, from_v, src_sr, emitCastAggregateElement)) |agg|
+            return agg;
+
+        if (try self.reinterpretAggregateViaSpill(store, dst_sr, to_ty, from_v, src_sr)) |agg|
             return agg;
 
         // Fallback: bitcast (ensure size match upstream)
