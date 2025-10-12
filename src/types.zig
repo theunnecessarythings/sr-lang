@@ -83,9 +83,12 @@ pub const TypeInfo = struct {
             try self.expr_types.ensureTotalCapacity(gpa, need);
             while (self.expr_types.items.len < need) self.expr_types.appendAssumeCapacity(self.store.*.tVoid()); // or any sentinel
         }
-        if (self.field_index_for_expr.items.len < need) {
+        if (self.field_index_for_expr.count() < need) {
             try self.field_index_for_expr.ensureTotalCapacity(gpa, need);
-            while (self.field_index_for_expr.items.len < need) self.field_index_for_expr.appendAssumeCapacity(0xFFFF_FFFF);
+            var i = self.field_index_for_expr.count();
+            while (i < need) : (i += 1) {
+                try self.field_index_for_expr.put(gpa, @intCast(i), 0xFFFF_FFFF);
+            }
         }
     }
 

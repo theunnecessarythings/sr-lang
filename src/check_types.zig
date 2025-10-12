@@ -3,6 +3,18 @@ const types = @import("types.zig");
 const ast = @import("ast.zig");
 const std = @import("std");
 
+const TypeBinding = struct {
+    name: ast.StrId,
+    ty: types.TypeId,
+};
+
+fn lookupTypeBinding(bindings: []const TypeBinding, name: ast.StrId) ?types.TypeId {
+    for (bindings) |binding| {
+        if (binding.name.eq(name)) return binding.ty;
+    }
+    return null;
+}
+
 // --------- type helpers
 pub fn isNumericKind(_: *const Checker, k: types.TypeKind) bool {
     return switch (k) {
@@ -74,6 +86,106 @@ fn variantPayloadType(self: *Checker, variant_ty: types.TypeId, tag: ast.StrId) 
     return null;
 }
 
+fn typeFromTypeExprWithBindings(
+    self: *Checker,
+    id: ast.ExprId,
+    bindings: []const TypeBinding,
+) anyerror!?types.TypeId {
+    const kind = self.ast_unit.exprs.index.kinds.items[id.toRaw()];
+    return switch (kind) {
+        .Ident => blk_ident: {
+            const name = self.ast_unit.exprs.get(.Ident, id).name;
+            if (lookupTypeBinding(bindings, name)) |ty|
+                break :blk_ident ty;
+            break :blk_ident try typeFromTypeExpr(self, id);
+        },
+        .StructType => blk_struct: {
+            const row = self.ast_unit.exprs.get(.StructType, id);
+            const sfs = self.ast_unit.exprs.sfield_pool.slice(row.fields);
+            var buf = try self.context.type_store.gpa.alloc(types.TypeStore.StructFieldArg, sfs.len);
+            defer self.context.type_store.gpa.free(buf);
+            var seen = std.AutoArrayHashMapUnmanaged(u32, void){};
+            defer seen.deinit(self.gpa);
+            var i: usize = 0;
+            while (i < sfs.len) : (i += 1) {
+                const f = self.ast_unit.exprs.StructField.get(sfs[i]);
+                const gop = try seen.getOrPut(self.gpa, f.name.toRaw());
+                if (gop.found_existing) {
+                    try self.context.diags.addError(self.ast_unit.exprs.locs.get(f.loc), .duplicate_field, .{});
+                    return null;
+                }
+                const ft = (try typeFromTypeExprWithBindings(self, f.ty, bindings)) orelse break :blk_struct null;
+                buf[i] = .{ .name = f.name, .ty = ft };
+            }
+            break :blk_struct self.context.type_store.mkStruct(buf);
+        },
+        else => try typeFromTypeExpr(self, id),
+    };
+}
+
+fn resolveTypeFunctionCall(
+    self: *Checker,
+    call_id: ast.ExprId,
+) anyerror!?types.TypeId {
+    const call = self.ast_unit.exprs.get(.Call, call_id);
+    const callee_kind = self.ast_unit.exprs.index.kinds.items[call.callee.toRaw()];
+    if (callee_kind != .Ident) return null;
+
+    const callee_ident = self.ast_unit.exprs.get(.Ident, call.callee);
+    const sym_id = self.lookup(callee_ident.name) orelse return null;
+    const sym = self.symtab.syms.get(sym_id);
+    if (sym.origin_decl.isNone()) return null;
+
+    const decl_id = sym.origin_decl.unwrap();
+    const decl = self.ast_unit.exprs.Decl.get(decl_id);
+    const value_kind = self.ast_unit.exprs.index.kinds.items[decl.value.toRaw()];
+    if (value_kind != .FunctionLit) return null;
+
+    const fn_lit = self.ast_unit.exprs.get(.FunctionLit, decl.value);
+    const params = self.ast_unit.exprs.param_pool.slice(fn_lit.params);
+    const args = self.ast_unit.exprs.expr_pool.slice(call.args);
+    if (params.len != args.len) return null;
+
+    var bindings: std.ArrayList(TypeBinding) = .empty;
+    defer bindings.deinit(self.gpa);
+
+    var i: usize = 0;
+    while (i < params.len) : (i += 1) {
+        const param = self.ast_unit.exprs.Param.get(params[i]);
+        if (!param.is_comptime or param.pat.isNone() or param.ty.isNone()) return null;
+
+        const pat_id = param.pat.unwrap();
+        if (self.ast_unit.pats.index.kinds.items[pat_id.toRaw()] != .Binding) return null;
+        const pname = self.ast_unit.pats.get(.Binding, pat_id).name;
+
+        const annotated = (try typeFromTypeExpr(self, param.ty.unwrap())) orelse return null;
+        if (self.context.type_store.getKind(annotated) != .TypeType) return null;
+
+        const arg_ty = (try typeFromTypeExpr(self, args[i])) orelse return null;
+        try bindings.append(self.gpa, .{ .name = pname, .ty = arg_ty });
+    }
+
+    if (fn_lit.body.isNone()) return null;
+    const body_id = fn_lit.body.unwrap();
+    if (self.ast_unit.exprs.index.kinds.items[body_id.toRaw()] != .Block) return null;
+    const block = self.ast_unit.exprs.get(.Block, body_id);
+    const stmts = self.ast_unit.stmts.stmt_pool.slice(block.items);
+    for (stmts) |sid| {
+        if (self.ast_unit.stmts.index.kinds.items[sid.toRaw()] != .Return) continue;
+        const ret = self.ast_unit.stmts.get(.Return, sid);
+        if (ret.value.isNone()) return null;
+        const resolved = try typeFromTypeExprWithBindings(self, ret.value.unwrap(), bindings.items);
+        if (resolved) |ty| {
+            try self.type_info.ensureExpr(self.gpa, call_id);
+            const type_ty = self.context.type_store.mkTypeType(ty);
+            self.type_info.expr_types.items[call_id.toRaw()] = type_ty;
+            return ty;
+        }
+        return null;
+    }
+    return null;
+}
+
 pub fn typeFromTypeExpr(self: *Checker, id: ast.ExprId) anyerror!?types.TypeId {
     const k = self.ast_unit.exprs.index.kinds.items[id.toRaw()];
     return switch (k) {
@@ -104,11 +216,15 @@ pub fn typeFromTypeExpr(self: *Checker, id: ast.ExprId) anyerror!?types.TypeId {
                 if (!sym.origin_decl.isNone()) {
                     const did = sym.origin_decl.unwrap();
                     if (self.type_info.decl_types.items[did.toRaw()]) |ty| {
-                        if (self.context.type_store.index.kinds.items[ty.toRaw()] == .TypeType) {
+                        const kind = self.context.type_store.index.kinds.items[ty.toRaw()];
+                        if (kind == .TypeType) {
                             const tt = self.context.type_store.get(.TypeType, ty);
-                            return tt.of;
+                            if (self.context.type_store.getKind(tt.of) != .Any) {
+                                return tt.of;
+                            }
+                        } else {
+                            return ty;
                         }
-                        return ty;
                     }
                     // Lazy resolve: if the declaration's RHS is a type expression, resolve it now.
                     const drow = self.ast_unit.exprs.Decl.get(did);
@@ -117,6 +233,8 @@ pub fn typeFromTypeExpr(self: *Checker, id: ast.ExprId) anyerror!?types.TypeId {
                         // Record as a type constant for future queries
                         const tt = self.context.type_store.mkTypeType(rt);
                         self.type_info.decl_types.items[did.toRaw()] = tt;
+                        try self.type_info.ensureExpr(self.gpa, drow.value);
+                        self.type_info.expr_types.items[drow.value.toRaw()] = tt;
                         return rt;
                     }
                 }
@@ -598,6 +716,7 @@ pub fn typeFromTypeExpr(self: *Checker, id: ast.ExprId) anyerror!?types.TypeId {
                 },
             }
         },
+        .Call => try resolveTypeFunctionCall(self, id),
         .AnyType => self.context.type_store.tAny(),
         .TypeType => self.context.type_store.tType(),
         .NoreturnType => self.context.type_store.tNoReturn(),
