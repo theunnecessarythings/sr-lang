@@ -208,7 +208,17 @@ pub const LowerTir = struct {
         expected_ty: ?types.TypeId,
     ) !tir.ValueId {
         const row = a.exprs.get(.MlirBlock, id);
-        const ty0 = self.getExprType(id) orelse (expected_ty orelse self.context.type_store.tAny());
+        const expr_ty_opt = self.getExprType(id);
+        var ty0 = expr_ty_opt orelse (expected_ty orelse self.context.type_store.tAny());
+        if (expected_ty) |want| {
+            if (expr_ty_opt) |expr_ty| {
+                if (self.isAny(expr_ty) and !self.isAny(want)) {
+                    ty0 = want;
+                }
+            } else {
+                ty0 = want;
+            }
+        }
 
         // Lower args
         const arg_ids = a.exprs.expr_pool.slice(row.args);
@@ -228,6 +238,11 @@ pub const LowerTir = struct {
             .args = args_range,
         });
         blk.instrs.append(self.gpa, iid) catch @panic("OOM");
+        if (expected_ty) |want| {
+            if (!ty0.eq(want)) {
+                return self.emitCoerce(blk, result_id, ty0, want);
+            }
+        }
         return result_id;
     }
 
@@ -2264,6 +2279,31 @@ pub const LowerTir = struct {
                 lhs_expect = want;
                 rhs_expect = want;
                 op_ty = self.context.type_store.tBool();
+                if (row.op == .eq or row.op == .neq) {
+                    const ts = &self.context.type_store;
+                    const lhs_ty_hint = lhs_hint orelse lhs_stamped;
+                    const rhs_ty_hint = rhs_hint orelse rhs_stamped;
+                    if (lhs_ty_hint) |lh| {
+                        const lhs_kind = ts.index.kinds.items[lh.toRaw()];
+                        if (lhs_kind == .Optional and rhs_ty_hint != null) {
+                            const rhs_kind = ts.index.kinds.items[rhs_ty_hint.?.toRaw()];
+                            if (rhs_kind != .Optional) {
+                                lhs_expect = lh;
+                                rhs_expect = ts.get(.Optional, lh).elem;
+                            }
+                        }
+                    }
+                    if (rhs_ty_hint) |rh| {
+                        const rhs_kind = ts.index.kinds.items[rh.toRaw()];
+                        if (rhs_kind == .Optional and lhs_ty_hint != null) {
+                            const lhs_kind = ts.index.kinds.items[lhs_ty_hint.?.toRaw()];
+                            if (lhs_kind != .Optional) {
+                                rhs_expect = rh;
+                                lhs_expect = ts.get(.Optional, rh).elem;
+                            }
+                        }
+                    }
+                }
             },
             .logical_and, .logical_or => {
                 const bty = self.context.type_store.tBool();
@@ -2281,31 +2321,76 @@ pub const LowerTir = struct {
         const l = try self.lowerExpr(a, env, f, blk, row.left, lhs_expect, .rvalue);
         const r = try self.lowerExpr(a, env, f, blk, row.right, rhs_expect, .rvalue);
 
-        // --- Handle Optional(T) == null or Optional(T) != null ---
+        // --- Handle Optional(T) equality/inequality cases ---
         const l_ty = self.getExprType(row.left) orelse return error.LoweringBug;
         const r_ty = self.getExprType(row.right) orelse return error.LoweringBug;
 
         const l_is_optional = self.context.type_store.getKind(l_ty) == .Optional;
         const r_is_optional = self.context.type_store.getKind(r_ty) == .Optional;
 
+        const bool_ty = self.context.type_store.tBool();
         const null_ty = self.context.type_store.mkOptional(self.context.type_store.tAny());
 
-        if ((row.op == .eq or row.op == .neq) and l_is_optional and r_is_optional) {
-            if (l_ty.eq(null_ty) or r_ty.eq(null_ty)) { // One of them is explicitly the null type
-                const optional_val = if (l_ty.eq(null_ty)) r else l; // The non-null optional
+        if (row.op == .eq or row.op == .neq) {
+            if (l_is_optional and r_is_optional) {
+                if (l_ty.eq(null_ty) or r_ty.eq(null_ty)) { // One of them is explicitly the null type
+                    const optional_val = if (l_ty.eq(null_ty)) r else l; // The non-null optional
+                    const flag = blk.builder.extractField(blk, bool_ty, optional_val, 0); // Extract is_some flag
 
-                const bool_ty = self.context.type_store.tBool();
-                const flag = blk.builder.extractField(blk, bool_ty, optional_val, 0); // Extract is_some flag
+                    const result = if (row.op == .eq)
+                        blk.builder.binBool(blk, .CmpEq, flag, blk.builder.tirValue(.ConstBool, blk, bool_ty, .{ .value = false }))
+                    else
+                        blk.builder.binBool(blk, .CmpNe, flag, blk.builder.tirValue(.ConstBool, blk, bool_ty, .{ .value = false }));
 
-                const result = if (row.op == .eq)
-                    blk.builder.binBool(blk, .CmpEq, flag, blk.builder.tirValue(.ConstBool, blk, bool_ty, .{ .value = false })) // == null means flag == false
+                    return result;
+                }
+            } else if (l_is_optional != r_is_optional) {
+                const opt_val = if (l_is_optional) l else r;
+                const opt_ty = if (l_is_optional) l_ty else r_ty;
+                const opt_info = self.context.type_store.get(.Optional, opt_ty);
+                const other_val = if (l_is_optional) r else l;
+                const other_ty_raw = if (l_is_optional)
+                    (self.getExprType(row.right) orelse (rhs_expect orelse opt_info.elem))
                 else
-                    blk.builder.binBool(blk, .CmpNe, flag, blk.builder.tirValue(.ConstBool, blk, bool_ty, .{ .value = false })); // != null means flag != false
+                    (self.getExprType(row.left) orelse (lhs_expect orelse opt_info.elem));
 
-                return result;
+                var coerced_other = other_val;
+                if (!other_ty_raw.eq(opt_info.elem)) {
+                    coerced_other = self.emitCoerce(blk, other_val, other_ty_raw, opt_info.elem);
+                }
+
+                const flag = blk.builder.extractField(blk, bool_ty, opt_val, 0);
+                const payload = blk.builder.extractField(blk, opt_info.elem, opt_val, 1);
+
+                var then_blk = try f.builder.beginBlock(f);
+                var else_blk = try f.builder.beginBlock(f);
+                var join_blk = try f.builder.beginBlock(f);
+
+                const payload_param = try f.builder.addBlockParam(&then_blk, null, opt_info.elem);
+                const other_param = try f.builder.addBlockParam(&then_blk, null, opt_info.elem);
+                const res_param = try f.builder.addBlockParam(&join_blk, null, bool_ty);
+
+                try f.builder.condBr(blk, flag, then_blk.id, &.{ payload, coerced_other }, else_blk.id, &.{});
+                const orig_blk = blk.*;
+                try f.builder.endBlock(f, orig_blk);
+
+                const cmp = if (row.op == .eq)
+                    then_blk.builder.binBool(&then_blk, .CmpEq, payload_param, other_param)
+                else
+                    then_blk.builder.binBool(&then_blk, .CmpNe, payload_param, other_param);
+
+                try f.builder.br(&then_blk, join_blk.id, &.{cmp});
+                try f.builder.endBlock(f, then_blk);
+
+                const else_val = else_blk.builder.tirValue(.ConstBool, &else_blk, bool_ty, .{ .value = (row.op == .neq) });
+                try f.builder.br(&else_blk, join_blk.id, &.{else_val});
+                try f.builder.endBlock(f, else_blk);
+
+                blk.* = join_blk;
+                return res_param;
             }
         }
-        // --- End Optional(T) == null or Optional(T) != null handling ---
+        // --- End Optional(T) equality/inequality handling ---
 
         const ty0 = blk: {
             if (op_ty) |t| break :blk t;
@@ -2315,12 +2400,30 @@ pub const LowerTir = struct {
         try self.noteExprType(id, ty0);
 
         const v = switch (row.op) {
-            .add => blk.builder.bin(blk, .Add, ty0, l, r),
-            .sub => blk.builder.bin(blk, .Sub, ty0, l, r),
-            .mul => blk.builder.bin(blk, .Mul, ty0, l, r),
+            .add => if (row.saturate)
+                blk.builder.bin(blk, .BinSatAdd, ty0, l, r)
+            else if (row.wrap)
+                blk.builder.bin(blk, .BinWrapAdd, ty0, l, r)
+            else
+                blk.builder.bin(blk, .Add, ty0, l, r),
+            .sub => if (row.saturate)
+                blk.builder.bin(blk, .BinSatSub, ty0, l, r)
+            else if (row.wrap)
+                blk.builder.bin(blk, .BinWrapSub, ty0, l, r)
+            else
+                blk.builder.bin(blk, .Sub, ty0, l, r),
+            .mul => if (row.saturate)
+                blk.builder.bin(blk, .BinSatMul, ty0, l, r)
+            else if (row.wrap)
+                blk.builder.bin(blk, .BinWrapMul, ty0, l, r)
+            else
+                blk.builder.bin(blk, .Mul, ty0, l, r),
             .div => blk.builder.bin(blk, .Div, ty0, l, r),
             .mod => blk.builder.bin(blk, .Mod, ty0, l, r),
-            .shl => blk.builder.bin(blk, .Shl, ty0, l, r),
+            .shl => if (row.saturate)
+                blk.builder.bin(blk, .BinSatShl, ty0, l, r)
+            else
+                blk.builder.bin(blk, .Shl, ty0, l, r),
             .shr => blk.builder.bin(blk, .Shr, ty0, l, r),
             .bit_and => blk.builder.bin(blk, .BitAnd, ty0, l, r),
             .bit_or => blk.builder.bin(blk, .BitOr, ty0, l, r),
@@ -2341,7 +2444,6 @@ pub const LowerTir = struct {
                 if (self.context.type_store.index.kinds.items[opt_src_ty.toRaw()] != .Optional)
                     return error.LoweringBug;
                 const opt_info = self.context.type_store.get(.Optional, opt_src_ty);
-                const bool_ty = self.context.type_store.tBool();
                 const flag = blk.builder.extractField(blk, bool_ty, l, 0);
                 const payload = blk.builder.extractField(blk, opt_info.elem, l, 1);
                 const then_param = try f.builder.addBlockParam(&then_blk, null, opt_info.elem);
@@ -3395,6 +3497,10 @@ pub const LowerTir = struct {
             .Match => self.lowerMatch(a, env, f, blk, id, expected_ty),
             .While => self.lowerWhile(a, env, f, blk, id, expected_ty),
             .For => self.lowerFor(a, env, f, blk, id, expected_ty),
+            .MlirBlock => blk: {
+                if (mode == .lvalue_addr) return error.LoweringBug;
+                break :blk try self.lowerMlirBlock(a, env, f, blk, id, expected_ty);
+            },
             .Import => blk.builder.tirValue(.ConstUndef, blk, self.getExprType(id) orelse self.context.type_store.tAny(), .{}),
             .VariantType, .EnumType, .StructType => self.lowerTypeExprOpaque(blk, id, expected_ty),
             .CodeBlock => blk: {
@@ -4525,7 +4631,31 @@ pub const LowerTir = struct {
                 }
                 return result;
             },
-            .Binding, .Tuple, .Struct, .Range => {
+            .Range => {
+                const range_pat = a.pats.get(.Range, pid);
+                const bool_ty = self.context.type_store.tBool();
+                var result = blk.builder.tirValue(.ConstBool, blk, bool_ty, .{ .value = true });
+
+                if (!range_pat.start.isNone()) {
+                    const start_expr = range_pat.start.unwrap();
+                    const start_val = try self.lowerExpr(a, env, f, blk, start_expr, scrut_ty, .rvalue);
+                    const cmp = blk.builder.binBool(blk, .CmpGe, scrut, start_val);
+                    result = blk.builder.binBool(blk, .LogicalAnd, result, cmp);
+                }
+
+                if (!range_pat.end.isNone()) {
+                    const end_expr = range_pat.end.unwrap();
+                    const end_val = try self.lowerExpr(a, env, f, blk, end_expr, scrut_ty, .rvalue);
+                    const cmp = if (range_pat.inclusive_right)
+                        blk.builder.binBool(blk, .CmpLe, scrut, end_val)
+                    else
+                        blk.builder.binBool(blk, .CmpLt, scrut, end_val);
+                    result = blk.builder.binBool(blk, .LogicalAnd, result, cmp);
+                }
+
+                return result;
+            },
+            .Binding, .Tuple, .Struct => {
                 return blk.builder.tirValue(.ConstBool, blk, self.context.type_store.tBool(), .{ .value = true });
             },
         }

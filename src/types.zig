@@ -125,6 +125,7 @@ pub const TypeKind = enum(u8) {
     Simd,
     String,
     Any,
+    Undef,
     Ptr,
     Slice,
     Array,
@@ -159,6 +160,7 @@ pub const Rows = struct {
     pub const Usize = struct {};
     pub const String = struct {};
     pub const Any = struct {};
+    pub const Undef = struct {};
     pub const Noreturn = struct {};
 
     pub const Complex = struct { elem: TypeId };
@@ -208,6 +210,7 @@ pub const TypeStore = struct {
     Usize: Table(Rows.Usize) = .{},
     String: Table(Rows.String) = .{},
     Any: Table(Rows.Any) = .{},
+    Undef: Table(Rows.Undef) = .{},
     Noreturn: Table(Rows.Noreturn) = .{},
 
     Complex: Table(Rows.Complex) = .{},
@@ -253,6 +256,7 @@ pub const TypeStore = struct {
     t_usize: ?TypeId = null,
     t_string: ?TypeId = null,
     t_any: ?TypeId = null,
+    t_undef: ?TypeId = null,
     t_type: ?TypeId = null,
     t_noreturn: ?TypeId = null,
 
@@ -382,6 +386,12 @@ pub const TypeStore = struct {
         if (self.t_any) |id| return id;
         const id = self.add(.Any, .{});
         self.t_any = id;
+        return id;
+    }
+    pub fn tUndef(self: *TypeStore) TypeId {
+        if (self.t_undef) |id| return id;
+        const id = self.add(.Undef, .{});
+        self.t_undef = id;
         return id;
     }
     pub fn tType(self: *TypeStore) TypeId {
@@ -686,6 +696,7 @@ pub const TypeStore = struct {
             .String => try w.print("string", .{}),
             .Any => try w.print("any", .{}),
             .Noreturn => try w.print("noreturn", .{}),
+            .Undef => try w.print("undef", .{}),
             .Complex => {
                 const r = self.get(.Complex, id);
                 try w.print("complex@", .{});

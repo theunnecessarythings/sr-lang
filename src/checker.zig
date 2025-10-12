@@ -883,7 +883,7 @@ pub const Checker = struct {
             .Break => try self.checkBreak(self.getExpr(.Break, id)),
             .Continue => try self.checkContinue(id),
             .Unreachable => try self.checkUnreachable(id),
-            .UndefLit => self.context.type_store.tAny(),
+            .UndefLit => self.context.type_store.tUndef(),
 
             .Block => try self.checkBlock(id),
             .Defer => try self.checkDefer(self.getExpr(.Defer, id)),
@@ -1143,6 +1143,11 @@ pub const Checker = struct {
         const lhs_kind = self.typeKind(l);
         const rhs_kind = self.typeKind(r);
 
+        if (lhs_kind == .Undef or rhs_kind == .Undef) {
+            try self.context.diags.addError(self.exprLoc(bin), .invalid_binary_op_operands, .{ bin.op, lhs_kind, rhs_kind });
+            return null;
+        }
+
         switch (bin.op) {
             .add, .sub, .mul, .div, .mod, .bit_and, .bit_or, .bit_xor, .shl, .shr => {
                 if (bin.op == .div) try self.checkDivByZero(bin.right, self.exprLoc(bin));
@@ -1211,6 +1216,26 @@ pub const Checker = struct {
             .eq, .neq, .lt, .lte, .gt, .gte => {
                 if (lhs_kind == .Any or rhs_kind == .Any) {
                     return self.context.type_store.tBool();
+                }
+                const is_equality = bin.op == .eq or bin.op == .neq;
+                if (is_equality) {
+                    const lhs_is_optional = lhs_kind == .Optional;
+                    const rhs_is_optional = rhs_kind == .Optional;
+                    if (lhs_is_optional != rhs_is_optional) {
+                        const opt_ty = if (lhs_is_optional) l else r;
+                        const other_ty = if (lhs_is_optional) r else l;
+                        const opt_elem_ty = self.context.type_store.get(.Optional, opt_ty).elem;
+                        // Disallow comparing `null` with non-optional values.
+                        if (self.typeKind(opt_elem_ty) == .Any) {
+                            try self.context.diags.addError(self.exprLoc(bin), .invalid_binary_op_operands, .{ bin.op, lhs_kind, rhs_kind });
+                            return null;
+                        }
+                        if (self.assignable(other_ty, opt_elem_ty) != .success) {
+                            try self.context.diags.addError(self.exprLoc(bin), .invalid_binary_op_operands, .{ bin.op, lhs_kind, rhs_kind });
+                            return null;
+                        }
+                        return self.context.type_store.tBool();
+                    }
                 }
                 const both_ints = check_types.isIntegerKind(self, lhs_kind) and check_types.isIntegerKind(self, rhs_kind);
                 const both_floats = (lhs_kind == .F32 or lhs_kind == .F64) and (rhs_kind == .F32 or rhs_kind == .F64);

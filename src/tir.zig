@@ -52,6 +52,13 @@ pub const OpKind = enum(u16) {
     Add,
     Sub,
     Mul,
+    BinWrapAdd,
+    BinWrapSub,
+    BinWrapMul,
+    BinSatAdd,
+    BinSatSub,
+    BinSatMul,
+    BinSatShl,
     Div,
     Mod,
     Shl,
@@ -197,7 +204,7 @@ inline fn RowT(comptime K: OpKind) type {
         .ConstNull => Rows.ConstNull,
         .ConstUndef => Rows.ConstUndef,
 
-        .Add, .Sub, .Mul, .Div, .Mod, .Shl, .Shr, .BitAnd, .BitOr, .BitXor, .LogicalAnd, .LogicalOr, .CmpEq, .CmpNe, .CmpLt, .CmpLe, .CmpGt, .CmpGe => Rows.Bin2,
+        .Add, .Sub, .Mul, .BinWrapAdd, .BinWrapSub, .BinWrapMul, .BinSatAdd, .BinSatSub, .BinSatMul, .BinSatShl, .Div, .Mod, .Shl, .Shr, .BitAnd, .BitOr, .BitXor, .LogicalAnd, .LogicalOr, .CmpEq, .CmpNe, .CmpLt, .CmpLe, .CmpGt, .CmpGe => Rows.Bin2,
 
         .LogicalNot => Rows.Un1,
 
@@ -255,6 +262,13 @@ pub const InstrStore = struct {
     Add: Table(Rows.Bin2) = .{},
     Sub: Table(Rows.Bin2) = .{},
     Mul: Table(Rows.Bin2) = .{},
+    BinWrapAdd: Table(Rows.Bin2) = .{},
+    BinWrapSub: Table(Rows.Bin2) = .{},
+    BinWrapMul: Table(Rows.Bin2) = .{},
+    BinSatAdd: Table(Rows.Bin2) = .{},
+    BinSatSub: Table(Rows.Bin2) = .{},
+    BinSatMul: Table(Rows.Bin2) = .{},
+    BinSatShl: Table(Rows.Bin2) = .{},
     Div: Table(Rows.Bin2) = .{},
     Mod: Table(Rows.Bin2) = .{},
     Shl: Table(Rows.Bin2) = .{},
@@ -760,8 +774,17 @@ pub const Builder = struct {
         return id;
     }
 
-    pub fn addMlirBlock(self: *Builder, blk: *BlockFrame, result: ValueId, ty: types.TypeId, kind: ast.MlirKind, text: StrId) InstrId {
-        const row: Rows.MlirBlock = .{ .result = .some(result), .ty = ty, .kind = kind, .text = text };
+    pub fn addMlirBlock(
+        self: *Builder,
+        blk: *BlockFrame,
+        result: ValueId,
+        ty: types.TypeId,
+        kind: ast.MlirKind,
+        text: StrId,
+        args: []const ValueId,
+    ) InstrId {
+        const args_range = self.t.instrs.value_pool.pushMany(self.gpa, args);
+        const row: Rows.MlirBlock = .{ .result = .some(result), .ty = ty, .kind = kind, .text = text, .args = args_range };
         const id = self.t.instrs.add(.MlirBlock, row);
         blk.instrs.append(self.gpa, id) catch @panic("OOM");
         return id;
@@ -1090,7 +1113,7 @@ pub const TirPrinter = struct {
                 try self.writer.print(" = ConstUndef : {f})\n", .{self.tf(r.ty)});
             },
 
-            inline .Add, .Sub, .Mul, .Div, .Mod, .Shl, .Shr, .BitAnd, .BitOr, .BitXor, .LogicalAnd, .LogicalOr, .CmpEq, .CmpNe, .CmpLt, .CmpLe, .CmpGt, .CmpGe => |opk| {
+            inline .Add, .Sub, .Mul, .BinWrapAdd, .BinWrapSub, .BinWrapMul, .BinSatAdd, .BinSatSub, .BinSatMul, .BinSatShl, .Div, .Mod, .Shl, .Shr, .BitAnd, .BitOr, .BitXor, .LogicalAnd, .LogicalOr, .CmpEq, .CmpNe, .CmpLt, .CmpLe, .CmpGt, .CmpGe => |opk| {
                 const r = self.tir.instrs.get(opk, iid);
                 try self.ws();
                 try self.writer.writeByte('(');

@@ -495,7 +495,7 @@ pub const MlirCodegen = struct {
             .ConstString => return t.instrs.get(.ConstString, id).result,
             .ConstNull => return t.instrs.get(.ConstNull, id).result,
             .ConstUndef => return t.instrs.get(.ConstUndef, id).result,
-            inline .Add, .Sub, .Mul, .Div, .Mod, .Shl, .Shr, .BitAnd, .BitOr, .BitXor, .CmpEq, .CmpNe, .CmpLt, .CmpLe, .CmpGt, .CmpGe, .LogicalAnd, .LogicalOr => |k| return t.instrs.get(k, id).result,
+            inline .Add, .Sub, .Mul, .BinWrapAdd, .BinWrapSub, .BinWrapMul, .BinSatAdd, .BinSatSub, .BinSatMul, .BinSatShl, .Div, .Mod, .Shl, .Shr, .BitAnd, .BitOr, .BitXor, .CmpEq, .CmpNe, .CmpLt, .CmpLe, .CmpGt, .CmpGe, .LogicalAnd, .LogicalOr => |k| return t.instrs.get(k, id).result,
             .LogicalNot => return t.instrs.get(.LogicalNot, id).result,
             inline .CastNormal, .CastBit, .CastSaturate, .CastWrap, .CastChecked => |k| return t.instrs.get(k, id).result,
             .Alloca => return t.instrs.get(.Alloca, id).result,
@@ -540,7 +540,7 @@ pub const MlirCodegen = struct {
             .ConstString => t.instrs.get(.ConstString, id).ty,
             .ConstNull => t.instrs.get(.ConstNull, id).ty,
             .ConstUndef => t.instrs.get(.ConstUndef, id).ty,
-            inline .Add, .Sub, .Mul, .Div, .Mod, .Shl, .Shr, .BitAnd, .BitOr, .BitXor, .CmpEq, .CmpNe, .CmpLt, .CmpLe, .CmpGt, .CmpGe, .LogicalAnd, .LogicalOr => |k| t.instrs.get(k, id).ty,
+            inline .Add, .Sub, .Mul, .BinWrapAdd, .BinWrapSub, .BinWrapMul, .BinSatAdd, .BinSatSub, .BinSatMul, .BinSatShl, .Div, .Mod, .Shl, .Shr, .BitAnd, .BitOr, .BitXor, .CmpEq, .CmpNe, .CmpLt, .CmpLe, .CmpGt, .CmpGe, .LogicalAnd, .LogicalOr => |k| t.instrs.get(k, id).ty,
             .LogicalNot => t.instrs.get(.LogicalNot, id).ty,
             inline .CastNormal, .CastBit, .CastSaturate, .CastWrap, .CastChecked => |k| t.instrs.get(k, id).ty,
             .Alloca => t.instrs.get(.Alloca, id).ty,
@@ -789,6 +789,12 @@ pub const MlirCodegen = struct {
                 }
                 break :blk try self.binArith("llvm.mul", "llvm.fmul", p, store);
             },
+            .BinWrapAdd => try self.binArith("llvm.add", "llvm.fadd", t.instrs.get(.BinWrapAdd, ins_id), store),
+            .BinWrapSub => try self.binArith("llvm.sub", "llvm.fsub", t.instrs.get(.BinWrapSub, ins_id), store),
+            .BinWrapMul => try self.binArith("llvm.mul", "llvm.fmul", t.instrs.get(.BinWrapMul, ins_id), store),
+            .BinSatAdd => try self.emitSaturatingIntBinary(t.instrs.get(.BinSatAdd, ins_id), store, "arith.addi", true),
+            .BinSatSub => try self.emitSaturatingIntBinary(t.instrs.get(.BinSatSub, ins_id), store, "arith.subi", true),
+            .BinSatMul => try self.emitSaturatingIntBinary(t.instrs.get(.BinSatMul, ins_id), store, "arith.muli", true),
 
             .Div => blk: {
                 const p = t.instrs.get(.Div, ins_id);
@@ -825,6 +831,7 @@ pub const MlirCodegen = struct {
                 const ty = try self.llvmTypeOf(store, p.ty);
                 break :blk self.arithShl(lhs, rhs, ty);
             },
+            .BinSatShl => try self.emitSaturatingIntBinary(t.instrs.get(.BinSatShl, ins_id), store, "arith.shli", false),
             .Shr => blk: {
                 const p = t.instrs.get(.Shr, ins_id);
                 const lhs = self.value_map.get(p.lhs).?;
@@ -872,7 +879,7 @@ pub const MlirCodegen = struct {
                 const to_ty = try self.llvmTypeOf(store, p.ty);
                 const from_v = self.value_map.get(p.value).?;
                 const src_sr = self.srTypeOfValue(t, p.value);
-                const val = self.emitCastNormal(store, p.ty, to_ty, from_v, src_sr);
+                const val = try self.emitCastNormal(store, p.ty, to_ty, from_v, src_sr);
                 break :blk val;
             },
 
@@ -987,7 +994,7 @@ pub const MlirCodegen = struct {
                         // Pass-through/coerce
                         if (ptr.getType().equal(res_ty)) break :blk ptr;
                         const src_sr = self.srTypeOfValue(t, p.ptr);
-                        const v = try self.coerceOnBranch(ptr, res_ty, src_sr, store);
+                        const v = try self.coerceOnBranch(ptr, res_ty, p.ty, src_sr, store);
                         break :blk v;
                     }
                     var load = OpBuilder.init("llvm.load", self.loc).builder()
@@ -1090,8 +1097,8 @@ pub const MlirCodegen = struct {
                 var acc = self.zeroOf(pairTy);
                 const s = self.value_map.get(p.start).?;
                 const e = self.value_map.get(p.end).?;
-                const s64 = try self.coerceOnBranch(s, i64t, self.srTypeOfValue(t, p.start), store);
-                const e64 = try self.coerceOnBranch(e, i64t, self.srTypeOfValue(t, p.end), store);
+                const s64 = try self.coerceOnBranch(s, i64t, store.tI64(), self.srTypeOfValue(t, p.start), store);
+                const e64 = try self.coerceOnBranch(e, i64t, store.tI64(), self.srTypeOfValue(t, p.end), store);
                 acc = self.insertAt(acc, s64, &.{0});
                 acc = self.insertAt(acc, e64, &.{1});
                 break :blk acc;
@@ -1109,7 +1116,7 @@ pub const MlirCodegen = struct {
                     var v = self.value_map.get(vid).?;
                     // Best-effort: coerce value to the array element type if it doesn't match
                     if (!v.getType().equal(elem_mlir)) {
-                        v = try self.coerceOnBranch(v, elem_mlir, self.srTypeOfValue(t, vid), store);
+                        v = try self.coerceOnBranch(v, elem_mlir, arr_sr.elem, self.srTypeOfValue(t, vid), store);
                     }
                     acc = self.insertAt(acc, v, &.{@as(i64, @intCast(i))});
                 }
@@ -1252,7 +1259,7 @@ pub const MlirCodegen = struct {
                 const f_sr = store.Field.get(f_ids[@intCast(p.field_index)]).ty;
                 const f_mlir = try self.llvmTypeOf(store, f_sr);
                 if (!payload.getType().equal(f_mlir)) {
-                    payload = try self.coerceOnBranch(payload, f_mlir, self.srTypeOfValue(t, p.value), store);
+                    payload = try self.coerceOnBranch(payload, f_mlir, f_sr, self.srTypeOfValue(t, p.value), store);
                 }
 
                 // Materialize the union by writing the chosen field at offset 0
@@ -1426,8 +1433,8 @@ pub const MlirCodegen = struct {
                     const incl_v = self.value_map.get(incl_vid).?;
                     const i64t = self.i64_ty;
                     // Ensure operands are i64
-                    const start64 = try self.coerceOnBranch(start_v, i64t, self.srTypeOfValue(t, start_vid), store);
-                    const end64 = try self.coerceOnBranch(end_v, i64t, self.srTypeOfValue(t, end_vid), store);
+                    const start64 = try self.coerceOnBranch(start_v, i64t, store.tI64(), self.srTypeOfValue(t, start_vid), store);
+                    const end64 = try self.coerceOnBranch(end_v, i64t, store.tI64(), self.srTypeOfValue(t, end_vid), store);
                     var sub = OpBuilder.init("llvm.sub", self.loc).builder()
                         .add_operands(&.{ end64, start64 })
                         .add_results(&.{i64t}).build();
@@ -2336,6 +2343,54 @@ pub const MlirCodegen = struct {
         return op.getResult(0);
     }
 
+    fn extendIntegerValue(self: *MlirCodegen, v: mlir.Value, signed: bool, to_ty: mlir.Type) mlir.Value {
+        const from_ty = v.getType();
+        const from_w = intOrFloatWidth(from_ty) catch 0;
+        const to_w = intOrFloatWidth(to_ty) catch 0;
+        if (from_w >= to_w) return v;
+        const opname = if (signed) "arith.extsi" else "arith.extui";
+        var op = OpBuilder.init(opname, self.loc).builder()
+            .add_operands(&.{v})
+            .add_results(&.{to_ty}).build();
+        self.append(op);
+        return op.getResult(0);
+    }
+
+    fn emitSaturatingIntBinary(
+        self: *MlirCodegen,
+        p: tir.Rows.Bin2,
+        store: *types.TypeStore,
+        arith_name: []const u8,
+        rhs_uses_lhs_sign: bool,
+    ) !mlir.Value {
+        const kind = store.getKind(p.ty);
+        std.debug.assert(switch (kind) {
+            .I8, .I16, .I32, .I64, .U8, .U16, .U32, .U64, .Usize => true,
+            else => false,
+        });
+
+        const lhs = self.value_map.get(p.lhs).?;
+        const rhs = self.value_map.get(p.rhs).?;
+        const res_ty = try self.llvmTypeOf(store, p.ty);
+        const base_width = intOrFloatWidth(res_ty) catch unreachable;
+        std.debug.assert(base_width > 0);
+        const wide_width = base_width * 2;
+        const ext_ty = mlir.Type.getSignlessIntegerType(self.mlir_ctx, @intCast(wide_width));
+
+        const lhs_signed = self.isSignedInt(store, p.ty);
+        const rhs_signed = if (rhs_uses_lhs_sign) lhs_signed else false;
+
+        const lhs_ext = self.extendIntegerValue(lhs, lhs_signed, ext_ty);
+        const rhs_ext = self.extendIntegerValue(rhs, rhs_signed, ext_ty);
+
+        var op = OpBuilder.init(arith_name, self.loc).builder()
+            .add_operands(&.{ lhs_ext, rhs_ext })
+            .add_results(&.{ext_ty}).build();
+        self.append(op);
+        const wide = op.getResult(0);
+        return self.saturateIntToInt(wide, lhs_signed, res_ty, lhs_signed);
+    }
+
     fn binBit(
         self: *MlirCodegen,
         name_hint: []const u8, // caller passes "llvm.and"|"llvm.or"|"llvm.xor"
@@ -2559,10 +2614,247 @@ pub const MlirCodegen = struct {
         return null;
     }
 
+    const AggregateElemCoercer = fn (
+        *MlirCodegen,
+        *types.TypeStore,
+        types.TypeId,
+        mlir.Type,
+        mlir.Value,
+        types.TypeId,
+    ) anyerror!mlir.Value;
+
+    fn isAggregateKind(kind: types.TypeKind) bool {
+        return switch (kind) {
+            .Struct, .Tuple, .Array, .Optional, .Union, .ErrorSet => true,
+            else => false,
+        };
+    }
+
+    fn tryCopyAggregateValue(
+        self: *MlirCodegen,
+        store: *types.TypeStore,
+        dst_sr: types.TypeId,
+        dst_ty: mlir.Type,
+        src_val: mlir.Value,
+        src_sr: types.TypeId,
+        elem_coercer: AggregateElemCoercer,
+    ) anyerror!?mlir.Value {
+        const dst_kind = store.getKind(dst_sr);
+        const src_kind = store.getKind(src_sr);
+        if (!isAggregateKind(dst_kind) or !isAggregateKind(src_kind)) return null;
+
+        switch (dst_kind) {
+            .Array => if (src_kind == .Array) return try self.copyArrayAggregate(store, dst_sr, dst_ty, src_val, src_sr, elem_coercer),
+            .Struct => if (src_kind == .Struct) return try self.copyStructAggregate(store, dst_sr, dst_ty, src_val, src_sr, elem_coercer),
+            .Tuple => if (src_kind == .Tuple) return try self.copyTupleAggregate(store, dst_sr, dst_ty, src_val, src_sr, elem_coercer),
+            .Optional => if (src_kind == .Optional) return try self.copyOptionalAggregate(store, dst_sr, dst_ty, src_val, src_sr, elem_coercer),
+            .Union => if (src_kind == .Union) return try self.copyUnionAggregate(store, dst_sr, dst_ty, src_val, src_sr),
+            .ErrorSet => if (src_kind == .ErrorSet) return try self.copyErrorSetAggregate(store, dst_sr, dst_ty, src_val, src_sr, elem_coercer),
+            else => {},
+        }
+
+        return null;
+    }
+
+    fn copyArrayAggregate(
+        self: *MlirCodegen,
+        store: *types.TypeStore,
+        dst_sr: types.TypeId,
+        dst_ty: mlir.Type,
+        src_val: mlir.Value,
+        src_sr: types.TypeId,
+        elem_coercer: AggregateElemCoercer,
+    ) anyerror!?mlir.Value {
+        const dst_info = store.get(.Array, dst_sr);
+        const src_info = store.get(.Array, src_sr);
+        if (dst_info.len != src_info.len) return null;
+
+        const dst_elem_ty = try self.llvmTypeOf(store, dst_info.elem);
+        const src_elem_ty = try self.llvmTypeOf(store, src_info.elem);
+
+        var result = self.undefOf(dst_ty);
+        var i: usize = 0;
+        while (i < dst_info.len) : (i += 1) {
+            const idx = [_]i64{@intCast(i)};
+            const elem_val = self.extractAt(src_val, src_elem_ty, &idx);
+            const coerced = try elem_coercer(self, store, dst_info.elem, dst_elem_ty, elem_val, src_info.elem);
+            result = self.insertAt(result, coerced, &idx);
+        }
+        return result;
+    }
+
+    fn copyStructAggregate(
+        self: *MlirCodegen,
+        store: *types.TypeStore,
+        dst_sr: types.TypeId,
+        dst_ty: mlir.Type,
+        src_val: mlir.Value,
+        src_sr: types.TypeId,
+        elem_coercer: AggregateElemCoercer,
+    ) anyerror!?mlir.Value {
+        const dst_info = store.get(.Struct, dst_sr);
+        const src_info = store.get(.Struct, src_sr);
+        if (dst_info.fields.len != src_info.fields.len) return null;
+
+        const dst_fields = store.field_pool.slice(dst_info.fields);
+        const src_fields = store.field_pool.slice(src_info.fields);
+
+        var result = self.undefOf(dst_ty);
+        for (dst_fields, 0..) |dst_field_id, i| {
+            const src_field_id = src_fields[i];
+            const dst_field = store.Field.get(dst_field_id);
+            const src_field = store.Field.get(src_field_id);
+            const dst_field_ty = try self.llvmTypeOf(store, dst_field.ty);
+            const src_field_ty = try self.llvmTypeOf(store, src_field.ty);
+            const idx = [_]i64{@intCast(i)};
+            const field_val = self.extractAt(src_val, src_field_ty, &idx);
+            const coerced = try elem_coercer(self, store, dst_field.ty, dst_field_ty, field_val, src_field.ty);
+            result = self.insertAt(result, coerced, &idx);
+        }
+        return result;
+    }
+
+    fn copyTupleAggregate(
+        self: *MlirCodegen,
+        store: *types.TypeStore,
+        dst_sr: types.TypeId,
+        dst_ty: mlir.Type,
+        src_val: mlir.Value,
+        src_sr: types.TypeId,
+        elem_coercer: AggregateElemCoercer,
+    ) anyerror!?mlir.Value {
+        const dst_info = store.get(.Tuple, dst_sr);
+        const src_info = store.get(.Tuple, src_sr);
+        if (dst_info.elems.len != src_info.elems.len) return null;
+
+        const dst_elems = store.type_pool.slice(dst_info.elems);
+        const src_elems = store.type_pool.slice(src_info.elems);
+
+        var result = self.undefOf(dst_ty);
+        for (dst_elems, 0..) |dst_elem_sr, i| {
+            const src_elem_sr = src_elems[i];
+            const dst_elem_ty = try self.llvmTypeOf(store, dst_elem_sr);
+            const src_elem_ty = try self.llvmTypeOf(store, src_elem_sr);
+            const idx = [_]i64{@intCast(i)};
+            const elem_val = self.extractAt(src_val, src_elem_ty, &idx);
+            const coerced = try elem_coercer(self, store, dst_elem_sr, dst_elem_ty, elem_val, src_elem_sr);
+            result = self.insertAt(result, coerced, &idx);
+        }
+        return result;
+    }
+
+    fn copyOptionalAggregate(
+        self: *MlirCodegen,
+        store: *types.TypeStore,
+        dst_sr: types.TypeId,
+        dst_ty: mlir.Type,
+        src_val: mlir.Value,
+        src_sr: types.TypeId,
+        elem_coercer: AggregateElemCoercer,
+    ) anyerror!?mlir.Value {
+        const dst_info = store.get(.Optional, dst_sr);
+        const src_info = store.get(.Optional, src_sr);
+        const dst_payload_ty = try self.llvmTypeOf(store, dst_info.elem);
+        const src_payload_ty = try self.llvmTypeOf(store, src_info.elem);
+
+        const tag = self.extractAt(src_val, self.i1_ty, &.{0});
+        const src_payload = self.extractAt(src_val, src_payload_ty, &.{1});
+        const coerced_payload = try elem_coercer(self, store, dst_info.elem, dst_payload_ty, src_payload, src_info.elem);
+
+        var result = self.undefOf(dst_ty);
+        result = self.insertAt(result, tag, &.{0});
+        result = self.insertAt(result, coerced_payload, &.{1});
+        return result;
+    }
+
+    fn copyUnionAggregate(
+        self: *MlirCodegen,
+        store: *types.TypeStore,
+        dst_sr: types.TypeId,
+        dst_ty: mlir.Type,
+        src_val: mlir.Value,
+        src_sr: types.TypeId,
+    ) anyerror!?mlir.Value {
+        const dst_size = abi.abiSizeAlign(self, store, dst_sr).size;
+        const src_size = abi.abiSizeAlign(self, store, src_sr).size;
+        if (dst_size != src_size) return null;
+
+        var result = self.undefOf(dst_ty);
+        var i: usize = 0;
+        while (i < dst_size) : (i += 1) {
+            const idx = [_]i64{@intCast(i)};
+            const byte_val = self.extractAt(src_val, self.i8_ty, &idx);
+            result = self.insertAt(result, byte_val, &idx);
+        }
+        return result;
+    }
+
+    fn copyErrorSetAggregate(
+        self: *MlirCodegen,
+        store: *types.TypeStore,
+        dst_sr: types.TypeId,
+        dst_ty: mlir.Type,
+        src_val: mlir.Value,
+        src_sr: types.TypeId,
+        elem_coercer: AggregateElemCoercer,
+    ) anyerror!?mlir.Value {
+        const dst_info = store.get(.ErrorSet, dst_sr);
+        const src_info = store.get(.ErrorSet, src_sr);
+
+        const ok_name = store.strs.intern("Ok");
+        const err_name = store.strs.intern("Err");
+
+        var dst_union_fields = [_]types.TypeStore.StructFieldArg{
+            .{ .name = ok_name, .ty = dst_info.value_ty },
+            .{ .name = err_name, .ty = dst_info.error_ty },
+        };
+        var src_union_fields = [_]types.TypeStore.StructFieldArg{
+            .{ .name = ok_name, .ty = src_info.value_ty },
+            .{ .name = err_name, .ty = src_info.error_ty },
+        };
+
+        const dst_union_sr = store.mkUnion(&dst_union_fields);
+        const src_union_sr = store.mkUnion(&src_union_fields);
+        const dst_union_ty = try self.llvmTypeOf(store, dst_union_sr);
+        const src_union_ty = try self.llvmTypeOf(store, src_union_sr);
+
+        const tag = self.extractAt(src_val, self.i32_ty, &.{0});
+        const src_payload = self.extractAt(src_val, src_union_ty, &.{1});
+        const coerced_payload = try self.tryCopyAggregateValue(store, dst_union_sr, dst_union_ty, src_payload, src_union_sr, elem_coercer) orelse src_payload;
+
+        var result = self.undefOf(dst_ty);
+        result = self.insertAt(result, tag, &.{0});
+        result = self.insertAt(result, coerced_payload, &.{1});
+        return result;
+    }
+
+    fn coerceAggregateElementOnBranch(
+        self: *MlirCodegen,
+        store: *types.TypeStore,
+        dst_sr: types.TypeId,
+        dst_ty: mlir.Type,
+        src_val: mlir.Value,
+        src_sr: types.TypeId,
+    ) anyerror!mlir.Value {
+        return self.coerceOnBranch(src_val, dst_ty, dst_sr, src_sr, store);
+    }
+
+    fn emitCastAggregateElement(
+        self: *MlirCodegen,
+        store: *types.TypeStore,
+        dst_sr: types.TypeId,
+        dst_ty: mlir.Type,
+        src_val: mlir.Value,
+        src_sr: types.TypeId,
+    ) anyerror!mlir.Value {
+        return self.emitCastNormal(store, dst_sr, dst_ty, src_val, src_sr);
+    }
+
     fn coerceOnBranch(
         self: *MlirCodegen,
         v: mlir.Value,
         want: mlir.Type,
+        dst_sr_ty: types.TypeId,
         src_sr_ty: types.TypeId,
         store: *types.TypeStore,
     ) !mlir.Value {
@@ -2645,6 +2937,9 @@ pub const MlirCodegen = struct {
             return op.getResult(0);
         }
 
+        if (try self.tryCopyAggregateValue(store, dst_sr_ty, want, v, src_sr_ty, coerceAggregateElementOnBranch)) |agg|
+            return agg;
+
         // last resort (should be rare): bitcast
         var bc = OpBuilder.init("llvm.bitcast", self.loc).builder()
             .add_operands(&.{v}).add_results(&.{want}).build();
@@ -2683,6 +2978,11 @@ pub const MlirCodegen = struct {
     // boolean ops
     fn boolOr(self: *MlirCodegen, a: mlir.Value, b: mlir.Value) mlir.Value {
         const op = OpBuilder.init("arith.ori", self.loc).builder()
+            .add_operands(&.{ a, b }).add_results(&.{self.i1_ty}).build();
+        return appendIfHasResult(self, op);
+    }
+    fn boolAnd(self: *MlirCodegen, a: mlir.Value, b: mlir.Value) mlir.Value {
+        const op = OpBuilder.init("arith.andi", self.loc).builder()
             .add_operands(&.{ a, b }).add_results(&.{self.i1_ty}).build();
         return appendIfHasResult(self, op);
     }
@@ -2947,7 +3247,7 @@ pub const MlirCodegen = struct {
 
     // --- The normalized "normal cast" (includes Complex + slice→int quirk) ---
 
-    fn emitCastNormal(self: *MlirCodegen, store: *types.TypeStore, dst_sr: types.TypeId, to_ty: mlir.Type, from_v: mlir.Value, src_sr: types.TypeId) mlir.Value {
+    fn emitCastNormal(self: *MlirCodegen, store: *types.TypeStore, dst_sr: types.TypeId, to_ty: mlir.Type, from_v: mlir.Value, src_sr: types.TypeId) !mlir.Value {
         var from_ty = from_v.getType();
 
         // Complex target?
@@ -3004,6 +3304,9 @@ pub const MlirCodegen = struct {
         if (from_is_f and to_is_int) return self.castFloatToInt(from_v, to_ty, self.isSignedInt(store, dst_sr));
         if (from_is_f and to_is_f) return self.resizeFloat(from_v, from_ty, to_ty);
 
+        if (try self.tryCopyAggregateValue(store, dst_sr, to_ty, from_v, src_sr, emitCastAggregateElement)) |agg|
+            return agg;
+
         // Fallback: bitcast (ensure size match upstream)
         const op = OpBuilder.init("llvm.bitcast", self.loc).builder()
             .add_operands(&.{from_v}).add_results(&.{to_ty}).build();
@@ -3044,8 +3347,10 @@ pub const MlirCodegen = struct {
                 const from_ty_mlir = from_v.getType();
 
                 // The result of a checked cast is always an Optional type.
+                const optional_sr = store.get(.Optional, dst_sr);
                 const optional_mlir_ty = try self.llvmTypeOf(store, dst_sr);
-                const optional_elem_mlir_ty = try self.llvmTypeOf(store, store.get(.Optional, dst_sr).elem);
+                const optional_elem_mlir_ty = try self.llvmTypeOf(store, optional_sr.elem);
+                const optional_elem_is_signed = self.isSignedInt(store, optional_sr.elem);
 
                 var cast_ok: mlir.Value = self.constBool(true);
                 var casted_val: mlir.Value = undefined;
@@ -3075,10 +3380,10 @@ pub const MlirCodegen = struct {
                     }
                 } else if (from_ty_mlir.isAFloat() and optional_elem_mlir_ty.isAInteger()) {
                     // Float to Integer checked cast
-                    const lim = self.intMinMax(optional_elem_mlir_ty, self.isSignedInt(store, store.get(.Optional, dst_sr).elem));
+                    const lim = self.intMinMax(optional_elem_mlir_ty, optional_elem_is_signed);
                     const ft = from_ty_mlir;
-                    const min_f = self.castIntToFloat(lim.min, ft, self.isSignedInt(store, store.get(.Optional, dst_sr).elem));
-                    const max_f = self.castIntToFloat(lim.max, ft, self.isSignedInt(store, store.get(.Optional, dst_sr).elem));
+                    const min_f = self.castIntToFloat(lim.min, ft, optional_elem_is_signed);
+                    const max_f = self.castIntToFloat(lim.max, ft, optional_elem_is_signed);
 
                     const lt = appendIfHasResult(self, OpBuilder.init("arith.cmpf", self.loc).builder()
                         .add_operands(&.{ from_v, min_f })
@@ -3097,12 +3402,29 @@ pub const MlirCodegen = struct {
                     bad = self.boolOr(bad, isnan);
                     cast_ok = self.boolNot(bad);
 
-                    casted_val = self.castFloatToInt(from_v, optional_elem_mlir_ty, self.isSignedInt(store, store.get(.Optional, dst_sr).elem));
+                    // Clamp the source value into the integer domain (or a benign value for NaN)
+                    const clamped_low = appendIfHasResult(self, OpBuilder.init("arith.select", self.loc).builder()
+                        .add_operands(&.{ lt, min_f, from_v }).add_results(&.{ft}).build());
+                    const clamped_high = appendIfHasResult(self, OpBuilder.init("arith.select", self.loc).builder()
+                        .add_operands(&.{ gt, max_f, clamped_low }).add_results(&.{ft}).build());
+                    const zero = self.constFloat(ft, 0.0);
+                    const sanitized = appendIfHasResult(self, OpBuilder.init("arith.select", self.loc).builder()
+                        .add_operands(&.{ isnan, zero, clamped_high }).add_results(&.{ft}).build());
+
+                    casted_val = self.castFloatToInt(sanitized, optional_elem_mlir_ty, optional_elem_is_signed);
+
+                    // Verify round-trip back to float to catch fractional values.
+                    const roundtrip = self.castIntToFloat(casted_val, ft, optional_elem_is_signed);
+                    const same = appendIfHasResult(self, OpBuilder.init("arith.cmpf", self.loc).builder()
+                        .add_operands(&.{ from_v, roundtrip })
+                        .add_attributes(&.{self.named("predicate", mlir.Attribute.integerAttrGet(self.i64_ty, F_CMP_OEQ))})
+                        .add_results(&.{self.i1_ty}).build());
+                    cast_ok = self.boolAnd(cast_ok, same);
                 } else {
                     // For other types (ptr<->int, float<->float), treat as normal cast for now.
                     // If it's a normal cast that would fail, then the checked cast should produce None.
                     // This is a simplification; a more robust solution would involve more specific checks.
-                    casted_val = self.emitCastNormal(store, store.get(.Optional, dst_sr).elem, optional_elem_mlir_ty, from_v, src_sr);
+                    casted_val = try self.emitCastNormal(store, optional_sr.elem, optional_elem_mlir_ty, from_v, src_sr);
                     // Assume success for now, or add more complex checks if needed.
                     cast_ok = self.constBool(true);
                 }
