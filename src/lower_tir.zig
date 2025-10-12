@@ -350,7 +350,16 @@ pub const LowerTir = struct {
         if (kind == .FunctionLit and !a.exprs.get(.FunctionLit, d.value).flags.is_extern) {
             const name = if (!d.pattern.isNone()) self.bindingNameOfPattern(a, d.pattern.unwrap()) else null;
             if (name) |nm| {
-                try self.lowerFunction(a, b, nm, d.value, null);
+                //        try self.lowerFunction(a, b, nm, d.value, null);
+                const fn_lit = a.exprs.get(.FunctionLit, d.value);
+                const params = a.exprs.param_pool.slice(fn_lit.params);
+
+                var skip_params: usize = 0;
+                while (skip_params < params.len and a.exprs.Param.get(params[skip_params]).is_comptime) : (skip_params += 1) {}
+
+                if (skip_params == 0) {
+                    try self.lowerFunction(a, b, nm, d.value, null);
+                }
             }
             return;
         }
@@ -442,7 +451,7 @@ pub const LowerTir = struct {
                     .type_param => {},
                     .value_param => |vp| {
                         const const_val = try self.constValueFromComptime(&blk, vp.ty, vp.value);
-                        try env.bind(self.gpa, a, binding.name, .{ .value = const_val, .is_slot = false });
+                        try env.bind(self.gpa, a, binding.name, .{ .value = const_val, .ty = vp.ty, .is_slot = false });
                     },
                 }
             }
@@ -457,7 +466,9 @@ pub const LowerTir = struct {
             const p = a.exprs.Param.get(params[i]);
             if (!p.pat.isNone()) {
                 const pname = self.bindingNameOfPattern(a, p.pat.unwrap()) orelse continue;
-                try env.bind(self.gpa, a, pname, .{ .value = param_vals[runtime_index], .is_slot = false });
+                // try env.bind(self.gpa, a, pname, .{ .value = param_vals[runtime_index], .is_slot = false });
+                const pty = runtime_param_tys[runtime_index];
+                try env.bind(self.gpa, a, pname, .{ .value = param_vals[runtime_index], .ty = pty, .is_slot = false });
             }
             runtime_index += 1;
         }
@@ -689,10 +700,14 @@ pub const LowerTir = struct {
         if (!r.value.isNone()) {
             const frow = f.builder.t.funcs.Function.get(f.id);
             const expect = frow.result;
-            const v_raw = try self.lowerExpr(a, env, f, blk, r.value.unwrap(), null, .rvalue);
+            //    const v_raw = try self.lowerExpr(a, env, f, blk, r.value.unwrap(), null, .rvalue);
+            const want: ?types.TypeId = if (self.isVoid(expect)) null else expect;
+            const v_raw = try self.lowerExpr(a, env, f, blk, r.value.unwrap(), want, .rvalue);
             var v = v_raw;
-            if (self.getExprType(r.value.unwrap())) |got| {
-                v = self.emitCoerce(blk, v_raw, got, expect);
+            if (want == null) {
+                if (self.getExprType(r.value.unwrap())) |got| {
+                    v = self.emitCoerce(blk, v_raw, got, expect);
+                }
             }
 
             const expect_kind = self.context.type_store.index.kinds.items[expect.toRaw()];
@@ -981,7 +996,8 @@ pub const LowerTir = struct {
 
         var tmp_env = Env.init(self.gpa);
         defer tmp_env.deinit(self.gpa);
-        try tmp_env.bind(self.gpa, a, tmp_builder.intern("comptime_api_ptr"), .{ .value = api_ptr_val, .is_slot = false });
+        // try tmp_env.bind(self.gpa, a, tmp_builder.intern("comptime_api_ptr"), .{ .value = api_ptr_val, .is_slot = false });
+        try tmp_env.bind(self.gpa, a, tmp_builder.intern("comptime_api_ptr"), .{ .value = api_ptr_val, .ty = ptr_ty, .is_slot = false });
 
         const result_val_id = try self.lowerExpr(a, &tmp_env, &thunk_fn, &thunk_blk, expr, result_ty, .rvalue);
 
@@ -1314,7 +1330,7 @@ pub const LowerTir = struct {
 
         // Choose a concrete return type: expected → stamped → callee.fty.ret → void
         const ret_ty = blk: {
-            if (expected) |e| if (!self.isVoid(e)) break :blk e;
+            if (expected) |e| if (!self.isVoid(e) and !self.isAny(e)) break :blk e;
             if (self.getExprType(id)) |t| if (!self.isVoid(t) and !self.isAny(t)) break :blk t;
             if (callee.fty) |fty| {
                 if (self.context.type_store.index.kinds.items[fty.toRaw()] == .Function) {
@@ -1326,6 +1342,9 @@ pub const LowerTir = struct {
             break :blk self.context.type_store.tVoid();
         };
 
+        if (!self.isAny(ret_ty)) {
+            self.type_info.setExprType(id, ret_ty);
+        }
         return blk.builder.call(blk, ret_ty, callee.name, vals);
     }
 
@@ -2012,7 +2031,7 @@ pub const LowerTir = struct {
                 const gty = self.getDeclType(did) orelse return error.LoweringBug;
                 const ptr_ty = self.context.type_store.mkPtr(gty, !d.flags.is_const);
                 const addr = blk.builder.tirValue(.GlobalAddr, blk, ptr_ty, .{ .name = name });
-                try env.bind(self.gpa, a, name, .{ .value = addr, .is_slot = true });
+                try env.bind(self.gpa, a, name, .{ .value = addr, .ty = gty, .is_slot = true });
                 return addr;
             }
 
@@ -2021,11 +2040,11 @@ pub const LowerTir = struct {
                 const slot_ty = self.context.type_store.mkPtr(want_elem, false);
                 const slot = f.builder.tirValue(.Alloca, blk, slot_ty, .{ .count = tir.OptValueId.none(), .@"align" = 0 });
 
-                const src_ty = (expr_ty_opt orelse want_elem);
+                const src_ty = if (expr_ty_opt) |ty| if (!self.isAny(ty)) ty else bnd.ty else bnd.ty;
                 const to_store = self.emitCoerce(blk, bnd.value, src_ty, want_elem);
                 _ = f.builder.tirValue(.Store, blk, want_elem, .{ .ptr = slot, .value = to_store, .@"align" = 0 });
 
-                try env.bind(self.gpa, a, name, .{ .value = slot, .is_slot = true });
+                try env.bind(self.gpa, a, name, .{ .value = slot, .ty = want_elem, .is_slot = true });
                 return slot;
             }
 
@@ -2042,7 +2061,7 @@ pub const LowerTir = struct {
                 const gty = self.getDeclType(did) orelse return error.LoweringBug;
                 const ptr_ty = self.context.type_store.mkPtr(gty, !d.flags.is_const);
                 const addr = blk.builder.tirValue(.GlobalAddr, blk, ptr_ty, .{ .name = name });
-                try env.bind(self.gpa, a, name, .{ .value = addr, .is_slot = true });
+                try env.bind(self.gpa, a, name, .{ .value = addr, .ty = gty, .is_slot = true });
                 break :blk env.lookup(name).?;
             }
 
@@ -2050,19 +2069,29 @@ pub const LowerTir = struct {
             // Bind a safe placeholder so downstream code can keep going.
             const ty0 = expr_ty_opt orelse self.context.type_store.tAny();
             const placeholder = self.safeUndef(blk, ty0);
-            try env.bind(self.gpa, a, name, .{ .value = placeholder, .is_slot = false });
+            try env.bind(self.gpa, a, name, .{ .value = placeholder, .ty = ty0, .is_slot = false });
             break :blk env.lookup(name).?;
         };
 
         if (bnd.is_slot) {
-            const load_ty = expr_ty_opt orelse (expected_ty orelse self.context.type_store.tAny());
+            const load_ty = if (expr_ty_opt) |ty|
+                if (!self.isAny(ty)) ty else bnd.ty
+            else if (expected_ty) |want|
+                want
+            else
+                bnd.ty;
             var loaded = blk.builder.tirValue(.Load, blk, load_ty, .{ .ptr = bnd.value, .@"align" = 0 });
             if (expected_ty) |want| loaded = self.emitCoerce(blk, loaded, load_ty, want);
             return loaded;
         }
 
         // Non-slot: coerce if a target type was requested.
-        const got_ty = expr_ty_opt orelse (expected_ty orelse self.context.type_store.tAny());
+        const got_ty = if (expr_ty_opt) |ty|
+            if (!self.isAny(ty)) ty else bnd.ty
+        else if (expected_ty) |want|
+            want
+        else
+            bnd.ty;
         return if (expected_ty) |want| self.emitCoerce(blk, bnd.value, got_ty, want) else bnd.value;
     }
 
@@ -2314,7 +2343,7 @@ pub const LowerTir = struct {
             });
             if (!row.binding_name.isNone()) {
                 const name = row.binding_name.unwrap();
-                try env.bind(self.gpa, a, name, .{ .value = err_val, .is_slot = false });
+                try env.bind(self.gpa, a, name, .{ .value = err_val, .ty = es.error_ty, .is_slot = false });
             }
             try self.lowerExprAsStmtList(a, env, f, &else_blk, row.handler);
             _ = env.popScope(); // Pop scope after handler
@@ -2352,7 +2381,7 @@ pub const LowerTir = struct {
             });
             if (!row.binding_name.isNone()) {
                 const name = row.binding_name.unwrap();
-                try env.bind(self.gpa, a, name, .{ .value = err_val, .is_slot = false });
+                try env.bind(self.gpa, a, name, .{ .value = err_val, .ty = es.error_ty, .is_slot = false });
             }
             try self.lowerExprAsStmtList(a, env, f, &else_blk, row.handler);
             _ = env.popScope(); // Pop scope after handler
@@ -3633,11 +3662,11 @@ pub const LowerTir = struct {
         switch (k) {
             .Binding => {
                 const nm = a.pats.get(.Binding, pid).name;
-                try env.bind(self.gpa, a, nm, .{ .value = value, .is_slot = false });
+                try env.bind(self.gpa, a, nm, .{ .value = value, .ty = vty, .is_slot = false });
             },
             .At => {
                 const at = a.pats.get(.At, pid);
-                try env.bind(self.gpa, a, at.binder, .{ .value = value, .is_slot = false });
+                try env.bind(self.gpa, a, at.binder, .{ .value = value, .ty = vty, .is_slot = false });
                 try self.bindPattern(a, env, f, blk, at.pattern, value, vty);
             },
             .Tuple => {
@@ -3812,9 +3841,9 @@ pub const LowerTir = struct {
                     const slot_ty = self.context.type_store.mkPtr(vty, false);
                     const slot = f.builder.tirValue(.Alloca, blk, slot_ty, .{ .count = tir.OptValueId.none(), .@"align" = 0 });
                     _ = f.builder.tirValue(.Store, blk, vty, .{ .ptr = slot, .value = value, .@"align" = 0 });
-                    try env.bind(self.gpa, a, nm, .{ .value = slot, .is_slot = true });
+                    try env.bind(self.gpa, a, nm, .{ .value = slot, .ty = vty, .is_slot = true });
                 } else {
-                    try env.bind(self.gpa, a, nm, .{ .value = value, .is_slot = false });
+                    try env.bind(self.gpa, a, nm, .{ .value = value, .ty = vty, .is_slot = false });
                 }
             },
             .Tuple => {
@@ -4407,5 +4436,5 @@ const Env = struct {
     }
 };
 
-const ValueBinding = struct { value: tir.ValueId, is_slot: bool };
+const ValueBinding = struct { value: tir.ValueId, ty: types.TypeId, is_slot: bool };
 const DeferEntry = struct { expr: ast.ExprId, is_err: bool };
