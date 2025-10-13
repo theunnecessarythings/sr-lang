@@ -175,6 +175,14 @@ pub const MlirCodegen = struct {
         return try list.toOwnedSlice();
     }
 
+    fn ownedAttributeText(self: *MlirCodegen, attr: mlir.Attribute) ![]u8 {
+        var list: std.ArrayList(u8) = .empty;
+        errdefer list.deinit(self.gpa);
+        var sink = PrintBuffer{ .list = &list, .allocator = self.gpa };
+        attr.print(printCallback, &sink);
+        return list.toOwnedSlice(self.gpa);
+    }
+
     // ----------------------------------------------------------------
     // Init / Deinit
     // ----------------------------------------------------------------
@@ -193,7 +201,7 @@ pub const MlirCodegen = struct {
             .file_cache = std.AutoHashMap(u32, []const u8).init(gpa),
             .di_files = std.AutoHashMap(u32, DebugFileInfo).init(gpa),
             .di_subprograms = std.AutoHashMap(tir.FuncId, DebugSubprogramInfo).init(gpa),
-            .metadata_ty = mlir.Type.getNull(),
+            .metadata_ty = mlir.Type.empty(),
             .di_null_type_attr = mlir.Attribute.empty(),
             .di_empty_expr_attr = mlir.Attribute.empty(),
             .next_di_id = 0,
@@ -303,7 +311,7 @@ pub const MlirCodegen = struct {
         }
         self.di_files.clearRetainingCapacity();
         self.di_subprograms.clearRetainingCapacity();
-        self.metadata_ty = mlir.Type.getNull();
+        self.metadata_ty = mlir.Type.empty();
         self.di_null_type_attr = mlir.Attribute.empty();
         self.di_empty_expr_attr = mlir.Attribute.empty();
         self.next_di_id = 0;
@@ -392,7 +400,6 @@ pub const MlirCodegen = struct {
     }
 
     fn blockOptLoc(self: *MlirCodegen, block_id: tir.BlockId, t: *const tir.TIR) tir.OptLocId {
-        _ = self;
         const block = t.funcs.Block.get(block_id);
         const instrs = t.instrs.instr_pool.slice(block.instrs);
         for (instrs) |ins_id| {
@@ -403,7 +410,6 @@ pub const MlirCodegen = struct {
     }
 
     fn functionOptLoc(self: *MlirCodegen, f_id: tir.FuncId, t: *const tir.TIR) tir.OptLocId {
-        _ = self;
         const f = t.funcs.Function.get(f_id);
         const blocks = t.funcs.block_pool.slice(f.blocks);
         for (blocks) |block_id| {
@@ -611,7 +617,7 @@ pub const MlirCodegen = struct {
 
             const var_value = self.metadataConstant(var_attr, meta_ty);
             const arg_val = entry_block.getArgument(idx);
-            var dbg = OpBuilder.init("llvm.intr.dbg.value", self.loc).builder()
+            const dbg = OpBuilder.init("llvm.intr.dbg.value", self.loc).builder()
                 .add_operands(&.{ arg_val, var_value, expr_value })
                 .build();
             self.append(dbg);
@@ -822,7 +828,7 @@ pub const MlirCodegen = struct {
         self.loc = prev_loc;
 
         const region = mlir.Region.create();
-        const fnop = OpBuilder.init("func.func", fn_mlir_loc).builder()
+        var fnop = OpBuilder.init("func.func", fn_mlir_loc).builder()
             .add_attributes(attrs.items)
             .add_regions(&.{region})
             .build();
@@ -854,7 +860,7 @@ pub const MlirCodegen = struct {
                         fn_loc,
                     ) catch null;
                     if (maybe_subp) |subp| {
-                        fnop.setAttributeByName(mlir.StringRef.from("llvm.di.subprogram"), subp.attr);
+                        fnop.setInherentAttributeByName(mlir.StringRef.from("llvm.di.subprogram"), subp.attr);
                         finfo.dbg_subprogram = subp.attr;
                     }
                 }

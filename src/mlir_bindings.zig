@@ -448,7 +448,7 @@ pub const Location = struct {
         return Context{ .handle = c.mlirLocationGetContext(self.handle) };
     }
 
-    pub fn print(self: *Location, cb: fn ([]const u8, anyopaque) callconv(.C) void, userData: anyopaque) void {
+    pub fn print(self: *Location, cb: fn ([]const u8, anyopaque) callconv(.c) void, userData: anyopaque) void {
         c.mlirLocationPrint(self.handle, cb, userData);
     }
 };
@@ -812,23 +812,23 @@ pub const Operation = struct {
     // (Deprecated) getAttributeByName, etc. omitted or rename if needed
     // ...
 
-    pub fn print(self: *Operation, callback: fn ([]const u8, anyopaque) callconv(.C) void, userData: anyopaque) void {
+    pub fn print(self: *Operation, callback: fn ([]const u8, anyopaque) callconv(.c) void, userData: anyopaque) void {
         c.mlirOperationPrint(self.handle, callback, userData);
     }
 
-    pub fn printWithFlags(self: *Operation, flags: OpPrintingFlags, callback: fn ([]const u8, anyopaque) callconv(.C) void, userData: anyopaque) void {
+    pub fn printWithFlags(self: *Operation, flags: OpPrintingFlags, callback: fn ([]const u8, anyopaque) callconv(.c) void, userData: anyopaque) void {
         c.mlirOperationPrintWithFlags(self.handle, flags.handle, callback, userData);
     }
 
-    pub fn printWithState(self: *Operation, state: AsmState, callback: fn ([]const u8, anyopaque) callconv(.C) void, userData: anyopaque) void {
+    pub fn printWithState(self: *Operation, state: AsmState, callback: fn ([]const u8, anyopaque) callconv(.c) void, userData: anyopaque) void {
         c.mlirOperationPrintWithState(self.handle, state.handle, callback, userData);
     }
 
-    pub fn writeBytecode(self: *Operation, callback: fn ([]const u8, anyopaque) callconv(.C) void, userData: anyopaque) void {
+    pub fn writeBytecode(self: *Operation, callback: fn ([]const u8, anyopaque) callconv(.c) void, userData: anyopaque) void {
         c.mlirOperationWriteBytecode(self.handle, callback, userData);
     }
 
-    pub fn writeBytecodeWithConfig(self: *Operation, config: BytecodeWriterConfig, callback: fn ([]const u8, anyopaque) callconv(.C) void, userData: anyopaque) LogicalResult {
+    pub fn writeBytecodeWithConfig(self: *Operation, config: BytecodeWriterConfig, callback: fn ([]const u8, anyopaque) callconv(.c) void, userData: anyopaque) LogicalResult {
         return LogicalResult{
             .inner = c.mlirOperationWriteBytecodeWithConfig(self.handle, config.handle, callback, userData),
         };
@@ -850,11 +850,11 @@ pub const Operation = struct {
         c.mlirOperationMoveBefore(self.handle, other.handle);
     }
 
-    // pub fn walk(self: *Operation, callback: fn (Operation, *anyopaque) callconv(.C) WalkResult, userData: *anyopaque, walkOrder: WalkOrder) void {
+    // pub fn walk(self: *Operation, callback: fn (Operation, *anyopaque) callconv(.c) WalkResult, userData: *anyopaque, walkOrder: WalkOrder) void {
     // c.mlirOperationWalk(
     //     self.handle,
     //     // bridging function pointer
-    //     callconv(.C) function(op: c.MlirOperation, ud: *anyopaque) callconv(.C) c.MlirWalkResult {
+    //     callconv(.c) function(op: c.MlirOperation, ud: *anyopaque) callconv(.c) c.MlirWalkResult {
     //         const wrapped = Operation{ .handle = op };
     //         const r = callback(wrapped, ud);
     //         switch (r) {
@@ -1022,7 +1022,7 @@ pub const Block = struct {
         return Value{ .handle = c.mlirBlockGetArgument(self.handle, @intCast(pos)) };
     }
 
-    pub fn print(self: *Block, callback: fn ([]const u8, anyopaque) callconv(.C) void, userData: anyopaque) void {
+    pub fn print(self: *Block, callback: fn ([]const u8, anyopaque) callconv(.c) void, userData: anyopaque) void {
         c.mlirBlockPrint(self.handle, callback, userData);
     }
 };
@@ -1199,11 +1199,11 @@ pub const SymbolTable = struct {
         ) };
     }
 
-    // pub fn walkSymbolTables(from: Operation, allSymUsesVisible: bool, callback: fn (Operation, bool, *anyopaque) callconv(.C) void, userData: *anyopaque) void {
+    // pub fn walkSymbolTables(from: Operation, allSymUsesVisible: bool, callback: fn (Operation, bool, *anyopaque) callconv(.c) void, userData: *anyopaque) void {
     // c.mlirSymbolTableWalkSymbolTables(
     //     from.handle,
     //     allSymUsesVisible,
-    //     callconv(.C) function(op: c.MlirOperation, visible: bool, ud: *anyopaque) callconv(.C) void {
+    //     callconv(.c) function(op: c.MlirOperation, visible: bool, ud: *anyopaque) callconv(.c) void {
     //         const wrapped = Operation{ .handle = op };
     //         callback(wrapped, visible, ud);
     //     },
@@ -1358,7 +1358,7 @@ pub const Attribute = struct {
         return c.mlirAttributeEqual(self.handle, other.handle);
     }
 
-    pub fn print(self: *Attribute, cb: fn ([]const u8, anyopaque) callconv(.C) void, userData: anyopaque) void {
+    pub fn print(self: *const Attribute, cb: fn (c.MlirStringRef, ?*anyopaque) callconv(.c) void, userData: ?*anyopaque) void {
         c.mlirAttributePrint(self.handle, cb, userData);
     }
 
@@ -2170,7 +2170,7 @@ pub const Attribute = struct {
     //     data: []const u8,
     //     dataAlignment: usize,
     //     dataIsMutable: bool,
-    //     deleter: ?fn(userData: *c_void, data: ?* u8, size: usize, align: usize) callconv(.C) void,
+    //     deleter: ?fn(userData: *c_void, data: ?* u8, size: usize, align: usize) callconv(.c) void,
     //     userData: *anyopaque
     // ) Attribute {
     //     if (data.len == 0) {
@@ -2562,6 +2562,10 @@ pub const Attribute = struct {
 pub const Type = struct {
     handle: c.MlirType,
 
+    pub fn empty() Type {
+        return Type{ .handle = c.MlirType{} };
+    }
+
     pub fn parseGet(ctx: Context, typeStr: StringRef) Type {
         return Type{ .handle = c.mlirTypeParseGet(ctx.handle, typeStr.inner) };
     }
@@ -2578,7 +2582,7 @@ pub const Type = struct {
         return Dialect{ .handle = c.mlirTypeGetDialect(self.handle) };
     }
 
-    pub fn isNull(self: *Type) bool {
+    pub fn isNull(self: *const Type) bool {
         return c.mlirTypeIsNull(self.handle);
     }
 
@@ -3420,7 +3424,7 @@ pub fn emitError(location: Location, message: []const u8) void {
 }
 
 /// Callback type for printing.
-pub const StringCallback = fn ([]const u8, anyopaque) callconv(.C) void;
+pub const StringCallback = fn ([]const u8, anyopaque) callconv(.c) void;
 
 //-------------------------------------
 // AffineExpr
