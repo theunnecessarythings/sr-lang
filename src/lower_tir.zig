@@ -1198,7 +1198,7 @@ pub const LowerTir = struct {
         }
         var gen = mlir_codegen.MlirCodegen.init(self.gpa, self.context, g_mlir_ctx);
         defer gen.deinit();
-        var mlir_module = try gen.emitModule(&tmp_tir, self.context);
+        var mlir_module = try gen.emitModule(&tmp_tir, self.context, a.exprs.locs);
 
         try compile.run_passes(&gen.mlir_ctx, &mlir_module);
         _ = mlir.c.LLVMInitializeNativeTarget();
@@ -2626,6 +2626,7 @@ pub const LowerTir = struct {
         const loc = self.exprOptLoc(a, id);
         const out_ty_guess = expected_ty orelse (self.getExprType(id) orelse self.context.type_store.tVoid());
         const produce_value = (expected_ty != null) and !self.isVoid(out_ty_guess);
+        const loc = self.exprOptLoc(a, id);
 
         const lhs = try self.lowerExpr(a, env, f, blk, row.expr, null, .rvalue);
         const es_ty = self.getExprType(row.expr).?;
