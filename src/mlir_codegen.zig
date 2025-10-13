@@ -4,9 +4,37 @@ const tir = @import("tir.zig");
 const compile = @import("compile.zig");
 const types = @import("types.zig");
 const abi = @import("abi.zig");
+const cst = @import("cst.zig");
 
 const Allocator = std.mem.Allocator;
 const ArrayList = std.array_list.Managed;
+
+pub var enable_debug_info: bool = true;
+
+const LocKey = struct {
+    store: usize,
+    raw: u32,
+};
+
+const LineInfo = struct {
+    line: usize,
+    col: usize,
+};
+
+fn computeLineCol(src: []const u8, index: usize) LineInfo {
+    var i: usize = 0;
+    var line: usize = 0;
+    var last_nl: usize = 0;
+    const limit = if (index > src.len) src.len else index;
+    while (i < limit) : (i += 1) {
+        if (src[i] == '\n') {
+            line += 1;
+            last_nl = i + 1;
+        }
+    }
+    const col = if (limit >= last_nl) limit - last_nl else 0;
+    return .{ .line = line, .col = col };
+}
 
 pub const MlirCodegen = struct {
     gpa: Allocator,
@@ -14,6 +42,10 @@ pub const MlirCodegen = struct {
     mlir_ctx: mlir.Context,
     loc: mlir.Location,
     module: mlir.Module,
+
+    active_loc_store: ?*const cst.LocStore = null,
+    loc_cache: std.AutoHashMap(LocKey, mlir.Location),
+    file_cache: std.AutoHashMap(u32, []const u8),
 
     // common LLVM/arith types (opaque pointers on master)
     void_ty: mlir.Type,
@@ -119,6 +151,9 @@ pub const MlirCodegen = struct {
             .mlir_ctx = ctx,
             .loc = loc,
             .module = module,
+            .active_loc_store = null,
+            .loc_cache = std.AutoHashMap(LocKey, mlir.Location).init(gpa),
+            .file_cache = std.AutoHashMap(u32, []const u8).init(gpa),
             .void_ty = void_ty,
             .i1_ty = mlir.Type.getSignlessIntegerType(ctx, 1),
             .i8_ty = mlir.Type.getSignlessIntegerType(ctx, 8),
@@ -143,13 +178,25 @@ pub const MlirCodegen = struct {
         self.value_map.deinit();
         self.val_types.deinit();
         self.def_instr.deinit();
+        var fit = self.file_cache.valueIterator();
+        while (fit.next()) |src| {
+            self.context.source_manager.gpa.free(@constCast(src.*));
+        }
+        self.file_cache.deinit();
+        self.loc_cache.deinit();
         self.module.destroy();
     }
 
     // ----------------------------------------------------------------
     // Public entry
     // ----------------------------------------------------------------
-    pub fn emitModule(self: *MlirCodegen, t: *const tir.TIR, context: *compile.Context) !mlir.Module {
+    pub fn emitModule(
+        self: *MlirCodegen,
+        t: *const tir.TIR,
+        context: *compile.Context,
+        locs: ?*const cst.LocStore,
+    ) !mlir.Module {
+        self.active_loc_store = locs;
         self.attachTargetInfo();
         try self.emitExternDecls(t, &context.type_store);
 
@@ -161,6 +208,43 @@ pub const MlirCodegen = struct {
             if (blocks.len > 0) try self.emitFunctionBody(fid, t, &context.type_store);
         }
         return self.module;
+    }
+
+    fn mlirLocation(self: *MlirCodegen, opt_loc: tir.OptLocId) mlir.Location {
+        if (opt_loc.isNone()) return self.loc;
+        const locs = self.active_loc_store orelse return self.loc;
+        const loc_id = opt_loc.unwrap();
+        const key = LocKey{ .store = @intFromPtr(locs), .raw = loc_id.toRaw() };
+        if (self.loc_cache.get(key)) |cached| return cached;
+
+        const loc_record = locs.get(loc_id);
+        const src = self.getFileSource(loc_record.file_id) catch {
+            return self.loc;
+        };
+        const lc = computeLineCol(src, loc_record.start);
+        const filename = self.context.source_manager.get(loc_record.file_id) orelse "unknown";
+        const mlir_loc = mlir.Location.fileLineColGet(
+            self.mlir_ctx,
+            mlir.StringRef.from(filename),
+            @as(u32, @intCast(lc.line + 1)),
+            @as(u32, @intCast(lc.col + 1)),
+        );
+        _ = self.loc_cache.put(key, mlir_loc) catch {};
+        return mlir_loc;
+    }
+
+    fn pushLocation(self: *MlirCodegen, opt_loc: tir.OptLocId) mlir.Location {
+        const prev = self.loc;
+        self.loc = self.mlirLocation(opt_loc);
+        return prev;
+    }
+
+    fn getFileSource(self: *MlirCodegen, file_id: u32) ![]const u8 {
+        if (self.file_cache.get(file_id)) |buf| return buf;
+        const data = try self.context.source_manager.read(file_id);
+        errdefer self.context.source_manager.gpa.free(@constCast(data));
+        try self.file_cache.put(file_id, data);
+        return data;
     }
 
     fn attachTargetInfo(self: *MlirCodegen) void {
@@ -707,20 +791,28 @@ pub const MlirCodegen = struct {
             // ------------- Constants -------------
             .ConstInt => blk: {
                 const p = t.instrs.get(.ConstInt, ins_id);
+                const prev_loc = self.pushLocation(p.loc);
+                defer self.loc = prev_loc;
                 const ty = try self.llvmTypeOf(store, p.ty);
                 break :blk self.constInt(ty, p.value);
             },
             .ConstFloat => blk: {
                 const p = t.instrs.get(.ConstFloat, ins_id);
+                const prev_loc = self.pushLocation(p.loc);
+                defer self.loc = prev_loc;
                 const ty = try self.llvmTypeOf(store, p.ty);
                 break :blk self.constFloat(ty, p.value);
             },
             .ConstBool => blk: {
                 const p = t.instrs.get(.ConstBool, ins_id);
+                const prev_loc = self.pushLocation(p.loc);
+                defer self.loc = prev_loc;
                 break :blk self.constBool(p.value);
             },
             .ConstNull => blk: {
                 const p = t.instrs.get(.ConstNull, ins_id);
+                const prev_loc = self.pushLocation(p.loc);
+                defer self.loc = prev_loc;
                 const ty = try self.llvmTypeOf(store, p.ty);
                 var zero = OpBuilder.init("llvm.mlir.zero", self.loc).builder()
                     .add_results(&.{ty}).build();
@@ -731,6 +823,8 @@ pub const MlirCodegen = struct {
             },
             .ConstUndef => blk: {
                 const p = t.instrs.get(.ConstUndef, ins_id);
+                const prev_loc = self.pushLocation(p.loc);
+                defer self.loc = prev_loc;
                 const ty = try self.llvmTypeOf(store, p.ty);
                 var op = OpBuilder.init("llvm.mlir.undef", self.loc).builder()
                     .add_results(&.{ty}).build();
@@ -739,6 +833,8 @@ pub const MlirCodegen = struct {
             },
             .ConstString => blk: {
                 const p = t.instrs.get(.ConstString, ins_id);
+                const prev_loc = self.pushLocation(p.loc);
+                defer self.loc = prev_loc;
                 const str_text = t.instrs.strs.get(p.text);
                 var ptr_op = try self.constStringPtr(str_text);
                 const ptr_val = ptr_op.getResult(0);
@@ -754,6 +850,8 @@ pub const MlirCodegen = struct {
             // ------------- Arithmetic / bitwise (now arith.*) -------------
             .Add => blk: {
                 const p = t.instrs.get(.Add, ins_id);
+                const prev_loc = self.pushLocation(p.loc);
+                defer self.loc = prev_loc;
                 // If result SR type is Complex, use complex.add
                 if (store.getKind(p.ty) == .Complex) {
                     const lhs = self.value_map.get(p.lhs).?;
@@ -769,6 +867,8 @@ pub const MlirCodegen = struct {
             },
             .Sub => blk: {
                 const p = t.instrs.get(.Sub, ins_id);
+                const prev_loc = self.pushLocation(p.loc);
+                defer self.loc = prev_loc;
                 if (store.getKind(p.ty) == .Complex) {
                     const lhs = self.value_map.get(p.lhs).?;
                     const rhs = self.value_map.get(p.rhs).?;
@@ -783,6 +883,8 @@ pub const MlirCodegen = struct {
             },
             .Mul => blk: {
                 const p = t.instrs.get(.Mul, ins_id);
+                const prev_loc = self.pushLocation(p.loc);
+                defer self.loc = prev_loc;
                 if (store.getKind(p.ty) == .Complex) {
                     const lhs = self.value_map.get(p.lhs).?;
                     const rhs = self.value_map.get(p.rhs).?;
@@ -798,12 +900,29 @@ pub const MlirCodegen = struct {
             .BinWrapAdd => try self.binArith("llvm.add", "llvm.fadd", t.instrs.get(.BinWrapAdd, ins_id), store),
             .BinWrapSub => try self.binArith("llvm.sub", "llvm.fsub", t.instrs.get(.BinWrapSub, ins_id), store),
             .BinWrapMul => try self.binArith("llvm.mul", "llvm.fmul", t.instrs.get(.BinWrapMul, ins_id), store),
-            .BinSatAdd => try self.emitSaturatingIntBinary(t.instrs.get(.BinSatAdd, ins_id), store, "arith.addi", true),
-            .BinSatSub => try self.emitSaturatingIntBinary(t.instrs.get(.BinSatSub, ins_id), store, "arith.subi", true),
-            .BinSatMul => try self.emitSaturatingIntBinary(t.instrs.get(.BinSatMul, ins_id), store, "arith.muli", true),
+            .BinSatAdd => blk: {
+                const row = t.instrs.get(.BinSatAdd, ins_id);
+                const prev_loc = self.pushLocation(row.loc);
+                defer self.loc = prev_loc;
+                break :blk try self.emitSaturatingIntBinary(row, store, "arith.addi", true);
+            },
+            .BinSatSub => blk: {
+                const row = t.instrs.get(.BinSatSub, ins_id);
+                const prev_loc = self.pushLocation(row.loc);
+                defer self.loc = prev_loc;
+                break :blk try self.emitSaturatingIntBinary(row, store, "arith.subi", true);
+            },
+            .BinSatMul => blk: {
+                const row = t.instrs.get(.BinSatMul, ins_id);
+                const prev_loc = self.pushLocation(row.loc);
+                defer self.loc = prev_loc;
+                break :blk try self.emitSaturatingIntBinary(row, store, "arith.muli", true);
+            },
 
             .Div => blk: {
                 const p = t.instrs.get(.Div, ins_id);
+                const prev_loc = self.pushLocation(p.loc);
+                defer self.loc = prev_loc;
                 if (store.getKind(p.ty) == .Complex) {
                     const lhs = self.value_map.get(p.lhs).?;
                     const rhs = self.value_map.get(p.rhs).?;
@@ -823,6 +942,8 @@ pub const MlirCodegen = struct {
 
             .Mod => blk: {
                 const p = t.instrs.get(.Mod, ins_id);
+                const prev_loc = self.pushLocation(p.loc);
+                defer self.loc = prev_loc;
                 const lhs = self.value_map.get(p.lhs).?;
                 const rhs = self.value_map.get(p.rhs).?;
                 const ty = try self.llvmTypeOf(store, p.ty);
@@ -832,14 +953,23 @@ pub const MlirCodegen = struct {
 
             .Shl => blk: {
                 const p = t.instrs.get(.Shl, ins_id);
+                const prev_loc = self.pushLocation(p.loc);
+                defer self.loc = prev_loc;
                 const lhs = self.value_map.get(p.lhs).?;
                 const rhs = self.value_map.get(p.rhs).?;
                 const ty = try self.llvmTypeOf(store, p.ty);
                 break :blk self.arithShl(lhs, rhs, ty);
             },
-            .BinSatShl => try self.emitSaturatingIntBinary(t.instrs.get(.BinSatShl, ins_id), store, "arith.shli", false),
+            .BinSatShl => blk: {
+                const row = t.instrs.get(.BinSatShl, ins_id);
+                const prev_loc = self.pushLocation(row.loc);
+                defer self.loc = prev_loc;
+                break :blk try self.emitSaturatingIntBinary(row, store, "arith.shli", false);
+            },
             .Shr => blk: {
                 const p = t.instrs.get(.Shr, ins_id);
+                const prev_loc = self.pushLocation(p.loc);
+                defer self.loc = prev_loc;
                 const lhs = self.value_map.get(p.lhs).?;
                 const rhs = self.value_map.get(p.rhs).?;
                 const ty = try self.llvmTypeOf(store, p.ty);
@@ -856,21 +986,55 @@ pub const MlirCodegen = struct {
             .LogicalOr => try self.binBit("llvm.or", t.instrs.get(.LogicalOr, ins_id), store),
             .LogicalNot => blk: {
                 const p = t.instrs.get(.LogicalNot, ins_id);
+                const prev_loc = self.pushLocation(p.loc);
+                defer self.loc = prev_loc;
                 const v = self.value_map.get(p.value).?;
                 break :blk self.arithLogicalNotI1(v);
             },
 
             // ------------- Comparisons (keep LLVM for robust attrs) -------------
-            .CmpEq => try self.emitCmp("eq", "eq", "oeq", t.instrs.get(.CmpEq, ins_id), t, store),
-            .CmpNe => try self.emitCmp("ne", "ne", "one", t.instrs.get(.CmpNe, ins_id), t, store),
-            .CmpLt => try self.emitCmp("ult", "slt", "olt", t.instrs.get(.CmpLt, ins_id), t, store),
-            .CmpLe => try self.emitCmp("ule", "sle", "ole", t.instrs.get(.CmpLe, ins_id), t, store),
-            .CmpGt => try self.emitCmp("ugt", "sgt", "ogt", t.instrs.get(.CmpGt, ins_id), t, store),
-            .CmpGe => try self.emitCmp("uge", "sge", "oge", t.instrs.get(.CmpGe, ins_id), t, store),
+            .CmpEq => blk: {
+                const row = t.instrs.get(.CmpEq, ins_id);
+                const prev_loc = self.pushLocation(row.loc);
+                defer self.loc = prev_loc;
+                break :blk try self.emitCmp("eq", "eq", "oeq", row, t, store);
+            },
+            .CmpNe => blk: {
+                const row = t.instrs.get(.CmpNe, ins_id);
+                const prev_loc = self.pushLocation(row.loc);
+                defer self.loc = prev_loc;
+                break :blk try self.emitCmp("ne", "ne", "one", row, t, store);
+            },
+            .CmpLt => blk: {
+                const row = t.instrs.get(.CmpLt, ins_id);
+                const prev_loc = self.pushLocation(row.loc);
+                defer self.loc = prev_loc;
+                break :blk try self.emitCmp("ult", "slt", "olt", row, t, store);
+            },
+            .CmpLe => blk: {
+                const row = t.instrs.get(.CmpLe, ins_id);
+                const prev_loc = self.pushLocation(row.loc);
+                defer self.loc = prev_loc;
+                break :blk try self.emitCmp("ule", "sle", "ole", row, t, store);
+            },
+            .CmpGt => blk: {
+                const row = t.instrs.get(.CmpGt, ins_id);
+                const prev_loc = self.pushLocation(row.loc);
+                defer self.loc = prev_loc;
+                break :blk try self.emitCmp("ugt", "sgt", "ogt", row, t, store);
+            },
+            .CmpGe => blk: {
+                const row = t.instrs.get(.CmpGe, ins_id);
+                const prev_loc = self.pushLocation(row.loc);
+                defer self.loc = prev_loc;
+                break :blk try self.emitCmp("uge", "sge", "oge", row, t, store);
+            },
 
             // ------------- Casts -------------
             .CastBit => blk: {
                 const p = t.instrs.get(.CastBit, ins_id);
+                const prev_loc = self.pushLocation(p.loc);
+                defer self.loc = prev_loc;
                 const to_ty = try self.llvmTypeOf(store, p.ty);
                 const from_v = self.value_map.get(p.value).?;
                 var op = OpBuilder.init("llvm.bitcast", self.loc).builder()
@@ -882,6 +1046,8 @@ pub const MlirCodegen = struct {
 
             .CastNormal => blk: {
                 const p = t.instrs.get(.CastNormal, ins_id);
+                const prev_loc = self.pushLocation(p.loc);
+                defer self.loc = prev_loc;
                 const to_ty = try self.llvmTypeOf(store, p.ty);
                 const from_v = self.value_map.get(p.value).?;
                 const src_sr = self.srTypeOfValue(t, p.value);
@@ -891,6 +1057,8 @@ pub const MlirCodegen = struct {
 
             .CastSaturate => blk: {
                 const p = t.instrs.get(.CastSaturate, ins_id);
+                const prev_loc = self.pushLocation(p.loc);
+                defer self.loc = prev_loc;
                 const from_v = self.value_map.get(p.value).?;
                 const src_sr = self.srTypeOfValue(t, p.value);
                 const val = try self.emitCast(.CastSaturate, store, p.ty, src_sr, from_v);
@@ -899,6 +1067,8 @@ pub const MlirCodegen = struct {
 
             inline .CastWrap, .CastChecked => |x| blk: {
                 const p = t.instrs.get(x, ins_id);
+                const prev_loc = self.pushLocation(p.loc);
+                defer self.loc = prev_loc;
                 const from_v = self.value_map.get(p.value).?;
                 const src_sr = self.srTypeOfValue(t, p.value);
                 const val = try self.emitCast(x, store, p.ty, src_sr, from_v);
@@ -908,6 +1078,8 @@ pub const MlirCodegen = struct {
             // ------------- Memory -------------
             .Alloca => blk: {
                 const p = t.instrs.get(.Alloca, ins_id);
+                const prev_loc = self.pushLocation(p.loc);
+                defer self.loc = prev_loc;
                 var elem_ty: mlir.Type = self.i8_ty;
                 switch (store.getKind(p.ty)) {
                     .Ptr => {
@@ -941,6 +1113,8 @@ pub const MlirCodegen = struct {
 
             .Load => blk: {
                 const p = t.instrs.get(.Load, ins_id);
+                const prev_loc = self.pushLocation(p.loc);
+                defer self.loc = prev_loc;
                 var ptr_val_opt = self.value_map.get(p.ptr);
                 if (ptr_val_opt == null) {
                     // Try materializing or folding known-constant pointers directly to values as a last resort.
@@ -1013,6 +1187,8 @@ pub const MlirCodegen = struct {
 
             .Store => blk: {
                 const p = t.instrs.get(.Store, ins_id);
+                const prev_loc = self.pushLocation(p.loc);
+                defer self.loc = prev_loc;
                 const v = self.value_map.get(p.value).?;
                 const ptr_opt = self.value_map.get(p.ptr);
                 if (ptr_opt == null) {
@@ -1049,6 +1225,8 @@ pub const MlirCodegen = struct {
 
             .Gep => blk: {
                 const p = t.instrs.get(.Gep, ins_id);
+                const prev_loc = self.pushLocation(p.loc);
+                defer self.loc = prev_loc;
                 const base = self.value_map.get(p.base).?;
                 const pty_kind = store.getKind(p.ty);
                 var elem_mlir: mlir.Type = undefined;
@@ -1070,6 +1248,8 @@ pub const MlirCodegen = struct {
             },
             .GlobalAddr => blk: {
                 const p = t.instrs.get(.GlobalAddr, ins_id);
+                const prev_loc = self.pushLocation(p.loc);
+                defer self.loc = prev_loc;
                 const name = t.instrs.strs.get(p.name);
                 const ty = try self.llvmTypeOf(store, p.ty);
 
@@ -1085,6 +1265,8 @@ pub const MlirCodegen = struct {
             // ------------- Aggregates -------------
             .TupleMake => blk: {
                 const p = t.instrs.get(.TupleMake, ins_id);
+                const prev_loc = self.pushLocation(p.loc);
+                defer self.loc = prev_loc;
                 const tup_ty = try self.llvmTypeOf(store, p.ty);
                 var acc = self.zeroOf(tup_ty);
                 // Tuple elements are stored in value_pool
@@ -1097,6 +1279,8 @@ pub const MlirCodegen = struct {
             },
             .RangeMake => blk: {
                 const p = t.instrs.get(.RangeMake, ins_id);
+                const prev_loc = self.pushLocation(p.loc);
+                defer self.loc = prev_loc;
                 // Materialize as struct<i64,i64> { start, end } (inclusive handled by consumers)
                 const i64t = self.i64_ty;
                 const pairTy = mlir.LLVM.getLLVMStructTypeLiteral(self.mlir_ctx, &[_]mlir.Type{ i64t, i64t }, false);
@@ -1111,6 +1295,8 @@ pub const MlirCodegen = struct {
             },
             .ArrayMake => blk: {
                 const p = t.instrs.get(.ArrayMake, ins_id);
+                const prev_loc = self.pushLocation(p.loc);
+                defer self.loc = prev_loc;
                 const arr_ty = try self.llvmTypeOf(store, p.ty);
                 // Determine element MLIR type from SR array element
                 const arr_sr = store.get(.Array, p.ty);
@@ -1130,6 +1316,8 @@ pub const MlirCodegen = struct {
             },
             .StructMake => blk: {
                 const p = t.instrs.get(.StructMake, ins_id);
+                const prev_loc = self.pushLocation(p.loc);
+                defer self.loc = prev_loc;
                 const st_ty = try self.llvmTypeOf(store, p.ty);
                 var acc = self.zeroOf(st_ty);
                 const fields = t.instrs.sfi_pool.slice(p.fields);
@@ -1142,6 +1330,8 @@ pub const MlirCodegen = struct {
             },
             .ComplexMake => blk: {
                 const p = t.instrs.get(.ComplexMake, ins_id);
+                const prev_loc = self.pushLocation(p.loc);
+                defer self.loc = prev_loc;
                 const cty = try self.llvmTypeOf(store, p.ty);
                 const re = self.value_map.get(p.re).?;
                 const im = self.value_map.get(p.im).?;
@@ -1153,6 +1343,8 @@ pub const MlirCodegen = struct {
             },
             .ExtractElem => blk: {
                 const p = t.instrs.get(.ExtractElem, ins_id);
+                const prev_loc = self.pushLocation(p.loc);
+                defer self.loc = prev_loc;
                 const agg = self.value_map.get(p.agg).?;
                 const res_ty = try self.llvmTypeOf(store, p.ty);
                 const v = self.extractAt(agg, res_ty, &.{@as(i64, @intCast(p.index))});
@@ -1161,6 +1353,8 @@ pub const MlirCodegen = struct {
 
             .InsertElem => blk: {
                 const p = t.instrs.get(.InsertElem, ins_id);
+                const prev_loc = self.pushLocation(p.loc);
+                defer self.loc = prev_loc;
                 const agg = self.value_map.get(p.agg).?;
                 const val = self.value_map.get(p.value).?;
                 const v = self.insertAt(agg, val, &.{@as(i64, @intCast(p.index))});
@@ -1169,6 +1363,8 @@ pub const MlirCodegen = struct {
 
             .ExtractField => blk: {
                 const p = t.instrs.get(.ExtractField, ins_id);
+                const prev_loc = self.pushLocation(p.loc);
+                defer self.loc = prev_loc;
                 const agg = self.value_map.get(p.agg).?;
                 const res_ty = try self.llvmTypeOf(store, p.ty);
                 // Special-case: Complex field access -> complex.re/complex.im
@@ -1207,6 +1403,8 @@ pub const MlirCodegen = struct {
 
             .InsertField => blk: {
                 const p = t.instrs.get(.InsertField, ins_id);
+                const prev_loc = self.pushLocation(p.loc);
+                defer self.loc = prev_loc;
                 const agg = self.value_map.get(p.agg).?;
                 const val = self.value_map.get(p.value).?;
                 const v = self.insertAt(agg, val, &.{@as(i64, @intCast(p.index))});
@@ -1215,6 +1413,8 @@ pub const MlirCodegen = struct {
 
             .VariantMake => blk: {
                 const p = t.instrs.get(.VariantMake, ins_id);
+                const prev_loc = self.pushLocation(p.loc);
+                defer self.loc = prev_loc;
                 const var_ty = try self.llvmTypeOf(store, p.ty);
                 var acc = self.undefOf(var_ty);
 
@@ -1239,6 +1439,8 @@ pub const MlirCodegen = struct {
             },
             .VariantTag => blk: {
                 const p = t.instrs.get(.VariantTag, ins_id);
+                const prev_loc = self.pushLocation(p.loc);
+                defer self.loc = prev_loc;
                 const v = self.value_map.get(p.value).?;
                 const i32ty = mlir.Type.getSignlessIntegerType(self.mlir_ctx, 32);
                 const tag = self.extractAt(v, i32ty, &.{0});
@@ -1246,6 +1448,8 @@ pub const MlirCodegen = struct {
             },
             .VariantPayloadPtr => blk: {
                 const p = t.instrs.get(.VariantPayloadPtr, ins_id);
+                const prev_loc = self.pushLocation(p.loc);
+                defer self.loc = prev_loc;
                 const v = self.value_map.get(p.value).?;
                 // Extract field 1 (payload pointer)
                 const ptr = self.extractAt(v, self.llvm_ptr_ty, &.{1});
@@ -1254,6 +1458,8 @@ pub const MlirCodegen = struct {
 
             .UnionMake => blk: {
                 const p = t.instrs.get(.UnionMake, ins_id);
+                const prev_loc = self.pushLocation(p.loc);
+                defer self.loc = prev_loc;
 
                 // MLIR type of the union "storage blob"
                 const u_mlir = try self.llvmTypeOf(store, p.ty);
@@ -1280,6 +1486,8 @@ pub const MlirCodegen = struct {
             },
             .UnionField => blk: {
                 const p = t.instrs.get(.UnionField, ins_id);
+                const prev_loc = self.pushLocation(p.loc);
+                defer self.loc = prev_loc;
 
                 // Get a pointer to the union storage, even if we were given an SSA value.
                 var base = self.value_map.get(p.base).?;
@@ -1314,6 +1522,8 @@ pub const MlirCodegen = struct {
 
             .UnionFieldPtr => blk: {
                 const p = t.instrs.get(.UnionFieldPtr, ins_id);
+                const prev_loc = self.pushLocation(p.loc);
+                defer self.loc = prev_loc;
 
                 // Get a pointer to the union storage, even if we were given an SSA value.
                 var base = self.value_map.get(p.base).?;
@@ -1343,6 +1553,8 @@ pub const MlirCodegen = struct {
             // ------------- Pointers/Indexing -------------
             .AddressOf => blk: {
                 const p = t.instrs.get(.AddressOf, ins_id);
+                const prev_loc = self.pushLocation(p.loc);
+                defer self.loc = prev_loc;
                 const v = self.value_map.get(p.value).?;
                 if (mlir.LLVM.isLLVMPointerType(v.getType())) break :blk v;
                 break :blk v.opResultGetOwner().getOperand(0);
@@ -1350,6 +1562,8 @@ pub const MlirCodegen = struct {
 
             .Index => blk: {
                 const p = t.instrs.get(.Index, ins_id);
+                const prev_loc = self.pushLocation(p.loc);
+                defer self.loc = prev_loc;
                 const base = self.value_map.get(p.base).?;
                 const res_ty = try self.llvmTypeOf(store, p.ty);
                 const res_sr_kind = store.getKind(p.ty);
@@ -1499,6 +1713,8 @@ pub const MlirCodegen = struct {
             // ------------- Data movement -------------
             .Select => blk: {
                 const p = t.instrs.get(.Select, ins_id);
+                const prev_loc = self.pushLocation(p.loc);
+                defer self.loc = prev_loc;
                 const c = self.value_map.get(p.cond).?;
                 const tv = self.value_map.get(p.then_value).?;
                 const ev = self.value_map.get(p.else_value).?;
@@ -1508,6 +1724,8 @@ pub const MlirCodegen = struct {
 
             .IndirectCall => blk: {
                 const p = t.instrs.get(.IndirectCall, ins_id);
+                const prev_loc = self.pushLocation(p.loc);
+                defer self.loc = prev_loc;
                 const callee = self.value_map.get(p.callee).?;
                 const args_slice = t.instrs.val_list_pool.slice(p.args);
                 var ops = try self.gpa.alloc(mlir.Value, 1 + args_slice.len);
@@ -1537,6 +1755,8 @@ pub const MlirCodegen = struct {
             },
             .Call => blk: {
                 const p = t.instrs.get(.Call, ins_id);
+                const prev_loc = self.pushLocation(p.loc);
+                defer self.loc = prev_loc;
                 const callee_name = t.instrs.strs.get(p.callee);
 
                 const finfo = self.func_syms.get(callee_name) orelse try self.ensureFuncDeclFromCall(ins_id, t, store);
@@ -1746,6 +1966,8 @@ pub const MlirCodegen = struct {
             },
             .MlirBlock => blk: {
                 const p = t.instrs.get(.MlirBlock, ins_id);
+                const prev_loc = self.pushLocation(p.loc);
+                defer self.loc = prev_loc;
                 const mlir_text_raw = t.instrs.strs.get(p.text);
                 const mlir_kind = p.kind;
 
