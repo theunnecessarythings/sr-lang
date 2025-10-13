@@ -1671,7 +1671,7 @@ pub const Attribute = struct {
 
     /// Creates a Distinct attribute referencing another attribute.
     pub fn distinctAttrCreate(referenced: Attribute) Attribute {
-        return Attribute{ .handle = c.mlirDisctinctAttrCreate(referenced.handle) };
+        return Attribute{ .handle = c.mlirDistinctAttrCreate(referenced.handle) };
     }
 
     /// Checks whether the attribute is a FlatSymbolRef attribute.
@@ -4670,7 +4670,7 @@ pub const LLVMAttributes = struct {
         annotations: []const Attribute,
     ) LogicalResult {
         return LogicalResult{
-            .handle = c.mlirLLVMDISubprogramAttrGet(
+            .inner = c.mlirLLVMDISubprogramAttrGet(
                 ctx.handle,
                 recId.handle,
                 @intCast(isRecSelf),
