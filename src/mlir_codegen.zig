@@ -21,6 +21,21 @@ const LineInfo = struct {
     col: usize,
 };
 
+const DebugFileInfo = struct {
+    file_attr: mlir.Attribute,
+    compile_unit_attr: mlir.Attribute,
+    file_text: []const u8,
+    compile_unit_text: []const u8,
+};
+
+const DebugSubprogramInfo = struct {
+    attr: mlir.Attribute,
+    file_id: u32,
+    line: u32,
+    scope_line: u32,
+    loc: tir.OptLocId,
+};
+
 fn computeLineCol(src: []const u8, index: usize) LineInfo {
     var i: usize = 0;
     var line: usize = 0;
@@ -46,6 +61,13 @@ pub const MlirCodegen = struct {
     active_loc_store: ?*const cst.LocStore = null,
     loc_cache: std.AutoHashMap(LocKey, mlir.Location),
     file_cache: std.AutoHashMap(u32, []const u8),
+    di_files: std.AutoHashMap(u32, DebugFileInfo),
+    di_subprograms: std.AutoHashMap(tir.FuncId, DebugSubprogramInfo),
+
+    metadata_ty: mlir.Type,
+    di_null_type_attr: mlir.Attribute,
+    di_empty_expr_attr: mlir.Attribute,
+    next_di_id: usize = 0,
 
     // common LLVM/arith types (opaque pointers on master)
     void_ty: mlir.Type,
@@ -77,6 +99,7 @@ pub const MlirCodegen = struct {
         is_variadic: bool,
         n_formals: usize, // MLIR visible formals after dropping trailing Any
         ret_type: mlir.Type,
+        dbg_subprogram: ?mlir.Attribute = null,
     };
 
     // ----------------------------------------------------------------
@@ -154,6 +177,12 @@ pub const MlirCodegen = struct {
             .active_loc_store = null,
             .loc_cache = std.AutoHashMap(LocKey, mlir.Location).init(gpa),
             .file_cache = std.AutoHashMap(u32, []const u8).init(gpa),
+            .di_files = std.AutoHashMap(u32, DebugFileInfo).init(gpa),
+            .di_subprograms = std.AutoHashMap(tir.FuncId, DebugSubprogramInfo).init(gpa),
+            .metadata_ty = mlir.Type.getNull(),
+            .di_null_type_attr = mlir.Attribute.empty(),
+            .di_empty_expr_attr = mlir.Attribute.empty(),
+            .next_di_id = 0,
             .void_ty = void_ty,
             .i1_ty = mlir.Type.getSignlessIntegerType(ctx, 1),
             .i8_ty = mlir.Type.getSignlessIntegerType(ctx, 8),
@@ -172,6 +201,9 @@ pub const MlirCodegen = struct {
     }
 
     pub fn deinit(self: *MlirCodegen) void {
+        self.resetDebugCaches();
+        self.di_subprograms.deinit();
+        self.di_files.deinit();
         self.func_syms.deinit();
         self.str_pool.deinit();
         self.block_map.deinit();
@@ -197,6 +229,7 @@ pub const MlirCodegen = struct {
         locs: ?*const cst.LocStore,
     ) !mlir.Module {
         self.active_loc_store = locs;
+        self.resetDebugCaches();
         self.attachTargetInfo();
         try self.emitExternDecls(t, &context.type_store);
 
@@ -237,6 +270,20 @@ pub const MlirCodegen = struct {
         const prev = self.loc;
         self.loc = self.mlirLocation(opt_loc);
         return prev;
+    }
+
+    fn resetDebugCaches(self: *MlirCodegen) void {
+        var file_it = self.di_files.valueIterator();
+        while (file_it.next()) |info| {
+            self.gpa.free(@constCast(info.file_text));
+            self.gpa.free(@constCast(info.compile_unit_text));
+        }
+        self.di_files.clearRetainingCapacity();
+        self.di_subprograms.clearRetainingCapacity();
+        self.metadata_ty = mlir.Type.getNull();
+        self.di_null_type_attr = mlir.Attribute.empty();
+        self.di_empty_expr_attr = mlir.Attribute.empty();
+        self.next_di_id = 0;
     }
 
     fn instrOptLoc(self: *MlirCodegen, t: *const tir.TIR, ins_id: tir.InstrId) tir.OptLocId {
@@ -351,12 +398,184 @@ pub const MlirCodegen = struct {
         return data;
     }
 
+    fn nextDistinctId(self: *MlirCodegen) usize {
+        const id = self.next_di_id;
+        self.next_di_id += 1;
+        return id;
+    }
+
+    fn ensureDebugFile(self: *MlirCodegen, file_id: u32) !*DebugFileInfo {
+        if (self.di_files.getPtr(file_id)) |info| return info;
+
+        const path = self.context.source_manager.get(file_id) orelse "unknown";
+        const base = std.fs.path.basename(path);
+        const dir = std.fs.path.dirname(path) orelse ".";
+
+        const file_text = try std.fmt.allocPrint(
+            self.gpa,
+            "#llvm.di_file<\"{s}\", \"{s}\">",
+            .{ std.zig.fmtEscapes(base), std.zig.fmtEscapes(dir) },
+        );
+        errdefer self.gpa.free(file_text);
+
+        const file_attr = mlir.Attribute.parseGet(self.mlir_ctx, mlir.StringRef.from(file_text));
+        if (file_attr.isNull()) return error.DebugAttrParseFailed;
+
+        const cu_text = try std.fmt.allocPrint(
+            self.gpa,
+            "#llvm.di_compile_unit<id = distinct[{d}], source_language = DW_LANG_C, file = {s}, producer = \"sr-lang\", is_optimized = false, runtime_version = 0, emission_kind = Full>",
+            .{ self.nextDistinctId(), file_text },
+        );
+        errdefer self.gpa.free(cu_text);
+
+        const cu_attr = mlir.Attribute.parseGet(self.mlir_ctx, mlir.StringRef.from(cu_text));
+        if (cu_attr.isNull()) return error.DebugAttrParseFailed;
+
+        try self.di_files.put(file_id, .{
+            .file_attr = file_attr,
+            .compile_unit_attr = cu_attr,
+            .file_text = file_text,
+            .compile_unit_text = cu_text,
+        });
+        return self.di_files.getPtr(file_id).?;
+    }
+
+    fn ensureDebugSubprogram(
+        self: *MlirCodegen,
+        f_id: tir.FuncId,
+        func_name: []const u8,
+        line: u32,
+        file_id: u32,
+        loc: tir.OptLocId,
+    ) !*DebugSubprogramInfo {
+        if (self.di_subprograms.getPtr(f_id)) |info| return info;
+
+        const file_info = try self.ensureDebugFile(file_id);
+        const sp_text = try std.fmt.allocPrint(
+            self.gpa,
+            "#llvm.di_subprogram<id = distinct[{d}], compile_unit = {s}, scope = {s}, name = \"{s}\", linkageName = \"{s}\", file = {s}, line = {d}, scopeLine = {d}, type = #llvm.di_subroutine_type<types = !llvm.array<[]>>, spFlags = DIFlagDefinition>",
+            .{
+                self.nextDistinctId(),
+                file_info.compile_unit_text,
+                file_info.file_text,
+                std.zig.fmtEscapes(func_name),
+                std.zig.fmtEscapes(func_name),
+                file_info.file_text,
+                line,
+                line,
+            },
+        );
+        defer self.gpa.free(sp_text);
+
+        const attr = mlir.Attribute.parseGet(self.mlir_ctx, mlir.StringRef.from(sp_text));
+        if (attr.isNull()) return error.DebugAttrParseFailed;
+
+        try self.di_subprograms.put(f_id, .{
+            .attr = attr,
+            .file_id = file_id,
+            .line = line,
+            .scope_line = line,
+            .loc = loc,
+        });
+        return self.di_subprograms.getPtr(f_id).?;
+    }
+
     fn attachTargetInfo(self: *MlirCodegen) void {
         const triple = self.strAttr("x86_64-unknown-linux-gnu");
         const dl = self.strAttr("e-m:e-p270:32:32-p271:32:32-p272:64:64-i64:64-i128:128-f80:128-n8:16:32:64-S128");
         var mod_op = self.module.getOperation();
         mod_op.setDiscardableAttributeByName(mlir.StringRef.from("llvm.target_triple"), triple);
         mod_op.setDiscardableAttributeByName(mlir.StringRef.from("llvm.data_layout"), dl);
+    }
+
+    fn ensureMetadataType(self: *MlirCodegen) !mlir.Type {
+        if (!self.metadata_ty.isNull()) return self.metadata_ty;
+        const ty = mlir.Type.parseGet(self.mlir_ctx, mlir.StringRef.from("!llvm.metadata"));
+        if (ty.isNull()) return error.DebugAttrParseFailed;
+        self.metadata_ty = ty;
+        return ty;
+    }
+
+    fn ensureDINullTypeAttr(self: *MlirCodegen) !mlir.Attribute {
+        if (!self.di_null_type_attr.isNull()) return self.di_null_type_attr;
+        const attr = mlir.Attribute.getLLVMDINullTypeAttr(self.mlir_ctx);
+        if (attr.isNull()) return error.DebugAttrParseFailed;
+        self.di_null_type_attr = attr;
+        return attr;
+    }
+
+    fn ensureEmptyDIExpression(self: *MlirCodegen) !mlir.Attribute {
+        if (!self.di_empty_expr_attr.isNull()) return self.di_empty_expr_attr;
+        const attr = mlir.Attribute.getLLVMDIExpressionAttr(self.mlir_ctx, &[_]mlir.Attribute{});
+        if (attr.isNull()) return error.DebugAttrParseFailed;
+        self.di_empty_expr_attr = attr;
+        return attr;
+    }
+
+    fn metadataConstant(self: *MlirCodegen, attr: mlir.Attribute, ty: mlir.Type) mlir.Value {
+        var op = OpBuilder.init("llvm.mlir.constant", self.loc).builder()
+            .add_results(&.{ty})
+            .add_attributes(&.{self.named("value", attr)})
+            .build();
+        self.append(op);
+        return op.getResult(0);
+    }
+
+    fn emitParameterDebugInfo(
+        self: *MlirCodegen,
+        f_id: tir.FuncId,
+        params: []const tir.ParamId,
+        entry_block: mlir.Block,
+        t: *const tir.TIR,
+    ) !void {
+        if (!enable_debug_info) return;
+        const subp_ptr = self.di_subprograms.getPtr(f_id) orelse return;
+        const subp = subp_ptr.*;
+
+        var has_named = false;
+        for (params) |pid| {
+            const p = t.funcs.Param.get(pid);
+            if (!p.name.isNone()) {
+                has_named = true;
+                break;
+            }
+        }
+        if (!has_named) return;
+
+        const file_info = self.ensureDebugFile(subp.file_id) catch return;
+        const meta_ty = self.ensureMetadataType() catch return;
+        const expr_attr = self.ensureEmptyDIExpression() catch return;
+        const di_type = self.ensureDINullTypeAttr() catch return;
+
+        const prev_loc = self.pushLocation(subp.loc);
+        defer self.loc = prev_loc;
+
+        const expr_value = self.metadataConstant(expr_attr, meta_ty);
+
+        for (params, 0..) |pid, idx| {
+            const p = t.funcs.Param.get(pid);
+            if (p.name.isNone()) continue;
+            const name = t.instrs.strs.get(p.name.unwrap());
+            const var_attr = mlir.Attribute.getLLVMDILocalVariableAttr(
+                self.mlir_ctx,
+                subp.attr,
+                self.strAttr(name),
+                file_info.file_attr,
+                subp.line,
+                @intCast(idx + 1),
+                0,
+                di_type,
+                0,
+            );
+            if (var_attr.isNull()) continue;
+
+            const var_value = self.metadataConstant(var_attr, meta_ty);
+            const arg_val = entry_block.getArgument(idx);
+            var dbg = OpBuilder.init("llvm.intr.dbg.value", self.loc).builder()
+                .add_operands(&.{ arg_val, var_value, expr_value })
+                .build();
+            self.append(dbg);
+        }
     }
 
     // ----------------------------------------------------------------
@@ -474,6 +693,7 @@ pub const MlirCodegen = struct {
                     .is_variadic = fnty.is_variadic,
                     .n_formals = params_sr.len, // SR count, not lowered
                     .ret_type = ret_type,
+                    .dbg_subprogram = null,
                 });
             } else {
                 // Handle global variables
@@ -567,12 +787,37 @@ pub const MlirCodegen = struct {
         body.appendOwnedOperation(fnop);
 
         const ret_mlir = if (n_res == 0) self.void_ty else results[0];
-        _ = try self.func_syms.put(func_name, .{
+        var finfo: FuncInfo = .{
             .op = fnop,
             .is_variadic = false,
             .n_formals = params.len,
             .ret_type = ret_mlir,
-        });
+            .dbg_subprogram = null,
+        };
+
+        if (enable_debug_info and !fn_loc.isNone()) {
+            if (self.active_loc_store) |locs_store| {
+                const loc_record = locs_store.get(fn_loc.unwrap());
+                const src = self.getFileSource(loc_record.file_id) catch null;
+                if (src) |src_text| {
+                    const lc = computeLineCol(src_text, loc_record.start);
+                    const line = @as(u32, @intCast(lc.line + 1));
+                    const maybe_subp: ?*DebugSubprogramInfo = self.ensureDebugSubprogram(
+                        f_id,
+                        func_name,
+                        line,
+                        loc_record.file_id,
+                        fn_loc,
+                    ) catch null;
+                    if (maybe_subp) |subp| {
+                        fnop.setAttributeByName(mlir.StringRef.from("llvm.di.subprogram"), subp.attr);
+                        finfo.dbg_subprogram = subp.attr;
+                    }
+                }
+            }
+        }
+
+        _ = try self.func_syms.put(func_name, finfo);
     }
 
     fn emitFunctionBody(self: *MlirCodegen, f_id: tir.FuncId, t: *const tir.TIR, store: *types.TypeStore) !void {
@@ -632,6 +877,10 @@ pub const MlirCodegen = struct {
             const v = entry_block.getArgument(i);
             try self.value_map.put(p.value, v);
             try self.val_types.put(p.value, p.ty);
+        }
+
+        if (enable_debug_info) {
+            self.emitParameterDebugInfo(f_id, params[0..n_formals], entry_block, t) catch {};
         }
 
         // pre-create remaining blocks and map their params + SR types
@@ -900,7 +1149,13 @@ pub const MlirCodegen = struct {
         var body = self.module.getBody();
         body.appendOwnedOperation(fnop);
 
-        const info: FuncInfo = .{ .op = fnop, .is_variadic = is_var, .n_formals = params_sr.len, .ret_type = ret_type };
+        const info: FuncInfo = .{
+            .op = fnop,
+            .is_variadic = is_var,
+            .n_formals = params_sr.len,
+            .ret_type = ret_type,
+            .dbg_subprogram = null,
+        };
         _ = try self.func_syms.put(name, info);
         return info;
     }
@@ -2206,6 +2461,7 @@ pub const MlirCodegen = struct {
                                             .is_variadic = false, // func.func is not variadic in this context
                                             .n_formals = @intCast(n_formals),
                                             .ret_type = ret_type,
+                                            .dbg_subprogram = null,
                                         };
                                         _ = try self.func_syms.put(sym_name, info);
                                     }
@@ -2951,7 +3207,13 @@ pub const MlirCodegen = struct {
         const name = t.instrs.strs.get(p.callee);
 
         if (std.mem.startsWith(u8, name, "m$")) {
-            return .{ .op = self.module.getOperation(), .is_variadic = false, .n_formals = arg_tys.len, .ret_type = ret_ty };
+            return .{
+                .op = self.module.getOperation(),
+                .is_variadic = false,
+                .n_formals = arg_tys.len,
+                .ret_type = ret_ty,
+                .dbg_subprogram = null,
+            };
         }
 
         const attrs = [_]mlir.NamedAttribute{
@@ -2966,7 +3228,13 @@ pub const MlirCodegen = struct {
         var body = self.module.getBody();
         body.appendOwnedOperation(func_op);
 
-        const info: FuncInfo = .{ .op = func_op, .is_variadic = false, .n_formals = arg_tys.len, .ret_type = ret_ty };
+        const info: FuncInfo = .{
+            .op = func_op,
+            .is_variadic = false,
+            .n_formals = arg_tys.len,
+            .ret_type = ret_ty,
+            .dbg_subprogram = null,
+        };
         _ = try self.func_syms.put(name, info);
         return info;
     }
