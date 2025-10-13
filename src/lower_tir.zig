@@ -2602,6 +2602,7 @@ pub const LowerTir = struct {
         expected_ty: ?types.TypeId,
     ) anyerror!tir.ValueId {
         const row = a.exprs.get(.Catch, id);
+        const loc = self.exprOptLoc(a, id);
         const out_ty_guess = expected_ty orelse (self.getExprType(id) orelse self.context.type_store.tVoid());
         const produce_value = (expected_ty != null) and !self.isVoid(out_ty_guess);
 
