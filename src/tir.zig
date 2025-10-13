@@ -3,6 +3,8 @@ const dod = @import("cst.zig");
 const ast = @import("ast.zig");
 const types = @import("types.zig");
 
+const OptLocId = dod.OptLocId;
+
 // Typed IR (TIR)
 // Columnar stores with typed indices and contiguous pools.
 
@@ -128,65 +130,66 @@ pub const ConstInit = union(enum) {
 
 pub const Rows = struct {
     // All rows that produce a value carry (result, ty)
-    pub const Bin2 = struct { result: ValueId, ty: types.TypeId, lhs: ValueId, rhs: ValueId };
-    pub const Un1 = struct { result: ValueId, ty: types.TypeId, value: ValueId };
+    pub const Bin2 = struct { result: ValueId, ty: types.TypeId, lhs: ValueId, rhs: ValueId, loc: OptLocId };
+    pub const Un1 = struct { result: ValueId, ty: types.TypeId, value: ValueId, loc: OptLocId };
 
-    pub const ConstInt = struct { result: ValueId, ty: types.TypeId, value: u64 };
-    pub const ConstFloat = struct { result: ValueId, ty: types.TypeId, value: f64 };
-    pub const ConstBool = struct { result: ValueId, ty: types.TypeId, value: bool };
-    pub const ConstString = struct { result: ValueId, ty: types.TypeId, text: StrId };
-    pub const ConstNull = struct { result: ValueId, ty: types.TypeId };
-    pub const ConstUndef = struct { result: ValueId, ty: types.TypeId };
+    pub const ConstInt = struct { result: ValueId, ty: types.TypeId, value: u64, loc: OptLocId };
+    pub const ConstFloat = struct { result: ValueId, ty: types.TypeId, value: f64, loc: OptLocId };
+    pub const ConstBool = struct { result: ValueId, ty: types.TypeId, value: bool, loc: OptLocId };
+    pub const ConstString = struct { result: ValueId, ty: types.TypeId, text: StrId, loc: OptLocId };
+    pub const ConstNull = struct { result: ValueId, ty: types.TypeId, loc: OptLocId };
+    pub const ConstUndef = struct { result: ValueId, ty: types.TypeId, loc: OptLocId };
 
-    pub const Alloca = struct { result: ValueId, ty: types.TypeId, count: OptValueId, @"align": u32 };
-    pub const Load = struct { result: ValueId, ty: types.TypeId, ptr: ValueId, @"align": u32 };
-    pub const Store = struct { result: ValueId, ty: types.TypeId, ptr: ValueId, value: ValueId, @"align": u32 };
+    pub const Alloca = struct { result: ValueId, ty: types.TypeId, count: OptValueId, @"align": u32, loc: OptLocId };
+    pub const Load = struct { result: ValueId, ty: types.TypeId, ptr: ValueId, @"align": u32, loc: OptLocId };
+    pub const Store = struct { result: ValueId, ty: types.TypeId, ptr: ValueId, value: ValueId, @"align": u32, loc: OptLocId };
     pub const GepIndex = union(enum) { Const: u64, Value: ValueId };
     pub const Gep = struct {
         result: ValueId,
         ty: types.TypeId,
         base: ValueId, // pointer
         indices: RangeGepIndex,
+        loc: OptLocId,
     };
 
-    pub const TupleMake = struct { result: ValueId, ty: types.TypeId, elems: RangeValue };
-    pub const ArrayMake = struct { result: ValueId, ty: types.TypeId, elems: RangeValue };
+    pub const TupleMake = struct { result: ValueId, ty: types.TypeId, elems: RangeValue, loc: OptLocId };
+    pub const ArrayMake = struct { result: ValueId, ty: types.TypeId, elems: RangeValue, loc: OptLocId };
     pub const StructFieldInit = struct { index: u32, name: dod.OptStrId, value: ValueId };
     pub const Attribute = struct { name: StrId, value: OptValueId };
 
-    pub const StructMake = struct { result: ValueId, ty: types.TypeId, fields: RangeStructFieldInit };
+    pub const StructMake = struct { result: ValueId, ty: types.TypeId, fields: RangeStructFieldInit, loc: OptLocId };
 
-    pub const ExtractElem = struct { result: ValueId, ty: types.TypeId, agg: ValueId, index: u32 };
-    pub const InsertElem = struct { result: ValueId, ty: types.TypeId, agg: ValueId, index: u32, value: ValueId };
-    pub const ExtractField = struct { result: ValueId, ty: types.TypeId, agg: ValueId, index: u32, name: dod.OptStrId };
-    pub const InsertField = struct { result: ValueId, ty: types.TypeId, agg: ValueId, index: u32, value: ValueId, name: dod.OptStrId };
+    pub const ExtractElem = struct { result: ValueId, ty: types.TypeId, agg: ValueId, index: u32, loc: OptLocId };
+    pub const InsertElem = struct { result: ValueId, ty: types.TypeId, agg: ValueId, index: u32, value: ValueId, loc: OptLocId };
+    pub const ExtractField = struct { result: ValueId, ty: types.TypeId, agg: ValueId, index: u32, name: dod.OptStrId, loc: OptLocId };
+    pub const InsertField = struct { result: ValueId, ty: types.TypeId, agg: ValueId, index: u32, value: ValueId, name: dod.OptStrId, loc: OptLocId };
 
-    pub const Index = struct { result: ValueId, ty: types.TypeId, base: ValueId, index: ValueId };
-    pub const AddressOf = struct { result: ValueId, ty: types.TypeId, value: ValueId };
-    pub const GlobalAddr = struct { result: ValueId, ty: types.TypeId, name: StrId };
+    pub const Index = struct { result: ValueId, ty: types.TypeId, base: ValueId, index: ValueId, loc: OptLocId };
+    pub const AddressOf = struct { result: ValueId, ty: types.TypeId, value: ValueId, loc: OptLocId };
+    pub const GlobalAddr = struct { result: ValueId, ty: types.TypeId, name: StrId, loc: OptLocId };
 
-    pub const Select = struct { result: ValueId, ty: types.TypeId, cond: ValueId, then_value: ValueId, else_value: ValueId };
+    pub const Select = struct { result: ValueId, ty: types.TypeId, cond: ValueId, then_value: ValueId, else_value: ValueId, loc: OptLocId };
 
-    pub const Call = struct { result: ValueId, ty: types.TypeId, callee: StrId, args: RangeValue };
-    pub const IndirectCall = struct { result: ValueId, ty: types.TypeId, callee: ValueId, args: RangeValue };
-    pub const MlirBlock = struct { result: OptValueId, ty: types.TypeId, kind: ast.MlirKind, text: StrId, args: RangeValue };
-    pub const VariantMake = struct { result: ValueId, ty: types.TypeId, tag: u32, payload: OptValueId, payload_ty: types.TypeId };
-    pub const VariantTag = struct { result: ValueId, ty: types.TypeId, value: ValueId };
-    pub const VariantPayloadPtr = struct { result: ValueId, ty: types.TypeId, value: ValueId };
-    pub const UnionMake = struct { result: ValueId, ty: types.TypeId, field_index: u32, value: ValueId };
-    pub const UnionField = struct { result: ValueId, ty: types.TypeId, base: ValueId, field_index: u32 };
-    pub const UnionFieldPtr = struct { result: ValueId, ty: types.TypeId, base: ValueId, field_index: u32 };
-    pub const ComplexMake = struct { result: ValueId, ty: types.TypeId, re: ValueId, im: ValueId };
-    pub const RangeMake = struct { result: ValueId, ty: types.TypeId, start: ValueId, end: ValueId, inclusive: ValueId };
+    pub const Call = struct { result: ValueId, ty: types.TypeId, callee: StrId, args: RangeValue, loc: OptLocId };
+    pub const IndirectCall = struct { result: ValueId, ty: types.TypeId, callee: ValueId, args: RangeValue, loc: OptLocId };
+    pub const MlirBlock = struct { result: OptValueId, ty: types.TypeId, kind: ast.MlirKind, text: StrId, args: RangeValue, loc: OptLocId };
+    pub const VariantMake = struct { result: ValueId, ty: types.TypeId, tag: u32, payload: OptValueId, payload_ty: types.TypeId, loc: OptLocId };
+    pub const VariantTag = struct { result: ValueId, ty: types.TypeId, value: ValueId, loc: OptLocId };
+    pub const VariantPayloadPtr = struct { result: ValueId, ty: types.TypeId, value: ValueId, loc: OptLocId };
+    pub const UnionMake = struct { result: ValueId, ty: types.TypeId, field_index: u32, value: ValueId, loc: OptLocId };
+    pub const UnionField = struct { result: ValueId, ty: types.TypeId, base: ValueId, field_index: u32, loc: OptLocId };
+    pub const UnionFieldPtr = struct { result: ValueId, ty: types.TypeId, base: ValueId, field_index: u32, loc: OptLocId };
+    pub const ComplexMake = struct { result: ValueId, ty: types.TypeId, re: ValueId, im: ValueId, loc: OptLocId };
+    pub const RangeMake = struct { result: ValueId, ty: types.TypeId, start: ValueId, end: ValueId, inclusive: ValueId, loc: OptLocId };
 
     // Terminator rows
-    pub const Return = struct { value: OptValueId };
-    pub const Edge = struct { dest: BlockId, args: RangeValue };
-    pub const Br = struct { edge: EdgeId };
-    pub const CondBr = struct { cond: ValueId, then_edge: EdgeId, else_edge: EdgeId };
-    pub const Case = struct { value: u64, edge: EdgeId };
-    pub const SwitchInt = struct { scrut: ValueId, cases: RangeCase, default_edge: EdgeId };
-    pub const Unreachable = struct {};
+    pub const Return = struct { value: OptValueId, loc: OptLocId };
+    pub const Edge = struct { dest: BlockId, args: RangeValue, loc: OptLocId };
+    pub const Br = struct { edge: EdgeId, loc: OptLocId };
+    pub const CondBr = struct { cond: ValueId, then_edge: EdgeId, else_edge: EdgeId, loc: OptLocId };
+    pub const Case = struct { value: u64, edge: EdgeId, loc: OptLocId };
+    pub const SwitchInt = struct { scrut: ValueId, cases: RangeCase, default_edge: EdgeId, loc: OptLocId };
+    pub const Unreachable = struct { loc: OptLocId };
 };
 
 pub const GepIndexId = dod.Index(Rows.GepIndex);
@@ -579,7 +582,14 @@ pub const Builder = struct {
     }
 
     // ---- instruction helpers ----
-    pub fn tirValue(self: *Builder, comptime kind: OpKind, blk: *BlockFrame, ty: types.TypeId, value: anytype) ValueId {
+    pub fn tirValue(
+        self: *Builder,
+        comptime kind: OpKind,
+        blk: *BlockFrame,
+        ty: types.TypeId,
+        loc: OptLocId,
+        value: anytype,
+    ) ValueId {
         const vid = self.freshValue();
         var v: RowT(kind) = undefined;
         v.result = vid;
@@ -587,79 +597,140 @@ pub const Builder = struct {
         inline for (@typeInfo(@TypeOf(value)).@"struct".fields) |f| {
             @field(v, f.name) = @field(value, f.name);
         }
+        v.loc = loc;
         const instr_id = self.t.instrs.add(kind, v);
         blk.instrs.append(self.gpa, instr_id) catch @panic("OOM");
         return vid;
     }
-    pub fn bin(self: *Builder, blk: *BlockFrame, comptime k: OpKind, ty: types.TypeId, l: ValueId, r: ValueId) ValueId {
+    pub fn bin(
+        self: *Builder,
+        blk: *BlockFrame,
+        comptime k: OpKind,
+        ty: types.TypeId,
+        l: ValueId,
+        r: ValueId,
+        loc: OptLocId,
+    ) ValueId {
         const vid = self.freshValue();
-        const iid = self.t.instrs.add(k, Rows.Bin2{ .result = vid, .ty = ty, .lhs = l, .rhs = r });
+        const iid = self.t.instrs.add(k, Rows.Bin2{ .result = vid, .ty = ty, .lhs = l, .rhs = r, .loc = loc });
         blk.instrs.append(self.gpa, iid) catch @panic("OOM");
         return vid;
     }
-    pub fn binBool(self: *Builder, blk: *BlockFrame, comptime k: OpKind, l: ValueId, r: ValueId) ValueId {
+    pub fn binBool(
+        self: *Builder,
+        blk: *BlockFrame,
+        comptime k: OpKind,
+        l: ValueId,
+        r: ValueId,
+        loc: OptLocId,
+    ) ValueId {
         const bty = self.t.type_store.tBool();
         const vid = self.freshValue();
-        const iid = self.t.instrs.add(k, Rows.Bin2{ .result = vid, .ty = bty, .lhs = l, .rhs = r });
+        const iid = self.t.instrs.add(k, Rows.Bin2{ .result = vid, .ty = bty, .lhs = l, .rhs = r, .loc = loc });
         blk.instrs.append(self.gpa, iid) catch @panic("OOM");
         return vid;
     }
-    pub fn call(self: *Builder, blk: *BlockFrame, ty: types.TypeId, callee: StrId, args: []const ValueId) ValueId {
+    pub fn call(
+        self: *Builder,
+        blk: *BlockFrame,
+        ty: types.TypeId,
+        callee: StrId,
+        args: []const ValueId,
+        loc: OptLocId,
+    ) ValueId {
         const r = self.t.instrs.val_list_pool.pushMany(self.gpa, args);
         const vid = self.freshValue();
-        const iid = self.t.instrs.add(.Call, Rows.Call{ .result = vid, .ty = ty, .callee = callee, .args = r });
+        const iid = self.t.instrs.add(.Call, Rows.Call{ .result = vid, .ty = ty, .callee = callee, .args = r, .loc = loc });
         blk.instrs.append(self.gpa, iid) catch @panic("OOM");
         return vid;
     }
-    pub fn indirectCall(self: *Builder, blk: *BlockFrame, ty: types.TypeId, callee: ValueId, args: []const ValueId) ValueId {
+    pub fn indirectCall(
+        self: *Builder,
+        blk: *BlockFrame,
+        ty: types.TypeId,
+        callee: ValueId,
+        args: []const ValueId,
+        loc: OptLocId,
+    ) ValueId {
         const r = self.t.instrs.val_list_pool.pushMany(self.gpa, args);
         const vid = self.freshValue();
-        const iid = self.t.instrs.add(.IndirectCall, Rows.IndirectCall{ .result = vid, .ty = ty, .callee = callee, .args = r });
+        const iid = self.t.instrs.add(.IndirectCall, Rows.IndirectCall{ .result = vid, .ty = ty, .callee = callee, .args = r, .loc = loc });
         blk.instrs.append(self.gpa, iid) catch @panic("OOM");
         return vid;
     }
-    pub fn indexOp(self: *Builder, blk: *BlockFrame, ty: types.TypeId, base: ValueId, idx: ValueId) ValueId {
+    pub fn indexOp(
+        self: *Builder,
+        blk: *BlockFrame,
+        ty: types.TypeId,
+        base: ValueId,
+        idx: ValueId,
+        loc: OptLocId,
+    ) ValueId {
         const vid = self.freshValue();
-        const iid = self.t.instrs.add(.Index, Rows.Index{ .result = vid, .ty = ty, .base = base, .index = idx });
+        const iid = self.t.instrs.add(.Index, Rows.Index{ .result = vid, .ty = ty, .base = base, .index = idx, .loc = loc });
         blk.instrs.append(self.gpa, iid) catch @panic("OOM");
         return vid;
     }
-    pub fn rangeMake(self: *Builder, blk: *BlockFrame, ty: types.TypeId, start: ValueId, end: ValueId, inclusive: ValueId) ValueId {
+    pub fn rangeMake(
+        self: *Builder,
+        blk: *BlockFrame,
+        ty: types.TypeId,
+        start: ValueId,
+        end: ValueId,
+        inclusive: ValueId,
+        loc: OptLocId,
+    ) ValueId {
         const vid = self.freshValue();
-        const iid = self.t.instrs.add(.RangeMake, Rows.RangeMake{ .result = vid, .ty = ty, .start = start, .end = end, .inclusive = inclusive });
+        const iid = self.t.instrs.add(
+            .RangeMake,
+            Rows.RangeMake{ .result = vid, .ty = ty, .start = start, .end = end, .inclusive = inclusive, .loc = loc },
+        );
         blk.instrs.append(self.gpa, iid) catch @panic("OOM");
         return vid;
     }
     pub fn intern(self: *Builder, s: []const u8) StrId {
         return self.t.instrs.strs.intern(s);
     }
-    pub fn un1(self: *Builder, blk: *BlockFrame, comptime k: OpKind, ty: types.TypeId, v: ValueId) ValueId {
+    pub fn un1(
+        self: *Builder,
+        blk: *BlockFrame,
+        comptime k: OpKind,
+        ty: types.TypeId,
+        v: ValueId,
+        loc: OptLocId,
+    ) ValueId {
         const vid = self.freshValue();
-        const iid = self.t.instrs.add(k, Rows.Un1{ .result = vid, .ty = ty, .value = v });
+        const iid = self.t.instrs.add(k, Rows.Un1{ .result = vid, .ty = ty, .value = v, .loc = loc });
         blk.instrs.append(self.gpa, iid) catch @panic("OOM");
         return vid;
     }
-    pub fn constNull(self: *Builder, blk: *BlockFrame, ty: types.TypeId) ValueId {
+    pub fn constNull(self: *Builder, blk: *BlockFrame, ty: types.TypeId, loc: OptLocId) ValueId {
         const vid = self.freshValue();
-        const iid = self.t.instrs.add(.ConstNull, Rows.ConstNull{ .result = vid, .ty = ty });
+        const iid = self.t.instrs.add(.ConstNull, Rows.ConstNull{ .result = vid, .ty = ty, .loc = loc });
         blk.instrs.append(self.gpa, iid) catch @panic("OOM");
         return vid;
     }
-    pub fn tupleMake(self: *Builder, blk: *BlockFrame, ty: types.TypeId, elems: []const ValueId) ValueId {
+    pub fn tupleMake(self: *Builder, blk: *BlockFrame, ty: types.TypeId, elems: []const ValueId, loc: OptLocId) ValueId {
         const r = self.t.instrs.value_pool.pushMany(self.gpa, elems);
         const vid = self.freshValue();
-        const iid = self.t.instrs.add(.TupleMake, Rows.TupleMake{ .result = vid, .ty = ty, .elems = r });
+        const iid = self.t.instrs.add(.TupleMake, Rows.TupleMake{ .result = vid, .ty = ty, .elems = r, .loc = loc });
         blk.instrs.append(self.gpa, iid) catch @panic("OOM");
         return vid;
     }
-    pub fn arrayMake(self: *Builder, blk: *BlockFrame, ty: types.TypeId, elems: []const ValueId) ValueId {
+    pub fn arrayMake(self: *Builder, blk: *BlockFrame, ty: types.TypeId, elems: []const ValueId, loc: OptLocId) ValueId {
         const r = self.t.instrs.value_pool.pushMany(self.gpa, elems);
         const vid = self.freshValue();
-        const iid = self.t.instrs.add(.ArrayMake, Rows.ArrayMake{ .result = vid, .ty = ty, .elems = r });
+        const iid = self.t.instrs.add(.ArrayMake, Rows.ArrayMake{ .result = vid, .ty = ty, .elems = r, .loc = loc });
         blk.instrs.append(self.gpa, iid) catch @panic("OOM");
         return vid;
     }
-    pub fn structMake(self: *Builder, blk: *BlockFrame, ty: types.TypeId, fields: []const Rows.StructFieldInit) ValueId {
+    pub fn structMake(
+        self: *Builder,
+        blk: *BlockFrame,
+        ty: types.TypeId,
+        fields: []const Rows.StructFieldInit,
+        loc: OptLocId,
+    ) ValueId {
         var ids = self.gpa.alloc(StructFieldInitId, fields.len) catch @panic("OOM");
         defer self.gpa.free(ids);
         var i: usize = 0;
@@ -668,29 +739,64 @@ pub const Builder = struct {
         }
         const r = self.t.instrs.sfi_pool.pushMany(self.gpa, ids);
         const vid = self.freshValue();
-        const iid = self.t.instrs.add(.StructMake, Rows.StructMake{ .result = vid, .ty = ty, .fields = r });
+        const iid = self.t.instrs.add(.StructMake, Rows.StructMake{ .result = vid, .ty = ty, .fields = r, .loc = loc });
         blk.instrs.append(self.gpa, iid) catch @panic("OOM");
         return vid;
     }
-    pub fn extractElem(self: *Builder, blk: *BlockFrame, ty: types.TypeId, agg: ValueId, index: u32) ValueId {
+    pub fn extractElem(
+        self: *Builder,
+        blk: *BlockFrame,
+        ty: types.TypeId,
+        agg: ValueId,
+        index: u32,
+        loc: OptLocId,
+    ) ValueId {
         const vid = self.freshValue();
-        const iid = self.t.instrs.add(.ExtractElem, Rows.ExtractElem{ .result = vid, .ty = ty, .agg = agg, .index = index });
+        const iid = self.t.instrs.add(.ExtractElem, Rows.ExtractElem{ .result = vid, .ty = ty, .agg = agg, .index = index, .loc = loc });
         blk.instrs.append(self.gpa, iid) catch @panic("OOM");
         return vid;
     }
-    pub fn insertElem(self: *Builder, blk: *BlockFrame, ty: types.TypeId, agg: ValueId, index: u32, value: ValueId) ValueId {
+    pub fn insertElem(
+        self: *Builder,
+        blk: *BlockFrame,
+        ty: types.TypeId,
+        agg: ValueId,
+        index: u32,
+        value: ValueId,
+        loc: OptLocId,
+    ) ValueId {
         const vid = self.freshValue();
-        const iid = self.t.instrs.add(.InsertElem, Rows.InsertElem{ .result = vid, .ty = ty, .agg = agg, .index = index, .value = value });
+        const iid = self.t.instrs.add(
+            .InsertElem,
+            Rows.InsertElem{ .result = vid, .ty = ty, .agg = agg, .index = index, .value = value, .loc = loc },
+        );
         blk.instrs.append(self.gpa, iid) catch @panic("OOM");
         return vid;
     }
-    pub fn extractField(self: *Builder, blk: *BlockFrame, ty: types.TypeId, agg: ValueId, index: u32) ValueId {
+    pub fn extractField(
+        self: *Builder,
+        blk: *BlockFrame,
+        ty: types.TypeId,
+        agg: ValueId,
+        index: u32,
+        loc: OptLocId,
+    ) ValueId {
         const vid = self.freshValue();
-        const iid = self.t.instrs.add(.ExtractField, Rows.ExtractField{ .result = vid, .ty = ty, .agg = agg, .index = index, .name = .none() });
+        const iid = self.t.instrs.add(
+            .ExtractField,
+            Rows.ExtractField{ .result = vid, .ty = ty, .agg = agg, .index = index, .name = .none(), .loc = loc },
+        );
         blk.instrs.append(self.gpa, iid) catch @panic("OOM");
         return vid;
     }
-    pub fn extractFieldNamed(self: *Builder, blk: *BlockFrame, ty: types.TypeId, agg: ValueId, name: StrId) ValueId {
+    pub fn extractFieldNamed(
+        self: *Builder,
+        blk: *BlockFrame,
+        ty: types.TypeId,
+        agg: ValueId,
+        name: StrId,
+        loc: OptLocId,
+    ) ValueId {
         const vid = self.freshValue();
         const iid = self.t.instrs.add(
             .ExtractField,
@@ -700,6 +806,7 @@ pub const Builder = struct {
                 .agg = agg,
                 .index = 0, // ignored when name is provided
                 .name = .some(name),
+                .loc = loc,
             },
         );
         blk.instrs.append(self.gpa, iid) catch @panic("OOM");
@@ -721,54 +828,80 @@ pub const Builder = struct {
         _ = self.t.funcs.global_pool.push(self.gpa, idx);
         return idx;
     }
-    pub fn edge(self: *Builder, dest: BlockId, args: []const ValueId) EdgeId {
+    pub fn edge(self: *Builder, dest: BlockId, args: []const ValueId, loc: OptLocId) EdgeId {
         const r = self.t.instrs.value_pool.pushMany(self.gpa, args);
-        return self.t.terms.Edge.add(self.gpa, .{ .dest = dest, .args = r });
+        return self.t.terms.Edge.add(self.gpa, .{ .dest = dest, .args = r, .loc = loc });
     }
-    pub fn br(self: *Builder, blk: *BlockFrame, dest: BlockId, args: []const ValueId) !void {
-        const e = self.edge(dest, args);
-        const tid = self.t.terms.add(.Br, .{ .edge = e });
+    pub fn br(self: *Builder, blk: *BlockFrame, dest: BlockId, args: []const ValueId, loc: OptLocId) !void {
+        const e = self.edge(dest, args, loc);
+        const tid = self.t.terms.add(.Br, .{ .edge = e, .loc = loc });
         blk.term = .some(tid);
     }
-    pub fn condBr(self: *Builder, blk: *BlockFrame, cond: ValueId, then_dest: BlockId, then_args: []const ValueId, else_dest: BlockId, else_args: []const ValueId) !void {
-        const te = self.edge(then_dest, then_args);
-        const ee = self.edge(else_dest, else_args);
-        const tid = self.t.terms.add(.CondBr, .{ .cond = cond, .then_edge = te, .else_edge = ee });
+    pub fn condBr(
+        self: *Builder,
+        blk: *BlockFrame,
+        cond: ValueId,
+        then_dest: BlockId,
+        then_args: []const ValueId,
+        else_dest: BlockId,
+        else_args: []const ValueId,
+        loc: OptLocId,
+    ) !void {
+        const te = self.edge(then_dest, then_args, loc);
+        const ee = self.edge(else_dest, else_args, loc);
+        const tid = self.t.terms.add(.CondBr, .{ .cond = cond, .then_edge = te, .else_edge = ee, .loc = loc });
         blk.term = OptTermId.some(tid);
     }
-    pub fn setReturn(self: *Builder, blk: *BlockFrame, value: OptValueId) !void {
-        const tid = self.t.terms.add(.Return, .{ .value = value });
+    pub fn setReturn(self: *Builder, blk: *BlockFrame, value: OptValueId, loc: OptLocId) !void {
+        const tid = self.t.terms.add(.Return, .{ .value = value, .loc = loc });
         blk.term = OptTermId.some(tid);
     }
-    pub fn setReturnVal(self: *Builder, blk: *BlockFrame, v: ValueId) !void {
-        return self.setReturn(blk, OptValueId.some(v));
+    pub fn setReturnVal(self: *Builder, blk: *BlockFrame, v: ValueId, loc: OptLocId) !void {
+        return self.setReturn(blk, OptValueId.some(v), loc);
     }
-    pub fn setReturnVoid(self: *Builder, blk: *BlockFrame) !void {
-        return self.setReturn(blk, OptValueId.none());
+    pub fn setReturnVoid(self: *Builder, blk: *BlockFrame, loc: OptLocId) !void {
+        return self.setReturn(blk, OptValueId.none(), loc);
     }
-    pub fn setUnreachable(self: *Builder, blk: *BlockFrame) !void {
-        const tid = self.t.terms.add(.Unreachable, .{});
+    pub fn setUnreachable(self: *Builder, blk: *BlockFrame, loc: OptLocId) !void {
+        const tid = self.t.terms.add(.Unreachable, .{ .loc = loc });
         blk.term = OptTermId.some(tid);
     }
 
-    pub fn switchInt(self: *Builder, blk: *BlockFrame, scrut: ValueId, case_vals: []const u64, case_dests: []const SwitchDest, default_dest: BlockId, default_args: []const ValueId) !void {
+    pub fn switchInt(
+        self: *Builder,
+        blk: *BlockFrame,
+        scrut: ValueId,
+        case_vals: []const u64,
+        case_dests: []const SwitchDest,
+        default_dest: BlockId,
+        default_args: []const ValueId,
+        loc: OptLocId,
+    ) !void {
         std.debug.assert(case_vals.len == case_dests.len);
         var case_ids = self.gpa.alloc(CaseId, case_vals.len) catch @panic("OOM");
         defer self.gpa.free(case_ids);
         var i: usize = 0;
         while (i < case_vals.len) : (i += 1) {
-            const e = self.edge(case_dests[i].dest, case_dests[i].args);
-            case_ids[i] = self.t.terms.Case.add(self.gpa, .{ .value = case_vals[i], .edge = e });
+            const e = self.edge(case_dests[i].dest, case_dests[i].args, loc);
+            case_ids[i] = self.t.terms.Case.add(self.gpa, .{ .value = case_vals[i], .edge = e, .loc = loc });
         }
         const crange = self.t.terms.case_pool.pushMany(self.gpa, case_ids);
-        const def_e = self.edge(default_dest, default_args);
-        const tid = self.t.terms.add(.SwitchInt, .{ .scrut = scrut, .cases = crange, .default_edge = def_e });
+        const def_e = self.edge(default_dest, default_args, loc);
+        const tid = self.t.terms.add(.SwitchInt, .{ .scrut = scrut, .cases = crange, .default_edge = def_e, .loc = loc });
         blk.term = .some(tid);
     }
 
-    pub fn addCall(self: *Builder, blk: *BlockFrame, result: ValueId, ty: types.TypeId, callee: StrId, args: []const ValueId) InstrId {
+    pub fn addCall(
+        self: *Builder,
+        blk: *BlockFrame,
+        result: ValueId,
+        ty: types.TypeId,
+        callee: StrId,
+        args: []const ValueId,
+        loc: OptLocId,
+    ) InstrId {
         const r = self.t.instrs.val_list_pool.pushMany(self.gpa, args);
-        const row: Rows.Call = .{ .result = result, .ty = ty, .callee = callee, .args = r };
+        const row: Rows.Call = .{ .result = result, .ty = ty, .callee = callee, .args = r, .loc = loc };
         const id = self.t.instrs.add(.Call, row);
         blk.instrs.append(self.gpa, id) catch @panic("OOM");
         return id;
@@ -782,9 +915,10 @@ pub const Builder = struct {
         kind: ast.MlirKind,
         text: StrId,
         args: []const ValueId,
+        loc: OptLocId,
     ) InstrId {
         const args_range = self.t.instrs.value_pool.pushMany(self.gpa, args);
-        const row: Rows.MlirBlock = .{ .result = .some(result), .ty = ty, .kind = kind, .text = text, .args = args_range };
+        const row: Rows.MlirBlock = .{ .result = .some(result), .ty = ty, .kind = kind, .text = text, .args = args_range, .loc = loc };
         const id = self.t.instrs.add(.MlirBlock, row);
         blk.instrs.append(self.gpa, id) catch @panic("OOM");
         return id;
@@ -797,10 +931,17 @@ pub const Builder = struct {
     pub fn gepValue(self: *Builder, val: ValueId) GepIndexId {
         return self.t.instrs.GepIndex.add(self.gpa, .{ .Value = val });
     }
-    pub fn gep(self: *Builder, blk: *BlockFrame, ty: types.TypeId, base: ValueId, idxs: []const GepIndexId) ValueId {
+    pub fn gep(
+        self: *Builder,
+        blk: *BlockFrame,
+        ty: types.TypeId,
+        base: ValueId,
+        idxs: []const GepIndexId,
+        loc: OptLocId,
+    ) ValueId {
         const r = self.t.instrs.gep_pool.pushMany(self.gpa, idxs);
         const vid = self.freshValue();
-        const iid = self.t.instrs.add(.Gep, Rows.Gep{ .result = vid, .ty = ty, .base = base, .indices = r });
+        const iid = self.t.instrs.add(.Gep, Rows.Gep{ .result = vid, .ty = ty, .base = base, .indices = r, .loc = loc });
         blk.instrs.append(self.gpa, iid) catch @panic("OOM");
         return vid;
     }
