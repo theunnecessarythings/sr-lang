@@ -4644,13 +4644,6 @@ pub const LLVMAttributes = struct {
         };
     }
 
-    /// Creates a self-referencing LLVM DISubprogramAttr attribute.
-    pub fn getLLVMDISubprogramAttrRecSelf(recId: Attribute) Attribute {
-        return Attribute{
-            .handle = c.mlirLLVMDISubprogramAttrGetRecSelf(recId.handle),
-        };
-    }
-
     /// Creates a LLVM DISubprogramAttr attribute.
     pub fn getLLVMDISubprogramAttr(
         ctx: Context,
@@ -4668,9 +4661,9 @@ pub const LLVMAttributes = struct {
         type_: Attribute,
         retainedNodes: []const Attribute,
         annotations: []const Attribute,
-    ) LogicalResult {
-        return LogicalResult{
-            .inner = c.mlirLLVMDISubprogramAttrGet(
+    ) Attribute {
+        return Attribute{
+            .handle = c.mlirLLVMDISubprogramAttrGet(
                 ctx.handle,
                 recId.handle,
                 @intCast(isRecSelf),

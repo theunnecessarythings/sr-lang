@@ -21,6 +21,10 @@ const LineInfo = struct {
     col: usize,
 };
 
+const DW_TAG_base_type: u32 = 0x24;
+const DW_TAG_pointer_type: u32 = 0x0f;
+const POINTER_SIZE_BITS: u64 = 64;
+
 const DebugFileInfo = struct {
     file_attr: mlir.Attribute,
     compile_unit_attr: mlir.Attribute,
@@ -65,6 +69,7 @@ pub const MlirCodegen = struct {
     di_null_type_attr: mlir.Attribute,
     di_subroutine_null_type_attr: mlir.Attribute,
     di_empty_expr_attr: mlir.Attribute,
+    di_type_cache: std.AutoHashMap(types.TypeId, mlir.Attribute),
     next_di_id: usize = 0,
 
     // common LLVM/arith types (opaque pointers on master)
@@ -204,6 +209,7 @@ pub const MlirCodegen = struct {
             .di_null_type_attr = mlir.Attribute.empty(),
             .di_subroutine_null_type_attr = mlir.Attribute.empty(),
             .di_empty_expr_attr = mlir.Attribute.empty(),
+            .di_type_cache = std.AutoHashMap(types.TypeId, mlir.Attribute).init(gpa),
             .next_di_id = 0,
             .void_ty = void_ty,
             .i1_ty = mlir.Type.getSignlessIntegerType(ctx, 1),
@@ -226,6 +232,7 @@ pub const MlirCodegen = struct {
         self.resetDebugCaches();
         self.di_subprograms.deinit();
         self.di_files.deinit();
+        self.di_type_cache.deinit();
         self.func_syms.deinit();
         self.str_pool.deinit();
         self.block_map.deinit();
@@ -317,6 +324,7 @@ pub const MlirCodegen = struct {
         self.di_null_type_attr = mlir.Attribute.empty();
         self.di_subroutine_null_type_attr = mlir.Attribute.empty();
         self.di_empty_expr_attr = mlir.Attribute.empty();
+        self.di_type_cache.clearRetainingCapacity();
         self.next_di_id = 0;
         var mod_op = self.module.getOperation();
         _ = mod_op.removeDiscardableAttributeByName(mlir.StringRef.from("llvm.dbg.cu"));
@@ -515,6 +523,10 @@ pub const MlirCodegen = struct {
         line: u32,
         file_id: u32,
         loc: tir.OptLocId,
+        ret_ty: types.TypeId,
+        params: []const tir.ParamId,
+        store: *const types.TypeStore,
+        t: *const tir.TIR,
     ) !*DebugSubprogramInfo {
         if (self.di_subprograms.getPtr(f_id)) |info| return info;
 
@@ -525,14 +537,14 @@ pub const MlirCodegen = struct {
         defer self.gpa.free(id_payload);
         const id_attr = mlir.Attribute.distinctAttrCreate(self.strAttr(id_payload));
 
-        const rec_attr = mlir.Attribute.distinctAttrCreate(mlir.Attribute.unitAttrGet(self.mlir_ctx));
+        const flags_definition: u64 = 1 << 3; // DISPFlagDefinition
+        const type_attr = try self.buildDISubroutineTypeAttr(store, ret_ty, params, t);
+        const rec_attr = mlir.Attribute.null();
 
-        const flags_definition: u64 = 1;
-        const type_attr = try self.ensureDISubroutineNullTypeAttr();
-        const result = mlir.LLVMAttributes.getLLVMDISubprogramAttr(
+        const attr = mlir.LLVMAttributes.getLLVMDISubprogramAttr(
             self.mlir_ctx,
             rec_attr,
-            true,
+            false,
             id_attr,
             file_info.compile_unit_attr,
             file_info.file_attr,
@@ -546,10 +558,45 @@ pub const MlirCodegen = struct {
             &[_]mlir.Attribute{},
             &[_]mlir.Attribute{},
         );
-        if (result.failure()) return error.DebugAttrParseFailed;
-
-        const attr = mlir.LLVMAttributes.getLLVMDISubprogramAttrRecSelf(rec_attr);
         if (attr.isNull()) return error.DebugAttrParseFailed;
+
+        // The builder may materialize the recursive placeholder if it could not
+        // populate the subprogram payload. In that case, fall back to parsing a
+        // concrete attribute so downstream scopes always reference a full
+        // definition instead of the unbound recursion marker.
+        if (mlir.LLVMAttributes.getLLVMDISubprogramAttrCompileUnit(attr).isNull()) {
+            const file_text = try self.ownedAttributeText(file_info.file_attr);
+            defer self.gpa.free(file_text);
+            const cu_text = try self.ownedAttributeText(file_info.compile_unit_attr);
+            defer self.gpa.free(cu_text);
+            const name_text = try self.ownedAttributeText(func_name_attr);
+            defer self.gpa.free(name_text);
+            const linkage_text = try self.ownedAttributeText(linkage_name_attr);
+            defer self.gpa.free(linkage_text);
+            const type_text = try self.ownedAttributeText(type_attr);
+            defer self.gpa.free(type_text);
+            const id_text = try self.ownedAttributeText(id_attr);
+            defer self.gpa.free(id_text);
+
+            const subp_text = try std.fmt.allocPrint(
+                self.gpa,
+                "#llvm.di_subprogram<id = {s}, compileUnit = {s}, scope = {s}, name = {s}, linkageName = {s}, file = {s}, line = {d}, scopeLine = {d}, subprogramFlags = Definition, type = {s}>",
+                .{ id_text, cu_text, file_text, name_text, linkage_text, file_text, line, line, type_text },
+            );
+            defer self.gpa.free(subp_text);
+
+            const parsed = mlir.Attribute.parseGet(self.mlir_ctx, mlir.StringRef.from(subp_text));
+            if (!parsed.isNull()) {
+                try self.di_subprograms.put(f_id, .{
+                    .attr = parsed,
+                    .file_id = file_id,
+                    .line = line,
+                    .scope_line = line,
+                    .loc = loc,
+                });
+                return self.di_subprograms.getPtr(f_id).?;
+            }
+        }
 
         try self.di_subprograms.put(f_id, .{
             .attr = attr,
@@ -577,18 +624,109 @@ pub const MlirCodegen = struct {
         return attr;
     }
 
-    fn ensureDISubroutineNullTypeAttr(self: *MlirCodegen) !mlir.Attribute {
-        if (!self.di_subroutine_null_type_attr.isNull()) return self.di_subroutine_null_type_attr;
+    fn ensureDIType(self: *MlirCodegen, store: *const types.TypeStore, ty: types.TypeId) !mlir.Attribute {
+        if (self.di_type_cache.get(ty)) |cached| return cached;
 
-        const null_type = try self.ensureDINullTypeAttr();
+        const kind = store.getKind(ty);
+        const attr: mlir.Attribute = switch (kind) {
+            .Void => return mlir.Attribute.null(),
+            .Bool => mlir.LLVMAttributes.getLLVMDIBasicTypeAttr(
+                self.mlir_ctx,
+                DW_TAG_base_type,
+                self.strAttr("bool"),
+                1,
+                mlir.LLVMAttributes.LLVMTypeEncoding.Boolean,
+            ),
+            .I8 => self.diSignedIntType("i8", 8),
+            .I16 => self.diSignedIntType("i16", 16),
+            .I32 => self.diSignedIntType("i32", 32),
+            .I64 => self.diSignedIntType("i64", 64),
+            .U8 => self.diUnsignedIntType("u8", 8),
+            .U16 => self.diUnsignedIntType("u16", 16),
+            .U32 => self.diUnsignedIntType("u32", 32),
+            .U64 => self.diUnsignedIntType("u64", 64),
+            .Usize => self.diUnsignedIntType("usize", POINTER_SIZE_BITS),
+            .F32 => mlir.LLVMAttributes.getLLVMDIBasicTypeAttr(
+                self.mlir_ctx,
+                DW_TAG_base_type,
+                self.strAttr("f32"),
+                32,
+                mlir.LLVMAttributes.LLVMTypeEncoding.FloatT,
+            ),
+            .F64 => mlir.LLVMAttributes.getLLVMDIBasicTypeAttr(
+                self.mlir_ctx,
+                DW_TAG_base_type,
+                self.strAttr("f64"),
+                64,
+                mlir.LLVMAttributes.LLVMTypeEncoding.FloatT,
+            ),
+            .Ptr => blk: {
+                const info = store.get(.Ptr, ty);
+                const base = try self.ensureDIType(store, info.elem);
+                break :blk mlir.LLVMAttributes.getLLVMDIDerivedTypeAttr(
+                    self.mlir_ctx,
+                    DW_TAG_pointer_type,
+                    self.strAttr(""),
+                    base,
+                    POINTER_SIZE_BITS,
+                    @intCast(POINTER_SIZE_BITS),
+                    0,
+                    -1,
+                    mlir.Attribute.null(),
+                );
+            },
+            else => try self.ensureDINullTypeAttr(),
+        };
+
+        if (!attr.isNull()) try self.di_type_cache.put(ty, attr);
+        return attr;
+    }
+
+    fn diSignedIntType(self: *MlirCodegen, name: []const u8, bits: u64) mlir.Attribute {
+        return mlir.LLVMAttributes.getLLVMDIBasicTypeAttr(
+            self.mlir_ctx,
+            DW_TAG_base_type,
+            self.strAttr(name),
+            bits,
+            mlir.LLVMAttributes.LLVMTypeEncoding.Signed,
+        );
+    }
+
+    fn diUnsignedIntType(self: *MlirCodegen, name: []const u8, bits: u64) mlir.Attribute {
+        return mlir.LLVMAttributes.getLLVMDIBasicTypeAttr(
+            self.mlir_ctx,
+            DW_TAG_base_type,
+            self.strAttr(name),
+            bits,
+            mlir.LLVMAttributes.LLVMTypeEncoding.Unsigned,
+        );
+    }
+
+    fn buildDISubroutineTypeAttr(
+        self: *MlirCodegen,
+        store: *const types.TypeStore,
+        ret_ty: types.TypeId,
+        params: []const tir.ParamId,
+        t: *const tir.TIR,
+    ) !mlir.Attribute {
+        var types_buf = std.ArrayList(mlir.Attribute).init(self.gpa);
+        defer types_buf.deinit();
+
+        const ret_attr = try self.ensureDIType(store, ret_ty);
+        try types_buf.append(ret_attr);
+
+        for (params) |pid| {
+            const param = t.funcs.Param.get(pid);
+            const param_attr = try self.ensureDIType(store, param.ty);
+            try types_buf.append(param_attr);
+        }
+
         const attr = mlir.LLVMAttributes.getLLVMDISubroutineTypeAttr(
             self.mlir_ctx,
             0,
-            &.{null_type},
+            types_buf.items,
         );
         if (attr.isNull()) return error.DebugAttrParseFailed;
-
-        self.di_subroutine_null_type_attr = attr;
         return attr;
     }
 
@@ -606,6 +744,7 @@ pub const MlirCodegen = struct {
         params: []const tir.ParamId,
         entry_block: mlir.Block,
         t: *const tir.TIR,
+        store: *const types.TypeStore,
     ) !void {
         if (!enable_debug_info) return;
         const subp_ptr = self.di_subprograms.getPtr(f_id) orelse return;
@@ -623,7 +762,6 @@ pub const MlirCodegen = struct {
 
         const file_info = self.ensureDebugFile(subp.file_id) catch return;
         const expr_attr = self.ensureEmptyDIExpression() catch return;
-        const di_type = self.ensureDINullTypeAttr() catch return;
 
         const prev_loc = self.pushLocation(subp.loc);
         defer self.loc = prev_loc;
@@ -632,6 +770,8 @@ pub const MlirCodegen = struct {
             const p = t.funcs.Param.get(pid);
             if (p.name.isNone()) continue;
             const name = t.instrs.strs.get(p.name.unwrap());
+            var di_type = self.ensureDIType(store, p.ty) catch self.ensureDINullTypeAttr() catch continue;
+            if (di_type.isNull()) di_type = self.ensureDINullTypeAttr() catch continue;
             const var_attr = mlir.LLVMAttributes.getLLVMDILocalVariableAttr(
                 self.mlir_ctx,
                 subp.attr,
@@ -892,6 +1032,10 @@ pub const MlirCodegen = struct {
                         line,
                         loc_record.file_id,
                         fn_loc,
+                        f.result,
+                        params,
+                        store,
+                        t,
                     ) catch null;
                     if (maybe_subp) |subp| {
                         fnop.setInherentAttributeByName(mlir.StringRef.from("llvm.di.subprogram"), subp.attr);
@@ -966,7 +1110,7 @@ pub const MlirCodegen = struct {
         }
 
         if (enable_debug_info) {
-            self.emitParameterDebugInfo(f_id, params[0..n_formals], entry_block, t) catch {};
+            self.emitParameterDebugInfo(f_id, params[0..n_formals], entry_block, t, store) catch {};
         }
 
         // pre-create remaining blocks and map their params + SR types
