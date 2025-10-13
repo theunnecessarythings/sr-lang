@@ -308,7 +308,7 @@ pub const LowerTir = struct {
     fn exprOptLoc(self: *const LowerTir, a: *const ast.Ast, id: ast.ExprId) tir.OptLocId {
         const kind = a.exprs.index.kinds.items[id.toRaw()];
         inline for (@typeInfo(ast.ExprKind).@"enum".fields) |field| {
-            const tag = @enumFromInt(ast.ExprKind, field.value);
+            const tag: ast.ExprKind = @enumFromInt(field.value);
             if (tag == kind) {
                 const row = a.exprs.get(tag, id);
                 return self.rowOptLoc(row);
@@ -324,7 +324,7 @@ pub const LowerTir = struct {
     fn patternOptLoc(self: *const LowerTir, a: *const ast.Ast, id: ast.PatternId) tir.OptLocId {
         const kind = a.pats.index.kinds.items[id.toRaw()];
         inline for (@typeInfo(ast.PatternKind).@"enum".fields) |field| {
-            const tag = @enumFromInt(ast.PatternKind, field.value);
+            const tag: ast.PatternKind = @enumFromInt(field.value);
             if (tag == kind) {
                 const row = a.pats.get(tag, id);
                 return self.rowOptLoc(row);
@@ -340,7 +340,7 @@ pub const LowerTir = struct {
     fn stmtOptLoc(self: *const LowerTir, a: *const ast.Ast, id: ast.StmtId) tir.OptLocId {
         const kind = a.stmts.index.kinds.items[id.toRaw()];
         inline for (@typeInfo(ast.StmtKind).@"enum".fields) |field| {
-            const tag = @enumFromInt(ast.StmtKind, field.value);
+            const tag: ast.StmtKind = @enumFromInt(field.value);
             if (tag == kind) {
                 const row = a.stmts.get(tag, id);
                 return self.stmtRowOptLoc(a, tag, row);
@@ -2623,6 +2623,7 @@ pub const LowerTir = struct {
         expected_ty: ?types.TypeId,
     ) anyerror!tir.ValueId {
         const row = a.exprs.get(.Catch, id);
+        const loc = self.exprOptLoc(a, id);
         const out_ty_guess = expected_ty orelse (self.getExprType(id) orelse self.context.type_store.tVoid());
         const produce_value = (expected_ty != null) and !self.isVoid(out_ty_guess);
         const loc = self.exprOptLoc(a, id);
