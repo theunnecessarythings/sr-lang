@@ -308,7 +308,7 @@ pub const LowerTir = struct {
     fn exprOptLoc(self: *const LowerTir, a: *const ast.Ast, id: ast.ExprId) tir.OptLocId {
         const kind = a.exprs.index.kinds.items[id.toRaw()];
         inline for (@typeInfo(ast.ExprKind).@"enum".fields) |field| {
-            const tag = @enumFromInt(ast.ExprKind, field.value);
+            const tag: ast.ExprKind = @enumFromInt(field.value);
             if (tag == kind) {
                 const row = a.exprs.get(tag, id);
                 return self.rowOptLoc(row);
@@ -324,7 +324,7 @@ pub const LowerTir = struct {
     fn patternOptLoc(self: *const LowerTir, a: *const ast.Ast, id: ast.PatternId) tir.OptLocId {
         const kind = a.pats.index.kinds.items[id.toRaw()];
         inline for (@typeInfo(ast.PatternKind).@"enum".fields) |field| {
-            const tag = @enumFromInt(ast.PatternKind, field.value);
+            const tag: ast.PatternKind = @enumFromInt(field.value);
             if (tag == kind) {
                 const row = a.pats.get(tag, id);
                 return self.rowOptLoc(row);
@@ -340,7 +340,7 @@ pub const LowerTir = struct {
     fn stmtOptLoc(self: *const LowerTir, a: *const ast.Ast, id: ast.StmtId) tir.OptLocId {
         const kind = a.stmts.index.kinds.items[id.toRaw()];
         inline for (@typeInfo(ast.StmtKind).@"enum".fields) |field| {
-            const tag = @enumFromInt(ast.StmtKind, field.value);
+            const tag: ast.StmtKind = @enumFromInt(field.value);
             if (tag == kind) {
                 const row = a.stmts.get(tag, id);
                 return self.stmtRowOptLoc(a, tag, row);
@@ -2623,6 +2623,7 @@ pub const LowerTir = struct {
         expected_ty: ?types.TypeId,
     ) anyerror!tir.ValueId {
         const row = a.exprs.get(.Catch, id);
+        const loc = self.exprOptLoc(a, id);
         const out_ty_guess = expected_ty orelse (self.getExprType(id) orelse self.context.type_store.tVoid());
         const produce_value = (expected_ty != null) and !self.isVoid(out_ty_guess);
         const loc = self.exprOptLoc(a, id);
@@ -3973,7 +3974,7 @@ pub const LowerTir = struct {
                 const sfields = me.ast.exprs.sfv_pool.slice(row.fields);
                 const st = self.context.type_store.get(.Struct, expected_ty);
                 const exp_fields = self.context.type_store.field_pool.slice(st.fields);
-                const loc = self.exprOptLoc(me.ast, eid);
+                const loc = self.exprOptLoc(&me.ast, eid);
                 var fields = self.gpa.alloc(tir.Rows.StructFieldInit, exp_fields.len) catch return null;
                 var j: usize = 0;
                 while (j < exp_fields.len) : (j += 1) {
@@ -3993,7 +3994,7 @@ pub const LowerTir = struct {
             .Literal => {
                 const lit = me.ast.exprs.get(.Literal, eid);
                 const k = self.context.type_store.getKind(expected_ty);
-                const loc = self.exprOptLoc(me.ast, eid);
+                const loc = self.exprOptLoc(&me.ast, eid);
                 switch (k) {
                     .U8, .U16, .U32, .U64, .I8, .I16, .I32, .I64 => {
                         const info = switch (lit.data) {
@@ -4428,7 +4429,6 @@ pub const LowerTir = struct {
         const src_default_ty = src_ty_opt orelse target_ty;
         const vty = if (target_kind == .Any) src_default_ty else target_ty;
         const expr_loc = self.exprOptLoc(a, src_expr);
-        const pat_loc = self.patternOptLoc(a, pid);
         switch (pk) {
             .Binding => {
                 const guess_ty = src_ty_opt orelse target_ty;
