@@ -3,7 +3,7 @@ const dod = @import("cst.zig");
 const ast = @import("ast.zig");
 const types = @import("types.zig");
 
-const OptLocId = dod.OptLocId;
+pub const OptLocId = dod.OptLocId;
 
 // Typed IR (TIR)
 // Columnar stores with typed indices and contiguous pools.

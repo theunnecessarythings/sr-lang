@@ -236,6 +236,7 @@ pub const LowerTir = struct {
             .kind = row.kind,
             .text = row.text,
             .args = args_range,
+            .loc = .none(),
         });
         blk.instrs.append(self.gpa, iid) catch @panic("OOM");
         if (expected_ty) |want| {
@@ -2344,9 +2345,9 @@ pub const LowerTir = struct {
                     const flag = blk.builder.extractField(blk, bool_ty, optional_val, 0, tir.OptLocId.none()); // Extract is_some flag
 
                     const result = if (row.op == .eq)
-                        blk.builder.binBool(blk, .CmpEq, flag, blk.builder.tirValue(.ConstBool, blk, bool_ty, tir.OptLocId.none(), .{ .value = false }))
+                        blk.builder.binBool(blk, .CmpEq, flag, blk.builder.tirValue(.ConstBool, blk, bool_ty, tir.OptLocId.none(), .{ .value = false }), .none())
                     else
-                        blk.builder.binBool(blk, .CmpNe, flag, blk.builder.tirValue(.ConstBool, blk, bool_ty, tir.OptLocId.none(), .{ .value = false }));
+                        blk.builder.binBool(blk, .CmpNe, flag, blk.builder.tirValue(.ConstBool, blk, bool_ty, tir.OptLocId.none(), .{ .value = false }), .none());
 
                     return result;
                 }
@@ -3952,14 +3953,14 @@ pub const LowerTir = struct {
 
                 for (elems, 0..) |pat_elem, i| {
                     if (sl.has_rest and i == sl.rest_index) continue;
-                    const elem_val = blk.builder.indexOp(blk, elem_ty, value, blk.builder.tirValue(.ConstInt, blk, self.context.type_store.tUsize(), tir.OptLocId.none(), .{ .value = i }));
+                    const elem_val = blk.builder.indexOp(blk, elem_ty, value, blk.builder.tirValue(.ConstInt, blk, self.context.type_store.tUsize(), .none(), .{ .value = i }), .none());
                     try self.bindPattern(a, env, f, blk, pat_elem, elem_val, elem_ty);
                 }
 
                 if (sl.has_rest and !sl.rest_binding.isNone()) {
                     const rest_pat = sl.rest_binding.unwrap();
                     const slice_ty = self.context.type_store.mkSlice(elem_ty);
-                    const start = blk.builder.tirValue(.ConstInt, blk, self.context.type_store.tUsize(), tir.OptLocId.none(), .{ .value = sl.rest_index });
+                    const start = blk.builder.tirValue(.ConstInt, blk, self.context.type_store.tUsize(), .none(), .{ .value = sl.rest_index });
 
                     var len_val: tir.ValueId = undefined;
                     const vty_kind = self.context.type_store.getKind(vty);
@@ -4534,7 +4535,8 @@ pub const LowerTir = struct {
                     const want = f.builder.tirValue(
                         .ConstInt,
                         blk,
-                        self.context.type_store.tI32(), tir.OptLocId.none(),
+                        self.context.type_store.tI32(),
+                        tir.OptLocId.none(),
                         .{ .value = @as(u64, @intCast(idx)) },
                     );
                     return blk.builder.binBool(blk, .CmpEq, tag, want, tir.OptLocId.none());
@@ -4615,7 +4617,7 @@ pub const LowerTir = struct {
                 var i: usize = 0;
                 while (i < required_len) : (i += 1) {
                     const pat_elem = elems[i];
-                    const elem_val = blk.builder.indexOp(blk, elem_ty, scrut, blk.builder.tirValue(.ConstInt, blk, self.context.type_store.tUsize(), tir.OptLocId.none(), .{ .value = i }));
+                    const elem_val = blk.builder.indexOp(blk, elem_ty, scrut, blk.builder.tirValue(.ConstInt, blk, self.context.type_store.tUsize(), tir.OptLocId.none(), .{ .value = i }), .none());
                     const elem_match = try self.matchPattern(a, env, f, blk, pat_elem, elem_val, elem_ty);
                     all_elements_match = blk.builder.binBool(blk, .LogicalAnd, all_elements_match, elem_match, tir.OptLocId.none());
                 }
