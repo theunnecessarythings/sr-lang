@@ -239,6 +239,110 @@ pub const MlirCodegen = struct {
         return prev;
     }
 
+    fn instrOptLoc(self: *MlirCodegen, t: *const tir.TIR, ins_id: tir.InstrId) tir.OptLocId {
+        _ = self;
+        const kind = t.instrs.index.kinds.items[ins_id.toRaw()];
+        return switch (kind) {
+            .ConstInt => t.instrs.get(.ConstInt, ins_id).loc,
+            .ConstFloat => t.instrs.get(.ConstFloat, ins_id).loc,
+            .ConstBool => t.instrs.get(.ConstBool, ins_id).loc,
+            .ConstString => t.instrs.get(.ConstString, ins_id).loc,
+            .ConstNull => t.instrs.get(.ConstNull, ins_id).loc,
+            .ConstUndef => t.instrs.get(.ConstUndef, ins_id).loc,
+            .RangeMake => t.instrs.get(.RangeMake, ins_id).loc,
+            .BinWrapAdd => t.instrs.get(.BinWrapAdd, ins_id).loc,
+            .BinWrapSub => t.instrs.get(.BinWrapSub, ins_id).loc,
+            .BinWrapMul => t.instrs.get(.BinWrapMul, ins_id).loc,
+            .BinSatAdd => t.instrs.get(.BinSatAdd, ins_id).loc,
+            .BinSatSub => t.instrs.get(.BinSatSub, ins_id).loc,
+            .BinSatMul => t.instrs.get(.BinSatMul, ins_id).loc,
+            .BinSatShl => t.instrs.get(.BinSatShl, ins_id).loc,
+            .Add => t.instrs.get(.Add, ins_id).loc,
+            .Sub => t.instrs.get(.Sub, ins_id).loc,
+            .Mul => t.instrs.get(.Mul, ins_id).loc,
+            .Div => t.instrs.get(.Div, ins_id).loc,
+            .Mod => t.instrs.get(.Mod, ins_id).loc,
+            .Shl => t.instrs.get(.Shl, ins_id).loc,
+            .Shr => t.instrs.get(.Shr, ins_id).loc,
+            .BitAnd => t.instrs.get(.BitAnd, ins_id).loc,
+            .BitOr => t.instrs.get(.BitOr, ins_id).loc,
+            .BitXor => t.instrs.get(.BitXor, ins_id).loc,
+            .CmpEq => t.instrs.get(.CmpEq, ins_id).loc,
+            .CmpNe => t.instrs.get(.CmpNe, ins_id).loc,
+            .CmpLt => t.instrs.get(.CmpLt, ins_id).loc,
+            .CmpLe => t.instrs.get(.CmpLe, ins_id).loc,
+            .CmpGt => t.instrs.get(.CmpGt, ins_id).loc,
+            .CmpGe => t.instrs.get(.CmpGe, ins_id).loc,
+            .LogicalAnd => t.instrs.get(.LogicalAnd, ins_id).loc,
+            .LogicalOr => t.instrs.get(.LogicalOr, ins_id).loc,
+            .LogicalNot => t.instrs.get(.LogicalNot, ins_id).loc,
+            .CastNormal => t.instrs.get(.CastNormal, ins_id).loc,
+            .CastBit => t.instrs.get(.CastBit, ins_id).loc,
+            .CastSaturate => t.instrs.get(.CastSaturate, ins_id).loc,
+            .CastWrap => t.instrs.get(.CastWrap, ins_id).loc,
+            .CastChecked => t.instrs.get(.CastChecked, ins_id).loc,
+            .Alloca => t.instrs.get(.Alloca, ins_id).loc,
+            .Load => t.instrs.get(.Load, ins_id).loc,
+            .Store => t.instrs.get(.Store, ins_id).loc,
+            .Gep => t.instrs.get(.Gep, ins_id).loc,
+            .GlobalAddr => t.instrs.get(.GlobalAddr, ins_id).loc,
+            .ComplexMake => t.instrs.get(.ComplexMake, ins_id).loc,
+            .TupleMake => t.instrs.get(.TupleMake, ins_id).loc,
+            .ArrayMake => t.instrs.get(.ArrayMake, ins_id).loc,
+            .StructMake => t.instrs.get(.StructMake, ins_id).loc,
+            .ExtractElem => t.instrs.get(.ExtractElem, ins_id).loc,
+            .InsertElem => t.instrs.get(.InsertElem, ins_id).loc,
+            .ExtractField => t.instrs.get(.ExtractField, ins_id).loc,
+            .InsertField => t.instrs.get(.InsertField, ins_id).loc,
+            .Index => t.instrs.get(.Index, ins_id).loc,
+            .AddressOf => t.instrs.get(.AddressOf, ins_id).loc,
+            .Select => t.instrs.get(.Select, ins_id).loc,
+            .Call => t.instrs.get(.Call, ins_id).loc,
+            .IndirectCall => t.instrs.get(.IndirectCall, ins_id).loc,
+            .VariantMake => t.instrs.get(.VariantMake, ins_id).loc,
+            .VariantTag => t.instrs.get(.VariantTag, ins_id).loc,
+            .VariantPayloadPtr => t.instrs.get(.VariantPayloadPtr, ins_id).loc,
+            .UnionMake => t.instrs.get(.UnionMake, ins_id).loc,
+            .UnionField => t.instrs.get(.UnionField, ins_id).loc,
+            .UnionFieldPtr => t.instrs.get(.UnionFieldPtr, ins_id).loc,
+            .MlirBlock => t.instrs.get(.MlirBlock, ins_id).loc,
+        };
+    }
+
+    fn termOptLoc(self: *MlirCodegen, t: *const tir.TIR, term_id: tir.TermId) tir.OptLocId {
+        _ = self;
+        const kind = t.terms.index.kinds.items[term_id.toRaw()];
+        return switch (kind) {
+            .Return => t.terms.get(.Return, term_id).loc,
+            .Br => t.terms.get(.Br, term_id).loc,
+            .CondBr => t.terms.get(.CondBr, term_id).loc,
+            .SwitchInt => t.terms.get(.SwitchInt, term_id).loc,
+            .Unreachable => t.terms.get(.Unreachable, term_id).loc,
+        };
+    }
+
+    fn blockOptLoc(self: *MlirCodegen, block_id: tir.BlockId, t: *const tir.TIR) tir.OptLocId {
+        _ = self;
+        const block = t.funcs.Block.get(block_id);
+        const instrs = t.instrs.instr_pool.slice(block.instrs);
+        for (instrs) |ins_id| {
+            const loc = self.instrOptLoc(t, ins_id);
+            if (!loc.isNone()) return loc;
+        }
+        return self.termOptLoc(t, block.term);
+    }
+
+    fn functionOptLoc(self: *MlirCodegen, f_id: tir.FuncId, t: *const tir.TIR) tir.OptLocId {
+        _ = self;
+        const f = t.funcs.Function.get(f_id);
+        const blocks = t.funcs.block_pool.slice(f.blocks);
+        for (blocks) |block_id| {
+            const loc = self.blockOptLoc(block_id, t);
+            if (!loc.isNone()) return loc;
+        }
+        return tir.OptLocId.none();
+    }
+
     fn getFileSource(self: *MlirCodegen, file_id: u32) ![]const u8 {
         if (self.file_cache.get(file_id)) |buf| return buf;
         const data = try self.context.source_manager.read(file_id);
@@ -448,8 +552,13 @@ pub const MlirCodegen = struct {
             }
         }
 
+        const fn_loc = self.functionOptLoc(f_id, t);
+        const prev_loc = self.pushLocation(fn_loc);
+        const fn_mlir_loc = self.loc;
+        self.loc = prev_loc;
+
         const region = mlir.Region.create();
-        const fnop = OpBuilder.init("func.func", self.loc).builder()
+        const fnop = OpBuilder.init("func.func", fn_mlir_loc).builder()
             .add_attributes(attrs.items)
             .add_regions(&.{region})
             .build();
@@ -476,6 +585,7 @@ pub const MlirCodegen = struct {
         self.cur_block = null;
 
         const f = t.funcs.Function.get(f_id);
+        const fn_opt_loc = self.functionOptLoc(f_id, t);
         const func_name = t.instrs.strs.get(f.name);
         const finfo = self.func_syms.get(func_name).?;
         var func_op = finfo.op;
@@ -483,6 +593,7 @@ pub const MlirCodegen = struct {
 
         const n_formals = finfo.n_formals;
         const params = t.funcs.param_pool.slice(f.params);
+        const blocks = t.funcs.block_pool.slice(f.blocks);
 
         // entry block arg types
         var entry_arg_tys = try self.gpa.alloc(mlir.Type, n_formals);
@@ -493,14 +604,20 @@ pub const MlirCodegen = struct {
         }
         const entry_locs = try self.gpa.alloc(mlir.Location, n_formals);
         defer self.gpa.free(entry_locs);
-        for (entry_locs) |*L| L.* = self.loc;
+
+        const entry_block_loc_opt = if (blocks.len > 0)
+            self.blockOptLoc(blocks[0], t)
+        else
+            tir.OptLocId.none();
+        const entry_prev = self.pushLocation(if (!entry_block_loc_opt.isNone()) entry_block_loc_opt else fn_opt_loc);
+        const entry_mlir_loc = self.loc;
+        self.loc = entry_prev;
+        for (entry_locs) |*L| L.* = entry_mlir_loc;
 
         var entry_block = mlir.Block.create(entry_arg_tys, entry_locs);
         region.appendOwnedBlock(entry_block);
         self.cur_region = region;
         self.cur_block = entry_block;
-
-        const blocks = t.funcs.block_pool.slice(f.blocks);
 
         if (blocks.len > 0) {
             const entry_bid = blocks[0];
@@ -528,10 +645,16 @@ pub const MlirCodegen = struct {
                 defer self.gpa.free(arg_tys);
                 var arg_locs = try self.gpa.alloc(mlir.Location, m);
                 defer self.gpa.free(arg_locs);
+
+                const block_loc_opt = self.blockOptLoc(b_id, t);
+                const block_prev = self.pushLocation(if (!block_loc_opt.isNone()) block_loc_opt else fn_opt_loc);
+                const block_mlir_loc = self.loc;
+                self.loc = block_prev;
+
                 for (b_params, 0..) |bp_id, i| {
                     const bp = t.funcs.Param.get(bp_id);
                     arg_tys[i] = try self.llvmTypeOf(store, bp.ty);
-                    arg_locs[i] = self.loc;
+                    arg_locs[i] = block_mlir_loc;
                 }
 
                 const b = mlir.Block.create(arg_tys, arg_locs);
@@ -2274,6 +2397,8 @@ pub const MlirCodegen = struct {
         switch (kind) {
             .Return => {
                 const p = t.terms.get(.Return, term_id);
+                const prev_loc = self.pushLocation(p.loc);
+                defer self.loc = prev_loc;
                 var func_op = self.cur_block.?.getParentOperation();
                 var name_attr = func_op.getInherentAttributeByName(mlir.StringRef.from("sym_name"));
                 const finfo = self.func_syms.get(name_attr.stringAttrGetValue().toSlice()).?;
@@ -2304,6 +2429,8 @@ pub const MlirCodegen = struct {
 
             .Br => {
                 const p = t.terms.get(.Br, term_id);
+                const prev_loc = self.pushLocation(p.loc);
+                defer self.loc = prev_loc;
                 const edge = t.terms.Edge.get(p.edge);
                 var dest = self.block_map.get(edge.dest).?;
                 const args = t.instrs.value_pool.slice(edge.args);
@@ -2324,6 +2451,8 @@ pub const MlirCodegen = struct {
 
             .CondBr => {
                 const p = t.terms.get(.CondBr, term_id);
+                const prev_loc = self.pushLocation(p.loc);
+                defer self.loc = prev_loc;
                 const cond = self.value_map.get(p.cond).?;
 
                 const tedge = t.terms.Edge.get(p.then_edge);
@@ -2365,6 +2494,9 @@ pub const MlirCodegen = struct {
             },
 
             .Unreachable => {
+                const p = t.terms.get(.Unreachable, term_id);
+                const prev_loc = self.pushLocation(p.loc);
+                defer self.loc = prev_loc;
                 const op = OpBuilder.init("llvm.unreachable", self.loc).builder().build();
                 self.append(op);
             },
