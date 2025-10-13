@@ -24,8 +24,6 @@ const LineInfo = struct {
 const DebugFileInfo = struct {
     file_attr: mlir.Attribute,
     compile_unit_attr: mlir.Attribute,
-    file_text: []const u8,
-    compile_unit_text: []const u8,
 };
 
 const DebugSubprogramInfo = struct {
@@ -65,6 +63,7 @@ pub const MlirCodegen = struct {
     di_subprograms: std.AutoHashMap(tir.FuncId, DebugSubprogramInfo),
 
     di_null_type_attr: mlir.Attribute,
+    di_subroutine_null_type_attr: mlir.Attribute,
     di_empty_expr_attr: mlir.Attribute,
     next_di_id: usize = 0,
 
@@ -203,6 +202,7 @@ pub const MlirCodegen = struct {
             .di_files = std.AutoHashMap(u32, DebugFileInfo).init(gpa),
             .di_subprograms = std.AutoHashMap(tir.FuncId, DebugSubprogramInfo).init(gpa),
             .di_null_type_attr = mlir.Attribute.empty(),
+            .di_subroutine_null_type_attr = mlir.Attribute.empty(),
             .di_empty_expr_attr = mlir.Attribute.empty(),
             .next_di_id = 0,
             .void_ty = void_ty,
@@ -312,16 +312,14 @@ pub const MlirCodegen = struct {
     }
 
     pub fn resetDebugCaches(self: *MlirCodegen) void {
-        var file_it = self.di_files.valueIterator();
-        while (file_it.next()) |info| {
-            self.gpa.free(@constCast(info.file_text));
-            self.gpa.free(@constCast(info.compile_unit_text));
-        }
         self.di_files.clearRetainingCapacity();
         self.di_subprograms.clearRetainingCapacity();
         self.di_null_type_attr = mlir.Attribute.empty();
+        self.di_subroutine_null_type_attr = mlir.Attribute.empty();
         self.di_empty_expr_attr = mlir.Attribute.empty();
         self.next_di_id = 0;
+        var mod_op = self.module.getOperation();
+        _ = mod_op.removeDiscardableAttributeByName(mlir.StringRef.from("llvm.dbg.cu"));
     }
 
     fn instrOptLoc(self: *MlirCodegen, t: *const tir.TIR, ins_id: tir.InstrId) tir.OptLocId {
@@ -446,7 +444,6 @@ pub const MlirCodegen = struct {
         if (self.di_files.getPtr(file_id)) |info| return info;
 
         const path = self.context.source_manager.get(file_id) orelse "unknown";
-        std.debug.print("ensureDebugFile for: {s}\n", .{path});
         const base = std.fs.path.basename(path);
         const dir = std.fs.path.dirname(path) orelse ".";
 
@@ -455,32 +452,58 @@ pub const MlirCodegen = struct {
         const file_attr = mlir.LLVMAttributes.getLLVMDIFileAttr(self.mlir_ctx, base_attr, dir_attr);
         if (file_attr.isNull()) return error.DebugAttrParseFailed;
 
-        const file_text_owned = try self.ownedAttributeText(file_attr);
-        errdefer self.gpa.free(file_text_owned);
-
         const producer_attr = self.strAttr("sr-lang");
+        const id_payload = try std.fmt.allocPrint(self.gpa, "cu_{d}", .{self.nextDistinctId()});
+        defer self.gpa.free(id_payload);
+        const id_payload_attr = self.strAttr(id_payload);
+        const id_attr = mlir.Attribute.distinctAttrCreate(id_payload_attr);
+
+        const file_text_owned = try self.ownedAttributeText(file_attr);
+        defer self.gpa.free(file_text_owned);
         const producer_text = try self.ownedAttributeText(producer_attr);
         defer self.gpa.free(producer_text);
-
-        const id_payload_attr = self.strAttr("cu");
-        const id_payload_text = try self.ownedAttributeText(id_payload_attr);
-        defer self.gpa.free(id_payload_text);
+        const id_text = try self.ownedAttributeText(id_attr);
+        defer self.gpa.free(id_text);
 
         const cu_text = try std.fmt.allocPrint(
             self.gpa,
-            "#llvm.di_compile_unit<id = distinct[{d}]<{s}>, sourceLanguage = DW_LANG_C, file = {s}, producer = {s}, isOptimized = false, emissionKind = Full>",
-            .{ self.nextDistinctId(), id_payload_text, file_text_owned, producer_text },
+            "#llvm.di_compile_unit<id = {s}, sourceLanguage = DW_LANG_C, file = {s}, producer = {s}, isOptimized = false, emissionKind = Full>",
+            .{ id_text, file_text_owned, producer_text },
         );
-        errdefer self.gpa.free(cu_text);
+        defer self.gpa.free(cu_text);
 
         const cu_attr = mlir.Attribute.parseGet(self.mlir_ctx, mlir.StringRef.from(cu_text));
         if (cu_attr.isNull()) return error.DebugAttrParseFailed;
 
+        var mod_op = self.module.getOperation();
+        const dbg_name = mlir.StringRef.from("llvm.dbg.cu");
+        const existing = mod_op.getDiscardableAttributeByName(dbg_name);
+        if (existing.isNull()) {
+            const array_attr = mlir.Attribute.arrayAttrGet(self.mlir_ctx, &.{cu_attr});
+            mod_op.setDiscardableAttributeByName(dbg_name, array_attr);
+        } else {
+            const count = existing.arrayAttrGetNumElements();
+            var already_present = false;
+            var elements = std.ArrayList(mlir.Attribute).init(self.gpa);
+            defer elements.deinit();
+            var idx: usize = 0;
+            while (idx < count) : (idx += 1) {
+                const elem = existing.arrayAttrGetElement(idx);
+                if (!already_present and elem.equal(&cu_attr)) {
+                    already_present = true;
+                }
+                try elements.append(elem);
+            }
+            if (!already_present) {
+                try elements.append(cu_attr);
+                const array_attr = mlir.Attribute.arrayAttrGet(self.mlir_ctx, elements.items);
+                mod_op.setDiscardableAttributeByName(dbg_name, array_attr);
+            }
+        }
+
         try self.di_files.put(file_id, .{
             .file_attr = file_attr,
             .compile_unit_attr = cu_attr,
-            .file_text = file_text_owned,
-            .compile_unit_text = cu_text,
         });
         return self.di_files.getPtr(file_id).?;
     }
@@ -497,31 +520,35 @@ pub const MlirCodegen = struct {
 
         const file_info = try self.ensureDebugFile(file_id);
         const func_name_attr = self.strAttr(func_name);
-        const func_name_text = try self.ownedAttributeText(func_name_attr);
-        defer self.gpa.free(func_name_text);
+        const linkage_name_attr = func_name_attr;
+        const id_payload = try std.fmt.allocPrint(self.gpa, "sp_{d}", .{self.nextDistinctId()});
+        defer self.gpa.free(id_payload);
+        const id_attr = mlir.Attribute.distinctAttrCreate(self.strAttr(id_payload));
 
-        const id_payload_attr = self.strAttr("sp");
-        const id_payload_text = try self.ownedAttributeText(id_payload_attr);
-        defer self.gpa.free(id_payload_text);
+        const rec_attr = mlir.Attribute.distinctAttrCreate(mlir.Attribute.unitAttrGet(self.mlir_ctx));
 
-        const sp_text = try std.fmt.allocPrint(
-            self.gpa,
-            "#llvm.di_subprogram<id = distinct[{d}]<{s}>, compileUnit = {s}, scope = {s}, name = {s}, linkageName = {s}, file = {s}, line = {d}, scopeLine = {d}, subprogramFlags = Definition>",
-            .{
-                self.nextDistinctId(),
-                id_payload_text,
-                file_info.compile_unit_text,
-                file_info.file_text,
-                func_name_text,
-                func_name_text,
-                file_info.file_text,
-                line,
-                line,
-            },
+        const flags_definition: u64 = 1;
+        const type_attr = try self.ensureDISubroutineNullTypeAttr();
+        const result = mlir.LLVMAttributes.getLLVMDISubprogramAttr(
+            self.mlir_ctx,
+            rec_attr,
+            true,
+            id_attr,
+            file_info.compile_unit_attr,
+            file_info.file_attr,
+            func_name_attr,
+            linkage_name_attr,
+            file_info.file_attr,
+            line,
+            line,
+            flags_definition,
+            type_attr,
+            &[_]mlir.Attribute{},
+            &[_]mlir.Attribute{},
         );
-        defer self.gpa.free(sp_text);
+        if (result.failure()) return error.DebugAttrParseFailed;
 
-        const attr = mlir.Attribute.parseGet(self.mlir_ctx, mlir.StringRef.from(sp_text));
+        const attr = mlir.LLVMAttributes.getLLVMDISubprogramAttrRecSelf(rec_attr);
         if (attr.isNull()) return error.DebugAttrParseFailed;
 
         try self.di_subprograms.put(f_id, .{
@@ -547,6 +574,21 @@ pub const MlirCodegen = struct {
         const attr = mlir.LLVMAttributes.getLLVMDINullTypeAttr(self.mlir_ctx);
         if (attr.isNull()) return error.DebugAttrParseFailed;
         self.di_null_type_attr = attr;
+        return attr;
+    }
+
+    fn ensureDISubroutineNullTypeAttr(self: *MlirCodegen) !mlir.Attribute {
+        if (!self.di_subroutine_null_type_attr.isNull()) return self.di_subroutine_null_type_attr;
+
+        const null_type = try self.ensureDINullTypeAttr();
+        const attr = mlir.LLVMAttributes.getLLVMDISubroutineTypeAttr(
+            self.mlir_ctx,
+            0,
+            &.{null_type},
+        );
+        if (attr.isNull()) return error.DebugAttrParseFailed;
+
+        self.di_subroutine_null_type_attr = attr;
         return attr;
     }
 
