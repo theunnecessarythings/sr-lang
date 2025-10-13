@@ -1,0 +1,21 @@
+{
+  "name": "tree-sitter-sr",
+  "version": "0.1.0",
+  "description": "Tree-sitter grammar for the sr programming language",
+  "main": "index.js",
+  "scripts": {
+    "test": "tree-sitter test",
+    "build": "tree-sitter generate"
+  },
+  "keywords": [
+    "tree-sitter",
+    "parser",
+    "sr"
+  ],
+  "author": "sr-lang contributors",
+  "license": "MIT",
+  "dependencies": {},
+  "devDependencies": {
+    "tree-sitter-cli": "^0.22.0"
+  }
+}

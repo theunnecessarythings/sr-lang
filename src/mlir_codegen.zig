@@ -64,7 +64,6 @@ pub const MlirCodegen = struct {
     di_files: std.AutoHashMap(u32, DebugFileInfo),
     di_subprograms: std.AutoHashMap(tir.FuncId, DebugSubprogramInfo),
 
-    metadata_ty: mlir.Type,
     di_null_type_attr: mlir.Attribute,
     di_empty_expr_attr: mlir.Attribute,
     next_di_id: usize = 0,
@@ -86,6 +85,7 @@ pub const MlirCodegen = struct {
     // per-function state (reset each function)
     cur_region: ?mlir.Region = null,
     cur_block: ?mlir.Block = null,
+    current_scope: ?mlir.Attribute = null,
     block_map: std.AutoHashMap(tir.BlockId, mlir.Block),
     value_map: std.AutoHashMap(tir.ValueId, mlir.Value),
 
@@ -152,19 +152,20 @@ pub const MlirCodegen = struct {
     };
 
     const PrintBuffer = struct {
-        list: *std.ArrayList(u8),
+        list: *ArrayList(u8),
         had_error: *bool,
     };
 
-    fn printCallback(bytes: []const u8, user_data: anyopaque) callconv(.C) void {
+    fn printCallback(str: mlir.c.MlirStringRef, user_data: ?*anyopaque) callconv(.c) void {
         const buf: *PrintBuffer = @ptrCast(@alignCast(user_data));
+        const bytes = str.data[0..str.length];
         buf.list.appendSlice(bytes) catch {
             buf.had_error.* = true;
         };
     }
 
     fn ownedAttributeText(self: *MlirCodegen, attr: mlir.Attribute) ![]u8 {
-        var list = std.ArrayList(u8).init(self.gpa);
+        var list = ArrayList(u8).init(self.gpa);
         errdefer list.deinit();
 
         var had_error = false;
@@ -175,13 +176,13 @@ pub const MlirCodegen = struct {
         return try list.toOwnedSlice();
     }
 
-    fn ownedAttributeText(self: *MlirCodegen, attr: mlir.Attribute) ![]u8 {
-        var list: std.ArrayList(u8) = .empty;
-        errdefer list.deinit(self.gpa);
-        var sink = PrintBuffer{ .list = &list, .allocator = self.gpa };
-        attr.print(printCallback, &sink);
-        return list.toOwnedSlice(self.gpa);
-    }
+    // fn ownedAttributeText(self: *MlirCodegen, attr: mlir.Attribute) ![]u8 {
+    //     var list: std.ArrayList(u8) = .empty;
+    //     errdefer list.deinit(self.gpa);
+    //     var sink = PrintBuffer{ .list = &list, .allocator = self.gpa };
+    //     attr.print(printCallback, &sink);
+    //     return list.toOwnedSlice(self.gpa);
+    // }
 
     // ----------------------------------------------------------------
     // Init / Deinit
@@ -201,7 +202,6 @@ pub const MlirCodegen = struct {
             .file_cache = std.AutoHashMap(u32, []const u8).init(gpa),
             .di_files = std.AutoHashMap(u32, DebugFileInfo).init(gpa),
             .di_subprograms = std.AutoHashMap(tir.FuncId, DebugSubprogramInfo).init(gpa),
-            .metadata_ty = mlir.Type.empty(),
             .di_null_type_attr = mlir.Attribute.empty(),
             .di_empty_expr_attr = mlir.Attribute.empty(),
             .next_di_id = 0,
@@ -257,7 +257,6 @@ pub const MlirCodegen = struct {
         defer self.active_loc_store = null;
 
         self.loc_cache.clearRetainingCapacity();
-        self.resetDebugCaches();
         self.attachTargetInfo();
         try self.emitExternDecls(t, &context.type_store);
 
@@ -271,7 +270,7 @@ pub const MlirCodegen = struct {
         return self.module;
     }
 
-    fn mlirLocation(self: *MlirCodegen, opt_loc: tir.OptLocId) mlir.Location {
+    fn mlirFileLineColLocation(self: *MlirCodegen, opt_loc: tir.OptLocId) mlir.Location {
         if (opt_loc.isNone())
             // Preserve the current ambient location so callers can deliberately
             // keep emitting with whatever scope was active.
@@ -299,11 +298,20 @@ pub const MlirCodegen = struct {
 
     fn pushLocation(self: *MlirCodegen, opt_loc: tir.OptLocId) mlir.Location {
         const prev = self.loc;
-        self.loc = self.mlirLocation(opt_loc);
+        const file_loc = self.mlirFileLineColLocation(opt_loc);
+        if (self.current_scope) |s| {
+            if (s.isNull()) {
+                self.loc = file_loc;
+            } else {
+                self.loc = mlir.Location.fusedGet(self.mlir_ctx, &.{file_loc}, s);
+            }
+        } else {
+            self.loc = file_loc;
+        }
         return prev;
     }
 
-    fn resetDebugCaches(self: *MlirCodegen) void {
+    pub fn resetDebugCaches(self: *MlirCodegen) void {
         var file_it = self.di_files.valueIterator();
         while (file_it.next()) |info| {
             self.gpa.free(@constCast(info.file_text));
@@ -311,7 +319,6 @@ pub const MlirCodegen = struct {
         }
         self.di_files.clearRetainingCapacity();
         self.di_subprograms.clearRetainingCapacity();
-        self.metadata_ty = mlir.Type.empty();
         self.di_null_type_attr = mlir.Attribute.empty();
         self.di_empty_expr_attr = mlir.Attribute.empty();
         self.next_di_id = 0;
@@ -439,6 +446,7 @@ pub const MlirCodegen = struct {
         if (self.di_files.getPtr(file_id)) |info| return info;
 
         const path = self.context.source_manager.get(file_id) orelse "unknown";
+        std.debug.print("ensureDebugFile for: {s}\n", .{path});
         const base = std.fs.path.basename(path);
         const dir = std.fs.path.dirname(path) orelse ".";
 
@@ -460,7 +468,7 @@ pub const MlirCodegen = struct {
 
         const cu_text = try std.fmt.allocPrint(
             self.gpa,
-            "#llvm.di_compile_unit<id = distinct[{d}]<{s}>, source_language = DW_LANG_C, file = {s}, producer = {s}, is_optimized = false, runtime_version = 0, emission_kind = Full>",
+            "#llvm.di_compile_unit<id = distinct[{d}]<{s}>, sourceLanguage = DW_LANG_C, file = {s}, producer = {s}, isOptimized = false, emissionKind = Full>",
             .{ self.nextDistinctId(), id_payload_text, file_text_owned, producer_text },
         );
         errdefer self.gpa.free(cu_text);
@@ -498,7 +506,7 @@ pub const MlirCodegen = struct {
 
         const sp_text = try std.fmt.allocPrint(
             self.gpa,
-            "#llvm.di_subprogram<id = distinct[{d}]<{s}>, compile_unit = {s}, scope = {s}, name = {s}, linkageName = {s}, file = {s}, line = {d}, scopeLine = {d}, type = #llvm.di_subroutine_type<types = !llvm.array<[]>>, spFlags = DIFlagDefinition>",
+            "#llvm.di_subprogram<id = distinct[{d}]<{s}>, compileUnit = {s}, scope = {s}, name = {s}, linkageName = {s}, file = {s}, line = {d}, scopeLine = {d}, subprogramFlags = Definition>",
             .{
                 self.nextDistinctId(),
                 id_payload_text,
@@ -534,14 +542,6 @@ pub const MlirCodegen = struct {
         mod_op.setDiscardableAttributeByName(mlir.StringRef.from("llvm.data_layout"), dl);
     }
 
-    fn ensureMetadataType(self: *MlirCodegen) !mlir.Type {
-        if (!self.metadata_ty.isNull()) return self.metadata_ty;
-        const ty = mlir.Type.parseGet(self.mlir_ctx, mlir.StringRef.from("!llvm.metadata"));
-        if (ty.isNull()) return error.DebugAttrParseFailed;
-        self.metadata_ty = ty;
-        return ty;
-    }
-
     fn ensureDINullTypeAttr(self: *MlirCodegen) !mlir.Attribute {
         if (!self.di_null_type_attr.isNull()) return self.di_null_type_attr;
         const attr = mlir.LLVMAttributes.getLLVMDINullTypeAttr(self.mlir_ctx);
@@ -556,15 +556,6 @@ pub const MlirCodegen = struct {
         if (attr.isNull()) return error.DebugAttrParseFailed;
         self.di_empty_expr_attr = attr;
         return attr;
-    }
-
-    fn metadataConstant(self: *MlirCodegen, attr: mlir.Attribute, ty: mlir.Type) mlir.Value {
-        var op = OpBuilder.init("llvm.mlir.constant", self.loc).builder()
-            .add_results(&.{ty})
-            .add_attributes(&.{self.named("value", attr)})
-            .build();
-        self.append(op);
-        return op.getResult(0);
     }
 
     fn emitParameterDebugInfo(
@@ -589,14 +580,11 @@ pub const MlirCodegen = struct {
         if (!has_named) return;
 
         const file_info = self.ensureDebugFile(subp.file_id) catch return;
-        const meta_ty = self.ensureMetadataType() catch return;
         const expr_attr = self.ensureEmptyDIExpression() catch return;
         const di_type = self.ensureDINullTypeAttr() catch return;
 
         const prev_loc = self.pushLocation(subp.loc);
         defer self.loc = prev_loc;
-
-        const expr_value = self.metadataConstant(expr_attr, meta_ty);
 
         for (params, 0..) |pid, idx| {
             const p = t.funcs.Param.get(pid);
@@ -615,10 +603,14 @@ pub const MlirCodegen = struct {
             );
             if (var_attr.isNull()) continue;
 
-            const var_value = self.metadataConstant(var_attr, meta_ty);
             const arg_val = entry_block.getArgument(idx);
+            const attrs = [_]mlir.NamedAttribute{
+                self.named("varInfo", var_attr),
+                self.named("locationExpr", expr_attr),
+            };
             const dbg = OpBuilder.init("llvm.intr.dbg.value", self.loc).builder()
-                .add_operands(&.{ arg_val, var_value, expr_value })
+                .add_operands(&.{arg_val})
+                .add_attributes(&attrs)
                 .build();
             self.append(dbg);
         }
@@ -883,6 +875,8 @@ pub const MlirCodegen = struct {
         const fn_opt_loc = self.functionOptLoc(f_id, t);
         const func_name = t.instrs.strs.get(f.name);
         const finfo = self.func_syms.get(func_name).?;
+        self.current_scope = finfo.dbg_subprogram;
+        defer self.current_scope = null;
         var func_op = finfo.op;
         var region = func_op.getRegion(0);
 
@@ -2424,12 +2418,13 @@ pub const MlirCodegen = struct {
                     for (arg_vids) |arg_vid| {
                         const mlir_val = self.value_map.get(arg_vid).?;
 
-                        var str_buf: std.ArrayList(u8) = .empty;
-                        defer str_buf.deinit(self.gpa);
-                        var sink = PrintBuffer{ .list = &str_buf, .allocator = self.gpa };
+                        var str_buf = ArrayList(u8).init(self.gpa);
+                        defer str_buf.deinit();
+                        var had_error = false;
+                        var sink = PrintBuffer{ .list = &str_buf, .had_error = &had_error };
                         mlir_val.print(printCallback, &sink);
 
-                        const owned = try str_buf.toOwnedSlice(self.gpa);
+                        const owned = try str_buf.toOwnedSlice();
                         var trimmed: []const u8 = owned;
 
                         if (std.mem.indexOfScalar(u8, trimmed, '=')) |eq_idx| {
@@ -2585,9 +2580,10 @@ pub const MlirCodegen = struct {
         for (arg_types.items, 0..) |*ty, i| {
             if (i > 0) try writer.writeAll(", ");
             try writer.print("%arg{d}: ", .{i});
-            var type_str_buf: std.ArrayList(u8) = .empty;
-            defer type_str_buf.deinit(self.gpa);
-            var sink = PrintBuffer{ .list = &type_str_buf, .allocator = self.gpa };
+            var type_str_buf = ArrayList(u8).init(self.gpa);
+            defer type_str_buf.deinit();
+            var had_error = false;
+            var sink = PrintBuffer{ .list = &type_str_buf, .had_error = &had_error };
             ty.print(printCallback, &sink);
             try writer.writeAll(type_str_buf.items);
         }
@@ -2596,9 +2592,10 @@ pub const MlirCodegen = struct {
         const has_result = !result_ty.equal(self.void_ty);
         if (has_result) {
             try writer.writeAll(" -> ");
-            var type_str_buf: std.ArrayList(u8) = .empty;
-            defer type_str_buf.deinit(self.gpa);
-            var sink = PrintBuffer{ .list = &type_str_buf, .allocator = self.gpa };
+            var type_str_buf = ArrayList(u8).init(self.gpa);
+            defer type_str_buf.deinit();
+            var had_error = false;
+            var sink = PrintBuffer{ .list = &type_str_buf, .had_error = &had_error };
             result_ty.print(printCallback, &sink);
             try writer.writeAll(type_str_buf.items);
         }
@@ -2615,9 +2612,10 @@ pub const MlirCodegen = struct {
 
         if (has_result) {
             try writer.writeAll("  func.return %res : ");
-            var type_str_buf: std.ArrayList(u8) = .empty;
-            defer type_str_buf.deinit(self.gpa);
-            var sink = PrintBuffer{ .list = &type_str_buf, .allocator = self.gpa };
+            var type_str_buf = ArrayList(u8).init(self.gpa);
+            defer type_str_buf.deinit();
+            var had_error = false;
+            var sink = PrintBuffer{ .list = &type_str_buf, .had_error = &had_error };
             result_ty.print(printCallback, &sink);
             try writer.writeAll(type_str_buf.items);
             try writer.writeAll("\n");

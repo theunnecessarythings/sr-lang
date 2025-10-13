@@ -1,0 +1,29 @@
+==================
+Functions
+==================
+fn add<T>(a: i32, b: i32) -> i32 {
+  return a + b;
+}
+
+proc log(message: str) {
+  print(message);
+}
+---
+(source_file
+  (function_declaration
+    name: (identifier)
+    type_parameters: (type_parameters (identifier))
+    parameters: (parameters
+      (parameter pattern: (identifier) type: (basic_type))
+      (parameter pattern: (identifier) type: (basic_type)))
+    return_type: (basic_type)
+    body: (block
+      (statement
+        (return_statement (binary_expression (identifier) (identifier))))))
+  (procedure_declaration
+    name: (identifier)
+    parameters: (parameters
+      (parameter pattern: (identifier) type: (basic_type)))
+    body: (block
+      (statement
+        (expression_statement (call_expression function: (identifier) arguments: (arguments (identifier))))))))

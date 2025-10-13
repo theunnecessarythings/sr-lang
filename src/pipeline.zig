@@ -165,6 +165,7 @@ pub const Pipeline = struct {
 
         const mlir_ctx = compile.initMLIR(self.allocator);
         var gen = mlir_codegen.MlirCodegen.init(self.allocator, self.context, mlir_ctx);
+        gen.resetDebugCaches();
 
         // Resolve imports recursively and append their codegen (reuse resolver)
         try self.resolveImports(&ast, &gen, &name_to_prefix, &self.context.resolver);
@@ -258,7 +259,10 @@ pub const Pipeline = struct {
             const pref = name_to_prefix.get(imp) orelse computePrefix(self.allocator, imp) catch @panic("OOM");
             try mangleTIR(self.allocator, &me.tir, me.tir.instrs.strs, pref);
             // append TIR into same generator (emit into same module)
+            const original_debug_flag = mlir_codegen.enable_debug_info;
+            mlir_codegen.enable_debug_info = false;
             _ = try gen.emitModule(&me.tir, self.context, me.ast.exprs.locs);
+            mlir_codegen.enable_debug_info = original_debug_flag;
             if (self.context.diags.anyErrors()) {
                 return error.MlirCodegenFailed;
             }

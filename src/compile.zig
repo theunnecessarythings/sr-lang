@@ -176,7 +176,7 @@ pub fn convert_to_llvm_ir(module: mlir.c.MlirModule, print_ir: bool, link_args: 
         return error.TargetNotFound;
     }
 
-    const targetMachine = mlir.c.LLVMCreateTargetMachine(target, targetTriple, cpu, features, mlir.c.LLVMCodeGenLevelDefault, mlir.c.LLVMRelocPIC, mlir.c.LLVMCodeModelDefault);
+    const targetMachine = mlir.c.LLVMCreateTargetMachine(target, targetTriple, cpu, features, mlir.c.LLVMCodeGenLevelNone, mlir.c.LLVMRelocPIC, mlir.c.LLVMCodeModelDefault);
 
     defer {
         mlir.c.LLVMDisposeTargetMachine(targetMachine);
@@ -190,7 +190,7 @@ pub fn convert_to_llvm_ir(module: mlir.c.MlirModule, print_ir: bool, link_args: 
     defer mlir.c.LLVMDisposePassBuilderOptions(passBuilderOptions);
 
     // Run the default O2 optimization pipeline
-    const passes = "default<O2>";
+    const passes = "default<O0>";
     const pass_err = mlir.c.LLVMRunPasses(llvmIR, passes, targetMachine, passBuilderOptions);
     _ = pass_err;
     _ = mlir.c.LLVMRunPassManager(pass_manager, llvmIR);
@@ -220,7 +220,7 @@ pub fn convert_to_llvm_ir(module: mlir.c.MlirModule, print_ir: bool, link_args: 
     var args: std.ArrayList([]const u8) = .empty;
     defer args.deinit(allocator);
     try args.append(allocator, "clang");
-    try args.append(allocator, "-O2");
+    try args.append(allocator, "-O0");
     try args.append(allocator, "-g");
     try args.append(allocator, "-o");
     try args.append(allocator, "zig-out/output_program");

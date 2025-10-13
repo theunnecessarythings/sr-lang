@@ -1,0 +1,41 @@
+==================
+Expressions
+==================
+let value := if cond {
+  1 + foo.bar[0]
+} else {
+  match opt {
+    Some(x) => x,
+    None => 0,
+  }
+};
+---
+(source_file
+  (variable_declaration
+    pattern: (identifier)
+    value: (if_expression
+      condition: (identifier)
+      consequence: (block
+        (statement
+          (expression_statement
+            (binary_expression
+              (integer_literal)
+              (member_expression
+                object: (identifier)
+                property: (identifier))))))
+      alternative: (block
+        (statement
+          (match_expression
+            value: (identifier)
+            body: (match_block
+              (match_arm
+                pattern: (variant_pattern
+                  type: (identifier)
+                  variant: (identifier)
+                  payload: (pattern_list (identifier)))
+                body: (identifier))
+              (match_arm
+                pattern: (identifier)
+                body: (integer_literal))))))))
+    )
+)

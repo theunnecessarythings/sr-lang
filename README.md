@@ -112,6 +112,49 @@ Alternatively, after building, you can directly run the executable:
 ./zig-out/bin/sr_lang examples/hello.sr
 ```
 
+## 🌳 Tree-sitter Grammar
+
+Experimental Tree-sitter support for the language is available in `tools/tree-sitter-sr`.
+
+### Generate & Test the Parser
+
+> **Heads-up:** The commands below require the `tree-sitter` CLI. The CLI is normally
+> installed via `npm install`, which downloads packages from the public npm registry.
+> The execution environment used for automated checks in this repository does not
+> have outbound network access, so `npm install` will fail there. Run these commands
+> on a machine with internet access (or with the CLI already installed) when you need
+> to regenerate or test the grammar.
+
+```bash
+cd tools/tree-sitter-sr
+npm install
+npx tree-sitter generate
+npx tree-sitter test
+```
+
+### Parse Sample Code
+
+```bash
+npx tree-sitter parse ../../examples/hello.sr
+```
+
+### Neovim Integration
+
+The repository ships with a minimal Neovim plugin in `tools/nvim-sr`. To try it out:
+
+```bash
+mkdir -p ~/.config/nvim/pack/sr/start
+ln -s $(pwd)/tools/nvim-sr ~/.config/nvim/pack/sr/start/sr-lang
+```
+
+Then restart Neovim and run:
+
+```vim
+:TSInstallFromGrammar sr
+```
+
+This will compile and install the grammar, enabling syntax highlighting for `.sr` files.
+
 ## 🚧 Current Status
 
 The language is in an **alpha** state. This means:

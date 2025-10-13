@@ -1,0 +1,30 @@
+==================
+Types
+==================
+struct Point<T> {
+  x: f64,
+  y: f64,
+  meta: *const T,
+}
+
+enum Option<T> {
+  Some(T),
+  None,
+}
+---
+(source_file
+  (struct_declaration
+    name: (identifier)
+    type_parameters: (type_parameters (identifier))
+    body: (struct_body
+      (struct_field name: (identifier) type: (basic_type))
+      (struct_field name: (identifier) type: (basic_type))
+      (struct_field name: (identifier) type: (pointer_type qualifier: (pointer_qualifier) type: (identifier)))))
+  (enum_declaration
+    name: (identifier)
+    type_parameters: (type_parameters (identifier))
+    body: (enum_body
+      (enum_variant
+        name: (identifier)
+        payload: (variant_payload (type)))
+      (enum_variant name: (identifier)))))

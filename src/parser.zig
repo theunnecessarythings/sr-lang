@@ -1227,6 +1227,42 @@ pub const Parser = struct {
         return self.addPat(.Or, .{ .alts = alts_range, .loc = loc });
     }
 
+    fn canStartExpression(self: *Parser, tag: Token.Tag) bool {
+        if (self.isLiteralTag(tag)) {
+            return true;
+        }
+        return switch (tag) {
+            .plus, .minus, .b_and, .bang, .dotdot, .dotdoteq,
+            .b_or,
+            .keyword_comptime, .keyword_code, .keyword_mlir, .keyword_insert,
+            .star,
+            .question,
+            .at,
+            .identifier, .raw_identifier,
+            .lsquare, .lparen, .lcurly,
+            .keyword_proc, .keyword_fn, .keyword_extern,
+            .keyword_any, .keyword_type, .keyword_noreturn,
+            .keyword_complex, .keyword_simd, .keyword_tensor,
+            .keyword_struct, .keyword_union, .keyword_enum, .keyword_variant, .keyword_error,
+            .keyword_return,
+            .keyword_import,
+            .keyword_typeof,
+            .keyword_async,
+            .keyword_if,
+            .keyword_while,
+            .keyword_match,
+            .keyword_for,
+            .keyword_break,
+            .keyword_continue,
+            .keyword_unreachable,
+            .keyword_null,
+            .keyword_undefined,
+            .keyword_defer,
+            .keyword_errdefer => true,
+            else => false,
+        };
+    }
+
     fn parsePatRange(self: *Parser) !cst.PatternId {
         // prefix/open: ..X or ..=X
         if (self.cur.tag == .dotdot or self.cur.tag == .dotdoteq) {
@@ -1251,12 +1287,16 @@ pub const Parser = struct {
             const inclusive = (self.cur.tag == .dotdoteq);
             self.advance();
 
-            const rhs = try self.parseConstExprForRangeEnd();
+            var end_expr_opt: cst.OptExprId = .none();
+            if (self.canStartExpression(self.cur.tag)) {
+                end_expr_opt = .some(try self.parseConstExprForRangeEnd());
+            }
+
             const lhs_expr = try self.patternToConstExpr(left);
 
             return self.addPat(.Range, .{
                 .start = .some(lhs_expr),
-                .end = .some(rhs),
+                .end = end_expr_opt,
                 .inclusive_right = inclusive,
                 .loc = loc,
             });
