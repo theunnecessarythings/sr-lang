@@ -242,7 +242,7 @@ pub const LowerTir = struct {
         blk.instrs.append(self.gpa, iid) catch @panic("OOM");
         if (expected_ty) |want| {
             if (!ty0.eq(want)) {
-                return self.emitCoerce(blk, result_id, ty0, want);
+                return self.emitCoerce(blk, result_id, ty0, want, loc);
             }
         }
         return result_id;
@@ -380,6 +380,7 @@ pub const LowerTir = struct {
         v: tir.ValueId,
         got: types.TypeId,
         want: types.TypeId,
+        loc: tir.OptLocId,
     ) tir.ValueId {
         if (got.eq(want)) return v;
 
@@ -400,28 +401,28 @@ pub const LowerTir = struct {
 
             // Value T -> Ok
             if (got.toRaw() == es.value_ty.toRaw()) {
-                const tag_ok = blk.builder.tirValue(.ConstInt, blk, ts.tI32(), tir.OptLocId.none(), .{ .value = 0 });
-                const payload = blk.builder.tirValue(.UnionMake, blk, payload_union_ty, tir.OptLocId.none(), .{
+                const tag_ok = blk.builder.tirValue(.ConstInt, blk, ts.tI32(), loc, .{ .value = 0 });
+                const payload = blk.builder.tirValue(.UnionMake, blk, payload_union_ty, loc, .{
                     .field_index = 0, // Ok
                     .value = v,
                 });
                 return blk.builder.structMake(blk, want, &[_]tir.Rows.StructFieldInit{
                     .{ .index = 0, .name = .none(), .value = tag_ok },
                     .{ .index = 1, .name = .none(), .value = payload },
-                }, tir.OptLocId.none());
+                }, loc);
             }
 
             // Error E -> Err
             if (got.toRaw() == es.error_ty.toRaw()) {
-                const tag_err = blk.builder.tirValue(.ConstInt, blk, ts.tI32(), tir.OptLocId.none(), .{ .value = 1 });
-                const payload = blk.builder.tirValue(.UnionMake, blk, payload_union_ty, tir.OptLocId.none(), .{
+                const tag_err = blk.builder.tirValue(.ConstInt, blk, ts.tI32(), loc, .{ .value = 1 });
+                const payload = blk.builder.tirValue(.UnionMake, blk, payload_union_ty, loc, .{
                     .field_index = 1, // Err
                     .value = v,
                 });
                 return blk.builder.structMake(blk, want, &[_]tir.Rows.StructFieldInit{
                     .{ .index = 0, .name = .none(), .value = tag_err },
                     .{ .index = 1, .name = .none(), .value = payload },
-                }, tir.OptLocId.none());
+                }, loc);
             }
             // else fall through (e.g., Any → ErrorSet: let the generic path try)
         }
@@ -434,21 +435,21 @@ pub const LowerTir = struct {
                 const got_opt = ts.get(.Optional, got);
                 if (got_opt.elem.eq(opt.elem)) return v;
 
-                const flag = blk.builder.extractField(blk, bool_ty, v, 0, tir.OptLocId.none());
-                var payload = blk.builder.extractField(blk, got_opt.elem, v, 1, tir.OptLocId.none());
-                payload = self.emitCoerce(blk, payload, got_opt.elem, opt.elem);
+                const flag = blk.builder.extractField(blk, bool_ty, v, 0, loc);
+                var payload = blk.builder.extractField(blk, got_opt.elem, v, 1, loc);
+                payload = self.emitCoerce(blk, payload, got_opt.elem, opt.elem, loc);
                 return blk.builder.structMake(blk, want, &[_]tir.Rows.StructFieldInit{
                     .{ .index = 0, .name = .none(), .value = flag },
                     .{ .index = 1, .name = .none(), .value = payload },
-                }, tir.OptLocId.none());
+                }, loc);
             }
 
-            const payload = self.emitCoerce(blk, v, got, opt.elem);
-            const some_flag = blk.builder.tirValue(.ConstBool, blk, bool_ty, tir.OptLocId.none(), .{ .value = true });
+            const payload = self.emitCoerce(blk, v, got, opt.elem, loc);
+            const some_flag = blk.builder.tirValue(.ConstBool, blk, bool_ty, loc, .{ .value = true });
             return blk.builder.structMake(blk, want, &[_]tir.Rows.StructFieldInit{
                 .{ .index = 0, .name = .none(), .value = some_flag },
                 .{ .index = 1, .name = .none(), .value = payload },
-            }, tir.OptLocId.none());
+            }, loc);
         }
 
         // Numeric ⇄ numeric
@@ -461,14 +462,14 @@ pub const LowerTir = struct {
             else => false,
         };
         if (is_num_got and is_num_want)
-            return blk.builder.tirValue(.CastNormal, blk, want, tir.OptLocId.none(), .{ .value = v });
+            return blk.builder.tirValue(.CastNormal, blk, want, loc, .{ .value = v });
 
         // Ptr ⇄ Ptr
         if (gk == .Ptr and wk == .Ptr)
-            return blk.builder.tirValue(.CastBit, blk, want, tir.OptLocId.none(), .{ .value = v });
+            return blk.builder.tirValue(.CastBit, blk, want, loc, .{ .value = v });
 
         // Fallback: materialize/assignable
-        return blk.builder.tirValue(.CastNormal, blk, want, tir.OptLocId.none(), .{ .value = v });
+        return blk.builder.tirValue(.CastNormal, blk, want, loc, .{ .value = v });
     }
 
     // ============================
@@ -863,11 +864,13 @@ pub const LowerTir = struct {
             const frow = f.builder.t.funcs.Function.get(f.id);
             const expect = frow.result;
             const want: ?types.TypeId = if (self.isVoid(expect)) null else expect;
-            const v_raw = try self.lowerExpr(a, env, f, blk, r.value.unwrap(), want, .rvalue);
+            const value_expr = r.value.unwrap();
+            const value_loc = self.exprOptLoc(a, value_expr);
+            const v_raw = try self.lowerExpr(a, env, f, blk, value_expr, want, .rvalue);
             var v = v_raw;
             if (want == null) {
                 if (self.getExprType(r.value.unwrap())) |got| {
-                    v = self.emitCoerce(blk, v_raw, got, expect);
+                    v = self.emitCoerce(blk, v_raw, got, expect, value_loc);
                 }
             }
 
@@ -878,10 +881,10 @@ pub const LowerTir = struct {
                 var err_blk = try f.builder.beginBlock(f);
                 var ok_blk = try f.builder.beginBlock(f);
                 const tag_ty = self.context.type_store.tI32();
-                const tag = blk.builder.extractField(blk, tag_ty, v, 0, tir.OptLocId.none());
-                const zero = blk.builder.tirValue(.ConstInt, blk, tag_ty, tir.OptLocId.none(), .{ .value = 0 });
-                const is_err = blk.builder.binBool(blk, .CmpNe, tag, zero, tir.OptLocId.none());
-                const br_cond = self.forceLocalCond(blk, is_err);
+                const tag = blk.builder.extractField(blk, tag_ty, v, 0, value_loc);
+                const zero = blk.builder.tirValue(.ConstInt, blk, tag_ty, value_loc, .{ .value = 0 });
+                const is_err = blk.builder.binBool(blk, .CmpNe, tag, zero, value_loc);
+                const br_cond = self.forceLocalCond(blk, is_err, value_loc);
                 try f.builder.condBr(blk, br_cond, err_blk.id, &.{}, ok_blk.id, &.{}, stmt_loc);
 
                 const defer_slice = env.defers.items[defer_mark..env.defers.items.len];
@@ -1489,7 +1492,8 @@ pub const LowerTir = struct {
                 const want = param_tys[i];
                 const got = self.getExprType(arg_ids[i]) orelse want;
                 if (want.toRaw() != got.toRaw()) {
-                    vals[i] = self.emitCoerce(blk, vals[i], got, want);
+                    const arg_loc = self.exprOptLoc(a, arg_ids[i]);
+                    vals[i] = self.emitCoerce(blk, vals[i], got, want, arg_loc);
                 }
             }
         }
@@ -1549,7 +1553,7 @@ pub const LowerTir = struct {
         const ty0 = self.getExprType(id) orelse self.context.type_store.tAny();
         const loc = self.exprOptLoc(a, id);
         const v = self.safeUndef(blk, ty0, loc);
-        if (expected_ty) |want| return self.emitCoerce(blk, v, ty0, want);
+        if (expected_ty) |want| return self.emitCoerce(blk, v, ty0, want, loc);
         return v;
     }
 
@@ -1622,7 +1626,7 @@ pub const LowerTir = struct {
             }) orelse return error.LoweringBug }),
         };
         const want_ty = expected_ty orelse ty0;
-        if (!want_ty.eq(base_ty)) return self.emitCoerce(blk, v, base_ty, want_ty);
+        if (!want_ty.eq(base_ty)) return self.emitCoerce(blk, v, base_ty, want_ty, loc);
         return v;
     }
 
@@ -1638,6 +1642,7 @@ pub const LowerTir = struct {
     ) anyerror!tir.ValueId {
         const row = a.exprs.get(.Unary, id);
         const loc = self.exprOptLoc(a, id);
+        const operand_loc = self.exprOptLoc(a, row.expr);
         if (row.op == .address_of or mode == .lvalue_addr) {
             // compute address of the operand
             const ety = self.getExprType(row.expr) orelse return error.LoweringBug;
@@ -1692,12 +1697,12 @@ pub const LowerTir = struct {
                 // Ensure operand is bool for logical ops
                 const bty = self.context.type_store.tBool();
                 const got = self.getExprType(row.expr) orelse bty;
-                v0 = self.emitCoerce(blk, v0, got, bty);
+                v0 = self.emitCoerce(blk, v0, got, bty, operand_loc);
                 break :blk blk.builder.un1(blk, .LogicalNot, bty, v0, loc);
             },
             .address_of => unreachable,
         };
-        if (expected_ty) |want| return self.emitCoerce(blk, v, ty0, want);
+        if (expected_ty) |want| return self.emitCoerce(blk, v, ty0, want, loc);
         return v;
     }
 
@@ -1711,7 +1716,7 @@ pub const LowerTir = struct {
         const incl = blk.builder.tirValue(.ConstBool, blk, self.context.type_store.tBool(), loc, .{ .value = row.inclusive_right });
         // Materialize range as TIR RangeMake (typed as []usize)
         const v = blk.builder.rangeMake(blk, ty0, start_v, end_v, incl, loc);
-        if (expected_ty) |want| return self.emitCoerce(blk, v, ty0, want);
+        if (expected_ty) |want| return self.emitCoerce(blk, v, ty0, want, loc);
         return v;
     }
 
@@ -1735,7 +1740,7 @@ pub const LowerTir = struct {
         const ptr = try self.lowerExpr(a, env, f, blk, row.expr, null, .rvalue);
         const loc = self.exprOptLoc(a, id);
         const v = blk.builder.tirValue(.Load, blk, ty0, loc, .{ .ptr = ptr, .@"align" = 0 });
-        if (expected_ty) |want| return self.emitCoerce(blk, v, ty0, want);
+        if (expected_ty) |want| return self.emitCoerce(blk, v, ty0, want, loc);
         return v;
     }
 
@@ -1761,7 +1766,7 @@ pub const LowerTir = struct {
         while (i < ids.len) : (i += 1)
             vals[i] = try self.lowerExpr(a, env, f, blk, ids[i], expect_elem, .rvalue);
         const v = blk.builder.arrayMake(blk, ty0, vals, loc);
-        if (expected_ty) |want| return self.emitCoerce(blk, v, ty0, want);
+        if (expected_ty) |want| return self.emitCoerce(blk, v, ty0, want, loc);
         return v;
     }
 
@@ -1800,7 +1805,7 @@ pub const LowerTir = struct {
             fields[j] = .{ .index = @intCast(j), .name = .none(), .value = vals[j] };
         }
         const v = blk.builder.structMake(blk, ty0, fields, loc);
-        if (expected_ty) |want| return self.emitCoerce(blk, v, ty0, want);
+        if (expected_ty) |want| return self.emitCoerce(blk, v, ty0, want, loc);
         return v;
     }
 
@@ -1873,7 +1878,7 @@ pub const LowerTir = struct {
             });
         } else blk.builder.structMake(blk, ty0, fields, loc);
 
-        if (expected_ty) |want| return self.emitCoerce(blk, v, ty0, want);
+        if (expected_ty) |want| return self.emitCoerce(blk, v, ty0, want, loc);
         return v;
     }
 
@@ -1911,7 +1916,7 @@ pub const LowerTir = struct {
         }
         const make = blk.builder.intern("builtin.map.from_kv");
         const v = blk.builder.call(blk, ty0, make, vals, loc);
-        if (expected_ty) |want| return self.emitCoerce(blk, v, ty0, want);
+        if (expected_ty) |want| return self.emitCoerce(blk, v, ty0, want, loc);
         return v;
     }
 
@@ -1985,21 +1990,29 @@ pub const LowerTir = struct {
                 }
             };
             const v = blk.builder.indexOp(blk, ty0, base, idx, loc);
-            if (expected_ty) |want| return self.emitCoerce(blk, v, ty0, want);
+            if (expected_ty) |want| return self.emitCoerce(blk, v, ty0, want, loc);
             return v;
         }
     }
 
-    fn lowerImportedModuleMember(self: *LowerTir, a: *const ast.Ast, blk: *Builder.BlockFrame, parent_id: ast.ExprId, field_name: StrId, expected_ty: ?types.TypeId) !?tir.ValueId {
+    fn lowerImportedModuleMember(
+        self: *LowerTir,
+        a: *const ast.Ast,
+        blk: *Builder.BlockFrame,
+        parent_id: ast.ExprId,
+        field_name: StrId,
+        expected_ty: ?types.TypeId,
+        loc: tir.OptLocId,
+    ) !?tir.ValueId {
         const idr = a.exprs.get(.Ident, parent_id);
         if (self.findTopLevelImportByName(a, idr.name)) |imp_decl| {
             const ty0 = self.getExprType(parent_id) orelse (expected_ty orelse self.context.type_store.tAny());
             if (self.materializeImportedConst(&self.context.resolver, a, imp_decl, field_name, ty0, blk, self.pipeline)) |vv| {
-                if (expected_ty) |want| return self.emitCoerce(blk, vv, ty0, want);
+                if (expected_ty) |want| return self.emitCoerce(blk, vv, ty0, want, loc);
                 return vv;
             }
-            const v = blk.builder.tirValue(.ConstUndef, blk, ty0, tir.OptLocId.none(), .{});
-            if (expected_ty) |want| return self.emitCoerce(blk, v, ty0, want);
+            const v = blk.builder.tirValue(.ConstUndef, blk, ty0, loc, .{});
+            if (expected_ty) |want| return self.emitCoerce(blk, v, ty0, want, loc);
             return v;
         }
         return null;
@@ -2007,7 +2020,7 @@ pub const LowerTir = struct {
 
     fn lowerEnumMember(
         self: *LowerTir,
-        _: *const ast.Ast,
+        a: *const ast.Ast,
         blk: *Builder.BlockFrame,
         id: ast.ExprId,
         parent_expr: ast.ExprId,
@@ -2022,15 +2035,16 @@ pub const LowerTir = struct {
             if (of_kind != .Enum) return null;
         }
         const ty0 = self.getExprType(id) orelse (expected_ty orelse self.context.type_store.tAny());
+        const loc = self.exprOptLoc(a, id);
         const idx = self.type_info.getFieldIndex(id) orelse return error.LoweringBug; // enum members should be indexed by the checker
-        var ev = blk.builder.tirValue(.ConstInt, blk, ty0, tir.OptLocId.none(), .{ .value = idx });
-        if (expected_ty) |want| ev = self.emitCoerce(blk, ev, ty0, want);
+        var ev = blk.builder.tirValue(.ConstInt, blk, ty0, loc, .{ .value = idx });
+        if (expected_ty) |want| ev = self.emitCoerce(blk, ev, ty0, want, loc);
         return ev;
     }
 
     fn lowerVariantTagLiteral(
         self: *LowerTir,
-        _: *const ast.Ast,
+        a: *const ast.Ast,
         blk: *Builder.BlockFrame,
         id: ast.ExprId,
         parent_expr: ast.ExprId,
@@ -2057,9 +2071,10 @@ pub const LowerTir = struct {
         const payload_kind = self.context.type_store.getKind(payload_ty);
         if (payload_kind != .Void) return null; // only literal tags for no-payload cases
         const ty0 = self.getExprType(id) orelse (expected_ty orelse self.context.type_store.tAny());
+        const loc = self.exprOptLoc(a, id);
         if (self.context.type_store.getKind(payload_ty) != .Void) return null;
-        const tag_val = blk.builder.extractField(blk, self.context.type_store.tI32(), self.safeUndef(blk, ty, tir.OptLocId.none()), 0, tir.OptLocId.none());
-        if (expected_ty) |want| return self.emitCoerce(blk, tag_val, ty0, want);
+        const tag_val = blk.builder.extractField(blk, self.context.type_store.tI32(), self.safeUndef(blk, ty, loc), 0, loc);
+        if (expected_ty) |want| return self.emitCoerce(blk, tag_val, ty0, want, loc);
         return tag_val;
     }
 
@@ -2086,7 +2101,7 @@ pub const LowerTir = struct {
                         const base = try self.lowerExpr(a, env, f, blk, row.parent, null, .rvalue);
                         const ty0 = self.context.type_store.tUsize();
                         const v = blk.builder.extractFieldNamed(blk, ty0, base, row.field, loc);
-                        if (expected_ty) |want| return self.emitCoerce(blk, v, ty0, want);
+                        if (expected_ty) |want| return self.emitCoerce(blk, v, ty0, want, loc);
                         return v;
                     },
                     else => {},
@@ -2096,7 +2111,7 @@ pub const LowerTir = struct {
 
         // 1) imported module member (rvalue only)
         if (mode == .rvalue and a.exprs.index.kinds.items[row.parent.toRaw()] == .Ident) {
-            if (try self.lowerImportedModuleMember(a, blk, row.parent, row.field, expected_ty)) |v| {
+            if (try self.lowerImportedModuleMember(a, blk, row.parent, row.field, expected_ty, loc)) |v| {
                 return v;
             }
         }
@@ -2184,7 +2199,7 @@ pub const LowerTir = struct {
                     .{ .index = 1, .name = .none(), .value = union_val },
                 }, loc);
 
-                if (expected_ty) |want| break :blk self.emitCoerce(blk, v_res, of_ty, want);
+                if (expected_ty) |want| break :blk self.emitCoerce(blk, v_res, of_ty, want, loc);
                 break :blk v_res;
             } else if (is_tuple)
                 blk.builder.extractElem(blk, ty0, base, resolved_idx, loc)
@@ -2197,7 +2212,7 @@ pub const LowerTir = struct {
             v = blk.builder.extractFieldNamed(blk, ty0, base, row.field, loc);
         }
 
-        if (expected_ty) |want| return self.emitCoerce(blk, v, ty0, want);
+        if (expected_ty) |want| return self.emitCoerce(blk, v, ty0, want, loc);
         return v;
     }
 
@@ -2256,7 +2271,7 @@ pub const LowerTir = struct {
                 const slot = f.builder.tirValue(.Alloca, blk, slot_ty, loc, .{ .count = tir.OptValueId.none(), .@"align" = 0 });
 
                 const src_ty = if (expr_ty_opt) |ty| if (!self.isAny(ty)) ty else bnd.ty else bnd.ty;
-                const to_store = self.emitCoerce(blk, bnd.value, src_ty, want_elem);
+                const to_store = self.emitCoerce(blk, bnd.value, src_ty, want_elem, loc);
                 _ = f.builder.tirValue(.Store, blk, want_elem, loc, .{ .ptr = slot, .value = to_store, .@"align" = 0 });
 
                 try env.bind(self.gpa, a, name, .{ .value = slot, .ty = want_elem, .is_slot = true });
@@ -2296,7 +2311,7 @@ pub const LowerTir = struct {
             else
                 bnd.ty;
             var loaded = blk.builder.tirValue(.Load, blk, load_ty, loc, .{ .ptr = bnd.value, .@"align" = 0 });
-            if (expected_ty) |want| loaded = self.emitCoerce(blk, loaded, load_ty, want);
+            if (expected_ty) |want| loaded = self.emitCoerce(blk, loaded, load_ty, want, loc);
             return loaded;
         }
 
@@ -2307,7 +2322,7 @@ pub const LowerTir = struct {
             want
         else
             bnd.ty;
-        return if (expected_ty) |want| self.emitCoerce(blk, bnd.value, got_ty, want) else bnd.value;
+        return if (expected_ty) |want| self.emitCoerce(blk, bnd.value, got_ty, want, loc) else bnd.value;
     }
 
     fn lowerBinary(
@@ -2471,7 +2486,7 @@ pub const LowerTir = struct {
 
                 var coerced_other = other_val;
                 if (!other_ty_raw.eq(opt_info.elem)) {
-                    coerced_other = self.emitCoerce(blk, other_val, other_ty_raw, opt_info.elem);
+                    coerced_other = self.emitCoerce(blk, other_val, other_ty_raw, opt_info.elem, loc);
                 }
 
                 const flag = blk.builder.extractField(blk, bool_ty, opt_val, 0, loc);
@@ -2570,13 +2585,13 @@ pub const LowerTir = struct {
 
                 var unwrapped = then_param;
                 if (expected_ty) |want| {
-                    unwrapped = self.emitCoerce(&then_blk, unwrapped, opt_info.elem, want);
+                    unwrapped = self.emitCoerce(&then_blk, unwrapped, opt_info.elem, want, loc);
                 }
                 try f.builder.br(&then_blk, join_blk.id, &.{unwrapped}, loc);
                 var rhs_v = r;
                 if (expected_ty) |want| {
                     const gotr = self.getExprType(row.right) orelse want;
-                    rhs_v = self.emitCoerce(&else_blk, rhs_v, gotr, want);
+                    rhs_v = self.emitCoerce(&else_blk, rhs_v, gotr, want, loc);
                 }
                 try f.builder.br(&else_blk, join_blk.id, &.{rhs_v}, loc);
                 try f.builder.endBlock(f, then_blk);
@@ -2587,7 +2602,7 @@ pub const LowerTir = struct {
         };
         if (expected_ty) |want| {
             if (!self.isVoid(ty0))
-                return self.emitCoerce(blk, v, ty0, want);
+                return self.emitCoerce(blk, v, ty0, want, loc);
         }
         return v;
     }
@@ -2605,15 +2620,17 @@ pub const LowerTir = struct {
         const loc = self.exprOptLoc(a, id);
         const out_ty_guess = expected_ty orelse (self.getExprType(id) orelse self.context.type_store.tVoid());
         const produce_value = (expected_ty != null) and !self.isVoid(out_ty_guess);
+        const loc = self.exprOptLoc(a, id);
 
         const lhs = try self.lowerExpr(a, env, f, blk, row.expr, null, .rvalue);
         const es_ty = self.getExprType(row.expr).?;
         const es = self.context.type_store.get(.ErrorSet, es_ty);
+        const expr_loc = self.exprOptLoc(a, row.expr);
 
         // An ErrorSet is a tagged union { tag, payload }, where tag=0 is OK, non-zero is Err.
-        const tag = blk.builder.extractField(blk, self.context.type_store.tI32(), lhs, 0, tir.OptLocId.none());
-        const zero = blk.builder.tirValue(.ConstInt, blk, self.context.type_store.tI32(), tir.OptLocId.none(), .{ .value = 0 });
-        const is_ok = blk.builder.binBool(blk, .CmpEq, tag, zero, tir.OptLocId.none());
+        const tag = blk.builder.extractField(blk, self.context.type_store.tI32(), lhs, 0, expr_loc);
+        const zero = blk.builder.tirValue(.ConstInt, blk, self.context.type_store.tI32(), expr_loc, .{ .value = 0 });
+        const is_ok = blk.builder.binBool(blk, .CmpEq, tag, zero, expr_loc);
 
         var then_blk = try f.builder.beginBlock(f); // ok path
         var else_blk = try f.builder.beginBlock(f); // err path
@@ -2629,8 +2646,8 @@ pub const LowerTir = struct {
             try self.noteExprType(id, res_ty);
             const res_param = try f.builder.addBlockParam(&join_blk, null, res_ty);
 
-            const br_cond = self.forceLocalCond(blk, is_ok);
-            try f.builder.condBr(blk, br_cond, then_blk.id, &.{}, else_blk.id, &.{}, tir.OptLocId.none());
+            const br_cond = self.forceLocalCond(blk, is_ok, expr_loc);
+            try f.builder.condBr(blk, br_cond, then_blk.id, &.{}, else_blk.id, &.{}, loc);
             {
                 // Close the current block after emitting the branch (mirrors lowerIf).
                 const old = blk.*;
@@ -2638,17 +2655,17 @@ pub const LowerTir = struct {
             }
 
             // then (ok) branch: unwrap value
-            const payload_union_ok = then_blk.builder.extractField(&then_blk, payload_union_ty, lhs, 1, tir.OptLocId.none());
-            const ok_val = then_blk.builder.tirValue(.UnionField, &then_blk, es.value_ty, tir.OptLocId.none(), .{
+            const payload_union_ok = then_blk.builder.extractField(&then_blk, payload_union_ty, lhs, 1, expr_loc);
+            const ok_val = then_blk.builder.tirValue(.UnionField, &then_blk, es.value_ty, loc, .{
                 .base = payload_union_ok,
                 .field_index = 0,
             });
-            try f.builder.br(&then_blk, join_blk.id, &.{ok_val}, tir.OptLocId.none());
+            try f.builder.br(&then_blk, join_blk.id, &.{ok_val}, loc);
 
             // else (err) branch: unwrap error and run handler
             try env.pushScope(self.gpa); // Push scope for handler
-            const payload_union_err = else_blk.builder.extractField(&else_blk, payload_union_ty, lhs, 1, tir.OptLocId.none());
-            const err_val = else_blk.builder.tirValue(.UnionField, &else_blk, es.error_ty, tir.OptLocId.none(), .{
+            const payload_union_err = else_blk.builder.extractField(&else_blk, payload_union_ty, lhs, 1, expr_loc);
+            const err_val = else_blk.builder.tirValue(.UnionField, &else_blk, es.error_ty, loc, .{
                 .base = payload_union_err,
                 .field_index = 1,
             });
@@ -2660,7 +2677,7 @@ pub const LowerTir = struct {
             _ = env.popScope(); // Pop scope after handler
             if (else_blk.term.isNone()) {
                 const hv = try self.lowerBlockExprValue(a, env, f, &else_blk, row.handler, res_ty);
-                try f.builder.br(&else_blk, join_blk.id, &.{hv}, tir.OptLocId.none());
+                try f.builder.br(&else_blk, join_blk.id, &.{hv}, loc);
             }
 
             try f.builder.endBlock(f, then_blk);
@@ -2671,8 +2688,8 @@ pub const LowerTir = struct {
             // No value: conditionally run handler, then continue
             const exit_blk = try f.builder.beginBlock(f);
 
-            const br_cond = self.forceLocalCond(blk, is_ok);
-            try f.builder.condBr(blk, br_cond, then_blk.id, &.{}, else_blk.id, &.{}, tir.OptLocId.none());
+            const br_cond = self.forceLocalCond(blk, is_ok, expr_loc);
+            try f.builder.condBr(blk, br_cond, then_blk.id, &.{}, else_blk.id, &.{}, loc);
             {
                 // Close the current block after emitting the branch.
                 const old = blk.*;
@@ -2680,13 +2697,13 @@ pub const LowerTir = struct {
             }
 
             // then: nothing to do, jump to exit
-            if (then_blk.term.isNone()) try f.builder.br(&then_blk, exit_blk.id, &.{}, tir.OptLocId.none());
+            if (then_blk.term.isNone()) try f.builder.br(&then_blk, exit_blk.id, &.{}, loc);
             try f.builder.endBlock(f, then_blk);
 
             // else: execute handler as stmt
             try env.pushScope(self.gpa); // Push scope for handler
-            const payload_union_err = else_blk.builder.extractField(&else_blk, payload_union_ty, lhs, 1, tir.OptLocId.none());
-            const err_val = else_blk.builder.tirValue(.UnionField, &else_blk, es.error_ty, tir.OptLocId.none(), .{
+            const payload_union_err = else_blk.builder.extractField(&else_blk, payload_union_ty, lhs, 1, expr_loc);
+            const err_val = else_blk.builder.tirValue(.UnionField, &else_blk, es.error_ty, loc, .{
                 .base = payload_union_err,
                 .field_index = 1,
             });
@@ -2696,7 +2713,7 @@ pub const LowerTir = struct {
             }
             try self.lowerExprAsStmtList(a, env, f, &else_blk, row.handler);
             _ = env.popScope(); // Pop scope after handler
-            if (else_blk.term.isNone()) try f.builder.br(&else_blk, exit_blk.id, &.{}, tir.OptLocId.none());
+            if (else_blk.term.isNone()) try f.builder.br(&else_blk, exit_blk.id, &.{}, loc);
             try f.builder.endBlock(f, else_blk);
 
             blk.* = exit_blk;
@@ -2728,7 +2745,7 @@ pub const LowerTir = struct {
             const res_ty = out_ty_guess;
             const res_param = try f.builder.addBlockParam(&join_blk, null, res_ty);
 
-            const br_cond = self.forceLocalCond(blk, cond_v);
+            const br_cond = self.forceLocalCond(blk, cond_v, loc);
             try f.builder.condBr(blk, br_cond, then_blk.id, &.{}, else_blk.id, &.{}, loc);
             {
                 const old = blk.*;
@@ -2739,7 +2756,7 @@ pub const LowerTir = struct {
             try self.lowerExprAsStmtList(a, env, f, &then_blk, row.then_block);
             if (then_blk.term.isNone()) {
                 var v_then = try self.lowerBlockExprValue(a, env, f, &then_blk, row.then_block, res_ty);
-                if (expected_ty) |want| v_then = self.emitCoerce(&then_blk, v_then, self.getExprType(row.then_block) orelse res_ty, want);
+                if (expected_ty) |want| v_then = self.emitCoerce(&then_blk, v_then, self.getExprType(row.then_block) orelse res_ty, want, loc);
                 try f.builder.br(&then_blk, join_blk.id, &.{v_then}, loc);
             }
 
@@ -2748,7 +2765,7 @@ pub const LowerTir = struct {
                 try self.lowerExprAsStmtList(a, env, f, &else_blk, row.else_block.unwrap());
                 if (else_blk.term.isNone()) {
                     var v_else = try self.lowerBlockExprValue(a, env, f, &else_blk, row.else_block.unwrap(), res_ty);
-                    if (expected_ty) |want| v_else = self.emitCoerce(&else_blk, v_else, self.getExprType(row.else_block.unwrap()) orelse res_ty, want);
+                    if (expected_ty) |want| v_else = self.emitCoerce(&else_blk, v_else, self.getExprType(row.else_block.unwrap()) orelse res_ty, want, loc);
                     try f.builder.br(&else_blk, join_blk.id, &.{v_else}, loc);
                 }
             } else {
@@ -2766,7 +2783,7 @@ pub const LowerTir = struct {
             // statement-position if: no value, no phi
             const exit_blk = try f.builder.beginBlock(f);
 
-            const br_cond = self.forceLocalCond(blk, cond_v);
+            const br_cond = self.forceLocalCond(blk, cond_v, loc);
             try f.builder.condBr(blk, br_cond, then_blk.id, &.{}, else_blk.id, &.{}, loc);
             {
                 const old = blk.*;
@@ -2808,7 +2825,7 @@ pub const LowerTir = struct {
             .wrap => blk.builder.tirValue(.CastWrap, blk, ty0, loc, .{ .value = v }),
             .checked => blk.builder.tirValue(.CastChecked, blk, ty0, loc, .{ .value = v }),
         };
-        if (expected_ty) |want| return self.emitCoerce(blk, out, ty0, want);
+        if (expected_ty) |want| return self.emitCoerce(blk, out, ty0, want, loc);
         return out;
     }
 
@@ -2849,7 +2866,7 @@ pub const LowerTir = struct {
 
         var unwrapped = then_param;
         if (expected_ty) |want| {
-            unwrapped = self.emitCoerce(&then_blk, unwrapped, elem_ty, want);
+            unwrapped = self.emitCoerce(&then_blk, unwrapped, elem_ty, want, loc);
         }
         try f.builder.br(&then_blk, join_blk.id, &.{unwrapped}, loc);
         try f.builder.endBlock(f, then_blk);
@@ -2889,7 +2906,7 @@ pub const LowerTir = struct {
         const unwrap_ok = blk.builder.intern("builtin.err.unwrap_ok");
         const loc = self.exprOptLoc(a, id);
         const out = blk.builder.call(blk, ty0, unwrap_ok, &.{v}, loc);
-        if (expected_ty) |want| return self.emitCoerce(blk, out, ty0, want);
+        if (expected_ty) |want| return self.emitCoerce(blk, out, ty0, want, loc);
         return out;
     }
 
@@ -2977,7 +2994,7 @@ pub const LowerTir = struct {
                     try self.lowerExprAsStmtList(a, env, f, &bodies[i], arm.body);
                     if (bodies[i].term.isNone()) {
                         var v = try self.lowerBlockExprValue(a, env, f, &bodies[i], arm.body, res_ty);
-                        v = self.emitCoerce(&bodies[i], v, self.getExprType(arm.body) orelse res_ty, res_ty);
+                        v = self.emitCoerce(&bodies[i], v, self.getExprType(arm.body) orelse res_ty, res_ty, loc);
                         try f.builder.br(&bodies[i], join_blk.id, &.{v}, loc);
                     }
                     try f.builder.endBlock(f, bodies[i]);
@@ -3008,7 +3025,7 @@ pub const LowerTir = struct {
 
                 // pattern test
                 const arm_scrut_ty = self.getExprType(row.expr) orelse self.context.type_store.tAny();
-                const ok = try self.matchPattern(a, env, f, &test_blk, arm.pattern, scrut, arm_scrut_ty);
+                const ok = try self.matchPattern(a, env, f, &test_blk, arm.pattern, scrut, arm_scrut_ty, loc);
 
                 // if last arm fails, feed an undef to the join
                 const else_args = if (next_blk.id.toRaw() == join_blk.id.toRaw()) blkargs: {
@@ -3033,7 +3050,7 @@ pub const LowerTir = struct {
 
                 if (!arm.guard.isNone()) {
                     var guard_blk = try f.builder.beginBlock(f);
-                    const br_cond = self.forceLocalCond(&test_blk, ok);
+                    const br_cond = self.forceLocalCond(&test_blk, ok, loc);
                     try f.builder.condBr(&test_blk, br_cond, guard_blk.id, &.{}, next_blk.id, else_args, loc);
                     try f.builder.endBlock(f, test_blk);
 
@@ -3041,12 +3058,12 @@ pub const LowerTir = struct {
                     const guard_id = arm.guard.unwrap();
                     const guard_loc = self.exprOptLoc(a, guard_id);
                     const guard_val = try self.lowerExpr(a, env, f, &guard_blk, guard_id, self.context.type_store.tBool(), .rvalue);
-                    const guard_cond = self.forceLocalCond(&guard_blk, guard_val);
+                    const guard_cond = self.forceLocalCond(&guard_blk, guard_val, guard_loc);
                     try self.restoreBindings(env, saved.items);
                     try f.builder.condBr(&guard_blk, guard_cond, body_blk.id, &.{}, next_blk.id, else_args, guard_loc);
                     try f.builder.endBlock(f, guard_blk);
                 } else {
-                    const br_cond = self.forceLocalCond(&test_blk, ok);
+                    const br_cond = self.forceLocalCond(&test_blk, ok, loc);
                     try f.builder.condBr(&test_blk, br_cond, body_blk.id, &.{}, next_blk.id, else_args, loc);
                     try f.builder.endBlock(f, test_blk);
                 }
@@ -3057,7 +3074,7 @@ pub const LowerTir = struct {
 
                 if (body_blk.term.isNone()) {
                     var v2 = try self.lowerBlockExprValue(a, env, f, &body_blk, arm.body, res_ty);
-                    v2 = self.emitCoerce(&body_blk, v2, self.getExprType(arm.body) orelse res_ty, res_ty);
+                    v2 = self.emitCoerce(&body_blk, v2, self.getExprType(arm.body) orelse res_ty, res_ty, loc);
                     try f.builder.br(&body_blk, join_blk.id, &.{v2}, loc);
                 }
 
@@ -3129,11 +3146,11 @@ pub const LowerTir = struct {
                 try f.builder.endBlock(f, cur);
 
                 const arm_scrut_ty = self.getExprType(row.expr) orelse self.context.type_store.tAny();
-                const ok = try self.matchPattern(a, env, f, &test_blk, arm.pattern, scrut, arm_scrut_ty);
+                const ok = try self.matchPattern(a, env, f, &test_blk, arm.pattern, scrut, arm_scrut_ty, loc);
 
                 if (!arm.guard.isNone()) {
                     var guard_blk = try f.builder.beginBlock(f);
-                    const br_cond = self.forceLocalCond(&test_blk, ok);
+                    const br_cond = self.forceLocalCond(&test_blk, ok, loc);
                     try f.builder.condBr(&test_blk, br_cond, guard_blk.id, &.{}, next_blk.id, &.{}, loc);
                     try f.builder.endBlock(f, test_blk);
 
@@ -3151,12 +3168,12 @@ pub const LowerTir = struct {
                     const guard_id = arm.guard.unwrap();
                     const guard_loc = self.exprOptLoc(a, guard_id);
                     const guard_val = try self.lowerExpr(a, env, f, &guard_blk, guard_id, self.context.type_store.tBool(), .rvalue);
-                    const guard_cond = self.forceLocalCond(&guard_blk, guard_val);
+                    const guard_cond = self.forceLocalCond(&guard_blk, guard_val, guard_loc);
                     try self.restoreBindings(env, saved.items);
                     try f.builder.condBr(&guard_blk, guard_cond, body_blk.id, &.{}, next_blk.id, &.{}, guard_loc);
                     try f.builder.endBlock(f, guard_blk);
                 } else {
-                    const br_cond = self.forceLocalCond(&test_blk, ok);
+                    const br_cond = self.forceLocalCond(&test_blk, ok, loc);
                     try f.builder.condBr(&test_blk, br_cond, body_blk.id, &.{}, next_blk.id, &.{}, loc);
                     try f.builder.endBlock(f, test_blk);
                 }
@@ -3209,9 +3226,9 @@ pub const LowerTir = struct {
                 const subj = try self.lowerExpr(a, env, f, &header, row.cond.unwrap(), null, .rvalue);
                 const subj_ty = self.getExprType(row.cond.unwrap()) orelse self.context.type_store.tAny();
 
-                const ok = try self.matchPattern(a, env, f, &header, row.pattern.unwrap(), subj, subj_ty);
+                const ok = try self.matchPattern(a, env, f, &header, row.pattern.unwrap(), subj, subj_ty, loc);
 
-                const br_cond = self.forceLocalCond(blk, ok);
+                const br_cond = self.forceLocalCond(blk, ok, loc);
                 try f.builder.condBr(&header, br_cond, body.id, &.{}, exit_blk.id, &.{}, loc);
 
                 // bind `x` etc. for the body
@@ -3223,7 +3240,7 @@ pub const LowerTir = struct {
                 else
                     f.builder.tirValue(.ConstBool, &header, self.context.type_store.tBool(), cond_loc, .{ .value = true });
 
-                const br_cond = self.forceLocalCond(&header, cond_v);
+                const br_cond = self.forceLocalCond(&header, cond_v, cond_loc);
                 try f.builder.condBr(&header, br_cond, body.id, &.{}, exit_blk.id, &.{}, loc);
             }
 
@@ -3265,9 +3282,9 @@ pub const LowerTir = struct {
                 const subj = try self.lowerExpr(a, env, f, &header, row.cond.unwrap(), null, .rvalue);
                 const subj_ty = self.getExprType(row.cond.unwrap()) orelse self.context.type_store.tAny();
 
-                const ok = try self.matchPattern(a, env, f, &header, row.pattern.unwrap(), subj, subj_ty);
+                const ok = try self.matchPattern(a, env, f, &header, row.pattern.unwrap(), subj, subj_ty, loc);
 
-                const br_cond = self.forceLocalCond(&header, ok);
+                const br_cond = self.forceLocalCond(&header, ok, loc);
                 try f.builder.condBr(&header, br_cond, body.id, &.{}, exit_blk.id, &.{}, loc);
 
                 // bind `x` etc. for the body
@@ -3278,7 +3295,7 @@ pub const LowerTir = struct {
                     try self.lowerExpr(a, env, f, &header, row.cond.unwrap(), self.context.type_store.tBool(), .rvalue)
                 else
                     f.builder.tirValue(.ConstBool, &header, self.context.type_store.tBool(), cond_loc, .{ .value = true });
-                const br_cond = self.forceLocalCond(&header, cond_v);
+                const br_cond = self.forceLocalCond(&header, cond_v, cond_loc);
                 try f.builder.condBr(&header, br_cond, body.id, &.{}, exit_blk.id, &.{}, loc);
             }
 
@@ -3385,7 +3402,7 @@ pub const LowerTir = struct {
                 else
                     blk.builder.binBool(&header, .CmpLt, idx_param, end_v, iterable_loc);
 
-                const br_cond = self.forceLocalCond(&header, cond);
+                const br_cond = self.forceLocalCond(&header, cond, iterable_loc);
                 try f.builder.condBr(&header, br_cond, body.id, &.{}, exit_blk.id, &.{}, loc);
 
                 try self.bindPattern(a, env, f, &body, row.pattern, idx_param, idx_ty);
@@ -3425,7 +3442,7 @@ pub const LowerTir = struct {
                 }
 
                 const cond = blk.builder.binBool(&header, .CmpLt, idx_param, len_v, iterable_loc);
-                const br_cond = self.forceLocalCond(&header, cond);
+                const br_cond = self.forceLocalCond(&header, cond, iterable_loc);
                 try f.builder.condBr(&header, br_cond, body.id, &.{}, exit_blk.id, &.{}, loc);
 
                 // Determine element type
@@ -3507,7 +3524,7 @@ pub const LowerTir = struct {
                 else
                     blk.builder.binBool(&header, .CmpLt, idx_param, end_v, iterable_loc);
 
-                const br_cond = self.forceLocalCond(&header, cond);
+                const br_cond = self.forceLocalCond(&header, cond, iterable_loc);
                 try f.builder.condBr(&header, br_cond, body.id, &.{}, exit_blk.id, &.{}, loc);
 
                 try self.bindPattern(a, env, f, &body, row.pattern, idx_param, idx_ty);
@@ -3547,7 +3564,7 @@ pub const LowerTir = struct {
                 }
 
                 const cond = blk.builder.binBool(&header, .CmpLt, idx_param, len_v, iterable_loc);
-                const br_cond = self.forceLocalCond(&header, cond);
+                const br_cond = self.forceLocalCond(&header, cond, iterable_loc);
                 try f.builder.condBr(&header, br_cond, body.id, &.{}, exit_blk.id, &.{}, loc);
 
                 var elem_ty = self.context.type_store.tAny();
@@ -3601,14 +3618,14 @@ pub const LowerTir = struct {
                 const loc = self.exprOptLoc(a, id);
                 const ty0 = self.getExprType(id) orelse return error.LoweringBug;
                 const v = blk.builder.constNull(blk, ty0, loc);
-                if (expected_ty) |want| return self.emitCoerce(blk, v, ty0, want);
+                if (expected_ty) |want| return self.emitCoerce(blk, v, ty0, want, loc);
                 return v;
             },
             .UndefLit => {
                 const loc = self.exprOptLoc(a, id);
                 const ty0 = self.getExprType(id) orelse return error.LoweringBug;
                 const v = blk.builder.tirValue(.ConstUndef, blk, ty0, loc, .{});
-                if (expected_ty) |want| return self.emitCoerce(blk, v, ty0, want);
+                if (expected_ty) |want| return self.emitCoerce(blk, v, ty0, want, loc);
                 return v;
             },
             .Unary => self.lowerUnary(a, env, f, blk, id, expected_ty, mode),
@@ -4392,6 +4409,7 @@ pub const LowerTir = struct {
         const src_ty_opt = self.getExprType(src_expr);
         const src_default_ty = src_ty_opt orelse target_ty;
         const vty = if (target_kind == .Any) src_default_ty else target_ty;
+        const expr_loc = self.exprOptLoc(a, src_expr);
         switch (pk) {
             .Binding => {
                 const guess_ty = src_ty_opt orelse target_ty;
@@ -4403,7 +4421,7 @@ pub const LowerTir = struct {
                 const eff_ty = if (target_kind == .Any and !self.isAny(src_ty)) src_ty else target_ty;
 
                 if (!src_ty.eq(eff_ty)) {
-                    raw = self.emitCoerce(blk, raw, src_ty, eff_ty);
+                    raw = self.emitCoerce(blk, raw, src_ty, eff_ty, expr_loc);
                 }
 
                 return try self.destructureDeclPattern(a, env, f, blk, pid, raw, eff_ty, to_slots);
@@ -4420,7 +4438,7 @@ pub const LowerTir = struct {
                 const src_ty = src_ty_opt orelse target_ty;
                 const eff_ty = if (target_kind == .Any) src_ty else target_ty;
                 const raw = try self.lowerExpr(a, env, f, blk, src_expr, eff_ty, .rvalue);
-                const val = if (!src_ty.eq(eff_ty)) self.emitCoerce(blk, raw, src_ty, eff_ty) else raw;
+                const val = if (!src_ty.eq(eff_ty)) self.emitCoerce(blk, raw, src_ty, eff_ty, expr_loc) else raw;
                 return try self.destructureDeclPattern(a, env, f, blk, pid, val, eff_ty, to_slots);
             },
             .Struct => {
@@ -4434,7 +4452,7 @@ pub const LowerTir = struct {
                 const src_ty = src_ty_opt orelse target_ty;
                 const eff_ty = if (target_kind == .Any) src_ty else target_ty;
                 const raw = try self.lowerExpr(a, env, f, blk, src_expr, eff_ty, .rvalue);
-                const val = if (!src_ty.eq(eff_ty)) self.emitCoerce(blk, raw, src_ty, eff_ty) else raw;
+                const val = if (!src_ty.eq(eff_ty)) self.emitCoerce(blk, raw, src_ty, eff_ty, expr_loc) else raw;
                 return try self.destructureDeclPattern(a, env, f, blk, pid, val, eff_ty, to_slots);
             },
             .VariantTuple => {
@@ -4617,10 +4635,15 @@ pub const LowerTir = struct {
 
     /// Ensure `cond` is defined in `blk` and is i1.
     /// This always emits a local SSA (CastNormal) in `blk`, even if the source is already a bool.
-    fn forceLocalCond(self: *LowerTir, blk: *Builder.BlockFrame, cond: tir.ValueId) tir.ValueId {
+    fn forceLocalCond(
+        self: *LowerTir,
+        blk: *Builder.BlockFrame,
+        cond: tir.ValueId,
+        loc: tir.OptLocId,
+    ) tir.ValueId {
         const tBool = self.context.type_store.tBool();
         // Emit a bitcast to anchor `cond` in this block without changing its representation.
-        return blk.builder.tirValue(.CastBit, blk, tBool, tir.OptLocId.none(), .{ .value = cond });
+        return blk.builder.tirValue(.CastBit, blk, tBool, loc, .{ .value = cond });
     }
 
     fn isVariantLike(self: *const LowerTir, ty: types.TypeId) bool {
@@ -4660,72 +4683,82 @@ pub const LowerTir = struct {
         return .{ .of_ty = of_ty, .tag_idx = @intCast(idx) };
     }
 
-    fn matchPattern(self: *LowerTir, a: *const ast.Ast, env: *Env, f: *Builder.FunctionFrame, blk: *Builder.BlockFrame, pid: ast.PatternId, scrut: tir.ValueId, scrut_ty: types.TypeId) !tir.ValueId {
+    fn matchPattern(
+        self: *LowerTir,
+        a: *const ast.Ast,
+        env: *Env,
+        f: *Builder.FunctionFrame,
+        blk: *Builder.BlockFrame,
+        pid: ast.PatternId,
+        scrut: tir.ValueId,
+        scrut_ty: types.TypeId,
+        loc: tir.OptLocId,
+    ) !tir.ValueId {
         const k = a.pats.index.kinds.items[pid.toRaw()];
         switch (k) {
-            .Wildcard => return blk.builder.tirValue(.ConstBool, blk, self.context.type_store.tBool(), tir.OptLocId.none(), .{ .value = true }),
+            .Wildcard => return blk.builder.tirValue(.ConstBool, blk, self.context.type_store.tBool(), loc, .{ .value = true }),
             .Literal => {
                 const pr = a.pats.get(.Literal, pid);
                 const litv = try self.lowerExpr(a, env, f, blk, pr.expr, null, .rvalue);
-                return blk.builder.binBool(blk, .CmpEq, scrut, litv, tir.OptLocId.none());
+                return blk.builder.binBool(blk, .CmpEq, scrut, litv, loc);
             },
             .VariantTuple => {
                 const vt = a.pats.get(.VariantTuple, pid);
                 const segs = a.pats.seg_pool.slice(vt.path);
-                if (segs.len == 0) return blk.builder.tirValue(.ConstBool, blk, self.context.type_store.tBool(), tir.OptLocId.none(), .{ .value = false });
+                if (segs.len == 0) return blk.builder.tirValue(.ConstBool, blk, self.context.type_store.tBool(), loc, .{ .value = false });
                 const last = a.pats.PathSeg.get(segs[segs.len - 1]);
                 if (self.tagIndexForCase(scrut_ty, last.name)) |idx| {
-                    const tag = blk.builder.extractField(blk, self.context.type_store.tI32(), scrut, 0, tir.OptLocId.none());
+                    const tag = blk.builder.extractField(blk, self.context.type_store.tI32(), scrut, 0, loc);
                     const want = f.builder.tirValue(
                         .ConstInt,
                         blk,
                         self.context.type_store.tI32(),
-                        tir.OptLocId.none(),
+                        loc,
                         .{ .value = @as(u64, @intCast(idx)) },
                     );
-                    return blk.builder.binBool(blk, .CmpEq, tag, want, tir.OptLocId.none());
+                    return blk.builder.binBool(blk, .CmpEq, tag, want, loc);
                 }
-                return blk.builder.tirValue(.ConstBool, blk, self.context.type_store.tBool(), tir.OptLocId.none(), .{ .value = false });
+                return blk.builder.tirValue(.ConstBool, blk, self.context.type_store.tBool(), loc, .{ .value = false });
             },
             .At => {
                 const node = a.pats.get(.At, pid);
-                return try self.matchPattern(a, env, f, blk, node.pattern, scrut, scrut_ty);
+                return try self.matchPattern(a, env, f, blk, node.pattern, scrut, scrut_ty, loc);
             },
             .VariantStruct => {
                 const vs = a.pats.get(.VariantStruct, pid);
                 const vk = self.context.type_store.getKind(scrut_ty);
                 if (vk == .Struct) {
-                    return blk.builder.tirValue(.ConstBool, blk, self.context.type_store.tBool(), tir.OptLocId.none(), .{ .value = true });
+                    return blk.builder.tirValue(.ConstBool, blk, self.context.type_store.tBool(), loc, .{ .value = true });
                 }
 
                 const segs = a.pats.seg_pool.slice(vs.path);
-                if (segs.len == 0) return blk.builder.tirValue(.ConstBool, blk, self.context.type_store.tBool(), tir.OptLocId.none(), .{ .value = false });
+                if (segs.len == 0) return blk.builder.tirValue(.ConstBool, blk, self.context.type_store.tBool(), loc, .{ .value = false });
                 const last = a.pats.PathSeg.get(segs[segs.len - 1]);
                 if (self.tagIndexForCase(scrut_ty, last.name)) |idx| {
-                    const tag = blk.builder.extractField(blk, self.context.type_store.tI32(), scrut, 0, tir.OptLocId.none());
-                    const want = f.builder.tirValue(.ConstInt, blk, self.context.type_store.tI32(), tir.OptLocId.none(), .{ .value = @as(u64, @intCast(idx)) });
-                    return blk.builder.binBool(blk, .CmpEq, tag, want, tir.OptLocId.none());
+                    const tag = blk.builder.extractField(blk, self.context.type_store.tI32(), scrut, 0, loc);
+                    const want = f.builder.tirValue(.ConstInt, blk, self.context.type_store.tI32(), loc, .{ .value = @as(u64, @intCast(idx)) });
+                    return blk.builder.binBool(blk, .CmpEq, tag, want, loc);
                 }
-                return blk.builder.tirValue(.ConstBool, blk, self.context.type_store.tBool(), tir.OptLocId.none(), .{ .value = false });
+                return blk.builder.tirValue(.ConstBool, blk, self.context.type_store.tBool(), loc, .{ .value = false });
             },
             .Path => {
                 // Tag-only variant pattern
                 const pp = a.pats.get(.Path, pid);
                 const segs = a.pats.seg_pool.slice(pp.segments);
-                if (segs.len == 0) return blk.builder.tirValue(.ConstBool, blk, self.context.type_store.tBool(), tir.OptLocId.none(), .{ .value = false });
+                if (segs.len == 0) return blk.builder.tirValue(.ConstBool, blk, self.context.type_store.tBool(), loc, .{ .value = false });
                 const last = a.pats.PathSeg.get(segs[segs.len - 1]);
 
                 if (self.enumMemberValue(scrut_ty, last.name)) |val| {
-                    const want = f.builder.tirValue(.ConstInt, blk, scrut_ty, tir.OptLocId.none(), .{ .value = val });
-                    return blk.builder.binBool(blk, .CmpEq, scrut, want, tir.OptLocId.none());
+                    const want = f.builder.tirValue(.ConstInt, blk, scrut_ty, loc, .{ .value = val });
+                    return blk.builder.binBool(blk, .CmpEq, scrut, want, loc);
                 }
 
                 if (self.tagIndexForCase(scrut_ty, last.name)) |idx| {
-                    const tag = blk.builder.extractField(blk, self.context.type_store.tI32(), scrut, 0, tir.OptLocId.none());
-                    const want = f.builder.tirValue(.ConstInt, blk, self.context.type_store.tI32(), tir.OptLocId.none(), .{ .value = @as(u64, @intCast(idx)) });
-                    return blk.builder.binBool(blk, .CmpEq, tag, want, tir.OptLocId.none());
+                    const tag = blk.builder.extractField(blk, self.context.type_store.tI32(), scrut, 0, loc);
+                    const want = f.builder.tirValue(.ConstInt, blk, self.context.type_store.tI32(), loc, .{ .value = @as(u64, @intCast(idx)) });
+                    return blk.builder.binBool(blk, .CmpEq, tag, want, loc);
                 }
-                return blk.builder.tirValue(.ConstBool, blk, self.context.type_store.tBool(), tir.OptLocId.none(), .{ .value = false });
+                return blk.builder.tirValue(.ConstBool, blk, self.context.type_store.tBool(), loc, .{ .value = false });
             },
             .Slice => {
                 const sl = a.pats.get(.Slice, pid);
@@ -4736,20 +4769,20 @@ pub const LowerTir = struct {
                 const scrut_ty_kind = self.context.type_store.getKind(scrut_ty);
                 if (scrut_ty_kind == .Array) {
                     const arr_ty = self.context.type_store.get(.Array, scrut_ty);
-                    len_val = blk.builder.tirValue(.ConstInt, blk, self.context.type_store.tUsize(), tir.OptLocId.none(), .{ .value = arr_ty.len });
+                    len_val = blk.builder.tirValue(.ConstInt, blk, self.context.type_store.tUsize(), loc, .{ .value = arr_ty.len });
                 } else {
-                    len_val = blk.builder.extractFieldNamed(blk, self.context.type_store.tUsize(), scrut, f.builder.intern("len"), tir.OptLocId.none());
+                    len_val = blk.builder.extractFieldNamed(blk, self.context.type_store.tUsize(), scrut, f.builder.intern("len"), loc);
                 }
-                const required_val = blk.builder.tirValue(.ConstInt, blk, self.context.type_store.tUsize(), tir.OptLocId.none(), .{ .value = required_len });
+                const required_val = blk.builder.tirValue(.ConstInt, blk, self.context.type_store.tUsize(), loc, .{ .value = required_len });
 
                 var len_check_result: tir.ValueId = undefined;
                 if (sl.has_rest) {
-                    len_check_result = blk.builder.binBool(blk, .CmpGe, len_val, required_val, tir.OptLocId.none());
+                    len_check_result = blk.builder.binBool(blk, .CmpGe, len_val, required_val, loc);
                 } else {
-                    len_check_result = blk.builder.binBool(blk, .CmpEq, len_val, required_val, tir.OptLocId.none());
+                    len_check_result = blk.builder.binBool(blk, .CmpEq, len_val, required_val, loc);
                 }
 
-                var all_elements_match = blk.builder.tirValue(.ConstBool, blk, self.context.type_store.tBool(), tir.OptLocId.none(), .{ .value = true });
+                var all_elements_match = blk.builder.tirValue(.ConstBool, blk, self.context.type_store.tBool(), loc, .{ .value = true });
 
                 const elem_ty = if (self.context.type_store.getKind(scrut_ty) == .Array)
                     self.context.type_store.get(.Array, scrut_ty).elem
@@ -4761,54 +4794,54 @@ pub const LowerTir = struct {
                 var i: usize = 0;
                 while (i < required_len) : (i += 1) {
                     const pat_elem = elems[i];
-                    const elem_val = blk.builder.indexOp(blk, elem_ty, scrut, blk.builder.tirValue(.ConstInt, blk, self.context.type_store.tUsize(), tir.OptLocId.none(), .{ .value = i }), .none());
-                    const elem_match = try self.matchPattern(a, env, f, blk, pat_elem, elem_val, elem_ty);
-                    all_elements_match = blk.builder.binBool(blk, .LogicalAnd, all_elements_match, elem_match, tir.OptLocId.none());
+                    const elem_val = blk.builder.indexOp(blk, elem_ty, scrut, blk.builder.tirValue(.ConstInt, blk, self.context.type_store.tUsize(), loc, .{ .value = i }), .none());
+                    const elem_match = try self.matchPattern(a, env, f, blk, pat_elem, elem_val, elem_ty, loc);
+                    all_elements_match = blk.builder.binBool(blk, .LogicalAnd, all_elements_match, elem_match, loc);
                 }
 
-                return blk.builder.binBool(blk, .LogicalAnd, len_check_result, all_elements_match, tir.OptLocId.none());
+                return blk.builder.binBool(blk, .LogicalAnd, len_check_result, all_elements_match, loc);
             },
             .Or => {
                 const or_pat = a.pats.get(.Or, pid);
                 const alts = a.pats.pat_pool.slice(or_pat.alts);
                 if (alts.len == 0) {
-                    return blk.builder.tirValue(.ConstBool, blk, self.context.type_store.tBool(), tir.OptLocId.none(), .{ .value = false });
+                    return blk.builder.tirValue(.ConstBool, blk, self.context.type_store.tBool(), loc, .{ .value = false });
                 }
 
-                var result = try self.matchPattern(a, env, f, blk, alts[0], scrut, scrut_ty);
+                var result = try self.matchPattern(a, env, f, blk, alts[0], scrut, scrut_ty, loc);
                 var i: usize = 1;
                 while (i < alts.len) : (i += 1) {
-                    const next_ok = try self.matchPattern(a, env, f, blk, alts[i], scrut, scrut_ty);
-                    result = blk.builder.binBool(blk, .LogicalOr, result, next_ok, tir.OptLocId.none());
+                    const next_ok = try self.matchPattern(a, env, f, blk, alts[i], scrut, scrut_ty, loc);
+                    result = blk.builder.binBool(blk, .LogicalOr, result, next_ok, loc);
                 }
                 return result;
             },
             .Range => {
                 const range_pat = a.pats.get(.Range, pid);
                 const bool_ty = self.context.type_store.tBool();
-                var result = blk.builder.tirValue(.ConstBool, blk, bool_ty, tir.OptLocId.none(), .{ .value = true });
+                var result = blk.builder.tirValue(.ConstBool, blk, bool_ty, loc, .{ .value = true });
 
                 if (!range_pat.start.isNone()) {
                     const start_expr = range_pat.start.unwrap();
                     const start_val = try self.lowerExpr(a, env, f, blk, start_expr, scrut_ty, .rvalue);
-                    const cmp = blk.builder.binBool(blk, .CmpGe, scrut, start_val, tir.OptLocId.none());
-                    result = blk.builder.binBool(blk, .LogicalAnd, result, cmp, tir.OptLocId.none());
+                    const cmp = blk.builder.binBool(blk, .CmpGe, scrut, start_val, loc);
+                    result = blk.builder.binBool(blk, .LogicalAnd, result, cmp, loc);
                 }
 
                 if (!range_pat.end.isNone()) {
                     const end_expr = range_pat.end.unwrap();
                     const end_val = try self.lowerExpr(a, env, f, blk, end_expr, scrut_ty, .rvalue);
                     const cmp = if (range_pat.inclusive_right)
-                        blk.builder.binBool(blk, .CmpLe, scrut, end_val, tir.OptLocId.none())
+                        blk.builder.binBool(blk, .CmpLe, scrut, end_val, loc)
                     else
-                        blk.builder.binBool(blk, .CmpLt, scrut, end_val, tir.OptLocId.none());
-                    result = blk.builder.binBool(blk, .LogicalAnd, result, cmp, tir.OptLocId.none());
+                        blk.builder.binBool(blk, .CmpLt, scrut, end_val, loc);
+                    result = blk.builder.binBool(blk, .LogicalAnd, result, cmp, loc);
                 }
 
                 return result;
             },
             .Binding, .Tuple, .Struct => {
-                return blk.builder.tirValue(.ConstBool, blk, self.context.type_store.tBool(), tir.OptLocId.none(), .{ .value = true });
+                return blk.builder.tirValue(.ConstBool, blk, self.context.type_store.tBool(), loc, .{ .value = true });
             },
         }
     }
