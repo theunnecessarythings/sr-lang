@@ -4,9 +4,37 @@ const tir = @import("tir.zig");
 const compile = @import("compile.zig");
 const types = @import("types.zig");
 const abi = @import("abi.zig");
+const cst = @import("cst.zig");
 
 const Allocator = std.mem.Allocator;
 const ArrayList = std.array_list.Managed;
+
+pub var enable_debug_info: bool = true;
+
+const LocKey = struct {
+    store: usize,
+    raw: u32,
+};
+
+const LineInfo = struct {
+    line: usize,
+    col: usize,
+};
+
+fn computeLineCol(src: []const u8, index: usize) LineInfo {
+    var i: usize = 0;
+    var line: usize = 0;
+    var last_nl: usize = 0;
+    const limit = if (index > src.len) src.len else index;
+    while (i < limit) : (i += 1) {
+        if (src[i] == '\n') {
+            line += 1;
+            last_nl = i + 1;
+        }
+    }
+    const col = if (limit >= last_nl) limit - last_nl else 0;
+    return .{ .line = line, .col = col };
+}
 
 pub const MlirCodegen = struct {
     gpa: Allocator,
@@ -14,6 +42,10 @@ pub const MlirCodegen = struct {
     mlir_ctx: mlir.Context,
     loc: mlir.Location,
     module: mlir.Module,
+
+    active_loc_store: ?*const cst.LocStore = null,
+    loc_cache: std.AutoHashMap(LocKey, mlir.Location),
+    file_cache: std.AutoHashMap(u32, []const u8),
 
     // common LLVM/arith types (opaque pointers on master)
     void_ty: mlir.Type,
@@ -119,6 +151,9 @@ pub const MlirCodegen = struct {
             .mlir_ctx = ctx,
             .loc = loc,
             .module = module,
+            .active_loc_store = null,
+            .loc_cache = std.AutoHashMap(LocKey, mlir.Location).init(gpa),
+            .file_cache = std.AutoHashMap(u32, []const u8).init(gpa),
             .void_ty = void_ty,
             .i1_ty = mlir.Type.getSignlessIntegerType(ctx, 1),
             .i8_ty = mlir.Type.getSignlessIntegerType(ctx, 8),
@@ -143,13 +178,25 @@ pub const MlirCodegen = struct {
         self.value_map.deinit();
         self.val_types.deinit();
         self.def_instr.deinit();
+        var fit = self.file_cache.valueIterator();
+        while (fit.next()) |src| {
+            self.context.source_manager.gpa.free(@constCast(src.*));
+        }
+        self.file_cache.deinit();
+        self.loc_cache.deinit();
         self.module.destroy();
     }
 
     // ----------------------------------------------------------------
     // Public entry
     // ----------------------------------------------------------------
-    pub fn emitModule(self: *MlirCodegen, t: *const tir.TIR, context: *compile.Context) !mlir.Module {
+    pub fn emitModule(
+        self: *MlirCodegen,
+        t: *const tir.TIR,
+        context: *compile.Context,
+        locs: ?*const cst.LocStore,
+    ) !mlir.Module {
+        self.active_loc_store = locs;
         self.attachTargetInfo();
         try self.emitExternDecls(t, &context.type_store);
 
@@ -161,6 +208,37 @@ pub const MlirCodegen = struct {
             if (blocks.len > 0) try self.emitFunctionBody(fid, t, &context.type_store);
         }
         return self.module;
+    }
+
+    fn mlirLocation(self: *MlirCodegen, opt_loc: tir.OptLocId) mlir.Location {
+        if (opt_loc.isNone()) return self.loc;
+        const locs = self.active_loc_store orelse return self.loc;
+        const loc_id = opt_loc.unwrap();
+        const key = LocKey{ .store = @intFromPtr(locs), .raw = loc_id.toRaw() };
+        if (self.loc_cache.get(key)) |cached| return cached;
+
+        const loc_record = locs.get(loc_id);
+        const src = self.getFileSource(loc_record.file_id) catch {
+            return self.loc;
+        };
+        const lc = computeLineCol(src, loc_record.start);
+        const filename = self.context.source_manager.get(loc_record.file_id) orelse "unknown";
+        const mlir_loc = mlir.Location.fileLineColGet(
+            self.mlir_ctx,
+            mlir.StringRef.from(filename),
+            @as(u32, @intCast(lc.line + 1)),
+            @as(u32, @intCast(lc.col + 1)),
+        );
+        _ = self.loc_cache.put(key, mlir_loc) catch {};
+        return mlir_loc;
+    }
+
+    fn getFileSource(self: *MlirCodegen, file_id: u32) ![]const u8 {
+        if (self.file_cache.get(file_id)) |buf| return buf;
+        const data = try self.context.source_manager.read(file_id);
+        errdefer self.context.source_manager.gpa.free(@constCast(data));
+        try self.file_cache.put(file_id, data);
+        return data;
     }
 
     fn attachTargetInfo(self: *MlirCodegen) void {

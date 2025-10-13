@@ -169,7 +169,7 @@ pub const Pipeline = struct {
         // Resolve imports recursively and append their codegen (reuse resolver)
         try self.resolveImports(&ast, &gen, &name_to_prefix, &self.context.resolver);
 
-        var mlir_module = try gen.emitModule(&root_mod, self.context);
+        var mlir_module = try gen.emitModule(&root_mod, self.context, ast.exprs.locs);
         // verify module
         if (!mlir_module.getOperation().verify()) {
             mlir_module.getOperation().dump();
@@ -258,7 +258,7 @@ pub const Pipeline = struct {
             const pref = name_to_prefix.get(imp) orelse computePrefix(self.allocator, imp) catch @panic("OOM");
             try mangleTIR(self.allocator, &me.tir, me.tir.instrs.strs, pref);
             // append TIR into same generator (emit into same module)
-            _ = try gen.emitModule(&me.tir, self.context);
+            _ = try gen.emitModule(&me.tir, self.context, me.ast.exprs.locs);
             if (self.context.diags.anyErrors()) {
                 return error.MlirCodegenFailed;
             }
