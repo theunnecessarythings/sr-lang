@@ -153,12 +153,26 @@ pub const MlirCodegen = struct {
 
     const PrintBuffer = struct {
         list: *std.ArrayList(u8),
-        allocator: Allocator,
+        had_error: *bool,
     };
 
-    fn printCallback(s: mlir.c.MlirStringRef, user_data: ?*anyopaque) callconv(.c) void {
-        const buf: *PrintBuffer = @ptrCast(@alignCast(user_data.?));
-        buf.list.appendSlice(buf.allocator, s.data[0..s.length]) catch {};
+    fn printCallback(bytes: []const u8, user_data: anyopaque) callconv(.C) void {
+        const buf: *PrintBuffer = @ptrCast(@alignCast(user_data));
+        buf.list.appendSlice(bytes) catch {
+            buf.had_error.* = true;
+        };
+    }
+
+    fn ownedAttributeText(self: *MlirCodegen, attr: mlir.Attribute) ![]u8 {
+        var list = std.ArrayList(u8).init(self.gpa);
+        errdefer list.deinit();
+
+        var had_error = false;
+        var sink = PrintBuffer{ .list = &list, .had_error = &had_error };
+        attr.print(printCallback, &sink);
+        if (had_error) return error.OutOfMemory;
+
+        return try list.toOwnedSlice();
     }
 
     fn ownedAttributeText(self: *MlirCodegen, attr: mlir.Attribute) ![]u8 {
@@ -440,10 +454,14 @@ pub const MlirCodegen = struct {
         const producer_text = try self.ownedAttributeText(producer_attr);
         defer self.gpa.free(producer_text);
 
+        const id_payload_attr = self.strAttr("cu");
+        const id_payload_text = try self.ownedAttributeText(id_payload_attr);
+        defer self.gpa.free(id_payload_text);
+
         const cu_text = try std.fmt.allocPrint(
             self.gpa,
-            "#llvm.di_compile_unit<id = distinct[{d}], source_language = DW_LANG_C, file = {s}, producer = {s}, is_optimized = false, runtime_version = 0, emission_kind = Full>",
-            .{ self.nextDistinctId(), file_text_owned, producer_text },
+            "#llvm.di_compile_unit<id = distinct[{d}]<{s}>, source_language = DW_LANG_C, file = {s}, producer = {s}, is_optimized = false, runtime_version = 0, emission_kind = Full>",
+            .{ self.nextDistinctId(), id_payload_text, file_text_owned, producer_text },
         );
         errdefer self.gpa.free(cu_text);
 
@@ -474,11 +492,16 @@ pub const MlirCodegen = struct {
         const func_name_text = try self.ownedAttributeText(func_name_attr);
         defer self.gpa.free(func_name_text);
 
+        const id_payload_attr = self.strAttr("sp");
+        const id_payload_text = try self.ownedAttributeText(id_payload_attr);
+        defer self.gpa.free(id_payload_text);
+
         const sp_text = try std.fmt.allocPrint(
             self.gpa,
-            "#llvm.di_subprogram<id = distinct[{d}], compile_unit = {s}, scope = {s}, name = {s}, linkageName = {s}, file = {s}, line = {d}, scopeLine = {d}, type = #llvm.di_subroutine_type<types = !llvm.array<[]>>, spFlags = DIFlagDefinition>",
+            "#llvm.di_subprogram<id = distinct[{d}]<{s}>, compile_unit = {s}, scope = {s}, name = {s}, linkageName = {s}, file = {s}, line = {d}, scopeLine = {d}, type = #llvm.di_subroutine_type<types = !llvm.array<[]>>, spFlags = DIFlagDefinition>",
             .{
                 self.nextDistinctId(),
+                id_payload_text,
                 file_info.compile_unit_text,
                 file_info.file_text,
                 func_name_text,
