@@ -161,6 +161,14 @@ pub const MlirCodegen = struct {
         buf.list.appendSlice(buf.allocator, s.data[0..s.length]) catch {};
     }
 
+    fn ownedAttributeText(self: *MlirCodegen, attr: mlir.Attribute) ![]u8 {
+        var list: std.ArrayList(u8) = .empty;
+        errdefer list.deinit(self.gpa);
+        var sink = PrintBuffer{ .list = &list, .allocator = self.gpa };
+        attr.print(printCallback, &sink);
+        return list.toOwnedSlice(self.gpa);
+    }
+
     // ----------------------------------------------------------------
     // Init / Deinit
     // ----------------------------------------------------------------
@@ -228,7 +236,13 @@ pub const MlirCodegen = struct {
         context: *compile.Context,
         locs: ?*const cst.LocStore,
     ) !mlir.Module {
+        const prev_loc = self.loc;
+        defer self.loc = prev_loc;
+
         self.active_loc_store = locs;
+        defer self.active_loc_store = null;
+
+        self.loc_cache.clearRetainingCapacity();
         self.resetDebugCaches();
         self.attachTargetInfo();
         try self.emitExternDecls(t, &context.type_store);
@@ -244,7 +258,10 @@ pub const MlirCodegen = struct {
     }
 
     fn mlirLocation(self: *MlirCodegen, opt_loc: tir.OptLocId) mlir.Location {
-        if (opt_loc.isNone()) return self.loc;
+        if (opt_loc.isNone())
+            // Preserve the current ambient location so callers can deliberately
+            // keep emitting with whatever scope was active.
+            return self.loc;
         const locs = self.active_loc_store orelse return self.loc;
         const loc_id = opt_loc.unwrap();
         const key = LocKey{ .store = @intFromPtr(locs), .raw = loc_id.toRaw() };
@@ -387,6 +404,8 @@ pub const MlirCodegen = struct {
             const loc = self.blockOptLoc(block_id, t);
             if (!loc.isNone()) return loc;
         }
+        // No block carried a concrete span. Leave the function location unknown so
+        // downstream consumers treat it as compiler-synthesized.
         return tir.OptLocId.none();
     }
 
@@ -411,20 +430,22 @@ pub const MlirCodegen = struct {
         const base = std.fs.path.basename(path);
         const dir = std.fs.path.dirname(path) orelse ".";
 
-        const file_text = try std.fmt.allocPrint(
-            self.gpa,
-            "#llvm.di_file<\"{s}\", \"{s}\">",
-            .{ std.zig.fmtEscapes(base), std.zig.fmtEscapes(dir) },
-        );
-        errdefer self.gpa.free(file_text);
-
-        const file_attr = mlir.Attribute.parseGet(self.mlir_ctx, mlir.StringRef.from(file_text));
+        const base_attr = self.strAttr(base);
+        const dir_attr = self.strAttr(dir);
+        const file_attr = mlir.LLVMAttributes.getLLVMDIFileAttr(self.mlir_ctx, base_attr, dir_attr);
         if (file_attr.isNull()) return error.DebugAttrParseFailed;
+
+        const file_text_owned = try self.ownedAttributeText(file_attr);
+        errdefer self.gpa.free(file_text_owned);
+
+        const producer_attr = self.strAttr("sr-lang");
+        const producer_text = try self.ownedAttributeText(producer_attr);
+        defer self.gpa.free(producer_text);
 
         const cu_text = try std.fmt.allocPrint(
             self.gpa,
-            "#llvm.di_compile_unit<id = distinct[{d}], source_language = DW_LANG_C, file = {s}, producer = \"sr-lang\", is_optimized = false, runtime_version = 0, emission_kind = Full>",
-            .{ self.nextDistinctId(), file_text },
+            "#llvm.di_compile_unit<id = distinct[{d}], source_language = DW_LANG_C, file = {s}, producer = {s}, is_optimized = false, runtime_version = 0, emission_kind = Full>",
+            .{ self.nextDistinctId(), file_text_owned, producer_text },
         );
         errdefer self.gpa.free(cu_text);
 
@@ -434,7 +455,7 @@ pub const MlirCodegen = struct {
         try self.di_files.put(file_id, .{
             .file_attr = file_attr,
             .compile_unit_attr = cu_attr,
-            .file_text = file_text,
+            .file_text = file_text_owned,
             .compile_unit_text = cu_text,
         });
         return self.di_files.getPtr(file_id).?;
@@ -451,15 +472,19 @@ pub const MlirCodegen = struct {
         if (self.di_subprograms.getPtr(f_id)) |info| return info;
 
         const file_info = try self.ensureDebugFile(file_id);
+        const func_name_attr = self.strAttr(func_name);
+        const func_name_text = try self.ownedAttributeText(func_name_attr);
+        defer self.gpa.free(func_name_text);
+
         const sp_text = try std.fmt.allocPrint(
             self.gpa,
-            "#llvm.di_subprogram<id = distinct[{d}], compile_unit = {s}, scope = {s}, name = \"{s}\", linkageName = \"{s}\", file = {s}, line = {d}, scopeLine = {d}, type = #llvm.di_subroutine_type<types = !llvm.array<[]>>, spFlags = DIFlagDefinition>",
+            "#llvm.di_subprogram<id = distinct[{d}], compile_unit = {s}, scope = {s}, name = {s}, linkageName = {s}, file = {s}, line = {d}, scopeLine = {d}, type = #llvm.di_subroutine_type<types = !llvm.array<[]>>, spFlags = DIFlagDefinition>",
             .{
                 self.nextDistinctId(),
                 file_info.compile_unit_text,
                 file_info.file_text,
-                std.zig.fmtEscapes(func_name),
-                std.zig.fmtEscapes(func_name),
+                func_name_text,
+                func_name_text,
                 file_info.file_text,
                 line,
                 line,
@@ -498,7 +523,7 @@ pub const MlirCodegen = struct {
 
     fn ensureDINullTypeAttr(self: *MlirCodegen) !mlir.Attribute {
         if (!self.di_null_type_attr.isNull()) return self.di_null_type_attr;
-        const attr = mlir.Attribute.getLLVMDINullTypeAttr(self.mlir_ctx);
+        const attr = mlir.LLVMAttributes.getLLVMDINullTypeAttr(self.mlir_ctx);
         if (attr.isNull()) return error.DebugAttrParseFailed;
         self.di_null_type_attr = attr;
         return attr;
@@ -506,7 +531,7 @@ pub const MlirCodegen = struct {
 
     fn ensureEmptyDIExpression(self: *MlirCodegen) !mlir.Attribute {
         if (!self.di_empty_expr_attr.isNull()) return self.di_empty_expr_attr;
-        const attr = mlir.Attribute.getLLVMDIExpressionAttr(self.mlir_ctx, &[_]mlir.Attribute{});
+        const attr = mlir.LLVMAttributes.getLLVMDIExpressionAttr(self.mlir_ctx, &[_]mlir.Attribute{});
         if (attr.isNull()) return error.DebugAttrParseFailed;
         self.di_empty_expr_attr = attr;
         return attr;
@@ -556,7 +581,7 @@ pub const MlirCodegen = struct {
             const p = t.funcs.Param.get(pid);
             if (p.name.isNone()) continue;
             const name = t.instrs.strs.get(p.name.unwrap());
-            const var_attr = mlir.Attribute.getLLVMDILocalVariableAttr(
+            const var_attr = mlir.LLVMAttributes.getLLVMDILocalVariableAttr(
                 self.mlir_ctx,
                 subp.attr,
                 self.strAttr(name),
@@ -681,6 +706,8 @@ pub const MlirCodegen = struct {
                     self.named("sym_visibility", self.strAttr("private")),
                 };
                 const region = mlir.Region.create(); // extern: no body
+                // Extern declarations originate from imported metadata and have no
+                // source span, so we intentionally reuse the module location here.
                 const fnop = OpBuilder.init("llvm.func", self.loc).builder()
                     .add_attributes(&attrs)
                     .add_regions(&.{region})
@@ -723,6 +750,8 @@ pub const MlirCodegen = struct {
                 }
 
                 const attrs = attr_buf.items;
+                // Likewise, synthesized globals are emitted with the module location
+                // because they are not backed by user-written syntax.
                 const global_op = OpBuilder.init("llvm.mlir.global", self.loc).builder()
                     .add_attributes(attrs)
                     .add_regions(&.{mlir.Region.create()})
