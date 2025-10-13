@@ -192,6 +192,7 @@ pub const LowerTir = struct {
         }
 
         if (blk.term.isNone()) {
+            // This synthesized initializer has no source span; emit a location-less return.
             try b.setReturn(&blk, .none(), tir.OptLocId.none());
         }
         try b.endBlock(&f, blk);
@@ -558,6 +559,7 @@ pub const LowerTir = struct {
         const fnty = self.context.type_store.get(.Function, fid);
 
         const fnr = a.exprs.get(.FunctionLit, fun_eid);
+        const fn_loc = self.locToOpt(fnr.loc);
 
         try self.pushExprTypeOverrideFrame();
         defer self.popExprTypeOverrideFrame();
@@ -633,7 +635,7 @@ pub const LowerTir = struct {
         }
 
         if (blk.term.isNone()) {
-            try b.setReturn(&blk, tir.OptValueId.none(), tir.OptLocId.none());
+            try b.setReturn(&blk, tir.OptValueId.none(), fn_loc);
         }
 
         try b.endBlock(&f, blk);
@@ -1066,6 +1068,7 @@ pub const LowerTir = struct {
         row: ast.Rows.Call,
         ety: types.TypeId,
         k: types.TypeKind,
+        loc: tir.OptLocId,
     ) !tir.ValueId {
         var cur = row.callee;
         var last_name: ?StrId = null;
@@ -1110,13 +1113,13 @@ pub const LowerTir = struct {
                     const arg_id = if (i < args.len) args[i] else args[args.len - 1];
                     elems[i] = try self.lowerExpr(a, env, f, blk, arg_id, sty, .rvalue);
                 }
-                break :blk blk.builder.tupleMake(blk, payload_ty, elems, tir.OptLocId.none());
+                break :blk blk.builder.tupleMake(blk, payload_ty, elems, loc);
             },
             else => try self.lowerExpr(a, env, f, blk, args[0], payload_ty, .rvalue),
         };
 
         // tag (i32)
-        const tag_val = blk.builder.tirValue(.ConstInt, blk, self.context.type_store.tI32(), tir.OptLocId.none(), .{ .value = tag_idx });
+        const tag_val = blk.builder.tirValue(.ConstInt, blk, self.context.type_store.tI32(), loc, .{ .value = tag_idx });
 
         // union type for the payload field
         var union_fields_args = try self.gpa.alloc(types.TypeStore.StructFieldArg, fields.len);
@@ -1129,14 +1132,14 @@ pub const LowerTir = struct {
 
         // IMPORTANT: for void payload, do NOT call UnionMake (it would force an llvm.void store).
         const union_val: tir.ValueId = if (payload_val) |pv|
-            blk.builder.tirValue(.UnionMake, blk, union_ty, tir.OptLocId.none(), .{ .field_index = tag_idx, .value = pv })
+            blk.builder.tirValue(.UnionMake, blk, union_ty, loc, .{ .field_index = tag_idx, .value = pv })
         else
-            blk.builder.tirValue(.ConstUndef, blk, union_ty, tir.OptLocId.none(), .{});
+            blk.builder.tirValue(.ConstUndef, blk, union_ty, loc, .{});
 
         return blk.builder.structMake(blk, ety, &[_]tir.Rows.StructFieldInit{
             .{ .index = 0, .name = .none(), .value = tag_val },
             .{ .index = 1, .name = .none(), .value = union_val },
-        }, tir.OptLocId.none());
+        }, loc);
     }
 
     fn runComptimeExpr(
@@ -1151,6 +1154,7 @@ pub const LowerTir = struct {
 
         const ptr_ty = self.context.type_store.mkPtr(self.context.type_store.tU8(), false);
         const thunk_name = tmp_builder.intern("__comptime_thunk");
+        const expr_loc = self.exprOptLoc(a, expr);
 
         const attr_id = tmp_tir.instrs.Attribute.add(self.gpa, .{
             .name = a.exprs.strs.intern("llvm.emit_c_interface"),
@@ -1178,12 +1182,12 @@ pub const LowerTir = struct {
                 else => return error.UnsupportedComptimeType,
             };
             const field_ptr_ty = self.context.type_store.mkPtr(field_ty, false);
-            const field_ptr = thunk_blk.builder.tirValue(.CastBit, &thunk_blk, field_ptr_ty, tir.OptLocId.none(), .{ .value = result_ptr_val });
-            _ = thunk_blk.builder.tirValue(.Store, &thunk_blk, field_ty, tir.OptLocId.none(), .{ .ptr = field_ptr, .value = result_val_id, .@"align" = 0 });
+            const field_ptr = thunk_blk.builder.tirValue(.CastBit, &thunk_blk, field_ptr_ty, expr_loc, .{ .value = result_ptr_val });
+            _ = thunk_blk.builder.tirValue(.Store, &thunk_blk, field_ty, expr_loc, .{ .ptr = field_ptr, .value = result_val_id, .@"align" = 0 });
         }
 
         if (thunk_blk.term.isNone()) {
-            try tmp_builder.setReturnVoid(&thunk_blk, tir.OptLocId.none());
+            try tmp_builder.setReturnVoid(&thunk_blk, expr_loc);
         }
         try tmp_builder.endBlock(&thunk_fn, thunk_blk);
         try tmp_builder.endFunction(thunk_fn);
@@ -1235,13 +1239,14 @@ pub const LowerTir = struct {
         const cb = a.exprs.get(.ComptimeBlock, id);
         const result_ty = self.getExprType(cb.block) orelse return error.LoweringBug;
         const comptime_value = try self.runComptimeExpr(a, cb.block, result_ty);
+        const loc = self.exprOptLoc(a, id);
 
         return switch (comptime_value) {
-            .Int => |val| blk.builder.tirValue(.ConstInt, blk, result_ty, tir.OptLocId.none(), .{ .value = @as(u64, @intCast(val)) }),
-            .Float => |val| blk.builder.tirValue(.ConstFloat, blk, result_ty, tir.OptLocId.none(), .{ .value = val }),
-            .Bool => |val| blk.builder.tirValue(.ConstBool, blk, result_ty, tir.OptLocId.none(), .{ .value = val }),
-            .Void => blk.builder.tirValue(.ConstUndef, blk, self.context.type_store.tVoid(), tir.OptLocId.none(), .{}),
-            .String => |s| blk.builder.tirValue(.ConstString, blk, result_ty, tir.OptLocId.none(), .{ .text = blk.builder.intern(s) }),
+            .Int => |val| blk.builder.tirValue(.ConstInt, blk, result_ty, loc, .{ .value = @as(u64, @intCast(val)) }),
+            .Float => |val| blk.builder.tirValue(.ConstFloat, blk, result_ty, loc, .{ .value = val }),
+            .Bool => |val| blk.builder.tirValue(.ConstBool, blk, result_ty, loc, .{ .value = val }),
+            .Void => blk.builder.tirValue(.ConstUndef, blk, self.context.type_store.tVoid(), loc, .{}),
+            .String => |s| blk.builder.tirValue(.ConstString, blk, result_ty, loc, .{ .text = blk.builder.intern(s) }),
         };
     }
 
@@ -1267,6 +1272,7 @@ pub const LowerTir = struct {
         value: comp.ComptimeValue,
     ) !tir.ValueId {
         _ = self;
+        // These values are synthesized from specialization metadata; no source location is available.
         return switch (value) {
             .Int => |val| blk: {
                 const casted = std.math.cast(u64, val) orelse return error.LoweringBug;
@@ -1346,7 +1352,7 @@ pub const LowerTir = struct {
         if (expected) |ety| {
             const k = self.context.type_store.getKind(ety);
             if (k == .Variant or k == .Error)
-                return try self.buildVariantItem(a, env, f, blk, row, ety, k);
+                return try self.buildVariantItem(a, env, f, blk, row, ety, k, loc);
         }
 
         // Try to get callee param types
@@ -3322,12 +3328,18 @@ pub const LowerTir = struct {
         }
     }
 
-    fn getIterableLen(self: *LowerTir, blk: *Builder.BlockFrame, iter_ty: types.TypeId, idx_ty: types.TypeId) !tir.ValueId {
+    fn getIterableLen(
+        self: *LowerTir,
+        blk: *Builder.BlockFrame,
+        iter_ty: types.TypeId,
+        idx_ty: types.TypeId,
+        loc: tir.OptLocId,
+    ) !tir.ValueId {
         const iter_ty_kind = self.context.type_store.index.kinds.items[iter_ty.toRaw()];
         return switch (iter_ty_kind) {
             .Array => blk: {
                 const at = self.context.type_store.get(.Array, iter_ty);
-                break :blk blk.builder.tirValue(.ConstInt, blk, idx_ty, tir.OptLocId.none(), .{ .value = @as(u64, @intCast(at.len)) });
+                break :blk blk.builder.tirValue(.ConstInt, blk, idx_ty, loc, .{ .value = @as(u64, @intCast(at.len)) });
             },
             .Slice, .DynArray => @panic("Not implemented"),
             else => return error.LoweringBug,
@@ -3422,7 +3434,7 @@ pub const LowerTir = struct {
                 const arr_v = try self.lowerExpr(a, env, f, blk, row.iterable, null, .rvalue);
                 const idx_ty = self.context.type_store.tUsize();
                 const iter_ty = self.getExprType(row.iterable) orelse return error.LoweringBug;
-                const len_v = try self.getIterableLen(blk, iter_ty, idx_ty);
+                const len_v = try self.getIterableLen(blk, iter_ty, idx_ty, iterable_loc);
 
                 const zero = blk.builder.tirValue(.ConstInt, blk, idx_ty, loc, .{ .value = 0 });
                 const idx_param = try f.builder.addBlockParam(&header, null, idx_ty);
@@ -3544,7 +3556,7 @@ pub const LowerTir = struct {
                 const arr_v = try self.lowerExpr(a, env, f, blk, row.iterable, null, .rvalue);
                 const idx_ty = self.context.type_store.tUsize();
                 const iter_ty = self.getExprType(row.iterable) orelse return error.LoweringBug;
-                const len_v = try self.getIterableLen(blk, iter_ty, idx_ty);
+                const len_v = try self.getIterableLen(blk, iter_ty, idx_ty, iterable_loc);
 
                 const zero = blk.builder.tirValue(.ConstInt, blk, idx_ty, loc, .{ .value = 0 });
                 const idx_param = try f.builder.addBlockParam(&header, null, idx_ty);
@@ -3962,6 +3974,7 @@ pub const LowerTir = struct {
                 const sfields = me.ast.exprs.sfv_pool.slice(row.fields);
                 const st = self.context.type_store.get(.Struct, expected_ty);
                 const exp_fields = self.context.type_store.field_pool.slice(st.fields);
+                const loc = self.exprOptLoc(me.ast, eid);
                 var fields = self.gpa.alloc(tir.Rows.StructFieldInit, exp_fields.len) catch return null;
                 var j: usize = 0;
                 while (j < exp_fields.len) : (j += 1) {
@@ -3974,13 +3987,14 @@ pub const LowerTir = struct {
                     };
                     fields[j] = .{ .index = @intCast(j), .name = .none(), .value = vv };
                 }
-                const v = blk.builder.structMake(blk, expected_ty, fields, tir.OptLocId.none());
+                const v = blk.builder.structMake(blk, expected_ty, fields, loc);
                 self.gpa.free(fields);
                 return v;
             },
             .Literal => {
                 const lit = me.ast.exprs.get(.Literal, eid);
                 const k = self.context.type_store.getKind(expected_ty);
+                const loc = self.exprOptLoc(me.ast, eid);
                 switch (k) {
                     .U8, .U16, .U32, .U64, .I8, .I16, .I32, .I64 => {
                         const info = switch (lit.data) {
@@ -3989,21 +4003,21 @@ pub const LowerTir = struct {
                         };
                         if (!info.valid) return null;
                         const value = std.math.cast(u64, info.value) orelse return null;
-                        return blk.builder.tirValue(.ConstInt, blk, expected_ty, tir.OptLocId.none(), .{ .value = value });
+                        return blk.builder.tirValue(.ConstInt, blk, expected_ty, loc, .{ .value = value });
                     },
                     .Bool => {
                         const b = switch (lit.data) {
                             .bool => |val| val,
                             else => return null,
                         };
-                        return blk.builder.tirValue(.ConstBool, blk, expected_ty, tir.OptLocId.none(), .{ .value = b });
+                        return blk.builder.tirValue(.ConstBool, blk, expected_ty, loc, .{ .value = b });
                     },
                     .String => {
                         const sid = switch (lit.data) {
                             .string => |str_id| str_id,
                             else => return null,
                         };
-                        return blk.builder.tirValue(.ConstString, blk, expected_ty, tir.OptLocId.none(), .{ .text = sid });
+                        return blk.builder.tirValue(.ConstString, blk, expected_ty, loc, .{ .text = sid });
                     },
                     else => return null,
                 }
@@ -4078,6 +4092,7 @@ pub const LowerTir = struct {
         vty: types.TypeId,
     ) !void {
         const k = a.pats.index.kinds.items[pid.toRaw()];
+        const loc = self.patternOptLoc(a, pid);
         switch (k) {
             .Binding => {
                 const nm = a.pats.get(.Binding, pid).name;
@@ -4098,7 +4113,7 @@ pub const LowerTir = struct {
                 }
                 for (elems, 0..) |pe, i| {
                     const ety = if (i < elem_tys.len) elem_tys[i] else self.context.type_store.tAny();
-                    const ev = blk.builder.extractElem(blk, ety, value, @intCast(i), tir.OptLocId.none());
+                    const ev = blk.builder.extractElem(blk, ety, value, @intCast(i), loc);
                     try self.bindPattern(a, env, f, blk, pe, ev, ety);
                 }
             },
@@ -4114,28 +4129,29 @@ pub const LowerTir = struct {
 
                 for (elems, 0..) |pat_elem, i| {
                     if (sl.has_rest and i == sl.rest_index) continue;
-                    const elem_val = blk.builder.indexOp(blk, elem_ty, value, blk.builder.tirValue(.ConstInt, blk, self.context.type_store.tUsize(), .none(), .{ .value = i }), .none());
+                    const index_val = blk.builder.tirValue(.ConstInt, blk, self.context.type_store.tUsize(), loc, .{ .value = i });
+                    const elem_val = blk.builder.indexOp(blk, elem_ty, value, index_val, loc);
                     try self.bindPattern(a, env, f, blk, pat_elem, elem_val, elem_ty);
                 }
 
                 if (sl.has_rest and !sl.rest_binding.isNone()) {
                     const rest_pat = sl.rest_binding.unwrap();
                     const slice_ty = self.context.type_store.mkSlice(elem_ty);
-                    const start = blk.builder.tirValue(.ConstInt, blk, self.context.type_store.tUsize(), .none(), .{ .value = sl.rest_index });
+                    const start = blk.builder.tirValue(.ConstInt, blk, self.context.type_store.tUsize(), loc, .{ .value = sl.rest_index });
 
                     var len_val: tir.ValueId = undefined;
                     const vty_kind = self.context.type_store.getKind(vty);
                     if (vty_kind == .Array) {
                         const arr_ty = self.context.type_store.get(.Array, vty);
-                        len_val = blk.builder.tirValue(.ConstInt, blk, self.context.type_store.tUsize(), tir.OptLocId.none(), .{ .value = arr_ty.len });
+                        len_val = blk.builder.tirValue(.ConstInt, blk, self.context.type_store.tUsize(), loc, .{ .value = arr_ty.len });
                     } else {
-                        len_val = blk.builder.extractFieldNamed(blk, self.context.type_store.tUsize(), value, f.builder.intern("len"), tir.OptLocId.none());
+                        len_val = blk.builder.extractFieldNamed(blk, self.context.type_store.tUsize(), value, f.builder.intern("len"), loc);
                     }
 
                     const range_ty = self.context.type_store.mkSlice(self.context.type_store.tUsize());
-                    const inclusive = blk.builder.tirValue(.ConstBool, blk, self.context.type_store.tBool(), tir.OptLocId.none(), .{ .value = false });
-                    const range_val = blk.builder.rangeMake(blk, range_ty, start, len_val, inclusive, tir.OptLocId.none());
-                    const rest_slice = blk.builder.indexOp(blk, slice_ty, value, range_val, tir.OptLocId.none());
+                    const inclusive = blk.builder.tirValue(.ConstBool, blk, self.context.type_store.tBool(), loc, .{ .value = false });
+                    const range_val = blk.builder.rangeMake(blk, range_ty, start, len_val, inclusive, loc);
+                    const rest_slice = blk.builder.indexOp(blk, slice_ty, value, range_val, loc);
                     try self.bindPattern(a, env, f, blk, rest_pat, rest_slice, slice_ty);
                 }
             },
@@ -4152,7 +4168,7 @@ pub const LowerTir = struct {
                 const union_ty = self.getUnionTypeFromVariant(vty) orelse return;
 
                 // Grab the union payload aggregate from the variant value
-                const union_agg = blk.builder.extractField(blk, union_ty, value, 1, tir.OptLocId.none());
+                const union_agg = blk.builder.extractField(blk, union_ty, value, 1, loc);
 
                 // Determine the concrete payload type for this case
                 const payload_fields = self.context.type_store.field_pool.slice(
@@ -4165,7 +4181,7 @@ pub const LowerTir = struct {
 
                 if (self.context.type_store.getKind(payload_ty) == .Tuple) {
                     // Read the whole tuple payload value, then destructure
-                    const tuple_val = blk.builder.tirValue(.UnionField, blk, payload_ty, tir.OptLocId.none(), .{
+                    const tuple_val = blk.builder.tirValue(.UnionField, blk, payload_ty, loc, .{
                         .base = union_agg,
                         .field_index = tag_idx,
                     });
@@ -4175,12 +4191,12 @@ pub const LowerTir = struct {
 
                     for (pelems, 0..) |pe, i| {
                         const ety = if (i < subtys.len) subtys[i] else self.context.type_store.tAny();
-                        const ev = blk.builder.extractElem(blk, ety, tuple_val, @intCast(i), tir.OptLocId.none());
+                        const ev = blk.builder.extractElem(blk, ety, tuple_val, @intCast(i), loc);
                         try self.bindPattern(a, env, f, blk, pe, ev, ety);
                     }
                 } else {
                     // Single non-tuple payload
-                    const pv = blk.builder.tirValue(.UnionField, blk, payload_ty, tir.OptLocId.none(), .{
+                    const pv = blk.builder.tirValue(.UnionField, blk, payload_ty, loc, .{
                         .base = union_agg,
                         .field_index = tag_idx,
                     });
@@ -4201,7 +4217,7 @@ pub const LowerTir = struct {
                         for (sfields, 0..) |sfid, i| {
                             const sf = self.context.type_store.Field.get(sfid);
                             if (sf.name.eq(pf.name)) {
-                                const field_val = blk.builder.extractField(blk, sf.ty, value, @intCast(i), tir.OptLocId.none());
+                                const field_val = blk.builder.extractField(blk, sf.ty, value, @intCast(i), loc);
                                 try self.bindPattern(a, env, f, blk, pf.pattern, field_val, sf.ty);
                                 break;
                             }
@@ -4217,7 +4233,7 @@ pub const LowerTir = struct {
                 const tag_idx = self.tagIndexForCase(vty, case_name) orelse return;
 
                 const union_ty = self.getUnionTypeFromVariant(vty) orelse return;
-                const union_agg = blk.builder.extractField(blk, union_ty, value, 1, tir.OptLocId.none());
+                const union_agg = blk.builder.extractField(blk, union_ty, value, 1, loc);
 
                 const payload_fields = self.context.type_store.field_pool.slice(
                     self.context.type_store.get(.Union, union_ty).fields,
@@ -4225,7 +4241,7 @@ pub const LowerTir = struct {
                 const fld = self.context.type_store.Field.get(payload_fields[tag_idx]);
                 const payload_ty = fld.ty;
 
-                const struct_val = blk.builder.tirValue(.UnionField, blk, payload_ty, tir.OptLocId.none(), .{
+                const struct_val = blk.builder.tirValue(.UnionField, blk, payload_ty, loc, .{
                     .base = union_agg,
                     .field_index = tag_idx,
                 });
@@ -4238,7 +4254,7 @@ pub const LowerTir = struct {
                     for (sfields, 0..) |sfid, i| {
                         const sf = self.context.type_store.Field.get(sfid);
                         if (sf.name.eq(pf.name)) {
-                            const field_val = blk.builder.extractField(blk, sf.ty, struct_val, @intCast(i), tir.OptLocId.none());
+                            const field_val = blk.builder.extractField(blk, sf.ty, struct_val, @intCast(i), loc);
                             try self.bindPattern(a, env, f, blk, pf.pattern, field_val, sf.ty);
                             break;
                         }
@@ -4253,13 +4269,14 @@ pub const LowerTir = struct {
     // Destructure a declaration pattern and bind its sub-bindings either as values (const) or slots (mutable).
     fn destructureDeclPattern(self: *LowerTir, a: *const ast.Ast, env: *Env, f: *Builder.FunctionFrame, blk: *Builder.BlockFrame, pid: ast.PatternId, value: tir.ValueId, vty: types.TypeId, to_slots: bool) !void {
         const pk = a.pats.index.kinds.items[pid.toRaw()];
+        const loc = self.patternOptLoc(a, pid);
         switch (pk) {
             .Binding => {
                 const nm = a.pats.get(.Binding, pid).name;
                 if (to_slots) {
                     const slot_ty = self.context.type_store.mkPtr(vty, false);
-                    const slot = f.builder.tirValue(.Alloca, blk, slot_ty, tir.OptLocId.none(), .{ .count = tir.OptValueId.none(), .@"align" = 0 });
-                    _ = f.builder.tirValue(.Store, blk, vty, tir.OptLocId.none(), .{ .ptr = slot, .value = value, .@"align" = 0 });
+                    const slot = f.builder.tirValue(.Alloca, blk, slot_ty, loc, .{ .count = tir.OptValueId.none(), .@"align" = 0 });
+                    _ = f.builder.tirValue(.Store, blk, vty, loc, .{ .ptr = slot, .value = value, .@"align" = 0 });
                     try env.bind(self.gpa, a, nm, .{ .value = slot, .ty = vty, .is_slot = true });
                 } else {
                     try env.bind(self.gpa, a, nm, .{ .value = value, .ty = vty, .is_slot = false });
@@ -4277,7 +4294,7 @@ pub const LowerTir = struct {
                 var i: usize = 0;
                 while (i < elems.len) : (i += 1) {
                     const ety = if (i < etys.len) etys[i] else self.context.type_store.tAny();
-                    const ev = blk.builder.extractElem(blk, ety, value, @intCast(i), tir.OptLocId.none());
+                    const ev = blk.builder.extractElem(blk, ety, value, @intCast(i), loc);
                     try self.destructureDeclPattern(a, env, f, blk, elems[i], ev, ety, to_slots);
                 }
             },
@@ -4303,18 +4320,18 @@ pub const LowerTir = struct {
                             const stf = self.context.type_store.Field.get(field_ids[j]);
                             if (stf.name.toRaw() == pf.name.toRaw()) {
                                 fty = stf.ty;
-                                extracted = blk.builder.extractField(blk, fty, value, @intCast(j), tir.OptLocId.none());
+                                extracted = blk.builder.extractField(blk, fty, value, @intCast(j), loc);
                                 found = true;
                                 break;
                             }
                         }
                         if (!found) {
                             // name not present on this struct type; bind undef of Any
-                            extracted = self.undef(blk, fty, tir.OptLocId.none());
+                            extracted = self.undef(blk, fty, loc);
                         }
                     } else {
                         // Unknown layout; fall back to by-name extraction in IR
-                        extracted = blk.builder.extractFieldNamed(blk, fty, value, pf.name, tir.OptLocId.none());
+                        extracted = blk.builder.extractFieldNamed(blk, fty, value, pf.name, loc);
                     }
                     try self.destructureDeclPattern(a, env, f, blk, pf.pattern, extracted, fty, to_slots);
                 }
@@ -4346,7 +4363,8 @@ pub const LowerTir = struct {
         // If pattern has more elements than expr, fill remaining with undef of element type.
         while (i < elems_pat.len) : (i += 1) {
             const ety = if (i < etys.len) etys[i] else self.context.type_store.tAny();
-            const uv = self.undef(blk, ety, tir.OptLocId.none());
+            const elem_loc = self.patternOptLoc(a, elems_pat[i]);
+            const uv = self.undef(blk, ety, elem_loc);
             try self.destructureDeclPattern(a, env, f, blk, elems_pat[i], uv, ety, to_slots);
         }
     }
@@ -4387,7 +4405,8 @@ pub const LowerTir = struct {
                 try self.destructureDeclFromExpr(a, env, f, blk, pf.pattern, ve, fty, to_slots);
             } else {
                 // missing -> bind undef
-                const uv = self.undef(blk, fty, tir.OptLocId.none());
+                const field_loc = self.patternOptLoc(a, pf.pattern);
+                const uv = self.undef(blk, fty, field_loc);
                 try self.destructureDeclPattern(a, env, f, blk, pf.pattern, uv, fty, to_slots);
             }
         }
@@ -4410,6 +4429,7 @@ pub const LowerTir = struct {
         const src_default_ty = src_ty_opt orelse target_ty;
         const vty = if (target_kind == .Any) src_default_ty else target_ty;
         const expr_loc = self.exprOptLoc(a, src_expr);
+        const pat_loc = self.patternOptLoc(a, pid);
         switch (pk) {
             .Binding => {
                 const guess_ty = src_ty_opt orelse target_ty;
@@ -4496,7 +4516,8 @@ pub const LowerTir = struct {
                         }
                         while (i < pelems.len) : (i += 1) {
                             const ety = if (i < elem_tys.len) elem_tys[i] else self.context.type_store.tAny();
-                            const uv = self.undef(blk, ety, tir.OptLocId.none());
+                            const elem_loc = self.patternOptLoc(a, pelems[i]);
+                            const uv = self.undef(blk, ety, elem_loc);
                             try self.destructureDeclPattern(a, env, f, blk, pelems[i], uv, ety, to_slots);
                         }
                         return;
@@ -4522,7 +4543,8 @@ pub const LowerTir = struct {
                 var i: usize = 0;
                 while (i < pelems.len) : (i += 1) {
                     const ety = if (i < elem_tys.len) elem_tys[i] else self.context.type_store.tAny();
-                    const uv = self.undef(blk, ety, tir.OptLocId.none());
+                    const elem_loc = self.patternOptLoc(a, pelems[i]);
+                    const uv = self.undef(blk, ety, elem_loc);
                     try self.destructureDeclPattern(a, env, f, blk, pelems[i], uv, ety, to_slots);
                 }
             },
@@ -4583,7 +4605,8 @@ pub const LowerTir = struct {
                                 if (val_expr) |ve2| {
                                     try self.destructureDeclFromExpr(a, env, f, blk, pf.pattern, ve2, fty, to_slots);
                                 } else {
-                                    const uv = self.undef(blk, fty, tir.OptLocId.none());
+                                    const field_loc = self.patternOptLoc(a, pf.pattern);
+                                    const uv = self.undef(blk, fty, field_loc);
                                     try self.destructureDeclPattern(a, env, f, blk, pf.pattern, uv, fty, to_slots);
                                 }
                             }
@@ -4595,7 +4618,8 @@ pub const LowerTir = struct {
                 const pfields = a.pats.field_pool.slice(pr.fields);
                 for (pfields) |pfid| {
                     const pf = a.pats.StructField.get(pfid);
-                    const uv = self.undef(blk, self.context.type_store.tAny(), tir.OptLocId.none());
+                    const field_loc = self.patternOptLoc(a, pf.pattern);
+                    const uv = self.undef(blk, self.context.type_store.tAny(), field_loc);
                     try self.destructureDeclPattern(a, env, f, blk, pf.pattern, uv, self.context.type_store.tAny(), to_slots);
                 }
             },
