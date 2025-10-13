@@ -206,6 +206,7 @@ pub const LowerTir = struct {
         blk: *Builder.BlockFrame,
         id: ast.ExprId,
         expected_ty: ?types.TypeId,
+        loc: tir.OptLocId,
     ) !tir.ValueId {
         const row = a.exprs.get(.MlirBlock, id);
         const expr_ty_opt = self.getExprType(id);
@@ -236,7 +237,7 @@ pub const LowerTir = struct {
             .kind = row.kind,
             .text = row.text,
             .args = args_range,
-            .loc = .none(),
+            .loc = loc,
         });
         blk.instrs.append(self.gpa, iid) catch @panic("OOM");
         if (expected_ty) |want| {
@@ -288,14 +289,88 @@ pub const LowerTir = struct {
         return self.context.type_store.index.kinds.items[ty.toRaw()] == .Void;
     }
 
-    // Produce an undef that is never-void; if asked for void, give Any instead.
-    fn safeUndef(self: *LowerTir, blk: *Builder.BlockFrame, ty: types.TypeId) tir.ValueId {
-        if (self.isVoid(ty)) return blk.builder.tirValue(.ConstUndef, blk, self.context.type_store.tAny(), tir.OptLocId.none(), .{});
-        return blk.builder.tirValue(.ConstUndef, blk, ty, tir.OptLocId.none(), .{});
+    inline fn locToOpt(_: *const LowerTir, loc: ast.LocId) tir.OptLocId {
+        return tir.OptLocId.some(loc);
     }
 
-    fn undef(_: *LowerTir, blk: *Builder.BlockFrame, ty: types.TypeId) tir.ValueId {
-        return blk.builder.tirValue(.ConstUndef, blk, ty, tir.OptLocId.none(), .{});
+    inline fn optLocToOpt(_: *const LowerTir, opt_loc: ast.OptLocId) tir.OptLocId {
+        return if (opt_loc.isNone()) tir.OptLocId.none() else tir.OptLocId.some(opt_loc.unwrap());
+    }
+
+    inline fn rowOptLoc(self: *const LowerTir, row: anytype) tir.OptLocId {
+        if (comptime @hasField(@TypeOf(row), "loc")) {
+            return self.locToOpt(row.loc);
+        }
+        return tir.OptLocId.none();
+    }
+
+    fn exprOptLoc(self: *const LowerTir, a: *const ast.Ast, id: ast.ExprId) tir.OptLocId {
+        const kind = a.exprs.index.kinds.items[id.toRaw()];
+        inline for (@typeInfo(ast.ExprKind).@"enum".fields) |field| {
+            const tag = @enumFromInt(ast.ExprKind, field.value);
+            if (tag == kind) {
+                const row = a.exprs.get(tag, id);
+                return self.rowOptLoc(row);
+            }
+        }
+        return tir.OptLocId.none();
+    }
+
+    fn optExprOptLoc(self: *const LowerTir, a: *const ast.Ast, id: ast.OptExprId) tir.OptLocId {
+        return if (id.isNone()) tir.OptLocId.none() else self.exprOptLoc(a, id.unwrap());
+    }
+
+    fn patternOptLoc(self: *const LowerTir, a: *const ast.Ast, id: ast.PatternId) tir.OptLocId {
+        const kind = a.pats.index.kinds.items[id.toRaw()];
+        inline for (@typeInfo(ast.PatternKind).@"enum".fields) |field| {
+            const tag = @enumFromInt(ast.PatternKind, field.value);
+            if (tag == kind) {
+                const row = a.pats.get(tag, id);
+                return self.rowOptLoc(row);
+            }
+        }
+        return tir.OptLocId.none();
+    }
+
+    fn optPatternOptLoc(self: *const LowerTir, a: *const ast.Ast, id: ast.OptPatternId) tir.OptLocId {
+        return if (id.isNone()) tir.OptLocId.none() else self.patternOptLoc(a, id.unwrap());
+    }
+
+    fn stmtOptLoc(self: *const LowerTir, a: *const ast.Ast, id: ast.StmtId) tir.OptLocId {
+        const kind = a.stmts.index.kinds.items[id.toRaw()];
+        inline for (@typeInfo(ast.StmtKind).@"enum".fields) |field| {
+            const tag = @enumFromInt(ast.StmtKind, field.value);
+            if (tag == kind) {
+                const row = a.stmts.get(tag, id);
+                return self.stmtRowOptLoc(a, tag, row);
+            }
+        }
+        return tir.OptLocId.none();
+    }
+
+    fn stmtRowOptLoc(
+        self: *const LowerTir,
+        a: *const ast.Ast,
+        comptime tag: ast.StmtKind,
+        row: ast.StmtRowT(tag),
+    ) tir.OptLocId {
+        return switch (tag) {
+            .Expr => self.exprOptLoc(a, row.expr),
+            .Decl => self.rowOptLoc(a.exprs.Decl.get(row.decl)),
+            else => self.rowOptLoc(row),
+        };
+    }
+
+    // Produce an undef that is never-void; if asked for void, give Any instead.
+    fn safeUndef(self: *LowerTir, blk: *Builder.BlockFrame, ty: types.TypeId, loc: tir.OptLocId) tir.ValueId {
+        if (self.isVoid(ty)) {
+            return blk.builder.tirValue(.ConstUndef, blk, self.context.type_store.tAny(), loc, .{});
+        }
+        return blk.builder.tirValue(.ConstUndef, blk, ty, loc, .{});
+    }
+
+    fn undef(_: *LowerTir, blk: *Builder.BlockFrame, ty: types.TypeId, loc: tir.OptLocId) tir.ValueId {
+        return blk.builder.tirValue(.ConstUndef, blk, ty, loc, .{});
     }
 
     /// Insert an explicit coercion that realizes what the checker proved assignable/castable.
@@ -1452,7 +1527,7 @@ pub const LowerTir = struct {
 
     fn lowerTypeExprOpaque(self: *LowerTir, blk: *Builder.BlockFrame, id: ast.ExprId, expected_ty: ?types.TypeId) tir.ValueId {
         const ty0 = self.getExprType(id) orelse self.context.type_store.tAny();
-        const v = self.safeUndef(blk, ty0);
+        const v = self.safeUndef(blk, ty0, tir.OptLocId.none());
         if (expected_ty) |want| return self.emitCoerce(blk, v, ty0, want);
         return v;
     }
@@ -1953,7 +2028,7 @@ pub const LowerTir = struct {
         if (payload_kind != .Void) return null; // only literal tags for no-payload cases
         const ty0 = self.getExprType(id) orelse (expected_ty orelse self.context.type_store.tAny());
         if (self.context.type_store.getKind(payload_ty) != .Void) return null;
-        const tag_val = blk.builder.extractField(blk, self.context.type_store.tI32(), self.safeUndef(blk, ty), 0, tir.OptLocId.none());
+        const tag_val = blk.builder.extractField(blk, self.context.type_store.tI32(), self.safeUndef(blk, ty, tir.OptLocId.none()), 0, tir.OptLocId.none());
         if (expected_ty) |want| return self.emitCoerce(blk, tag_val, ty0, want);
         return tag_val;
     }
@@ -2070,7 +2145,7 @@ pub const LowerTir = struct {
                     else
                         blk.builder.tirValue(.UnionMake, blk, union_ty, tir.OptLocId.none(), .{
                             .field_index = resolved_idx,
-                            .value = self.undef(blk, payload_ty),
+                            .value = self.undef(blk, payload_ty, tir.OptLocId.none()),
                         });
 
                 const v_res = blk.builder.structMake(blk, of_ty, &[_]tir.Rows.StructFieldInit{
@@ -2176,7 +2251,7 @@ pub const LowerTir = struct {
             // Not a value binding or top-level decl (likely a type name etc.).
             // Bind a safe placeholder so downstream code can keep going.
             const ty0 = expr_ty_opt orelse self.context.type_store.tAny();
-            const placeholder = self.safeUndef(blk, ty0);
+            const placeholder = self.safeUndef(blk, ty0, tir.OptLocId.none());
             try env.bind(self.gpa, a, name, .{ .value = placeholder, .ty = ty0, .is_slot = false });
             break :blk env.lookup(name).?;
         };
@@ -2591,7 +2666,7 @@ pub const LowerTir = struct {
             try f.builder.endBlock(f, else_blk);
 
             blk.* = exit_blk;
-            return self.safeUndef(blk, self.context.type_store.tAny());
+            return self.safeUndef(blk, self.context.type_store.tAny(), tir.OptLocId.none());
         }
     }
 
@@ -2643,7 +2718,7 @@ pub const LowerTir = struct {
                 }
             } else {
                 if (else_blk.term.isNone()) {
-                    const uv = self.safeUndef(&else_blk, res_ty);
+                    const uv = self.safeUndef(&else_blk, res_ty, tir.OptLocId.none());
                     try f.builder.br(&else_blk, join_blk.id, &.{uv}, tir.OptLocId.none());
                 }
             }
@@ -2674,7 +2749,7 @@ pub const LowerTir = struct {
             try f.builder.endBlock(f, else_blk);
 
             blk.* = exit_blk;
-            return self.safeUndef(blk, self.context.type_store.tAny());
+            return self.safeUndef(blk, self.context.type_store.tAny(), tir.OptLocId.none());
         }
     }
 
@@ -2823,7 +2898,7 @@ pub const LowerTir = struct {
 
             const arms = a.exprs.arm_pool.slice(row.arms);
             if (arms.len == 0) {
-                const uv = self.safeUndef(blk, res_ty);
+                const uv = self.safeUndef(blk, res_ty, tir.OptLocId.none());
                 try f.builder.br(blk, join_blk.id, &.{uv}, tir.OptLocId.none());
                 blk.* = join_blk;
                 return res_param;
@@ -2862,7 +2937,7 @@ pub const LowerTir = struct {
                     try f.builder.endBlock(f, bodies[i]);
                 }
 
-                const uv = self.safeUndef(&default_blk, res_ty);
+                const uv = self.safeUndef(&default_blk, res_ty, tir.OptLocId.none());
                 try f.builder.br(&default_blk, join_blk.id, &.{uv}, tir.OptLocId.none());
                 try f.builder.endBlock(f, default_blk);
 
@@ -2891,7 +2966,7 @@ pub const LowerTir = struct {
 
                 // if last arm fails, feed an undef to the join
                 const else_args = if (next_blk.id.toRaw() == join_blk.id.toRaw()) blkargs: {
-                    const uv = self.safeUndef(&test_blk, res_ty);
+                    const uv = self.safeUndef(&test_blk, res_ty, tir.OptLocId.none());
                     break :blkargs &.{uv};
                 } else &.{};
 
@@ -2954,7 +3029,7 @@ pub const LowerTir = struct {
             if (arms.len == 0) {
                 try f.builder.br(blk, exit_blk.id, &.{}, tir.OptLocId.none());
                 blk.* = exit_blk;
-                return self.safeUndef(blk, self.context.type_store.tAny());
+                return self.safeUndef(blk, self.context.type_store.tAny(), tir.OptLocId.none());
             }
 
             const values = try self.gpa.alloc(u64, arms.len);
@@ -2988,7 +3063,7 @@ pub const LowerTir = struct {
                 try f.builder.endBlock(f, default_blk);
 
                 blk.* = exit_blk;
-                return self.safeUndef(blk, self.context.type_store.tAny());
+                return self.safeUndef(blk, self.context.type_store.tAny(), tir.OptLocId.none());
             }
 
             // General path (no value): chained tests, fallthrough to exit
@@ -3047,7 +3122,7 @@ pub const LowerTir = struct {
             }
 
             blk.* = exit_blk;
-            return self.safeUndef(blk, self.context.type_store.tAny());
+            return self.safeUndef(blk, self.context.type_store.tAny(), tir.OptLocId.none());
         }
     }
 
@@ -3117,7 +3192,7 @@ pub const LowerTir = struct {
             try f.builder.endBlock(f, header);
             try f.builder.endBlock(f, body);
 
-            const uv = self.safeUndef(&exit_blk, res_ty);
+            const uv = self.safeUndef(&exit_blk, res_ty, tir.OptLocId.none());
             try f.builder.br(&exit_blk, join_blk.id, &.{uv}, tir.OptLocId.none());
             try f.builder.endBlock(f, exit_blk);
 
@@ -3173,7 +3248,7 @@ pub const LowerTir = struct {
 
             _ = self.loop_stack.pop();
             blk.* = exit_blk;
-            return self.safeUndef(blk, self.context.type_store.tAny());
+            return self.safeUndef(blk, self.context.type_store.tAny(), tir.OptLocId.none());
         }
     }
 
@@ -3326,7 +3401,7 @@ pub const LowerTir = struct {
             }
 
             // Exit -> join with a safe undef of the result type
-            const uv = self.safeUndef(&exit_blk, res_ty);
+            const uv = self.safeUndef(&exit_blk, res_ty, tir.OptLocId.none());
             try f.builder.br(&exit_blk, join_blk.id, &.{uv}, tir.OptLocId.none());
             try f.builder.endBlock(f, exit_blk);
 
@@ -3447,7 +3522,7 @@ pub const LowerTir = struct {
 
             _ = self.loop_stack.pop();
             blk.* = exit_blk;
-            return self.safeUndef(blk, self.context.type_store.tAny());
+            return self.safeUndef(blk, self.context.type_store.tAny(), tir.OptLocId.none());
         }
     }
 
@@ -3506,7 +3581,7 @@ pub const LowerTir = struct {
             .For => self.lowerFor(a, env, f, blk, id, expected_ty),
             .MlirBlock => blk: {
                 if (mode == .lvalue_addr) return error.LoweringBug;
-                break :blk try self.lowerMlirBlock(a, env, f, blk, id, expected_ty);
+                break :blk try self.lowerMlirBlock(a, env, f, blk, id, expected_ty, tir.OptLocId.none());
             },
             .Import => blk.builder.tirValue(.ConstUndef, blk, self.getExprType(id) orelse self.context.type_store.tAny(), tir.OptLocId.none(), .{}),
             .VariantType, .EnumType, .StructType => self.lowerTypeExprOpaque(blk, id, expected_ty),
@@ -3515,7 +3590,7 @@ pub const LowerTir = struct {
                 _ = r;
                 // For now, treat as opaque and produce undef
                 const ty0 = self.getExprType(id) orelse self.context.type_store.tAny();
-                break :blk self.undef(blk, ty0);
+                break :blk self.undef(blk, ty0, tir.OptLocId.none());
             },
             .ComptimeBlock => blk: {
                 break :blk try self.jitEvalComptimeBlock(a, env, f, blk, id);
@@ -3536,7 +3611,7 @@ pub const LowerTir = struct {
         const stmts = a.stmts.stmt_pool.slice(b.items);
         if (stmts.len == 0) {
             try self.noteExprType(block_expr, expected_ty);
-            return self.safeUndef(blk, expected_ty);
+            return self.safeUndef(blk, expected_ty, tir.OptLocId.none());
         }
 
         // Remember where this block's scope begins on the defer stack.
@@ -3563,7 +3638,7 @@ pub const LowerTir = struct {
             // Early exits (return/break/continue) won’t reach here and already run defers.
             try self.runNormalDefersFrom(a, env, f, blk, mark);
             try self.noteExprType(block_expr, expected_ty);
-            return self.safeUndef(blk, expected_ty);
+            return self.safeUndef(blk, expected_ty, tir.OptLocId.none());
         }
     }
 
@@ -4149,7 +4224,7 @@ pub const LowerTir = struct {
                         }
                         if (!found) {
                             // name not present on this struct type; bind undef of Any
-                            extracted = self.undef(blk, fty);
+                            extracted = self.undef(blk, fty, tir.OptLocId.none());
                         }
                     } else {
                         // Unknown layout; fall back to by-name extraction in IR
@@ -4185,7 +4260,7 @@ pub const LowerTir = struct {
         // If pattern has more elements than expr, fill remaining with undef of element type.
         while (i < elems_pat.len) : (i += 1) {
             const ety = if (i < etys.len) etys[i] else self.context.type_store.tAny();
-            const uv = self.undef(blk, ety);
+            const uv = self.undef(blk, ety, tir.OptLocId.none());
             try self.destructureDeclPattern(a, env, f, blk, elems_pat[i], uv, ety, to_slots);
         }
     }
@@ -4226,7 +4301,7 @@ pub const LowerTir = struct {
                 try self.destructureDeclFromExpr(a, env, f, blk, pf.pattern, ve, fty, to_slots);
             } else {
                 // missing -> bind undef
-                const uv = self.undef(blk, fty);
+                const uv = self.undef(blk, fty, tir.OptLocId.none());
                 try self.destructureDeclPattern(a, env, f, blk, pf.pattern, uv, fty, to_slots);
             }
         }
@@ -4334,7 +4409,7 @@ pub const LowerTir = struct {
                         }
                         while (i < pelems.len) : (i += 1) {
                             const ety = if (i < elem_tys.len) elem_tys[i] else self.context.type_store.tAny();
-                            const uv = self.undef(blk, ety);
+                            const uv = self.undef(blk, ety, tir.OptLocId.none());
                             try self.destructureDeclPattern(a, env, f, blk, pelems[i], uv, ety, to_slots);
                         }
                         return;
@@ -4360,7 +4435,7 @@ pub const LowerTir = struct {
                 var i: usize = 0;
                 while (i < pelems.len) : (i += 1) {
                     const ety = if (i < elem_tys.len) elem_tys[i] else self.context.type_store.tAny();
-                    const uv = self.undef(blk, ety);
+                    const uv = self.undef(blk, ety, tir.OptLocId.none());
                     try self.destructureDeclPattern(a, env, f, blk, pelems[i], uv, ety, to_slots);
                 }
             },
@@ -4421,7 +4496,7 @@ pub const LowerTir = struct {
                                 if (val_expr) |ve2| {
                                     try self.destructureDeclFromExpr(a, env, f, blk, pf.pattern, ve2, fty, to_slots);
                                 } else {
-                                    const uv = self.undef(blk, fty);
+                                    const uv = self.undef(blk, fty, tir.OptLocId.none());
                                     try self.destructureDeclPattern(a, env, f, blk, pf.pattern, uv, fty, to_slots);
                                 }
                             }
@@ -4433,7 +4508,7 @@ pub const LowerTir = struct {
                 const pfields = a.pats.field_pool.slice(pr.fields);
                 for (pfields) |pfid| {
                     const pf = a.pats.StructField.get(pfid);
-                    const uv = self.undef(blk, self.context.type_store.tAny());
+                    const uv = self.undef(blk, self.context.type_store.tAny(), tir.OptLocId.none());
                     try self.destructureDeclPattern(a, env, f, blk, pf.pattern, uv, self.context.type_store.tAny(), to_slots);
                 }
             },
