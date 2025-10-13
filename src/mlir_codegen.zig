@@ -67,6 +67,7 @@ pub const MlirCodegen = struct {
     di_subprograms: std.AutoHashMap(tir.FuncId, DebugSubprogramInfo),
 
     di_null_type_attr: mlir.Attribute,
+    di_subroutine_null_type_attr: mlir.Attribute,
     di_empty_expr_attr: mlir.Attribute,
     di_type_cache: std.AutoHashMap(types.TypeId, mlir.Attribute),
     next_di_id: usize = 0,
@@ -206,6 +207,7 @@ pub const MlirCodegen = struct {
             .di_files = std.AutoHashMap(u32, DebugFileInfo).init(gpa),
             .di_subprograms = std.AutoHashMap(tir.FuncId, DebugSubprogramInfo).init(gpa),
             .di_null_type_attr = mlir.Attribute.empty(),
+            .di_subroutine_null_type_attr = mlir.Attribute.empty(),
             .di_empty_expr_attr = mlir.Attribute.empty(),
             .di_type_cache = std.AutoHashMap(types.TypeId, mlir.Attribute).init(gpa),
             .next_di_id = 0,
@@ -320,6 +322,7 @@ pub const MlirCodegen = struct {
         self.di_files.clearRetainingCapacity();
         self.di_subprograms.clearRetainingCapacity();
         self.di_null_type_attr = mlir.Attribute.empty();
+        self.di_subroutine_null_type_attr = mlir.Attribute.empty();
         self.di_empty_expr_attr = mlir.Attribute.empty();
         self.di_type_cache.clearRetainingCapacity();
         self.next_di_id = 0;
