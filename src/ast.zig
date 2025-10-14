@@ -17,6 +17,7 @@ pub const OptStrId = dod.OptStrId;
 pub const OptLocId = dod.OptLocId;
 pub const MlirKind = dod.MlirKind;
 pub const CastKind = dod.CastKind;
+pub const MlirPieceKind = dod.MlirPieceKind;
 
 pub const ExprTag = struct {};
 pub const StmtTag = struct {};
@@ -34,6 +35,7 @@ pub const KeyValueId = Index(Rows.KeyValue);
 pub const MatchArmId = Index(Rows.MatchArm);
 pub const StructFieldValueId = Index(Rows.StructFieldValue);
 pub const MethodPathSegId = Index(Rows.MethodPathSeg);
+pub const MlirPieceId = Index(Rows.MlirPiece);
 pub const PathSegId = Index(PatRows.PathSeg);
 pub const PatternId = Index(PatternTag);
 pub const PatFieldId = Index(PatRows.StructField);
@@ -56,6 +58,7 @@ pub const RangeKeyValue = RangeOf(KeyValueId);
 pub const RangeStructFieldValue = RangeOf(StructFieldValueId);
 pub const RangeMatchArm = RangeOf(MatchArmId);
 pub const RangeMethodPathSeg = RangeOf(MethodPathSegId);
+pub const RangeMlirPiece = RangeOf(MlirPieceId);
 pub const RangePat = RangeOf(PatternId);
 pub const RangePathSeg = RangeOf(PathSegId);
 pub const RangePatField = RangeOf(PatFieldId);
@@ -206,7 +209,8 @@ pub const Rows = struct {
     pub const ComptimeBlock = struct { block: ExprId, loc: LocId };
     pub const CodeBlock = struct { block: ExprId, loc: LocId };
     pub const AsyncBlock = struct { body: ExprId, loc: LocId };
-    pub const MlirBlock = struct { kind: MlirKind, text: StrId, args: RangeExpr, loc: LocId };
+    pub const MlirPiece = struct { kind: MlirPieceKind, text: StrId };
+    pub const MlirBlock = struct { kind: MlirKind, text: StrId, pieces: RangeMlirPiece, args: RangeExpr, loc: LocId };
     pub const Insert = struct { expr: ExprId, loc: LocId };
 
     pub const Return = struct { value: OptExprId, loc: LocId };
@@ -448,6 +452,7 @@ pub const ExprStore = struct {
     CodeBlock: Table(Rows.CodeBlock) = .{},
     AsyncBlock: Table(Rows.AsyncBlock) = .{},
     MlirBlock: Table(Rows.MlirBlock) = .{},
+    MlirPiece: Table(Rows.MlirPiece) = .{},
     Insert: Table(Rows.Insert) = .{},
 
     Return: Table(Rows.Return) = .{},
@@ -515,6 +520,7 @@ pub const ExprStore = struct {
     efield_pool: Pool(EnumFieldId) = .{},
     vfield_pool: Pool(VariantFieldId) = .{},
     method_path_pool: Pool(MethodPathSegId) = .{},
+    mlir_piece_pool: Pool(MlirPieceId) = .{},
 
     strs: *StringInterner,
     locs: *const LocStore,
@@ -534,6 +540,7 @@ pub const ExprStore = struct {
 
         self.StructFieldValue.deinit(gpa);
         self.KeyValue.deinit(gpa);
+        self.MlirPiece.deinit(gpa);
         self.MatchArm.deinit(gpa);
         self.Param.deinit(gpa);
         self.Attribute.deinit(gpa);
@@ -554,6 +561,7 @@ pub const ExprStore = struct {
         self.efield_pool.deinit(gpa);
         self.vfield_pool.deinit(gpa);
         self.method_path_pool.deinit(gpa);
+        self.mlir_piece_pool.deinit(gpa);
     }
 
     pub fn add(self: *@This(), comptime K: ExprKind, row: RowT(K)) ExprId {
@@ -607,6 +615,9 @@ pub const ExprStore = struct {
 
     pub fn addVariantField(self: *@This(), row: Rows.VariantField) VariantFieldId {
         return self.VariantField.add(self.gpa, row);
+    }
+    pub fn addMlirPiece(self: *@This(), row: Rows.MlirPiece) MlirPieceId {
+        return self.MlirPiece.add(self.gpa, row);
     }
 };
 
@@ -1085,7 +1096,20 @@ pub const AstPrinter = struct {
             },
             .MlirBlock => {
                 const node = self.exprs.get(.MlirBlock, id);
-                try self.leaf("(mlir kind={s} \"{s}\")", .{ @tagName(node.kind), self.s(node.text) });
+                try self.open("(mlir kind={s}", .{@tagName(node.kind)});
+                try self.leaf("(text \"{s}\")", .{self.s(node.text)});
+                const pieces = self.exprs.mlir_piece_pool.slice(node.pieces);
+                try self.open("(pieces", .{});
+                for (pieces) |pid| {
+                    const piece = self.exprs.MlirPiece.get(pid);
+                    switch (piece.kind) {
+                        .literal => try self.leaf("(literal \"{s}\")", .{self.s(piece.text)}),
+                        .splice => try self.leaf("(splice {s})", .{self.s(piece.text)}),
+                    }
+                }
+                try self.close();
+                try self.printExprRange("args", node.args);
+                try self.close();
             },
             .Insert => {
                 const node = self.exprs.get(.Insert, id);

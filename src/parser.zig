@@ -2433,13 +2433,62 @@ pub const Parser = struct {
             .tag = .invalid,
             .loc = mlir_loc,
         };
-        const text = self.intern(self.slice(text_tok));
+        const raw_text = self.slice(text_tok);
+        const text = self.intern(raw_text);
+
+        var piece_ids = std.ArrayListUnmanaged(cst.MlirPieceId){};
+        defer piece_ids.deinit(self.gpa);
+
+        var literal_start: usize = 0;
+        var i: usize = 0;
+        while (i < raw_text.len) {
+            if (raw_text[i] == '@' and i + 1 < raw_text.len and isIdentStart(raw_text[i + 1])) {
+                if (i > literal_start) {
+                    const lit = self.intern(raw_text[literal_start..i]);
+                    const pid = self.cst.exprs.addMlirPieceRow(.{ .kind = .literal, .text = lit });
+                    piece_ids.append(self.gpa, pid) catch @panic("OOM");
+                }
+
+                var j = i + 1;
+                while (j < raw_text.len and isIdentContinue(raw_text[j])) : (j += 1) {}
+                const ident = self.intern(raw_text[(i + 1)..j]);
+                const sid = self.cst.exprs.addMlirPieceRow(.{ .kind = .splice, .text = ident });
+                piece_ids.append(self.gpa, sid) catch @panic("OOM");
+
+                literal_start = j;
+                i = j;
+                continue;
+            }
+            i += 1;
+        }
+
+        if (literal_start < raw_text.len) {
+            const tail = self.intern(raw_text[literal_start..]);
+            const pid = self.cst.exprs.addMlirPieceRow(.{ .kind = .literal, .text = tail });
+            piece_ids.append(self.gpa, pid) catch @panic("OOM");
+        }
+
+        if (piece_ids.items.len == 0) {
+            const empty_id = self.cst.exprs.addMlirPieceRow(.{ .kind = .literal, .text = self.intern("") });
+            piece_ids.append(self.gpa, empty_id) catch @panic("OOM");
+        }
+
+        const pieces_range = self.cst.exprs.mlir_piece_pool.pushMany(self.gpa, piece_ids.items);
         return self.addExpr(.Mlir, .{
             .kind = kind,
             .text = text,
+            .pieces = pieces_range,
             .args = args_range,
             .loc = self.toLocId(mlir_loc),
         });
+    }
+
+    fn isIdentStart(ch: u8) bool {
+        return ch == '_' or std.ascii.isAlphabetic(ch);
+    }
+
+    fn isIdentContinue(ch: u8) bool {
+        return ch == '_' or std.ascii.isAlphanumeric(ch);
     }
 
     //=================================================================

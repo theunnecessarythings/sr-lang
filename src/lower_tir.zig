@@ -276,6 +276,16 @@ pub const LowerTir = struct {
         }
 
         // Lower args
+        const ast_piece_ids = a.exprs.mlir_piece_pool.slice(row.pieces);
+        var tir_piece_ids = std.ArrayListUnmanaged(tir.MlirPieceId){};
+        defer tir_piece_ids.deinit(self.gpa);
+        for (ast_piece_ids) |pid| {
+            const piece = a.exprs.MlirPiece.get(pid);
+            const new_id = blk.builder.t.instrs.addMlirPieceRow(.{ .kind = piece.kind, .text = piece.text });
+            tir_piece_ids.append(self.gpa, new_id) catch @panic("OOM");
+        }
+        const pieces_range = blk.builder.t.instrs.mlir_piece_pool.pushMany(self.gpa, tir_piece_ids.items);
+
         const arg_ids = a.exprs.expr_pool.slice(row.args);
         var arg_vals = try self.gpa.alloc(tir.ValueId, arg_ids.len);
         defer self.gpa.free(arg_vals);
@@ -291,6 +301,7 @@ pub const LowerTir = struct {
             .kind = row.kind,
             .expr = id,
             .text = row.text,
+            .pieces = pieces_range,
             .args = args_range,
             .loc = loc,
         });
