@@ -15,6 +15,7 @@ pub const ComptimeValue = union(enum) {
     Float: f64,
     Bool: bool,
     String: []const u8,
+    Type: types.TypeId,
 };
 
 pub fn type_of_impl(context: ?*anyopaque, type_id_raw: u32) callconv(.c) u32 {

@@ -1023,6 +1023,7 @@ pub const LowerTir = struct {
                     try buf.append(self.gpa, if (keep) ch else '_');
                 }
             },
+            .Type => |ty| try self.context.type_store.fmt(ty, w),
         }
     }
 
@@ -1210,6 +1211,12 @@ pub const LowerTir = struct {
         expr: ast.ExprId,
         result_ty: types.TypeId,
     ) !comp.ComptimeValue {
+        const result_kind = self.context.type_store.getKind(result_ty);
+        if (result_kind == .TypeType) {
+            const tt = self.context.type_store.get(.TypeType, result_ty);
+            return .{ .Type = tt.of };
+        }
+
         var tmp_tir = tir.TIR.init(self.gpa, &self.context.type_store);
         defer tmp_tir.deinit();
         var tmp_builder = tir.Builder.init(self.gpa, &tmp_tir);
@@ -1234,8 +1241,6 @@ pub const LowerTir = struct {
         try tmp_env.bind(self.gpa, a, tmp_builder.intern("comptime_api_ptr"), .{ .value = api_ptr_val, .ty = ptr_ty, .is_slot = false });
 
         const result_val_id = try self.lowerExpr(a, &tmp_env, &thunk_fn, &thunk_blk, expr, result_ty, .rvalue);
-
-        const result_kind = self.context.type_store.getKind(result_ty);
         if (result_kind != .Void) {
             const field_ty = switch (result_kind) {
                 .I64, .U64, .I32, .U32 => self.context.type_store.tI64(),
@@ -1309,6 +1314,7 @@ pub const LowerTir = struct {
             .Bool => |val| blk.builder.tirValue(.ConstBool, blk, result_ty, loc, .{ .value = val }),
             .Void => blk.builder.tirValue(.ConstUndef, blk, self.context.type_store.tVoid(), loc, .{}),
             .String => |s| blk.builder.tirValue(.ConstString, blk, result_ty, loc, .{ .text = blk.builder.intern(s) }),
+            .Type => return error.UnsupportedComptimeType,
         };
     }
 
@@ -1344,6 +1350,7 @@ pub const LowerTir = struct {
             .Bool => |val| blk.builder.tirValue(.ConstBool, blk, ty, tir.OptLocId.none(), .{ .value = val }),
             .Void => blk.builder.tirValue(.ConstUndef, blk, ty, tir.OptLocId.none(), .{}),
             .String => |s| blk.builder.tirValue(.ConstString, blk, ty, tir.OptLocId.none(), .{ .text = blk.builder.intern(s) }),
+            .Type => return error.UnsupportedComptimeType,
         };
     }
 
