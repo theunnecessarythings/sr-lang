@@ -95,6 +95,30 @@ pub const JsonPrinter = struct {
             try self.writeNull();
         }
 
+        try self.stream.objectField("method_path");
+        if (!row.method_path.isNone()) {
+            try self.stream.beginArray();
+            const seg_ids = self.exprs.method_path_pool.slice(row.method_path.asRange());
+            for (seg_ids) |sid| {
+                const seg = self.exprs.MethodPathSeg.get(sid);
+                try self.stream.beginObject();
+                try self.stream.objectField("name");
+                try self.stream.write(self.s(seg.name));
+                try self.stream.objectField("loc");
+                try self.stream.beginObject();
+                const loc = self.exprs.locs.get(seg.loc);
+                try self.stream.objectField("start");
+                try self.writeValue(loc.start);
+                try self.stream.objectField("end");
+                try self.writeValue(loc.end);
+                try self.stream.endObject();
+                try self.stream.endObject();
+            }
+            try self.stream.endArray();
+        } else {
+            try self.writeNull();
+        }
+
         try self.stream.objectField("type");
         if (!row.ty.isNone()) {
             try self.printExpr(row.ty.unwrap());
