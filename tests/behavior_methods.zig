@@ -28,3 +28,19 @@ test "methods: static, value, pointer, and const receivers" {
     const code = getSource(globals, src);
     try runCompilerTest(code, "origin=0,0\ndistance=7\nsum=7\nfinal=2,6\n");
 }
+
+test "methods: enum value receiver" {
+    const globals =
+        \\Color :: enum { Red, Blue }
+        \\Color.describe :: fn(self: Color) i32 { return 1 }
+    ;
+    const src =
+        \\main :: proc () i32 {
+        \\  value := Color.Red.describe()
+        \\  printf("%d\n", value)
+        \\  return value
+        \\ }
+    ;
+    const code = getSource(globals, src);
+    try runCompilerTest(code, "1\n");
+}

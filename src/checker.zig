@@ -1677,7 +1677,7 @@ pub const Checker = struct {
         receiver_ty: types.TypeId,
         field_name: ast.StrId,
         loc: Loc,
-    ) !?types.TypeId {
+    ) error{MethodResolutionFailed}!?types.TypeId {
         const entry_opt = self.type_info.getMethod(owner_ty, field_name);
         if (entry_opt == null) return null;
 
@@ -1694,7 +1694,7 @@ pub const Checker = struct {
                 .value => {
                     if (!receiver_ty.eq(owner_ty)) {
                         try self.context.diags.addError(loc, .method_receiver_requires_value, .{ self.getStr(field_name) });
-                        return null;
+                        return error.MethodResolutionFailed;
                     }
                 },
                 .pointer, .pointer_const => {
@@ -1702,18 +1702,18 @@ pub const Checker = struct {
                         const ptr_row = self.context.type_store.get(.Ptr, receiver_ty);
                         if (!ptr_row.elem.eq(owner_ty)) {
                             try self.context.diags.addError(loc, .method_receiver_requires_pointer, .{ self.getStr(field_name) });
-                            return null;
+                            return error.MethodResolutionFailed;
                         }
                     } else if (receiver_ty.eq(owner_ty)) {
                         const field_expr = self.getExpr(.FieldAccess, expr_id);
                         if (self.lvalueRootKind(field_expr.parent) == .Unknown) {
                             try self.context.diags.addError(loc, .method_receiver_not_addressable, .{ self.getStr(field_name) });
-                            return null;
+                            return error.MethodResolutionFailed;
                         }
                         needs_addr_of = true;
                     } else {
                         try self.context.diags.addError(loc, .method_receiver_requires_pointer, .{ self.getStr(field_name) });
-                        return null;
+                        return error.MethodResolutionFailed;
                     }
                 },
             }
@@ -1823,7 +1823,10 @@ pub const Checker = struct {
                         return f.ty;
                     }
                 }
-                if (try self.resolveMethodFieldAccess(id, ty, ty, field_expr.field, field_loc)) |mt| return mt;
+                const method_ty = self.resolveMethodFieldAccess(id, ty, ty, field_expr.field, field_loc) catch |err| switch (err) {
+                    error.MethodResolutionFailed => return null,
+                };
+                if (method_ty) |mt| return mt;
                 _ = self.context.diags.addError(field_loc, .unknown_struct_field, .{}) catch {};
                 return null;
             },
@@ -1869,11 +1872,22 @@ pub const Checker = struct {
                         }
                     }
                 }
-                if (try self.resolveMethodFieldAccess(id, ty, parent_ty.?, field_expr.field, field_loc)) |mt| return mt;
+                const method_ty = self.resolveMethodFieldAccess(id, ty, parent_ty.?, field_expr.field, field_loc) catch |err| switch (err) {
+                    error.MethodResolutionFailed => return null,
+                };
+                if (method_ty) |mt| return mt;
                 if (inner_kind == .Struct) {
                     _ = self.context.diags.addError(field_loc, .unknown_struct_field, .{}) catch {};
                     return null;
                 }
+                _ = self.context.diags.addError(self.exprLoc(field_expr), .field_access_on_non_aggregate, .{}) catch {};
+                return null;
+            },
+            .Enum, .Error => {
+                const method_ty = self.resolveMethodFieldAccess(id, ty, ty, field_expr.field, field_loc) catch |err| switch (err) {
+                    error.MethodResolutionFailed => return null,
+                };
+                if (method_ty) |mt| return mt;
                 _ = self.context.diags.addError(self.exprLoc(field_expr), .field_access_on_non_aggregate, .{}) catch {};
                 return null;
             },
@@ -1932,7 +1946,10 @@ pub const Checker = struct {
                     return null;
                 }
                 if (inner_kind == .Struct or inner_kind == .Union or inner_kind == .Enum or inner_kind == .Variant or inner_kind == .Error) {
-                    if (try self.resolveMethodFieldAccess(id, ty, parent_ty.?, field_expr.field, field_loc)) |mt| return mt;
+                    const method_ty = self.resolveMethodFieldAccess(id, ty, parent_ty.?, field_expr.field, field_loc) catch |err| switch (err) {
+                        error.MethodResolutionFailed => return null,
+                    };
+                    if (method_ty) |mt| return mt;
                 }
                 _ = self.context.diags.addError(self.exprLoc(field_expr), .field_access_on_non_aggregate, .{}) catch {};
                 return null;
@@ -1964,7 +1981,10 @@ pub const Checker = struct {
                         return variant.ty;
                     }
                 }
-                if (try self.resolveMethodFieldAccess(id, ty, ty, field_expr.field, field_loc)) |mt| return mt;
+                const method_ty = self.resolveMethodFieldAccess(id, ty, ty, field_expr.field, field_loc) catch |err| switch (err) {
+                    error.MethodResolutionFailed => return null,
+                };
+                if (method_ty) |mt| return mt;
                 _ = self.context.diags.addError(self.exprLoc(field_expr), .unknown_variant_tag, .{}) catch {};
                 return null;
             },
