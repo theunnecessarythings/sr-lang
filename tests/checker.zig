@@ -487,6 +487,20 @@ test "builtin types - array - failures" {
     try checkProgram("a_elem: [3]i32 = [1, \"x\", 3]", &[_]diag.DiagnosticCode{.heterogeneous_array_elements});
 }
 
+test "array length resolved from comptime expression" {
+    const code =
+        \\Vec :: fn(comptime T: type, comptime N: usize) type {
+        \\  return struct { data: [N]T };
+        \\}
+        \\Matrix :: fn(comptime T: type, comptime R: usize, comptime C: usize) type {
+        \\  Row :: Vec(T, C)
+        \\  return struct { rows: [R]Row };
+        \\}
+        \\MatrixI32x2x3 :: Matrix(i32, 2, 3)
+    ;
+    try checkProgram(code, &.{});
+}
+
 test "builtin types - dynarray - success" {
     // Dynarray type as a value (type constant)
     try checkProgram("dt :: [dyn]u8", &.{});
