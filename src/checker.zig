@@ -10,9 +10,11 @@ const Loc = @import("lexer.zig").Token.Loc;
 const ModuleEntry = @import("import_resolver.zig").ModuleEntry;
 const pattern_matching = @import("check_pattern_matching.zig");
 const Pipeline = @import("pipeline.zig").Pipeline;
+const comp = @import("comptime.zig");
 const symbols = @import("symbols.zig");
 const types = @import("types.zig");
 const TypeInfo = types.TypeInfo;
+const mlir = @import("mlir_bindings.zig");
 
 pub const Checker = struct {
     gpa: std.mem.Allocator,
@@ -2517,6 +2519,43 @@ pub const Checker = struct {
         const args = self.ast_unit.exprs.expr_pool.slice(row.args);
         for (args) |arg_id| {
             _ = try self.checkExpr(arg_id);
+        }
+
+        if (row.kind != .Operation and !self.type_info.hasComptimeValue(id)) {
+            const ctx_ptr = self.pipeline.ensureMlirContext();
+            const mlir_ctx = ctx_ptr.*;
+            const text = self.getStr(row.text);
+            const loc = self.exprLoc(row);
+
+            const value = switch (row.kind) {
+                .Module => blk: {
+                    var parsed_module = mlir.Module.createParse(mlir_ctx, mlir.StringRef.from(text));
+                    if (parsed_module.isNull()) {
+                        try self.context.diags.addError(loc, .mlir_parse_error, .{text});
+                        return null;
+                    }
+                    break :blk comp.ComptimeValue{ .MlirModule = parsed_module };
+                },
+                .Type => blk: {
+                    const parsed_type = mlir.Type.parseGet(mlir_ctx, mlir.StringRef.from(text));
+                    if (parsed_type.isNull()) {
+                        try self.context.diags.addError(loc, .mlir_parse_error, .{text});
+                        return null;
+                    }
+                    break :blk comp.ComptimeValue{ .MlirType = parsed_type };
+                },
+                .Attribute => blk: {
+                    const parsed_attr = mlir.Attribute.parseGet(mlir_ctx, mlir.StringRef.from(text));
+                    if (parsed_attr.isNull()) {
+                        try self.context.diags.addError(loc, .mlir_parse_error, .{text});
+                        return null;
+                    }
+                    break :blk comp.ComptimeValue{ .MlirAttribute = parsed_attr };
+                },
+                .Operation => unreachable,
+            };
+
+            try self.type_info.setComptimeValue(id, value);
         }
 
         const ts = &self.context.type_store;

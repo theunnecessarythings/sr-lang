@@ -41,6 +41,10 @@ pub const TypeInfo = struct {
         self.expr_types.deinit(self.gpa);
         self.decl_types.deinit(self.gpa);
         self.field_index_for_expr.deinit(self.gpa);
+        var cv_it = self.comptime_values.valueIterator();
+        while (cv_it.next()) |value_ptr| {
+            self.destroyComptimeValue(value_ptr);
+        }
         self.comptime_values.deinit(self.gpa);
         self.method_table.deinit(self.gpa);
         self.method_bindings.deinit(self.gpa);
@@ -166,6 +170,36 @@ pub const TypeInfo = struct {
 
     pub fn getMethodBinding(self: *const TypeInfo, expr_id: ast.ExprId) ?MethodBinding {
         return self.method_bindings.get(expr_id.toRaw());
+    }
+
+    pub fn hasComptimeValue(self: *TypeInfo, expr_id: ast.ExprId) bool {
+        return self.comptime_values.get(expr_id) != null;
+    }
+
+    pub fn getComptimeValue(self: *TypeInfo, expr_id: ast.ExprId) ?*comp.ComptimeValue {
+        return self.comptime_values.get(expr_id);
+    }
+
+    pub fn setComptimeValue(self: *TypeInfo, expr_id: ast.ExprId, value: comp.ComptimeValue) !void {
+        const gop = try self.comptime_values.getOrPut(self.gpa, expr_id);
+        if (gop.found_existing) {
+            self.destroyComptimeValue(gop.value_ptr);
+        }
+        gop.value_ptr.* = value;
+    }
+
+    fn destroyComptimeValue(self: *TypeInfo, value_ptr: *comp.ComptimeValue) void {
+        switch (value_ptr.*) {
+            .String => |s| {
+                const mut: []u8 = @constCast(s);
+                self.gpa.free(mut);
+            },
+            .MlirModule => |*mod| {
+                mod.destroy();
+            },
+            else => {},
+        }
+        value_ptr.* = .Void;
     }
 };
 

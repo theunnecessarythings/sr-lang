@@ -100,6 +100,7 @@ pub const MlirCodegen = struct {
 
     diagnostic_handler: mlir.c.MlirDiagnosticHandlerID,
     diagnostic_data: *DiagnosticData,
+    active_type_info: ?*types.TypeInfo = null,
 
     pub const FuncInfo = struct {
         op: mlir.Operation,
@@ -248,6 +249,7 @@ pub const MlirCodegen = struct {
             .def_instr = std.AutoHashMap(tir.ValueId, tir.InstrId).init(gpa),
             .diagnostic_handler = mlir.c.mlirContextAttachDiagnosticHandler(ctx.handle, diagnosticHandler, @ptrCast(diag_data), null),
             .diagnostic_data = diag_data,
+            .active_type_info = null,
         };
     }
 
@@ -281,9 +283,14 @@ pub const MlirCodegen = struct {
         t: *const tir.TIR,
         context: *compile.Context,
         locs: ?*const cst.LocStore,
+        type_info: *types.TypeInfo,
     ) !mlir.Module {
         const prev_loc = self.loc;
         defer self.loc = prev_loc;
+
+        const prev_type_info = self.active_type_info;
+        self.active_type_info = type_info;
+        defer self.active_type_info = prev_type_info;
 
         self.active_loc_store = locs;
         defer self.active_loc_store = null;
@@ -2567,7 +2574,6 @@ pub const MlirCodegen = struct {
                 const mlir_text_raw = t.instrs.strs.get(p.text);
                 const mlir_kind = p.kind;
 
-                // NEW: handle arguments
                 const arg_vids = t.instrs.value_pool.slice(p.args);
                 if (mlir_kind == .Operation) {
                     const result_ty = if (p.result.isNone()) self.void_ty else try self.llvmTypeOf(store, p.ty);
@@ -2576,6 +2582,75 @@ pub const MlirCodegen = struct {
                         break :blk mlir.Value.empty();
                     } else {
                         break :blk value;
+                    }
+                }
+
+                if (mlir_kind != .Operation) {
+                    if (self.active_type_info) |ti| {
+                        if (ti.getComptimeValue(p.expr)) |cached_ptr| {
+                            const cached_value = cached_ptr.*;
+                            switch (mlir_kind) {
+                                .Module => {
+                                    switch (cached_value) {
+                                        .MlirModule => |module| {
+                                            const cloned_op = mlir.Operation.clone(module.getOperation());
+                                            var cloned_module = mlir.Module.fromOperation(cloned_op);
+                                            defer cloned_module.destroy();
+                                            var cloned_body = cloned_module.getBody();
+                                            cloned_body.detach();
+                                            var current_op = cloned_body.getFirstOperation();
+                                            while (!current_op.isNull()) {
+                                                const next_op = current_op.getNextInBlock();
+
+                                                const op_name_ref = current_op.getName().str();
+                                                if (std.mem.eql(u8, op_name_ref.toSlice(), "func.func")) {
+                                                    const sym_name_attr = current_op.getInherentAttributeByName(mlir.StringRef.from("sym_name"));
+                                                    if (!sym_name_attr.isNull()) {
+                                                        const sym_name = sym_name_attr.stringAttrGetValue().toSlice();
+                                                        if (!self.func_syms.contains(sym_name)) {
+                                                            const func_type_attr = current_op.getInherentAttributeByName(mlir.StringRef.from("function_type"));
+                                                            const func_type = func_type_attr.typeAttrGetValue();
+                                                            const n_formals = func_type.getFunctionNumInputs();
+                                                            const n_results = func_type.getFunctionNumResults();
+                                                            const ret_type = if (n_results == 1) func_type.getFunctionResult(0) else self.void_ty;
+
+                                                            const info = FuncInfo{
+                                                                .op = current_op,
+                                                                .is_variadic = false,
+                                                                .n_formals = @intCast(n_formals),
+                                                                .ret_type = ret_type,
+                                                                .dbg_subprogram = null,
+                                                            };
+                                                            _ = try self.func_syms.put(sym_name, info);
+                                                        }
+                                                    }
+                                                }
+
+                                                current_op.removeFromParent();
+                                                var body = self.module.getBody();
+                                                body.appendOwnedOperation(current_op);
+                                                current_op = next_op;
+                                            }
+                                            break :blk mlir.Value.empty();
+                                        },
+                                        else => {},
+                                    }
+                                },
+                                .Type => {
+                                    switch (cached_value) {
+                                        .MlirType => break :blk mlir.Value.empty(),
+                                        else => {},
+                                    }
+                                },
+                                .Attribute => {
+                                    switch (cached_value) {
+                                        .MlirAttribute => break :blk mlir.Value.empty(),
+                                        else => {},
+                                    }
+                                },
+                                .Operation => {},
+                            }
+                        }
                     }
                 }
 
@@ -2650,14 +2725,13 @@ pub const MlirCodegen = struct {
                     .Module => {
                         var parsed_module = mlir.Module.createParse(
                             self.mlir_ctx,
-                            mlir.StringRef.from(mlir_text), // No stripping of braces
+                            mlir.StringRef.from(mlir_text),
                         );
                         if (parsed_module.isNull()) {
                             const loc = self.active_loc_store.?.get(p.loc.unwrap());
                             try self.context.diags.addError(loc, .mlir_parse_error, .{});
                             return error.MlirParseError;
                         }
-                        // Merge the parsed module into the current module
                         var parsed_module_body = parsed_module.getBody();
                         parsed_module_body.detach();
                         var current_op = parsed_module_body.getFirstOperation();
@@ -2678,7 +2752,7 @@ pub const MlirCodegen = struct {
 
                                         const info = FuncInfo{
                                             .op = current_op,
-                                            .is_variadic = false, // func.func is not variadic in this context
+                                            .is_variadic = false,
                                             .n_formals = @intCast(n_formals),
                                             .ret_type = ret_type,
                                             .dbg_subprogram = null,
@@ -2697,23 +2771,19 @@ pub const MlirCodegen = struct {
                         break :blk mlir.Value.empty();
                     },
                     .Type => {
-                        // Parse the MLIR type
                         var parsed_type = mlir.Type.parseGet(self.mlir_ctx, mlir.StringRef.from(mlir_text));
                         if (parsed_type.isNull()) {
                             std.debug.print("Error parsing inline MLIR type: {s}\n", .{mlir_text});
                             return error.MlirParseError;
                         }
-                        // Type declarations don't produce SSA values, so return empty.
                         break :blk mlir.Value.empty();
                     },
                     .Attribute => {
-                        // Parse the MLIR attribute
                         var parsed_attr = mlir.Attribute.parseGet(self.mlir_ctx, mlir.StringRef.from(mlir_text));
                         if (parsed_attr.isNull()) {
                             std.debug.print("Error parsing inline MLIR attribute: {s}\n", .{mlir_text});
                             return error.MlirParseError;
                         }
-                        // Attribute declarations don't produce SSA values, so return empty.
                         break :blk mlir.Value.empty();
                     },
                 }
