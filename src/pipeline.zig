@@ -30,6 +30,7 @@ pub const Pipeline = struct {
     allocator: std.mem.Allocator,
     context: *compile.Context,
     next_module_id: usize = 1,
+    mlir_ctx: ?mlir.Context = null,
 
     const Mode = enum {
         lex,
@@ -54,6 +55,12 @@ pub const Pipeline = struct {
 
     pub fn init(allocator: std.mem.Allocator, context: *compile.Context) Pipeline {
         return .{ .allocator = allocator, .context = context };
+    }
+
+    pub fn ensureMlirContext(self: *Pipeline) *mlir.Context {
+        if (self.mlir_ctx) |*ctx| return ctx;
+        self.mlir_ctx = compile.initMLIR(self.allocator);
+        return &self.mlir_ctx.?;
     }
 
     pub const ComptimeBinding = union(enum) {
@@ -191,14 +198,14 @@ pub const Pipeline = struct {
         // Print Types
         // type_info.print();
 
-        const mlir_ctx = compile.initMLIR(self.allocator);
-        var gen = mlir_codegen.MlirCodegen.init(self.allocator, self.context, mlir_ctx);
+        const mlir_ctx_ptr = self.ensureMlirContext();
+        var gen = mlir_codegen.MlirCodegen.init(self.allocator, self.context, mlir_ctx_ptr.*);
         gen.resetDebugCaches();
 
         // Resolve imports recursively and append their codegen (reuse resolver)
         try self.resolveImports(&ast, &gen, &name_to_prefix, &self.context.resolver);
 
-        var mlir_module = gen.emitModule(&root_mod, self.context, ast.exprs.locs) catch |err| {
+        var mlir_module = gen.emitModule(&root_mod, self.context, ast.exprs.locs, type_info) catch |err| {
             switch (err) {
                 error.CompilationFailed => {
                     try self.context.diags.emitStyled(self.context, &writer.interface, true);
@@ -297,7 +304,7 @@ pub const Pipeline = struct {
             // append TIR into same generator (emit into same module)
             const original_debug_flag = mlir_codegen.enable_debug_info;
             mlir_codegen.enable_debug_info = false;
-            _ = try gen.emitModule(&me.tir, self.context, me.ast.exprs.locs);
+            _ = try gen.emitModule(&me.tir, self.context, me.ast.exprs.locs, me.type_info);
             mlir_codegen.enable_debug_info = original_debug_flag;
             if (self.context.diags.anyErrors()) {
                 return error.MlirCodegenFailed;

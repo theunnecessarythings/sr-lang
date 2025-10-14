@@ -257,6 +257,14 @@ pub const LowerTir = struct {
         const row = a.exprs.get(.MlirBlock, id);
         const expr_ty_opt = self.getExprType(id);
         var ty0 = expr_ty_opt orelse (expected_ty orelse self.context.type_store.tAny());
+        if (self.isAny(ty0)) {
+            ty0 = switch (row.kind) {
+                .Module => self.context.type_store.tMlirModule(),
+                .Attribute => self.context.type_store.tMlirAttribute(),
+                .Type => self.context.type_store.tMlirType(),
+                .Operation => ty0,
+            };
+        }
         if (expected_ty) |want| {
             if (expr_ty_opt) |expr_ty| {
                 if (self.isAny(expr_ty) and !self.isAny(want)) {
@@ -281,6 +289,7 @@ pub const LowerTir = struct {
             .result = .some(result_id),
             .ty = ty0,
             .kind = row.kind,
+            .expr = id,
             .text = row.text,
             .args = args_range,
             .loc = loc,
@@ -1310,7 +1319,7 @@ pub const LowerTir = struct {
         }
         var gen = mlir_codegen.MlirCodegen.init(self.gpa, self.context, g_mlir_ctx);
         defer gen.deinit();
-        var mlir_module = try gen.emitModule(&tmp_tir, self.context, a.exprs.locs);
+        var mlir_module = try gen.emitModule(&tmp_tir, self.context, a.exprs.locs, self.type_info);
         mlir_module.getOperation().dump();
 
         try compile.run_passes(&gen.mlir_ctx, &mlir_module);

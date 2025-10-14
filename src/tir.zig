@@ -172,7 +172,7 @@ pub const Rows = struct {
 
     pub const Call = struct { result: ValueId, ty: types.TypeId, callee: StrId, args: RangeValue, loc: OptLocId };
     pub const IndirectCall = struct { result: ValueId, ty: types.TypeId, callee: ValueId, args: RangeValue, loc: OptLocId };
-    pub const MlirBlock = struct { result: OptValueId, ty: types.TypeId, kind: ast.MlirKind, text: StrId, args: RangeValue, loc: OptLocId };
+    pub const MlirBlock = struct { result: OptValueId, ty: types.TypeId, kind: ast.MlirKind, expr: ast.ExprId, text: StrId, args: RangeValue, loc: OptLocId };
     pub const VariantMake = struct { result: ValueId, ty: types.TypeId, tag: u32, payload: OptValueId, payload_ty: types.TypeId, loc: OptLocId };
     pub const VariantTag = struct { result: ValueId, ty: types.TypeId, value: ValueId, loc: OptLocId };
     pub const VariantPayloadPtr = struct { result: ValueId, ty: types.TypeId, value: ValueId, loc: OptLocId };
@@ -913,12 +913,13 @@ pub const Builder = struct {
         result: ValueId,
         ty: types.TypeId,
         kind: ast.MlirKind,
+        expr: ast.ExprId,
         text: StrId,
         args: []const ValueId,
         loc: OptLocId,
     ) InstrId {
         const args_range = self.t.instrs.value_pool.pushMany(self.gpa, args);
-        const row: Rows.MlirBlock = .{ .result = .some(result), .ty = ty, .kind = kind, .text = text, .args = args_range, .loc = loc };
+        const row: Rows.MlirBlock = .{ .result = .some(result), .ty = ty, .kind = kind, .expr = expr, .text = text, .args = args_range, .loc = loc };
         const id = self.t.instrs.add(.MlirBlock, row);
         blk.instrs.append(self.gpa, id) catch @panic("OOM");
         return id;
