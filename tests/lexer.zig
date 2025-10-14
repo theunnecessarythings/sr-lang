@@ -185,7 +185,7 @@ test "chars" {
 }
 
 test "invalid token characters" {
-    try testSingle("#", &.{.invalid});
+    try testSingle("#", &.{.hash});
     try testSingle("`", &.{.invalid});
     try testSingle("'c", &.{.invalid});
     try testSingle("'", &.{.invalid});
@@ -697,29 +697,63 @@ test "asm block" {
 test "mlir block" {
     try testSingle(
         \\mlir { func @main() -> i32 { return 0 : i32 } }
-    , &.{ .keyword_mlir, .mlir_content });
+    , &.{
+        .keyword_mlir,
+        .lcurly,
+        .identifier,
+        .at,
+        .identifier,
+        .lparen,
+        .rparen,
+        .rarrow,
+        .identifier,
+        .lcurly,
+        .keyword_return,
+        .integer_literal,
+        .colon,
+        .identifier,
+        .rcurly,
+        .rcurly,
+    });
     // skip escaped
     try testSingle(
         \\mlir { func \@main() -> i32 { return 0 : i32 } }
-    , &.{ .keyword_mlir, .mlir_content });
+    , &.{
+        .keyword_mlir,
+        .lcurly,
+        .identifier,
+        .invalid,
+    });
 }
 
 test "mlir attribute" {
     try testSingle(
         \\mlir attribute {foo = "bar"}
-    , &.{ .keyword_mlir, .identifier, .mlir_content });
+    , &.{ .keyword_mlir, .identifier, .lcurly, .identifier, .equal, .string_literal, .rcurly });
 }
 
 test "mlir attribute with nested braces" {
     try testSingle(
         \\mlir attribute {foo = {bar = "baz"}}
-    , &.{ .keyword_mlir, .identifier, .mlir_content });
+    , &.{
+        .keyword_mlir,
+        .identifier,
+        .lcurly,
+        .identifier,
+        .equal,
+        .lcurly,
+        .identifier,
+        .equal,
+        .string_literal,
+        .rcurly,
+        .rcurly,
+    });
 }
 
 test "mlir type" {
     try testSingle(
         \\mlir type {i32}
-    , &.{ .keyword_mlir, .keyword_type, .mlir_content });
+    , &.{ .keyword_mlir, .keyword_type, .lcurly, .identifier, .rcurly });
 }
 
 test "imaginary literals: integers & floats" {
