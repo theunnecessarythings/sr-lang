@@ -66,6 +66,48 @@ pub const LowerTir = struct {
         self.expr_type_override_stack.items.len -= 1;
     }
 
+    fn pushComptimeBindings(self: *LowerTir, bindings: []const Pipeline.ComptimeBinding) !bool {
+        if (bindings.len == 0) return false;
+
+        var infos = try self.gpa.alloc(monomorphize.BindingInfo, bindings.len);
+        var init_count: usize = 0;
+        var info_cleanup = true;
+        defer {
+            if (info_cleanup) {
+                var j: usize = 0;
+                while (j < init_count) : (j += 1) infos[j].deinit(self.gpa);
+                self.gpa.free(infos);
+            }
+        }
+
+        for (bindings, 0..) |binding, i| {
+            switch (binding) {
+                .type_param => |tp| {
+                    infos[i] = monomorphize.BindingInfo.typeParam(tp.name, tp.ty);
+                },
+                .value_param => |vp| {
+                    infos[i] = try monomorphize.BindingInfo.valueParam(self.gpa, vp.name, vp.ty, vp.value);
+                },
+            }
+            init_count = i + 1;
+        }
+
+        var ctx = try monomorphize.MonomorphizationContext.init(
+            self.gpa,
+            infos[0..init_count],
+            0,
+            self.context.type_store.tVoid(),
+        );
+        errdefer ctx.deinit(self.gpa);
+
+        try self.monomorph_context_stack.append(self.gpa, ctx) catch |err| {
+            ctx.deinit(self.gpa);
+            return err;
+        };
+
+        return true;
+    }
+
     fn noteExprType(self: *LowerTir, expr: ast.ExprId, ty: types.TypeId) !void {
         if (self.expr_type_override_stack.items.len == 0) return;
         if (self.isAny(ty)) return;
@@ -1210,7 +1252,14 @@ pub const LowerTir = struct {
         a: *const ast.Ast,
         expr: ast.ExprId,
         result_ty: types.TypeId,
+        bindings: []const Pipeline.ComptimeBinding,
     ) !comp.ComptimeValue {
+        const pushed = try self.pushComptimeBindings(bindings);
+        defer if (pushed) {
+            const popped = self.monomorph_context_stack.pop();
+            if (popped) |*ctx| ctx.deinit(self.gpa);
+        };
+
         const result_kind = self.context.type_store.getKind(result_ty);
         if (result_kind == .TypeType) {
             const tt = self.context.type_store.get(.TypeType, result_ty);
@@ -1306,7 +1355,7 @@ pub const LowerTir = struct {
 
         const cb = a.exprs.get(.ComptimeBlock, id);
         const result_ty = self.getExprType(cb.block) orelse return error.LoweringBug;
-        const comptime_value = try self.runComptimeExpr(a, cb.block, result_ty);
+        const comptime_value = try self.runComptimeExpr(a, cb.block, result_ty, &[_]Pipeline.ComptimeBinding{});
         const loc = self.exprOptLoc(a, id);
 
         return switch (comptime_value) {
@@ -1331,7 +1380,7 @@ pub const LowerTir = struct {
         _ = env;
         _ = f;
         _ = blk;
-        return self.runComptimeExpr(a, expr, result_ty);
+        return self.runComptimeExpr(a, expr, result_ty, &[_]Pipeline.ComptimeBinding{});
     }
 
     fn constValueFromComptime(
@@ -4606,14 +4655,14 @@ pub const LowerTir = struct {
                 if (self.context.type_store.getKind(result_ty) == .TypeType) {
                     const tt = self.context.type_store.get(.TypeType, result_ty);
                     if (!self.isAny(tt.of)) break :blk tt.of;
-                    const computed = try self.runComptimeExpr(a, src_expr, result_ty);
+                    const computed = try self.runComptimeExpr(a, src_expr, result_ty, &[_]Pipeline.ComptimeBinding{});
                     break :blk switch (computed) {
                         .Type => |ty| ty,
                         else => return error.UnsupportedComptimeType,
                     };
                 }
                 const type_wrapper = self.context.type_store.mkTypeType(result_ty);
-                const computed = try self.runComptimeExpr(a, src_expr, type_wrapper);
+                const computed = try self.runComptimeExpr(a, src_expr, type_wrapper, &[_]Pipeline.ComptimeBinding{});
                 break :blk switch (computed) {
                     .Type => |ty| ty,
                     else => return error.UnsupportedComptimeType,
@@ -5085,10 +5134,11 @@ pub fn evalComptimeExpr(
     ast_unit: *const ast.Ast,
     expr: ast.ExprId,
     result_ty: types.TypeId,
+    bindings: []const Pipeline.ComptimeBinding,
 ) !comp.ComptimeValue {
     var lowerer = LowerTir.init(gpa, context, pipeline, type_info, module_id, chk);
     defer lowerer.deinit();
-    return lowerer.runComptimeExpr(ast_unit, expr, result_ty);
+    return lowerer.runComptimeExpr(ast_unit, expr, result_ty, bindings);
 }
 
 // ============================

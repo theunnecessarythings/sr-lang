@@ -56,12 +56,18 @@ pub const Pipeline = struct {
         return .{ .allocator = allocator, .context = context };
     }
 
+    pub const ComptimeBinding = union(enum) {
+        type_param: struct { name: ast_mod.StrId, ty: types.TypeId },
+        value_param: struct { name: ast_mod.StrId, ty: types.TypeId, value: comp.ComptimeValue },
+    };
+
     pub fn evalComptimeExpr(
         self: *Pipeline,
         chk: *checker.Checker,
         ast_unit: *const ast_mod.Ast,
         expr: ast_mod.ExprId,
         result_ty: types.TypeId,
+        bindings: []const ComptimeBinding,
     ) !comp.ComptimeValue {
         return lower_tir.evalComptimeExpr(
             self.allocator,
@@ -73,6 +79,7 @@ pub const Pipeline = struct {
             ast_unit,
             expr,
             result_ty,
+            bindings,
         );
     }
 

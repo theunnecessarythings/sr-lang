@@ -4,12 +4,69 @@ const ast = @import("ast.zig");
 const std = @import("std");
 
 const comp = @import("comptime.zig");
+const PipelineBinding = @import("pipeline.zig").ComptimeBinding;
 const Loc = @import("lexer.zig").Token.Loc;
 
 const Binding = union(enum) {
     Type: struct { name: ast.StrId, ty: types.TypeId },
     Value: struct { name: ast.StrId, value: comp.ComptimeValue, ty: types.TypeId },
 };
+
+const PipelineBindingSlice = struct {
+    items: []PipelineBinding,
+    owns: bool,
+};
+
+fn pipelineBindingsFor(self: *Checker, bindings: []const Binding) !PipelineBindingSlice {
+    if (bindings.len == 0) return .{ .items = &[_]PipelineBinding{}, .owns = false };
+
+    var out = try self.gpa.alloc(PipelineBinding, bindings.len);
+    var i: usize = 0;
+    while (i < bindings.len) : (i += 1) {
+        const b = bindings[i];
+        out[i] = switch (b) {
+            .Type => |t| .{ .type_param = .{ .name = t.name, .ty = t.ty } },
+            .Value => |v| .{ .value_param = .{ .name = v.name, .ty = v.ty, .value = v.value } },
+        };
+    }
+
+    return .{ .items = out, .owns = true };
+}
+
+fn evalComptimeValueWithBindings(
+    self: *Checker,
+    expr: ast.ExprId,
+    expected_ty: types.TypeId,
+    bindings: []const Binding,
+) !comp.ComptimeValue {
+    const pb = try pipelineBindingsFor(self, bindings);
+    defer if (pb.owns) self.gpa.free(pb.items);
+    return self.pipeline.evalComptimeExpr(self, self.ast_unit, expr, expected_ty, pb.items);
+}
+
+fn comptimeValueToUsize(self: *Checker, value: comp.ComptimeValue, loc: Loc) ?usize {
+    return switch (value) {
+        .Int => |int_val| blk: {
+            const casted = std.math.cast(usize, int_val) orelse {
+                try self.context.diags.addError(loc, .array_size_not_integer_literal, .{});
+                break :blk null;
+            };
+            break :blk casted;
+        },
+        else => blk: {
+            try self.context.diags.addError(loc, .array_size_not_integer_literal, .{});
+            break :blk null;
+        },
+    };
+}
+
+fn literalArrayLenFallback(self: *Checker, size_expr: ast.ExprId, loc: Loc) ?usize {
+    const lit_val = (try evalLiteralToComptime(self, size_expr)) orelse {
+        try self.context.diags.addError(loc, .array_size_not_integer_literal, .{});
+        return null;
+    };
+    return comptimeValueToUsize(self, lit_val, loc);
+}
 
 fn lookupTypeBinding(bindings: []const Binding, name: ast.StrId) ?types.TypeId {
     for (bindings) |binding| {
@@ -129,66 +186,20 @@ fn resolveArrayLen(
     if (kind == .Ident) {
         const name = self.ast_unit.exprs.get(.Ident, size_expr).name;
         if (lookupValueBinding(bindings, name)) |val| {
-            switch (val) {
-                .Int => |int_val| {
-                    const casted = std.math.cast(usize, int_val) orelse {
-                        try self.context.diags.addError(loc, .array_size_not_integer_literal, .{});
-                        return null;
-                    };
-                    return casted;
-                },
-                else => {
-                    try self.context.diags.addError(loc, .array_size_not_integer_literal, .{});
-                    return null;
-                },
-            }
-        }
-    }
-
-    if (kind == .Literal) {
-        const lit_val = (try evalLiteralToComptime(self, size_expr)) orelse {
-            try self.context.diags.addError(loc, .array_size_not_integer_literal, .{});
-            return null;
-        };
-        switch (lit_val) {
-            .Int => |int_val| {
-                const casted = std.math.cast(usize, int_val) orelse {
-                    try self.context.diags.addError(loc, .array_size_not_integer_literal, .{});
-                    return null;
-                };
-                return casted;
-            },
-            else => {
-                try self.context.diags.addError(loc, .array_size_not_integer_literal, .{});
-                return null;
-            },
+            return comptimeValueToUsize(self, val, loc);
         }
     }
 
     const expected_ty = self.context.type_store.tUsize();
-    const comptime_val = self.pipeline.evalComptimeExpr(
-        self,
-        self.ast_unit,
-        size_expr,
-        expected_ty,
-    ) catch {
+    const comptime_val = evalComptimeValueWithBindings(self, size_expr, expected_ty, bindings) catch {
+        if (kind == .Literal) return literalArrayLenFallback(self, size_expr, loc);
         try self.context.diags.addError(loc, .array_size_not_integer_literal, .{});
         return null;
     };
 
-    switch (comptime_val) {
-        .Int => |int_val| {
-            const casted = std.math.cast(usize, int_val) orelse {
-                try self.context.diags.addError(loc, .array_size_not_integer_literal, .{});
-                return null;
-            };
-            return casted;
-        },
-        else => {
-            try self.context.diags.addError(loc, .array_size_not_integer_literal, .{});
-            return null;
-        },
-    }
+    if (comptimeValueToUsize(self, comptime_val, loc)) |len| return len;
+    if (kind == .Literal) return literalArrayLenFallback(self, size_expr, loc);
+    return null;
 }
 
 fn typeFromTypeExprWithBindings(
@@ -230,6 +241,7 @@ fn typeFromTypeExprWithBindings(
             const len_val = (try resolveArrayLen(self, row.size, bindings, self.ast_unit.exprs.locs.get(row.loc))) orelse break :blk_at null;
             break :blk_at self.context.type_store.mkArray(elem, len_val);
         },
+        .Call => try resolveTypeFunctionCall(self, id, bindings),
         else => try typeFromTypeExpr(self, id),
     };
 }
@@ -237,6 +249,7 @@ fn typeFromTypeExprWithBindings(
 fn resolveTypeFunctionCall(
     self: *Checker,
     call_id: ast.ExprId,
+    existing_bindings: []const Binding,
 ) anyerror!?types.TypeId {
     const call = self.ast_unit.exprs.get(.Call, call_id);
     const callee_kind = self.ast_unit.exprs.index.kinds.items[call.callee.toRaw()];
@@ -257,8 +270,11 @@ fn resolveTypeFunctionCall(
     const args = self.ast_unit.exprs.expr_pool.slice(call.args);
     if (params.len != args.len) return null;
 
-    var bindings: std.ArrayList(Binding) = .empty;
-    defer bindings.deinit(self.gpa);
+    var bindings_builder = std.ArrayList(Binding).init(self.gpa);
+    defer bindings_builder.deinit();
+    if (existing_bindings.len > 0) {
+        try bindings_builder.appendSlice(existing_bindings);
+    }
 
     var i: usize = 0;
     while (i < params.len) : (i += 1) {
@@ -271,12 +287,39 @@ fn resolveTypeFunctionCall(
 
         const annotated = (try typeFromTypeExpr(self, param.ty.unwrap())) orelse return null;
         if (self.context.type_store.getKind(annotated) == .TypeType) {
-            const arg_ty = (try typeFromTypeExpr(self, args[i])) orelse return null;
-            try bindings.append(self.gpa, .{ .Type = .{ .name = pname, .ty = arg_ty } });
+            const arg_ty = (try typeFromTypeExprWithBindings(self, args[i], bindings_builder.items)) orelse return null;
+            try bindings_builder.append(.{ .Type = .{ .name = pname, .ty = arg_ty } });
         } else {
             const arg_expr = args[i];
-            const val = (try evalLiteralToComptime(self, arg_expr)) orelse return null;
-            try bindings.append(self.gpa, .{ .Value = .{ .name = pname, .value = val, .ty = annotated } });
+            const arg_kind = self.ast_unit.exprs.index.kinds.items[arg_expr.toRaw()];
+
+            var have_value = false;
+            var value: comp.ComptimeValue = undefined;
+
+            if (arg_kind == .Ident) {
+                const ident_name = self.ast_unit.exprs.get(.Ident, arg_expr).name;
+                if (lookupValueBinding(bindings_builder.items, ident_name)) |existing| {
+                    value = existing;
+                    have_value = true;
+                }
+            }
+
+            if (!have_value) {
+                value = blk: {
+                    const computed = evalComptimeValueWithBindings(self, arg_expr, annotated, bindings_builder.items) catch {
+                        if (arg_kind == .Literal) {
+                            const literal_val = (try evalLiteralToComptime(self, arg_expr)) orelse return null;
+                            break :blk literal_val;
+                        }
+                        return null;
+                    };
+                    break :blk computed;
+                };
+                have_value = true;
+            }
+
+            if (!have_value) return null;
+            try bindings_builder.append(.{ .Value = .{ .name = pname, .value = value, .ty = annotated } });
         }
     }
 
@@ -289,7 +332,7 @@ fn resolveTypeFunctionCall(
         if (self.ast_unit.stmts.index.kinds.items[sid.toRaw()] != .Return) continue;
         const ret = self.ast_unit.stmts.get(.Return, sid);
         if (ret.value.isNone()) return null;
-        const resolved = try typeFromTypeExprWithBindings(self, ret.value.unwrap(), bindings.items);
+        const resolved = try typeFromTypeExprWithBindings(self, ret.value.unwrap(), bindings_builder.items);
         if (resolved) |ty| {
             try self.type_info.ensureExpr(self.gpa, call_id);
             const type_ty = self.context.type_store.mkTypeType(ty);
@@ -811,7 +854,7 @@ pub fn typeFromTypeExpr(self: *Checker, id: ast.ExprId) anyerror!?types.TypeId {
                 },
             }
         },
-        .Call => try resolveTypeFunctionCall(self, id),
+        .Call => try resolveTypeFunctionCall(self, id, &[_]Binding{}),
         .AnyType => self.context.type_store.tAny(),
         .TypeType => self.context.type_store.tType(),
         .NoreturnType => self.context.type_store.tNoReturn(),
