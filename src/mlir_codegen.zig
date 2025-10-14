@@ -5,6 +5,7 @@ const compile = @import("compile.zig");
 const types = @import("types.zig");
 const abi = @import("abi.zig");
 const cst = @import("cst.zig");
+const comp = @import("comptime.zig");
 
 const Allocator = std.mem.Allocator;
 const ArrayList = std.array_list.Managed;
@@ -182,6 +183,89 @@ pub const MlirCodegen = struct {
         if (had_error) return error.OutOfMemory;
 
         return try list.toOwnedSlice();
+    }
+
+    fn appendMlirTypeText(self: *MlirCodegen, buf: *ArrayList(u8), ty: mlir.Type) !void {
+        var tmp = ArrayList(u8).init(self.gpa);
+        defer tmp.deinit();
+        var had_error = false;
+        var sink = PrintBuffer{ .list = &tmp, .had_error = &had_error };
+        ty.print(printCallback, &sink);
+        if (had_error) return error.OutOfMemory;
+        try buf.appendSlice(self.gpa, tmp.items);
+    }
+
+    fn appendMlirAttributeText(self: *MlirCodegen, buf: *ArrayList(u8), attr: mlir.Attribute) !void {
+        var tmp = ArrayList(u8).init(self.gpa);
+        defer tmp.deinit();
+        var had_error = false;
+        var sink = PrintBuffer{ .list = &tmp, .had_error = &had_error };
+        attr.print(printCallback, &sink);
+        if (had_error) return error.OutOfMemory;
+        try buf.appendSlice(self.gpa, tmp.items);
+    }
+
+    fn appendMlirModuleText(self: *MlirCodegen, buf: *ArrayList(u8), module: mlir.Module) !void {
+        var tmp = ArrayList(u8).init(self.gpa);
+        defer tmp.deinit();
+        var had_error = false;
+        var sink = PrintBuffer{ .list = &tmp, .had_error = &had_error };
+        module.getOperation().print(printCallback, &sink);
+        if (had_error) return error.OutOfMemory;
+        try buf.appendSlice(self.gpa, tmp.items);
+    }
+
+    fn appendMlirSpliceValue(
+        self: *MlirCodegen,
+        buf: *ArrayList(u8),
+        value: comp.ComptimeValue,
+    ) !void {
+        switch (value) {
+            .Void => return error.MlirSpliceMissingValue,
+            .Int => |v| {
+                var writer = buf.writer();
+                try writer.print("{d}", .{v});
+            },
+            .Float => |v| {
+                var writer = buf.writer();
+                try writer.print("{f}", .{v});
+            },
+            .Bool => |b| {
+                try buf.appendSlice(self.gpa, if (b) "true" else "false");
+            },
+            .String => |s| {
+                try buf.appendSlice(self.gpa, s);
+            },
+            .Type => |ty| {
+                var writer = buf.writer();
+                try self.context.type_store.fmt(ty, writer);
+            },
+            .MlirType => |ty| try self.appendMlirTypeText(buf, ty),
+            .MlirAttribute => |attr| try self.appendMlirAttributeText(buf, attr),
+            .MlirModule => |module| try self.appendMlirModuleText(buf, module),
+        }
+    }
+
+    fn renderMlirTemplate(
+        self: *MlirCodegen,
+        t: *const tir.TIR,
+        pieces: []const tir.MlirPieceId,
+    ) ![]u8 {
+        var buf = ArrayList(u8).init(self.gpa);
+        errdefer buf.deinit();
+
+        for (pieces) |pid| {
+            const piece = t.instrs.MlirPiece.get(pid);
+            switch (piece.kind) {
+                .literal => {
+                    const text = t.instrs.strs.get(piece.text);
+                    try buf.appendSlice(self.gpa, text);
+                },
+                .splice => try self.appendMlirSpliceValue(&buf, piece.value),
+            }
+        }
+
+        return try buf.toOwnedSlice();
     }
 
     const DiagnosticData = struct {
@@ -2571,13 +2655,15 @@ pub const MlirCodegen = struct {
                 const p = t.instrs.get(.MlirBlock, ins_id);
                 const prev_loc = self.pushLocation(p.loc);
                 defer self.loc = prev_loc;
-                const mlir_text_raw = t.instrs.strs.get(p.text);
                 const mlir_kind = p.kind;
+                const piece_ids = t.instrs.mlir_piece_pool.slice(p.pieces);
+                const mlir_template = try self.renderMlirTemplate(t, piece_ids);
+                defer self.gpa.free(mlir_template);
 
                 const arg_vids = t.instrs.value_pool.slice(p.args);
                 if (mlir_kind == .Operation) {
                     const result_ty = if (p.result.isNone()) self.void_ty else try self.llvmTypeOf(store, p.ty);
-                    const value = try self.emitInlineMlirOperation(mlir_text_raw, arg_vids, result_ty, p.loc);
+                    const value = try self.emitInlineMlirOperation(mlir_template, arg_vids, result_ty, p.loc);
                     if (p.result.isNone()) {
                         break :blk mlir.Value.empty();
                     } else {
@@ -2692,13 +2778,13 @@ pub const MlirCodegen = struct {
                     var writer = mlir_text_list.writer(self.gpa);
 
                     var i: usize = 0;
-                    while (i < mlir_text_raw.len) {
-                        if (mlir_text_raw[i] == '%') {
+                    while (i < mlir_template.len) {
+                        if (mlir_template[i] == '%') {
                             var j = i + 1;
                             var num: u32 = 0;
                             var num_len: u32 = 0;
-                            while (j < mlir_text_raw.len and std.ascii.isDigit(mlir_text_raw[j])) {
-                                num = num * 10 + (mlir_text_raw[j] - '0');
+                            while (j < mlir_template.len and std.ascii.isDigit(mlir_template[j])) {
+                                num = num * 10 + (mlir_template[j] - '0');
                                 num_len += 1;
                                 j += 1;
                             }
@@ -2707,16 +2793,16 @@ pub const MlirCodegen = struct {
                                 try writer.writeAll(arg_names.items[num]);
                                 i += num_len + 1;
                             } else {
-                                try writer.writeByte(mlir_text_raw[i]);
+                                try writer.writeByte(mlir_template[i]);
                                 i += 1;
                             }
                         } else {
-                            try writer.writeByte(mlir_text_raw[i]);
+                            try writer.writeByte(mlir_template[i]);
                             i += 1;
                         }
                     }
                 } else {
-                    try mlir_text_list.appendSlice(self.gpa, mlir_text_raw);
+                    try mlir_text_list.appendSlice(self.gpa, mlir_template);
                 }
                 const mlir_text = mlir_text_list.items;
 
