@@ -45,3 +45,12 @@ test "composite_types: array iteration with for loop" {
     try runCompilerTest(code, "Array sum=10\n");
 }
 
+test "composite_types: array length from comptime binding" {
+    const src =
+        \\comptime len: usize = 3
+        \\arr: [len]i32 = [7, 8, 9]
+        \\printf("arr=%d,%d,%d\n", arr[0], arr[1], arr[2])
+    ;
+    const code = getSource("", src);
+    try runCompilerTest(code, "arr=7,8,9\n");
+}

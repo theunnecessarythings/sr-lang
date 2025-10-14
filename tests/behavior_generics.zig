@@ -49,3 +49,22 @@ test "generics: nested type specializations" {
     const code = getSource(globals, src);
     try runCompilerTest(code, "3,4\n");
 }
+
+test "generics: struct field uses comptime array length" {
+    const globals =
+        \\
+        \\ Vec :: fn(comptime T: type, comptime N: usize) type {
+        \\   return struct { data: [N]T };
+        \\ }
+    ;
+
+    const src =
+        \\
+        \\ top := Vec(i32, 3){ data: [1, 2, 3] }
+        \\ bottom := Vec(i32, 3){ data: [4, 5, 6] }
+        \\ printf("%d,%d,%d|%d,%d,%d\n", top.data[0], top.data[1], top.data[2], bottom.data[0], bottom.data[1], bottom.data[2])
+    ;
+
+    const code = getSource(globals, src);
+    try runCompilerTest(code, "1,2,3|4,5,6\n");
+}

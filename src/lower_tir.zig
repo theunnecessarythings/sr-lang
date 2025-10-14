@@ -1280,10 +1280,13 @@ pub const LowerTir = struct {
             .value = .none(),
         });
         const attrs = tmp_tir.instrs.attribute_pool.pushMany(self.gpa, &.{attr_id});
+        const thunk_ret_ty = switch (result_kind) {
+            .Void => self.context.type_store.tVoid(),
+            else => result_ty,
+        };
 
-        var thunk_fn = try tmp_builder.beginFunction(thunk_name, self.context.type_store.tVoid(), false, attrs);
+        var thunk_fn = try tmp_builder.beginFunction(thunk_name, thunk_ret_ty, false, attrs);
         const api_ptr_val = try tmp_builder.addParam(&thunk_fn, tmp_builder.intern("api_ptr"), ptr_ty);
-        const result_ptr_val = try tmp_builder.addParam(&thunk_fn, tmp_builder.intern("result_ptr"), ptr_ty);
         var thunk_blk = try tmp_builder.beginBlock(&thunk_fn);
 
         var tmp_env = Env.init(self.gpa);
@@ -1292,18 +1295,10 @@ pub const LowerTir = struct {
 
         const result_val_id = try self.lowerExpr(a, &tmp_env, &thunk_fn, &thunk_blk, expr, result_ty, .rvalue);
         if (result_kind != .Void) {
-            const field_ty = switch (result_kind) {
-                .I64, .U64, .I32, .U32 => self.context.type_store.tI64(),
-                .F64 => self.context.type_store.tF64(),
-                .Bool => self.context.type_store.tBool(),
-                else => return error.UnsupportedComptimeType,
-            };
-            const field_ptr_ty = self.context.type_store.mkPtr(field_ty, false);
-            const field_ptr = thunk_blk.builder.tirValue(.CastBit, &thunk_blk, field_ptr_ty, expr_loc, .{ .value = result_ptr_val });
-            _ = thunk_blk.builder.tirValue(.Store, &thunk_blk, field_ty, expr_loc, .{ .ptr = field_ptr, .value = result_val_id, .@"align" = 0 });
-        }
-
-        if (thunk_blk.term.isNone()) {
+            if (thunk_blk.term.isNone()) {
+                try tmp_builder.setReturnVal(&thunk_blk, result_val_id, expr_loc);
+            }
+        } else if (thunk_blk.term.isNone()) {
             try tmp_builder.setReturnVoid(&thunk_blk, expr_loc);
         }
         try tmp_builder.endBlock(&thunk_fn, thunk_blk);
@@ -1329,17 +1324,69 @@ pub const LowerTir = struct {
             .get_type_by_name = comp.get_type_by_name_impl,
             .type_of = comp.type_of_impl,
         };
-        var result_value: comp.ComptimeValue = .Void;
 
         const thunk_fn_name_ref = mlir.StringRef.from("__comptime_thunk");
         const func_ptr = mlir.c.mlirExecutionEngineLookup(engine, thunk_fn_name_ref.inner);
         if (func_ptr == null) return error.ComptimeExecutionFailed;
+        const non_null_ptr = func_ptr.?;
 
-        const ThunkFn = *const fn (api_ptr: *comp.ComptimeApi, result_ptr: *comp.ComptimeValue) callconv(.c) void;
-        const typed_func_ptr: ThunkFn = @ptrCast(@alignCast(func_ptr));
-        typed_func_ptr(&comptime_api, &result_value);
+        if (result_kind == .Void) {
+            callComptimeThunk(void, non_null_ptr, &comptime_api);
+            return .Void;
+        }
 
-        return result_value;
+        if (result_kind == .Bool) {
+            const raw = callComptimeThunk(bool, non_null_ptr, &comptime_api);
+            return comp.ComptimeValue{ .Bool = raw };
+        }
+
+        if (result_kind == .F64) {
+            const raw = callComptimeThunk(f64, non_null_ptr, &comptime_api);
+            return comp.ComptimeValue{ .Float = raw };
+        }
+
+        if (result_kind == .F32) {
+            const raw = callComptimeThunk(f32, non_null_ptr, &comptime_api);
+            return comp.ComptimeValue{ .Float = @floatCast(f64, raw) };
+        }
+
+        inline for (.{
+            .{ .kind = types.TypeKind.I8, .T = i8 },
+            .{ .kind = types.TypeKind.I16, .T = i16 },
+            .{ .kind = types.TypeKind.I32, .T = i32 },
+            .{ .kind = types.TypeKind.I64, .T = i64 },
+            .{ .kind = types.TypeKind.U8, .T = u8 },
+            .{ .kind = types.TypeKind.U16, .T = u16 },
+            .{ .kind = types.TypeKind.U32, .T = u32 },
+            .{ .kind = types.TypeKind.U64, .T = u64 },
+            .{ .kind = types.TypeKind.Usize, .T = usize },
+        }) |entry| {
+            if (result_kind == entry.kind) {
+                const raw = callComptimeThunk(entry.T, non_null_ptr, &comptime_api);
+                if (castIntThunkResultToU128(raw)) |casted| {
+                    return comp.ComptimeValue{ .Int = casted };
+                } else {
+                    return error.UnsupportedComptimeType;
+                }
+            }
+        }
+
+        return error.UnsupportedComptimeType;
+    }
+
+    fn callComptimeThunk(comptime Ret: type, func_ptr: *anyopaque, api: *comp.ComptimeApi) Ret {
+        const FnPtr = *const fn (*comp.ComptimeApi) callconv(.c) Ret;
+        const typed: FnPtr = @ptrCast(@alignCast(func_ptr));
+        return typed(api);
+    }
+
+    fn castIntThunkResultToU128(value: anytype) ?u128 {
+        const info = @typeInfo(@TypeOf(value)).Int;
+        if (info.signedness == .signed) {
+            return std.math.cast(u128, value);
+        } else {
+            return @as(u128, value);
+        }
     }
 
     fn jitEvalComptimeBlock(
