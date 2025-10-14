@@ -2686,6 +2686,63 @@ test "patterns - match - failures" {
     , &[_]diag.DiagnosticCode{.pattern_type_mismatch});
 }
 
+test "methods - call success" {
+    try checkProgram(
+        \\
+        \\ Point :: struct { x: i32 }
+        \\ Point.distance :: fn(self: Point) i32 { return self.x }
+        \\ main :: proc() i32 {
+        \\   p := Point{ x: 4 }
+        \\   return p.distance()
+        \\ }
+    , &.{});
+}
+
+test "methods - missing self parameter" {
+    try checkProgram(
+        \\
+        \\ Point :: struct { x: i32 }
+        \\ Point.bad :: fn() void {}
+    , &[_]diag.DiagnosticCode{.method_requires_self_parameter});
+}
+
+test "methods - duplicate declaration" {
+    try checkProgram(
+        \\
+        \\ Point :: struct { x: i32 }
+        \\ Point.distance :: fn(self: Point) i32 { return self.x }
+        \\ Point.distance :: fn(self: Point) i32 { return self.x }
+    , &[_]diag.DiagnosticCode{.duplicate_method_on_type});
+}
+
+test "methods - pointer receiver required" {
+    try checkProgram(
+        \\
+        \\ Point :: struct { x: i32 }
+        \\ Point.bump :: fn(self: *Point) void {}
+        \\ main :: proc() {
+        \\   p := Point{ x: 1 }
+        \\   p.bump()
+        \\ }
+    , &[_]diag.DiagnosticCode{.method_receiver_requires_pointer});
+}
+
+test "methods - owner must be struct" {
+    try checkProgram(
+        \\
+        \\ Foo :: 42
+        \\ Foo.bar :: fn(self: Foo) void {}
+    , &[_]diag.DiagnosticCode{.method_owner_not_struct});
+}
+
+test "methods - self type mismatch" {
+    try checkProgram(
+        \\
+        \\ Point :: struct { x: i32 }
+        \\ Point.bad :: fn(self: i32) void {}
+    , &[_]diag.DiagnosticCode{.method_self_type_mismatch});
+}
+
 // Focused: Import statements
 //
 // test "import statements - success" {

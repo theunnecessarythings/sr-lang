@@ -300,6 +300,10 @@ pub const Checker = struct {
         // Try to coerce value type to expected type (if any)
         try self.tryTypeCoercion(decl_id, rhs_ty.?, expect_ty);
 
+        if (!decl.method_path.isNone()) {
+            if (!(try self.registerMethodDecl(decl_id, decl, rhs_ty.?))) return;
+        }
+
         // If LHS is a pattern, ensure the RHS type matches the pattern's shape.
         if (!decl.pattern.isNone()) {
             const shape_ok = pattern_matching.checkPatternShapeForDecl(self, decl.pattern.unwrap(), rhs_ty.?);
@@ -319,6 +323,130 @@ pub const Checker = struct {
                 },
             }
         }
+    }
+
+    fn registerMethodDecl(
+        self: *Checker,
+        decl_id: ast.DeclId,
+        decl: ast.Rows.Decl,
+        fn_ty: types.TypeId,
+    ) !bool {
+        const seg_range = decl.method_path.asRange();
+        const seg_ids = self.ast_unit.exprs.method_path_pool.slice(seg_range);
+        if (seg_ids.len < 2) return false;
+
+        const owner_seg = self.ast_unit.exprs.MethodPathSeg.get(seg_ids[0]);
+        if (seg_ids.len != 2) {
+            try self.context.diags.addError(self.ast_unit.exprs.locs.get(owner_seg.loc), .method_invalid_owner_path, .{});
+            return false;
+        }
+
+        const method_seg = self.ast_unit.exprs.MethodPathSeg.get(seg_ids[seg_ids.len - 1]);
+
+        const owner_sym_id = self.lookup(owner_seg.name) orelse {
+            try self.context.diags.addError(self.ast_unit.exprs.locs.get(owner_seg.loc), .undefined_identifier, .{});
+            return false;
+        };
+        const owner_sym = self.symtab.syms.get(owner_sym_id);
+        if (owner_sym.origin_decl.isNone()) {
+            try self.context.diags.addError(self.ast_unit.exprs.locs.get(owner_seg.loc), .method_owner_not_struct, .{});
+            return false;
+        }
+        const owner_decl_id = owner_sym.origin_decl.unwrap();
+
+        var owner_ty_opt = self.type_info.decl_types.items[owner_decl_id.toRaw()];
+        if (owner_ty_opt == null) {
+            const owner_decl = self.ast_unit.exprs.Decl.get(owner_decl_id);
+            owner_ty_opt = (try self.checkExpr(owner_decl.value)) orelse return false;
+            self.type_info.decl_types.items[owner_decl_id.toRaw()] = owner_ty_opt.?;
+        }
+        var owner_ty = owner_ty_opt.?;
+        if (self.typeKind(owner_ty) == .TypeType) {
+            owner_ty = self.context.type_store.get(.TypeType, owner_ty).of;
+        }
+        if (self.typeKind(owner_ty) != .Struct) {
+            try self.context.diags.addError(self.ast_unit.exprs.locs.get(owner_seg.loc), .method_owner_not_struct, .{});
+            return false;
+        }
+
+        if (self.typeKind(fn_ty) != .Function) {
+            try self.context.diags.addError(self.exprLoc(decl), .method_requires_function_value, .{});
+            return false;
+        }
+        if (self.exprKind(decl.value) != .FunctionLit) {
+            try self.context.diags.addError(self.exprLoc(decl), .method_requires_function_value, .{});
+            return false;
+        }
+
+        const fn_lit = self.getExpr(.FunctionLit, decl.value);
+        const params = self.ast_unit.exprs.param_pool.slice(fn_lit.params);
+        if (params.len == 0) {
+            try self.context.diags.addError(self.ast_unit.exprs.locs.get(fn_lit.loc), .method_requires_self_parameter, .{});
+            return false;
+        }
+
+        const first_param_id = params[0];
+        const first_param = self.ast_unit.exprs.Param.get(first_param_id);
+        const param_loc = self.ast_unit.exprs.locs.get(first_param.loc);
+        if (first_param.pat.isNone()) {
+            try self.context.diags.addError(param_loc, .method_requires_self_parameter, .{});
+            return false;
+        }
+
+        const pat_id = first_param.pat.unwrap();
+        if (self.ast_unit.pats.index.kinds.items[pat_id.toRaw()] != .Binding) {
+            try self.context.diags.addError(param_loc, .method_self_must_be_binding, .{});
+            return false;
+        }
+        const binding = self.ast_unit.pats.get(.Binding, pat_id);
+        if (!std.mem.eql(u8, self.getStr(binding.name), "self")) {
+            try self.context.diags.addError(param_loc, .method_self_must_be_binding, .{});
+            return false;
+        }
+        if (first_param.ty.isNone()) {
+            try self.context.diags.addError(param_loc, .method_self_requires_type, .{});
+            return false;
+        }
+
+        const fn_row = self.context.type_store.get(.Function, fn_ty);
+        const fn_params = self.context.type_store.type_pool.slice(fn_row.params);
+        if (fn_params.len == 0) {
+            try self.context.diags.addError(param_loc, .method_requires_self_parameter, .{});
+            return false;
+        }
+        const self_param_ty = fn_params[0];
+        var needs_ptr_self = false;
+        if (self.typeKind(self_param_ty) == .Ptr) {
+            const ptr_row = self.context.type_store.get(.Ptr, self_param_ty);
+            if (!ptr_row.elem.eq(owner_ty)) {
+                try self.context.diags.addError(param_loc, .method_self_type_mismatch, .{});
+                return false;
+            }
+            needs_ptr_self = true;
+        } else if (!self_param_ty.eq(owner_ty)) {
+            try self.context.diags.addError(param_loc, .method_self_type_mismatch, .{});
+            return false;
+        }
+
+        const entry: types.TypeInfo.MethodEntry = .{
+            .owner_type = owner_ty,
+            .method_name = method_seg.name,
+            .decl_id = decl_id,
+            .func_expr = decl.value,
+            .func_type = fn_ty,
+            .self_param_type = self_param_ty,
+            .needs_ptr_self = needs_ptr_self,
+        };
+        if (!try self.type_info.addMethod(entry)) {
+            try self.context.diags.addError(
+                self.ast_unit.exprs.locs.get(method_seg.loc),
+                .duplicate_method_on_type,
+                .{ self.getStr(method_seg.name) },
+            );
+            return false;
+        }
+
+        return true;
     }
 
     const AssignErrors = enum {
@@ -1532,8 +1660,55 @@ pub const Checker = struct {
         };
     }
 
+    fn resolveMethodFieldAccess(
+        self: *Checker,
+        expr_id: ast.ExprId,
+        owner_ty: types.TypeId,
+        receiver_ty: types.TypeId,
+        field_name: ast.StrId,
+        loc: Loc,
+    ) !?types.TypeId {
+        const entry_opt = self.type_info.getMethod(owner_ty, field_name);
+        if (entry_opt == null) return null;
+
+        const entry = entry_opt.?;
+        if (entry.needs_ptr_self) {
+            if (self.typeKind(receiver_ty) != .Ptr) {
+                try self.context.diags.addError(loc, .method_receiver_requires_pointer, .{ self.getStr(field_name) });
+                return null;
+            }
+            const ptr_row = self.context.type_store.get(.Ptr, receiver_ty);
+            if (!ptr_row.elem.eq(owner_ty)) {
+                try self.context.diags.addError(loc, .method_receiver_requires_pointer, .{ self.getStr(field_name) });
+                return null;
+            }
+        } else {
+            if (!receiver_ty.eq(owner_ty)) {
+                try self.context.diags.addError(loc, .method_receiver_requires_value, .{ self.getStr(field_name) });
+                return null;
+            }
+        }
+
+        const fn_row = self.context.type_store.get(.Function, entry.func_type);
+        const params = self.context.type_store.type_pool.slice(fn_row.params);
+        const rest = if (params.len <= 1) params[0..0] else params[1..];
+        const trimmed = self.context.type_store.mkFunction(rest, fn_row.result, fn_row.is_variadic, fn_row.is_pure);
+
+        try self.type_info.setMethodBinding(expr_id, .{
+            .owner_type = entry.owner_type,
+            .method_name = entry.method_name,
+            .decl_id = entry.decl_id,
+            .func_type = entry.func_type,
+            .self_param_type = entry.self_param_type,
+            .needs_ptr_self = entry.needs_ptr_self,
+        });
+
+        return trimmed;
+    }
+
     fn checkFieldAccess(self: *Checker, id: ast.ExprId) !?types.TypeId {
         const field_expr = self.getExpr(.FieldAccess, id);
+        const field_loc = self.exprLoc(field_expr);
 
         // -------- Module member access via import "path".member --------
         const parent_kind = self.exprKind(field_expr.parent);
@@ -1611,7 +1786,8 @@ pub const Checker = struct {
                         return f.ty;
                     }
                 }
-                _ = self.context.diags.addError(self.exprLoc(field_expr), .unknown_struct_field, .{}) catch {};
+                if (try self.resolveMethodFieldAccess(id, ty, ty, field_expr.field, field_loc)) |mt| return mt;
+                _ = self.context.diags.addError(field_loc, .unknown_struct_field, .{}) catch {};
                 return null;
             },
             .Tuple => {
@@ -1655,7 +1831,8 @@ pub const Checker = struct {
                             return f.ty;
                         }
                     }
-                    _ = self.context.diags.addError(self.exprLoc(field_expr), .unknown_struct_field, .{}) catch {};
+                    if (try self.resolveMethodFieldAccess(id, ty, parent_ty.?, field_expr.field, field_loc)) |mt| return mt;
+                    _ = self.context.diags.addError(field_loc, .unknown_struct_field, .{}) catch {};
                     return null;
                 }
                 _ = self.context.diags.addError(self.exprLoc(field_expr), .field_access_on_non_aggregate, .{}) catch {};
@@ -2102,6 +2279,9 @@ pub const Checker = struct {
             return null;
         }
         const func_ty = func_ty_opt.?;
+        if (self.type_info.getMethodBinding(call_expr.callee)) |binding| {
+            return try self.checkMethodCall(&call_expr, binding, args);
+        }
         const func_kind = self.typeKind(func_ty);
 
         // Tuple-as-constructor: `(T0,T1,..)(a0,a1,..)` -> construct the tuple type.
@@ -2178,6 +2358,64 @@ pub const Checker = struct {
             }
         }
         return fnrow.result;
+    }
+
+    fn checkMethodCall(
+        self: *Checker,
+        call_expr: *const ast.Rows.Call,
+        binding: types.TypeInfo.MethodBinding,
+        args: []const ast.ExprId,
+    ) !?types.TypeId {
+        const field_expr = self.getExpr(.FieldAccess, call_expr.callee);
+        const receiver_ty_opt = try self.checkExpr(field_expr.parent);
+        if (receiver_ty_opt == null) return null;
+        const receiver_ty = receiver_ty_opt.?;
+
+        const fn_row = self.context.type_store.get(.Function, binding.func_type);
+        const params = self.context.type_store.type_pool.slice(fn_row.params);
+        const total_args = args.len + 1;
+
+        if (!fn_row.is_variadic) {
+            if (params.len != total_args) {
+                try self.context.diags.addError(self.exprLoc(call_expr.*), .argument_count_mismatch, .{});
+                return null;
+            }
+        } else {
+            const min_required = if (params.len == 0) 0 else params.len - 1;
+            if (total_args < min_required) {
+                try self.context.diags.addError(self.exprLoc(call_expr.*), .argument_count_mismatch, .{});
+                return null;
+            }
+        }
+
+        const self_param_ty = params[0];
+        if (self.assignable(receiver_ty, self_param_ty) != .success) {
+            const expected_kind = self.typeKind(self_param_ty);
+            const actual_kind = self.typeKind(receiver_ty);
+            try self.context.diags.addError(self.exprLoc(field_expr), .argument_type_mismatch, .{ expected_kind, actual_kind });
+            return null;
+        }
+
+        var i: usize = 0;
+        while (i < args.len) : (i += 1) {
+            const at = try self.checkExpr(args[i]) orelse return null;
+            const param_index = i + 1;
+            const pt = if (!fn_row.is_variadic)
+                (if (param_index < params.len) params[param_index] else params[params.len - 1])
+            else blk: {
+                const fixed = if (params.len == 0) 0 else params.len - 1;
+                break :blk if (param_index < fixed) params[param_index] else params[params.len - 1];
+            };
+            if (self.assignable(at, pt) != .success) {
+                const expected_kind = self.typeKind(pt);
+                const actual_kind = self.typeKind(at);
+                const loc = self.exprLocFromId(args[i]);
+                try self.context.diags.addError(loc, .argument_type_mismatch, .{ expected_kind, actual_kind });
+                return null;
+            }
+        }
+
+        return fn_row.result;
     }
 
     // =========================
