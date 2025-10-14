@@ -276,6 +276,20 @@ pub const LowerTir = struct {
         }
 
         // Lower args
+        const ast_piece_ids = a.exprs.mlir_piece_pool.slice(row.pieces);
+        var tir_piece_ids = std.ArrayListUnmanaged(tir.MlirPieceId){};
+        defer tir_piece_ids.deinit(self.gpa);
+        for (ast_piece_ids) |pid| {
+            const piece = a.exprs.MlirPiece.get(pid);
+            var splice_value = comp.ComptimeValue.Void;
+            if (piece.kind == .splice) {
+                splice_value = try self.resolveMlirSpliceValue(a, env, f, blk, pid, piece.text, row.loc);
+            }
+            const new_id = blk.builder.t.instrs.addMlirPieceRow(.{ .kind = piece.kind, .text = piece.text, .value = splice_value });
+            tir_piece_ids.append(self.gpa, new_id) catch @panic("OOM");
+        }
+        const pieces_range = blk.builder.t.instrs.mlir_piece_pool.pushMany(self.gpa, tir_piece_ids.items);
+
         const arg_ids = a.exprs.expr_pool.slice(row.args);
         var arg_vals = try self.gpa.alloc(tir.ValueId, arg_ids.len);
         defer self.gpa.free(arg_vals);
@@ -291,6 +305,7 @@ pub const LowerTir = struct {
             .kind = row.kind,
             .expr = id,
             .text = row.text,
+            .pieces = pieces_range,
             .args = args_range,
             .loc = loc,
         });
@@ -301,6 +316,70 @@ pub const LowerTir = struct {
             }
         }
         return result_id;
+    }
+
+    fn cloneComptimeValue(self: *LowerTir, value: comp.ComptimeValue) !comp.ComptimeValue {
+        return switch (value) {
+            .Void => .Void,
+            .Int => |v| .{ .Int = v },
+            .Float => |v| .{ .Float = v },
+            .Bool => |v| .{ .Bool = v },
+            .String => |s| .{ .String = try self.gpa.dupe(u8, s) },
+            .Type => |ty| .{ .Type = ty },
+            .MlirType => |ty| .{ .MlirType = ty },
+            .MlirAttribute => |attr| .{ .MlirAttribute = attr },
+            .MlirModule => |mod| blk: {
+                const cloned_op = mlir.Operation.clone(mod.getOperation());
+                break :blk .{ .MlirModule = mlir.Module.fromOperation(cloned_op) };
+            },
+        };
+    }
+
+    fn resolveMlirSpliceValue(
+        self: *LowerTir,
+        a: *const ast.Ast,
+        env: *Env,
+        f: *Builder.FunctionFrame,
+        blk: *Builder.BlockFrame,
+        piece_id: ast.MlirPieceId,
+        name: StrId,
+        loc_id: ast.LocId,
+    ) !comp.ComptimeValue {
+        const info = self.type_info.getMlirSpliceInfo(piece_id) orelse return error.LoweringBug;
+        const diag_loc = a.exprs.locs.get(loc_id);
+        const name_str = a.exprs.strs.get(name);
+        switch (info) {
+            .decl => |decl_info| {
+                const decl = a.exprs.Decl.get(decl_info.decl_id);
+                const expect_ty = self.getDeclType(decl_info.decl_id) orelse
+                    (self.getExprType(decl.value) orelse self.context.type_store.tAny());
+                return self.evalComptimeExprValue(a, env, f, blk, decl.value, expect_ty);
+            },
+            .value_param => |param_info| {
+                var i: usize = self.monomorph_context_stack.items.len;
+                while (i > 0) {
+                    i -= 1;
+                    const ctx = &self.monomorph_context_stack.items[i];
+                    if (ctx.lookupValue(param_info.name)) |binding| {
+                        return self.cloneComptimeValue(binding.value);
+                    }
+                }
+                try self.context.diags.addError(diag_loc, .mlir_splice_unbound, .{name_str});
+                return error.LoweringBug;
+            },
+            .type_param => |param_info| {
+                var i: usize = self.monomorph_context_stack.items.len;
+                while (i > 0) {
+                    i -= 1;
+                    const ctx = &self.monomorph_context_stack.items[i];
+                    if (ctx.lookupType(param_info.name)) |ty| {
+                        return comp.ComptimeValue{ .Type = ty };
+                    }
+                }
+                try self.context.diags.addError(diag_loc, .mlir_splice_unbound, .{name_str});
+                return error.LoweringBug;
+            },
+        }
     }
 
     pub fn run(self: *LowerTir, a: *const ast.Ast) !tir.TIR {
