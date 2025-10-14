@@ -1311,6 +1311,7 @@ pub const LowerTir = struct {
         var gen = mlir_codegen.MlirCodegen.init(self.gpa, self.context, g_mlir_ctx);
         defer gen.deinit();
         var mlir_module = try gen.emitModule(&tmp_tir, self.context, a.exprs.locs);
+        mlir_module.getOperation().dump();
 
         try compile.run_passes(&gen.mlir_ctx, &mlir_module);
         _ = mlir.c.LLVMInitializeNativeTarget();

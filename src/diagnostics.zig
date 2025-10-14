@@ -269,6 +269,8 @@ pub const DiagnosticCode = enum {
 
     mlir_verification_failed,
     mlir_parse_error,
+
+    comptime_type_not_supported,
 };
 
 pub fn diagnosticMessageFmt(code: DiagnosticCode) []const u8 {
@@ -479,6 +481,8 @@ pub fn diagnosticMessageFmt(code: DiagnosticCode) []const u8 {
         .mlir_verification_failed => "MLIR verification failed",
         .mlir_block_not_a_type => "MLIR block is not a type",
         .mlir_parse_error => "failed to parse inline MLIR block: {s}",
+
+        .comptime_type_not_supported => "comptime type not supported",
     };
 }
 
