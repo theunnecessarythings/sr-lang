@@ -2519,7 +2519,13 @@ pub const Checker = struct {
             _ = try self.checkExpr(arg_id);
         }
 
-        return self.context.type_store.tAny();
+        const ts = &self.context.type_store;
+        return switch (row.kind) {
+            .Module => ts.tMlirModule(),
+            .Attribute => ts.tMlirAttribute(),
+            .Type => ts.tMlirType(),
+            .Operation => ts.tAny(),
+        };
     }
 
     fn checkInsert(self: *Checker, id: ast.ExprId) !?types.TypeId {

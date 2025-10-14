@@ -4569,9 +4569,7 @@ pub const MlirCodegen = struct {
             .F64 => self.f64_ty,
             .Usize => self.i64_ty,
 
-            .Any => self.llvm_ptr_ty,
-            .Function => self.llvm_ptr_ty,
-            .Ptr => self.llvm_ptr_ty,
+            .Any, .Function, .Ptr, .MlirModule, .MlirAttribute, .MlirType => self.llvm_ptr_ty,
 
             .String, .Slice => blk: {
                 // { ptr, len } (opaque ptr for data)

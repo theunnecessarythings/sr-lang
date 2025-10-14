@@ -27,7 +27,7 @@ const AbiClass = struct {
 fn srIsIntLike(store: *types.TypeStore, ty: types.TypeId) bool {
     return switch (store.getKind(ty)) {
         .I8, .U8, .I16, .U16, .I32, .U32, .I64, .U64, .Usize, .Bool => true,
-        .Ptr, .Any, .String, .Function => true, // treat as pointer-sized
+        .Ptr, .Any, .String, .Function, .MlirModule, .MlirAttribute, .MlirType => true, // treat as pointer-sized
         else => false,
     };
 }
@@ -59,7 +59,7 @@ pub fn abiSizeAlign(self: *MlirCodegen, store: *types.TypeStore, ty: types.TypeI
         .F32 => .{ .size = 4, .alignment = 4, .hasFloat = true, .allIntsOnly = false },
         .F64 => .{ .size = 8, .alignment = 8, .hasFloat = true, .allIntsOnly = false },
 
-        .Ptr, .Any, .String, .Function => .{ .size = 8, .alignment = 8, .hasFloat = false, .allIntsOnly = true },
+        .Ptr, .Any, .String, .Function, .MlirModule, .MlirAttribute, .MlirType => .{ .size = 8, .alignment = 8, .hasFloat = false, .allIntsOnly = true },
         .Slice => .{ .size = 16, .alignment = 8, .hasFloat = false, .allIntsOnly = true },
         .Enum => {
             const E = store.get(.Enum, ty);
@@ -263,7 +263,7 @@ pub fn abiClassifyX64SysV(self: *MlirCodegen, store: *types.TypeStore, ty: types
         .I64, .U64, .Usize => return .{ .kind = .DirectScalar, .scalar0 = self.i64_ty, .size = 8, .alignment = 8 },
         .F32 => return .{ .kind = .DirectScalar, .scalar0 = self.f32_ty, .size = 4, .alignment = 4 },
         .F64 => return .{ .kind = .DirectScalar, .scalar0 = self.f64_ty, .size = 8, .alignment = 8 },
-        .Ptr, .Any, .Function, .Map => return .{ .kind = .DirectScalar, .scalar0 = self.llvm_ptr_ty, .size = 8, .alignment = 8 },
+        .Ptr, .Any, .Function, .Map, .MlirModule, .MlirAttribute, .MlirType => return .{ .kind = .DirectScalar, .scalar0 = self.llvm_ptr_ty, .size = 8, .alignment = 8 },
         .Variant => {
             const sa = abiSizeAlign(self, store, ty);
             return if (isReturn) .{ .kind = .IndirectSRet, .alignment = @intCast(sa.alignment), .size = sa.size } else .{ .kind = .IndirectByVal, .alignment = @intCast(sa.alignment), .size = sa.size };

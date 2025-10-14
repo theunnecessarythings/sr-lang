@@ -1,6 +1,7 @@
 const std = @import("std");
 const Context = @import("compile.zig").Context;
 const types = @import("types.zig");
+const mlir = @import("mlir_bindings.zig");
 
 pub const ComptimeApi = struct {
     context: ?*anyopaque,
@@ -16,6 +17,9 @@ pub const ComptimeValue = union(enum) {
     Bool: bool,
     String: []const u8,
     Type: types.TypeId,
+    MlirType: mlir.Type,
+    MlirAttribute: mlir.Attribute,
+    MlirModule: mlir.Module,
 };
 
 pub fn type_of_impl(context: ?*anyopaque, type_id_raw: u32) callconv(.c) u32 {
