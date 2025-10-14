@@ -27,6 +27,8 @@ pub const TypeInfo = struct {
     decl_types: std.ArrayListUnmanaged(?TypeId) = .{},
     field_index_for_expr: std.AutoArrayHashMapUnmanaged(u32, u32) = .{},
     comptime_values: std.AutoArrayHashMapUnmanaged(ast.ExprId, comp.ComptimeValue) = .{},
+    method_table: std.AutoArrayHashMapUnmanaged(MethodKey, MethodEntry) = .{},
+    method_bindings: std.AutoArrayHashMapUnmanaged(u32, MethodBinding) = .{},
 
     pub fn init(gpa: std.mem.Allocator, store: *TypeStore) TypeInfo {
         return .{
@@ -40,6 +42,8 @@ pub const TypeInfo = struct {
         self.decl_types.deinit(self.gpa);
         self.field_index_for_expr.deinit(self.gpa);
         self.comptime_values.deinit(self.gpa);
+        self.method_table.deinit(self.gpa);
+        self.method_bindings.deinit(self.gpa);
     }
 
     pub fn setModule(self: *TypeInfo, module_id: usize) void {
@@ -103,6 +107,56 @@ pub const TypeInfo = struct {
     pub fn getFieldIndex(self: *const TypeInfo, expr_id: ast.ExprId) ?u32 {
         const v = self.field_index_for_expr.get(expr_id.toRaw()) orelse 0xFFFF_FFFF;
         return if (v == 0xFFFF_FFFF) null else v;
+    }
+
+    const MethodKey = struct {
+        owner: usize,
+        name: usize,
+    };
+
+    fn makeMethodKey(owner: TypeId, name: ast.StrId) MethodKey {
+        return .{ .owner = owner.toRaw(), .name = name.toRaw() };
+    }
+
+    pub const MethodEntry = struct {
+        owner_type: TypeId,
+        method_name: ast.StrId,
+        decl_id: ast.DeclId,
+        func_expr: ast.ExprId,
+        func_type: TypeId,
+        self_param_type: TypeId,
+        needs_ptr_self: bool,
+    };
+
+    pub const MethodBinding = struct {
+        owner_type: TypeId,
+        method_name: ast.StrId,
+        decl_id: ast.DeclId,
+        func_type: TypeId,
+        self_param_type: TypeId,
+        needs_ptr_self: bool,
+    };
+
+    pub fn addMethod(self: *TypeInfo, entry: MethodEntry) !bool {
+        const key = makeMethodKey(entry.owner_type, entry.method_name);
+        const gop = try self.method_table.getOrPut(self.gpa, key);
+        if (gop.found_existing) return false;
+        gop.value_ptr.* = entry;
+        return true;
+    }
+
+    pub fn getMethod(self: *const TypeInfo, owner: TypeId, name: ast.StrId) ?MethodEntry {
+        const key = makeMethodKey(owner, name);
+        return self.method_table.get(key);
+    }
+
+    pub fn setMethodBinding(self: *TypeInfo, expr_id: ast.ExprId, binding: MethodBinding) !void {
+        const gop = try self.method_bindings.getOrPut(self.gpa, expr_id.toRaw());
+        gop.value_ptr.* = binding;
+    }
+
+    pub fn getMethodBinding(self: *const TypeInfo, expr_id: ast.ExprId) ?MethodBinding {
+        return self.method_bindings.get(expr_id.toRaw());
     }
 };
 

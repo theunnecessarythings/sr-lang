@@ -323,10 +323,27 @@ pub const Lower = struct {
         const pattern = try self.lowerOptionalPatternFromExpr(d.lhs);
         const value = try self.lowerExpr(d.rhs);
         const ty: ast.OptExprId = if (!d.ty.isNone()) .some(try self.lowerExpr(d.ty.unwrap())) else .none();
+        var method_path: ast.OptRangeMethodPathSeg = .none();
+        if (!d.method_path.isNone()) {
+            const segs = self.cst_program.exprs.method_path_pool.slice(d.method_path.asRange());
+            var ids = try self.gpa.alloc(ast.MethodPathSegId, segs.len);
+            defer self.gpa.free(ids);
+
+            var i: usize = 0;
+            while (i < segs.len) : (i += 1) {
+                const seg = self.cst_program.exprs.MethodPathSeg.get(segs[i]);
+                const mapped: ast.Rows.MethodPathSeg = .{ .name = seg.name, .loc = seg.loc };
+                ids[i] = self.ast_unit.exprs.addMethodPathSeg(mapped);
+            }
+
+            const range = self.ast_unit.exprs.method_path_pool.pushMany(self.gpa, ids);
+            method_path = .some(range);
+        }
         const decl_row: ast.Rows.Decl = .{
             .pattern = pattern,
             .value = value,
             .ty = ty,
+            .method_path = method_path,
             .flags = .{ .is_const = d.flags.is_const },
             .loc = d.loc,
         };
