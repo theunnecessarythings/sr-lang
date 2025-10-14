@@ -451,7 +451,7 @@ pub const Checker = struct {
             try self.context.diags.addError(
                 self.ast_unit.exprs.locs.get(method_seg.loc),
                 .duplicate_method_on_type,
-                .{ self.getStr(method_seg.name) },
+                .{self.getStr(method_seg.name)},
             );
             return false;
         }
@@ -1677,7 +1677,7 @@ pub const Checker = struct {
         receiver_ty: types.TypeId,
         field_name: ast.StrId,
         loc: Loc,
-    ) error{MethodResolutionFailed}!?types.TypeId {
+    ) !?types.TypeId {
         const entry_opt = self.type_info.getMethod(owner_ty, field_name);
         if (entry_opt == null) return null;
 
@@ -1693,7 +1693,7 @@ pub const Checker = struct {
                 .none => {},
                 .value => {
                     if (!receiver_ty.eq(owner_ty)) {
-                        try self.context.diags.addError(loc, .method_receiver_requires_value, .{ self.getStr(field_name) });
+                        try self.context.diags.addError(loc, .method_receiver_requires_value, .{self.getStr(field_name)});
                         return error.MethodResolutionFailed;
                     }
                 },
@@ -1701,18 +1701,18 @@ pub const Checker = struct {
                     if (self.typeKind(receiver_ty) == .Ptr) {
                         const ptr_row = self.context.type_store.get(.Ptr, receiver_ty);
                         if (!ptr_row.elem.eq(owner_ty)) {
-                            try self.context.diags.addError(loc, .method_receiver_requires_pointer, .{ self.getStr(field_name) });
+                            try self.context.diags.addError(loc, .method_receiver_requires_pointer, .{self.getStr(field_name)});
                             return error.MethodResolutionFailed;
                         }
                     } else if (receiver_ty.eq(owner_ty)) {
                         const field_expr = self.getExpr(.FieldAccess, expr_id);
                         if (self.lvalueRootKind(field_expr.parent) == .Unknown) {
-                            try self.context.diags.addError(loc, .method_receiver_not_addressable, .{ self.getStr(field_name) });
+                            try self.context.diags.addError(loc, .method_receiver_not_addressable, .{self.getStr(field_name)});
                             return error.MethodResolutionFailed;
                         }
                         needs_addr_of = true;
                     } else {
-                        try self.context.diags.addError(loc, .method_receiver_requires_pointer, .{ self.getStr(field_name) });
+                        try self.context.diags.addError(loc, .method_receiver_requires_pointer, .{self.getStr(field_name)});
                         return error.MethodResolutionFailed;
                     }
                 },
@@ -1824,7 +1824,7 @@ pub const Checker = struct {
                     }
                 }
                 const method_ty = self.resolveMethodFieldAccess(id, ty, ty, field_expr.field, field_loc) catch |err| switch (err) {
-                    error.MethodResolutionFailed => return null,
+                    else => return null,
                 };
                 if (method_ty) |mt| return mt;
                 _ = self.context.diags.addError(field_loc, .unknown_struct_field, .{}) catch {};
@@ -1873,7 +1873,7 @@ pub const Checker = struct {
                     }
                 }
                 const method_ty = self.resolveMethodFieldAccess(id, ty, parent_ty.?, field_expr.field, field_loc) catch |err| switch (err) {
-                    error.MethodResolutionFailed => return null,
+                    else => return null,
                 };
                 if (method_ty) |mt| return mt;
                 if (inner_kind == .Struct) {
@@ -1885,7 +1885,7 @@ pub const Checker = struct {
             },
             .Enum, .Error => {
                 const method_ty = self.resolveMethodFieldAccess(id, ty, ty, field_expr.field, field_loc) catch |err| switch (err) {
-                    error.MethodResolutionFailed => return null,
+                    else => return null,
                 };
                 if (method_ty) |mt| return mt;
                 _ = self.context.diags.addError(self.exprLoc(field_expr), .field_access_on_non_aggregate, .{}) catch {};
@@ -1947,7 +1947,7 @@ pub const Checker = struct {
                 }
                 if (inner_kind == .Struct or inner_kind == .Union or inner_kind == .Enum or inner_kind == .Variant or inner_kind == .Error) {
                     const method_ty = self.resolveMethodFieldAccess(id, ty, parent_ty.?, field_expr.field, field_loc) catch |err| switch (err) {
-                        error.MethodResolutionFailed => return null,
+                        else => return null,
                     };
                     if (method_ty) |mt| return mt;
                 }
@@ -1982,7 +1982,7 @@ pub const Checker = struct {
                     }
                 }
                 const method_ty = self.resolveMethodFieldAccess(id, ty, ty, field_expr.field, field_loc) catch |err| switch (err) {
-                    error.MethodResolutionFailed => return null,
+                    else => return null,
                 };
                 if (method_ty) |mt| return mt;
                 _ = self.context.diags.addError(self.exprLoc(field_expr), .unknown_variant_tag, .{}) catch {};
@@ -2466,7 +2466,7 @@ pub const Checker = struct {
                     return null;
                 }
             } else if (!receiver_ty.eq(binding.owner_type)) {
-                try self.context.diags.addError(self.exprLoc(field_expr), .method_receiver_requires_pointer, .{ self.getStr(binding.method_name) });
+                try self.context.diags.addError(self.exprLoc(field_expr), .method_receiver_requires_pointer, .{self.getStr(binding.method_name)});
                 return null;
             }
         }

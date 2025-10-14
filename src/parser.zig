@@ -398,13 +398,21 @@ pub const Parser = struct {
                 self.advance();
                 flags.is_const = true;
                 rhs_id = try self.parseExpr(0, .expr);
-                try self.expect(.eos);
+                if (self.cur.tag == .eos) {
+                    self.advance();
+                } else if (self.cur.tag != .rcurly and self.cur.tag != .eof) {
+                    try self.expect(.eos);
+                }
                 lhs_opt = .some(lhs_or_rhs);
             },
             .coloneq => { // x := rhs
                 self.advance();
                 rhs_id = try self.parseExpr(0, .expr);
-                try self.expect(.eos);
+                if (self.cur.tag == .eos) {
+                    self.advance();
+                } else if (self.cur.tag != .rcurly and self.cur.tag != .eof) {
+                    try self.expect(.eos);
+                }
                 lhs_opt = .some(lhs_or_rhs);
             },
             .colon => { // x : T (=|::) rhs
@@ -416,14 +424,22 @@ pub const Parser = struct {
                     .equal => {
                         self.advance();
                         rhs_id = try self.parseExpr(0, .expr);
-                        try self.expect(.eos);
+                        if (self.cur.tag == .eos) {
+                            self.advance();
+                        } else if (self.cur.tag != .rcurly and self.cur.tag != .eof) {
+                            try self.expect(.eos);
+                        }
                         lhs_opt = .some(lhs_or_rhs);
                     },
                     .colon => {
                         self.advance();
                         flags.is_const = true;
                         rhs_id = try self.parseExpr(0, .expr);
-                        try self.expect(.eos);
+                        if (self.cur.tag == .eos) {
+                            self.advance();
+                        } else if (self.cur.tag != .rcurly and self.cur.tag != .eof) {
+                            try self.expect(.eos);
+                        }
                         lhs_opt = .some(lhs_or_rhs);
                     },
                     .eos, .rcurly, .eof => {
@@ -446,7 +462,11 @@ pub const Parser = struct {
                 self.advance();
                 flags.is_assign = true;
                 rhs_id = try self.parseExpr(0, .expr);
-                try self.expect(.eos);
+                if (self.cur.tag == .eos) {
+                    self.advance();
+                } else if (self.cur.tag != .rcurly and self.cur.tag != .eof) {
+                    try self.expect(.eos);
+                }
                 lhs_opt = .some(lhs_or_rhs);
             },
             .eos, .rcurly, .eof => {

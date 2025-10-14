@@ -1214,7 +1214,8 @@ pub const LowerTir = struct {
         const result_kind = self.context.type_store.getKind(result_ty);
         if (result_kind == .TypeType) {
             const tt = self.context.type_store.get(.TypeType, result_ty);
-            return .{ .Type = tt.of };
+            if (!self.isAny(tt.of)) return .{ .Type = tt.of };
+            // Otherwise, fall through and evaluate the expression to compute the concrete type.
         }
 
         var tmp_tir = tir.TIR.init(self.gpa, &self.context.type_store);
@@ -1354,6 +1355,47 @@ pub const LowerTir = struct {
         };
     }
 
+    fn constValueFromLiteral(self: *LowerTir, a: *const ast.Ast, expr: ast.ExprId) !?comp.ComptimeValue {
+        const kind = a.exprs.index.kinds.items[expr.toRaw()];
+        if (kind != .Literal) return null;
+        const lit = a.exprs.get(.Literal, expr);
+
+        return switch (lit.kind) {
+            .int => blk: {
+                const info = switch (lit.data) {
+                    .int => |int_info| int_info,
+                    else => return null,
+                };
+                if (!info.valid) return null;
+                break :blk comp.ComptimeValue{ .Int = info.value };
+            },
+            .float => blk: {
+                const info = switch (lit.data) {
+                    .float => |float_info| float_info,
+                    else => return null,
+                };
+                if (!info.valid) return null;
+                break :blk comp.ComptimeValue{ .Float = info.value };
+            },
+            .bool => blk: {
+                const value = switch (lit.data) {
+                    .bool => |b| b,
+                    else => return null,
+                };
+                break :blk comp.ComptimeValue{ .Bool = value };
+            },
+            .string => blk: {
+                const s = switch (lit.data) {
+                    .string => |s_id| a.exprs.strs.get(s_id),
+                    else => return null,
+                };
+                const owned_s = try self.gpa.dupe(u8, s);
+                break :blk comp.ComptimeValue{ .String = owned_s };
+            },
+            else => null,
+        };
+    }
+
     fn lowerCall(
         self: *LowerTir,
         a: *const ast.Ast,
@@ -1443,7 +1485,7 @@ pub const LowerTir = struct {
                     const field_expr = a.exprs.get(.FieldAccess, row.callee);
                     method_arg_buf = try self.gpa.alloc(ast.ExprId, arg_ids.len + 1);
                     method_arg_buf[0] = field_expr.parent;
-                    std.mem.copy(ast.ExprId, method_arg_buf[1..], arg_ids);
+                    std.mem.copyForwards(ast.ExprId, method_arg_buf[1..], arg_ids);
                     arg_ids = method_arg_buf;
                 }
             }
@@ -1498,10 +1540,23 @@ pub const LowerTir = struct {
                                     break;
                                 };
 
-                                const param_ty = if (idx < param_tys.len)
+                                var param_ty = if (idx < param_tys.len)
                                     param_tys[idx]
                                 else
                                     self.context.type_store.tAny();
+
+                                if (!param.ty.isNone()) {
+                                    const ty_expr_id = param.ty.unwrap();
+                                    if (a.exprs.index.kinds.items[ty_expr_id.toRaw()] == .Ident) {
+                                        const ident_name = a.exprs.get(.Ident, ty_expr_id).name;
+                                        for (binding_infos.items) |info| {
+                                            if (info.name.eq(ident_name) and info.kind == .type_param) {
+                                                param_ty = info.kind.type_param;
+                                                break;
+                                            }
+                                        }
+                                    }
+                                }
                                 const arg_expr = arg_ids[idx];
                                 const param_kind = self.context.type_store.getKind(param_ty);
 
@@ -1512,10 +1567,17 @@ pub const LowerTir = struct {
                                     };
                                     try binding_infos.append(self.gpa, monomorphize.BindingInfo.typeParam(pname, targ));
                                 } else {
-                                    const comptime_val = self.evalComptimeExprValue(a, env, f, blk, arg_expr, param_ty) catch {
-                                        ok = false;
-                                        break;
-                                    };
+                                    const comptime_val_opt = if (a.exprs.index.kinds.items[arg_expr.toRaw()] == .Literal)
+                                        try self.constValueFromLiteral(a, arg_expr)
+                                    else
+                                        null;
+
+                                    const comptime_val = if (comptime_val_opt) |cv| cv else
+                                        self.evalComptimeExprValue(a, env, f, blk, arg_expr, param_ty) catch {
+                                            ok = false;
+                                            break;
+                                        };
+
                                     var info = monomorphize.BindingInfo.valueParam(self.gpa, pname, param_ty, comptime_val) catch {
                                         ok = false;
                                         break;
@@ -4537,6 +4599,33 @@ pub const LowerTir = struct {
         const src_default_ty = src_ty_opt orelse target_ty;
         const vty = if (target_kind == .Any) src_default_ty else target_ty;
         const expr_loc = self.exprOptLoc(a, src_expr);
+
+        if (target_kind == .TypeType) {
+            const result_ty = src_ty_opt orelse target_ty;
+            const resolved_ty = blk: {
+                if (self.context.type_store.getKind(result_ty) == .TypeType) {
+                    const tt = self.context.type_store.get(.TypeType, result_ty);
+                    if (!self.isAny(tt.of)) break :blk tt.of;
+                    const computed = try self.runComptimeExpr(a, src_expr, result_ty);
+                    break :blk switch (computed) {
+                        .Type => |ty| ty,
+                        else => return error.UnsupportedComptimeType,
+                    };
+                }
+                const type_wrapper = self.context.type_store.mkTypeType(result_ty);
+                const computed = try self.runComptimeExpr(a, src_expr, type_wrapper);
+                break :blk switch (computed) {
+                    .Type => |ty| ty,
+                    else => return error.UnsupportedComptimeType,
+                };
+            };
+            const type_ty = self.context.type_store.mkTypeType(resolved_ty);
+            try self.noteExprType(src_expr, type_ty);
+            const placeholder = self.safeUndef(blk, type_ty, expr_loc);
+            try self.destructureDeclPattern(a, env, f, blk, pid, placeholder, type_ty, to_slots);
+            return;
+        }
+
         switch (pk) {
             .Binding => {
                 const guess_ty = src_ty_opt orelse target_ty;

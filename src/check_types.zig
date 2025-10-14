@@ -3,14 +3,29 @@ const types = @import("types.zig");
 const ast = @import("ast.zig");
 const std = @import("std");
 
-const TypeBinding = struct {
-    name: ast.StrId,
-    ty: types.TypeId,
+const comp = @import("comptime.zig");
+
+const Binding = union(enum) {
+    Type: struct { name: ast.StrId, ty: types.TypeId },
+    Value: struct { name: ast.StrId, value: comp.ComptimeValue, ty: types.TypeId },
 };
 
-fn lookupTypeBinding(bindings: []const TypeBinding, name: ast.StrId) ?types.TypeId {
+fn lookupTypeBinding(bindings: []const Binding, name: ast.StrId) ?types.TypeId {
     for (bindings) |binding| {
-        if (binding.name.eq(name)) return binding.ty;
+        switch (binding) {
+            .Type => |t| if (t.name.eq(name)) return t.ty,
+            else => {},
+        }
+    }
+    return null;
+}
+
+fn lookupValueBinding(bindings: []const Binding, name: ast.StrId) ?comp.ComptimeValue {
+    for (bindings) |binding| {
+        switch (binding) {
+            .Value => |v| if (v.name.eq(name)) return v.value,
+            else => {},
+        }
     }
     return null;
 }
@@ -86,10 +101,26 @@ fn variantPayloadType(self: *Checker, variant_ty: types.TypeId, tag: ast.StrId) 
     return null;
 }
 
+fn evalLiteralToComptime(self: *Checker, id: ast.ExprId) !?comp.ComptimeValue {
+    if (self.ast_unit.exprs.index.kinds.items[id.toRaw()] != .Literal) return null;
+    const lit = self.ast_unit.exprs.get(.Literal, id);
+    return switch (lit.kind) {
+        .int => blk: {
+            const info = switch (lit.data) {
+                .int => |i| i,
+                else => return null,
+            };
+            if (!info.valid) return null;
+            break :blk comp.ComptimeValue{ .Int = info.value };
+        },
+        else => null,
+    };
+}
+
 fn typeFromTypeExprWithBindings(
     self: *Checker,
     id: ast.ExprId,
-    bindings: []const TypeBinding,
+    bindings: []const Binding,
 ) anyerror!?types.TypeId {
     const kind = self.ast_unit.exprs.index.kinds.items[id.toRaw()];
     return switch (kind) {
@@ -119,6 +150,42 @@ fn typeFromTypeExprWithBindings(
             }
             break :blk_struct self.context.type_store.mkStruct(buf);
         },
+        .ArrayType => blk_at: {
+            const row = self.ast_unit.exprs.get(.ArrayType, id);
+            const elem = (try typeFromTypeExprWithBindings(self, row.elem, bindings)) orelse break :blk_at null;
+            var len_val: usize = 0;
+            if (self.ast_unit.exprs.index.kinds.items[row.size.toRaw()] == .Ident) {
+                const name = self.ast_unit.exprs.get(.Ident, row.size).name;
+                if (lookupValueBinding(bindings, name)) |val| {
+                    switch (val) {
+                        .Int => |int_val| {
+                            len_val = std.math.cast(usize, int_val) orelse return null;
+                        },
+                        else => return null,
+                    }
+                } else return error.InvalidArraySize;
+            } else if (self.ast_unit.exprs.index.kinds.items[row.size.toRaw()] == .Literal) {
+                const lit = self.ast_unit.exprs.get(.Literal, row.size);
+                if (lit.kind == .int) {
+                    const info = switch (lit.data) {
+                        .int => |int_info| int_info,
+                        else => return null,
+                    };
+                    if (!info.valid) {
+                        try self.context.diags.addError(self.ast_unit.exprs.locs.get(row.loc), .array_size_not_integer_literal, .{});
+                        return null;
+                    }
+                    len_val = std.math.cast(usize, info.value) orelse {
+                        try self.context.diags.addError(self.ast_unit.exprs.locs.get(row.loc), .array_size_not_integer_literal, .{});
+                        return null;
+                    };
+                } else {
+                    try self.context.diags.addError(self.ast_unit.exprs.locs.get(row.loc), .array_size_not_integer_literal, .{});
+                    return null;
+                }
+            } else return error.InvalidArraySize;
+            break :blk_at self.context.type_store.mkArray(elem, len_val);
+        },
         else => try typeFromTypeExpr(self, id),
     };
 }
@@ -146,7 +213,7 @@ fn resolveTypeFunctionCall(
     const args = self.ast_unit.exprs.expr_pool.slice(call.args);
     if (params.len != args.len) return null;
 
-    var bindings: std.ArrayList(TypeBinding) = .empty;
+    var bindings: std.ArrayList(Binding) = .empty;
     defer bindings.deinit(self.gpa);
 
     var i: usize = 0;
@@ -159,10 +226,14 @@ fn resolveTypeFunctionCall(
         const pname = self.ast_unit.pats.get(.Binding, pat_id).name;
 
         const annotated = (try typeFromTypeExpr(self, param.ty.unwrap())) orelse return null;
-        if (self.context.type_store.getKind(annotated) != .TypeType) return null;
-
-        const arg_ty = (try typeFromTypeExpr(self, args[i])) orelse return null;
-        try bindings.append(self.gpa, .{ .name = pname, .ty = arg_ty });
+        if (self.context.type_store.getKind(annotated) == .TypeType) {
+            const arg_ty = (try typeFromTypeExpr(self, args[i])) orelse return null;
+            try bindings.append(self.gpa, .{ .Type = .{ .name = pname, .ty = arg_ty } });
+        } else {
+            const arg_expr = args[i];
+            const val = (try evalLiteralToComptime(self, arg_expr)) orelse return null;
+            try bindings.append(self.gpa, .{ .Value = .{ .name = pname, .value = val, .ty = annotated } });
+        }
     }
 
     if (fn_lit.body.isNone()) return null;
