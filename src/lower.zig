@@ -705,9 +705,20 @@ pub const Lower = struct {
                 else
                     try self.lowerExprRange(r.args.asRange());
 
+                const cst_pieces = self.cst_program.exprs.mlir_piece_pool.slice(r.pieces);
+                var piece_ids = std.ArrayListUnmanaged(ast.MlirPieceId){};
+                defer piece_ids.deinit(self.gpa);
+                for (cst_pieces) |pid| {
+                    const piece = self.cst_program.exprs.MlirPiece.get(pid);
+                    const new_id = self.ast_unit.exprs.addMlirPiece(.{ .kind = piece.kind, .text = piece.text });
+                    piece_ids.append(self.gpa, new_id) catch @panic("OOM");
+                }
+                const piece_range = self.ast_unit.exprs.mlir_piece_pool.pushMany(self.gpa, piece_ids.items);
+
                 break :blk self.ast_unit.exprs.add(.MlirBlock, .{
                     .kind = r.kind,
                     .text = r.text,
+                    .pieces = piece_range,
                     .args = args_range,
                     .loc = r.loc,
                 });

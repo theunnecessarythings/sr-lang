@@ -310,6 +310,7 @@ pub const InfixOp = enum(u16) {
     shl_sat_assign,
 };
 pub const MlirKind = enum(u8) { Module, Type, Attribute, Operation };
+pub const MlirPieceKind = enum(u8) { literal, splice };
 pub const CastKind = enum(u8) { normal, bitcast, saturate, wrap, checked };
 
 ////////////////////////////////////////////////////////////////
@@ -330,6 +331,7 @@ pub const KeyValueId = Index(Rows.KeyValue);
 pub const MatchArmId = Index(Rows.MatchArm);
 pub const StructFieldValueId = Index(Rows.StructFieldValue);
 pub const MethodPathSegId = Index(Rows.MethodPathSeg);
+pub const MlirPieceId = Index(Rows.MlirPiece);
 
 pub const PathSegId = Index(PatRows.PathSeg);
 pub const PatternId = Index(PatTag);
@@ -461,7 +463,14 @@ pub const Rows = struct {
     pub const Comptime = struct { payload: ExprId, is_block: bool, loc: LocId };
     pub const Code = struct { block: ExprId, loc: LocId };
     pub const Insert = struct { expr: ExprId, loc: LocId };
-    pub const Mlir = struct { kind: MlirKind, text: StrId, args: OptRangeOf(ExprId), loc: LocId };
+    pub const MlirPiece = struct { kind: MlirPieceKind, text: StrId };
+    pub const Mlir = struct {
+        kind: MlirKind,
+        text: StrId,
+        pieces: RangeOf(MlirPieceId),
+        args: OptRangeOf(ExprId),
+        loc: LocId,
+    };
 
     // ---------- flow ----------
     pub const Return = struct { value: OptExprId, loc: LocId };
@@ -700,6 +709,7 @@ pub const ExprStore = struct {
     Code: Table(Rows.Code) = .{},
     Insert: Table(Rows.Insert) = .{},
     Mlir: Table(Rows.Mlir) = .{},
+    MlirPiece: Table(Rows.MlirPiece) = .{},
 
     Return: Table(Rows.Return) = .{},
     If: Table(Rows.If) = .{},
@@ -766,6 +776,7 @@ pub const ExprStore = struct {
     efield_pool: Pool(EnumFieldId) = .{},
     vfield_pool: Pool(VariantFieldId) = .{},
     method_path_pool: Pool(MethodPathSegId) = .{},
+    mlir_piece_pool: Pool(MlirPieceId) = .{},
 
     // Infra
     strs: *StringInterner,
@@ -784,6 +795,7 @@ pub const ExprStore = struct {
             @field(self, f.name).deinit(gpa);
         }
 
+        self.MlirPiece.deinit(gpa);
         self.Decl.deinit(gpa);
         self.MethodPathSeg.deinit(gpa);
         self.Param.deinit(gpa);
@@ -807,6 +819,7 @@ pub const ExprStore = struct {
         self.efield_pool.deinit(gpa);
         self.vfield_pool.deinit(gpa);
         self.method_path_pool.deinit(gpa);
+        self.mlir_piece_pool.deinit(gpa);
 
         self.locs.deinit(gpa);
     }
@@ -850,6 +863,9 @@ pub const ExprStore = struct {
     }
     pub fn addAttrRow(self: *@This(), row: Rows.Attribute) AttributeId {
         return self.Attribute.add(self.gpa, row);
+    }
+    pub fn addMlirPieceRow(self: *@This(), row: Rows.MlirPiece) MlirPieceId {
+        return self.MlirPiece.add(self.gpa, row);
     }
     pub fn addStructFieldRow(self: *@This(), row: Rows.StructField) StructFieldId {
         return self.StructField.add(self.gpa, row);
@@ -1196,7 +1212,19 @@ pub const DodPrinter = struct {
             },
             .Mlir => {
                 const n = self.exprs.get(.Mlir, id);
-                try self.leaf("(mlir kind={s} \"{s}\")", .{ @tagName(n.kind), self.s(n.text) });
+                try self.open("(mlir kind={s}", .{@tagName(n.kind)});
+                try self.leaf("(text \"{s}\")", .{self.s(n.text)});
+                const pieces = self.exprs.mlir_piece_pool.slice(n.pieces);
+                try self.open("(pieces", .{});
+                for (pieces) |pid| {
+                    const piece = self.exprs.MlirPiece.get(pid);
+                    switch (piece.kind) {
+                        .literal => try self.leaf("(literal \"{s}\")", .{self.s(piece.text)}),
+                        .splice => try self.leaf("(splice {s})", .{self.s(piece.text)}),
+                    }
+                }
+                try self.close();
+                try self.close();
             },
 
             .Return => {
