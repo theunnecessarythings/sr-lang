@@ -24,6 +24,19 @@ test "special_types: optional declaration with null" {
     try runCompilerTest(code, "x is null\n");
 }
 
+test "special_types: optional compare with payload" {
+    const src =
+        \\opt: ?i32 = 42
+        \\assert(opt == 42)
+        \\assert(42 == opt)
+        \\assert(opt != 13)
+        \\assert(13 != opt)
+        \\printf("optional compare ok\n")
+    ;
+    const code = getSource("", src);
+    try runCompilerTest(code, "optional compare ok\n");
+}
+
 test "special_types: optional unwrap with value" {
     const src =
         \\x: ?i32 = 100

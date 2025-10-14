@@ -45,3 +45,46 @@ test "expressions_operators: saturating multiply assignment" {
     const code = getSource("", src);
     try runCompilerTest(code, "Result: 255\n");
 }
+
+test "expressions_operators: saturating addition clamps signed max" {
+    const src =
+        \\x: i8 = 120
+        \\y: i8 = 120
+        \\r := x +| y
+        \\printf("Result: %d\n", r)
+    ;
+    const code = getSource("", src);
+    try runCompilerTest(code, "Result: 127\n");
+}
+
+test "expressions_operators: saturating addition clamps signed min" {
+    const src =
+        \\x: i8 = -120
+        \\y: i8 = -20
+        \\r := x +| y
+        \\printf("Result: %d\n", r.(i64))
+    ;
+    const code = getSource("", src);
+    try runCompilerTest(code, "Result: -128\n");
+}
+
+test "expressions_operators: saturating multiplication clamps signed min" {
+    const src =
+        \\x: i8 = -70
+        \\y: i8 = 3
+        \\r := x *| y
+        \\printf("Result: %d\n", r.(i64))
+    ;
+    const code = getSource("", src);
+    try runCompilerTest(code, "Result: -128\n");
+}
+
+test "expressions_operators: saturating shift clamps to max" {
+    const src =
+        \\x: u8 = 200
+        \\r := x <<| 2.(u8)
+        \\printf("Result: %d\n", r)
+    ;
+    const code = getSource("", src);
+    try runCompilerTest(code, "Result: 255\n");
+}

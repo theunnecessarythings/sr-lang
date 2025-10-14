@@ -59,4 +59,3 @@ test "patterns: match with character literal" {
     const code = getSource("", src);
     try runCompilerTest(code, "Result: Char B\n");
 }
-

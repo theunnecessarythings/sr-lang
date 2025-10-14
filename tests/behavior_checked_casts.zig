@@ -59,3 +59,31 @@ test "casts: float to i32 checked (out of range)" {
     const code = getSource("", src);
     try runCompilerTest(code, "Result: null\n");
 }
+
+test "casts: float to i32 checked (just below min)" {
+    const src =
+        \\x: f64 = -2147483649.0
+        \\r := x.?i32
+        \\if r != null {
+        \\  printf("Result: %d\n", r?)
+        \\} else {
+        \\  printf("Result: null\n")
+        \\}
+    ;
+    const code = getSource("", src);
+    try runCompilerTest(code, "Result: null\n");
+}
+
+test "casts: float to i32 checked (just above max)" {
+    const src =
+        \\x: f64 = 2147483647.0 + 0.5
+        \\r := x.?i32
+        \\if r != null {
+        \\  printf("Result: %d\n", r?)
+        \\} else {
+        \\  printf("Result: null\n")
+        \\}
+    ;
+    const code = getSource("", src);
+    try runCompilerTest(code, "Result: null\n");
+}

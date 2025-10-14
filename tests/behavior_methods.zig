@@ -8,8 +8,8 @@ test "methods: static, value, pointer, and const receivers" {
     const globals =
         \\Point :: struct { x: i32, y: i32 }
         \\Point.origin :: fn() Point { return Point{ x: 0, y: 0 } }
-        \\Point.distance :: fn(self: Point) i32 { return self.x + self.y }
-        \\Point.translate :: fn(self: *Point, dx: i32, dy: i32) void {
+        \\Point.distance :: proc(self: Point) i32 { return self.x + self.y }
+        \\Point.translate :: proc(self: *Point, dx: i32, dy: i32) void {
         \\  self.x = self.x + dx
         \\  self.y = self.y + dy
         \\}
