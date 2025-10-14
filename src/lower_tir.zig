@@ -1293,10 +1293,14 @@ pub const LowerTir = struct {
         const result_val_id = try self.lowerExpr(a, &tmp_env, &thunk_fn, &thunk_blk, expr, result_ty, .rvalue);
         if (result_kind != .Void) {
             const field_ty = switch (result_kind) {
-                .I64, .U64, .I32, .U32 => self.context.type_store.tI64(),
+                .I64, .U64, .I32, .U32, .Usize => self.context.type_store.tI64(),
                 .F64 => self.context.type_store.tF64(),
                 .Bool => self.context.type_store.tBool(),
-                else => return error.UnsupportedComptimeType,
+                else => {
+                    const loc = self.chk.ast_unit.exprs.locs.get(expr_loc.unwrap());
+                    try self.context.diags.addError(loc, .comptime_type_not_supported, .{});
+                    return error.UnsupportedComptimeType;
+                },
             };
             const field_ptr_ty = self.context.type_store.mkPtr(field_ty, false);
             const field_ptr = thunk_blk.builder.tirValue(.CastBit, &thunk_blk, field_ptr_ty, expr_loc, .{ .value = result_ptr_val });
@@ -1316,6 +1320,7 @@ pub const LowerTir = struct {
         var gen = mlir_codegen.MlirCodegen.init(self.gpa, self.context, g_mlir_ctx);
         defer gen.deinit();
         var mlir_module = try gen.emitModule(&tmp_tir, self.context, a.exprs.locs);
+        mlir_module.getOperation().dump();
 
         try compile.run_passes(&gen.mlir_ctx, &mlir_module);
         _ = mlir.c.LLVMInitializeNativeTarget();
@@ -1329,7 +1334,7 @@ pub const LowerTir = struct {
             .get_type_by_name = comp.get_type_by_name_impl,
             .type_of = comp.type_of_impl,
         };
-        var result_value: comp.ComptimeValue = .Void;
+        var result_slot: comp.ComptimeValue = undefined;
 
         const thunk_fn_name_ref = mlir.StringRef.from("__comptime_thunk");
         const func_ptr = mlir.c.mlirExecutionEngineLookup(engine, thunk_fn_name_ref.inner);
@@ -1337,9 +1342,25 @@ pub const LowerTir = struct {
 
         const ThunkFn = *const fn (api_ptr: *comp.ComptimeApi, result_ptr: *comp.ComptimeValue) callconv(.c) void;
         const typed_func_ptr: ThunkFn = @ptrCast(@alignCast(func_ptr));
-        typed_func_ptr(&comptime_api, &result_value);
+        typed_func_ptr(&comptime_api, &result_slot);
 
-        return result_value;
+        return switch (result_kind) {
+            .Void => comp.ComptimeValue.Void,
+            .I64, .U64, .I32, .U32, .Usize => blk: {
+                const bits_ptr: *const u64 = @ptrCast(@alignCast(&result_slot));
+                const widened = @as(u128, bits_ptr.*);
+                break :blk comp.ComptimeValue{ .Int = widened };
+            },
+            .F64 => blk: {
+                const float_ptr: *const f64 = @ptrCast(@alignCast(&result_slot));
+                break :blk comp.ComptimeValue{ .Float = float_ptr.* };
+            },
+            .Bool => blk: {
+                const bool_ptr: *const bool = @ptrCast(@alignCast(&result_slot));
+                break :blk comp.ComptimeValue{ .Bool = bool_ptr.* };
+            },
+            else => return error.UnsupportedComptimeType,
+        };
     }
 
     fn jitEvalComptimeBlock(
