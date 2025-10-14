@@ -170,7 +170,15 @@ pub const Pipeline = struct {
         // Resolve imports recursively and append their codegen (reuse resolver)
         try self.resolveImports(&ast, &gen, &name_to_prefix, &self.context.resolver);
 
-        var mlir_module = try gen.emitModule(&root_mod, self.context, ast.exprs.locs);
+        var mlir_module = gen.emitModule(&root_mod, self.context, ast.exprs.locs) catch |err| {
+            switch (err) {
+                error.CompilationFailed => {
+                    try self.context.diags.emitStyled(self.context, &writer.interface, true);
+                    return error.MlirCodegenFailed;
+                },
+                else => return err,
+            }
+        };
         // verify module
         if (!mlir_module.getOperation().verify()) {
             mlir_module.getOperation().dump();

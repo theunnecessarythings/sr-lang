@@ -1354,7 +1354,7 @@ pub const Attribute = struct {
         return c.mlirAttributeIsNull(self.handle);
     }
 
-    pub fn equal(self: *Attribute, other: *Attribute) bool {
+    pub fn equal(self: *const Attribute, other: *const Attribute) bool {
         return c.mlirAttributeEqual(self.handle, other.handle);
     }
 
@@ -1671,7 +1671,7 @@ pub const Attribute = struct {
 
     /// Creates a Distinct attribute referencing another attribute.
     pub fn distinctAttrCreate(referenced: Attribute) Attribute {
-        return Attribute{ .handle = c.mlirDistinctAttrCreate(referenced.handle) };
+        return Attribute{ .handle = c.mlirDisctinctAttrCreate(referenced.handle) };
     }
 
     /// Checks whether the attribute is a FlatSymbolRef attribute.
@@ -4359,7 +4359,7 @@ pub const LLVMAttributes = struct {
                 @intCast(tag),
                 name.handle,
                 sizeInBits,
-                @intCast(encoding),
+                @intFromEnum(encoding),
             ),
         };
     }
@@ -4666,7 +4666,7 @@ pub const LLVMAttributes = struct {
             .handle = c.mlirLLVMDISubprogramAttrGet(
                 ctx.handle,
                 recId.handle,
-                @intCast(isRecSelf),
+                isRecSelf,
                 id.handle,
                 compileUnit.handle,
                 scope.handle,

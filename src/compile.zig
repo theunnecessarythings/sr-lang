@@ -103,7 +103,7 @@ pub fn run_passes(context: *mlir.Context, module: *mlir.Module) !void {
     const pm = mlir.c.mlirPassManagerCreate(context.handle);
     defer mlir.c.mlirPassManagerDestroy(pm);
 
-    const pipeline = "convert-arith-to-llvm,convert-complex-to-llvm,convert-func-to-llvm,convert-cf-to-llvm,inline,canonicalize,cse";
+    const pipeline = "convert-scf-to-cf,convert-arith-to-llvm,convert-complex-to-llvm,convert-func-to-llvm,convert-cf-to-llvm,inline,canonicalize,cse";
     const op_pm = mlir.c.mlirPassManagerGetAsOpPassManager(pm);
     var result = mlir.c.mlirOpPassManagerAddPipeline(op_pm, mlir.c.mlirStringRefCreateFromCString(@ptrCast(pipeline)), callback, null);
 
@@ -158,6 +158,7 @@ pub fn convert_to_llvm_ir(module: mlir.c.MlirModule, print_ir: bool, link_args: 
 
     const llvmContext = mlir.c.LLVMContextCreate();
     const llvmIR = mlir.c.mlirTranslateModuleToLLVMIR(mlir.c.mlirModuleGetOperation(module), llvmContext);
+    if (llvmIR == null) return error.CompilationFailed;
 
     if (print_ir)
         mlir.c.LLVMDumpModule(llvmIR);

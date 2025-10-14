@@ -2201,11 +2201,6 @@ pub const Checker = struct {
 
     fn checkMlirBlock(self: *Checker, id: ast.ExprId) !?types.TypeId {
         const row = self.ast_unit.exprs.get(.MlirBlock, id);
-        if (!self.warned_meta) {
-            _ = self.context.diags.addNote(self.exprLoc(row), .checker_comptime_not_executed, .{}) catch {};
-            self.warned_meta = true;
-        }
-
         const args = self.ast_unit.exprs.expr_pool.slice(row.args);
         for (args) |arg_id| {
             _ = try self.checkExpr(arg_id);

@@ -9,7 +9,7 @@ const cst = @import("cst.zig");
 const Allocator = std.mem.Allocator;
 const ArrayList = std.array_list.Managed;
 
-pub var enable_debug_info: bool = true;
+pub var enable_debug_info: bool = false;
 
 const LocKey = struct {
     store: usize,
@@ -98,6 +98,9 @@ pub const MlirCodegen = struct {
     def_instr: std.AutoHashMap(tir.ValueId, tir.InstrId), // SSA def site
     inline_mlir_counter: u32 = 0,
 
+    diagnostic_handler: mlir.c.MlirDiagnosticHandlerID,
+    diagnostic_data: *DiagnosticData,
+
     pub const FuncInfo = struct {
         op: mlir.Operation,
         is_variadic: bool,
@@ -180,13 +183,29 @@ pub const MlirCodegen = struct {
         return try list.toOwnedSlice();
     }
 
-    // fn ownedAttributeText(self: *MlirCodegen, attr: mlir.Attribute) ![]u8 {
-    //     var list: std.ArrayList(u8) = .empty;
-    //     errdefer list.deinit(self.gpa);
-    //     var sink = PrintBuffer{ .list = &list, .allocator = self.gpa };
-    //     attr.print(printCallback, &sink);
-    //     return list.toOwnedSlice(self.gpa);
-    // }
+    const DiagnosticData = struct {
+        context: *compile.Context,
+        msg: ?[]const u8 = null,
+        span: ?struct { start: u32, end: u32 } = null,
+    };
+
+    fn diagnosticHandler(diag: mlir.c.MlirDiagnostic, userdata: ?*anyopaque) callconv(.c) mlir.c.MlirLogicalResult {
+        const data: *DiagnosticData = @ptrCast(@alignCast(userdata));
+        var buf = ArrayList(u8).init(data.context.gpa);
+        defer buf.deinit();
+        var had_error = false;
+        var sink = PrintBuffer{ .list = &buf, .had_error = &had_error };
+        mlir.c.mlirDiagnosticPrint(diag, printCallback, &sink);
+        const loc = mlir.c.mlirDiagnosticGetLocation(diag);
+        var start = mlir.c.mlirLocationFileLineColRangeGetStartColumn(loc);
+        var end = mlir.c.mlirLocationFileLineColRangeGetEndColumn(loc);
+        if (start == -1) start = 0;
+        if (end == -1) end = 0;
+        data.msg = buf.toOwnedSlice() catch unreachable;
+        data.span = .{ .start = @intCast(start), .end = @intCast(end) };
+
+        return .{ .value = 1 };
+    }
 
     // ----------------------------------------------------------------
     // Init / Deinit
@@ -195,6 +214,8 @@ pub const MlirCodegen = struct {
         const loc = mlir.Location.unknownGet(ctx);
         const module = mlir.Module.createEmpty(loc);
         const void_ty = mlir.Type{ .handle = mlir.c.mlirLLVMVoidTypeGet(ctx.handle) };
+        const diag_data = gpa.create(DiagnosticData) catch unreachable;
+        diag_data.* = DiagnosticData{ .context = context };
         return .{
             .gpa = gpa,
             .context = context,
@@ -225,6 +246,8 @@ pub const MlirCodegen = struct {
             .value_map = std.AutoHashMap(tir.ValueId, mlir.Value).init(gpa),
             .val_types = std.AutoHashMap(tir.ValueId, types.TypeId).init(gpa),
             .def_instr = std.AutoHashMap(tir.ValueId, tir.InstrId).init(gpa),
+            .diagnostic_handler = mlir.c.mlirContextAttachDiagnosticHandler(ctx.handle, diagnosticHandler, @ptrCast(diag_data), null),
+            .diagnostic_data = diag_data,
         };
     }
 
@@ -245,6 +268,8 @@ pub const MlirCodegen = struct {
         }
         self.file_cache.deinit();
         self.loc_cache.deinit();
+        self.gpa.destroy(self.diagnostic_data);
+        mlir.c.mlirContextDetachDiagnosticHandler(self.mlir_ctx.handle, self.diagnostic_handler);
         self.module.destroy();
     }
 
@@ -264,7 +289,7 @@ pub const MlirCodegen = struct {
         defer self.active_loc_store = null;
 
         self.loc_cache.clearRetainingCapacity();
-        self.attachTargetInfo();
+        try self.attachTargetInfo();
         try self.emitExternDecls(t, &context.type_store);
 
         const func_ids = t.funcs.func_pool.data.items;
@@ -492,18 +517,18 @@ pub const MlirCodegen = struct {
         } else {
             const count = existing.arrayAttrGetNumElements();
             var already_present = false;
-            var elements = std.ArrayList(mlir.Attribute).init(self.gpa);
-            defer elements.deinit();
+            var elements: std.ArrayList(mlir.Attribute) = .empty;
+            defer elements.deinit(self.gpa);
             var idx: usize = 0;
             while (idx < count) : (idx += 1) {
                 const elem = existing.arrayAttrGetElement(idx);
                 if (!already_present and elem.equal(&cu_attr)) {
                     already_present = true;
                 }
-                try elements.append(elem);
+                try elements.append(self.gpa, elem);
             }
             if (!already_present) {
-                try elements.append(cu_attr);
+                try elements.append(self.gpa, cu_attr);
                 const array_attr = mlir.Attribute.arrayAttrGet(self.mlir_ctx, elements.items);
                 mod_op.setDiscardableAttributeByName(dbg_name, array_attr);
             }
@@ -539,7 +564,8 @@ pub const MlirCodegen = struct {
 
         const flags_definition: u64 = 1 << 3; // DISPFlagDefinition
         const type_attr = try self.buildDISubroutineTypeAttr(store, ret_ty, params, t);
-        const rec_attr = mlir.Attribute.null();
+        //       const rec_attr = mlir.Attribute.distinctAttrCreate(mlir.Attribute.unitAttrGet(self.mlir_ctx));
+        const rec_attr = mlir.Attribute.distinctAttrCreate(try self.ensureDINullTypeAttr());
 
         const attr = mlir.LLVMAttributes.getLLVMDISubprogramAttr(
             self.mlir_ctx,
@@ -560,44 +586,6 @@ pub const MlirCodegen = struct {
         );
         if (attr.isNull()) return error.DebugAttrParseFailed;
 
-        // The builder may materialize the recursive placeholder if it could not
-        // populate the subprogram payload. In that case, fall back to parsing a
-        // concrete attribute so downstream scopes always reference a full
-        // definition instead of the unbound recursion marker.
-        if (mlir.LLVMAttributes.getLLVMDISubprogramAttrCompileUnit(attr).isNull()) {
-            const file_text = try self.ownedAttributeText(file_info.file_attr);
-            defer self.gpa.free(file_text);
-            const cu_text = try self.ownedAttributeText(file_info.compile_unit_attr);
-            defer self.gpa.free(cu_text);
-            const name_text = try self.ownedAttributeText(func_name_attr);
-            defer self.gpa.free(name_text);
-            const linkage_text = try self.ownedAttributeText(linkage_name_attr);
-            defer self.gpa.free(linkage_text);
-            const type_text = try self.ownedAttributeText(type_attr);
-            defer self.gpa.free(type_text);
-            const id_text = try self.ownedAttributeText(id_attr);
-            defer self.gpa.free(id_text);
-
-            const subp_text = try std.fmt.allocPrint(
-                self.gpa,
-                "#llvm.di_subprogram<id = {s}, compileUnit = {s}, scope = {s}, name = {s}, linkageName = {s}, file = {s}, line = {d}, scopeLine = {d}, subprogramFlags = Definition, type = {s}>",
-                .{ id_text, cu_text, file_text, name_text, linkage_text, file_text, line, line, type_text },
-            );
-            defer self.gpa.free(subp_text);
-
-            const parsed = mlir.Attribute.parseGet(self.mlir_ctx, mlir.StringRef.from(subp_text));
-            if (!parsed.isNull()) {
-                try self.di_subprograms.put(f_id, .{
-                    .attr = parsed,
-                    .file_id = file_id,
-                    .line = line,
-                    .scope_line = line,
-                    .loc = loc,
-                });
-                return self.di_subprograms.getPtr(f_id).?;
-            }
-        }
-
         try self.di_subprograms.put(f_id, .{
             .attr = attr,
             .file_id = file_id,
@@ -608,7 +596,7 @@ pub const MlirCodegen = struct {
         return self.di_subprograms.getPtr(f_id).?;
     }
 
-    fn attachTargetInfo(self: *MlirCodegen) void {
+    fn attachTargetInfo(self: *MlirCodegen) !void {
         const triple = self.strAttr("x86_64-unknown-linux-gnu");
         const dl = self.strAttr("e-m:e-p270:32:32-p271:32:32-p272:64:64-i64:64-i128:128-f80:128-n8:16:32:64-S128");
         var mod_op = self.module.getOperation();
@@ -629,13 +617,13 @@ pub const MlirCodegen = struct {
 
         const kind = store.getKind(ty);
         const attr: mlir.Attribute = switch (kind) {
-            .Void => return mlir.Attribute.null(),
+            // .Void => return mlir.Attribute.getNull(),
             .Bool => mlir.LLVMAttributes.getLLVMDIBasicTypeAttr(
                 self.mlir_ctx,
                 DW_TAG_base_type,
                 self.strAttr("bool"),
                 1,
-                mlir.LLVMAttributes.LLVMTypeEncoding.Boolean,
+                mlir.LLVMTypeEncoding.Boolean,
             ),
             .I8 => self.diSignedIntType("i8", 8),
             .I16 => self.diSignedIntType("i16", 16),
@@ -651,14 +639,14 @@ pub const MlirCodegen = struct {
                 DW_TAG_base_type,
                 self.strAttr("f32"),
                 32,
-                mlir.LLVMAttributes.LLVMTypeEncoding.FloatT,
+                mlir.LLVMTypeEncoding.FloatT,
             ),
             .F64 => mlir.LLVMAttributes.getLLVMDIBasicTypeAttr(
                 self.mlir_ctx,
                 DW_TAG_base_type,
                 self.strAttr("f64"),
                 64,
-                mlir.LLVMAttributes.LLVMTypeEncoding.FloatT,
+                mlir.LLVMTypeEncoding.FloatT,
             ),
             .Ptr => blk: {
                 const info = store.get(.Ptr, ty);
@@ -672,7 +660,7 @@ pub const MlirCodegen = struct {
                     @intCast(POINTER_SIZE_BITS),
                     0,
                     -1,
-                    mlir.Attribute.null(),
+                    mlir.Attribute.getNull(),
                 );
             },
             else => try self.ensureDINullTypeAttr(),
@@ -688,7 +676,7 @@ pub const MlirCodegen = struct {
             DW_TAG_base_type,
             self.strAttr(name),
             bits,
-            mlir.LLVMAttributes.LLVMTypeEncoding.Signed,
+            mlir.LLVMTypeEncoding.Signed,
         );
     }
 
@@ -698,7 +686,7 @@ pub const MlirCodegen = struct {
             DW_TAG_base_type,
             self.strAttr(name),
             bits,
-            mlir.LLVMAttributes.LLVMTypeEncoding.Unsigned,
+            mlir.LLVMTypeEncoding.Unsigned,
         );
     }
 
@@ -709,16 +697,16 @@ pub const MlirCodegen = struct {
         params: []const tir.ParamId,
         t: *const tir.TIR,
     ) !mlir.Attribute {
-        var types_buf = std.ArrayList(mlir.Attribute).init(self.gpa);
-        defer types_buf.deinit();
+        var types_buf: std.ArrayList(mlir.Attribute) = .empty;
+        defer types_buf.deinit(self.gpa);
 
         const ret_attr = try self.ensureDIType(store, ret_ty);
-        try types_buf.append(ret_attr);
+        try types_buf.append(self.gpa, ret_attr);
 
         for (params) |pid| {
             const param = t.funcs.Param.get(pid);
             const param_attr = try self.ensureDIType(store, param.ty);
-            try types_buf.append(param_attr);
+            try types_buf.append(self.gpa, param_attr);
         }
 
         const attr = mlir.LLVMAttributes.getLLVMDISubroutineTypeAttr(
@@ -2583,7 +2571,7 @@ pub const MlirCodegen = struct {
                 const arg_vids = t.instrs.value_pool.slice(p.args);
                 if (mlir_kind == .Operation) {
                     const result_ty = if (p.result.isNone()) self.void_ty else try self.llvmTypeOf(store, p.ty);
-                    const value = try self.emitInlineMlirOperation(mlir_text_raw, arg_vids, result_ty);
+                    const value = try self.emitInlineMlirOperation(mlir_text_raw, arg_vids, result_ty, p.loc);
                     if (p.result.isNone()) {
                         break :blk mlir.Value.empty();
                     } else {
@@ -2665,7 +2653,8 @@ pub const MlirCodegen = struct {
                             mlir.StringRef.from(mlir_text), // No stripping of braces
                         );
                         if (parsed_module.isNull()) {
-                            std.debug.print("Error parsing inline MLIR module: {s}\n", .{mlir_text});
+                            const loc = self.active_loc_store.?.get(p.loc.unwrap());
+                            try self.context.diags.addError(loc, .mlir_parse_error, .{});
                             return error.MlirParseError;
                         }
                         // Merge the parsed module into the current module
@@ -2737,6 +2726,7 @@ pub const MlirCodegen = struct {
         mlir_text_raw: []const u8,
         arg_vids: []const tir.ValueId,
         result_ty: mlir.Type,
+        loc: tir.OptLocId,
     ) !mlir.Value {
         var arg_values = ArrayList(mlir.Value).init(self.gpa);
         defer arg_values.deinit();
@@ -2816,8 +2806,14 @@ pub const MlirCodegen = struct {
             mlir.StringRef.from(func_str.items),
         );
         if (parsed_module.isNull()) {
-            std.debug.print("Error parsing inline MLIR func: {s}\n", .{func_str.items});
-            return error.MlirParseError;
+            const msg = self.diagnostic_data.msg orelse return error.CompilationFailed;
+            const span = self.diagnostic_data.span orelse return error.CompilationFailed;
+            var diag_loc = self.active_loc_store.?.get(loc.unwrap());
+            diag_loc.start += @intCast(span.start -| 10);
+            diag_loc.end += @intCast(span.end -| 10);
+
+            try self.context.diags.addError(diag_loc, .mlir_parse_error, .{msg});
+            return error.CompilationFailed;
         }
         defer parsed_module.destroy();
 

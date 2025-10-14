@@ -547,32 +547,22 @@ test "behavior: match expression with guards" {
 //     const code = getSource("", src);
 //     try runCompilerTest(code, "Vector add x=15.500000, y=21.500000\n");
 // }
-//
-// test "behavior: mlir module block" {
-//     const src =
-//         \\ mod := mlir {
-//         \\   module {
-//         \\     func.func @const() -> i32 {
-//         \\       %c42 = arith.constant 42 : i32
-//         \\       func.return %c42 : i32
-//         \\     }
-//         \\   }
-//         \\ }
-//         \\ // Assuming mlir blocks are opaque and can be assigned
-//         \\ printf("MLIR module assigned\n")
-//     ;
-//     const code = getSource("", src);
-//     try runCompilerTest(code, "MLIR module assigned\n");
-// }
 
-test "behavior: mlir op block" {
+test "behavior: mlir module block" {
     const src =
-        \\ op := mlir op { arith.addi %a, %b : i32 }
-        \\ // Assuming mlir op blocks are opaque and can be assigned
-        \\ printf("MLIR op assigned\n")
+        \\ mod := mlir {
+        \\   module {
+        \\     func.func @const() -> i32 {
+        \\       %c42 = arith.constant 42 : i32
+        \\       func.return %c42 : i32
+        \\     }
+        \\   }
+        \\ }
+        \\ // Assuming mlir blocks are opaque and can be assigned
+        \\ printf("MLIR module assigned\n")
     ;
     const code = getSource("", src);
-    try runCompilerTest(code, "MLIR op assigned\n");
+    try runCompilerTest(code, "MLIR module assigned\n");
 }
 
 test "behavior: defer statement" {
@@ -674,10 +664,10 @@ test "behavior: checked cast" {
         \\ assert(checked_cast == null)
         \\ successful_checked_cast: ?i8 = (100).?i8
         \\ assert(successful_checked_cast == 100)
-        \\ printf("Checked cast null=%b, successful=%d\n", checked_cast == null, successful_checked_cast)
+        \\ printf("Checked cast null=%b, successful=%d\n", checked_cast == null, successful_checked_cast?)
     ;
     const code = getSource("", src);
-    try runCompilerTest(code, "Checked cast null=true, successful=100\n");
+    try runCompilerTest(code, "Checked cast null=1, successful=100\n");
 }
 
 test "behavior: optional unwrap" {
@@ -827,19 +817,19 @@ test "behavior: match at-pattern" {
 //     const code = getSource("", src);
 //     try runCompilerTest(code, "Vector x=10.000000\n");
 // }
-//
-// test "behavior: error union orelse" {
-//     const src =
-//         \\ MyErr :: error { Failed }
-//         \\ might_fail :: proc() i32!MyErr { return MyErr.Failed }
-//         \\ might_succeed :: proc() i32!MyErr { return 100 }
-//         \\ r1 := might_fail() orelse 0
-//         \\ r2 := might_succeed() orelse 0
-//         \\ printf("Orelse r1=%d, r2=%d\n", r1, r2)
-//     ;
-//     const code = getSource("", src);
-//     try runCompilerTest(code, "Orelse r1=0, r2=100\n");
-// }
+
+test "behavior: error union catch" {
+    const src =
+        \\ MyErr :: error { Failed }
+        \\ might_fail :: proc() i32!MyErr { return MyErr.Failed }
+        \\ might_succeed :: proc() i32!MyErr { return 100 }
+        \\ r1 := might_fail() catch 0
+        \\ r2 := might_succeed() catch 0
+        \\ printf("Orelse r1=%d, r2=%d\n", r1, r2)
+    ;
+    const code = getSource("", src);
+    try runCompilerTest(code, "Orelse r1=0, r2=100\n");
+}
 
 test "behavior: optional unwrap failure" {
     const global = "rt_panic :: extern proc(ptr: *const u8, len: usize) noreturn";
@@ -955,15 +945,15 @@ test "behavior: nested tuples" {
 //     const code = getSource("", src);
 //     try runCompilerTest(code, "Inserted function result=1\n");
 // }
-//
-// test "behavior: complex arithmetic with mixed types" {
-//     const src =
-//         \\ x := 10 + 2.5 * 4 - (10 % 3)
-//         \\ printf("Complex arithmetic result=%f\n", x)
-//     ;
-//     const code = getSource("", src);
-//     try runCompilerTest(code, "Complex arithmetic result=19.000000\n");
-// }
+
+test "behavior: complex arithmetic with mixed types" {
+    const src =
+        \\ x := 10 + 2.5 * 4 - (10 % 3)
+        \\ printf("Complex arithmetic result=%f\n", x)
+    ;
+    const code = getSource("", src);
+    try runCompilerTest(code, "Complex arithmetic result=19.000000\n");
+}
 
 test "behavior: integer division and modulo with negative numbers" {
     const src =
@@ -1069,40 +1059,40 @@ test "behavior: array slice with rest pattern" {
     try runCompilerTest(code, "First=1, Second=2, Rest len=3\n");
 }
 
-// test "behavior: error union orelse with success" {
-//     const globals =
-//         \\ MyErr :: error { Failed }
-//         \\ might_succeed :: proc() i32!MyErr { return 100 }
-//     ;
-//     const src =
-//         \\ r := might_succeed() catch 0
-//         \\ printf("Orelse success result=%d\n", r)
-//     ;
-//     const code = getSource(globals, src);
-//     try runCompilerTest(code, "Orelse success result=100\n");
-// }
+test "behavior: error union orelse with success" {
+    const globals =
+        \\ MyErr :: error { Failed }
+        \\ might_succeed :: proc() i32!MyErr { return 100 }
+    ;
+    const src =
+        \\ r := might_succeed() catch 0
+        \\ printf("Catch success result=%d\n", r)
+    ;
+    const code = getSource(globals, src);
+    try runCompilerTest(code, "Catch success result=100\n");
+}
 
-// test "behavior: catch with error binding" {
-//     const globals =
-//         \\ MyErr :: error { NotFound, PermissionDenied }
-//         \\ might_fail :: proc() i32!MyErr { return MyErr.PermissionDenied }
-//     ;
-//     const src =
-//         \\ r := might_fail() catch |err| {
-//         \\   if err == MyErr.NotFound {
-//         \\     printf("Caught NotFound\n")
-//         \\   } else if err == MyErr.PermissionDenied {
-//         \\     printf("Caught PermissionDenied\n")
-//         \\   } else {
-//         \\     printf("Caught unknown error\n")
-//         \\   }
-//         \\   return 0
-//         \\ }
-//         \\ printf("Catch result=%d\n", r)
-//     ;
-//     const code = getSource(globals, src);
-//     try runCompilerTest(code, "Caught PermissionDenied\nCatch result=0\n");
-// }
+test "behavior: catch with error binding" {
+    const globals =
+        \\ MyErr :: error { NotFound, PermissionDenied }
+        \\ might_fail :: proc() i32!MyErr { return MyErr.PermissionDenied }
+    ;
+    const src =
+        \\ r := might_fail() catch |err| {
+        \\   if err == MyErr.NotFound {
+        \\     printf("Caught NotFound\n")
+        \\   } else if err == MyErr.PermissionDenied {
+        \\     printf("Caught PermissionDenied\n")
+        \\   } else {
+        \\     printf("Caught unknown error\n")
+        \\   }
+        \\   return 0
+        \\ }
+        \\ printf("Catch result=%d\n", r)
+    ;
+    const code = getSource(globals, src);
+    try runCompilerTest(code, "Caught PermissionDenied\nCatch result=0\n");
+}
 
 test "behavior: match nested tuple pattern" {
     const src =
@@ -1166,29 +1156,18 @@ test "behavior: match or-pattern with binding" {
 //     const code = getSource("", src);
 //     try runCompilerTest(code, "Closure returning closure result=30\n");
 // }
-//
-// test "behavior: error union orelse with error value" {
-//     const src =
-//         \\ MyErr :: error { Failed }
-//         \\ might_fail :: proc() i32!MyErr { return MyErr.Failed }
-//         \\ r := might_fail() orelse 99
-//         \\ printf("Orelse error result=%d\n", r)
-//     ;
-//     const code = getSource("", src);
-//     try runCompilerTest(code, "Orelse error result=99\n");
-// }
-//
-// test "behavior: error type definition and usage" {
-//     const src =
-//         \\ FileSystemError :: error { NotFound, PermissionDenied }
-//         \\ get_error :: proc() FileSystemError { return FileSystemError.PermissionDenied }
-//         \\ err := get_error()
-//         \\ assert(err == FileSystemError.PermissionDenied)
-//         \\ printf("Error type usage OK\n")
-//     ;
-//     const code = getSource("", src);
-//     try runCompilerTest(code, "Error type usage OK\n");
-// }
+
+test "behavior: error type definition and usage" {
+    const src =
+        \\ FileSystemError :: error { NotFound, PermissionDenied }
+        \\ get_error :: proc() FileSystemError { return FileSystemError.PermissionDenied }
+        \\ err := get_error()
+        \\ assert(err == FileSystemError.PermissionDenied)
+        \\ printf("Error type usage OK\n")
+    ;
+    const code = getSource("", src);
+    try runCompilerTest(code, "Error type usage OK\n");
+}
 
 test "behavior: nested for loops" {
     const src =
@@ -1204,23 +1183,23 @@ test "behavior: nested for loops" {
     try runCompilerTest(code, "Nested for count=4\n");
 }
 
-// test "behavior: labeled for loop with break" {
-//     const src =
-//         \\ result := 0
-//         \\ outer: for i in 0..5 {
-//         \\   for j in 0..5 {
-//         \\     if i * j > 10 {
-//         \\       break :outer
-//         \\     }
-//         \\     result += 1
-//         \\   }
-//         \\ }
-//         \\ printf("Labeled for break result=%d\n", result)
-//     ;
-//     const code = getSource("", src);
-//     try runCompilerTest(code, "Labeled for break result=15\n");
-// }
-//
+test "behavior: labeled for loop with break" {
+    const src =
+        \\ result := 0
+        \\ outer: for i in 0..5 {
+        \\   for j in 0..5 {
+        \\     if i * j > 10 {
+        \\       break :outer
+        \\     }
+        \\     result += 1
+        \\   }
+        \\ }
+        \\ printf("Labeled for break result=%d\n", result)
+    ;
+    const code = getSource("", src);
+    try runCompilerTest(code, "Labeled for break result=15\n");
+}
+
 // test "behavior: comptime assertion" {
 //     const src =
 //         \\ comptime {
@@ -1300,23 +1279,23 @@ test "behavior: error union orelse with different types" {
     try runCompilerTest(code, "Orelse different type result=10.000000\n");
 }
 
-// test "behavior: catch with nested errors" {
-//     const src =
-//         \\ ErrA :: error { A }
-//         \\ ErrB :: error { B }
-//         \\ func_a :: proc() i32!ErrA { return ErrA.A }
-//         \\ func_b :: proc() i32!ErrB { return func_a()! catch |err| { return ErrB.B } }
-//         \\ r := func_b() catch |err| {
-//         \\   if err == ErrB.B {
-//         \\     printf("Caught nested ErrB\n")
-//         \\   }
-//         \\   return 0
-//         \\ }
-//         \\ printf("Nested catch result=%d\n", r)
-//     ;
-//     const code = getSource("", src);
-//     try runCompilerTest(code, "Caught nested ErrB\nNested catch result=0\n");
-// }
+test "behavior: catch with nested errors" {
+    const src =
+        \\ ErrA :: error { A }
+        \\ ErrB :: error { B }
+        \\ func_a :: proc() i32!ErrA { return ErrA.A }
+        \\ func_b :: proc() i32!ErrB { return func_a()! catch |err| { return ErrB.B } }
+        \\ r := func_b() catch |err| {
+        \\   if err == ErrB.B {
+        \\     printf("Caught nested ErrB\n")
+        \\   }
+        \\   return 0
+        \\ }
+        \\ printf("Nested catch result=%d\n", r)
+    ;
+    const code = getSource("", src);
+    try runCompilerTest(code, "Caught nested ErrB\nNested catch result=0\n");
+}
 
 test "behavior: match variant struct payload with destructuring" {
     const src =
@@ -1427,23 +1406,23 @@ test "behavior: recursive function" {
 //     const code = getSource("", src);
 //     try runCompilerTest(code, "Args count=3\nFirst arg=10\nSecond arg=hello\nArgs count=1\nFirst arg=5\n");
 // }
-//
-// test "behavior: error union orelse and catch combined" {
-//     const src =
-//         \\ MyErr :: error { Failed, Other }
-//         \\ might_fail :: proc(val: i32) i32!MyErr {
-//         \\   if val == 0 { return MyErr.Failed }
-//         \\   if val == 1 { return MyErr.Other }
-//         \\   return val
-//         \\ }
-//         \\ r1 := might_fail(0) orelse 100 catch |err| { return 0 }
-//         \\ r2 := might_fail(1) orelse 100 catch |err| { return 1 }
-//         \\ r3 := might_fail(5) orelse 100 catch |err| { return 2 }
-//         \\ printf("Combined error handling r1=%d, r2=%d, r3=%d\n", r1, r2, r3)
-//     ;
-//     const code = getSource("", src);
-//     try runCompilerTest(code, "Combined error handling r1=0, r2=1, r3=5\n");
-// }
+
+test "behavior: error union orelse and catch combined" {
+    const src =
+        \\ MyErr :: error { Failed, Other }
+        \\ might_fail :: proc(val: i32) ?i32!MyErr {
+        \\   if val == 0 { return MyErr.Failed }
+        \\   if val == 1 { return MyErr.Other }
+        \\   return val
+        \\ }
+        \\ r1 := might_fail(0) orelse 100 catch |err| { return 0 }
+        \\ r2 := might_fail(1) orelse 100 catch |err| { return 1 }
+        \\ r3 := might_fail(5) orelse 100 catch |err| { return 2 }
+        \\ printf("Combined error handling r1=%d, r2=%d, r3=%d\n", r1, r2, r3)
+    ;
+    const code = getSource("", src);
+    try runCompilerTest(code, "Combined error handling r1=0, r2=1, r3=5\n");
+}
 
 test "behavior: optional chaining (field access on optional struct)" {
     const globals = "rt_panic :: extern proc(ptr: *const u8, len: usize) noreturn";
@@ -1482,22 +1461,27 @@ test "behavior: tuple of arrays" {
     try runCompilerTest(code, "Tuple of arrays 0[0]=1, 1[1]=0\n");
 }
 
-// test "behavior: mlir op with nested region" {
-//     const src =
-//         \\ op := mlir op {
-//         \\   scf.if %c0 {
-//         \\     %1 = arith.addi %a, %b : i32
-//         \\   } else {
-//         \\     %2 = arith.subi %a, %b : i32
-//         \\   }
-//         \\ }
-//         \\ // Assuming mlir op blocks are opaque and can be assigned
-//         \\ printf("MLIR op with nested region assigned\n")
-//     ;
-//     const code = getSource("", src);
-//     try runCompilerTest(code, "MLIR op with nested region assigned\n");
-// }
-//
+test "behavior: mlir op with nested region" {
+    const src =
+        \\ a : i32 = 10
+        \\ b : i32 = 32
+        \\ c := true
+        \\ op : i32 = mlir op(a, b, c) {
+        \\   scf.if %arg2 -> (i32) {
+        \\     %1 = arith.addi %arg0, %arg1 : i32
+        \\     scf.yield %1 : i32
+        \\   } else {
+        \\     %2 = arith.subi %arg0, %arg1 : i32
+        \\     scf.yield %2 : i32
+        \\   }
+        \\ }
+        \\ // Assuming mlir op blocks are opaque and can be assigned
+        \\ printf("MLIR op with nested region assigned: %d\n", op)
+    ;
+    const code = getSource("", src);
+    try runCompilerTest(code, "MLIR op with nested region assigned: 42\n");
+}
+
 // test "behavior: code block with complex type insert" {
 //     const src =
 //         \\ comptime {
@@ -1535,4 +1519,28 @@ test "behavior: match with if guard and binding" {
     ;
     const code = getSource("", src);
     try runCompilerTest(code, "Matched odd in 10-20: 15\n");
+}
+
+test "behavior: mlir block constant" {
+    const src =
+        \\ value: i32 = mlir op {
+        \\   "arith.constant"() {value = 42 : i32} : () -> i32
+        \\ }
+        \\ printf("%d\n", value)
+    ;
+    const code = getSource("", src);
+    try runCompilerTest(code, "42\n");
+}
+
+test "behavior: mlir block with args" {
+    const src =
+        \\ a : i32 = 10
+        \\ b : i32 = 32
+        \\ sum: i32 = mlir op(a, b) {
+        \\   "arith.addi"(%arg0, %arg1) : (i32, i32) -> i32
+        \\ }
+        \\ printf("%d\n", sum)
+    ;
+    const code = getSource("", src);
+    try runCompilerTest(code, "42\n");
 }

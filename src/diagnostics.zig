@@ -56,6 +56,7 @@ fn convertToPayloadTag(value: anytype) PayloadTag {
 
 const MessagePayload = union(enum) {
     none,
+    string: []const u8,
     one: struct { a: PayloadTag },
     two: struct { a: PayloadTag, b: PayloadTag },
     three: struct { a: PayloadTag, b: PayloadTag, c: PayloadTag },
@@ -451,7 +452,7 @@ pub fn diagnosticMessageFmt(code: DiagnosticCode) []const u8 {
 
         .mlir_verification_failed => "MLIR verification failed",
         .mlir_block_not_a_type => "MLIR block is not a type",
-        .mlir_parse_error => "failed to parse inline MLIR block",
+        .mlir_parse_error => "failed to parse inline MLIR block: {s}",
     };
 }
 
@@ -561,6 +562,8 @@ pub const Diagnostics = struct {
         const n = info.fields.len;
         if (n == 0) return .none;
         if (n == 1) {
+            if (@TypeOf(args[0]) == []const u8)
+                return .{ .string = args[0] };
             const f0 = info.fields[0];
             return .{ .one = .{ .a = convertToPayloadTag(@field(args, f0.name)) } };
         } else if (n == 2) {
@@ -716,6 +719,10 @@ pub const Diagnostics = struct {
         var arg_count: usize = 0;
         switch (payload) {
             .none => {},
+            .string => |s| {
+                args[0] = s;
+                arg_count = 1;
+            },
             .one => |p| {
                 args[0] = @tagName(p.a);
                 arg_count = 1;

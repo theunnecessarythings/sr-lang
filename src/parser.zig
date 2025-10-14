@@ -1232,33 +1232,7 @@ pub const Parser = struct {
             return true;
         }
         return switch (tag) {
-            .plus, .minus, .b_and, .bang, .dotdot, .dotdoteq,
-            .b_or,
-            .keyword_comptime, .keyword_code, .keyword_mlir, .keyword_insert,
-            .star,
-            .question,
-            .at,
-            .identifier, .raw_identifier,
-            .lsquare, .lparen, .lcurly,
-            .keyword_proc, .keyword_fn, .keyword_extern,
-            .keyword_any, .keyword_type, .keyword_noreturn,
-            .keyword_complex, .keyword_simd, .keyword_tensor,
-            .keyword_struct, .keyword_union, .keyword_enum, .keyword_variant, .keyword_error,
-            .keyword_return,
-            .keyword_import,
-            .keyword_typeof,
-            .keyword_async,
-            .keyword_if,
-            .keyword_while,
-            .keyword_match,
-            .keyword_for,
-            .keyword_break,
-            .keyword_continue,
-            .keyword_unreachable,
-            .keyword_null,
-            .keyword_undefined,
-            .keyword_defer,
-            .keyword_errdefer => true,
+            .plus, .minus, .b_and, .bang, .dotdot, .dotdoteq, .b_or, .keyword_comptime, .keyword_code, .keyword_mlir, .keyword_insert, .star, .question, .at, .identifier, .raw_identifier, .lsquare, .lparen, .lcurly, .keyword_proc, .keyword_fn, .keyword_extern, .keyword_any, .keyword_type, .keyword_noreturn, .keyword_complex, .keyword_simd, .keyword_tensor, .keyword_struct, .keyword_union, .keyword_enum, .keyword_variant, .keyword_error, .keyword_return, .keyword_import, .keyword_typeof, .keyword_async, .keyword_if, .keyword_while, .keyword_match, .keyword_for, .keyword_break, .keyword_continue, .keyword_unreachable, .keyword_null, .keyword_undefined, .keyword_defer, .keyword_errdefer => true,
             else => false,
         };
     }
@@ -2327,7 +2301,6 @@ pub const Parser = struct {
     }
 
     fn parseMlir(self: *Parser) !cst.ExprId {
-        const loc = self.toLocId(self.cur.loc);
         self.advance(); // "mlir"
 
         var kind: cst.MlirKind = .Module;
@@ -2386,12 +2359,18 @@ pub const Parser = struct {
 
         // Build a "fake" token over the exact byte range so we can reuse `self.slice`.
         const TokT = @TypeOf(self.cur); // same token type the parser already uses
+        const mlir_loc: Loc = .{ .file_id = file_id, .start = start_index, .end = end_index - 1 };
         const text_tok = TokT{
             .tag = .invalid,
-            .loc = .{ .file_id = file_id, .start = start_index, .end = end_index - 1 },
+            .loc = mlir_loc,
         };
         const text = self.intern(self.slice(text_tok));
-        return self.addExpr(.Mlir, .{ .kind = kind, .text = text, .args = args_range, .loc = loc });
+        return self.addExpr(.Mlir, .{
+            .kind = kind,
+            .text = text,
+            .args = args_range,
+            .loc = self.toLocId(mlir_loc),
+        });
     }
 
     //=================================================================
