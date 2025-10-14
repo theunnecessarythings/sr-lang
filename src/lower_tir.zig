@@ -71,7 +71,7 @@ pub const LowerTir = struct {
 
         var infos = try self.gpa.alloc(monomorphize.BindingInfo, bindings.len);
         var init_count: usize = 0;
-        var info_cleanup = true;
+        const info_cleanup = true;
         defer {
             if (info_cleanup) {
                 var j: usize = 0;
@@ -100,7 +100,7 @@ pub const LowerTir = struct {
         );
         errdefer ctx.deinit(self.gpa);
 
-        try self.monomorph_context_stack.append(self.gpa, ctx) catch |err| {
+        self.monomorph_context_stack.append(self.gpa, ctx) catch |err| {
             ctx.deinit(self.gpa);
             return err;
         };
@@ -1256,7 +1256,7 @@ pub const LowerTir = struct {
     ) !comp.ComptimeValue {
         const pushed = try self.pushComptimeBindings(bindings);
         defer if (pushed) {
-            const popped = self.monomorph_context_stack.pop();
+            var popped = self.monomorph_context_stack.pop();
             if (popped) |*ctx| ctx.deinit(self.gpa);
         };
 
@@ -1621,11 +1621,10 @@ pub const LowerTir = struct {
                                     else
                                         null;
 
-                                    const comptime_val = if (comptime_val_opt) |cv| cv else
-                                        self.evalComptimeExprValue(a, env, f, blk, arg_expr, param_ty) catch {
-                                            ok = false;
-                                            break;
-                                        };
+                                    const comptime_val = if (comptime_val_opt) |cv| cv else self.evalComptimeExprValue(a, env, f, blk, arg_expr, param_ty) catch {
+                                        ok = false;
+                                        break;
+                                    };
 
                                     var info = monomorphize.BindingInfo.valueParam(self.gpa, pname, param_ty, comptime_val) catch {
                                         ok = false;
