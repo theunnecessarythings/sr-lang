@@ -486,8 +486,14 @@ pub const LowerTir = struct {
         }
 
         if (kind == .FunctionLit and !a.exprs.get(.FunctionLit, d.value).flags.is_extern) {
-            const name = if (!d.pattern.isNone()) self.bindingNameOfPattern(a, d.pattern.unwrap()) else null;
-            if (name) |nm| {
+            var name_opt: ?StrId = null;
+            if (!d.pattern.isNone()) {
+                name_opt = self.bindingNameOfPattern(a, d.pattern.unwrap());
+            } else if (!d.method_path.isNone()) {
+                name_opt = try self.methodSymbolName(a, did);
+            }
+
+            if (name_opt) |nm| {
                 const fn_lit = a.exprs.get(.FunctionLit, d.value);
                 const params = a.exprs.param_pool.slice(fn_lit.params);
 
@@ -845,6 +851,10 @@ pub const LowerTir = struct {
             // Destructure once for all names: bind as values for const, or slots for mut.
             try self.destructureDeclFromExpr(a, env, f, blk, d.pattern.unwrap(), d.value, decl_ty, !d.flags.is_const);
         } else {
+            if (!d.method_path.isNone()) {
+                const vk = a.exprs.index.kinds.items[d.value.toRaw()];
+                if (vk == .FunctionLit) return;
+            }
             // No pattern: just evaluate for side-effects.
             _ = try self.lowerExpr(a, env, f, blk, d.value, decl_ty, .rvalue);
         }
@@ -1013,6 +1023,26 @@ pub const LowerTir = struct {
 
     fn moduleCallKey(alias: ast.StrId, field: StrId) u64 {
         return (@as(u64, alias.toRaw()) << 32) | @as(u64, field.toRaw());
+    }
+
+    fn methodSymbolName(
+        self: *LowerTir,
+        a: *const ast.Ast,
+        did: ast.DeclId,
+    ) !StrId {
+        const decl = a.exprs.Decl.get(did);
+        std.debug.assert(!decl.method_path.isNone());
+        const seg_ids = a.exprs.method_path_pool.slice(decl.method_path.asRange());
+        if (seg_ids.len < 2) return error.LoweringBug;
+
+        const owner_seg = a.exprs.MethodPathSeg.get(seg_ids[0]);
+        const method_seg = a.exprs.MethodPathSeg.get(seg_ids[seg_ids.len - 1]);
+        const owner_name = a.exprs.strs.get(owner_seg.name);
+        const method_name = a.exprs.strs.get(method_seg.name);
+
+        const symbol = try std.fmt.allocPrint(self.gpa, "{s}__{s}", .{ owner_name, method_name });
+        defer self.gpa.free(symbol);
+        return self.context.type_store.strs.intern(symbol);
     }
 
     fn resolveModuleFieldCallee(
@@ -1297,6 +1327,12 @@ pub const LowerTir = struct {
         const row = a.exprs.get(.Call, id);
         var callee = try self.resolveCallee(a, f, row);
         const loc = self.exprOptLoc(a, id);
+        var arg_ids = a.exprs.expr_pool.slice(row.args);
+        var method_arg_buf: []ast.ExprId = &.{};
+        var method_decl_id: ?ast.DeclId = null;
+        defer {
+            if (method_arg_buf.len != 0) self.gpa.free(method_arg_buf);
+        }
 
         var callee_name = a.exprs.strs.get(callee.name);
         if (std.mem.eql(u8, callee_name, "get_type_by_name") or
@@ -1328,7 +1364,6 @@ pub const LowerTir = struct {
             const fn_ptr_ptr = blk.builder.gep(blk, self.context.type_store.mkPtr(fn_ptr_ty, false), typed_api_ptr, &.{blk.builder.gepConst(fn_ptr_idx)}, loc);
             const fn_ptr = blk.builder.tirValue(.Load, blk, fn_ptr_ty, loc, .{ .ptr = fn_ptr_ptr, .@"align" = 0 });
 
-            const arg_ids = a.exprs.expr_pool.slice(row.args);
             var all_args: std.ArrayList(tir.ValueId) = .empty;
             defer all_args.deinit(self.gpa);
             try all_args.append(self.gpa, ctx_ptr);
@@ -1355,6 +1390,22 @@ pub const LowerTir = struct {
                 return try self.buildVariantItem(a, env, f, blk, row, ety, k, loc);
         }
 
+        if (self.type_info.getMethodBinding(row.callee)) |binding| {
+            if (a.exprs.index.kinds.items[row.callee.toRaw()] == .FieldAccess) {
+                const symbol = try self.methodSymbolName(a, binding.decl_id);
+                callee.name = symbol;
+                callee.fty = binding.func_type;
+                callee_name = self.context.type_store.strs.get(callee.name);
+                method_decl_id = binding.decl_id;
+
+                const field_expr = a.exprs.get(.FieldAccess, row.callee);
+                method_arg_buf = try self.gpa.alloc(ast.ExprId, arg_ids.len + 1);
+                method_arg_buf[0] = field_expr.parent;
+                std.mem.copy(ast.ExprId, method_arg_buf[1..], arg_ids);
+                arg_ids = method_arg_buf;
+            }
+        }
+
         // Try to get callee param types
         var param_tys: []const types.TypeId = &.{};
         var fixed: usize = 0;
@@ -1368,13 +1419,13 @@ pub const LowerTir = struct {
                 if (is_variadic and fixed > 0) fixed -= 1; // last param is the vararg pack type
             }
         }
-
-        // Lower args with expected param types when available
-        var arg_ids = a.exprs.expr_pool.slice(row.args);
-
         if (callee.fty) |fty| {
             if (self.context.type_store.index.kinds.items[fty.toRaw()] == .Function) {
-                if (self.findTopLevelDeclByName(a, callee.name)) |decl_id| {
+                const decl_id_opt = if (method_decl_id) |mid|
+                    mid
+                else
+                    self.findTopLevelDeclByName(a, callee.name);
+                if (decl_id_opt) |decl_id| {
                     const decl = a.exprs.Decl.get(decl_id);
                     const base_kind = a.exprs.index.kinds.items[decl.value.toRaw()];
                     if (base_kind == .FunctionLit) {
