@@ -5075,6 +5075,22 @@ pub const LowerTir = struct {
     }
 };
 
+pub fn evalComptimeExpr(
+    gpa: std.mem.Allocator,
+    context: *Context,
+    pipeline: *Pipeline,
+    type_info: *types.TypeInfo,
+    module_id: usize,
+    chk: *checker.Checker,
+    ast_unit: *const ast.Ast,
+    expr: ast.ExprId,
+    result_ty: types.TypeId,
+) !comp.ComptimeValue {
+    var lowerer = LowerTir.init(gpa, context, pipeline, type_info, module_id, chk);
+    defer lowerer.deinit();
+    return lowerer.runComptimeExpr(ast_unit, expr, result_ty);
+}
+
 // ============================
 // Context structs
 // ============================

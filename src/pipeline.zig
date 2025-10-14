@@ -8,6 +8,7 @@ const checker = @import("checker.zig");
 const Lexer = @import("lexer.zig").Tokenizer;
 const Parser = @import("parser.zig").Parser;
 const types = @import("types.zig");
+const comp = @import("comptime.zig");
 const mlir_codegen = @import("mlir_codegen.zig");
 const mlir = @import("mlir_bindings.zig");
 const compile = @import("compile.zig");
@@ -53,6 +54,26 @@ pub const Pipeline = struct {
 
     pub fn init(allocator: std.mem.Allocator, context: *compile.Context) Pipeline {
         return .{ .allocator = allocator, .context = context };
+    }
+
+    pub fn evalComptimeExpr(
+        self: *Pipeline,
+        chk: *checker.Checker,
+        ast_unit: *const ast_mod.Ast,
+        expr: ast_mod.ExprId,
+        result_ty: types.TypeId,
+    ) !comp.ComptimeValue {
+        return lower_tir.evalComptimeExpr(
+            self.allocator,
+            self.context,
+            self,
+            chk.type_info,
+            chk.type_info.module_id,
+            chk,
+            ast_unit,
+            expr,
+            result_ty,
+        );
     }
 
     // Run with import resolution: loads imported modules and appends their codegen into one MLIR module
