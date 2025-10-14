@@ -2701,20 +2701,25 @@ test "methods - call success" {
     try checkProgram(
         \\
         \\ Point :: struct { x: i32 }
-        \\ Point.distance :: fn(self: Point) i32 { return self.x }
+        \\ Point.make :: fn(x: i32) Point { return Point{ x: x } }
+        \\ Point.value :: fn(self: Point) i32 { return self.x }
+        \\ Point.bump :: fn(self: *Point, dx: i32) void { self.x = self.x + dx }
+        \\ Point.peek :: fn(self: *const Point) i32 { return self.x }
         \\ main :: proc() i32 {
-        \\   p := Point{ x: 4 }
-        \\   return p.distance()
+        \\   p := Point.make(5)
+        \\   p.bump(3)
+        \\   return p.peek() + p.value()
         \\ }
     , &.{});
 }
 
-test "methods - missing self parameter" {
+test "methods - static method allowed" {
     try checkProgram(
         \\
         \\ Point :: struct { x: i32 }
-        \\ Point.bad :: fn() void {}
-    , &[_]diag.DiagnosticCode{.method_requires_self_parameter});
+        \\ Point.zero :: fn() Point { return Point{ x: 0 } }
+        \\ main :: proc() Point { return Point.zero() }
+    , &.{});
 }
 
 test "methods - duplicate declaration" {
@@ -2726,16 +2731,26 @@ test "methods - duplicate declaration" {
     , &[_]diag.DiagnosticCode{.duplicate_method_on_type});
 }
 
-test "methods - pointer receiver required" {
+test "methods - enum owner" {
+    try checkProgram(
+        \\
+        \\ Color :: enum { Red, Blue }
+        \\ Color.describe :: fn(self: Color) i32 { return 1 }
+        \\ main :: proc() i32 {
+        \\   return Color.Red.describe()
+        \\ }
+    , &.{});
+}
+
+test "methods - receiver must be addressable" {
     try checkProgram(
         \\
         \\ Point :: struct { x: i32 }
         \\ Point.bump :: fn(self: *Point) void {}
         \\ main :: proc() {
-        \\   p := Point{ x: 1 }
-        \\   p.bump()
+        \\   Point{ x: 1 }.bump()
         \\ }
-    , &[_]diag.DiagnosticCode{.method_receiver_requires_pointer});
+    , &[_]diag.DiagnosticCode{.method_receiver_not_addressable});
 }
 
 test "methods - owner must be struct" {

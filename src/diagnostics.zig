@@ -183,6 +183,7 @@ pub const DiagnosticCode = enum {
     duplicate_method_on_type, // payload: one (method name)
     method_receiver_requires_pointer,
     method_receiver_requires_value,
+    method_receiver_not_addressable,
 
     // Decls / control flow
     checker_insert_not_expanded,
@@ -386,11 +387,12 @@ pub fn diagnosticMessageFmt(code: DiagnosticCode) []const u8 {
         .method_self_must_be_binding => "the first parameter of a method must bind to 'self'",
         .method_self_requires_type => "the 'self' parameter of a method requires an explicit type",
         .method_self_type_mismatch => "method 'self' parameter must match the enclosing struct type",
-        .method_owner_not_struct => "methods can only be declared on struct types",
+        .method_owner_not_struct => "methods can only be declared on struct, union, enum, variant, or error types",
         .method_invalid_owner_path => "methods must be declared on a simple struct name",
         .duplicate_method_on_type => "duplicate method '{s}' for this struct",
         .method_receiver_requires_pointer => "method '{s}' requires a pointer receiver",
         .method_receiver_requires_value => "method '{s}' requires a value receiver",
+        .method_receiver_not_addressable => "method '{s}' requires an addressable receiver",
 
         // Decls / control flow
         .checker_insert_not_expanded => "checker: insert not expanded yet; walking only",

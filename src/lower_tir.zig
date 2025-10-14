@@ -1362,6 +1362,7 @@ pub const LowerTir = struct {
         var arg_ids = a.exprs.expr_pool.slice(row.args);
         var method_arg_buf: []ast.ExprId = &.{};
         var method_decl_id: ?ast.DeclId = null;
+        var method_binding: ?types.TypeInfo.MethodBinding = null;
         defer {
             if (method_arg_buf.len != 0) self.gpa.free(method_arg_buf);
         }
@@ -1429,12 +1430,15 @@ pub const LowerTir = struct {
                 callee.fty = binding.func_type;
                 callee_name = self.context.type_store.strs.get(callee.name);
                 method_decl_id = binding.decl_id;
+                method_binding = binding;
 
-                const field_expr = a.exprs.get(.FieldAccess, row.callee);
-                method_arg_buf = try self.gpa.alloc(ast.ExprId, arg_ids.len + 1);
-                method_arg_buf[0] = field_expr.parent;
-                std.mem.copyForwards(ast.ExprId, method_arg_buf[1..], arg_ids);
-                arg_ids = method_arg_buf;
+                if (binding.requires_implicit_receiver) {
+                    const field_expr = a.exprs.get(.FieldAccess, row.callee);
+                    method_arg_buf = try self.gpa.alloc(ast.ExprId, arg_ids.len + 1);
+                    method_arg_buf[0] = field_expr.parent;
+                    std.mem.copy(ast.ExprId, method_arg_buf[1..], arg_ids);
+                    arg_ids = method_arg_buf;
+                }
             }
         }
 
@@ -1571,7 +1575,15 @@ pub const LowerTir = struct {
         var i: usize = 0;
         while (i < arg_ids.len) : (i += 1) {
             const want: ?types.TypeId = if (i < fixed) param_tys[i] else null;
-            vals[i] = try self.lowerExpr(a, env, f, blk, arg_ids[i], want, .rvalue);
+            const mode: LowerMode = blk: {
+                if (method_binding) |mb| {
+                    if (mb.requires_implicit_receiver and mb.needs_addr_of and i == 0) {
+                        break :blk .lvalue_addr;
+                    }
+                }
+                break :blk .rvalue;
+            };
+            vals[i] = try self.lowerExpr(a, env, f, blk, arg_ids[i], want, mode);
         }
 
         // Final safety: if we know param types, coerce the fixed ones
@@ -1579,7 +1591,14 @@ pub const LowerTir = struct {
             i = 0;
             while (i < vals.len and i < fixed) : (i += 1) {
                 const want = param_tys[i];
-                const got = self.getExprType(arg_ids[i]) orelse want;
+                const got = blk: {
+                    if (method_binding) |mb| {
+                        if (mb.requires_implicit_receiver and mb.needs_addr_of and i == 0) {
+                            break :blk mb.self_param_type orelse want;
+                        }
+                    }
+                    break :blk self.getExprType(arg_ids[i]) orelse want;
+                };
                 if (want.toRaw() != got.toRaw()) {
                     const arg_loc = self.exprOptLoc(a, arg_ids[i]);
                     vals[i] = self.emitCoerce(blk, vals[i], got, want, arg_loc);

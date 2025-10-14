@@ -118,14 +118,21 @@ pub const TypeInfo = struct {
         return .{ .owner = owner.toRaw(), .name = name.toRaw() };
     }
 
+    pub const MethodReceiverKind = enum {
+        none,
+        value,
+        pointer,
+        pointer_const,
+    };
+
     pub const MethodEntry = struct {
         owner_type: TypeId,
         method_name: ast.StrId,
         decl_id: ast.DeclId,
         func_expr: ast.ExprId,
         func_type: TypeId,
-        self_param_type: TypeId,
-        needs_ptr_self: bool,
+        self_param_type: ?TypeId,
+        receiver_kind: MethodReceiverKind,
     };
 
     pub const MethodBinding = struct {
@@ -133,8 +140,10 @@ pub const TypeInfo = struct {
         method_name: ast.StrId,
         decl_id: ast.DeclId,
         func_type: TypeId,
-        self_param_type: TypeId,
-        needs_ptr_self: bool,
+        self_param_type: ?TypeId,
+        receiver_kind: MethodReceiverKind,
+        requires_implicit_receiver: bool,
+        needs_addr_of: bool,
     };
 
     pub fn addMethod(self: *TypeInfo, entry: MethodEntry) !bool {
