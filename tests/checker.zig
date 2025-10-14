@@ -427,6 +427,7 @@ test "null/undefined literals - failures" {
     // Logical/unary operations
     try checkProgram("z :: !null", &[_]diag.DiagnosticCode{.invalid_unary_op_operand});
     try checkProgram("w :: -undefined", &[_]diag.DiagnosticCode{.invalid_unary_op_operand});
+    try checkProgram("w2 :: !undefined", &[_]diag.DiagnosticCode{.invalid_unary_op_operand});
 
     // Indexing
     try checkProgram("i :: null[0]", &[_]diag.DiagnosticCode{.not_indexable});
@@ -438,6 +439,8 @@ test "null/undefined literals - failures" {
     // Comparisons
     try checkProgram("cmp1 :: null == 0", &[_]diag.DiagnosticCode{.invalid_binary_op_operands});
     try checkProgram("cmp2 :: undefined != false", &[_]diag.DiagnosticCode{.invalid_binary_op_operands});
+    try checkProgram("cmp3 :: undefined == undefined", &[_]diag.DiagnosticCode{.invalid_binary_op_operands});
+    try checkProgram("cmp4 :: undefined == null", &[_]diag.DiagnosticCode{.invalid_binary_op_operands});
 }
 
 // Builtin types: tuple, array, dynarray (type expressions and typed inits)
@@ -547,6 +550,14 @@ test "builtin types - optional - failures" {
 
     // Null to non-optional
     try checkProgram("oi: i32 = null", &[_]diag.DiagnosticCode{.assign_null_to_non_optional});
+}
+
+test "builtin types - optional - comparison failures" {
+    const src =
+        \\opt: ?i32 = 1
+        \\cmp :: opt == "s"
+    ;
+    try checkProgram(src, &[_]diag.DiagnosticCode{.invalid_binary_op_operands});
 }
 
 // Builtin types: struct (type expressions, literals, field access)

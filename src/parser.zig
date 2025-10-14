@@ -474,8 +474,8 @@ pub const Parser = struct {
     }
 
     fn tryMethodPath(self: *Parser, lhs_expr: cst.ExprId) !cst.OptRangeMethodPathSeg {
-        var segs = List(cst.Rows.MethodPathSeg).init(self.gpa);
-        defer segs.deinit();
+        var segs: List(cst.Rows.MethodPathSeg) = .empty;
+        defer segs.deinit(self.gpa);
 
         const ok = try self.collectMethodPathSegments(lhs_expr, &segs);
         if (!ok or segs.items.len < 2) return cst.OptRangeMethodPathSeg.none();
@@ -502,14 +502,14 @@ pub const Parser = struct {
         return switch (kind) {
             .Ident => blk: {
                 const row = self.cst.exprs.get(.Ident, expr);
-                try segs.append(.{ .name = row.name, .loc = row.loc });
+                try segs.append(self.gpa, .{ .name = row.name, .loc = row.loc });
                 break :blk true;
             },
             .FieldAccess => blk: {
                 const row = self.cst.exprs.get(.FieldAccess, expr);
                 if (row.is_tuple) break :blk false;
                 if (!try self.collectMethodPathSegments(row.parent, segs)) break :blk false;
-                try segs.append(.{ .name = row.field, .loc = row.loc });
+                try segs.append(self.gpa, .{ .name = row.field, .loc = row.loc });
                 break :blk true;
             },
             else => false,
