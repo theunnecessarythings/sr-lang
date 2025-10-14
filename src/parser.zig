@@ -391,6 +391,7 @@ pub const Parser = struct {
         var ty_opt = cst.OptExprId.none();
         var lhs_opt = cst.OptExprId.none();
         var rhs_id = lhs_or_rhs;
+        var method_path = cst.OptRangeMethodPathSeg.none();
 
         switch (self.cur.tag) {
             .coloncolon => { // constant: x :: (type)? (= rhs)?
@@ -457,14 +458,62 @@ pub const Parser = struct {
             },
         }
 
+        if (flags.is_const and !lhs_opt.isNone()) {
+            method_path = try self.tryMethodPath(lhs_opt.unwrap());
+        }
+
         const row: cst.Rows.Decl = .{
             .lhs = lhs_opt,
             .rhs = rhs_id,
             .ty = ty_opt,
+            .method_path = method_path,
             .flags = flags,
             .loc = loc,
         };
         return self.cst.exprs.addDeclRow(row);
+    }
+
+    fn tryMethodPath(self: *Parser, lhs_expr: cst.ExprId) !cst.OptRangeMethodPathSeg {
+        var segs: List(cst.Rows.MethodPathSeg) = .empty;
+        defer segs.deinit(self.gpa);
+
+        const ok = try self.collectMethodPathSegments(lhs_expr, &segs);
+        if (!ok or segs.items.len < 2) return cst.OptRangeMethodPathSeg.none();
+
+        var ids = try self.gpa.alloc(cst.MethodPathSegId, segs.items.len);
+        defer self.gpa.free(ids);
+
+        var i: usize = 0;
+        while (i < segs.items.len) : (i += 1) {
+            const seg_id = self.cst.exprs.addMethodPathSegRow(segs.items[i]);
+            ids[i] = seg_id;
+        }
+
+        const range = self.cst.exprs.method_path_pool.pushMany(self.gpa, ids);
+        return cst.OptRangeMethodPathSeg.some(range);
+    }
+
+    fn collectMethodPathSegments(
+        self: *Parser,
+        expr: cst.ExprId,
+        segs: *List(cst.Rows.MethodPathSeg),
+    ) anyerror!bool {
+        const kind = self.cst.exprs.index.kinds.items[expr.toRaw()];
+        return switch (kind) {
+            .Ident => blk: {
+                const row = self.cst.exprs.get(.Ident, expr);
+                try segs.append(self.gpa, .{ .name = row.name, .loc = row.loc });
+                break :blk true;
+            },
+            .FieldAccess => blk: {
+                const row = self.cst.exprs.get(.FieldAccess, expr);
+                if (row.is_tuple) break :blk false;
+                if (!try self.collectMethodPathSegments(row.parent, segs)) break :blk false;
+                try segs.append(self.gpa, .{ .name = row.field, .loc = row.loc });
+                break :blk true;
+            },
+            else => false,
+        };
     }
 
     fn nud(self: *Parser, tag: Token.Tag, comptime mode: ParseMode) anyerror!cst.ExprId {
