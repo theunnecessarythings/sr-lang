@@ -7,4 +7,6 @@ test "all" {
     _ = @import("mlir_codegen.zig");
     _ = @import("tir.zig");
     _ = @import("behavior.zig");
+    _ = @import("behavior_methods.zig");
+    _ = @import("behavior_generics.zig");
 }

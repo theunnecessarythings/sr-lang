@@ -2686,6 +2686,78 @@ test "patterns - match - failures" {
     , &[_]diag.DiagnosticCode{.pattern_type_mismatch});
 }
 
+test "methods - call success" {
+    try checkProgram(
+        \\
+        \\ Point :: struct { x: i32 }
+        \\ Point.make :: fn(x: i32) Point { return Point{ x: x } }
+        \\ Point.value :: fn(self: Point) i32 { return self.x }
+        \\ Point.bump :: fn(self: *Point, dx: i32) void { self.x = self.x + dx }
+        \\ Point.peek :: fn(self: *const Point) i32 { return self.x }
+        \\ main :: proc() i32 {
+        \\   p := Point.make(5)
+        \\   p.bump(3)
+        \\   return p.peek() + p.value()
+        \\ }
+    , &.{});
+}
+
+test "methods - static method allowed" {
+    try checkProgram(
+        \\
+        \\ Point :: struct { x: i32 }
+        \\ Point.zero :: fn() Point { return Point{ x: 0 } }
+        \\ main :: proc() Point { return Point.zero() }
+    , &.{});
+}
+
+test "methods - duplicate declaration" {
+    try checkProgram(
+        \\
+        \\ Point :: struct { x: i32 }
+        \\ Point.distance :: fn(self: Point) i32 { return self.x }
+        \\ Point.distance :: fn(self: Point) i32 { return self.x }
+    , &[_]diag.DiagnosticCode{.duplicate_method_on_type});
+}
+
+test "methods - enum owner" {
+    try checkProgram(
+        \\
+        \\ Color :: enum { Red, Blue }
+        \\ Color.describe :: fn(self: Color) i32 { return 1 }
+        \\ main :: proc() i32 {
+        \\   return Color.Red.describe()
+        \\ }
+    , &.{});
+}
+
+test "methods - receiver must be addressable" {
+    try checkProgram(
+        \\
+        \\ Point :: struct { x: i32 }
+        \\ Point.bump :: fn(self: *Point) void {}
+        \\ main :: proc() {
+        \\   Point{ x: 1 }.bump()
+        \\ }
+    , &[_]diag.DiagnosticCode{.method_receiver_not_addressable});
+}
+
+test "methods - owner must be struct" {
+    try checkProgram(
+        \\
+        \\ Foo :: 42
+        \\ Foo.bar :: fn(self: Foo) void {}
+    , &[_]diag.DiagnosticCode{.method_owner_not_struct});
+}
+
+test "methods - self type mismatch" {
+    try checkProgram(
+        \\
+        \\ Point :: struct { x: i32 }
+        \\ Point.bad :: fn(self: i32) void {}
+    , &[_]diag.DiagnosticCode{.method_self_type_mismatch});
+}
+
 // Focused: Import statements
 //
 // test "import statements - success" {

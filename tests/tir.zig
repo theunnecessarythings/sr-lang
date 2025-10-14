@@ -355,6 +355,129 @@ test "tir: type-returning generic yields concrete struct" {
     try testing.expectEqual(type_store.tUsize().toRaw(), fields[1].ty.toRaw());
 }
 
+test "tir: nested generic type propagates specialization" {
+    const src =
+        \\
+        \\ Vec :: fn(comptime T: type, comptime N: usize) type {
+        \\   return struct { data: [N]T };
+        \\ }
+        \\ Matrix :: fn(comptime T: type, comptime R: usize, comptime C: usize) type {
+        \\   Row :: Vec(T, C)
+        \\   return struct { rows: [R]Row };
+        \\ }
+        \\ MatrixI32x2x3 :: Matrix(i32, 2, 3)
+        \\ make :: fn() MatrixI32x2x3 {
+        \\   return MatrixI32x2x3{
+        \\     .rows = [
+        \\       Vec(i32, 3){ .data = [1, 2, 3] },
+        \\       Vec(i32, 3){ .data = [4, 5, 6] },
+        \\     ],
+        \\   };
+        \\ }
+    ;
+
+    var lowered = try lowerToTir(std.heap.page_allocator, src);
+    defer lowered.tir.deinit();
+    defer lowered.context.deinit();
+
+    const type_store = &lowered.context.type_store;
+    const funcs = lowered.tir.funcs.func_pool.data.items;
+
+    var matrix_ty: ?types.TypeId = null;
+    for (funcs) |fid| {
+        const frow = lowered.tir.funcs.Function.get(fid);
+        const fname = lowered.tir.instrs.strs.get(frow.name);
+        if (std.mem.eql(u8, fname, "make")) {
+            matrix_ty = frow.result;
+            break;
+        }
+    }
+
+    try testing.expect(matrix_ty != null);
+    const struct_ty = matrix_ty.?;
+    try testing.expectEqual(.Struct, type_store.getKind(struct_ty));
+    const matrix_struct = type_store.get(.Struct, struct_ty);
+    const matrix_fields = type_store.field_pool.slice(matrix_struct.fields);
+    try testing.expectEqual(@as(usize, 1), matrix_fields.len);
+
+    const rows_field = matrix_fields[0];
+    try testing.expect(std.mem.eql(u8, type_store.strs.get(rows_field.name), "rows"));
+    try testing.expectEqual(.Array, type_store.getKind(rows_field.ty));
+
+    const rows_array = type_store.get(.Array, rows_field.ty);
+    try testing.expectEqual(@as(usize, 2), rows_array.len);
+
+    const row_ty = rows_array.elem;
+    try testing.expectEqual(.Struct, type_store.getKind(row_ty));
+    const row_struct = type_store.get(.Struct, row_ty);
+    const row_fields = type_store.field_pool.slice(row_struct.fields);
+    try testing.expectEqual(@as(usize, 1), row_fields.len);
+
+    const data_field = row_fields[0];
+    try testing.expect(std.mem.eql(u8, type_store.strs.get(data_field.name), "data"));
+    try testing.expectEqual(.Array, type_store.getKind(data_field.ty));
+
+    const data_array = type_store.get(.Array, data_field.ty);
+    try testing.expectEqual(@as(usize, 3), data_array.len);
+    try testing.expectEqual(type_store.tI32().toRaw(), data_array.elem.toRaw());
+}
+
+test "tir: recursive generic produces self-referential pointer" {
+    const src =
+        \\
+        \\ List :: fn(comptime T: type) type {
+        \\   Type :: struct {
+        \\     value: T,
+        \\     next: ?*Type,
+        \\   }
+        \\   return Type;
+        \\ }
+        \\ use :: fn() List(i32) {
+        \\   return List(i32){ .value = 1, .next = null };
+        \\ }
+    ;
+
+    var lowered = try lowerToTir(std.heap.page_allocator, src);
+    defer lowered.tir.deinit();
+    defer lowered.context.deinit();
+
+    const type_store = &lowered.context.type_store;
+    const funcs = lowered.tir.funcs.func_pool.data.items;
+
+    var list_ty: ?types.TypeId = null;
+    for (funcs) |fid| {
+        const frow = lowered.tir.funcs.Function.get(fid);
+        const fname = lowered.tir.instrs.strs.get(frow.name);
+        if (std.mem.eql(u8, fname, "use")) {
+            list_ty = frow.result;
+            break;
+        }
+    }
+
+    try testing.expect(list_ty != null);
+    const struct_ty = list_ty.?;
+    try testing.expectEqual(.Struct, type_store.getKind(struct_ty));
+
+    const list_struct = type_store.get(.Struct, struct_ty);
+    const fields = type_store.field_pool.slice(list_struct.fields);
+    try testing.expectEqual(@as(usize, 2), fields.len);
+
+    const value_field = fields[0];
+    try testing.expect(std.mem.eql(u8, type_store.strs.get(value_field.name), "value"));
+    try testing.expectEqual(type_store.tI32().toRaw(), value_field.ty.toRaw());
+
+    const next_field = fields[1];
+    try testing.expect(std.mem.eql(u8, type_store.strs.get(next_field.name), "next"));
+    try testing.expectEqual(.Optional, type_store.getKind(next_field.ty));
+
+    const opt_ty = type_store.get(.Optional, next_field.ty).elem;
+    try testing.expectEqual(.Ptr, type_store.getKind(opt_ty));
+
+    const ptr_info = type_store.get(.Ptr, opt_ty);
+    try testing.expect(!ptr_info.is_const);
+    try testing.expectEqual(struct_ty.toRaw(), ptr_info.elem.toRaw());
+}
+
 test "tir: match bool fallback carries value to join" {
     const src =
         \\

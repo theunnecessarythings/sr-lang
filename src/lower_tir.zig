@@ -32,6 +32,7 @@ pub const LowerTir = struct {
     // Mapping: module ident name -> prefix for mangling (module.func -> prefix_func)
     module_prefix: std.StringHashMapUnmanaged([]const u8) = .{},
     module_call_cache: std.AutoHashMap(u64, StrId),
+    method_lowered: std.AutoHashMap(usize, void),
     monomorphizer: monomorphize.Monomorphizer,
     monomorph_context_stack: std.ArrayListUnmanaged(monomorphize.MonomorphizationContext) = .{},
     expr_type_override_stack: std.ArrayListUnmanaged(ExprTypeOverrideFrame) = .{},
@@ -136,6 +137,7 @@ pub const LowerTir = struct {
             .module_id = module_id,
             .chk = chk,
             .module_call_cache = std.AutoHashMap(u64, StrId).init(gpa),
+            .method_lowered = std.AutoHashMap(usize, void).init(gpa),
             .monomorphizer = monomorphize.Monomorphizer.init(gpa),
             .expr_type_override_stack = .{},
         };
@@ -147,6 +149,7 @@ pub const LowerTir = struct {
         while (it.next()) |p| self.gpa.free(p.*);
         self.module_prefix.deinit(self.gpa);
         self.module_call_cache.deinit();
+        self.method_lowered.deinit();
         while (self.monomorph_context_stack.items.len > 0) {
             var ctx = self.monomorph_context_stack.pop().?;
             ctx.deinit(self.gpa);
@@ -254,12 +257,22 @@ pub const LowerTir = struct {
         var b = Builder.init(self.gpa, &t);
 
         self.module_call_cache.clearRetainingCapacity();
+        self.method_lowered.clearRetainingCapacity();
 
         try self.lowerGlobalMlir(a, &b);
 
         // Lower top-level decls: functions and globals
         const decls = a.exprs.decl_pool.slice(a.unit.decls);
         for (decls) |did| try self.lowerTopDecl(a, &b, did);
+
+        var method_it = self.type_info.method_table.iterator();
+        while (method_it.next()) |entry| {
+            const method = entry.value_ptr.*;
+            const decl_id = method.decl_id;
+            if (self.method_lowered.contains(decl_id.toRaw())) continue;
+            const name = try self.methodSymbolName(a, decl_id);
+            try self.tryLowerNamedFunction(a, &b, decl_id, name, true);
+        }
 
         try self.monomorphizer.run(self, a, &b, monomorphLowerCallback);
 
@@ -477,6 +490,44 @@ pub const LowerTir = struct {
     // Top-level lowering
     // ============================
 
+    fn tryLowerNamedFunction(
+        self: *LowerTir,
+        a: *const ast.Ast,
+        b: *Builder,
+        did: ast.DeclId,
+        name: StrId,
+        is_method: bool,
+    ) !void {
+        if (is_method and self.method_lowered.contains(did.toRaw())) return;
+
+        const decl = a.exprs.Decl.get(did);
+        const kind = a.exprs.index.kinds.items[decl.value.toRaw()];
+        if (kind != .FunctionLit) return;
+
+        const fn_ty_opt = self.getExprType(decl.value);
+        if (fn_ty_opt == null) return;
+        const fn_ty = fn_ty_opt.?;
+        if (self.context.type_store.getKind(fn_ty) != .Function) return;
+
+        const fn_ty_info = self.context.type_store.get(.Function, fn_ty);
+        const param_tys = self.context.type_store.type_pool.slice(fn_ty_info.params);
+        for (param_tys) |param_ty| {
+            if (self.isAny(param_ty)) return;
+        }
+
+        const fn_lit = a.exprs.get(.FunctionLit, decl.value);
+        const params = a.exprs.param_pool.slice(fn_lit.params);
+        var skip_params: usize = 0;
+        while (skip_params < params.len and a.exprs.Param.get(params[skip_params]).is_comptime) : (skip_params += 1) {}
+        if (skip_params != 0) return;
+
+        try self.lowerFunction(a, b, name, decl.value, null);
+
+        if (is_method) {
+            try self.method_lowered.put(did.toRaw(), {});
+        }
+    }
+
     fn lowerTopDecl(self: *LowerTir, a: *const ast.Ast, b: *Builder, did: ast.DeclId) !void {
         const d = a.exprs.Decl.get(did);
         const kind = a.exprs.index.kinds.items[d.value.toRaw()];
@@ -486,29 +537,16 @@ pub const LowerTir = struct {
         }
 
         if (kind == .FunctionLit and !a.exprs.get(.FunctionLit, d.value).flags.is_extern) {
-            const name = if (!d.pattern.isNone()) self.bindingNameOfPattern(a, d.pattern.unwrap()) else null;
-            if (name) |nm| {
-                const fn_lit = a.exprs.get(.FunctionLit, d.value);
-                const params = a.exprs.param_pool.slice(fn_lit.params);
+            var name_opt: ?StrId = null;
+            if (!d.pattern.isNone()) {
+                name_opt = self.bindingNameOfPattern(a, d.pattern.unwrap());
+            } else if (!d.method_path.isNone()) {
+                name_opt = try self.methodSymbolName(a, did);
+            }
 
-                if (self.getDeclType(did)) |fn_ty| {
-                    if (self.context.type_store.getKind(fn_ty) == .Function) {
-                        const fn_ty_info = self.context.type_store.get(.Function, fn_ty);
-                        const param_tys = self.context.type_store.type_pool.slice(fn_ty_info.params);
-                        for (param_tys) |param_ty| {
-                            if (self.isAny(param_ty)) {
-                                return;
-                            }
-                        }
-                    }
-                }
-
-                var skip_params: usize = 0;
-                while (skip_params < params.len and a.exprs.Param.get(params[skip_params]).is_comptime) : (skip_params += 1) {}
-
-                if (skip_params == 0) {
-                    try self.lowerFunction(a, b, nm, d.value, null);
-                }
+            if (name_opt) |nm| {
+                const is_method = !d.method_path.isNone();
+                try self.tryLowerNamedFunction(a, b, did, nm, is_method);
             }
             return;
         }
@@ -845,6 +883,10 @@ pub const LowerTir = struct {
             // Destructure once for all names: bind as values for const, or slots for mut.
             try self.destructureDeclFromExpr(a, env, f, blk, d.pattern.unwrap(), d.value, decl_ty, !d.flags.is_const);
         } else {
+            if (!d.method_path.isNone()) {
+                const vk = a.exprs.index.kinds.items[d.value.toRaw()];
+                if (vk == .FunctionLit) return;
+            }
             // No pattern: just evaluate for side-effects.
             _ = try self.lowerExpr(a, env, f, blk, d.value, decl_ty, .rvalue);
         }
@@ -981,6 +1023,7 @@ pub const LowerTir = struct {
                     try buf.append(self.gpa, if (keep) ch else '_');
                 }
             },
+            .Type => |ty| try self.context.type_store.fmt(ty, w),
         }
     }
 
@@ -1013,6 +1056,26 @@ pub const LowerTir = struct {
 
     fn moduleCallKey(alias: ast.StrId, field: StrId) u64 {
         return (@as(u64, alias.toRaw()) << 32) | @as(u64, field.toRaw());
+    }
+
+    fn methodSymbolName(
+        self: *LowerTir,
+        a: *const ast.Ast,
+        did: ast.DeclId,
+    ) !StrId {
+        const decl = a.exprs.Decl.get(did);
+        std.debug.assert(!decl.method_path.isNone());
+        const seg_ids = a.exprs.method_path_pool.slice(decl.method_path.asRange());
+        if (seg_ids.len < 2) return error.LoweringBug;
+
+        const owner_seg = a.exprs.MethodPathSeg.get(seg_ids[0]);
+        const method_seg = a.exprs.MethodPathSeg.get(seg_ids[seg_ids.len - 1]);
+        const owner_name = a.exprs.strs.get(owner_seg.name);
+        const method_name = a.exprs.strs.get(method_seg.name);
+
+        const symbol = try std.fmt.allocPrint(self.gpa, "{s}__{s}", .{ owner_name, method_name });
+        defer self.gpa.free(symbol);
+        return self.context.type_store.strs.intern(symbol);
     }
 
     fn resolveModuleFieldCallee(
@@ -1148,6 +1211,12 @@ pub const LowerTir = struct {
         expr: ast.ExprId,
         result_ty: types.TypeId,
     ) !comp.ComptimeValue {
+        const result_kind = self.context.type_store.getKind(result_ty);
+        if (result_kind == .TypeType) {
+            const tt = self.context.type_store.get(.TypeType, result_ty);
+            return .{ .Type = tt.of };
+        }
+
         var tmp_tir = tir.TIR.init(self.gpa, &self.context.type_store);
         defer tmp_tir.deinit();
         var tmp_builder = tir.Builder.init(self.gpa, &tmp_tir);
@@ -1172,8 +1241,6 @@ pub const LowerTir = struct {
         try tmp_env.bind(self.gpa, a, tmp_builder.intern("comptime_api_ptr"), .{ .value = api_ptr_val, .ty = ptr_ty, .is_slot = false });
 
         const result_val_id = try self.lowerExpr(a, &tmp_env, &thunk_fn, &thunk_blk, expr, result_ty, .rvalue);
-
-        const result_kind = self.context.type_store.getKind(result_ty);
         if (result_kind != .Void) {
             const field_ty = switch (result_kind) {
                 .I64, .U64, .I32, .U32 => self.context.type_store.tI64(),
@@ -1247,6 +1314,7 @@ pub const LowerTir = struct {
             .Bool => |val| blk.builder.tirValue(.ConstBool, blk, result_ty, loc, .{ .value = val }),
             .Void => blk.builder.tirValue(.ConstUndef, blk, self.context.type_store.tVoid(), loc, .{}),
             .String => |s| blk.builder.tirValue(.ConstString, blk, result_ty, loc, .{ .text = blk.builder.intern(s) }),
+            .Type => return error.UnsupportedComptimeType,
         };
     }
 
@@ -1282,6 +1350,7 @@ pub const LowerTir = struct {
             .Bool => |val| blk.builder.tirValue(.ConstBool, blk, ty, tir.OptLocId.none(), .{ .value = val }),
             .Void => blk.builder.tirValue(.ConstUndef, blk, ty, tir.OptLocId.none(), .{}),
             .String => |s| blk.builder.tirValue(.ConstString, blk, ty, tir.OptLocId.none(), .{ .text = blk.builder.intern(s) }),
+            .Type => return error.UnsupportedComptimeType,
         };
     }
 
@@ -1297,6 +1366,13 @@ pub const LowerTir = struct {
         const row = a.exprs.get(.Call, id);
         var callee = try self.resolveCallee(a, f, row);
         const loc = self.exprOptLoc(a, id);
+        var arg_ids = a.exprs.expr_pool.slice(row.args);
+        var method_arg_buf: []ast.ExprId = &.{};
+        var method_decl_id: ?ast.DeclId = null;
+        var method_binding: ?types.TypeInfo.MethodBinding = null;
+        defer {
+            if (method_arg_buf.len != 0) self.gpa.free(method_arg_buf);
+        }
 
         var callee_name = a.exprs.strs.get(callee.name);
         if (std.mem.eql(u8, callee_name, "get_type_by_name") or
@@ -1328,7 +1404,6 @@ pub const LowerTir = struct {
             const fn_ptr_ptr = blk.builder.gep(blk, self.context.type_store.mkPtr(fn_ptr_ty, false), typed_api_ptr, &.{blk.builder.gepConst(fn_ptr_idx)}, loc);
             const fn_ptr = blk.builder.tirValue(.Load, blk, fn_ptr_ty, loc, .{ .ptr = fn_ptr_ptr, .@"align" = 0 });
 
-            const arg_ids = a.exprs.expr_pool.slice(row.args);
             var all_args: std.ArrayList(tir.ValueId) = .empty;
             defer all_args.deinit(self.gpa);
             try all_args.append(self.gpa, ctx_ptr);
@@ -1355,6 +1430,25 @@ pub const LowerTir = struct {
                 return try self.buildVariantItem(a, env, f, blk, row, ety, k, loc);
         }
 
+        if (self.type_info.getMethodBinding(row.callee)) |binding| {
+            if (a.exprs.index.kinds.items[row.callee.toRaw()] == .FieldAccess) {
+                const symbol = try self.methodSymbolName(a, binding.decl_id);
+                callee.name = symbol;
+                callee.fty = binding.func_type;
+                callee_name = self.context.type_store.strs.get(callee.name);
+                method_decl_id = binding.decl_id;
+                method_binding = binding;
+
+                if (binding.requires_implicit_receiver) {
+                    const field_expr = a.exprs.get(.FieldAccess, row.callee);
+                    method_arg_buf = try self.gpa.alloc(ast.ExprId, arg_ids.len + 1);
+                    method_arg_buf[0] = field_expr.parent;
+                    std.mem.copy(ast.ExprId, method_arg_buf[1..], arg_ids);
+                    arg_ids = method_arg_buf;
+                }
+            }
+        }
+
         // Try to get callee param types
         var param_tys: []const types.TypeId = &.{};
         var fixed: usize = 0;
@@ -1368,13 +1462,13 @@ pub const LowerTir = struct {
                 if (is_variadic and fixed > 0) fixed -= 1; // last param is the vararg pack type
             }
         }
-
-        // Lower args with expected param types when available
-        var arg_ids = a.exprs.expr_pool.slice(row.args);
-
         if (callee.fty) |fty| {
             if (self.context.type_store.index.kinds.items[fty.toRaw()] == .Function) {
-                if (self.findTopLevelDeclByName(a, callee.name)) |decl_id| {
+                const decl_id_opt = if (method_decl_id) |mid|
+                    mid
+                else
+                    self.findTopLevelDeclByName(a, callee.name);
+                if (decl_id_opt) |decl_id| {
                     const decl = a.exprs.Decl.get(decl_id);
                     const base_kind = a.exprs.index.kinds.items[decl.value.toRaw()];
                     if (base_kind == .FunctionLit) {
@@ -1488,7 +1582,15 @@ pub const LowerTir = struct {
         var i: usize = 0;
         while (i < arg_ids.len) : (i += 1) {
             const want: ?types.TypeId = if (i < fixed) param_tys[i] else null;
-            vals[i] = try self.lowerExpr(a, env, f, blk, arg_ids[i], want, .rvalue);
+            const mode: LowerMode = blk: {
+                if (method_binding) |mb| {
+                    if (mb.requires_implicit_receiver and mb.needs_addr_of and i == 0) {
+                        break :blk .lvalue_addr;
+                    }
+                }
+                break :blk .rvalue;
+            };
+            vals[i] = try self.lowerExpr(a, env, f, blk, arg_ids[i], want, mode);
         }
 
         // Final safety: if we know param types, coerce the fixed ones
@@ -1496,7 +1598,14 @@ pub const LowerTir = struct {
             i = 0;
             while (i < vals.len and i < fixed) : (i += 1) {
                 const want = param_tys[i];
-                const got = self.getExprType(arg_ids[i]) orelse want;
+                const got = blk: {
+                    if (method_binding) |mb| {
+                        if (mb.requires_implicit_receiver and mb.needs_addr_of and i == 0) {
+                            break :blk mb.self_param_type orelse want;
+                        }
+                    }
+                    break :blk self.getExprType(arg_ids[i]) orelse want;
+                };
                 if (want.toRaw() != got.toRaw()) {
                     const arg_loc = self.exprOptLoc(a, arg_ids[i]);
                     vals[i] = self.emitCoerce(blk, vals[i], got, want, arg_loc);

@@ -101,6 +101,7 @@ fn cloneComptimeValue(gpa: std.mem.Allocator, value: comp.ComptimeValue) !comp.C
         .Float => |v| .{ .Float = v },
         .Bool => |v| .{ .Bool = v },
         .String => |s| .{ .String = try gpa.dupe(u8, s) },
+        .Type => |ty| .{ .Type = ty },
     };
 }
 
@@ -238,11 +239,15 @@ pub const Monomorphizer = struct {
             .Void => {},
             .Int => |v| hasher.update(std.mem.asBytes(&v)),
             .Float => |v| hasher.update(std.mem.asBytes(&v)),
-        .Bool => |v| {
-            const byte: u8 = if (v) 1 else 0;
-            hasher.update(std.mem.asBytes(&byte));
-        },
+            .Bool => |v| {
+                const byte: u8 = if (v) 1 else 0;
+                hasher.update(std.mem.asBytes(&byte));
+            },
             .String => |s| hasher.update(s),
+            .Type => |ty| {
+                const raw: u32 = ty.toRaw();
+                hasher.update(std.mem.asBytes(&raw));
+            },
         }
     }
 
