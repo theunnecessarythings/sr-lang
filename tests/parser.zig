@@ -131,3 +131,39 @@ test "full success test" {
     var result = try parseProgramFromText(gpa, &context, src0);
     defer result.deinit();
 }
+
+test "decl: method path segments recorded" {
+    const gpa = testing.allocator;
+    var context = Context.init(gpa);
+    defer context.deinit();
+
+    const src =
+        \\Point :: struct {
+        \\  x: i32,
+        \\};
+        \\Point.distance :: fn(self: Point) i32 {
+        \\  return self.x;
+        \\};
+    ;
+
+    const src0 = try gpa.dupeZ(u8, src);
+    defer gpa.free(src0);
+
+    var ast = try parseProgramFromText(gpa, &context, src0);
+    defer ast.deinit();
+
+    const decl_ids = ast.exprs.decl_pool.slice(ast.program.top_decls);
+    try testing.expectEqual(@as(usize, 2), decl_ids.len);
+
+    const method_decl = ast.exprs.Decl.get(decl_ids[1]);
+    try testing.expect(!method_decl.method_path.isNone());
+
+    const range = method_decl.method_path.asRange();
+    const seg_ids = ast.exprs.method_path_pool.slice(range);
+    try testing.expectEqual(@as(usize, 2), seg_ids.len);
+
+    const owner_seg = ast.exprs.MethodPathSeg.get(seg_ids[0]);
+    const method_seg = ast.exprs.MethodPathSeg.get(seg_ids[1]);
+    try testing.expectEqualStrings("Point", ast.exprs.strs.get(owner_seg.name));
+    try testing.expectEqualStrings("distance", ast.exprs.strs.get(method_seg.name));
+}

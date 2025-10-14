@@ -33,6 +33,7 @@ pub const VariantFieldId = Index(Rows.VariantField);
 pub const KeyValueId = Index(Rows.KeyValue);
 pub const MatchArmId = Index(Rows.MatchArm);
 pub const StructFieldValueId = Index(Rows.StructFieldValue);
+pub const MethodPathSegId = Index(Rows.MethodPathSeg);
 pub const PathSegId = Index(PatRows.PathSeg);
 pub const PatternId = Index(PatternTag);
 pub const PatFieldId = Index(PatRows.StructField);
@@ -54,6 +55,7 @@ pub const RangeVariantField = RangeOf(VariantFieldId);
 pub const RangeKeyValue = RangeOf(KeyValueId);
 pub const RangeStructFieldValue = RangeOf(StructFieldValueId);
 pub const RangeMatchArm = RangeOf(MatchArmId);
+pub const RangeMethodPathSeg = RangeOf(MethodPathSegId);
 pub const RangePat = RangeOf(PatternId);
 pub const RangePathSeg = RangeOf(PathSegId);
 pub const RangePatField = RangeOf(PatFieldId);
@@ -64,6 +66,7 @@ pub const OptRangeDecl = OptRangeOf(DeclId);
 pub const OptRangeAttr = OptRangeOf(AttributeId);
 pub const OptRangeField = OptRangeOf(StructFieldId);
 pub const OptRangePat = OptRangeOf(PatternId);
+pub const OptRangeMethodPathSeg = OptRangeOf(MethodPathSegId);
 
 pub const LiteralKind = enum(u8) { int, float, bool, string, char, imaginary };
 pub const UnaryOp = enum(u8) { pos, neg, address_of, logical_not };
@@ -246,8 +249,16 @@ pub const Rows = struct {
     };
     pub const Attribute = struct { name: StrId, value: OptExprId, loc: LocId };
 
+    pub const MethodPathSeg = struct { name: StrId, loc: LocId };
     pub const DeclFlags = packed struct(u8) { is_const: bool, _pad: u7 = 0 };
-    pub const Decl = struct { pattern: OptPatternId, value: ExprId, ty: OptExprId, flags: DeclFlags, loc: LocId };
+    pub const Decl = struct {
+        pattern: OptPatternId,
+        value: ExprId,
+        ty: OptExprId,
+        method_path: OptRangeMethodPathSeg,
+        flags: DeclFlags,
+        loc: LocId,
+    };
 
     pub const TupleType = struct { elems: RangeExpr, loc: LocId };
     pub const ArrayType = struct { elem: ExprId, size: ExprId, loc: LocId };
@@ -491,6 +502,7 @@ pub const ExprStore = struct {
     Param: Table(Rows.Param) = .{},
     Attribute: Table(Rows.Attribute) = .{},
     Decl: Table(Rows.Decl) = .{},
+    MethodPathSeg: Table(Rows.MethodPathSeg) = .{},
 
     expr_pool: Pool(ExprId) = .{},
     decl_pool: Pool(DeclId) = .{},
@@ -502,6 +514,7 @@ pub const ExprStore = struct {
     sfield_pool: Pool(StructFieldId) = .{},
     efield_pool: Pool(EnumFieldId) = .{},
     vfield_pool: Pool(VariantFieldId) = .{},
+    method_path_pool: Pool(MethodPathSegId) = .{},
 
     strs: *StringInterner,
     locs: *const LocStore,
@@ -525,6 +538,7 @@ pub const ExprStore = struct {
         self.Param.deinit(gpa);
         self.Attribute.deinit(gpa);
         self.Decl.deinit(gpa);
+        self.MethodPathSeg.deinit(gpa);
         self.StructField.deinit(gpa);
         self.EnumField.deinit(gpa);
         self.VariantField.deinit(gpa);
@@ -539,6 +553,7 @@ pub const ExprStore = struct {
         self.sfield_pool.deinit(gpa);
         self.efield_pool.deinit(gpa);
         self.vfield_pool.deinit(gpa);
+        self.method_path_pool.deinit(gpa);
     }
 
     pub fn add(self: *@This(), comptime K: ExprKind, row: RowT(K)) ExprId {
@@ -576,6 +591,10 @@ pub const ExprStore = struct {
 
     pub fn addDecl(self: *@This(), row: Rows.Decl) DeclId {
         return self.Decl.add(self.gpa, row);
+    }
+
+    pub fn addMethodPathSeg(self: *@This(), row: Rows.MethodPathSeg) MethodPathSegId {
+        return self.MethodPathSeg.add(self.gpa, row);
     }
 
     pub fn addStructField(self: *@This(), row: Rows.StructField) StructFieldId {
@@ -792,6 +811,16 @@ pub const AstPrinter = struct {
         if (!row.pattern.isNone()) {
             try self.open("(pattern", .{});
             try self.printPattern(row.pattern.unwrap());
+            try self.close();
+        }
+
+        if (!row.method_path.isNone()) {
+            try self.open("(method_path", .{});
+            const seg_ids = self.exprs.method_path_pool.slice(row.method_path.asRange());
+            for (seg_ids) |sid| {
+                const seg = self.exprs.MethodPathSeg.get(sid);
+                try self.leaf("(seg \"{s}\")", .{self.s(seg.name)});
+            }
             try self.close();
         }
 
