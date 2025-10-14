@@ -85,7 +85,7 @@ pub const TypeInfo = struct {
 
         if (self.expr_types.items.len < need) {
             try self.expr_types.ensureTotalCapacity(gpa, need);
-            while (self.expr_types.items.len < need) self.expr_types.appendAssumeCapacity(self.store.*.tVoid()); // or any sentinel
+            while (self.expr_types.items.len < need) self.expr_types.appendAssumeCapacity(null);
         }
         if (self.field_index_for_expr.count() < need) {
             try self.field_index_for_expr.ensureTotalCapacity(gpa, need);

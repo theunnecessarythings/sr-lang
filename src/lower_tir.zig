@@ -32,6 +32,7 @@ pub const LowerTir = struct {
     // Mapping: module ident name -> prefix for mangling (module.func -> prefix_func)
     module_prefix: std.StringHashMapUnmanaged([]const u8) = .{},
     module_call_cache: std.AutoHashMap(u64, StrId),
+    method_lowered: std.AutoHashMap(usize, void),
     monomorphizer: monomorphize.Monomorphizer,
     monomorph_context_stack: std.ArrayListUnmanaged(monomorphize.MonomorphizationContext) = .{},
     expr_type_override_stack: std.ArrayListUnmanaged(ExprTypeOverrideFrame) = .{},
@@ -136,6 +137,7 @@ pub const LowerTir = struct {
             .module_id = module_id,
             .chk = chk,
             .module_call_cache = std.AutoHashMap(u64, StrId).init(gpa),
+            .method_lowered = std.AutoHashMap(usize, void).init(gpa),
             .monomorphizer = monomorphize.Monomorphizer.init(gpa),
             .expr_type_override_stack = .{},
         };
@@ -147,6 +149,7 @@ pub const LowerTir = struct {
         while (it.next()) |p| self.gpa.free(p.*);
         self.module_prefix.deinit(self.gpa);
         self.module_call_cache.deinit();
+        self.method_lowered.deinit();
         while (self.monomorph_context_stack.items.len > 0) {
             var ctx = self.monomorph_context_stack.pop().?;
             ctx.deinit(self.gpa);
@@ -254,12 +257,22 @@ pub const LowerTir = struct {
         var b = Builder.init(self.gpa, &t);
 
         self.module_call_cache.clearRetainingCapacity();
+        self.method_lowered.clearRetainingCapacity();
 
         try self.lowerGlobalMlir(a, &b);
 
         // Lower top-level decls: functions and globals
         const decls = a.exprs.decl_pool.slice(a.unit.decls);
         for (decls) |did| try self.lowerTopDecl(a, &b, did);
+
+        var method_it = self.type_info.method_table.iterator();
+        while (method_it.next()) |entry| {
+            const method = entry.value_ptr.*;
+            const decl_id = method.decl_id;
+            if (self.method_lowered.contains(decl_id.toRaw())) continue;
+            const name = try self.methodSymbolName(a, decl_id);
+            try self.tryLowerNamedFunction(a, &b, decl_id, name, true);
+        }
 
         try self.monomorphizer.run(self, a, &b, monomorphLowerCallback);
 
@@ -477,6 +490,44 @@ pub const LowerTir = struct {
     // Top-level lowering
     // ============================
 
+    fn tryLowerNamedFunction(
+        self: *LowerTir,
+        a: *const ast.Ast,
+        b: *Builder,
+        did: ast.DeclId,
+        name: StrId,
+        is_method: bool,
+    ) !void {
+        if (is_method and self.method_lowered.contains(did.toRaw())) return;
+
+        const decl = a.exprs.Decl.get(did);
+        const kind = a.exprs.index.kinds.items[decl.value.toRaw()];
+        if (kind != .FunctionLit) return;
+
+        const fn_ty_opt = self.getExprType(decl.value);
+        if (fn_ty_opt == null) return;
+        const fn_ty = fn_ty_opt.?;
+        if (self.context.type_store.getKind(fn_ty) != .Function) return;
+
+        const fn_ty_info = self.context.type_store.get(.Function, fn_ty);
+        const param_tys = self.context.type_store.type_pool.slice(fn_ty_info.params);
+        for (param_tys) |param_ty| {
+            if (self.isAny(param_ty)) return;
+        }
+
+        const fn_lit = a.exprs.get(.FunctionLit, decl.value);
+        const params = a.exprs.param_pool.slice(fn_lit.params);
+        var skip_params: usize = 0;
+        while (skip_params < params.len and a.exprs.Param.get(params[skip_params]).is_comptime) : (skip_params += 1) {}
+        if (skip_params != 0) return;
+
+        try self.lowerFunction(a, b, name, decl.value, null);
+
+        if (is_method) {
+            try self.method_lowered.put(did.toRaw(), {});
+        }
+    }
+
     fn lowerTopDecl(self: *LowerTir, a: *const ast.Ast, b: *Builder, did: ast.DeclId) !void {
         const d = a.exprs.Decl.get(did);
         const kind = a.exprs.index.kinds.items[d.value.toRaw()];
@@ -494,27 +545,8 @@ pub const LowerTir = struct {
             }
 
             if (name_opt) |nm| {
-                const fn_lit = a.exprs.get(.FunctionLit, d.value);
-                const params = a.exprs.param_pool.slice(fn_lit.params);
-
-                if (self.getDeclType(did)) |fn_ty| {
-                    if (self.context.type_store.getKind(fn_ty) == .Function) {
-                        const fn_ty_info = self.context.type_store.get(.Function, fn_ty);
-                        const param_tys = self.context.type_store.type_pool.slice(fn_ty_info.params);
-                        for (param_tys) |param_ty| {
-                            if (self.isAny(param_ty)) {
-                                return;
-                            }
-                        }
-                    }
-                }
-
-                var skip_params: usize = 0;
-                while (skip_params < params.len and a.exprs.Param.get(params[skip_params]).is_comptime) : (skip_params += 1) {}
-
-                if (skip_params == 0) {
-                    try self.lowerFunction(a, b, nm, d.value, null);
-                }
+                const is_method = !d.method_path.isNone();
+                try self.tryLowerNamedFunction(a, b, did, nm, is_method);
             }
             return;
         }
