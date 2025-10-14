@@ -2521,6 +2521,58 @@ pub const Checker = struct {
             _ = try self.checkExpr(arg_id);
         }
 
+        const pieces = self.ast_unit.exprs.mlir_piece_pool.slice(row.pieces);
+        for (pieces) |pid| {
+            const piece = self.ast_unit.exprs.MlirPiece.get(pid);
+            if (piece.kind != .splice) continue;
+
+            const name = piece.text;
+            const loc = self.exprLoc(row);
+            const sym_id = self.lookup(name) orelse {
+                try self.context.diags.addError(loc, .mlir_splice_unknown_identifier, .{ self.getStr(name) });
+                return null;
+            };
+            const sym = self.symtab.syms.get(sym_id);
+
+            if (!sym.is_comptime) {
+                try self.context.diags.addError(loc, .mlir_splice_not_comptime, .{ self.getStr(name) });
+                return null;
+            }
+
+            if (!sym.origin_decl.isNone() and sym.is_comptime) {
+                const did = sym.origin_decl.unwrap();
+                try self.type_info.setMlirSpliceInfo(pid, .{ .decl = .{ .decl_id = did, .name = name } });
+                continue;
+            }
+
+            switch (sym.kind) {
+                .Param => {
+                    if (!sym.is_comptime or sym.origin_param.isNone()) {
+                        try self.context.diags.addError(loc, .mlir_splice_not_comptime, .{ self.getStr(name) });
+                        return null;
+                    }
+
+                    const pid_param = sym.origin_param.unwrap();
+                    const param_row = self.ast_unit.exprs.Param.get(pid_param);
+                    var param_ty = self.context.type_store.tAny();
+                    if (!param_row.ty.isNone()) {
+                        if (try check_types.typeFromTypeExpr(self, param_row.ty.unwrap())) |ty|
+                            param_ty = ty;
+                    }
+
+                    if (self.context.type_store.getKind(param_ty) == .TypeType) {
+                        try self.type_info.setMlirSpliceInfo(pid, .{ .type_param = .{ .param_id = pid_param, .name = name, .ty = param_ty } });
+                    } else {
+                        try self.type_info.setMlirSpliceInfo(pid, .{ .value_param = .{ .param_id = pid_param, .name = name, .ty = param_ty } });
+                    }
+                },
+                else => {
+                    try self.context.diags.addError(loc, .mlir_splice_not_comptime, .{ self.getStr(name) });
+                    return null;
+                },
+            }
+        }
+
         if (row.kind != .Operation and !self.type_info.hasComptimeValue(id)) {
             const ctx_ptr = self.pipeline.ensureMlirContext();
             const mlir_ctx = ctx_ptr.*;

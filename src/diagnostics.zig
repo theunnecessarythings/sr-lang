@@ -269,6 +269,9 @@ pub const DiagnosticCode = enum {
 
     mlir_verification_failed,
     mlir_parse_error,
+    mlir_splice_unknown_identifier,
+    mlir_splice_not_comptime,
+    mlir_splice_unbound,
 
     comptime_type_not_supported,
 };
@@ -481,6 +484,9 @@ pub fn diagnosticMessageFmt(code: DiagnosticCode) []const u8 {
         .mlir_verification_failed => "MLIR verification failed",
         .mlir_block_not_a_type => "MLIR block is not a type",
         .mlir_parse_error => "failed to parse inline MLIR block: {s}",
+        .mlir_splice_unknown_identifier => "unknown '@{s}' splice",
+        .mlir_splice_not_comptime => "'@{s}' must name a comptime value or type",
+        .mlir_splice_unbound => "no comptime binding available for '@{s}'",
 
         .comptime_type_not_supported => "comptime type not supported",
     };

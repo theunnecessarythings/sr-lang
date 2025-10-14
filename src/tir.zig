@@ -2,6 +2,7 @@ const std = @import("std");
 const dod = @import("cst.zig");
 const ast = @import("ast.zig");
 const types = @import("types.zig");
+const comp = @import("comptime.zig");
 
 pub const OptLocId = dod.OptLocId;
 
@@ -130,6 +131,20 @@ pub const ConstInit = union(enum) {
     string: StrId,
 };
 
+fn destroyComptimeValue(gpa: std.mem.Allocator, value: *comp.ComptimeValue) void {
+    switch (value.*) {
+        .String => |s| {
+            const mut: []u8 = @constCast(s);
+            gpa.free(mut);
+        },
+        .MlirModule => |*mod| {
+            mod.destroy();
+        },
+        else => {},
+    }
+    value.* = .Void;
+}
+
 pub const Rows = struct {
     // All rows that produce a value carry (result, ty)
     pub const Bin2 = struct { result: ValueId, ty: types.TypeId, lhs: ValueId, rhs: ValueId, loc: OptLocId };
@@ -174,7 +189,7 @@ pub const Rows = struct {
 
     pub const Call = struct { result: ValueId, ty: types.TypeId, callee: StrId, args: RangeValue, loc: OptLocId };
     pub const IndirectCall = struct { result: ValueId, ty: types.TypeId, callee: ValueId, args: RangeValue, loc: OptLocId };
-    pub const MlirPiece = struct { kind: ast.MlirPieceKind, text: StrId };
+    pub const MlirPiece = struct { kind: ast.MlirPieceKind, text: StrId, value: comp.ComptimeValue };
     pub const MlirBlock = struct {
         result: OptValueId,
         ty: types.TypeId,
@@ -368,6 +383,10 @@ pub const InstrStore = struct {
         }
         self.GepIndex.deinit(gpa);
         self.StructFieldInit.deinit(gpa);
+        if (self.MlirPiece.list.len != 0) {
+            const values = self.MlirPiece.col("value");
+            for (values) |*val| destroyComptimeValue(gpa, val);
+        }
         self.MlirPiece.deinit(gpa);
         self.instr_pool.deinit(gpa);
         self.value_pool.deinit(gpa);
