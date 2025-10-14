@@ -106,3 +106,64 @@ test "control_flow: match with if guard" {
     const code = getSource("", src);
     try runCompilerTest(code, "Size: Medium\n");
 }
+
+test "control_flow: match with open and closed range patterns" {
+    const src =
+        \\x := 5
+        \\result1 := match x {
+        \\  ..5 => "lt",
+        \\  _ => "ge",
+        \\}
+        \\y := 5
+        \\result2 := match y {
+        \\  ..=5 => "le",
+        \\  _ => "gt",
+        \\}
+        \\z := 5
+        \\result3 := match z {
+        \\  5.. => "ge",
+        \\  _ => "lt",
+        \\}
+        \\printf("%s %s %s\n", result1, result2, result3)
+    ;
+    const code = getSource("", src);
+    try runCompilerTest(code, "ge le ge\n");
+}
+
+test "control_flow: match with range inside at-pattern" {
+    const src =
+        \\x := 7
+        \\result := match x {
+        \\  y @ (0..5) => y,
+        \\  _ => 99,
+        \\}
+        \\printf("Result: %d\n", result)
+    ;
+    const code = getSource("", src);
+    try runCompilerTest(code, "Result: 99\n");
+}
+
+test "control_flow: match with range inside or-pattern" {
+    const src =
+        \\x := 10
+        \\result := match x {
+        \\  0 | 1..5 => 111,
+        \\  _ => 222,
+        \\}
+        \\printf("Result: %d\n", result)
+    ;
+    const code = getSource("", src);
+    try runCompilerTest(code, "Result: 222\n");
+}
+
+test "control_flow: match with descending range pattern reports diagnostic" {
+    const src =
+        \\x := 0
+        \\_ := match x {
+        \\  5..3 => 1,
+        \\  _ => 2,
+        \\}
+    ;
+    const code = getSource("", src);
+    try std.testing.expectError(error.CompilationFailed, runCompilerTest(code, ""));
+}

@@ -40,9 +40,9 @@ test "generics: nested type specializations" {
 
     const src =
         \\
-        \\ row0 := Vec(i32, 3){ .data = [1, 2, 3] }
-        \\ row1 := Vec(i32, 3){ .data = [4, 5, 6] }
-        \\ mat := MatrixI32x2x3{ .rows = [row0, row1] }
+        \\ row0 := Vec(i32, 3){ data : [1, 2, 3] }
+        \\ row1 := Vec(i32, 3){ data : [4, 5, 6] }
+        \\ mat := MatrixI32x2x3{ rows : [row0, row1] }
         \\ printf("%d,%d\n", mat.rows[0].data[2], mat.rows[1].data[0])
     ;
 

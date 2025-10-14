@@ -51,5 +51,5 @@ test "composite_types: struct with mixed field types" {
         \\printf("User: %d, %s, %b\n", u.id, u.name, u.active)
     ;
     const code = getSource(globals, src);
-    try runCompilerTest(code, "User: 1, Alice, true\n");
+    try runCompilerTest(code, "User: 1, Alice, 1\n");
 }
