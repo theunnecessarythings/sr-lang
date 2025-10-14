@@ -3,6 +3,7 @@ const ast = @import("ast.zig");
 const comp = @import("comptime.zig");
 const types = @import("types.zig");
 const tir = @import("tir.zig");
+const mlir = @import("mlir_bindings.zig");
 
 pub const BindingValue = struct {
     ty: types.TypeId,
@@ -102,6 +103,12 @@ fn cloneComptimeValue(gpa: std.mem.Allocator, value: comp.ComptimeValue) !comp.C
         .Bool => |v| .{ .Bool = v },
         .String => |s| .{ .String = try gpa.dupe(u8, s) },
         .Type => |ty| .{ .Type = ty },
+        .MlirType => |ty| .{ .MlirType = ty },
+        .MlirAttribute => |attr| .{ .MlirAttribute = attr },
+        .MlirModule => |mod| blk: {
+            const cloned_op = mlir.Operation.clone(mod.getOperation());
+            break :blk .{ .MlirModule = mlir.Module.fromOperation(cloned_op) };
+        },
     };
 }
 
@@ -110,6 +117,9 @@ fn destroyComptimeValue(gpa: std.mem.Allocator, value: *comp.ComptimeValue) void
         .String => |s| {
             const mut: []u8 = @constCast(s);
             gpa.free(mut);
+        },
+        .MlirModule => |*mod| {
+            mod.destroy();
         },
         else => {},
     }
@@ -247,6 +257,18 @@ pub const Monomorphizer = struct {
             .Type => |ty| {
                 const raw: u32 = ty.toRaw();
                 hasher.update(std.mem.asBytes(&raw));
+            },
+            .MlirType => |ty| {
+                const ptr_val: usize = if (ty.handle.ptr) |p| @intFromPtr(p) else 0;
+                hasher.update(std.mem.asBytes(&ptr_val));
+            },
+            .MlirAttribute => |attr| {
+                const ptr_val: usize = if (attr.handle.ptr) |p| @intFromPtr(p) else 0;
+                hasher.update(std.mem.asBytes(&ptr_val));
+            },
+            .MlirModule => |mod| {
+                const ptr_val: usize = if (mod.handle.ptr) |p| @intFromPtr(p) else 0;
+                hasher.update(std.mem.asBytes(&ptr_val));
             },
         }
     }

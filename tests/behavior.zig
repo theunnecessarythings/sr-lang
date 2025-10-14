@@ -565,6 +565,17 @@ test "behavior: mlir module block" {
     try runCompilerTest(code, "MLIR module assigned\n");
 }
 
+test "behavior: comptime mlir type reuse" {
+    const src =
+        \\ const mlir_ty = comptime { mlir type { !llvm.ptr } }
+        \\ const reused_ty = comptime { mlir_ty }
+        \\ _ = reused_ty
+        \\ printf("MLIR comptime handles ok\n")
+    ;
+    const code = getSource("", src);
+    try runCompilerTest(code, "MLIR comptime handles ok\n");
+}
+
 test "behavior: defer statement" {
     const global =
         \\ cleanup_ran := 0

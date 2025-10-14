@@ -1351,6 +1351,21 @@ pub const LowerTir = struct {
             return comp.ComptimeValue{ .Float = @floatCast(f64, raw) };
         }
 
+        if (result_kind == .MlirType) {
+            const raw = callComptimeThunk(mlir.Type, non_null_ptr, &comptime_api);
+            return comp.ComptimeValue{ .MlirType = raw };
+        }
+
+        if (result_kind == .MlirAttribute) {
+            const raw = callComptimeThunk(mlir.Attribute, non_null_ptr, &comptime_api);
+            return comp.ComptimeValue{ .MlirAttribute = raw };
+        }
+
+        if (result_kind == .MlirModule) {
+            const raw = callComptimeThunk(mlir.Module, non_null_ptr, &comptime_api);
+            return comp.ComptimeValue{ .MlirModule = raw };
+        }
+
         inline for (.{
             .{ .kind = types.TypeKind.I8, .T = i8 },
             .{ .kind = types.TypeKind.I16, .T = i16 },
@@ -1413,6 +1428,9 @@ pub const LowerTir = struct {
             .Void => blk.builder.tirValue(.ConstUndef, blk, self.context.type_store.tVoid(), loc, .{}),
             .String => |s| blk.builder.tirValue(.ConstString, blk, result_ty, loc, .{ .text = blk.builder.intern(s) }),
             .Type => return error.UnsupportedComptimeType,
+            .MlirType => blk.builder.tirValue(.ConstUndef, blk, result_ty, loc, .{}),
+            .MlirAttribute => blk.builder.tirValue(.ConstUndef, blk, result_ty, loc, .{}),
+            .MlirModule => blk.builder.tirValue(.ConstUndef, blk, result_ty, loc, .{}),
         };
     }
 
@@ -1449,6 +1467,9 @@ pub const LowerTir = struct {
             .Void => blk.builder.tirValue(.ConstUndef, blk, ty, tir.OptLocId.none(), .{}),
             .String => |s| blk.builder.tirValue(.ConstString, blk, ty, tir.OptLocId.none(), .{ .text = blk.builder.intern(s) }),
             .Type => return error.UnsupportedComptimeType,
+            .MlirType => blk.builder.tirValue(.ConstUndef, blk, ty, tir.OptLocId.none(), .{}),
+            .MlirAttribute => blk.builder.tirValue(.ConstUndef, blk, ty, tir.OptLocId.none(), .{}),
+            .MlirModule => blk.builder.tirValue(.ConstUndef, blk, ty, tir.OptLocId.none(), .{}),
         };
     }
 

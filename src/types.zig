@@ -203,6 +203,9 @@ pub const TypeKind = enum(u8) {
     Variant,
     Error,
     ErrorSet,
+    MlirModule,
+    MlirAttribute,
+    MlirType,
     TypeType,
     Noreturn,
 };
@@ -246,6 +249,9 @@ pub const Rows = struct {
     pub const Variant = struct { variants: RangeField };
     pub const Error = struct { variants: RangeField };
     pub const ErrorSet = struct { value_ty: TypeId, error_ty: TypeId };
+    pub const MlirModule = struct {};
+    pub const MlirAttribute = struct {};
+    pub const MlirType = struct {};
     pub const TypeType = struct { of: TypeId };
 };
 
@@ -275,6 +281,9 @@ pub const TypeStore = struct {
     Any: Table(Rows.Any) = .{},
     Undef: Table(Rows.Undef) = .{},
     Noreturn: Table(Rows.Noreturn) = .{},
+    MlirModule: Table(Rows.MlirModule) = .{},
+    MlirAttribute: Table(Rows.MlirAttribute) = .{},
+    MlirType: Table(Rows.MlirType) = .{},
 
     Complex: Table(Rows.Complex) = .{},
     Tensor: Table(Rows.Tensor) = .{},
@@ -322,6 +331,9 @@ pub const TypeStore = struct {
     t_undef: ?TypeId = null,
     t_type: ?TypeId = null,
     t_noreturn: ?TypeId = null,
+    t_mlir_module: ?TypeId = null,
+    t_mlir_attribute: ?TypeId = null,
+    t_mlir_type: ?TypeId = null,
 
     pub fn init(gpa: std.mem.Allocator, strs: *StringInterner) TypeStore {
         return .{ .gpa = gpa, .strs = strs };
@@ -473,6 +485,27 @@ pub const TypeStore = struct {
         if (self.t_noreturn) |id| return id;
         const id = self.add(.Noreturn, .{});
         self.t_noreturn = id;
+        return id;
+    }
+
+    pub fn tMlirModule(self: *TypeStore) TypeId {
+        if (self.t_mlir_module) |id| return id;
+        const id = self.add(.MlirModule, .{});
+        self.t_mlir_module = id;
+        return id;
+    }
+
+    pub fn tMlirAttribute(self: *TypeStore) TypeId {
+        if (self.t_mlir_attribute) |id| return id;
+        const id = self.add(.MlirAttribute, .{});
+        self.t_mlir_attribute = id;
+        return id;
+    }
+
+    pub fn tMlirType(self: *TypeStore) TypeId {
+        if (self.t_mlir_type) |id| return id;
+        const id = self.add(.MlirType, .{});
+        self.t_mlir_type = id;
         return id;
     }
 
@@ -760,6 +793,9 @@ pub const TypeStore = struct {
             .Any => try w.print("any", .{}),
             .Noreturn => try w.print("noreturn", .{}),
             .Undef => try w.print("undef", .{}),
+            .MlirModule => try w.print("mlir.module", .{}),
+            .MlirAttribute => try w.print("mlir.attribute", .{}),
+            .MlirType => try w.print("mlir.type", .{}),
             .Complex => {
                 const r = self.get(.Complex, id);
                 try w.print("complex@", .{});

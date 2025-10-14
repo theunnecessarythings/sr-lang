@@ -110,6 +110,7 @@ pub fn typeSize(self: *Checker, ty_id: types.TypeId) ?usize {
         .I32, .U32, .F32 => 4,
         .I64, .U64, .F64, .Usize => 8, // best-effort default for 64-bit targets
         .Ptr => 8, // best-effort default for 64-bit targets
+        .MlirModule, .MlirAttribute, .MlirType => 8,
         .Void => 0,
         .Any => null, // unknown by definition
         .String => 8, // best-effort: pointer-like handle; real impl is more complex
@@ -417,14 +418,16 @@ pub fn typeFromTypeExpr(self: *Checker, id: ast.ExprId) anyerror!?types.TypeId {
         },
         .MlirBlock => blk: {
             const row = self.ast_unit.exprs.get(.MlirBlock, id);
-            if (row.kind == .Type) {
-                // For now, we'll just return tAny() for MLIR types.
-                // More sophisticated type resolution for MLIR types can be added later.
-                break :blk self.context.type_store.tAny();
-            } else {
-                try self.context.diags.addError(self.ast_unit.exprs.locs.get(row.loc), .mlir_block_not_a_type, .{});
-                break :blk null;
-            }
+            const ts = &self.context.type_store;
+            break :blk switch (row.kind) {
+                .Type => ts.tMlirType(),
+                .Attribute => ts.tMlirAttribute(),
+                .Module => ts.tMlirModule(),
+                .Operation => blk_inner: {
+                    try self.context.diags.addError(self.ast_unit.exprs.locs.get(row.loc), .mlir_block_not_a_type, .{});
+                    break :blk_inner null;
+                },
+            };
         },
         .TupleType => blk_tt: {
             const row = self.ast_unit.exprs.get(.TupleType, id);
