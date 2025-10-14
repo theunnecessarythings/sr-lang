@@ -430,6 +430,19 @@ pub const JsonPrinter = struct {
                 try self.stream.write(@tagName(node.kind));
                 try self.stream.objectField("text");
                 try self.stream.write(self.s(node.text));
+                try self.stream.objectField("pieces");
+                try self.stream.beginArray();
+                const pieces = self.exprs.mlir_piece_pool.slice(node.pieces);
+                for (pieces) |pid| {
+                    const piece = self.exprs.MlirPiece.get(pid);
+                    try self.stream.beginObject();
+                    try self.stream.objectField("kind");
+                    try self.stream.write(@tagName(piece.kind));
+                    try self.stream.objectField("text");
+                    try self.stream.write(self.s(piece.text));
+                    try self.stream.endObject();
+                }
+                try self.stream.endArray();
                 try self.stream.objectField("args");
                 try self.printExprRange(node.args);
             },

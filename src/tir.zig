@@ -2,6 +2,7 @@ const std = @import("std");
 const dod = @import("cst.zig");
 const ast = @import("ast.zig");
 const types = @import("types.zig");
+const comp = @import("comptime.zig");
 
 pub const OptLocId = dod.OptLocId;
 
@@ -24,6 +25,7 @@ pub const GlobalId = dod.Index(FuncRows.Global);
 pub const EdgeId = dod.Index(Rows.Edge);
 pub const CaseId = dod.Index(Rows.Case);
 pub const AttributeId = dod.Index(Rows.Attribute);
+pub const MlirPieceId = dod.Index(Rows.MlirPiece);
 
 pub const RangeValue = dod.RangeOf(ValueId);
 pub const RangeBlock = dod.RangeOf(BlockId);
@@ -34,6 +36,7 @@ pub const RangeCase = dod.RangeOf(CaseId);
 pub const RangeFunc = dod.RangeOf(FuncId);
 pub const RangeGlobal = dod.RangeOf(GlobalId);
 pub const RangeAttribute = dod.RangeOf(AttributeId);
+pub const RangeMlirPiece = dod.RangeOf(MlirPieceId);
 
 pub const Pool = dod.Pool;
 pub const Table = dod.Table;
@@ -128,6 +131,20 @@ pub const ConstInit = union(enum) {
     string: StrId,
 };
 
+fn destroyComptimeValue(gpa: std.mem.Allocator, value: *comp.ComptimeValue) void {
+    switch (value.*) {
+        .String => |s| {
+            const mut: []u8 = @constCast(s);
+            gpa.free(mut);
+        },
+        .MlirModule => |*mod| {
+            mod.destroy();
+        },
+        else => {},
+    }
+    value.* = .Void;
+}
+
 pub const Rows = struct {
     // All rows that produce a value carry (result, ty)
     pub const Bin2 = struct { result: ValueId, ty: types.TypeId, lhs: ValueId, rhs: ValueId, loc: OptLocId };
@@ -172,7 +189,17 @@ pub const Rows = struct {
 
     pub const Call = struct { result: ValueId, ty: types.TypeId, callee: StrId, args: RangeValue, loc: OptLocId };
     pub const IndirectCall = struct { result: ValueId, ty: types.TypeId, callee: ValueId, args: RangeValue, loc: OptLocId };
-    pub const MlirBlock = struct { result: OptValueId, ty: types.TypeId, kind: ast.MlirKind, expr: ast.ExprId, text: StrId, args: RangeValue, loc: OptLocId };
+    pub const MlirPiece = struct { kind: ast.MlirPieceKind, text: StrId, value: comp.ComptimeValue };
+    pub const MlirBlock = struct {
+        result: OptValueId,
+        ty: types.TypeId,
+        kind: ast.MlirKind,
+        expr: ast.ExprId,
+        text: StrId,
+        pieces: RangeMlirPiece,
+        args: RangeValue,
+        loc: OptLocId,
+    };
     pub const VariantMake = struct { result: ValueId, ty: types.TypeId, tag: u32, payload: OptValueId, payload_ty: types.TypeId, loc: OptLocId };
     pub const VariantTag = struct { result: ValueId, ty: types.TypeId, value: ValueId, loc: OptLocId };
     pub const VariantPayloadPtr = struct { result: ValueId, ty: types.TypeId, value: ValueId, loc: OptLocId };
@@ -319,6 +346,7 @@ pub const InstrStore = struct {
     Call: Table(Rows.Call) = .{},
     IndirectCall: Table(Rows.IndirectCall) = .{},
     MlirBlock: Table(Rows.MlirBlock) = .{},
+    MlirPiece: Table(Rows.MlirPiece) = .{},
     VariantMake: Table(Rows.VariantMake) = .{},
     VariantTag: Table(Rows.VariantTag) = .{},
     VariantPayloadPtr: Table(Rows.VariantPayloadPtr) = .{},
@@ -340,6 +368,7 @@ pub const InstrStore = struct {
     sfi_pool: Pool(StructFieldInitId) = .{},
     attribute_pool: Pool(AttributeId) = .{},
     val_list_pool: Pool(ValueId) = .{},
+    mlir_piece_pool: Pool(MlirPieceId) = .{},
 
     strs: *StringInterner,
 
@@ -354,11 +383,17 @@ pub const InstrStore = struct {
         }
         self.GepIndex.deinit(gpa);
         self.StructFieldInit.deinit(gpa);
+        if (self.MlirPiece.list.len != 0) {
+            const values = self.MlirPiece.col("value");
+            for (values) |*val| destroyComptimeValue(gpa, val);
+        }
+        self.MlirPiece.deinit(gpa);
         self.instr_pool.deinit(gpa);
         self.value_pool.deinit(gpa);
         self.gep_pool.deinit(gpa);
         self.sfi_pool.deinit(gpa);
         self.val_list_pool.deinit(gpa);
+        self.mlir_piece_pool.deinit(gpa);
     }
 
     pub fn add(self: *@This(), comptime K: OpKind, row: RowT(K)) InstrId {
@@ -372,6 +407,10 @@ pub const InstrStore = struct {
         const row_idx = self.index.rows.items[id.toRaw()];
         const tbl: *const Table(RowT(K)) = &@field(self, @tagName(K));
         return tbl.get(.{ .index = row_idx });
+    }
+
+    pub fn addMlirPieceRow(self: *@This(), row: Rows.MlirPiece) MlirPieceId {
+        return self.MlirPiece.add(self.gpa, row);
     }
 };
 
@@ -915,11 +954,22 @@ pub const Builder = struct {
         kind: ast.MlirKind,
         expr: ast.ExprId,
         text: StrId,
+        pieces: []const MlirPieceId,
         args: []const ValueId,
         loc: OptLocId,
     ) InstrId {
         const args_range = self.t.instrs.value_pool.pushMany(self.gpa, args);
-        const row: Rows.MlirBlock = .{ .result = .some(result), .ty = ty, .kind = kind, .expr = expr, .text = text, .args = args_range, .loc = loc };
+        const pieces_range = self.t.instrs.mlir_piece_pool.pushMany(self.gpa, pieces);
+        const row: Rows.MlirBlock = .{
+            .result = .some(result),
+            .ty = ty,
+            .kind = kind,
+            .expr = expr,
+            .text = text,
+            .pieces = pieces_range,
+            .args = args_range,
+            .loc = loc,
+        };
         const id = self.t.instrs.add(.MlirBlock, row);
         blk.instrs.append(self.gpa, id) catch @panic("OOM");
         return id;
@@ -1655,6 +1705,18 @@ pub const TirPrinter = struct {
                 } else {
                     try self.leaf("result=null", .{});
                 }
+                const pieces = self.tir.instrs.mlir_piece_pool.slice(r.pieces);
+                try self.ws();
+                try self.writer.writeAll("pieces=[");
+                for (pieces, 0..) |pid, i| {
+                    if (i > 0) try self.writer.writeAll(", ");
+                    const piece = self.tir.instrs.MlirPiece.get(pid);
+                    switch (piece.kind) {
+                        .literal => try self.writer.print("literal:\"{s}\"", .{self.s(piece.text)}),
+                        .splice => try self.writer.print("splice:{s}", .{self.s(piece.text)}),
+                    }
+                }
+                try self.writer.writeAll("]\n");
                 try self.ws();
                 try self.writer.writeAll("args=");
                 const args = self.tir.instrs.value_pool.slice(r.args);

@@ -19,6 +19,23 @@ pub const Pool = cst.Pool;
 pub const StoreIndex = cst.StoreIndex;
 pub const StrId = cst.StrId;
 
+pub const MlirSpliceInfo = union(enum) {
+    decl: struct {
+        decl_id: ast.DeclId,
+        name: ast.StrId,
+    },
+    value_param: struct {
+        param_id: ast.ParamId,
+        name: ast.StrId,
+        ty: TypeId,
+    },
+    type_param: struct {
+        param_id: ast.ParamId,
+        name: ast.StrId,
+        ty: TypeId,
+    },
+};
+
 pub const TypeInfo = struct {
     gpa: std.mem.Allocator,
     store: *TypeStore,
@@ -29,6 +46,7 @@ pub const TypeInfo = struct {
     comptime_values: std.AutoArrayHashMapUnmanaged(ast.ExprId, comp.ComptimeValue) = .{},
     method_table: std.AutoArrayHashMapUnmanaged(MethodKey, MethodEntry) = .{},
     method_bindings: std.AutoArrayHashMapUnmanaged(u32, MethodBinding) = .{},
+    mlir_splice_info: std.AutoArrayHashMapUnmanaged(u32, MlirSpliceInfo) = .{},
 
     pub fn init(gpa: std.mem.Allocator, store: *TypeStore) TypeInfo {
         return .{
@@ -48,6 +66,7 @@ pub const TypeInfo = struct {
         self.comptime_values.deinit(self.gpa);
         self.method_table.deinit(self.gpa);
         self.method_bindings.deinit(self.gpa);
+        self.mlir_splice_info.deinit(self.gpa);
     }
 
     pub fn setModule(self: *TypeInfo, module_id: usize) void {
@@ -200,6 +219,17 @@ pub const TypeInfo = struct {
             else => {},
         }
         value_ptr.* = .Void;
+    }
+
+    pub fn setMlirSpliceInfo(self: *TypeInfo, piece_id: ast.MlirPieceId, info: MlirSpliceInfo) !void {
+        const gop = try self.mlir_splice_info.getOrPut(self.gpa, piece_id.toRaw());
+        gop.value_ptr.* = info;
+    }
+
+    pub fn getMlirSpliceInfo(self: *const TypeInfo, piece_id: ast.MlirPieceId) ?MlirSpliceInfo {
+        if (self.mlir_splice_info.get(piece_id.toRaw())) |info_ptr|
+            return info_ptr.*;
+        return null;
     }
 };
 
