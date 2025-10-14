@@ -1401,7 +1401,7 @@ pub const LowerTir = struct {
                 const field_expr = a.exprs.get(.FieldAccess, row.callee);
                 method_arg_buf = try self.gpa.alloc(ast.ExprId, arg_ids.len + 1);
                 method_arg_buf[0] = field_expr.parent;
-                std.mem.copy(ast.ExprId, method_arg_buf[1..], arg_ids);
+                std.mem.copyForwards(ast.ExprId, method_arg_buf[1..], arg_ids);
                 arg_ids = method_arg_buf;
             }
         }
