@@ -329,6 +329,7 @@ pub const VariantFieldId = Index(Rows.VariantField);
 pub const KeyValueId = Index(Rows.KeyValue);
 pub const MatchArmId = Index(Rows.MatchArm);
 pub const StructFieldValueId = Index(Rows.StructFieldValue);
+pub const MethodPathSegId = Index(Rows.MethodPathSeg);
 
 pub const PathSegId = Index(PatRows.PathSeg);
 pub const PatternId = Index(PatTag);
@@ -346,6 +347,7 @@ pub const OptRangeDecl = OptRangeOf(DeclId);
 pub const OptRangeAttr = OptRangeOf(AttributeId);
 pub const OptRangeField = OptRangeOf(StructFieldId);
 pub const OptRangePat = OptRangeOf(PatternId);
+pub const OptRangeMethodPathSeg = OptRangeOf(MethodPathSegId);
 
 ////////////////////////////////////////////////////////////////
 //                    Expression Kinds & Rows
@@ -510,8 +512,16 @@ pub const Rows = struct {
     pub const Attribute = struct { name: StrId, value: OptExprId, loc: LocId };
 
     // ---------- decls ----------
+    pub const MethodPathSeg = struct { name: StrId, loc: LocId };
     pub const DeclFlags = packed struct(u8) { is_const: bool, is_assign: bool, _pad: u6 = 0 };
-    pub const Decl = struct { lhs: OptExprId, rhs: ExprId, ty: OptExprId, flags: DeclFlags, loc: LocId };
+    pub const Decl = struct {
+        lhs: OptExprId,
+        rhs: ExprId,
+        ty: OptExprId,
+        method_path: OptRangeMethodPathSeg,
+        flags: DeclFlags,
+        loc: LocId,
+    };
 
     // ---------- builtin types (flattened) ----------
     pub const ArrayType = struct { elem: ExprId, size: ExprId, loc: LocId };
@@ -717,6 +727,7 @@ pub const ExprStore = struct {
     Param: Table(Rows.Param) = .{},
     Attribute: Table(Rows.Attribute) = .{},
     Decl: Table(Rows.Decl) = .{},
+    MethodPathSeg: Table(Rows.MethodPathSeg) = .{},
 
     ArrayType: Table(Rows.ArrayType) = .{},
     DynArrayType: Table(Rows.DynArrayType) = .{},
@@ -754,6 +765,7 @@ pub const ExprStore = struct {
     sfield_pool: Pool(StructFieldId) = .{},
     efield_pool: Pool(EnumFieldId) = .{},
     vfield_pool: Pool(VariantFieldId) = .{},
+    method_path_pool: Pool(MethodPathSegId) = .{},
 
     // Infra
     strs: *StringInterner,
@@ -773,6 +785,7 @@ pub const ExprStore = struct {
         }
 
         self.Decl.deinit(gpa);
+        self.MethodPathSeg.deinit(gpa);
         self.Param.deinit(gpa);
         self.Attribute.deinit(gpa);
         self.KeyValue.deinit(gpa);
@@ -793,6 +806,7 @@ pub const ExprStore = struct {
         self.sfield_pool.deinit(gpa);
         self.efield_pool.deinit(gpa);
         self.vfield_pool.deinit(gpa);
+        self.method_path_pool.deinit(gpa);
 
         self.locs.deinit(gpa);
     }
@@ -827,6 +841,9 @@ pub const ExprStore = struct {
     }
     pub fn addDeclRow(self: *@This(), row: Rows.Decl) DeclId {
         return self.Decl.add(self.gpa, row);
+    }
+    pub fn addMethodPathSegRow(self: *@This(), row: Rows.MethodPathSeg) MethodPathSegId {
+        return self.MethodPathSeg.add(self.gpa, row);
     }
     pub fn addParamRow(self: *@This(), row: Rows.Param) ParamId {
         return self.Param.add(self.gpa, row);
@@ -1591,6 +1608,15 @@ pub const DodPrinter = struct {
             try self.printExpr(d.lhs.unwrap());
             try self.close();
         }
+        if (!d.method_path.isNone()) {
+            try self.open("(method_path", .{});
+            const segs = self.exprs.method_path_pool.slice(d.method_path.asRange());
+            for (segs) |sid| {
+                const seg = self.exprs.MethodPathSeg.get(sid);
+                try self.leaf("(seg \"{s}\")", .{self.s(seg.name)});
+            }
+            try self.close();
+        }
         try self.open("(rhs", .{});
         try self.printExpr(d.rhs);
         try self.close();
@@ -1839,6 +1865,7 @@ test "printer: simple const decl with lhs, rhs literal" {
         .lhs = OptExprId.some(id_x),
         .rhs = id_42,
         .ty = OptExprId.none(),
+        .method_path = OptRangeMethodPathSeg.none(),
         .flags = .{ .is_const = true, .is_assign = false },
         .loc = loc,
     };

@@ -172,6 +172,19 @@ pub const DiagnosticCode = enum {
     expected_integer_type, // payload: one (found)
     expected_float_type, // payload: one (found)
 
+    // Methods
+    method_requires_function_value,
+    method_requires_self_parameter,
+    method_self_must_be_binding,
+    method_self_requires_type,
+    method_self_type_mismatch,
+    method_owner_not_struct,
+    method_invalid_owner_path,
+    duplicate_method_on_type, // payload: one (method name)
+    method_receiver_requires_pointer,
+    method_receiver_requires_value,
+    method_receiver_not_addressable,
+
     // Decls / control flow
     checker_insert_not_expanded,
     checker_comptime_not_executed,
@@ -367,6 +380,19 @@ pub fn diagnosticMessageFmt(code: DiagnosticCode) []const u8 {
         .expected_pointer_type => "expected pointer type, found {s}",
         .expected_integer_type => "expected integer type, found {s}",
         .expected_float_type => "expected float type, found {s}",
+
+        // Methods
+        .method_requires_function_value => "methods must be defined with a function value",
+        .method_requires_self_parameter => "methods must declare a 'self' parameter as the first argument",
+        .method_self_must_be_binding => "the first parameter of a method must bind to 'self'",
+        .method_self_requires_type => "the 'self' parameter of a method requires an explicit type",
+        .method_self_type_mismatch => "method 'self' parameter must match the enclosing struct type",
+        .method_owner_not_struct => "methods can only be declared on struct, union, enum, variant, or error types",
+        .method_invalid_owner_path => "methods must be declared on a simple struct name",
+        .duplicate_method_on_type => "duplicate method '{s}' for this struct",
+        .method_receiver_requires_pointer => "method '{s}' requires a pointer receiver",
+        .method_receiver_requires_value => "method '{s}' requires a value receiver",
+        .method_receiver_not_addressable => "method '{s}' requires an addressable receiver",
 
         // Decls / control flow
         .checker_insert_not_expanded => "checker: insert not expanded yet; walking only",

@@ -304,7 +304,7 @@ test "behavior: variable reassignment" {
 test "behavior: tuple creation and indexing" {
     const src =
         \\ t := (1, "hello", true)
-        \\ printf("Tuple 0=%d, 1=%s, 2=%b\n", t.0, t.1, t.2)
+        \\ printf("Tuple 0=%d, 1=%s, 2=%d\n", t.0, t.1, t.2)
         \\ first := t.0
         \\ printf("First element=%d\n", first)
     ;
