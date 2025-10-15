@@ -923,13 +923,20 @@ pub const MlirCodegen = struct {
                 var n_args: usize = 0;
 
                 // Return classification (may add leading sret)
-                const retClass = abi.abiClassifyX64SysV(self, store, ret_sr, true);
+                const ret_kind = store.getKind(ret_sr);
+                const ret_no_result = switch (ret_kind) {
+                    .Void, .Noreturn => true,
+                    else => false,
+                };
                 var ret_type: mlir.Type = self.void_ty;
+                var retClass: abi.AbiClass = undefined;
 
-                if (store.getKind(ret_sr) == .Void) {
+                if (ret_no_result) {
                     ret_type = self.void_ty;
-                } else switch (retClass.kind) {
-                    .IndirectSRet => {
+                } else {
+                    retClass = abi.abiClassifyX64SysV(self, store, ret_sr, true);
+                    switch (retClass.kind) {
+                        .IndirectSRet => {
                         // leading ptr arg with { llvm.sret = type(T), llvm.align = K }
                         lowered_params[n_args] = self.llvm_ptr_ty;
                         const stTy = try self.llvmTypeOf(store, ret_sr);
@@ -940,18 +947,19 @@ pub const MlirCodegen = struct {
                         argAttrs[n_args] = sretDict;
                         n_args += 1;
                         ret_type = self.void_ty;
-                    },
-                    .DirectScalar => {
-                        ret_type = retClass.scalar0.?;
-                    },
-                    .DirectPair => {
-                        // Return a literal LLVM struct of the two scalars
-                        const pairTy = mlir.LLVM.getLLVMStructTypeLiteral(self.mlir_ctx, &[_]mlir.Type{
-                            retClass.scalar0.?, retClass.scalar1.?,
-                        }, false);
-                        ret_type = pairTy;
-                    },
-                    else => unreachable,
+                        },
+                        .DirectScalar => {
+                            ret_type = retClass.scalar0.?;
+                        },
+                        .DirectPair => {
+                            // Return a literal LLVM struct of the two scalars
+                            const pairTy = mlir.LLVM.getLLVMStructTypeLiteral(self.mlir_ctx, &[_]mlir.Type{
+                                retClass.scalar0.?, retClass.scalar1.?,
+                            }, false);
+                            ret_type = pairTy;
+                        },
+                        else => unreachable,
+                    }
                 }
 
                 // Params
@@ -1071,7 +1079,10 @@ pub const MlirCodegen = struct {
         }
 
         var results: [1]mlir.Type = undefined;
-        const n_res: usize = if (store.getKind(f.result) == .Void) 0 else 1;
+        const n_res: usize = switch (store.getKind(f.result)) {
+            .Void, .Noreturn => 0,
+            else => 1,
+        };
         if (n_res == 1) results[0] = try self.llvmTypeOf(store, f.result);
 
         const func_name = t.instrs.strs.get(f.name);
@@ -1416,30 +1427,38 @@ pub const MlirCodegen = struct {
         defer self.gpa.free(argAttrs);
         var n_args: usize = 0;
 
-        const retClass = abi.abiClassifyX64SysV(self, store, ret_sr, true);
+        const ret_kind = store.getKind(ret_sr);
+        const ret_no_result = switch (ret_kind) {
+            .Void, .Noreturn => true,
+            else => false,
+        };
         var ret_type: mlir.Type = self.void_ty;
+        var retClass: abi.AbiClass = undefined;
 
-        if (store.getKind(ret_sr) == .Void) {
+        if (ret_no_result) {
             ret_type = self.void_ty;
-        } else switch (retClass.kind) {
-            .IndirectSRet => {
-                lowered_params[n_args] = self.llvm_ptr_ty;
-                const stTy = try self.llvmTypeOf(store, ret_sr);
-                argAttrs[n_args] = mlir.Attribute.dictionaryAttrGet(self.mlir_ctx, &[_]mlir.NamedAttribute{
-                    self.named("llvm.sret", mlir.Attribute.typeAttrGet(stTy)),
-                    self.named("llvm.align", mlir.Attribute.integerAttrGet(self.i64_ty, retClass.alignment)),
-                });
-                n_args += 1;
-                ret_type = self.void_ty;
-            },
-            .DirectScalar => ret_type = retClass.scalar0.?,
-            .DirectPair => {
-                const pairTy = mlir.LLVM.getLLVMStructTypeLiteral(self.mlir_ctx, &[_]mlir.Type{
-                    retClass.scalar0.?, retClass.scalar1.?,
-                }, false);
-                ret_type = pairTy;
-            },
-            else => unreachable,
+        } else {
+            retClass = abi.abiClassifyX64SysV(self, store, ret_sr, true);
+            switch (retClass.kind) {
+                .IndirectSRet => {
+                    lowered_params[n_args] = self.llvm_ptr_ty;
+                    const stTy = try self.llvmTypeOf(store, ret_sr);
+                    argAttrs[n_args] = mlir.Attribute.dictionaryAttrGet(self.mlir_ctx, &[_]mlir.NamedAttribute{
+                        self.named("llvm.sret", mlir.Attribute.typeAttrGet(stTy)),
+                        self.named("llvm.align", mlir.Attribute.integerAttrGet(self.i64_ty, retClass.alignment)),
+                    });
+                    n_args += 1;
+                    ret_type = self.void_ty;
+                },
+                .DirectScalar => ret_type = retClass.scalar0.?,
+                .DirectPair => {
+                    const pairTy = mlir.LLVM.getLLVMStructTypeLiteral(self.mlir_ctx, &[_]mlir.Type{
+                        retClass.scalar0.?, retClass.scalar1.?,
+                    }, false);
+                    ret_type = pairTy;
+                },
+                else => unreachable,
+            }
         }
 
         for (params_sr) |psr| {
@@ -2717,8 +2736,13 @@ pub const MlirCodegen = struct {
                 }
 
                 const want_res_sr = p.ty;
+                const want_kind = store.getKind(want_res_sr);
+                const want_no_result = switch (want_kind) {
+                    .Void, .Noreturn => true,
+                    else => false,
+                };
                 const want_res_mlir = try self.llvmTypeOf(store, want_res_sr);
-                const want_has_res = !self.void_ty.equal(want_res_mlir);
+                const want_has_res = !want_no_result and !self.void_ty.equal(want_res_mlir);
 
                 if (!isExternLL) {
                     // Internal call: unchanged (func.call)
@@ -2737,14 +2761,17 @@ pub const MlirCodegen = struct {
                 // ===== Extern C call via llvm.func (ABI-lowered) =====
 
                 // Handle sret (if any): if return is IndirectSRet, first argument becomes out pointer.
-                const retClass = abi.abiClassifyX64SysV(self, store, want_res_sr, true);
+                var retClass: abi.AbiClass = undefined;
+                if (!want_no_result) {
+                    retClass = abi.abiClassifyX64SysV(self, store, want_res_sr, true);
+                }
 
                 var lowered_ops = ArrayList(mlir.Value).init(self.gpa);
                 defer lowered_ops.deinit();
 
                 var formal_index: usize = 0;
                 var retbuf: mlir.Value = mlir.Value.empty();
-                if (store.getKind(want_res_sr) != .Void and retClass.kind == .IndirectSRet) {
+                if (!want_no_result and retClass.kind == .IndirectSRet) {
                     // allocate result, pass as first arg
                     retbuf = self.spillAgg(self.undefOf(want_res_mlir), want_res_mlir, @intCast(retClass.alignment));
                     // The alloca above created memory; but we stored undef just to materialize it.
@@ -2839,7 +2866,9 @@ pub const MlirCodegen = struct {
                 }
                 var call = OpBuilder.init("llvm.call", self.loc).builder()
                     .add_operands(lowered_ops.items)
-                    .add_results(if (store.getKind(want_res_sr) == .Void or retClass.kind == .IndirectSRet)
+                    .add_results(if (want_no_result)
+                        &.{}
+                    else if (retClass.kind == .IndirectSRet)
                         &.{}
                     else
                         &.{finfo.ret_type})
@@ -2848,7 +2877,7 @@ pub const MlirCodegen = struct {
                 self.append(call);
 
                 // Reconstruct desired result (structural) from ABI return
-                if (store.getKind(want_res_sr) == .Void) break :blk mlir.Value.empty();
+                if (want_no_result) break :blk mlir.Value.empty();
 
                 switch (retClass.kind) {
                     .IndirectSRet => {

@@ -11,7 +11,7 @@ const AbiKind = enum {
     IndirectSRet, // return via sret(T) align K (handled via first arg)
 };
 
-const AbiClass = struct {
+pub const AbiClass = struct {
     kind: AbiKind,
     // For DirectScalar: scalar0 used
     // For DirectPair:   scalar0 + scalar1 used
