@@ -103,6 +103,7 @@ pub const MlirCodegen = struct {
     // per-function state (reset each function)
     cur_region: ?mlir.Region = null,
     cur_block: ?mlir.Block = null,
+    func_entry_block: ?mlir.Block = null,
     current_scope: ?mlir.Attribute = null,
     block_map: std.AutoHashMap(tir.BlockId, mlir.Block),
     value_map: std.AutoHashMap(tir.ValueId, mlir.Value),
@@ -111,6 +112,8 @@ pub const MlirCodegen = struct {
     val_types: std.AutoHashMap(tir.ValueId, types.TypeId), // SR types of SSA values
     def_instr: std.AutoHashMap(tir.ValueId, tir.InstrId), // SSA def site
     inline_mlir_counter: u32 = 0,
+
+    global_addr_cache: std.StringHashMap(mlir.Value),
 
     diagnostic_handler: mlir.c.MlirDiagnosticHandlerID,
     diagnostic_data: *DiagnosticData,
@@ -121,6 +124,8 @@ pub const MlirCodegen = struct {
         is_variadic: bool,
         n_formals: usize, // MLIR visible formals after dropping trailing Any
         ret_type: mlir.Type,
+        param_types: []mlir.Type = @constCast((&[_]mlir.Type{})[0..]),
+        owns_param_types: bool = false,
         dbg_subprogram: ?mlir.Attribute = null,
     };
 
@@ -331,6 +336,7 @@ pub const MlirCodegen = struct {
             .value_map = std.AutoHashMap(tir.ValueId, mlir.Value).init(gpa),
             .val_types = std.AutoHashMap(tir.ValueId, types.TypeId).init(gpa),
             .def_instr = std.AutoHashMap(tir.ValueId, tir.InstrId).init(gpa),
+            .global_addr_cache = std.StringHashMap(mlir.Value).init(gpa),
             .diagnostic_handler = mlir.c.mlirContextAttachDiagnosticHandler(ctx.handle, diagnosticHandler, @ptrCast(diag_data), null),
             .diagnostic_data = diag_data,
             .active_type_info = null,
@@ -342,12 +348,19 @@ pub const MlirCodegen = struct {
         self.di_subprograms.deinit();
         self.di_files.deinit();
         self.di_type_cache.deinit();
+        var fit = self.func_syms.valueIterator();
+        while (fit.next()) |info| {
+            if (info.owns_param_types) {
+                self.gpa.free(info.param_types);
+            }
+        }
         self.func_syms.deinit();
         self.str_pool.deinit();
         self.block_map.deinit();
         self.value_map.deinit();
         self.val_types.deinit();
         self.def_instr.deinit();
+        self.global_addr_cache.deinit();
         var fit = self.file_cache.valueIterator();
         while (fit.next()) |src| {
             self.context.source_manager.gpa.free(@constCast(src.*));
@@ -989,13 +1002,18 @@ pub const MlirCodegen = struct {
                 var body = self.module.getBody();
                 body.appendOwnedOperation(fnop);
 
-                _ = try self.func_syms.put(name, .{
+                const param_types_copy = try self.gpa.alloc(mlir.Type, n_args);
+                std.mem.copy(mlir.Type, param_types_copy, lowered_params[0..n_args]);
+                const info = FuncInfo{
                     .op = fnop,
                     .is_variadic = fnty.is_variadic,
                     .n_formals = params_sr.len, // SR count, not lowered
                     .ret_type = ret_type,
+                    .param_types = param_types_copy,
+                    .owns_param_types = true,
                     .dbg_subprogram = null,
-                });
+                };
+                _ = try self.func_syms.put(name, info);
             } else {
                 // Handle global variables
                 const var_mlir_ty = try self.llvmTypeOf(store, g.ty);
@@ -1090,11 +1108,14 @@ pub const MlirCodegen = struct {
         body.appendOwnedOperation(fnop);
 
         const ret_mlir = if (n_res == 0) self.void_ty else results[0];
+        const empty_param_types = try self.gpa.alloc(mlir.Type, 0);
         var finfo: FuncInfo = .{
             .op = fnop,
             .is_variadic = false,
             .n_formals = params.len,
             .ret_type = ret_mlir,
+            .param_types = empty_param_types,
+            .owns_param_types = true,
             .dbg_subprogram = null,
         };
 
@@ -1135,6 +1156,8 @@ pub const MlirCodegen = struct {
         self.def_instr.clearRetainingCapacity();
         self.cur_region = null;
         self.cur_block = null;
+        self.func_entry_block = null;
+        self.global_addr_cache.clearRetainingCapacity();
 
         const f = t.funcs.Function.get(f_id);
         const fn_opt_loc = self.functionOptLoc(f_id, t);
@@ -1172,6 +1195,7 @@ pub const MlirCodegen = struct {
         region.appendOwnedBlock(entry_block);
         self.cur_region = region;
         self.cur_block = entry_block;
+        self.func_entry_block = entry_block;
 
         if (blocks.len > 0) {
             const entry_bid = blocks[0];
@@ -1253,6 +1277,8 @@ pub const MlirCodegen = struct {
             // terminator
             try self.emitTerminator(bb.term, t, store);
         }
+
+        self.func_entry_block = null;
     }
 
     fn getInstrResultId(self: *MlirCodegen, t: *const tir.TIR, id: tir.InstrId) ?tir.ValueId {
@@ -1458,15 +1484,70 @@ pub const MlirCodegen = struct {
         var body = self.module.getBody();
         body.appendOwnedOperation(fnop);
 
+        const param_types_copy = try self.gpa.alloc(mlir.Type, n_args);
+        std.mem.copy(mlir.Type, param_types_copy, lowered_params[0..n_args]);
         const info: FuncInfo = .{
             .op = fnop,
             .is_variadic = is_var,
             .n_formals = params_sr.len,
             .ret_type = ret_type,
+            .param_types = param_types_copy,
+            .owns_param_types = true,
             .dbg_subprogram = null,
         };
         _ = try self.func_syms.put(name, info);
         return info;
+    }
+
+    fn ensureCallArgType(
+        self: *MlirCodegen,
+        store: *types.TypeStore,
+        value: mlir.Value,
+        src_sr: types.TypeId,
+        want_ty: mlir.Type,
+    ) !mlir.Value {
+        if (value.getType().equal(want_ty)) return value;
+
+        const have_ty = value.getType();
+
+        if (have_ty.isAInteger() and want_ty.isAInteger()) {
+            const fw = try intOrFloatWidth(have_ty);
+            const tw = try intOrFloatWidth(want_ty);
+            if (fw == tw) return value;
+            if (fw > tw) {
+                var tr = OpBuilder.init("llvm.trunc", self.loc).builder()
+                    .add_operands(&.{value}).add_results(&.{want_ty}).build();
+                self.append(tr);
+                return tr.getResult(0);
+            } else {
+                const signed_from = self.isSignedInt(store, src_sr);
+                const op_name = if (signed_from) "llvm.sext" else "llvm.zext";
+                var ex = OpBuilder.init(op_name, self.loc).builder()
+                    .add_operands(&.{value}).add_results(&.{want_ty}).build();
+                self.append(ex);
+                return ex.getResult(0);
+            }
+        }
+
+        if (have_ty.isAFloat() and want_ty.isAFloat()) {
+            const fw = try intOrFloatWidth(have_ty);
+            const tw = try intOrFloatWidth(want_ty);
+            if (fw == tw) return value;
+            const op_name = if (fw > tw) "llvm.fptrunc" else "llvm.fpext";
+            var cast = OpBuilder.init(op_name, self.loc).builder()
+                .add_operands(&.{value}).add_results(&.{want_ty}).build();
+            self.append(cast);
+            return cast.getResult(0);
+        }
+
+        if (mlir.LLVM.isLLVMPointerType(have_ty) and mlir.LLVM.isLLVMPointerType(want_ty)) {
+            var bc = OpBuilder.init("llvm.bitcast", self.loc).builder()
+                .add_operands(&.{value}).add_results(&.{want_ty}).build();
+            self.append(bc);
+            return bc.getResult(0);
+        }
+
+        return value;
     }
 
     // ----------------------------------------------------------------
@@ -1724,6 +1805,25 @@ pub const MlirCodegen = struct {
                 defer self.loc = prev_loc;
                 const to_ty = try self.llvmTypeOf(store, p.ty);
                 const from_v = self.value_map.get(p.value).?;
+                const from_ty = from_v.getType();
+                if (from_ty.equal(to_ty)) break :blk from_v;
+                if (self.isUndefValue(from_v)) break :blk self.undefOf(to_ty);
+
+                const src_is_ptr = mlir.LLVM.isLLVMPointerType(from_ty);
+                const dst_is_ptr = mlir.LLVM.isLLVMPointerType(to_ty);
+                const needs_spill = mlir.LLVM.isLLVMStructType(from_ty) or
+                    mlir.LLVM.isLLVMStructType(to_ty) or
+                    (src_is_ptr != dst_is_ptr);
+
+                if (needs_spill) {
+                    const spill = self.spillAgg(from_v, from_ty, 0);
+                    var load = OpBuilder.init("llvm.load", self.loc).builder()
+                        .add_operands(&.{spill})
+                        .add_results(&.{to_ty}).build();
+                    self.append(load);
+                    break :blk load.getResult(0);
+                }
+
                 var op = OpBuilder.init("llvm.bitcast", self.loc).builder()
                     .add_operands(&.{from_v})
                     .add_results(&.{to_ty}).build();
@@ -1940,13 +2040,29 @@ pub const MlirCodegen = struct {
                 const name = t.instrs.strs.get(p.name);
                 const ty = try self.llvmTypeOf(store, p.ty);
 
+                if (self.global_addr_cache.get(name)) |cached| break :blk cached;
+
                 const gsym = mlir.Attribute.flatSymbolRefAttrGet(self.mlir_ctx, mlir.StringRef.from(name));
                 var addr = OpBuilder.init("llvm.mlir.addressof", self.loc).builder()
                     .add_results(&.{ty})
                     .add_attributes(&.{self.named("global_name", gsym)})
                     .build();
-                self.append(addr);
-                break :blk addr.getResult(0);
+                const entry_block = if (self.func_entry_block) |eb|
+                    eb
+                else blk: {
+                    std.debug.assert(self.cur_block != null);
+                    break :blk self.cur_block.?;
+                };
+                const term = entry_block.getTerminator();
+                if (!term.isNull()) {
+                    entry_block.insertOwnedOperationBefore(term, addr);
+                } else {
+                    entry_block.appendOwnedOperation(addr);
+                }
+
+                const value = addr.getResult(0);
+                try self.global_addr_cache.put(name, value);
+                break :blk value;
             },
 
             // ------------- Aggregates -------------
@@ -2487,6 +2603,7 @@ pub const MlirCodegen = struct {
                 var lowered_ops = ArrayList(mlir.Value).init(self.gpa);
                 defer lowered_ops.deinit();
 
+                var formal_index: usize = 0;
                 var retbuf: mlir.Value = mlir.Value.empty();
                 if (store.getKind(want_res_sr) != .Void and retClass.kind == .IndirectSRet) {
                     // allocate result, pass as first arg
@@ -2494,6 +2611,7 @@ pub const MlirCodegen = struct {
                     // The alloca above created memory; but we stored undef just to materialize it.
                     // Overwrite with real result after the call; passing the pointer now:
                     lowered_ops.append(retbuf) catch unreachable;
+                    formal_index += 1;
                 }
 
                 // Lower each argument
@@ -2506,54 +2624,40 @@ pub const MlirCodegen = struct {
                             // build a temp, store agg, pass pointer
                             const stTy = try self.llvmTypeOf(store, sr);
                             const tmp = self.spillAgg(v, stTy, cls.alignment);
-                            lowered_ops.append(tmp) catch unreachable;
+                            var passv = tmp;
+                            if (formal_index < finfo.param_types.len) {
+                                const want_ty = finfo.param_types[formal_index];
+                                passv = try self.ensureCallArgType(store, passv, sr, want_ty);
+                            }
+                            lowered_ops.append(passv) catch unreachable;
+                            formal_index += 1;
                         },
                         .DirectScalar => {
                             const stTy = try self.llvmTypeOf(store, sr);
-                            // If already scalar of right type, pass as-is.
+                            var passv: mlir.Value = undefined;
                             if (!stTy.isAInteger() and !stTy.isAFloat() and !stTy.isAVector()) {
                                 // aggregate -> pack
                                 const tmp = self.spillAgg(v, stTy, 1);
-                                // load scalar type (int/float/vector)
                                 if (cls.scalar0.?.isAInteger()) {
                                     const bits = cls.scalar0.?.getIntegerBitwidth();
-                                    const packed_v = self.loadIntAt(tmp, bits, 0);
-                                    lowered_ops.append(packed_v) catch unreachable;
-                                } else if (cls.scalar0.?.isAFloat()) {
-                                    var ld = OpBuilder.init("llvm.load", self.loc).builder()
-                                        .add_operands(&.{tmp})
-                                        .add_results(&.{cls.scalar0.?}).build();
-                                    self.append(ld);
-                                    lowered_ops.append(ld.getResult(0)) catch unreachable;
+                                    passv = self.loadIntAt(tmp, bits, 0);
                                 } else {
-                                    // vector (e.g., <2 x float>)
                                     var ld = OpBuilder.init("llvm.load", self.loc).builder()
                                         .add_operands(&.{tmp})
                                         .add_results(&.{cls.scalar0.?}).build();
                                     self.append(ld);
-                                    lowered_ops.append(ld.getResult(0)) catch unreachable;
+                                    passv = ld.getResult(0);
                                 }
                             } else {
-                                // v is already scalar (or vector); cast if widths differ
-                                var passv = v;
-                                if (stTy.isAInteger() and cls.scalar0.?.isAInteger() and stTy.getIntegerBitwidth() != cls.scalar0.?.getIntegerBitwidth()) {
-                                    // zext/trunc to exact width (unsigned ok for arg passing)
-                                    const fw = stTy.getIntegerBitwidth();
-                                    const tw = cls.scalar0.?.getIntegerBitwidth();
-                                    if (fw > tw) {
-                                        var tr = OpBuilder.init("llvm.trunc", self.loc).builder()
-                                            .add_operands(&.{v}).add_results(&.{cls.scalar0.?}).build();
-                                        self.append(tr);
-                                        passv = tr.getResult(0);
-                                    } else if (fw < tw) {
-                                        var ex = OpBuilder.init("llvm.zext", self.loc).builder()
-                                            .add_operands(&.{v}).add_results(&.{cls.scalar0.?}).build();
-                                        self.append(ex);
-                                        passv = ex.getResult(0);
-                                    }
-                                }
-                                lowered_ops.append(passv) catch unreachable;
+                                passv = v;
                             }
+                            const want_ty = if (formal_index < finfo.param_types.len)
+                                finfo.param_types[formal_index]
+                            else
+                                passv.getType();
+                            passv = try self.ensureCallArgType(store, passv, sr, want_ty);
+                            lowered_ops.append(passv) catch unreachable;
+                            formal_index += 1;
                         },
                         .DirectPair => {
                             // spill -> load lo i64, hi iN
@@ -2562,8 +2666,19 @@ pub const MlirCodegen = struct {
                             const lo = self.loadIntAt(tmp, 64, 0);
                             const hibits = cls.scalar1.?.getIntegerBitwidth();
                             const hi = self.loadIntAt(tmp, hibits, 8);
-                            lowered_ops.append(lo) catch unreachable;
-                            lowered_ops.append(hi) catch unreachable;
+                            var lo_cast = lo;
+                            if (formal_index < finfo.param_types.len) {
+                                const want0 = finfo.param_types[formal_index];
+                                lo_cast = try self.ensureCallArgType(store, lo_cast, sr, want0);
+                            }
+                            var hi_cast = hi;
+                            if (formal_index + 1 < finfo.param_types.len) {
+                                const want1 = finfo.param_types[formal_index + 1];
+                                hi_cast = try self.ensureCallArgType(store, hi_cast, sr, want1);
+                            }
+                            lowered_ops.append(lo_cast) catch unreachable;
+                            lowered_ops.append(hi_cast) catch unreachable;
+                            formal_index += 2;
                         },
                         else => unreachable,
                     }
@@ -2700,11 +2815,19 @@ pub const MlirCodegen = struct {
                                                             const n_results = func_type.getFunctionNumResults();
                                                             const ret_type = if (n_results == 1) func_type.getFunctionResult(0) else self.void_ty;
 
+                                                            const param_len: usize = @intCast(n_formals);
+                                                            const param_types_copy = try self.gpa.alloc(mlir.Type, param_len);
+                                                            var pi: usize = 0;
+                                                            while (pi < param_len) : (pi += 1) {
+                                                                param_types_copy[pi] = func_type.getFunctionInput(@intCast(pi));
+                                                            }
                                                             const info = FuncInfo{
                                                                 .op = current_op,
                                                                 .is_variadic = false,
                                                                 .n_formals = @intCast(n_formals),
                                                                 .ret_type = ret_type,
+                                                                .param_types = param_types_copy,
+                                                                .owns_param_types = true,
                                                                 .dbg_subprogram = null,
                                                             };
                                                             _ = try self.func_syms.put(sym_name, info);
@@ -2836,11 +2959,19 @@ pub const MlirCodegen = struct {
                                         const n_results = func_type.getFunctionNumResults();
                                         const ret_type = if (n_results == 1) func_type.getFunctionResult(0) else self.void_ty;
 
+                                        const param_len: usize = @intCast(n_formals);
+                                        const param_types_copy = try self.gpa.alloc(mlir.Type, param_len);
+                                        var pi: usize = 0;
+                                        while (pi < param_len) : (pi += 1) {
+                                            param_types_copy[pi] = func_type.getFunctionInput(@intCast(pi));
+                                        }
                                         const info = FuncInfo{
                                             .op = current_op,
                                             .is_variadic = false,
                                             .n_formals = @intCast(n_formals),
                                             .ret_type = ret_type,
+                                            .param_types = param_types_copy,
+                                            .owns_param_types = true,
                                             .dbg_subprogram = null,
                                         };
                                         _ = try self.func_syms.put(sym_name, info);
@@ -3229,6 +3360,16 @@ pub const MlirCodegen = struct {
     fn append(self: *MlirCodegen, op: mlir.Operation) void {
         self.cur_block.?.appendOwnedOperation(op);
     }
+
+    fn isUndefValue(self: *const MlirCodegen, v: mlir.Value) bool {
+        _ = self;
+        if (!v.isAOpResult()) return false;
+        var owner = v.opResultGetOwner();
+        if (owner.isNull()) return false;
+        var name_id = owner.getName();
+        const name = name_id.str().toSlice();
+        return std.mem.eql(u8, name, "llvm.mlir.undef");
+    }
     fn named(self: *const MlirCodegen, name: []const u8, attr: mlir.Attribute) mlir.NamedAttribute {
         return .{
             .inner = .{
@@ -3598,6 +3739,8 @@ pub const MlirCodegen = struct {
                 .is_variadic = false,
                 .n_formals = arg_tys.len,
                 .ret_type = ret_ty,
+                .param_types = @constCast((&[_]mlir.Type{})[0..]),
+                .owns_param_types = false,
                 .dbg_subprogram = null,
             };
         }
@@ -3614,11 +3757,15 @@ pub const MlirCodegen = struct {
         var body = self.module.getBody();
         body.appendOwnedOperation(func_op);
 
+        const param_types_copy = try self.gpa.alloc(mlir.Type, arg_tys.len);
+        std.mem.copy(mlir.Type, param_types_copy, arg_tys);
         const info: FuncInfo = .{
             .op = func_op,
             .is_variadic = false,
             .n_formals = arg_tys.len,
             .ret_type = ret_ty,
+            .param_types = param_types_copy,
+            .owns_param_types = true,
             .dbg_subprogram = null,
         };
         _ = try self.func_syms.put(name, info);
@@ -4578,6 +4725,8 @@ pub const MlirCodegen = struct {
 
         if (try self.reinterpretAggregateViaSpill(store, dst_sr, to_ty, from_v, src_sr)) |agg|
             return agg;
+
+        if (self.isUndefValue(from_v)) return self.undefOf(to_ty);
 
         // Fallback: bitcast (ensure size match upstream)
         const op = OpBuilder.init("llvm.bitcast", self.loc).builder()

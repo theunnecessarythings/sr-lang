@@ -1090,10 +1090,22 @@ pub const LowerTir = struct {
 
     fn lowerAssign(self: *LowerTir, a: *const ast.Ast, env: *Env, f: *Builder.FunctionFrame, blk: *Builder.BlockFrame, sid: ast.StmtId) !void {
         const as = a.stmts.get(.Assign, sid);
-        const lhs_ptr = try self.lowerExpr(a, env, f, blk, as.left, null, .lvalue_addr);
-        const rhs = try self.lowerExpr(a, env, f, blk, as.right, self.getExprType(as.left), .rvalue);
-        const rty = self.getExprType(as.left) orelse return error.LoweringBug;
         const stmt_loc = self.stmtOptLoc(a, sid);
+        const rty = self.getExprType(as.left) orelse return error.LoweringBug;
+
+        if (a.exprs.index.kinds.items[as.left.toRaw()] == .Ident) {
+            const ident = a.exprs.get(.Ident, as.left);
+            if (env.lookup(ident.name)) |bnd| {
+                if (!bnd.is_slot) {
+                    const rhs = try self.lowerExpr(a, env, f, blk, as.right, rty, .rvalue);
+                    try env.bind(self.gpa, a, ident.name, .{ .value = rhs, .ty = rty, .is_slot = false });
+                    return;
+                }
+            }
+        }
+
+        const lhs_ptr = try self.lowerExpr(a, env, f, blk, as.left, null, .lvalue_addr);
+        const rhs = try self.lowerExpr(a, env, f, blk, as.right, rty, .rvalue);
         _ = f.builder.tirValue(.Store, blk, rty, stmt_loc, .{ .ptr = lhs_ptr, .value = rhs, .@"align" = 0 });
     }
 
@@ -2643,7 +2655,15 @@ pub const LowerTir = struct {
 
         if (mode == .lvalue_addr) {
             // 1) If it's already a slot, we're done.
-            if (env.lookup(name)) |bnd| if (bnd.is_slot) return bnd.value;
+            if (env.lookup(name)) |bnd| {
+                if (bnd.is_slot) return bnd.value;
+
+                // For pointer-typed bindings we can reuse the SSA value directly as the
+                // address; no temporary slot required.
+                if (self.context.type_store.getKind(bnd.ty) == .Ptr) {
+                    return bnd.value;
+                }
+            }
 
             // 2) If it's a top-level decl, bind its address as a slot and return.
             if (did_opt) |did| {
@@ -4379,7 +4399,7 @@ pub const LowerTir = struct {
                 const k = self.context.type_store.getKind(expected_ty);
                 const loc = self.exprOptLoc(&me.ast, eid);
                 switch (k) {
-                    .U8, .U16, .U32, .U64, .I8, .I16, .I32, .I64 => {
+                    .U8, .U16, .U32, .U64, .I8, .I16, .I32, .I64, .Enum => {
                         const info = switch (lit.data) {
                             .int => |int_info| int_info,
                             else => return null,
@@ -4387,6 +4407,14 @@ pub const LowerTir = struct {
                         if (!info.valid) return null;
                         const value = std.math.cast(u64, info.value) orelse return null;
                         return blk.builder.tirValue(.ConstInt, blk, expected_ty, loc, .{ .value = value });
+                    },
+                    .F32, .F64 => {
+                        const info = switch (lit.data) {
+                            .float => |float_info| float_info,
+                            else => return null,
+                        };
+                        if (!info.valid) return null;
+                        return blk.builder.tirValue(.ConstFloat, blk, expected_ty, loc, .{ .value = info.value });
                     },
                     .Bool => {
                         const b = switch (lit.data) {
