@@ -51,6 +51,9 @@ pub const ImportResolver = struct {
 
     config: Config,
 
+    var STD_LIB_PATH_BUF: [1024]u8 = undefined;
+    var STD_LIB_PATH: []u8 = undefined;
+
     pub const Config = struct {
         /// Roots searched when the import is not absolute and not clearly relative.
         roots: []const []const u8 = &.{ "std", "vendor", "examples" },
@@ -63,6 +66,7 @@ pub const ImportResolver = struct {
     };
 
     pub fn init(gpa: std.mem.Allocator) ImportResolver {
+        STD_LIB_PATH = std.fs.selfExePath(&STD_LIB_PATH_BUF) catch unreachable;
         return .{
             .gpa = gpa,
             .cache = std.StringHashMap(ModuleEntry).init(gpa),
@@ -308,9 +312,18 @@ pub const ImportResolver = struct {
         // Pick the first that exists, then canonicalize via realpath.
         const cwd = std.fs.cwd();
         var i: usize = 0;
+        // TODO: hack for now, remove later
+        const std_lib_path = try std.fs.openDirAbsolute(STD_LIB_PATH[0 .. STD_LIB_PATH.len - 20], .{});
         while (i < candidates.items.len) : (i += 1) {
             if (cwd.access(candidates.items[i], .{})) |_| {
                 const canonical = cwd.realpathAlloc(self.gpa, candidates.items[i]) catch |e| switch (e) {
+                    error.FileNotFound, error.AccessDenied => continue,
+                    else => return e,
+                };
+                return canonical;
+            } else |_| {}
+            if (std_lib_path.access(candidates.items[i], .{})) |_| {
+                const canonical = std_lib_path.realpathAlloc(self.gpa, candidates.items[i]) catch |e| switch (e) {
                     error.FileNotFound, error.AccessDenied => continue,
                     else => return e,
                 };

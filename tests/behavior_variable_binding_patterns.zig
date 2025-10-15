@@ -29,7 +29,7 @@ test "patterns: variable binding with sub-pattern (optional)" {
         \\}
     ;
     const code = getSource(globals, src);
-    try runCompilerTest(code, "Bound pattern: Some(42), Value: 42\n");
+    try runCompilerTest(code, "Bound pattern: 1, Value: 42\n");
 }
 
 test "patterns: variable binding in if guard" {

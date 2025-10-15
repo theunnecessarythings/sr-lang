@@ -18,7 +18,7 @@ test "casts: u8 to i8 wrapping (overflow)" {
     const src =
         \\x: u8 = 128
         \\r := x.%i8
-        \\printf("Result: %d\n", r)
+        \\printf("Result: %d\n", r.(i64))
     ;
     const code = getSource("", src);
     try runCompilerTest(code, "Result: -128\n"); // 128 wraps to -128 for i8
@@ -33,4 +33,3 @@ test "casts: negative i32 to u8 wrapping" {
     const code = getSource("", src);
     try runCompilerTest(code, "Result: 255\n"); // -1 wraps to 255 for u8
 }
-

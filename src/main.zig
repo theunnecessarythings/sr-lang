@@ -50,15 +50,15 @@ fn printUsage(writer: anytype, exec_name: []const u8) !void {
         .{ Colors.bold, Colors.reset },
     );
     try writer.print("  {s}compile{s} <file>      Compile a source file to an executable.\n", .{ Colors.cyan, Colors.reset });
-    try writer.print("  {s}run{s} <file>         Compile and immediately run a source file.\n", .{ Colors.cyan, Colors.reset });
-    try writer.print("  {s}check{s} <file>        Parse and perform semantic checks on a source file.\n", .{ Colors.cyan, Colors.reset });
-    try writer.print("  {s}ast{s} <file>         Print the Abstract Syntax Tree (AST) of a source file.\n", .{ Colors.cyan, Colors.reset });
-    try writer.print("  {s}cst{s} <file>         Print the Concrete Syntax Tree (CST) of a source file.\n", .{ Colors.cyan, Colors.reset });
-    try writer.print("  {s}tir{s} <file>         Print the Typed Intermediate Representation (TIR) of a source file.\n", .{ Colors.cyan, Colors.reset });
-    try writer.print("  {s}pretty-print{s} <file>  Format and print the source file.\n", .{ Colors.cyan, Colors.reset });
-    try writer.print("  {s}json-ast{s} <file>      Print the Abstract Syntax Tree (AST) of a source file as JSON.\n", .{ Colors.cyan, Colors.reset });
-    try writer.print("  {s}server{s}             Run a server for AST Explorer.\n", .{ Colors.cyan, Colors.reset });
-    try writer.print("  {s}help{s}               Display this help message.\n\n", .{ Colors.cyan, Colors.reset });
+    try writer.print("  {s}run{s}     <file>      Compile and immediately run a source file.\n", .{ Colors.cyan, Colors.reset });
+    try writer.print("  {s}check{s}   <file>      Parse and perform semantic checks on a source file.\n", .{ Colors.cyan, Colors.reset });
+    try writer.print("  {s}ast{s}     <file>      Print the Abstract Syntax Tree (AST) of a source file.\n", .{ Colors.cyan, Colors.reset });
+    try writer.print("  {s}cst{s}     <file>      Print the Concrete Syntax Tree (CST) of a source file.\n", .{ Colors.cyan, Colors.reset });
+    try writer.print("  {s}tir{s}     <file>      Print the Typed Intermediate Representation (TIR) of a source file.\n", .{ Colors.cyan, Colors.reset });
+    try writer.print("  {s}pretty-print{s} <file> Format and print the source file.\n", .{ Colors.cyan, Colors.reset });
+    try writer.print("  {s}json-ast{s}     <file> Print the Abstract Syntax Tree (AST) of a source file as JSON.\n", .{ Colors.cyan, Colors.reset });
+    try writer.print("  {s}server{s}              Run a server for AST Explorer.\n", .{ Colors.cyan, Colors.reset });
+    try writer.print("  {s}help{s}                Display this help message.\n\n", .{ Colors.cyan, Colors.reset });
 
     try writer.print(
         "{s}Options:{s}\n",

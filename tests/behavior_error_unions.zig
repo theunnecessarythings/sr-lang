@@ -58,7 +58,7 @@ test "error_handling: error propagation (!) operator" {
     try runCompilerTest(code, "Propagated error caught\n");
 }
 
-test "error_handling: orelse expression" {
+test "error_handling: expression" {
     const globals =
         \\MyError :: error { NotFound }
         \\get_value :: fn(found: bool) i32!MyError {
@@ -70,8 +70,8 @@ test "error_handling: orelse expression" {
         \\}
     ;
     const src =
-        \\r1 := get_value(true) orelse 0
-        \\r2 := get_value(false) orelse 0
+        \\r1 := get_value(true) catch 0
+        \\r2 := get_value(false) catch 0
         \\printf("Orelse results: %d, %d\n", r1, r2)
     ;
     const code = getSource(globals, src);

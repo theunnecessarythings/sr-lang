@@ -6,8 +6,8 @@ const runCompilerTest = behavior.runCompilerTest;
 
 test "special_types: function returning noreturn" {
     const globals =
-        \\exit :: extern proc(code: i32) noreturn
-        \\my_noreturn_func :: fn() noreturn {
+        \\exit :: extern proc(c: i32) noreturn
+        \\my_noreturn_func :: proc() noreturn {
         \\  exit(1)
         \\}
     ;

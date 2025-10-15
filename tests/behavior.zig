@@ -23,7 +23,7 @@ pub fn getSource(comptime globals: []const u8, comptime main_body: []const u8) [
 const alloc = std.testing.allocator;
 
 pub fn runCompilerTest(source: []const u8, expected_stdout: []const u8) !void {
-    const temp_dir = "zig-out";
+    const temp_dir = "out";
     const file_path = temp_dir ++ "/test.sr";
     const file = std.fs.cwd().createFile(file_path, .{}) catch unreachable;
     defer file.close();
@@ -31,11 +31,11 @@ pub fn runCompilerTest(source: []const u8, expected_stdout: []const u8) !void {
     _ = file.writeAll(source) catch unreachable;
 
     // remove old output
-    _ = std.fs.cwd().deleteFile("zig-out/output_program") catch {};
+    _ = std.fs.cwd().deleteFile("out/output_program") catch {};
 
     const compile_result = try std.process.Child.run(.{
         .allocator = alloc,
-        .argv = &.{ "zig-out/bin/sr_lang", "compile", "zig-out/test.sr" },
+        .argv = &.{ "out/bin/sr_lang", "compile", "out/test.sr" },
         .max_output_bytes = 16 * 1024 * 1024,
     });
     defer alloc.free(compile_result.stdout);
@@ -56,13 +56,13 @@ pub fn runCompilerTest(source: []const u8, expected_stdout: []const u8) !void {
     }
 
     // check output program exists
-    _ = std.fs.cwd().statFile("zig-out/output_program") catch |err| {
+    _ = std.fs.cwd().statFile("out/output_program") catch |err| {
         std.debug.print("Error: {}\n", .{err});
         return error.CompilationFailed;
     };
     const run_result = try std.process.Child.run(.{
         .allocator = alloc,
-        .argv = &.{"zig-out/output_program"},
+        .argv = &.{"out/output_program"},
         .max_output_bytes = 16 * 1024 * 1024,
     });
     defer alloc.free(run_result.stdout);

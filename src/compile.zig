@@ -206,7 +206,10 @@ pub fn convert_to_llvm_ir(module: mlir.c.MlirModule, print_ir: bool, link_args: 
     }
     if (mode == .llvm_passes) return;
 
-    const objectFileName = "zig-out/output.o";
+    // make output dir
+    if (std.fs.cwd().access("out", .{})) |_| {} else |_| try std.fs.cwd().makeDir("out");
+
+    const objectFileName = "out/output.o";
     if (mlir.c.LLVMTargetMachineEmitToFile(targetMachine, llvmIR, objectFileName, mlir.c.LLVMObjectFile, &err) != 0) {
         std.debug.print("Error emitting object file: {s}\n", .{err});
         mlir.c.LLVMDisposeMessage(err);
@@ -224,10 +227,17 @@ pub fn convert_to_llvm_ir(module: mlir.c.MlirModule, print_ir: bool, link_args: 
     try args.append(allocator, "-O0");
     try args.append(allocator, "-g");
     try args.append(allocator, "-o");
-    try args.append(allocator, "zig-out/output_program");
-    try args.append(allocator, "zig-out/output.o");
+    try args.append(allocator, "out/output_program");
+    try args.append(allocator, "out/output.o");
     // Link the language runtime (static)
-    try args.append(allocator, "zig-out/lib/libsr_runtime.a");
+    const exe_path = try std.fs.selfExeDirPathAlloc(allocator);
+    defer allocator.free(exe_path);
+    const runtime_path = try std.fs.path.join(
+        allocator,
+        &.{ exe_path[0 .. exe_path.len - 4], "lib/libsr_runtime.a" },
+    );
+    defer allocator.free(runtime_path);
+    try args.append(allocator, runtime_path);
     // Append user-provided link args (e.g., -L/usr/local/lib, -lraylib)
     for (link_args) |la| try args.append(allocator, la);
 
@@ -237,7 +247,7 @@ pub fn convert_to_llvm_ir(module: mlir.c.MlirModule, print_ir: bool, link_args: 
 }
 
 pub fn run() void {
-    const argv = &[_][]const u8{"zig-out/output_program"};
+    const argv = &[_][]const u8{"out/output_program"};
     var child = std.process.Child.init(argv, std.heap.page_allocator);
     child.spawn() catch unreachable;
     _ = child.wait() catch unreachable;
