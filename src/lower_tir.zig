@@ -2581,6 +2581,15 @@ pub const LowerTir = struct {
             const elem_ty = self.getExprType(id) orelse return error.LoweringBug;
             const idx = idx_maybe orelse return error.LoweringBug;
             const rptr_ty = self.context.type_store.mkPtr(elem_ty, false);
+            if (parent_ty_opt) |parent_ty| {
+                const parent_kind = self.context.type_store.getKind(parent_ty);
+                if (parent_kind == .Union) {
+                    return blk.builder.tirValue(.UnionFieldPtr, blk, rptr_ty, loc, .{
+                        .base = parent_ptr,
+                        .field_index = @intCast(idx),
+                    });
+                }
+            }
             return blk.builder.gep(blk, rptr_ty, parent_ptr, &.{blk.builder.gepConst(@intCast(idx))}, loc);
         }
 
