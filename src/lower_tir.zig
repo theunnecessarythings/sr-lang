@@ -2657,6 +2657,7 @@ pub const LowerTir = struct {
             // 1) If it's already a slot, we're done.
             if (env.lookup(name)) |bnd| {
                 if (bnd.is_slot) return bnd.value;
+
                 // For pointer-typed bindings we can reuse the SSA value directly as the
                 // address; no temporary slot required.
                 if (self.context.type_store.getKind(bnd.ty) == .Ptr) {
