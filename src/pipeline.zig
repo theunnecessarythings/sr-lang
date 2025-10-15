@@ -172,16 +172,19 @@ pub const Pipeline = struct {
 
         var tir_lowerer = lower_tir.LowerTir.init(self.allocator, self.context, self, type_info, module_id, &chk);
         defer tir_lowerer.deinit();
-        var name_to_prefix = std.StringHashMap([]const u8).init(self.allocator);
+        var alias_info_map = std.StringHashMap(lower_tir.LowerTir.ModuleAliasInfo).init(self.allocator);
         defer {
-            var it = name_to_prefix.valueIterator();
-            while (it.next()) |p| self.allocator.free(p.*);
-            name_to_prefix.deinit();
+            var it = alias_info_map.iterator();
+            while (it.next()) |kv| {
+                self.allocator.free(kv.value_ptr.prefix);
+                self.allocator.free(kv.value_ptr.import_path);
+            }
+            alias_info_map.deinit();
         }
-        try computeModulePrefixes(self.allocator, &ast, &name_to_prefix);
-        var iter = name_to_prefix.iterator();
+        try computeModulePrefixes(self.allocator, &ast, &alias_info_map);
+        var iter = alias_info_map.iterator();
         while (iter.next()) |kv| {
-            try tir_lowerer.setModulePrefix(kv.key_ptr.*, kv.value_ptr.*);
+            try tir_lowerer.setModuleAlias(kv.key_ptr.*, kv.value_ptr.*);
         }
 
         const root_mod = try tir_lowerer.run(&ast);
@@ -203,7 +206,7 @@ pub const Pipeline = struct {
         gen.resetDebugCaches();
 
         // Resolve imports recursively and append their codegen (reuse resolver)
-        try self.resolveImports(&ast, &gen, &name_to_prefix, &self.context.resolver);
+        try self.resolveImports(&ast, &gen, &self.context.resolver);
 
         var mlir_module = gen.emitModule(&root_mod, self.context, ast.exprs.locs, type_info) catch |err| {
             switch (err) {
@@ -296,7 +299,6 @@ pub const Pipeline = struct {
         self: *Pipeline,
         ast: *ast_mod.Ast,
         gen: *mlir_codegen.MlirCodegen,
-        name_to_prefix: *std.StringHashMap([]const u8),
         resolver: *ImportResolver,
     ) !void {
         // Resolve imports recursively and append their codegen (reuse resolver)
@@ -313,7 +315,8 @@ pub const Pipeline = struct {
             if ((try seen.getOrPut(imp)).found_existing) continue;
             const me = try resolver.resolve(".", imp, self);
             // Apply name mangling to imported module functions (and their internal calls)
-            const pref = name_to_prefix.get(imp) orelse computePrefix(self.allocator, imp) catch @panic("OOM");
+            const pref = try computePrefix(self.allocator, imp);
+            defer self.allocator.free(pref);
             try mangleTIR(self.allocator, &me.tir, me.tir.instrs.strs, pref);
             // append TIR into same generator (emit into same module)
             const original_debug_flag = mlir_codegen.enable_debug_info;
@@ -338,7 +341,11 @@ fn computePrefix(gpa: std.mem.Allocator, imp: []const u8) ![]const u8 {
     return try buf.toOwnedSlice(gpa);
 }
 
-fn computeModulePrefixes(gpa: std.mem.Allocator, a: *const ast_mod.Ast, out: *std.StringHashMap([]const u8)) !void {
+fn computeModulePrefixes(
+    gpa: std.mem.Allocator,
+    a: *const ast_mod.Ast,
+    out: *std.StringHashMap(lower_tir.LowerTir.ModuleAliasInfo),
+) !void {
     const decls = a.exprs.decl_pool.slice(a.unit.decls);
     for (decls) |did| {
         const d = a.exprs.Decl.get(did);
@@ -358,13 +365,18 @@ fn computeModulePrefixes(gpa: std.mem.Allocator, a: *const ast_mod.Ast, out: *st
         };
         const imp = a.exprs.strs.get(sid);
         const pref = try computePrefix(gpa, imp);
+        const path = try gpa.dupe(u8, imp);
         const key = try gpa.dupe(u8, a.exprs.strs.get(bind.name));
         const gop = try out.getOrPut(key);
         if (gop.found_existing) {
             gpa.free(key);
-            gpa.free(gop.value_ptr.*);
+            gpa.free(gop.value_ptr.prefix);
+            gpa.free(gop.value_ptr.import_path);
         }
-        gop.value_ptr.* = pref;
+        gop.value_ptr.* = .{
+            .prefix = pref,
+            .import_path = path,
+        };
     }
 }
 

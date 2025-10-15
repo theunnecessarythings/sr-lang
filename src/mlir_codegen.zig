@@ -361,8 +361,8 @@ pub const MlirCodegen = struct {
         self.val_types.deinit();
         self.def_instr.deinit();
         self.global_addr_cache.deinit();
-        var fit = self.file_cache.valueIterator();
-        while (fit.next()) |src| {
+        var it = self.file_cache.valueIterator();
+        while (it.next()) |src| {
             self.context.source_manager.gpa.free(@constCast(src.*));
         }
         self.file_cache.deinit();
@@ -1003,7 +1003,7 @@ pub const MlirCodegen = struct {
                 body.appendOwnedOperation(fnop);
 
                 const param_types_copy = try self.gpa.alloc(mlir.Type, n_args);
-                std.mem.copy(mlir.Type, param_types_copy, lowered_params[0..n_args]);
+                std.mem.copyForwards(mlir.Type, param_types_copy, lowered_params[0..n_args]);
                 const info = FuncInfo{
                     .op = fnop,
                     .is_variadic = fnty.is_variadic,
@@ -1485,7 +1485,7 @@ pub const MlirCodegen = struct {
         body.appendOwnedOperation(fnop);
 
         const param_types_copy = try self.gpa.alloc(mlir.Type, n_args);
-        std.mem.copy(mlir.Type, param_types_copy, lowered_params[0..n_args]);
+        std.mem.copyForwards(mlir.Type, param_types_copy, lowered_params[0..n_args]);
         const info: FuncInfo = .{
             .op = fnop,
             .is_variadic = is_var,
@@ -2041,27 +2041,16 @@ pub const MlirCodegen = struct {
                 const ty = try self.llvmTypeOf(store, p.ty);
                 if (self.global_addr_cache.get(name)) |cached| break :blk cached;
 
-                const saved_block = self.cur_block;
-                const entry_block = if (self.func_entry_block) |eb|
-                    eb
-                else blk2: {
-                    std.debug.assert(saved_block != null);
-                    break :blk2 saved_block.?;
-                };
-                self.cur_block = entry_block;
-
-                if (self.global_addr_cache.get(name)) |cached| break :blk cached;
-
                 const gsym = mlir.Attribute.flatSymbolRefAttrGet(self.mlir_ctx, mlir.StringRef.from(name));
                 var addr = OpBuilder.init("llvm.mlir.addressof", self.loc).builder()
                     .add_results(&.{ty})
                     .add_attributes(&.{self.named("global_name", gsym)})
                     .build();
-                const entry_block = if (self.func_entry_block) |eb|
+                var entry_block = if (self.func_entry_block) |eb|
                     eb
-                else blk: {
+                else blk2: {
                     std.debug.assert(self.cur_block != null);
-                    break :blk self.cur_block.?;
+                    break :blk2 self.cur_block.?;
                 };
                 const term = entry_block.getTerminator();
                 if (!term.isNull()) {
@@ -2734,7 +2723,11 @@ pub const MlirCodegen = struct {
                         const rv = call.getResult(0);
                         // If caller expects a scalar too, just return it
                         if (want_res_mlir.isAInteger() or want_res_mlir.isAFloat() or want_res_mlir.isAVector()) {
-                            break :blk rv;
+                            var coerced = rv;
+                            if (!rv.getType().equal(want_res_mlir)) {
+                                coerced = try self.ensureCallArgType(store, rv, want_res_sr, want_res_mlir);
+                            }
+                            break :blk coerced;
                         }
                         // Caller expects an aggregate: write scalar into buffer and reload as struct
                         const tmp = self.spillAgg(self.undefOf(want_res_mlir), want_res_mlir, 1);

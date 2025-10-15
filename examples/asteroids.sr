@@ -181,24 +181,24 @@ shoot :: proc() {
     }
 }
 
-explode_rock :: proc(idx: int) {
+explode_rock :: proc(idx: i64) {
     if !rocks[idx].alive { return }
     r := rocks[idx]
     rocks[idx].alive = false
     // score & split
     match r.size {
         RockSize.Large => {
-            score += 20
+            score += 20.(i32)
             spawn_rock(RockSize.Medium, r.pos, r.vel)
-            spawn_rock(RockSize.Medium, r.pos, vmul(r.vel, -1))
+            spawn_rock(RockSize.Medium, r.pos, vmul(r.vel, (-1.0).(f32)))
         },
         RockSize.Medium => {
-            score += 50
+            score += 50.(i32)
             spawn_rock(RockSize.Small, r.pos, r.vel)
-            spawn_rock(RockSize.Small, r.pos, vmul(r.vel, -1))
+            spawn_rock(RockSize.Small, r.pos, vmul(r.vel, (-1.0).(f32)))
         },
         RockSize.Small => {
-            score += 100
+            score += 100.(i32)
         },
     }
 }
@@ -253,7 +253,7 @@ main :: proc() {
             if rl.IsKeyDown(rl.KEY_RIGHT) { ship.angle += 3.5.(f32) * dt }
 
             if rl.IsKeyDown(rl.KEY_UP) {
-                thrust := vmul(Vec2{m.cos(ship.angle), m.sin(ship.angle)}, 220.0 * dt)
+                thrust := vmul(Vec2{x: m.cos(ship.angle), y: m.sin(ship.angle)}, 220.0.(f32) * dt)
                 ship.vel = vadd(ship.vel, thrust)
                 // small speed clamp
                 maxs := 240.0

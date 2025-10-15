@@ -681,7 +681,7 @@ pub const Operation = struct {
         c.mlirOperationRemoveFromParent(self.handle);
     }
 
-    pub fn isNull(self: *Operation) bool {
+    pub fn isNull(self: *const Operation) bool {
         return c.mlirOperationIsNull(self.handle);
     }
 
@@ -982,7 +982,7 @@ pub const Block = struct {
         return Operation{ .handle = c.mlirBlockGetFirstOperation(self.handle) };
     }
 
-    pub fn getTerminator(self: *Block) Operation {
+    pub fn getTerminator(self: *const Block) Operation {
         return Operation{ .handle = c.mlirBlockGetTerminator(self.handle) };
     }
 

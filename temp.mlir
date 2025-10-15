@@ -768,9 +768,9 @@
     %1238 = "llvm.fpext"(%1237) : (f32) -> f64
     %1239 = "llvm.mlir.constant"() <{value = 0.000000e+00 : f64}> : () -> f64
     %1240 = "arith.cmpf"(%1238, %1239) <{fastmath = #arith.fastmath<none>, predicate = 4 : i64}> : (f64, f64) -> i1
-    "cf.cond_br"(%1240)[^bb1, ^bb2] <{operandSegmentSizes = array<i32: 1, 0, 0>}> : (i1) -> ()
     %1241 = "llvm.mlir.addressof"() <{global_name = @SCREEN_W}> : () -> !llvm.ptr
     %1242 = "llvm.mlir.addressof"() <{global_name = @SCREEN_H}> : () -> !llvm.ptr
+    "cf.cond_br"(%1240)[^bb1, ^bb2] <{operandSegmentSizes = array<i32: 1, 0, 0>}> : (i1) -> ()
   ^bb1:  // pred: ^bb0
     %1243 = "llvm.getelementptr"(%arg5) <{elem_type = f32, noWrapFlags = 0 : i32, rawConstantIndices = array<i32: 0>}> : (!llvm.ptr) -> !llvm.ptr
     %1244 = "llvm.load"(%arg5) <{ordering = 0 : i64}> : (!llvm.ptr) -> f32
@@ -833,10 +833,10 @@
   "func.func"() <{function_type = () -> (), sym_name = "init_stars", sym_visibility = "public"}> ({
     %1210 = "llvm.mlir.constant"() <{value = 0 : i64}> : () -> i64
     %1211 = "llvm.mlir.constant"() <{value = 60 : i64}> : () -> i64
-    "cf.br"(%1210)[^bb1] : (i64) -> ()
     %1212 = "llvm.mlir.addressof"() <{global_name = @stars}> : () -> !llvm.ptr
     %1213 = "llvm.mlir.addressof"() <{global_name = @SCREEN_W}> : () -> !llvm.ptr
     %1214 = "llvm.mlir.addressof"() <{global_name = @SCREEN_H}> : () -> !llvm.ptr
+    "cf.br"(%1210)[^bb1] : (i64) -> ()
   ^bb1(%1215: i64):  // 2 preds: ^bb0, ^bb4
     %1216 = "arith.cmpi"(%1215, %1211) <{predicate = 2 : i64}> : (i64, i64) -> i1
     "cf.cond_br"(%1216)[^bb2, ^bb3] <{operandSegmentSizes = array<i32: 1, 0, 0>}> : (i1) -> ()
@@ -883,10 +883,10 @@
     %1056 = "llvm.mlir.constant"() <{value = 0 : i64}> : () -> i64
     %1057 = "llvm.mlir.addressof"() <{global_name = @MAX_ROCKS}> : () -> !llvm.ptr
     %1058 = "llvm.load"(%1057) <{ordering = 0 : i64}> : (!llvm.ptr) -> i64
-    "cf.br"(%1056)[^bb1] : (i64) -> ()
     %1059 = "llvm.mlir.addressof"() <{global_name = @rocks}> : () -> !llvm.ptr
     %1060 = "llvm.mlir.addressof"() <{global_name = @SCREEN_H}> : () -> !llvm.ptr
     %1061 = "llvm.mlir.addressof"() <{global_name = @SCREEN_W}> : () -> !llvm.ptr
+    "cf.br"(%1056)[^bb1] : (i64) -> ()
   ^bb1(%1062: i64):  // 2 preds: ^bb0, ^bb4
     %1063 = "arith.cmpi"(%1062, %1058) <{predicate = 2 : i64}> : (i64, i64) -> i1
     "cf.cond_br"(%1063)[^bb2, ^bb3] <{operandSegmentSizes = array<i32: 1, 0, 0>}> : (i1) -> ()
@@ -1141,12 +1141,12 @@
     %956 = "llvm.mlir.constant"() <{value = 0 : i64}> : () -> i64
     %957 = "llvm.mlir.addressof"() <{global_name = @MAX_BULLETS}> : () -> !llvm.ptr
     %958 = "llvm.load"(%957) <{ordering = 0 : i64}> : (!llvm.ptr) -> i64
-    "cf.br"(%956)[^bb1] : (i64) -> ()
     %959 = "llvm.mlir.addressof"() <{global_name = @bullets}> : () -> !llvm.ptr
     %960 = "llvm.mlir.addressof"() <{global_name = @MAX_ROCKS}> : () -> !llvm.ptr
     %961 = "llvm.mlir.addressof"() <{global_name = @rocks}> : () -> !llvm.ptr
     %962 = "llvm.mlir.addressof"() <{global_name = @score}> : () -> !llvm.ptr
     %963 = "llvm.mlir.addressof"() <{global_name = @game_over}> : () -> !llvm.ptr
+    "cf.br"(%956)[^bb1] : (i64) -> ()
   ^bb1(%964: i64):  // 2 preds: ^bb0, ^bb4
     %965 = "arith.cmpi"(%964, %958) <{predicate = 2 : i64}> : (i64, i64) -> i1
     "cf.cond_br"(%965)[^bb2, ^bb3] <{operandSegmentSizes = array<i32: 1, 0, 0>}> : (i1) -> ()
@@ -1267,9 +1267,9 @@
     %860 = "llvm.mlir.constant"() <{value = 0 : i64}> : () -> i64
     %861 = "llvm.mlir.addressof"() <{global_name = @MAX_BULLETS}> : () -> !llvm.ptr
     %862 = "llvm.load"(%861) <{ordering = 0 : i64}> : (!llvm.ptr) -> i64
-    "cf.br"(%860)[^bb1] : (i64) -> ()
     %863 = "llvm.mlir.addressof"() <{global_name = @bullets}> : () -> !llvm.ptr
     %864 = "llvm.mlir.addressof"() <{global_name = @ship}> : () -> !llvm.ptr
+    "cf.br"(%860)[^bb1] : (i64) -> ()
   ^bb1(%865: i64):  // 2 preds: ^bb0, ^bb4
     %866 = "arith.cmpi"(%865, %862) <{predicate = 2 : i64}> : (i64, i64) -> i1
     "cf.cond_br"(%866)[^bb2, ^bb3] <{operandSegmentSizes = array<i32: 1, 0, 0>}> : (i1) -> ()
@@ -1586,9 +1586,9 @@
     "llvm.call"(%625, %619, %620, %621, %628) <{CConv = #llvm.cconv<ccc>, TailCallKind = #llvm.tailcallkind<none>, callee = @m$vendor_raylib_DrawText, fastmathFlags = #llvm.fastmath<none>, op_bundle_sizes = array<i32>, operandSegmentSizes = array<i32: 5, 0>}> : (i64, i64, i64, i64, !llvm.ptr) -> ()
     %629 = "llvm.mlir.addressof"() <{global_name = @game_over}> : () -> !llvm.ptr
     %630 = "llvm.load"(%629) <{ordering = 0 : i64}> : (!llvm.ptr) -> i1
-    "cf.cond_br"(%630)[^bb1, ^bb2] <{operandSegmentSizes = array<i32: 1, 0, 0>}> : (i1) -> ()
     %631 = "llvm.mlir.addressof"() <{global_name = @SCREEN_W}> : () -> !llvm.ptr
     %632 = "llvm.mlir.addressof"() <{global_name = @SCREEN_H}> : () -> !llvm.ptr
+    "cf.cond_br"(%630)[^bb1, ^bb2] <{operandSegmentSizes = array<i32: 1, 0, 0>}> : (i1) -> ()
   ^bb1:  // pred: ^bb0
     %633 = "llvm.mlir.addressof"() <{global_name = @__str_f0e02cb040ccdaaf}> : () -> !llvm.ptr
     %634 = "llvm.getelementptr"(%633) <{elem_type = !llvm.array<10 x i8>, noWrapFlags = 0 : i32, rawConstantIndices = array<i32: 0, 0>}> : (!llvm.ptr) -> !llvm.ptr
@@ -1680,7 +1680,6 @@
     %15 = "llvm.mlir.constant"() <{value = 60 : i64}> : () -> i64
     "llvm.call"(%15) <{CConv = #llvm.cconv<ccc>, TailCallKind = #llvm.tailcallkind<none>, callee = @m$vendor_raylib_SetTargetFPS, fastmathFlags = #llvm.fastmath<none>, op_bundle_sizes = array<i32>, operandSegmentSizes = array<i32: 1, 0>}> : (i64) -> ()
     "func.call"() <{callee = @reset_game}> : () -> ()
-    "cf.br"()[^bb1] : () -> ()
     %16 = "llvm.mlir.addressof"() <{global_name = @game_over}> : () -> !llvm.ptr
     %17 = "llvm.mlir.addressof"() <{global_name = @ship}> : () -> !llvm.ptr
     %18 = "llvm.mlir.addressof"() <{global_name = @stars}> : () -> !llvm.ptr
@@ -1689,6 +1688,7 @@
     %21 = "llvm.mlir.addressof"() <{global_name = @MAX_ROCKS}> : () -> !llvm.ptr
     %22 = "llvm.mlir.addressof"() <{global_name = @rocks}> : () -> !llvm.ptr
     %23 = "llvm.mlir.addressof"() <{global_name = @score}> : () -> !llvm.ptr
+    "cf.br"()[^bb1] : () -> ()
   ^bb1:  // 2 preds: ^bb0, ^bb107
     %24 = "llvm.call"() <{CConv = #llvm.cconv<ccc>, TailCallKind = #llvm.tailcallkind<none>, callee = @m$vendor_raylib_WindowShouldClose, fastmathFlags = #llvm.fastmath<none>, op_bundle_sizes = array<i32>, operandSegmentSizes = array<i32: 0, 0>}> : () -> i1
     %25 = "llvm.mlir.constant"() <{value = true}> : () -> i1

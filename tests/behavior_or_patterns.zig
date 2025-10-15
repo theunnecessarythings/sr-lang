@@ -22,7 +22,7 @@ test "patterns: or-pattern with ranges" {
     const src =
         \\x := 7
         \\result := match x {
-        \\  0..=3 | 7..=10 => "In range",
+        \\  (0..=3) | (7..=10) => "In range",
         \\  _ => "Out of range",
         \\}
         \\printf("Result: %s\n", result)

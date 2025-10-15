@@ -47,7 +47,7 @@ test "composite_types: array iteration with for loop" {
 
 test "composite_types: array length from comptime binding" {
     const src =
-        \\comptime len: usize = 3
+        \\len: usize = 3
         \\arr: [len]i32 = [7, 8, 9]
         \\printf("arr=%d,%d,%d\n", arr[0], arr[1], arr[2])
     ;

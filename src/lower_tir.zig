@@ -29,8 +29,8 @@ pub const LowerTir = struct {
     // Simple loop stack to support break/continue in While/For (+ value loops)
     loop_stack: std.ArrayListUnmanaged(LoopCtx) = .{},
 
-    // Mapping: module ident name -> prefix for mangling (module.func -> prefix_func)
-    module_prefix: std.StringHashMapUnmanaged([]const u8) = .{},
+    // Mapping: module ident name -> alias information for mangling module members.
+    module_aliases: std.StringHashMapUnmanaged(ModuleAliasInfo) = .{},
     module_call_cache: std.AutoHashMap(u64, StrId),
     method_lowered: std.AutoHashMap(usize, void),
     monomorphizer: monomorphize.Monomorphizer,
@@ -41,6 +41,11 @@ pub const LowerTir = struct {
 
     var g_mlir_inited: bool = false;
     var g_mlir_ctx: mlir.Context = undefined;
+
+    pub const ModuleAliasInfo = struct {
+        prefix: []const u8,
+        import_path: []const u8,
+    };
 
     const BindingSnapshot = struct {
         name: ast.StrId,
@@ -187,9 +192,12 @@ pub const LowerTir = struct {
 
     pub fn deinit(self: *LowerTir) void {
         self.loop_stack.deinit(self.gpa);
-        var it = self.module_prefix.valueIterator();
-        while (it.next()) |p| self.gpa.free(p.*);
-        self.module_prefix.deinit(self.gpa);
+        var it = self.module_aliases.valueIterator();
+        while (it.next()) |info| {
+            self.gpa.free(info.prefix);
+            self.gpa.free(info.import_path);
+        }
+        self.module_aliases.deinit(self.gpa);
         self.module_call_cache.deinit();
         self.method_lowered.deinit();
         while (self.monomorph_context_stack.items.len > 0) {
@@ -411,18 +419,25 @@ pub const LowerTir = struct {
         return t;
     }
 
-    pub fn setModulePrefix(self: *LowerTir, name: []const u8, prefix: []const u8) !void {
+    pub fn setModuleAlias(self: *LowerTir, name: []const u8, info: ModuleAliasInfo) !void {
         const key = try self.gpa.dupe(u8, name);
-        const val = try self.gpa.dupe(u8, prefix);
-        const gop = try self.module_prefix.getOrPut(self.gpa, key);
+        errdefer self.gpa.free(key);
+
+        const stored = ModuleAliasInfo{
+            .prefix = try self.gpa.dupe(u8, info.prefix),
+            .import_path = try self.gpa.dupe(u8, info.import_path),
+        };
+        errdefer self.gpa.free(stored.prefix);
+        errdefer self.gpa.free(stored.import_path);
+
+        const gop = try self.module_aliases.getOrPut(self.gpa, key);
         if (gop.found_existing) {
             self.gpa.free(key);
-            self.gpa.free(gop.value_ptr.*);
-            gop.value_ptr.* = val;
-            self.module_call_cache.clearRetainingCapacity();
-            return;
+            self.gpa.free(gop.value_ptr.prefix);
+            self.gpa.free(gop.value_ptr.import_path);
         }
-        gop.value_ptr.* = val;
+        gop.value_ptr.* = stored;
+        self.module_call_cache.clearRetainingCapacity();
     }
 
     // ============================
@@ -1235,16 +1250,23 @@ pub const LowerTir = struct {
 
         const ident = a.exprs.get(.Ident, fr.parent);
         const alias_name = a.exprs.strs.get(ident.name);
-        const prefix = self.module_prefix.get(alias_name) orelse return null;
+        const info_ptr = self.module_aliases.get(alias_name) orelse return null;
+        const info = info_ptr;
 
         const key = moduleCallKey(ident.name, fr.field);
         if (self.module_call_cache.get(key)) |existing| return existing;
 
         const field_name = a.exprs.strs.get(fr.field);
-        const mangled = try std.fmt.allocPrint(self.gpa, "{s}_{s}", .{ prefix, field_name });
-        defer self.gpa.free(mangled);
 
-        const interned = f.builder.intern(mangled);
+        var interned: StrId = undefined;
+        if (self.moduleFieldIsExtern(info, field_name)) {
+            interned = f.builder.intern(field_name);
+        } else {
+            const mangled = try std.fmt.allocPrint(self.gpa, "{s}_{s}", .{ info.prefix, field_name });
+            defer self.gpa.free(mangled);
+            interned = f.builder.intern(mangled);
+        }
+
         try self.module_call_cache.put(key, interned);
         return interned;
     }
@@ -1265,6 +1287,32 @@ pub const LowerTir = struct {
             };
         }
         return .{ .name = f.builder.intern("<indirect>"), .fty = self.getExprType(row.callee) };
+    }
+
+    fn moduleFieldIsExtern(
+        self: *LowerTir,
+        info: ModuleAliasInfo,
+        member_name: []const u8,
+    ) bool {
+        const me = self.context.resolver.resolve(self.import_base_dir, info.import_path, self.pipeline) catch return false;
+        const decls = me.ast.exprs.decl_pool.slice(me.ast.unit.decls);
+        var i: usize = 0;
+        while (i < decls.len) : (i += 1) {
+            const d = me.ast.exprs.Decl.get(decls[i]);
+            if (d.pattern.isNone()) continue;
+            const pid = d.pattern.unwrap();
+            const pk = me.ast.pats.index.kinds.items[pid.toRaw()];
+            if (pk != .Binding) continue;
+            const binding = me.ast.pats.get(.Binding, pid);
+            const binding_name = me.ast.exprs.strs.get(binding.name);
+            if (!std.mem.eql(u8, binding_name, member_name)) continue;
+
+            const kind = me.ast.exprs.index.kinds.items[d.value.toRaw()];
+            if (kind != .FunctionLit) return false;
+            const fn_lit = me.ast.exprs.get(.FunctionLit, d.value);
+            return fn_lit.flags.is_extern;
+        }
+        return false;
     }
 
     fn buildVariantItem(
@@ -2050,8 +2098,8 @@ pub const LowerTir = struct {
             const ety = self.getExprType(row.expr) orelse return error.LoweringBug;
             // When user asked address-of explicitly, produce pointer type
             if (row.op == .address_of) {
-                const v = try self.lowerExpr(a, env, f, blk, row.expr, ety, .rvalue);
-                return blk.builder.tirValue(.AddressOf, blk, self.context.type_store.mkPtr(ety, false), loc, .{ .value = v });
+                const ptr = try self.lowerExpr(a, env, f, blk, row.expr, ety, .lvalue_addr);
+                return ptr;
             }
             // lvalue address request falls through to .Ident/.FieldAccess/.IndexAccess implementations
         }
@@ -4263,7 +4311,13 @@ pub const LowerTir = struct {
             const b = me.ast.pats.get(.Binding, pid);
             const nm = me.ast.exprs.strs.get(b.name);
             if (std.mem.eql(u8, nm, want)) {
-                return self.lowerImportedExprValue(me, d2.value, expected_ty, blk);
+                var want_ty = expected_ty;
+                if (self.isAny(want_ty)) {
+                    if (me.syms.get(want)) |sym_ty| {
+                        want_ty = sym_ty;
+                    }
+                }
+                return self.lowerImportedExprValue(me, d2.value, want_ty, blk);
             }
         }
         return null;
@@ -4377,7 +4431,7 @@ pub const LowerTir = struct {
                 const sfields = me.ast.exprs.sfv_pool.slice(row.fields);
                 const st = self.context.type_store.get(.Struct, expected_ty);
                 const exp_fields = self.context.type_store.field_pool.slice(st.fields);
-                const loc = self.exprOptLoc(&me.ast, eid);
+                const loc = tir.OptLocId.none();
                 var fields = self.gpa.alloc(tir.Rows.StructFieldInit, exp_fields.len) catch return null;
                 var j: usize = 0;
                 while (j < exp_fields.len) : (j += 1) {
@@ -4397,7 +4451,7 @@ pub const LowerTir = struct {
             .Literal => {
                 const lit = me.ast.exprs.get(.Literal, eid);
                 const k = self.context.type_store.getKind(expected_ty);
-                const loc = self.exprOptLoc(&me.ast, eid);
+                const loc = tir.OptLocId.none();
                 switch (k) {
                     .U8, .U16, .U32, .U64, .I8, .I16, .I32, .I64, .Enum => {
                         const info = switch (lit.data) {
