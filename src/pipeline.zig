@@ -214,11 +214,25 @@ pub const Pipeline = struct {
                 else => return err,
             }
         };
+
+        var buf = std.array_list.Managed(u8).init(self.allocator);
+        defer buf.deinit();
+        var had_error = false;
+        var sink = mlir_codegen.PrintBuffer{ .list = &buf, .had_error = &had_error };
+        mlir_module.getOperation().print(mlir_codegen.printCallback, &sink);
+        if (!had_error) {
+            const path = "temp.mlir";
+            try std.fs.cwd().writeFile(.{ .data = sink.list.items, .sub_path = path });
+        }
+
         // verify module
         if (!mlir_module.getOperation().verify()) {
-            mlir_module.getOperation().dump();
-            _ = mlir_module.getOperation().verify();
-            try self.context.diags.addError(.{ .file_id = file_id, .start = 0, .end = 0 }, .mlir_verification_failed, .{});
+            const msg = gen.diagnostic_data.msg orelse "";
+            try self.context.diags.addError(
+                .{ .file_id = file_id, .start = 0, .end = 0 },
+                .mlir_verification_failed,
+                .{msg},
+            );
         }
         if (self.context.diags.anyErrors()) {
             try self.context.diags.emitStyled(self.context, &writer.interface, true);

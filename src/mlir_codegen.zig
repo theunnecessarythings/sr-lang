@@ -22,6 +22,19 @@ const LineInfo = struct {
     col: usize,
 };
 
+pub const PrintBuffer = struct {
+    list: *ArrayList(u8),
+    had_error: *bool,
+};
+
+pub fn printCallback(str: mlir.c.MlirStringRef, user_data: ?*anyopaque) callconv(.c) void {
+    const buf: *PrintBuffer = @ptrCast(@alignCast(user_data));
+    const bytes = str.data[0..str.length];
+    buf.list.appendSlice(bytes) catch {
+        buf.had_error.* = true;
+    };
+}
+
 const DW_TAG_base_type: u32 = 0x24;
 const DW_TAG_pointer_type: u32 = 0x0f;
 const POINTER_SIZE_BITS: u64 = 64;
@@ -159,19 +172,6 @@ pub const MlirCodegen = struct {
             return mlir.Operation.create(&st);
         }
     };
-
-    const PrintBuffer = struct {
-        list: *ArrayList(u8),
-        had_error: *bool,
-    };
-
-    fn printCallback(str: mlir.c.MlirStringRef, user_data: ?*anyopaque) callconv(.c) void {
-        const buf: *PrintBuffer = @ptrCast(@alignCast(user_data));
-        const bytes = str.data[0..str.length];
-        buf.list.appendSlice(bytes) catch {
-            buf.had_error.* = true;
-        };
-    }
 
     fn ownedAttributeText(self: *MlirCodegen, attr: mlir.Attribute) ![]u8 {
         var list = ArrayList(u8).init(self.gpa);

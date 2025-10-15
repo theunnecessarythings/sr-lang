@@ -481,7 +481,7 @@ pub fn diagnosticMessageFmt(code: DiagnosticCode) []const u8 {
         .expected_comma_or_rparen => "expected ',' or ')', found {s}",
         .expected_colon_or_comma_in_param => "expected ':' (type) or ',' (next parameter), found {s}",
 
-        .mlir_verification_failed => "MLIR verification failed",
+        .mlir_verification_failed => "MLIR verification failed: {s}",
         .mlir_block_not_a_type => "MLIR block is not a type",
         .mlir_parse_error => "failed to parse inline MLIR block: {s}",
         .mlir_splice_unknown_identifier => "unknown '@{s}' splice",
