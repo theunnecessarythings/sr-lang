@@ -493,6 +493,13 @@ pub const Checker = struct {
         const expected_kind = self.typeKind(expect);
         if (expected_kind == .Any or got_kind == .Any) return .success;
 
+        if (got_kind == .Undef) {
+            return switch (expected_kind) {
+                .Noreturn => .noreturn_not_storable,
+                else => .success,
+            };
+        }
+
         // Assigning `null` (modeled as Optional(Any)) to a non-optional target should error clearly.
         if (got_kind == .Optional and expected_kind != .Optional) {
             const got_opt = self.context.type_store.get(.Optional, got);

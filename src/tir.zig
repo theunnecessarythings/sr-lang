@@ -369,6 +369,7 @@ pub const InstrStore = struct {
         }
         self.GepIndex.deinit(gpa);
         self.StructFieldInit.deinit(gpa);
+        self.Attribute.deinit(gpa);
         if (self.MlirPiece.list.len != 0) {
             const values = self.MlirPiece.col("value");
             for (values) |*val| val.destroy(gpa);
@@ -378,6 +379,7 @@ pub const InstrStore = struct {
         self.value_pool.deinit(gpa);
         self.gep_pool.deinit(gpa);
         self.sfi_pool.deinit(gpa);
+        self.attribute_pool.deinit(gpa);
         self.val_list_pool.deinit(gpa);
         self.mlir_piece_pool.deinit(gpa);
     }

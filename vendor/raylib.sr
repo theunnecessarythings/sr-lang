@@ -146,7 +146,7 @@ RAYWHITE :: Color{ r: 245, g: 245, b: 245, a: 255 }
 // ------------------------------------------------------------
 
 SetConfigFlags :: extern proc(u32) void
-InitWindow :: extern proc(i64, i64, *void) void
+InitWindow :: extern proc(i64, i64, string) void
 CloseWindow :: extern proc() void
 WindowShouldClose :: extern proc() bool
 IsWindowReady :: extern proc() bool
@@ -166,7 +166,7 @@ MinimizeWindow :: extern proc() void
 RestoreWindow :: extern proc() void
 SetWindowIcon :: extern proc(Image) void
 SetWindowIcons :: extern proc(*Image, i64) void
-SetWindowTitle :: extern proc(*void) void
+SetWindowTitle :: extern proc(string) void
 SetWindowPosition :: extern proc(i64, i64) void
 SetWindowMonitor :: extern proc(i64) void
 SetWindowMinSize :: extern proc(i64, i64) void
@@ -197,12 +197,6 @@ GetCharPressed :: extern proc() i64
 GetKeyName :: extern proc(i64) *i8
 SetExitKey :: extern proc(i64) void
 
-init_window :: proc(w: i64, h: i64, title: string) void {
-    InitWindow(w, h, title.^*void)
-}
-set_window_title :: proc(title: string) void { 
-    SetWindowTitle(title.^*void)
-}
 
 // ------------------------------------------------------------
 // Drawing
@@ -211,13 +205,11 @@ set_window_title :: proc(title: string) void {
 BeginDrawing :: extern proc() void
 EndDrawing :: extern proc() void
 ClearBackground :: extern proc(Color) void
-DrawText :: extern proc(*void, i64, i64, i64, Color) void
+DrawText :: extern proc(string, i64, i64, i64, Color) void
 DrawTriangleLines :: extern proc(Vector2, Vector2, Vector2, Color) void
 DrawCircleLines :: extern proc(i64, i64, f32, Color) void
 
-draw_text :: proc(s: string, x: i64, y: i64, size: i64, c: Color) { 
-    DrawText(s.^*void, x, y, size, c)
-}
+
 
 // ------------------------------------------------------------
 // Textures & Images (selected)
@@ -230,10 +222,6 @@ LoadImage :: extern proc(*void) Image
 UnloadImage :: extern proc(Image) void
 ImageFormat :: extern proc(*Image, i64) void
 ExportImage :: extern proc(Image, *void) bool
-
-load_texture :: proc(path: string) Texture2D { return LoadTexture(path.^*void) }
-load_image :: proc(path: string) Image { return LoadImage(path.^*void) }
-export_image :: proc(img: Image, path: string) bool { return ExportImage(img, path.^*void) }
 
 // ------------------------------------------------------------
 // Mouse, Touch, Gestures
@@ -281,12 +269,6 @@ GetGlyphIndex :: extern proc(Font, i64) i64
 GetGlyphInfo :: extern proc(Font, i64) GlyphInfo
 GetGlyphAtlasRec :: extern proc(Font, i64) Rectangle
 
-load_font :: proc(path: string) Font { return LoadFont(path.^*void) }
-load_font_ex :: proc(path: string, fontSize: i64, codepoints: *i64, count: i64) Font { return LoadFontEx(path.^*void, fontSize, codepoints, count) }
-draw_text_ex :: proc(font: Font, text: string, pos: Vector2, size: f32, spacing: f32, tint: Color) void { DrawTextEx(font, text.^*void, pos, size, spacing, tint) }
-measure_text :: proc(text: string, fontSize: i64) i64 { return MeasureText(text.^*void, fontSize) }
-measure_text_ex :: proc(font: Font, text: string, size: f32, spacing: f32) Vector2 { return MeasureTextEx(font, text.^*void, size, spacing) }
-
 
 // ------------------------------------------------------------
 // Shapes (selected)
@@ -318,7 +300,6 @@ LoadSound :: extern proc(*void) Sound
 UnloadSound :: extern proc(Sound) void
 PlaySound :: extern proc(Sound) void
 
-load_sound :: proc(path: string) Sound { return LoadSound(path.^*void) }
 
 // ------------------------------------------------------------
 // Models and 3D drawing (selected)
@@ -328,7 +309,6 @@ UnloadModel :: extern proc(Model) void
 DrawModel :: extern proc(Model, Vector3, f32, Color) void
 DrawModelEx :: extern proc(Model, Vector3, Vector3, f32, Vector3, Color) void
 
-load_model :: proc(path: string) Model { return LoadModel(path.^*void) }
 
 // ------------------------------------------------------------
 // Shaders (selected)
@@ -341,10 +321,10 @@ SetShaderValueMatrix :: extern proc(Shader, i64, Matrix) void
 SetShaderValueTexture :: extern proc(Shader, i64, Texture2D) void
 
 //  load_shader :: proc(vsPath: string, fsPath: string) Shader { 
-//      return LoadShader(vsPath.^*void, fsPath.^*void)
+//      return LoadShader(vsPath, fsPath)
 //  }
 //  get_shader_location :: proc(sh: Shader, name: string) i64 {
-//      return GetShaderLocation(sh, name.^*void)
+//      return GetShaderLocation(sh, name)
 //  }
 
 // ------------------------------------------------------------
@@ -391,20 +371,6 @@ ComputeCRC32 :: extern proc(*u8, i64) u32
 ComputeMD5 :: extern proc(*u8, i64) *u32 // returns pointer to static int[4]
 ComputeSHA1 :: extern proc(*u8, i64) *u32 // returns pointer to static int[5]
 
-// Convenience wrappers
-file_exists :: proc(path: string) bool { return FileExists(path.^*void) }
-dir_exists :: proc(path: string) bool { return DirectoryExists(path.^*void) }
-is_file_extension :: proc(path: string, ext: string) bool { return IsFileExtension(path.^*void, ext.^*void) }
-get_file_extension :: proc(path: string) *i8 { return GetFileExtension(path.^*void) }
-get_file_name :: proc(path: string) *i8 { return GetFileName(path.^*void) }
-get_file_name_wo_ext :: proc(path: string) *i8 { return GetFileNameWithoutExt(path.^*void) }
-get_directory_path :: proc(path: string) *i8 { return GetDirectoryPath(path.^*void) }
-get_prev_directory_path :: proc(path: string) *i8 { return GetPrevDirectoryPath(path.^*void) }
-change_directory :: proc(path: string) bool { return ChangeDirectory(path.^*void) }
-is_path_file :: proc(path: string) bool { return IsPathFile(path.^*void) }
-load_file_text :: proc(path: string) *i8 { return LoadFileText(path.^*void) }
-save_file_text :: proc(path: string, text: *i8) bool { return SaveFileText(path.^*void, text) }
-
 // ------------------------------------------------------------
 // Text codepoints and strings utilities
 // ------------------------------------------------------------
@@ -420,9 +386,9 @@ CodepointToUTF8 :: extern proc(i64, *i64) *i8
 
 TextCopy :: extern proc(*i8, *void) i64
 TextIsEqual :: extern proc(*void, *void) bool
-TextLength :: extern proc(*void) u32
-TextFormat :: extern proc(*void, any) *void
-TextSubtext :: extern proc(*void, i64, i64) *i8
+TextLength :: extern proc(string) u32
+TextFormat :: extern proc(string, any) *void
+TextSubtext :: extern proc(string, i64, i64) *i8
 TextReplace :: extern proc(*void, *void, *void) *i8
 TextInsert :: extern proc(*void, *void, i64) *i8
 TextJoin :: extern proc(**i8, i64, *void) **i8
@@ -432,10 +398,6 @@ TextFindIndex :: extern proc(*void, *void) i64
 TextToUpper :: extern proc(*void) *i8
 TextToLower :: extern proc(*void) *i8
 TextToPascal :: extern proc(*void) *i8
-
-text_length :: proc(s: string) u32 { return TextLength(s.^*void) }
-text_is_equal :: proc(a: string, b: string) bool { return TextIsEqual(a.^*void, b.^*void) }
-text_subtext :: proc(s: string, pos: i64, len: i64) *i8 { return TextSubtext(s.^*void, pos, len) }
 
 
 GetRandomValue :: extern proc(i64, i64) i64

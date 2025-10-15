@@ -213,7 +213,7 @@ draw_ship :: proc() {
     p2 := vadd(ship.pos, vmul(right, 10.0))
 
     color := if ship.invuln > 0.0 { rl.YELLOW } else { rl.WHITE }
-        rl.DrawTriangleLines(Vector2{x: p0.x, y: p0.y}, Vector2{x: p1.x, y: p1.y}, Vector2{x: p2.x, y: p2.y}, color)
+        rl.DrawTriangleLines(rl.Vector2{x: p0.x, y: p0.y}, rl.Vector2{x: p1.x, y: p1.y}, rl.Vector2{x: p2.x, y: p2.y}, color)
 }
 
 draw_rock :: proc(r: Rock) {
@@ -225,11 +225,11 @@ draw_rock :: proc(r: Rock) {
 }
 
 draw_hud :: proc() {
-    txt := rl.TextFormat("Score: %d".^*void, score)
-    rl.DrawText(txt, 10, 10, 20, rl.WHITE)
+    txt := rl.TextFormat("Score: %d", score)
+    rl.DrawText(txt.^string, 10, 10, 20, rl.WHITE)
     if game_over {
-        rl.DrawText("GAME OVER".^*void, (SCREEN_W.(f64)/2.0 - 110.0).(i64), (SCREEN_H.(f64)/2.0 - 20.0).(i64), 40, rl.RED)
-        rl.DrawText("Press R to restart".^*void, (SCREEN_W.(f64)/2.0 - 120.0).(i64), (SCREEN_H.(f64)/2.0 + 30.0).(i64), 20, rl.WHITE)
+        rl.DrawText("GAME OVER", (SCREEN_W.(f64)/2.0 - 110.0).(i64), (SCREEN_H.(f64)/2.0 - 20.0).(i64), 40, rl.RED)
+        rl.DrawText("Press R to restart", (SCREEN_W.(f64)/2.0 - 120.0).(i64), (SCREEN_H.(f64)/2.0 + 30.0).(i64), 20, rl.WHITE)
     }
 }
 
@@ -238,7 +238,7 @@ draw_hud :: proc() {
 // Main
 // -----------------------------------------------------
 main :: proc() {
-    rl.InitWindow(SCREEN_W.(i32), SCREEN_H.(i32), "Asteroids-ish (raylib)".^*void)
+    rl.InitWindow(SCREEN_W.(i32), SCREEN_H.(i32), "Asteroids-ish (raylib)")
     rl.SetTargetFPS(60)
 
     reset_game()

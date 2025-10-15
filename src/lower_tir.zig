@@ -1402,7 +1402,6 @@ pub const LowerTir = struct {
         var gen = mlir_codegen.MlirCodegen.init(self.gpa, self.context, g_mlir_ctx);
         defer gen.deinit();
         var mlir_module = try gen.emitModule(&tmp_tir, self.context, a.exprs.locs, self.type_info);
-        mlir_module.getOperation().dump();
 
         try compile.run_passes(&gen.mlir_ctx, &mlir_module);
         _ = mlir.c.LLVMInitializeNativeTarget();
@@ -1962,6 +1961,7 @@ pub const LowerTir = struct {
             break :blk ty0;
         };
 
+        var literal_ty = base_ty;
         const v = switch (lit.kind) {
             .int => blk: {
                 const info = switch (lit.data) {
@@ -1978,6 +1978,7 @@ pub const LowerTir = struct {
                 if (tk != .Complex) break :blk blk.builder.tirValue(.ConstUndef, blk, ty0, loc, .{});
                 const crow = self.context.type_store.get(.Complex, base_ty);
                 const elem = crow.elem;
+                literal_ty = base_ty;
                 const info = switch (lit.data) {
                     .imaginary => |imag| imag,
                     else => return error.LoweringBug,
@@ -1995,7 +1996,11 @@ pub const LowerTir = struct {
                     else => return error.LoweringBug,
                 };
                 if (!info.valid) return error.LoweringBug;
-                break :blk blk.builder.tirValue(.ConstFloat, blk, base_ty, loc, .{ .value = info.value });
+                switch (self.context.type_store.getKind(base_ty)) {
+                    .F32, .F64 => literal_ty = base_ty,
+                    else => literal_ty = self.context.type_store.tF64(),
+                }
+                break :blk blk.builder.tirValue(.ConstFloat, blk, literal_ty, loc, .{ .value = info.value });
             },
             .bool => blk.builder.tirValue(.ConstBool, blk, base_ty, loc, .{ .value = switch (lit.data) {
                 .bool => |b| b,
@@ -2011,7 +2016,7 @@ pub const LowerTir = struct {
             }) orelse return error.LoweringBug }),
         };
         const want_ty = expected_ty orelse ty0;
-        if (!want_ty.eq(base_ty)) return self.emitCoerce(blk, v, base_ty, want_ty, loc);
+        if (!want_ty.eq(literal_ty)) return self.emitCoerce(blk, v, literal_ty, want_ty, loc);
         return v;
     }
 
@@ -5127,6 +5132,22 @@ pub const LowerTir = struct {
             .Wildcard => return blk.builder.tirValue(.ConstBool, blk, self.context.type_store.tBool(), loc, .{ .value = true }),
             .Literal => {
                 const pr = a.pats.get(.Literal, pid);
+                const expr_kind = a.exprs.index.kinds.items[pr.expr.toRaw()];
+                if (expr_kind == .Range) {
+                    const range = a.exprs.get(.Range, pr.expr);
+                    return self.matchRangeBounds(
+                        a,
+                        env,
+                        f,
+                        blk,
+                        range.start,
+                        range.end,
+                        range.inclusive_right,
+                        scrut,
+                        scrut_ty,
+                        loc,
+                    );
+                }
                 const litv = try self.lowerExpr(a, env, f, blk, pr.expr, null, .rvalue);
                 return blk.builder.binBool(blk, .CmpEq, scrut, litv, loc);
             },
@@ -5246,32 +5267,59 @@ pub const LowerTir = struct {
             },
             .Range => {
                 const range_pat = a.pats.get(.Range, pid);
-                const bool_ty = self.context.type_store.tBool();
-                var result = blk.builder.tirValue(.ConstBool, blk, bool_ty, loc, .{ .value = true });
-
-                if (!range_pat.start.isNone()) {
-                    const start_expr = range_pat.start.unwrap();
-                    const start_val = try self.lowerExpr(a, env, f, blk, start_expr, scrut_ty, .rvalue);
-                    const cmp = blk.builder.binBool(blk, .CmpGe, scrut, start_val, loc);
-                    result = blk.builder.binBool(blk, .LogicalAnd, result, cmp, loc);
-                }
-
-                if (!range_pat.end.isNone()) {
-                    const end_expr = range_pat.end.unwrap();
-                    const end_val = try self.lowerExpr(a, env, f, blk, end_expr, scrut_ty, .rvalue);
-                    const cmp = if (range_pat.inclusive_right)
-                        blk.builder.binBool(blk, .CmpLe, scrut, end_val, loc)
-                    else
-                        blk.builder.binBool(blk, .CmpLt, scrut, end_val, loc);
-                    result = blk.builder.binBool(blk, .LogicalAnd, result, cmp, loc);
-                }
-
-                return result;
+                return self.matchRangeBounds(
+                    a,
+                    env,
+                    f,
+                    blk,
+                    range_pat.start,
+                    range_pat.end,
+                    range_pat.inclusive_right,
+                    scrut,
+                    scrut_ty,
+                    loc,
+                );
             },
             .Binding, .Tuple, .Struct => {
                 return blk.builder.tirValue(.ConstBool, blk, self.context.type_store.tBool(), loc, .{ .value = true });
             },
         }
+    }
+
+    fn matchRangeBounds(
+        self: *LowerTir,
+        a: *const ast.Ast,
+        env: *Env,
+        f: *Builder.FunctionFrame,
+        blk: *Builder.BlockFrame,
+        start: ast.OptExprId,
+        end: ast.OptExprId,
+        inclusive_right: bool,
+        scrut: tir.ValueId,
+        scrut_ty: types.TypeId,
+        loc: tir.OptLocId,
+    ) !tir.ValueId {
+        const bool_ty = self.context.type_store.tBool();
+        var result = blk.builder.tirValue(.ConstBool, blk, bool_ty, loc, .{ .value = true });
+
+        if (!start.isNone()) {
+            const start_expr = start.unwrap();
+            const start_val = try self.lowerExpr(a, env, f, blk, start_expr, scrut_ty, .rvalue);
+            const cmp = blk.builder.binBool(blk, .CmpGe, scrut, start_val, loc);
+            result = blk.builder.binBool(blk, .LogicalAnd, result, cmp, loc);
+        }
+
+        if (!end.isNone()) {
+            const end_expr = end.unwrap();
+            const end_val = try self.lowerExpr(a, env, f, blk, end_expr, scrut_ty, .rvalue);
+            const cmp = if (inclusive_right)
+                blk.builder.binBool(blk, .CmpLe, scrut, end_val, loc)
+            else
+                blk.builder.binBool(blk, .CmpLt, scrut, end_val, loc);
+            result = blk.builder.binBool(blk, .LogicalAnd, result, cmp, loc);
+        }
+
+        return result;
     }
 
     fn restoreBindings(self: *LowerTir, env: *Env, saved: []const BindingSnapshot) !void {
