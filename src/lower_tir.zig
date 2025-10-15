@@ -2681,7 +2681,11 @@ pub const LowerTir = struct {
         if (idx_maybe) |resolved_idx| {
             const parent_kind = self.context.type_store.getKind(parent_ty_opt orelse self.context.type_store.tAny());
             v = if (parent_kind == .Variant) blk: {
-                // accessing the payload field out of a runtime variant value
+                if (row.is_tuple) {
+                    // Runtime variant struct exposes tag (field 0) and payload union (field 1).
+                    break :blk blk.builder.extractField(blk, ty0, base, resolved_idx, loc);
+                }
+                // accessing the payload field out of a runtime variant value via case name
                 const variants = self.context.type_store.get(.Variant, parent_ty_opt.?).variants;
                 const fields = self.context.type_store.field_pool.slice(variants);
                 var union_fields_args = try self.gpa.alloc(types.TypeStore.StructFieldArg, variants.len);

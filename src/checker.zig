@@ -2047,13 +2047,23 @@ pub const Checker = struct {
                         _ = self.context.diags.addError(self.exprLoc(field_expr), .expected_field_name_or_index, .{}) catch {};
                         return null;
                     };
-                    if (index >= variants.len) {
+                    const runtime_fields: usize = if (variants.len == 0) 1 else 2;
+                    if (index >= runtime_fields) {
                         _ = self.context.diags.addError(self.exprLoc(field_expr), .tuple_index_out_of_bounds, .{}) catch {};
                         return null;
                     }
                     try self.type_info.setFieldIndex(id, @intCast(index));
-                    const variant = self.context.type_store.Field.get(variants[index]);
-                    return variant.ty;
+                    if (index == 0) {
+                        return self.context.type_store.tI32();
+                    }
+
+                    var union_fields_args = try self.gpa.alloc(types.TypeStore.StructFieldArg, variants.len);
+                    defer self.gpa.free(union_fields_args);
+                    for (variants, 0..) |fid, i| {
+                        const fld = self.context.type_store.Field.get(fid);
+                        union_fields_args[i] = .{ .name = fld.name, .ty = fld.ty };
+                    }
+                    return self.context.type_store.mkUnion(union_fields_args);
                 }
                 var i: usize = 0;
                 while (i < variants.len) : (i += 1) {
