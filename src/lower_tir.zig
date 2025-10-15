@@ -2204,20 +2204,95 @@ pub const LowerTir = struct {
         expected_ty: ?types.TypeId,
     ) anyerror!tir.ValueId {
         const row = a.exprs.get(.ArrayLit, id);
-        const ty0 = expected_ty orelse (self.getExprType(id) orelse self.context.type_store.tAny());
+        const ty0 = expected_ty orelse (self.getExprType(id) orelse return error.LoweringBug);
         const loc = self.exprOptLoc(a, id);
-        const ids = a.exprs.expr_pool.slice(row.elems);
-        var vals = try self.gpa.alloc(tir.ValueId, ids.len);
-        defer self.gpa.free(vals);
-        var i: usize = 0;
-        var expect_elem = self.context.type_store.tAny();
         const vk = self.context.type_store.index.kinds.items[ty0.toRaw()];
-        if (vk == .Array) expect_elem = self.context.type_store.get(.Array, ty0).elem;
-        while (i < ids.len) : (i += 1)
-            vals[i] = try self.lowerExpr(a, env, f, blk, ids[i], expect_elem, .rvalue);
-        const v = blk.builder.arrayMake(blk, ty0, vals, loc);
-        if (expected_ty) |want| return self.emitCoerce(blk, v, ty0, want, loc);
-        return v;
+        switch (vk) {
+            .Array => {
+                const ids = a.exprs.expr_pool.slice(row.elems);
+                var vals = try self.gpa.alloc(tir.ValueId, ids.len);
+                defer self.gpa.free(vals);
+                const expect_elem = self.context.type_store.get(.Array, ty0).elem;
+                var i: usize = 0;
+                while (i < ids.len) : (i += 1)
+                    vals[i] = try self.lowerExpr(a, env, f, blk, ids[i], expect_elem, .rvalue);
+                const v = blk.builder.arrayMake(blk, ty0, vals, loc);
+                if (expected_ty) |want| return self.emitCoerce(blk, v, ty0, want, loc);
+                return v;
+            },
+            .Tensor => {
+                const v = try self.lowerTensorArrayLiteral(a, env, f, blk, id, ty0, loc);
+                if (expected_ty) |want| return self.emitCoerce(blk, v, ty0, want, loc);
+                return v;
+            },
+            else => return error.LoweringBug,
+        }
+    }
+
+    fn lowerTensorArrayLiteral(
+        self: *LowerTir,
+        a: *const ast.Ast,
+        env: *Env,
+        f: *Builder.FunctionFrame,
+        blk: *Builder.BlockFrame,
+        id: ast.ExprId,
+        tensor_ty: types.TypeId,
+        loc: tir.OptLocId,
+    ) !tir.ValueId {
+        const tensor_row = self.context.type_store.get(.Tensor, tensor_ty);
+        if (tensor_row.rank == 0) return error.LoweringBug;
+
+        var values: std.ArrayList(tir.ValueId) = .empty;
+        defer values.deinit(self.gpa);
+
+        try self.collectTensorLiteralValues(a, env, f, blk, id, tensor_ty, &values);
+
+        const slice = try values.toOwnedSlice(self.gpa);
+        defer self.gpa.free(slice);
+
+        return blk.builder.arrayMake(blk, tensor_ty, slice, loc);
+    }
+
+    fn collectTensorLiteralValues(
+        self: *LowerTir,
+        a: *const ast.Ast,
+        env: *Env,
+        f: *Builder.FunctionFrame,
+        blk: *Builder.BlockFrame,
+        expr_id: ast.ExprId,
+        current_ty: types.TypeId,
+        out: *std.ArrayList(tir.ValueId),
+    ) !void {
+        const kind = self.context.type_store.getKind(current_ty);
+        if (kind == .Tensor) {
+            if (a.exprs.index.kinds.items[expr_id.toRaw()] != .ArrayLit) return error.LoweringBug;
+            const row = a.exprs.get(.ArrayLit, expr_id);
+            const ids = a.exprs.expr_pool.slice(row.elems);
+            const tensor_info = self.context.type_store.get(.Tensor, current_ty);
+            std.debug.assert(tensor_info.rank > 0);
+            const expected_len: usize = @intCast(tensor_info.dims[0]);
+            std.debug.assert(ids.len == expected_len);
+
+            var next_ty: types.TypeId = undefined;
+            if (tensor_info.rank == 1) {
+                next_ty = tensor_info.elem;
+            } else {
+                var dims_buf: [types.max_tensor_rank]usize = undefined;
+                var i: usize = 0;
+                while (i + 1 < tensor_info.rank) : (i += 1) {
+                    dims_buf[i] = tensor_info.dims[i + 1];
+                }
+                next_ty = self.context.type_store.mkTensor(tensor_info.elem, dims_buf[0 .. tensor_info.rank - 1]);
+            }
+
+            for (ids) |child_id| {
+                try self.collectTensorLiteralValues(a, env, f, blk, child_id, next_ty, out);
+            }
+            return;
+        }
+
+        const value = try self.lowerExpr(a, env, f, blk, expr_id, current_ty, .rvalue);
+        try out.append(self.gpa, value);
     }
 
     fn lowerTupleLit(
@@ -2586,7 +2661,7 @@ pub const LowerTir = struct {
                 if (parent_kind == .Union) {
                     return blk.builder.tirValue(.UnionFieldPtr, blk, rptr_ty, loc, .{
                         .base = parent_ptr,
-                        .field_index = @intCast(idx),
+                        .field_index = idx,
                     });
                 }
             }

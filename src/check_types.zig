@@ -514,6 +514,11 @@ pub fn typeFromTypeExpr(self: *Checker, id: ast.ExprId) anyerror!?types.TypeId {
             const row = self.ast_unit.exprs.get(.TensorType, id);
             // Validate shape dimensions are integer literals
             const dims = self.ast_unit.exprs.expr_pool.slice(row.shape);
+            if (dims.len > types.max_tensor_rank) {
+                try self.context.diags.addError(self.ast_unit.exprs.locs.get(row.loc), .tensor_rank_exceeds_limit, .{});
+                break :blk_tensor null;
+            }
+            var dim_values = [_]usize{0} ** types.max_tensor_rank;
             var i: usize = 0;
             while (i < dims.len) : (i += 1) {
                 const dk = self.ast_unit.exprs.index.kinds.items[dims[i].toRaw()];
@@ -534,14 +539,21 @@ pub fn typeFromTypeExpr(self: *Checker, id: ast.ExprId) anyerror!?types.TypeId {
                     try self.context.diags.addError(self.ast_unit.exprs.locs.get(row.loc), .tensor_dimension_not_integer_literal, .{});
                     break :blk_tensor null;
                 }
+                const dim_val = std.math.cast(usize, info.value) orelse {
+                    try self.context.diags.addError(self.ast_unit.exprs.locs.get(row.loc), .tensor_dimension_not_integer_literal, .{});
+                    break :blk_tensor null;
+                };
+                dim_values[i] = dim_val;
             }
             // Validate element type present and resolvable
             const ety = try typeFromTypeExpr(self, row.elem);
             if (ety == null) {
-                try self.context.diags.addError(self.ast_unit.exprs.locs.get(row.loc), .tensor_missing_arguments, .{});
+                try self.context.diags.addError(self.ast_unit.exprs.locs.get(row.loc), .tensor_missing_element_type, .{});
                 break :blk_tensor null;
             }
-            break :blk_tensor self.context.type_store.tAny();
+            const rank = dims.len;
+            const tensor_ty = self.context.type_store.mkTensor(ety.?, dim_values[0..rank]);
+            break :blk_tensor tensor_ty;
         },
         .StructType => blk_sty: {
             const row = self.ast_unit.exprs.get(.StructType, id);

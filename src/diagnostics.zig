@@ -4,7 +4,8 @@ const Tag = @import("lexer.zig").Token.Tag;
 const Context = @import("compile.zig").Context;
 const BinaryOp = @import("ast.zig").BinaryOp;
 const UnaryOp = @import("ast.zig").UnaryOp;
-const TypeKind = @import("types.zig").TypeKind;
+const types = @import("types.zig");
+const TypeKind = types.TypeKind;
 
 pub const Severity = enum {
     err,
@@ -106,6 +107,10 @@ pub const DiagnosticCode = enum {
     tensor_missing_arguments,
     tensor_missing_element_type,
     tensor_dimension_not_integer_literal,
+    tensor_rank_exceeds_limit,
+    tensor_rank_mismatch,
+    tensor_dimension_mismatch,
+    tensor_element_type_mismatch,
     simd_lanes_not_integer_literal,
     simd_invalid_element_type,
     array_size_not_integer_literal,
@@ -164,6 +169,7 @@ pub const DiagnosticCode = enum {
 
     // Types
     expected_array_type, // payload: one (found)
+    expected_tensor_type,
     expected_map_type, // payload: one (found)
     expected_struct_type, // payload: one (found)
     expected_enum_type, // payload: one (found)
@@ -321,6 +327,10 @@ pub fn diagnosticMessageFmt(code: DiagnosticCode) []const u8 {
         .tensor_missing_arguments => "expected at least one argument to 'tensor', found none",
         .tensor_missing_element_type => "tensor is missing the element type",
         .tensor_dimension_not_integer_literal => "tensor dimensions must be integer literals",
+        .tensor_rank_exceeds_limit => "tensor rank exceeds supported maximum of {d}",
+        .tensor_rank_mismatch => "tensor rank mismatch",
+        .tensor_dimension_mismatch => "tensor dimensions do not match",
+        .tensor_element_type_mismatch => "tensor element type mismatch",
         .simd_lanes_not_integer_literal => "SIMD lanes must be an integer literal",
         .simd_invalid_element_type => "invalid SIMD element type",
         .array_size_not_integer_literal => "array size must be an integer literal",
@@ -376,8 +386,9 @@ pub fn diagnosticMessageFmt(code: DiagnosticCode) []const u8 {
         .non_integer_index => "array index must be an integer; found {s}",
         .invalid_index_type => "invalid index type; found {s}",
 
-        // Types
-        .expected_array_type => "expected array type, found {s}",
+    // Types
+    .expected_array_type => "expected array type, found {s}",
+    .expected_tensor_type => "expected tensor type",
         .expected_map_type => "expected map type, found {s}",
         .expected_struct_type => "expected struct type, found {s}",
         .expected_enum_type => "expected enum type, found {s}",

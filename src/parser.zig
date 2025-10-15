@@ -135,6 +135,12 @@ pub const Parser = struct {
             else => false,
         };
     }
+    inline fn exprIsIntegerLiteral(self: *const Parser, expr_id: cst.ExprId) bool {
+        const kind = self.cst.exprs.index.kinds.items[expr_id.toRaw()];
+        if (kind != .Literal) return false;
+        const lit = self.cst.exprs.get(.Literal, expr_id);
+        return lit.tag_small == self.litSmall(.integer_literal);
+    }
     inline fn nextIsTerminator(self: *const Parser) bool {
         return switch (self.nxt.tag) {
             .comma, .rsquare, .rparen, .rcurly, .eos, .eof => true,
@@ -1787,14 +1793,9 @@ pub const Parser = struct {
     fn parseTensorType(self: *Parser) !cst.ExprId {
         const start = try self.beginKeywordParen(.keyword_tensor);
 
-        // Parse a sequence: shape..., elem_type  (lcst item is the element type)
         var items: List(cst.ExprId) = .empty;
         defer items.deinit(self.gpa);
 
-        try items.append(self.gpa, try self.parseExpr(0, .expr));
-        try self.expect(.comma);
-
-        // Read until ')'
         while (self.cur.tag != .rparen and self.cur.tag != .eof) {
             try items.append(self.gpa, try self.parseExpr(0, .expr));
             if (!self.consumeIf(.comma)) break;
@@ -1802,13 +1803,38 @@ pub const Parser = struct {
         try self.expect(.rparen);
 
         if (items.items.len == 0) {
-            self.errorNote(self.cur.loc, .tensor_missing_arguments, .{}, null, .provide_element_type_last);
+            self.errorNote(start, .tensor_missing_arguments, .{}, null, .provide_element_type_last);
             self.sync(.eos);
             return error.UnexpectedToken;
         }
-        const elem = items.pop().?; // lcst is element type
 
-        const shape_range = self.cst.exprs.expr_pool.pushMany(self.gpa, items.items);
+        var elem_index_opt: ?usize = null;
+        var scan: usize = items.items.len;
+        while (scan > 0) {
+            scan -= 1;
+            if (!self.exprIsIntegerLiteral(items.items[scan])) {
+                elem_index_opt = scan;
+                break;
+            }
+        }
+
+        const elem_index = elem_index_opt orelse {
+            self.errorNote(start, .tensor_missing_arguments, .{}, null, .provide_element_type_last);
+            self.sync(.eos);
+            return error.UnexpectedToken;
+        };
+
+        const elem = items.items[elem_index];
+
+        var dims: List(cst.ExprId) = .empty;
+        defer dims.deinit(self.gpa);
+
+        for (items.items, 0..) |expr_id, i| {
+            if (i == elem_index) continue;
+            try dims.append(self.gpa, expr_id);
+        }
+
+        const shape_range = self.cst.exprs.expr_pool.pushMany(self.gpa, dims.items);
         return self.addExpr(.TensorType, .{ .elem = elem, .shape = shape_range, .loc = self.toLocId(start) });
     }
 

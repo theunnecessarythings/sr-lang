@@ -483,6 +483,10 @@ pub const Checker = struct {
         struct_field_name_mismatch,
         union_literal_multiple_fields,
         union_empty_literal,
+        expected_tensor_type,
+        tensor_rank_mismatch,
+        tensor_dimension_mismatch,
+        tensor_element_type_mismatch,
         failure,
         success,
     };
@@ -573,6 +577,44 @@ pub const Checker = struct {
                 if (key_ok != .success) return .map_wrong_key_type;
                 if (value_ok != .success) return value_ok;
                 return .success;
+            },
+            .Tensor => {
+                const expected_ty = self.context.type_store.get(.Tensor, expect);
+                const expected_rank: usize = @intCast(expected_ty.rank);
+                switch (got_kind) {
+                    .Tensor => {
+                        const got_ty = self.context.type_store.get(.Tensor, got);
+                        if (got_ty.rank != expected_ty.rank) return .tensor_rank_mismatch;
+                        var i: usize = 0;
+                        while (i < expected_rank) : (i += 1) {
+                            if (got_ty.dims[i] != expected_ty.dims[i]) return .tensor_dimension_mismatch;
+                        }
+                        return self.assignable(got_ty.elem, expected_ty.elem);
+                    },
+                    .Array => {
+                        var dims_buf = [_]usize{0} ** types.max_tensor_rank;
+                        var rank: usize = 0;
+                        var current_ty = got;
+                        var current_kind = got_kind;
+                        var elem_ty = got;
+                        while (current_kind == .Array) : (rank += 1) {
+                            if (rank >= types.max_tensor_rank) return .tensor_rank_mismatch;
+                            const arr = self.context.type_store.get(.Array, current_ty);
+                            dims_buf[rank] = arr.len;
+                            elem_ty = arr.elem;
+                            current_ty = arr.elem;
+                            current_kind = self.typeKind(current_ty);
+                        }
+                        if (rank == 0) return .expected_tensor_type;
+                        if (rank != expected_rank) return .tensor_rank_mismatch;
+                        var j: usize = 0;
+                        while (j < expected_rank) : (j += 1) {
+                            if (dims_buf[j] != expected_ty.dims[j]) return .tensor_dimension_mismatch;
+                        }
+                        return self.assignable(elem_ty, expected_ty.elem);
+                    },
+                    else => return .expected_tensor_type,
+                }
             },
             .Optional => {
                 const expected_ty = self.context.type_store.get(.Optional, expect);
@@ -1618,6 +1660,7 @@ pub const Checker = struct {
         const col_kind = self.typeKind(col_ty.?);
         switch (col_kind) {
             .Array, .Slice => return self.indexElemTypeFromArrayLike(col_ty.?, index_expr.index, self.exprLoc(index_expr)),
+            .Tensor => return self.indexElemTypeFromTensor(col_ty.?, index_expr.index, self.exprLoc(index_expr)),
             .Map => {
                 const m = self.context.type_store.get(.Map, col_ty.?);
                 const it = self.checkExpr(index_expr.index) catch return null;
@@ -1677,6 +1720,39 @@ pub const Checker = struct {
             .Slice => self.context.type_store.get(.Slice, col_ty).elem,
             else => unreachable,
         };
+    }
+
+    fn indexElemTypeFromTensor(self: *Checker, col_ty: types.TypeId, idx_expr: ast.ExprId, loc: Loc) ?types.TypeId {
+        const tensor = self.context.type_store.get(.Tensor, col_ty);
+        const rank: usize = @intCast(tensor.rank);
+        if (rank == 0) {
+            _ = self.context.diags.addError(loc, .not_indexable, .{}) catch {};
+            return null;
+        }
+
+        const idx_kind = self.exprKind(idx_expr);
+        if (idx_kind == .Range) {
+            // Tensor slicing is not yet supported.
+            _ = self.context.diags.addError(loc, .non_integer_index, .{}) catch {};
+            return null;
+        }
+
+        const it = self.checkExpr(idx_expr) catch return null;
+        if (it) |iid| {
+            if (!check_types.isIntegerKind(self, self.typeKind(iid))) {
+                _ = self.context.diags.addError(loc, .non_integer_index, .{}) catch {};
+                return null;
+            }
+        }
+
+        if (rank == 1) return tensor.elem;
+
+        var dims = [_]usize{0} ** types.max_tensor_rank;
+        var i: usize = 1;
+        while (i < rank) : (i += 1) {
+            dims[i - 1] = tensor.dims[i];
+        }
+        return self.context.type_store.mkTensor(tensor.elem, dims[0 .. rank - 1]);
     }
 
     fn resolveMethodFieldAccess(

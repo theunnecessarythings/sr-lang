@@ -107,6 +107,7 @@ pub const MlirCodegen = struct {
     current_scope: ?mlir.Attribute = null,
     block_map: std.AutoHashMap(tir.BlockId, mlir.Block),
     value_map: std.AutoHashMap(tir.ValueId, mlir.Value),
+    tensor_slots: std.AutoHashMap(tir.ValueId, mlir.Value),
 
     // NEW: for correctness decisions (signedness, etc.)
     val_types: std.AutoHashMap(tir.ValueId, types.TypeId), // SR types of SSA values
@@ -334,6 +335,7 @@ pub const MlirCodegen = struct {
             .str_pool = std.StringHashMap(mlir.Operation).init(gpa),
             .block_map = std.AutoHashMap(tir.BlockId, mlir.Block).init(gpa),
             .value_map = std.AutoHashMap(tir.ValueId, mlir.Value).init(gpa),
+            .tensor_slots = std.AutoHashMap(tir.ValueId, mlir.Value).init(gpa),
             .val_types = std.AutoHashMap(tir.ValueId, types.TypeId).init(gpa),
             .def_instr = std.AutoHashMap(tir.ValueId, tir.InstrId).init(gpa),
             .global_addr_cache = std.StringHashMap(mlir.Value).init(gpa),
@@ -358,6 +360,7 @@ pub const MlirCodegen = struct {
         self.str_pool.deinit();
         self.block_map.deinit();
         self.value_map.deinit();
+        self.tensor_slots.deinit();
         self.val_types.deinit();
         self.def_instr.deinit();
         self.global_addr_cache.deinit();
@@ -1871,6 +1874,10 @@ pub const MlirCodegen = struct {
                 switch (store.getKind(p.ty)) {
                     .Ptr => {
                         const ptr_row = store.get(.Ptr, p.ty);
+                        if (store.getKind(ptr_row.elem) == .Tensor) {
+                            try self.tensor_slots.put(p.result, mlir.Value.empty());
+                            break :blk self.llvmNullPtr();
+                        }
                         // Use storage representation for memory: Complex -> {elem, elem}
                         if (store.getKind(ptr_row.elem) == .Complex) {
                             const c = store.get(.Complex, ptr_row.elem);
@@ -1937,6 +1944,10 @@ pub const MlirCodegen = struct {
                     }
                 }
                 const ptr = ptr_val_opt.?;
+                if (store.getKind(p.ty) == .Tensor) {
+                    const stored = self.tensor_slots.get(p.ptr) orelse std.debug.panic("tensor load before store", .{});
+                    break :blk stored;
+                }
                 if (store.getKind(p.ty) == .Complex) {
                     const c = store.get(.Complex, p.ty);
                     const elem_ty = try self.llvmTypeOf(store, c.elem);
@@ -1984,6 +1995,11 @@ pub const MlirCodegen = struct {
                 }
                 const ptr = ptr_opt.?;
                 const v_sr = self.srTypeOfValue(t, p.value);
+                const ptr_sr = self.srTypeOfValue(t, p.ptr);
+                if (store.getKind(ptr_sr) == .Ptr and store.getKind(store.get(.Ptr, ptr_sr).elem) == .Tensor) {
+                    try self.tensor_slots.put(p.ptr, v);
+                    break :blk mlir.Value.empty();
+                }
                 if (store.getKind(v_sr) == .Complex) {
                     const c = store.get(.Complex, v_sr);
                     const elem_ty = try self.llvmTypeOf(store, c.elem);
@@ -2099,6 +2115,39 @@ pub const MlirCodegen = struct {
                 const p = t.instrs.get(.ArrayMake, ins_id);
                 const prev_loc = self.pushLocation(p.loc);
                 defer self.loc = prev_loc;
+                const result_kind = store.getKind(p.ty);
+                if (result_kind == .Tensor) {
+                    const tensor_sr = store.get(.Tensor, p.ty);
+                    const tensor_ty = try self.llvmTypeOf(store, p.ty);
+                    const elems = t.instrs.value_pool.slice(p.elems);
+                    const scalar_elem_mlir = try self.llvmTypeOf(store, tensor_sr.elem);
+
+                    var total: usize = 1;
+                    var dim_idx: usize = 0;
+                    while (dim_idx < tensor_sr.rank) : (dim_idx += 1) {
+                        total *= @intCast(tensor_sr.dims[dim_idx]);
+                    }
+                    std.debug.assert(total == elems.len);
+
+                    var operands = try self.gpa.alloc(mlir.Value, elems.len);
+                    defer self.gpa.free(operands);
+
+                    for (elems, 0..) |vid, i| {
+                        var v = self.value_map.get(vid).?;
+                        if (!v.getType().equal(scalar_elem_mlir)) {
+                            const src_sr = self.srTypeOfValue(t, vid);
+                            v = try self.coerceOnBranch(v, scalar_elem_mlir, tensor_sr.elem, src_sr, store);
+                        }
+                        operands[i] = v;
+                    }
+
+                    var literal = OpBuilder.init("tensor.from_elements", self.loc).builder()
+                        .add_operands(operands)
+                        .add_results(&.{tensor_ty}).build();
+                    self.append(literal);
+                    break :blk literal.getResult(0);
+                }
+
                 const arr_ty = try self.llvmTypeOf(store, p.ty);
                 // Determine element MLIR type from SR array element
                 const arr_sr = store.get(.Array, p.ty);
@@ -2372,6 +2421,97 @@ pub const MlirCodegen = struct {
                 const base_sr_ty = self.srTypeOfValue(t, p.base);
 
                 // Slicing: result is a slice type ([]T). Build {ptr,len} from base + range.
+                if (store.getKind(base_sr_ty) == .Tensor) {
+                    const base_tensor = store.get(.Tensor, base_sr_ty);
+                    const base_rank: usize = @intCast(base_tensor.rank);
+                    const idx_raw = self.value_map.get(p.index).?;
+                    const idx_val = try self.ensureIndexValue(idx_raw);
+
+                    if (base_rank == 1 and res_sr_kind != .Tensor and res_sr_kind != .Slice) {
+                        // Rank-1 tensor indexed by scalar -> tensor.extract returning element value.
+                        var op = OpBuilder.init("tensor.extract", self.loc).builder()
+                            .add_operands(&.{ base, idx_val })
+                            .add_results(&.{res_ty}).build();
+                        self.append(op);
+                        break :blk op.getResult(0);
+                    }
+
+                    std.debug.assert(res_sr_kind == .Tensor);
+                    const res_tensor = store.get(.Tensor, p.ty);
+                    const new_rank: usize = @intCast(res_tensor.rank);
+                    std.debug.assert(new_rank + 1 == base_rank);
+
+                    const elem_mlir = try self.llvmTypeOf(store, base_tensor.elem);
+
+                    var slice_dims_storage: [types.max_tensor_rank]i64 = undefined;
+                    var i: usize = 0;
+                    slice_dims_storage[0] = 1;
+                    while (i + 1 < base_rank) : (i += 1) {
+                        slice_dims_storage[i + 1] = @intCast(base_tensor.dims[i + 1]);
+                    }
+                    const slice_dims = slice_dims_storage[0..base_rank];
+                    const slice_ty = mlir.Type.getRankedTensorType(@intCast(base_rank), slice_dims, elem_mlir, mlir.Attribute.getNull());
+
+                    var static_offsets_buf: [types.max_tensor_rank]i64 = undefined;
+                    var static_sizes_buf: [types.max_tensor_rank]i64 = undefined;
+                    var static_strides_buf: [types.max_tensor_rank]i64 = undefined;
+                    static_offsets_buf[0] = -1;
+                    static_sizes_buf[0] = 1;
+                    static_strides_buf[0] = 1;
+                    var j: usize = 1;
+                    while (j < base_rank) : (j += 1) {
+                        static_offsets_buf[j] = 0;
+                        static_sizes_buf[j] = @intCast(base_tensor.dims[j]);
+                        static_strides_buf[j] = 1;
+                    }
+                    const offsets_attr = mlir.Attribute.denseI64ArrayGet(self.mlir_ctx, static_offsets_buf[0..base_rank]);
+                    const sizes_attr = mlir.Attribute.denseI64ArrayGet(self.mlir_ctx, static_sizes_buf[0..base_rank]);
+                    const strides_attr = mlir.Attribute.denseI64ArrayGet(self.mlir_ctx, static_strides_buf[0..base_rank]);
+
+                    const operand_segment = mlir.Attribute.denseI32ArrayGet(self.mlir_ctx, &[_]i32{ 1, 0, 0, 0 });
+
+                    var extract_attrs = [_]mlir.NamedAttribute{
+                        self.named("static_offsets", offsets_attr),
+                        self.named("static_sizes", sizes_attr),
+                        self.named("static_strides", strides_attr),
+                        self.named("operand_segment_sizes", operand_segment),
+                    };
+
+                    var extract_operands = [_]mlir.Value{ base, idx_val };
+                    var slice = OpBuilder.init("tensor.extract_slice", self.loc).builder()
+                        .add_operands(&extract_operands)
+                        .add_results(&.{slice_ty})
+                        .add_attributes(&extract_attrs).build();
+                    self.append(slice);
+
+                    const collapse_result_ty = res_ty;
+                    const reassoc_rank = new_rank;
+                    var reassoc_groups = try self.gpa.alloc(mlir.Attribute, reassoc_rank);
+                    defer self.gpa.free(reassoc_groups);
+                    const i64_ty = mlir.Type.getSignlessIntegerType(self.mlir_ctx, 64);
+
+                    var first_group_elems = [_]mlir.Attribute{
+                        mlir.Attribute.integerAttrGet(i64_ty, 0),
+                        mlir.Attribute.integerAttrGet(i64_ty, 1),
+                    };
+                    reassoc_groups[0] = mlir.Attribute.arrayAttrGet(self.mlir_ctx, first_group_elems[0..]);
+                    var g: usize = 1;
+                    while (g < reassoc_rank) : (g += 1) {
+                        const orig_dim: i64 = @intCast(g + 1);
+                        var elem_attr = [_]mlir.Attribute{mlir.Attribute.integerAttrGet(i64_ty, orig_dim)};
+                        reassoc_groups[g] = mlir.Attribute.arrayAttrGet(self.mlir_ctx, elem_attr[0..]);
+                    }
+                    const reassoc_attr = mlir.Attribute.arrayAttrGet(self.mlir_ctx, reassoc_groups);
+
+                    var collapse_attrs = [_]mlir.NamedAttribute{self.named("reassociation", reassoc_attr)};
+                    var collapse = OpBuilder.init("tensor.collapse_shape", self.loc).builder()
+                        .add_operands(&.{slice.getResult(0)})
+                        .add_results(&.{collapse_result_ty})
+                        .add_attributes(&collapse_attrs).build();
+                    self.append(collapse);
+                    break :blk collapse.getResult(0);
+                }
+
                 if (res_sr_kind == .Slice) {
                     // Peel optional CastNormal from the index to find builtin.range.make
                     var idx_vid: tir.ValueId = p.index;
@@ -3401,6 +3541,19 @@ pub const MlirCodegen = struct {
         return op.getResult(0);
     }
 
+    fn ensureIndexValue(self: *MlirCodegen, value: mlir.Value) !mlir.Value {
+        const idx_ty = mlir.Type.getIndexType(self.mlir_ctx);
+        if (value.getType().equal(idx_ty)) return value;
+        if (value.getType().isAInteger()) {
+            var cast = OpBuilder.init("arith.index_cast", self.loc).builder()
+                .add_operands(&.{value})
+                .add_results(&.{idx_ty}).build();
+            self.append(cast);
+            return cast.getResult(0);
+        }
+        return value;
+    }
+
     fn llvmConstI64(self: *MlirCodegen, x: i64) mlir.Value {
         const val = mlir.Attribute.integerAttrGet(self.i64_ty, x);
         var op = OpBuilder.init("llvm.mlir.constant", self.loc).builder()
@@ -3436,6 +3589,7 @@ pub const MlirCodegen = struct {
     }
 
     fn insertAt(self: *MlirCodegen, agg: mlir.Value, val: mlir.Value, pos: []const i64) mlir.Value {
+        std.debug.assert(!mlir.LLVM.isLLVMPointerType(agg.getType()));
         const pos_attr = mlir.Attribute.denseI64ArrayGet(self.mlir_ctx, pos);
         var op = OpBuilder.init("llvm.insertvalue", self.loc).builder()
             // Builder expects (container, value)
@@ -4890,6 +5044,21 @@ pub const MlirCodegen = struct {
                 const arr_ty = store.get(.Array, ty);
                 const e = try self.llvmTypeOf(store, arr_ty.elem);
                 break :blk mlir.LLVM.getLLVMArrayType(e, @intCast(arr_ty.len));
+            },
+            .Tensor => blk: {
+                const ten = store.get(.Tensor, ty);
+                const rank: usize = @intCast(ten.rank);
+                var shape_storage: [types.max_tensor_rank]i64 = undefined;
+                var shape_slice: []const i64 = &[_]i64{};
+                if (rank != 0) {
+                    var i: usize = 0;
+                    while (i < rank) : (i += 1) {
+                        shape_storage[i] = @intCast(ten.dims[i]);
+                    }
+                    shape_slice = shape_storage[0..rank];
+                }
+                const elem_ty = try self.llvmTypeOf(store, ten.elem);
+                break :blk mlir.Type.getRankedTensorType(@intCast(rank), shape_slice, elem_ty, mlir.Attribute.getNull());
             },
             .Complex => blk: {
                 const c = store.get(.Complex, ty);

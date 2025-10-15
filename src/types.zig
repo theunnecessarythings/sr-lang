@@ -6,6 +6,8 @@ const comp = @import("comptime.zig");
 // DOD Type Store
 pub const TypeTag = struct {};
 
+pub const max_tensor_rank: usize = 4;
+
 pub const TypeId = cst.Index(TypeTag);
 pub const FieldId = cst.Index(Rows.Field);
 pub const EnumMemberId = cst.Index(Rows.EnumMember);
@@ -594,6 +596,18 @@ pub const TypeStore = struct {
         if (self.findMap(key, value)) |id| return id;
         return self.add(.Map, .{ .key = key, .value = value });
     }
+    pub fn mkTensor(self: *TypeStore, elem: TypeId, dims: []const usize) TypeId {
+        std.debug.assert(dims.len <= max_tensor_rank);
+        if (self.findTensor(elem, dims)) |id| return id;
+        var row_dims = [_]usize{0} ** max_tensor_rank;
+        var i: usize = 0;
+        while (i < dims.len) : (i += 1) row_dims[i] = dims[i];
+        return self.add(.Tensor, .{
+            .elem = elem,
+            .rank = @intCast(dims.len),
+            .dims = row_dims,
+        });
+    }
     pub fn mkOptional(self: *TypeStore, elem: TypeId) TypeId {
         if (self.findOptional(elem)) |id| return id;
         return self.add(.Optional, .{ .elem = elem });
@@ -707,6 +721,19 @@ pub const TypeStore = struct {
             fn eq(s: *const TypeStore, row: Rows.Array, key: anytype) bool {
                 _ = s;
                 return row.elem.toRaw() == key.e.toRaw() and row.len == key.l;
+            }
+        });
+    }
+    fn findTensor(self: *const TypeStore, elem: TypeId, dims: []const usize) ?TypeId {
+        return self.findMatch(.Tensor, struct { e: TypeId, d: []const usize }{ .e = elem, .d = dims }, struct {
+            fn eq(_: *const TypeStore, row: Rows.Tensor, key: anytype) bool {
+                if (row.elem.toRaw() != key.e.toRaw()) return false;
+                if (row.rank != key.d.len) return false;
+                var i: usize = 0;
+                while (i < row.rank) : (i += 1) {
+                    if (row.dims[i] != key.d[i]) return false;
+                }
+                return true;
             }
         });
     }
