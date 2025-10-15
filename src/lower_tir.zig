@@ -2697,6 +2697,12 @@ pub const LowerTir = struct {
                 const union_ty = self.context.type_store.mkUnion(union_fields_args);
                 base = blk.builder.extractField(blk, union_ty, base, 1, loc);
                 break :blk blk.builder.tirValue(.UnionField, blk, ty0, loc, .{ .base = base, .field_index = resolved_idx });
+            } else if (parent_kind == .Ptr) blk: {
+                const field_ptr = try self.lowerExpr(a, env, f, blk, id, null, .lvalue_addr);
+                break :blk blk.builder.tirValue(.Load, blk, ty0, loc, .{
+                    .ptr = field_ptr,
+                    .@"align" = 0,
+                });
             } else if (parent_kind == .TypeType) blk: {
                 // VariantType.C  => construct the value (void payload must NOT use UnionMake)
                 const of_ty = self.context.type_store.get(.TypeType, parent_ty_opt.?).of;
