@@ -103,6 +103,7 @@ pub const MlirCodegen = struct {
     // per-function state (reset each function)
     cur_region: ?mlir.Region = null,
     cur_block: ?mlir.Block = null,
+    func_entry_block: ?mlir.Block = null,
     current_scope: ?mlir.Attribute = null,
     block_map: std.AutoHashMap(tir.BlockId, mlir.Block),
     value_map: std.AutoHashMap(tir.ValueId, mlir.Value),
@@ -111,6 +112,8 @@ pub const MlirCodegen = struct {
     val_types: std.AutoHashMap(tir.ValueId, types.TypeId), // SR types of SSA values
     def_instr: std.AutoHashMap(tir.ValueId, tir.InstrId), // SSA def site
     inline_mlir_counter: u32 = 0,
+
+    global_addr_cache: std.StringHashMap(mlir.Value),
 
     diagnostic_handler: mlir.c.MlirDiagnosticHandlerID,
     diagnostic_data: *DiagnosticData,
@@ -331,6 +334,7 @@ pub const MlirCodegen = struct {
             .value_map = std.AutoHashMap(tir.ValueId, mlir.Value).init(gpa),
             .val_types = std.AutoHashMap(tir.ValueId, types.TypeId).init(gpa),
             .def_instr = std.AutoHashMap(tir.ValueId, tir.InstrId).init(gpa),
+            .global_addr_cache = std.StringHashMap(mlir.Value).init(gpa),
             .diagnostic_handler = mlir.c.mlirContextAttachDiagnosticHandler(ctx.handle, diagnosticHandler, @ptrCast(diag_data), null),
             .diagnostic_data = diag_data,
             .active_type_info = null,
@@ -348,6 +352,7 @@ pub const MlirCodegen = struct {
         self.value_map.deinit();
         self.val_types.deinit();
         self.def_instr.deinit();
+        self.global_addr_cache.deinit();
         var fit = self.file_cache.valueIterator();
         while (fit.next()) |src| {
             self.context.source_manager.gpa.free(@constCast(src.*));
@@ -1135,6 +1140,8 @@ pub const MlirCodegen = struct {
         self.def_instr.clearRetainingCapacity();
         self.cur_region = null;
         self.cur_block = null;
+        self.func_entry_block = null;
+        self.global_addr_cache.clearRetainingCapacity();
 
         const f = t.funcs.Function.get(f_id);
         const fn_opt_loc = self.functionOptLoc(f_id, t);
@@ -1172,6 +1179,7 @@ pub const MlirCodegen = struct {
         region.appendOwnedBlock(entry_block);
         self.cur_region = region;
         self.cur_block = entry_block;
+        self.func_entry_block = entry_block;
 
         if (blocks.len > 0) {
             const entry_bid = blocks[0];
@@ -1253,6 +1261,8 @@ pub const MlirCodegen = struct {
             // terminator
             try self.emitTerminator(bb.term, t, store);
         }
+
+        self.func_entry_block = null;
     }
 
     fn getInstrResultId(self: *MlirCodegen, t: *const tir.TIR, id: tir.InstrId) ?tir.ValueId {
@@ -1726,6 +1736,7 @@ pub const MlirCodegen = struct {
                 const from_v = self.value_map.get(p.value).?;
                 const from_ty = from_v.getType();
                 if (from_ty.equal(to_ty)) break :blk from_v;
+                if (self.isUndefValue(from_v)) break :blk self.undefOf(to_ty);
 
                 const src_is_ptr = mlir.LLVM.isLLVMPointerType(from_ty);
                 const dst_is_ptr = mlir.LLVM.isLLVMPointerType(to_ty);
@@ -1956,6 +1967,16 @@ pub const MlirCodegen = struct {
                 defer self.loc = prev_loc;
                 const name = t.instrs.strs.get(p.name);
                 const ty = try self.llvmTypeOf(store, p.ty);
+                if (self.global_addr_cache.get(name)) |cached| break :blk cached;
+
+                const saved_block = self.cur_block;
+                const entry_block = if (self.func_entry_block) |eb|
+                    eb
+                else blk2: {
+                    std.debug.assert(saved_block != null);
+                    break :blk2 saved_block.?;
+                };
+                self.cur_block = entry_block;
 
                 const gsym = mlir.Attribute.flatSymbolRefAttrGet(self.mlir_ctx, mlir.StringRef.from(name));
                 var addr = OpBuilder.init("llvm.mlir.addressof", self.loc).builder()
@@ -1963,7 +1984,11 @@ pub const MlirCodegen = struct {
                     .add_attributes(&.{self.named("global_name", gsym)})
                     .build();
                 self.append(addr);
-                break :blk addr.getResult(0);
+                self.cur_block = saved_block;
+
+                const value = addr.getResult(0);
+                try self.global_addr_cache.put(name, value);
+                break :blk value;
             },
 
             // ------------- Aggregates -------------
@@ -3245,6 +3270,16 @@ pub const MlirCodegen = struct {
     }
     fn append(self: *MlirCodegen, op: mlir.Operation) void {
         self.cur_block.?.appendOwnedOperation(op);
+    }
+
+    fn isUndefValue(self: *const MlirCodegen, v: mlir.Value) bool {
+        _ = self;
+        if (!v.isAOpResult()) return false;
+        var owner = v.opResultGetOwner();
+        if (owner.isNull()) return false;
+        var name_id = owner.getName();
+        const name = name_id.str().toSlice();
+        return std.mem.eql(u8, name, "llvm.mlir.undef");
     }
     fn named(self: *const MlirCodegen, name: []const u8, attr: mlir.Attribute) mlir.NamedAttribute {
         return .{
@@ -4595,6 +4630,7 @@ pub const MlirCodegen = struct {
 
         if (try self.reinterpretAggregateViaSpill(store, dst_sr, to_ty, from_v, src_sr)) |agg|
             return agg;
+        if (self.isUndefValue(from_v)) return self.undefOf(to_ty);
 
         // Fallback: bitcast (ensure size match upstream)
         const op = OpBuilder.init("llvm.bitcast", self.loc).builder()

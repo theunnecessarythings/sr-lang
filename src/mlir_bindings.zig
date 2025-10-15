@@ -1049,7 +1049,7 @@ pub const Value = struct {
         return c.mlirValueIsABlockArgument(self.handle);
     }
 
-    pub fn isAOpResult(self: *Value) bool {
+    pub fn isAOpResult(self: *const Value) bool {
         return c.mlirValueIsAOpResult(self.handle);
     }
 
