@@ -2039,6 +2039,16 @@ pub const MlirCodegen = struct {
                 defer self.loc = prev_loc;
                 const name = t.instrs.strs.get(p.name);
                 const ty = try self.llvmTypeOf(store, p.ty);
+                if (self.global_addr_cache.get(name)) |cached| break :blk cached;
+
+                const saved_block = self.cur_block;
+                const entry_block = if (self.func_entry_block) |eb|
+                    eb
+                else blk2: {
+                    std.debug.assert(saved_block != null);
+                    break :blk2 saved_block.?;
+                };
+                self.cur_block = entry_block;
 
                 if (self.global_addr_cache.get(name)) |cached| break :blk cached;
 
@@ -4725,6 +4735,7 @@ pub const MlirCodegen = struct {
 
         if (try self.reinterpretAggregateViaSpill(store, dst_sr, to_ty, from_v, src_sr)) |agg|
             return agg;
+        if (self.isUndefValue(from_v)) return self.undefOf(to_ty);
 
         if (self.isUndefValue(from_v)) return self.undefOf(to_ty);
 

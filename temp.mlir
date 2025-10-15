@@ -727,962 +727,936 @@
   }) {sym_visibility = "private"} : () -> ()
   "func.func"() <{function_type = (!llvm.struct<(f32, f32)>, !llvm.struct<(f32, f32)>) -> !llvm.struct<(f32, f32)>, sym_name = "vadd", sym_visibility = "public"}> ({
   ^bb0(%arg10: !llvm.struct<(f32, f32)>, %arg11: !llvm.struct<(f32, f32)>):
-    %1349 = "llvm.extractvalue"(%arg10) <{position = array<i64: 0>}> : (!llvm.struct<(f32, f32)>) -> f32
-    %1350 = "llvm.extractvalue"(%arg11) <{position = array<i64: 0>}> : (!llvm.struct<(f32, f32)>) -> f32
-    %1351 = "arith.addf"(%1349, %1350) <{fastmath = #arith.fastmath<none>}> : (f32, f32) -> f32
-    %1352 = "llvm.extractvalue"(%arg10) <{position = array<i64: 1>}> : (!llvm.struct<(f32, f32)>) -> f32
-    %1353 = "llvm.extractvalue"(%arg11) <{position = array<i64: 1>}> : (!llvm.struct<(f32, f32)>) -> f32
-    %1354 = "arith.addf"(%1352, %1353) <{fastmath = #arith.fastmath<none>}> : (f32, f32) -> f32
-    %1355 = "llvm.mlir.zero"() : () -> !llvm.struct<(f32, f32)>
-    %1356 = "llvm.insertvalue"(%1355, %1351) <{position = array<i64: 0>}> : (!llvm.struct<(f32, f32)>, f32) -> !llvm.struct<(f32, f32)>
-    %1357 = "llvm.insertvalue"(%1356, %1354) <{position = array<i64: 1>}> : (!llvm.struct<(f32, f32)>, f32) -> !llvm.struct<(f32, f32)>
-    "func.return"(%1357) : (!llvm.struct<(f32, f32)>) -> ()
+    %1289 = "llvm.extractvalue"(%arg10) <{position = array<i64: 0>}> : (!llvm.struct<(f32, f32)>) -> f32
+    %1290 = "llvm.extractvalue"(%arg11) <{position = array<i64: 0>}> : (!llvm.struct<(f32, f32)>) -> f32
+    %1291 = "arith.addf"(%1289, %1290) <{fastmath = #arith.fastmath<none>}> : (f32, f32) -> f32
+    %1292 = "llvm.extractvalue"(%arg10) <{position = array<i64: 1>}> : (!llvm.struct<(f32, f32)>) -> f32
+    %1293 = "llvm.extractvalue"(%arg11) <{position = array<i64: 1>}> : (!llvm.struct<(f32, f32)>) -> f32
+    %1294 = "arith.addf"(%1292, %1293) <{fastmath = #arith.fastmath<none>}> : (f32, f32) -> f32
+    %1295 = "llvm.mlir.zero"() : () -> !llvm.struct<(f32, f32)>
+    %1296 = "llvm.insertvalue"(%1295, %1291) <{position = array<i64: 0>}> : (!llvm.struct<(f32, f32)>, f32) -> !llvm.struct<(f32, f32)>
+    %1297 = "llvm.insertvalue"(%1296, %1294) <{position = array<i64: 1>}> : (!llvm.struct<(f32, f32)>, f32) -> !llvm.struct<(f32, f32)>
+    "func.return"(%1297) : (!llvm.struct<(f32, f32)>) -> ()
   }) : () -> ()
   "func.func"() <{function_type = (!llvm.struct<(f32, f32)>, !llvm.struct<(f32, f32)>) -> !llvm.struct<(f32, f32)>, sym_name = "vsub", sym_visibility = "public"}> ({
   ^bb0(%arg8: !llvm.struct<(f32, f32)>, %arg9: !llvm.struct<(f32, f32)>):
-    %1340 = "llvm.extractvalue"(%arg8) <{position = array<i64: 0>}> : (!llvm.struct<(f32, f32)>) -> f32
-    %1341 = "llvm.extractvalue"(%arg9) <{position = array<i64: 0>}> : (!llvm.struct<(f32, f32)>) -> f32
-    %1342 = "arith.subf"(%1340, %1341) <{fastmath = #arith.fastmath<none>}> : (f32, f32) -> f32
-    %1343 = "llvm.extractvalue"(%arg8) <{position = array<i64: 1>}> : (!llvm.struct<(f32, f32)>) -> f32
-    %1344 = "llvm.extractvalue"(%arg9) <{position = array<i64: 1>}> : (!llvm.struct<(f32, f32)>) -> f32
-    %1345 = "arith.subf"(%1343, %1344) <{fastmath = #arith.fastmath<none>}> : (f32, f32) -> f32
-    %1346 = "llvm.mlir.zero"() : () -> !llvm.struct<(f32, f32)>
-    %1347 = "llvm.insertvalue"(%1346, %1342) <{position = array<i64: 0>}> : (!llvm.struct<(f32, f32)>, f32) -> !llvm.struct<(f32, f32)>
-    %1348 = "llvm.insertvalue"(%1347, %1345) <{position = array<i64: 1>}> : (!llvm.struct<(f32, f32)>, f32) -> !llvm.struct<(f32, f32)>
-    "func.return"(%1348) : (!llvm.struct<(f32, f32)>) -> ()
+    %1280 = "llvm.extractvalue"(%arg8) <{position = array<i64: 0>}> : (!llvm.struct<(f32, f32)>) -> f32
+    %1281 = "llvm.extractvalue"(%arg9) <{position = array<i64: 0>}> : (!llvm.struct<(f32, f32)>) -> f32
+    %1282 = "arith.subf"(%1280, %1281) <{fastmath = #arith.fastmath<none>}> : (f32, f32) -> f32
+    %1283 = "llvm.extractvalue"(%arg8) <{position = array<i64: 1>}> : (!llvm.struct<(f32, f32)>) -> f32
+    %1284 = "llvm.extractvalue"(%arg9) <{position = array<i64: 1>}> : (!llvm.struct<(f32, f32)>) -> f32
+    %1285 = "arith.subf"(%1283, %1284) <{fastmath = #arith.fastmath<none>}> : (f32, f32) -> f32
+    %1286 = "llvm.mlir.zero"() : () -> !llvm.struct<(f32, f32)>
+    %1287 = "llvm.insertvalue"(%1286, %1282) <{position = array<i64: 0>}> : (!llvm.struct<(f32, f32)>, f32) -> !llvm.struct<(f32, f32)>
+    %1288 = "llvm.insertvalue"(%1287, %1285) <{position = array<i64: 1>}> : (!llvm.struct<(f32, f32)>, f32) -> !llvm.struct<(f32, f32)>
+    "func.return"(%1288) : (!llvm.struct<(f32, f32)>) -> ()
   }) : () -> ()
   "func.func"() <{function_type = (!llvm.struct<(f32, f32)>, f32) -> !llvm.struct<(f32, f32)>, sym_name = "vmul", sym_visibility = "public"}> ({
   ^bb0(%arg6: !llvm.struct<(f32, f32)>, %arg7: f32):
-    %1333 = "llvm.extractvalue"(%arg6) <{position = array<i64: 0>}> : (!llvm.struct<(f32, f32)>) -> f32
-    %1334 = "arith.mulf"(%1333, %arg7) <{fastmath = #arith.fastmath<none>}> : (f32, f32) -> f32
-    %1335 = "llvm.extractvalue"(%arg6) <{position = array<i64: 1>}> : (!llvm.struct<(f32, f32)>) -> f32
-    %1336 = "arith.mulf"(%1335, %arg7) <{fastmath = #arith.fastmath<none>}> : (f32, f32) -> f32
-    %1337 = "llvm.mlir.zero"() : () -> !llvm.struct<(f32, f32)>
-    %1338 = "llvm.insertvalue"(%1337, %1334) <{position = array<i64: 0>}> : (!llvm.struct<(f32, f32)>, f32) -> !llvm.struct<(f32, f32)>
-    %1339 = "llvm.insertvalue"(%1338, %1336) <{position = array<i64: 1>}> : (!llvm.struct<(f32, f32)>, f32) -> !llvm.struct<(f32, f32)>
-    "func.return"(%1339) : (!llvm.struct<(f32, f32)>) -> ()
+    %1273 = "llvm.extractvalue"(%arg6) <{position = array<i64: 0>}> : (!llvm.struct<(f32, f32)>) -> f32
+    %1274 = "arith.mulf"(%1273, %arg7) <{fastmath = #arith.fastmath<none>}> : (f32, f32) -> f32
+    %1275 = "llvm.extractvalue"(%arg6) <{position = array<i64: 1>}> : (!llvm.struct<(f32, f32)>) -> f32
+    %1276 = "arith.mulf"(%1275, %arg7) <{fastmath = #arith.fastmath<none>}> : (f32, f32) -> f32
+    %1277 = "llvm.mlir.zero"() : () -> !llvm.struct<(f32, f32)>
+    %1278 = "llvm.insertvalue"(%1277, %1274) <{position = array<i64: 0>}> : (!llvm.struct<(f32, f32)>, f32) -> !llvm.struct<(f32, f32)>
+    %1279 = "llvm.insertvalue"(%1278, %1276) <{position = array<i64: 1>}> : (!llvm.struct<(f32, f32)>, f32) -> !llvm.struct<(f32, f32)>
+    "func.return"(%1279) : (!llvm.struct<(f32, f32)>) -> ()
   }) : () -> ()
   "func.func"() <{function_type = (!llvm.ptr) -> (), sym_name = "wrap", sym_visibility = "public"}> ({
   ^bb0(%arg5: !llvm.ptr):
-    %1284 = "llvm.load"(%arg5) <{ordering = 0 : i64}> : (!llvm.ptr) -> f32
-    %1285 = "llvm.fpext"(%1284) : (f32) -> f64
-    %1286 = "llvm.mlir.constant"() <{value = 0.000000e+00 : f64}> : () -> f64
-    %1287 = "arith.cmpf"(%1285, %1286) <{fastmath = #arith.fastmath<none>, predicate = 4 : i64}> : (f64, f64) -> i1
-    %1288 = "llvm.bitcast"(%1287) : (i1) -> i1
-    "cf.cond_br"(%1288)[^bb1, ^bb2] <{operandSegmentSizes = array<i32: 1, 0, 0>}> : (i1) -> ()
+    %1237 = "llvm.load"(%arg5) <{ordering = 0 : i64}> : (!llvm.ptr) -> f32
+    %1238 = "llvm.fpext"(%1237) : (f32) -> f64
+    %1239 = "llvm.mlir.constant"() <{value = 0.000000e+00 : f64}> : () -> f64
+    %1240 = "arith.cmpf"(%1238, %1239) <{fastmath = #arith.fastmath<none>, predicate = 4 : i64}> : (f64, f64) -> i1
+    "cf.cond_br"(%1240)[^bb1, ^bb2] <{operandSegmentSizes = array<i32: 1, 0, 0>}> : (i1) -> ()
+    %1241 = "llvm.mlir.addressof"() <{global_name = @SCREEN_W}> : () -> !llvm.ptr
+    %1242 = "llvm.mlir.addressof"() <{global_name = @SCREEN_H}> : () -> !llvm.ptr
   ^bb1:  // pred: ^bb0
-    %1289 = "llvm.mlir.constant"() <{value = 1 : i64}> : () -> i64
-    %1290 = "llvm.alloca"(%1289) <{elem_type = !llvm.ptr}> : (i64) -> !llvm.ptr
-    "llvm.store"(%arg5, %1290) <{ordering = 0 : i64}> : (!llvm.ptr, !llvm.ptr) -> ()
-    %1291 = "llvm.getelementptr"(%1290) <{elem_type = f32, noWrapFlags = 0 : i32, rawConstantIndices = array<i32: 0>}> : (!llvm.ptr) -> !llvm.ptr
-    %1292 = "llvm.load"(%1290) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.ptr
-    %1293 = "llvm.load"(%1292) <{ordering = 0 : i64}> : (!llvm.ptr) -> f32
-    %1294 = "llvm.mlir.addressof"() <{global_name = @SCREEN_W}> : () -> !llvm.ptr
-    %1295 = "llvm.load"(%1294) <{ordering = 0 : i64}> : (!llvm.ptr) -> f32
-    %1296 = "arith.addf"(%1293, %1295) <{fastmath = #arith.fastmath<none>}> : (f32, f32) -> f32
-    "llvm.store"(%1296, %1291) <{ordering = 0 : i64}> : (f32, !llvm.ptr) -> ()
+    %1243 = "llvm.getelementptr"(%arg5) <{elem_type = f32, noWrapFlags = 0 : i32, rawConstantIndices = array<i32: 0>}> : (!llvm.ptr) -> !llvm.ptr
+    %1244 = "llvm.load"(%arg5) <{ordering = 0 : i64}> : (!llvm.ptr) -> f32
+    %1245 = "llvm.load"(%1241) <{ordering = 0 : i64}> : (!llvm.ptr) -> f32
+    %1246 = "arith.addf"(%1244, %1245) <{fastmath = #arith.fastmath<none>}> : (f32, f32) -> f32
+    "llvm.store"(%1246, %1243) <{ordering = 0 : i64}> : (f32, !llvm.ptr) -> ()
     "cf.br"()[^bb3] : () -> ()
   ^bb2:  // pred: ^bb0
     "cf.br"()[^bb3] : () -> ()
   ^bb3:  // 2 preds: ^bb1, ^bb2
-    %1297 = "llvm.mlir.undef"() : () -> !llvm.ptr
-    %1298 = "llvm.load"(%1290) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.ptr
-    %1299 = "llvm.load"(%1298) <{ordering = 0 : i64}> : (!llvm.ptr) -> f32
-    %1300 = "llvm.load"(%1294) <{ordering = 0 : i64}> : (!llvm.ptr) -> f32
-    %1301 = "arith.cmpf"(%1299, %1300) <{fastmath = #arith.fastmath<none>, predicate = 3 : i64}> : (f32, f32) -> i1
-    %1302 = "llvm.bitcast"(%1301) : (i1) -> i1
-    "cf.cond_br"(%1302)[^bb4, ^bb5] <{operandSegmentSizes = array<i32: 1, 0, 0>}> : (i1) -> ()
+    %1247 = "llvm.mlir.undef"() : () -> !llvm.ptr
+    %1248 = "llvm.load"(%arg5) <{ordering = 0 : i64}> : (!llvm.ptr) -> f32
+    %1249 = "llvm.load"(%1241) <{ordering = 0 : i64}> : (!llvm.ptr) -> f32
+    %1250 = "arith.cmpf"(%1248, %1249) <{fastmath = #arith.fastmath<none>, predicate = 3 : i64}> : (f32, f32) -> i1
+    "cf.cond_br"(%1250)[^bb4, ^bb5] <{operandSegmentSizes = array<i32: 1, 0, 0>}> : (i1) -> ()
   ^bb4:  // pred: ^bb3
-    %1303 = "llvm.getelementptr"(%1290) <{elem_type = f32, noWrapFlags = 0 : i32, rawConstantIndices = array<i32: 0>}> : (!llvm.ptr) -> !llvm.ptr
-    %1304 = "llvm.load"(%1290) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.ptr
-    %1305 = "llvm.load"(%1304) <{ordering = 0 : i64}> : (!llvm.ptr) -> f32
-    %1306 = "llvm.load"(%1294) <{ordering = 0 : i64}> : (!llvm.ptr) -> f32
-    %1307 = "arith.subf"(%1305, %1306) <{fastmath = #arith.fastmath<none>}> : (f32, f32) -> f32
-    "llvm.store"(%1307, %1303) <{ordering = 0 : i64}> : (f32, !llvm.ptr) -> ()
+    %1251 = "llvm.getelementptr"(%arg5) <{elem_type = f32, noWrapFlags = 0 : i32, rawConstantIndices = array<i32: 0>}> : (!llvm.ptr) -> !llvm.ptr
+    %1252 = "llvm.load"(%arg5) <{ordering = 0 : i64}> : (!llvm.ptr) -> f32
+    %1253 = "llvm.load"(%1241) <{ordering = 0 : i64}> : (!llvm.ptr) -> f32
+    %1254 = "arith.subf"(%1252, %1253) <{fastmath = #arith.fastmath<none>}> : (f32, f32) -> f32
+    "llvm.store"(%1254, %1251) <{ordering = 0 : i64}> : (f32, !llvm.ptr) -> ()
     "cf.br"()[^bb6] : () -> ()
   ^bb5:  // pred: ^bb3
     "cf.br"()[^bb6] : () -> ()
   ^bb6:  // 2 preds: ^bb4, ^bb5
-    %1308 = "llvm.mlir.undef"() : () -> !llvm.ptr
-    %1309 = "llvm.load"(%1290) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.ptr
-    %1310 = "llvm.load"(%1309) <{ordering = 0 : i64}> : (!llvm.ptr) -> f32
-    %1311 = "llvm.fpext"(%1310) : (f32) -> f64
-    %1312 = "llvm.mlir.constant"() <{value = 0.000000e+00 : f64}> : () -> f64
-    %1313 = "arith.cmpf"(%1311, %1312) <{fastmath = #arith.fastmath<none>, predicate = 4 : i64}> : (f64, f64) -> i1
-    %1314 = "llvm.bitcast"(%1313) : (i1) -> i1
-    "cf.cond_br"(%1314)[^bb7, ^bb8] <{operandSegmentSizes = array<i32: 1, 0, 0>}> : (i1) -> ()
+    %1255 = "llvm.mlir.undef"() : () -> !llvm.ptr
+    %1256 = "llvm.load"(%arg5) <{ordering = 0 : i64}> : (!llvm.ptr) -> f32
+    %1257 = "llvm.fpext"(%1256) : (f32) -> f64
+    %1258 = "llvm.mlir.constant"() <{value = 0.000000e+00 : f64}> : () -> f64
+    %1259 = "arith.cmpf"(%1257, %1258) <{fastmath = #arith.fastmath<none>, predicate = 4 : i64}> : (f64, f64) -> i1
+    "cf.cond_br"(%1259)[^bb7, ^bb8] <{operandSegmentSizes = array<i32: 1, 0, 0>}> : (i1) -> ()
   ^bb7:  // pred: ^bb6
-    %1315 = "llvm.getelementptr"(%1290) <{elem_type = f32, noWrapFlags = 0 : i32, rawConstantIndices = array<i32: 1>}> : (!llvm.ptr) -> !llvm.ptr
-    %1316 = "llvm.load"(%1290) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.ptr
-    %1317 = "llvm.load"(%1316) <{ordering = 0 : i64}> : (!llvm.ptr) -> f32
-    %1318 = "llvm.mlir.addressof"() <{global_name = @SCREEN_H}> : () -> !llvm.ptr
-    %1319 = "llvm.load"(%1318) <{ordering = 0 : i64}> : (!llvm.ptr) -> f32
-    %1320 = "arith.addf"(%1317, %1319) <{fastmath = #arith.fastmath<none>}> : (f32, f32) -> f32
-    "llvm.store"(%1320, %1315) <{ordering = 0 : i64}> : (f32, !llvm.ptr) -> ()
+    %1260 = "llvm.getelementptr"(%arg5) <{elem_type = f32, noWrapFlags = 0 : i32, rawConstantIndices = array<i32: 1>}> : (!llvm.ptr) -> !llvm.ptr
+    %1261 = "llvm.load"(%arg5) <{ordering = 0 : i64}> : (!llvm.ptr) -> f32
+    %1262 = "llvm.load"(%1242) <{ordering = 0 : i64}> : (!llvm.ptr) -> f32
+    %1263 = "arith.addf"(%1261, %1262) <{fastmath = #arith.fastmath<none>}> : (f32, f32) -> f32
+    "llvm.store"(%1263, %1260) <{ordering = 0 : i64}> : (f32, !llvm.ptr) -> ()
     "cf.br"()[^bb9] : () -> ()
   ^bb8:  // pred: ^bb6
     "cf.br"()[^bb9] : () -> ()
   ^bb9:  // 2 preds: ^bb7, ^bb8
-    %1321 = "llvm.mlir.undef"() : () -> !llvm.ptr
-    %1322 = "llvm.load"(%1290) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.ptr
-    %1323 = "llvm.load"(%1322) <{ordering = 0 : i64}> : (!llvm.ptr) -> f32
-    %1324 = "llvm.load"(%1318) <{ordering = 0 : i64}> : (!llvm.ptr) -> f32
-    %1325 = "arith.cmpf"(%1323, %1324) <{fastmath = #arith.fastmath<none>, predicate = 3 : i64}> : (f32, f32) -> i1
-    %1326 = "llvm.bitcast"(%1325) : (i1) -> i1
-    "cf.cond_br"(%1326)[^bb10, ^bb11] <{operandSegmentSizes = array<i32: 1, 0, 0>}> : (i1) -> ()
+    %1264 = "llvm.mlir.undef"() : () -> !llvm.ptr
+    %1265 = "llvm.load"(%arg5) <{ordering = 0 : i64}> : (!llvm.ptr) -> f32
+    %1266 = "llvm.load"(%1242) <{ordering = 0 : i64}> : (!llvm.ptr) -> f32
+    %1267 = "arith.cmpf"(%1265, %1266) <{fastmath = #arith.fastmath<none>, predicate = 3 : i64}> : (f32, f32) -> i1
+    "cf.cond_br"(%1267)[^bb10, ^bb11] <{operandSegmentSizes = array<i32: 1, 0, 0>}> : (i1) -> ()
   ^bb10:  // pred: ^bb9
-    %1327 = "llvm.getelementptr"(%1290) <{elem_type = f32, noWrapFlags = 0 : i32, rawConstantIndices = array<i32: 1>}> : (!llvm.ptr) -> !llvm.ptr
-    %1328 = "llvm.load"(%1290) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.ptr
-    %1329 = "llvm.load"(%1328) <{ordering = 0 : i64}> : (!llvm.ptr) -> f32
-    %1330 = "llvm.load"(%1318) <{ordering = 0 : i64}> : (!llvm.ptr) -> f32
-    %1331 = "arith.subf"(%1329, %1330) <{fastmath = #arith.fastmath<none>}> : (f32, f32) -> f32
-    "llvm.store"(%1331, %1327) <{ordering = 0 : i64}> : (f32, !llvm.ptr) -> ()
+    %1268 = "llvm.getelementptr"(%arg5) <{elem_type = f32, noWrapFlags = 0 : i32, rawConstantIndices = array<i32: 1>}> : (!llvm.ptr) -> !llvm.ptr
+    %1269 = "llvm.load"(%arg5) <{ordering = 0 : i64}> : (!llvm.ptr) -> f32
+    %1270 = "llvm.load"(%1242) <{ordering = 0 : i64}> : (!llvm.ptr) -> f32
+    %1271 = "arith.subf"(%1269, %1270) <{fastmath = #arith.fastmath<none>}> : (f32, f32) -> f32
+    "llvm.store"(%1271, %1268) <{ordering = 0 : i64}> : (f32, !llvm.ptr) -> ()
     "cf.br"()[^bb12] : () -> ()
   ^bb11:  // pred: ^bb9
     "cf.br"()[^bb12] : () -> ()
   ^bb12:  // 2 preds: ^bb10, ^bb11
-    %1332 = "llvm.mlir.undef"() : () -> !llvm.ptr
+    %1272 = "llvm.mlir.undef"() : () -> !llvm.ptr
     "func.return"() : () -> ()
   }) : () -> ()
   "func.func"() <{function_type = () -> (), sym_name = "init_stars", sym_visibility = "public"}> ({
-    %1256 = "llvm.mlir.constant"() <{value = 0 : i64}> : () -> i64
-    %1257 = "llvm.mlir.constant"() <{value = 60 : i64}> : () -> i64
-    "cf.br"(%1256)[^bb1] : (i64) -> ()
-  ^bb1(%1258: i64):  // 2 preds: ^bb0, ^bb4
-    %1259 = "arith.cmpi"(%1258, %1257) <{predicate = 2 : i64}> : (i64, i64) -> i1
-    %1260 = "llvm.bitcast"(%1259) : (i1) -> i1
-    "cf.cond_br"(%1260)[^bb2, ^bb3] <{operandSegmentSizes = array<i32: 1, 0, 0>}> : (i1) -> ()
+    %1210 = "llvm.mlir.constant"() <{value = 0 : i64}> : () -> i64
+    %1211 = "llvm.mlir.constant"() <{value = 60 : i64}> : () -> i64
+    "cf.br"(%1210)[^bb1] : (i64) -> ()
+    %1212 = "llvm.mlir.addressof"() <{global_name = @stars}> : () -> !llvm.ptr
+    %1213 = "llvm.mlir.addressof"() <{global_name = @SCREEN_W}> : () -> !llvm.ptr
+    %1214 = "llvm.mlir.addressof"() <{global_name = @SCREEN_H}> : () -> !llvm.ptr
+  ^bb1(%1215: i64):  // 2 preds: ^bb0, ^bb4
+    %1216 = "arith.cmpi"(%1215, %1211) <{predicate = 2 : i64}> : (i64, i64) -> i1
+    "cf.cond_br"(%1216)[^bb2, ^bb3] <{operandSegmentSizes = array<i32: 1, 0, 0>}> : (i1) -> ()
   ^bb2:  // pred: ^bb1
-    %1261 = "llvm.mlir.addressof"() <{global_name = @stars}> : () -> !llvm.ptr
-    %1262 = "llvm.getelementptr"(%1261, %1258) <{elem_type = !llvm.struct<(i32, i32)>, noWrapFlags = 0 : i32, rawConstantIndices = array<i32: -2147483648>}> : (!llvm.ptr, i64) -> !llvm.ptr
-    %1263 = "llvm.mlir.constant"() <{value = 0 : i64}> : () -> i64
-    %1264 = "llvm.mlir.addressof"() <{global_name = @SCREEN_W}> : () -> !llvm.ptr
-    %1265 = "llvm.load"(%1264) <{ordering = 0 : i64}> : (!llvm.ptr) -> f32
-    %1266 = "llvm.fptosi"(%1265) : (f32) -> i64
-    %1267 = "llvm.mlir.constant"() <{value = 1 : i64}> : () -> i64
-    %1268 = "arith.subi"(%1266, %1267) <{overflowFlags = #arith.overflow<none>}> : (i64, i64) -> i64
-    %1269 = "llvm.call"(%1263, %1268) <{CConv = #llvm.cconv<ccc>, TailCallKind = #llvm.tailcallkind<none>, callee = @m$vendor_raylib_GetRandomValue, fastmathFlags = #llvm.fastmath<none>, op_bundle_sizes = array<i32>, operandSegmentSizes = array<i32: 2, 0>}> : (i64, i64) -> i32
-    %1270 = "llvm.mlir.constant"() <{value = 0 : i64}> : () -> i64
-    %1271 = "llvm.mlir.addressof"() <{global_name = @SCREEN_H}> : () -> !llvm.ptr
-    %1272 = "llvm.load"(%1271) <{ordering = 0 : i64}> : (!llvm.ptr) -> f32
-    %1273 = "llvm.fptosi"(%1272) : (f32) -> i64
-    %1274 = "llvm.mlir.constant"() <{value = 1 : i64}> : () -> i64
-    %1275 = "arith.subi"(%1273, %1274) <{overflowFlags = #arith.overflow<none>}> : (i64, i64) -> i64
-    %1276 = "llvm.call"(%1270, %1275) <{CConv = #llvm.cconv<ccc>, TailCallKind = #llvm.tailcallkind<none>, callee = @m$vendor_raylib_GetRandomValue, fastmathFlags = #llvm.fastmath<none>, op_bundle_sizes = array<i32>, operandSegmentSizes = array<i32: 2, 0>}> : (i64, i64) -> i32
-    %1277 = "llvm.mlir.zero"() : () -> !llvm.struct<(i32, i32)>
-    %1278 = "llvm.insertvalue"(%1277, %1269) <{position = array<i64: 0>}> : (!llvm.struct<(i32, i32)>, i32) -> !llvm.struct<(i32, i32)>
-    %1279 = "llvm.insertvalue"(%1278, %1276) <{position = array<i64: 1>}> : (!llvm.struct<(i32, i32)>, i32) -> !llvm.struct<(i32, i32)>
-    "llvm.store"(%1279, %1262) <{ordering = 0 : i64}> : (!llvm.struct<(i32, i32)>, !llvm.ptr) -> ()
-    "cf.br"(%1258)[^bb4] : (i64) -> ()
+    %1217 = "llvm.getelementptr"(%1212, %1215) <{elem_type = !llvm.struct<(i32, i32)>, noWrapFlags = 0 : i32, rawConstantIndices = array<i32: -2147483648>}> : (!llvm.ptr, i64) -> !llvm.ptr
+    %1218 = "llvm.mlir.constant"() <{value = 0 : i64}> : () -> i64
+    %1219 = "llvm.load"(%1213) <{ordering = 0 : i64}> : (!llvm.ptr) -> f32
+    %1220 = "llvm.fptosi"(%1219) : (f32) -> i64
+    %1221 = "llvm.mlir.constant"() <{value = 1 : i64}> : () -> i64
+    %1222 = "arith.subi"(%1220, %1221) <{overflowFlags = #arith.overflow<none>}> : (i64, i64) -> i64
+    %1223 = "llvm.call"(%1218, %1222) <{CConv = #llvm.cconv<ccc>, TailCallKind = #llvm.tailcallkind<none>, callee = @m$vendor_raylib_GetRandomValue, fastmathFlags = #llvm.fastmath<none>, op_bundle_sizes = array<i32>, operandSegmentSizes = array<i32: 2, 0>}> : (i64, i64) -> i32
+    %1224 = "llvm.mlir.constant"() <{value = 0 : i64}> : () -> i64
+    %1225 = "llvm.load"(%1214) <{ordering = 0 : i64}> : (!llvm.ptr) -> f32
+    %1226 = "llvm.fptosi"(%1225) : (f32) -> i64
+    %1227 = "llvm.mlir.constant"() <{value = 1 : i64}> : () -> i64
+    %1228 = "arith.subi"(%1226, %1227) <{overflowFlags = #arith.overflow<none>}> : (i64, i64) -> i64
+    %1229 = "llvm.call"(%1224, %1228) <{CConv = #llvm.cconv<ccc>, TailCallKind = #llvm.tailcallkind<none>, callee = @m$vendor_raylib_GetRandomValue, fastmathFlags = #llvm.fastmath<none>, op_bundle_sizes = array<i32>, operandSegmentSizes = array<i32: 2, 0>}> : (i64, i64) -> i32
+    %1230 = "llvm.mlir.zero"() : () -> !llvm.struct<(i32, i32)>
+    %1231 = "llvm.insertvalue"(%1230, %1223) <{position = array<i64: 0>}> : (!llvm.struct<(i32, i32)>, i32) -> !llvm.struct<(i32, i32)>
+    %1232 = "llvm.insertvalue"(%1231, %1229) <{position = array<i64: 1>}> : (!llvm.struct<(i32, i32)>, i32) -> !llvm.struct<(i32, i32)>
+    "llvm.store"(%1232, %1217) <{ordering = 0 : i64}> : (!llvm.struct<(i32, i32)>, !llvm.ptr) -> ()
+    "cf.br"(%1215)[^bb4] : (i64) -> ()
   ^bb3:  // pred: ^bb1
-    %1280 = "llvm.mlir.undef"() : () -> !llvm.ptr
+    %1233 = "llvm.mlir.undef"() : () -> !llvm.ptr
     "func.return"() : () -> ()
-  ^bb4(%1281: i64):  // pred: ^bb2
-    %1282 = "llvm.mlir.constant"() <{value = 1 : i64}> : () -> i64
-    %1283 = "arith.addi"(%1281, %1282) <{overflowFlags = #arith.overflow<none>}> : (i64, i64) -> i64
-    "cf.br"(%1283)[^bb1] : (i64) -> ()
+  ^bb4(%1234: i64):  // pred: ^bb2
+    %1235 = "llvm.mlir.constant"() <{value = 1 : i64}> : () -> i64
+    %1236 = "arith.addi"(%1234, %1235) <{overflowFlags = #arith.overflow<none>}> : (i64, i64) -> i64
+    "cf.br"(%1236)[^bb1] : (i64) -> ()
   }) : () -> ()
   "func.func"() <{function_type = (!llvm.struct<(f32, f32)>) -> f32, sym_name = "len2", sym_visibility = "public"}> ({
   ^bb0(%arg4: !llvm.struct<(f32, f32)>):
-    %1249 = "llvm.extractvalue"(%arg4) <{position = array<i64: 0>}> : (!llvm.struct<(f32, f32)>) -> f32
-    %1250 = "llvm.extractvalue"(%arg4) <{position = array<i64: 0>}> : (!llvm.struct<(f32, f32)>) -> f32
-    %1251 = "arith.mulf"(%1249, %1250) <{fastmath = #arith.fastmath<none>}> : (f32, f32) -> f32
-    %1252 = "llvm.extractvalue"(%arg4) <{position = array<i64: 1>}> : (!llvm.struct<(f32, f32)>) -> f32
-    %1253 = "llvm.extractvalue"(%arg4) <{position = array<i64: 1>}> : (!llvm.struct<(f32, f32)>) -> f32
-    %1254 = "arith.mulf"(%1252, %1253) <{fastmath = #arith.fastmath<none>}> : (f32, f32) -> f32
-    %1255 = "arith.addf"(%1251, %1254) <{fastmath = #arith.fastmath<none>}> : (f32, f32) -> f32
-    "func.return"(%1255) : (f32) -> ()
+    %1203 = "llvm.extractvalue"(%arg4) <{position = array<i64: 0>}> : (!llvm.struct<(f32, f32)>) -> f32
+    %1204 = "llvm.extractvalue"(%arg4) <{position = array<i64: 0>}> : (!llvm.struct<(f32, f32)>) -> f32
+    %1205 = "arith.mulf"(%1203, %1204) <{fastmath = #arith.fastmath<none>}> : (f32, f32) -> f32
+    %1206 = "llvm.extractvalue"(%arg4) <{position = array<i64: 1>}> : (!llvm.struct<(f32, f32)>) -> f32
+    %1207 = "llvm.extractvalue"(%arg4) <{position = array<i64: 1>}> : (!llvm.struct<(f32, f32)>) -> f32
+    %1208 = "arith.mulf"(%1206, %1207) <{fastmath = #arith.fastmath<none>}> : (f32, f32) -> f32
+    %1209 = "arith.addf"(%1205, %1208) <{fastmath = #arith.fastmath<none>}> : (f32, f32) -> f32
+    "func.return"(%1209) : (f32) -> ()
   }) : () -> ()
   "func.func"() <{function_type = (i32, !llvm.struct<(f32, f32)>, !llvm.struct<(f32, f32)>) -> (), sym_name = "spawn_rock", sym_visibility = "public"}> ({
   ^bb0(%arg1: i32, %arg2: !llvm.struct<(f32, f32)>, %arg3: !llvm.struct<(f32, f32)>):
-    %1096 = "llvm.mlir.constant"() <{value = 0 : i64}> : () -> i64
-    %1097 = "llvm.mlir.addressof"() <{global_name = @MAX_ROCKS}> : () -> !llvm.ptr
-    %1098 = "llvm.load"(%1097) <{ordering = 0 : i64}> : (!llvm.ptr) -> i64
-    "cf.br"(%1096)[^bb1] : (i64) -> ()
-  ^bb1(%1099: i64):  // 2 preds: ^bb0, ^bb4
-    %1100 = "arith.cmpi"(%1099, %1098) <{predicate = 2 : i64}> : (i64, i64) -> i1
-    %1101 = "llvm.bitcast"(%1100) : (i1) -> i1
-    "cf.cond_br"(%1101)[^bb2, ^bb3] <{operandSegmentSizes = array<i32: 1, 0, 0>}> : (i1) -> ()
+    %1056 = "llvm.mlir.constant"() <{value = 0 : i64}> : () -> i64
+    %1057 = "llvm.mlir.addressof"() <{global_name = @MAX_ROCKS}> : () -> !llvm.ptr
+    %1058 = "llvm.load"(%1057) <{ordering = 0 : i64}> : (!llvm.ptr) -> i64
+    "cf.br"(%1056)[^bb1] : (i64) -> ()
+    %1059 = "llvm.mlir.addressof"() <{global_name = @rocks}> : () -> !llvm.ptr
+    %1060 = "llvm.mlir.addressof"() <{global_name = @SCREEN_H}> : () -> !llvm.ptr
+    %1061 = "llvm.mlir.addressof"() <{global_name = @SCREEN_W}> : () -> !llvm.ptr
+  ^bb1(%1062: i64):  // 2 preds: ^bb0, ^bb4
+    %1063 = "arith.cmpi"(%1062, %1058) <{predicate = 2 : i64}> : (i64, i64) -> i1
+    "cf.cond_br"(%1063)[^bb2, ^bb3] <{operandSegmentSizes = array<i32: 1, 0, 0>}> : (i1) -> ()
   ^bb2:  // pred: ^bb1
-    %1102 = "llvm.mlir.addressof"() <{global_name = @rocks}> : () -> !llvm.ptr
-    %1103 = "llvm.load"(%1102) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.array<64 x struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i32, i1)>>
-    %1104 = "llvm.mlir.constant"() <{value = 1 : i64}> : () -> i64
-    %1105 = "llvm.alloca"(%1104) <{elem_type = !llvm.array<64 x struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i32, i1)>>}> : (i64) -> !llvm.ptr
-    "llvm.store"(%1103, %1105) <{ordering = 0 : i64}> : (!llvm.array<64 x struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i32, i1)>>, !llvm.ptr) -> ()
-    %1106 = "llvm.getelementptr"(%1105, %1099) <{elem_type = !llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i32, i1)>, noWrapFlags = 0 : i32, rawConstantIndices = array<i32: -2147483648>}> : (!llvm.ptr, i64) -> !llvm.ptr
-    %1107 = "llvm.load"(%1106) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i32, i1)>
-    %1108 = "llvm.extractvalue"(%1107) <{position = array<i64: 4>}> : (!llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i32, i1)>) -> i1
-    %1109 = "llvm.mlir.constant"() <{value = true}> : () -> i1
-    %1110 = "arith.xori"(%1108, %1109) : (i1, i1) -> i1
-    %1111 = "llvm.bitcast"(%1110) : (i1) -> i1
-    "cf.cond_br"(%1111)[^bb5, ^bb6] <{operandSegmentSizes = array<i32: 1, 0, 0>}> : (i1) -> ()
+    %1064 = "llvm.load"(%1059) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.array<64 x struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i32, i1)>>
+    %1065 = "llvm.mlir.constant"() <{value = 1 : i64}> : () -> i64
+    %1066 = "llvm.alloca"(%1065) <{elem_type = !llvm.array<64 x struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i32, i1)>>}> : (i64) -> !llvm.ptr
+    "llvm.store"(%1064, %1066) <{ordering = 0 : i64}> : (!llvm.array<64 x struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i32, i1)>>, !llvm.ptr) -> ()
+    %1067 = "llvm.getelementptr"(%1066, %1062) <{elem_type = !llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i32, i1)>, noWrapFlags = 0 : i32, rawConstantIndices = array<i32: -2147483648>}> : (!llvm.ptr, i64) -> !llvm.ptr
+    %1068 = "llvm.load"(%1067) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i32, i1)>
+    %1069 = "llvm.extractvalue"(%1068) <{position = array<i64: 4>}> : (!llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i32, i1)>) -> i1
+    %1070 = "llvm.mlir.constant"() <{value = true}> : () -> i1
+    %1071 = "arith.xori"(%1069, %1070) : (i1, i1) -> i1
+    "cf.cond_br"(%1071)[^bb5, ^bb6] <{operandSegmentSizes = array<i32: 1, 0, 0>}> : (i1) -> ()
   ^bb3:  // 2 preds: ^bb1, ^bb19
-    %1112 = "llvm.mlir.undef"() : () -> !llvm.ptr
+    %1072 = "llvm.mlir.undef"() : () -> !llvm.ptr
     "func.return"() : () -> ()
-  ^bb4(%1113: i64):  // pred: ^bb7
-    %1114 = "llvm.mlir.constant"() <{value = 1 : i64}> : () -> i64
-    %1115 = "arith.addi"(%1113, %1114) <{overflowFlags = #arith.overflow<none>}> : (i64, i64) -> i64
-    "cf.br"(%1115)[^bb1] : (i64) -> ()
+  ^bb4(%1073: i64):  // pred: ^bb7
+    %1074 = "llvm.mlir.constant"() <{value = 1 : i64}> : () -> i64
+    %1075 = "arith.addi"(%1073, %1074) <{overflowFlags = #arith.overflow<none>}> : (i64, i64) -> i64
+    "cf.br"(%1075)[^bb1] : (i64) -> ()
   ^bb5:  // pred: ^bb2
-    %1116 = "llvm.getelementptr"(%1102, %1099) <{elem_type = !llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i32, i1)>, noWrapFlags = 0 : i32, rawConstantIndices = array<i32: -2147483648>}> : (!llvm.ptr, i64) -> !llvm.ptr
-    %1117 = "llvm.getelementptr"(%1116) <{elem_type = i1, noWrapFlags = 0 : i32, rawConstantIndices = array<i32: 4>}> : (!llvm.ptr) -> !llvm.ptr
-    %1118 = "llvm.mlir.constant"() <{value = true}> : () -> i1
-    "llvm.store"(%1118, %1117) <{ordering = 0 : i64}> : (i1, !llvm.ptr) -> ()
-    %1119 = "llvm.getelementptr"(%1102, %1099) <{elem_type = !llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i32, i1)>, noWrapFlags = 0 : i32, rawConstantIndices = array<i32: -2147483648>}> : (!llvm.ptr, i64) -> !llvm.ptr
-    %1120 = "llvm.getelementptr"(%1119) <{elem_type = i32, noWrapFlags = 0 : i32, rawConstantIndices = array<i32: 3>}> : (!llvm.ptr) -> !llvm.ptr
-    "llvm.store"(%arg1, %1120) <{ordering = 0 : i64}> : (i32, !llvm.ptr) -> ()
-    %1121 = "llvm.getelementptr"(%1102, %1099) <{elem_type = !llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i32, i1)>, noWrapFlags = 0 : i32, rawConstantIndices = array<i32: -2147483648>}> : (!llvm.ptr, i64) -> !llvm.ptr
-    %1122 = "llvm.getelementptr"(%1121) <{elem_type = !llvm.struct<(f32, f32)>, noWrapFlags = 0 : i32, rawConstantIndices = array<i32: 0>}> : (!llvm.ptr) -> !llvm.ptr
-    "llvm.store"(%arg2, %1122) <{ordering = 0 : i64}> : (!llvm.struct<(f32, f32)>, !llvm.ptr) -> ()
-    %1123 = "llvm.mlir.constant"() <{value = 0.000000e+00 : f32}> : () -> f32
-    %1124 = "llvm.mlir.constant"() <{value = 1 : i64}> : () -> i64
-    %1125 = "llvm.alloca"(%1124) <{elem_type = f32}> : (i64) -> !llvm.ptr
-    "llvm.store"(%1123, %1125) <{ordering = 0 : i64}> : (f32, !llvm.ptr) -> ()
-    %1126 = "llvm.mlir.constant"() <{value = 0.000000e+00 : f32}> : () -> f32
-    %1127 = "llvm.mlir.constant"() <{value = 1 : i64}> : () -> i64
-    %1128 = "llvm.alloca"(%1127) <{elem_type = f32}> : (i64) -> !llvm.ptr
-    "llvm.store"(%1126, %1128) <{ordering = 0 : i64}> : (f32, !llvm.ptr) -> ()
+    %1076 = "llvm.getelementptr"(%1059, %1062) <{elem_type = !llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i32, i1)>, noWrapFlags = 0 : i32, rawConstantIndices = array<i32: -2147483648>}> : (!llvm.ptr, i64) -> !llvm.ptr
+    %1077 = "llvm.getelementptr"(%1076) <{elem_type = i1, noWrapFlags = 0 : i32, rawConstantIndices = array<i32: 4>}> : (!llvm.ptr) -> !llvm.ptr
+    %1078 = "llvm.mlir.constant"() <{value = true}> : () -> i1
+    "llvm.store"(%1078, %1077) <{ordering = 0 : i64}> : (i1, !llvm.ptr) -> ()
+    %1079 = "llvm.getelementptr"(%1059, %1062) <{elem_type = !llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i32, i1)>, noWrapFlags = 0 : i32, rawConstantIndices = array<i32: -2147483648>}> : (!llvm.ptr, i64) -> !llvm.ptr
+    %1080 = "llvm.getelementptr"(%1079) <{elem_type = i32, noWrapFlags = 0 : i32, rawConstantIndices = array<i32: 3>}> : (!llvm.ptr) -> !llvm.ptr
+    "llvm.store"(%arg1, %1080) <{ordering = 0 : i64}> : (i32, !llvm.ptr) -> ()
+    %1081 = "llvm.getelementptr"(%1059, %1062) <{elem_type = !llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i32, i1)>, noWrapFlags = 0 : i32, rawConstantIndices = array<i32: -2147483648>}> : (!llvm.ptr, i64) -> !llvm.ptr
+    %1082 = "llvm.getelementptr"(%1081) <{elem_type = !llvm.struct<(f32, f32)>, noWrapFlags = 0 : i32, rawConstantIndices = array<i32: 0>}> : (!llvm.ptr) -> !llvm.ptr
+    "llvm.store"(%arg2, %1082) <{ordering = 0 : i64}> : (!llvm.struct<(f32, f32)>, !llvm.ptr) -> ()
+    %1083 = "llvm.mlir.constant"() <{value = 0.000000e+00 : f32}> : () -> f32
+    %1084 = "llvm.mlir.constant"() <{value = 1 : i64}> : () -> i64
+    %1085 = "llvm.alloca"(%1084) <{elem_type = f32}> : (i64) -> !llvm.ptr
+    "llvm.store"(%1083, %1085) <{ordering = 0 : i64}> : (f32, !llvm.ptr) -> ()
+    %1086 = "llvm.mlir.constant"() <{value = 0.000000e+00 : f32}> : () -> f32
+    %1087 = "llvm.mlir.constant"() <{value = 1 : i64}> : () -> i64
+    %1088 = "llvm.alloca"(%1087) <{elem_type = f32}> : (i64) -> !llvm.ptr
+    "llvm.store"(%1086, %1088) <{ordering = 0 : i64}> : (f32, !llvm.ptr) -> ()
     "cf.br"()[^bb9] : () -> ()
   ^bb6:  // pred: ^bb2
     "cf.br"()[^bb7] : () -> ()
   ^bb7:  // pred: ^bb6
-    %1129 = "llvm.mlir.undef"() : () -> !llvm.ptr
-    "cf.br"(%1099)[^bb4] : (i64) -> ()
+    %1089 = "llvm.mlir.undef"() : () -> !llvm.ptr
+    "cf.br"(%1062)[^bb4] : (i64) -> ()
   ^bb8:  // 4 preds: ^bb10, ^bb13, ^bb15, ^bb16
-    %1130 = "llvm.mlir.undef"() : () -> !llvm.ptr
-    %1131 = "llvm.getelementptr"(%1102, %1099) <{elem_type = !llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i32, i1)>, noWrapFlags = 0 : i32, rawConstantIndices = array<i32: -2147483648>}> : (!llvm.ptr, i64) -> !llvm.ptr
-    %1132 = "llvm.getelementptr"(%1131) <{elem_type = f32, noWrapFlags = 0 : i32, rawConstantIndices = array<i32: 2>}> : (!llvm.ptr) -> !llvm.ptr
-    %1133 = "llvm.load"(%1125) <{ordering = 0 : i64}> : (!llvm.ptr) -> f32
-    "llvm.store"(%1133, %1132) <{ordering = 0 : i64}> : (f32, !llvm.ptr) -> ()
-    %1134 = "llvm.mlir.constant"() <{value = 0 : i64}> : () -> i64
-    %1135 = "llvm.mlir.constant"() <{value = 360 : i64}> : () -> i64
-    %1136 = "llvm.call"(%1134, %1135) <{CConv = #llvm.cconv<ccc>, TailCallKind = #llvm.tailcallkind<none>, callee = @m$vendor_raylib_GetRandomValue, fastmathFlags = #llvm.fastmath<none>, op_bundle_sizes = array<i32>, operandSegmentSizes = array<i32: 2, 0>}> : (i64, i64) -> i32
-    %1137 = "llvm.sitofp"(%1136) : (i32) -> f64
-    %1138 = "llvm.mlir.undef"() : () -> f64
-    %1139 = "arith.mulf"(%1137, %1138) <{fastmath = #arith.fastmath<none>}> : (f64, f64) -> f64
-    %1140 = "llvm.mlir.constant"() <{value = 3.600000e+02 : f64}> : () -> f64
-    %1141 = "arith.divf"(%1139, %1140) <{fastmath = #arith.fastmath<none>}> : (f64, f64) -> f64
-    %1142 = "llvm.mlir.constant"() <{value = 1 : i64}> : () -> i64
-    %1143 = "llvm.alloca"(%1142) <{elem_type = f64}> : (i64) -> !llvm.ptr
-    "llvm.store"(%1141, %1143) <{ordering = 0 : i64}> : (f64, !llvm.ptr) -> ()
-    %1144 = "llvm.load"(%1143) <{ordering = 0 : i64}> : (!llvm.ptr) -> f64
-    %1145 = "llvm.call"(%1144) <{CConv = #llvm.cconv<ccc>, TailCallKind = #llvm.tailcallkind<none>, callee = @m$std_math_cos, fastmathFlags = #llvm.fastmath<none>, op_bundle_sizes = array<i32>, operandSegmentSizes = array<i32: 1, 0>}> : (f64) -> f32
-    %1146 = "llvm.load"(%1143) <{ordering = 0 : i64}> : (!llvm.ptr) -> f64
-    %1147 = "llvm.call"(%1146) <{CConv = #llvm.cconv<ccc>, TailCallKind = #llvm.tailcallkind<none>, callee = @m$std_math_sin, fastmathFlags = #llvm.fastmath<none>, op_bundle_sizes = array<i32>, operandSegmentSizes = array<i32: 1, 0>}> : (f64) -> f32
-    %1148 = "llvm.mlir.zero"() : () -> !llvm.struct<(f32, f32)>
-    %1149 = "llvm.insertvalue"(%1148, %1145) <{position = array<i64: 0>}> : (!llvm.struct<(f32, f32)>, f32) -> !llvm.struct<(f32, f32)>
-    %1150 = "llvm.insertvalue"(%1149, %1147) <{position = array<i64: 1>}> : (!llvm.struct<(f32, f32)>, f32) -> !llvm.struct<(f32, f32)>
-    %1151 = "llvm.mlir.constant"() <{value = 1 : i64}> : () -> i64
-    %1152 = "llvm.alloca"(%1151) <{elem_type = !llvm.struct<(f32, f32)>}> : (i64) -> !llvm.ptr
-    "llvm.store"(%1150, %1152) <{ordering = 0 : i64}> : (!llvm.struct<(f32, f32)>, !llvm.ptr) -> ()
-    %1153 = "llvm.getelementptr"(%1102, %1099) <{elem_type = !llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i32, i1)>, noWrapFlags = 0 : i32, rawConstantIndices = array<i32: -2147483648>}> : (!llvm.ptr, i64) -> !llvm.ptr
-    %1154 = "llvm.getelementptr"(%1153) <{elem_type = !llvm.struct<(f32, f32)>, noWrapFlags = 0 : i32, rawConstantIndices = array<i32: 1>}> : (!llvm.ptr) -> !llvm.ptr
-    %1155 = "llvm.load"(%1152) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.struct<(f32, f32)>
-    %1156 = "llvm.load"(%1128) <{ordering = 0 : i64}> : (!llvm.ptr) -> f32
-    %1157 = "func.call"(%1155, %1156) <{callee = @vmul}> : (!llvm.struct<(f32, f32)>, f32) -> !llvm.struct<(f32, f32)>
-    %1158 = "func.call"(%1157, %arg3) <{callee = @vadd}> : (!llvm.struct<(f32, f32)>, !llvm.struct<(f32, f32)>) -> !llvm.struct<(f32, f32)>
-    "llvm.store"(%1158, %1154) <{ordering = 0 : i64}> : (!llvm.struct<(f32, f32)>, !llvm.ptr) -> ()
-    %1159 = "llvm.extractvalue"(%arg2) <{position = array<i64: 0>}> : (!llvm.struct<(f32, f32)>) -> f32
-    %1160 = "llvm.fpext"(%1159) : (f32) -> f64
-    %1161 = "llvm.mlir.constant"() <{value = 1.000000e+00 : f64}> : () -> f64
-    %1162 = "llvm.mlir.constant"() <{value = 0.000000e+00 : f64}> : () -> f64
-    %1163 = "arith.subf"(%1162, %1161) <{fastmath = #arith.fastmath<none>}> : (f64, f64) -> f64
-    %1164 = "arith.cmpf"(%1160, %1163) <{fastmath = #arith.fastmath<none>, predicate = 1 : i64}> : (f64, f64) -> i1
-    %1165 = "llvm.extractvalue"(%arg2) <{position = array<i64: 1>}> : (!llvm.struct<(f32, f32)>) -> f32
-    %1166 = "llvm.fpext"(%1165) : (f32) -> f64
-    %1167 = "llvm.mlir.constant"() <{value = 1.000000e+00 : f64}> : () -> f64
-    %1168 = "llvm.mlir.constant"() <{value = 0.000000e+00 : f64}> : () -> f64
-    %1169 = "arith.subf"(%1168, %1167) <{fastmath = #arith.fastmath<none>}> : (f64, f64) -> f64
-    %1170 = "arith.cmpf"(%1166, %1169) <{fastmath = #arith.fastmath<none>, predicate = 1 : i64}> : (f64, f64) -> i1
-    %1171 = "arith.andi"(%1164, %1170) : (i1, i1) -> i1
-    %1172 = "llvm.bitcast"(%1171) : (i1) -> i1
-    "cf.cond_br"(%1172)[^bb17, ^bb18] <{operandSegmentSizes = array<i32: 1, 0, 0>}> : (i1) -> ()
+    %1090 = "llvm.mlir.undef"() : () -> !llvm.ptr
+    %1091 = "llvm.getelementptr"(%1059, %1062) <{elem_type = !llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i32, i1)>, noWrapFlags = 0 : i32, rawConstantIndices = array<i32: -2147483648>}> : (!llvm.ptr, i64) -> !llvm.ptr
+    %1092 = "llvm.getelementptr"(%1091) <{elem_type = f32, noWrapFlags = 0 : i32, rawConstantIndices = array<i32: 2>}> : (!llvm.ptr) -> !llvm.ptr
+    %1093 = "llvm.load"(%1085) <{ordering = 0 : i64}> : (!llvm.ptr) -> f32
+    "llvm.store"(%1093, %1092) <{ordering = 0 : i64}> : (f32, !llvm.ptr) -> ()
+    %1094 = "llvm.mlir.constant"() <{value = 0 : i64}> : () -> i64
+    %1095 = "llvm.mlir.constant"() <{value = 360 : i64}> : () -> i64
+    %1096 = "llvm.call"(%1094, %1095) <{CConv = #llvm.cconv<ccc>, TailCallKind = #llvm.tailcallkind<none>, callee = @m$vendor_raylib_GetRandomValue, fastmathFlags = #llvm.fastmath<none>, op_bundle_sizes = array<i32>, operandSegmentSizes = array<i32: 2, 0>}> : (i64, i64) -> i32
+    %1097 = "llvm.sitofp"(%1096) : (i32) -> f64
+    %1098 = "llvm.mlir.constant"() <{value = 6.2831853071795862 : f64}> : () -> f64
+    %1099 = "arith.mulf"(%1097, %1098) <{fastmath = #arith.fastmath<none>}> : (f64, f64) -> f64
+    %1100 = "llvm.mlir.constant"() <{value = 3.600000e+02 : f64}> : () -> f64
+    %1101 = "arith.divf"(%1099, %1100) <{fastmath = #arith.fastmath<none>}> : (f64, f64) -> f64
+    %1102 = "llvm.mlir.constant"() <{value = 1 : i64}> : () -> i64
+    %1103 = "llvm.alloca"(%1102) <{elem_type = f64}> : (i64) -> !llvm.ptr
+    "llvm.store"(%1101, %1103) <{ordering = 0 : i64}> : (f64, !llvm.ptr) -> ()
+    %1104 = "llvm.load"(%1103) <{ordering = 0 : i64}> : (!llvm.ptr) -> f64
+    %1105 = "llvm.call"(%1104) <{CConv = #llvm.cconv<ccc>, TailCallKind = #llvm.tailcallkind<none>, callee = @m$std_math_cos, fastmathFlags = #llvm.fastmath<none>, op_bundle_sizes = array<i32>, operandSegmentSizes = array<i32: 1, 0>}> : (f64) -> f32
+    %1106 = "llvm.load"(%1103) <{ordering = 0 : i64}> : (!llvm.ptr) -> f64
+    %1107 = "llvm.call"(%1106) <{CConv = #llvm.cconv<ccc>, TailCallKind = #llvm.tailcallkind<none>, callee = @m$std_math_sin, fastmathFlags = #llvm.fastmath<none>, op_bundle_sizes = array<i32>, operandSegmentSizes = array<i32: 1, 0>}> : (f64) -> f32
+    %1108 = "llvm.mlir.zero"() : () -> !llvm.struct<(f32, f32)>
+    %1109 = "llvm.insertvalue"(%1108, %1105) <{position = array<i64: 0>}> : (!llvm.struct<(f32, f32)>, f32) -> !llvm.struct<(f32, f32)>
+    %1110 = "llvm.insertvalue"(%1109, %1107) <{position = array<i64: 1>}> : (!llvm.struct<(f32, f32)>, f32) -> !llvm.struct<(f32, f32)>
+    %1111 = "llvm.mlir.constant"() <{value = 1 : i64}> : () -> i64
+    %1112 = "llvm.alloca"(%1111) <{elem_type = !llvm.struct<(f32, f32)>}> : (i64) -> !llvm.ptr
+    "llvm.store"(%1110, %1112) <{ordering = 0 : i64}> : (!llvm.struct<(f32, f32)>, !llvm.ptr) -> ()
+    %1113 = "llvm.getelementptr"(%1059, %1062) <{elem_type = !llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i32, i1)>, noWrapFlags = 0 : i32, rawConstantIndices = array<i32: -2147483648>}> : (!llvm.ptr, i64) -> !llvm.ptr
+    %1114 = "llvm.getelementptr"(%1113) <{elem_type = !llvm.struct<(f32, f32)>, noWrapFlags = 0 : i32, rawConstantIndices = array<i32: 1>}> : (!llvm.ptr) -> !llvm.ptr
+    %1115 = "llvm.load"(%1112) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.struct<(f32, f32)>
+    %1116 = "llvm.load"(%1088) <{ordering = 0 : i64}> : (!llvm.ptr) -> f32
+    %1117 = "func.call"(%1115, %1116) <{callee = @vmul}> : (!llvm.struct<(f32, f32)>, f32) -> !llvm.struct<(f32, f32)>
+    %1118 = "func.call"(%1117, %arg3) <{callee = @vadd}> : (!llvm.struct<(f32, f32)>, !llvm.struct<(f32, f32)>) -> !llvm.struct<(f32, f32)>
+    "llvm.store"(%1118, %1114) <{ordering = 0 : i64}> : (!llvm.struct<(f32, f32)>, !llvm.ptr) -> ()
+    %1119 = "llvm.extractvalue"(%arg2) <{position = array<i64: 0>}> : (!llvm.struct<(f32, f32)>) -> f32
+    %1120 = "llvm.fpext"(%1119) : (f32) -> f64
+    %1121 = "llvm.mlir.constant"() <{value = 1.000000e+00 : f64}> : () -> f64
+    %1122 = "llvm.mlir.constant"() <{value = 0.000000e+00 : f64}> : () -> f64
+    %1123 = "arith.subf"(%1122, %1121) <{fastmath = #arith.fastmath<none>}> : (f64, f64) -> f64
+    %1124 = "arith.cmpf"(%1120, %1123) <{fastmath = #arith.fastmath<none>, predicate = 1 : i64}> : (f64, f64) -> i1
+    %1125 = "llvm.extractvalue"(%arg2) <{position = array<i64: 1>}> : (!llvm.struct<(f32, f32)>) -> f32
+    %1126 = "llvm.fpext"(%1125) : (f32) -> f64
+    %1127 = "llvm.mlir.constant"() <{value = 1.000000e+00 : f64}> : () -> f64
+    %1128 = "llvm.mlir.constant"() <{value = 0.000000e+00 : f64}> : () -> f64
+    %1129 = "arith.subf"(%1128, %1127) <{fastmath = #arith.fastmath<none>}> : (f64, f64) -> f64
+    %1130 = "arith.cmpf"(%1126, %1129) <{fastmath = #arith.fastmath<none>, predicate = 1 : i64}> : (f64, f64) -> i1
+    %1131 = "arith.andi"(%1124, %1130) : (i1, i1) -> i1
+    "cf.cond_br"(%1131)[^bb17, ^bb18] <{operandSegmentSizes = array<i32: 1, 0, 0>}> : (i1) -> ()
   ^bb9:  // pred: ^bb5
-    %1173 = "llvm.mlir.constant"() <{value = 0 : i32}> : () -> i32
-    %1174 = "arith.cmpi"(%arg1, %1173) <{predicate = 0 : i64}> : (i32, i32) -> i1
-    %1175 = "llvm.bitcast"(%1174) : (i1) -> i1
-    "cf.cond_br"(%1175)[^bb10, ^bb11] <{operandSegmentSizes = array<i32: 1, 0, 0>}> : (i1) -> ()
+    %1132 = "llvm.mlir.constant"() <{value = 0 : i32}> : () -> i32
+    %1133 = "arith.cmpi"(%arg1, %1132) <{predicate = 0 : i64}> : (i32, i32) -> i1
+    "cf.cond_br"(%1133)[^bb10, ^bb11] <{operandSegmentSizes = array<i32: 1, 0, 0>}> : (i1) -> ()
   ^bb10:  // pred: ^bb9
-    %1176 = "llvm.mlir.constant"() <{value = 4.200000e+01 : f64}> : () -> f64
-    %1177 = "llvm.fptrunc"(%1176) : (f64) -> f32
-    "llvm.store"(%1177, %1125) <{ordering = 0 : i64}> : (f32, !llvm.ptr) -> ()
-    %1178 = "llvm.mlir.constant"() <{value = 6.000000e+01 : f64}> : () -> f64
-    %1179 = "llvm.fptrunc"(%1178) : (f64) -> f32
-    "llvm.store"(%1179, %1128) <{ordering = 0 : i64}> : (f32, !llvm.ptr) -> ()
+    %1134 = "llvm.mlir.constant"() <{value = 4.200000e+01 : f64}> : () -> f64
+    %1135 = "llvm.fptrunc"(%1134) : (f64) -> f32
+    "llvm.store"(%1135, %1085) <{ordering = 0 : i64}> : (f32, !llvm.ptr) -> ()
+    %1136 = "llvm.mlir.constant"() <{value = 6.000000e+01 : f64}> : () -> f64
+    %1137 = "llvm.fptrunc"(%1136) : (f64) -> f32
+    "llvm.store"(%1137, %1088) <{ordering = 0 : i64}> : (f32, !llvm.ptr) -> ()
     "cf.br"()[^bb8] : () -> ()
   ^bb11:  // pred: ^bb9
     "cf.br"()[^bb12] : () -> ()
   ^bb12:  // pred: ^bb11
-    %1180 = "llvm.mlir.constant"() <{value = 1 : i32}> : () -> i32
-    %1181 = "arith.cmpi"(%arg1, %1180) <{predicate = 0 : i64}> : (i32, i32) -> i1
-    %1182 = "llvm.bitcast"(%1181) : (i1) -> i1
-    "cf.cond_br"(%1182)[^bb13, ^bb14] <{operandSegmentSizes = array<i32: 1, 0, 0>}> : (i1) -> ()
+    %1138 = "llvm.mlir.constant"() <{value = 1 : i32}> : () -> i32
+    %1139 = "arith.cmpi"(%arg1, %1138) <{predicate = 0 : i64}> : (i32, i32) -> i1
+    "cf.cond_br"(%1139)[^bb13, ^bb14] <{operandSegmentSizes = array<i32: 1, 0, 0>}> : (i1) -> ()
   ^bb13:  // pred: ^bb12
-    %1183 = "llvm.mlir.constant"() <{value = 2.600000e+01 : f64}> : () -> f64
-    %1184 = "llvm.fptrunc"(%1183) : (f64) -> f32
-    "llvm.store"(%1184, %1125) <{ordering = 0 : i64}> : (f32, !llvm.ptr) -> ()
-    %1185 = "llvm.mlir.constant"() <{value = 9.000000e+01 : f64}> : () -> f64
-    %1186 = "llvm.fptrunc"(%1185) : (f64) -> f32
-    "llvm.store"(%1186, %1128) <{ordering = 0 : i64}> : (f32, !llvm.ptr) -> ()
+    %1140 = "llvm.mlir.constant"() <{value = 2.600000e+01 : f64}> : () -> f64
+    %1141 = "llvm.fptrunc"(%1140) : (f64) -> f32
+    "llvm.store"(%1141, %1085) <{ordering = 0 : i64}> : (f32, !llvm.ptr) -> ()
+    %1142 = "llvm.mlir.constant"() <{value = 9.000000e+01 : f64}> : () -> f64
+    %1143 = "llvm.fptrunc"(%1142) : (f64) -> f32
+    "llvm.store"(%1143, %1088) <{ordering = 0 : i64}> : (f32, !llvm.ptr) -> ()
     "cf.br"()[^bb8] : () -> ()
   ^bb14:  // pred: ^bb12
     "cf.br"()[^bb15] : () -> ()
   ^bb15:  // pred: ^bb14
-    %1187 = "llvm.mlir.constant"() <{value = 2 : i32}> : () -> i32
-    %1188 = "arith.cmpi"(%arg1, %1187) <{predicate = 0 : i64}> : (i32, i32) -> i1
-    %1189 = "llvm.bitcast"(%1188) : (i1) -> i1
-    "cf.cond_br"(%1189)[^bb16, ^bb8] <{operandSegmentSizes = array<i32: 1, 0, 0>}> : (i1) -> ()
+    %1144 = "llvm.mlir.constant"() <{value = 2 : i32}> : () -> i32
+    %1145 = "arith.cmpi"(%arg1, %1144) <{predicate = 0 : i64}> : (i32, i32) -> i1
+    "cf.cond_br"(%1145)[^bb16, ^bb8] <{operandSegmentSizes = array<i32: 1, 0, 0>}> : (i1) -> ()
   ^bb16:  // pred: ^bb15
-    %1190 = "llvm.mlir.constant"() <{value = 1.600000e+01 : f64}> : () -> f64
-    %1191 = "llvm.fptrunc"(%1190) : (f64) -> f32
-    "llvm.store"(%1191, %1125) <{ordering = 0 : i64}> : (f32, !llvm.ptr) -> ()
-    %1192 = "llvm.mlir.constant"() <{value = 1.300000e+02 : f64}> : () -> f64
-    %1193 = "llvm.fptrunc"(%1192) : (f64) -> f32
-    "llvm.store"(%1193, %1128) <{ordering = 0 : i64}> : (f32, !llvm.ptr) -> ()
+    %1146 = "llvm.mlir.constant"() <{value = 1.600000e+01 : f64}> : () -> f64
+    %1147 = "llvm.fptrunc"(%1146) : (f64) -> f32
+    "llvm.store"(%1147, %1085) <{ordering = 0 : i64}> : (f32, !llvm.ptr) -> ()
+    %1148 = "llvm.mlir.constant"() <{value = 1.300000e+02 : f64}> : () -> f64
+    %1149 = "llvm.fptrunc"(%1148) : (f64) -> f32
+    "llvm.store"(%1149, %1088) <{ordering = 0 : i64}> : (f32, !llvm.ptr) -> ()
     "cf.br"()[^bb8] : () -> ()
   ^bb17:  // pred: ^bb8
-    %1194 = "llvm.mlir.zero"() : () -> !llvm.void
+    %1150 = "llvm.mlir.zero"() : () -> !llvm.void
     "func.return"() : () -> ()
   ^bb18:  // pred: ^bb8
     "cf.br"()[^bb19] : () -> ()
   ^bb19:  // 2 preds: ^bb18, ^bb20
-    %1195 = "llvm.mlir.undef"() : () -> !llvm.ptr
+    %1151 = "llvm.mlir.undef"() : () -> !llvm.ptr
     "cf.br"()[^bb3] : () -> ()
   ^bb20:  // 5 preds: ^bb21, ^bb22, ^bb23, ^bb24, ^bb25
-    %1196 = "llvm.mlir.undef"() : () -> !llvm.ptr
+    %1152 = "llvm.mlir.undef"() : () -> !llvm.ptr
     "cf.br"()[^bb19] : () -> ()
   ^bb21:  // no predecessors
-    %1197 = "llvm.getelementptr"(%1102, %1099) <{elem_type = !llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i32, i1)>, noWrapFlags = 0 : i32, rawConstantIndices = array<i32: -2147483648>}> : (!llvm.ptr, i64) -> !llvm.ptr
-    %1198 = "llvm.getelementptr"(%1197) <{elem_type = !llvm.struct<(f32, f32)>, noWrapFlags = 0 : i32, rawConstantIndices = array<i32: 0>}> : (!llvm.ptr) -> !llvm.ptr
-    %1199 = "llvm.mlir.constant"() <{value = 0.000000e+00 : f64}> : () -> f64
-    %1200 = "llvm.fptrunc"(%1199) : (f64) -> f32
-    %1201 = "llvm.mlir.constant"() <{value = 0 : i64}> : () -> i64
-    %1202 = "llvm.mlir.addressof"() <{global_name = @SCREEN_H}> : () -> !llvm.ptr
-    %1203 = "llvm.load"(%1202) <{ordering = 0 : i64}> : (!llvm.ptr) -> f32
-    %1204 = "llvm.fptosi"(%1203) : (f32) -> i64
-    %1205 = "llvm.call"(%1201, %1204) <{CConv = #llvm.cconv<ccc>, TailCallKind = #llvm.tailcallkind<none>, callee = @m$vendor_raylib_GetRandomValue, fastmathFlags = #llvm.fastmath<none>, op_bundle_sizes = array<i32>, operandSegmentSizes = array<i32: 2, 0>}> : (i64, i64) -> i32
-    %1206 = "llvm.sitofp"(%1205) : (i32) -> f32
-    %1207 = "llvm.mlir.zero"() : () -> !llvm.struct<(f32, f32)>
-    %1208 = "llvm.insertvalue"(%1207, %1200) <{position = array<i64: 0>}> : (!llvm.struct<(f32, f32)>, f32) -> !llvm.struct<(f32, f32)>
-    %1209 = "llvm.insertvalue"(%1208, %1206) <{position = array<i64: 1>}> : (!llvm.struct<(f32, f32)>, f32) -> !llvm.struct<(f32, f32)>
-    "llvm.store"(%1209, %1198) <{ordering = 0 : i64}> : (!llvm.struct<(f32, f32)>, !llvm.ptr) -> ()
+    %1153 = "llvm.getelementptr"(%1059, %1062) <{elem_type = !llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i32, i1)>, noWrapFlags = 0 : i32, rawConstantIndices = array<i32: -2147483648>}> : (!llvm.ptr, i64) -> !llvm.ptr
+    %1154 = "llvm.getelementptr"(%1153) <{elem_type = !llvm.struct<(f32, f32)>, noWrapFlags = 0 : i32, rawConstantIndices = array<i32: 0>}> : (!llvm.ptr) -> !llvm.ptr
+    %1155 = "llvm.mlir.constant"() <{value = 0.000000e+00 : f64}> : () -> f64
+    %1156 = "llvm.fptrunc"(%1155) : (f64) -> f32
+    %1157 = "llvm.mlir.constant"() <{value = 0 : i64}> : () -> i64
+    %1158 = "llvm.load"(%1060) <{ordering = 0 : i64}> : (!llvm.ptr) -> f32
+    %1159 = "llvm.fptosi"(%1158) : (f32) -> i64
+    %1160 = "llvm.call"(%1157, %1159) <{CConv = #llvm.cconv<ccc>, TailCallKind = #llvm.tailcallkind<none>, callee = @m$vendor_raylib_GetRandomValue, fastmathFlags = #llvm.fastmath<none>, op_bundle_sizes = array<i32>, operandSegmentSizes = array<i32: 2, 0>}> : (i64, i64) -> i32
+    %1161 = "llvm.sitofp"(%1160) : (i32) -> f32
+    %1162 = "llvm.mlir.zero"() : () -> !llvm.struct<(f32, f32)>
+    %1163 = "llvm.insertvalue"(%1162, %1156) <{position = array<i64: 0>}> : (!llvm.struct<(f32, f32)>, f32) -> !llvm.struct<(f32, f32)>
+    %1164 = "llvm.insertvalue"(%1163, %1161) <{position = array<i64: 1>}> : (!llvm.struct<(f32, f32)>, f32) -> !llvm.struct<(f32, f32)>
+    "llvm.store"(%1164, %1154) <{ordering = 0 : i64}> : (!llvm.struct<(f32, f32)>, !llvm.ptr) -> ()
     "cf.br"()[^bb20] : () -> ()
   ^bb22:  // no predecessors
-    %1210 = "llvm.getelementptr"(%1102, %1099) <{elem_type = !llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i32, i1)>, noWrapFlags = 0 : i32, rawConstantIndices = array<i32: -2147483648>}> : (!llvm.ptr, i64) -> !llvm.ptr
-    %1211 = "llvm.getelementptr"(%1210) <{elem_type = !llvm.struct<(f32, f32)>, noWrapFlags = 0 : i32, rawConstantIndices = array<i32: 0>}> : (!llvm.ptr) -> !llvm.ptr
-    %1212 = "llvm.mlir.addressof"() <{global_name = @SCREEN_W}> : () -> !llvm.ptr
-    %1213 = "llvm.load"(%1212) <{ordering = 0 : i64}> : (!llvm.ptr) -> f32
-    %1214 = "llvm.mlir.constant"() <{value = 0 : i64}> : () -> i64
-    %1215 = "llvm.load"(%1202) <{ordering = 0 : i64}> : (!llvm.ptr) -> f32
-    %1216 = "llvm.fptosi"(%1215) : (f32) -> i64
-    %1217 = "llvm.call"(%1214, %1216) <{CConv = #llvm.cconv<ccc>, TailCallKind = #llvm.tailcallkind<none>, callee = @m$vendor_raylib_GetRandomValue, fastmathFlags = #llvm.fastmath<none>, op_bundle_sizes = array<i32>, operandSegmentSizes = array<i32: 2, 0>}> : (i64, i64) -> i32
-    %1218 = "llvm.sitofp"(%1217) : (i32) -> f32
-    %1219 = "llvm.mlir.zero"() : () -> !llvm.struct<(f32, f32)>
-    %1220 = "llvm.insertvalue"(%1219, %1213) <{position = array<i64: 0>}> : (!llvm.struct<(f32, f32)>, f32) -> !llvm.struct<(f32, f32)>
-    %1221 = "llvm.insertvalue"(%1220, %1218) <{position = array<i64: 1>}> : (!llvm.struct<(f32, f32)>, f32) -> !llvm.struct<(f32, f32)>
-    "llvm.store"(%1221, %1211) <{ordering = 0 : i64}> : (!llvm.struct<(f32, f32)>, !llvm.ptr) -> ()
+    %1165 = "llvm.getelementptr"(%1059, %1062) <{elem_type = !llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i32, i1)>, noWrapFlags = 0 : i32, rawConstantIndices = array<i32: -2147483648>}> : (!llvm.ptr, i64) -> !llvm.ptr
+    %1166 = "llvm.getelementptr"(%1165) <{elem_type = !llvm.struct<(f32, f32)>, noWrapFlags = 0 : i32, rawConstantIndices = array<i32: 0>}> : (!llvm.ptr) -> !llvm.ptr
+    %1167 = "llvm.load"(%1061) <{ordering = 0 : i64}> : (!llvm.ptr) -> f32
+    %1168 = "llvm.mlir.constant"() <{value = 0 : i64}> : () -> i64
+    %1169 = "llvm.load"(%1060) <{ordering = 0 : i64}> : (!llvm.ptr) -> f32
+    %1170 = "llvm.fptosi"(%1169) : (f32) -> i64
+    %1171 = "llvm.call"(%1168, %1170) <{CConv = #llvm.cconv<ccc>, TailCallKind = #llvm.tailcallkind<none>, callee = @m$vendor_raylib_GetRandomValue, fastmathFlags = #llvm.fastmath<none>, op_bundle_sizes = array<i32>, operandSegmentSizes = array<i32: 2, 0>}> : (i64, i64) -> i32
+    %1172 = "llvm.sitofp"(%1171) : (i32) -> f32
+    %1173 = "llvm.mlir.zero"() : () -> !llvm.struct<(f32, f32)>
+    %1174 = "llvm.insertvalue"(%1173, %1167) <{position = array<i64: 0>}> : (!llvm.struct<(f32, f32)>, f32) -> !llvm.struct<(f32, f32)>
+    %1175 = "llvm.insertvalue"(%1174, %1172) <{position = array<i64: 1>}> : (!llvm.struct<(f32, f32)>, f32) -> !llvm.struct<(f32, f32)>
+    "llvm.store"(%1175, %1166) <{ordering = 0 : i64}> : (!llvm.struct<(f32, f32)>, !llvm.ptr) -> ()
     "cf.br"()[^bb20] : () -> ()
   ^bb23:  // no predecessors
-    %1222 = "llvm.getelementptr"(%1102, %1099) <{elem_type = !llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i32, i1)>, noWrapFlags = 0 : i32, rawConstantIndices = array<i32: -2147483648>}> : (!llvm.ptr, i64) -> !llvm.ptr
-    %1223 = "llvm.getelementptr"(%1222) <{elem_type = !llvm.struct<(f32, f32)>, noWrapFlags = 0 : i32, rawConstantIndices = array<i32: 0>}> : (!llvm.ptr) -> !llvm.ptr
-    %1224 = "llvm.mlir.constant"() <{value = 0 : i64}> : () -> i64
-    %1225 = "llvm.load"(%1212) <{ordering = 0 : i64}> : (!llvm.ptr) -> f32
-    %1226 = "llvm.fptosi"(%1225) : (f32) -> i64
-    %1227 = "llvm.call"(%1224, %1226) <{CConv = #llvm.cconv<ccc>, TailCallKind = #llvm.tailcallkind<none>, callee = @m$vendor_raylib_GetRandomValue, fastmathFlags = #llvm.fastmath<none>, op_bundle_sizes = array<i32>, operandSegmentSizes = array<i32: 2, 0>}> : (i64, i64) -> i32
-    %1228 = "llvm.sitofp"(%1227) : (i32) -> f32
-    %1229 = "llvm.mlir.constant"() <{value = 0.000000e+00 : f64}> : () -> f64
-    %1230 = "llvm.fptrunc"(%1229) : (f64) -> f32
-    %1231 = "llvm.mlir.zero"() : () -> !llvm.struct<(f32, f32)>
-    %1232 = "llvm.insertvalue"(%1231, %1228) <{position = array<i64: 0>}> : (!llvm.struct<(f32, f32)>, f32) -> !llvm.struct<(f32, f32)>
-    %1233 = "llvm.insertvalue"(%1232, %1230) <{position = array<i64: 1>}> : (!llvm.struct<(f32, f32)>, f32) -> !llvm.struct<(f32, f32)>
-    "llvm.store"(%1233, %1223) <{ordering = 0 : i64}> : (!llvm.struct<(f32, f32)>, !llvm.ptr) -> ()
+    %1176 = "llvm.getelementptr"(%1059, %1062) <{elem_type = !llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i32, i1)>, noWrapFlags = 0 : i32, rawConstantIndices = array<i32: -2147483648>}> : (!llvm.ptr, i64) -> !llvm.ptr
+    %1177 = "llvm.getelementptr"(%1176) <{elem_type = !llvm.struct<(f32, f32)>, noWrapFlags = 0 : i32, rawConstantIndices = array<i32: 0>}> : (!llvm.ptr) -> !llvm.ptr
+    %1178 = "llvm.mlir.constant"() <{value = 0 : i64}> : () -> i64
+    %1179 = "llvm.load"(%1061) <{ordering = 0 : i64}> : (!llvm.ptr) -> f32
+    %1180 = "llvm.fptosi"(%1179) : (f32) -> i64
+    %1181 = "llvm.call"(%1178, %1180) <{CConv = #llvm.cconv<ccc>, TailCallKind = #llvm.tailcallkind<none>, callee = @m$vendor_raylib_GetRandomValue, fastmathFlags = #llvm.fastmath<none>, op_bundle_sizes = array<i32>, operandSegmentSizes = array<i32: 2, 0>}> : (i64, i64) -> i32
+    %1182 = "llvm.sitofp"(%1181) : (i32) -> f32
+    %1183 = "llvm.mlir.constant"() <{value = 0.000000e+00 : f64}> : () -> f64
+    %1184 = "llvm.fptrunc"(%1183) : (f64) -> f32
+    %1185 = "llvm.mlir.zero"() : () -> !llvm.struct<(f32, f32)>
+    %1186 = "llvm.insertvalue"(%1185, %1182) <{position = array<i64: 0>}> : (!llvm.struct<(f32, f32)>, f32) -> !llvm.struct<(f32, f32)>
+    %1187 = "llvm.insertvalue"(%1186, %1184) <{position = array<i64: 1>}> : (!llvm.struct<(f32, f32)>, f32) -> !llvm.struct<(f32, f32)>
+    "llvm.store"(%1187, %1177) <{ordering = 0 : i64}> : (!llvm.struct<(f32, f32)>, !llvm.ptr) -> ()
     "cf.br"()[^bb20] : () -> ()
   ^bb24:  // no predecessors
-    %1234 = "llvm.getelementptr"(%1102, %1099) <{elem_type = !llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i32, i1)>, noWrapFlags = 0 : i32, rawConstantIndices = array<i32: -2147483648>}> : (!llvm.ptr, i64) -> !llvm.ptr
-    %1235 = "llvm.getelementptr"(%1234) <{elem_type = !llvm.struct<(f32, f32)>, noWrapFlags = 0 : i32, rawConstantIndices = array<i32: 0>}> : (!llvm.ptr) -> !llvm.ptr
-    %1236 = "llvm.mlir.constant"() <{value = 0 : i64}> : () -> i64
-    %1237 = "llvm.load"(%1212) <{ordering = 0 : i64}> : (!llvm.ptr) -> f32
-    %1238 = "llvm.fptosi"(%1237) : (f32) -> i64
-    %1239 = "llvm.call"(%1236, %1238) <{CConv = #llvm.cconv<ccc>, TailCallKind = #llvm.tailcallkind<none>, callee = @m$vendor_raylib_GetRandomValue, fastmathFlags = #llvm.fastmath<none>, op_bundle_sizes = array<i32>, operandSegmentSizes = array<i32: 2, 0>}> : (i64, i64) -> i32
-    %1240 = "llvm.sitofp"(%1239) : (i32) -> f32
-    %1241 = "llvm.mlir.constant"() <{value = 0 : i64}> : () -> i64
-    %1242 = "llvm.load"(%1202) <{ordering = 0 : i64}> : (!llvm.ptr) -> f32
-    %1243 = "llvm.fptosi"(%1242) : (f32) -> i64
-    %1244 = "llvm.call"(%1241, %1243) <{CConv = #llvm.cconv<ccc>, TailCallKind = #llvm.tailcallkind<none>, callee = @m$vendor_raylib_GetRandomValue, fastmathFlags = #llvm.fastmath<none>, op_bundle_sizes = array<i32>, operandSegmentSizes = array<i32: 2, 0>}> : (i64, i64) -> i32
-    %1245 = "llvm.sitofp"(%1244) : (i32) -> f32
-    %1246 = "llvm.mlir.zero"() : () -> !llvm.struct<(f32, f32)>
-    %1247 = "llvm.insertvalue"(%1246, %1240) <{position = array<i64: 0>}> : (!llvm.struct<(f32, f32)>, f32) -> !llvm.struct<(f32, f32)>
-    %1248 = "llvm.insertvalue"(%1247, %1245) <{position = array<i64: 1>}> : (!llvm.struct<(f32, f32)>, f32) -> !llvm.struct<(f32, f32)>
-    "llvm.store"(%1248, %1235) <{ordering = 0 : i64}> : (!llvm.struct<(f32, f32)>, !llvm.ptr) -> ()
+    %1188 = "llvm.getelementptr"(%1059, %1062) <{elem_type = !llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i32, i1)>, noWrapFlags = 0 : i32, rawConstantIndices = array<i32: -2147483648>}> : (!llvm.ptr, i64) -> !llvm.ptr
+    %1189 = "llvm.getelementptr"(%1188) <{elem_type = !llvm.struct<(f32, f32)>, noWrapFlags = 0 : i32, rawConstantIndices = array<i32: 0>}> : (!llvm.ptr) -> !llvm.ptr
+    %1190 = "llvm.mlir.constant"() <{value = 0 : i64}> : () -> i64
+    %1191 = "llvm.load"(%1061) <{ordering = 0 : i64}> : (!llvm.ptr) -> f32
+    %1192 = "llvm.fptosi"(%1191) : (f32) -> i64
+    %1193 = "llvm.call"(%1190, %1192) <{CConv = #llvm.cconv<ccc>, TailCallKind = #llvm.tailcallkind<none>, callee = @m$vendor_raylib_GetRandomValue, fastmathFlags = #llvm.fastmath<none>, op_bundle_sizes = array<i32>, operandSegmentSizes = array<i32: 2, 0>}> : (i64, i64) -> i32
+    %1194 = "llvm.sitofp"(%1193) : (i32) -> f32
+    %1195 = "llvm.mlir.constant"() <{value = 0 : i64}> : () -> i64
+    %1196 = "llvm.load"(%1060) <{ordering = 0 : i64}> : (!llvm.ptr) -> f32
+    %1197 = "llvm.fptosi"(%1196) : (f32) -> i64
+    %1198 = "llvm.call"(%1195, %1197) <{CConv = #llvm.cconv<ccc>, TailCallKind = #llvm.tailcallkind<none>, callee = @m$vendor_raylib_GetRandomValue, fastmathFlags = #llvm.fastmath<none>, op_bundle_sizes = array<i32>, operandSegmentSizes = array<i32: 2, 0>}> : (i64, i64) -> i32
+    %1199 = "llvm.sitofp"(%1198) : (i32) -> f32
+    %1200 = "llvm.mlir.zero"() : () -> !llvm.struct<(f32, f32)>
+    %1201 = "llvm.insertvalue"(%1200, %1194) <{position = array<i64: 0>}> : (!llvm.struct<(f32, f32)>, f32) -> !llvm.struct<(f32, f32)>
+    %1202 = "llvm.insertvalue"(%1201, %1199) <{position = array<i64: 1>}> : (!llvm.struct<(f32, f32)>, f32) -> !llvm.struct<(f32, f32)>
+    "llvm.store"(%1202, %1189) <{ordering = 0 : i64}> : (!llvm.struct<(f32, f32)>, !llvm.ptr) -> ()
     "cf.br"()[^bb20] : () -> ()
   ^bb25:  // no predecessors
     "cf.br"()[^bb20] : () -> ()
   }) : () -> ()
   "func.func"() <{function_type = () -> (), sym_name = "reset_game", sym_visibility = "public"}> ({
-    %954 = "llvm.mlir.addressof"() <{global_name = @ship}> : () -> !llvm.ptr
-    %955 = "llvm.mlir.addressof"() <{global_name = @SCREEN_W}> : () -> !llvm.ptr
-    %956 = "llvm.load"(%955) <{ordering = 0 : i64}> : (!llvm.ptr) -> f32
-    %957 = "llvm.mlir.constant"() <{value = 2.000000e+00 : f64}> : () -> f64
-    %958 = "llvm.fptrunc"(%957) : (f64) -> f32
-    %959 = "arith.divf"(%956, %958) <{fastmath = #arith.fastmath<none>}> : (f32, f32) -> f32
-    %960 = "llvm.mlir.addressof"() <{global_name = @SCREEN_H}> : () -> !llvm.ptr
-    %961 = "llvm.load"(%960) <{ordering = 0 : i64}> : (!llvm.ptr) -> f32
-    %962 = "llvm.mlir.constant"() <{value = 2.000000e+00 : f64}> : () -> f64
-    %963 = "llvm.fptrunc"(%962) : (f64) -> f32
-    %964 = "arith.divf"(%961, %963) <{fastmath = #arith.fastmath<none>}> : (f32, f32) -> f32
-    %965 = "llvm.mlir.zero"() : () -> !llvm.struct<(f32, f32)>
-    %966 = "llvm.insertvalue"(%965, %959) <{position = array<i64: 0>}> : (!llvm.struct<(f32, f32)>, f32) -> !llvm.struct<(f32, f32)>
-    %967 = "llvm.insertvalue"(%966, %964) <{position = array<i64: 1>}> : (!llvm.struct<(f32, f32)>, f32) -> !llvm.struct<(f32, f32)>
-    %968 = "llvm.mlir.constant"() <{value = 0.000000e+00 : f64}> : () -> f64
-    %969 = "llvm.fptrunc"(%968) : (f64) -> f32
-    %970 = "llvm.mlir.constant"() <{value = 0.000000e+00 : f64}> : () -> f64
-    %971 = "llvm.fptrunc"(%970) : (f64) -> f32
-    %972 = "llvm.mlir.zero"() : () -> !llvm.struct<(f32, f32)>
-    %973 = "llvm.insertvalue"(%972, %969) <{position = array<i64: 0>}> : (!llvm.struct<(f32, f32)>, f32) -> !llvm.struct<(f32, f32)>
-    %974 = "llvm.insertvalue"(%973, %971) <{position = array<i64: 1>}> : (!llvm.struct<(f32, f32)>, f32) -> !llvm.struct<(f32, f32)>
-    %975 = "llvm.mlir.undef"() : () -> f64
+    %917 = "llvm.mlir.addressof"() <{global_name = @ship}> : () -> !llvm.ptr
+    %918 = "llvm.mlir.addressof"() <{global_name = @SCREEN_W}> : () -> !llvm.ptr
+    %919 = "llvm.load"(%918) <{ordering = 0 : i64}> : (!llvm.ptr) -> f32
+    %920 = "llvm.mlir.constant"() <{value = 2.000000e+00 : f64}> : () -> f64
+    %921 = "llvm.fptrunc"(%920) : (f64) -> f32
+    %922 = "arith.divf"(%919, %921) <{fastmath = #arith.fastmath<none>}> : (f32, f32) -> f32
+    %923 = "llvm.mlir.addressof"() <{global_name = @SCREEN_H}> : () -> !llvm.ptr
+    %924 = "llvm.load"(%923) <{ordering = 0 : i64}> : (!llvm.ptr) -> f32
+    %925 = "llvm.mlir.constant"() <{value = 2.000000e+00 : f64}> : () -> f64
+    %926 = "llvm.fptrunc"(%925) : (f64) -> f32
+    %927 = "arith.divf"(%924, %926) <{fastmath = #arith.fastmath<none>}> : (f32, f32) -> f32
+    %928 = "llvm.mlir.zero"() : () -> !llvm.struct<(f32, f32)>
+    %929 = "llvm.insertvalue"(%928, %922) <{position = array<i64: 0>}> : (!llvm.struct<(f32, f32)>, f32) -> !llvm.struct<(f32, f32)>
+    %930 = "llvm.insertvalue"(%929, %927) <{position = array<i64: 1>}> : (!llvm.struct<(f32, f32)>, f32) -> !llvm.struct<(f32, f32)>
+    %931 = "llvm.mlir.constant"() <{value = 0.000000e+00 : f64}> : () -> f64
+    %932 = "llvm.fptrunc"(%931) : (f64) -> f32
+    %933 = "llvm.mlir.constant"() <{value = 0.000000e+00 : f64}> : () -> f64
+    %934 = "llvm.fptrunc"(%933) : (f64) -> f32
+    %935 = "llvm.mlir.zero"() : () -> !llvm.struct<(f32, f32)>
+    %936 = "llvm.insertvalue"(%935, %932) <{position = array<i64: 0>}> : (!llvm.struct<(f32, f32)>, f32) -> !llvm.struct<(f32, f32)>
+    %937 = "llvm.insertvalue"(%936, %934) <{position = array<i64: 1>}> : (!llvm.struct<(f32, f32)>, f32) -> !llvm.struct<(f32, f32)>
+    %938 = "llvm.mlir.constant"() <{value = 3.1415926535897931 : f64}> : () -> f64
+    %939 = "llvm.mlir.constant"() <{value = 0.000000e+00 : f64}> : () -> f64
+    %940 = "arith.subf"(%939, %938) <{fastmath = #arith.fastmath<none>}> : (f64, f64) -> f64
+    %941 = "llvm.mlir.constant"() <{value = 2.000000e+00 : f64}> : () -> f64
+    %942 = "arith.divf"(%940, %941) <{fastmath = #arith.fastmath<none>}> : (f64, f64) -> f64
+    %943 = "llvm.fptrunc"(%942) : (f64) -> f32
+    %944 = "llvm.mlir.constant"() <{value = 0.000000e+00 : f64}> : () -> f64
+    %945 = "llvm.fptrunc"(%944) : (f64) -> f32
+    %946 = "llvm.mlir.constant"() <{value = true}> : () -> i1
+    %947 = "llvm.mlir.constant"() <{value = 2.000000e+00 : f64}> : () -> f64
+    %948 = "llvm.fptrunc"(%947) : (f64) -> f32
+    %949 = "llvm.mlir.zero"() : () -> !llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, f32, i1, f32)>
+    %950 = "llvm.insertvalue"(%949, %930) <{position = array<i64: 0>}> : (!llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, f32, i1, f32)>, !llvm.struct<(f32, f32)>) -> !llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, f32, i1, f32)>
+    %951 = "llvm.insertvalue"(%950, %937) <{position = array<i64: 1>}> : (!llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, f32, i1, f32)>, !llvm.struct<(f32, f32)>) -> !llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, f32, i1, f32)>
+    %952 = "llvm.insertvalue"(%951, %943) <{position = array<i64: 2>}> : (!llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, f32, i1, f32)>, f32) -> !llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, f32, i1, f32)>
+    %953 = "llvm.insertvalue"(%952, %945) <{position = array<i64: 3>}> : (!llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, f32, i1, f32)>, f32) -> !llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, f32, i1, f32)>
+    %954 = "llvm.insertvalue"(%953, %946) <{position = array<i64: 4>}> : (!llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, f32, i1, f32)>, i1) -> !llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, f32, i1, f32)>
+    %955 = "llvm.insertvalue"(%954, %948) <{position = array<i64: 5>}> : (!llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, f32, i1, f32)>, f32) -> !llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, f32, i1, f32)>
+    "llvm.store"(%955, %917) <{ordering = 0 : i64}> : (!llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, f32, i1, f32)>, !llvm.ptr) -> ()
+    %956 = "llvm.mlir.constant"() <{value = 0 : i64}> : () -> i64
+    %957 = "llvm.mlir.addressof"() <{global_name = @MAX_BULLETS}> : () -> !llvm.ptr
+    %958 = "llvm.load"(%957) <{ordering = 0 : i64}> : (!llvm.ptr) -> i64
+    "cf.br"(%956)[^bb1] : (i64) -> ()
+    %959 = "llvm.mlir.addressof"() <{global_name = @bullets}> : () -> !llvm.ptr
+    %960 = "llvm.mlir.addressof"() <{global_name = @MAX_ROCKS}> : () -> !llvm.ptr
+    %961 = "llvm.mlir.addressof"() <{global_name = @rocks}> : () -> !llvm.ptr
+    %962 = "llvm.mlir.addressof"() <{global_name = @score}> : () -> !llvm.ptr
+    %963 = "llvm.mlir.addressof"() <{global_name = @game_over}> : () -> !llvm.ptr
+  ^bb1(%964: i64):  // 2 preds: ^bb0, ^bb4
+    %965 = "arith.cmpi"(%964, %958) <{predicate = 2 : i64}> : (i64, i64) -> i1
+    "cf.cond_br"(%965)[^bb2, ^bb3] <{operandSegmentSizes = array<i32: 1, 0, 0>}> : (i1) -> ()
+  ^bb2:  // pred: ^bb1
+    %966 = "llvm.getelementptr"(%959, %964) <{elem_type = !llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i1)>, noWrapFlags = 0 : i32, rawConstantIndices = array<i32: -2147483648>}> : (!llvm.ptr, i64) -> !llvm.ptr
+    %967 = "llvm.mlir.constant"() <{value = 0.000000e+00 : f64}> : () -> f64
+    %968 = "llvm.fptrunc"(%967) : (f64) -> f32
+    %969 = "llvm.mlir.constant"() <{value = 0.000000e+00 : f64}> : () -> f64
+    %970 = "llvm.fptrunc"(%969) : (f64) -> f32
+    %971 = "llvm.mlir.zero"() : () -> !llvm.struct<(f32, f32)>
+    %972 = "llvm.insertvalue"(%971, %968) <{position = array<i64: 0>}> : (!llvm.struct<(f32, f32)>, f32) -> !llvm.struct<(f32, f32)>
+    %973 = "llvm.insertvalue"(%972, %970) <{position = array<i64: 1>}> : (!llvm.struct<(f32, f32)>, f32) -> !llvm.struct<(f32, f32)>
+    %974 = "llvm.mlir.constant"() <{value = 0.000000e+00 : f64}> : () -> f64
+    %975 = "llvm.fptrunc"(%974) : (f64) -> f32
     %976 = "llvm.mlir.constant"() <{value = 0.000000e+00 : f64}> : () -> f64
-    %977 = "arith.subf"(%976, %975) <{fastmath = #arith.fastmath<none>}> : (f64, f64) -> f64
-    %978 = "llvm.mlir.constant"() <{value = 2.000000e+00 : f64}> : () -> f64
-    %979 = "arith.divf"(%977, %978) <{fastmath = #arith.fastmath<none>}> : (f64, f64) -> f64
-    %980 = "llvm.fptrunc"(%979) : (f64) -> f32
+    %977 = "llvm.fptrunc"(%976) : (f64) -> f32
+    %978 = "llvm.mlir.zero"() : () -> !llvm.struct<(f32, f32)>
+    %979 = "llvm.insertvalue"(%978, %975) <{position = array<i64: 0>}> : (!llvm.struct<(f32, f32)>, f32) -> !llvm.struct<(f32, f32)>
+    %980 = "llvm.insertvalue"(%979, %977) <{position = array<i64: 1>}> : (!llvm.struct<(f32, f32)>, f32) -> !llvm.struct<(f32, f32)>
     %981 = "llvm.mlir.constant"() <{value = 0.000000e+00 : f64}> : () -> f64
     %982 = "llvm.fptrunc"(%981) : (f64) -> f32
-    %983 = "llvm.mlir.constant"() <{value = true}> : () -> i1
-    %984 = "llvm.mlir.constant"() <{value = 2.000000e+00 : f64}> : () -> f64
-    %985 = "llvm.fptrunc"(%984) : (f64) -> f32
-    %986 = "llvm.mlir.zero"() : () -> !llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, f32, i1, f32)>
-    %987 = "llvm.insertvalue"(%986, %967) <{position = array<i64: 0>}> : (!llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, f32, i1, f32)>, !llvm.struct<(f32, f32)>) -> !llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, f32, i1, f32)>
-    %988 = "llvm.insertvalue"(%987, %974) <{position = array<i64: 1>}> : (!llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, f32, i1, f32)>, !llvm.struct<(f32, f32)>) -> !llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, f32, i1, f32)>
-    %989 = "llvm.insertvalue"(%988, %980) <{position = array<i64: 2>}> : (!llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, f32, i1, f32)>, f32) -> !llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, f32, i1, f32)>
-    %990 = "llvm.insertvalue"(%989, %982) <{position = array<i64: 3>}> : (!llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, f32, i1, f32)>, f32) -> !llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, f32, i1, f32)>
-    %991 = "llvm.insertvalue"(%990, %983) <{position = array<i64: 4>}> : (!llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, f32, i1, f32)>, i1) -> !llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, f32, i1, f32)>
-    %992 = "llvm.insertvalue"(%991, %985) <{position = array<i64: 5>}> : (!llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, f32, i1, f32)>, f32) -> !llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, f32, i1, f32)>
-    "llvm.store"(%992, %954) <{ordering = 0 : i64}> : (!llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, f32, i1, f32)>, !llvm.ptr) -> ()
-    %993 = "llvm.mlir.constant"() <{value = 0 : i64}> : () -> i64
-    %994 = "llvm.mlir.addressof"() <{global_name = @MAX_BULLETS}> : () -> !llvm.ptr
-    %995 = "llvm.load"(%994) <{ordering = 0 : i64}> : (!llvm.ptr) -> i64
-    "cf.br"(%993)[^bb1] : (i64) -> ()
-  ^bb1(%996: i64):  // 2 preds: ^bb0, ^bb4
-    %997 = "arith.cmpi"(%996, %995) <{predicate = 2 : i64}> : (i64, i64) -> i1
-    %998 = "llvm.bitcast"(%997) : (i1) -> i1
-    "cf.cond_br"(%998)[^bb2, ^bb3] <{operandSegmentSizes = array<i32: 1, 0, 0>}> : (i1) -> ()
-  ^bb2:  // pred: ^bb1
-    %999 = "llvm.mlir.addressof"() <{global_name = @bullets}> : () -> !llvm.ptr
-    %1000 = "llvm.getelementptr"(%999, %996) <{elem_type = !llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i1)>, noWrapFlags = 0 : i32, rawConstantIndices = array<i32: -2147483648>}> : (!llvm.ptr, i64) -> !llvm.ptr
-    %1001 = "llvm.mlir.constant"() <{value = 0.000000e+00 : f64}> : () -> f64
-    %1002 = "llvm.fptrunc"(%1001) : (f64) -> f32
-    %1003 = "llvm.mlir.constant"() <{value = 0.000000e+00 : f64}> : () -> f64
-    %1004 = "llvm.fptrunc"(%1003) : (f64) -> f32
-    %1005 = "llvm.mlir.zero"() : () -> !llvm.struct<(f32, f32)>
-    %1006 = "llvm.insertvalue"(%1005, %1002) <{position = array<i64: 0>}> : (!llvm.struct<(f32, f32)>, f32) -> !llvm.struct<(f32, f32)>
-    %1007 = "llvm.insertvalue"(%1006, %1004) <{position = array<i64: 1>}> : (!llvm.struct<(f32, f32)>, f32) -> !llvm.struct<(f32, f32)>
-    %1008 = "llvm.mlir.constant"() <{value = 0.000000e+00 : f64}> : () -> f64
-    %1009 = "llvm.fptrunc"(%1008) : (f64) -> f32
-    %1010 = "llvm.mlir.constant"() <{value = 0.000000e+00 : f64}> : () -> f64
-    %1011 = "llvm.fptrunc"(%1010) : (f64) -> f32
-    %1012 = "llvm.mlir.zero"() : () -> !llvm.struct<(f32, f32)>
-    %1013 = "llvm.insertvalue"(%1012, %1009) <{position = array<i64: 0>}> : (!llvm.struct<(f32, f32)>, f32) -> !llvm.struct<(f32, f32)>
-    %1014 = "llvm.insertvalue"(%1013, %1011) <{position = array<i64: 1>}> : (!llvm.struct<(f32, f32)>, f32) -> !llvm.struct<(f32, f32)>
-    %1015 = "llvm.mlir.constant"() <{value = 0.000000e+00 : f64}> : () -> f64
-    %1016 = "llvm.fptrunc"(%1015) : (f64) -> f32
-    %1017 = "llvm.mlir.constant"() <{value = false}> : () -> i1
-    %1018 = "llvm.mlir.zero"() : () -> !llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i1)>
-    %1019 = "llvm.insertvalue"(%1018, %1007) <{position = array<i64: 0>}> : (!llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i1)>, !llvm.struct<(f32, f32)>) -> !llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i1)>
-    %1020 = "llvm.insertvalue"(%1019, %1014) <{position = array<i64: 1>}> : (!llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i1)>, !llvm.struct<(f32, f32)>) -> !llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i1)>
-    %1021 = "llvm.insertvalue"(%1020, %1016) <{position = array<i64: 2>}> : (!llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i1)>, f32) -> !llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i1)>
-    %1022 = "llvm.insertvalue"(%1021, %1017) <{position = array<i64: 3>}> : (!llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i1)>, i1) -> !llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i1)>
-    "llvm.store"(%1022, %1000) <{ordering = 0 : i64}> : (!llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i1)>, !llvm.ptr) -> ()
-    "cf.br"(%996)[^bb4] : (i64) -> ()
+    %983 = "llvm.mlir.constant"() <{value = false}> : () -> i1
+    %984 = "llvm.mlir.zero"() : () -> !llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i1)>
+    %985 = "llvm.insertvalue"(%984, %973) <{position = array<i64: 0>}> : (!llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i1)>, !llvm.struct<(f32, f32)>) -> !llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i1)>
+    %986 = "llvm.insertvalue"(%985, %980) <{position = array<i64: 1>}> : (!llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i1)>, !llvm.struct<(f32, f32)>) -> !llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i1)>
+    %987 = "llvm.insertvalue"(%986, %982) <{position = array<i64: 2>}> : (!llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i1)>, f32) -> !llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i1)>
+    %988 = "llvm.insertvalue"(%987, %983) <{position = array<i64: 3>}> : (!llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i1)>, i1) -> !llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i1)>
+    "llvm.store"(%988, %966) <{ordering = 0 : i64}> : (!llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i1)>, !llvm.ptr) -> ()
+    "cf.br"(%964)[^bb4] : (i64) -> ()
   ^bb3:  // pred: ^bb1
-    %1023 = "llvm.mlir.undef"() : () -> !llvm.ptr
-    %1024 = "llvm.mlir.constant"() <{value = 0 : i64}> : () -> i64
-    %1025 = "llvm.mlir.addressof"() <{global_name = @MAX_ROCKS}> : () -> !llvm.ptr
-    %1026 = "llvm.load"(%1025) <{ordering = 0 : i64}> : (!llvm.ptr) -> i64
-    "cf.br"(%1024)[^bb5] : (i64) -> ()
-  ^bb4(%1027: i64):  // pred: ^bb2
-    %1028 = "llvm.mlir.constant"() <{value = 1 : i64}> : () -> i64
-    %1029 = "arith.addi"(%1027, %1028) <{overflowFlags = #arith.overflow<none>}> : (i64, i64) -> i64
-    "cf.br"(%1029)[^bb1] : (i64) -> ()
-  ^bb5(%1030: i64):  // 2 preds: ^bb3, ^bb8
-    %1031 = "arith.cmpi"(%1030, %1026) <{predicate = 2 : i64}> : (i64, i64) -> i1
-    %1032 = "llvm.bitcast"(%1031) : (i1) -> i1
-    "cf.cond_br"(%1032)[^bb6, ^bb7] <{operandSegmentSizes = array<i32: 1, 0, 0>}> : (i1) -> ()
+    %989 = "llvm.mlir.undef"() : () -> !llvm.ptr
+    %990 = "llvm.mlir.constant"() <{value = 0 : i64}> : () -> i64
+    %991 = "llvm.load"(%960) <{ordering = 0 : i64}> : (!llvm.ptr) -> i64
+    "cf.br"(%990)[^bb5] : (i64) -> ()
+  ^bb4(%992: i64):  // pred: ^bb2
+    %993 = "llvm.mlir.constant"() <{value = 1 : i64}> : () -> i64
+    %994 = "arith.addi"(%992, %993) <{overflowFlags = #arith.overflow<none>}> : (i64, i64) -> i64
+    "cf.br"(%994)[^bb1] : (i64) -> ()
+  ^bb5(%995: i64):  // 2 preds: ^bb3, ^bb8
+    %996 = "arith.cmpi"(%995, %991) <{predicate = 2 : i64}> : (i64, i64) -> i1
+    "cf.cond_br"(%996)[^bb6, ^bb7] <{operandSegmentSizes = array<i32: 1, 0, 0>}> : (i1) -> ()
   ^bb6:  // pred: ^bb5
-    %1033 = "llvm.mlir.addressof"() <{global_name = @rocks}> : () -> !llvm.ptr
-    %1034 = "llvm.getelementptr"(%1033, %1030) <{elem_type = !llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i32, i1)>, noWrapFlags = 0 : i32, rawConstantIndices = array<i32: -2147483648>}> : (!llvm.ptr, i64) -> !llvm.ptr
-    %1035 = "llvm.mlir.constant"() <{value = 0.000000e+00 : f64}> : () -> f64
-    %1036 = "llvm.fptrunc"(%1035) : (f64) -> f32
-    %1037 = "llvm.mlir.constant"() <{value = 0.000000e+00 : f64}> : () -> f64
-    %1038 = "llvm.fptrunc"(%1037) : (f64) -> f32
-    %1039 = "llvm.mlir.zero"() : () -> !llvm.struct<(f32, f32)>
-    %1040 = "llvm.insertvalue"(%1039, %1036) <{position = array<i64: 0>}> : (!llvm.struct<(f32, f32)>, f32) -> !llvm.struct<(f32, f32)>
-    %1041 = "llvm.insertvalue"(%1040, %1038) <{position = array<i64: 1>}> : (!llvm.struct<(f32, f32)>, f32) -> !llvm.struct<(f32, f32)>
-    %1042 = "llvm.mlir.constant"() <{value = 0.000000e+00 : f64}> : () -> f64
-    %1043 = "llvm.fptrunc"(%1042) : (f64) -> f32
-    %1044 = "llvm.mlir.constant"() <{value = 0.000000e+00 : f64}> : () -> f64
-    %1045 = "llvm.fptrunc"(%1044) : (f64) -> f32
-    %1046 = "llvm.mlir.zero"() : () -> !llvm.struct<(f32, f32)>
-    %1047 = "llvm.insertvalue"(%1046, %1043) <{position = array<i64: 0>}> : (!llvm.struct<(f32, f32)>, f32) -> !llvm.struct<(f32, f32)>
-    %1048 = "llvm.insertvalue"(%1047, %1045) <{position = array<i64: 1>}> : (!llvm.struct<(f32, f32)>, f32) -> !llvm.struct<(f32, f32)>
-    %1049 = "llvm.mlir.constant"() <{value = 0.000000e+00 : f64}> : () -> f64
-    %1050 = "llvm.fptrunc"(%1049) : (f64) -> f32
-    %1051 = "llvm.mlir.constant"() <{value = 0 : i32}> : () -> i32
-    %1052 = "llvm.mlir.constant"() <{value = false}> : () -> i1
-    %1053 = "llvm.mlir.zero"() : () -> !llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i32, i1)>
-    %1054 = "llvm.insertvalue"(%1053, %1041) <{position = array<i64: 0>}> : (!llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i32, i1)>, !llvm.struct<(f32, f32)>) -> !llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i32, i1)>
-    %1055 = "llvm.insertvalue"(%1054, %1048) <{position = array<i64: 1>}> : (!llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i32, i1)>, !llvm.struct<(f32, f32)>) -> !llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i32, i1)>
-    %1056 = "llvm.insertvalue"(%1055, %1050) <{position = array<i64: 2>}> : (!llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i32, i1)>, f32) -> !llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i32, i1)>
-    %1057 = "llvm.insertvalue"(%1056, %1051) <{position = array<i64: 3>}> : (!llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i32, i1)>, i32) -> !llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i32, i1)>
-    %1058 = "llvm.insertvalue"(%1057, %1052) <{position = array<i64: 4>}> : (!llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i32, i1)>, i1) -> !llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i32, i1)>
-    "llvm.store"(%1058, %1034) <{ordering = 0 : i64}> : (!llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i32, i1)>, !llvm.ptr) -> ()
-    "cf.br"(%1030)[^bb8] : (i64) -> ()
+    %997 = "llvm.getelementptr"(%961, %995) <{elem_type = !llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i32, i1)>, noWrapFlags = 0 : i32, rawConstantIndices = array<i32: -2147483648>}> : (!llvm.ptr, i64) -> !llvm.ptr
+    %998 = "llvm.mlir.constant"() <{value = 0.000000e+00 : f64}> : () -> f64
+    %999 = "llvm.fptrunc"(%998) : (f64) -> f32
+    %1000 = "llvm.mlir.constant"() <{value = 0.000000e+00 : f64}> : () -> f64
+    %1001 = "llvm.fptrunc"(%1000) : (f64) -> f32
+    %1002 = "llvm.mlir.zero"() : () -> !llvm.struct<(f32, f32)>
+    %1003 = "llvm.insertvalue"(%1002, %999) <{position = array<i64: 0>}> : (!llvm.struct<(f32, f32)>, f32) -> !llvm.struct<(f32, f32)>
+    %1004 = "llvm.insertvalue"(%1003, %1001) <{position = array<i64: 1>}> : (!llvm.struct<(f32, f32)>, f32) -> !llvm.struct<(f32, f32)>
+    %1005 = "llvm.mlir.constant"() <{value = 0.000000e+00 : f64}> : () -> f64
+    %1006 = "llvm.fptrunc"(%1005) : (f64) -> f32
+    %1007 = "llvm.mlir.constant"() <{value = 0.000000e+00 : f64}> : () -> f64
+    %1008 = "llvm.fptrunc"(%1007) : (f64) -> f32
+    %1009 = "llvm.mlir.zero"() : () -> !llvm.struct<(f32, f32)>
+    %1010 = "llvm.insertvalue"(%1009, %1006) <{position = array<i64: 0>}> : (!llvm.struct<(f32, f32)>, f32) -> !llvm.struct<(f32, f32)>
+    %1011 = "llvm.insertvalue"(%1010, %1008) <{position = array<i64: 1>}> : (!llvm.struct<(f32, f32)>, f32) -> !llvm.struct<(f32, f32)>
+    %1012 = "llvm.mlir.constant"() <{value = 0.000000e+00 : f64}> : () -> f64
+    %1013 = "llvm.fptrunc"(%1012) : (f64) -> f32
+    %1014 = "llvm.mlir.constant"() <{value = 0 : i32}> : () -> i32
+    %1015 = "llvm.mlir.constant"() <{value = false}> : () -> i1
+    %1016 = "llvm.mlir.zero"() : () -> !llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i32, i1)>
+    %1017 = "llvm.insertvalue"(%1016, %1004) <{position = array<i64: 0>}> : (!llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i32, i1)>, !llvm.struct<(f32, f32)>) -> !llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i32, i1)>
+    %1018 = "llvm.insertvalue"(%1017, %1011) <{position = array<i64: 1>}> : (!llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i32, i1)>, !llvm.struct<(f32, f32)>) -> !llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i32, i1)>
+    %1019 = "llvm.insertvalue"(%1018, %1013) <{position = array<i64: 2>}> : (!llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i32, i1)>, f32) -> !llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i32, i1)>
+    %1020 = "llvm.insertvalue"(%1019, %1014) <{position = array<i64: 3>}> : (!llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i32, i1)>, i32) -> !llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i32, i1)>
+    %1021 = "llvm.insertvalue"(%1020, %1015) <{position = array<i64: 4>}> : (!llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i32, i1)>, i1) -> !llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i32, i1)>
+    "llvm.store"(%1021, %997) <{ordering = 0 : i64}> : (!llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i32, i1)>, !llvm.ptr) -> ()
+    "cf.br"(%995)[^bb8] : (i64) -> ()
   ^bb7:  // pred: ^bb5
-    %1059 = "llvm.mlir.undef"() : () -> !llvm.ptr
-    %1060 = "llvm.mlir.addressof"() <{global_name = @score}> : () -> !llvm.ptr
-    %1061 = "llvm.mlir.constant"() <{value = 0 : i64}> : () -> i64
-    %1062 = "llvm.trunc"(%1061) <{overflowFlags = 0 : i32}> : (i64) -> i32
-    "llvm.store"(%1062, %1060) <{ordering = 0 : i64}> : (i32, !llvm.ptr) -> ()
-    %1063 = "llvm.mlir.addressof"() <{global_name = @game_over}> : () -> !llvm.ptr
-    %1064 = "llvm.mlir.constant"() <{value = false}> : () -> i1
-    "llvm.store"(%1064, %1063) <{ordering = 0 : i64}> : (i1, !llvm.ptr) -> ()
-    %1065 = "llvm.mlir.constant"() <{value = 0 : i64}> : () -> i64
-    %1066 = "llvm.mlir.constant"() <{value = 8 : i64}> : () -> i64
-    "cf.br"(%1065)[^bb9] : (i64) -> ()
-  ^bb8(%1067: i64):  // pred: ^bb6
-    %1068 = "llvm.mlir.constant"() <{value = 1 : i64}> : () -> i64
-    %1069 = "arith.addi"(%1067, %1068) <{overflowFlags = #arith.overflow<none>}> : (i64, i64) -> i64
-    "cf.br"(%1069)[^bb5] : (i64) -> ()
-  ^bb9(%1070: i64):  // 2 preds: ^bb7, ^bb12
-    %1071 = "arith.cmpi"(%1070, %1066) <{predicate = 2 : i64}> : (i64, i64) -> i1
-    %1072 = "llvm.bitcast"(%1071) : (i1) -> i1
-    "cf.cond_br"(%1072)[^bb10, ^bb11] <{operandSegmentSizes = array<i32: 1, 0, 0>}> : (i1) -> ()
+    %1022 = "llvm.mlir.undef"() : () -> !llvm.ptr
+    %1023 = "llvm.mlir.constant"() <{value = 0 : i64}> : () -> i64
+    %1024 = "llvm.trunc"(%1023) <{overflowFlags = 0 : i32}> : (i64) -> i32
+    "llvm.store"(%1024, %962) <{ordering = 0 : i64}> : (i32, !llvm.ptr) -> ()
+    %1025 = "llvm.mlir.constant"() <{value = false}> : () -> i1
+    "llvm.store"(%1025, %963) <{ordering = 0 : i64}> : (i1, !llvm.ptr) -> ()
+    %1026 = "llvm.mlir.constant"() <{value = 0 : i64}> : () -> i64
+    %1027 = "llvm.mlir.constant"() <{value = 8 : i64}> : () -> i64
+    "cf.br"(%1026)[^bb9] : (i64) -> ()
+  ^bb8(%1028: i64):  // pred: ^bb6
+    %1029 = "llvm.mlir.constant"() <{value = 1 : i64}> : () -> i64
+    %1030 = "arith.addi"(%1028, %1029) <{overflowFlags = #arith.overflow<none>}> : (i64, i64) -> i64
+    "cf.br"(%1030)[^bb5] : (i64) -> ()
+  ^bb9(%1031: i64):  // 2 preds: ^bb7, ^bb12
+    %1032 = "arith.cmpi"(%1031, %1027) <{predicate = 2 : i64}> : (i64, i64) -> i1
+    "cf.cond_br"(%1032)[^bb10, ^bb11] <{operandSegmentSizes = array<i32: 1, 0, 0>}> : (i1) -> ()
   ^bb10:  // pred: ^bb9
-    %1073 = "llvm.mlir.constant"() <{value = 0 : i32}> : () -> i32
-    %1074 = "llvm.mlir.constant"() <{value = 1.000000e+00 : f64}> : () -> f64
-    %1075 = "llvm.mlir.constant"() <{value = 0.000000e+00 : f64}> : () -> f64
-    %1076 = "arith.subf"(%1075, %1074) <{fastmath = #arith.fastmath<none>}> : (f64, f64) -> f64
-    %1077 = "llvm.fptrunc"(%1076) : (f64) -> f32
-    %1078 = "llvm.mlir.constant"() <{value = 1.000000e+00 : f64}> : () -> f64
-    %1079 = "llvm.mlir.constant"() <{value = 0.000000e+00 : f64}> : () -> f64
-    %1080 = "arith.subf"(%1079, %1078) <{fastmath = #arith.fastmath<none>}> : (f64, f64) -> f64
-    %1081 = "llvm.fptrunc"(%1080) : (f64) -> f32
-    %1082 = "llvm.mlir.zero"() : () -> !llvm.struct<(f32, f32)>
-    %1083 = "llvm.insertvalue"(%1082, %1077) <{position = array<i64: 0>}> : (!llvm.struct<(f32, f32)>, f32) -> !llvm.struct<(f32, f32)>
-    %1084 = "llvm.insertvalue"(%1083, %1081) <{position = array<i64: 1>}> : (!llvm.struct<(f32, f32)>, f32) -> !llvm.struct<(f32, f32)>
-    %1085 = "llvm.mlir.constant"() <{value = 0.000000e+00 : f64}> : () -> f64
-    %1086 = "llvm.fptrunc"(%1085) : (f64) -> f32
-    %1087 = "llvm.mlir.constant"() <{value = 0.000000e+00 : f64}> : () -> f64
-    %1088 = "llvm.fptrunc"(%1087) : (f64) -> f32
-    %1089 = "llvm.mlir.zero"() : () -> !llvm.struct<(f32, f32)>
-    %1090 = "llvm.insertvalue"(%1089, %1086) <{position = array<i64: 0>}> : (!llvm.struct<(f32, f32)>, f32) -> !llvm.struct<(f32, f32)>
-    %1091 = "llvm.insertvalue"(%1090, %1088) <{position = array<i64: 1>}> : (!llvm.struct<(f32, f32)>, f32) -> !llvm.struct<(f32, f32)>
-    "func.call"(%1073, %1084, %1091) <{callee = @spawn_rock}> : (i32, !llvm.struct<(f32, f32)>, !llvm.struct<(f32, f32)>) -> ()
-    "cf.br"(%1070)[^bb12] : (i64) -> ()
+    %1033 = "llvm.mlir.constant"() <{value = 0 : i32}> : () -> i32
+    %1034 = "llvm.mlir.constant"() <{value = 1.000000e+00 : f64}> : () -> f64
+    %1035 = "llvm.mlir.constant"() <{value = 0.000000e+00 : f64}> : () -> f64
+    %1036 = "arith.subf"(%1035, %1034) <{fastmath = #arith.fastmath<none>}> : (f64, f64) -> f64
+    %1037 = "llvm.fptrunc"(%1036) : (f64) -> f32
+    %1038 = "llvm.mlir.constant"() <{value = 1.000000e+00 : f64}> : () -> f64
+    %1039 = "llvm.mlir.constant"() <{value = 0.000000e+00 : f64}> : () -> f64
+    %1040 = "arith.subf"(%1039, %1038) <{fastmath = #arith.fastmath<none>}> : (f64, f64) -> f64
+    %1041 = "llvm.fptrunc"(%1040) : (f64) -> f32
+    %1042 = "llvm.mlir.zero"() : () -> !llvm.struct<(f32, f32)>
+    %1043 = "llvm.insertvalue"(%1042, %1037) <{position = array<i64: 0>}> : (!llvm.struct<(f32, f32)>, f32) -> !llvm.struct<(f32, f32)>
+    %1044 = "llvm.insertvalue"(%1043, %1041) <{position = array<i64: 1>}> : (!llvm.struct<(f32, f32)>, f32) -> !llvm.struct<(f32, f32)>
+    %1045 = "llvm.mlir.constant"() <{value = 0.000000e+00 : f64}> : () -> f64
+    %1046 = "llvm.fptrunc"(%1045) : (f64) -> f32
+    %1047 = "llvm.mlir.constant"() <{value = 0.000000e+00 : f64}> : () -> f64
+    %1048 = "llvm.fptrunc"(%1047) : (f64) -> f32
+    %1049 = "llvm.mlir.zero"() : () -> !llvm.struct<(f32, f32)>
+    %1050 = "llvm.insertvalue"(%1049, %1046) <{position = array<i64: 0>}> : (!llvm.struct<(f32, f32)>, f32) -> !llvm.struct<(f32, f32)>
+    %1051 = "llvm.insertvalue"(%1050, %1048) <{position = array<i64: 1>}> : (!llvm.struct<(f32, f32)>, f32) -> !llvm.struct<(f32, f32)>
+    "func.call"(%1033, %1044, %1051) <{callee = @spawn_rock}> : (i32, !llvm.struct<(f32, f32)>, !llvm.struct<(f32, f32)>) -> ()
+    "cf.br"(%1031)[^bb12] : (i64) -> ()
   ^bb11:  // pred: ^bb9
-    %1092 = "llvm.mlir.undef"() : () -> !llvm.ptr
+    %1052 = "llvm.mlir.undef"() : () -> !llvm.ptr
     "func.return"() : () -> ()
-  ^bb12(%1093: i64):  // pred: ^bb10
-    %1094 = "llvm.mlir.constant"() <{value = 1 : i64}> : () -> i64
-    %1095 = "arith.addi"(%1093, %1094) <{overflowFlags = #arith.overflow<none>}> : (i64, i64) -> i64
-    "cf.br"(%1095)[^bb9] : (i64) -> ()
+  ^bb12(%1053: i64):  // pred: ^bb10
+    %1054 = "llvm.mlir.constant"() <{value = 1 : i64}> : () -> i64
+    %1055 = "arith.addi"(%1053, %1054) <{overflowFlags = #arith.overflow<none>}> : (i64, i64) -> i64
+    "cf.br"(%1055)[^bb9] : (i64) -> ()
   }) : () -> ()
   "func.func"() <{function_type = () -> (), sym_name = "shoot", sym_visibility = "public"}> ({
-    %895 = "llvm.mlir.constant"() <{value = 0 : i64}> : () -> i64
-    %896 = "llvm.mlir.addressof"() <{global_name = @MAX_BULLETS}> : () -> !llvm.ptr
-    %897 = "llvm.load"(%896) <{ordering = 0 : i64}> : (!llvm.ptr) -> i64
-    "cf.br"(%895)[^bb1] : (i64) -> ()
-  ^bb1(%898: i64):  // 2 preds: ^bb0, ^bb4
-    %899 = "arith.cmpi"(%898, %897) <{predicate = 2 : i64}> : (i64, i64) -> i1
-    %900 = "llvm.bitcast"(%899) : (i1) -> i1
-    "cf.cond_br"(%900)[^bb2, ^bb3] <{operandSegmentSizes = array<i32: 1, 0, 0>}> : (i1) -> ()
+    %860 = "llvm.mlir.constant"() <{value = 0 : i64}> : () -> i64
+    %861 = "llvm.mlir.addressof"() <{global_name = @MAX_BULLETS}> : () -> !llvm.ptr
+    %862 = "llvm.load"(%861) <{ordering = 0 : i64}> : (!llvm.ptr) -> i64
+    "cf.br"(%860)[^bb1] : (i64) -> ()
+    %863 = "llvm.mlir.addressof"() <{global_name = @bullets}> : () -> !llvm.ptr
+    %864 = "llvm.mlir.addressof"() <{global_name = @ship}> : () -> !llvm.ptr
+  ^bb1(%865: i64):  // 2 preds: ^bb0, ^bb4
+    %866 = "arith.cmpi"(%865, %862) <{predicate = 2 : i64}> : (i64, i64) -> i1
+    "cf.cond_br"(%866)[^bb2, ^bb3] <{operandSegmentSizes = array<i32: 1, 0, 0>}> : (i1) -> ()
   ^bb2:  // pred: ^bb1
-    %901 = "llvm.mlir.addressof"() <{global_name = @bullets}> : () -> !llvm.ptr
-    %902 = "llvm.load"(%901) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.array<64 x struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i1)>>
-    %903 = "llvm.mlir.constant"() <{value = 1 : i64}> : () -> i64
-    %904 = "llvm.alloca"(%903) <{elem_type = !llvm.array<64 x struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i1)>>}> : (i64) -> !llvm.ptr
-    "llvm.store"(%902, %904) <{ordering = 0 : i64}> : (!llvm.array<64 x struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i1)>>, !llvm.ptr) -> ()
-    %905 = "llvm.getelementptr"(%904, %898) <{elem_type = !llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i1)>, noWrapFlags = 0 : i32, rawConstantIndices = array<i32: -2147483648>}> : (!llvm.ptr, i64) -> !llvm.ptr
-    %906 = "llvm.load"(%905) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i1)>
-    %907 = "llvm.extractvalue"(%906) <{position = array<i64: 3>}> : (!llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i1)>) -> i1
-    %908 = "llvm.mlir.constant"() <{value = true}> : () -> i1
-    %909 = "arith.xori"(%907, %908) : (i1, i1) -> i1
-    %910 = "llvm.bitcast"(%909) : (i1) -> i1
-    "cf.cond_br"(%910)[^bb5, ^bb6] <{operandSegmentSizes = array<i32: 1, 0, 0>}> : (i1) -> ()
+    %867 = "llvm.load"(%863) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.array<64 x struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i1)>>
+    %868 = "llvm.mlir.constant"() <{value = 1 : i64}> : () -> i64
+    %869 = "llvm.alloca"(%868) <{elem_type = !llvm.array<64 x struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i1)>>}> : (i64) -> !llvm.ptr
+    "llvm.store"(%867, %869) <{ordering = 0 : i64}> : (!llvm.array<64 x struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i1)>>, !llvm.ptr) -> ()
+    %870 = "llvm.getelementptr"(%869, %865) <{elem_type = !llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i1)>, noWrapFlags = 0 : i32, rawConstantIndices = array<i32: -2147483648>}> : (!llvm.ptr, i64) -> !llvm.ptr
+    %871 = "llvm.load"(%870) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i1)>
+    %872 = "llvm.extractvalue"(%871) <{position = array<i64: 3>}> : (!llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i1)>) -> i1
+    %873 = "llvm.mlir.constant"() <{value = true}> : () -> i1
+    %874 = "arith.xori"(%872, %873) : (i1, i1) -> i1
+    "cf.cond_br"(%874)[^bb5, ^bb6] <{operandSegmentSizes = array<i32: 1, 0, 0>}> : (i1) -> ()
   ^bb3:  // 2 preds: ^bb1, ^bb5
-    %911 = "llvm.mlir.undef"() : () -> !llvm.ptr
+    %875 = "llvm.mlir.undef"() : () -> !llvm.ptr
     "func.return"() : () -> ()
-  ^bb4(%912: i64):  // pred: ^bb7
-    %913 = "llvm.mlir.constant"() <{value = 1 : i64}> : () -> i64
-    %914 = "arith.addi"(%912, %913) <{overflowFlags = #arith.overflow<none>}> : (i64, i64) -> i64
-    "cf.br"(%914)[^bb1] : (i64) -> ()
+  ^bb4(%876: i64):  // pred: ^bb7
+    %877 = "llvm.mlir.constant"() <{value = 1 : i64}> : () -> i64
+    %878 = "arith.addi"(%876, %877) <{overflowFlags = #arith.overflow<none>}> : (i64, i64) -> i64
+    "cf.br"(%878)[^bb1] : (i64) -> ()
   ^bb5:  // pred: ^bb2
-    %915 = "llvm.mlir.addressof"() <{global_name = @ship}> : () -> !llvm.ptr
-    %916 = "llvm.load"(%915) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, f32, i1, f32)>
-    %917 = "llvm.extractvalue"(%916) <{position = array<i64: 2>}> : (!llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, f32, i1, f32)>) -> f32
-    %918 = "llvm.call"(%917) <{CConv = #llvm.cconv<ccc>, TailCallKind = #llvm.tailcallkind<none>, callee = @m$std_math_cos, fastmathFlags = #llvm.fastmath<none>, op_bundle_sizes = array<i32>, operandSegmentSizes = array<i32: 1, 0>}> : (f32) -> f32
-    %919 = "llvm.load"(%915) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, f32, i1, f32)>
-    %920 = "llvm.extractvalue"(%919) <{position = array<i64: 2>}> : (!llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, f32, i1, f32)>) -> f32
-    %921 = "llvm.call"(%920) <{CConv = #llvm.cconv<ccc>, TailCallKind = #llvm.tailcallkind<none>, callee = @m$std_math_sin, fastmathFlags = #llvm.fastmath<none>, op_bundle_sizes = array<i32>, operandSegmentSizes = array<i32: 1, 0>}> : (f32) -> f32
-    %922 = "llvm.mlir.zero"() : () -> !llvm.struct<(f32, f32)>
-    %923 = "llvm.insertvalue"(%922, %918) <{position = array<i64: 0>}> : (!llvm.struct<(f32, f32)>, f32) -> !llvm.struct<(f32, f32)>
-    %924 = "llvm.insertvalue"(%923, %921) <{position = array<i64: 1>}> : (!llvm.struct<(f32, f32)>, f32) -> !llvm.struct<(f32, f32)>
-    %925 = "llvm.mlir.constant"() <{value = 1 : i64}> : () -> i64
-    %926 = "llvm.alloca"(%925) <{elem_type = !llvm.struct<(f32, f32)>}> : (i64) -> !llvm.ptr
-    "llvm.store"(%924, %926) <{ordering = 0 : i64}> : (!llvm.struct<(f32, f32)>, !llvm.ptr) -> ()
-    %927 = "llvm.load"(%915) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, f32, i1, f32)>
-    %928 = "llvm.extractvalue"(%927) <{position = array<i64: 0>}> : (!llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, f32, i1, f32)>) -> !llvm.struct<(f32, f32)>
-    %929 = "llvm.load"(%926) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.struct<(f32, f32)>
-    %930 = "llvm.mlir.constant"() <{value = 1.800000e+01 : f64}> : () -> f64
-    %931 = "llvm.fptrunc"(%930) : (f64) -> f32
-    %932 = "func.call"(%929, %931) <{callee = @vmul}> : (!llvm.struct<(f32, f32)>, f32) -> !llvm.struct<(f32, f32)>
-    %933 = "func.call"(%928, %932) <{callee = @vadd}> : (!llvm.struct<(f32, f32)>, !llvm.struct<(f32, f32)>) -> !llvm.struct<(f32, f32)>
-    %934 = "llvm.mlir.constant"() <{value = 1 : i64}> : () -> i64
-    %935 = "llvm.alloca"(%934) <{elem_type = !llvm.struct<(f32, f32)>}> : (i64) -> !llvm.ptr
-    "llvm.store"(%933, %935) <{ordering = 0 : i64}> : (!llvm.struct<(f32, f32)>, !llvm.ptr) -> ()
-    %936 = "llvm.getelementptr"(%901, %898) <{elem_type = !llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i1)>, noWrapFlags = 0 : i32, rawConstantIndices = array<i32: -2147483648>}> : (!llvm.ptr, i64) -> !llvm.ptr
-    %937 = "llvm.load"(%935) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.struct<(f32, f32)>
-    %938 = "llvm.load"(%926) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.struct<(f32, f32)>
-    %939 = "llvm.mlir.constant"() <{value = 3.800000e+02 : f64}> : () -> f64
-    %940 = "llvm.fptrunc"(%939) : (f64) -> f32
-    %941 = "func.call"(%938, %940) <{callee = @vmul}> : (!llvm.struct<(f32, f32)>, f32) -> !llvm.struct<(f32, f32)>
-    %942 = "llvm.load"(%915) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, f32, i1, f32)>
-    %943 = "llvm.extractvalue"(%942) <{position = array<i64: 1>}> : (!llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, f32, i1, f32)>) -> !llvm.struct<(f32, f32)>
-    %944 = "func.call"(%941, %943) <{callee = @vadd}> : (!llvm.struct<(f32, f32)>, !llvm.struct<(f32, f32)>) -> !llvm.struct<(f32, f32)>
-    %945 = "llvm.mlir.constant"() <{value = 1.300000e+00 : f64}> : () -> f64
-    %946 = "llvm.fptrunc"(%945) : (f64) -> f32
-    %947 = "llvm.mlir.constant"() <{value = true}> : () -> i1
-    %948 = "llvm.mlir.zero"() : () -> !llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i1)>
-    %949 = "llvm.insertvalue"(%948, %937) <{position = array<i64: 0>}> : (!llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i1)>, !llvm.struct<(f32, f32)>) -> !llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i1)>
-    %950 = "llvm.insertvalue"(%949, %944) <{position = array<i64: 1>}> : (!llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i1)>, !llvm.struct<(f32, f32)>) -> !llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i1)>
-    %951 = "llvm.insertvalue"(%950, %946) <{position = array<i64: 2>}> : (!llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i1)>, f32) -> !llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i1)>
-    %952 = "llvm.insertvalue"(%951, %947) <{position = array<i64: 3>}> : (!llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i1)>, i1) -> !llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i1)>
-    "llvm.store"(%952, %936) <{ordering = 0 : i64}> : (!llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i1)>, !llvm.ptr) -> ()
+    %879 = "llvm.load"(%864) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, f32, i1, f32)>
+    %880 = "llvm.extractvalue"(%879) <{position = array<i64: 2>}> : (!llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, f32, i1, f32)>) -> f32
+    %881 = "llvm.call"(%880) <{CConv = #llvm.cconv<ccc>, TailCallKind = #llvm.tailcallkind<none>, callee = @m$std_math_cos, fastmathFlags = #llvm.fastmath<none>, op_bundle_sizes = array<i32>, operandSegmentSizes = array<i32: 1, 0>}> : (f32) -> f32
+    %882 = "llvm.load"(%864) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, f32, i1, f32)>
+    %883 = "llvm.extractvalue"(%882) <{position = array<i64: 2>}> : (!llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, f32, i1, f32)>) -> f32
+    %884 = "llvm.call"(%883) <{CConv = #llvm.cconv<ccc>, TailCallKind = #llvm.tailcallkind<none>, callee = @m$std_math_sin, fastmathFlags = #llvm.fastmath<none>, op_bundle_sizes = array<i32>, operandSegmentSizes = array<i32: 1, 0>}> : (f32) -> f32
+    %885 = "llvm.mlir.zero"() : () -> !llvm.struct<(f32, f32)>
+    %886 = "llvm.insertvalue"(%885, %881) <{position = array<i64: 0>}> : (!llvm.struct<(f32, f32)>, f32) -> !llvm.struct<(f32, f32)>
+    %887 = "llvm.insertvalue"(%886, %884) <{position = array<i64: 1>}> : (!llvm.struct<(f32, f32)>, f32) -> !llvm.struct<(f32, f32)>
+    %888 = "llvm.mlir.constant"() <{value = 1 : i64}> : () -> i64
+    %889 = "llvm.alloca"(%888) <{elem_type = !llvm.struct<(f32, f32)>}> : (i64) -> !llvm.ptr
+    "llvm.store"(%887, %889) <{ordering = 0 : i64}> : (!llvm.struct<(f32, f32)>, !llvm.ptr) -> ()
+    %890 = "llvm.load"(%864) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, f32, i1, f32)>
+    %891 = "llvm.extractvalue"(%890) <{position = array<i64: 0>}> : (!llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, f32, i1, f32)>) -> !llvm.struct<(f32, f32)>
+    %892 = "llvm.load"(%889) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.struct<(f32, f32)>
+    %893 = "llvm.mlir.constant"() <{value = 1.800000e+01 : f64}> : () -> f64
+    %894 = "llvm.fptrunc"(%893) : (f64) -> f32
+    %895 = "func.call"(%892, %894) <{callee = @vmul}> : (!llvm.struct<(f32, f32)>, f32) -> !llvm.struct<(f32, f32)>
+    %896 = "func.call"(%891, %895) <{callee = @vadd}> : (!llvm.struct<(f32, f32)>, !llvm.struct<(f32, f32)>) -> !llvm.struct<(f32, f32)>
+    %897 = "llvm.mlir.constant"() <{value = 1 : i64}> : () -> i64
+    %898 = "llvm.alloca"(%897) <{elem_type = !llvm.struct<(f32, f32)>}> : (i64) -> !llvm.ptr
+    "llvm.store"(%896, %898) <{ordering = 0 : i64}> : (!llvm.struct<(f32, f32)>, !llvm.ptr) -> ()
+    %899 = "llvm.getelementptr"(%863, %865) <{elem_type = !llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i1)>, noWrapFlags = 0 : i32, rawConstantIndices = array<i32: -2147483648>}> : (!llvm.ptr, i64) -> !llvm.ptr
+    %900 = "llvm.load"(%898) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.struct<(f32, f32)>
+    %901 = "llvm.load"(%889) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.struct<(f32, f32)>
+    %902 = "llvm.mlir.constant"() <{value = 3.800000e+02 : f64}> : () -> f64
+    %903 = "llvm.fptrunc"(%902) : (f64) -> f32
+    %904 = "func.call"(%901, %903) <{callee = @vmul}> : (!llvm.struct<(f32, f32)>, f32) -> !llvm.struct<(f32, f32)>
+    %905 = "llvm.load"(%864) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, f32, i1, f32)>
+    %906 = "llvm.extractvalue"(%905) <{position = array<i64: 1>}> : (!llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, f32, i1, f32)>) -> !llvm.struct<(f32, f32)>
+    %907 = "func.call"(%904, %906) <{callee = @vadd}> : (!llvm.struct<(f32, f32)>, !llvm.struct<(f32, f32)>) -> !llvm.struct<(f32, f32)>
+    %908 = "llvm.mlir.constant"() <{value = 1.300000e+00 : f64}> : () -> f64
+    %909 = "llvm.fptrunc"(%908) : (f64) -> f32
+    %910 = "llvm.mlir.constant"() <{value = true}> : () -> i1
+    %911 = "llvm.mlir.zero"() : () -> !llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i1)>
+    %912 = "llvm.insertvalue"(%911, %900) <{position = array<i64: 0>}> : (!llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i1)>, !llvm.struct<(f32, f32)>) -> !llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i1)>
+    %913 = "llvm.insertvalue"(%912, %907) <{position = array<i64: 1>}> : (!llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i1)>, !llvm.struct<(f32, f32)>) -> !llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i1)>
+    %914 = "llvm.insertvalue"(%913, %909) <{position = array<i64: 2>}> : (!llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i1)>, f32) -> !llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i1)>
+    %915 = "llvm.insertvalue"(%914, %910) <{position = array<i64: 3>}> : (!llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i1)>, i1) -> !llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i1)>
+    "llvm.store"(%915, %899) <{ordering = 0 : i64}> : (!llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i1)>, !llvm.ptr) -> ()
     "cf.br"()[^bb3] : () -> ()
   ^bb6:  // pred: ^bb2
     "cf.br"()[^bb7] : () -> ()
   ^bb7:  // pred: ^bb6
-    %953 = "llvm.mlir.undef"() : () -> !llvm.ptr
-    "cf.br"(%898)[^bb4] : (i64) -> ()
+    %916 = "llvm.mlir.undef"() : () -> !llvm.ptr
+    "cf.br"(%865)[^bb4] : (i64) -> ()
   }) : () -> ()
   "func.func"() <{function_type = () -> (), sym_name = "draw_ship", sym_visibility = "public"}> ({
-    %759 = "llvm.mlir.addressof"() <{global_name = @ship}> : () -> !llvm.ptr
-    %760 = "llvm.load"(%759) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, f32, i1, f32)>
+    %725 = "llvm.mlir.addressof"() <{global_name = @ship}> : () -> !llvm.ptr
+    %726 = "llvm.load"(%725) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, f32, i1, f32)>
+    %727 = "llvm.extractvalue"(%726) <{position = array<i64: 2>}> : (!llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, f32, i1, f32)>) -> f32
+    %728 = "llvm.call"(%727) <{CConv = #llvm.cconv<ccc>, TailCallKind = #llvm.tailcallkind<none>, callee = @m$std_math_cos, fastmathFlags = #llvm.fastmath<none>, op_bundle_sizes = array<i32>, operandSegmentSizes = array<i32: 1, 0>}> : (f32) -> f32
+    %729 = "llvm.load"(%725) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, f32, i1, f32)>
+    %730 = "llvm.extractvalue"(%729) <{position = array<i64: 2>}> : (!llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, f32, i1, f32)>) -> f32
+    %731 = "llvm.call"(%730) <{CConv = #llvm.cconv<ccc>, TailCallKind = #llvm.tailcallkind<none>, callee = @m$std_math_sin, fastmathFlags = #llvm.fastmath<none>, op_bundle_sizes = array<i32>, operandSegmentSizes = array<i32: 1, 0>}> : (f32) -> f32
+    %732 = "llvm.mlir.zero"() : () -> !llvm.struct<(f32, f32)>
+    %733 = "llvm.insertvalue"(%732, %728) <{position = array<i64: 0>}> : (!llvm.struct<(f32, f32)>, f32) -> !llvm.struct<(f32, f32)>
+    %734 = "llvm.insertvalue"(%733, %731) <{position = array<i64: 1>}> : (!llvm.struct<(f32, f32)>, f32) -> !llvm.struct<(f32, f32)>
+    %735 = "llvm.mlir.constant"() <{value = 1 : i64}> : () -> i64
+    %736 = "llvm.alloca"(%735) <{elem_type = !llvm.struct<(f32, f32)>}> : (i64) -> !llvm.ptr
+    "llvm.store"(%734, %736) <{ordering = 0 : i64}> : (!llvm.struct<(f32, f32)>, !llvm.ptr) -> ()
+    %737 = "llvm.load"(%725) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, f32, i1, f32)>
+    %738 = "llvm.extractvalue"(%737) <{position = array<i64: 2>}> : (!llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, f32, i1, f32)>) -> f32
+    %739 = "llvm.mlir.constant"() <{value = 2.500000e+00 : f64}> : () -> f64
+    %740 = "llvm.fptrunc"(%739) : (f64) -> f32
+    %741 = "arith.addf"(%738, %740) <{fastmath = #arith.fastmath<none>}> : (f32, f32) -> f32
+    %742 = "llvm.call"(%741) <{CConv = #llvm.cconv<ccc>, TailCallKind = #llvm.tailcallkind<none>, callee = @m$std_math_cos, fastmathFlags = #llvm.fastmath<none>, op_bundle_sizes = array<i32>, operandSegmentSizes = array<i32: 1, 0>}> : (f32) -> f32
+    %743 = "llvm.load"(%725) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, f32, i1, f32)>
+    %744 = "llvm.extractvalue"(%743) <{position = array<i64: 2>}> : (!llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, f32, i1, f32)>) -> f32
+    %745 = "llvm.mlir.constant"() <{value = 2.500000e+00 : f64}> : () -> f64
+    %746 = "llvm.fptrunc"(%745) : (f64) -> f32
+    %747 = "arith.addf"(%744, %746) <{fastmath = #arith.fastmath<none>}> : (f32, f32) -> f32
+    %748 = "llvm.call"(%747) <{CConv = #llvm.cconv<ccc>, TailCallKind = #llvm.tailcallkind<none>, callee = @m$std_math_sin, fastmathFlags = #llvm.fastmath<none>, op_bundle_sizes = array<i32>, operandSegmentSizes = array<i32: 1, 0>}> : (f32) -> f32
+    %749 = "llvm.mlir.zero"() : () -> !llvm.struct<(f32, f32)>
+    %750 = "llvm.insertvalue"(%749, %742) <{position = array<i64: 0>}> : (!llvm.struct<(f32, f32)>, f32) -> !llvm.struct<(f32, f32)>
+    %751 = "llvm.insertvalue"(%750, %748) <{position = array<i64: 1>}> : (!llvm.struct<(f32, f32)>, f32) -> !llvm.struct<(f32, f32)>
+    %752 = "llvm.mlir.constant"() <{value = 1 : i64}> : () -> i64
+    %753 = "llvm.alloca"(%752) <{elem_type = !llvm.struct<(f32, f32)>}> : (i64) -> !llvm.ptr
+    "llvm.store"(%751, %753) <{ordering = 0 : i64}> : (!llvm.struct<(f32, f32)>, !llvm.ptr) -> ()
+    %754 = "llvm.load"(%725) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, f32, i1, f32)>
+    %755 = "llvm.extractvalue"(%754) <{position = array<i64: 2>}> : (!llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, f32, i1, f32)>) -> f32
+    %756 = "llvm.mlir.constant"() <{value = 2.500000e+00 : f64}> : () -> f64
+    %757 = "llvm.fptrunc"(%756) : (f64) -> f32
+    %758 = "arith.subf"(%755, %757) <{fastmath = #arith.fastmath<none>}> : (f32, f32) -> f32
+    %759 = "llvm.call"(%758) <{CConv = #llvm.cconv<ccc>, TailCallKind = #llvm.tailcallkind<none>, callee = @m$std_math_cos, fastmathFlags = #llvm.fastmath<none>, op_bundle_sizes = array<i32>, operandSegmentSizes = array<i32: 1, 0>}> : (f32) -> f32
+    %760 = "llvm.load"(%725) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, f32, i1, f32)>
     %761 = "llvm.extractvalue"(%760) <{position = array<i64: 2>}> : (!llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, f32, i1, f32)>) -> f32
-    %762 = "llvm.call"(%761) <{CConv = #llvm.cconv<ccc>, TailCallKind = #llvm.tailcallkind<none>, callee = @m$std_math_cos, fastmathFlags = #llvm.fastmath<none>, op_bundle_sizes = array<i32>, operandSegmentSizes = array<i32: 1, 0>}> : (f32) -> f32
-    %763 = "llvm.load"(%759) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, f32, i1, f32)>
-    %764 = "llvm.extractvalue"(%763) <{position = array<i64: 2>}> : (!llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, f32, i1, f32)>) -> f32
+    %762 = "llvm.mlir.constant"() <{value = 2.500000e+00 : f64}> : () -> f64
+    %763 = "llvm.fptrunc"(%762) : (f64) -> f32
+    %764 = "arith.subf"(%761, %763) <{fastmath = #arith.fastmath<none>}> : (f32, f32) -> f32
     %765 = "llvm.call"(%764) <{CConv = #llvm.cconv<ccc>, TailCallKind = #llvm.tailcallkind<none>, callee = @m$std_math_sin, fastmathFlags = #llvm.fastmath<none>, op_bundle_sizes = array<i32>, operandSegmentSizes = array<i32: 1, 0>}> : (f32) -> f32
     %766 = "llvm.mlir.zero"() : () -> !llvm.struct<(f32, f32)>
-    %767 = "llvm.insertvalue"(%766, %762) <{position = array<i64: 0>}> : (!llvm.struct<(f32, f32)>, f32) -> !llvm.struct<(f32, f32)>
+    %767 = "llvm.insertvalue"(%766, %759) <{position = array<i64: 0>}> : (!llvm.struct<(f32, f32)>, f32) -> !llvm.struct<(f32, f32)>
     %768 = "llvm.insertvalue"(%767, %765) <{position = array<i64: 1>}> : (!llvm.struct<(f32, f32)>, f32) -> !llvm.struct<(f32, f32)>
     %769 = "llvm.mlir.constant"() <{value = 1 : i64}> : () -> i64
     %770 = "llvm.alloca"(%769) <{elem_type = !llvm.struct<(f32, f32)>}> : (i64) -> !llvm.ptr
     "llvm.store"(%768, %770) <{ordering = 0 : i64}> : (!llvm.struct<(f32, f32)>, !llvm.ptr) -> ()
-    %771 = "llvm.load"(%759) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, f32, i1, f32)>
-    %772 = "llvm.extractvalue"(%771) <{position = array<i64: 2>}> : (!llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, f32, i1, f32)>) -> f32
-    %773 = "llvm.mlir.constant"() <{value = 2.500000e+00 : f64}> : () -> f64
-    %774 = "llvm.fptrunc"(%773) : (f64) -> f32
-    %775 = "arith.addf"(%772, %774) <{fastmath = #arith.fastmath<none>}> : (f32, f32) -> f32
-    %776 = "llvm.call"(%775) <{CConv = #llvm.cconv<ccc>, TailCallKind = #llvm.tailcallkind<none>, callee = @m$std_math_cos, fastmathFlags = #llvm.fastmath<none>, op_bundle_sizes = array<i32>, operandSegmentSizes = array<i32: 1, 0>}> : (f32) -> f32
-    %777 = "llvm.load"(%759) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, f32, i1, f32)>
-    %778 = "llvm.extractvalue"(%777) <{position = array<i64: 2>}> : (!llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, f32, i1, f32)>) -> f32
-    %779 = "llvm.mlir.constant"() <{value = 2.500000e+00 : f64}> : () -> f64
-    %780 = "llvm.fptrunc"(%779) : (f64) -> f32
-    %781 = "arith.addf"(%778, %780) <{fastmath = #arith.fastmath<none>}> : (f32, f32) -> f32
-    %782 = "llvm.call"(%781) <{CConv = #llvm.cconv<ccc>, TailCallKind = #llvm.tailcallkind<none>, callee = @m$std_math_sin, fastmathFlags = #llvm.fastmath<none>, op_bundle_sizes = array<i32>, operandSegmentSizes = array<i32: 1, 0>}> : (f32) -> f32
-    %783 = "llvm.mlir.zero"() : () -> !llvm.struct<(f32, f32)>
-    %784 = "llvm.insertvalue"(%783, %776) <{position = array<i64: 0>}> : (!llvm.struct<(f32, f32)>, f32) -> !llvm.struct<(f32, f32)>
-    %785 = "llvm.insertvalue"(%784, %782) <{position = array<i64: 1>}> : (!llvm.struct<(f32, f32)>, f32) -> !llvm.struct<(f32, f32)>
-    %786 = "llvm.mlir.constant"() <{value = 1 : i64}> : () -> i64
-    %787 = "llvm.alloca"(%786) <{elem_type = !llvm.struct<(f32, f32)>}> : (i64) -> !llvm.ptr
-    "llvm.store"(%785, %787) <{ordering = 0 : i64}> : (!llvm.struct<(f32, f32)>, !llvm.ptr) -> ()
-    %788 = "llvm.load"(%759) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, f32, i1, f32)>
-    %789 = "llvm.extractvalue"(%788) <{position = array<i64: 2>}> : (!llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, f32, i1, f32)>) -> f32
-    %790 = "llvm.mlir.constant"() <{value = 2.500000e+00 : f64}> : () -> f64
-    %791 = "llvm.fptrunc"(%790) : (f64) -> f32
-    %792 = "arith.subf"(%789, %791) <{fastmath = #arith.fastmath<none>}> : (f32, f32) -> f32
-    %793 = "llvm.call"(%792) <{CConv = #llvm.cconv<ccc>, TailCallKind = #llvm.tailcallkind<none>, callee = @m$std_math_cos, fastmathFlags = #llvm.fastmath<none>, op_bundle_sizes = array<i32>, operandSegmentSizes = array<i32: 1, 0>}> : (f32) -> f32
-    %794 = "llvm.load"(%759) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, f32, i1, f32)>
-    %795 = "llvm.extractvalue"(%794) <{position = array<i64: 2>}> : (!llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, f32, i1, f32)>) -> f32
-    %796 = "llvm.mlir.constant"() <{value = 2.500000e+00 : f64}> : () -> f64
-    %797 = "llvm.fptrunc"(%796) : (f64) -> f32
-    %798 = "arith.subf"(%795, %797) <{fastmath = #arith.fastmath<none>}> : (f32, f32) -> f32
-    %799 = "llvm.call"(%798) <{CConv = #llvm.cconv<ccc>, TailCallKind = #llvm.tailcallkind<none>, callee = @m$std_math_sin, fastmathFlags = #llvm.fastmath<none>, op_bundle_sizes = array<i32>, operandSegmentSizes = array<i32: 1, 0>}> : (f32) -> f32
-    %800 = "llvm.mlir.zero"() : () -> !llvm.struct<(f32, f32)>
-    %801 = "llvm.insertvalue"(%800, %793) <{position = array<i64: 0>}> : (!llvm.struct<(f32, f32)>, f32) -> !llvm.struct<(f32, f32)>
-    %802 = "llvm.insertvalue"(%801, %799) <{position = array<i64: 1>}> : (!llvm.struct<(f32, f32)>, f32) -> !llvm.struct<(f32, f32)>
-    %803 = "llvm.mlir.constant"() <{value = 1 : i64}> : () -> i64
-    %804 = "llvm.alloca"(%803) <{elem_type = !llvm.struct<(f32, f32)>}> : (i64) -> !llvm.ptr
-    "llvm.store"(%802, %804) <{ordering = 0 : i64}> : (!llvm.struct<(f32, f32)>, !llvm.ptr) -> ()
-    %805 = "llvm.load"(%759) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, f32, i1, f32)>
-    %806 = "llvm.extractvalue"(%805) <{position = array<i64: 0>}> : (!llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, f32, i1, f32)>) -> !llvm.struct<(f32, f32)>
-    %807 = "llvm.load"(%770) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.struct<(f32, f32)>
-    %808 = "llvm.mlir.constant"() <{value = 1.400000e+01 : f64}> : () -> f64
-    %809 = "llvm.fptrunc"(%808) : (f64) -> f32
-    %810 = "func.call"(%807, %809) <{callee = @vmul}> : (!llvm.struct<(f32, f32)>, f32) -> !llvm.struct<(f32, f32)>
-    %811 = "func.call"(%806, %810) <{callee = @vadd}> : (!llvm.struct<(f32, f32)>, !llvm.struct<(f32, f32)>) -> !llvm.struct<(f32, f32)>
-    %812 = "llvm.mlir.constant"() <{value = 1 : i64}> : () -> i64
-    %813 = "llvm.alloca"(%812) <{elem_type = !llvm.struct<(f32, f32)>}> : (i64) -> !llvm.ptr
-    "llvm.store"(%811, %813) <{ordering = 0 : i64}> : (!llvm.struct<(f32, f32)>, !llvm.ptr) -> ()
-    %814 = "llvm.load"(%759) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, f32, i1, f32)>
-    %815 = "llvm.extractvalue"(%814) <{position = array<i64: 0>}> : (!llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, f32, i1, f32)>) -> !llvm.struct<(f32, f32)>
-    %816 = "llvm.load"(%787) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.struct<(f32, f32)>
-    %817 = "llvm.mlir.constant"() <{value = 1.000000e+01 : f64}> : () -> f64
-    %818 = "llvm.fptrunc"(%817) : (f64) -> f32
-    %819 = "func.call"(%816, %818) <{callee = @vmul}> : (!llvm.struct<(f32, f32)>, f32) -> !llvm.struct<(f32, f32)>
-    %820 = "func.call"(%815, %819) <{callee = @vadd}> : (!llvm.struct<(f32, f32)>, !llvm.struct<(f32, f32)>) -> !llvm.struct<(f32, f32)>
-    %821 = "llvm.mlir.constant"() <{value = 1 : i64}> : () -> i64
-    %822 = "llvm.alloca"(%821) <{elem_type = !llvm.struct<(f32, f32)>}> : (i64) -> !llvm.ptr
-    "llvm.store"(%820, %822) <{ordering = 0 : i64}> : (!llvm.struct<(f32, f32)>, !llvm.ptr) -> ()
-    %823 = "llvm.load"(%759) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, f32, i1, f32)>
-    %824 = "llvm.extractvalue"(%823) <{position = array<i64: 0>}> : (!llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, f32, i1, f32)>) -> !llvm.struct<(f32, f32)>
-    %825 = "llvm.load"(%804) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.struct<(f32, f32)>
-    %826 = "llvm.mlir.constant"() <{value = 1.000000e+01 : f64}> : () -> f64
-    %827 = "llvm.fptrunc"(%826) : (f64) -> f32
-    %828 = "func.call"(%825, %827) <{callee = @vmul}> : (!llvm.struct<(f32, f32)>, f32) -> !llvm.struct<(f32, f32)>
-    %829 = "func.call"(%824, %828) <{callee = @vadd}> : (!llvm.struct<(f32, f32)>, !llvm.struct<(f32, f32)>) -> !llvm.struct<(f32, f32)>
-    %830 = "llvm.mlir.constant"() <{value = 1 : i64}> : () -> i64
-    %831 = "llvm.alloca"(%830) <{elem_type = !llvm.struct<(f32, f32)>}> : (i64) -> !llvm.ptr
-    "llvm.store"(%829, %831) <{ordering = 0 : i64}> : (!llvm.struct<(f32, f32)>, !llvm.ptr) -> ()
-    %832 = "llvm.load"(%759) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, f32, i1, f32)>
-    %833 = "llvm.extractvalue"(%832) <{position = array<i64: 5>}> : (!llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, f32, i1, f32)>) -> f32
-    %834 = "llvm.fpext"(%833) : (f32) -> f64
-    %835 = "llvm.mlir.constant"() <{value = 0.000000e+00 : f64}> : () -> f64
-    %836 = "arith.cmpf"(%834, %835) <{fastmath = #arith.fastmath<none>, predicate = 2 : i64}> : (f64, f64) -> i1
-    %837 = "llvm.bitcast"(%836) : (i1) -> i1
-    "cf.cond_br"(%837)[^bb1, ^bb2] <{operandSegmentSizes = array<i32: 1, 0, 0>}> : (i1) -> ()
+    %771 = "llvm.load"(%725) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, f32, i1, f32)>
+    %772 = "llvm.extractvalue"(%771) <{position = array<i64: 0>}> : (!llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, f32, i1, f32)>) -> !llvm.struct<(f32, f32)>
+    %773 = "llvm.load"(%736) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.struct<(f32, f32)>
+    %774 = "llvm.mlir.constant"() <{value = 1.400000e+01 : f64}> : () -> f64
+    %775 = "llvm.fptrunc"(%774) : (f64) -> f32
+    %776 = "func.call"(%773, %775) <{callee = @vmul}> : (!llvm.struct<(f32, f32)>, f32) -> !llvm.struct<(f32, f32)>
+    %777 = "func.call"(%772, %776) <{callee = @vadd}> : (!llvm.struct<(f32, f32)>, !llvm.struct<(f32, f32)>) -> !llvm.struct<(f32, f32)>
+    %778 = "llvm.mlir.constant"() <{value = 1 : i64}> : () -> i64
+    %779 = "llvm.alloca"(%778) <{elem_type = !llvm.struct<(f32, f32)>}> : (i64) -> !llvm.ptr
+    "llvm.store"(%777, %779) <{ordering = 0 : i64}> : (!llvm.struct<(f32, f32)>, !llvm.ptr) -> ()
+    %780 = "llvm.load"(%725) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, f32, i1, f32)>
+    %781 = "llvm.extractvalue"(%780) <{position = array<i64: 0>}> : (!llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, f32, i1, f32)>) -> !llvm.struct<(f32, f32)>
+    %782 = "llvm.load"(%753) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.struct<(f32, f32)>
+    %783 = "llvm.mlir.constant"() <{value = 1.000000e+01 : f64}> : () -> f64
+    %784 = "llvm.fptrunc"(%783) : (f64) -> f32
+    %785 = "func.call"(%782, %784) <{callee = @vmul}> : (!llvm.struct<(f32, f32)>, f32) -> !llvm.struct<(f32, f32)>
+    %786 = "func.call"(%781, %785) <{callee = @vadd}> : (!llvm.struct<(f32, f32)>, !llvm.struct<(f32, f32)>) -> !llvm.struct<(f32, f32)>
+    %787 = "llvm.mlir.constant"() <{value = 1 : i64}> : () -> i64
+    %788 = "llvm.alloca"(%787) <{elem_type = !llvm.struct<(f32, f32)>}> : (i64) -> !llvm.ptr
+    "llvm.store"(%786, %788) <{ordering = 0 : i64}> : (!llvm.struct<(f32, f32)>, !llvm.ptr) -> ()
+    %789 = "llvm.load"(%725) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, f32, i1, f32)>
+    %790 = "llvm.extractvalue"(%789) <{position = array<i64: 0>}> : (!llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, f32, i1, f32)>) -> !llvm.struct<(f32, f32)>
+    %791 = "llvm.load"(%770) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.struct<(f32, f32)>
+    %792 = "llvm.mlir.constant"() <{value = 1.000000e+01 : f64}> : () -> f64
+    %793 = "llvm.fptrunc"(%792) : (f64) -> f32
+    %794 = "func.call"(%791, %793) <{callee = @vmul}> : (!llvm.struct<(f32, f32)>, f32) -> !llvm.struct<(f32, f32)>
+    %795 = "func.call"(%790, %794) <{callee = @vadd}> : (!llvm.struct<(f32, f32)>, !llvm.struct<(f32, f32)>) -> !llvm.struct<(f32, f32)>
+    %796 = "llvm.mlir.constant"() <{value = 1 : i64}> : () -> i64
+    %797 = "llvm.alloca"(%796) <{elem_type = !llvm.struct<(f32, f32)>}> : (i64) -> !llvm.ptr
+    "llvm.store"(%795, %797) <{ordering = 0 : i64}> : (!llvm.struct<(f32, f32)>, !llvm.ptr) -> ()
+    %798 = "llvm.load"(%725) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, f32, i1, f32)>
+    %799 = "llvm.extractvalue"(%798) <{position = array<i64: 5>}> : (!llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, f32, i1, f32)>) -> f32
+    %800 = "llvm.fpext"(%799) : (f32) -> f64
+    %801 = "llvm.mlir.constant"() <{value = 0.000000e+00 : f64}> : () -> f64
+    %802 = "arith.cmpf"(%800, %801) <{fastmath = #arith.fastmath<none>, predicate = 2 : i64}> : (f64, f64) -> i1
+    "cf.cond_br"(%802)[^bb1, ^bb2] <{operandSegmentSizes = array<i32: 1, 0, 0>}> : (i1) -> ()
   ^bb1:  // pred: ^bb0
-    %838 = "llvm.mlir.undef"() : () -> !llvm.ptr
-    %839 = "llvm.mlir.constant"() <{value = -3 : i8}> : () -> i8
-    %840 = "llvm.mlir.constant"() <{value = -7 : i8}> : () -> i8
-    %841 = "llvm.mlir.constant"() <{value = 0 : i8}> : () -> i8
-    %842 = "llvm.mlir.constant"() <{value = -1 : i8}> : () -> i8
-    %843 = "llvm.mlir.zero"() : () -> !llvm.struct<(i8, i8, i8, i8)>
-    %844 = "llvm.insertvalue"(%843, %839) <{position = array<i64: 0>}> : (!llvm.struct<(i8, i8, i8, i8)>, i8) -> !llvm.struct<(i8, i8, i8, i8)>
-    %845 = "llvm.insertvalue"(%844, %840) <{position = array<i64: 1>}> : (!llvm.struct<(i8, i8, i8, i8)>, i8) -> !llvm.struct<(i8, i8, i8, i8)>
-    %846 = "llvm.insertvalue"(%845, %841) <{position = array<i64: 2>}> : (!llvm.struct<(i8, i8, i8, i8)>, i8) -> !llvm.struct<(i8, i8, i8, i8)>
-    %847 = "llvm.insertvalue"(%846, %842) <{position = array<i64: 3>}> : (!llvm.struct<(i8, i8, i8, i8)>, i8) -> !llvm.struct<(i8, i8, i8, i8)>
-    "cf.br"(%847)[^bb3] : (!llvm.struct<(i8, i8, i8, i8)>) -> ()
+    %803 = "llvm.mlir.undef"() : () -> !llvm.ptr
+    %804 = "llvm.mlir.constant"() <{value = -3 : i8}> : () -> i8
+    %805 = "llvm.mlir.constant"() <{value = -7 : i8}> : () -> i8
+    %806 = "llvm.mlir.constant"() <{value = 0 : i8}> : () -> i8
+    %807 = "llvm.mlir.constant"() <{value = -1 : i8}> : () -> i8
+    %808 = "llvm.mlir.zero"() : () -> !llvm.struct<(i8, i8, i8, i8)>
+    %809 = "llvm.insertvalue"(%808, %804) <{position = array<i64: 0>}> : (!llvm.struct<(i8, i8, i8, i8)>, i8) -> !llvm.struct<(i8, i8, i8, i8)>
+    %810 = "llvm.insertvalue"(%809, %805) <{position = array<i64: 1>}> : (!llvm.struct<(i8, i8, i8, i8)>, i8) -> !llvm.struct<(i8, i8, i8, i8)>
+    %811 = "llvm.insertvalue"(%810, %806) <{position = array<i64: 2>}> : (!llvm.struct<(i8, i8, i8, i8)>, i8) -> !llvm.struct<(i8, i8, i8, i8)>
+    %812 = "llvm.insertvalue"(%811, %807) <{position = array<i64: 3>}> : (!llvm.struct<(i8, i8, i8, i8)>, i8) -> !llvm.struct<(i8, i8, i8, i8)>
+    "cf.br"(%812)[^bb3] : (!llvm.struct<(i8, i8, i8, i8)>) -> ()
   ^bb2:  // pred: ^bb0
-    %848 = "llvm.mlir.undef"() : () -> !llvm.ptr
-    %849 = "llvm.mlir.constant"() <{value = -1 : i8}> : () -> i8
-    %850 = "llvm.mlir.constant"() <{value = -1 : i8}> : () -> i8
-    %851 = "llvm.mlir.constant"() <{value = -1 : i8}> : () -> i8
-    %852 = "llvm.mlir.constant"() <{value = -1 : i8}> : () -> i8
-    %853 = "llvm.mlir.zero"() : () -> !llvm.struct<(i8, i8, i8, i8)>
-    %854 = "llvm.insertvalue"(%853, %849) <{position = array<i64: 0>}> : (!llvm.struct<(i8, i8, i8, i8)>, i8) -> !llvm.struct<(i8, i8, i8, i8)>
-    %855 = "llvm.insertvalue"(%854, %850) <{position = array<i64: 1>}> : (!llvm.struct<(i8, i8, i8, i8)>, i8) -> !llvm.struct<(i8, i8, i8, i8)>
-    %856 = "llvm.insertvalue"(%855, %851) <{position = array<i64: 2>}> : (!llvm.struct<(i8, i8, i8, i8)>, i8) -> !llvm.struct<(i8, i8, i8, i8)>
-    %857 = "llvm.insertvalue"(%856, %852) <{position = array<i64: 3>}> : (!llvm.struct<(i8, i8, i8, i8)>, i8) -> !llvm.struct<(i8, i8, i8, i8)>
-    "cf.br"(%857)[^bb3] : (!llvm.struct<(i8, i8, i8, i8)>) -> ()
-  ^bb3(%858: !llvm.struct<(i8, i8, i8, i8)>):  // 2 preds: ^bb1, ^bb2
-    %859 = "llvm.mlir.constant"() <{value = 1 : i64}> : () -> i64
-    %860 = "llvm.alloca"(%859) <{elem_type = !llvm.struct<(i8, i8, i8, i8)>}> : (i64) -> !llvm.ptr
-    "llvm.store"(%858, %860) <{ordering = 0 : i64}> : (!llvm.struct<(i8, i8, i8, i8)>, !llvm.ptr) -> ()
-    %861 = "llvm.load"(%813) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.struct<(f32, f32)>
-    %862 = "llvm.extractvalue"(%861) <{position = array<i64: 0>}> : (!llvm.struct<(f32, f32)>) -> f32
-    %863 = "llvm.load"(%813) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.struct<(f32, f32)>
-    %864 = "llvm.extractvalue"(%863) <{position = array<i64: 1>}> : (!llvm.struct<(f32, f32)>) -> f32
-    %865 = "llvm.mlir.zero"() : () -> !llvm.struct<(f32, f32)>
-    %866 = "llvm.insertvalue"(%865, %862) <{position = array<i64: 0>}> : (!llvm.struct<(f32, f32)>, f32) -> !llvm.struct<(f32, f32)>
-    %867 = "llvm.insertvalue"(%866, %864) <{position = array<i64: 1>}> : (!llvm.struct<(f32, f32)>, f32) -> !llvm.struct<(f32, f32)>
-    %868 = "llvm.load"(%822) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.struct<(f32, f32)>
-    %869 = "llvm.extractvalue"(%868) <{position = array<i64: 0>}> : (!llvm.struct<(f32, f32)>) -> f32
-    %870 = "llvm.load"(%822) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.struct<(f32, f32)>
-    %871 = "llvm.extractvalue"(%870) <{position = array<i64: 1>}> : (!llvm.struct<(f32, f32)>) -> f32
-    %872 = "llvm.mlir.zero"() : () -> !llvm.struct<(f32, f32)>
-    %873 = "llvm.insertvalue"(%872, %869) <{position = array<i64: 0>}> : (!llvm.struct<(f32, f32)>, f32) -> !llvm.struct<(f32, f32)>
-    %874 = "llvm.insertvalue"(%873, %871) <{position = array<i64: 1>}> : (!llvm.struct<(f32, f32)>, f32) -> !llvm.struct<(f32, f32)>
-    %875 = "llvm.load"(%831) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.struct<(f32, f32)>
-    %876 = "llvm.extractvalue"(%875) <{position = array<i64: 0>}> : (!llvm.struct<(f32, f32)>) -> f32
-    %877 = "llvm.load"(%831) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.struct<(f32, f32)>
-    %878 = "llvm.extractvalue"(%877) <{position = array<i64: 1>}> : (!llvm.struct<(f32, f32)>) -> f32
-    %879 = "llvm.mlir.zero"() : () -> !llvm.struct<(f32, f32)>
-    %880 = "llvm.insertvalue"(%879, %876) <{position = array<i64: 0>}> : (!llvm.struct<(f32, f32)>, f32) -> !llvm.struct<(f32, f32)>
-    %881 = "llvm.insertvalue"(%880, %878) <{position = array<i64: 1>}> : (!llvm.struct<(f32, f32)>, f32) -> !llvm.struct<(f32, f32)>
-    %882 = "llvm.load"(%860) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.struct<(i8, i8, i8, i8)>
-    %883 = "llvm.mlir.constant"() <{value = 1 : i64}> : () -> i64
-    %884 = "llvm.alloca"(%883) <{elem_type = !llvm.struct<(f32, f32)>}> : (i64) -> !llvm.ptr
-    "llvm.store"(%867, %884) <{ordering = 0 : i64}> : (!llvm.struct<(f32, f32)>, !llvm.ptr) -> ()
-    %885 = "llvm.load"(%884) <{ordering = 0 : i64}> : (!llvm.ptr) -> vector<2xf32>
-    %886 = "llvm.mlir.constant"() <{value = 1 : i64}> : () -> i64
-    %887 = "llvm.alloca"(%886) <{elem_type = !llvm.struct<(f32, f32)>}> : (i64) -> !llvm.ptr
-    "llvm.store"(%874, %887) <{ordering = 0 : i64}> : (!llvm.struct<(f32, f32)>, !llvm.ptr) -> ()
-    %888 = "llvm.load"(%887) <{ordering = 0 : i64}> : (!llvm.ptr) -> vector<2xf32>
-    %889 = "llvm.mlir.constant"() <{value = 1 : i64}> : () -> i64
-    %890 = "llvm.alloca"(%889) <{elem_type = !llvm.struct<(f32, f32)>}> : (i64) -> !llvm.ptr
-    "llvm.store"(%881, %890) <{ordering = 0 : i64}> : (!llvm.struct<(f32, f32)>, !llvm.ptr) -> ()
-    %891 = "llvm.load"(%890) <{ordering = 0 : i64}> : (!llvm.ptr) -> vector<2xf32>
-    %892 = "llvm.mlir.constant"() <{value = 1 : i64}> : () -> i64
-    %893 = "llvm.alloca"(%892) <{elem_type = !llvm.struct<(i8, i8, i8, i8)>}> : (i64) -> !llvm.ptr
-    "llvm.store"(%882, %893) <{ordering = 0 : i64}> : (!llvm.struct<(i8, i8, i8, i8)>, !llvm.ptr) -> ()
-    %894 = "llvm.load"(%893) <{ordering = 0 : i64}> : (!llvm.ptr) -> i32
-    "llvm.call"(%885, %888, %891, %894) <{CConv = #llvm.cconv<ccc>, TailCallKind = #llvm.tailcallkind<none>, callee = @m$vendor_raylib_DrawTriangleLines, fastmathFlags = #llvm.fastmath<none>, op_bundle_sizes = array<i32>, operandSegmentSizes = array<i32: 4, 0>}> : (vector<2xf32>, vector<2xf32>, vector<2xf32>, i32) -> ()
+    %813 = "llvm.mlir.undef"() : () -> !llvm.ptr
+    %814 = "llvm.mlir.constant"() <{value = -1 : i8}> : () -> i8
+    %815 = "llvm.mlir.constant"() <{value = -1 : i8}> : () -> i8
+    %816 = "llvm.mlir.constant"() <{value = -1 : i8}> : () -> i8
+    %817 = "llvm.mlir.constant"() <{value = -1 : i8}> : () -> i8
+    %818 = "llvm.mlir.zero"() : () -> !llvm.struct<(i8, i8, i8, i8)>
+    %819 = "llvm.insertvalue"(%818, %814) <{position = array<i64: 0>}> : (!llvm.struct<(i8, i8, i8, i8)>, i8) -> !llvm.struct<(i8, i8, i8, i8)>
+    %820 = "llvm.insertvalue"(%819, %815) <{position = array<i64: 1>}> : (!llvm.struct<(i8, i8, i8, i8)>, i8) -> !llvm.struct<(i8, i8, i8, i8)>
+    %821 = "llvm.insertvalue"(%820, %816) <{position = array<i64: 2>}> : (!llvm.struct<(i8, i8, i8, i8)>, i8) -> !llvm.struct<(i8, i8, i8, i8)>
+    %822 = "llvm.insertvalue"(%821, %817) <{position = array<i64: 3>}> : (!llvm.struct<(i8, i8, i8, i8)>, i8) -> !llvm.struct<(i8, i8, i8, i8)>
+    "cf.br"(%822)[^bb3] : (!llvm.struct<(i8, i8, i8, i8)>) -> ()
+  ^bb3(%823: !llvm.struct<(i8, i8, i8, i8)>):  // 2 preds: ^bb1, ^bb2
+    %824 = "llvm.mlir.constant"() <{value = 1 : i64}> : () -> i64
+    %825 = "llvm.alloca"(%824) <{elem_type = !llvm.struct<(i8, i8, i8, i8)>}> : (i64) -> !llvm.ptr
+    "llvm.store"(%823, %825) <{ordering = 0 : i64}> : (!llvm.struct<(i8, i8, i8, i8)>, !llvm.ptr) -> ()
+    %826 = "llvm.load"(%779) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.struct<(f32, f32)>
+    %827 = "llvm.extractvalue"(%826) <{position = array<i64: 0>}> : (!llvm.struct<(f32, f32)>) -> f32
+    %828 = "llvm.load"(%779) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.struct<(f32, f32)>
+    %829 = "llvm.extractvalue"(%828) <{position = array<i64: 1>}> : (!llvm.struct<(f32, f32)>) -> f32
+    %830 = "llvm.mlir.zero"() : () -> !llvm.struct<(f32, f32)>
+    %831 = "llvm.insertvalue"(%830, %827) <{position = array<i64: 0>}> : (!llvm.struct<(f32, f32)>, f32) -> !llvm.struct<(f32, f32)>
+    %832 = "llvm.insertvalue"(%831, %829) <{position = array<i64: 1>}> : (!llvm.struct<(f32, f32)>, f32) -> !llvm.struct<(f32, f32)>
+    %833 = "llvm.load"(%788) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.struct<(f32, f32)>
+    %834 = "llvm.extractvalue"(%833) <{position = array<i64: 0>}> : (!llvm.struct<(f32, f32)>) -> f32
+    %835 = "llvm.load"(%788) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.struct<(f32, f32)>
+    %836 = "llvm.extractvalue"(%835) <{position = array<i64: 1>}> : (!llvm.struct<(f32, f32)>) -> f32
+    %837 = "llvm.mlir.zero"() : () -> !llvm.struct<(f32, f32)>
+    %838 = "llvm.insertvalue"(%837, %834) <{position = array<i64: 0>}> : (!llvm.struct<(f32, f32)>, f32) -> !llvm.struct<(f32, f32)>
+    %839 = "llvm.insertvalue"(%838, %836) <{position = array<i64: 1>}> : (!llvm.struct<(f32, f32)>, f32) -> !llvm.struct<(f32, f32)>
+    %840 = "llvm.load"(%797) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.struct<(f32, f32)>
+    %841 = "llvm.extractvalue"(%840) <{position = array<i64: 0>}> : (!llvm.struct<(f32, f32)>) -> f32
+    %842 = "llvm.load"(%797) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.struct<(f32, f32)>
+    %843 = "llvm.extractvalue"(%842) <{position = array<i64: 1>}> : (!llvm.struct<(f32, f32)>) -> f32
+    %844 = "llvm.mlir.zero"() : () -> !llvm.struct<(f32, f32)>
+    %845 = "llvm.insertvalue"(%844, %841) <{position = array<i64: 0>}> : (!llvm.struct<(f32, f32)>, f32) -> !llvm.struct<(f32, f32)>
+    %846 = "llvm.insertvalue"(%845, %843) <{position = array<i64: 1>}> : (!llvm.struct<(f32, f32)>, f32) -> !llvm.struct<(f32, f32)>
+    %847 = "llvm.load"(%825) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.struct<(i8, i8, i8, i8)>
+    %848 = "llvm.mlir.constant"() <{value = 1 : i64}> : () -> i64
+    %849 = "llvm.alloca"(%848) <{elem_type = !llvm.struct<(f32, f32)>}> : (i64) -> !llvm.ptr
+    "llvm.store"(%832, %849) <{ordering = 0 : i64}> : (!llvm.struct<(f32, f32)>, !llvm.ptr) -> ()
+    %850 = "llvm.load"(%849) <{ordering = 0 : i64}> : (!llvm.ptr) -> vector<2xf32>
+    %851 = "llvm.mlir.constant"() <{value = 1 : i64}> : () -> i64
+    %852 = "llvm.alloca"(%851) <{elem_type = !llvm.struct<(f32, f32)>}> : (i64) -> !llvm.ptr
+    "llvm.store"(%839, %852) <{ordering = 0 : i64}> : (!llvm.struct<(f32, f32)>, !llvm.ptr) -> ()
+    %853 = "llvm.load"(%852) <{ordering = 0 : i64}> : (!llvm.ptr) -> vector<2xf32>
+    %854 = "llvm.mlir.constant"() <{value = 1 : i64}> : () -> i64
+    %855 = "llvm.alloca"(%854) <{elem_type = !llvm.struct<(f32, f32)>}> : (i64) -> !llvm.ptr
+    "llvm.store"(%846, %855) <{ordering = 0 : i64}> : (!llvm.struct<(f32, f32)>, !llvm.ptr) -> ()
+    %856 = "llvm.load"(%855) <{ordering = 0 : i64}> : (!llvm.ptr) -> vector<2xf32>
+    %857 = "llvm.mlir.constant"() <{value = 1 : i64}> : () -> i64
+    %858 = "llvm.alloca"(%857) <{elem_type = !llvm.struct<(i8, i8, i8, i8)>}> : (i64) -> !llvm.ptr
+    "llvm.store"(%847, %858) <{ordering = 0 : i64}> : (!llvm.struct<(i8, i8, i8, i8)>, !llvm.ptr) -> ()
+    %859 = "llvm.load"(%858) <{ordering = 0 : i64}> : (!llvm.ptr) -> i32
+    "llvm.call"(%850, %853, %856, %859) <{CConv = #llvm.cconv<ccc>, TailCallKind = #llvm.tailcallkind<none>, callee = @m$vendor_raylib_DrawTriangleLines, fastmathFlags = #llvm.fastmath<none>, op_bundle_sizes = array<i32>, operandSegmentSizes = array<i32: 4, 0>}> : (vector<2xf32>, vector<2xf32>, vector<2xf32>, i32) -> ()
     "func.return"() : () -> ()
   }) : () -> ()
   "func.func"() <{function_type = (!llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i32, i1)>) -> (), sym_name = "draw_rock", sym_visibility = "public"}> ({
   ^bb0(%arg0: !llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i32, i1)>):
-    %723 = "llvm.mlir.constant"() <{value = -56 : i8}> : () -> i8
-    %724 = "llvm.mlir.constant"() <{value = -56 : i8}> : () -> i8
-    %725 = "llvm.mlir.constant"() <{value = -56 : i8}> : () -> i8
-    %726 = "llvm.mlir.constant"() <{value = -1 : i8}> : () -> i8
-    %727 = "llvm.mlir.zero"() : () -> !llvm.struct<(i8, i8, i8, i8)>
-    %728 = "llvm.insertvalue"(%727, %723) <{position = array<i64: 0>}> : (!llvm.struct<(i8, i8, i8, i8)>, i8) -> !llvm.struct<(i8, i8, i8, i8)>
-    %729 = "llvm.insertvalue"(%728, %724) <{position = array<i64: 1>}> : (!llvm.struct<(i8, i8, i8, i8)>, i8) -> !llvm.struct<(i8, i8, i8, i8)>
-    %730 = "llvm.insertvalue"(%729, %725) <{position = array<i64: 2>}> : (!llvm.struct<(i8, i8, i8, i8)>, i8) -> !llvm.struct<(i8, i8, i8, i8)>
-    %731 = "llvm.insertvalue"(%730, %726) <{position = array<i64: 3>}> : (!llvm.struct<(i8, i8, i8, i8)>, i8) -> !llvm.struct<(i8, i8, i8, i8)>
-    %732 = "llvm.mlir.constant"() <{value = 1 : i64}> : () -> i64
-    %733 = "llvm.alloca"(%732) <{elem_type = !llvm.struct<(i8, i8, i8, i8)>}> : (i64) -> !llvm.ptr
-    "llvm.store"(%731, %733) <{ordering = 0 : i64}> : (!llvm.struct<(i8, i8, i8, i8)>, !llvm.ptr) -> ()
-    %734 = "llvm.extractvalue"(%arg0) <{position = array<i64: 3>}> : (!llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i32, i1)>) -> i32
-    %735 = "llvm.mlir.constant"() <{value = 2 : i32}> : () -> i32
-    %736 = "arith.cmpi"(%734, %735) <{predicate = 0 : i64}> : (i32, i32) -> i1
-    %737 = "llvm.bitcast"(%736) : (i1) -> i1
-    "cf.cond_br"(%737)[^bb1, ^bb2] <{operandSegmentSizes = array<i32: 1, 0, 0>}> : (i1) -> ()
+    %690 = "llvm.mlir.constant"() <{value = -56 : i8}> : () -> i8
+    %691 = "llvm.mlir.constant"() <{value = -56 : i8}> : () -> i8
+    %692 = "llvm.mlir.constant"() <{value = -56 : i8}> : () -> i8
+    %693 = "llvm.mlir.constant"() <{value = -1 : i8}> : () -> i8
+    %694 = "llvm.mlir.zero"() : () -> !llvm.struct<(i8, i8, i8, i8)>
+    %695 = "llvm.insertvalue"(%694, %690) <{position = array<i64: 0>}> : (!llvm.struct<(i8, i8, i8, i8)>, i8) -> !llvm.struct<(i8, i8, i8, i8)>
+    %696 = "llvm.insertvalue"(%695, %691) <{position = array<i64: 1>}> : (!llvm.struct<(i8, i8, i8, i8)>, i8) -> !llvm.struct<(i8, i8, i8, i8)>
+    %697 = "llvm.insertvalue"(%696, %692) <{position = array<i64: 2>}> : (!llvm.struct<(i8, i8, i8, i8)>, i8) -> !llvm.struct<(i8, i8, i8, i8)>
+    %698 = "llvm.insertvalue"(%697, %693) <{position = array<i64: 3>}> : (!llvm.struct<(i8, i8, i8, i8)>, i8) -> !llvm.struct<(i8, i8, i8, i8)>
+    %699 = "llvm.mlir.constant"() <{value = 1 : i64}> : () -> i64
+    %700 = "llvm.alloca"(%699) <{elem_type = !llvm.struct<(i8, i8, i8, i8)>}> : (i64) -> !llvm.ptr
+    "llvm.store"(%698, %700) <{ordering = 0 : i64}> : (!llvm.struct<(i8, i8, i8, i8)>, !llvm.ptr) -> ()
+    %701 = "llvm.extractvalue"(%arg0) <{position = array<i64: 3>}> : (!llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i32, i1)>) -> i32
+    %702 = "llvm.mlir.constant"() <{value = 2 : i32}> : () -> i32
+    %703 = "arith.cmpi"(%701, %702) <{predicate = 0 : i64}> : (i32, i32) -> i1
+    "cf.cond_br"(%703)[^bb1, ^bb2] <{operandSegmentSizes = array<i32: 1, 0, 0>}> : (i1) -> ()
   ^bb1:  // pred: ^bb0
-    %738 = "llvm.mlir.constant"() <{value = -126 : i8}> : () -> i8
-    %739 = "llvm.mlir.constant"() <{value = -126 : i8}> : () -> i8
-    %740 = "llvm.mlir.constant"() <{value = -126 : i8}> : () -> i8
-    %741 = "llvm.mlir.constant"() <{value = -1 : i8}> : () -> i8
-    %742 = "llvm.mlir.zero"() : () -> !llvm.struct<(i8, i8, i8, i8)>
-    %743 = "llvm.insertvalue"(%742, %738) <{position = array<i64: 0>}> : (!llvm.struct<(i8, i8, i8, i8)>, i8) -> !llvm.struct<(i8, i8, i8, i8)>
-    %744 = "llvm.insertvalue"(%743, %739) <{position = array<i64: 1>}> : (!llvm.struct<(i8, i8, i8, i8)>, i8) -> !llvm.struct<(i8, i8, i8, i8)>
-    %745 = "llvm.insertvalue"(%744, %740) <{position = array<i64: 2>}> : (!llvm.struct<(i8, i8, i8, i8)>, i8) -> !llvm.struct<(i8, i8, i8, i8)>
-    %746 = "llvm.insertvalue"(%745, %741) <{position = array<i64: 3>}> : (!llvm.struct<(i8, i8, i8, i8)>, i8) -> !llvm.struct<(i8, i8, i8, i8)>
-    "llvm.store"(%746, %733) <{ordering = 0 : i64}> : (!llvm.struct<(i8, i8, i8, i8)>, !llvm.ptr) -> ()
+    %704 = "llvm.mlir.constant"() <{value = -126 : i8}> : () -> i8
+    %705 = "llvm.mlir.constant"() <{value = -126 : i8}> : () -> i8
+    %706 = "llvm.mlir.constant"() <{value = -126 : i8}> : () -> i8
+    %707 = "llvm.mlir.constant"() <{value = -1 : i8}> : () -> i8
+    %708 = "llvm.mlir.zero"() : () -> !llvm.struct<(i8, i8, i8, i8)>
+    %709 = "llvm.insertvalue"(%708, %704) <{position = array<i64: 0>}> : (!llvm.struct<(i8, i8, i8, i8)>, i8) -> !llvm.struct<(i8, i8, i8, i8)>
+    %710 = "llvm.insertvalue"(%709, %705) <{position = array<i64: 1>}> : (!llvm.struct<(i8, i8, i8, i8)>, i8) -> !llvm.struct<(i8, i8, i8, i8)>
+    %711 = "llvm.insertvalue"(%710, %706) <{position = array<i64: 2>}> : (!llvm.struct<(i8, i8, i8, i8)>, i8) -> !llvm.struct<(i8, i8, i8, i8)>
+    %712 = "llvm.insertvalue"(%711, %707) <{position = array<i64: 3>}> : (!llvm.struct<(i8, i8, i8, i8)>, i8) -> !llvm.struct<(i8, i8, i8, i8)>
+    "llvm.store"(%712, %700) <{ordering = 0 : i64}> : (!llvm.struct<(i8, i8, i8, i8)>, !llvm.ptr) -> ()
     "cf.br"()[^bb3] : () -> ()
   ^bb2:  // pred: ^bb0
     "cf.br"()[^bb3] : () -> ()
   ^bb3:  // 2 preds: ^bb1, ^bb2
-    %747 = "llvm.mlir.undef"() : () -> !llvm.ptr
-    %748 = "llvm.extractvalue"(%arg0) <{position = array<i64: 0>}> : (!llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i32, i1)>) -> !llvm.struct<(f32, f32)>
-    %749 = "llvm.extractvalue"(%748) <{position = array<i64: 0>}> : (!llvm.struct<(f32, f32)>) -> f32
-    %750 = "llvm.fptosi"(%749) : (f32) -> i32
-    %751 = "llvm.extractvalue"(%arg0) <{position = array<i64: 0>}> : (!llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i32, i1)>) -> !llvm.struct<(f32, f32)>
-    %752 = "llvm.extractvalue"(%751) <{position = array<i64: 1>}> : (!llvm.struct<(f32, f32)>) -> f32
-    %753 = "llvm.fptosi"(%752) : (f32) -> i32
-    %754 = "llvm.extractvalue"(%arg0) <{position = array<i64: 2>}> : (!llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i32, i1)>) -> f32
-    %755 = "llvm.load"(%733) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.struct<(i8, i8, i8, i8)>
-    %756 = "llvm.mlir.constant"() <{value = 1 : i64}> : () -> i64
-    %757 = "llvm.alloca"(%756) <{elem_type = !llvm.struct<(i8, i8, i8, i8)>}> : (i64) -> !llvm.ptr
-    "llvm.store"(%755, %757) <{ordering = 0 : i64}> : (!llvm.struct<(i8, i8, i8, i8)>, !llvm.ptr) -> ()
-    %758 = "llvm.load"(%757) <{ordering = 0 : i64}> : (!llvm.ptr) -> i32
-    "llvm.call"(%750, %753, %754, %758) <{CConv = #llvm.cconv<ccc>, TailCallKind = #llvm.tailcallkind<none>, callee = @m$vendor_raylib_DrawCircleLines, fastmathFlags = #llvm.fastmath<none>, op_bundle_sizes = array<i32>, operandSegmentSizes = array<i32: 4, 0>}> : (i32, i32, f32, i32) -> ()
+    %713 = "llvm.mlir.undef"() : () -> !llvm.ptr
+    %714 = "llvm.extractvalue"(%arg0) <{position = array<i64: 0>}> : (!llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i32, i1)>) -> !llvm.struct<(f32, f32)>
+    %715 = "llvm.extractvalue"(%714) <{position = array<i64: 0>}> : (!llvm.struct<(f32, f32)>) -> f32
+    %716 = "llvm.fptosi"(%715) : (f32) -> i32
+    %717 = "llvm.extractvalue"(%arg0) <{position = array<i64: 0>}> : (!llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i32, i1)>) -> !llvm.struct<(f32, f32)>
+    %718 = "llvm.extractvalue"(%717) <{position = array<i64: 1>}> : (!llvm.struct<(f32, f32)>) -> f32
+    %719 = "llvm.fptosi"(%718) : (f32) -> i32
+    %720 = "llvm.extractvalue"(%arg0) <{position = array<i64: 2>}> : (!llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i32, i1)>) -> f32
+    %721 = "llvm.load"(%700) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.struct<(i8, i8, i8, i8)>
+    %722 = "llvm.mlir.constant"() <{value = 1 : i64}> : () -> i64
+    %723 = "llvm.alloca"(%722) <{elem_type = !llvm.struct<(i8, i8, i8, i8)>}> : (i64) -> !llvm.ptr
+    "llvm.store"(%721, %723) <{ordering = 0 : i64}> : (!llvm.struct<(i8, i8, i8, i8)>, !llvm.ptr) -> ()
+    %724 = "llvm.load"(%723) <{ordering = 0 : i64}> : (!llvm.ptr) -> i32
+    "llvm.call"(%716, %719, %720, %724) <{CConv = #llvm.cconv<ccc>, TailCallKind = #llvm.tailcallkind<none>, callee = @m$vendor_raylib_DrawCircleLines, fastmathFlags = #llvm.fastmath<none>, op_bundle_sizes = array<i32>, operandSegmentSizes = array<i32: 4, 0>}> : (i32, i32, f32, i32) -> ()
     "func.return"() : () -> ()
   }) : () -> ()
   "func.func"() <{function_type = () -> (), sym_name = "draw_hud", sym_visibility = "public"}> ({
-    %631 = "llvm.mlir.addressof"() <{global_name = @__str_b01ec5df1afd4766}> : () -> !llvm.ptr
-    %632 = "llvm.getelementptr"(%631) <{elem_type = !llvm.array<10 x i8>, noWrapFlags = 0 : i32, rawConstantIndices = array<i32: 0, 0>}> : (!llvm.ptr) -> !llvm.ptr
-    %633 = "llvm.mlir.constant"() <{value = 9 : i64}> : () -> i64
-    %634 = "llvm.mlir.undef"() : () -> !llvm.struct<(ptr, i64)>
-    %635 = "llvm.insertvalue"(%634, %632) <{position = array<i64: 0>}> : (!llvm.struct<(ptr, i64)>, !llvm.ptr) -> !llvm.struct<(ptr, i64)>
-    %636 = "llvm.insertvalue"(%635, %633) <{position = array<i64: 1>}> : (!llvm.struct<(ptr, i64)>, i64) -> !llvm.struct<(ptr, i64)>
-    %637 = "llvm.mlir.addressof"() <{global_name = @score}> : () -> !llvm.ptr
-    %638 = "llvm.load"(%637) <{ordering = 0 : i64}> : (!llvm.ptr) -> i32
-    %639 = "llvm.mlir.constant"() <{value = 1 : i64}> : () -> i64
-    %640 = "llvm.alloca"(%639) <{elem_type = !llvm.struct<(ptr, i64)>}> : (i64) -> !llvm.ptr
-    "llvm.store"(%636, %640) <{ordering = 0 : i64}> : (!llvm.struct<(ptr, i64)>, !llvm.ptr) -> ()
-    %641 = "llvm.load"(%640) <{ordering = 0 : i64}> : (!llvm.ptr) -> i64
-    %642 = "llvm.call"(%641, %638) <{CConv = #llvm.cconv<ccc>, TailCallKind = #llvm.tailcallkind<none>, callee = @m$vendor_raylib_TextFormat, fastmathFlags = #llvm.fastmath<none>, op_bundle_sizes = array<i32>, operandSegmentSizes = array<i32: 2, 0>}> : (i64, i32) -> !llvm.ptr
-    %643 = "llvm.mlir.undef"() : () -> !llvm.ptr
-    %644 = "llvm.mlir.constant"() <{value = 1 : i64}> : () -> i64
-    %645 = "llvm.alloca"(%644) <{elem_type = !llvm.ptr}> : (i64) -> !llvm.ptr
-    "llvm.store"(%643, %645) <{ordering = 0 : i64}> : (!llvm.ptr, !llvm.ptr) -> ()
-    "llvm.store"(%642, %645) <{ordering = 0 : i64}> : (!llvm.ptr, !llvm.ptr) -> ()
-    %646 = "llvm.load"(%645) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.ptr
-    %647 = "llvm.mlir.constant"() <{value = 1 : i64}> : () -> i64
-    %648 = "llvm.alloca"(%647) <{elem_type = !llvm.ptr}> : (i64) -> !llvm.ptr
-    "llvm.store"(%646, %648) <{ordering = 0 : i64}> : (!llvm.ptr, !llvm.ptr) -> ()
-    %649 = "llvm.load"(%648) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.ptr
-    %650 = "llvm.bitcast"(%649) : (!llvm.ptr) -> !llvm.struct<(ptr, i64)>
-    %651 = "llvm.mlir.constant"() <{value = 10 : i64}> : () -> i64
-    %652 = "llvm.mlir.constant"() <{value = 10 : i64}> : () -> i64
-    %653 = "llvm.mlir.constant"() <{value = 20 : i64}> : () -> i64
+    %597 = "llvm.mlir.addressof"() <{global_name = @__str_b01ec5df1afd4766}> : () -> !llvm.ptr
+    %598 = "llvm.getelementptr"(%597) <{elem_type = !llvm.array<10 x i8>, noWrapFlags = 0 : i32, rawConstantIndices = array<i32: 0, 0>}> : (!llvm.ptr) -> !llvm.ptr
+    %599 = "llvm.mlir.constant"() <{value = 9 : i64}> : () -> i64
+    %600 = "llvm.mlir.undef"() : () -> !llvm.struct<(ptr, i64)>
+    %601 = "llvm.insertvalue"(%600, %598) <{position = array<i64: 0>}> : (!llvm.struct<(ptr, i64)>, !llvm.ptr) -> !llvm.struct<(ptr, i64)>
+    %602 = "llvm.insertvalue"(%601, %599) <{position = array<i64: 1>}> : (!llvm.struct<(ptr, i64)>, i64) -> !llvm.struct<(ptr, i64)>
+    %603 = "llvm.mlir.addressof"() <{global_name = @score}> : () -> !llvm.ptr
+    %604 = "llvm.load"(%603) <{ordering = 0 : i64}> : (!llvm.ptr) -> i32
+    %605 = "llvm.mlir.constant"() <{value = 1 : i64}> : () -> i64
+    %606 = "llvm.alloca"(%605) <{elem_type = !llvm.struct<(ptr, i64)>}> : (i64) -> !llvm.ptr
+    "llvm.store"(%602, %606) <{ordering = 0 : i64}> : (!llvm.struct<(ptr, i64)>, !llvm.ptr) -> ()
+    %607 = "llvm.load"(%606) <{ordering = 0 : i64}> : (!llvm.ptr) -> i64
+    %608 = "llvm.call"(%607, %604) <{CConv = #llvm.cconv<ccc>, TailCallKind = #llvm.tailcallkind<none>, callee = @m$vendor_raylib_TextFormat, fastmathFlags = #llvm.fastmath<none>, op_bundle_sizes = array<i32>, operandSegmentSizes = array<i32: 2, 0>}> : (i64, i32) -> !llvm.ptr
+    %609 = "llvm.mlir.undef"() : () -> !llvm.ptr
+    %610 = "llvm.mlir.constant"() <{value = 1 : i64}> : () -> i64
+    %611 = "llvm.alloca"(%610) <{elem_type = !llvm.ptr}> : (i64) -> !llvm.ptr
+    "llvm.store"(%609, %611) <{ordering = 0 : i64}> : (!llvm.ptr, !llvm.ptr) -> ()
+    "llvm.store"(%608, %611) <{ordering = 0 : i64}> : (!llvm.ptr, !llvm.ptr) -> ()
+    %612 = "llvm.load"(%611) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.ptr
+    %613 = "llvm.mlir.constant"() <{value = 1 : i64}> : () -> i64
+    %614 = "llvm.alloca"(%613) <{elem_type = !llvm.ptr}> : (i64) -> !llvm.ptr
+    "llvm.store"(%612, %614) <{ordering = 0 : i64}> : (!llvm.ptr, !llvm.ptr) -> ()
+    %615 = "llvm.load"(%614) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.ptr
+    %616 = "llvm.mlir.constant"() <{value = 1 : i64}> : () -> i64
+    %617 = "llvm.alloca"(%616) <{elem_type = !llvm.ptr}> : (i64) -> !llvm.ptr
+    "llvm.store"(%615, %617) <{ordering = 0 : i64}> : (!llvm.ptr, !llvm.ptr) -> ()
+    %618 = "llvm.load"(%617) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.struct<(ptr, i64)>
+    %619 = "llvm.mlir.constant"() <{value = 10 : i64}> : () -> i64
+    %620 = "llvm.mlir.constant"() <{value = 10 : i64}> : () -> i64
+    %621 = "llvm.mlir.constant"() <{value = 20 : i64}> : () -> i64
+    %622 = "llvm.mlir.undef"() : () -> !llvm.ptr
+    %623 = "llvm.mlir.constant"() <{value = 1 : i64}> : () -> i64
+    %624 = "llvm.alloca"(%623) <{elem_type = !llvm.struct<(ptr, i64)>}> : (i64) -> !llvm.ptr
+    "llvm.store"(%618, %624) <{ordering = 0 : i64}> : (!llvm.struct<(ptr, i64)>, !llvm.ptr) -> ()
+    %625 = "llvm.load"(%624) <{ordering = 0 : i64}> : (!llvm.ptr) -> i64
+    %626 = "llvm.mlir.constant"() <{value = 1 : i64}> : () -> i64
+    %627 = "llvm.alloca"(%626) <{elem_type = !llvm.ptr}> : (i64) -> !llvm.ptr
+    "llvm.store"(%622, %627) <{ordering = 0 : i64}> : (!llvm.ptr, !llvm.ptr) -> ()
+    %628 = "llvm.load"(%627) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.ptr
+    "llvm.call"(%625, %619, %620, %621, %628) <{CConv = #llvm.cconv<ccc>, TailCallKind = #llvm.tailcallkind<none>, callee = @m$vendor_raylib_DrawText, fastmathFlags = #llvm.fastmath<none>, op_bundle_sizes = array<i32>, operandSegmentSizes = array<i32: 5, 0>}> : (i64, i64, i64, i64, !llvm.ptr) -> ()
+    %629 = "llvm.mlir.addressof"() <{global_name = @game_over}> : () -> !llvm.ptr
+    %630 = "llvm.load"(%629) <{ordering = 0 : i64}> : (!llvm.ptr) -> i1
+    "cf.cond_br"(%630)[^bb1, ^bb2] <{operandSegmentSizes = array<i32: 1, 0, 0>}> : (i1) -> ()
+    %631 = "llvm.mlir.addressof"() <{global_name = @SCREEN_W}> : () -> !llvm.ptr
+    %632 = "llvm.mlir.addressof"() <{global_name = @SCREEN_H}> : () -> !llvm.ptr
+  ^bb1:  // pred: ^bb0
+    %633 = "llvm.mlir.addressof"() <{global_name = @__str_f0e02cb040ccdaaf}> : () -> !llvm.ptr
+    %634 = "llvm.getelementptr"(%633) <{elem_type = !llvm.array<10 x i8>, noWrapFlags = 0 : i32, rawConstantIndices = array<i32: 0, 0>}> : (!llvm.ptr) -> !llvm.ptr
+    %635 = "llvm.mlir.constant"() <{value = 9 : i64}> : () -> i64
+    %636 = "llvm.mlir.undef"() : () -> !llvm.struct<(ptr, i64)>
+    %637 = "llvm.insertvalue"(%636, %634) <{position = array<i64: 0>}> : (!llvm.struct<(ptr, i64)>, !llvm.ptr) -> !llvm.struct<(ptr, i64)>
+    %638 = "llvm.insertvalue"(%637, %635) <{position = array<i64: 1>}> : (!llvm.struct<(ptr, i64)>, i64) -> !llvm.struct<(ptr, i64)>
+    %639 = "llvm.load"(%631) <{ordering = 0 : i64}> : (!llvm.ptr) -> f32
+    %640 = "llvm.fpext"(%639) : (f32) -> f64
+    %641 = "llvm.mlir.constant"() <{value = 2.000000e+00 : f64}> : () -> f64
+    %642 = "arith.divf"(%640, %641) <{fastmath = #arith.fastmath<none>}> : (f64, f64) -> f64
+    %643 = "llvm.mlir.constant"() <{value = 1.100000e+02 : f64}> : () -> f64
+    %644 = "arith.subf"(%642, %643) <{fastmath = #arith.fastmath<none>}> : (f64, f64) -> f64
+    %645 = "llvm.fptosi"(%644) : (f64) -> i64
+    %646 = "llvm.load"(%632) <{ordering = 0 : i64}> : (!llvm.ptr) -> f32
+    %647 = "llvm.fpext"(%646) : (f32) -> f64
+    %648 = "llvm.mlir.constant"() <{value = 2.000000e+00 : f64}> : () -> f64
+    %649 = "arith.divf"(%647, %648) <{fastmath = #arith.fastmath<none>}> : (f64, f64) -> f64
+    %650 = "llvm.mlir.constant"() <{value = 2.000000e+01 : f64}> : () -> f64
+    %651 = "arith.subf"(%649, %650) <{fastmath = #arith.fastmath<none>}> : (f64, f64) -> f64
+    %652 = "llvm.fptosi"(%651) : (f64) -> i64
+    %653 = "llvm.mlir.constant"() <{value = 40 : i64}> : () -> i64
     %654 = "llvm.mlir.undef"() : () -> !llvm.ptr
     %655 = "llvm.mlir.constant"() <{value = 1 : i64}> : () -> i64
     %656 = "llvm.alloca"(%655) <{elem_type = !llvm.struct<(ptr, i64)>}> : (i64) -> !llvm.ptr
-    "llvm.store"(%650, %656) <{ordering = 0 : i64}> : (!llvm.struct<(ptr, i64)>, !llvm.ptr) -> ()
+    "llvm.store"(%638, %656) <{ordering = 0 : i64}> : (!llvm.struct<(ptr, i64)>, !llvm.ptr) -> ()
     %657 = "llvm.load"(%656) <{ordering = 0 : i64}> : (!llvm.ptr) -> i64
     %658 = "llvm.mlir.constant"() <{value = 1 : i64}> : () -> i64
     %659 = "llvm.alloca"(%658) <{elem_type = !llvm.ptr}> : (i64) -> !llvm.ptr
     "llvm.store"(%654, %659) <{ordering = 0 : i64}> : (!llvm.ptr, !llvm.ptr) -> ()
     %660 = "llvm.load"(%659) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.ptr
-    "llvm.call"(%657, %651, %652, %653, %660) <{CConv = #llvm.cconv<ccc>, TailCallKind = #llvm.tailcallkind<none>, callee = @m$vendor_raylib_DrawText, fastmathFlags = #llvm.fastmath<none>, op_bundle_sizes = array<i32>, operandSegmentSizes = array<i32: 5, 0>}> : (i64, i64, i64, i64, !llvm.ptr) -> ()
-    %661 = "llvm.mlir.addressof"() <{global_name = @game_over}> : () -> !llvm.ptr
-    %662 = "llvm.load"(%661) <{ordering = 0 : i64}> : (!llvm.ptr) -> i1
-    %663 = "llvm.bitcast"(%662) : (i1) -> i1
-    "cf.cond_br"(%663)[^bb1, ^bb2] <{operandSegmentSizes = array<i32: 1, 0, 0>}> : (i1) -> ()
-  ^bb1:  // pred: ^bb0
-    %664 = "llvm.mlir.addressof"() <{global_name = @__str_f0e02cb040ccdaaf}> : () -> !llvm.ptr
-    %665 = "llvm.getelementptr"(%664) <{elem_type = !llvm.array<10 x i8>, noWrapFlags = 0 : i32, rawConstantIndices = array<i32: 0, 0>}> : (!llvm.ptr) -> !llvm.ptr
-    %666 = "llvm.mlir.constant"() <{value = 9 : i64}> : () -> i64
-    %667 = "llvm.mlir.undef"() : () -> !llvm.struct<(ptr, i64)>
-    %668 = "llvm.insertvalue"(%667, %665) <{position = array<i64: 0>}> : (!llvm.struct<(ptr, i64)>, !llvm.ptr) -> !llvm.struct<(ptr, i64)>
-    %669 = "llvm.insertvalue"(%668, %666) <{position = array<i64: 1>}> : (!llvm.struct<(ptr, i64)>, i64) -> !llvm.struct<(ptr, i64)>
-    %670 = "llvm.mlir.addressof"() <{global_name = @SCREEN_W}> : () -> !llvm.ptr
-    %671 = "llvm.load"(%670) <{ordering = 0 : i64}> : (!llvm.ptr) -> f32
-    %672 = "llvm.fpext"(%671) : (f32) -> f64
-    %673 = "llvm.mlir.constant"() <{value = 2.000000e+00 : f64}> : () -> f64
-    %674 = "arith.divf"(%672, %673) <{fastmath = #arith.fastmath<none>}> : (f64, f64) -> f64
-    %675 = "llvm.mlir.constant"() <{value = 1.100000e+02 : f64}> : () -> f64
-    %676 = "arith.subf"(%674, %675) <{fastmath = #arith.fastmath<none>}> : (f64, f64) -> f64
-    %677 = "llvm.fptosi"(%676) : (f64) -> i64
-    %678 = "llvm.mlir.addressof"() <{global_name = @SCREEN_H}> : () -> !llvm.ptr
-    %679 = "llvm.load"(%678) <{ordering = 0 : i64}> : (!llvm.ptr) -> f32
-    %680 = "llvm.fpext"(%679) : (f32) -> f64
-    %681 = "llvm.mlir.constant"() <{value = 2.000000e+00 : f64}> : () -> f64
-    %682 = "arith.divf"(%680, %681) <{fastmath = #arith.fastmath<none>}> : (f64, f64) -> f64
-    %683 = "llvm.mlir.constant"() <{value = 2.000000e+01 : f64}> : () -> f64
-    %684 = "arith.subf"(%682, %683) <{fastmath = #arith.fastmath<none>}> : (f64, f64) -> f64
-    %685 = "llvm.fptosi"(%684) : (f64) -> i64
-    %686 = "llvm.mlir.constant"() <{value = 40 : i64}> : () -> i64
-    %687 = "llvm.mlir.undef"() : () -> !llvm.ptr
-    %688 = "llvm.mlir.constant"() <{value = 1 : i64}> : () -> i64
-    %689 = "llvm.alloca"(%688) <{elem_type = !llvm.struct<(ptr, i64)>}> : (i64) -> !llvm.ptr
-    "llvm.store"(%669, %689) <{ordering = 0 : i64}> : (!llvm.struct<(ptr, i64)>, !llvm.ptr) -> ()
-    %690 = "llvm.load"(%689) <{ordering = 0 : i64}> : (!llvm.ptr) -> i64
-    %691 = "llvm.mlir.constant"() <{value = 1 : i64}> : () -> i64
-    %692 = "llvm.alloca"(%691) <{elem_type = !llvm.ptr}> : (i64) -> !llvm.ptr
-    "llvm.store"(%687, %692) <{ordering = 0 : i64}> : (!llvm.ptr, !llvm.ptr) -> ()
-    %693 = "llvm.load"(%692) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.ptr
-    "llvm.call"(%690, %677, %685, %686, %693) <{CConv = #llvm.cconv<ccc>, TailCallKind = #llvm.tailcallkind<none>, callee = @m$vendor_raylib_DrawText, fastmathFlags = #llvm.fastmath<none>, op_bundle_sizes = array<i32>, operandSegmentSizes = array<i32: 5, 0>}> : (i64, i64, i64, i64, !llvm.ptr) -> ()
-    %694 = "llvm.mlir.addressof"() <{global_name = @__str_60ec0d92ce55f4d0}> : () -> !llvm.ptr
-    %695 = "llvm.getelementptr"(%694) <{elem_type = !llvm.array<19 x i8>, noWrapFlags = 0 : i32, rawConstantIndices = array<i32: 0, 0>}> : (!llvm.ptr) -> !llvm.ptr
-    %696 = "llvm.mlir.constant"() <{value = 18 : i64}> : () -> i64
-    %697 = "llvm.mlir.undef"() : () -> !llvm.struct<(ptr, i64)>
-    %698 = "llvm.insertvalue"(%697, %695) <{position = array<i64: 0>}> : (!llvm.struct<(ptr, i64)>, !llvm.ptr) -> !llvm.struct<(ptr, i64)>
-    %699 = "llvm.insertvalue"(%698, %696) <{position = array<i64: 1>}> : (!llvm.struct<(ptr, i64)>, i64) -> !llvm.struct<(ptr, i64)>
-    %700 = "llvm.load"(%670) <{ordering = 0 : i64}> : (!llvm.ptr) -> f32
-    %701 = "llvm.fpext"(%700) : (f32) -> f64
-    %702 = "llvm.mlir.constant"() <{value = 2.000000e+00 : f64}> : () -> f64
-    %703 = "arith.divf"(%701, %702) <{fastmath = #arith.fastmath<none>}> : (f64, f64) -> f64
-    %704 = "llvm.mlir.constant"() <{value = 1.200000e+02 : f64}> : () -> f64
-    %705 = "arith.subf"(%703, %704) <{fastmath = #arith.fastmath<none>}> : (f64, f64) -> f64
-    %706 = "llvm.fptosi"(%705) : (f64) -> i64
-    %707 = "llvm.load"(%678) <{ordering = 0 : i64}> : (!llvm.ptr) -> f32
-    %708 = "llvm.fpext"(%707) : (f32) -> f64
-    %709 = "llvm.mlir.constant"() <{value = 2.000000e+00 : f64}> : () -> f64
-    %710 = "arith.divf"(%708, %709) <{fastmath = #arith.fastmath<none>}> : (f64, f64) -> f64
-    %711 = "llvm.mlir.constant"() <{value = 3.000000e+01 : f64}> : () -> f64
-    %712 = "arith.addf"(%710, %711) <{fastmath = #arith.fastmath<none>}> : (f64, f64) -> f64
-    %713 = "llvm.fptosi"(%712) : (f64) -> i64
-    %714 = "llvm.mlir.constant"() <{value = 20 : i64}> : () -> i64
-    %715 = "llvm.mlir.undef"() : () -> !llvm.ptr
-    %716 = "llvm.mlir.constant"() <{value = 1 : i64}> : () -> i64
-    %717 = "llvm.alloca"(%716) <{elem_type = !llvm.struct<(ptr, i64)>}> : (i64) -> !llvm.ptr
-    "llvm.store"(%699, %717) <{ordering = 0 : i64}> : (!llvm.struct<(ptr, i64)>, !llvm.ptr) -> ()
-    %718 = "llvm.load"(%717) <{ordering = 0 : i64}> : (!llvm.ptr) -> i64
-    %719 = "llvm.mlir.constant"() <{value = 1 : i64}> : () -> i64
-    %720 = "llvm.alloca"(%719) <{elem_type = !llvm.ptr}> : (i64) -> !llvm.ptr
-    "llvm.store"(%715, %720) <{ordering = 0 : i64}> : (!llvm.ptr, !llvm.ptr) -> ()
-    %721 = "llvm.load"(%720) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.ptr
-    "llvm.call"(%718, %706, %713, %714, %721) <{CConv = #llvm.cconv<ccc>, TailCallKind = #llvm.tailcallkind<none>, callee = @m$vendor_raylib_DrawText, fastmathFlags = #llvm.fastmath<none>, op_bundle_sizes = array<i32>, operandSegmentSizes = array<i32: 5, 0>}> : (i64, i64, i64, i64, !llvm.ptr) -> ()
+    "llvm.call"(%657, %645, %652, %653, %660) <{CConv = #llvm.cconv<ccc>, TailCallKind = #llvm.tailcallkind<none>, callee = @m$vendor_raylib_DrawText, fastmathFlags = #llvm.fastmath<none>, op_bundle_sizes = array<i32>, operandSegmentSizes = array<i32: 5, 0>}> : (i64, i64, i64, i64, !llvm.ptr) -> ()
+    %661 = "llvm.mlir.addressof"() <{global_name = @__str_60ec0d92ce55f4d0}> : () -> !llvm.ptr
+    %662 = "llvm.getelementptr"(%661) <{elem_type = !llvm.array<19 x i8>, noWrapFlags = 0 : i32, rawConstantIndices = array<i32: 0, 0>}> : (!llvm.ptr) -> !llvm.ptr
+    %663 = "llvm.mlir.constant"() <{value = 18 : i64}> : () -> i64
+    %664 = "llvm.mlir.undef"() : () -> !llvm.struct<(ptr, i64)>
+    %665 = "llvm.insertvalue"(%664, %662) <{position = array<i64: 0>}> : (!llvm.struct<(ptr, i64)>, !llvm.ptr) -> !llvm.struct<(ptr, i64)>
+    %666 = "llvm.insertvalue"(%665, %663) <{position = array<i64: 1>}> : (!llvm.struct<(ptr, i64)>, i64) -> !llvm.struct<(ptr, i64)>
+    %667 = "llvm.load"(%631) <{ordering = 0 : i64}> : (!llvm.ptr) -> f32
+    %668 = "llvm.fpext"(%667) : (f32) -> f64
+    %669 = "llvm.mlir.constant"() <{value = 2.000000e+00 : f64}> : () -> f64
+    %670 = "arith.divf"(%668, %669) <{fastmath = #arith.fastmath<none>}> : (f64, f64) -> f64
+    %671 = "llvm.mlir.constant"() <{value = 1.200000e+02 : f64}> : () -> f64
+    %672 = "arith.subf"(%670, %671) <{fastmath = #arith.fastmath<none>}> : (f64, f64) -> f64
+    %673 = "llvm.fptosi"(%672) : (f64) -> i64
+    %674 = "llvm.load"(%632) <{ordering = 0 : i64}> : (!llvm.ptr) -> f32
+    %675 = "llvm.fpext"(%674) : (f32) -> f64
+    %676 = "llvm.mlir.constant"() <{value = 2.000000e+00 : f64}> : () -> f64
+    %677 = "arith.divf"(%675, %676) <{fastmath = #arith.fastmath<none>}> : (f64, f64) -> f64
+    %678 = "llvm.mlir.constant"() <{value = 3.000000e+01 : f64}> : () -> f64
+    %679 = "arith.addf"(%677, %678) <{fastmath = #arith.fastmath<none>}> : (f64, f64) -> f64
+    %680 = "llvm.fptosi"(%679) : (f64) -> i64
+    %681 = "llvm.mlir.constant"() <{value = 20 : i64}> : () -> i64
+    %682 = "llvm.mlir.undef"() : () -> !llvm.ptr
+    %683 = "llvm.mlir.constant"() <{value = 1 : i64}> : () -> i64
+    %684 = "llvm.alloca"(%683) <{elem_type = !llvm.struct<(ptr, i64)>}> : (i64) -> !llvm.ptr
+    "llvm.store"(%666, %684) <{ordering = 0 : i64}> : (!llvm.struct<(ptr, i64)>, !llvm.ptr) -> ()
+    %685 = "llvm.load"(%684) <{ordering = 0 : i64}> : (!llvm.ptr) -> i64
+    %686 = "llvm.mlir.constant"() <{value = 1 : i64}> : () -> i64
+    %687 = "llvm.alloca"(%686) <{elem_type = !llvm.ptr}> : (i64) -> !llvm.ptr
+    "llvm.store"(%682, %687) <{ordering = 0 : i64}> : (!llvm.ptr, !llvm.ptr) -> ()
+    %688 = "llvm.load"(%687) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.ptr
+    "llvm.call"(%685, %673, %680, %681, %688) <{CConv = #llvm.cconv<ccc>, TailCallKind = #llvm.tailcallkind<none>, callee = @m$vendor_raylib_DrawText, fastmathFlags = #llvm.fastmath<none>, op_bundle_sizes = array<i32>, operandSegmentSizes = array<i32: 5, 0>}> : (i64, i64, i64, i64, !llvm.ptr) -> ()
     "cf.br"()[^bb3] : () -> ()
   ^bb2:  // pred: ^bb0
     "cf.br"()[^bb3] : () -> ()
   ^bb3:  // 2 preds: ^bb1, ^bb2
-    %722 = "llvm.mlir.undef"() : () -> !llvm.ptr
+    %689 = "llvm.mlir.undef"() : () -> !llvm.ptr
     "func.return"() : () -> ()
   }) : () -> ()
   "func.func"() <{function_type = () -> (), sym_name = "main", sym_visibility = "public"}> ({
@@ -1707,103 +1681,103 @@
     "llvm.call"(%15) <{CConv = #llvm.cconv<ccc>, TailCallKind = #llvm.tailcallkind<none>, callee = @m$vendor_raylib_SetTargetFPS, fastmathFlags = #llvm.fastmath<none>, op_bundle_sizes = array<i32>, operandSegmentSizes = array<i32: 1, 0>}> : (i64) -> ()
     "func.call"() <{callee = @reset_game}> : () -> ()
     "cf.br"()[^bb1] : () -> ()
+    %16 = "llvm.mlir.addressof"() <{global_name = @game_over}> : () -> !llvm.ptr
+    %17 = "llvm.mlir.addressof"() <{global_name = @ship}> : () -> !llvm.ptr
+    %18 = "llvm.mlir.addressof"() <{global_name = @stars}> : () -> !llvm.ptr
+    %19 = "llvm.mlir.addressof"() <{global_name = @MAX_BULLETS}> : () -> !llvm.ptr
+    %20 = "llvm.mlir.addressof"() <{global_name = @bullets}> : () -> !llvm.ptr
+    %21 = "llvm.mlir.addressof"() <{global_name = @MAX_ROCKS}> : () -> !llvm.ptr
+    %22 = "llvm.mlir.addressof"() <{global_name = @rocks}> : () -> !llvm.ptr
+    %23 = "llvm.mlir.addressof"() <{global_name = @score}> : () -> !llvm.ptr
   ^bb1:  // 2 preds: ^bb0, ^bb107
-    %16 = "llvm.call"() <{CConv = #llvm.cconv<ccc>, TailCallKind = #llvm.tailcallkind<none>, callee = @m$vendor_raylib_WindowShouldClose, fastmathFlags = #llvm.fastmath<none>, op_bundle_sizes = array<i32>, operandSegmentSizes = array<i32: 0, 0>}> : () -> i1
-    %17 = "llvm.mlir.constant"() <{value = true}> : () -> i1
-    %18 = "arith.xori"(%16, %17) : (i1, i1) -> i1
-    %19 = "llvm.bitcast"(%18) : (i1) -> i1
-    "cf.cond_br"(%19)[^bb2, ^bb3] <{operandSegmentSizes = array<i32: 1, 0, 0>}> : (i1) -> ()
-  ^bb2:  // pred: ^bb1
-    %20 = "llvm.call"() <{CConv = #llvm.cconv<ccc>, TailCallKind = #llvm.tailcallkind<none>, callee = @m$vendor_raylib_GetFrameTime, fastmathFlags = #llvm.fastmath<none>, op_bundle_sizes = array<i32>, operandSegmentSizes = array<i32: 0, 0>}> : () -> f32
-    %21 = "llvm.mlir.constant"() <{value = 1 : i64}> : () -> i64
-    %22 = "llvm.alloca"(%21) <{elem_type = f32}> : (i64) -> !llvm.ptr
-    "llvm.store"(%20, %22) <{ordering = 0 : i64}> : (f32, !llvm.ptr) -> ()
-    %23 = "llvm.mlir.addressof"() <{global_name = @game_over}> : () -> !llvm.ptr
-    %24 = "llvm.load"(%23) <{ordering = 0 : i64}> : (!llvm.ptr) -> i1
+    %24 = "llvm.call"() <{CConv = #llvm.cconv<ccc>, TailCallKind = #llvm.tailcallkind<none>, callee = @m$vendor_raylib_WindowShouldClose, fastmathFlags = #llvm.fastmath<none>, op_bundle_sizes = array<i32>, operandSegmentSizes = array<i32: 0, 0>}> : () -> i1
     %25 = "llvm.mlir.constant"() <{value = true}> : () -> i1
     %26 = "arith.xori"(%24, %25) : (i1, i1) -> i1
-    %27 = "llvm.mlir.addressof"() <{global_name = @ship}> : () -> !llvm.ptr
-    %28 = "llvm.load"(%27) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, f32, i1, f32)>
-    %29 = "llvm.extractvalue"(%28) <{position = array<i64: 4>}> : (!llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, f32, i1, f32)>) -> i1
-    %30 = "arith.andi"(%26, %29) : (i1, i1) -> i1
-    %31 = "llvm.bitcast"(%30) : (i1) -> i1
-    "cf.cond_br"(%31)[^bb4, ^bb5] <{operandSegmentSizes = array<i32: 1, 0, 0>}> : (i1) -> ()
+    "cf.cond_br"(%26)[^bb2, ^bb3] <{operandSegmentSizes = array<i32: 1, 0, 0>}> : (i1) -> ()
+  ^bb2:  // pred: ^bb1
+    %27 = "llvm.call"() <{CConv = #llvm.cconv<ccc>, TailCallKind = #llvm.tailcallkind<none>, callee = @m$vendor_raylib_GetFrameTime, fastmathFlags = #llvm.fastmath<none>, op_bundle_sizes = array<i32>, operandSegmentSizes = array<i32: 0, 0>}> : () -> f32
+    %28 = "llvm.mlir.constant"() <{value = 1 : i64}> : () -> i64
+    %29 = "llvm.alloca"(%28) <{elem_type = f32}> : (i64) -> !llvm.ptr
+    "llvm.store"(%27, %29) <{ordering = 0 : i64}> : (f32, !llvm.ptr) -> ()
+    %30 = "llvm.load"(%16) <{ordering = 0 : i64}> : (!llvm.ptr) -> i1
+    %31 = "llvm.mlir.constant"() <{value = true}> : () -> i1
+    %32 = "arith.xori"(%30, %31) : (i1, i1) -> i1
+    %33 = "llvm.load"(%17) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, f32, i1, f32)>
+    %34 = "llvm.extractvalue"(%33) <{position = array<i64: 4>}> : (!llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, f32, i1, f32)>) -> i1
+    %35 = "arith.andi"(%32, %34) : (i1, i1) -> i1
+    "cf.cond_br"(%35)[^bb4, ^bb5] <{operandSegmentSizes = array<i32: 1, 0, 0>}> : (i1) -> ()
   ^bb3:  // pred: ^bb1
-    %32 = "llvm.mlir.undef"() : () -> !llvm.ptr
+    %36 = "llvm.mlir.undef"() : () -> !llvm.ptr
     "llvm.call"() <{CConv = #llvm.cconv<ccc>, TailCallKind = #llvm.tailcallkind<none>, callee = @m$vendor_raylib_CloseWindow, fastmathFlags = #llvm.fastmath<none>, op_bundle_sizes = array<i32>, operandSegmentSizes = array<i32: 0, 0>}> : () -> ()
     "func.return"() : () -> ()
   ^bb4:  // pred: ^bb2
-    %33 = "llvm.mlir.undef"() : () -> !llvm.ptr
-    %34 = "llvm.mlir.constant"() <{value = 1 : i64}> : () -> i64
-    %35 = "llvm.alloca"(%34) <{elem_type = !llvm.ptr}> : (i64) -> !llvm.ptr
-    "llvm.store"(%33, %35) <{ordering = 0 : i64}> : (!llvm.ptr, !llvm.ptr) -> ()
-    %36 = "llvm.load"(%35) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.ptr
-    %37 = "llvm.call"(%36) <{CConv = #llvm.cconv<ccc>, TailCallKind = #llvm.tailcallkind<none>, callee = @m$vendor_raylib_IsKeyDown, fastmathFlags = #llvm.fastmath<none>, op_bundle_sizes = array<i32>, operandSegmentSizes = array<i32: 1, 0>}> : (!llvm.ptr) -> i1
-    %38 = "llvm.bitcast"(%37) : (i1) -> i1
-    "cf.cond_br"(%38)[^bb7, ^bb8] <{operandSegmentSizes = array<i32: 1, 0, 0>}> : (i1) -> ()
+    %37 = "llvm.mlir.undef"() : () -> !llvm.ptr
+    %38 = "llvm.mlir.constant"() <{value = 1 : i64}> : () -> i64
+    %39 = "llvm.alloca"(%38) <{elem_type = !llvm.ptr}> : (i64) -> !llvm.ptr
+    "llvm.store"(%37, %39) <{ordering = 0 : i64}> : (!llvm.ptr, !llvm.ptr) -> ()
+    %40 = "llvm.load"(%39) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.ptr
+    %41 = "llvm.call"(%40) <{CConv = #llvm.cconv<ccc>, TailCallKind = #llvm.tailcallkind<none>, callee = @m$vendor_raylib_IsKeyDown, fastmathFlags = #llvm.fastmath<none>, op_bundle_sizes = array<i32>, operandSegmentSizes = array<i32: 1, 0>}> : (!llvm.ptr) -> i1
+    "cf.cond_br"(%41)[^bb7, ^bb8] <{operandSegmentSizes = array<i32: 1, 0, 0>}> : (i1) -> ()
   ^bb5:  // pred: ^bb2
     "cf.br"()[^bb6] : () -> ()
   ^bb6:  // 2 preds: ^bb5, ^bb21
-    %39 = "llvm.mlir.undef"() : () -> !llvm.ptr
-    %40 = "llvm.mlir.undef"() : () -> !llvm.ptr
-    %41 = "llvm.mlir.constant"() <{value = 1 : i64}> : () -> i64
-    %42 = "llvm.alloca"(%41) <{elem_type = !llvm.ptr}> : (i64) -> !llvm.ptr
-    "llvm.store"(%40, %42) <{ordering = 0 : i64}> : (!llvm.ptr, !llvm.ptr) -> ()
-    %43 = "llvm.load"(%42) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.ptr
-    %44 = "llvm.call"(%43) <{CConv = #llvm.cconv<ccc>, TailCallKind = #llvm.tailcallkind<none>, callee = @m$vendor_raylib_IsKeyPressed, fastmathFlags = #llvm.fastmath<none>, op_bundle_sizes = array<i32>, operandSegmentSizes = array<i32: 1, 0>}> : (!llvm.ptr) -> i1
-    %45 = "llvm.bitcast"(%44) : (i1) -> i1
-    "cf.cond_br"(%45)[^bb22, ^bb23] <{operandSegmentSizes = array<i32: 1, 0, 0>}> : (i1) -> ()
+    %42 = "llvm.mlir.undef"() : () -> !llvm.ptr
+    %43 = "llvm.mlir.undef"() : () -> !llvm.ptr
+    %44 = "llvm.mlir.constant"() <{value = 1 : i64}> : () -> i64
+    %45 = "llvm.alloca"(%44) <{elem_type = !llvm.ptr}> : (i64) -> !llvm.ptr
+    "llvm.store"(%43, %45) <{ordering = 0 : i64}> : (!llvm.ptr, !llvm.ptr) -> ()
+    %46 = "llvm.load"(%45) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.ptr
+    %47 = "llvm.call"(%46) <{CConv = #llvm.cconv<ccc>, TailCallKind = #llvm.tailcallkind<none>, callee = @m$vendor_raylib_IsKeyPressed, fastmathFlags = #llvm.fastmath<none>, op_bundle_sizes = array<i32>, operandSegmentSizes = array<i32: 1, 0>}> : (!llvm.ptr) -> i1
+    "cf.cond_br"(%47)[^bb22, ^bb23] <{operandSegmentSizes = array<i32: 1, 0, 0>}> : (i1) -> ()
   ^bb7:  // pred: ^bb4
-    %46 = "llvm.getelementptr"(%27) <{elem_type = f32, noWrapFlags = 0 : i32, rawConstantIndices = array<i32: 2>}> : (!llvm.ptr) -> !llvm.ptr
-    %47 = "llvm.load"(%27) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, f32, i1, f32)>
-    %48 = "llvm.extractvalue"(%47) <{position = array<i64: 2>}> : (!llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, f32, i1, f32)>) -> f32
-    %49 = "llvm.mlir.constant"() <{value = 3.500000e+00 : f64}> : () -> f64
-    %50 = "llvm.fptrunc"(%49) : (f64) -> f32
-    %51 = "llvm.load"(%22) <{ordering = 0 : i64}> : (!llvm.ptr) -> f32
-    %52 = "arith.mulf"(%50, %51) <{fastmath = #arith.fastmath<none>}> : (f32, f32) -> f32
-    %53 = "arith.subf"(%48, %52) <{fastmath = #arith.fastmath<none>}> : (f32, f32) -> f32
-    "llvm.store"(%53, %46) <{ordering = 0 : i64}> : (f32, !llvm.ptr) -> ()
+    %48 = "llvm.getelementptr"(%17) <{elem_type = f32, noWrapFlags = 0 : i32, rawConstantIndices = array<i32: 2>}> : (!llvm.ptr) -> !llvm.ptr
+    %49 = "llvm.load"(%17) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, f32, i1, f32)>
+    %50 = "llvm.extractvalue"(%49) <{position = array<i64: 2>}> : (!llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, f32, i1, f32)>) -> f32
+    %51 = "llvm.mlir.constant"() <{value = 3.500000e+00 : f64}> : () -> f64
+    %52 = "llvm.fptrunc"(%51) : (f64) -> f32
+    %53 = "llvm.load"(%29) <{ordering = 0 : i64}> : (!llvm.ptr) -> f32
+    %54 = "arith.mulf"(%52, %53) <{fastmath = #arith.fastmath<none>}> : (f32, f32) -> f32
+    %55 = "arith.subf"(%50, %54) <{fastmath = #arith.fastmath<none>}> : (f32, f32) -> f32
+    "llvm.store"(%55, %48) <{ordering = 0 : i64}> : (f32, !llvm.ptr) -> ()
     "cf.br"()[^bb9] : () -> ()
   ^bb8:  // pred: ^bb4
     "cf.br"()[^bb9] : () -> ()
   ^bb9:  // 2 preds: ^bb7, ^bb8
-    %54 = "llvm.mlir.undef"() : () -> !llvm.ptr
-    %55 = "llvm.mlir.undef"() : () -> !llvm.ptr
-    %56 = "llvm.mlir.constant"() <{value = 1 : i64}> : () -> i64
-    %57 = "llvm.alloca"(%56) <{elem_type = !llvm.ptr}> : (i64) -> !llvm.ptr
-    "llvm.store"(%55, %57) <{ordering = 0 : i64}> : (!llvm.ptr, !llvm.ptr) -> ()
-    %58 = "llvm.load"(%57) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.ptr
-    %59 = "llvm.call"(%58) <{CConv = #llvm.cconv<ccc>, TailCallKind = #llvm.tailcallkind<none>, callee = @m$vendor_raylib_IsKeyDown, fastmathFlags = #llvm.fastmath<none>, op_bundle_sizes = array<i32>, operandSegmentSizes = array<i32: 1, 0>}> : (!llvm.ptr) -> i1
-    %60 = "llvm.bitcast"(%59) : (i1) -> i1
-    "cf.cond_br"(%60)[^bb10, ^bb11] <{operandSegmentSizes = array<i32: 1, 0, 0>}> : (i1) -> ()
+    %56 = "llvm.mlir.undef"() : () -> !llvm.ptr
+    %57 = "llvm.mlir.undef"() : () -> !llvm.ptr
+    %58 = "llvm.mlir.constant"() <{value = 1 : i64}> : () -> i64
+    %59 = "llvm.alloca"(%58) <{elem_type = !llvm.ptr}> : (i64) -> !llvm.ptr
+    "llvm.store"(%57, %59) <{ordering = 0 : i64}> : (!llvm.ptr, !llvm.ptr) -> ()
+    %60 = "llvm.load"(%59) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.ptr
+    %61 = "llvm.call"(%60) <{CConv = #llvm.cconv<ccc>, TailCallKind = #llvm.tailcallkind<none>, callee = @m$vendor_raylib_IsKeyDown, fastmathFlags = #llvm.fastmath<none>, op_bundle_sizes = array<i32>, operandSegmentSizes = array<i32: 1, 0>}> : (!llvm.ptr) -> i1
+    "cf.cond_br"(%61)[^bb10, ^bb11] <{operandSegmentSizes = array<i32: 1, 0, 0>}> : (i1) -> ()
   ^bb10:  // pred: ^bb9
-    %61 = "llvm.getelementptr"(%27) <{elem_type = f32, noWrapFlags = 0 : i32, rawConstantIndices = array<i32: 2>}> : (!llvm.ptr) -> !llvm.ptr
-    %62 = "llvm.load"(%27) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, f32, i1, f32)>
-    %63 = "llvm.extractvalue"(%62) <{position = array<i64: 2>}> : (!llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, f32, i1, f32)>) -> f32
-    %64 = "llvm.mlir.constant"() <{value = 3.500000e+00 : f64}> : () -> f64
-    %65 = "llvm.fptrunc"(%64) : (f64) -> f32
-    %66 = "llvm.load"(%22) <{ordering = 0 : i64}> : (!llvm.ptr) -> f32
-    %67 = "arith.mulf"(%65, %66) <{fastmath = #arith.fastmath<none>}> : (f32, f32) -> f32
-    %68 = "arith.addf"(%63, %67) <{fastmath = #arith.fastmath<none>}> : (f32, f32) -> f32
-    "llvm.store"(%68, %61) <{ordering = 0 : i64}> : (f32, !llvm.ptr) -> ()
+    %62 = "llvm.getelementptr"(%17) <{elem_type = f32, noWrapFlags = 0 : i32, rawConstantIndices = array<i32: 2>}> : (!llvm.ptr) -> !llvm.ptr
+    %63 = "llvm.load"(%17) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, f32, i1, f32)>
+    %64 = "llvm.extractvalue"(%63) <{position = array<i64: 2>}> : (!llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, f32, i1, f32)>) -> f32
+    %65 = "llvm.mlir.constant"() <{value = 3.500000e+00 : f64}> : () -> f64
+    %66 = "llvm.fptrunc"(%65) : (f64) -> f32
+    %67 = "llvm.load"(%29) <{ordering = 0 : i64}> : (!llvm.ptr) -> f32
+    %68 = "arith.mulf"(%66, %67) <{fastmath = #arith.fastmath<none>}> : (f32, f32) -> f32
+    %69 = "arith.addf"(%64, %68) <{fastmath = #arith.fastmath<none>}> : (f32, f32) -> f32
+    "llvm.store"(%69, %62) <{ordering = 0 : i64}> : (f32, !llvm.ptr) -> ()
     "cf.br"()[^bb12] : () -> ()
   ^bb11:  // pred: ^bb9
     "cf.br"()[^bb12] : () -> ()
   ^bb12:  // 2 preds: ^bb10, ^bb11
-    %69 = "llvm.mlir.undef"() : () -> !llvm.ptr
     %70 = "llvm.mlir.undef"() : () -> !llvm.ptr
-    %71 = "llvm.mlir.constant"() <{value = 1 : i64}> : () -> i64
-    %72 = "llvm.alloca"(%71) <{elem_type = !llvm.ptr}> : (i64) -> !llvm.ptr
-    "llvm.store"(%70, %72) <{ordering = 0 : i64}> : (!llvm.ptr, !llvm.ptr) -> ()
-    %73 = "llvm.load"(%72) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.ptr
-    %74 = "llvm.call"(%73) <{CConv = #llvm.cconv<ccc>, TailCallKind = #llvm.tailcallkind<none>, callee = @m$vendor_raylib_IsKeyDown, fastmathFlags = #llvm.fastmath<none>, op_bundle_sizes = array<i32>, operandSegmentSizes = array<i32: 1, 0>}> : (!llvm.ptr) -> i1
-    %75 = "llvm.bitcast"(%74) : (i1) -> i1
+    %71 = "llvm.mlir.undef"() : () -> !llvm.ptr
+    %72 = "llvm.mlir.constant"() <{value = 1 : i64}> : () -> i64
+    %73 = "llvm.alloca"(%72) <{elem_type = !llvm.ptr}> : (i64) -> !llvm.ptr
+    "llvm.store"(%71, %73) <{ordering = 0 : i64}> : (!llvm.ptr, !llvm.ptr) -> ()
+    %74 = "llvm.load"(%73) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.ptr
+    %75 = "llvm.call"(%74) <{CConv = #llvm.cconv<ccc>, TailCallKind = #llvm.tailcallkind<none>, callee = @m$vendor_raylib_IsKeyDown, fastmathFlags = #llvm.fastmath<none>, op_bundle_sizes = array<i32>, operandSegmentSizes = array<i32: 1, 0>}> : (!llvm.ptr) -> i1
     "cf.cond_br"(%75)[^bb13, ^bb14] <{operandSegmentSizes = array<i32: 1, 0, 0>}> : (i1) -> ()
   ^bb13:  // pred: ^bb12
-    %76 = "llvm.load"(%27) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, f32, i1, f32)>
+    %76 = "llvm.load"(%17) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, f32, i1, f32)>
     %77 = "llvm.extractvalue"(%76) <{position = array<i64: 2>}> : (!llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, f32, i1, f32)>) -> f32
     %78 = "llvm.call"(%77) <{CConv = #llvm.cconv<ccc>, TailCallKind = #llvm.tailcallkind<none>, callee = @m$std_math_cos, fastmathFlags = #llvm.fastmath<none>, op_bundle_sizes = array<i32>, operandSegmentSizes = array<i32: 1, 0>}> : (f32) -> f32
-    %79 = "llvm.load"(%27) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, f32, i1, f32)>
+    %79 = "llvm.load"(%17) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, f32, i1, f32)>
     %80 = "llvm.extractvalue"(%79) <{position = array<i64: 2>}> : (!llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, f32, i1, f32)>) -> f32
     %81 = "llvm.call"(%80) <{CConv = #llvm.cconv<ccc>, TailCallKind = #llvm.tailcallkind<none>, callee = @m$std_math_sin, fastmathFlags = #llvm.fastmath<none>, op_bundle_sizes = array<i32>, operandSegmentSizes = array<i32: 1, 0>}> : (f32) -> f32
     %82 = "llvm.mlir.zero"() : () -> !llvm.struct<(f32, f32)>
@@ -1811,14 +1785,14 @@
     %84 = "llvm.insertvalue"(%83, %81) <{position = array<i64: 1>}> : (!llvm.struct<(f32, f32)>, f32) -> !llvm.struct<(f32, f32)>
     %85 = "llvm.mlir.constant"() <{value = 2.200000e+02 : f64}> : () -> f64
     %86 = "llvm.fptrunc"(%85) : (f64) -> f32
-    %87 = "llvm.load"(%22) <{ordering = 0 : i64}> : (!llvm.ptr) -> f32
+    %87 = "llvm.load"(%29) <{ordering = 0 : i64}> : (!llvm.ptr) -> f32
     %88 = "arith.mulf"(%86, %87) <{fastmath = #arith.fastmath<none>}> : (f32, f32) -> f32
     %89 = "func.call"(%84, %88) <{callee = @vmul}> : (!llvm.struct<(f32, f32)>, f32) -> !llvm.struct<(f32, f32)>
     %90 = "llvm.mlir.constant"() <{value = 1 : i64}> : () -> i64
     %91 = "llvm.alloca"(%90) <{elem_type = !llvm.struct<(f32, f32)>}> : (i64) -> !llvm.ptr
     "llvm.store"(%89, %91) <{ordering = 0 : i64}> : (!llvm.struct<(f32, f32)>, !llvm.ptr) -> ()
-    %92 = "llvm.getelementptr"(%27) <{elem_type = !llvm.struct<(f32, f32)>, noWrapFlags = 0 : i32, rawConstantIndices = array<i32: 1>}> : (!llvm.ptr) -> !llvm.ptr
-    %93 = "llvm.load"(%27) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, f32, i1, f32)>
+    %92 = "llvm.getelementptr"(%17) <{elem_type = !llvm.struct<(f32, f32)>, noWrapFlags = 0 : i32, rawConstantIndices = array<i32: 1>}> : (!llvm.ptr) -> !llvm.ptr
+    %93 = "llvm.load"(%17) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, f32, i1, f32)>
     %94 = "llvm.extractvalue"(%93) <{position = array<i64: 1>}> : (!llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, f32, i1, f32)>) -> !llvm.struct<(f32, f32)>
     %95 = "llvm.load"(%91) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.struct<(f32, f32)>
     %96 = "func.call"(%94, %95) <{callee = @vadd}> : (!llvm.struct<(f32, f32)>, !llvm.struct<(f32, f32)>) -> !llvm.struct<(f32, f32)>
@@ -1827,7 +1801,7 @@
     %98 = "llvm.mlir.constant"() <{value = 1 : i64}> : () -> i64
     %99 = "llvm.alloca"(%98) <{elem_type = f64}> : (i64) -> !llvm.ptr
     "llvm.store"(%97, %99) <{ordering = 0 : i64}> : (f64, !llvm.ptr) -> ()
-    %100 = "llvm.load"(%27) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, f32, i1, f32)>
+    %100 = "llvm.load"(%17) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, f32, i1, f32)>
     %101 = "llvm.extractvalue"(%100) <{position = array<i64: 1>}> : (!llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, f32, i1, f32)>) -> !llvm.struct<(f32, f32)>
     %102 = "func.call"(%101) <{callee = @len2}> : (!llvm.struct<(f32, f32)>) -> f32
     %103 = "llvm.mlir.constant"() <{value = 1 : i64}> : () -> i64
@@ -1839,58 +1813,56 @@
     %108 = "llvm.load"(%99) <{ordering = 0 : i64}> : (!llvm.ptr) -> f64
     %109 = "arith.mulf"(%107, %108) <{fastmath = #arith.fastmath<none>}> : (f64, f64) -> f64
     %110 = "arith.cmpf"(%106, %109) <{fastmath = #arith.fastmath<none>, predicate = 2 : i64}> : (f64, f64) -> i1
-    %111 = "llvm.bitcast"(%110) : (i1) -> i1
-    "cf.cond_br"(%111)[^bb16, ^bb17] <{operandSegmentSizes = array<i32: 1, 0, 0>}> : (i1) -> ()
+    "cf.cond_br"(%110)[^bb16, ^bb17] <{operandSegmentSizes = array<i32: 1, 0, 0>}> : (i1) -> ()
   ^bb14:  // pred: ^bb12
     "cf.br"()[^bb15] : () -> ()
   ^bb15:  // 2 preds: ^bb14, ^bb18
+    %111 = "llvm.mlir.undef"() : () -> !llvm.ptr
     %112 = "llvm.mlir.undef"() : () -> !llvm.ptr
-    %113 = "llvm.mlir.undef"() : () -> !llvm.ptr
-    %114 = "llvm.mlir.constant"() <{value = 1 : i64}> : () -> i64
-    %115 = "llvm.alloca"(%114) <{elem_type = !llvm.ptr}> : (i64) -> !llvm.ptr
-    "llvm.store"(%113, %115) <{ordering = 0 : i64}> : (!llvm.ptr, !llvm.ptr) -> ()
-    %116 = "llvm.load"(%115) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.ptr
-    %117 = "llvm.call"(%116) <{CConv = #llvm.cconv<ccc>, TailCallKind = #llvm.tailcallkind<none>, callee = @m$vendor_raylib_IsKeyPressed, fastmathFlags = #llvm.fastmath<none>, op_bundle_sizes = array<i32>, operandSegmentSizes = array<i32: 1, 0>}> : (!llvm.ptr) -> i1
-    %118 = "llvm.load"(%27) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, f32, i1, f32)>
-    %119 = "llvm.extractvalue"(%118) <{position = array<i64: 3>}> : (!llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, f32, i1, f32)>) -> f32
-    %120 = "llvm.fpext"(%119) : (f32) -> f64
-    %121 = "llvm.mlir.constant"() <{value = 0.000000e+00 : f64}> : () -> f64
-    %122 = "arith.cmpf"(%120, %121) <{fastmath = #arith.fastmath<none>, predicate = 5 : i64}> : (f64, f64) -> i1
-    %123 = "arith.andi"(%117, %122) : (i1, i1) -> i1
-    %124 = "llvm.bitcast"(%123) : (i1) -> i1
-    "cf.cond_br"(%124)[^bb19, ^bb20] <{operandSegmentSizes = array<i32: 1, 0, 0>}> : (i1) -> ()
+    %113 = "llvm.mlir.constant"() <{value = 1 : i64}> : () -> i64
+    %114 = "llvm.alloca"(%113) <{elem_type = !llvm.ptr}> : (i64) -> !llvm.ptr
+    "llvm.store"(%112, %114) <{ordering = 0 : i64}> : (!llvm.ptr, !llvm.ptr) -> ()
+    %115 = "llvm.load"(%114) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.ptr
+    %116 = "llvm.call"(%115) <{CConv = #llvm.cconv<ccc>, TailCallKind = #llvm.tailcallkind<none>, callee = @m$vendor_raylib_IsKeyPressed, fastmathFlags = #llvm.fastmath<none>, op_bundle_sizes = array<i32>, operandSegmentSizes = array<i32: 1, 0>}> : (!llvm.ptr) -> i1
+    %117 = "llvm.load"(%17) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, f32, i1, f32)>
+    %118 = "llvm.extractvalue"(%117) <{position = array<i64: 3>}> : (!llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, f32, i1, f32)>) -> f32
+    %119 = "llvm.fpext"(%118) : (f32) -> f64
+    %120 = "llvm.mlir.constant"() <{value = 0.000000e+00 : f64}> : () -> f64
+    %121 = "arith.cmpf"(%119, %120) <{fastmath = #arith.fastmath<none>, predicate = 5 : i64}> : (f64, f64) -> i1
+    %122 = "arith.andi"(%116, %121) : (i1, i1) -> i1
+    "cf.cond_br"(%122)[^bb19, ^bb20] <{operandSegmentSizes = array<i32: 1, 0, 0>}> : (i1) -> ()
   ^bb16:  // pred: ^bb13
-    %125 = "llvm.load"(%99) <{ordering = 0 : i64}> : (!llvm.ptr) -> f64
-    %126 = "llvm.load"(%104) <{ordering = 0 : i64}> : (!llvm.ptr) -> f32
-    %127 = "llvm.call"(%126) <{CConv = #llvm.cconv<ccc>, TailCallKind = #llvm.tailcallkind<none>, callee = @m$std_math_sqrt, fastmathFlags = #llvm.fastmath<none>, op_bundle_sizes = array<i32>, operandSegmentSizes = array<i32: 1, 0>}> : (f32) -> f64
-    %128 = "arith.divf"(%125, %127) <{fastmath = #arith.fastmath<none>}> : (f64, f64) -> f64
-    %129 = "llvm.mlir.constant"() <{value = 1 : i64}> : () -> i64
-    %130 = "llvm.alloca"(%129) <{elem_type = f64}> : (i64) -> !llvm.ptr
-    "llvm.store"(%128, %130) <{ordering = 0 : i64}> : (f64, !llvm.ptr) -> ()
-    %131 = "llvm.getelementptr"(%27) <{elem_type = !llvm.struct<(f32, f32)>, noWrapFlags = 0 : i32, rawConstantIndices = array<i32: 1>}> : (!llvm.ptr) -> !llvm.ptr
-    %132 = "llvm.load"(%27) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, f32, i1, f32)>
-    %133 = "llvm.extractvalue"(%132) <{position = array<i64: 1>}> : (!llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, f32, i1, f32)>) -> !llvm.struct<(f32, f32)>
-    %134 = "llvm.load"(%130) <{ordering = 0 : i64}> : (!llvm.ptr) -> f64
-    %135 = "llvm.fptrunc"(%134) : (f64) -> f32
-    %136 = "func.call"(%133, %135) <{callee = @vmul}> : (!llvm.struct<(f32, f32)>, f32) -> !llvm.struct<(f32, f32)>
-    "llvm.store"(%136, %131) <{ordering = 0 : i64}> : (!llvm.struct<(f32, f32)>, !llvm.ptr) -> ()
+    %123 = "llvm.load"(%99) <{ordering = 0 : i64}> : (!llvm.ptr) -> f64
+    %124 = "llvm.load"(%104) <{ordering = 0 : i64}> : (!llvm.ptr) -> f32
+    %125 = "llvm.call"(%124) <{CConv = #llvm.cconv<ccc>, TailCallKind = #llvm.tailcallkind<none>, callee = @m$std_math_sqrt, fastmathFlags = #llvm.fastmath<none>, op_bundle_sizes = array<i32>, operandSegmentSizes = array<i32: 1, 0>}> : (f32) -> f64
+    %126 = "arith.divf"(%123, %125) <{fastmath = #arith.fastmath<none>}> : (f64, f64) -> f64
+    %127 = "llvm.mlir.constant"() <{value = 1 : i64}> : () -> i64
+    %128 = "llvm.alloca"(%127) <{elem_type = f64}> : (i64) -> !llvm.ptr
+    "llvm.store"(%126, %128) <{ordering = 0 : i64}> : (f64, !llvm.ptr) -> ()
+    %129 = "llvm.getelementptr"(%17) <{elem_type = !llvm.struct<(f32, f32)>, noWrapFlags = 0 : i32, rawConstantIndices = array<i32: 1>}> : (!llvm.ptr) -> !llvm.ptr
+    %130 = "llvm.load"(%17) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, f32, i1, f32)>
+    %131 = "llvm.extractvalue"(%130) <{position = array<i64: 1>}> : (!llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, f32, i1, f32)>) -> !llvm.struct<(f32, f32)>
+    %132 = "llvm.load"(%128) <{ordering = 0 : i64}> : (!llvm.ptr) -> f64
+    %133 = "llvm.fptrunc"(%132) : (f64) -> f32
+    %134 = "func.call"(%131, %133) <{callee = @vmul}> : (!llvm.struct<(f32, f32)>, f32) -> !llvm.struct<(f32, f32)>
+    "llvm.store"(%134, %129) <{ordering = 0 : i64}> : (!llvm.struct<(f32, f32)>, !llvm.ptr) -> ()
     "cf.br"()[^bb18] : () -> ()
   ^bb17:  // pred: ^bb13
     "cf.br"()[^bb18] : () -> ()
   ^bb18:  // 2 preds: ^bb16, ^bb17
-    %137 = "llvm.mlir.undef"() : () -> !llvm.ptr
+    %135 = "llvm.mlir.undef"() : () -> !llvm.ptr
     "cf.br"()[^bb15] : () -> ()
   ^bb19:  // pred: ^bb15
     "func.call"() <{callee = @shoot}> : () -> ()
-    %138 = "llvm.getelementptr"(%27) <{elem_type = f32, noWrapFlags = 0 : i32, rawConstantIndices = array<i32: 3>}> : (!llvm.ptr) -> !llvm.ptr
-    %139 = "llvm.mlir.constant"() <{value = 1.800000e-01 : f64}> : () -> f64
-    %140 = "llvm.fptrunc"(%139) : (f64) -> f32
-    "llvm.store"(%140, %138) <{ordering = 0 : i64}> : (f32, !llvm.ptr) -> ()
+    %136 = "llvm.getelementptr"(%17) <{elem_type = f32, noWrapFlags = 0 : i32, rawConstantIndices = array<i32: 3>}> : (!llvm.ptr) -> !llvm.ptr
+    %137 = "llvm.mlir.constant"() <{value = 1.800000e-01 : f64}> : () -> f64
+    %138 = "llvm.fptrunc"(%137) : (f64) -> f32
+    "llvm.store"(%138, %136) <{ordering = 0 : i64}> : (f32, !llvm.ptr) -> ()
     "cf.br"()[^bb21] : () -> ()
   ^bb20:  // pred: ^bb15
     "cf.br"()[^bb21] : () -> ()
   ^bb21:  // 2 preds: ^bb19, ^bb20
-    %141 = "llvm.mlir.undef"() : () -> !llvm.ptr
+    %139 = "llvm.mlir.undef"() : () -> !llvm.ptr
     "cf.br"()[^bb6] : () -> ()
   ^bb22:  // pred: ^bb6
     "func.call"() <{callee = @reset_game}> : () -> ()
@@ -1898,717 +1870,685 @@
   ^bb23:  // pred: ^bb6
     "cf.br"()[^bb24] : () -> ()
   ^bb24:  // 2 preds: ^bb22, ^bb23
-    %142 = "llvm.mlir.undef"() : () -> !llvm.ptr
-    %143 = "llvm.mlir.constant"() <{value = 0 : i64}> : () -> i64
-    %144 = "llvm.mlir.constant"() <{value = 60 : i64}> : () -> i64
-    "cf.br"(%143)[^bb25] : (i64) -> ()
-  ^bb25(%145: i64):  // 2 preds: ^bb24, ^bb28
-    %146 = "arith.cmpi"(%145, %144) <{predicate = 2 : i64}> : (i64, i64) -> i1
-    %147 = "llvm.bitcast"(%146) : (i1) -> i1
-    "cf.cond_br"(%147)[^bb26, ^bb27] <{operandSegmentSizes = array<i32: 1, 0, 0>}> : (i1) -> ()
+    %140 = "llvm.mlir.undef"() : () -> !llvm.ptr
+    %141 = "llvm.mlir.constant"() <{value = 0 : i64}> : () -> i64
+    %142 = "llvm.mlir.constant"() <{value = 60 : i64}> : () -> i64
+    "cf.br"(%141)[^bb25] : (i64) -> ()
+  ^bb25(%143: i64):  // 2 preds: ^bb24, ^bb28
+    %144 = "arith.cmpi"(%143, %142) <{predicate = 2 : i64}> : (i64, i64) -> i1
+    "cf.cond_br"(%144)[^bb26, ^bb27] <{operandSegmentSizes = array<i32: 1, 0, 0>}> : (i1) -> ()
   ^bb26:  // pred: ^bb25
-    %148 = "llvm.mlir.addressof"() <{global_name = @stars}> : () -> !llvm.ptr
-    %149 = "llvm.load"(%148) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.array<60 x struct<(i32, i32)>>
-    %150 = "llvm.mlir.constant"() <{value = 1 : i64}> : () -> i64
-    %151 = "llvm.alloca"(%150) <{elem_type = !llvm.array<60 x struct<(i32, i32)>>}> : (i64) -> !llvm.ptr
-    "llvm.store"(%149, %151) <{ordering = 0 : i64}> : (!llvm.array<60 x struct<(i32, i32)>>, !llvm.ptr) -> ()
-    %152 = "llvm.getelementptr"(%151, %145) <{elem_type = !llvm.struct<(i32, i32)>, noWrapFlags = 0 : i32, rawConstantIndices = array<i32: -2147483648>}> : (!llvm.ptr, i64) -> !llvm.ptr
-    %153 = "llvm.load"(%152) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.struct<(i32, i32)>
-    %154 = "llvm.extractvalue"(%153) <{position = array<i64: 0>}> : (!llvm.struct<(i32, i32)>) -> i32
-    %155 = "llvm.load"(%148) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.array<60 x struct<(i32, i32)>>
-    %156 = "llvm.mlir.constant"() <{value = 1 : i64}> : () -> i64
-    %157 = "llvm.alloca"(%156) <{elem_type = !llvm.array<60 x struct<(i32, i32)>>}> : (i64) -> !llvm.ptr
-    "llvm.store"(%155, %157) <{ordering = 0 : i64}> : (!llvm.array<60 x struct<(i32, i32)>>, !llvm.ptr) -> ()
-    %158 = "llvm.getelementptr"(%157, %145) <{elem_type = !llvm.struct<(i32, i32)>, noWrapFlags = 0 : i32, rawConstantIndices = array<i32: -2147483648>}> : (!llvm.ptr, i64) -> !llvm.ptr
-    %159 = "llvm.load"(%158) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.struct<(i32, i32)>
-    %160 = "llvm.extractvalue"(%159) <{position = array<i64: 1>}> : (!llvm.struct<(i32, i32)>) -> i32
-    %161 = "llvm.mlir.undef"() : () -> !llvm.ptr
-    %162 = "llvm.mlir.constant"() <{value = 1 : i64}> : () -> i64
-    %163 = "llvm.alloca"(%162) <{elem_type = !llvm.ptr}> : (i64) -> !llvm.ptr
-    "llvm.store"(%161, %163) <{ordering = 0 : i64}> : (!llvm.ptr, !llvm.ptr) -> ()
-    %164 = "llvm.load"(%163) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.ptr
-    "llvm.call"(%154, %160, %164) <{CConv = #llvm.cconv<ccc>, TailCallKind = #llvm.tailcallkind<none>, callee = @m$vendor_raylib_DrawPixel, fastmathFlags = #llvm.fastmath<none>, op_bundle_sizes = array<i32>, operandSegmentSizes = array<i32: 3, 0>}> : (i32, i32, !llvm.ptr) -> ()
-    "cf.br"(%145)[^bb28] : (i64) -> ()
+    %145 = "llvm.load"(%18) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.array<60 x struct<(i32, i32)>>
+    %146 = "llvm.mlir.constant"() <{value = 1 : i64}> : () -> i64
+    %147 = "llvm.alloca"(%146) <{elem_type = !llvm.array<60 x struct<(i32, i32)>>}> : (i64) -> !llvm.ptr
+    "llvm.store"(%145, %147) <{ordering = 0 : i64}> : (!llvm.array<60 x struct<(i32, i32)>>, !llvm.ptr) -> ()
+    %148 = "llvm.getelementptr"(%147, %143) <{elem_type = !llvm.struct<(i32, i32)>, noWrapFlags = 0 : i32, rawConstantIndices = array<i32: -2147483648>}> : (!llvm.ptr, i64) -> !llvm.ptr
+    %149 = "llvm.load"(%148) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.struct<(i32, i32)>
+    %150 = "llvm.extractvalue"(%149) <{position = array<i64: 0>}> : (!llvm.struct<(i32, i32)>) -> i32
+    %151 = "llvm.load"(%18) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.array<60 x struct<(i32, i32)>>
+    %152 = "llvm.mlir.constant"() <{value = 1 : i64}> : () -> i64
+    %153 = "llvm.alloca"(%152) <{elem_type = !llvm.array<60 x struct<(i32, i32)>>}> : (i64) -> !llvm.ptr
+    "llvm.store"(%151, %153) <{ordering = 0 : i64}> : (!llvm.array<60 x struct<(i32, i32)>>, !llvm.ptr) -> ()
+    %154 = "llvm.getelementptr"(%153, %143) <{elem_type = !llvm.struct<(i32, i32)>, noWrapFlags = 0 : i32, rawConstantIndices = array<i32: -2147483648>}> : (!llvm.ptr, i64) -> !llvm.ptr
+    %155 = "llvm.load"(%154) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.struct<(i32, i32)>
+    %156 = "llvm.extractvalue"(%155) <{position = array<i64: 1>}> : (!llvm.struct<(i32, i32)>) -> i32
+    %157 = "llvm.mlir.undef"() : () -> !llvm.ptr
+    %158 = "llvm.mlir.constant"() <{value = 1 : i64}> : () -> i64
+    %159 = "llvm.alloca"(%158) <{elem_type = !llvm.ptr}> : (i64) -> !llvm.ptr
+    "llvm.store"(%157, %159) <{ordering = 0 : i64}> : (!llvm.ptr, !llvm.ptr) -> ()
+    %160 = "llvm.load"(%159) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.ptr
+    "llvm.call"(%150, %156, %160) <{CConv = #llvm.cconv<ccc>, TailCallKind = #llvm.tailcallkind<none>, callee = @m$vendor_raylib_DrawPixel, fastmathFlags = #llvm.fastmath<none>, op_bundle_sizes = array<i32>, operandSegmentSizes = array<i32: 3, 0>}> : (i32, i32, !llvm.ptr) -> ()
+    "cf.br"(%143)[^bb28] : (i64) -> ()
   ^bb27:  // pred: ^bb25
-    %165 = "llvm.mlir.undef"() : () -> !llvm.ptr
-    %166 = "llvm.load"(%27) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, f32, i1, f32)>
-    %167 = "llvm.extractvalue"(%166) <{position = array<i64: 3>}> : (!llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, f32, i1, f32)>) -> f32
-    %168 = "llvm.fpext"(%167) : (f32) -> f64
-    %169 = "llvm.mlir.constant"() <{value = 0.000000e+00 : f64}> : () -> f64
-    %170 = "arith.cmpf"(%168, %169) <{fastmath = #arith.fastmath<none>, predicate = 2 : i64}> : (f64, f64) -> i1
-    %171 = "llvm.bitcast"(%170) : (i1) -> i1
-    "cf.cond_br"(%171)[^bb29, ^bb30] <{operandSegmentSizes = array<i32: 1, 0, 0>}> : (i1) -> ()
-  ^bb28(%172: i64):  // pred: ^bb26
-    %173 = "llvm.mlir.constant"() <{value = 1 : i64}> : () -> i64
-    %174 = "arith.addi"(%172, %173) <{overflowFlags = #arith.overflow<none>}> : (i64, i64) -> i64
-    "cf.br"(%174)[^bb25] : (i64) -> ()
+    %161 = "llvm.mlir.undef"() : () -> !llvm.ptr
+    %162 = "llvm.load"(%17) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, f32, i1, f32)>
+    %163 = "llvm.extractvalue"(%162) <{position = array<i64: 3>}> : (!llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, f32, i1, f32)>) -> f32
+    %164 = "llvm.fpext"(%163) : (f32) -> f64
+    %165 = "llvm.mlir.constant"() <{value = 0.000000e+00 : f64}> : () -> f64
+    %166 = "arith.cmpf"(%164, %165) <{fastmath = #arith.fastmath<none>, predicate = 2 : i64}> : (f64, f64) -> i1
+    "cf.cond_br"(%166)[^bb29, ^bb30] <{operandSegmentSizes = array<i32: 1, 0, 0>}> : (i1) -> ()
+  ^bb28(%167: i64):  // pred: ^bb26
+    %168 = "llvm.mlir.constant"() <{value = 1 : i64}> : () -> i64
+    %169 = "arith.addi"(%167, %168) <{overflowFlags = #arith.overflow<none>}> : (i64, i64) -> i64
+    "cf.br"(%169)[^bb25] : (i64) -> ()
   ^bb29:  // pred: ^bb27
-    %175 = "llvm.getelementptr"(%27) <{elem_type = f32, noWrapFlags = 0 : i32, rawConstantIndices = array<i32: 3>}> : (!llvm.ptr) -> !llvm.ptr
-    %176 = "llvm.load"(%27) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, f32, i1, f32)>
-    %177 = "llvm.extractvalue"(%176) <{position = array<i64: 3>}> : (!llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, f32, i1, f32)>) -> f32
-    %178 = "llvm.load"(%22) <{ordering = 0 : i64}> : (!llvm.ptr) -> f32
-    %179 = "arith.subf"(%177, %178) <{fastmath = #arith.fastmath<none>}> : (f32, f32) -> f32
-    "llvm.store"(%179, %175) <{ordering = 0 : i64}> : (f32, !llvm.ptr) -> ()
+    %170 = "llvm.getelementptr"(%17) <{elem_type = f32, noWrapFlags = 0 : i32, rawConstantIndices = array<i32: 3>}> : (!llvm.ptr) -> !llvm.ptr
+    %171 = "llvm.load"(%17) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, f32, i1, f32)>
+    %172 = "llvm.extractvalue"(%171) <{position = array<i64: 3>}> : (!llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, f32, i1, f32)>) -> f32
+    %173 = "llvm.load"(%29) <{ordering = 0 : i64}> : (!llvm.ptr) -> f32
+    %174 = "arith.subf"(%172, %173) <{fastmath = #arith.fastmath<none>}> : (f32, f32) -> f32
+    "llvm.store"(%174, %170) <{ordering = 0 : i64}> : (f32, !llvm.ptr) -> ()
     "cf.br"()[^bb31] : () -> ()
   ^bb30:  // pred: ^bb27
     "cf.br"()[^bb31] : () -> ()
   ^bb31:  // 2 preds: ^bb29, ^bb30
-    %180 = "llvm.mlir.undef"() : () -> !llvm.ptr
-    %181 = "llvm.load"(%27) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, f32, i1, f32)>
-    %182 = "llvm.extractvalue"(%181) <{position = array<i64: 5>}> : (!llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, f32, i1, f32)>) -> f32
-    %183 = "llvm.fpext"(%182) : (f32) -> f64
-    %184 = "llvm.mlir.constant"() <{value = 0.000000e+00 : f64}> : () -> f64
-    %185 = "arith.cmpf"(%183, %184) <{fastmath = #arith.fastmath<none>, predicate = 2 : i64}> : (f64, f64) -> i1
-    %186 = "llvm.bitcast"(%185) : (i1) -> i1
-    "cf.cond_br"(%186)[^bb32, ^bb33] <{operandSegmentSizes = array<i32: 1, 0, 0>}> : (i1) -> ()
+    %175 = "llvm.mlir.undef"() : () -> !llvm.ptr
+    %176 = "llvm.load"(%17) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, f32, i1, f32)>
+    %177 = "llvm.extractvalue"(%176) <{position = array<i64: 5>}> : (!llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, f32, i1, f32)>) -> f32
+    %178 = "llvm.fpext"(%177) : (f32) -> f64
+    %179 = "llvm.mlir.constant"() <{value = 0.000000e+00 : f64}> : () -> f64
+    %180 = "arith.cmpf"(%178, %179) <{fastmath = #arith.fastmath<none>, predicate = 2 : i64}> : (f64, f64) -> i1
+    "cf.cond_br"(%180)[^bb32, ^bb33] <{operandSegmentSizes = array<i32: 1, 0, 0>}> : (i1) -> ()
   ^bb32:  // pred: ^bb31
-    %187 = "llvm.getelementptr"(%27) <{elem_type = f32, noWrapFlags = 0 : i32, rawConstantIndices = array<i32: 5>}> : (!llvm.ptr) -> !llvm.ptr
-    %188 = "llvm.load"(%27) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, f32, i1, f32)>
-    %189 = "llvm.extractvalue"(%188) <{position = array<i64: 5>}> : (!llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, f32, i1, f32)>) -> f32
-    %190 = "llvm.load"(%22) <{ordering = 0 : i64}> : (!llvm.ptr) -> f32
-    %191 = "arith.subf"(%189, %190) <{fastmath = #arith.fastmath<none>}> : (f32, f32) -> f32
-    "llvm.store"(%191, %187) <{ordering = 0 : i64}> : (f32, !llvm.ptr) -> ()
+    %181 = "llvm.getelementptr"(%17) <{elem_type = f32, noWrapFlags = 0 : i32, rawConstantIndices = array<i32: 5>}> : (!llvm.ptr) -> !llvm.ptr
+    %182 = "llvm.load"(%17) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, f32, i1, f32)>
+    %183 = "llvm.extractvalue"(%182) <{position = array<i64: 5>}> : (!llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, f32, i1, f32)>) -> f32
+    %184 = "llvm.load"(%29) <{ordering = 0 : i64}> : (!llvm.ptr) -> f32
+    %185 = "arith.subf"(%183, %184) <{fastmath = #arith.fastmath<none>}> : (f32, f32) -> f32
+    "llvm.store"(%185, %181) <{ordering = 0 : i64}> : (f32, !llvm.ptr) -> ()
     "cf.br"()[^bb34] : () -> ()
   ^bb33:  // pred: ^bb31
     "cf.br"()[^bb34] : () -> ()
   ^bb34:  // 2 preds: ^bb32, ^bb33
-    %192 = "llvm.mlir.undef"() : () -> !llvm.ptr
-    %193 = "llvm.load"(%27) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, f32, i1, f32)>
-    %194 = "llvm.extractvalue"(%193) <{position = array<i64: 4>}> : (!llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, f32, i1, f32)>) -> i1
-    %195 = "llvm.load"(%23) <{ordering = 0 : i64}> : (!llvm.ptr) -> i1
-    %196 = "llvm.mlir.constant"() <{value = true}> : () -> i1
-    %197 = "arith.xori"(%195, %196) : (i1, i1) -> i1
-    %198 = "arith.andi"(%194, %197) : (i1, i1) -> i1
-    %199 = "llvm.bitcast"(%198) : (i1) -> i1
-    "cf.cond_br"(%199)[^bb35, ^bb36] <{operandSegmentSizes = array<i32: 1, 0, 0>}> : (i1) -> ()
+    %186 = "llvm.mlir.undef"() : () -> !llvm.ptr
+    %187 = "llvm.load"(%17) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, f32, i1, f32)>
+    %188 = "llvm.extractvalue"(%187) <{position = array<i64: 4>}> : (!llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, f32, i1, f32)>) -> i1
+    %189 = "llvm.load"(%16) <{ordering = 0 : i64}> : (!llvm.ptr) -> i1
+    %190 = "llvm.mlir.constant"() <{value = true}> : () -> i1
+    %191 = "arith.xori"(%189, %190) : (i1, i1) -> i1
+    %192 = "arith.andi"(%188, %191) : (i1, i1) -> i1
+    "cf.cond_br"(%192)[^bb35, ^bb36] <{operandSegmentSizes = array<i32: 1, 0, 0>}> : (i1) -> ()
   ^bb35:  // pred: ^bb34
-    %200 = "llvm.getelementptr"(%27) <{elem_type = !llvm.struct<(f32, f32)>, noWrapFlags = 0 : i32, rawConstantIndices = array<i32: 0>}> : (!llvm.ptr) -> !llvm.ptr
-    %201 = "llvm.load"(%27) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, f32, i1, f32)>
+    %193 = "llvm.getelementptr"(%17) <{elem_type = !llvm.struct<(f32, f32)>, noWrapFlags = 0 : i32, rawConstantIndices = array<i32: 0>}> : (!llvm.ptr) -> !llvm.ptr
+    %194 = "llvm.load"(%17) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, f32, i1, f32)>
+    %195 = "llvm.extractvalue"(%194) <{position = array<i64: 0>}> : (!llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, f32, i1, f32)>) -> !llvm.struct<(f32, f32)>
+    %196 = "llvm.load"(%17) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, f32, i1, f32)>
+    %197 = "llvm.extractvalue"(%196) <{position = array<i64: 1>}> : (!llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, f32, i1, f32)>) -> !llvm.struct<(f32, f32)>
+    %198 = "llvm.load"(%29) <{ordering = 0 : i64}> : (!llvm.ptr) -> f32
+    %199 = "func.call"(%197, %198) <{callee = @vmul}> : (!llvm.struct<(f32, f32)>, f32) -> !llvm.struct<(f32, f32)>
+    %200 = "func.call"(%195, %199) <{callee = @vadd}> : (!llvm.struct<(f32, f32)>, !llvm.struct<(f32, f32)>) -> !llvm.struct<(f32, f32)>
+    "llvm.store"(%200, %193) <{ordering = 0 : i64}> : (!llvm.struct<(f32, f32)>, !llvm.ptr) -> ()
+    %201 = "llvm.load"(%17) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, f32, i1, f32)>
     %202 = "llvm.extractvalue"(%201) <{position = array<i64: 0>}> : (!llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, f32, i1, f32)>) -> !llvm.struct<(f32, f32)>
-    %203 = "llvm.load"(%27) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, f32, i1, f32)>
-    %204 = "llvm.extractvalue"(%203) <{position = array<i64: 1>}> : (!llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, f32, i1, f32)>) -> !llvm.struct<(f32, f32)>
-    %205 = "llvm.load"(%22) <{ordering = 0 : i64}> : (!llvm.ptr) -> f32
-    %206 = "func.call"(%204, %205) <{callee = @vmul}> : (!llvm.struct<(f32, f32)>, f32) -> !llvm.struct<(f32, f32)>
-    %207 = "func.call"(%202, %206) <{callee = @vadd}> : (!llvm.struct<(f32, f32)>, !llvm.struct<(f32, f32)>) -> !llvm.struct<(f32, f32)>
-    "llvm.store"(%207, %200) <{ordering = 0 : i64}> : (!llvm.struct<(f32, f32)>, !llvm.ptr) -> ()
-    %208 = "llvm.load"(%27) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, f32, i1, f32)>
-    %209 = "llvm.extractvalue"(%208) <{position = array<i64: 0>}> : (!llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, f32, i1, f32)>) -> !llvm.struct<(f32, f32)>
-    "func.call"(%208) <{callee = @wrap}> : (!llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, f32, i1, f32)>) -> ()
+    "func.call"(%201) <{callee = @wrap}> : (!llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, f32, i1, f32)>) -> ()
     "cf.br"()[^bb37] : () -> ()
   ^bb36:  // pred: ^bb34
     "cf.br"()[^bb37] : () -> ()
   ^bb37:  // 2 preds: ^bb35, ^bb36
-    %210 = "llvm.mlir.undef"() : () -> !llvm.ptr
-    %211 = "llvm.mlir.constant"() <{value = 0 : i64}> : () -> i64
-    %212 = "llvm.mlir.addressof"() <{global_name = @MAX_BULLETS}> : () -> !llvm.ptr
-    %213 = "llvm.load"(%212) <{ordering = 0 : i64}> : (!llvm.ptr) -> i64
-    "cf.br"(%211)[^bb38] : (i64) -> ()
-  ^bb38(%214: i64):  // 2 preds: ^bb37, ^bb41
-    %215 = "arith.cmpi"(%214, %213) <{predicate = 2 : i64}> : (i64, i64) -> i1
-    %216 = "llvm.bitcast"(%215) : (i1) -> i1
-    "cf.cond_br"(%216)[^bb39, ^bb40] <{operandSegmentSizes = array<i32: 1, 0, 0>}> : (i1) -> ()
+    %203 = "llvm.mlir.undef"() : () -> !llvm.ptr
+    %204 = "llvm.mlir.constant"() <{value = 0 : i64}> : () -> i64
+    %205 = "llvm.load"(%19) <{ordering = 0 : i64}> : (!llvm.ptr) -> i64
+    "cf.br"(%204)[^bb38] : (i64) -> ()
+  ^bb38(%206: i64):  // 2 preds: ^bb37, ^bb41
+    %207 = "arith.cmpi"(%206, %205) <{predicate = 2 : i64}> : (i64, i64) -> i1
+    "cf.cond_br"(%207)[^bb39, ^bb40] <{operandSegmentSizes = array<i32: 1, 0, 0>}> : (i1) -> ()
   ^bb39:  // pred: ^bb38
-    %217 = "llvm.mlir.addressof"() <{global_name = @bullets}> : () -> !llvm.ptr
-    %218 = "llvm.load"(%217) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.array<64 x struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i1)>>
-    %219 = "llvm.mlir.constant"() <{value = 1 : i64}> : () -> i64
-    %220 = "llvm.alloca"(%219) <{elem_type = !llvm.array<64 x struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i1)>>}> : (i64) -> !llvm.ptr
-    "llvm.store"(%218, %220) <{ordering = 0 : i64}> : (!llvm.array<64 x struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i1)>>, !llvm.ptr) -> ()
-    %221 = "llvm.getelementptr"(%220, %214) <{elem_type = !llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i1)>, noWrapFlags = 0 : i32, rawConstantIndices = array<i32: -2147483648>}> : (!llvm.ptr, i64) -> !llvm.ptr
-    %222 = "llvm.load"(%221) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i1)>
-    %223 = "llvm.extractvalue"(%222) <{position = array<i64: 3>}> : (!llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i1)>) -> i1
-    %224 = "llvm.mlir.constant"() <{value = true}> : () -> i1
-    %225 = "arith.xori"(%223, %224) : (i1, i1) -> i1
-    %226 = "llvm.bitcast"(%225) : (i1) -> i1
-    "cf.cond_br"(%226)[^bb42, ^bb43] <{operandSegmentSizes = array<i32: 1, 0, 0>}> : (i1) -> ()
+    %208 = "llvm.load"(%20) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.array<64 x struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i1)>>
+    %209 = "llvm.mlir.constant"() <{value = 1 : i64}> : () -> i64
+    %210 = "llvm.alloca"(%209) <{elem_type = !llvm.array<64 x struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i1)>>}> : (i64) -> !llvm.ptr
+    "llvm.store"(%208, %210) <{ordering = 0 : i64}> : (!llvm.array<64 x struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i1)>>, !llvm.ptr) -> ()
+    %211 = "llvm.getelementptr"(%210, %206) <{elem_type = !llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i1)>, noWrapFlags = 0 : i32, rawConstantIndices = array<i32: -2147483648>}> : (!llvm.ptr, i64) -> !llvm.ptr
+    %212 = "llvm.load"(%211) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i1)>
+    %213 = "llvm.extractvalue"(%212) <{position = array<i64: 3>}> : (!llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i1)>) -> i1
+    %214 = "llvm.mlir.constant"() <{value = true}> : () -> i1
+    %215 = "arith.xori"(%213, %214) : (i1, i1) -> i1
+    "cf.cond_br"(%215)[^bb42, ^bb43] <{operandSegmentSizes = array<i32: 1, 0, 0>}> : (i1) -> ()
   ^bb40:  // pred: ^bb38
-    %227 = "llvm.mlir.undef"() : () -> !llvm.ptr
-    %228 = "llvm.mlir.constant"() <{value = 0 : i64}> : () -> i64
-    %229 = "llvm.mlir.constant"() <{value = 1 : i64}> : () -> i64
-    %230 = "llvm.alloca"(%229) <{elem_type = i64}> : (i64) -> !llvm.ptr
-    "llvm.store"(%228, %230) <{ordering = 0 : i64}> : (i64, !llvm.ptr) -> ()
-    %231 = "llvm.mlir.constant"() <{value = 0 : i64}> : () -> i64
-    %232 = "llvm.mlir.addressof"() <{global_name = @MAX_ROCKS}> : () -> !llvm.ptr
-    %233 = "llvm.load"(%232) <{ordering = 0 : i64}> : (!llvm.ptr) -> i64
-    "cf.br"(%231)[^bb48] : (i64) -> ()
-  ^bb41(%234: i64):  // 2 preds: ^bb42, ^bb47
-    %235 = "llvm.mlir.constant"() <{value = 1 : i64}> : () -> i64
-    %236 = "arith.addi"(%234, %235) <{overflowFlags = #arith.overflow<none>}> : (i64, i64) -> i64
-    "cf.br"(%236)[^bb38] : (i64) -> ()
+    %216 = "llvm.mlir.undef"() : () -> !llvm.ptr
+    %217 = "llvm.mlir.constant"() <{value = 0 : i64}> : () -> i64
+    %218 = "llvm.mlir.constant"() <{value = 1 : i64}> : () -> i64
+    %219 = "llvm.alloca"(%218) <{elem_type = i64}> : (i64) -> !llvm.ptr
+    "llvm.store"(%217, %219) <{ordering = 0 : i64}> : (i64, !llvm.ptr) -> ()
+    %220 = "llvm.mlir.constant"() <{value = 0 : i64}> : () -> i64
+    %221 = "llvm.load"(%21) <{ordering = 0 : i64}> : (!llvm.ptr) -> i64
+    "cf.br"(%220)[^bb48] : (i64) -> ()
+  ^bb41(%222: i64):  // 2 preds: ^bb42, ^bb47
+    %223 = "llvm.mlir.constant"() <{value = 1 : i64}> : () -> i64
+    %224 = "arith.addi"(%222, %223) <{overflowFlags = #arith.overflow<none>}> : (i64, i64) -> i64
+    "cf.br"(%224)[^bb38] : (i64) -> ()
   ^bb42:  // pred: ^bb39
-    "cf.br"(%214)[^bb41] : (i64) -> ()
+    "cf.br"(%206)[^bb41] : (i64) -> ()
   ^bb43:  // pred: ^bb39
     "cf.br"()[^bb44] : () -> ()
   ^bb44:  // pred: ^bb43
-    %237 = "llvm.mlir.undef"() : () -> !llvm.ptr
-    %238 = "llvm.getelementptr"(%217, %214) <{elem_type = !llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i1)>, noWrapFlags = 0 : i32, rawConstantIndices = array<i32: -2147483648>}> : (!llvm.ptr, i64) -> !llvm.ptr
-    %239 = "llvm.getelementptr"(%238) <{elem_type = !llvm.struct<(f32, f32)>, noWrapFlags = 0 : i32, rawConstantIndices = array<i32: 0>}> : (!llvm.ptr) -> !llvm.ptr
-    %240 = "llvm.load"(%217) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.array<64 x struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i1)>>
-    %241 = "llvm.mlir.constant"() <{value = 1 : i64}> : () -> i64
-    %242 = "llvm.alloca"(%241) <{elem_type = !llvm.array<64 x struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i1)>>}> : (i64) -> !llvm.ptr
-    "llvm.store"(%240, %242) <{ordering = 0 : i64}> : (!llvm.array<64 x struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i1)>>, !llvm.ptr) -> ()
-    %243 = "llvm.getelementptr"(%242, %214) <{elem_type = !llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i1)>, noWrapFlags = 0 : i32, rawConstantIndices = array<i32: -2147483648>}> : (!llvm.ptr, i64) -> !llvm.ptr
-    %244 = "llvm.load"(%243) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i1)>
-    %245 = "llvm.extractvalue"(%244) <{position = array<i64: 0>}> : (!llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i1)>) -> !llvm.struct<(f32, f32)>
-    %246 = "llvm.load"(%217) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.array<64 x struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i1)>>
-    %247 = "llvm.mlir.constant"() <{value = 1 : i64}> : () -> i64
-    %248 = "llvm.alloca"(%247) <{elem_type = !llvm.array<64 x struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i1)>>}> : (i64) -> !llvm.ptr
-    "llvm.store"(%246, %248) <{ordering = 0 : i64}> : (!llvm.array<64 x struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i1)>>, !llvm.ptr) -> ()
-    %249 = "llvm.getelementptr"(%248, %214) <{elem_type = !llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i1)>, noWrapFlags = 0 : i32, rawConstantIndices = array<i32: -2147483648>}> : (!llvm.ptr, i64) -> !llvm.ptr
-    %250 = "llvm.load"(%249) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i1)>
-    %251 = "llvm.extractvalue"(%250) <{position = array<i64: 1>}> : (!llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i1)>) -> !llvm.struct<(f32, f32)>
-    %252 = "llvm.load"(%22) <{ordering = 0 : i64}> : (!llvm.ptr) -> f32
-    %253 = "func.call"(%251, %252) <{callee = @vmul}> : (!llvm.struct<(f32, f32)>, f32) -> !llvm.struct<(f32, f32)>
-    %254 = "func.call"(%245, %253) <{callee = @vadd}> : (!llvm.struct<(f32, f32)>, !llvm.struct<(f32, f32)>) -> !llvm.struct<(f32, f32)>
-    "llvm.store"(%254, %239) <{ordering = 0 : i64}> : (!llvm.struct<(f32, f32)>, !llvm.ptr) -> ()
-    %255 = "llvm.load"(%217) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.array<64 x struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i1)>>
-    %256 = "llvm.mlir.constant"() <{value = 1 : i64}> : () -> i64
-    %257 = "llvm.alloca"(%256) <{elem_type = !llvm.array<64 x struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i1)>>}> : (i64) -> !llvm.ptr
-    "llvm.store"(%255, %257) <{ordering = 0 : i64}> : (!llvm.array<64 x struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i1)>>, !llvm.ptr) -> ()
-    %258 = "llvm.getelementptr"(%257, %214) <{elem_type = !llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i1)>, noWrapFlags = 0 : i32, rawConstantIndices = array<i32: -2147483648>}> : (!llvm.ptr, i64) -> !llvm.ptr
-    %259 = "llvm.load"(%258) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i1)>
-    %260 = "llvm.extractvalue"(%259) <{position = array<i64: 0>}> : (!llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i1)>) -> !llvm.struct<(f32, f32)>
-    "func.call"(%259) <{callee = @wrap}> : (!llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i1)>) -> ()
-    %261 = "llvm.getelementptr"(%217, %214) <{elem_type = !llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i1)>, noWrapFlags = 0 : i32, rawConstantIndices = array<i32: -2147483648>}> : (!llvm.ptr, i64) -> !llvm.ptr
-    %262 = "llvm.getelementptr"(%261) <{elem_type = f32, noWrapFlags = 0 : i32, rawConstantIndices = array<i32: 2>}> : (!llvm.ptr) -> !llvm.ptr
-    %263 = "llvm.load"(%217) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.array<64 x struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i1)>>
-    %264 = "llvm.mlir.constant"() <{value = 1 : i64}> : () -> i64
-    %265 = "llvm.alloca"(%264) <{elem_type = !llvm.array<64 x struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i1)>>}> : (i64) -> !llvm.ptr
-    "llvm.store"(%263, %265) <{ordering = 0 : i64}> : (!llvm.array<64 x struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i1)>>, !llvm.ptr) -> ()
-    %266 = "llvm.getelementptr"(%265, %214) <{elem_type = !llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i1)>, noWrapFlags = 0 : i32, rawConstantIndices = array<i32: -2147483648>}> : (!llvm.ptr, i64) -> !llvm.ptr
-    %267 = "llvm.load"(%266) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i1)>
-    %268 = "llvm.extractvalue"(%267) <{position = array<i64: 2>}> : (!llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i1)>) -> f32
-    %269 = "llvm.load"(%22) <{ordering = 0 : i64}> : (!llvm.ptr) -> f32
-    %270 = "arith.subf"(%268, %269) <{fastmath = #arith.fastmath<none>}> : (f32, f32) -> f32
-    "llvm.store"(%270, %262) <{ordering = 0 : i64}> : (f32, !llvm.ptr) -> ()
-    %271 = "llvm.load"(%217) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.array<64 x struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i1)>>
-    %272 = "llvm.mlir.constant"() <{value = 1 : i64}> : () -> i64
-    %273 = "llvm.alloca"(%272) <{elem_type = !llvm.array<64 x struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i1)>>}> : (i64) -> !llvm.ptr
-    "llvm.store"(%271, %273) <{ordering = 0 : i64}> : (!llvm.array<64 x struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i1)>>, !llvm.ptr) -> ()
-    %274 = "llvm.getelementptr"(%273, %214) <{elem_type = !llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i1)>, noWrapFlags = 0 : i32, rawConstantIndices = array<i32: -2147483648>}> : (!llvm.ptr, i64) -> !llvm.ptr
-    %275 = "llvm.load"(%274) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i1)>
-    %276 = "llvm.extractvalue"(%275) <{position = array<i64: 2>}> : (!llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i1)>) -> f32
-    %277 = "llvm.fpext"(%276) : (f32) -> f64
-    %278 = "llvm.mlir.constant"() <{value = 0.000000e+00 : f64}> : () -> f64
-    %279 = "arith.cmpf"(%277, %278) <{fastmath = #arith.fastmath<none>, predicate = 5 : i64}> : (f64, f64) -> i1
-    %280 = "llvm.bitcast"(%279) : (i1) -> i1
-    "cf.cond_br"(%280)[^bb45, ^bb46] <{operandSegmentSizes = array<i32: 1, 0, 0>}> : (i1) -> ()
+    %225 = "llvm.mlir.undef"() : () -> !llvm.ptr
+    %226 = "llvm.getelementptr"(%20, %206) <{elem_type = !llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i1)>, noWrapFlags = 0 : i32, rawConstantIndices = array<i32: -2147483648>}> : (!llvm.ptr, i64) -> !llvm.ptr
+    %227 = "llvm.getelementptr"(%226) <{elem_type = !llvm.struct<(f32, f32)>, noWrapFlags = 0 : i32, rawConstantIndices = array<i32: 0>}> : (!llvm.ptr) -> !llvm.ptr
+    %228 = "llvm.load"(%20) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.array<64 x struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i1)>>
+    %229 = "llvm.mlir.constant"() <{value = 1 : i64}> : () -> i64
+    %230 = "llvm.alloca"(%229) <{elem_type = !llvm.array<64 x struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i1)>>}> : (i64) -> !llvm.ptr
+    "llvm.store"(%228, %230) <{ordering = 0 : i64}> : (!llvm.array<64 x struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i1)>>, !llvm.ptr) -> ()
+    %231 = "llvm.getelementptr"(%230, %206) <{elem_type = !llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i1)>, noWrapFlags = 0 : i32, rawConstantIndices = array<i32: -2147483648>}> : (!llvm.ptr, i64) -> !llvm.ptr
+    %232 = "llvm.load"(%231) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i1)>
+    %233 = "llvm.extractvalue"(%232) <{position = array<i64: 0>}> : (!llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i1)>) -> !llvm.struct<(f32, f32)>
+    %234 = "llvm.load"(%20) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.array<64 x struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i1)>>
+    %235 = "llvm.mlir.constant"() <{value = 1 : i64}> : () -> i64
+    %236 = "llvm.alloca"(%235) <{elem_type = !llvm.array<64 x struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i1)>>}> : (i64) -> !llvm.ptr
+    "llvm.store"(%234, %236) <{ordering = 0 : i64}> : (!llvm.array<64 x struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i1)>>, !llvm.ptr) -> ()
+    %237 = "llvm.getelementptr"(%236, %206) <{elem_type = !llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i1)>, noWrapFlags = 0 : i32, rawConstantIndices = array<i32: -2147483648>}> : (!llvm.ptr, i64) -> !llvm.ptr
+    %238 = "llvm.load"(%237) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i1)>
+    %239 = "llvm.extractvalue"(%238) <{position = array<i64: 1>}> : (!llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i1)>) -> !llvm.struct<(f32, f32)>
+    %240 = "llvm.load"(%29) <{ordering = 0 : i64}> : (!llvm.ptr) -> f32
+    %241 = "func.call"(%239, %240) <{callee = @vmul}> : (!llvm.struct<(f32, f32)>, f32) -> !llvm.struct<(f32, f32)>
+    %242 = "func.call"(%233, %241) <{callee = @vadd}> : (!llvm.struct<(f32, f32)>, !llvm.struct<(f32, f32)>) -> !llvm.struct<(f32, f32)>
+    "llvm.store"(%242, %227) <{ordering = 0 : i64}> : (!llvm.struct<(f32, f32)>, !llvm.ptr) -> ()
+    %243 = "llvm.load"(%20) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.array<64 x struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i1)>>
+    %244 = "llvm.mlir.constant"() <{value = 1 : i64}> : () -> i64
+    %245 = "llvm.alloca"(%244) <{elem_type = !llvm.array<64 x struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i1)>>}> : (i64) -> !llvm.ptr
+    "llvm.store"(%243, %245) <{ordering = 0 : i64}> : (!llvm.array<64 x struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i1)>>, !llvm.ptr) -> ()
+    %246 = "llvm.getelementptr"(%245, %206) <{elem_type = !llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i1)>, noWrapFlags = 0 : i32, rawConstantIndices = array<i32: -2147483648>}> : (!llvm.ptr, i64) -> !llvm.ptr
+    %247 = "llvm.load"(%246) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i1)>
+    %248 = "llvm.extractvalue"(%247) <{position = array<i64: 0>}> : (!llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i1)>) -> !llvm.struct<(f32, f32)>
+    "func.call"(%247) <{callee = @wrap}> : (!llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i1)>) -> ()
+    %249 = "llvm.getelementptr"(%20, %206) <{elem_type = !llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i1)>, noWrapFlags = 0 : i32, rawConstantIndices = array<i32: -2147483648>}> : (!llvm.ptr, i64) -> !llvm.ptr
+    %250 = "llvm.getelementptr"(%249) <{elem_type = f32, noWrapFlags = 0 : i32, rawConstantIndices = array<i32: 2>}> : (!llvm.ptr) -> !llvm.ptr
+    %251 = "llvm.load"(%20) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.array<64 x struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i1)>>
+    %252 = "llvm.mlir.constant"() <{value = 1 : i64}> : () -> i64
+    %253 = "llvm.alloca"(%252) <{elem_type = !llvm.array<64 x struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i1)>>}> : (i64) -> !llvm.ptr
+    "llvm.store"(%251, %253) <{ordering = 0 : i64}> : (!llvm.array<64 x struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i1)>>, !llvm.ptr) -> ()
+    %254 = "llvm.getelementptr"(%253, %206) <{elem_type = !llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i1)>, noWrapFlags = 0 : i32, rawConstantIndices = array<i32: -2147483648>}> : (!llvm.ptr, i64) -> !llvm.ptr
+    %255 = "llvm.load"(%254) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i1)>
+    %256 = "llvm.extractvalue"(%255) <{position = array<i64: 2>}> : (!llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i1)>) -> f32
+    %257 = "llvm.load"(%29) <{ordering = 0 : i64}> : (!llvm.ptr) -> f32
+    %258 = "arith.subf"(%256, %257) <{fastmath = #arith.fastmath<none>}> : (f32, f32) -> f32
+    "llvm.store"(%258, %250) <{ordering = 0 : i64}> : (f32, !llvm.ptr) -> ()
+    %259 = "llvm.load"(%20) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.array<64 x struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i1)>>
+    %260 = "llvm.mlir.constant"() <{value = 1 : i64}> : () -> i64
+    %261 = "llvm.alloca"(%260) <{elem_type = !llvm.array<64 x struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i1)>>}> : (i64) -> !llvm.ptr
+    "llvm.store"(%259, %261) <{ordering = 0 : i64}> : (!llvm.array<64 x struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i1)>>, !llvm.ptr) -> ()
+    %262 = "llvm.getelementptr"(%261, %206) <{elem_type = !llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i1)>, noWrapFlags = 0 : i32, rawConstantIndices = array<i32: -2147483648>}> : (!llvm.ptr, i64) -> !llvm.ptr
+    %263 = "llvm.load"(%262) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i1)>
+    %264 = "llvm.extractvalue"(%263) <{position = array<i64: 2>}> : (!llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i1)>) -> f32
+    %265 = "llvm.fpext"(%264) : (f32) -> f64
+    %266 = "llvm.mlir.constant"() <{value = 0.000000e+00 : f64}> : () -> f64
+    %267 = "arith.cmpf"(%265, %266) <{fastmath = #arith.fastmath<none>, predicate = 5 : i64}> : (f64, f64) -> i1
+    "cf.cond_br"(%267)[^bb45, ^bb46] <{operandSegmentSizes = array<i32: 1, 0, 0>}> : (i1) -> ()
   ^bb45:  // pred: ^bb44
-    %281 = "llvm.getelementptr"(%217, %214) <{elem_type = !llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i1)>, noWrapFlags = 0 : i32, rawConstantIndices = array<i32: -2147483648>}> : (!llvm.ptr, i64) -> !llvm.ptr
-    %282 = "llvm.getelementptr"(%281) <{elem_type = i1, noWrapFlags = 0 : i32, rawConstantIndices = array<i32: 3>}> : (!llvm.ptr) -> !llvm.ptr
-    %283 = "llvm.mlir.constant"() <{value = false}> : () -> i1
-    "llvm.store"(%283, %282) <{ordering = 0 : i64}> : (i1, !llvm.ptr) -> ()
+    %268 = "llvm.getelementptr"(%20, %206) <{elem_type = !llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i1)>, noWrapFlags = 0 : i32, rawConstantIndices = array<i32: -2147483648>}> : (!llvm.ptr, i64) -> !llvm.ptr
+    %269 = "llvm.getelementptr"(%268) <{elem_type = i1, noWrapFlags = 0 : i32, rawConstantIndices = array<i32: 3>}> : (!llvm.ptr) -> !llvm.ptr
+    %270 = "llvm.mlir.constant"() <{value = false}> : () -> i1
+    "llvm.store"(%270, %269) <{ordering = 0 : i64}> : (i1, !llvm.ptr) -> ()
     "cf.br"()[^bb47] : () -> ()
   ^bb46:  // pred: ^bb44
     "cf.br"()[^bb47] : () -> ()
   ^bb47:  // 2 preds: ^bb45, ^bb46
-    %284 = "llvm.mlir.undef"() : () -> !llvm.ptr
-    "cf.br"(%214)[^bb41] : (i64) -> ()
-  ^bb48(%285: i64):  // 2 preds: ^bb40, ^bb51
-    %286 = "arith.cmpi"(%285, %233) <{predicate = 2 : i64}> : (i64, i64) -> i1
-    %287 = "llvm.bitcast"(%286) : (i1) -> i1
-    "cf.cond_br"(%287)[^bb49, ^bb50] <{operandSegmentSizes = array<i32: 1, 0, 0>}> : (i1) -> ()
+    %271 = "llvm.mlir.undef"() : () -> !llvm.ptr
+    "cf.br"(%206)[^bb41] : (i64) -> ()
+  ^bb48(%272: i64):  // 2 preds: ^bb40, ^bb51
+    %273 = "arith.cmpi"(%272, %221) <{predicate = 2 : i64}> : (i64, i64) -> i1
+    "cf.cond_br"(%273)[^bb49, ^bb50] <{operandSegmentSizes = array<i32: 1, 0, 0>}> : (i1) -> ()
   ^bb49:  // pred: ^bb48
-    %288 = "llvm.mlir.addressof"() <{global_name = @rocks}> : () -> !llvm.ptr
-    %289 = "llvm.load"(%288) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.array<64 x struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i32, i1)>>
-    %290 = "llvm.mlir.constant"() <{value = 1 : i64}> : () -> i64
-    %291 = "llvm.alloca"(%290) <{elem_type = !llvm.array<64 x struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i32, i1)>>}> : (i64) -> !llvm.ptr
-    "llvm.store"(%289, %291) <{ordering = 0 : i64}> : (!llvm.array<64 x struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i32, i1)>>, !llvm.ptr) -> ()
-    %292 = "llvm.getelementptr"(%291, %285) <{elem_type = !llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i32, i1)>, noWrapFlags = 0 : i32, rawConstantIndices = array<i32: -2147483648>}> : (!llvm.ptr, i64) -> !llvm.ptr
-    %293 = "llvm.load"(%292) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i32, i1)>
-    %294 = "llvm.extractvalue"(%293) <{position = array<i64: 4>}> : (!llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i32, i1)>) -> i1
-    %295 = "llvm.mlir.constant"() <{value = true}> : () -> i1
-    %296 = "arith.xori"(%294, %295) : (i1, i1) -> i1
-    %297 = "llvm.bitcast"(%296) : (i1) -> i1
-    "cf.cond_br"(%297)[^bb52, ^bb53] <{operandSegmentSizes = array<i32: 1, 0, 0>}> : (i1) -> ()
+    %274 = "llvm.load"(%22) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.array<64 x struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i32, i1)>>
+    %275 = "llvm.mlir.constant"() <{value = 1 : i64}> : () -> i64
+    %276 = "llvm.alloca"(%275) <{elem_type = !llvm.array<64 x struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i32, i1)>>}> : (i64) -> !llvm.ptr
+    "llvm.store"(%274, %276) <{ordering = 0 : i64}> : (!llvm.array<64 x struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i32, i1)>>, !llvm.ptr) -> ()
+    %277 = "llvm.getelementptr"(%276, %272) <{elem_type = !llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i32, i1)>, noWrapFlags = 0 : i32, rawConstantIndices = array<i32: -2147483648>}> : (!llvm.ptr, i64) -> !llvm.ptr
+    %278 = "llvm.load"(%277) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i32, i1)>
+    %279 = "llvm.extractvalue"(%278) <{position = array<i64: 4>}> : (!llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i32, i1)>) -> i1
+    %280 = "llvm.mlir.constant"() <{value = true}> : () -> i1
+    %281 = "arith.xori"(%279, %280) : (i1, i1) -> i1
+    "cf.cond_br"(%281)[^bb52, ^bb53] <{operandSegmentSizes = array<i32: 1, 0, 0>}> : (i1) -> ()
   ^bb50:  // pred: ^bb48
-    %298 = "llvm.mlir.undef"() : () -> !llvm.ptr
-    %299 = "llvm.mlir.constant"() <{value = 0 : i64}> : () -> i64
-    %300 = "llvm.load"(%212) <{ordering = 0 : i64}> : (!llvm.ptr) -> i64
-    "cf.br"(%299)[^bb55] : (i64) -> ()
-  ^bb51(%301: i64):  // 2 preds: ^bb52, ^bb54
-    %302 = "llvm.mlir.constant"() <{value = 1 : i64}> : () -> i64
-    %303 = "arith.addi"(%301, %302) <{overflowFlags = #arith.overflow<none>}> : (i64, i64) -> i64
-    "cf.br"(%303)[^bb48] : (i64) -> ()
+    %282 = "llvm.mlir.undef"() : () -> !llvm.ptr
+    %283 = "llvm.mlir.constant"() <{value = 0 : i64}> : () -> i64
+    %284 = "llvm.load"(%19) <{ordering = 0 : i64}> : (!llvm.ptr) -> i64
+    "cf.br"(%283)[^bb55] : (i64) -> ()
+  ^bb51(%285: i64):  // 2 preds: ^bb52, ^bb54
+    %286 = "llvm.mlir.constant"() <{value = 1 : i64}> : () -> i64
+    %287 = "arith.addi"(%285, %286) <{overflowFlags = #arith.overflow<none>}> : (i64, i64) -> i64
+    "cf.br"(%287)[^bb48] : (i64) -> ()
   ^bb52:  // pred: ^bb49
-    "cf.br"(%285)[^bb51] : (i64) -> ()
+    "cf.br"(%272)[^bb51] : (i64) -> ()
   ^bb53:  // pred: ^bb49
     "cf.br"()[^bb54] : () -> ()
   ^bb54:  // pred: ^bb53
-    %304 = "llvm.mlir.undef"() : () -> !llvm.ptr
-    %305 = "llvm.load"(%230) <{ordering = 0 : i64}> : (!llvm.ptr) -> i64
-    %306 = "llvm.mlir.constant"() <{value = 1 : i64}> : () -> i64
-    %307 = "arith.addi"(%305, %306) <{overflowFlags = #arith.overflow<none>}> : (i64, i64) -> i64
-    "llvm.store"(%307, %230) <{ordering = 0 : i64}> : (i64, !llvm.ptr) -> ()
-    %308 = "llvm.getelementptr"(%288, %285) <{elem_type = !llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i32, i1)>, noWrapFlags = 0 : i32, rawConstantIndices = array<i32: -2147483648>}> : (!llvm.ptr, i64) -> !llvm.ptr
-    %309 = "llvm.getelementptr"(%308) <{elem_type = !llvm.struct<(f32, f32)>, noWrapFlags = 0 : i32, rawConstantIndices = array<i32: 0>}> : (!llvm.ptr) -> !llvm.ptr
-    %310 = "llvm.load"(%288) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.array<64 x struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i32, i1)>>
-    %311 = "llvm.mlir.constant"() <{value = 1 : i64}> : () -> i64
-    %312 = "llvm.alloca"(%311) <{elem_type = !llvm.array<64 x struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i32, i1)>>}> : (i64) -> !llvm.ptr
-    "llvm.store"(%310, %312) <{ordering = 0 : i64}> : (!llvm.array<64 x struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i32, i1)>>, !llvm.ptr) -> ()
-    %313 = "llvm.getelementptr"(%312, %285) <{elem_type = !llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i32, i1)>, noWrapFlags = 0 : i32, rawConstantIndices = array<i32: -2147483648>}> : (!llvm.ptr, i64) -> !llvm.ptr
-    %314 = "llvm.load"(%313) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i32, i1)>
-    %315 = "llvm.extractvalue"(%314) <{position = array<i64: 0>}> : (!llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i32, i1)>) -> !llvm.struct<(f32, f32)>
-    %316 = "llvm.load"(%288) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.array<64 x struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i32, i1)>>
-    %317 = "llvm.mlir.constant"() <{value = 1 : i64}> : () -> i64
-    %318 = "llvm.alloca"(%317) <{elem_type = !llvm.array<64 x struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i32, i1)>>}> : (i64) -> !llvm.ptr
-    "llvm.store"(%316, %318) <{ordering = 0 : i64}> : (!llvm.array<64 x struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i32, i1)>>, !llvm.ptr) -> ()
-    %319 = "llvm.getelementptr"(%318, %285) <{elem_type = !llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i32, i1)>, noWrapFlags = 0 : i32, rawConstantIndices = array<i32: -2147483648>}> : (!llvm.ptr, i64) -> !llvm.ptr
-    %320 = "llvm.load"(%319) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i32, i1)>
-    %321 = "llvm.extractvalue"(%320) <{position = array<i64: 1>}> : (!llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i32, i1)>) -> !llvm.struct<(f32, f32)>
-    %322 = "llvm.load"(%22) <{ordering = 0 : i64}> : (!llvm.ptr) -> f32
-    %323 = "func.call"(%321, %322) <{callee = @vmul}> : (!llvm.struct<(f32, f32)>, f32) -> !llvm.struct<(f32, f32)>
-    %324 = "func.call"(%315, %323) <{callee = @vadd}> : (!llvm.struct<(f32, f32)>, !llvm.struct<(f32, f32)>) -> !llvm.struct<(f32, f32)>
-    "llvm.store"(%324, %309) <{ordering = 0 : i64}> : (!llvm.struct<(f32, f32)>, !llvm.ptr) -> ()
-    %325 = "llvm.load"(%288) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.array<64 x struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i32, i1)>>
-    %326 = "llvm.mlir.constant"() <{value = 1 : i64}> : () -> i64
-    %327 = "llvm.alloca"(%326) <{elem_type = !llvm.array<64 x struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i32, i1)>>}> : (i64) -> !llvm.ptr
-    "llvm.store"(%325, %327) <{ordering = 0 : i64}> : (!llvm.array<64 x struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i32, i1)>>, !llvm.ptr) -> ()
-    %328 = "llvm.getelementptr"(%327, %285) <{elem_type = !llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i32, i1)>, noWrapFlags = 0 : i32, rawConstantIndices = array<i32: -2147483648>}> : (!llvm.ptr, i64) -> !llvm.ptr
-    %329 = "llvm.load"(%328) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i32, i1)>
-    %330 = "llvm.extractvalue"(%329) <{position = array<i64: 0>}> : (!llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i32, i1)>) -> !llvm.struct<(f32, f32)>
-    "func.call"(%329) <{callee = @wrap}> : (!llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i32, i1)>) -> ()
-    "cf.br"(%285)[^bb51] : (i64) -> ()
-  ^bb55(%331: i64):  // 2 preds: ^bb50, ^bb58
-    %332 = "arith.cmpi"(%331, %300) <{predicate = 2 : i64}> : (i64, i64) -> i1
-    %333 = "llvm.bitcast"(%332) : (i1) -> i1
-    "cf.cond_br"(%333)[^bb56, ^bb57] <{operandSegmentSizes = array<i32: 1, 0, 0>}> : (i1) -> ()
+    %288 = "llvm.mlir.undef"() : () -> !llvm.ptr
+    %289 = "llvm.load"(%219) <{ordering = 0 : i64}> : (!llvm.ptr) -> i64
+    %290 = "llvm.mlir.constant"() <{value = 1 : i64}> : () -> i64
+    %291 = "arith.addi"(%289, %290) <{overflowFlags = #arith.overflow<none>}> : (i64, i64) -> i64
+    "llvm.store"(%291, %219) <{ordering = 0 : i64}> : (i64, !llvm.ptr) -> ()
+    %292 = "llvm.getelementptr"(%22, %272) <{elem_type = !llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i32, i1)>, noWrapFlags = 0 : i32, rawConstantIndices = array<i32: -2147483648>}> : (!llvm.ptr, i64) -> !llvm.ptr
+    %293 = "llvm.getelementptr"(%292) <{elem_type = !llvm.struct<(f32, f32)>, noWrapFlags = 0 : i32, rawConstantIndices = array<i32: 0>}> : (!llvm.ptr) -> !llvm.ptr
+    %294 = "llvm.load"(%22) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.array<64 x struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i32, i1)>>
+    %295 = "llvm.mlir.constant"() <{value = 1 : i64}> : () -> i64
+    %296 = "llvm.alloca"(%295) <{elem_type = !llvm.array<64 x struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i32, i1)>>}> : (i64) -> !llvm.ptr
+    "llvm.store"(%294, %296) <{ordering = 0 : i64}> : (!llvm.array<64 x struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i32, i1)>>, !llvm.ptr) -> ()
+    %297 = "llvm.getelementptr"(%296, %272) <{elem_type = !llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i32, i1)>, noWrapFlags = 0 : i32, rawConstantIndices = array<i32: -2147483648>}> : (!llvm.ptr, i64) -> !llvm.ptr
+    %298 = "llvm.load"(%297) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i32, i1)>
+    %299 = "llvm.extractvalue"(%298) <{position = array<i64: 0>}> : (!llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i32, i1)>) -> !llvm.struct<(f32, f32)>
+    %300 = "llvm.load"(%22) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.array<64 x struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i32, i1)>>
+    %301 = "llvm.mlir.constant"() <{value = 1 : i64}> : () -> i64
+    %302 = "llvm.alloca"(%301) <{elem_type = !llvm.array<64 x struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i32, i1)>>}> : (i64) -> !llvm.ptr
+    "llvm.store"(%300, %302) <{ordering = 0 : i64}> : (!llvm.array<64 x struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i32, i1)>>, !llvm.ptr) -> ()
+    %303 = "llvm.getelementptr"(%302, %272) <{elem_type = !llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i32, i1)>, noWrapFlags = 0 : i32, rawConstantIndices = array<i32: -2147483648>}> : (!llvm.ptr, i64) -> !llvm.ptr
+    %304 = "llvm.load"(%303) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i32, i1)>
+    %305 = "llvm.extractvalue"(%304) <{position = array<i64: 1>}> : (!llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i32, i1)>) -> !llvm.struct<(f32, f32)>
+    %306 = "llvm.load"(%29) <{ordering = 0 : i64}> : (!llvm.ptr) -> f32
+    %307 = "func.call"(%305, %306) <{callee = @vmul}> : (!llvm.struct<(f32, f32)>, f32) -> !llvm.struct<(f32, f32)>
+    %308 = "func.call"(%299, %307) <{callee = @vadd}> : (!llvm.struct<(f32, f32)>, !llvm.struct<(f32, f32)>) -> !llvm.struct<(f32, f32)>
+    "llvm.store"(%308, %293) <{ordering = 0 : i64}> : (!llvm.struct<(f32, f32)>, !llvm.ptr) -> ()
+    %309 = "llvm.load"(%22) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.array<64 x struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i32, i1)>>
+    %310 = "llvm.mlir.constant"() <{value = 1 : i64}> : () -> i64
+    %311 = "llvm.alloca"(%310) <{elem_type = !llvm.array<64 x struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i32, i1)>>}> : (i64) -> !llvm.ptr
+    "llvm.store"(%309, %311) <{ordering = 0 : i64}> : (!llvm.array<64 x struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i32, i1)>>, !llvm.ptr) -> ()
+    %312 = "llvm.getelementptr"(%311, %272) <{elem_type = !llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i32, i1)>, noWrapFlags = 0 : i32, rawConstantIndices = array<i32: -2147483648>}> : (!llvm.ptr, i64) -> !llvm.ptr
+    %313 = "llvm.load"(%312) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i32, i1)>
+    %314 = "llvm.extractvalue"(%313) <{position = array<i64: 0>}> : (!llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i32, i1)>) -> !llvm.struct<(f32, f32)>
+    "func.call"(%313) <{callee = @wrap}> : (!llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i32, i1)>) -> ()
+    "cf.br"(%272)[^bb51] : (i64) -> ()
+  ^bb55(%315: i64):  // 2 preds: ^bb50, ^bb58
+    %316 = "arith.cmpi"(%315, %284) <{predicate = 2 : i64}> : (i64, i64) -> i1
+    "cf.cond_br"(%316)[^bb56, ^bb57] <{operandSegmentSizes = array<i32: 1, 0, 0>}> : (i1) -> ()
   ^bb56:  // pred: ^bb55
-    %334 = "llvm.load"(%217) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.array<64 x struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i1)>>
-    %335 = "llvm.mlir.constant"() <{value = 1 : i64}> : () -> i64
-    %336 = "llvm.alloca"(%335) <{elem_type = !llvm.array<64 x struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i1)>>}> : (i64) -> !llvm.ptr
-    "llvm.store"(%334, %336) <{ordering = 0 : i64}> : (!llvm.array<64 x struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i1)>>, !llvm.ptr) -> ()
-    %337 = "llvm.getelementptr"(%336, %331) <{elem_type = !llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i1)>, noWrapFlags = 0 : i32, rawConstantIndices = array<i32: -2147483648>}> : (!llvm.ptr, i64) -> !llvm.ptr
-    %338 = "llvm.load"(%337) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i1)>
-    %339 = "llvm.extractvalue"(%338) <{position = array<i64: 3>}> : (!llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i1)>) -> i1
-    %340 = "llvm.mlir.constant"() <{value = true}> : () -> i1
-    %341 = "arith.xori"(%339, %340) : (i1, i1) -> i1
-    %342 = "llvm.bitcast"(%341) : (i1) -> i1
-    "cf.cond_br"(%342)[^bb59, ^bb60] <{operandSegmentSizes = array<i32: 1, 0, 0>}> : (i1) -> ()
+    %317 = "llvm.load"(%20) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.array<64 x struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i1)>>
+    %318 = "llvm.mlir.constant"() <{value = 1 : i64}> : () -> i64
+    %319 = "llvm.alloca"(%318) <{elem_type = !llvm.array<64 x struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i1)>>}> : (i64) -> !llvm.ptr
+    "llvm.store"(%317, %319) <{ordering = 0 : i64}> : (!llvm.array<64 x struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i1)>>, !llvm.ptr) -> ()
+    %320 = "llvm.getelementptr"(%319, %315) <{elem_type = !llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i1)>, noWrapFlags = 0 : i32, rawConstantIndices = array<i32: -2147483648>}> : (!llvm.ptr, i64) -> !llvm.ptr
+    %321 = "llvm.load"(%320) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i1)>
+    %322 = "llvm.extractvalue"(%321) <{position = array<i64: 3>}> : (!llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i1)>) -> i1
+    %323 = "llvm.mlir.constant"() <{value = true}> : () -> i1
+    %324 = "arith.xori"(%322, %323) : (i1, i1) -> i1
+    "cf.cond_br"(%324)[^bb59, ^bb60] <{operandSegmentSizes = array<i32: 1, 0, 0>}> : (i1) -> ()
   ^bb57:  // pred: ^bb55
-    %343 = "llvm.mlir.undef"() : () -> !llvm.ptr
-    %344 = "llvm.load"(%27) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, f32, i1, f32)>
-    %345 = "llvm.extractvalue"(%344) <{position = array<i64: 4>}> : (!llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, f32, i1, f32)>) -> i1
-    %346 = "llvm.load"(%27) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, f32, i1, f32)>
-    %347 = "llvm.extractvalue"(%346) <{position = array<i64: 5>}> : (!llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, f32, i1, f32)>) -> f32
-    %348 = "llvm.fpext"(%347) : (f32) -> f64
-    %349 = "llvm.mlir.constant"() <{value = 0.000000e+00 : f64}> : () -> f64
-    %350 = "arith.cmpf"(%348, %349) <{fastmath = #arith.fastmath<none>, predicate = 5 : i64}> : (f64, f64) -> i1
-    %351 = "arith.andi"(%345, %350) : (i1, i1) -> i1
-    %352 = "llvm.load"(%23) <{ordering = 0 : i64}> : (!llvm.ptr) -> i1
-    %353 = "llvm.mlir.constant"() <{value = true}> : () -> i1
-    %354 = "arith.xori"(%352, %353) : (i1, i1) -> i1
-    %355 = "arith.andi"(%351, %354) : (i1, i1) -> i1
-    %356 = "llvm.bitcast"(%355) : (i1) -> i1
-    "cf.cond_br"(%356)[^bb72, ^bb73] <{operandSegmentSizes = array<i32: 1, 0, 0>}> : (i1) -> ()
-  ^bb58(%357: i64):  // 2 preds: ^bb59, ^bb64
-    %358 = "llvm.mlir.constant"() <{value = 1 : i64}> : () -> i64
-    %359 = "arith.addi"(%357, %358) <{overflowFlags = #arith.overflow<none>}> : (i64, i64) -> i64
-    "cf.br"(%359)[^bb55] : (i64) -> ()
+    %325 = "llvm.mlir.undef"() : () -> !llvm.ptr
+    %326 = "llvm.load"(%17) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, f32, i1, f32)>
+    %327 = "llvm.extractvalue"(%326) <{position = array<i64: 4>}> : (!llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, f32, i1, f32)>) -> i1
+    %328 = "llvm.load"(%17) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, f32, i1, f32)>
+    %329 = "llvm.extractvalue"(%328) <{position = array<i64: 5>}> : (!llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, f32, i1, f32)>) -> f32
+    %330 = "llvm.fpext"(%329) : (f32) -> f64
+    %331 = "llvm.mlir.constant"() <{value = 0.000000e+00 : f64}> : () -> f64
+    %332 = "arith.cmpf"(%330, %331) <{fastmath = #arith.fastmath<none>, predicate = 5 : i64}> : (f64, f64) -> i1
+    %333 = "arith.andi"(%327, %332) : (i1, i1) -> i1
+    %334 = "llvm.load"(%16) <{ordering = 0 : i64}> : (!llvm.ptr) -> i1
+    %335 = "llvm.mlir.constant"() <{value = true}> : () -> i1
+    %336 = "arith.xori"(%334, %335) : (i1, i1) -> i1
+    %337 = "arith.andi"(%333, %336) : (i1, i1) -> i1
+    "cf.cond_br"(%337)[^bb72, ^bb73] <{operandSegmentSizes = array<i32: 1, 0, 0>}> : (i1) -> ()
+  ^bb58(%338: i64):  // 2 preds: ^bb59, ^bb64
+    %339 = "llvm.mlir.constant"() <{value = 1 : i64}> : () -> i64
+    %340 = "arith.addi"(%338, %339) <{overflowFlags = #arith.overflow<none>}> : (i64, i64) -> i64
+    "cf.br"(%340)[^bb55] : (i64) -> ()
   ^bb59:  // pred: ^bb56
-    "cf.br"(%331)[^bb58] : (i64) -> ()
+    "cf.br"(%315)[^bb58] : (i64) -> ()
   ^bb60:  // pred: ^bb56
     "cf.br"()[^bb61] : () -> ()
   ^bb61:  // pred: ^bb60
-    %360 = "llvm.mlir.undef"() : () -> !llvm.ptr
-    %361 = "llvm.mlir.constant"() <{value = 0 : i64}> : () -> i64
-    %362 = "llvm.load"(%232) <{ordering = 0 : i64}> : (!llvm.ptr) -> i64
-    "cf.br"(%361)[^bb62] : (i64) -> ()
-  ^bb62(%363: i64):  // 2 preds: ^bb61, ^bb65
-    %364 = "arith.cmpi"(%363, %362) <{predicate = 2 : i64}> : (i64, i64) -> i1
-    %365 = "llvm.bitcast"(%364) : (i1) -> i1
-    "cf.cond_br"(%365)[^bb63, ^bb64] <{operandSegmentSizes = array<i32: 1, 0, 0>}> : (i1) -> ()
+    %341 = "llvm.mlir.undef"() : () -> !llvm.ptr
+    %342 = "llvm.mlir.constant"() <{value = 0 : i64}> : () -> i64
+    %343 = "llvm.load"(%21) <{ordering = 0 : i64}> : (!llvm.ptr) -> i64
+    "cf.br"(%342)[^bb62] : (i64) -> ()
+  ^bb62(%344: i64):  // 2 preds: ^bb61, ^bb65
+    %345 = "arith.cmpi"(%344, %343) <{predicate = 2 : i64}> : (i64, i64) -> i1
+    "cf.cond_br"(%345)[^bb63, ^bb64] <{operandSegmentSizes = array<i32: 1, 0, 0>}> : (i1) -> ()
   ^bb63:  // pred: ^bb62
-    %366 = "llvm.load"(%288) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.array<64 x struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i32, i1)>>
-    %367 = "llvm.mlir.constant"() <{value = 1 : i64}> : () -> i64
-    %368 = "llvm.alloca"(%367) <{elem_type = !llvm.array<64 x struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i32, i1)>>}> : (i64) -> !llvm.ptr
-    "llvm.store"(%366, %368) <{ordering = 0 : i64}> : (!llvm.array<64 x struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i32, i1)>>, !llvm.ptr) -> ()
-    %369 = "llvm.getelementptr"(%368, %363) <{elem_type = !llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i32, i1)>, noWrapFlags = 0 : i32, rawConstantIndices = array<i32: -2147483648>}> : (!llvm.ptr, i64) -> !llvm.ptr
-    %370 = "llvm.load"(%369) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i32, i1)>
-    %371 = "llvm.extractvalue"(%370) <{position = array<i64: 4>}> : (!llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i32, i1)>) -> i1
-    %372 = "llvm.mlir.constant"() <{value = true}> : () -> i1
-    %373 = "arith.xori"(%371, %372) : (i1, i1) -> i1
-    %374 = "llvm.bitcast"(%373) : (i1) -> i1
-    "cf.cond_br"(%374)[^bb66, ^bb67] <{operandSegmentSizes = array<i32: 1, 0, 0>}> : (i1) -> ()
+    %346 = "llvm.load"(%22) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.array<64 x struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i32, i1)>>
+    %347 = "llvm.mlir.constant"() <{value = 1 : i64}> : () -> i64
+    %348 = "llvm.alloca"(%347) <{elem_type = !llvm.array<64 x struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i32, i1)>>}> : (i64) -> !llvm.ptr
+    "llvm.store"(%346, %348) <{ordering = 0 : i64}> : (!llvm.array<64 x struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i32, i1)>>, !llvm.ptr) -> ()
+    %349 = "llvm.getelementptr"(%348, %344) <{elem_type = !llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i32, i1)>, noWrapFlags = 0 : i32, rawConstantIndices = array<i32: -2147483648>}> : (!llvm.ptr, i64) -> !llvm.ptr
+    %350 = "llvm.load"(%349) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i32, i1)>
+    %351 = "llvm.extractvalue"(%350) <{position = array<i64: 4>}> : (!llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i32, i1)>) -> i1
+    %352 = "llvm.mlir.constant"() <{value = true}> : () -> i1
+    %353 = "arith.xori"(%351, %352) : (i1, i1) -> i1
+    "cf.cond_br"(%353)[^bb66, ^bb67] <{operandSegmentSizes = array<i32: 1, 0, 0>}> : (i1) -> ()
   ^bb64:  // 2 preds: ^bb62, ^bb69
-    %375 = "llvm.mlir.undef"() : () -> !llvm.ptr
-    "cf.br"(%331)[^bb58] : (i64) -> ()
-  ^bb65(%376: i64):  // 2 preds: ^bb66, ^bb71
-    %377 = "llvm.mlir.constant"() <{value = 1 : i64}> : () -> i64
-    %378 = "arith.addi"(%376, %377) <{overflowFlags = #arith.overflow<none>}> : (i64, i64) -> i64
-    "cf.br"(%378)[^bb62] : (i64) -> ()
+    %354 = "llvm.mlir.undef"() : () -> !llvm.ptr
+    "cf.br"(%315)[^bb58] : (i64) -> ()
+  ^bb65(%355: i64):  // 2 preds: ^bb66, ^bb71
+    %356 = "llvm.mlir.constant"() <{value = 1 : i64}> : () -> i64
+    %357 = "arith.addi"(%355, %356) <{overflowFlags = #arith.overflow<none>}> : (i64, i64) -> i64
+    "cf.br"(%357)[^bb62] : (i64) -> ()
   ^bb66:  // pred: ^bb63
-    "cf.br"(%363)[^bb65] : (i64) -> ()
+    "cf.br"(%344)[^bb65] : (i64) -> ()
   ^bb67:  // pred: ^bb63
     "cf.br"()[^bb68] : () -> ()
   ^bb68:  // pred: ^bb67
-    %379 = "llvm.mlir.undef"() : () -> !llvm.ptr
-    %380 = "llvm.load"(%217) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.array<64 x struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i1)>>
-    %381 = "llvm.mlir.constant"() <{value = 1 : i64}> : () -> i64
-    %382 = "llvm.alloca"(%381) <{elem_type = !llvm.array<64 x struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i1)>>}> : (i64) -> !llvm.ptr
-    "llvm.store"(%380, %382) <{ordering = 0 : i64}> : (!llvm.array<64 x struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i1)>>, !llvm.ptr) -> ()
-    %383 = "llvm.getelementptr"(%382, %331) <{elem_type = !llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i1)>, noWrapFlags = 0 : i32, rawConstantIndices = array<i32: -2147483648>}> : (!llvm.ptr, i64) -> !llvm.ptr
-    %384 = "llvm.load"(%383) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i1)>
-    %385 = "llvm.extractvalue"(%384) <{position = array<i64: 0>}> : (!llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i1)>) -> !llvm.struct<(f32, f32)>
-    %386 = "llvm.load"(%288) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.array<64 x struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i32, i1)>>
-    %387 = "llvm.mlir.constant"() <{value = 1 : i64}> : () -> i64
-    %388 = "llvm.alloca"(%387) <{elem_type = !llvm.array<64 x struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i32, i1)>>}> : (i64) -> !llvm.ptr
-    "llvm.store"(%386, %388) <{ordering = 0 : i64}> : (!llvm.array<64 x struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i32, i1)>>, !llvm.ptr) -> ()
-    %389 = "llvm.getelementptr"(%388, %363) <{elem_type = !llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i32, i1)>, noWrapFlags = 0 : i32, rawConstantIndices = array<i32: -2147483648>}> : (!llvm.ptr, i64) -> !llvm.ptr
-    %390 = "llvm.load"(%389) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i32, i1)>
-    %391 = "llvm.extractvalue"(%390) <{position = array<i64: 0>}> : (!llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i32, i1)>) -> !llvm.struct<(f32, f32)>
-    %392 = "func.call"(%385, %391) <{callee = @vsub}> : (!llvm.struct<(f32, f32)>, !llvm.struct<(f32, f32)>) -> !llvm.struct<(f32, f32)>
-    %393 = "llvm.mlir.constant"() <{value = 1 : i64}> : () -> i64
-    %394 = "llvm.alloca"(%393) <{elem_type = !llvm.struct<(f32, f32)>}> : (i64) -> !llvm.ptr
-    "llvm.store"(%392, %394) <{ordering = 0 : i64}> : (!llvm.struct<(f32, f32)>, !llvm.ptr) -> ()
-    %395 = "llvm.load"(%394) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.struct<(f32, f32)>
-    %396 = "func.call"(%395) <{callee = @len2}> : (!llvm.struct<(f32, f32)>) -> f32
-    %397 = "llvm.load"(%288) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.array<64 x struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i32, i1)>>
-    %398 = "llvm.mlir.constant"() <{value = 1 : i64}> : () -> i64
-    %399 = "llvm.alloca"(%398) <{elem_type = !llvm.array<64 x struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i32, i1)>>}> : (i64) -> !llvm.ptr
-    "llvm.store"(%397, %399) <{ordering = 0 : i64}> : (!llvm.array<64 x struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i32, i1)>>, !llvm.ptr) -> ()
-    %400 = "llvm.getelementptr"(%399, %363) <{elem_type = !llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i32, i1)>, noWrapFlags = 0 : i32, rawConstantIndices = array<i32: -2147483648>}> : (!llvm.ptr, i64) -> !llvm.ptr
-    %401 = "llvm.load"(%400) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i32, i1)>
-    %402 = "llvm.extractvalue"(%401) <{position = array<i64: 2>}> : (!llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i32, i1)>) -> f32
-    %403 = "llvm.load"(%288) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.array<64 x struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i32, i1)>>
-    %404 = "llvm.mlir.constant"() <{value = 1 : i64}> : () -> i64
-    %405 = "llvm.alloca"(%404) <{elem_type = !llvm.array<64 x struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i32, i1)>>}> : (i64) -> !llvm.ptr
-    "llvm.store"(%403, %405) <{ordering = 0 : i64}> : (!llvm.array<64 x struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i32, i1)>>, !llvm.ptr) -> ()
-    %406 = "llvm.getelementptr"(%405, %363) <{elem_type = !llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i32, i1)>, noWrapFlags = 0 : i32, rawConstantIndices = array<i32: -2147483648>}> : (!llvm.ptr, i64) -> !llvm.ptr
-    %407 = "llvm.load"(%406) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i32, i1)>
-    %408 = "llvm.extractvalue"(%407) <{position = array<i64: 2>}> : (!llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i32, i1)>) -> f32
-    %409 = "arith.mulf"(%402, %408) <{fastmath = #arith.fastmath<none>}> : (f32, f32) -> f32
-    %410 = "arith.cmpf"(%396, %409) <{fastmath = #arith.fastmath<none>, predicate = 5 : i64}> : (f32, f32) -> i1
-    %411 = "llvm.bitcast"(%410) : (i1) -> i1
-    "cf.cond_br"(%411)[^bb69, ^bb70] <{operandSegmentSizes = array<i32: 1, 0, 0>}> : (i1) -> ()
+    %358 = "llvm.mlir.undef"() : () -> !llvm.ptr
+    %359 = "llvm.load"(%20) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.array<64 x struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i1)>>
+    %360 = "llvm.mlir.constant"() <{value = 1 : i64}> : () -> i64
+    %361 = "llvm.alloca"(%360) <{elem_type = !llvm.array<64 x struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i1)>>}> : (i64) -> !llvm.ptr
+    "llvm.store"(%359, %361) <{ordering = 0 : i64}> : (!llvm.array<64 x struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i1)>>, !llvm.ptr) -> ()
+    %362 = "llvm.getelementptr"(%361, %315) <{elem_type = !llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i1)>, noWrapFlags = 0 : i32, rawConstantIndices = array<i32: -2147483648>}> : (!llvm.ptr, i64) -> !llvm.ptr
+    %363 = "llvm.load"(%362) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i1)>
+    %364 = "llvm.extractvalue"(%363) <{position = array<i64: 0>}> : (!llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i1)>) -> !llvm.struct<(f32, f32)>
+    %365 = "llvm.load"(%22) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.array<64 x struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i32, i1)>>
+    %366 = "llvm.mlir.constant"() <{value = 1 : i64}> : () -> i64
+    %367 = "llvm.alloca"(%366) <{elem_type = !llvm.array<64 x struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i32, i1)>>}> : (i64) -> !llvm.ptr
+    "llvm.store"(%365, %367) <{ordering = 0 : i64}> : (!llvm.array<64 x struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i32, i1)>>, !llvm.ptr) -> ()
+    %368 = "llvm.getelementptr"(%367, %344) <{elem_type = !llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i32, i1)>, noWrapFlags = 0 : i32, rawConstantIndices = array<i32: -2147483648>}> : (!llvm.ptr, i64) -> !llvm.ptr
+    %369 = "llvm.load"(%368) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i32, i1)>
+    %370 = "llvm.extractvalue"(%369) <{position = array<i64: 0>}> : (!llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i32, i1)>) -> !llvm.struct<(f32, f32)>
+    %371 = "func.call"(%364, %370) <{callee = @vsub}> : (!llvm.struct<(f32, f32)>, !llvm.struct<(f32, f32)>) -> !llvm.struct<(f32, f32)>
+    %372 = "llvm.mlir.constant"() <{value = 1 : i64}> : () -> i64
+    %373 = "llvm.alloca"(%372) <{elem_type = !llvm.struct<(f32, f32)>}> : (i64) -> !llvm.ptr
+    "llvm.store"(%371, %373) <{ordering = 0 : i64}> : (!llvm.struct<(f32, f32)>, !llvm.ptr) -> ()
+    %374 = "llvm.load"(%373) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.struct<(f32, f32)>
+    %375 = "func.call"(%374) <{callee = @len2}> : (!llvm.struct<(f32, f32)>) -> f32
+    %376 = "llvm.load"(%22) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.array<64 x struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i32, i1)>>
+    %377 = "llvm.mlir.constant"() <{value = 1 : i64}> : () -> i64
+    %378 = "llvm.alloca"(%377) <{elem_type = !llvm.array<64 x struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i32, i1)>>}> : (i64) -> !llvm.ptr
+    "llvm.store"(%376, %378) <{ordering = 0 : i64}> : (!llvm.array<64 x struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i32, i1)>>, !llvm.ptr) -> ()
+    %379 = "llvm.getelementptr"(%378, %344) <{elem_type = !llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i32, i1)>, noWrapFlags = 0 : i32, rawConstantIndices = array<i32: -2147483648>}> : (!llvm.ptr, i64) -> !llvm.ptr
+    %380 = "llvm.load"(%379) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i32, i1)>
+    %381 = "llvm.extractvalue"(%380) <{position = array<i64: 2>}> : (!llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i32, i1)>) -> f32
+    %382 = "llvm.load"(%22) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.array<64 x struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i32, i1)>>
+    %383 = "llvm.mlir.constant"() <{value = 1 : i64}> : () -> i64
+    %384 = "llvm.alloca"(%383) <{elem_type = !llvm.array<64 x struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i32, i1)>>}> : (i64) -> !llvm.ptr
+    "llvm.store"(%382, %384) <{ordering = 0 : i64}> : (!llvm.array<64 x struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i32, i1)>>, !llvm.ptr) -> ()
+    %385 = "llvm.getelementptr"(%384, %344) <{elem_type = !llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i32, i1)>, noWrapFlags = 0 : i32, rawConstantIndices = array<i32: -2147483648>}> : (!llvm.ptr, i64) -> !llvm.ptr
+    %386 = "llvm.load"(%385) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i32, i1)>
+    %387 = "llvm.extractvalue"(%386) <{position = array<i64: 2>}> : (!llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i32, i1)>) -> f32
+    %388 = "arith.mulf"(%381, %387) <{fastmath = #arith.fastmath<none>}> : (f32, f32) -> f32
+    %389 = "arith.cmpf"(%375, %388) <{fastmath = #arith.fastmath<none>, predicate = 5 : i64}> : (f32, f32) -> i1
+    "cf.cond_br"(%389)[^bb69, ^bb70] <{operandSegmentSizes = array<i32: 1, 0, 0>}> : (i1) -> ()
   ^bb69:  // pred: ^bb68
-    %412 = "llvm.getelementptr"(%217, %331) <{elem_type = !llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i1)>, noWrapFlags = 0 : i32, rawConstantIndices = array<i32: -2147483648>}> : (!llvm.ptr, i64) -> !llvm.ptr
-    %413 = "llvm.getelementptr"(%412) <{elem_type = i1, noWrapFlags = 0 : i32, rawConstantIndices = array<i32: 3>}> : (!llvm.ptr) -> !llvm.ptr
-    %414 = "llvm.mlir.constant"() <{value = false}> : () -> i1
-    "llvm.store"(%414, %413) <{ordering = 0 : i64}> : (i1, !llvm.ptr) -> ()
-    "llvm.call"(%363) <{CConv = #llvm.cconv<ccc>, TailCallKind = #llvm.tailcallkind<none>, callee = @explode_rock, fastmathFlags = #llvm.fastmath<none>, op_bundle_sizes = array<i32>, operandSegmentSizes = array<i32: 1, 0>}> : (i64) -> ()
+    %390 = "llvm.getelementptr"(%20, %315) <{elem_type = !llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i1)>, noWrapFlags = 0 : i32, rawConstantIndices = array<i32: -2147483648>}> : (!llvm.ptr, i64) -> !llvm.ptr
+    %391 = "llvm.getelementptr"(%390) <{elem_type = i1, noWrapFlags = 0 : i32, rawConstantIndices = array<i32: 3>}> : (!llvm.ptr) -> !llvm.ptr
+    %392 = "llvm.mlir.constant"() <{value = false}> : () -> i1
+    "llvm.store"(%392, %391) <{ordering = 0 : i64}> : (i1, !llvm.ptr) -> ()
+    "llvm.call"(%344) <{CConv = #llvm.cconv<ccc>, TailCallKind = #llvm.tailcallkind<none>, callee = @explode_rock, fastmathFlags = #llvm.fastmath<none>, op_bundle_sizes = array<i32>, operandSegmentSizes = array<i32: 1, 0>}> : (i64) -> ()
     "cf.br"()[^bb64] : () -> ()
   ^bb70:  // pred: ^bb68
     "cf.br"()[^bb71] : () -> ()
   ^bb71:  // pred: ^bb70
-    %415 = "llvm.mlir.undef"() : () -> !llvm.ptr
-    "cf.br"(%363)[^bb65] : (i64) -> ()
+    %393 = "llvm.mlir.undef"() : () -> !llvm.ptr
+    "cf.br"(%344)[^bb65] : (i64) -> ()
   ^bb72:  // pred: ^bb57
-    %416 = "llvm.mlir.constant"() <{value = 0 : i64}> : () -> i64
-    %417 = "llvm.load"(%232) <{ordering = 0 : i64}> : (!llvm.ptr) -> i64
-    "cf.br"(%416)[^bb75] : (i64) -> ()
+    %394 = "llvm.mlir.constant"() <{value = 0 : i64}> : () -> i64
+    %395 = "llvm.load"(%21) <{ordering = 0 : i64}> : (!llvm.ptr) -> i64
+    "cf.br"(%394)[^bb75] : (i64) -> ()
   ^bb73:  // pred: ^bb57
     "cf.br"()[^bb74] : () -> ()
   ^bb74:  // 2 preds: ^bb73, ^bb77
-    %418 = "llvm.mlir.undef"() : () -> !llvm.ptr
-    %419 = "llvm.load"(%230) <{ordering = 0 : i64}> : (!llvm.ptr) -> i64
-    %420 = "llvm.mlir.constant"() <{value = 0 : i64}> : () -> i64
-    %421 = "arith.cmpi"(%419, %420) <{predicate = 0 : i64}> : (i64, i64) -> i1
-    %422 = "llvm.load"(%23) <{ordering = 0 : i64}> : (!llvm.ptr) -> i1
-    %423 = "llvm.mlir.constant"() <{value = true}> : () -> i1
-    %424 = "arith.xori"(%422, %423) : (i1, i1) -> i1
-    %425 = "arith.andi"(%421, %424) : (i1, i1) -> i1
-    %426 = "llvm.bitcast"(%425) : (i1) -> i1
-    "cf.cond_br"(%426)[^bb85, ^bb86] <{operandSegmentSizes = array<i32: 1, 0, 0>}> : (i1) -> ()
-  ^bb75(%427: i64):  // 2 preds: ^bb72, ^bb78
-    %428 = "arith.cmpi"(%427, %417) <{predicate = 2 : i64}> : (i64, i64) -> i1
-    %429 = "llvm.bitcast"(%428) : (i1) -> i1
-    "cf.cond_br"(%429)[^bb76, ^bb77] <{operandSegmentSizes = array<i32: 1, 0, 0>}> : (i1) -> ()
+    %396 = "llvm.mlir.undef"() : () -> !llvm.ptr
+    %397 = "llvm.load"(%219) <{ordering = 0 : i64}> : (!llvm.ptr) -> i64
+    %398 = "llvm.mlir.constant"() <{value = 0 : i64}> : () -> i64
+    %399 = "arith.cmpi"(%397, %398) <{predicate = 0 : i64}> : (i64, i64) -> i1
+    %400 = "llvm.load"(%16) <{ordering = 0 : i64}> : (!llvm.ptr) -> i1
+    %401 = "llvm.mlir.constant"() <{value = true}> : () -> i1
+    %402 = "arith.xori"(%400, %401) : (i1, i1) -> i1
+    %403 = "arith.andi"(%399, %402) : (i1, i1) -> i1
+    "cf.cond_br"(%403)[^bb85, ^bb86] <{operandSegmentSizes = array<i32: 1, 0, 0>}> : (i1) -> ()
+  ^bb75(%404: i64):  // 2 preds: ^bb72, ^bb78
+    %405 = "arith.cmpi"(%404, %395) <{predicate = 2 : i64}> : (i64, i64) -> i1
+    "cf.cond_br"(%405)[^bb76, ^bb77] <{operandSegmentSizes = array<i32: 1, 0, 0>}> : (i1) -> ()
   ^bb76:  // pred: ^bb75
-    %430 = "llvm.load"(%288) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.array<64 x struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i32, i1)>>
-    %431 = "llvm.mlir.constant"() <{value = 1 : i64}> : () -> i64
-    %432 = "llvm.alloca"(%431) <{elem_type = !llvm.array<64 x struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i32, i1)>>}> : (i64) -> !llvm.ptr
-    "llvm.store"(%430, %432) <{ordering = 0 : i64}> : (!llvm.array<64 x struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i32, i1)>>, !llvm.ptr) -> ()
-    %433 = "llvm.getelementptr"(%432, %427) <{elem_type = !llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i32, i1)>, noWrapFlags = 0 : i32, rawConstantIndices = array<i32: -2147483648>}> : (!llvm.ptr, i64) -> !llvm.ptr
-    %434 = "llvm.load"(%433) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i32, i1)>
-    %435 = "llvm.extractvalue"(%434) <{position = array<i64: 4>}> : (!llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i32, i1)>) -> i1
-    %436 = "llvm.mlir.constant"() <{value = true}> : () -> i1
-    %437 = "arith.xori"(%435, %436) : (i1, i1) -> i1
-    %438 = "llvm.bitcast"(%437) : (i1) -> i1
-    "cf.cond_br"(%438)[^bb79, ^bb80] <{operandSegmentSizes = array<i32: 1, 0, 0>}> : (i1) -> ()
+    %406 = "llvm.load"(%22) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.array<64 x struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i32, i1)>>
+    %407 = "llvm.mlir.constant"() <{value = 1 : i64}> : () -> i64
+    %408 = "llvm.alloca"(%407) <{elem_type = !llvm.array<64 x struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i32, i1)>>}> : (i64) -> !llvm.ptr
+    "llvm.store"(%406, %408) <{ordering = 0 : i64}> : (!llvm.array<64 x struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i32, i1)>>, !llvm.ptr) -> ()
+    %409 = "llvm.getelementptr"(%408, %404) <{elem_type = !llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i32, i1)>, noWrapFlags = 0 : i32, rawConstantIndices = array<i32: -2147483648>}> : (!llvm.ptr, i64) -> !llvm.ptr
+    %410 = "llvm.load"(%409) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i32, i1)>
+    %411 = "llvm.extractvalue"(%410) <{position = array<i64: 4>}> : (!llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i32, i1)>) -> i1
+    %412 = "llvm.mlir.constant"() <{value = true}> : () -> i1
+    %413 = "arith.xori"(%411, %412) : (i1, i1) -> i1
+    "cf.cond_br"(%413)[^bb79, ^bb80] <{operandSegmentSizes = array<i32: 1, 0, 0>}> : (i1) -> ()
   ^bb77:  // 2 preds: ^bb75, ^bb82
-    %439 = "llvm.mlir.undef"() : () -> !llvm.ptr
+    %414 = "llvm.mlir.undef"() : () -> !llvm.ptr
     "cf.br"()[^bb74] : () -> ()
-  ^bb78(%440: i64):  // 2 preds: ^bb79, ^bb84
-    %441 = "llvm.mlir.constant"() <{value = 1 : i64}> : () -> i64
-    %442 = "arith.addi"(%440, %441) <{overflowFlags = #arith.overflow<none>}> : (i64, i64) -> i64
-    "cf.br"(%442)[^bb75] : (i64) -> ()
+  ^bb78(%415: i64):  // 2 preds: ^bb79, ^bb84
+    %416 = "llvm.mlir.constant"() <{value = 1 : i64}> : () -> i64
+    %417 = "arith.addi"(%415, %416) <{overflowFlags = #arith.overflow<none>}> : (i64, i64) -> i64
+    "cf.br"(%417)[^bb75] : (i64) -> ()
   ^bb79:  // pred: ^bb76
-    "cf.br"(%427)[^bb78] : (i64) -> ()
+    "cf.br"(%404)[^bb78] : (i64) -> ()
   ^bb80:  // pred: ^bb76
     "cf.br"()[^bb81] : () -> ()
   ^bb81:  // pred: ^bb80
-    %443 = "llvm.mlir.undef"() : () -> !llvm.ptr
-    %444 = "llvm.load"(%27) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, f32, i1, f32)>
-    %445 = "llvm.extractvalue"(%444) <{position = array<i64: 0>}> : (!llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, f32, i1, f32)>) -> !llvm.struct<(f32, f32)>
-    %446 = "llvm.load"(%288) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.array<64 x struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i32, i1)>>
-    %447 = "llvm.mlir.constant"() <{value = 1 : i64}> : () -> i64
-    %448 = "llvm.alloca"(%447) <{elem_type = !llvm.array<64 x struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i32, i1)>>}> : (i64) -> !llvm.ptr
-    "llvm.store"(%446, %448) <{ordering = 0 : i64}> : (!llvm.array<64 x struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i32, i1)>>, !llvm.ptr) -> ()
-    %449 = "llvm.getelementptr"(%448, %427) <{elem_type = !llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i32, i1)>, noWrapFlags = 0 : i32, rawConstantIndices = array<i32: -2147483648>}> : (!llvm.ptr, i64) -> !llvm.ptr
-    %450 = "llvm.load"(%449) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i32, i1)>
-    %451 = "llvm.extractvalue"(%450) <{position = array<i64: 0>}> : (!llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i32, i1)>) -> !llvm.struct<(f32, f32)>
-    %452 = "func.call"(%445, %451) <{callee = @vsub}> : (!llvm.struct<(f32, f32)>, !llvm.struct<(f32, f32)>) -> !llvm.struct<(f32, f32)>
-    %453 = "llvm.mlir.constant"() <{value = 1 : i64}> : () -> i64
-    %454 = "llvm.alloca"(%453) <{elem_type = !llvm.struct<(f32, f32)>}> : (i64) -> !llvm.ptr
-    "llvm.store"(%452, %454) <{ordering = 0 : i64}> : (!llvm.struct<(f32, f32)>, !llvm.ptr) -> ()
-    %455 = "llvm.load"(%454) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.struct<(f32, f32)>
-    %456 = "func.call"(%455) <{callee = @len2}> : (!llvm.struct<(f32, f32)>) -> f32
-    %457 = "llvm.load"(%288) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.array<64 x struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i32, i1)>>
-    %458 = "llvm.mlir.constant"() <{value = 1 : i64}> : () -> i64
-    %459 = "llvm.alloca"(%458) <{elem_type = !llvm.array<64 x struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i32, i1)>>}> : (i64) -> !llvm.ptr
-    "llvm.store"(%457, %459) <{ordering = 0 : i64}> : (!llvm.array<64 x struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i32, i1)>>, !llvm.ptr) -> ()
-    %460 = "llvm.getelementptr"(%459, %427) <{elem_type = !llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i32, i1)>, noWrapFlags = 0 : i32, rawConstantIndices = array<i32: -2147483648>}> : (!llvm.ptr, i64) -> !llvm.ptr
-    %461 = "llvm.load"(%460) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i32, i1)>
-    %462 = "llvm.extractvalue"(%461) <{position = array<i64: 2>}> : (!llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i32, i1)>) -> f32
-    %463 = "llvm.load"(%288) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.array<64 x struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i32, i1)>>
-    %464 = "llvm.mlir.constant"() <{value = 1 : i64}> : () -> i64
-    %465 = "llvm.alloca"(%464) <{elem_type = !llvm.array<64 x struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i32, i1)>>}> : (i64) -> !llvm.ptr
-    "llvm.store"(%463, %465) <{ordering = 0 : i64}> : (!llvm.array<64 x struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i32, i1)>>, !llvm.ptr) -> ()
-    %466 = "llvm.getelementptr"(%465, %427) <{elem_type = !llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i32, i1)>, noWrapFlags = 0 : i32, rawConstantIndices = array<i32: -2147483648>}> : (!llvm.ptr, i64) -> !llvm.ptr
-    %467 = "llvm.load"(%466) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i32, i1)>
-    %468 = "llvm.extractvalue"(%467) <{position = array<i64: 2>}> : (!llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i32, i1)>) -> f32
-    %469 = "arith.mulf"(%462, %468) <{fastmath = #arith.fastmath<none>}> : (f32, f32) -> f32
-    %470 = "arith.cmpf"(%456, %469) <{fastmath = #arith.fastmath<none>, predicate = 5 : i64}> : (f32, f32) -> i1
-    %471 = "llvm.bitcast"(%470) : (i1) -> i1
-    "cf.cond_br"(%471)[^bb82, ^bb83] <{operandSegmentSizes = array<i32: 1, 0, 0>}> : (i1) -> ()
+    %418 = "llvm.mlir.undef"() : () -> !llvm.ptr
+    %419 = "llvm.load"(%17) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, f32, i1, f32)>
+    %420 = "llvm.extractvalue"(%419) <{position = array<i64: 0>}> : (!llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, f32, i1, f32)>) -> !llvm.struct<(f32, f32)>
+    %421 = "llvm.load"(%22) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.array<64 x struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i32, i1)>>
+    %422 = "llvm.mlir.constant"() <{value = 1 : i64}> : () -> i64
+    %423 = "llvm.alloca"(%422) <{elem_type = !llvm.array<64 x struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i32, i1)>>}> : (i64) -> !llvm.ptr
+    "llvm.store"(%421, %423) <{ordering = 0 : i64}> : (!llvm.array<64 x struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i32, i1)>>, !llvm.ptr) -> ()
+    %424 = "llvm.getelementptr"(%423, %404) <{elem_type = !llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i32, i1)>, noWrapFlags = 0 : i32, rawConstantIndices = array<i32: -2147483648>}> : (!llvm.ptr, i64) -> !llvm.ptr
+    %425 = "llvm.load"(%424) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i32, i1)>
+    %426 = "llvm.extractvalue"(%425) <{position = array<i64: 0>}> : (!llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i32, i1)>) -> !llvm.struct<(f32, f32)>
+    %427 = "func.call"(%420, %426) <{callee = @vsub}> : (!llvm.struct<(f32, f32)>, !llvm.struct<(f32, f32)>) -> !llvm.struct<(f32, f32)>
+    %428 = "llvm.mlir.constant"() <{value = 1 : i64}> : () -> i64
+    %429 = "llvm.alloca"(%428) <{elem_type = !llvm.struct<(f32, f32)>}> : (i64) -> !llvm.ptr
+    "llvm.store"(%427, %429) <{ordering = 0 : i64}> : (!llvm.struct<(f32, f32)>, !llvm.ptr) -> ()
+    %430 = "llvm.load"(%429) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.struct<(f32, f32)>
+    %431 = "func.call"(%430) <{callee = @len2}> : (!llvm.struct<(f32, f32)>) -> f32
+    %432 = "llvm.load"(%22) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.array<64 x struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i32, i1)>>
+    %433 = "llvm.mlir.constant"() <{value = 1 : i64}> : () -> i64
+    %434 = "llvm.alloca"(%433) <{elem_type = !llvm.array<64 x struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i32, i1)>>}> : (i64) -> !llvm.ptr
+    "llvm.store"(%432, %434) <{ordering = 0 : i64}> : (!llvm.array<64 x struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i32, i1)>>, !llvm.ptr) -> ()
+    %435 = "llvm.getelementptr"(%434, %404) <{elem_type = !llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i32, i1)>, noWrapFlags = 0 : i32, rawConstantIndices = array<i32: -2147483648>}> : (!llvm.ptr, i64) -> !llvm.ptr
+    %436 = "llvm.load"(%435) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i32, i1)>
+    %437 = "llvm.extractvalue"(%436) <{position = array<i64: 2>}> : (!llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i32, i1)>) -> f32
+    %438 = "llvm.load"(%22) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.array<64 x struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i32, i1)>>
+    %439 = "llvm.mlir.constant"() <{value = 1 : i64}> : () -> i64
+    %440 = "llvm.alloca"(%439) <{elem_type = !llvm.array<64 x struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i32, i1)>>}> : (i64) -> !llvm.ptr
+    "llvm.store"(%438, %440) <{ordering = 0 : i64}> : (!llvm.array<64 x struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i32, i1)>>, !llvm.ptr) -> ()
+    %441 = "llvm.getelementptr"(%440, %404) <{elem_type = !llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i32, i1)>, noWrapFlags = 0 : i32, rawConstantIndices = array<i32: -2147483648>}> : (!llvm.ptr, i64) -> !llvm.ptr
+    %442 = "llvm.load"(%441) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i32, i1)>
+    %443 = "llvm.extractvalue"(%442) <{position = array<i64: 2>}> : (!llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i32, i1)>) -> f32
+    %444 = "arith.mulf"(%437, %443) <{fastmath = #arith.fastmath<none>}> : (f32, f32) -> f32
+    %445 = "arith.cmpf"(%431, %444) <{fastmath = #arith.fastmath<none>, predicate = 5 : i64}> : (f32, f32) -> i1
+    "cf.cond_br"(%445)[^bb82, ^bb83] <{operandSegmentSizes = array<i32: 1, 0, 0>}> : (i1) -> ()
   ^bb82:  // pred: ^bb81
-    %472 = "llvm.getelementptr"(%27) <{elem_type = i1, noWrapFlags = 0 : i32, rawConstantIndices = array<i32: 4>}> : (!llvm.ptr) -> !llvm.ptr
-    %473 = "llvm.mlir.constant"() <{value = false}> : () -> i1
-    "llvm.store"(%473, %472) <{ordering = 0 : i64}> : (i1, !llvm.ptr) -> ()
-    %474 = "llvm.mlir.constant"() <{value = true}> : () -> i1
-    "llvm.store"(%474, %23) <{ordering = 0 : i64}> : (i1, !llvm.ptr) -> ()
+    %446 = "llvm.getelementptr"(%17) <{elem_type = i1, noWrapFlags = 0 : i32, rawConstantIndices = array<i32: 4>}> : (!llvm.ptr) -> !llvm.ptr
+    %447 = "llvm.mlir.constant"() <{value = false}> : () -> i1
+    "llvm.store"(%447, %446) <{ordering = 0 : i64}> : (i1, !llvm.ptr) -> ()
+    %448 = "llvm.mlir.constant"() <{value = true}> : () -> i1
+    "llvm.store"(%448, %16) <{ordering = 0 : i64}> : (i1, !llvm.ptr) -> ()
     "cf.br"()[^bb77] : () -> ()
   ^bb83:  // pred: ^bb81
     "cf.br"()[^bb84] : () -> ()
   ^bb84:  // pred: ^bb83
-    %475 = "llvm.mlir.undef"() : () -> !llvm.ptr
-    "cf.br"(%427)[^bb78] : (i64) -> ()
+    %449 = "llvm.mlir.undef"() : () -> !llvm.ptr
+    "cf.br"(%404)[^bb78] : (i64) -> ()
   ^bb85:  // pred: ^bb74
-    %476 = "llvm.mlir.addressof"() <{global_name = @score}> : () -> !llvm.ptr
-    %477 = "llvm.load"(%476) <{ordering = 0 : i64}> : (!llvm.ptr) -> i32
-    %478 = "llvm.mlir.constant"() <{value = 250 : i64}> : () -> i64
-    %479 = "llvm.trunc"(%478) <{overflowFlags = 0 : i32}> : (i64) -> i32
-    %480 = "arith.addi"(%477, %479) <{overflowFlags = #arith.overflow<none>}> : (i32, i32) -> i32
-    "llvm.store"(%480, %476) <{ordering = 0 : i64}> : (i32, !llvm.ptr) -> ()
-    %481 = "llvm.mlir.constant"() <{value = 6 : i64}> : () -> i64
-    %482 = "llvm.mlir.constant"() <{value = 10 : i64}> : () -> i64
-    %483 = "llvm.call"(%481, %482) <{CConv = #llvm.cconv<ccc>, TailCallKind = #llvm.tailcallkind<none>, callee = @m$vendor_raylib_GetRandomValue, fastmathFlags = #llvm.fastmath<none>, op_bundle_sizes = array<i32>, operandSegmentSizes = array<i32: 2, 0>}> : (i64, i64) -> i32
-    %484 = "llvm.mlir.constant"() <{value = 1 : i64}> : () -> i64
-    %485 = "llvm.alloca"(%484) <{elem_type = i64}> : (i64) -> !llvm.ptr
-    "llvm.store"(%483, %485) <{ordering = 0 : i64}> : (i32, !llvm.ptr) -> ()
-    %486 = "llvm.mlir.constant"() <{value = 0 : i64}> : () -> i64
-    %487 = "llvm.load"(%485) <{ordering = 0 : i64}> : (!llvm.ptr) -> i64
-    "cf.br"(%486)[^bb88] : (i64) -> ()
+    %450 = "llvm.load"(%23) <{ordering = 0 : i64}> : (!llvm.ptr) -> i32
+    %451 = "llvm.mlir.constant"() <{value = 250 : i64}> : () -> i64
+    %452 = "llvm.trunc"(%451) <{overflowFlags = 0 : i32}> : (i64) -> i32
+    %453 = "arith.addi"(%450, %452) <{overflowFlags = #arith.overflow<none>}> : (i32, i32) -> i32
+    "llvm.store"(%453, %23) <{ordering = 0 : i64}> : (i32, !llvm.ptr) -> ()
+    %454 = "llvm.mlir.constant"() <{value = 6 : i64}> : () -> i64
+    %455 = "llvm.mlir.constant"() <{value = 10 : i64}> : () -> i64
+    %456 = "llvm.call"(%454, %455) <{CConv = #llvm.cconv<ccc>, TailCallKind = #llvm.tailcallkind<none>, callee = @m$vendor_raylib_GetRandomValue, fastmathFlags = #llvm.fastmath<none>, op_bundle_sizes = array<i32>, operandSegmentSizes = array<i32: 2, 0>}> : (i64, i64) -> i32
+    %457 = "llvm.mlir.constant"() <{value = 1 : i64}> : () -> i64
+    %458 = "llvm.alloca"(%457) <{elem_type = i64}> : (i64) -> !llvm.ptr
+    "llvm.store"(%456, %458) <{ordering = 0 : i64}> : (i32, !llvm.ptr) -> ()
+    %459 = "llvm.mlir.constant"() <{value = 0 : i64}> : () -> i64
+    %460 = "llvm.load"(%458) <{ordering = 0 : i64}> : (!llvm.ptr) -> i64
+    "cf.br"(%459)[^bb88] : (i64) -> ()
   ^bb86:  // pred: ^bb74
     "cf.br"()[^bb87] : () -> ()
   ^bb87:  // 2 preds: ^bb86, ^bb90
-    %488 = "llvm.mlir.undef"() : () -> !llvm.ptr
+    %461 = "llvm.mlir.undef"() : () -> !llvm.ptr
     "llvm.call"() <{CConv = #llvm.cconv<ccc>, TailCallKind = #llvm.tailcallkind<none>, callee = @m$vendor_raylib_BeginDrawing, fastmathFlags = #llvm.fastmath<none>, op_bundle_sizes = array<i32>, operandSegmentSizes = array<i32: 0, 0>}> : () -> ()
-    %489 = "llvm.mlir.undef"() : () -> !llvm.ptr
-    %490 = "llvm.mlir.constant"() <{value = 1 : i64}> : () -> i64
-    %491 = "llvm.alloca"(%490) <{elem_type = !llvm.ptr}> : (i64) -> !llvm.ptr
-    "llvm.store"(%489, %491) <{ordering = 0 : i64}> : (!llvm.ptr, !llvm.ptr) -> ()
-    %492 = "llvm.load"(%491) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.ptr
-    "llvm.call"(%492) <{CConv = #llvm.cconv<ccc>, TailCallKind = #llvm.tailcallkind<none>, callee = @m$vendor_raylib_ClearBackground, fastmathFlags = #llvm.fastmath<none>, op_bundle_sizes = array<i32>, operandSegmentSizes = array<i32: 1, 0>}> : (!llvm.ptr) -> ()
-    %493 = "llvm.load"(%27) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, f32, i1, f32)>
-    %494 = "llvm.extractvalue"(%493) <{position = array<i64: 4>}> : (!llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, f32, i1, f32)>) -> i1
-    %495 = "llvm.bitcast"(%494) : (i1) -> i1
-    "cf.cond_br"(%495)[^bb92, ^bb93] <{operandSegmentSizes = array<i32: 1, 0, 0>}> : (i1) -> ()
-  ^bb88(%496: i64):  // 2 preds: ^bb85, ^bb91
-    %497 = "arith.cmpi"(%496, %487) <{predicate = 2 : i64}> : (i64, i64) -> i1
-    %498 = "llvm.bitcast"(%497) : (i1) -> i1
-    "cf.cond_br"(%498)[^bb89, ^bb90] <{operandSegmentSizes = array<i32: 1, 0, 0>}> : (i1) -> ()
+    %462 = "llvm.mlir.undef"() : () -> !llvm.ptr
+    %463 = "llvm.mlir.constant"() <{value = 1 : i64}> : () -> i64
+    %464 = "llvm.alloca"(%463) <{elem_type = !llvm.ptr}> : (i64) -> !llvm.ptr
+    "llvm.store"(%462, %464) <{ordering = 0 : i64}> : (!llvm.ptr, !llvm.ptr) -> ()
+    %465 = "llvm.load"(%464) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.ptr
+    "llvm.call"(%465) <{CConv = #llvm.cconv<ccc>, TailCallKind = #llvm.tailcallkind<none>, callee = @m$vendor_raylib_ClearBackground, fastmathFlags = #llvm.fastmath<none>, op_bundle_sizes = array<i32>, operandSegmentSizes = array<i32: 1, 0>}> : (!llvm.ptr) -> ()
+    %466 = "llvm.load"(%17) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, f32, i1, f32)>
+    %467 = "llvm.extractvalue"(%466) <{position = array<i64: 4>}> : (!llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, f32, i1, f32)>) -> i1
+    "cf.cond_br"(%467)[^bb92, ^bb93] <{operandSegmentSizes = array<i32: 1, 0, 0>}> : (i1) -> ()
+  ^bb88(%468: i64):  // 2 preds: ^bb85, ^bb91
+    %469 = "arith.cmpi"(%468, %460) <{predicate = 2 : i64}> : (i64, i64) -> i1
+    "cf.cond_br"(%469)[^bb89, ^bb90] <{operandSegmentSizes = array<i32: 1, 0, 0>}> : (i1) -> ()
   ^bb89:  // pred: ^bb88
-    %499 = "llvm.mlir.constant"() <{value = 0 : i32}> : () -> i32
-    %500 = "llvm.mlir.constant"() <{value = 1.000000e+00 : f64}> : () -> f64
-    %501 = "llvm.mlir.constant"() <{value = 0.000000e+00 : f64}> : () -> f64
-    %502 = "arith.subf"(%501, %500) <{fastmath = #arith.fastmath<none>}> : (f64, f64) -> f64
-    %503 = "llvm.fptrunc"(%502) : (f64) -> f32
-    %504 = "llvm.mlir.constant"() <{value = 1.000000e+00 : f64}> : () -> f64
-    %505 = "llvm.mlir.constant"() <{value = 0.000000e+00 : f64}> : () -> f64
-    %506 = "arith.subf"(%505, %504) <{fastmath = #arith.fastmath<none>}> : (f64, f64) -> f64
-    %507 = "llvm.fptrunc"(%506) : (f64) -> f32
-    %508 = "llvm.mlir.zero"() : () -> !llvm.struct<(f32, f32)>
-    %509 = "llvm.insertvalue"(%508, %503) <{position = array<i64: 0>}> : (!llvm.struct<(f32, f32)>, f32) -> !llvm.struct<(f32, f32)>
-    %510 = "llvm.insertvalue"(%509, %507) <{position = array<i64: 1>}> : (!llvm.struct<(f32, f32)>, f32) -> !llvm.struct<(f32, f32)>
-    %511 = "llvm.load"(%27) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, f32, i1, f32)>
-    %512 = "llvm.extractvalue"(%511) <{position = array<i64: 1>}> : (!llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, f32, i1, f32)>) -> !llvm.struct<(f32, f32)>
-    %513 = "llvm.mlir.constant"() <{value = 2.000000e-01 : f64}> : () -> f64
-    %514 = "llvm.fptrunc"(%513) : (f64) -> f32
-    %515 = "func.call"(%512, %514) <{callee = @vmul}> : (!llvm.struct<(f32, f32)>, f32) -> !llvm.struct<(f32, f32)>
-    "func.call"(%499, %510, %515) <{callee = @spawn_rock}> : (i32, !llvm.struct<(f32, f32)>, !llvm.struct<(f32, f32)>) -> ()
-    "cf.br"(%496)[^bb91] : (i64) -> ()
+    %470 = "llvm.mlir.constant"() <{value = 0 : i32}> : () -> i32
+    %471 = "llvm.mlir.constant"() <{value = 1.000000e+00 : f64}> : () -> f64
+    %472 = "llvm.mlir.constant"() <{value = 0.000000e+00 : f64}> : () -> f64
+    %473 = "arith.subf"(%472, %471) <{fastmath = #arith.fastmath<none>}> : (f64, f64) -> f64
+    %474 = "llvm.fptrunc"(%473) : (f64) -> f32
+    %475 = "llvm.mlir.constant"() <{value = 1.000000e+00 : f64}> : () -> f64
+    %476 = "llvm.mlir.constant"() <{value = 0.000000e+00 : f64}> : () -> f64
+    %477 = "arith.subf"(%476, %475) <{fastmath = #arith.fastmath<none>}> : (f64, f64) -> f64
+    %478 = "llvm.fptrunc"(%477) : (f64) -> f32
+    %479 = "llvm.mlir.zero"() : () -> !llvm.struct<(f32, f32)>
+    %480 = "llvm.insertvalue"(%479, %474) <{position = array<i64: 0>}> : (!llvm.struct<(f32, f32)>, f32) -> !llvm.struct<(f32, f32)>
+    %481 = "llvm.insertvalue"(%480, %478) <{position = array<i64: 1>}> : (!llvm.struct<(f32, f32)>, f32) -> !llvm.struct<(f32, f32)>
+    %482 = "llvm.load"(%17) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, f32, i1, f32)>
+    %483 = "llvm.extractvalue"(%482) <{position = array<i64: 1>}> : (!llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, f32, i1, f32)>) -> !llvm.struct<(f32, f32)>
+    %484 = "llvm.mlir.constant"() <{value = 2.000000e-01 : f64}> : () -> f64
+    %485 = "llvm.fptrunc"(%484) : (f64) -> f32
+    %486 = "func.call"(%483, %485) <{callee = @vmul}> : (!llvm.struct<(f32, f32)>, f32) -> !llvm.struct<(f32, f32)>
+    "func.call"(%470, %481, %486) <{callee = @spawn_rock}> : (i32, !llvm.struct<(f32, f32)>, !llvm.struct<(f32, f32)>) -> ()
+    "cf.br"(%468)[^bb91] : (i64) -> ()
   ^bb90:  // pred: ^bb88
-    %516 = "llvm.mlir.undef"() : () -> !llvm.ptr
-    %517 = "llvm.getelementptr"(%27) <{elem_type = f32, noWrapFlags = 0 : i32, rawConstantIndices = array<i32: 5>}> : (!llvm.ptr) -> !llvm.ptr
-    %518 = "llvm.mlir.constant"() <{value = 1.500000e+00 : f64}> : () -> f64
-    %519 = "llvm.fptrunc"(%518) : (f64) -> f32
-    "llvm.store"(%519, %517) <{ordering = 0 : i64}> : (f32, !llvm.ptr) -> ()
+    %487 = "llvm.mlir.undef"() : () -> !llvm.ptr
+    %488 = "llvm.getelementptr"(%17) <{elem_type = f32, noWrapFlags = 0 : i32, rawConstantIndices = array<i32: 5>}> : (!llvm.ptr) -> !llvm.ptr
+    %489 = "llvm.mlir.constant"() <{value = 1.500000e+00 : f64}> : () -> f64
+    %490 = "llvm.fptrunc"(%489) : (f64) -> f32
+    "llvm.store"(%490, %488) <{ordering = 0 : i64}> : (f32, !llvm.ptr) -> ()
     "cf.br"()[^bb87] : () -> ()
-  ^bb91(%520: i64):  // pred: ^bb89
-    %521 = "llvm.mlir.constant"() <{value = 1 : i64}> : () -> i64
-    %522 = "arith.addi"(%520, %521) <{overflowFlags = #arith.overflow<none>}> : (i64, i64) -> i64
-    "cf.br"(%522)[^bb88] : (i64) -> ()
+  ^bb91(%491: i64):  // pred: ^bb89
+    %492 = "llvm.mlir.constant"() <{value = 1 : i64}> : () -> i64
+    %493 = "arith.addi"(%491, %492) <{overflowFlags = #arith.overflow<none>}> : (i64, i64) -> i64
+    "cf.br"(%493)[^bb88] : (i64) -> ()
   ^bb92:  // pred: ^bb87
     "func.call"() <{callee = @draw_ship}> : () -> ()
     "cf.br"()[^bb94] : () -> ()
   ^bb93:  // pred: ^bb87
     "cf.br"()[^bb94] : () -> ()
   ^bb94:  // 2 preds: ^bb92, ^bb93
-    %523 = "llvm.mlir.undef"() : () -> !llvm.ptr
-    %524 = "llvm.load"(%27) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, f32, i1, f32)>
-    %525 = "llvm.extractvalue"(%524) <{position = array<i64: 4>}> : (!llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, f32, i1, f32)>) -> i1
-    %526 = "llvm.mlir.undef"() : () -> !llvm.ptr
-    %527 = "llvm.mlir.constant"() <{value = 1 : i64}> : () -> i64
-    %528 = "llvm.alloca"(%527) <{elem_type = !llvm.ptr}> : (i64) -> !llvm.ptr
-    "llvm.store"(%526, %528) <{ordering = 0 : i64}> : (!llvm.ptr, !llvm.ptr) -> ()
-    %529 = "llvm.load"(%528) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.ptr
-    %530 = "llvm.call"(%529) <{CConv = #llvm.cconv<ccc>, TailCallKind = #llvm.tailcallkind<none>, callee = @m$vendor_raylib_IsKeyDown, fastmathFlags = #llvm.fastmath<none>, op_bundle_sizes = array<i32>, operandSegmentSizes = array<i32: 1, 0>}> : (!llvm.ptr) -> i1
-    %531 = "arith.andi"(%525, %530) : (i1, i1) -> i1
-    %532 = "llvm.bitcast"(%531) : (i1) -> i1
-    "cf.cond_br"(%532)[^bb95, ^bb96] <{operandSegmentSizes = array<i32: 1, 0, 0>}> : (i1) -> ()
+    %494 = "llvm.mlir.undef"() : () -> !llvm.ptr
+    %495 = "llvm.load"(%17) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, f32, i1, f32)>
+    %496 = "llvm.extractvalue"(%495) <{position = array<i64: 4>}> : (!llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, f32, i1, f32)>) -> i1
+    %497 = "llvm.mlir.undef"() : () -> !llvm.ptr
+    %498 = "llvm.mlir.constant"() <{value = 1 : i64}> : () -> i64
+    %499 = "llvm.alloca"(%498) <{elem_type = !llvm.ptr}> : (i64) -> !llvm.ptr
+    "llvm.store"(%497, %499) <{ordering = 0 : i64}> : (!llvm.ptr, !llvm.ptr) -> ()
+    %500 = "llvm.load"(%499) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.ptr
+    %501 = "llvm.call"(%500) <{CConv = #llvm.cconv<ccc>, TailCallKind = #llvm.tailcallkind<none>, callee = @m$vendor_raylib_IsKeyDown, fastmathFlags = #llvm.fastmath<none>, op_bundle_sizes = array<i32>, operandSegmentSizes = array<i32: 1, 0>}> : (!llvm.ptr) -> i1
+    %502 = "arith.andi"(%496, %501) : (i1, i1) -> i1
+    "cf.cond_br"(%502)[^bb95, ^bb96] <{operandSegmentSizes = array<i32: 1, 0, 0>}> : (i1) -> ()
   ^bb95:  // pred: ^bb94
-    %533 = "llvm.load"(%27) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, f32, i1, f32)>
-    %534 = "llvm.extractvalue"(%533) <{position = array<i64: 2>}> : (!llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, f32, i1, f32)>) -> f32
-    %535 = "llvm.mlir.undef"() : () -> !llvm.ptr
-    %536 = "llvm.bitcast"(%535) : (!llvm.ptr) -> f32
-    %537 = "arith.addf"(%534, %536) <{fastmath = #arith.fastmath<none>}> : (f32, f32) -> f32
-    %538 = "llvm.call"(%537) <{CConv = #llvm.cconv<ccc>, TailCallKind = #llvm.tailcallkind<none>, callee = @m$std_math_cos, fastmathFlags = #llvm.fastmath<none>, op_bundle_sizes = array<i32>, operandSegmentSizes = array<i32: 1, 0>}> : (f32) -> f32
-    %539 = "llvm.load"(%27) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, f32, i1, f32)>
-    %540 = "llvm.extractvalue"(%539) <{position = array<i64: 2>}> : (!llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, f32, i1, f32)>) -> f32
-    %541 = "llvm.mlir.undef"() : () -> !llvm.ptr
-    %542 = "llvm.bitcast"(%541) : (!llvm.ptr) -> f32
-    %543 = "arith.addf"(%540, %542) <{fastmath = #arith.fastmath<none>}> : (f32, f32) -> f32
-    %544 = "llvm.call"(%543) <{CConv = #llvm.cconv<ccc>, TailCallKind = #llvm.tailcallkind<none>, callee = @m$std_math_sin, fastmathFlags = #llvm.fastmath<none>, op_bundle_sizes = array<i32>, operandSegmentSizes = array<i32: 1, 0>}> : (f32) -> f32
-    %545 = "llvm.mlir.zero"() : () -> !llvm.struct<(f32, f32)>
-    %546 = "llvm.insertvalue"(%545, %538) <{position = array<i64: 0>}> : (!llvm.struct<(f32, f32)>, f32) -> !llvm.struct<(f32, f32)>
-    %547 = "llvm.insertvalue"(%546, %544) <{position = array<i64: 1>}> : (!llvm.struct<(f32, f32)>, f32) -> !llvm.struct<(f32, f32)>
-    %548 = "llvm.mlir.constant"() <{value = 1 : i64}> : () -> i64
-    %549 = "llvm.alloca"(%548) <{elem_type = !llvm.struct<(f32, f32)>}> : (i64) -> !llvm.ptr
-    "llvm.store"(%547, %549) <{ordering = 0 : i64}> : (!llvm.struct<(f32, f32)>, !llvm.ptr) -> ()
-    %550 = "llvm.load"(%27) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, f32, i1, f32)>
-    %551 = "llvm.extractvalue"(%550) <{position = array<i64: 0>}> : (!llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, f32, i1, f32)>) -> !llvm.struct<(f32, f32)>
-    %552 = "llvm.load"(%549) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.struct<(f32, f32)>
-    %553 = "llvm.mlir.constant"() <{value = 1.200000e+01 : f64}> : () -> f64
-    %554 = "llvm.fptrunc"(%553) : (f64) -> f32
-    %555 = "func.call"(%552, %554) <{callee = @vmul}> : (!llvm.struct<(f32, f32)>, f32) -> !llvm.struct<(f32, f32)>
-    %556 = "func.call"(%551, %555) <{callee = @vadd}> : (!llvm.struct<(f32, f32)>, !llvm.struct<(f32, f32)>) -> !llvm.struct<(f32, f32)>
-    %557 = "llvm.mlir.constant"() <{value = 1 : i64}> : () -> i64
-    %558 = "llvm.alloca"(%557) <{elem_type = !llvm.struct<(f32, f32)>}> : (i64) -> !llvm.ptr
-    "llvm.store"(%556, %558) <{ordering = 0 : i64}> : (!llvm.struct<(f32, f32)>, !llvm.ptr) -> ()
-    %559 = "llvm.load"(%558) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.struct<(f32, f32)>
-    %560 = "llvm.extractvalue"(%559) <{position = array<i64: 0>}> : (!llvm.struct<(f32, f32)>) -> f32
-    %561 = "llvm.fptosi"(%560) : (f32) -> i32
-    %562 = "llvm.load"(%558) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.struct<(f32, f32)>
-    %563 = "llvm.extractvalue"(%562) <{position = array<i64: 1>}> : (!llvm.struct<(f32, f32)>) -> f32
-    %564 = "llvm.fptosi"(%563) : (f32) -> i32
-    %565 = "llvm.mlir.constant"() <{value = 3.000000e+00 : f64}> : () -> f64
-    %566 = "llvm.mlir.undef"() : () -> !llvm.ptr
-    %567 = "llvm.mlir.constant"() <{value = 1 : i64}> : () -> i64
-    %568 = "llvm.alloca"(%567) <{elem_type = !llvm.ptr}> : (i64) -> !llvm.ptr
-    "llvm.store"(%566, %568) <{ordering = 0 : i64}> : (!llvm.ptr, !llvm.ptr) -> ()
-    %569 = "llvm.load"(%568) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.ptr
-    "llvm.call"(%561, %564, %565, %569) <{CConv = #llvm.cconv<ccc>, TailCallKind = #llvm.tailcallkind<none>, callee = @m$vendor_raylib_DrawCircle, fastmathFlags = #llvm.fastmath<none>, op_bundle_sizes = array<i32>, operandSegmentSizes = array<i32: 4, 0>}> : (i32, i32, f64, !llvm.ptr) -> ()
+    %503 = "llvm.load"(%17) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, f32, i1, f32)>
+    %504 = "llvm.extractvalue"(%503) <{position = array<i64: 2>}> : (!llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, f32, i1, f32)>) -> f32
+    %505 = "llvm.mlir.undef"() : () -> !llvm.ptr
+    %506 = "llvm.mlir.undef"() : () -> f32
+    %507 = "arith.addf"(%504, %506) <{fastmath = #arith.fastmath<none>}> : (f32, f32) -> f32
+    %508 = "llvm.call"(%507) <{CConv = #llvm.cconv<ccc>, TailCallKind = #llvm.tailcallkind<none>, callee = @m$std_math_cos, fastmathFlags = #llvm.fastmath<none>, op_bundle_sizes = array<i32>, operandSegmentSizes = array<i32: 1, 0>}> : (f32) -> f32
+    %509 = "llvm.load"(%17) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, f32, i1, f32)>
+    %510 = "llvm.extractvalue"(%509) <{position = array<i64: 2>}> : (!llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, f32, i1, f32)>) -> f32
+    %511 = "llvm.mlir.undef"() : () -> !llvm.ptr
+    %512 = "llvm.mlir.undef"() : () -> f32
+    %513 = "arith.addf"(%510, %512) <{fastmath = #arith.fastmath<none>}> : (f32, f32) -> f32
+    %514 = "llvm.call"(%513) <{CConv = #llvm.cconv<ccc>, TailCallKind = #llvm.tailcallkind<none>, callee = @m$std_math_sin, fastmathFlags = #llvm.fastmath<none>, op_bundle_sizes = array<i32>, operandSegmentSizes = array<i32: 1, 0>}> : (f32) -> f32
+    %515 = "llvm.mlir.zero"() : () -> !llvm.struct<(f32, f32)>
+    %516 = "llvm.insertvalue"(%515, %508) <{position = array<i64: 0>}> : (!llvm.struct<(f32, f32)>, f32) -> !llvm.struct<(f32, f32)>
+    %517 = "llvm.insertvalue"(%516, %514) <{position = array<i64: 1>}> : (!llvm.struct<(f32, f32)>, f32) -> !llvm.struct<(f32, f32)>
+    %518 = "llvm.mlir.constant"() <{value = 1 : i64}> : () -> i64
+    %519 = "llvm.alloca"(%518) <{elem_type = !llvm.struct<(f32, f32)>}> : (i64) -> !llvm.ptr
+    "llvm.store"(%517, %519) <{ordering = 0 : i64}> : (!llvm.struct<(f32, f32)>, !llvm.ptr) -> ()
+    %520 = "llvm.load"(%17) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, f32, i1, f32)>
+    %521 = "llvm.extractvalue"(%520) <{position = array<i64: 0>}> : (!llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, f32, i1, f32)>) -> !llvm.struct<(f32, f32)>
+    %522 = "llvm.load"(%519) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.struct<(f32, f32)>
+    %523 = "llvm.mlir.constant"() <{value = 1.200000e+01 : f64}> : () -> f64
+    %524 = "llvm.fptrunc"(%523) : (f64) -> f32
+    %525 = "func.call"(%522, %524) <{callee = @vmul}> : (!llvm.struct<(f32, f32)>, f32) -> !llvm.struct<(f32, f32)>
+    %526 = "func.call"(%521, %525) <{callee = @vadd}> : (!llvm.struct<(f32, f32)>, !llvm.struct<(f32, f32)>) -> !llvm.struct<(f32, f32)>
+    %527 = "llvm.mlir.constant"() <{value = 1 : i64}> : () -> i64
+    %528 = "llvm.alloca"(%527) <{elem_type = !llvm.struct<(f32, f32)>}> : (i64) -> !llvm.ptr
+    "llvm.store"(%526, %528) <{ordering = 0 : i64}> : (!llvm.struct<(f32, f32)>, !llvm.ptr) -> ()
+    %529 = "llvm.load"(%528) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.struct<(f32, f32)>
+    %530 = "llvm.extractvalue"(%529) <{position = array<i64: 0>}> : (!llvm.struct<(f32, f32)>) -> f32
+    %531 = "llvm.fptosi"(%530) : (f32) -> i32
+    %532 = "llvm.load"(%528) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.struct<(f32, f32)>
+    %533 = "llvm.extractvalue"(%532) <{position = array<i64: 1>}> : (!llvm.struct<(f32, f32)>) -> f32
+    %534 = "llvm.fptosi"(%533) : (f32) -> i32
+    %535 = "llvm.mlir.constant"() <{value = 3.000000e+00 : f64}> : () -> f64
+    %536 = "llvm.mlir.undef"() : () -> !llvm.ptr
+    %537 = "llvm.mlir.constant"() <{value = 1 : i64}> : () -> i64
+    %538 = "llvm.alloca"(%537) <{elem_type = !llvm.ptr}> : (i64) -> !llvm.ptr
+    "llvm.store"(%536, %538) <{ordering = 0 : i64}> : (!llvm.ptr, !llvm.ptr) -> ()
+    %539 = "llvm.load"(%538) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.ptr
+    "llvm.call"(%531, %534, %535, %539) <{CConv = #llvm.cconv<ccc>, TailCallKind = #llvm.tailcallkind<none>, callee = @m$vendor_raylib_DrawCircle, fastmathFlags = #llvm.fastmath<none>, op_bundle_sizes = array<i32>, operandSegmentSizes = array<i32: 4, 0>}> : (i32, i32, f64, !llvm.ptr) -> ()
     "cf.br"()[^bb97] : () -> ()
   ^bb96:  // pred: ^bb94
     "cf.br"()[^bb97] : () -> ()
   ^bb97:  // 2 preds: ^bb95, ^bb96
-    %570 = "llvm.mlir.undef"() : () -> !llvm.ptr
-    %571 = "llvm.mlir.constant"() <{value = 0 : i64}> : () -> i64
-    %572 = "llvm.load"(%212) <{ordering = 0 : i64}> : (!llvm.ptr) -> i64
-    "cf.br"(%571)[^bb98] : (i64) -> ()
-  ^bb98(%573: i64):  // 2 preds: ^bb97, ^bb101
-    %574 = "arith.cmpi"(%573, %572) <{predicate = 2 : i64}> : (i64, i64) -> i1
-    %575 = "llvm.bitcast"(%574) : (i1) -> i1
-    "cf.cond_br"(%575)[^bb99, ^bb100] <{operandSegmentSizes = array<i32: 1, 0, 0>}> : (i1) -> ()
+    %540 = "llvm.mlir.undef"() : () -> !llvm.ptr
+    %541 = "llvm.mlir.constant"() <{value = 0 : i64}> : () -> i64
+    %542 = "llvm.load"(%19) <{ordering = 0 : i64}> : (!llvm.ptr) -> i64
+    "cf.br"(%541)[^bb98] : (i64) -> ()
+  ^bb98(%543: i64):  // 2 preds: ^bb97, ^bb101
+    %544 = "arith.cmpi"(%543, %542) <{predicate = 2 : i64}> : (i64, i64) -> i1
+    "cf.cond_br"(%544)[^bb99, ^bb100] <{operandSegmentSizes = array<i32: 1, 0, 0>}> : (i1) -> ()
   ^bb99:  // pred: ^bb98
-    %576 = "llvm.load"(%217) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.array<64 x struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i1)>>
-    %577 = "llvm.mlir.constant"() <{value = 1 : i64}> : () -> i64
-    %578 = "llvm.alloca"(%577) <{elem_type = !llvm.array<64 x struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i1)>>}> : (i64) -> !llvm.ptr
-    "llvm.store"(%576, %578) <{ordering = 0 : i64}> : (!llvm.array<64 x struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i1)>>, !llvm.ptr) -> ()
-    %579 = "llvm.getelementptr"(%578, %573) <{elem_type = !llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i1)>, noWrapFlags = 0 : i32, rawConstantIndices = array<i32: -2147483648>}> : (!llvm.ptr, i64) -> !llvm.ptr
-    %580 = "llvm.load"(%579) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i1)>
-    %581 = "llvm.extractvalue"(%580) <{position = array<i64: 3>}> : (!llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i1)>) -> i1
-    %582 = "llvm.bitcast"(%581) : (i1) -> i1
-    "cf.cond_br"(%582)[^bb102, ^bb103] <{operandSegmentSizes = array<i32: 1, 0, 0>}> : (i1) -> ()
+    %545 = "llvm.load"(%20) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.array<64 x struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i1)>>
+    %546 = "llvm.mlir.constant"() <{value = 1 : i64}> : () -> i64
+    %547 = "llvm.alloca"(%546) <{elem_type = !llvm.array<64 x struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i1)>>}> : (i64) -> !llvm.ptr
+    "llvm.store"(%545, %547) <{ordering = 0 : i64}> : (!llvm.array<64 x struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i1)>>, !llvm.ptr) -> ()
+    %548 = "llvm.getelementptr"(%547, %543) <{elem_type = !llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i1)>, noWrapFlags = 0 : i32, rawConstantIndices = array<i32: -2147483648>}> : (!llvm.ptr, i64) -> !llvm.ptr
+    %549 = "llvm.load"(%548) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i1)>
+    %550 = "llvm.extractvalue"(%549) <{position = array<i64: 3>}> : (!llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i1)>) -> i1
+    "cf.cond_br"(%550)[^bb102, ^bb103] <{operandSegmentSizes = array<i32: 1, 0, 0>}> : (i1) -> ()
   ^bb100:  // pred: ^bb98
-    %583 = "llvm.mlir.undef"() : () -> !llvm.ptr
-    %584 = "llvm.mlir.constant"() <{value = 0 : i64}> : () -> i64
-    %585 = "llvm.load"(%232) <{ordering = 0 : i64}> : (!llvm.ptr) -> i64
-    "cf.br"(%584)[^bb105] : (i64) -> ()
-  ^bb101(%586: i64):  // pred: ^bb104
-    %587 = "llvm.mlir.constant"() <{value = 1 : i64}> : () -> i64
-    %588 = "arith.addi"(%586, %587) <{overflowFlags = #arith.overflow<none>}> : (i64, i64) -> i64
-    "cf.br"(%588)[^bb98] : (i64) -> ()
+    %551 = "llvm.mlir.undef"() : () -> !llvm.ptr
+    %552 = "llvm.mlir.constant"() <{value = 0 : i64}> : () -> i64
+    %553 = "llvm.load"(%21) <{ordering = 0 : i64}> : (!llvm.ptr) -> i64
+    "cf.br"(%552)[^bb105] : (i64) -> ()
+  ^bb101(%554: i64):  // pred: ^bb104
+    %555 = "llvm.mlir.constant"() <{value = 1 : i64}> : () -> i64
+    %556 = "arith.addi"(%554, %555) <{overflowFlags = #arith.overflow<none>}> : (i64, i64) -> i64
+    "cf.br"(%556)[^bb98] : (i64) -> ()
   ^bb102:  // pred: ^bb99
-    %589 = "llvm.load"(%217) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.array<64 x struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i1)>>
-    %590 = "llvm.mlir.constant"() <{value = 1 : i64}> : () -> i64
-    %591 = "llvm.alloca"(%590) <{elem_type = !llvm.array<64 x struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i1)>>}> : (i64) -> !llvm.ptr
-    "llvm.store"(%589, %591) <{ordering = 0 : i64}> : (!llvm.array<64 x struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i1)>>, !llvm.ptr) -> ()
-    %592 = "llvm.getelementptr"(%591, %573) <{elem_type = !llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i1)>, noWrapFlags = 0 : i32, rawConstantIndices = array<i32: -2147483648>}> : (!llvm.ptr, i64) -> !llvm.ptr
-    %593 = "llvm.load"(%592) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i1)>
-    %594 = "llvm.extractvalue"(%593) <{position = array<i64: 0>}> : (!llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i1)>) -> !llvm.struct<(f32, f32)>
-    %595 = "llvm.extractvalue"(%594) <{position = array<i64: 0>}> : (!llvm.struct<(f32, f32)>) -> f32
-    %596 = "llvm.fptosi"(%595) : (f32) -> i64
-    %597 = "llvm.load"(%217) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.array<64 x struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i1)>>
-    %598 = "llvm.mlir.constant"() <{value = 1 : i64}> : () -> i64
-    %599 = "llvm.alloca"(%598) <{elem_type = !llvm.array<64 x struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i1)>>}> : (i64) -> !llvm.ptr
-    "llvm.store"(%597, %599) <{ordering = 0 : i64}> : (!llvm.array<64 x struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i1)>>, !llvm.ptr) -> ()
-    %600 = "llvm.getelementptr"(%599, %573) <{elem_type = !llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i1)>, noWrapFlags = 0 : i32, rawConstantIndices = array<i32: -2147483648>}> : (!llvm.ptr, i64) -> !llvm.ptr
-    %601 = "llvm.load"(%600) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i1)>
-    %602 = "llvm.extractvalue"(%601) <{position = array<i64: 0>}> : (!llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i1)>) -> !llvm.struct<(f32, f32)>
-    %603 = "llvm.extractvalue"(%602) <{position = array<i64: 1>}> : (!llvm.struct<(f32, f32)>) -> f32
-    %604 = "llvm.fptosi"(%603) : (f32) -> i64
-    %605 = "llvm.mlir.constant"() <{value = 2.000000e+00 : f64}> : () -> f64
-    %606 = "llvm.mlir.undef"() : () -> !llvm.ptr
-    %607 = "llvm.mlir.constant"() <{value = 1 : i64}> : () -> i64
-    %608 = "llvm.alloca"(%607) <{elem_type = !llvm.ptr}> : (i64) -> !llvm.ptr
-    "llvm.store"(%606, %608) <{ordering = 0 : i64}> : (!llvm.ptr, !llvm.ptr) -> ()
-    %609 = "llvm.load"(%608) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.ptr
-    "llvm.call"(%596, %604, %605, %609) <{CConv = #llvm.cconv<ccc>, TailCallKind = #llvm.tailcallkind<none>, callee = @m$vendor_raylib_DrawCircle, fastmathFlags = #llvm.fastmath<none>, op_bundle_sizes = array<i32>, operandSegmentSizes = array<i32: 4, 0>}> : (i64, i64, f64, !llvm.ptr) -> ()
+    %557 = "llvm.load"(%20) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.array<64 x struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i1)>>
+    %558 = "llvm.mlir.constant"() <{value = 1 : i64}> : () -> i64
+    %559 = "llvm.alloca"(%558) <{elem_type = !llvm.array<64 x struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i1)>>}> : (i64) -> !llvm.ptr
+    "llvm.store"(%557, %559) <{ordering = 0 : i64}> : (!llvm.array<64 x struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i1)>>, !llvm.ptr) -> ()
+    %560 = "llvm.getelementptr"(%559, %543) <{elem_type = !llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i1)>, noWrapFlags = 0 : i32, rawConstantIndices = array<i32: -2147483648>}> : (!llvm.ptr, i64) -> !llvm.ptr
+    %561 = "llvm.load"(%560) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i1)>
+    %562 = "llvm.extractvalue"(%561) <{position = array<i64: 0>}> : (!llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i1)>) -> !llvm.struct<(f32, f32)>
+    %563 = "llvm.extractvalue"(%562) <{position = array<i64: 0>}> : (!llvm.struct<(f32, f32)>) -> f32
+    %564 = "llvm.fptosi"(%563) : (f32) -> i64
+    %565 = "llvm.load"(%20) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.array<64 x struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i1)>>
+    %566 = "llvm.mlir.constant"() <{value = 1 : i64}> : () -> i64
+    %567 = "llvm.alloca"(%566) <{elem_type = !llvm.array<64 x struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i1)>>}> : (i64) -> !llvm.ptr
+    "llvm.store"(%565, %567) <{ordering = 0 : i64}> : (!llvm.array<64 x struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i1)>>, !llvm.ptr) -> ()
+    %568 = "llvm.getelementptr"(%567, %543) <{elem_type = !llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i1)>, noWrapFlags = 0 : i32, rawConstantIndices = array<i32: -2147483648>}> : (!llvm.ptr, i64) -> !llvm.ptr
+    %569 = "llvm.load"(%568) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i1)>
+    %570 = "llvm.extractvalue"(%569) <{position = array<i64: 0>}> : (!llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i1)>) -> !llvm.struct<(f32, f32)>
+    %571 = "llvm.extractvalue"(%570) <{position = array<i64: 1>}> : (!llvm.struct<(f32, f32)>) -> f32
+    %572 = "llvm.fptosi"(%571) : (f32) -> i64
+    %573 = "llvm.mlir.constant"() <{value = 2.000000e+00 : f64}> : () -> f64
+    %574 = "llvm.mlir.undef"() : () -> !llvm.ptr
+    %575 = "llvm.mlir.constant"() <{value = 1 : i64}> : () -> i64
+    %576 = "llvm.alloca"(%575) <{elem_type = !llvm.ptr}> : (i64) -> !llvm.ptr
+    "llvm.store"(%574, %576) <{ordering = 0 : i64}> : (!llvm.ptr, !llvm.ptr) -> ()
+    %577 = "llvm.load"(%576) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.ptr
+    "llvm.call"(%564, %572, %573, %577) <{CConv = #llvm.cconv<ccc>, TailCallKind = #llvm.tailcallkind<none>, callee = @m$vendor_raylib_DrawCircle, fastmathFlags = #llvm.fastmath<none>, op_bundle_sizes = array<i32>, operandSegmentSizes = array<i32: 4, 0>}> : (i64, i64, f64, !llvm.ptr) -> ()
     "cf.br"()[^bb104] : () -> ()
   ^bb103:  // pred: ^bb99
     "cf.br"()[^bb104] : () -> ()
   ^bb104:  // 2 preds: ^bb102, ^bb103
-    %610 = "llvm.mlir.undef"() : () -> !llvm.ptr
-    "cf.br"(%573)[^bb101] : (i64) -> ()
-  ^bb105(%611: i64):  // 2 preds: ^bb100, ^bb108
-    %612 = "arith.cmpi"(%611, %585) <{predicate = 2 : i64}> : (i64, i64) -> i1
-    %613 = "llvm.bitcast"(%612) : (i1) -> i1
-    "cf.cond_br"(%613)[^bb106, ^bb107] <{operandSegmentSizes = array<i32: 1, 0, 0>}> : (i1) -> ()
+    %578 = "llvm.mlir.undef"() : () -> !llvm.ptr
+    "cf.br"(%543)[^bb101] : (i64) -> ()
+  ^bb105(%579: i64):  // 2 preds: ^bb100, ^bb108
+    %580 = "arith.cmpi"(%579, %553) <{predicate = 2 : i64}> : (i64, i64) -> i1
+    "cf.cond_br"(%580)[^bb106, ^bb107] <{operandSegmentSizes = array<i32: 1, 0, 0>}> : (i1) -> ()
   ^bb106:  // pred: ^bb105
-    %614 = "llvm.load"(%288) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.array<64 x struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i32, i1)>>
-    %615 = "llvm.mlir.constant"() <{value = 1 : i64}> : () -> i64
-    %616 = "llvm.alloca"(%615) <{elem_type = !llvm.array<64 x struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i32, i1)>>}> : (i64) -> !llvm.ptr
-    "llvm.store"(%614, %616) <{ordering = 0 : i64}> : (!llvm.array<64 x struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i32, i1)>>, !llvm.ptr) -> ()
-    %617 = "llvm.getelementptr"(%616, %611) <{elem_type = !llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i32, i1)>, noWrapFlags = 0 : i32, rawConstantIndices = array<i32: -2147483648>}> : (!llvm.ptr, i64) -> !llvm.ptr
-    %618 = "llvm.load"(%617) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i32, i1)>
-    %619 = "llvm.extractvalue"(%618) <{position = array<i64: 4>}> : (!llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i32, i1)>) -> i1
-    %620 = "llvm.bitcast"(%619) : (i1) -> i1
-    "cf.cond_br"(%620)[^bb109, ^bb110] <{operandSegmentSizes = array<i32: 1, 0, 0>}> : (i1) -> ()
+    %581 = "llvm.load"(%22) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.array<64 x struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i32, i1)>>
+    %582 = "llvm.mlir.constant"() <{value = 1 : i64}> : () -> i64
+    %583 = "llvm.alloca"(%582) <{elem_type = !llvm.array<64 x struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i32, i1)>>}> : (i64) -> !llvm.ptr
+    "llvm.store"(%581, %583) <{ordering = 0 : i64}> : (!llvm.array<64 x struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i32, i1)>>, !llvm.ptr) -> ()
+    %584 = "llvm.getelementptr"(%583, %579) <{elem_type = !llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i32, i1)>, noWrapFlags = 0 : i32, rawConstantIndices = array<i32: -2147483648>}> : (!llvm.ptr, i64) -> !llvm.ptr
+    %585 = "llvm.load"(%584) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i32, i1)>
+    %586 = "llvm.extractvalue"(%585) <{position = array<i64: 4>}> : (!llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i32, i1)>) -> i1
+    "cf.cond_br"(%586)[^bb109, ^bb110] <{operandSegmentSizes = array<i32: 1, 0, 0>}> : (i1) -> ()
   ^bb107:  // pred: ^bb105
-    %621 = "llvm.mlir.undef"() : () -> !llvm.ptr
+    %587 = "llvm.mlir.undef"() : () -> !llvm.ptr
     "func.call"() <{callee = @draw_hud}> : () -> ()
     "llvm.call"() <{CConv = #llvm.cconv<ccc>, TailCallKind = #llvm.tailcallkind<none>, callee = @m$vendor_raylib_EndDrawing, fastmathFlags = #llvm.fastmath<none>, op_bundle_sizes = array<i32>, operandSegmentSizes = array<i32: 0, 0>}> : () -> ()
     "cf.br"()[^bb1] : () -> ()
-  ^bb108(%622: i64):  // pred: ^bb111
-    %623 = "llvm.mlir.constant"() <{value = 1 : i64}> : () -> i64
-    %624 = "arith.addi"(%622, %623) <{overflowFlags = #arith.overflow<none>}> : (i64, i64) -> i64
-    "cf.br"(%624)[^bb105] : (i64) -> ()
+  ^bb108(%588: i64):  // pred: ^bb111
+    %589 = "llvm.mlir.constant"() <{value = 1 : i64}> : () -> i64
+    %590 = "arith.addi"(%588, %589) <{overflowFlags = #arith.overflow<none>}> : (i64, i64) -> i64
+    "cf.br"(%590)[^bb105] : (i64) -> ()
   ^bb109:  // pred: ^bb106
-    %625 = "llvm.load"(%288) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.array<64 x struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i32, i1)>>
-    %626 = "llvm.mlir.constant"() <{value = 1 : i64}> : () -> i64
-    %627 = "llvm.alloca"(%626) <{elem_type = !llvm.array<64 x struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i32, i1)>>}> : (i64) -> !llvm.ptr
-    "llvm.store"(%625, %627) <{ordering = 0 : i64}> : (!llvm.array<64 x struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i32, i1)>>, !llvm.ptr) -> ()
-    %628 = "llvm.getelementptr"(%627, %611) <{elem_type = !llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i32, i1)>, noWrapFlags = 0 : i32, rawConstantIndices = array<i32: -2147483648>}> : (!llvm.ptr, i64) -> !llvm.ptr
-    %629 = "llvm.load"(%628) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i32, i1)>
-    "func.call"(%629) <{callee = @draw_rock}> : (!llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i32, i1)>) -> ()
+    %591 = "llvm.load"(%22) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.array<64 x struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i32, i1)>>
+    %592 = "llvm.mlir.constant"() <{value = 1 : i64}> : () -> i64
+    %593 = "llvm.alloca"(%592) <{elem_type = !llvm.array<64 x struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i32, i1)>>}> : (i64) -> !llvm.ptr
+    "llvm.store"(%591, %593) <{ordering = 0 : i64}> : (!llvm.array<64 x struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i32, i1)>>, !llvm.ptr) -> ()
+    %594 = "llvm.getelementptr"(%593, %579) <{elem_type = !llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i32, i1)>, noWrapFlags = 0 : i32, rawConstantIndices = array<i32: -2147483648>}> : (!llvm.ptr, i64) -> !llvm.ptr
+    %595 = "llvm.load"(%594) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i32, i1)>
+    "func.call"(%595) <{callee = @draw_rock}> : (!llvm.struct<(struct<(f32, f32)>, struct<(f32, f32)>, f32, i32, i1)>) -> ()
     "cf.br"()[^bb111] : () -> ()
   ^bb110:  // pred: ^bb106
     "cf.br"()[^bb111] : () -> ()
   ^bb111:  // 2 preds: ^bb109, ^bb110
-    %630 = "llvm.mlir.undef"() : () -> !llvm.ptr
-    "cf.br"(%611)[^bb108] : (i64) -> ()
+    %596 = "llvm.mlir.undef"() : () -> !llvm.ptr
+    "cf.br"(%579)[^bb108] : (i64) -> ()
   }) : () -> ()
   "llvm.func"() <{CConv = #llvm.cconv<ccc>, arg_attrs = [{}, {}], function_type = !llvm.func<i32 (i64, i64)>, linkage = #llvm.linkage<external>, sym_name = "m$vendor_raylib_GetRandomValue", sym_visibility = "private", visibility_ = 0 : i64}> ({
   }) : () -> ()
