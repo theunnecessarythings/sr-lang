@@ -1724,6 +1724,23 @@ pub const MlirCodegen = struct {
                 defer self.loc = prev_loc;
                 const to_ty = try self.llvmTypeOf(store, p.ty);
                 const from_v = self.value_map.get(p.value).?;
+                const from_ty = from_v.getType();
+                if (from_ty.equal(to_ty)) break :blk from_v;
+
+                const src_is_ptr = mlir.LLVM.isLLVMPointerType(from_ty);
+                const dst_is_ptr = mlir.LLVM.isLLVMPointerType(to_ty);
+                const needs_spill = mlir.LLVM.isLLVMStructType(from_ty) or
+                    mlir.LLVM.isLLVMStructType(to_ty) or
+                    (src_is_ptr != dst_is_ptr);
+
+                if (needs_spill) {
+                    const spill = self.spillAgg(from_v, from_ty, 0);
+                    var load = OpBuilder.init("llvm.load", self.loc).builder()
+                        .add_operands(&.{spill})
+                        .add_results(&.{to_ty}).build();
+                    self.append(load);
+                    break :blk load.getResult(0);
+                }
                 var op = OpBuilder.init("llvm.bitcast", self.loc).builder()
                     .add_operands(&.{from_v})
                     .add_results(&.{to_ty}).build();
