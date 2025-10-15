@@ -192,7 +192,7 @@ pub const MlirCodegen = struct {
         var sink = PrintBuffer{ .list = &tmp, .had_error = &had_error };
         ty.print(printCallback, &sink);
         if (had_error) return error.OutOfMemory;
-        try buf.appendSlice(self.gpa, tmp.items);
+        try buf.appendSlice(tmp.items);
     }
 
     fn appendMlirAttributeText(self: *MlirCodegen, buf: *ArrayList(u8), attr: mlir.Attribute) !void {
@@ -202,7 +202,7 @@ pub const MlirCodegen = struct {
         var sink = PrintBuffer{ .list = &tmp, .had_error = &had_error };
         attr.print(printCallback, &sink);
         if (had_error) return error.OutOfMemory;
-        try buf.appendSlice(self.gpa, tmp.items);
+        try buf.appendSlice(tmp.items);
     }
 
     fn appendMlirModuleText(self: *MlirCodegen, buf: *ArrayList(u8), module: mlir.Module) !void {
@@ -212,7 +212,7 @@ pub const MlirCodegen = struct {
         var sink = PrintBuffer{ .list = &tmp, .had_error = &had_error };
         module.getOperation().print(printCallback, &sink);
         if (had_error) return error.OutOfMemory;
-        try buf.appendSlice(self.gpa, tmp.items);
+        try buf.appendSlice(tmp.items);
     }
 
     fn appendMlirSpliceValue(
@@ -224,20 +224,20 @@ pub const MlirCodegen = struct {
             .Void => return error.MlirSpliceMissingValue,
             .Int => |v| {
                 var writer = buf.writer();
-                try writer.print("{d}", .{v});
+                try writer.print("{}", .{v});
             },
             .Float => |v| {
                 var writer = buf.writer();
-                try writer.print("{f}", .{v});
+                try writer.print("{}", .{v});
             },
             .Bool => |b| {
-                try buf.appendSlice(self.gpa, if (b) "true" else "false");
+                try buf.appendSlice(if (b) "true" else "false");
             },
             .String => |s| {
-                try buf.appendSlice(self.gpa, s);
+                try buf.appendSlice(s);
             },
             .Type => |ty| {
-                var writer = buf.writer();
+                const writer = buf.writer();
                 try self.context.type_store.fmt(ty, writer);
             },
             .MlirType => |ty| try self.appendMlirTypeText(buf, ty),
@@ -259,7 +259,7 @@ pub const MlirCodegen = struct {
             switch (piece.kind) {
                 .literal => {
                     const text = t.instrs.strs.get(piece.text);
-                    try buf.appendSlice(self.gpa, text);
+                    try buf.appendSlice(text);
                 },
                 .splice => try self.appendMlirSpliceValue(&buf, piece.value),
             }

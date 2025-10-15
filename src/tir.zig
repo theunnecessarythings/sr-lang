@@ -131,20 +131,6 @@ pub const ConstInit = union(enum) {
     string: StrId,
 };
 
-fn destroyComptimeValue(gpa: std.mem.Allocator, value: *comp.ComptimeValue) void {
-    switch (value.*) {
-        .String => |s| {
-            const mut: []u8 = @constCast(s);
-            gpa.free(mut);
-        },
-        .MlirModule => |*mod| {
-            mod.destroy();
-        },
-        else => {},
-    }
-    value.* = .Void;
-}
-
 pub const Rows = struct {
     // All rows that produce a value carry (result, ty)
     pub const Bin2 = struct { result: ValueId, ty: types.TypeId, lhs: ValueId, rhs: ValueId, loc: OptLocId };
@@ -385,7 +371,7 @@ pub const InstrStore = struct {
         self.StructFieldInit.deinit(gpa);
         if (self.MlirPiece.list.len != 0) {
             const values = self.MlirPiece.col("value");
-            for (values) |*val| destroyComptimeValue(gpa, val);
+            for (values) |*val| val.destroy(gpa);
         }
         self.MlirPiece.deinit(gpa);
         self.instr_pool.deinit(gpa);

@@ -812,7 +812,7 @@ pub const Operation = struct {
     // (Deprecated) getAttributeByName, etc. omitted or rename if needed
     // ...
 
-    pub fn print(self: *Operation, callback: fn ([]const u8, anyopaque) callconv(.c) void, userData: anyopaque) void {
+    pub fn print(self: *const Operation, callback: fn (c.MlirStringRef, ?*anyopaque) callconv(.c) void, userData: ?*anyopaque) void {
         c.mlirOperationPrint(self.handle, callback, userData);
     }
 

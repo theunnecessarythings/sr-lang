@@ -59,9 +59,9 @@ pub const TypeInfo = struct {
         self.expr_types.deinit(self.gpa);
         self.decl_types.deinit(self.gpa);
         self.field_index_for_expr.deinit(self.gpa);
-        var cv_it = self.comptime_values.valueIterator();
+        var cv_it = self.comptime_values.iterator();
         while (cv_it.next()) |value_ptr| {
-            self.destroyComptimeValue(value_ptr);
+            self.destroyComptimeValue(value_ptr.value_ptr);
         }
         self.comptime_values.deinit(self.gpa);
         self.method_table.deinit(self.gpa);
@@ -196,7 +196,7 @@ pub const TypeInfo = struct {
     }
 
     pub fn getComptimeValue(self: *TypeInfo, expr_id: ast.ExprId) ?*comp.ComptimeValue {
-        return self.comptime_values.get(expr_id);
+        return if (self.comptime_values.getEntry(expr_id)) |entry| entry.value_ptr else null;
     }
 
     pub fn setComptimeValue(self: *TypeInfo, expr_id: ast.ExprId, value: comp.ComptimeValue) !void {
@@ -228,7 +228,7 @@ pub const TypeInfo = struct {
 
     pub fn getMlirSpliceInfo(self: *const TypeInfo, piece_id: ast.MlirPieceId) ?MlirSpliceInfo {
         if (self.mlir_splice_info.get(piece_id.toRaw())) |info_ptr|
-            return info_ptr.*;
+            return info_ptr;
         return null;
     }
 };

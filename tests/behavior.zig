@@ -1543,6 +1543,38 @@ test "behavior: mlir block constant" {
     try runCompilerTest(code, "42\n");
 }
 
+test "behavior: mlir op with comptime splices" {
+    const global =
+        \\ ValueTy :: mlir type { i32 }
+        \\ ConstAttr :: mlir attribute { 42 : i32 }
+    ;
+    const src =
+        \\ value: i32 = mlir op {
+        \\   "arith.constant"() {value = @ConstAttr} : () -> @ValueTy
+        \\ }
+        \\ printf("%d\n", value)
+    ;
+    const code = getSource(global, src);
+    try runCompilerTest(code, "42\n");
+}
+
+test "behavior: mlir type with spliced shape" {
+    const global =
+        \\ ElemTy :: mlir type { f32 }
+        \\ Rows :: 4
+        \\ Cols :: 16
+        \\ TensorTy :: mlir type { tensor<@Rowsx@Colsx@ElemTy> }
+    ;
+    const src =
+        \\ comptime {
+        \\   _ = TensorTy
+        \\ }
+        \\ printf("Tensor type splicing OK\n")
+    ;
+    const code = getSource(global, src);
+    try runCompilerTest(code, "Tensor type splicing OK\n");
+}
+
 test "behavior: mlir block with args" {
     const src =
         \\ a : i32 = 10

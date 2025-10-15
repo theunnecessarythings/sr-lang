@@ -20,6 +20,19 @@ pub const ComptimeValue = union(enum) {
     MlirType: mlir.Type,
     MlirAttribute: mlir.Attribute,
     MlirModule: mlir.Module,
+
+    pub fn destroy(self: *ComptimeValue, gpa: std.mem.Allocator) void {
+        switch (self.*) {
+            .String => |s| {
+                gpa.free(s);
+            },
+            .MlirModule => |*mod| {
+                mod.destroy();
+            },
+            else => {},
+        }
+        self.* = .Void;
+    }
 };
 
 pub fn type_of_impl(context: ?*anyopaque, type_id_raw: u32) callconv(.c) u32 {

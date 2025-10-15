@@ -281,11 +281,13 @@ pub const LowerTir = struct {
         defer tir_piece_ids.deinit(self.gpa);
         for (ast_piece_ids) |pid| {
             const piece = a.exprs.MlirPiece.get(pid);
-            var splice_value = comp.ComptimeValue.Void;
+            var splice_value: comp.ComptimeValue = .Void;
             if (piece.kind == .splice) {
                 splice_value = try self.resolveMlirSpliceValue(a, env, f, blk, pid, piece.text, row.loc);
             }
-            const new_id = blk.builder.t.instrs.addMlirPieceRow(.{ .kind = piece.kind, .text = piece.text, .value = splice_value });
+            const new_id = blk.builder.t.instrs.addMlirPieceRow(
+                .{ .kind = piece.kind, .text = piece.text, .value = splice_value },
+            );
             tir_piece_ids.append(self.gpa, new_id) catch @panic("OOM");
         }
         const pieces_range = blk.builder.t.instrs.mlir_piece_pool.pushMany(self.gpa, tir_piece_ids.items);
@@ -1143,7 +1145,7 @@ pub const LowerTir = struct {
         var w = buf.writer(self.gpa);
         switch (value) {
             .Int => |val| try w.print("i{}", .{val}),
-            .Float => |val| try w.print("f{d}", .{val}),
+            .Float => |val| try w.print("f{}", .{val}),
             .Bool => |val| try w.print("{s}", .{if (val) "true" else "false"}),
             .Void => try w.print("void", .{}),
             .String => |s| {
@@ -1154,6 +1156,7 @@ pub const LowerTir = struct {
                 }
             },
             .Type => |ty| try self.context.type_store.fmt(ty, w),
+            else => @panic("Not implemented"),
         }
     }
 
@@ -1436,22 +1439,22 @@ pub const LowerTir = struct {
 
         if (result_kind == .F32) {
             const raw = callComptimeThunk(f32, non_null_ptr, &comptime_api);
-            return comp.ComptimeValue{ .Float = @floatCast(f64, raw) };
+            return comp.ComptimeValue{ .Float = @floatCast(raw) };
         }
 
         if (result_kind == .MlirType) {
-            const raw = callComptimeThunk(mlir.Type, non_null_ptr, &comptime_api);
-            return comp.ComptimeValue{ .MlirType = raw };
+            const raw = callComptimeThunk(mlir.c.MlirType, non_null_ptr, &comptime_api);
+            return comp.ComptimeValue{ .MlirType = .{ .handle = raw } };
         }
 
         if (result_kind == .MlirAttribute) {
-            const raw = callComptimeThunk(mlir.Attribute, non_null_ptr, &comptime_api);
-            return comp.ComptimeValue{ .MlirAttribute = raw };
+            const raw = callComptimeThunk(mlir.c.MlirAttribute, non_null_ptr, &comptime_api);
+            return comp.ComptimeValue{ .MlirAttribute = .{ .handle = raw } };
         }
 
         if (result_kind == .MlirModule) {
-            const raw = callComptimeThunk(mlir.Module, non_null_ptr, &comptime_api);
-            return comp.ComptimeValue{ .MlirModule = raw };
+            const raw = callComptimeThunk(mlir.c.MlirModule, non_null_ptr, &comptime_api);
+            return comp.ComptimeValue{ .MlirModule = .{ .handle = raw } };
         }
 
         inline for (.{
@@ -1485,7 +1488,7 @@ pub const LowerTir = struct {
     }
 
     fn castIntThunkResultToU128(value: anytype) ?u128 {
-        const info = @typeInfo(@TypeOf(value)).Int;
+        const info = @typeInfo(@TypeOf(value)).int;
         if (info.signedness == .signed) {
             return std.math.cast(u128, value);
         } else {

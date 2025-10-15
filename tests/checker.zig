@@ -2825,22 +2825,43 @@ test "typeof - success" {
 //     , &.{});
 // }
 //
-// // Focused: MLIR meta blocks (module/op/attribute/type)
-//
-// test "mlir blocks - success" {
-//     // Module-level mlir
-//     try checkProgram("m0 :: mlir { %0 = \"const\"() : () -> () }", &.{});
-//
-//     // MLIR operation form
-//     try checkProgram("m1 :: mlir op { %0 = arith.addi %0, %1 : i32 }", &.{});
-//
-//     // MLIR attribute form
-//     try checkProgram("m2 :: mlir attribute { #attr<string> }", &.{});
-//
-//     // MLIR type form
-//     try checkProgram("m3 :: mlir type { !i32 }", &.{});
-// }
-//
+// Focused: MLIR meta blocks (module/op/attribute/type)
+
+test "mlir splices - success" {
+    try checkProgram(
+        \\
+        \\ ValueTy :: mlir type { i32 }
+        \\ ConstAttr :: mlir attribute { 42 : i32 }
+        \\ make_const :: proc() void {
+        \\   _ = mlir op {
+        \\     "arith.constant"() {value = @ConstAttr} : () -> @ValueTy
+        \\   }
+        \\ }
+        \\ TensorTy :: mlir type { tensor<4x4x@ValueTy> }
+        \\ use_tensor :: proc() void {
+        \\   comptime {
+        \\     _ = TensorTy
+        \\   }
+        \\ }
+    , &.{});
+}
+
+test "mlir splices - unknown identifier" {
+    try checkProgram(
+        \\
+        \\ BadType :: mlir type { tensor<@Missing> }
+    , &.{.mlir_splice_unknown_identifier});
+}
+
+test "mlir splices - non-comptime" {
+    try checkProgram(
+        \\
+        \\ main :: proc(x: i32) void {
+        \\   _ = mlir type { tensor<@x> }
+        \\ }
+    , &.{.mlir_splice_not_comptime});
+}
+
 // // Focused: code expressions
 //
 // test "code expressions - success with note" {

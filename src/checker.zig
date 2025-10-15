@@ -1799,15 +1799,15 @@ pub const Checker = struct {
 
         switch (kind) {
             .Complex => {
-                const comp = self.context.type_store.get(.Complex, ty);
+                const complex = self.context.type_store.get(.Complex, ty);
                 const field_name_inner = self.getStr(field_expr.field);
                 if (std.mem.eql(u8, field_name_inner, "real") or std.mem.eql(u8, field_name_inner, "re")) {
                     try self.type_info.setFieldIndex(id, 0);
-                    return comp.elem;
+                    return complex.elem;
                 }
                 if (std.mem.eql(u8, field_name_inner, "imag") or std.mem.eql(u8, field_name_inner, "im")) {
                     try self.type_info.setFieldIndex(id, 1);
-                    return comp.elem;
+                    return complex.elem;
                 }
                 _ = self.context.diags.addError(self.exprLoc(field_expr), .unknown_struct_field, .{}) catch {};
                 return null;
@@ -1851,15 +1851,15 @@ pub const Checker = struct {
                 ty = ptr_row.elem;
                 const inner_kind = self.typeKind(ty);
                 if (inner_kind == .Complex) {
-                    const comp = self.context.type_store.get(.Complex, ty);
+                    const complex = self.context.type_store.get(.Complex, ty);
                     const field_name_inner = self.getStr(field_expr.field);
                     if (std.mem.eql(u8, field_name_inner, "real") or std.mem.eql(u8, field_name_inner, "re")) {
                         try self.type_info.setFieldIndex(id, 0);
-                        return comp.elem;
+                        return complex.elem;
                     }
                     if (std.mem.eql(u8, field_name_inner, "imag") or std.mem.eql(u8, field_name_inner, "im")) {
                         try self.type_info.setFieldIndex(id, 1);
-                        return comp.elem;
+                        return complex.elem;
                     }
                 }
                 if (inner_kind == .Struct) {
@@ -2529,13 +2529,13 @@ pub const Checker = struct {
             const name = piece.text;
             const loc = self.exprLoc(row);
             const sym_id = self.lookup(name) orelse {
-                try self.context.diags.addError(loc, .mlir_splice_unknown_identifier, .{ self.getStr(name) });
+                try self.context.diags.addError(loc, .mlir_splice_unknown_identifier, .{self.getStr(name)});
                 return null;
             };
             const sym = self.symtab.syms.get(sym_id);
 
             if (!sym.is_comptime) {
-                try self.context.diags.addError(loc, .mlir_splice_not_comptime, .{ self.getStr(name) });
+                try self.context.diags.addError(loc, .mlir_splice_not_comptime, .{self.getStr(name)});
                 return null;
             }
 
@@ -2548,7 +2548,7 @@ pub const Checker = struct {
             switch (sym.kind) {
                 .Param => {
                     if (!sym.is_comptime or sym.origin_param.isNone()) {
-                        try self.context.diags.addError(loc, .mlir_splice_not_comptime, .{ self.getStr(name) });
+                        try self.context.diags.addError(loc, .mlir_splice_not_comptime, .{self.getStr(name)});
                         return null;
                     }
 
@@ -2567,7 +2567,7 @@ pub const Checker = struct {
                     }
                 },
                 else => {
-                    try self.context.diags.addError(loc, .mlir_splice_not_comptime, .{ self.getStr(name) });
+                    try self.context.diags.addError(loc, .mlir_splice_not_comptime, .{self.getStr(name)});
                     return null;
                 },
             }
