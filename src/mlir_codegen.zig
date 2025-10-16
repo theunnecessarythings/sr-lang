@@ -2169,8 +2169,6 @@ pub const MlirCodegen = struct {
                     return error.CompileError;
                 }
                 const ptr = ptr_opt.?;
-                v.dump();
-                ptr.dump();
                 const v_sr = self.srTypeOfValue(t, p.value);
                 const ptr_sr = self.srTypeOfValue(t, p.ptr);
                 if (store.getKind(ptr_sr) == .Ptr and store.getKind(store.get(.Ptr, ptr_sr).elem) == .Tensor) {

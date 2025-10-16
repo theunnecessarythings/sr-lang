@@ -228,13 +228,35 @@ pub const Checker = struct {
         id: ast.ExprId,
         specs: []const ParamSpecialization,
     ) !?types.TypeId {
+        const need_scope = self.symtab.stack.items.len == 0;
+        if (need_scope) {
+            _ = try self.symtab.push(null);
+            const decl_ids = self.ast_unit.exprs.decl_pool.slice(self.ast_unit.unit.decls);
+            for (decl_ids) |did| {
+                const d = self.ast_unit.exprs.Decl.get(did);
+                try self.bindDeclPattern(did, d);
+            }
+        }
+        defer if (need_scope) self.symtab.pop();
+
         const base_len = self.param_specializations.items.len;
         defer self.param_specializations.items.len = base_len;
         if (specs.len > 0) try self.param_specializations.appendSlice(self.gpa, specs);
 
-        const backup = try self.gpa.dupe(?types.TypeId, self.type_info.expr_types.items);
-        defer std.mem.copyForwards(?types.TypeId, self.type_info.expr_types.items, backup);
-        defer self.gpa.free(backup);
+        const backup_len = self.type_info.expr_types.items.len;
+        const backup = try self.gpa.alloc(?types.TypeId, backup_len);
+        if (backup_len != 0) {
+            const src = self.type_info.expr_types.items[0..backup_len];
+            std.mem.copyForwards(?types.TypeId, backup, src);
+        }
+        defer {
+            self.type_info.expr_types.items.len = backup_len;
+            if (backup_len != 0) {
+                const dest = self.type_info.expr_types.items[0..backup_len];
+                std.mem.copyForwards(?types.TypeId, dest, backup);
+            }
+            self.gpa.free(backup);
+        }
 
         return try self.checkFunctionLit(id);
     }
@@ -1928,6 +1950,7 @@ pub const Checker = struct {
 
         var ty = parent_ty.?;
         const kind = self.typeKind(ty);
+        if (kind == .Any) return self.context.type_store.tAny();
 
         const field_name = self.getStr(field_expr.field);
         if (std.mem.eql(u8, field_name, "len")) {
@@ -2501,6 +2524,7 @@ pub const Checker = struct {
             return try self.checkMethodCall(&call_expr, binding, args);
         }
         const func_kind = self.typeKind(func_ty);
+        if (func_kind == .Any) return null;
 
         // Tuple-as-constructor: `(T0,T1,..)(a0,a1,..)` -> construct the tuple type.
         if (func_kind == .Tuple) {
