@@ -1162,27 +1162,35 @@ pub const LowerTir = struct {
         return self.context.type_store.get(.TypeType, ty).of;
     }
 
-    fn appendMangleValue(
-        self: *LowerTir,
-        buf: *std.ArrayList(u8),
-        value: comp.ComptimeValue,
-    ) !void {
-        var w = buf.writer(self.gpa);
+    fn hashComptimeValue(_: *const LowerTir, value: comp.ComptimeValue) u64 {
+        var hasher = std.hash.Wyhash.init(0);
+        const tag: u8 = @intFromEnum(value);
+        hasher.update(&.{tag});
         switch (value) {
-            .Int => |val| try w.print("i{}", .{val}),
-            .Float => |val| try w.print("f{}", .{val}),
-            .Bool => |val| try w.print("{s}", .{if (val) "true" else "false"}),
-            .Void => try w.print("void", .{}),
-            .String => |s| {
-                try w.print("s{}_", .{s.len});
-                for (s) |ch| {
-                    const keep = std.ascii.isAlphanumeric(ch) or ch == '_';
-                    try buf.append(self.gpa, if (keep) ch else '_');
-                }
+            .Void => {},
+            .Int => |val| hasher.update(std.mem.asBytes(&val)),
+            .Float => |val| {
+                const bits: u64 = @bitCast(val);
+                hasher.update(std.mem.asBytes(&bits));
             },
-            .Type => |ty| try self.context.type_store.fmt(ty, w),
-            else => @panic("Not implemented"),
+            .Bool => |val| {
+                const b: u8 = if (val) 1 else 0;
+                hasher.update(&.{b});
+            },
+            .String => |s| {
+                const len: usize = s.len;
+                hasher.update(std.mem.asBytes(&len));
+                hasher.update(s);
+            },
+            .Type => |ty| {
+                const raw = ty.toRaw();
+                hasher.update(std.mem.asBytes(&raw));
+            },
+            .MlirType => |ty| hasher.update(std.mem.asBytes(&ty.handle)),
+            .MlirAttribute => |attr| hasher.update(std.mem.asBytes(&attr.handle)),
+            .MlirModule => |mod| hasher.update(std.mem.asBytes(&mod.handle)),
         }
+        return hasher.final();
     }
 
     fn mangleMonomorphName(
@@ -1194,18 +1202,19 @@ pub const LowerTir = struct {
         defer buf.deinit(self.gpa);
 
         try buf.appendSlice(self.gpa, self.context.type_store.strs.get(base));
+        if (bindings.len == 0) return self.context.type_store.strs.intern(buf.items);
+
+        try buf.appendSlice(self.gpa, "_M");
         for (bindings) |info| {
             try buf.append(self.gpa, '_');
+            var w = buf.writer(self.gpa);
             switch (info.kind) {
-                .type_param => |ty| {
-                    const w = buf.writer(self.gpa);
-                    try self.context.type_store.fmt(ty, w);
+                .type_param => |ty| try w.print("T{}", .{ty.toRaw()}),
+                .value_param => |vp| {
+                    const hash = self.hashComptimeValue(vp.value);
+                    try w.print("V{}x{X}", .{ vp.ty.toRaw(), hash });
                 },
-                .value_param => |vp| try self.appendMangleValue(&buf, vp.value),
-                .runtime_param => |ty| {
-                    const w = buf.writer(self.gpa);
-                    try self.context.type_store.fmt(ty, w);
-                },
+                .runtime_param => |ty| try w.print("R{}", .{ty.toRaw()}),
             }
         }
 
@@ -1234,6 +1243,105 @@ pub const LowerTir = struct {
         const symbol = try std.fmt.allocPrint(self.gpa, "{s}__{s}", .{ owner_name, method_name });
         defer self.gpa.free(symbol);
         return self.context.type_store.strs.intern(symbol);
+    }
+
+    fn prepareMethodCall(
+        self: *LowerTir,
+        a: *const ast.Ast,
+        row: ast.Rows.Call,
+        binding: types.TypeInfo.MethodBinding,
+        callee: *CalleeInfo,
+        callee_name: *[]const u8,
+        method_decl_id: *?ast.DeclId,
+        method_binding_out: *?types.TypeInfo.MethodBinding,
+        arg_ids: *[]const ast.ExprId,
+        method_arg_buf: *[]ast.ExprId,
+    ) !void {
+        const symbol = try self.methodSymbolName(a, binding.decl_id);
+        callee.name = symbol;
+        callee.fty = binding.func_type;
+        method_decl_id.* = binding.decl_id;
+        method_binding_out.* = binding;
+        callee_name.* = self.context.type_store.strs.get(callee.name);
+
+        if (binding.requires_implicit_receiver) {
+            std.debug.assert(a.exprs.index.kinds.items[row.callee.toRaw()] == .FieldAccess);
+            const field_expr = a.exprs.get(.FieldAccess, row.callee);
+            if (method_arg_buf.*.len != 0) {
+                self.gpa.free(method_arg_buf.*);
+                method_arg_buf.* = &.{};
+            }
+            method_arg_buf.* = try self.gpa.alloc(ast.ExprId, arg_ids.*.len + 1);
+            method_arg_buf.*[0] = field_expr.parent;
+            std.mem.copyForwards(ast.ExprId, method_arg_buf.*[1..], arg_ids.*);
+            arg_ids.* = method_arg_buf.*;
+        }
+    }
+
+    fn synthesizeMethodBinding(
+        self: *LowerTir,
+        a: *const ast.Ast,
+        env: *Env,
+        field_expr_id: ast.ExprId,
+    ) !?types.TypeInfo.MethodBinding {
+        if (a.exprs.index.kinds.items[field_expr_id.toRaw()] != .FieldAccess) return null;
+
+        const field_expr = a.exprs.get(.FieldAccess, field_expr_id);
+        const refined = try self.refineExprType(a, env, field_expr.parent, self.getExprType(field_expr.parent));
+        if (refined == null) return null;
+
+        var receiver_ty = refined.?;
+        var owner_ty = receiver_ty;
+        const parent_kind = self.context.type_store.getKind(receiver_ty);
+
+        switch (parent_kind) {
+            .Ptr => {
+                const ptr_row = self.context.type_store.get(.Ptr, receiver_ty);
+                owner_ty = ptr_row.elem;
+            },
+            .TypeType => {
+                owner_ty = self.context.type_store.get(.TypeType, receiver_ty).of;
+            },
+            else => {},
+        }
+
+        const entry_opt = self.type_info.getMethod(owner_ty, field_expr.field);
+        if (entry_opt == null) return null;
+
+        const entry = entry_opt.?;
+        const wants_receiver = entry.receiver_kind != .none;
+        const implicit_receiver = wants_receiver and parent_kind != .TypeType;
+        var needs_addr_of = false;
+
+        if (implicit_receiver) {
+            switch (entry.receiver_kind) {
+                .none => {},
+                .value => {
+                    if (!receiver_ty.eq(owner_ty)) return null;
+                },
+                .pointer, .pointer_const => {
+                    if (parent_kind == .Ptr) {
+                        const ptr_row = self.context.type_store.get(.Ptr, receiver_ty);
+                        if (!ptr_row.elem.eq(owner_ty)) return null;
+                    } else if (receiver_ty.eq(owner_ty)) {
+                        needs_addr_of = true;
+                    } else {
+                        return null;
+                    }
+                },
+            }
+        }
+
+        return types.TypeInfo.MethodBinding{
+            .owner_type = entry.owner_type,
+            .method_name = entry.method_name,
+            .decl_id = entry.decl_id,
+            .func_type = entry.func_type,
+            .self_param_type = entry.self_param_type,
+            .receiver_kind = entry.receiver_kind,
+            .requires_implicit_receiver = implicit_receiver,
+            .needs_addr_of = needs_addr_of,
+        };
     }
 
     fn resolveModuleFieldCallee(
@@ -1308,7 +1416,12 @@ pub const LowerTir = struct {
             const kind = me.ast.exprs.index.kinds.items[d.value.toRaw()];
             if (kind != .FunctionLit) return false;
             const fn_lit = me.ast.exprs.get(.FunctionLit, d.value);
-            return fn_lit.flags.is_extern;
+            if (fn_lit.flags.is_extern) return true;
+            // Treat function declarations without a body as extern. This covers
+            // imported prototypes that were parsed via `extern proc` but lost
+            // their flag metadata while being serialized through the resolver.
+            if (fn_lit.body.isNone()) return true;
+            return false;
         }
         return false;
     }
@@ -1743,20 +1856,31 @@ pub const LowerTir = struct {
 
         if (self.type_info.getMethodBinding(row.callee)) |binding| {
             if (a.exprs.index.kinds.items[row.callee.toRaw()] == .FieldAccess) {
-                const symbol = try self.methodSymbolName(a, binding.decl_id);
-                callee.name = symbol;
-                callee.fty = binding.func_type;
-                callee_name = self.context.type_store.strs.get(callee.name);
-                method_decl_id = binding.decl_id;
-                method_binding = binding;
-
-                if (binding.requires_implicit_receiver) {
-                    const field_expr = a.exprs.get(.FieldAccess, row.callee);
-                    method_arg_buf = try self.gpa.alloc(ast.ExprId, arg_ids.len + 1);
-                    method_arg_buf[0] = field_expr.parent;
-                    std.mem.copyForwards(ast.ExprId, method_arg_buf[1..], arg_ids);
-                    arg_ids = method_arg_buf;
-                }
+                try self.prepareMethodCall(
+                    a,
+                    row,
+                    binding,
+                    &callee,
+                    &callee_name,
+                    &method_decl_id,
+                    &method_binding,
+                    &arg_ids,
+                    &method_arg_buf,
+                );
+            }
+        } else if (a.exprs.index.kinds.items[row.callee.toRaw()] == .FieldAccess) {
+            if (try self.synthesizeMethodBinding(a, env, row.callee)) |binding| {
+                try self.prepareMethodCall(
+                    a,
+                    row,
+                    binding,
+                    &callee,
+                    &callee_name,
+                    &method_decl_id,
+                    &method_binding,
+                    &arg_ids,
+                    &method_arg_buf,
+                );
             }
         }
 
@@ -2690,17 +2814,8 @@ pub const LowerTir = struct {
                         .field_index = idx,
                     });
                 }
-                if (parent_kind == .Ptr) {
-                    // Auto-deref pointer receiver to compute field address of the pointee.
-                    const loaded_ptr = blk.builder.tirValue(
-                        .Load,
-                        blk,
-                        parent_ty,
-                        loc,
-                        .{ .ptr = parent_ptr, .@"align" = 0 },
-                    );
-                    return blk.builder.gep(blk, rptr_ty, loaded_ptr, &.{blk.builder.gepConst(@intCast(idx))}, loc);
-                }
+                if (parent_kind == .Ptr)
+                    return blk.builder.gep(blk, rptr_ty, parent_ptr, &.{blk.builder.gepConst(@intCast(idx))}, loc);
             }
             return blk.builder.gep(blk, rptr_ty, parent_ptr, &.{blk.builder.gepConst(@intCast(idx))}, loc);
         }
@@ -5791,3 +5906,4 @@ const Env = struct {
 
 const ValueBinding = struct { value: tir.ValueId, ty: types.TypeId, is_slot: bool };
 const DeferEntry = struct { expr: ast.ExprId, is_err: bool };
+
