@@ -10,7 +10,7 @@ const comp = @import("comptime.zig");
 const Allocator = std.mem.Allocator;
 const ArrayList = std.array_list.Managed;
 
-pub var enable_debug_info: bool = false;
+pub var enable_debug_info: bool = true;
 
 const LocKey = struct {
     store: usize,
@@ -85,6 +85,7 @@ pub const MlirCodegen = struct {
     di_empty_expr_attr: mlir.Attribute,
     di_type_cache: std.AutoHashMap(types.TypeId, mlir.Attribute),
     next_di_id: usize = 0,
+    debug_module_attrs_initialized: bool = false,
 
     // common LLVM/arith types (opaque pointers on master)
     void_ty: mlir.Type,
@@ -402,6 +403,7 @@ pub const MlirCodegen = struct {
 
         self.loc_cache.clearRetainingCapacity();
         try self.attachTargetInfo();
+        try self.ensureDebugModuleAttrs();
         try self.emitExternDecls(t, &context.type_store);
 
         const func_ids = t.funcs.func_pool.data.items;
@@ -463,8 +465,11 @@ pub const MlirCodegen = struct {
         self.di_empty_expr_attr = mlir.Attribute.empty();
         self.di_type_cache.clearRetainingCapacity();
         self.next_di_id = 0;
+        self.debug_module_attrs_initialized = false;
         var mod_op = self.module.getOperation();
         _ = mod_op.removeDiscardableAttributeByName(mlir.StringRef.from("llvm.dbg.cu"));
+        _ = mod_op.removeDiscardableAttributeByName(mlir.StringRef.from("llvm.module.flags"));
+        _ = mod_op.removeDiscardableAttributeByName(mlir.StringRef.from("llvm.ident"));
     }
 
     fn instrOptLoc(self: *MlirCodegen, t: *const tir.TIR, ins_id: tir.InstrId) tir.OptLocId {
@@ -597,14 +602,24 @@ pub const MlirCodegen = struct {
         const file_attr = mlir.LLVMAttributes.getLLVMDIFileAttr(self.mlir_ctx, base_attr, dir_attr);
         if (file_attr.isNull()) return error.DebugAttrParseFailed;
 
+        const cu_attr = try self.buildDICompileUnit(file_attr);
+        try self.addCompileUnitToModule(cu_attr);
+
+        try self.di_files.put(file_id, .{
+            .file_attr = file_attr,
+            .compile_unit_attr = cu_attr,
+        });
+        return self.di_files.getPtr(file_id).?;
+    }
+
+    fn buildDICompileUnit(self: *MlirCodegen, file_attr: mlir.Attribute) !mlir.Attribute {
         const producer_attr = self.strAttr("sr-lang");
         const id_payload = try std.fmt.allocPrint(self.gpa, "cu_{d}", .{self.nextDistinctId()});
         defer self.gpa.free(id_payload);
-        const id_payload_attr = self.strAttr(id_payload);
-        const id_attr = mlir.Attribute.distinctAttrCreate(id_payload_attr);
+        const id_attr = mlir.Attribute.distinctAttrCreate(self.strAttr(id_payload));
 
-        const file_text_owned = try self.ownedAttributeText(file_attr);
-        defer self.gpa.free(file_text_owned);
+        const file_text = try self.ownedAttributeText(file_attr);
+        defer self.gpa.free(file_text);
         const producer_text = try self.ownedAttributeText(producer_attr);
         defer self.gpa.free(producer_text);
         const id_text = try self.ownedAttributeText(id_attr);
@@ -612,45 +627,44 @@ pub const MlirCodegen = struct {
 
         const cu_text = try std.fmt.allocPrint(
             self.gpa,
-            "#llvm.di_compile_unit<id = {s}, sourceLanguage = DW_LANG_C, file = {s}, producer = {s}, isOptimized = false, emissionKind = Full>",
-            .{ id_text, file_text_owned, producer_text },
+            "#llvm.di_compile_unit<id = {s}, sourceLanguage = DW_LANG_C11, file = {s}, producer = {s}, isOptimized = false, emissionKind = Full>",
+            .{ id_text, file_text, producer_text },
         );
         defer self.gpa.free(cu_text);
 
         const cu_attr = mlir.Attribute.parseGet(self.mlir_ctx, mlir.StringRef.from(cu_text));
         if (cu_attr.isNull()) return error.DebugAttrParseFailed;
+        return cu_attr;
+    }
 
+    fn addCompileUnitToModule(self: *MlirCodegen, cu_attr: mlir.Attribute) !void {
         var mod_op = self.module.getOperation();
         const dbg_name = mlir.StringRef.from("llvm.dbg.cu");
         const existing = mod_op.getDiscardableAttributeByName(dbg_name);
         if (existing.isNull()) {
             const array_attr = mlir.Attribute.arrayAttrGet(self.mlir_ctx, &.{cu_attr});
             mod_op.setDiscardableAttributeByName(dbg_name, array_attr);
-        } else {
-            const count = existing.arrayAttrGetNumElements();
-            var already_present = false;
-            var elements: std.ArrayList(mlir.Attribute) = .empty;
-            defer elements.deinit(self.gpa);
-            var idx: usize = 0;
-            while (idx < count) : (idx += 1) {
-                const elem = existing.arrayAttrGetElement(idx);
-                if (!already_present and elem.equal(&cu_attr)) {
-                    already_present = true;
-                }
-                try elements.append(self.gpa, elem);
-            }
-            if (!already_present) {
-                try elements.append(self.gpa, cu_attr);
-                const array_attr = mlir.Attribute.arrayAttrGet(self.mlir_ctx, elements.items);
-                mod_op.setDiscardableAttributeByName(dbg_name, array_attr);
-            }
+            return;
         }
 
-        try self.di_files.put(file_id, .{
-            .file_attr = file_attr,
-            .compile_unit_attr = cu_attr,
-        });
-        return self.di_files.getPtr(file_id).?;
+        const count = existing.arrayAttrGetNumElements();
+        var already_present = false;
+        var elements: std.ArrayList(mlir.Attribute) = .empty;
+        defer elements.deinit(self.gpa);
+        var idx: usize = 0;
+        while (idx < count) : (idx += 1) {
+            const elem = existing.arrayAttrGetElement(idx);
+            if (!already_present and elem.equal(&cu_attr)) {
+                already_present = true;
+            }
+            try elements.append(self.gpa, elem);
+        }
+
+        if (!already_present) {
+            try elements.append(self.gpa, cu_attr);
+            const array_attr = mlir.Attribute.arrayAttrGet(self.mlir_ctx, elements.items);
+            mod_op.setDiscardableAttributeByName(dbg_name, array_attr);
+        }
     }
 
     fn ensureDebugSubprogram(
@@ -676,8 +690,7 @@ pub const MlirCodegen = struct {
 
         const flags_definition: u64 = 1 << 3; // DISPFlagDefinition
         const type_attr = try self.buildDISubroutineTypeAttr(store, ret_ty, params, t);
-        //       const rec_attr = mlir.Attribute.distinctAttrCreate(mlir.Attribute.unitAttrGet(self.mlir_ctx));
-        const rec_attr = mlir.Attribute.distinctAttrCreate(try self.ensureDINullTypeAttr());
+        const rec_attr = mlir.Attribute.distinctAttrCreate(mlir.Attribute.unitAttrGet(self.mlir_ctx));
 
         const attr = mlir.LLVMAttributes.getLLVMDISubprogramAttr(
             self.mlir_ctx,
@@ -714,6 +727,76 @@ pub const MlirCodegen = struct {
         var mod_op = self.module.getOperation();
         mod_op.setDiscardableAttributeByName(mlir.StringRef.from("llvm.target_triple"), triple);
         mod_op.setDiscardableAttributeByName(mlir.StringRef.from("llvm.data_layout"), dl);
+    }
+
+    fn moduleFlagAttr(self: *MlirCodegen, behavior: []const u8, key: []const u8, value_repr: []const u8) !mlir.Attribute {
+        const text = try std.fmt.allocPrint(
+            self.gpa,
+            "#llvm.mlir.module_flag<{s}, \"{s}\", {s}>",
+            .{ behavior, key, value_repr },
+        );
+        defer self.gpa.free(text);
+        const attr = mlir.Attribute.parseGet(self.mlir_ctx, mlir.StringRef.from(text));
+        if (attr.isNull()) return error.DebugAttrParseFailed;
+        return attr;
+    }
+
+    fn moduleFlagMatchesKey(self: *MlirCodegen, attr: mlir.Attribute, key: []const u8) !bool {
+        const text = try self.ownedAttributeText(attr);
+        defer self.gpa.free(text);
+        const needle = try std.fmt.allocPrint(self.gpa, ", \"{s}\",", .{key});
+        defer self.gpa.free(needle);
+        return std.mem.indexOf(u8, text, needle) != null;
+    }
+
+    fn appendModuleFlag(
+        self: *MlirCodegen,
+        flags: *std.ArrayList(mlir.Attribute),
+        behavior: []const u8,
+        key: []const u8,
+        value_repr: []const u8,
+    ) !void {
+        for (flags.items) |existing| {
+            if (try self.moduleFlagMatchesKey(existing, key)) return;
+        }
+        const attr = try self.moduleFlagAttr(behavior, key, value_repr);
+        try flags.append(self.gpa, attr);
+    }
+
+    fn ensureDebugModuleAttrs(self: *MlirCodegen) !void {
+        if (!enable_debug_info) return;
+        if (self.debug_module_attrs_initialized) return;
+
+        var mod_op = self.module.getOperation();
+        const flags_name = mlir.StringRef.from("llvm.module.flags");
+        const existing_flags = mod_op.getDiscardableAttributeByName(flags_name);
+
+        var flags: std.ArrayList(mlir.Attribute) = .empty;
+        defer flags.deinit(self.gpa);
+        if (!existing_flags.isNull()) {
+            const count = existing_flags.arrayAttrGetNumElements();
+            var idx: usize = 0;
+            while (idx < count) : (idx += 1) {
+                try flags.append(self.gpa, existing_flags.arrayAttrGetElement(idx));
+            }
+        }
+
+        try self.appendModuleFlag(&flags, "warning", "Debug Info Version", "3 : i32");
+        try self.appendModuleFlag(&flags, "max", "Dwarf Version", "5 : i32");
+
+        if (flags.items.len > 0) {
+            const array_attr = mlir.Attribute.arrayAttrGet(self.mlir_ctx, flags.items);
+            mod_op.setDiscardableAttributeByName(flags_name, array_attr);
+        }
+
+        const ident_name = mlir.StringRef.from("llvm.ident");
+        if (mod_op.getDiscardableAttributeByName(ident_name).isNull()) {
+            const ident_attr = self.strAttr("sr-lang compiler");
+            const ident_array = mlir.Attribute.arrayAttrGet(self.mlir_ctx, &.{ident_attr});
+            mod_op.setDiscardableAttributeByName(ident_name, ident_array);
+        }
+
+        self.debug_module_attrs_initialized = true;
     }
 
     fn ensureDINullTypeAttr(self: *MlirCodegen) !mlir.Attribute {
@@ -1103,41 +1186,8 @@ pub const MlirCodegen = struct {
         try attrs.append(self.gpa, self.named("function_type", mlir.Attribute.typeAttrGet(fty)));
         try attrs.append(self.gpa, self.named("sym_visibility", self.strAttr("public")));
 
-        const f_attrs = t.instrs.attribute_pool.slice(f.attrs);
-        const emit_c_iface = t.instrs.strs.intern("llvm.emit_c_interface");
-        for (f_attrs) |attr_id| {
-            const attr = t.instrs.Attribute.get(attr_id);
-            if (attr.name.eq(emit_c_iface)) {
-                try attrs.append(self.gpa, self.named("llvm.emit_c_interface", mlir.Attribute.unitAttrGet(self.mlir_ctx)));
-            }
-        }
-
         const fn_loc = self.functionOptLoc(f_id, t);
-        const prev_loc = self.pushLocation(fn_loc);
-        const fn_mlir_loc = self.loc;
-        self.loc = prev_loc;
-
-        const region = mlir.Region.create();
-        var fnop = OpBuilder.init("func.func", fn_mlir_loc).builder()
-            .add_attributes(attrs.items)
-            .add_regions(&.{region})
-            .build();
-
-        var body = self.module.getBody();
-        body.appendOwnedOperation(fnop);
-
-        const ret_mlir = if (n_res == 0) self.void_ty else results[0];
-        const empty_param_types = try self.gpa.alloc(mlir.Type, 0);
-        var finfo: FuncInfo = .{
-            .op = fnop,
-            .is_variadic = false,
-            .n_formals = params.len,
-            .ret_type = ret_mlir,
-            .param_types = empty_param_types,
-            .owns_param_types = true,
-            .dbg_subprogram = null,
-        };
-
+        var maybe_dbg_attr: ?mlir.Attribute = null;
         if (enable_debug_info and !fn_loc.isNone()) {
             if (self.active_loc_store) |locs_store| {
                 const loc_record = locs_store.get(fn_loc.unwrap());
@@ -1157,12 +1207,54 @@ pub const MlirCodegen = struct {
                         t,
                     ) catch null;
                     if (maybe_subp) |subp| {
-                        fnop.setInherentAttributeByName(mlir.StringRef.from("llvm.di.subprogram"), subp.attr);
-                        finfo.dbg_subprogram = subp.attr;
+                        maybe_dbg_attr = subp.attr;
                     }
                 }
             }
         }
+
+        if (maybe_dbg_attr) |dbg_attr| {
+            try attrs.append(self.gpa, self.named("llvm.di.subprogram", dbg_attr));
+        }
+
+        const f_attrs = t.instrs.attribute_pool.slice(f.attrs);
+        const emit_c_iface = t.instrs.strs.intern("llvm.emit_c_interface");
+        for (f_attrs) |attr_id| {
+            const attr = t.instrs.Attribute.get(attr_id);
+            if (attr.name.eq(emit_c_iface)) {
+                try attrs.append(self.gpa, self.named("llvm.emit_c_interface", mlir.Attribute.unitAttrGet(self.mlir_ctx)));
+            }
+        }
+
+        const prev_loc = self.pushLocation(fn_loc);
+        const fn_mlir_loc = self.loc;
+        self.loc = prev_loc;
+
+        const func_op_loc = if (maybe_dbg_attr) |dbg_attr|
+            mlir.Location.fusedGet(self.mlir_ctx, &.{fn_mlir_loc}, dbg_attr)
+        else
+            fn_mlir_loc;
+
+        const region = mlir.Region.create();
+        const fnop = OpBuilder.init("func.func", func_op_loc).builder()
+            .add_attributes(attrs.items)
+            .add_regions(&.{region})
+            .build();
+
+        var body = self.module.getBody();
+        body.appendOwnedOperation(fnop);
+
+        const ret_mlir = if (n_res == 0) self.void_ty else results[0];
+        const empty_param_types = try self.gpa.alloc(mlir.Type, 0);
+        const finfo: FuncInfo = .{
+            .op = fnop,
+            .is_variadic = false,
+            .n_formals = params.len,
+            .ret_type = ret_mlir,
+            .param_types = empty_param_types,
+            .owns_param_types = true,
+            .dbg_subprogram = maybe_dbg_attr,
+        };
 
         _ = try self.func_syms.put(func_name, finfo);
     }
