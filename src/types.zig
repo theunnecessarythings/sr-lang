@@ -223,6 +223,7 @@ pub const TypeInfo = struct {
         value_ptr.* = .Void;
     }
 
+
     pub fn setMlirSpliceInfo(self: *TypeInfo, piece_id: ast.MlirPieceId, info: MlirSpliceInfo) !void {
         const gop = try self.mlir_splice_info.getOrPut(self.gpa, piece_id.toRaw());
         gop.value_ptr.* = info;

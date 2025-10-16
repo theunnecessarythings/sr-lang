@@ -233,7 +233,7 @@ pub const Checker = struct {
         if (specs.len > 0) try self.param_specializations.appendSlice(self.gpa, specs);
 
         const backup = try self.gpa.dupe(?types.TypeId, self.type_info.expr_types.items);
-        defer std.mem.copy(?types.TypeId, self.type_info.expr_types.items, backup);
+        defer std.mem.copyForwards(?types.TypeId, self.type_info.expr_types.items, backup);
         defer self.gpa.free(backup);
 
         return try self.checkFunctionLit(id);
@@ -3108,16 +3108,16 @@ pub const Checker = struct {
         switch (cr.kind) {
             .normal => {
                 if (self.assignable(vt, et) != .success and !self.castable(vt, et)) {
-                    try self.context.diags.addError(self.exprLoc(cr), .invalid_cast, .{});
+                    try self.context.diags.addError(self.exprLoc(cr), .invalid_cast, .{ vk, ek });
                     return null;
                 }
             },
             .bitcast => {
                 const gsize = check_types.typeSize(self, vt);
                 const tsize = check_types.typeSize(self, et);
-                if (gsize == null or tsize == null or gsize.? != tsize.?) {
-                    try self.context.diags.addError(self.exprLoc(cr), .invalid_bitcast, .{});
-                    return null;
+                if (vk == .Any or ek == .Any) {} else if (gsize == null or tsize == null or gsize.? != tsize.?) {
+                    try self.context.diags.addError(self.exprLoc(cr), .invalid_bitcast, .{ vk, ek });
+                    return error.Stuf;
                 }
             },
             .saturate, .wrap => {

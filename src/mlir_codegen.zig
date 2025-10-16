@@ -10,7 +10,7 @@ const comp = @import("comptime.zig");
 const Allocator = std.mem.Allocator;
 const ArrayList = std.array_list.Managed;
 
-pub var enable_debug_info: bool = true;
+pub var enable_debug_info: bool = false;
 
 const LocKey = struct {
     store: usize,
@@ -2169,6 +2169,8 @@ pub const MlirCodegen = struct {
                     return error.CompileError;
                 }
                 const ptr = ptr_opt.?;
+                v.dump();
+                ptr.dump();
                 const v_sr = self.srTypeOfValue(t, p.value);
                 const ptr_sr = self.srTypeOfValue(t, p.ptr);
                 if (store.getKind(ptr_sr) == .Ptr and store.getKind(store.get(.Ptr, ptr_sr).elem) == .Tensor) {

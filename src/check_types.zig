@@ -112,7 +112,7 @@ pub fn typeSize(self: *Checker, ty_id: types.TypeId) ?usize {
         .Ptr => 8, // best-effort default for 64-bit targets
         .MlirModule, .MlirAttribute, .MlirType => 8,
         .Void => 0,
-        .Any => null, // unknown by definition
+        .Any => 0, // Size is not known
         .String => 8, // best-effort: pointer-like handle; real impl is more complex
         .Slice => 16, // best-effort: ptr + len on 64-bit
         .Array => blk: {

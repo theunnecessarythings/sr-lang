@@ -347,9 +347,9 @@ pub fn diagnosticMessageFmt(code: DiagnosticCode) []const u8 {
 
         // Casts / conversions
         .cast_target_not_type => "cast target is not a type",
-        .invalid_cast => "invalid cast between incompatible types",
+        .invalid_cast => "invalid cast between incompatible types {s} and {s}",
         .invalid_checked_cast => "checked cast cannot succeed",
-        .invalid_bitcast => "invalid bitcast between incompatible types",
+        .invalid_bitcast => "invalid bitcast between incompatible types {s} and {s}",
         .bitcast_non_numeric_or_pointer => "bitcast source must be numeric or a pointer type",
         .bitcast_target_non_numeric_or_pointer => "bitcast target must be numeric or a pointer type",
         .numeric_cast_on_non_numeric => "numeric cast applied to non-numeric type",
@@ -386,9 +386,9 @@ pub fn diagnosticMessageFmt(code: DiagnosticCode) []const u8 {
         .non_integer_index => "array index must be an integer; found {s}",
         .invalid_index_type => "invalid index type; found {s}",
 
-    // Types
-    .expected_array_type => "expected array type, found {s}",
-    .expected_tensor_type => "expected tensor type",
+        // Types
+        .expected_array_type => "expected array type, found {s}",
+        .expected_tensor_type => "expected tensor type",
         .expected_map_type => "expected map type, found {s}",
         .expected_struct_type => "expected struct type, found {s}",
         .expected_enum_type => "expected enum type, found {s}",

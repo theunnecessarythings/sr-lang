@@ -1882,12 +1882,12 @@ pub const LowerTir = struct {
                         }
 
                         if (ok and binding_infos.items.len > 0) {
-                            var runtime_specs = std.ArrayList(checker.Checker.ParamSpecialization).init(self.gpa);
-                            defer runtime_specs.deinit();
+                            var runtime_specs: std.ArrayList(checker.Checker.ParamSpecialization) = .empty;
+                            defer runtime_specs.deinit(self.gpa);
 
                             for (binding_infos.items) |info| {
                                 switch (info.kind) {
-                                    .runtime_param => |ty| try runtime_specs.append(.{ .name = info.name, .ty = ty }),
+                                    .runtime_param => |ty| try runtime_specs.append(self.gpa, .{ .name = info.name, .ty = ty }),
                                     else => {},
                                 }
                             }
