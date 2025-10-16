@@ -104,6 +104,10 @@ pub const MlirCodegen = struct {
     cur_region: ?mlir.Region = null,
     cur_block: ?mlir.Block = null,
     func_entry_block: ?mlir.Block = null,
+    // join-return block for func.func lowering
+    ret_join_block: ?mlir.Block = null,
+    ret_has_value: bool = false,
+    ret_type_cache: ?mlir.Type = null,
     current_scope: ?mlir.Attribute = null,
     block_map: std.AutoHashMap(tir.BlockId, mlir.Block),
     value_map: std.AutoHashMap(tir.ValueId, mlir.Value),
@@ -293,6 +297,7 @@ pub const MlirCodegen = struct {
         if (start == -1) start = 0;
         if (end == -1) end = 0;
         data.msg = buf.toOwnedSlice() catch unreachable;
+        std.debug.print("Diagnostics: {s}\n", .{data.msg.?});
         data.span = .{ .start = @intCast(start), .end = @intCast(end) };
 
         return .{ .value = 1 };
@@ -937,16 +942,16 @@ pub const MlirCodegen = struct {
                     retClass = abi.abiClassifyX64SysV(self, store, ret_sr, true);
                     switch (retClass.kind) {
                         .IndirectSRet => {
-                        // leading ptr arg with { llvm.sret = type(T), llvm.align = K }
-                        lowered_params[n_args] = self.llvm_ptr_ty;
-                        const stTy = try self.llvmTypeOf(store, ret_sr);
-                        const sretDict = mlir.Attribute.dictionaryAttrGet(self.mlir_ctx, &[_]mlir.NamedAttribute{
-                            self.named("llvm.sret", mlir.Attribute.typeAttrGet(stTy)),
-                            self.named("llvm.align", mlir.Attribute.integerAttrGet(self.i64_ty, retClass.alignment)),
-                        });
-                        argAttrs[n_args] = sretDict;
-                        n_args += 1;
-                        ret_type = self.void_ty;
+                            // leading ptr arg with { llvm.sret = type(T), llvm.align = K }
+                            lowered_params[n_args] = self.llvm_ptr_ty;
+                            const stTy = try self.llvmTypeOf(store, ret_sr);
+                            const sretDict = mlir.Attribute.dictionaryAttrGet(self.mlir_ctx, &[_]mlir.NamedAttribute{
+                                self.named("llvm.sret", mlir.Attribute.typeAttrGet(stTy)),
+                                self.named("llvm.align", mlir.Attribute.integerAttrGet(self.i64_ty, retClass.alignment)),
+                            });
+                            argAttrs[n_args] = sretDict;
+                            n_args += 1;
+                            ret_type = self.void_ty;
                         },
                         .DirectScalar => {
                             ret_type = retClass.scalar0.?;
@@ -1171,6 +1176,9 @@ pub const MlirCodegen = struct {
         self.cur_region = null;
         self.cur_block = null;
         self.func_entry_block = null;
+        self.ret_join_block = null;
+        self.ret_has_value = false;
+        self.ret_type_cache = null;
         self.global_addr_cache.clearRetainingCapacity();
 
         const f = t.funcs.Function.get(f_id);
@@ -1259,6 +1267,19 @@ pub const MlirCodegen = struct {
             }
         }
 
+        // Create a dedicated return-join block at end of region for func.func
+        const is_llvm_func = std.mem.eql(u8, func_op.getName().str().toSlice(), "llvm.func");
+        if (!is_llvm_func) {
+            const has_res = !finfo.ret_type.equal(self.void_ty);
+            self.ret_has_value = has_res;
+            self.ret_type_cache = finfo.ret_type;
+            const arg_ty_slice: []const mlir.Type = if (has_res) &.{finfo.ret_type} else &.{};
+            const arg_loc_slice: []const mlir.Location = if (has_res) &.{entry_mlir_loc} else &.{};
+            const ret_blk = mlir.Block.create(arg_ty_slice, arg_loc_slice);
+            region.appendOwnedBlock(ret_blk);
+            self.ret_join_block = ret_blk;
+        }
+
         // emit each block
         for (blocks) |b_id| {
             var mblock = self.block_map.get(b_id).?;
@@ -1292,7 +1313,22 @@ pub const MlirCodegen = struct {
             try self.emitTerminator(bb.term, t, store);
         }
 
+        // Emit the single func.return in the join block (if func.func)
+        if (self.ret_join_block) |rb| {
+            self.cur_block = rb;
+            if (self.ret_has_value) {
+                const arg = rb.getArgument(0);
+                const retop = OpBuilder.init("func.return", self.loc).builder().add_operands(&.{arg}).build();
+                self.append(retop);
+            } else {
+                const retop = OpBuilder.init("func.return", self.loc).builder().build();
+                self.append(retop);
+            }
+        }
+
         self.func_entry_block = null;
+        self.ret_join_block = null;
+        self.ret_type_cache = null;
     }
 
     fn getInstrResultId(self: *MlirCodegen, t: *const tir.TIR, id: tir.InstrId) ?tir.ValueId {
@@ -1389,6 +1425,17 @@ pub const MlirCodegen = struct {
 
         // If already present, return it.
         if (self.func_syms.get(name)) |fi| return fi;
+
+        // If this name matches a function defined in the current TIR module,
+        // ensure a func.func declaration instead of llvm.func.
+        const func_ids = t.funcs.func_pool.data.items;
+        var i: usize = 0;
+        while (i < func_ids.len) : (i += 1) {
+            const fname = t.instrs.strs.get(t.funcs.Function.get(func_ids[i]).name);
+            if (std.mem.eql(u8, fname, name)) {
+                return try self.ensureDeclFromCall(ins_id, t, store);
+            }
+        }
 
         // Try to pick types from global (for varargs info etc.)
         const global_ids = t.funcs.global_pool.data.items;
@@ -2720,9 +2767,28 @@ pub const MlirCodegen = struct {
                 defer self.loc = prev_loc;
                 const callee_name = t.instrs.strs.get(p.callee);
 
-                const finfo = self.func_syms.get(callee_name) orelse try self.ensureFuncDeclFromCall(ins_id, t, store);
+                var finfo = self.func_syms.get(callee_name);
+                if (finfo == null) {
+                    // If callee is in this module, ensure a func.func decl; else extern (llvm.func)
+                    var is_local = false;
+                    const fids = t.funcs.func_pool.data.items;
+                    var ii: usize = 0;
+                    while (ii < fids.len) : (ii += 1) {
+                        const fname = t.instrs.strs.get(t.funcs.Function.get(fids[ii]).name);
+                        if (std.mem.eql(u8, fname, callee_name)) {
+                            is_local = true;
+                            break;
+                        }
+                    }
+                    if (is_local) {
+                        _ = try self.ensureDeclFromCall(ins_id, t, store);
+                        finfo = self.func_syms.get(callee_name);
+                    } else {
+                        finfo = try self.ensureFuncDeclFromCall(ins_id, t, store);
+                    }
+                }
 
-                const isExternLL = std.mem.eql(u8, finfo.op.getName().str().toSlice(), "llvm.func");
+                const isExternLL = std.mem.eql(u8, finfo.?.op.getName().str().toSlice(), "llvm.func");
 
                 // Gather SR arg types and MLIR values
                 const args_slice = t.instrs.val_list_pool.slice(p.args);
@@ -2791,8 +2857,8 @@ pub const MlirCodegen = struct {
                             const stTy = try self.llvmTypeOf(store, sr);
                             const tmp = self.spillAgg(v, stTy, cls.alignment);
                             var passv = tmp;
-                            if (formal_index < finfo.param_types.len) {
-                                const want_ty = finfo.param_types[formal_index];
+                            if (formal_index < finfo.?.param_types.len) {
+                                const want_ty = finfo.?.param_types[formal_index];
                                 passv = try self.ensureCallArgType(store, passv, sr, want_ty);
                             }
                             lowered_ops.append(passv) catch unreachable;
@@ -2817,8 +2883,8 @@ pub const MlirCodegen = struct {
                             } else {
                                 passv = v;
                             }
-                            const want_ty = if (formal_index < finfo.param_types.len)
-                                finfo.param_types[formal_index]
+                            const want_ty = if (formal_index < finfo.?.param_types.len)
+                                finfo.?.param_types[formal_index]
                             else
                                 passv.getType();
                             passv = try self.ensureCallArgType(store, passv, sr, want_ty);
@@ -2833,13 +2899,13 @@ pub const MlirCodegen = struct {
                             const hibits = cls.scalar1.?.getIntegerBitwidth();
                             const hi = self.loadIntAt(tmp, hibits, 8);
                             var lo_cast = lo;
-                            if (formal_index < finfo.param_types.len) {
-                                const want0 = finfo.param_types[formal_index];
+                            if (formal_index < finfo.?.param_types.len) {
+                                const want0 = finfo.?.param_types[formal_index];
                                 lo_cast = try self.ensureCallArgType(store, lo_cast, sr, want0);
                             }
                             var hi_cast = hi;
-                            if (formal_index + 1 < finfo.param_types.len) {
-                                const want1 = finfo.param_types[formal_index + 1];
+                            if (formal_index + 1 < finfo.?.param_types.len) {
+                                const want1 = finfo.?.param_types[formal_index + 1];
                                 hi_cast = try self.ensureCallArgType(store, hi_cast, sr, want1);
                             }
                             lowered_ops.append(lo_cast) catch unreachable;
@@ -2860,8 +2926,8 @@ pub const MlirCodegen = struct {
                 try callAttrsList.append(self.named("operand_segment_sizes", seg));
                 try callAttrsList.append(self.named("op_bundle_sizes", mlir.Attribute.denseI32ArrayGet(self.mlir_ctx, &[_]i32{})));
 
-                if (finfo.is_variadic) {
-                    const func_ty = finfo.op.getInherentAttributeByName(mlir.StringRef.from("function_type"));
+                if (finfo.?.is_variadic) {
+                    const func_ty = finfo.?.op.getInherentAttributeByName(mlir.StringRef.from("function_type"));
                     callAttrsList.append(self.named("var_callee_type", func_ty)) catch unreachable;
                 }
                 var call = OpBuilder.init("llvm.call", self.loc).builder()
@@ -2871,7 +2937,7 @@ pub const MlirCodegen = struct {
                     else if (retClass.kind == .IndirectSRet)
                         &.{}
                     else
-                        &.{finfo.ret_type})
+                        &.{finfo.?.ret_type})
                     .add_attributes(callAttrsList.items)
                     .build();
                 self.append(call);
@@ -3348,28 +3414,44 @@ pub const MlirCodegen = struct {
                 var name_attr = func_op.getInherentAttributeByName(mlir.StringRef.from("sym_name"));
                 const finfo = self.func_syms.get(name_attr.stringAttrGetValue().toSlice()).?;
                 const ret_ty = finfo.ret_type;
-
-                var retop: mlir.Operation = undefined;
-                if (!p.value.isNone()) {
-                    const maybe_v = self.value_map.get(p.value.unwrap());
-                    const v = if (maybe_v) |mv| mv else self.zeroOf(ret_ty);
-                    if (ret_ty.equal(self.void_ty)) {
-                        retop = OpBuilder.init("func.return", self.loc).builder().build();
+                const in_llvm_func = std.mem.eql(u8, func_op.getName().str().toSlice(), "llvm.func");
+                if (in_llvm_func) {
+                    // LLVM functions still return directly
+                    var retop: mlir.Operation = undefined;
+                    if (!p.value.isNone()) {
+                        const maybe_v = self.value_map.get(p.value.unwrap());
+                        const v = if (maybe_v) |mv| mv else self.zeroOf(ret_ty);
+                        if (ret_ty.equal(self.void_ty)) {
+                            retop = OpBuilder.init("llvm.return", self.loc).builder().build();
+                        } else {
+                            retop = OpBuilder.init("llvm.return", self.loc).builder().add_operands(&.{v}).build();
+                        }
                     } else {
-                        retop = OpBuilder.init("func.return", self.loc).builder()
-                            .add_operands(&.{v}).build();
+                        if (!ret_ty.equal(self.void_ty)) {
+                            const z = self.zeroOf(ret_ty);
+                            retop = OpBuilder.init("llvm.return", self.loc).builder().add_operands(&.{z}).build();
+                        } else {
+                            retop = OpBuilder.init("llvm.return", self.loc).builder().build();
+                        }
                     }
+                    self.append(retop);
                 } else {
-                    if (!ret_ty.equal(self.void_ty)) {
-                        // Synthesize a zero value to satisfy non-void return paths.
-                        const z = self.zeroOf(ret_ty);
-                        retop = OpBuilder.init("func.return", self.loc).builder()
-                            .add_operands(&.{z}).build();
+                    // For func.func: branch to the join-return block with optional value.
+                    const dest = self.ret_join_block.?;
+                    if (self.ret_has_value) {
+                        const v = if (!p.value.isNone()) (self.value_map.get(p.value.unwrap()) orelse self.zeroOf(ret_ty)) else self.zeroOf(ret_ty);
+                        const br = OpBuilder.init("cf.br", self.loc).builder()
+                            .add_operands(&.{v})
+                            .add_successors(&.{dest})
+                            .build();
+                        self.append(br);
                     } else {
-                        retop = OpBuilder.init("func.return", self.loc).builder().build();
+                        const br = OpBuilder.init("cf.br", self.loc).builder()
+                            .add_successors(&.{dest})
+                            .build();
+                        self.append(br);
                     }
                 }
-                self.append(retop);
             },
 
             .Br => {
@@ -3916,7 +3998,6 @@ pub const MlirCodegen = struct {
         defer self.gpa.free(arg_tys);
         for (args_slice, 0..) |vid, i| arg_tys[i] = self.value_map.get(vid).?.getType();
         const ret_ty = try self.llvmTypeOf(store, p.ty);
-        const fn_ty = mlir.LLVM.getLLVMFunctionType(ret_ty, arg_tys, true);
         const name = t.instrs.strs.get(p.callee);
 
         if (std.mem.startsWith(u8, name, "m$")) {
@@ -3931,20 +4012,26 @@ pub const MlirCodegen = struct {
             };
         }
 
+        // Create a plain func.func declaration so internal functions remain in the
+        // Func dialect; externs are handled via emitExternDecls.
+        const n_res: usize = if (ret_ty.equal(self.void_ty)) 0 else 1;
+        var res_buf: [1]mlir.Type = undefined;
+        if (n_res == 1) res_buf[0] = ret_ty;
+        const func_type = mlir.Type.getFunctionType(self.mlir_ctx, @intCast(arg_tys.len), arg_tys, @intCast(n_res), res_buf[0..n_res]);
         const attrs = [_]mlir.NamedAttribute{
             self.named("sym_name", self.strAttr(name)),
-            self.named("function_type", mlir.Attribute.typeAttrGet(fn_ty)),
+            self.named("function_type", mlir.Attribute.typeAttrGet(func_type)),
             self.named("sym_visibility", self.strAttr("private")),
         };
         const region = mlir.Region.create();
-        const func_op = OpBuilder.init("llvm.func", self.loc).builder()
+        const func_op = OpBuilder.init("func.func", self.loc).builder()
             .add_attributes(&attrs)
             .add_regions(&.{region}).build();
         var body = self.module.getBody();
         body.appendOwnedOperation(func_op);
 
         const param_types_copy = try self.gpa.alloc(mlir.Type, arg_tys.len);
-        std.mem.copy(mlir.Type, param_types_copy, arg_tys);
+        std.mem.copyForwards(mlir.Type, param_types_copy, arg_tys);
         const info: FuncInfo = .{
             .op = func_op,
             .is_variadic = false,
@@ -4851,6 +4938,44 @@ pub const MlirCodegen = struct {
 
     fn emitCastNormal(self: *MlirCodegen, store: *types.TypeStore, dst_sr: types.TypeId, to_ty: mlir.Type, from_v: mlir.Value, src_sr: types.TypeId) !mlir.Value {
         var from_ty = from_v.getType();
+
+        // Special-case: build an ErrorSet value from a non-error value.
+        // This creates the Ok variant with tag = 0 and coerces the payload.
+        if (store.getKind(dst_sr) == .ErrorSet and store.getKind(src_sr) != .ErrorSet) {
+            const es = store.get(.ErrorSet, dst_sr);
+
+            // Construct the union storage type: union { Ok: value_ty, Err: error_ty }
+            const ok_name = store.strs.intern("Ok");
+            const err_name = store.strs.intern("Err");
+            var union_fields = [_]types.TypeStore.StructFieldArg{
+                .{ .name = ok_name, .ty = es.value_ty },
+                .{ .name = err_name, .ty = es.error_ty },
+            };
+            const union_sr = store.mkUnion(&union_fields);
+            const union_mlir = try self.llvmTypeOf(store, union_sr);
+
+            // Coerce the incoming value to the Ok payload type if needed.
+            var payload_val = from_v;
+            const ok_payload_mlir = try self.llvmTypeOf(store, es.value_ty);
+            if (!payload_val.getType().equal(ok_payload_mlir)) {
+                payload_val = try self.coerceOnBranch(payload_val, ok_payload_mlir, es.value_ty, src_sr, store);
+            }
+
+            // Materialize the union storage by writing the Ok payload at offset 0.
+            const tmp_union_ptr = self.spillAgg(self.undefOf(union_mlir), union_mlir, 0);
+            self.storeAt(tmp_union_ptr, payload_val, 0);
+            var ld_union = OpBuilder.init("llvm.load", self.loc).builder()
+                .add_operands(&.{tmp_union_ptr})
+                .add_results(&.{union_mlir}).build();
+            self.append(ld_union);
+
+            // Assemble the ErrorSet aggregate: { tag: i32 = 0, payload: union }
+            var acc = self.undefOf(to_ty);
+            const tag0 = self.constInt(self.i32_ty, 0);
+            acc = self.insertAt(acc, tag0, &.{0});
+            acc = self.insertAt(acc, ld_union.getResult(0), &.{1});
+            return acc;
+        }
 
         // Complex target?
         if (store.getKind(dst_sr) == .Complex) {

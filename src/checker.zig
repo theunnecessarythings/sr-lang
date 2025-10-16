@@ -3096,6 +3096,12 @@ pub const Checker = struct {
 
         if (handler_ty == null) return null;
 
+        // Allow handler to be noreturn (early exit), in which case the
+        // overall catch expression has the value type on the success path.
+        if (self.typeKind(handler_ty.?) == .Noreturn) {
+            return es.value_ty;
+        }
+
         if (self.assignable(handler_ty.?, es.value_ty) != .success) {
             try self.context.diags.addError(self.exprLoc(row), .catch_handler_type_mismatch, .{});
             return null;

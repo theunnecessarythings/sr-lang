@@ -113,11 +113,12 @@ pub fn run_passes(context: *mlir.Context, module: *mlir.Module) !void {
     }
 
     // Run the pass manager on the module
+    const c_module = module.getOperation().clone();
     result = mlir.c.mlirPassManagerRunOnOp(pm, module.getOperation().handle);
 
     if (mlir.c.mlirLogicalResultIsFailure(result)) {
         std.debug.print("Pass manager failed\n", .{});
-        module.getOperation().dump();
+        c_module.dump();
         return error.PassManagerFailed;
     }
 }

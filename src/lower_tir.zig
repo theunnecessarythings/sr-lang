@@ -1059,10 +1059,9 @@ pub const LowerTir = struct {
             const value_loc = self.exprOptLoc(a, value_expr);
             const v_raw = try self.lowerExpr(a, env, f, blk, value_expr, want, .rvalue);
             var v = v_raw;
-            if (want == null) {
-                if (self.getExprType(r.value.unwrap())) |got| {
-                    v = self.emitCoerce(blk, v_raw, got, expect, value_loc);
-                }
+            if (!self.isVoid(expect)) {
+                const got_ty = self.getExprType(value_expr) orelse expect;
+                v = self.emitCoerce(blk, v_raw, got_ty, expect, value_loc);
             }
 
             const expect_kind = self.context.type_store.index.kinds.items[expect.toRaw()];
@@ -2663,6 +2662,17 @@ pub const LowerTir = struct {
                         .base = parent_ptr,
                         .field_index = idx,
                     });
+                }
+                if (parent_kind == .Ptr) {
+                    // Auto-deref pointer receiver to compute field address of the pointee.
+                    const loaded_ptr = blk.builder.tirValue(
+                        .Load,
+                        blk,
+                        parent_ty,
+                        loc,
+                        .{ .ptr = parent_ptr, .@"align" = 0 },
+                    );
+                    return blk.builder.gep(blk, rptr_ty, loaded_ptr, &.{blk.builder.gepConst(@intCast(idx))}, loc);
                 }
             }
             return blk.builder.gep(blk, rptr_ty, parent_ptr, &.{blk.builder.gepConst(@intCast(idx))}, loc);
