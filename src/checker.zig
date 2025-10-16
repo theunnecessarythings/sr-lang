@@ -38,6 +38,7 @@ pub const Checker = struct {
     loop_binding_stack: std.ArrayListUnmanaged(LoopBindingCtx) = .{},
     catch_binding_stack: std.ArrayListUnmanaged(CatchBindingCtx) = .{},
     match_binding_stack: std.ArrayListUnmanaged(MatchBindingCtx) = .{},
+    param_specializations: std.ArrayListUnmanaged(ParamSpecialization) = .{},
 
     const LoopBindingCtx = struct {
         pat: ast.OptPatternId,
@@ -48,6 +49,11 @@ pub const Checker = struct {
         subject_ty: types.TypeId,
     };
     const CatchBindingCtx = struct {
+        name: ast.StrId,
+        ty: types.TypeId,
+    };
+
+    pub const ParamSpecialization = struct {
         name: ast.StrId,
         ty: types.TypeId,
     };
@@ -110,6 +116,7 @@ pub const Checker = struct {
         self.loop_binding_stack.deinit(self.gpa);
         self.match_binding_stack.deinit(self.gpa);
         self.catch_binding_stack.deinit(self.gpa);
+        self.param_specializations.deinit(self.gpa);
         self.symtab.deinit();
     }
 
@@ -196,6 +203,40 @@ pub const Checker = struct {
     }
     inline fn popLoopBinding(self: *Checker) void {
         if (self.loop_binding_stack.items.len > 0) _ = self.loop_binding_stack.pop();
+    }
+
+    fn bindingNameOfPattern(self: *const Checker, pid: ast.PatternId) ?ast.StrId {
+        const pkind = self.ast_unit.pats.index.kinds.items[pid.toRaw()];
+        return switch (pkind) {
+            .Binding => self.ast_unit.pats.get(.Binding, pid).name,
+            else => null,
+        };
+    }
+
+    fn lookupParamSpecialization(self: *const Checker, name: ast.StrId) ?types.TypeId {
+        var i: usize = self.param_specializations.items.len;
+        while (i > 0) {
+            i -= 1;
+            const spec = self.param_specializations.items[i];
+            if (spec.name.eq(name)) return spec.ty;
+        }
+        return null;
+    }
+
+    pub fn checkSpecializedFunction(
+        self: *Checker,
+        id: ast.ExprId,
+        specs: []const ParamSpecialization,
+    ) !?types.TypeId {
+        const base_len = self.param_specializations.items.len;
+        defer self.param_specializations.items.len = base_len;
+        if (specs.len > 0) try self.param_specializations.appendSlice(self.gpa, specs);
+
+        const backup = try self.gpa.dupe(?types.TypeId, self.type_info.expr_types.items);
+        defer std.mem.copy(?types.TypeId, self.type_info.expr_types.items, backup);
+        defer self.gpa.free(backup);
+
+        return try self.checkFunctionLit(id);
     }
 
     pub inline fn pushMatchBinding(self: *Checker, pat: ast.PatternId, subj: types.TypeId) !void {
@@ -1223,6 +1264,8 @@ pub const Checker = struct {
                     }
                     return pt;
                 } else {
+                    if (self.lookupParamSpecialization(row.name)) |override_ty|
+                        return override_ty;
                     if (p.is_comptime) {
                         return self.context.type_store.mkTypeType(self.context.type_store.tAny());
                     }
@@ -1555,7 +1598,15 @@ pub const Checker = struct {
                 }
                 pbuf[i] = pt;
             } else {
-                pbuf[i] = if (p.is_comptime)
+                var override_ty: ?types.TypeId = null;
+                if (!p.pat.isNone()) {
+                    if (self.bindingNameOfPattern(p.pat.unwrap())) |pname| {
+                        override_ty = self.lookupParamSpecialization(pname);
+                    }
+                }
+                pbuf[i] = if (override_ty) |oty|
+                    oty
+                else if (p.is_comptime)
                     self.context.type_store.mkTypeType(self.context.type_store.tAny())
                 else
                     self.context.type_store.tAny();
