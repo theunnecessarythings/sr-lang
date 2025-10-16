@@ -2406,24 +2406,29 @@ pub const MlirCodegen = struct {
                 const prev_loc = self.pushLocation(p.loc);
                 defer self.loc = prev_loc;
 
-                // Get a pointer to the union storage, even if we were given an SSA value.
-                var base = self.value_map.get(p.base).?;
-                var union_sr = self.srTypeOfValue(t, p.base);
-                var storage_ptr = base;
-
-                if (!self.isLlvmPtr(base.getType())) {
-                    // SSA value: spill to memory to get a pointer
-                    const u_mlir = try self.llvmTypeOf(store, union_sr);
-                    storage_ptr = self.spillAgg(base, u_mlir, 0);
-                } else if (store.getKind(union_sr) == .Ptr) {
-                    union_sr = store.get(.Ptr, union_sr).elem; // peel pointee SR type
+                // Base & SR type
+                const base = self.value_map.get(p.base).?;
+                const base_is_ptr = self.isLlvmPtr(base.getType());
+                const union_sr = self.srTypeOfValue(t, p.base);
+                var core_union_sr = union_sr;
+                if (base_is_ptr and store.getKind(union_sr) == .Ptr) {
+                    core_union_sr = store.get(.Ptr, union_sr).elem;
                 }
 
-                // Desired field type
-                const urow = store.get(.Union, union_sr);
+                // Desired field type (from the union's SR type)
+                const urow = store.get(.Union, core_union_sr);
                 const f_ids = store.field_pool.slice(urow.fields);
                 const f_sr = store.Field.get(f_ids[@intCast(p.field_index)]).ty;
                 const f_mlir = try self.llvmTypeOf(store, f_sr);
+
+                // Get a pointer to the union storage (spill SSA value if needed),
+                // aligning to the field's alignment for a correct typed load.
+                var storage_ptr: mlir.Value = base;
+                if (!base_is_ptr) {
+                    const u_mlir = try self.llvmTypeOf(store, core_union_sr);
+                    const field_align = abi.abiSizeAlign(self, store, f_sr).alignment;
+                    storage_ptr = self.spillAgg(base, u_mlir, @intCast(field_align));
+                }
 
                 // Reinterpret the same address as a pointer-to-field-type at offset 0.
                 // With opaque pointers in MLIR, use a zero-index GEP with the desired element type.
@@ -2442,24 +2447,27 @@ pub const MlirCodegen = struct {
                 const prev_loc = self.pushLocation(p.loc);
                 defer self.loc = prev_loc;
 
-                // Get a pointer to the union storage, even if we were given an SSA value.
-                var base = self.value_map.get(p.base).?;
-                var union_sr = self.srTypeOfValue(t, p.base);
-                var storage_ptr = base;
-
-                if (!self.isLlvmPtr(base.getType())) {
-                    // SSA value: spill to memory to get a pointer
-                    const u_mlir = try self.llvmTypeOf(store, union_sr);
-                    storage_ptr = self.spillAgg(base, u_mlir, 0);
-                } else if (store.getKind(union_sr) == .Ptr) {
-                    union_sr = store.get(.Ptr, union_sr).elem; // peel pointee SR type
+                const base = self.value_map.get(p.base).?;
+                const base_is_ptr = self.isLlvmPtr(base.getType());
+                const union_sr = self.srTypeOfValue(t, p.base);
+                var core_union_sr = union_sr;
+                if (base_is_ptr and store.getKind(union_sr) == .Ptr) {
+                    core_union_sr = store.get(.Ptr, union_sr).elem;
                 }
 
                 // Desired field type
-                const urow = store.get(.Union, union_sr);
+                const urow = store.get(.Union, core_union_sr);
                 const f_ids = store.field_pool.slice(urow.fields);
                 const f_sr = store.Field.get(f_ids[@intCast(p.field_index)]).ty;
                 const f_mlir = try self.llvmTypeOf(store, f_sr);
+
+                // Spill SSA union value if needed, aligned to field alignment.
+                var storage_ptr: mlir.Value = base;
+                if (!base_is_ptr) {
+                    const u_mlir = try self.llvmTypeOf(store, core_union_sr);
+                    const field_align = abi.abiSizeAlign(self, store, f_sr).alignment;
+                    storage_ptr = self.spillAgg(base, u_mlir, @intCast(field_align));
+                }
 
                 // Reinterpret the same address as a pointer-to-field-type at offset 0.
                 // With opaque pointers in MLIR, use a zero-index GEP with the desired element type.
@@ -3734,16 +3742,21 @@ pub const MlirCodegen = struct {
     }
 
     // Spill an aggregate SSA to memory (%tmp = alloca T ; store T %v, %tmp)
+    // If alignment != 0, request that alignment (in bytes) on the alloca.
     fn spillAgg(self: *MlirCodegen, aggVal: mlir.Value, elemTy: mlir.Type, alignment: u32) mlir.Value {
-        _ = alignment;
-        var attrs = [_]mlir.NamedAttribute{
-            self.named("elem_type", mlir.Attribute.typeAttrGet(elemTy)),
-        };
+        var n_attrs: usize = 1;
+        var attrs_buf: [2]mlir.NamedAttribute = undefined;
+        attrs_buf[0] = self.named("elem_type", mlir.Attribute.typeAttrGet(elemTy));
+        if (alignment != 0) {
+            attrs_buf[1] = self.named("alignment", mlir.Attribute.integerAttrGet(self.i64_ty, alignment));
+            n_attrs = 2;
+        }
+        const attrs = attrs_buf[0..n_attrs];
         // one element
         var a = OpBuilder.init("llvm.alloca", self.loc).builder()
             .add_operands(&.{self.llvmConstI64(1)})
             .add_results(&.{self.llvm_ptr_ty})
-            .add_attributes(&attrs).build();
+            .add_attributes(attrs).build();
         self.append(a);
         const st = OpBuilder.init("llvm.store", self.loc).builder()
             .add_operands(&.{ aggVal, a.getResult(0) }).build();
@@ -4256,7 +4269,7 @@ pub const MlirCodegen = struct {
             payload = try elem_coercer(self, store, dst_union_sr, dst_union_ty, payload, src_union_sr);
         }
 
-        var result = self.undefOf(dst_ty);
+        var result = self.zeroOf(dst_ty);
         result = self.insertAt(result, tag, &.{0});
         result = self.insertAt(result, payload, &.{1});
         return result;
@@ -4336,7 +4349,7 @@ pub const MlirCodegen = struct {
         const dst_elems = store.type_pool.slice(dst_info.elems);
         const src_elems = store.type_pool.slice(src_info.elems);
 
-        var result = self.undefOf(dst_ty);
+        var result = self.zeroOf(dst_ty);
         for (dst_elems, 0..) |dst_elem_sr, i| {
             const src_elem_sr = src_elems[i];
             const dst_elem_ty = try self.llvmTypeOf(store, dst_elem_sr);
@@ -4367,7 +4380,7 @@ pub const MlirCodegen = struct {
         const src_payload = self.extractAt(src_val, src_payload_ty, &.{1});
         const coerced_payload = try elem_coercer(self, store, dst_info.elem, dst_payload_ty, src_payload, src_info.elem);
 
-        var result = self.undefOf(dst_ty);
+        var result = self.zeroOf(dst_ty);
         result = self.insertAt(result, tag, &.{0});
         result = self.insertAt(result, coerced_payload, &.{1});
         return result;
@@ -4385,7 +4398,7 @@ pub const MlirCodegen = struct {
         const src_size = abi.abiSizeAlign(self, store, src_sr).size;
         if (dst_size != src_size) return null;
 
-        var result = self.undefOf(dst_ty);
+        var result = self.zeroOf(dst_ty);
         var i: usize = 0;
         while (i < dst_size) : (i += 1) {
             const idx = [_]i64{@intCast(i)};
@@ -4446,14 +4459,19 @@ pub const MlirCodegen = struct {
 
         const dst_kind = store.getKind(dst_sr);
         const src_kind = store.getKind(src_sr);
-        if (!isAggregateKind(dst_kind) and !isAggregateKind(src_kind)) return null;
+        // Only allow aggregate-to-aggregate reinterpret via spill. Reinterpreting an
+        // aggregate into a scalar (or vice-versa) is semantically wrong for tagged
+        // unions like ErrorSet and Optional and has been the source of corruption.
+        if (!(isAggregateKind(dst_kind) and isAggregateKind(src_kind))) return null;
 
         const dst_layout = abi.abiSizeAlign(self, store, dst_sr);
         const src_layout = abi.abiSizeAlign(self, store, src_sr);
 
-        const src_ptr = self.spillAgg(src_val, src_val.getType(), 0);
+        const src_align = abi.abiSizeAlign(self, store, src_sr).alignment;
+        const dst_align = abi.abiSizeAlign(self, store, dst_sr).alignment;
+        const src_ptr = self.spillAgg(src_val, src_val.getType(), @intCast(src_align));
         const dst_init = self.zeroOf(dst_ty);
-        const dst_ptr = self.spillAgg(dst_init, dst_ty, 0);
+        const dst_ptr = self.spillAgg(dst_init, dst_ty, @intCast(dst_align));
 
         const copy_len = if (dst_layout.size < src_layout.size) dst_layout.size else src_layout.size;
         var i: usize = 0;
@@ -4499,6 +4517,8 @@ pub const MlirCodegen = struct {
         store: *types.TypeStore,
     ) !mlir.Value {
         if (v.getType().equal(want)) return v;
+
+        // (array-of-bytes to scalar typed-load path removed; implement at exact unwrap sites instead)
 
         // ptr <-> ptr : bitcast
         if (mlir.LLVM.isLLVMPointerType(v.getType()) and mlir.LLVM.isLLVMPointerType(want)) {
@@ -4592,6 +4612,28 @@ pub const MlirCodegen = struct {
         if (try self.reinterpretAggregateViaSpill(store, dst_sr_ty, want, v, src_sr_ty)) |agg|
             return agg;
 
+        // Avoid unsafe fallback bitcasts between aggregates and scalars.
+        if (dst_sr_ty.toRaw() != 0 and src_sr_ty.toRaw() != 0) {
+            const dst_kind = store.getKind(dst_sr_ty);
+            const src_kind = store.getKind(src_sr_ty);
+            // If asked to coerce an ErrorSet to its Ok payload type, perform a
+            // typed extraction instead of any byte-level reinterpretation.
+            if (src_kind == .ErrorSet and !isAggregateKind(dst_kind)) {
+                const es = store.get(.ErrorSet, src_sr_ty);
+                const ok_mlir = try self.llvmTypeOf(store, es.value_ty);
+                if (want.equal(ok_mlir)) {
+                    return try self.loadOkFromErrorSet(store, src_sr_ty, v);
+                }
+            }
+            const dst_is_agg = isAggregateKind(dst_kind);
+            const src_is_agg = isAggregateKind(src_kind);
+            if (dst_is_agg != src_is_agg) {
+                // Give up on coercion here; the caller should already be producing
+                // the correct shaped value for aggregates at this point.
+                return v;
+            }
+        }
+
         // last resort (should be rare): bitcast
         var bc = OpBuilder.init("llvm.bitcast", self.loc).builder()
             .add_operands(&.{v}).add_results(&.{want}).build();
@@ -4634,6 +4676,38 @@ pub const MlirCodegen = struct {
         }
 
         return err_val;
+    }
+
+    // Typed load of the Ok payload from an ErrorSet aggregate value.
+    // src_val has SR type ErrorSet(V,E) with MLIR type { i32, union }.
+    // We extract field 1 (the union storage), spill to memory, GEP as a pointer to V,
+    // then perform a typed load of V.
+    fn loadOkFromErrorSet(
+        self: *MlirCodegen,
+        store: *types.TypeStore,
+        src_errset_sr: types.TypeId,
+        src_val: mlir.Value,
+    ) !mlir.Value {
+        const es = store.get(.ErrorSet, src_errset_sr);
+        const ok_name = store.strs.intern("Ok");
+        const err_name = store.strs.intern("Err");
+        var union_fields = [_]types.TypeStore.StructFieldArg{
+            .{ .name = ok_name, .ty = es.value_ty },
+            .{ .name = err_name, .ty = es.error_ty },
+        };
+        const union_sr = store.mkUnion(&union_fields);
+        const union_ty = try self.llvmTypeOf(store, union_sr);
+        const payload = self.extractAt(src_val, union_ty, &.{1});
+
+        const ok_mlir = try self.llvmTypeOf(store, es.value_ty);
+        const alignment = abi.abiSizeAlign(self, store, es.value_ty).alignment;
+        const union_ptr = self.spillAgg(payload, union_ty, @intCast(alignment));
+        const idxs = [_]tir.Rows.GepIndex{.{ .Const = 0 }};
+        const ok_ptr = try self.emitGep(union_ptr, ok_mlir, &idxs);
+        var load_op = OpBuilder.init("llvm.load", self.loc).builder()
+            .add_operands(&.{ok_ptr}).add_results(&.{ok_mlir}).build();
+        self.append(load_op);
+        return load_op.getResult(0);
     }
 
     fn sameType(a: mlir.Type, b: mlir.Type) bool {
@@ -4970,7 +5044,7 @@ pub const MlirCodegen = struct {
             self.append(ld_union);
 
             // Assemble the ErrorSet aggregate: { tag: i32 = 0, payload: union }
-            var acc = self.undefOf(to_ty);
+            var acc = self.zeroOf(to_ty);
             const tag0 = self.constInt(self.i32_ty, 0);
             acc = self.insertAt(acc, tag0, &.{0});
             acc = self.insertAt(acc, ld_union.getResult(0), &.{1});

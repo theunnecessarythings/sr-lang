@@ -1471,8 +1471,19 @@ pub const Checker = struct {
                 return null;
             },
             .@"orelse" => {
-                // Zig-like: only Optional(T) orelse R is valid, and R must be assignable to T.
+                // Case A: Optional(T) orelse R -> T (R assignable to T)
                 if (check_types.isOptional(self, l)) |elem| {
+                    const elem_kind = self.typeKind(elem);
+                    // Case B: Optional(ErrorSet(V,E)) orelse R -> ErrorSet(V,E)
+                    if (elem_kind == .ErrorSet) {
+                        const es = self.context.type_store.get(.ErrorSet, elem);
+                        if (self.assignable(es.value_ty, r) == .success) {
+                            return self.context.type_store.mkErrorSet(es.value_ty, es.error_ty);
+                        }
+                        try self.context.diags.addError(self.exprLoc(bin), .invalid_binary_op_operands, .{ bin.op, lhs_kind, rhs_kind });
+                        return null;
+                    }
+                    // Plain optional: require R assignable to T
                     if (self.assignable(elem, r) == .success) return elem;
                     try self.context.diags.addError(self.exprLoc(bin), .invalid_binary_op_operands, .{ bin.op, lhs_kind, rhs_kind });
                     return null;
@@ -3082,21 +3093,11 @@ pub const Checker = struct {
         if (lhs_ty == null) return null;
 
         const lhs_kind = self.typeKind(lhs_ty.?);
-        var is_optional_es = false;
         var result_ty: types.TypeId = undefined;
         var es_info: types.Rows.ErrorSet = undefined;
         if (lhs_kind == .ErrorSet) {
             es_info = self.context.type_store.get(.ErrorSet, lhs_ty.?);
             result_ty = es_info.value_ty;
-        } else if (lhs_kind == .Optional) {
-            const opt = self.context.type_store.get(.Optional, lhs_ty.?);
-            if (self.typeKind(opt.elem) != .ErrorSet) {
-                try self.context.diags.addError(self.exprLoc(row), .catch_on_non_error, .{});
-                return null;
-            }
-            es_info = self.context.type_store.get(.ErrorSet, opt.elem);
-            is_optional_es = true;
-            result_ty = self.context.type_store.mkOptional(es_info.value_ty);
         } else {
             try self.context.diags.addError(self.exprLoc(row), .catch_on_non_error, .{});
             return null;
@@ -3132,7 +3133,7 @@ pub const Checker = struct {
             return result_ty;
         }
 
-        const want_ok_ty = if (is_optional_es) self.context.type_store.get(.Optional, result_ty).elem else es_info.value_ty;
+        const want_ok_ty = es_info.value_ty;
         if (self.assignable(handler_ty.?, want_ok_ty) != .success and !self.castable(handler_ty.?, want_ok_ty)) {
             try self.context.diags.addError(self.exprLoc(row), .catch_handler_type_mismatch, .{});
             return null;

@@ -3134,29 +3134,70 @@ pub const LowerTir = struct {
                 var join_blk = try f.builder.beginBlock(f);
                 const lhs_ty = self.getExprType(row.left) orelse return error.LoweringBug;
                 if (self.context.type_store.index.kinds.items[lhs_ty.toRaw()] != .Optional) return error.LoweringBug;
-                // Optional(T) orelse R -> T
                 const opt_info = self.context.type_store.get(.Optional, lhs_ty);
                 const flag = blk.builder.extractField(blk, bool_ty, l, 0, loc);
                 const payload = blk.builder.extractField(blk, opt_info.elem, l, 1, loc);
-                const then_param = try f.builder.addBlockParam(&then_blk, null, opt_info.elem);
-                const res_ty = expected_ty orelse opt_info.elem;
-                const res_param = try f.builder.addBlockParam(&join_blk, null, res_ty);
-                try f.builder.condBr(blk, flag, then_blk.id, &.{payload}, else_blk.id, &.{}, loc);
-                const orig_blk = blk.*;
-                try f.builder.endBlock(f, orig_blk);
 
-                var unwrapped = then_param;
-                if (expected_ty) |want| unwrapped = self.emitCoerce(&then_blk, unwrapped, opt_info.elem, want, loc);
-                try f.builder.br(&then_blk, join_blk.id, &.{unwrapped}, loc);
+                const elem_kind = self.context.type_store.getKind(opt_info.elem);
 
-                var rhs_v = r;
-                const rhs_ty = self.getExprType(row.right) orelse res_ty;
-                rhs_v = self.emitCoerce(&else_blk, rhs_v, rhs_ty, res_ty, loc);
-                try f.builder.br(&else_blk, join_blk.id, &.{rhs_v}, loc);
-                try f.builder.endBlock(f, then_blk);
-                try f.builder.endBlock(f, else_blk);
-                blk.* = join_blk;
-                break :blk res_param;
+                if (elem_kind != .ErrorSet) {
+                    // Optional(T) orelse R -> T
+                    const then_param = try f.builder.addBlockParam(&then_blk, null, opt_info.elem);
+                    const res_ty = expected_ty orelse opt_info.elem;
+                    const res_param = try f.builder.addBlockParam(&join_blk, null, res_ty);
+                    try f.builder.condBr(blk, flag, then_blk.id, &.{payload}, else_blk.id, &.{}, loc);
+                    const orig_blk = blk.*;
+                    try f.builder.endBlock(f, orig_blk);
+
+                    var unwrapped = then_param;
+                    if (expected_ty) |want| unwrapped = self.emitCoerce(&then_blk, unwrapped, opt_info.elem, want, loc);
+                    try f.builder.br(&then_blk, join_blk.id, &.{unwrapped}, loc);
+
+                    var rhs_v = r;
+                    const rhs_ty = self.getExprType(row.right) orelse res_ty;
+                    rhs_v = self.emitCoerce(&else_blk, rhs_v, rhs_ty, res_ty, loc);
+                    try f.builder.br(&else_blk, join_blk.id, &.{rhs_v}, loc);
+                    try f.builder.endBlock(f, then_blk);
+                    try f.builder.endBlock(f, else_blk);
+                    blk.* = join_blk;
+                    break :blk res_param;
+                } else {
+                    // Optional(ErrorSet(V,E)) orelse R -> ErrorSet(V,E)
+                    const es = self.context.type_store.get(.ErrorSet, opt_info.elem);
+                    const res_es_ty = self.context.type_store.mkErrorSet(es.value_ty, es.error_ty);
+                    const res_param = try f.builder.addBlockParam(&join_blk, null, res_es_ty);
+                    // Prepare then param to receive the ErrorSet payload
+                    const then_param = try f.builder.addBlockParam(&then_blk, null, res_es_ty);
+                    // Branch on optional flag; forward payload on then
+                    try f.builder.condBr(blk, flag, then_blk.id, &.{payload}, else_blk.id, &.{}, loc);
+                    const orig_blk = blk.*;
+                    try f.builder.endBlock(f, orig_blk);
+
+                    // then: pass through the ErrorSet value received as param
+                    try f.builder.br(&then_blk, join_blk.id, &.{then_param}, loc);
+                    try f.builder.endBlock(f, then_blk);
+
+                    // else: wrap default RHS as Ok in ErrorSet
+                    var rhs_v = r;
+                    const rhs_ty = self.getExprType(row.right) orelse es.value_ty;
+                    if (rhs_ty.toRaw() != es.value_ty.toRaw()) rhs_v = self.emitCoerce(&else_blk, rhs_v, rhs_ty, es.value_ty, loc);
+                    // Build union payload {Ok: V, Err: E}
+                    const ok_name = f.builder.intern("Ok");
+                    const err_name = f.builder.intern("Err");
+                    const union_ty = self.context.type_store.mkUnion(&.{ .{ .name = ok_name, .ty = es.value_ty }, .{ .name = err_name, .ty = es.error_ty } });
+                    const union_val = else_blk.builder.tirValue(.UnionMake, &else_blk, union_ty, loc, .{ .field_index = 0, .value = rhs_v });
+                    const tag0 = else_blk.builder.tirValue(.ConstInt, &else_blk, self.context.type_store.tI32(), loc, .{ .value = 0 });
+                    const fields = [_]tir.Rows.StructFieldInit{
+                        .{ .index = 0, .name = .none(), .value = tag0 },
+                        .{ .index = 1, .name = .none(), .value = union_val },
+                    };
+                    const es_val = else_blk.builder.structMake(&else_blk, res_es_ty, &fields, loc);
+                    try f.builder.br(&else_blk, join_blk.id, &.{es_val}, loc);
+                    try f.builder.endBlock(f, else_blk);
+
+                    blk.* = join_blk;
+                    break :blk res_param;
+                }
             },
         };
         if (expected_ty) |want| {
@@ -3214,26 +3255,30 @@ pub const LowerTir = struct {
                 try f.builder.endBlock(f, old);
             }
 
-            // In some-block: apply catch to inner error-set
+            // In some-block: apply catch to inner error-set and produce Optional(V) directly
             const tag = some_blk.builder.extractField(&some_blk, self.context.type_store.tI32(), es_payload, 0, expr_loc);
             const zero = some_blk.builder.tirValue(.ConstInt, &some_blk, self.context.type_store.tI32(), expr_loc, .{ .value = 0 });
             const is_ok_inner = some_blk.builder.binBool(&some_blk, .CmpEq, tag, zero, expr_loc);
 
             var ok_blk = try f.builder.beginBlock(f);
             var err_blk = try f.builder.beginBlock(f);
-            var join_inner = try f.builder.beginBlock(f);
-            const ok_param = try f.builder.addBlockParam(&join_inner, null, es.value_ty);
-
             try f.builder.condBr(&some_blk, is_ok_inner, ok_blk.id, &.{}, err_blk.id, &.{}, loc);
             try f.builder.endBlock(f, some_blk);
 
-            // ok: unwrap value from union
+            const one = self.context.type_store.tBool();
+            // ok: unwrap value from union and wrap as Some(value)
             const payload_union_ok = ok_blk.builder.extractField(&ok_blk, self.context.type_store.mkUnion(&.{ .{ .name = f.builder.intern("Ok"), .ty = es.value_ty }, .{ .name = f.builder.intern("Err"), .ty = es.error_ty } }), es_payload, 1, expr_loc);
             const ok_v = ok_blk.builder.tirValue(.UnionField, &ok_blk, es.value_ty, loc, .{ .base = payload_union_ok, .field_index = 0 });
-            try f.builder.br(&ok_blk, join_inner.id, &.{ok_v}, loc);
+            const true_v_ok = ok_blk.builder.tirValue(.ConstBool, &ok_blk, one, loc, .{ .value = true });
+            const ok_fields = [_]tir.Rows.StructFieldInit{
+                .{ .index = 0, .name = .none(), .value = true_v_ok },
+                .{ .index = 1, .name = .none(), .value = ok_v },
+            };
+            const some_opt_ok = ok_blk.builder.structMake(&ok_blk, res_opt_ty, &ok_fields, loc);
+            try f.builder.br(&ok_blk, join_blk.id, &.{some_opt_ok}, loc);
             try f.builder.endBlock(f, ok_blk);
 
-            // err: bind error and run handler producing V (unless noreturn)
+            // err: bind error and run handler producing V (unless noreturn); wrap as Some(value)
             const payload_union_err = err_blk.builder.extractField(&err_blk, self.context.type_store.mkUnion(&.{ .{ .name = f.builder.intern("Ok"), .ty = es.value_ty }, .{ .name = f.builder.intern("Err"), .ty = es.error_ty } }), es_payload, 1, expr_loc);
             const err_val = err_blk.builder.tirValue(.UnionField, &err_blk, es.error_ty, loc, .{ .base = payload_union_err, .field_index = 1 });
             if (!row.binding_name.isNone()) {
@@ -3243,21 +3288,15 @@ pub const LowerTir = struct {
             try self.lowerExprAsStmtList(a, env, f, &err_blk, row.handler);
             if (err_blk.term.isNone()) {
                 const hv = try self.lowerBlockExprValue(a, env, f, &err_blk, row.handler, es.value_ty);
-                try f.builder.br(&err_blk, join_inner.id, &.{hv}, loc);
+                const true_v_err = err_blk.builder.tirValue(.ConstBool, &err_blk, one, loc, .{ .value = true });
+                const err_fields = [_]tir.Rows.StructFieldInit{
+                    .{ .index = 0, .name = .none(), .value = true_v_err },
+                    .{ .index = 1, .name = .none(), .value = hv },
+                };
+                const some_opt_err = err_blk.builder.structMake(&err_blk, res_opt_ty, &err_fields, loc);
+                try f.builder.br(&err_blk, join_blk.id, &.{some_opt_err}, loc);
             }
             try f.builder.endBlock(f, err_blk);
-
-            // Now wrap the chosen V into Optional(V) with is_some=true and branch to outer join
-            const chosen_v = ok_param;
-            const one = self.context.type_store.tBool();
-            const true_v = join_inner.builder.tirValue(.ConstBool, &join_inner, one, loc, .{ .value = true });
-            const fields = [_]tir.Rows.StructFieldInit{
-                .{ .index = 0, .name = .none(), .value = true_v },
-                .{ .index = 1, .name = .none(), .value = chosen_v },
-            };
-            const some_opt = join_inner.builder.structMake(&join_inner, res_opt_ty, &fields, loc);
-            try f.builder.br(&join_inner, join_blk.id, &.{some_opt}, loc);
-            try f.builder.endBlock(f, join_inner);
 
             // none branch: wrap as None Optional(V)
             const false_v = none_blk.builder.tirValue(.ConstBool, &none_blk, one, loc, .{ .value = false });
