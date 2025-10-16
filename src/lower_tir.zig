@@ -3462,13 +3462,66 @@ pub const LowerTir = struct {
         expected_ty: ?types.TypeId,
     ) anyerror!tir.ValueId {
         const row = a.exprs.get(.ErrUnwrap, id);
-        const ty0 = self.getExprType(id) orelse return error.LoweringBug;
-        const v = try self.lowerExpr(a, env, f, blk, row.expr, null, .rvalue);
-        const unwrap_ok = blk.builder.intern("builtin.err.unwrap_ok");
+        const result_ty = self.getExprType(id) orelse return error.LoweringBug; // Ok payload type
         const loc = self.exprOptLoc(a, id);
-        const out = blk.builder.call(blk, ty0, unwrap_ok, &.{v}, loc);
-        if (expected_ty) |want| return self.emitCoerce(blk, out, ty0, want, loc);
-        return out;
+        const expr_loc = self.exprOptLoc(a, row.expr);
+
+        // Lower the error-union expression
+        const es_val = try self.lowerExpr(a, env, f, blk, row.expr, null, .rvalue);
+        const es_ty = self.getExprType(row.expr) orelse return error.LoweringBug;
+        if (self.context.type_store.index.kinds.items[es_ty.toRaw()] != .ErrorSet)
+            return error.LoweringBug;
+        const es = self.context.type_store.get(.ErrorSet, es_ty);
+
+        // Extract tag and branch
+        const tag_ty = self.context.type_store.tI32();
+        const tag = blk.builder.extractField(blk, tag_ty, es_val, 0, expr_loc);
+        const zero = blk.builder.tirValue(.ConstInt, blk, tag_ty, expr_loc, .{ .value = 0 });
+        const is_ok = blk.builder.binBool(blk, .CmpEq, tag, zero, expr_loc);
+
+        var then_blk = try f.builder.beginBlock(f); // ok path
+        var else_blk = try f.builder.beginBlock(f); // err path
+        var join_blk = try f.builder.beginBlock(f);
+
+        const res_ty = expected_ty orelse result_ty;
+        try self.noteExprType(id, res_ty);
+        const res_param = try f.builder.addBlockParam(&join_blk, null, res_ty);
+
+        const br_cond = self.forceLocalCond(blk, is_ok, expr_loc);
+        try f.builder.condBr(blk, br_cond, then_blk.id, &.{}, else_blk.id, &.{}, loc);
+        {
+            const old = blk.*;
+            try f.builder.endBlock(f, old);
+        }
+
+        // Ok path: extract Ok payload from union and jump to join
+        const payload_union_ty = self.context.type_store.mkUnion(&.{
+            .{ .name = f.builder.intern("Ok"), .ty = es.value_ty },
+            .{ .name = f.builder.intern("Err"), .ty = es.error_ty },
+        });
+        const payload_union_ok = then_blk.builder.extractField(&then_blk, payload_union_ty, es_val, 1, expr_loc);
+        var ok_val = then_blk.builder.tirValue(.UnionField, &then_blk, es.value_ty, loc, .{
+            .base = payload_union_ok,
+            .field_index = 0,
+        });
+        if (expected_ty) |want| ok_val = self.emitCoerce(&then_blk, ok_val, es.value_ty, want, loc);
+        try f.builder.br(&then_blk, join_blk.id, &.{ok_val}, loc);
+        try f.builder.endBlock(f, then_blk);
+
+        // Err path: early-return the error to the caller
+        // Coerce to current function's expected result type if needed
+        const frow = f.builder.t.funcs.Function.get(f.id);
+        const expect = frow.result;
+        var ret_val = es_val;
+        if (!self.isVoid(expect) and expect.toRaw() != es_ty.toRaw()) {
+            ret_val = self.emitCoerce(&else_blk, es_val, es_ty, expect, loc);
+        }
+        try f.builder.setReturnVal(&else_blk, ret_val, loc);
+        try f.builder.endBlock(f, else_blk);
+
+        // Continue after join with the unwrapped value
+        blk.* = join_blk;
+        return res_param;
     }
 
     fn isAllIntMatch(_: *LowerTir, a: *const ast.Ast, arms_slice: []const ast.MatchArmId, values_buf: []u64) bool {

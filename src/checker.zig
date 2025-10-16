@@ -3096,6 +3096,16 @@ pub const Checker = struct {
 
         if (handler_ty == null) return null;
 
+        // If this catch expression is used in a statement (no value required),
+        // allow a void handler (side effects only). The overall expression then
+        // has type void, unless the handler is noreturn.
+        if (!self.isValueReq()) {
+            if (self.typeKind(handler_ty.?) == .Noreturn) {
+                return self.context.type_store.tNoreturn();
+            }
+            return self.context.type_store.tVoid();
+        }
+
         // Allow handler to be noreturn (early exit), in which case the
         // overall catch expression has the value type on the success path.
         if (self.typeKind(handler_ty.?) == .Noreturn) {
