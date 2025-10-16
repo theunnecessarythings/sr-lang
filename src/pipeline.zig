@@ -218,15 +218,15 @@ pub const Pipeline = struct {
             }
         };
 
-        var buf = std.array_list.Managed(u8).init(self.allocator);
-        defer buf.deinit();
-        var had_error = false;
-        var sink = mlir_codegen.PrintBuffer{ .list = &buf, .had_error = &had_error };
-        mlir_module.getOperation().print(mlir_codegen.printCallback, &sink);
-        if (!had_error) {
-            const path = "temp.mlir";
-            try std.fs.cwd().writeFile(.{ .data = sink.list.items, .sub_path = path });
-        }
+        // var buf = std.array_list.Managed(u8).init(self.allocator);
+        // defer buf.deinit();
+        // var had_error = false;
+        // var sink = mlir_codegen.PrintBuffer{ .list = &buf, .had_error = &had_error };
+        // mlir_module.getOperation().print(mlir_codegen.printCallback, &sink);
+        // if (!had_error) {
+        //     const path = "temp.mlir";
+        //     try std.fs.cwd().writeFile(.{ .data = sink.list.items, .sub_path = path });
+        // }
 
         // verify module
         if (!mlir_module.getOperation().verify()) {

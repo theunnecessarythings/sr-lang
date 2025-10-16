@@ -843,21 +843,36 @@ pub const MlirCodegen = struct {
                 64,
                 mlir.LLVMTypeEncoding.FloatT,
             ),
-            .Ptr => blk: {
-                const info = store.get(.Ptr, ty);
-                const base = try self.ensureDIType(store, info.elem);
-                break :blk mlir.LLVMAttributes.getLLVMDIDerivedTypeAttr(
+            .Void, .Noreturn => try self.ensureDINullTypeAttr(),
+            .Function => blk: {
+                const finfo = store.get(.Function, ty);
+                var types_buf: std.ArrayList(mlir.Attribute) = .empty;
+                defer types_buf.deinit(self.gpa);
+
+                var ret_attr = self.ensureDIType(store, finfo.result) catch blk_ret: {
+                    break :blk_ret try self.ensureDINullTypeAttr();
+                };
+                if (ret_attr.isNull()) ret_attr = try self.ensureDINullTypeAttr();
+                try types_buf.append(self.gpa, ret_attr);
+
+                const params = store.type_pool.slice(finfo.params);
+                for (params) |param_ty| {
+                    var param_attr = self.ensureDIType(store, param_ty) catch blk_param: {
+                        break :blk_param try self.ensureDINullTypeAttr();
+                    };
+                    if (param_attr.isNull()) param_attr = try self.ensureDINullTypeAttr();
+                    try types_buf.append(self.gpa, param_attr);
+                }
+
+                const sub_ty = mlir.LLVMAttributes.getLLVMDISubroutineTypeAttr(
                     self.mlir_ctx,
-                    DW_TAG_pointer_type,
-                    self.strAttr(""),
-                    base,
-                    POINTER_SIZE_BITS,
-                    @intCast(POINTER_SIZE_BITS),
                     0,
-                    -1,
-                    mlir.Attribute.getNull(),
+                    types_buf.items,
                 );
+                if (sub_ty.isNull()) break :blk try self.ensureDINullTypeAttr();
+                break :blk sub_ty;
             },
+            .Ptr => try self.ensureDINullTypeAttr(),
             else => try self.ensureDINullTypeAttr(),
         };
 
@@ -895,13 +910,15 @@ pub const MlirCodegen = struct {
         var types_buf: std.ArrayList(mlir.Attribute) = .empty;
         defer types_buf.deinit(self.gpa);
 
-        const ret_attr = try self.ensureDIType(store, ret_ty);
-        try types_buf.append(self.gpa, ret_attr);
+        const ret_attr = self.ensureDIType(store, ret_ty) catch try self.ensureDINullTypeAttr();
+        const norm_ret = if (!ret_attr.isNull()) ret_attr else try self.ensureDINullTypeAttr();
+        try types_buf.append(self.gpa, norm_ret);
 
         for (params) |pid| {
             const param = t.funcs.Param.get(pid);
-            const param_attr = try self.ensureDIType(store, param.ty);
-            try types_buf.append(self.gpa, param_attr);
+            const param_attr = self.ensureDIType(store, param.ty) catch try self.ensureDINullTypeAttr();
+            const norm_param = if (!param_attr.isNull()) param_attr else try self.ensureDINullTypeAttr();
+            try types_buf.append(self.gpa, norm_param);
         }
 
         const attr = mlir.LLVMAttributes.getLLVMDISubroutineTypeAttr(
