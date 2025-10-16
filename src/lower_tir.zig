@@ -839,7 +839,6 @@ pub const LowerTir = struct {
             req.skip_params,
             req.specialized_ty,
         );
-        errdefer ctx.deinit(self.gpa);
 
         self.monomorph_context_stack.append(self.gpa, ctx) catch |err| {
             ctx.deinit(self.gpa);
@@ -1460,6 +1459,9 @@ pub const LowerTir = struct {
         }
         var gen = mlir_codegen.MlirCodegen.init(self.gpa, self.context, g_mlir_ctx);
         defer gen.deinit();
+        const prev_debug_flag = mlir_codegen.enable_debug_info;
+        mlir_codegen.enable_debug_info = false;
+        defer mlir_codegen.enable_debug_info = prev_debug_flag;
         var mlir_module = try gen.emitModule(&tmp_tir, self.context, a.exprs.locs, self.type_info);
 
         try compile.run_passes(&gen.mlir_ctx, &mlir_module);
