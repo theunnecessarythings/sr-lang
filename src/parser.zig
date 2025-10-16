@@ -215,6 +215,7 @@ pub const Parser = struct {
             .keyword_or => .{ 20, 21 },
             .bang => .{ 15, 16 }, // for error union
             .keyword_orelse => .{ 12, 11 },
+            // do not treat 'catch' as an infix operator; it's a postfix form with optional binder
             .plus_equal,
             .minus_equal,
             .star_equal,

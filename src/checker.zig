@@ -1471,13 +1471,11 @@ pub const Checker = struct {
                 return null;
             },
             .@"orelse" => {
+                // Zig-like: only Optional(T) orelse R is valid, and R must be assignable to T.
                 if (check_types.isOptional(self, l)) |elem| {
-                    if (self.assignable(elem, r) == .success) {
-                        return elem;
-                    } else return {
-                        try self.context.diags.addError(self.exprLoc(bin), .invalid_binary_op_operands, .{ bin.op, lhs_kind, rhs_kind });
-                        return null;
-                    };
+                    if (self.assignable(elem, r) == .success) return elem;
+                    try self.context.diags.addError(self.exprLoc(bin), .invalid_binary_op_operands, .{ bin.op, lhs_kind, rhs_kind });
+                    return null;
                 }
                 try self.context.diags.addError(self.exprLoc(bin), .invalid_use_of_orelse_on_non_optional, .{});
                 return null;
@@ -2884,6 +2882,14 @@ pub const Checker = struct {
         const gk = self.typeKind(got);
         const ek = self.typeKind(expect);
 
+        // Optional promotion: allow T -> Optional(T)
+        if (ek == .Optional) {
+            const opt = self.context.type_store.get(.Optional, expect);
+            if (self.assignable(got, opt.elem) == .success) return true;
+            // Reuse castability rules for the element type
+            if (self.castable(got, opt.elem)) return true;
+        }
+
         // Numeric <-> numeric (no implicit *value* coercion, but casts allowed)
         const num_ok =
             switch (gk) {
@@ -3076,18 +3082,32 @@ pub const Checker = struct {
         if (lhs_ty == null) return null;
 
         const lhs_kind = self.typeKind(lhs_ty.?);
-        if (lhs_kind != .ErrorSet) {
+        var is_optional_es = false;
+        var result_ty: types.TypeId = undefined;
+        var es_info: types.Rows.ErrorSet = undefined;
+        if (lhs_kind == .ErrorSet) {
+            es_info = self.context.type_store.get(.ErrorSet, lhs_ty.?);
+            result_ty = es_info.value_ty;
+        } else if (lhs_kind == .Optional) {
+            const opt = self.context.type_store.get(.Optional, lhs_ty.?);
+            if (self.typeKind(opt.elem) != .ErrorSet) {
+                try self.context.diags.addError(self.exprLoc(row), .catch_on_non_error, .{});
+                return null;
+            }
+            es_info = self.context.type_store.get(.ErrorSet, opt.elem);
+            is_optional_es = true;
+            result_ty = self.context.type_store.mkOptional(es_info.value_ty);
+        } else {
             try self.context.diags.addError(self.exprLoc(row), .catch_on_non_error, .{});
             return null;
         }
-        const es = self.context.type_store.get(.ErrorSet, lhs_ty.?);
 
         // TODO: Support full patterns in `catch` expressions. This would require
         // changing the AST and parser to use a pattern ID instead of just a binding name.
         var handler_ty: ?types.TypeId = null;
         if (!row.binding_name.isNone()) {
             const name = row.binding_name.unwrap();
-            try self.pushCatchBinding(name, es.error_ty);
+            try self.pushCatchBinding(name, es_info.error_ty);
             handler_ty = try self.checkExpr(row.handler);
             self.popCatchBinding();
         } else {
@@ -3109,15 +3129,16 @@ pub const Checker = struct {
         // Allow handler to be noreturn (early exit), in which case the
         // overall catch expression has the value type on the success path.
         if (self.typeKind(handler_ty.?) == .Noreturn) {
-            return es.value_ty;
+            return result_ty;
         }
 
-        if (self.assignable(handler_ty.?, es.value_ty) != .success) {
+        const want_ok_ty = if (is_optional_es) self.context.type_store.get(.Optional, result_ty).elem else es_info.value_ty;
+        if (self.assignable(handler_ty.?, want_ok_ty) != .success and !self.castable(handler_ty.?, want_ok_ty)) {
             try self.context.diags.addError(self.exprLoc(row), .catch_handler_type_mismatch, .{});
             return null;
         }
 
-        return es.value_ty;
+        return result_ty;
     }
 
     fn checkImport(self: *Checker, id: ast.ExprId) !?types.TypeId {
