@@ -2,6 +2,7 @@ const std = @import("std");
 const testing = std.testing;
 const compiler = @import("compiler");
 const types = compiler.types;
+const diag = compiler.diagnostics;
 
 const Lowered = struct {
     tir: compiler.tir.TIR,
@@ -47,7 +48,7 @@ fn lowerToTir(gpa: std.mem.Allocator, src: []const u8) !Lowered {
     try chk.run();
     if (context.diags.anyErrors()) return error.SemanticErrors; // Use context.diags
 
-    var lt = compiler.lower_tir.LowerTir.init(gpa, &context, &pipeline, &type_info);
+    var lt = compiler.lower_tir.LowerTir.init(gpa, &context, &pipeline, &type_info, hir.module_id, &chk);
     defer lt.deinit();
     const tir_result = try lt.run(&hir);
     return .{ .tir = tir_result, .context = context };
@@ -787,6 +788,57 @@ test "tir: imported call uses mangled prefix" {
         }
     }
     try testing.expect(found);
+}
+
+test "tir: runtime any specialization rejects mismatched numeric operands" {
+    const gpa = std.heap.page_allocator;
+    const src =
+        \\ add :: fn(a: any, b: any) any {
+        \\     return a + b
+        \\ }
+        \\ main :: fn() i32 {
+        \\     _ = add(1, 2.5)
+        \\     return 0
+        \\ }
+    ;
+
+    var context = compiler.compile.Context.init(gpa);
+    defer context.deinit();
+
+    const src0 = try std.mem.concatWithSentinel(gpa, u8, &.{src}, 0);
+    defer gpa.free(src0);
+
+    var parser = compiler.parser.Parser.init(gpa, src0, 0, &context);
+    var cst = try parser.parse();
+    defer cst.deinit();
+
+    var lower1 = compiler.lower.Lower.init(gpa, &cst, &context);
+    var hir = try lower1.run();
+    defer hir.deinit();
+
+    var type_info = compiler.types.TypeInfo.init(gpa, &context.type_store);
+    defer type_info.deinit();
+
+    var pipeline = compiler.pipeline.Pipeline.init(gpa, &context);
+    var chk = compiler.checker.Checker.init(gpa, &hir, &context, &pipeline, &type_info);
+    defer chk.deinit();
+    try chk.run();
+    try testing.expectEqual(@as(usize, 0), context.diags.count());
+
+    var lt = compiler.lower_tir.LowerTir.init(gpa, &context, &pipeline, &type_info, hir.module_id, &chk);
+    defer lt.deinit();
+
+    if (lt.run(&hir)) |tir_result| {
+        defer tir_result.deinit();
+    } else |err| {
+        switch (err) {
+            error.LoweringBug, error.ComptimeExecutionFailed, error.UnsupportedComptimeType => {},
+            else => return err,
+        }
+    }
+
+    try testing.expectEqual(@as(usize, 1), context.diags.count());
+    try testing.expectEqual(diag.DiagnosticCode.invalid_binary_op_operands, context.diags.messages.items[0].code);
 }
 
 // test "tir: catch expression carries value to join" {

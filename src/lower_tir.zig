@@ -1858,6 +1858,8 @@ pub const LowerTir = struct {
                             }
                         }
 
+                        var specialized_result_override: ?types.TypeId = null;
+
                         if (ok) {
                             const original_args = arg_ids;
                             var runtime_idx: usize = skip_params;
@@ -1880,6 +1882,28 @@ pub const LowerTir = struct {
                         }
 
                         if (ok and binding_infos.items.len > 0) {
+                            var runtime_specs = std.ArrayList(checker.Checker.ParamSpecialization).init(self.gpa);
+                            defer runtime_specs.deinit();
+
+                            for (binding_infos.items) |info| {
+                                switch (info.kind) {
+                                    .runtime_param => |ty| try runtime_specs.append(.{ .name = info.name, .ty = ty }),
+                                    else => {},
+                                }
+                            }
+
+                            if (runtime_specs.items.len > 0) {
+                                const specialized_fn_ty = try self.chk.checkSpecializedFunction(decl.value, runtime_specs.items);
+                                if (specialized_fn_ty) |fn_ty_override| {
+                                    const fn_info_override = self.context.type_store.get(.Function, fn_ty_override);
+                                    specialized_result_override = fn_info_override.result;
+                                } else {
+                                    ok = false;
+                                }
+                            }
+                        }
+
+                        if (ok and binding_infos.items.len > 0) {
                             const mangled = try self.mangleMonomorphName(callee.name, binding_infos.items);
                             const result = try self.monomorphizer.request(
                                 a,
@@ -1890,6 +1914,7 @@ pub const LowerTir = struct {
                                 binding_infos.items,
                                 skip_params,
                                 mangled,
+                                specialized_result_override,
                             );
                             callee.name = result.mangled_name;
                             callee.fty = result.specialized_ty;

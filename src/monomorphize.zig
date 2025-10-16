@@ -330,6 +330,7 @@ pub const Monomorphizer = struct {
         bindings: []const BindingInfo,
         skip_params: usize,
         mangled_name: ast.StrId,
+        specialized_result_override: ?types.TypeId,
     ) !RequestResult {
         const key = hashKey(base_name, bindings);
         if (self.cache.get(key)) |cached| {
@@ -372,7 +373,9 @@ pub const Monomorphizer = struct {
             idx += 1;
         }
 
-        var result_ty = blk: {
+        var result_ty = if (specialized_result_override) |override|
+            override
+        else blk: {
             if (!fn_lit.result_ty.isNone()) {
                 if (resolveSpecializedType(ts, bindings, a, fn_lit.result_ty.unwrap())) |resolved|
                     break :blk resolved;
@@ -380,7 +383,7 @@ pub const Monomorphizer = struct {
             break :blk fn_kind.result;
         };
 
-        if (ts.getKind(result_ty) == .Any) {
+        if (specialized_result_override == null and ts.getKind(result_ty) == .Any) {
             if (runtimeResultType(bindings)) |override| {
                 result_ty = override;
             }
