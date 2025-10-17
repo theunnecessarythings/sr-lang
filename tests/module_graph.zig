@@ -1,10 +1,13 @@
 const std = @import("std");
-const module_graph = @import("../src/module_graph.zig");
+const module_graph = @import("compiler").module_graph;
 
 const ModuleGraph = module_graph.ModuleGraph;
 
 fn makeTempFile(dir: *std.fs.Dir, path: []const u8) !void {
-    try dir.writeFile(path, "// temp\n");
+    try dir.writeFile(.{
+        .data = "// temp\n",
+        .sub_path = path,
+    });
 }
 
 test "ModuleGraph resolves relative file" {

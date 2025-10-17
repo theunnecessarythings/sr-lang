@@ -4710,7 +4710,7 @@ pub const LowerTir = struct {
         member: StrId,
         expected_ty: types.TypeId,
         blk: *Builder.BlockFrame,
-        pipeline: *Pipeline,
+        _: *Pipeline,
     ) ?tir.ValueId {
         const d = a.exprs.Decl.get(imp_decl);
         const ir = a.exprs.get(.Import, d.value);
@@ -5909,4 +5909,3 @@ const Env = struct {
 
 const ValueBinding = struct { value: tir.ValueId, ty: types.TypeId, is_slot: bool };
 const DeferEntry = struct { expr: ast.ExprId, is_err: bool };
-

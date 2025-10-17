@@ -96,11 +96,11 @@ pub const Pipeline = struct {
         link_args: []const []const u8,
         mode: Mode,
     ) anyerror!Result {
-        const runner_ctx = @ptrCast(*anyopaque, self);
-        self.context.module_graph.enterPipeline(runner_ctx, runModuleForGraph);
-        defer self.context.module_graph.leavePipeline(runner_ctx);
-        const type_info = try self.context.gpa.create(types.TypeInfo);
-        type_info.* = types.TypeInfo.init(self.context.gpa, &self.context.type_store);
+        const runner_ctx: *anyopaque = @ptrCast(self);
+        self.context.resolver.enterPipeline(runner_ctx, runModuleForGraph);
+        defer self.context.resolver.leavePipeline(runner_ctx);
+        const type_info = try self.allocator.create(types.TypeInfo);
+        type_info.* = types.TypeInfo.init(self.allocator, &self.context.type_store);
         var type_info_cleanup = true;
         defer if (type_info_cleanup) {
             type_info.deinit();
@@ -365,8 +365,7 @@ fn runModuleForGraph(
     path: []const u8,
     mode: module_graph.LoadMode,
 ) anyerror!module_graph.ModuleGraph.Artifacts {
-    const aligned = @alignCast(@alignOf(Pipeline), ctx);
-    const pipeline = @ptrCast(*Pipeline, aligned);
+    const pipeline: *Pipeline = @ptrCast(@alignCast(ctx));
     return pipeline.runModuleArtifacts(path, mode);
 }
 

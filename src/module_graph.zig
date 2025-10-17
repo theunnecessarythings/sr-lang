@@ -100,7 +100,7 @@ pub const ModuleGraph = struct {
         module_id: usize = 0,
     };
 
-    pub const RunFn = fn (ctx: *anyopaque, path: []const u8, mode: LoadMode) anyerror!Artifacts;
+    pub const RunFn = *const fn (ctx: *anyopaque, path: []const u8, mode: LoadMode) anyerror!Artifacts;
 
     pub const Config = struct {
         roots: []const []const u8 = &.{ "std", "vendor", "examples" },
