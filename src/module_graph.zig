@@ -108,6 +108,15 @@ pub const ModuleGraph = struct {
         module_id: usize = 0,
     };
 
+    pub const NamespaceInfo = struct {
+        namespace: []u8,
+        package_id: package_graph.PackageId = .{},
+
+        pub fn matchedPackage(self: NamespaceInfo) bool {
+            return self.package_id.isValid();
+        }
+    };
+
 pub const RunFn = *const fn (ctx: *anyopaque, path: []const u8, mode: LoadMode) anyerror!Artifacts;
 
 pub const prelude_alias_prefix = "$__sr_prelude";
@@ -327,6 +336,27 @@ const default_roots = [_]package_graph.RootConfig{
                 try out_list.append(self.gpa, try self.gpa.dupe(u8, s));
             }
         }
+    }
+
+    pub fn namespaceForImport(
+        self: *const ModuleGraph,
+        gpa: std.mem.Allocator,
+        import_path: []const u8,
+    ) !NamespaceInfo {
+        if (self.packages.matchImport(import_path)) |match| {
+            var pkg_id = match.pkg.id;
+            const ns = self.packages.deriveNamespace(gpa, pkg_id, match.remainder) catch |err| switch (err) {
+                error.UnknownPackage => blk: {
+                    pkg_id = package_graph.PackageId{};
+                    break :blk try package_graph.deriveNamespaceFallback(gpa, import_path);
+                },
+                else => return err,
+            };
+            return .{ .namespace = ns, .package_id = pkg_id };
+        }
+
+        const ns = try package_graph.deriveNamespaceFallback(gpa, import_path);
+        return .{ .namespace = ns };
     }
 
     fn findPackageForPath(self: *const ModuleGraph, canonical_path: []const u8) ?*const package_graph.PackageInfo {

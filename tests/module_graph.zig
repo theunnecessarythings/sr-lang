@@ -110,3 +110,32 @@ test "ModuleGraph discovery finds std, vendor, examples, and workspace modules" 
     defer std.testing.allocator.free(workspace_named);
     try std.testing.expect(std.mem.endsWith(u8, workspace_named, "workspace_named/workspace_named.sr"));
 }
+
+test "ModuleGraph namespace derivation uses package information" {
+    const gpa = std.testing.allocator;
+    var graph = ModuleGraph.init(gpa);
+    defer graph.deinit();
+
+    const std_pkg = graph.packages.getByName("std").?;
+    const std_info = try graph.namespaceForImport(gpa, "std/fmt");
+    defer gpa.free(std_info.namespace);
+    try std.testing.expectEqualStrings("std_fmt", std_info.namespace);
+    try std.testing.expect(std_info.package_id.isValid());
+    try std.testing.expectEqual(std_pkg.id.index, std_info.package_id.index);
+
+    const vendor_info = try graph.namespaceForImport(gpa, "vendor/raylib");
+    defer gpa.free(vendor_info.namespace);
+    try std.testing.expectEqualStrings("vendor_raylib", vendor_info.namespace);
+    try std.testing.expect(vendor_info.package_id.isValid());
+
+    const std_example = try graph.namespaceForImport(gpa, "std/example");
+    defer gpa.free(std_example.namespace);
+    const vendor_example = try graph.namespaceForImport(gpa, "vendor/example");
+    defer gpa.free(vendor_example.namespace);
+    try std.testing.expect(!std.mem.eql(u8, std_example.namespace, vendor_example.namespace));
+
+    const fallback_info = try graph.namespaceForImport(gpa, "out/import_prefix_test/math.sr");
+    defer gpa.free(fallback_info.namespace);
+    try std.testing.expectEqualStrings("out_import_prefix_test_math_sr", fallback_info.namespace);
+    try std.testing.expect(!fallback_info.package_id.isValid());
+}
