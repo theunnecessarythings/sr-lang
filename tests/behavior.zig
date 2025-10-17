@@ -35,7 +35,7 @@ pub fn runCompilerTest(source: []const u8, expected_stdout: []const u8) !void {
 
     const compile_result = try std.process.Child.run(.{
         .allocator = alloc,
-        .argv = &.{ "out/bin/sr_lang", "compile", "out/test.sr" },
+        .argv = &.{ "zig-out/bin/sr_lang", "compile", "out/test.sr" },
         .max_output_bytes = 16 * 1024 * 1024,
     });
     defer alloc.free(compile_result.stdout);
@@ -1419,19 +1419,21 @@ test "behavior: recursive function" {
 // }
 
 test "behavior: error union orelse and catch combined" {
-    const src =
+    const globals =
         \\ MyErr :: error { Failed, Other }
         \\ might_fail :: proc(val: i32) ?i32!MyErr {
         \\   if val == 0 { return MyErr.Failed }
         \\   if val == 1 { return MyErr.Other }
         \\   return val
         \\ }
-        \\ r1 := might_fail(0) orelse 100 catch |err| { return 0 }
-        \\ r2 := might_fail(1) orelse 100 catch |err| { return 1 }
-        \\ r3 := might_fail(5) orelse 100 catch |err| { return 2 }
-        \\ printf("Combined error handling r1=%d, r2=%d, r3=%d\n", r1, r2, r3)
     ;
-    const code = getSource("", src);
+    const src =
+        \\r1 := (might_fail(0) catch |err| { 0 }) orelse 100
+        \\r2 := (might_fail(1) catch |err| { 1 }) orelse 100
+        \\r3 := (might_fail(5) catch |err| { 2 }) orelse 100
+        \\printf("Combined error handling r1=%d, r2=%d, r3=%d\n", r1, r2, r3)
+    ;
+    const code = getSource(globals, src);
     try runCompilerTest(code, "Combined error handling r1=0, r2=1, r3=5\n");
 }
 

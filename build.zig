@@ -1,5 +1,7 @@
 const std = @import("std");
 
+const use_llvm = false;
+
 fn linkMLIR(LLVM_HOME: []const u8, exe: *std.Build.Step.Compile) !void {
     const dir = try std.fs.cwd().openDir(LLVM_HOME, .{ .iterate = true });
     var iter = dir.iterate();
@@ -44,7 +46,7 @@ pub fn build(b: *std.Build) void {
             },
         }),
     });
-    exe.use_llvm = true;
+    exe.use_llvm = use_llvm;
 
     const LLVM_HOME_S = "/usr/local/lib";
     linkMLIR(LLVM_HOME_S, exe) catch |err| {
@@ -93,7 +95,7 @@ pub fn build(b: *std.Build) void {
             },
         }),
     });
-    exe_tests.use_llvm = true;
+    exe_tests.use_llvm = use_llvm;
     linkMLIR(LLVM_HOME_S, exe_tests) catch |err| {
         std.debug.print("Error linking MLIR for tests: {}\n", .{err});
         @panic("Failed to link MLIR for tests");
@@ -108,7 +110,7 @@ pub fn build(b: *std.Build) void {
 
     const fuzz_lib = b.addLibrary(.{
         .name = "fuzzer",
-        .use_llvm = true,
+        .use_llvm = use_llvm,
         .root_module = b.createModule(.{
             .root_source_file = b.path("tests/fuzzer.zig"),
             .target = target,

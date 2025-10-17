@@ -701,8 +701,15 @@ test "tir: match with guard carries value to join" {
 
 test "tir: imported call resolves dependency" {
     const gpa = std.testing.allocator;
+<<<<<<< Updated upstream
     const import_dir = "zig-out/import_prefix_test";
     const main_path = "zig-out/import_prefix_test/main.sr";
+=======
+    const import_dir = "out/import_prefix_test";
+    const main_path = "out/import_prefix_test/main.sr";
+    const import_path = "out/import_prefix_test/math.sr";
+
+>>>>>>> Stashed changes
     _ = std.fs.cwd().deleteTree(import_dir) catch {};
     try std.fs.cwd().makePath(import_dir);
     defer std.fs.cwd().deleteTree(import_dir) catch {};
@@ -716,7 +723,7 @@ test "tir: imported call resolves dependency" {
     ;
     const main_src =
         \\
-        \\math :: import "zig-out/import_prefix_test/math.sr"
+        \\math :: import "out/import_prefix_test/math.sr"
         \\call_math :: fn() i32 { return math.answer() }
     ;
 

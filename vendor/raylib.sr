@@ -102,6 +102,20 @@ ConfigFlags :: enum {
     FLAG_WINDOW_ALWAYS_RUN = 256,
 }
 
+ShaderUniformDataType :: enum {
+    SHADER_UNIFORM_FLOAT,       // Shader uniform type: float
+    SHADER_UNIFORM_VEC2,            // Shader uniform type: vec2 (2 float)
+    SHADER_UNIFORM_VEC3,            // Shader uniform type: vec3 (3 float)
+    SHADER_UNIFORM_VEC4,            // Shader uniform type: vec4 (4 float)
+    SHADER_UNIFORM_INT,             // Shader uniform type: int
+    SHADER_UNIFORM_IVEC2,           // Shader uniform type: ivec2 (2 int)
+    SHADER_UNIFORM_IVEC3,           // Shader uniform type: ivec3 (3 int)
+    SHADER_UNIFORM_IVEC4,           // Shader uniform type: ivec4 (4 int)
+    SHADER_UNIFORM_SAMPLER2D,       // Shader uniform type: sampler2d
+} 
+
+
+
 KeyboardKey :: enum {
     KEY_NULL = 0,
     KEY_ESCAPE = 256,
@@ -208,6 +222,8 @@ ClearBackground :: extern proc(Color) void
 DrawText :: extern proc(string, i64, i64, i64, Color) void
 DrawTriangleLines :: extern proc(Vector2, Vector2, Vector2, Color) void
 DrawCircleLines :: extern proc(i64, i64, f32, Color) void
+DrawCircleV :: extern proc(Vector2, f32, Color) void
+DrawRectangleV :: extern proc(Vector2, Vector2, Color) void
 
 
 
@@ -313,12 +329,14 @@ DrawModelEx :: extern proc(Model, Vector3, Vector3, f32, Vector3, Color) void
 // ------------------------------------------------------------
 // Shaders (selected)
 // ------------------------------------------------------------
-LoadShader :: extern proc(*void, *void) Shader
+LoadShader :: extern proc(string, string) Shader
 UnloadShader :: extern proc(Shader) void
-GetShaderLocation :: extern proc(Shader, *void) i64
-SetShaderValue :: extern proc(Shader, i64, *void, i64) void
+GetShaderLocation :: extern proc(Shader, string) i64
+SetShaderValue :: extern proc(Shader, i64, *void, ShaderUniformDataType) void
 SetShaderValueMatrix :: extern proc(Shader, i64, Matrix) void
 SetShaderValueTexture :: extern proc(Shader, i64, Texture2D) void
+BeginShaderMode :: extern proc(Shader) void
+EndShaderMode :: extern proc() void
 
 //  load_shader :: proc(vsPath: string, fsPath: string) Shader { 
 //      return LoadShader(vsPath, fsPath)
