@@ -191,6 +191,26 @@ pub const ModuleGraph = struct {
         return gop.value_ptr;
     }
 
+    pub const ExportLookup = struct {
+        module: *ModuleEntry,
+        ty: ?types.TypeId,
+        found: bool,
+    };
+
+    pub fn lookupExport(
+        self: *ModuleGraph,
+        base_dir: []const u8,
+        import_path: []const u8,
+        name: []const u8,
+        mode: LoadMode,
+    ) !ExportLookup {
+        const entry = try self.ensureModule(base_dir, import_path, mode);
+        if (entry.syms.get(name)) |ty| {
+            return .{ .module = entry, .ty = ty, .found = true };
+        }
+        return .{ .module = entry, .ty = null, .found = false };
+    }
+
     pub fn ownsTypeInfo(self: *const ModuleGraph, ti: *const types.TypeInfo) bool {
         return self.owned_type_infos.contains(@constCast(ti));
     }

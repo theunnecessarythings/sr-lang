@@ -2188,12 +2188,10 @@ pub const Checker = struct {
     }
 
     fn importMemberTypeByPath(self: *Checker, res: *ImportResolver, path: []const u8, member: ast.StrId) ?types.TypeId {
-        const me = res.ensureModule(self.import_base_dir, path, .tir) catch return null;
         const target = self.getStr(member);
-        if (me.syms.get(target)) |ty| {
-            return ty;
-        }
-        return null;
+        const lookup = res.lookupExport(self.import_base_dir, path, target, .check) catch return null;
+        if (!lookup.found) return null;
+        return lookup.ty;
     }
 
     pub fn importMemberType(self: *Checker, import_eid: ast.ExprId, member: ast.StrId) ?types.TypeId {
