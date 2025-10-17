@@ -1,3 +1,5 @@
+package main
+
 // Examples using std/io wrappers
 
 io :: import "std/io"

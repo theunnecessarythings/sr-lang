@@ -1,3 +1,5 @@
+package closures_and_higher_order_functions
+
 // Semantic Example: Closures and Higher-Order Functions
 
 // A higher-order function that takes a list and a function (closure)

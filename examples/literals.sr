@@ -1,3 +1,5 @@
+package literals
+
 // Literals
 
 literals::proc() {

@@ -1,3 +1,5 @@
+package hash
+
 // Hash utilities
 
 rt_strlen :: extern proc(*u8) usize

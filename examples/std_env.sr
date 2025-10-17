@@ -1,3 +1,5 @@
+package main
+
 io  :: import "std/io"
 env :: import "std/env"
 

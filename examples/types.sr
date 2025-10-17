@@ -1,3 +1,5 @@
+package types
+
 // Type Examples
 
 // Raw pointer types

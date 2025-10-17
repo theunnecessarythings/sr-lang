@@ -1,3 +1,5 @@
+package enums_and_matching
+
 // Semantic Example: Variants, Enums and Pattern Matching
 
 // WebEvent is a constant that holds a variant type.

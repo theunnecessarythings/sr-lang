@@ -1,3 +1,5 @@
+package main
+
 io  :: import "std/io"
 fmt :: import "std/fmt"
 

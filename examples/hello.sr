@@ -1,3 +1,5 @@
+package main
+
 printf :: extern proc(*void, any) i32
 
 add :: proc(a: i64, b: i64) i64 {

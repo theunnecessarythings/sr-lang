@@ -1,3 +1,5 @@
+package defer
+
 // Defer and Errdefer
 
 // A procedure demonstrating defer and errdefer.

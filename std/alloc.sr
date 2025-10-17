@@ -1,3 +1,5 @@
+package alloc
+
 // Allocation wrappers over runtime allocator
 
 rt_alloc   :: extern proc(usize) ?*void

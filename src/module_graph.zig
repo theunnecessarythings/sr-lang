@@ -4,9 +4,12 @@ const ast_mod = @import("ast.zig");
 const tir_mod = @import("tir.zig");
 const types = @import("types.zig");
 const package_graph = @import("package/graph.zig");
+const discovery = @import("package/discovery.zig");
 
 pub const PackageId = package_graph.PackageId;
 pub const PackageInfo = package_graph.PackageInfo;
+pub const ModuleMatch = package_graph.ModuleMatch;
+const PreludeImport = package_graph.PackageInfo.PreludeImport;
 
 pub const LoadMode = enum(u4) {
     lex,
@@ -105,18 +108,50 @@ pub const ModuleGraph = struct {
         module_id: usize = 0,
     };
 
+    pub const NamespaceInfo = struct {
+        namespace: []u8,
+        package_id: package_graph.PackageId = .{},
+
+        pub fn matchedPackage(self: NamespaceInfo) bool {
+            return self.package_id.isValid();
+        }
+    };
+
     pub const RunFn = *const fn (ctx: *anyopaque, path: []const u8, mode: LoadMode) anyerror!Artifacts;
 
+    pub const prelude_alias_prefix = "$__sr_prelude";
+
+    pub const PreludeSpec = struct {
+        path: []const u8,
+        reexport: package_graph.PreludeReexportConfig,
+    };
+
+    const std_io_prelude_symbols = &.{
+        "ptrcast",
+    };
+
+    const std_vendor_preludes = &[_]package_graph.PreludeConfig{
+        // .{ .path = "std/io", .reexport = .{ .symbols = std_io_prelude_symbols } },
+        .{ .path = "std/prelude", .reexport = .{ .symbols = std_io_prelude_symbols } },
+    };
+
+    const workspace_preludes = &[_]package_graph.PreludeConfig{
+        .{ .path = "std/prelude", .reexport = .{ .symbols = std_io_prelude_symbols } },
+    };
+
+    pub fn workspacePreludeConfigs() []const package_graph.PreludeConfig {
+        return workspace_preludes;
+    }
+
     const default_roots = [_]package_graph.RootConfig{
-        .{ .name = "std", .path = "std" },
-        .{ .name = "vendor", .path = "vendor" },
+        .{ .name = "std", .path = "std", .prelude_imports = std_vendor_preludes },
+        .{ .name = "vendor", .path = "vendor", .prelude_imports = std_vendor_preludes },
         .{ .name = "examples", .path = "examples" },
     };
 
     pub const Config = struct {
         roots: []const package_graph.RootConfig = &default_roots,
-        main_filenames: []const []const u8 = &.{"main.sr"},
-        exts: []const []const u8 = &.{".sr"},
+        discovery: discovery.Rules = .{},
     };
 
     pub fn init(gpa: std.mem.Allocator) ModuleGraph {
@@ -152,7 +187,7 @@ pub const ModuleGraph = struct {
     }
 
     fn rebuildPackages(self: *ModuleGraph) !void {
-        try self.packages.rebuild(self.config.roots, self.config.exts, self.config.main_filenames);
+        try self.packages.rebuild(self.config.roots, self.config.discovery);
     }
 
     pub fn getPackage(self: *const ModuleGraph, id: package_graph.PackageId) ?*const package_graph.PackageInfo {
@@ -165,6 +200,41 @@ pub const ModuleGraph = struct {
 
     pub fn matchPackageImport(self: *const ModuleGraph, import_path: []const u8) ?package_graph.PackageGraph.Match {
         return self.packages.matchImport(import_path);
+    }
+
+    pub fn findModuleByPath(self: *const ModuleGraph, canonical_path: []const u8) ?ModuleMatch {
+        return self.packages.findModuleByPath(canonical_path);
+    }
+
+    fn convertPreludeReexport(re: PreludeImport.PreludeReexport) package_graph.PreludeReexportConfig {
+        return switch (re) {
+            .none => .none,
+            .all => .all,
+            .symbols => |list| .{ .symbols = list.items },
+        };
+    }
+
+    pub fn collectPreludeSpecsForModule(
+        self: *ModuleGraph,
+        module_path: []const u8,
+        out: *std.ArrayList(PreludeSpec),
+    ) !void {
+        if (self.findPackageForPath(module_path)) |pkg| {
+            const specs = pkg.preludeSpecs();
+            try out.ensureTotalCapacity(self.gpa, out.items.len + specs.len);
+            for (specs) |prelude| {
+                try out.append(self.gpa, .{
+                    .path = prelude.path,
+                    .reexport = convertPreludeReexport(prelude.reexport),
+                });
+            }
+            return;
+        }
+
+        try out.ensureTotalCapacity(self.gpa, out.items.len + workspace_preludes.len);
+        for (workspace_preludes) |cfg| {
+            try out.append(self.gpa, .{ .path = cfg.path, .reexport = cfg.reexport });
+        }
     }
 
     pub fn enterPipeline(self: *ModuleGraph, ctx: *anyopaque, run_fn: RunFn) void {
@@ -263,22 +333,96 @@ pub const ModuleGraph = struct {
         }
     }
 
+    pub fn namespaceForImport(
+        self: *const ModuleGraph,
+        gpa: std.mem.Allocator,
+        import_path: []const u8,
+    ) !NamespaceInfo {
+        if (self.packages.matchImport(import_path)) |match| {
+            var pkg_id = match.pkg.id;
+            const ns = self.packages.deriveNamespace(gpa, pkg_id, match.remainder) catch |err| switch (err) {
+                error.UnknownPackage => blk: {
+                    pkg_id = package_graph.PackageId{};
+                    break :blk try package_graph.PackageGraph.deriveNamespaceFallback(gpa, import_path);
+                },
+                else => return err,
+            };
+            return .{ .namespace = ns, .package_id = pkg_id };
+        }
+
+        const ns = try package_graph.PackageGraph.deriveNamespaceFallback(gpa, import_path);
+        return .{ .namespace = ns };
+    }
+
+    fn findPackageForPath(self: *const ModuleGraph, canonical_path: []const u8) ?*const package_graph.PackageInfo {
+        if (self.packages.findModuleByPath(canonical_path)) |match| {
+            return match.pkg;
+        }
+        var best: ?*const package_graph.PackageInfo = null;
+        var best_len: usize = 0;
+        for (self.packages.packages.items) |*pkg| {
+            if (canonical_path.len < pkg.root_path.len) continue;
+            if (!std.mem.startsWith(u8, canonical_path, pkg.root_path)) continue;
+            if (canonical_path.len > pkg.root_path.len) {
+                const next = canonical_path[pkg.root_path.len];
+                if (next != '/' and next != std.fs.path.sep) continue;
+            }
+            if (pkg.root_path.len > best_len) {
+                best = pkg;
+                best_len = pkg.root_path.len;
+            }
+        }
+        return best;
+    }
+
+    fn loadPreludeDependencies(
+        self: *ModuleGraph,
+        base_dir: []const u8,
+        module_path: []const u8,
+        mode: LoadMode,
+        seen: *std.StringHashMap(void),
+        out: *std.ArrayList(*ModuleEntry),
+    ) !void {
+        if (self.findPackageForPath(module_path)) |pkg| {
+            for (pkg.preludeSpecs()) |prelude| {
+                try self.appendPreludeDependency(base_dir, module_path, prelude.path, mode, seen, out);
+            }
+        } else {
+            for (workspace_preludes) |cfg| {
+                try self.appendPreludeDependency(base_dir, module_path, cfg.path, mode, seen, out);
+            }
+        }
+    }
+
+    fn appendPreludeDependency(
+        self: *ModuleGraph,
+        base_dir: []const u8,
+        module_path: []const u8,
+        import_path: []const u8,
+        mode: LoadMode,
+        seen: *std.StringHashMap(void),
+        out: *std.ArrayList(*ModuleEntry),
+    ) !void {
+        const resolved = try self.resolvePath(base_dir, import_path);
+        defer self.gpa.free(resolved);
+        if (std.mem.eql(u8, resolved, module_path)) return;
+        if ((try seen.getOrPut(import_path)).found_existing) return;
+        const entry = try self.ensureModule(base_dir, import_path, mode);
+        try out.append(self.gpa, entry);
+    }
+
     pub fn loadDependencies(
         self: *ModuleGraph,
         base_dir: []const u8,
+        module_path: []const u8,
         ast: *const ast_mod.Ast,
-        prelude: []const []const u8,
         mode: LoadMode,
         out: *std.ArrayList(*ModuleEntry),
     ) !void {
         var seen = std.StringHashMap(void).init(self.gpa);
         defer seen.deinit();
 
-        for (prelude) |path| {
-            if ((try seen.getOrPut(path)).found_existing) continue;
-            const entry = try self.ensureModule(".", path, mode);
-            try out.append(entry);
-        }
+        try self.loadPreludeDependencies(base_dir, module_path, mode, &seen, out);
 
         var imports: std.ArrayList([]const u8) = .empty;
         defer {
@@ -291,7 +435,7 @@ pub const ModuleGraph = struct {
         for (imports.items) |imp| {
             if ((try seen.getOrPut(imp)).found_existing) continue;
             const entry = try self.ensureModule(base_dir, imp, mode);
-            try out.append(entry);
+            try out.append(self.gpa, entry);
         }
     }
 
@@ -315,25 +459,25 @@ pub const ModuleGraph = struct {
 
         if (is_abs or looks_rooted) {
             if (is_abs) {
-                try addCandidates(&candidates, self.gpa, raw_in, self.config.exts, self.config.main_filenames);
+                try self.config.discovery.appendImportCandidates(&candidates, self.gpa, raw_in);
             } else if (package_match) |match| {
                 const package_path = try match.pkg.absolutePathFor(self.gpa, match.remainder);
                 defer self.gpa.free(package_path);
-                try addCandidates(&candidates, self.gpa, package_path, self.config.exts, self.config.main_filenames);
+                try self.config.discovery.appendImportCandidates(&candidates, self.gpa, package_path);
             }
         } else {
             if (base_dir.len == 0) {
-                try addCandidates(&candidates, self.gpa, raw_in, self.config.exts, self.config.main_filenames);
+                try self.config.discovery.appendImportCandidates(&candidates, self.gpa, raw_in);
             } else {
                 const base = try std.fmt.allocPrint(self.gpa, "{s}/{s}", .{ base_dir, raw_in });
                 defer self.gpa.free(base);
-                try addCandidates(&candidates, self.gpa, base, self.config.exts, self.config.main_filenames);
+                try self.config.discovery.appendImportCandidates(&candidates, self.gpa, base);
             }
 
             for (self.packages.packages.items) |pkg| {
                 const base = try std.fmt.allocPrint(self.gpa, "{s}/{s}", .{ pkg.root_path, raw_in });
                 defer self.gpa.free(base);
-                try addCandidates(&candidates, self.gpa, base, self.config.exts, self.config.main_filenames);
+                try self.config.discovery.appendImportCandidates(&candidates, self.gpa, base);
             }
         }
 
@@ -509,36 +653,3 @@ pub const ModuleGraph = struct {
         }
     }
 };
-
-fn addCandidates(
-    list: *std.ArrayList([]const u8),
-    gpa: std.mem.Allocator,
-    base: []const u8,
-    exts: []const []const u8,
-    main_files: []const []const u8,
-) !void {
-    try push(list, gpa, base);
-    if (!hasAnyExt(base, exts)) {
-        for (exts) |ext| {
-            const with_ext = try std.fmt.allocPrint(gpa, "{s}{s}", .{ base, ext });
-            defer gpa.free(with_ext);
-            try push(list, gpa, with_ext);
-        }
-    }
-    for (main_files) |main_name| {
-        const with_main = try std.fmt.allocPrint(gpa, "{s}/{s}", .{ base, main_name });
-        defer gpa.free(with_main);
-        try push(list, gpa, with_main);
-    }
-}
-
-fn hasAnyExt(path: []const u8, exts: []const []const u8) bool {
-    for (exts) |e| {
-        if (std.mem.endsWith(u8, path, e)) return true;
-    }
-    return false;
-}
-
-inline fn push(list: *std.ArrayList([]const u8), gpa: std.mem.Allocator, s: []const u8) !void {
-    try list.append(gpa, try gpa.dupe(u8, s));
-}

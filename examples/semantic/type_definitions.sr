@@ -1,3 +1,5 @@
+package type_definitions
+
 // Semantic Example: Type Definitions
 
 // 1. Structs: A collection of named fields.

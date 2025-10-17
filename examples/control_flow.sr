@@ -1,3 +1,5 @@
+package main
+
 // Control Flow
 printf :: extern proc(*void, any) i32
 scanf :: extern proc(*void, *any) i32
