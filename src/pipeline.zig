@@ -97,8 +97,8 @@ pub const Pipeline = struct {
         mode: Mode,
     ) anyerror!Result {
         const runner_ctx: *anyopaque = @ptrCast(self);
-        self.context.resolver.enterPipeline(runner_ctx, runModuleForGraph);
-        defer self.context.resolver.leavePipeline(runner_ctx);
+        self.context.module_graph.enterPipeline(runner_ctx, runModuleForGraph);
+        defer self.context.module_graph.leavePipeline(runner_ctx);
         const type_info = try self.allocator.create(types.TypeInfo);
         type_info.* = types.TypeInfo.init(self.allocator, &self.context.type_store);
         var type_info_cleanup = true;
@@ -212,6 +212,7 @@ pub const Pipeline = struct {
 
         const source_path = self.context.source_manager.get(file_id) orelse filename;
         const base_dir = moduleBaseDir(source_path);
+        tir_lowerer.import_base_dir = base_dir;
         try self.context.module_graph.loadDependencies(
             base_dir,
             &ast,
