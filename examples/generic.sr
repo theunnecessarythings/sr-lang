@@ -1,3 +1,5 @@
+package main
+
 printf :: extern proc(string, any) i32
 
 max :: fn(comptime T: type, a: T, b: T) T {

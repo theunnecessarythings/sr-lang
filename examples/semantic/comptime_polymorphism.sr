@@ -1,3 +1,5 @@
+package comptime_polymorphism
+
 // Semantic Example: Compile-Time Polymorphism (Duck Typing)
 
 // This language does not require formal `interface` or `trait` declarations.

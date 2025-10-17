@@ -1,3 +1,5 @@
+package pointer_features
+
 // Semantic Example: Pointer Features
 
 Point :: struct { x: i32, y: i32 }

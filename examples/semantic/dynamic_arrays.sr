@@ -1,3 +1,5 @@
+package dynamic_arrays
+
 // Semantic Example: Dynamic Arrays
 
 // The `[dyn]T` syntax defines a dynamic array (also known as a slice or vector).

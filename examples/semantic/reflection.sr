@@ -1,3 +1,5 @@
+package reflection
+
 // Semantic Example: Compile-Time and Runtime Reflection
 
 // This example demonstrates how reflection can be used both at compile time

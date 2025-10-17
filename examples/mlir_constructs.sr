@@ -1,3 +1,5 @@
+package mlir_constructs
+
 // MLIR Construct Examples
 
 // The `mlir` keyword can be modified with an attribute to parse

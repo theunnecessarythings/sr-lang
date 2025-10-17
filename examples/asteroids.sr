@@ -1,3 +1,5 @@
+package main
+
 rl :: import "vendor/raylib"
 m :: import "std/math"
 
