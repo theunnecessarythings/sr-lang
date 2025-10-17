@@ -1075,7 +1075,7 @@ pub const Checker = struct {
             .Insert => {
                 const row = self.getStmt(.Insert, sid);
                 if (!self.warned_meta) {
-                    _ = self.context.diags.addNote(self.exprLoc(row), .checker_insert_not_expanded, .{}) catch {};
+                    try self.context.diags.addNote(self.exprLoc(row), .checker_insert_not_expanded, .{});
                     self.warned_meta = true;
                 }
                 _ = try self.checkExpr(row.expr);
@@ -1113,7 +1113,7 @@ pub const Checker = struct {
             .ArrayLit => try self.checkArrayLit(id),
             .TupleLit => try self.checkTupleLit(id),
             .MapLit => try self.checkMapLit(id),
-            .IndexAccess => self.checkIndexAccess(id),
+            .IndexAccess => try self.checkIndexAccess(id),
             .FieldAccess => try self.checkFieldAccess(id),
             .StructLit => try self.checkStructLit(id),
             .Range => try self.checkRange(id),
@@ -1734,7 +1734,7 @@ pub const Checker = struct {
         return self.context.type_store.mkMap(key_ty.?, val_ty.?);
     }
 
-    fn checkIndexAccess(self: *Checker, id: ast.ExprId) ?types.TypeId {
+    fn checkIndexAccess(self: *Checker, id: ast.ExprId) !?types.TypeId {
         const index_expr = self.getExpr(.IndexAccess, id);
         const col_ty = self.checkExpr(index_expr.collection) catch
             return null;
@@ -1748,7 +1748,7 @@ pub const Checker = struct {
                 const it = self.checkExpr(index_expr.index) catch return null;
                 if (it) |iid| {
                     if (iid.toRaw() != m.key.toRaw()) {
-                        _ = self.context.diags.addError(self.exprLoc(index_expr), .map_wrong_key_type, .{}) catch {};
+                        try self.context.diags.addError(self.exprLoc(index_expr), .map_wrong_key_type, .{});
                         return null;
                     }
                 }
@@ -1759,20 +1759,20 @@ pub const Checker = struct {
                 const it = self.checkExpr(index_expr.index) catch return null;
                 if (it) |iid| {
                     if (!check_types.isIntegerKind(self, self.typeKind(iid))) {
-                        _ = self.context.diags.addError(self.exprLoc(index_expr), .non_integer_index, .{}) catch {};
+                        try self.context.diags.addError(self.exprLoc(index_expr), .non_integer_index, .{});
                         return null;
                     }
                 }
                 return self.context.type_store.tU8();
             },
             else => {
-                _ = self.context.diags.addError(self.exprLoc(index_expr), .not_indexable, .{}) catch {};
+                try self.context.diags.addError(self.exprLoc(index_expr), .not_indexable, .{});
             },
         }
         return null;
     }
 
-    fn indexElemTypeFromArrayLike(self: *Checker, col_ty: types.TypeId, idx_expr: ast.ExprId, loc: Loc) ?types.TypeId {
+    fn indexElemTypeFromArrayLike(self: *Checker, col_ty: types.TypeId, idx_expr: ast.ExprId, loc: Loc) !?types.TypeId {
         const col_kind = self.typeKind(col_ty);
         std.debug.assert(col_kind == .Array or col_kind == .Slice);
         const idx_kind = self.exprKind(idx_expr);
@@ -1793,7 +1793,7 @@ pub const Checker = struct {
         const it = self.checkExpr(idx_expr) catch return null;
         if (it) |iid| {
             if (!check_types.isIntegerKind(self, self.typeKind(iid))) {
-                _ = self.context.diags.addError(loc, .non_integer_index, .{}) catch {};
+                try self.context.diags.addError(loc, .non_integer_index, .{});
                 return null;
             }
         }
@@ -1804,25 +1804,25 @@ pub const Checker = struct {
         };
     }
 
-    fn indexElemTypeFromTensor(self: *Checker, col_ty: types.TypeId, idx_expr: ast.ExprId, loc: Loc) ?types.TypeId {
+    fn indexElemTypeFromTensor(self: *Checker, col_ty: types.TypeId, idx_expr: ast.ExprId, loc: Loc) !?types.TypeId {
         const tensor = self.context.type_store.get(.Tensor, col_ty);
         const rank: usize = @intCast(tensor.rank);
         if (rank == 0) {
-            _ = self.context.diags.addError(loc, .not_indexable, .{}) catch {};
+            try self.context.diags.addError(loc, .not_indexable, .{});
             return null;
         }
 
         const idx_kind = self.exprKind(idx_expr);
         if (idx_kind == .Range) {
             // Tensor slicing is not yet supported.
-            _ = self.context.diags.addError(loc, .non_integer_index, .{}) catch {};
+            try self.context.diags.addError(loc, .non_integer_index, .{});
             return null;
         }
 
         const it = self.checkExpr(idx_expr) catch return null;
         if (it) |iid| {
             if (!check_types.isIntegerKind(self, self.typeKind(iid))) {
-                _ = self.context.diags.addError(loc, .non_integer_index, .{}) catch {};
+                try self.context.diags.addError(loc, .non_integer_index, .{});
                 return null;
             }
         }
@@ -1922,7 +1922,7 @@ pub const Checker = struct {
                 // into a struct; do not set a field index here.
                 return mt;
             }
-            _ = self.context.diags.addError(self.exprLoc(field_expr), .unknown_module_field, .{}) catch {};
+            try self.context.diags.addError(self.exprLoc(field_expr), .unknown_module_field, .{});
             return null;
         }
         // Also allow module access when parent is an identifier bound to an import declaration
@@ -1937,7 +1937,7 @@ pub const Checker = struct {
                         if (self.importMemberType(drow.value, field_expr.field)) |mt| {
                             return mt;
                         }
-                        _ = self.context.diags.addError(self.exprLoc(field_expr), .unknown_module_field, .{}) catch {};
+                        try self.context.diags.addError(self.exprLoc(field_expr), .unknown_module_field, .{});
                         return null;
                     }
                 }
@@ -1975,7 +1975,7 @@ pub const Checker = struct {
                     try self.type_info.setFieldIndex(id, 1);
                     return complex.elem;
                 }
-                _ = self.context.diags.addError(self.exprLoc(field_expr), .unknown_struct_field, .{}) catch {};
+                try self.context.diags.addError(self.exprLoc(field_expr), .unknown_struct_field, .{});
                 return null;
             },
             .Struct, .Union => {
@@ -1995,18 +1995,18 @@ pub const Checker = struct {
                     else => return null,
                 };
                 if (method_ty) |mt| return mt;
-                _ = self.context.diags.addError(field_loc, .unknown_struct_field, .{}) catch {};
+                try self.context.diags.addError(field_loc, .unknown_struct_field, .{});
                 return null;
             },
             .Tuple => {
                 const tuple_row = self.context.type_store.get(.Tuple, ty);
                 const elems = self.context.type_store.type_pool.slice(tuple_row.elems);
                 const index = std.fmt.parseInt(usize, self.getStr(field_expr.field), 10) catch {
-                    _ = self.context.diags.addError(self.exprLoc(field_expr), .expected_field_name_or_index, .{}) catch {};
+                    try self.context.diags.addError(self.exprLoc(field_expr), .expected_field_name_or_index, .{});
                     return null;
                 };
                 if (index >= elems.len) {
-                    _ = self.context.diags.addError(self.exprLoc(field_expr), .tuple_index_out_of_bounds, .{}) catch {};
+                    try self.context.diags.addError(self.exprLoc(field_expr), .tuple_index_out_of_bounds, .{});
                     return null;
                 }
                 try self.type_info.setFieldIndex(id, @intCast(index));
@@ -2045,10 +2045,10 @@ pub const Checker = struct {
                 };
                 if (method_ty) |mt| return mt;
                 if (inner_kind == .Struct) {
-                    _ = self.context.diags.addError(field_loc, .unknown_struct_field, .{}) catch {};
+                    try self.context.diags.addError(field_loc, .unknown_struct_field, .{});
                     return null;
                 }
-                _ = self.context.diags.addError(self.exprLoc(field_expr), .field_access_on_non_aggregate, .{}) catch {};
+                try self.context.diags.addError(self.exprLoc(field_expr), .field_access_on_non_aggregate, .{});
                 return null;
             },
             .Enum, .Error => {
@@ -2056,7 +2056,7 @@ pub const Checker = struct {
                     else => return null,
                 };
                 if (method_ty) |mt| return mt;
-                _ = self.context.diags.addError(self.exprLoc(field_expr), .field_access_on_non_aggregate, .{}) catch {};
+                try self.context.diags.addError(self.exprLoc(field_expr), .field_access_on_non_aggregate, .{});
                 return null;
             },
             .TypeType => {
@@ -2076,7 +2076,7 @@ pub const Checker = struct {
                             return ty;
                         }
                     }
-                    _ = self.context.diags.addError(self.exprLoc(field_expr), .unknown_enum_tag, .{}) catch {};
+                    try self.context.diags.addError(self.exprLoc(field_expr), .unknown_enum_tag, .{});
                     return null;
                 } else if (inner_kind == .Variant) {
                     const vr = self.context.type_store.get(.Variant, ty);
@@ -2093,11 +2093,11 @@ pub const Checker = struct {
                                 try self.type_info.setFieldIndex(id, @intCast(i));
                                 return ty;
                             }
-                            _ = self.context.diags.addError(self.exprLoc(field_expr), .variant_payload_arity_mismatch, .{}) catch {};
+                            try self.context.diags.addError(self.exprLoc(field_expr), .variant_payload_arity_mismatch, .{});
                             return null;
                         }
                     }
-                    _ = self.context.diags.addError(self.exprLoc(field_expr), .unknown_variant_tag, .{}) catch {};
+                    try self.context.diags.addError(self.exprLoc(field_expr), .unknown_variant_tag, .{});
                     return null;
                 } else if (inner_kind == .Error) {
                     const er = self.context.type_store.get(.Error, ty);
@@ -2110,7 +2110,7 @@ pub const Checker = struct {
                             return ty;
                         }
                     }
-                    _ = self.context.diags.addError(self.exprLoc(field_expr), .unknown_error_tag, .{}) catch {};
+                    try self.context.diags.addError(self.exprLoc(field_expr), .unknown_error_tag, .{});
                     return null;
                 }
                 if (inner_kind == .Struct or inner_kind == .Union or inner_kind == .Enum or inner_kind == .Variant or inner_kind == .Error) {
@@ -2119,7 +2119,7 @@ pub const Checker = struct {
                     };
                     if (method_ty) |mt| return mt;
                 }
-                _ = self.context.diags.addError(self.exprLoc(field_expr), .field_access_on_non_aggregate, .{}) catch {};
+                try self.context.diags.addError(self.exprLoc(field_expr), .field_access_on_non_aggregate, .{inner_kind});
                 return null;
             },
             .Variant => {
@@ -2127,12 +2127,12 @@ pub const Checker = struct {
                 const variants = self.context.type_store.field_pool.slice(vty.variants);
                 if (field_expr.is_tuple) {
                     const index = std.fmt.parseInt(usize, self.getStr(field_expr.field), 10) catch {
-                        _ = self.context.diags.addError(self.exprLoc(field_expr), .expected_field_name_or_index, .{}) catch {};
+                        try self.context.diags.addError(self.exprLoc(field_expr), .expected_field_name_or_index, .{});
                         return null;
                     };
                     const runtime_fields: usize = if (variants.len == 0) 1 else 2;
                     if (index >= runtime_fields) {
-                        _ = self.context.diags.addError(self.exprLoc(field_expr), .tuple_index_out_of_bounds, .{}) catch {};
+                        try self.context.diags.addError(self.exprLoc(field_expr), .tuple_index_out_of_bounds, .{});
                         return null;
                     }
                     try self.type_info.setFieldIndex(id, @intCast(index));
@@ -2163,11 +2163,11 @@ pub const Checker = struct {
                     else => return null,
                 };
                 if (method_ty) |mt| return mt;
-                _ = self.context.diags.addError(self.exprLoc(field_expr), .unknown_variant_tag, .{}) catch {};
+                try self.context.diags.addError(self.exprLoc(field_expr), .unknown_variant_tag, .{});
                 return null;
             },
             else => {
-                _ = self.context.diags.addError(self.exprLoc(field_expr), .field_access_on_non_aggregate, .{}) catch {};
+                try self.context.diags.addError(self.exprLoc(field_expr), .field_access_on_non_aggregate, .{});
                 return null;
             },
         }
@@ -2679,7 +2679,7 @@ pub const Checker = struct {
     fn checkCodeBlock(self: *Checker, id: ast.ExprId) !?types.TypeId {
         const cb = self.getExpr(.CodeBlock, id);
         if (!self.warned_code) {
-            _ = self.context.diags.addNote(self.exprLoc(cb), .checker_code_block_not_executed, .{}) catch {};
+            try self.context.diags.addNote(self.exprLoc(cb), .checker_code_block_not_executed, .{});
             self.warned_code = true;
         }
         return try self.checkExpr(cb.block);

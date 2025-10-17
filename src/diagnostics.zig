@@ -380,7 +380,7 @@ pub fn diagnosticMessageFmt(code: DiagnosticCode) []const u8 {
         .await_outside_async_context => "'await' used outside of an async context",
 
         // Values / indexing / fields
-        .field_access_on_non_aggregate => "field access on non-aggregate value",
+        .field_access_on_non_aggregate => "field access on non-aggregate value, {s}",
         .invalid_struct_field_index => "numeric field access is invalid on a struct; found {s}",
         .not_indexable => "value is not indexable",
         .non_integer_index => "array index must be an integer; found {s}",
