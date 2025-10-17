@@ -376,21 +376,6 @@ fn runModuleForGraph(
     return pipeline.runModuleArtifacts(path, mode);
 }
 
-fn expectedPackageName(key: []const u8, exts: []const []const u8) []const u8 {
-    if (key.len == 0) return "main";
-    var trimmed = key;
-    for (exts) |ext| {
-        if (trimmed.len > ext.len and std.mem.endsWith(u8, trimmed, ext)) {
-            trimmed = trimmed[0 .. trimmed.len - ext.len];
-            break;
-        }
-    }
-    if (std.mem.lastIndexOfScalar(u8, trimmed, '/')) |idx| {
-        return trimmed[idx + 1 ..];
-    }
-    return trimmed;
-}
-
 fn packageLocOrDefault(ast: *const ast_mod.Ast, file_id: u32) Loc {
     if (!ast.unit.package_loc.isNone()) {
         const loc_id = ast.unit.package_loc.unwrap();
@@ -447,7 +432,7 @@ fn verifyPackageDeclaration(
 
     const lookup_path = canonical_path_opt orelse source_path;
     if (self.context.module_graph.findModuleByPath(lookup_path)) |match| {
-        const expected = expectedPackageName(match.key, self.context.module_graph.config.exts);
+        const expected = self.context.module_graph.config.discovery.expectedPackageName(match.key);
         if (declared_name) |decl| {
             if (!namesEqual(decl, expected)) {
                 if (!is_entry or !namesEqual(decl, "main")) {

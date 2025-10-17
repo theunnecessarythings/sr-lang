@@ -4,6 +4,7 @@ const ast_mod = @import("ast.zig");
 const tir_mod = @import("tir.zig");
 const types = @import("types.zig");
 const package_graph = @import("package/graph.zig");
+const discovery = @import("package/discovery.zig");
 
 pub const PackageId = package_graph.PackageId;
 pub const PackageInfo = package_graph.PackageInfo;
@@ -116,8 +117,7 @@ pub const ModuleGraph = struct {
 
     pub const Config = struct {
         roots: []const package_graph.RootConfig = &default_roots,
-        main_filenames: []const []const u8 = &.{"main.sr"},
-        exts: []const []const u8 = &.{".sr"},
+        discovery: discovery.Rules = .{},
     };
 
     pub fn init(gpa: std.mem.Allocator) ModuleGraph {
@@ -153,7 +153,7 @@ pub const ModuleGraph = struct {
     }
 
     fn rebuildPackages(self: *ModuleGraph) !void {
-        try self.packages.rebuild(self.config.roots, self.config.exts, self.config.main_filenames);
+        try self.packages.rebuild(self.config.roots, self.config.discovery);
     }
 
     pub fn getPackage(self: *const ModuleGraph, id: package_graph.PackageId) ?*const package_graph.PackageInfo {
@@ -320,25 +320,25 @@ pub const ModuleGraph = struct {
 
         if (is_abs or looks_rooted) {
             if (is_abs) {
-                try addCandidates(&candidates, self.gpa, raw_in, self.config.exts, self.config.main_filenames);
+                try self.config.discovery.appendImportCandidates(&candidates, self.gpa, raw_in);
             } else if (package_match) |match| {
                 const package_path = try match.pkg.absolutePathFor(self.gpa, match.remainder);
                 defer self.gpa.free(package_path);
-                try addCandidates(&candidates, self.gpa, package_path, self.config.exts, self.config.main_filenames);
+                try self.config.discovery.appendImportCandidates(&candidates, self.gpa, package_path);
             }
         } else {
             if (base_dir.len == 0) {
-                try addCandidates(&candidates, self.gpa, raw_in, self.config.exts, self.config.main_filenames);
+                try self.config.discovery.appendImportCandidates(&candidates, self.gpa, raw_in);
             } else {
                 const base = try std.fmt.allocPrint(self.gpa, "{s}/{s}", .{ base_dir, raw_in });
                 defer self.gpa.free(base);
-                try addCandidates(&candidates, self.gpa, base, self.config.exts, self.config.main_filenames);
+                try self.config.discovery.appendImportCandidates(&candidates, self.gpa, base);
             }
 
             for (self.packages.packages.items) |pkg| {
                 const base = try std.fmt.allocPrint(self.gpa, "{s}/{s}", .{ pkg.root_path, raw_in });
                 defer self.gpa.free(base);
-                try addCandidates(&candidates, self.gpa, base, self.config.exts, self.config.main_filenames);
+                try self.config.discovery.appendImportCandidates(&candidates, self.gpa, base);
             }
         }
 
@@ -514,36 +514,3 @@ pub const ModuleGraph = struct {
         }
     }
 };
-
-fn addCandidates(
-    list: *std.ArrayList([]const u8),
-    gpa: std.mem.Allocator,
-    base: []const u8,
-    exts: []const []const u8,
-    main_files: []const []const u8,
-) !void {
-    try push(list, gpa, base);
-    if (!hasAnyExt(base, exts)) {
-        for (exts) |ext| {
-            const with_ext = try std.fmt.allocPrint(gpa, "{s}{s}", .{ base, ext });
-            defer gpa.free(with_ext);
-            try push(list, gpa, with_ext);
-        }
-    }
-    for (main_files) |main_name| {
-        const with_main = try std.fmt.allocPrint(gpa, "{s}/{s}", .{ base, main_name });
-        defer gpa.free(with_main);
-        try push(list, gpa, with_main);
-    }
-}
-
-fn hasAnyExt(path: []const u8, exts: []const []const u8) bool {
-    for (exts) |e| {
-        if (std.mem.endsWith(u8, path, e)) return true;
-    }
-    return false;
-}
-
-inline fn push(list: *std.ArrayList([]const u8), gpa: std.mem.Allocator, s: []const u8) !void {
-    try list.append(gpa, try gpa.dupe(u8, s));
-}

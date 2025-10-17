@@ -17,8 +17,7 @@ fn extendRoots(
     defer gpa.free(combined);
     try context.module_graph.setConfig(.{
         .roots = combined,
-        .exts = context.module_graph.config.exts,
-        .main_filenames = context.module_graph.config.main_filenames,
+        .discovery = context.module_graph.config.discovery,
     });
 }
 

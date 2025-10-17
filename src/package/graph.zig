@@ -1,4 +1,5 @@
 const std = @import("std");
+const discovery = @import("discovery.zig");
 
 pub const PackageId = struct {
     index: usize = std.math.maxInt(usize),
@@ -115,8 +116,7 @@ pub const PackageGraph = struct {
     pub fn rebuild(
         self: *PackageGraph,
         roots: []const RootConfig,
-        exts: []const []const u8,
-        main_files: []const []const u8,
+        rules: discovery.Rules,
     ) !void {
         self.clear();
 
@@ -139,20 +139,19 @@ pub const PackageGraph = struct {
             }
             gop.value_ptr.* = pkg_ptr.id;
 
-            try self.populatePackage(pkg_ptr, exts, main_files);
+            try self.populatePackage(pkg_ptr, rules);
         }
     }
 
     fn populatePackage(
         self: *PackageGraph,
         pkg: *PackageInfo,
-        exts: []const []const u8,
-        main_files: []const []const u8,
+        rules: discovery.Rules,
     ) !void {
         var dir = std.fs.openDirAbsolute(pkg.root_path, .{ .iterate = true }) catch return;
         defer dir.close();
 
-        try self.scanDirectory(pkg, pkg.root_path, "", &dir, exts, main_files);
+        try self.scanDirectory(pkg, pkg.root_path, "", &dir, rules);
     }
 
     fn scanDirectory(
@@ -161,8 +160,7 @@ pub const PackageGraph = struct {
         abs_dir: []const u8,
         rel_prefix: []const u8,
         dir: *std.fs.Dir,
-        exts: []const []const u8,
-        main_files: []const []const u8,
+        rules: discovery.Rules,
     ) !void {
         var iterator = dir.iterate();
         while (iterator.next()) |entry| {
@@ -174,10 +172,10 @@ pub const PackageGraph = struct {
                     defer sub_dir.close();
                     const sub_rel = try self.joinRelative(rel_prefix, entry.name);
                     defer self.gpa.free(sub_rel);
-                    try self.scanDirectory(pkg, sub_abs, sub_rel, &sub_dir, exts, main_files);
+                    try self.scanDirectory(pkg, sub_abs, sub_rel, &sub_dir, rules);
                 },
                 .file => {
-                    const matched_ext = matchExt(entry.name, exts) orelse continue;
+                    const matched_ext = rules.matchExtension(entry.name) orelse continue;
                     const rel_with_ext = try self.joinRelative(rel_prefix, entry.name);
                     defer self.gpa.free(rel_with_ext);
 
@@ -189,40 +187,15 @@ pub const PackageGraph = struct {
                     };
                     defer self.gpa.free(canonical);
 
-                    try self.recordModule(pkg, rel_with_ext, matched_ext, canonical);
+                    const module_keys = try rules.generateModuleKeys(self.gpa, pkg.name, rel_with_ext, matched_ext);
+                    defer module_keys.deinit();
 
-                    for (main_files) |main_name| {
-                        if (!std.mem.eql(u8, entry.name, main_name)) continue;
-                        if (rel_with_ext.len <= main_name.len) {
-                            try self.recordModule(pkg, "", matched_ext, canonical);
-                        } else {
-                            const alias_len = rel_with_ext.len - main_name.len - 1;
-                            const alias_slice = rel_with_ext[0..alias_len];
-                            try self.recordModule(pkg, alias_slice, matched_ext, canonical);
-                        }
+                    for (module_keys.items) |key| {
+                        try pkg.addModule(self.gpa, key, canonical);
                     }
                 },
                 else => continue,
             }
-        }
-    }
-
-    fn recordModule(
-        self: *PackageGraph,
-        pkg: *PackageInfo,
-        rel_with_ext: []const u8,
-        ext: []const u8,
-        canonical: []const u8,
-    ) !void {
-        const key_with_ext = try normalizeKey(self.gpa, rel_with_ext);
-        defer self.gpa.free(key_with_ext);
-        try pkg.addModule(self.gpa, key_with_ext, canonical);
-
-        if (rel_with_ext.len > ext.len and std.mem.endsWith(u8, rel_with_ext, ext)) {
-            const without_ext = rel_with_ext[0 .. rel_with_ext.len - ext.len];
-            const key_without_ext = try normalizeKey(self.gpa, without_ext);
-            defer self.gpa.free(key_without_ext);
-            try pkg.addModule(self.gpa, key_without_ext, canonical);
         }
     }
 
@@ -293,23 +266,4 @@ fn keyPriority(key: []const u8) u8 {
     if (std.mem.indexOfScalar(u8, key, '/')) |_| return 3;
     if (std.mem.endsWith(u8, key, ".sr")) return 2;
     return 1;
-}
-
-fn matchExt(name: []const u8, exts: []const []const u8) ?[]const u8 {
-    for (exts) |ext| {
-        if (std.mem.endsWith(u8, name, ext)) return ext;
-    }
-    return null;
-}
-
-fn normalizeKey(gpa: std.mem.Allocator, input: []const u8) ![]u8 {
-    var out = try gpa.dupe(u8, input);
-    if (std.fs.path.sep != '/') {
-        for (out) |*c| {
-            if (c.* == std.fs.path.sep) {
-                c.* = '/';
-            }
-        }
-    }
-    return out;
 }
