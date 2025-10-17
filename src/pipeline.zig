@@ -97,14 +97,14 @@ pub const Pipeline = struct {
         mode: Mode,
     ) anyerror!Result {
         const runner_ctx = @ptrCast(*anyopaque, self);
-        self.context.resolver.enterPipeline(runner_ctx, runModuleForGraph);
-        defer self.context.resolver.leavePipeline(runner_ctx);
-        const type_info = try self.allocator.create(types.TypeInfo);
-        type_info.* = types.TypeInfo.init(self.allocator, &self.context.type_store);
+        self.context.module_graph.enterPipeline(runner_ctx, runModuleForGraph);
+        defer self.context.module_graph.leavePipeline(runner_ctx);
+        const type_info = try self.context.gpa.create(types.TypeInfo);
+        type_info.* = types.TypeInfo.init(self.context.gpa, &self.context.type_store);
         var type_info_cleanup = true;
         defer if (type_info_cleanup) {
             type_info.deinit();
-            self.allocator.destroy(type_info);
+            self.context.gpa.destroy(type_info);
         };
         const module_id = self.next_module_id;
         self.next_module_id += 1;
@@ -208,7 +208,7 @@ pub const Pipeline = struct {
         gen.resetDebugCaches();
 
         // Resolve imports recursively and append their codegen (reuse resolver)
-        try self.resolveImports(&ast, &gen, &self.context.resolver);
+        try self.resolveImports(&ast, &gen, &self.context.module_graph);
 
         var mlir_module = gen.emitModule(&root_mod, self.context, ast.exprs.locs, type_info) catch |err| {
             switch (err) {

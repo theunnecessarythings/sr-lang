@@ -2184,7 +2184,7 @@ pub const Checker = struct {
             else => return false,
         };
         const path = self.getStr(sid);
-        return self.importMemberTypeByPath(&self.context.resolver, path, member) != null;
+        return self.importMemberTypeByPath(&self.context.module_graph, path, member) != null;
     }
 
     fn importMemberTypeByPath(self: *Checker, res: *ImportResolver, path: []const u8, member: ast.StrId) ?types.TypeId {
@@ -2197,7 +2197,7 @@ pub const Checker = struct {
     }
 
     pub fn importMemberType(self: *Checker, import_eid: ast.ExprId, member: ast.StrId) ?types.TypeId {
-        const res = &self.context.resolver;
+        const res = &self.context.module_graph;
         const ir = self.getExpr(.Import, import_eid);
         const ek = self.exprKind(ir.expr);
         if (ek != .Literal) return null;
@@ -3237,7 +3237,7 @@ pub const Checker = struct {
             },
         };
         const path = self.getStr(sid);
-        _ = self.context.resolver.ensureModule(self.import_base_dir, path, .tir) catch {
+        _ = self.context.module_graph.ensureModule(self.import_base_dir, path, .tir) catch {
             try self.context.diags.addError(self.exprLoc(lit), .import_not_found, .{});
             return self.context.type_store.tAny();
         };

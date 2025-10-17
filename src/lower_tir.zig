@@ -1400,7 +1400,7 @@ pub const LowerTir = struct {
         info: ModuleAliasInfo,
         member_name: []const u8,
     ) bool {
-        const me = self.context.resolver.ensureModule(self.import_base_dir, info.import_path, .tir) catch return false;
+        const me = self.context.module_graph.ensureModule(self.import_base_dir, info.import_path, .tir) catch return false;
         const imported_ast = me.astRef();
         const decls = imported_ast.exprs.decl_pool.slice(imported_ast.unit.decls);
         var i: usize = 0;
@@ -2683,7 +2683,7 @@ pub const LowerTir = struct {
         const idr = a.exprs.get(.Ident, parent_id);
         if (self.findTopLevelImportByName(a, idr.name)) |imp_decl| {
             const ty0 = self.getExprType(parent_id) orelse (expected_ty orelse self.context.type_store.tAny());
-            if (self.materializeImportedConst(&self.context.resolver, a, imp_decl, field_name, ty0, blk, self.pipeline)) |vv| {
+            if (self.materializeImportedConst(&self.context.module_graph, a, imp_decl, field_name, ty0, blk, self.pipeline)) |vv| {
                 if (expected_ty) |want| return self.emitCoerce(blk, vv, ty0, want, loc);
                 return vv;
             }
