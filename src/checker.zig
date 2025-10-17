@@ -812,6 +812,161 @@ pub const Checker = struct {
         }
     }
 
+    fn updateCoercedLiteral(
+        self: *Checker,
+        expr_id: ast.ExprId,
+        target_ty: types.TypeId,
+        value_ty: *types.TypeId,
+        kind: *types.TypeKind,
+    ) !bool {
+        if (!try self.coerceNumericLiteral(expr_id, target_ty)) return false;
+        if (self.type_info.expr_types.items[expr_id.toRaw()]) |coerced| {
+            value_ty.* = coerced;
+        } else {
+            value_ty.* = target_ty;
+        }
+        kind.* = self.typeKind(value_ty.*);
+        return true;
+    }
+
+    fn coerceNumericLiteral(self: *Checker, expr_id: ast.ExprId, target_ty: types.TypeId) !bool {
+        if (self.exprKind(expr_id) != .Literal) return false;
+        const lit = self.getExpr(.Literal, expr_id);
+        const target_kind = self.typeKind(target_ty);
+        return switch (lit.kind) {
+            .int => self.coerceIntLiteral(expr_id, target_ty, target_kind, lit),
+            .float => self.coerceFloatLiteral(expr_id, target_ty, target_kind, lit),
+            .imaginary => self.coerceImaginaryLiteral(expr_id, target_ty, target_kind, lit),
+            else => false,
+        };
+    }
+
+    fn coerceIntLiteral(
+        self: *Checker,
+        expr_id: ast.ExprId,
+        target_ty: types.TypeId,
+        target_kind: types.TypeKind,
+        lit: ast.Rows.Literal,
+    ) bool {
+        const info = switch (lit.data) {
+            .int => |i| i,
+            else => return false,
+        };
+        if (!info.valid) return false;
+
+        const value = info.value;
+        const ok = switch (target_kind) {
+            .I8 => value <= blk: {
+                const max: u128 = @intCast(std.math.maxInt(i8));
+                break :blk max;
+            },
+            .I16 => value <= blk: {
+                const max: u128 = @intCast(std.math.maxInt(i16));
+                break :blk max;
+            },
+            .I32 => value <= blk: {
+                const max: u128 = @intCast(std.math.maxInt(i32));
+                break :blk max;
+            },
+            .I64 => value <= blk: {
+                const max: u128 = @intCast(std.math.maxInt(i64));
+                break :blk max;
+            },
+            .U8 => value <= blk: {
+                const max: u128 = @intCast(std.math.maxInt(u8));
+                break :blk max;
+            },
+            .U16 => value <= blk: {
+                const max: u128 = @intCast(std.math.maxInt(u16));
+                break :blk max;
+            },
+            .U32 => value <= blk: {
+                const max: u128 = @intCast(std.math.maxInt(u32));
+                break :blk max;
+            },
+            .U64 => value <= blk: {
+                const max: u128 = @intCast(std.math.maxInt(u64));
+                break :blk max;
+            },
+            .Usize => value <= blk: {
+                const max: u128 = @intCast(std.math.maxInt(usize));
+                break :blk max;
+            },
+            .F32 => blk: {
+                const limit: f128 = @floatCast(std.math.floatMax(f32));
+                const as_float: f128 = @floatFromInt(value);
+                break :blk as_float <= limit;
+            },
+            .F64 => true,
+            else => false,
+        };
+
+        if (!ok) return false;
+        self.type_info.setExprType(expr_id, target_ty);
+        return true;
+    }
+
+    fn coerceFloatLiteral(
+        self: *Checker,
+        expr_id: ast.ExprId,
+        target_ty: types.TypeId,
+        target_kind: types.TypeKind,
+        lit: ast.Rows.Literal,
+    ) bool {
+        const info = switch (lit.data) {
+            .float => |f| f,
+            else => return false,
+        };
+        if (!info.valid) return false;
+
+        const value = info.value;
+        const ok = switch (target_kind) {
+            .F32 => blk: {
+                if (!std.math.isFinite(value)) break :blk false;
+                const limit: f64 = @floatCast(std.math.floatMax(f32));
+                break :blk @abs(value) <= limit;
+            },
+            .F64 => std.math.isFinite(value),
+            else => false,
+        };
+
+        if (!ok) return false;
+        self.type_info.setExprType(expr_id, target_ty);
+        return true;
+    }
+
+    fn coerceImaginaryLiteral(
+        self: *Checker,
+        expr_id: ast.ExprId,
+        target_ty: types.TypeId,
+        target_kind: types.TypeKind,
+        lit: ast.Rows.Literal,
+    ) bool {
+        if (target_kind != .Complex) return false;
+        const info = switch (lit.data) {
+            .imaginary => |imag| imag,
+            else => return false,
+        };
+        if (!info.valid) return false;
+
+        const target = self.context.type_store.get(.Complex, target_ty);
+        const elem_ty = target.elem;
+        const elem_kind = self.typeKind(elem_ty);
+        const ok = switch (elem_kind) {
+            .F32 => blk: {
+                if (!std.math.isFinite(info.value)) break :blk false;
+                const limit: f64 = @floatCast(std.math.floatMax(f32));
+                break :blk @abs(info.value) <= limit;
+            },
+            .F64 => std.math.isFinite(info.value),
+            else => false,
+        };
+
+        if (!ok) return false;
+        self.type_info.setExprType(expr_id, target_ty);
+        return true;
+    }
+
     fn tryCoerceVariantOrErrorLiteral(
         self: *Checker,
         expr_id: ast.ExprId,
@@ -905,8 +1060,18 @@ pub const Checker = struct {
             if (args.len != tys.len) return false;
 
             for (args, 0..) |aid, i| {
-                const at = try self.checkExpr(aid) orelse return false;
-                if (self.assignable(at, tys[i]) != .success) return false;
+                var at = try self.checkExpr(aid) orelse return false;
+                if (self.assignable(at, tys[i]) != .success) {
+                    if (check_types.isNumericKind(self, self.typeKind(tys[i]))) {
+                        var at_kind = self.typeKind(at);
+                        if (try self.updateCoercedLiteral(aid, tys[i], &at, &at_kind) and
+                            self.assignable(at, tys[i]) == .success)
+                        {
+                            continue;
+                        }
+                    }
+                    return false;
+                }
             }
             return true;
         }
@@ -919,8 +1084,15 @@ pub const Checker = struct {
         const args = self.ast_unit.exprs.expr_pool.slice(call.args);
         if (args.len != 1) return false;
 
-        const at = try self.checkExpr(args[0]) orelse return false;
-        return (self.assignable(at, pay_ty) == .success);
+        var at = try self.checkExpr(args[0]) orelse return false;
+        if (self.assignable(at, pay_ty) == .success) return true;
+        if (check_types.isNumericKind(self, self.typeKind(pay_ty))) {
+            var at_kind = self.typeKind(at);
+            if (try self.updateCoercedLiteral(args[0], pay_ty, &at, &at_kind)) {
+                return self.assignable(at, pay_ty) == .success;
+            }
+        }
+        return false;
     }
 
     fn checkStructLitAgainstPayload(
@@ -952,8 +1124,18 @@ pub const Checker = struct {
             if (want == null) return false;
 
             // Type-check value against target field type
-            const at = try self.checkExpr(sf.value) orelse return false;
-            if (self.assignable(at, want.?) != .success) return false;
+            var at = try self.checkExpr(sf.value) orelse return false;
+            if (self.assignable(at, want.?) != .success) {
+                if (check_types.isNumericKind(self, self.typeKind(want.?))) {
+                    var at_kind = self.typeKind(at);
+                    if (try self.updateCoercedLiteral(sf.value, want.?, &at, &at_kind) and
+                        self.assignable(at, want.?) == .success)
+                    {
+                        continue;
+                    }
+                }
+                return false;
+            }
         }
 
         return true;
@@ -972,6 +1154,17 @@ pub const Checker = struct {
 
         // First, check direct assignability
         var is_assignable = self.assignable(rhs_ty, expect_ty.?);
+
+        if (is_assignable != .success and
+            check_types.isNumericKind(self, self.typeKind(expect_ty.?)))
+        {
+            var coerced = rhs_ty;
+            var coerced_kind = self.typeKind(coerced);
+            if (try self.updateCoercedLiteral(decl.value, expect_ty.?, &coerced, &coerced_kind)) {
+                rhs_ty = coerced;
+                is_assignable = self.assignable(rhs_ty, expect_ty.?);
+            }
+        }
 
         const decl = self.ast_unit.exprs.Decl.get(decl_id);
 
@@ -1035,8 +1228,23 @@ pub const Checker = struct {
             try self.pushValueReq(true);
             const rt = try self.checkExpr(stmt.right);
             self.popValueReq();
-            if (lt != null and rt != null and (self.assignable(rt.?, lt.?) != .success)) {
-                try self.context.diags.addError(self.exprLoc(stmt), .type_annotation_mismatch, .{});
+            if (lt != null and rt != null) {
+                const expected = lt.?;
+                var value_ty = rt.?;
+                if (self.assignable(value_ty, expected) != .success) {
+                    var coerced_ok = false;
+                    if (check_types.isNumericKind(self, self.typeKind(expected))) {
+                        var value_kind = self.typeKind(value_ty);
+                        if (try self.updateCoercedLiteral(stmt.right, expected, &value_ty, &value_kind) and
+                            self.assignable(value_ty, expected) == .success)
+                        {
+                            coerced_ok = true;
+                        }
+                    }
+                    if (!coerced_ok) {
+                        try self.context.diags.addError(self.exprLoc(stmt), .type_annotation_mismatch, .{});
+                    }
+                }
             }
         }
         // Purity: assignment writes inside pure functions are allowed only to locals
@@ -1391,10 +1599,14 @@ pub const Checker = struct {
         const rt = try self.checkExpr(bin.right);
         if (lt == null or rt == null) return null;
 
-        const l = lt.?;
-        const r = rt.?;
-        const lhs_kind = self.typeKind(l);
-        const rhs_kind = self.typeKind(r);
+        var l = lt.?;
+        var r = rt.?;
+        var lhs_kind = self.typeKind(l);
+        var rhs_kind = self.typeKind(r);
+        const left_expr_kind = self.exprKind(bin.left);
+        const right_expr_kind = self.exprKind(bin.right);
+        const left_is_literal = left_expr_kind == .Literal;
+        const right_is_literal = right_expr_kind == .Literal;
 
         if (lhs_kind == .Undef or rhs_kind == .Undef) {
             try self.context.diags.addError(self.exprLoc(bin), .invalid_binary_op_operands, .{ bin.op, lhs_kind, rhs_kind });
@@ -1441,10 +1653,16 @@ pub const Checker = struct {
                     if (lhs_is_complex and check_types.isNumericKind(self, rhs_kind)) {
                         const lc = self.context.type_store.get(.Complex, l);
                         if (lc.elem.eq(r)) return l;
+                        if (right_is_literal and try self.updateCoercedLiteral(bin.right, lc.elem, &r, &rhs_kind)) {
+                            if (lc.elem.eq(r)) return l;
+                        }
                     }
                     if (rhs_is_complex and check_types.isNumericKind(self, lhs_kind)) {
                         const rc = self.context.type_store.get(.Complex, r);
                         if (rc.elem.eq(l)) return r;
+                        if (left_is_literal and try self.updateCoercedLiteral(bin.left, rc.elem, &l, &lhs_kind)) {
+                            if (rc.elem.eq(l)) return r;
+                        }
                     }
                     try self.context.diags.addError(self.exprLoc(bin), .invalid_binary_op_operands, .{ bin.op, lhs_kind, rhs_kind });
                     return null;
@@ -1463,6 +1681,12 @@ pub const Checker = struct {
                     return null;
                 }
                 if (l.eq(r)) return l;
+                if (left_is_literal and !right_is_literal and try self.updateCoercedLiteral(bin.left, r, &l, &lhs_kind)) {
+                    if (l.eq(r)) return l;
+                }
+                if (right_is_literal and !left_is_literal and try self.updateCoercedLiteral(bin.right, l, &r, &rhs_kind)) {
+                    if (l.eq(r)) return l;
+                }
                 try self.context.diags.addError(self.exprLoc(bin), .invalid_binary_op_operands, .{ bin.op, lhs_kind, rhs_kind });
                 return null;
             },
@@ -1490,17 +1714,17 @@ pub const Checker = struct {
                         return self.context.type_store.tBool();
                     }
                 }
-                const both_ints = check_types.isIntegerKind(self, lhs_kind) and check_types.isIntegerKind(self, rhs_kind);
-                const both_floats = (lhs_kind == .F32 or lhs_kind == .F64) and (rhs_kind == .F32 or rhs_kind == .F64);
-                const both_bools = lhs_kind == .Bool and rhs_kind == .Bool;
+                var both_ints = check_types.isIntegerKind(self, lhs_kind) and check_types.isIntegerKind(self, rhs_kind);
+                var both_floats = (lhs_kind == .F32 or lhs_kind == .F64) and (rhs_kind == .F32 or rhs_kind == .F64);
+                var both_bools = lhs_kind == .Bool and rhs_kind == .Bool;
                 var both_complex = lhs_kind == .Complex and rhs_kind == .Complex;
                 if (both_complex) {
                     const lc = self.context.type_store.get(.Complex, l);
                     const rc = self.context.type_store.get(.Complex, r);
                     both_complex = (lc.elem.toRaw() == rc.elem.toRaw());
                 }
-                const both_same_enum = lhs_kind == .Enum and rhs_kind == .Enum and l.eq(r);
-                const both_same_error = lhs_kind == .Error and rhs_kind == .Error and l.eq(r);
+                var both_same_enum = lhs_kind == .Enum and rhs_kind == .Enum and l.eq(r);
+                var both_same_error = lhs_kind == .Error and rhs_kind == .Error and l.eq(r);
 
                 // Handle Optional(T) == null or Optional(T) != null
                 if ((bin.op == .eq or bin.op == .neq) and lhs_kind == .Optional and rhs_kind == .Optional) {
@@ -1520,7 +1744,38 @@ pub const Checker = struct {
                 //   - int ? int (any width/sign)
                 //   - float ? float (F32/F64 mixed ok)
                 //   - bool ? bool
-                if (!(both_ints or both_floats or both_complex or both_bools or both_same_enum)) {
+                if (!(both_ints or both_floats or both_complex or both_bools or both_same_enum or both_same_error)) {
+                    if (left_is_literal and !right_is_literal and check_types.isNumericKind(self, rhs_kind)) {
+                        if (try self.updateCoercedLiteral(bin.left, r, &l, &lhs_kind)) {
+                            both_ints = check_types.isIntegerKind(self, lhs_kind) and check_types.isIntegerKind(self, rhs_kind);
+                            both_floats = (lhs_kind == .F32 or lhs_kind == .F64) and (rhs_kind == .F32 or rhs_kind == .F64);
+                            both_bools = lhs_kind == .Bool and rhs_kind == .Bool;
+                            both_complex = lhs_kind == .Complex and rhs_kind == .Complex;
+                            if (both_complex) {
+                                const lc = self.context.type_store.get(.Complex, l);
+                                const rc = self.context.type_store.get(.Complex, r);
+                                both_complex = (lc.elem.toRaw() == rc.elem.toRaw());
+                            }
+                            both_same_enum = lhs_kind == .Enum and rhs_kind == .Enum and l.eq(r);
+                            both_same_error = lhs_kind == .Error and rhs_kind == .Error and l.eq(r);
+                        }
+                    } else if (right_is_literal and !left_is_literal and check_types.isNumericKind(self, lhs_kind)) {
+                        if (try self.updateCoercedLiteral(bin.right, l, &r, &rhs_kind)) {
+                            both_ints = check_types.isIntegerKind(self, lhs_kind) and check_types.isIntegerKind(self, rhs_kind);
+                            both_floats = (lhs_kind == .F32 or lhs_kind == .F64) and (rhs_kind == .F32 or rhs_kind == .F64);
+                            both_bools = lhs_kind == .Bool and rhs_kind == .Bool;
+                            both_complex = lhs_kind == .Complex and rhs_kind == .Complex;
+                            if (both_complex) {
+                                const lc = self.context.type_store.get(.Complex, l);
+                                const rc = self.context.type_store.get(.Complex, r);
+                                both_complex = (lc.elem.toRaw() == rc.elem.toRaw());
+                            }
+                            both_same_enum = lhs_kind == .Enum and rhs_kind == .Enum and l.eq(r);
+                            both_same_error = lhs_kind == .Error and rhs_kind == .Error and l.eq(r);
+                        }
+                    }
+                }
+                if (!(both_ints or both_floats or both_complex or both_bools or both_same_enum or both_same_error)) {
                     try self.context.diags.addError(self.exprLoc(bin), .invalid_binary_op_operands, .{ bin.op, lhs_kind, rhs_kind });
                     return null;
                 }
@@ -2434,10 +2689,18 @@ pub const Checker = struct {
 
                 var i: usize = 0;
                 while (i < args.len) : (i += 1) {
-                    const at = try self.checkExpr(args[i]) orelse return null;
+                    var at = try self.checkExpr(args[i]) orelse return null;
+                    var at_kind = self.typeKind(at);
                     if (self.assignable(at, params[i]) != .success) {
+                        if (check_types.isNumericKind(self, self.typeKind(params[i]))) {
+                            if (try self.updateCoercedLiteral(args[i], params[i], &at, &at_kind) and
+                                self.assignable(at, params[i]) == .success)
+                            {
+                                continue;
+                            }
+                        }
                         const expected_kind = self.typeKind(params[i]);
-                        const actual_kind = self.typeKind(at);
+                        const actual_kind = at_kind;
                         // IMPORTANT: only one type diagnostic
                         try self.context.diags.addError(loc, .argument_type_mismatch, .{ expected_kind, actual_kind });
                         return null;
@@ -2479,12 +2742,20 @@ pub const Checker = struct {
 
                 var i: usize = 0;
                 while (i < args.len) : (i += 1) {
-                    const at = try self.checkExpr(args[i]) orelse return null;
+                    var at = try self.checkExpr(args[i]) orelse return null;
+                    var at_kind = self.typeKind(at);
                     const pt = if (i < fixed) params[i] else params[fixed];
                     // print types
                     if (self.assignable(at, pt) != .success) {
+                        if (check_types.isNumericKind(self, self.typeKind(pt))) {
+                            if (try self.updateCoercedLiteral(args[i], pt, &at, &at_kind) and
+                                self.assignable(at, pt) == .success)
+                            {
+                                continue;
+                            }
+                        }
                         const expected_kind = self.typeKind(pt);
-                        const actual_kind = self.typeKind(at);
+                        const actual_kind = at_kind;
                         const loc = self.exprLocFromId(args[i]);
                         try self.context.diags.addError(loc, .argument_type_mismatch, .{ expected_kind, actual_kind });
                         return null;
@@ -2533,10 +2804,18 @@ pub const Checker = struct {
             }
             var i: usize = 0;
             while (i < args.len) : (i += 1) {
-                const at = try self.checkExpr(args[i]) orelse return null;
+                var at = try self.checkExpr(args[i]) orelse return null;
+                var at_kind = self.typeKind(at);
                 if (self.assignable(at, params[i]) != .success) {
+                    if (check_types.isNumericKind(self, self.typeKind(params[i]))) {
+                        if (try self.updateCoercedLiteral(args[i], params[i], &at, &at_kind) and
+                            self.assignable(at, params[i]) == .success)
+                        {
+                            continue;
+                        }
+                    }
                     const expected_kind = self.typeKind(params[i]);
-                    const actual_kind = self.typeKind(at);
+                    const actual_kind = at_kind;
                     const loc = self.exprLocFromId(args[i]);
                     try self.context.diags.addError(loc, .argument_type_mismatch, .{ expected_kind, actual_kind });
                     return null;
@@ -2581,7 +2860,8 @@ pub const Checker = struct {
 
         var i: usize = 0;
         while (i < args.len) : (i += 1) {
-            const at = try self.checkExpr(args[i]) orelse return null;
+            var at = try self.checkExpr(args[i]) orelse return null;
+            var at_kind = self.typeKind(at);
             const pt = if (!fnrow.is_variadic)
                 (if (i < params.len) params[i] else params[params.len - 1])
             else blk: {
@@ -2589,8 +2869,15 @@ pub const Checker = struct {
                 break :blk if (i < fixed) params[i] else params[params.len - 1];
             };
             if (self.assignable(at, pt) != .success) {
+                if (check_types.isNumericKind(self, self.typeKind(pt))) {
+                    if (try self.updateCoercedLiteral(args[i], pt, &at, &at_kind) and
+                        self.assignable(at, pt) == .success)
+                    {
+                        continue;
+                    }
+                }
                 const expected_kind = self.typeKind(pt);
-                const actual_kind = self.typeKind(at);
+                const actual_kind = at_kind;
                 const loc = self.exprLocFromId(args[i]);
                 try self.context.diags.addError(loc, .argument_type_mismatch, .{ expected_kind, actual_kind });
                 return null;
@@ -2649,7 +2936,8 @@ pub const Checker = struct {
 
         var i: usize = 0;
         while (i < args.len) : (i += 1) {
-            const at = try self.checkExpr(args[i]) orelse return null;
+            var at = try self.checkExpr(args[i]) orelse return null;
+            var at_kind = self.typeKind(at);
             const param_index = i + implicit_count;
             const pt = if (!fn_row.is_variadic)
                 (if (param_index < params.len) params[param_index] else params[params.len - 1])
@@ -2658,8 +2946,15 @@ pub const Checker = struct {
                 break :blk if (param_index < fixed) params[param_index] else params[params.len - 1];
             };
             if (self.assignable(at, pt) != .success) {
+                if (check_types.isNumericKind(self, self.typeKind(pt))) {
+                    if (try self.updateCoercedLiteral(args[i], pt, &at, &at_kind) and
+                        self.assignable(at, pt) == .success)
+                    {
+                        continue;
+                    }
+                }
                 const expected_kind = self.typeKind(pt);
-                const actual_kind = self.typeKind(at);
+                const actual_kind = at_kind;
                 const loc = self.exprLocFromId(args[i]);
                 try self.context.diags.addError(loc, .argument_type_mismatch, .{ expected_kind, actual_kind });
                 return null;
@@ -2825,6 +3120,16 @@ pub const Checker = struct {
         if (ret_ty == null) return null;
 
         if (self.assignable(ret_ty.?, expect_ty) != .success) {
+            if (check_types.isNumericKind(self, self.typeKind(expect_ty))) {
+                var coerced = ret_ty.?;
+                var coerced_kind = self.typeKind(coerced);
+                if (!rr.value.isNone() and
+                    try self.updateCoercedLiteral(rr.value.unwrap(), expect_ty, &coerced, &coerced_kind) and
+                    self.assignable(coerced, expect_ty) == .success)
+                {
+                    return coerced;
+                }
+            }
             try self.context.diags.addError(self.exprLoc(rr), .return_type_mismatch, .{});
             return null;
         }

@@ -150,7 +150,8 @@ test "floating point expression failure cases" {
 
     // Type mismatch for binary operations
     try checkProgram("a :: 5.0 + true", &[_]diag.DiagnosticCode{.invalid_binary_op_operands});
-    try checkProgram("a :: 5.0 - 3", &[_]diag.DiagnosticCode{.invalid_binary_op_operands}); // Assuming no implicit conversion from int to float
+    // Mixed numeric operands now coerce literals to the other side.
+    try checkProgram("a :: 5.0 - 3", &.{});
     try checkProgram("a :: 5.0 * \"hello\"", &[_]diag.DiagnosticCode{.invalid_binary_op_operands});
 
     // Type mismatch for unary operations
@@ -172,14 +173,53 @@ test "integer expression failure cases" {
     // Type mismatch for binary operations
     try checkProgram("a :: 5 + true", &[_]diag.DiagnosticCode{.invalid_binary_op_operands});
     try checkProgram("a :: 5 - \"hello\"", &[_]diag.DiagnosticCode{.invalid_binary_op_operands});
-    try checkProgram("a :: 5 * 3.0", &[_]diag.DiagnosticCode{.invalid_binary_op_operands}); // Assuming integers and floats are distinct types
+    try checkProgram("a :: 5 * 3.0", &.{});
     try checkProgram("a :: 5 << true", &[_]diag.DiagnosticCode{.invalid_binary_op_operands});
     try checkProgram("a :: 5 & false", &[_]diag.DiagnosticCode{.invalid_binary_op_operands});
     try checkProgram("a :: true | 1", &[_]diag.DiagnosticCode{.invalid_binary_op_operands});
     try checkProgram("a :: 1 == \"hello\"", &[_]diag.DiagnosticCode{.invalid_binary_op_operands});
-    try checkProgram("a :: 1 < 3.0", &[_]diag.DiagnosticCode{.invalid_binary_op_operands});
+    try checkProgram("a :: 1 < 3.0", &.{});
     try checkProgram("a :: 10 *| true", &[_]diag.DiagnosticCode{.invalid_binary_op_operands});
     try checkProgram("a :: 10 +% \"20\"", &[_]diag.DiagnosticCode{.invalid_binary_op_operands});
+}
+
+test "numeric literal coercion" {
+    try checkProgram(
+        \\ f: f32 = 1.5
+        \\ result :: f + 2
+    , &.{});
+
+    try checkProgram(
+        \\ foo :: proc(x: f32) {}
+        \\ foo(2)
+    , &.{});
+
+    try checkProgram(
+        \\ mix :: proc(a: f64, b: f32) {}
+        \\ mix(2, 3)
+    , &.{});
+
+    try checkProgram(
+        \\ make :: proc() f32 {
+        \\   value: f32 = 0
+        \\   value = 2
+        \\   return value
+        \\ }
+    , &.{});
+
+    try checkProgram(
+        \\ Point :: struct { x: f32, y: i64 }
+        \\ p :: Point{ x: 2, y: 3 }
+    , &.{});
+
+    try checkProgram(
+        \\ wrap :: proc(x: f32) f32 { return x }
+        \\ result :: wrap(2)
+    , &.{});
+
+    try checkProgram("a :: 5.0 - 3", &.{});
+    try checkProgram("a :: 5 * 3.0", &.{});
+    try checkProgram("a :: 1 < 3.0", &.{});
 }
 
 test "boolean expressions" {
