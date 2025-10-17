@@ -281,7 +281,6 @@ pub const DiagnosticCode = enum {
 
     comptime_type_not_supported,
     package_missing_declaration,
-    package_mismatch,
     entry_package_missing,
     entry_package_not_main,
 };
@@ -505,7 +504,6 @@ pub fn diagnosticMessageFmt(code: DiagnosticCode) []const u8 {
 
         .comptime_type_not_supported => "comptime type not supported",
         .package_missing_declaration => "missing package declaration; expected 'package {s}'",
-        .package_mismatch => "package declaration mismatch; expected '{s}', found '{s}'",
         .entry_package_missing => "entry modules must declare 'package main'",
         .entry_package_not_main => "entry modules must declare 'package main'; found '{s}'",
     };

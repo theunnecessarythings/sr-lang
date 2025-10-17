@@ -164,8 +164,10 @@ pub const Pipeline = struct {
 
         var prelude_specs: std.ArrayList(PreludeSpec) = .empty;
         defer prelude_specs.deinit(self.allocator);
-        try self.context.module_graph.collectPreludeSpecsForModule(module_path, &prelude_specs);
-        try self.injectPreludeImports(&ast, file_id, base_dir, module_path, canonical_module_path, prelude_specs.items);
+        if (is_entry) {
+            try self.context.module_graph.collectPreludeSpecsForModule(module_path, &prelude_specs);
+            try self.injectPreludeImports(&ast, file_id, base_dir, module_path, canonical_module_path, prelude_specs.items);
+        }
 
         if (mode == .ast) {
             type_info_cleanup = false;
@@ -262,6 +264,7 @@ pub const Pipeline = struct {
 
         // verify module
         if (!mlir_module.getOperation().verify()) {
+            mlir_module.getOperation().dump();
             const msg = gen.diagnostic_data.msg orelse "";
             try self.context.diags.addError(
                 .{ .file_id = file_id, .start = 0, .end = 0 },
@@ -366,16 +369,8 @@ pub const Pipeline = struct {
 
         const lookup_path = canonical_path_opt orelse source_path;
         if (self.context.module_graph.findModuleByPath(lookup_path)) |match| {
-            const expected = self.context.module_graph.config.discovery.expectedPackageName(match.key);
-            if (declared_name) |decl| {
-                if (!namesEqual(decl, expected)) {
-                    if (!is_entry or !namesEqual(decl, "main")) {
-                        //try self.context.diags.addError(pkg_loc, .package_mismatch, .{ expected, decl });
-                        try self.context.diags.addError(pkg_loc, .package_mismatch, .{});
-                        had_error = true;
-                    }
-                }
-            } else {
+            if (declared_name == null) {
+                const expected = self.context.module_graph.config.discovery.expectedPackageName(match.key);
                 try self.context.diags.addError(pkg_loc, .package_missing_declaration, .{expected});
                 had_error = true;
             }

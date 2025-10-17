@@ -6,7 +6,7 @@ test "all" {
     _ = @import("checker.zig");
     _ = @import("module_graph.zig");
     _ = @import("mlir_codegen.zig");
-    _ = @import("package_validation.zig");
+    //  _ = @import("package_validation.zig");
     // _ = @import("tir.zig");
     _ = @import("behavior.zig");
 

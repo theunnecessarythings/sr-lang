@@ -1154,20 +1154,20 @@ pub const Checker = struct {
         }
 
         // First, check direct assignability
-        var is_assignable = self.assignable(rhs_ty, expect_ty.?);
+        var current_rhs_ty = rhs_ty;
+        var is_assignable = self.assignable(current_rhs_ty, expect_ty.?);
 
+        const decl = self.ast_unit.exprs.Decl.get(decl_id);
         if (is_assignable != .success and
             check_types.isNumericKind(self, self.typeKind(expect_ty.?)))
         {
-            var coerced = rhs_ty;
+            var coerced = current_rhs_ty;
             var coerced_kind = self.typeKind(coerced);
             if (try self.updateCoercedLiteral(decl.value, expect_ty.?, &coerced, &coerced_kind)) {
-                rhs_ty = coerced;
-                is_assignable = self.assignable(rhs_ty, expect_ty.?);
+                current_rhs_ty = coerced;
+                is_assignable = self.assignable(current_rhs_ty, expect_ty.?);
             }
         }
-
-        const decl = self.ast_unit.exprs.Decl.get(decl_id);
 
         // If that failed, variant/error literals might be of the form V.C(...) or V.C{...}
         if (is_assignable == .failure) {
