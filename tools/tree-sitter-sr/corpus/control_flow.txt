@@ -1,0 +1,134 @@
+==================
+Control flow and comptime
+==================
+control_flow :: proc() {
+  defer print("done")
+  errdefer { log_error() }
+  comptime { insert nodes }
+
+  if flag { return } else { continue }
+
+  while keep_looping {
+    break
+  }
+
+  while is Option.Some(x) := maybe_value {
+    break :maybe x
+  }
+
+  looped: for item in items {
+    continue :looped
+  }
+
+  result := for i in 0..3 {
+    if i == stop {
+      break i
+    }
+  }
+
+  matched := match value {
+    _ => value,
+  }
+
+  code_block := code { add := fn(a: i32, b: i32) i32 { return a + b } }
+}
+---
+(source_file
+  (const_declaration
+    pattern: (identifier)
+    value: (proc_expression
+      parameters: (parameter_list)
+      body: (block
+        (defer_statement
+          handler: (call_expression
+            function: (primary_expression (identifier))
+            arguments: (argument_list
+              (primary_expression (literal (string_literal))))))
+        (errdefer_statement
+          handler: (block
+            (expression_statement
+              (call_expression
+                function: (primary_expression (identifier))
+                arguments: (argument_list)))))
+        (expression_statement
+          (comptime_expression
+            body: (block
+              (insert_statement
+                value: (primary_expression (identifier))))))
+        (expression_statement
+          (if_expression
+            condition: (primary_expression (identifier))
+            consequence: (block
+              (return_statement))
+            alternative: (block
+              (continue_statement))))
+        (expression_statement
+          (while_expression
+            condition: (primary_expression (identifier))
+            body: (block
+              (break_statement))))
+        (expression_statement
+          (while_expression
+            pattern: (call_expression
+              function: (member_expression
+                object: (primary_expression (identifier))
+                property: (identifier))
+              arguments: (argument_list
+                (primary_expression (identifier))))
+            value: (primary_expression (identifier))
+            body: (block
+              (break_statement
+                label: (identifier)
+                value: (identifier))))))
+        (expression_statement
+          (for_expression
+            (loop_label
+              label: (identifier))
+            pattern: (identifier)
+            iterable: (primary_expression (identifier))
+            body: (block
+              (continue_statement
+                label: (identifier)))))
+        (var_declaration
+          pattern: (identifier)
+          value: (for_expression
+            pattern: (identifier)
+            iterable: (binary_expression
+              left: (primary_expression (literal (integer_literal)))
+              right: (primary_expression (literal (integer_literal))))
+            body: (block
+              (expression_statement
+                (if_expression
+                  condition: (binary_expression
+                    left: (primary_expression (identifier))
+                    right: (primary_expression (identifier)))
+                  consequence: (block
+                    (break_statement
+                      value: (identifier))))))))
+        (var_declaration
+          pattern: (identifier)
+          value: (match_expression
+            value: (primary_expression (identifier))
+            (match_arm
+              pattern: (primary_expression (identifier))
+              body: (primary_expression (identifier))))))
+        (var_declaration
+          pattern: (identifier)
+          value: (code_expression
+            body: (block
+              (var_declaration
+                pattern: (identifier)
+                value: (fn_expression
+                  parameters: (parameter_list
+                    (parameter
+                      pattern: (identifier)
+                      type: (type_identifier (identifier)))
+                    (parameter
+                      pattern: (identifier)
+                      type: (type_identifier (identifier))))
+                  return_type: (type_identifier (identifier))
+                  body: (block
+                    (return_statement
+                      (binary_expression
+                        left: (primary_expression (identifier))
+                        right: (primary_expression (identifier))))))))))))))

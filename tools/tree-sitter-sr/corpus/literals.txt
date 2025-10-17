@@ -1,0 +1,99 @@
+==================
+Numeric literals
+==================
+int_val := 123_456
+hex_val := 0x_FF_00
+oct_val := 0o755
+bin_val := 0b1101_0101
+float_plain := 3.14
+float_leading := .5
+float_exponent := 1e9
+float_suffix := 2.0f32
+imag_val := 2.0i
+/* nested /* block */ still ok */
+complex_sum := (1.0 + 2.0i)
+---
+(source_file
+  (var_declaration
+    pattern: (identifier)
+    value: (primary_expression (literal (integer_literal))))
+  (var_declaration
+    pattern: (identifier)
+    value: (primary_expression (literal (integer_literal))))
+  (var_declaration
+    pattern: (identifier)
+    value: (primary_expression (literal (integer_literal))))
+  (var_declaration
+    pattern: (identifier)
+    value: (primary_expression (literal (integer_literal))))
+  (var_declaration
+    pattern: (identifier)
+    value: (primary_expression (literal (float_literal))))
+  (var_declaration
+    pattern: (identifier)
+    value: (primary_expression (literal (float_literal))))
+  (var_declaration
+    pattern: (identifier)
+    value: (primary_expression (literal (float_literal))))
+  (var_declaration
+    pattern: (identifier)
+    value: (primary_expression (literal (float_literal))))
+  (var_declaration
+    pattern: (identifier)
+    value: (primary_expression (literal (float_literal))))
+  (var_declaration
+    pattern: (identifier)
+    value: (primary_expression
+      (parenthesized_expression
+        (binary_expression
+          left: (primary_expression (literal (float_literal)))
+          right: (primary_expression (literal (float_literal))))))))
+==================
+String and character literals
+==================
+text := "Hello, world!\n"
+byte_text := b"some bytes"
+raw_text := r"no escapes \\n "
+hashed_raw := r#"hash " inside"#
+byte_raw := br"bytes"
+byte_raw_hashed := br#"raw bytes"#
+char_val := 'a'
+escaped_char := '\n'
+byte_char := b'x'
+truth := true
+falsity := false
+---
+(source_file
+  (var_declaration
+    pattern: (identifier)
+    value: (primary_expression (literal (string_literal))))
+  (var_declaration
+    pattern: (identifier)
+    value: (primary_expression (literal (string_literal))))
+  (var_declaration
+    pattern: (identifier)
+    value: (primary_expression (literal (string_literal))))
+  (var_declaration
+    pattern: (identifier)
+    value: (primary_expression (literal (string_literal))))
+  (var_declaration
+    pattern: (identifier)
+    value: (primary_expression (literal (string_literal))))
+  (var_declaration
+    pattern: (identifier)
+    value: (primary_expression (literal (string_literal))))
+  (var_declaration
+    pattern: (identifier)
+    value: (primary_expression (literal (char_literal))))
+  (var_declaration
+    pattern: (identifier)
+    value: (primary_expression (literal (char_literal))))
+  (var_declaration
+    pattern: (identifier)
+    value: (primary_expression (literal (char_literal))))
+  (var_declaration
+    pattern: (identifier)
+    value: (primary_expression (literal (boolean_literal))))
+  (var_declaration
+    pattern: (identifier)
+    value: (primary_expression (literal (boolean_literal)))) )

@@ -1,41 +1,189 @@
 ==================
 Expressions
 ==================
-let value := if cond {
-  1 + foo.bar[0]
-} else {
-  match opt {
-    Some(x) => x,
-    None => 0,
-  }
-};
+value := add(40, 2) + other.catch
+ptr := value.^*i64
+negated := -value
+chained := math.print("hi").^*void
 ---
 (source_file
-  (variable_declaration
+  (var_declaration
     pattern: (identifier)
-    value: (if_expression
-      condition: (identifier)
-      consequence: (block
-        (statement
-          (expression_statement
+    value: (binary_expression
+      left: (call_expression
+        function: (primary_expression (identifier))
+        arguments: (argument_list
+          (primary_expression (literal (integer_literal)))
+          (primary_expression (literal (integer_literal)))))
+      right: (member_expression
+        object: (primary_expression (identifier))
+        property: (identifier))))
+  (var_declaration
+    pattern: (identifier)
+    value: (cast_expression
+      value: (primary_expression (identifier))
+      type: (pointer_type (type_identifier (identifier)))))
+  (var_declaration
+    pattern: (identifier)
+    value: (unary_expression
+      argument: (primary_expression (identifier))))
+  (var_declaration
+    pattern: (identifier)
+    value: (cast_expression
+      value: (call_expression
+        function: (member_expression
+          object: (primary_expression (identifier))
+          property: (identifier))
+        arguments: (argument_list
+          (primary_expression (literal (string_literal)))) )
+      type: (pointer_type (type_identifier (identifier)))))))
+==================
+Postfix expressions
+==================
+tuple := (1, 2, 3)
+array := [1, 2, 3]
+map := ["one": 1, "two": 2]
+slice := array[1..3]
+element := array[0]
+point := Point{ x: 5, ..other }
+unit := UnitStruct{}
+closure := |x: i32| i32 { return x + 1 }
+closure_inferred := |x| x * x
+future := async { return 42 }
+awaited := future.await
+deref := ptr.*
+propagated := might_fail()!
+unwrapped := optional?
+cast := value.(i32)
+bitcast := value.^f64
+sat := big.|i8
+wrap := val.%u8
+checked := maybe.?i8
+---
+(source_file
+  (var_declaration
+    pattern: (identifier)
+    value: (primary_expression
+      (tuple_expression
+        first: (primary_expression (literal (integer_literal)))
+        (primary_expression (literal (integer_literal)))
+        (primary_expression (literal (integer_literal))))))
+  (var_declaration
+    pattern: (identifier)
+    value: (primary_expression
+      (array_expression
+        (primary_expression (literal (integer_literal)))
+        (primary_expression (literal (integer_literal)))
+        (primary_expression (literal (integer_literal))))))
+  (var_declaration
+    pattern: (identifier)
+    value: (primary_expression
+      (array_expression
+        (map_entry
+          key: (primary_expression (literal (string_literal)))
+          value: (primary_expression (literal (integer_literal))))
+        (map_entry
+          key: (primary_expression (literal (string_literal)))
+          value: (primary_expression (literal (integer_literal)))))))
+  (var_declaration
+    pattern: (identifier)
+    value: (index_expression
+      array: (primary_expression (identifier))
+      (binary_expression
+        left: (primary_expression (literal (integer_literal)))
+        right: (primary_expression (literal (integer_literal))))))
+  (var_declaration
+    pattern: (identifier)
+    value: (index_expression
+      array: (primary_expression (identifier))
+      (primary_expression (literal (integer_literal))))))
+  (var_declaration
+    pattern: (identifier)
+    value: (struct_literal
+      type: (primary_expression (identifier))
+      body: (struct_literal_body
+        (struct_literal_field
+          name: (identifier)
+          value: (primary_expression (literal (integer_literal))))
+        (struct_literal_spread
+          value: (primary_expression (identifier))))))
+  (var_declaration
+    pattern: (identifier)
+    value: (struct_literal
+      type: (primary_expression (identifier))
+      body: (struct_literal_body)))
+  (var_declaration
+    pattern: (identifier)
+    value: (primary_expression
+      (closure_expression
+        parameters: (closure_parameters
+          (closure_parameter
+            pattern: (identifier)
+            type: (type_identifier (identifier))))
+        return_type: (type_identifier (identifier))
+        body: (block
+          (return_statement
             (binary_expression
-              (integer_literal)
-              (member_expression
-                object: (identifier)
-                property: (identifier))))))
-      alternative: (block
-        (statement
-          (match_expression
-            value: (identifier)
-            body: (match_block
-              (match_arm
-                pattern: (variant_pattern
-                  type: (identifier)
-                  variant: (identifier)
-                  payload: (pattern_list (identifier)))
-                body: (identifier))
-              (match_arm
-                pattern: (identifier)
-                body: (integer_literal))))))))
-    )
-)
+              left: (primary_expression (identifier))
+              right: (primary_expression (literal (integer_literal))))))))))
+  (var_declaration
+    pattern: (identifier)
+    value: (primary_expression
+      (closure_expression
+        parameters: (closure_parameters
+          (closure_parameter
+            pattern: (identifier)))
+        body: (binary_expression
+          left: (primary_expression (identifier))
+          right: (primary_expression (identifier)))))))
+  (var_declaration
+    pattern: (identifier)
+    value: (primary_expression
+      (async_expression
+        body: (block
+          (return_statement
+            (primary_expression (literal (integer_literal)))))))))
+  (var_declaration
+    pattern: (identifier)
+    value: (member_expression
+      object: (primary_expression (identifier))
+      property: (identifier)))
+  (var_declaration
+    pattern: (identifier)
+    value: (pointer_dereference_expression
+      value: (primary_expression (identifier))))
+  (var_declaration
+    pattern: (identifier)
+    value: (error_propagation_expression
+      value: (call_expression
+        function: (primary_expression (identifier))
+        arguments: (argument_list))))
+  (var_declaration
+    pattern: (identifier)
+    value: (optional_unwrap_expression
+      value: (primary_expression (identifier))))
+  (var_declaration
+    pattern: (identifier)
+    value: (cast_expression
+      value: (primary_expression (identifier))
+      type: (type_identifier (identifier))))
+  (var_declaration
+    pattern: (identifier)
+    value: (cast_expression
+      value: (primary_expression (identifier))
+      type: (type_identifier (identifier))))
+  (var_declaration
+    pattern: (identifier)
+    value: (cast_expression
+      value: (primary_expression (identifier))
+      type: (type_identifier (identifier))))
+  (var_declaration
+    pattern: (identifier)
+    value: (cast_expression
+      value: (primary_expression (identifier))
+      type: (type_identifier (identifier))))
+  (var_declaration
+    pattern: (identifier)
+    value: (cast_expression
+      value: (primary_expression (identifier))
+      type: (type_identifier (identifier)))))
