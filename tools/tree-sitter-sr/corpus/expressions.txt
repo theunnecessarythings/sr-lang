@@ -1,41 +1,39 @@
 ==================
 Expressions
 ==================
-let value := if cond {
-  1 + foo.bar[0]
-} else {
-  match opt {
-    Some(x) => x,
-    None => 0,
-  }
-};
+value := add(40, 2) + other.catch
+ptr := value.^*i64
+negated := -value
+chained := math.print("hi").^*void
 ---
 (source_file
-  (variable_declaration
+  (var_declaration
     pattern: (identifier)
-    value: (if_expression
-      condition: (identifier)
-      consequence: (block
-        (statement
-          (expression_statement
-            (binary_expression
-              (integer_literal)
-              (member_expression
-                object: (identifier)
-                property: (identifier))))))
-      alternative: (block
-        (statement
-          (match_expression
-            value: (identifier)
-            body: (match_block
-              (match_arm
-                pattern: (variant_pattern
-                  type: (identifier)
-                  variant: (identifier)
-                  payload: (pattern_list (identifier)))
-                body: (identifier))
-              (match_arm
-                pattern: (identifier)
-                body: (integer_literal))))))))
-    )
-)
+    value: (binary_expression
+      left: (call_expression
+        function: (primary_expression (identifier))
+        arguments: (argument_list
+          (primary_expression (literal (integer_literal)))
+          (primary_expression (literal (integer_literal)))))
+      right: (member_expression
+        object: (primary_expression (identifier))
+        property: (identifier))))
+  (var_declaration
+    pattern: (identifier)
+    value: (cast_expression
+      value: (primary_expression (identifier))
+      type: (pointer_type (type_identifier (identifier)))))
+  (var_declaration
+    pattern: (identifier)
+    value: (unary_expression
+      argument: (primary_expression (identifier))))
+  (var_declaration
+    pattern: (identifier)
+    value: (cast_expression
+      value: (call_expression
+        function: (member_expression
+          object: (primary_expression (identifier))
+          property: (identifier))
+        arguments: (argument_list
+          (primary_expression (literal (string_literal)))) )
+      type: (pointer_type (type_identifier (identifier))))))
