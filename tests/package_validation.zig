@@ -12,7 +12,7 @@ fn extendRoots(
     var roots = std.ArrayList(RootConfig).init(gpa);
     defer roots.deinit();
     try roots.appendSlice(context.module_graph.config.roots);
-    try roots.append(.{ .name = root_name, .path = root_path });
+    try roots.append(.{ .name = root_name, .path = root_path, .prelude_imports = &.{} });
     const combined = try roots.toOwnedSlice();
     defer gpa.free(combined);
     try context.module_graph.setConfig(.{

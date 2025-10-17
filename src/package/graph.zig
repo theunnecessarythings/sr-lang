@@ -17,23 +17,81 @@ pub const ModuleInfo = struct {
     path: []u8,
 };
 
+pub const PreludeReexportConfig = union(enum) {
+    none,
+    all,
+    symbols: []const []const u8,
+};
+
+pub const PreludeConfig = struct {
+    path: []const u8,
+    reexport: PreludeReexportConfig = .none,
+};
+
 pub const PackageInfo = struct {
     id: PackageId,
     name: []u8,
     root_path: []u8,
     modules: std.StringHashMapUnmanaged(ModuleInfo) = .{},
+    prelude_imports: std.ArrayListUnmanaged(PreludeImport) = .{},
+
+    pub const PreludeImport = struct {
+        path: []u8,
+        reexport: PreludeReexport = .none,
+
+        pub const PreludeReexport = union(enum) {
+            none,
+            all,
+            symbols: std.ArrayListUnmanaged([]u8),
+
+            pub fn deinit(self: *PreludeReexport, gpa: std.mem.Allocator) void {
+                switch (self.*) {
+                    .symbols => |*list| {
+                        for (list.items) |name| gpa.free(name);
+                        list.deinit(gpa);
+                    },
+                    else => {},
+                }
+                self.* = .none;
+            }
+
+            pub fn symbolSlice(self: PreludeReexport) []const []u8 {
+                return switch (self) {
+                    .symbols => |list| list.items,
+                    else => &.{},
+                };
+            }
+        };
+
+        pub fn deinit(self: *PreludeImport, gpa: std.mem.Allocator) void {
+            self.reexport.deinit(gpa);
+            gpa.free(self.path);
+            self.* = PreludeImport{
+                .path = &[_]u8{},
+                .reexport = .none,
+            };
+        }
+    };
 
     pub fn init(
         gpa: std.mem.Allocator,
         id: PackageId,
         name: []const u8,
         root_path: []const u8,
+        preludes: []const PreludeConfig,
     ) !PackageInfo {
-        return .{
+        var info = PackageInfo{
             .id = id,
             .name = try gpa.dupe(u8, name),
             .root_path = try gpa.dupe(u8, root_path),
         };
+        errdefer {
+            gpa.free(info.name);
+            gpa.free(info.root_path);
+        }
+
+        try info.initPreludes(gpa, preludes);
+        return info;
     }
 
     pub fn deinit(self: *PackageInfo, gpa: std.mem.Allocator) void {
@@ -43,8 +101,47 @@ pub const PackageInfo = struct {
             gpa.free(entry.value_ptr.path);
         }
         self.modules.deinit(gpa);
+        for (self.prelude_imports.items) |*prelude| {
+            prelude.deinit(gpa);
+        }
+        self.prelude_imports.deinit(gpa);
         gpa.free(self.name);
         gpa.free(self.root_path);
+    }
+
+    fn initPreludes(
+        self: *PackageInfo,
+        gpa: std.mem.Allocator,
+        preludes: []const PreludeConfig,
+    ) !void {
+        if (preludes.len == 0) return;
+        errdefer {
+            for (self.prelude_imports.items) |*prelude| prelude.deinit(gpa);
+            self.prelude_imports.deinit(gpa);
+            self.prelude_imports = .{};
+        }
+        try self.prelude_imports.ensureTotalCapacity(gpa, preludes.len);
+        for (preludes) |cfg| {
+            var import = PreludeImport{
+                .path = try gpa.dupe(u8, cfg.path),
+            };
+            switch (cfg.reexport) {
+                .none => {},
+                .all => import.reexport = .all,
+                .symbols => |names| {
+                    import.reexport = .{ .symbols = .{} };
+                    try import.reexport.symbols.ensureTotalCapacity(gpa, names.len);
+                    for (names) |name| {
+                        try import.reexport.symbols.append(gpa, try gpa.dupe(u8, name));
+                    }
+                },
+            }
+            self.prelude_imports.appendAssumeCapacity(import);
+        }
+    }
+
+    pub fn preludeSpecs(self: *const PackageInfo) []const PreludeImport {
+        return self.prelude_imports.items;
     }
 
     pub fn addModule(
@@ -83,6 +180,7 @@ pub const ModuleMatch = struct {
 pub const RootConfig = struct {
     name: []const u8,
     path: []const u8,
+    prelude_imports: []const PreludeConfig = &.{},
 };
 
 pub const PackageGraph = struct {
@@ -127,7 +225,7 @@ pub const PackageGraph = struct {
             };
             defer self.gpa.free(canonical);
 
-            var pkg = try PackageInfo.init(self.gpa, PackageId.init(idx), root.name, canonical);
+            var pkg = try PackageInfo.init(self.gpa, PackageId.init(idx), root.name, canonical, root.prelude_imports);
             errdefer pkg.deinit(self.gpa);
 
             try self.packages.append(self.gpa, pkg);

@@ -90,8 +90,8 @@ test "ModuleGraph discovery finds std, vendor, examples, and workspace modules" 
     var roots = std.ArrayList(RootConfig).init(std.testing.allocator);
     defer roots.deinit();
     try roots.appendSlice(graph.config.roots);
-    try roots.append(.{ .name = "workspace_main", .path = workspace_main_path });
-    try roots.append(.{ .name = "workspace_named", .path = workspace_named_path });
+    try roots.append(.{ .name = "workspace_main", .path = workspace_main_path, .prelude_imports = &.{} });
+    try roots.append(.{ .name = "workspace_named", .path = workspace_named_path, .prelude_imports = &.{} });
     const combined = try roots.toOwnedSlice();
     defer std.testing.allocator.free(combined);
 

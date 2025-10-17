@@ -17,6 +17,8 @@ const compile = @import("compile.zig");
 const module_graph = @import("module_graph.zig");
 const Diagnostics = @import("diagnostics.zig").Diagnostics;
 
+const PreludeSpec = module_graph.ModuleGraph.PreludeSpec;
+
 pub const Result = struct {
     cst: ?cst_mod.CST = null,
     ast: ?ast_mod.Ast = null,
@@ -48,10 +50,6 @@ pub const Pipeline = struct {
         run,
 
         repl,
-    };
-
-    const prelude = [_][]const u8{
-        "std/prelude.sr",
     };
 
     pub fn init(allocator: std.mem.Allocator, context: *compile.Context) Pipeline {
@@ -163,12 +161,24 @@ pub const Pipeline = struct {
             try self.context.diags.emitStyled(self.context, &writer.interface, true);
             return error.PackageValidationFailed;
         }
+
+        var canonical_path_opt = try canonicalizePath(self.allocator, source_path);
+        defer if (canonical_path_opt) |p| self.allocator.free(p);
+        const module_path = canonical_path_opt orelse source_path;
+        const base_dir = moduleBaseDir(module_path);
+
+        var prelude_specs = std.ArrayList(PreludeSpec).init(self.allocator);
+        defer prelude_specs.deinit();
+        try self.context.module_graph.collectPreludeSpecsForModule(module_path, &prelude_specs);
+        try self.injectPreludeImports(&ast, file_id, base_dir, prelude_specs.items);
+
         if (mode == .ast) {
             type_info_cleanup = false;
             return .{ .cst = cst_program, .ast = ast, .type_info = type_info, .module_id = module_id };
         }
 
         var chk = checker.Checker.init(self.allocator, &ast, self.context, self, type_info);
+        chk.import_base_dir = base_dir;
         defer chk.deinit();
         try chk.run();
         if (self.context.diags.anyErrors()) {
@@ -219,12 +229,11 @@ pub const Pipeline = struct {
         var dependencies = std.ArrayList(*module_graph.ModuleEntry).init(self.allocator);
         defer dependencies.deinit();
 
-        const base_dir = moduleBaseDir(source_path);
         tir_lowerer.import_base_dir = base_dir;
         try self.context.module_graph.loadDependencies(
             base_dir,
+            module_path,
             &ast,
-            &prelude,
             .tir,
             &dependencies,
         );
@@ -342,6 +351,134 @@ pub const Pipeline = struct {
         };
     }
 };
+
+const PreludeAliasInfo = struct {
+    alias_sid: ast_mod.StrId,
+    decl_id: ast_mod.DeclId,
+};
+
+fn injectPreludeImports(
+    self: *Pipeline,
+    ast: *ast_mod.Ast,
+    file_id: u32,
+    base_dir: []const u8,
+    specs: []const PreludeSpec,
+) !void {
+    if (specs.len == 0) return;
+
+    var new_decl_ids = std.ArrayList(ast_mod.DeclId).init(self.allocator);
+    defer new_decl_ids.deinit();
+
+    var seen_exports = std.StringHashMap(void).init(self.allocator);
+    defer {
+        var it = seen_exports.keyIterator();
+        while (it.next()) |name_ptr| self.allocator.free(name_ptr.*);
+        seen_exports.deinit();
+    }
+
+    for (specs, 0..) |spec, idx| {
+        const alias = try createPreludeAlias(self, ast, file_id, spec.path, idx);
+        try new_decl_ids.append(alias.decl_id);
+        try appendPreludeReexports(self, ast, file_id, base_dir, spec, alias, &seen_exports, &new_decl_ids);
+    }
+
+    const existing = ast.exprs.decl_pool.slice(ast.unit.decls);
+    try new_decl_ids.appendSlice(existing);
+
+    const range = ast.exprs.decl_pool.pushMany(ast.gpa, new_decl_ids.items);
+    ast.unit.decls = range;
+}
+
+fn createPreludeAlias(
+    self: *Pipeline,
+    ast: *ast_mod.Ast,
+    file_id: u32,
+    import_path: []const u8,
+    index: usize,
+) !PreludeAliasInfo {
+    const loc_id = ast.exprs.locs.add(ast.gpa, Loc.init(file_id, 0, 0));
+    const alias_name = try std.fmt.allocPrint(self.allocator, "{s}_{d}", .{ module_graph.prelude_alias_prefix, index });
+    defer self.allocator.free(alias_name);
+    const alias_sid = ast.exprs.strs.intern(alias_name);
+    const pattern_id = ast.pats.add(.Binding, .{ .name = alias_sid, .by_ref = false, .is_mut = false, .loc = loc_id });
+    const path_sid = ast.exprs.strs.intern(import_path);
+    const literal_id = ast.exprs.add(.Literal, .{ .kind = .string, .data = .{ .string = path_sid }, .loc = loc_id });
+    const import_expr = ast.exprs.add(.Import, .{ .expr = literal_id, .loc = loc_id });
+    const decl_id = ast.exprs.addDeclRow(.{
+        .pattern = ast_mod.OptPatternId.some(pattern_id),
+        .value = import_expr,
+        .ty = ast_mod.OptExprId.none(),
+        .method_path = ast_mod.OptRangeMethodPathSeg.none(),
+        .flags = .{ .is_const = true },
+        .loc = loc_id,
+    });
+    return .{ .alias_sid = alias_sid, .decl_id = decl_id };
+}
+
+fn appendPreludeReexports(
+    self: *Pipeline,
+    ast: *ast_mod.Ast,
+    file_id: u32,
+    base_dir: []const u8,
+    spec: PreludeSpec,
+    alias: PreludeAliasInfo,
+    seen: *std.StringHashMap(void),
+    out: *std.ArrayList(ast_mod.DeclId),
+) !void {
+    switch (spec.reexport) {
+        .none => return,
+        .all => {
+            const entry = try self.context.module_graph.ensureModule(base_dir, spec.path, .tir);
+            var it = entry.syms.keyIterator();
+            while (it.next()) |name_ptr| {
+                const name = name_ptr.*;
+                try appendPreludeReexportDecl(self, ast, file_id, alias.alias_sid, name, seen, out);
+            }
+        },
+        .symbols => |names| {
+            for (names) |name| {
+                try appendPreludeReexportDecl(self, ast, file_id, alias.alias_sid, name, seen, out);
+            }
+        },
+    }
+}
+
+fn appendPreludeReexportDecl(
+    self: *Pipeline,
+    ast: *ast_mod.Ast,
+    file_id: u32,
+    alias_sid: ast_mod.StrId,
+    symbol_name: []const u8,
+    seen: *std.StringHashMap(void),
+    out: *std.ArrayList(ast_mod.DeclId),
+) !void {
+    if (symbol_name.len == 0) return;
+    if (std.mem.startsWith(u8, symbol_name, module_graph.prelude_alias_prefix)) return;
+
+    const gop = try seen.getOrPut(symbol_name);
+    if (gop.found_existing) return;
+    gop.key_ptr.* = try self.allocator.dupe(u8, symbol_name);
+
+    const loc_id = ast.exprs.locs.add(ast.gpa, Loc.init(file_id, 0, 0));
+    const symbol_sid = ast.exprs.strs.intern(symbol_name);
+    const pattern_id = ast.pats.add(.Binding, .{ .name = symbol_sid, .by_ref = false, .is_mut = false, .loc = loc_id });
+    const alias_ident = ast.exprs.add(.Ident, .{ .name = alias_sid, .loc = loc_id });
+    const field_expr = ast.exprs.add(.FieldAccess, .{
+        .parent = alias_ident,
+        .field = symbol_sid,
+        .is_tuple = false,
+        .loc = loc_id,
+    });
+    const decl_id = ast.exprs.addDeclRow(.{
+        .pattern = ast_mod.OptPatternId.some(pattern_id),
+        .value = field_expr,
+        .ty = ast_mod.OptExprId.none(),
+        .method_path = ast_mod.OptRangeMethodPathSeg.none(),
+        .flags = .{ .is_const = true },
+        .loc = loc_id,
+    });
+    try out.append(decl_id);
+}
 
 fn computePrefix(gpa: std.mem.Allocator, imp: []const u8) ![]const u8 {
     var buf: std.ArrayList(u8) = .empty;
