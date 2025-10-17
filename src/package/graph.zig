@@ -60,7 +60,7 @@ pub const PackageInfo = struct {
     }
 
     pub fn lookup(self: *const PackageInfo, key: []const u8) ?*const ModuleInfo {
-        return self.modules.get(key);
+        return self.modules.getPtr(key);
     }
 
     pub fn absolutePathFor(
@@ -163,7 +163,7 @@ pub const PackageGraph = struct {
         rules: discovery.Rules,
     ) !void {
         var iterator = dir.iterate();
-        while (iterator.next()) |entry| {
+        while (try iterator.next()) |entry| {
             switch (entry.kind) {
                 .directory => {
                     const sub_abs = try std.fs.path.join(self.gpa, &.{ abs_dir, entry.name });
@@ -187,7 +187,7 @@ pub const PackageGraph = struct {
                     };
                     defer self.gpa.free(canonical);
 
-                    const module_keys = try rules.generateModuleKeys(self.gpa, pkg.name, rel_with_ext, matched_ext);
+                    var module_keys = try rules.generateModuleKeys(self.gpa, pkg.name, rel_with_ext, matched_ext);
                     defer module_keys.deinit();
 
                     for (module_keys.items) |key| {

@@ -87,12 +87,13 @@ test "ModuleGraph discovery finds std, vendor, examples, and workspace modules" 
     defer std.testing.allocator.free(workspace_named_path);
 
     const RootConfig = @TypeOf(graph.config.roots[0]);
-    var roots = std.ArrayList(RootConfig).init(std.testing.allocator);
-    defer roots.deinit();
-    try roots.appendSlice(graph.config.roots);
-    try roots.append(.{ .name = "workspace_main", .path = workspace_main_path });
-    try roots.append(.{ .name = "workspace_named", .path = workspace_named_path });
-    const combined = try roots.toOwnedSlice();
+    const gpa = std.testing.allocator;
+    var roots: std.ArrayList(RootConfig) = .{};
+    defer roots.deinit(gpa);
+    try roots.appendSlice(gpa, graph.config.roots);
+    try roots.append(gpa, .{ .name = "workspace_main", .path = workspace_main_path });
+    try roots.append(gpa, .{ .name = "workspace_named", .path = workspace_named_path });
+    const combined = try roots.toOwnedSlice(gpa);
     defer std.testing.allocator.free(combined);
 
     try graph.setConfig(.{ .roots = combined, .discovery = graph.config.discovery });

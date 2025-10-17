@@ -282,7 +282,7 @@ pub const ModuleGraph = struct {
         for (prelude) |path| {
             if ((try seen.getOrPut(path)).found_existing) continue;
             const entry = try self.ensureModule(".", path, mode);
-            try out.append(entry);
+            try out.append(self.gpa, entry);
         }
 
         var imports: std.ArrayList([]const u8) = .empty;
@@ -296,7 +296,7 @@ pub const ModuleGraph = struct {
         for (imports.items) |imp| {
             if ((try seen.getOrPut(imp)).found_existing) continue;
             const entry = try self.ensureModule(base_dir, imp, mode);
-            try out.append(entry);
+            try out.append(self.gpa, entry);
         }
     }
 
