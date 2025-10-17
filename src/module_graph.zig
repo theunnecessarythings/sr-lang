@@ -211,6 +211,38 @@ pub const ModuleGraph = struct {
         }
     }
 
+    pub fn loadDependencies(
+        self: *ModuleGraph,
+        base_dir: []const u8,
+        ast: *const ast_mod.Ast,
+        prelude: []const []const u8,
+        mode: LoadMode,
+        out: *std.ArrayList(*ModuleEntry),
+    ) !void {
+        var seen = std.StringHashMap(void).init(self.gpa);
+        defer seen.deinit();
+
+        for (prelude) |path| {
+            if ((try seen.getOrPut(path)).found_existing) continue;
+            const entry = try self.ensureModule(".", path, mode);
+            try out.append(entry);
+        }
+
+        var imports: std.ArrayList([]const u8) = .empty;
+        defer {
+            for (imports.items) |imp| self.gpa.free(imp);
+            imports.deinit(self.gpa);
+        }
+
+        try self.collectImportsFromAst(ast, &imports);
+
+        for (imports.items) |imp| {
+            if ((try seen.getOrPut(imp)).found_existing) continue;
+            const entry = try self.ensureModule(base_dir, imp, mode);
+            try out.append(entry);
+        }
+    }
+
     pub fn resolvePath(self: *ModuleGraph, base_dir: []const u8, raw_in: []const u8) ![]u8 {
         var candidates: std.ArrayList([]const u8) = .empty;
         defer {

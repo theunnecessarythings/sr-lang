@@ -207,8 +207,29 @@ pub const Pipeline = struct {
         var gen = mlir_codegen.MlirCodegen.init(self.allocator, self.context, mlir_ctx_ptr.*);
         gen.resetDebugCaches();
 
-        // Resolve imports recursively and append their codegen (reuse resolver)
-        try self.resolveImports(&ast, &gen, &self.context.module_graph);
+        var dependencies = std.ArrayList(*module_graph.ModuleEntry).init(self.allocator);
+        defer dependencies.deinit();
+
+        const source_path = self.context.source_manager.get(file_id) orelse filename;
+        const base_dir = moduleBaseDir(source_path);
+        try self.context.module_graph.loadDependencies(
+            base_dir,
+            &ast,
+            &prelude,
+            .tir,
+            &dependencies,
+        );
+
+        for (dependencies.items) |dep| {
+            const original_debug_flag = mlir_codegen.enable_debug_info;
+            mlir_codegen.enable_debug_info = false;
+            const imported_ast = dep.astRef();
+            _ = try gen.emitModule(dep.tirRef(), self.context, imported_ast.exprs.locs, dep.typeInfo());
+            mlir_codegen.enable_debug_info = original_debug_flag;
+            if (self.context.diags.anyErrors()) {
+                return error.MlirCodegenFailed;
+            }
+        }
 
         var mlir_module = gen.emitModule(&root_mod, self.context, ast.exprs.locs, type_info) catch |err| {
             switch (err) {
@@ -297,42 +318,6 @@ pub const Pipeline = struct {
         return .{ .ast = ast, .tir = root_mod, .mlir_module = mlir_module, .gen = gen, .cst = cst_program, .type_info = type_info, .module_id = module_id };
     }
 
-    fn resolveImports(
-        self: *Pipeline,
-        ast: *ast_mod.Ast,
-        gen: *mlir_codegen.MlirCodegen,
-        resolver: anytype,
-    ) !void {
-        // Resolve imports recursively and append their codegen (reuse resolver)
-        var imports: std.ArrayList([]const u8) = .empty;
-        for (prelude) |p| try imports.append(self.allocator, try self.allocator.dupe(u8, p));
-        defer {
-            for (imports.items) |s| self.allocator.free(s);
-            imports.deinit(self.allocator);
-        }
-        try resolver.collectImportsFromAst(ast, &imports);
-        var seen = std.StringHashMap(bool).init(self.allocator);
-        defer seen.deinit();
-        for (imports.items) |imp| {
-            if ((try seen.getOrPut(imp)).found_existing) continue;
-            const me = try resolver.ensureModule(".", imp, .tir);
-            // Apply name mangling to imported module functions (and their internal calls)
-            const pref = try computePrefix(self.allocator, imp);
-            defer self.allocator.free(pref);
-            const imported_tir = me.tirRef();
-            try mangleTIR(self.allocator, imported_tir, imported_tir.instrs.strs, pref);
-            // append TIR into same generator (emit into same module)
-            const original_debug_flag = mlir_codegen.enable_debug_info;
-            mlir_codegen.enable_debug_info = false;
-            const imported_ast = me.astRef();
-            _ = try gen.emitModule(imported_tir, self.context, imported_ast.exprs.locs, me.typeInfo());
-            mlir_codegen.enable_debug_info = original_debug_flag;
-            if (self.context.diags.anyErrors()) {
-                return error.MlirCodegenFailed;
-            }
-        }
-    }
-
     fn runModuleArtifacts(
         self: *Pipeline,
         path: []const u8,
@@ -358,6 +343,19 @@ fn computePrefix(gpa: std.mem.Allocator, imp: []const u8) ![]const u8 {
         try buf.append(gpa, if (keep) c else '_');
     }
     return try buf.toOwnedSlice(gpa);
+}
+
+fn moduleBaseDir(path: []const u8) []const u8 {
+    if (path.len == 0) return ".";
+    if (std.mem.lastIndexOfScalar(u8, path, '/')) |idx| {
+        if (idx == 0) return path[0..1];
+        return path[0..idx];
+    }
+    if (std.mem.lastIndexOfScalar(u8, path, '\\')) |idx| {
+        if (idx == 0) return path[0..1];
+        return path[0..idx];
+    }
+    return ".";
 }
 
 fn runModuleForGraph(
@@ -415,43 +413,5 @@ fn computeModulePrefixes(
             .prefix = pref,
             .import_path = path,
         };
-    }
-}
-
-fn mangleTIR(gpa: std.mem.Allocator, t: *tir_mod.TIR, strs: *cst_mod.StringInterner, prefix: []const u8) !void {
-    // Map of old function name -> new name
-    var rename = std.AutoHashMap(cst_mod.StrId, cst_mod.StrId).init(gpa);
-    defer rename.deinit();
-    // Gather functions and rename
-    const funcs = t.funcs.func_pool.data.items;
-    for (funcs) |fid| {
-        const row = t.funcs.Function.get(fid);
-        const old_name = row.name;
-        const name_s = strs.get(old_name);
-        const new_s = try std.fmt.allocPrint(gpa, "{s}_{s}", .{ prefix, name_s });
-        defer gpa.free(new_s);
-        const new_id = strs.intern(new_s);
-        var new_row = row;
-        new_row.name = new_id;
-        t.funcs.Function.list.set(fid.toRaw(), new_row);
-        try rename.put(old_name, new_id);
-    }
-    // Update call sites
-    const blocks = t.funcs.block_pool.data.items;
-    for (blocks) |bid| {
-        const b = t.funcs.Block.get(bid);
-        const instrs = t.instrs.instr_pool.slice(b.instrs);
-        for (instrs) |iid| {
-            const kind = t.instrs.index.kinds.items[iid.toRaw()];
-            if (kind == .Call) {
-                const row = t.instrs.get(.Call, iid);
-                if (rename.get(row.callee)) |new_id| {
-                    var new_row = row;
-                    new_row.callee = new_id;
-                    const idx = t.instrs.index.rows.items[iid.toRaw()];
-                    t.instrs.Call.list.set(idx, new_row);
-                }
-            }
-        }
     }
 }
