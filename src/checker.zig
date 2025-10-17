@@ -857,17 +857,48 @@ pub const Checker = struct {
 
         const value = info.value;
         const ok = switch (target_kind) {
-            .I8 => value <= @intCast(u128, std.math.maxInt(i8)),
-            .I16 => value <= @intCast(u128, std.math.maxInt(i16)),
-            .I32 => value <= @intCast(u128, std.math.maxInt(i32)),
-            .I64 => value <= @intCast(u128, std.math.maxInt(i64)),
-            .U8 => value <= @intCast(u128, std.math.maxInt(u8)),
-            .U16 => value <= @intCast(u128, std.math.maxInt(u16)),
-            .U32 => value <= @intCast(u128, std.math.maxInt(u32)),
-            .U64 => value <= @intCast(u128, std.math.maxInt(u64)),
-            .Usize => value <= @intCast(u128, std.math.maxInt(usize)),
-            .F32 => std.math.cast(f32, value) != null,
-            .F64 => std.math.cast(f64, value) != null,
+            .I8 => value <= blk: {
+                const max: u128 = @intCast(std.math.maxInt(i8));
+                break :blk max;
+            },
+            .I16 => value <= blk: {
+                const max: u128 = @intCast(std.math.maxInt(i16));
+                break :blk max;
+            },
+            .I32 => value <= blk: {
+                const max: u128 = @intCast(std.math.maxInt(i32));
+                break :blk max;
+            },
+            .I64 => value <= blk: {
+                const max: u128 = @intCast(std.math.maxInt(i64));
+                break :blk max;
+            },
+            .U8 => value <= blk: {
+                const max: u128 = @intCast(std.math.maxInt(u8));
+                break :blk max;
+            },
+            .U16 => value <= blk: {
+                const max: u128 = @intCast(std.math.maxInt(u16));
+                break :blk max;
+            },
+            .U32 => value <= blk: {
+                const max: u128 = @intCast(std.math.maxInt(u32));
+                break :blk max;
+            },
+            .U64 => value <= blk: {
+                const max: u128 = @intCast(std.math.maxInt(u64));
+                break :blk max;
+            },
+            .Usize => value <= blk: {
+                const max: u128 = @intCast(std.math.maxInt(usize));
+                break :blk max;
+            },
+            .F32 => blk: {
+                const limit: f128 = @floatCast(std.math.floatMax(f32));
+                const as_float: f128 = @floatFromInt(value);
+                break :blk as_float <= limit;
+            },
+            .F64 => true,
             else => false,
         };
 
@@ -891,7 +922,11 @@ pub const Checker = struct {
 
         const value = info.value;
         const ok = switch (target_kind) {
-            .F32 => std.math.cast(f32, value) != null,
+            .F32 => blk: {
+                if (!std.math.isFinite(value)) break :blk false;
+                const limit: f64 = @floatCast(std.math.floatMax(f32));
+                break :blk @abs(value) <= limit;
+            },
             .F64 => std.math.isFinite(value),
             else => false,
         };
@@ -919,7 +954,11 @@ pub const Checker = struct {
         const elem_ty = target.elem;
         const elem_kind = self.typeKind(elem_ty);
         const ok = switch (elem_kind) {
-            .F32 => std.math.cast(f32, info.value) != null,
+            .F32 => blk: {
+                if (!std.math.isFinite(info.value)) break :blk false;
+                const limit: f64 = @floatCast(std.math.floatMax(f32));
+                break :blk @abs(info.value) <= limit;
+            },
             .F64 => std.math.isFinite(info.value),
             else => false,
         };
@@ -1022,8 +1061,18 @@ pub const Checker = struct {
             if (args.len != tys.len) return false;
 
             for (args, 0..) |aid, i| {
-                const at = try self.checkExpr(aid) orelse return false;
-                if (self.assignable(at, tys[i]) != .success) return false;
+                var at = try self.checkExpr(aid) orelse return false;
+                if (self.assignable(at, tys[i]) != .success) {
+                    if (check_types.isNumericKind(self, self.typeKind(tys[i]))) {
+                        var at_kind = self.typeKind(at);
+                        if (try self.updateCoercedLiteral(aid, tys[i], &at, &at_kind) and
+                            self.assignable(at, tys[i]) == .success)
+                        {
+                            continue;
+                        }
+                    }
+                    return false;
+                }
             }
             return true;
         }
@@ -1036,8 +1085,15 @@ pub const Checker = struct {
         const args = self.ast_unit.exprs.expr_pool.slice(call.args);
         if (args.len != 1) return false;
 
-        const at = try self.checkExpr(args[0]) orelse return false;
-        return (self.assignable(at, pay_ty) == .success);
+        var at = try self.checkExpr(args[0]) orelse return false;
+        if (self.assignable(at, pay_ty) == .success) return true;
+        if (check_types.isNumericKind(self, self.typeKind(pay_ty))) {
+            var at_kind = self.typeKind(at);
+            if (try self.updateCoercedLiteral(args[0], pay_ty, &at, &at_kind)) {
+                return self.assignable(at, pay_ty) == .success;
+            }
+        }
+        return false;
     }
 
     fn checkStructLitAgainstPayload(
@@ -1069,8 +1125,18 @@ pub const Checker = struct {
             if (want == null) return false;
 
             // Type-check value against target field type
-            const at = try self.checkExpr(sf.value) orelse return false;
-            if (self.assignable(at, want.?) != .success) return false;
+            var at = try self.checkExpr(sf.value) orelse return false;
+            if (self.assignable(at, want.?) != .success) {
+                if (check_types.isNumericKind(self, self.typeKind(want.?))) {
+                    var at_kind = self.typeKind(at);
+                    if (try self.updateCoercedLiteral(sf.value, want.?, &at, &at_kind) and
+                        self.assignable(at, want.?) == .success)
+                    {
+                        continue;
+                    }
+                }
+                return false;
+            }
         }
 
         return true;
@@ -1089,6 +1155,17 @@ pub const Checker = struct {
 
         // First, check direct assignability
         var is_assignable = self.assignable(rhs_ty, expect_ty.?);
+
+        if (is_assignable != .success and
+            check_types.isNumericKind(self, self.typeKind(expect_ty.?)))
+        {
+            var coerced = rhs_ty;
+            var coerced_kind = self.typeKind(coerced);
+            if (try self.updateCoercedLiteral(decl.value, expect_ty.?, &coerced, &coerced_kind)) {
+                rhs_ty = coerced;
+                is_assignable = self.assignable(rhs_ty, expect_ty.?);
+            }
+        }
 
         const decl = self.ast_unit.exprs.Decl.get(decl_id);
 
@@ -1152,8 +1229,23 @@ pub const Checker = struct {
             try self.pushValueReq(true);
             const rt = try self.checkExpr(stmt.right);
             self.popValueReq();
-            if (lt != null and rt != null and (self.assignable(rt.?, lt.?) != .success)) {
-                try self.context.diags.addError(self.exprLoc(stmt), .type_annotation_mismatch, .{});
+            if (lt != null and rt != null) {
+                const expected = lt.?;
+                var value_ty = rt.?;
+                if (self.assignable(value_ty, expected) != .success) {
+                    var coerced_ok = false;
+                    if (check_types.isNumericKind(self, self.typeKind(expected))) {
+                        var value_kind = self.typeKind(value_ty);
+                        if (try self.updateCoercedLiteral(stmt.right, expected, &value_ty, &value_kind) and
+                            self.assignable(value_ty, expected) == .success)
+                        {
+                            coerced_ok = true;
+                        }
+                    }
+                    if (!coerced_ok) {
+                        try self.context.diags.addError(self.exprLoc(stmt), .type_annotation_mismatch, .{});
+                    }
+                }
             }
         }
         // Purity: assignment writes inside pure functions are allowed only to locals
@@ -3065,6 +3157,16 @@ pub const Checker = struct {
         if (ret_ty == null) return null;
 
         if (self.assignable(ret_ty.?, expect_ty) != .success) {
+            if (check_types.isNumericKind(self, self.typeKind(expect_ty))) {
+                var coerced = ret_ty.?;
+                var coerced_kind = self.typeKind(coerced);
+                if (!rr.value.isNone() and
+                    try self.updateCoercedLiteral(rr.value.unwrap(), expect_ty, &coerced, &coerced_kind) and
+                    self.assignable(coerced, expect_ty) == .success)
+                {
+                    return coerced;
+                }
+            }
             try self.context.diags.addError(self.exprLoc(rr), .return_type_mismatch, .{});
             return null;
         }

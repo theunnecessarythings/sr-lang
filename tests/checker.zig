@@ -199,6 +199,24 @@ test "numeric literal coercion" {
         \\ mix(2, 3)
     , &.{});
 
+    try checkProgram(
+        \\ make :: proc() f32 {
+        \\   value: f32 = 0
+        \\   value = 2
+        \\   return value
+        \\ }
+    , &.{});
+
+    try checkProgram(
+        \\ Point :: struct { x: f32, y: i64 }
+        \\ p :: Point{ x: 2, y: 3 }
+    , &.{});
+
+    try checkProgram(
+        \\ wrap :: proc(x: f32) f32 { return x }
+        \\ result :: wrap(2)
+    , &.{});
+
     try checkProgram("a :: 5.0 - 3", &.{});
     try checkProgram("a :: 5 * 3.0", &.{});
     try checkProgram("a :: 1 < 3.0", &.{});
