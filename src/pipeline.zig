@@ -104,7 +104,7 @@ pub const Pipeline = struct {
         var type_info_cleanup = true;
         defer if (type_info_cleanup) {
             type_info.deinit();
-            self.allocator.destroy(type_info);
+            self.context.gpa.destroy(type_info);
         };
         const module_id = self.next_module_id;
         self.next_module_id += 1;
@@ -208,7 +208,7 @@ pub const Pipeline = struct {
         gen.resetDebugCaches();
 
         // Resolve imports recursively and append their codegen (reuse resolver)
-        try self.resolveImports(&ast, &gen, &self.context.resolver);
+        try self.resolveImports(&ast, &gen, &self.context.module_graph);
 
         var mlir_module = gen.emitModule(&root_mod, self.context, ast.exprs.locs, type_info) catch |err| {
             switch (err) {

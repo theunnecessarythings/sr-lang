@@ -2,7 +2,7 @@ const std = @import("std");
 const mlir = @import("mlir_bindings.zig");
 const cst = @import("cst.zig");
 const Diagnostics = @import("diagnostics.zig").Diagnostics;
-const ImportResolver = @import("import_resolver.zig").ImportResolver;
+const ModuleGraph = @import("module_graph.zig").ModuleGraph;
 const TypeInfo = @import("types.zig").TypeInfo;
 const TypeStore = @import("types.zig").TypeStore;
 
@@ -51,7 +51,7 @@ pub const Context = struct {
     source_manager: *SourceManager,
     diags: *Diagnostics,
     interner: *cst.StringInterner,
-    resolver: ImportResolver,
+    module_graph: ModuleGraph,
     type_store: TypeStore,
 
     pub fn init(gpa: std.mem.Allocator) Context {
@@ -66,7 +66,7 @@ pub const Context = struct {
             .interner = interner,
             .gpa = gpa,
             .source_manager = source_manager,
-            .resolver = ImportResolver.init(gpa),
+            .module_graph = ModuleGraph.init(gpa),
             .type_store = TypeStore.init(gpa, interner),
         };
     }
@@ -76,7 +76,7 @@ pub const Context = struct {
         self.diags.deinit();
         self.interner.deinit();
         self.type_store.deinit();
-        self.resolver.deinit();
+        self.module_graph.deinit();
         self.gpa.destroy(self.interner);
         self.gpa.destroy(self.diags);
         self.gpa.destroy(self.source_manager);

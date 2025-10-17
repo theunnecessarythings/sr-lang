@@ -297,7 +297,7 @@ fn process_file(
         else => unreachable,
     });
     defer if (result.type_info) |ti| {
-        if (!compiler_ctx.resolver.ownsTypeInfo(ti)) {
+        if (!compiler_ctx.module_graph.ownsTypeInfo(ti)) {
             ti.deinit();
             allocator.destroy(ti);
         }
