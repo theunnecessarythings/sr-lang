@@ -10,11 +10,11 @@ const compile = @import("compile.zig");
 const mlir_codegen = @import("mlir_codegen.zig");
 const comp = @import("comptime.zig");
 const monomorphize = @import("monomorphize.zig");
+const module_graph = @import("module_graph.zig");
 
 const StrId = @import("cst.zig").StrId;
 const OptStrId = @import("cst.zig").OptStrId;
 const Context = @import("compile.zig").Context;
-const ImportResolver = @import("import_resolver.zig").ImportResolver;
 const Pipeline = @import("pipeline.zig").Pipeline;
 const Builder = tir.Builder;
 
@@ -211,11 +211,6 @@ pub const LowerTir = struct {
         }
         self.expr_type_override_stack.deinit(self.gpa);
         self.monomorphizer.deinit();
-    }
-
-    pub fn setImportResolver(self: *LowerTir, r: *ImportResolver, base_dir: []const u8) void {
-        self.import_resolver = r;
-        self.import_base_dir = base_dir;
     }
 
     fn lowerGlobalMlir(self: *LowerTir, a: *const ast.Ast, b: *Builder) !void {
@@ -1420,7 +1415,7 @@ pub const LowerTir = struct {
             if (fn_lit.flags.is_extern) return true;
             // Treat function declarations without a body as extern. This covers
             // imported prototypes that were parsed via `extern proc` but lost
-            // their flag metadata while being serialized through the resolver.
+            // their flag metadata while being serialized through the module graph.
             if (fn_lit.body.isNone()) return true;
             return false;
         }
@@ -4704,7 +4699,7 @@ pub const LowerTir = struct {
 
     fn materializeImportedConst(
         self: *LowerTir,
-        res: *ImportResolver,
+        res: *module_graph.ModuleGraph,
         a: *const ast.Ast,
         imp_decl: ast.DeclId,
         member: StrId,
@@ -4851,7 +4846,7 @@ pub const LowerTir = struct {
         return stamped;
     }
 
-    fn lowerImportedExprValue(self: *LowerTir, me: *@import("import_resolver.zig").ModuleEntry, eid: ast.ExprId, expected_ty: types.TypeId, blk: *Builder.BlockFrame) ?tir.ValueId {
+    fn lowerImportedExprValue(self: *LowerTir, me: *module_graph.ModuleEntry, eid: ast.ExprId, expected_ty: types.TypeId, blk: *Builder.BlockFrame) ?tir.ValueId {
         const imported_ast = me.astRef();
         const kinds = imported_ast.exprs.index.kinds.items;
         switch (kinds[eid.toRaw()]) {

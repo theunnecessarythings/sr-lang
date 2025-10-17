@@ -5,9 +5,8 @@ const check_types = @import("check_types.zig");
 const Context = @import("compile.zig").Context;
 const diag = @import("diagnostics.zig");
 const Diagnostics = @import("diagnostics.zig").Diagnostics;
-const ImportResolver = @import("import_resolver.zig").ImportResolver;
+const module_graph = @import("module_graph.zig");
 const Loc = @import("lexer.zig").Token.Loc;
-const ModuleEntry = @import("import_resolver.zig").ModuleEntry;
 const pattern_matching = @import("check_pattern_matching.zig");
 const Pipeline = @import("pipeline.zig").Pipeline;
 const comp = @import("comptime.zig");
@@ -2187,7 +2186,7 @@ pub const Checker = struct {
         return self.importMemberTypeByPath(&self.context.module_graph, path, member) != null;
     }
 
-    fn importMemberTypeByPath(self: *Checker, res: *ImportResolver, path: []const u8, member: ast.StrId) ?types.TypeId {
+    fn importMemberTypeByPath(self: *Checker, res: *module_graph.ModuleGraph, path: []const u8, member: ast.StrId) ?types.TypeId {
         const target = self.getStr(member);
         const lookup = res.lookupExport(self.import_base_dir, path, target, .check) catch return null;
         if (!lookup.found) return null;
