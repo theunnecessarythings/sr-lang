@@ -108,42 +108,42 @@ pub const ModuleGraph = struct {
         module_id: usize = 0,
     };
 
-pub const RunFn = *const fn (ctx: *anyopaque, path: []const u8, mode: LoadMode) anyerror!Artifacts;
+    pub const RunFn = *const fn (ctx: *anyopaque, path: []const u8, mode: LoadMode) anyerror!Artifacts;
 
-pub const prelude_alias_prefix = "$__sr_prelude";
+    pub const prelude_alias_prefix = "$__sr_prelude";
 
-pub const PreludeSpec = struct {
-    path: []const u8,
-    reexport: package_graph.PreludeReexportConfig,
-};
+    pub const PreludeSpec = struct {
+        path: []const u8,
+        reexport: package_graph.PreludeReexportConfig,
+    };
 
-const std_io_prelude_symbols = &.{
-    "print",
-    "print0",
-    "println",
-    "println0",
-    "eprint0",
-    "eprintln0",
-    "panic",
-};
+    const std_io_prelude_symbols = &.{
+        "print",
+        "print0",
+        "println",
+        "println0",
+        "eprint0",
+        "eprintln0",
+        "panic",
+    };
 
-const std_vendor_preludes = &[_]package_graph.PreludeConfig{
-    .{ .path = "std/io", .reexport = .{ .symbols = std_io_prelude_symbols } },
-};
+    const std_vendor_preludes = &[_]package_graph.PreludeConfig{
+        .{ .path = "std/io", .reexport = .{ .symbols = std_io_prelude_symbols } },
+    };
 
-const workspace_preludes = &[_]package_graph.PreludeConfig{
-    .{ .path = "std/io", .reexport = .{ .symbols = std_io_prelude_symbols } },
-};
+    const workspace_preludes = &[_]package_graph.PreludeConfig{
+        .{ .path = "std/io", .reexport = .{ .symbols = std_io_prelude_symbols } },
+    };
 
-pub fn workspacePreludeConfigs() []const package_graph.PreludeConfig {
-    return workspace_preludes;
-}
+    pub fn workspacePreludeConfigs() []const package_graph.PreludeConfig {
+        return workspace_preludes;
+    }
 
-const default_roots = [_]package_graph.RootConfig{
-    .{ .name = "std", .path = "std", .prelude_imports = std_vendor_preludes },
-    .{ .name = "vendor", .path = "vendor", .prelude_imports = std_vendor_preludes },
-    .{ .name = "examples", .path = "examples" },
-};
+    const default_roots = [_]package_graph.RootConfig{
+        .{ .name = "std", .path = "std", .prelude_imports = std_vendor_preludes },
+        .{ .name = "vendor", .path = "vendor", .prelude_imports = std_vendor_preludes },
+        .{ .name = "examples", .path = "examples" },
+    };
 
     pub const Config = struct {
         roots: []const package_graph.RootConfig = &default_roots,
@@ -217,19 +217,19 @@ const default_roots = [_]package_graph.RootConfig{
     ) !void {
         if (self.findPackageForPath(module_path)) |pkg| {
             const specs = pkg.preludeSpecs();
-            try out.ensureTotalCapacity(out.items.len + specs.len);
+            try out.ensureTotalCapacity(self.gpa, out.items.len + specs.len);
             for (specs) |prelude| {
-                try out.append(.{
-                    .path = std.mem.sliceToConst(prelude.path),
+                try out.append(self.gpa, .{
+                    .path = prelude.path,
                     .reexport = convertPreludeReexport(prelude.reexport),
                 });
             }
             return;
         }
 
-        try out.ensureTotalCapacity(out.items.len + workspace_preludes.len);
+        try out.ensureTotalCapacity(self.gpa, out.items.len + workspace_preludes.len);
         for (workspace_preludes) |cfg| {
-            try out.append(.{ .path = cfg.path, .reexport = cfg.reexport });
+            try out.append(self.gpa, .{ .path = cfg.path, .reexport = cfg.reexport });
         }
     }
 
@@ -360,7 +360,7 @@ const default_roots = [_]package_graph.RootConfig{
     ) !void {
         if (self.findPackageForPath(module_path)) |pkg| {
             for (pkg.preludeSpecs()) |prelude| {
-                try self.appendPreludeDependency(base_dir, module_path, std.mem.sliceToConst(prelude.path), mode, seen, out);
+                try self.appendPreludeDependency(base_dir, module_path, prelude.path, mode, seen, out);
             }
         } else {
             for (workspace_preludes) |cfg| {
@@ -383,7 +383,7 @@ const default_roots = [_]package_graph.RootConfig{
         if (std.mem.eql(u8, resolved, module_path)) return;
         if ((try seen.getOrPut(import_path)).found_existing) return;
         const entry = try self.ensureModule(base_dir, import_path, mode);
-        try out.append(entry);
+        try out.append(self.gpa, entry);
     }
 
     pub fn loadDependencies(
