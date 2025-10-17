@@ -510,6 +510,7 @@ pub const Checker = struct {
             .func_type = fn_ty,
             .self_param_type = self_param_type_opt,
             .receiver_kind = receiver_kind,
+            .module_id = self.type_info.module_id,
         };
         if (!try self.type_info.addMethod(entry)) {
             try self.context.diags.addError(
@@ -2067,6 +2068,7 @@ pub const Checker = struct {
             .receiver_kind = entry.receiver_kind,
             .requires_implicit_receiver = implicit_receiver,
             .needs_addr_of = needs_addr_of,
+            .module_id = entry.module_id,
         });
 
         return trimmed;
@@ -2346,14 +2348,49 @@ pub const Checker = struct {
             else => return false,
         };
         const path = self.getStr(sid);
-        return self.importMemberTypeByPath(&self.context.module_graph, path, member) != null;
+        const imported = self.importMemberTypeByPath(&self.context.module_graph, path, member) catch return false;
+        return imported != null;
     }
 
-    fn importMemberTypeByPath(self: *Checker, res: *module_graph.ModuleGraph, path: []const u8, member: ast.StrId) ?types.TypeId {
+    fn copyImportedMethods(
+        self: *Checker,
+        module: *module_graph.ModuleEntry,
+        imported_ty: types.TypeId,
+    ) !void {
+        const owner_ty = blk: {
+            const kind = self.typeKind(imported_ty);
+            if (kind == .TypeType) {
+                break :blk self.context.type_store.get(.TypeType, imported_ty).of;
+            }
+            break :blk imported_ty;
+        };
+
+        const imported_ti = module.typeInfo();
+        var it = imported_ti.method_table.iterator();
+        while (it.next()) |entry| {
+            const method = entry.value_ptr.*;
+            if (!method.owner_type.eq(owner_ty)) continue;
+
+            var copy = method;
+            if (copy.module_id == 0) {
+                copy.module_id = imported_ti.module_id;
+            }
+            _ = try self.type_info.addMethod(copy);
+        }
+    }
+
+    fn importMemberTypeByPath(
+        self: *Checker,
+        res: *module_graph.ModuleGraph,
+        path: []const u8,
+        member: ast.StrId,
+    ) !?types.TypeId {
         const target = self.getStr(member);
         const look_up = res.lookupExport(self.import_base_dir, path, target, .check) catch return null;
         if (!look_up.found) return null;
-        return look_up.ty;
+        const ty = look_up.ty orelse return null;
+        try self.copyImportedMethods(look_up.module, ty);
+        return ty;
     }
 
     pub fn importMemberType(self: *Checker, import_eid: ast.ExprId, member: ast.StrId) ?types.TypeId {
@@ -2368,7 +2405,7 @@ pub const Checker = struct {
             else => return null,
         };
         const path = self.getStr(sid);
-        return self.importMemberTypeByPath(res, path, member);
+        return self.importMemberTypeByPath(res, path, member) catch return null;
     }
 
     fn fileHasTopDecl(self: *Checker, abs_or_rel: []const u8, name: []const u8) bool {

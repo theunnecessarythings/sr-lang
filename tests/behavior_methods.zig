@@ -44,3 +44,31 @@ test "methods: enum value receiver" {
     const code = getSource(globals, src);
     try runCompilerTest(code, "1\n");
 }
+
+test "methods: imported multi-segment access" {
+    const import_dir = "out/import_method_chain";
+    _ = std.fs.cwd().deleteTree(import_dir) catch {};
+    try std.fs.cwd().makePath(import_dir);
+    defer std.fs.cwd().deleteTree(import_dir) catch {};
+
+    {
+        var file = try std.fs.cwd().createFile("out/import_method_chain/io.sr", .{ .truncate = true });
+        defer file.close();
+        const io_src =
+            \\package io
+            \\Vec2 :: struct { x: i32, y: i32 }
+            \\Vec2.init :: fn(x: i32, y: i32) Vec2 { return Vec2{ x: x, y: y } }
+        ;
+        try file.writeAll(io_src);
+    }
+
+    const globals =
+        \\io :: import "import_method_chain/io.sr"
+    ;
+    const src =
+        \\vec := io.Vec2.init(11, 42)
+        \\printf("Vec2=%d,%d\n", vec.x, vec.y)
+    ;
+    const code = getSource(globals, src);
+    try runCompilerTest(code, "Vec2=11,42\n");
+}
