@@ -12,9 +12,8 @@ const comp = @import("comptime.zig");
 const mlir_codegen = @import("mlir_codegen.zig");
 const mlir = @import("mlir_bindings.zig");
 const compile = @import("compile.zig");
+const module_graph = @import("module_graph.zig");
 const Diagnostics = @import("diagnostics.zig").Diagnostics;
-const ImportResolver = @import("import_resolver.zig").ImportResolver;
-const ModuleEntry = @import("import_resolver.zig").ModuleEntry;
 
 pub const Result = struct {
     cst: ?cst_mod.CST = null,
@@ -97,6 +96,9 @@ pub const Pipeline = struct {
         link_args: []const []const u8,
         mode: Mode,
     ) anyerror!Result {
+        const runner_ctx = @ptrCast(*anyopaque, self);
+        self.context.resolver.enterPipeline(runner_ctx, runModuleForGraph);
+        defer self.context.resolver.leavePipeline(runner_ctx);
         const type_info = try self.allocator.create(types.TypeInfo);
         type_info.* = types.TypeInfo.init(self.allocator, &self.context.type_store);
         var type_info_cleanup = true;
@@ -299,7 +301,7 @@ pub const Pipeline = struct {
         self: *Pipeline,
         ast: *ast_mod.Ast,
         gen: *mlir_codegen.MlirCodegen,
-        resolver: *ImportResolver,
+        resolver: anytype,
     ) !void {
         // Resolve imports recursively and append their codegen (reuse resolver)
         var imports: std.ArrayList([]const u8) = .empty;
@@ -313,20 +315,37 @@ pub const Pipeline = struct {
         defer seen.deinit();
         for (imports.items) |imp| {
             if ((try seen.getOrPut(imp)).found_existing) continue;
-            const me = try resolver.resolve(".", imp, self);
+            const me = try resolver.ensureModule(".", imp, .tir);
             // Apply name mangling to imported module functions (and their internal calls)
             const pref = try computePrefix(self.allocator, imp);
             defer self.allocator.free(pref);
-            try mangleTIR(self.allocator, &me.tir, me.tir.instrs.strs, pref);
+            const imported_tir = me.tirRef();
+            try mangleTIR(self.allocator, imported_tir, imported_tir.instrs.strs, pref);
             // append TIR into same generator (emit into same module)
             const original_debug_flag = mlir_codegen.enable_debug_info;
             mlir_codegen.enable_debug_info = false;
-            _ = try gen.emitModule(&me.tir, self.context, me.ast.exprs.locs, me.type_info);
+            const imported_ast = me.astRef();
+            _ = try gen.emitModule(imported_tir, self.context, imported_ast.exprs.locs, me.typeInfo());
             mlir_codegen.enable_debug_info = original_debug_flag;
             if (self.context.diags.anyErrors()) {
                 return error.MlirCodegenFailed;
             }
         }
+    }
+
+    fn runModuleArtifacts(
+        self: *Pipeline,
+        path: []const u8,
+        mode: module_graph.LoadMode,
+    ) anyerror!module_graph.ModuleGraph.Artifacts {
+        const result = try self.runWithImports(path, &.{}, toPipelineMode(mode));
+        return .{
+            .cst = result.cst,
+            .ast = result.ast,
+            .tir = result.tir,
+            .type_info = result.type_info,
+            .module_id = result.module_id,
+        };
     }
 };
 
@@ -339,6 +358,26 @@ fn computePrefix(gpa: std.mem.Allocator, imp: []const u8) ![]const u8 {
         try buf.append(gpa, if (keep) c else '_');
     }
     return try buf.toOwnedSlice(gpa);
+}
+
+fn runModuleForGraph(
+    ctx: *anyopaque,
+    path: []const u8,
+    mode: module_graph.LoadMode,
+) anyerror!module_graph.ModuleGraph.Artifacts {
+    const aligned = @alignCast(@alignOf(Pipeline), ctx);
+    const pipeline = @ptrCast(*Pipeline, aligned);
+    return pipeline.runModuleArtifacts(path, mode);
+}
+
+fn toPipelineMode(mode: module_graph.LoadMode) Pipeline.Mode {
+    return switch (mode) {
+        .lex => .lex,
+        .parse => .parse,
+        .ast => .ast,
+        .check => .check,
+        .tir => .tir,
+    };
 }
 
 fn computeModulePrefixes(
