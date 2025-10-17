@@ -1,3 +1,5 @@
+package array
+
 // Dynamic array implemented in std using runtime alloc/mem and pointer helpers.
 
 alloc :: import "std/alloc"

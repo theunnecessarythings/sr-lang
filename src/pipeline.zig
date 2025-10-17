@@ -5,7 +5,9 @@ const tir_mod = @import("tir.zig");
 const lower = @import("lower.zig");
 const lower_tir = @import("lower_tir.zig");
 const checker = @import("checker.zig");
-const Lexer = @import("lexer.zig").Tokenizer;
+const lexer_mod = @import("lexer.zig");
+const Lexer = lexer_mod.Tokenizer;
+const Loc = lexer_mod.Token.Loc;
 const Parser = @import("parser.zig").Parser;
 const types = @import("types.zig");
 const comp = @import("comptime.zig");
@@ -99,6 +101,7 @@ pub const Pipeline = struct {
         const runner_ctx: *anyopaque = @ptrCast(self);
         self.context.module_graph.enterPipeline(runner_ctx, runModuleForGraph);
         defer self.context.module_graph.leavePipeline(runner_ctx);
+        const is_entry = self.context.module_graph.runner_depth == 1;
         const type_info = try self.allocator.create(types.TypeInfo);
         type_info.* = types.TypeInfo.init(self.allocator, &self.context.type_store);
         var type_info_cleanup = true;
@@ -112,6 +115,7 @@ pub const Pipeline = struct {
 
         const filename = if (mode == .repl) "temp.sr" else filename_or_src;
         const file_id = try self.context.source_manager.add(filename);
+        const source_path = self.context.source_manager.get(file_id) orelse filename;
         const source = if (mode == .repl)
             filename_or_src
         else
@@ -153,6 +157,11 @@ pub const Pipeline = struct {
         if (self.context.diags.anyErrors()) {
             try self.context.diags.emitStyled(self.context, &writer.interface, true);
             return error.LoweringFailed;
+        }
+        const package_issue = try self.verifyPackageDeclaration(&ast, file_id, source_path, is_entry);
+        if (package_issue) {
+            try self.context.diags.emitStyled(self.context, &writer.interface, true);
+            return error.PackageValidationFailed;
         }
         if (mode == .ast) {
             type_info_cleanup = false;
@@ -210,7 +219,6 @@ pub const Pipeline = struct {
         var dependencies = std.ArrayList(*module_graph.ModuleEntry).init(self.allocator);
         defer dependencies.deinit();
 
-        const source_path = self.context.source_manager.get(file_id) orelse filename;
         const base_dir = moduleBaseDir(source_path);
         tir_lowerer.import_base_dir = base_dir;
         try self.context.module_graph.loadDependencies(
@@ -366,6 +374,94 @@ fn runModuleForGraph(
 ) anyerror!module_graph.ModuleGraph.Artifacts {
     const pipeline: *Pipeline = @ptrCast(@alignCast(ctx));
     return pipeline.runModuleArtifacts(path, mode);
+}
+
+fn expectedPackageName(key: []const u8, exts: []const []const u8) []const u8 {
+    if (key.len == 0) return "main";
+    var trimmed = key;
+    for (exts) |ext| {
+        if (trimmed.len > ext.len and std.mem.endsWith(u8, trimmed, ext)) {
+            trimmed = trimmed[0 .. trimmed.len - ext.len];
+            break;
+        }
+    }
+    if (std.mem.lastIndexOfScalar(u8, trimmed, '/')) |idx| {
+        return trimmed[idx + 1 ..];
+    }
+    return trimmed;
+}
+
+fn packageLocOrDefault(ast: *const ast_mod.Ast, file_id: u32) Loc {
+    if (!ast.unit.package_loc.isNone()) {
+        const loc_id = ast.unit.package_loc.unwrap();
+        return ast.exprs.locs.get(loc_id);
+    }
+    return Loc.init(file_id, 0, 0);
+}
+
+fn namesEqual(a: []const u8, b: []const u8) bool {
+    return std.mem.eql(u8, a, b);
+}
+
+fn canonicalizePath(
+    allocator: std.mem.Allocator,
+    path: []const u8,
+) !?[]u8 {
+    return std.fs.cwd().realpathAlloc(allocator, path) catch |err| switch (err) {
+        error.FileNotFound, error.AccessDenied => return null,
+        else => return err,
+    };
+}
+
+fn declareName(ast: *const ast_mod.Ast) ?[]const u8 {
+    if (ast.unit.package_name.isNone()) return null;
+    const sid = ast.unit.package_name.unwrap();
+    return ast.exprs.strs.get(sid);
+}
+
+fn verifyPackageDeclaration(
+    self: *Pipeline,
+    ast: *const ast_mod.Ast,
+    file_id: u32,
+    source_path: []const u8,
+    is_entry: bool,
+) !bool {
+    var had_error = false;
+    const declared_name = declareName(ast);
+    const pkg_loc = packageLocOrDefault(ast, file_id);
+
+    if (is_entry) {
+        if (declared_name) |decl| {
+            if (!namesEqual(decl, "main")) {
+                try self.context.diags.addError(pkg_loc, .entry_package_not_main, .{decl});
+                return true;
+            }
+        } else {
+            try self.context.diags.addError(pkg_loc, .entry_package_missing, .{});
+            return true;
+        }
+    }
+
+    var canonical_path_opt = try canonicalizePath(self.allocator, source_path);
+    defer if (canonical_path_opt) |p| self.allocator.free(p);
+
+    const lookup_path = canonical_path_opt orelse source_path;
+    if (self.context.module_graph.findModuleByPath(lookup_path)) |match| {
+        const expected = expectedPackageName(match.key, self.context.module_graph.config.exts);
+        if (declared_name) |decl| {
+            if (!namesEqual(decl, expected)) {
+                if (!is_entry or !namesEqual(decl, "main")) {
+                    try self.context.diags.addError(pkg_loc, .package_mismatch, .{ expected, decl });
+                    had_error = true;
+                }
+            }
+        } else {
+            try self.context.diags.addError(pkg_loc, .package_missing_declaration, .{ expected });
+            had_error = true;
+        }
+    }
+
+    return had_error;
 }
 
 fn toPipelineMode(mode: module_graph.LoadMode) Pipeline.Mode {

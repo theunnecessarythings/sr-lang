@@ -1,3 +1,5 @@
+package str
+
 // ASCII string utilities
 
 rt_strlen :: extern proc(*u8) usize

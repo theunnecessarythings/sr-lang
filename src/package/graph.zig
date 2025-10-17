@@ -74,6 +74,11 @@ pub const PackageInfo = struct {
     }
 };
 
+pub const ModuleMatch = struct {
+    pkg: *const PackageInfo,
+    key: []const u8,
+};
+
 pub const RootConfig = struct {
     name: []const u8,
     path: []const u8,
@@ -251,7 +256,44 @@ pub const PackageGraph = struct {
         if (id.index >= self.packages.items.len) return null;
         return &self.packages.items[id.index];
     }
+
+    pub fn findModuleByPath(
+        self: *const PackageGraph,
+        canonical_path: []const u8,
+    ) ?ModuleMatch {
+        var best: ?struct {
+            pkg: *const PackageInfo,
+            key: []const u8,
+            score: u8,
+        } = null;
+
+        for (self.packages.items) |*pkg| {
+            var it = pkg.modules.iterator();
+            while (it.next()) |entry| {
+                if (!std.mem.eql(u8, entry.value_ptr.path, canonical_path)) continue;
+                const key = entry.key_ptr.*;
+                const score = keyPriority(key);
+                if (best) |b| {
+                    if (score < b.score) continue;
+                    if (score == b.score and key.len <= b.key.len) continue;
+                }
+                best = .{ .pkg = pkg, .key = key, .score = score };
+            }
+        }
+
+        if (best) |b| {
+            return .{ .pkg = b.pkg, .key = b.key };
+        }
+        return null;
+    }
 };
+
+fn keyPriority(key: []const u8) u8 {
+    if (key.len == 0) return 0;
+    if (std.mem.indexOfScalar(u8, key, '/')) |_| return 3;
+    if (std.mem.endsWith(u8, key, ".sr")) return 2;
+    return 1;
+}
 
 fn matchExt(name: []const u8, exts: []const []const u8) ?[]const u8 {
     for (exts) |ext| {

@@ -1,3 +1,5 @@
+package fmt
+
 // Minimal formatting utilities for numbers, booleans, and strings.
 
 io  :: import "std/io"
