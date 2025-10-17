@@ -9,24 +9,6 @@ const Lowered = struct {
     context: compiler.compile.Context,
 };
 
-fn expectedMangled(
-    alloc: std.mem.Allocator,
-    import_path: []const u8,
-    field: []const u8,
-) ![]u8 {
-    var buf = std.ArrayList(u8).init(alloc);
-    defer buf.deinit();
-
-    try buf.appendSlice("m$");
-    for (import_path) |c| {
-        const keep = (c >= 'a' and c <= 'z') or (c >= 'A' and c <= 'Z') or (c >= '0' and c <= '9');
-        try buf.append(if (keep) c else '_');
-    }
-    try buf.append('_');
-    try buf.appendSlice(field);
-    return try buf.toOwnedSlice();
-}
-
 fn lowerToTir(gpa: std.mem.Allocator, src: []const u8) !Lowered {
     var context = compiler.compile.Context.init(gpa); // Create context
 
@@ -717,12 +699,10 @@ test "tir: match with guard carries value to join" {
     try testing.expect(ok);
 }
 
-test "tir: imported call uses mangled prefix" {
+test "tir: imported call resolves dependency" {
     const gpa = std.testing.allocator;
     const import_dir = "zig-out/import_prefix_test";
     const main_path = "zig-out/import_prefix_test/main.sr";
-    const import_path = "zig-out/import_prefix_test/math.sr";
-
     _ = std.fs.cwd().deleteTree(import_dir) catch {};
     try std.fs.cwd().makePath(import_dir);
     defer std.fs.cwd().deleteTree(import_dir) catch {};
@@ -771,9 +751,6 @@ test "tir: imported call uses mangled prefix" {
         unreachable;
     };
 
-    const expected = try expectedMangled(gpa, import_path, "answer");
-    defer gpa.free(expected);
-
     const kinds = t.instrs.index.kinds.items;
     var found = false;
     var i: usize = 0;
@@ -781,7 +758,7 @@ test "tir: imported call uses mangled prefix" {
         if (kinds[i] == .Call) {
             const row = t.instrs.get(.Call, compiler.tir.InstrId.fromRaw(@intCast(i)));
             const callee = t.instrs.strs.get(row.callee);
-            if (std.mem.eql(u8, callee, expected)) {
+            if (std.mem.eql(u8, callee, "answer")) {
                 found = true;
                 break;
             }
