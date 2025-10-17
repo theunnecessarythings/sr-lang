@@ -1,0 +1,449 @@
+==================
+Match patterns
+==================
+result := match value {
+    1 => print("one"),
+    2 | 3 => print("two or three"),
+    4..=10 => print("range"),
+    (x, y) => print(x + y),
+    Option.Some(x) => print(x),
+    Point{ x: 0, y: y_val } => print(y_val),
+    [first, ..rest] => print(first),
+    _ => print("default"),
+}
+---
+(source_file
+  (var_declaration
+    pattern: (identifier)
+    value: (match_expression
+      value: (primary_expression
+        (identifier)
+      )
+      (match_arm
+        pattern: (literal_pattern
+          (literal_pattern)
+        )
+        body: (call_expression
+          function: (primary_expression
+            (identifier)
+          )
+          arguments: (argument_list
+            (primary_expression
+              (literal
+                (string_literal)
+              )
+            )
+          )
+        )
+      )
+      (match_arm
+        pattern: (or_pattern
+          (literal_pattern
+            (literal_pattern)
+          )
+          (literal_pattern
+            (literal_pattern)
+          )
+        )
+        body: (call_expression
+          function: (primary_expression
+            (identifier)
+          )
+          arguments: (argument_list
+            (primary_expression
+              (literal
+                (string_literal)
+              )
+            )
+          )
+        )
+      )
+      (match_arm
+        pattern: (range_pattern
+          start: (pattern_range_bound
+            (literal_pattern
+              (literal_pattern)
+            )
+          )
+          end: (pattern_range_bound
+            (literal_pattern
+              (literal_pattern)
+            )
+          )
+        )
+        body: (call_expression
+          function: (primary_expression
+            (identifier)
+          )
+          arguments: (argument_list
+            (primary_expression
+              (literal
+                (string_literal)
+              )
+            )
+          )
+        )
+      )
+      (match_arm
+        pattern: (tuple_pattern
+          (identifier)
+          (identifier)
+        )
+        body: (call_expression
+          function: (primary_expression
+            (identifier)
+          )
+          arguments: (argument_list
+            (binary_expression
+              left: (primary_expression
+                (identifier)
+              )
+              right: (primary_expression
+                (identifier)
+              )
+            )
+          )
+        )
+      )
+      (match_arm
+        pattern: (variant_pattern
+          constructor: (identifier)
+          name: (identifier)
+          arguments: (variant_pattern_arguments
+            (identifier)
+          )
+        )
+        body: (call_expression
+          function: (primary_expression
+            (identifier)
+          )
+          arguments: (argument_list
+            (primary_expression
+              (identifier)
+            )
+          )
+        )
+      )
+      (match_arm
+        pattern: (struct_pattern
+          type: (identifier)
+          body: (struct_pattern_body
+            (struct_pattern_field
+              name: (identifier)
+              value: (literal_pattern
+                (literal_pattern)
+              )
+            )
+            (struct_pattern_field
+              name: (identifier)
+              value: (identifier)
+            )
+          )
+        )
+        body: (call_expression
+          function: (primary_expression
+            (identifier)
+          )
+          arguments: (argument_list
+            (primary_expression
+              (identifier)
+            )
+          )
+        )
+      )
+      (match_arm
+        pattern: (array_pattern
+          (array_pattern_element
+            (identifier)
+          )
+          (array_pattern_element
+            (rest_pattern
+              name: (identifier)
+            )
+          )
+        )
+        body: (call_expression
+          function: (primary_expression
+            (identifier)
+          )
+          arguments: (argument_list
+            (primary_expression
+              (identifier)
+            )
+          )
+        )
+      )
+      (match_arm
+        pattern: (wildcard_pattern)
+        body: (call_expression
+          function: (primary_expression
+            (identifier)
+          )
+          arguments: (argument_list
+            (primary_expression
+              (literal
+                (string_literal)
+              )
+            )
+          )
+        )
+      )
+    )
+  )
+)
+
+==================
+Binding patterns
+==================
+result := match maybe_point {
+    p @ Option.Some(Point{ x, y }) => p,
+    _ => Option.None,
+}
+
+match user_instance {
+    User{ id: 1, name: user_name } => {},
+    User{ role: "guest", .. } => {},
+    _ => {},
+}
+---
+(source_file
+  (var_declaration
+    pattern: (identifier)
+    value: (match_expression
+      value: (primary_expression
+        (identifier)
+      )
+      (match_arm
+        pattern: (binding_pattern
+          name: (identifier)
+          pattern: (variant_pattern
+            constructor: (identifier)
+            name: (identifier)
+            arguments: (variant_pattern_arguments
+              (struct_pattern
+                type: (identifier)
+                body: (struct_pattern_body
+                  (struct_pattern_field
+                    shorthand: (identifier)
+                  )
+                  (struct_pattern_field
+                    shorthand: (identifier)
+                  )
+                )
+              )
+            )
+          )
+        )
+        body: (primary_expression
+          (identifier)
+        )
+      )
+      (match_arm
+        pattern: (wildcard_pattern)
+        body: (member_expression
+          object: (primary_expression
+            (identifier)
+          )
+          property: (identifier)
+        )
+      )
+    )
+  )
+  (expression_statement
+    (match_expression
+      value: (primary_expression
+        (identifier)
+      )
+      (match_arm
+        pattern: (struct_pattern
+          type: (identifier)
+          body: (struct_pattern_body
+            (struct_pattern_field
+              name: (identifier)
+              value: (literal_pattern
+                (literal_pattern)
+              )
+            )
+            (struct_pattern_field
+              name: (identifier)
+              value: (identifier)
+            )
+          )
+        )
+        body: (block)
+      )
+      (match_arm
+        pattern: (struct_pattern
+          type: (identifier)
+          body: (struct_pattern_body
+            (struct_pattern_field
+              name: (identifier)
+              value: (literal_pattern
+                (literal_pattern)
+              )
+            )
+            (rest_pattern)
+          )
+        )
+        body: (block)
+      )
+      (match_arm
+        pattern: (wildcard_pattern)
+        body: (block)
+      )
+    )
+  )
+)
+
+==================
+Destructuring patterns
+==================
+(a, b) := pair
+Pair{ i: ai, d: bd } := pair_value
+V.B(n) := variant_value
+V.C{ x: cx, y: cy } := variant_struct
+((t1, Pair{ i: tai, d: tbd }), t2) := nested_value
+W.D((vd1, vd2)) := variant_tuple
+W.E{ p: Pair{ i: wpi, d: wpd } } := variant_struct_nested
+---
+(source_file
+  (var_declaration
+    pattern: (tuple_pattern
+      (identifier)
+      (identifier)
+    )
+    value: (primary_expression
+      (identifier)
+    )
+  )
+  (var_declaration
+    pattern: (struct_pattern
+      type: (identifier)
+      body: (struct_pattern_body
+        (struct_pattern_field
+          name: (identifier)
+          value: (identifier)
+        )
+        (struct_pattern_field
+          name: (identifier)
+          value: (identifier)
+        )
+      )
+    )
+    value: (primary_expression
+      (identifier)
+    )
+  )
+  (var_declaration
+    pattern: (variant_pattern
+      constructor: (identifier)
+      name: (identifier)
+      arguments: (variant_pattern_arguments
+        (identifier)
+      )
+    )
+    value: (primary_expression
+      (identifier)
+    )
+  )
+  (var_declaration
+    pattern: (variant_pattern
+      constructor: (identifier)
+      name: (identifier)
+      fields: (variant_pattern_fields
+        (struct_pattern_field
+          name: (identifier)
+          value: (identifier)
+        )
+        (struct_pattern_field
+          name: (identifier)
+          value: (identifier)
+        )
+      )
+    )
+    value: (call_expression
+      function: (primary_expression
+        (identifier)
+      )
+      arguments: (argument_list
+        (primary_expression
+          (tuple_expression
+            first: (primary_expression
+              (identifier)
+            )
+            (struct_literal
+              type: (primary_expression
+                (identifier)
+              )
+              body: (struct_literal_body
+                (struct_literal_field
+                  name: (identifier)
+                  value: (primary_expression
+                    (identifier)
+                  )
+                )
+                (struct_literal_field
+                  name: (identifier)
+                  value: (primary_expression
+                    (identifier)
+                  )
+                )
+              )
+            )
+          )
+        )
+        (primary_expression
+          (identifier)
+        )
+      )
+    )
+  )
+  (var_declaration
+    pattern: (wildcard_pattern)
+    value: (primary_expression
+      (identifier)
+    )
+  )
+  (var_declaration
+    pattern: (variant_pattern
+      constructor: (identifier)
+      name: (identifier)
+      arguments: (variant_pattern_arguments
+        (tuple_pattern
+          (identifier)
+          (identifier)
+        )
+      )
+    )
+    value: (primary_expression
+      (identifier)
+    )
+  )
+  (var_declaration
+    pattern: (variant_pattern
+      constructor: (identifier)
+      name: (identifier)
+      fields: (variant_pattern_fields
+        (struct_pattern_field
+          name: (identifier)
+          value: (struct_pattern
+            type: (identifier)
+            body: (struct_pattern_body
+              (struct_pattern_field
+                name: (identifier)
+                value: (identifier)
+              )
+              (struct_pattern_field
+                name: (identifier)
+                value: (identifier)
+              )
+            )
+          )
+        )
+      )
+    )
+    value: (primary_expression
+      (identifier)
+    )
+  )
+)

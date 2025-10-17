@@ -1,0 +1,56 @@
+==================
+MLIR and asm bodies
+==================
+mlir_op := mlir op {
+  %0 = arith.addi %a, %b : i32
+}
+
+mlir_attr := mlir attribute {
+  #key = #value
+}
+
+mlir_type_example := mlir type {
+  !tensor<2x2xf32>
+}
+
+add_asm :: fn(a: i64, b: i64) i64 asm {
+  mov
+  add
+}
+---
+(source_file
+  (var_declaration
+    pattern: (identifier)
+    value: (mlir_expression
+      kind: (identifier)
+      body: (mlir_body
+        (mlir_text))))
+  (var_declaration
+    pattern: (identifier)
+    value: (mlir_expression
+      kind: (identifier)
+      body: (mlir_body
+        (mlir_text))))
+  (var_declaration
+    pattern: (identifier)
+    value: (mlir_expression
+      kind: (identifier)
+      body: (mlir_body
+        (mlir_text))))
+  (const_declaration
+    pattern: (identifier)
+    value: (fn_expression
+      parameters: (parameter_list
+        (parameter
+          pattern: (identifier)
+          type: (type_identifier (identifier)))
+        (parameter
+          pattern: (identifier)
+          type: (type_identifier (identifier))))
+      return_type: (type_identifier (identifier))
+      body: (asm_block
+        body: (block
+          (expression_statement
+            (primary_expression (identifier)))
+          (expression_statement
+            (primary_expression (identifier))))))))

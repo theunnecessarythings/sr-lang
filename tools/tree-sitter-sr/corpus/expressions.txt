@@ -36,4 +36,4 @@ chained := math.print("hi").^*void
           property: (identifier))
         arguments: (argument_list
           (primary_expression (literal (string_literal)))) )
-      type: (pointer_type (type_identifier (identifier))))))
+      type: (pointer_type (type_identifier (identifier)))))))
