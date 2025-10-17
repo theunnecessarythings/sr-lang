@@ -404,6 +404,7 @@ pub const LowerTir = struct {
         var method_it = self.type_info.method_table.iterator();
         while (method_it.next()) |entry| {
             const method = entry.value_ptr.*;
+            if (method.module_id != self.module_id) continue;
             const decl_id = method.decl_id;
             if (self.method_lowered.contains(decl_id.toRaw())) continue;
             const name = try self.methodSymbolName(a, decl_id);
@@ -1254,10 +1255,16 @@ pub const LowerTir = struct {
         arg_ids: *[]const ast.ExprId,
         method_arg_buf: *[]ast.ExprId,
     ) !void {
-        const symbol = try self.methodSymbolName(a, binding.decl_id);
+        const symbol_ast = blk: {
+            if (binding.module_id == self.module_id) break :blk a;
+            const dep_entry = (&self.context.module_graph).findModuleById(binding.module_id) orelse
+                return error.LoweringBug;
+            break :blk dep_entry.astRef();
+        };
+        const symbol = try self.methodSymbolName(symbol_ast, binding.decl_id);
         callee.name = symbol;
         callee.fty = binding.func_type;
-        method_decl_id.* = binding.decl_id;
+        method_decl_id.* = if (binding.module_id == self.module_id) binding.decl_id else null;
         method_binding_out.* = binding;
         callee_name.* = self.context.type_store.strs.get(callee.name);
 
@@ -1338,6 +1345,7 @@ pub const LowerTir = struct {
             .receiver_kind = entry.receiver_kind,
             .requires_implicit_receiver = implicit_receiver,
             .needs_addr_of = needs_addr_of,
+            .module_id = entry.module_id,
         };
     }
 

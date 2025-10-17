@@ -158,6 +158,7 @@ pub const TypeInfo = struct {
         func_type: TypeId,
         self_param_type: ?TypeId,
         receiver_kind: MethodReceiverKind,
+        module_id: usize,
     };
 
     pub const MethodBinding = struct {
@@ -169,6 +170,7 @@ pub const TypeInfo = struct {
         receiver_kind: MethodReceiverKind,
         requires_implicit_receiver: bool,
         needs_addr_of: bool,
+        module_id: usize,
     };
 
     pub fn addMethod(self: *TypeInfo, entry: MethodEntry) !bool {

@@ -332,6 +332,14 @@ pub const ModuleGraph = struct {
         return .{ .module = entry, .ty = null, .found = false };
     }
 
+    pub fn findModuleById(self: *ModuleGraph, module_id: usize) ?*ModuleEntry {
+        var it = self.cache.valueIterator();
+        while (it.next()) |entry| {
+            if (entry.module_id == module_id) return entry;
+        }
+        return null;
+    }
+
     pub fn ownsTypeInfo(self: *const ModuleGraph, ti: *const types.TypeInfo) bool {
         return self.owned_type_infos.contains(@constCast(ti));
     }
