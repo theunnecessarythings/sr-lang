@@ -269,6 +269,7 @@ fn server(
 }
 
 fn process_file(
+    compiler_ctx: *lib.compile.Context,
     allocator: std.mem.Allocator,
     filename: []const u8,
     cli_args: *CliArgs,
@@ -276,14 +277,15 @@ fn process_file(
     out_writer: anytype,
     link_args: []const []const u8,
 ) anyerror!void {
-    var compiler_ctx = lib.compile.Context.init(allocator);
-    defer compiler_ctx.deinit();
-    var pipeline = lib.pipeline.Pipeline.init(allocator, &compiler_ctx);
+    var abs_filename_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const abs_filename = std.fs.cwd().realpath(filename, &abs_filename_buf) catch filename;
+
+    var pipeline = lib.pipeline.Pipeline.init(allocator, compiler_ctx);
 
     if (cli_args.verbose) {
-        try err_writer.print("Compiling {s}...\n", .{filename});
+        try err_writer.print("Compiling {s}...\n", .{abs_filename});
     }
-    const result = try pipeline.runWithImports(filename, link_args, switch (cli_args.subcommand) {
+    const result = try pipeline.runWithImports(abs_filename, link_args, switch (cli_args.subcommand) {
         .compile => .compile,
         .run => .run,
         .check => .check,
@@ -464,6 +466,9 @@ pub fn main() !void {
         }
     }
 
+    var compiler_ctx = lib.compile.Context.init(gpa);
+    defer compiler_ctx.deinit();
+
     var out_buf: [1024]u8 = undefined;
     var out = std.fs.File.stdout().writer(&out_buf);
     const out_writer = &out.interface;
@@ -473,7 +478,12 @@ pub fn main() !void {
             if (cli_args.filename) |filename| {
                 // If only a filename is provided without a subcommand, default to 'compile'
                 cli_args.subcommand = .compile;
-                try process_file(gpa, filename, &cli_args, writer, out_writer, link_args_list.items);
+                process_file(&compiler_ctx, gpa, filename, &cli_args, writer, out_writer, link_args_list.items) catch |e| {
+                    if (compiler_ctx.diags.anyErrors()) {
+                        try compiler_ctx.diags.emitStyled(&compiler_ctx, writer, !cli_args.no_color);
+                    }
+                    return e;
+                };
             } else {
                 try printUsage(writer, exec_name);
                 std.process.exit(1);
@@ -488,8 +498,10 @@ pub fn main() !void {
                 try printUsage(writer, exec_name);
                 std.process.exit(1);
             }
-            process_file(gpa, cli_args.filename.?, &cli_args, writer, out_writer, link_args_list.items) catch |e| {
-                try writer.flush();
+            process_file(&compiler_ctx, gpa, cli_args.filename.?, &cli_args, writer, out_writer, link_args_list.items) catch |e| {
+                if (compiler_ctx.diags.anyErrors()) {
+                    try compiler_ctx.diags.emitStyled(&compiler_ctx, writer, !cli_args.no_color);
+                }
                 return e;
             };
         },

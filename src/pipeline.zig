@@ -136,11 +136,7 @@ pub const Pipeline = struct {
         var parser = Parser.init(self.allocator, source0, file_id, self.context);
         const cst_program = try parser.parse();
 
-        var buffer: [4096]u8 = undefined;
-        var writer = std.fs.File.stdout().writer(&buffer);
-
         if (self.context.diags.anyErrors()) {
-            try self.context.diags.emitStyled(self.context, &writer.interface, true);
             return error.ParseFailed;
         }
         if (mode == .parse) {
@@ -153,12 +149,10 @@ pub const Pipeline = struct {
         ast.module_id = module_id;
         type_info.setModule(module_id);
         if (self.context.diags.anyErrors()) {
-            try self.context.diags.emitStyled(self.context, &writer.interface, true);
             return error.LoweringFailed;
         }
         const package_issue = try self.verifyPackageDeclaration(&ast, file_id, source_path, is_entry);
         if (package_issue) {
-            try self.context.diags.emitStyled(self.context, &writer.interface, true);
             return error.PackageValidationFailed;
         }
 
@@ -183,8 +177,6 @@ pub const Pipeline = struct {
         defer chk.deinit();
         try chk.run();
         if (self.context.diags.anyErrors()) {
-            try self.context.diags.emitStyled(self.context, &writer.interface, true);
-            std.debug.print("TypeCheckFailed for {s}\n", .{filename});
             return error.TypeCheckFailed;
         }
         if (mode == .check) {
@@ -212,7 +204,6 @@ pub const Pipeline = struct {
         const root_mod = try tir_lowerer.run(&ast);
 
         if (self.context.diags.anyErrors()) {
-            try self.context.diags.emitStyled(self.context, &writer.interface, true);
             return error.TirLoweringFailed;
         }
         if (mode == .tir) {
@@ -253,7 +244,6 @@ pub const Pipeline = struct {
         var mlir_module = gen.emitModule(&root_mod, self.context, ast.exprs.locs, type_info) catch |err| {
             switch (err) {
                 error.CompilationFailed => {
-                    try self.context.diags.emitStyled(self.context, &writer.interface, true);
                     return error.MlirCodegenFailed;
                 },
                 else => return err,
@@ -280,7 +270,6 @@ pub const Pipeline = struct {
             );
         }
         if (self.context.diags.anyErrors()) {
-            try self.context.diags.emitStyled(self.context, &writer.interface, true);
             return error.MlirCodegenFailed;
         }
         if (mode == .mlir) {
@@ -293,7 +282,6 @@ pub const Pipeline = struct {
 
         try compile.run_passes(&gen.mlir_ctx, &mlir_module);
         if (self.context.diags.anyErrors()) {
-            try self.context.diags.emitStyled(self.context, &writer.interface, true);
             return error.MlirPassesFailed;
         }
         if (mode == .passes) {
@@ -310,7 +298,6 @@ pub const Pipeline = struct {
             else => .compile,
         });
         if (self.context.diags.anyErrors()) {
-            try self.context.diags.emitStyled(self.context, &writer.interface, true);
             return error.LLVMIRFailed;
         }
         if (mode == .llvm_ir or mode == .llvm_passes) {
@@ -325,7 +312,6 @@ pub const Pipeline = struct {
         if (mode == .jit) {
             compile.runJit(mlir_module.handle);
             if (self.context.diags.anyErrors()) {
-                try self.context.diags.emitStyled(self.context, &writer.interface, true);
                 return error.JITFailed;
             }
             type_info_cleanup = false;

@@ -9,11 +9,13 @@
 (boolean_literal) @boolean
 
 ; Attributes
-(attribute
-  (identifier) @attribute)
 (attribute_argument
-  name: (identifier) @attribute
-  value: (identifier) @constant)
+  name: (identifier) @attribute)
+(attribute_argument
+  value: (attribute_value (identifier) @constant))
+
+(attribute_argument
+  value: (attribute_value (literal) @constant))
 
 ; Identifiers
 (identifier) @variable
@@ -44,24 +46,58 @@
   name: (identifier) @field)
 
 ; Keywords
-[("fn") ("proc") ("struct") ("union") ("enum") ("variant")
- ("if") ("else") ("while") ("for") ("in") ("match")
- ("return") ("break") ("continue") ("defer") ("errdefer")
- ("comptime") ("code") ("async") ("import") ("const") ("var")
- ("pub") ("package") ("insert") ("asm") ("mlir") ("error")]
+["fn" "proc" "struct" "union" "enum" "variant"
+ "if" "else" "while" "for" "in" "match"
+ "return" "break" "continue" "defer" "errdefer"
+ "comptime" "code" "async" "import" "package" "insert" "asm" "mlir" "error"]
  @keyword
 
 ; Operators
-(binary_expression operator: (_) @operator)
-(unary_expression operator: (_) @operator)
-(assignment_statement operator: (_) @operator)
+[(binary_expression "or" @operator)
+ (binary_expression "and" @operator)
+ (binary_expression "orelse" @operator)
+ (binary_expression "catch" @operator)
+ (binary_expression "|" @operator)
+ (binary_expression "^" @operator)
+ (binary_expression "&" @operator)
+ (binary_expression "==" @operator)
+ (binary_expression "!=" @operator)
+ (binary_expression "<" @operator)
+ (binary_expression "<=" @operator)
+ (binary_expression ">" @operator)
+ (binary_expression ">=" @operator)
+ (binary_expression ".." @operator)
+ (binary_expression "..=" @operator)
+ (binary_expression "<<" @operator)
+ (binary_expression ">>" @operator)
+ (binary_expression "+" @operator)
+ (binary_expression "-" @operator)
+ (binary_expression "*" @operator)
+ (binary_expression "/" @operator)
+ (binary_expression "%" @operator)]
+(unary_expression "+" @operator)
+(unary_expression "-" @operator)
+(unary_expression "!" @operator)
+(unary_expression "&" @operator)
+(unary_expression "*" @operator)
+[(assignment_statement "=" @operator)
+ (assignment_statement "+=" @operator)
+ (assignment_statement "-=" @operator)
+ (assignment_statement "*=" @operator)
+ (assignment_statement "/=" @operator)
+ (assignment_statement "%=" @operator)
+ (assignment_statement "<<=" @operator)
+ (assignment_statement ">>=" @operator)
+ (assignment_statement "&=" @operator)
+ (assignment_statement "|=" @operator)
+ (assignment_statement "^=" @operator)]
 (cast_expression "." @operator)
 (pointer_dereference_expression "." @operator)
 (error_propagation_expression "!" @operator)
 (optional_unwrap_expression "?" @operator)
 
 ; Punctuation
-["{" "}" "(" ")" "[" "]" "," ":" ";" "=>" "::" ":=" "="] @punctuation.delimiter
+["{" "}" "(" ")" "[" "]" "," ":" "=>" "::" ":=" "="] @punctuation.delimiter
 
 ; Built-in boolean literals
 [("true") ("false")] @boolean

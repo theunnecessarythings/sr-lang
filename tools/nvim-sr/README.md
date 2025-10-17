@@ -42,7 +42,7 @@ Add the following to your `init.lua` or `init.vim`:
 require('sr').setup()
 ```
 
-When you open an `.sr` file, Neovim automatically looks for the grammar next to the plugin at `../tree-sitter-sr`. If it is not present, it falls back to the public `sr-lang/tree-sitter-sr` repository.
+When you open an `.sr` file, Neovim automatically looks for the grammar bundled with this repository at `tools/tree-sitter-sr`. If it is not present, it falls back to the public `sr-lang/tree-sitter-sr` repository.
 
 To compile the parser with `nvim-treesitter` run:
 

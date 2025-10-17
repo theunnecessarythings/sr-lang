@@ -1,5 +1,62 @@
 ==================
-Module declarations
+package demo
+
+@[inline, export_name=my_add]
+pub add :: fn(
+  @[nonnull] a: i32,
+  @[nonnull] b: i32,
+  level: i32 = 1,
+) i32 {
+  return a + b
+}
+
+printf :: extern proc(*void, any) i32
+
+math :: import math
+rl :: import "vendor/raylib"
+
+@[repr=C]
+Point :: struct {
+  @[align=4] pub x: i32,
+  @[align=4] y: i32,
+}
+
+Value :: union {
+  @[tag=0] i: i32,
+  f: f32,
+}
+
+@[repr=tagged]
+Result :: variant {
+  @[ok_attr] Ok(i32),
+  @[err_attr]
+  Err {
+    @[code=1] err_code: i32,
+    msg: string,
+  },
+  None,
+}
+
+Colors :: enum(u8) {
+  Red,
+  @[val=2] Blue = 2,
+}
+
+mlir {
+  func.func @sub(%a: i64, %b: i64) -> i64 {
+    %res = arith.subi %a, %b : i64
+    func.return %res : i64
+  }
+}
+
+main :: proc() {
+  mlir {
+    func.func @add(%a: i64, %b: i64) -> i64 {
+      %res = arith.addi %a, %b : i64
+      func.return %res : i64
+    }
+  }
+}
 ---
 (source_file
   (package_declaration

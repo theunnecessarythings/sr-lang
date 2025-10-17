@@ -643,11 +643,23 @@ pub const Diagnostics = struct {
     }
 
     fn addMessage(self: *Diagnostics, sev: Severity, loc: Loc, comptime code: DiagnosticCode, args: anytype) !void {
-        const notes = std.array_list.Managed(Note).init(self.allocator);
+        const error_limit = 20;
+        if (sev == .err and self.messages.items.len >= error_limit) {
+            return error.TooManyErrors;
+        }
+
         const info = @typeInfo(@TypeOf(args)).@"struct";
         const arg_count = info.fields.len;
         const payload: MessagePayload = if (arg_count == 0) .none else payloadFromArgs(args);
 
+        // De-duplication check
+        for (self.messages.items) |m| {
+            if (m.severity == sev and m.code == code and std.meta.eql(m.loc, loc) and std.meta.eql(m.payload, payload)) {
+                return;
+            }
+        }
+
+        const notes = std.array_list.Managed(Note).init(self.allocator);
         try self.messages.append(.{
             .severity = sev,
             .loc = loc,
@@ -686,10 +698,24 @@ pub const Diagnostics = struct {
 
     // Pretty-print diagnostics Rust-like with optional ANSI colors
     pub fn emitStyled(self: *Diagnostics, context: *Context, writer: anytype, color: bool) !void {
+        const max_errors_to_show = 20;
+        var error_count: usize = 0;
+        for (self.messages.items) |m| {
+            if (m.severity == .err) {
+                error_count += 1;
+            }
+        }
+
         var source_map = std.AutoArrayHashMap(usize, []const u8).init(context.gpa);
         defer source_map.deinit();
 
+        var errors_shown: usize = 0;
         for (self.messages.items) |m| {
+            if (errors_shown >= max_errors_to_show) {
+                // Stop printing after reaching the error limit.
+                break;
+            }
+
             const sev_str = switch (m.severity) {
                 .err => "error",
                 .warning => "warning",
@@ -765,7 +791,17 @@ pub const Diagnostics = struct {
             }
 
             try writer.print("\n", .{});
+
+            if (m.severity == .err) {
+                errors_shown += 1;
+            }
         }
+
+        if (error_count > errors_shown) {
+            const remaining = error_count - errors_shown;
+            try writer.print("\n... and {d} more error(s) not shown.\n", .{remaining});
+        }
+
         try writer.flush();
     }
 
