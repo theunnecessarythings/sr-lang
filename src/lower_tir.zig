@@ -4723,9 +4723,13 @@ pub const LowerTir = struct {
         };
         const s_full = a.exprs.strs.get(sid);
 
-        const me = res.ensureModule(self.import_base_dir, s_full, .tir) catch return null;
-        // Find member decl by name
+        // Query module exports to ensure the requested member exists and obtain
+        // any known type information.
         const want = a.exprs.strs.get(member);
+        const lookup = res.lookupExport(self.import_base_dir, s_full, want, .tir) catch return null;
+        if (!lookup.found) return null;
+
+        const me = lookup.module;
         const imported_ast = me.astRef();
         const decls = imported_ast.exprs.decl_pool.slice(imported_ast.unit.decls);
         var i: usize = 0;
@@ -4740,9 +4744,7 @@ pub const LowerTir = struct {
             if (std.mem.eql(u8, nm, want)) {
                 var want_ty = expected_ty;
                 if (self.isAny(want_ty)) {
-                    if (me.syms.get(want)) |sym_ty| {
-                        want_ty = sym_ty;
-                    }
+                    if (lookup.ty) |sym_ty| want_ty = sym_ty;
                 }
                 return self.lowerImportedExprValue(me, d2.value, want_ty, blk);
             }
