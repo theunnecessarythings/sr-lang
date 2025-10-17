@@ -10,21 +10,14 @@ const Lowered = struct {
 };
 
 fn expectedMangled(
+    context: *compiler.compile.Context,
     alloc: std.mem.Allocator,
     import_path: []const u8,
     field: []const u8,
 ) ![]u8 {
-    var buf = std.ArrayList(u8).init(alloc);
-    defer buf.deinit();
-
-    try buf.appendSlice("m$");
-    for (import_path) |c| {
-        const keep = (c >= 'a' and c <= 'z') or (c >= 'A' and c <= 'Z') or (c >= '0' and c <= '9');
-        try buf.append(if (keep) c else '_');
-    }
-    try buf.append('_');
-    try buf.appendSlice(field);
-    return try buf.toOwnedSlice();
+    const ns_info = try context.module_graph.namespaceForImport(alloc, import_path);
+    defer alloc.free(ns_info.namespace);
+    return try std.fmt.allocPrint(alloc, "{s}_{s}", .{ ns_info.namespace, field });
 }
 
 fn lowerToTir(gpa: std.mem.Allocator, src: []const u8) !Lowered {
@@ -771,7 +764,7 @@ test "tir: imported call uses mangled prefix" {
         unreachable;
     };
 
-    const expected = try expectedMangled(gpa, import_path, "answer");
+    const expected = try expectedMangled(&context, gpa, import_path, "answer");
     defer gpa.free(expected);
 
     const kinds = t.instrs.index.kinds.items;

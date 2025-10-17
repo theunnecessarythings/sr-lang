@@ -197,12 +197,12 @@ pub const Pipeline = struct {
         defer {
             var it = alias_info_map.iterator();
             while (it.next()) |kv| {
-                self.allocator.free(kv.value_ptr.prefix);
+                self.allocator.free(kv.value_ptr.namespace);
                 self.allocator.free(kv.value_ptr.import_path);
             }
             alias_info_map.deinit();
         }
-        try computeModulePrefixes(self.allocator, &ast, &alias_info_map);
+        try computeModuleNamespaces(self.allocator, &ast, &self.context.module_graph, &alias_info_map);
         var iter = alias_info_map.iterator();
         while (iter.next()) |kv| {
             try tir_lowerer.setModuleAlias(kv.key_ptr.*, kv.value_ptr.*);
@@ -528,17 +528,6 @@ const PreludeAliasInfo = struct {
     decl_id: ast_mod.DeclId,
 };
 
-fn computePrefix(gpa: std.mem.Allocator, imp: []const u8) ![]const u8 {
-    var buf: std.ArrayList(u8) = .empty;
-    errdefer buf.deinit(gpa);
-    try buf.appendSlice(gpa, "m$");
-    for (imp) |c| {
-        const keep = (c >= 'a' and c <= 'z') or (c >= 'A' and c <= 'Z') or (c >= '0' and c <= '9');
-        try buf.append(gpa, if (keep) c else '_');
-    }
-    return try buf.toOwnedSlice(gpa);
-}
-
 fn moduleBaseDir(path: []const u8) []const u8 {
     if (path.len == 0) return ".";
     if (std.mem.lastIndexOfScalar(u8, path, '/')) |idx| {
@@ -599,9 +588,10 @@ fn toPipelineMode(mode: module_graph.LoadMode) Pipeline.Mode {
     };
 }
 
-fn computeModulePrefixes(
+fn computeModuleNamespaces(
     gpa: std.mem.Allocator,
     a: *const ast_mod.Ast,
+    graph: *module_graph.ModuleGraph,
     out: *std.StringHashMap(lower_tir.LowerTir.ModuleAliasInfo),
 ) !void {
     const decls = a.exprs.decl_pool.slice(a.unit.decls);
@@ -622,18 +612,32 @@ fn computeModulePrefixes(
             else => continue,
         };
         const imp = a.exprs.strs.get(sid);
-        const pref = try computePrefix(gpa, imp);
-        const path = try gpa.dupe(u8, imp);
-        const key = try gpa.dupe(u8, a.exprs.strs.get(bind.name));
-        const gop = try out.getOrPut(key);
+        const ns_info = try graph.namespaceForImport(gpa, imp);
+        var namespace_owned = ns_info.namespace;
+        const path = gpa.dupe(u8, imp) catch |err| {
+            gpa.free(namespace_owned);
+            return err;
+        };
+        const key = gpa.dupe(u8, a.exprs.strs.get(bind.name)) catch |err| {
+            gpa.free(namespace_owned);
+            gpa.free(path);
+            return err;
+        };
+        const gop = out.getOrPut(key) catch |err| {
+            gpa.free(namespace_owned);
+            gpa.free(path);
+            gpa.free(key);
+            return err;
+        };
         if (gop.found_existing) {
             gpa.free(key);
-            gpa.free(gop.value_ptr.prefix);
+            gpa.free(gop.value_ptr.namespace);
             gpa.free(gop.value_ptr.import_path);
         }
         gop.value_ptr.* = .{
-            .prefix = pref,
+            .namespace = namespace_owned,
             .import_path = path,
+            .package_id = ns_info.package_id,
         };
     }
 }

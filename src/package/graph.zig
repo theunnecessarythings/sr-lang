@@ -172,6 +172,50 @@ pub const PackageInfo = struct {
     }
 };
 
+fn appendNamespaceSegment(
+    buf: *std.ArrayList(u8),
+    gpa: std.mem.Allocator,
+    segment: []const u8,
+) !void {
+    for (segment) |c| {
+        const keep =
+            (c >= 'a' and c <= 'z') or
+            (c >= 'A' and c <= 'Z') or
+            (c >= '0' and c <= '9') or
+            c == '_';
+        try buf.append(gpa, if (keep) c else '_');
+    }
+}
+
+pub fn deriveNamespaceFromParts(
+    gpa: std.mem.Allocator,
+    package_name: []const u8,
+    remainder: []const u8,
+) ![]u8 {
+    var buf: std.ArrayList(u8) = .empty;
+    errdefer buf.deinit(gpa);
+
+    var wrote_any = false;
+    if (package_name.len != 0) {
+        try appendNamespaceSegment(&buf, gpa, package_name);
+        wrote_any = buf.items.len != 0;
+    }
+
+    var it = std.mem.splitScalar(u8, remainder, '/');
+    while (it.next()) |segment| {
+        if (segment.len == 0) continue;
+        if (wrote_any) try buf.append(gpa, '_');
+        try appendNamespaceSegment(&buf, gpa, segment);
+        wrote_any = true;
+    }
+
+    if (!wrote_any) {
+        try buf.append(gpa, '_');
+    }
+
+    return try buf.toOwnedSlice(gpa);
+}
+
 pub const ModuleMatch = struct {
     pkg: *const PackageInfo,
     key: []const u8,
@@ -326,6 +370,23 @@ pub const PackageGraph = struct {
         if (!id.isValid()) return null;
         if (id.index >= self.packages.items.len) return null;
         return &self.packages.items[id.index];
+    }
+
+    pub fn deriveNamespace(
+        self: *const PackageGraph,
+        gpa: std.mem.Allocator,
+        id: PackageId,
+        module_key: []const u8,
+    ) ![]u8 {
+        const pkg = self.get(id) orelse return error.UnknownPackage;
+        return deriveNamespaceFromParts(gpa, pkg.name, module_key);
+    }
+
+    pub fn deriveNamespaceFallback(
+        gpa: std.mem.Allocator,
+        import_path: []const u8,
+    ) ![]u8 {
+        return deriveNamespaceFromParts(gpa, "", import_path);
     }
 
     pub fn findModuleByPath(

@@ -43,8 +43,9 @@ pub const LowerTir = struct {
     var g_mlir_ctx: mlir.Context = undefined;
 
     pub const ModuleAliasInfo = struct {
-        prefix: []const u8,
+        namespace: []u8,
         import_path: []const u8,
+        package_id: module_graph.PackageId,
     };
 
     const BindingSnapshot = struct {
@@ -194,7 +195,7 @@ pub const LowerTir = struct {
         self.loop_stack.deinit(self.gpa);
         var it = self.module_aliases.valueIterator();
         while (it.next()) |info| {
-            self.gpa.free(info.prefix);
+            self.gpa.free(info.namespace);
             self.gpa.free(info.import_path);
         }
         self.module_aliases.deinit(self.gpa);
@@ -419,16 +420,17 @@ pub const LowerTir = struct {
         errdefer self.gpa.free(key);
 
         const stored = ModuleAliasInfo{
-            .prefix = try self.gpa.dupe(u8, info.prefix),
+            .namespace = try self.gpa.dupe(u8, info.namespace),
             .import_path = try self.gpa.dupe(u8, info.import_path),
+            .package_id = info.package_id,
         };
-        errdefer self.gpa.free(stored.prefix);
+        errdefer self.gpa.free(stored.namespace);
         errdefer self.gpa.free(stored.import_path);
 
         const gop = try self.module_aliases.getOrPut(self.gpa, key);
         if (gop.found_existing) {
             self.gpa.free(key);
-            self.gpa.free(gop.value_ptr.prefix);
+            self.gpa.free(gop.value_ptr.namespace);
             self.gpa.free(gop.value_ptr.import_path);
         }
         gop.value_ptr.* = stored;
@@ -1363,7 +1365,7 @@ pub const LowerTir = struct {
         if (self.moduleFieldIsExtern(info, field_name)) {
             interned = f.builder.intern(field_name);
         } else {
-            const mangled = try std.fmt.allocPrint(self.gpa, "{s}_{s}", .{ info.prefix, field_name });
+            const mangled = try std.fmt.allocPrint(self.gpa, "{s}_{s}", .{ info.namespace, field_name });
             defer self.gpa.free(mangled);
             interned = f.builder.intern(mangled);
         }
