@@ -1,3 +1,5 @@
+package fs
+
 // Minimal filesystem wrappers (Linux)
 
 rt_strlen :: extern proc(*u8) usize

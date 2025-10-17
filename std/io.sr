@@ -1,3 +1,5 @@
+package io
+
 // Minimal std I/O wrappers built on C printf and runtime helpers.
 
 // C stdio printf (varargs enabled by trailing `any`).

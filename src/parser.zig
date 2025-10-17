@@ -377,6 +377,10 @@ pub const Parser = struct {
             try self.expect(.eos);
             self.cst.program.package_name = .some(pkg_name);
             self.cst.program.package_loc = .some(self.toLocId(start));
+        } else {
+            // default package, set to "main"
+            self.cst.program.package_name = .some(self.intern("main"));
+            self.cst.program.package_loc = .none();
         }
 
         // Top-level declarations

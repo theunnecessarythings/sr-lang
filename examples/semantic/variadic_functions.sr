@@ -1,3 +1,5 @@
+package variadic_functions
+
 // Semantic Example: Variadic Functions
 
 // This language handles variadic functions by bundling extra arguments

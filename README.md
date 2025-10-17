@@ -58,7 +58,10 @@ The language is designed with a focus on modern language features, explicit cont
 
 ### 🔗 Modularity
 
-*   **Imports:** Organize code into modules and import them using the `import` keyword.
+*   **Packages:** Every `.sr` file declares a package at the top of the file (`package foo`).
+    *   Entry points (`zig build run -- path/to/app.sr`) must declare `package main`, mirroring Go/Odin executables.
+    *   When a directory is imported (for example `import "std/io"` or `import "vendor/raylib"`), the compiler loads `main.sr` from that directory and expects the package name to match the directory basename (e.g. `package io`).
+*   **Imports:** Organize code into modules and import them using the `import` keyword with fully qualified package paths (e.g. `math :: import "examples/imports/math"`).
 
 ## 🚀 Getting Started
 

@@ -22,6 +22,8 @@ Types :: struct {
   complex: complex(f32),
   result: void!ErrorSet,
 }
+value: *i32 = 0
+alias : Vector = Vector
 ---
 (source_file
   (const_declaration

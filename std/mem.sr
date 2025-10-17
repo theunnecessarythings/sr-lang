@@ -1,3 +1,5 @@
+package mem
+
 // Memory operations: wrappers over runtime functions
 
 rt_memcpy  :: extern proc(*u8, *u8, usize) void

@@ -1,3 +1,5 @@
+package error_handling
+
 // Error Handling
 
 // This language uses error union types for handleable errors.

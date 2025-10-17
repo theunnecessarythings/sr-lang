@@ -1,3 +1,5 @@
+package raylib
+
 // Raylib v5.x bindings (hand-written subset; extend as needed)
 // NOTE: Externs follow C ABI; for string-taking APIs, convenience wrappers accept `string`.
 

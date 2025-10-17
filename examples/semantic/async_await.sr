@@ -1,3 +1,5 @@
+package async_await
+
 // Semantic Example: Async/Await
 
 User :: struct { id: i32, name: string }

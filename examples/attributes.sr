@@ -1,3 +1,5 @@
+package attributes
+
 // Attribute syntax showcase
 // Syntax: @[a, b=ident, c=42, d=true]
 

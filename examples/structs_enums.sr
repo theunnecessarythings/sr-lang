@@ -1,3 +1,5 @@
+package structs_enums
+
 event := Event.Click{ x: 100, y: 50 }
 
 // Structs, Unions, Enums, and Variants

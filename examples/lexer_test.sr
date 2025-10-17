@@ -1,3 +1,5 @@
+package lexer_test
+
 asm { mov rax, rbx }       // raw_asm_block, then EOS by NLSEMI
 asm{a}                     // no space
 "hi\n\"ok\""               // string with escapes

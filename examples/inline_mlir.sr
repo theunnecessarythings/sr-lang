@@ -1,3 +1,5 @@
+package main
+
 printf :: extern proc(*void, any) i32
 
 add :: @[mlir_fn] proc(i64, i64) i64 
