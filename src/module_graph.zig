@@ -3,6 +3,10 @@ const cst_mod = @import("cst.zig");
 const ast_mod = @import("ast.zig");
 const tir_mod = @import("tir.zig");
 const types = @import("types.zig");
+const package_graph = @import("package/graph.zig");
+
+pub const PackageId = package_graph.PackageId;
+pub const PackageInfo = package_graph.PackageInfo;
 
 pub const LoadMode = enum(u4) {
     lex,
@@ -85,6 +89,7 @@ pub const ModuleGraph = struct {
     cache: std.StringHashMap(ModuleEntry),
     in_progress: std.StringHashMap(void),
     owned_type_infos: std.AutoHashMap(*types.TypeInfo, void),
+    packages: package_graph.PackageGraph,
     runner_ctx: ?*anyopaque = null,
     runner_fn: ?RunFn = null,
     runner_depth: usize = 0,
@@ -102,8 +107,14 @@ pub const ModuleGraph = struct {
 
     pub const RunFn = *const fn (ctx: *anyopaque, path: []const u8, mode: LoadMode) anyerror!Artifacts;
 
+    const default_roots = [_]package_graph.RootConfig{
+        .{ .name = "std", .path = "std" },
+        .{ .name = "vendor", .path = "vendor" },
+        .{ .name = "examples", .path = "examples" },
+    };
+
     pub const Config = struct {
-        roots: []const []const u8 = &.{ "std", "vendor", "examples" },
+        roots: []const package_graph.RootConfig = &default_roots,
         main_filenames: []const []const u8 = &.{"main.sr"},
         exts: []const []const u8 = &.{".sr"},
     };
@@ -112,12 +123,15 @@ pub const ModuleGraph = struct {
         if (std_lib_path.len == 0) {
             std_lib_path = std.fs.selfExePath(&std_lib_path_buf) catch "";
         }
-        return .{
+        var graph = ModuleGraph{
             .gpa = gpa,
             .cache = std.StringHashMap(ModuleEntry).init(gpa),
             .in_progress = std.StringHashMap(void).init(gpa),
             .owned_type_infos = std.AutoHashMap(*types.TypeInfo, void).init(gpa),
+            .packages = package_graph.PackageGraph.init(gpa),
         };
+        graph.rebuildPackages() catch unreachable;
+        return graph;
     }
 
     pub fn deinit(self: *ModuleGraph) void {
@@ -129,10 +143,28 @@ pub const ModuleGraph = struct {
         self.cache.deinit();
         self.in_progress.deinit();
         self.owned_type_infos.deinit();
+        self.packages.deinit();
     }
 
-    pub fn setConfig(self: *ModuleGraph, cfg: Config) void {
+    pub fn setConfig(self: *ModuleGraph, cfg: Config) !void {
         self.config = cfg;
+        try self.rebuildPackages();
+    }
+
+    fn rebuildPackages(self: *ModuleGraph) !void {
+        try self.packages.rebuild(self.config.roots, self.config.exts, self.config.main_filenames);
+    }
+
+    pub fn getPackage(self: *const ModuleGraph, id: package_graph.PackageId) ?*const package_graph.PackageInfo {
+        return self.packages.get(id);
+    }
+
+    pub fn findPackage(self: *const ModuleGraph, name: []const u8) ?*const package_graph.PackageInfo {
+        return self.packages.getByName(name);
+    }
+
+    pub fn matchPackageImport(self: *const ModuleGraph, import_path: []const u8) ?package_graph.PackageGraph.Match {
+        return self.packages.matchImport(import_path);
     }
 
     pub fn enterPipeline(self: *ModuleGraph, ctx: *anyopaque, run_fn: RunFn) void {
@@ -272,71 +304,36 @@ pub const ModuleGraph = struct {
 
         const is_abs = raw_in.len > 0 and (raw_in[0] == '/' or
             (raw_in.len >= 3 and raw_in[1] == ':' and (raw_in[2] == '\\' or raw_in[2] == '/')));
+        const package_match = self.packages.matchImport(raw_in);
+        const looks_rooted = package_match != null;
 
-        const looks_rooted = blk: {
-            for (self.config.roots) |r| {
-                if (std.mem.startsWith(u8, raw_in, r)) break :blk true;
-                const with_slash = std.fmt.allocPrint(self.gpa, "{s}/", .{r}) catch "";
-                defer if (with_slash.len != 0) self.gpa.free(with_slash);
-                if (with_slash.len != 0 and std.mem.startsWith(u8, raw_in, with_slash)) break :blk true;
+        if (package_match) |match| {
+            if (match.pkg.lookup(match.remainder)) |module_info| {
+                return try self.gpa.dupe(u8, module_info.path);
             }
-            break :blk false;
-        };
+        }
 
         if (is_abs or looks_rooted) {
-            try push(&candidates, self.gpa, raw_in);
-            if (!hasAnyExt(raw_in, self.config.exts)) {
-                for (self.config.exts) |e| {
-                    const temp_str = try std.fmt.allocPrint(self.gpa, "{s}{s}", .{ raw_in, e });
-                    defer self.gpa.free(temp_str);
-                    try push(&candidates, self.gpa, temp_str);
-                }
-            }
-            for (self.config.main_filenames) |mf| {
-                const temp_str = try std.fmt.allocPrint(self.gpa, "{s}/{s}", .{ raw_in, mf });
-                defer self.gpa.free(temp_str);
-                try push(&candidates, self.gpa, temp_str);
+            if (is_abs) {
+                try addCandidates(&candidates, self.gpa, raw_in, self.config.exts, self.config.main_filenames);
+            } else if (package_match) |match| {
+                const package_path = try match.pkg.absolutePathFor(self.gpa, match.remainder);
+                defer self.gpa.free(package_path);
+                try addCandidates(&candidates, self.gpa, package_path, self.config.exts, self.config.main_filenames);
             }
         } else {
             if (base_dir.len == 0) {
-                try push(&candidates, self.gpa, raw_in);
+                try addCandidates(&candidates, self.gpa, raw_in, self.config.exts, self.config.main_filenames);
             } else {
-                const temp_str = try std.fmt.allocPrint(self.gpa, "{s}/{s}", .{ base_dir, raw_in });
-                defer self.gpa.free(temp_str);
-                try push(&candidates, self.gpa, temp_str);
-            }
-
-            const last = candidates.items[candidates.items.len - 1];
-            if (!hasAnyExt(last, self.config.exts)) {
-                for (self.config.exts) |e| {
-                    const temp_str = try std.fmt.allocPrint(self.gpa, "{s}{s}", .{ last, e });
-                    defer self.gpa.free(temp_str);
-                    try push(&candidates, self.gpa, temp_str);
-                }
-            }
-            for (self.config.main_filenames) |mf| {
-                const temp_str = try std.fmt.allocPrint(self.gpa, "{s}/{s}", .{ last, mf });
-                defer self.gpa.free(temp_str);
-                try push(&candidates, self.gpa, temp_str);
-            }
-
-            for (self.config.roots) |r| {
-                const base = try std.fmt.allocPrint(self.gpa, "{s}/{s}", .{ r, raw_in });
+                const base = try std.fmt.allocPrint(self.gpa, "{s}/{s}", .{ base_dir, raw_in });
                 defer self.gpa.free(base);
+                try addCandidates(&candidates, self.gpa, base, self.config.exts, self.config.main_filenames);
+            }
 
-                try push(&candidates, self.gpa, base);
-                if (!hasAnyExt(base, self.config.exts)) {
-                    for (self.config.exts) |e| {
-                        const temp_str = try std.fmt.allocPrint(self.gpa, "{s}{s}", .{ base, e });
-                        defer self.gpa.free(temp_str);
-                        try push(&candidates, self.gpa, temp_str);
-                    }
-                }
-                for (self.config.main_filenames) |mf| {
-                    const temp_str = try std.fmt.allocPrint(self.gpa, "{s}/{s}", .{ base, mf });
-                    defer self.gpa.free(temp_str);
-                    try push(&candidates, self.gpa, temp_str);
-                }
+            for (self.packages.packages.items) |pkg| {
+                const base = try std.fmt.allocPrint(self.gpa, "{s}/{s}", .{ pkg.root_path, raw_in });
+                defer self.gpa.free(base);
+                try addCandidates(&candidates, self.gpa, base, self.config.exts, self.config.main_filenames);
             }
         }
 
@@ -512,6 +509,28 @@ pub const ModuleGraph = struct {
         }
     }
 };
+
+fn addCandidates(
+    list: *std.ArrayList([]const u8),
+    gpa: std.mem.Allocator,
+    base: []const u8,
+    exts: []const []const u8,
+    main_files: []const []const u8,
+) !void {
+    try push(list, gpa, base);
+    if (!hasAnyExt(base, exts)) {
+        for (exts) |ext| {
+            const with_ext = try std.fmt.allocPrint(gpa, "{s}{s}", .{ base, ext });
+            defer gpa.free(with_ext);
+            try push(list, gpa, with_ext);
+        }
+    }
+    for (main_files) |main_name| {
+        const with_main = try std.fmt.allocPrint(gpa, "{s}/{s}", .{ base, main_name });
+        defer gpa.free(with_main);
+        try push(list, gpa, with_main);
+    }
+}
 
 fn hasAnyExt(path: []const u8, exts: []const []const u8) bool {
     for (exts) |e| {
