@@ -117,7 +117,7 @@ pub const ModuleGraph = struct {
         }
     };
 
-pub const RunFn = *const fn (ctx: *anyopaque, path: []const u8, mode: LoadMode) anyerror!Artifacts;
+    pub const RunFn = *const fn (ctx: *anyopaque, path: []const u8, mode: LoadMode) anyerror!Artifacts;
 
     pub const prelude_alias_prefix = "$__sr_prelude";
 
@@ -127,21 +127,16 @@ pub const RunFn = *const fn (ctx: *anyopaque, path: []const u8, mode: LoadMode) 
     };
 
     const std_io_prelude_symbols = &.{
-        "print",
-        "print0",
-        "println",
-        "println0",
-        "eprint0",
-        "eprintln0",
-        "panic",
+        "ptrcast",
     };
 
     const std_vendor_preludes = &[_]package_graph.PreludeConfig{
-        .{ .path = "std/io", .reexport = .{ .symbols = std_io_prelude_symbols } },
+        // .{ .path = "std/io", .reexport = .{ .symbols = std_io_prelude_symbols } },
+        .{ .path = "std/prelude", .reexport = .{ .symbols = std_io_prelude_symbols } },
     };
 
     const workspace_preludes = &[_]package_graph.PreludeConfig{
-        .{ .path = "std/io", .reexport = .{ .symbols = std_io_prelude_symbols } },
+        .{ .path = "std/prelude", .reexport = .{ .symbols = std_io_prelude_symbols } },
     };
 
     pub fn workspacePreludeConfigs() []const package_graph.PreludeConfig {
@@ -348,14 +343,14 @@ pub const RunFn = *const fn (ctx: *anyopaque, path: []const u8, mode: LoadMode) 
             const ns = self.packages.deriveNamespace(gpa, pkg_id, match.remainder) catch |err| switch (err) {
                 error.UnknownPackage => blk: {
                     pkg_id = package_graph.PackageId{};
-                    break :blk try package_graph.deriveNamespaceFallback(gpa, import_path);
+                    break :blk try package_graph.PackageGraph.deriveNamespaceFallback(gpa, import_path);
                 },
                 else => return err,
             };
             return .{ .namespace = ns, .package_id = pkg_id };
         }
 
-        const ns = try package_graph.deriveNamespaceFallback(gpa, import_path);
+        const ns = try package_graph.PackageGraph.deriveNamespaceFallback(gpa, import_path);
         return .{ .namespace = ns };
     }
 

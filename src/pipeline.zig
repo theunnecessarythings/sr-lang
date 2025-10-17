@@ -165,12 +165,13 @@ pub const Pipeline = struct {
         const canonical_path_opt = try canonicalizePath(self.allocator, source_path);
         defer if (canonical_path_opt) |p| self.allocator.free(p);
         const module_path = canonical_path_opt orelse source_path;
+        const canonical_module_path: ?[]const u8 = if (canonical_path_opt) |p| p else null;
         const base_dir = moduleBaseDir(module_path);
 
         var prelude_specs: std.ArrayList(PreludeSpec) = .empty;
         defer prelude_specs.deinit(self.allocator);
         try self.context.module_graph.collectPreludeSpecsForModule(module_path, &prelude_specs);
-        try self.injectPreludeImports(&ast, file_id, base_dir, prelude_specs.items);
+        try self.injectPreludeImports(&ast, file_id, base_dir, module_path, canonical_module_path, prelude_specs.items);
 
         if (mode == .ast) {
             type_info_cleanup = false;
@@ -402,6 +403,8 @@ pub const Pipeline = struct {
         ast: *ast_mod.Ast,
         file_id: u32,
         base_dir: []const u8,
+        module_path: []const u8,
+        canonical_module_path: ?[]const u8,
         specs: []const PreludeSpec,
     ) !void {
         if (specs.len == 0) return;
@@ -417,6 +420,9 @@ pub const Pipeline = struct {
         }
 
         for (specs, 0..) |spec, idx| {
+            if (try self.preludeResolvesToSelf(base_dir, module_path, canonical_module_path, spec.path)) {
+                continue;
+            }
             const alias = try createPreludeAlias(self, ast, file_id, spec.path, idx);
             try new_decl_ids.append(self.allocator, alias.decl_id);
             try appendPreludeReexports(self, ast, file_id, base_dir, spec, alias, &seen_exports, &new_decl_ids);
@@ -427,6 +433,32 @@ pub const Pipeline = struct {
 
         const range = ast.exprs.decl_pool.pushMany(ast.gpa, new_decl_ids.items);
         ast.unit.decls = range;
+    }
+
+    fn preludeResolvesToSelf(
+        self: *Pipeline,
+        base_dir: []const u8,
+        module_path: []const u8,
+        canonical_module_path: ?[]const u8,
+        import_path: []const u8,
+    ) !bool {
+        const resolved = self.context.module_graph.resolvePath(base_dir, import_path) catch |err| switch (err) {
+            error.FileNotFound, error.AccessDenied => return false,
+            else => return err,
+        };
+        defer self.context.module_graph.gpa.free(resolved);
+
+        if (canonical_module_path) |canon| {
+            if (std.mem.eql(u8, resolved, canon)) return true;
+        } else {
+            if (std.mem.eql(u8, resolved, module_path)) return true;
+            if (try canonicalizePath(self.allocator, module_path)) |canon| {
+                defer self.allocator.free(canon);
+                if (std.mem.eql(u8, resolved, canon)) return true;
+            }
+        }
+
+        return false;
     }
 
     fn createPreludeAlias(
@@ -613,7 +645,7 @@ fn computeModuleNamespaces(
         };
         const imp = a.exprs.strs.get(sid);
         const ns_info = try graph.namespaceForImport(gpa, imp);
-        var namespace_owned = ns_info.namespace;
+        const namespace_owned = ns_info.namespace;
         const path = gpa.dupe(u8, imp) catch |err| {
             gpa.free(namespace_owned);
             return err;
