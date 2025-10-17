@@ -390,6 +390,7 @@ pub const LowerTir = struct {
 
     pub fn run(self: *LowerTir, a: *const ast.Ast) !tir.TIR {
         var t = tir.TIR.init(self.gpa, &self.context.type_store);
+        t.setLocStore(a.exprs.locs);
         var b = Builder.init(self.gpa, &t);
 
         self.module_call_cache.clearRetainingCapacity();
@@ -1581,7 +1582,7 @@ pub const LowerTir = struct {
         const prev_debug_flag = mlir_codegen.enable_debug_info;
         mlir_codegen.enable_debug_info = false;
         defer mlir_codegen.enable_debug_info = prev_debug_flag;
-        var mlir_module = try gen.emitModule(&tmp_tir, self.context, a.exprs.locs, self.type_info);
+        var mlir_module = try gen.emitModule(&tmp_tir, self.context, self.type_info);
 
         try compile.run_passes(&gen.mlir_ctx, &mlir_module);
         _ = mlir.c.LLVMInitializeNativeTarget();
@@ -1792,6 +1793,7 @@ pub const LowerTir = struct {
         blk: *Builder.BlockFrame,
         id: ast.ExprId,
         expected: ?types.TypeId,
+        mode: LowerMode,
     ) !tir.ValueId {
         const row = a.exprs.get(.Call, id);
         var callee = try self.resolveCallee(a, f, row);
@@ -2067,7 +2069,7 @@ pub const LowerTir = struct {
         var i: usize = 0;
         while (i < arg_ids.len) : (i += 1) {
             const want: ?types.TypeId = if (i < fixed) param_tys[i] else null;
-            const mode: LowerMode = blk: {
+            const lower_mode: LowerMode = blk: {
                 if (method_binding) |mb| {
                     if (mb.requires_implicit_receiver and mb.needs_addr_of and i == 0) {
                         break :blk .lvalue_addr;
@@ -2075,7 +2077,7 @@ pub const LowerTir = struct {
                 }
                 break :blk .rvalue;
             };
-            vals[i] = try self.lowerExpr(a, env, f, blk, arg_ids[i], want, mode);
+            vals[i] = try self.lowerExpr(a, env, f, blk, arg_ids[i], want, lower_mode);
         }
 
         // Final safety: if we know param types, coerce the fixed ones
@@ -2139,8 +2141,41 @@ pub const LowerTir = struct {
             self.type_info.setExprType(id, ret_ty);
             try self.noteExprType(id, ret_ty);
         }
+        const call_val = blk.builder.call(blk, ret_ty, callee.name, vals, loc);
 
-        return blk.builder.call(blk, ret_ty, callee.name, vals, loc);
+        if (mode == .lvalue_addr) {
+            const want_ptr_ty_opt: ?types.TypeId = blk: {
+                if (expected) |want| {
+                    if (self.context.type_store.getKind(want) == .Ptr) break :blk want;
+                }
+                break :blk null;
+            };
+            const elem_ty = if (want_ptr_ty_opt) |want_ptr_ty|
+                self.context.type_store.get(.Ptr, want_ptr_ty).elem
+            else
+                ret_ty;
+            const slot_ty = self.context.type_store.mkPtr(elem_ty, false);
+            const slot = f.builder.tirValue(
+                .Alloca,
+                blk,
+                slot_ty,
+                loc,
+                .{ .count = tir.OptValueId.none(), .@"align" = 0 },
+            );
+            const stored = if (!elem_ty.eq(ret_ty))
+                self.emitCoerce(blk, call_val, ret_ty, elem_ty, loc)
+            else
+                call_val;
+            _ = f.builder.tirValue(.Store, blk, elem_ty, loc, .{ .ptr = slot, .value = stored, .@"align" = 0 });
+            if (want_ptr_ty_opt) |want_ptr_ty| {
+                if (!want_ptr_ty.eq(slot_ty)) {
+                    return self.emitCoerce(blk, slot, slot_ty, want_ptr_ty, loc);
+                }
+            }
+            return slot;
+        }
+
+        return call_val;
     }
 
     fn lowerTypeExprOpaque(
@@ -4539,7 +4574,7 @@ pub const LowerTir = struct {
             .Binary => self.lowerBinary(a, env, f, blk, id, expected_ty),
             .Catch => self.lowerCatch(a, env, f, blk, id, expected_ty),
             .If => self.lowerIf(a, env, f, blk, id, expected_ty),
-            .Call => self.lowerCall(a, env, f, blk, id, expected_ty),
+            .Call => self.lowerCall(a, env, f, blk, id, expected_ty, mode),
             .Cast => self.lowerCast(a, env, f, blk, id, expected_ty),
             .OptionalUnwrap => self.lowerOptionalUnwrap(a, env, f, blk, id, expected_ty),
             .ErrUnwrap => self.lowerErrUnwrap(a, env, f, blk, id, expected_ty),

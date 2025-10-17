@@ -388,7 +388,6 @@ pub const MlirCodegen = struct {
         self: *MlirCodegen,
         t: *const tir.TIR,
         context: *compile.Context,
-        locs: ?*const cst.LocStore,
         type_info: *types.TypeInfo,
     ) !mlir.Module {
         const prev_loc = self.loc;
@@ -398,8 +397,9 @@ pub const MlirCodegen = struct {
         self.active_type_info = type_info;
         defer self.active_type_info = prev_type_info;
 
-        self.active_loc_store = locs;
-        defer self.active_loc_store = null;
+        const prev_loc_store = self.active_loc_store;
+        self.active_loc_store = t.locStore() orelse type_info.locStore();
+        defer self.active_loc_store = prev_loc_store;
 
         self.loc_cache.clearRetainingCapacity();
         try self.attachTargetInfo();

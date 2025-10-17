@@ -202,7 +202,7 @@ pub const ModuleGraph = struct {
         // but avoids more complex changes to the ModuleGraph struct.
         for (self.config.roots, 0..) |root_cfg, i| {
             var new_cfg = root_cfg;
-            new_cfg.path = try std.fs.path.join(self.gpa, &.{project_root, root_cfg.path});
+            new_cfg.path = try std.fs.path.join(self.gpa, &.{ project_root, root_cfg.path });
             absolute_roots[i] = new_cfg;
         }
 

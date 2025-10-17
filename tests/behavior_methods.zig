@@ -72,3 +72,87 @@ test "methods: imported multi-segment access" {
     const code = getSource(globals, src);
     try runCompilerTest(code, "Vec2=11,42\n");
 }
+
+test "methods: imported builder with pointer receiver" {
+    const import_dir = "out/import_method_builder";
+    _ = std.fs.cwd().deleteTree(import_dir) catch {};
+    try std.fs.cwd().makePath(import_dir);
+    defer std.fs.cwd().deleteTree(import_dir) catch {};
+
+    {
+        var file = try std.fs.cwd().createFile("out/import_method_builder/builder.sr", .{ .truncate = true });
+        defer file.close();
+        const builder_src =
+            \\package builder
+            \\Thing :: struct { base: i32 }
+            \\Builder :: struct { owner: *Thing, value: i32 }
+            \\Thing.init :: proc(base: i32) Thing { return Thing{ base: base } }
+            \\Thing.bump :: proc(self: *Thing, delta: i32) void { self.base = self.base + delta }
+            \\Thing.make_builder :: proc(self: *Thing) Builder { return Builder{ owner: self, value: self.base } }
+            \\Builder.add :: proc(self: *Builder, x: i32) *Builder { self.value = self.value + x; return self }
+            \\Builder.finish :: proc(self: *Builder) i32 {
+            \\  self.owner.bump(self.value)
+            \\  return self.owner.base
+            \\}
+        ;
+        try file.writeAll(builder_src);
+    }
+
+    const globals =
+        \\builder :: import "import_method_builder/builder.sr"
+    ;
+    const src =
+        \\main :: proc () i32 {
+        \\  thing := builder.Thing.init(5)
+        \\  ptr := &thing
+        \\  b := ptr.make_builder()
+        \\  b_ptr := &b
+        \\  _ = b_ptr.add(3)
+        \\  result := b_ptr.finish()
+        \\  printf("%d\n", result)
+        \\  return result
+        \\}
+    ;
+    const code = getSource(globals, src);
+    try runCompilerTest(code, "13\n");
+}
+
+test "methods: builder chain on temporary" {
+    const import_dir = "out/import_method_builder";
+    _ = std.fs.cwd().deleteTree(import_dir) catch {};
+    try std.fs.cwd().makePath(import_dir);
+    defer std.fs.cwd().deleteTree(import_dir) catch {};
+
+    {
+        var file = try std.fs.cwd().createFile("out/import_method_builder/builder.sr", .{ .truncate = true });
+        defer file.close();
+        const builder_src =
+            \\package builder
+            \\Thing :: struct { base: i32 }
+            \\Builder :: struct { owner: *Thing, value: i32 }
+            \\Thing.init :: proc(base: i32) Thing { return Thing{ base: base } }
+            \\Thing.bump :: proc(self: *Thing, delta: i32) void { self.base = self.base + delta }
+            \\Thing.make_builder :: proc(self: *Thing) Builder { return Builder{ owner: self, value: self.base } }
+            \\Builder.add :: proc(self: *Builder, x: i32) *Builder { self.value = self.value + x; return self }
+            \\Builder.finish :: proc(self: *Builder) i32 {
+            \\  self.owner.bump(self.value)
+            \\  return self.owner.base
+            \\}
+        ;
+        try file.writeAll(builder_src);
+    }
+
+    const globals =
+        \\builder :: import "import_method_builder/builder.sr"
+    ;
+    const src =
+        \\main :: proc () i32 {
+        \\  thing := builder.Thing.init(7)
+        \\  result := thing.make_builder().add(9).finish()
+        \\  printf("%d %d\\n", result, thing.base)
+        \\  return result
+        \\}
+    ;
+    const code = getSource(globals, src);
+    try runCompilerTest(code, "16 16\\n");
+}
