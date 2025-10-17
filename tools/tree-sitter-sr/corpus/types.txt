@@ -1,30 +1,113 @@
 ==================
 Types
 ==================
-struct Point<T> {
-  x: f64,
-  y: f64,
-  meta: *const T,
+ErrorSet :: error {
+  ThingNotFound,
+  PermissionDenied,
 }
 
-enum Option<T> {
-  Some(T),
-  None,
+Types :: struct {
+  maybe: ?string,
+  array: [10]f64,
+  slice: []u8,
+  dyn: [dyn]i32,
+  map: [string: i32],
+  tuple: (i32, f64, char),
+  nested: ((i32, f64), string),
+  fn_ptr: fn(i32) bool,
+  proc_ptr: proc(string, any) void,
+  ptr: *i32,
+  const_ptr: *const i32,
+  tensor: tensor(2, 3, i32),
+  complex: complex(f32),
+  result: void!ErrorSet,
 }
 ---
 (source_file
-  (struct_declaration
-    name: (identifier)
-    type_parameters: (type_parameters (identifier))
-    body: (struct_body
-      (struct_field name: (identifier) type: (basic_type))
-      (struct_field name: (identifier) type: (basic_type))
-      (struct_field name: (identifier) type: (pointer_type qualifier: (pointer_qualifier) type: (identifier)))))
-  (enum_declaration
-    name: (identifier)
-    type_parameters: (type_parameters (identifier))
-    body: (enum_body
-      (enum_variant
-        name: (identifier)
-        payload: (variant_payload (type)))
-      (enum_variant name: (identifier)))))
+  (const_declaration
+    pattern: (identifier)
+    value: (error_type
+      name: (identifier)
+      name: (identifier)))
+  (const_declaration
+    pattern: (identifier)
+    value: (struct_type
+      body: (struct_body
+        (struct_field
+          name: (identifier)
+          type: (optional_type
+            type: (type_identifier (identifier))))
+        (struct_field
+          name: (identifier)
+          type: (array_type
+            length: (primary_expression
+              (literal (integer_literal)))
+            element: (type_identifier (identifier))))
+        (struct_field
+          name: (identifier)
+          type: (slice_type
+            element: (type_identifier (identifier))))
+        (struct_field
+          name: (identifier)
+          type: (dynamic_array_type
+            element: (type_identifier (identifier))))
+        (struct_field
+          name: (identifier)
+          type: (map_type
+            key: (type_identifier (identifier))
+            value: (type_identifier (identifier))))
+        (struct_field
+          name: (identifier)
+          type: (tuple_type
+            first: (type_identifier (identifier))
+            (type_identifier (identifier))
+            (type_identifier (identifier))))
+        (struct_field
+          name: (identifier)
+          type: (tuple_type
+            first: (tuple_type
+              first: (type_identifier (identifier))
+              (type_identifier (identifier)))
+            (type_identifier (identifier))))
+        (struct_field
+          name: (identifier)
+          type: (function_type
+            parameters: (type_parameter_list
+              (type_parameter
+                type: (type_identifier (identifier))))
+            return_type: (type_identifier (identifier))))
+        (struct_field
+          name: (identifier)
+          type: (procedure_type
+            parameters: (type_parameter_list
+              (type_parameter
+                type: (type_identifier (identifier)))
+              (type_parameter
+                type: (type_identifier (identifier))))
+            return_type: (type_identifier (identifier))))
+        (struct_field
+          name: (identifier)
+          type: (pointer_type
+            type: (type_identifier (identifier))))
+        (struct_field
+          name: (identifier)
+          type: (pointer_type
+            qualifier: (pointer_qualifier)
+            type: (type_identifier (identifier))))
+        (struct_field
+          name: (identifier)
+          type: (type_call
+            function: (type_identifier (identifier))
+            (type_argument (literal (integer_literal)))
+            (type_argument (literal (integer_literal)))
+            (type_argument (identifier))))
+        (struct_field
+          name: (identifier)
+          type: (type_call
+            function: (type_identifier (identifier))
+            (type_argument (identifier))))
+        (struct_field
+          name: (identifier)
+          type: (error_union_type
+            left: (type_identifier (identifier))
+            right: (type_identifier (identifier))))))))

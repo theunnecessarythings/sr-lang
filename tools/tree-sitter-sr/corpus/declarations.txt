@@ -1,29 +1,220 @@
 ==================
-Functions
+Module declarations
 ==================
-fn add<T>(a: i32, b: i32) -> i32 {
-  return a + b;
+package demo
+
+@[inline, export_name=my_add]
+pub add :: fn(
+  @[nonnull] a: i32,
+  @[nonnull] b: i32,
+  level: i32 = 1,
+) i32 {
+  return a + b
 }
 
-proc log(message: str) {
-  print(message);
+printf :: extern proc(*void, any) i32
+
+math :: import math
+rl :: import "vendor/raylib"
+
+@[repr=C]
+Point :: struct {
+  @[align=4] pub x: i32,
+  @[align=4] y: i32,
+}
+
+Value :: union {
+  @[tag=0] i: i32,
+  f: f32,
+}
+
+@[repr=tagged]
+Result :: variant {
+  @[ok_attr] Ok(i32),
+  @[err_attr]
+  Err {
+    @[code=1] err_code: i32,
+    msg: string,
+  },
+  None,
+}
+
+Colors :: enum(u8) {
+  Red,
+  @[val=2] Blue = 2,
+}
+
+mlir {
+  func.func @sub(%a: i64, %b: i64) -> i64 {
+    %res = arith.subi %a, %b : i64
+    func.return %res : i64
+  }
+}
+
+main :: proc() {
+  mlir {
+    func.func @add(%a: i64, %b: i64) -> i64 {
+      %res = arith.addi %a, %b : i64
+      func.return %res : i64
+    }
+  }
 }
 ---
 (source_file
-  (function_declaration
-    name: (identifier)
-    type_parameters: (type_parameters (identifier))
-    parameters: (parameters
-      (parameter pattern: (identifier) type: (basic_type))
-      (parameter pattern: (identifier) type: (basic_type)))
-    return_type: (basic_type)
-    body: (block
-      (statement
-        (return_statement (binary_expression (identifier) (identifier))))))
-  (procedure_declaration
-    name: (identifier)
-    parameters: (parameters
-      (parameter pattern: (identifier) type: (basic_type)))
-    body: (block
-      (statement
-        (expression_statement (call_expression function: (identifier) arguments: (arguments (identifier))))))))
+  (package_declaration
+    name: (path
+      root: (identifier)))
+  (const_declaration
+    attribute: (attribute
+      (attribute_argument
+        name: (identifier))
+      (attribute_argument
+        name: (identifier)
+        value: (identifier)))
+    modifier: (declaration_modifier)
+    pattern: (identifier)
+    value: (fn_expression
+      parameters: (parameter_list
+        (parameter
+          attribute: (attribute
+            (attribute_argument
+              name: (identifier)))
+          pattern: (identifier)
+          type: (type_identifier (identifier)))
+        (parameter
+          attribute: (attribute
+            (attribute_argument
+              name: (identifier)))
+          pattern: (identifier)
+          type: (type_identifier (identifier)))
+        (parameter
+          pattern: (identifier)
+          type: (type_identifier (identifier))
+          default_value: (primary_expression
+            (literal (integer_literal)))) )
+      return_type: (type_identifier (identifier))
+      body: (block
+        (return_statement
+          (binary_expression
+            left: (primary_expression (identifier))
+            right: (primary_expression (identifier)))))))
+  (const_declaration
+    pattern: (identifier)
+    value: (proc_expression
+      modifier: (identifier)
+      parameters: (parameter_list
+        (parameter
+          type: (pointer_type
+            type: (type_identifier (identifier))) )
+        (parameter
+          type: (type_identifier (identifier))))
+      return_type: (type_identifier (identifier))))
+  (const_declaration
+    pattern: (identifier)
+    value: (import_expression
+      path: (identifier)))
+  (const_declaration
+    pattern: (identifier)
+    value: (import_expression
+      path: (literal (string_literal))))
+  (const_declaration
+    attribute: (attribute
+      (attribute_argument
+        name: (identifier)))
+    pattern: (identifier)
+    value: (struct_type
+      body: (struct_body
+        (struct_field
+          attribute: (attribute
+            (attribute_argument
+              name: (identifier)
+              value: (literal (integer_literal))))
+          modifier: (declaration_modifier)
+          name: (identifier)
+          type: (type_identifier (identifier)))
+        (struct_field
+          attribute: (attribute
+            (attribute_argument
+              name: (identifier)
+              value: (literal (integer_literal))))
+          name: (identifier)
+          type: (type_identifier (identifier))))))
+  (const_declaration
+    pattern: (identifier)
+    value: (union_type
+      body: (union_body
+        (union_field
+          attribute: (attribute
+            (attribute_argument
+              name: (identifier)
+              value: (literal (integer_literal))))
+          name: (identifier)
+          type: (type_identifier (identifier)))
+        (union_field
+          name: (identifier)
+          type: (type_identifier (identifier))))))
+  (const_declaration
+    attribute: (attribute
+      (attribute_argument
+        name: (identifier)))
+    pattern: (identifier)
+    value: (variant_type
+      body: (variant_body
+        (variant_case
+          attribute: (attribute
+            (attribute_argument
+              name: (identifier)))
+          name: (identifier)
+          payload: (variant_payload
+            (type_identifier (identifier))))
+        (variant_case
+          attribute: (attribute
+            (attribute_argument
+              name: (identifier)))
+          name: (identifier)
+          payload: (variant_payload
+            (struct_field
+              attribute: (attribute
+                (attribute_argument
+                  name: (identifier)
+                  value: (literal (integer_literal))))
+              name: (identifier)
+              type: (type_identifier (identifier)))
+            (struct_field
+              name: (identifier)
+              type: (type_identifier (identifier)))))
+        (variant_case
+          name: (identifier)))) )
+  (const_declaration
+    pattern: (identifier)
+    value: (enum_type
+      body: (enum_body
+        (enum_variant
+          name: (identifier))
+        (enum_variant
+          attribute: (attribute
+            (attribute_argument
+              name: (identifier)
+              value: (literal (integer_literal))))
+          name: (identifier)
+          value: (primary_expression
+            (literal (integer_literal)))))))
+  (statement
+  (mlir_expression
+      body: (mlir_body
+        (mlir_text)
+        (mlir_body
+          body: (mlir_body
+            (mlir_text))))))
+  (const_declaration
+    pattern: (identifier)
+    value: (proc_expression
+      parameters: (parameter_list)
+      body: (block
+        (statement
+          (mlir_expression
+            body: (mlir_body
+              (mlir_text)
+              (mlir_body
+                body: (mlir_body
+                  (mlir_text))))))))))
