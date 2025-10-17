@@ -275,7 +275,7 @@ fn process_file(
     err_writer: anytype,
     out_writer: anytype,
     link_args: []const []const u8,
-) !void {
+) anyerror!void {
     var compiler_ctx = lib.compile.Context.init(allocator);
     defer compiler_ctx.deinit();
     var pipeline = lib.pipeline.Pipeline.init(allocator, &compiler_ctx);

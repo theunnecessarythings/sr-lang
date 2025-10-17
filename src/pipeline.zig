@@ -96,7 +96,7 @@ pub const Pipeline = struct {
         link_args: []const []const u8,
         mode: Mode,
     ) anyerror!Result {
-        const runner_ctx = @ptrCast(*anyopaque, self);
+        const runner_ctx: *anyopaque = @ptrCast(self);
         self.context.resolver.enterPipeline(runner_ctx, runModuleForGraph);
         defer self.context.resolver.leavePipeline(runner_ctx);
         const type_info = try self.allocator.create(types.TypeInfo);
@@ -365,8 +365,7 @@ fn runModuleForGraph(
     path: []const u8,
     mode: module_graph.LoadMode,
 ) anyerror!module_graph.ModuleGraph.Artifacts {
-    const aligned = @alignCast(@alignOf(Pipeline), ctx);
-    const pipeline = @ptrCast(*Pipeline, aligned);
+    const pipeline: *Pipeline = @ptrCast(@alignCast(ctx));
     return pipeline.runModuleArtifacts(path, mode);
 }
 
