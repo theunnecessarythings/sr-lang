@@ -35,7 +35,7 @@ pub const Pipeline = struct {
     next_module_id: usize = 1,
     mlir_ctx: ?mlir.Context = null,
 
-    const Mode = enum {
+    pub const Mode = enum {
         lex,
         parse,
         ast,
@@ -226,8 +226,8 @@ pub const Pipeline = struct {
         var gen = mlir_codegen.MlirCodegen.init(self.allocator, self.context, mlir_ctx_ptr.*);
         gen.resetDebugCaches();
 
-        var dependencies = std.ArrayList(*module_graph.ModuleEntry).init(self.allocator);
-        defer dependencies.deinit();
+        var dependencies: std.ArrayList(*module_graph.ModuleEntry) = .empty;
+        defer dependencies.deinit(self.allocator);
 
         tir_lowerer.import_base_dir = base_dir;
         try self.context.module_graph.loadDependencies(
@@ -349,6 +349,52 @@ pub const Pipeline = struct {
             .type_info = result.type_info,
             .module_id = result.module_id,
         };
+    }
+
+    fn verifyPackageDeclaration(
+        self: *Pipeline,
+        ast: *const ast_mod.Ast,
+        file_id: u32,
+        source_path: []const u8,
+        is_entry: bool,
+    ) !bool {
+        var had_error = false;
+        const declared_name = declareName(ast);
+        const pkg_loc = packageLocOrDefault(ast, file_id);
+
+        if (is_entry) {
+            if (declared_name) |decl| {
+                if (!namesEqual(decl, "main")) {
+                    try self.context.diags.addError(pkg_loc, .entry_package_not_main, .{decl});
+                    return true;
+                }
+            } else {
+                try self.context.diags.addError(pkg_loc, .entry_package_missing, .{});
+                return true;
+            }
+        }
+
+        const canonical_path_opt = try canonicalizePath(self.allocator, source_path);
+        defer if (canonical_path_opt) |p| self.allocator.free(p);
+
+        const lookup_path = canonical_path_opt orelse source_path;
+        if (self.context.module_graph.findModuleByPath(lookup_path)) |match| {
+            const expected = self.context.module_graph.config.discovery.expectedPackageName(match.key);
+            if (declared_name) |decl| {
+                if (!namesEqual(decl, expected)) {
+                    if (!is_entry or !namesEqual(decl, "main")) {
+                        //try self.context.diags.addError(pkg_loc, .package_mismatch, .{ expected, decl });
+                        try self.context.diags.addError(pkg_loc, .package_mismatch, .{});
+                        had_error = true;
+                    }
+                }
+            } else {
+                try self.context.diags.addError(pkg_loc, .package_missing_declaration, .{expected});
+                had_error = true;
+            }
+        }
+
+        return had_error;
     }
 };
 
@@ -539,51 +585,6 @@ fn declareName(ast: *const ast_mod.Ast) ?[]const u8 {
     if (ast.unit.package_name.isNone()) return null;
     const sid = ast.unit.package_name.unwrap();
     return ast.exprs.strs.get(sid);
-}
-
-fn verifyPackageDeclaration(
-    self: *Pipeline,
-    ast: *const ast_mod.Ast,
-    file_id: u32,
-    source_path: []const u8,
-    is_entry: bool,
-) !bool {
-    var had_error = false;
-    const declared_name = declareName(ast);
-    const pkg_loc = packageLocOrDefault(ast, file_id);
-
-    if (is_entry) {
-        if (declared_name) |decl| {
-            if (!namesEqual(decl, "main")) {
-                try self.context.diags.addError(pkg_loc, .entry_package_not_main, .{decl});
-                return true;
-            }
-        } else {
-            try self.context.diags.addError(pkg_loc, .entry_package_missing, .{});
-            return true;
-        }
-    }
-
-    var canonical_path_opt = try canonicalizePath(self.allocator, source_path);
-    defer if (canonical_path_opt) |p| self.allocator.free(p);
-
-    const lookup_path = canonical_path_opt orelse source_path;
-    if (self.context.module_graph.findModuleByPath(lookup_path)) |match| {
-        const expected = self.context.module_graph.config.discovery.expectedPackageName(match.key);
-        if (declared_name) |decl| {
-            if (!namesEqual(decl, expected)) {
-                if (!is_entry or !namesEqual(decl, "main")) {
-                    try self.context.diags.addError(pkg_loc, .package_mismatch, .{ expected, decl });
-                    had_error = true;
-                }
-            }
-        } else {
-            try self.context.diags.addError(pkg_loc, .package_missing_declaration, .{ expected });
-            had_error = true;
-        }
-    }
-
-    return had_error;
 }
 
 fn toPipelineMode(mode: module_graph.LoadMode) Pipeline.Mode {

@@ -1,30 +1,28 @@
 ==================
 Types
 ==================
-struct Point<T> {
-  x: f64,
-  y: f64,
-  meta: *const T,
+ptr_type :: extern proc(ptr: *void) {
+  return
 }
-
-enum Option<T> {
-  Some(T),
-  None,
-}
+value: *i32 = 0
+alias : Vector = Vector
 ---
 (source_file
-  (struct_declaration
-    name: (identifier)
-    type_parameters: (type_parameters (identifier))
-    body: (struct_body
-      (struct_field name: (identifier) type: (basic_type))
-      (struct_field name: (identifier) type: (basic_type))
-      (struct_field name: (identifier) type: (pointer_type qualifier: (pointer_qualifier) type: (identifier)))))
-  (enum_declaration
-    name: (identifier)
-    type_parameters: (type_parameters (identifier))
-    body: (enum_body
-      (enum_variant
-        name: (identifier)
-        payload: (variant_payload (type)))
-      (enum_variant name: (identifier)))))
+  (const_declaration
+    pattern: (identifier)
+    value: (primary_expression
+      (proc_expression
+        parameters: (parameter_list
+          (parameter
+            pattern: (identifier)
+            type: (pointer_type (type_identifier (identifier)))))
+        body: (block
+          (return_statement)))))
+  (var_declaration
+    pattern: (identifier)
+    type: (pointer_type (type_identifier (identifier)))
+    value: (primary_expression (literal (integer_literal))))
+  (var_declaration
+    pattern: (identifier)
+    type: (type_identifier (identifier))
+    value: (primary_expression (identifier))))

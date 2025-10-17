@@ -69,10 +69,10 @@ pub const Rules = struct {
         rel_with_ext: []const u8,
         matched_ext: []const u8,
     ) !ModuleKeys {
-        var list = std.ArrayList([]const u8).init(gpa);
+        var list: std.ArrayList([]const u8) = .empty;
         errdefer {
             for (list.items) |item| gpa.free(item);
-            list.deinit();
+            list.deinit(gpa);
         }
 
         try appendNormalized(&list, gpa, rel_with_ext);
@@ -97,7 +97,7 @@ pub const Rules = struct {
 
         return ModuleKeys{
             .allocator = gpa,
-            .items = try list.toOwnedSlice(),
+            .items = try list.toOwnedSlice(gpa),
         };
     }
 
@@ -158,7 +158,7 @@ fn appendNormalized(
         gpa.free(normalized);
         return;
     }
-    try list.append(normalized);
+    try list.append(gpa, normalized);
 }
 
 fn appendKey(
@@ -172,7 +172,7 @@ fn appendKey(
         gpa.free(duped);
         return;
     }
-    try list.append(duped);
+    try list.append(gpa, duped);
 }
 
 fn contains(items: []const []const u8, key: []const u8) bool {
@@ -183,7 +183,7 @@ fn contains(items: []const []const u8, key: []const u8) bool {
 }
 
 pub fn normalizeKey(gpa: std.mem.Allocator, input: []const u8) ![]u8 {
-    var out = try gpa.dupe(u8, input);
+    const out = try gpa.dupe(u8, input);
     if (std.fs.path.sep != '/') {
         for (out) |*c| {
             if (c.* == std.fs.path.sep) {

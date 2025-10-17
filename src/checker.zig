@@ -2188,9 +2188,9 @@ pub const Checker = struct {
 
     fn importMemberTypeByPath(self: *Checker, res: *module_graph.ModuleGraph, path: []const u8, member: ast.StrId) ?types.TypeId {
         const target = self.getStr(member);
-        const lookup = res.lookupExport(self.import_base_dir, path, target, .check) catch return null;
-        if (!lookup.found) return null;
-        return lookup.ty;
+        const look_up = res.lookupExport(self.import_base_dir, path, target, .check) catch return null;
+        if (!look_up.found) return null;
+        return look_up.ty;
     }
 
     pub fn importMemberType(self: *Checker, import_eid: ast.ExprId, member: ast.StrId) ?types.TypeId {
