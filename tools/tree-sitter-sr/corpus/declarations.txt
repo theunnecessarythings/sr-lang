@@ -1,29 +1,65 @@
 ==================
-Functions
+Top level
 ==================
-fn add<T>(a: i32, b: i32) -> i32 {
-  return a + b;
+package main
+
+printf :: extern proc(message: str) {
+  return
 }
 
-proc log(message: str) {
-  print(message);
+add :: proc(a: i64, b: i64) i64 {
+  return a + b
 }
+
+fmt := "%d\n"
+result: i64 = add(40, 2)
+greeting : string : "hello"
 ---
 (source_file
-  (function_declaration
-    name: (identifier)
-    type_parameters: (type_parameters (identifier))
-    parameters: (parameters
-      (parameter pattern: (identifier) type: (basic_type))
-      (parameter pattern: (identifier) type: (basic_type)))
-    return_type: (basic_type)
-    body: (block
-      (statement
-        (return_statement (binary_expression (identifier) (identifier))))))
-  (procedure_declaration
-    name: (identifier)
-    parameters: (parameters
-      (parameter pattern: (identifier) type: (basic_type)))
-    body: (block
-      (statement
-        (expression_statement (call_expression function: (identifier) arguments: (arguments (identifier))))))))
+  (package_declaration
+    name: (path
+      root: (identifier)))
+  (const_declaration
+    pattern: (identifier)
+    value: (primary_expression
+      (proc_expression
+        parameters: (parameter_list
+          (parameter
+            pattern: (identifier)
+            type: (type_identifier (identifier))))
+        body: (block
+          (return_statement)))))
+  (const_declaration
+    pattern: (identifier)
+    value: (primary_expression
+      (proc_expression
+        parameters: (parameter_list
+          (parameter
+            pattern: (identifier)
+            type: (type_identifier (identifier)))
+          (parameter
+            pattern: (identifier)
+            type: (type_identifier (identifier))))
+        return_type: (type_identifier (identifier))
+        body: (block
+          (return_statement
+            (binary_expression
+              left: (primary_expression (identifier))
+              right: (primary_expression (identifier))))))))
+  (var_declaration
+    pattern: (identifier)
+    value: (primary_expression
+      (literal (string_literal))))
+  (var_declaration
+    pattern: (identifier)
+    type: (type_identifier (identifier))
+    value: (call_expression
+      function: (primary_expression (identifier))
+      arguments: (argument_list
+        (primary_expression (literal (integer_literal)))
+        (primary_expression (literal (integer_literal))))))
+  (const_declaration
+    pattern: (identifier)
+    type: (type_identifier (identifier))
+    value: (primary_expression
+      (literal (string_literal))))))
