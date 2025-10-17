@@ -1,3 +1,5 @@
+package path
+
 // Simple path utilities for POSIX-style paths
 
 rt_strlen :: extern proc(*u8) usize

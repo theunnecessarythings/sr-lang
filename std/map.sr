@@ -1,3 +1,5 @@
+package map
+
 // String-keyed map with linear search, backed by std/array
 
 io   :: import "std/io"

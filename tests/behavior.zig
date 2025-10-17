@@ -1,6 +1,7 @@
 const std = @import("std");
 
 const test_harness =
+    \\ package main
     \\ printf :: extern proc(string, any) i32
     \\ __assert_fail :: extern proc(string, string, i32, string) void
     \\ assert :: proc (cond: bool) {{

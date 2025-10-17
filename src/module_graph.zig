@@ -7,6 +7,7 @@ const package_graph = @import("package/graph.zig");
 
 pub const PackageId = package_graph.PackageId;
 pub const PackageInfo = package_graph.PackageInfo;
+pub const ModuleMatch = package_graph.ModuleMatch;
 
 pub const LoadMode = enum(u4) {
     lex,
@@ -165,6 +166,10 @@ pub const ModuleGraph = struct {
 
     pub fn matchPackageImport(self: *const ModuleGraph, import_path: []const u8) ?package_graph.PackageGraph.Match {
         return self.packages.matchImport(import_path);
+    }
+
+    pub fn findModuleByPath(self: *const ModuleGraph, canonical_path: []const u8) ?ModuleMatch {
+        return self.packages.findModuleByPath(canonical_path);
     }
 
     pub fn enterPipeline(self: *ModuleGraph, ctx: *anyopaque, run_fn: RunFn) void {
