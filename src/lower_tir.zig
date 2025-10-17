@@ -1400,22 +1400,23 @@ pub const LowerTir = struct {
         info: ModuleAliasInfo,
         member_name: []const u8,
     ) bool {
-        const me = self.context.resolver.resolve(self.import_base_dir, info.import_path, self.pipeline) catch return false;
-        const decls = me.ast.exprs.decl_pool.slice(me.ast.unit.decls);
+        const me = self.context.resolver.ensureModule(self.import_base_dir, info.import_path, .tir) catch return false;
+        const imported_ast = me.astRef();
+        const decls = imported_ast.exprs.decl_pool.slice(imported_ast.unit.decls);
         var i: usize = 0;
         while (i < decls.len) : (i += 1) {
-            const d = me.ast.exprs.Decl.get(decls[i]);
+            const d = imported_ast.exprs.Decl.get(decls[i]);
             if (d.pattern.isNone()) continue;
             const pid = d.pattern.unwrap();
-            const pk = me.ast.pats.index.kinds.items[pid.toRaw()];
+            const pk = imported_ast.pats.index.kinds.items[pid.toRaw()];
             if (pk != .Binding) continue;
-            const binding = me.ast.pats.get(.Binding, pid);
-            const binding_name = me.ast.exprs.strs.get(binding.name);
+            const binding = imported_ast.pats.get(.Binding, pid);
+            const binding_name = imported_ast.exprs.strs.get(binding.name);
             if (!std.mem.eql(u8, binding_name, member_name)) continue;
 
-            const kind = me.ast.exprs.index.kinds.items[d.value.toRaw()];
+            const kind = imported_ast.exprs.index.kinds.items[d.value.toRaw()];
             if (kind != .FunctionLit) return false;
-            const fn_lit = me.ast.exprs.get(.FunctionLit, d.value);
+            const fn_lit = imported_ast.exprs.get(.FunctionLit, d.value);
             if (fn_lit.flags.is_extern) return true;
             // Treat function declarations without a body as extern. This covers
             // imported prototypes that were parsed via `extern proc` but lost
@@ -4722,19 +4723,20 @@ pub const LowerTir = struct {
         };
         const s_full = a.exprs.strs.get(sid);
 
-        const me = res.resolve(self.import_base_dir, s_full, pipeline) catch return null;
+        const me = res.ensureModule(self.import_base_dir, s_full, .tir) catch return null;
         // Find member decl by name
         const want = a.exprs.strs.get(member);
-        const decls = me.ast.exprs.decl_pool.slice(me.ast.unit.decls);
+        const imported_ast = me.astRef();
+        const decls = imported_ast.exprs.decl_pool.slice(imported_ast.unit.decls);
         var i: usize = 0;
         while (i < decls.len) : (i += 1) {
-            const d2 = me.ast.exprs.Decl.get(decls[i]);
+            const d2 = imported_ast.exprs.Decl.get(decls[i]);
             if (d2.pattern.isNone()) continue;
             const pid = d2.pattern.unwrap();
-            const pk = me.ast.pats.index.kinds.items[pid.toRaw()];
+            const pk = imported_ast.pats.index.kinds.items[pid.toRaw()];
             if (pk != .Binding) continue;
-            const b = me.ast.pats.get(.Binding, pid);
-            const nm = me.ast.exprs.strs.get(b.name);
+            const b = imported_ast.pats.get(.Binding, pid);
+            const nm = imported_ast.exprs.strs.get(b.name);
             if (std.mem.eql(u8, nm, want)) {
                 var want_ty = expected_ty;
                 if (self.isAny(want_ty)) {
@@ -4848,12 +4850,13 @@ pub const LowerTir = struct {
     }
 
     fn lowerImportedExprValue(self: *LowerTir, me: *@import("import_resolver.zig").ModuleEntry, eid: ast.ExprId, expected_ty: types.TypeId, blk: *Builder.BlockFrame) ?tir.ValueId {
-        const kinds = me.ast.exprs.index.kinds.items;
+        const imported_ast = me.astRef();
+        const kinds = imported_ast.exprs.index.kinds.items;
         switch (kinds[eid.toRaw()]) {
             .StructLit => {
                 if (self.context.type_store.getKind(expected_ty) != .Struct) return null;
-                const row = me.ast.exprs.get(.StructLit, eid);
-                const sfields = me.ast.exprs.sfv_pool.slice(row.fields);
+                const row = imported_ast.exprs.get(.StructLit, eid);
+                const sfields = imported_ast.exprs.sfv_pool.slice(row.fields);
                 const st = self.context.type_store.get(.Struct, expected_ty);
                 const exp_fields = self.context.type_store.field_pool.slice(st.fields);
                 const loc = tir.OptLocId.none();
@@ -4862,7 +4865,7 @@ pub const LowerTir = struct {
                 while (j < exp_fields.len) : (j += 1) {
                     const f = self.context.type_store.Field.get(exp_fields[j]);
                     const src_idx = if (j < sfields.len) j else sfields.len - 1;
-                    const sfv = me.ast.exprs.StructFieldValue.get(sfields[src_idx]);
+                    const sfv = imported_ast.exprs.StructFieldValue.get(sfields[src_idx]);
                     const vv = self.lowerImportedExprValue(me, sfv.value, f.ty, blk) orelse {
                         self.gpa.free(fields);
                         return null;
@@ -4874,7 +4877,7 @@ pub const LowerTir = struct {
                 return v;
             },
             .Literal => {
-                const lit = me.ast.exprs.get(.Literal, eid);
+                const lit = imported_ast.exprs.get(.Literal, eid);
                 const k = self.context.type_store.getKind(expected_ty);
                 const loc = tir.OptLocId.none();
                 switch (k) {

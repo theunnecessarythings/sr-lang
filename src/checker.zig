@@ -2188,7 +2188,7 @@ pub const Checker = struct {
     }
 
     fn importMemberTypeByPath(self: *Checker, res: *ImportResolver, path: []const u8, member: ast.StrId) ?types.TypeId {
-        const me = res.resolve(self.import_base_dir, path, self.pipeline) catch return null;
+        const me = res.ensureModule(self.import_base_dir, path, .tir) catch return null;
         const target = self.getStr(member);
         if (me.syms.get(target)) |ty| {
             return ty;
@@ -3237,7 +3237,7 @@ pub const Checker = struct {
             },
         };
         const path = self.getStr(sid);
-        _ = self.context.resolver.resolve(self.import_base_dir, path, self.pipeline) catch {
+        _ = self.context.resolver.ensureModule(self.import_base_dir, path, .tir) catch {
             try self.context.diags.addError(self.exprLoc(lit), .import_not_found, .{});
             return self.context.type_store.tAny();
         };
