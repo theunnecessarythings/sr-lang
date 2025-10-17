@@ -54,3 +54,58 @@ test "ModuleGraph resolves directory main file" {
 
     try std.testing.expectEqualStrings(expected, resolved);
 }
+
+test "ModuleGraph discovery finds std, vendor, examples, and workspace modules" {
+    var graph = ModuleGraph.init(std.testing.allocator);
+    defer graph.deinit();
+
+    const std_path = try graph.resolvePath("", "std/array");
+    defer std.testing.allocator.free(std_path);
+    try std.testing.expect(std.mem.endsWith(u8, std_path, "std/array.sr"));
+
+    const vendor_path = try graph.resolvePath("", "vendor/raylib");
+    defer std.testing.allocator.free(vendor_path);
+    try std.testing.expect(std.mem.endsWith(u8, vendor_path, "vendor/raylib.sr"));
+
+    const example_path = try graph.resolvePath("", "examples/imports");
+    defer std.testing.allocator.free(example_path);
+    try std.testing.expect(std.mem.endsWith(u8, example_path, "examples/imports/main.sr"));
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try tmp.dir.makePath("workspace_main");
+    try tmp.dir.writeFile(.{ .sub_path = "workspace_main/main.sr", .data = "// main\n" });
+    try tmp.dir.writeFile(.{ .sub_path = "workspace_main/app.sr", .data = "// app\n" });
+
+    try tmp.dir.makePath("workspace_named");
+    try tmp.dir.writeFile(.{ .sub_path = "workspace_named/workspace_named.sr", .data = "// named\n" });
+
+    const workspace_main_path = try tmp.dir.realpathAlloc(std.testing.allocator, "workspace_main");
+    defer std.testing.allocator.free(workspace_main_path);
+    const workspace_named_path = try tmp.dir.realpathAlloc(std.testing.allocator, "workspace_named");
+    defer std.testing.allocator.free(workspace_named_path);
+
+    const RootConfig = @TypeOf(graph.config.roots[0]);
+    var roots = std.ArrayList(RootConfig).init(std.testing.allocator);
+    defer roots.deinit();
+    try roots.appendSlice(graph.config.roots);
+    try roots.append(.{ .name = "workspace_main", .path = workspace_main_path });
+    try roots.append(.{ .name = "workspace_named", .path = workspace_named_path });
+    const combined = try roots.toOwnedSlice();
+    defer std.testing.allocator.free(combined);
+
+    try graph.setConfig(.{ .roots = combined, .discovery = graph.config.discovery });
+
+    const workspace_main = try graph.resolvePath("", "workspace_main");
+    defer std.testing.allocator.free(workspace_main);
+    try std.testing.expect(std.mem.endsWith(u8, workspace_main, "workspace_main/main.sr"));
+
+    const workspace_member = try graph.resolvePath("", "workspace_main/app");
+    defer std.testing.allocator.free(workspace_member);
+    try std.testing.expect(std.mem.endsWith(u8, workspace_member, "workspace_main/app.sr"));
+
+    const workspace_named = try graph.resolvePath("", "workspace_named");
+    defer std.testing.allocator.free(workspace_named);
+    try std.testing.expect(std.mem.endsWith(u8, workspace_named, "workspace_named/workspace_named.sr"));
+}
