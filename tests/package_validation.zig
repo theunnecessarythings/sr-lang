@@ -132,6 +132,48 @@ test "package validation: mismatched declaration" {
     try std.testing.expect(false);
 }
 
+test "package validation: directory import requires matching package" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try tmp.dir.makePath("pkg/util");
+    try tmp.dir.writeFile(.{
+        .sub_path = "pkg/util/main.sr",
+        .data = "package main\nvalue :: 1\n",
+    });
+    try tmp.dir.writeFile(.{
+        .sub_path = "pkg/consumer.sr",
+        .data =
+            \\package main
+            \\util :: import "pkg/util"
+            \\main :: proc() {
+            \\    _ = util.value
+            \\}
+            \\ 
+        ,
+    });
+
+    const root_path = try tmp.dir.realpathAlloc(gpa, "pkg");
+    defer gpa.free(root_path);
+
+    var context = compiler.compile.Context.init(gpa);
+    defer context.deinit();
+    try extendRoots(&context, "pkg", root_path);
+
+    var pipeline = compiler.pipeline.Pipeline.init(gpa, &context);
+    const file_path = try std.fs.path.join(gpa, &.{ root_path, "consumer.sr" });
+    defer gpa.free(file_path);
+
+    var run_result = pipeline.runWithImports(file_path, &.{}, .check) catch |err| {
+        try std.testing.expectEqual(error.PackageValidationFailed, err);
+        try std.testing.expectEqual(@as(usize, 1), context.diags.count());
+        try std.testing.expectEqual(diag.DiagnosticCode.package_mismatch, context.diags.messages.items[0].code);
+        return;
+    };
+    defer freeResult(&run_result, &context, gpa);
+    try std.testing.expect(false);
+}
+
 test "package validation: entry module must be main" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();

@@ -1,3 +1,5 @@
+package concepts_as_functions
+
 // Semantic Example: Concepts as Compile-Time Functions
 
 // This example demonstrates a powerful way to enforce generic constraints

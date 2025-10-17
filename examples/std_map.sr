@@ -1,3 +1,5 @@
+package main
+
 // Example: simple string-keyed map
 
 io  :: import "std/io"

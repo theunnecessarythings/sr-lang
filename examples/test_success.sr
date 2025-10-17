@@ -1,4 +1,4 @@
-package main
+package test_success
 
 a := 31
 b :: 231.0i + a * 2.0
