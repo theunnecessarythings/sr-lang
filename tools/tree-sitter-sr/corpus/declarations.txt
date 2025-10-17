@@ -1,10 +1,5 @@
 ==================
 Module declarations
-}
-
-fmt := "%d\n"
-result: i64 = add(40, 2)
-greeting : string : "hello"
 ---
 (source_file
   (package_declaration
