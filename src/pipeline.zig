@@ -148,7 +148,6 @@ pub const Pipeline = struct {
         var ast = try lower_pass.run();
         ast.module_id = module_id;
         type_info.setModule(module_id);
-        type_info.setLocStore(ast.exprs.locs);
         if (self.context.diags.anyErrors()) {
             return error.LoweringFailed;
         }

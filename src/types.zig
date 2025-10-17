@@ -42,7 +42,6 @@ pub const TypeInfo = struct {
     gpa: std.mem.Allocator,
     store: *TypeStore,
     module_id: usize = 0,
-    loc_store: ?*const cst.LocStore = null,
     expr_types: std.ArrayListUnmanaged(?TypeId) = .{},
     decl_types: std.ArrayListUnmanaged(?TypeId) = .{},
     field_index_for_expr: std.AutoArrayHashMapUnmanaged(u32, u32) = .{},
@@ -76,14 +75,6 @@ pub const TypeInfo = struct {
 
     pub fn setModule(self: *TypeInfo, module_id: usize) void {
         self.module_id = module_id;
-    }
-
-    pub fn setLocStore(self: *TypeInfo, locs: *const cst.LocStore) void {
-        self.loc_store = locs;
-    }
-
-    pub fn locStore(self: *const TypeInfo) ?*const cst.LocStore {
-        return self.loc_store;
     }
 
     pub fn print(self: *TypeInfo) void {

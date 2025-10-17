@@ -512,14 +512,6 @@ pub const TIR = struct {
         self.terms.deinit();
         self.funcs.deinit();
     }
-
-    pub fn setLocStore(self: *TIR, locs: *const dod.LocStore) void {
-        self.loc_store = locs;
-    }
-
-    pub fn locStore(self: *const TIR) ?*const dod.LocStore {
-        return self.loc_store;
-    }
 };
 
 // ============================

@@ -36,7 +36,7 @@ pub const Parser = struct {
             .cur = cur,
             .nxt = nxt,
             .context = context,
-            .cst = .init(gpa, context.interner),
+            .cst = .init(gpa, context.interner, context.loc_store),
         };
     }
 

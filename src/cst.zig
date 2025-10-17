@@ -780,11 +780,11 @@ pub const ExprStore = struct {
 
     // Infra
     strs: *StringInterner,
-    locs: LocStore = .{},
+    locs: *LocStore,
 
     // ----- lifecycle -----
-    pub fn init(gpa: std.mem.Allocator, strs: *StringInterner) ExprStore {
-        return .{ .gpa = gpa, .strs = strs };
+    pub fn init(gpa: std.mem.Allocator, strs: *StringInterner, locs: *LocStore) ExprStore {
+        return .{ .gpa = gpa, .strs = strs, .locs = locs };
     }
     pub fn deinit(self: *@This()) void {
         const gpa = self.gpa;
@@ -820,8 +820,6 @@ pub const ExprStore = struct {
         self.vfield_pool.deinit(gpa);
         self.method_path_pool.deinit(gpa);
         self.mlir_piece_pool.deinit(gpa);
-
-        self.locs.deinit(gpa);
     }
 
     pub fn add(self: *@This(), comptime K: ExprKind, row: RowT(K)) ExprId {
@@ -965,10 +963,10 @@ pub const CST = struct {
     program: ProgramDO,
     interner: *StringInterner,
 
-    pub fn init(gpa: std.mem.Allocator, interner: *StringInterner) CST {
+    pub fn init(gpa: std.mem.Allocator, interner: *StringInterner, locs: *LocStore) CST {
         return .{
             .gpa = gpa,
-            .exprs = ExprStore.init(gpa, interner),
+            .exprs = ExprStore.init(gpa, interner, locs),
             .pats = PatternStore.init(gpa, interner),
             .program = .{ .top_decls = RangeOf(DeclId).empty(), .package_name = OptStrId.none(), .package_loc = OptLocId.none() },
             .interner = interner,

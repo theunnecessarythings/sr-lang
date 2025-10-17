@@ -12,11 +12,6 @@ const ArrayList = std.array_list.Managed;
 
 pub var enable_debug_info: bool = false;
 
-const LocKey = struct {
-    store: usize,
-    raw: u32,
-};
-
 const LineInfo = struct {
     line: usize,
     col: usize,
@@ -74,8 +69,7 @@ pub const MlirCodegen = struct {
     loc: mlir.Location,
     module: mlir.Module,
 
-    active_loc_store: ?*const cst.LocStore = null,
-    loc_cache: std.AutoHashMap(LocKey, mlir.Location),
+    loc_cache: std.AutoHashMap(cst.LocId, mlir.Location),
     file_cache: std.AutoHashMap(u32, []const u8),
     di_files: std.AutoHashMap(u32, DebugFileInfo),
     di_subprograms: std.AutoHashMap(tir.FuncId, DebugSubprogramInfo),
@@ -319,8 +313,7 @@ pub const MlirCodegen = struct {
             .mlir_ctx = ctx,
             .loc = loc,
             .module = module,
-            .active_loc_store = null,
-            .loc_cache = std.AutoHashMap(LocKey, mlir.Location).init(gpa),
+            .loc_cache = std.AutoHashMap(cst.LocId, mlir.Location).init(gpa),
             .file_cache = std.AutoHashMap(u32, []const u8).init(gpa),
             .di_files = std.AutoHashMap(u32, DebugFileInfo).init(gpa),
             .di_subprograms = std.AutoHashMap(tir.FuncId, DebugSubprogramInfo).init(gpa),
@@ -397,10 +390,6 @@ pub const MlirCodegen = struct {
         self.active_type_info = type_info;
         defer self.active_type_info = prev_type_info;
 
-        const prev_loc_store = self.active_loc_store;
-        self.active_loc_store = t.locStore() orelse type_info.locStore();
-        defer self.active_loc_store = prev_loc_store;
-
         self.loc_cache.clearRetainingCapacity();
         try self.attachTargetInfo();
         try self.ensureDebugModuleAttrs();
@@ -421,12 +410,10 @@ pub const MlirCodegen = struct {
             // Preserve the current ambient location so callers can deliberately
             // keep emitting with whatever scope was active.
             return self.loc;
-        const locs = self.active_loc_store orelse return self.loc;
         const loc_id = opt_loc.unwrap();
-        const key = LocKey{ .store = @intFromPtr(locs), .raw = loc_id.toRaw() };
-        if (self.loc_cache.get(key)) |cached| return cached;
+        if (self.loc_cache.get(loc_id)) |cached| return cached;
 
-        const loc_record = locs.get(loc_id);
+        const loc_record = self.context.loc_store.get(loc_id);
         const src = self.getFileSource(loc_record.file_id) catch {
             return self.loc;
         };
@@ -438,7 +425,7 @@ pub const MlirCodegen = struct {
             @as(u32, @intCast(lc.line + 1)),
             @as(u32, @intCast(lc.col + 1)),
         );
-        _ = self.loc_cache.put(key, mlir_loc) catch {};
+        _ = self.loc_cache.put(loc_id, mlir_loc) catch {};
         return mlir_loc;
     }
 
@@ -1206,26 +1193,24 @@ pub const MlirCodegen = struct {
         const fn_loc = self.functionOptLoc(f_id, t);
         var maybe_dbg_attr: ?mlir.Attribute = null;
         if (enable_debug_info and !fn_loc.isNone()) {
-            if (self.active_loc_store) |locs_store| {
-                const loc_record = locs_store.get(fn_loc.unwrap());
-                const src = self.getFileSource(loc_record.file_id) catch null;
-                if (src) |src_text| {
-                    const lc = computeLineCol(src_text, loc_record.start);
-                    const line = @as(u32, @intCast(lc.line + 1));
-                    const maybe_subp: ?*DebugSubprogramInfo = self.ensureDebugSubprogram(
-                        f_id,
-                        func_name,
-                        line,
-                        loc_record.file_id,
-                        fn_loc,
-                        f.result,
-                        params,
-                        store,
-                        t,
-                    ) catch null;
-                    if (maybe_subp) |subp| {
-                        maybe_dbg_attr = subp.attr;
-                    }
+            const loc_record = self.context.loc_store.get(fn_loc.unwrap());
+            const src = self.getFileSource(loc_record.file_id) catch null;
+            if (src) |src_text| {
+                const lc = computeLineCol(src_text, loc_record.start);
+                const line = @as(u32, @intCast(lc.line + 1));
+                const maybe_subp: ?*DebugSubprogramInfo = self.ensureDebugSubprogram(
+                    f_id,
+                    func_name,
+                    line,
+                    loc_record.file_id,
+                    fn_loc,
+                    f.result,
+                    params,
+                    store,
+                    t,
+                ) catch null;
+                if (maybe_subp) |subp| {
+                    maybe_dbg_attr = subp.attr;
                 }
             }
         }
@@ -3292,7 +3277,7 @@ pub const MlirCodegen = struct {
                             mlir.StringRef.from(mlir_text),
                         );
                         if (parsed_module.isNull()) {
-                            const loc = self.active_loc_store.?.get(p.loc.unwrap());
+                            const loc = self.context.loc_store.get(p.loc.unwrap());
                             try self.context.diags.addError(loc, .mlir_parse_error, .{});
                             return error.MlirParseError;
                         }
@@ -3450,7 +3435,7 @@ pub const MlirCodegen = struct {
         if (parsed_module.isNull()) {
             const msg = self.diagnostic_data.msg orelse return error.CompilationFailed;
             const span = self.diagnostic_data.span orelse return error.CompilationFailed;
-            var diag_loc = self.active_loc_store.?.get(loc.unwrap());
+            var diag_loc = self.context.loc_store.get(loc.unwrap());
             diag_loc.start += @intCast(span.start -| 10);
             diag_loc.end += @intCast(span.end -| 10);
 

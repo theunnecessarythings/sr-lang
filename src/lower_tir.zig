@@ -390,7 +390,6 @@ pub const LowerTir = struct {
 
     pub fn run(self: *LowerTir, a: *const ast.Ast) !tir.TIR {
         var t = tir.TIR.init(self.gpa, &self.context.type_store);
-        t.setLocStore(a.exprs.locs);
         var b = Builder.init(self.gpa, &t);
 
         self.module_call_cache.clearRetainingCapacity();
