@@ -589,8 +589,16 @@ pub const Checker = struct {
                 const expected_ty = self.context.type_store.get(.Array, expect);
                 const got_ty = self.context.type_store.get(.Array, got);
                 const elem_ok = self.assignable(got_ty.elem, expected_ty.elem);
-                if (expected_ty.len != got_ty.len)
-                    return .array_length_mismatch;
+                const len_match = blk: {
+                    switch (expected_ty.len) {
+                        .Concrete => |l1| switch (got_ty.len) {
+                            .Concrete => |l2| break :blk l1 == l2,
+                            .Unresolved => break :blk true, // compatible for now
+                        },
+                        .Unresolved => break :blk true, // compatible for now
+                    }
+                };
+                if (!len_match) return .array_length_mismatch;
                 return elem_ok;
             },
             .DynArray => {
@@ -630,7 +638,11 @@ pub const Checker = struct {
                 // Allow "empty array" sugar to coerce to any map type.
                 if (got_kind == .Array) {
                     const got_ty = self.context.type_store.get(.Array, got);
-                    if (got_ty.len != 0) return .expected_map_type;
+                    const is_zero = switch (got_ty.len) {
+                        .Concrete => |l| l == 0,
+                        .Unresolved => false,
+                    };
+                    if (!is_zero) return .expected_map_type;
                     return .success;
                 }
                 if (got_kind != .Map) return .expected_map_type;
@@ -664,7 +676,10 @@ pub const Checker = struct {
                         while (current_kind == .Array) : (rank += 1) {
                             if (rank >= types.max_tensor_rank) return .tensor_rank_mismatch;
                             const arr = self.context.type_store.get(.Array, current_ty);
-                            dims_buf[rank] = arr.len;
+                            dims_buf[rank] = switch (arr.len) {
+                                .Concrete => |l| l,
+                                .Unresolved => return .failure,
+                            };
                             elem_ty = arr.elem;
                             current_ty = arr.elem;
                             current_kind = self.typeKind(current_ty);
@@ -803,7 +818,11 @@ pub const Checker = struct {
         switch (rhs_kind) {
             .Array => {
                 const arr = self.context.type_store.get(.Array, rhs_ty);
-                if (arr.len == 0)
+                const is_zero = switch (arr.len) {
+                    .Concrete => |l| l == 0,
+                    .Unresolved => false,
+                };
+                if (is_zero)
                     try self.context.diags.addError(
                         self.exprLoc(self.ast_unit.exprs.Decl.get(decl)),
                         .cannot_infer_type_from_empty_array,
@@ -1982,7 +2001,7 @@ pub const Checker = struct {
 
         // infer from first element, homogeneous requirement
         if (elems.len == 0) {
-            return self.context.type_store.mkArray(self.context.type_store.tAny(), 0);
+            return self.context.type_store.mkArray(self.context.type_store.tAny(), .{.Concrete = 0});
         }
         const first_ty = (try self.checkExpr(elems[0])) orelse return null;
         var i: usize = 1;
@@ -1993,7 +2012,7 @@ pub const Checker = struct {
                 return null;
             }
         }
-        return self.context.type_store.mkArray(first_ty, elems.len);
+        return self.context.type_store.mkArray(first_ty, .{.Concrete = elems.len});
     }
 
     fn checkMapLit(self: *Checker, id: ast.ExprId) !?types.TypeId {

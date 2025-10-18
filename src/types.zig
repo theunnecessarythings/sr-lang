@@ -6,6 +6,11 @@ const comp = @import("comptime.zig");
 // DOD Type Store
 pub const TypeTag = struct {};
 
+pub const ArraySize = union(enum) {
+    Concrete: usize,
+    Unresolved: ast.ExprId,
+};
+
 pub const max_tensor_rank: usize = 4;
 
 pub const TypeId = cst.Index(TypeTag);
@@ -317,7 +322,7 @@ pub const Rows = struct {
 
     pub const Ptr = struct { elem: TypeId, is_const: bool };
     pub const Slice = struct { elem: TypeId };
-    pub const Array = struct { elem: TypeId, len: usize };
+    pub const Array = struct { elem: TypeId, len: ArraySize };
     pub const DynArray = struct { elem: TypeId };
     pub const Map = struct { key: TypeId, value: TypeId };
     pub const Optional = struct { elem: TypeId };
@@ -600,7 +605,7 @@ pub const TypeStore = struct {
         if (self.findSlice(elem)) |id| return id;
         return self.add(.Slice, .{ .elem = elem });
     }
-    pub fn mkArray(self: *TypeStore, elem: TypeId, len: usize) TypeId {
+    pub fn mkArray(self: *TypeStore, elem: TypeId, len: ArraySize) TypeId {
         if (self.findArray(elem, len)) |id| return id;
         return self.add(.Array, .{ .elem = elem, .len = len });
     }
@@ -732,11 +737,21 @@ pub const TypeStore = struct {
             }
         });
     }
-    fn findArray(self: *const TypeStore, elem: TypeId, len: usize) ?TypeId {
-        return self.findMatch(.Array, struct { e: TypeId, l: usize }{ .e = elem, .l = len }, struct {
+    fn findArray(self: *const TypeStore, elem: TypeId, len: ArraySize) ?TypeId {
+        return self.findMatch(.Array, struct { e: TypeId, l: ArraySize }{ .e = elem, .l = len }, struct {
             fn eq(s: *const TypeStore, row: Rows.Array, key: anytype) bool {
                 _ = s;
-                return row.elem.toRaw() == key.e.toRaw() and row.len == key.l;
+                if (row.elem.toRaw() != key.e.toRaw()) return false;
+                return switch (row.len) {
+                    .Concrete => |l1| switch (key.l) {
+                        .Concrete => |l2| l1 == l2,
+                        else => false,
+                    },
+                    .Unresolved => |e1| switch (key.l) {
+                        .Unresolved => |e2| e1.toRaw() == e2.toRaw(),
+                        else => false,
+                    },
+                };
             }
         });
     }
@@ -937,7 +952,10 @@ pub const TypeStore = struct {
             },
             .Array => {
                 const r = self.get(.Array, id);
-                try w.print("[{}]", .{r.len});
+                switch (r.len) {
+                    .Concrete => |l| try w.print("[{}]", .{l}),
+                    .Unresolved => try w.print("[]", .{}),
+                }
                 try self.fmt(r.elem, w);
             },
             .DynArray => {

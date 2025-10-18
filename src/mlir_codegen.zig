@@ -4389,21 +4389,34 @@ pub const MlirCodegen = struct {
         dst_ty: mlir.Type,
         src_val: mlir.Value,
         src_sr: types.TypeId,
-        elem_coercer: AggregateElemCoercer,
+        elemCoercer: AggregateElemCoercer,
     ) anyerror!?mlir.Value {
         const dst_info = store.get(.Array, dst_sr);
         const src_info = store.get(.Array, src_sr);
-        if (dst_info.len != src_info.len) return null;
+        const len_match = blk: {
+            switch (dst_info.len) {
+                .Concrete => |l1| switch (src_info.len) {
+                    .Concrete => |l2| break :blk l1 == l2,
+                    .Unresolved => break :blk true,
+                },
+                .Unresolved => break :blk true,
+            }
+        };
+        if (!len_match) return null;
 
         const dst_elem_ty = try self.llvmTypeOf(store, dst_info.elem);
         const src_elem_ty = try self.llvmTypeOf(store, src_info.elem);
 
         var result = self.undefOf(dst_ty);
+        const len = switch (dst_info.len) {
+            .Concrete => |l| l,
+            .Unresolved => std.debug.panic("copyArrayAggregate on unresolved array", .{}),
+        };
         var i: usize = 0;
-        while (i < dst_info.len) : (i += 1) {
+        while (i < len) : (i += 1) {
             const idx = [_]i64{@intCast(i)};
             const elem_val = self.extractAt(src_val, src_elem_ty, &idx);
-            const coerced = try elem_coercer(self, store, dst_info.elem, dst_elem_ty, elem_val, src_info.elem);
+            const coerced = try elemCoercer(self, store, dst_info.elem, dst_elem_ty, elem_val, src_info.elem);
             result = self.insertAt(result, coerced, &idx);
         }
         return result;
@@ -5386,7 +5399,11 @@ pub const MlirCodegen = struct {
             .Array => blk: {
                 const arr_ty = store.get(.Array, ty);
                 const e = try self.llvmTypeOf(store, arr_ty.elem);
-                break :blk mlir.LLVM.getLLVMArrayType(e, @intCast(arr_ty.len));
+                const len = switch (arr_ty.len) {
+                    .Concrete => |l| l,
+                    .Unresolved => std.debug.panic("llvmTypeOf on unresolved array", .{}),
+                };
+                break :blk mlir.LLVM.getLLVMArrayType(e, @intCast(len));
             },
             .Tensor => blk: {
                 const ten = store.get(.Tensor, ty);

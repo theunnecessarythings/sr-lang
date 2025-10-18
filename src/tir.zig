@@ -599,8 +599,7 @@ pub const Builder = struct {
         row.params = param_range;
         row.term = blk.term.unwrap();
         self.t.funcs.Block.list.set(blk.id.toRaw(), row);
-        var tmp = blk;
-        tmp.deinit(self.gpa);
+
         _ = f;
     }
 
@@ -611,8 +610,7 @@ pub const Builder = struct {
         row.params = prange;
         row.blocks = brange;
         self.t.funcs.Function.list.set(f.id.toRaw(), row);
-        var tmp = f;
-        tmp.deinit(self.gpa);
+
         _ = self.t.funcs.func_pool.push(self.gpa, f.id);
     }
 

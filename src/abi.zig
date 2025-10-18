@@ -69,9 +69,13 @@ pub fn abiSizeAlign(self: *MlirCodegen, store: *types.TypeStore, ty: types.TypeI
 
         .Array => {
             const A = store.get(.Array, ty);
+            const len = switch (A.len) {
+                .Concrete => |l| l,
+                .Unresolved => std.debug.panic("abiSizeAlign called on array with unresolved size", .{}),
+            };
             const e = abiSizeAlign(self, store, A.elem);
             const stride = std.mem.alignForward(usize, e.size, e.alignment);
-            return .{ .size = stride * A.len, .alignment = e.alignment, .hasFloat = e.hasFloat, .allIntsOnly = e.allIntsOnly };
+            return .{ .size = stride * len, .alignment = e.alignment, .hasFloat = e.hasFloat, .allIntsOnly = e.allIntsOnly };
         },
         .Variant => {
             const v_ty = store.get(.Variant, ty);

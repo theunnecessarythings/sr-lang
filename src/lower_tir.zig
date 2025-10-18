@@ -442,7 +442,31 @@ pub const LowerTir = struct {
     // Utilities / common helpers
     // ============================
 
-    const LowerMode = enum { rvalue, lvalue_addr };
+    fn resolveArrayLen(self: *LowerTir, a: *const ast.Ast, size_expr: ast.ExprId, loc: tir.OptLocId) !usize {
+    const comptime_val = self.runComptimeExpr(a, size_expr, self.context.type_store.tUsize(), &[_]Pipeline.ComptimeBinding{}) catch |err| {
+        std.debug.print("error while resolving array len: {any}\n", .{err});
+        if (loc.isNone()) {
+            // TODO: better location
+        } else {
+            try self.context.diags.addError(a.exprs.locs.get(loc.unwrap()), .array_size_not_integer_literal, .{});
+        }
+        return error.ComptimeEvalFailed;
+    };
+
+    return switch (comptime_val) {
+        .Int => |i| @intCast(i),
+        else => {
+            if (loc.isNone()) {
+                // TODO: better location
+            } else {
+                try self.context.diags.addError(a.exprs.locs.get(loc.unwrap()), .array_size_not_integer_literal, .{});
+            }
+            return error.ComptimeEvalFailed;
+        },
+    };
+}
+
+const LowerMode = enum { rvalue, lvalue_addr };
 
     fn isVoid(self: *const LowerTir, ty: types.TypeId) bool {
         return self.context.type_store.index.kinds.items[ty.toRaw()] == .Void;
@@ -1554,8 +1578,10 @@ pub const LowerTir = struct {
         };
 
         var thunk_fn = try tmp_builder.beginFunction(thunk_name, thunk_ret_ty, false, attrs);
+        defer thunk_fn.deinit(self.gpa);
         const api_ptr_val = try tmp_builder.addParam(&thunk_fn, tmp_builder.intern("api_ptr"), ptr_ty);
         var thunk_blk = try tmp_builder.beginBlock(&thunk_fn);
+        defer thunk_blk.deinit(self.gpa);
 
         var tmp_env = Env.init(self.gpa);
         defer tmp_env.deinit(self.gpa);
@@ -2399,10 +2425,21 @@ pub const LowerTir = struct {
         const vk = self.context.type_store.index.kinds.items[ty0.toRaw()];
         switch (vk) {
             .Array => {
+                const array_ty = self.context.type_store.get(.Array, ty0);
+                const len = switch (array_ty.len) {
+                    .Concrete => |l| l,
+                    .Unresolved => |expr_id| try self.resolveArrayLen(a, expr_id, loc),
+                };
+
                 const ids = a.exprs.expr_pool.slice(row.elems);
+                if (len != ids.len) {
+                    // TODO: better diagnostic
+                    return error.LoweringBug;
+                }
+
                 var vals = try self.gpa.alloc(tir.ValueId, ids.len);
                 defer self.gpa.free(vals);
-                const expect_elem = self.context.type_store.get(.Array, ty0).elem;
+                const expect_elem = array_ty.elem;
                 var i: usize = 0;
                 while (i < ids.len) : (i += 1)
                     vals[i] = try self.lowerExpr(a, env, f, blk, ids[i], expect_elem, .rvalue);
@@ -4246,6 +4283,7 @@ pub const LowerTir = struct {
 
     fn getIterableLen(
         self: *LowerTir,
+        a: *const ast.Ast,
         blk: *Builder.BlockFrame,
         iter_ty: types.TypeId,
         idx_ty: types.TypeId,
@@ -4255,7 +4293,11 @@ pub const LowerTir = struct {
         return switch (iter_ty_kind) {
             .Array => blk: {
                 const at = self.context.type_store.get(.Array, iter_ty);
-                break :blk blk.builder.tirValue(.ConstInt, blk, idx_ty, loc, .{ .value = @as(u64, @intCast(at.len)) });
+                const len = switch (at.len) {
+                    .Concrete => |l| l,
+                    .Unresolved => |expr_id| try self.resolveArrayLen(a, expr_id, loc),
+                };
+                break :blk blk.builder.tirValue(.ConstInt, blk, idx_ty, loc, .{ .value = @as(u64, @intCast(len)) });
             },
             .Slice, .DynArray => @panic("Not implemented"),
             else => return error.LoweringBug,
@@ -4346,11 +4388,10 @@ pub const LowerTir = struct {
                 try f.builder.endBlock(f, header);
                 try f.builder.endBlock(f, body);
             } else {
-                // for x in iterable
                 const arr_v = try self.lowerExpr(a, env, f, blk, row.iterable, null, .rvalue);
                 const idx_ty = self.context.type_store.tUsize();
                 const iter_ty = self.getExprType(row.iterable) orelse return error.LoweringBug;
-                const len_v = try self.getIterableLen(blk, iter_ty, idx_ty, iterable_loc);
+                const len_v = try self.getIterableLen(a, blk, iter_ty, idx_ty, iterable_loc);
 
                 const zero = blk.builder.tirValue(.ConstInt, blk, idx_ty, loc, .{ .value = 0 });
                 const idx_param = try f.builder.addBlockParam(&header, null, idx_ty);
@@ -4472,7 +4513,7 @@ pub const LowerTir = struct {
                 const arr_v = try self.lowerExpr(a, env, f, blk, row.iterable, null, .rvalue);
                 const idx_ty = self.context.type_store.tUsize();
                 const iter_ty = self.getExprType(row.iterable) orelse return error.LoweringBug;
-                const len_v = try self.getIterableLen(blk, iter_ty, idx_ty, iterable_loc);
+                const len_v = try self.getIterableLen(a, blk, iter_ty, idx_ty, iterable_loc);
 
                 const zero = blk.builder.tirValue(.ConstInt, blk, idx_ty, loc, .{ .value = 0 });
                 const idx_param = try f.builder.addBlockParam(&header, null, idx_ty);
@@ -5077,7 +5118,11 @@ pub const LowerTir = struct {
                     const vty_kind = self.context.type_store.getKind(vty);
                     if (vty_kind == .Array) {
                         const arr_ty = self.context.type_store.get(.Array, vty);
-                        len_val = blk.builder.tirValue(.ConstInt, blk, self.context.type_store.tUsize(), loc, .{ .value = arr_ty.len });
+                        const len = switch (arr_ty.len) {
+                            .Concrete => |l| l,
+                            .Unresolved => |expr_id| try self.resolveArrayLen(a, expr_id, loc),
+                        };
+                        len_val = blk.builder.tirValue(.ConstInt, blk, self.context.type_store.tUsize(), loc, .{ .value = len });
                     } else {
                         len_val = blk.builder.extractFieldNamed(blk, self.context.type_store.tUsize(), value, f.builder.intern("len"), loc);
                     }
@@ -5769,7 +5814,11 @@ pub const LowerTir = struct {
                 const scrut_ty_kind = self.context.type_store.getKind(scrut_ty);
                 if (scrut_ty_kind == .Array) {
                     const arr_ty = self.context.type_store.get(.Array, scrut_ty);
-                    len_val = blk.builder.tirValue(.ConstInt, blk, self.context.type_store.tUsize(), loc, .{ .value = arr_ty.len });
+                    const len = switch (arr_ty.len) {
+                        .Concrete => |l| l,
+                        .Unresolved => |expr_id| try self.resolveArrayLen(a, expr_id, loc),
+                    };
+                    len_val = blk.builder.tirValue(.ConstInt, blk, self.context.type_store.tUsize(), loc, .{ .value = len });
                 } else {
                     len_val = blk.builder.extractFieldNamed(blk, self.context.type_store.tUsize(), scrut, f.builder.intern("len"), loc);
                 }
