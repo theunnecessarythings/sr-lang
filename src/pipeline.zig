@@ -235,15 +235,14 @@ pub const Pipeline = struct {
         for (dependencies.items) |dep| {
             const original_debug_flag = mlir_codegen.enable_debug_info;
             mlir_codegen.enable_debug_info = false;
-            const imported_ast = dep.astRef();
-            _ = try gen.emitModule(dep.tirRef(), self.context, imported_ast.exprs.locs, dep.typeInfo());
+            _ = try gen.emitModule(dep.tirRef(), self.context, dep.typeInfo());
             mlir_codegen.enable_debug_info = original_debug_flag;
             if (self.context.diags.anyErrors()) {
                 return error.MlirCodegenFailed;
             }
         }
 
-        var mlir_module = gen.emitModule(&root_mod, self.context, ast.exprs.locs, type_info) catch |err| {
+        var mlir_module = gen.emitModule(&root_mod, self.context, type_info) catch |err| {
             switch (err) {
                 error.CompilationFailed => {
                     return error.MlirCodegenFailed;

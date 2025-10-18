@@ -18,7 +18,7 @@ pub const Lower = struct {
         return .{
             .gpa = gpa,
             .cst_program = program,
-            .ast_unit = ast.Ast.init(gpa, program.interner, &program.exprs.locs),
+            .ast_unit = ast.Ast.init(gpa, program.interner, program.exprs.locs),
             .context = context,
         };
     }

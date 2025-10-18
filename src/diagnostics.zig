@@ -689,18 +689,18 @@ pub const Diagnostics = struct {
         return self.messages.items.len;
     }
 
-    pub fn messageToOwnedSlice(self: *Diagnostics, allocator: std.mem.Allocator, message: Message) ![]u8 {
-        var buffer = std.ArrayList(u8).init(allocator);
-        defer buffer.deinit();
-        try writeInterpolated(buffer.writer(), diagnosticMessageFmt(message.code), message.payload);
-        return buffer.toOwnedSlice();
+    pub fn messageToOwnedSlice(_: *Diagnostics, allocator: std.mem.Allocator, message: Message) ![]u8 {
+        var buffer: std.ArrayList(u8) = .empty;
+        defer buffer.deinit(allocator);
+        try writeInterpolated(buffer.writer(allocator), diagnosticMessageFmt(message.code), message.payload);
+        return buffer.toOwnedSlice(allocator);
     }
 
-    pub fn noteToOwnedSlice(self: *Diagnostics, allocator: std.mem.Allocator, note: Note) ![]u8 {
-        var buffer = std.ArrayList(u8).init(allocator);
-        defer buffer.deinit();
-        try writeInterpolated(buffer.writer(), diagnosticNoteFmt(note.code), note.payload);
-        return buffer.toOwnedSlice();
+    pub fn noteToOwnedSlice(_: *Diagnostics, allocator: std.mem.Allocator, note: Note) ![]u8 {
+        var buffer: std.ArrayList(u8) = .empty;
+        defer buffer.deinit(allocator);
+        try writeInterpolated(buffer.writer(allocator), diagnosticNoteFmt(note.code), note.payload);
+        return buffer.toOwnedSlice(allocator);
     }
 
     // Pretty-print diagnostics with source excerpt and caret span (unstyled)

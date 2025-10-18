@@ -49,6 +49,7 @@ pub const TypeInfo = struct {
     method_table: std.AutoArrayHashMapUnmanaged(MethodKey, MethodEntry) = .{},
     method_bindings: std.AutoArrayHashMapUnmanaged(u32, MethodBinding) = .{},
     mlir_splice_info: std.AutoArrayHashMapUnmanaged(u32, MlirSpliceInfo) = .{},
+    type_owner_modules: std.AutoArrayHashMapUnmanaged(u32, usize) = .{},
 
     pub fn init(gpa: std.mem.Allocator, store: *TypeStore) TypeInfo {
         return .{
@@ -69,6 +70,7 @@ pub const TypeInfo = struct {
         self.method_table.deinit(self.gpa);
         self.method_bindings.deinit(self.gpa);
         self.mlir_splice_info.deinit(self.gpa);
+        self.type_owner_modules.deinit(self.gpa);
     }
 
     pub fn setModule(self: *TypeInfo, module_id: usize) void {
@@ -134,6 +136,10 @@ pub const TypeInfo = struct {
         return if (v == 0xFFFF_FFFF) null else v;
     }
 
+    pub fn clearFieldIndex(self: *TypeInfo, expr_id: ast.ExprId) !void {
+        try self.field_index_for_expr.put(self.gpa, expr_id.toRaw(), 0xFFFF_FFFF);
+    }
+
     const MethodKey = struct {
         owner: usize,
         name: usize,
@@ -186,6 +192,14 @@ pub const TypeInfo = struct {
         return self.method_table.get(key);
     }
 
+    pub fn setTypeOwnerModule(self: *TypeInfo, owner: TypeId, module_id: usize) !void {
+        try self.type_owner_modules.put(self.gpa, owner.toRaw(), module_id);
+    }
+
+    pub fn getTypeOwnerModule(self: *const TypeInfo, owner: TypeId) ?usize {
+        return self.type_owner_modules.get(owner.toRaw());
+    }
+
     pub fn setMethodBinding(self: *TypeInfo, expr_id: ast.ExprId, binding: MethodBinding) !void {
         const gop = try self.method_bindings.getOrPut(self.gpa, expr_id.toRaw());
         gop.value_ptr.* = binding;
@@ -224,7 +238,6 @@ pub const TypeInfo = struct {
         }
         value_ptr.* = .Void;
     }
-
 
     pub fn setMlirSpliceInfo(self: *TypeInfo, piece_id: ast.MlirPieceId, info: MlirSpliceInfo) !void {
         const gop = try self.mlir_splice_info.getOrPut(self.gpa, piece_id.toRaw());

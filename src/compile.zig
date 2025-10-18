@@ -101,6 +101,7 @@ pub const Context = struct {
     source_manager: *SourceManager,
     diags: *Diagnostics,
     interner: *cst.StringInterner,
+    loc_store: *cst.LocStore,
     module_graph: ModuleGraph,
     type_store: TypeStore,
 
@@ -111,9 +112,12 @@ pub const Context = struct {
         diags.* = Diagnostics.init(gpa);
         const source_manager = gpa.create(SourceManager) catch unreachable;
         source_manager.* = SourceManager{ .gpa = gpa };
+        const loc_store = gpa.create(cst.LocStore) catch unreachable;
+        loc_store.* = cst.LocStore{};
         return .{
             .diags = diags,
             .interner = interner,
+            .loc_store = loc_store,
             .gpa = gpa,
             .source_manager = source_manager,
             .module_graph = ModuleGraph.init(gpa),
@@ -125,6 +129,7 @@ pub const Context = struct {
         self.source_manager.deinit();
         self.diags.deinit();
         self.interner.deinit();
+        self.loc_store.deinit(self.gpa);
         self.type_store.deinit();
         self.module_graph.deinit();
         self.gpa.destroy(self.interner);

@@ -495,9 +495,17 @@ pub const TIR = struct {
     instrs: InstrStore,
     terms: TermStore,
     funcs: FuncStore,
+    loc_store: ?*const dod.LocStore = null,
 
     pub fn init(gpa: std.mem.Allocator, store: *types.TypeStore) TIR {
-        return .{ .gpa = gpa, .type_store = store, .instrs = InstrStore.init(gpa, store.strs), .terms = TermStore.init(gpa), .funcs = FuncStore.init(gpa) };
+        return .{
+            .gpa = gpa,
+            .type_store = store,
+            .instrs = InstrStore.init(gpa, store.strs),
+            .terms = TermStore.init(gpa),
+            .funcs = FuncStore.init(gpa),
+            .loc_store = null,
+        };
     }
     pub fn deinit(self: *@This()) void {
         self.instrs.deinit();

@@ -521,6 +521,7 @@ pub const Checker = struct {
             return false;
         }
 
+        try self.type_info.setTypeOwnerModule(owner_ty, entry.module_id);
         return true;
     }
 
@@ -2100,7 +2101,15 @@ pub const Checker = struct {
         field_name: ast.StrId,
         loc: Loc,
     ) !?types.TypeId {
-        const entry_opt = self.type_info.getMethod(owner_ty, field_name);
+        var entry_opt = self.type_info.getMethod(owner_ty, field_name);
+        if (entry_opt == null) {
+            if (self.type_info.getTypeOwnerModule(owner_ty)) |origin_module| {
+                if (self.context.module_graph.findModuleById(origin_module)) |mod_entry| {
+                    try self.copyModuleMethods(mod_entry, owner_ty);
+                    entry_opt = self.type_info.getMethod(owner_ty, field_name);
+                }
+            }
+        }
         if (entry_opt == null) return null;
 
         const entry = entry_opt.?;
@@ -2127,11 +2136,11 @@ pub const Checker = struct {
                             return error.MethodResolutionFailed;
                         }
                     } else if (receiver_ty.eq(owner_ty)) {
-                        const field_expr = self.getExpr(.FieldAccess, expr_id);
-                        if (self.lvalueRootKind(field_expr.parent) == .Unknown) {
-                            try self.context.diags.addError(loc, .method_receiver_not_addressable, .{self.getStr(field_name)});
-                            return error.MethodResolutionFailed;
-                        }
+                        // const field_expr = self.getExpr(.FieldAccess, expr_id);
+                        // if (self.lvalueRootKind(field_expr.parent) == .Unknown) {
+                        //     try self.context.diags.addError(loc, .method_receiver_not_addressable, .{self.getStr(field_name)});
+                        //     return error.MethodResolutionFailed;
+                        // }
                         needs_addr_of = true;
                     } else {
                         try self.context.diags.addError(loc, .method_receiver_requires_pointer, .{self.getStr(field_name)});
@@ -2444,6 +2453,29 @@ pub const Checker = struct {
         return imported != null;
     }
 
+    fn copyModuleMethods(
+        self: *Checker,
+        module: *module_graph.ModuleEntry,
+        owner_filter: ?types.TypeId,
+    ) !void {
+        const imported_ti = module.typeInfo();
+        var it = imported_ti.method_table.iterator();
+        while (it.next()) |entry| {
+            var copy = entry.value_ptr.*;
+            if (copy.module_id == 0) {
+                copy.module_id = imported_ti.module_id;
+            }
+            try self.type_info.setTypeOwnerModule(copy.owner_type, copy.module_id);
+            if (owner_filter) |owner_ty| {
+                if (!copy.owner_type.eq(owner_ty)) continue;
+            }
+            _ = try self.type_info.addMethod(copy);
+        }
+        if (owner_filter) |owner_ty| {
+            try self.type_info.setTypeOwnerModule(owner_ty, imported_ti.module_id);
+        }
+    }
+
     fn copyImportedMethods(
         self: *Checker,
         module: *module_graph.ModuleEntry,
@@ -2456,19 +2488,7 @@ pub const Checker = struct {
             }
             break :blk imported_ty;
         };
-
-        const imported_ti = module.typeInfo();
-        var it = imported_ti.method_table.iterator();
-        while (it.next()) |entry| {
-            const method = entry.value_ptr.*;
-            if (!method.owner_type.eq(owner_ty)) continue;
-
-            var copy = method;
-            if (copy.module_id == 0) {
-                copy.module_id = imported_ti.module_id;
-            }
-            _ = try self.type_info.addMethod(copy);
-        }
+        try self.copyModuleMethods(module, owner_ty);
     }
 
     fn importMemberTypeByPath(
@@ -2824,11 +2844,38 @@ pub const Checker = struct {
             }
             return null;
         }
-        const func_ty = func_ty_opt.?;
+        var func_ty = func_ty_opt.?;
+        var func_kind = self.typeKind(func_ty);
+
+        if (callee_kind == .FieldAccess and self.type_info.getMethodBinding(call_expr.callee) == null) {
+            const field_expr = self.getExpr(.FieldAccess, call_expr.callee);
+            const field_loc = self.exprLoc(field_expr);
+            const parent_ty_opt = try self.checkExpr(field_expr.parent);
+            if (parent_ty_opt == null) return null;
+            const parent_ty = parent_ty_opt.?;
+            const parent_kind = self.typeKind(parent_ty);
+            const owner_ty = switch (parent_kind) {
+                .Ptr => self.context.type_store.get(.Ptr, parent_ty).elem,
+                .TypeType => self.context.type_store.get(.TypeType, parent_ty).of,
+                else => parent_ty,
+            };
+            const receiver_ty = switch (parent_kind) {
+                .TypeType => owner_ty,
+                else => parent_ty,
+            };
+            const method_ty = self.resolveMethodFieldAccess(call_expr.callee, owner_ty, receiver_ty, field_expr.field, field_loc) catch |err| switch (err) {
+                else => return null,
+            };
+            if (method_ty) |mt| {
+                func_ty = mt;
+                func_kind = self.typeKind(func_ty);
+                try self.type_info.clearFieldIndex(call_expr.callee);
+            }
+        }
         if (self.type_info.getMethodBinding(call_expr.callee)) |binding| {
             return try self.checkMethodCall(&call_expr, binding, args);
         }
-        const func_kind = self.typeKind(func_ty);
+        func_kind = self.typeKind(func_ty);
         if (func_kind == .Any) return null;
 
         // Tuple-as-constructor: `(T0,T1,..)(a0,a1,..)` -> construct the tuple type.
