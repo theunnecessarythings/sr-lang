@@ -1,6 +1,6 @@
 const std = @import("std");
 
-const use_llvm = false;
+const use_llvm = true;
 
 fn linkMLIR(LLVM_HOME: []const u8, exe: *std.Build.Step.Compile) !void {
     const dir = try std.fs.cwd().openDir(LLVM_HOME, .{ .iterate = true });
@@ -67,6 +67,35 @@ pub fn build(b: *std.Build) void {
     b.installArtifact(runtime_lib);
 
     b.installArtifact(exe);
+
+    // copy std lib and vendor libs to install dir
+    var std_lib = std.fs.cwd().openDir("std", .{ .iterate = true }) catch unreachable;
+    var iter = std_lib.iterate();
+    var install_dir = std.fs.openDirAbsolute(b.install_path, .{}) catch unreachable;
+    defer install_dir.close();
+    install_dir.makeDir("std") catch |err| switch (err) {
+        error.PathAlreadyExists => {},
+        else => unreachable,
+    };
+    install_dir.makeDir("vendor") catch |err| switch (err) {
+        error.PathAlreadyExists => {},
+        else => unreachable,
+    };
+    const root_src = std.fs.cwd().realpathAlloc(b.allocator, ".") catch unreachable;
+    while (iter.next() catch null) |entry| {
+        if (entry.kind != .file) continue;
+        const dest = b.pathJoin(&.{ b.install_path, "std", entry.name });
+        const src = b.pathJoin(&.{ root_src, "std", entry.name });
+        std.fs.copyFileAbsolute(src, dest, .{}) catch unreachable;
+    }
+    var vendor_lib = std.fs.cwd().openDir("vendor", .{ .iterate = true }) catch unreachable;
+    iter = vendor_lib.iterate();
+    while (iter.next() catch null) |entry| {
+        if (entry.kind != .file) continue;
+        const dest = b.pathJoin(&.{ b.install_path, "vendor", entry.name });
+        const src = b.pathJoin(&.{ root_src, "vendor", entry.name });
+        std.fs.copyFileAbsolute(src, dest, .{}) catch unreachable;
+    }
 
     const run_step = b.step("run", "Run the app");
     const run_cmd = b.addRunArtifact(exe);

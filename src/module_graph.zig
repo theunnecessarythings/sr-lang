@@ -143,10 +143,12 @@ pub const ModuleGraph = struct {
         return workspace_preludes;
     }
 
-    const default_roots = [_]package_graph.RootConfig{
+    var std_path_buf: [1024]u8 = undefined;
+    var vendor_path_buf: [1024]u8 = undefined;
+
+    var default_roots = [_]package_graph.RootConfig{
         .{ .name = "std", .path = "std", .prelude_imports = std_vendor_preludes },
         .{ .name = "vendor", .path = "vendor", .prelude_imports = std_vendor_preludes },
-        .{ .name = "examples", .path = "examples" },
     };
 
     pub const Config = struct {
@@ -157,6 +159,12 @@ pub const ModuleGraph = struct {
     pub fn init(gpa: std.mem.Allocator) ModuleGraph {
         if (std_lib_path.len == 0) {
             std_lib_path = std.fs.selfExePath(&std_lib_path_buf) catch "";
+            if (std_lib_path.len > 0) {
+                const exe_dir = std.fs.path.dirname(std_lib_path) orelse "";
+                const install_dir = std.fs.path.dirname(exe_dir) orelse "";
+                default_roots[0].path = std.fmt.bufPrint(&std_path_buf, "{s}/std", .{install_dir}) catch "std";
+                default_roots[1].path = std.fmt.bufPrint(&vendor_path_buf, "{s}/vendor", .{install_dir}) catch "vendor";
+            }
         }
         var graph = ModuleGraph{
             .gpa = gpa,
