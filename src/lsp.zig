@@ -21,12 +21,12 @@ const Position = struct {
     character: usize,
 };
 
-pub fn run(allocator: std.mem.Allocator, err_writer: *std.io.AnyWriter, out_writer: *std.io.AnyWriter) !void {
+pub fn run(allocator: std.mem.Allocator, err_writer: *std.io.Writer, out_writer: *std.io.Writer) !void {
     var server = Server{
-        .allocator = allocator,
+        .gpa = allocator,
         .err_writer = err_writer,
         .out_writer = out_writer,
-        .documents = std.ArrayList(Document).init(allocator),
+        .documents = .empty,
     };
     defer server.deinit();
 
@@ -34,59 +34,43 @@ pub fn run(allocator: std.mem.Allocator, err_writer: *std.io.AnyWriter, out_writ
 }
 
 const Server = struct {
-    allocator: std.mem.Allocator,
-    err_writer: *std.io.AnyWriter,
-    out_writer: *std.io.AnyWriter,
+    gpa: std.mem.Allocator,
+    err_writer: *std.io.Writer,
+    out_writer: *std.io.Writer,
     documents: std.ArrayList(Document),
     shutdown_requested: bool = false,
     running: bool = true,
 
     fn deinit(self: *Server) void {
         for (self.documents.items) |*doc| {
-            doc.deinit(self.allocator);
+            doc.deinit(self.gpa);
         }
-        self.documents.deinit();
+        self.documents.deinit(self.gpa);
     }
 
     fn loop(self: *Server) !void {
-        var stdin_file = std.fs.File.stdin();
-        var buffered = std.io.bufferedReader(stdin_file.reader());
+        var in_buf: [4096]u8 = undefined;
+        var stdin = std.fs.File.stdin().readerStreaming(&in_buf);
 
         while (self.running) {
-            const message_opt = try self.readMessage(&buffered);
+            const message_opt = try self.readMessage(&stdin.interface);
             if (message_opt == null) break;
             const message = message_opt.?;
-            defer self.allocator.free(message);
-
+            defer self.gpa.free(message);
             self.handleMessage(message) catch |err| {
                 _ = self.err_writer.print("LSP error: {s}\n", .{@errorName(err)}) catch {};
             };
         }
     }
 
-    fn readMessage(self: *Server, buffered: anytype) !?[]u8 {
-        var reader = buffered.reader();
-        var header = std.ArrayList(u8).init(self.allocator);
-        defer header.deinit();
-
-        while (true) {
-            const byte = reader.readByte() catch |err| switch (err) {
-                error.EndOfStream => {
-                    if (header.items.len == 0) {
-                        return null;
-                    }
-                    return error.UnexpectedEof;
-                },
-                else => return err,
-            };
-            try header.append(byte);
-            if (header.items.len >= 4 and std.mem.endsWith(u8, header.items, "\r\n\r\n")) {
-                break;
-            }
-        }
+    fn readMessage(self: *Server, reader: anytype) !?[]u8 {
+        var buffer: [1024]u8 = undefined;
+        var hp = std.http.HeadParser{};
+        const size = hp.feed(&buffer);
+        const header = buffer[0..size];
 
         var content_length: ?usize = null;
-        var lines = std.mem.splitSequence(u8, header.items, "\r\n");
+        var lines = std.mem.splitSequence(u8, header, "\r\n");
         while (lines.next()) |line| {
             if (line.len == 0) continue;
             const trimmed = std.mem.trim(u8, line, " \t");
@@ -99,30 +83,30 @@ const Server = struct {
         }
 
         const length = content_length orelse return error.MissingContentLength;
-        var body = try self.allocator.alloc(u8, length);
+        const body = try self.gpa.alloc(u8, length);
         if (length != 0) {
-            try reader.readNoEof(body);
+            try reader.readSliceAll(body);
         }
         return body;
     }
 
     fn handleMessage(self: *Server, message: []u8) !void {
-        var tree = try std.json.parseFromSlice(JsonValue, self.allocator, message, .{});
+        var tree = try std.json.parseFromSlice(JsonValue, self.gpa, message, .{});
         defer tree.deinit();
         const root = tree.value;
         if (root != .object) return;
         const obj = root.object;
 
         const method_ptr = obj.get("method") orelse return;
-        if (method_ptr.* != .string) return;
+        if (method_ptr != .string) return;
         const method = method_ptr.string;
 
-        const params_ptr = obj.get("params");
+        var params_ptr = obj.get("params");
         const id_ptr = obj.get("id");
 
         if (std.mem.eql(u8, method, "initialize")) {
             if (id_ptr) |id| {
-                try self.handleInitialize(id.*, if (params_ptr) |p| p else null);
+                try self.handleInitialize(id, if (params_ptr) |*p| p else null);
             }
             return;
         }
@@ -131,7 +115,7 @@ const Server = struct {
         }
         if (std.mem.eql(u8, method, "shutdown")) {
             if (id_ptr) |id| {
-                try self.handleShutdown(id.*);
+                try self.handleShutdown(id);
             }
             return;
         }
@@ -140,45 +124,49 @@ const Server = struct {
             return;
         }
         if (std.mem.eql(u8, method, "textDocument/didOpen")) {
-            if (params_ptr) |p| try self.handleDidOpen(p.*);
+            if (params_ptr) |p| try self.handleDidOpen(p);
             return;
         }
         if (std.mem.eql(u8, method, "textDocument/didChange")) {
-            if (params_ptr) |p| try self.handleDidChange(p.*);
+            if (params_ptr) |p| try self.handleDidChange(p);
             return;
         }
         if (std.mem.eql(u8, method, "textDocument/didClose")) {
-            if (params_ptr) |p| try self.handleDidClose(p.*);
+            if (params_ptr) |p| try self.handleDidClose(p);
             return;
         }
         if (std.mem.eql(u8, method, "textDocument/didSave")) {
-            if (params_ptr) |p| try self.handleDidSave(p.*);
+            if (params_ptr) |p| try self.handleDidSave(p);
             return;
         }
 
         if (id_ptr) |id| {
-            try self.sendMethodNotFound(id.*);
+            try self.sendMethodNotFound(id);
         }
     }
 
     fn handleInitialize(self: *Server, id_value: JsonValue, params: ?*JsonValue) !void {
         _ = params;
-        var payload = std.ArrayList(u8).init(self.allocator);
-        defer payload.deinit();
-        var writer = payload.writer();
+        var payload = std.ArrayList(u8){};
+        defer payload.deinit(self.gpa);
+        var writer = payload.writer(self.gpa);
         try writer.writeAll("{\"jsonrpc\":\"2.0\",\"id\":");
-        try std.json.stringify(id_value, .{}, writer);
+        var buff: [100]u8 = undefined;
+        var iface = writer.adaptToNewApi(&buff).new_interface;
+        try std.json.Stringify.value(id_value, .{}, &iface);
         try writer.writeAll(",\"result\":{\"capabilities\":{\"textDocumentSync\":{\"openClose\":true,\"change\":1},\"positionEncoding\":\"utf-8\"}}}");
         try self.sendPayload(payload.items);
     }
 
     fn handleShutdown(self: *Server, id_value: JsonValue) !void {
         self.shutdown_requested = true;
-        var payload = std.ArrayList(u8).init(self.allocator);
-        defer payload.deinit();
-        var writer = payload.writer();
+        var payload = std.ArrayList(u8){};
+        defer payload.deinit(self.gpa);
+        var writer = payload.writer(self.gpa);
         try writer.writeAll("{\"jsonrpc\":\"2.0\",\"id\":");
-        try std.json.stringify(id_value, .{}, writer);
+        var buff: [100]u8 = undefined;
+        var iface = writer.adaptToNewApi(&buff).new_interface;
+        try std.json.Stringify.value(id_value, .{}, &iface);
         try writer.writeAll(",\"result\":null}");
         try self.sendPayload(payload.items);
     }
@@ -191,26 +179,26 @@ const Server = struct {
         if (params != .object) return;
         const params_obj = params.object;
         const text_doc_ptr = params_obj.get("textDocument") orelse return;
-        if (text_doc_ptr.* != .object) return;
+        if (text_doc_ptr != .object) return;
         const text_doc = text_doc_ptr.object;
 
         const uri_ptr = text_doc.get("uri") orelse return;
-        if (uri_ptr.* != .string) return;
+        if (uri_ptr != .string) return;
         const uri = uri_ptr.string;
 
         const text_ptr = text_doc.get("text") orelse return;
-        if (text_ptr.* != .string) return;
+        if (text_ptr != .string) return;
         const text_value = text_ptr.string;
 
-        const version = if (text_doc.get("version")) |ver| parseVersion(ver) else null;
+        const version = if (text_doc.getPtr("version")) |ver| parseVersion(ver) else null;
 
-        var text_copy = try self.allocator.dupe(u8, text_value);
+        const text_copy = try self.gpa.dupe(u8, text_value);
         var cleanup_text = true;
-        defer if (cleanup_text) self.allocator.free(text_copy);
+        defer if (cleanup_text) self.gpa.free(text_copy);
 
-        var path = try self.uriToPath(uri);
+        const path = try self.uriToPath(uri);
         var cleanup_path = true;
-        defer if (cleanup_path) self.allocator.free(path);
+        defer if (cleanup_path) self.gpa.free(path);
 
         const doc = try self.upsertDocument(uri, path, text_copy, version);
         cleanup_text = false;
@@ -222,41 +210,41 @@ const Server = struct {
         if (params != .object) return;
         const params_obj = params.object;
         const text_doc_ptr = params_obj.get("textDocument") orelse return;
-        if (text_doc_ptr.* != .object) return;
+        if (text_doc_ptr != .object) return;
         const text_doc = text_doc_ptr.object;
 
         const uri_ptr = text_doc.get("uri") orelse return;
-        if (uri_ptr.* != .string) return;
+        if (uri_ptr != .string) return;
         const uri = uri_ptr.string;
 
-        const version = if (text_doc.get("version")) |ver| parseVersion(ver) else null;
+        const version = if (text_doc.getPtr("version")) |ver| parseVersion(ver) else null;
 
         const changes_ptr = params_obj.get("contentChanges") orelse return;
-        if (changes_ptr.* != .array) return;
+        if (changes_ptr != .array) return;
         const changes = changes_ptr.array.items;
         if (changes.len == 0) return;
         const change_value = changes[changes.len - 1];
         if (change_value != .object) return;
         const change_obj = change_value.object;
         const text_ptr = change_obj.get("text") orelse return;
-        if (text_ptr.* != .string) return;
+        if (text_ptr != .string) return;
         const text_value = text_ptr.string;
 
-        var text_copy = try self.allocator.dupe(u8, text_value);
+        const text_copy = try self.gpa.dupe(u8, text_value);
         var cleanup_text = true;
-        defer if (cleanup_text) self.allocator.free(text_copy);
+        defer if (cleanup_text) self.gpa.free(text_copy);
 
         if (self.findDocumentIndex(uri)) |idx| {
             var doc = &self.documents.items[idx];
-            self.allocator.free(doc.text);
+            self.gpa.free(doc.text);
             doc.text = text_copy;
             doc.version = version;
             cleanup_text = false;
             try self.publishDocumentDiagnostics(doc);
         } else {
-            var path = try self.uriToPath(uri);
+            const path = try self.uriToPath(uri);
             var cleanup_path = true;
-            defer if (cleanup_path) self.allocator.free(path);
+            defer if (cleanup_path) self.gpa.free(path);
             const doc = try self.upsertDocument(uri, path, text_copy, version);
             cleanup_path = false;
             cleanup_text = false;
@@ -268,10 +256,10 @@ const Server = struct {
         if (params != .object) return;
         const params_obj = params.object;
         const text_doc_ptr = params_obj.get("textDocument") orelse return;
-        if (text_doc_ptr.* != .object) return;
+        if (text_doc_ptr != .object) return;
         const text_doc = text_doc_ptr.object;
         const uri_ptr = text_doc.get("uri") orelse return;
-        if (uri_ptr.* != .string) return;
+        if (uri_ptr != .string) return;
         const uri = uri_ptr.string;
 
         self.removeDocument(uri);
@@ -282,24 +270,24 @@ const Server = struct {
         if (params != .object) return;
         const params_obj = params.object;
         const text_doc_ptr = params_obj.get("textDocument") orelse return;
-        if (text_doc_ptr.* != .object) return;
+        if (text_doc_ptr != .object) return;
         const text_doc = text_doc_ptr.object;
         const uri_ptr = text_doc.get("uri") orelse return;
-        if (uri_ptr.* != .string) return;
+        if (uri_ptr != .string) return;
         const uri = uri_ptr.string;
 
         var new_text: ?[]u8 = null;
         if (params_obj.get("text")) |text_ptr| {
-            if (text_ptr.* == .string) {
-                new_text = try self.allocator.dupe(u8, text_ptr.string);
+            if (text_ptr == .string) {
+                new_text = try self.gpa.dupe(u8, text_ptr.string);
             }
         }
-        defer if (new_text) |text_copy| self.allocator.free(text_copy);
+        defer if (new_text) |text_copy| self.gpa.free(text_copy);
 
         if (self.findDocumentIndex(uri)) |idx| {
             var doc = &self.documents.items[idx];
             if (new_text) |text_copy| {
-                self.allocator.free(doc.text);
+                self.gpa.free(doc.text);
                 doc.text = text_copy;
                 new_text = null;
             }
@@ -310,23 +298,23 @@ const Server = struct {
     fn upsertDocument(self: *Server, uri: []const u8, path: []u8, text: []u8, version: ?i64) !*Document {
         if (self.findDocumentIndex(uri)) |idx| {
             var doc = &self.documents.items[idx];
-            self.allocator.free(doc.path);
-            self.allocator.free(doc.text);
+            self.gpa.free(doc.path);
+            self.gpa.free(doc.text);
             doc.path = path;
             doc.text = text;
             doc.version = version;
             return doc;
         }
-        const uri_copy = try self.allocator.dupe(u8, uri);
-        errdefer self.allocator.free(uri_copy);
-        try self.documents.append(.{ .uri = uri_copy, .path = path, .text = text, .version = version });
+        const uri_copy = try self.gpa.dupe(u8, uri);
+        errdefer self.gpa.free(uri_copy);
+        try self.documents.append(self.gpa, .{ .uri = uri_copy, .path = path, .text = text, .version = version });
         return &self.documents.items[self.documents.items.len - 1];
     }
 
     fn removeDocument(self: *Server, uri: []const u8) void {
         if (self.findDocumentIndex(uri)) |idx| {
-            const removed = self.documents.swapRemove(idx);
-            removed.deinit(self.allocator);
+            var removed = self.documents.swapRemove(idx);
+            removed.deinit(self.gpa);
         }
     }
 
@@ -338,12 +326,12 @@ const Server = struct {
     }
 
     fn publishDocumentDiagnostics(self: *Server, doc: *Document) !void {
-        var context = lib.compile.Context.init(self.allocator);
+        var context = lib.compile.Context.init(self.gpa);
         defer context.deinit();
 
         const file_id = try context.source_manager.setVirtualSourceByPath(doc.path, doc.text);
 
-        var pipeline = lib.pipeline.Pipeline.init(self.allocator, &context);
+        var pipeline = lib.pipeline.Pipeline.init(self.gpa, &context);
         const result_opt: ?lib.pipeline.Result = blk: {
             const res = pipeline.runWithImports(doc.path, &.{}, .check) catch |err| {
                 if (context.diags.count() == 0) {
@@ -358,7 +346,7 @@ const Server = struct {
             if (res.type_info) |ti| {
                 if (!context.module_graph.ownsTypeInfo(ti)) {
                     ti.deinit();
-                    self.allocator.destroy(ti);
+                    self.gpa.destroy(ti);
                 }
             }
         }
@@ -367,11 +355,13 @@ const Server = struct {
     }
 
     fn sendDiagnosticsForFile(self: *Server, doc: *Document, context: *lib.compile.Context, file_id: u32) !void {
-        var payload = std.ArrayList(u8).init(self.allocator);
-        defer payload.deinit();
-        var writer = payload.writer();
+        var payload = std.ArrayList(u8){};
+        defer payload.deinit(self.gpa);
+        var writer = payload.writer(self.gpa);
         try writer.writeAll("{\"jsonrpc\":\"2.0\",\"method\":\"textDocument/publishDiagnostics\",\"params\":{\"uri\":");
-        try std.json.encodeString(writer, doc.uri);
+        var buff: [100]u8 = undefined;
+        var iface = writer.adaptToNewApi(&buff).new_interface;
+        try std.json.Stringify.value(doc.uri, .{}, &iface);
         try writer.writeAll(",\"diagnostics\":[");
 
         var first = true;
@@ -388,37 +378,37 @@ const Server = struct {
             const end_pos = Server.computePosition(text_slice, end_offset);
 
             try writer.writeAll("{\"range\":{\"start\":{\"line\":");
-            try writer.print("{d},\"character\":{d}}", .{ start_pos.line, start_pos.character });
+            try writer.print("{d},\"character\":{d}}}", .{ start_pos.line, start_pos.character });
             try writer.writeAll(",\"end\":{\"line\":");
             try writer.print("{d},\"character\":{d}}}", .{ end_pos.line, end_pos.character });
             try writer.writeAll(",\"severity\":");
             try writer.print("{d}", .{severityToLsp(message.severity)});
             try writer.writeAll(",\"source\":\"sr-lang\",\"code\":");
-            try std.json.encodeString(writer, @tagName(message.code));
+            try std.json.Stringify.value(@tagName(message.code), .{}, &iface);
             try writer.writeAll(",\"message\":");
 
-            const base_message = try context.diags.messageToOwnedSlice(self.allocator, message);
-            defer self.allocator.free(base_message);
+            const base_message = try context.diags.messageToOwnedSlice(self.gpa, message);
+            defer self.gpa.free(base_message);
             var final_message = base_message;
             var owned_message: ?[]u8 = null;
 
             if (message.notes.items.len != 0) {
-                var combined = std.ArrayList(u8).init(self.allocator);
-                defer combined.deinit();
-                try combined.appendSlice(base_message);
+                var combined = std.ArrayList(u8){};
+                defer combined.deinit(self.gpa);
+                try combined.appendSlice(self.gpa, base_message);
                 for (message.notes.items) |note| {
-                    const note_text = try context.diags.noteToOwnedSlice(self.allocator, note);
-                    try combined.appendSlice("\nNote: ");
-                    try combined.appendSlice(note_text);
-                    self.allocator.free(note_text);
+                    const note_text = try context.diags.noteToOwnedSlice(self.gpa, note);
+                    try combined.appendSlice(self.gpa, "\nNote: ");
+                    try combined.appendSlice(self.gpa, note_text);
+                    self.gpa.free(note_text);
                 }
-                owned_message = try combined.toOwnedSlice();
+                owned_message = try combined.toOwnedSlice(self.gpa);
                 final_message = owned_message.?;
             }
 
-            try std.json.encodeString(writer, final_message);
+            try std.json.Stringify.value(final_message, .{}, &iface);
             if (owned_message) |owned| {
-                self.allocator.free(owned);
+                self.gpa.free(owned);
             }
 
             try writer.writeAll("}");
@@ -429,11 +419,13 @@ const Server = struct {
     }
 
     fn sendEmptyDiagnostics(self: *Server, uri: []const u8) !void {
-        var payload = std.ArrayList(u8).init(self.allocator);
-        defer payload.deinit();
-        var writer = payload.writer();
+        var payload = std.ArrayList(u8){};
+        defer payload.deinit(self.gpa);
+        var writer = payload.writer(self.gpa);
         try writer.writeAll("{\"jsonrpc\":\"2.0\",\"method\":\"textDocument/publishDiagnostics\",\"params\":{\"uri\":");
-        try std.json.encodeString(writer, uri);
+        var buff: [100]u8 = undefined;
+        var iface = writer.adaptToNewApi(&buff).new_interface;
+        try std.json.Stringify.value(uri, .{}, &iface);
         try writer.writeAll(",\"diagnostics\":[]}}");
         try self.sendPayload(payload.items);
     }
@@ -476,22 +468,22 @@ const Server = struct {
     }
 
     fn decodeUriPath(self: *Server, encoded: []const u8) ![]u8 {
-        var builder = std.ArrayList(u8).init(self.allocator);
-        defer builder.deinit();
+        var builder = std.ArrayList(u8){};
+        defer builder.deinit(self.gpa);
         var i: usize = 0;
         while (i < encoded.len) {
             const c = encoded[i];
             if (c == '%') {
                 if (i + 2 >= encoded.len) return error.InvalidUri;
                 const value = try decodeHexPair(encoded[i + 1], encoded[i + 2]);
-                try builder.append(value);
+                try builder.append(self.gpa, value);
                 i += 3;
             } else {
-                try builder.append(c);
+                try builder.append(self.gpa, c);
                 i += 1;
             }
         }
-        return builder.toOwnedSlice();
+        return builder.toOwnedSlice(self.gpa);
     }
 
     fn decodeHexPair(hi: u8, lo: u8) !u8 {
@@ -533,11 +525,13 @@ const Server = struct {
     }
 
     fn sendMethodNotFound(self: *Server, id_value: JsonValue) !void {
-        var payload = std.ArrayList(u8).init(self.allocator);
-        defer payload.deinit();
-        var writer = payload.writer();
+        var payload = std.ArrayList(u8){};
+        defer payload.deinit(self.gpa);
+        var writer = payload.writer(self.gpa);
         try writer.writeAll("{\"jsonrpc\":\"2.0\",\"id\":");
-        try std.json.stringify(id_value, .{}, writer);
+        var buff: [100]u8 = undefined;
+        var iface = writer.adaptToNewApi(&buff).new_interface;
+        try std.json.Stringify.value(id_value, .{}, &iface);
         try writer.writeAll(",\"error\":{\"code\":-32601,\"message\":\"Method not found\"}}");
         try self.sendPayload(payload.items);
     }
