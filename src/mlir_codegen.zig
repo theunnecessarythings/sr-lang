@@ -93,6 +93,7 @@ pub const MlirCodegen = struct {
 
     // per-module caches
     func_syms: std.StringHashMap(FuncInfo),
+    global_syms: std.StringHashMap(void),
     str_pool: std.StringHashMap(mlir.Operation), // text -> llvm.mlir.global op
 
     // per-function state (reset each function)
@@ -331,6 +332,7 @@ pub const MlirCodegen = struct {
             .f64_ty = mlir.Type.getFloat64Type(ctx),
             .llvm_ptr_ty = mlir.LLVM.getPointerType(ctx, 0),
             .func_syms = std.StringHashMap(FuncInfo).init(gpa),
+            .global_syms = std.StringHashMap(void).init(gpa),
             .str_pool = std.StringHashMap(mlir.Operation).init(gpa),
             .block_map = std.AutoHashMap(tir.BlockId, mlir.Block).init(gpa),
             .value_map = std.AutoHashMap(tir.ValueId, mlir.Value).init(gpa),
@@ -356,6 +358,7 @@ pub const MlirCodegen = struct {
             }
         }
         self.func_syms.deinit();
+        self.global_syms.deinit();
         self.str_pool.deinit();
         self.block_map.deinit();
         self.value_map.deinit();
@@ -1122,6 +1125,9 @@ pub const MlirCodegen = struct {
                 _ = try self.func_syms.put(name, info);
             } else {
                 // Handle global variables
+                if (self.global_syms.contains(name)) {
+                    continue;
+                }
                 const var_mlir_ty = try self.llvmTypeOf(store, g.ty);
 
                 var attr_buf: std.ArrayList(mlir.NamedAttribute) = .empty;
@@ -1157,6 +1163,7 @@ pub const MlirCodegen = struct {
 
                 var body = self.module.getBody();
                 body.appendOwnedOperation(global_op);
+                try self.global_syms.put(name, {});
             }
         }
     }
@@ -1728,6 +1735,9 @@ pub const MlirCodegen = struct {
                 const prev_loc = self.pushLocation(p.loc);
                 defer self.loc = prev_loc;
                 const ty = try self.llvmTypeOf(store, p.ty);
+                if (self.isFloat(ty)) {
+                    break :blk self.constFloat(ty, @floatFromInt(p.value));
+                }
                 break :blk self.constInt(ty, p.value);
             },
             .ConstFloat => blk: {
@@ -5109,6 +5119,14 @@ pub const MlirCodegen = struct {
 
     fn emitCastNormal(self: *MlirCodegen, store: *types.TypeStore, dst_sr: types.TypeId, to_ty: mlir.Type, from_v: mlir.Value, src_sr: types.TypeId) !mlir.Value {
         var from_ty = from_v.getType();
+
+        if (isLLVMPtr(from_ty) and mlir.LLVM.isLLVMStructType(to_ty)) {
+            var load = OpBuilder.init("llvm.load", self.loc).builder()
+                .add_operands(&.{from_v})
+                .add_results(&.{to_ty}).build();
+            self.append(load);
+            return load.getResult(0);
+        }
 
         // Special-case: build an ErrorSet value from a non-error value.
         // This creates the Ok variant with tag = 0 and coerces the payload.

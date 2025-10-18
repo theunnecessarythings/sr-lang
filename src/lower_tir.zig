@@ -2122,17 +2122,17 @@ pub const LowerTir = struct {
             }
         }
 
-        // Choose a concrete return type: expected → stamped → callee.fty.ret → void
+        // Choose a concrete return type: callee.fty.ret -> expected -> stamped -> void
         const ret_ty = blk: {
-            if (expected) |e| if (!self.isVoid(e) and !self.isAny(e)) break :blk e;
-            if (self.getExprType(id)) |t| if (!self.isVoid(t) and !self.isAny(t)) break :blk t;
             if (callee.fty) |fty| {
                 if (self.context.type_store.index.kinds.items[fty.toRaw()] == .Function) {
                     const fr2 = self.context.type_store.get(.Function, fty);
-                    const rt = fr2.result; // adjust if your field is named differently
+                    const rt = fr2.result;
                     if (!self.isVoid(rt) and !self.isAny(rt)) break :blk rt;
                 }
             }
+            if (expected) |e| if (!self.isVoid(e) and !self.isAny(e)) break :blk e;
+            if (self.getExprType(id)) |t| if (!self.isVoid(t) and !self.isAny(t)) break :blk t;
             break :blk self.context.type_store.tVoid();
         };
 
