@@ -2313,7 +2313,7 @@ pub const Checker = struct {
                     try self.context.diags.addError(field_loc, .unknown_struct_field, .{});
                     return null;
                 }
-                try self.context.diags.addError(self.exprLoc(field_expr), .field_access_on_non_aggregate, .{});
+                try self.context.diags.addError(self.exprLoc(field_expr), .field_access_on_non_aggregate, .{kind});
                 return null;
             },
             .Enum, .Error => {
@@ -2321,7 +2321,7 @@ pub const Checker = struct {
                     else => return null,
                 };
                 if (method_ty) |mt| return mt;
-                try self.context.diags.addError(self.exprLoc(field_expr), .field_access_on_non_aggregate, .{});
+                try self.context.diags.addError(self.exprLoc(field_expr), .field_access_on_non_aggregate, .{kind});
                 return null;
             },
             .TypeType => {
@@ -2432,7 +2432,7 @@ pub const Checker = struct {
                 return null;
             },
             else => {
-                try self.context.diags.addError(self.exprLoc(field_expr), .field_access_on_non_aggregate, .{});
+                try self.context.diags.addError(self.exprLoc(field_expr), .field_access_on_non_aggregate, .{kind});
                 return null;
             },
         }

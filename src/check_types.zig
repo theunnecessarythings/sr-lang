@@ -863,6 +863,19 @@ pub fn typeFromTypeExpr(self: *Checker, id: ast.ExprId) anyerror!?types.TypeId {
                     try self.context.diags.addError(self.ast_unit.exprs.locs.get(fr.loc), .unknown_variant_tag, .{});
                     break :blk_fa null;
                 },
+                .Enum => {
+                    const et = self.context.type_store.get(.Enum, parent_ty);
+                    const members = self.context.type_store.enum_member_pool.slice(et.members);
+                    var i: usize = 0;
+                    while (i < members.len) : (i += 1) {
+                        const member = self.context.type_store.EnumMember.get(members[i]);
+                        if (member.name.toRaw() == fr.field.toRaw()) {
+                            return parent_ty;
+                        }
+                    }
+                    try self.context.diags.addError(self.ast_unit.exprs.locs.get(fr.loc), .unknown_struct_field, .{});
+                    break :blk_fa null;
+                },
                 else => {
                     try self.context.diags.addError(self.ast_unit.exprs.locs.get(fr.loc), .field_access_on_non_aggregate, .{});
                     break :blk_fa null;
