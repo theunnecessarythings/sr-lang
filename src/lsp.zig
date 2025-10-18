@@ -64,9 +64,24 @@ const Server = struct {
     }
 
     fn readMessage(self: *Server, reader: anytype) !?[]u8 {
-        var buffer: [1024]u8 = undefined;
+        // Read  from stdin until we get a complete message
+        var in_buf: [4096]u8 = undefined;
+        var stdin = std.fs.File.stdin().readerStreaming(&in_buf);
+        var source = std.ArrayList(u8){};
+        defer source.deinit(self.gpa);
+
+        while (true) {
+            const byte = stdin.interface.takeByte() catch |err| switch (err) {
+                error.EndOfStream => break, // clean EOF
+                else => return err,
+            };
+            try source.append(self.gpa, byte);
+        }
+
+        const buffer = source.items;
+        std.debug.print("{s}\n", .{buffer});
         var hp = std.http.HeadParser{};
-        const size = hp.feed(&buffer);
+        const size = hp.feed(buffer);
         const header = buffer[0..size];
 
         var content_length: ?usize = null;
