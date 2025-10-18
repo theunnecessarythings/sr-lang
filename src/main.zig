@@ -1,5 +1,6 @@
 const std = @import("std");
 const lib = @import("compiler");
+const lsp = @import("lsp.zig");
 
 const Colors = struct {
     pub const reset = "\x1b[0m";
@@ -35,6 +36,7 @@ const CliArgs = struct {
         pretty_print,
         json_ast,
         server,
+        lsp,
     };
 };
 
@@ -58,6 +60,7 @@ fn printUsage(writer: anytype, exec_name: []const u8) !void {
     try writer.print("  {s}pretty-print{s} <file> Format and print the source file.\n", .{ Colors.cyan, Colors.reset });
     try writer.print("  {s}json-ast{s}     <file> Print the Abstract Syntax Tree (AST) of a source file as JSON.\n", .{ Colors.cyan, Colors.reset });
     try writer.print("  {s}server{s}              Run a server for AST Explorer.\n", .{ Colors.cyan, Colors.reset });
+    try writer.print("  {s}lsp{s}                Start the language server.\n", .{ Colors.cyan, Colors.reset });
     try writer.print("  {s}help{s}                Display this help message.\n\n", .{ Colors.cyan, Colors.reset });
 
     try writer.print(
@@ -438,6 +441,8 @@ pub fn main() !void {
                     cli_args.subcommand = .json_ast;
                 } else if (std.mem.eql(u8, arg, "server")) {
                     cli_args.subcommand = .server;
+                } else if (std.mem.eql(u8, arg, "lsp")) {
+                    cli_args.subcommand = .lsp;
                 } else {
                     // Assume it's a filename if no subcommand yet
                     cli_args.filename = arg;
@@ -507,5 +512,6 @@ pub fn main() !void {
         },
         .repl => try repl(gpa, writer, out_writer),
         .server => try server(gpa, writer),
+        .lsp => try lsp.run(gpa, writer, out_writer),
     }
 }

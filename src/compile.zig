@@ -10,23 +10,40 @@ var g_passes_registered: bool = false;
 
 pub const SourceManager = struct {
     gpa: std.mem.Allocator,
-    files: std.ArrayList([]const u8) = .empty,
+    files: std.ArrayList(Entry) = .empty,
+
+    const Entry = struct {
+        path: []u8,
+        virtual_source: ?[]u8 = null,
+    };
 
     pub fn deinit(self: *SourceManager) void {
-        for (self.files.items) |file_path| {
-            self.gpa.free(file_path);
+        for (self.files.items) |*entry| {
+            self.gpa.free(entry.path);
+            if (entry.virtual_source) |src| {
+                self.gpa.free(src);
+            }
         }
         self.files.deinit(self.gpa);
     }
 
     pub fn add(self: *SourceManager, file_path: []const u8) !u32 {
-        try self.files.append(self.gpa, try self.gpa.dupe(u8, file_path));
+        if (self.findIndex(file_path)) |idx| {
+            return @intCast(idx);
+        }
+        const copy = try self.gpa.dupe(u8, file_path);
+        errdefer self.gpa.free(copy);
+        try self.files.append(self.gpa, .{ .path = copy });
         return @intCast(self.files.items.len - 1);
     }
 
     pub fn read(self: *SourceManager, index: u32) ![]const u8 {
-        const file_path = self.get(index) orelse return error.FileNotFound;
-        var file = try std.fs.cwd().openFile(file_path, .{});
+        if (index >= self.files.items.len) return error.FileNotFound;
+        const entry = self.files.items[index];
+        if (entry.virtual_source) |src| {
+            return try self.gpa.dupe(u8, src);
+        }
+        var file = try std.fs.cwd().openFile(entry.path, .{});
         defer file.close();
         const file_size = try file.getEndPos();
         const buffer = try self.gpa.alloc(u8, file_size);
@@ -40,7 +57,40 @@ pub const SourceManager = struct {
 
     pub fn get(self: *const SourceManager, index: u32) ?[]const u8 {
         if (index < self.files.items.len) {
-            return self.files.items[index];
+            return self.files.items[index].path;
+        }
+        return null;
+    }
+
+    pub fn setVirtualSource(self: *SourceManager, index: u32, contents: []const u8) !void {
+        if (index >= self.files.items.len) return error.FileNotFound;
+        var entry = &self.files.items[index];
+        if (entry.virtual_source) |src| {
+            self.gpa.free(src);
+        }
+        entry.virtual_source = try self.gpa.dupe(u8, contents);
+    }
+
+    pub fn clearVirtualSource(self: *SourceManager, index: u32) void {
+        if (index >= self.files.items.len) return;
+        var entry = &self.files.items[index];
+        if (entry.virtual_source) |src| {
+            self.gpa.free(src);
+            entry.virtual_source = null;
+        }
+    }
+
+    pub fn setVirtualSourceByPath(self: *SourceManager, file_path: []const u8, contents: []const u8) !u32 {
+        const idx = try self.add(file_path);
+        try self.setVirtualSource(idx, contents);
+        return idx;
+    }
+
+    fn findIndex(self: *SourceManager, file_path: []const u8) ?usize {
+        for (self.files.items, 0..) |entry, idx| {
+            if (std.mem.eql(u8, entry.path, file_path)) {
+                return idx;
+            }
         }
         return null;
     }
