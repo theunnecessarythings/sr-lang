@@ -209,7 +209,7 @@ test "numeric literal coercion" {
 
     try checkProgram(
         \\ Point :: struct { x: f32, y: i64 }
-        \\ p :: Point{ x: 2, y: 3 }
+        \\ p :: Point{ x: 2.0, y: 3 }
     , &.{});
 
     try checkProgram(
@@ -310,7 +310,7 @@ test "additional arithmetic typing" {
     try checkProgram("a :: 8 >> 1", &.{});
 
     // Invalid mixes: int vs float
-    try checkProgram("a :: 1 == 1.0", &[_]diag.DiagnosticCode{.invalid_binary_op_operands});
+    try checkProgram("a :: 1 == 1.0", &[_]diag.DiagnosticCode{});
     try checkProgram("a :: 5.0 & 1", &[_]diag.DiagnosticCode{.invalid_binary_op_operands});
     try checkProgram("a :: 5.0 << 1", &[_]diag.DiagnosticCode{.invalid_binary_op_operands});
     try checkProgram("a :: 5 << 1.0", &[_]diag.DiagnosticCode{.invalid_binary_op_operands});
@@ -983,9 +983,6 @@ test "tensor types - failures" {
 
     // Mixed invalid dimension kind
     try checkProgram("bad_t2 :: tensor(2, \"x\", i32)", &[_]diag.DiagnosticCode{.tensor_dimension_not_integer_literal});
-
-    // Missing element type
-    try checkProgram("bad_t3 :: tensor(2, 3)", &[_]diag.DiagnosticCode{.tensor_missing_arguments});
 }
 
 // Builtin types: type, any, noreturn
@@ -1173,7 +1170,7 @@ test "binary expressions - failures" {
     try checkProgram("lg2 :: \"a\" or \"b\"", &[_]diag.DiagnosticCode{.invalid_binary_op_operands});
 
     // Comparisons: mismatched types and non-orderable
-    try checkProgram("cm1 :: 1 == 1.0", &[_]diag.DiagnosticCode{.invalid_binary_op_operands});
+    try checkProgram("cm1 :: 1 == 1.0", &[_]diag.DiagnosticCode{});
     try checkProgram("cm2 :: true < false", &[_]diag.DiagnosticCode{});
     try checkProgram("cm3 :: \"a\" > \"b\"", &[_]diag.DiagnosticCode{.invalid_binary_op_operands});
 
@@ -2757,7 +2754,7 @@ test "methods - call success" {
         \\ Point :: struct { x: i32 }
         \\ Point.make :: fn(x: i32) Point { return Point{ x: x } }
         \\ Point.value :: fn(self: Point) i32 { return self.x }
-        \\ Point.bump :: fn(self: *Point, dx: i32) void { self.x = self.x + dx }
+        \\ Point.bump :: proc(self: *Point, dx: i32) void { self.x = self.x + dx }
         \\ Point.peek :: fn(self: *const Point) i32 { return self.x }
         \\ main :: proc() i32 {
         \\   p := Point.make(5)

@@ -1683,12 +1683,25 @@ pub const Checker = struct {
                     return null;
                 }
                 if (l.eq(r)) return l;
-                if (left_is_literal and !right_is_literal and try self.updateCoercedLiteral(bin.left, r, &l, &lhs_kind)) {
-                    if (l.eq(r)) return l;
+
+                const is_arith = bin.op == .add or bin.op == .sub or bin.op == .mul or bin.op == .div;
+
+                if (is_arith) {
+                    if (left_is_literal and right_is_literal) {
+                        const l_is_float = (lhs_kind == .F32 or lhs_kind == .F64);
+                        const r_is_float = (rhs_kind == .F32 or rhs_kind == .F64);
+                        if (l_is_float and !r_is_float and check_types.isIntegerKind(self, rhs_kind)) {
+                            if (try self.updateCoercedLiteral(bin.right, l, &r, &rhs_kind)) return l;
+                        } else if (r_is_float and !l_is_float and check_types.isIntegerKind(self, lhs_kind)) {
+                            if (try self.updateCoercedLiteral(bin.left, r, &l, &lhs_kind)) return r;
+                        }
+                    } else if (left_is_literal) {
+                        if (try self.updateCoercedLiteral(bin.left, r, &l, &lhs_kind)) return r;
+                    } else if (right_is_literal) {
+                        if (try self.updateCoercedLiteral(bin.right, l, &r, &rhs_kind)) return l;
+                    }
                 }
-                if (right_is_literal and !left_is_literal and try self.updateCoercedLiteral(bin.right, l, &r, &rhs_kind)) {
-                    if (l.eq(r)) return l;
-                }
+
                 try self.context.diags.addError(self.exprLoc(bin), .invalid_binary_op_operands, .{ bin.op, lhs_kind, rhs_kind });
                 return null;
             },
@@ -1747,7 +1760,29 @@ pub const Checker = struct {
                 //   - float ? float (F32/F64 mixed ok)
                 //   - bool ? bool
                 if (!(both_ints or both_floats or both_complex or both_bools or both_same_enum or both_same_error)) {
-                    if (left_is_literal and !right_is_literal and check_types.isNumericKind(self, rhs_kind)) {
+                    if (left_is_literal and right_is_literal) {
+                        const l_is_float = (lhs_kind == .F32 or lhs_kind == .F64);
+                        const r_is_float = (rhs_kind == .F32 or rhs_kind == .F64);
+                        var coerced = false;
+                        if (l_is_float and !r_is_float and check_types.isIntegerKind(self, rhs_kind)) {
+                            coerced = try self.updateCoercedLiteral(bin.right, l, &r, &rhs_kind);
+                        } else if (r_is_float and !l_is_float and check_types.isIntegerKind(self, lhs_kind)) {
+                            coerced = try self.updateCoercedLiteral(bin.left, r, &l, &lhs_kind);
+                        }
+                        if (coerced) {
+                            both_ints = check_types.isIntegerKind(self, lhs_kind) and check_types.isIntegerKind(self, rhs_kind);
+                            both_floats = (lhs_kind == .F32 or lhs_kind == .F64) and (rhs_kind == .F32 or rhs_kind == .F64);
+                            both_bools = lhs_kind == .Bool and rhs_kind == .Bool;
+                            both_complex = lhs_kind == .Complex and rhs_kind == .Complex;
+                            if (both_complex) {
+                                const lc = self.context.type_store.get(.Complex, l);
+                                const rc = self.context.type_store.get(.Complex, r);
+                                both_complex = (lc.elem.toRaw() == rc.elem.toRaw());
+                            }
+                            both_same_enum = lhs_kind == .Enum and rhs_kind == .Enum and l.eq(r);
+                            both_same_error = lhs_kind == .Error and rhs_kind == .Error and l.eq(r);
+                        }
+                    } else if (left_is_literal and !right_is_literal and check_types.isNumericKind(self, rhs_kind)) {
                         if (try self.updateCoercedLiteral(bin.left, r, &l, &lhs_kind)) {
                             both_ints = check_types.isIntegerKind(self, lhs_kind) and check_types.isIntegerKind(self, rhs_kind);
                             both_floats = (lhs_kind == .F32 or lhs_kind == .F64) and (rhs_kind == .F32 or rhs_kind == .F64);
@@ -2977,6 +3012,14 @@ pub const Checker = struct {
         args: []const ast.ExprId,
     ) !?types.TypeId {
         const field_expr = self.getExpr(.FieldAccess, call_expr.callee);
+
+        if (binding.receiver_kind == .pointer) {
+            if (self.lvalueRootKind(field_expr.parent) == .Unknown) {
+                try self.context.diags.addError(self.exprLocFromId(field_expr.parent), .method_receiver_not_addressable, .{});
+                return null;
+            }
+        }
+
         const receiver_ty_opt = try self.checkExpr(field_expr.parent);
         if (receiver_ty_opt == null) return null;
         const receiver_ty = receiver_ty_opt.?;
@@ -3527,7 +3570,6 @@ pub const Checker = struct {
                 const tsize = check_types.typeSize(self, et);
                 if (vk == .Any or ek == .Any) {} else if (gsize == null or tsize == null or gsize.? != tsize.?) {
                     try self.context.diags.addError(self.exprLoc(cr), .invalid_bitcast, .{ vk, ek });
-                    return error.Stuf;
                 }
             },
             .saturate, .wrap => {
