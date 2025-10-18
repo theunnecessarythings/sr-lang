@@ -26,8 +26,6 @@ pub const Rules = struct {
         gpa: std.mem.Allocator,
         base: []const u8,
     ) !void {
-        try push(list, gpa, base);
-
         if (!self.hasAnyExtension(base)) {
             for (self.extensions) |ext| {
                 const with_ext = try std.fmt.allocPrint(gpa, "{s}{s}", .{ base, ext });
@@ -44,6 +42,8 @@ pub const Rules = struct {
             defer gpa.free(with_default);
             try push(list, gpa, with_default);
         }
+
+        try push(list, gpa, base);
 
         if (base.len == 0) {
             for (self.package_entry_files) |entry| {

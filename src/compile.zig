@@ -135,6 +135,7 @@ pub const Context = struct {
         self.gpa.destroy(self.interner);
         self.gpa.destroy(self.diags);
         self.gpa.destroy(self.source_manager);
+        self.gpa.destroy(self.loc_store);
     }
 };
 

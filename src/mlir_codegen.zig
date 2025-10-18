@@ -369,6 +369,9 @@ pub const MlirCodegen = struct {
         }
         self.file_cache.deinit();
         self.loc_cache.deinit();
+        if (self.diagnostic_data.msg) |msg| {
+            self.gpa.free(msg);
+        }
         self.gpa.destroy(self.diagnostic_data);
         mlir.c.mlirContextDetachDiagnosticHandler(self.mlir_ctx.handle, self.diagnostic_handler);
         self.module.destroy();

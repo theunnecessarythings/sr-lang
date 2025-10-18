@@ -187,26 +187,7 @@ pub const ModuleGraph = struct {
     }
 
     fn rebuildPackages(self: *ModuleGraph) !void {
-        const project_root = blk: {
-            if (std_lib_path.len == 0) {
-                std_lib_path = std.fs.selfExePath(&std_lib_path_buf) catch "";
-            }
-            var path = std.fs.path.dirname(std_lib_path) orelse "";
-            path = std.fs.path.dirname(path) orelse path;
-            path = std.fs.path.dirname(path) orelse path;
-            break :blk path;
-        };
-
-        var absolute_roots = try self.gpa.alloc(package_graph.RootConfig, self.config.roots.len);
-        // This leaks memory for the absolute_roots array and the paths inside,
-        // but avoids more complex changes to the ModuleGraph struct.
-        for (self.config.roots, 0..) |root_cfg, i| {
-            var new_cfg = root_cfg;
-            new_cfg.path = try std.fs.path.join(self.gpa, &.{ project_root, root_cfg.path });
-            absolute_roots[i] = new_cfg;
-        }
-
-        try self.packages.rebuild(absolute_roots, self.config.discovery);
+        try self.packages.rebuild(self.config.roots, self.config.discovery);
     }
 
     pub fn getPackage(self: *const ModuleGraph, id: package_graph.PackageId) ?*const package_graph.PackageInfo {
