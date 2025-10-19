@@ -158,8 +158,33 @@ pub fn initMLIR(alloc: std.mem.Allocator) mlir.Context {
 pub fn run_passes(context: *mlir.Context, module: *mlir.Module) !void {
     const pm = mlir.c.mlirPassManagerCreate(context.handle);
     defer mlir.c.mlirPassManagerDestroy(pm);
+    const pipeline =
+        "canonicalize,cse," ++
+        "empty-tensor-to-alloc-tensor," ++
+        "convert-elementwise-to-linalg," ++
+        "one-shot-bufferize{bufferize-function-boundaries=true allow-unknown-ops=true}," ++
+        "buffer-deallocation-pipeline," ++
+        "canonicalize,cse," ++
+        "convert-bufferization-to-memref," ++
+        "convert-linalg-to-loops," ++
+        "lower-affine," ++
+        "convert-vector-to-llvm," ++
 
-    const pipeline = "convert-scf-to-cf,convert-arith-to-llvm,convert-complex-to-llvm,convert-func-to-llvm,convert-cf-to-llvm,inline,canonicalize,cse";
+        // Control flow & math
+        "convert-scf-to-cf," ++
+        "arith-expand," ++ //                  # (if wide-int/index/mulhs etc. show up)
+        "convert-math-to-llvm," ++ //          # (if math dialect is present)
+
+        "expand-strided-metadata," ++
+        "fold-memref-alias-ops," ++
+
+        // To LLVM
+        "finalize-memref-to-llvm," ++
+        "convert-arith-to-llvm," ++
+        "convert-func-to-llvm," ++
+        "convert-cf-to-llvm," ++
+        "reconcile-unrealized-casts," ++
+        "llvm-legalize-for-export";
     const op_pm = mlir.c.mlirPassManagerGetAsOpPassManager(pm);
     var result = mlir.c.mlirOpPassManagerAddPipeline(op_pm, mlir.c.mlirStringRefCreateFromCString(@ptrCast(pipeline)), callback, null);
 

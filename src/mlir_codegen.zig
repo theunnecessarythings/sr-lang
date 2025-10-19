@@ -2606,7 +2606,7 @@ pub const MlirCodegen = struct {
                     const base_tensor = store.get(.Tensor, base_sr_ty);
                     const base_rank: usize = @intCast(base_tensor.rank);
                     const idx_raw = self.value_map.get(p.index).?;
-                    const idx_val = try self.ensureIndexValue(idx_raw);
+                    var idx_val = try self.ensureIndexValue(idx_raw);
 
                     if (base_rank == 1 and res_sr_kind != .Tensor and res_sr_kind != .Slice) {
                         // Rank-1 tensor indexed by scalar -> tensor.extract returning element value.
@@ -2636,7 +2636,7 @@ pub const MlirCodegen = struct {
                     var static_offsets_buf: [types.max_tensor_rank]i64 = undefined;
                     var static_sizes_buf: [types.max_tensor_rank]i64 = undefined;
                     var static_strides_buf: [types.max_tensor_rank]i64 = undefined;
-                    static_offsets_buf[0] = -1;
+                    static_offsets_buf[0] = 0;
                     static_sizes_buf[0] = 1;
                     static_strides_buf[0] = 1;
                     var j: usize = 1;
@@ -2649,7 +2649,7 @@ pub const MlirCodegen = struct {
                     const sizes_attr = mlir.Attribute.denseI64ArrayGet(self.mlir_ctx, static_sizes_buf[0..base_rank]);
                     const strides_attr = mlir.Attribute.denseI64ArrayGet(self.mlir_ctx, static_strides_buf[0..base_rank]);
 
-                    const operand_segment = mlir.Attribute.denseI32ArrayGet(self.mlir_ctx, &[_]i32{ 1, 0, 0, 0 });
+                    const operand_segment = mlir.Attribute.denseI32ArrayGet(self.mlir_ctx, &[_]i32{ @intCast(base_rank), 0, 0, 0 });
 
                     var extract_attrs = [_]mlir.NamedAttribute{
                         self.named("static_offsets", offsets_attr),
@@ -2657,6 +2657,15 @@ pub const MlirCodegen = struct {
                         self.named("static_strides", strides_attr),
                         self.named("operand_segment_sizes", operand_segment),
                     };
+
+                    const idx_ty = mlir.Type.getIndexType(self.mlir_ctx);
+                    const index_ty = mlir.Type.getRankedTensorType(1, &.{1}, idx_ty, mlir.Attribute.getNull());
+                    const idx_op = OpBuilder.init("tensor.from_elements", self.loc).builder()
+                        .add_operands(&.{idx_val})
+                        .add_results(&.{index_ty})
+                        .build();
+                    self.append(idx_op);
+                    idx_val = idx_op.getResult(0);
 
                     var extract_operands = [_]mlir.Value{ base, idx_val };
                     var slice = OpBuilder.init("tensor.extract_slice", self.loc).builder()

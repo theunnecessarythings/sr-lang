@@ -3031,17 +3031,16 @@ pub const Checker = struct {
         args: []const ast.ExprId,
     ) !?types.TypeId {
         const field_expr = self.getExpr(.FieldAccess, call_expr.callee);
+        const receiver_ty_opt = try self.checkExpr(field_expr.parent);
+        if (receiver_ty_opt == null) return null;
+        const receiver_ty = receiver_ty_opt.?;
 
-        if (binding.receiver_kind == .pointer) {
-            if (self.lvalueRootKind(field_expr.parent) == .Unknown) {
+        if (binding.receiver_kind == .pointer or binding.receiver_kind == .pointer_const) {
+            if (!binding.needs_addr_of and self.lvalueRootKind(field_expr.parent) == .Unknown and self.typeKind(receiver_ty) != .Ptr) {
                 try self.context.diags.addError(self.exprLocFromId(field_expr.parent), .method_receiver_not_addressable, .{});
                 return null;
             }
         }
-
-        const receiver_ty_opt = try self.checkExpr(field_expr.parent);
-        if (receiver_ty_opt == null) return null;
-        const receiver_ty = receiver_ty_opt.?;
 
         const fn_row = self.context.type_store.get(.Function, binding.func_type);
         const params = self.context.type_store.type_pool.slice(fn_row.params);

@@ -442,6 +442,8 @@ pub fn typeFromTypeExpr(self: *Checker, id: ast.ExprId) anyerror!?types.TypeId {
                         };
                         size = .{ .Concrete = len };
                     }
+                } else {
+                    try self.context.diags.addError(self.ast_unit.exprs.locs.get(row.loc), .array_size_not_integer_literal, .{});
                 }
             }
             break :blk_at self.context.type_store.mkArray(elem, size);
