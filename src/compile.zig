@@ -163,7 +163,7 @@ pub fn run_passes(context: *mlir.Context, module: *mlir.Module) !void {
         "empty-tensor-to-alloc-tensor," ++
         "convert-elementwise-to-linalg," ++
         "one-shot-bufferize{bufferize-function-boundaries=true allow-unknown-ops=true}," ++
-        "buffer-deallocation-pipeline," ++
+        // "buffer-deallocation-pipeline," ++
         "canonicalize,cse," ++
         "convert-bufferization-to-memref," ++
         "convert-linalg-to-loops," ++
