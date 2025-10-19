@@ -4,7 +4,7 @@ const ast = @import("ast.zig");
 const check_types = @import("check_types.zig");
 const Context = @import("compile.zig").Context;
 const diag = @import("diagnostics.zig");
-const Diagnostics = @import("diagnostics.zig").Diagnostics;
+const Diagnostics = diag.Diagnostics;
 const module_graph = @import("module_graph.zig");
 const Loc = @import("lexer.zig").Token.Loc;
 const pattern_matching = @import("check_pattern_matching.zig");
@@ -14,6 +14,8 @@ const symbols = @import("symbols.zig");
 const types = @import("types.zig");
 const TypeInfo = types.TypeInfo;
 const mlir = @import("mlir_bindings.zig");
+
+const List = std.ArrayList;
 
 pub const Checker = struct {
     gpa: std.mem.Allocator,
@@ -27,17 +29,17 @@ pub const Checker = struct {
 
     symtab: symbols.SymbolStore = undefined,
 
-    func_stack: std.ArrayListUnmanaged(FunctionCtx) = .{},
-    loop_stack: std.ArrayListUnmanaged(LoopCtx) = .{},
-    value_ctx: std.ArrayListUnmanaged(bool) = .{},
+    func_stack: List(FunctionCtx) = .{},
+    loop_stack: List(LoopCtx) = .{},
+    value_ctx: List(bool) = .{},
     warned_meta: bool = false,
     warned_comptime: bool = false,
     warned_code: bool = false,
 
-    loop_binding_stack: std.ArrayListUnmanaged(LoopBindingCtx) = .{},
-    catch_binding_stack: std.ArrayListUnmanaged(CatchBindingCtx) = .{},
-    match_binding_stack: std.ArrayListUnmanaged(MatchBindingCtx) = .{},
-    param_specializations: std.ArrayListUnmanaged(ParamSpecialization) = .{},
+    loop_binding_stack: List(LoopBindingCtx) = .{},
+    catch_binding_stack: List(CatchBindingCtx) = .{},
+    match_binding_stack: List(MatchBindingCtx) = .{},
+    param_specializations: List(ParamSpecialization) = .{},
 
     const LoopBindingCtx = struct {
         pat: ast.OptPatternId,

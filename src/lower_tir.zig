@@ -542,30 +542,30 @@ pub const LowerTir = struct {
     // ============================
 
     fn resolveArrayLen(self: *LowerTir, a: *const ast.Ast, size_expr: ast.ExprId, loc: tir.OptLocId) !usize {
-    const comptime_val = self.runComptimeExpr(a, size_expr, self.context.type_store.tUsize(), &[_]Pipeline.ComptimeBinding{}) catch |err| {
-        std.debug.print("error while resolving array len: {any}\n", .{err});
-        if (loc.isNone()) {
-            // TODO: better location
-        } else {
-            try self.context.diags.addError(a.exprs.locs.get(loc.unwrap()), .array_size_not_integer_literal, .{});
-        }
-        return error.ComptimeEvalFailed;
-    };
-
-    return switch (comptime_val) {
-        .Int => |i| @intCast(i),
-        else => {
+        const comptime_val = self.runComptimeExpr(a, size_expr, self.context.type_store.tUsize(), &[_]Pipeline.ComptimeBinding{}) catch |err| {
+            std.debug.print("error while resolving array len: {any}\n", .{err});
             if (loc.isNone()) {
                 // TODO: better location
             } else {
                 try self.context.diags.addError(a.exprs.locs.get(loc.unwrap()), .array_size_not_integer_literal, .{});
             }
             return error.ComptimeEvalFailed;
-        },
-    };
-}
+        };
 
-const LowerMode = enum { rvalue, lvalue_addr };
+        return switch (comptime_val) {
+            .Int => |i| @intCast(i),
+            else => {
+                if (loc.isNone()) {
+                    // TODO: better location
+                } else {
+                    try self.context.diags.addError(a.exprs.locs.get(loc.unwrap()), .array_size_not_integer_literal, .{});
+                }
+                return error.ComptimeEvalFailed;
+            },
+        };
+    }
+
+    const LowerMode = enum { rvalue, lvalue_addr };
 
     fn isVoid(self: *const LowerTir, ty: types.TypeId) bool {
         return self.context.type_store.index.kinds.items[ty.toRaw()] == .Void;
@@ -1740,7 +1740,7 @@ const LowerMode = enum { rvalue, lvalue_addr };
         const prev_debug_flag = mlir_codegen.enable_debug_info;
         mlir_codegen.enable_debug_info = false;
         defer mlir_codegen.enable_debug_info = prev_debug_flag;
-        var mlir_module = try gen.emitModule(&tmp_tir, self.context, self.type_info);
+        var mlir_module = try gen.emitModule(&tmp_tir, self.type_info);
 
         try compile.run_passes(&gen.mlir_ctx, &mlir_module);
         _ = mlir.c.LLVMInitializeNativeTarget();

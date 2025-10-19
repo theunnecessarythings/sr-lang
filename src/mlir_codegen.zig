@@ -162,14 +162,14 @@ pub const MlirCodegen = struct {
     }
 
     // ----------------------------------------------------------------
-    // Op builder (unchanged)
+    // Op builder
     // ----------------------------------------------------------------
     const OpBuilder = struct {
-        operands: ?[]const mlir.Value = null,
-        results: ?[]const mlir.Type = null,
-        attributes: ?[]const mlir.NamedAttribute = null,
-        regions: ?[]const mlir.Region = null,
-        successors: ?[]const mlir.Block = null,
+        ops: ?[]const mlir.Value = null,
+        tys: ?[]const mlir.Type = null,
+        attrs: ?[]const mlir.NamedAttribute = null,
+        regs: ?[]const mlir.Region = null,
+        succs: ?[]const mlir.Block = null,
         name: []const u8,
         loc: mlir.Location,
 
@@ -179,33 +179,33 @@ pub const MlirCodegen = struct {
         pub fn builder(self: *const OpBuilder) *OpBuilder {
             return @constCast(self);
         }
-        pub fn add_operands(self: *OpBuilder, ops: []const mlir.Value) *OpBuilder {
-            self.operands = ops;
+        pub fn operands(self: *OpBuilder, ops: []const mlir.Value) *OpBuilder {
+            self.ops = ops;
             return self;
         }
-        pub fn add_results(self: *OpBuilder, tys: []const mlir.Type) *OpBuilder {
-            self.results = tys;
+        pub fn results(self: *OpBuilder, tys: []const mlir.Type) *OpBuilder {
+            self.tys = tys;
             return self;
         }
-        pub fn add_attributes(self: *OpBuilder, attrs: []const mlir.NamedAttribute) *OpBuilder {
-            self.attributes = attrs;
+        pub fn attributes(self: *OpBuilder, attrs: []const mlir.NamedAttribute) *OpBuilder {
+            self.attrs = attrs;
             return self;
         }
-        pub fn add_regions(self: *OpBuilder, regs: []const mlir.Region) *OpBuilder {
-            self.regions = regs;
+        pub fn regions(self: *OpBuilder, regs: []const mlir.Region) *OpBuilder {
+            self.regs = regs;
             return self;
         }
-        pub fn add_successors(self: *OpBuilder, succs: []const mlir.Block) *OpBuilder {
-            self.successors = succs;
+        pub fn successors(self: *OpBuilder, succs: []const mlir.Block) *OpBuilder {
+            self.succs = succs;
             return self;
         }
         pub fn build(self: *OpBuilder) mlir.Operation {
             var st = mlir.OperationState.get(mlir.StringRef.from(self.name), self.loc);
-            if (self.results) |r| st.addResults(r);
-            if (self.operands) |o| st.addOperands(o);
-            if (self.attributes) |a| st.addAttributes(a);
-            if (self.regions) |rg| st.addOwnedRegions(rg);
-            if (self.successors) |s| st.addSuccessors(s);
+            if (self.tys) |r| st.addResults(r);
+            if (self.ops) |o| st.addOperands(o);
+            if (self.attrs) |a| st.addAttributes(a);
+            if (self.regs) |rg| st.addOwnedRegions(rg);
+            if (self.succs) |s| st.addSuccessors(s);
             return mlir.Operation.create(&st);
         }
     };
@@ -420,7 +420,6 @@ pub const MlirCodegen = struct {
     pub fn emitModule(
         self: *MlirCodegen,
         t: *const tir.TIR,
-        context: *compile.Context,
         type_info: *types.TypeInfo,
     ) !mlir.Module {
         const prev_loc = self.loc;
@@ -433,14 +432,14 @@ pub const MlirCodegen = struct {
         self.loc_cache.clearRetainingCapacity();
         try self.attachTargetInfo();
         try self.ensureDebugModuleAttrs();
-        try self.emitExternDecls(t, &context.type_store);
+        try self.emitExternDecls(t);
 
         const func_ids = t.funcs.func_pool.data.items;
-        for (func_ids) |fid| try self.emitFunctionHeader(fid, t, &context.type_store);
+        for (func_ids) |fid| try self.emitFunctionHeader(fid, t);
         for (func_ids) |fid| {
             const row = t.funcs.Function.get(fid);
             const blocks = t.funcs.block_pool.slice(row.blocks);
-            if (blocks.len > 0) try self.emitFunctionBody(fid, t, &context.type_store);
+            if (blocks.len > 0) try self.emitFunctionBody(fid, t);
         }
         return self.module;
     }
@@ -499,85 +498,17 @@ pub const MlirCodegen = struct {
         _ = mod_op.removeDiscardableAttributeByName(mlir.StringRef.from("llvm.ident"));
     }
 
-    fn instrOptLoc(self: *MlirCodegen, t: *const tir.TIR, ins_id: tir.InstrId) tir.OptLocId {
-        _ = self;
+    fn instrOptLoc(_: *MlirCodegen, t: *const tir.TIR, ins_id: tir.InstrId) tir.OptLocId {
         const kind = t.instrs.index.kinds.items[ins_id.toRaw()];
         return switch (kind) {
-            .ConstInt => t.instrs.get(.ConstInt, ins_id).loc,
-            .ConstFloat => t.instrs.get(.ConstFloat, ins_id).loc,
-            .ConstBool => t.instrs.get(.ConstBool, ins_id).loc,
-            .ConstString => t.instrs.get(.ConstString, ins_id).loc,
-            .ConstNull => t.instrs.get(.ConstNull, ins_id).loc,
-            .ConstUndef => t.instrs.get(.ConstUndef, ins_id).loc,
-            .RangeMake => t.instrs.get(.RangeMake, ins_id).loc,
-            .BinWrapAdd => t.instrs.get(.BinWrapAdd, ins_id).loc,
-            .BinWrapSub => t.instrs.get(.BinWrapSub, ins_id).loc,
-            .BinWrapMul => t.instrs.get(.BinWrapMul, ins_id).loc,
-            .BinSatAdd => t.instrs.get(.BinSatAdd, ins_id).loc,
-            .BinSatSub => t.instrs.get(.BinSatSub, ins_id).loc,
-            .BinSatMul => t.instrs.get(.BinSatMul, ins_id).loc,
-            .BinSatShl => t.instrs.get(.BinSatShl, ins_id).loc,
-            .Add => t.instrs.get(.Add, ins_id).loc,
-            .Sub => t.instrs.get(.Sub, ins_id).loc,
-            .Mul => t.instrs.get(.Mul, ins_id).loc,
-            .Div => t.instrs.get(.Div, ins_id).loc,
-            .Mod => t.instrs.get(.Mod, ins_id).loc,
-            .Shl => t.instrs.get(.Shl, ins_id).loc,
-            .Shr => t.instrs.get(.Shr, ins_id).loc,
-            .BitAnd => t.instrs.get(.BitAnd, ins_id).loc,
-            .BitOr => t.instrs.get(.BitOr, ins_id).loc,
-            .BitXor => t.instrs.get(.BitXor, ins_id).loc,
-            .CmpEq => t.instrs.get(.CmpEq, ins_id).loc,
-            .CmpNe => t.instrs.get(.CmpNe, ins_id).loc,
-            .CmpLt => t.instrs.get(.CmpLt, ins_id).loc,
-            .CmpLe => t.instrs.get(.CmpLe, ins_id).loc,
-            .CmpGt => t.instrs.get(.CmpGt, ins_id).loc,
-            .CmpGe => t.instrs.get(.CmpGe, ins_id).loc,
-            .LogicalAnd => t.instrs.get(.LogicalAnd, ins_id).loc,
-            .LogicalOr => t.instrs.get(.LogicalOr, ins_id).loc,
-            .LogicalNot => t.instrs.get(.LogicalNot, ins_id).loc,
-            .CastNormal => t.instrs.get(.CastNormal, ins_id).loc,
-            .CastBit => t.instrs.get(.CastBit, ins_id).loc,
-            .CastSaturate => t.instrs.get(.CastSaturate, ins_id).loc,
-            .CastWrap => t.instrs.get(.CastWrap, ins_id).loc,
-            .CastChecked => t.instrs.get(.CastChecked, ins_id).loc,
-            .Alloca => t.instrs.get(.Alloca, ins_id).loc,
-            .Load => t.instrs.get(.Load, ins_id).loc,
-            .Store => t.instrs.get(.Store, ins_id).loc,
-            .Gep => t.instrs.get(.Gep, ins_id).loc,
-            .GlobalAddr => t.instrs.get(.GlobalAddr, ins_id).loc,
-            .ComplexMake => t.instrs.get(.ComplexMake, ins_id).loc,
-            .TupleMake => t.instrs.get(.TupleMake, ins_id).loc,
-            .ArrayMake => t.instrs.get(.ArrayMake, ins_id).loc,
-            .StructMake => t.instrs.get(.StructMake, ins_id).loc,
-            .ExtractElem => t.instrs.get(.ExtractElem, ins_id).loc,
-            .InsertElem => t.instrs.get(.InsertElem, ins_id).loc,
-            .ExtractField => t.instrs.get(.ExtractField, ins_id).loc,
-            .InsertField => t.instrs.get(.InsertField, ins_id).loc,
-            .Index => t.instrs.get(.Index, ins_id).loc,
-            .AddressOf => t.instrs.get(.AddressOf, ins_id).loc,
-            .Select => t.instrs.get(.Select, ins_id).loc,
-            .Call => t.instrs.get(.Call, ins_id).loc,
-            .IndirectCall => t.instrs.get(.IndirectCall, ins_id).loc,
-            .VariantMake => t.instrs.get(.VariantMake, ins_id).loc,
-            .VariantTag => t.instrs.get(.VariantTag, ins_id).loc,
-            .VariantPayloadPtr => t.instrs.get(.VariantPayloadPtr, ins_id).loc,
-            .UnionMake => t.instrs.get(.UnionMake, ins_id).loc,
-            .UnionField => t.instrs.get(.UnionField, ins_id).loc,
-            .UnionFieldPtr => t.instrs.get(.UnionFieldPtr, ins_id).loc,
-            .MlirBlock => t.instrs.get(.MlirBlock, ins_id).loc,
+            inline else => |k| t.instrs.get(k, ins_id).loc,
         };
     }
 
-    fn termOptLoc(self: *MlirCodegen, t: *const tir.TIR, term_id: tir.TermId) tir.OptLocId {
-        _ = self;
+    fn termOptLoc(_: *MlirCodegen, t: *const tir.TIR, term_id: tir.TermId) tir.OptLocId {
         const kind = t.terms.index.kinds.items[term_id.toRaw()];
         return switch (kind) {
-            .Return => t.terms.get(.Return, term_id).loc,
-            .Br => t.terms.get(.Br, term_id).loc,
-            .CondBr => t.terms.get(.CondBr, term_id).loc,
-            .SwitchInt => t.terms.get(.SwitchInt, term_id).loc,
-            .Unreachable => t.terms.get(.Unreachable, term_id).loc,
+            inline else => |k| t.terms.get(k, term_id).loc,
         };
     }
 
@@ -703,7 +634,6 @@ pub const MlirCodegen = struct {
         loc: tir.OptLocId,
         ret_ty: types.TypeId,
         params: []const tir.ParamId,
-        store: *const types.TypeStore,
         t: *const tir.TIR,
     ) !*DebugSubprogramInfo {
         if (self.di_subprograms.getPtr(f_id)) |info| return info;
@@ -716,7 +646,7 @@ pub const MlirCodegen = struct {
         const id_attr = mlir.Attribute.distinctAttrCreate(self.strAttr(id_payload));
 
         const flags_definition: u64 = 1 << 3; // DISPFlagDefinition
-        const type_attr = try self.buildDISubroutineTypeAttr(store, ret_ty, params, t);
+        const type_attr = try self.buildDISubroutineTypeAttr(ret_ty, params, t);
         const rec_attr = mlir.Attribute.distinctAttrCreate(mlir.Attribute.unitAttrGet(self.mlir_ctx));
 
         const attr = mlir.LLVMAttributes.getLLVMDISubprogramAttr(
@@ -834,10 +764,10 @@ pub const MlirCodegen = struct {
         return attr;
     }
 
-    fn ensureDIType(self: *MlirCodegen, store: *const types.TypeStore, ty: types.TypeId) !mlir.Attribute {
+    fn ensureDIType(self: *MlirCodegen, ty: types.TypeId) !mlir.Attribute {
         if (self.di_type_cache.get(ty)) |cached| return cached;
 
-        const kind = store.getKind(ty);
+        const kind = self.context.type_store.getKind(ty);
         const attr: mlir.Attribute = switch (kind) {
             // .Void => return mlir.Attribute.getNull(),
             .Bool => mlir.LLVMAttributes.getLLVMDIBasicTypeAttr(
@@ -872,19 +802,19 @@ pub const MlirCodegen = struct {
             ),
             .Void, .Noreturn => try self.ensureDINullTypeAttr(),
             .Function => blk: {
-                const finfo = store.get(.Function, ty);
+                const finfo = self.context.type_store.get(.Function, ty);
                 var types_buf: std.ArrayList(mlir.Attribute) = .empty;
                 defer types_buf.deinit(self.gpa);
 
-                var ret_attr = self.ensureDIType(store, finfo.result) catch blk_ret: {
+                var ret_attr = self.ensureDIType(finfo.result) catch blk_ret: {
                     break :blk_ret try self.ensureDINullTypeAttr();
                 };
                 if (ret_attr.isNull()) ret_attr = try self.ensureDINullTypeAttr();
                 try types_buf.append(self.gpa, ret_attr);
 
-                const params = store.type_pool.slice(finfo.params);
+                const params = self.context.type_store.type_pool.slice(finfo.params);
                 for (params) |param_ty| {
-                    var param_attr = self.ensureDIType(store, param_ty) catch blk_param: {
+                    var param_attr = self.ensureDIType(param_ty) catch blk_param: {
                         break :blk_param try self.ensureDINullTypeAttr();
                     };
                     if (param_attr.isNull()) param_attr = try self.ensureDINullTypeAttr();
@@ -929,7 +859,6 @@ pub const MlirCodegen = struct {
 
     fn buildDISubroutineTypeAttr(
         self: *MlirCodegen,
-        store: *const types.TypeStore,
         ret_ty: types.TypeId,
         params: []const tir.ParamId,
         t: *const tir.TIR,
@@ -937,13 +866,13 @@ pub const MlirCodegen = struct {
         var types_buf: std.ArrayList(mlir.Attribute) = .empty;
         defer types_buf.deinit(self.gpa);
 
-        const ret_attr = self.ensureDIType(store, ret_ty) catch try self.ensureDINullTypeAttr();
+        const ret_attr = self.ensureDIType(ret_ty) catch try self.ensureDINullTypeAttr();
         const norm_ret = if (!ret_attr.isNull()) ret_attr else try self.ensureDINullTypeAttr();
         try types_buf.append(self.gpa, norm_ret);
 
         for (params) |pid| {
             const param = t.funcs.Param.get(pid);
-            const param_attr = self.ensureDIType(store, param.ty) catch try self.ensureDINullTypeAttr();
+            const param_attr = self.ensureDIType(param.ty) catch try self.ensureDINullTypeAttr();
             const norm_param = if (!param_attr.isNull()) param_attr else try self.ensureDINullTypeAttr();
             try types_buf.append(self.gpa, norm_param);
         }
@@ -971,7 +900,6 @@ pub const MlirCodegen = struct {
         params: []const tir.ParamId,
         entry_block: mlir.Block,
         t: *const tir.TIR,
-        store: *const types.TypeStore,
     ) !void {
         if (!enable_debug_info) return;
         const subp_ptr = self.di_subprograms.getPtr(f_id) orelse return;
@@ -997,7 +925,7 @@ pub const MlirCodegen = struct {
             const p = t.funcs.Param.get(pid);
             if (p.name.isNone()) continue;
             const name = t.instrs.strs.get(p.name.unwrap());
-            var di_type = self.ensureDIType(store, p.ty) catch self.ensureDINullTypeAttr() catch continue;
+            var di_type = self.ensureDIType(p.ty) catch self.ensureDINullTypeAttr() catch continue;
             if (di_type.isNull()) di_type = self.ensureDINullTypeAttr() catch continue;
             const var_attr = mlir.LLVMAttributes.getLLVMDILocalVariableAttr(
                 self.mlir_ctx,
@@ -1018,8 +946,8 @@ pub const MlirCodegen = struct {
                 self.named("locationExpr", expr_attr),
             };
             const dbg = OpBuilder.init("llvm.intr.dbg.value", self.loc).builder()
-                .add_operands(&.{arg_val})
-                .add_attributes(&attrs)
+                .operands(&.{arg_val})
+                .attributes(&attrs)
                 .build();
             self.append(dbg);
         }
@@ -1029,19 +957,19 @@ pub const MlirCodegen = struct {
     // Functions
     // ----------------------------------------------------------------
 
-    fn emitExternDecls(self: *MlirCodegen, t: *const tir.TIR, store: *types.TypeStore) !void {
+    fn emitExternDecls(self: *MlirCodegen, t: *const tir.TIR) !void {
         const global_ids = t.funcs.global_pool.data.items;
 
         for (global_ids) |global_id| {
             const g = t.funcs.Global.get(global_id);
             const name = t.instrs.strs.get(g.name);
 
-            if (store.getKind(g.ty) == .Function) {
+            if (self.context.type_store.getKind(g.ty) == .Function) {
                 // If already present, return it.
                 if (self.func_syms.contains(name)) continue;
 
-                const fnty = store.get(.Function, g.ty);
-                var params_sr = store.type_pool.slice(fnty.params);
+                const fnty = self.context.type_store.get(.Function, g.ty);
+                var params_sr = self.context.type_store.type_pool.slice(fnty.params);
                 if (fnty.is_variadic)
                     params_sr = params_sr[0 .. params_sr.len - 1]; // drop trailing Any for varargs
                 const ret_sr = fnty.result;
@@ -1055,7 +983,7 @@ pub const MlirCodegen = struct {
                 var n_args: usize = 0;
 
                 // Return classification (may add leading sret)
-                const ret_kind = store.getKind(ret_sr);
+                const ret_kind = self.context.type_store.getKind(ret_sr);
                 const ret_no_result = switch (ret_kind) {
                     .Void, .Noreturn => true,
                     else => false,
@@ -1066,12 +994,12 @@ pub const MlirCodegen = struct {
                 if (ret_no_result) {
                     ret_type = self.void_ty;
                 } else {
-                    retClass = abi.abiClassifyX64SysV(self, store, ret_sr, true);
+                    retClass = abi.abiClassifyX64SysV(self, ret_sr, true);
                     switch (retClass.kind) {
                         .IndirectSRet => {
                             // leading ptr arg with { llvm.sret = type(T), llvm.align = K }
                             lowered_params[n_args] = self.llvm_ptr_ty;
-                            const stTy = try self.llvmTypeOf(store, ret_sr);
+                            const stTy = try self.llvmTypeOf(ret_sr);
                             const sretDict = mlir.Attribute.dictionaryAttrGet(self.mlir_ctx, &[_]mlir.NamedAttribute{
                                 self.named("llvm.sret", mlir.Attribute.typeAttrGet(stTy)),
                                 self.named("llvm.align", mlir.Attribute.integerAttrGet(self.i64_ty, retClass.alignment)),
@@ -1096,11 +1024,11 @@ pub const MlirCodegen = struct {
 
                 // Params
                 for (params_sr) |psr| {
-                    const cls = abi.abiClassifyX64SysV(self, store, psr, false);
+                    const cls = abi.abiClassifyX64SysV(self, psr, false);
                     switch (cls.kind) {
                         .IndirectByVal => {
                             lowered_params[n_args] = self.llvm_ptr_ty;
-                            const stTy = try self.llvmTypeOf(store, psr);
+                            const stTy = try self.llvmTypeOf(psr);
                             const byvalDict = mlir.Attribute.dictionaryAttrGet(self.mlir_ctx, &[_]mlir.NamedAttribute{
                                 self.named("llvm.byval", mlir.Attribute.typeAttrGet(stTy)),
                                 self.named("llvm.align", mlir.Attribute.integerAttrGet(self.i64_ty, cls.alignment)),
@@ -1139,8 +1067,8 @@ pub const MlirCodegen = struct {
                 // Extern declarations originate from imported metadata and have no
                 // source span, so we intentionally reuse the module location here.
                 const fnop = OpBuilder.init("llvm.func", self.loc).builder()
-                    .add_attributes(&attrs)
-                    .add_regions(&.{region})
+                    .attributes(&attrs)
+                    .regions(&.{region})
                     .build();
                 var body = self.module.getBody();
                 body.appendOwnedOperation(fnop);
@@ -1162,7 +1090,7 @@ pub const MlirCodegen = struct {
                 if (self.global_syms.contains(name)) {
                     continue;
                 }
-                const var_mlir_ty = try self.llvmTypeOf(store, g.ty);
+                const var_mlir_ty = try self.llvmTypeOf(g.ty);
 
                 var attr_buf: std.ArrayList(mlir.NamedAttribute) = .empty;
                 defer attr_buf.deinit(self.gpa);
@@ -1191,8 +1119,8 @@ pub const MlirCodegen = struct {
                 // Likewise, synthesized globals are emitted with the module location
                 // because they are not backed by user-written syntax.
                 const global_op = OpBuilder.init("llvm.mlir.global", self.loc).builder()
-                    .add_attributes(attrs)
-                    .add_regions(&.{mlir.Region.create()})
+                    .attributes(attrs)
+                    .regions(&.{mlir.Region.create()})
                     .build();
 
                 var body = self.module.getBody();
@@ -1202,7 +1130,7 @@ pub const MlirCodegen = struct {
         }
     }
 
-    fn emitFunctionHeader(self: *MlirCodegen, f_id: tir.FuncId, t: *const tir.TIR, store: *types.TypeStore) !void {
+    fn emitFunctionHeader(self: *MlirCodegen, f_id: tir.FuncId, t: *const tir.TIR) !void {
         const f = t.funcs.Function.get(f_id);
         const params = t.funcs.param_pool.slice(f.params);
 
@@ -1211,15 +1139,15 @@ pub const MlirCodegen = struct {
 
         for (params, 0..) |p_id, i| {
             const p = t.funcs.Param.get(p_id);
-            param_tys[i] = try self.llvmTypeOf(store, p.ty);
+            param_tys[i] = try self.llvmTypeOf(p.ty);
         }
 
         var results: [1]mlir.Type = undefined;
-        const n_res: usize = switch (store.getKind(f.result)) {
+        const n_res: usize = switch (self.context.type_store.getKind(f.result)) {
             .Void, .Noreturn => 0,
             else => 1,
         };
-        if (n_res == 1) results[0] = try self.llvmTypeOf(store, f.result);
+        if (n_res == 1) results[0] = try self.llvmTypeOf(f.result);
 
         const func_name = t.instrs.strs.get(f.name);
         if (self.func_syms.contains(func_name)) return;
@@ -1250,7 +1178,6 @@ pub const MlirCodegen = struct {
                     fn_loc,
                     f.result,
                     params,
-                    store,
                     t,
                 ) catch null;
                 if (maybe_subp) |subp| {
@@ -1283,8 +1210,8 @@ pub const MlirCodegen = struct {
 
         const region = mlir.Region.create();
         const fnop = OpBuilder.init("func.func", func_op_loc).builder()
-            .add_attributes(attrs.items)
-            .add_regions(&.{region})
+            .attributes(attrs.items)
+            .regions(&.{region})
             .build();
 
         var body = self.module.getBody();
@@ -1305,7 +1232,7 @@ pub const MlirCodegen = struct {
         _ = try self.func_syms.put(func_name, finfo);
     }
 
-    fn emitFunctionBody(self: *MlirCodegen, f_id: tir.FuncId, t: *const tir.TIR, store: *types.TypeStore) !void {
+    fn emitFunctionBody(self: *MlirCodegen, f_id: tir.FuncId, t: *const tir.TIR) !void {
         // reset per-function state
         self.block_map.clearRetainingCapacity();
         self.value_map.clearRetainingCapacity();
@@ -1339,7 +1266,7 @@ pub const MlirCodegen = struct {
         defer self.gpa.free(entry_arg_tys);
         for (params[0..n_formals], 0..) |p_id, i| {
             const p = t.funcs.Param.get(p_id);
-            entry_arg_tys[i] = try self.llvmTypeOf(store, p.ty);
+            entry_arg_tys[i] = try self.llvmTypeOf(p.ty);
         }
         const entry_locs = try self.gpa.alloc(mlir.Location, n_formals);
         defer self.gpa.free(entry_locs);
@@ -1375,7 +1302,7 @@ pub const MlirCodegen = struct {
         }
 
         if (enable_debug_info) {
-            self.emitParameterDebugInfo(f_id, params[0..n_formals], entry_block, t, store) catch {};
+            self.emitParameterDebugInfo(f_id, params[0..n_formals], entry_block, t) catch {};
         }
 
         // pre-create remaining blocks and map their params + SR types
@@ -1397,7 +1324,7 @@ pub const MlirCodegen = struct {
 
                 for (b_params, 0..) |bp_id, i| {
                     const bp = t.funcs.Param.get(bp_id);
-                    arg_tys[i] = try self.llvmTypeOf(store, bp.ty);
+                    arg_tys[i] = try self.llvmTypeOf(bp.ty);
                     arg_locs[i] = block_mlir_loc;
                 }
 
@@ -1438,7 +1365,7 @@ pub const MlirCodegen = struct {
             // non-terminators
             const instrs = t.instrs.instr_pool.slice(bb.instrs);
             for (instrs) |ins_id| {
-                const v = try self.emitInstr(ins_id, t, store);
+                const v = try self.emitInstr(ins_id, t);
 
                 if (self.getInstrResultId(t, ins_id)) |rid| {
                     try self.value_map.put(rid, v);
@@ -1450,7 +1377,7 @@ pub const MlirCodegen = struct {
             }
 
             // terminator
-            try self.emitTerminator(bb.term, t, store);
+            try self.emitTerminator(bb.term, t);
         }
 
         // Emit the single func.return in the join block (if func.func)
@@ -1458,7 +1385,7 @@ pub const MlirCodegen = struct {
             self.cur_block = rb;
             if (self.ret_has_value) {
                 const arg = rb.getArgument(0);
-                const retop = OpBuilder.init("func.return", self.loc).builder().add_operands(&.{arg}).build();
+                const retop = OpBuilder.init("func.return", self.loc).builder().operands(&.{arg}).build();
                 self.append(retop);
             } else {
                 const retop = OpBuilder.init("func.return", self.loc).builder().build();
@@ -1475,40 +1402,10 @@ pub const MlirCodegen = struct {
         _ = self;
         const K = t.instrs.index.kinds.items[id.toRaw()];
         switch (K) {
-            .RangeMake => return t.instrs.get(.RangeMake, id).result,
-            .ConstInt => return t.instrs.get(.ConstInt, id).result,
-            .ConstFloat => return t.instrs.get(.ConstFloat, id).result,
-            .ConstBool => return t.instrs.get(.ConstBool, id).result,
-            .ConstString => return t.instrs.get(.ConstString, id).result,
-            .ConstNull => return t.instrs.get(.ConstNull, id).result,
-            .ConstUndef => return t.instrs.get(.ConstUndef, id).result,
+            inline else => |k| return t.instrs.get(k, id).result,
             inline .Add, .Sub, .Mul, .BinWrapAdd, .BinWrapSub, .BinWrapMul, .BinSatAdd, .BinSatSub, .BinSatMul, .BinSatShl, .Div, .Mod, .Shl, .Shr, .BitAnd, .BitOr, .BitXor, .CmpEq, .CmpNe, .CmpLt, .CmpLe, .CmpGt, .CmpGe, .LogicalAnd, .LogicalOr => |k| return t.instrs.get(k, id).result,
-            .LogicalNot => return t.instrs.get(.LogicalNot, id).result,
             inline .CastNormal, .CastBit, .CastSaturate, .CastWrap, .CastChecked => |k| return t.instrs.get(k, id).result,
-            .Alloca => return t.instrs.get(.Alloca, id).result,
-            .Load => return t.instrs.get(.Load, id).result,
             .Store => return null,
-            .Gep => return t.instrs.get(.Gep, id).result,
-            .GlobalAddr => return t.instrs.get(.GlobalAddr, id).result,
-            .ComplexMake => return t.instrs.get(.ComplexMake, id).result,
-            .TupleMake => return t.instrs.get(.TupleMake, id).result,
-            .ArrayMake => return t.instrs.get(.ArrayMake, id).result,
-            .StructMake => return t.instrs.get(.StructMake, id).result,
-            .ExtractElem => return t.instrs.get(.ExtractElem, id).result,
-            .InsertElem => return t.instrs.get(.InsertElem, id).result,
-            .ExtractField => return t.instrs.get(.ExtractField, id).result,
-            .InsertField => return t.instrs.get(.InsertField, id).result,
-            .Index => return t.instrs.get(.Index, id).result,
-            .AddressOf => return t.instrs.get(.AddressOf, id).result,
-            .Select => return t.instrs.get(.Select, id).result,
-            .Call => return t.instrs.get(.Call, id).result,
-            .IndirectCall => return t.instrs.get(.IndirectCall, id).result,
-            .VariantMake => return t.instrs.get(.VariantMake, id).result,
-            .VariantTag => return t.instrs.get(.VariantTag, id).result,
-            .VariantPayloadPtr => return t.instrs.get(.VariantPayloadPtr, id).result,
-            .UnionMake => return t.instrs.get(.UnionMake, id).result,
-            .UnionFieldPtr => return t.instrs.get(.UnionFieldPtr, id).result,
-            .UnionField => return t.instrs.get(.UnionField, id).result,
             .MlirBlock => {
                 const p = t.instrs.get(.MlirBlock, id);
                 if (p.result.isNone()) return null;
@@ -1517,49 +1414,17 @@ pub const MlirCodegen = struct {
         }
     }
 
-    fn instrResultSrType(self: *MlirCodegen, t: *const tir.TIR, id: tir.InstrId) ?types.TypeId {
-        _ = self;
+    fn instrResultSrType(_: *MlirCodegen, t: *const tir.TIR, id: tir.InstrId) ?types.TypeId {
         const K = t.instrs.index.kinds.items[id.toRaw()];
         return switch (K) {
-            .ConstInt => t.instrs.get(.ConstInt, id).ty,
-            .ConstFloat => t.instrs.get(.ConstFloat, id).ty,
-            .ConstBool => t.instrs.get(.ConstBool, id).ty,
-            .ConstString => t.instrs.get(.ConstString, id).ty,
-            .ConstNull => t.instrs.get(.ConstNull, id).ty,
-            .ConstUndef => t.instrs.get(.ConstUndef, id).ty,
+            inline else => |k| t.instrs.get(k, id).ty,
             inline .Add, .Sub, .Mul, .BinWrapAdd, .BinWrapSub, .BinWrapMul, .BinSatAdd, .BinSatSub, .BinSatMul, .BinSatShl, .Div, .Mod, .Shl, .Shr, .BitAnd, .BitOr, .BitXor, .CmpEq, .CmpNe, .CmpLt, .CmpLe, .CmpGt, .CmpGe, .LogicalAnd, .LogicalOr => |k| t.instrs.get(k, id).ty,
-            .LogicalNot => t.instrs.get(.LogicalNot, id).ty,
             inline .CastNormal, .CastBit, .CastSaturate, .CastWrap, .CastChecked => |k| t.instrs.get(k, id).ty,
-            .Alloca => t.instrs.get(.Alloca, id).ty,
-            .Load => t.instrs.get(.Load, id).ty,
             .Store => null,
-            .Gep => t.instrs.get(.Gep, id).ty,
-            .GlobalAddr => t.instrs.get(.GlobalAddr, id).ty,
-            .ComplexMake => t.instrs.get(.ComplexMake, id).ty,
-            .TupleMake => t.instrs.get(.TupleMake, id).ty,
-            .ArrayMake => t.instrs.get(.ArrayMake, id).ty,
-            .RangeMake => t.instrs.get(.RangeMake, id).ty,
-            .StructMake => t.instrs.get(.StructMake, id).ty,
-            .ExtractElem => t.instrs.get(.ExtractElem, id).ty,
-            .InsertElem => t.instrs.get(.InsertElem, id).ty,
-            .ExtractField => t.instrs.get(.ExtractField, id).ty,
-            .InsertField => t.instrs.get(.InsertField, id).ty,
-            .Index => t.instrs.get(.Index, id).ty,
-            .AddressOf => t.instrs.get(.AddressOf, id).ty,
-            .Select => t.instrs.get(.Select, id).ty,
-            .Call => t.instrs.get(.Call, id).ty,
-            .IndirectCall => t.instrs.get(.IndirectCall, id).ty,
-            .VariantMake => t.instrs.get(.VariantMake, id).ty,
-            .VariantTag => t.instrs.get(.VariantTag, id).ty,
-            .VariantPayloadPtr => t.instrs.get(.VariantPayloadPtr, id).ty,
-            .UnionMake => t.instrs.get(.UnionMake, id).ty,
-            .UnionFieldPtr => t.instrs.get(.UnionFieldPtr, id).ty,
-            .UnionField => t.instrs.get(.UnionField, id).ty,
-            .MlirBlock => t.instrs.get(.MlirBlock, id).ty,
         };
     }
 
-    fn ensureFuncDeclFromCall(self: *MlirCodegen, ins_id: tir.InstrId, t: *const tir.TIR, store: *types.TypeStore) !FuncInfo {
+    fn ensureFuncDeclFromCall(self: *MlirCodegen, ins_id: tir.InstrId, t: *const tir.TIR) !FuncInfo {
         const p = t.instrs.get(.Call, ins_id);
         const name = t.instrs.strs.get(p.callee);
 
@@ -1573,7 +1438,7 @@ pub const MlirCodegen = struct {
         while (i < func_ids.len) : (i += 1) {
             const fname = t.instrs.strs.get(t.funcs.Function.get(func_ids[i]).name);
             if (std.mem.eql(u8, fname, name)) {
-                return try self.ensureDeclFromCall(ins_id, t, store);
+                return try self.ensureDeclFromCall(ins_id, t);
             }
         }
 
@@ -1588,11 +1453,11 @@ pub const MlirCodegen = struct {
 
         for (global_ids) |gid| {
             const g = t.funcs.Global.get(gid);
-            if (store.getKind(g.ty) != .Function) continue;
+            if (self.context.type_store.getKind(g.ty) != .Function) continue;
             if (!g.name.eq(p.callee)) continue;
-            const fnty = store.get(.Function, g.ty);
+            const fnty = self.context.type_store.get(.Function, g.ty);
             is_var = fnty.is_variadic;
-            params_sr = store.type_pool.slice(fnty.params);
+            params_sr = self.context.type_store.type_pool.slice(fnty.params);
             ret_sr = fnty.result;
             found = true;
             break;
@@ -1614,7 +1479,7 @@ pub const MlirCodegen = struct {
         defer self.gpa.free(argAttrs);
         var n_args: usize = 0;
 
-        const ret_kind = store.getKind(ret_sr);
+        const ret_kind = self.context.type_store.getKind(ret_sr);
         const ret_no_result = switch (ret_kind) {
             .Void, .Noreturn => true,
             else => false,
@@ -1625,11 +1490,11 @@ pub const MlirCodegen = struct {
         if (ret_no_result) {
             ret_type = self.void_ty;
         } else {
-            retClass = abi.abiClassifyX64SysV(self, store, ret_sr, true);
+            retClass = abi.abiClassifyX64SysV(self, ret_sr, true);
             switch (retClass.kind) {
                 .IndirectSRet => {
                     lowered_params[n_args] = self.llvm_ptr_ty;
-                    const stTy = try self.llvmTypeOf(store, ret_sr);
+                    const stTy = try self.llvmTypeOf(ret_sr);
                     argAttrs[n_args] = mlir.Attribute.dictionaryAttrGet(self.mlir_ctx, &[_]mlir.NamedAttribute{
                         self.named("llvm.sret", mlir.Attribute.typeAttrGet(stTy)),
                         self.named("llvm.align", mlir.Attribute.integerAttrGet(self.i64_ty, retClass.alignment)),
@@ -1649,11 +1514,11 @@ pub const MlirCodegen = struct {
         }
 
         for (params_sr) |psr| {
-            const cls = abi.abiClassifyX64SysV(self, store, psr, false);
+            const cls = abi.abiClassifyX64SysV(self, psr, false);
             switch (cls.kind) {
                 .IndirectByVal => {
                     lowered_params[n_args] = self.llvm_ptr_ty;
-                    const stTy = try self.llvmTypeOf(store, psr);
+                    const stTy = try self.llvmTypeOf(psr);
                     argAttrs[n_args] = mlir.Attribute.dictionaryAttrGet(self.mlir_ctx, &[_]mlir.NamedAttribute{
                         self.named("llvm.byval", mlir.Attribute.typeAttrGet(stTy)),
                         self.named("llvm.align", mlir.Attribute.integerAttrGet(self.i64_ty, cls.alignment)),
@@ -1687,8 +1552,8 @@ pub const MlirCodegen = struct {
         };
         const region = mlir.Region.create();
         const fnop = OpBuilder.init("llvm.func", self.loc).builder()
-            .add_attributes(&attrs)
-            .add_regions(&.{region})
+            .attributes(&attrs)
+            .regions(&.{region})
             .build();
         var body = self.module.getBody();
         body.appendOwnedOperation(fnop);
@@ -1710,7 +1575,6 @@ pub const MlirCodegen = struct {
 
     fn ensureCallArgType(
         self: *MlirCodegen,
-        store: *types.TypeStore,
         value: mlir.Value,
         src_sr: types.TypeId,
         want_ty: mlir.Type,
@@ -1725,14 +1589,14 @@ pub const MlirCodegen = struct {
             if (fw == tw) return value;
             if (fw > tw) {
                 var tr = OpBuilder.init("llvm.trunc", self.loc).builder()
-                    .add_operands(&.{value}).add_results(&.{want_ty}).build();
+                    .operands(&.{value}).results(&.{want_ty}).build();
                 self.append(tr);
                 return tr.getResult(0);
             } else {
-                const signed_from = self.isSignedInt(store, src_sr);
+                const signed_from = self.isSignedInt(src_sr);
                 const op_name = if (signed_from) "llvm.sext" else "llvm.zext";
                 var ex = OpBuilder.init(op_name, self.loc).builder()
-                    .add_operands(&.{value}).add_results(&.{want_ty}).build();
+                    .operands(&.{value}).results(&.{want_ty}).build();
                 self.append(ex);
                 return ex.getResult(0);
             }
@@ -1744,14 +1608,14 @@ pub const MlirCodegen = struct {
             if (fw == tw) return value;
             const op_name = if (fw > tw) "llvm.fptrunc" else "llvm.fpext";
             var cast = OpBuilder.init(op_name, self.loc).builder()
-                .add_operands(&.{value}).add_results(&.{want_ty}).build();
+                .operands(&.{value}).results(&.{want_ty}).build();
             self.append(cast);
             return cast.getResult(0);
         }
 
         if (mlir.LLVM.isLLVMPointerType(have_ty) and mlir.LLVM.isLLVMPointerType(want_ty)) {
             var bc = OpBuilder.init("llvm.bitcast", self.loc).builder()
-                .add_operands(&.{value}).add_results(&.{want_ty}).build();
+                .operands(&.{value}).results(&.{want_ty}).build();
             self.append(bc);
             return bc.getResult(0);
         }
@@ -1759,28 +1623,32 @@ pub const MlirCodegen = struct {
         return value;
     }
 
+    fn emitConstInt(self: *MlirCodegen, p: tir.Rows.ConstInt) !mlir.Value {
+        const prev_loc = self.pushLocation(p.loc);
+        defer self.loc = prev_loc;
+        const ty = try self.llvmTypeOf(p.ty);
+        if (self.isFloat(ty)) {
+            return self.constFloat(ty, @floatFromInt(p.value));
+        }
+        return self.constInt(ty, p.value);
+    }
+
     // ----------------------------------------------------------------
     // Instructions
     // ----------------------------------------------------------------
-    fn emitInstr(self: *MlirCodegen, ins_id: tir.InstrId, t: *const tir.TIR, store: *types.TypeStore) !mlir.Value {
+    fn emitInstr(self: *MlirCodegen, ins_id: tir.InstrId, t: *const tir.TIR) !mlir.Value {
         const kind = t.instrs.index.kinds.items[ins_id.toRaw()];
         return switch (kind) {
             // ------------- Constants -------------
             .ConstInt => blk: {
                 const p = t.instrs.get(.ConstInt, ins_id);
-                const prev_loc = self.pushLocation(p.loc);
-                defer self.loc = prev_loc;
-                const ty = try self.llvmTypeOf(store, p.ty);
-                if (self.isFloat(ty)) {
-                    break :blk self.constFloat(ty, @floatFromInt(p.value));
-                }
-                break :blk self.constInt(ty, p.value);
+                break :blk try self.emitConstInt(p);
             },
             .ConstFloat => blk: {
                 const p = t.instrs.get(.ConstFloat, ins_id);
                 const prev_loc = self.pushLocation(p.loc);
                 defer self.loc = prev_loc;
-                const ty = try self.llvmTypeOf(store, p.ty);
+                const ty = try self.llvmTypeOf(p.ty);
                 break :blk self.constFloat(ty, p.value);
             },
             .ConstBool => blk: {
@@ -1793,11 +1661,11 @@ pub const MlirCodegen = struct {
                 const p = t.instrs.get(.ConstNull, ins_id);
                 const prev_loc = self.pushLocation(p.loc);
                 defer self.loc = prev_loc;
-                const ty = try self.llvmTypeOf(store, p.ty);
+                const ty = try self.llvmTypeOf(p.ty);
                 var zero = OpBuilder.init("llvm.mlir.zero", self.loc).builder()
-                    .add_results(&.{ty}).build();
+                    .results(&.{ty}).build();
                 self.append(zero);
-                const sr_kind = store.getKind(p.ty);
+                const sr_kind = self.context.type_store.getKind(p.ty);
                 if (sr_kind == .Optional) {
                     const flag = self.constBool(false);
                     const v = self.insertAt(zero.getResult(0), flag, &.{0});
@@ -1809,9 +1677,9 @@ pub const MlirCodegen = struct {
                 const p = t.instrs.get(.ConstUndef, ins_id);
                 const prev_loc = self.pushLocation(p.loc);
                 defer self.loc = prev_loc;
-                const ty = try self.llvmTypeOf(store, p.ty);
+                const ty = try self.llvmTypeOf(p.ty);
                 var op = OpBuilder.init("llvm.mlir.undef", self.loc).builder()
-                    .add_results(&.{ty}).build();
+                    .results(&.{ty}).build();
                 self.append(op);
                 break :blk op.getResult(0);
             },
@@ -1824,7 +1692,7 @@ pub const MlirCodegen = struct {
                 const ptr_val = ptr_op.getResult(0);
                 const len_val = self.llvmConstI64(@intCast(str_text.len));
 
-                const string_ty = try self.llvmTypeOf(store, p.ty);
+                const string_ty = try self.llvmTypeOf(p.ty);
                 var agg = self.undefOf(string_ty);
                 agg = self.insertAt(agg, ptr_val, &.{0});
                 agg = self.insertAt(agg, len_val, &.{1});
@@ -1837,90 +1705,90 @@ pub const MlirCodegen = struct {
                 const prev_loc = self.pushLocation(p.loc);
                 defer self.loc = prev_loc;
                 // If result SR type is Complex, use complex.add
-                if (store.getKind(p.ty) == .Complex) {
+                if (self.context.type_store.getKind(p.ty) == .Complex) {
                     const lhs = self.value_map.get(p.lhs).?;
                     const rhs = self.value_map.get(p.rhs).?;
-                    const cty = try self.llvmTypeOf(store, p.ty);
+                    const cty = try self.llvmTypeOf(p.ty);
                     var op = OpBuilder.init("complex.add", self.loc).builder()
-                        .add_operands(&.{ lhs, rhs })
-                        .add_results(&.{cty}).build();
+                        .operands(&.{ lhs, rhs })
+                        .results(&.{cty}).build();
                     self.append(op);
                     break :blk op.getResult(0);
                 }
-                break :blk try self.binArith("llvm.add", "llvm.fadd", p, store);
+                break :blk try self.binArith("llvm.add", "llvm.fadd", p);
             },
             .Sub => blk: {
                 const p = t.instrs.get(.Sub, ins_id);
                 const prev_loc = self.pushLocation(p.loc);
                 defer self.loc = prev_loc;
-                if (store.getKind(p.ty) == .Complex) {
+                if (self.context.type_store.getKind(p.ty) == .Complex) {
                     const lhs = self.value_map.get(p.lhs).?;
                     const rhs = self.value_map.get(p.rhs).?;
-                    const cty = try self.llvmTypeOf(store, p.ty);
+                    const cty = try self.llvmTypeOf(p.ty);
                     var op = OpBuilder.init("complex.sub", self.loc).builder()
-                        .add_operands(&.{ lhs, rhs })
-                        .add_results(&.{cty}).build();
+                        .operands(&.{ lhs, rhs })
+                        .results(&.{cty}).build();
                     self.append(op);
                     break :blk op.getResult(0);
                 }
-                break :blk try self.binArith("llvm.sub", "llvm.fsub", p, store);
+                break :blk try self.binArith("llvm.sub", "llvm.fsub", p);
             },
             .Mul => blk: {
                 const p = t.instrs.get(.Mul, ins_id);
                 const prev_loc = self.pushLocation(p.loc);
                 defer self.loc = prev_loc;
-                if (store.getKind(p.ty) == .Complex) {
+                if (self.context.type_store.getKind(p.ty) == .Complex) {
                     const lhs = self.value_map.get(p.lhs).?;
                     const rhs = self.value_map.get(p.rhs).?;
-                    const cty = try self.llvmTypeOf(store, p.ty);
+                    const cty = try self.llvmTypeOf(p.ty);
                     var op = OpBuilder.init("complex.mul", self.loc).builder()
-                        .add_operands(&.{ lhs, rhs })
-                        .add_results(&.{cty}).build();
+                        .operands(&.{ lhs, rhs })
+                        .results(&.{cty}).build();
                     self.append(op);
                     break :blk op.getResult(0);
                 }
-                break :blk try self.binArith("llvm.mul", "llvm.fmul", p, store);
+                break :blk try self.binArith("llvm.mul", "llvm.fmul", p);
             },
-            .BinWrapAdd => try self.binArith("llvm.add", "llvm.fadd", t.instrs.get(.BinWrapAdd, ins_id), store),
-            .BinWrapSub => try self.binArith("llvm.sub", "llvm.fsub", t.instrs.get(.BinWrapSub, ins_id), store),
-            .BinWrapMul => try self.binArith("llvm.mul", "llvm.fmul", t.instrs.get(.BinWrapMul, ins_id), store),
+            .BinWrapAdd => try self.binArith("llvm.add", "llvm.fadd", t.instrs.get(.BinWrapAdd, ins_id)),
+            .BinWrapSub => try self.binArith("llvm.sub", "llvm.fsub", t.instrs.get(.BinWrapSub, ins_id)),
+            .BinWrapMul => try self.binArith("llvm.mul", "llvm.fmul", t.instrs.get(.BinWrapMul, ins_id)),
             .BinSatAdd => blk: {
                 const row = t.instrs.get(.BinSatAdd, ins_id);
                 const prev_loc = self.pushLocation(row.loc);
                 defer self.loc = prev_loc;
-                break :blk try self.emitSaturatingIntBinary(row, store, "arith.addi", true);
+                break :blk try self.emitSaturatingIntBinary(row, "arith.addi", true);
             },
             .BinSatSub => blk: {
                 const row = t.instrs.get(.BinSatSub, ins_id);
                 const prev_loc = self.pushLocation(row.loc);
                 defer self.loc = prev_loc;
-                break :blk try self.emitSaturatingIntBinary(row, store, "arith.subi", true);
+                break :blk try self.emitSaturatingIntBinary(row, "arith.subi", true);
             },
             .BinSatMul => blk: {
                 const row = t.instrs.get(.BinSatMul, ins_id);
                 const prev_loc = self.pushLocation(row.loc);
                 defer self.loc = prev_loc;
-                break :blk try self.emitSaturatingIntBinary(row, store, "arith.muli", true);
+                break :blk try self.emitSaturatingIntBinary(row, "arith.muli", true);
             },
 
             .Div => blk: {
                 const p = t.instrs.get(.Div, ins_id);
                 const prev_loc = self.pushLocation(p.loc);
                 defer self.loc = prev_loc;
-                if (store.getKind(p.ty) == .Complex) {
+                if (self.context.type_store.getKind(p.ty) == .Complex) {
                     const lhs = self.value_map.get(p.lhs).?;
                     const rhs = self.value_map.get(p.rhs).?;
-                    const cty = try self.llvmTypeOf(store, p.ty);
+                    const cty = try self.llvmTypeOf(p.ty);
                     var op = OpBuilder.init("complex.div", self.loc).builder()
-                        .add_operands(&.{ lhs, rhs })
-                        .add_results(&.{cty}).build();
+                        .operands(&.{ lhs, rhs })
+                        .results(&.{cty}).build();
                     self.append(op);
                     break :blk op.getResult(0);
                 }
                 const lhs = self.value_map.get(p.lhs).?;
                 const rhs = self.value_map.get(p.rhs).?;
-                const ty = try self.llvmTypeOf(store, p.ty);
-                const signed = !self.isUnsigned(store, self.srTypeOfValue(t, p.lhs));
+                const ty = try self.llvmTypeOf(p.ty);
+                const signed = !self.isUnsigned(self.srTypeOfValue(t, p.lhs));
                 break :blk self.arithDiv(lhs, rhs, ty, signed);
             },
 
@@ -1930,8 +1798,8 @@ pub const MlirCodegen = struct {
                 defer self.loc = prev_loc;
                 const lhs = self.value_map.get(p.lhs).?;
                 const rhs = self.value_map.get(p.rhs).?;
-                const ty = try self.llvmTypeOf(store, p.ty);
-                const signed = !self.isUnsigned(store, self.srTypeOfValue(t, p.lhs));
+                const ty = try self.llvmTypeOf(p.ty);
+                const signed = !self.isUnsigned(self.srTypeOfValue(t, p.lhs));
                 break :blk self.arithRem(lhs, rhs, ty, signed);
             },
 
@@ -1941,14 +1809,14 @@ pub const MlirCodegen = struct {
                 defer self.loc = prev_loc;
                 const lhs = self.value_map.get(p.lhs).?;
                 const rhs = self.value_map.get(p.rhs).?;
-                const ty = try self.llvmTypeOf(store, p.ty);
+                const ty = try self.llvmTypeOf(p.ty);
                 break :blk self.arithShl(lhs, rhs, ty);
             },
             .BinSatShl => blk: {
                 const row = t.instrs.get(.BinSatShl, ins_id);
                 const prev_loc = self.pushLocation(row.loc);
                 defer self.loc = prev_loc;
-                break :blk try self.emitSaturatingIntBinary(row, store, "arith.shli", false);
+                break :blk try self.emitSaturatingIntBinary(row, "arith.shli", false);
             },
             .Shr => blk: {
                 const p = t.instrs.get(.Shr, ins_id);
@@ -1956,18 +1824,18 @@ pub const MlirCodegen = struct {
                 defer self.loc = prev_loc;
                 const lhs = self.value_map.get(p.lhs).?;
                 const rhs = self.value_map.get(p.rhs).?;
-                const ty = try self.llvmTypeOf(store, p.ty);
-                const signed = !self.isUnsigned(store, self.srTypeOfValue(t, p.lhs));
+                const ty = try self.llvmTypeOf(p.ty);
+                const signed = !self.isUnsigned(self.srTypeOfValue(t, p.lhs));
                 break :blk self.arithShr(lhs, rhs, ty, signed);
             },
 
-            .BitAnd => try self.binBit("llvm.and", t.instrs.get(.BitAnd, ins_id), store),
-            .BitOr => try self.binBit("llvm.or", t.instrs.get(.BitOr, ins_id), store),
-            .BitXor => try self.binBit("llvm.xor", t.instrs.get(.BitXor, ins_id), store),
+            .BitAnd => try self.binBit("llvm.and", t.instrs.get(.BitAnd, ins_id)),
+            .BitOr => try self.binBit("llvm.or", t.instrs.get(.BitOr, ins_id)),
+            .BitXor => try self.binBit("llvm.xor", t.instrs.get(.BitXor, ins_id)),
 
             // ------------- Logical (arith.*) -------------
-            .LogicalAnd => try self.binBit("llvm.and", t.instrs.get(.LogicalAnd, ins_id), store),
-            .LogicalOr => try self.binBit("llvm.or", t.instrs.get(.LogicalOr, ins_id), store),
+            .LogicalAnd => try self.binBit("llvm.and", t.instrs.get(.LogicalAnd, ins_id)),
+            .LogicalOr => try self.binBit("llvm.or", t.instrs.get(.LogicalOr, ins_id)),
             .LogicalNot => blk: {
                 const p = t.instrs.get(.LogicalNot, ins_id);
                 const prev_loc = self.pushLocation(p.loc);
@@ -1981,37 +1849,37 @@ pub const MlirCodegen = struct {
                 const row = t.instrs.get(.CmpEq, ins_id);
                 const prev_loc = self.pushLocation(row.loc);
                 defer self.loc = prev_loc;
-                break :blk try self.emitCmp("eq", "eq", "oeq", row, t, store);
+                break :blk try self.emitCmp("eq", "eq", "oeq", row, t);
             },
             .CmpNe => blk: {
                 const row = t.instrs.get(.CmpNe, ins_id);
                 const prev_loc = self.pushLocation(row.loc);
                 defer self.loc = prev_loc;
-                break :blk try self.emitCmp("ne", "ne", "one", row, t, store);
+                break :blk try self.emitCmp("ne", "ne", "one", row, t);
             },
             .CmpLt => blk: {
                 const row = t.instrs.get(.CmpLt, ins_id);
                 const prev_loc = self.pushLocation(row.loc);
                 defer self.loc = prev_loc;
-                break :blk try self.emitCmp("ult", "slt", "olt", row, t, store);
+                break :blk try self.emitCmp("ult", "slt", "olt", row, t);
             },
             .CmpLe => blk: {
                 const row = t.instrs.get(.CmpLe, ins_id);
                 const prev_loc = self.pushLocation(row.loc);
                 defer self.loc = prev_loc;
-                break :blk try self.emitCmp("ule", "sle", "ole", row, t, store);
+                break :blk try self.emitCmp("ule", "sle", "ole", row, t);
             },
             .CmpGt => blk: {
                 const row = t.instrs.get(.CmpGt, ins_id);
                 const prev_loc = self.pushLocation(row.loc);
                 defer self.loc = prev_loc;
-                break :blk try self.emitCmp("ugt", "sgt", "ogt", row, t, store);
+                break :blk try self.emitCmp("ugt", "sgt", "ogt", row, t);
             },
             .CmpGe => blk: {
                 const row = t.instrs.get(.CmpGe, ins_id);
                 const prev_loc = self.pushLocation(row.loc);
                 defer self.loc = prev_loc;
-                break :blk try self.emitCmp("uge", "sge", "oge", row, t, store);
+                break :blk try self.emitCmp("uge", "sge", "oge", row, t);
             },
 
             // ------------- Casts -------------
@@ -2019,7 +1887,7 @@ pub const MlirCodegen = struct {
                 const p = t.instrs.get(.CastBit, ins_id);
                 const prev_loc = self.pushLocation(p.loc);
                 defer self.loc = prev_loc;
-                const to_ty = try self.llvmTypeOf(store, p.ty);
+                const to_ty = try self.llvmTypeOf(p.ty);
                 const from_v = self.value_map.get(p.value).?;
                 const from_ty = from_v.getType();
                 if (from_ty.equal(to_ty)) break :blk from_v;
@@ -2034,15 +1902,15 @@ pub const MlirCodegen = struct {
                 if (needs_spill) {
                     const spill = self.spillAgg(from_v, from_ty, 0);
                     var load = OpBuilder.init("llvm.load", self.loc).builder()
-                        .add_operands(&.{spill})
-                        .add_results(&.{to_ty}).build();
+                        .operands(&.{spill})
+                        .results(&.{to_ty}).build();
                     self.append(load);
                     break :blk load.getResult(0);
                 }
 
                 var op = OpBuilder.init("llvm.bitcast", self.loc).builder()
-                    .add_operands(&.{from_v})
-                    .add_results(&.{to_ty}).build();
+                    .operands(&.{from_v})
+                    .results(&.{to_ty}).build();
                 self.append(op);
                 break :blk op.getResult(0);
             },
@@ -2051,10 +1919,10 @@ pub const MlirCodegen = struct {
                 const p = t.instrs.get(.CastNormal, ins_id);
                 const prev_loc = self.pushLocation(p.loc);
                 defer self.loc = prev_loc;
-                const to_ty = try self.llvmTypeOf(store, p.ty);
+                const to_ty = try self.llvmTypeOf(p.ty);
                 const from_v = self.value_map.get(p.value).?;
                 const src_sr = self.srTypeOfValue(t, p.value);
-                const val = try self.emitCastNormal(store, p.ty, to_ty, from_v, src_sr);
+                const val = try self.emitCastNormal(p.ty, to_ty, from_v, src_sr);
                 break :blk val;
             },
 
@@ -2064,7 +1932,7 @@ pub const MlirCodegen = struct {
                 defer self.loc = prev_loc;
                 const from_v = self.value_map.get(p.value).?;
                 const src_sr = self.srTypeOfValue(t, p.value);
-                const val = try self.emitCast(.CastSaturate, store, p.ty, src_sr, from_v);
+                const val = try self.emitCast(.CastSaturate, p.ty, src_sr, from_v);
                 break :blk val;
             },
 
@@ -2074,7 +1942,7 @@ pub const MlirCodegen = struct {
                 defer self.loc = prev_loc;
                 const from_v = self.value_map.get(p.value).?;
                 const src_sr = self.srTypeOfValue(t, p.value);
-                const val = try self.emitCast(x, store, p.ty, src_sr, from_v);
+                const val = try self.emitCast(x, p.ty, src_sr, from_v);
                 break :blk val;
             },
 
@@ -2084,20 +1952,20 @@ pub const MlirCodegen = struct {
                 const prev_loc = self.pushLocation(p.loc);
                 defer self.loc = prev_loc;
                 var elem_ty: mlir.Type = self.i8_ty;
-                switch (store.getKind(p.ty)) {
+                switch (self.context.type_store.getKind(p.ty)) {
                     .Ptr => {
-                        const ptr_row = store.get(.Ptr, p.ty);
-                        if (store.getKind(ptr_row.elem) == .Tensor) {
+                        const ptr_row = self.context.type_store.get(.Ptr, p.ty);
+                        if (self.context.type_store.getKind(ptr_row.elem) == .Tensor) {
                             try self.tensor_slots.put(p.result, mlir.Value.empty());
                             break :blk self.llvmNullPtr();
                         }
                         // Use storage representation for memory: Complex -> {elem, elem}
-                        if (store.getKind(ptr_row.elem) == .Complex) {
-                            const c = store.get(.Complex, ptr_row.elem);
-                            const ety = try self.llvmTypeOf(store, c.elem);
+                        if (self.context.type_store.getKind(ptr_row.elem) == .Complex) {
+                            const c = self.context.type_store.get(.Complex, ptr_row.elem);
+                            const ety = try self.llvmTypeOf(c.elem);
                             elem_ty = mlir.LLVM.getLLVMStructTypeLiteral(self.mlir_ctx, &[_]mlir.Type{ ety, ety }, false);
                         } else {
-                            elem_ty = try self.llvmTypeOf(store, ptr_row.elem);
+                            elem_ty = try self.llvmTypeOf(ptr_row.elem);
                         }
                     },
                     else => {},
@@ -2111,9 +1979,9 @@ pub const MlirCodegen = struct {
                     self.named("elem_type", mlir.Attribute.typeAttrGet(elem_ty)),
                 };
                 var alloca = OpBuilder.init("llvm.alloca", self.loc).builder()
-                    .add_operands(&.{count_v})
-                    .add_results(&.{self.llvm_ptr_ty})
-                    .add_attributes(&attrs).build();
+                    .operands(&.{count_v})
+                    .results(&.{self.llvm_ptr_ty})
+                    .attributes(&attrs).build();
                 self.append(alloca);
                 break :blk alloca.getResult(0);
             },
@@ -2122,13 +1990,13 @@ pub const MlirCodegen = struct {
                 const p = t.instrs.get(.Load, ins_id);
                 const prev_loc = self.pushLocation(p.loc);
                 defer self.loc = prev_loc;
-                if (try self.tryEmitTensorElementLoad(p, t, store)) |elem| break :blk elem;
+                if (try self.tryEmitTensorElementLoad(p, t)) |elem| break :blk elem;
                 var ptr_val_opt = self.value_map.get(p.ptr);
                 if (ptr_val_opt == null) {
                     // Try materializing or folding known-constant pointers directly to values as a last resort.
                     if (self.def_instr.get(p.ptr)) |pid| {
                         const kdef = t.instrs.index.kinds.items[pid.toRaw()];
-                        const res_ty = try self.llvmTypeOf(store, p.ty);
+                        const res_ty = try self.llvmTypeOf(p.ty);
                         switch (kdef) {
                             .ConstFloat => {
                                 const rowf = t.instrs.get(.ConstFloat, pid);
@@ -2148,50 +2016,50 @@ pub const MlirCodegen = struct {
                             else => {},
                         }
                         // Otherwise, attempt on-demand emission
-                        _ = try self.emitInstr(pid, t, store);
+                        _ = try self.emitInstr(pid, t);
                         ptr_val_opt = self.value_map.get(p.ptr);
                     }
                     if (ptr_val_opt == null) {
                         // Last-resort: treat as value load and synthesize zero of result type.
-                        const res_ty = try self.llvmTypeOf(store, p.ty);
+                        const res_ty = try self.llvmTypeOf(p.ty);
                         break :blk self.zeroOf(res_ty);
                     }
                 }
                 const ptr = ptr_val_opt.?;
-                if (store.getKind(p.ty) == .Tensor) {
+                if (self.context.type_store.getKind(p.ty) == .Tensor) {
                     const stored = self.tensor_slots.get(p.ptr) orelse std.debug.panic("tensor load before store", .{});
                     break :blk stored;
                 }
-                if (store.getKind(p.ty) == .Complex) {
-                    const c = store.get(.Complex, p.ty);
-                    const elem_ty = try self.llvmTypeOf(store, c.elem);
+                if (self.context.type_store.getKind(p.ty) == .Complex) {
+                    const c = self.context.type_store.get(.Complex, p.ty);
+                    const elem_ty = try self.llvmTypeOf(c.elem);
                     const storage_ty = mlir.LLVM.getLLVMStructTypeLiteral(self.mlir_ctx, &[_]mlir.Type{ elem_ty, elem_ty }, false);
                     var ld = OpBuilder.init("llvm.load", self.loc).builder()
-                        .add_operands(&.{ptr})
-                        .add_results(&.{storage_ty}).build();
+                        .operands(&.{ptr})
+                        .results(&.{storage_ty}).build();
                     self.append(ld);
                     const agg = ld.getResult(0);
                     const re = self.extractAt(agg, elem_ty, &.{0});
                     const im = self.extractAt(agg, elem_ty, &.{1});
-                    const res_ty = try self.llvmTypeOf(store, p.ty);
+                    const res_ty = try self.llvmTypeOf(p.ty);
                     var mk = OpBuilder.init("complex.create", self.loc).builder()
-                        .add_operands(&.{ re, im })
-                        .add_results(&.{res_ty}).build();
+                        .operands(&.{ re, im })
+                        .results(&.{res_ty}).build();
                     self.append(mk);
                     break :blk mk.getResult(0);
                 } else {
-                    const res_ty = try self.llvmTypeOf(store, p.ty);
+                    const res_ty = try self.llvmTypeOf(p.ty);
                     // If the operand is not a pointer (opaque ptr model), treat it as a value and coerce if needed.
                     if (!mlir.LLVM.isLLVMPointerType(ptr.getType())) {
                         // Pass-through/coerce
                         if (ptr.getType().equal(res_ty)) break :blk ptr;
                         const src_sr = self.srTypeOfValue(t, p.ptr);
-                        const v = try self.coerceOnBranch(ptr, res_ty, p.ty, src_sr, store);
+                        const v = try self.coerceOnBranch(ptr, res_ty, p.ty, src_sr);
                         break :blk v;
                     }
                     var load = OpBuilder.init("llvm.load", self.loc).builder()
-                        .add_operands(&.{ptr})
-                        .add_results(&.{res_ty}).build();
+                        .operands(&.{ptr})
+                        .results(&.{res_ty}).build();
                     self.append(load);
                     break :blk load.getResult(0);
                 }
@@ -2202,7 +2070,7 @@ pub const MlirCodegen = struct {
                 const prev_loc = self.pushLocation(p.loc);
                 defer self.loc = prev_loc;
                 const v = self.value_map.get(p.value).?;
-                if (try self.handleTensorElementStore(p, v, t, store)) break :blk mlir.Value.empty();
+                if (try self.handleTensorElementStore(p, v, t)) break :blk mlir.Value.empty();
                 const ptr_opt = self.value_map.get(p.ptr);
                 if (ptr_opt == null) {
                     std.debug.print("MLIR Store missing ptr mapping: ins_id={} ptr_vid={}\n", .{ ins_id, p.ptr });
@@ -2211,48 +2079,48 @@ pub const MlirCodegen = struct {
                 const ptr = ptr_opt.?;
                 const v_sr = self.srTypeOfValue(t, p.value);
                 const ptr_sr = self.srTypeOfValue(t, p.ptr);
-                if (store.getKind(ptr_sr) == .Ptr and store.getKind(store.get(.Ptr, ptr_sr).elem) == .Tensor) {
+                if (self.context.type_store.getKind(ptr_sr) == .Ptr and self.context.type_store.getKind(self.context.type_store.get(.Ptr, ptr_sr).elem) == .Tensor) {
                     try self.tensor_slots.put(p.ptr, v);
                     break :blk mlir.Value.empty();
                 }
-                if (store.getKind(v_sr) == .Complex) {
-                    const c = store.get(.Complex, v_sr);
-                    const elem_ty = try self.llvmTypeOf(store, c.elem);
+                if (self.context.type_store.getKind(v_sr) == .Complex) {
+                    const c = self.context.type_store.get(.Complex, v_sr);
+                    const elem_ty = try self.llvmTypeOf(c.elem);
                     // Spill complex into {elem, elem}
                     var reop = OpBuilder.init("complex.re", self.loc).builder()
-                        .add_operands(&.{v}).add_results(&.{elem_ty}).build();
+                        .operands(&.{v}).results(&.{elem_ty}).build();
                     self.append(reop);
                     var imop = OpBuilder.init("complex.im", self.loc).builder()
-                        .add_operands(&.{v}).add_results(&.{elem_ty}).build();
+                        .operands(&.{v}).results(&.{elem_ty}).build();
                     self.append(imop);
                     const storage_ty = mlir.LLVM.getLLVMStructTypeLiteral(self.mlir_ctx, &[_]mlir.Type{ elem_ty, elem_ty }, false);
                     var acc = self.undefOf(storage_ty);
                     acc = self.insertAt(acc, reop.getResult(0), &.{0});
                     acc = self.insertAt(acc, imop.getResult(0), &.{1});
                     const st = OpBuilder.init("llvm.store", self.loc).builder()
-                        .add_operands(&.{ acc, ptr }).build();
+                        .operands(&.{ acc, ptr }).build();
                     self.append(st);
                     break :blk mlir.Value.empty();
                 } else {
                     const st = OpBuilder.init("llvm.store", self.loc).builder()
-                        .add_operands(&.{ v, ptr }).build();
+                        .operands(&.{ v, ptr }).build();
                     self.append(st);
                     break :blk mlir.Value.empty();
                 }
             },
 
             .Gep => blk: {
-                if (try self.tryEmitTensorGep(ins_id, t, store)) |special| break :blk special;
+                if (try self.tryEmitTensorGep(ins_id, t)) |special| break :blk special;
 
                 const p = t.instrs.get(.Gep, ins_id);
                 const prev_loc = self.pushLocation(p.loc);
                 defer self.loc = prev_loc;
                 const base = self.value_map.get(p.base).?;
-                const pty_kind = store.getKind(p.ty);
+                const pty_kind = self.context.type_store.getKind(p.ty);
                 var elem_mlir: mlir.Type = undefined;
                 if (pty_kind == .Ptr) {
-                    const ptr_row = store.get(.Ptr, p.ty);
-                    elem_mlir = try self.llvmTypeOf(store, ptr_row.elem);
+                    const ptr_row = self.context.type_store.get(.Ptr, p.ty);
+                    elem_mlir = try self.llvmTypeOf(ptr_row.elem);
                 } else {
                     elem_mlir = self.i8_ty;
                 }
@@ -2271,13 +2139,13 @@ pub const MlirCodegen = struct {
                 const prev_loc = self.pushLocation(p.loc);
                 defer self.loc = prev_loc;
                 const name = t.instrs.strs.get(p.name);
-                const ty = try self.llvmTypeOf(store, p.ty);
+                const ty = try self.llvmTypeOf(p.ty);
                 if (self.global_addr_cache.get(name)) |cached| break :blk cached;
 
                 const gsym = mlir.Attribute.flatSymbolRefAttrGet(self.mlir_ctx, mlir.StringRef.from(name));
                 var addr = OpBuilder.init("llvm.mlir.addressof", self.loc).builder()
-                    .add_results(&.{ty})
-                    .add_attributes(&.{self.named("global_name", gsym)})
+                    .results(&.{ty})
+                    .attributes(&.{self.named("global_name", gsym)})
                     .build();
                 var entry_block = if (self.func_entry_block) |eb|
                     eb
@@ -2302,7 +2170,7 @@ pub const MlirCodegen = struct {
                 const p = t.instrs.get(.TupleMake, ins_id);
                 const prev_loc = self.pushLocation(p.loc);
                 defer self.loc = prev_loc;
-                const tup_ty = try self.llvmTypeOf(store, p.ty);
+                const tup_ty = try self.llvmTypeOf(p.ty);
                 var acc = self.zeroOf(tup_ty);
                 // Tuple elements are stored in value_pool
                 const elems = t.instrs.value_pool.slice(p.elems);
@@ -2322,8 +2190,8 @@ pub const MlirCodegen = struct {
                 var acc = self.zeroOf(pairTy);
                 const s = self.value_map.get(p.start).?;
                 const e = self.value_map.get(p.end).?;
-                const s64 = try self.coerceOnBranch(s, i64t, store.tI64(), self.srTypeOfValue(t, p.start), store);
-                const e64 = try self.coerceOnBranch(e, i64t, store.tI64(), self.srTypeOfValue(t, p.end), store);
+                const s64 = try self.coerceOnBranch(s, i64t, self.context.type_store.tI64(), self.srTypeOfValue(t, p.start));
+                const e64 = try self.coerceOnBranch(e, i64t, self.context.type_store.tI64(), self.srTypeOfValue(t, p.end));
                 acc = self.insertAt(acc, s64, &.{0});
                 acc = self.insertAt(acc, e64, &.{1});
                 break :blk acc;
@@ -2332,37 +2200,37 @@ pub const MlirCodegen = struct {
                 const p = t.instrs.get(.ArrayMake, ins_id);
                 const prev_loc = self.pushLocation(p.loc);
                 defer self.loc = prev_loc;
-                const result_kind = store.getKind(p.ty);
+                const result_kind = self.context.type_store.getKind(p.ty);
                 if (result_kind == .Simd) {
-                    const simd_ty = store.get(.Simd, p.ty);
+                    const simd_ty = self.context.type_store.get(.Simd, p.ty);
                     const lanes: usize = @intCast(simd_ty.lanes);
                     const elems = t.instrs.value_pool.slice(p.elems);
                     std.debug.assert(elems.len == lanes);
 
-                    const elem_mlir = try self.llvmTypeOf(store, simd_ty.elem);
-                    const vec_ty = try self.llvmTypeOf(store, p.ty);
+                    const elem_mlir = try self.llvmTypeOf(simd_ty.elem);
+                    const vec_ty = try self.llvmTypeOf(p.ty);
                     var operands = try self.gpa.alloc(mlir.Value, elems.len);
                     defer self.gpa.free(operands);
 
                     for (elems, 0..) |vid, i| {
                         var v = self.value_map.get(vid).?;
                         if (!v.getType().equal(elem_mlir)) {
-                            v = try self.coerceOnBranch(v, elem_mlir, simd_ty.elem, self.srTypeOfValue(t, vid), store);
+                            v = try self.coerceOnBranch(v, elem_mlir, simd_ty.elem, self.srTypeOfValue(t, vid));
                         }
                         operands[i] = v;
                     }
 
                     var literal = OpBuilder.init("vector.from_elements", self.loc).builder()
-                        .add_operands(operands)
-                        .add_results(&.{vec_ty}).build();
+                        .operands(operands)
+                        .results(&.{vec_ty}).build();
                     self.append(literal);
                     break :blk literal.getResult(0);
                 }
                 if (result_kind == .Tensor) {
-                    const tensor_sr = store.get(.Tensor, p.ty);
-                    const tensor_ty = try self.llvmTypeOf(store, p.ty);
+                    const tensor_sr = self.context.type_store.get(.Tensor, p.ty);
+                    const tensor_ty = try self.llvmTypeOf(p.ty);
                     const elems = t.instrs.value_pool.slice(p.elems);
-                    const scalar_elem_mlir = try self.llvmTypeOf(store, tensor_sr.elem);
+                    const scalar_elem_mlir = try self.llvmTypeOf(tensor_sr.elem);
 
                     var total: usize = 1;
                     var dim_idx: usize = 0;
@@ -2378,22 +2246,22 @@ pub const MlirCodegen = struct {
                         var v = self.value_map.get(vid).?;
                         if (!v.getType().equal(scalar_elem_mlir)) {
                             const src_sr = self.srTypeOfValue(t, vid);
-                            v = try self.coerceOnBranch(v, scalar_elem_mlir, tensor_sr.elem, src_sr, store);
+                            v = try self.coerceOnBranch(v, scalar_elem_mlir, tensor_sr.elem, src_sr);
                         }
                         operands[i] = v;
                     }
 
                     var literal = OpBuilder.init("tensor.from_elements", self.loc).builder()
-                        .add_operands(operands)
-                        .add_results(&.{tensor_ty}).build();
+                        .operands(operands)
+                        .results(&.{tensor_ty}).build();
                     self.append(literal);
                     break :blk literal.getResult(0);
                 }
 
-                const arr_ty = try self.llvmTypeOf(store, p.ty);
+                const arr_ty = try self.llvmTypeOf(p.ty);
                 // Determine element MLIR type from SR array element
-                const arr_sr = store.get(.Array, p.ty);
-                const elem_mlir = try self.llvmTypeOf(store, arr_sr.elem);
+                const arr_sr = self.context.type_store.get(.Array, p.ty);
+                const elem_mlir = try self.llvmTypeOf(arr_sr.elem);
                 var acc = self.zeroOf(arr_ty);
                 // Array elements are stored in value_pool
                 const elems = t.instrs.value_pool.slice(p.elems);
@@ -2401,7 +2269,7 @@ pub const MlirCodegen = struct {
                     var v = self.value_map.get(vid).?;
                     // Best-effort: coerce value to the array element type if it doesn't match
                     if (!v.getType().equal(elem_mlir)) {
-                        v = try self.coerceOnBranch(v, elem_mlir, arr_sr.elem, self.srTypeOfValue(t, vid), store);
+                        v = try self.coerceOnBranch(v, elem_mlir, arr_sr.elem, self.srTypeOfValue(t, vid));
                     }
                     acc = self.insertAt(acc, v, &.{@as(i64, @intCast(i))});
                 }
@@ -2411,7 +2279,7 @@ pub const MlirCodegen = struct {
                 const p = t.instrs.get(.StructMake, ins_id);
                 const prev_loc = self.pushLocation(p.loc);
                 defer self.loc = prev_loc;
-                const st_ty = try self.llvmTypeOf(store, p.ty);
+                const st_ty = try self.llvmTypeOf(p.ty);
                 var acc = self.zeroOf(st_ty);
                 const fields = t.instrs.sfi_pool.slice(p.fields);
                 for (fields) |f_id| {
@@ -2425,12 +2293,12 @@ pub const MlirCodegen = struct {
                 const p = t.instrs.get(.ComplexMake, ins_id);
                 const prev_loc = self.pushLocation(p.loc);
                 defer self.loc = prev_loc;
-                const cty = try self.llvmTypeOf(store, p.ty);
+                const cty = try self.llvmTypeOf(p.ty);
                 const re = self.value_map.get(p.re).?;
                 const im = self.value_map.get(p.im).?;
                 var op = OpBuilder.init("complex.create", self.loc).builder()
-                    .add_operands(&.{ re, im })
-                    .add_results(&.{cty}).build();
+                    .operands(&.{ re, im })
+                    .results(&.{cty}).build();
                 self.append(op);
                 break :blk op.getResult(0);
             },
@@ -2439,7 +2307,7 @@ pub const MlirCodegen = struct {
                 const prev_loc = self.pushLocation(p.loc);
                 defer self.loc = prev_loc;
                 const agg = self.value_map.get(p.agg).?;
-                const res_ty = try self.llvmTypeOf(store, p.ty);
+                const res_ty = try self.llvmTypeOf(p.ty);
                 const v = self.extractAt(agg, res_ty, &.{@as(i64, @intCast(p.index))});
                 break :blk v;
             },
@@ -2459,10 +2327,10 @@ pub const MlirCodegen = struct {
                 const prev_loc = self.pushLocation(p.loc);
                 defer self.loc = prev_loc;
                 const agg = self.value_map.get(p.agg).?;
-                const res_ty = try self.llvmTypeOf(store, p.ty);
+                const res_ty = try self.llvmTypeOf(p.ty);
                 // Special-case: Complex field access -> complex.re/complex.im
                 const parent_sr = self.srTypeOfValue(t, p.agg);
-                const parent_kind = store.getKind(parent_sr);
+                const parent_kind = self.context.type_store.getKind(parent_sr);
                 if (parent_kind == .Complex) {
                     var which_re: bool = false;
                     var which_im: bool = false;
@@ -2477,8 +2345,8 @@ pub const MlirCodegen = struct {
                     if (which_re or which_im) {
                         const opname = if (which_re) "complex.re" else "complex.im";
                         var op = OpBuilder.init(opname, self.loc).builder()
-                            .add_operands(&.{agg})
-                            .add_results(&.{res_ty}).build();
+                            .operands(&.{agg})
+                            .results(&.{res_ty}).build();
                         self.append(op);
                         break :blk op.getResult(0);
                     }
@@ -2512,7 +2380,7 @@ pub const MlirCodegen = struct {
                 const p = t.instrs.get(.VariantMake, ins_id);
                 const prev_loc = self.pushLocation(p.loc);
                 defer self.loc = prev_loc;
-                const var_ty = try self.llvmTypeOf(store, p.ty);
+                const var_ty = try self.llvmTypeOf(p.ty);
                 var acc = self.undefOf(var_ty);
 
                 const tag_val = self.llvmConstI32(@intCast(p.tag));
@@ -2522,10 +2390,10 @@ pub const MlirCodegen = struct {
                     const payload_val_id = p.payload.unwrap();
                     const payload_val = self.value_map.get(payload_val_id).?;
 
-                    const struct_ty = store.get(.Struct, p.ty);
-                    const union_field = store.field_pool.slice(struct_ty.fields)[1];
-                    const union_ty = store.Field.get(union_field).ty;
-                    const union_mlir_ty = try self.llvmTypeOf(store, union_ty);
+                    const struct_ty = self.context.type_store.get(.Struct, p.ty);
+                    const union_field = self.context.type_store.field_pool.slice(struct_ty.fields)[1];
+                    const union_ty = self.context.type_store.Field.get(union_field).ty;
+                    const union_mlir_ty = try self.llvmTypeOf(union_ty);
 
                     var union_acc = self.undefOf(union_mlir_ty);
                     union_acc = self.insertAt(union_acc, payload_val, &.{0});
@@ -2559,16 +2427,16 @@ pub const MlirCodegen = struct {
                 defer self.loc = prev_loc;
 
                 // MLIR type of the union "storage blob"
-                const u_mlir = try self.llvmTypeOf(store, p.ty);
+                const u_mlir = try self.llvmTypeOf(p.ty);
 
                 // Figure out the chosen field type and coerce payload to it
                 var payload = self.value_map.get(p.value).?;
-                const urow = store.get(.Union, p.ty);
-                const f_ids = store.field_pool.slice(urow.fields);
-                const f_sr = store.Field.get(f_ids[@intCast(p.field_index)]).ty;
-                const f_mlir = try self.llvmTypeOf(store, f_sr);
+                const urow = self.context.type_store.get(.Union, p.ty);
+                const f_ids = self.context.type_store.field_pool.slice(urow.fields);
+                const f_sr = self.context.type_store.Field.get(f_ids[@intCast(p.field_index)]).ty;
+                const f_mlir = try self.llvmTypeOf(f_sr);
                 if (!payload.getType().equal(f_mlir)) {
-                    payload = try self.coerceOnBranch(payload, f_mlir, f_sr, self.srTypeOfValue(t, p.value), store);
+                    payload = try self.coerceOnBranch(payload, f_mlir, f_sr, self.srTypeOfValue(t, p.value));
                 }
 
                 // Materialize the union by writing the chosen field at offset 0
@@ -2576,8 +2444,8 @@ pub const MlirCodegen = struct {
                 self.storeAt(tmp, payload, 0);
 
                 var ld = OpBuilder.init("llvm.load", self.loc).builder()
-                    .add_operands(&.{tmp})
-                    .add_results(&.{u_mlir}).build();
+                    .operands(&.{tmp})
+                    .results(&.{u_mlir}).build();
                 self.append(ld);
                 break :blk ld.getResult(0);
             },
@@ -2591,22 +2459,22 @@ pub const MlirCodegen = struct {
                 const base_is_ptr = self.isLlvmPtr(base.getType());
                 const union_sr = self.srTypeOfValue(t, p.base);
                 var core_union_sr = union_sr;
-                if (base_is_ptr and store.getKind(union_sr) == .Ptr) {
-                    core_union_sr = store.get(.Ptr, union_sr).elem;
+                if (base_is_ptr and self.context.type_store.getKind(union_sr) == .Ptr) {
+                    core_union_sr = self.context.type_store.get(.Ptr, union_sr).elem;
                 }
 
                 // Desired field type (from the union's SR type)
-                const urow = store.get(.Union, core_union_sr);
-                const f_ids = store.field_pool.slice(urow.fields);
-                const f_sr = store.Field.get(f_ids[@intCast(p.field_index)]).ty;
-                const f_mlir = try self.llvmTypeOf(store, f_sr);
+                const urow = self.context.type_store.get(.Union, core_union_sr);
+                const f_ids = self.context.type_store.field_pool.slice(urow.fields);
+                const f_sr = self.context.type_store.Field.get(f_ids[@intCast(p.field_index)]).ty;
+                const f_mlir = try self.llvmTypeOf(f_sr);
 
                 // Get a pointer to the union storage (spill SSA value if needed),
                 // aligning to the field's alignment for a correct typed load.
                 var storage_ptr: mlir.Value = base;
                 if (!base_is_ptr) {
-                    const u_mlir = try self.llvmTypeOf(store, core_union_sr);
-                    const field_align = abi.abiSizeAlign(self, store, f_sr).alignment;
+                    const u_mlir = try self.llvmTypeOf(core_union_sr);
+                    const field_align = abi.abiSizeAlign(self, f_sr).alignment;
                     storage_ptr = self.spillAgg(base, u_mlir, @intCast(field_align));
                 }
 
@@ -2616,8 +2484,8 @@ pub const MlirCodegen = struct {
                 const fptr = try self.emitGep(storage_ptr, f_mlir, &idxs);
                 // load the field value from the pointer
                 const load_op = OpBuilder.init("llvm.load", self.loc).builder()
-                    .add_operands(&.{fptr})
-                    .add_results(&.{f_mlir}).build();
+                    .operands(&.{fptr})
+                    .results(&.{f_mlir}).build();
                 self.append(load_op);
                 break :blk load_op.getResult(0);
             },
@@ -2631,21 +2499,21 @@ pub const MlirCodegen = struct {
                 const base_is_ptr = self.isLlvmPtr(base.getType());
                 const union_sr = self.srTypeOfValue(t, p.base);
                 var core_union_sr = union_sr;
-                if (base_is_ptr and store.getKind(union_sr) == .Ptr) {
-                    core_union_sr = store.get(.Ptr, union_sr).elem;
+                if (base_is_ptr and self.context.type_store.getKind(union_sr) == .Ptr) {
+                    core_union_sr = self.context.type_store.get(.Ptr, union_sr).elem;
                 }
 
                 // Desired field type
-                const urow = store.get(.Union, core_union_sr);
-                const f_ids = store.field_pool.slice(urow.fields);
-                const f_sr = store.Field.get(f_ids[@intCast(p.field_index)]).ty;
-                const f_mlir = try self.llvmTypeOf(store, f_sr);
+                const urow = self.context.type_store.get(.Union, core_union_sr);
+                const f_ids = self.context.type_store.field_pool.slice(urow.fields);
+                const f_sr = self.context.type_store.Field.get(f_ids[@intCast(p.field_index)]).ty;
+                const f_mlir = try self.llvmTypeOf(f_sr);
 
                 // Spill SSA union value if needed, aligned to field alignment.
                 var storage_ptr: mlir.Value = base;
                 if (!base_is_ptr) {
-                    const u_mlir = try self.llvmTypeOf(store, core_union_sr);
-                    const field_align = abi.abiSizeAlign(self, store, f_sr).alignment;
+                    const u_mlir = try self.llvmTypeOf(core_union_sr);
+                    const field_align = abi.abiSizeAlign(self, f_sr).alignment;
                     storage_ptr = self.spillAgg(base, u_mlir, @intCast(field_align));
                 }
 
@@ -2670,13 +2538,13 @@ pub const MlirCodegen = struct {
                 const prev_loc = self.pushLocation(p.loc);
                 defer self.loc = prev_loc;
                 const base = self.value_map.get(p.base).?;
-                const res_ty = try self.llvmTypeOf(store, p.ty);
-                const res_sr_kind = store.getKind(p.ty);
+                const res_ty = try self.llvmTypeOf(p.ty);
+                const res_sr_kind = self.context.type_store.getKind(p.ty);
                 const base_sr_ty = self.srTypeOfValue(t, p.base);
 
                 // Slicing: result is a slice type ([]T). Build {ptr,len} from base + range.
-                if (store.getKind(base_sr_ty) == .Tensor) {
-                    const base_tensor = store.get(.Tensor, base_sr_ty);
+                if (self.context.type_store.getKind(base_sr_ty) == .Tensor) {
+                    const base_tensor = self.context.type_store.get(.Tensor, base_sr_ty);
                     const base_rank: usize = @intCast(base_tensor.rank);
                     const idx_raw = self.value_map.get(p.index).?;
                     const idx_val = try self.ensureIndexValue(idx_raw);
@@ -2684,18 +2552,18 @@ pub const MlirCodegen = struct {
                     if (base_rank == 1 and res_sr_kind != .Tensor and res_sr_kind != .Slice) {
                         // Rank-1 tensor indexed by scalar -> tensor.extract returning element value.
                         var op = OpBuilder.init("tensor.extract", self.loc).builder()
-                            .add_operands(&.{ base, idx_val })
-                            .add_results(&.{res_ty}).build();
+                            .operands(&.{ base, idx_val })
+                            .results(&.{res_ty}).build();
                         self.append(op);
                         break :blk op.getResult(0);
                     }
 
                     std.debug.assert(res_sr_kind == .Tensor);
-                    const res_tensor = store.get(.Tensor, p.ty);
+                    const res_tensor = self.context.type_store.get(.Tensor, p.ty);
                     const new_rank: usize = @intCast(res_tensor.rank);
                     std.debug.assert(new_rank + 1 == base_rank);
 
-                    const elem_mlir = try self.llvmTypeOf(store, base_tensor.elem);
+                    const elem_mlir = try self.llvmTypeOf(base_tensor.elem);
 
                     var slice_dims_storage: [types.max_tensor_rank]i64 = undefined;
                     var i: usize = 0;
@@ -2733,9 +2601,9 @@ pub const MlirCodegen = struct {
 
                     var extract_operands = [_]mlir.Value{ base, idx_val };
                     var slice = OpBuilder.init("tensor.extract_slice", self.loc).builder()
-                        .add_operands(&extract_operands)
-                        .add_results(&.{slice_ty})
-                        .add_attributes(&extract_attrs).build();
+                        .operands(&extract_operands)
+                        .results(&.{slice_ty})
+                        .attributes(&extract_attrs).build();
                     self.append(slice);
 
                     const collapse_result_ty = res_ty;
@@ -2759,20 +2627,20 @@ pub const MlirCodegen = struct {
 
                     var collapse_attrs = [_]mlir.NamedAttribute{self.named("reassociation", reassoc_attr)};
                     var collapse = OpBuilder.init("tensor.collapse_shape", self.loc).builder()
-                        .add_operands(&.{slice.getResult(0)})
-                        .add_results(&.{collapse_result_ty})
-                        .add_attributes(&collapse_attrs).build();
+                        .operands(&.{slice.getResult(0)})
+                        .results(&.{collapse_result_ty})
+                        .attributes(&collapse_attrs).build();
                     self.append(collapse);
                     break :blk collapse.getResult(0);
                 }
 
-                if (store.getKind(base_sr_ty) == .Simd) {
+                if (self.context.type_store.getKind(base_sr_ty) == .Simd) {
                     const idx_val = try self.ensureIndexValue(self.value_map.get(p.index).?);
                     const static_pos_attr = mlir.Attribute.denseI64ArrayGet(self.mlir_ctx, &.{mlir.Type.getDynamicSize()});
                     var op = OpBuilder.init("vector.extract", self.loc).builder()
-                        .add_operands(&.{ base, idx_val })
-                        .add_attributes(&.{self.named("static_position", static_pos_attr)})
-                        .add_results(&.{res_ty}).build();
+                        .operands(&.{ base, idx_val })
+                        .attributes(&.{self.named("static_position", static_pos_attr)})
+                        .results(&.{res_ty}).build();
                     self.append(op);
                     break :blk op.getResult(0);
                 }
@@ -2826,11 +2694,11 @@ pub const MlirCodegen = struct {
                     // Compute data pointer for the slice
                     var data_ptr: mlir.Value = undefined;
                     var elem_sr: types.TypeId = undefined;
-                    switch (store.getKind(base_sr_ty)) {
+                    switch (self.context.type_store.getKind(base_sr_ty)) {
                         .Array => {
-                            const arr = store.get(.Array, base_sr_ty);
+                            const arr = self.context.type_store.get(.Array, base_sr_ty);
                             elem_sr = arr.elem;
-                            const arr_mlir = try self.llvmTypeOf(store, base_sr_ty);
+                            const arr_mlir = try self.llvmTypeOf(base_sr_ty);
                             // Spill SSA array to memory to get a pointer
                             const base_ptr = self.spillAgg(base, arr_mlir, 0);
                             const idxs = [_]tir.Rows.GepIndex{
@@ -2841,19 +2709,19 @@ pub const MlirCodegen = struct {
                         },
                         .Slice => {
                             // Base is already a slice: extract ptr and compute ptr + start
-                            elem_sr = store.get(.Slice, base_sr_ty).elem;
+                            elem_sr = self.context.type_store.get(.Slice, base_sr_ty).elem;
                             const ptr0 = self.extractAt(base, self.llvm_ptr_ty, &.{0});
                             const idxs = [_]tir.Rows.GepIndex{.{ .Value = start_vid }};
-                            const elem_mlir = try self.llvmTypeOf(store, elem_sr);
+                            const elem_mlir = try self.llvmTypeOf(elem_sr);
                             data_ptr = try self.emitGep(ptr0, elem_mlir, &idxs);
                         },
                         .DynArray => {
-                            elem_sr = store.get(.DynArray, base_sr_ty).elem;
-                            const elem_ptr_sr = store.mkPtr(elem_sr, false);
-                            const ptr_ty_mlir = try self.llvmTypeOf(store, elem_ptr_sr);
+                            elem_sr = self.context.type_store.get(.DynArray, base_sr_ty).elem;
+                            const elem_ptr_sr = self.context.type_store.mkPtr(elem_sr, false);
+                            const ptr_ty_mlir = try self.llvmTypeOf(elem_ptr_sr);
                             const ptr0 = self.extractAt(base, ptr_ty_mlir, &.{0});
                             const idxs = [_]tir.Rows.GepIndex{.{ .Value = start_vid }};
-                            const elem_mlir = try self.llvmTypeOf(store, elem_sr);
+                            const elem_mlir = try self.llvmTypeOf(elem_sr);
                             data_ptr = try self.emitGep(ptr0, elem_mlir, &idxs);
                         },
                         else => {
@@ -2869,21 +2737,21 @@ pub const MlirCodegen = struct {
                     const incl_v = self.value_map.get(incl_vid).?;
                     const i64t = self.i64_ty;
                     // Ensure operands are i64
-                    const start64 = try self.coerceOnBranch(start_v, i64t, store.tI64(), self.srTypeOfValue(t, start_vid), store);
-                    const end64 = try self.coerceOnBranch(end_v, i64t, store.tI64(), self.srTypeOfValue(t, end_vid), store);
+                    const start64 = try self.coerceOnBranch(start_v, i64t, self.context.type_store.tI64(), self.srTypeOfValue(t, start_vid));
+                    const end64 = try self.coerceOnBranch(end_v, i64t, self.context.type_store.tI64(), self.srTypeOfValue(t, end_vid));
                     var sub = OpBuilder.init("llvm.sub", self.loc).builder()
-                        .add_operands(&.{ end64, start64 })
-                        .add_results(&.{i64t}).build();
+                        .operands(&.{ end64, start64 })
+                        .results(&.{i64t}).build();
                     self.append(sub);
                     const diff = sub.getResult(0);
                     // zext bool to i64
                     var z = OpBuilder.init("llvm.zext", self.loc).builder()
-                        .add_operands(&.{incl_v})
-                        .add_results(&.{i64t}).build();
+                        .operands(&.{incl_v})
+                        .results(&.{i64t}).build();
                     self.append(z);
                     var add = OpBuilder.init("llvm.add", self.loc).builder()
-                        .add_operands(&.{ diff, z.getResult(0) })
-                        .add_results(&.{i64t}).build();
+                        .operands(&.{ diff, z.getResult(0) })
+                        .results(&.{i64t}).build();
                     self.append(add);
                     const len64 = add.getResult(0);
 
@@ -2895,20 +2763,20 @@ pub const MlirCodegen = struct {
                 }
 
                 // Indexing into a slice value (in-SSA): extract ptr and load *(ptr+idx)
-                if (!self.isLlvmPtr(base.getType()) and (store.getKind(base_sr_ty) == .Slice or store.getKind(base_sr_ty) == .DynArray) and res_sr_kind != .Slice) {
+                if (!self.isLlvmPtr(base.getType()) and (self.context.type_store.getKind(base_sr_ty) == .Slice or self.context.type_store.getKind(base_sr_ty) == .DynArray) and res_sr_kind != .Slice) {
                     const elem_mlir = res_ty; // result type is the element type
-                    const ptr0 = switch (store.getKind(base_sr_ty)) {
+                    const ptr0 = switch (self.context.type_store.getKind(base_sr_ty)) {
                         .Slice => self.extractAt(base, self.llvm_ptr_ty, &.{0}),
                         .DynArray => ptr_case: {
-                            const elem_ptr_ty = try self.llvmTypeOf(store, store.mkPtr(store.get(.DynArray, base_sr_ty).elem, false));
+                            const elem_ptr_ty = try self.llvmTypeOf(self.context.type_store.mkPtr(self.context.type_store.get(.DynArray, base_sr_ty).elem, false));
                             break :ptr_case self.extractAt(base, elem_ptr_ty, &.{0});
                         },
                         else => unreachable,
                     };
                     const vptr = try self.emitGep(ptr0, elem_mlir, &.{.{ .Value = p.index }});
                     var ld = OpBuilder.init("llvm.load", self.loc).builder()
-                        .add_operands(&.{vptr})
-                        .add_results(&.{res_ty}).build();
+                        .operands(&.{vptr})
+                        .results(&.{res_ty}).build();
                     self.append(ld);
                     break :blk ld.getResult(0);
                 }
@@ -2916,8 +2784,8 @@ pub const MlirCodegen = struct {
                 if (self.isLlvmPtr(base.getType())) {
                     const vptr = try self.emitGep(base, res_ty, &.{.{ .Value = p.index }});
                     var ld = OpBuilder.init("llvm.load", self.loc).builder()
-                        .add_operands(&.{vptr})
-                        .add_results(&.{res_ty}).build();
+                        .operands(&.{vptr})
+                        .results(&.{res_ty}).build();
                     self.append(ld);
                     break :blk ld.getResult(0);
                 } else {
@@ -2926,8 +2794,8 @@ pub const MlirCodegen = struct {
                     const tmp_ptr = self.spillAgg(base, base_ty, 0);
                     const vptr = try self.emitGep(tmp_ptr, res_ty, &.{.{ .Value = p.index }});
                     var ld = OpBuilder.init("llvm.load", self.loc).builder()
-                        .add_operands(&.{vptr})
-                        .add_results(&.{res_ty}).build();
+                        .operands(&.{vptr})
+                        .results(&.{res_ty}).build();
                     self.append(ld);
                     break :blk ld.getResult(0);
                 }
@@ -2941,7 +2809,7 @@ pub const MlirCodegen = struct {
                 const c = self.value_map.get(p.cond).?;
                 const tv = self.value_map.get(p.then_value).?;
                 const ev = self.value_map.get(p.else_value).?;
-                const ty = try self.llvmTypeOf(store, p.ty);
+                const ty = try self.llvmTypeOf(p.ty);
                 break :blk self.arithSelect(c, tv, ev, ty);
             },
 
@@ -2958,7 +2826,7 @@ pub const MlirCodegen = struct {
                     ops[i + 1] = self.value_map.get(vid).?;
                 }
 
-                const ret_ty = try self.llvmTypeOf(store, p.ty);
+                const ret_ty = try self.llvmTypeOf(p.ty);
                 const has_res = !ret_ty.equal(self.void_ty);
 
                 var callAttrsList = ArrayList(mlir.NamedAttribute).init(self.gpa);
@@ -2970,8 +2838,8 @@ pub const MlirCodegen = struct {
                 try callAttrsList.append(self.named("op_bundle_sizes", mlir.Attribute.denseI32ArrayGet(self.mlir_ctx, &[_]i32{})));
 
                 var call = OpBuilder.init("llvm.call", self.loc).builder()
-                    .add_operands(ops)
-                    .add_results(if (has_res) &.{ret_ty} else &.{}).add_attributes(callAttrsList.items)
+                    .operands(ops)
+                    .results(if (has_res) &.{ret_ty} else &.{}).attributes(callAttrsList.items)
                     .build();
                 self.append(call);
                 break :blk if (has_res) call.getResult(0) else mlir.Value.empty();
@@ -2996,10 +2864,10 @@ pub const MlirCodegen = struct {
                         }
                     }
                     if (is_local) {
-                        _ = try self.ensureDeclFromCall(ins_id, t, store);
+                        _ = try self.ensureDeclFromCall(ins_id, t);
                         finfo = self.func_syms.get(callee_name);
                     } else {
-                        finfo = try self.ensureFuncDeclFromCall(ins_id, t, store);
+                        finfo = try self.ensureFuncDeclFromCall(ins_id, t);
                     }
                 }
 
@@ -3017,12 +2885,12 @@ pub const MlirCodegen = struct {
                 }
 
                 const want_res_sr = p.ty;
-                const want_kind = store.getKind(want_res_sr);
+                const want_kind = self.context.type_store.getKind(want_res_sr);
                 const want_no_result = switch (want_kind) {
                     .Void, .Noreturn => true,
                     else => false,
                 };
-                const want_res_mlir = try self.llvmTypeOf(store, want_res_sr);
+                const want_res_mlir = try self.llvmTypeOf(want_res_sr);
                 const want_has_res = !want_no_result and !self.void_ty.equal(want_res_mlir);
 
                 if (!isExternLL) {
@@ -3031,9 +2899,9 @@ pub const MlirCodegen = struct {
                         self.named("callee", mlir.Attribute.flatSymbolRefAttrGet(self.mlir_ctx, mlir.StringRef.from(callee_name))),
                     };
                     var call = OpBuilder.init("func.call", self.loc).builder()
-                        .add_operands(src_vals)
-                        .add_results(if (want_has_res) &.{want_res_mlir} else &.{})
-                        .add_attributes(&attrs)
+                        .operands(src_vals)
+                        .results(if (want_has_res) &.{want_res_mlir} else &.{})
+                        .attributes(&attrs)
                         .build();
                     self.append(call);
                     break :blk if (want_has_res) call.getResult(0) else mlir.Value.empty();
@@ -3044,7 +2912,7 @@ pub const MlirCodegen = struct {
                 // Handle sret (if any): if return is IndirectSRet, first argument becomes out pointer.
                 var retClass: abi.AbiClass = undefined;
                 if (!want_no_result) {
-                    retClass = abi.abiClassifyX64SysV(self, store, want_res_sr, true);
+                    retClass = abi.abiClassifyX64SysV(self, want_res_sr, true);
                 }
 
                 var lowered_ops = ArrayList(mlir.Value).init(self.gpa);
@@ -3064,23 +2932,23 @@ pub const MlirCodegen = struct {
                 // Lower each argument
                 for (src_vals, 0..) |v, i| {
                     const sr = src_sr[i];
-                    const cls = abi.abiClassifyX64SysV(self, store, sr, false);
+                    const cls = abi.abiClassifyX64SysV(self, sr, false);
 
                     switch (cls.kind) {
                         .IndirectByVal => {
-                            // build a temp, store agg, pass pointer
-                            const stTy = try self.llvmTypeOf(store, sr);
+                            // build a temp agg, pass pointer
+                            const stTy = try self.llvmTypeOf(sr);
                             const tmp = self.spillAgg(v, stTy, cls.alignment);
                             var passv = tmp;
                             if (formal_index < finfo.?.param_types.len) {
                                 const want_ty = finfo.?.param_types[formal_index];
-                                passv = try self.ensureCallArgType(store, passv, sr, want_ty);
+                                passv = try self.ensureCallArgType(passv, sr, want_ty);
                             }
                             lowered_ops.append(passv) catch unreachable;
                             formal_index += 1;
                         },
                         .DirectScalar => {
-                            const stTy = try self.llvmTypeOf(store, sr);
+                            const stTy = try self.llvmTypeOf(sr);
                             var passv: mlir.Value = undefined;
                             if (!stTy.isAInteger() and !stTy.isAFloat() and !stTy.isAVector()) {
                                 // aggregate -> pack
@@ -3090,8 +2958,8 @@ pub const MlirCodegen = struct {
                                     passv = self.loadIntAt(tmp, bits, 0);
                                 } else {
                                     var ld = OpBuilder.init("llvm.load", self.loc).builder()
-                                        .add_operands(&.{tmp})
-                                        .add_results(&.{cls.scalar0.?}).build();
+                                        .operands(&.{tmp})
+                                        .results(&.{cls.scalar0.?}).build();
                                     self.append(ld);
                                     passv = ld.getResult(0);
                                 }
@@ -3102,13 +2970,13 @@ pub const MlirCodegen = struct {
                                 finfo.?.param_types[formal_index]
                             else
                                 passv.getType();
-                            passv = try self.ensureCallArgType(store, passv, sr, want_ty);
+                            passv = try self.ensureCallArgType(passv, sr, want_ty);
                             lowered_ops.append(passv) catch unreachable;
                             formal_index += 1;
                         },
                         .DirectPair => {
                             // spill -> load lo i64, hi iN
-                            const stTy = try self.llvmTypeOf(store, sr);
+                            const stTy = try self.llvmTypeOf(sr);
                             const tmp = self.spillAgg(v, stTy, 1);
                             const lo = self.loadIntAt(tmp, 64, 0);
                             const hibits = cls.scalar1.?.getIntegerBitwidth();
@@ -3116,12 +2984,12 @@ pub const MlirCodegen = struct {
                             var lo_cast = lo;
                             if (formal_index < finfo.?.param_types.len) {
                                 const want0 = finfo.?.param_types[formal_index];
-                                lo_cast = try self.ensureCallArgType(store, lo_cast, sr, want0);
+                                lo_cast = try self.ensureCallArgType(lo_cast, sr, want0);
                             }
                             var hi_cast = hi;
                             if (formal_index + 1 < finfo.?.param_types.len) {
                                 const want1 = finfo.?.param_types[formal_index + 1];
-                                hi_cast = try self.ensureCallArgType(store, hi_cast, sr, want1);
+                                hi_cast = try self.ensureCallArgType(hi_cast, sr, want1);
                             }
                             lowered_ops.append(lo_cast) catch unreachable;
                             lowered_ops.append(hi_cast) catch unreachable;
@@ -3146,14 +3014,14 @@ pub const MlirCodegen = struct {
                     callAttrsList.append(self.named("var_callee_type", func_ty)) catch unreachable;
                 }
                 var call = OpBuilder.init("llvm.call", self.loc).builder()
-                    .add_operands(lowered_ops.items)
-                    .add_results(if (want_no_result)
+                    .operands(lowered_ops.items)
+                    .results(if (want_no_result)
                         &.{}
                     else if (retClass.kind == .IndirectSRet)
                         &.{}
                     else
                         &.{finfo.?.ret_type})
-                    .add_attributes(callAttrsList.items)
+                    .attributes(callAttrsList.items)
                     .build();
                 self.append(call);
 
@@ -3164,8 +3032,8 @@ pub const MlirCodegen = struct {
                     .IndirectSRet => {
                         // load structural result from retbuf
                         var ld = OpBuilder.init("llvm.load", self.loc).builder()
-                            .add_operands(&.{retbuf})
-                            .add_results(&.{want_res_mlir}).build();
+                            .operands(&.{retbuf})
+                            .results(&.{want_res_mlir}).build();
                         self.append(ld);
                         break :blk ld.getResult(0);
                     },
@@ -3175,7 +3043,7 @@ pub const MlirCodegen = struct {
                         if (want_res_mlir.isAInteger() or want_res_mlir.isAFloat() or want_res_mlir.isAVector()) {
                             var coerced = rv;
                             if (!rv.getType().equal(want_res_mlir)) {
-                                coerced = try self.ensureCallArgType(store, rv, want_res_sr, want_res_mlir);
+                                coerced = try self.ensureCallArgType(rv, want_res_sr, want_res_mlir);
                             }
                             break :blk coerced;
                         }
@@ -3183,8 +3051,8 @@ pub const MlirCodegen = struct {
                         const tmp = self.spillAgg(self.undefOf(want_res_mlir), want_res_mlir, 1);
                         self.storeAt(tmp, rv, 0);
                         var ld2 = OpBuilder.init("llvm.load", self.loc).builder()
-                            .add_operands(&.{tmp})
-                            .add_results(&.{want_res_mlir}).build();
+                            .operands(&.{tmp})
+                            .results(&.{want_res_mlir}).build();
                         self.append(ld2);
                         break :blk ld2.getResult(0);
                     },
@@ -3195,15 +3063,15 @@ pub const MlirCodegen = struct {
                         const hiTy = retClass.scalar1.?;
                         // extract pieces
                         var ex0 = OpBuilder.init("llvm.extractvalue", self.loc).builder()
-                            .add_operands(&.{rv})
-                            .add_results(&.{loTy})
-                            .add_attributes(&.{self.named("position", mlir.Attribute.denseI64ArrayGet(self.mlir_ctx, &[_]i64{0}))})
+                            .operands(&.{rv})
+                            .results(&.{loTy})
+                            .attributes(&.{self.named("position", mlir.Attribute.denseI64ArrayGet(self.mlir_ctx, &[_]i64{0}))})
                             .build();
                         self.append(ex0);
                         var ex1 = OpBuilder.init("llvm.extractvalue", self.loc).builder()
-                            .add_operands(&.{rv})
-                            .add_results(&.{hiTy})
-                            .add_attributes(&.{self.named("position", mlir.Attribute.denseI64ArrayGet(self.mlir_ctx, &[_]i64{1}))})
+                            .operands(&.{rv})
+                            .results(&.{hiTy})
+                            .attributes(&.{self.named("position", mlir.Attribute.denseI64ArrayGet(self.mlir_ctx, &[_]i64{1}))})
                             .build();
                         self.append(ex1);
                         // write into tmp at offsets 0 and 8, then reload as structural
@@ -3211,8 +3079,8 @@ pub const MlirCodegen = struct {
                         self.storeAt(tmp, ex0.getResult(0), 0);
                         self.storeAt(tmp, ex1.getResult(0), 8);
                         var ld3 = OpBuilder.init("llvm.load", self.loc).builder()
-                            .add_operands(&.{tmp})
-                            .add_results(&.{want_res_mlir}).build();
+                            .operands(&.{tmp})
+                            .results(&.{want_res_mlir}).build();
                         self.append(ld3);
                         break :blk ld3.getResult(0);
                     },
@@ -3230,7 +3098,7 @@ pub const MlirCodegen = struct {
 
                 const arg_vids = t.instrs.value_pool.slice(p.args);
                 if (mlir_kind == .Operation) {
-                    const result_ty = if (p.result.isNone()) self.void_ty else try self.llvmTypeOf(store, p.ty);
+                    const result_ty = if (p.result.isNone()) self.void_ty else try self.llvmTypeOf(p.ty);
                     const value = try self.emitInlineMlirOperation(mlir_template, arg_vids, result_ty, p.loc);
                     if (p.result.isNone()) {
                         break :blk mlir.Value.empty();
@@ -3569,9 +3437,9 @@ pub const MlirCodegen = struct {
             self.named("callee", mlir.Attribute.flatSymbolRefAttrGet(self.mlir_ctx, mlir.StringRef.from(func_name_buf))),
         };
         var call = OpBuilder.init("func.call", self.loc).builder()
-            .add_operands(arg_values.items)
-            .add_results(if (has_result) &.{result_ty} else &.{}) //
-            .add_attributes(&attrs)
+            .operands(arg_values.items)
+            .results(if (has_result) &.{result_ty} else &.{}) //
+            .attributes(&attrs)
             .build();
         self.append(call);
 
@@ -3589,35 +3457,34 @@ pub const MlirCodegen = struct {
         pred_f: []const u8, // for floats        (oeq, one, olt, ole, ogt, oge, ...)
         p: tir.Rows.Bin2,
         t: *const tir.TIR,
-        store: *types.TypeStore,
     ) !mlir.Value {
         const lhs = self.value_map.get(p.lhs).?;
         const rhs = self.value_map.get(p.rhs).?;
 
         if (self.isFloat(lhs.getType())) {
             var op = OpBuilder.init("arith.cmpf", self.loc).builder()
-                .add_operands(&.{ lhs, rhs })
-                .add_results(&.{self.i1_ty})
-                .add_attributes(&.{self.named("predicate", self.arithCmpFPredAttr(pred_f))})
+                .operands(&.{ lhs, rhs })
+                .results(&.{self.i1_ty})
+                .attributes(&.{self.named("predicate", self.arithCmpFPredAttr(pred_f))})
                 .build();
             self.append(op);
             return op.getResult(0);
         } else {
             // Integers (signless). Signedness is semantic and comes from SR type.
-            const unsigned = self.isUnsigned(store, self.srTypeOfValue(t, p.lhs));
+            const unsigned = self.isUnsigned(self.srTypeOfValue(t, p.lhs));
             const pred = if (unsigned) pred_u else pred_s;
 
             var op = OpBuilder.init("arith.cmpi", self.loc).builder()
-                .add_operands(&.{ lhs, rhs })
-                .add_results(&.{self.i1_ty})
-                .add_attributes(&.{self.named("predicate", self.arithCmpIPredAttr(pred))})
+                .operands(&.{ lhs, rhs })
+                .results(&.{self.i1_ty})
+                .attributes(&.{self.named("predicate", self.arithCmpIPredAttr(pred))})
                 .build();
             self.append(op);
             return op.getResult(0);
         }
     }
 
-    fn emitTerminator(self: *MlirCodegen, term_id: tir.TermId, t: *const tir.TIR, _: *types.TypeStore) !void {
+    fn emitTerminator(self: *MlirCodegen, term_id: tir.TermId, t: *const tir.TIR) !void {
         const kind = t.terms.index.kinds.items[term_id.toRaw()];
 
         switch (kind) {
@@ -3639,12 +3506,12 @@ pub const MlirCodegen = struct {
                         if (ret_ty.equal(self.void_ty)) {
                             retop = OpBuilder.init("llvm.return", self.loc).builder().build();
                         } else {
-                            retop = OpBuilder.init("llvm.return", self.loc).builder().add_operands(&.{v}).build();
+                            retop = OpBuilder.init("llvm.return", self.loc).builder().operands(&.{v}).build();
                         }
                     } else {
                         if (!ret_ty.equal(self.void_ty)) {
                             const z = self.zeroOf(ret_ty);
-                            retop = OpBuilder.init("llvm.return", self.loc).builder().add_operands(&.{z}).build();
+                            retop = OpBuilder.init("llvm.return", self.loc).builder().operands(&.{z}).build();
                         } else {
                             retop = OpBuilder.init("llvm.return", self.loc).builder().build();
                         }
@@ -3656,13 +3523,13 @@ pub const MlirCodegen = struct {
                     if (self.ret_has_value) {
                         const v = if (!p.value.isNone()) (self.value_map.get(p.value.unwrap()) orelse self.zeroOf(ret_ty)) else self.zeroOf(ret_ty);
                         const br = OpBuilder.init("cf.br", self.loc).builder()
-                            .add_operands(&.{v})
-                            .add_successors(&.{dest})
+                            .operands(&.{v})
+                            .successors(&.{dest})
                             .build();
                         self.append(br);
                     } else {
                         const br = OpBuilder.init("cf.br", self.loc).builder()
-                            .add_successors(&.{dest})
+                            .successors(&.{dest})
                             .build();
                         self.append(br);
                     }
@@ -3685,8 +3552,8 @@ pub const MlirCodegen = struct {
                 for (args, 0..) |avid, i| argv[i] = self.value_map.get(avid).?;
 
                 const br = OpBuilder.init("cf.br", self.loc).builder()
-                    .add_operands(argv)
-                    .add_successors(&.{dest})
+                    .operands(argv)
+                    .successors(&.{dest})
                     .build();
                 self.append(br);
             },
@@ -3724,9 +3591,9 @@ pub const MlirCodegen = struct {
                 const seg = mlir.Attribute.denseI32ArrayGet(self.mlir_ctx, &[_]i32{ 1, @intCast(tbuf.len), @intCast(ebuf.len) });
 
                 const br = OpBuilder.init("cf.cond_br", self.loc).builder()
-                    .add_operands(ops)
-                    .add_successors(&.{ tdest, edest })
-                    .add_attributes(&.{self.named("operand_segment_sizes", seg)})
+                    .operands(ops)
+                    .successors(&.{ tdest, edest })
+                    .attributes(&.{self.named("operand_segment_sizes", seg)})
                     .build();
                 self.append(br);
             },
@@ -3745,9 +3612,9 @@ pub const MlirCodegen = struct {
         }
     }
 
-    fn tryEmitTensorGep(self: *MlirCodegen, ins_id: tir.InstrId, t: *const tir.TIR, store: *types.TypeStore) !?mlir.Value {
+    fn tryEmitTensorGep(self: *MlirCodegen, ins_id: tir.InstrId, t: *const tir.TIR) !?mlir.Value {
         const p = t.instrs.get(.Gep, ins_id);
-        if (store.getKind(p.ty) != .Ptr) return null;
+        if (self.context.type_store.getKind(p.ty) != .Ptr) return null;
 
         const base_vid = p.base;
         var root_ptr: ?tir.ValueId = null;
@@ -3764,9 +3631,9 @@ pub const MlirCodegen = struct {
 
         const root = root_ptr.?;
         const root_sr = self.srTypeOfValue(t, root);
-        if (store.getKind(root_sr) != .Ptr) return null;
-        const root_elem = store.get(.Ptr, root_sr).elem;
-        if (store.getKind(root_elem) != .Tensor) return null;
+        if (self.context.type_store.getKind(root_sr) != .Ptr) return null;
+        const root_elem = self.context.type_store.get(.Ptr, root_sr).elem;
+        if (self.context.type_store.getKind(root_elem) != .Tensor) return null;
 
         const index_ids = t.instrs.gep_pool.slice(p.indices);
         const combined = try self.combineTensorIndexIds(t, base_indices, index_ids);
@@ -3775,7 +3642,7 @@ pub const MlirCodegen = struct {
         const placeholder = self.llvmNullPtr();
         const info = TensorElemPtrInfo{
             .root_ptr = root,
-            .elem_ty = store.get(.Ptr, p.ty).elem,
+            .elem_ty = self.context.type_store.get(.Ptr, p.ty).elem,
             .indices = combined,
         };
 
@@ -3821,7 +3688,6 @@ pub const MlirCodegen = struct {
     fn buildTensorIndexValues(
         self: *MlirCodegen,
         t: *const tir.TIR,
-        store: *types.TypeStore,
         indices: []const TensorIndex,
     ) ![]mlir.Value {
         if (indices.len == 0) return &[_]mlir.Value{};
@@ -3834,13 +3700,13 @@ pub const MlirCodegen = struct {
                 .constant => |c| blk: {
                     const attr = mlir.Attribute.integerAttrGet(idx_ty, c);
                     var op = OpBuilder.init("arith.constant", self.loc).builder()
-                        .add_results(&.{idx_ty})
-                        .add_attributes(&.{self.named("value", attr)}).build();
+                        .results(&.{idx_ty})
+                        .attributes(&.{self.named("value", attr)}).build();
                     self.append(op);
                     break :blk op.getResult(0);
                 },
                 .value => |vid| blk: {
-                    const raw = try self.ensureValue(t, store, vid);
+                    const raw = try self.ensureValue(t, vid);
                     break :blk try self.ensureIndexValue(raw);
                 },
             };
@@ -3848,10 +3714,10 @@ pub const MlirCodegen = struct {
         return out;
     }
 
-    fn ensureValue(self: *MlirCodegen, t: *const tir.TIR, store: *types.TypeStore, vid: tir.ValueId) anyerror!mlir.Value {
+    fn ensureValue(self: *MlirCodegen, t: *const tir.TIR, vid: tir.ValueId) anyerror!mlir.Value {
         if (self.value_map.get(vid)) |v| return v;
         if (self.def_instr.get(vid)) |iid| {
-            return try self.emitInstr(iid, t, store);
+            return try self.emitInstr(iid, t);
         }
         return error.CompileError;
     }
@@ -3861,19 +3727,18 @@ pub const MlirCodegen = struct {
         p: tir.Rows.Store,
         value: mlir.Value,
         t: *const tir.TIR,
-        store: *types.TypeStore,
     ) !bool {
         if (self.tensor_elem_ptrs.get(p.ptr)) |info| {
-            if (store.getKind(info.elem_ty) == .Tensor) return false;
+            if (self.context.type_store.getKind(info.elem_ty) == .Tensor) return false;
             const tensor_sr = self.srTypeOfValue(t, info.root_ptr);
-            if (store.getKind(tensor_sr) != .Ptr) return false;
-            const tensor_ty = store.get(.Ptr, tensor_sr).elem;
-            const tensor_mlir_ty = try self.llvmTypeOf(store, tensor_ty);
+            if (self.context.type_store.getKind(tensor_sr) != .Ptr) return false;
+            const tensor_ty = self.context.type_store.get(.Ptr, tensor_sr).elem;
+            const tensor_mlir_ty = try self.llvmTypeOf(tensor_ty);
             var base_val = self.tensor_slots.get(info.root_ptr) orelse mlir.Value.empty();
             if (base_val.isNull()) base_val = self.zeroOf(tensor_mlir_ty);
-            const index_vals = try self.buildTensorIndexValues(t, store, info.indices);
+            const index_vals = try self.buildTensorIndexValues(t, info.indices);
             defer if (index_vals.len != 0) self.gpa.free(index_vals);
-            const new_tensor = try self.tensorInsertScalar(tensor_ty, info.elem_ty, base_val, value, index_vals, store);
+            const new_tensor = try self.tensorInsertScalar(tensor_ty, info.elem_ty, base_val, value, index_vals);
             try self.tensor_slots.put(info.root_ptr, new_tensor);
             return true;
         }
@@ -3884,19 +3749,18 @@ pub const MlirCodegen = struct {
         self: *MlirCodegen,
         p: tir.Rows.Load,
         t: *const tir.TIR,
-        store: *types.TypeStore,
     ) !?mlir.Value {
         if (self.tensor_elem_ptrs.get(p.ptr)) |info| {
-            if (store.getKind(info.elem_ty) == .Tensor) return null;
+            if (self.context.type_store.getKind(info.elem_ty) == .Tensor) return null;
             const tensor_sr = self.srTypeOfValue(t, info.root_ptr);
-            if (store.getKind(tensor_sr) != .Ptr) return null;
-            const tensor_ty = store.get(.Ptr, tensor_sr).elem;
-            const tensor_mlir_ty = try self.llvmTypeOf(store, tensor_ty);
+            if (self.context.type_store.getKind(tensor_sr) != .Ptr) return null;
+            const tensor_ty = self.context.type_store.get(.Ptr, tensor_sr).elem;
+            const tensor_mlir_ty = try self.llvmTypeOf(tensor_ty);
             var base_val = self.tensor_slots.get(info.root_ptr) orelse mlir.Value.empty();
             if (base_val.isNull()) base_val = self.zeroOf(tensor_mlir_ty);
-            const index_vals = try self.buildTensorIndexValues(t, store, info.indices);
+            const index_vals = try self.buildTensorIndexValues(t, info.indices);
             defer if (index_vals.len != 0) self.gpa.free(index_vals);
-            const elem_val = try self.tensorExtractScalar(info.elem_ty, base_val, index_vals, store);
+            const elem_val = try self.tensorExtractScalar(info.elem_ty, base_val, index_vals);
             return elem_val;
         }
         return null;
@@ -3909,18 +3773,17 @@ pub const MlirCodegen = struct {
         base_tensor: mlir.Value,
         elem_value: mlir.Value,
         indices: []const mlir.Value,
-        store: *types.TypeStore,
     ) !mlir.Value {
         _ = elem_ty;
-        const tensor_mlir = try self.llvmTypeOf(store, tensor_ty);
+        const tensor_mlir = try self.llvmTypeOf(tensor_ty);
         var ops = try self.gpa.alloc(mlir.Value, 2 + indices.len);
         defer self.gpa.free(ops);
         ops[0] = elem_value;
         ops[1] = base_tensor;
         if (indices.len != 0) std.mem.copyForwards(mlir.Value, ops[2..], indices);
         var insert = OpBuilder.init("tensor.insert", self.loc).builder()
-            .add_operands(ops)
-            .add_results(&.{tensor_mlir}).build();
+            .operands(ops)
+            .results(&.{tensor_mlir}).build();
         self.append(insert);
         return insert.getResult(0);
     }
@@ -3930,16 +3793,15 @@ pub const MlirCodegen = struct {
         elem_ty: types.TypeId,
         base_tensor: mlir.Value,
         indices: []const mlir.Value,
-        store: *types.TypeStore,
     ) !mlir.Value {
-        const elem_mlir = try self.llvmTypeOf(store, elem_ty);
+        const elem_mlir = try self.llvmTypeOf(elem_ty);
         var ops = try self.gpa.alloc(mlir.Value, 1 + indices.len);
         defer self.gpa.free(ops);
         ops[0] = base_tensor;
         if (indices.len != 0) std.mem.copyForwards(mlir.Value, ops[1..], indices);
         var extract = OpBuilder.init("tensor.extract", self.loc).builder()
-            .add_operands(ops)
-            .add_results(&.{elem_mlir}).build();
+            .operands(ops)
+            .results(&.{elem_mlir}).build();
         self.append(extract);
         return extract.getResult(0);
     }
@@ -3975,9 +3837,9 @@ pub const MlirCodegen = struct {
         for (dyn[0..ndyn], 0..) |v, i| ops[1 + i] = v;
 
         var op = OpBuilder.init("llvm.getelementptr", self.loc).builder()
-            .add_operands(ops)
-            .add_results(&.{self.llvm_ptr_ty})
-            .add_attributes(&.{
+            .operands(ops)
+            .results(&.{self.llvm_ptr_ty})
+            .attributes(&.{
                 self.named("elem_type", mlir.Attribute.typeAttrGet(elem_ty)),
 
                 self.named("rawConstantIndices", mlir.Attribute.denseI32ArrayGet(self.mlir_ctx, raw)),
@@ -4006,8 +3868,8 @@ pub const MlirCodegen = struct {
     }
 
     // Pick signedness from SR type; default to signed if unknown.
-    fn isSrcSigned(self: *MlirCodegen, store: *types.TypeStore, sr_ty: types.TypeId) bool {
-        return self.isSignedInt(store, sr_ty);
+    fn isSrcSigned(self: *MlirCodegen, sr_ty: types.TypeId) bool {
+        return self.isSignedInt(sr_ty);
     }
     fn arithCmpIPredAttr(self: *MlirCodegen, pred: []const u8) mlir.Attribute {
         const val: i64 = if (std.mem.eql(u8, pred, "eq")) 0 else if (std.mem.eql(u8, pred, "ne")) 1 else if (std.mem.eql(u8, pred, "slt")) 2 else if (std.mem.eql(u8, pred, "sle")) 3 else if (std.mem.eql(u8, pred, "sgt")) 4 else if (std.mem.eql(u8, pred, "sge")) 5 else if (std.mem.eql(u8, pred, "ult")) 6 else if (std.mem.eql(u8, pred, "ule")) 7 else if (std.mem.eql(u8, pred, "ugt")) 8 else if (std.mem.eql(u8, pred, "uge")) 9 else unreachable;
@@ -4071,13 +3933,13 @@ pub const MlirCodegen = struct {
             }
             const dense = mlir.Attribute.denseElementsAttrSplatGet(ty, elem_zero);
             var const_op = OpBuilder.init("arith.constant", self.loc).builder()
-                .add_results(&.{ty})
-                .add_attributes(&.{self.named("value", dense)}).build();
+                .results(&.{ty})
+                .attributes(&.{self.named("value", dense)}).build();
             self.append(const_op);
             return const_op.getResult(0);
         }
         var op = OpBuilder.init("llvm.mlir.zero", self.loc).builder()
-            .add_results(&.{ty})
+            .results(&.{ty})
             .build();
         self.append(op);
         return op.getResult(0);
@@ -4088,8 +3950,8 @@ pub const MlirCodegen = struct {
         if (value.getType().equal(idx_ty)) return value;
         if (value.getType().isAInteger()) {
             var cast = OpBuilder.init("arith.index_cast", self.loc).builder()
-                .add_operands(&.{value})
-                .add_results(&.{idx_ty}).build();
+                .operands(&.{value})
+                .results(&.{idx_ty}).build();
             self.append(cast);
             return cast.getResult(0);
         }
@@ -4099,8 +3961,8 @@ pub const MlirCodegen = struct {
     fn llvmConstI64(self: *MlirCodegen, x: i64) mlir.Value {
         const val = mlir.Attribute.integerAttrGet(self.i64_ty, x);
         var op = OpBuilder.init("llvm.mlir.constant", self.loc).builder()
-            .add_results(&.{self.i64_ty})
-            .add_attributes(&.{self.named("value", val)}).build();
+            .results(&.{self.i64_ty})
+            .attributes(&.{self.named("value", val)}).build();
         self.append(op);
         return op.getResult(0);
     }
@@ -4108,8 +3970,8 @@ pub const MlirCodegen = struct {
         const ty = mlir.Type.getSignlessIntegerType(self.mlir_ctx, 32);
         const val = mlir.Attribute.integerAttrGet(ty, x);
         var op = OpBuilder.init("llvm.mlir.constant", self.loc).builder()
-            .add_results(&.{ty})
-            .add_attributes(&.{self.named("value", val)}).build();
+            .results(&.{ty})
+            .attributes(&.{self.named("value", val)}).build();
         self.append(op);
         return op.getResult(0);
     }
@@ -4117,15 +3979,15 @@ pub const MlirCodegen = struct {
         // Create a null pointer via constant integer 0 casted to ptr
         const zero = self.llvmConstI64(0);
         var op = OpBuilder.init("llvm.inttoptr", self.loc).builder()
-            .add_operands(&.{zero})
-            .add_results(&.{self.llvm_ptr_ty}).build();
+            .operands(&.{zero})
+            .results(&.{self.llvm_ptr_ty}).build();
         self.append(op);
         return op.getResult(0);
     }
 
     fn undefOf(self: *MlirCodegen, ty: mlir.Type) mlir.Value {
         var op = OpBuilder.init("llvm.mlir.undef", self.loc).builder()
-            .add_results(&.{ty}).build();
+            .results(&.{ty}).build();
         self.append(op);
         return op.getResult(0);
     }
@@ -4135,9 +3997,9 @@ pub const MlirCodegen = struct {
         const pos_attr = mlir.Attribute.denseI64ArrayGet(self.mlir_ctx, pos);
         var op = OpBuilder.init("llvm.insertvalue", self.loc).builder()
             // Builder expects (container, value)
-            .add_operands(&.{ agg, val })
-            .add_results(&.{agg.getType()})
-            .add_attributes(&.{self.named("position", pos_attr)})
+            .operands(&.{ agg, val })
+            .results(&.{agg.getType()})
+            .attributes(&.{self.named("position", pos_attr)})
             .build();
         self.append(op);
         return op.getResult(0);
@@ -4148,17 +4010,17 @@ pub const MlirCodegen = struct {
         // invalid extractvalue-on-pointer and matches our opaque-pointer lowering model.
         if (mlir.LLVM.isLLVMPointerType(agg.getType())) {
             var ld = OpBuilder.init("llvm.load", self.loc).builder()
-                .add_operands(&.{agg})
-                .add_results(&.{res_ty})
+                .operands(&.{agg})
+                .results(&.{res_ty})
                 .build();
             self.append(ld);
             return ld.getResult(0);
         }
         const pos_attr = mlir.Attribute.denseI64ArrayGet(self.mlir_ctx, pos);
         var op = OpBuilder.init("llvm.extractvalue", self.loc).builder()
-            .add_operands(&.{agg})
-            .add_results(&.{res_ty})
-            .add_attributes(&.{self.named("position", pos_attr)})
+            .operands(&.{agg})
+            .results(&.{res_ty})
+            .attributes(&.{self.named("position", pos_attr)})
             .build();
         self.append(op);
         return op.getResult(0);
@@ -4177,12 +4039,12 @@ pub const MlirCodegen = struct {
         const attrs = attrs_buf[0..n_attrs];
         // one element
         var a = OpBuilder.init("llvm.alloca", self.loc).builder()
-            .add_operands(&.{self.llvmConstI64(1)})
-            .add_results(&.{self.llvm_ptr_ty})
-            .add_attributes(attrs).build();
+            .operands(&.{self.llvmConstI64(1)})
+            .results(&.{self.llvm_ptr_ty})
+            .attributes(attrs).build();
         self.append(a);
         const st = OpBuilder.init("llvm.store", self.loc).builder()
-            .add_operands(&.{ aggVal, a.getResult(0) }).build();
+            .operands(&.{ aggVal, a.getResult(0) }).build();
         self.append(st);
         return a.getResult(0);
     }
@@ -4194,9 +4056,9 @@ pub const MlirCodegen = struct {
         if (offset != 0) {
             const offv = self.constInt(self.i64_ty, @intCast(offset));
             var gep = OpBuilder.init("llvm.getelementptr", self.loc).builder()
-                .add_operands(&.{ base, offv })
-                .add_results(&.{self.llvm_ptr_ty})
-                .add_attributes(&.{
+                .operands(&.{ base, offv })
+                .results(&.{self.llvm_ptr_ty})
+                .attributes(&.{
                     self.named("elem_type", mlir.Attribute.typeAttrGet(self.i8_ty)),
                     self.named("rawConstantIndices", mlir.Attribute.denseI32ArrayGet(self.mlir_ctx, &[_]i32{std.math.minInt(i32)})),
                 }) // byte-wise GEP with dynamic index marker
@@ -4205,8 +4067,8 @@ pub const MlirCodegen = struct {
             p = gep.getResult(0);
         }
         var ld = OpBuilder.init("llvm.load", self.loc).builder()
-            .add_operands(&.{p})
-            .add_results(&.{ity}).build();
+            .operands(&.{p})
+            .results(&.{ity}).build();
         self.append(ld);
         return ld.getResult(0);
     }
@@ -4217,9 +4079,9 @@ pub const MlirCodegen = struct {
         if (offset != 0) {
             const offv = self.constInt(self.i64_ty, @intCast(offset));
             var gep = OpBuilder.init("llvm.getelementptr", self.loc).builder()
-                .add_operands(&.{ base, offv })
-                .add_results(&.{self.llvm_ptr_ty})
-                .add_attributes(&.{
+                .operands(&.{ base, offv })
+                .results(&.{self.llvm_ptr_ty})
+                .attributes(&.{
                     self.named("elem_type", mlir.Attribute.typeAttrGet(self.i8_ty)),
                     self.named("rawConstantIndices", mlir.Attribute.denseI32ArrayGet(self.mlir_ctx, &[_]i32{std.math.minInt(i32)})),
                 })
@@ -4228,14 +4090,14 @@ pub const MlirCodegen = struct {
             p = gep.getResult(0);
         }
         const st = OpBuilder.init("llvm.store", self.loc).builder()
-            .add_operands(&.{ val, p }).build();
+            .operands(&.{ val, p }).build();
         self.append(st);
     }
 
     fn constInt(self: *MlirCodegen, ty: mlir.Type, v: i128) mlir.Value {
         var op = OpBuilder.init("llvm.mlir.constant", self.loc).builder()
-            .add_results(&.{ty})
-            .add_attributes(&.{self.named("value", mlir.Attribute.integerAttrGet(ty, @intCast(v)))}).build();
+            .results(&.{ty})
+            .attributes(&.{self.named("value", mlir.Attribute.integerAttrGet(ty, @intCast(v)))}).build();
         self.append(op);
         return op.getResult(0);
     }
@@ -4243,8 +4105,8 @@ pub const MlirCodegen = struct {
     fn constFloat(self: *MlirCodegen, ty: mlir.Type, v: f64) mlir.Value {
         const attr = mlir.Attribute.floatAttrDoubleGet(self.mlir_ctx, ty, v);
         var op = OpBuilder.init("llvm.mlir.constant", self.loc).builder()
-            .add_results(&.{ty})
-            .add_attributes(&.{self.named("value", attr)}).build();
+            .results(&.{ty})
+            .attributes(&.{self.named("value", attr)}).build();
         self.append(op);
         return op.getResult(0);
     }
@@ -4253,9 +4115,8 @@ pub const MlirCodegen = struct {
         return self.constInt(self.i1_ty, if (v) 1 else 0);
     }
 
-    fn isUnsigned(self: *MlirCodegen, store: *types.TypeStore, ty: types.TypeId) bool {
-        _ = self;
-        return switch (store.getKind(ty)) {
+    fn isUnsigned(self: *MlirCodegen, ty: types.TypeId) bool {
+        return switch (self.context.type_store.getKind(ty)) {
             .U8, .U16, .U32, .U64, .Usize => true,
             else => false,
         };
@@ -4281,11 +4142,10 @@ pub const MlirCodegen = struct {
         intName: []const u8, // caller passes "llvm.add"|"llvm.sub"|"llvm.mul"
         floatName: []const u8, // caller passes "llvm.fadd"|"llvm.fsub"|"llvm.fmul"
         p: tir.Rows.Bin2,
-        store: *types.TypeStore,
     ) !mlir.Value {
         const lhs = self.value_map.get(p.lhs).?;
         const rhs = self.value_map.get(p.rhs).?;
-        const ty = try self.llvmTypeOf(store, p.ty);
+        const ty = try self.llvmTypeOf(p.ty);
         const elem_ty = if (ty.isAVector()) ty.getShapedElementType() else ty;
 
         // Infer which of {add,sub,mul} from the names you already pass.
@@ -4299,8 +4159,8 @@ pub const MlirCodegen = struct {
             (if (is_add) "arith.addi" else if (is_sub) "arith.subi" else "arith.muli");
 
         var op = OpBuilder.init(op_name, self.loc).builder()
-            .add_operands(&.{ lhs, rhs })
-            .add_results(&.{ty})
+            .operands(&.{ lhs, rhs })
+            .results(&.{ty})
             .build();
         self.append(op);
         return op.getResult(0);
@@ -4313,8 +4173,8 @@ pub const MlirCodegen = struct {
         if (from_w >= to_w) return v;
         const opname = if (signed) "arith.extsi" else "arith.extui";
         var op = OpBuilder.init(opname, self.loc).builder()
-            .add_operands(&.{v})
-            .add_results(&.{to_ty}).build();
+            .operands(&.{v})
+            .results(&.{to_ty}).build();
         self.append(op);
         return op.getResult(0);
     }
@@ -4322,11 +4182,10 @@ pub const MlirCodegen = struct {
     fn emitSaturatingIntBinary(
         self: *MlirCodegen,
         p: tir.Rows.Bin2,
-        store: *types.TypeStore,
         arith_name: []const u8,
         rhs_uses_lhs_sign: bool,
     ) !mlir.Value {
-        const kind = store.getKind(p.ty);
+        const kind = self.context.type_store.getKind(p.ty);
         std.debug.assert(switch (kind) {
             .I8, .I16, .I32, .I64, .U8, .U16, .U32, .U64, .Usize => true,
             else => false,
@@ -4334,21 +4193,21 @@ pub const MlirCodegen = struct {
 
         const lhs = self.value_map.get(p.lhs).?;
         const rhs = self.value_map.get(p.rhs).?;
-        const res_ty = try self.llvmTypeOf(store, p.ty);
+        const res_ty = try self.llvmTypeOf(p.ty);
         const base_width = intOrFloatWidth(res_ty) catch unreachable;
         std.debug.assert(base_width > 0);
         const wide_width = base_width * 2;
         const ext_ty = mlir.Type.getSignlessIntegerType(self.mlir_ctx, @intCast(wide_width));
 
-        const lhs_signed = self.isSignedInt(store, p.ty);
+        const lhs_signed = self.isSignedInt(p.ty);
         const rhs_signed = if (rhs_uses_lhs_sign) lhs_signed else false;
 
         const lhs_ext = self.extendIntegerValue(lhs, lhs_signed, ext_ty);
         const rhs_ext = self.extendIntegerValue(rhs, rhs_signed, ext_ty);
 
         var op = OpBuilder.init(arith_name, self.loc).builder()
-            .add_operands(&.{ lhs_ext, rhs_ext })
-            .add_results(&.{ext_ty}).build();
+            .operands(&.{ lhs_ext, rhs_ext })
+            .results(&.{ext_ty}).build();
         self.append(op);
         const wide = op.getResult(0);
         return self.saturateIntToInt(wide, lhs_signed, res_ty, lhs_signed);
@@ -4358,19 +4217,18 @@ pub const MlirCodegen = struct {
         self: *MlirCodegen,
         name_hint: []const u8, // caller passes "llvm.and"|"llvm.or"|"llvm.xor"
         p: tir.Rows.Bin2,
-        store: *types.TypeStore,
     ) !mlir.Value {
         const lhs = self.value_map.get(p.lhs).?;
         const rhs = self.value_map.get(p.rhs).?;
-        const ty = try self.llvmTypeOf(store, p.ty);
+        const ty = try self.llvmTypeOf(p.ty);
 
         const is_and = std.mem.eql(u8, name_hint, "llvm.and");
         const is_or = std.mem.eql(u8, name_hint, "llvm.or");
         const op_name = if (is_and) "arith.andi" else if (is_or) "arith.ori" else "arith.xori";
 
         var op = OpBuilder.init(op_name, self.loc).builder()
-            .add_operands(&.{ lhs, rhs })
-            .add_results(&.{ty})
+            .operands(&.{ lhs, rhs })
+            .results(&.{ty})
             .build();
         self.append(op);
         return op.getResult(0);
@@ -4380,8 +4238,8 @@ pub const MlirCodegen = struct {
         const elem_ty = if (res_ty.isAVector()) res_ty.getShapedElementType() else res_ty;
         const op_name = if (elem_ty.isAFloat()) "arith.divf" else (if (signed) "arith.divsi" else "arith.divui");
         var op = OpBuilder.init(op_name, self.loc).builder()
-            .add_operands(&.{ lhs, rhs })
-            .add_results(&.{res_ty}).build();
+            .operands(&.{ lhs, rhs })
+            .results(&.{res_ty}).build();
         self.append(op);
         return op.getResult(0);
     }
@@ -4390,16 +4248,16 @@ pub const MlirCodegen = struct {
         const elem_ty = if (res_ty.isAVector()) res_ty.getShapedElementType() else res_ty;
         const op_name = if (elem_ty.isAFloat()) "arith.remf" else (if (signed) "arith.remsi" else "arith.remui");
         var op = OpBuilder.init(op_name, self.loc).builder()
-            .add_operands(&.{ lhs, rhs })
-            .add_results(&.{res_ty}).build();
+            .operands(&.{ lhs, rhs })
+            .results(&.{res_ty}).build();
         self.append(op);
         return op.getResult(0);
     }
 
     fn arithShl(self: *MlirCodegen, lhs: mlir.Value, rhs: mlir.Value, res_ty: mlir.Type) mlir.Value {
         var op = OpBuilder.init("arith.shli", self.loc).builder()
-            .add_operands(&.{ lhs, rhs })
-            .add_results(&.{res_ty}).build();
+            .operands(&.{ lhs, rhs })
+            .results(&.{res_ty}).build();
         self.append(op);
         return op.getResult(0);
     }
@@ -4407,8 +4265,8 @@ pub const MlirCodegen = struct {
     fn arithShr(self: *MlirCodegen, lhs: mlir.Value, rhs: mlir.Value, res_ty: mlir.Type, signed: bool) mlir.Value {
         const op_name = if (signed) "arith.shrsi" else "arith.shrui";
         var op = OpBuilder.init(op_name, self.loc).builder()
-            .add_operands(&.{ lhs, rhs })
-            .add_results(&.{res_ty}).build();
+            .operands(&.{ lhs, rhs })
+            .results(&.{res_ty}).build();
         self.append(op);
         return op.getResult(0);
     }
@@ -4416,27 +4274,27 @@ pub const MlirCodegen = struct {
     fn arithLogicalNotI1(self: *MlirCodegen, v: mlir.Value) mlir.Value {
         // !v  ==  xori v, true
         var op = OpBuilder.init("arith.xori", self.loc).builder()
-            .add_operands(&.{ v, self.constBool(true) })
-            .add_results(&.{self.i1_ty}).build();
+            .operands(&.{ v, self.constBool(true) })
+            .results(&.{self.i1_ty}).build();
         self.append(op);
         return op.getResult(0);
     }
 
     fn arithSelect(self: *MlirCodegen, c: mlir.Value, tv: mlir.Value, ev: mlir.Value, res_ty: mlir.Type) mlir.Value {
         var op = OpBuilder.init("arith.select", self.loc).builder()
-            .add_operands(&.{ c, tv, ev })
-            .add_results(&.{res_ty}).build();
+            .operands(&.{ c, tv, ev })
+            .results(&.{res_ty}).build();
         self.append(op);
         return op.getResult(0);
     }
 
-    fn ensureDeclFromCall(self: *MlirCodegen, ins_id: tir.InstrId, t: *const tir.TIR, store: *types.TypeStore) !FuncInfo {
+    fn ensureDeclFromCall(self: *MlirCodegen, ins_id: tir.InstrId, t: *const tir.TIR) !FuncInfo {
         const p = t.instrs.get(.Call, ins_id);
         const args_slice = t.instrs.val_list_pool.slice(p.args);
         var arg_tys = try self.gpa.alloc(mlir.Type, args_slice.len);
         defer self.gpa.free(arg_tys);
         for (args_slice, 0..) |vid, i| arg_tys[i] = self.value_map.get(vid).?.getType();
-        const ret_ty = try self.llvmTypeOf(store, p.ty);
+        const ret_ty = try self.llvmTypeOf(p.ty);
         const name = t.instrs.strs.get(p.callee);
 
         if (std.mem.startsWith(u8, name, "m$")) {
@@ -4464,8 +4322,8 @@ pub const MlirCodegen = struct {
         };
         const region = mlir.Region.create();
         const func_op = OpBuilder.init("func.func", self.loc).builder()
-            .add_attributes(&attrs)
-            .add_regions(&.{region}).build();
+            .attributes(&attrs)
+            .regions(&.{region}).build();
         var body = self.module.getBody();
         body.appendOwnedOperation(func_op);
 
@@ -4524,17 +4382,17 @@ pub const MlirCodegen = struct {
         const gsym = mlir.Attribute.flatSymbolRefAttrGet(self.mlir_ctx, mlir.Attribute.stringAttrGetValue(name_attr));
 
         var addr = OpBuilder.init("llvm.mlir.addressof", self.loc).builder()
-            .add_results(&.{self.llvm_ptr_ty})
-            .add_attributes(&.{self.named("global_name", gsym)})
+            .results(&.{self.llvm_ptr_ty})
+            .attributes(&.{self.named("global_name", gsym)})
             .build();
         self.append(addr);
 
         // GEP 0,0 into [n x i8] to get pointer to first char
         const arr_ty = mlir.LLVM.getLLVMArrayType(self.i8_ty, @intCast(n_bytes));
         const gep = OpBuilder.init("llvm.getelementptr", self.loc).builder()
-            .add_operands(&.{addr.getResult(0)})
-            .add_results(&.{self.llvm_ptr_ty})
-            .add_attributes(&.{
+            .operands(&.{addr.getResult(0)})
+            .results(&.{self.llvm_ptr_ty})
+            .attributes(&.{
                 self.named("rawConstantIndices", mlir.Attribute.denseI32ArrayGet(self.mlir_ctx, &[_]i32{ 0, 0 })),
                 self.named("elem_type", mlir.Attribute.typeAttrGet(arr_ty)),
             })
@@ -4558,15 +4416,15 @@ pub const MlirCodegen = struct {
         return out.toOwnedSlice();
     }
 
-    fn typeIsAny(_: *MlirCodegen, store: *types.TypeStore, ty: types.TypeId) bool {
-        return switch (store.getKind(ty)) {
+    fn typeIsAny(self: *MlirCodegen, ty: types.TypeId) bool {
+        return switch (self.context.type_store.getKind(ty)) {
             .Any => true,
             else => false,
         };
     }
 
-    fn intWidth(_: *MlirCodegen, store: *types.TypeStore, ty: types.TypeId) u32 {
-        return switch (store.getKind(ty)) {
+    fn intWidth(self: *MlirCodegen, ty: types.TypeId) u32 {
+        return switch (self.context.type_store.getKind(ty)) {
             .I8, .U8 => 8,
             .I16, .U16 => 16,
             .I32, .U32 => 32,
@@ -4576,9 +4434,8 @@ pub const MlirCodegen = struct {
         };
     }
 
-    fn isSignedInt(self: *MlirCodegen, store: *types.TypeStore, ty: types.TypeId) bool {
-        _ = self;
-        return switch (store.getKind(ty)) {
+    fn isSignedInt(self: *MlirCodegen, ty: types.TypeId) bool {
+        return switch (self.context.type_store.getKind(ty)) {
             .I8, .I16, .I32, .I64 => true,
             else => false,
         };
@@ -4604,7 +4461,6 @@ pub const MlirCodegen = struct {
 
     const AggregateElemCoercer = fn (
         *MlirCodegen,
-        *types.TypeStore,
         types.TypeId,
         mlir.Type,
         mlir.Value,
@@ -4620,32 +4476,31 @@ pub const MlirCodegen = struct {
 
     fn tryCopyAggregateValue(
         self: *MlirCodegen,
-        store: *types.TypeStore,
         dst_sr: types.TypeId,
         dst_ty: mlir.Type,
         src_val: mlir.Value,
         src_sr: types.TypeId,
         elem_coercer: AggregateElemCoercer,
     ) anyerror!?mlir.Value {
-        const dst_kind = store.getKind(dst_sr);
-        const src_kind = store.getKind(src_sr);
+        const dst_kind = self.context.type_store.getKind(dst_sr);
+        const src_kind = self.context.type_store.getKind(src_sr);
         if (!isAggregateKind(dst_kind) or !isAggregateKind(src_kind)) return null;
 
         switch (dst_kind) {
             .Array => if (src_kind == .Array)
-                return self.copyArrayAggregate(store, dst_sr, dst_ty, src_val, src_sr, elem_coercer),
+                return self.copyArrayAggregate(dst_sr, dst_ty, src_val, src_sr, elem_coercer),
             .Struct => if (src_kind == .Struct)
-                return self.copyStructAggregate(store, dst_sr, dst_ty, src_val, src_sr, elem_coercer),
+                return self.copyStructAggregate(dst_sr, dst_ty, src_val, src_sr, elem_coercer),
             .Tuple => if (src_kind == .Tuple)
-                return self.copyTupleAggregate(store, dst_sr, dst_ty, src_val, src_sr, elem_coercer),
+                return self.copyTupleAggregate(dst_sr, dst_ty, src_val, src_sr, elem_coercer),
             .Optional => if (src_kind == .Optional)
-                return self.copyOptionalAggregate(store, dst_sr, dst_ty, src_val, src_sr, elem_coercer),
+                return self.copyOptionalAggregate(dst_sr, dst_ty, src_val, src_sr, elem_coercer),
             .Union => if (src_kind == .Union)
-                return self.copyUnionAggregate(store, dst_sr, dst_ty, src_val, src_sr),
+                return self.copyUnionAggregate(dst_sr, dst_ty, src_val, src_sr),
             .ErrorSet => if (src_kind == .ErrorSet)
-                return self.copyErrorSetAggregate(store, dst_sr, dst_ty, src_val, src_sr, elem_coercer),
+                return self.copyErrorSetAggregate(dst_sr, dst_ty, src_val, src_sr, elem_coercer),
             .Error => if (src_kind == .ErrorSet)
-                return self.copyErrorAggregate(store, dst_sr, dst_ty, src_val, src_sr, elem_coercer),
+                return self.copyErrorAggregate(dst_sr, dst_ty, src_val, src_sr, elem_coercer),
             else => {},
         }
 
@@ -4654,18 +4509,17 @@ pub const MlirCodegen = struct {
 
     fn copyErrorAggregate(
         self: *MlirCodegen,
-        store: *types.TypeStore,
         dst_sr: types.TypeId,
         dst_ty: mlir.Type,
         src_val: mlir.Value,
         src_sr: types.TypeId,
         elem_coercer: AggregateElemCoercer,
     ) anyerror!?mlir.Value {
-        const dst_info = store.get(.Error, dst_sr);
-        const src_info = store.get(.Error, src_sr);
+        const dst_info = self.context.type_store.get(.Error, dst_sr);
+        const src_info = self.context.type_store.get(.Error, src_sr);
 
-        const dst_variants = store.field_pool.slice(dst_info.variants);
-        const src_variants = store.field_pool.slice(src_info.variants);
+        const dst_variants = self.context.type_store.field_pool.slice(dst_info.variants);
+        const src_variants = self.context.type_store.field_pool.slice(src_info.variants);
         if (dst_variants.len != src_variants.len) return null;
 
         var dst_union_fields = try self.gpa.alloc(types.TypeStore.StructFieldArg, dst_variants.len);
@@ -4675,24 +4529,24 @@ pub const MlirCodegen = struct {
 
         for (dst_variants, 0..) |dst_field_id, i| {
             const src_field_id = src_variants[i];
-            const dst_field = store.Field.get(dst_field_id);
-            const src_field = store.Field.get(src_field_id);
+            const dst_field = self.context.type_store.Field.get(dst_field_id);
+            const src_field = self.context.type_store.Field.get(src_field_id);
             if (dst_field.name.toRaw() != src_field.name.toRaw()) return null;
             dst_union_fields[i] = .{ .name = dst_field.name, .ty = dst_field.ty };
             src_union_fields[i] = .{ .name = src_field.name, .ty = src_field.ty };
         }
 
-        const dst_union_sr = store.mkUnion(dst_union_fields);
-        const src_union_sr = store.mkUnion(src_union_fields);
-        const dst_union_ty = try self.llvmTypeOf(store, dst_union_sr);
-        const src_union_ty = try self.llvmTypeOf(store, src_union_sr);
+        const dst_union_sr = self.context.type_store.mkUnion(dst_union_fields);
+        const src_union_sr = self.context.type_store.mkUnion(src_union_fields);
+        const dst_union_ty = try self.llvmTypeOf(dst_union_sr);
+        const src_union_ty = try self.llvmTypeOf(src_union_sr);
 
         const tag = self.extractAt(src_val, self.i32_ty, &.{0});
         const src_payload = self.extractAt(src_val, src_union_ty, &.{1});
 
-        var payload = try self.tryCopyAggregateValue(store, dst_union_sr, dst_union_ty, src_payload, src_union_sr, elem_coercer) orelse src_payload;
+        var payload = try self.tryCopyAggregateValue(dst_union_sr, dst_union_ty, src_payload, src_union_sr, elem_coercer) orelse src_payload;
         if (!payload.getType().equal(dst_union_ty)) {
-            payload = try elem_coercer(self, store, dst_union_sr, dst_union_ty, payload, src_union_sr);
+            payload = try elem_coercer(self, dst_union_sr, dst_union_ty, payload, src_union_sr);
         }
 
         var result = self.zeroOf(dst_ty);
@@ -4703,15 +4557,14 @@ pub const MlirCodegen = struct {
 
     fn copyArrayAggregate(
         self: *MlirCodegen,
-        store: *types.TypeStore,
         dst_sr: types.TypeId,
         dst_ty: mlir.Type,
         src_val: mlir.Value,
         src_sr: types.TypeId,
         elemCoercer: AggregateElemCoercer,
     ) anyerror!?mlir.Value {
-        const dst_info = store.get(.Array, dst_sr);
-        const src_info = store.get(.Array, src_sr);
+        const dst_info = self.context.type_store.get(.Array, dst_sr);
+        const src_info = self.context.type_store.get(.Array, src_sr);
         const len_match = blk: {
             switch (dst_info.len) {
                 .Concrete => |l1| switch (src_info.len) {
@@ -4723,8 +4576,8 @@ pub const MlirCodegen = struct {
         };
         if (!len_match) return null;
 
-        const dst_elem_ty = try self.llvmTypeOf(store, dst_info.elem);
-        const src_elem_ty = try self.llvmTypeOf(store, src_info.elem);
+        const dst_elem_ty = try self.llvmTypeOf(dst_info.elem);
+        const src_elem_ty = try self.llvmTypeOf(src_info.elem);
 
         var result = self.undefOf(dst_ty);
         const len = switch (dst_info.len) {
@@ -4735,7 +4588,7 @@ pub const MlirCodegen = struct {
         while (i < len) : (i += 1) {
             const idx = [_]i64{@intCast(i)};
             const elem_val = self.extractAt(src_val, src_elem_ty, &idx);
-            const coerced = try elemCoercer(self, store, dst_info.elem, dst_elem_ty, elem_val, src_info.elem);
+            const coerced = try elemCoercer(self, dst_info.elem, dst_elem_ty, elem_val, src_info.elem);
             result = self.insertAt(result, coerced, &idx);
         }
         return result;
@@ -4743,30 +4596,29 @@ pub const MlirCodegen = struct {
 
     fn copyStructAggregate(
         self: *MlirCodegen,
-        store: *types.TypeStore,
         dst_sr: types.TypeId,
         dst_ty: mlir.Type,
         src_val: mlir.Value,
         src_sr: types.TypeId,
         elem_coercer: AggregateElemCoercer,
     ) anyerror!?mlir.Value {
-        const dst_info = store.get(.Struct, dst_sr);
-        const src_info = store.get(.Struct, src_sr);
+        const dst_info = self.context.type_store.get(.Struct, dst_sr);
+        const src_info = self.context.type_store.get(.Struct, src_sr);
         if (dst_info.fields.len != src_info.fields.len) return null;
 
-        const dst_fields = store.field_pool.slice(dst_info.fields);
-        const src_fields = store.field_pool.slice(src_info.fields);
+        const dst_fields = self.context.type_store.field_pool.slice(dst_info.fields);
+        const src_fields = self.context.type_store.field_pool.slice(src_info.fields);
 
         var result = self.undefOf(dst_ty);
         for (dst_fields, 0..) |dst_field_id, i| {
             const src_field_id = src_fields[i];
-            const dst_field = store.Field.get(dst_field_id);
-            const src_field = store.Field.get(src_field_id);
-            const dst_field_ty = try self.llvmTypeOf(store, dst_field.ty);
-            const src_field_ty = try self.llvmTypeOf(store, src_field.ty);
+            const dst_field = self.context.type_store.Field.get(dst_field_id);
+            const src_field = self.context.type_store.Field.get(src_field_id);
+            const dst_field_ty = try self.llvmTypeOf(dst_field.ty);
+            const src_field_ty = try self.llvmTypeOf(src_field.ty);
             const idx = [_]i64{@intCast(i)};
             const field_val = self.extractAt(src_val, src_field_ty, &idx);
-            const coerced = try elem_coercer(self, store, dst_field.ty, dst_field_ty, field_val, src_field.ty);
+            const coerced = try elem_coercer(self, dst_field.ty, dst_field_ty, field_val, src_field.ty);
             result = self.insertAt(result, coerced, &idx);
         }
         return result;
@@ -4774,28 +4626,27 @@ pub const MlirCodegen = struct {
 
     fn copyTupleAggregate(
         self: *MlirCodegen,
-        store: *types.TypeStore,
         dst_sr: types.TypeId,
         dst_ty: mlir.Type,
         src_val: mlir.Value,
         src_sr: types.TypeId,
         elem_coercer: AggregateElemCoercer,
     ) anyerror!?mlir.Value {
-        const dst_info = store.get(.Tuple, dst_sr);
-        const src_info = store.get(.Tuple, src_sr);
+        const dst_info = self.context.type_store.get(.Tuple, dst_sr);
+        const src_info = self.context.type_store.get(.Tuple, src_sr);
         if (dst_info.elems.len != src_info.elems.len) return null;
 
-        const dst_elems = store.type_pool.slice(dst_info.elems);
-        const src_elems = store.type_pool.slice(src_info.elems);
+        const dst_elems = self.context.type_store.type_pool.slice(dst_info.elems);
+        const src_elems = self.context.type_store.type_pool.slice(src_info.elems);
 
         var result = self.zeroOf(dst_ty);
         for (dst_elems, 0..) |dst_elem_sr, i| {
             const src_elem_sr = src_elems[i];
-            const dst_elem_ty = try self.llvmTypeOf(store, dst_elem_sr);
-            const src_elem_ty = try self.llvmTypeOf(store, src_elem_sr);
+            const dst_elem_ty = try self.llvmTypeOf(dst_elem_sr);
+            const src_elem_ty = try self.llvmTypeOf(src_elem_sr);
             const idx = [_]i64{@intCast(i)};
             const elem_val = self.extractAt(src_val, src_elem_ty, &idx);
-            const coerced = try elem_coercer(self, store, dst_elem_sr, dst_elem_ty, elem_val, src_elem_sr);
+            const coerced = try elem_coercer(self, dst_elem_sr, dst_elem_ty, elem_val, src_elem_sr);
             result = self.insertAt(result, coerced, &idx);
         }
         return result;
@@ -4803,21 +4654,20 @@ pub const MlirCodegen = struct {
 
     fn copyOptionalAggregate(
         self: *MlirCodegen,
-        store: *types.TypeStore,
         dst_sr: types.TypeId,
         dst_ty: mlir.Type,
         src_val: mlir.Value,
         src_sr: types.TypeId,
         elem_coercer: AggregateElemCoercer,
     ) anyerror!?mlir.Value {
-        const dst_info = store.get(.Optional, dst_sr);
-        const src_info = store.get(.Optional, src_sr);
-        const dst_payload_ty = try self.llvmTypeOf(store, dst_info.elem);
-        const src_payload_ty = try self.llvmTypeOf(store, src_info.elem);
+        const dst_info = self.context.type_store.get(.Optional, dst_sr);
+        const src_info = self.context.type_store.get(.Optional, src_sr);
+        const dst_payload_ty = try self.llvmTypeOf(dst_info.elem);
+        const src_payload_ty = try self.llvmTypeOf(src_info.elem);
 
         const tag = self.extractAt(src_val, self.i1_ty, &.{0});
         const src_payload = self.extractAt(src_val, src_payload_ty, &.{1});
-        const coerced_payload = try elem_coercer(self, store, dst_info.elem, dst_payload_ty, src_payload, src_info.elem);
+        const coerced_payload = try elem_coercer(self, dst_info.elem, dst_payload_ty, src_payload, src_info.elem);
 
         var result = self.zeroOf(dst_ty);
         result = self.insertAt(result, tag, &.{0});
@@ -4827,14 +4677,13 @@ pub const MlirCodegen = struct {
 
     fn copyUnionAggregate(
         self: *MlirCodegen,
-        store: *types.TypeStore,
         dst_sr: types.TypeId,
         dst_ty: mlir.Type,
         src_val: mlir.Value,
         src_sr: types.TypeId,
     ) anyerror!?mlir.Value {
-        const dst_size = abi.abiSizeAlign(self, store, dst_sr).size;
-        const src_size = abi.abiSizeAlign(self, store, src_sr).size;
+        const dst_size = abi.abiSizeAlign(self, dst_sr).size;
+        const src_size = abi.abiSizeAlign(self, src_sr).size;
         if (dst_size != src_size) return null;
 
         var result = self.zeroOf(dst_ty);
@@ -4849,18 +4698,17 @@ pub const MlirCodegen = struct {
 
     fn copyErrorSetAggregate(
         self: *MlirCodegen,
-        store: *types.TypeStore,
         dst_sr: types.TypeId,
         dst_ty: mlir.Type,
         src_val: mlir.Value,
         src_sr: types.TypeId,
         elem_coercer: AggregateElemCoercer,
     ) anyerror!?mlir.Value {
-        const dst_info = store.get(.ErrorSet, dst_sr);
-        const src_info = store.get(.ErrorSet, src_sr);
+        const dst_info = self.context.type_store.get(.ErrorSet, dst_sr);
+        const src_info = self.context.type_store.get(.ErrorSet, src_sr);
 
-        const ok_name = store.strs.intern("Ok");
-        const err_name = store.strs.intern("Err");
+        const ok_name = self.context.type_store.strs.intern("Ok");
+        const err_name = self.context.type_store.strs.intern("Err");
 
         var dst_union_fields = [_]types.TypeStore.StructFieldArg{
             .{ .name = ok_name, .ty = dst_info.value_ty },
@@ -4871,14 +4719,14 @@ pub const MlirCodegen = struct {
             .{ .name = err_name, .ty = src_info.error_ty },
         };
 
-        const dst_union_sr = store.mkUnion(&dst_union_fields);
-        const src_union_sr = store.mkUnion(&src_union_fields);
-        const dst_union_ty = try self.llvmTypeOf(store, dst_union_sr);
-        const src_union_ty = try self.llvmTypeOf(store, src_union_sr);
+        const dst_union_sr = self.context.type_store.mkUnion(&dst_union_fields);
+        const src_union_sr = self.context.type_store.mkUnion(&src_union_fields);
+        const dst_union_ty = try self.llvmTypeOf(dst_union_sr);
+        const src_union_ty = try self.llvmTypeOf(src_union_sr);
 
         const tag = self.extractAt(src_val, self.i32_ty, &.{0});
         const src_payload = self.extractAt(src_val, src_union_ty, &.{1});
-        const coerced_payload = try self.tryCopyAggregateValue(store, dst_union_sr, dst_union_ty, src_payload, src_union_sr, elem_coercer) orelse src_payload;
+        const coerced_payload = try self.tryCopyAggregateValue(dst_union_sr, dst_union_ty, src_payload, src_union_sr, elem_coercer) orelse src_payload;
 
         var result = self.undefOf(dst_ty);
         result = self.insertAt(result, tag, &.{0});
@@ -4888,7 +4736,6 @@ pub const MlirCodegen = struct {
 
     fn reinterpretAggregateViaSpill(
         self: *MlirCodegen,
-        store: *types.TypeStore,
         dst_sr: types.TypeId,
         dst_ty: mlir.Type,
         src_val: mlir.Value,
@@ -4896,18 +4743,18 @@ pub const MlirCodegen = struct {
     ) anyerror!?mlir.Value {
         if (dst_sr.toRaw() == 0 or src_sr.toRaw() == 0) return null;
 
-        const dst_kind = store.getKind(dst_sr);
-        const src_kind = store.getKind(src_sr);
+        const dst_kind = self.context.type_store.getKind(dst_sr);
+        const src_kind = self.context.type_store.getKind(src_sr);
         // Only allow aggregate-to-aggregate reinterpret via spill. Reinterpreting an
         // aggregate into a scalar (or vice-versa) is semantically wrong for tagged
         // unions like ErrorSet and Optional and has been the source of corruption.
         if (!(isAggregateKind(dst_kind) and isAggregateKind(src_kind))) return null;
 
-        const dst_layout = abi.abiSizeAlign(self, store, dst_sr);
-        const src_layout = abi.abiSizeAlign(self, store, src_sr);
+        const dst_layout = abi.abiSizeAlign(self, dst_sr);
+        const src_layout = abi.abiSizeAlign(self, src_sr);
 
-        const src_align = abi.abiSizeAlign(self, store, src_sr).alignment;
-        const dst_align = abi.abiSizeAlign(self, store, dst_sr).alignment;
+        const src_align = abi.abiSizeAlign(self, src_sr).alignment;
+        const dst_align = abi.abiSizeAlign(self, dst_sr).alignment;
         const src_ptr = self.spillAgg(src_val, src_val.getType(), @intCast(src_align));
         const dst_init = self.zeroOf(dst_ty);
         const dst_ptr = self.spillAgg(dst_init, dst_ty, @intCast(dst_align));
@@ -4920,31 +4767,29 @@ pub const MlirCodegen = struct {
         }
 
         var ld = OpBuilder.init("llvm.load", self.loc).builder()
-            .add_operands(&.{dst_ptr}).add_results(&.{dst_ty}).build();
+            .operands(&.{dst_ptr}).results(&.{dst_ty}).build();
         self.append(ld);
         return ld.getResult(0);
     }
 
     fn coerceAggregateElementOnBranch(
         self: *MlirCodegen,
-        store: *types.TypeStore,
         dst_sr: types.TypeId,
         dst_ty: mlir.Type,
         src_val: mlir.Value,
         src_sr: types.TypeId,
     ) anyerror!mlir.Value {
-        return self.coerceOnBranch(src_val, dst_ty, dst_sr, src_sr, store);
+        return self.coerceOnBranch(src_val, dst_ty, dst_sr, src_sr);
     }
 
     fn emitCastAggregateElement(
         self: *MlirCodegen,
-        store: *types.TypeStore,
         dst_sr: types.TypeId,
         dst_ty: mlir.Type,
         src_val: mlir.Value,
         src_sr: types.TypeId,
     ) anyerror!mlir.Value {
-        return self.emitCastNormal(store, dst_sr, dst_ty, src_val, src_sr);
+        return self.emitCastNormal(dst_sr, dst_ty, src_val, src_sr);
     }
 
     fn coerceOnBranch(
@@ -4953,7 +4798,6 @@ pub const MlirCodegen = struct {
         want: mlir.Type,
         dst_sr_ty: types.TypeId,
         src_sr_ty: types.TypeId,
-        store: *types.TypeStore,
     ) !mlir.Value {
         if (v.getType().equal(want)) return v;
 
@@ -4962,7 +4806,7 @@ pub const MlirCodegen = struct {
         // ptr <-> ptr : bitcast
         if (mlir.LLVM.isLLVMPointerType(v.getType()) and mlir.LLVM.isLLVMPointerType(want)) {
             var bc = OpBuilder.init("llvm.bitcast", self.loc).builder()
-                .add_operands(&.{v}).add_results(&.{want}).build();
+                .operands(&.{v}).results(&.{want}).build();
             self.append(bc);
             return bc.getResult(0);
         }
@@ -4970,7 +4814,7 @@ pub const MlirCodegen = struct {
         // ptr -> int : ptrtoint
         if (mlir.LLVM.isLLVMPointerType(v.getType()) and want.isAInteger()) {
             var op = OpBuilder.init("llvm.ptrtoint", self.loc).builder()
-                .add_operands(&.{v}).add_results(&.{want}).build();
+                .operands(&.{v}).results(&.{want}).build();
             self.append(op);
             return op.getResult(0);
         }
@@ -4978,7 +4822,7 @@ pub const MlirCodegen = struct {
         // int -> ptr : inttoptr
         if (v.getType().isAInteger() and mlir.LLVM.isLLVMPointerType(want)) {
             var op = OpBuilder.init("llvm.inttoptr", self.loc).builder()
-                .add_operands(&.{v}).add_results(&.{want}).build();
+                .operands(&.{v}).results(&.{want}).build();
             self.append(op);
             return op.getResult(0);
         }
@@ -4990,13 +4834,13 @@ pub const MlirCodegen = struct {
             if (fw == tw) return v;
             if (fw > tw) {
                 var tr = OpBuilder.init("llvm.trunc", self.loc).builder()
-                    .add_operands(&.{v}).add_results(&.{want}).build();
+                    .operands(&.{v}).results(&.{want}).build();
                 self.append(tr);
                 return tr.getResult(0);
             } else {
-                const from_signed = self.isSignedInt(store, src_sr_ty);
+                const from_signed = self.isSignedInt(src_sr_ty);
                 var ex = OpBuilder.init(if (from_signed) "llvm.sext" else "llvm.zext", self.loc).builder()
-                    .add_operands(&.{v}).add_results(&.{want}).build();
+                    .operands(&.{v}).results(&.{want}).build();
                 self.append(ex);
                 return ex.getResult(0);
             }
@@ -5009,12 +4853,12 @@ pub const MlirCodegen = struct {
             if (fw == tw) return v;
             if (fw > tw) {
                 var tr = OpBuilder.init("llvm.fptrunc", self.loc).builder()
-                    .add_operands(&.{v}).add_results(&.{want}).build();
+                    .operands(&.{v}).results(&.{want}).build();
                 self.append(tr);
                 return tr.getResult(0);
             } else {
                 var ex = OpBuilder.init("llvm.fpext", self.loc).builder()
-                    .add_operands(&.{v}).add_results(&.{want}).build();
+                    .operands(&.{v}).results(&.{want}).build();
                 self.append(ex);
                 return ex.getResult(0);
             }
@@ -5024,44 +4868,44 @@ pub const MlirCodegen = struct {
         if (v.getType().isAInteger() and want.isAFloat()) {
             const from_signed = true; // branch-time info thin; assume signed
             var op = OpBuilder.init(if (from_signed) "llvm.sitofp" else "llvm.uitofp", self.loc).builder()
-                .add_operands(&.{v}).add_results(&.{want}).build();
+                .operands(&.{v}).results(&.{want}).build();
             self.append(op);
             return op.getResult(0);
         }
         if (v.getType().isAFloat() and want.isAInteger()) {
             // pick signed based on 'want' SR type if you pass it; here default signed
             var op = OpBuilder.init("llvm.fptosi", self.loc).builder()
-                .add_operands(&.{v}).add_results(&.{want}).build();
+                .operands(&.{v}).results(&.{want}).build();
             self.append(op);
             return op.getResult(0);
         }
 
         if (dst_sr_ty.toRaw() != 0 and src_sr_ty.toRaw() != 0) {
-            const dst_kind = store.getKind(dst_sr_ty);
-            const src_kind = store.getKind(src_sr_ty);
+            const dst_kind = self.context.type_store.getKind(dst_sr_ty);
+            const src_kind = self.context.type_store.getKind(src_sr_ty);
 
             if (dst_kind == .Error and src_kind == .ErrorSet) {
-                return try self.errorSetToError(store, dst_sr_ty, want, src_sr_ty, v);
+                return try self.errorSetToError(dst_sr_ty, want, src_sr_ty, v);
             }
         }
 
-        if (try self.tryCopyAggregateValue(store, dst_sr_ty, want, v, src_sr_ty, coerceAggregateElementOnBranch)) |agg|
+        if (try self.tryCopyAggregateValue(dst_sr_ty, want, v, src_sr_ty, coerceAggregateElementOnBranch)) |agg|
             return agg;
 
-        if (try self.reinterpretAggregateViaSpill(store, dst_sr_ty, want, v, src_sr_ty)) |agg|
+        if (try self.reinterpretAggregateViaSpill(dst_sr_ty, want, v, src_sr_ty)) |agg|
             return agg;
 
         // Avoid unsafe fallback bitcasts between aggregates and scalars.
         if (dst_sr_ty.toRaw() != 0 and src_sr_ty.toRaw() != 0) {
-            const dst_kind = store.getKind(dst_sr_ty);
-            const src_kind = store.getKind(src_sr_ty);
+            const dst_kind = self.context.type_store.getKind(dst_sr_ty);
+            const src_kind = self.context.type_store.getKind(src_sr_ty);
             // If asked to coerce an ErrorSet to its Ok payload type, perform a
             // typed extraction instead of any byte-level reinterpretation.
             if (src_kind == .ErrorSet and !isAggregateKind(dst_kind)) {
-                const es = store.get(.ErrorSet, src_sr_ty);
-                const ok_mlir = try self.llvmTypeOf(store, es.value_ty);
+                const es = self.context.type_store.get(.ErrorSet, src_sr_ty);
+                const ok_mlir = try self.llvmTypeOf(es.value_ty);
                 if (want.equal(ok_mlir)) {
-                    return try self.loadOkFromErrorSet(store, src_sr_ty, v);
+                    return try self.loadOkFromErrorSet(src_sr_ty, v);
                 }
             }
             const dst_is_agg = isAggregateKind(dst_kind);
@@ -5075,43 +4919,42 @@ pub const MlirCodegen = struct {
 
         // last resort (should be rare): bitcast
         var bc = OpBuilder.init("llvm.bitcast", self.loc).builder()
-            .add_operands(&.{v}).add_results(&.{want}).build();
+            .operands(&.{v}).results(&.{want}).build();
         self.append(bc);
         return bc.getResult(0);
     }
 
     fn errorSetToError(
         self: *MlirCodegen,
-        store: *types.TypeStore,
         dst_err_sr: types.TypeId,
         dst_err_ty: mlir.Type,
         src_errset_sr: types.TypeId,
         src_val: mlir.Value,
     ) anyerror!mlir.Value {
-        const es = store.get(.ErrorSet, src_errset_sr);
+        const es = self.context.type_store.get(.ErrorSet, src_errset_sr);
 
-        const ok_name = store.strs.intern("Ok");
-        const err_name = store.strs.intern("Err");
+        const ok_name = self.context.type_store.strs.intern("Ok");
+        const err_name = self.context.type_store.strs.intern("Err");
         var union_fields = [_]types.TypeStore.StructFieldArg{
             .{ .name = ok_name, .ty = es.value_ty },
             .{ .name = err_name, .ty = es.error_ty },
         };
 
-        const union_sr = store.mkUnion(&union_fields);
-        const union_ty = try self.llvmTypeOf(store, union_sr);
+        const union_sr = self.context.type_store.mkUnion(&union_fields);
+        const union_ty = try self.llvmTypeOf(union_sr);
         const payload = self.extractAt(src_val, union_ty, &.{1});
 
-        const err_mlir = try self.llvmTypeOf(store, es.error_ty);
+        const err_mlir = try self.llvmTypeOf(es.error_ty);
         const union_ptr = self.spillAgg(payload, union_ty, 0);
         const idxs = [_]tir.Rows.GepIndex{.{ .Const = 0 }};
         const err_ptr = try self.emitGep(union_ptr, err_mlir, &idxs);
         var load_op = OpBuilder.init("llvm.load", self.loc).builder()
-            .add_operands(&.{err_ptr}).add_results(&.{err_mlir}).build();
+            .operands(&.{err_ptr}).results(&.{err_mlir}).build();
         self.append(load_op);
 
         var err_val = load_op.getResult(0);
         if (!err_mlir.equal(dst_err_ty)) {
-            err_val = try self.coerceOnBranch(err_val, dst_err_ty, dst_err_sr, es.error_ty, store);
+            err_val = try self.coerceOnBranch(err_val, dst_err_ty, dst_err_sr, es.error_ty);
         }
 
         return err_val;
@@ -5123,28 +4966,27 @@ pub const MlirCodegen = struct {
     // then perform a typed load of V.
     fn loadOkFromErrorSet(
         self: *MlirCodegen,
-        store: *types.TypeStore,
         src_errset_sr: types.TypeId,
         src_val: mlir.Value,
     ) !mlir.Value {
-        const es = store.get(.ErrorSet, src_errset_sr);
-        const ok_name = store.strs.intern("Ok");
-        const err_name = store.strs.intern("Err");
+        const es = self.context.type_store.get(.ErrorSet, src_errset_sr);
+        const ok_name = self.context.type_store.strs.intern("Ok");
+        const err_name = self.context.type_store.strs.intern("Err");
         var union_fields = [_]types.TypeStore.StructFieldArg{
             .{ .name = ok_name, .ty = es.value_ty },
             .{ .name = err_name, .ty = es.error_ty },
         };
-        const union_sr = store.mkUnion(&union_fields);
-        const union_ty = try self.llvmTypeOf(store, union_sr);
+        const union_sr = self.context.type_store.mkUnion(&union_fields);
+        const union_ty = try self.llvmTypeOf(union_sr);
         const payload = self.extractAt(src_val, union_ty, &.{1});
 
-        const ok_mlir = try self.llvmTypeOf(store, es.value_ty);
-        const alignment = abi.abiSizeAlign(self, store, es.value_ty).alignment;
+        const ok_mlir = try self.llvmTypeOf(es.value_ty);
+        const alignment = abi.abiSizeAlign(self, es.value_ty).alignment;
         const union_ptr = self.spillAgg(payload, union_ty, @intCast(alignment));
         const idxs = [_]tir.Rows.GepIndex{.{ .Const = 0 }};
         const ok_ptr = try self.emitGep(union_ptr, ok_mlir, &idxs);
         var load_op = OpBuilder.init("llvm.load", self.loc).builder()
-            .add_operands(&.{ok_ptr}).add_results(&.{ok_mlir}).build();
+            .operands(&.{ok_ptr}).results(&.{ok_mlir}).build();
         self.append(load_op);
         return load_op.getResult(0);
     }
@@ -5180,29 +5022,29 @@ pub const MlirCodegen = struct {
     // boolean ops
     fn boolOr(self: *MlirCodegen, a: mlir.Value, b: mlir.Value) mlir.Value {
         const op = OpBuilder.init("arith.ori", self.loc).builder()
-            .add_operands(&.{ a, b }).add_results(&.{self.i1_ty}).build();
+            .operands(&.{ a, b }).results(&.{self.i1_ty}).build();
         return appendIfHasResult(self, op);
     }
     fn boolAnd(self: *MlirCodegen, a: mlir.Value, b: mlir.Value) mlir.Value {
         const op = OpBuilder.init("arith.andi", self.loc).builder()
-            .add_operands(&.{ a, b }).add_results(&.{self.i1_ty}).build();
+            .operands(&.{ a, b }).results(&.{self.i1_ty}).build();
         return appendIfHasResult(self, op);
     }
     fn boolNot(self: *MlirCodegen, a: mlir.Value) mlir.Value {
         const t = OpBuilder.init("llvm.mlir.constant", self.loc).builder()
-            .add_attributes(&.{self.named("value", mlir.Attribute.integerAttrGet(self.i1_ty, 1))})
-            .add_results(&.{self.i1_ty}).build();
+            .attributes(&.{self.named("value", mlir.Attribute.integerAttrGet(self.i1_ty, 1))})
+            .results(&.{self.i1_ty}).build();
         self.append(t);
         const op = OpBuilder.init("arith.xori", self.loc).builder()
-            .add_operands(&.{ a, t.getResult(0) }).add_results(&.{self.i1_ty}).build();
+            .operands(&.{ a, t.getResult(0) }).results(&.{self.i1_ty}).build();
         return appendIfHasResult(self, op);
     }
 
     // call the lowered @assert(bool)
     fn emitAssertCall(self: *MlirCodegen, cond: mlir.Value) void {
         _ = appendIfHasResult(self, OpBuilder.init("func.call", self.loc).builder()
-            .add_operands(&.{cond})
-            .add_attributes(&.{
+            .operands(&.{cond})
+            .attributes(&.{
                 self.named("callee", mlir.Attribute.flatSymbolRefAttrGet(self.mlir_ctx, mlir.Attribute.stringAttrGetValue(self.strAttr("assert")))),
                 self.named("sym_visibility", self.strAttr("private")),
                 self.named("function_type", mlir.Attribute.typeAttrGet(mlir.LLVM.getLLVMFunctionType(self.i1_ty, &.{self.i1_ty}, false))),
@@ -5215,19 +5057,19 @@ pub const MlirCodegen = struct {
 
     fn complexRe(self: *MlirCodegen, v: mlir.Value, elem_ty: mlir.Type) mlir.Value {
         const op = OpBuilder.init("complex.re", self.loc).builder()
-            .add_operands(&.{v}).add_results(&.{elem_ty}).build();
+            .operands(&.{v}).results(&.{elem_ty}).build();
         return appendIfHasResult(self, op);
     }
 
     fn complexIm(self: *MlirCodegen, v: mlir.Value, elem_ty: mlir.Type) mlir.Value {
         const op = OpBuilder.init("complex.im", self.loc).builder()
-            .add_operands(&.{v}).add_results(&.{elem_ty}).build();
+            .operands(&.{v}).results(&.{elem_ty}).build();
         return appendIfHasResult(self, op);
     }
 
     fn complexFromParts(self: *MlirCodegen, re: mlir.Value, im: mlir.Value, complex_ty: mlir.Type) mlir.Value {
         const make = OpBuilder.init("complex.create", self.loc).builder()
-            .add_operands(&.{ re, im }).add_results(&.{complex_ty}).build();
+            .operands(&.{ re, im }).results(&.{complex_ty}).build();
         self.append(make);
         return make.getResult(0);
     }
@@ -5236,17 +5078,17 @@ pub const MlirCodegen = struct {
 
     fn castPtrToPtr(self: *MlirCodegen, v: mlir.Value, to_ty: mlir.Type) mlir.Value {
         const op = OpBuilder.init("llvm.bitcast", self.loc).builder()
-            .add_operands(&.{v}).add_results(&.{to_ty}).build();
+            .operands(&.{v}).results(&.{to_ty}).build();
         return appendIfHasResult(self, op);
     }
     fn castPtrToInt(self: *MlirCodegen, v: mlir.Value, to_ty: mlir.Type) mlir.Value {
         const op = OpBuilder.init("llvm.ptrtoint", self.loc).builder()
-            .add_operands(&.{v}).add_results(&.{to_ty}).build();
+            .operands(&.{v}).results(&.{to_ty}).build();
         return appendIfHasResult(self, op);
     }
     fn castIntToPtr(self: *MlirCodegen, v: mlir.Value, to_ty: mlir.Type) mlir.Value {
         const op = OpBuilder.init("llvm.inttoptr", self.loc).builder()
-            .add_operands(&.{v}).add_results(&.{to_ty}).build();
+            .operands(&.{v}).results(&.{to_ty}).build();
         return appendIfHasResult(self, op);
     }
 
@@ -5256,24 +5098,24 @@ pub const MlirCodegen = struct {
         if (fw == tw) return from_v;
         if (fw > tw) {
             const op = OpBuilder.init("llvm.trunc", self.loc).builder()
-                .add_operands(&.{from_v}).add_results(&.{to_ty}).build();
+                .operands(&.{from_v}).results(&.{to_ty}).build();
             return appendIfHasResult(self, op);
         }
         const opname = if (signed_from) "llvm.sext" else "llvm.zext";
         const op = OpBuilder.init(opname, self.loc).builder()
-            .add_operands(&.{from_v}).add_results(&.{to_ty}).build();
+            .operands(&.{from_v}).results(&.{to_ty}).build();
         return appendIfHasResult(self, op);
     }
 
     fn castIntToFloat(self: *MlirCodegen, v: mlir.Value, to_ty: mlir.Type, signed_from: bool) mlir.Value {
         const op = OpBuilder.init(if (signed_from) "llvm.sitofp" else "llvm.uitofp", self.loc).builder()
-            .add_operands(&.{v}).add_results(&.{to_ty}).build();
+            .operands(&.{v}).results(&.{to_ty}).build();
         return appendIfHasResult(self, op);
     }
 
     fn castFloatToInt(self: *MlirCodegen, v: mlir.Value, to_ty: mlir.Type, signed_to: bool) mlir.Value {
         const op = OpBuilder.init(if (signed_to) "llvm.fptosi" else "llvm.fptoui", self.loc).builder()
-            .add_operands(&.{v}).add_results(&.{to_ty}).build();
+            .operands(&.{v}).results(&.{to_ty}).build();
         return appendIfHasResult(self, op);
     }
 
@@ -5283,7 +5125,7 @@ pub const MlirCodegen = struct {
         if (fw == tw) return v;
         const opname = if (fw > tw) "llvm.fptrunc" else "llvm.fpext";
         const op = OpBuilder.init(opname, self.loc).builder()
-            .add_operands(&.{v}).add_results(&.{to_ty}).build();
+            .operands(&.{v}).results(&.{to_ty}).build();
         return appendIfHasResult(self, op);
     }
 
@@ -5329,30 +5171,30 @@ pub const MlirCodegen = struct {
         const from_ty = v.getType();
         const ext_opname = if (from_signed) "llvm.sext" else "llvm.zext";
         const min_in_from = appendIfHasResult(self, OpBuilder.init(ext_opname, self.loc).builder()
-            .add_operands(&.{lim.min}).add_results(&.{from_ty}).build());
+            .operands(&.{lim.min}).results(&.{from_ty}).build());
         const max_in_from = appendIfHasResult(self, OpBuilder.init(ext_opname, self.loc).builder()
-            .add_operands(&.{lim.max}).add_results(&.{from_ty}).build());
+            .operands(&.{lim.max}).results(&.{from_ty}).build());
 
         const pred_lt: i64 = if (from_signed) CMP_SLT else CMP_ULT;
         const pred_gt: i64 = if (from_signed) CMP_SGT else CMP_UGT;
 
         const lt = OpBuilder.init("arith.cmpi", self.loc).builder()
-            .add_operands(&.{ v, min_in_from })
-            .add_attributes(&.{self.named("predicate", mlir.Attribute.integerAttrGet(self.i64_ty, pred_lt))})
-            .add_results(&.{self.i1_ty}).build();
+            .operands(&.{ v, min_in_from })
+            .attributes(&.{self.named("predicate", mlir.Attribute.integerAttrGet(self.i64_ty, pred_lt))})
+            .results(&.{self.i1_ty}).build();
         const gt = OpBuilder.init("arith.cmpi", self.loc).builder()
-            .add_operands(&.{ v, max_in_from })
-            .add_attributes(&.{self.named("predicate", mlir.Attribute.integerAttrGet(self.i64_ty, pred_gt))})
-            .add_results(&.{self.i1_ty}).build();
+            .operands(&.{ v, max_in_from })
+            .attributes(&.{self.named("predicate", mlir.Attribute.integerAttrGet(self.i64_ty, pred_gt))})
+            .results(&.{self.i1_ty}).build();
         self.append(lt);
         self.append(gt);
 
         // select low/high in source domain
         const sel_low = OpBuilder.init("arith.select", self.loc).builder()
-            .add_operands(&.{ lt.getResult(0), min_in_from, v }).add_results(&.{from_ty}).build();
+            .operands(&.{ lt.getResult(0), min_in_from, v }).results(&.{from_ty}).build();
         self.append(sel_low);
         const sel_hi = OpBuilder.init("arith.select", self.loc).builder()
-            .add_operands(&.{ gt.getResult(0), max_in_from, sel_low.getResult(0) }).add_results(&.{from_ty}).build();
+            .operands(&.{ gt.getResult(0), max_in_from, sel_low.getResult(0) }).results(&.{from_ty}).build();
         self.append(sel_hi);
 
         // Final convert to destination width
@@ -5366,17 +5208,17 @@ pub const MlirCodegen = struct {
         const max_f = self.castIntToFloat(lim.max, ft, signed_to);
 
         const lt = OpBuilder.init("arith.cmpf", self.loc).builder()
-            .add_operands(&.{ v, min_f })
-            .add_attributes(&.{self.named("predicate", mlir.Attribute.integerAttrGet(self.i64_ty, F_CMP_OLT))})
-            .add_results(&.{self.i1_ty}).build();
+            .operands(&.{ v, min_f })
+            .attributes(&.{self.named("predicate", mlir.Attribute.integerAttrGet(self.i64_ty, F_CMP_OLT))})
+            .results(&.{self.i1_ty}).build();
         const gt = OpBuilder.init("arith.cmpf", self.loc).builder()
-            .add_operands(&.{ v, max_f })
-            .add_attributes(&.{self.named("predicate", mlir.Attribute.integerAttrGet(self.i64_ty, F_CMP_OGT))})
-            .add_results(&.{self.i1_ty}).build();
+            .operands(&.{ v, max_f })
+            .attributes(&.{self.named("predicate", mlir.Attribute.integerAttrGet(self.i64_ty, F_CMP_OGT))})
+            .results(&.{self.i1_ty}).build();
         const isnan = OpBuilder.init("arith.cmpf", self.loc).builder()
-            .add_operands(&.{ v, v })
-            .add_attributes(&.{self.named("predicate", mlir.Attribute.integerAttrGet(self.i64_ty, F_CMP_UNO))})
-            .add_results(&.{self.i1_ty}).build();
+            .operands(&.{ v, v })
+            .attributes(&.{self.named("predicate", mlir.Attribute.integerAttrGet(self.i64_ty, F_CMP_UNO))})
+            .results(&.{self.i1_ty}).build();
         self.append(lt);
         self.append(gt);
         self.append(isnan);
@@ -5386,10 +5228,10 @@ pub const MlirCodegen = struct {
 
         // clamp
         const sel_low = OpBuilder.init("arith.select", self.loc).builder()
-            .add_operands(&.{ lt.getResult(0), min_f, v }).add_results(&.{ft}).build();
+            .operands(&.{ lt.getResult(0), min_f, v }).results(&.{ft}).build();
         self.append(sel_low);
         const sel_hi = OpBuilder.init("arith.select", self.loc).builder()
-            .add_operands(&.{ gt.getResult(0), max_f, sel_low.getResult(0) }).add_results(&.{ft}).build();
+            .operands(&.{ gt.getResult(0), max_f, sel_low.getResult(0) }).results(&.{ft}).build();
         self.append(sel_hi);
 
         return self.castFloatToInt(sel_hi.getResult(0), to_ty, signed_to);
@@ -5403,12 +5245,12 @@ pub const MlirCodegen = struct {
 
         // Re-extend to source width and compare equality (round-trip check)
         const widened = appendIfHasResult(self, OpBuilder.init(if (from_signed) "llvm.sext" else "llvm.zext", self.loc).builder()
-            .add_operands(&.{narrowed}).add_results(&.{from_ty}).build());
+            .operands(&.{narrowed}).results(&.{from_ty}).build());
 
         const ok = OpBuilder.init("arith.cmpi", self.loc).builder()
-            .add_operands(&.{ v, widened })
-            .add_attributes(&.{self.named("predicate", mlir.Attribute.integerAttrGet(self.i64_ty, CMP_EQ))})
-            .add_results(&.{self.i1_ty}).build();
+            .operands(&.{ v, widened })
+            .attributes(&.{self.named("predicate", mlir.Attribute.integerAttrGet(self.i64_ty, CMP_EQ))})
+            .results(&.{self.i1_ty}).build();
         self.append(ok);
         self.emitAssertCall(ok.getResult(0)); // trap if overflow
 
@@ -5422,17 +5264,17 @@ pub const MlirCodegen = struct {
         const max_f = self.castIntToFloat(lim.max, ft, signed_to);
 
         const lt = OpBuilder.init("arith.cmpf", self.loc).builder()
-            .add_operands(&.{ v, min_f })
-            .add_attributes(&.{self.named("predicate", mlir.Attribute.integerAttrGet(self.i64_ty, F_CMP_OLT))})
-            .add_results(&.{self.i1_ty}).build();
+            .operands(&.{ v, min_f })
+            .attributes(&.{self.named("predicate", mlir.Attribute.integerAttrGet(self.i64_ty, F_CMP_OLT))})
+            .results(&.{self.i1_ty}).build();
         const gt = OpBuilder.init("arith.cmpf", self.loc).builder()
-            .add_operands(&.{ v, max_f })
-            .add_attributes(&.{self.named("predicate", mlir.Attribute.integerAttrGet(self.i64_ty, F_CMP_OGT))})
-            .add_results(&.{self.i1_ty}).build();
+            .operands(&.{ v, max_f })
+            .attributes(&.{self.named("predicate", mlir.Attribute.integerAttrGet(self.i64_ty, F_CMP_OGT))})
+            .results(&.{self.i1_ty}).build();
         const isnan = OpBuilder.init("arith.cmpf", self.loc).builder()
-            .add_operands(&.{ v, v })
-            .add_attributes(&.{self.named("predicate", mlir.Attribute.integerAttrGet(self.i64_ty, F_CMP_UNO))})
-            .add_results(&.{self.i1_ty}).build();
+            .operands(&.{ v, v })
+            .attributes(&.{self.named("predicate", mlir.Attribute.integerAttrGet(self.i64_ty, F_CMP_UNO))})
+            .results(&.{self.i1_ty}).build();
         self.append(lt);
         self.append(gt);
         self.append(isnan);
@@ -5449,45 +5291,45 @@ pub const MlirCodegen = struct {
 
     // --- The normalized "normal cast" (includes Complex + slice→int quirk) ---
 
-    fn emitCastNormal(self: *MlirCodegen, store: *types.TypeStore, dst_sr: types.TypeId, to_ty: mlir.Type, from_v: mlir.Value, src_sr: types.TypeId) !mlir.Value {
+    fn emitCastNormal(self: *MlirCodegen, dst_sr: types.TypeId, to_ty: mlir.Type, from_v: mlir.Value, src_sr: types.TypeId) !mlir.Value {
         var from_ty = from_v.getType();
 
         if (isLLVMPtr(from_ty) and mlir.LLVM.isLLVMStructType(to_ty)) {
             var load = OpBuilder.init("llvm.load", self.loc).builder()
-                .add_operands(&.{from_v})
-                .add_results(&.{to_ty}).build();
+                .operands(&.{from_v})
+                .results(&.{to_ty}).build();
             self.append(load);
             return load.getResult(0);
         }
 
         // Special-case: build an ErrorSet value from a non-error value.
         // This creates the Ok variant with tag = 0 and coerces the payload.
-        if (store.getKind(dst_sr) == .ErrorSet and store.getKind(src_sr) != .ErrorSet) {
-            const es = store.get(.ErrorSet, dst_sr);
+        if (self.context.type_store.getKind(dst_sr) == .ErrorSet and self.context.type_store.getKind(src_sr) != .ErrorSet) {
+            const es = self.context.type_store.get(.ErrorSet, dst_sr);
 
             // Construct the union storage type: union { Ok: value_ty, Err: error_ty }
-            const ok_name = store.strs.intern("Ok");
-            const err_name = store.strs.intern("Err");
+            const ok_name = self.context.type_store.strs.intern("Ok");
+            const err_name = self.context.type_store.strs.intern("Err");
             var union_fields = [_]types.TypeStore.StructFieldArg{
                 .{ .name = ok_name, .ty = es.value_ty },
                 .{ .name = err_name, .ty = es.error_ty },
             };
-            const union_sr = store.mkUnion(&union_fields);
-            const union_mlir = try self.llvmTypeOf(store, union_sr);
+            const union_sr = self.context.type_store.mkUnion(&union_fields);
+            const union_mlir = try self.llvmTypeOf(union_sr);
 
             // Coerce the incoming value to the Ok payload type if needed.
             var payload_val = from_v;
-            const ok_payload_mlir = try self.llvmTypeOf(store, es.value_ty);
+            const ok_payload_mlir = try self.llvmTypeOf(es.value_ty);
             if (!payload_val.getType().equal(ok_payload_mlir)) {
-                payload_val = try self.coerceOnBranch(payload_val, ok_payload_mlir, es.value_ty, src_sr, store);
+                payload_val = try self.coerceOnBranch(payload_val, ok_payload_mlir, es.value_ty, src_sr);
             }
 
             // Materialize the union storage by writing the Ok payload at offset 0.
             const tmp_union_ptr = self.spillAgg(self.undefOf(union_mlir), union_mlir, 0);
             self.storeAt(tmp_union_ptr, payload_val, 0);
             var ld_union = OpBuilder.init("llvm.load", self.loc).builder()
-                .add_operands(&.{tmp_union_ptr})
-                .add_results(&.{union_mlir}).build();
+                .operands(&.{tmp_union_ptr})
+                .results(&.{union_mlir}).build();
             self.append(ld_union);
 
             // Assemble the ErrorSet aggregate: { tag: i32 = 0, payload: union }
@@ -5499,14 +5341,14 @@ pub const MlirCodegen = struct {
         }
 
         // Complex target?
-        if (store.getKind(dst_sr) == .Complex) {
-            const tgt = store.get(.Complex, dst_sr);
-            const elem_ty = self.llvmTypeOf(store, tgt.elem) catch unreachable;
+        if (self.context.type_store.getKind(dst_sr) == .Complex) {
+            const tgt = self.context.type_store.get(.Complex, dst_sr);
+            const elem_ty = self.llvmTypeOf(tgt.elem) catch unreachable;
 
-            const src_kind = store.getKind(src_sr);
+            const src_kind = self.context.type_store.getKind(src_sr);
             if (src_kind == .Complex) {
-                const src_c = store.get(.Complex, src_sr);
-                const src_elem_ty = self.llvmTypeOf(store, src_c.elem) catch unreachable;
+                const src_c = self.context.type_store.get(.Complex, src_sr);
+                const src_elem_ty = self.llvmTypeOf(src_c.elem) catch unreachable;
                 if (sameType(src_elem_ty, elem_ty)) return from_v;
 
                 const re0 = self.complexRe(from_v, src_elem_ty);
@@ -5520,7 +5362,7 @@ pub const MlirCodegen = struct {
                 const from_is_f = from_ty.isAFloat();
                 var re_val: mlir.Value = from_v;
                 if (from_is_int and elem_ty.isAFloat()) {
-                    const signed_from = self.isSignedInt(store, src_sr);
+                    const signed_from = self.isSignedInt(src_sr);
                     re_val = self.castIntToFloat(from_v, elem_ty, signed_from);
                 } else if (from_is_f and elem_ty.isAFloat()) {
                     re_val = self.resizeFloat(from_v, from_ty, elem_ty);
@@ -5531,7 +5373,7 @@ pub const MlirCodegen = struct {
         }
 
         // Special-case slice -> int coercion artifact
-        if (store.getKind(src_sr) == .Slice and to_ty.isAInteger()) {
+        if (self.context.type_store.getKind(src_sr) == .Slice and to_ty.isAInteger()) {
             return self.constInt(to_ty, 0);
         }
 
@@ -5547,15 +5389,15 @@ pub const MlirCodegen = struct {
         if (from_is_ptr and to_is_int) return self.castPtrToInt(from_v, to_ty);
         if (from_is_int and to_is_ptr) return self.castIntToPtr(from_v, to_ty);
 
-        if (from_is_int and to_is_int) return self.castIntToInt(from_v, from_ty, to_ty, self.isSignedInt(store, src_sr));
-        if (from_is_int and to_is_f) return self.castIntToFloat(from_v, to_ty, self.isSignedInt(store, src_sr));
-        if (from_is_f and to_is_int) return self.castFloatToInt(from_v, to_ty, self.isSignedInt(store, dst_sr));
+        if (from_is_int and to_is_int) return self.castIntToInt(from_v, from_ty, to_ty, self.isSignedInt(src_sr));
+        if (from_is_int and to_is_f) return self.castIntToFloat(from_v, to_ty, self.isSignedInt(src_sr));
+        if (from_is_f and to_is_int) return self.castFloatToInt(from_v, to_ty, self.isSignedInt(dst_sr));
         if (from_is_f and to_is_f) return self.resizeFloat(from_v, from_ty, to_ty);
 
-        if (try self.tryCopyAggregateValue(store, dst_sr, to_ty, from_v, src_sr, emitCastAggregateElement)) |agg|
+        if (try self.tryCopyAggregateValue(dst_sr, to_ty, from_v, src_sr, emitCastAggregateElement)) |agg|
             return agg;
 
-        if (try self.reinterpretAggregateViaSpill(store, dst_sr, to_ty, from_v, src_sr)) |agg|
+        if (try self.reinterpretAggregateViaSpill(dst_sr, to_ty, from_v, src_sr)) |agg|
             return agg;
         if (self.isUndefValue(from_v)) return self.undefOf(to_ty);
 
@@ -5563,37 +5405,37 @@ pub const MlirCodegen = struct {
 
         // Fallback: bitcast (ensure size match upstream)
         const op = OpBuilder.init("llvm.bitcast", self.loc).builder()
-            .add_operands(&.{from_v}).add_results(&.{to_ty}).build();
+            .operands(&.{from_v}).results(&.{to_ty}).build();
         return appendIfHasResult(self, op);
     }
 
     // --- Public dispatcher for all cast kinds ---
 
-    fn emitCast(self: *MlirCodegen, kind: tir.OpKind, store: *types.TypeStore, dst_sr: types.TypeId, src_sr: types.TypeId, from_v: mlir.Value) !mlir.Value {
-        const to_ty = try self.llvmTypeOf(store, dst_sr);
+    fn emitCast(self: *MlirCodegen, kind: tir.OpKind, dst_sr: types.TypeId, src_sr: types.TypeId, from_v: mlir.Value) !mlir.Value {
+        const to_ty = try self.llvmTypeOf(dst_sr);
         const from_ty = from_v.getType();
 
         switch (kind) {
             else => unreachable, // not a cast
-            .CastNormal => return self.emitCastNormal(store, dst_sr, to_ty, from_v, src_sr),
+            .CastNormal => return self.emitCastNormal(dst_sr, to_ty, from_v, src_sr),
 
             .CastWrap => {
                 if (from_ty.isAInteger() and to_ty.isAInteger()) {
-                    return self.castIntToInt(from_v, from_ty, to_ty, self.isSignedInt(store, src_sr)); // wrap == modular
+                    return self.castIntToInt(from_v, from_ty, to_ty, self.isSignedInt(src_sr)); // wrap == modular
                 }
                 // others: same as normal
-                return self.emitCastNormal(store, dst_sr, to_ty, from_v, src_sr);
+                return self.emitCastNormal(dst_sr, to_ty, from_v, src_sr);
             },
 
             .CastSaturate => {
                 if (from_ty.isAInteger() and to_ty.isAInteger()) {
-                    return self.saturateIntToInt(from_v, self.isSignedInt(store, src_sr), to_ty, self.isSignedInt(store, dst_sr));
+                    return self.saturateIntToInt(from_v, self.isSignedInt(src_sr), to_ty, self.isSignedInt(dst_sr));
                 }
                 if (from_ty.isAFloat() and to_ty.isAInteger()) {
-                    return self.saturateFloatToInt(from_v, to_ty, self.isSignedInt(store, dst_sr));
+                    return self.saturateFloatToInt(from_v, to_ty, self.isSignedInt(dst_sr));
                 }
                 // others: normal behavior
-                return self.emitCastNormal(store, dst_sr, to_ty, from_v, src_sr);
+                return self.emitCastNormal(dst_sr, to_ty, from_v, src_sr);
             },
 
             .CastChecked => {
@@ -5601,10 +5443,10 @@ pub const MlirCodegen = struct {
                 const from_ty_mlir = from_v.getType();
 
                 // The result of a checked cast is always an Optional type.
-                const optional_sr = store.get(.Optional, dst_sr);
-                const optional_mlir_ty = try self.llvmTypeOf(store, dst_sr);
-                const optional_elem_mlir_ty = try self.llvmTypeOf(store, optional_sr.elem);
-                const optional_elem_is_signed = self.isSignedInt(store, optional_sr.elem);
+                const optional_sr = self.context.type_store.get(.Optional, dst_sr);
+                const optional_mlir_ty = try self.llvmTypeOf(dst_sr);
+                const optional_elem_mlir_ty = try self.llvmTypeOf(optional_sr.elem);
+                const optional_elem_is_signed = self.isSignedInt(optional_sr.elem);
 
                 var cast_ok: mlir.Value = self.constBool(true);
                 var casted_val: mlir.Value = undefined;
@@ -5613,8 +5455,8 @@ pub const MlirCodegen = struct {
                     // Integer to Integer checked cast
                     const fw = try intOrFloatWidth(from_ty_mlir);
                     const tw = try intOrFloatWidth(optional_elem_mlir_ty);
-                    const from_signed = self.isSignedInt(store, src_sr);
-                    // const to_signed = self.isSignedInt(store, store.get(.Optional, dst_sr).elem);
+                    const from_signed = self.isSignedInt(src_sr);
+                    // const to_signed = self.isSignedInt(store.get(.Optional, dst_sr).elem);
 
                     if (fw == tw) {
                         casted_val = from_v;
@@ -5622,11 +5464,11 @@ pub const MlirCodegen = struct {
                         // Truncation: check for overflow
                         const narrowed = self.castIntToInt(from_v, from_ty_mlir, optional_elem_mlir_ty, from_signed);
                         const widened = appendIfHasResult(self, OpBuilder.init(if (from_signed) "llvm.sext" else "llvm.zext", self.loc).builder()
-                            .add_operands(&.{narrowed}).add_results(&.{from_ty_mlir}).build());
+                            .operands(&.{narrowed}).results(&.{from_ty_mlir}).build());
                         cast_ok = appendIfHasResult(self, OpBuilder.init("arith.cmpi", self.loc).builder()
-                            .add_operands(&.{ from_v, widened })
-                            .add_attributes(&.{self.named("predicate", mlir.Attribute.integerAttrGet(self.i64_ty, CMP_EQ))})
-                            .add_results(&.{self.i1_ty}).build());
+                            .operands(&.{ from_v, widened })
+                            .attributes(&.{self.named("predicate", mlir.Attribute.integerAttrGet(self.i64_ty, CMP_EQ))})
+                            .results(&.{self.i1_ty}).build());
                         casted_val = narrowed;
                     } else {
                         // Extension: always succeeds
@@ -5640,17 +5482,17 @@ pub const MlirCodegen = struct {
                     const max_f = self.castIntToFloat(lim.max, ft, optional_elem_is_signed);
 
                     const lt = appendIfHasResult(self, OpBuilder.init("arith.cmpf", self.loc).builder()
-                        .add_operands(&.{ from_v, min_f })
-                        .add_attributes(&.{self.named("predicate", mlir.Attribute.integerAttrGet(self.i64_ty, F_CMP_OLT))})
-                        .add_results(&.{self.i1_ty}).build());
+                        .operands(&.{ from_v, min_f })
+                        .attributes(&.{self.named("predicate", mlir.Attribute.integerAttrGet(self.i64_ty, F_CMP_OLT))})
+                        .results(&.{self.i1_ty}).build());
                     const gt = appendIfHasResult(self, OpBuilder.init("arith.cmpf", self.loc).builder()
-                        .add_operands(&.{ from_v, max_f })
-                        .add_attributes(&.{self.named("predicate", mlir.Attribute.integerAttrGet(self.i64_ty, F_CMP_OGT))})
-                        .add_results(&.{self.i1_ty}).build());
+                        .operands(&.{ from_v, max_f })
+                        .attributes(&.{self.named("predicate", mlir.Attribute.integerAttrGet(self.i64_ty, F_CMP_OGT))})
+                        .results(&.{self.i1_ty}).build());
                     const isnan = appendIfHasResult(self, OpBuilder.init("arith.cmpf", self.loc).builder()
-                        .add_operands(&.{ from_v, from_v })
-                        .add_attributes(&.{self.named("predicate", mlir.Attribute.integerAttrGet(self.i64_ty, F_CMP_UNO))})
-                        .add_results(&.{self.i1_ty}).build());
+                        .operands(&.{ from_v, from_v })
+                        .attributes(&.{self.named("predicate", mlir.Attribute.integerAttrGet(self.i64_ty, F_CMP_UNO))})
+                        .results(&.{self.i1_ty}).build());
 
                     var bad = self.boolOr(lt, gt);
                     bad = self.boolOr(bad, isnan);
@@ -5658,27 +5500,27 @@ pub const MlirCodegen = struct {
 
                     // Clamp the source value into the integer domain (or a benign value for NaN)
                     const clamped_low = appendIfHasResult(self, OpBuilder.init("arith.select", self.loc).builder()
-                        .add_operands(&.{ lt, min_f, from_v }).add_results(&.{ft}).build());
+                        .operands(&.{ lt, min_f, from_v }).results(&.{ft}).build());
                     const clamped_high = appendIfHasResult(self, OpBuilder.init("arith.select", self.loc).builder()
-                        .add_operands(&.{ gt, max_f, clamped_low }).add_results(&.{ft}).build());
+                        .operands(&.{ gt, max_f, clamped_low }).results(&.{ft}).build());
                     const zero = self.constFloat(ft, 0.0);
                     const sanitized = appendIfHasResult(self, OpBuilder.init("arith.select", self.loc).builder()
-                        .add_operands(&.{ isnan, zero, clamped_high }).add_results(&.{ft}).build());
+                        .operands(&.{ isnan, zero, clamped_high }).results(&.{ft}).build());
 
                     casted_val = self.castFloatToInt(sanitized, optional_elem_mlir_ty, optional_elem_is_signed);
 
                     // Verify round-trip back to float to catch fractional values.
                     const roundtrip = self.castIntToFloat(casted_val, ft, optional_elem_is_signed);
                     const same = appendIfHasResult(self, OpBuilder.init("arith.cmpf", self.loc).builder()
-                        .add_operands(&.{ from_v, roundtrip })
-                        .add_attributes(&.{self.named("predicate", mlir.Attribute.integerAttrGet(self.i64_ty, F_CMP_OEQ))})
-                        .add_results(&.{self.i1_ty}).build());
+                        .operands(&.{ from_v, roundtrip })
+                        .attributes(&.{self.named("predicate", mlir.Attribute.integerAttrGet(self.i64_ty, F_CMP_OEQ))})
+                        .results(&.{self.i1_ty}).build());
                     cast_ok = self.boolAnd(cast_ok, same);
                 } else {
                     // For other types (ptr<->int, float<->float), treat as normal cast for now.
                     // If it's a normal cast that would fail, then the checked cast should produce None.
                     // This is a simplification; a more robust solution would involve more specific checks.
-                    casted_val = try self.emitCastNormal(store, optional_sr.elem, optional_elem_mlir_ty, from_v, src_sr);
+                    casted_val = try self.emitCastNormal(optional_sr.elem, optional_elem_mlir_ty, from_v, src_sr);
                     // Assume success for now, or add more complex checks if needed.
                     cast_ok = self.constBool(true);
                 }
@@ -5692,8 +5534,8 @@ pub const MlirCodegen = struct {
         }
     }
 
-    fn llvmTypeOf(self: *MlirCodegen, store: *types.TypeStore, ty: types.TypeId) !mlir.Type {
-        return switch (store.getKind(ty)) {
+    fn llvmTypeOf(self: *MlirCodegen, ty: types.TypeId) !mlir.Type {
+        return switch (self.context.type_store.getKind(ty)) {
             .Void => self.void_ty,
             .Noreturn => self.void_ty,
             .Bool => self.i1_ty,
@@ -5716,8 +5558,8 @@ pub const MlirCodegen = struct {
             },
 
             .Array => blk: {
-                const arr_ty = store.get(.Array, ty);
-                const e = try self.llvmTypeOf(store, arr_ty.elem);
+                const arr_ty = self.context.type_store.get(.Array, ty);
+                const e = try self.llvmTypeOf(arr_ty.elem);
                 const len = switch (arr_ty.len) {
                     .Concrete => |l| l,
                     .Unresolved => std.debug.panic("llvmTypeOf on unresolved array", .{}),
@@ -5725,20 +5567,20 @@ pub const MlirCodegen = struct {
                 break :blk mlir.LLVM.getLLVMArrayType(e, @intCast(len));
             },
             .DynArray => blk: {
-                const dyn_ty = store.get(.DynArray, ty);
-                const elem_ptr_sr = store.mkPtr(dyn_ty.elem, false);
-                const ptr_ty = try self.llvmTypeOf(store, elem_ptr_sr);
+                const dyn_ty = self.context.type_store.get(.DynArray, ty);
+                const elem_ptr_sr = self.context.type_store.mkPtr(dyn_ty.elem, false);
+                const ptr_ty = try self.llvmTypeOf(elem_ptr_sr);
                 const fields = [_]mlir.Type{ ptr_ty, self.i64_ty, self.i64_ty };
                 break :blk mlir.LLVM.getLLVMStructTypeLiteral(self.mlir_ctx, &fields, false);
             },
             .Simd => blk: {
-                const simd_ty = store.get(.Simd, ty);
-                const elem_ty = try self.llvmTypeOf(store, simd_ty.elem);
+                const simd_ty = self.context.type_store.get(.Simd, ty);
+                const elem_ty = try self.llvmTypeOf(simd_ty.elem);
                 var shape = [_]i64{@intCast(simd_ty.lanes)};
                 break :blk mlir.Type.getVectorType(1, shape[0..], elem_ty);
             },
             .Tensor => blk: {
-                const ten = store.get(.Tensor, ty);
+                const ten = self.context.type_store.get(.Tensor, ty);
                 const rank: usize = @intCast(ten.rank);
                 var shape_storage: [types.max_tensor_rank]i64 = undefined;
                 var shape_slice: []const i64 = &[_]i64{};
@@ -5749,55 +5591,55 @@ pub const MlirCodegen = struct {
                     }
                     shape_slice = shape_storage[0..rank];
                 }
-                const elem_ty = try self.llvmTypeOf(store, ten.elem);
+                const elem_ty = try self.llvmTypeOf(ten.elem);
                 break :blk mlir.Type.getRankedTensorType(@intCast(rank), shape_slice, elem_ty, mlir.Attribute.getNull());
             },
             .Complex => blk: {
-                const c = store.get(.Complex, ty);
-                const elem = try self.llvmTypeOf(store, c.elem);
+                const c = self.context.type_store.get(.Complex, ty);
+                const elem = try self.llvmTypeOf(c.elem);
                 break :blk mlir.Type.getComplexType(elem);
             },
 
             .Optional => blk: {
-                const opt_ty = store.get(.Optional, ty);
-                const inner = try self.llvmTypeOf(store, opt_ty.elem);
+                const opt_ty = self.context.type_store.get(.Optional, ty);
+                const inner = try self.llvmTypeOf(opt_ty.elem);
                 const fields = [_]mlir.Type{ self.i1_ty, inner };
                 break :blk mlir.LLVM.getLLVMStructTypeLiteral(self.mlir_ctx, &fields, false);
             },
 
             .ErrorSet => blk: {
-                const es = store.get(.ErrorSet, ty);
-                const ok_name = store.strs.intern("Ok");
-                const err_name = store.strs.intern("Err");
+                const es = self.context.type_store.get(.ErrorSet, ty);
+                const ok_name = self.context.type_store.strs.intern("Ok");
+                const err_name = self.context.type_store.strs.intern("Err");
                 var union_fields = [_]types.TypeStore.StructFieldArg{
                     .{ .name = ok_name, .ty = es.value_ty },
                     .{ .name = err_name, .ty = es.error_ty },
                 };
-                const payload_union = store.mkUnion(&union_fields);
-                const payload_mlir = try self.llvmTypeOf(store, payload_union);
+                const payload_union = self.context.type_store.mkUnion(&union_fields);
+                const payload_mlir = try self.llvmTypeOf(payload_union);
                 const parts = [_]mlir.Type{ self.i32_ty, payload_mlir };
                 break :blk mlir.LLVM.getLLVMStructTypeLiteral(self.mlir_ctx, &parts, false);
             },
 
             .Tuple => blk: {
-                const tup_ty = store.get(.Tuple, ty);
+                const tup_ty = self.context.type_store.get(.Tuple, ty);
                 const n = tup_ty.elems.len;
                 var buf = try self.gpa.alloc(mlir.Type, n);
                 defer self.gpa.free(buf);
-                const elems = store.type_pool.slice(tup_ty.elems);
-                for (elems, 0..) |eid, i| buf[i] = try self.llvmTypeOf(store, eid);
+                const elems = self.context.type_store.type_pool.slice(tup_ty.elems);
+                for (elems, 0..) |eid, i| buf[i] = try self.llvmTypeOf(eid);
                 break :blk mlir.LLVM.getLLVMStructTypeLiteral(self.mlir_ctx, buf, false);
             },
 
             .Struct => blk: {
-                const st_ty = store.get(.Struct, ty);
+                const st_ty = self.context.type_store.get(.Struct, ty);
                 const n = st_ty.fields.len;
                 var buf = try self.gpa.alloc(mlir.Type, n);
                 defer self.gpa.free(buf);
-                const fields = store.field_pool.slice(st_ty.fields);
+                const fields = self.context.type_store.field_pool.slice(st_ty.fields);
                 for (fields, 0..) |f, i| {
-                    const field = store.Field.get(f);
-                    buf[i] = try self.llvmTypeOf(store, field.ty);
+                    const field = self.context.type_store.Field.get(f);
+                    buf[i] = try self.llvmTypeOf(field.ty);
                 }
                 break :blk mlir.LLVM.getLLVMStructTypeLiteral(self.mlir_ctx, buf, false);
             },
@@ -5808,16 +5650,16 @@ pub const MlirCodegen = struct {
             },
 
             .Union => blk: {
-                const un_ty = store.get(.Union, ty);
+                const un_ty = self.context.type_store.get(.Union, ty);
                 const n = un_ty.fields.len;
                 if (n == 0) break :blk mlir.LLVM.getLLVMStructTypeLiteral(self.mlir_ctx, &[_]mlir.Type{}, false);
 
                 var max_size: u64 = 0;
 
-                const fields = store.field_pool.slice(un_ty.fields);
+                const fields = self.context.type_store.field_pool.slice(un_ty.fields);
                 for (fields) |f| {
-                    const field = store.Field.get(f);
-                    const sa = abi.abiSizeAlign(self, store, field.ty);
+                    const field = self.context.type_store.Field.get(f);
+                    const sa = abi.abiSizeAlign(self, field.ty);
                     if (sa.size > max_size) {
                         max_size = sa.size;
                     }
@@ -5827,8 +5669,8 @@ pub const MlirCodegen = struct {
             },
 
             .Error => blk: {
-                const e_ty = store.get(.Error, ty);
-                const fields = store.field_pool.slice(e_ty.variants);
+                const e_ty = self.context.type_store.get(.Error, ty);
+                const fields = self.context.type_store.field_pool.slice(e_ty.variants);
                 if (fields.len == 0) {
                     const parts = [_]mlir.Type{self.i32_ty};
                     break :blk mlir.LLVM.getLLVMStructTypeLiteral(self.mlir_ctx, &parts, false);
@@ -5837,37 +5679,37 @@ pub const MlirCodegen = struct {
                 var payload_types = try self.gpa.alloc(types.TypeStore.StructFieldArg, fields.len);
                 defer self.gpa.free(payload_types);
                 for (fields, 0..) |f, i| {
-                    const field = store.Field.get(f);
+                    const field = self.context.type_store.Field.get(f);
                     payload_types[i] = .{ .name = field.name, .ty = field.ty };
                 }
-                const union_ty = store.mkUnion(payload_types);
-                const union_mlir_ty = try self.llvmTypeOf(store, union_ty);
+                const union_ty = self.context.type_store.mkUnion(payload_types);
+                const union_mlir_ty = try self.llvmTypeOf(union_ty);
 
                 const parts = [_]mlir.Type{ self.i32_ty, union_mlir_ty };
                 break :blk mlir.LLVM.getLLVMStructTypeLiteral(self.mlir_ctx, &parts, false);
             },
 
             .Variant => blk: {
-                const v_ty = store.get(.Variant, ty);
+                const v_ty = self.context.type_store.get(.Variant, ty);
                 const n = v_ty.variants.len;
                 var payload_types = try self.gpa.alloc(types.TypeStore.StructFieldArg, n);
                 defer self.gpa.free(payload_types);
 
-                const fields = store.field_pool.slice(v_ty.variants);
+                const fields = self.context.type_store.field_pool.slice(v_ty.variants);
                 for (fields, 0..) |f, i| {
-                    const field = store.Field.get(f);
+                    const field = self.context.type_store.Field.get(f);
                     payload_types[i] = .{ .name = field.name, .ty = field.ty };
                 }
 
-                const union_ty = store.mkUnion(payload_types);
-                const union_mlir_ty = try self.llvmTypeOf(store, union_ty);
+                const union_ty = self.context.type_store.mkUnion(payload_types);
+                const union_mlir_ty = try self.llvmTypeOf(union_ty);
 
                 const fields_mlir = [_]mlir.Type{ self.i32_ty, union_mlir_ty };
                 break :blk mlir.LLVM.getLLVMStructTypeLiteral(self.mlir_ctx, &fields_mlir, false);
             },
 
             .TypeType => return self.llvm_ptr_ty,
-            else => std.debug.panic("unhandled type: {}", .{store.getKind(ty)}),
+            else => std.debug.panic("unhandled type: {}", .{self.context.type_store.getKind(ty)}),
         };
     }
 };
