@@ -2289,6 +2289,30 @@ pub const MlirCodegen = struct {
                 const prev_loc = self.pushLocation(p.loc);
                 defer self.loc = prev_loc;
                 const result_kind = store.getKind(p.ty);
+                if (result_kind == .Simd) {
+                    const simd_ty = store.get(.Simd, p.ty);
+                    const lanes: usize = @intCast(simd_ty.lanes);
+                    const elems = t.instrs.value_pool.slice(p.elems);
+                    std.debug.assert(elems.len == lanes);
+
+                    const elem_mlir = try self.llvmTypeOf(store, simd_ty.elem);
+                    var operands = try self.gpa.alloc(mlir.Value, elems.len);
+                    defer self.gpa.free(operands);
+
+                    for (elems, 0..) |vid, i| {
+                        var v = self.value_map.get(vid).?;
+                        if (!v.getType().equal(elem_mlir)) {
+                            v = try self.coerceOnBranch(v, elem_mlir, simd_ty.elem, self.srTypeOfValue(t, vid), store);
+                        }
+                        operands[i] = v;
+                    }
+
+                    var literal = OpBuilder.init("vector.from_elements", self.loc).builder()
+                        .add_operands(operands)
+                        .add_results(&.{res_ty}).build();
+                    self.append(literal);
+                    break :blk literal.getResult(0);
+                }
                 if (result_kind == .Tensor) {
                     const tensor_sr = store.get(.Tensor, p.ty);
                     const tensor_ty = try self.llvmTypeOf(store, p.ty);
@@ -2636,7 +2660,7 @@ pub const MlirCodegen = struct {
                     var static_offsets_buf: [types.max_tensor_rank]i64 = undefined;
                     var static_sizes_buf: [types.max_tensor_rank]i64 = undefined;
                     var static_strides_buf: [types.max_tensor_rank]i64 = undefined;
-                    static_offsets_buf[0] = 0;
+                    static_offsets_buf[0] = mlir.ShapedType.getDynamicStrideOrOffset();
                     static_sizes_buf[0] = 1;
                     static_strides_buf[0] = 1;
                     var j: usize = 1;
@@ -2649,7 +2673,7 @@ pub const MlirCodegen = struct {
                     const sizes_attr = mlir.Attribute.denseI64ArrayGet(self.mlir_ctx, static_sizes_buf[0..base_rank]);
                     const strides_attr = mlir.Attribute.denseI64ArrayGet(self.mlir_ctx, static_strides_buf[0..base_rank]);
 
-                    const operand_segment = mlir.Attribute.denseI32ArrayGet(self.mlir_ctx, &[_]i32{ @intCast(base_rank), 0, 0, 0 });
+                    const operand_segment = mlir.Attribute.denseI32ArrayGet(self.mlir_ctx, &[_]i32{ 1, 1, 0, 0 });
 
                     var extract_attrs = [_]mlir.NamedAttribute{
                         self.named("static_offsets", offsets_attr),
@@ -2657,15 +2681,6 @@ pub const MlirCodegen = struct {
                         self.named("static_strides", strides_attr),
                         self.named("operand_segment_sizes", operand_segment),
                     };
-
-                    const idx_ty = mlir.Type.getIndexType(self.mlir_ctx);
-                    const index_ty = mlir.Type.getRankedTensorType(1, &.{1}, idx_ty, mlir.Attribute.getNull());
-                    const idx_op = OpBuilder.init("tensor.from_elements", self.loc).builder()
-                        .add_operands(&.{idx_val})
-                        .add_results(&.{index_ty})
-                        .build();
-                    self.append(idx_op);
-                    idx_val = idx_op.getResult(0);
 
                     var extract_operands = [_]mlir.Value{ base, idx_val };
                     var slice = OpBuilder.init("tensor.extract_slice", self.loc).builder()
@@ -2700,6 +2715,15 @@ pub const MlirCodegen = struct {
                         .add_attributes(&collapse_attrs).build();
                     self.append(collapse);
                     break :blk collapse.getResult(0);
+                }
+
+                if (store.getKind(base_sr_ty) == .Simd) {
+                    const idx_val = try self.ensureIndexValue(self.value_map.get(p.index).?);
+                    var op = OpBuilder.init("vector.extractelement", self.loc).builder()
+                        .add_operands(&.{ base, idx_val })
+                        .add_results(&.{res_ty}).build();
+                    self.append(op);
+                    break :blk op.getResult(0);
                 }
 
                 if (res_sr_kind == .Slice) {
@@ -3769,6 +3793,23 @@ pub const MlirCodegen = struct {
     }
 
     fn zeroOf(self: *MlirCodegen, ty: mlir.Type) mlir.Value {
+        if (ty.isAVector()) {
+            const elem_ty = ty.getShapedElementType();
+            var elem_zero: mlir.Attribute = undefined;
+            if (elem_ty.isAFloat()) {
+                elem_zero = mlir.Attribute.floatAttrDoubleGet(self.mlir_ctx, elem_ty, 0.0);
+            } else if (elem_ty.isAInteger()) {
+                elem_zero = mlir.Attribute.integerAttrGet(elem_ty, 0);
+            } else {
+                return self.undefOf(ty);
+            }
+            const dense = mlir.Attribute.denseElementsAttrSplatGet(ty, elem_zero);
+            var const_op = OpBuilder.init("arith.constant", self.loc).builder()
+                .add_results(&.{ty})
+                .add_attributes(&.{self.named("value", dense)}).build();
+            self.append(const_op);
+            return const_op.getResult(0);
+        }
         var op = OpBuilder.init("llvm.mlir.zero", self.loc).builder()
             .add_results(&.{ty})
             .build();
@@ -3979,13 +4020,14 @@ pub const MlirCodegen = struct {
         const lhs = self.value_map.get(p.lhs).?;
         const rhs = self.value_map.get(p.rhs).?;
         const ty = try self.llvmTypeOf(store, p.ty);
+        const elem_ty = if (ty.isAVector()) ty.getShapedElementType() else ty;
 
         // Infer which of {add,sub,mul} from the names you already pass.
         const is_add = std.mem.eql(u8, intName, "llvm.add") and std.mem.eql(u8, floatName, "llvm.fadd");
         const is_sub = std.mem.eql(u8, intName, "llvm.sub") and std.mem.eql(u8, floatName, "llvm.fsub");
         // const is_mul = std.mem.eql(u8, intName, "llvm.mul") and std.mem.eql(u8, floatName, "llvm.fmul");
         //
-        const op_name = if (lhs.getType().isAFloat())
+        const op_name = if (elem_ty.isAFloat())
             (if (is_add) "arith.addf" else if (is_sub) "arith.subf" else "arith.mulf")
         else
             (if (is_add) "arith.addi" else if (is_sub) "arith.subi" else "arith.muli");
@@ -4069,7 +4111,8 @@ pub const MlirCodegen = struct {
     }
 
     fn arithDiv(self: *MlirCodegen, lhs: mlir.Value, rhs: mlir.Value, res_ty: mlir.Type, signed: bool) mlir.Value {
-        const op_name = if (lhs.getType().isAFloat()) "arith.divf" else (if (signed) "arith.divsi" else "arith.divui");
+        const elem_ty = if (res_ty.isAVector()) res_ty.getShapedElementType() else res_ty;
+        const op_name = if (elem_ty.isAFloat()) "arith.divf" else (if (signed) "arith.divsi" else "arith.divui");
         var op = OpBuilder.init(op_name, self.loc).builder()
             .add_operands(&.{ lhs, rhs })
             .add_results(&.{res_ty}).build();
@@ -4078,7 +4121,8 @@ pub const MlirCodegen = struct {
     }
 
     fn arithRem(self: *MlirCodegen, lhs: mlir.Value, rhs: mlir.Value, res_ty: mlir.Type, signed: bool) mlir.Value {
-        const op_name = if (lhs.getType().isAFloat()) "arith.remf" else (if (signed) "arith.remsi" else "arith.remui");
+        const elem_ty = if (res_ty.isAVector()) res_ty.getShapedElementType() else res_ty;
+        const op_name = if (elem_ty.isAFloat()) "arith.remf" else (if (signed) "arith.remsi" else "arith.remui");
         var op = OpBuilder.init(op_name, self.loc).builder()
             .add_operands(&.{ lhs, rhs })
             .add_results(&.{res_ty}).build();
@@ -5413,6 +5457,12 @@ pub const MlirCodegen = struct {
                     .Unresolved => std.debug.panic("llvmTypeOf on unresolved array", .{}),
                 };
                 break :blk mlir.LLVM.getLLVMArrayType(e, @intCast(len));
+            },
+            .Simd => blk: {
+                const simd_ty = store.get(.Simd, ty);
+                const elem_ty = try self.llvmTypeOf(store, simd_ty.elem);
+                var shape = [_]i64{@intCast(simd_ty.lanes)};
+                break :blk mlir.Type.getVectorType(1, shape[0..], elem_ty);
             },
             .Tensor => blk: {
                 const ten = store.get(.Tensor, ty);

@@ -617,6 +617,10 @@ pub const TypeStore = struct {
         if (self.findMap(key, value)) |id| return id;
         return self.add(.Map, .{ .key = key, .value = value });
     }
+    pub fn mkSimd(self: *TypeStore, elem: TypeId, lanes: u16) TypeId {
+        if (self.findSimd(elem, lanes)) |id| return id;
+        return self.add(.Simd, .{ .elem = elem, .lanes = lanes });
+    }
     pub fn mkTensor(self: *TypeStore, elem: TypeId, dims: []const usize) TypeId {
         std.debug.assert(dims.len <= max_tensor_rank);
         if (self.findTensor(elem, dims)) |id| return id;
@@ -773,6 +777,13 @@ pub const TypeStore = struct {
             fn eq(s: *const TypeStore, row: Rows.Map, k: anytype) bool {
                 _ = s;
                 return row.key.toRaw() == k.k.toRaw() and row.value.toRaw() == k.v.toRaw();
+            }
+        });
+    }
+    fn findSimd(self: *const TypeStore, elem: TypeId, lanes: u16) ?TypeId {
+        return self.findMatch(.Simd, struct { e: TypeId, l: u16 }{ .e = elem, .l = lanes }, struct {
+            fn eq(_: *const TypeStore, row: Rows.Simd, key: anytype) bool {
+                return row.elem.toRaw() == key.e.toRaw() and row.lanes == key.l;
             }
         });
     }

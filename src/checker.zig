@@ -654,6 +654,26 @@ pub const Checker = struct {
                 if (value_ok != .success) return value_ok;
                 return .success;
             },
+            .Simd => {
+                const expected_ty = self.context.type_store.get(.Simd, expect);
+                switch (got_kind) {
+                    .Simd => {
+                        const got_ty = self.context.type_store.get(.Simd, got);
+                        if (got_ty.lanes != expected_ty.lanes) return .array_length_mismatch;
+                        return self.assignable(got_ty.elem, expected_ty.elem);
+                    },
+                    .Array => {
+                        const got_ty = self.context.type_store.get(.Array, got);
+                        const len_ok = switch (got_ty.len) {
+                            .Concrete => |l| l == expected_ty.lanes,
+                            .Unresolved => false,
+                        };
+                        if (!len_ok) return .array_length_mismatch;
+                        return self.assignable(got_ty.elem, expected_ty.elem);
+                    },
+                    else => return .failure,
+                }
+            },
             .Tensor => {
                 const expected_ty = self.context.type_store.get(.Tensor, expect);
                 const expected_rank: usize = @intCast(expected_ty.rank);
@@ -1636,6 +1656,26 @@ pub const Checker = struct {
 
         switch (bin.op) {
             .add, .sub, .mul, .div, .mod, .bit_and, .bit_or, .bit_xor, .shl, .shr => {
+                if (lhs_kind == .Simd or rhs_kind == .Simd) {
+                    if (!(lhs_kind == .Simd and rhs_kind == .Simd)) {
+                        try self.context.diags.addError(self.exprLoc(bin), .invalid_binary_op_operands, .{ bin.op, lhs_kind, rhs_kind });
+                        return null;
+                    }
+                    switch (bin.op) {
+                        .add, .sub, .mul, .div => {},
+                        else => {
+                            try self.context.diags.addError(self.exprLoc(bin), .invalid_binary_op_operands, .{ bin.op, lhs_kind, rhs_kind });
+                            return null;
+                        },
+                    }
+                    const ls = self.context.type_store.get(.Simd, l);
+                    const rs = self.context.type_store.get(.Simd, r);
+                    if (ls.lanes != rs.lanes or ls.elem.toRaw() != rs.elem.toRaw()) {
+                        try self.context.diags.addError(self.exprLoc(bin), .invalid_binary_op_operands, .{ bin.op, lhs_kind, rhs_kind });
+                        return null;
+                    }
+                    return l;
+                }
                 if (bin.op == .div) try self.checkDivByZero(bin.right, self.exprLoc(bin));
                 if (bin.op == .mod) {
                     const left_is_float = switch (lhs_kind) {
@@ -2053,6 +2093,22 @@ pub const Checker = struct {
         switch (col_kind) {
             .Array, .Slice => return self.indexElemTypeFromArrayLike(col_ty.?, index_expr.index, self.exprLoc(index_expr)),
             .Tensor => return self.indexElemTypeFromTensor(col_ty.?, index_expr.index, self.exprLoc(index_expr)),
+            .Simd => blk_simd_index: {
+                const idx_kind = self.exprKind(index_expr.index);
+                if (idx_kind == .Range) {
+                    try self.context.diags.addError(self.exprLoc(index_expr), .non_integer_index, .{});
+                    break :blk_simd_index null;
+                }
+                const it = self.checkExpr(index_expr.index) catch return null;
+                if (it) |iid| {
+                    if (!check_types.isIntegerKind(self, self.typeKind(iid))) {
+                        try self.context.diags.addError(self.exprLoc(index_expr), .non_integer_index, .{});
+                        break :blk_simd_index null;
+                    }
+                }
+                const simd = self.context.type_store.get(.Simd, col_ty.?);
+                break :blk_simd_index simd.elem;
+            },
             .Map => {
                 const m = self.context.type_store.get(.Map, col_ty.?);
                 const it = self.checkExpr(index_expr.index) catch return null;
