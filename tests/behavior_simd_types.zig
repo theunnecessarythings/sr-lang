@@ -6,7 +6,7 @@ const runCompilerTest = behavior.runCompilerTest;
 
 test "special_types: simd vector declaration and initialization" {
     const src =
-        \\vec: simd(f32, 4) = [1.0, 2.0, 3.0, 4.0]
+        \\vec: simd(f64, 4) = [1.0, 2.0, 3.0, 4.0]
         \\printf("SIMD vec: %f, %f, %f, %f\n", vec[0], vec[1], vec[2], vec[3])
     ;
     const code = getSource("", src);
@@ -27,7 +27,7 @@ test "special_types: simd vector addition" {
         \\vec1: simd(f32, 2) = [1.0, 2.0]
         \\vec2: simd(f32, 2) = [3.0, 4.0]
         \\sum := vec1 + vec2
-        \\printf("SIMD sum: %f, %f\n", sum[0], sum[1])
+        \\printf("SIMD sum: %f, %f\n", sum[0].(f64), sum[1].(f64))
     ;
     const code = getSource("", src);
     try runCompilerTest(code, "SIMD sum: 4.000000, 6.000000\n");

@@ -29,6 +29,19 @@ test "expressions_operators: nested struct field access" {
     try runCompilerTest(code, "Rect tl.x: 0\n");
 }
 
+test "expressions_operators: pointer struct field access" {
+    const globals =
+        \\Point :: struct { x: i32, y: i32 }
+    ;
+    const src =
+        \\p_val := Point{ x: 10, y: 20 }
+        \\p_ptr := &p_val
+        \\printf("Pointer x: %d\n", p_ptr.x)
+    ;
+    const code = getSource(globals, src);
+    try runCompilerTest(code, "Pointer x: 10\n");
+}
+
 test "expressions_operators: array element access" {
     const src =
         \\arr := [10, 20, 30]

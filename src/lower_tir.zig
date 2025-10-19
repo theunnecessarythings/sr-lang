@@ -2897,7 +2897,14 @@ const LowerMode = enum { rvalue, lvalue_addr };
 
         // 3) address path (needs concrete field index)
         if (mode == .lvalue_addr) {
-            const parent_ptr = try self.lowerExpr(a, env, f, blk, row.parent, null, .lvalue_addr);
+            const parent_lower_mode: LowerMode = blk: {
+                if (parent_ty_opt) |parent_ty| {
+                    const parent_kind = self.context.type_store.getKind(parent_ty);
+                    if (parent_kind == .Ptr) break :blk .rvalue;
+                }
+                break :blk .lvalue_addr;
+            };
+            const parent_ptr = try self.lowerExpr(a, env, f, blk, row.parent, null, parent_lower_mode);
             const elem_ty = self.getExprType(id) orelse return error.LoweringBug;
             const idx = idx_maybe orelse return error.LoweringBug;
             const rptr_ty = self.context.type_store.mkPtr(elem_ty, false);
