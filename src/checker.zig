@@ -511,6 +511,7 @@ pub const Checker = struct {
             .self_param_type = self_param_type_opt,
             .receiver_kind = receiver_kind,
             .module_id = self.type_info.module_id,
+            .builtin = null,
         };
         if (!try self.type_info.addMethod(entry)) {
             try self.context.diags.addError(
@@ -2091,7 +2092,7 @@ pub const Checker = struct {
         if (col_ty == null) return null;
         const col_kind = self.typeKind(col_ty.?);
         switch (col_kind) {
-            .Array, .Slice => return self.indexElemTypeFromArrayLike(col_ty.?, index_expr.index, self.exprLoc(index_expr)),
+            .Array, .Slice, .DynArray => return self.indexElemTypeFromArrayLike(col_ty.?, index_expr.index, self.exprLoc(index_expr)),
             .Tensor => return self.indexElemTypeFromTensor(col_ty.?, index_expr.index, self.exprLoc(index_expr)),
             .Simd => {
                 const idx_kind = self.exprKind(index_expr.index);
@@ -2140,7 +2141,7 @@ pub const Checker = struct {
 
     fn indexElemTypeFromArrayLike(self: *Checker, col_ty: types.TypeId, idx_expr: ast.ExprId, loc: Loc) !?types.TypeId {
         const col_kind = self.typeKind(col_ty);
-        std.debug.assert(col_kind == .Array or col_kind == .Slice);
+        std.debug.assert(col_kind == .Array or col_kind == .Slice or col_kind == .DynArray);
         const idx_kind = self.exprKind(idx_expr);
         if (idx_kind == .Range) {
             _ = self.checkExpr(idx_expr) catch return null; // validate range endpoints
@@ -2152,6 +2153,10 @@ pub const Checker = struct {
                 .Slice => blk2: {
                     const r = self.context.type_store.get(.Slice, col_ty);
                     break :blk2 self.context.type_store.mkSlice(r.elem);
+                },
+                .DynArray => blk3: {
+                    const r = self.context.type_store.get(.DynArray, col_ty);
+                    break :blk3 self.context.type_store.mkSlice(r.elem);
                 },
                 else => unreachable,
             };
@@ -2166,6 +2171,7 @@ pub const Checker = struct {
         return switch (col_kind) {
             .Array => self.context.type_store.get(.Array, col_ty).elem,
             .Slice => self.context.type_store.get(.Slice, col_ty).elem,
+            .DynArray => self.context.type_store.get(.DynArray, col_ty).elem,
             else => unreachable,
         };
     }
@@ -2203,6 +2209,58 @@ pub const Checker = struct {
         return self.context.type_store.mkTensor(tensor.elem, dims[0 .. rank - 1]);
     }
 
+    fn tryRegisterDynArrayBuiltin(
+        self: *Checker,
+        expr_id: ast.ExprId,
+        owner_ty: types.TypeId,
+        receiver_ty: types.TypeId,
+        field_name: ast.StrId,
+        parent_kind: types.TypeKind,
+        loc: Loc,
+    ) !?types.TypeId {
+        if (self.context.type_store.getKind(owner_ty) != .DynArray) return null;
+        const method_name = self.getStr(field_name);
+
+        if (std.mem.eql(u8, method_name, "append")) {
+            const dyn_info = self.context.type_store.get(.DynArray, owner_ty);
+            const elem_ty = dyn_info.elem;
+            const ptr_owner_ty = self.context.type_store.mkPtr(owner_ty, false);
+            const params = [_]types.TypeId{ ptr_owner_ty, elem_ty };
+            const fn_ty = self.context.type_store.mkFunction(&params, self.context.type_store.tVoid(), false, false);
+
+            var needs_addr_of = true;
+            if (parent_kind == .Ptr) {
+                needs_addr_of = false;
+                const ptr_row = self.context.type_store.get(.Ptr, receiver_ty);
+                if (!ptr_row.elem.eq(owner_ty)) {
+                    try self.context.diags.addError(loc, .method_receiver_requires_pointer, .{self.getStr(field_name)});
+                    return error.MethodResolutionFailed;
+                }
+                if (ptr_row.is_const) {
+                    try self.context.diags.addError(loc, .method_receiver_requires_pointer, .{self.getStr(field_name)});
+                    return error.MethodResolutionFailed;
+                }
+            }
+
+            const binding = types.TypeInfo.MethodBinding{
+                .owner_type = owner_ty,
+                .method_name = field_name,
+                .decl_id = ast.DeclId.fromRaw(0),
+                .func_type = fn_ty,
+                .self_param_type = ptr_owner_ty,
+                .receiver_kind = .pointer,
+                .requires_implicit_receiver = parent_kind != .TypeType,
+                .needs_addr_of = needs_addr_of,
+                .module_id = self.type_info.module_id,
+                .builtin = .dynarray_append,
+            };
+            try self.type_info.setMethodBinding(expr_id, binding);
+            return fn_ty;
+        }
+
+        return null;
+    }
+
     fn resolveMethodFieldAccess(
         self: *Checker,
         expr_id: ast.ExprId,
@@ -2220,10 +2278,15 @@ pub const Checker = struct {
                 }
             }
         }
-        if (entry_opt == null) return null;
+        const parent_kind = self.typeKind(receiver_ty);
+        if (entry_opt == null) {
+            if (try self.tryRegisterDynArrayBuiltin(expr_id, owner_ty, receiver_ty, field_name, parent_kind, loc)) |mt| {
+                return mt;
+            }
+            return null;
+        }
 
         const entry = entry_opt.?;
-        const parent_kind = self.typeKind(receiver_ty);
         const wants_receiver = entry.receiver_kind != .none;
         const implicit_receiver = wants_receiver and parent_kind != .TypeType;
 
@@ -2280,6 +2343,7 @@ pub const Checker = struct {
             .requires_implicit_receiver = implicit_receiver,
             .needs_addr_of = needs_addr_of,
             .module_id = entry.module_id,
+            .builtin = entry.builtin,
         });
 
         return trimmed;
@@ -2336,6 +2400,14 @@ pub const Checker = struct {
                 },
                 else => {},
             }
+        } else if (std.mem.eql(u8, field_name, "capacity")) {
+            switch (kind) {
+                .DynArray => {
+                    try self.type_info.setFieldIndex(id, 2);
+                    return self.context.type_store.tUsize();
+                },
+                else => {},
+            }
         }
 
         switch (kind) {
@@ -2386,6 +2458,14 @@ pub const Checker = struct {
                 }
                 try self.type_info.setFieldIndex(id, @intCast(index));
                 return elems[index];
+            },
+            .DynArray => {
+                const method_ty = self.resolveMethodFieldAccess(id, ty, ty, field_expr.field, field_loc) catch |err| switch (err) {
+                    else => return null,
+                };
+                if (method_ty) |mt| return mt;
+                try self.context.diags.addError(self.exprLoc(field_expr), .field_access_on_non_aggregate, .{kind});
+                return null;
             },
             .Ptr => {
                 const ptr_row = self.context.type_store.get(.Ptr, ty);

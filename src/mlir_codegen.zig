@@ -1797,9 +1797,13 @@ pub const MlirCodegen = struct {
                 var zero = OpBuilder.init("llvm.mlir.zero", self.loc).builder()
                     .add_results(&.{ty}).build();
                 self.append(zero);
-                const flag = self.constBool(false);
-                const v = self.insertAt(zero.getResult(0), flag, &.{0});
-                break :blk v;
+                const sr_kind = store.getKind(p.ty);
+                if (sr_kind == .Optional) {
+                    const flag = self.constBool(false);
+                    const v = self.insertAt(zero.getResult(0), flag, &.{0});
+                    break :blk v;
+                }
+                break :blk zero.getResult(0);
             },
             .ConstUndef => blk: {
                 const p = t.instrs.get(.ConstUndef, ins_id);
@@ -2485,6 +2489,10 @@ pub const MlirCodegen = struct {
                         const v = self.extractAt(agg, res_ty, &.{@as(i64, @intCast(1))});
                         break :blk v;
                     }
+                    if (std.mem.eql(u8, field_name, "capacity")) {
+                        const v = self.extractAt(agg, res_ty, &.{@as(i64, @intCast(2))});
+                        break :blk v;
+                    }
                 }
                 const v = self.extractAt(agg, res_ty, &.{@as(i64, @intCast(p.index))});
                 break :blk v;
@@ -2839,6 +2847,15 @@ pub const MlirCodegen = struct {
                             const elem_mlir = try self.llvmTypeOf(store, elem_sr);
                             data_ptr = try self.emitGep(ptr0, elem_mlir, &idxs);
                         },
+                        .DynArray => {
+                            elem_sr = store.get(.DynArray, base_sr_ty).elem;
+                            const elem_ptr_sr = store.mkPtr(elem_sr, false);
+                            const ptr_ty_mlir = try self.llvmTypeOf(store, elem_ptr_sr);
+                            const ptr0 = self.extractAt(base, ptr_ty_mlir, &.{0});
+                            const idxs = [_]tir.Rows.GepIndex{.{ .Value = start_vid }};
+                            const elem_mlir = try self.llvmTypeOf(store, elem_sr);
+                            data_ptr = try self.emitGep(ptr0, elem_mlir, &idxs);
+                        },
                         else => {
                             // Unsupported base; return zero slice
                             const zero = self.zeroOf(res_ty);
@@ -2878,9 +2895,16 @@ pub const MlirCodegen = struct {
                 }
 
                 // Indexing into a slice value (in-SSA): extract ptr and load *(ptr+idx)
-                if (!self.isLlvmPtr(base.getType()) and store.getKind(base_sr_ty) == .Slice and res_sr_kind != .Slice) {
+                if (!self.isLlvmPtr(base.getType()) and (store.getKind(base_sr_ty) == .Slice or store.getKind(base_sr_ty) == .DynArray) and res_sr_kind != .Slice) {
                     const elem_mlir = res_ty; // result type is the element type
-                    const ptr0 = self.extractAt(base, self.llvm_ptr_ty, &.{0});
+                    const ptr0 = switch (store.getKind(base_sr_ty)) {
+                        .Slice => self.extractAt(base, self.llvm_ptr_ty, &.{0}),
+                        .DynArray => ptr_case: {
+                            const elem_ptr_ty = try self.llvmTypeOf(store, store.mkPtr(store.get(.DynArray, base_sr_ty).elem, false));
+                            break :ptr_case self.extractAt(base, elem_ptr_ty, &.{0});
+                        },
+                        else => unreachable,
+                    };
                     const vptr = try self.emitGep(ptr0, elem_mlir, &.{.{ .Value = p.index }});
                     var ld = OpBuilder.init("llvm.load", self.loc).builder()
                         .add_operands(&.{vptr})
@@ -5699,6 +5723,13 @@ pub const MlirCodegen = struct {
                     .Unresolved => std.debug.panic("llvmTypeOf on unresolved array", .{}),
                 };
                 break :blk mlir.LLVM.getLLVMArrayType(e, @intCast(len));
+            },
+            .DynArray => blk: {
+                const dyn_ty = store.get(.DynArray, ty);
+                const elem_ptr_sr = store.mkPtr(dyn_ty.elem, false);
+                const ptr_ty = try self.llvmTypeOf(store, elem_ptr_sr);
+                const fields = [_]mlir.Type{ ptr_ty, self.i64_ty, self.i64_ty };
+                break :blk mlir.LLVM.getLLVMStructTypeLiteral(self.mlir_ctx, &fields, false);
             },
             .Simd => blk: {
                 const simd_ty = store.get(.Simd, ty);

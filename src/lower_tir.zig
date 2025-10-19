@@ -11,6 +11,7 @@ const mlir_codegen = @import("mlir_codegen.zig");
 const comp = @import("comptime.zig");
 const monomorphize = @import("monomorphize.zig");
 const module_graph = @import("module_graph.zig");
+const check_types = @import("check_types.zig");
 
 const StrId = @import("cst.zig").StrId;
 const OptStrId = @import("cst.zig").OptStrId;
@@ -166,6 +167,98 @@ pub const LowerTir = struct {
             },
             else => null,
         };
+    }
+
+    fn lowerDynArrayAppend(
+        self: *LowerTir,
+        f: *Builder.FunctionFrame,
+        blk: *Builder.BlockFrame,
+        loc: tir.OptLocId,
+        binding: types.TypeInfo.MethodBinding,
+        args: []const tir.ValueId,
+    ) !tir.ValueId {
+        std.debug.assert(binding.builtin != null and binding.builtin.? == .dynarray_append);
+        if (args.len < 2) return error.LoweringBug;
+
+        const ts = &self.context.type_store;
+        const owner_kind = ts.getKind(binding.owner_type);
+        if (owner_kind != .DynArray) return error.LoweringBug;
+
+        const dyn_info = ts.get(.DynArray, binding.owner_type);
+        const elem_ty = dyn_info.elem;
+        const usize_ty = ts.tUsize();
+        const ptr_elem_ty = ts.mkPtr(elem_ty, false);
+        const ptr_ptr_elem_ty = ts.mkPtr(ptr_elem_ty, false);
+        const ptr_usize_ty = ts.mkPtr(usize_ty, false);
+        const ptr_void_ty = ts.mkPtr(ts.tVoid(), false);
+
+        const array_ptr = args[0];
+        const value = args[1];
+
+        const data_ptr_ptr = blk.builder.gep(blk, ptr_ptr_elem_ty, array_ptr, &.{blk.builder.gepConst(0)}, loc);
+        const len_ptr = blk.builder.gep(blk, ptr_usize_ty, array_ptr, &.{blk.builder.gepConst(1)}, loc);
+        const cap_ptr = blk.builder.gep(blk, ptr_usize_ty, array_ptr, &.{blk.builder.gepConst(2)}, loc);
+
+        const len_val = blk.builder.tirValue(.Load, blk, usize_ty, loc, .{ .ptr = len_ptr, .@"align" = 0 });
+        const cap_val = blk.builder.tirValue(.Load, blk, usize_ty, loc, .{ .ptr = cap_ptr, .@"align" = 0 });
+
+        const need_grow_raw = blk.builder.binBool(blk, .CmpEq, len_val, cap_val, loc);
+
+        var grow_blk = try f.builder.beginBlock(f);
+        const cont_blk = try f.builder.beginBlock(f);
+
+        const grow_cond = self.forceLocalCond(blk, need_grow_raw, loc);
+        try f.builder.condBr(blk, grow_cond, grow_blk.id, &.{}, cont_blk.id, &.{}, loc);
+        {
+            const old = blk.*;
+            try f.builder.endBlock(f, old);
+        }
+
+        {
+            // Growth path
+            const data_ptr = grow_blk.builder.tirValue(.Load, &grow_blk, ptr_elem_ty, loc, .{ .ptr = data_ptr_ptr, .@"align" = 0 });
+            const zero_const = grow_blk.builder.tirValue(.ConstInt, &grow_blk, usize_ty, loc, .{ .value = 0 });
+            const cap_is_zero = grow_blk.builder.binBool(&grow_blk, .CmpEq, cap_val, zero_const, loc);
+            const one_const = grow_blk.builder.tirValue(.ConstInt, &grow_blk, usize_ty, loc, .{ .value = 1 });
+            const two_const = grow_blk.builder.tirValue(.ConstInt, &grow_blk, usize_ty, loc, .{ .value = 2 });
+            const doubled = grow_blk.builder.bin(&grow_blk, .Mul, usize_ty, cap_val, two_const, loc);
+            const new_cap = grow_blk.builder.tirValue(.Select, &grow_blk, usize_ty, loc, .{
+                .cond = cap_is_zero,
+                .then_value = one_const,
+                .else_value = doubled,
+            });
+
+            const elem_size = check_types.typeSize(self.chk, elem_ty) orelse return error.LoweringBug;
+            const elem_size_u64 = std.math.cast(u64, elem_size) orelse return error.LoweringBug;
+            const elem_size_const = grow_blk.builder.tirValue(.ConstInt, &grow_blk, usize_ty, loc, .{ .value = elem_size_u64 });
+            const new_bytes = grow_blk.builder.bin(&grow_blk, .Mul, usize_ty, new_cap, elem_size_const, loc);
+
+            const data_ptr_void = grow_blk.builder.tirValue(.CastBit, &grow_blk, ptr_void_ty, loc, .{ .value = data_ptr });
+            const realloc_name = grow_blk.builder.intern("rt_realloc");
+            const new_data_void = grow_blk.builder.call(&grow_blk, ptr_void_ty, realloc_name, &.{ data_ptr_void, new_bytes }, loc);
+            const new_data_ptr = grow_blk.builder.tirValue(.CastBit, &grow_blk, ptr_elem_ty, loc, .{ .value = new_data_void });
+
+            _ = grow_blk.builder.tirValue(.Store, &grow_blk, ptr_elem_ty, loc, .{ .ptr = data_ptr_ptr, .value = new_data_ptr, .@"align" = 0 });
+            _ = grow_blk.builder.tirValue(.Store, &grow_blk, usize_ty, loc, .{ .ptr = cap_ptr, .value = new_cap, .@"align" = 0 });
+
+            try f.builder.br(&grow_blk, cont_blk.id, &.{}, loc);
+            try f.builder.endBlock(f, grow_blk);
+        }
+
+        blk.* = cont_blk;
+
+        const data_ptr_cur = blk.builder.tirValue(.Load, blk, ptr_elem_ty, loc, .{ .ptr = data_ptr_ptr, .@"align" = 0 });
+        const len_cur = blk.builder.tirValue(.Load, blk, usize_ty, loc, .{ .ptr = len_ptr, .@"align" = 0 });
+
+        const len_index = blk.builder.gepValue(len_cur);
+        const slot_ptr = blk.builder.gep(blk, ptr_elem_ty, data_ptr_cur, &.{len_index}, loc);
+        _ = blk.builder.tirValue(.Store, blk, elem_ty, loc, .{ .ptr = slot_ptr, .value = value, .@"align" = 0 });
+
+        const one_inc = blk.builder.tirValue(.ConstInt, blk, usize_ty, loc, .{ .value = 1 });
+        const new_len = blk.builder.bin(blk, .Add, usize_ty, len_cur, one_inc, loc);
+        _ = blk.builder.tirValue(.Store, blk, usize_ty, loc, .{ .ptr = len_ptr, .value = new_len, .@"align" = 0 });
+
+        return self.safeUndef(blk, ts.tVoid(), loc);
     }
 
     pub fn init(
@@ -1279,6 +1372,25 @@ const LowerMode = enum { rvalue, lvalue_addr };
         arg_ids: *[]const ast.ExprId,
         method_arg_buf: *[]ast.ExprId,
     ) !void {
+        if (binding.builtin) |_| {
+            callee.fty = binding.func_type;
+            method_decl_id.* = null;
+            method_binding_out.* = binding;
+            if (binding.requires_implicit_receiver) {
+                std.debug.assert(a.exprs.index.kinds.items[row.callee.toRaw()] == .FieldAccess);
+                const field_expr = a.exprs.get(.FieldAccess, row.callee);
+                if (method_arg_buf.*.len != 0) {
+                    self.gpa.free(method_arg_buf.*);
+                    method_arg_buf.* = &.{};
+                }
+                method_arg_buf.* = try self.gpa.alloc(ast.ExprId, arg_ids.*.len + 1);
+                method_arg_buf.*[0] = field_expr.parent;
+                std.mem.copyForwards(ast.ExprId, method_arg_buf.*[1..], arg_ids.*);
+                arg_ids.* = method_arg_buf.*;
+            }
+            return;
+        }
+
         const symbol_ast = blk: {
             if (binding.module_id == self.module_id) break :blk a;
             const dep_entry = (&self.context.module_graph).findModuleById(binding.module_id) orelse
@@ -1370,6 +1482,7 @@ const LowerMode = enum { rvalue, lvalue_addr };
             .requires_implicit_receiver = implicit_receiver,
             .needs_addr_of = needs_addr_of,
             .module_id = entry.module_id,
+            .builtin = entry.builtin,
         };
     }
 
@@ -2148,6 +2261,17 @@ const LowerMode = enum { rvalue, lvalue_addr };
             }
         }
 
+        if (method_binding) |mb| {
+            if (mb.builtin) |builtin_kind| {
+                switch (builtin_kind) {
+                    .dynarray_append => {
+                        if (mode == .lvalue_addr) return error.LoweringBug;
+                        return try self.lowerDynArrayAppend(f, blk, loc, mb, vals);
+                    },
+                }
+            }
+        }
+
         // Choose a concrete return type: callee.fty.ret -> expected -> stamped -> void
         const ret_ty = blk: {
             if (callee.fty) |fty| {
@@ -2464,6 +2588,62 @@ const LowerMode = enum { rvalue, lvalue_addr };
                 const v = blk.builder.arrayMake(blk, ty0, vals, loc);
                 if (expected_ty) |want| return self.emitCoerce(blk, v, ty0, want, loc);
                 return v;
+            },
+            .DynArray => {
+                const dyn_ty = self.context.type_store.get(.DynArray, ty0);
+                const elem_ty = dyn_ty.elem;
+                const ptr_elem_ty = self.context.type_store.mkPtr(elem_ty, false);
+                const usize_ty = self.context.type_store.tUsize();
+                const ptr_void_ty = self.context.type_store.mkPtr(self.context.type_store.tVoid(), false);
+                const ids = a.exprs.expr_pool.slice(row.elems);
+
+                const elem_size = check_types.typeSize(self.chk, elem_ty) orelse return error.LoweringBug;
+
+                if (ids.len == 0) {
+                    const null_ptr = blk.builder.constNull(blk, ptr_elem_ty, loc);
+                    const zero = blk.builder.tirValue(.ConstInt, blk, usize_ty, loc, .{ .value = 0 });
+                    const fields = [_]tir.Rows.StructFieldInit{
+                        .{ .index = 0, .name = .none(), .value = null_ptr },
+                        .{ .index = 1, .name = .none(), .value = zero },
+                        .{ .index = 2, .name = .none(), .value = zero },
+                    };
+                    const dyn_val = blk.builder.structMake(blk, ty0, &fields, loc);
+                    if (expected_ty) |want| return self.emitCoerce(blk, dyn_val, ty0, want, loc);
+                    return dyn_val;
+                }
+
+                var elems = try self.gpa.alloc(tir.ValueId, ids.len);
+                defer self.gpa.free(elems);
+                var i: usize = 0;
+                while (i < ids.len) : (i += 1) {
+                    elems[i] = try self.lowerExpr(a, env, f, blk, ids[i], elem_ty, .rvalue);
+                }
+
+                const total_bytes = elem_size * ids.len;
+                const total_bytes_u64 = std.math.cast(u64, total_bytes) orelse return error.LoweringBug;
+                const bytes_const = blk.builder.tirValue(.ConstInt, blk, usize_ty, loc, .{ .value = total_bytes_u64 });
+                const alloc_name = blk.builder.intern("rt_alloc");
+                const raw_ptr = blk.builder.call(blk, ptr_void_ty, alloc_name, &.{bytes_const}, loc);
+                const data_ptr = blk.builder.tirValue(.CastBit, blk, ptr_elem_ty, loc, .{ .value = raw_ptr });
+
+                var idx: usize = 0;
+                while (idx < elems.len) : (idx += 1) {
+                    const idx_u64 = std.math.cast(u64, idx) orelse return error.LoweringBug;
+                    const offset = blk.builder.gepConst(idx_u64);
+                    const elem_ptr = blk.builder.gep(blk, ptr_elem_ty, data_ptr, &.{offset}, loc);
+                    _ = blk.builder.tirValue(.Store, blk, elem_ty, loc, .{ .ptr = elem_ptr, .value = elems[idx], .@"align" = 0 });
+                }
+
+                const len_u64 = std.math.cast(u64, ids.len) orelse return error.LoweringBug;
+                const len_const = blk.builder.tirValue(.ConstInt, blk, usize_ty, loc, .{ .value = len_u64 });
+                const fields = [_]tir.Rows.StructFieldInit{
+                    .{ .index = 0, .name = .none(), .value = data_ptr },
+                    .{ .index = 1, .name = .none(), .value = len_const },
+                    .{ .index = 2, .name = .none(), .value = len_const },
+                };
+                const dyn_val = blk.builder.structMake(blk, ty0, &fields, loc);
+                if (expected_ty) |want| return self.emitCoerce(blk, dyn_val, ty0, want, loc);
+                return dyn_val;
             },
             .Tensor => {
                 const v = try self.lowerTensorArrayLiteral(a, env, f, blk, id, ty0, loc);
@@ -2868,6 +3048,17 @@ const LowerMode = enum { rvalue, lvalue_addr };
             if (std.mem.eql(u8, field_name, "len")) {
                 switch (parent_kind) {
                     .Array, .Slice, .DynArray, .String => {
+                        const base = try self.lowerExpr(a, env, f, blk, row.parent, null, .rvalue);
+                        const ty0 = self.context.type_store.tUsize();
+                        const v = blk.builder.extractFieldNamed(blk, ty0, base, row.field, loc);
+                        if (expected_ty) |want| return self.emitCoerce(blk, v, ty0, want, loc);
+                        return v;
+                    },
+                    else => {},
+                }
+            } else if (std.mem.eql(u8, field_name, "capacity")) {
+                switch (parent_kind) {
+                    .DynArray => {
                         const base = try self.lowerExpr(a, env, f, blk, row.parent, null, .rvalue);
                         const ty0 = self.context.type_store.tUsize();
                         const v = blk.builder.extractFieldNamed(blk, ty0, base, row.field, loc);
@@ -4310,6 +4501,7 @@ const LowerMode = enum { rvalue, lvalue_addr };
         self: *LowerTir,
         a: *const ast.Ast,
         blk: *Builder.BlockFrame,
+        iterable_val: tir.ValueId,
         iter_ty: types.TypeId,
         idx_ty: types.TypeId,
         loc: tir.OptLocId,
@@ -4324,7 +4516,10 @@ const LowerMode = enum { rvalue, lvalue_addr };
                 };
                 break :blk blk.builder.tirValue(.ConstInt, blk, idx_ty, loc, .{ .value = @as(u64, @intCast(len)) });
             },
-            .Slice, .DynArray => @panic("Not implemented"),
+            .Slice, .DynArray => blk: {
+                const v = blk.builder.extractField(blk, idx_ty, iterable_val, 1, loc);
+                break :blk v;
+            },
             else => return error.LoweringBug,
         };
     }
@@ -4416,7 +4611,7 @@ const LowerMode = enum { rvalue, lvalue_addr };
                 const arr_v = try self.lowerExpr(a, env, f, blk, row.iterable, null, .rvalue);
                 const idx_ty = self.context.type_store.tUsize();
                 const iter_ty = self.getExprType(row.iterable) orelse return error.LoweringBug;
-                const len_v = try self.getIterableLen(a, blk, iter_ty, idx_ty, iterable_loc);
+                const len_v = try self.getIterableLen(a, blk, arr_v, iter_ty, idx_ty, iterable_loc);
 
                 const zero = blk.builder.tirValue(.ConstInt, blk, idx_ty, loc, .{ .value = 0 });
                 const idx_param = try f.builder.addBlockParam(&header, null, idx_ty);
@@ -4538,7 +4733,7 @@ const LowerMode = enum { rvalue, lvalue_addr };
                 const arr_v = try self.lowerExpr(a, env, f, blk, row.iterable, null, .rvalue);
                 const idx_ty = self.context.type_store.tUsize();
                 const iter_ty = self.getExprType(row.iterable) orelse return error.LoweringBug;
-                const len_v = try self.getIterableLen(a, blk, iter_ty, idx_ty, iterable_loc);
+                const len_v = try self.getIterableLen(a, blk, arr_v, iter_ty, idx_ty, iterable_loc);
 
                 const zero = blk.builder.tirValue(.ConstInt, blk, idx_ty, loc, .{ .value = 0 });
                 const idx_param = try f.builder.addBlockParam(&header, null, idx_ty);

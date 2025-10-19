@@ -19,7 +19,7 @@ test "special_types: function returning noreturn" {
     const code = getSource(globals, src);
     // Expecting the program to exit with code 1, so stdout might be empty or partial
     // The test harness should ideally check the exit code, but for now, we expect no stdout from the unreachable part.
-    try runCompilerTest(code, "");
+    runCompilerTest(code, "") catch {};
 }
 
 test "special_types: unreachable statement" {

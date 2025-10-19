@@ -161,6 +161,10 @@ pub const TypeInfo = struct {
         pointer_const,
     };
 
+    pub const BuiltinMethod = enum {
+        dynarray_append,
+    };
+
     pub const MethodEntry = struct {
         owner_type: TypeId,
         method_name: ast.StrId,
@@ -170,6 +174,7 @@ pub const TypeInfo = struct {
         self_param_type: ?TypeId,
         receiver_kind: MethodReceiverKind,
         module_id: usize,
+        builtin: ?BuiltinMethod = null,
     };
 
     pub const MethodBinding = struct {
@@ -182,6 +187,7 @@ pub const TypeInfo = struct {
         requires_implicit_receiver: bool,
         needs_addr_of: bool,
         module_id: usize,
+        builtin: ?BuiltinMethod = null,
     };
 
     pub fn addMethod(self: *TypeInfo, entry: MethodEntry) !bool {

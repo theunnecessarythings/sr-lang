@@ -568,9 +568,8 @@ test "behavior: mlir module block" {
 
 test "behavior: comptime mlir type reuse" {
     const src =
-        \\ const mlir_ty = comptime { mlir type { !llvm.ptr } }
-        \\ const reused_ty = comptime { mlir_ty }
-        \\ _ = reused_ty
+        \\ mlir_ty := comptime { mlir type { !llvm.ptr } }
+        \\ reused_ty := comptime { mlir_ty }
         \\ printf("MLIR comptime handles ok\n")
     ;
     const code = getSource("", src);

@@ -61,6 +61,7 @@ pub fn abiSizeAlign(self: *MlirCodegen, store: *types.TypeStore, ty: types.TypeI
 
         .Ptr, .Any, .String, .Function, .MlirModule, .MlirAttribute, .MlirType => .{ .size = 8, .alignment = 8, .hasFloat = false, .allIntsOnly = true },
         .Slice => .{ .size = 16, .alignment = 8, .hasFloat = false, .allIntsOnly = true },
+        .DynArray => .{ .size = 24, .alignment = 8, .hasFloat = false, .allIntsOnly = true },
         .Enum => {
             const E = store.get(.Enum, ty);
             // Enums are represented as their discriminant type.
