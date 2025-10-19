@@ -108,6 +108,7 @@ pub const MlirCodegen = struct {
     block_map: std.AutoHashMap(tir.BlockId, mlir.Block),
     value_map: std.AutoHashMap(tir.ValueId, mlir.Value),
     tensor_slots: std.AutoHashMap(tir.ValueId, mlir.Value),
+    tensor_elem_ptrs: std.AutoHashMap(tir.ValueId, TensorElemPtrInfo),
 
     // NEW: for correctness decisions (signedness, etc.)
     val_types: std.AutoHashMap(tir.ValueId, types.TypeId), // SR types of SSA values
@@ -129,6 +130,36 @@ pub const MlirCodegen = struct {
         owns_param_types: bool = false,
         dbg_subprogram: ?mlir.Attribute = null,
     };
+
+    const TensorIndex = union(enum) {
+        constant: i64,
+        value: tir.ValueId,
+    };
+
+    const TensorElemPtrInfo = struct {
+        root_ptr: tir.ValueId,
+        elem_ty: types.TypeId,
+        indices: []TensorIndex,
+    };
+
+    fn freeTensorElemPtrInfo(self: *MlirCodegen, info: *TensorElemPtrInfo) void {
+        if (info.indices.len != 0) {
+            self.gpa.free(info.indices);
+            info.indices = &[_]TensorIndex{};
+        }
+    }
+
+    fn clearTensorElemPtrs(self: *MlirCodegen) void {
+        var it = self.tensor_elem_ptrs.valueIterator();
+        while (it.next()) |info| self.freeTensorElemPtrInfo(info);
+        self.tensor_elem_ptrs.clearRetainingCapacity();
+    }
+
+    fn releaseTensorElemPtrs(self: *MlirCodegen) void {
+        var it = self.tensor_elem_ptrs.valueIterator();
+        while (it.next()) |info| self.freeTensorElemPtrInfo(info);
+        self.tensor_elem_ptrs.clearRetainingCapacity();
+    }
 
     // ----------------------------------------------------------------
     // Op builder (unchanged)
@@ -337,6 +368,7 @@ pub const MlirCodegen = struct {
             .block_map = std.AutoHashMap(tir.BlockId, mlir.Block).init(gpa),
             .value_map = std.AutoHashMap(tir.ValueId, mlir.Value).init(gpa),
             .tensor_slots = std.AutoHashMap(tir.ValueId, mlir.Value).init(gpa),
+            .tensor_elem_ptrs = std.AutoHashMap(tir.ValueId, TensorElemPtrInfo).init(gpa),
             .val_types = std.AutoHashMap(tir.ValueId, types.TypeId).init(gpa),
             .def_instr = std.AutoHashMap(tir.ValueId, tir.InstrId).init(gpa),
             .global_addr_cache = std.StringHashMap(mlir.Value).init(gpa),
@@ -362,6 +394,8 @@ pub const MlirCodegen = struct {
         self.str_pool.deinit();
         self.block_map.deinit();
         self.value_map.deinit();
+        self.releaseTensorElemPtrs();
+        self.tensor_elem_ptrs.deinit();
         self.tensor_slots.deinit();
         self.val_types.deinit();
         self.def_instr.deinit();
@@ -1277,6 +1311,8 @@ pub const MlirCodegen = struct {
         self.value_map.clearRetainingCapacity();
         self.val_types.clearRetainingCapacity();
         self.def_instr.clearRetainingCapacity();
+        self.tensor_slots.clearRetainingCapacity();
+        self.clearTensorElemPtrs();
         self.cur_region = null;
         self.cur_block = null;
         self.func_entry_block = null;
@@ -2082,6 +2118,7 @@ pub const MlirCodegen = struct {
                 const p = t.instrs.get(.Load, ins_id);
                 const prev_loc = self.pushLocation(p.loc);
                 defer self.loc = prev_loc;
+                if (try self.tryEmitTensorElementLoad(p, t, store)) |elem| break :blk elem;
                 var ptr_val_opt = self.value_map.get(p.ptr);
                 if (ptr_val_opt == null) {
                     // Try materializing or folding known-constant pointers directly to values as a last resort.
@@ -2161,6 +2198,7 @@ pub const MlirCodegen = struct {
                 const prev_loc = self.pushLocation(p.loc);
                 defer self.loc = prev_loc;
                 const v = self.value_map.get(p.value).?;
+                if (try self.handleTensorElementStore(p, v, t, store)) break :blk mlir.Value.empty();
                 const ptr_opt = self.value_map.get(p.ptr);
                 if (ptr_opt == null) {
                     std.debug.print("MLIR Store missing ptr mapping: ins_id={} ptr_vid={}\n", .{ ins_id, p.ptr });
@@ -2200,6 +2238,8 @@ pub const MlirCodegen = struct {
             },
 
             .Gep => blk: {
+                if (try self.tryEmitTensorGep(ins_id, t, store)) |special| break :blk special;
+
                 const p = t.instrs.get(.Gep, ins_id);
                 const prev_loc = self.pushLocation(p.loc);
                 defer self.loc = prev_loc;
@@ -3679,6 +3719,205 @@ pub const MlirCodegen = struct {
                 self.append(op);
             },
         }
+    }
+
+    fn tryEmitTensorGep(self: *MlirCodegen, ins_id: tir.InstrId, t: *const tir.TIR, store: *types.TypeStore) !?mlir.Value {
+        const p = t.instrs.get(.Gep, ins_id);
+        if (store.getKind(p.ty) != .Ptr) return null;
+
+        const base_vid = p.base;
+        var root_ptr: ?tir.ValueId = null;
+        var base_indices: []const TensorIndex = &[_]TensorIndex{};
+
+        if (self.tensor_slots.get(base_vid)) |_| {
+            root_ptr = base_vid;
+        } else if (self.tensor_elem_ptrs.get(base_vid)) |base_info| {
+            root_ptr = base_info.root_ptr;
+            base_indices = base_info.indices;
+        } else {
+            return null;
+        }
+
+        const root = root_ptr.?;
+        const root_sr = self.srTypeOfValue(t, root);
+        if (store.getKind(root_sr) != .Ptr) return null;
+        const root_elem = store.get(.Ptr, root_sr).elem;
+        if (store.getKind(root_elem) != .Tensor) return null;
+
+        const index_ids = t.instrs.gep_pool.slice(p.indices);
+        const combined = try self.combineTensorIndexIds(t, base_indices, index_ids);
+        errdefer if (combined.len != 0) self.gpa.free(combined);
+
+        const placeholder = self.llvmNullPtr();
+        const info = TensorElemPtrInfo{
+            .root_ptr = root,
+            .elem_ty = store.get(.Ptr, p.ty).elem,
+            .indices = combined,
+        };
+
+        if (self.tensor_elem_ptrs.getPtr(p.result)) |old_ptr| {
+            self.freeTensorElemPtrInfo(old_ptr);
+            old_ptr.* = info;
+        } else {
+            try self.tensor_elem_ptrs.put(p.result, info);
+        }
+
+        try self.value_map.put(p.result, placeholder);
+        try self.val_types.put(p.result, p.ty);
+        return placeholder;
+    }
+
+    fn combineTensorIndexIds(
+        self: *MlirCodegen,
+        t: *const tir.TIR,
+        base: []const TensorIndex,
+        ids: []const tir.GepIndexId,
+    ) ![]TensorIndex {
+        if (base.len == 0 and ids.len == 0) return &[_]TensorIndex{};
+        const total = base.len + ids.len;
+        var buf = try self.gpa.alloc(TensorIndex, total);
+        if (base.len != 0) std.mem.copyForwards(TensorIndex, buf[0..base.len], base);
+        var idx: usize = base.len;
+        for (ids) |gid| {
+            const g = t.instrs.GepIndex.get(gid);
+            buf[idx] = switch (g) {
+                .Const => |c| TensorIndex{ .constant = @as(i64, @intCast(c)) },
+                .Value => |vid| blk: {
+                    if (self.constIntOf(t, vid)) |const_val| {
+                        break :blk TensorIndex{ .constant = @as(i64, @intCast(const_val)) };
+                    }
+                    break :blk TensorIndex{ .value = vid };
+                },
+            };
+            idx += 1;
+        }
+        return buf;
+    }
+
+    fn buildTensorIndexValues(
+        self: *MlirCodegen,
+        t: *const tir.TIR,
+        store: *types.TypeStore,
+        indices: []const TensorIndex,
+    ) ![]mlir.Value {
+        if (indices.len == 0) return &[_]mlir.Value{};
+        var out = try self.gpa.alloc(mlir.Value, indices.len);
+        const idx_ty = mlir.Type.getIndexType(self.mlir_ctx);
+        var i: usize = 0;
+        while (i < indices.len) : (i += 1) {
+            const entry = indices[i];
+            out[i] = switch (entry) {
+                .constant => |c| blk: {
+                    const attr = mlir.Attribute.integerAttrGet(idx_ty, c);
+                    var op = OpBuilder.init("arith.constant", self.loc).builder()
+                        .add_results(&.{idx_ty})
+                        .add_attributes(&.{self.named("value", attr)}).build();
+                    self.append(op);
+                    break :blk op.getResult(0);
+                },
+                .value => |vid| blk: {
+                    const raw = try self.ensureValue(t, store, vid);
+                    break :blk try self.ensureIndexValue(raw);
+                },
+            };
+        }
+        return out;
+    }
+
+    fn ensureValue(self: *MlirCodegen, t: *const tir.TIR, store: *types.TypeStore, vid: tir.ValueId) anyerror!mlir.Value {
+        if (self.value_map.get(vid)) |v| return v;
+        if (self.def_instr.get(vid)) |iid| {
+            return try self.emitInstr(iid, t, store);
+        }
+        return error.CompileError;
+    }
+
+    fn handleTensorElementStore(
+        self: *MlirCodegen,
+        p: tir.Rows.Store,
+        value: mlir.Value,
+        t: *const tir.TIR,
+        store: *types.TypeStore,
+    ) !bool {
+        if (self.tensor_elem_ptrs.get(p.ptr)) |info| {
+            if (store.getKind(info.elem_ty) == .Tensor) return false;
+            const tensor_sr = self.srTypeOfValue(t, info.root_ptr);
+            if (store.getKind(tensor_sr) != .Ptr) return false;
+            const tensor_ty = store.get(.Ptr, tensor_sr).elem;
+            const tensor_mlir_ty = try self.llvmTypeOf(store, tensor_ty);
+            var base_val = self.tensor_slots.get(info.root_ptr) orelse mlir.Value.empty();
+            if (base_val.isNull()) base_val = self.zeroOf(tensor_mlir_ty);
+            const index_vals = try self.buildTensorIndexValues(t, store, info.indices);
+            defer if (index_vals.len != 0) self.gpa.free(index_vals);
+            const new_tensor = try self.tensorInsertScalar(tensor_ty, info.elem_ty, base_val, value, index_vals, store);
+            try self.tensor_slots.put(info.root_ptr, new_tensor);
+            return true;
+        }
+        return false;
+    }
+
+    fn tryEmitTensorElementLoad(
+        self: *MlirCodegen,
+        p: tir.Rows.Load,
+        t: *const tir.TIR,
+        store: *types.TypeStore,
+    ) !?mlir.Value {
+        if (self.tensor_elem_ptrs.get(p.ptr)) |info| {
+            if (store.getKind(info.elem_ty) == .Tensor) return null;
+            const tensor_sr = self.srTypeOfValue(t, info.root_ptr);
+            if (store.getKind(tensor_sr) != .Ptr) return null;
+            const tensor_ty = store.get(.Ptr, tensor_sr).elem;
+            const tensor_mlir_ty = try self.llvmTypeOf(store, tensor_ty);
+            var base_val = self.tensor_slots.get(info.root_ptr) orelse mlir.Value.empty();
+            if (base_val.isNull()) base_val = self.zeroOf(tensor_mlir_ty);
+            const index_vals = try self.buildTensorIndexValues(t, store, info.indices);
+            defer if (index_vals.len != 0) self.gpa.free(index_vals);
+            const elem_val = try self.tensorExtractScalar(info.elem_ty, base_val, index_vals, store);
+            return elem_val;
+        }
+        return null;
+    }
+
+    fn tensorInsertScalar(
+        self: *MlirCodegen,
+        tensor_ty: types.TypeId,
+        elem_ty: types.TypeId,
+        base_tensor: mlir.Value,
+        elem_value: mlir.Value,
+        indices: []const mlir.Value,
+        store: *types.TypeStore,
+    ) !mlir.Value {
+        _ = elem_ty;
+        const tensor_mlir = try self.llvmTypeOf(store, tensor_ty);
+        var ops = try self.gpa.alloc(mlir.Value, 2 + indices.len);
+        defer self.gpa.free(ops);
+        ops[0] = elem_value;
+        ops[1] = base_tensor;
+        if (indices.len != 0) std.mem.copyForwards(mlir.Value, ops[2..], indices);
+        var insert = OpBuilder.init("tensor.insert", self.loc).builder()
+            .add_operands(ops)
+            .add_results(&.{tensor_mlir}).build();
+        self.append(insert);
+        return insert.getResult(0);
+    }
+
+    fn tensorExtractScalar(
+        self: *MlirCodegen,
+        elem_ty: types.TypeId,
+        base_tensor: mlir.Value,
+        indices: []const mlir.Value,
+        store: *types.TypeStore,
+    ) !mlir.Value {
+        const elem_mlir = try self.llvmTypeOf(store, elem_ty);
+        var ops = try self.gpa.alloc(mlir.Value, 1 + indices.len);
+        defer self.gpa.free(ops);
+        ops[0] = base_tensor;
+        if (indices.len != 0) std.mem.copyForwards(mlir.Value, ops[1..], indices);
+        var extract = OpBuilder.init("tensor.extract", self.loc).builder()
+            .add_operands(ops)
+            .add_results(&.{elem_mlir}).build();
+        self.append(extract);
+        return extract.getResult(0);
     }
 
     fn emitGep(
