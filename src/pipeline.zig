@@ -231,7 +231,6 @@ pub const Pipeline = struct {
             .tir,
             &dependencies,
         );
-
         for (dependencies.items) |dep| {
             const original_debug_flag = mlir_codegen.enable_debug_info;
             mlir_codegen.enable_debug_info = false;
@@ -600,7 +599,7 @@ fn toPipelineMode(mode: module_graph.LoadMode) Pipeline.Mode {
     };
 }
 
-fn computeModuleNamespaces(
+pub fn computeModuleNamespaces(
     gpa: std.mem.Allocator,
     a: *const ast_mod.Ast,
     graph: *module_graph.ModuleGraph,

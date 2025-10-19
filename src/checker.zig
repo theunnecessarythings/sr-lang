@@ -2357,6 +2357,8 @@ pub const Checker = struct {
         const parent_kind = self.exprKind(field_expr.parent);
         if (parent_kind == .Import) {
             if (self.importMemberType(field_expr.parent, field_expr.field)) |mt| {
+                try self.type_info.ensureExpr(self.gpa, id);
+                self.type_info.setExprType(id, mt);
                 // For imported members we don't currently expose a precise index
                 // into a struct; do not set a field index here.
                 return mt;
@@ -2374,6 +2376,8 @@ pub const Checker = struct {
                     const drow = self.ast_unit.exprs.Decl.get(did);
                     if (self.exprKind(drow.value) == .Import) {
                         if (self.importMemberType(drow.value, field_expr.field)) |mt| {
+                            try self.type_info.ensureExpr(self.gpa, id);
+                            self.type_info.setExprType(id, mt);
                             return mt;
                         }
                         try self.context.diags.addError(self.exprLoc(field_expr), .unknown_module_field, .{});

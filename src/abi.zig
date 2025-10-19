@@ -225,6 +225,10 @@ pub fn abiSizeAlign(self: *MlirCodegen, store: *types.TypeStore, ty: types.TypeI
             size = std.mem.alignForward(usize, size, alignment);
             return .{ .size = size, .alignment = alignment, .hasFloat = hasF, .allIntsOnly = intsOnly };
         },
+        .TypeType => {
+            const ptr_bytes: usize = if (@sizeOf(usize) >= 8) 8 else @sizeOf(usize);
+            return .{ .size = ptr_bytes, .alignment = ptr_bytes, .hasFloat = false, .allIntsOnly = true };
+        },
         .Noreturn => {
             return .{ .size = 0, .alignment = 1, .hasFloat = false, .allIntsOnly = true };
         },

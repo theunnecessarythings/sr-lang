@@ -12,11 +12,12 @@ const comp = @import("comptime.zig");
 const monomorphize = @import("monomorphize.zig");
 const module_graph = @import("module_graph.zig");
 const check_types = @import("check_types.zig");
+const pipeline_mod = @import("pipeline.zig");
 
 const StrId = @import("cst.zig").StrId;
 const OptStrId = @import("cst.zig").OptStrId;
 const Context = @import("compile.zig").Context;
-const Pipeline = @import("pipeline.zig").Pipeline;
+const Pipeline = pipeline_mod.Pipeline;
 const Builder = tir.Builder;
 
 pub const LowerTir = struct {
@@ -60,6 +61,11 @@ pub const LowerTir = struct {
         fn deinit(self: *ExprTypeOverrideFrame, gpa: std.mem.Allocator) void {
             self.map.deinit(gpa);
         }
+    };
+
+    const FunctionDeclContext = struct {
+        ast: *const ast.Ast,
+        decl_id: ast.DeclId,
     };
 
     fn pushExprTypeOverrideFrame(self: *LowerTir) !void {
@@ -1510,9 +1516,22 @@ const LowerMode = enum { rvalue, lvalue_addr };
         if (self.moduleFieldIsExtern(info, field_name)) {
             interned = f.builder.intern(field_name);
         } else {
-            const mangled = try std.fmt.allocPrint(self.gpa, "{s}_{s}", .{ info.namespace, field_name });
-            defer self.gpa.free(mangled);
-            interned = f.builder.intern(mangled);
+            interned = f.builder.intern(field_name);
+        }
+
+        if ((self.getExprType(field_access)) == null) {
+            const lookup_res = self.context.module_graph.lookupExport(
+                self.import_base_dir,
+                info.import_path,
+                field_name,
+                .tir,
+            ) catch null;
+            if (lookup_res) |lu| {
+                if (lu.ty) |ty| {
+                    self.type_info.ensureExpr(self.gpa, field_access) catch {};
+                    self.type_info.setExprType(field_access, ty);
+                }
+            }
         }
 
         try self.module_call_cache.put(key, interned);
@@ -1701,6 +1720,7 @@ const LowerMode = enum { rvalue, lvalue_addr };
         try tmp_env.bind(self.gpa, a, tmp_builder.intern("comptime_api_ptr"), .{ .value = api_ptr_val, .ty = ptr_ty, .is_slot = false });
 
         const result_val_id = try self.lowerExpr(a, &tmp_env, &thunk_fn, &thunk_blk, expr, result_ty, .rvalue);
+        try self.monomorphizer.run(self, a, &tmp_builder, monomorphLowerCallback);
         if (result_kind != .Void) {
             if (thunk_blk.term.isNone()) {
                 try tmp_builder.setReturnVal(&thunk_blk, result_val_id, expr_loc);
@@ -2045,18 +2065,20 @@ const LowerMode = enum { rvalue, lvalue_addr };
         }
         if (callee.fty) |fty| {
             if (self.context.type_store.index.kinds.items[fty.toRaw()] == .Function) {
-                const decl_id_opt = if (method_decl_id) |mid|
-                    mid
-                else
-                    self.findTopLevelDeclByName(a, callee.name);
-                if (decl_id_opt) |decl_id| {
-                    const decl = a.exprs.Decl.get(decl_id);
-                    const base_kind = a.exprs.index.kinds.items[decl.value.toRaw()];
+                var decl_ctx_opt: ?FunctionDeclContext = null;
+                if (method_decl_id) |mid| {
+                    decl_ctx_opt = .{ .ast = a, .decl_id = mid };
+                } else {
+                    decl_ctx_opt = self.findFunctionDeclForCall(a, row, callee.name);
+                }
+                if (decl_ctx_opt) |decl_ctx| {
+                    const decl_ast = decl_ctx.ast;
+                    const decl = decl_ast.exprs.Decl.get(decl_ctx.decl_id);
+                    const base_kind = decl_ast.exprs.index.kinds.items[decl.value.toRaw()];
                     if (base_kind == .FunctionLit) {
-                        const params = a.exprs.param_pool.slice(a.exprs.get(.FunctionLit, decl.value).params);
-
+                        const params = decl_ast.exprs.param_pool.slice(decl_ast.exprs.get(.FunctionLit, decl.value).params);
                         var skip_params: usize = 0;
-                        while (skip_params < params.len and a.exprs.Param.get(params[skip_params]).is_comptime) : (skip_params += 1) {}
+                        while (skip_params < params.len and decl_ast.exprs.Param.get(params[skip_params]).is_comptime) : (skip_params += 1) {}
 
                         var binding_infos: std.ArrayList(monomorphize.BindingInfo) = .empty;
                         defer {
@@ -2068,13 +2090,13 @@ const LowerMode = enum { rvalue, lvalue_addr };
                         if (arg_ids.len >= skip_params) {
                             var idx: usize = 0;
                             while (idx < skip_params) : (idx += 1) {
-                                const param = a.exprs.Param.get(params[idx]);
+                                const param = decl_ast.exprs.Param.get(params[idx]);
                                 if (param.pat.isNone()) {
                                     ok = false;
                                     break;
                                 }
 
-                                const pname = self.bindingNameOfPattern(a, param.pat.unwrap()) orelse {
+                                const pname = self.bindingNameOfPattern(decl_ast, param.pat.unwrap()) orelse {
                                     ok = false;
                                     break;
                                 };
@@ -2086,8 +2108,8 @@ const LowerMode = enum { rvalue, lvalue_addr };
 
                                 if (!param.ty.isNone()) {
                                     const ty_expr_id = param.ty.unwrap();
-                                    if (a.exprs.index.kinds.items[ty_expr_id.toRaw()] == .Ident) {
-                                        const ident_name = a.exprs.get(.Ident, ty_expr_id).name;
+                                    if (decl_ast.exprs.index.kinds.items[ty_expr_id.toRaw()] == .Ident) {
+                                        const ident_name = decl_ast.exprs.get(.Ident, ty_expr_id).name;
                                         for (binding_infos.items) |info| {
                                             if (info.name.eq(ident_name) and info.kind == .type_param) {
                                                 param_ty = info.kind.type_param;
@@ -2134,9 +2156,9 @@ const LowerMode = enum { rvalue, lvalue_addr };
                             const original_args = arg_ids;
                             var runtime_idx: usize = skip_params;
                             while (runtime_idx < params.len and runtime_idx < original_args.len) : (runtime_idx += 1) {
-                                const param = a.exprs.Param.get(params[runtime_idx]);
+                                const param = decl_ast.exprs.Param.get(params[runtime_idx]);
                                 if (param.pat.isNone()) continue;
-                                const pname = self.bindingNameOfPattern(a, param.pat.unwrap()) orelse continue;
+                                const pname = self.bindingNameOfPattern(decl_ast, param.pat.unwrap()) orelse continue;
 
                                 const param_ty = if (runtime_idx < param_tys.len)
                                     param_tys[runtime_idx]
@@ -2163,10 +2185,14 @@ const LowerMode = enum { rvalue, lvalue_addr };
                             }
 
                             if (runtime_specs.items.len > 0) {
-                                const specialized_fn_ty = try self.chk.checkSpecializedFunction(decl.value, runtime_specs.items);
-                                if (specialized_fn_ty) |fn_ty_override| {
-                                    const fn_info_override = self.context.type_store.get(.Function, fn_ty_override);
-                                    specialized_result_override = fn_info_override.result;
+                                if (decl_ast == a) {
+                                    const specialized_fn_ty = try self.chk.checkSpecializedFunction(decl.value, runtime_specs.items);
+                                    if (specialized_fn_ty) |fn_ty_override| {
+                                        const fn_info_override = self.context.type_store.get(.Function, fn_ty_override);
+                                        specialized_result_override = fn_info_override.result;
+                                    } else {
+                                        ok = false;
+                                    }
                                 } else {
                                     ok = false;
                                 }
@@ -2176,10 +2202,10 @@ const LowerMode = enum { rvalue, lvalue_addr };
                         if (ok and binding_infos.items.len > 0) {
                             const mangled = try self.mangleMonomorphName(callee.name, binding_infos.items);
                             const result = try self.monomorphizer.request(
-                                a,
+                                decl_ast,
                                 &self.context.type_store,
                                 callee.name,
-                                decl_id,
+                                decl_ctx.decl_id,
                                 fty,
                                 binding_infos.items,
                                 skip_params,
@@ -2597,8 +2623,6 @@ const LowerMode = enum { rvalue, lvalue_addr };
                 const ptr_void_ty = self.context.type_store.mkPtr(self.context.type_store.tVoid(), false);
                 const ids = a.exprs.expr_pool.slice(row.elems);
 
-                const elem_size = check_types.typeSize(self.chk, elem_ty) orelse return error.LoweringBug;
-
                 if (ids.len == 0) {
                     const null_ptr = blk.builder.constNull(blk, ptr_elem_ty, loc);
                     const zero = blk.builder.tirValue(.ConstInt, blk, usize_ty, loc, .{ .value = 0 });
@@ -2611,6 +2635,8 @@ const LowerMode = enum { rvalue, lvalue_addr };
                     if (expected_ty) |want| return self.emitCoerce(blk, dyn_val, ty0, want, loc);
                     return dyn_val;
                 }
+
+                const elem_size = check_types.typeSize(self.chk, elem_ty) orelse return error.LoweringBug;
 
                 var elems = try self.gpa.alloc(tir.ValueId, ids.len);
                 defer self.gpa.free(elems);
@@ -4922,30 +4948,38 @@ const LowerMode = enum { rvalue, lvalue_addr };
     // ============================
 
     fn findTopLevelDeclByName(self: *const LowerTir, a: *const ast.Ast, name: ast.StrId) ?ast.DeclId {
+        const target = a.exprs.strs.get(name);
+        return self.findTopLevelDeclByNameSlice(a, target);
+    }
+
+    fn findTopLevelDeclByNameSlice(self: *const LowerTir, a: *const ast.Ast, target: []const u8) ?ast.DeclId {
         const decls = a.exprs.decl_pool.slice(a.unit.decls);
         var i: usize = 0;
         while (i < decls.len) : (i += 1) {
             const d = a.exprs.Decl.get(decls[i]);
             if (d.pattern.isNone()) continue;
             const pid = d.pattern.unwrap();
-            if (self.patternContainsName(a, pid, name)) return decls[i];
+            if (self.patternContainsNameStr(a, pid, target)) return decls[i];
         }
         return null;
     }
 
-    fn patternContainsName(
+    fn patternContainsNameStr(
         self: *const LowerTir,
         a: *const ast.Ast,
         pid: ast.PatternId,
-        name: ast.StrId,
+        target: []const u8,
     ) bool {
         const pk = a.pats.index.kinds.items[pid.toRaw()];
         return switch (pk) {
-            .Binding => a.pats.get(.Binding, pid).name.eq(name),
+            .Binding => {
+                const nm = a.pats.get(.Binding, pid).name;
+                return std.mem.eql(u8, a.exprs.strs.get(nm), target);
+            },
             .Tuple => {
                 const row = a.pats.get(.Tuple, pid);
                 const elems = a.pats.pat_pool.slice(row.elems);
-                for (elems) |eid| if (self.patternContainsName(a, eid, name)) return true;
+                for (elems) |eid| if (self.patternContainsNameStr(a, eid, target)) return true;
                 return false;
             },
             .Struct => {
@@ -4953,14 +4987,14 @@ const LowerMode = enum { rvalue, lvalue_addr };
                 const fields = a.pats.field_pool.slice(row.fields);
                 for (fields) |fid| {
                     const frow = a.pats.StructField.get(fid);
-                    if (self.patternContainsName(a, frow.pattern, name)) return true;
+                    if (self.patternContainsNameStr(a, frow.pattern, target)) return true;
                 }
                 return false;
             },
             .VariantTuple => {
                 const row = a.pats.get(.VariantTuple, pid);
                 const elems = a.pats.pat_pool.slice(row.elems);
-                for (elems) |eid| if (self.patternContainsName(a, eid, name)) return true;
+                for (elems) |eid| if (self.patternContainsNameStr(a, eid, target)) return true;
                 return false;
             },
             .VariantStruct => {
@@ -4968,33 +5002,63 @@ const LowerMode = enum { rvalue, lvalue_addr };
                 const fields = a.pats.field_pool.slice(row.fields);
                 for (fields) |fid| {
                     const frow = a.pats.StructField.get(fid);
-                    if (self.patternContainsName(a, frow.pattern, name)) return true;
+                    if (self.patternContainsNameStr(a, frow.pattern, target)) return true;
                 }
                 return false;
             },
             .Slice => {
                 const row = a.pats.get(.Slice, pid);
                 const elems = a.pats.pat_pool.slice(row.elems);
-                for (elems) |eid| if (self.patternContainsName(a, eid, name)) return true;
+                for (elems) |eid| if (self.patternContainsNameStr(a, eid, target)) return true;
                 if (!row.rest_binding.isNone()) {
-                    if (self.patternContainsName(a, row.rest_binding.unwrap(), name)) return true;
+                    if (self.patternContainsNameStr(a, row.rest_binding.unwrap(), target)) return true;
                 }
                 return false;
             },
             .Or => {
                 const row = a.pats.get(.Or, pid);
                 const alts = a.pats.pat_pool.slice(row.alts);
-                for (alts) |aid| if (self.patternContainsName(a, aid, name)) return true;
+                for (alts) |aid| if (self.patternContainsNameStr(a, aid, target)) return true;
                 return false;
             },
             .At => {
                 const row = a.pats.get(.At, pid);
-                // if (std.mem.eql(u8, a.exprs.strs.get(row.binder), name)) return true;
-                if (row.binder.eq(name)) return true;
-                return self.patternContainsName(a, row.pattern, name);
+                const binder = a.exprs.strs.get(row.binder);
+                if (std.mem.eql(u8, binder, target)) return true;
+                return self.patternContainsNameStr(a, row.pattern, target);
             },
-            else => return false,
+            else => false,
         };
+    }
+
+    fn findFunctionDeclForCall(
+        self: *LowerTir,
+        caller_ast: *const ast.Ast,
+        row: ast.Rows.Call,
+        callee_name: ast.StrId,
+    ) ?FunctionDeclContext {
+        if (self.findTopLevelDeclByName(caller_ast, callee_name)) |decl_id| {
+            return .{ .ast = caller_ast, .decl_id = decl_id };
+        }
+
+        const callee_kind = caller_ast.exprs.index.kinds.items[row.callee.toRaw()];
+        if (callee_kind != .FieldAccess) return null;
+
+        const fr = caller_ast.exprs.get(.FieldAccess, row.callee);
+        const parent_kind = caller_ast.exprs.index.kinds.items[fr.parent.toRaw()];
+        if (parent_kind != .Ident) return null;
+
+        const alias_ident = caller_ast.exprs.get(.Ident, fr.parent);
+        const alias = caller_ast.exprs.strs.get(alias_ident.name);
+        const info = self.module_aliases.get(alias) orelse return null;
+
+        const me = self.context.module_graph.ensureModule(self.import_base_dir, info.import_path, .tir) catch return null;
+        const imported_ast = me.astRef();
+        const member_name = caller_ast.exprs.strs.get(fr.field);
+        if (self.findTopLevelDeclByNameSlice(imported_ast, member_name)) |decl_id| {
+            return .{ .ast = imported_ast, .decl_id = decl_id };
+        }
+        return null;
     }
     fn findTopLevelImportByName(self: *const LowerTir, a: *const ast.Ast, name: ast.StrId) ?ast.DeclId {
         const did = self.findTopLevelDeclByName(a, name) orelse return null;
@@ -6164,6 +6228,22 @@ pub fn evalComptimeExpr(
     bindings: []const Pipeline.ComptimeBinding,
 ) !comp.ComptimeValue {
     var lowerer = LowerTir.init(gpa, context, pipeline, type_info, module_id, chk);
+    lowerer.import_base_dir = chk.import_base_dir;
+    var alias_info_map = std.StringHashMap(LowerTir.ModuleAliasInfo).init(gpa);
+    defer {
+        var it = alias_info_map.iterator();
+        while (it.next()) |kv| {
+            gpa.free(kv.key_ptr.*);
+            gpa.free(kv.value_ptr.namespace);
+            gpa.free(kv.value_ptr.import_path);
+        }
+        alias_info_map.deinit();
+    }
+    try pipeline_mod.computeModuleNamespaces(gpa, ast_unit, &context.module_graph, &alias_info_map);
+    var alias_it = alias_info_map.iterator();
+    while (alias_it.next()) |kv| {
+        try lowerer.setModuleAlias(kv.key_ptr.*, kv.value_ptr.*);
+    }
     defer lowerer.deinit();
     return lowerer.runComptimeExpr(ast_unit, expr, result_ty, bindings);
 }

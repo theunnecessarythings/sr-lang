@@ -198,6 +198,7 @@ pub const MonomorphizationContext = struct {
 };
 
 pub const MonomorphizationRequest = struct {
+    ast: *const ast.Ast,
     base_name: ast.StrId,
     decl_id: ast.DeclId,
     mangled_name: ast.StrId,
@@ -322,7 +323,7 @@ pub const Monomorphizer = struct {
 
     pub fn request(
         self: *Monomorphizer,
-        a: *const ast.Ast,
+        ast_unit: *const ast.Ast,
         ts: *types.TypeStore,
         base_name: ast.StrId,
         decl_id: ast.DeclId,
@@ -347,20 +348,20 @@ pub const Monomorphizer = struct {
 
         var idx: usize = 0;
         var i: usize = skip_params;
-        const decl = a.exprs.Decl.get(decl_id);
-        const fn_lit = a.exprs.get(.FunctionLit, decl.value);
-        const params = a.exprs.param_pool.slice(fn_lit.params);
+        const decl = ast_unit.exprs.Decl.get(decl_id);
+        const fn_lit = ast_unit.exprs.get(.FunctionLit, decl.value);
+        const params = ast_unit.exprs.param_pool.slice(fn_lit.params);
 
         while (i < base_params.len) : (i += 1) {
             const base_ty = base_params[i];
             const param_index = i;
-            const param = a.exprs.Param.get(params[param_index]);
+            const param = ast_unit.exprs.Param.get(params[param_index]);
             var specialized_ty = base_ty;
             if (!param.ty.isNone()) {
-                specialized_ty = resolveSpecializedType(ts, bindings, a, param.ty.unwrap()) orelse base_ty;
+                specialized_ty = resolveSpecializedType(ts, bindings, ast_unit, param.ty.unwrap()) orelse base_ty;
             }
             if (!param.pat.isNone()) {
-                if (bindingNameOfPattern(a, param.pat.unwrap())) |pname| {
+                if (bindingNameOfPattern(ast_unit, param.pat.unwrap())) |pname| {
                     if (lookupRuntimeOverride(bindings, pname)) |override_ty|
                         specialized_ty = override_ty;
                 }
@@ -377,7 +378,7 @@ pub const Monomorphizer = struct {
             override
         else blk: {
             if (!fn_lit.result_ty.isNone()) {
-                if (resolveSpecializedType(ts, bindings, a, fn_lit.result_ty.unwrap())) |resolved|
+                if (resolveSpecializedType(ts, bindings, ast_unit, fn_lit.result_ty.unwrap())) |resolved|
                     break :blk resolved;
             }
             break :blk fn_kind.result;
@@ -402,6 +403,7 @@ pub const Monomorphizer = struct {
         }
 
         try self.requests.append(self.gpa, .{
+            .ast = ast_unit,
             .base_name = base_name,
             .decl_id = decl_id,
             .mangled_name = mangled_name,
@@ -418,14 +420,14 @@ pub const Monomorphizer = struct {
     pub fn run(
         self: *Monomorphizer,
         ctx: ?*anyopaque,
-        a: *const ast.Ast,
+        _: *const ast.Ast,
         b: *tir.Builder,
         cb: LowerCallback,
     ) !void {
         while (self.requests.items.len > 0) {
             var req = self.requests.pop().?;
             defer self.freeRequest(&req);
-            try cb(ctx, a, b, &req);
+            try cb(ctx, req.ast, b, &req);
         }
     }
 };

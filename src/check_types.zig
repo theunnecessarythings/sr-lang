@@ -100,6 +100,18 @@ pub fn typeSize(self: *Checker, ty_id: types.TypeId) ?usize {
             };
             break :blk std.math.mul(usize, elem_size, len) catch return null;
         },
+        .Struct => blk: {
+            const st = self.context.type_store.get(.Struct, ty_id);
+            const fields = self.context.type_store.field_pool.slice(st.fields);
+            var total: usize = 0;
+            var i: usize = 0;
+            while (i < fields.len) : (i += 1) {
+                const field = self.context.type_store.Field.get(fields[i]);
+                const field_size = typeSize(self, field.ty) orelse return null;
+                total = std.math.add(usize, total, field_size) catch return null;
+            }
+            break :blk total;
+        },
         // Optional/Struct/Tuple/Union/Map/Error/Variant/ErrorSet/Simd/Tensor:
         // ABI/padding/representation are not modeled here yet.
         else => null,
@@ -212,7 +224,29 @@ fn typeFromTypeExprWithBindings(
             }
             break :blk_at self.context.type_store.mkArray(elem, size);
         },
-        .Call => try resolveTypeFunctionCall(self, id, bindings),
+        .Call => blk_call: {
+            _ = try typeFromTypeExpr(self, self.ast_unit.exprs.get(.Call, id).callee);
+            if (try resolveTypeFunctionCall(self, id, bindings)) |ty| {
+                break :blk_call ty;
+            }
+            const call_row = self.ast_unit.exprs.get(.Call, id);
+            const callee_kind = self.ast_unit.exprs.index.kinds.items[call_row.callee.toRaw()];
+            if (callee_kind == .FieldAccess or callee_kind == .Ident) {
+                const any_type_ty = self.context.type_store.mkTypeType(self.context.type_store.tAny());
+                var value = evalComptimeValueWithBindings(self, id, any_type_ty, bindings) catch break :blk_call null;
+                defer value.destroy(self.gpa);
+                switch (value) {
+                    .Type => |resolved| {
+                        const wrapped = self.context.type_store.mkTypeType(resolved);
+                        try self.type_info.ensureExpr(self.gpa, id);
+                        self.type_info.expr_types.items[id.toRaw()] = wrapped;
+                        break :blk_call resolved;
+                    },
+                    else => {},
+                }
+            }
+            break :blk_call null;
+        },
         else => try typeFromTypeExpr(self, id),
     };
 }
@@ -801,6 +835,8 @@ pub fn typeFromTypeExpr(self: *Checker, id: ast.ExprId) anyerror!?types.TypeId {
 
             if (parent_expr_kind == .Import) {
                 if (self.importMemberType(fr.parent, fr.field)) |mt| {
+                    try self.type_info.ensureExpr(self.gpa, id);
+                    self.type_info.expr_types.items[id.toRaw()] = mt;
                     const mt_kind = self.context.type_store.index.kinds.items[mt.toRaw()];
                     break :blk_fa if (mt_kind == .TypeType)
                         self.context.type_store.get(.TypeType, mt).of
@@ -819,12 +855,14 @@ pub fn typeFromTypeExpr(self: *Checker, id: ast.ExprId) anyerror!?types.TypeId {
                         const did = sym.origin_decl.unwrap();
                         const drow = self.ast_unit.exprs.Decl.get(did);
                         if (self.ast_unit.exprs.index.kinds.items[drow.value.toRaw()] == .Import) {
-                            if (self.importMemberType(drow.value, fr.field)) |mt| {
-                                const mt_kind = self.context.type_store.index.kinds.items[mt.toRaw()];
-                                break :blk_fa if (mt_kind == .TypeType)
-                                    self.context.type_store.get(.TypeType, mt).of
-                                else
-                                    mt;
+                        if (self.importMemberType(drow.value, fr.field)) |mt| {
+                            try self.type_info.ensureExpr(self.gpa, id);
+                            self.type_info.expr_types.items[id.toRaw()] = mt;
+                            const mt_kind = self.context.type_store.index.kinds.items[mt.toRaw()];
+                            break :blk_fa if (mt_kind == .TypeType)
+                                self.context.type_store.get(.TypeType, mt).of
+                            else
+                                mt;
                             }
                             try self.context.diags.addError(self.ast_unit.exprs.locs.get(fr.loc), .unknown_module_field, .{});
                             break :blk_fa null;
@@ -872,7 +910,29 @@ pub fn typeFromTypeExpr(self: *Checker, id: ast.ExprId) anyerror!?types.TypeId {
                 },
             }
         },
-        .Call => try resolveTypeFunctionCall(self, id, &[_]Binding{}),
+        .Call => blk_call: {
+            _ = try typeFromTypeExpr(self, self.ast_unit.exprs.get(.Call, id).callee);
+            if (try resolveTypeFunctionCall(self, id, &[_]Binding{})) |ty| {
+                break :blk_call ty;
+            }
+            const call_row = self.ast_unit.exprs.get(.Call, id);
+            const callee_kind = self.ast_unit.exprs.index.kinds.items[call_row.callee.toRaw()];
+            if (callee_kind == .FieldAccess or callee_kind == .Ident) {
+                const any_type_ty = self.context.type_store.mkTypeType(self.context.type_store.tAny());
+                var value = evalComptimeValueWithBindings(self, id, any_type_ty, &[_]Binding{}) catch break :blk_call null;
+                defer value.destroy(self.gpa);
+                switch (value) {
+                    .Type => |resolved| {
+                        const wrapped = self.context.type_store.mkTypeType(resolved);
+                        try self.type_info.ensureExpr(self.gpa, id);
+                        self.type_info.expr_types.items[id.toRaw()] = wrapped;
+                        break :blk_call resolved;
+                    },
+                    else => {},
+                }
+            }
+            break :blk_call null;
+        },
         .AnyType => self.context.type_store.tAny(),
         .TypeType => self.context.type_store.tType(),
         .NoreturnType => self.context.type_store.tNoReturn(),

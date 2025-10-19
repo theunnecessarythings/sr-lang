@@ -181,6 +181,7 @@ pub fn run_passes(context: *mlir.Context, module: *mlir.Module) !void {
 
         // To LLVM
         "finalize-memref-to-llvm," ++
+        "convert-complex-to-llvm," ++
         "convert-arith-to-llvm," ++
         "convert-func-to-llvm," ++
         "convert-cf-to-llvm," ++
