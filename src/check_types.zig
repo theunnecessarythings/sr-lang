@@ -493,11 +493,12 @@ pub fn typeFromTypeExpr(self: *Checker, id: ast.ExprId) anyerror!?types.TypeId {
                 },
                 else => 0,
             };
-            if (lanes_val == 0) {
+            if (lanes_val == 0 or lanes_val > std.math.maxInt(u16)) {
                 try self.context.diags.addError(self.ast_unit.exprs.locs.get(row.loc), .simd_lanes_not_integer_literal, .{});
                 break :blk_simd null;
             }
-            break :blk_simd self.context.type_store.tAny();
+            const simd_ty = self.context.type_store.mkSimd(elem_ty, @intCast(lanes_val));
+            break :blk_simd simd_ty;
         },
         .TensorType => blk_tensor: {
             const row = self.ast_unit.exprs.get(.TensorType, id);

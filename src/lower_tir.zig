@@ -2447,6 +2447,24 @@ const LowerMode = enum { rvalue, lvalue_addr };
                 if (expected_ty) |want| return self.emitCoerce(blk, v, ty0, want, loc);
                 return v;
             },
+            .Simd => {
+                const simd_ty = self.context.type_store.get(.Simd, ty0);
+                const lanes: usize = @intCast(simd_ty.lanes);
+                const ids = a.exprs.expr_pool.slice(row.elems);
+                if (lanes != ids.len) {
+                    return error.LoweringBug;
+                }
+
+                var vals = try self.gpa.alloc(tir.ValueId, ids.len);
+                defer self.gpa.free(vals);
+                const expect_elem = simd_ty.elem;
+                var i: usize = 0;
+                while (i < ids.len) : (i += 1)
+                    vals[i] = try self.lowerExpr(a, env, f, blk, ids[i], expect_elem, .rvalue);
+                const v = blk.builder.arrayMake(blk, ty0, vals, loc);
+                if (expected_ty) |want| return self.emitCoerce(blk, v, ty0, want, loc);
+                return v;
+            },
             .Tensor => {
                 const v = try self.lowerTensorArrayLiteral(a, env, f, blk, id, ty0, loc);
                 if (expected_ty) |want| return self.emitCoerce(blk, v, ty0, want, loc);
