@@ -200,6 +200,7 @@ GetCurrentMonitor :: extern proc() i64
 GetMonitorPosition :: extern proc(i64) Vector2
 GetMonitorWidth :: extern proc(i64) i64
 GetMonitorHeight :: extern proc(i64) i64
+GetTime :: extern proc() f64
 SetTargetFPS :: extern proc(i64) void
 GetFrameTime :: extern proc() f32
 

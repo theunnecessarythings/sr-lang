@@ -2296,6 +2296,7 @@ pub const MlirCodegen = struct {
                     std.debug.assert(elems.len == lanes);
 
                     const elem_mlir = try self.llvmTypeOf(store, simd_ty.elem);
+                    const vec_ty = try self.llvmTypeOf(store, p.ty);
                     var operands = try self.gpa.alloc(mlir.Value, elems.len);
                     defer self.gpa.free(operands);
 
@@ -2309,7 +2310,7 @@ pub const MlirCodegen = struct {
 
                     var literal = OpBuilder.init("vector.from_elements", self.loc).builder()
                         .add_operands(operands)
-                        .add_results(&.{res_ty}).build();
+                        .add_results(&.{vec_ty}).build();
                     self.append(literal);
                     break :blk literal.getResult(0);
                 }
@@ -2630,7 +2631,7 @@ pub const MlirCodegen = struct {
                     const base_tensor = store.get(.Tensor, base_sr_ty);
                     const base_rank: usize = @intCast(base_tensor.rank);
                     const idx_raw = self.value_map.get(p.index).?;
-                    var idx_val = try self.ensureIndexValue(idx_raw);
+                    const idx_val = try self.ensureIndexValue(idx_raw);
 
                     if (base_rank == 1 and res_sr_kind != .Tensor and res_sr_kind != .Slice) {
                         // Rank-1 tensor indexed by scalar -> tensor.extract returning element value.
@@ -2660,7 +2661,7 @@ pub const MlirCodegen = struct {
                     var static_offsets_buf: [types.max_tensor_rank]i64 = undefined;
                     var static_sizes_buf: [types.max_tensor_rank]i64 = undefined;
                     var static_strides_buf: [types.max_tensor_rank]i64 = undefined;
-                    static_offsets_buf[0] = mlir.ShapedType.getDynamicStrideOrOffset();
+                    static_offsets_buf[0] = mlir.Type.getDynamicStrideOrOffset();
                     static_sizes_buf[0] = 1;
                     static_strides_buf[0] = 1;
                     var j: usize = 1;
@@ -2719,8 +2720,10 @@ pub const MlirCodegen = struct {
 
                 if (store.getKind(base_sr_ty) == .Simd) {
                     const idx_val = try self.ensureIndexValue(self.value_map.get(p.index).?);
-                    var op = OpBuilder.init("vector.extractelement", self.loc).builder()
+                    const static_pos_attr = mlir.Attribute.denseI64ArrayGet(self.mlir_ctx, &.{mlir.Type.getDynamicSize()});
+                    var op = OpBuilder.init("vector.extract", self.loc).builder()
                         .add_operands(&.{ base, idx_val })
+                        .add_attributes(&.{self.named("static_position", static_pos_attr)})
                         .add_results(&.{res_ty}).build();
                     self.append(op);
                     break :blk op.getResult(0);

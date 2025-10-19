@@ -2041,7 +2041,7 @@ pub const Checker = struct {
 
         // infer from first element, homogeneous requirement
         if (elems.len == 0) {
-            return self.context.type_store.mkArray(self.context.type_store.tAny(), .{.Concrete = 0});
+            return self.context.type_store.mkArray(self.context.type_store.tAny(), .{ .Concrete = 0 });
         }
         const first_ty = (try self.checkExpr(elems[0])) orelse return null;
         var i: usize = 1;
@@ -2052,7 +2052,7 @@ pub const Checker = struct {
                 return null;
             }
         }
-        return self.context.type_store.mkArray(first_ty, .{.Concrete = elems.len});
+        return self.context.type_store.mkArray(first_ty, .{ .Concrete = elems.len });
     }
 
     fn checkMapLit(self: *Checker, id: ast.ExprId) !?types.TypeId {
@@ -2093,21 +2093,21 @@ pub const Checker = struct {
         switch (col_kind) {
             .Array, .Slice => return self.indexElemTypeFromArrayLike(col_ty.?, index_expr.index, self.exprLoc(index_expr)),
             .Tensor => return self.indexElemTypeFromTensor(col_ty.?, index_expr.index, self.exprLoc(index_expr)),
-            .Simd => blk_simd_index: {
+            .Simd => {
                 const idx_kind = self.exprKind(index_expr.index);
                 if (idx_kind == .Range) {
                     try self.context.diags.addError(self.exprLoc(index_expr), .non_integer_index, .{});
-                    break :blk_simd_index null;
+                    return null;
                 }
                 const it = self.checkExpr(index_expr.index) catch return null;
                 if (it) |iid| {
                     if (!check_types.isIntegerKind(self, self.typeKind(iid))) {
                         try self.context.diags.addError(self.exprLoc(index_expr), .non_integer_index, .{});
-                        break :blk_simd_index null;
+                        return null;
                     }
                 }
                 const simd = self.context.type_store.get(.Simd, col_ty.?);
-                break :blk_simd_index simd.elem;
+                return simd.elem;
             },
             .Map => {
                 const m = self.context.type_store.get(.Map, col_ty.?);

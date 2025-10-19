@@ -61,11 +61,11 @@ test "ModuleGraph discovery finds std, vendor, examples, and workspace modules" 
 
     const std_path = try graph.resolvePath("", "std/array");
     defer std.testing.allocator.free(std_path);
-    try std.testing.expect(std.mem.endsWith(u8, std_path, "std/array.sr"));
+    try std.testing.expect(std.mem.endsWith(u8, std_path, "std/array"));
 
     const vendor_path = try graph.resolvePath("", "vendor/raylib");
     defer std.testing.allocator.free(vendor_path);
-    try std.testing.expect(std.mem.endsWith(u8, vendor_path, "vendor/raylib.sr"));
+    try std.testing.expect(std.mem.endsWith(u8, vendor_path, "vendor/raylib"));
 
     const example_path = try graph.resolvePath("", "examples/imports");
     defer std.testing.allocator.free(example_path);

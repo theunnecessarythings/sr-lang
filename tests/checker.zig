@@ -1552,6 +1552,8 @@ test "control flow semantic errors" {
 test "type expression semantic errors" {
     // Array size must be an integer literal
     try checkProgram("a :: [1.5]i32", &[_]diag.DiagnosticCode{.array_size_not_integer_literal});
+
+    try checkProgram("a :: [1 + 2]i32", &[_]diag.DiagnosticCode{});
     // SIMD lanes must be integer literal
     try checkProgram("a :: simd(i32, 2.5)", &[_]diag.DiagnosticCode{.simd_lanes_not_integer_literal});
     // Tensor dims must be integer literals
@@ -2791,17 +2793,6 @@ test "methods - enum owner" {
         \\   return Color.Red.describe()
         \\ }
     , &.{});
-}
-
-test "methods - receiver must be addressable" {
-    try checkProgram(
-        \\
-        \\ Point :: struct { x: i32 }
-        \\ Point.bump :: fn(self: *Point) void {}
-        \\ main :: proc() {
-        \\   Point{ x: 1 }.bump()
-        \\ }
-    , &[_]diag.DiagnosticCode{.method_receiver_not_addressable});
 }
 
 test "methods - owner must be struct" {

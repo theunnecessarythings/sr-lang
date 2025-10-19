@@ -19,7 +19,7 @@ test "special_types: tensor element access and modification" {
     const src =
         \\t: tensor(f32, 2, 2) = [[1.0, 2.0], [3.0, 4.0]]
         \\t[0][0] = 99.0
-        \\printf("Modified Tensor[0][0]=%f\n", t[0][0])
+        \\printf("Modified Tensor[0][0]=%f\n", t[0][0].(f64))
     ;
 
     const code = getSource("", src);

@@ -163,11 +163,11 @@ pub fn run_passes(context: *mlir.Context, module: *mlir.Module) !void {
         "empty-tensor-to-alloc-tensor," ++
         "convert-elementwise-to-linalg," ++
         "one-shot-bufferize{bufferize-function-boundaries=true allow-unknown-ops=true}," ++
+        // "lift-cf-to-scf," ++
+        // "buffer-deallocation-pipeline," ++
         "canonicalize,cse," ++
         "convert-bufferization-to-memref," ++
         "convert-linalg-to-loops," ++
-        "convert-cfg-to-scf," ++
-        "buffer-deallocation-pipeline," ++
         "lower-affine," ++
         "convert-vector-to-llvm," ++
 
@@ -184,6 +184,7 @@ pub fn run_passes(context: *mlir.Context, module: *mlir.Module) !void {
         "convert-arith-to-llvm," ++
         "convert-func-to-llvm," ++
         "convert-cf-to-llvm," ++
+        // "convert-ub-to-llvm," ++
         "reconcile-unrealized-casts," ++
         "llvm-legalize-for-export";
     const op_pm = mlir.c.mlirPassManagerGetAsOpPassManager(pm);
