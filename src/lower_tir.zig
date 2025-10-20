@@ -7,7 +7,7 @@ const check_pattern_matching = @import("check_pattern_matching.zig");
 const checker = @import("checker.zig");
 const mlir = @import("mlir_bindings.zig");
 const compile = @import("compile.zig");
-const mlir_codegen = @import("mlir_codegen.zig");
+const codegen = @import("codegen_main.zig");
 const comp = @import("comptime.zig");
 const monomorphize = @import("monomorphize.zig");
 const module_graph = @import("module_graph.zig");
@@ -1735,11 +1735,11 @@ pub const LowerTir = struct {
             g_mlir_ctx = compile.initMLIR(self.gpa);
             g_mlir_inited = true;
         }
-        var gen = mlir_codegen.MlirCodegen.init(self.gpa, self.context, g_mlir_ctx);
+        var gen = codegen.Codegen.init(self.gpa, self.context, g_mlir_ctx);
         defer gen.deinit();
-        const prev_debug_flag = mlir_codegen.enable_debug_info;
-        mlir_codegen.enable_debug_info = false;
-        defer mlir_codegen.enable_debug_info = prev_debug_flag;
+        const prev_debug_flag = codegen.enable_debug_info;
+        codegen.enable_debug_info = false;
+        defer codegen.enable_debug_info = prev_debug_flag;
         var mlir_module = try gen.emitModule(&tmp_tir, self.type_info);
 
         try compile.run_passes(&gen.mlir_ctx, &mlir_module);
@@ -2527,8 +2527,14 @@ pub const LowerTir = struct {
         const ty0 = self.getExprType(id) orelse return error.LoweringBug;
         const loc = self.exprOptLoc(a, id);
         const usize_ty = self.context.type_store.tUsize();
-        const start_v = if (!row.start.isNone()) try self.lowerExpr(a, env, f, blk, row.start.unwrap(), usize_ty, .rvalue) else blk.builder.tirValue(.ConstUndef, blk, usize_ty, loc, .{});
-        const end_v = if (!row.end.isNone()) try self.lowerExpr(a, env, f, blk, row.end.unwrap(), usize_ty, .rvalue) else blk.builder.tirValue(.ConstUndef, blk, usize_ty, loc, .{});
+        const start_v = if (!row.start.isNone())
+            try self.lowerExpr(a, env, f, blk, row.start.unwrap(), usize_ty, .rvalue)
+        else
+            blk.builder.tirValue(.ConstUndef, blk, usize_ty, loc, .{});
+        const end_v = if (!row.end.isNone())
+            try self.lowerExpr(a, env, f, blk, row.end.unwrap(), usize_ty, .rvalue)
+        else
+            blk.builder.tirValue(.ConstUndef, blk, usize_ty, loc, .{});
         const incl = blk.builder.tirValue(.ConstBool, blk, self.context.type_store.tBool(), loc, .{ .value = row.inclusive_right });
         // Materialize range as TIR RangeMake (typed as []usize)
         const v = blk.builder.rangeMake(blk, ty0, start_v, end_v, incl, loc);

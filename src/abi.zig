@@ -1,5 +1,5 @@
 const mlir = @import("mlir_bindings.zig");
-const MlirCodegen = @import("mlir_codegen.zig").MlirCodegen;
+const Codegen = @import("codegen_main.zig").Codegen;
 const types = @import("types.zig");
 const std = @import("std");
 
@@ -46,7 +46,7 @@ const SizeAlign = struct {
     allIntsOnly: bool,
 };
 
-pub fn abiSizeAlign(self: *MlirCodegen, ty: types.TypeId) SizeAlign {
+pub fn abiSizeAlign(self: *Codegen, ty: types.TypeId) SizeAlign {
     return switch (self.context.type_store.getKind(ty)) {
         .Void => .{ .size = 0, .alignment = 1, .hasFloat = false, .allIntsOnly = true },
         .Bool => .{ .size = 1, .alignment = 1, .hasFloat = false, .allIntsOnly = true },
@@ -261,7 +261,7 @@ fn srIsTwoFloats(store: *types.TypeStore, ty: types.TypeId) bool {
 }
 
 // Main classifier for a *parameter* or *return* SR type.
-pub fn abiClassifyX64SysV(self: *MlirCodegen, ty: types.TypeId, isReturn: bool) AbiClass {
+pub fn abiClassifyX64SysV(self: *Codegen, ty: types.TypeId, isReturn: bool) AbiClass {
     // Scalars: map 1:1, don't ABI-mangle
     switch (self.context.type_store.getKind(ty)) {
         .Noreturn => return .{ .kind = .DirectScalar, .scalar0 = self.void_ty, .size = 0 },

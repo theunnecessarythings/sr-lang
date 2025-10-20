@@ -11,7 +11,7 @@ const Loc = lexer_mod.Token.Loc;
 const Parser = @import("parser.zig").Parser;
 const types = @import("types.zig");
 const comp = @import("comptime.zig");
-const mlir_codegen = @import("mlir_codegen.zig");
+const codegen = @import("codegen_main.zig");
 const mlir = @import("mlir_bindings.zig");
 const compile = @import("compile.zig");
 const module_graph = @import("module_graph.zig");
@@ -24,7 +24,7 @@ pub const Result = struct {
     ast: ?ast_mod.Ast = null,
     tir: ?tir_mod.TIR = null,
     mlir_module: ?mlir.Module = null,
-    gen: ?mlir_codegen.MlirCodegen = null,
+    gen: ?codegen.Codegen = null,
     type_info: ?*types.TypeInfo = null,
     module_id: usize = 0,
 };
@@ -217,7 +217,7 @@ pub const Pipeline = struct {
         // type_info.print();
 
         const mlir_ctx_ptr = self.ensureMlirContext();
-        var gen = mlir_codegen.MlirCodegen.init(self.allocator, self.context, mlir_ctx_ptr.*);
+        var gen = codegen.Codegen.init(self.allocator, self.context, mlir_ctx_ptr.*);
         gen.resetDebugCaches();
 
         var dependencies: std.ArrayList(*module_graph.ModuleEntry) = .empty;
@@ -232,10 +232,10 @@ pub const Pipeline = struct {
             &dependencies,
         );
         for (dependencies.items) |dep| {
-            const original_debug_flag = mlir_codegen.enable_debug_info;
-            mlir_codegen.enable_debug_info = false;
+            const original_debug_flag = codegen.enable_debug_info;
+            codegen.enable_debug_info = false;
             _ = try gen.emitModule(dep.tirRef(), dep.typeInfo());
-            mlir_codegen.enable_debug_info = original_debug_flag;
+            codegen.enable_debug_info = original_debug_flag;
             if (self.context.diags.anyErrors()) {
                 return error.MlirCodegenFailed;
             }
