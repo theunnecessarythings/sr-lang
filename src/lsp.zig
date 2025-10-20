@@ -348,7 +348,7 @@ const Server = struct {
 
         var pipeline = lib.pipeline.Pipeline.init(self.gpa, &context);
         const result_opt: ?lib.pipeline.Result = blk: {
-            const res = pipeline.runWithImports(doc.path, &.{}, .check) catch |err| {
+            const res = pipeline.run(doc.path, &.{}, .check) catch |err| {
                 if (context.diags.count() == 0) {
                     return err;
                 }
@@ -357,13 +357,13 @@ const Server = struct {
             break :blk res;
         };
 
-        if (result_opt) |res| {
-            if (res.type_info) |ti| {
-                if (!context.module_graph.ownsTypeInfo(ti)) {
-                    ti.deinit();
-                    self.gpa.destroy(ti);
-                }
-            }
+        if (result_opt) |_| {
+            // if (res.type_info) |ti| {
+            //     if (!context.module_graph.ownsTypeInfo(ti)) {
+            //         ti.deinit();
+            //         self.gpa.destroy(ti);
+            //     }
+            // }
         }
 
         try self.sendDiagnosticsForFile(doc, &context, file_id);

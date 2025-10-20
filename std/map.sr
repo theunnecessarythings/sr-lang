@@ -1,327 +1,124 @@
 package map
 
-// String-keyed map with linear search, backed by std/array
+// Map is an in-language associative container built on top of dynamic arrays.
+// It favours clarity over performance and keeps entries in insertion order.
+// The compiler can lower `[K: V]` forms to this implementation.
 
-io   :: import "std/io"
-arr  :: import "std/array"
-mem  :: import "std/mem"
-hash :: import "std/hash"
+Map :: fn(comptime K: type, comptime V: type) type {
+    Entry :: struct { key: K, value: V }
 
-// runtime helpers
-rt_strlen :: extern proc(*u8) usize
-rt_memcmp :: extern proc(*u8, *u8, usize) i32
-
-// Map from string -> value bytes of fixed size
-StringMap :: struct {
-    key_ptrs: arr.Array, // elem_size=8 (pointer bytes)
-    key_lens: arr.Array, // elem_size=8 (usize bytes)
-    values:   arr.Array, // elem_size=value_size
-    value_size: usize,
-}
-
-// Initialize with value size in bytes
-init :: proc(value_size: usize) StringMap {
-    return StringMap{
-        key_ptrs: arr.init(8, 0),
-        key_lens: arr.init(8, 0),
-        values:   arr.init(value_size, 0),
-        value_size: value_size,
+    MapType :: struct {
+        len: usize,
+        entries: [dyn]Entry,
     }
-}
 
-deinit :: proc(self: *StringMap) void {
-    arr.deinit(&self.key_ptrs)
-    arr.deinit(&self.key_lens)
-    arr.deinit(&self.values)
-}
+    MapType.entry :: fn(key: K, value: V) Entry {
+        return Entry{ key: key, value: value }
+    }
 
-clear :: proc(self: *StringMap) void {
-    arr.clear(&self.key_ptrs)
-    arr.clear(&self.key_lens)
-    arr.clear(&self.values)
-}
+    MapType.init :: fn() MapType {
+        return MapType{ len: 0, entries: [] }
+    }
 
-len :: proc(self: *StringMap) usize { return self.key_ptrs.len }
-
-// Internal: find key index, returns (found, index)
-find_index :: proc(self: *StringMap, key: string) (bool, usize) {
-    kptr := key.^*u8
-    klen := rt_strlen(kptr)
-    n := self.key_ptrs.len
-    i: usize = 0
-    while (i < n) {
-        // load stored key ptr and len
-        sptr: *u8 = kptr
-        slen: usize = klen
-        mem.move((&sptr).^*void, arr.get_ptr(&self.key_ptrs, i), 8)
-        mem.move((&slen).^*void, arr.get_ptr(&self.key_lens, i), 8)
-        if (slen == klen and rt_memcmp(sptr, kptr, klen) == 0) {
-            return (true, i)
+    MapType.fromEntries :: fn(items: []Entry) MapType {
+        map := MapType.init()
+        i: usize = 0
+        while i < items.len {
+            map.entries.append(items[i])
+            i = i + 1
         }
-        i = i + 1
+        map.len = map.entries.len
+        return map
     }
-    return (false, 0)
-}
 
-// Insert or update
-set :: proc(self: *StringMap, key: string, value_ptr: *void) void {
-    kptr := key.^*u8
-    klen := rt_strlen(kptr)
-    found, idx := find_index(self, key)
-    if (found) {
-        // update
-        mem.move(arr.get_ptr(&self.values, idx), value_ptr, self.value_size)
-        return
+    MapType.clone :: fn(self: *const MapType) MapType {
+        copy := MapType.init()
+        i: usize = 0
+        while i < self.entries.len {
+            copy.entries.append(self.entries[i])
+            i = i + 1
+        }
+        copy.len = copy.entries.len
+        return copy
     }
-    // append
-    mem.move((&kptr).^*void, (&kptr).^*void, 0) // no-op; placeholder to keep pattern
-    arr.push(&self.key_ptrs, (&kptr).^*void)
-    arr.push(&self.key_lens, (&klen).^*void)
-    arr.push(&self.values, value_ptr)
-}
 
-// Get returns true and writes into out_ptr if found
-get :: proc(self: *StringMap, key: string, out_ptr: *void) bool {
-    found, idx := find_index(self, key)
-    if (!found) { return false }
-    mem.move(out_ptr, arr.get_ptr(&self.values, idx), self.value_size)
-    return true
-}
-
-// ------------------------------------------------------------
-// Hashed string-key map (open addressing, linear probing)
-// ------------------------------------------------------------
-
-HashMap :: struct {
-    cap: usize,
-    len: usize,
-    tombstones: usize,
-    value_size: usize,
-    // parallel buffers sized to cap
-    key_ptrs: ?*u8,  // array of 8-byte entries
-    key_lens: ?*u8,  // array of 8-byte entries
-    hashes:   ?*u8,  // array of 8-byte entries (u64)
-    states:   ?*u8,  // array of 1-byte entries: 0=empty,1=deleted,2=occupied
-    values:   ?*u8,  // array of value_size bytes per slot
-}
-
-const EMPTY: u8 = 0
-const DELETED: u8 = 1
-const OCCUPIED: u8 = 2
-
-// runtime helpers
-rt_strlen  :: extern proc(*u8) usize
-rt_ptr_add :: extern proc(*u8, usize) *u8
-
-// Allocate internal buffers to capacity (power of two preferred)
-init_hm :: proc(value_size: usize, initial_cap: usize) HashMap {
-    hm := HashMap{
-        cap: 0, len: 0, tombstones: 0, value_size: value_size,
-        key_ptrs: null, key_lens: null, hashes: null, states: null, values: null,
-    }
-    if (initial_cap < 8) { initial_cap = 8 }
-    // round to next power-of-two
-    cap := 8
-    while (cap < initial_cap) { cap = cap * 2 }
-    reserve_table(&hm, cap)
-    return hm
-}
-
-deinit_hm :: proc(self: *HashMap) void {
-    if (self.key_ptrs != null) { alloc.free(self.key_ptrs?) }
-    if (self.key_lens != null) { alloc.free(self.key_lens?) }
-    if (self.hashes != null)   { alloc.free(self.hashes?) }
-    if (self.states != null)   { alloc.free(self.states?) }
-    if (self.values != null)   { alloc.free(self.values?) }
-    self.* = HashMap{ cap: 0, len: 0, tombstones: 0, value_size: self.value_size, key_ptrs: null, key_lens: null, hashes: null, states: null, values: null }
-}
-
-alloc :: import "std/alloc"
-
-reserve_table :: proc(self: *HashMap, new_cap: usize) void {
-    // allocate new buffers
-    keys_bytes  := new_cap * 8
-    lens_bytes  := new_cap * 8
-    hash_bytes  := new_cap * 8
-    state_bytes := new_cap * 1
-    vals_bytes  := new_cap * self.value_size
-
-    nk := alloc.alloc(keys_bytes)?
-    nl := alloc.alloc(lens_bytes)?
-    nh := alloc.alloc(hash_bytes)?
-    ns := alloc.alloc(state_bytes)?
-    nv := alloc.alloc(vals_bytes)?
-
-    // zero states to EMPTY
-    i: usize = 0
-    while (i < state_bytes) { (ns.^*u8)[i] = EMPTY; i = i + 1 }
-
-    // swap in
-    old := *self
-    self.cap = new_cap
-    self.len = 0
-    self.tombstones = 0
-    self.key_ptrs = nk.^*u8
-    self.key_lens = nl.^*u8
-    self.hashes = nh.^*u8
-    self.states = ns.^*u8
-    self.values = nv.^*u8
-
-    // reinsert from old if present
-    if (old.cap != 0) {
-        j: usize = 0
-        while (j < old.cap) {
-            st := (old.states?).[j]
-            if (st == OCCUPIED) {
-                // read old key ptr, len, hash, value
-                optr: *u8 = 0.^*u8
-                olen: usize = 0
-                ohash: u64 = 0
-                mem.move((&optr).^*void, rt_ptr_add(old.key_ptrs?, j*8).^*void, 8)
-                mem.move((&olen).^*void, rt_ptr_add(old.key_lens?, j*8).^*void, 8)
-                mem.move((&ohash).^*void, rt_ptr_add(old.hashes?, j*8).^*void, 8)
-                insert_with_hash(self, optr, olen, ohash, rt_ptr_add(old.values?, j*self.value_size))
+    MapType.find_index :: fn(self: *const MapType, key: K) ?usize {
+        i: usize = 0
+        while i < self.entries.len {
+            entry := self.entries[i]
+            if (entry.key == key) {
+                return i
             }
-            j = j + 1
+            i = i + 1
         }
-        // free old buffers
-        deinit_hm(&old)
+        return null
     }
-}
 
-load_factor :: proc(self: *HashMap) f64 {
-    // approximate used slots including tombstones
-    used := self.len + self.tombstones
-    return (used.^f64) / (self.cap.^f64)
-}
-
-rehash_if_needed :: proc(self: *HashMap) void {
-    if (load_factor(self) > 0.7) {
-        reserve_table(self, self.cap * 2)
+    MapType.contains :: fn(self: *const MapType, key: K) bool {
+        return self.find_index(key) != null
     }
-}
 
-// internal insert at slot determined by hash
-insert_with_hash :: proc(self: *HashMap, kptr: *u8, klen: usize, h: u64, vptr: *u8) void {
-    mask := self.cap - 1
-    idx := (h & mask).^usize
-    first_tomb: ?usize = null
-    loop: while (true) {
-        st := (self.states?).[idx]
-        if (st == EMPTY) {
-            slot := if (first_tomb != null) first_tomb? else idx
-            // write entry
-            mem.move(rt_ptr_add(self.key_ptrs?, slot*8), (&kptr).^*void, 8)
-            mem.move(rt_ptr_add(self.key_lens?, slot*8), (&klen).^*void, 8)
-            mem.move(rt_ptr_add(self.hashes?,   slot*8), (&h).^*void, 8)
-            mem.move(rt_ptr_add(self.values?,   slot*self.value_size), vptr.^*void, self.value_size)
-            (self.states?).[slot] = OCCUPIED
-            self.len = self.len + 1
-            if (first_tomb != null) { self.tombstones = self.tombstones - 1 }
-            break loop
-        } else if (st == DELETED) {
-            if (first_tomb == null) { first_tomb = idx }
-        } else { // OCCUPIED
-            // compare key
-            sptr: *u8 = 0.^*u8
-            slen: usize = 0
-            shash: u64 = 0
-            mem.move((&sptr).^*void, rt_ptr_add(self.key_ptrs?, idx*8).^*void, 8)
-            mem.move((&slen).^*void, rt_ptr_add(self.key_lens?, idx*8).^*void, 8)
-            mem.move((&shash).^*void, rt_ptr_add(self.hashes?,   idx*8).^*void, 8)
-            if (shash == h and slen == klen and rt_memcmp(sptr, kptr, klen) == 0) {
-                // update value
-                mem.move(rt_ptr_add(self.values?, idx*self.value_size), vptr.^*void, self.value_size)
-                return
+    MapType.get :: fn(self: *const MapType, key: K) ?V {
+        idx := self.find_index(key)
+        if idx != null {
+            return self.entries[idx?].value
+        }
+        return null
+    }
+
+    MapType.get_ptr :: fn(self: *MapType, key: K) ?*V {
+        idx := self.find_index(key)
+        if idx != null {
+            return &self.entries[idx?].value
+        }
+        return null
+    }
+
+    MapType.set :: proc(self: *MapType, key: K, value: V) void {
+        updated: [dyn]Entry = []
+        found := false
+        i: usize = 0
+        while i < self.entries.len {
+            entry := self.entries[i]
+            if (!found and entry.key == key) {
+                updated.append(Entry{ key: key, value: value })
+                found = true
+            } else {
+                updated.append(entry)
             }
+            i = i + 1
         }
-        idx = (idx + 1) & mask
+        if (!found) {
+            updated.append(Entry{ key: key, value: value })
+        }
+        self.entries = updated
+        self.len = updated.len
     }
-    rehash_if_needed(self)
-}
 
-// runtime helper
-rt_memcmp :: extern proc(*u8, *u8, usize) i32
+    MapType.clear :: proc(self: *MapType) void {
+        self.entries = []
+        self.len = 0
+    }
 
-set_hm :: proc(self: *HashMap, key: string, value_ptr: *void) void {
-    kptr := key.^*u8
-    klen := rt_strlen(kptr)
-    h := hash.hash_str(key)
-    insert_with_hash(self, kptr, klen, h, value_ptr.^*u8)
-}
-
-get_hm :: proc(self: *HashMap, key: string, out_ptr: *void) bool {
-    if (self.cap == 0) { return false }
-    kptr := key.^*u8
-    klen := rt_strlen(kptr)
-    h := hash.hash_str(key)
-    mask := self.cap - 1
-    idx := (h & mask).^usize
-    while (true) {
-        st := (self.states?).[idx]
-        if (st == EMPTY) { return false }
-        if (st == OCCUPIED) {
-            sptr: *u8 = 0.^*u8
-            slen: usize = 0
-            shash: u64 = 0
-            mem.move((&sptr).^*void, rt_ptr_add(self.key_ptrs?, idx*8).^*void, 8)
-            mem.move((&slen).^*void, rt_ptr_add(self.key_lens?, idx*8).^*void, 8)
-            mem.move((&shash).^*void, rt_ptr_add(self.hashes?,   idx*8).^*void, 8)
-            if (shash == h and slen == klen and rt_memcmp(sptr, kptr, klen) == 0) {
-                mem.move(out_ptr, rt_ptr_add(self.values?, idx*self.value_size), self.value_size)
-                return true
+    MapType.remove :: proc(self: *MapType, key: K) bool {
+        removed := false
+        filtered: [dyn]Entry = []
+        i: usize = 0
+        while i < self.entries.len {
+            entry := self.entries[i]
+            if (!removed and entry.key == key) {
+                removed = true
+            } else {
+                filtered.append(entry)
             }
+            i = i + 1
         }
-        idx = (idx + 1) & mask
-    }
-}
-
-remove_hm :: proc(self: *HashMap, key: string) bool {
-    if (self.cap == 0) { return false }
-    kptr := key.^*u8
-    klen := rt_strlen(kptr)
-    h := hash.hash_str(key)
-    mask := self.cap - 1
-    idx := (h & mask).^usize
-    while (true) {
-        st := (self.states?).[idx]
-        if (st == EMPTY) { return false }
-        if (st == OCCUPIED) {
-            sptr: *u8 = 0.^*u8
-            slen: usize = 0
-            shash: u64 = 0
-            mem.move((&sptr).^*void, rt_ptr_add(self.key_ptrs?, idx*8).^*void, 8)
-            mem.move((&slen).^*void, rt_ptr_add(self.key_lens?, idx*8).^*void, 8)
-            mem.move((&shash).^*void, rt_ptr_add(self.hashes?,   idx*8).^*void, 8)
-            if (shash == h and slen == klen and rt_memcmp(sptr, kptr, klen) == 0) {
-                (self.states?).[idx] = DELETED
-                self.len = self.len - 1
-                self.tombstones = self.tombstones + 1
-                return true
-            }
+        if (removed) {
+            self.entries = filtered
+            self.len = filtered.len
         }
-        idx = (idx + 1) & mask
+        return removed
     }
-}
 
-// Remove key if present; returns true if removed
-remove :: proc(self: *StringMap, key: string) bool {
-    found, idx := find_index(self, key)
-    if (!found) { return false }
-    last := self.key_ptrs.len - 1
-    if (idx != last) {
-        // move last into idx
-        mem.move(arr.get_ptr(&self.key_ptrs, idx), arr.get_ptr(&self.key_ptrs, last), 8)
-        mem.move(arr.get_ptr(&self.key_lens, idx), arr.get_ptr(&self.key_lens, last), 8)
-        mem.move(arr.get_ptr(&self.values, idx),   arr.get_ptr(&self.values,   last), self.value_size)
-    }
-    // pop last entries
-    scratch_ptr: *u8 = 0.^*u8
-    scratch_len: usize = 0
-    scratch_val := arr.init(self.value_size, 0)
-    _ = arr.pop(&self.key_ptrs, (&scratch_ptr).^*void)
-    _ = arr.pop(&self.key_lens, (&scratch_len).^*void)
-    _ = arr.pop(&self.values,   arr.get_ptr(&scratch_val, 0))
-    arr.deinit(&scratch_val)
-    return true
+    return MapType
 }

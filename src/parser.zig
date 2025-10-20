@@ -16,6 +16,7 @@ pub const Parser = struct {
 
     cst: cst.CST,
     context: *compile.Context,
+    parse_imports: bool = true,
 
     const ParseMode = enum { expr, type, expr_no_struct };
 

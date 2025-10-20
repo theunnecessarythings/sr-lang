@@ -106,7 +106,7 @@ fn repl(
     const source = try std.mem.concatWithSentinel(allocator, u8, source_lines.items, 0);
     std.debug.print("{s}Input source:{s}\n{s}\n", .{ Colors.bold, Colors.reset, source });
 
-    const result = try pipeline.runWithImports(source, &.{}, .repl);
+    const result = try pipeline.run(source, &.{}, .repl);
 
     // Print results based on the 'result' struct
     if (result.cst) |cst_program| {
@@ -229,7 +229,7 @@ fn server(
 
             var pipeline = lib.pipeline.Pipeline.init(allocator, &context); // Create pipeline here
 
-            const result = try pipeline.runWithImports(source, &.{}, .ast); // Run the pipeline to AST
+            const result = try pipeline.run(source, &.{}, .ast); // Run the pipeline to AST
 
             // If there are diagnostics, emit them to stderr and return 400
             if (context.diags.anyErrors()) {
@@ -288,7 +288,7 @@ fn process_file(
     if (cli_args.verbose) {
         try err_writer.print("Compiling {s}...\n", .{abs_filename});
     }
-    const result = try pipeline.runWithImports(abs_filename, link_args, switch (cli_args.subcommand) {
+    const result = try pipeline.run(abs_filename, link_args, switch (cli_args.subcommand) {
         .compile => .compile,
         .run => .run,
         .check => .check,
@@ -301,12 +301,6 @@ fn process_file(
         .json_ast => .ast,
         else => unreachable,
     });
-    defer if (result.type_info) |ti| {
-        if (!compiler_ctx.module_graph.ownsTypeInfo(ti)) {
-            ti.deinit();
-            allocator.destroy(ti);
-        }
-    };
 
     // For 'check' command, stop after semantic checks
     if (cli_args.subcommand == .check) {

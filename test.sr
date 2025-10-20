@@ -1,0 +1,435 @@
+//printf :: extern proc(string, any) i32
+//
+//scanf :: extern proc(string, any) i32
+//__assert_fail :: extern proc(string, string, i32, string) void
+//
+//assert :: proc(cond: bool) {
+//    if !cond {
+//        __assert_fail("Assertion failed", "test.sr", 10, "assert")  
+//        //mlir op { "llvm.intr.trap"() : () -> () }
+//        unreachable
+//    }
+//}
+
+
+// -----------------------------------------------------
+// Config
+// -----------------------------------------------------
+SCREEN_W : f32 : 800.0
+SCREEN_H : f32 : 480.0
+
+MAX_BULLETS :: 64
+MAX_ROCKS   :: 64
+
+// -----------------------------------------------------
+// Types
+// -----------------------------------------------------
+Vec2 :: struct {
+    x: f32,
+    y: f32,
+}
+
+Ship :: struct {
+    pos: Vec2,
+    vel: Vec2,
+    angle: f32, // radians
+    cooldown: f32,
+    alive: bool,
+    invuln: f32,
+}
+
+Bullet :: struct {
+    pos: Vec2,
+    vel: Vec2,
+    life: f32,
+    alive: bool,
+}
+
+RockSize :: enum {
+    Large, Medium, Small,
+}
+
+Rock :: struct {
+    pos: Vec2,
+    vel: Vec2,
+    radius: f32,
+    size: RockSize,
+    alive: bool,
+}
+
+Star :: struct { x: i32, y: i32 }
+stars: [60]Star = undefined
+// -----------------------------------------------------
+// Globals
+// -----------------------------------------------------
+ship: Ship = undefined
+bullets: [64]Bullet = undefined
+rocks: [64]Rock = undefined
+// bullets: [MAX_BULLETS]Bullet = undefined
+// rocks: [MAX_ROCKS]Rock = undefined
+score: i32 = 0
+game_over: bool = false
+
+// -----------------------------------------------------
+// Helpers
+// -----------------------------------------------------
+vadd :: proc(a: Vec2, b: Vec2) Vec2 { return Vec2{x: a.x + b.x, y: a.y + b.y} }
+vsub :: proc(a: Vec2, b: Vec2) Vec2 { return Vec2{x: a.x - b.x, y: a.y - b.y} }
+vmul :: proc(a: Vec2, s: f32)  Vec2 { return Vec2{x: a.x * s, y: a.y * s} }
+
+wrap :: proc(p: *Vec2) {
+    if p.x < 0.0    { p.x += SCREEN_W }
+    if p.x >= SCREEN_W { p.x -= SCREEN_W }
+    if p.y < 0.0    { p.y += SCREEN_H }
+    if p.y >= SCREEN_H { p.y -= SCREEN_H }
+}
+
+
+GetRandomValue :: extern proc(i64, i64) i64
+PI :: 3.1415926
+TAU :: 6.28
+
+
+init_stars :: proc() {
+    for i in 0..60 {
+        stars[i] = Star{
+            x: GetRandomValue(0, SCREEN_W.(i64) - 1),
+            y: GetRandomValue(0, SCREEN_H.(i64) - 1),
+        }
+    }
+}
+
+
+
+len2 :: proc(d: Vec2) f32 {
+    return d.x * d.x + d.y * d.y
+}
+
+spawn_rock :: proc(size: RockSize, pos: Vec2, inherit_vel: Vec2) {
+    // find slot
+    for i in 0..MAX_ROCKS {
+        if !rocks[i].alive {
+            rocks[i].alive = true
+            rocks[i].size = size
+            rocks[i].pos = pos
+            // Radius and base speed by size
+            radius: f32 = 0.0
+            speed: f32 = 0.0
+          match size {
+              RockSize.Large => {
+                  radius = 42.0
+                  speed = 60.0
+              },
+              RockSize.Medium => {
+                  radius = 26.0
+                  speed = 90.0
+              },
+              RockSize.Small => {
+                  radius = 16.0
+                  speed = 130.0
+              },
+          }
+            rocks[i].radius = radius
+            // Random direction
+            ang := GetRandomValue(0, 360).(f64) * TAU / 360.0
+            dir := Vec2{x: cos(ang), y: sin(ang)}
+            rocks[i].vel = vadd(vmul(dir, speed), inherit_vel)
+            // If spawning fresh, push to screen edges
+            if pos.x == -1.0 and pos.y == -1.0{
+                side := GetRandomValue(0, 3)
+              match side {
+                  0 => { 
+                      rocks[i].pos = Vec2{x: 0.0, y: GetRandomValue(0, SCREEN_H.(i64)).(f32)}
+                  },
+                  1 => { 
+                      rocks[i].pos = Vec2{x: SCREEN_W, y: GetRandomValue(0, SCREEN_H.(i64)).(f32)} 
+                  },
+                  2 => { 
+                      rocks[i].pos = Vec2{x: GetRandomValue(0, SCREEN_W.(i64)).(f32), y: 0.0} 
+                  },
+                  3 => { 
+                      rocks[i].pos = Vec2{x: GetRandomValue(0, SCREEN_W.(i64)).(f32), y: GetRandomValue(0, SCREEN_H.(i64)).(f32)} 
+                  },
+              }
+            }
+            break
+        }
+    }
+}
+
+reset_game :: proc() {
+    ship = Ship{
+        pos: Vec2{x:SCREEN_W / 2.0.(f32), y:SCREEN_H / 2.0.(f32)},
+        vel: Vec2{x:0.0, y: 0.0},
+        angle: -PI / 2.0, // facing up
+        cooldown: 0.0,
+        alive: true,
+        invuln: 2.0,
+    }
+    for i in 0..MAX_BULLETS { 
+        bullets[i] = Bullet{ pos: Vec2{x: 0.0, y: 0.0}, vel: Vec2{x:0.0,y:0.0}, life: 0.0, alive: false }
+    }
+    for i in 0..MAX_ROCKS   { 
+        rocks[i] = Rock{ pos: Vec2{x: 0.0, y: 0.0}, vel: Vec2{x:0.0,y:0.0}, radius: 0.0, size: RockSize.Large, alive: false }
+    }
+    score = 0
+    game_over = false
+    // initial rocks
+    for i in 0..8 {
+        spawn_rock(RockSize.Large, Vec2{x:-1.0, y:-1.0}, Vec2{x:0.0, y:0.0})
+    }
+}
+
+shoot :: proc() {
+    // find slot
+    for i in 0..MAX_BULLETS {
+        if !bullets[i].alive {
+            dir := Vec2{x:cos(ship.angle), y:sin(ship.angle)}
+            muzzle := vadd(ship.pos, vmul(dir, 18.0))
+            bullets[i] = Bullet{
+                pos: muzzle,
+                vel: vadd(vmul(dir, 380.0), ship.vel),
+                life: 1.3,
+                alive: true,
+            }
+            break
+        }
+    }
+}
+
+explode_rock :: proc(idx: int) {
+    if !rocks[idx].alive { return }
+    r := rocks[idx]
+    rocks[idx].alive = false
+    // score & split
+    match r.size {
+        RockSize.Large => {
+            score += 20
+            spawn_rock(RockSize.Medium, r.pos, r.vel)
+            spawn_rock(RockSize.Medium, r.pos, vmul(r.vel, -1))
+        },
+        RockSize.Medium => {
+            score += 50
+            spawn_rock(RockSize.Small, r.pos, r.vel)
+            spawn_rock(RockSize.Small, r.pos, vmul(r.vel, -1))
+        },
+        RockSize.Small => {
+            score += 100
+        },
+    }
+}
+
+sin :: extern proc(f32) f32
+cos :: extern proc(f32) f32
+Color :: struct {r: u8, g: u8, b: u8, a: u8}
+DrawTriangleLines :: extern proc(Vec2, Vec2, Vec2, Color) void
+
+WHITE :: Color{r: 255, g: 255, b: 255, a: 255}
+YELLOW :: Color {r: 0, g: 255, b: 255, a: 255}
+LIGHTGRAY :: Color { r: 20, g: 20, b: 20, a: 255}
+GRAY :: Color{r: 10, g: 10, b: 10, a: 255}
+RED :: Color {r: 255, g: 0, b: 0, a: 255}
+BLACK :: Color {r: 0, g: 0, b: 0, a: 255}
+
+KEY_SPACE :: 1
+KEY_LEFT :: 2 
+KEY_UP :: 2 
+KEY_R :: 3 
+KEY_RIGHT :: 4
+KEY_UP :: 5
+
+EndDrawing :: extern proc() void
+CloseWindow :: extern proc() void
+DrawCircleLines :: extern proc(i32, i32, f32, Color) void
+DrawCircle :: extern proc(i64, i64, f32, Color) void
+
+draw_ship :: proc() {
+    // triangle points relative to ship
+    dir := Vec2{x: cos(ship.angle), y: sin(ship.angle)}
+    left := Vec2{x: cos(ship.angle + 2.5.(f32)), y: sin(ship.angle + 2.5.(f32))}
+    right:= Vec2{x: cos(ship.angle - 2.5.(f32)), y: sin(ship.angle - 2.5.(f32))}
+    p0 := vadd(ship.pos, vmul(dir, 14.0))
+    p1 := vadd(ship.pos, vmul(left, 10.0))
+    p2 := vadd(ship.pos, vmul(right, 10.0))
+
+    color := if ship.invuln > 0.0 { YELLOW } else { WHITE }
+        DrawTriangleLines(Vec2{x: p0.x, y: p0.y}, Vec2{x: p1.x, y: p1.y}, Vec2{x: p2.x, y: p2.y}, color)
+}
+
+draw_rock :: proc(r: Rock) {
+    c := LIGHTGRAY
+    if r.size == RockSize.Small { 
+        c = GRAY
+    }
+    DrawCircleLines(r.pos.x.(i32), r.pos.y.(i32), r.radius, c)
+}
+
+
+TextFormat :: extern proc(string, any) string
+DrawText :: extern proc(string, i64, i64, i64, Color) void
+
+draw_hud :: proc() {
+    txt := TextFormat("Score: %d", score)
+    DrawText(txt, 10, 10, 20, WHITE)
+    if game_over {
+        DrawText("GAME OVER", (SCREEN_W.(f64)/2.0 - 110.0).(i64), (SCREEN_H.(f64)/2.0 - 20.0).(i64), 40, RED)
+        DrawText("Press R to restart", (SCREEN_W.(f64)/2.0 - 120.0).(i64), (SCREEN_H.(f64)/2.0 + 30.0).(i64), 20, WHITE)
+    }
+}
+
+
+InitWindow :: extern proc(i64, i64, string) void
+SetTargetFPS :: extern proc(i64) void
+WindowShouldClose :: extern proc() bool
+IsKeyDown :: extern proc(i32) bool
+IsKeyPressed :: extern proc(i32) bool
+GetFrameTime :: extern proc() f32
+
+sqrt :: extern proc(f32) f32
+
+
+BeginDrawing :: extern proc() void
+ClearBackground :: extern proc(Color) void
+DrawPixel :: extern proc(i64, i64, Color) void
+
+main :: proc() {
+    InitWindow(SCREEN_W.(i64), SCREEN_H.(i64), "Asteroids-ish (raylib)")
+    SetTargetFPS(60)
+
+    reset_game()
+
+
+    while !WindowShouldClose() {
+        dt := GetFrameTime()
+
+        // ----- Input -----
+        if !game_over and ship.alive {
+            if IsKeyDown(KEY_LEFT)  { ship.angle -= 3.5.(f32) * dt }
+            if IsKeyDown(KEY_RIGHT) { ship.angle += 3.5.(f32) * dt }
+
+            if IsKeyDown(KEY_UP) {
+                thrust := vmul(Vec2{x: cos(ship.angle), y: sin(ship.angle)}, 220.0.(f32) * dt)
+                ship.vel = vadd(ship.vel, thrust)
+                // small speed clamp
+                maxs : f32 = 240.0
+                spd2 := len2(ship.vel)
+                if spd2 > maxs * maxs {
+                    s := maxs / sqrt(spd2)
+                    ship.vel = vmul(ship.vel, s)
+                }
+            }
+
+            if IsKeyPressed(KEY_SPACE) and ship.cooldown <= 0.0 {
+                shoot()
+                ship.cooldown = 0.18
+            }
+        }
+
+        if IsKeyPressed(KEY_R) {
+            reset_game()
+        }
+
+        for s in 0..60 { DrawPixel(stars[s].x, stars[s].y, WHITE) }
+
+        // ----- Update -----
+        if ship.cooldown > 0.0 { ship.cooldown -= dt }
+        if ship.invuln > 0.0   { ship.invuln -= dt }
+
+        if ship.alive and !game_over {
+            ship.pos = vadd(ship.pos, vmul(ship.vel, dt))
+            wrap(&ship.pos)
+        }
+
+        // bullets
+        for i in 0..MAX_BULLETS {
+            if !bullets[i].alive { continue }
+            bullets[i].pos = vadd(bullets[i].pos, vmul(bullets[i].vel, dt))
+            wrap(&bullets[i].pos)
+            bullets[i].life -= dt
+            if bullets[i].life <= 0.0 { 
+                bullets[i].alive = false
+            }
+        }
+
+        // rocks
+        alive_rocks := 0
+        for i in 0..MAX_ROCKS {
+            if !rocks[i].alive { continue }
+            alive_rocks += 1
+            rocks[i].pos = vadd(rocks[i].pos, vmul(rocks[i].vel, dt))
+            wrap(&rocks[i].pos)
+        }
+
+        // collisions: bullet vs rock
+        for i in 0..MAX_BULLETS {
+            if !bullets[i].alive { continue }
+            for j in 0..MAX_ROCKS {
+                if !rocks[j].alive { continue }
+                d := vsub(bullets[i].pos, rocks[j].pos)
+                if len2(d) <= (rocks[j].radius * rocks[j].radius) {
+                    bullets[i].alive = false
+                    explode_rock(j)
+                    break
+                }
+            }
+        }
+
+        // collisions: ship vs rock
+        if ship.alive and ship.invuln <= 0.0 and !game_over {
+            for j in 0..MAX_ROCKS {
+                if !rocks[j].alive { continue }
+                d := vsub(ship.pos, rocks[j].pos)
+                if len2(d) <= (rocks[j].radius * rocks[j].radius) {
+                    ship.alive = false
+                    game_over = true
+                    break
+                }
+            }
+        }
+
+        // wave clear: respawn bigger set
+        if alive_rocks == 0 and !game_over {
+            // bonus & wave up
+            score += 250.(i32)
+            // spawn next wave
+            count := GetRandomValue(6, 10)
+            for k in 0..count {
+                spawn_rock(RockSize.Large, Vec2{x:-1.0, y: -1.0}, vmul(ship.vel, 0.2))
+            }
+            // a little invuln to not insta-die
+            ship.invuln = 1.5
+        }
+
+        // ----- Draw -----
+        BeginDrawing()
+        ClearBackground(BLACK)
+
+
+        // ship
+        if ship.alive { draw_ship() }
+
+        // thrust flame if accelerating
+        if ship.alive and IsKeyDown(KEY_UP) {
+            back := Vec2{x: cos(ship.angle + PI.(f32)), y: sin(ship.angle + PI.(f32))}
+            p := vadd(ship.pos, vmul(back, 12.0))
+            DrawCircle(p.x.(i32), p.y.(i32), 3.0, RED)
+        }
+
+        // bullets
+        for i in 0..MAX_BULLETS {
+            if bullets[i].alive {
+                DrawCircle(bullets[i].pos.x.(i64), bullets[i].pos.y.(i64), 2.0, WHITE)
+            }
+        }
+
+        // rocks
+        for i in 0..MAX_ROCKS {
+            if rocks[i].alive { draw_rock(rocks[i]) }
+        }
+
+        draw_hud()
+        EndDrawing()
+    }
+
+    CloseWindow()
+}

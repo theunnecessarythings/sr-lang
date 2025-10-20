@@ -1,0 +1,24 @@
+package main
+
+Foo :: fn(comptime T: type) type {
+    FooType :: struct {
+        items: [dyn]T,
+    }
+
+    FooType.init :: fn() FooType {
+        return FooType{ items: [] };
+    }
+
+    FooType.add :: proc(self: *FooType, value: T) void {
+        self.items.append(value);
+    }
+
+    return FooType;
+}
+
+main :: proc() i32 {
+    FooI32 :: Foo(i32)
+    f := FooI32.init();
+    f.add(5);
+    return f.items.len;
+}

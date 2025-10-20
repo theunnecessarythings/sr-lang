@@ -39,7 +39,7 @@ pub fn type_of_impl(context: ?*anyopaque, type_id_raw: u32) callconv(.c) u32 {
     const ctx: *Context = @ptrCast(@alignCast(context.?));
     const type_id = types.TypeId.fromRaw(type_id_raw);
     const kind = ctx.type_store.getKind(type_id);
-    std.debug.print("comptime> type_of_impl: type_id_raw={}, kind={s}\n", .{type_id_raw, @tagName(kind)});
+    std.debug.print("comptime> type_of_impl: type_id_raw={}, kind={s}\n", .{ type_id_raw, @tagName(kind) });
     return @intFromEnum(kind);
 }
 
@@ -51,7 +51,7 @@ pub fn comptime_print_impl(context: ?*anyopaque, format: [*c]const u8, ...) call
 pub fn get_type_by_name_impl(context: ?*anyopaque, name: [*c]const u8) callconv(.c) u32 {
     const ctx: *Context = @ptrCast(@alignCast(context.?));
     const name_slice = std.mem.sliceTo(name, 0);
-    const ts = &ctx.type_store;
+    const ts = ctx.type_store;
 
     if (std.mem.eql(u8, name_slice, "bool")) return ts.tBool().toRaw();
     if (std.mem.eql(u8, name_slice, "i8")) return ts.tI8().toRaw();

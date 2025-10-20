@@ -10,7 +10,6 @@ const compile = @import("compile.zig");
 const codegen = @import("codegen_main.zig");
 const comp = @import("comptime.zig");
 const monomorphize = @import("monomorphize.zig");
-const module_graph = @import("module_graph.zig");
 const check_types = @import("check_types.zig");
 const pipeline_mod = @import("pipeline.zig");
 
@@ -25,14 +24,11 @@ pub const LowerTir = struct {
     context: *Context,
     pipeline: *Pipeline,
     type_info: *types.TypeInfo,
-    module_id: usize,
     chk: *checker.Checker,
 
     // Simple loop stack to support break/continue in While/For (+ value loops)
     loop_stack: std.ArrayListUnmanaged(LoopCtx) = .{},
 
-    // Mapping: module ident name -> alias information for mangling module members.
-    module_aliases: std.StringHashMapUnmanaged(ModuleAliasInfo) = .{},
     module_call_cache: std.AutoHashMap(u64, StrId),
     method_lowered: std.AutoHashMap(usize, void),
     monomorphizer: monomorphize.Monomorphizer,
@@ -43,12 +39,6 @@ pub const LowerTir = struct {
 
     var g_mlir_inited: bool = false;
     var g_mlir_ctx: mlir.Context = undefined;
-
-    pub const ModuleAliasInfo = struct {
-        namespace: []u8,
-        import_path: []const u8,
-        package_id: module_graph.PackageId,
-    };
 
     const BindingSnapshot = struct {
         name: ast.StrId,
@@ -186,7 +176,7 @@ pub const LowerTir = struct {
         std.debug.assert(binding.builtin != null and binding.builtin.? == .dynarray_append);
         if (args.len < 2) return error.LoweringBug;
 
-        const ts = &self.context.type_store;
+        const ts = self.context.type_store;
         const owner_kind = ts.getKind(binding.owner_type);
         if (owner_kind != .DynArray) return error.LoweringBug;
 
@@ -271,17 +261,13 @@ pub const LowerTir = struct {
         gpa: std.mem.Allocator,
         context: *Context,
         pipeline: *Pipeline,
-        type_info: *types.TypeInfo,
-        module_id: usize,
         chk: *checker.Checker,
     ) LowerTir {
-        std.debug.assert(type_info.module_id == module_id);
         return .{
             .gpa = gpa,
             .context = context,
             .pipeline = pipeline,
-            .type_info = type_info,
-            .module_id = module_id,
+            .type_info = &chk.type_info,
             .chk = chk,
             .module_call_cache = std.AutoHashMap(u64, StrId).init(gpa),
             .method_lowered = std.AutoHashMap(usize, void).init(gpa),
@@ -292,12 +278,12 @@ pub const LowerTir = struct {
 
     pub fn deinit(self: *LowerTir) void {
         self.loop_stack.deinit(self.gpa);
-        var it = self.module_aliases.valueIterator();
-        while (it.next()) |info| {
-            self.gpa.free(info.namespace);
-            self.gpa.free(info.import_path);
-        }
-        self.module_aliases.deinit(self.gpa);
+        // var it = self.module_aliases.valueIterator();
+        // while (it.next()) |info| {
+        //     self.gpa.free(info.namespace);
+        //     self.gpa.free(info.import_path);
+        // }
+        // self.module_aliases.deinit(self.gpa);
         self.module_call_cache.deinit();
         self.method_lowered.deinit();
         while (self.monomorph_context_stack.items.len > 0) {
@@ -488,7 +474,7 @@ pub const LowerTir = struct {
     }
 
     pub fn run(self: *LowerTir, a: *const ast.Ast) !tir.TIR {
-        var t = tir.TIR.init(self.gpa, &self.context.type_store);
+        var t = tir.TIR.init(self.gpa, self.context.type_store);
         var b = Builder.init(self.gpa, &t);
 
         self.module_call_cache.clearRetainingCapacity();
@@ -503,7 +489,7 @@ pub const LowerTir = struct {
         var method_it = self.type_info.method_table.iterator();
         while (method_it.next()) |entry| {
             const method = entry.value_ptr.*;
-            if (method.module_id != self.module_id) continue;
+            // if (method.module_id != self.module_id) continue;
             const decl_id = method.decl_id;
             if (self.method_lowered.contains(decl_id.toRaw())) continue;
             const name = try self.methodSymbolName(a, decl_id);
@@ -515,27 +501,27 @@ pub const LowerTir = struct {
         return t;
     }
 
-    pub fn setModuleAlias(self: *LowerTir, name: []const u8, info: ModuleAliasInfo) !void {
-        const key = try self.gpa.dupe(u8, name);
-        errdefer self.gpa.free(key);
-
-        const stored = ModuleAliasInfo{
-            .namespace = try self.gpa.dupe(u8, info.namespace),
-            .import_path = try self.gpa.dupe(u8, info.import_path),
-            .package_id = info.package_id,
-        };
-        errdefer self.gpa.free(stored.namespace);
-        errdefer self.gpa.free(stored.import_path);
-
-        const gop = try self.module_aliases.getOrPut(self.gpa, key);
-        if (gop.found_existing) {
-            self.gpa.free(key);
-            self.gpa.free(gop.value_ptr.namespace);
-            self.gpa.free(gop.value_ptr.import_path);
-        }
-        gop.value_ptr.* = stored;
-        self.module_call_cache.clearRetainingCapacity();
-    }
+    // pub fn setModuleAlias(self: *LowerTir, name: []const u8, info: ModuleAliasInfo) !void {
+    //     const key = try self.gpa.dupe(u8, name);
+    //     errdefer self.gpa.free(key);
+    //
+    //     const stored = ModuleAliasInfo{
+    //         .namespace = try self.gpa.dupe(u8, info.namespace),
+    //         .import_path = try self.gpa.dupe(u8, info.import_path),
+    //         .package_id = info.package_id,
+    //     };
+    //     errdefer self.gpa.free(stored.namespace);
+    //     errdefer self.gpa.free(stored.import_path);
+    //
+    //     const gop = try self.module_aliases.getOrPut(self.gpa, key);
+    //     if (gop.found_existing) {
+    //         self.gpa.free(key);
+    //         self.gpa.free(gop.value_ptr.namespace);
+    //         self.gpa.free(gop.value_ptr.import_path);
+    //     }
+    //     gop.value_ptr.* = stored;
+    //     self.module_call_cache.clearRetainingCapacity();
+    // }
 
     // ============================
     // Utilities / common helpers
@@ -666,7 +652,7 @@ pub const LowerTir = struct {
     ) tir.ValueId {
         if (got.eq(want)) return v;
 
-        const ts = &self.context.type_store;
+        const ts = self.context.type_store;
         const gk = ts.index.kinds.items[got.toRaw()];
         const wk = ts.index.kinds.items[want.toRaw()];
 
@@ -1397,16 +1383,18 @@ pub const LowerTir = struct {
             return;
         }
 
-        const symbol_ast = blk: {
-            if (binding.module_id == self.module_id) break :blk a;
-            const dep_entry = (&self.context.module_graph).findModuleById(binding.module_id) orelse
-                return error.LoweringBug;
-            break :blk dep_entry.astRef();
-        };
+        const symbol_ast = a;
+
+        // const symbol_ast = blk: {
+        //     if (binding.module_id == self.module_id) break :blk a;
+        //     const dep_entry = (&self.context.module_graph).findModuleById(binding.module_id) orelse
+        //         return error.LoweringBug;
+        //     break :blk dep_entry.astRef();
+        // };
         const symbol = try self.methodSymbolName(symbol_ast, binding.decl_id);
         callee.name = symbol;
         callee.fty = binding.func_type;
-        method_decl_id.* = if (binding.module_id == self.module_id) binding.decl_id else null;
+        // method_decl_id.* = if (binding.module_id == self.module_id) binding.decl_id else null;
         method_binding_out.* = binding;
         callee_name.* = self.context.type_store.strs.get(callee.name);
 
@@ -1492,51 +1480,51 @@ pub const LowerTir = struct {
         };
     }
 
-    fn resolveModuleFieldCallee(
-        self: *LowerTir,
-        a: *const ast.Ast,
-        f: *Builder.FunctionFrame,
-        field_access: ast.ExprId,
-    ) !?StrId {
-        const fr = a.exprs.get(.FieldAccess, field_access);
-        const parent_kind = a.exprs.index.kinds.items[fr.parent.toRaw()];
-        if (parent_kind != .Ident) return null;
-
-        const ident = a.exprs.get(.Ident, fr.parent);
-        const alias_name = a.exprs.strs.get(ident.name);
-        const info_ptr = self.module_aliases.get(alias_name) orelse return null;
-        const info = info_ptr;
-
-        const key = moduleCallKey(ident.name, fr.field);
-        if (self.module_call_cache.get(key)) |existing| return existing;
-
-        const field_name = a.exprs.strs.get(fr.field);
-
-        var interned: StrId = undefined;
-        if (self.moduleFieldIsExtern(info, field_name)) {
-            interned = f.builder.intern(field_name);
-        } else {
-            interned = f.builder.intern(field_name);
-        }
-
-        if ((self.getExprType(field_access)) == null) {
-            const lookup_res = self.context.module_graph.lookupExport(
-                self.import_base_dir,
-                info.import_path,
-                field_name,
-                .tir,
-            ) catch null;
-            if (lookup_res) |lu| {
-                if (lu.ty) |ty| {
-                    self.type_info.ensureExpr(self.gpa, field_access) catch {};
-                    self.type_info.setExprType(field_access, ty);
-                }
-            }
-        }
-
-        try self.module_call_cache.put(key, interned);
-        return interned;
-    }
+    // fn resolveModuleFieldCallee(
+    //     self: *LowerTir,
+    //     a: *const ast.Ast,
+    //     f: *Builder.FunctionFrame,
+    //     field_access: ast.ExprId,
+    // ) !?StrId {
+    //     const fr = a.exprs.get(.FieldAccess, field_access);
+    //     const parent_kind = a.exprs.index.kinds.items[fr.parent.toRaw()];
+    //     if (parent_kind != .Ident) return null;
+    //
+    //     const ident = a.exprs.get(.Ident, fr.parent);
+    //     const alias_name = a.exprs.strs.get(ident.name);
+    //     // const info_ptr = self.module_aliases.get(alias_name) orelse return null;
+    //     const info = info_ptr;
+    //
+    //     const key = moduleCallKey(ident.name, fr.field);
+    //     if (self.module_call_cache.get(key)) |existing| return existing;
+    //
+    //     const field_name = a.exprs.strs.get(fr.field);
+    //
+    //     var interned: StrId = undefined;
+    //     if (self.moduleFieldIsExtern(info, field_name)) {
+    //         interned = f.builder.intern(field_name);
+    //     } else {
+    //         interned = f.builder.intern(field_name);
+    //     }
+    //
+    //     if ((self.getExprType(field_access)) == null) {
+    //         const lookup_res = self.context.module_graph.lookupExport(
+    //             self.import_base_dir,
+    //             info.import_path,
+    //             field_name,
+    //             .tir,
+    //         ) catch null;
+    //         if (lookup_res) |lu| {
+    //             if (lu.ty) |ty| {
+    //                 self.type_info.ensureExpr(self.gpa, field_access) catch {};
+    //                 self.type_info.setExprType(field_access, ty);
+    //             }
+    //         }
+    //     }
+    //
+    //     try self.module_call_cache.put(key, interned);
+    //     return interned;
+    // }
 
     fn resolveCallee(self: *LowerTir, a: *const ast.Ast, f: *Builder.FunctionFrame, row: ast.Rows.Call) !CalleeInfo {
         const ck = a.exprs.index.kinds.items[row.callee.toRaw()];
@@ -1545,8 +1533,8 @@ pub const LowerTir = struct {
             return .{ .name = nm, .fty = self.getExprType(row.callee) };
         }
         if (ck == .FieldAccess) {
-            if (try self.resolveModuleFieldCallee(a, f, row.callee)) |mangled|
-                return .{ .name = mangled, .fty = self.getExprType(row.callee) };
+            // if (try self.resolveModuleFieldCallee(a, f, row.callee)) |mangled|
+            //     return .{ .name = mangled, .fty = self.getExprType(row.callee) };
 
             return .{
                 .name = a.exprs.get(.FieldAccess, row.callee).field,
@@ -1556,37 +1544,37 @@ pub const LowerTir = struct {
         return .{ .name = f.builder.intern("<indirect>"), .fty = self.getExprType(row.callee) };
     }
 
-    fn moduleFieldIsExtern(
-        self: *LowerTir,
-        info: ModuleAliasInfo,
-        member_name: []const u8,
-    ) bool {
-        const me = self.context.module_graph.ensureModule(self.import_base_dir, info.import_path, .tir) catch return false;
-        const imported_ast = me.astRef();
-        const decls = imported_ast.exprs.decl_pool.slice(imported_ast.unit.decls);
-        var i: usize = 0;
-        while (i < decls.len) : (i += 1) {
-            const d = imported_ast.exprs.Decl.get(decls[i]);
-            if (d.pattern.isNone()) continue;
-            const pid = d.pattern.unwrap();
-            const pk = imported_ast.pats.index.kinds.items[pid.toRaw()];
-            if (pk != .Binding) continue;
-            const binding = imported_ast.pats.get(.Binding, pid);
-            const binding_name = imported_ast.exprs.strs.get(binding.name);
-            if (!std.mem.eql(u8, binding_name, member_name)) continue;
-
-            const kind = imported_ast.exprs.index.kinds.items[d.value.toRaw()];
-            if (kind != .FunctionLit) return false;
-            const fn_lit = imported_ast.exprs.get(.FunctionLit, d.value);
-            if (fn_lit.flags.is_extern) return true;
-            // Treat function declarations without a body as extern. This covers
-            // imported prototypes that were parsed via `extern proc` but lost
-            // their flag metadata while being serialized through the module graph.
-            if (fn_lit.body.isNone()) return true;
-            return false;
-        }
-        return false;
-    }
+    // fn moduleFieldIsExtern(
+    //     self: *LowerTir,
+    //     info: ModuleAliasInfo,
+    //     member_name: []const u8,
+    // ) bool {
+    //     const me = self.context.module_graph.ensureModule(self.import_base_dir, info.import_path, .tir) catch return false;
+    //     const imported_ast = me.astRef();
+    //     const decls = imported_ast.exprs.decl_pool.slice(imported_ast.unit.decls);
+    //     var i: usize = 0;
+    //     while (i < decls.len) : (i += 1) {
+    //         const d = imported_ast.exprs.Decl.get(decls[i]);
+    //         if (d.pattern.isNone()) continue;
+    //         const pid = d.pattern.unwrap();
+    //         const pk = imported_ast.pats.index.kinds.items[pid.toRaw()];
+    //         if (pk != .Binding) continue;
+    //         const binding = imported_ast.pats.get(.Binding, pid);
+    //         const binding_name = imported_ast.exprs.strs.get(binding.name);
+    //         if (!std.mem.eql(u8, binding_name, member_name)) continue;
+    //
+    //         const kind = imported_ast.exprs.index.kinds.items[d.value.toRaw()];
+    //         if (kind != .FunctionLit) return false;
+    //         const fn_lit = imported_ast.exprs.get(.FunctionLit, d.value);
+    //         if (fn_lit.flags.is_extern) return true;
+    //         // Treat function declarations without a body as extern. This covers
+    //         // imported prototypes that were parsed via `extern proc` but lost
+    //         // their flag metadata while being serialized through the module graph.
+    //         if (fn_lit.body.isNone()) return true;
+    //         return false;
+    //     }
+    //     return false;
+    // }
 
     fn buildVariantItem(
         self: *LowerTir,
@@ -1691,7 +1679,7 @@ pub const LowerTir = struct {
             // Otherwise, fall through and evaluate the expression to compute the concrete type.
         }
 
-        var tmp_tir = tir.TIR.init(self.gpa, &self.context.type_store);
+        var tmp_tir = tir.TIR.init(self.gpa, self.context.type_store);
         defer tmp_tir.deinit();
         var tmp_builder = tir.Builder.init(self.gpa, &tmp_tir);
 
@@ -2198,7 +2186,7 @@ pub const LowerTir = struct {
                             const mangled = try self.mangleMonomorphName(callee.name, binding_infos.items);
                             const result = try self.monomorphizer.request(
                                 decl_ast,
-                                &self.context.type_store,
+                                self.context.type_store,
                                 callee.name,
                                 decl_ctx.decl_id,
                                 fty,
@@ -2972,28 +2960,28 @@ pub const LowerTir = struct {
         }
     }
 
-    fn lowerImportedModuleMember(
-        self: *LowerTir,
-        a: *const ast.Ast,
-        blk: *Builder.BlockFrame,
-        parent_id: ast.ExprId,
-        field_name: StrId,
-        expected_ty: ?types.TypeId,
-        loc: tir.OptLocId,
-    ) !?tir.ValueId {
-        const idr = a.exprs.get(.Ident, parent_id);
-        if (self.findTopLevelImportByName(a, idr.name)) |imp_decl| {
-            const ty0 = self.getExprType(parent_id) orelse (expected_ty orelse self.context.type_store.tAny());
-            if (self.materializeImportedConst(&self.context.module_graph, a, imp_decl, field_name, ty0, blk, self.pipeline)) |vv| {
-                if (expected_ty) |want| return self.emitCoerce(blk, vv, ty0, want, loc);
-                return vv;
-            }
-            const v = blk.builder.tirValue(.ConstUndef, blk, ty0, loc, .{});
-            if (expected_ty) |want| return self.emitCoerce(blk, v, ty0, want, loc);
-            return v;
-        }
-        return null;
-    }
+    // fn lowerImportedModuleMember(
+    //     self: *LowerTir,
+    //     a: *const ast.Ast,
+    //     blk: *Builder.BlockFrame,
+    //     parent_id: ast.ExprId,
+    //     field_name: StrId,
+    //     expected_ty: ?types.TypeId,
+    //     loc: tir.OptLocId,
+    // ) !?tir.ValueId {
+    //     const idr = a.exprs.get(.Ident, parent_id);
+    //     if (self.findTopLevelImportByName(a, idr.name)) |imp_decl| {
+    //         const ty0 = self.getExprType(parent_id) orelse (expected_ty orelse self.context.type_store.tAny());
+    //         if (self.materializeImportedConst(&self.context.module_graph, a, imp_decl, field_name, ty0, blk, self.pipeline)) |vv| {
+    //             if (expected_ty) |want| return self.emitCoerce(blk, vv, ty0, want, loc);
+    //             return vv;
+    //         }
+    //         const v = blk.builder.tirValue(.ConstUndef, blk, ty0, loc, .{});
+    //         if (expected_ty) |want| return self.emitCoerce(blk, v, ty0, want, loc);
+    //         return v;
+    //     }
+    //     return null;
+    // }
 
     fn lowerEnumMember(
         self: *LowerTir,
@@ -3099,9 +3087,9 @@ pub const LowerTir = struct {
 
         // 1) imported module member (rvalue only)
         if (mode == .rvalue and a.exprs.index.kinds.items[row.parent.toRaw()] == .Ident) {
-            if (try self.lowerImportedModuleMember(a, blk, row.parent, row.field, expected_ty, loc)) |v| {
-                return v;
-            }
+            // if (try self.lowerImportedModuleMember(a, blk, row.parent, row.field, expected_ty, loc)) |v| {
+            //     return v;
+            // }
         }
 
         const idx_maybe = self.type_info.getFieldIndex(id);
@@ -3434,7 +3422,7 @@ pub const LowerTir = struct {
                 rhs_expect = want;
                 op_ty = self.context.type_store.tBool();
                 if (row.op == .eq or row.op == .neq) {
-                    const ts = &self.context.type_store;
+                    const ts = self.context.type_store;
                     const lhs_ty_hint = lhs_hint orelse lhs_stamped;
                     const rhs_ty_hint = rhs_hint orelse rhs_stamped;
                     if (lhs_ty_hint) |lh| {
@@ -5054,16 +5042,16 @@ pub const LowerTir = struct {
         const parent_kind = caller_ast.exprs.index.kinds.items[fr.parent.toRaw()];
         if (parent_kind != .Ident) return null;
 
-        const alias_ident = caller_ast.exprs.get(.Ident, fr.parent);
-        const alias = caller_ast.exprs.strs.get(alias_ident.name);
-        const info = self.module_aliases.get(alias) orelse return null;
+        // const alias_ident = caller_ast.exprs.get(.Ident, fr.parent);
+        // const alias = caller_ast.exprs.strs.get(alias_ident.name);
+        // const info = self.module_aliases.get(alias) orelse return null;
 
-        const me = self.context.module_graph.ensureModule(self.import_base_dir, info.import_path, .tir) catch return null;
-        const imported_ast = me.astRef();
-        const member_name = caller_ast.exprs.strs.get(fr.field);
-        if (self.findTopLevelDeclByNameSlice(imported_ast, member_name)) |decl_id| {
-            return .{ .ast = imported_ast, .decl_id = decl_id };
-        }
+        // const me = self.context.module_graph.ensureModule(self.import_base_dir, info.import_path, .tir) catch return null;
+        // const imported_ast = me.astRef();
+        // const member_name = caller_ast.exprs.strs.get(fr.field);
+        // if (self.findTopLevelDeclByNameSlice(imported_ast, member_name)) |decl_id| {
+        //     return .{ .ast = imported_ast, .decl_id = decl_id };
+        // }
         return null;
     }
     fn findTopLevelImportByName(self: *const LowerTir, a: *const ast.Ast, name: ast.StrId) ?ast.DeclId {
@@ -5072,55 +5060,55 @@ pub const LowerTir = struct {
         return if (a.exprs.index.kinds.items[d.value.toRaw()] == .Import) did else null;
     }
 
-    fn materializeImportedConst(
-        self: *LowerTir,
-        res: *module_graph.ModuleGraph,
-        a: *const ast.Ast,
-        imp_decl: ast.DeclId,
-        member: StrId,
-        expected_ty: types.TypeId,
-        blk: *Builder.BlockFrame,
-        _: *Pipeline,
-    ) ?tir.ValueId {
-        const d = a.exprs.Decl.get(imp_decl);
-        const ir = a.exprs.get(.Import, d.value);
-        if (a.exprs.index.kinds.items[ir.expr.toRaw()] != .Literal) return null;
-        const lit = a.exprs.get(.Literal, ir.expr);
-        if (lit.kind != .string) return null;
-        const sid = switch (lit.data) {
-            .string => |str_id| str_id,
-            else => return null,
-        };
-        const s_full = a.exprs.strs.get(sid);
-
-        // Query module exports to ensure the requested member exists and obtain
-        // any known type information.
-        const want = a.exprs.strs.get(member);
-        const lookup = res.lookupExport(self.import_base_dir, s_full, want, .tir) catch return null;
-        if (!lookup.found) return null;
-
-        const me = lookup.module;
-        const imported_ast = me.astRef();
-        const decls = imported_ast.exprs.decl_pool.slice(imported_ast.unit.decls);
-        var i: usize = 0;
-        while (i < decls.len) : (i += 1) {
-            const d2 = imported_ast.exprs.Decl.get(decls[i]);
-            if (d2.pattern.isNone()) continue;
-            const pid = d2.pattern.unwrap();
-            const pk = imported_ast.pats.index.kinds.items[pid.toRaw()];
-            if (pk != .Binding) continue;
-            const b = imported_ast.pats.get(.Binding, pid);
-            const nm = imported_ast.exprs.strs.get(b.name);
-            if (std.mem.eql(u8, nm, want)) {
-                var want_ty = expected_ty;
-                if (self.isAny(want_ty)) {
-                    if (lookup.ty) |sym_ty| want_ty = sym_ty;
-                }
-                return self.lowerImportedExprValue(me, d2.value, want_ty, blk);
-            }
-        }
-        return null;
-    }
+    // fn materializeImportedConst(
+    //     self: *LowerTir,
+    //     res: *module_graph.ModuleGraph,
+    //     a: *const ast.Ast,
+    //     imp_decl: ast.DeclId,
+    //     member: StrId,
+    //     expected_ty: types.TypeId,
+    //     blk: *Builder.BlockFrame,
+    //     _: *Pipeline,
+    // ) ?tir.ValueId {
+    //     const d = a.exprs.Decl.get(imp_decl);
+    //     const ir = a.exprs.get(.Import, d.value);
+    //     if (a.exprs.index.kinds.items[ir.expr.toRaw()] != .Literal) return null;
+    //     const lit = a.exprs.get(.Literal, ir.expr);
+    //     if (lit.kind != .string) return null;
+    //     const sid = switch (lit.data) {
+    //         .string => |str_id| str_id,
+    //         else => return null,
+    //     };
+    //     const s_full = a.exprs.strs.get(sid);
+    //
+    //     // Query module exports to ensure the requested member exists and obtain
+    //     // any known type information.
+    //     const want = a.exprs.strs.get(member);
+    //     const lookup = res.lookupExport(self.import_base_dir, s_full, want, .tir) catch return null;
+    //     if (!lookup.found) return null;
+    //
+    //     const me = lookup.module;
+    //     const imported_ast = me.astRef();
+    //     const decls = imported_ast.exprs.decl_pool.slice(imported_ast.unit.decls);
+    //     var i: usize = 0;
+    //     while (i < decls.len) : (i += 1) {
+    //         const d2 = imported_ast.exprs.Decl.get(decls[i]);
+    //         if (d2.pattern.isNone()) continue;
+    //         const pid = d2.pattern.unwrap();
+    //         const pk = imported_ast.pats.index.kinds.items[pid.toRaw()];
+    //         if (pk != .Binding) continue;
+    //         const b = imported_ast.pats.get(.Binding, pid);
+    //         const nm = imported_ast.exprs.strs.get(b.name);
+    //         if (std.mem.eql(u8, nm, want)) {
+    //             var want_ty = expected_ty;
+    //             if (self.isAny(want_ty)) {
+    //                 if (lookup.ty) |sym_ty| want_ty = sym_ty;
+    //             }
+    //             return self.lowerImportedExprValue(me, d2.value, want_ty, blk);
+    //         }
+    //     }
+    //     return null;
+    // }
 
     /// True if `ty` is a numeric scalar type.
     fn isNumeric(self: *const LowerTir, ty: types.TypeId) bool {
@@ -5221,75 +5209,75 @@ pub const LowerTir = struct {
         return stamped;
     }
 
-    fn lowerImportedExprValue(self: *LowerTir, me: *module_graph.ModuleEntry, eid: ast.ExprId, expected_ty: types.TypeId, blk: *Builder.BlockFrame) ?tir.ValueId {
-        const imported_ast = me.astRef();
-        const kinds = imported_ast.exprs.index.kinds.items;
-        switch (kinds[eid.toRaw()]) {
-            .StructLit => {
-                if (self.context.type_store.getKind(expected_ty) != .Struct) return null;
-                const row = imported_ast.exprs.get(.StructLit, eid);
-                const sfields = imported_ast.exprs.sfv_pool.slice(row.fields);
-                const st = self.context.type_store.get(.Struct, expected_ty);
-                const exp_fields = self.context.type_store.field_pool.slice(st.fields);
-                const loc = tir.OptLocId.none();
-                var fields = self.gpa.alloc(tir.Rows.StructFieldInit, exp_fields.len) catch return null;
-                var j: usize = 0;
-                while (j < exp_fields.len) : (j += 1) {
-                    const f = self.context.type_store.Field.get(exp_fields[j]);
-                    const src_idx = if (j < sfields.len) j else sfields.len - 1;
-                    const sfv = imported_ast.exprs.StructFieldValue.get(sfields[src_idx]);
-                    const vv = self.lowerImportedExprValue(me, sfv.value, f.ty, blk) orelse {
-                        self.gpa.free(fields);
-                        return null;
-                    };
-                    fields[j] = .{ .index = @intCast(j), .name = .none(), .value = vv };
-                }
-                const v = blk.builder.structMake(blk, expected_ty, fields, loc);
-                self.gpa.free(fields);
-                return v;
-            },
-            .Literal => {
-                const lit = imported_ast.exprs.get(.Literal, eid);
-                const k = self.context.type_store.getKind(expected_ty);
-                const loc = tir.OptLocId.none();
-                switch (k) {
-                    .U8, .U16, .U32, .U64, .I8, .I16, .I32, .I64, .Enum => {
-                        const info = switch (lit.data) {
-                            .int => |int_info| int_info,
-                            else => return null,
-                        };
-                        if (!info.valid) return null;
-                        const value = std.math.cast(u64, info.value) orelse return null;
-                        return blk.builder.tirValue(.ConstInt, blk, expected_ty, loc, .{ .value = value });
-                    },
-                    .F32, .F64 => {
-                        const info = switch (lit.data) {
-                            .float => |float_info| float_info,
-                            else => return null,
-                        };
-                        if (!info.valid) return null;
-                        return blk.builder.tirValue(.ConstFloat, blk, expected_ty, loc, .{ .value = info.value });
-                    },
-                    .Bool => {
-                        const b = switch (lit.data) {
-                            .bool => |val| val,
-                            else => return null,
-                        };
-                        return blk.builder.tirValue(.ConstBool, blk, expected_ty, loc, .{ .value = b });
-                    },
-                    .String => {
-                        const sid = switch (lit.data) {
-                            .string => |str_id| str_id,
-                            else => return null,
-                        };
-                        return blk.builder.tirValue(.ConstString, blk, expected_ty, loc, .{ .text = sid });
-                    },
-                    else => return null,
-                }
-            },
-            else => return null,
-        }
-    }
+    // fn lowerImportedExprValue(self: *LowerTir, me: *module_graph.ModuleEntry, eid: ast.ExprId, expected_ty: types.TypeId, blk: *Builder.BlockFrame) ?tir.ValueId {
+    //     const imported_ast = me.astRef();
+    //     const kinds = imported_ast.exprs.index.kinds.items;
+    //     switch (kinds[eid.toRaw()]) {
+    //         .StructLit => {
+    //             if (self.context.type_store.getKind(expected_ty) != .Struct) return null;
+    //             const row = imported_ast.exprs.get(.StructLit, eid);
+    //             const sfields = imported_ast.exprs.sfv_pool.slice(row.fields);
+    //             const st = self.context.type_store.get(.Struct, expected_ty);
+    //             const exp_fields = self.context.type_store.field_pool.slice(st.fields);
+    //             const loc = tir.OptLocId.none();
+    //             var fields = self.gpa.alloc(tir.Rows.StructFieldInit, exp_fields.len) catch return null;
+    //             var j: usize = 0;
+    //             while (j < exp_fields.len) : (j += 1) {
+    //                 const f = self.context.type_store.Field.get(exp_fields[j]);
+    //                 const src_idx = if (j < sfields.len) j else sfields.len - 1;
+    //                 const sfv = imported_ast.exprs.StructFieldValue.get(sfields[src_idx]);
+    //                 const vv = self.lowerImportedExprValue(me, sfv.value, f.ty, blk) orelse {
+    //                     self.gpa.free(fields);
+    //                     return null;
+    //                 };
+    //                 fields[j] = .{ .index = @intCast(j), .name = .none(), .value = vv };
+    //             }
+    //             const v = blk.builder.structMake(blk, expected_ty, fields, loc);
+    //             self.gpa.free(fields);
+    //             return v;
+    //         },
+    //         .Literal => {
+    //             const lit = imported_ast.exprs.get(.Literal, eid);
+    //             const k = self.context.type_store.getKind(expected_ty);
+    //             const loc = tir.OptLocId.none();
+    //             switch (k) {
+    //                 .U8, .U16, .U32, .U64, .I8, .I16, .I32, .I64, .Enum => {
+    //                     const info = switch (lit.data) {
+    //                         .int => |int_info| int_info,
+    //                         else => return null,
+    //                     };
+    //                     if (!info.valid) return null;
+    //                     const value = std.math.cast(u64, info.value) orelse return null;
+    //                     return blk.builder.tirValue(.ConstInt, blk, expected_ty, loc, .{ .value = value });
+    //                 },
+    //                 .F32, .F64 => {
+    //                     const info = switch (lit.data) {
+    //                         .float => |float_info| float_info,
+    //                         else => return null,
+    //                     };
+    //                     if (!info.valid) return null;
+    //                     return blk.builder.tirValue(.ConstFloat, blk, expected_ty, loc, .{ .value = info.value });
+    //                 },
+    //                 .Bool => {
+    //                     const b = switch (lit.data) {
+    //                         .bool => |val| val,
+    //                         else => return null,
+    //                     };
+    //                     return blk.builder.tirValue(.ConstBool, blk, expected_ty, loc, .{ .value = b });
+    //                 },
+    //                 .String => {
+    //                     const sid = switch (lit.data) {
+    //                         .string => |str_id| str_id,
+    //                         else => return null,
+    //                     };
+    //                     return blk.builder.tirValue(.ConstString, blk, expected_ty, loc, .{ .text = sid });
+    //                 },
+    //                 else => return null,
+    //             }
+    //         },
+    //         else => return null,
+    //     }
+    // }
 
     // ============================
     // Misc helpers
@@ -5299,7 +5287,7 @@ pub const LowerTir = struct {
         if (self.lookupExprTypeOverride(id)) |override| return override;
         const i = id.toRaw();
         std.debug.assert(i < self.type_info.expr_types.items.len);
-        std.debug.assert(self.type_info.module_id == self.module_id);
+        // std.debug.assert(self.type_info.module_id == self.module_id);
         return self.type_info.expr_types.items[i];
     }
     fn getDeclType(self: *const LowerTir, did: ast.DeclId) ?types.TypeId {
@@ -5309,7 +5297,7 @@ pub const LowerTir = struct {
     }
 
     fn getUnionTypeFromVariant(self: *const LowerTir, vty: types.TypeId) ?types.TypeId {
-        const ts = &self.context.type_store;
+        const ts = self.context.type_store;
         const k = ts.getKind(vty);
 
         if (k == .Variant or k == .Error) {
@@ -6225,31 +6213,14 @@ pub fn evalComptimeExpr(
     gpa: std.mem.Allocator,
     context: *Context,
     pipeline: *Pipeline,
-    type_info: *types.TypeInfo,
-    module_id: usize,
     chk: *checker.Checker,
     ast_unit: *const ast.Ast,
     expr: ast.ExprId,
     result_ty: types.TypeId,
     bindings: []const Pipeline.ComptimeBinding,
 ) !comp.ComptimeValue {
-    var lowerer = LowerTir.init(gpa, context, pipeline, type_info, module_id, chk);
+    var lowerer = LowerTir.init(gpa, context, pipeline, chk);
     lowerer.import_base_dir = chk.import_base_dir;
-    var alias_info_map = std.StringHashMap(LowerTir.ModuleAliasInfo).init(gpa);
-    defer {
-        var it = alias_info_map.iterator();
-        while (it.next()) |kv| {
-            gpa.free(kv.key_ptr.*);
-            gpa.free(kv.value_ptr.namespace);
-            gpa.free(kv.value_ptr.import_path);
-        }
-        alias_info_map.deinit();
-    }
-    try pipeline_mod.computeModuleNamespaces(gpa, ast_unit, &context.module_graph, &alias_info_map);
-    var alias_it = alias_info_map.iterator();
-    while (alias_it.next()) |kv| {
-        try lowerer.setModuleAlias(kv.key_ptr.*, kv.value_ptr.*);
-    }
     defer lowerer.deinit();
     return lowerer.runComptimeExpr(ast_unit, expr, result_ty, bindings);
 }

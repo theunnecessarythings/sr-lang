@@ -54,7 +54,6 @@ pub const TypeInfo = struct {
     method_table: std.AutoArrayHashMapUnmanaged(MethodKey, MethodEntry) = .{},
     method_bindings: std.AutoArrayHashMapUnmanaged(u32, MethodBinding) = .{},
     mlir_splice_info: std.AutoArrayHashMapUnmanaged(u32, MlirSpliceInfo) = .{},
-    type_owner_modules: std.AutoArrayHashMapUnmanaged(u32, usize) = .{},
 
     pub fn init(gpa: std.mem.Allocator, store: *TypeStore) TypeInfo {
         return .{
@@ -75,7 +74,6 @@ pub const TypeInfo = struct {
         self.method_table.deinit(self.gpa);
         self.method_bindings.deinit(self.gpa);
         self.mlir_splice_info.deinit(self.gpa);
-        self.type_owner_modules.deinit(self.gpa);
     }
 
     pub fn setModule(self: *TypeInfo, module_id: usize) void {
@@ -201,14 +199,6 @@ pub const TypeInfo = struct {
     pub fn getMethod(self: *const TypeInfo, owner: TypeId, name: ast.StrId) ?MethodEntry {
         const key = makeMethodKey(owner, name);
         return self.method_table.get(key);
-    }
-
-    pub fn setTypeOwnerModule(self: *TypeInfo, owner: TypeId, module_id: usize) !void {
-        try self.type_owner_modules.put(self.gpa, owner.toRaw(), module_id);
-    }
-
-    pub fn getTypeOwnerModule(self: *const TypeInfo, owner: TypeId) ?usize {
-        return self.type_owner_modules.get(owner.toRaw());
     }
 
     pub fn setMethodBinding(self: *TypeInfo, expr_id: ast.ExprId, binding: MethodBinding) !void {

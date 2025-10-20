@@ -155,9 +155,7 @@ fn testChecker(data: []const u8) !void {
     var a = try lower_mod.run();
     defer a.deinit();
 
-    var type_info = compiler.types.TypeInfo.init(gpa, &context.type_store);
-    defer type_info.deinit();
-    var chk = checker.Checker.init(gpa, &a, &context, &pipeline, &type_info); // Pass context and pipeline
+    var chk = checker.Checker.init(gpa, &a, &context, &pipeline); // Pass context and pipeline
     defer chk.deinit();
     _ = try chk.run();
 }

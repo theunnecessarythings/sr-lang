@@ -1,0 +1,7 @@
+package main
+
+printf :: extern proc(string, any) i32
+
+print :: proc(x: i32) {
+  printf("%d\n", x)
+}

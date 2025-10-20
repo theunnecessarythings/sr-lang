@@ -1,0 +1,74 @@
+package ml
+
+Tensor :: fn(comptime T: type, comptime Shape: []u64) type {
+    TensorData :: tensor(T, Shape)
+    Type :: struct {
+        data: TensorData,
+        requires_grad: bool,
+        grad: ?*Tensor(T, Shape),
+        grad_fn: ?*proc(*Tensor(T, Shape)),
+    }
+
+    Type.zeros :: proc() Type {
+        zero_data: TensorData = mlir op() {
+            "arith.constant"() {value = dense<0.0 : T>} : () -> tensor<Shape, T>
+        }
+        return Type{ data: zero_data, requires_grad: false, grad: null, grad_fn: null }
+    }
+
+    return Type
+}
+
+
+zeros :: fn(comptime T: type, comptime Shape: ...any)() Tensor(T, Shape...) {
+    zero_data: tensor(T, Shape...) = mlir op {
+        "arith.constant"() {value = dense<0.0 : T>} : () -> tensor<Shape..., T>
+    }
+
+    return Tensor(T, Shape...){
+        data: zero_data,
+        requires_grad: false,
+        grad: null,
+        grad_fn: null,
+    }
+}
+
+
+add :: fn(comptime T: type, comptime Shape: ...any)
+    (a: Tensor(T, Shape...), b: Tensor(T, Shape...))
+    Tensor(T, Shape...)
+   sum_data: tensor(T, Shape...) = mlir op(a.data, b.data) {
+        "arith.addf"(%0, %1) : (tensor<Shape..., T>, tensor<Shape..., T>) -> tensor<Shape..., T>
+    }
+
+    is_grad_required := a.requires_grad or b.requires_grad;
+
+    return Tensor(T, Shape...){
+        data: sum_data,
+        requires_grad: is_grad_required,
+        grad: null,
+        grad_fn: null, // Would be set if is_grad_required
+    };
+}
+
+matmul :: fn(comptime T: type, comptime M: int, comptime N: int, comptime K: int)
+    (a: Tensor(T, M, K), b: Tensor(T, K, N))
+    Tensor(T, M, N)
+{
+    init_tensor: tensor(T, M, N) = mlir op {
+        "arith.constant"() {value = dense<0.0 : T>} : () -> tensor<M, N, T>
+    }
+
+    prod_data: tensor(T, M, N) = mlir op(a.data, b.data, init_tensor) {
+        "linalg.matmul"(%0, %1, %2) : (tensor<M, K, T>, tensor<K, N, T>, tensor<M, N, T>) -> tensor<M, N, T>
+    }
+
+    is_grad_required := a.requires_grad or b.requires_grad;
+
+    return Tensor(T, M, N){
+        data: prod_data,
+        requires_grad: is_grad_required,
+        grad: null,
+        grad_fn: null, // Would be set if is_grad_required
+    };
+}

@@ -5,7 +5,6 @@ const check_types = @import("check_types.zig");
 const Context = @import("compile.zig").Context;
 const diag = @import("diagnostics.zig");
 const Diagnostics = diag.Diagnostics;
-const module_graph = @import("module_graph.zig");
 const Loc = @import("lexer.zig").Token.Loc;
 const pattern_matching = @import("check_pattern_matching.zig");
 const Pipeline = @import("pipeline.zig").Pipeline;
@@ -22,7 +21,7 @@ pub const Checker = struct {
     ast_unit: *const ast.Ast,
     context: *Context,
     pipeline: *Pipeline,
-    type_info: *TypeInfo,
+    type_info: TypeInfo,
     imported_symbols: std.StringHashMapUnmanaged(types.TypeId) = .{},
 
     import_base_dir: []const u8 = ".",
@@ -90,20 +89,14 @@ pub const Checker = struct {
         unit: *ast.Ast,
         context: *Context,
         pipeline: *Pipeline,
-        type_info: *TypeInfo,
     ) Checker {
-        if (type_info.module_id == 0) {
-            type_info.setModule(unit.module_id);
-        } else {
-            std.debug.assert(type_info.module_id == unit.module_id);
-        }
         return .{
             .gpa = gpa,
             .ast_unit = unit,
             .symtab = symbols.SymbolStore.init(gpa),
             .context = context,
             .pipeline = pipeline,
-            .type_info = type_info,
+            .type_info = TypeInfo.init(gpa, context.type_store),
         };
     }
 
@@ -118,6 +111,7 @@ pub const Checker = struct {
         self.match_binding_stack.deinit(self.gpa);
         self.catch_binding_stack.deinit(self.gpa);
         self.param_specializations.deinit(self.gpa);
+        self.type_info.deinit();
         self.symtab.deinit();
     }
 
@@ -524,7 +518,6 @@ pub const Checker = struct {
             return false;
         }
 
-        try self.type_info.setTypeOwnerModule(owner_ty, entry.module_id);
         return true;
     }
 
@@ -2271,14 +2264,14 @@ pub const Checker = struct {
         field_name: ast.StrId,
         loc: Loc,
     ) !?types.TypeId {
-        var entry_opt = self.type_info.getMethod(owner_ty, field_name);
+        const entry_opt = self.type_info.getMethod(owner_ty, field_name);
         if (entry_opt == null) {
-            if (self.type_info.getTypeOwnerModule(owner_ty)) |origin_module| {
-                if (self.context.module_graph.findModuleById(origin_module)) |mod_entry| {
-                    try self.copyModuleMethods(mod_entry, owner_ty);
-                    entry_opt = self.type_info.getMethod(owner_ty, field_name);
-                }
-            }
+            // if (self.type_info.getTypeOwnerModule(owner_ty)) |_| {
+            // if (self.context.module_graph.findModuleById(origin_module)) |mod_entry| {
+            //     try self.copyModuleMethods(mod_entry, owner_ty);
+            //     entry_opt = self.type_info.getMethod(owner_ty, field_name);
+            // }
+            // }
         }
         const parent_kind = self.typeKind(receiver_ty);
         if (entry_opt == null) {
@@ -2358,13 +2351,13 @@ pub const Checker = struct {
         // -------- Module member access via import "path".member --------
         const parent_kind = self.exprKind(field_expr.parent);
         if (parent_kind == .Import) {
-            if (self.importMemberType(field_expr.parent, field_expr.field)) |mt| {
-                try self.type_info.ensureExpr(self.gpa, id);
-                self.type_info.setExprType(id, mt);
-                // For imported members we don't currently expose a precise index
-                // into a struct; do not set a field index here.
-                return mt;
-            }
+            // if (self.importMemberType(field_expr.parent, field_expr.field)) |mt| {
+            //     try self.type_info.ensureExpr(self.gpa, id);
+            //     self.type_info.setExprType(id, mt);
+            //     // For imported members we don't currently expose a precise index
+            //     // into a struct; do not set a field index here.
+            //     return mt;
+            // }
             try self.context.diags.addError(self.exprLoc(field_expr), .unknown_module_field, .{});
             return null;
         }
@@ -2377,11 +2370,11 @@ pub const Checker = struct {
                     const did = sym.origin_decl.unwrap();
                     const drow = self.ast_unit.exprs.Decl.get(did);
                     if (self.exprKind(drow.value) == .Import) {
-                        if (self.importMemberType(drow.value, field_expr.field)) |mt| {
-                            try self.type_info.ensureExpr(self.gpa, id);
-                            self.type_info.setExprType(id, mt);
-                            return mt;
-                        }
+                        // if (self.importMemberType(drow.value, field_expr.field)) |mt| {
+                        //     try self.type_info.ensureExpr(self.gpa, id);
+                        //     self.type_info.setExprType(id, mt);
+                        //     return mt;
+                        // }
                         try self.context.diags.addError(self.exprLoc(field_expr), .unknown_module_field, .{});
                         return null;
                     }
@@ -2649,72 +2642,72 @@ pub const Checker = struct {
         return imported != null;
     }
 
-    fn copyModuleMethods(
-        self: *Checker,
-        module: *module_graph.ModuleEntry,
-        owner_filter: ?types.TypeId,
-    ) !void {
-        const imported_ti = module.typeInfo();
-        var it = imported_ti.method_table.iterator();
-        while (it.next()) |entry| {
-            var copy = entry.value_ptr.*;
-            if (copy.module_id == 0) {
-                copy.module_id = imported_ti.module_id;
-            }
-            try self.type_info.setTypeOwnerModule(copy.owner_type, copy.module_id);
-            if (owner_filter) |owner_ty| {
-                if (!copy.owner_type.eq(owner_ty)) continue;
-            }
-            _ = try self.type_info.addMethod(copy);
-        }
-        if (owner_filter) |owner_ty| {
-            try self.type_info.setTypeOwnerModule(owner_ty, imported_ti.module_id);
-        }
-    }
-
-    fn copyImportedMethods(
-        self: *Checker,
-        module: *module_graph.ModuleEntry,
-        imported_ty: types.TypeId,
-    ) !void {
-        const owner_ty = blk: {
-            const kind = self.typeKind(imported_ty);
-            if (kind == .TypeType) {
-                break :blk self.context.type_store.get(.TypeType, imported_ty).of;
-            }
-            break :blk imported_ty;
-        };
-        try self.copyModuleMethods(module, owner_ty);
-    }
-
-    fn importMemberTypeByPath(
-        self: *Checker,
-        res: *module_graph.ModuleGraph,
-        path: []const u8,
-        member: ast.StrId,
-    ) !?types.TypeId {
-        const target = self.getStr(member);
-        const look_up = res.lookupExport(self.import_base_dir, path, target, .check) catch return null;
-        if (!look_up.found) return null;
-        const ty = look_up.ty orelse return null;
-        try self.copyImportedMethods(look_up.module, ty);
-        return ty;
-    }
-
-    pub fn importMemberType(self: *Checker, import_eid: ast.ExprId, member: ast.StrId) ?types.TypeId {
-        const res = &self.context.module_graph;
-        const ir = self.getExpr(.Import, import_eid);
-        const ek = self.exprKind(ir.expr);
-        if (ek != .Literal) return null;
-        const lit = self.getExpr(.Literal, ir.expr);
-        if (lit.kind != .string) return null;
-        const sid = switch (lit.data) {
-            .string => |str_id| str_id,
-            else => return null,
-        };
-        const path = self.getStr(sid);
-        return self.importMemberTypeByPath(res, path, member) catch return null;
-    }
+    // fn copyModuleMethods(
+    //     self: *Checker,
+    //     module: *module_graph.ModuleEntry,
+    //     owner_filter: ?types.TypeId,
+    // ) !void {
+    //     const imported_ti = module.typeInfo();
+    //     var it = imported_ti.method_table.iterator();
+    //     while (it.next()) |entry| {
+    //         var copy = entry.value_ptr.*;
+    //         if (copy.module_id == 0) {
+    //             copy.module_id = imported_ti.module_id;
+    //         }
+    //         try self.type_info.setTypeOwnerModule(copy.owner_type, copy.module_id);
+    //         if (owner_filter) |owner_ty| {
+    //             if (!copy.owner_type.eq(owner_ty)) continue;
+    //         }
+    //         _ = try self.type_info.addMethod(copy);
+    //     }
+    //     if (owner_filter) |owner_ty| {
+    //         try self.type_info.setTypeOwnerModule(owner_ty, imported_ti.module_id);
+    //     }
+    // }
+    //
+    // fn copyImportedMethods(
+    //     self: *Checker,
+    //     module: *module_graph.ModuleEntry,
+    //     imported_ty: types.TypeId,
+    // ) !void {
+    //     const owner_ty = blk: {
+    //         const kind = self.typeKind(imported_ty);
+    //         if (kind == .TypeType) {
+    //             break :blk self.context.type_store.get(.TypeType, imported_ty).of;
+    //         }
+    //         break :blk imported_ty;
+    //     };
+    //     try self.copyModuleMethods(module, owner_ty);
+    // }
+    //
+    // fn importMemberTypeByPath(
+    //     self: *Checker,
+    //     res: *module_graph.ModuleGraph,
+    //     path: []const u8,
+    //     member: ast.StrId,
+    // ) !?types.TypeId {
+    //     const target = self.getStr(member);
+    //     const look_up = res.lookupExport(self.import_base_dir, path, target, .check) catch return null;
+    //     if (!look_up.found) return null;
+    //     const ty = look_up.ty orelse return null;
+    //     try self.copyImportedMethods(look_up.module, ty);
+    //     return ty;
+    // }
+    //
+    // pub fn importMemberType(self: *Checker, import_eid: ast.ExprId, member: ast.StrId) ?types.TypeId {
+    //     const res = &self.context.module_graph;
+    //     const ir = self.getExpr(.Import, import_eid);
+    //     const ek = self.exprKind(ir.expr);
+    //     if (ek != .Literal) return null;
+    //     const lit = self.getExpr(.Literal, ir.expr);
+    //     if (lit.kind != .string) return null;
+    //     const sid = switch (lit.data) {
+    //         .string => |str_id| str_id,
+    //         else => return null,
+    //     };
+    //     const path = self.getStr(sid);
+    //     return self.importMemberTypeByPath(res, path, member) catch return null;
+    // }
 
     fn fileHasTopDecl(self: *Checker, abs_or_rel: []const u8, name: []const u8) bool {
         var cwd = std.fs.cwd();
@@ -2838,7 +2831,7 @@ pub const Checker = struct {
     fn resolveImportedMemberType(self: *Checker, fr: ast.Rows.FieldAccess) ?types.TypeId {
         // Case 1: direct module value: (import "x").foo(...)
         const pk = self.exprKind(fr.parent);
-        if (pk == .Import) return self.importMemberType(fr.parent, fr.field);
+        // if (pk == .Import) return self.importMemberType(fr.parent, fr.field);
 
         // Case 2: 'ident' bound to an import declaration
         if (pk == .Ident) {
@@ -2846,11 +2839,11 @@ pub const Checker = struct {
             if (self.lookup(idr.name)) |sid_sym| {
                 const sym = self.symtab.syms.get(sid_sym);
                 if (!sym.origin_decl.isNone()) {
-                    const did = sym.origin_decl.unwrap();
-                    const drow = self.ast_unit.exprs.Decl.get(did);
-                    if (self.exprKind(drow.value) == .Import) {
-                        return self.importMemberType(drow.value, fr.field);
-                    }
+                    // const did = sym.origin_decl.unwrap();
+                    // const drow = self.ast_unit.exprs.Decl.get(did);
+                    // if (self.exprKind(drow.value) == .Import) {
+                    //     return self.importMemberType(drow.value, fr.field);
+                    // }
                 }
             }
         }
@@ -3366,7 +3359,7 @@ pub const Checker = struct {
             try self.type_info.setComptimeValue(id, value);
         }
 
-        const ts = &self.context.type_store;
+        const ts = self.context.type_store;
         return switch (row.kind) {
             .Module => ts.tMlirModule(),
             .Attribute => ts.tMlirAttribute(),
@@ -3817,18 +3810,18 @@ pub const Checker = struct {
             try self.context.diags.addError(self.exprLoc(ir), .invalid_import_operand, .{});
             return null;
         }
-        const sid = switch (lit.data) {
-            .string => |str_id| str_id,
-            else => {
-                try self.context.diags.addError(self.exprLoc(ir), .invalid_import_operand, .{});
-                return null;
-            },
-        };
-        const path = self.getStr(sid);
-        _ = self.context.module_graph.ensureModule(self.import_base_dir, path, .tir) catch {
-            try self.context.diags.addError(self.exprLoc(lit), .import_not_found, .{});
-            return self.context.type_store.tAny();
-        };
+        // const sid = switch (lit.data) {
+        //     .string => |str_id| str_id,
+        //     else => {
+        //         try self.context.diags.addError(self.exprLoc(ir), .invalid_import_operand, .{});
+        //         return null;
+        //     },
+        // };
+        // const path = self.getStr(sid);
+        // _ = self.context.module_graph.ensureModule(self.import_base_dir, path, .tir) catch {
+        //     try self.context.diags.addError(self.exprLoc(lit), .import_not_found, .{});
+        //     return self.context.type_store.tAny();
+        // };
         return self.context.type_store.tAny();
     }
 

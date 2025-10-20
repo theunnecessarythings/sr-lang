@@ -1,8 +1,9 @@
 const std = @import("std");
 const mlir = @import("mlir_bindings.zig");
 const cst = @import("cst.zig");
+const package = @import("package.zig");
+const CompilationUnit = package.CompilationUnit;
 const Diagnostics = @import("diagnostics.zig").Diagnostics;
-const ModuleGraph = @import("module_graph.zig").ModuleGraph;
 const TypeInfo = @import("types.zig").TypeInfo;
 const TypeStore = @import("types.zig").TypeStore;
 
@@ -102,8 +103,8 @@ pub const Context = struct {
     diags: *Diagnostics,
     interner: *cst.StringInterner,
     loc_store: *cst.LocStore,
-    module_graph: ModuleGraph,
-    type_store: TypeStore,
+    type_store: *TypeStore,
+    compilation_unit: CompilationUnit,
 
     pub fn init(gpa: std.mem.Allocator) Context {
         const interner = gpa.create(cst.StringInterner) catch unreachable;
@@ -114,14 +115,16 @@ pub const Context = struct {
         source_manager.* = SourceManager{ .gpa = gpa };
         const loc_store = gpa.create(cst.LocStore) catch unreachable;
         loc_store.* = cst.LocStore{};
+        const type_store = gpa.create(TypeStore) catch unreachable;
+        type_store.* = TypeStore.init(gpa, interner);
         return .{
             .diags = diags,
             .interner = interner,
             .loc_store = loc_store,
             .gpa = gpa,
             .source_manager = source_manager,
-            .module_graph = ModuleGraph.init(gpa),
-            .type_store = TypeStore.init(gpa, interner),
+            .type_store = type_store,
+            .compilation_unit = CompilationUnit.init(gpa),
         };
     }
 
@@ -131,11 +134,11 @@ pub const Context = struct {
         self.interner.deinit();
         self.loc_store.deinit(self.gpa);
         self.type_store.deinit();
-        self.module_graph.deinit();
         self.gpa.destroy(self.interner);
         self.gpa.destroy(self.diags);
         self.gpa.destroy(self.source_manager);
         self.gpa.destroy(self.loc_store);
+        self.gpa.destroy(self.type_store);
     }
 };
 

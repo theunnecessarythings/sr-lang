@@ -288,15 +288,15 @@ pub fn abiClassifyX64SysV(self: *Codegen, ty: types.TypeId, isReturn: bool) AbiC
     // MVP float handling (common cases)
     if (sa.hasFloat and !sa.allIntsOnly) {
         // 1x float -> float in XMM
-        if (sa.size == 4 and srIsExactlyFloat(&self.context.type_store, ty)) {
+        if (sa.size == 4 and srIsExactlyFloat(self.context.type_store, ty)) {
             return .{ .kind = .DirectScalar, .scalar0 = self.f32_ty, .size = 4 };
         }
         // 1x double -> double in XMM
-        if (sa.size == 8 and srIsExactlyDouble(&self.context.type_store, ty)) {
+        if (sa.size == 8 and srIsExactlyDouble(self.context.type_store, ty)) {
             return .{ .kind = .DirectScalar, .scalar0 = self.f64_ty, .size = 8 };
         }
         // 2x float -> <2 x float> (one XMM)
-        if (sa.size == 8 and srIsTwoFloats(&self.context.type_store, ty)) {
+        if (sa.size == 8 and srIsTwoFloats(self.context.type_store, ty)) {
             const vty = mlir.Type.getVectorType(1, &[_]i64{2}, self.f32_ty);
             return .{ .kind = .DirectScalar, .scalar0 = vty, .size = 8 };
         }
