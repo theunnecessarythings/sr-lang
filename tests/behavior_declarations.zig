@@ -120,7 +120,6 @@ test "declarations: local scope variable" {
 }
 
 test "declarations: typed variable without initialization (undefined)" {
-    if (true) return error.SkipZigTest;
     const src =
         \\ x: i32 = undefined
         \\ printf("x=%d\n", x)

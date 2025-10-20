@@ -2,7 +2,7 @@ const std = @import("std");
 const cst_mod = @import("cst.zig");
 const ast_mod = @import("ast.zig");
 const tir_mod = @import("tir.zig");
-const lower = @import("lower.zig");
+const lower_to_ast = @import("lower_to_ast.zig");
 const lower_tir = @import("lower_tir.zig");
 const checker = @import("checker.zig");
 const lexer_mod = @import("lexer.zig");
@@ -144,7 +144,7 @@ pub const Pipeline = struct {
             return .{ .cst = cst_program, .type_info = type_info, .module_id = module_id };
         }
 
-        var lower_pass = lower.Lower.init(self.allocator, &cst_program, self.context);
+        var lower_pass = lower_to_ast.Lower.init(self.allocator, &cst_program, self.context);
         var ast = try lower_pass.run();
         ast.module_id = module_id;
         type_info.setModule(module_id);

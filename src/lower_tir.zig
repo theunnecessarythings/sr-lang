@@ -1837,14 +1837,9 @@ pub const LowerTir = struct {
     fn jitEvalComptimeBlock(
         self: *LowerTir,
         a: *const ast.Ast,
-        env: *Env,
-        f: *Builder.FunctionFrame,
         blk: *Builder.BlockFrame,
         id: ast.ExprId,
     ) !tir.ValueId {
-        _ = env;
-        _ = f;
-
         const cb = a.exprs.get(.ComptimeBlock, id);
         const result_ty = self.getExprType(cb.block) orelse return error.LoweringBug;
         const comptime_value = try self.runComptimeExpr(a, cb.block, result_ty, &[_]Pipeline.ComptimeBinding{});
@@ -3734,7 +3729,16 @@ pub const LowerTir = struct {
 
             const one = self.context.type_store.tBool();
             // ok: unwrap value from union and wrap as Some(value)
-            const payload_union_ok = ok_blk.builder.extractField(&ok_blk, self.context.type_store.mkUnion(&.{ .{ .name = f.builder.intern("Ok"), .ty = es.value_ty }, .{ .name = f.builder.intern("Err"), .ty = es.error_ty } }), es_payload, 1, expr_loc);
+            const payload_union_ok = ok_blk.builder.extractField(
+                &ok_blk,
+                self.context.type_store.mkUnion(&.{
+                    .{ .name = f.builder.intern("Ok"), .ty = es.value_ty },
+                    .{ .name = f.builder.intern("Err"), .ty = es.error_ty },
+                }),
+                es_payload,
+                1,
+                expr_loc,
+            );
             const ok_v = ok_blk.builder.tirValue(.UnionField, &ok_blk, es.value_ty, loc, .{ .base = payload_union_ok, .field_index = 0 });
             const true_v_ok = ok_blk.builder.tirValue(.ConstBool, &ok_blk, one, loc, .{ .value = true });
             const ok_fields = [_]tir.Rows.StructFieldInit{
@@ -4891,16 +4895,12 @@ pub const LowerTir = struct {
             },
             .VariantType, .EnumType, .StructType => self.lowerTypeExprOpaque(a, blk, id, expected_ty),
             .CodeBlock => blk: {
-                const r = a.exprs.get(.CodeBlock, id);
-                _ = r;
                 // For now, treat as opaque and produce undef
                 const ty0 = self.getExprType(id) orelse self.context.type_store.tAny();
                 const loc = self.exprOptLoc(a, id);
                 break :blk self.undef(blk, ty0, loc);
             },
-            .ComptimeBlock => blk: {
-                break :blk try self.jitEvalComptimeBlock(a, env, f, blk, id);
-            },
+            .ComptimeBlock => self.jitEvalComptimeBlock(a, blk, id),
             else => {
                 std.debug.print("lowerExpr: unhandled expr kind {}\n", .{expr_kind});
                 return error.LoweringBug;

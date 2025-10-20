@@ -38,7 +38,6 @@ test "error_handling: returning error from procedure" {
 }
 
 test "error_handling: returning error from function" {
-    if (true) return error.SkipZigTest;
     const globals =
         \\MyError :: error { InvalidInput }
         \\parse_int :: fn(s: string) i32!MyError {
@@ -57,4 +56,3 @@ test "error_handling: returning error from function" {
     const code = getSource(globals, src);
     try runCompilerTest(code, "Caught InvalidInput\n");
 }
-

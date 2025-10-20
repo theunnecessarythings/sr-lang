@@ -19,7 +19,6 @@ test "patterns: match with integer literal" {
 }
 
 test "patterns: match with string literal" {
-    if (true) return error.SkipZigTest;
     const src =
         \\s := "world"
         \\result := match s {

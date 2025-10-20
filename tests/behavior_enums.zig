@@ -20,7 +20,6 @@ test "composite_types: c-style enum definition and usage" {
 }
 
 test "composite_types: integer-backed enum" {
-    if (true) return error.SkipZigTest;
     const globals =
         \\HttpCode :: enum(u16) { Ok = 200, NotFound = 404, InternalError = 500 }
     ;
@@ -36,7 +35,6 @@ test "composite_types: integer-backed enum" {
 }
 
 test "composite_types: enum in match expression" {
-    if (true) return error.SkipZigTest;
     const globals =
         \\Color :: enum { Red, Green, Blue }
     ;
@@ -51,4 +49,3 @@ test "composite_types: enum in match expression" {
     const code = getSource(globals, src);
     try runCompilerTest(code, "Color is Green\n");
 }
-

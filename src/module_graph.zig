@@ -489,12 +489,6 @@ pub const ModuleGraph = struct {
                 defer self.gpa.free(base);
                 try self.config.discovery.appendImportCandidates(&candidates, self.gpa, base);
             }
-
-            for (self.packages.packages.items) |pkg| {
-                const base = try std.fmt.allocPrint(self.gpa, "{s}/{s}", .{ pkg.root_path, raw_in });
-                defer self.gpa.free(base);
-                try self.config.discovery.appendImportCandidates(&candidates, self.gpa, base);
-            }
         }
 
         const cwd = std.fs.cwd();

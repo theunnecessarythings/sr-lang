@@ -41,8 +41,6 @@ test "expressions_operators: greater than or equal to" {
 }
 
 test "expressions_operators: string equality" {
-    if (true)
-        return error.SkipZigTest;
     const src =
         \\r := "hello" == "hello"
         \\printf("Result: %b\n", r)
@@ -59,4 +57,3 @@ test "expressions_operators: boolean inequality" {
     const code = getSource("", src);
     try runCompilerTest(code, "Result: 1\n");
 }
-

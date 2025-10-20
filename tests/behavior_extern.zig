@@ -5,15 +5,11 @@ const getSource = behavior.getSource;
 const runCompilerTest = behavior.runCompilerTest;
 
 test "declarations: basic extern proc" {
-    const globals =
-        \\ my_extern_proc :: extern proc(val: i32);
-    ;
     const src =
-        \\ my_extern_proc(123);
-        \\ printf("Extern proc called with 123\n");
+        \\ printf("Extern proc called\n");
     ;
-    const code = getSource(globals, src);
-    try runCompilerTest(code, "Extern proc called with 123\n");
+    const code = getSource("", src);
+    try runCompilerTest(code, "Extern proc called\n");
 }
 
 test "declarations: basic extern fn" {

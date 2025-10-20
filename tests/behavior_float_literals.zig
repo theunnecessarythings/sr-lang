@@ -23,7 +23,6 @@ test "literals: negative float" {
 }
 
 test "literals: float without leading zero" {
-    if (true) return error.SkipZigTest;
     // a different error should happen, currently gives undefined identifier
     const src =
         \\ x := .5;

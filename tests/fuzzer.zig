@@ -3,7 +3,7 @@ const std = @import("std");
 const lexer = compiler.lexer;
 const parser = compiler.parser;
 const diagnostics = compiler.diagnostics;
-const lower = compiler.lower;
+const lower = compiler.lower_to_ast;
 const ast = compiler.ast;
 const checker = compiler.checker;
 

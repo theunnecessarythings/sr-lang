@@ -17,7 +17,6 @@ test "composite_types: basic struct definition and instantiation" {
 }
 
 test "composite_types: struct update syntax" {
-    if (true) return error.SkipZigTest;
     const globals =
         \\Point :: struct { x: i32, y: i32 }
     ;
