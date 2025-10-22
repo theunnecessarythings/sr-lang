@@ -473,18 +473,20 @@ pub const LowerTir = struct {
         }
     }
 
-    pub fn run(self: *LowerTir, a: *const ast.Ast) !tir.TIR {
+    pub fn run(self: *LowerTir) !tir.TIR {
+        const main_pkg = self.context.compilation_unit.packages.getPtr("main") orelse return error.PackageNotFound;
+        const main_ast = main_pkg.sources.items[0].ast.?;
         var t = tir.TIR.init(self.gpa, self.context.type_store);
         var b = Builder.init(self.gpa, &t);
 
         self.module_call_cache.clearRetainingCapacity();
         self.method_lowered.clearRetainingCapacity();
 
-        try self.lowerGlobalMlir(a, &b);
+        try self.lowerGlobalMlir(&main_ast, &b);
 
         // Lower top-level decls: functions and globals
-        const decls = a.exprs.decl_pool.slice(a.unit.decls);
-        for (decls) |did| try self.lowerTopDecl(a, &b, did);
+        const decls = main_ast.exprs.decl_pool.slice(main_ast.unit.decls);
+        for (decls) |did| try self.lowerTopDecl(&main_ast, &b, did);
 
         var method_it = self.type_info.method_table.iterator();
         while (method_it.next()) |entry| {
@@ -492,36 +494,14 @@ pub const LowerTir = struct {
             // if (method.module_id != self.module_id) continue;
             const decl_id = method.decl_id;
             if (self.method_lowered.contains(decl_id.toRaw())) continue;
-            const name = try self.methodSymbolName(a, decl_id);
-            try self.tryLowerNamedFunction(a, &b, decl_id, name, true);
+            const name = try self.methodSymbolName(&main_ast, decl_id);
+            try self.tryLowerNamedFunction(&main_ast, &b, decl_id, name, true);
         }
 
-        try self.monomorphizer.run(self, a, &b, monomorphLowerCallback);
+        try self.monomorphizer.run(self, &main_ast, &b, monomorphLowerCallback);
 
         return t;
     }
-
-    // pub fn setModuleAlias(self: *LowerTir, name: []const u8, info: ModuleAliasInfo) !void {
-    //     const key = try self.gpa.dupe(u8, name);
-    //     errdefer self.gpa.free(key);
-    //
-    //     const stored = ModuleAliasInfo{
-    //         .namespace = try self.gpa.dupe(u8, info.namespace),
-    //         .import_path = try self.gpa.dupe(u8, info.import_path),
-    //         .package_id = info.package_id,
-    //     };
-    //     errdefer self.gpa.free(stored.namespace);
-    //     errdefer self.gpa.free(stored.import_path);
-    //
-    //     const gop = try self.module_aliases.getOrPut(self.gpa, key);
-    //     if (gop.found_existing) {
-    //         self.gpa.free(key);
-    //         self.gpa.free(gop.value_ptr.namespace);
-    //         self.gpa.free(gop.value_ptr.import_path);
-    //     }
-    //     gop.value_ptr.* = stored;
-    //     self.module_call_cache.clearRetainingCapacity();
-    // }
 
     // ============================
     // Utilities / common helpers

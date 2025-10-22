@@ -506,7 +506,7 @@ pub const Rows = struct {
     pub const Async = struct { body: ExprId, loc: LocId };
     pub const Cast = struct { expr: ExprId, ty: ExprId, kind: CastKind, loc: LocId };
     pub const Catch = struct { expr: ExprId, binding_name: OptStrId, binding_loc: OptLocId, handler: ExprId, loc: LocId };
-    pub const Import = struct { expr: ExprId, loc: LocId };
+    pub const Import = struct { path: StrId, loc: LocId };
     pub const TypeOf = struct { expr: ExprId, loc: LocId };
 
     // ---------- params & attributes ----------
@@ -1423,7 +1423,7 @@ pub const DodPrinter = struct {
             .Import => {
                 const n = self.exprs.get(.Import, id);
                 try self.open("(import", .{});
-                try self.printExpr(n.expr);
+                try self.leaf("(path \"{s}\")", .{self.s(n.path)});
                 try self.close();
             },
             .TypeOf => {

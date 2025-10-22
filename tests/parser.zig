@@ -7,7 +7,7 @@ const Diagnostics = compiler.diagnostics.Diagnostics;
 const Context = compiler.compile.Context;
 
 fn parseProgramFromText(gpa: std.mem.Allocator, context: *Context, src: [:0]const u8) !cst.CST {
-    var parser = Parser.init(gpa, src, 0, context); // Pass file_id and context
+    var parser = Parser.init(gpa, src, 0, context.diags, context); // Pass file_id and context
     var ast = try parser.parse();
     errdefer ast.deinit();
     if (context.diags.count() != 0) { // Use context.diags

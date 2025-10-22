@@ -3800,16 +3800,7 @@ pub const Checker = struct {
 
     fn checkImport(self: *Checker, id: ast.ExprId) !?types.TypeId {
         const ir = self.getExpr(.Import, id);
-        const k = self.exprKind(ir.expr);
-        if (k != .Literal) {
-            try self.context.diags.addError(self.exprLoc(ir), .invalid_import_operand, .{});
-            return null;
-        }
-        const lit = self.getExpr(.Literal, ir.expr);
-        if (lit.kind != .string) {
-            try self.context.diags.addError(self.exprLoc(ir), .invalid_import_operand, .{});
-            return null;
-        }
+        _ = ir;
         // const sid = switch (lit.data) {
         //     .string => |str_id| str_id,
         //     else => {

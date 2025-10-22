@@ -8,13 +8,11 @@ const compile = @import("compile.zig");
 
 pub const CompilationUnit = struct {
     gpa: std.mem.Allocator,
-    context: *compile.Context,
-    packages: std.ArrayList(Package) = .{},
+    packages: std.StringArrayHashMapUnmanaged(Package) = .{},
 
-    pub fn init(gpa: std.mem.Allocator, context: *compile.Context) CompilationUnit {
+    pub fn init(gpa: std.mem.Allocator) CompilationUnit {
         return .{
             .gpa = gpa,
-            .context = context,
             .packages = .{},
         };
     }
@@ -24,7 +22,7 @@ pub const CompilationUnit = struct {
     }
 
     pub fn createMain(self: *CompilationUnit) !void {
-        try self.packages.append(self.gpa, .{
+        try self.packages.put(self.gpa, "main", .{
             .source_manager = self.context.source_manager,
             .sources = .{},
         });
@@ -33,11 +31,10 @@ pub const CompilationUnit = struct {
 
 pub const FileUnit = struct {
     file_id: u32, // index into SourceManager
-    package_id: u32, // index into CompilationUnit.packages
-    cst: *const cst.CST,
-    ast: *const ast.Ast,
-    tir: *const tir.TIR,
-    type_info: *types.TypeInfo,
+    cst: ?cst.CST,
+    ast: ?ast.Ast,
+    tir: ?tir.TIR,
+    type_info: ?types.TypeInfo,
 };
 
 pub const Package = struct {

@@ -6,6 +6,7 @@ const CompilationUnit = package.CompilationUnit;
 const Diagnostics = @import("diagnostics.zig").Diagnostics;
 const TypeInfo = @import("types.zig").TypeInfo;
 const TypeStore = @import("types.zig").TypeStore;
+const Parser = @import("parser.zig").Parser;
 
 var g_passes_registered: bool = false;
 
@@ -44,7 +45,11 @@ pub const SourceManager = struct {
         if (entry.virtual_source) |src| {
             return try self.gpa.dupe(u8, src);
         }
-        var file = try std.fs.cwd().openFile(entry.path, .{});
+        var file = std.fs.cwd().openFile(entry.path, .{}) catch |err| {
+            std.debug.print("error: {s}\n", .{entry.path});
+            return err;
+        };
+
         defer file.close();
         const file_size = try file.getEndPos();
         const buffer = try self.gpa.alloc(u8, file_size);
@@ -105,6 +110,16 @@ pub const Context = struct {
     loc_store: *cst.LocStore,
     type_store: *TypeStore,
     compilation_unit: CompilationUnit,
+
+    parse_worklist: std.ArrayList(ParseRequest) = .{},
+
+    const ParseRequest = struct {
+        path: []const u8,
+        file_id: u32,
+        thread: std.Thread,
+        diags: *Diagnostics,
+        parser: *Parser,
+    };
 
     pub fn init(gpa: std.mem.Allocator) Context {
         const interner = gpa.create(cst.StringInterner) catch unreachable;

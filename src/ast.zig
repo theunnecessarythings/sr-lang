@@ -240,7 +240,7 @@ pub const Rows = struct {
     pub const Closure = struct { params: RangeParam, result_ty: OptExprId, body: ExprId, loc: LocId };
     pub const Cast = struct { expr: ExprId, ty: ExprId, kind: CastKind, loc: LocId };
     pub const Catch = struct { expr: ExprId, binding_name: OptStrId, binding_loc: OptLocId, handler: ExprId, loc: LocId };
-    pub const Import = struct { expr: ExprId, loc: LocId };
+    pub const Import = struct { path: StrId, loc: LocId };
     pub const TypeOf = struct { expr: ExprId, loc: LocId };
 
     pub const Param = struct {
@@ -1299,8 +1299,8 @@ pub const AstPrinter = struct {
             .Import => {
                 const node = self.exprs.get(.Import, id);
                 try self.open("(import", .{});
-                try self.open("(expr", .{});
-                try self.printExpr(node.expr);
+                try self.open("(path", .{});
+                try self.leaf("\"{s}\"", .{self.s(node.path)});
                 try self.close();
                 try self.close();
             },
@@ -2239,7 +2239,7 @@ pub const CodePrinter = struct {
             .Import => {
                 const node = self.exprs.get(.Import, id);
                 try self.printf("import ", .{});
-                try self.printExpr(node.expr);
+                try self.printf("\"{s}\"", .{self.s(node.path)});
             },
             .TypeOf => {
                 const node = self.exprs.get(.TypeOf, id);

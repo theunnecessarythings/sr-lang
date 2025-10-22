@@ -27,6 +27,10 @@ pub const Lower = struct {
         self.ast_unit.deinit();
     }
 
+    pub fn runLower(self: *Lower) !void {
+        _ = try self.run();
+    }
+
     pub fn run(self: *Lower) !ast.Ast {
         var unit: ast.Unit = .empty();
 
@@ -866,7 +870,7 @@ pub const Lower = struct {
             .Import => blk: {
                 const r = self.cst_program.exprs.get(.Import, id);
                 break :blk self.ast_unit.exprs.add(.Import, .{
-                    .expr = try self.lowerExpr(r.expr),
+                    .path = r.path,
                     .loc = r.loc,
                 });
             },

@@ -15,6 +15,7 @@ const codegen = @import("codegen_main.zig");
 const mlir = @import("mlir_bindings.zig");
 const compile = @import("compile.zig");
 const Diagnostics = @import("diagnostics.zig").Diagnostics;
+const Package = @import("package.zig").Package;
 
 pub const Result = struct {
     cst: ?cst_mod.CST = null,
@@ -108,18 +109,85 @@ pub const Pipeline = struct {
             return .{};
         }
 
-        var parser = Parser.init(self.allocator, source0, file_id, self.context);
-        const cst_program = try parser.parse();
+        var parser = Parser.init(self.allocator, source0, file_id, self.context.diags, self.context);
+        const main_thread = try std.Thread.spawn(.{}, Parser.run, .{&parser});
+        try self.context.parse_worklist.append(self.allocator, .{
+            .path = filename,
+            .file_id = file_id,
+            .thread = main_thread,
+            .diags = self.context.diags,
+            .parser = &parser,
+        });
+
+        for (self.context.parse_worklist.items) |work| {
+            work.thread.join();
+            try self.context.diags.messages.appendSlice(try work.diags.messages.toOwnedSlice());
+            const package_id = work.parser.cst.program.package_name.unwrap();
+            const package_name = self.context.interner.get(package_id);
+            const package = self.context.compilation_unit.packages.getPtr(package_name);
+            if (package) |pkg| {
+                try pkg.sources.append(self.allocator, .{
+                    .file_id = work.file_id,
+                    .cst = work.parser.cst,
+                    .ast = null,
+                    .tir = null,
+                    .type_info = null,
+                });
+            } else {
+                try self.context.compilation_unit.packages.put(
+                    self.allocator,
+                    package_name,
+                    .{
+                        .gpa = self.allocator,
+                        .name = package_name,
+                        .source_manager = self.context.source_manager,
+                        .sources = .{},
+                    },
+                );
+                const pkg = self.context.compilation_unit.packages.getPtr(package_name).?;
+                try pkg.sources.append(self.allocator, .{
+                    .file_id = work.file_id,
+                    .cst = work.parser.cst,
+                    .ast = null,
+                    .tir = null,
+                    .type_info = null,
+                });
+            }
+        }
+        self.context.parse_worklist.deinit(self.allocator);
 
         if (self.context.diags.anyErrors()) {
             return error.ParseFailed;
         }
+
+        const main_pkg = self.context.compilation_unit.packages.getPtr("main") orelse return error.NoMainPackage;
+        const cst_program = main_pkg.sources.items[0].cst.?;
         if (mode == .parse) {
             return .{ .cst = cst_program };
         }
 
-        var lower_pass = lower_to_ast.Lower.init(self.allocator, &cst_program, self.context);
-        var ast = try lower_pass.run();
+        var pkg_iter = self.context.compilation_unit.packages.iterator();
+        const runFn = struct {
+            fn run(lower_pass: *lower_to_ast.Lower) !void {
+                try lower_pass.runLower();
+            }
+        }.run;
+        var threads = std.ArrayList(struct { std.Thread, *lower_to_ast.Lower, []const u8, usize }){};
+        while (pkg_iter.next()) |pkg| {
+            for (pkg.value_ptr.sources.items, 0..) |unit, i| {
+                const lower_pass = try self.allocator.create(lower_to_ast.Lower);
+                lower_pass.* = lower_to_ast.Lower.init(self.allocator, &unit.cst.?, self.context);
+                const thread = try std.Thread.spawn(.{}, runFn, .{lower_pass});
+                try threads.append(self.allocator, .{ thread, lower_pass, pkg.key_ptr.*, i });
+            }
+        }
+
+        for (threads.items) |thread| {
+            thread.@"0".join();
+            const pkg = self.context.compilation_unit.packages.getPtr(thread.@"2").?;
+            pkg.sources.items[thread.@"3"].ast = thread.@"1".ast_unit;
+            self.allocator.destroy(thread.@"1");
+        }
         if (self.context.diags.anyErrors()) {
             return error.LoweringFailed;
         }
@@ -129,6 +197,7 @@ pub const Pipeline = struct {
         const module_path = canonical_path_opt orelse source_path;
         const base_dir = moduleBaseDir(module_path);
 
+        var ast = main_pkg.sources.items[0].ast.?;
         if (mode == .ast) {
             return .{ .cst = cst_program, .ast = ast };
         }
@@ -147,7 +216,7 @@ pub const Pipeline = struct {
         var tir_lowerer = lower_tir.LowerTir.init(self.allocator, self.context, self, &chk);
         defer tir_lowerer.deinit();
 
-        const root_mod = try tir_lowerer.run(&ast);
+        const root_mod = try tir_lowerer.run();
 
         if (self.context.diags.anyErrors()) {
             return error.TirLoweringFailed;
@@ -201,7 +270,13 @@ pub const Pipeline = struct {
             std.debug.print("Generated MLIR module:\n", .{});
             var op = mlir_module.getOperation();
             op.dump();
-            return .{ .cst = cst_program, .ast = ast, .tir = root_mod, .mlir_module = mlir_module, .gen = gen };
+            return .{
+                .cst = cst_program,
+                .ast = ast,
+                .tir = root_mod,
+                .mlir_module = mlir_module,
+                .gen = gen,
+            };
         }
 
         try compile.run_passes(&gen.mlir_ctx, &mlir_module);
@@ -212,7 +287,13 @@ pub const Pipeline = struct {
             std.debug.print("Transformed MLIR module:\n", .{});
             var op = mlir_module.getOperation();
             op.dump();
-            return .{ .cst = cst_program, .ast = ast, .tir = root_mod, .mlir_module = mlir_module, .gen = gen };
+            return .{
+                .cst = cst_program,
+                .ast = ast,
+                .tir = root_mod,
+                .mlir_module = mlir_module,
+                .gen = gen,
+            };
         }
 
         try compile.convert_to_llvm_ir(mlir_module.handle, true, link_args, switch (mode) {
@@ -224,10 +305,22 @@ pub const Pipeline = struct {
             return error.LLVMIRFailed;
         }
         if (mode == .llvm_ir or mode == .llvm_passes) {
-            return .{ .cst = cst_program, .ast = ast, .tir = root_mod, .mlir_module = mlir_module, .gen = gen };
+            return .{
+                .cst = cst_program,
+                .ast = ast,
+                .tir = root_mod,
+                .mlir_module = mlir_module,
+                .gen = gen,
+            };
         }
         if (mode == .compile) {
-            return .{ .cst = cst_program, .ast = ast, .tir = root_mod, .mlir_module = mlir_module, .gen = gen };
+            return .{
+                .cst = cst_program,
+                .ast = ast,
+                .tir = root_mod,
+                .mlir_module = mlir_module,
+                .gen = gen,
+            };
         }
 
         if (mode == .jit) {
@@ -235,11 +328,23 @@ pub const Pipeline = struct {
             if (self.context.diags.anyErrors()) {
                 return error.JITFailed;
             }
-            return .{ .cst = cst_program, .ast = ast, .tir = root_mod, .mlir_module = mlir_module, .gen = gen };
+            return .{
+                .cst = cst_program,
+                .ast = ast,
+                .tir = root_mod,
+                .mlir_module = mlir_module,
+                .gen = gen,
+            };
         }
         // run
         compile.run();
-        return .{ .ast = ast, .tir = root_mod, .mlir_module = mlir_module, .gen = gen, .cst = cst_program };
+        return .{
+            .ast = ast,
+            .tir = root_mod,
+            .mlir_module = mlir_module,
+            .gen = gen,
+            .cst = cst_program,
+        };
     }
 };
 

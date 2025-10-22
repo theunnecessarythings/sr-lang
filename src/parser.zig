@@ -16,7 +16,7 @@ pub const Parser = struct {
 
     cst: cst.CST,
     context: *compile.Context,
-    parse_imports: bool = true,
+    diags: *diag.Diagnostics,
 
     const ParseMode = enum { expr, type, expr_no_struct };
 
@@ -25,6 +25,7 @@ pub const Parser = struct {
         gpa: std.mem.Allocator,
         source: [:0]const u8,
         file_id: u32,
+        diags: *diag.Diagnostics,
         context: *compile.Context,
     ) Parser {
         var lex = Lexer.init(source, file_id, .semi);
@@ -37,6 +38,7 @@ pub const Parser = struct {
             .cur = cur,
             .nxt = nxt,
             .context = context,
+            .diags = diags,
             .cst = .init(gpa, context.interner, context.loc_store),
         };
     }
@@ -95,11 +97,11 @@ pub const Parser = struct {
         note_loc: ?Loc,
         comptime note_code: diag.NoteCode,
     ) void {
-        const before = self.context.diags.count();
-        _ = self.context.diags.addError(loc, error_code, args) catch {};
-        if (self.context.diags.count() > before) {
-            const idx = self.context.diags.count() - 1;
-            _ = self.context.diags.attachNote(idx, note_loc, note_code) catch {};
+        const before = self.diags.count();
+        _ = self.diags.addError(loc, error_code, args) catch {};
+        if (self.diags.count() > before) {
+            const idx = self.diags.count() - 1;
+            _ = self.diags.attachNote(idx, note_loc, note_code) catch {};
         }
     }
 
@@ -632,12 +634,7 @@ pub const Parser = struct {
 
             // control / meta
             .keyword_return => try self.parseReturn(),
-            .keyword_import => blk: {
-                const loc = self.toLocId(self.cur.loc);
-                self.advance(); // 'import'
-                const e = try self.parseExpr(0, .expr);
-                break :blk self.addExpr(.Import, .{ .expr = e, .loc = loc });
-            },
+            .keyword_import => try self.parseImport(),
             .keyword_typeof => blk: {
                 const start = try self.beginKeywordParen(.keyword_typeof);
                 const e = try self.parseExpr(0, .expr);
@@ -1128,6 +1125,42 @@ pub const Parser = struct {
             .handler = handler,
             .loc = loc,
         });
+    }
+
+    fn parseImport(self: *Parser) !cst.ExprId {
+        const loc = self.toLocId(self.cur.loc);
+        self.advance(); // 'import'
+
+        const filename = std.mem.trim(u8, self.slice(self.cur), "\"");
+        try self.expect(.string_literal);
+        const path = self.intern(filename);
+
+        const diags = try self.gpa.create(diag.Diagnostics);
+        diags.* = diag.Diagnostics.init(self.gpa);
+
+        const filepath = try std.fs.cwd().realpathAlloc(self.gpa, filename);
+        const file_id = try self.context.source_manager.add(filepath);
+        const source = try self.context.source_manager.read(file_id);
+        defer self.gpa.free(source);
+        const source0 = try self.gpa.dupeZ(u8, source);
+        const parser = try self.gpa.create(Parser);
+        parser.* = Parser.init(self.gpa, source0, file_id, diags, self.context);
+
+        const thread = try std.Thread.spawn(.{}, run, .{parser});
+        try self.context.parse_worklist.append(self.gpa, .{
+            .path = filename,
+            .file_id = file_id,
+            .thread = thread,
+            .diags = diags,
+            .parser = parser,
+        });
+        return self.addExpr(.Import, .{ .path = path, .loc = loc });
+    }
+
+    pub fn run(
+        parser: *Parser,
+    ) !void {
+        try parser.parseProgram();
     }
 
     // -------------------- if / while / for --------------------

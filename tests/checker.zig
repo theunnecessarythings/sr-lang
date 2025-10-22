@@ -14,7 +14,7 @@ fn checkProgram(src: [:0]const u8, expected: []const diag.DiagnosticCode) !void 
     defer context.deinit();
 
     // Step 1: Parse
-    var parser = Parser.init(gpa, src, 0, &context); // Pass file_id and context
+    var parser = Parser.init(gpa, src, 0, context.diags, &context); // Pass file_id and context
     var cst = try parser.parse();
     defer cst.deinit();
     if (context.diags.count() != 0) { // Use context.diags
