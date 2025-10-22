@@ -1,8 +1,0 @@
-package main
-
-main :: proc() i32 {
-  S :: struct { data: [dyn]i32 }
-  s := S{ data: [] }
-  s.data.append(1)
-  return s.data.len
-}

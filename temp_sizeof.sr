@@ -1,5 +1,0 @@
-package main
-
-main :: proc() i32 {
-  return @sizeOf(i32);
-}

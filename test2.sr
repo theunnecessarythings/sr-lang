@@ -1,9 +1,0 @@
-package main
-
-printf :: extern proc(string, any) i32
-test3 :: import "test3"
-
-main :: proc() i32 {
-  test3.print(10)
-}
-
