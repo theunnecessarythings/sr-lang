@@ -35,6 +35,54 @@ pub const ComptimeValue = union(enum) {
     }
 };
 
+pub fn cloneValue(gpa: std.mem.Allocator, value: ComptimeValue) !ComptimeValue {
+    return switch (value) {
+        .Void => .Void,
+        .Int => |v| .{ .Int = v },
+        .Float => |v| .{ .Float = v },
+        .Bool => |v| .{ .Bool = v },
+        .String => |s| .{ .String = try gpa.dupe(u8, s) },
+        .Type => |ty| .{ .Type = ty },
+        .MlirType => |ty| .{ .MlirType = ty },
+        .MlirAttribute => |attr| .{ .MlirAttribute = attr },
+        .MlirModule => |mod| blk: {
+            const cloned_op = mlir.Operation.clone(mod.getOperation());
+            break :blk .{ .MlirModule = mlir.Module.fromOperation(cloned_op) };
+        },
+    };
+}
+
+pub fn hashValue(value: ComptimeValue) u64 {
+    var hasher = std.hash.Wyhash.init(0);
+    const tag: u8 = @intFromEnum(value);
+    hasher.update(&.{tag});
+    switch (value) {
+        .Void => {},
+        .Int => |v| hasher.update(std.mem.asBytes(&v)),
+        .Float => |v| {
+            const bits: u64 = @bitCast(v);
+            hasher.update(std.mem.asBytes(&bits));
+        },
+        .Bool => |v| {
+            const byte: u8 = if (v) 1 else 0;
+            hasher.update(&.{byte});
+        },
+        .String => |s| {
+            const len: usize = s.len;
+            hasher.update(std.mem.asBytes(&len));
+            hasher.update(s);
+        },
+        .Type => |ty| {
+            const raw: u32 = ty.toRaw();
+            hasher.update(std.mem.asBytes(&raw));
+        },
+        .MlirType => |ty| hasher.update(std.mem.asBytes(&ty.handle)),
+        .MlirAttribute => |attr| hasher.update(std.mem.asBytes(&attr.handle)),
+        .MlirModule => |mod| hasher.update(std.mem.asBytes(&mod.handle)),
+    }
+    return hasher.final();
+}
+
 pub fn type_of_impl(context: ?*anyopaque, type_id_raw: u32) callconv(.c) u32 {
     const ctx: *Context = @ptrCast(@alignCast(context.?));
     const type_id = types.TypeId.fromRaw(type_id_raw);

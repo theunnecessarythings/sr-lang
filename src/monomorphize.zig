@@ -3,22 +3,21 @@ const ast = @import("ast.zig");
 const comp = @import("comptime.zig");
 const types = @import("types.zig");
 const tir = @import("tir.zig");
-const mlir = @import("mlir_bindings.zig");
 
 pub const BindingValue = struct {
     ty: types.TypeId,
     value: comp.ComptimeValue,
 
     pub fn init(gpa: std.mem.Allocator, ty: types.TypeId, value: comp.ComptimeValue) !BindingValue {
-        return .{ .ty = ty, .value = try cloneComptimeValue(gpa, value) };
+        return .{ .ty = ty, .value = try comp.cloneValue(gpa, value) };
     }
 
     fn clone(self: BindingValue, gpa: std.mem.Allocator) !BindingValue {
-        return .{ .ty = self.ty, .value = try cloneComptimeValue(gpa, self.value) };
+        return .{ .ty = self.ty, .value = try comp.cloneValue(gpa, self.value) };
     }
 
     fn deinit(self: *BindingValue, gpa: std.mem.Allocator) void {
-        destroyComptimeValue(gpa, &self.value);
+        self.value.destroy(gpa);
         self.* = .{ .ty = types.TypeId.fromRaw(0), .value = .Void };
     }
 };
@@ -94,37 +93,6 @@ pub const Binding = struct {
         self.* = .{ .name = ast.StrId.fromRaw(0), .kind = .{ .type_param = types.TypeId.fromRaw(0) } };
     }
 };
-
-fn cloneComptimeValue(gpa: std.mem.Allocator, value: comp.ComptimeValue) !comp.ComptimeValue {
-    return switch (value) {
-        .Void => .Void,
-        .Int => |v| .{ .Int = v },
-        .Float => |v| .{ .Float = v },
-        .Bool => |v| .{ .Bool = v },
-        .String => |s| .{ .String = try gpa.dupe(u8, s) },
-        .Type => |ty| .{ .Type = ty },
-        .MlirType => |ty| .{ .MlirType = ty },
-        .MlirAttribute => |attr| .{ .MlirAttribute = attr },
-        .MlirModule => |mod| blk: {
-            const cloned_op = mlir.Operation.clone(mod.getOperation());
-            break :blk .{ .MlirModule = mlir.Module.fromOperation(cloned_op) };
-        },
-    };
-}
-
-fn destroyComptimeValue(gpa: std.mem.Allocator, value: *comp.ComptimeValue) void {
-    switch (value.*) {
-        .String => |s| {
-            const mut: []u8 = @constCast(s);
-            gpa.free(mut);
-        },
-        .MlirModule => |*mod| {
-            mod.destroy();
-        },
-        else => {},
-    }
-    value.* = .Void;
-}
 
 pub const MonomorphizationContext = struct {
     bindings: []Binding,
@@ -245,35 +213,6 @@ pub const Monomorphizer = struct {
         self.cache.deinit();
     }
 
-    fn hashComptimeValue(hasher: *std.hash.Wyhash, value: comp.ComptimeValue) void {
-        switch (value) {
-            .Void => {},
-            .Int => |v| hasher.update(std.mem.asBytes(&v)),
-            .Float => |v| hasher.update(std.mem.asBytes(&v)),
-            .Bool => |v| {
-                const byte: u8 = if (v) 1 else 0;
-                hasher.update(std.mem.asBytes(&byte));
-            },
-            .String => |s| hasher.update(s),
-            .Type => |ty| {
-                const raw: u32 = ty.toRaw();
-                hasher.update(std.mem.asBytes(&raw));
-            },
-            .MlirType => |ty| {
-                const ptr_val: usize = if (ty.handle.ptr) |p| @intFromPtr(p) else 0;
-                hasher.update(std.mem.asBytes(&ptr_val));
-            },
-            .MlirAttribute => |attr| {
-                const ptr_val: usize = if (attr.handle.ptr) |p| @intFromPtr(p) else 0;
-                hasher.update(std.mem.asBytes(&ptr_val));
-            },
-            .MlirModule => |mod| {
-                const ptr_val: usize = if (mod.handle.ptr) |p| @intFromPtr(p) else 0;
-                hasher.update(std.mem.asBytes(&ptr_val));
-            },
-        }
-    }
-
     fn hashKey(base: ast.StrId, bindings: []const BindingInfo) u64 {
         var hasher = std.hash.Wyhash.init(0);
         const base_raw: u32 = base.toRaw();
@@ -289,7 +228,8 @@ pub const Monomorphizer = struct {
                 .value_param => |vp| {
                     const ty_raw: u32 = vp.ty.toRaw();
                     hasher.update(std.mem.asBytes(&ty_raw));
-                    hashComptimeValue(&hasher, vp.value);
+                    const value_hash = comp.hashValue(vp.value);
+                    hasher.update(std.mem.asBytes(&value_hash));
                 },
                 .runtime_param => |ty| {
                     const raw: u32 = ty.toRaw();
