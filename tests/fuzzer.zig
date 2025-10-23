@@ -111,7 +111,7 @@ fn testLower(data: []const u8) !void {
     };
     defer tree.deinit();
 
-    var lower_mod = try lower.Lower.init(gpa, &tree, &context); // Pass context
+    var lower_mod = try lower.Lower.init(gpa, &tree, &context, 0); // Pass context
     var a = try (&lower_mod).run();
     defer a.deinit();
 
@@ -151,7 +151,7 @@ fn testChecker(data: []const u8) !void {
     };
     defer c.deinit();
 
-    var lower_mod = try lower.Lower.init(gpa, &c, &context); // Pass context
+    var lower_mod = try lower.Lower.init(gpa, &c, &context, 0); // Pass context
     var a = try (&lower_mod).run();
     defer a.deinit();
 

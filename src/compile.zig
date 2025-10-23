@@ -145,6 +145,7 @@ pub const Context = struct {
     }
 
     pub fn deinit(self: *Context) void {
+        self.compilation_unit.deinit();
         self.source_manager.deinit();
         self.diags.deinit();
         self.interner.deinit();

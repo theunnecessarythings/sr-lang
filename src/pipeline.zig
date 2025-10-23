@@ -184,7 +184,12 @@ pub const Pipeline = struct {
             var source_iter = pkg.value_ptr.sources.iterator();
             while (source_iter.next()) |unit| {
                 const lower_pass = try self.allocator.create(lower_to_ast.Lower);
-                lower_pass.* = try lower_to_ast.Lower.init(self.allocator, &unit.value_ptr.cst.?, self.context);
+                lower_pass.* = try lower_to_ast.Lower.init(
+                    self.allocator,
+                    &unit.value_ptr.cst.?,
+                    self.context,
+                    unit.value_ptr.file_id,
+                );
                 const thread = try std.Thread.spawn(.{}, runFn, .{lower_pass});
                 try threads.append(self.allocator, .{ thread, lower_pass, pkg.key_ptr.*, unit.key_ptr.* });
             }
