@@ -39,6 +39,11 @@ pub const SourceManager = struct {
         return @intCast(self.files.items.len - 1);
     }
 
+    pub fn find(self: *SourceManager, file_path: []const u8) ?u32 {
+        const idx = self.findIndex(file_path) orelse return null;
+        return @intCast(idx);
+    }
+
     pub fn read(self: *SourceManager, index: u32) ![]const u8 {
         if (index >= self.files.items.len) return error.FileNotFound;
         const entry = self.files.items[index];
@@ -179,6 +184,7 @@ pub fn computeDependencyLevels(
     allocator: std.mem.Allocator,
     unit: *CompilationUnit,
     interner: *cst.StringInterner,
+    source_manager: *SourceManager,
 ) !DependencyLevels {
     var result = DependencyLevels.init(allocator);
     errdefer result.deinit();
@@ -230,7 +236,7 @@ pub fn computeDependencyLevels(
         var set_iter = entry.value_ptr.iterator();
         while (set_iter.next()) |dep_entry| {
             const dep_str = interner.get(dep_entry.key_ptr.*);
-            const dep_file_id = findFileId(unit, dep_str) orelse continue;
+            const dep_file_id = source_manager.find(dep_str) orelse continue;
             if (dep_file_id == file_id) continue;
 
             const indegree_ptr = indegree.getPtr(file_id) orelse blk: {
@@ -310,16 +316,6 @@ pub fn computeDependencyLevels(
     }
 
     return result;
-}
-
-fn findFileId(unit: *CompilationUnit, path: []const u8) ?u32 {
-    var pkg_iter = unit.packages.iterator();
-    while (pkg_iter.next()) |pkg| {
-        if (pkg.value_ptr.sources.get(path)) |entry| {
-            return entry.file_id;
-        }
-    }
-    return null;
 }
 
 pub fn initMLIR(alloc: std.mem.Allocator) mlir.Context {

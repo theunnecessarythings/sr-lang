@@ -207,6 +207,7 @@ pub const Pipeline = struct {
             self.allocator,
             &self.context.compilation_unit,
             self.context.interner,
+            self.context.source_manager,
         );
         defer dep_levels.deinit();
         if (self.context.diags.anyErrors()) {
