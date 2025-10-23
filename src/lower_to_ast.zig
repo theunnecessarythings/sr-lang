@@ -9,11 +9,13 @@ pub const Lower = struct {
     cst_program: *const cst.CST,
     ast_unit: *ast.Ast,
     context: *compile.Context,
+    file_id: u32,
 
     pub fn init(
         gpa: std.mem.Allocator,
         program: *const cst.CST,
         context: *compile.Context,
+        file_id: u32,
     ) !Lower {
         const ast_unit = try gpa.create(ast.Ast);
         ast_unit.* = ast.Ast.init(gpa, program.interner, program.exprs.locs, context.type_store);
@@ -22,6 +24,7 @@ pub const Lower = struct {
             .cst_program = program,
             .ast_unit = ast_unit,
             .context = context,
+            .file_id = file_id,
         };
     }
 
@@ -45,6 +48,10 @@ pub const Lower = struct {
 
         self.ast_unit.unit = unit;
         return self.ast_unit;
+    }
+
+    fn recordDependency(self: *Lower, dependency: ast.StrId) !void {
+        try self.context.compilation_unit.addDependency(self.file_id, dependency);
     }
 
     fn unescapeString(self: *Lower, quoted_str: []const u8) !ast.StrId {
@@ -872,6 +879,7 @@ pub const Lower = struct {
             },
             .Import => blk: {
                 const r = self.cst_program.exprs.get(.Import, id);
+                try self.recordDependency(r.path);
                 break :blk self.ast_unit.exprs.add(.Import, .{
                     .path = r.path,
                     .loc = r.loc,

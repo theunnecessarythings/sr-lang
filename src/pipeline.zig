@@ -184,7 +184,12 @@ pub const Pipeline = struct {
             var source_iter = pkg.value_ptr.sources.iterator();
             while (source_iter.next()) |unit| {
                 const lower_pass = try self.allocator.create(lower_to_ast.Lower);
-                lower_pass.* = try lower_to_ast.Lower.init(self.allocator, &unit.value_ptr.cst.?, self.context);
+                lower_pass.* = try lower_to_ast.Lower.init(
+                    self.allocator,
+                    &unit.value_ptr.cst.?,
+                    self.context,
+                    unit.value_ptr.file_id,
+                );
                 const thread = try std.Thread.spawn(.{}, runFn, .{lower_pass});
                 try threads.append(self.allocator, .{ thread, lower_pass, pkg.key_ptr.*, unit.key_ptr.* });
             }
@@ -198,6 +203,13 @@ pub const Pipeline = struct {
             self.context.compilation_unit.mutex.unlock();
             self.allocator.destroy(thread.@"1");
         }
+        var dep_levels = try compile.computeDependencyLevels(
+            self.allocator,
+            &self.context.compilation_unit,
+            self.context.interner,
+            self.context.source_manager,
+        );
+        defer dep_levels.deinit();
         if (self.context.diags.anyErrors()) {
             return error.LoweringFailed;
         }
@@ -212,7 +224,7 @@ pub const Pipeline = struct {
 
         var chk = checker.Checker.init(self.allocator, self.context, self);
         defer chk.deinit();
-        try chk.run();
+        try chk.run(&dep_levels);
         if (self.context.diags.anyErrors()) {
             return error.TypeCheckFailed;
         }
