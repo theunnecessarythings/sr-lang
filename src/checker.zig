@@ -2,7 +2,8 @@ const std = @import("std");
 
 const ast = @import("ast.zig");
 const check_types = @import("check_types.zig");
-const Context = @import("compile.zig").Context;
+const compile = @import("compile.zig");
+const Context = compile.Context;
 const diag = @import("diagnostics.zig");
 const Diagnostics = diag.Diagnostics;
 const Loc = @import("lexer.zig").Token.Loc;
@@ -103,20 +104,36 @@ pub const Checker = struct {
         self.symtab.deinit();
     }
 
-    var threads = std.StringArrayHashMapUnmanaged(struct { std.Thread, bool }){};
+    pub fn run(self: *Checker, levels: *const compile.DependencyLevels) !void {
+        var ast_by_file = std.AutoHashMap(u32, *ast.Ast).init(self.gpa);
+        defer ast_by_file.deinit();
 
-    pub fn run(self: *Checker) !void {
         var pkg_iter = self.context.compilation_unit.packages.iterator();
         while (pkg_iter.next()) |pkg| {
             var source_iter = pkg.value_ptr.sources.iterator();
             while (source_iter.next()) |unit| {
-                const thread = try std.Thread.spawn(.{}, runAst, .{ self, unit.value_ptr.ast.? });
-                try threads.put(self.gpa, unit.key_ptr.*, .{ thread, false });
+                if (unit.value_ptr.ast) |ast_unit| {
+                    try ast_by_file.put(unit.value_ptr.file_id, ast_unit);
+                }
             }
         }
-        for (threads.values()) |item| {
-            const thread, const joined = item;
-            if (!joined) thread.join();
+
+        var threads = std.ArrayList(std.Thread).init(self.gpa);
+        defer threads.deinit();
+
+        for (levels.levels.items) |level| {
+            threads.clearRetainingCapacity();
+            if (level.items.len == 0) continue;
+
+            for (level.items) |file_id| {
+                const ast_unit = ast_by_file.get(file_id) orelse continue;
+                const thread = try std.Thread.spawn(.{}, runAst, .{ self, ast_unit });
+                try threads.append(thread);
+            }
+
+            for (threads.items) |thread| {
+                thread.join();
+            }
         }
     }
 
@@ -3769,14 +3786,6 @@ pub const Checker = struct {
     fn checkImport(self: *Checker, ast_unit: *ast.Ast, id: ast.ExprId) !?types.TypeId {
         const ir = getExpr(ast_unit, .Import, id);
         const filepath = getStr(ast_unit, ir.path);
-        if (threads.getPtr(filepath)) |item| {
-            const thread, const joined = item.*;
-            if (!joined) thread.join();
-            item.@"1" = true;
-        } else {
-            try self.context.diags.addError(ast_unit.exprs.locs.get(ir.loc), .import_not_found, .{});
-            return null;
-        }
         for (self.context.compilation_unit.packages.values()) |pkg| {
             if (pkg.sources.get(filepath) == null) continue;
             const pkg_name = self.context.interner.intern(pkg.name);
