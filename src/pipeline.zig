@@ -232,7 +232,12 @@ pub const Pipeline = struct {
             return .{ .cst = cst_program, .ast = ast };
         }
 
-        var tir_lowerer = lower_tir.LowerTir.init(self.allocator, self.context, self, &chk);
+        var tir_lowerer = lower_tir.LowerTir.init(.{
+            .allocator = self.allocator,
+            .context = self.context,
+            .pipeline = self,
+            .checker = &chk,
+        });
         defer tir_lowerer.deinit();
 
         const root_mod = try tir_lowerer.run();
