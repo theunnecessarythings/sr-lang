@@ -118,8 +118,8 @@ pub const Checker = struct {
             }
         }
 
-        var threads = std.ArrayList(std.Thread).init(self.gpa);
-        defer threads.deinit();
+        var threads = std.ArrayList(std.Thread){};
+        defer threads.deinit(self.gpa);
 
         for (levels.levels.items) |level| {
             threads.clearRetainingCapacity();
@@ -128,7 +128,7 @@ pub const Checker = struct {
             for (level.items) |file_id| {
                 const ast_unit = ast_by_file.get(file_id) orelse continue;
                 const thread = try std.Thread.spawn(.{}, runAst, .{ self, ast_unit });
-                try threads.append(thread);
+                try threads.append(self.gpa, thread);
             }
 
             for (threads.items) |thread| {

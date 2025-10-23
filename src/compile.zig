@@ -169,14 +169,14 @@ pub const DependencyLevels = struct {
     levels: std.ArrayList(std.ArrayList(u32)),
 
     pub fn init(allocator: std.mem.Allocator) DependencyLevels {
-        return .{ .allocator = allocator, .levels = std.ArrayList(std.ArrayList(u32)).init(allocator) };
+        return .{ .allocator = allocator, .levels = .{} };
     }
 
     pub fn deinit(self: *DependencyLevels) void {
         for (self.levels.items) |*level| {
-            level.deinit();
+            level.deinit(self.allocator);
         }
-        self.levels.deinit();
+        self.levels.deinit(self.allocator);
     }
 };
 
@@ -196,13 +196,13 @@ pub fn computeDependencyLevels(
     defer {
         var adj_iter = adjacency.iterator();
         while (adj_iter.next()) |entry| {
-            entry.value_ptr.deinit();
+            entry.value_ptr.deinit(allocator);
         }
         adjacency.deinit();
     }
 
-    var ordered_nodes = std.ArrayList(u32).init(allocator);
-    defer ordered_nodes.deinit();
+    var ordered_nodes = std.ArrayList(u32){};
+    defer ordered_nodes.deinit(allocator);
 
     var remaining = std.AutoHashMap(u32, void).init(allocator);
     defer remaining.deinit();
@@ -217,7 +217,7 @@ pub fn computeDependencyLevels(
             }
             if (!remaining.contains(file_id)) {
                 try remaining.put(file_id, {});
-                try ordered_nodes.append(file_id);
+                try ordered_nodes.append(allocator, file_id);
             }
         }
     }
@@ -230,7 +230,7 @@ pub fn computeDependencyLevels(
         }
         if (!remaining.contains(file_id)) {
             try remaining.put(file_id, {});
-            try ordered_nodes.append(file_id);
+            try ordered_nodes.append(allocator, file_id);
         }
 
         var set_iter = entry.value_ptr.iterator();
@@ -246,41 +246,41 @@ pub fn computeDependencyLevels(
             indegree_ptr.* += 1;
 
             var adj_ptr = adjacency.getPtr(dep_file_id) orelse blk: {
-                var list = std.ArrayList(u32).init(allocator);
+                const list = std.ArrayList(u32){};
                 try adjacency.put(dep_file_id, list);
                 break :blk adjacency.getPtr(dep_file_id).?;
             };
-            try adj_ptr.append(file_id);
+            try adj_ptr.append(allocator, file_id);
 
             if (indegree.getPtr(dep_file_id) == null) {
                 try indegree.put(dep_file_id, 0);
             }
             if (!remaining.contains(dep_file_id)) {
                 try remaining.put(dep_file_id, {});
-                try ordered_nodes.append(dep_file_id);
+                try ordered_nodes.append(allocator, dep_file_id);
             }
         }
     }
 
-    var queue = std.ArrayList(u32).init(allocator);
-    defer queue.deinit();
-    var next_queue = std.ArrayList(u32).init(allocator);
-    defer next_queue.deinit();
+    var queue = std.ArrayList(u32){};
+    defer queue.deinit(allocator);
+    var next_queue = std.ArrayList(u32){};
+    defer next_queue.deinit(allocator);
 
     var indegree_iter = indegree.iterator();
     while (indegree_iter.next()) |entry| {
         if (entry.value_ptr.* == 0) {
-            try queue.append(entry.key_ptr.*);
+            try queue.append(allocator, entry.key_ptr.*);
         }
     }
 
     while (queue.items.len > 0) {
-        var level = std.ArrayList(u32).init(allocator);
-        try level.appendSlice(queue.items);
+        var level = std.ArrayList(u32){};
+        try level.appendSlice(allocator, queue.items);
         for (queue.items) |node| {
             _ = remaining.remove(node);
         }
-        try result.levels.append(level);
+        try result.levels.append(allocator, level);
 
         next_queue.clearRetainingCapacity();
         for (queue.items) |node| {
@@ -290,7 +290,7 @@ pub fn computeDependencyLevels(
                     if (indegree_ptr.* == 0) continue;
                     indegree_ptr.* -= 1;
                     if (indegree_ptr.* == 0) {
-                        try next_queue.append(neighbor);
+                        try next_queue.append(allocator, neighbor);
                     }
                 }
             }
@@ -301,17 +301,17 @@ pub fn computeDependencyLevels(
     }
 
     if (remaining.count() > 0) {
-        var cycle_level = std.ArrayList(u32).init(allocator);
+        var cycle_level = std.ArrayList(u32){};
         for (ordered_nodes.items) |node| {
             if (remaining.contains(node)) {
                 _ = remaining.remove(node);
-                try cycle_level.append(node);
+                try cycle_level.append(allocator, node);
             }
         }
         if (cycle_level.items.len > 0) {
-            try result.levels.append(cycle_level);
+            try result.levels.append(allocator, cycle_level);
         } else {
-            cycle_level.deinit();
+            cycle_level.deinit(allocator);
         }
     }
 
