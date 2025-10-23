@@ -119,6 +119,7 @@ pub const StringInterner = struct {
     map: std.StringHashMapUnmanaged(StrId) = .{},
     buf: std.ArrayListUnmanaged(u8) = .{},
     off: std.ArrayListUnmanaged(u32) = .{},
+    mutex: std.Thread.Mutex = .{},
 
     pub fn init(gpa: std.mem.Allocator) StringInterner {
         var si: StringInterner = .{ .gpa = gpa };
@@ -140,6 +141,8 @@ pub const StringInterner = struct {
     }
 
     pub fn intern(self: *StringInterner, s: []const u8) StrId {
+        self.mutex.lock();
+        defer self.mutex.unlock();
         // Fast path: already interned
         if (self.map.get(s)) |existing| return existing;
 
@@ -173,7 +176,10 @@ pub const LocId = Index(LocTag);
 
 pub const LocStore = struct {
     data: std.ArrayListUnmanaged(Loc) = .{},
+    mutex: std.Thread.Mutex = .{},
     pub fn add(self: *LocStore, gpa: std.mem.Allocator, loc: Loc) LocId {
+        self.mutex.lock();
+        defer self.mutex.unlock();
         const id = LocId.fromRaw(@intCast(self.data.items.len));
         self.data.append(gpa, loc) catch @panic("OOM");
         return id;

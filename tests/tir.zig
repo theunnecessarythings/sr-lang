@@ -29,21 +29,19 @@ fn lowerToTir(gpa: std.mem.Allocator, src: []const u8) !Lowered {
     var cst = try parser.parse();
     defer cst.deinit();
 
-    var lower1 = compiler.lower.Lower.init(gpa, &cst, &context); // Pass context
+    var lower1 = compiler.lower_to_ast.Lower.init(gpa, &cst, &context); // Pass context
     var hir = try lower1.run();
     defer hir.deinit();
 
-    var type_info = compiler.types.TypeInfo.init(gpa, &context.type_store);
-    defer type_info.deinit();
     var pipeline = compiler.pipeline.Pipeline.init(gpa, &context); // Create pipeline
-    var chk = compiler.checker.Checker.init(gpa, &hir, &context, &pipeline, &type_info); // Pass context and pipeline
+    var chk = compiler.checker.Checker.init(gpa, &context, &pipeline); // Pass context and pipeline
     defer chk.deinit();
-    try chk.run();
+    try chk.runAst(&hir);
     if (context.diags.anyErrors()) return error.SemanticErrors; // Use context.diags
 
-    var lt = compiler.lower_tir.LowerTir.init(gpa, &context, &pipeline, &type_info, hir.module_id, &chk);
+    var lt = compiler.lower_tir.LowerTir.init(gpa, &context, &pipeline, &chk);
     defer lt.deinit();
-    const tir_result = try lt.run(&hir);
+    const tir_result = try lt.runAst(&hir);
     return .{ .tir = tir_result, .context = context };
 }
 
@@ -805,23 +803,20 @@ test "tir: runtime any specialization rejects mismatched numeric operands" {
     var cst = try parser.parse();
     defer cst.deinit();
 
-    var lower1 = compiler.lower.Lower.init(gpa, &cst, &context);
+    var lower1 = compiler.lower_to_ast.Lower.init(gpa, &cst, &context);
     var hir = try lower1.run();
     defer hir.deinit();
 
-    var type_info = compiler.types.TypeInfo.init(gpa, &context.type_store);
-    defer type_info.deinit();
-
     var pipeline = compiler.pipeline.Pipeline.init(gpa, &context);
-    var chk = compiler.checker.Checker.init(gpa, &hir, &context, &pipeline, &type_info);
+    var chk = compiler.checker.Checker.init(gpa, &context, &pipeline);
     defer chk.deinit();
-    try chk.run();
+    try chk.runAst(&hir);
     try testing.expectEqual(@as(usize, 0), context.diags.count());
 
-    var lt = compiler.lower_tir.LowerTir.init(gpa, &context, &pipeline, &type_info, hir.module_id, &chk);
+    var lt = compiler.lower_tir.LowerTir.init(gpa, &context, &pipeline, &chk);
     defer lt.deinit();
 
-    if (lt.run(&hir)) |tir_result| {
+    if (lt.runAst(&hir)) |tir_result| {
         defer tir_result.deinit();
     } else |err| {
         switch (err) {

@@ -7,31 +7,34 @@ const diagnostics = @import("diagnostics.zig");
 pub const Lower = struct {
     gpa: std.mem.Allocator,
     cst_program: *const cst.CST,
-    ast_unit: ast.Ast,
+    ast_unit: *ast.Ast,
     context: *compile.Context,
 
     pub fn init(
         gpa: std.mem.Allocator,
         program: *const cst.CST,
         context: *compile.Context,
-    ) Lower {
+    ) !Lower {
+        const ast_unit = try gpa.create(ast.Ast);
+        ast_unit.* = ast.Ast.init(gpa, program.interner, program.exprs.locs, context.type_store);
         return .{
             .gpa = gpa,
             .cst_program = program,
-            .ast_unit = ast.Ast.init(gpa, program.interner, program.exprs.locs),
+            .ast_unit = ast_unit,
             .context = context,
         };
     }
 
     pub fn deinit(self: *Lower) void {
         self.ast_unit.deinit();
+        self.gpa.destroy(self.ast_unit);
     }
 
     pub fn runLower(self: *Lower) !void {
         _ = try self.run();
     }
 
-    pub fn run(self: *Lower) !ast.Ast {
+    pub fn run(self: *Lower) !*ast.Ast {
         var unit: ast.Unit = .empty();
 
         unit.package_name = self.cst_program.program.package_name;

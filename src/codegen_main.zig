@@ -453,14 +453,13 @@ pub const Codegen = struct {
     pub fn emitModule(
         self: *Codegen,
         t: *const tir.TIR,
-        type_info: *types.TypeInfo,
     ) !mlir.Module {
         const prev_loc = self.loc;
         defer self.loc = prev_loc;
 
-        const prev_type_info = self.active_type_info;
-        self.active_type_info = type_info;
-        defer self.active_type_info = prev_type_info;
+        // const prev_type_info = self.active_type_info;
+        // self.active_type_info = type_info;
+        // defer self.active_type_info = prev_type_info;
 
         self.loc_cache.clearRetainingCapacity();
         try debug.attachTargetInfo(self);

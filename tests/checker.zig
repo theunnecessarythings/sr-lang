@@ -33,15 +33,15 @@ fn checkProgram(src: [:0]const u8, expected: []const diag.DiagnosticCode) !void 
     try testing.expectEqual(0, context.diags.count());
 
     // Step 2: Lower to AST
-    var lower = Lower.init(gpa, &cst, &context);
+    var lower = try Lower.init(gpa, &cst, &context);
     defer lower.deinit();
-    var ast = try lower.run();
+    const ast = try (&lower).run();
 
     // Step 3: Type Check
     var pipeline = compiler.pipeline.Pipeline.init(gpa, &context);
-    var checker = Checker.init(gpa, &ast, &context, &pipeline);
+    var checker = Checker.init(gpa, &context, &pipeline);
     defer checker.deinit();
-    _ = try checker.run();
+    try checker.runAst(ast);
 
     testing.expectEqual(expected.len, context.diags.count()) catch |err| {
         std.debug.print("Expected {} diagnostics, but got {}.\n", .{ expected.len, context.diags.count() });
@@ -2821,10 +2821,10 @@ test "methods - self type mismatch" {
 //
 test "import statements - failures" {
     // Import non-path value (number)
-    try checkProgram("bad :: import 123", &[_]diag.DiagnosticCode{.invalid_import_operand});
+    try checkProgram("bad :: import 123", &[_]diag.DiagnosticCode{.unexpected_token});
 
     // Import of boolean
-    try checkProgram("bad2 :: import true", &[_]diag.DiagnosticCode{.invalid_import_operand});
+    try checkProgram("bad2 :: import true", &[_]diag.DiagnosticCode{.unexpected_token});
 }
 
 // Focused: typeof expressions

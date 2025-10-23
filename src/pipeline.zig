@@ -19,7 +19,7 @@ const Package = @import("package.zig").Package;
 
 pub const Result = struct {
     cst: ?cst_mod.CST = null,
-    ast: ?ast_mod.Ast = null,
+    ast: ?*ast_mod.Ast = null,
     tir: ?tir_mod.TIR = null,
     mlir_module: ?mlir.Module = null,
     gen: ?codegen.Codegen = null,
@@ -65,7 +65,7 @@ pub const Pipeline = struct {
     pub fn evalComptimeExpr(
         self: *Pipeline,
         chk: *checker.Checker,
-        ast_unit: *const ast_mod.Ast,
+        ast_unit: *ast_mod.Ast,
         expr: ast_mod.ExprId,
         result_ty: types.TypeId,
         bindings: []const ComptimeBinding,
@@ -119,14 +119,19 @@ pub const Pipeline = struct {
             .parser = &parser,
         });
 
-        for (self.context.parse_worklist.items) |work| {
+        var i: usize = 0;
+        while (i < self.context.parse_worklist.items.len) {
+            const work = self.context.parse_worklist.items[i];
             work.thread.join();
-            try self.context.diags.messages.appendSlice(try work.diags.messages.toOwnedSlice());
+            if (i > 0) {
+                try self.context.diags.messages.appendSlice(try work.diags.messages.toOwnedSlice());
+            }
+            self.context.compilation_unit.mutex.lock();
             const package_id = work.parser.cst.program.package_name.unwrap();
             const package_name = self.context.interner.get(package_id);
             const package = self.context.compilation_unit.packages.getPtr(package_name);
             if (package) |pkg| {
-                try pkg.sources.append(self.allocator, .{
+                try pkg.sources.put(self.allocator, work.path, .{
                     .file_id = work.file_id,
                     .cst = work.parser.cst,
                     .ast = null,
@@ -145,7 +150,7 @@ pub const Pipeline = struct {
                     },
                 );
                 const pkg = self.context.compilation_unit.packages.getPtr(package_name).?;
-                try pkg.sources.append(self.allocator, .{
+                try pkg.sources.put(self.allocator, work.path, .{
                     .file_id = work.file_id,
                     .cst = work.parser.cst,
                     .ast = null,
@@ -153,6 +158,8 @@ pub const Pipeline = struct {
                     .type_info = null,
                 });
             }
+            self.context.compilation_unit.mutex.unlock();
+            i += 1;
         }
         self.context.parse_worklist.deinit(self.allocator);
 
@@ -161,7 +168,7 @@ pub const Pipeline = struct {
         }
 
         const main_pkg = self.context.compilation_unit.packages.getPtr("main") orelse return error.NoMainPackage;
-        const cst_program = main_pkg.sources.items[0].cst.?;
+        const cst_program = main_pkg.sources.entries.get(0).value.cst.?;
         if (mode == .parse) {
             return .{ .cst = cst_program };
         }
@@ -172,20 +179,23 @@ pub const Pipeline = struct {
                 try lower_pass.runLower();
             }
         }.run;
-        var threads = std.ArrayList(struct { std.Thread, *lower_to_ast.Lower, []const u8, usize }){};
+        var threads = std.ArrayList(struct { std.Thread, *lower_to_ast.Lower, []const u8, []const u8 }){};
         while (pkg_iter.next()) |pkg| {
-            for (pkg.value_ptr.sources.items, 0..) |unit, i| {
+            var source_iter = pkg.value_ptr.sources.iterator();
+            while (source_iter.next()) |unit| {
                 const lower_pass = try self.allocator.create(lower_to_ast.Lower);
-                lower_pass.* = lower_to_ast.Lower.init(self.allocator, &unit.cst.?, self.context);
+                lower_pass.* = try lower_to_ast.Lower.init(self.allocator, &unit.value_ptr.cst.?, self.context);
                 const thread = try std.Thread.spawn(.{}, runFn, .{lower_pass});
-                try threads.append(self.allocator, .{ thread, lower_pass, pkg.key_ptr.*, i });
+                try threads.append(self.allocator, .{ thread, lower_pass, pkg.key_ptr.*, unit.key_ptr.* });
             }
         }
 
         for (threads.items) |thread| {
             thread.@"0".join();
+            self.context.compilation_unit.mutex.lock();
             const pkg = self.context.compilation_unit.packages.getPtr(thread.@"2").?;
-            pkg.sources.items[thread.@"3"].ast = thread.@"1".ast_unit;
+            pkg.sources.getPtr(thread.@"3").?.ast = thread.@"1".ast_unit;
+            self.context.compilation_unit.mutex.unlock();
             self.allocator.destroy(thread.@"1");
         }
         if (self.context.diags.anyErrors()) {
@@ -194,16 +204,13 @@ pub const Pipeline = struct {
 
         const canonical_path_opt = try canonicalizePath(self.allocator, source_path);
         defer if (canonical_path_opt) |p| self.allocator.free(p);
-        const module_path = canonical_path_opt orelse source_path;
-        const base_dir = moduleBaseDir(module_path);
 
-        var ast = main_pkg.sources.items[0].ast.?;
+        const ast = main_pkg.sources.entries.get(0).value.ast.?;
         if (mode == .ast) {
             return .{ .cst = cst_program, .ast = ast };
         }
 
-        var chk = checker.Checker.init(self.allocator, &ast, self.context, self);
-        chk.import_base_dir = base_dir;
+        var chk = checker.Checker.init(self.allocator, self.context, self);
         defer chk.deinit();
         try chk.run();
         if (self.context.diags.anyErrors()) {
@@ -232,9 +239,7 @@ pub const Pipeline = struct {
         var gen = codegen.Codegen.init(self.allocator, self.context, mlir_ctx_ptr.*);
         gen.resetDebugCaches();
 
-        tir_lowerer.import_base_dir = base_dir;
-
-        var mlir_module = gen.emitModule(&root_mod, &chk.type_info) catch |err| {
+        var mlir_module = gen.emitModule(&root_mod) catch |err| {
             switch (err) {
                 error.CompilationFailed => {
                     return error.MlirCodegenFailed;
@@ -347,19 +352,6 @@ pub const Pipeline = struct {
         };
     }
 };
-
-fn moduleBaseDir(path: []const u8) []const u8 {
-    if (path.len == 0) return ".";
-    if (std.mem.lastIndexOfScalar(u8, path, '/')) |idx| {
-        if (idx == 0) return path[0..1];
-        return path[0..idx];
-    }
-    if (std.mem.lastIndexOfScalar(u8, path, '\\')) |idx| {
-        if (idx == 0) return path[0..1];
-        return path[0..idx];
-    }
-    return ".";
-}
 
 fn packageLocOrDefault(ast: *const ast_mod.Ast, file_id: u32) Loc {
     if (!ast.unit.package_loc.isNone()) {

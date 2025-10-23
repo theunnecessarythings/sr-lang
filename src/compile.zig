@@ -110,6 +110,7 @@ pub const Context = struct {
     loc_store: *cst.LocStore,
     type_store: *TypeStore,
     compilation_unit: CompilationUnit,
+    mutex: std.Thread.Mutex = .{},
 
     parse_worklist: std.ArrayList(ParseRequest) = .{},
 

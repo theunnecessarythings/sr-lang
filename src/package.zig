@@ -9,6 +9,7 @@ const compile = @import("compile.zig");
 pub const CompilationUnit = struct {
     gpa: std.mem.Allocator,
     packages: std.StringArrayHashMapUnmanaged(Package) = .{},
+    mutex: std.Thread.Mutex = .{},
 
     pub fn init(gpa: std.mem.Allocator) CompilationUnit {
         return .{
@@ -32,7 +33,7 @@ pub const CompilationUnit = struct {
 pub const FileUnit = struct {
     file_id: u32, // index into SourceManager
     cst: ?cst.CST,
-    ast: ?ast.Ast,
+    ast: ?*ast.Ast,
     tir: ?tir.TIR,
     type_info: ?types.TypeInfo,
 };
@@ -40,7 +41,7 @@ pub const FileUnit = struct {
 pub const Package = struct {
     name: []const u8,
     gpa: std.mem.Allocator,
-    sources: std.ArrayList(FileUnit),
+    sources: std.StringArrayHashMapUnmanaged(FileUnit),
     source_manager: *SourceManager,
 
     pub fn init(gpa: std.mem.Allocator, name: []const u8, source_manager: *SourceManager) Package {

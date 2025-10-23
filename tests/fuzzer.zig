@@ -111,8 +111,8 @@ fn testLower(data: []const u8) !void {
     };
     defer tree.deinit();
 
-    var lower_mod = lower.Lower.init(gpa, &tree, &context); // Pass context
-    var a = try lower_mod.run();
+    var lower_mod = try lower.Lower.init(gpa, &tree, &context); // Pass context
+    var a = try (&lower_mod).run();
     defer a.deinit();
 
     var buffer: [1024]u8 = undefined;
@@ -151,13 +151,13 @@ fn testChecker(data: []const u8) !void {
     };
     defer c.deinit();
 
-    var lower_mod = lower.Lower.init(gpa, &c, &context); // Pass context
-    var a = try lower_mod.run();
+    var lower_mod = try lower.Lower.init(gpa, &c, &context); // Pass context
+    var a = try (&lower_mod).run();
     defer a.deinit();
 
-    var chk = checker.Checker.init(gpa, &a, &context, &pipeline); // Pass context and pipeline
+    var chk = checker.Checker.init(gpa, &context, &pipeline); // Pass context and pipeline
     defer chk.deinit();
-    _ = try chk.run();
+    try chk.runAst(a);
 }
 
 pub export fn fuzz_checker(ptr: [*]const u8, len: usize) callconv(.c) void {

@@ -1133,12 +1133,18 @@ pub const Parser = struct {
 
         const filename = std.mem.trim(u8, self.slice(self.cur), "\"");
         try self.expect(.string_literal);
-        const path = self.intern(filename);
 
         const diags = try self.gpa.create(diag.Diagnostics);
         diags.* = diag.Diagnostics.init(self.gpa);
 
-        const filepath = try std.fs.cwd().realpathAlloc(self.gpa, filename);
+        const current_file_path = self.context.source_manager.get(self.lex.file_id) orelse ".";
+        const current_dir = std.fs.path.dirname(current_file_path) orelse ".";
+        const joined_path = try std.fs.path.join(self.gpa, &.{current_dir, filename});
+        defer self.gpa.free(joined_path);
+        const filepath = try std.fs.realpathAlloc(self.gpa, joined_path);
+
+        const path = self.intern(filepath);
+
         const file_id = try self.context.source_manager.add(filepath);
         const source = try self.context.source_manager.read(file_id);
         defer self.gpa.free(source);
@@ -1148,7 +1154,7 @@ pub const Parser = struct {
 
         const thread = try std.Thread.spawn(.{}, run, .{parser});
         try self.context.parse_worklist.append(self.gpa, .{
-            .path = filename,
+            .path = filepath,
             .file_id = file_id,
             .thread = thread,
             .diags = diags,

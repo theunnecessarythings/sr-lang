@@ -35,13 +35,14 @@ fn pipelineBindingsFor(self: *Checker, bindings: []const Binding) !PipelineBindi
 
 fn evalComptimeValueWithBindings(
     self: *Checker,
+    ast_unit: *ast.Ast,
     expr: ast.ExprId,
     expected_ty: types.TypeId,
     bindings: []const Binding,
 ) !comp.ComptimeValue {
     const pb = try pipelineBindingsFor(self, bindings);
     defer if (pb.owns) self.gpa.free(pb.items);
-    return self.pipeline.evalComptimeExpr(self, self.ast_unit, expr, expected_ty, pb.items);
+    return self.pipeline.evalComptimeExpr(self, ast_unit, expr, expected_ty, pb.items);
 }
 
 fn lookupTypeBinding(bindings: []const Binding, name: ast.StrId) ?types.TypeId {
@@ -124,17 +125,17 @@ pub fn isOptional(self: *Checker, id: types.TypeId) ?types.TypeId {
     return self.context.type_store.get(.Optional, id).elem;
 }
 
-pub fn checkTypeOf(self: *Checker, id: ast.ExprId) !?types.TypeId {
-    const tr = self.ast_unit.exprs.get(.TypeOf, id);
+pub fn checkTypeOf(self: *Checker, ast_unit: *ast.Ast, id: ast.ExprId) !?types.TypeId {
+    const tr = ast_unit.exprs.get(.TypeOf, id);
     // typeof should accept value expressions; get their type directly.
-    if (try self.checkExpr(tr.expr)) |et| {
+    if (try self.checkExpr(ast_unit, tr.expr)) |et| {
         return self.context.type_store.mkTypeType(et);
     }
     // As a fallback, allow typeof on a type expression (yielding that type).
-    if (try typeFromTypeExpr(self, tr.expr)) |tt| {
+    if (try typeFromTypeExpr(self, ast_unit, tr.expr)) |tt| {
         return self.context.type_store.mkTypeType(tt);
     }
-    try self.context.diags.addError(self.ast_unit.exprs.locs.get(tr.loc), .could_not_resolve_type, .{});
+    try self.context.diags.addError(ast_unit.exprs.locs.get(tr.loc), .could_not_resolve_type, .{});
     return null;
 }
 
@@ -152,9 +153,9 @@ fn variantPayloadType(self: *Checker, variant_ty: types.TypeId, tag: ast.StrId) 
     return null;
 }
 
-fn evalLiteralToComptime(self: *Checker, id: ast.ExprId) !?comp.ComptimeValue {
-    if (self.ast_unit.exprs.index.kinds.items[id.toRaw()] != .Literal) return null;
-    const lit = self.ast_unit.exprs.get(.Literal, id);
+fn evalLiteralToComptime(ast_unit: *ast.Ast, id: ast.ExprId) !?comp.ComptimeValue {
+    if (ast_unit.exprs.index.kinds.items[id.toRaw()] != .Literal) return null;
+    const lit = ast_unit.exprs.get(.Literal, id);
     return switch (lit.kind) {
         .int => blk: {
             const info = switch (lit.data) {
@@ -170,44 +171,45 @@ fn evalLiteralToComptime(self: *Checker, id: ast.ExprId) !?comp.ComptimeValue {
 
 fn typeFromTypeExprWithBindings(
     self: *Checker,
+    ast_unit: *ast.Ast,
     id: ast.ExprId,
     bindings: []const Binding,
 ) anyerror!?types.TypeId {
-    const kind = self.ast_unit.exprs.index.kinds.items[id.toRaw()];
+    const kind = ast_unit.exprs.index.kinds.items[id.toRaw()];
     return switch (kind) {
         .Ident => blk_ident: {
-            const name = self.ast_unit.exprs.get(.Ident, id).name;
+            const name = ast_unit.exprs.get(.Ident, id).name;
             if (lookupTypeBinding(bindings, name)) |ty|
                 break :blk_ident ty;
-            break :blk_ident try typeFromTypeExpr(self, id);
+            break :blk_ident try typeFromTypeExpr(self, ast_unit, id);
         },
         .StructType => blk_struct: {
-            const row = self.ast_unit.exprs.get(.StructType, id);
-            const sfs = self.ast_unit.exprs.sfield_pool.slice(row.fields);
+            const row = ast_unit.exprs.get(.StructType, id);
+            const sfs = ast_unit.exprs.sfield_pool.slice(row.fields);
             var buf = try self.context.type_store.gpa.alloc(types.TypeStore.StructFieldArg, sfs.len);
             defer self.context.type_store.gpa.free(buf);
             var seen = std.AutoArrayHashMapUnmanaged(u32, void){};
             defer seen.deinit(self.gpa);
             var i: usize = 0;
             while (i < sfs.len) : (i += 1) {
-                const f = self.ast_unit.exprs.StructField.get(sfs[i]);
+                const f = ast_unit.exprs.StructField.get(sfs[i]);
                 const gop = try seen.getOrPut(self.gpa, f.name.toRaw());
                 if (gop.found_existing) {
-                    try self.context.diags.addError(self.ast_unit.exprs.locs.get(f.loc), .duplicate_field, .{});
+                    try self.context.diags.addError(ast_unit.exprs.locs.get(f.loc), .duplicate_field, .{});
                     return null;
                 }
-                const ft = (try typeFromTypeExprWithBindings(self, f.ty, bindings)) orelse break :blk_struct null;
+                const ft = (try typeFromTypeExprWithBindings(self, ast_unit, f.ty, bindings)) orelse break :blk_struct null;
                 buf[i] = .{ .name = f.name, .ty = ft };
             }
             break :blk_struct self.context.type_store.mkStruct(buf);
         },
         .ArrayType => blk_at: {
-            const row = self.ast_unit.exprs.get(.ArrayType, id);
-            const elem = (try typeFromTypeExprWithBindings(self, row.elem, bindings)) orelse break :blk_at null;
-            const size_expr_kind = self.ast_unit.exprs.index.kinds.items[row.size.toRaw()];
+            const row = ast_unit.exprs.get(.ArrayType, id);
+            const elem = (try typeFromTypeExprWithBindings(self, ast_unit, row.elem, bindings)) orelse break :blk_at null;
+            const size_expr_kind = ast_unit.exprs.index.kinds.items[row.size.toRaw()];
             var size: types.ArraySize = .{ .Unresolved = row.size };
             if (size_expr_kind == .Literal) {
-                const lit = self.ast_unit.exprs.get(.Literal, row.size);
+                const lit = ast_unit.exprs.get(.Literal, row.size);
                 if (lit.kind == .int) {
                     const info = switch (lit.data) {
                         .int => |i| i,
@@ -215,7 +217,7 @@ fn typeFromTypeExprWithBindings(
                     };
                     if (info.valid) {
                         const len = std.math.cast(usize, info.value) orelse {
-                            try self.context.diags.addError(self.ast_unit.exprs.locs.get(lit.loc), .array_size_not_integer_literal, .{});
+                            try self.context.diags.addError(ast_unit.exprs.locs.get(lit.loc), .array_size_not_integer_literal, .{});
                             break :blk_at null;
                         };
                         size = .{ .Concrete = len };
@@ -225,21 +227,21 @@ fn typeFromTypeExprWithBindings(
             break :blk_at self.context.type_store.mkArray(elem, size);
         },
         .Call => blk_call: {
-            _ = try typeFromTypeExpr(self, self.ast_unit.exprs.get(.Call, id).callee);
-            if (try resolveTypeFunctionCall(self, id, bindings)) |ty| {
+            _ = try typeFromTypeExpr(self, ast_unit, ast_unit.exprs.get(.Call, id).callee);
+            if (try resolveTypeFunctionCall(self, ast_unit, id, bindings)) |ty| {
                 break :blk_call ty;
             }
-            const call_row = self.ast_unit.exprs.get(.Call, id);
-            const callee_kind = self.ast_unit.exprs.index.kinds.items[call_row.callee.toRaw()];
+            const call_row = ast_unit.exprs.get(.Call, id);
+            const callee_kind = ast_unit.exprs.index.kinds.items[call_row.callee.toRaw()];
             if (callee_kind == .FieldAccess or callee_kind == .Ident) {
                 const any_type_ty = self.context.type_store.mkTypeType(self.context.type_store.tAny());
-                var value = evalComptimeValueWithBindings(self, id, any_type_ty, bindings) catch break :blk_call null;
+                var value = evalComptimeValueWithBindings(self, ast_unit, id, any_type_ty, bindings) catch break :blk_call null;
                 defer value.destroy(self.gpa);
                 switch (value) {
                     .Type => |resolved| {
                         const wrapped = self.context.type_store.mkTypeType(resolved);
-                        try self.type_info.ensureExpr(self.gpa, id);
-                        self.type_info.expr_types.items[id.toRaw()] = wrapped;
+                        try ast_unit.type_info.ensureExpr(self.gpa, id);
+                        ast_unit.type_info.expr_types.items[id.toRaw()] = wrapped;
                         break :blk_call resolved;
                     },
                     else => {},
@@ -247,32 +249,33 @@ fn typeFromTypeExprWithBindings(
             }
             break :blk_call null;
         },
-        else => try typeFromTypeExpr(self, id),
+        else => try typeFromTypeExpr(self, ast_unit, id),
     };
 }
 
 fn resolveTypeFunctionCall(
     self: *Checker,
+    ast_unit: *ast.Ast,
     call_id: ast.ExprId,
     existing_bindings: []const Binding,
 ) anyerror!?types.TypeId {
-    const call = self.ast_unit.exprs.get(.Call, call_id);
-    const callee_kind = self.ast_unit.exprs.index.kinds.items[call.callee.toRaw()];
+    const call = ast_unit.exprs.get(.Call, call_id);
+    const callee_kind = ast_unit.exprs.index.kinds.items[call.callee.toRaw()];
     if (callee_kind != .Ident) return null;
 
-    const callee_ident = self.ast_unit.exprs.get(.Ident, call.callee);
-    const sym_id = self.lookup(callee_ident.name) orelse return null;
+    const callee_ident = ast_unit.exprs.get(.Ident, call.callee);
+    const sym_id = self.lookup(ast_unit, callee_ident.name) orelse return null;
     const sym = self.symtab.syms.get(sym_id);
     if (sym.origin_decl.isNone()) return null;
 
     const decl_id = sym.origin_decl.unwrap();
-    const decl = self.ast_unit.exprs.Decl.get(decl_id);
-    const value_kind = self.ast_unit.exprs.index.kinds.items[decl.value.toRaw()];
+    const decl = ast_unit.exprs.Decl.get(decl_id);
+    const value_kind = ast_unit.exprs.index.kinds.items[decl.value.toRaw()];
     if (value_kind != .FunctionLit) return null;
 
-    const fn_lit = self.ast_unit.exprs.get(.FunctionLit, decl.value);
-    const params = self.ast_unit.exprs.param_pool.slice(fn_lit.params);
-    const args = self.ast_unit.exprs.expr_pool.slice(call.args);
+    const fn_lit = ast_unit.exprs.get(.FunctionLit, decl.value);
+    const params = ast_unit.exprs.param_pool.slice(fn_lit.params);
+    const args = ast_unit.exprs.expr_pool.slice(call.args);
     if (params.len != args.len) return null;
 
     var bindings_builder: std.ArrayList(Binding) = .empty;
@@ -283,26 +286,26 @@ fn resolveTypeFunctionCall(
 
     var i: usize = 0;
     while (i < params.len) : (i += 1) {
-        const param = self.ast_unit.exprs.Param.get(params[i]);
+        const param = ast_unit.exprs.Param.get(params[i]);
         if (!param.is_comptime or param.pat.isNone() or param.ty.isNone()) return null;
 
         const pat_id = param.pat.unwrap();
-        if (self.ast_unit.pats.index.kinds.items[pat_id.toRaw()] != .Binding) return null;
-        const pname = self.ast_unit.pats.get(.Binding, pat_id).name;
+        if (ast_unit.pats.index.kinds.items[pat_id.toRaw()] != .Binding) return null;
+        const pname = ast_unit.pats.get(.Binding, pat_id).name;
 
-        const annotated = (try typeFromTypeExpr(self, param.ty.unwrap())) orelse return null;
+        const annotated = (try typeFromTypeExpr(self, ast_unit, param.ty.unwrap())) orelse return null;
         if (self.context.type_store.getKind(annotated) == .TypeType) {
-            const arg_ty = (try typeFromTypeExprWithBindings(self, args[i], bindings_builder.items)) orelse return null;
+            const arg_ty = (try typeFromTypeExprWithBindings(self, ast_unit, args[i], bindings_builder.items)) orelse return null;
             try bindings_builder.append(self.gpa, .{ .Type = .{ .name = pname, .ty = arg_ty } });
         } else {
             const arg_expr = args[i];
-            const arg_kind = self.ast_unit.exprs.index.kinds.items[arg_expr.toRaw()];
+            const arg_kind = ast_unit.exprs.index.kinds.items[arg_expr.toRaw()];
 
             var have_value = false;
             var value: comp.ComptimeValue = undefined;
 
             if (arg_kind == .Ident) {
-                const ident_name = self.ast_unit.exprs.get(.Ident, arg_expr).name;
+                const ident_name = ast_unit.exprs.get(.Ident, arg_expr).name;
                 if (lookupValueBinding(bindings_builder.items, ident_name)) |existing| {
                     value = existing;
                     have_value = true;
@@ -311,9 +314,9 @@ fn resolveTypeFunctionCall(
 
             if (!have_value) {
                 value = blk: {
-                    const computed = evalComptimeValueWithBindings(self, arg_expr, annotated, bindings_builder.items) catch {
+                    const computed = evalComptimeValueWithBindings(self, ast_unit, arg_expr, annotated, bindings_builder.items) catch {
                         if (arg_kind == .Literal) {
-                            const literal_val = (try evalLiteralToComptime(self, arg_expr)) orelse return null;
+                            const literal_val = (try evalLiteralToComptime(ast_unit, arg_expr)) orelse return null;
                             break :blk literal_val;
                         }
                         return null;
@@ -330,18 +333,18 @@ fn resolveTypeFunctionCall(
 
     if (fn_lit.body.isNone()) return null;
     const body_id = fn_lit.body.unwrap();
-    if (self.ast_unit.exprs.index.kinds.items[body_id.toRaw()] != .Block) return null;
-    const block = self.ast_unit.exprs.get(.Block, body_id);
-    const stmts = self.ast_unit.stmts.stmt_pool.slice(block.items);
+    if (ast_unit.exprs.index.kinds.items[body_id.toRaw()] != .Block) return null;
+    const block = ast_unit.exprs.get(.Block, body_id);
+    const stmts = ast_unit.stmts.stmt_pool.slice(block.items);
     for (stmts) |sid| {
-        if (self.ast_unit.stmts.index.kinds.items[sid.toRaw()] != .Return) continue;
-        const ret = self.ast_unit.stmts.get(.Return, sid);
+        if (ast_unit.stmts.index.kinds.items[sid.toRaw()] != .Return) continue;
+        const ret = ast_unit.stmts.get(.Return, sid);
         if (ret.value.isNone()) return null;
-        const resolved = try typeFromTypeExprWithBindings(self, ret.value.unwrap(), bindings_builder.items);
+        const resolved = try typeFromTypeExprWithBindings(self, ast_unit, ret.value.unwrap(), bindings_builder.items);
         if (resolved) |ty| {
-            try self.type_info.ensureExpr(self.gpa, call_id);
+            try ast_unit.type_info.ensureExpr(self.gpa, call_id);
             const type_ty = self.context.type_store.mkTypeType(ty);
-            self.type_info.expr_types.items[call_id.toRaw()] = type_ty;
+            ast_unit.type_info.expr_types.items[call_id.toRaw()] = type_ty;
             return ty;
         }
         return null;
@@ -349,12 +352,12 @@ fn resolveTypeFunctionCall(
     return null;
 }
 
-pub fn typeFromTypeExpr(self: *Checker, id: ast.ExprId) anyerror!?types.TypeId {
-    const k = self.ast_unit.exprs.index.kinds.items[id.toRaw()];
+pub fn typeFromTypeExpr(self: *Checker, ast_unit: *ast.Ast, id: ast.ExprId) anyerror!?types.TypeId {
+    const k = ast_unit.exprs.index.kinds.items[id.toRaw()];
     return switch (k) {
         .Ident => blk_ident: {
-            const name = self.ast_unit.exprs.get(.Ident, id).name;
-            const s = self.ast_unit.exprs.strs.get(name);
+            const name = ast_unit.exprs.get(.Ident, id).name;
+            const s = ast_unit.exprs.strs.get(name);
             if (std.mem.eql(u8, s, "bool")) break :blk_ident self.context.type_store.tBool();
             if (std.mem.eql(u8, s, "i8")) break :blk_ident self.context.type_store.tI8();
             if (std.mem.eql(u8, s, "i16")) break :blk_ident self.context.type_store.tI16();
@@ -374,11 +377,11 @@ pub fn typeFromTypeExpr(self: *Checker, id: ast.ExprId) anyerror!?types.TypeId {
             if (std.mem.eql(u8, s, "type"))
                 break :blk_ident self.context.type_store.mkTypeType(self.context.type_store.tAny());
 
-            if (self.lookup(name)) |sid| {
+            if (self.lookup(ast_unit, name)) |sid| {
                 const sym = self.symtab.syms.get(sid);
                 if (!sym.origin_decl.isNone()) {
                     const did = sym.origin_decl.unwrap();
-                    if (self.type_info.decl_types.items[did.toRaw()]) |ty| {
+                    if (ast_unit.type_info.decl_types.items[did.toRaw()]) |ty| {
                         const kind = self.context.type_store.index.kinds.items[ty.toRaw()];
                         if (kind == .TypeType) {
                             const tt = self.context.type_store.get(.TypeType, ty);
@@ -390,22 +393,22 @@ pub fn typeFromTypeExpr(self: *Checker, id: ast.ExprId) anyerror!?types.TypeId {
                         }
                     }
                     // Lazy resolve: if the declaration's RHS is a type expression, resolve it now.
-                    const drow = self.ast_unit.exprs.Decl.get(did);
-                    const rhs_ty = try typeFromTypeExpr(self, drow.value);
+                    const drow = ast_unit.exprs.Decl.get(did);
+                    const rhs_ty = try typeFromTypeExpr(self, ast_unit, drow.value);
                     if (rhs_ty) |rt| {
                         // Record as a type constant for future queries
                         const tt = self.context.type_store.mkTypeType(rt);
-                        self.type_info.decl_types.items[did.toRaw()] = tt;
-                        try self.type_info.ensureExpr(self.gpa, drow.value);
-                        self.type_info.expr_types.items[drow.value.toRaw()] = tt;
+                        ast_unit.type_info.decl_types.items[did.toRaw()] = tt;
+                        try ast_unit.type_info.ensureExpr(self.gpa, drow.value);
+                        ast_unit.type_info.expr_types.items[drow.value.toRaw()] = tt;
                         return rt;
                     }
                 }
                 if (!sym.origin_param.isNone()) {
                     const pid = sym.origin_param.unwrap();
-                    const param_row = self.ast_unit.exprs.Param.get(pid);
+                    const param_row = ast_unit.exprs.Param.get(pid);
                     if (!param_row.ty.isNone()) {
-                        const annotated = (try typeFromTypeExpr(self, param_row.ty.unwrap())) orelse return null;
+                        const annotated = (try typeFromTypeExpr(self, ast_unit, param_row.ty.unwrap())) orelse return null;
                         if (param_row.is_comptime) {
                             if (self.context.type_store.getKind(annotated) == .TypeType) {
                                 return self.context.type_store.get(.TypeType, annotated).of;
@@ -421,49 +424,49 @@ pub fn typeFromTypeExpr(self: *Checker, id: ast.ExprId) anyerror!?types.TypeId {
             break :blk_ident null;
         },
         .MlirBlock => blk: {
-            const row = self.ast_unit.exprs.get(.MlirBlock, id);
+            const row = ast_unit.exprs.get(.MlirBlock, id);
             const ts = self.context.type_store;
             break :blk switch (row.kind) {
                 .Type => ts.tMlirType(),
                 .Attribute => ts.tMlirAttribute(),
                 .Module => ts.tMlirModule(),
                 .Operation => blk_inner: {
-                    try self.context.diags.addError(self.ast_unit.exprs.locs.get(row.loc), .mlir_block_not_a_type, .{});
+                    try self.context.diags.addError(ast_unit.exprs.locs.get(row.loc), .mlir_block_not_a_type, .{});
                     break :blk_inner null;
                 },
             };
         },
         .TupleType => blk_tt: {
-            const row = self.ast_unit.exprs.get(.TupleType, id);
-            const ids = self.ast_unit.exprs.expr_pool.slice(row.elems);
+            const row = ast_unit.exprs.get(.TupleType, id);
+            const ids = ast_unit.exprs.expr_pool.slice(row.elems);
             var buf = try self.context.type_store.gpa.alloc(types.TypeId, ids.len);
             defer self.context.type_store.gpa.free(buf);
             var i: usize = 0;
-            while (i < ids.len) : (i += 1) buf[i] = (try typeFromTypeExpr(self, ids[i])) orelse break :blk_tt null;
+            while (i < ids.len) : (i += 1) buf[i] = (try typeFromTypeExpr(self, ast_unit, ids[i])) orelse break :blk_tt null;
             break :blk_tt self.context.type_store.mkTuple(buf);
         },
         .TupleLit => blk_ttl: {
-            const row = self.ast_unit.exprs.get(.TupleLit, id);
-            const ids = self.ast_unit.exprs.expr_pool.slice(row.elems);
+            const row = ast_unit.exprs.get(.TupleLit, id);
+            const ids = ast_unit.exprs.expr_pool.slice(row.elems);
             var buf = try self.context.type_store.gpa.alloc(types.TypeId, ids.len);
             defer self.context.type_store.gpa.free(buf);
             var i: usize = 0;
-            while (i < ids.len) : (i += 1) buf[i] = (try typeFromTypeExpr(self, ids[i])) orelse break :blk_ttl null;
+            while (i < ids.len) : (i += 1) buf[i] = (try typeFromTypeExpr(self, ast_unit, ids[i])) orelse break :blk_ttl null;
             break :blk_ttl self.context.type_store.mkTuple(buf);
         },
         .MapType => blk_mt: {
-            const row = self.ast_unit.exprs.get(.MapType, id);
-            const key = (try typeFromTypeExpr(self, row.key)) orelse break :blk_mt null;
-            const val = (try typeFromTypeExpr(self, row.value)) orelse break :blk_mt null;
+            const row = ast_unit.exprs.get(.MapType, id);
+            const key = (try typeFromTypeExpr(self, ast_unit, row.key)) orelse break :blk_mt null;
+            const val = (try typeFromTypeExpr(self, ast_unit, row.value)) orelse break :blk_mt null;
             break :blk_mt self.context.type_store.mkMap(key, val);
         },
         .ArrayType => blk_at: {
-            const row = self.ast_unit.exprs.get(.ArrayType, id);
-            const elem = (try typeFromTypeExpr(self, row.elem)) orelse break :blk_at null;
-            const size_expr_kind = self.ast_unit.exprs.index.kinds.items[row.size.toRaw()];
+            const row = ast_unit.exprs.get(.ArrayType, id);
+            const elem = (try typeFromTypeExpr(self, ast_unit, row.elem)) orelse break :blk_at null;
+            const size_expr_kind = ast_unit.exprs.index.kinds.items[row.size.toRaw()];
             var size: types.ArraySize = .{ .Unresolved = row.size };
             if (size_expr_kind == .Literal) {
-                const lit = self.ast_unit.exprs.get(.Literal, row.size);
+                const lit = ast_unit.exprs.get(.Literal, row.size);
                 if (lit.kind == .int) {
                     const info = switch (lit.data) {
                         .int => |i| i,
@@ -471,53 +474,53 @@ pub fn typeFromTypeExpr(self: *Checker, id: ast.ExprId) anyerror!?types.TypeId {
                     };
                     if (info.valid) {
                         const len = std.math.cast(usize, info.value) orelse {
-                            try self.context.diags.addError(self.ast_unit.exprs.locs.get(lit.loc), .array_size_not_integer_literal, .{});
+                            try self.context.diags.addError(ast_unit.exprs.locs.get(lit.loc), .array_size_not_integer_literal, .{});
                             break :blk_at null;
                         };
                         size = .{ .Concrete = len };
                     }
                 } else {
-                    try self.context.diags.addError(self.ast_unit.exprs.locs.get(row.loc), .array_size_not_integer_literal, .{});
+                    try self.context.diags.addError(ast_unit.exprs.locs.get(row.loc), .array_size_not_integer_literal, .{});
                 }
             }
             break :blk_at self.context.type_store.mkArray(elem, size);
         },
         .DynArrayType => blk_dt: {
-            const row = self.ast_unit.exprs.get(.DynArrayType, id);
-            const elem = (try typeFromTypeExpr(self, row.elem)) orelse break :blk_dt null;
+            const row = ast_unit.exprs.get(.DynArrayType, id);
+            const elem = (try typeFromTypeExpr(self, ast_unit, row.elem)) orelse break :blk_dt null;
             break :blk_dt self.context.type_store.mkDynArray(elem);
         },
         .SliceType => blk_st: {
-            const row = self.ast_unit.exprs.get(.SliceType, id);
-            const elem = (try typeFromTypeExpr(self, row.elem)) orelse break :blk_st null;
+            const row = ast_unit.exprs.get(.SliceType, id);
+            const elem = (try typeFromTypeExpr(self, ast_unit, row.elem)) orelse break :blk_st null;
             break :blk_st self.context.type_store.mkSlice(elem);
         },
         .OptionalType => blk_ot: {
-            const row = self.ast_unit.exprs.get(.OptionalType, id);
-            const elem = (try typeFromTypeExpr(self, row.elem)) orelse break :blk_ot null;
+            const row = ast_unit.exprs.get(.OptionalType, id);
+            const elem = (try typeFromTypeExpr(self, ast_unit, row.elem)) orelse break :blk_ot null;
             break :blk_ot self.context.type_store.mkOptional(elem);
         },
         .PointerType => blk_pt: {
-            const row = self.ast_unit.exprs.get(.PointerType, id);
-            const elem = (try typeFromTypeExpr(self, row.elem)) orelse break :blk_pt null;
+            const row = ast_unit.exprs.get(.PointerType, id);
+            const elem = (try typeFromTypeExpr(self, ast_unit, row.elem)) orelse break :blk_pt null;
             break :blk_pt self.context.type_store.mkPtr(elem, row.is_const);
         },
         .SimdType => blk_simd: {
-            const row = self.ast_unit.exprs.get(.SimdType, id);
-            const elem_ty = (try typeFromTypeExpr(self, row.elem)) orelse break :blk_simd null;
+            const row = ast_unit.exprs.get(.SimdType, id);
+            const elem_ty = (try typeFromTypeExpr(self, ast_unit, row.elem)) orelse break :blk_simd null;
             const ek = self.context.type_store.index.kinds.items[elem_ty.toRaw()];
             if (!isNumericKind(self, ek)) {
-                try self.context.diags.addError(self.ast_unit.exprs.locs.get(row.loc), .simd_invalid_element_type, .{});
+                try self.context.diags.addError(ast_unit.exprs.locs.get(row.loc), .simd_invalid_element_type, .{});
                 break :blk_simd null;
             }
-            const lk = self.ast_unit.exprs.index.kinds.items[row.lanes.toRaw()];
+            const lk = ast_unit.exprs.index.kinds.items[row.lanes.toRaw()];
             if (lk != .Literal) {
-                try self.context.diags.addError(self.ast_unit.exprs.locs.get(row.loc), .simd_lanes_not_integer_literal, .{});
+                try self.context.diags.addError(ast_unit.exprs.locs.get(row.loc), .simd_lanes_not_integer_literal, .{});
                 break :blk_simd null;
             }
-            const lit = self.ast_unit.exprs.get(.Literal, row.lanes);
+            const lit = ast_unit.exprs.get(.Literal, row.lanes);
             if (lit.kind != .int) {
-                try self.context.diags.addError(self.ast_unit.exprs.locs.get(row.loc), .simd_lanes_not_integer_literal, .{});
+                try self.context.diags.addError(ast_unit.exprs.locs.get(row.loc), .simd_lanes_not_integer_literal, .{});
                 break :blk_simd null;
             }
             const lanes_val = switch (lit.data) {
@@ -528,31 +531,31 @@ pub fn typeFromTypeExpr(self: *Checker, id: ast.ExprId) anyerror!?types.TypeId {
                 else => 0,
             };
             if (lanes_val == 0 or lanes_val > std.math.maxInt(u16)) {
-                try self.context.diags.addError(self.ast_unit.exprs.locs.get(row.loc), .simd_lanes_not_integer_literal, .{});
+                try self.context.diags.addError(ast_unit.exprs.locs.get(row.loc), .simd_lanes_not_integer_literal, .{});
                 break :blk_simd null;
             }
             const simd_ty = self.context.type_store.mkSimd(elem_ty, @intCast(lanes_val));
             break :blk_simd simd_ty;
         },
         .TensorType => blk_tensor: {
-            const row = self.ast_unit.exprs.get(.TensorType, id);
+            const row = ast_unit.exprs.get(.TensorType, id);
             // Validate shape dimensions are integer literals
-            const dims = self.ast_unit.exprs.expr_pool.slice(row.shape);
+            const dims = ast_unit.exprs.expr_pool.slice(row.shape);
             if (dims.len > types.max_tensor_rank) {
-                try self.context.diags.addError(self.ast_unit.exprs.locs.get(row.loc), .tensor_rank_exceeds_limit, .{});
+                try self.context.diags.addError(ast_unit.exprs.locs.get(row.loc), .tensor_rank_exceeds_limit, .{});
                 break :blk_tensor null;
             }
             var dim_values = [_]usize{0} ** types.max_tensor_rank;
             var i: usize = 0;
             while (i < dims.len) : (i += 1) {
-                const dk = self.ast_unit.exprs.index.kinds.items[dims[i].toRaw()];
+                const dk = ast_unit.exprs.index.kinds.items[dims[i].toRaw()];
                 if (dk != .Literal) {
-                    try self.context.diags.addError(self.ast_unit.exprs.locs.get(row.loc), .tensor_dimension_not_integer_literal, .{});
+                    try self.context.diags.addError(ast_unit.exprs.locs.get(row.loc), .tensor_dimension_not_integer_literal, .{});
                     break :blk_tensor null;
                 }
-                const dl = self.ast_unit.exprs.get(.Literal, dims[i]);
+                const dl = ast_unit.exprs.get(.Literal, dims[i]);
                 if (dl.kind != .int) {
-                    try self.context.diags.addError(self.ast_unit.exprs.locs.get(row.loc), .tensor_dimension_not_integer_literal, .{});
+                    try self.context.diags.addError(ast_unit.exprs.locs.get(row.loc), .tensor_dimension_not_integer_literal, .{});
                     break :blk_tensor null;
                 }
                 const info = switch (dl.data) {
@@ -560,19 +563,19 @@ pub fn typeFromTypeExpr(self: *Checker, id: ast.ExprId) anyerror!?types.TypeId {
                     else => return null,
                 };
                 if (!info.valid) {
-                    try self.context.diags.addError(self.ast_unit.exprs.locs.get(row.loc), .tensor_dimension_not_integer_literal, .{});
+                    try self.context.diags.addError(ast_unit.exprs.locs.get(row.loc), .tensor_dimension_not_integer_literal, .{});
                     break :blk_tensor null;
                 }
                 const dim_val = std.math.cast(usize, info.value) orelse {
-                    try self.context.diags.addError(self.ast_unit.exprs.locs.get(row.loc), .tensor_dimension_not_integer_literal, .{});
+                    try self.context.diags.addError(ast_unit.exprs.locs.get(row.loc), .tensor_dimension_not_integer_literal, .{});
                     break :blk_tensor null;
                 };
                 dim_values[i] = dim_val;
             }
             // Validate element type present and resolvable
-            const ety = try typeFromTypeExpr(self, row.elem);
+            const ety = try typeFromTypeExpr(self, ast_unit, row.elem);
             if (ety == null) {
-                try self.context.diags.addError(self.ast_unit.exprs.locs.get(row.loc), .tensor_missing_element_type, .{});
+                try self.context.diags.addError(ast_unit.exprs.locs.get(row.loc), .tensor_missing_element_type, .{});
                 break :blk_tensor null;
             }
             const rank = dims.len;
@@ -580,60 +583,60 @@ pub fn typeFromTypeExpr(self: *Checker, id: ast.ExprId) anyerror!?types.TypeId {
             break :blk_tensor tensor_ty;
         },
         .StructType => blk_sty: {
-            const row = self.ast_unit.exprs.get(.StructType, id);
-            const sfs = self.ast_unit.exprs.sfield_pool.slice(row.fields);
+            const row = ast_unit.exprs.get(.StructType, id);
+            const sfs = ast_unit.exprs.sfield_pool.slice(row.fields);
             var buf = try self.context.type_store.gpa.alloc(types.TypeStore.StructFieldArg, sfs.len);
             defer self.context.type_store.gpa.free(buf);
             var seen = std.AutoArrayHashMapUnmanaged(u32, void){};
             defer seen.deinit(self.gpa);
             var i: usize = 0;
             while (i < sfs.len) : (i += 1) {
-                const f = self.ast_unit.exprs.StructField.get(sfs[i]);
+                const f = ast_unit.exprs.StructField.get(sfs[i]);
                 const gop = try seen.getOrPut(self.gpa, f.name.toRaw());
                 if (gop.found_existing) {
-                    try self.context.diags.addError(self.ast_unit.exprs.locs.get(f.loc), .duplicate_field, .{});
+                    try self.context.diags.addError(ast_unit.exprs.locs.get(f.loc), .duplicate_field, .{});
                     return null;
                 }
-                const ft = (try typeFromTypeExpr(self, f.ty)) orelse break :blk_sty null;
+                const ft = (try typeFromTypeExpr(self, ast_unit, f.ty)) orelse break :blk_sty null;
                 buf[i] = .{ .name = f.name, .ty = ft };
             }
             break :blk_sty self.context.type_store.mkStruct(buf);
         },
         .UnionType => blk_un: {
-            const row = self.ast_unit.exprs.get(.UnionType, id);
-            const sfs = self.ast_unit.exprs.sfield_pool.slice(row.fields);
+            const row = ast_unit.exprs.get(.UnionType, id);
+            const sfs = ast_unit.exprs.sfield_pool.slice(row.fields);
             var buf = try self.context.type_store.gpa.alloc(types.TypeStore.StructFieldArg, sfs.len);
             defer self.context.type_store.gpa.free(buf);
             var seen = std.AutoArrayHashMapUnmanaged(u32, void){};
             defer seen.deinit(self.gpa);
             var i: usize = 0;
             while (i < sfs.len) : (i += 1) {
-                const sf = self.ast_unit.exprs.StructField.get(sfs[i]);
+                const sf = ast_unit.exprs.StructField.get(sfs[i]);
                 const gop = try seen.getOrPut(self.gpa, sf.name.toRaw());
                 if (gop.found_existing) {
-                    try self.context.diags.addError(self.ast_unit.exprs.locs.get(sf.loc), .duplicate_field, .{});
+                    try self.context.diags.addError(ast_unit.exprs.locs.get(sf.loc), .duplicate_field, .{});
                     return null;
                 }
                 // Validate field types resolve
-                const ft = (try typeFromTypeExpr(self, sf.ty)) orelse break :blk_un null;
+                const ft = (try typeFromTypeExpr(self, ast_unit, sf.ty)) orelse break :blk_un null;
                 buf[i] = .{ .name = sf.name, .ty = ft };
             }
             break :blk_un self.context.type_store.mkUnion(buf);
         },
 
         .EnumType => blk_en: {
-            const row = self.ast_unit.exprs.get(.EnumType, id);
-            const efs = self.ast_unit.exprs.efield_pool.slice(row.fields);
+            const row = ast_unit.exprs.get(.EnumType, id);
+            const efs = ast_unit.exprs.efield_pool.slice(row.fields);
 
             const tag_ty = if (row.discriminant.isNone())
                 self.context.type_store.tI32()
             else
-                (try typeFromTypeExpr(self, row.discriminant.unwrap())) orelse return null;
+                (try typeFromTypeExpr(self, ast_unit, row.discriminant.unwrap())) orelse return null;
 
             // Ensure the tag type is an integer.
             const tk = self.context.type_store.index.kinds.items[tag_ty.toRaw()];
             if (!isIntegerKind(self, tk)) {
-                try self.context.diags.addError(self.ast_unit.exprs.locs.get(row.loc), .enum_discriminant_not_integer, .{});
+                try self.context.diags.addError(ast_unit.exprs.locs.get(row.loc), .enum_discriminant_not_integer, .{});
                 break :blk_en null;
             }
 
@@ -646,41 +649,41 @@ pub fn typeFromTypeExpr(self: *Checker, id: ast.ExprId) anyerror!?types.TypeId {
             var next_value: u64 = 0;
             var i: usize = 0;
             while (i < efs.len) : (i += 1) {
-                const enum_field = self.ast_unit.exprs.EnumField.get(efs[i]);
+                const enum_field = ast_unit.exprs.EnumField.get(efs[i]);
 
                 const gop = try seen.getOrPut(self.gpa, enum_field.name.toRaw());
                 if (gop.found_existing) {
-                    try self.context.diags.addError(self.ast_unit.exprs.locs.get(enum_field.loc), .duplicate_enum_field, .{});
+                    try self.context.diags.addError(ast_unit.exprs.locs.get(enum_field.loc), .duplicate_enum_field, .{});
                     return null;
                 }
 
                 var current_value: u64 = next_value;
                 if (!enum_field.value.isNone()) {
                     const val_id = enum_field.value.unwrap();
-                    const val_kind = self.ast_unit.exprs.index.kinds.items[val_id.toRaw()];
+                    const val_kind = ast_unit.exprs.index.kinds.items[val_id.toRaw()];
                     if (val_kind != .Literal) {
-                        try self.context.diags.addError(self.ast_unit.exprs.locs.get(enum_field.loc), .enum_discriminant_not_integer, .{});
+                        try self.context.diags.addError(ast_unit.exprs.locs.get(enum_field.loc), .enum_discriminant_not_integer, .{});
                         return null;
                     }
-                    const lit = self.ast_unit.exprs.get(.Literal, val_id);
+                    const lit = ast_unit.exprs.get(.Literal, val_id);
                     if (lit.kind != .int) {
-                        try self.context.diags.addError(self.ast_unit.exprs.locs.get(enum_field.loc), .enum_discriminant_not_integer, .{});
+                        try self.context.diags.addError(ast_unit.exprs.locs.get(enum_field.loc), .enum_discriminant_not_integer, .{});
                         return null;
                     }
                     const parsed = switch (lit.data) {
                         .int => |int_info| blk: {
                             if (!int_info.valid) {
-                                try self.context.diags.addError(self.ast_unit.exprs.locs.get(enum_field.loc), .invalid_integer_literal, .{});
+                                try self.context.diags.addError(ast_unit.exprs.locs.get(enum_field.loc), .invalid_integer_literal, .{});
                                 break :blk null;
                             }
                             const casted = std.math.cast(u64, int_info.value) orelse {
-                                try self.context.diags.addError(self.ast_unit.exprs.locs.get(enum_field.loc), .invalid_integer_literal, .{});
+                                try self.context.diags.addError(ast_unit.exprs.locs.get(enum_field.loc), .invalid_integer_literal, .{});
                                 break :blk null;
                             };
                             break :blk casted;
                         },
                         else => blk: {
-                            try self.context.diags.addError(self.ast_unit.exprs.locs.get(enum_field.loc), .enum_discriminant_not_integer, .{});
+                            try self.context.diags.addError(ast_unit.exprs.locs.get(enum_field.loc), .enum_discriminant_not_integer, .{});
                             break :blk null;
                         },
                     };
@@ -694,8 +697,8 @@ pub fn typeFromTypeExpr(self: *Checker, id: ast.ExprId) anyerror!?types.TypeId {
             break :blk_en self.context.type_store.mkEnum(member_buf, tag_ty);
         },
         .ErrorType => blk_err: {
-            const row = self.ast_unit.exprs.get(.ErrorType, id);
-            const vfs = self.ast_unit.exprs.vfield_pool.slice(row.fields);
+            const row = ast_unit.exprs.get(.ErrorType, id);
+            const vfs = ast_unit.exprs.vfield_pool.slice(row.fields);
             var case_buf = try self.gpa.alloc(types.TypeStore.StructFieldArg, vfs.len);
             defer self.gpa.free(case_buf);
 
@@ -704,10 +707,10 @@ pub fn typeFromTypeExpr(self: *Checker, id: ast.ExprId) anyerror!?types.TypeId {
 
             var i: usize = 0;
             while (i < vfs.len) : (i += 1) {
-                const vf = self.ast_unit.exprs.VariantField.get(vfs[i]);
+                const vf = ast_unit.exprs.VariantField.get(vfs[i]);
                 const gop = try seen.getOrPut(self.gpa, vf.name.toRaw());
                 if (gop.found_existing) {
-                    try self.context.diags.addError(self.ast_unit.exprs.locs.get(vf.loc), .duplicate_error_variant, .{});
+                    try self.context.diags.addError(ast_unit.exprs.locs.get(vf.loc), .duplicate_error_variant, .{});
                     return null;
                 }
 
@@ -717,12 +720,12 @@ pub fn typeFromTypeExpr(self: *Checker, id: ast.ExprId) anyerror!?types.TypeId {
                         if (vf.payload_elems.isNone()) {
                             break :blk_tuple self.context.type_store.tVoid();
                         }
-                        const elems = self.ast_unit.exprs.expr_pool.slice(vf.payload_elems.asRange());
+                        const elems = ast_unit.exprs.expr_pool.slice(vf.payload_elems.asRange());
                         var elem_buf = try self.gpa.alloc(types.TypeId, elems.len);
                         defer self.gpa.free(elem_buf);
                         var j: usize = 0;
                         while (j < elems.len) : (j += 1) {
-                            elem_buf[j] = (try typeFromTypeExpr(self, elems[j])) orelse return null;
+                            elem_buf[j] = (try typeFromTypeExpr(self, ast_unit, elems[j])) orelse return null;
                         }
                         break :blk_tuple self.context.type_store.mkTuple(elem_buf);
                     },
@@ -730,15 +733,15 @@ pub fn typeFromTypeExpr(self: *Checker, id: ast.ExprId) anyerror!?types.TypeId {
                         if (vf.payload_fields.isNone()) {
                             break :blk_struct self.context.type_store.tVoid();
                         }
-                        const fields = self.ast_unit.exprs.sfield_pool.slice(vf.payload_fields.asRange());
+                        const fields = ast_unit.exprs.sfield_pool.slice(vf.payload_fields.asRange());
                         var field_buf = try self.gpa.alloc(types.TypeStore.StructFieldArg, fields.len);
                         defer self.gpa.free(field_buf);
                         var j: usize = 0;
                         while (j < fields.len) : (j += 1) {
-                            const sf = self.ast_unit.exprs.StructField.get(fields[j]);
+                            const sf = ast_unit.exprs.StructField.get(fields[j]);
                             field_buf[j] = .{
                                 .name = sf.name,
-                                .ty = (try typeFromTypeExpr(self, sf.ty)) orelse return null,
+                                .ty = (try typeFromTypeExpr(self, ast_unit, sf.ty)) orelse return null,
                             };
                         }
                         break :blk_struct self.context.type_store.mkStruct(field_buf);
@@ -749,15 +752,15 @@ pub fn typeFromTypeExpr(self: *Checker, id: ast.ExprId) anyerror!?types.TypeId {
             break :blk_err self.context.type_store.mkError(case_buf);
         },
         .ErrorSetType => blk_est: {
-            const row = self.ast_unit.exprs.get(.ErrorSetType, id);
-            const val_ty = try typeFromTypeExpr(self, row.value);
-            const err_ty = try typeFromTypeExpr(self, row.err);
+            const row = ast_unit.exprs.get(.ErrorSetType, id);
+            const val_ty = try typeFromTypeExpr(self, ast_unit, row.value);
+            const err_ty = try typeFromTypeExpr(self, ast_unit, row.err);
             if (val_ty == null or err_ty == null) break :blk_est null;
             break :blk_est self.context.type_store.mkErrorSet(val_ty.?, err_ty.?);
         },
         .VariantType => blk_var: {
-            const row = self.ast_unit.exprs.get(.VariantType, id);
-            const vfs = self.ast_unit.exprs.vfield_pool.slice(row.fields);
+            const row = ast_unit.exprs.get(.VariantType, id);
+            const vfs = ast_unit.exprs.vfield_pool.slice(row.fields);
             var case_buf = try self.gpa.alloc(types.TypeStore.StructFieldArg, vfs.len);
             defer self.gpa.free(case_buf);
 
@@ -766,10 +769,10 @@ pub fn typeFromTypeExpr(self: *Checker, id: ast.ExprId) anyerror!?types.TypeId {
 
             var i: usize = 0;
             while (i < vfs.len) : (i += 1) {
-                const vf = self.ast_unit.exprs.VariantField.get(vfs[i]);
+                const vf = ast_unit.exprs.VariantField.get(vfs[i]);
                 const gop = try seen.getOrPut(self.gpa, vf.name.toRaw());
                 if (gop.found_existing) {
-                    try self.context.diags.addError(self.ast_unit.exprs.locs.get(vf.loc), .duplicate_variant, .{});
+                    try self.context.diags.addError(ast_unit.exprs.locs.get(vf.loc), .duplicate_variant, .{});
                     return null;
                 }
 
@@ -779,12 +782,12 @@ pub fn typeFromTypeExpr(self: *Checker, id: ast.ExprId) anyerror!?types.TypeId {
                         if (vf.payload_elems.isNone()) {
                             break :blk_tuple self.context.type_store.tVoid();
                         }
-                        const elems = self.ast_unit.exprs.expr_pool.slice(vf.payload_elems.asRange());
+                        const elems = ast_unit.exprs.expr_pool.slice(vf.payload_elems.asRange());
                         var elem_buf = try self.gpa.alloc(types.TypeId, elems.len);
                         defer self.gpa.free(elem_buf);
                         var j: usize = 0;
                         while (j < elems.len) : (j += 1) {
-                            elem_buf[j] = (try typeFromTypeExpr(self, elems[j])) orelse return null;
+                            elem_buf[j] = (try typeFromTypeExpr(self, ast_unit, elems[j])) orelse return null;
                         }
                         break :blk_tuple self.context.type_store.mkTuple(elem_buf);
                     },
@@ -792,15 +795,15 @@ pub fn typeFromTypeExpr(self: *Checker, id: ast.ExprId) anyerror!?types.TypeId {
                         if (vf.payload_fields.isNone()) {
                             break :blk_struct self.context.type_store.tVoid();
                         }
-                        const fields = self.ast_unit.exprs.sfield_pool.slice(vf.payload_fields.asRange());
+                        const fields = ast_unit.exprs.sfield_pool.slice(vf.payload_fields.asRange());
                         var field_buf = try self.gpa.alloc(types.TypeStore.StructFieldArg, fields.len);
                         defer self.gpa.free(field_buf);
                         var j: usize = 0;
                         while (j < fields.len) : (j += 1) {
-                            const sf = self.ast_unit.exprs.StructField.get(fields[j]);
+                            const sf = ast_unit.exprs.StructField.get(fields[j]);
                             field_buf[j] = .{
                                 .name = sf.name,
-                                .ty = (try typeFromTypeExpr(self, sf.ty)) orelse return null,
+                                .ty = (try typeFromTypeExpr(self, ast_unit, sf.ty)) orelse return null,
                             };
                         }
                         break :blk_struct self.context.type_store.mkStruct(field_buf);
@@ -813,65 +816,65 @@ pub fn typeFromTypeExpr(self: *Checker, id: ast.ExprId) anyerror!?types.TypeId {
 
         .FunctionLit => blk_fn: {
             // function type in type position
-            const fnr = self.ast_unit.exprs.get(.FunctionLit, id);
-            const params = self.ast_unit.exprs.param_pool.slice(fnr.params);
+            const fnr = ast_unit.exprs.get(.FunctionLit, id);
+            const params = ast_unit.exprs.param_pool.slice(fnr.params);
             var pbuf = try self.gpa.alloc(types.TypeId, params.len);
             defer self.gpa.free(pbuf);
             var i: usize = 0;
             while (i < params.len) : (i += 1) {
-                const p = self.ast_unit.exprs.Param.get(params[i]);
+                const p = ast_unit.exprs.Param.get(params[i]);
                 if (p.ty.isNone()) break :blk_fn null;
-                const pt = (try typeFromTypeExpr(self, p.ty.unwrap())) orelse break :blk_fn null;
+                const pt = (try typeFromTypeExpr(self, ast_unit, p.ty.unwrap())) orelse break :blk_fn null;
                 pbuf[i] = pt;
             }
-            const res = if (!fnr.result_ty.isNone()) (try typeFromTypeExpr(self, fnr.result_ty.unwrap())) else self.context.type_store.tVoid();
+            const res = if (!fnr.result_ty.isNone()) (try typeFromTypeExpr(self, ast_unit, fnr.result_ty.unwrap())) else self.context.type_store.tVoid();
             if (res == null) break :blk_fn null;
             const is_pure = !fnr.flags.is_proc;
             break :blk_fn self.context.type_store.mkFunction(pbuf, res.?, fnr.flags.is_variadic, is_pure);
         },
         .FieldAccess => blk_fa: {
-            const fr = self.ast_unit.exprs.get(.FieldAccess, id);
-            const parent_expr_kind = self.ast_unit.exprs.index.kinds.items[fr.parent.toRaw()];
+            const fr = ast_unit.exprs.get(.FieldAccess, id);
+            const parent_expr_kind = ast_unit.exprs.index.kinds.items[fr.parent.toRaw()];
 
             if (parent_expr_kind == .Import) {
                 // if (self.importMemberType(fr.parent, fr.field)) |mt| {
-                //     try self.type_info.ensureExpr(self.gpa, id);
-                //     self.type_info.expr_types.items[id.toRaw()] = mt;
+                //     try ast_unit.type_info.ensureExpr(self.gpa, id);
+                //     ast_unit.type_info.expr_types.items[id.toRaw()] = mt;
                 //     const mt_kind = self.context.type_store.index.kinds.items[mt.toRaw()];
                 //     break :blk_fa if (mt_kind == .TypeType)
                 //         self.context.type_store.get(.TypeType, mt).of
                 //     else
                 //         mt;
                 // }
-                try self.context.diags.addError(self.ast_unit.exprs.locs.get(fr.loc), .unknown_module_field, .{});
+                try self.context.diags.addError(ast_unit.exprs.locs.get(fr.loc), .unknown_module_field, .{});
                 break :blk_fa null;
             }
 
             if (parent_expr_kind == .Ident) {
-                const idr = self.ast_unit.exprs.get(.Ident, fr.parent);
-                if (self.lookup(idr.name)) |sid_sym| {
+                const idr = ast_unit.exprs.get(.Ident, fr.parent);
+                if (self.lookup(ast_unit, idr.name)) |sid_sym| {
                     const sym = self.symtab.syms.get(sid_sym);
                     if (!sym.origin_decl.isNone()) {
                         const did = sym.origin_decl.unwrap();
-                        const drow = self.ast_unit.exprs.Decl.get(did);
-                        if (self.ast_unit.exprs.index.kinds.items[drow.value.toRaw()] == .Import) {
+                        const drow = ast_unit.exprs.Decl.get(did);
+                        if (ast_unit.exprs.index.kinds.items[drow.value.toRaw()] == .Import) {
                             // if (self.importMemberType(drow.value, fr.field)) |mt| {
-                            //     try self.type_info.ensureExpr(self.gpa, id);
-                            //     self.type_info.expr_types.items[id.toRaw()] = mt;
+                            //     try ast_unit.type_info.ensureExpr(self.gpa, id);
+                            //     ast_unit.type_info.expr_types.items[id.toRaw()] = mt;
                             //     const mt_kind = self.context.type_store.index.kinds.items[mt.toRaw()];
                             //     break :blk_fa if (mt_kind == .TypeType)
                             //         self.context.type_store.get(.TypeType, mt).of
                             //     else
                             //         mt;
                             // }
-                            try self.context.diags.addError(self.ast_unit.exprs.locs.get(fr.loc), .unknown_module_field, .{});
+                            try self.context.diags.addError(ast_unit.exprs.locs.get(fr.loc), .unknown_module_field, .{});
                             break :blk_fa null;
                         }
                     }
                 }
             }
 
-            const parent_ty = (try typeFromTypeExpr(self, fr.parent)) orelse break :blk_fa null;
+            const parent_ty = (try typeFromTypeExpr(self, ast_unit, fr.parent)) orelse break :blk_fa null;
             const parent_kind = self.context.type_store.index.kinds.items[parent_ty.toRaw()];
             switch (parent_kind) {
                 .Struct => {
@@ -883,12 +886,12 @@ pub fn typeFromTypeExpr(self: *Checker, id: ast.ExprId) anyerror!?types.TypeId {
                         const field = self.context.type_store.Field.get(f);
                         if (field.name.toRaw() == fr.field.toRaw()) return field.ty;
                     }
-                    try self.context.diags.addError(self.ast_unit.exprs.locs.get(fr.loc), .unknown_struct_field, .{});
+                    try self.context.diags.addError(ast_unit.exprs.locs.get(fr.loc), .unknown_struct_field, .{});
                     break :blk_fa null;
                 },
                 .Variant => {
                     if (variantPayloadType(self, parent_ty, fr.field)) |pt| return pt;
-                    try self.context.diags.addError(self.ast_unit.exprs.locs.get(fr.loc), .unknown_variant_tag, .{});
+                    try self.context.diags.addError(ast_unit.exprs.locs.get(fr.loc), .unknown_variant_tag, .{});
                     break :blk_fa null;
                 },
                 .Enum => {
@@ -901,31 +904,31 @@ pub fn typeFromTypeExpr(self: *Checker, id: ast.ExprId) anyerror!?types.TypeId {
                             return parent_ty;
                         }
                     }
-                    try self.context.diags.addError(self.ast_unit.exprs.locs.get(fr.loc), .unknown_struct_field, .{});
+                    try self.context.diags.addError(ast_unit.exprs.locs.get(fr.loc), .unknown_struct_field, .{});
                     break :blk_fa null;
                 },
                 else => {
-                    try self.context.diags.addError(self.ast_unit.exprs.locs.get(fr.loc), .field_access_on_non_aggregate, .{});
+                    try self.context.diags.addError(ast_unit.exprs.locs.get(fr.loc), .field_access_on_non_aggregate, .{});
                     break :blk_fa null;
                 },
             }
         },
         .Call => blk_call: {
-            _ = try typeFromTypeExpr(self, self.ast_unit.exprs.get(.Call, id).callee);
-            if (try resolveTypeFunctionCall(self, id, &[_]Binding{})) |ty| {
+            _ = try typeFromTypeExpr(self, ast_unit, ast_unit.exprs.get(.Call, id).callee);
+            if (try resolveTypeFunctionCall(self, ast_unit, id, &[_]Binding{})) |ty| {
                 break :blk_call ty;
             }
-            const call_row = self.ast_unit.exprs.get(.Call, id);
-            const callee_kind = self.ast_unit.exprs.index.kinds.items[call_row.callee.toRaw()];
+            const call_row = ast_unit.exprs.get(.Call, id);
+            const callee_kind = ast_unit.exprs.index.kinds.items[call_row.callee.toRaw()];
             if (callee_kind == .FieldAccess or callee_kind == .Ident) {
                 const any_type_ty = self.context.type_store.mkTypeType(self.context.type_store.tAny());
-                var value = evalComptimeValueWithBindings(self, id, any_type_ty, &[_]Binding{}) catch break :blk_call null;
+                var value = evalComptimeValueWithBindings(self, ast_unit, id, any_type_ty, &[_]Binding{}) catch break :blk_call null;
                 defer value.destroy(self.gpa);
                 switch (value) {
                     .Type => |resolved| {
                         const wrapped = self.context.type_store.mkTypeType(resolved);
-                        try self.type_info.ensureExpr(self.gpa, id);
-                        self.type_info.expr_types.items[id.toRaw()] = wrapped;
+                        try ast_unit.type_info.ensureExpr(self.gpa, id);
+                        ast_unit.type_info.expr_types.items[id.toRaw()] = wrapped;
                         break :blk_call resolved;
                     },
                     else => {},

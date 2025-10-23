@@ -1,5 +1,7 @@
 const std = @import("std");
 const dod = @import("cst.zig");
+const TypeInfo = @import("types.zig").TypeInfo;
+const TypeStore = @import("types.zig").TypeStore;
 const ArrayList = std.array_list.Managed;
 
 pub const Index = dod.Index;
@@ -742,8 +744,14 @@ pub const Ast = struct {
     exprs: ExprStore,
     stmts: StmtStore,
     pats: PatternStore,
+    type_info: TypeInfo,
 
-    pub fn init(gpa: std.mem.Allocator, interner: *StringInterner, locs: *const LocStore) Ast {
+    pub fn init(
+        gpa: std.mem.Allocator,
+        interner: *StringInterner,
+        locs: *const LocStore,
+        type_store: *TypeStore,
+    ) Ast {
         return .{
             .gpa = gpa,
             .module_id = 0,
@@ -751,10 +759,12 @@ pub const Ast = struct {
             .exprs = ExprStore.init(gpa, interner, locs),
             .stmts = StmtStore.init(gpa),
             .pats = PatternStore.init(gpa, interner),
+            .type_info = TypeInfo.init(gpa, type_store),
         };
     }
 
     pub fn deinit(self: *@This()) void {
+        self.type_info.deinit();
         self.exprs.deinit();
         self.stmts.deinit();
         self.pats.deinit();
