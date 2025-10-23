@@ -3786,14 +3786,6 @@ pub const Checker = struct {
     fn checkImport(self: *Checker, ast_unit: *ast.Ast, id: ast.ExprId) !?types.TypeId {
         const ir = getExpr(ast_unit, .Import, id);
         const filepath = getStr(ast_unit, ir.path);
-        if (threads.getPtr(filepath)) |item| {
-            const thread, const joined = item.*;
-            if (!joined) thread.join();
-            item.@"1" = true;
-        } else {
-            try self.context.diags.addError(ast_unit.exprs.locs.get(ir.loc), .import_not_found, .{});
-            return null;
-        }
         for (self.context.compilation_unit.packages.values()) |pkg| {
             if (pkg.sources.get(filepath) == null) continue;
             const pkg_name = self.context.interner.intern(pkg.name);
