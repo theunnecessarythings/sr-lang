@@ -203,6 +203,12 @@ pub const Pipeline = struct {
             self.context.compilation_unit.mutex.unlock();
             self.allocator.destroy(thread.@"1");
         }
+        var dep_levels = try compile.computeDependencyLevels(
+            self.allocator,
+            &self.context.compilation_unit,
+            self.context.interner,
+        );
+        defer dep_levels.deinit();
         if (self.context.diags.anyErrors()) {
             return error.LoweringFailed;
         }
@@ -217,7 +223,7 @@ pub const Pipeline = struct {
 
         var chk = checker.Checker.init(self.allocator, self.context, self);
         defer chk.deinit();
-        try chk.run();
+        try chk.run(&dep_levels);
         if (self.context.diags.anyErrors()) {
             return error.TypeCheckFailed;
         }
