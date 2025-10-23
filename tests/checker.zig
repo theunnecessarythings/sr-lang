@@ -33,7 +33,7 @@ fn checkProgram(src: [:0]const u8, expected: []const diag.DiagnosticCode) !void 
     try testing.expectEqual(0, context.diags.count());
 
     // Step 2: Lower to AST
-    var lower = try Lower.init(gpa, &cst, &context);
+    var lower = try Lower.init(gpa, &cst, &context, 0);
     defer lower.deinit();
     const ast = try (&lower).run();
 

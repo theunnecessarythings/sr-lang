@@ -145,6 +145,7 @@ pub const Context = struct {
     }
 
     pub fn deinit(self: *Context) void {
+        self.compilation_unit.deinit();
         self.source_manager.deinit();
         self.diags.deinit();
         self.interner.deinit();
@@ -157,6 +158,169 @@ pub const Context = struct {
         self.gpa.destroy(self.type_store);
     }
 };
+
+pub const DependencyLevels = struct {
+    allocator: std.mem.Allocator,
+    levels: std.ArrayList(std.ArrayList(u32)),
+
+    pub fn init(allocator: std.mem.Allocator) DependencyLevels {
+        return .{ .allocator = allocator, .levels = std.ArrayList(std.ArrayList(u32)).init(allocator) };
+    }
+
+    pub fn deinit(self: *DependencyLevels) void {
+        for (self.levels.items) |*level| {
+            level.deinit();
+        }
+        self.levels.deinit();
+    }
+};
+
+pub fn computeDependencyLevels(
+    allocator: std.mem.Allocator,
+    unit: *CompilationUnit,
+    interner: *cst.StringInterner,
+) !DependencyLevels {
+    var result = DependencyLevels.init(allocator);
+    errdefer result.deinit();
+
+    var indegree = std.AutoHashMap(u32, usize).init(allocator);
+    defer indegree.deinit();
+
+    var adjacency = std.AutoHashMap(u32, std.ArrayList(u32)).init(allocator);
+    defer {
+        var adj_iter = adjacency.iterator();
+        while (adj_iter.next()) |entry| {
+            entry.value_ptr.deinit();
+        }
+        adjacency.deinit();
+    }
+
+    var ordered_nodes = std.ArrayList(u32).init(allocator);
+    defer ordered_nodes.deinit();
+
+    var remaining = std.AutoHashMap(u32, void).init(allocator);
+    defer remaining.deinit();
+
+    var pkg_iter = unit.packages.iterator();
+    while (pkg_iter.next()) |pkg| {
+        var source_iter = pkg.value_ptr.sources.iterator();
+        while (source_iter.next()) |entry| {
+            const file_id = entry.value_ptr.file_id;
+            if (indegree.getPtr(file_id) == null) {
+                try indegree.put(file_id, 0);
+            }
+            if (!remaining.contains(file_id)) {
+                try remaining.put(file_id, {});
+                try ordered_nodes.append(file_id);
+            }
+        }
+    }
+
+    var dep_iter = unit.dependencies.iterator();
+    while (dep_iter.next()) |entry| {
+        const file_id = entry.key_ptr.*;
+        if (indegree.getPtr(file_id) == null) {
+            try indegree.put(file_id, 0);
+        }
+        if (!remaining.contains(file_id)) {
+            try remaining.put(file_id, {});
+            try ordered_nodes.append(file_id);
+        }
+
+        var set_iter = entry.value_ptr.iterator();
+        while (set_iter.next()) |dep_entry| {
+            const dep_str = interner.get(dep_entry.key_ptr.*);
+            const dep_file_id = findFileId(unit, dep_str) orelse continue;
+            if (dep_file_id == file_id) continue;
+
+            const indegree_ptr = indegree.getPtr(file_id) orelse blk: {
+                try indegree.put(file_id, 0);
+                break :blk indegree.getPtr(file_id).?;
+            };
+            indegree_ptr.* += 1;
+
+            var adj_ptr = adjacency.getPtr(dep_file_id) orelse blk: {
+                var list = std.ArrayList(u32).init(allocator);
+                try adjacency.put(dep_file_id, list);
+                break :blk adjacency.getPtr(dep_file_id).?;
+            };
+            try adj_ptr.append(file_id);
+
+            if (indegree.getPtr(dep_file_id) == null) {
+                try indegree.put(dep_file_id, 0);
+            }
+            if (!remaining.contains(dep_file_id)) {
+                try remaining.put(dep_file_id, {});
+                try ordered_nodes.append(dep_file_id);
+            }
+        }
+    }
+
+    var queue = std.ArrayList(u32).init(allocator);
+    defer queue.deinit();
+    var next_queue = std.ArrayList(u32).init(allocator);
+    defer next_queue.deinit();
+
+    var indegree_iter = indegree.iterator();
+    while (indegree_iter.next()) |entry| {
+        if (entry.value_ptr.* == 0) {
+            try queue.append(entry.key_ptr.*);
+        }
+    }
+
+    while (queue.items.len > 0) {
+        var level = std.ArrayList(u32).init(allocator);
+        try level.appendSlice(queue.items);
+        for (queue.items) |node| {
+            _ = remaining.remove(node);
+        }
+        try result.levels.append(level);
+
+        next_queue.clearRetainingCapacity();
+        for (queue.items) |node| {
+            if (adjacency.getPtr(node)) |neighbors| {
+                for (neighbors.items) |neighbor| {
+                    const indegree_ptr = indegree.getPtr(neighbor) orelse continue;
+                    if (indegree_ptr.* == 0) continue;
+                    indegree_ptr.* -= 1;
+                    if (indegree_ptr.* == 0) {
+                        try next_queue.append(neighbor);
+                    }
+                }
+            }
+        }
+
+        queue.clearRetainingCapacity();
+        std.mem.swap(std.ArrayList(u32), &queue, &next_queue);
+    }
+
+    if (remaining.count() > 0) {
+        var cycle_level = std.ArrayList(u32).init(allocator);
+        for (ordered_nodes.items) |node| {
+            if (remaining.contains(node)) {
+                _ = remaining.remove(node);
+                try cycle_level.append(node);
+            }
+        }
+        if (cycle_level.items.len > 0) {
+            try result.levels.append(cycle_level);
+        } else {
+            cycle_level.deinit();
+        }
+    }
+
+    return result;
+}
+
+fn findFileId(unit: *CompilationUnit, path: []const u8) ?u32 {
+    var pkg_iter = unit.packages.iterator();
+    while (pkg_iter.next()) |pkg| {
+        if (pkg.value_ptr.sources.get(path)) |entry| {
+            return entry.file_id;
+        }
+    }
+    return null;
+}
 
 pub fn initMLIR(alloc: std.mem.Allocator) mlir.Context {
     mlir.setGlobalAlloc(alloc);

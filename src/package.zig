@@ -6,20 +6,45 @@ const tir = @import("tir.zig");
 const types = @import("types.zig");
 const compile = @import("compile.zig");
 
+const DependencySet = std.AutoHashMapUnmanaged(ast.StrId, void);
+const DependencyGraph = std.AutoHashMapUnmanaged(u32, DependencySet);
+
 pub const CompilationUnit = struct {
     gpa: std.mem.Allocator,
     packages: std.StringArrayHashMapUnmanaged(Package) = .{},
     mutex: std.Thread.Mutex = .{},
+    dependencies: DependencyGraph = .{},
 
     pub fn init(gpa: std.mem.Allocator) CompilationUnit {
         return .{
             .gpa = gpa,
             .packages = .{},
+            .dependencies = .{},
         };
     }
 
     pub fn deinit(self: *CompilationUnit) void {
+        var dep_iter = self.dependencies.iterator();
+        while (dep_iter.next()) |entry| {
+            entry.value_ptr.deinit(self.gpa);
+        }
+        self.dependencies.deinit(self.gpa);
         self.packages.deinit(self.gpa);
+    }
+
+    pub fn addDependency(self: *CompilationUnit, file_id: u32, dependency: ast.StrId) !void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        if (self.dependencies.getPtr(file_id)) |deps| {
+            try deps.put(self.gpa, dependency, {});
+            return;
+        }
+
+        var deps: DependencySet = .{};
+        errdefer deps.deinit(self.gpa);
+        try deps.put(self.gpa, dependency, {});
+        try self.dependencies.put(self.gpa, file_id, deps);
     }
 
     pub fn createMain(self: *CompilationUnit) !void {

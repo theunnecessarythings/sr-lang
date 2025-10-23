@@ -34,7 +34,7 @@ fn lowerToTir(gpa: std.mem.Allocator, src: []const u8) !Lowered {
     var cst = try parser.parse();
     defer cst.deinit();
 
-    var lower1 = compiler.lower_to_ast.Lower.init(gpa, &cst, context); // Pass context
+    var lower1 = compiler.lower_to_ast.Lower.init(gpa, &cst, context, 0); // Pass context
     var hir = try lower1.run();
     defer hir.deinit();
 
