@@ -35,6 +35,23 @@ pub const ComptimeValue = union(enum) {
     }
 };
 
+pub fn cloneValue(gpa: std.mem.Allocator, value: ComptimeValue) !ComptimeValue {
+    return switch (value) {
+        .Void => .Void,
+        .Int => |v| .{ .Int = v },
+        .Float => |v| .{ .Float = v },
+        .Bool => |v| .{ .Bool = v },
+        .String => |s| .{ .String = try gpa.dupe(u8, s) },
+        .Type => |ty| .{ .Type = ty },
+        .MlirType => |ty| .{ .MlirType = ty },
+        .MlirAttribute => |attr| .{ .MlirAttribute = attr },
+        .MlirModule => |mod| blk: {
+            const cloned_op = mlir.Operation.clone(mod.getOperation());
+            break :blk .{ .MlirModule = mlir.Module.fromOperation(cloned_op) };
+        },
+    };
+}
+
 pub fn type_of_impl(context: ?*anyopaque, type_id_raw: u32) callconv(.c) u32 {
     const ctx: *Context = @ptrCast(@alignCast(context.?));
     const type_id = types.TypeId.fromRaw(type_id_raw);
