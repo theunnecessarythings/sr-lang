@@ -13,6 +13,8 @@ const comp = @import("comptime.zig");
 const symbols = @import("symbols.zig");
 const types = @import("types.zig");
 const TypeInfo = types.TypeInfo;
+const MethodBinding = types.MethodBinding;
+const MethodEntry = types.MethodEntry;
 const mlir = @import("mlir_bindings.zig");
 
 const List = std.ArrayList;
@@ -518,7 +520,7 @@ fn registerMethodDecl(
     const fn_row = self.context.type_store.get(.Function, fn_ty);
     const fn_params = self.context.type_store.type_pool.slice(fn_row.params);
 
-    var receiver_kind: types.TypeInfo.MethodReceiverKind = .none;
+    var receiver_kind: types.MethodReceiverKind = .none;
     var self_param_type_opt: ?types.TypeId = null;
 
     if (params.len > 0 and fn_params.len > 0) {
@@ -569,17 +571,18 @@ fn registerMethodDecl(
         }
     }
 
-    const entry: types.TypeInfo.MethodEntry = .{
+    const entry: types.MethodEntry = .{
         .owner_type = owner_ty,
         .method_name = method_seg.name,
         .decl_id = decl_id,
+        .decl_ast = ast_unit,
         .func_expr = decl.value,
         .func_type = fn_ty,
         .self_param_type = self_param_type_opt,
         .receiver_kind = receiver_kind,
         .builtin = null,
     };
-    if (!try ast_unit.type_info.addMethod(entry)) {
+    if (!try self.context.type_store.addMethod(entry)) {
         try self.context.diags.addError(
             ast_unit.exprs.locs.get(method_seg.loc),
             .duplicate_method_on_type,
@@ -2322,10 +2325,11 @@ fn tryRegisterDynArrayBuiltin(
             }
         }
 
-        const binding = types.TypeInfo.MethodBinding{
+        const binding = types.MethodBinding{
             .owner_type = owner_ty,
             .method_name = field_name,
             .decl_id = ast.DeclId.fromRaw(0),
+            .decl_ast = ast_unit,
             .func_type = fn_ty,
             .self_param_type = ptr_owner_ty,
             .receiver_kind = .pointer,
@@ -2349,15 +2353,8 @@ fn resolveMethodFieldAccess(
     field_name: ast.StrId,
     loc: Loc,
 ) !?types.TypeId {
-    const entry_opt = ast_unit.type_info.getMethod(owner_ty, field_name);
-    if (entry_opt == null) {
-        // if (ast_unit.type_info.getTypeOwnerModule(owner_ty)) |_| {
-        // if (self.context.module_graph.findModuleById(origin_module)) |mod_entry| {
-        //     try self.copyModuleMethods(mod_entry, owner_ty);
-        //     entry_opt = ast_unit.type_info.getMethod(owner_ty, field_name);
-        // }
-        // }
-    }
+    const entry_opt = self.context.type_store.getMethod(owner_ty, field_name);
+
     const parent_kind = self.typeKind(receiver_ty);
     if (entry_opt == null) {
         if (try self.tryRegisterDynArrayBuiltin(ast_unit, expr_id, owner_ty, receiver_ty, field_name, parent_kind, loc)) |mt| {
@@ -2367,6 +2364,7 @@ fn resolveMethodFieldAccess(
     }
 
     const entry = entry_opt.?;
+    const decl_ast = entry.decl_ast;
     const wants_receiver = entry.receiver_kind != .none;
     const implicit_receiver = wants_receiver and parent_kind != .TypeType;
 
@@ -2389,11 +2387,6 @@ fn resolveMethodFieldAccess(
                         return error.MethodResolutionFailed;
                     }
                 } else if (receiver_ty.eq(owner_ty)) {
-                    // const field_expr = getExpr(ast_unit, .FieldAccess, expr_id);
-                    // if (self.lvalueRootKind(field_expr.parent) == .Unknown) {
-                    //     try self.context.diags.addError(loc, .method_receiver_not_addressable, .{getStr(ast_unit, field_name)});
-                    //     return error.MethodResolutionFailed;
-                    // }
                     needs_addr_of = true;
                 } else {
                     try self.context.diags.addError(loc, .method_receiver_requires_pointer, .{getStr(ast_unit, field_name)});
@@ -2417,6 +2410,7 @@ fn resolveMethodFieldAccess(
         .owner_type = entry.owner_type,
         .method_name = entry.method_name,
         .decl_id = entry.decl_id,
+        .decl_ast = decl_ast,
         .func_type = entry.func_type,
         .self_param_type = entry.self_param_type,
         .receiver_kind = entry.receiver_kind,
@@ -2436,7 +2430,8 @@ fn checkFieldAccess(self: *Checker, ast_unit: *ast.Ast, id: ast.ExprId) !?types.
     const parent_kind = exprKind(ast_unit, field_expr.parent);
     if (parent_kind == .Import) {
         const member_ty = self.getMemberFromImport(ast_unit, field_expr.parent, field_expr.field) orelse {
-            try self.context.diags.addError(exprLoc(ast_unit, field_expr), .unknown_module_field, .{});
+            const name = ast_unit.exprs.strs.get(field_expr.field);
+            try self.context.diags.addError(exprLoc(ast_unit, field_expr), .unknown_module_field, .{name});
             return null;
         };
         return member_ty;
@@ -2451,7 +2446,8 @@ fn checkFieldAccess(self: *Checker, ast_unit: *ast.Ast, id: ast.ExprId) !?types.
                 const drow = ast_unit.exprs.Decl.get(did);
                 if (exprKind(ast_unit, drow.value) == .Import) {
                     const member_ty = self.getMemberFromImport(ast_unit, drow.value, field_expr.field) orelse {
-                        try self.context.diags.addError(exprLoc(ast_unit, field_expr), .unknown_module_field, .{});
+                        const name = ast_unit.exprs.strs.get(field_expr.field);
+                        try self.context.diags.addError(exprLoc(ast_unit, field_expr), .unknown_module_field, .{name});
                         return null;
                     };
                     return member_ty;
@@ -2795,7 +2791,7 @@ fn checkDeref(self: *Checker, ast_unit: *ast.Ast, id: ast.ExprId) !?types.TypeId
 // Calls & related helpers
 // =========================
 
-fn getMemberFromImport(self: *Checker, ast_unit: *const ast.Ast, parent: ast.ExprId, field: ast.StrId) ?types.TypeId {
+pub fn getMemberFromImport(self: *Checker, ast_unit: *const ast.Ast, parent: ast.ExprId, field: ast.StrId) ?types.TypeId {
     const parent_ty = ast_unit.type_info.expr_types.items[parent.toRaw()];
     if (parent_ty) |pty| {
         const ast_ty = self.context.type_store.get(.Ast, pty);
@@ -3161,7 +3157,7 @@ fn checkMethodCall(
     self: *Checker,
     ast_unit: *ast.Ast,
     call_expr: *const ast.Rows.Call,
-    binding: types.TypeInfo.MethodBinding,
+    binding: types.MethodBinding,
     args: []const ast.ExprId,
 ) !?types.TypeId {
     const field_expr = getExpr(ast_unit, .FieldAccess, call_expr.callee);

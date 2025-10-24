@@ -837,16 +837,17 @@ pub fn typeFromTypeExpr(self: *Checker, ast_unit: *ast.Ast, id: ast.ExprId) anye
             const parent_expr_kind = ast_unit.exprs.index.kinds.items[fr.parent.toRaw()];
 
             if (parent_expr_kind == .Import) {
-                // if (self.importMemberType(fr.parent, fr.field)) |mt| {
-                //     try ast_unit.type_info.ensureExpr(self.gpa, id);
-                //     ast_unit.type_info.expr_types.items[id.toRaw()] = mt;
-                //     const mt_kind = self.context.type_store.index.kinds.items[mt.toRaw()];
-                //     break :blk_fa if (mt_kind == .TypeType)
-                //         self.context.type_store.get(.TypeType, mt).of
-                //     else
-                //         mt;
-                // }
-                try self.context.diags.addError(ast_unit.exprs.locs.get(fr.loc), .unknown_module_field, .{});
+                if (self.getMemberFromImport(ast_unit, fr.parent, fr.field)) |mt| {
+                    try ast_unit.type_info.ensureExpr(self.gpa, id);
+                    ast_unit.type_info.expr_types.items[id.toRaw()] = mt;
+                    const mt_kind = self.context.type_store.index.kinds.items[mt.toRaw()];
+                    break :blk_fa if (mt_kind == .TypeType)
+                        self.context.type_store.get(.TypeType, mt).of
+                    else
+                        mt;
+                }
+                const name = ast_unit.exprs.strs.get(fr.field);
+                try self.context.diags.addError(ast_unit.exprs.locs.get(fr.loc), .unknown_module_field, .{name});
                 break :blk_fa null;
             }
 
@@ -858,16 +859,17 @@ pub fn typeFromTypeExpr(self: *Checker, ast_unit: *ast.Ast, id: ast.ExprId) anye
                         const did = sym.origin_decl.unwrap();
                         const drow = ast_unit.exprs.Decl.get(did);
                         if (ast_unit.exprs.index.kinds.items[drow.value.toRaw()] == .Import) {
-                            // if (self.importMemberType(drow.value, fr.field)) |mt| {
-                            //     try ast_unit.type_info.ensureExpr(self.gpa, id);
-                            //     ast_unit.type_info.expr_types.items[id.toRaw()] = mt;
-                            //     const mt_kind = self.context.type_store.index.kinds.items[mt.toRaw()];
-                            //     break :blk_fa if (mt_kind == .TypeType)
-                            //         self.context.type_store.get(.TypeType, mt).of
-                            //     else
-                            //         mt;
-                            // }
-                            try self.context.diags.addError(ast_unit.exprs.locs.get(fr.loc), .unknown_module_field, .{});
+                            if (self.getMemberFromImport(ast_unit, drow.value, fr.field)) |mt| {
+                                try ast_unit.type_info.ensureExpr(self.gpa, id);
+                                ast_unit.type_info.expr_types.items[id.toRaw()] = mt;
+                                const mt_kind = self.context.type_store.index.kinds.items[mt.toRaw()];
+                                break :blk_fa if (mt_kind == .TypeType)
+                                    self.context.type_store.get(.TypeType, mt).of
+                                else
+                                    mt;
+                            }
+                            const name = ast_unit.exprs.strs.get(fr.field);
+                            try self.context.diags.addError(ast_unit.exprs.locs.get(fr.loc), .unknown_module_field, .{name});
                             break :blk_fa null;
                         }
                     }

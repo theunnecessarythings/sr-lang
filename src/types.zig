@@ -43,6 +43,51 @@ pub const MlirSpliceInfo = union(enum) {
     },
 };
 
+pub const MethodReceiverKind = enum {
+    none,
+    value,
+    pointer,
+    pointer_const,
+};
+
+pub const BuiltinMethod = enum {
+    dynarray_append,
+};
+
+pub const MethodEntry = struct {
+    owner_type: TypeId,
+    method_name: ast.StrId,
+    decl_id: ast.DeclId,
+    decl_ast: *ast.Ast,
+    func_expr: ast.ExprId,
+    func_type: TypeId,
+    self_param_type: ?TypeId,
+    receiver_kind: MethodReceiverKind,
+    builtin: ?BuiltinMethod = null,
+};
+
+pub const MethodBinding = struct {
+    owner_type: TypeId,
+    method_name: ast.StrId,
+    decl_id: ast.DeclId,
+    decl_ast: *ast.Ast,
+    func_type: TypeId,
+    self_param_type: ?TypeId,
+    receiver_kind: MethodReceiverKind,
+    requires_implicit_receiver: bool,
+    needs_addr_of: bool,
+    builtin: ?BuiltinMethod = null,
+};
+
+const MethodKey = struct {
+    owner: usize,
+    name: usize,
+};
+
+fn makeMethodKey(owner: TypeId, name: ast.StrId) MethodKey {
+    return .{ .owner = owner.toRaw(), .name = name.toRaw() };
+}
+
 pub const TypeInfo = struct {
     gpa: std.mem.Allocator,
     store: *TypeStore,
@@ -50,7 +95,6 @@ pub const TypeInfo = struct {
     decl_types: std.ArrayListUnmanaged(?TypeId) = .{},
     field_index_for_expr: std.AutoArrayHashMapUnmanaged(u32, u32) = .{},
     comptime_values: std.AutoArrayHashMapUnmanaged(ast.ExprId, comp.ComptimeValue) = .{},
-    method_table: std.AutoArrayHashMapUnmanaged(MethodKey, MethodEntry) = .{},
     method_bindings: std.AutoArrayHashMapUnmanaged(u32, MethodBinding) = .{},
     mlir_splice_info: std.AutoArrayHashMapUnmanaged(u32, MlirSpliceInfo) = .{},
     exports: std.AutoArrayHashMapUnmanaged(ast.StrId, ExportEntry) = .{},
@@ -76,7 +120,6 @@ pub const TypeInfo = struct {
             self.destroyComptimeValue(value_ptr.value_ptr);
         }
         self.comptime_values.deinit(self.gpa);
-        self.method_table.deinit(self.gpa);
         self.method_bindings.deinit(self.gpa);
         self.mlir_splice_info.deinit(self.gpa);
         self.exports.deinit(self.gpa);
@@ -145,69 +188,13 @@ pub const TypeInfo = struct {
         try self.field_index_for_expr.put(self.gpa, expr_id.toRaw(), 0xFFFF_FFFF);
     }
 
-    const MethodKey = struct {
-        owner: usize,
-        name: usize,
-    };
-
-    fn makeMethodKey(owner: TypeId, name: ast.StrId) MethodKey {
-        return .{ .owner = owner.toRaw(), .name = name.toRaw() };
-    }
-
-    pub const MethodReceiverKind = enum {
-        none,
-        value,
-        pointer,
-        pointer_const,
-    };
-
-    pub const BuiltinMethod = enum {
-        dynarray_append,
-    };
-
-    pub const MethodEntry = struct {
-        owner_type: TypeId,
-        method_name: ast.StrId,
-        decl_id: ast.DeclId,
-        func_expr: ast.ExprId,
-        func_type: TypeId,
-        self_param_type: ?TypeId,
-        receiver_kind: MethodReceiverKind,
-        builtin: ?BuiltinMethod = null,
-    };
-
-    pub const MethodBinding = struct {
-        owner_type: TypeId,
-        method_name: ast.StrId,
-        decl_id: ast.DeclId,
-        func_type: TypeId,
-        self_param_type: ?TypeId,
-        receiver_kind: MethodReceiverKind,
-        requires_implicit_receiver: bool,
-        needs_addr_of: bool,
-        builtin: ?BuiltinMethod = null,
-    };
-
-    pub fn addMethod(self: *TypeInfo, entry: MethodEntry) !bool {
-        const key = makeMethodKey(entry.owner_type, entry.method_name);
-        const gop = try self.method_table.getOrPut(self.gpa, key);
-        if (gop.found_existing) return false;
-        gop.value_ptr.* = entry;
-        return true;
-    }
-
-    pub fn getMethod(self: *const TypeInfo, owner: TypeId, name: ast.StrId) ?MethodEntry {
-        const key = makeMethodKey(owner, name);
-        return self.method_table.get(key);
+    pub fn getMethodBinding(self: *const TypeInfo, expr_id: ast.ExprId) ?MethodBinding {
+        return self.method_bindings.get(expr_id.toRaw());
     }
 
     pub fn setMethodBinding(self: *TypeInfo, expr_id: ast.ExprId, binding: MethodBinding) !void {
         const gop = try self.method_bindings.getOrPut(self.gpa, expr_id.toRaw());
         gop.value_ptr.* = binding;
-    }
-
-    pub fn getMethodBinding(self: *const TypeInfo, expr_id: ast.ExprId) ?MethodBinding {
-        return self.method_bindings.get(expr_id.toRaw());
     }
 
     pub fn addExport(self: *TypeInfo, name: ast.StrId, ty: TypeId, decl_id: ast.DeclId) !void {
@@ -358,6 +345,8 @@ pub const TypeStore = struct {
     index: StoreIndex(TypeKind) = .{},
     mutex: std.Thread.Mutex = .{},
 
+    method_table: std.AutoArrayHashMapUnmanaged(MethodKey, MethodEntry) = .{},
+
     // basic kinds
     Void: Table(Rows.Void) = .{},
     Bool: Table(Rows.Bool) = .{},
@@ -438,6 +427,7 @@ pub const TypeStore = struct {
     pub fn deinit(self: *TypeStore) void {
         const gpa = self.gpa;
         self.index.deinit(gpa);
+        self.method_table.deinit(gpa);
         inline for (@typeInfo(TypeKind).@"enum".fields) |f| @field(self, f.name).deinit(gpa);
         self.Field.deinit(gpa);
         self.EnumMember.deinit(gpa);
@@ -453,6 +443,23 @@ pub const TypeStore = struct {
     pub fn get(self: *const TypeStore, comptime K: TypeKind, id: TypeId) RowT(K) {
         const tbl: *const Table(RowT(K)) = &@field(self, @tagName(K));
         return tbl.get(.{ .index = self.index.rows.items[id.toRaw()] });
+    }
+
+    pub fn addMethod(self: *TypeStore, entry: MethodEntry) !bool {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        const key = makeMethodKey(entry.owner_type, entry.method_name);
+        const gop = try self.method_table.getOrPut(self.gpa, key);
+        if (gop.found_existing) return false;
+        gop.value_ptr.* = entry;
+        return true;
+    }
+
+    pub fn getMethod(self: *TypeStore, owner: TypeId, name: ast.StrId) ?MethodEntry {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        const key = makeMethodKey(owner, name);
+        return self.method_table.get(key);
     }
 
     fn addLocked(self: *TypeStore, comptime K: TypeKind, row: RowT(K)) TypeId {

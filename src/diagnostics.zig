@@ -440,7 +440,7 @@ pub fn diagnosticMessageFmt(code: DiagnosticCode) []const u8 {
         .struct_missing_field => "struct literal missing required field",
         .unknown_struct_field => "unknown struct field",
         .unknown_tuple_field => "unknown tuple field",
-        .unknown_module_field => "member not found in module/file",
+        .unknown_module_field => "member `{s}` not found in module/file",
         .expected_pattern_on_decl_lhs => "lhs of decl should be a pattern",
         .missing_field_name_in_struct_literal => "missing field name in struct literal",
 

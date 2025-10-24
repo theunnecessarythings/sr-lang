@@ -148,9 +148,11 @@ pub fn runAst(self: *LowerTir, ast_unit: *ast.Ast, t: *tir.TIR) !void {
     const decls = ast_unit.exprs.decl_pool.slice(ast_unit.unit.decls);
     for (decls) |did| try self.lowerTopDecl(ast_unit, &b, did);
 
-    var method_it = ast_unit.type_info.method_table.iterator();
+    var method_it = self.context.type_store.method_table.iterator();
     while (method_it.next()) |entry| {
         const method = entry.value_ptr.*;
+        if (method.decl_ast != ast_unit) continue;
+
         const decl_id = method.decl_id;
         if (self.method_lowered.contains(decl_id.toRaw())) continue;
         const name = try self.methodSymbolName(ast_unit, decl_id);
@@ -223,7 +225,7 @@ fn lowerDynArrayAppend(
     f: *Builder.FunctionFrame,
     blk: *Builder.BlockFrame,
     loc: tir.OptLocId,
-    binding: types.TypeInfo.MethodBinding,
+    binding: types.MethodBinding,
     args: []const tir.ValueId,
 ) !tir.ValueId {
     std.debug.assert(binding.builtin != null and binding.builtin.? == .dynarray_append);
@@ -1008,11 +1010,11 @@ fn prepareMethodCall(
     self: *LowerTir,
     a: *ast.Ast,
     row: ast.Rows.Call,
-    binding: types.TypeInfo.MethodBinding,
+    binding: types.MethodBinding,
     callee: *CalleeInfo,
     callee_name: *[]const u8,
     method_decl_id: *?ast.DeclId,
-    method_binding_out: *?types.TypeInfo.MethodBinding,
+    method_binding_out: *?types.MethodBinding,
     arg_ids: *[]const ast.ExprId,
     method_arg_buf: *[]ast.ExprId,
 ) !void {
@@ -1035,7 +1037,7 @@ fn prepareMethodCall(
         return;
     }
 
-    const symbol_ast = a;
+    const symbol_ast = binding.decl_ast;
 
     const symbol = try self.methodSymbolName(symbol_ast, binding.decl_id);
     callee.name = symbol;
@@ -1062,7 +1064,7 @@ fn synthesizeMethodBinding(
     a: *ast.Ast,
     env: *cf.Env,
     field_expr_id: ast.ExprId,
-) !?types.TypeInfo.MethodBinding {
+) !?types.MethodBinding {
     if (a.exprs.index.kinds.items[field_expr_id.toRaw()] != .FieldAccess) return null;
 
     const field_expr = a.exprs.get(.FieldAccess, field_expr_id);
@@ -1084,7 +1086,7 @@ fn synthesizeMethodBinding(
         else => {},
     }
 
-    const entry_opt = a.type_info.getMethod(owner_ty, field_expr.field);
+    const entry_opt = self.context.type_store.getMethod(owner_ty, field_expr.field);
     if (entry_opt == null) return null;
 
     const entry = entry_opt.?;
@@ -1111,10 +1113,11 @@ fn synthesizeMethodBinding(
         }
     }
 
-    return types.TypeInfo.MethodBinding{
+    return types.MethodBinding{
         .owner_type = entry.owner_type,
         .method_name = entry.method_name,
         .decl_id = entry.decl_id,
+        .decl_ast = entry.decl_ast,
         .func_type = entry.func_type,
         .self_param_type = entry.self_param_type,
         .receiver_kind = entry.receiver_kind,
@@ -1351,7 +1354,7 @@ fn lowerCall(
     var arg_ids = a.exprs.expr_pool.slice(row.args);
     var method_arg_buf: []ast.ExprId = &.{};
     var method_decl_id: ?ast.DeclId = null;
-    var method_binding: ?types.TypeInfo.MethodBinding = null;
+    var method_binding: ?types.MethodBinding = null;
     defer {
         if (method_arg_buf.len != 0) self.gpa.free(method_arg_buf);
     }
