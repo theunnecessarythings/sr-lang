@@ -52,15 +52,15 @@ pub const LowerMlir = struct {
     }
 
     pub fn emitGlobalInit(self: *LowerMlir, hooks: Hooks, a: *ast.Ast, b: *Builder) !void {
-        var global_mlir_decls = std.ArrayList(ast.DeclId).init(self.gpa);
-        defer global_mlir_decls.deinit();
+        var global_mlir_decls = std.ArrayList(ast.DeclId){};
+        defer global_mlir_decls.deinit(self.gpa);
 
         const decls = a.exprs.decl_pool.slice(a.unit.decls);
         for (decls) |did| {
             const d = a.exprs.Decl.get(did);
             const kind = a.exprs.index.kinds.items[d.value.toRaw()];
             if (kind == .MlirBlock and d.pattern.isNone()) {
-                try global_mlir_decls.append(did);
+                try global_mlir_decls.append(self.gpa, did);
             }
         }
 
