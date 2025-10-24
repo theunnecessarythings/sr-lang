@@ -20,7 +20,7 @@ const Package = @import("package.zig").Package;
 pub const Result = struct {
     cst: ?cst_mod.CST = null,
     ast: ?*ast_mod.Ast = null,
-    tir: ?tir_mod.TIR = null,
+    tir: ?*tir_mod.TIR = null,
     mlir_module: ?mlir.Module = null,
     gen: ?codegen.Codegen = null,
 };
@@ -235,7 +235,7 @@ pub const Pipeline = struct {
         var tir_lowerer = lower_tir.LowerTir.init(self.allocator, self.context, self, &chk);
         defer tir_lowerer.deinit();
 
-        const root_mod = try tir_lowerer.run();
+        const root_mod = try tir_lowerer.run(&dep_levels);
 
         if (self.context.diags.anyErrors()) {
             return error.TirLoweringFailed;
@@ -251,7 +251,7 @@ pub const Pipeline = struct {
         var gen = codegen.Codegen.init(self.allocator, self.context, mlir_ctx_ptr.*);
         gen.resetDebugCaches();
 
-        var mlir_module = gen.emitModule(&root_mod) catch |err| {
+        var mlir_module = gen.emitModule(root_mod) catch |err| {
             switch (err) {
                 error.CompilationFailed => {
                     return error.MlirCodegenFailed;

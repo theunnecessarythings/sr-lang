@@ -120,7 +120,7 @@ fn repl(
         try ast_printer.printUnit(&hir.unit);
     }
     if (result.tir) |tir_mod| {
-        var tir_printer = lib.tir.TirPrinter.init(out_writer, &tir_mod);
+        var tir_printer = lib.tir.TirPrinter.init(out_writer, tir_mod);
         std.debug.print("{s}Typed Intermediate Representation (TIR){s}\n", .{ Colors.bold, Colors.yellow });
         try tir_printer.print();
     }
@@ -361,7 +361,7 @@ fn process_file(
     // For 'tir' command, print TIR and exit
     if (cli_args.subcommand == .tir) {
         const tir = result.tir.?;
-        var tir_printer = lib.tir.TirPrinter.init(out_writer, &tir);
+        var tir_printer = lib.tir.TirPrinter.init(out_writer, tir);
         try tir_printer.print();
         try out_writer.flush();
 

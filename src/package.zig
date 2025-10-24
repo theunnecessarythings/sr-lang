@@ -59,7 +59,7 @@ pub const FileUnit = struct {
     file_id: u32, // index into SourceManager
     cst: ?cst.CST,
     ast: ?*ast.Ast,
-    tir: ?tir.TIR,
+    tir: ?*tir.TIR,
     type_info: ?types.TypeInfo,
 };
 

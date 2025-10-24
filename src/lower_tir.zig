@@ -13,6 +13,7 @@ const monomorphize = @import("monomorphize.zig");
 const check_types = @import("check_types.zig");
 const pipeline_mod = @import("pipeline.zig");
 const cf = @import("lower_cf_tir.zig");
+const package = @import("package.zig");
 
 const StrId = @import("cst.zig").StrId;
 const OptStrId = @import("cst.zig").OptStrId;
@@ -95,15 +96,48 @@ pub fn deinit(self: *LowerTir) void {
     self.monomorphizer.deinit();
 }
 
-pub fn run(self: *LowerTir) !tir.TIR {
+pub fn run(self: *LowerTir, levels: *const compile.DependencyLevels) !*tir.TIR {
+    var unit_by_file = std.AutoHashMap(u32, *package.FileUnit).init(self.gpa);
+    defer unit_by_file.deinit();
+
+    var pkg_iter = self.context.compilation_unit.packages.iterator();
+    while (pkg_iter.next()) |pkg| {
+        var source_iter = pkg.value_ptr.sources.iterator();
+        while (source_iter.next()) |unit| {
+            try unit_by_file.put(unit.value_ptr.file_id, unit.value_ptr);
+        }
+    }
+
+    var threads = std.ArrayList(struct { std.Thread, *tir.TIR }){};
+    defer threads.deinit(self.gpa);
+
+    for (levels.levels.items) |level| {
+        threads.clearRetainingCapacity();
+        if (level.items.len == 0) continue;
+
+        for (level.items) |file_id| {
+            const unit = unit_by_file.get(file_id) orelse continue;
+            if (unit.ast == null) continue;
+            const t = try self.gpa.create(tir.TIR);
+            t.* = tir.TIR.init(self.gpa, self.context.type_store);
+            const thread = try std.Thread.spawn(.{}, runAst, .{ self, unit.ast.?, t });
+            try threads.append(self.gpa, .{ thread, t });
+        }
+
+        for (threads.items, 0..) |item, i| {
+            const thread, const t = item;
+            thread.join();
+            const unit = unit_by_file.get(level.items[i]) orelse continue;
+            unit.tir = t;
+        }
+    }
+
     const main_pkg = self.context.compilation_unit.packages.getPtr("main") orelse return error.PackageNotFound;
-    const main_ast = main_pkg.sources.entries.get(0).value.ast.?;
-    return self.runAst(main_ast);
+    return main_pkg.sources.entries.get(0).value.tir.?;
 }
 
-pub fn runAst(self: *LowerTir, ast_unit: *ast.Ast) !tir.TIR {
-    var t = tir.TIR.init(self.gpa, self.context.type_store);
-    var b = Builder.init(self.gpa, &t);
+pub fn runAst(self: *LowerTir, ast_unit: *ast.Ast, t: *tir.TIR) !void {
+    var b = Builder.init(self.gpa, t);
 
     self.module_call_cache.clearRetainingCapacity();
     self.method_lowered.clearRetainingCapacity();
@@ -124,8 +158,6 @@ pub fn runAst(self: *LowerTir, ast_unit: *ast.Ast) !tir.TIR {
     }
 
     try self.monomorphizer.run(self, &b, comp.monomorphLowerCallback);
-
-    return t;
 }
 
 fn pushExprTypeOverrideFrame(self: *LowerTir) !void {
