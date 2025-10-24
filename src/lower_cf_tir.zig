@@ -154,7 +154,7 @@ pub fn lowerIf(
     var else_blk = try f.builder.beginBlock(f);
     const loc = LowerTir.optLoc(a, id);
 
-    const out_ty_guess = expected_ty orelse (self.getExprType(a, id) orelse self.context.type_store.tVoid());
+    const out_ty_guess = expected_ty orelse self.getExprType(a, id);
     const produce_value = (expected_ty != null) and !self.isVoid(out_ty_guess);
 
     const cond_v = try self.lowerExpr(a, env, f, blk, row.cond, self.context.type_store.tBool(), .rvalue);
@@ -175,7 +175,7 @@ pub fn lowerIf(
         try self.lowerExprAsStmtList(a, env, f, &then_blk, row.then_block);
         if (then_blk.term.isNone()) {
             var v_then = try self.lowerBlockExprValue(a, env, f, &then_blk, row.then_block, res_ty);
-            if (expected_ty) |want| v_then = self.emitCoerce(&then_blk, v_then, self.getExprType(a, row.then_block) orelse res_ty, want, loc);
+            if (expected_ty) |want| v_then = self.emitCoerce(&then_blk, v_then, self.getExprType(a, row.then_block), want, loc);
             try f.builder.br(&then_blk, join_blk.id, &.{v_then}, loc);
         }
 
@@ -184,7 +184,7 @@ pub fn lowerIf(
             try self.lowerExprAsStmtList(a, env, f, &else_blk, row.else_block.unwrap());
             if (else_blk.term.isNone()) {
                 var v_else = try self.lowerBlockExprValue(a, env, f, &else_blk, row.else_block.unwrap(), res_ty);
-                if (expected_ty) |want| v_else = self.emitCoerce(&else_blk, v_else, self.getExprType(a, row.else_block.unwrap()) orelse res_ty, want, loc);
+                if (expected_ty) |want| v_else = self.emitCoerce(&else_blk, v_else, self.getExprType(a, row.else_block.unwrap()), want, loc);
                 try f.builder.br(&else_blk, join_blk.id, &.{v_else}, loc);
             }
         } else {
@@ -497,8 +497,8 @@ pub fn lowerOptionalUnwrap(
     expected_ty: ?types.TypeId,
 ) anyerror!tir.ValueId {
     const row = a.exprs.get(.OptionalUnwrap, id);
-    const elem_ty = self.getExprType(a, id) orelse return error.LoweringBug;
-    const opt_ty = self.getExprType(a, row.expr) orelse return error.LoweringBug;
+    const elem_ty = self.getExprType(a, id);
+    const opt_ty = self.getExprType(a, row.expr);
     if (self.context.type_store.index.kinds.items[opt_ty.toRaw()] != .Optional)
         return error.LoweringBug;
     const opt_info = self.context.type_store.get(.Optional, opt_ty);
@@ -559,13 +559,13 @@ pub fn lowerErrUnwrap(
     expected_ty: ?types.TypeId,
 ) anyerror!tir.ValueId {
     const row = a.exprs.get(.ErrUnwrap, id);
-    const result_ty = self.getExprType(a, id) orelse return error.LoweringBug; // Ok payload type
+    const result_ty = self.getExprType(a, id);
     const loc = LowerTir.optLoc(a, id);
     const expr_loc = LowerTir.optLoc(a, row.expr);
 
     // Lower the error-union expression
     const es_val = try self.lowerExpr(a, env, f, blk, row.expr, null, .rvalue);
-    const es_ty = self.getExprType(a, row.expr) orelse return error.LoweringBug;
+    const es_ty = self.getExprType(a, row.expr);
     if (self.context.type_store.index.kinds.items[es_ty.toRaw()] != .ErrorSet)
         return error.LoweringBug;
     const es = self.context.type_store.get(.ErrorSet, es_ty);
@@ -659,7 +659,7 @@ pub fn lowerMatch(
     const scrut = try self.lowerExpr(a, env, f, blk, row.expr, null, .rvalue);
 
     // Decide if this match-expression needs to produce a value
-    const out_ty_guess = expected_ty orelse (self.getExprType(a, id) orelse self.context.type_store.tVoid());
+    const out_ty_guess = expected_ty orelse self.getExprType(a, id);
     const produce_value = (expected_ty != null) and !self.isVoid(out_ty_guess);
 
     if (produce_value) {
@@ -705,7 +705,7 @@ pub fn lowerMatch(
                 try self.lowerExprAsStmtList(a, env, f, &bodies[i], arm.body);
                 if (bodies[i].term.isNone()) {
                     var v = try self.lowerBlockExprValue(a, env, f, &bodies[i], arm.body, res_ty);
-                    v = self.emitCoerce(&bodies[i], v, self.getExprType(a, arm.body) orelse res_ty, res_ty, loc);
+                    v = self.emitCoerce(&bodies[i], v, self.getExprType(a, arm.body), res_ty, loc);
                     try f.builder.br(&bodies[i], join_blk.id, &.{v}, loc);
                 }
                 try f.builder.endBlock(f, bodies[i]);
@@ -735,7 +735,7 @@ pub fn lowerMatch(
             try f.builder.endBlock(f, cur);
 
             // pattern test
-            const arm_scrut_ty = self.getExprType(a, row.expr) orelse self.context.type_store.tAny();
+            const arm_scrut_ty = self.getExprType(a, row.expr);
             const ok = try matchPattern(self, a, env, f, &test_blk, arm.pattern, scrut, arm_scrut_ty, loc);
 
             // if last arm fails, feed an undef to the join
@@ -780,12 +780,12 @@ pub fn lowerMatch(
             }
 
             // bind + body
-            const scrut_ty = self.getExprType(a, row.expr) orelse self.context.type_store.tAny();
+            const scrut_ty = self.getExprType(a, row.expr);
             try bindPattern(self, a, env, f, &body_blk, arm.pattern, scrut, scrut_ty);
 
             if (body_blk.term.isNone()) {
                 var v2 = try self.lowerBlockExprValue(a, env, f, &body_blk, arm.body, res_ty);
-                v2 = self.emitCoerce(&body_blk, v2, self.getExprType(a, arm.body) orelse res_ty, res_ty, loc);
+                v2 = self.emitCoerce(&body_blk, v2, self.getExprType(a, arm.body), res_ty, loc);
                 try f.builder.br(&body_blk, join_blk.id, &.{v2}, loc);
             }
 
@@ -856,7 +856,7 @@ pub fn lowerMatch(
             try f.builder.br(&cur, test_blk.id, &.{}, loc);
             try f.builder.endBlock(f, cur);
 
-            const arm_scrut_ty = self.getExprType(a, row.expr) orelse self.context.type_store.tAny();
+            const arm_scrut_ty = self.getExprType(a, row.expr);
             const ok = try matchPattern(self, a, env, f, &test_blk, arm.pattern, scrut, arm_scrut_ty, loc);
 
             if (!arm.guard.isNone()) {
@@ -889,7 +889,7 @@ pub fn lowerMatch(
                 try f.builder.endBlock(f, test_blk);
             }
 
-            const scrut_ty = self.getExprType(a, row.expr) orelse self.context.type_store.tAny();
+            const scrut_ty = self.getExprType(a, row.expr);
             try bindPattern(self, a, env, f, &body_blk, arm.pattern, scrut, scrut_ty);
 
             try self.lowerExprAsStmtList(a, env, f, &body_blk, arm.body);
@@ -918,7 +918,7 @@ pub fn lowerWhile(
     var body = try f.builder.beginBlock(f);
     const loc = LowerTir.optLoc(a, id);
 
-    const out_ty_guess = expected_ty orelse (self.getExprType(a, id) orelse self.context.type_store.tVoid());
+    const out_ty_guess = expected_ty orelse self.getExprType(a, id);
     const produce_value = (expected_ty != null) and !self.isVoid(out_ty_guess);
 
     if (produce_value) {
@@ -935,7 +935,7 @@ pub fn lowerWhile(
 
         if (row.is_pattern and !row.pattern.isNone() and !row.cond.isNone()) {
             const subj = try self.lowerExpr(a, env, f, &header, row.cond.unwrap(), null, .rvalue);
-            const subj_ty = self.getExprType(a, row.cond.unwrap()) orelse self.context.type_store.tAny();
+            const subj_ty = self.getExprType(a, row.cond.unwrap());
 
             const ok = try matchPattern(self, a, env, f, &header, row.pattern.unwrap(), subj, subj_ty, loc);
 
@@ -991,7 +991,7 @@ pub fn lowerWhile(
 
         if (row.is_pattern and !row.pattern.isNone() and !row.cond.isNone()) {
             const subj = try self.lowerExpr(a, env, f, &header, row.cond.unwrap(), null, .rvalue);
-            const subj_ty = self.getExprType(a, row.cond.unwrap()) orelse self.context.type_store.tAny();
+            const subj_ty = self.getExprType(a, row.cond.unwrap());
 
             const ok = try matchPattern(self, a, env, f, &header, row.pattern.unwrap(), subj, subj_ty, loc);
 
@@ -1074,7 +1074,7 @@ pub fn lowerFor(
     const iterable_loc = LowerTir.optLoc(a, row.iterable);
 
     // Decide if this for-expression needs to produce a value
-    const out_ty_guess = expected_ty orelse (self.getExprType(a, id) orelse self.context.type_store.tVoid());
+    const out_ty_guess = expected_ty orelse self.getExprType(a, id);
     const produce_value = (expected_ty != null) and !self.isVoid(out_ty_guess);
 
     // Common blocks
@@ -1105,7 +1105,7 @@ pub fn lowerFor(
 
             const start_v = try self.lowerExpr(a, env, f, blk, rg.start.unwrap(), null, .rvalue);
             const end_v = try self.lowerExpr(a, env, f, blk, rg.end.unwrap(), null, .rvalue);
-            const idx_ty = self.getExprType(a, rg.start.unwrap()) orelse return error.LoweringBug;
+            const idx_ty = self.getExprType(a, rg.start.unwrap());
 
             const idx_param = try f.builder.addBlockParam(&header, null, idx_ty);
 
@@ -1146,7 +1146,7 @@ pub fn lowerFor(
         } else {
             const arr_v = try self.lowerExpr(a, env, f, blk, row.iterable, null, .rvalue);
             const idx_ty = self.context.type_store.tUsize();
-            const iter_ty = self.getExprType(a, row.iterable) orelse return error.LoweringBug;
+            const iter_ty = self.getExprType(a, row.iterable);
             const len_v = try getIterableLen(self, a, blk, arr_v, iter_ty, idx_ty, iterable_loc);
 
             const zero = blk.builder.tirValue(.ConstInt, blk, idx_ty, loc, .{ .value = 0 });
@@ -1172,15 +1172,14 @@ pub fn lowerFor(
 
             // Determine element type
             var elem_ty = self.context.type_store.tAny();
-            if (self.getExprType(a, row.iterable)) |it_ty| {
-                const ik = self.context.type_store.index.kinds.items[it_ty.toRaw()];
-                if (ik == .Array)
-                    elem_ty = self.context.type_store.get(.Array, it_ty).elem
-                else if (ik == .Slice)
-                    elem_ty = self.context.type_store.get(.Slice, it_ty).elem
-                else if (ik == .DynArray)
-                    elem_ty = self.context.type_store.get(.DynArray, it_ty).elem;
-            }
+            const it_ty = self.getExprType(a, row.iterable);
+            const ik = self.context.type_store.index.kinds.items[it_ty.toRaw()];
+            if (ik == .Array)
+                elem_ty = self.context.type_store.get(.Array, it_ty).elem
+            else if (ik == .Slice)
+                elem_ty = self.context.type_store.get(.Slice, it_ty).elem
+            else if (ik == .DynArray)
+                elem_ty = self.context.type_store.get(.DynArray, it_ty).elem;
 
             const elem = blk.builder.indexOp(&body, elem_ty, arr_v, idx_param, iterable_loc);
             try bindPattern(self, a, env, f, &body, row.pattern, elem, elem_ty);
@@ -1228,7 +1227,7 @@ pub fn lowerFor(
 
             const start_v = try self.lowerExpr(a, env, f, blk, rg.start.unwrap(), null, .rvalue);
             const end_v = try self.lowerExpr(a, env, f, blk, rg.end.unwrap(), null, .rvalue);
-            const idx_ty = self.getExprType(a, rg.start.unwrap()) orelse return error.LoweringBug;
+            const idx_ty = self.getExprType(a, rg.start.unwrap());
 
             const idx_param = try f.builder.addBlockParam(&header, null, idx_ty);
             var update_blk = try f.builder.beginBlock(f);
@@ -1268,7 +1267,7 @@ pub fn lowerFor(
         } else {
             const arr_v = try self.lowerExpr(a, env, f, blk, row.iterable, null, .rvalue);
             const idx_ty = self.context.type_store.tUsize();
-            const iter_ty = self.getExprType(a, row.iterable) orelse return error.LoweringBug;
+            const iter_ty = self.getExprType(a, row.iterable);
             const len_v = try getIterableLen(self, a, blk, arr_v, iter_ty, idx_ty, iterable_loc);
 
             const zero = blk.builder.tirValue(.ConstInt, blk, idx_ty, loc, .{ .value = 0 });
@@ -1293,15 +1292,14 @@ pub fn lowerFor(
             try f.builder.condBr(&header, br_cond, body.id, &.{}, exit_blk.id, &.{}, loc);
 
             var elem_ty = self.context.type_store.tAny();
-            if (self.getExprType(a, row.iterable)) |it_ty| {
-                const ik = self.context.type_store.index.kinds.items[it_ty.toRaw()];
-                if (ik == .Array)
-                    elem_ty = self.context.type_store.get(.Array, it_ty).elem
-                else if (ik == .Slice)
-                    elem_ty = self.context.type_store.get(.Slice, it_ty).elem
-                else if (ik == .DynArray)
-                    elem_ty = self.context.type_store.get(.DynArray, it_ty).elem;
-            }
+            const it_ty = self.getExprType(a, row.iterable);
+            const ik = self.context.type_store.index.kinds.items[it_ty.toRaw()];
+            if (ik == .Array)
+                elem_ty = self.context.type_store.get(.Array, it_ty).elem
+            else if (ik == .Slice)
+                elem_ty = self.context.type_store.get(.Slice, it_ty).elem
+            else if (ik == .DynArray)
+                elem_ty = self.context.type_store.get(.DynArray, it_ty).elem;
             const elem = blk.builder.indexOp(&body, elem_ty, arr_v, idx_param, iterable_loc);
             try bindPattern(self, a, env, f, &body, row.pattern, elem, elem_ty);
 

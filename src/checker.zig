@@ -2999,10 +2999,23 @@ fn checkCall(self: *Checker, ast_unit: *ast.Ast, id: ast.ExprId) !?types.TypeId 
         if (try check_types.typeFromTypeExpr(self, ast_unit, fr.parent)) |pty| {
             const pk = self.typeKind(pty);
             if (pk == .Variant or pk == .Error) {
-                // This single call either returns a type (success) or null after emitting exactly one diagnostic.
-                return try self.checkTagConstructorCall(ast_unit, pty, fr.field, args, call_loc);
+                const result_ty = try self.checkTagConstructorCall(ast_unit, pty, fr.field, args, call_loc);
+                if (result_ty != null) {
+                    // Also stamp the type of the callee expression as a function type
+                    if (self.getPayloadTypeForCase(pty, fr.field)) |payload_ty| {
+                        const payload_kind = self.typeKind(payload_ty);
+                        const params: []const types.TypeId = if (payload_kind == .Void)
+                            &.{}
+                        else if (payload_kind == .Tuple)
+                            self.context.type_store.type_pool.slice(self.context.type_store.get(.Tuple, payload_ty).elems)
+                        else
+                            &.{payload_ty};
+                        const fn_ty = self.context.type_store.mkFunction(params, pty, false, false);
+                        ast_unit.type_info.expr_types.items[call_expr.callee.toRaw()] = fn_ty;
+                    }
+                }
+                return result_ty;
             }
-            // If parent is a type but not Variant/Error, fall through to general evaluation.
         }
     }
 

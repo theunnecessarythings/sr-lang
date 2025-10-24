@@ -290,7 +290,7 @@ pub fn jitEvalComptimeBlock(
     id: ast.ExprId,
 ) !tir.ValueId {
     const cb = a.exprs.get(.ComptimeBlock, id);
-    const result_ty = self.getExprType(a, cb.block) orelse return error.LoweringBug;
+    const result_ty = self.getExprType(a, cb.block);
     const comptime_value = try runComptimeExpr(self, a, cb.block, result_ty, &[_]Pipeline.ComptimeBinding{});
     const loc = LowerTir.optLoc(a, id);
 

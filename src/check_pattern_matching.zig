@@ -220,6 +220,13 @@ pub fn checkPattern(
             return try checkPattern(self, ast_unit, ap.pattern, value_ty, false);
         },
         .Range => {
+            const rp = ast_unit.pats.get(.Range, pid);
+            if (!rp.start.isNone()) {
+                _ = try self.checkExpr(ast_unit, rp.start.unwrap());
+            }
+            if (!rp.end.isNone()) {
+                _ = try self.checkExpr(ast_unit, rp.end.unwrap());
+            }
             // Accept integer subjects only.
             return check_types.isIntegerKind(self, self.typeKind(value_ty));
         },
