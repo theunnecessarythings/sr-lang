@@ -39,7 +39,12 @@ fn lowerToTir(gpa: std.mem.Allocator, src: []const u8) !Lowered {
     try chk.runAst(&hir);
     if (context.diags.anyErrors()) return error.SemanticErrors; // Use context.diags
 
-    var lt = compiler.lower_tir.LowerTir.init(gpa, &context, &pipeline, &chk);
+    var lt = compiler.lower_tir.LowerTir.init(.{
+        .allocator = gpa,
+        .context = &context,
+        .pipeline = &pipeline,
+        .checker = &chk,
+    });
     defer lt.deinit();
     const tir_result = try lt.runAst(&hir);
     return .{ .tir = tir_result, .context = context };
@@ -813,7 +818,12 @@ test "tir: runtime any specialization rejects mismatched numeric operands" {
     try chk.runAst(&hir);
     try testing.expectEqual(@as(usize, 0), context.diags.count());
 
-    var lt = compiler.lower_tir.LowerTir.init(gpa, &context, &pipeline, &chk);
+    var lt = compiler.lower_tir.LowerTir.init(.{
+        .allocator = gpa,
+        .context = &context,
+        .pipeline = &pipeline,
+        .checker = &chk,
+    });
     defer lt.deinit();
 
     if (lt.runAst(&hir)) |tir_result| {

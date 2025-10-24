@@ -20,6 +20,13 @@ const Pipeline = pipeline_mod.Pipeline;
 const Builder = tir.Builder;
 
 pub const LowerTir = struct {
+    pub const Inputs = struct {
+        allocator: std.mem.Allocator,
+        context: *Context,
+        pipeline: *Pipeline,
+        checker: *checker.Checker,
+    };
+
     gpa: std.mem.Allocator,
     context: *Context,
     pipeline: *Pipeline,
@@ -33,25 +40,17 @@ pub const LowerTir = struct {
     monomorphizer: monomorphize.Monomorphizer,
     monomorph_context_stack: std.ArrayListUnmanaged(monomorphize.MonomorphizationContext) = .{},
     expr_type_override_stack: std.ArrayListUnmanaged(ExprTypeOverrideFrame) = .{},
+    mlir_state: MlirState = .{},
 
-    var g_mlir_inited: bool = false;
-    var g_mlir_ctx: mlir.Context = undefined;
-
-    pub fn init(
-        gpa: std.mem.Allocator,
-        context: *Context,
-        pipeline: *Pipeline,
-        chk: *checker.Checker,
-    ) LowerTir {
+    pub fn init(inputs: Inputs) LowerTir {
         return .{
-            .gpa = gpa,
-            .context = context,
-            .pipeline = pipeline,
-            .chk = chk,
-            .module_call_cache = std.AutoHashMap(u64, StrId).init(gpa),
-            .method_lowered = std.AutoHashMap(usize, void).init(gpa),
-            .monomorphizer = monomorphize.Monomorphizer.init(gpa),
-            .expr_type_override_stack = .{},
+            .gpa = inputs.allocator,
+            .context = inputs.context,
+            .pipeline = inputs.pipeline,
+            .chk = inputs.checker,
+            .module_call_cache = std.AutoHashMap(u64, StrId).init(inputs.allocator),
+            .method_lowered = std.AutoHashMap(usize, void).init(inputs.allocator),
+            .monomorphizer = monomorphize.Monomorphizer.init(inputs.allocator),
         };
     }
 
@@ -59,15 +58,9 @@ pub const LowerTir = struct {
         self.loop_stack.deinit(self.gpa);
         self.module_call_cache.deinit();
         self.method_lowered.deinit();
-        while (self.monomorph_context_stack.items.len > 0) {
-            var ctx = self.monomorph_context_stack.pop().?;
-            ctx.deinit(self.gpa);
-        }
+        while (self.monomorph_context_stack.items.len > 0) self.popMonomorphContext();
         self.monomorph_context_stack.deinit(self.gpa);
-        while (self.expr_type_override_stack.items.len > 0) {
-            self.expr_type_override_stack.items[self.expr_type_override_stack.items.len - 1].deinit(self.gpa);
-            self.expr_type_override_stack.items.len -= 1;
-        }
+        while (self.expr_type_override_stack.items.len > 0) self.releaseTopOverrideFrame();
         self.expr_type_override_stack.deinit(self.gpa);
         self.monomorphizer.deinit();
     }
@@ -79,9 +72,92 @@ pub const LowerTir = struct {
 
     const ExprTypeOverrideFrame = struct {
         map: std.AutoArrayHashMapUnmanaged(u32, types.TypeId) = .{},
+    };
 
-        fn deinit(self: *ExprTypeOverrideFrame, gpa: std.mem.Allocator) void {
-            self.map.deinit(gpa);
+    const MlirState = struct {
+        initialized: bool = false,
+        ctx: mlir.Context = undefined,
+
+        fn ensure(self: *MlirState, gpa: std.mem.Allocator) mlir.Context {
+            if (!self.initialized) {
+                self.ctx = compile.initMLIR(gpa);
+                self.initialized = true;
+            }
+            return self.ctx;
+        }
+    };
+
+    const ExprTypeOverrideScope = struct {
+        lowerer: *LowerTir,
+        active: bool,
+
+        fn begin(lowerer: *LowerTir) !ExprTypeOverrideScope {
+            try lowerer.expr_type_override_stack.append(lowerer.gpa, .{});
+            return .{ .lowerer = lowerer, .active = true };
+        }
+
+        pub fn end(self: *ExprTypeOverrideScope) void {
+            if (!self.active) return;
+            self.lowerer.releaseTopOverrideFrame();
+            self.active = false;
+        }
+
+        pub fn deinit(self: *ExprTypeOverrideScope) void {
+            self.end();
+        }
+    };
+
+    const MonomorphScope = struct {
+        lowerer: *LowerTir,
+        active: bool,
+
+        fn init(lowerer: *LowerTir, active: bool) MonomorphScope {
+            return .{ .lowerer = lowerer, .active = active };
+        }
+
+        pub fn end(self: *MonomorphScope) void {
+            if (!self.active) return;
+            self.lowerer.popMonomorphContext();
+            self.active = false;
+        }
+
+        pub fn deinit(self: *MonomorphScope) void {
+            self.end();
+        }
+    };
+
+    const BindingInfoBuffer = struct {
+        allocator: std.mem.Allocator,
+        items: []monomorphize.BindingInfo,
+        len: usize,
+
+        fn init(allocator: std.mem.Allocator, count: usize) !BindingInfoBuffer {
+            if (count == 0) {
+                return .{ .allocator = allocator, .items = &[_]monomorphize.BindingInfo{}, .len = 0 };
+            }
+            return .{ .allocator = allocator, .items = try allocator.alloc(monomorphize.BindingInfo, count), .len = 0 };
+        }
+
+        fn append(self: *BindingInfoBuffer, info: monomorphize.BindingInfo) void {
+            std.debug.assert(self.len < self.items.len);
+            self.items[self.len] = info;
+            self.len += 1;
+        }
+
+        fn slice(self: *const BindingInfoBuffer) []const monomorphize.BindingInfo {
+            return self.items[0..self.len];
+        }
+
+        fn deinit(self: *BindingInfoBuffer) void {
+            var i: usize = 0;
+            while (i < self.len) : (i += 1) {
+                self.items[i].deinit(self.allocator);
+            }
+            if (self.items.len != 0) {
+                self.allocator.free(self.items);
+            }
+            self.items = &[_]monomorphize.BindingInfo{};
+            self.len = 0;
         }
     };
 
@@ -90,64 +166,90 @@ pub const LowerTir = struct {
         decl_id: ast.DeclId,
     };
 
-    fn pushExprTypeOverrideFrame(self: *LowerTir) !void {
-        try self.expr_type_override_stack.append(self.gpa, .{});
+    fn beginExprTypeOverrideScope(self: *LowerTir) !ExprTypeOverrideScope {
+        return ExprTypeOverrideScope.begin(self);
     }
 
-    fn popExprTypeOverrideFrame(self: *LowerTir) void {
+    fn currentOverrideFrame(self: *LowerTir) ?*ExprTypeOverrideFrame {
+        if (self.expr_type_override_stack.items.len == 0) return null;
+        const idx = self.expr_type_override_stack.items.len - 1;
+        return &self.expr_type_override_stack.items[idx];
+    }
+
+    fn releaseTopOverrideFrame(self: *LowerTir) void {
         if (self.expr_type_override_stack.items.len == 0) return;
         const idx = self.expr_type_override_stack.items.len - 1;
-        self.expr_type_override_stack.items[idx].deinit(self.gpa);
-        self.expr_type_override_stack.items.len -= 1;
+        self.expr_type_override_stack.items[idx].map.deinit(self.gpa);
+        self.expr_type_override_stack.items.len = idx;
     }
 
-    fn pushComptimeBindings(self: *LowerTir, bindings: []const Pipeline.ComptimeBinding) !bool {
-        if (bindings.len == 0) return false;
+    fn popMonomorphContext(self: *LowerTir) void {
+        if (self.monomorph_context_stack.items.len == 0) return;
+        const idx = self.monomorph_context_stack.items.len - 1;
+        var ctx = self.monomorph_context_stack.items[idx];
+        self.monomorph_context_stack.items.len = idx;
+        ctx.deinit(self.gpa);
+    }
 
-        var infos = try self.gpa.alloc(monomorphize.BindingInfo, bindings.len);
-        var init_count: usize = 0;
-        const info_cleanup = true;
-        defer {
-            if (info_cleanup) {
-                var j: usize = 0;
-                while (j < init_count) : (j += 1) infos[j].deinit(self.gpa);
-                self.gpa.free(infos);
-            }
+    fn collectBindingInfos(
+        self: *LowerTir,
+        bindings: []const Pipeline.ComptimeBinding,
+    ) !BindingInfoBuffer {
+        var buffer = try BindingInfoBuffer.init(self.gpa, bindings.len);
+        errdefer buffer.deinit();
+
+        for (bindings) |binding| {
+            const info = switch (binding) {
+                .type_param => |tp| monomorphize.BindingInfo.typeParam(tp.name, tp.ty),
+                .value_param => |vp| try monomorphize.BindingInfo.valueParam(self.gpa, vp.name, vp.ty, vp.value),
+            };
+            buffer.append(info);
         }
 
-        for (bindings, 0..) |binding, i| {
-            switch (binding) {
-                .type_param => |tp| {
-                    infos[i] = monomorphize.BindingInfo.typeParam(tp.name, tp.ty);
-                },
-                .value_param => |vp| {
-                    infos[i] = try monomorphize.BindingInfo.valueParam(self.gpa, vp.name, vp.ty, vp.value);
-                },
-            }
-            init_count = i + 1;
+        return buffer;
+    }
+
+    fn enterMonomorphScope(
+        self: *LowerTir,
+        infos: []const monomorphize.BindingInfo,
+    ) !MonomorphScope {
+        if (infos.len == 0) {
+            return MonomorphScope.init(self, false);
         }
 
         var ctx = try monomorphize.MonomorphizationContext.init(
             self.gpa,
-            infos[0..init_count],
+            infos,
             0,
             self.context.type_store.tVoid(),
         );
         errdefer ctx.deinit(self.gpa);
 
-        self.monomorph_context_stack.append(self.gpa, ctx) catch |err| {
-            ctx.deinit(self.gpa);
-            return err;
-        };
+        try self.monomorph_context_stack.append(self.gpa, ctx);
+        return MonomorphScope.init(self, true);
+    }
 
-        return true;
+    fn pushComptimeBindings(
+        self: *LowerTir,
+        bindings: []const Pipeline.ComptimeBinding,
+    ) !MonomorphScope {
+        if (bindings.len == 0) return MonomorphScope.init(self, false);
+
+        var infos = try self.collectBindingInfos(bindings);
+        defer infos.deinit();
+
+        var scope = try self.enterMonomorphScope(infos.slice());
+        if (!scope.active) return scope;
+
+        // The context clones the binding infos; they can be dropped now.
+        return scope;
     }
 
     fn noteExprType(self: *LowerTir, expr: ast.ExprId, ty: types.TypeId) !void {
-        if (self.expr_type_override_stack.items.len == 0) return;
+        const frame = self.currentOverrideFrame() orelse return;
         if (self.isAny(ty)) return;
-        var frame = &self.expr_type_override_stack.items[self.expr_type_override_stack.items.len - 1];
-        try frame.map.put(self.gpa, expr.toRaw(), ty);
+        const entry = try frame.map.getOrPut(self.gpa, expr.toRaw());
+        entry.value_ptr.* = ty;
     }
 
     fn lookupExprTypeOverride(self: *const LowerTir, expr: ast.ExprId) ?types.TypeId {
@@ -162,36 +264,73 @@ pub const LowerTir = struct {
         return null;
     }
 
+    const LiteralPayload = union(enum) {
+        int: u128,
+        float: f64,
+        bool: bool,
+        string: ast.StrId,
+    };
+
+    fn literalPayload(a: *ast.Ast, expr: ast.ExprId) ?LiteralPayload {
+        const kind = a.exprs.index.kinds.items[expr.toRaw()];
+        if (kind != .Literal) return null;
+        const lit = a.exprs.get(.Literal, expr);
+
+        return switch (lit.kind) {
+            .int => blk: {
+                const info = switch (lit.data) {
+                    .int => |int_info| int_info,
+                    else => return null,
+                };
+                if (!info.valid) break :blk null;
+                break :blk LiteralPayload{ .int = info.value };
+            },
+            .float => blk: {
+                const info = switch (lit.data) {
+                    .float => |float_info| float_info,
+                    else => return null,
+                };
+                if (!info.valid) break :blk null;
+                break :blk LiteralPayload{ .float = info.value };
+            },
+            .bool => blk: {
+                const value = switch (lit.data) {
+                    .bool => |b| b,
+                    else => return null,
+                };
+                break :blk LiteralPayload{ .bool = value };
+            },
+            .string => blk: {
+                const sid = switch (lit.data) {
+                    .string => |s_id| s_id,
+                    else => return null,
+                };
+                break :blk LiteralPayload{ .string = sid };
+            },
+            else => null,
+        };
+    }
+
     fn constInitFromLiteral(
         self: *LowerTir,
         a: *ast.Ast,
         expr: ast.ExprId,
         ty: types.TypeId,
     ) ?tir.ConstInit {
-        const kind = a.exprs.index.kinds.items[expr.toRaw()];
-        if (kind != .Literal) return null;
-        const lit = a.exprs.get(.Literal, expr);
-
+        const payload = literalPayload(a, expr) orelse return null;
         const ty_kind = self.context.type_store.getKind(ty);
         return switch (ty_kind) {
-            .I8, .I16, .I32, .I64, .U8, .U16, .U32, .U64, .Usize => blk: {
-                if (lit.kind != .int) break :blk null;
-                const info = switch (lit.data) {
-                    .int => |int_info| int_info,
-                    else => return null,
-                };
-                if (!info.valid) break :blk null;
-                const max_i64: u128 = @intCast(std.math.maxInt(i64));
-                if (info.value > max_i64) break :blk null;
-                break :blk tir.ConstInit{ .int = @intCast(info.value) };
+            .I8, .I16, .I32, .I64, .U8, .U16, .U32, .U64, .Usize => switch (payload) {
+                .int => |value| blk: {
+                    const max_i64: u128 = @intCast(std.math.maxInt(i64));
+                    if (value > max_i64) break :blk null;
+                    break :blk tir.ConstInit{ .int = @intCast(value) };
+                },
+                else => null,
             },
-            .Bool => blk: {
-                if (lit.kind != .bool) break :blk null;
-                const value = switch (lit.data) {
-                    .bool => |b| b,
-                    else => return null,
-                };
-                break :blk tir.ConstInit{ .bool = value };
+            .Bool => switch (payload) {
+                .bool => |b| tir.ConstInit{ .bool = b },
+                else => null,
             },
             else => null,
         };
@@ -827,8 +966,8 @@ pub const LowerTir = struct {
         const fnr = a.exprs.get(.FunctionLit, fun_eid);
         const fn_loc = self.locToOpt(fnr.loc);
 
-        try self.pushExprTypeOverrideFrame();
-        defer self.popExprTypeOverrideFrame();
+        var override_scope = try self.beginExprTypeOverrideScope();
+        defer override_scope.deinit();
 
         if (!fnr.attrs.isNone()) {
             const attrs = a.exprs.attr_pool.slice(fnr.attrs.asRange());
@@ -1639,11 +1778,8 @@ pub const LowerTir = struct {
         result_ty: types.TypeId,
         bindings: []const Pipeline.ComptimeBinding,
     ) !comp.ComptimeValue {
-        const pushed = try self.pushComptimeBindings(bindings);
-        defer if (pushed) {
-            var popped = self.monomorph_context_stack.pop();
-            if (popped) |*ctx| ctx.deinit(self.gpa);
-        };
+        var monomorph_scope = try self.pushComptimeBindings(bindings);
+        defer monomorph_scope.deinit();
 
         const result_kind = self.context.type_store.getKind(result_ty);
         if (result_kind == .TypeType) {
@@ -1692,11 +1828,8 @@ pub const LowerTir = struct {
         try tmp_builder.endBlock(&thunk_fn, thunk_blk);
         try tmp_builder.endFunction(thunk_fn);
 
-        if (!g_mlir_inited) {
-            g_mlir_ctx = compile.initMLIR(self.gpa);
-            g_mlir_inited = true;
-        }
-        var gen = codegen.Codegen.init(self.gpa, self.context, g_mlir_ctx);
+        const mlir_ctx = self.mlir_state.ensure(self.gpa);
+        var gen = codegen.Codegen.init(self.gpa, self.context, mlir_ctx);
         defer gen.deinit();
         const prev_debug_flag = codegen.enable_debug_info;
         codegen.enable_debug_info = false;
@@ -1859,43 +1992,16 @@ pub const LowerTir = struct {
     }
 
     fn constValueFromLiteral(self: *LowerTir, a: *ast.Ast, expr: ast.ExprId) !?comp.ComptimeValue {
-        const kind = a.exprs.index.kinds.items[expr.toRaw()];
-        if (kind != .Literal) return null;
-        const lit = a.exprs.get(.Literal, expr);
-
-        return switch (lit.kind) {
-            .int => blk: {
-                const info = switch (lit.data) {
-                    .int => |int_info| int_info,
-                    else => return null,
-                };
-                if (!info.valid) return null;
-                break :blk comp.ComptimeValue{ .Int = info.value };
+        const payload = literalPayload(a, expr) orelse return null;
+        return switch (payload) {
+            .int => |value| comp.ComptimeValue{ .Int = value },
+            .float => |value| comp.ComptimeValue{ .Float = value },
+            .bool => |value| comp.ComptimeValue{ .Bool = value },
+            .string => |sid| blk: {
+                const text = a.exprs.strs.get(sid);
+                const owned = try self.gpa.dupe(u8, text);
+                break :blk comp.ComptimeValue{ .String = owned };
             },
-            .float => blk: {
-                const info = switch (lit.data) {
-                    .float => |float_info| float_info,
-                    else => return null,
-                };
-                if (!info.valid) return null;
-                break :blk comp.ComptimeValue{ .Float = info.value };
-            },
-            .bool => blk: {
-                const value = switch (lit.data) {
-                    .bool => |b| b,
-                    else => return null,
-                };
-                break :blk comp.ComptimeValue{ .Bool = value };
-            },
-            .string => blk: {
-                const s = switch (lit.data) {
-                    .string => |s_id| a.exprs.strs.get(s_id),
-                    else => return null,
-                };
-                const owned_s = try self.gpa.dupe(u8, s);
-                break :blk comp.ComptimeValue{ .String = owned_s };
-            },
-            else => null,
         };
     }
 
@@ -6063,7 +6169,12 @@ pub fn evalComptimeExpr(
     result_ty: types.TypeId,
     bindings: []const Pipeline.ComptimeBinding,
 ) !comp.ComptimeValue {
-    var lowerer = LowerTir.init(gpa, context, pipeline, chk);
+    var lowerer = LowerTir.init(.{
+        .allocator = gpa,
+        .context = context,
+        .pipeline = pipeline,
+        .checker = chk,
+    });
     defer lowerer.deinit();
     return lowerer.runComptimeExpr(ast_unit, expr, result_ty, bindings);
 }

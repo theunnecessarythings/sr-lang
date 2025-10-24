@@ -48,7 +48,12 @@ fn lowerToTir(gpa: std.mem.Allocator, src: []const u8) !Lowered {
     try chk.runAst(&hir);
     if (context.diags.anyErrors()) return error.SemanticErrors; // Use context.diags
 
-    var lt = compiler.lower_tir.LowerTir.init(gpa, context, &pipeline, chk); // Pass context and pipeline
+    var lt = compiler.lower_tir.LowerTir.init(.{
+        .allocator = gpa,
+        .context = context,
+        .pipeline = &pipeline,
+        .checker = chk,
+    }); // Pass context and pipeline
     defer lt.deinit();
     const t = try lt.runAst(&hir);
     return .{ .tir = t, .checker = chk, .type_info = &chk.type_info, .context = context };
