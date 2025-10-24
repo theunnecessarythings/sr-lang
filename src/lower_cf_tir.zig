@@ -765,7 +765,7 @@ pub fn lowerMatch(
                 try f.builder.condBr(&test_blk, br_cond, guard_blk.id, &.{}, next_blk.id, else_args, loc);
                 try f.builder.endBlock(f, test_blk);
 
-                try self.bindPattern(a, env, f, &guard_blk, arm.pattern, scrut, arm_scrut_ty);
+                try bindPattern(self, a, env, f, &guard_blk, arm.pattern, scrut, arm_scrut_ty);
                 const guard_id = arm.guard.unwrap();
                 const guard_loc = LowerTir.optLoc(a, guard_id);
                 const guard_val = try self.lowerExpr(a, env, f, &guard_blk, guard_id, self.context.type_store.tBool(), .rvalue);
@@ -781,7 +781,7 @@ pub fn lowerMatch(
 
             // bind + body
             const scrut_ty = self.getExprType(a, row.expr) orelse self.context.type_store.tAny();
-            try self.bindPattern(a, env, f, &body_blk, arm.pattern, scrut, scrut_ty);
+            try bindPattern(self, a, env, f, &body_blk, arm.pattern, scrut, scrut_ty);
 
             if (body_blk.term.isNone()) {
                 var v2 = try self.lowerBlockExprValue(a, env, f, &body_blk, arm.body, res_ty);
@@ -875,7 +875,7 @@ pub fn lowerMatch(
                     try saved.append(self.gpa, .{ .name = name, .prev = env.lookup(name) });
                 }
 
-                try self.bindPattern(a, env, f, &guard_blk, arm.pattern, scrut, arm_scrut_ty);
+                try bindPattern(self, a, env, f, &guard_blk, arm.pattern, scrut, arm_scrut_ty);
                 const guard_id = arm.guard.unwrap();
                 const guard_loc = LowerTir.optLoc(a, guard_id);
                 const guard_val = try self.lowerExpr(a, env, f, &guard_blk, guard_id, self.context.type_store.tBool(), .rvalue);
@@ -890,7 +890,7 @@ pub fn lowerMatch(
             }
 
             const scrut_ty = self.getExprType(a, row.expr) orelse self.context.type_store.tAny();
-            try self.bindPattern(a, env, f, &body_blk, arm.pattern, scrut, scrut_ty);
+            try bindPattern(self, a, env, f, &body_blk, arm.pattern, scrut, scrut_ty);
 
             try self.lowerExprAsStmtList(a, env, f, &body_blk, arm.body);
             if (body_blk.term.isNone()) try f.builder.br(&body_blk, exit_blk.id, &.{}, loc);
@@ -943,7 +943,7 @@ pub fn lowerWhile(
             try f.builder.condBr(&header, br_cond, body.id, &.{}, exit_blk.id, &.{}, loc);
 
             // bind `x` etc. for the body
-            try self.bindPattern(a, env, f, &body, row.pattern.unwrap(), subj, subj_ty);
+            try bindPattern(self, a, env, f, &body, row.pattern.unwrap(), subj, subj_ty);
         } else {
             const cond_loc = if (!row.cond.isNone()) LowerTir.optLoc(a, row.cond.unwrap()) else loc;
             const cond_v = if (!row.cond.isNone())
@@ -999,7 +999,7 @@ pub fn lowerWhile(
             try f.builder.condBr(&header, br_cond, body.id, &.{}, exit_blk.id, &.{}, loc);
 
             // bind `x` etc. for the body
-            try self.bindPattern(a, env, f, &body, row.pattern.unwrap(), subj, subj_ty);
+            try bindPattern(self, a, env, f, &body, row.pattern.unwrap(), subj, subj_ty);
         } else {
             const cond_loc = if (!row.cond.isNone()) LowerTir.optLoc(a, row.cond.unwrap()) else loc;
             const cond_v = if (!row.cond.isNone())
@@ -1131,7 +1131,7 @@ pub fn lowerFor(
             const br_cond = self.forceLocalCond(&header, cond, iterable_loc);
             try f.builder.condBr(&header, br_cond, body.id, &.{}, exit_blk.id, &.{}, loc);
 
-            try self.bindPattern(a, env, f, &body, row.pattern, idx_param, idx_ty);
+            try bindPattern(self, a, env, f, &body, row.pattern, idx_param, idx_ty);
 
             var lc = &self.loop_stack.items[self.loop_stack.items.len - 1];
             lc.continue_block = update_block_id;
@@ -1183,7 +1183,7 @@ pub fn lowerFor(
             }
 
             const elem = blk.builder.indexOp(&body, elem_ty, arr_v, idx_param, iterable_loc);
-            try self.bindPattern(a, env, f, &body, row.pattern, elem, elem_ty);
+            try bindPattern(self, a, env, f, &body, row.pattern, elem, elem_ty);
 
             var lc2 = &self.loop_stack.items[self.loop_stack.items.len - 1];
             lc2.continue_block = update_block_id;
@@ -1252,7 +1252,7 @@ pub fn lowerFor(
             const br_cond = self.forceLocalCond(&header, cond, iterable_loc);
             try f.builder.condBr(&header, br_cond, body.id, &.{}, exit_blk.id, &.{}, loc);
 
-            try self.bindPattern(a, env, f, &body, row.pattern, idx_param, idx_ty);
+            try bindPattern(self, a, env, f, &body, row.pattern, idx_param, idx_ty);
 
             var lc = &self.loop_stack.items[self.loop_stack.items.len - 1];
             lc.continue_block = update_block_id;
@@ -1303,7 +1303,7 @@ pub fn lowerFor(
                     elem_ty = self.context.type_store.get(.DynArray, it_ty).elem;
             }
             const elem = blk.builder.indexOp(&body, elem_ty, arr_v, idx_param, iterable_loc);
-            try self.bindPattern(a, env, f, &body, row.pattern, elem, elem_ty);
+            try bindPattern(self, a, env, f, &body, row.pattern, elem, elem_ty);
 
             var lc2 = &self.loop_stack.items[self.loop_stack.items.len - 1];
             lc2.continue_block = update_block_id;
@@ -1320,5 +1320,194 @@ pub fn lowerFor(
         _ = self.loop_stack.pop();
         blk.* = exit_blk;
         return self.safeUndef(blk, self.context.type_store.tAny(), loc);
+    }
+}
+
+pub fn bindPattern(
+    self: *LowerTir,
+    a: *ast.Ast,
+    env: *Env,
+    f: *tir.Builder.FunctionFrame,
+    blk: *tir.Builder.BlockFrame,
+    pid: ast.PatternId,
+    value: tir.ValueId,
+    vty: types.TypeId,
+) !void {
+    const k = a.pats.index.kinds.items[pid.toRaw()];
+    const loc = LowerTir.optLoc(a, pid);
+    switch (k) {
+        .Binding => {
+            const nm = a.pats.get(.Binding, pid).name;
+            try env.bind(self.gpa, a, nm, .{ .value = value, .ty = vty, .is_slot = false });
+        },
+        .At => {
+            const at = a.pats.get(.At, pid);
+            try env.bind(self.gpa, a, at.binder, .{ .value = value, .ty = vty, .is_slot = false });
+            try bindPattern(self, a, env, f, blk, at.pattern, value, vty);
+        },
+        .Tuple => {
+            const row = a.pats.get(.Tuple, pid);
+            const elems = a.pats.pat_pool.slice(row.elems);
+            var elem_tys: []const types.TypeId = &.{};
+            if (self.context.type_store.getKind(vty) == .Tuple) {
+                const tr = self.context.type_store.get(.Tuple, vty);
+                elem_tys = self.context.type_store.type_pool.slice(tr.elems);
+            }
+            for (elems, 0..) |pe, i| {
+                const ety = if (i < elem_tys.len) elem_tys[i] else self.context.type_store.tAny();
+                const ev = blk.builder.extractElem(blk, ety, value, @intCast(i), loc);
+                try bindPattern(self, a, env, f, blk, pe, ev, ety);
+            }
+        },
+        .Slice => {
+            const sl = a.pats.get(.Slice, pid);
+            const elems = a.pats.pat_pool.slice(sl.elems);
+            const elem_ty = if (self.context.type_store.getKind(vty) == .Array)
+                self.context.type_store.get(.Array, vty).elem
+            else if (self.context.type_store.getKind(vty) == .Slice)
+                self.context.type_store.get(.Slice, vty).elem
+            else
+                self.context.type_store.tAny();
+
+            for (elems, 0..) |pat_elem, i| {
+                if (sl.has_rest and i == sl.rest_index) continue;
+                const index_val = blk.builder.tirValue(.ConstInt, blk, self.context.type_store.tUsize(), loc, .{ .value = i });
+                const elem_val = blk.builder.indexOp(blk, elem_ty, value, index_val, loc);
+                try bindPattern(self, a, env, f, blk, pat_elem, elem_val, elem_ty);
+            }
+
+            if (sl.has_rest and !sl.rest_binding.isNone()) {
+                const rest_pat = sl.rest_binding.unwrap();
+                const slice_ty = self.context.type_store.mkSlice(elem_ty);
+                const start = blk.builder.tirValue(.ConstInt, blk, self.context.type_store.tUsize(), loc, .{ .value = sl.rest_index });
+
+                var len_val: tir.ValueId = undefined;
+                const vty_kind = self.context.type_store.getKind(vty);
+                if (vty_kind == .Array) {
+                    const arr_ty = self.context.type_store.get(.Array, vty);
+                    const len = switch (arr_ty.len) {
+                        .Concrete => |l| l,
+                        .Unresolved => |expr_id| try self.resolveArrayLen(a, expr_id, loc),
+                    };
+                    len_val = blk.builder.tirValue(.ConstInt, blk, self.context.type_store.tUsize(), loc, .{ .value = len });
+                } else {
+                    len_val = blk.builder.extractFieldNamed(blk, self.context.type_store.tUsize(), value, f.builder.intern("len"), loc);
+                }
+
+                const range_ty = self.context.type_store.mkSlice(self.context.type_store.tUsize());
+                const inclusive = blk.builder.tirValue(.ConstBool, blk, self.context.type_store.tBool(), loc, .{ .value = false });
+                const range_val = blk.builder.rangeMake(blk, range_ty, start, len_val, inclusive, loc);
+                const rest_slice = blk.builder.indexOp(blk, slice_ty, value, range_val, loc);
+                try bindPattern(self, a, env, f, blk, rest_pat, rest_slice, slice_ty);
+            }
+        },
+        .VariantTuple => {
+            // Pattern like Some(x, y, ...)
+            const pr = a.pats.get(.VariantTuple, pid);
+            const segs = a.pats.seg_pool.slice(pr.path);
+            if (segs.len == 0) return;
+            const case_name = a.pats.PathSeg.get(segs[segs.len - 1]).name;
+
+            const tag_idx = self.tagIndexForCase(vty, case_name) orelse return;
+
+            // Build the union type that sits at field #1 of the runtime variant value
+            const union_ty = self.getUnionTypeFromVariant(vty) orelse return;
+
+            // Grab the union payload aggregate from the variant value
+            const union_agg = blk.builder.extractField(blk, union_ty, value, 1, loc);
+
+            // Determine the concrete payload type for this case
+            const payload_fields = self.context.type_store.field_pool.slice(
+                self.context.type_store.get(.Union, union_ty).fields,
+            );
+            const fld = self.context.type_store.Field.get(payload_fields[tag_idx]);
+            const payload_ty = fld.ty;
+
+            const pelems = a.pats.pat_pool.slice(pr.elems);
+
+            if (self.context.type_store.getKind(payload_ty) == .Tuple) {
+                // Read the whole tuple payload value, then destructure
+                const tuple_val = blk.builder.tirValue(.UnionField, blk, payload_ty, loc, .{
+                    .base = union_agg,
+                    .field_index = tag_idx,
+                });
+
+                const tr = self.context.type_store.get(.Tuple, payload_ty);
+                const subtys = self.context.type_store.type_pool.slice(tr.elems);
+
+                for (pelems, 0..) |pe, i| {
+                    const ety = if (i < subtys.len) subtys[i] else self.context.type_store.tAny();
+                    const ev = blk.builder.extractElem(blk, ety, tuple_val, @intCast(i), loc);
+                    try bindPattern(self, a, env, f, blk, pe, ev, ety);
+                }
+            } else {
+                // Single non-tuple payload
+                const pv = blk.builder.tirValue(.UnionField, blk, payload_ty, loc, .{
+                    .base = union_agg,
+                    .field_index = tag_idx,
+                });
+                if (pelems.len > 0) {
+                    try bindPattern(self, a, env, f, blk, pelems[0], pv, payload_ty);
+                }
+            }
+        },
+        .VariantStruct => {
+            const vs = a.pats.get(.VariantStruct, pid);
+            const vk = self.context.type_store.getKind(vty);
+            if (vk == .Struct) {
+                const pfields = a.pats.field_pool.slice(vs.fields);
+                for (pfields) |pfid| {
+                    const pf = a.pats.StructField.get(pfid);
+                    const struct_ty = self.context.type_store.get(.Struct, vty);
+                    const sfields = self.context.type_store.field_pool.slice(struct_ty.fields);
+                    for (sfields, 0..) |sfid, i| {
+                        const sf = self.context.type_store.Field.get(sfid);
+                        if (sf.name.eq(pf.name)) {
+                            const field_val = blk.builder.extractField(blk, sf.ty, value, @intCast(i), loc);
+                            try bindPattern(self, a, env, f, blk, pf.pattern, field_val, sf.ty);
+                            break;
+                        }
+                    }
+                }
+                return;
+            }
+
+            const segs = a.pats.seg_pool.slice(vs.path);
+            if (segs.len == 0) return;
+            const case_name = a.pats.PathSeg.get(segs[segs.len - 1]).name;
+
+            const tag_idx = self.tagIndexForCase(vty, case_name) orelse return;
+
+            const union_ty = self.getUnionTypeFromVariant(vty) orelse return;
+            const union_agg = blk.builder.extractField(blk, union_ty, value, 1, loc);
+
+            const payload_fields = self.context.type_store.field_pool.slice(
+                self.context.type_store.get(.Union, union_ty).fields,
+            );
+            const fld = self.context.type_store.Field.get(payload_fields[tag_idx]);
+            const payload_ty = fld.ty;
+
+            const struct_val = blk.builder.tirValue(.UnionField, blk, payload_ty, loc, .{
+                .base = union_agg,
+                .field_index = tag_idx,
+            });
+
+            const pfields = a.pats.field_pool.slice(vs.fields);
+            for (pfields) |pfid| {
+                const pf = a.pats.StructField.get(pfid);
+                const struct_ty = self.context.type_store.get(.Struct, payload_ty);
+                const sfields = self.context.type_store.field_pool.slice(struct_ty.fields);
+                for (sfields, 0..) |sfid, i| {
+                    const sf = self.context.type_store.Field.get(sfid);
+                    if (sf.name.eq(pf.name)) {
+                        const field_val = blk.builder.extractField(blk, sf.ty, struct_val, @intCast(i), loc);
+                        try bindPattern(self, a, env, f, blk, pf.pattern, field_val, sf.ty);
+                        break;
+                    }
+                }
+            }
+        },
+        // Other pattern forms can be added as needed.
+        else => {},
     }
 }
