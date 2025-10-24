@@ -127,13 +127,13 @@ pub const Pipeline = struct {
                 try self.context.diags.messages.appendSlice(try work.diags.messages.toOwnedSlice());
             }
             self.context.compilation_unit.mutex.lock();
-            const package_id = work.parser.cst.program.package_name.unwrap();
+            const package_id = work.parser.cst_u.program.package_name.unwrap();
             const package_name = self.context.interner.get(package_id);
             const package = self.context.compilation_unit.packages.getPtr(package_name);
             if (package) |pkg| {
                 try pkg.sources.put(self.allocator, work.path, .{
                     .file_id = work.file_id,
-                    .cst = work.parser.cst,
+                    .cst = work.parser.cst_u,
                     .ast = null,
                     .tir = null,
                     .type_info = null,
@@ -152,7 +152,7 @@ pub const Pipeline = struct {
                 const pkg = self.context.compilation_unit.packages.getPtr(package_name).?;
                 try pkg.sources.put(self.allocator, work.path, .{
                     .file_id = work.file_id,
-                    .cst = work.parser.cst,
+                    .cst = work.parser.cst_u,
                     .ast = null,
                     .tir = null,
                     .type_info = null,
