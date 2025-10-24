@@ -318,6 +318,7 @@ pub const InfixOp = enum(u16) {
 pub const MlirKind = enum(u8) { Module, Type, Attribute, Operation };
 pub const MlirPieceKind = enum(u8) { literal, splice };
 pub const CastKind = enum(u8) { normal, bitcast, saturate, wrap, checked };
+pub const LiteralKind = enum { int, float, string, raw_string, char, imaginary, true, false };
 
 ////////////////////////////////////////////////////////////////
 //                          IDs
@@ -429,7 +430,7 @@ pub const ExprKind = enum(u16) {
 
 pub const Rows = struct {
     // ---------- literals / identifiers ----------
-    pub const Literal = struct { value: StrId, tag_small: u16, loc: LocId };
+    pub const Literal = struct { value: StrId, tag_small: LiteralKind, loc: LocId };
     pub const Ident = struct { name: StrId, loc: LocId };
 
     // ---------- operators ----------

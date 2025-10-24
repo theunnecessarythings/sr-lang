@@ -143,7 +143,7 @@ inline fn exprIsIntegerLiteral(self: *const Parser, expr_id: cst.ExprId) bool {
     const kind = self.cst_u.exprs.index.kinds.items[expr_id.toRaw()];
     if (kind != .Literal) return false;
     const lit = self.cst_u.exprs.get(.Literal, expr_id);
-    return lit.tag_small == self.litSmall(.integer_literal);
+    return lit.tag_small == litTag(.integer_literal);
 }
 inline fn nextIsTerminator(self: *const Parser) bool {
     return switch (self.nxt.tag) {
@@ -167,17 +167,17 @@ fn isLiteral(_: *const Parser, t: Token.Tag) bool {
         else => false,
     };
 }
-fn litSmall(_: *const Parser, t: Token.Tag) u16 {
-    // pack your token literal kind into a small number; keep stable with checker
+fn litTag(t: Token.Tag) cst.LiteralKind {
     return switch (t) {
-        .integer_literal => 1,
-        .float_literal => 2,
-        .string_literal, .raw_string_literal => 3,
-        .char_literal => 4,
-        .imaginary_literal => 5,
-        .keyword_true => 6,
-        .keyword_false => 7,
-        else => 0,
+        .integer_literal => .int,
+        .float_literal => .float,
+        .string_literal => .string,
+        .raw_string_literal => .raw_string,
+        .char_literal => .char,
+        .imaginary_literal => .imaginary,
+        .keyword_true => .true,
+        .keyword_false => .false,
+        else => unreachable,
     };
 }
 
@@ -573,7 +573,7 @@ fn nud(self: *Parser, tag: Token.Tag, comptime mode: ParseMode) anyerror!cst.Exp
     if (self.isLiteralTag(tag)) {
         const loc = self.toLocId(self.cur.loc);
         const value = self.intern(self.slice(self.cur));
-        const tag_small: u16 = self.litSmall(tag);
+        const tag_small = litTag(tag);
         self.advance();
         return self.addExpr(.Literal, .{ .value = value, .tag_small = tag_small, .loc = loc });
     }

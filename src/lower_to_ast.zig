@@ -54,8 +54,11 @@ fn recordDependency(self: *Lower, dependency: ast.StrId) !void {
     try self.context.compilation_unit.addDependency(self.file_id, dependency);
 }
 
-fn unescapeString(self: *Lower, quoted_str: []const u8) !ast.StrId {
-    const inner_str = quoted_str[1 .. quoted_str.len - 1];
+fn unescapeString(self: *Lower, quoted_str: []const u8, raw: bool) !ast.StrId {
+    const inner_str = if (raw)
+        std.mem.trim(u8, quoted_str[1..], "\"#")
+    else
+        quoted_str[1 .. quoted_str.len - 1];
 
     var unescaped_list = std.array_list.Managed(u8).init(self.gpa);
     defer unescaped_list.deinit();
@@ -1035,7 +1038,7 @@ fn lowerLiteral(self: *Lower, id: cst.ExprId) !ast.ExprId {
     // tag_small mapping: 1=int, 2=float, 3=string, 4=char, 5=imag, 6=true, 7=false
     const loc = lit.loc;
     return switch (lit.tag_small) {
-        1 => blk: {
+        .int => blk: {
             const text = self.cst_program.exprs.strs.get(lit.value);
             const parsed = try self.parseIntLiteralText(text);
             break :blk self.ast_unit.exprs.add(.Literal, .{
@@ -1049,7 +1052,7 @@ fn lowerLiteral(self: *Lower, id: cst.ExprId) !ast.ExprId {
                 .loc = loc,
             });
         },
-        2 => blk_float: {
+        .float => blk_float: {
             const text = self.cst_program.exprs.strs.get(lit.value);
             const parsed = try self.parseFloatLiteralText(text);
             break :blk_float self.ast_unit.exprs.add(.Literal, .{
@@ -1058,7 +1061,7 @@ fn lowerLiteral(self: *Lower, id: cst.ExprId) !ast.ExprId {
                 .loc = loc,
             });
         },
-        4 => blk: {
+        .char => blk: {
             const unescaped_char_val = try self.unescapeChar(self.cst_program.exprs.strs.get(lit.value));
             break :blk self.ast_unit.exprs.add(.Literal, .{
                 .kind = .char,
@@ -1066,7 +1069,7 @@ fn lowerLiteral(self: *Lower, id: cst.ExprId) !ast.ExprId {
                 .loc = loc,
             });
         },
-        5 => blk_im: {
+        .imaginary => blk_im: {
             const s = self.cst_program.exprs.strs.get(lit.value);
             const trimmed: []const u8 = if (s.len > 0 and s[s.len - 1] == 'i') s[0 .. s.len - 1] else s;
             const parsed = try self.parseFloatLiteralText(trimmed);
@@ -1077,12 +1080,12 @@ fn lowerLiteral(self: *Lower, id: cst.ExprId) !ast.ExprId {
                 .loc = loc,
             });
         },
-        6 => self.ast_unit.exprs.add(.Literal, .{
+        .true => self.ast_unit.exprs.add(.Literal, .{
             .kind = .bool,
             .data = .{ .bool = true },
             .loc = loc,
         }),
-        7 => self.ast_unit.exprs.add(.Literal, .{
+        .false => self.ast_unit.exprs.add(.Literal, .{
             .kind = .bool,
             .data = .{ .bool = false },
             .loc = loc,
@@ -1090,7 +1093,7 @@ fn lowerLiteral(self: *Lower, id: cst.ExprId) !ast.ExprId {
         else => blk: {
             // fallback: treat as string
             const str = self.cst_program.exprs.strs.get(lit.value);
-            const unescaped = try self.unescapeString(str);
+            const unescaped = try self.unescapeString(str, lit.tag_small == .raw_string);
             break :blk self.ast_unit.exprs.add(.Literal, .{
                 .kind = .string,
                 .data = .{ .string = unescaped },
