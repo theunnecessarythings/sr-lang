@@ -251,7 +251,7 @@ pub const Pipeline = struct {
         var gen = codegen.Codegen.init(self.allocator, self.context, mlir_ctx_ptr.*);
         gen.resetDebugCaches();
 
-        var mlir_module = gen.emitModule(root_mod) catch |err| {
+        var mlir_module = gen.emit(&dep_levels) catch |err| {
             switch (err) {
                 error.CompilationFailed => {
                     return error.MlirCodegenFailed;

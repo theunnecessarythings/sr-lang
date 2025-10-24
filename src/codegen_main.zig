@@ -8,6 +8,7 @@ const cst = @import("cst.zig");
 const comp = @import("comptime.zig");
 const cast = @import("codegen_cast.zig");
 const debug = @import("codegen_debug.zig");
+const package = @import("package.zig");
 
 const Allocator = std.mem.Allocator;
 const ArrayList = std.array_list.Managed;
@@ -451,6 +452,31 @@ fn functionOptLoc(self: *Codegen, f_id: tir.FuncId, t: *const tir.TIR) tir.OptLo
 // ----------------------------------------------------------------
 // Public entry
 // ----------------------------------------------------------------
+
+pub fn emit(self: *Codegen, levels: *const compile.DependencyLevels) !mlir.Module {
+    var unit_by_file = std.AutoHashMap(u32, *package.FileUnit).init(self.gpa);
+    defer unit_by_file.deinit();
+
+    var pkg_iter = self.context.compilation_unit.packages.iterator();
+    while (pkg_iter.next()) |pkg| {
+        var source_iter = pkg.value_ptr.sources.iterator();
+        while (source_iter.next()) |unit| {
+            try unit_by_file.put(unit.value_ptr.file_id, unit.value_ptr);
+        }
+    }
+
+    for (levels.levels.items) |level| {
+        if (level.items.len == 0) continue;
+
+        for (level.items) |file_id| {
+            const unit = unit_by_file.get(file_id) orelse continue;
+            if (unit.tir == null) continue;
+            _ = try self.emitModule(unit.tir.?);
+        }
+    }
+    return self.module;
+}
+
 pub fn emitModule(
     self: *Codegen,
     t: *const tir.TIR,
