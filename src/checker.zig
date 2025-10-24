@@ -2992,25 +2992,30 @@ fn checkCall(self: *Checker, ast_unit: *ast.Ast, id: ast.ExprId) !?types.TypeId 
         }
 
         // Fast path B: (Type).Tag(...) for Variant/Error constructors — handle ONCE and return.
-        if (try check_types.typeFromTypeExpr(self, ast_unit, fr.parent)) |pty| {
-            const pk = self.typeKind(pty);
-            if (pk == .Variant or pk == .Error) {
-                const result_ty = try self.checkTagConstructorCall(ast_unit, pty, fr.field, args, call_loc);
-                if (result_ty != null) {
-                    // Also stamp the type of the callee expression as a function type
-                    if (self.getPayloadTypeForCase(pty, fr.field)) |payload_ty| {
-                        const payload_kind = self.typeKind(payload_ty);
-                        const params: []const types.TypeId = if (payload_kind == .Void)
-                            &.{}
-                        else if (payload_kind == .Tuple)
-                            self.context.type_store.type_pool.slice(self.context.type_store.get(.Tuple, payload_ty).elems)
-                        else
-                            &.{payload_ty};
-                        const fn_ty = self.context.type_store.mkFunction(params, pty, false, false);
-                        ast_unit.type_info.expr_types.items[call_expr.callee.toRaw()] = fn_ty;
+        const parent_of_field_access_ty_opt = try self.checkExpr(ast_unit, fr.parent);
+        if (parent_of_field_access_ty_opt) |parent_of_field_access_ty| {
+            const pk = self.typeKind(parent_of_field_access_ty);
+            if (pk == .TypeType) {
+                const inner_ty = self.context.type_store.get(.TypeType, parent_of_field_access_ty).of;
+                const inner_pk = self.typeKind(inner_ty);
+                if (inner_pk == .Variant or inner_pk == .Error) {
+                    const result_ty = try self.checkTagConstructorCall(ast_unit, inner_ty, fr.field, args, call_loc);
+                    if (result_ty != null) {
+                        // Also stamp the type of the callee expression as a function type
+                        if (self.getPayloadTypeForCase(inner_ty, fr.field)) |payload_ty| {
+                            const payload_kind = self.typeKind(payload_ty);
+                            const params: []const types.TypeId = if (payload_kind == .Void)
+                                &.{}
+                            else if (payload_kind == .Tuple)
+                                self.context.type_store.type_pool.slice(self.context.type_store.get(.Tuple, payload_ty).elems)
+                            else
+                                &.{payload_ty};
+                            const fn_ty = self.context.type_store.mkFunction(params, inner_ty, false, false);
+                            ast_unit.type_info.expr_types.items[call_expr.callee.toRaw()] = fn_ty;
+                        }
                     }
+                    return result_ty;
                 }
-                return result_ty;
             }
         }
     }
