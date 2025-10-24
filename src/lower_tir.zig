@@ -228,7 +228,7 @@ pub const LowerTir = struct {
         var infos = try self.collectBindingInfos(bindings);
         defer infos.deinit();
 
-        var scope = try self.enterMonomorphScope(infos.slice());
+        const scope = try self.enterMonomorphScope(infos.slice());
         if (!scope.active) return scope;
 
         // The context clones the binding infos; they can be dropped now.
@@ -437,7 +437,7 @@ pub const LowerTir = struct {
             const prev = blk.*;
             try f.builder.endBlock(f, prev);
 
-            self.emitGrowBlock(f, &grow_blk, cap_val, elem_size, loc, cont_blk.id);
+            try self.emitGrowBlock(f, &grow_blk, cap_val, elem_size, loc, cont_blk.id);
 
             blk.* = cont_blk;
         }
@@ -449,7 +449,7 @@ pub const LowerTir = struct {
             cap_val: tir.ValueId,
             elem_size: u64,
             loc: tir.OptLocId,
-            cont_id: Builder.BlockId,
+            cont_id: tir.BlockId,
         ) !void {
             const data_ptr = self.loadDataPtr(grow_blk, loc);
             const zero_const = self.constUsize(grow_blk, 0, loc);
@@ -575,8 +575,8 @@ pub const LowerTir = struct {
         return self.getExprType(a, expr);
     }
 
-    fn mlirGetDeclType(ctx: *anyopaque, a: *ast.Ast, decl: ast.DeclId) ?types.TypeId {
-        const self: *LowerTir = @ptrCast(@alignCast(ctx));
+    fn mlirGetDeclType(_: *anyopaque, a: *ast.Ast, decl: ast.DeclId) ?types.TypeId {
+        // const self: *LowerTir = @ptrCast(@alignCast(ctx));
         return getDeclType(a, decl);
     }
 
