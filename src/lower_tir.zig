@@ -12,6 +12,7 @@ const comp = @import("comptime.zig");
 const monomorphize = @import("monomorphize.zig");
 const check_types = @import("check_types.zig");
 const pipeline_mod = @import("pipeline.zig");
+const lower_mlir = @import("lower_mlir.zig");
 
 const StrId = @import("cst.zig").StrId;
 const OptStrId = @import("cst.zig").OptStrId;
@@ -20,6 +21,13 @@ const Pipeline = pipeline_mod.Pipeline;
 const Builder = tir.Builder;
 
 pub const LowerTir = struct {
+    pub const Inputs = struct {
+        allocator: std.mem.Allocator,
+        context: *Context,
+        pipeline: *Pipeline,
+        checker: *checker.Checker,
+    };
+
     gpa: std.mem.Allocator,
     context: *Context,
     pipeline: *Pipeline,
@@ -33,25 +41,18 @@ pub const LowerTir = struct {
     monomorphizer: monomorphize.Monomorphizer,
     monomorph_context_stack: std.ArrayListUnmanaged(monomorphize.MonomorphizationContext) = .{},
     expr_type_override_stack: std.ArrayListUnmanaged(ExprTypeOverrideFrame) = .{},
+    mlir_lower: lower_mlir.LowerMlir,
 
-    var g_mlir_inited: bool = false;
-    var g_mlir_ctx: mlir.Context = undefined;
-
-    pub fn init(
-        gpa: std.mem.Allocator,
-        context: *Context,
-        pipeline: *Pipeline,
-        chk: *checker.Checker,
-    ) LowerTir {
+    pub fn init(inputs: Inputs) LowerTir {
         return .{
-            .gpa = gpa,
-            .context = context,
-            .pipeline = pipeline,
-            .chk = chk,
-            .module_call_cache = std.AutoHashMap(u64, StrId).init(gpa),
-            .method_lowered = std.AutoHashMap(usize, void).init(gpa),
-            .monomorphizer = monomorphize.Monomorphizer.init(gpa),
-            .expr_type_override_stack = .{},
+            .gpa = inputs.allocator,
+            .context = inputs.context,
+            .pipeline = inputs.pipeline,
+            .chk = inputs.checker,
+            .module_call_cache = std.AutoHashMap(u64, StrId).init(inputs.allocator),
+            .method_lowered = std.AutoHashMap(usize, void).init(inputs.allocator),
+            .monomorphizer = monomorphize.Monomorphizer.init(inputs.allocator),
+            .mlir_lower = lower_mlir.LowerMlir.init(inputs.allocator, inputs.context),
         };
     }
 
@@ -59,18 +60,31 @@ pub const LowerTir = struct {
         self.loop_stack.deinit(self.gpa);
         self.module_call_cache.deinit();
         self.method_lowered.deinit();
-        while (self.monomorph_context_stack.items.len > 0) {
-            var ctx = self.monomorph_context_stack.pop().?;
-            ctx.deinit(self.gpa);
-        }
+        while (self.monomorph_context_stack.items.len > 0) self.popMonomorphContext();
         self.monomorph_context_stack.deinit(self.gpa);
-        while (self.expr_type_override_stack.items.len > 0) {
-            self.expr_type_override_stack.items[self.expr_type_override_stack.items.len - 1].deinit(self.gpa);
-            self.expr_type_override_stack.items.len -= 1;
-        }
+        while (self.expr_type_override_stack.items.len > 0) self.releaseTopOverrideFrame();
         self.expr_type_override_stack.deinit(self.gpa);
         self.monomorphizer.deinit();
+        self.mlir_lower.deinit();
     }
+
+    const ModuleState = struct {
+        tir: tir.TIR,
+        builder: Builder,
+
+        fn init(allocator: std.mem.Allocator, type_store: *types.TypeStore) ModuleState {
+            var state = ModuleState{
+                .tir = tir.TIR.init(allocator, type_store),
+                .builder = undefined,
+            };
+            state.builder = Builder.init(allocator, &state.tir);
+            return state;
+        }
+
+        fn intoResult(self: ModuleState) tir.TIR {
+            return self.tir;
+        }
+    };
 
     const BindingSnapshot = struct {
         name: ast.StrId,
@@ -79,9 +93,79 @@ pub const LowerTir = struct {
 
     const ExprTypeOverrideFrame = struct {
         map: std.AutoArrayHashMapUnmanaged(u32, types.TypeId) = .{},
+    };
 
-        fn deinit(self: *ExprTypeOverrideFrame, gpa: std.mem.Allocator) void {
-            self.map.deinit(gpa);
+    const ExprTypeOverrideScope = struct {
+        lowerer: *LowerTir,
+        active: bool,
+
+        fn begin(lowerer: *LowerTir) !ExprTypeOverrideScope {
+            try lowerer.expr_type_override_stack.append(lowerer.gpa, .{});
+            return .{ .lowerer = lowerer, .active = true };
+        }
+
+        pub fn end(self: *ExprTypeOverrideScope) void {
+            if (!self.active) return;
+            self.lowerer.releaseTopOverrideFrame();
+            self.active = false;
+        }
+
+        pub fn deinit(self: *ExprTypeOverrideScope) void {
+            self.end();
+        }
+    };
+
+    const MonomorphScope = struct {
+        lowerer: *LowerTir,
+        active: bool,
+
+        fn init(lowerer: *LowerTir, active: bool) MonomorphScope {
+            return .{ .lowerer = lowerer, .active = active };
+        }
+
+        pub fn end(self: *MonomorphScope) void {
+            if (!self.active) return;
+            self.lowerer.popMonomorphContext();
+            self.active = false;
+        }
+
+        pub fn deinit(self: *MonomorphScope) void {
+            self.end();
+        }
+    };
+
+    const BindingInfoBuffer = struct {
+        allocator: std.mem.Allocator,
+        items: []monomorphize.BindingInfo,
+        len: usize,
+
+        fn init(allocator: std.mem.Allocator, count: usize) !BindingInfoBuffer {
+            if (count == 0) {
+                return .{ .allocator = allocator, .items = &[_]monomorphize.BindingInfo{}, .len = 0 };
+            }
+            return .{ .allocator = allocator, .items = try allocator.alloc(monomorphize.BindingInfo, count), .len = 0 };
+        }
+
+        fn append(self: *BindingInfoBuffer, info: monomorphize.BindingInfo) void {
+            std.debug.assert(self.len < self.items.len);
+            self.items[self.len] = info;
+            self.len += 1;
+        }
+
+        fn slice(self: *const BindingInfoBuffer) []const monomorphize.BindingInfo {
+            return self.items[0..self.len];
+        }
+
+        fn deinit(self: *BindingInfoBuffer) void {
+            var i: usize = 0;
+            while (i < self.len) : (i += 1) {
+                self.items[i].deinit(self.allocator);
+            }
+            if (self.items.len != 0) {
+                self.allocator.free(self.items);
+            }
+            self.items = &[_]monomorphize.BindingInfo{};
+            self.len = 0;
         }
     };
 
@@ -90,64 +174,90 @@ pub const LowerTir = struct {
         decl_id: ast.DeclId,
     };
 
-    fn pushExprTypeOverrideFrame(self: *LowerTir) !void {
-        try self.expr_type_override_stack.append(self.gpa, .{});
+    fn beginExprTypeOverrideScope(self: *LowerTir) !ExprTypeOverrideScope {
+        return ExprTypeOverrideScope.begin(self);
     }
 
-    fn popExprTypeOverrideFrame(self: *LowerTir) void {
+    fn currentOverrideFrame(self: *LowerTir) ?*ExprTypeOverrideFrame {
+        if (self.expr_type_override_stack.items.len == 0) return null;
+        const idx = self.expr_type_override_stack.items.len - 1;
+        return &self.expr_type_override_stack.items[idx];
+    }
+
+    fn releaseTopOverrideFrame(self: *LowerTir) void {
         if (self.expr_type_override_stack.items.len == 0) return;
         const idx = self.expr_type_override_stack.items.len - 1;
-        self.expr_type_override_stack.items[idx].deinit(self.gpa);
-        self.expr_type_override_stack.items.len -= 1;
+        self.expr_type_override_stack.items[idx].map.deinit(self.gpa);
+        self.expr_type_override_stack.items.len = idx;
     }
 
-    fn pushComptimeBindings(self: *LowerTir, bindings: []const Pipeline.ComptimeBinding) !bool {
-        if (bindings.len == 0) return false;
+    fn popMonomorphContext(self: *LowerTir) void {
+        if (self.monomorph_context_stack.items.len == 0) return;
+        const idx = self.monomorph_context_stack.items.len - 1;
+        var ctx = self.monomorph_context_stack.items[idx];
+        self.monomorph_context_stack.items.len = idx;
+        ctx.deinit(self.gpa);
+    }
 
-        var infos = try self.gpa.alloc(monomorphize.BindingInfo, bindings.len);
-        var init_count: usize = 0;
-        const info_cleanup = true;
-        defer {
-            if (info_cleanup) {
-                var j: usize = 0;
-                while (j < init_count) : (j += 1) infos[j].deinit(self.gpa);
-                self.gpa.free(infos);
-            }
+    fn collectBindingInfos(
+        self: *LowerTir,
+        bindings: []const Pipeline.ComptimeBinding,
+    ) !BindingInfoBuffer {
+        var buffer = try BindingInfoBuffer.init(self.gpa, bindings.len);
+        errdefer buffer.deinit();
+
+        for (bindings) |binding| {
+            const info = switch (binding) {
+                .type_param => |tp| monomorphize.BindingInfo.typeParam(tp.name, tp.ty),
+                .value_param => |vp| try monomorphize.BindingInfo.valueParam(self.gpa, vp.name, vp.ty, vp.value),
+            };
+            buffer.append(info);
         }
 
-        for (bindings, 0..) |binding, i| {
-            switch (binding) {
-                .type_param => |tp| {
-                    infos[i] = monomorphize.BindingInfo.typeParam(tp.name, tp.ty);
-                },
-                .value_param => |vp| {
-                    infos[i] = try monomorphize.BindingInfo.valueParam(self.gpa, vp.name, vp.ty, vp.value);
-                },
-            }
-            init_count = i + 1;
+        return buffer;
+    }
+
+    fn enterMonomorphScope(
+        self: *LowerTir,
+        infos: []const monomorphize.BindingInfo,
+    ) !MonomorphScope {
+        if (infos.len == 0) {
+            return MonomorphScope.init(self, false);
         }
 
         var ctx = try monomorphize.MonomorphizationContext.init(
             self.gpa,
-            infos[0..init_count],
+            infos,
             0,
             self.context.type_store.tVoid(),
         );
         errdefer ctx.deinit(self.gpa);
 
-        self.monomorph_context_stack.append(self.gpa, ctx) catch |err| {
-            ctx.deinit(self.gpa);
-            return err;
-        };
+        try self.monomorph_context_stack.append(self.gpa, ctx);
+        return MonomorphScope.init(self, true);
+    }
 
-        return true;
+    fn pushComptimeBindings(
+        self: *LowerTir,
+        bindings: []const Pipeline.ComptimeBinding,
+    ) !MonomorphScope {
+        if (bindings.len == 0) return MonomorphScope.init(self, false);
+
+        var infos = try self.collectBindingInfos(bindings);
+        defer infos.deinit();
+
+        var scope = try self.enterMonomorphScope(infos.slice());
+        if (!scope.active) return scope;
+
+        // The context clones the binding infos; they can be dropped now.
+        return scope;
     }
 
     fn noteExprType(self: *LowerTir, expr: ast.ExprId, ty: types.TypeId) !void {
-        if (self.expr_type_override_stack.items.len == 0) return;
+        const frame = self.currentOverrideFrame() orelse return;
         if (self.isAny(ty)) return;
-        var frame = &self.expr_type_override_stack.items[self.expr_type_override_stack.items.len - 1];
-        try frame.map.put(self.gpa, expr.toRaw(), ty);
+        const entry = try frame.map.getOrPut(self.gpa, expr.toRaw());
+        entry.value_ptr.* = ty;
     }
 
     fn lookupExprTypeOverride(self: *const LowerTir, expr: ast.ExprId) ?types.TypeId {
@@ -162,40 +272,228 @@ pub const LowerTir = struct {
         return null;
     }
 
+    const LiteralPayload = union(enum) {
+        int: u128,
+        float: f64,
+        bool: bool,
+        string: ast.StrId,
+    };
+
+    fn literalPayload(a: *ast.Ast, expr: ast.ExprId) ?LiteralPayload {
+        const kind = a.exprs.index.kinds.items[expr.toRaw()];
+        if (kind != .Literal) return null;
+        const lit = a.exprs.get(.Literal, expr);
+
+        return switch (lit.kind) {
+            .int => blk: {
+                const info = switch (lit.data) {
+                    .int => |int_info| int_info,
+                    else => return null,
+                };
+                if (!info.valid) break :blk null;
+                break :blk LiteralPayload{ .int = info.value };
+            },
+            .float => blk: {
+                const info = switch (lit.data) {
+                    .float => |float_info| float_info,
+                    else => return null,
+                };
+                if (!info.valid) break :blk null;
+                break :blk LiteralPayload{ .float = info.value };
+            },
+            .bool => blk: {
+                const value = switch (lit.data) {
+                    .bool => |b| b,
+                    else => return null,
+                };
+                break :blk LiteralPayload{ .bool = value };
+            },
+            .string => blk: {
+                const sid = switch (lit.data) {
+                    .string => |s_id| s_id,
+                    else => return null,
+                };
+                break :blk LiteralPayload{ .string = sid };
+            },
+            else => null,
+        };
+    }
+
     fn constInitFromLiteral(
         self: *LowerTir,
         a: *ast.Ast,
         expr: ast.ExprId,
         ty: types.TypeId,
     ) ?tir.ConstInit {
-        const kind = a.exprs.index.kinds.items[expr.toRaw()];
-        if (kind != .Literal) return null;
-        const lit = a.exprs.get(.Literal, expr);
-
+        const payload = literalPayload(a, expr) orelse return null;
         const ty_kind = self.context.type_store.getKind(ty);
         return switch (ty_kind) {
-            .I8, .I16, .I32, .I64, .U8, .U16, .U32, .U64, .Usize => blk: {
-                if (lit.kind != .int) break :blk null;
-                const info = switch (lit.data) {
-                    .int => |int_info| int_info,
-                    else => return null,
-                };
-                if (!info.valid) break :blk null;
-                const max_i64: u128 = @intCast(std.math.maxInt(i64));
-                if (info.value > max_i64) break :blk null;
-                break :blk tir.ConstInit{ .int = @intCast(info.value) };
+            .I8, .I16, .I32, .I64, .U8, .U16, .U32, .U64, .Usize => switch (payload) {
+                .int => |value| blk: {
+                    const max_i64: u128 = @intCast(std.math.maxInt(i64));
+                    if (value > max_i64) break :blk null;
+                    break :blk tir.ConstInit{ .int = @intCast(value) };
+                },
+                else => null,
             },
-            .Bool => blk: {
-                if (lit.kind != .bool) break :blk null;
-                const value = switch (lit.data) {
-                    .bool => |b| b,
-                    else => return null,
-                };
-                break :blk tir.ConstInit{ .bool = value };
+            .Bool => switch (payload) {
+                .bool => |b| tir.ConstInit{ .bool = b },
+                else => null,
             },
             else => null,
         };
     }
+
+    const DynArrayView = struct {
+        elem_ty: types.TypeId,
+        usize_ty: types.TypeId,
+        ptr_elem_ty: types.TypeId,
+        ptr_ptr_elem_ty: types.TypeId,
+        ptr_usize_ty: types.TypeId,
+        ptr_void_ty: types.TypeId,
+        data_ptr_ptr: tir.ValueId,
+        len_ptr: tir.ValueId,
+        cap_ptr: tir.ValueId,
+
+        fn init(
+            lowerer: *LowerTir,
+            blk: *Builder.BlockFrame,
+            owner_ty: types.TypeId,
+            array_ptr: tir.ValueId,
+            loc: tir.OptLocId,
+        ) !DynArrayView {
+            const ts = lowerer.context.type_store;
+            if (ts.getKind(owner_ty) != .DynArray) return error.LoweringBug;
+
+            const dyn_info = ts.get(.DynArray, owner_ty);
+            const elem_ty = dyn_info.elem;
+            const usize_ty = ts.tUsize();
+            const ptr_elem_ty = ts.mkPtr(elem_ty, false);
+            const ptr_ptr_elem_ty = ts.mkPtr(ptr_elem_ty, false);
+            const ptr_usize_ty = ts.mkPtr(usize_ty, false);
+            const ptr_void_ty = ts.mkPtr(ts.tVoid(), false);
+
+            return .{
+                .elem_ty = elem_ty,
+                .usize_ty = usize_ty,
+                .ptr_elem_ty = ptr_elem_ty,
+                .ptr_ptr_elem_ty = ptr_ptr_elem_ty,
+                .ptr_usize_ty = ptr_usize_ty,
+                .ptr_void_ty = ptr_void_ty,
+                .data_ptr_ptr = blk.builder.gep(blk, ptr_ptr_elem_ty, array_ptr, &.{blk.builder.gepConst(0)}, loc),
+                .len_ptr = blk.builder.gep(blk, ptr_usize_ty, array_ptr, &.{blk.builder.gepConst(1)}, loc),
+                .cap_ptr = blk.builder.gep(blk, ptr_usize_ty, array_ptr, &.{blk.builder.gepConst(2)}, loc),
+            };
+        }
+
+        fn loadLen(self: *const DynArrayView, blk: *Builder.BlockFrame, loc: tir.OptLocId) tir.ValueId {
+            return blk.builder.tirValue(.Load, blk, self.usize_ty, loc, .{ .ptr = self.len_ptr, .@"align" = 0 });
+        }
+
+        fn loadCap(self: *const DynArrayView, blk: *Builder.BlockFrame, loc: tir.OptLocId) tir.ValueId {
+            return blk.builder.tirValue(.Load, blk, self.usize_ty, loc, .{ .ptr = self.cap_ptr, .@"align" = 0 });
+        }
+
+        fn loadDataPtr(self: *const DynArrayView, blk: *Builder.BlockFrame, loc: tir.OptLocId) tir.ValueId {
+            return blk.builder.tirValue(.Load, blk, self.ptr_elem_ty, loc, .{ .ptr = self.data_ptr_ptr, .@"align" = 0 });
+        }
+
+        fn storeDataPtr(self: *const DynArrayView, blk: *Builder.BlockFrame, value: tir.ValueId, loc: tir.OptLocId) void {
+            _ = blk.builder.tirValue(.Store, blk, self.ptr_elem_ty, loc, .{ .ptr = self.data_ptr_ptr, .value = value, .@"align" = 0 });
+        }
+
+        fn storeElement(
+            self: *const DynArrayView,
+            blk: *Builder.BlockFrame,
+            ptr: tir.ValueId,
+            value: tir.ValueId,
+            loc: tir.OptLocId,
+        ) void {
+            _ = blk.builder.tirValue(.Store, blk, self.elem_ty, loc, .{ .ptr = ptr, .value = value, .@"align" = 0 });
+        }
+
+        fn storeLen(self: *const DynArrayView, blk: *Builder.BlockFrame, value: tir.ValueId, loc: tir.OptLocId) void {
+            _ = blk.builder.tirValue(.Store, blk, self.usize_ty, loc, .{ .ptr = self.len_ptr, .value = value, .@"align" = 0 });
+        }
+
+        fn storeCap(self: *const DynArrayView, blk: *Builder.BlockFrame, value: tir.ValueId, loc: tir.OptLocId) void {
+            _ = blk.builder.tirValue(.Store, blk, self.usize_ty, loc, .{ .ptr = self.cap_ptr, .value = value, .@"align" = 0 });
+        }
+
+        fn constUsize(self: *const DynArrayView, blk: *Builder.BlockFrame, value: u64, loc: tir.OptLocId) tir.ValueId {
+            return blk.builder.tirValue(.ConstInt, blk, self.usize_ty, loc, .{ .value = value });
+        }
+
+        fn elementPtr(
+            self: *const DynArrayView,
+            blk: *Builder.BlockFrame,
+            data_ptr: tir.ValueId,
+            index_val: tir.ValueId,
+            loc: tir.OptLocId,
+        ) tir.ValueId {
+            const idx = blk.builder.gepValue(index_val);
+            return blk.builder.gep(blk, self.ptr_elem_ty, data_ptr, &.{idx}, loc);
+        }
+
+        fn ensureCapacity(
+            self: *const DynArrayView,
+            lowerer: *LowerTir,
+            f: *Builder.FunctionFrame,
+            blk: *Builder.BlockFrame,
+            len_val: tir.ValueId,
+            cap_val: tir.ValueId,
+            elem_size: u64,
+            loc: tir.OptLocId,
+        ) !void {
+            const need_grow = blk.builder.binBool(blk, .CmpEq, len_val, cap_val, loc);
+            var grow_blk = try f.builder.beginBlock(f);
+            const cont_blk = try f.builder.beginBlock(f);
+
+            const cond = lowerer.forceLocalCond(blk, need_grow, loc);
+            try f.builder.condBr(blk, cond, grow_blk.id, &.{}, cont_blk.id, &.{}, loc);
+
+            const prev = blk.*;
+            try f.builder.endBlock(f, prev);
+
+            self.emitGrowBlock(f, &grow_blk, cap_val, elem_size, loc, cont_blk.id);
+
+            blk.* = cont_blk;
+        }
+
+        fn emitGrowBlock(
+            self: *const DynArrayView,
+            f: *Builder.FunctionFrame,
+            grow_blk: *Builder.BlockFrame,
+            cap_val: tir.ValueId,
+            elem_size: u64,
+            loc: tir.OptLocId,
+            cont_id: Builder.BlockId,
+        ) !void {
+            const data_ptr = self.loadDataPtr(grow_blk, loc);
+            const zero_const = self.constUsize(grow_blk, 0, loc);
+            const cap_is_zero = grow_blk.builder.binBool(grow_blk, .CmpEq, cap_val, zero_const, loc);
+            const doubled = grow_blk.builder.bin(grow_blk, .Mul, self.usize_ty, cap_val, self.constUsize(grow_blk, 2, loc), loc);
+            const new_cap = grow_blk.builder.tirValue(.Select, grow_blk, self.usize_ty, loc, .{
+                .cond = cap_is_zero,
+                .then_value = self.constUsize(grow_blk, 1, loc),
+                .else_value = doubled,
+            });
+
+            const elem_size_const = self.constUsize(grow_blk, elem_size, loc);
+            const new_bytes = grow_blk.builder.bin(grow_blk, .Mul, self.usize_ty, new_cap, elem_size_const, loc);
+
+            const data_ptr_void = grow_blk.builder.tirValue(.CastBit, grow_blk, self.ptr_void_ty, loc, .{ .value = data_ptr });
+            const realloc_name = grow_blk.builder.intern("rt_realloc");
+            const new_data_void = grow_blk.builder.call(grow_blk, self.ptr_void_ty, realloc_name, &.{ data_ptr_void, new_bytes }, loc);
+            const new_data_ptr = grow_blk.builder.tirValue(.CastBit, grow_blk, self.ptr_elem_ty, loc, .{ .value = new_data_void });
+
+            self.storeDataPtr(grow_blk, new_data_ptr, loc);
+            self.storeCap(grow_blk, new_cap, loc);
+
+            try f.builder.br(grow_blk, cont_id, &.{}, loc);
+            try f.builder.endBlock(f, grow_blk.*);
+        }
+    };
 
     fn lowerDynArrayAppend(
         self: *LowerTir,
@@ -208,293 +506,189 @@ pub const LowerTir = struct {
         std.debug.assert(binding.builtin != null and binding.builtin.? == .dynarray_append);
         if (args.len < 2) return error.LoweringBug;
 
-        const ts = self.context.type_store;
-        const owner_kind = ts.getKind(binding.owner_type);
-        if (owner_kind != .DynArray) return error.LoweringBug;
+        var view = try DynArrayView.init(self, blk, binding.owner_type, args[0], loc);
+        const elem_size = check_types.typeSize(self.chk, view.elem_ty) orelse return error.LoweringBug;
+        const elem_size_u64 = std.math.cast(u64, elem_size) orelse return error.LoweringBug;
 
-        const dyn_info = ts.get(.DynArray, binding.owner_type);
-        const elem_ty = dyn_info.elem;
-        const usize_ty = ts.tUsize();
-        const ptr_elem_ty = ts.mkPtr(elem_ty, false);
-        const ptr_ptr_elem_ty = ts.mkPtr(ptr_elem_ty, false);
-        const ptr_usize_ty = ts.mkPtr(usize_ty, false);
-        const ptr_void_ty = ts.mkPtr(ts.tVoid(), false);
+        const len_val = view.loadLen(blk, loc);
+        const cap_val = view.loadCap(blk, loc);
+        try view.ensureCapacity(self, f, blk, len_val, cap_val, elem_size_u64, loc);
 
-        const array_ptr = args[0];
-        const value = args[1];
+        const data_ptr = view.loadDataPtr(blk, loc);
+        const len_cur = view.loadLen(blk, loc);
+        const slot_ptr = view.elementPtr(blk, data_ptr, len_cur, loc);
+        view.storeElement(blk, slot_ptr, args[1], loc);
 
-        const data_ptr_ptr = blk.builder.gep(blk, ptr_ptr_elem_ty, array_ptr, &.{blk.builder.gepConst(0)}, loc);
-        const len_ptr = blk.builder.gep(blk, ptr_usize_ty, array_ptr, &.{blk.builder.gepConst(1)}, loc);
-        const cap_ptr = blk.builder.gep(blk, ptr_usize_ty, array_ptr, &.{blk.builder.gepConst(2)}, loc);
+        const new_len = blk.builder.bin(
+            blk,
+            .Add,
+            view.usize_ty,
+            len_cur,
+            view.constUsize(blk, 1, loc),
+            loc,
+        );
+        view.storeLen(blk, new_len, loc);
 
-        const len_val = blk.builder.tirValue(.Load, blk, usize_ty, loc, .{ .ptr = len_ptr, .@"align" = 0 });
-        const cap_val = blk.builder.tirValue(.Load, blk, usize_ty, loc, .{ .ptr = cap_ptr, .@"align" = 0 });
-
-        const need_grow_raw = blk.builder.binBool(blk, .CmpEq, len_val, cap_val, loc);
-
-        var grow_blk = try f.builder.beginBlock(f);
-        const cont_blk = try f.builder.beginBlock(f);
-
-        const grow_cond = self.forceLocalCond(blk, need_grow_raw, loc);
-        try f.builder.condBr(blk, grow_cond, grow_blk.id, &.{}, cont_blk.id, &.{}, loc);
-        {
-            const old = blk.*;
-            try f.builder.endBlock(f, old);
-        }
-
-        {
-            // Growth path
-            const data_ptr = grow_blk.builder.tirValue(.Load, &grow_blk, ptr_elem_ty, loc, .{ .ptr = data_ptr_ptr, .@"align" = 0 });
-            const zero_const = grow_blk.builder.tirValue(.ConstInt, &grow_blk, usize_ty, loc, .{ .value = 0 });
-            const cap_is_zero = grow_blk.builder.binBool(&grow_blk, .CmpEq, cap_val, zero_const, loc);
-            const one_const = grow_blk.builder.tirValue(.ConstInt, &grow_blk, usize_ty, loc, .{ .value = 1 });
-            const two_const = grow_blk.builder.tirValue(.ConstInt, &grow_blk, usize_ty, loc, .{ .value = 2 });
-            const doubled = grow_blk.builder.bin(&grow_blk, .Mul, usize_ty, cap_val, two_const, loc);
-            const new_cap = grow_blk.builder.tirValue(.Select, &grow_blk, usize_ty, loc, .{
-                .cond = cap_is_zero,
-                .then_value = one_const,
-                .else_value = doubled,
-            });
-
-            const elem_size = check_types.typeSize(self.chk, elem_ty) orelse return error.LoweringBug;
-            const elem_size_u64 = std.math.cast(u64, elem_size) orelse return error.LoweringBug;
-            const elem_size_const = grow_blk.builder.tirValue(.ConstInt, &grow_blk, usize_ty, loc, .{ .value = elem_size_u64 });
-            const new_bytes = grow_blk.builder.bin(&grow_blk, .Mul, usize_ty, new_cap, elem_size_const, loc);
-
-            const data_ptr_void = grow_blk.builder.tirValue(.CastBit, &grow_blk, ptr_void_ty, loc, .{ .value = data_ptr });
-            const realloc_name = grow_blk.builder.intern("rt_realloc");
-            const new_data_void = grow_blk.builder.call(&grow_blk, ptr_void_ty, realloc_name, &.{ data_ptr_void, new_bytes }, loc);
-            const new_data_ptr = grow_blk.builder.tirValue(.CastBit, &grow_blk, ptr_elem_ty, loc, .{ .value = new_data_void });
-
-            _ = grow_blk.builder.tirValue(.Store, &grow_blk, ptr_elem_ty, loc, .{ .ptr = data_ptr_ptr, .value = new_data_ptr, .@"align" = 0 });
-            _ = grow_blk.builder.tirValue(.Store, &grow_blk, usize_ty, loc, .{ .ptr = cap_ptr, .value = new_cap, .@"align" = 0 });
-
-            try f.builder.br(&grow_blk, cont_blk.id, &.{}, loc);
-            try f.builder.endBlock(f, grow_blk);
-        }
-
-        blk.* = cont_blk;
-
-        const data_ptr_cur = blk.builder.tirValue(.Load, blk, ptr_elem_ty, loc, .{ .ptr = data_ptr_ptr, .@"align" = 0 });
-        const len_cur = blk.builder.tirValue(.Load, blk, usize_ty, loc, .{ .ptr = len_ptr, .@"align" = 0 });
-
-        const len_index = blk.builder.gepValue(len_cur);
-        const slot_ptr = blk.builder.gep(blk, ptr_elem_ty, data_ptr_cur, &.{len_index}, loc);
-        _ = blk.builder.tirValue(.Store, blk, elem_ty, loc, .{ .ptr = slot_ptr, .value = value, .@"align" = 0 });
-
-        const one_inc = blk.builder.tirValue(.ConstInt, blk, usize_ty, loc, .{ .value = 1 });
-        const new_len = blk.builder.bin(blk, .Add, usize_ty, len_cur, one_inc, loc);
-        _ = blk.builder.tirValue(.Store, blk, usize_ty, loc, .{ .ptr = len_ptr, .value = new_len, .@"align" = 0 });
-
-        return self.safeUndef(blk, ts.tVoid(), loc);
+        return self.emitUndefValue(blk, self.context.type_store.tVoid(), loc, false);
     }
 
-    fn lowerGlobalMlir(self: *LowerTir, a: *ast.Ast, b: *Builder) !void {
-        var global_mlir_decls: std.ArrayList(ast.DeclId) = .empty;
-        defer global_mlir_decls.deinit(self.gpa);
-
-        const decls = a.exprs.decl_pool.slice(a.unit.decls);
-        for (decls) |did| {
-            const d = a.exprs.Decl.get(did);
-            const kind = a.exprs.index.kinds.items[d.value.toRaw()];
-            if (kind == .MlirBlock and d.pattern.isNone()) {
-                try global_mlir_decls.append(self.gpa, did);
-            }
-        }
-
-        if (global_mlir_decls.items.len == 0) return;
-
-        const name = b.intern("__sr_global_mlir_init");
-        var f = try b.beginFunction(name, self.context.type_store.tVoid(), false, .empty());
-        var blk = try b.beginBlock(&f);
-        var env = Env.init(self.gpa);
-        defer env.deinit(self.gpa);
-
-        for (global_mlir_decls.items) |did| {
-            const d = a.exprs.Decl.get(did);
-            _ = try self.lowerExpr(a, &env, &f, &blk, d.value, null, .rvalue);
-        }
-
-        if (blk.term.isNone()) {
-            // This synthesized initializer has no source span; emit a location-less return.
-            try b.setReturn(&blk, .none(), tir.OptLocId.none());
-        }
-        try b.endBlock(&f, blk);
-        try b.endFunction(f);
-    }
-
-    fn lowerMlirBlock(
-        self: *LowerTir,
-        a: *ast.Ast,
-        env: *Env,
-        f: *Builder.FunctionFrame,
-        blk: *Builder.BlockFrame,
-        id: ast.ExprId,
-        expected_ty: ?types.TypeId,
-        loc: tir.OptLocId,
-    ) !tir.ValueId {
-        const row = a.exprs.get(.MlirBlock, id);
-        const expr_ty_opt = self.getExprType(a, id);
-        var ty0 = expr_ty_opt orelse (expected_ty orelse self.context.type_store.tAny());
-        if (self.isAny(ty0)) {
-            ty0 = switch (row.kind) {
-                .Module => self.context.type_store.tMlirModule(),
-                .Attribute => self.context.type_store.tMlirAttribute(),
-                .Type => self.context.type_store.tMlirType(),
-                .Operation => ty0,
-            };
-        }
-        if (expected_ty) |want| {
-            if (expr_ty_opt) |expr_ty| {
-                if (self.isAny(expr_ty) and !self.isAny(want)) {
-                    ty0 = want;
-                }
-            } else {
-                ty0 = want;
-            }
-        }
-
-        // Lower args
-        const ast_piece_ids = a.exprs.mlir_piece_pool.slice(row.pieces);
-        var tir_piece_ids = std.ArrayListUnmanaged(tir.MlirPieceId){};
-        defer tir_piece_ids.deinit(self.gpa);
-        for (ast_piece_ids) |pid| {
-            const piece = a.exprs.MlirPiece.get(pid);
-            var splice_value: comp.ComptimeValue = .Void;
-            if (piece.kind == .splice) {
-                splice_value = try self.resolveMlirSpliceValue(a, env, f, blk, pid, piece.text, row.loc);
-            }
-            const new_id = blk.builder.t.instrs.addMlirPieceRow(
-                .{ .kind = piece.kind, .text = piece.text, .value = splice_value },
-            );
-            tir_piece_ids.append(self.gpa, new_id) catch @panic("OOM");
-        }
-        const pieces_range = blk.builder.t.instrs.mlir_piece_pool.pushMany(self.gpa, tir_piece_ids.items);
-
-        const arg_ids = a.exprs.expr_pool.slice(row.args);
-        var arg_vals = try self.gpa.alloc(tir.ValueId, arg_ids.len);
-        defer self.gpa.free(arg_vals);
-        for (arg_ids, 0..) |arg_id, i| {
-            arg_vals[i] = try self.lowerExpr(a, env, f, blk, arg_id, null, .rvalue);
-        }
-        const args_range = blk.builder.t.instrs.value_pool.pushMany(self.gpa, arg_vals);
-
-        const result_id = blk.builder.freshValue();
-        const iid = blk.builder.t.instrs.add(.MlirBlock, .{
-            .result = .some(result_id),
-            .ty = ty0,
-            .kind = row.kind,
-            .expr = id,
-            .text = row.text,
-            .pieces = pieces_range,
-            .args = args_range,
-            .loc = loc,
-        });
-        blk.instrs.append(self.gpa, iid) catch @panic("OOM");
-        if (expected_ty) |want| {
-            if (!ty0.eq(want)) {
-                return self.emitCoerce(blk, result_id, ty0, want, loc);
-            }
-        }
-        return result_id;
-    }
-
-    fn cloneComptimeValue(self: *LowerTir, value: comp.ComptimeValue) !comp.ComptimeValue {
-        return switch (value) {
-            .Void => .Void,
-            .Int => |v| .{ .Int = v },
-            .Float => |v| .{ .Float = v },
-            .Bool => |v| .{ .Bool = v },
-            .String => |s| .{ .String = try self.gpa.dupe(u8, s) },
-            .Type => |ty| .{ .Type = ty },
-            .MlirType => |ty| .{ .MlirType = ty },
-            .MlirAttribute => |attr| .{ .MlirAttribute = attr },
-            .MlirModule => |mod| blk: {
-                const cloned_op = mlir.Operation.clone(mod.getOperation());
-                break :blk .{ .MlirModule = mlir.Module.fromOperation(cloned_op) };
-            },
+    fn mlirHooks(self: *LowerTir) lower_mlir.Hooks {
+        return .{
+            .host = self,
+            .lowerExprValue = mlirLowerExprValue,
+            .evalComptimeExpr = mlirEvalComptimeExpr,
+            .emitCoerce = mlirEmitCoerce,
+            .getExprType = mlirGetExprType,
+            .getDeclType = mlirGetDeclType,
+            .isAny = mlirIsAny,
+            .lookupMonomorphValue = mlirLookupMonomorphValue,
+            .lookupMonomorphType = mlirLookupMonomorphType,
+            .createEnv = mlirCreateEnv,
+            .destroyEnv = mlirDestroyEnv,
         };
     }
 
-    fn resolveMlirSpliceValue(
-        self: *LowerTir,
+    fn mlirLowerExprValue(
+        ctx: *anyopaque,
         a: *ast.Ast,
-        env: *Env,
+        env_ptr: *anyopaque,
         f: *Builder.FunctionFrame,
         blk: *Builder.BlockFrame,
-        piece_id: ast.MlirPieceId,
-        name: StrId,
-        loc_id: ast.LocId,
-    ) !comp.ComptimeValue {
-        const info = a.type_info.getMlirSpliceInfo(piece_id) orelse return error.LoweringBug;
-        const diag_loc = a.exprs.locs.get(loc_id);
-        const name_str = a.exprs.strs.get(name);
-        switch (info) {
-            .decl => |decl_info| {
-                const decl = a.exprs.Decl.get(decl_info.decl_id);
-                const expect_ty = getDeclType(a, decl_info.decl_id) orelse
-                    (self.getExprType(a, decl.value) orelse self.context.type_store.tAny());
-                return self.evalComptimeExprValue(a, env, f, blk, decl.value, expect_ty);
-            },
-            .value_param => |param_info| {
-                var i: usize = self.monomorph_context_stack.items.len;
-                while (i > 0) {
-                    i -= 1;
-                    const ctx = &self.monomorph_context_stack.items[i];
-                    if (ctx.lookupValue(param_info.name)) |binding| {
-                        return self.cloneComptimeValue(binding.value);
-                    }
-                }
-                try self.context.diags.addError(diag_loc, .mlir_splice_unbound, .{name_str});
-                return error.LoweringBug;
-            },
-            .type_param => |param_info| {
-                var i: usize = self.monomorph_context_stack.items.len;
-                while (i > 0) {
-                    i -= 1;
-                    const ctx = &self.monomorph_context_stack.items[i];
-                    if (ctx.lookupType(param_info.name)) |ty| {
-                        return comp.ComptimeValue{ .Type = ty };
-                    }
-                }
-                try self.context.diags.addError(diag_loc, .mlir_splice_unbound, .{name_str});
-                return error.LoweringBug;
-            },
+        expr: ast.ExprId,
+        expected: ?types.TypeId,
+    ) anyerror!tir.ValueId {
+        const self: *LowerTir = @ptrCast(@alignCast(ctx));
+        const env: *Env = @ptrCast(@alignCast(env_ptr));
+        return self.lowerExpr(a, env, f, blk, expr, expected, .rvalue);
+    }
+
+    fn mlirEvalComptimeExpr(
+        ctx: *anyopaque,
+        a: *ast.Ast,
+        env_ptr: *anyopaque,
+        f: *Builder.FunctionFrame,
+        blk: *Builder.BlockFrame,
+        expr: ast.ExprId,
+        result_ty: types.TypeId,
+    ) anyerror!comp.ComptimeValue {
+        const self: *LowerTir = @ptrCast(@alignCast(ctx));
+        const env: *Env = @ptrCast(@alignCast(env_ptr));
+        return self.evalComptimeExprValue(a, env, f, blk, expr, result_ty);
+    }
+
+    fn mlirEmitCoerce(
+        ctx: *anyopaque,
+        blk: *Builder.BlockFrame,
+        value: tir.ValueId,
+        from_ty: types.TypeId,
+        to_ty: types.TypeId,
+        loc: tir.OptLocId,
+    ) anyerror!tir.ValueId {
+        const self: *LowerTir = @ptrCast(@alignCast(ctx));
+        return self.emitCoerce(blk, value, from_ty, to_ty, loc);
+    }
+
+    fn mlirGetExprType(ctx: *anyopaque, a: *ast.Ast, expr: ast.ExprId) ?types.TypeId {
+        const self: *LowerTir = @ptrCast(@alignCast(ctx));
+        return self.getExprType(a, expr);
+    }
+
+    fn mlirGetDeclType(ctx: *anyopaque, a: *ast.Ast, decl: ast.DeclId) ?types.TypeId {
+        const self: *LowerTir = @ptrCast(@alignCast(ctx));
+        return getDeclType(a, decl);
+    }
+
+    fn mlirIsAny(ctx: *anyopaque, ty: types.TypeId) bool {
+        const self: *LowerTir = @ptrCast(@alignCast(ctx));
+        return self.isAny(ty);
+    }
+
+    fn mlirLookupMonomorphValue(ctx: *anyopaque, name: ast.StrId) anyerror!?comp.ComptimeValue {
+        const self: *LowerTir = @ptrCast(@alignCast(ctx));
+        var i: usize = self.monomorph_context_stack.items.len;
+        while (i > 0) {
+            i -= 1;
+            if (self.monomorph_context_stack.items[i].lookupValue(name)) |binding| {
+                return try comp.cloneValue(self.gpa, binding.value);
+            }
         }
+        return null;
+    }
+
+    fn mlirLookupMonomorphType(ctx: *anyopaque, name: ast.StrId) ?types.TypeId {
+        const self: *LowerTir = @ptrCast(@alignCast(ctx));
+        var i: usize = self.monomorph_context_stack.items.len;
+        while (i > 0) {
+            i -= 1;
+            if (self.monomorph_context_stack.items[i].lookupType(name)) |ty| {
+                return ty;
+            }
+        }
+        return null;
+    }
+
+    fn mlirCreateEnv(ctx: *anyopaque) anyerror!*anyopaque {
+        const self: *LowerTir = @ptrCast(@alignCast(ctx));
+        const env = try self.gpa.create(Env);
+        env.* = Env.init(self.gpa);
+        return @ptrCast(env);
+    }
+
+    fn mlirDestroyEnv(ctx: *anyopaque, env_ptr: *anyopaque) void {
+        const self: *LowerTir = @ptrCast(@alignCast(ctx));
+        const env: *Env = @ptrCast(@alignCast(env_ptr));
+        env.deinit(self.gpa);
+        self.gpa.destroy(env);
     }
 
     pub fn run(self: *LowerTir) !tir.TIR {
-        const main_pkg = self.context.compilation_unit.packages.getPtr("main") orelse return error.PackageNotFound;
-        const main_ast = main_pkg.sources.entries.get(0).value.ast.?;
-        return self.runAst(main_ast);
+        return self.runAst(try self.requireMainAst());
     }
 
     pub fn runAst(self: *LowerTir, ast_unit: *ast.Ast) !tir.TIR {
-        var t = tir.TIR.init(self.gpa, self.context.type_store);
-        var b = Builder.init(self.gpa, &t);
+        var module = try self.prepareModule(ast_unit);
+        try self.lowerTopDecls(ast_unit, &module);
+        try self.lowerDeferredMethods(ast_unit, &module);
+        try self.monomorphizer.run(self, ast_unit, &module.builder, monomorphLowerCallback);
+        return self.finishModule(module);
+    }
 
-        self.module_call_cache.clearRetainingCapacity();
-        self.method_lowered.clearRetainingCapacity();
+    fn requireMainAst(self: *LowerTir) !*ast.Ast {
+        const main_pkg = self.context.compilation_unit.packages.getPtr("main") orelse return error.PackageNotFound;
+        return main_pkg.sources.entries.get(0).value.ast.?;
+    }
 
-        try self.lowerGlobalMlir(ast_unit, &b);
+    fn prepareModule(self: *LowerTir, ast_unit: *ast.Ast) !ModuleState {
+        self.resetModuleCaches();
+        var module = ModuleState.init(self.gpa, self.context.type_store);
+        try self.mlir_lower.emitGlobalInit(self.mlirHooks(), ast_unit, &module.builder);
+        return module;
+    }
 
-        // Lower top-level decls: functions and globals
+    fn lowerTopDecls(self: *LowerTir, ast_unit: *ast.Ast, module: *ModuleState) !void {
         const decls = ast_unit.exprs.decl_pool.slice(ast_unit.unit.decls);
-        for (decls) |did| try self.lowerTopDecl(ast_unit, &b, did);
+        for (decls) |decl_id| try self.lowerTopDecl(ast_unit, &module.builder, decl_id);
+    }
 
+    fn lowerDeferredMethods(self: *LowerTir, ast_unit: *ast.Ast, module: *ModuleState) !void {
         var method_it = ast_unit.type_info.method_table.iterator();
         while (method_it.next()) |entry| {
             const method = entry.value_ptr.*;
-            // if (method.module_id != self.module_id) continue;
             const decl_id = method.decl_id;
             if (self.method_lowered.contains(decl_id.toRaw())) continue;
             const name = try self.methodSymbolName(ast_unit, decl_id);
-            try self.tryLowerNamedFunction(ast_unit, &b, decl_id, name, true);
+            try self.tryLowerNamedFunction(ast_unit, &module.builder, decl_id, name, true);
         }
+    }
 
-        try self.monomorphizer.run(self, ast_unit, &b, monomorphLowerCallback);
+    fn finishModule(self: *LowerTir, module: ModuleState) tir.TIR {
+        _ = self;
+        return module.intoResult();
+    }
 
-        return t;
+    fn resetModuleCaches(self: *LowerTir) void {
+        self.module_call_cache.clearRetainingCapacity();
+        self.method_lowered.clearRetainingCapacity();
     }
 
     // ============================
@@ -502,27 +696,23 @@ pub const LowerTir = struct {
     // ============================
 
     fn resolveArrayLen(self: *LowerTir, a: *ast.Ast, size_expr: ast.ExprId, loc: tir.OptLocId) !usize {
-        const comptime_val = self.runComptimeExpr(a, size_expr, self.context.type_store.tUsize(), &[_]Pipeline.ComptimeBinding{}) catch |err| {
-            std.debug.print("error while resolving array len: {any}\n", .{err});
-            if (loc.isNone()) {
-                // TODO: better location
-            } else {
-                try self.context.diags.addError(a.exprs.locs.get(loc.unwrap()), .array_size_not_integer_literal, .{});
-            }
+        const value = self.runComptimeExpr(a, size_expr, self.context.type_store.tUsize(), &[_]Pipeline.ComptimeBinding{}) catch {
+            try self.reportArrayLenError(a, loc);
             return error.ComptimeEvalFailed;
         };
 
-        return switch (comptime_val) {
+        return switch (value) {
             .Int => |i| @intCast(i),
-            else => {
-                if (loc.isNone()) {
-                    // TODO: better location
-                } else {
-                    try self.context.diags.addError(a.exprs.locs.get(loc.unwrap()), .array_size_not_integer_literal, .{});
-                }
-                return error.ComptimeEvalFailed;
+            else => blk: {
+                try self.reportArrayLenError(a, loc);
+                break :blk error.ComptimeEvalFailed;
             },
         };
+    }
+
+    fn reportArrayLenError(self: *LowerTir, a: *ast.Ast, loc: tir.OptLocId) !void {
+        if (loc.isNone()) return;
+        try self.context.diags.addError(a.exprs.locs.get(loc.unwrap()), .array_size_not_integer_literal, .{});
     }
 
     const LowerMode = enum { rvalue, lvalue_addr };
@@ -531,31 +721,58 @@ pub const LowerTir = struct {
         return self.context.type_store.index.kinds.items[ty.toRaw()] == .Void;
     }
 
-    inline fn locToOpt(_: *const LowerTir, loc: ast.LocId) tir.OptLocId {
-        return tir.OptLocId.some(loc);
-    }
+    const DefaultLocResolver = struct {
+        fn resolve(
+            _: *const LowerTir,
+            _: *ast.Ast,
+            comptime _: anytype,
+            row: anytype,
+        ) tir.OptLocId {
+            if (comptime @hasField(@TypeOf(row), "loc")) {
+                return tir.OptLocId.some(@field(row, "loc"));
+            }
+            if (comptime @hasField(@TypeOf(row), "opt_loc")) {
+                const opt_loc = @field(row, "opt_loc");
+                return if (opt_loc.isNone()) tir.OptLocId.none() else tir.OptLocId.some(opt_loc.unwrap());
+            }
+            return tir.OptLocId.none();
+        }
+    };
 
-    inline fn optLocToOpt(_: *const LowerTir, opt_loc: ast.OptLocId) tir.OptLocId {
-        return if (opt_loc.isNone()) tir.OptLocId.none() else tir.OptLocId.some(opt_loc.unwrap());
-    }
+    const StmtLocResolver = struct {
+        fn resolve(self: *const LowerTir, a: *ast.Ast, comptime tag: ast.StmtKind, row: anytype) tir.OptLocId {
+            return switch (tag) {
+                .Expr => self.exprOptLoc(a, row.expr),
+                .Decl => blk: {
+                    const decl_row = a.exprs.Decl.get(row.decl);
+                    break :blk DefaultLocResolver.resolve(self, a, @as(ast.ExprKind, .Decl), decl_row);
+                },
+                else => DefaultLocResolver.resolve(self, a, tag, row),
+            };
+        }
+    };
 
-    inline fn rowOptLoc(self: *const LowerTir, row: anytype) tir.OptLocId {
-        if (comptime @hasField(@TypeOf(row), "loc")) {
-            return self.locToOpt(row.loc);
+    fn optNodeLoc(
+        self: *const LowerTir,
+        a: *ast.Ast,
+        arena: anytype,
+        id: anytype,
+        comptime KindEnum: type,
+        comptime Resolver: type,
+    ) tir.OptLocId {
+        const kind = arena.index.kinds.items[id.toRaw()];
+        inline for (@typeInfo(KindEnum).@"enum".fields) |field| {
+            const tag: KindEnum = @enumFromInt(field.value);
+            if (tag == kind) {
+                const row = arena.get(tag, id);
+                return Resolver.resolve(self, a, tag, row);
+            }
         }
         return tir.OptLocId.none();
     }
 
     fn exprOptLoc(self: *const LowerTir, a: *ast.Ast, id: ast.ExprId) tir.OptLocId {
-        const kind = a.exprs.index.kinds.items[id.toRaw()];
-        inline for (@typeInfo(ast.ExprKind).@"enum".fields) |field| {
-            const tag: ast.ExprKind = @enumFromInt(field.value);
-            if (tag == kind) {
-                const row = a.exprs.get(tag, id);
-                return self.rowOptLoc(row);
-            }
-        }
-        return tir.OptLocId.none();
+        return self.optNodeLoc(a, a.exprs, id, ast.ExprKind, DefaultLocResolver);
     }
 
     fn optExprOptLoc(self: *const LowerTir, a: *ast.Ast, id: ast.OptExprId) tir.OptLocId {
@@ -563,15 +780,7 @@ pub const LowerTir = struct {
     }
 
     fn patternOptLoc(self: *const LowerTir, a: *ast.Ast, id: ast.PatternId) tir.OptLocId {
-        const kind = a.pats.index.kinds.items[id.toRaw()];
-        inline for (@typeInfo(ast.PatternKind).@"enum".fields) |field| {
-            const tag: ast.PatternKind = @enumFromInt(field.value);
-            if (tag == kind) {
-                const row = a.pats.get(tag, id);
-                return self.rowOptLoc(row);
-            }
-        }
-        return tir.OptLocId.none();
+        return self.optNodeLoc(a, a.pats, id, ast.PatternKind, DefaultLocResolver);
     }
 
     fn optPatternOptLoc(self: *const LowerTir, a: *ast.Ast, id: ast.OptPatternId) tir.OptLocId {
@@ -579,40 +788,135 @@ pub const LowerTir = struct {
     }
 
     fn stmtOptLoc(self: *const LowerTir, a: *ast.Ast, id: ast.StmtId) tir.OptLocId {
-        const kind = a.stmts.index.kinds.items[id.toRaw()];
-        inline for (@typeInfo(ast.StmtKind).@"enum".fields) |field| {
-            const tag: ast.StmtKind = @enumFromInt(field.value);
-            if (tag == kind) {
-                const row = a.stmts.get(tag, id);
-                return self.stmtRowOptLoc(a, tag, row);
-            }
-        }
-        return tir.OptLocId.none();
+        return self.optNodeLoc(a, a.stmts, id, ast.StmtKind, StmtLocResolver);
     }
 
-    fn stmtRowOptLoc(
-        self: *const LowerTir,
-        a: *ast.Ast,
-        comptime tag: ast.StmtKind,
-        row: ast.StmtRowT(tag),
-    ) tir.OptLocId {
-        return switch (tag) {
-            .Expr => self.exprOptLoc(a, row.expr),
-            .Decl => self.rowOptLoc(a.exprs.Decl.get(row.decl)),
-            else => self.rowOptLoc(row),
-        };
-    }
-
-    // Produce an undef that is never-void; if asked for void, give Any instead.
-    fn safeUndef(self: *LowerTir, blk: *Builder.BlockFrame, ty: types.TypeId, loc: tir.OptLocId) tir.ValueId {
-        if (self.isVoid(ty)) {
+    fn emitUndefValue(
+        self: *LowerTir,
+        blk: *Builder.BlockFrame,
+        ty: types.TypeId,
+        loc: tir.OptLocId,
+        allow_void: bool,
+    ) tir.ValueId {
+        if (!allow_void and self.isVoid(ty)) {
             return blk.builder.tirValue(.ConstUndef, blk, self.context.type_store.tAny(), loc, .{});
         }
         return blk.builder.tirValue(.ConstUndef, blk, ty, loc, .{});
     }
 
-    fn undef(_: *LowerTir, blk: *Builder.BlockFrame, ty: types.TypeId, loc: tir.OptLocId) tir.ValueId {
-        return blk.builder.tirValue(.ConstUndef, blk, ty, loc, .{});
+    fn tryWrapIntoErrorSet(
+        self: *LowerTir,
+        blk: *Builder.BlockFrame,
+        value: tir.ValueId,
+        got: types.TypeId,
+        want: types.TypeId,
+        loc: tir.OptLocId,
+    ) ?tir.ValueId {
+        const ts = self.context.type_store;
+        if (ts.index.kinds.items[want.toRaw()] != .ErrorSet) return null;
+
+        const es = ts.get(.ErrorSet, want);
+        var fields = [_]types.TypeStore.StructFieldArg{
+            .{ .name = blk.builder.intern("Ok"), .ty = es.value_ty },
+            .{ .name = blk.builder.intern("Err"), .ty = es.error_ty },
+        };
+        const payload_ty = ts.mkUnion(fields[0..]);
+
+        if (got.toRaw() == es.value_ty.toRaw()) {
+            const ok_tag = blk.builder.tirValue(.ConstInt, blk, ts.tI32(), loc, .{ .value = 0 });
+            const payload = blk.builder.tirValue(.UnionMake, blk, payload_ty, loc, .{
+                .field_index = 0,
+                .value = value,
+            });
+            return blk.builder.structMake(blk, want, &[_]tir.Rows.StructFieldInit{
+                .{ .index = 0, .name = .none(), .value = ok_tag },
+                .{ .index = 1, .name = .none(), .value = payload },
+            }, loc);
+        }
+
+        if (got.toRaw() == es.error_ty.toRaw()) {
+            const err_tag = blk.builder.tirValue(.ConstInt, blk, ts.tI32(), loc, .{ .value = 1 });
+            const payload = blk.builder.tirValue(.UnionMake, blk, payload_ty, loc, .{
+                .field_index = 1,
+                .value = value,
+            });
+            return blk.builder.structMake(blk, want, &[_]tir.Rows.StructFieldInit{
+                .{ .index = 0, .name = .none(), .value = err_tag },
+                .{ .index = 1, .name = .none(), .value = payload },
+            }, loc);
+        }
+
+        return null;
+    }
+
+    fn tryCoerceOptional(
+        self: *LowerTir,
+        blk: *Builder.BlockFrame,
+        value: tir.ValueId,
+        got: types.TypeId,
+        want: types.TypeId,
+        loc: tir.OptLocId,
+    ) ?tir.ValueId {
+        const ts = self.context.type_store;
+        if (ts.index.kinds.items[want.toRaw()] != .Optional) return null;
+
+        const opt = ts.get(.Optional, want);
+        const bool_ty = ts.tBool();
+
+        if (ts.index.kinds.items[got.toRaw()] == .Optional) {
+            const got_opt = ts.get(.Optional, got);
+            if (got_opt.elem.eq(opt.elem)) return value;
+
+            const flag = blk.builder.extractField(blk, bool_ty, value, 0, loc);
+            var payload = blk.builder.extractField(blk, got_opt.elem, value, 1, loc);
+            payload = self.emitCoerce(blk, payload, got_opt.elem, opt.elem, loc);
+            return blk.builder.structMake(blk, want, &[_]tir.Rows.StructFieldInit{
+                .{ .index = 0, .name = .none(), .value = flag },
+                .{ .index = 1, .name = .none(), .value = payload },
+            }, loc);
+        }
+
+        const payload = self.emitCoerce(blk, value, got, opt.elem, loc);
+        const tag = blk.builder.tirValue(.ConstBool, blk, bool_ty, loc, .{ .value = true });
+        return blk.builder.structMake(blk, want, &[_]tir.Rows.StructFieldInit{
+            .{ .index = 0, .name = .none(), .value = tag },
+            .{ .index = 1, .name = .none(), .value = payload },
+        }, loc);
+    }
+
+    fn tryCoerceNumeric(
+        self: *LowerTir,
+        blk: *Builder.BlockFrame,
+        value: tir.ValueId,
+        got: types.TypeId,
+        want: types.TypeId,
+        loc: tir.OptLocId,
+    ) ?tir.ValueId {
+        const ts = self.context.type_store;
+        if (!isNumericKind(ts.index.kinds.items[got.toRaw()])) return null;
+        if (!isNumericKind(ts.index.kinds.items[want.toRaw()])) return null;
+        return blk.builder.tirValue(.CastNormal, blk, want, loc, .{ .value = value });
+    }
+
+    fn tryCoercePointer(
+        self: *LowerTir,
+        blk: *Builder.BlockFrame,
+        value: tir.ValueId,
+        got: types.TypeId,
+        want: types.TypeId,
+        loc: tir.OptLocId,
+    ) ?tir.ValueId {
+        const ts = self.context.type_store;
+        if (ts.index.kinds.items[got.toRaw()] != .Ptr) return null;
+        if (ts.index.kinds.items[want.toRaw()] != .Ptr) return null;
+        return blk.builder.tirValue(.CastBit, blk, want, loc, .{ .value = value });
+    }
+
+    inline fn isNumericKind(kind: types.TypeKind) bool {
+        return switch (kind) {
+            .I8, .I16, .I32, .I64, .U8, .U16, .U32, .U64, .Usize, .F32, .F64 => true,
+            else => false,
+        };
     }
 
     /// Insert an explicit coercion that realizes what the checker proved assignable/castable.
@@ -626,91 +930,11 @@ pub const LowerTir = struct {
     ) tir.ValueId {
         if (got.eq(want)) return v;
 
-        const ts = self.context.type_store;
-        const gk = ts.index.kinds.items[got.toRaw()];
-        const wk = ts.index.kinds.items[want.toRaw()];
+        if (self.tryWrapIntoErrorSet(blk, v, got, want, loc)) |coerced| return coerced;
+        if (self.tryCoerceOptional(blk, v, got, want, loc)) |coerced| return coerced;
+        if (self.tryCoerceNumeric(blk, v, got, want, loc)) |coerced| return coerced;
+        if (self.tryCoercePointer(blk, v, got, want, loc)) |coerced| return coerced;
 
-        // ---- Special-case: wrap into ErrorSet ----
-        if (wk == .ErrorSet) {
-            const es = ts.get(.ErrorSet, want);
-
-            // payload union: { Ok: T, Err: E }
-            var uf = [_]types.TypeStore.StructFieldArg{
-                .{ .name = blk.builder.intern("Ok"), .ty = es.value_ty },
-                .{ .name = blk.builder.intern("Err"), .ty = es.error_ty },
-            };
-            const payload_union_ty = ts.mkUnion(uf[0..]);
-
-            // Value T -> Ok
-            if (got.toRaw() == es.value_ty.toRaw()) {
-                const tag_ok = blk.builder.tirValue(.ConstInt, blk, ts.tI32(), loc, .{ .value = 0 });
-                const payload = blk.builder.tirValue(.UnionMake, blk, payload_union_ty, loc, .{
-                    .field_index = 0, // Ok
-                    .value = v,
-                });
-                return blk.builder.structMake(blk, want, &[_]tir.Rows.StructFieldInit{
-                    .{ .index = 0, .name = .none(), .value = tag_ok },
-                    .{ .index = 1, .name = .none(), .value = payload },
-                }, loc);
-            }
-
-            // Error E -> Err
-            if (got.toRaw() == es.error_ty.toRaw()) {
-                const tag_err = blk.builder.tirValue(.ConstInt, blk, ts.tI32(), loc, .{ .value = 1 });
-                const payload = blk.builder.tirValue(.UnionMake, blk, payload_union_ty, loc, .{
-                    .field_index = 1, // Err
-                    .value = v,
-                });
-                return blk.builder.structMake(blk, want, &[_]tir.Rows.StructFieldInit{
-                    .{ .index = 0, .name = .none(), .value = tag_err },
-                    .{ .index = 1, .name = .none(), .value = payload },
-                }, loc);
-            }
-            // else fall through (e.g., Any → ErrorSet: let the generic path try)
-        }
-
-        if (wk == .Optional) {
-            const opt = ts.get(.Optional, want);
-            const bool_ty = ts.tBool();
-
-            if (gk == .Optional) {
-                const got_opt = ts.get(.Optional, got);
-                if (got_opt.elem.eq(opt.elem)) return v;
-
-                const flag = blk.builder.extractField(blk, bool_ty, v, 0, loc);
-                var payload = blk.builder.extractField(blk, got_opt.elem, v, 1, loc);
-                payload = self.emitCoerce(blk, payload, got_opt.elem, opt.elem, loc);
-                return blk.builder.structMake(blk, want, &[_]tir.Rows.StructFieldInit{
-                    .{ .index = 0, .name = .none(), .value = flag },
-                    .{ .index = 1, .name = .none(), .value = payload },
-                }, loc);
-            }
-
-            const payload = self.emitCoerce(blk, v, got, opt.elem, loc);
-            const some_flag = blk.builder.tirValue(.ConstBool, blk, bool_ty, loc, .{ .value = true });
-            return blk.builder.structMake(blk, want, &[_]tir.Rows.StructFieldInit{
-                .{ .index = 0, .name = .none(), .value = some_flag },
-                .{ .index = 1, .name = .none(), .value = payload },
-            }, loc);
-        }
-
-        // Numeric ⇄ numeric
-        const is_num_got = switch (gk) {
-            .I8, .I16, .I32, .I64, .U8, .U16, .U32, .U64, .Usize, .F32, .F64 => true,
-            else => false,
-        };
-        const is_num_want = switch (wk) {
-            .I8, .I16, .I32, .I64, .U8, .U16, .U32, .U64, .Usize, .F32, .F64 => true,
-            else => false,
-        };
-        if (is_num_got and is_num_want)
-            return blk.builder.tirValue(.CastNormal, blk, want, loc, .{ .value = v });
-
-        // Ptr ⇄ Ptr
-        if (gk == .Ptr and wk == .Ptr)
-            return blk.builder.tirValue(.CastBit, blk, want, loc, .{ .value = v });
-
-        // Fallback: materialize/assignable
         return blk.builder.tirValue(.CastNormal, blk, want, loc, .{ .value = v });
     }
 
@@ -761,7 +985,7 @@ pub const LowerTir = struct {
         const kind = a.exprs.index.kinds.items[d.value.toRaw()];
 
         if (kind == .MlirBlock and d.pattern.isNone()) {
-            return; // handled by lowerGlobalMlir
+            return; // handled by MLIR global initializer synthesis
         }
 
         if (kind == .FunctionLit and !a.exprs.get(.FunctionLit, d.value).flags.is_extern) {
@@ -825,10 +1049,10 @@ pub const LowerTir = struct {
         const fnty = self.context.type_store.get(.Function, fid);
 
         const fnr = a.exprs.get(.FunctionLit, fun_eid);
-        const fn_loc = self.locToOpt(fnr.loc);
+        const fn_loc = tir.OptLocId.some(fnr.loc);
 
-        try self.pushExprTypeOverrideFrame();
-        defer self.popExprTypeOverrideFrame();
+        var override_scope = try self.beginExprTypeOverrideScope();
+        defer override_scope.deinit();
 
         if (!fnr.attrs.isNone()) {
             const attrs = a.exprs.attr_pool.slice(fnr.attrs.asRange());
@@ -1639,11 +1863,8 @@ pub const LowerTir = struct {
         result_ty: types.TypeId,
         bindings: []const Pipeline.ComptimeBinding,
     ) !comp.ComptimeValue {
-        const pushed = try self.pushComptimeBindings(bindings);
-        defer if (pushed) {
-            var popped = self.monomorph_context_stack.pop();
-            if (popped) |*ctx| ctx.deinit(self.gpa);
-        };
+        var monomorph_scope = try self.pushComptimeBindings(bindings);
+        defer monomorph_scope.deinit();
 
         const result_kind = self.context.type_store.getKind(result_ty);
         if (result_kind == .TypeType) {
@@ -1692,11 +1913,8 @@ pub const LowerTir = struct {
         try tmp_builder.endBlock(&thunk_fn, thunk_blk);
         try tmp_builder.endFunction(thunk_fn);
 
-        if (!g_mlir_inited) {
-            g_mlir_ctx = compile.initMLIR(self.gpa);
-            g_mlir_inited = true;
-        }
-        var gen = codegen.Codegen.init(self.gpa, self.context, g_mlir_ctx);
+        const mlir_ctx = self.mlir_lower.ensureContext();
+        var gen = codegen.Codegen.init(self.gpa, self.context, mlir_ctx);
         defer gen.deinit();
         const prev_debug_flag = codegen.enable_debug_info;
         codegen.enable_debug_info = false;
@@ -1859,43 +2077,16 @@ pub const LowerTir = struct {
     }
 
     fn constValueFromLiteral(self: *LowerTir, a: *ast.Ast, expr: ast.ExprId) !?comp.ComptimeValue {
-        const kind = a.exprs.index.kinds.items[expr.toRaw()];
-        if (kind != .Literal) return null;
-        const lit = a.exprs.get(.Literal, expr);
-
-        return switch (lit.kind) {
-            .int => blk: {
-                const info = switch (lit.data) {
-                    .int => |int_info| int_info,
-                    else => return null,
-                };
-                if (!info.valid) return null;
-                break :blk comp.ComptimeValue{ .Int = info.value };
+        const payload = literalPayload(a, expr) orelse return null;
+        return switch (payload) {
+            .int => |value| comp.ComptimeValue{ .Int = value },
+            .float => |value| comp.ComptimeValue{ .Float = value },
+            .bool => |value| comp.ComptimeValue{ .Bool = value },
+            .string => |sid| blk: {
+                const text = a.exprs.strs.get(sid);
+                const owned = try self.gpa.dupe(u8, text);
+                break :blk comp.ComptimeValue{ .String = owned };
             },
-            .float => blk: {
-                const info = switch (lit.data) {
-                    .float => |float_info| float_info,
-                    else => return null,
-                };
-                if (!info.valid) return null;
-                break :blk comp.ComptimeValue{ .Float = info.value };
-            },
-            .bool => blk: {
-                const value = switch (lit.data) {
-                    .bool => |b| b,
-                    else => return null,
-                };
-                break :blk comp.ComptimeValue{ .Bool = value };
-            },
-            .string => blk: {
-                const s = switch (lit.data) {
-                    .string => |s_id| a.exprs.strs.get(s_id),
-                    else => return null,
-                };
-                const owned_s = try self.gpa.dupe(u8, s);
-                break :blk comp.ComptimeValue{ .String = owned_s };
-            },
-            else => null,
         };
     }
 
@@ -2318,7 +2509,7 @@ pub const LowerTir = struct {
     ) tir.ValueId {
         const ty0 = self.getExprType(a, id) orelse self.context.type_store.tAny();
         const loc = self.exprOptLoc(a, id);
-        const v = self.safeUndef(blk, ty0, loc);
+        const v = self.emitUndefValue(blk, ty0, loc, false);
         if (expected_ty) |want| return self.emitCoerce(blk, v, ty0, want, loc);
         return v;
     }
@@ -3011,7 +3202,7 @@ pub const LowerTir = struct {
         const ty0 = self.getExprType(a, id) orelse (expected_ty orelse self.context.type_store.tAny());
         const loc = self.exprOptLoc(a, id);
         if (self.context.type_store.getKind(payload_ty) != .Void) return null;
-        const tag_val = blk.builder.extractField(blk, self.context.type_store.tI32(), self.safeUndef(blk, ty, loc), 0, loc);
+        const tag_val = blk.builder.extractField(blk, self.context.type_store.tI32(), self.emitUndefValue(blk, ty, loc, false), 0, loc);
         if (expected_ty) |want| return self.emitCoerce(blk, tag_val, ty0, want, loc);
         return tag_val;
     }
@@ -3168,7 +3359,7 @@ pub const LowerTir = struct {
                     else
                         blk.builder.tirValue(.UnionMake, blk, union_ty, loc, .{
                             .field_index = resolved_idx,
-                            .value = self.undef(blk, payload_ty, loc),
+                            .value = self.emitUndefValue(blk, payload_ty, loc, true),
                         });
 
                 const v_res = blk.builder.structMake(blk, of_ty, &[_]tir.Rows.StructFieldInit{
@@ -3283,7 +3474,7 @@ pub const LowerTir = struct {
             // Not a value binding or top-level decl (likely a type name etc.).
             // Bind a safe placeholder so downstream code can keep going.
             const ty0 = expr_ty_opt orelse self.context.type_store.tAny();
-            const placeholder = self.safeUndef(blk, ty0, loc);
+            const placeholder = self.emitUndefValue(blk, ty0, loc, false);
             try env.bind(self.gpa, a, name, .{ .value = placeholder, .ty = ty0, .is_slot = false });
             break :blk env.lookup(name).?;
         };
@@ -3732,7 +3923,7 @@ pub const LowerTir = struct {
 
             // none branch: wrap as None Optional(V)
             const false_v = none_blk.builder.tirValue(.ConstBool, &none_blk, one, loc, .{ .value = false });
-            const undef_payload = self.safeUndef(&none_blk, es.value_ty, loc);
+            const undef_payload = self.emitUndefValue(&none_blk, es.value_ty, loc, false);
             const nfields = [_]tir.Rows.StructFieldInit{
                 .{ .index = 0, .name = .none(), .value = false_v },
                 .{ .index = 1, .name = .none(), .value = undef_payload },
@@ -3836,7 +4027,7 @@ pub const LowerTir = struct {
             try f.builder.endBlock(f, else_blk);
 
             blk.* = exit_blk;
-            return self.safeUndef(blk, self.context.type_store.tAny(), loc);
+            return self.emitUndefValue(blk, self.context.type_store.tAny(), loc, false);
         }
     }
 
@@ -3889,7 +4080,7 @@ pub const LowerTir = struct {
                 }
             } else {
                 if (else_blk.term.isNone()) {
-                    const uv = self.safeUndef(&else_blk, res_ty, loc);
+                    const uv = self.emitUndefValue(&else_blk, res_ty, loc, false);
                     try f.builder.br(&else_blk, join_blk.id, &.{uv}, loc);
                 }
             }
@@ -3920,7 +4111,7 @@ pub const LowerTir = struct {
             try f.builder.endBlock(f, else_blk);
 
             blk.* = exit_blk;
-            return self.safeUndef(blk, self.context.type_store.tAny(), loc);
+            return self.emitUndefValue(blk, self.context.type_store.tAny(), loc, false);
         }
     }
 
@@ -4133,7 +4324,7 @@ pub const LowerTir = struct {
 
             const arms = a.exprs.arm_pool.slice(row.arms);
             if (arms.len == 0) {
-                const uv = self.safeUndef(blk, res_ty, loc);
+                const uv = self.emitUndefValue(blk, res_ty, loc, false);
                 try f.builder.br(blk, join_blk.id, &.{uv}, loc);
                 blk.* = join_blk;
                 return res_param;
@@ -4172,7 +4363,7 @@ pub const LowerTir = struct {
                     try f.builder.endBlock(f, bodies[i]);
                 }
 
-                const uv = self.safeUndef(&default_blk, res_ty, loc);
+                const uv = self.emitUndefValue(&default_blk, res_ty, loc, false);
                 try f.builder.br(&default_blk, join_blk.id, &.{uv}, loc);
                 try f.builder.endBlock(f, default_blk);
 
@@ -4201,7 +4392,7 @@ pub const LowerTir = struct {
 
                 // if last arm fails, feed an undef to the join
                 const else_args = if (next_blk.id.toRaw() == join_blk.id.toRaw()) blkargs: {
-                    const uv = self.safeUndef(&test_blk, res_ty, loc);
+                    const uv = self.emitUndefValue(&test_blk, res_ty, loc, false);
                     break :blkargs &.{uv};
                 } else &.{};
 
@@ -4266,7 +4457,7 @@ pub const LowerTir = struct {
             if (arms.len == 0) {
                 try f.builder.br(blk, exit_blk.id, &.{}, loc);
                 blk.* = exit_blk;
-                return self.safeUndef(blk, self.context.type_store.tAny(), loc);
+                return self.emitUndefValue(blk, self.context.type_store.tAny(), loc, false);
             }
 
             const values = try self.gpa.alloc(u64, arms.len);
@@ -4300,7 +4491,7 @@ pub const LowerTir = struct {
                 try f.builder.endBlock(f, default_blk);
 
                 blk.* = exit_blk;
-                return self.safeUndef(blk, self.context.type_store.tAny(), loc);
+                return self.emitUndefValue(blk, self.context.type_store.tAny(), loc, false);
             }
 
             // General path (no value): chained tests, fallthrough to exit
@@ -4361,7 +4552,7 @@ pub const LowerTir = struct {
             }
 
             blk.* = exit_blk;
-            return self.safeUndef(blk, self.context.type_store.tAny(), loc);
+            return self.emitUndefValue(blk, self.context.type_store.tAny(), loc, false);
         }
     }
 
@@ -4433,7 +4624,7 @@ pub const LowerTir = struct {
             try f.builder.endBlock(f, header);
             try f.builder.endBlock(f, body);
 
-            const uv = self.safeUndef(&exit_blk, res_ty, loc);
+            const uv = self.emitUndefValue(&exit_blk, res_ty, loc, false);
             try f.builder.br(&exit_blk, join_blk.id, &.{uv}, loc);
             try f.builder.endBlock(f, exit_blk);
 
@@ -4490,7 +4681,7 @@ pub const LowerTir = struct {
 
             _ = self.loop_stack.pop();
             blk.* = exit_blk;
-            return self.safeUndef(blk, self.context.type_store.tAny(), loc);
+            return self.emitUndefValue(blk, self.context.type_store.tAny(), loc, false);
         }
     }
 
@@ -4659,7 +4850,7 @@ pub const LowerTir = struct {
             }
 
             // Exit -> join with a safe undef of the result type
-            const uv = self.safeUndef(&exit_blk, res_ty, loc);
+            const uv = self.emitUndefValue(&exit_blk, res_ty, loc, false);
             try f.builder.br(&exit_blk, join_blk.id, &.{uv}, loc);
             try f.builder.endBlock(f, exit_blk);
 
@@ -4780,7 +4971,7 @@ pub const LowerTir = struct {
 
             _ = self.loop_stack.pop();
             blk.* = exit_blk;
-            return self.safeUndef(blk, self.context.type_store.tAny(), loc);
+            return self.emitUndefValue(blk, self.context.type_store.tAny(), loc, false);
         }
     }
 
@@ -4842,7 +5033,7 @@ pub const LowerTir = struct {
             .MlirBlock => blk: {
                 if (mode == .lvalue_addr) return error.LoweringBug;
                 const loc = self.exprOptLoc(a, id);
-                break :blk try self.lowerMlirBlock(a, env, f, blk, id, expected_ty, loc);
+                break :blk try self.mlir_lower.lowerBlock(self.mlirHooks(), a, @ptrCast(@alignCast(env)), f, blk, id, expected_ty, loc);
             },
             .Import => blk: {
                 const loc = self.exprOptLoc(a, id);
@@ -4859,7 +5050,7 @@ pub const LowerTir = struct {
                 // For now, treat as opaque and produce undef
                 const ty0 = self.getExprType(a, id) orelse self.context.type_store.tAny();
                 const loc = self.exprOptLoc(a, id);
-                break :blk self.undef(blk, ty0, loc);
+                break :blk self.emitUndefValue(blk, ty0, loc, true);
             },
             .ComptimeBlock => self.jitEvalComptimeBlock(a, blk, id),
             else => {
@@ -4879,7 +5070,7 @@ pub const LowerTir = struct {
         const loc = self.exprOptLoc(a, block_expr);
         if (stmts.len == 0) {
             try self.noteExprType(block_expr, expected_ty);
-            return self.safeUndef(blk, expected_ty, loc);
+            return self.emitUndefValue(blk, expected_ty, loc, false);
         }
 
         // Remember where this block's scope begins on the defer stack.
@@ -4906,7 +5097,7 @@ pub const LowerTir = struct {
             // Early exits (return/break/continue) won’t reach here and already run defers.
             try self.runNormalDefersFrom(a, env, f, blk, mark);
             try self.noteExprType(block_expr, expected_ty);
-            return self.safeUndef(blk, expected_ty, loc);
+            return self.emitUndefValue(blk, expected_ty, loc, false);
         }
     }
 
@@ -5428,7 +5619,7 @@ pub const LowerTir = struct {
                         }
                         if (!found) {
                             // name not present on this struct type; bind undef of Any
-                            extracted = self.undef(blk, fty, loc);
+                            extracted = self.emitUndefValue(blk, fty, loc, true);
                         }
                     } else {
                         // Unknown layout; fall back to by-name extraction in IR
@@ -5465,7 +5656,7 @@ pub const LowerTir = struct {
         while (i < elems_pat.len) : (i += 1) {
             const ety = if (i < etys.len) etys[i] else self.context.type_store.tAny();
             const elem_loc = self.patternOptLoc(a, elems_pat[i]);
-            const uv = self.undef(blk, ety, elem_loc);
+            const uv = self.emitUndefValue(blk, ety, elem_loc, true);
             try self.destructureDeclPattern(a, env, f, blk, elems_pat[i], uv, ety, to_slots);
         }
     }
@@ -5507,7 +5698,7 @@ pub const LowerTir = struct {
             } else {
                 // missing -> bind undef
                 const field_loc = self.patternOptLoc(a, pf.pattern);
-                const uv = self.undef(blk, fty, field_loc);
+                const uv = self.emitUndefValue(blk, fty, field_loc, true);
                 try self.destructureDeclPattern(a, env, f, blk, pf.pattern, uv, fty, to_slots);
             }
         }
@@ -5552,7 +5743,7 @@ pub const LowerTir = struct {
             };
             const type_ty = self.context.type_store.mkTypeType(resolved_ty);
             try self.noteExprType(src_expr, type_ty);
-            const placeholder = self.safeUndef(blk, type_ty, expr_loc);
+            const placeholder = self.emitUndefValue(blk, type_ty, expr_loc, false);
             try self.destructureDeclPattern(a, env, f, blk, pid, placeholder, type_ty, to_slots);
             return;
         }
@@ -5644,7 +5835,7 @@ pub const LowerTir = struct {
                         while (i < pelems.len) : (i += 1) {
                             const ety = if (i < elem_tys.len) elem_tys[i] else self.context.type_store.tAny();
                             const elem_loc = self.patternOptLoc(a, pelems[i]);
-                            const uv = self.undef(blk, ety, elem_loc);
+                            const uv = self.emitUndefValue(blk, ety, elem_loc, true);
                             try self.destructureDeclPattern(a, env, f, blk, pelems[i], uv, ety, to_slots);
                         }
                         return;
@@ -5671,7 +5862,7 @@ pub const LowerTir = struct {
                 while (i < pelems.len) : (i += 1) {
                     const ety = if (i < elem_tys.len) elem_tys[i] else self.context.type_store.tAny();
                     const elem_loc = self.patternOptLoc(a, pelems[i]);
-                    const uv = self.undef(blk, ety, elem_loc);
+                    const uv = self.emitUndefValue(blk, ety, elem_loc, true);
                     try self.destructureDeclPattern(a, env, f, blk, pelems[i], uv, ety, to_slots);
                 }
             },
@@ -5733,7 +5924,7 @@ pub const LowerTir = struct {
                                     try self.destructureDeclFromExpr(a, env, f, blk, pf.pattern, ve2, fty, to_slots);
                                 } else {
                                     const field_loc = self.patternOptLoc(a, pf.pattern);
-                                    const uv = self.undef(blk, fty, field_loc);
+                                    const uv = self.emitUndefValue(blk, fty, field_loc, true);
                                     try self.destructureDeclPattern(a, env, f, blk, pf.pattern, uv, fty, to_slots);
                                 }
                             }
@@ -5746,7 +5937,7 @@ pub const LowerTir = struct {
                 for (pfields) |pfid| {
                     const pf = a.pats.StructField.get(pfid);
                     const field_loc = self.patternOptLoc(a, pf.pattern);
-                    const uv = self.undef(blk, self.context.type_store.tAny(), field_loc);
+                    const uv = self.emitUndefValue(blk, self.context.type_store.tAny(), field_loc, true);
                     try self.destructureDeclPattern(a, env, f, blk, pf.pattern, uv, self.context.type_store.tAny(), to_slots);
                 }
             },
@@ -6063,7 +6254,12 @@ pub fn evalComptimeExpr(
     result_ty: types.TypeId,
     bindings: []const Pipeline.ComptimeBinding,
 ) !comp.ComptimeValue {
-    var lowerer = LowerTir.init(gpa, context, pipeline, chk);
+    var lowerer = LowerTir.init(.{
+        .allocator = gpa,
+        .context = context,
+        .pipeline = pipeline,
+        .checker = chk,
+    });
     defer lowerer.deinit();
     return lowerer.runComptimeExpr(ast_unit, expr, result_ty, bindings);
 }
