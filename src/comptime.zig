@@ -169,7 +169,7 @@ pub fn runComptimeExpr(
     try tmp_env.bind(self.gpa, a, tmp_builder.intern("comptime_api_ptr"), .{ .value = api_ptr_val, .ty = ptr_ty, .is_slot = false });
 
     const result_val_id = try self.lowerExpr(a, &tmp_env, &thunk_fn, &thunk_blk, expr, result_ty, .rvalue);
-    try self.monomorphizer.run(self, a, &tmp_builder, monomorphLowerCallback);
+    try self.monomorphizer.run(self, &tmp_builder, monomorphLowerCallback);
     if (result_kind != .Void) {
         if (thunk_blk.term.isNone()) {
             try tmp_builder.setReturnVal(&thunk_blk, result_val_id, expr_loc);

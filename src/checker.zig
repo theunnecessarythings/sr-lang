@@ -2435,7 +2435,7 @@ fn checkFieldAccess(self: *Checker, ast_unit: *ast.Ast, id: ast.ExprId) !?types.
     // -------- Module member access via import "path".member --------
     const parent_kind = exprKind(ast_unit, field_expr.parent);
     if (parent_kind == .Import) {
-        const member_ty = self.getMemberFromImport(ast_unit, field_expr) orelse {
+        const member_ty = self.getMemberFromImport(ast_unit, field_expr.parent, field_expr.field) orelse {
             try self.context.diags.addError(exprLoc(ast_unit, field_expr), .unknown_module_field, .{});
             return null;
         };
@@ -2450,7 +2450,7 @@ fn checkFieldAccess(self: *Checker, ast_unit: *ast.Ast, id: ast.ExprId) !?types.
                 const did = sym.origin_decl.unwrap();
                 const drow = ast_unit.exprs.Decl.get(did);
                 if (exprKind(ast_unit, drow.value) == .Import) {
-                    const member_ty = self.getMemberFromImport(ast_unit, field_expr) orelse {
+                    const member_ty = self.getMemberFromImport(ast_unit, drow.value, field_expr.field) orelse {
                         try self.context.diags.addError(exprLoc(ast_unit, field_expr), .unknown_module_field, .{});
                         return null;
                     };
@@ -2795,16 +2795,16 @@ fn checkDeref(self: *Checker, ast_unit: *ast.Ast, id: ast.ExprId) !?types.TypeId
 // Calls & related helpers
 // =========================
 
-fn getMemberFromImport(self: *Checker, ast_unit: *const ast.Ast, fr: ast.Rows.FieldAccess) ?types.TypeId {
-    const parent = ast_unit.type_info.expr_types.items[fr.parent.toRaw()];
-    if (parent) |pty| {
+fn getMemberFromImport(self: *Checker, ast_unit: *const ast.Ast, parent: ast.ExprId, field: ast.StrId) ?types.TypeId {
+    const parent_ty = ast_unit.type_info.expr_types.items[parent.toRaw()];
+    if (parent_ty) |pty| {
         const ast_ty = self.context.type_store.get(.Ast, pty);
         const pkg_name = self.context.interner.get(ast_ty.pkg_name);
         const filepath = self.context.interner.get(ast_ty.filepath);
         const pkg = self.context.compilation_unit.packages.getPtr(pkg_name) orelse return null;
         const parent_unit = pkg.sources.getPtr(filepath) orelse return null;
         if (parent_unit.ast) |a| {
-            if (a.type_info.getExport(fr.field)) |ex| return ex.ty;
+            if (a.type_info.getExport(field)) |ex| return ex.ty;
         }
     }
     return null;
@@ -2814,20 +2814,20 @@ fn resolveImportedMemberType(self: *Checker, ast_unit: *ast.Ast, fr: ast.Rows.Fi
     // Case 1: direct module value: (import "x").foo(...)
     const pk = exprKind(ast_unit, fr.parent);
     if (pk == .Import) {
-        return self.getMemberFromImport(ast_unit, fr);
+        return self.getMemberFromImport(ast_unit, fr.parent, fr.field);
     }
 
     // Case 2: 'ident' bound to an import declaration
-    if (pk == .Ident) {
-        const idr = getExpr(ast_unit, .Ident, fr.parent);
-        if (self.lookup(ast_unit, idr.name)) |sid_sym| {
-            const sym = self.symtab.syms.get(sid_sym);
-            if (!sym.origin_decl.isNone()) {
-                const did = sym.origin_decl.unwrap();
-                const drow = ast_unit.exprs.Decl.get(did);
-                if (exprKind(ast_unit, drow.value) == .Import) {
-                    return self.getMemberFromImport(ast_unit, fr);
-                }
+    if (pk != .Ident) return null;
+
+    const idr = getExpr(ast_unit, .Ident, fr.parent);
+    if (self.lookup(ast_unit, idr.name)) |sid_sym| {
+        const sym = self.symtab.syms.get(sid_sym);
+        if (!sym.origin_decl.isNone()) {
+            const did = sym.origin_decl.unwrap();
+            const drow = ast_unit.exprs.Decl.get(did);
+            if (exprKind(ast_unit, drow.value) == .Import) {
+                return self.getMemberFromImport(ast_unit, fr.parent, fr.field);
             }
         }
     }

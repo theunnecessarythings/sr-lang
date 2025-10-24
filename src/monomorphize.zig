@@ -417,13 +417,7 @@ pub const Monomorphizer = struct {
         return .{ .mangled_name = mangled_name, .specialized_ty = specialized_ty };
     }
 
-    pub fn run(
-        self: *Monomorphizer,
-        ctx: ?*anyopaque,
-        _: *ast.Ast,
-        b: *tir.Builder,
-        cb: LowerCallback,
-    ) !void {
+    pub fn run(self: *Monomorphizer, ctx: ?*anyopaque, b: *tir.Builder, cb: LowerCallback) !void {
         while (self.requests.items.len > 0) {
             var req = self.requests.pop().?;
             defer self.freeRequest(&req);

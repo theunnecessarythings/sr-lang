@@ -4679,7 +4679,7 @@ pub fn llvmTypeOf(self: *Codegen, ty: types.TypeId) !mlir.Type {
             break :blk mlir.LLVM.getLLVMStructTypeLiteral(self.mlir_ctx, &fields_mlir, false);
         },
 
-        .TypeType => return self.llvm_ptr_ty,
+        .TypeType, .Ast => return self.llvm_ptr_ty,
         else => std.debug.panic("unhandled type: {}", .{self.context.type_store.getKind(ty)}),
     };
 }
