@@ -209,13 +209,13 @@ pub fn checkPattern(
         .At => {
             const ap = ast_unit.pats.get(.At, pid);
             // x @ pat : bind x as a Var and check subpattern.
-            _ = try self.symtab.declare(.{
+            _ = try Checker.symtab.?.declare(.{
                 .name = ap.binder,
                 .kind = .Var,
                 .is_comptime = false,
                 .loc = ap.loc,
-                .origin_decl = ast.OptDeclId.none(),
-                .origin_param = ast.OptParamId.none(),
+                .origin_decl = .none(),
+                .origin_param = .none(),
             });
             return try checkPattern(self, ast_unit, ap.pattern, value_ty, false);
         },
@@ -371,7 +371,7 @@ pub fn checkPattern(
         .Binding => {
             const bp = ast_unit.pats.get(.Binding, pid);
             // Declare the bound name.
-            _ = try self.symtab.declare(.{
+            _ = try Checker.symtab.?.declare(.{
                 .name = bp.name,
                 .kind = .Var,
                 .is_comptime = false,
@@ -540,8 +540,8 @@ pub fn checkMatch(self: *Checker, ast_unit: *ast.Ast, id: ast.ExprId) !?types.Ty
         try self.pushMatchBinding(arm.pattern, subj_ty);
         defer self.popMatchBinding();
 
-        _ = try self.symtab.push(self.symtab.currentId());
-        defer self.symtab.pop();
+        _ = try Checker.symtab.?.push(Checker.symtab.?.currentId());
+        defer Checker.symtab.?.pop();
         try declareBindingsInPattern(self, ast_unit, arm.pattern, arm.loc, .anonymous);
 
         // Validate pattern against subject type.
@@ -882,28 +882,7 @@ pub fn declareBindingsInPattern(
                     const d = ast_unit.exprs.Decl.get(did);
                     const rhs_kind = ast_unit.exprs.index.kinds.items[d.value.toRaw()];
                     const is_comptime_val = switch (rhs_kind) {
-                        .Literal,
-                        .MlirBlock,
-                        .TupleType,
-                        .ArrayType,
-                        .DynArrayType,
-                        .SliceType,
-                        .OptionalType,
-                        .ErrorSetType,
-                        .ErrorType,
-                        .StructType,
-                        .EnumType,
-                        .VariantType,
-                        .UnionType,
-                        .PointerType,
-                        .SimdType,
-                        .ComplexType,
-                        .TensorType,
-                        .TypeType,
-                        .AnyType,
-                        .NoreturnType,
-                        .MapType,
-                        .ComptimeBlock => true,
+                        .Literal, .MlirBlock, .TupleType, .ArrayType, .DynArrayType, .SliceType, .OptionalType, .ErrorSetType, .ErrorType, .StructType, .EnumType, .VariantType, .UnionType, .PointerType, .SimdType, .ComplexType, .TensorType, .TypeType, .AnyType, .NoreturnType, .MapType, .ComptimeBlock => true,
                         else => false,
                     };
                     break :blk .{
@@ -932,7 +911,7 @@ pub fn declareBindingsInPattern(
                     .origin_param = .none(),
                 },
             };
-            _ = try self.symtab.declare(rowv);
+            _ = try Checker.symtab.?.declare(rowv);
 
             // Also declare nested bindings if the AST supports a subpattern.
             if (@hasField(@TypeOf(b), "pattern")) {

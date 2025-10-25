@@ -264,8 +264,8 @@ fn resolveTypeFunctionCall(
     if (callee_kind != .Ident) return null;
 
     const callee_ident = ast_unit.exprs.get(.Ident, call.callee);
-    const sym_id = self.lookup(ast_unit, callee_ident.name) orelse return null;
-    const sym = self.symtab.syms.get(sym_id);
+    const sym_id = self.lookup(callee_ident.name) orelse return null;
+    const sym = Checker.symtab.?.syms.get(sym_id);
     if (sym.origin_decl.isNone()) return null;
 
     const decl_id = sym.origin_decl.unwrap();
@@ -377,8 +377,8 @@ pub fn typeFromTypeExpr(self: *Checker, ast_unit: *ast.Ast, id: ast.ExprId) anye
             if (std.mem.eql(u8, s, "type"))
                 break :blk_ident self.context.type_store.mkTypeType(self.context.type_store.tAny());
 
-            if (self.lookup(ast_unit, name)) |sid| {
-                const sym = self.symtab.syms.get(sid);
+            if (self.lookup(name)) |sid| {
+                const sym = Checker.symtab.?.syms.get(sid);
                 if (!sym.origin_decl.isNone()) {
                     const did = sym.origin_decl.unwrap();
                     if (ast_unit.type_info.decl_types.items[did.toRaw()]) |ty| {
@@ -853,8 +853,8 @@ pub fn typeFromTypeExpr(self: *Checker, ast_unit: *ast.Ast, id: ast.ExprId) anye
 
             if (parent_expr_kind == .Ident) {
                 const idr = ast_unit.exprs.get(.Ident, fr.parent);
-                if (self.lookup(ast_unit, idr.name)) |sid_sym| {
-                    const sym = self.symtab.syms.get(sid_sym);
+                if (self.lookup(idr.name)) |sid_sym| {
+                    const sym = Checker.symtab.?.syms.get(sid_sym);
                     if (!sym.origin_decl.isNone()) {
                         const did = sym.origin_decl.unwrap();
                         const drow = ast_unit.exprs.Decl.get(did);

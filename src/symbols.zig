@@ -25,7 +25,6 @@ pub const SymbolStore = struct {
     syms: dod.Table(SymbolRow) = .{},
     scopes: dod.Table(ScopeRow) = .{},
     sym_pool: dod.Pool(SymbolId) = .{},
-    mutex: std.Thread.Mutex = .{},
 
     // active scope stack (for building ranges)
     stack: std.ArrayListUnmanaged(struct { id: ScopeId, list: std.ArrayListUnmanaged(SymbolId) }) = .{},
@@ -43,15 +42,11 @@ pub const SymbolStore = struct {
     }
 
     pub fn push(self: *SymbolStore, parent: ?ScopeId) !ScopeId {
-        self.mutex.lock();
-        defer self.mutex.unlock();
         const sid = self.scopes.add(self.gpa, .{ .parent = if (parent) |p| .some(p) else .none(), .symbols = .empty() });
         try self.stack.append(self.gpa, .{ .id = sid, .list = .{} });
         return sid;
     }
     pub fn pop(self: *SymbolStore) void {
-        self.mutex.lock();
-        defer self.mutex.unlock();
         const gpa = self.gpa;
         if (self.stack.items.len == 0) return;
         var frame = self.stack.items[self.stack.items.len - 1];
@@ -115,16 +110,13 @@ pub const SymbolStore = struct {
     }
 
     pub fn declare(self: *SymbolStore, sym: SymbolRow) !SymbolId {
-        self.mutex.lock();
-        defer self.mutex.unlock();
         const id = self.syms.add(self.gpa, sym);
         var frame_ptr = &self.stack.items[self.stack.items.len - 1];
         try frame_ptr.list.append(self.gpa, id);
         return id;
     }
 
-    pub fn lookup(self: *const SymbolStore, a: *const ast.Ast, scope_id: ScopeId, name: ast.StrId) ?SymbolId {
-        _ = a;
+    pub fn lookup(self: *const SymbolStore, scope_id: ScopeId, name: ast.StrId) ?SymbolId {
         // linear search current scope and parents
         var sid_opt: dod.SentinelIndex(ScopeRow) = .some(scope_id);
         while (!sid_opt.isNone()) {

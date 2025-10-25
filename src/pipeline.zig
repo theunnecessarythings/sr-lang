@@ -207,6 +207,13 @@ pub const Pipeline = struct {
             self.context.source_manager,
         );
         defer dep_levels.deinit();
+        for (dep_levels.levels.items, 0..) |level, l| {
+            std.debug.print("Dep level {}:\n", .{l});
+            for (level.items) |id| {
+                const fname = self.context.source_manager.get(id) orelse "Not Found";
+                std.debug.print("Dep {}: {s}\n", .{ id, fname });
+            }
+        }
         if (self.context.diags.anyErrors()) {
             return error.LoweringFailed;
         }
