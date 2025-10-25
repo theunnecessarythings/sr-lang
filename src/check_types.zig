@@ -2,6 +2,7 @@ const Checker = @import("checker.zig").Checker;
 const types = @import("types.zig");
 const ast = @import("ast.zig");
 const std = @import("std");
+const compile = @import("compile.zig");
 
 const comp = @import("comptime.zig");
 const PipelineBinding = @import("pipeline.zig").Pipeline.ComptimeBinding;
@@ -79,8 +80,8 @@ pub fn isIntegerKind(_: *const Checker, k: types.TypeKind) bool {
     };
 }
 
-pub fn typeSize(self: *Checker, ty_id: types.TypeId) ?usize {
-    const k = self.context.type_store.index.kinds.items[ty_id.toRaw()];
+pub fn typeSize(ctx: *const compile.Context, ty_id: types.TypeId) ?usize {
+    const k = ctx.type_store.index.kinds.items[ty_id.toRaw()];
     return switch (k) {
         .I8, .U8, .Bool => 1,
         .I16, .U16 => 2,
@@ -93,8 +94,8 @@ pub fn typeSize(self: *Checker, ty_id: types.TypeId) ?usize {
         .String => 8, // best-effort: pointer-like handle; real impl is more complex
         .Slice => 16, // best-effort: ptr + len on 64-bit
         .Array => blk: {
-            const arr = self.context.type_store.get(.Array, ty_id);
-            const elem_size = typeSize(self, arr.elem) orelse return null;
+            const arr = ctx.type_store.get(.Array, ty_id);
+            const elem_size = typeSize(ctx, arr.elem) orelse return null;
             const len = switch (arr.len) {
                 .Concrete => |l| l,
                 .Unresolved => return null,
@@ -102,13 +103,13 @@ pub fn typeSize(self: *Checker, ty_id: types.TypeId) ?usize {
             break :blk std.math.mul(usize, elem_size, len) catch return null;
         },
         .Struct => blk: {
-            const st = self.context.type_store.get(.Struct, ty_id);
-            const fields = self.context.type_store.field_pool.slice(st.fields);
+            const st = ctx.type_store.get(.Struct, ty_id);
+            const fields = ctx.type_store.field_pool.slice(st.fields);
             var total: usize = 0;
             var i: usize = 0;
             while (i < fields.len) : (i += 1) {
-                const field = self.context.type_store.Field.get(fields[i]);
-                const field_size = typeSize(self, field.ty) orelse return null;
+                const field = ctx.type_store.Field.get(fields[i]);
+                const field_size = typeSize(ctx, field.ty) orelse return null;
                 total = std.math.add(usize, total, field_size) catch return null;
             }
             break :blk total;

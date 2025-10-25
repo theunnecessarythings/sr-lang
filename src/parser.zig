@@ -1147,20 +1147,23 @@ fn parseImport(self: *Parser) !cst.ExprId {
     const current_file_path = self.context.source_manager.get(self.lex.file_id) orelse ".";
     const current_dir = std.fs.path.dirname(current_file_path) orelse ".";
     var joined_path = try std.fs.path.join(self.gpa, &.{ current_dir, filename_ext });
-    defer self.gpa.free(joined_path);
     var found = std.fs.cwd().statFile(joined_path) catch null != null;
 
     if (!found) {
+        self.gpa.free(joined_path);
         joined_path = try std.fs.path.join(self.gpa, &.{ exe_dir, "..", filename_ext });
         found = std.fs.cwd().statFile(joined_path) catch null != null;
     }
+
     if (!found) {
+        self.gpa.free(joined_path);
         try self.diags.addError(self.cur.loc, .import_not_found, .{});
         self.sync(.eos);
         return error.UnexpectedToken;
     }
 
     const filepath = try std.fs.realpathAlloc(self.gpa, joined_path);
+    self.gpa.free(joined_path);
     const path = self.intern(filepath);
 
     const file_id = try self.context.source_manager.add(filepath);

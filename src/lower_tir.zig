@@ -279,7 +279,7 @@ fn lowerDynArrayAppend(
             .else_value = doubled,
         });
 
-        const elem_size = check_types.typeSize(self.chk, elem_ty) orelse unreachable;
+        const elem_size = check_types.typeSize(self.context, elem_ty) orelse unreachable;
         const elem_size_u64 = std.math.cast(u64, elem_size) orelse unreachable;
         const elem_size_const = grow_blk.builder.tirValue(.ConstInt, &grow_blk, usize_ty, loc, .{ .value = elem_size_u64 });
         const new_bytes = grow_blk.builder.bin(&grow_blk, .Mul, usize_ty, new_cap, elem_size_const, loc);
@@ -1975,7 +1975,7 @@ fn lowerArrayLit(
                 return dyn_val;
             }
 
-            const elem_size = check_types.typeSize(self.chk, elem_ty) orelse unreachable;
+            const elem_size = check_types.typeSize(self.context, elem_ty) orelse unreachable;
 
             var elems = try self.gpa.alloc(tir.ValueId, ids.len);
             defer self.gpa.free(elems);

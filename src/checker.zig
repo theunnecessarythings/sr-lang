@@ -142,7 +142,18 @@ pub fn run(self: *Checker, levels: *const compile.DependencyLevels) !void {
 }
 
 pub fn runAst(self: *Checker, ast_unit: *ast.Ast) !void {
+    // Re-initialize thread-local storage for safety, in case threads are reused.
+    func_stack = .{};
+    loop_stack = .{};
+    value_ctx = .{};
+    loop_binding_stack = .{};
+    match_binding_stack = .{};
+    catch_binding_stack = .{};
+    param_specializations = .{};
+
     symtab = symbols.SymbolStore.init(self.gpa);
+    defer self.deinitThreadLocals();
+
     // pre-allocate type slots for all exprs & decls
     const expr_len: usize = ast_unit.exprs.index.kinds.items.len;
     const decl_len: usize = ast_unit.exprs.Decl.list.len;
@@ -163,7 +174,7 @@ pub fn runAst(self: *Checker, ast_unit: *ast.Ast) !void {
     for (decl_ids) |did| {
         try self.checkDecl(ast_unit, did);
     }
-    self.deinitThreadLocals();
+
 }
 
 // --------- context
@@ -3729,8 +3740,8 @@ fn checkCast(self: *Checker, ast_unit: *ast.Ast, id: ast.ExprId) !?types.TypeId 
             }
         },
         .bitcast => {
-            const gsize = check_types.typeSize(self, vt);
-            const tsize = check_types.typeSize(self, et);
+            const gsize = check_types.typeSize(self.context, vt);
+            const tsize = check_types.typeSize(self.context, et);
             if (vk == .Any or ek == .Any) {} else if (gsize == null or tsize == null or gsize.? != tsize.?) {
                 try self.context.diags.addError(exprLoc(ast_unit, cr), .invalid_bitcast, .{ vk, ek });
             }
