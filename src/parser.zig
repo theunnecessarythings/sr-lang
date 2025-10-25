@@ -1129,10 +1129,16 @@ fn parseCatchExpr(self: *Parser, expr: cst.ExprId) !cst.ExprId {
 }
 
 fn parseImport(self: *Parser) !cst.ExprId {
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const exe_dir = try std.fs.selfExeDirPath(&buf);
     const loc = self.toLocId(self.cur.loc);
     self.advance(); // 'import'
 
     const filename = std.mem.trim(u8, self.slice(self.cur), "\"");
+    const ext = if (std.fs.path.extension(filename).len == 0) ".sr" else "";
+    const filename_ext = try std.fmt.allocPrint(self.gpa, "{s}{s}", .{ filename, ext });
+    defer self.gpa.free(filename_ext);
+
     try self.expect(.string_literal);
 
     const diags = try self.gpa.create(diag.Diagnostics);
@@ -1140,10 +1146,21 @@ fn parseImport(self: *Parser) !cst.ExprId {
 
     const current_file_path = self.context.source_manager.get(self.lex.file_id) orelse ".";
     const current_dir = std.fs.path.dirname(current_file_path) orelse ".";
-    const joined_path = try std.fs.path.join(self.gpa, &.{ current_dir, filename });
+    var joined_path = try std.fs.path.join(self.gpa, &.{ current_dir, filename_ext });
     defer self.gpa.free(joined_path);
-    const filepath = try std.fs.realpathAlloc(self.gpa, joined_path);
+    var found = std.fs.cwd().statFile(joined_path) catch null != null;
 
+    if (!found) {
+        joined_path = try std.fs.path.join(self.gpa, &.{ exe_dir, "..", filename_ext });
+        found = std.fs.cwd().statFile(joined_path) catch null != null;
+    }
+    if (!found) {
+        try self.diags.addError(self.cur.loc, .import_not_found, .{});
+        self.sync(.eos);
+        return error.UnexpectedToken;
+    }
+
+    const filepath = try std.fs.realpathAlloc(self.gpa, joined_path);
     const path = self.intern(filepath);
 
     const file_id = try self.context.source_manager.add(filepath);
