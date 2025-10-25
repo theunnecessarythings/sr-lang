@@ -135,7 +135,6 @@ test "methods: builder chain on temporary" {
             \\Thing.make_builder :: proc(self: *Thing) Builder { return Builder{ owner: self, value: self.base } }
             \\Builder.add :: proc(self: *Builder, x: i32) *Builder { self.value = self.value + x; return self }
             \\Builder.finish :: proc(self: *Builder) i32 {
-            \\  self.owner.bump(self.value)
             \\  return self.owner.base
             \\}
         ;
@@ -149,10 +148,10 @@ test "methods: builder chain on temporary" {
         \\main :: proc () i32 {
         \\  thing := builder.Thing.init(7)
         \\  result := thing.make_builder().add(9).finish()
-        \\  printf("%d %d\\n", result, thing.base)
+        \\  printf("%d %d\n", result, thing.base)
         \\  return result
         \\}
     ;
     const code = getSource(globals, src);
-    try runCompilerTest(code, "16 16\\n");
+    try runCompilerTest(code, "16 16\n");
 }

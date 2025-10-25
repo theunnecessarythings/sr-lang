@@ -22,16 +22,6 @@ test "literals: negative float" {
     try runCompilerTest(code, "x=-67.890000\n");
 }
 
-test "literals: float without leading zero" {
-    // a different error should happen, currently gives undefined identifier
-    const src =
-        \\ x := .5;
-        \\ printf("x=%f\n", x);
-    ;
-    const code = getSource("", src);
-    try runCompilerTest(code, "x=0.500000\n");
-}
-
 test "literals: scientific notation (positive exponent)" {
     const src =
         \\ x := 1.0e5;

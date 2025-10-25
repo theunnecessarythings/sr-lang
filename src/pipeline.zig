@@ -16,11 +16,10 @@ const mlir = @import("mlir_bindings.zig");
 const compile = @import("compile.zig");
 const Diagnostics = @import("diagnostics.zig").Diagnostics;
 const Package = @import("package.zig").Package;
+const CompilationUnit = @import("package.zig").CompilationUnit;
 
 pub const Result = struct {
-    cst: ?cst_mod.CST = null,
-    ast: ?*ast_mod.Ast = null,
-    tir: ?*tir_mod.TIR = null,
+    compilation_unit: ?CompilationUnit,
     mlir_module: ?mlir.Module = null,
     gen: ?codegen.Codegen = null,
 };
@@ -106,7 +105,7 @@ pub const Pipeline = struct {
                 const lexeme = source0[token.loc.start..token.loc.end];
                 std.debug.print("{}({},{}) `{s}`\n", .{ token.tag, token.loc.start, token.loc.end, lexeme });
             }
-            return .{};
+            return .{ .compilation_unit = null };
         }
 
         var parser = Parser.init(self.allocator, source0, file_id, self.context.diags, self.context);
@@ -167,10 +166,8 @@ pub const Pipeline = struct {
             return error.ParseFailed;
         }
 
-        const main_pkg = self.context.compilation_unit.packages.getPtr("main") orelse return error.NoMainPackage;
-        const cst_program = main_pkg.sources.entries.get(0).value.cst.?;
         if (mode == .parse) {
-            return .{ .cst = cst_program };
+            return .{ .compilation_unit = self.context.compilation_unit };
         }
 
         var pkg_iter = self.context.compilation_unit.packages.iterator();
@@ -217,9 +214,8 @@ pub const Pipeline = struct {
         const canonical_path_opt = try canonicalizePath(self.allocator, source_path);
         defer if (canonical_path_opt) |p| self.allocator.free(p);
 
-        const ast = main_pkg.sources.entries.get(0).value.ast.?;
         if (mode == .ast) {
-            return .{ .cst = cst_program, .ast = ast };
+            return .{ .compilation_unit = self.context.compilation_unit };
         }
 
         var chk = checker.Checker.init(self.allocator, self.context, self);
@@ -229,19 +225,19 @@ pub const Pipeline = struct {
             return error.TypeCheckFailed;
         }
         if (mode == .check) {
-            return .{ .cst = cst_program, .ast = ast };
+            return .{ .compilation_unit = self.context.compilation_unit };
         }
 
         var tir_lowerer = lower_tir.LowerTir.init(self.allocator, self.context, self, &chk);
         defer tir_lowerer.deinit();
 
-        const root_mod = try tir_lowerer.run(&dep_levels);
+        _ = try tir_lowerer.run(&dep_levels);
 
         if (self.context.diags.anyErrors()) {
             return error.TirLoweringFailed;
         }
         if (mode == .tir) {
-            return .{ .cst = cst_program, .ast = ast, .tir = root_mod };
+            return .{ .compilation_unit = self.context.compilation_unit };
         }
 
         // Print Types
@@ -288,9 +284,7 @@ pub const Pipeline = struct {
             var op = mlir_module.getOperation();
             op.dump();
             return .{
-                .cst = cst_program,
-                .ast = ast,
-                .tir = root_mod,
+                .compilation_unit = self.context.compilation_unit,
                 .mlir_module = mlir_module,
                 .gen = gen,
             };
@@ -305,9 +299,7 @@ pub const Pipeline = struct {
             var op = mlir_module.getOperation();
             op.dump();
             return .{
-                .cst = cst_program,
-                .ast = ast,
-                .tir = root_mod,
+                .compilation_unit = self.context.compilation_unit,
                 .mlir_module = mlir_module,
                 .gen = gen,
             };
@@ -323,18 +315,14 @@ pub const Pipeline = struct {
         }
         if (mode == .llvm_ir or mode == .llvm_passes) {
             return .{
-                .cst = cst_program,
-                .ast = ast,
-                .tir = root_mod,
+                .compilation_unit = self.context.compilation_unit,
                 .mlir_module = mlir_module,
                 .gen = gen,
             };
         }
         if (mode == .compile) {
             return .{
-                .cst = cst_program,
-                .ast = ast,
-                .tir = root_mod,
+                .compilation_unit = self.context.compilation_unit,
                 .mlir_module = mlir_module,
                 .gen = gen,
             };
@@ -346,9 +334,7 @@ pub const Pipeline = struct {
                 return error.JITFailed;
             }
             return .{
-                .cst = cst_program,
-                .ast = ast,
-                .tir = root_mod,
+                .compilation_unit = self.context.compilation_unit,
                 .mlir_module = mlir_module,
                 .gen = gen,
             };
@@ -356,11 +342,9 @@ pub const Pipeline = struct {
         // run
         compile.run();
         return .{
-            .ast = ast,
-            .tir = root_mod,
+            .compilation_unit = self.context.compilation_unit,
             .mlir_module = mlir_module,
             .gen = gen,
-            .cst = cst_program,
         };
     }
 };

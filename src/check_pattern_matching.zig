@@ -878,13 +878,42 @@ pub fn declareBindingsInPattern(
         .Binding => {
             const b = ast_unit.pats.get(.Binding, pid);
             const rowv: symbols.SymbolRow = switch (origin) {
-                .decl => |did| .{
-                    .name = b.name,
-                    .kind = .Var,
-                    .is_comptime = false,
-                    .loc = loc,
-                    .origin_decl = .some(did),
-                    .origin_param = .none(),
+                .decl => |did| blk: {
+                    const d = ast_unit.exprs.Decl.get(did);
+                    const rhs_kind = ast_unit.exprs.index.kinds.items[d.value.toRaw()];
+                    const is_comptime_val = switch (rhs_kind) {
+                        .Literal,
+                        .MlirBlock,
+                        .TupleType,
+                        .ArrayType,
+                        .DynArrayType,
+                        .SliceType,
+                        .OptionalType,
+                        .ErrorSetType,
+                        .ErrorType,
+                        .StructType,
+                        .EnumType,
+                        .VariantType,
+                        .UnionType,
+                        .PointerType,
+                        .SimdType,
+                        .ComplexType,
+                        .TensorType,
+                        .TypeType,
+                        .AnyType,
+                        .NoreturnType,
+                        .MapType,
+                        .ComptimeBlock => true,
+                        else => false,
+                    };
+                    break :blk .{
+                        .name = b.name,
+                        .kind = .Var,
+                        .is_comptime = is_comptime_val,
+                        .loc = loc,
+                        .origin_decl = .some(did),
+                        .origin_param = .none(),
+                    };
                 },
                 .param => |par| .{
                     .name = b.name,

@@ -1592,13 +1592,11 @@ fn emitGepInstr(self: *Codegen, ins_id: tir.InstrId, t: *const tir.TIR) !mlir.Va
     const prev_loc = self.pushLocation(p.loc);
     defer self.loc = prev_loc;
     const base = self.value_map.get(p.base).?;
-    const pty_kind = self.context.type_store.getKind(p.ty);
-    var elem_mlir: mlir.Type = undefined;
-    if (pty_kind == .Ptr) {
-        const ptr_row = self.context.type_store.get(.Ptr, p.ty);
+    const base_sr = self.srTypeOfValue(p.base);
+    var elem_mlir: mlir.Type = self.i8_ty;
+    if (self.context.type_store.getKind(base_sr) == .Ptr) {
+        const ptr_row = self.context.type_store.get(.Ptr, base_sr);
         elem_mlir = try self.llvmTypeOf(ptr_row.elem);
-    } else {
-        elem_mlir = self.i8_ty;
     }
 
     const index_ids = t.instrs.gep_pool.slice(p.indices);
@@ -1994,17 +1992,22 @@ fn emitIndex(self: *Codegen, p: tir.Rows.Index, t: *const tir.TIR) !mlir.Value {
     }
 
     if (base.getType().equal(self.llvm_ptr_ty)) {
-        const vptr = try self.emitGep(base, res_ty, &.{.{ .Value = p.index }});
+        const base_sr = self.srTypeOfValue(p.base);
+        var elem_mlir2: mlir.Type = res_ty; // fallback
+        if (self.context.type_store.getKind(base_sr) == .Ptr) {
+            const ptr_row2 = self.context.type_store.get(.Ptr, base_sr);
+            elem_mlir2 = try self.llvmTypeOf(ptr_row2.elem);
+        }
+        const vptr = try self.emitGep(base, elem_mlir2, &.{.{ .Value = p.index }});
         var ld = OpBuilder.init("llvm.load", self.loc).builder()
             .operands(&.{vptr})
             .results(&.{res_ty}).build();
         self.append(ld);
         return ld.getResult(0);
     } else {
-        // Always spill aggregate to memory and use pointer indexing for arrays
         const base_ty = base.getType();
         const tmp_ptr = self.spillAgg(base, base_ty, 0);
-        const vptr = try self.emitGep(tmp_ptr, res_ty, &.{.{ .Value = p.index }});
+        const vptr = try self.emitGep(tmp_ptr, base_ty, &.{.{ .Value = p.index }});
         var ld = OpBuilder.init("llvm.load", self.loc).builder()
             .operands(&.{vptr})
             .results(&.{res_ty}).build();
@@ -3353,13 +3356,37 @@ fn emitGep(
     idxs: []const tir.Rows.GepIndex,
 ) !mlir.Value {
     const dyn_min = std.math.minInt(i32);
-    var dyn = try self.gpa.alloc(mlir.Value, idxs.len);
+
+    var use_idxs = idxs;
+    var allocated_extra = false;
+    const is_scalarish =
+        elem_ty.isAInteger() or
+        elem_ty.isAFloat() or
+        elem_ty.isAComplex() or
+        elem_ty.isAVector() or
+        mlir.LLVM.isLLVMPointerType(elem_ty);
+    if (!is_scalarish) {
+        const need_leading_zero = (idxs.len == 0) or switch (idxs[0]) {
+            .Const => |c| c != 0,
+            .Value => true,
+        };
+        if (need_leading_zero) {
+            var tmp = try self.gpa.alloc(tir.Rows.GepIndex, idxs.len + 1);
+            tmp[0] = .{ .Const = 0 };
+            if (idxs.len != 0) std.mem.copyForwards(tir.Rows.GepIndex, tmp[1..], idxs);
+            use_idxs = tmp;
+            allocated_extra = true;
+        }
+    }
+    defer if (allocated_extra) self.gpa.free(use_idxs);
+
+    var dyn = try self.gpa.alloc(mlir.Value, use_idxs.len);
     defer self.gpa.free(dyn);
-    var raw = try self.gpa.alloc(i32, idxs.len);
+    var raw = try self.gpa.alloc(i32, use_idxs.len);
     defer self.gpa.free(raw);
 
     var ndyn: usize = 0;
-    for (idxs, 0..) |g, i| {
+    for (use_idxs, 0..) |g, i| {
         switch (g) {
             .Const => |c| raw[i] = @intCast(c),
             .Value => |vid| {

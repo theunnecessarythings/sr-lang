@@ -3270,10 +3270,12 @@ fn checkMlirBlock(self: *Checker, ast_unit: *ast.Ast, id: ast.ExprId) !?types.Ty
         _ = try self.checkExpr(ast_unit, arg_id);
     }
 
+    var has_splices = false;
     const pieces = ast_unit.exprs.mlir_piece_pool.slice(row.pieces);
     for (pieces) |pid| {
         const piece = ast_unit.exprs.MlirPiece.get(pid);
         if (piece.kind != .splice) continue;
+        has_splices = true;
 
         const name = piece.text;
         const loc = exprLoc(ast_unit, row);
@@ -3284,6 +3286,7 @@ fn checkMlirBlock(self: *Checker, ast_unit: *ast.Ast, id: ast.ExprId) !?types.Ty
         const sym = self.symtab.syms.get(sym_id);
 
         if (!sym.is_comptime) {
+            std.debug.print("sym: {}\n", .{sym});
             try self.context.diags.addError(loc, .mlir_splice_not_comptime, .{getStr(ast_unit, name)});
             return null;
         }
@@ -3322,7 +3325,7 @@ fn checkMlirBlock(self: *Checker, ast_unit: *ast.Ast, id: ast.ExprId) !?types.Ty
         }
     }
 
-    if (row.kind != .Operation and !ast_unit.type_info.hasComptimeValue(id)) {
+    if (row.kind != .Operation and !ast_unit.type_info.hasComptimeValue(id) and !has_splices) {
         const ctx_ptr = self.pipeline.ensureMlirContext();
         const mlir_ctx = ctx_ptr.*;
         const text = getStr(ast_unit, row.text);

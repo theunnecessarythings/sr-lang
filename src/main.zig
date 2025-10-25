@@ -107,29 +107,27 @@ fn repl(
     std.debug.print("{s}Input source:{s}\n{s}\n", .{ Colors.bold, Colors.reset, source });
 
     const result = try pipeline.run(source, &.{}, .repl);
+    const main_pkg = result.compilation_unit.?.packages.getPtr("main") orelse return error.NoMainPackage;
+    const cst_program = main_pkg.sources.entries.get(0).value.cst.?;
+    const hir = main_pkg.sources.entries.get(0).value.ast.?;
+    const tir_mod = main_pkg.sources.entries.get(0).value.tir.?;
 
     // Print results based on the 'result' struct
-    if (result.cst) |cst_program| {
-        var cst_printer = lib.cst.DodPrinter.init(out_writer, &cst_program.exprs, &cst_program.pats);
-        std.debug.print("{s}Concrete Syntax Tree (CST){s}\n", .{ Colors.bold, Colors.green });
-        try cst_printer.printProgram(&cst_program.program);
-    }
-    if (result.ast) |hir| {
-        var ast_printer = lib.ast.AstPrinter.init(out_writer, &hir.exprs, &hir.stmts, &hir.pats);
-        std.debug.print("{s}Abstract Syntax Tree (AST){s}\n", .{ Colors.bold, Colors.cyan });
-        try ast_printer.printUnit(&hir.unit);
-    }
-    if (result.tir) |tir_mod| {
-        var tir_printer = lib.tir.TirPrinter.init(out_writer, tir_mod);
-        std.debug.print("{s}Typed Intermediate Representation (TIR){s}\n", .{ Colors.bold, Colors.yellow });
-        try tir_printer.print();
-    }
+    var cst_printer = lib.cst.DodPrinter.init(out_writer, &cst_program.exprs, &cst_program.pats);
+    std.debug.print("{s}Concrete Syntax Tree (CST){s}\n", .{ Colors.bold, Colors.green });
+    try cst_printer.printProgram(&cst_program.program);
+    var ast_printer = lib.ast.AstPrinter.init(out_writer, &hir.exprs, &hir.stmts, &hir.pats);
+    std.debug.print("{s}Abstract Syntax Tree (AST){s}\n", .{ Colors.bold, Colors.cyan });
+    try ast_printer.printUnit(&hir.unit);
+    var tir_printer = lib.tir.TirPrinter.init(out_writer, tir_mod);
+    std.debug.print("{s}Typed Intermediate Representation (TIR){s}\n", .{ Colors.bold, Colors.yellow });
+    try tir_printer.print();
     if (result.mlir_module) |mlir_module| {
         std.debug.print("{s}{s}MLIR Module\n", .{ Colors.bold, Colors.green });
         var op = mlir_module.getOperation();
         op.dump();
-        std.debug.print("{s}\n", .{Colors.reset});
     }
+    std.debug.print("{s}\n", .{Colors.reset});
     try out_writer.flush();
     defer allocator.free(source);
 }
@@ -247,14 +245,16 @@ fn server(
             // Print HIR as JSON into an allocating writer buffer
             var json_buf: std.Io.Writer.Allocating = .init(allocator);
             defer json_buf.deinit();
+            const main_pkg = result.compilation_unit.?.packages.getPtr("main") orelse return error.NoMainPackage;
+            const ast = main_pkg.sources.entries.get(0).value.ast.?;
 
             var json_printer = lib.json_printer.JsonPrinter.init(
                 &json_buf.writer,
-                &result.ast.?.exprs, // Use result.ast
-                &result.ast.?.stmts, // Use result.ast
-                &result.ast.?.pats, // Use result.ast
+                &ast.exprs, // Use result.ast
+                &ast.stmts, // Use result.ast
+                &ast.pats, // Use result.ast
             );
-            try json_printer.printUnit(&result.ast.?.unit); // Use result.ast
+            try json_printer.printUnit(&ast.unit); // Use result.ast
 
             const json = try json_buf.toOwnedSlice();
             defer allocator.free(json);
@@ -304,67 +304,85 @@ fn process_file(
 
     // For 'check' command, stop after semantic checks
     if (cli_args.subcommand == .check) {
-        const hir = result.ast.?;
-        var printer = lib.ast.AstPrinter.init(out_writer, &hir.exprs, &hir.stmts, &hir.pats);
-        try printer.printUnit(&hir.unit);
+        for (result.compilation_unit.?.packages.values()) |pkg| {
+            for (pkg.sources.values()) |entry| {
+                const hir = entry.ast.?;
+                var printer = lib.ast.AstPrinter.init(out_writer, &hir.exprs, &hir.stmts, &hir.pats);
+                try printer.printUnit(&hir.unit);
+            }
+        }
         try out_writer.flush();
         return;
     }
     if (cli_args.subcommand == .ast) {
-        const hir = result.ast.?;
-        var ast_printer = lib.ast.AstPrinter.init(
-            out_writer,
-            &hir.exprs,
-            &hir.stmts,
-            &hir.pats,
-        );
-        try ast_printer.printUnit(&hir.unit);
+        for (result.compilation_unit.?.packages.values()) |pkg| {
+            for (pkg.sources.values()) |entry| {
+                const hir = entry.ast.?;
+                var printer = lib.ast.AstPrinter.init(out_writer, &hir.exprs, &hir.stmts, &hir.pats);
+                try printer.printUnit(&hir.unit);
+            }
+        }
         try out_writer.flush();
         return;
     }
     if (cli_args.subcommand == .cst) {
-        const cst = result.cst.?;
-        var cst_printer = lib.cst.DodPrinter.init(out_writer, &cst.exprs, &cst.pats);
-        try cst_printer.printProgram(&cst.program);
+        for (result.compilation_unit.?.packages.values()) |pkg| {
+            for (pkg.sources.values()) |entry| {
+                const cst = entry.cst.?;
+                var cst_printer = lib.cst.DodPrinter.init(out_writer, &cst.exprs, &cst.pats);
+                try cst_printer.printProgram(&cst.program);
+            }
+        }
         try out_writer.flush();
         return;
     }
 
     // For 'pretty-print' command, print formatted code and exit
     if (cli_args.subcommand == .pretty_print) {
-        const hir = result.ast.?;
-        var code_printer = lib.ast.CodePrinter.init(
-            out_writer,
-            &hir.exprs,
-            &hir.stmts,
-            &hir.pats,
-        );
-        try code_printer.printUnit(&hir.unit);
+        for (result.compilation_unit.?.packages.values()) |pkg| {
+            for (pkg.sources.values()) |entry| {
+                const hir = entry.ast.?;
+                var code_printer = lib.ast.CodePrinter.init(
+                    out_writer,
+                    &hir.exprs,
+                    &hir.stmts,
+                    &hir.pats,
+                );
+                try code_printer.printUnit(&hir.unit);
+            }
+        }
         try out_writer.flush();
         return;
     }
 
     // For 'json-ast' command, print AST as JSON and exit
     if (cli_args.subcommand == .json_ast) {
-        const hir = result.ast.?;
-        var json_printer = lib.json_printer.JsonPrinter.init(
-            out_writer,
-            &hir.exprs,
-            &hir.stmts,
-            &hir.pats,
-        );
-        try json_printer.printUnit(&hir.unit);
+        for (result.compilation_unit.?.packages.values()) |pkg| {
+            for (pkg.sources.values()) |entry| {
+                const hir = entry.ast.?;
+                var json_printer = lib.json_printer.JsonPrinter.init(
+                    out_writer,
+                    &hir.exprs,
+                    &hir.stmts,
+                    &hir.pats,
+                );
+                try json_printer.printUnit(&hir.unit);
+            }
+        }
         try out_writer.flush();
         return;
     }
 
     // For 'tir' command, print TIR and exit
     if (cli_args.subcommand == .tir) {
-        const tir = result.tir.?;
-        var tir_printer = lib.tir.TirPrinter.init(out_writer, tir);
-        try tir_printer.print();
+        for (result.compilation_unit.?.packages.values()) |pkg| {
+            for (pkg.sources.values()) |entry| {
+                const tir = entry.tir.?;
+                var tir_printer = lib.tir.TirPrinter.init(out_writer, tir);
+                try tir_printer.print();
+            }
+        }
         try out_writer.flush();
-
         return;
     }
 
