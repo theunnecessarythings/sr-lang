@@ -6,6 +6,7 @@ const diagnostics = compiler.diagnostics;
 const lower = compiler.lower_to_ast;
 const ast = compiler.ast;
 const checker = compiler.checker;
+const SymbolStore = compiler.symbols.SymbolStore;
 
 fn testLexer(data: []const u8) !void {
     const source0 = try std.heap.page_allocator.dupeZ(u8, data);
@@ -155,9 +156,10 @@ fn testChecker(data: []const u8) !void {
     var a = try (&lower_mod).run();
     defer a.deinit();
 
+    var ctx = checker.Checker.CheckerContext{ .symtab = SymbolStore.init(gpa) };
     var chk = checker.Checker.init(gpa, &context, &pipeline); // Pass context and pipeline
     defer chk.deinit();
-    try chk.runAst(a);
+    try chk.runAst(a, &ctx);
 }
 
 pub export fn fuzz_checker(ptr: [*]const u8, len: usize) callconv(.c) void {

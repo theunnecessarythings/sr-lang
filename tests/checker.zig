@@ -6,6 +6,7 @@ const Lower = compiler.lower_to_ast.Lower;
 const Checker = compiler.checker.Checker;
 const Parser = compiler.parser.Parser;
 const diag = compiler.diagnostics;
+const SymbolStore = compiler.symbols.SymbolStore;
 
 const gpa = testing.allocator;
 
@@ -39,9 +40,11 @@ fn checkProgram(src: [:0]const u8, expected: []const diag.DiagnosticCode) !void 
 
     // Step 3: Type Check
     var pipeline = compiler.pipeline.Pipeline.init(gpa, &context);
+    var ctx = Checker.CheckerContext{ .symtab = SymbolStore.init(gpa) };
+    defer ctx.deinit(gpa);
     var checker = Checker.init(gpa, &context, &pipeline);
     defer checker.deinit();
-    try checker.runAst(ast);
+    try checker.runAst(ast, &ctx);
 
     testing.expectEqual(expected.len, context.diags.count()) catch |err| {
         std.debug.print("Expected {} diagnostics, but got {}.\n", .{ expected.len, context.diags.count() });

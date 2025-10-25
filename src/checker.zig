@@ -24,20 +24,34 @@ pub const Checker = @This();
 gpa: std.mem.Allocator,
 context: *Context,
 pipeline: *Pipeline,
+checker_ctx: List(*CheckerContext),
 
-pub threadlocal var symtab: ?symbols.SymbolStore = null;
+pub const CheckerContext = struct {
+    symtab: symbols.SymbolStore,
 
-threadlocal var func_stack: List(FunctionCtx) = .{};
-threadlocal var loop_stack: List(LoopCtx) = .{};
-threadlocal var value_ctx: List(bool) = .{};
-threadlocal var warned_meta: bool = false;
-threadlocal var warned_comptime: bool = false;
-threadlocal var warned_code: bool = false;
+    func_stack: List(FunctionCtx) = .{},
+    loop_stack: List(LoopCtx) = .{},
+    value_ctx: List(bool) = .{},
+    warned_meta: bool = false,
+    warned_comptime: bool = false,
+    warned_code: bool = false,
 
-threadlocal var loop_binding_stack: List(LoopBindingCtx) = .{};
-threadlocal var catch_binding_stack: List(CatchBindingCtx) = .{};
-threadlocal var match_binding_stack: List(MatchBindingCtx) = .{};
-threadlocal var param_specializations: List(ParamSpecialization) = .{};
+    loop_binding_stack: List(LoopBindingCtx) = .{},
+    catch_binding_stack: List(CatchBindingCtx) = .{},
+    match_binding_stack: List(MatchBindingCtx) = .{},
+    param_specializations: List(ParamSpecialization) = .{},
+
+    pub fn deinit(self: *CheckerContext, gpa: std.mem.Allocator) void {
+        self.symtab.deinit();
+        self.func_stack.deinit(gpa);
+        self.loop_stack.deinit(gpa);
+        self.value_ctx.deinit(gpa);
+        self.loop_binding_stack.deinit(gpa);
+        self.catch_binding_stack.deinit(gpa);
+        self.match_binding_stack.deinit(gpa);
+        self.param_specializations.deinit(gpa);
+    }
+};
 
 const LoopBindingCtx = struct {
     pat: ast.OptPatternId,
@@ -92,20 +106,12 @@ pub fn init(
         .gpa = gpa,
         .context = context,
         .pipeline = pipeline,
+        .checker_ctx = .{},
     };
 }
 
-pub fn deinit(_: *Checker) void {}
-
-pub fn deinitThreadLocals(self: *Checker) void {
-    func_stack.deinit(self.gpa);
-    loop_stack.deinit(self.gpa);
-    value_ctx.deinit(self.gpa);
-    loop_binding_stack.deinit(self.gpa);
-    match_binding_stack.deinit(self.gpa);
-    catch_binding_stack.deinit(self.gpa);
-    param_specializations.deinit(self.gpa);
-    if (symtab) |*s| s.deinit();
+pub fn deinit(self: *Checker) void {
+    self.checker_ctx.deinit(self.gpa);
 }
 
 pub fn run(self: *Checker, levels: *const compile.DependencyLevels) !void {
@@ -122,6 +128,8 @@ pub fn run(self: *Checker, levels: *const compile.DependencyLevels) !void {
         }
     }
 
+    try self.checker_ctx.resize(self.gpa, @intCast(ast_by_file.count()));
+
     var threads = std.ArrayList(std.Thread){};
     defer threads.deinit(self.gpa);
 
@@ -131,7 +139,11 @@ pub fn run(self: *Checker, levels: *const compile.DependencyLevels) !void {
 
         for (level.items) |file_id| {
             const ast_unit = ast_by_file.get(file_id) orelse continue;
-            const thread = try std.Thread.spawn(.{}, runAst, .{ self, ast_unit });
+            const checker_ctx = try self.gpa.create(CheckerContext);
+            checker_ctx.* = CheckerContext{
+                .symtab = symbols.SymbolStore.init(self.gpa),
+            };
+            const thread = try std.Thread.spawn(.{}, runAst, .{ self, ast_unit, checker_ctx });
             try threads.append(self.gpa, thread);
         }
 
@@ -141,19 +153,7 @@ pub fn run(self: *Checker, levels: *const compile.DependencyLevels) !void {
     }
 }
 
-pub fn runAst(self: *Checker, ast_unit: *ast.Ast) !void {
-    // Re-initialize thread-local storage for safety, in case threads are reused.
-    func_stack = .{};
-    loop_stack = .{};
-    value_ctx = .{};
-    loop_binding_stack = .{};
-    match_binding_stack = .{};
-    catch_binding_stack = .{};
-    param_specializations = .{};
-
-    symtab = symbols.SymbolStore.init(self.gpa);
-    defer self.deinitThreadLocals();
-
+pub fn runAst(self: *Checker, ast_unit: *ast.Ast, ctx: *CheckerContext) !void {
     // pre-allocate type slots for all exprs & decls
     const expr_len: usize = ast_unit.exprs.index.kinds.items.len;
     const decl_len: usize = ast_unit.exprs.Decl.list.len;
@@ -161,20 +161,18 @@ pub fn runAst(self: *Checker, ast_unit: *ast.Ast) !void {
     try ast_unit.type_info.decl_types.appendNTimes(self.gpa, null, decl_len);
 
     // Add builtin symbols to the global scope
-    _ = try symtab.?.push(null);
-    // defer symtab.?.pop();
+    _ = try ctx.symtab.push(null);
 
     const decl_ids = ast_unit.exprs.decl_pool.slice(ast_unit.unit.decls);
     // Pre-bind all top-level declaration patterns so forward references resolve.
     for (decl_ids) |did| {
         const d = ast_unit.exprs.Decl.get(did);
-        try self.bindDeclPattern(ast_unit, did, d);
+        try self.bindDeclPattern(ctx, ast_unit, did, d);
     }
     // Now type-check declarations with names available in scope
     for (decl_ids) |did| {
-        try self.checkDecl(ast_unit, did);
+        try self.checkDecl(ctx, ast_unit, did);
     }
-
 }
 
 // --------- context
@@ -192,56 +190,63 @@ const LoopCtx = struct {
 
 fn bindDeclPattern(
     self: *Checker,
+    ctx: *CheckerContext,
     ast_unit: *ast.Ast,
     did: ast.DeclId,
     d: ast.Rows.Decl,
 ) !void {
     if (d.pattern.isNone()) return;
-    try pattern_matching.declareBindingsInPattern(self, ast_unit, d.pattern.unwrap(), d.loc, .{ .decl = did });
+    try pattern_matching.declareBindingsInPattern(self, ctx, ast_unit, d.pattern.unwrap(), d.loc, .{ .decl = did });
 }
 
-fn bindParamPattern(self: *Checker, ast_unit: *ast.Ast, pid: ast.ParamId, p: ast.Rows.Param) !void {
+fn bindParamPattern(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, pid: ast.ParamId, p: ast.Rows.Param) !void {
     if (p.pat.isNone()) return;
-    try pattern_matching.declareBindingsInPattern(self, ast_unit, p.pat.unwrap(), p.loc, .{ .param = pid });
+    try pattern_matching.declareBindingsInPattern(self, ctx, ast_unit, p.pat.unwrap(), p.loc, .{ .param = pid });
 }
 
-fn pushFunc(self: *Checker, result_ty: types.TypeId, has_result: bool, require_pure: bool) !void {
-    try func_stack.append(self.gpa, .{
+fn pushFunc(
+    self: *Checker,
+    ctx: *CheckerContext,
+    result_ty: types.TypeId,
+    has_result: bool,
+    require_pure: bool,
+) !void {
+    try ctx.func_stack.append(self.gpa, .{
         .result = result_ty,
         .has_result = has_result,
         .pure = true,
         .require_pure = require_pure,
     });
 }
-fn popFunc(self: *Checker) void {
-    if (func_stack.items.len > 0) {
-        var ctx = &func_stack.items[func_stack.items.len - 1];
-        ctx.locals.deinit(self.gpa);
-        _ = func_stack.pop();
+fn popFunc(self: *Checker, ctx: *CheckerContext) void {
+    if (ctx.func_stack.items.len > 0) {
+        var context = &ctx.func_stack.items[ctx.func_stack.items.len - 1];
+        context.locals.deinit(self.gpa);
+        _ = ctx.func_stack.pop();
     }
 }
-fn inFunction(_: *const Checker) bool {
-    return func_stack.items.len > 0;
+fn inFunction(_: *const Checker, ctx: *CheckerContext) bool {
+    return ctx.func_stack.items.len > 0;
 }
-fn currentFunc(_: *const Checker) ?FunctionCtx {
-    if (func_stack.items.len == 0) return null;
-    return func_stack.items[func_stack.items.len - 1];
+fn currentFunc(_: *const Checker, ctx: *CheckerContext) ?FunctionCtx {
+    if (ctx.func_stack.items.len == 0) return null;
+    return ctx.func_stack.items[ctx.func_stack.items.len - 1];
 }
 
-fn pushLoop(self: *Checker, label: ast.OptStrId) !void {
-    try loop_stack.append(self.gpa, .{ .label = label, .result_ty = null });
+fn pushLoop(self: *Checker, ctx: *CheckerContext, label: ast.OptStrId) !void {
+    try ctx.loop_stack.append(self.gpa, .{ .label = label, .result_ty = null });
 }
-fn popLoop(_: *Checker) void {
-    if (loop_stack.items.len > 0) _ = loop_stack.pop();
+fn popLoop(_: *Checker, ctx: *CheckerContext) void {
+    if (ctx.loop_stack.items.len > 0) _ = ctx.loop_stack.pop();
 }
-fn inLoop(_: *const Checker) bool {
-    return loop_stack.items.len > 0;
+fn inLoop(_: *const Checker, ctx: *CheckerContext) bool {
+    return ctx.loop_stack.items.len > 0;
 }
-inline fn pushLoopBinding(self: *Checker, pat: ast.OptPatternId, subj: types.TypeId) !void {
-    try loop_binding_stack.append(self.gpa, .{ .pat = pat, .subject_ty = subj });
+inline fn pushLoopBinding(self: *Checker, ctx: *CheckerContext, pat: ast.OptPatternId, subj: types.TypeId) !void {
+    try ctx.loop_binding_stack.append(self.gpa, .{ .pat = pat, .subject_ty = subj });
 }
-inline fn popLoopBinding(_: *Checker) void {
-    if (loop_binding_stack.items.len > 0) _ = loop_binding_stack.pop();
+inline fn popLoopBinding(_: *Checker, ctx: *CheckerContext) void {
+    if (ctx.loop_binding_stack.items.len > 0) _ = ctx.loop_binding_stack.pop();
 }
 
 fn bindingNameOfPattern(ast_unit: *ast.Ast, pid: ast.PatternId) ?ast.StrId {
@@ -252,11 +257,11 @@ fn bindingNameOfPattern(ast_unit: *ast.Ast, pid: ast.PatternId) ?ast.StrId {
     };
 }
 
-fn lookupParamSpecialization(_: *const Checker, name: ast.StrId) ?types.TypeId {
-    var i: usize = param_specializations.items.len;
+fn lookupParamSpecialization(_: *const Checker, ctx: *CheckerContext, name: ast.StrId) ?types.TypeId {
+    var i: usize = ctx.param_specializations.items.len;
     while (i > 0) {
         i -= 1;
-        const spec = param_specializations.items[i];
+        const spec = ctx.param_specializations.items[i];
         if (spec.name.eq(name)) return spec.ty;
     }
     return null;
@@ -264,27 +269,25 @@ fn lookupParamSpecialization(_: *const Checker, name: ast.StrId) ?types.TypeId {
 
 pub fn checkSpecializedFunction(
     self: *Checker,
+    ctx: *CheckerContext,
     ast_unit: *ast.Ast,
     id: ast.ExprId,
     specs: []const ParamSpecialization,
 ) !?types.TypeId {
-    if (symtab == null) {
-        symtab = symbols.SymbolStore.init(self.gpa);
-    }
-    const need_scope = symtab.?.stack.items.len == 0;
+    const need_scope = ctx.symtab.stack.items.len == 0;
     if (need_scope) {
-        _ = try symtab.?.push(null);
+        _ = try ctx.symtab.push(null);
         const decl_ids = ast_unit.exprs.decl_pool.slice(ast_unit.unit.decls);
         for (decl_ids) |did| {
             const d = ast_unit.exprs.Decl.get(did);
-            try self.bindDeclPattern(ast_unit, did, d);
+            try self.bindDeclPattern(ctx, ast_unit, did, d);
         }
     }
-    defer if (need_scope) symtab.?.pop();
+    defer if (need_scope) ctx.symtab.pop();
 
-    const base_len = param_specializations.items.len;
-    defer param_specializations.items.len = base_len;
-    if (specs.len > 0) try param_specializations.appendSlice(self.gpa, specs);
+    const base_len = ctx.param_specializations.items.len;
+    defer ctx.param_specializations.items.len = base_len;
+    if (specs.len > 0) try ctx.param_specializations.appendSlice(self.gpa, specs);
 
     const backup_len = ast_unit.type_info.expr_types.items.len;
     const backup = try self.gpa.alloc(?types.TypeId, backup_len);
@@ -301,77 +304,86 @@ pub fn checkSpecializedFunction(
         self.gpa.free(backup);
     }
 
-    return try self.checkFunctionLit(ast_unit, id);
+    return try self.checkFunctionLit(ctx, ast_unit, id);
 }
 
-pub inline fn pushMatchBinding(self: *Checker, pat: ast.PatternId, subj: types.TypeId) !void {
-    try match_binding_stack.append(self.gpa, .{ .pat = pat, .subject_ty = subj });
+pub inline fn pushMatchBinding(self: *Checker, ctx: *CheckerContext, pat: ast.PatternId, subj: types.TypeId) !void {
+    try ctx.match_binding_stack.append(self.gpa, .{ .pat = pat, .subject_ty = subj });
 }
-pub inline fn popMatchBinding(_: *Checker) void {
-    if (match_binding_stack.items.len > 0) _ = match_binding_stack.pop();
-}
-
-inline fn pushCatchBinding(self: *Checker, name: ast.StrId, ty: types.TypeId) !void {
-    try catch_binding_stack.append(self.gpa, .{ .name = name, .ty = ty });
-}
-inline fn popCatchBinding(_: *Checker) void {
-    if (catch_binding_stack.items.len > 0) _ = catch_binding_stack.pop();
+pub inline fn popMatchBinding(_: *Checker, ctx: *CheckerContext) void {
+    if (ctx.match_binding_stack.items.len > 0) _ = ctx.match_binding_stack.pop();
 }
 
-inline fn bindingTypeFromActiveCatches(_: *Checker, name: ast.StrId) ?types.TypeId {
-    var i: isize = @as(isize, @intCast(catch_binding_stack.items.len)) - 1;
+inline fn pushCatchBinding(self: *Checker, ctx: *CheckerContext, name: ast.StrId, ty: types.TypeId) !void {
+    try ctx.catch_binding_stack.append(self.gpa, .{ .name = name, .ty = ty });
+}
+inline fn popCatchBinding(_: *Checker, ctx: *CheckerContext) void {
+    if (ctx.catch_binding_stack.items.len > 0) _ = ctx.catch_binding_stack.pop();
+}
+
+inline fn bindingTypeFromActiveCatches(_: *Checker, ctx: *CheckerContext, name: ast.StrId) ?types.TypeId {
+    var i: isize = @as(isize, @intCast(ctx.catch_binding_stack.items.len)) - 1;
     while (i >= 0) : (i -= 1) {
-        const ctx = catch_binding_stack.items[@intCast(i)];
-        if (ctx.name.eq(name)) return ctx.ty;
+        const context = ctx.catch_binding_stack.items[@intCast(i)];
+        if (context.name.eq(name)) return context.ty;
     }
     return null;
 }
 
-inline fn bindingTypeFromActiveMatches(self: *Checker, ast_unit: *ast.Ast, name: ast.StrId) ?types.TypeId {
-    var i: isize = @as(isize, @intCast(match_binding_stack.items.len)) - 1;
+inline fn bindingTypeFromActiveMatches(
+    self: *Checker,
+    ctx: *CheckerContext,
+    ast_unit: *ast.Ast,
+    name: ast.StrId,
+) ?types.TypeId {
+    var i: isize = @as(isize, @intCast(ctx.match_binding_stack.items.len)) - 1;
     while (i >= 0) : (i -= 1) {
-        const ctx = match_binding_stack.items[@intCast(i)];
-        if (pattern_matching.bindingTypeInPattern(self, ast_unit, ctx.pat, name, ctx.subject_ty)) |bt|
+        const context = ctx.match_binding_stack.items[@intCast(i)];
+        if (pattern_matching.bindingTypeInPattern(self, ast_unit, context.pat, name, context.subject_ty)) |bt|
             return bt;
     }
     return null;
 }
 
-inline fn bindingTypeFromActiveLoops(self: *Checker, ast_unit: *ast.Ast, name: ast.StrId) ?types.TypeId {
-    var i: isize = @as(isize, @intCast(loop_binding_stack.items.len)) - 1;
+inline fn bindingTypeFromActiveLoops(
+    self: *Checker,
+    ctx: *CheckerContext,
+    ast_unit: *ast.Ast,
+    name: ast.StrId,
+) ?types.TypeId {
+    var i: isize = @as(isize, @intCast(ctx.loop_binding_stack.items.len)) - 1;
     while (i >= 0) : (i -= 1) {
-        const ctx = loop_binding_stack.items[@intCast(i)];
-        if (!ctx.pat.isNone()) {
-            if (pattern_matching.bindingTypeInPattern(self, ast_unit, ctx.pat.unwrap(), name, ctx.subject_ty)) |bt|
+        const context = ctx.loop_binding_stack.items[@intCast(i)];
+        if (!context.pat.isNone()) {
+            if (pattern_matching.bindingTypeInPattern(self, ast_unit, context.pat.unwrap(), name, context.subject_ty)) |bt|
                 return bt;
         }
     }
     return null;
 }
 
-fn pushValueReq(self: *Checker, v: bool) !void {
-    try value_ctx.append(self.gpa, v);
+fn pushValueReq(self: *Checker, ctx: *CheckerContext, v: bool) !void {
+    try ctx.value_ctx.append(self.gpa, v);
 }
-fn popValueReq(_: *Checker) void {
-    if (value_ctx.items.len > 0) _ = value_ctx.pop();
+fn popValueReq(_: *Checker, ctx: *CheckerContext) void {
+    if (ctx.value_ctx.items.len > 0) _ = ctx.value_ctx.pop();
 }
-pub fn isValueReq(_: *const Checker) bool {
-    if (value_ctx.items.len == 0) return true; // default: value required
-    return value_ctx.items[value_ctx.items.len - 1];
-}
-
-pub fn lookup(_: *Checker, name: ast.StrId) ?symbols.SymbolId {
-    if (symtab == null) return null;
-    return symtab.?.lookup(symtab.?.currentId(), name);
+pub fn isValueReq(_: *const Checker, ctx: *CheckerContext) bool {
+    if (ctx.value_ctx.items.len == 0) return true; // default: value required
+    return ctx.value_ctx.items[ctx.value_ctx.items.len - 1];
 }
 
-fn loopCtxForLabel(_: *Checker, opt_label: ast.OptStrId) ?*LoopCtx {
-    if (loop_stack.items.len == 0) return null;
+pub fn lookup(_: *Checker, ctx: *CheckerContext, name: ast.StrId) ?symbols.SymbolId {
+    return ctx.symtab.lookup(ctx.symtab.currentId(), name);
+}
+
+fn loopCtxForLabel(_: *Checker, ctx: *CheckerContext, opt_label: ast.OptStrId) ?*LoopCtx {
+    if (ctx.loop_stack.items.len == 0) return null;
     const want: ?u32 = if (!opt_label.isNone()) opt_label.unwrap().toRaw() else null;
-    var i: isize = @as(isize, @intCast(loop_stack.items.len)) - 1;
+    var i: isize = @as(isize, @intCast(ctx.loop_stack.items.len)) - 1;
     while (i >= 0) : (i -= 1) {
         const idx: usize = @intCast(i);
-        const lc = &loop_stack.items[idx];
+        const lc = &ctx.loop_stack.items[idx];
         if (want == null) return lc;
         if (!lc.label.isNone() and lc.label.unwrap().toRaw() == want.?) return lc;
     }
@@ -381,33 +393,33 @@ fn loopCtxForLabel(_: *Checker, opt_label: ast.OptStrId) ?*LoopCtx {
 // =========================================================
 // Declarations & Statements
 // =========================================================
-fn checkDecl(self: *Checker, ast_unit: *ast.Ast, decl_id: ast.DeclId) !void {
+fn checkDecl(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, decl_id: ast.DeclId) !void {
     // pattern : expect_ty = value
     const decl = ast_unit.exprs.Decl.get(decl_id);
 
     // Predeclare local bindings in the current scope so subsequent statements can reference them.
     if (!decl.pattern.isNone()) {
-        try pattern_matching.declareBindingsInPattern(self, ast_unit, decl.pattern.unwrap(), decl.loc, .{ .decl = decl_id });
+        try pattern_matching.declareBindingsInPattern(self, ctx, ast_unit, decl.pattern.unwrap(), decl.loc, .{ .decl = decl_id });
     }
 
     // Expected type from type annotation (if any)
     const expect_ty = if (decl.ty.isNone())
         null
     else
-        try check_types.typeFromTypeExpr(self, ast_unit, decl.ty.unwrap());
+        try check_types.typeFromTypeExpr(self, ctx, ast_unit, decl.ty.unwrap());
 
     // Initializers must be evaluated in value context even inside statement blocks
-    try self.pushValueReq(true);
-    const rhs_ty = try self.checkExpr(ast_unit, decl.value);
-    self.popValueReq();
+    try self.pushValueReq(ctx, true);
+    const rhs_ty = try self.checkExpr(ctx, ast_unit, decl.value);
+    self.popValueReq(ctx);
 
     if (rhs_ty == null) return;
 
     // Try to coerce value type to expected type (if any)
-    try self.tryTypeCoercion(ast_unit, decl_id, rhs_ty.?, expect_ty);
+    try self.tryTypeCoercion(ctx, ast_unit, decl_id, rhs_ty.?, expect_ty);
 
     if (!decl.method_path.isNone()) {
-        if (!(try self.registerMethodDecl(ast_unit, decl_id, decl, rhs_ty.?))) return;
+        if (!(try self.registerMethodDecl(ctx, ast_unit, decl_id, decl, rhs_ty.?))) return;
     }
 
     // If LHS is a pattern, ensure the RHS type matches the pattern's shape.
@@ -431,28 +443,34 @@ fn checkDecl(self: *Checker, ast_unit: *ast.Ast, decl_id: ast.DeclId) !void {
     }
 
     // Record exports for top-level bindings only (not inside functions).
-    if (!self.inFunction()) {
+    if (!self.inFunction(ctx)) {
         // Prefer finalized decl type if present (post-coercion), otherwise use rhs type.
         const final_rhs_ty: types.TypeId = blk: {
             if (ast_unit.type_info.decl_types.items[decl_id.toRaw()]) |t| break :blk t;
             break :blk rhs_ty.?;
         };
-        try self.recordExportsForDecl(ast_unit, decl_id, final_rhs_ty);
+        try self.recordExportsForDecl(ctx, ast_unit, decl_id, final_rhs_ty);
     }
 }
 
-fn recordExportsForDecl(self: *Checker, ast_unit: *ast.Ast, decl_id: ast.DeclId, value_ty: types.TypeId) !void {
+fn recordExportsForDecl(
+    self: *Checker,
+    ctx: *CheckerContext,
+    ast_unit: *ast.Ast,
+    decl_id: ast.DeclId,
+    value_ty: types.TypeId,
+) !void {
     const decl = ast_unit.exprs.Decl.get(decl_id);
     if (decl.pattern.isNone()) return;
 
     // Use already-declared bindings in the current scope to avoid re-walking the pattern.
-    const scope_id = symtab.?.currentId();
-    const scope_row = symtab.?.scopes.get(scope_id);
+    const scope_id = ctx.symtab.currentId();
+    const scope_row = ctx.symtab.scopes.get(scope_id);
 
     // Gather candidates from finalized pool
-    const pool_ids = symtab.?.sym_pool.slice(scope_row.symbols);
+    const pool_ids = ctx.symtab.sym_pool.slice(scope_row.symbols);
     for (pool_ids) |sid| {
-        const srow = symtab.?.syms.get(sid);
+        const srow = ctx.symtab.syms.get(sid);
         if (!srow.origin_decl.isNone() and srow.origin_decl.unwrap().eq(decl_id)) {
             const nm = srow.name;
             const bty = pattern_matching.bindingTypeInPattern(self, ast_unit, decl.pattern.unwrap(), nm, value_ty) orelse value_ty;
@@ -461,10 +479,10 @@ fn recordExportsForDecl(self: *Checker, ast_unit: *ast.Ast, decl_id: ast.DeclId,
     }
 
     // Also include any not-yet-finalized symbols in the active frame for this scope (mirrors lookup).
-    for (symtab.?.stack.items) |frame| {
+    for (ctx.symtab.stack.items) |frame| {
         if (!frame.id.eq(scope_id)) continue;
         for (frame.list.items) |sid| {
-            const srow = symtab.?.syms.get(sid);
+            const srow = ctx.symtab.syms.get(sid);
             if (!srow.origin_decl.isNone() and srow.origin_decl.unwrap().eq(decl_id)) {
                 const nm = srow.name;
                 const bty = pattern_matching.bindingTypeInPattern(self, ast_unit, decl.pattern.unwrap(), nm, value_ty) orelse value_ty;
@@ -477,6 +495,7 @@ fn recordExportsForDecl(self: *Checker, ast_unit: *ast.Ast, decl_id: ast.DeclId,
 
 fn registerMethodDecl(
     self: *Checker,
+    ctx: *CheckerContext,
     ast_unit: *ast.Ast,
     decl_id: ast.DeclId,
     decl: ast.Rows.Decl,
@@ -494,11 +513,11 @@ fn registerMethodDecl(
 
     const method_seg = ast_unit.exprs.MethodPathSeg.get(seg_ids[seg_ids.len - 1]);
 
-    const owner_sym_id = self.lookup(owner_seg.name) orelse {
+    const owner_sym_id = self.lookup(ctx, owner_seg.name) orelse {
         try self.context.diags.addError(ast_unit.exprs.locs.get(owner_seg.loc), .undefined_identifier, .{});
         return false;
     };
-    const owner_sym = symtab.?.syms.get(owner_sym_id);
+    const owner_sym = ctx.symtab.syms.get(owner_sym_id);
     if (owner_sym.origin_decl.isNone()) {
         try self.context.diags.addError(ast_unit.exprs.locs.get(owner_seg.loc), .method_owner_not_struct, .{});
         return false;
@@ -508,7 +527,7 @@ fn registerMethodDecl(
     var owner_ty_opt = ast_unit.type_info.decl_types.items[owner_decl_id.toRaw()];
     if (owner_ty_opt == null) {
         const owner_decl = ast_unit.exprs.Decl.get(owner_decl_id);
-        owner_ty_opt = (try self.checkExpr(ast_unit, owner_decl.value)) orelse return false;
+        owner_ty_opt = (try self.checkExpr(ctx, ast_unit, owner_decl.value)) orelse return false;
         ast_unit.type_info.decl_types.items[owner_decl_id.toRaw()] = owner_ty_opt.?;
     }
     var owner_ty = owner_ty_opt.?;
@@ -1104,6 +1123,7 @@ fn coerceImaginaryLiteral(
 
 fn tryCoerceVariantOrErrorLiteral(
     self: *Checker,
+    ctx: *CheckerContext,
     ast_unit: *ast.Ast,
     expr_id: ast.ExprId,
     expect_ty: types.TypeId,
@@ -1112,11 +1132,11 @@ fn tryCoerceVariantOrErrorLiteral(
     return switch (value_kind) {
         .Call => blk: { // Path 1: V.C(...) form
             const call = getExpr(ast_unit, .Call, expr_id);
-            break :blk try self.tryCoerceCallLike(ast_unit, &call, expect_ty);
+            break :blk try self.tryCoerceCallLike(ctx, ast_unit, &call, expect_ty);
         },
         .StructLit => blk: { // Path 2: V.C{ ... } form
             const struct_lit = getExpr(ast_unit, .StructLit, expr_id);
-            break :blk try self.tryCoerceStructLitLike(ast_unit, &struct_lit, expect_ty);
+            break :blk try self.tryCoerceStructLitLike(ctx, ast_unit, &struct_lit, expect_ty);
         },
         else => false,
     };
@@ -1124,6 +1144,7 @@ fn tryCoerceVariantOrErrorLiteral(
 
 fn tryCoerceCallLike(
     self: *Checker,
+    ctx: *CheckerContext,
     ast_unit: *ast.Ast,
     call_like: *const ast.Rows.Call,
     expect_ty: types.TypeId,
@@ -1137,7 +1158,7 @@ fn tryCoerceCallLike(
     }
     if (last) |lname| {
         if (self.getPayloadTypeForCase(expect_ty, lname)) |pay_ty| {
-            return try self.checkCallArgsAgainstPayload(ast_unit, pay_ty, call_like);
+            return try self.checkCallArgsAgainstPayload(ctx, ast_unit, pay_ty, call_like);
         }
     }
     return false;
@@ -1145,6 +1166,7 @@ fn tryCoerceCallLike(
 
 fn tryCoerceStructLitLike(
     self: *Checker,
+    ctx: *CheckerContext,
     ast_unit: *ast.Ast,
     sl: *const ast.Rows.StructLit,
     expect_ty: types.TypeId,
@@ -1160,7 +1182,7 @@ fn tryCoerceStructLitLike(
     }
     if (last) |lname| {
         if (self.getPayloadTypeForCase(expect_ty, lname)) |pay_ty| {
-            return try self.checkStructLitAgainstPayload(ast_unit, pay_ty, sl);
+            return try self.checkStructLitAgainstPayload(ctx, ast_unit, pay_ty, sl);
         }
     }
     return false;
@@ -1186,6 +1208,7 @@ fn getPayloadTypeForCase(
 
 fn checkCallArgsAgainstPayload(
     self: *Checker,
+    ctx: *CheckerContext,
     ast_unit: *ast.Ast,
     pay_ty: types.TypeId,
     call: *const ast.Rows.Call,
@@ -1199,7 +1222,7 @@ fn checkCallArgsAgainstPayload(
         if (args.len != tys.len) return false;
 
         for (args, 0..) |aid, i| {
-            var at = try self.checkExpr(ast_unit, aid) orelse return false;
+            var at = try self.checkExpr(ctx, ast_unit, aid) orelse return false;
             if (self.assignable(at, tys[i]) != .success) {
                 if (check_types.isNumericKind(self, self.typeKind(tys[i]))) {
                     var at_kind = self.typeKind(at);
@@ -1223,7 +1246,7 @@ fn checkCallArgsAgainstPayload(
     const args = ast_unit.exprs.expr_pool.slice(call.args);
     if (args.len != 1) return false;
 
-    var at = try self.checkExpr(ast_unit, args[0]) orelse return false;
+    var at = try self.checkExpr(ctx, ast_unit, args[0]) orelse return false;
     if (self.assignable(at, pay_ty) == .success) return true;
     if (check_types.isNumericKind(self, self.typeKind(pay_ty))) {
         var at_kind = self.typeKind(at);
@@ -1236,6 +1259,7 @@ fn checkCallArgsAgainstPayload(
 
 fn checkStructLitAgainstPayload(
     self: *Checker,
+    ctx: *CheckerContext,
     ast_unit: *ast.Ast,
     pay_ty: types.TypeId,
     sl: *const ast.Rows.StructLit,
@@ -1264,7 +1288,7 @@ fn checkStructLitAgainstPayload(
         if (want == null) return false;
 
         // Type-check value against target field type
-        var at = try self.checkExpr(ast_unit, sf.value) orelse return false;
+        var at = try self.checkExpr(ctx, ast_unit, sf.value) orelse return false;
         if (self.assignable(at, want.?) != .success) {
             if (check_types.isNumericKind(self, self.typeKind(want.?))) {
                 var at_kind = self.typeKind(at);
@@ -1283,6 +1307,7 @@ fn checkStructLitAgainstPayload(
 
 fn tryTypeCoercion(
     self: *Checker,
+    ctx: *CheckerContext,
     ast_unit: *ast.Ast,
     decl_id: ast.DeclId,
     rhs_ty: types.TypeId,
@@ -1313,7 +1338,7 @@ fn tryTypeCoercion(
     if (is_assignable == .failure) {
         const ek = self.context.type_store.getKind(expect_ty.?);
         if (ek == .Variant or ek == .Error) {
-            if (try self.tryCoerceVariantOrErrorLiteral(ast_unit, decl.value, expect_ty.?)) {
+            if (try self.tryCoerceVariantOrErrorLiteral(ctx, ast_unit, decl.value, expect_ty.?)) {
                 is_assignable = .success;
             }
         }
@@ -1334,7 +1359,12 @@ fn tryTypeCoercion(
     }
 }
 
-fn checkAssign(self: *Checker, ast_unit: *ast.Ast, stmt: *const ast.StmtRows.Assign) !void {
+fn checkAssign(
+    self: *Checker,
+    ctx: *CheckerContext,
+    ast_unit: *ast.Ast,
+    stmt: *const ast.StmtRows.Assign,
+) !void {
     // Handle `_ = rhs` as a special discard operation.
     if (exprKind(ast_unit, stmt.left) == .Ident) {
         const ident = getExpr(ast_unit, .Ident, stmt.left);
@@ -1342,9 +1372,9 @@ fn checkAssign(self: *Checker, ast_unit: *ast.Ast, stmt: *const ast.StmtRows.Ass
         if (std.mem.eql(u8, name, "_")) {
             // Check the RHS for side effects, but discard the value.
             // The value of the expression is not required.
-            try self.pushValueReq(false);
-            _ = try self.checkExpr(ast_unit, stmt.right);
-            self.popValueReq();
+            try self.pushValueReq(ctx, false);
+            _ = try self.checkExpr(ctx, ast_unit, stmt.right);
+            self.popValueReq(ctx);
             return;
         }
     }
@@ -1353,9 +1383,9 @@ fn checkAssign(self: *Checker, ast_unit: *ast.Ast, stmt: *const ast.StmtRows.Ass
     const lkind = exprKind(ast_unit, stmt.left);
     if (lkind == .TupleLit or lkind == .StructLit or lkind == .ArrayLit) {
         // RHS of assignment should be checked in value context
-        try self.pushValueReq(true);
-        const rv_ty = try self.checkExpr(ast_unit, stmt.right);
-        self.popValueReq();
+        try self.pushValueReq(ctx, true);
+        const rv_ty = try self.checkExpr(ctx, ast_unit, stmt.right);
+        self.popValueReq(ctx);
         if (rv_ty != null) {
             const shape_ok = pattern_matching.checkPatternShapeForAssignExpr(self, ast_unit, stmt.left, rv_ty.?);
             switch (shape_ok) {
@@ -1364,11 +1394,11 @@ fn checkAssign(self: *Checker, ast_unit: *ast.Ast, stmt: *const ast.StmtRows.Ass
             }
         }
     } else {
-        const lt = try self.checkExpr(ast_unit, stmt.left);
+        const lt = try self.checkExpr(ctx, ast_unit, stmt.left);
         // RHS of assignment should be checked in value context
-        try self.pushValueReq(true);
-        const rt = try self.checkExpr(ast_unit, stmt.right);
-        self.popValueReq();
+        try self.pushValueReq(ctx, true);
+        const rt = try self.checkExpr(ctx, ast_unit, stmt.right);
+        self.popValueReq(ctx);
         if (lt != null and rt != null) {
             const expected = lt.?;
             var value_ty = rt.?;
@@ -1389,58 +1419,58 @@ fn checkAssign(self: *Checker, ast_unit: *ast.Ast, stmt: *const ast.StmtRows.Ass
         }
     }
     // Purity: assignment writes inside pure functions are allowed only to locals
-    if (self.inFunction() and self.currentFunc().?.require_pure) {
-        switch (self.lvalueRootKind(ast_unit, stmt.left)) {
+    if (self.inFunction(ctx) and self.currentFunc(ctx).?.require_pure) {
+        switch (self.lvalueRootKind(ctx, ast_unit, stmt.left)) {
             .LocalDecl => {},
             .Param, .NonLocalDecl, .Unknown => {
                 try self.context.diags.addError(exprLoc(ast_unit, stmt), .purity_violation, .{});
-                func_stack.items[func_stack.items.len - 1].pure = false;
+                ctx.func_stack.items[ctx.func_stack.items.len - 1].pure = false;
             },
         }
     }
 }
 
-fn checkStmt(self: *Checker, ast_unit: *ast.Ast, sid: ast.StmtId) !?types.TypeId {
+fn checkStmt(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, sid: ast.StmtId) !?types.TypeId {
     switch (ast_unit.stmts.index.kinds.items[sid.toRaw()]) {
         .Expr => {
             const expr = getStmt(ast_unit, .Expr, sid);
             // Statement expression: no value required
-            try self.pushValueReq(false);
-            defer self.popValueReq();
-            _ = try self.checkExpr(ast_unit, expr.expr);
+            try self.pushValueReq(ctx, false);
+            defer self.popValueReq(ctx);
+            _ = try self.checkExpr(ctx, ast_unit, expr.expr);
             return null;
         },
         .Decl => {
             const stmt = getStmt(ast_unit, .Decl, sid);
-            try self.checkDecl(ast_unit, stmt.decl);
-            if (self.inFunction()) {
+            try self.checkDecl(ctx, ast_unit, stmt.decl);
+            if (self.inFunction(ctx)) {
                 // record local decl for purity tracking
-                const idx = func_stack.items.len - 1;
-                _ = func_stack.items[idx].locals.put(self.gpa, stmt.decl.toRaw(), {}) catch {};
+                const idx = ctx.func_stack.items.len - 1;
+                _ = ctx.func_stack.items[idx].locals.put(self.gpa, stmt.decl.toRaw(), {}) catch {};
             }
         },
-        .Assign => try self.checkAssign(ast_unit, &getStmt(ast_unit, .Assign, sid)),
+        .Assign => try self.checkAssign(ctx, ast_unit, &getStmt(ast_unit, .Assign, sid)),
         .Insert => {
             const row = getStmt(ast_unit, .Insert, sid);
-            if (!warned_meta) {
+            if (!ctx.warned_meta) {
                 try self.context.diags.addNote(exprLoc(ast_unit, row), .checker_insert_not_expanded, .{});
-                warned_meta = true;
+                ctx.warned_meta = true;
             }
-            _ = try self.checkExpr(ast_unit, row.expr);
+            _ = try self.checkExpr(ctx, ast_unit, row.expr);
         },
         .Return => {
             const row = getStmt(ast_unit, .Return, sid);
-            return try self.checkReturn(ast_unit, row);
+            return try self.checkReturn(ctx, ast_unit, row);
         },
-        .Break => _ = try self.checkBreak(ast_unit, getStmt(ast_unit, .Break, sid)),
+        .Break => _ = try self.checkBreak(ctx, ast_unit, getStmt(ast_unit, .Break, sid)),
         .Continue => {
             const row = getStmt(ast_unit, .Continue, sid);
-            if (!self.inLoop())
+            if (!self.inLoop(ctx))
                 try self.context.diags.addError(exprLoc(ast_unit, row), .continue_outside_loop, .{});
         },
         .Unreachable => {},
-        .Defer => _ = try self.checkDefer(ast_unit, getStmt(ast_unit, .Defer, sid)),
-        .ErrDefer => _ = try self.checkErrDefer(ast_unit, getStmt(ast_unit, .ErrDefer, sid)),
+        .Defer => _ = try self.checkDefer(ctx, ast_unit, getStmt(ast_unit, .Defer, sid)),
+        .ErrDefer => _ = try self.checkErrDefer(ctx, ast_unit, getStmt(ast_unit, .ErrDefer, sid)),
     }
     return null;
 }
@@ -1448,72 +1478,72 @@ fn checkStmt(self: *Checker, ast_unit: *ast.Ast, sid: ast.StmtId) !?types.TypeId
 // =========================================================
 // Expressions
 // =========================================================
-pub fn checkExpr(self: *Checker, ast_unit: *ast.Ast, id: ast.ExprId) anyerror!?types.TypeId {
+pub fn checkExpr(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, id: ast.ExprId) anyerror!?types.TypeId {
     if (ast_unit.type_info.expr_types.items[id.toRaw()]) |cached| return cached;
     const k = exprKind(ast_unit, id);
 
     const tid = switch (k) {
         .Literal => try self.checkLiteral(ast_unit, id),
-        .Ident => try self.checkIdent(ast_unit, id),
-        .Binary => try self.checkBinary(ast_unit, id),
-        .Unary => try self.checkUnary(ast_unit, id),
-        .FunctionLit => try self.checkFunctionLit(ast_unit, id),
-        .ArrayLit => try self.checkArrayLit(ast_unit, id),
-        .TupleLit => try self.checkTupleLit(ast_unit, id),
-        .MapLit => try self.checkMapLit(ast_unit, id),
-        .IndexAccess => try self.checkIndexAccess(ast_unit, id),
-        .FieldAccess => try self.checkFieldAccess(ast_unit, id),
-        .StructLit => try self.checkStructLit(ast_unit, id),
-        .Range => try self.checkRange(ast_unit, id),
-        .Deref => try self.checkDeref(ast_unit, id),
-        .Call => try self.checkCall(ast_unit, id),
+        .Ident => try self.checkIdent(ctx, ast_unit, id),
+        .Binary => try self.checkBinary(ctx, ast_unit, id),
+        .Unary => try self.checkUnary(ctx, ast_unit, id),
+        .FunctionLit => try self.checkFunctionLit(ctx, ast_unit, id),
+        .ArrayLit => try self.checkArrayLit(ctx, ast_unit, id),
+        .TupleLit => try self.checkTupleLit(ctx, ast_unit, id),
+        .MapLit => try self.checkMapLit(ctx, ast_unit, id),
+        .IndexAccess => try self.checkIndexAccess(ctx, ast_unit, id),
+        .FieldAccess => try self.checkFieldAccess(ctx, ast_unit, id),
+        .StructLit => try self.checkStructLit(ctx, ast_unit, id),
+        .Range => try self.checkRange(ctx, ast_unit, id),
+        .Deref => try self.checkDeref(ctx, ast_unit, id),
+        .Call => try self.checkCall(ctx, ast_unit, id),
         .ComptimeBlock => {
             const cb = ast_unit.exprs.get(.ComptimeBlock, id);
-            return try self.checkExpr(ast_unit, cb.block);
+            return try self.checkExpr(ctx, ast_unit, cb.block);
         },
-        .CodeBlock => try self.checkCodeBlock(ast_unit, id),
+        .CodeBlock => try self.checkCodeBlock(ctx, ast_unit, id),
         .AsyncBlock => try self.checkAsyncBlock(id),
-        .MlirBlock => try self.checkMlirBlock(ast_unit, id),
-        .Insert => try self.checkInsert(ast_unit, id),
-        .Return => try self.checkReturn(ast_unit, getExpr(ast_unit, .Return, id)),
-        .If => try self.checkIf(ast_unit, id),
-        .While => try self.checkWhile(ast_unit, id),
-        .For => try self.checkFor(ast_unit, id),
-        .Match => try pattern_matching.checkMatch(self, ast_unit, id),
-        .Break => try self.checkBreak(ast_unit, getExpr(ast_unit, .Break, id)),
+        .MlirBlock => try self.checkMlirBlock(ctx, ast_unit, id),
+        .Insert => try self.checkInsert(ctx, ast_unit, id),
+        .Return => try self.checkReturn(ctx, ast_unit, getExpr(ast_unit, .Return, id)),
+        .If => try self.checkIf(ctx, ast_unit, id),
+        .While => try self.checkWhile(ctx, ast_unit, id),
+        .For => try self.checkFor(ctx, ast_unit, id),
+        .Match => try pattern_matching.checkMatch(self, ctx, ast_unit, id),
+        .Break => try self.checkBreak(ctx, ast_unit, getExpr(ast_unit, .Break, id)),
         .Continue => try self.checkContinue(id),
         .Unreachable => try self.checkUnreachable(id),
         .UndefLit => self.context.type_store.tUndef(),
 
-        .Block => try self.checkBlock(ast_unit, id),
-        .Defer => try self.checkDefer(ast_unit, getExpr(ast_unit, .Defer, id)),
-        .ErrDefer => try self.checkErrDefer(ast_unit, getExpr(ast_unit, .ErrDefer, id)),
-        .ErrUnwrap => try self.checkErrUnwrap(ast_unit, id),
-        .OptionalUnwrap => try self.checkOptionalUnwrap(ast_unit, id),
+        .Block => try self.checkBlock(ctx, ast_unit, id),
+        .Defer => try self.checkDefer(ctx, ast_unit, getExpr(ast_unit, .Defer, id)),
+        .ErrDefer => try self.checkErrDefer(ctx, ast_unit, getExpr(ast_unit, .ErrDefer, id)),
+        .ErrUnwrap => try self.checkErrUnwrap(ctx, ast_unit, id),
+        .OptionalUnwrap => try self.checkOptionalUnwrap(ctx, ast_unit, id),
         .Await => try self.checkAwait(id),
-        .Closure => try self.checkClosure(ast_unit, id),
-        .Cast => try self.checkCast(ast_unit, id),
-        .Catch => try self.checkCatch(ast_unit, id),
+        .Closure => try self.checkClosure(ctx, ast_unit, id),
+        .Cast => try self.checkCast(ctx, ast_unit, id),
+        .Catch => try self.checkCatch(ctx, ast_unit, id),
         .Import => try self.checkImport(ast_unit, id),
-        .TypeOf => try check_types.checkTypeOf(self, ast_unit, id),
+        .TypeOf => try check_types.checkTypeOf(self, ctx, ast_unit, id),
         .NullLit => self.context.type_store.mkOptional(self.context.type_store.tAny()),
 
         .TupleType, .ArrayType, .DynArrayType, .SliceType, .OptionalType, .ErrorSetType, .ErrorType, .StructType, .EnumType, .VariantType, .UnionType, .PointerType, .SimdType, .ComplexType, .TensorType, .TypeType, .AnyType, .NoreturnType => blk: {
-            const ty = try check_types.typeFromTypeExpr(self, ast_unit, id);
+            const ty = try check_types.typeFromTypeExpr(self, ctx, ast_unit, id);
             if (ty == null) break :blk null;
             break :blk self.context.type_store.mkTypeType(ty.?);
         },
         .MapType => blk_mt_expr: {
             // Try to interpret as a type expression first
             const row = getExpr(ast_unit, .MapType, id);
-            const key_ty = try check_types.typeFromTypeExpr(self, ast_unit, row.key);
-            const val_ty = try check_types.typeFromTypeExpr(self, ast_unit, row.value);
+            const key_ty = try check_types.typeFromTypeExpr(self, ctx, ast_unit, row.key);
+            const val_ty = try check_types.typeFromTypeExpr(self, ctx, ast_unit, row.value);
             if (key_ty != null and val_ty != null) {
                 break :blk_mt_expr self.context.type_store.mkTypeType(self.context.type_store.mkMap(key_ty.?, val_ty.?));
             }
             // If not valid types, interpret operands as value expressions and produce a map value type
-            const key_vt = try self.checkExpr(ast_unit, row.key);
-            const val_vt = try self.checkExpr(ast_unit, row.value);
+            const key_vt = try self.checkExpr(ctx, ast_unit, row.key);
+            const val_vt = try self.checkExpr(ctx, ast_unit, row.value);
             if (key_vt == null or val_vt == null) break :blk_mt_expr null;
             break :blk_mt_expr self.context.type_store.mkMap(key_vt.?, val_vt.?);
         },
@@ -1595,16 +1625,16 @@ fn checkLiteral(self: *Checker, ast_unit: *ast.Ast, id: ast.ExprId) !?types.Type
         .char => self.context.type_store.tU32(),
     };
 }
-fn checkIdent(self: *Checker, ast_unit: *ast.Ast, id: ast.ExprId) !?types.TypeId {
+fn checkIdent(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, id: ast.ExprId) !?types.TypeId {
     const row = getExpr(ast_unit, .Ident, id);
     // First try dynamic bindings from active loop/match contexts to support
     // pattern-introduced names even if they were not declared in the symtab.
-    if (self.bindingTypeFromActiveCatches(row.name)) |btid_catch| return btid_catch;
-    if (self.bindingTypeFromActiveLoops(ast_unit, row.name)) |btid_loop| return btid_loop;
-    if (self.bindingTypeFromActiveMatches(ast_unit, row.name)) |btid_match| return btid_match;
+    if (self.bindingTypeFromActiveCatches(ctx, row.name)) |btid_catch| return btid_catch;
+    if (self.bindingTypeFromActiveLoops(ctx, ast_unit, row.name)) |btid_loop| return btid_loop;
+    if (self.bindingTypeFromActiveMatches(ctx, ast_unit, row.name)) |btid_match| return btid_match;
 
-    if (self.lookup(row.name)) |sid| {
-        const srow = symtab.?.syms.get(sid);
+    if (self.lookup(ctx, row.name)) |sid| {
+        const srow = ctx.symtab.syms.get(sid);
         // Decl-originated symbol?
         if (!srow.origin_decl.isNone()) {
             const did = srow.origin_decl.unwrap();
@@ -1615,7 +1645,7 @@ fn checkIdent(self: *Checker, ast_unit: *ast.Ast, id: ast.ExprId) !?types.TypeId
                     if (ast_unit.type_info.expr_types.items[drow.value.toRaw()]) |t| break :blk t;
                     if (ast_unit.type_info.decl_types.items[did.toRaw()]) |t| break :blk t;
                     // Fallback: check rhs now
-                    break :blk (try self.checkExpr(ast_unit, drow.value)) orelse return null;
+                    break :blk (try self.checkExpr(ctx, ast_unit, drow.value)) orelse return null;
                 };
                 const bt = pattern_matching.bindingTypeInPattern(self, ast_unit, drow.pattern.unwrap(), row.name, rhs_ty);
                 if (bt) |btid| return btid;
@@ -1627,14 +1657,14 @@ fn checkIdent(self: *Checker, ast_unit: *ast.Ast, id: ast.ExprId) !?types.TypeId
             const pid = srow.origin_param.unwrap();
             const p = ast_unit.exprs.Param.get(pid);
             if (!p.ty.isNone()) {
-                const pt = (try check_types.typeFromTypeExpr(self, ast_unit, p.ty.unwrap())) orelse return null;
+                const pt = (try check_types.typeFromTypeExpr(self, ctx, ast_unit, p.ty.unwrap())) orelse return null;
                 if (!p.pat.isNone()) {
                     // If this param had a pattern, compute binding type from pattern and param type
                     if (pattern_matching.bindingTypeInPattern(self, ast_unit, p.pat.unwrap(), row.name, pt)) |bt| return bt;
                 }
                 return pt;
             } else {
-                if (self.lookupParamSpecialization(row.name)) |override_ty|
+                if (self.lookupParamSpecialization(ctx, row.name)) |override_ty|
                     return override_ty;
                 if (p.is_comptime) {
                     return self.context.type_store.mkTypeType(self.context.type_store.tAny());
@@ -1646,24 +1676,24 @@ fn checkIdent(self: *Checker, ast_unit: *ast.Ast, id: ast.ExprId) !?types.TypeId
 
         // Fallback: plain binding introduced by pattern without origin info.
         // Try to infer its type from active loop/match binding contexts.
-        if (self.bindingTypeFromActiveLoops(ast_unit, row.name)) |btid2| return btid2;
-        if (self.bindingTypeFromActiveMatches(ast_unit, row.name)) |btid2| return btid2;
+        if (self.bindingTypeFromActiveLoops(ctx, ast_unit, row.name)) |btid2| return btid2;
+        if (self.bindingTypeFromActiveMatches(ctx, ast_unit, row.name)) |btid2| return btid2;
     }
-    if (try check_types.typeFromTypeExpr(self, ast_unit, id)) |ty|
+    if (try check_types.typeFromTypeExpr(self, ctx, ast_unit, id)) |ty|
         return self.context.type_store.mkTypeType(ty);
     try self.context.diags.addError(exprLoc(ast_unit, row), .undefined_identifier, .{});
     return null;
 }
 
-fn checkBlock(self: *Checker, ast_unit: *ast.Ast, id: ast.ExprId) !?types.TypeId {
+fn checkBlock(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, id: ast.ExprId) !?types.TypeId {
     const br = getExpr(ast_unit, .Block, id);
     const stmts = ast_unit.stmts.stmt_pool.slice(br.items);
-    _ = try symtab.?.push(symtab.?.currentId());
-    defer symtab.?.pop();
+    _ = try ctx.symtab.push(ctx.symtab.currentId());
+    defer ctx.symtab.pop();
     var i: usize = 0;
 
     if (stmts.len == 0) return self.context.type_store.tVoid();
-    const value_required = self.isValueReq();
+    const value_required = self.isValueReq(ctx);
     var after_break: bool = false;
     if (!value_required) {
         // Statement context: just type-check children, no value produced
@@ -1673,7 +1703,7 @@ fn checkBlock(self: *Checker, ast_unit: *ast.Ast, id: ast.ExprId) !?types.TypeId
                 try self.context.diags.addError(loc, .unreachable_code_after_break, .{});
                 return null;
             }
-            _ = try self.checkStmt(ast_unit, stmts[i]);
+            _ = try self.checkStmt(ctx, ast_unit, stmts[i]);
             // Track unconditional break at top-level in this block
             const sk = ast_unit.stmts.index.kinds.items[stmts[i].toRaw()];
             if (sk == .Break) after_break = true else if (sk == .Expr) {
@@ -1690,7 +1720,7 @@ fn checkBlock(self: *Checker, ast_unit: *ast.Ast, id: ast.ExprId) !?types.TypeId
             try self.context.diags.addError(loc, .unreachable_code_after_break, .{});
             return null;
         }
-        _ = try self.checkStmt(ast_unit, stmts[i]);
+        _ = try self.checkStmt(ctx, ast_unit, stmts[i]);
         const sk = ast_unit.stmts.index.kinds.items[stmts[i].toRaw()];
         if (sk == .Break) after_break = true else if (sk == .Expr) {
             const se = getStmt(ast_unit, .Expr, stmts[i]).expr;
@@ -1707,7 +1737,7 @@ fn checkBlock(self: *Checker, ast_unit: *ast.Ast, id: ast.ExprId) !?types.TypeId
             return null;
         }
         const row = getStmt(ast_unit, .Expr, last);
-        return try self.checkExpr(ast_unit, row.expr);
+        return try self.checkExpr(ctx, ast_unit, row.expr);
     }
     // Otherwise, type-check the statement and treat as void
     if (after_break) {
@@ -1715,7 +1745,7 @@ fn checkBlock(self: *Checker, ast_unit: *ast.Ast, id: ast.ExprId) !?types.TypeId
         try self.context.diags.addError(loc, .unreachable_code_after_break, .{});
         return null;
     }
-    _ = try self.checkStmt(ast_unit, last);
+    _ = try self.checkStmt(ctx, ast_unit, last);
     if (last_kind == .Break or last_kind == .Return) {
         return self.context.type_store.tNoreturn();
     }
@@ -1734,10 +1764,10 @@ fn stmtLoc(ast_unit: *ast.Ast, sid: ast.StmtId) Loc {
     };
 }
 
-fn checkBinary(self: *Checker, ast_unit: *ast.Ast, id: ast.ExprId) !?types.TypeId {
+fn checkBinary(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, id: ast.ExprId) !?types.TypeId {
     const bin: ast.Rows.Binary = getExpr(ast_unit, .Binary, id);
-    const lt = try self.checkExpr(ast_unit, bin.left);
-    const rt = try self.checkExpr(ast_unit, bin.right);
+    const lt = try self.checkExpr(ctx, ast_unit, bin.left);
+    const rt = try self.checkExpr(ctx, ast_unit, bin.right);
     if (lt == null or rt == null) return null;
 
     var l = lt.?;
@@ -2010,9 +2040,9 @@ fn checkBinary(self: *Checker, ast_unit: *ast.Ast, id: ast.ExprId) !?types.TypeI
     return null;
 }
 
-fn checkUnary(self: *Checker, ast_unit: *ast.Ast, id: ast.ExprId) !?types.TypeId {
+fn checkUnary(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, id: ast.ExprId) !?types.TypeId {
     const unary_expr = getExpr(ast_unit, .Unary, id);
-    const expr_ty = try self.checkExpr(ast_unit, unary_expr.expr);
+    const expr_ty = try self.checkExpr(ctx, ast_unit, unary_expr.expr);
     if (expr_ty == null) return null;
     const t = expr_ty.?;
     const type_kind = self.typeKind(t);
@@ -2036,19 +2066,19 @@ fn checkUnary(self: *Checker, ast_unit: *ast.Ast, id: ast.ExprId) !?types.TypeId
     }
 }
 
-fn checkFunctionLit(self: *Checker, ast_unit: *ast.Ast, id: ast.ExprId) !?types.TypeId {
+fn checkFunctionLit(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, id: ast.ExprId) !?types.TypeId {
     const fnr = getExpr(ast_unit, .FunctionLit, id);
     const params = ast_unit.exprs.param_pool.slice(fnr.params);
     var pbuf = try self.gpa.alloc(types.TypeId, params.len);
     defer self.gpa.free(pbuf);
-    _ = try symtab.?.push(symtab.?.currentId());
-    defer symtab.?.pop();
+    _ = try ctx.symtab.push(ctx.symtab.currentId());
+    defer ctx.symtab.pop();
 
     var i: usize = 0;
     while (i < params.len) : (i += 1) {
         const p = ast_unit.exprs.Param.get(params[i]);
         if (!p.ty.isNone()) {
-            const pt = (try check_types.typeFromTypeExpr(self, ast_unit, p.ty.unwrap())) orelse return null;
+            const pt = (try check_types.typeFromTypeExpr(self, ctx, ast_unit, p.ty.unwrap())) orelse return null;
             // If parameter uses a pattern, ensure its shape matches the annotated type
             if (!p.pat.isNone()) {
                 const shape_ok = pattern_matching.checkPatternShapeForDecl(self, ast_unit, p.pat.unwrap(), pt);
@@ -2073,7 +2103,7 @@ fn checkFunctionLit(self: *Checker, ast_unit: *ast.Ast, id: ast.ExprId) !?types.
             var override_ty: ?types.TypeId = null;
             if (!p.pat.isNone()) {
                 if (bindingNameOfPattern(ast_unit, p.pat.unwrap())) |pname| {
-                    override_ty = self.lookupParamSpecialization(pname);
+                    override_ty = self.lookupParamSpecialization(ctx, pname);
                 }
             }
             pbuf[i] = if (override_ty) |oty|
@@ -2084,11 +2114,11 @@ fn checkFunctionLit(self: *Checker, ast_unit: *ast.Ast, id: ast.ExprId) !?types.
                 self.context.type_store.tAny();
         }
         // store in symbol table
-        try self.bindParamPattern(ast_unit, params[i], p);
+        try self.bindParamPattern(ctx, ast_unit, params[i], p);
     }
 
     const res_opt: ?types.TypeId = if (!fnr.result_ty.isNone())
-        (try check_types.typeFromTypeExpr(self, ast_unit, fnr.result_ty.unwrap()))
+        (try check_types.typeFromTypeExpr(self, ctx, ast_unit, fnr.result_ty.unwrap()))
     else
         self.context.type_store.tVoid();
     if (res_opt == null) return null;
@@ -2098,13 +2128,13 @@ fn checkFunctionLit(self: *Checker, ast_unit: *ast.Ast, id: ast.ExprId) !?types.
     const temp_ty = self.context.type_store.mkFunction(pbuf, res, fnr.flags.is_variadic, true);
     ast_unit.type_info.expr_types.items[id.toRaw()] = temp_ty;
 
-    try self.pushFunc(res, !fnr.result_ty.isNone(), !fnr.flags.is_proc);
-    defer self.popFunc();
+    try self.pushFunc(ctx, res, !fnr.result_ty.isNone(), !fnr.flags.is_proc);
+    defer self.popFunc(ctx);
     if (!fnr.body.isNone()) {
         // Function bodies are in statement context: no value required from the block
-        try self.pushValueReq(false);
-        defer self.popValueReq();
-        _ = try self.checkExpr(ast_unit, fnr.body.unwrap());
+        try self.pushValueReq(ctx, false);
+        defer self.popValueReq(ctx);
+        _ = try self.checkExpr(ctx, ast_unit, fnr.body.unwrap());
     }
     // Extern procs are considered impure; otherwise proc purity comes from body analysis.
     const is_pure = if (fnr.flags.is_proc) false else true;
@@ -2113,9 +2143,9 @@ fn checkFunctionLit(self: *Checker, ast_unit: *ast.Ast, id: ast.ExprId) !?types.
     return final_ty;
 }
 
-fn checkTupleLit(self: *Checker, ast_unit: *ast.Ast, id: ast.ExprId) !?types.TypeId {
+fn checkTupleLit(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, id: ast.ExprId) !?types.TypeId {
     // try as type expr first
-    if (try check_types.typeFromTypeExpr(self, ast_unit, id)) |ty|
+    if (try check_types.typeFromTypeExpr(self, ctx, ast_unit, id)) |ty|
         return self.context.type_store.mkTypeType(ty);
 
     const tuple_lit = getExpr(ast_unit, .TupleLit, id);
@@ -2125,7 +2155,7 @@ fn checkTupleLit(self: *Checker, ast_unit: *ast.Ast, id: ast.ExprId) !?types.Typ
     defer self.gpa.free(tbuf);
     var i: usize = 0;
     while (i < elems.len) : (i += 1) {
-        const ety = try self.checkExpr(ast_unit, elems[i]);
+        const ety = try self.checkExpr(ctx, ast_unit, elems[i]);
         if (ety == null) return null;
         tbuf[i] = ety.?;
     }
@@ -2134,6 +2164,7 @@ fn checkTupleLit(self: *Checker, ast_unit: *ast.Ast, id: ast.ExprId) !?types.Typ
 
 fn checkArrayLit(
     self: *Checker,
+    ctx: *CheckerContext,
     ast_unit: *ast.Ast,
     id: ast.ExprId,
 ) !?types.TypeId {
@@ -2144,10 +2175,10 @@ fn checkArrayLit(
     if (elems.len == 0) {
         return self.context.type_store.mkArray(self.context.type_store.tAny(), .{ .Concrete = 0 });
     }
-    const first_ty = (try self.checkExpr(ast_unit, elems[0])) orelse return null;
+    const first_ty = (try self.checkExpr(ctx, ast_unit, elems[0])) orelse return null;
     var i: usize = 1;
     while (i < elems.len) : (i += 1) {
-        const ety = try self.checkExpr(ast_unit, elems[i]);
+        const ety = try self.checkExpr(ctx, ast_unit, elems[i]);
         if (ety == null or ety.?.toRaw() != first_ty.toRaw()) {
             try self.context.diags.addError(exprLoc(ast_unit, array_lit), .heterogeneous_array_elements, .{});
             return null;
@@ -2156,7 +2187,7 @@ fn checkArrayLit(
     return self.context.type_store.mkArray(first_ty, .{ .Concrete = elems.len });
 }
 
-fn checkMapLit(self: *Checker, ast_unit: *ast.Ast, id: ast.ExprId) !?types.TypeId {
+fn checkMapLit(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, id: ast.ExprId) !?types.TypeId {
     const row = getExpr(ast_unit, .MapLit, id);
     const kvs = ast_unit.exprs.kv_pool.slice(row.entries);
 
@@ -2164,15 +2195,15 @@ fn checkMapLit(self: *Checker, ast_unit: *ast.Ast, id: ast.ExprId) !?types.TypeI
         return self.context.type_store.mkMap(self.context.type_store.tAny(), self.context.type_store.tAny());
     }
     const first = ast_unit.exprs.KeyValue.get(kvs[0]);
-    const key_ty = try self.checkExpr(ast_unit, first.key);
-    const val_ty = try self.checkExpr(ast_unit, first.value);
+    const key_ty = try self.checkExpr(ctx, ast_unit, first.key);
+    const val_ty = try self.checkExpr(ctx, ast_unit, first.value);
     if (key_ty == null or val_ty == null) return null;
 
     var i: usize = 1;
     while (i < kvs.len) : (i += 1) {
         const kv = ast_unit.exprs.KeyValue.get(kvs[i]);
-        const kt = try self.checkExpr(ast_unit, kv.key);
-        const vt = try self.checkExpr(ast_unit, kv.value);
+        const kt = try self.checkExpr(ctx, ast_unit, kv.key);
+        const vt = try self.checkExpr(ctx, ast_unit, kv.value);
         if (kt == null or kt.?.toRaw() != key_ty.?.toRaw()) {
             try self.context.diags.addError(exprLoc(ast_unit, row), .map_mixed_key_types, .{});
             return null;
@@ -2185,22 +2216,22 @@ fn checkMapLit(self: *Checker, ast_unit: *ast.Ast, id: ast.ExprId) !?types.TypeI
     return self.context.type_store.mkMap(key_ty.?, val_ty.?);
 }
 
-fn checkIndexAccess(self: *Checker, ast_unit: *ast.Ast, id: ast.ExprId) !?types.TypeId {
+fn checkIndexAccess(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, id: ast.ExprId) !?types.TypeId {
     const index_expr = getExpr(ast_unit, .IndexAccess, id);
-    const col_ty = self.checkExpr(ast_unit, index_expr.collection) catch
+    const col_ty = self.checkExpr(ctx, ast_unit, index_expr.collection) catch
         return null;
     if (col_ty == null) return null;
     const col_kind = self.typeKind(col_ty.?);
     switch (col_kind) {
-        .Array, .Slice, .DynArray => return self.indexElemTypeFromArrayLike(ast_unit, col_ty.?, index_expr.index, exprLoc(ast_unit, index_expr)),
-        .Tensor => return self.indexElemTypeFromTensor(ast_unit, col_ty.?, index_expr.index, exprLoc(ast_unit, index_expr)),
+        .Array, .Slice, .DynArray => return self.indexElemTypeFromArrayLike(ctx, ast_unit, col_ty.?, index_expr.index, exprLoc(ast_unit, index_expr)),
+        .Tensor => return self.indexElemTypeFromTensor(ctx, ast_unit, col_ty.?, index_expr.index, exprLoc(ast_unit, index_expr)),
         .Simd => {
             const idx_kind = exprKind(ast_unit, index_expr.index);
             if (idx_kind == .Range) {
                 try self.context.diags.addError(exprLoc(ast_unit, index_expr), .non_integer_index, .{});
                 return null;
             }
-            const it = self.checkExpr(ast_unit, index_expr.index) catch return null;
+            const it = self.checkExpr(ctx, ast_unit, index_expr.index) catch return null;
             if (it) |iid| {
                 if (!check_types.isIntegerKind(self, self.typeKind(iid))) {
                     try self.context.diags.addError(exprLoc(ast_unit, index_expr), .non_integer_index, .{});
@@ -2212,7 +2243,7 @@ fn checkIndexAccess(self: *Checker, ast_unit: *ast.Ast, id: ast.ExprId) !?types.
         },
         .Map => {
             const m = self.context.type_store.get(.Map, col_ty.?);
-            const it = self.checkExpr(ast_unit, index_expr.index) catch return null;
+            const it = self.checkExpr(ctx, ast_unit, index_expr.index) catch return null;
             if (it) |iid| {
                 if (iid.toRaw() != m.key.toRaw()) {
                     try self.context.diags.addError(exprLoc(ast_unit, index_expr), .map_wrong_key_type, .{});
@@ -2223,7 +2254,7 @@ fn checkIndexAccess(self: *Checker, ast_unit: *ast.Ast, id: ast.ExprId) !?types.
         },
 
         .String => {
-            const it = self.checkExpr(ast_unit, index_expr.index) catch return null;
+            const it = self.checkExpr(ctx, ast_unit, index_expr.index) catch return null;
             if (it) |iid| {
                 if (!check_types.isIntegerKind(self, self.typeKind(iid))) {
                     try self.context.diags.addError(exprLoc(ast_unit, index_expr), .non_integer_index, .{});
@@ -2239,12 +2270,12 @@ fn checkIndexAccess(self: *Checker, ast_unit: *ast.Ast, id: ast.ExprId) !?types.
     return null;
 }
 
-fn indexElemTypeFromArrayLike(self: *Checker, ast_unit: *ast.Ast, col_ty: types.TypeId, idx_expr: ast.ExprId, loc: Loc) !?types.TypeId {
+fn indexElemTypeFromArrayLike(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, col_ty: types.TypeId, idx_expr: ast.ExprId, loc: Loc) !?types.TypeId {
     const col_kind = self.typeKind(col_ty);
     std.debug.assert(col_kind == .Array or col_kind == .Slice or col_kind == .DynArray);
     const idx_kind = exprKind(ast_unit, idx_expr);
     if (idx_kind == .Range) {
-        _ = self.checkExpr(ast_unit, idx_expr) catch return null; // validate range endpoints
+        _ = self.checkExpr(ctx, ast_unit, idx_expr) catch return null; // validate range endpoints
         return switch (col_kind) {
             .Array => blk: {
                 const r = self.context.type_store.get(.Array, col_ty);
@@ -2261,7 +2292,7 @@ fn indexElemTypeFromArrayLike(self: *Checker, ast_unit: *ast.Ast, col_ty: types.
             else => unreachable,
         };
     }
-    const it = self.checkExpr(ast_unit, idx_expr) catch return null;
+    const it = self.checkExpr(ctx, ast_unit, idx_expr) catch return null;
     if (it) |iid| {
         if (!check_types.isIntegerKind(self, self.typeKind(iid))) {
             try self.context.diags.addError(loc, .non_integer_index, .{});
@@ -2276,7 +2307,7 @@ fn indexElemTypeFromArrayLike(self: *Checker, ast_unit: *ast.Ast, col_ty: types.
     };
 }
 
-fn indexElemTypeFromTensor(self: *Checker, ast_unit: *ast.Ast, col_ty: types.TypeId, idx_expr: ast.ExprId, loc: Loc) !?types.TypeId {
+fn indexElemTypeFromTensor(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, col_ty: types.TypeId, idx_expr: ast.ExprId, loc: Loc) !?types.TypeId {
     const tensor = self.context.type_store.get(.Tensor, col_ty);
     const rank: usize = @intCast(tensor.rank);
     if (rank == 0) {
@@ -2291,7 +2322,7 @@ fn indexElemTypeFromTensor(self: *Checker, ast_unit: *ast.Ast, col_ty: types.Typ
         return null;
     }
 
-    const it = self.checkExpr(ast_unit, idx_expr) catch return null;
+    const it = self.checkExpr(ctx, ast_unit, idx_expr) catch return null;
     if (it) |iid| {
         if (!check_types.isIntegerKind(self, self.typeKind(iid))) {
             try self.context.diags.addError(loc, .non_integer_index, .{});
@@ -2440,7 +2471,7 @@ fn resolveMethodFieldAccess(
     return trimmed;
 }
 
-fn checkFieldAccess(self: *Checker, ast_unit: *ast.Ast, id: ast.ExprId) !?types.TypeId {
+fn checkFieldAccess(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, id: ast.ExprId) !?types.TypeId {
     const field_expr = getExpr(ast_unit, .FieldAccess, id);
     const field_loc = exprLoc(ast_unit, field_expr);
 
@@ -2457,8 +2488,8 @@ fn checkFieldAccess(self: *Checker, ast_unit: *ast.Ast, id: ast.ExprId) !?types.
     // Also allow module access when parent is an identifier bound to an import declaration
     if (parent_kind == .Ident) {
         const idr = getExpr(ast_unit, .Ident, field_expr.parent);
-        if (self.lookup(idr.name)) |sid_sym| {
-            const sym = symtab.?.syms.get(sid_sym);
+        if (self.lookup(ctx, idr.name)) |sid_sym| {
+            const sym = ctx.symtab.syms.get(sid_sym);
             if (!sym.origin_decl.isNone()) {
                 const did = sym.origin_decl.unwrap();
                 const drow = ast_unit.exprs.Decl.get(did);
@@ -2475,7 +2506,7 @@ fn checkFieldAccess(self: *Checker, ast_unit: *ast.Ast, id: ast.ExprId) !?types.
     }
 
     // -------- Normal value/type field access --------
-    const parent_ty = self.checkExpr(ast_unit, field_expr.parent) catch return null;
+    const parent_ty = self.checkExpr(ctx, ast_unit, field_expr.parent) catch return null;
     if (parent_ty == null) return null;
 
     var ty = parent_ty.?;
@@ -2719,17 +2750,17 @@ fn checkFieldAccess(self: *Checker, ast_unit: *ast.Ast, id: ast.ExprId) !?types.
     }
 }
 
-fn checkRange(self: *Checker, ast_unit: *ast.Ast, id: ast.ExprId) !?types.TypeId {
+fn checkRange(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, id: ast.ExprId) !?types.TypeId {
     const rr = getExpr(ast_unit, .Range, id);
     if (!rr.start.isNone()) {
-        const st = try self.checkExpr(ast_unit, rr.start.unwrap());
+        const st = try self.checkExpr(ctx, ast_unit, rr.start.unwrap());
         if (st == null or !check_types.isIntegerKind(self, self.typeKind(st.?))) {
             try self.context.diags.addError(exprLoc(ast_unit, rr), .non_integer_index, .{});
             return null;
         }
     }
     if (!rr.end.isNone()) {
-        const et = try self.checkExpr(ast_unit, rr.end.unwrap());
+        const et = try self.checkExpr(ctx, ast_unit, rr.end.unwrap());
         if (et == null or !check_types.isIntegerKind(self, self.typeKind(et.?))) {
             try self.context.diags.addError(exprLoc(ast_unit, rr), .non_integer_index, .{});
             return null;
@@ -2738,7 +2769,7 @@ fn checkRange(self: *Checker, ast_unit: *ast.Ast, id: ast.ExprId) !?types.TypeId
     return self.context.type_store.mkSlice(self.context.type_store.tUsize());
 }
 
-fn checkStructLit(self: *Checker, ast_unit: *ast.Ast, id: ast.ExprId) !?types.TypeId {
+fn checkStructLit(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, id: ast.ExprId) !?types.TypeId {
     const struct_lit = getExpr(ast_unit, .StructLit, id);
     const lit_fields = ast_unit.exprs.sfv_pool.slice(struct_lit.fields);
     var buf = try self.context.type_store.gpa.alloc(types.TypeStore.StructFieldArg, lit_fields.len);
@@ -2746,7 +2777,7 @@ fn checkStructLit(self: *Checker, ast_unit: *ast.Ast, id: ast.ExprId) !?types.Ty
     var i: usize = 0;
     while (i < lit_fields.len) : (i += 1) {
         const f = ast_unit.exprs.StructFieldValue.get(lit_fields[i]);
-        const ft = try self.checkExpr(ast_unit, f.value) orelse return null;
+        const ft = try self.checkExpr(ctx, ast_unit, f.value) orelse return null;
         if (f.name.isNone()) {
             // Positional field. We can't handle this yet.
             return null;
@@ -2759,7 +2790,7 @@ fn checkStructLit(self: *Checker, ast_unit: *ast.Ast, id: ast.ExprId) !?types.Ty
     }
     const lit_ty = struct_lit.ty.unwrap();
     const expect_ty = blk: {
-        if (try check_types.typeFromTypeExpr(self, ast_unit, lit_ty)) |resolved|
+        if (try check_types.typeFromTypeExpr(self, ctx, ast_unit, lit_ty)) |resolved|
             break :blk resolved;
         try self.context.diags.addError(exprLocFromId(ast_unit, lit_ty), .undefined_identifier, .{});
         return null;
@@ -2791,9 +2822,9 @@ fn checkStructLit(self: *Checker, ast_unit: *ast.Ast, id: ast.ExprId) !?types.Ty
     return expect_ty;
 }
 
-fn checkDeref(self: *Checker, ast_unit: *ast.Ast, id: ast.ExprId) !?types.TypeId {
+fn checkDeref(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, id: ast.ExprId) !?types.TypeId {
     const row = getExpr(ast_unit, .Deref, id);
-    const ptr_ty_opt = try self.checkExpr(ast_unit, row.expr);
+    const ptr_ty_opt = try self.checkExpr(ctx, ast_unit, row.expr);
     if (ptr_ty_opt == null) return null;
     const ptr_ty = ptr_ty_opt.?;
     const kind = self.typeKind(ptr_ty);
@@ -2824,7 +2855,7 @@ pub fn getMemberFromImport(self: *Checker, ast_unit: *const ast.Ast, parent: ast
     return null;
 }
 
-fn resolveImportedMemberType(self: *Checker, ast_unit: *ast.Ast, fr: ast.Rows.FieldAccess) ?types.TypeId {
+fn resolveImportedMemberType(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, fr: ast.Rows.FieldAccess) ?types.TypeId {
     // Case 1: direct module value: (import "x").foo(...)
     const pk = exprKind(ast_unit, fr.parent);
     if (pk == .Import) {
@@ -2835,8 +2866,8 @@ fn resolveImportedMemberType(self: *Checker, ast_unit: *ast.Ast, fr: ast.Rows.Fi
     if (pk != .Ident) return null;
 
     const idr = getExpr(ast_unit, .Ident, fr.parent);
-    if (self.lookup(idr.name)) |sid_sym| {
-        const sym = symtab.?.syms.get(sid_sym);
+    if (self.lookup(ctx, idr.name)) |sid_sym| {
+        const sym = ctx.symtab.syms.get(sid_sym);
         if (!sym.origin_decl.isNone()) {
             const did = sym.origin_decl.unwrap();
             const drow = ast_unit.exprs.Decl.get(did);
@@ -2876,6 +2907,7 @@ fn resolveTagPayloadType(self: *Checker, parent_ty: types.TypeId, tag: ast.StrId
 /// Supports payload kinds: Void, Tuple, Struct (new).
 fn checkTagConstructorCall(
     self: *Checker,
+    ctx: *CheckerContext,
     ast_unit: *ast.Ast,
     parent_ty: types.TypeId,
     tag: ast.StrId,
@@ -2934,7 +2966,7 @@ fn checkTagConstructorCall(
 
             var i: usize = 0;
             while (i < args.len) : (i += 1) {
-                var at = try self.checkExpr(ast_unit, args[i]) orelse return null;
+                var at = try self.checkExpr(ctx, ast_unit, args[i]) orelse return null;
                 var at_kind = self.typeKind(at);
                 if (self.assignable(at, params[i]) != .success) {
                     if (check_types.isNumericKind(self, self.typeKind(params[i]))) {
@@ -2961,7 +2993,7 @@ fn checkTagConstructorCall(
     }
 }
 
-fn checkCall(self: *Checker, ast_unit: *ast.Ast, id: ast.ExprId) !?types.TypeId {
+fn checkCall(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, id: ast.ExprId) !?types.TypeId {
     const call_expr = getExpr(ast_unit, .Call, id);
     const call_loc = exprLoc(ast_unit, call_expr);
     const callee_kind = exprKind(ast_unit, call_expr.callee);
@@ -2970,7 +3002,7 @@ fn checkCall(self: *Checker, ast_unit: *ast.Ast, id: ast.ExprId) !?types.TypeId 
     // Fast path A: module member call — resolve from import without evaluating callee.
     if (callee_kind == .FieldAccess) {
         const fr = getExpr(ast_unit, .FieldAccess, call_expr.callee);
-        if (self.resolveImportedMemberType(ast_unit, fr)) |fty| {
+        if (self.resolveImportedMemberType(ctx, ast_unit, fr)) |fty| {
             const fk = self.typeKind(fty);
             if (fk != .Function) {
                 try self.context.diags.addError(call_loc, .call_non_callable, .{});
@@ -2987,7 +3019,7 @@ fn checkCall(self: *Checker, ast_unit: *ast.Ast, id: ast.ExprId) !?types.TypeId 
 
             var i: usize = 0;
             while (i < args.len) : (i += 1) {
-                var at = try self.checkExpr(ast_unit, args[i]) orelse return null;
+                var at = try self.checkExpr(ctx, ast_unit, args[i]) orelse return null;
                 var at_kind = self.typeKind(at);
                 const pt = if (i < fixed) params[i] else params[fixed];
                 // print types
@@ -3010,14 +3042,14 @@ fn checkCall(self: *Checker, ast_unit: *ast.Ast, id: ast.ExprId) !?types.TypeId 
         }
 
         // Fast path B: (Type).Tag(...) for Variant/Error constructors — handle ONCE and return.
-        const parent_of_field_access_ty_opt = try self.checkExpr(ast_unit, fr.parent);
+        const parent_of_field_access_ty_opt = try self.checkExpr(ctx, ast_unit, fr.parent);
         if (parent_of_field_access_ty_opt) |parent_of_field_access_ty| {
             const pk = self.typeKind(parent_of_field_access_ty);
             if (pk == .TypeType) {
                 const inner_ty = self.context.type_store.get(.TypeType, parent_of_field_access_ty).of;
                 const inner_pk = self.typeKind(inner_ty);
                 if (inner_pk == .Variant or inner_pk == .Error) {
-                    const result_ty = try self.checkTagConstructorCall(ast_unit, inner_ty, fr.field, args, call_loc);
+                    const result_ty = try self.checkTagConstructorCall(ctx, ast_unit, inner_ty, fr.field, args, call_loc);
                     if (result_ty != null) {
                         // Also stamp the type of the callee expression as a function type
                         if (self.getPayloadTypeForCase(inner_ty, fr.field)) |payload_ty| {
@@ -3039,11 +3071,11 @@ fn checkCall(self: *Checker, ast_unit: *ast.Ast, id: ast.ExprId) !?types.TypeId 
     }
 
     // General case: the callee is a value expression.
-    const func_ty_opt = try self.checkExpr(ast_unit, call_expr.callee);
+    const func_ty_opt = try self.checkExpr(ctx, ast_unit, call_expr.callee);
     if (func_ty_opt == null) {
         if (callee_kind == .Ident) {
             const idr = getExpr(ast_unit, .Ident, call_expr.callee);
-            if (self.lookup(idr.name) == null) {
+            if (self.lookup(ctx, idr.name) == null) {
                 // already reported as undeclared identifier
                 self.context.diags.messages.items[self.context.diags.messages.items.len - 1].code = .unknown_function;
             }
@@ -3056,7 +3088,7 @@ fn checkCall(self: *Checker, ast_unit: *ast.Ast, id: ast.ExprId) !?types.TypeId 
     if (callee_kind == .FieldAccess and ast_unit.type_info.getMethodBinding(call_expr.callee) == null) {
         const field_expr = getExpr(ast_unit, .FieldAccess, call_expr.callee);
         const field_loc = exprLoc(ast_unit, field_expr);
-        const parent_ty_opt = try self.checkExpr(ast_unit, field_expr.parent);
+        const parent_ty_opt = try self.checkExpr(ctx, ast_unit, field_expr.parent);
         if (parent_ty_opt == null) return null;
         const parent_ty = parent_ty_opt.?;
         const parent_kind = self.typeKind(parent_ty);
@@ -3079,7 +3111,7 @@ fn checkCall(self: *Checker, ast_unit: *ast.Ast, id: ast.ExprId) !?types.TypeId 
         }
     }
     if (ast_unit.type_info.getMethodBinding(call_expr.callee)) |binding| {
-        return try self.checkMethodCall(ast_unit, &call_expr, binding, args);
+        return try self.checkMethodCall(ctx, ast_unit, &call_expr, binding, args);
     }
     func_kind = self.typeKind(func_ty);
     if (func_kind == .Any) return null;
@@ -3094,7 +3126,7 @@ fn checkCall(self: *Checker, ast_unit: *ast.Ast, id: ast.ExprId) !?types.TypeId 
         }
         var i: usize = 0;
         while (i < args.len) : (i += 1) {
-            var at = try self.checkExpr(ast_unit, args[i]) orelse return null;
+            var at = try self.checkExpr(ctx, ast_unit, args[i]) orelse return null;
             var at_kind = self.typeKind(at);
             if (self.assignable(at, params[i]) != .success) {
                 if (check_types.isNumericKind(self, self.typeKind(params[i]))) {
@@ -3121,15 +3153,15 @@ fn checkCall(self: *Checker, ast_unit: *ast.Ast, id: ast.ExprId) !?types.TypeId 
 
     // Purity bookkeeping / enforcement
     const fnrow = self.context.type_store.get(.Function, func_ty);
-    if (self.inFunction()) {
-        const fctx = self.currentFunc().?;
+    if (self.inFunction(ctx)) {
+        const fctx = self.currentFunc(ctx).?;
         if (fctx.require_pure and !fnrow.is_pure) {
             try self.context.diags.addError(call_loc, .purity_violation, .{});
             return null;
         }
         if (!fnrow.is_pure) {
-            const idx = func_stack.items.len - 1;
-            func_stack.items[idx].pure = false;
+            const idx = ctx.func_stack.items.len - 1;
+            ctx.func_stack.items[idx].pure = false;
         }
     }
 
@@ -3150,7 +3182,7 @@ fn checkCall(self: *Checker, ast_unit: *ast.Ast, id: ast.ExprId) !?types.TypeId 
 
     var i: usize = 0;
     while (i < args.len) : (i += 1) {
-        var at = try self.checkExpr(ast_unit, args[i]) orelse return null;
+        var at = try self.checkExpr(ctx, ast_unit, args[i]) orelse return null;
         var at_kind = self.typeKind(at);
         const pt = if (!fnrow.is_variadic)
             (if (i < params.len) params[i] else params[params.len - 1])
@@ -3178,18 +3210,19 @@ fn checkCall(self: *Checker, ast_unit: *ast.Ast, id: ast.ExprId) !?types.TypeId 
 
 fn checkMethodCall(
     self: *Checker,
+    ctx: *CheckerContext,
     ast_unit: *ast.Ast,
     call_expr: *const ast.Rows.Call,
     binding: types.MethodBinding,
     args: []const ast.ExprId,
 ) !?types.TypeId {
     const field_expr = getExpr(ast_unit, .FieldAccess, call_expr.callee);
-    const receiver_ty_opt = try self.checkExpr(ast_unit, field_expr.parent);
+    const receiver_ty_opt = try self.checkExpr(ctx, ast_unit, field_expr.parent);
     if (receiver_ty_opt == null) return null;
     const receiver_ty = receiver_ty_opt.?;
 
     if (binding.receiver_kind == .pointer or binding.receiver_kind == .pointer_const) {
-        if (!binding.needs_addr_of and self.lvalueRootKind(ast_unit, field_expr.parent) == .Unknown and self.typeKind(receiver_ty) != .Ptr) {
+        if (!binding.needs_addr_of and self.lvalueRootKind(ctx, ast_unit, field_expr.parent) == .Unknown and self.typeKind(receiver_ty) != .Ptr) {
             try self.context.diags.addError(exprLocFromId(ast_unit, field_expr.parent), .method_receiver_not_addressable, .{});
             return null;
         }
@@ -3234,7 +3267,7 @@ fn checkMethodCall(
 
     var i: usize = 0;
     while (i < args.len) : (i += 1) {
-        var at = try self.checkExpr(ast_unit, args[i]) orelse return null;
+        var at = try self.checkExpr(ctx, ast_unit, args[i]) orelse return null;
         var at_kind = self.typeKind(at);
         const param_index = i + implicit_count;
         const pt = if (!fn_row.is_variadic)
@@ -3266,13 +3299,13 @@ fn checkMethodCall(
 // Blocks, Return & Control
 // =========================
 
-fn checkCodeBlock(self: *Checker, ast_unit: *ast.Ast, id: ast.ExprId) !?types.TypeId {
+fn checkCodeBlock(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, id: ast.ExprId) !?types.TypeId {
     const cb = getExpr(ast_unit, .CodeBlock, id);
-    if (!warned_code) {
+    if (!ctx.warned_code) {
         try self.context.diags.addNote(exprLoc(ast_unit, cb), .checker_code_block_not_executed, .{});
-        warned_code = true;
+        ctx.warned_code = true;
     }
-    return try self.checkExpr(ast_unit, cb.block);
+    return try self.checkExpr(ctx, ast_unit, cb.block);
 }
 
 fn checkAsyncBlock(self: *Checker, id: ast.ExprId) !?types.TypeId {
@@ -3281,11 +3314,11 @@ fn checkAsyncBlock(self: *Checker, id: ast.ExprId) !?types.TypeId {
     return self.context.type_store.tAny();
 }
 
-fn checkMlirBlock(self: *Checker, ast_unit: *ast.Ast, id: ast.ExprId) !?types.TypeId {
+fn checkMlirBlock(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, id: ast.ExprId) !?types.TypeId {
     const row = ast_unit.exprs.get(.MlirBlock, id);
     const args = ast_unit.exprs.expr_pool.slice(row.args);
     for (args) |arg_id| {
-        _ = try self.checkExpr(ast_unit, arg_id);
+        _ = try self.checkExpr(ctx, ast_unit, arg_id);
     }
 
     var has_splices = false;
@@ -3297,11 +3330,11 @@ fn checkMlirBlock(self: *Checker, ast_unit: *ast.Ast, id: ast.ExprId) !?types.Ty
 
         const name = piece.text;
         const loc = exprLoc(ast_unit, row);
-        const sym_id = self.lookup(name) orelse {
+        const sym_id = self.lookup(ctx, name) orelse {
             try self.context.diags.addError(loc, .mlir_splice_unknown_identifier, .{getStr(ast_unit, name)});
             return null;
         };
-        const sym = symtab.?.syms.get(sym_id);
+        const sym = ctx.symtab.syms.get(sym_id);
 
         if (!sym.is_comptime) {
             std.debug.print("sym: {}\n", .{sym});
@@ -3326,7 +3359,7 @@ fn checkMlirBlock(self: *Checker, ast_unit: *ast.Ast, id: ast.ExprId) !?types.Ty
                 const param_row = ast_unit.exprs.Param.get(pid_param);
                 var param_ty = self.context.type_store.tAny();
                 if (!param_row.ty.isNone()) {
-                    if (try check_types.typeFromTypeExpr(self, ast_unit, param_row.ty.unwrap())) |ty|
+                    if (try check_types.typeFromTypeExpr(self, ctx, ast_unit, param_row.ty.unwrap())) |ty|
                         param_ty = ty;
                 }
 
@@ -3389,18 +3422,18 @@ fn checkMlirBlock(self: *Checker, ast_unit: *ast.Ast, id: ast.ExprId) !?types.Ty
     };
 }
 
-fn checkInsert(self: *Checker, ast_unit: *ast.Ast, id: ast.ExprId) !?types.TypeId {
+fn checkInsert(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, id: ast.ExprId) !?types.TypeId {
     const r = getExpr(ast_unit, .Insert, id);
-    _ = try self.checkExpr(ast_unit, r.expr);
+    _ = try self.checkExpr(ctx, ast_unit, r.expr);
     return self.context.type_store.tAny();
 }
 
-fn checkReturn(self: *Checker, ast_unit: *ast.Ast, rr: ast.Rows.Return) !?types.TypeId {
-    if (func_stack.items.len == 0) {
+fn checkReturn(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, rr: ast.Rows.Return) !?types.TypeId {
+    if (ctx.func_stack.items.len == 0) {
         try self.context.diags.addError(exprLoc(ast_unit, rr), .return_outside_function, .{});
         return null;
     }
-    const current_func = func_stack.items[func_stack.items.len - 1];
+    const current_func = ctx.func_stack.items[ctx.func_stack.items.len - 1];
 
     if (current_func.has_result and rr.value.isNone()) {
         try self.context.diags.addError(exprLoc(ast_unit, rr), .missing_return_value, .{});
@@ -3413,9 +3446,9 @@ fn checkReturn(self: *Checker, ast_unit: *ast.Ast, rr: ast.Rows.Return) !?types.
 
     const expect_ty = current_func.result;
     const ret_ty = if (rr.value.isNone()) self.context.type_store.tVoid() else blk: {
-        try self.pushValueReq(true);
-        const t = try self.checkExpr(ast_unit, rr.value.unwrap());
-        self.popValueReq();
+        try self.pushValueReq(ctx, true);
+        const t = try self.checkExpr(ctx, ast_unit, rr.value.unwrap());
+        self.popValueReq(ctx);
         break :blk t;
     };
     if (ret_ty == null) return null;
@@ -3437,22 +3470,22 @@ fn checkReturn(self: *Checker, ast_unit: *ast.Ast, rr: ast.Rows.Return) !?types.
     return ret_ty;
 }
 
-fn checkIf(self: *Checker, ast_unit: *ast.Ast, id: ast.ExprId) !?types.TypeId {
+fn checkIf(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, id: ast.ExprId) !?types.TypeId {
     const if_expr = getExpr(ast_unit, .If, id);
-    const cond = try self.checkExpr(ast_unit, if_expr.cond);
+    const cond = try self.checkExpr(ctx, ast_unit, if_expr.cond);
     if (cond == null or cond.?.toRaw() != self.context.type_store.tBool().toRaw()) {
         try self.context.diags.addError(exprLoc(ast_unit, if_expr), .non_boolean_condition, .{});
         return null;
     }
 
-    const value_required = self.isValueReq();
+    const value_required = self.isValueReq(ctx);
     if (!value_required) {
-        _ = try self.checkExpr(ast_unit, if_expr.then_block);
-        if (!if_expr.else_block.isNone()) _ = try self.checkExpr(ast_unit, if_expr.else_block.unwrap());
+        _ = try self.checkExpr(ctx, ast_unit, if_expr.then_block);
+        if (!if_expr.else_block.isNone()) _ = try self.checkExpr(ctx, ast_unit, if_expr.else_block.unwrap());
         return self.context.type_store.tVoid();
     }
 
-    const then_ty = try self.checkExpr(ast_unit, if_expr.then_block) orelse return null;
+    const then_ty = try self.checkExpr(ctx, ast_unit, if_expr.then_block) orelse return null;
     if (if_expr.else_block.isNone()) {
         if (self.typeKind(then_ty) == .Noreturn) {
             return self.context.type_store.tNoreturn();
@@ -3460,7 +3493,7 @@ fn checkIf(self: *Checker, ast_unit: *ast.Ast, id: ast.ExprId) !?types.TypeId {
         try self.context.diags.addError(exprLoc(ast_unit, if_expr), .if_expression_requires_else, .{});
         return null;
     }
-    const else_ty = try self.checkExpr(ast_unit, if_expr.else_block.unwrap()) orelse return null;
+    const else_ty = try self.checkExpr(ctx, ast_unit, if_expr.else_block.unwrap()) orelse return null;
 
     const then_is_noreturn = self.typeKind(then_ty) == .Noreturn;
     const else_is_noreturn = self.typeKind(else_ty) == .Noreturn;
@@ -3480,12 +3513,12 @@ fn checkIf(self: *Checker, ast_unit: *ast.Ast, id: ast.ExprId) !?types.TypeId {
     return then_ty;
 }
 
-fn checkWhile(self: *Checker, ast_unit: *ast.Ast, id: ast.ExprId) !?types.TypeId {
+fn checkWhile(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, id: ast.ExprId) !?types.TypeId {
     const wr = getExpr(ast_unit, .While, id);
 
     if (!wr.cond.isNone() and wr.pattern.isNone()) {
         // C-like while loop
-        const cond_ty = try self.checkExpr(ast_unit, wr.cond.unwrap()) orelse return null;
+        const cond_ty = try self.checkExpr(ctx, ast_unit, wr.cond.unwrap()) orelse return null;
         const ck = self.typeKind(cond_ty);
         if (ck != .Bool and ck != .Any) {
             try self.context.diags.addError(exprLoc(ast_unit, wr), .non_boolean_condition, .{});
@@ -3493,28 +3526,28 @@ fn checkWhile(self: *Checker, ast_unit: *ast.Ast, id: ast.ExprId) !?types.TypeId
         }
     } else if (!wr.cond.isNone() and !wr.pattern.isNone()) {
         // Pattern-matching while
-        const subj_ty = try self.checkExpr(ast_unit, wr.cond.unwrap()) orelse return null;
-        if (!(try pattern_matching.checkPattern(self, ast_unit, wr.pattern.unwrap(), subj_ty, true))) {
+        const subj_ty = try self.checkExpr(ctx, ast_unit, wr.cond.unwrap()) orelse return null;
+        if (!(try pattern_matching.checkPattern(self, ctx, ast_unit, wr.pattern.unwrap(), subj_ty, true))) {
             return null;
         }
         // Declare pattern bindings into the current (enclosing) scope so they persist after the loop
-        try pattern_matching.declareBindingsInPattern(self, ast_unit, wr.pattern.unwrap(), wr.loc, .anonymous);
-        try self.pushLoopBinding(wr.pattern, subj_ty);
+        try pattern_matching.declareBindingsInPattern(self, ctx, ast_unit, wr.pattern.unwrap(), wr.loc, .anonymous);
+        try self.pushLoopBinding(ctx, wr.pattern, subj_ty);
     } else if (wr.cond.isNone() and wr.pattern.isNone()) {
         // Infinite loop: ok
     } else unreachable;
 
-    try self.pushLoop(wr.label);
-    defer self.popLoop();
+    try self.pushLoop(ctx, wr.label);
+    defer self.popLoop(ctx);
     const need_pop_loop_binding = (!wr.cond.isNone() and !wr.pattern.isNone());
     defer {
-        if (need_pop_loop_binding) self.popLoopBinding();
+        if (need_pop_loop_binding) self.popLoopBinding(ctx);
     }
 
-    const body_ty = try self.checkExpr(ast_unit, wr.body);
+    const body_ty = try self.checkExpr(ctx, ast_unit, wr.body);
 
-    if (self.isValueReq()) {
-        if (self.loopCtxForLabel(wr.label)) |ctx| return ctx.result_ty;
+    if (self.isValueReq(ctx)) {
+        if (self.loopCtxForLabel(ctx, wr.label)) |context| return context.result_ty;
     }
     return body_ty;
 }
@@ -3524,9 +3557,9 @@ fn checkUnreachable(self: *Checker, id: ast.ExprId) !?types.TypeId {
     return self.context.type_store.tAny();
 }
 
-fn checkFor(self: *Checker, ast_unit: *ast.Ast, id: ast.ExprId) !?types.TypeId {
+fn checkFor(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, id: ast.ExprId) !?types.TypeId {
     const fr = getExpr(ast_unit, .For, id);
-    const it = try self.checkExpr(ast_unit, fr.iterable) orelse return null;
+    const it = try self.checkExpr(ctx, ast_unit, fr.iterable) orelse return null;
     const kind = self.typeKind(it);
 
     switch (kind) {
@@ -3541,23 +3574,23 @@ fn checkFor(self: *Checker, ast_unit: *ast.Ast, id: ast.ExprId) !?types.TypeId {
                     else => unreachable,
                 },
             };
-            if (!(try pattern_matching.checkPattern(self, ast_unit, fr.pattern, subject_ty, true))) {
+            if (!(try pattern_matching.checkPattern(self, ctx, ast_unit, fr.pattern, subject_ty, true))) {
                 return null;
             }
-            try self.pushLoopBinding(.some(fr.pattern), subject_ty);
+            try self.pushLoopBinding(ctx, .some(fr.pattern), subject_ty);
         },
         else => {
             try self.context.diags.addError(exprLoc(ast_unit, fr), .non_iterable_in_for, .{});
             return null;
         },
     }
-    try self.pushLoop(fr.label);
-    defer self.popLoop();
-    defer self.popLoopBinding();
+    try self.pushLoop(ctx, fr.label);
+    defer self.popLoop(ctx);
+    defer self.popLoopBinding(ctx);
 
-    const body_ty = try self.checkExpr(ast_unit, fr.body);
-    if (self.isValueReq()) {
-        if (self.loopCtxForLabel(fr.label)) |ctx| return ctx.result_ty;
+    const body_ty = try self.checkExpr(ctx, ast_unit, fr.body);
+    if (self.isValueReq(ctx)) {
+        if (self.loopCtxForLabel(ctx, fr.label)) |context| return context.result_ty;
     }
     return body_ty;
 }
@@ -3597,26 +3630,26 @@ fn castable(self: *Checker, got: types.TypeId, expect: types.TypeId) bool {
     return false;
 }
 
-fn checkBreak(self: *Checker, ast_unit: *ast.Ast, br: ast.Rows.Break) !?types.TypeId {
-    if (!self.inLoop()) {
+fn checkBreak(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, br: ast.Rows.Break) !?types.TypeId {
+    if (!self.inLoop(ctx)) {
         try self.context.diags.addError(exprLoc(ast_unit, br), .break_outside_loop, .{});
         return null;
     }
 
     var val_ty: ?types.TypeId = null;
     if (!br.value.isNone()) {
-        val_ty = try self.checkExpr(ast_unit, br.value.unwrap());
+        val_ty = try self.checkExpr(ctx, ast_unit, br.value.unwrap());
         if (val_ty == null) return null;
     }
 
-    if (self.loopCtxForLabel(br.label)) |ctx| {
+    if (self.loopCtxForLabel(ctx, br.label)) |context| {
         if (!br.value.isNone()) {
-            if (ctx.result_ty) |rt| {
+            if (context.result_ty) |rt| {
                 if (val_ty.?.toRaw() != rt.toRaw()) {
                     try self.context.diags.addError(exprLoc(ast_unit, br), .loop_break_value_type_conflict, .{});
                     return null;
                 }
-            } else ctx.result_ty = val_ty.?;
+            } else context.result_ty = val_ty.?;
             return val_ty;
         } else {
             // unlabeled/valueless break in value position yields void
@@ -3631,42 +3664,42 @@ fn checkContinue(self: *Checker, id: ast.ExprId) !?types.TypeId {
     return self.context.type_store.tVoid();
 }
 
-fn checkDefer(self: *Checker, ast_unit: *ast.Ast, defer_expr: ast.Rows.Defer) !?types.TypeId {
-    if (!self.inFunction()) {
+fn checkDefer(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, defer_expr: ast.Rows.Defer) !?types.TypeId {
+    if (!self.inFunction(ctx)) {
         try self.context.diags.addError(exprLoc(ast_unit, defer_expr), .defer_outside_function, .{});
     }
-    _ = try self.checkExpr(ast_unit, defer_expr.expr);
+    _ = try self.checkExpr(ctx, ast_unit, defer_expr.expr);
     return self.context.type_store.tVoid();
 }
 
-fn checkErrDefer(self: *Checker, ast_unit: *ast.Ast, errdefer_expr: ast.Rows.ErrDefer) !?types.TypeId {
-    if (!self.inFunction()) {
+fn checkErrDefer(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, errdefer_expr: ast.Rows.ErrDefer) !?types.TypeId {
+    if (!self.inFunction(ctx)) {
         try self.context.diags.addError(exprLoc(ast_unit, errdefer_expr), .errdefer_outside_function, .{});
         return null;
     }
-    const current_func = self.currentFunc().?;
+    const current_func = self.currentFunc(ctx).?;
     if (!current_func.has_result or self.typeKind(current_func.result) != .ErrorSet) {
         try self.context.diags.addError(exprLoc(ast_unit, errdefer_expr), .errdefer_in_non_error_function, .{});
         return null;
     }
-    _ = try self.checkExpr(ast_unit, errdefer_expr.expr) orelse return null;
+    _ = try self.checkExpr(ctx, ast_unit, errdefer_expr.expr) orelse return null;
     return self.context.type_store.tVoid();
 }
 
-fn checkErrUnwrap(self: *Checker, ast_unit: *ast.Ast, id: ast.ExprId) !?types.TypeId {
+fn checkErrUnwrap(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, id: ast.ExprId) !?types.TypeId {
     const eur = getExpr(ast_unit, .ErrUnwrap, id);
-    const et = try self.checkExpr(ast_unit, eur.expr) orelse return null;
+    const et = try self.checkExpr(ctx, ast_unit, eur.expr) orelse return null;
     if (self.typeKind(et) != .ErrorSet) {
         try self.context.diags.addError(exprLoc(ast_unit, eur), .error_propagation_on_non_error, .{});
         return null;
     }
     const er = self.context.type_store.get(.ErrorSet, et);
 
-    if (!self.inFunction()) {
+    if (!self.inFunction(ctx)) {
         try self.context.diags.addError(exprLoc(ast_unit, eur), .error_propagation_mismatched_function_result, .{});
         return null;
     }
-    const fctx = self.currentFunc().?;
+    const fctx = self.currentFunc(ctx).?;
     const fk = self.typeKind(fctx.result);
     if (fk != .ErrorSet) {
         try self.context.diags.addError(exprLoc(ast_unit, eur), .error_propagation_mismatched_function_result, .{});
@@ -3682,9 +3715,9 @@ fn checkErrUnwrap(self: *Checker, ast_unit: *ast.Ast, id: ast.ExprId) !?types.Ty
     return er.value_ty;
 }
 
-fn checkOptionalUnwrap(self: *Checker, ast_unit: *ast.Ast, id: ast.ExprId) !?types.TypeId {
+fn checkOptionalUnwrap(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, id: ast.ExprId) !?types.TypeId {
     const our = getExpr(ast_unit, .OptionalUnwrap, id);
-    const ot = try self.checkExpr(ast_unit, our.expr) orelse return null;
+    const ot = try self.checkExpr(ctx, ast_unit, our.expr) orelse return null;
     if (self.typeKind(ot) != .Optional) {
         try self.context.diags.addError(exprLoc(ast_unit, our), .invalid_optional_unwrap_target, .{});
         return null;
@@ -3698,7 +3731,7 @@ fn checkAwait(self: *Checker, id: ast.ExprId) !?types.TypeId {
     return self.context.type_store.tAny();
 }
 
-fn checkClosure(self: *Checker, ast_unit: *ast.Ast, id: ast.ExprId) !?types.TypeId {
+fn checkClosure(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, id: ast.ExprId) !?types.TypeId {
     const cr = getExpr(ast_unit, .Closure, id);
     const params = ast_unit.exprs.param_pool.slice(cr.params);
 
@@ -3712,22 +3745,22 @@ fn checkClosure(self: *Checker, ast_unit: *ast.Ast, id: ast.ExprId) !?types.Type
             try self.context.diags.addError(exprLoc(ast_unit, p), .type_annotation_mismatch, .{});
             return null;
         }
-        const pt = try check_types.typeFromTypeExpr(self, ast_unit, p.ty.unwrap()) orelse return null;
+        const pt = try check_types.typeFromTypeExpr(self, ctx, ast_unit, p.ty.unwrap()) orelse return null;
         param_tys[i] = pt;
     }
 
-    const body_ty = try self.checkExpr(ast_unit, cr.body) orelse return null;
+    const body_ty = try self.checkExpr(ctx, ast_unit, cr.body) orelse return null;
     // Closures are always pure function *types* (no side-effect tracking here).
     return self.context.type_store.mkFunction(param_tys, body_ty, false, true);
 }
 
-fn checkCast(self: *Checker, ast_unit: *ast.Ast, id: ast.ExprId) !?types.TypeId {
+fn checkCast(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, id: ast.ExprId) !?types.TypeId {
     const cr = getExpr(ast_unit, .Cast, id);
-    const et = try check_types.typeFromTypeExpr(self, ast_unit, cr.ty) orelse {
+    const et = try check_types.typeFromTypeExpr(self, ctx, ast_unit, cr.ty) orelse {
         try self.context.diags.addError(exprLoc(ast_unit, cr), .cast_target_not_type, .{});
         return null;
     };
-    const vt = try self.checkExpr(ast_unit, cr.expr) orelse return null;
+    const vt = try self.checkExpr(ctx, ast_unit, cr.expr) orelse return null;
 
     const vk = self.typeKind(vt);
     const ek = self.typeKind(et);
@@ -3763,9 +3796,9 @@ fn checkCast(self: *Checker, ast_unit: *ast.Ast, id: ast.ExprId) !?types.TypeId 
     return et;
 }
 
-fn checkCatch(self: *Checker, ast_unit: *ast.Ast, id: ast.ExprId) !?types.TypeId {
+fn checkCatch(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, id: ast.ExprId) !?types.TypeId {
     const row = getExpr(ast_unit, .Catch, id);
-    const lhs_ty = try self.checkExpr(ast_unit, row.expr);
+    const lhs_ty = try self.checkExpr(ctx, ast_unit, row.expr);
 
     if (lhs_ty == null) return null;
 
@@ -3785,11 +3818,11 @@ fn checkCatch(self: *Checker, ast_unit: *ast.Ast, id: ast.ExprId) !?types.TypeId
     var handler_ty: ?types.TypeId = null;
     if (!row.binding_name.isNone()) {
         const name = row.binding_name.unwrap();
-        try self.pushCatchBinding(name, es_info.error_ty);
-        handler_ty = try self.checkExpr(ast_unit, row.handler);
-        self.popCatchBinding();
+        try self.pushCatchBinding(ctx, name, es_info.error_ty);
+        handler_ty = try self.checkExpr(ctx, ast_unit, row.handler);
+        self.popCatchBinding(ctx);
     } else {
-        handler_ty = try self.checkExpr(ast_unit, row.handler);
+        handler_ty = try self.checkExpr(ctx, ast_unit, row.handler);
     }
 
     if (handler_ty == null) return null;
@@ -3797,7 +3830,7 @@ fn checkCatch(self: *Checker, ast_unit: *ast.Ast, id: ast.ExprId) !?types.TypeId
     // If this catch expression is used in a statement (no value required),
     // allow a void handler (side effects only). The overall expression then
     // has type void, unless the handler is noreturn.
-    if (!self.isValueReq()) {
+    if (!self.isValueReq(ctx)) {
         if (self.typeKind(handler_ty.?) == .Noreturn) {
             return self.context.type_store.tNoreturn();
         }
@@ -3878,20 +3911,20 @@ fn checkIntZeroLiteral(self: *Checker, ast_unit: *ast.Ast, rhs: ast.ExprId, loc:
 }
 
 const LvalueRootKind = enum { LocalDecl, Param, NonLocalDecl, Unknown };
-fn lvalueRootKind(self: *Checker, ast_unit: *ast.Ast, expr: ast.ExprId) LvalueRootKind {
+fn lvalueRootKind(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, expr: ast.ExprId) LvalueRootKind {
     const k = exprKind(ast_unit, expr);
     switch (k) {
         .Ident => {
             const idr = getExpr(ast_unit, .Ident, expr);
             // Discard assignment '_' is considered local
             if (std.mem.eql(u8, getStr(ast_unit, idr.name), "_")) return .LocalDecl;
-            if (self.lookup(idr.name)) |sid_sym| {
-                const sym = symtab.?.syms.get(sid_sym);
+            if (self.lookup(ctx, idr.name)) |sid_sym| {
+                const sym = ctx.symtab.syms.get(sid_sym);
                 if (!sym.origin_param.isNone()) return .Param;
                 if (!sym.origin_decl.isNone()) {
                     const did = sym.origin_decl.unwrap();
-                    if (self.inFunction()) {
-                        const fctx = self.currentFunc().?;
+                    if (self.inFunction(ctx)) {
+                        const fctx = self.currentFunc(ctx).?;
                         return if (fctx.locals.contains(did.toRaw())) .LocalDecl else .NonLocalDecl;
                     }
                     return .NonLocalDecl;
@@ -3901,15 +3934,15 @@ fn lvalueRootKind(self: *Checker, ast_unit: *ast.Ast, expr: ast.ExprId) LvalueRo
         },
         .Deref => {
             const dr = getExpr(ast_unit, .Deref, expr);
-            return self.lvalueRootKind(ast_unit, dr.expr);
+            return self.lvalueRootKind(ctx, ast_unit, dr.expr);
         },
         .FieldAccess => {
             const fr = getExpr(ast_unit, .FieldAccess, expr);
-            return self.lvalueRootKind(ast_unit, fr.parent);
+            return self.lvalueRootKind(ctx, ast_unit, fr.parent);
         },
         .IndexAccess => {
             const ir = getExpr(ast_unit, .IndexAccess, expr);
-            return self.lvalueRootKind(ast_unit, ir.collection);
+            return self.lvalueRootKind(ctx, ast_unit, ir.collection);
         },
         else => return .Unknown,
     }

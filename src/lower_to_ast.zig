@@ -18,7 +18,7 @@ pub fn init(
     file_id: u32,
 ) !Lower {
     const ast_unit = try gpa.create(ast.Ast);
-    ast_unit.* = ast.Ast.init(gpa, program.interner, program.exprs.locs, context.type_store);
+    ast_unit.* = ast.Ast.init(gpa, program.interner, program.exprs.locs, context.type_store, file_id);
     return .{
         .gpa = gpa,
         .cst_program = program,

@@ -146,6 +146,7 @@ fn coverAddRangeDetectOverlap(self: *Checker, cov: *IntCoverage, new: Interval) 
 
 pub fn checkPattern(
     self: *Checker,
+    ctx: *Checker.CheckerContext,
     ast_unit: *ast.Ast,
     pid: ast.PatternId,
     value_ty: types.TypeId,
@@ -201,7 +202,7 @@ pub fn checkPattern(
 
             var any_ok = false;
             for (alts) |aid| {
-                const is_ok = try checkPattern(self, ast_unit, aid, value_ty, false);
+                const is_ok = try checkPattern(self, ctx, ast_unit, aid, value_ty, false);
                 any_ok = any_ok or is_ok;
             }
             return any_ok;
@@ -209,7 +210,7 @@ pub fn checkPattern(
         .At => {
             const ap = ast_unit.pats.get(.At, pid);
             // x @ pat : bind x as a Var and check subpattern.
-            _ = try Checker.symtab.?.declare(.{
+            _ = try ctx.symtab.declare(.{
                 .name = ap.binder,
                 .kind = .Var,
                 .is_comptime = false,
@@ -217,15 +218,15 @@ pub fn checkPattern(
                 .origin_decl = .none(),
                 .origin_param = .none(),
             });
-            return try checkPattern(self, ast_unit, ap.pattern, value_ty, false);
+            return try checkPattern(self, ctx, ast_unit, ap.pattern, value_ty, false);
         },
         .Range => {
             const rp = ast_unit.pats.get(.Range, pid);
             if (!rp.start.isNone()) {
-                _ = try self.checkExpr(ast_unit, rp.start.unwrap());
+                _ = try self.checkExpr(ctx, ast_unit, rp.start.unwrap());
             }
             if (!rp.end.isNone()) {
-                _ = try self.checkExpr(ast_unit, rp.end.unwrap());
+                _ = try self.checkExpr(ctx, ast_unit, rp.end.unwrap());
             }
             // Accept integer subjects only.
             return check_types.isIntegerKind(self, self.typeKind(value_ty));
@@ -257,7 +258,7 @@ pub fn checkPattern(
                     return false;
                 }
                 for (elems, 0..) |eid, i| {
-                    if (!(try checkPattern(self, ast_unit, eid, tys[i], false))) return false;
+                    if (!(try checkPattern(self, ctx, ast_unit, eid, tys[i], false))) return false;
                 }
                 return true;
             } else {
@@ -266,7 +267,7 @@ pub fn checkPattern(
                     try self.context.diags.addError(ast_unit.exprs.locs.get(vt_pat.loc), .pattern_type_mismatch, .{});
                     return false;
                 }
-                return try checkPattern(self, ast_unit, elems[0], payload_ty, false);
+                return try checkPattern(self, ctx, ast_unit, elems[0], payload_ty, false);
             }
         },
         .Path => {
@@ -326,7 +327,7 @@ pub fn checkPattern(
                             try self.context.diags.addError(ast_unit.exprs.locs.get(vs_pat.loc), .struct_pattern_field_mismatch, .{});
                             return false;
                         }
-                        if (!(try checkPattern(self, ast_unit, pf.pattern, fty.?, false))) {
+                        if (!(try checkPattern(self, ctx, ast_unit, pf.pattern, fty.?, false))) {
                             try self.context.diags.addError(ast_unit.exprs.locs.get(vs_pat.loc), .struct_pattern_field_mismatch, .{});
                             return false;
                         }
@@ -361,7 +362,7 @@ pub fn checkPattern(
                     }
                 }
                 if (fty == null) return false;
-                if (!(try checkPattern(self, ast_unit, pf.pattern, fty.?, false))) {
+                if (!(try checkPattern(self, ctx, ast_unit, pf.pattern, fty.?, false))) {
                     try self.context.diags.addError(ast_unit.exprs.locs.get(vs_pat.loc), .struct_pattern_field_mismatch, .{});
                     return false;
                 }
@@ -371,7 +372,7 @@ pub fn checkPattern(
         .Binding => {
             const bp = ast_unit.pats.get(.Binding, pid);
             // Declare the bound name.
-            _ = try Checker.symtab.?.declare(.{
+            _ = try ctx.symtab.declare(.{
                 .name = bp.name,
                 .kind = .Var,
                 .is_comptime = false,
@@ -394,7 +395,7 @@ pub fn checkPattern(
             const lp = ast_unit.pats.get(.Literal, pid);
             const pattern_loc = ast_unit.exprs.locs.get(lp.loc);
             const lit_expr_id = lp.expr;
-            const lit_ty = (try self.checkExpr(ast_unit, lit_expr_id)) orelse return false;
+            const lit_ty = (try self.checkExpr(ctx, ast_unit, lit_expr_id)) orelse return false;
 
             if (self.assignable(value_ty, lit_ty) != .success) {
                 if (emit) try self.context.diags.addError(pattern_loc, .pattern_type_mismatch, .{});
@@ -419,7 +420,7 @@ pub fn checkPattern(
                 return false;
             }
             for (pattern_elems, 0..) |pat_elem_id, i| {
-                if (!(try checkPattern(self, ast_unit, pat_elem_id, value_elems[i], false))) return false;
+                if (!(try checkPattern(self, ctx, ast_unit, pat_elem_id, value_elems[i], false))) return false;
             }
             return true;
         },
@@ -457,11 +458,11 @@ pub fn checkPattern(
 
             for (pattern_elems, 0..) |pat_elem_id, i| {
                 if (ap.has_rest and i == ap.rest_index) continue; // skip the rest placeholder
-                if (!(try checkPattern(self, ast_unit, pat_elem_id, elem_ty, false))) return false;
+                if (!(try checkPattern(self, ctx, ast_unit, pat_elem_id, elem_ty, false))) return false;
             }
 
             if (ap.has_rest and !ap.rest_binding.isNone()) {
-                if (!(try checkPattern(self, ast_unit, ap.rest_binding.unwrap(), self.context.type_store.mkSlice(elem_ty), false)))
+                if (!(try checkPattern(self, ctx, ast_unit, ap.rest_binding.unwrap(), self.context.type_store.mkSlice(elem_ty), false)))
                     return false;
             }
             return true;
@@ -493,20 +494,20 @@ pub fn checkPattern(
                     if (emit) try self.context.diags.addError(pattern_loc, .struct_pattern_field_mismatch, .{});
                     return false;
                 }
-                if (!(try checkPattern(self, ast_unit, pat_field.pattern, match_ty.?, false))) return false;
+                if (!(try checkPattern(self, ctx, ast_unit, pat_field.pattern, match_ty.?, false))) return false;
             }
             return true;
         },
     }
 }
 
-pub fn checkMatch(self: *Checker, ast_unit: *ast.Ast, id: ast.ExprId) !?types.TypeId {
+pub fn checkMatch(self: *Checker, ctx: *Checker.CheckerContext, ast_unit: *ast.Ast, id: ast.ExprId) !?types.TypeId {
     const mr = ast_unit.exprs.get(.Match, id);
-    const subj_ty_opt = try self.checkExpr(ast_unit, mr.expr);
+    const subj_ty_opt = try self.checkExpr(ctx, ast_unit, mr.expr);
     if (subj_ty_opt == null) return null;
     const subj_ty = subj_ty_opt.?;
     const subj_kind = self.typeKind(subj_ty);
-    const value_required = self.isValueReq();
+    const value_required = self.isValueReq(ctx);
 
     var result_ty: ?types.TypeId = null;
 
@@ -537,22 +538,22 @@ pub fn checkMatch(self: *Checker, ast_unit: *ast.Ast, id: ast.ExprId) !?types.Ty
     while (i < arms.len) : (i += 1) {
         const arm = ast_unit.exprs.MatchArm.get(arms[i]);
 
-        try self.pushMatchBinding(arm.pattern, subj_ty);
-        defer self.popMatchBinding();
+        try self.pushMatchBinding(ctx, arm.pattern, subj_ty);
+        defer self.popMatchBinding(ctx);
 
-        _ = try Checker.symtab.?.push(Checker.symtab.?.currentId());
-        defer Checker.symtab.?.pop();
-        try declareBindingsInPattern(self, ast_unit, arm.pattern, arm.loc, .anonymous);
+        _ = try ctx.symtab.push(ctx.symtab.currentId());
+        defer ctx.symtab.pop();
+        try declareBindingsInPattern(self, ctx, ast_unit, arm.pattern, arm.loc, .anonymous);
 
         // Validate pattern against subject type.
-        const ok = try checkPattern(self, ast_unit, arm.pattern, subj_ty, true);
+        const ok = try checkPattern(self, ctx, ast_unit, arm.pattern, subj_ty, true);
         if (!ok) {
             return null;
         }
 
         // Guard must be boolean if present.
         if (!arm.guard.isNone()) {
-            const gty = try self.checkExpr(ast_unit, arm.guard.unwrap());
+            const gty = try self.checkExpr(ctx, ast_unit, arm.guard.unwrap());
             if (gty == null) return null;
             if (gty.?.toRaw() != self.context.type_store.tBool().toRaw()) {
                 try self.context.diags.addError(ast_unit.exprs.locs.get(arm.loc), .non_boolean_condition, .{});
@@ -628,7 +629,7 @@ pub fn checkMatch(self: *Checker, ast_unit: *ast.Ast, id: ast.ExprId) !?types.Ty
         }
 
         // Body type checking / unification when match is used as a value.
-        const body_ty = try self.checkExpr(ast_unit, arm.body);
+        const body_ty = try self.checkExpr(ctx, ast_unit, arm.body);
         if (!value_required) continue;
         if (body_ty == null) return null;
 
@@ -868,6 +869,7 @@ pub const BindingOrigin = union(enum) { decl: ast.DeclId, param: ast.ParamId, an
 
 pub fn declareBindingsInPattern(
     self: *Checker,
+    ctx: *Checker.CheckerContext,
     ast_unit: *ast.Ast,
     pid: ast.PatternId,
     loc: ast.LocId,
@@ -911,7 +913,7 @@ pub fn declareBindingsInPattern(
                     .origin_param = .none(),
                 },
             };
-            _ = try Checker.symtab.?.declare(rowv);
+            _ = try ctx.symtab.declare(rowv);
 
             // Also declare nested bindings if the AST supports a subpattern.
             if (@hasField(@TypeOf(b), "pattern")) {
@@ -922,35 +924,35 @@ pub fn declareBindingsInPattern(
         .Tuple => {
             const tp = ast_unit.pats.get(.Tuple, pid);
             const elems = ast_unit.pats.pat_pool.slice(tp.elems);
-            for (elems) |eid| try declareBindingsInPattern(self, ast_unit, eid, loc, origin);
+            for (elems) |eid| try declareBindingsInPattern(self, ctx, ast_unit, eid, loc, origin);
         },
         .Struct => {
             const sp = ast_unit.pats.get(.Struct, pid);
             const fields = ast_unit.pats.field_pool.slice(sp.fields);
             for (fields) |fid| {
                 const f = ast_unit.pats.StructField.get(fid);
-                try declareBindingsInPattern(self, ast_unit, f.pattern, loc, origin);
+                try declareBindingsInPattern(self, ctx, ast_unit, f.pattern, loc, origin);
             }
         },
         .VariantTuple => {
             const vt = ast_unit.pats.get(.VariantTuple, pid);
             const elems = ast_unit.pats.pat_pool.slice(vt.elems);
-            for (elems) |eid| try declareBindingsInPattern(self, ast_unit, eid, loc, origin);
+            for (elems) |eid| try declareBindingsInPattern(self, ctx, ast_unit, eid, loc, origin);
         },
         .VariantStruct => {
             const vs = ast_unit.pats.get(.VariantStruct, pid);
             const fields = ast_unit.pats.field_pool.slice(vs.fields);
             for (fields) |fid| {
                 const f = ast_unit.pats.StructField.get(fid);
-                try declareBindingsInPattern(self, ast_unit, f.pattern, loc, origin);
+                try declareBindingsInPattern(self, ctx, ast_unit, f.pattern, loc, origin);
             }
         },
         .Slice => {
             const ap = ast_unit.pats.get(.Slice, pid);
             const elems = ast_unit.pats.pat_pool.slice(ap.elems);
-            for (elems) |eid| try declareBindingsInPattern(self, ast_unit, eid, loc, origin);
+            for (elems) |eid| try declareBindingsInPattern(self, ctx, ast_unit, eid, loc, origin);
             if (ap.has_rest and !ap.rest_binding.isNone()) {
-                try declareBindingsInPattern(self, ast_unit, ap.rest_binding.unwrap(), loc, origin);
+                try declareBindingsInPattern(self, ctx, ast_unit, ap.rest_binding.unwrap(), loc, origin);
             }
         },
         .Path, .Literal => {},

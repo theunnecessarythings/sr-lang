@@ -1527,7 +1527,8 @@ fn lowerCall(
 
                         if (runtime_specs.items.len > 0) {
                             if (decl_ast == a) {
-                                const specialized_fn_ty = try self.chk.checkSpecializedFunction(decl_ast, decl.value, runtime_specs.items);
+                                const ctx = self.chk.checker_ctx.items[a.file_id];
+                                const specialized_fn_ty = try self.chk.checkSpecializedFunction(ctx, decl_ast, decl.value, runtime_specs.items);
                                 if (specialized_fn_ty) |fn_ty_override| {
                                     const fn_info_override = self.context.type_store.get(.Function, fn_ty_override);
                                     specialized_result_override = fn_info_override.result;
