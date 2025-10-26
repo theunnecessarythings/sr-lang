@@ -23,6 +23,8 @@ pub fn getSource(comptime globals: []const u8, comptime main_body: []const u8) [
 
 const alloc = std.testing.allocator;
 
+pub var link_lib: []const u8 = "-lm";
+
 pub fn runCompilerTest(source: []const u8, expected_stdout: []const u8) !void {
     const temp_dir = "out";
     const file_path = temp_dir ++ "/test.sr";
@@ -36,7 +38,7 @@ pub fn runCompilerTest(source: []const u8, expected_stdout: []const u8) !void {
 
     const compile_result = try std.process.Child.run(.{
         .allocator = alloc,
-        .argv = &.{ "zig-out/bin/sr_lang", "compile", "out/test.sr" },
+        .argv = &.{ "zig-out/bin/sr_lang", "compile", "out/test.sr", link_lib },
         .max_output_bytes = 16 * 1024 * 1024,
     });
     defer alloc.free(compile_result.stdout);
@@ -71,10 +73,16 @@ pub fn runCompilerTest(source: []const u8, expected_stdout: []const u8) !void {
     switch (run_result.term) {
         .Exited => |code| {
             if (code != 0) {
+                std.debug.print("Compiler stdout:\n{s}\n", .{run_result.stdout});
+                std.debug.print("Compiler stderr:\n{s}\n", .{run_result.stderr});
                 return error.CompilationFailed;
             }
         },
-        else => return error.ProcessFailed,
+        else => {
+            std.debug.print("Compiler stdout:\n{s}\n", .{run_result.stdout});
+            std.debug.print("Compiler stderr:\n{s}\n", .{run_result.stderr});
+            return error.ProcessFailed;
+        },
     }
     try std.testing.expectEqualStrings(expected_stdout, run_result.stdout);
 }
@@ -830,15 +838,17 @@ test "behavior: match at-pattern" {
 // }
 
 test "behavior: error union catch" {
-    const src =
+    const globals =
         \\ MyErr :: error { Failed }
         \\ might_fail :: proc() i32!MyErr { return MyErr.Failed }
         \\ might_succeed :: proc() i32!MyErr { return 100 }
+    ;
+    const src =
         \\ r1 := might_fail() catch 0
         \\ r2 := might_succeed() catch 0
         \\ printf("Orelse r1=%d, r2=%d\n", r1, r2)
     ;
-    const code = getSource("", src);
+    const code = getSource(globals, src);
     try runCompilerTest(code, "Orelse r1=0, r2=100\n");
 }
 
@@ -1169,14 +1179,16 @@ test "behavior: match or-pattern with binding" {
 // }
 
 test "behavior: error type definition and usage" {
-    const src =
+    const globals =
         \\ FileSystemError :: error { NotFound, PermissionDenied }
         \\ get_error :: proc() FileSystemError { return FileSystemError.PermissionDenied }
+    ;
+    const src =
         \\ err := get_error()
         \\ assert(err == FileSystemError.PermissionDenied)
         \\ printf("Error type usage OK\n")
     ;
-    const code = getSource("", src);
+    const code = getSource(globals, src);
     try runCompilerTest(code, "Error type usage OK\n");
 }
 
@@ -1291,20 +1303,22 @@ test "behavior: error union orelse with different types" {
 }
 
 test "behavior: catch with nested errors" {
-    const src =
+    const globals =
         \\ ErrA :: error { A }
         \\ ErrB :: error { B }
         \\ func_a :: proc() i32!ErrA { return ErrA.A }
         \\ func_b :: proc() i32!ErrB { return func_a()! catch |err| { return ErrB.B } }
+    ;
+    const src =
         \\ r := func_b() catch |err| {
         \\   if err == ErrB.B {
         \\     printf("Caught nested ErrB\n")
         \\   }
-        \\   return 0
+        \\   0
         \\ }
         \\ printf("Nested catch result=%d\n", r)
     ;
-    const code = getSource("", src);
+    const code = getSource(globals, src);
     try runCompilerTest(code, "Caught nested ErrB\nNested catch result=0\n");
 }
 
@@ -1428,9 +1442,9 @@ test "behavior: error union orelse and catch combined" {
         \\ }
     ;
     const src =
-        \\r1 := (might_fail(0) catch |err| { 0 }) orelse 100
-        \\r2 := (might_fail(1) catch |err| { 1 }) orelse 100
-        \\r3 := (might_fail(5) catch |err| { 2 }) orelse 100
+        \\r1 := might_fail(0) orelse { 0 } catch 100
+        \\r2 := might_fail(1) orelse { 1 } catch 200
+        \\r3 := might_fail(5) orelse { 2 } catch 300
         \\printf("Combined error handling r1=%d, r2=%d, r3=%d\n", r1, r2, r3)
     ;
     const code = getSource(globals, src);

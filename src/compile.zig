@@ -503,12 +503,30 @@ pub fn convert_to_llvm_ir(module: mlir.c.MlirModule, print_ir: bool, link_args: 
     );
     defer allocator.free(runtime_path);
     try args.append(allocator, runtime_path);
-    // Append user-provided link args (e.g., -L/usr/local/lib, -lraylib)
-    for (link_args) |la| try args.append(allocator, la);
+    // Ensure local out dir is searched at link and runtime for shared libs
+    try args.append(allocator, "-Wl,-rpath,./out");
+    try args.append(allocator, "-Lout");
+
+    // Append user-provided link args (e.g., -L/usr/local/lib, -lraylib, ./out/mylib.so)
+    for (link_args) |la| {
+        try args.append(allocator, la);
+    }
 
     var child = std.process.Child.init(args.items, allocator);
-    child.spawn() catch unreachable;
-    _ = child.wait() catch unreachable;
+    child.spawn() catch {
+        return error.LinkFailed;
+    };
+    const term = child.wait() catch {
+        return error.LinkFailed;
+    };
+    switch (term) {
+        .Exited => |code| {
+            if (code != 0) {
+                return error.LinkFailed;
+            }
+        },
+        else => return error.LinkFailed,
+    }
 }
 
 pub fn run() void {

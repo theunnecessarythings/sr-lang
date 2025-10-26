@@ -207,6 +207,7 @@ pub const DiagnosticCode = enum {
     defer_outside_function,
     errdefer_outside_function,
     errdefer_in_non_error_function,
+    nested_function_not_allowed,
 
     // Structs/tuples/enums/unions
     duplicate_field,
@@ -433,6 +434,7 @@ pub fn diagnosticMessageFmt(code: DiagnosticCode) []const u8 {
         .defer_outside_function => "'defer' only valid inside a function",
         .errdefer_outside_function => "'errdefer' only valid inside a function",
         .errdefer_in_non_error_function => "'errdefer' only valid in functions returning an error union",
+        .nested_function_not_allowed => "function definitions are only allowed at top level",
 
         // Structs/tuples/enums/unions
         .duplicate_field => "duplicate field",

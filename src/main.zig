@@ -476,8 +476,8 @@ pub fn main() !void {
                         std.process.exit(1);
                     }
                 } else {
-                    // Unknown extra arg, keep warning but continue
-                    try writer.print("{s}Warning:{s} Ignoring extra argument '{s}'.\n", .{ Colors.yellow, Colors.reset, arg });
+                    // Treat any additional arg as a linker argument (e.g., a direct .so/.a/.o path)
+                    try link_args_list.append(gpa, arg);
                 }
             }
         }

@@ -35,11 +35,8 @@ test "methods: enum value receiver" {
         \\Color.describe :: fn(self: Color) i32 { return 1 }
     ;
     const src =
-        \\main :: proc () i32 {
         \\  value := Color.Red.describe()
         \\  printf("%d\n", value)
-        \\  return value
-        \\ }
     ;
     const code = getSource(globals, src);
     try runCompilerTest(code, "1\n");
@@ -102,7 +99,6 @@ test "methods: imported builder with pointer receiver" {
         \\builder :: import "import_method_builder/builder.sr"
     ;
     const src =
-        \\main :: proc () i32 {
         \\  thing := builder.Thing.init(5)
         \\  ptr := &thing
         \\  b := ptr.make_builder()
@@ -110,8 +106,6 @@ test "methods: imported builder with pointer receiver" {
         \\  _ = b_ptr.add(3)
         \\  result := b_ptr.finish()
         \\  printf("%d\n", result)
-        \\  return result
-        \\}
     ;
     const code = getSource(globals, src);
     try runCompilerTest(code, "13\n");
@@ -145,12 +139,9 @@ test "methods: builder chain on temporary" {
         \\builder :: import "import_method_builder/builder.sr"
     ;
     const src =
-        \\main :: proc () i32 {
         \\  thing := builder.Thing.init(7)
         \\  result := thing.make_builder().add(9).finish()
         \\  printf("%d %d\n", result, thing.base)
-        \\  return result
-        \\}
     ;
     const code = getSource(globals, src);
     try runCompilerTest(code, "16 16\n");

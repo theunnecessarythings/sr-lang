@@ -981,6 +981,80 @@ fn updateCoercedLiteral(
     return true;
 }
 
+// Determine if an expression is a comptime numeric expression (integer or float).
+const ConstNumKind = enum { none, int, float };
+
+fn constNumericKind(self: *Checker, ast_unit: *ast.Ast, expr_id: ast.ExprId) ConstNumKind {
+    switch (exprKind(ast_unit, expr_id)) {
+        .Literal => {
+            const lit = getExpr(ast_unit, .Literal, expr_id);
+            return switch (lit.kind) {
+                .int => .int,
+                .float => .float,
+                else => .none,
+            };
+        },
+        .Unary => {
+            const u = getExpr(ast_unit, .Unary, expr_id);
+            switch (u.op) {
+                .pos, .neg => return self.constNumericKind(ast_unit, u.expr),
+                else => return .none,
+            }
+        },
+        .Binary => {
+            const b = getExpr(ast_unit, .Binary, expr_id);
+            const is_arith = b.op == .add or b.op == .sub or b.op == .mul or b.op == .div or b.op == .mod;
+            if (!is_arith) return .none;
+            const lk = self.constNumericKind(ast_unit, b.left);
+            if (lk == .none) return .none;
+            const rk = self.constNumericKind(ast_unit, b.right);
+            if (rk == .none) return .none;
+            if (b.op == .mod) {
+                return if (lk == .int and rk == .int) .int else .none;
+            }
+            return if (lk == .float or rk == .float) .float else .int;
+        },
+        else => return .none,
+    }
+}
+
+fn coerceComptimeNumericExpr(
+    self: *Checker,
+    ast_unit: *ast.Ast,
+    expr_id: ast.ExprId,
+    target_ty: types.TypeId,
+) !bool {
+    const kind = self.constNumericKind(ast_unit, expr_id);
+    if (kind == .none) return false;
+    const target_kind = self.typeKind(target_ty);
+    // Allow coercion to float targets; avoid unsafe integer range assumptions for now.
+    return switch (target_kind) {
+        .F32, .F64 => blk: {
+            ast_unit.type_info.setExprType(expr_id, target_ty);
+            break :blk true;
+        },
+        else => false,
+    };
+}
+
+fn updateCoercedConstNumeric(
+    self: *Checker,
+    ast_unit: *ast.Ast,
+    expr_id: ast.ExprId,
+    target_ty: types.TypeId,
+    value_ty: *types.TypeId,
+    kind: *types.TypeKind,
+) !bool {
+    if (!try self.coerceComptimeNumericExpr(ast_unit, expr_id, target_ty)) return false;
+    if (ast_unit.type_info.expr_types.items[expr_id.toRaw()]) |coerced| {
+        value_ty.* = coerced;
+    } else {
+        value_ty.* = target_ty;
+    }
+    kind.* = self.typeKind(value_ty.*);
+    return true;
+}
+
 fn coerceNumericLiteral(
     self: *Checker,
     ast_unit: *ast.Ast,
@@ -1897,6 +1971,21 @@ fn checkBinary(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, id: ast
                     if (try self.updateCoercedLiteral(ast_unit, bin.left, r, &l, &lhs_kind)) return r;
                 } else if (right_is_literal) {
                     if (try self.updateCoercedLiteral(ast_unit, bin.right, l, &r, &rhs_kind)) return l;
+                } else {
+                    const left_const = self.constNumericKind(ast_unit, bin.left) != .none;
+                    const right_const = self.constNumericKind(ast_unit, bin.right) != .none;
+                    // Accept mixed float-int arithmetic when the int side is a comptime constant;
+                    // return the float side's type without mutating child expression types.
+                    if (left_const and (rhs_kind == .F32 or rhs_kind == .F64) and check_types.isIntegerKind(self, lhs_kind)) {
+                        return r;
+                    } else if (right_const and (lhs_kind == .F32 or lhs_kind == .F64) and check_types.isIntegerKind(self, rhs_kind)) {
+                        return l;
+                    } else if (left_const and right_const) {
+                        const l_is_float = (lhs_kind == .F32 or lhs_kind == .F64);
+                        const r_is_float = (rhs_kind == .F32 or rhs_kind == .F64);
+                        if (l_is_float and !r_is_float and check_types.isIntegerKind(self, rhs_kind)) return l;
+                        if (r_is_float and !l_is_float and check_types.isIntegerKind(self, lhs_kind)) return r;
+                    }
                 }
             }
 
@@ -2076,6 +2165,11 @@ fn checkUnary(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, id: ast.
 }
 
 fn checkFunctionLit(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, id: ast.ExprId) !?types.TypeId {
+    // Disallow nested function definitions (functions inside functions).
+    if (self.inFunction(ctx)) {
+        try self.context.diags.addError(exprLoc(ast_unit, getExpr(ast_unit, .FunctionLit, id)), .nested_function_not_allowed, .{});
+        return null;
+    }
     const fnr = getExpr(ast_unit, .FunctionLit, id);
     const params = ast_unit.exprs.param_pool.slice(fnr.params);
     var pbuf = try self.gpa.alloc(types.TypeId, params.len);
