@@ -347,6 +347,7 @@ pub fn run_passes(context: *mlir.Context, module: *mlir.Module) !void {
         "canonicalize,cse," ++
         "convert-bufferization-to-memref," ++
         "convert-linalg-to-loops," ++
+        "loop-invariant-code-motion," ++
         "lower-affine," ++
         "convert-vector-to-llvm," ++
 

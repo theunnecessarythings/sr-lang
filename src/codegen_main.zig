@@ -87,6 +87,7 @@ str_pool: std.StringHashMap(mlir.Operation), // text -> llvm.mlir.global op
 cur_region: ?mlir.Region = null,
 cur_block: ?mlir.Block = null,
 func_entry_block: ?mlir.Block = null,
+i64_one_in_entry: ?mlir.Value = null,
 // join-return block for func.func lowering
 ret_join_block: ?mlir.Block = null,
 ret_has_value: bool = false,
@@ -822,6 +823,21 @@ fn emitFunctionHeader(self: *Codegen, f_id: tir.FuncId, t: *const tir.TIR) !void
     _ = try self.func_syms.put(func_name, finfo);
 }
 
+fn getI64OneInEntry(self: *Codegen) mlir.Value {
+    if (self.i64_one_in_entry) |v| return v;
+
+    // Build the constant op but place it in the entry block
+    var c = OpBuilder.init("llvm.mlir.constant", self.loc).builder()
+        .results(&.{self.i64_ty})
+        .attributes(&.{self.named("value", mlir.Attribute.integerAttrGet(self.i64_ty, 1))})
+        .build();
+
+    self.appendInFuncEntry(c);
+    const v = c.getResult(0);
+    self.i64_one_in_entry = v;
+    return v;
+}
+
 fn emitFunctionBody(self: *Codegen, f_id: tir.FuncId, t: *const tir.TIR) !void {
     // reset per-function state
     self.block_map.clearRetainingCapacity();
@@ -833,6 +849,7 @@ fn emitFunctionBody(self: *Codegen, f_id: tir.FuncId, t: *const tir.TIR) !void {
     self.cur_region = null;
     self.cur_block = null;
     self.func_entry_block = null;
+    self.i64_one_in_entry = null;
     self.ret_join_block = null;
     self.ret_has_value = false;
     self.ret_type_cache = null;
@@ -1433,9 +1450,16 @@ fn emitCastWrap(self: *Codegen, comptime x: tir.OpKind, p: tir.Rows.Un1) !mlir.V
     return val;
 }
 
+fn appendInFuncEntry(self: *Codegen, op: mlir.Operation) void {
+    var entry = self.func_entry_block orelse self.cur_block.?;
+    const term = entry.getTerminator();
+    if (!term.isNull()) entry.insertOwnedOperationBefore(term, op) else entry.appendOwnedOperation(op);
+}
+
 fn emitAlloca(self: *Codegen, p: tir.Rows.Alloca) !mlir.Value {
     const prev_loc = self.pushLocation(p.loc);
     defer self.loc = prev_loc;
+
     var elem_ty: mlir.Type = self.i8_ty;
     switch (self.context.type_store.getKind(p.ty)) {
         .Ptr => {
@@ -1444,7 +1468,6 @@ fn emitAlloca(self: *Codegen, p: tir.Rows.Alloca) !mlir.Value {
                 try self.tensor_slots.put(p.result, mlir.Value.empty());
                 return self.llvmNullPtr();
             }
-            // Use storage representation for memory: Complex -> {elem, elem}
             if (self.context.type_store.getKind(ptr_row.elem) == .Complex) {
                 const c = self.context.type_store.get(.Complex, ptr_row.elem);
                 const ety = try self.llvmTypeOf(c.elem);
@@ -1455,10 +1478,13 @@ fn emitAlloca(self: *Codegen, p: tir.Rows.Alloca) !mlir.Value {
         },
         else => {},
     }
+
+    // Count
+    const one = self.getI64OneInEntry();
     const count_v: mlir.Value = if (!p.count.isNone())
         self.value_map.get(p.count.unwrap()).?
     else
-        self.constInt(self.i64_ty, 1);
+        one;
 
     var attrs = [_]mlir.NamedAttribute{
         self.named("elem_type", mlir.Attribute.typeAttrGet(elem_ty)),
@@ -1466,8 +1492,13 @@ fn emitAlloca(self: *Codegen, p: tir.Rows.Alloca) !mlir.Value {
     var alloca = OpBuilder.init("llvm.alloca", self.loc).builder()
         .operands(&.{count_v})
         .results(&.{self.llvm_ptr_ty})
-        .attributes(&attrs).build();
-    self.append(alloca);
+        .attributes(&attrs)
+        .build();
+
+    // Heuristic: hoist fixed-size locals (no VLA) to entry.
+    const should_hoist = p.count.isNone();
+    if (should_hoist) self.appendInFuncEntry(alloca) else self.append(alloca); // dynamic-size: leave where it executes
+
     return alloca.getResult(0);
 }
 
@@ -3584,12 +3615,15 @@ pub fn spillAgg(self: *Codegen, aggVal: mlir.Value, elemTy: mlir.Type, alignment
         n_attrs = 2;
     }
     const attrs = attrs_buf[0..n_attrs];
-    // one element
+
+    const one = self.getI64OneInEntry();
     var a = OpBuilder.init("llvm.alloca", self.loc).builder()
-        .operands(&.{self.constInt(self.i64_ty, 1)})
+        .operands(&.{one})
         .results(&.{self.llvm_ptr_ty})
-        .attributes(attrs).build();
-    self.append(a);
+        .attributes(attrs)
+        .build();
+    self.appendInFuncEntry(a);
+
     const st = OpBuilder.init("llvm.store", self.loc).builder()
         .operands(&.{ aggVal, a.getResult(0) }).build();
     self.append(st);

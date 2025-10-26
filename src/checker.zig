@@ -2760,20 +2760,45 @@ fn checkFieldAccess(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, id
 }
 
 fn checkRange(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, id: ast.ExprId) !?types.TypeId {
-    const rr = getExpr(ast_unit, .Range, id);
-    if (!rr.start.isNone()) {
-        const st = try self.checkExpr(ctx, ast_unit, rr.start.unwrap());
-        if (st == null or !check_types.isIntegerKind(self, self.typeKind(st.?))) {
-            try self.context.diags.addError(exprLoc(ast_unit, rr), .non_integer_index, .{});
-            return null;
+    const range = getExpr(ast_unit, .Range, id);
+    var start_ty = if (!range.start.isNone()) try self.checkExpr(ctx, ast_unit, range.start.unwrap()) else null;
+    var end_ty = if (!range.end.isNone()) try self.checkExpr(ctx, ast_unit, range.end.unwrap()) else null;
+
+    if (start_ty == null and end_ty == null) {
+        try self.context.diags.addError(exprLoc(ast_unit, range), .cannot_infer_range_type, .{});
+        return null;
+    }
+
+    if (start_ty != null and end_ty != null and !start_ty.?.eq(end_ty.?)) {
+        var l = start_ty.?;
+        var r = end_ty.?;
+        var lkind = self.typeKind(l);
+        var rkind = self.typeKind(r);
+        const l_is_lit = if (!range.start.isNone()) exprKind(ast_unit, range.start.unwrap()) == .Literal else false;
+        const r_is_lit = if (!range.end.isNone()) exprKind(ast_unit, range.end.unwrap()) == .Literal else false;
+
+        if (l_is_lit and check_types.isIntegerKind(self, rkind)) {
+            if (try self.updateCoercedLiteral(ast_unit, range.start.unwrap(), r, &l, &lkind)) {
+                start_ty = l;
+            }
+        } else if (r_is_lit and check_types.isIntegerKind(self, lkind)) {
+            if (try self.updateCoercedLiteral(ast_unit, range.end.unwrap(), l, &r, &rkind)) {
+                end_ty = r;
+            }
         }
     }
-    if (!rr.end.isNone()) {
-        const et = try self.checkExpr(ctx, ast_unit, rr.end.unwrap());
-        if (et == null or !check_types.isIntegerKind(self, self.typeKind(et.?))) {
-            try self.context.diags.addError(exprLoc(ast_unit, rr), .non_integer_index, .{});
-            return null;
-        }
+
+    const final_ty = if (start_ty) |st| st else if (end_ty) |et| et else return null;
+
+    if (start_ty != null and end_ty != null and !start_ty.?.eq(end_ty.?)) {
+        try self.context.diags.addError(exprLoc(ast_unit, range), .range_type_mismatch, .{});
+        return null;
+    }
+
+    const k = self.typeKind(final_ty);
+    if (!check_types.isIntegerKind(self, k) and k != .Any) {
+        try self.context.diags.addError(exprLoc(ast_unit, range), .range_requires_integer_operands, .{});
+        return null;
     }
     return self.context.type_store.mkSlice(self.context.type_store.tUsize());
 }
