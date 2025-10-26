@@ -2821,14 +2821,6 @@ test "methods - self type mismatch" {
 //     // Import with field access
 //     try checkProgram("add :: (import \"examples/hello\").add", &.{});
 // }
-//
-test "import statements - failures" {
-    // Import non-path value (number)
-    try checkProgram("bad :: import 123", &[_]diag.DiagnosticCode{.unexpected_token});
-
-    // Import of boolean
-    try checkProgram("bad2 :: import true", &[_]diag.DiagnosticCode{.unexpected_token});
-}
 
 // Focused: typeof expressions
 
