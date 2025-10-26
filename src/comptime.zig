@@ -87,7 +87,7 @@ pub fn get_type_by_name_impl(context: ?*anyopaque, name: [*c]const u8) callconv(
 // Comptime Lower TIR API
 // =============================
 
-pub fn pushComptimeBindings(self: *LowerTir, bindings: []const Pipeline.ComptimeBinding) !bool {
+pub fn pushComptimeBindings(self: *LowerTir, ctx: *LowerTir.LowerContext, bindings: []const Pipeline.ComptimeBinding) !bool {
     if (bindings.len == 0) return false;
 
     var infos = try self.gpa.alloc(monomorphize.BindingInfo, bindings.len);
@@ -109,28 +109,29 @@ pub fn pushComptimeBindings(self: *LowerTir, bindings: []const Pipeline.Comptime
         init_count = i + 1;
     }
 
-    var ctx = try monomorphize.MonomorphizationContext.init(
+    var context = try monomorphize.MonomorphizationContext.init(
         self.gpa,
         infos[0..init_count],
         0,
         self.context.type_store.tVoid(),
     );
-    errdefer ctx.deinit(self.gpa);
-    try self.monomorph_context_stack.append(self.gpa, ctx);
+    errdefer context.deinit(self.gpa);
+    try ctx.monomorph_context_stack.append(self.gpa, context);
     return true;
 }
 
 pub fn runComptimeExpr(
     self: *LowerTir,
+    ctx: *LowerTir.LowerContext,
     a: *ast.Ast,
     expr: ast.ExprId,
     result_ty: types.TypeId,
     bindings: []const Pipeline.ComptimeBinding,
 ) !ComptimeValue {
-    const pushed = try pushComptimeBindings(self, bindings);
+    const pushed = try pushComptimeBindings(self, ctx, bindings);
     defer if (pushed) {
-        var popped = self.monomorph_context_stack.pop();
-        if (popped) |*ctx| ctx.deinit(self.gpa);
+        var popped = ctx.monomorph_context_stack.pop();
+        if (popped) |*context| context.deinit(self.gpa);
     };
 
     const result_kind = self.context.type_store.getKind(result_ty);
@@ -168,8 +169,8 @@ pub fn runComptimeExpr(
     defer tmp_env.deinit(self.gpa);
     try tmp_env.bind(self.gpa, a, tmp_builder.intern("comptime_api_ptr"), .{ .value = api_ptr_val, .ty = ptr_ty, .is_slot = false });
 
-    const result_val_id = try self.lowerExpr(a, &tmp_env, &thunk_fn, &thunk_blk, expr, result_ty, .rvalue);
-    try self.monomorphizer.run(self, &tmp_builder, monomorphLowerCallback);
+    const result_val_id = try self.lowerExpr(ctx, a, &tmp_env, &thunk_fn, &thunk_blk, expr, result_ty, .rvalue);
+    try ctx.monomorphizer.run(self, ctx, &tmp_builder, monomorphLowerCallback);
     if (result_kind != .Void) {
         if (thunk_blk.term.isNone()) {
             try tmp_builder.setReturnVal(&thunk_blk, result_val_id, expr_loc);
@@ -285,13 +286,14 @@ fn castIntThunkResultToU128(value: anytype) ?u128 {
 
 pub fn jitEvalComptimeBlock(
     self: *LowerTir,
+    ctx: *LowerTir.LowerContext,
     a: *ast.Ast,
     blk: *tir.Builder.BlockFrame,
     id: ast.ExprId,
 ) !tir.ValueId {
     const cb = a.exprs.get(.ComptimeBlock, id);
-    const result_ty = self.getExprType(a, cb.block);
-    const comptime_value = try runComptimeExpr(self, a, cb.block, result_ty, &[_]Pipeline.ComptimeBinding{});
+    const result_ty = self.getExprType(ctx, a, cb.block);
+    const comptime_value = try runComptimeExpr(self, ctx, a, cb.block, result_ty, &[_]Pipeline.ComptimeBinding{});
     const loc = LowerTir.optLoc(a, id);
 
     return switch (comptime_value) {
@@ -309,11 +311,12 @@ pub fn jitEvalComptimeBlock(
 
 pub fn evalComptimeExprValue(
     self: *LowerTir,
+    ctx: *LowerTir.LowerContext,
     a: *ast.Ast,
     expr: ast.ExprId,
     result_ty: types.TypeId,
 ) !ComptimeValue {
-    return runComptimeExpr(self, a, expr, result_ty, &[_]Pipeline.ComptimeBinding{});
+    return runComptimeExpr(self, ctx, a, expr, result_ty, &[_]Pipeline.ComptimeBinding{});
 }
 
 pub fn constValueFromComptime(
@@ -418,39 +421,41 @@ pub fn mangleMonomorphName(
 
 fn lowerSpecializedFunction(
     self: *LowerTir,
+    ctx: *LowerTir.LowerContext,
     a: *ast.Ast,
     b: *tir.Builder,
     req: *const monomorphize.MonomorphizationRequest,
 ) !void {
-    var ctx = try monomorphize.MonomorphizationContext.init(
+    var context = try monomorphize.MonomorphizationContext.init(
         self.gpa,
         req.bindings,
         req.skip_params,
         req.specialized_ty,
     );
 
-    self.monomorph_context_stack.append(self.gpa, ctx) catch |err| {
-        ctx.deinit(self.gpa);
+    ctx.monomorph_context_stack.append(self.gpa, context) catch |err| {
+        context.deinit(self.gpa);
         return err;
     };
     defer {
-        var popped = self.monomorph_context_stack.pop();
+        var popped = ctx.monomorph_context_stack.pop();
         if (popped) |*p|
             p.deinit(self.gpa);
     }
 
-    const active_ctx = &self.monomorph_context_stack.items[self.monomorph_context_stack.items.len - 1];
+    const active_ctx = &ctx.monomorph_context_stack.items[ctx.monomorph_context_stack.items.len - 1];
     const decl = a.exprs.Decl.get(req.decl_id);
-    try self.lowerFunction(a, b, req.mangled_name, decl.value, active_ctx);
+    try self.lowerFunction(ctx, a, b, req.mangled_name, decl.value, active_ctx);
 }
 
 pub fn monomorphLowerCallback(
     ctx: ?*anyopaque,
+    lower_ctx: *LowerTir.LowerContext,
     a: *ast.Ast,
     b: *tir.Builder,
     req: *const monomorphize.MonomorphizationRequest,
 ) anyerror!void {
     std.debug.assert(ctx != null);
     const self: *LowerTir = @ptrCast(@alignCast(ctx.?));
-    try lowerSpecializedFunction(self, a, b, req);
+    try lowerSpecializedFunction(self, lower_ctx, a, b, req);
 }

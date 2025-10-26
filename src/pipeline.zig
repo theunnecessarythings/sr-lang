@@ -69,8 +69,16 @@ pub const Pipeline = struct {
         result_ty: types.TypeId,
         bindings: []const ComptimeBinding,
     ) !comp.ComptimeValue {
+        const ctx = try self.allocator.create(lower_tir.LowerContext);
+        ctx.* = lower_tir.LowerContext{
+            .method_lowered = .init(self.allocator),
+            .module_call_cache = .init(self.allocator),
+            .monomorphizer = .init(self.allocator),
+        };
+
         return lower_tir.evalComptimeExpr(
             self.allocator,
+            ctx,
             self.context,
             self,
             chk,

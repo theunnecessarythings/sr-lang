@@ -3,6 +3,7 @@ const ast = @import("ast.zig");
 const comp = @import("comptime.zig");
 const types = @import("types.zig");
 const tir = @import("tir.zig");
+const LowerTir = @import("lower_tir.zig");
 const mlir = @import("mlir_bindings.zig");
 
 pub const BindingValue = struct {
@@ -214,6 +215,7 @@ pub const RequestResult = struct {
 
 pub const LowerCallback = *const fn (
     ctx: ?*anyopaque,
+    lower_ctx: *LowerTir.LowerContext,
     a: *ast.Ast,
     b: *tir.Builder,
     req: *const MonomorphizationRequest,
@@ -417,11 +419,11 @@ pub const Monomorphizer = struct {
         return .{ .mangled_name = mangled_name, .specialized_ty = specialized_ty };
     }
 
-    pub fn run(self: *Monomorphizer, ctx: ?*anyopaque, b: *tir.Builder, cb: LowerCallback) !void {
+    pub fn run(self: *Monomorphizer, ctx: ?*anyopaque, lower_ctx: *LowerTir.LowerContext, b: *tir.Builder, cb: LowerCallback) !void {
         while (self.requests.items.len > 0) {
             var req = self.requests.pop().?;
             defer self.freeRequest(&req);
-            try cb(ctx, req.ast, b, &req);
+            try cb(ctx, lower_ctx, req.ast, b, &req);
         }
     }
 };

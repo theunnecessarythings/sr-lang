@@ -70,6 +70,7 @@ pub const Env = struct {
 /// and then truncate the defer stack back to `from`.
 pub fn runNormalDefersFrom(
     self: *LowerTir,
+    ctx: *LowerTir.LowerContext,
     a: *ast.Ast,
     env: *Env,
     f: *tir.Builder.FunctionFrame,
@@ -80,7 +81,7 @@ pub fn runNormalDefersFrom(
     while (j >= 0 and @as(u32, @intCast(j)) >= from) : (j -= 1) {
         const ent = env.defers.items[@intCast(j)];
         if (!ent.is_err) {
-            _ = try self.lowerExpr(a, env, f, blk, ent.expr, null, .rvalue);
+            _ = try self.lowerExpr(ctx, a, env, f, blk, ent.expr, null, .rvalue);
         }
     }
     env.defers.items.len = from;
@@ -96,6 +97,7 @@ pub fn hasErrDefersFrom(_: *LowerTir, env: *Env, from: u32) bool {
 
 pub fn emitDefers(
     self: *LowerTir,
+    ctx: *LowerTir.LowerContext,
     a: *ast.Ast,
     env: *Env,
     f: *tir.Builder.FunctionFrame,
@@ -107,13 +109,14 @@ pub fn emitDefers(
     while (j >= 0) : (j -= 1) {
         const ent = slice[@intCast(j)];
         if (ent.is_err == want_err) {
-            _ = try self.lowerExpr(a, env, f, blk, ent.expr, null, .rvalue);
+            _ = try self.lowerExpr(ctx, a, env, f, blk, ent.expr, null, .rvalue);
         }
     }
 }
 
 fn runDefersForLoopExit(
     self: *LowerTir,
+    ctx: *LowerTir.LowerContext,
     a: *ast.Ast,
     env: *Env,
     f: *tir.Builder.FunctionFrame,
@@ -123,17 +126,17 @@ fn runDefersForLoopExit(
     var j: isize = @as(isize, @intCast(env.defers.items.len)) - 1;
     while (j >= 0 and @as(u32, @intCast(j)) >= lc.defer_len_at_entry) : (j -= 1) {
         const ent = env.defers.items[@intCast(j)];
-        if (!ent.is_err) _ = try self.lowerExpr(a, env, f, blk, ent.expr, null, .rvalue);
+        if (!ent.is_err) _ = try self.lowerExpr(ctx, a, env, f, blk, ent.expr, null, .rvalue);
     }
 }
 
-fn loopCtxForLabel(self: *LowerTir, opt_label: ast.OptStrId) ?*LoopCtx {
-    if (self.loop_stack.items.len == 0) return null;
+fn loopCtxForLabel(_: *LowerTir, ctx: *LowerTir.LowerContext, opt_label: ast.OptStrId) ?*LoopCtx {
+    if (ctx.loop_stack.items.len == 0) return null;
     const want: ?u32 = if (!opt_label.isNone()) opt_label.unwrap().toRaw() else null;
-    var i: isize = @as(isize, @intCast(self.loop_stack.items.len)) - 1;
+    var i: isize = @as(isize, @intCast(ctx.loop_stack.items.len)) - 1;
     while (i >= 0) : (i -= 1) {
         const idx: usize = @intCast(i);
-        const lc = &self.loop_stack.items[idx];
+        const lc = &ctx.loop_stack.items[idx];
         if (want == null) return lc;
         if (!lc.label.isNone() and lc.label.unwrap().toRaw() == want.?) return lc;
     }
@@ -142,6 +145,7 @@ fn loopCtxForLabel(self: *LowerTir, opt_label: ast.OptStrId) ?*LoopCtx {
 
 pub fn lowerIf(
     self: *LowerTir,
+    ctx: *LowerTir.LowerContext,
     a: *ast.Ast,
     env: *Env,
     f: *tir.Builder.FunctionFrame,
@@ -154,10 +158,10 @@ pub fn lowerIf(
     var else_blk = try f.builder.beginBlock(f);
     const loc = LowerTir.optLoc(a, id);
 
-    const out_ty_guess = expected_ty orelse self.getExprType(a, id);
+    const out_ty_guess = expected_ty orelse self.getExprType(ctx, a, id);
     const produce_value = (expected_ty != null) and !self.isVoid(out_ty_guess);
 
-    const cond_v = try self.lowerExpr(a, env, f, blk, row.cond, self.context.type_store.tBool(), .rvalue);
+    const cond_v = try self.lowerExpr(ctx, a, env, f, blk, row.cond, self.context.type_store.tBool(), .rvalue);
 
     if (produce_value) {
         var join_blk = try f.builder.beginBlock(f);
@@ -172,19 +176,19 @@ pub fn lowerIf(
         }
 
         // then
-        try self.lowerExprAsStmtList(a, env, f, &then_blk, row.then_block);
+        try self.lowerExprAsStmtList(ctx, a, env, f, &then_blk, row.then_block);
         if (then_blk.term.isNone()) {
-            var v_then = try self.lowerBlockExprValue(a, env, f, &then_blk, row.then_block, res_ty);
-            if (expected_ty) |want| v_then = self.emitCoerce(&then_blk, v_then, self.getExprType(a, row.then_block), want, loc);
+            var v_then = try self.lowerBlockExprValue(ctx, a, env, f, &then_blk, row.then_block, res_ty);
+            if (expected_ty) |want| v_then = self.emitCoerce(&then_blk, v_then, self.getExprType(ctx, a, row.then_block), want, loc);
             try f.builder.br(&then_blk, join_blk.id, &.{v_then}, loc);
         }
 
         // else
         if (!row.else_block.isNone()) {
-            try self.lowerExprAsStmtList(a, env, f, &else_blk, row.else_block.unwrap());
+            try self.lowerExprAsStmtList(ctx, a, env, f, &else_blk, row.else_block.unwrap());
             if (else_blk.term.isNone()) {
-                var v_else = try self.lowerBlockExprValue(a, env, f, &else_blk, row.else_block.unwrap(), res_ty);
-                if (expected_ty) |want| v_else = self.emitCoerce(&else_blk, v_else, self.getExprType(a, row.else_block.unwrap()), want, loc);
+                var v_else = try self.lowerBlockExprValue(ctx, a, env, f, &else_blk, row.else_block.unwrap(), res_ty);
+                if (expected_ty) |want| v_else = self.emitCoerce(&else_blk, v_else, self.getExprType(ctx, a, row.else_block.unwrap()), want, loc);
                 try f.builder.br(&else_blk, join_blk.id, &.{v_else}, loc);
             }
         } else {
@@ -209,12 +213,12 @@ pub fn lowerIf(
             try f.builder.endBlock(f, old);
         }
 
-        try self.lowerExprAsStmtList(a, env, f, &then_blk, row.then_block);
+        try self.lowerExprAsStmtList(ctx, a, env, f, &then_blk, row.then_block);
         if (then_blk.term.isNone()) try f.builder.br(&then_blk, exit_blk.id, &.{}, loc);
         try f.builder.endBlock(f, then_blk);
 
         if (!row.else_block.isNone()) {
-            try self.lowerExprAsStmtList(a, env, f, &else_blk, row.else_block.unwrap());
+            try self.lowerExprAsStmtList(ctx, a, env, f, &else_blk, row.else_block.unwrap());
         }
         if (else_blk.term.isNone()) try f.builder.br(&else_blk, exit_blk.id, &.{}, loc);
         try f.builder.endBlock(f, else_blk);
@@ -226,6 +230,7 @@ pub fn lowerIf(
 
 pub fn lowerBreak(
     self: *LowerTir,
+    ctx: *LowerTir.LowerContext,
     a: *ast.Ast,
     env: *Env,
     f: *tir.Builder.FunctionFrame,
@@ -235,19 +240,19 @@ pub fn lowerBreak(
     const br = a.stmts.get(.Break, sid);
     const loc = LowerTir.optLoc(a, sid);
     var target: ?LoopCtx = null;
-    var i: isize = @as(isize, @intCast(self.loop_stack.items.len)) - 1;
+    var i: isize = @as(isize, @intCast(ctx.loop_stack.items.len)) - 1;
     while (i >= 0) : (i -= 1) {
-        const lc = self.loop_stack.items[@intCast(i)];
+        const lc = ctx.loop_stack.items[@intCast(i)];
         if (br.label.isNone() or (!lc.label.isNone() and std.mem.eql(u8, a.exprs.strs.get(lc.label.unwrap()), a.exprs.strs.get(br.label.unwrap())))) {
             target = lc;
             break;
         }
     }
     if (target) |lc| {
-        try runDefersForLoopExit(self, a, env, f, blk, lc);
+        try runDefersForLoopExit(self, ctx, a, env, f, blk, lc);
         if (lc.has_result) {
             const v = if (!br.value.isNone())
-                try self.lowerExpr(a, env, f, blk, br.value.unwrap(), lc.res_ty, .rvalue)
+                try self.lowerExpr(ctx, a, env, f, blk, br.value.unwrap(), lc.res_ty, .rvalue)
             else
                 f.builder.tirValue(.ConstUndef, blk, lc.res_ty.?, loc, .{});
             try f.builder.br(blk, lc.join_block, &.{v}, loc);
@@ -259,6 +264,7 @@ pub fn lowerBreak(
 
 pub fn lowerContinue(
     self: *LowerTir,
+    ctx: *LowerTir.LowerContext,
     a: *ast.Ast,
     env: *Env,
     f: *tir.Builder.FunctionFrame,
@@ -267,8 +273,8 @@ pub fn lowerContinue(
 ) !void {
     const cid = a.stmts.get(.Continue, sid);
     const loc = LowerTir.optLoc(a, sid);
-    const lc = loopCtxForLabel(self, cid.label) orelse return error.LoweringBug;
-    try runDefersForLoopExit(self, a, env, f, blk, lc.*);
+    const lc = loopCtxForLabel(self, ctx, cid.label) orelse return error.LoweringBug;
+    try runDefersForLoopExit(self, ctx, a, env, f, blk, lc.*);
     switch (lc.continue_info) {
         .none => try f.builder.br(blk, lc.continue_block, &.{}, loc),
         .range => |info| try f.builder.br(blk, info.update_block, &.{info.idx_value}, loc),
@@ -277,6 +283,7 @@ pub fn lowerContinue(
 
 pub fn matchPattern(
     self: *LowerTir,
+    ctx: *LowerTir.LowerContext,
     a: *ast.Ast,
     env: *Env,
     f: *tir.Builder.FunctionFrame,
@@ -296,6 +303,7 @@ pub fn matchPattern(
                 const range = a.exprs.get(.Range, pr.expr);
                 return matchRangeBounds(
                     self,
+                    ctx,
                     a,
                     env,
                     f,
@@ -308,7 +316,7 @@ pub fn matchPattern(
                     loc,
                 );
             }
-            const litv = try self.lowerExpr(a, env, f, blk, pr.expr, null, .rvalue);
+            const litv = try self.lowerExpr(ctx, a, env, f, blk, pr.expr, null, .rvalue);
             return blk.builder.binBool(blk, .CmpEq, scrut, litv, loc);
         },
         .VariantTuple => {
@@ -331,7 +339,7 @@ pub fn matchPattern(
         },
         .At => {
             const node = a.pats.get(.At, pid);
-            return try matchPattern(self, a, env, f, blk, node.pattern, scrut, scrut_ty, loc);
+            return try matchPattern(self, ctx, a, env, f, blk, node.pattern, scrut, scrut_ty, loc);
         },
         .VariantStruct => {
             const vs = a.pats.get(.VariantStruct, pid);
@@ -380,7 +388,7 @@ pub fn matchPattern(
                 const arr_ty = self.context.type_store.get(.Array, scrut_ty);
                 const len = switch (arr_ty.len) {
                     .Concrete => |l| l,
-                    .Unresolved => |expr_id| try self.resolveArrayLen(a, expr_id, loc),
+                    .Unresolved => |expr_id| try self.resolveArrayLen(ctx, a, expr_id, loc),
                 };
                 len_val = blk.builder.tirValue(.ConstInt, blk, self.context.type_store.tUsize(), loc, .{ .value = len });
             } else {
@@ -408,7 +416,7 @@ pub fn matchPattern(
             while (i < required_len) : (i += 1) {
                 const pat_elem = elems[i];
                 const elem_val = blk.builder.indexOp(blk, elem_ty, scrut, blk.builder.tirValue(.ConstInt, blk, self.context.type_store.tUsize(), loc, .{ .value = i }), .none());
-                const elem_match = try matchPattern(self, a, env, f, blk, pat_elem, elem_val, elem_ty, loc);
+                const elem_match = try matchPattern(self, ctx, a, env, f, blk, pat_elem, elem_val, elem_ty, loc);
                 all_elements_match = blk.builder.binBool(blk, .LogicalAnd, all_elements_match, elem_match, loc);
             }
 
@@ -421,10 +429,10 @@ pub fn matchPattern(
                 return blk.builder.tirValue(.ConstBool, blk, self.context.type_store.tBool(), loc, .{ .value = false });
             }
 
-            var result = try matchPattern(self, a, env, f, blk, alts[0], scrut, scrut_ty, loc);
+            var result = try matchPattern(self, ctx, a, env, f, blk, alts[0], scrut, scrut_ty, loc);
             var i: usize = 1;
             while (i < alts.len) : (i += 1) {
-                const next_ok = try matchPattern(self, a, env, f, blk, alts[i], scrut, scrut_ty, loc);
+                const next_ok = try matchPattern(self, ctx, a, env, f, blk, alts[i], scrut, scrut_ty, loc);
                 result = blk.builder.binBool(blk, .LogicalOr, result, next_ok, loc);
             }
             return result;
@@ -433,6 +441,7 @@ pub fn matchPattern(
             const range_pat = a.pats.get(.Range, pid);
             return matchRangeBounds(
                 self,
+                ctx,
                 a,
                 env,
                 f,
@@ -453,6 +462,7 @@ pub fn matchPattern(
 
 fn matchRangeBounds(
     self: *LowerTir,
+    ctx: *LowerTir.LowerContext,
     a: *ast.Ast,
     env: *Env,
     f: *tir.Builder.FunctionFrame,
@@ -469,14 +479,14 @@ fn matchRangeBounds(
 
     if (!start.isNone()) {
         const start_expr = start.unwrap();
-        const start_val = try self.lowerExpr(a, env, f, blk, start_expr, scrut_ty, .rvalue);
+        const start_val = try self.lowerExpr(ctx, a, env, f, blk, start_expr, scrut_ty, .rvalue);
         const cmp = blk.builder.binBool(blk, .CmpGe, scrut, start_val, loc);
         result = blk.builder.binBool(blk, .LogicalAnd, result, cmp, loc);
     }
 
     if (!end.isNone()) {
         const end_expr = end.unwrap();
-        const end_val = try self.lowerExpr(a, env, f, blk, end_expr, scrut_ty, .rvalue);
+        const end_val = try self.lowerExpr(ctx, a, env, f, blk, end_expr, scrut_ty, .rvalue);
         const cmp = if (inclusive_right)
             blk.builder.binBool(blk, .CmpLe, scrut, end_val, loc)
         else
@@ -489,6 +499,7 @@ fn matchRangeBounds(
 
 pub fn lowerOptionalUnwrap(
     self: *LowerTir,
+    ctx: *LowerTir.LowerContext,
     a: *ast.Ast,
     env: *Env,
     f: *tir.Builder.FunctionFrame,
@@ -497,15 +508,15 @@ pub fn lowerOptionalUnwrap(
     expected_ty: ?types.TypeId,
 ) anyerror!tir.ValueId {
     const row = a.exprs.get(.OptionalUnwrap, id);
-    const elem_ty = self.getExprType(a, id);
-    const opt_ty = self.getExprType(a, row.expr);
+    const elem_ty = self.getExprType(ctx, a, id);
+    const opt_ty = self.getExprType(ctx, a, row.expr);
     if (self.context.type_store.index.kinds.items[opt_ty.toRaw()] != .Optional)
         return error.LoweringBug;
     const opt_info = self.context.type_store.get(.Optional, opt_ty);
     const loc = LowerTir.optLoc(a, id);
     const expr_loc = LowerTir.optLoc(a, row.expr);
 
-    const opt_val = try self.lowerExpr(a, env, f, blk, row.expr, null, .rvalue);
+    const opt_val = try self.lowerExpr(ctx, a, env, f, blk, row.expr, null, .rvalue);
     const bool_ty = self.context.type_store.tBool();
     const flag = blk.builder.extractField(blk, bool_ty, opt_val, 0, expr_loc);
     const payload = blk.builder.extractField(blk, opt_info.elem, opt_val, 1, expr_loc);
@@ -551,6 +562,7 @@ pub fn lowerOptionalUnwrap(
 
 pub fn lowerErrUnwrap(
     self: *LowerTir,
+    ctx: *LowerTir.LowerContext,
     a: *ast.Ast,
     env: *Env,
     f: *tir.Builder.FunctionFrame,
@@ -559,13 +571,13 @@ pub fn lowerErrUnwrap(
     expected_ty: ?types.TypeId,
 ) anyerror!tir.ValueId {
     const row = a.exprs.get(.ErrUnwrap, id);
-    const result_ty = self.getExprType(a, id);
+    const result_ty = self.getExprType(ctx, a, id);
     const loc = LowerTir.optLoc(a, id);
     const expr_loc = LowerTir.optLoc(a, row.expr);
 
     // Lower the error-union expression
-    const es_val = try self.lowerExpr(a, env, f, blk, row.expr, null, .rvalue);
-    const es_ty = self.getExprType(a, row.expr);
+    const es_val = try self.lowerExpr(ctx, a, env, f, blk, row.expr, null, .rvalue);
+    const es_ty = self.getExprType(ctx, a, row.expr);
     if (self.context.type_store.index.kinds.items[es_ty.toRaw()] != .ErrorSet)
         return error.LoweringBug;
     const es = self.context.type_store.get(.ErrorSet, es_ty);
@@ -581,7 +593,7 @@ pub fn lowerErrUnwrap(
     var join_blk = try f.builder.beginBlock(f);
 
     const res_ty = expected_ty orelse result_ty;
-    try self.noteExprType(id, res_ty);
+    try self.noteExprType(ctx, id, res_ty);
     const res_param = try f.builder.addBlockParam(&join_blk, null, res_ty);
 
     const br_cond = self.forceLocalCond(blk, is_ok, expr_loc);
@@ -645,6 +657,7 @@ fn isAllIntMatch(_: *LowerTir, a: *ast.Ast, arms_slice: []const ast.MatchArmId, 
 
 pub fn lowerMatch(
     self: *LowerTir,
+    ctx: *LowerTir.LowerContext,
     a: *ast.Ast,
     env: *Env,
     f: *tir.Builder.FunctionFrame,
@@ -656,10 +669,10 @@ pub fn lowerMatch(
     const loc = LowerTir.optLoc(a, id);
 
     // Scrutinee value
-    const scrut = try self.lowerExpr(a, env, f, blk, row.expr, null, .rvalue);
+    const scrut = try self.lowerExpr(ctx, a, env, f, blk, row.expr, null, .rvalue);
 
     // Decide if this match-expression needs to produce a value
-    const out_ty_guess = expected_ty orelse self.getExprType(a, id);
+    const out_ty_guess = expected_ty orelse self.getExprType(ctx, a, id);
     const produce_value = (expected_ty != null) and !self.isVoid(out_ty_guess);
 
     if (produce_value) {
@@ -702,10 +715,10 @@ pub fn lowerMatch(
             i = 0;
             while (i < arms.len) : (i += 1) {
                 const arm = a.exprs.MatchArm.get(arms[i]);
-                try self.lowerExprAsStmtList(a, env, f, &bodies[i], arm.body);
+                try self.lowerExprAsStmtList(ctx, a, env, f, &bodies[i], arm.body);
                 if (bodies[i].term.isNone()) {
-                    var v = try self.lowerBlockExprValue(a, env, f, &bodies[i], arm.body, res_ty);
-                    v = self.emitCoerce(&bodies[i], v, self.getExprType(a, arm.body), res_ty, loc);
+                    var v = try self.lowerBlockExprValue(ctx, a, env, f, &bodies[i], arm.body, res_ty);
+                    v = self.emitCoerce(&bodies[i], v, self.getExprType(ctx, a, arm.body), res_ty, loc);
                     try f.builder.br(&bodies[i], join_blk.id, &.{v}, loc);
                 }
                 try f.builder.endBlock(f, bodies[i]);
@@ -735,8 +748,8 @@ pub fn lowerMatch(
             try f.builder.endBlock(f, cur);
 
             // pattern test
-            const arm_scrut_ty = self.getExprType(a, row.expr);
-            const ok = try matchPattern(self, a, env, f, &test_blk, arm.pattern, scrut, arm_scrut_ty, loc);
+            const arm_scrut_ty = self.getExprType(ctx, a, row.expr);
+            const ok = try matchPattern(self, ctx, a, env, f, &test_blk, arm.pattern, scrut, arm_scrut_ty, loc);
 
             // if last arm fails, feed an undef to the join
             const else_args = if (next_blk.id.toRaw() == join_blk.id.toRaw()) blkargs: {
@@ -765,10 +778,10 @@ pub fn lowerMatch(
                 try f.builder.condBr(&test_blk, br_cond, guard_blk.id, &.{}, next_blk.id, else_args, loc);
                 try f.builder.endBlock(f, test_blk);
 
-                try bindPattern(self, a, env, f, &guard_blk, arm.pattern, scrut, arm_scrut_ty);
+                try bindPattern(self, ctx, a, env, f, &guard_blk, arm.pattern, scrut, arm_scrut_ty);
                 const guard_id = arm.guard.unwrap();
                 const guard_loc = LowerTir.optLoc(a, guard_id);
-                const guard_val = try self.lowerExpr(a, env, f, &guard_blk, guard_id, self.context.type_store.tBool(), .rvalue);
+                const guard_val = try self.lowerExpr(ctx, a, env, f, &guard_blk, guard_id, self.context.type_store.tBool(), .rvalue);
                 const guard_cond = self.forceLocalCond(&guard_blk, guard_val, guard_loc);
                 try self.restoreBindings(env, saved.items);
                 try f.builder.condBr(&guard_blk, guard_cond, body_blk.id, &.{}, next_blk.id, else_args, guard_loc);
@@ -780,12 +793,12 @@ pub fn lowerMatch(
             }
 
             // bind + body
-            const scrut_ty = self.getExprType(a, row.expr);
-            try bindPattern(self, a, env, f, &body_blk, arm.pattern, scrut, scrut_ty);
+            const scrut_ty = self.getExprType(ctx, a, row.expr);
+            try bindPattern(self, ctx, a, env, f, &body_blk, arm.pattern, scrut, scrut_ty);
 
             if (body_blk.term.isNone()) {
-                var v2 = try self.lowerBlockExprValue(a, env, f, &body_blk, arm.body, res_ty);
-                v2 = self.emitCoerce(&body_blk, v2, self.getExprType(a, arm.body), res_ty, loc);
+                var v2 = try self.lowerBlockExprValue(ctx, a, env, f, &body_blk, arm.body, res_ty);
+                v2 = self.emitCoerce(&body_blk, v2, self.getExprType(ctx, a, arm.body), res_ty, loc);
                 try f.builder.br(&body_blk, join_blk.id, &.{v2}, loc);
             }
 
@@ -830,7 +843,7 @@ pub fn lowerMatch(
             i = 0;
             while (i < arms.len) : (i += 1) {
                 const arm = a.exprs.MatchArm.get(arms[i]);
-                try self.lowerExprAsStmtList(a, env, f, &bodies[i], arm.body);
+                try self.lowerExprAsStmtList(ctx, a, env, f, &bodies[i], arm.body);
                 if (bodies[i].term.isNone()) try f.builder.br(&bodies[i], exit_blk.id, &.{}, loc);
                 try f.builder.endBlock(f, bodies[i]);
             }
@@ -856,8 +869,8 @@ pub fn lowerMatch(
             try f.builder.br(&cur, test_blk.id, &.{}, loc);
             try f.builder.endBlock(f, cur);
 
-            const arm_scrut_ty = self.getExprType(a, row.expr);
-            const ok = try matchPattern(self, a, env, f, &test_blk, arm.pattern, scrut, arm_scrut_ty, loc);
+            const arm_scrut_ty = self.getExprType(ctx, a, row.expr);
+            const ok = try matchPattern(self, ctx, a, env, f, &test_blk, arm.pattern, scrut, arm_scrut_ty, loc);
 
             if (!arm.guard.isNone()) {
                 var guard_blk = try f.builder.beginBlock(f);
@@ -875,10 +888,10 @@ pub fn lowerMatch(
                     try saved.append(self.gpa, .{ .name = name, .prev = env.lookup(name) });
                 }
 
-                try bindPattern(self, a, env, f, &guard_blk, arm.pattern, scrut, arm_scrut_ty);
+                try bindPattern(self, ctx, a, env, f, &guard_blk, arm.pattern, scrut, arm_scrut_ty);
                 const guard_id = arm.guard.unwrap();
                 const guard_loc = LowerTir.optLoc(a, guard_id);
-                const guard_val = try self.lowerExpr(a, env, f, &guard_blk, guard_id, self.context.type_store.tBool(), .rvalue);
+                const guard_val = try self.lowerExpr(ctx, a, env, f, &guard_blk, guard_id, self.context.type_store.tBool(), .rvalue);
                 const guard_cond = self.forceLocalCond(&guard_blk, guard_val, guard_loc);
                 try self.restoreBindings(env, saved.items);
                 try f.builder.condBr(&guard_blk, guard_cond, body_blk.id, &.{}, next_blk.id, &.{}, guard_loc);
@@ -889,10 +902,10 @@ pub fn lowerMatch(
                 try f.builder.endBlock(f, test_blk);
             }
 
-            const scrut_ty = self.getExprType(a, row.expr);
-            try bindPattern(self, a, env, f, &body_blk, arm.pattern, scrut, scrut_ty);
+            const scrut_ty = self.getExprType(ctx, a, row.expr);
+            try bindPattern(self, ctx, a, env, f, &body_blk, arm.pattern, scrut, scrut_ty);
 
-            try self.lowerExprAsStmtList(a, env, f, &body_blk, arm.body);
+            try self.lowerExprAsStmtList(ctx, a, env, f, &body_blk, arm.body);
             if (body_blk.term.isNone()) try f.builder.br(&body_blk, exit_blk.id, &.{}, loc);
 
             try f.builder.endBlock(f, body_blk);
@@ -906,6 +919,7 @@ pub fn lowerMatch(
 
 pub fn lowerWhile(
     self: *LowerTir,
+    ctx: *LowerTir.LowerContext,
     a: *ast.Ast,
     env: *Env,
     f: *tir.Builder.FunctionFrame,
@@ -918,7 +932,7 @@ pub fn lowerWhile(
     var body = try f.builder.beginBlock(f);
     const loc = LowerTir.optLoc(a, id);
 
-    const out_ty_guess = expected_ty orelse self.getExprType(a, id);
+    const out_ty_guess = expected_ty orelse self.getExprType(ctx, a, id);
     const produce_value = (expected_ty != null) and !self.isVoid(out_ty_guess);
 
     if (produce_value) {
@@ -934,20 +948,20 @@ pub fn lowerWhile(
         }
 
         if (row.is_pattern and !row.pattern.isNone() and !row.cond.isNone()) {
-            const subj = try self.lowerExpr(a, env, f, &header, row.cond.unwrap(), null, .rvalue);
-            const subj_ty = self.getExprType(a, row.cond.unwrap());
+            const subj = try self.lowerExpr(ctx, a, env, f, &header, row.cond.unwrap(), null, .rvalue);
+            const subj_ty = self.getExprType(ctx, a, row.cond.unwrap());
 
-            const ok = try matchPattern(self, a, env, f, &header, row.pattern.unwrap(), subj, subj_ty, loc);
+            const ok = try matchPattern(self, ctx, a, env, f, &header, row.pattern.unwrap(), subj, subj_ty, loc);
 
             const br_cond = self.forceLocalCond(blk, ok, loc);
             try f.builder.condBr(&header, br_cond, body.id, &.{}, exit_blk.id, &.{}, loc);
 
             // bind `x` etc. for the body
-            try bindPattern(self, a, env, f, &body, row.pattern.unwrap(), subj, subj_ty);
+            try bindPattern(self, ctx, a, env, f, &body, row.pattern.unwrap(), subj, subj_ty);
         } else {
             const cond_loc = if (!row.cond.isNone()) LowerTir.optLoc(a, row.cond.unwrap()) else loc;
             const cond_v = if (!row.cond.isNone())
-                try self.lowerExpr(a, env, f, &header, row.cond.unwrap(), self.context.type_store.tBool(), .rvalue)
+                try self.lowerExpr(ctx, a, env, f, &header, row.cond.unwrap(), self.context.type_store.tBool(), .rvalue)
             else
                 f.builder.tirValue(.ConstBool, &header, self.context.type_store.tBool(), cond_loc, .{ .value = true });
 
@@ -955,7 +969,7 @@ pub fn lowerWhile(
             try f.builder.condBr(&header, br_cond, body.id, &.{}, exit_blk.id, &.{}, loc);
         }
 
-        try self.loop_stack.append(self.gpa, .{
+        try ctx.loop_stack.append(self.gpa, .{
             .label = row.label,
             .continue_block = header.id,
             .break_block = exit_blk.id,
@@ -967,7 +981,7 @@ pub fn lowerWhile(
             .defer_len_at_entry = @intCast(env.defers.items.len),
         });
 
-        try self.lowerExprAsStmtList(a, env, f, &body, row.body);
+        try self.lowerExprAsStmtList(ctx, a, env, f, &body, row.body);
         if (body.term.isNone()) try f.builder.br(&body, header.id, &.{}, loc);
         try f.builder.endBlock(f, header);
         try f.builder.endBlock(f, body);
@@ -976,7 +990,7 @@ pub fn lowerWhile(
         try f.builder.br(&exit_blk, join_blk.id, &.{uv}, loc);
         try f.builder.endBlock(f, exit_blk);
 
-        _ = self.loop_stack.pop();
+        _ = ctx.loop_stack.pop();
         blk.* = join_blk;
         return res_param;
     } else {
@@ -990,27 +1004,27 @@ pub fn lowerWhile(
         }
 
         if (row.is_pattern and !row.pattern.isNone() and !row.cond.isNone()) {
-            const subj = try self.lowerExpr(a, env, f, &header, row.cond.unwrap(), null, .rvalue);
-            const subj_ty = self.getExprType(a, row.cond.unwrap());
+            const subj = try self.lowerExpr(ctx, a, env, f, &header, row.cond.unwrap(), null, .rvalue);
+            const subj_ty = self.getExprType(ctx, a, row.cond.unwrap());
 
-            const ok = try matchPattern(self, a, env, f, &header, row.pattern.unwrap(), subj, subj_ty, loc);
+            const ok = try matchPattern(self, ctx, a, env, f, &header, row.pattern.unwrap(), subj, subj_ty, loc);
 
             const br_cond = self.forceLocalCond(&header, ok, loc);
             try f.builder.condBr(&header, br_cond, body.id, &.{}, exit_blk.id, &.{}, loc);
 
             // bind `x` etc. for the body
-            try bindPattern(self, a, env, f, &body, row.pattern.unwrap(), subj, subj_ty);
+            try bindPattern(self, ctx, a, env, f, &body, row.pattern.unwrap(), subj, subj_ty);
         } else {
             const cond_loc = if (!row.cond.isNone()) LowerTir.optLoc(a, row.cond.unwrap()) else loc;
             const cond_v = if (!row.cond.isNone())
-                try self.lowerExpr(a, env, f, &header, row.cond.unwrap(), self.context.type_store.tBool(), .rvalue)
+                try self.lowerExpr(ctx, a, env, f, &header, row.cond.unwrap(), self.context.type_store.tBool(), .rvalue)
             else
                 f.builder.tirValue(.ConstBool, &header, self.context.type_store.tBool(), cond_loc, .{ .value = true });
             const br_cond = self.forceLocalCond(&header, cond_v, cond_loc);
             try f.builder.condBr(&header, br_cond, body.id, &.{}, exit_blk.id, &.{}, loc);
         }
 
-        try self.loop_stack.append(self.gpa, .{
+        try ctx.loop_stack.append(self.gpa, .{
             .label = row.label,
             .continue_block = header.id,
             .break_block = exit_blk.id,
@@ -1022,12 +1036,12 @@ pub fn lowerWhile(
             .defer_len_at_entry = @intCast(env.defers.items.len),
         });
 
-        try self.lowerExprAsStmtList(a, env, f, &body, row.body);
+        try self.lowerExprAsStmtList(ctx, a, env, f, &body, row.body);
         if (body.term.isNone()) try f.builder.br(&body, header.id, &.{}, loc);
         try f.builder.endBlock(f, header);
         try f.builder.endBlock(f, body);
 
-        _ = self.loop_stack.pop();
+        _ = ctx.loop_stack.pop();
         blk.* = exit_blk;
         return self.safeUndef(blk, self.context.type_store.tAny(), loc);
     }
@@ -1035,6 +1049,7 @@ pub fn lowerWhile(
 
 fn getIterableLen(
     self: *LowerTir,
+    ctx: *LowerTir.LowerContext,
     a: *ast.Ast,
     blk: *tir.Builder.BlockFrame,
     iterable_val: tir.ValueId,
@@ -1048,7 +1063,7 @@ fn getIterableLen(
             const at = self.context.type_store.get(.Array, iter_ty);
             const len = switch (at.len) {
                 .Concrete => |l| l,
-                .Unresolved => |expr_id| try self.resolveArrayLen(a, expr_id, loc),
+                .Unresolved => |expr_id| try self.resolveArrayLen(ctx, a, expr_id, loc),
             };
             break :blk blk.builder.tirValue(.ConstInt, blk, idx_ty, loc, .{ .value = @as(u64, @intCast(len)) });
         },
@@ -1062,6 +1077,7 @@ fn getIterableLen(
 
 pub fn lowerFor(
     self: *LowerTir,
+    ctx: *LowerTir.LowerContext,
     a: *ast.Ast,
     env: *Env,
     f: *tir.Builder.FunctionFrame,
@@ -1074,7 +1090,7 @@ pub fn lowerFor(
     const iterable_loc = LowerTir.optLoc(a, row.iterable);
 
     // Decide if this for-expression needs to produce a value
-    const out_ty_guess = expected_ty orelse self.getExprType(a, id);
+    const out_ty_guess = expected_ty orelse self.getExprType(ctx, a, id);
     const produce_value = (expected_ty != null) and !self.isVoid(out_ty_guess);
 
     // Common blocks
@@ -1087,7 +1103,7 @@ pub fn lowerFor(
         var join_blk = try f.builder.beginBlock(f);
         const res_ty = out_ty_guess;
         const res_param = try f.builder.addBlockParam(&join_blk, null, res_ty);
-        try self.loop_stack.append(self.gpa, .{
+        try ctx.loop_stack.append(self.gpa, .{
             .label = row.label,
             .continue_block = header.id,
             .break_block = exit_blk.id,
@@ -1103,9 +1119,9 @@ pub fn lowerFor(
             const rg = a.exprs.get(.Range, row.iterable);
             if (rg.start.isNone() or rg.end.isNone()) return error.LoweringBug;
 
-            const start_v = try self.lowerExpr(a, env, f, blk, rg.start.unwrap(), null, .rvalue);
-            const end_v = try self.lowerExpr(a, env, f, blk, rg.end.unwrap(), null, .rvalue);
-            const idx_ty = self.getExprType(a, rg.start.unwrap());
+            const start_v = try self.lowerExpr(ctx, a, env, f, blk, rg.start.unwrap(), null, .rvalue);
+            const end_v = try self.lowerExpr(ctx, a, env, f, blk, rg.end.unwrap(), null, .rvalue);
+            const idx_ty = self.getExprType(ctx, a, rg.start.unwrap());
 
             const idx_param = try f.builder.addBlockParam(&header, null, idx_ty);
 
@@ -1131,23 +1147,23 @@ pub fn lowerFor(
             const br_cond = self.forceLocalCond(&header, cond, iterable_loc);
             try f.builder.condBr(&header, br_cond, body.id, &.{}, exit_blk.id, &.{}, loc);
 
-            try bindPattern(self, a, env, f, &body, row.pattern, idx_param, idx_ty);
+            try bindPattern(self, ctx, a, env, f, &body, row.pattern, idx_param, idx_ty);
 
-            var lc = &self.loop_stack.items[self.loop_stack.items.len - 1];
+            var lc = &ctx.loop_stack.items[ctx.loop_stack.items.len - 1];
             lc.continue_block = update_block_id;
             lc.continue_info = .{ .range = .{ .update_block = update_block_id, .idx_value = idx_param } };
 
-            try self.lowerExprAsStmtList(a, env, f, &body, row.body);
+            try self.lowerExprAsStmtList(ctx, a, env, f, &body, row.body);
             if (body.term.isNone())
                 try f.builder.br(&body, update_block_id, &.{idx_param}, loc);
 
             try f.builder.endBlock(f, header);
             try f.builder.endBlock(f, body);
         } else {
-            const arr_v = try self.lowerExpr(a, env, f, blk, row.iterable, null, .rvalue);
+            const arr_v = try self.lowerExpr(ctx, a, env, f, blk, row.iterable, null, .rvalue);
             const idx_ty = self.context.type_store.tUsize();
-            const iter_ty = self.getExprType(a, row.iterable);
-            const len_v = try getIterableLen(self, a, blk, arr_v, iter_ty, idx_ty, iterable_loc);
+            const iter_ty = self.getExprType(ctx, a, row.iterable);
+            const len_v = try getIterableLen(self, ctx, a, blk, arr_v, iter_ty, idx_ty, iterable_loc);
 
             const zero = blk.builder.tirValue(.ConstInt, blk, idx_ty, loc, .{ .value = 0 });
             const idx_param = try f.builder.addBlockParam(&header, null, idx_ty);
@@ -1172,7 +1188,7 @@ pub fn lowerFor(
 
             // Determine element type
             var elem_ty = self.context.type_store.tAny();
-            const it_ty = self.getExprType(a, row.iterable);
+            const it_ty = self.getExprType(ctx, a, row.iterable);
             const ik = self.context.type_store.index.kinds.items[it_ty.toRaw()];
             if (ik == .Array)
                 elem_ty = self.context.type_store.get(.Array, it_ty).elem
@@ -1182,13 +1198,13 @@ pub fn lowerFor(
                 elem_ty = self.context.type_store.get(.DynArray, it_ty).elem;
 
             const elem = blk.builder.indexOp(&body, elem_ty, arr_v, idx_param, iterable_loc);
-            try bindPattern(self, a, env, f, &body, row.pattern, elem, elem_ty);
+            try bindPattern(self, ctx, a, env, f, &body, row.pattern, elem, elem_ty);
 
-            var lc2 = &self.loop_stack.items[self.loop_stack.items.len - 1];
+            var lc2 = &ctx.loop_stack.items[ctx.loop_stack.items.len - 1];
             lc2.continue_block = update_block_id;
             lc2.continue_info = .{ .range = .{ .update_block = update_block_id, .idx_value = idx_param } };
 
-            try self.lowerExprAsStmtList(a, env, f, &body, row.body);
+            try self.lowerExprAsStmtList(ctx, a, env, f, &body, row.body);
             if (body.term.isNone())
                 try f.builder.br(&body, update_block_id, &.{idx_param}, loc);
 
@@ -1201,7 +1217,7 @@ pub fn lowerFor(
         try f.builder.br(&exit_blk, join_blk.id, &.{uv}, loc);
         try f.builder.endBlock(f, exit_blk);
 
-        _ = self.loop_stack.pop();
+        _ = ctx.loop_stack.pop();
         blk.* = join_blk;
         return res_param;
     } else {
@@ -1209,7 +1225,7 @@ pub fn lowerFor(
         const exit_blk = try f.builder.beginBlock(f);
 
         // Loop stack entry (no value carried)
-        try self.loop_stack.append(self.gpa, .{
+        try ctx.loop_stack.append(self.gpa, .{
             .label = row.label,
             .continue_block = header.id,
             .break_block = exit_blk.id,
@@ -1225,9 +1241,9 @@ pub fn lowerFor(
             const rg = a.exprs.get(.Range, row.iterable);
             if (rg.start.isNone() or rg.end.isNone()) return error.LoweringBug;
 
-            const start_v = try self.lowerExpr(a, env, f, blk, rg.start.unwrap(), null, .rvalue);
-            const end_v = try self.lowerExpr(a, env, f, blk, rg.end.unwrap(), null, .rvalue);
-            const idx_ty = self.getExprType(a, rg.start.unwrap());
+            const start_v = try self.lowerExpr(ctx, a, env, f, blk, rg.start.unwrap(), null, .rvalue);
+            const end_v = try self.lowerExpr(ctx, a, env, f, blk, rg.end.unwrap(), null, .rvalue);
+            const idx_ty = self.getExprType(ctx, a, rg.start.unwrap());
 
             const idx_param = try f.builder.addBlockParam(&header, null, idx_ty);
             var update_blk = try f.builder.beginBlock(f);
@@ -1251,13 +1267,13 @@ pub fn lowerFor(
             const br_cond = self.forceLocalCond(&header, cond, iterable_loc);
             try f.builder.condBr(&header, br_cond, body.id, &.{}, exit_blk.id, &.{}, loc);
 
-            try bindPattern(self, a, env, f, &body, row.pattern, idx_param, idx_ty);
+            try bindPattern(self, ctx, a, env, f, &body, row.pattern, idx_param, idx_ty);
 
-            var lc = &self.loop_stack.items[self.loop_stack.items.len - 1];
+            var lc = &ctx.loop_stack.items[ctx.loop_stack.items.len - 1];
             lc.continue_block = update_block_id;
             lc.continue_info = .{ .range = .{ .update_block = update_block_id, .idx_value = idx_param } };
 
-            try self.lowerExprAsStmtList(a, env, f, &body, row.body);
+            try self.lowerExprAsStmtList(ctx, a, env, f, &body, row.body);
 
             if (body.term.isNone())
                 try f.builder.br(&body, update_block_id, &.{idx_param}, loc);
@@ -1265,10 +1281,10 @@ pub fn lowerFor(
             try f.builder.endBlock(f, header);
             try f.builder.endBlock(f, body);
         } else {
-            const arr_v = try self.lowerExpr(a, env, f, blk, row.iterable, null, .rvalue);
+            const arr_v = try self.lowerExpr(ctx, a, env, f, blk, row.iterable, null, .rvalue);
             const idx_ty = self.context.type_store.tUsize();
-            const iter_ty = self.getExprType(a, row.iterable);
-            const len_v = try getIterableLen(self, a, blk, arr_v, iter_ty, idx_ty, iterable_loc);
+            const iter_ty = self.getExprType(ctx, a, row.iterable);
+            const len_v = try getIterableLen(self, ctx, a, blk, arr_v, iter_ty, idx_ty, iterable_loc);
 
             const zero = blk.builder.tirValue(.ConstInt, blk, idx_ty, loc, .{ .value = 0 });
             const idx_param = try f.builder.addBlockParam(&header, null, idx_ty);
@@ -1292,7 +1308,7 @@ pub fn lowerFor(
             try f.builder.condBr(&header, br_cond, body.id, &.{}, exit_blk.id, &.{}, loc);
 
             var elem_ty = self.context.type_store.tAny();
-            const it_ty = self.getExprType(a, row.iterable);
+            const it_ty = self.getExprType(ctx, a, row.iterable);
             const ik = self.context.type_store.index.kinds.items[it_ty.toRaw()];
             if (ik == .Array)
                 elem_ty = self.context.type_store.get(.Array, it_ty).elem
@@ -1301,13 +1317,13 @@ pub fn lowerFor(
             else if (ik == .DynArray)
                 elem_ty = self.context.type_store.get(.DynArray, it_ty).elem;
             const elem = blk.builder.indexOp(&body, elem_ty, arr_v, idx_param, iterable_loc);
-            try bindPattern(self, a, env, f, &body, row.pattern, elem, elem_ty);
+            try bindPattern(self, ctx, a, env, f, &body, row.pattern, elem, elem_ty);
 
-            var lc2 = &self.loop_stack.items[self.loop_stack.items.len - 1];
+            var lc2 = &ctx.loop_stack.items[ctx.loop_stack.items.len - 1];
             lc2.continue_block = update_block_id;
             lc2.continue_info = .{ .range = .{ .update_block = update_block_id, .idx_value = idx_param } };
 
-            try self.lowerExprAsStmtList(a, env, f, &body, row.body);
+            try self.lowerExprAsStmtList(ctx, a, env, f, &body, row.body);
             if (body.term.isNone())
                 try f.builder.br(&body, update_block_id, &.{idx_param}, loc);
 
@@ -1315,7 +1331,7 @@ pub fn lowerFor(
             try f.builder.endBlock(f, body);
         }
 
-        _ = self.loop_stack.pop();
+        _ = ctx.loop_stack.pop();
         blk.* = exit_blk;
         return self.safeUndef(blk, self.context.type_store.tAny(), loc);
     }
@@ -1323,6 +1339,7 @@ pub fn lowerFor(
 
 pub fn bindPattern(
     self: *LowerTir,
+    ctx: *LowerTir.LowerContext,
     a: *ast.Ast,
     env: *Env,
     f: *tir.Builder.FunctionFrame,
@@ -1341,7 +1358,7 @@ pub fn bindPattern(
         .At => {
             const at = a.pats.get(.At, pid);
             try env.bind(self.gpa, a, at.binder, .{ .value = value, .ty = vty, .is_slot = false });
-            try bindPattern(self, a, env, f, blk, at.pattern, value, vty);
+            try bindPattern(self, ctx, a, env, f, blk, at.pattern, value, vty);
         },
         .Tuple => {
             const row = a.pats.get(.Tuple, pid);
@@ -1354,7 +1371,7 @@ pub fn bindPattern(
             for (elems, 0..) |pe, i| {
                 const ety = if (i < elem_tys.len) elem_tys[i] else self.context.type_store.tAny();
                 const ev = blk.builder.extractElem(blk, ety, value, @intCast(i), loc);
-                try bindPattern(self, a, env, f, blk, pe, ev, ety);
+                try bindPattern(self, ctx, a, env, f, blk, pe, ev, ety);
             }
         },
         .Slice => {
@@ -1371,7 +1388,7 @@ pub fn bindPattern(
                 if (sl.has_rest and i == sl.rest_index) continue;
                 const index_val = blk.builder.tirValue(.ConstInt, blk, self.context.type_store.tUsize(), loc, .{ .value = i });
                 const elem_val = blk.builder.indexOp(blk, elem_ty, value, index_val, loc);
-                try bindPattern(self, a, env, f, blk, pat_elem, elem_val, elem_ty);
+                try bindPattern(self, ctx, a, env, f, blk, pat_elem, elem_val, elem_ty);
             }
 
             if (sl.has_rest and !sl.rest_binding.isNone()) {
@@ -1385,7 +1402,7 @@ pub fn bindPattern(
                     const arr_ty = self.context.type_store.get(.Array, vty);
                     const len = switch (arr_ty.len) {
                         .Concrete => |l| l,
-                        .Unresolved => |expr_id| try self.resolveArrayLen(a, expr_id, loc),
+                        .Unresolved => |expr_id| try self.resolveArrayLen(ctx, a, expr_id, loc),
                     };
                     len_val = blk.builder.tirValue(.ConstInt, blk, self.context.type_store.tUsize(), loc, .{ .value = len });
                 } else {
@@ -1396,7 +1413,7 @@ pub fn bindPattern(
                 const inclusive = blk.builder.tirValue(.ConstBool, blk, self.context.type_store.tBool(), loc, .{ .value = false });
                 const range_val = blk.builder.rangeMake(blk, range_ty, start, len_val, inclusive, loc);
                 const rest_slice = blk.builder.indexOp(blk, slice_ty, value, range_val, loc);
-                try bindPattern(self, a, env, f, blk, rest_pat, rest_slice, slice_ty);
+                try bindPattern(self, ctx, a, env, f, blk, rest_pat, rest_slice, slice_ty);
             }
         },
         .VariantTuple => {
@@ -1436,7 +1453,7 @@ pub fn bindPattern(
                 for (pelems, 0..) |pe, i| {
                     const ety = if (i < subtys.len) subtys[i] else self.context.type_store.tAny();
                     const ev = blk.builder.extractElem(blk, ety, tuple_val, @intCast(i), loc);
-                    try bindPattern(self, a, env, f, blk, pe, ev, ety);
+                    try bindPattern(self, ctx, a, env, f, blk, pe, ev, ety);
                 }
             } else {
                 // Single non-tuple payload
@@ -1445,7 +1462,7 @@ pub fn bindPattern(
                     .field_index = tag_idx,
                 });
                 if (pelems.len > 0) {
-                    try bindPattern(self, a, env, f, blk, pelems[0], pv, payload_ty);
+                    try bindPattern(self, ctx, a, env, f, blk, pelems[0], pv, payload_ty);
                 }
             }
         },
@@ -1462,7 +1479,7 @@ pub fn bindPattern(
                         const sf = self.context.type_store.Field.get(sfid);
                         if (sf.name.eq(pf.name)) {
                             const field_val = blk.builder.extractField(blk, sf.ty, value, @intCast(i), loc);
-                            try bindPattern(self, a, env, f, blk, pf.pattern, field_val, sf.ty);
+                            try bindPattern(self, ctx, a, env, f, blk, pf.pattern, field_val, sf.ty);
                             break;
                         }
                     }
@@ -1499,7 +1516,7 @@ pub fn bindPattern(
                     const sf = self.context.type_store.Field.get(sfid);
                     if (sf.name.eq(pf.name)) {
                         const field_val = blk.builder.extractField(blk, sf.ty, struct_val, @intCast(i), loc);
-                        try bindPattern(self, a, env, f, blk, pf.pattern, field_val, sf.ty);
+                        try bindPattern(self, ctx, a, env, f, blk, pf.pattern, field_val, sf.ty);
                         break;
                     }
                 }
