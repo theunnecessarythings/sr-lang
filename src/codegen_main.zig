@@ -2504,7 +2504,16 @@ fn emitMlirBlock(self: *Codegen, p: tir.Rows.MlirBlock, t: *const tir.TIR) !mlir
                 current_op = next_op;
             }
             parsed_module.destroy();
-            return .empty();
+            if (p.result.isNone()) {
+                return .empty();
+            } else {
+                // Materialize a dummy pointer value to satisfy SSA uses of mlir.module type
+                const ty = try self.llvmTypeOf(p.ty);
+                var zero = OpBuilder.init("llvm.mlir.zero", self.loc).builder()
+                    .results(&.{ty}).build();
+                self.append(zero);
+                return zero.getResult(0);
+            }
         },
         .Type => {
             var parsed_type = mlir.Type.parseGet(self.mlir_ctx, mlir.StringRef.from(mlir_text));
@@ -2512,7 +2521,15 @@ fn emitMlirBlock(self: *Codegen, p: tir.Rows.MlirBlock, t: *const tir.TIR) !mlir
                 std.debug.print("Error parsing inline MLIR type: {s}\n", .{mlir_text});
                 return error.MlirParseError;
             }
-            return .empty();
+            if (p.result.isNone()) {
+                return .empty();
+            } else {
+                const ty = try self.llvmTypeOf(p.ty);
+                var zero = OpBuilder.init("llvm.mlir.zero", self.loc).builder()
+                    .results(&.{ty}).build();
+                self.append(zero);
+                return zero.getResult(0);
+            }
         },
         .Attribute => {
             var parsed_attr = mlir.Attribute.parseGet(self.mlir_ctx, mlir.StringRef.from(mlir_text));
@@ -2520,7 +2537,15 @@ fn emitMlirBlock(self: *Codegen, p: tir.Rows.MlirBlock, t: *const tir.TIR) !mlir
                 std.debug.print("Error parsing inline MLIR attribute: {s}\n", .{mlir_text});
                 return error.MlirParseError;
             }
-            return .empty();
+            if (p.result.isNone()) {
+                return .empty();
+            } else {
+                const ty = try self.llvmTypeOf(p.ty);
+                var zero = OpBuilder.init("llvm.mlir.zero", self.loc).builder()
+                    .results(&.{ty}).build();
+                self.append(zero);
+                return zero.getResult(0);
+            }
         },
     }
 }

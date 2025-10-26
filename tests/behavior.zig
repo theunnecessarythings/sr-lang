@@ -1566,7 +1566,7 @@ test "behavior: mlir op with comptime splices" {
     ;
     const src =
         \\ value: i32 = mlir op {
-        \\   "arith.constant"() {value = @ConstAttr} : () -> @ValueTy
+        \\   "arith.constant"() {value = `ConstAttr`} : () -> `ValueTy`
         \\ }
         \\ printf("%d\n", value)
     ;
@@ -1579,7 +1579,7 @@ test "behavior: mlir type with spliced shape" {
         \\ ElemTy :: mlir type { f32 }
         \\ Rows :: 4
         \\ Cols :: 16
-        \\ TensorTy :: mlir type { tensor<@Rowsx@Colsx@ElemTy> }
+        \\ TensorTy :: mlir type { tensor<`Rows`x`Cols`x`ElemTy`> }
     ;
     const src =
         \\ comptime {

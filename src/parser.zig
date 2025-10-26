@@ -2558,7 +2558,8 @@ fn parseMlir(self: *Parser) !cst.ExprId {
     var literal_start: usize = 0;
     var i: usize = 0;
     while (i < raw_text.len) {
-        if (raw_text[i] == '@' and i + 1 < raw_text.len and isIdentStart(raw_text[i + 1])) {
+        // Backtick-delimited splice: `Name`
+        if (raw_text[i] == '`') {
             if (i > literal_start) {
                 const lit = self.intern(raw_text[literal_start..i]);
                 const pid = self.cst_u.exprs.addMlirPieceRow(.{ .kind = .literal, .text = lit });
@@ -2566,13 +2567,23 @@ fn parseMlir(self: *Parser) !cst.ExprId {
             }
 
             var j = i + 1;
-            while (j < raw_text.len and isIdentContinue(raw_text[j])) : (j += 1) {}
-            const ident = self.intern(raw_text[(i + 1)..j]);
+            while (j < raw_text.len and raw_text[j] != '`') : (j += 1) {}
+            if (j >= raw_text.len) {
+                // No closing backtick; emit the backtick as literal and continue.
+                const lit = self.intern(raw_text[i .. i + 1]);
+                const pid = self.cst_u.exprs.addMlirPieceRow(.{ .kind = .literal, .text = lit });
+                piece_ids.append(self.gpa, pid) catch @panic("OOM");
+                i += 1;
+                literal_start = i;
+                continue;
+            }
+            const ident_text = raw_text[(i + 1)..j];
+            const ident = self.intern(ident_text);
             const sid = self.cst_u.exprs.addMlirPieceRow(.{ .kind = .splice, .text = ident });
             piece_ids.append(self.gpa, sid) catch @panic("OOM");
 
-            literal_start = j;
-            i = j;
+            literal_start = j + 1;
+            i = j + 1;
             continue;
         }
         i += 1;

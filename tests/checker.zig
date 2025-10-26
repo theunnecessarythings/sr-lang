@@ -2858,7 +2858,7 @@ test "mlir splices - success" {
         \\     "arith.constant"() {value = @ConstAttr} : () -> @ValueTy
         \\   }
         \\ }
-        \\ TensorTy :: mlir type { tensor<4x4x@ValueTy> }
+        \\ TensorTy :: mlir type { tensor<4x4x`ValueTy`> }
         \\ use_tensor :: proc() void {
         \\   comptime {
         \\     _ = TensorTy
@@ -2870,7 +2870,7 @@ test "mlir splices - success" {
 test "mlir splices - unknown identifier" {
     try checkProgram(
         \\
-        \\ BadType :: mlir type { tensor<@Missing> }
+        \\ BadType :: mlir type { tensor<`Missing`> }
     , &.{.mlir_splice_unknown_identifier});
 }
 
@@ -2878,7 +2878,7 @@ test "mlir splices - non-comptime" {
     try checkProgram(
         \\
         \\ main :: proc(x: i32) void {
-        \\   _ = mlir type { tensor<@x> }
+        \\   _ = mlir type { tensor<`x`> }
         \\ }
     , &.{.mlir_splice_not_comptime});
 }
