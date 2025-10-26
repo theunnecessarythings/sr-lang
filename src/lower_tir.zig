@@ -1652,21 +1652,34 @@ fn lowerCall(
         var j2: usize = fixed;
         while (j2 < vals.len) : (j2 += 1) {
             const got = self.getExprType(ctx, a, arg_ids[j2]);
+            // Apply default argument promotions for C varargs interop.
+            const want_promoted: ?types.TypeId = switch (self.context.type_store.getKind(got)) {
+                .Bool, .I8, .U8, .I16, .U16 => self.context.type_store.tI32(),
+                .F32 => self.context.type_store.tF64(),
+                else => null,
+            };
+            if (want_promoted) |want_ty| {
+                const arg_loc = optLoc(a, arg_ids[j2]);
+                vals[j2] = self.emitCoerce(blk, vals[j2], got, want_ty, arg_loc);
+                continue;
+            }
+
+            // If argument was typed as 'any', pick a concrete type consistent with promotions.
             if (self.isAny(got)) {
                 const k = a.exprs.index.kinds.items[arg_ids[j2].toRaw()];
-                const want: types.TypeId = switch (k) {
+                const want_any: types.TypeId = switch (k) {
                     .Literal => blk: {
                         const lit = a.exprs.get(.Literal, arg_ids[j2]);
                         break :blk switch (lit.kind) {
                             .int, .char => self.context.type_store.tI64(),
                             .float, .imaginary => self.context.type_store.tF64(),
-                            .bool => self.context.type_store.tBool(),
+                            .bool => self.context.type_store.tI32(),
                             .string => self.context.type_store.tString(),
                         };
                     },
                     else => self.context.type_store.tUsize(),
                 };
-                vals[j2] = try self.lowerExpr(ctx, a, env, f, blk, arg_ids[j2], want, .rvalue);
+                vals[j2] = try self.lowerExpr(ctx, a, env, f, blk, arg_ids[j2], want_any, .rvalue);
             }
         }
     }
