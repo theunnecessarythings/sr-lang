@@ -424,6 +424,7 @@ pub fn typeFromTypeExpr(self: *Checker, ctx: *Checker.CheckerContext, ast_unit: 
                 }
             }
 
+            try self.context.diags.addError(ast_unit.exprs.locs.get(ast_unit.exprs.get(.Ident, id).loc), .undefined_identifier, .{});
             break :blk_ident null;
         },
         .MlirBlock => blk: {

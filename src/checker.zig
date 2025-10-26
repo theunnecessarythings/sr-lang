@@ -938,7 +938,8 @@ pub fn assignable(self: *Checker, got: types.TypeId, expect: types.TypeId) Assig
     return .failure;
 }
 
-fn typeInferFromRHS(self: *Checker, ast_unit: *ast.Ast, decl: ast.DeclId, rhs_ty: types.TypeId) !void {
+fn typeInferFromRHS(self: *Checker, ast_unit: *ast.Ast, decl_id: ast.DeclId, rhs_ty: types.TypeId) !void {
+    const decl = ast_unit.exprs.Decl.get(decl_id);
     // Degenerate cases where we don't infer from RHS
     const rhs_kind = self.typeKind(rhs_ty);
     switch (rhs_kind) {
@@ -950,12 +951,15 @@ fn typeInferFromRHS(self: *Checker, ast_unit: *ast.Ast, decl: ast.DeclId, rhs_ty
             };
             if (is_zero)
                 try self.context.diags.addError(
-                    exprLoc(ast_unit, ast_unit.exprs.Decl.get(decl)),
+                    exprLoc(ast_unit, ast_unit.exprs.Decl.get(decl_id)),
                     .cannot_infer_type_from_empty_array,
                     .{},
                 );
         },
-        else => ast_unit.type_info.decl_types.items[decl.toRaw()] = rhs_ty,
+        else => {
+            ast_unit.type_info.decl_types.items[decl_id.toRaw()] = rhs_ty;
+            ast_unit.type_info.expr_types.items[decl.value.toRaw()] = rhs_ty;
+        },
     }
 }
 
@@ -1645,7 +1649,12 @@ fn checkIdent(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, id: ast.
                     if (ast_unit.type_info.expr_types.items[drow.value.toRaw()]) |t| break :blk t;
                     if (ast_unit.type_info.decl_types.items[did.toRaw()]) |t| break :blk t;
                     // Fallback: check rhs now
-                    break :blk (try self.checkExpr(ctx, ast_unit, drow.value)) orelse return null;
+                    ast_unit.type_info.expr_types.items[drow.value.toRaw()] = self.context.type_store.tAny();
+                    const ty = (try self.checkExpr(ctx, ast_unit, drow.value)) orelse {
+                        ast_unit.type_info.expr_types.items[drow.value.toRaw()] = null;
+                        return null;
+                    };
+                    break :blk ty;
                 };
                 const bt = pattern_matching.bindingTypeInPattern(self, ast_unit, drow.pattern.unwrap(), row.name, rhs_ty);
                 if (bt) |btid| return btid;

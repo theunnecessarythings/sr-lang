@@ -283,6 +283,7 @@ pub const DiagnosticCode = enum {
     package_missing_declaration,
     entry_package_missing,
     entry_package_not_main,
+    checker_internal_error,
 };
 
 pub fn diagnosticMessageFmt(code: DiagnosticCode) []const u8 {
@@ -506,6 +507,7 @@ pub fn diagnosticMessageFmt(code: DiagnosticCode) []const u8 {
         .package_missing_declaration => "missing package declaration; expected 'package {s}'",
         .entry_package_missing => "entry modules must declare 'package main'",
         .entry_package_not_main => "entry modules must declare 'package main'; found '{s}'",
+        .checker_internal_error => "internal checker error: {s}",
     };
 }
 
