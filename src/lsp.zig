@@ -54,6 +54,9 @@ const semantic_token_types = [_][]const u8{
     "property",
     "parameter",
     "enumMember",
+    "enum",
+    "struct",
+    "operator",
 };
 
 const semantic_token_modifiers = [_][]const u8{};
@@ -70,6 +73,9 @@ const SemanticTokenKind = enum(u8) {
     property,
     parameter,
     enum_member,
+    @"enum",
+    @"struct",
+    operator,
 };
 
 const DocumentStore = struct {
@@ -698,13 +704,18 @@ fn collectAstSemanticTokens(tokens: *TokenAccumulator, gpa: std.mem.Allocator, t
     };
 
     const ast_unit = findAstForFile(&context.compilation_unit, file_id) orelse return;
-    try gatherAstTokens(tokens, text, ast_unit, file_id);
+
+    var all_param_names = std.StringHashMap(void).init(gpa);
+    defer all_param_names.deinit();
+    try collectAllParamNames(gpa, &all_param_names, ast_unit);
+
+    try gatherAstTokens(tokens, gpa, text, ast_unit, file_id, &all_param_names);
 }
 
-fn gatherAstTokens(tokens: *TokenAccumulator, text: []const u8, ast_unit: *ast.Ast, file_id: u32) !void {
+fn gatherAstTokens(tokens: *TokenAccumulator, gpa: std.mem.Allocator, text: []const u8, ast_unit: *ast.Ast, file_id: u32, all_param_names: *std.StringHashMap(void)) !void {
     try highlightPackage(tokens, text, ast_unit, file_id);
     try highlightDecls(tokens, text, ast_unit, file_id);
-    try highlightExpressions(tokens, text, ast_unit, file_id);
+    try highlightExpressions(tokens, gpa, text, ast_unit, file_id, all_param_names);
 }
 
 fn highlightPackage(tokens: *TokenAccumulator, text: []const u8, ast_unit: *ast.Ast, file_id: u32) !void {
@@ -719,6 +730,10 @@ fn highlightDecls(tokens: *TokenAccumulator, text: []const u8, ast_unit: *ast.As
     for (decl_ids) |decl_id| {
         const row = ast_unit.exprs.Decl.get(decl_id);
         const decl_kind = classifyDeclKind(ast_unit, row.value);
+
+        if (!row.ty.isNone()) {
+            try highlightTypeExpr(tokens, text, ast_unit, file_id, row.ty.unwrap());
+        }
 
         if (!row.pattern.isNone()) {
             const pat_id = patternFromOpt(row.pattern);
@@ -738,7 +753,149 @@ fn highlightDecls(tokens: *TokenAccumulator, text: []const u8, ast_unit: *ast.As
     }
 }
 
-fn highlightExpressions(tokens: *TokenAccumulator, text: []const u8, ast_unit: *ast.Ast, file_id: u32) !void {
+fn collectPatternBindingNames(gpa: std.mem.Allocator, names: *std.StringHashMap(void), ast_unit: *ast.Ast, pat_id: ast.PatternId) !void {
+    const pat_store = &ast_unit.pats;
+    const pat_kind = pat_store.index.kinds.items[pat_id.toRaw()];
+    switch (pat_kind) {
+        .Binding => {
+            const row = pat_store.get(.Binding, pat_id);
+            try names.put(ast_unit.exprs.strs.get(row.name), {});
+        },
+        .Tuple => {
+            const row = pat_store.get(.Tuple, pat_id);
+            const elems = pat_store.pat_pool.slice(row.elems);
+            for (elems) |elem| try collectPatternBindingNames(gpa, names, ast_unit, elem);
+        },
+        .Slice => {
+            const row = pat_store.get(.Slice, pat_id);
+            const elems = pat_store.pat_pool.slice(row.elems);
+            for (elems) |elem| try collectPatternBindingNames(gpa, names, ast_unit, elem);
+            if (!row.rest_binding.isNone()) {
+                try collectPatternBindingNames(gpa, names, ast_unit, patternFromOpt(row.rest_binding));
+            }
+        },
+        .Struct => {
+            const row = pat_store.get(.Struct, pat_id);
+            const fields = pat_store.field_pool.slice(row.fields);
+            for (fields) |field_id| {
+                const field = pat_store.StructField.get(field_id);
+                try collectPatternBindingNames(gpa, names, ast_unit, field.pattern);
+            }
+        },
+        .VariantStruct => {
+            const row = pat_store.get(.VariantStruct, pat_id);
+            const fields = pat_store.field_pool.slice(row.fields);
+            for (fields) |field_id| {
+                const field = pat_store.StructField.get(field_id);
+                try collectPatternBindingNames(gpa, names, ast_unit, field.pattern);
+            }
+        },
+        .VariantTuple => {
+            const row = pat_store.get(.VariantTuple, pat_id);
+            const elems = pat_store.pat_pool.slice(row.elems);
+            for (elems) |elem| try collectPatternBindingNames(gpa, names, ast_unit, elem);
+        },
+        .Or => {
+            const row = pat_store.get(.Or, pat_id);
+            const alts = pat_store.pat_pool.slice(row.alts);
+            for (alts) |alt| try collectPatternBindingNames(gpa, names, ast_unit, alt);
+        },
+        .At => {
+            const row = pat_store.get(.At, pat_id);
+            try names.put(ast_unit.exprs.strs.get(row.binder), {});
+            try collectPatternBindingNames(gpa, names, ast_unit, row.pattern);
+        },
+        else => {},
+    }
+}
+
+fn collectAllParamNames(gpa: std.mem.Allocator, names: *std.StringHashMap(void), ast_unit: *ast.Ast) !void {
+    const expr_store = &ast_unit.exprs;
+    const kinds = expr_store.index.kinds.items;
+    var idx: usize = 0;
+    while (idx < kinds.len) : (idx += 1) {
+        const expr_kind = kinds[idx];
+        const expr_id = ast.ExprId.fromRaw(@intCast(idx));
+        switch (expr_kind) {
+            .FunctionLit => {
+                const fn_row = expr_store.get(.FunctionLit, expr_id);
+                const params = expr_store.param_pool.slice(fn_row.params);
+                for (params) |param_id| {
+                    const param = expr_store.Param.get(param_id);
+                    if (!param.pat.isNone()) {
+                        try collectPatternBindingNames(gpa, names, ast_unit, patternFromOpt(param.pat));
+                    }
+                }
+            },
+            .Closure => {
+                const cl_row = expr_store.get(.Closure, expr_id);
+                const params = expr_store.param_pool.slice(cl_row.params);
+                for (params) |param_id| {
+                    const param = expr_store.Param.get(param_id);
+                    if (!param.pat.isNone()) {
+                        try collectPatternBindingNames(gpa, names, ast_unit, patternFromOpt(param.pat));
+                    }
+                }
+            },
+            else => {},
+        }
+    }
+}
+
+fn highlightTypeExpr(tokens: *TokenAccumulator, text: []const u8, ast_unit: *ast.Ast, file_id: u32, expr_id: ast.ExprId) !void {
+    const expr_store = &ast_unit.exprs;
+    const expr_kind = expr_store.index.kinds.items[expr_id.toRaw()];
+    switch (expr_kind) {
+        .Ident => {
+            const row = expr_store.get(.Ident, expr_id);
+            try highlightLoc(tokens, text, expr_store.locs, row.loc, file_id, .type);
+        },
+        .PointerType => {
+            const row = expr_store.get(.PointerType, expr_id);
+            try highlightTypeExpr(tokens, text, ast_unit, file_id, row.elem);
+        },
+        .OptionalType => {
+            const row = expr_store.get(.OptionalType, expr_id);
+            try highlightTypeExpr(tokens, text, ast_unit, file_id, row.elem);
+        },
+        .SliceType => {
+            const row = expr_store.get(.SliceType, expr_id);
+            try highlightTypeExpr(tokens, text, ast_unit, file_id, row.elem);
+        },
+        .ArrayType => {
+            const row = expr_store.get(.ArrayType, expr_id);
+            try highlightTypeExpr(tokens, text, ast_unit, file_id, row.elem);
+        },
+        .DynArrayType => {
+            const row = expr_store.get(.DynArrayType, expr_id);
+            try highlightTypeExpr(tokens, text, ast_unit, file_id, row.elem);
+        },
+        .MapType => {
+            const row = expr_store.get(.MapType, expr_id);
+            try highlightTypeExpr(tokens, text, ast_unit, file_id, row.key);
+            try highlightTypeExpr(tokens, text, ast_unit, file_id, row.value);
+        },
+        .TupleType => {
+            const row = expr_store.get(.TupleType, expr_id);
+            const elems = expr_store.expr_pool.slice(row.elems);
+            for (elems) |elem| try highlightTypeExpr(tokens, text, ast_unit, file_id, elem);
+        },
+        .ErrorSetType => {
+            const row = expr_store.get(.ErrorSetType, expr_id);
+            try highlightTypeExpr(tokens, text, ast_unit, file_id, row.err);
+            try highlightTypeExpr(tokens, text, ast_unit, file_id, row.value);
+        },
+        .FieldAccess => { // For qualified type names like `my_module.MyType`
+            const row = expr_store.get(.FieldAccess, expr_id);
+            try highlightTypeExpr(tokens, text, ast_unit, file_id, row.parent);
+            try highlightLoc(tokens, text, expr_store.locs, row.loc, file_id, .type);
+        },
+        else => {},
+    }
+}
+
+fn highlightExpressions(tokens: *TokenAccumulator, gpa: std.mem.Allocator, text: []const u8, ast_unit: *ast.Ast, file_id: u32, all_param_names: *std.StringHashMap(void)) !void {
+    _ = gpa;
     const expr_store = &ast_unit.exprs;
     const kinds = expr_store.index.kinds.items;
     const expr_types = ast_unit.type_info.expr_types.items;
@@ -755,15 +912,86 @@ fn highlightExpressions(tokens: *TokenAccumulator, text: []const u8, ast_unit: *
                 if (loc.file_id != file_id) continue :expr_loop;
                 const start = clampOffset(text, loc.start);
                 const end = clampOffset(text, loc.end);
-                const ty_opt = if (idx < expr_types.len) expr_types[idx] else null;
-                const kind = classifyIdentType(type_store, ty_opt);
+
+                var kind: SemanticTokenKind = undefined;
+                const name = expr_store.strs.get(row.name);
+                if (all_param_names.contains(name)) {
+                    kind = .parameter;
+                } else {
+                    const ty_opt = if (idx < expr_types.len) expr_types[idx] else null;
+                    kind = classifyIdentType(type_store, ty_opt);
+                }
                 try addSegmentMultiLine(tokens, text, start, end, kind);
+            },
+            .FieldAccess => {
+                const row = expr_store.get(.FieldAccess, expr_id);
+                const loc = expr_store.locs.get(row.loc);
+                if (loc.file_id != file_id) continue :expr_loop;
+
+                const parent_ty_opt = getExprType(ast_unit, row.parent);
+                var is_enum_access = false;
+                if (parent_ty_opt) |parent_ty_id| {
+                    const parent_ty_kind = type_store.getKind(parent_ty_id);
+                    if (parent_ty_kind == .Enum) {
+                        is_enum_access = true;
+                    } else if (parent_ty_kind == .TypeType) {
+                        // It could be access on the type itself, e.g. EnumType.member
+                        const inner_ty_id = type_store.get(.TypeType, parent_ty_id).of;
+                        if (type_store.getKind(inner_ty_id) == .Enum) {
+                            is_enum_access = true;
+                        }
+                    }
+                }
+
+                const start = clampOffset(text, loc.start);
+                const end = clampOffset(text, loc.end);
+                const ty_opt = if (idx < expr_types.len) expr_types[idx] else null;
+
+                var kind = classifyMemberAccessType(type_store, ty_opt);
+                if (is_enum_access) {
+                    kind = .enum_member;
+                }
+
+                try addSegmentMultiLine(tokens, text, start, end, kind);
+            },
+            .For => {
+                const row = expr_store.get(.For, expr_id);
+                try highlightPattern(tokens, text, ast_unit, row.pattern, .variable, file_id);
+            },
+            .Match => {
+                const row = expr_store.get(.Match, expr_id);
+                const arms = expr_store.arm_pool.slice(row.arms);
+                for (arms) |arm_id| {
+                    const arm = expr_store.MatchArm.get(arm_id);
+                    try highlightPattern(tokens, text, ast_unit, arm.pattern, .variable, file_id);
+                }
+            },
+            .While => {
+                const row = expr_store.get(.While, expr_id);
+                if (row.is_pattern) {
+                    if (!row.pattern.isNone()) {
+                        const pat_id = patternFromOpt(row.pattern);
+                        try highlightPattern(tokens, text, ast_unit, pat_id, .variable, file_id);
+                    }
+                }
+            },
+            .Catch => {
+                const row = expr_store.get(.Catch, expr_id);
+                if (row.binding_loc.isNone()) continue :expr_loop;
+                const loc_id = ast.LocId.fromRaw(row.binding_loc.unwrap().toRaw());
+                try highlightLoc(tokens, text, expr_store.locs, loc_id, file_id, .variable);
             },
             .FunctionLit => {
                 const fn_row = expr_store.get(.FunctionLit, expr_id);
+                if (!fn_row.result_ty.isNone()) {
+                    try highlightTypeExpr(tokens, text, ast_unit, file_id, fn_row.result_ty.unwrap());
+                }
                 const params = expr_store.param_pool.slice(fn_row.params);
                 for (params) |param_id| {
                     const param = expr_store.Param.get(param_id);
+                    if (!param.ty.isNone()) {
+                        try highlightTypeExpr(tokens, text, ast_unit, file_id, param.ty.unwrap());
+                    }
                     if (!param.pat.isNone()) {
                         const pat_id = patternFromOpt(param.pat);
                         try highlightPattern(tokens, text, ast_unit, pat_id, .parameter, file_id);
@@ -772,9 +1000,15 @@ fn highlightExpressions(tokens: *TokenAccumulator, text: []const u8, ast_unit: *
             },
             .Closure => {
                 const cl_row = expr_store.get(.Closure, expr_id);
+                if (!cl_row.result_ty.isNone()) {
+                    try highlightTypeExpr(tokens, text, ast_unit, file_id, cl_row.result_ty.unwrap());
+                }
                 const params = expr_store.param_pool.slice(cl_row.params);
                 for (params) |param_id| {
                     const param = expr_store.Param.get(param_id);
+                    if (!param.ty.isNone()) {
+                        try highlightTypeExpr(tokens, text, ast_unit, file_id, param.ty.unwrap());
+                    }
                     if (!param.pat.isNone()) {
                         const pat_id = patternFromOpt(param.pat);
                         try highlightPattern(tokens, text, ast_unit, pat_id, .parameter, file_id);
@@ -787,10 +1021,14 @@ fn highlightExpressions(tokens: *TokenAccumulator, text: []const u8, ast_unit: *
                 for (fields) |field_id| {
                     const field = expr_store.StructField.get(field_id);
                     try highlightLoc(tokens, text, expr_store.locs, field.loc, file_id, .property);
+                    try highlightTypeExpr(tokens, text, ast_unit, file_id, field.ty);
                 }
             },
             .EnumType => {
                 const enum_row = expr_store.get(.EnumType, expr_id);
+                if (!enum_row.discriminant.isNone()) {
+                    try highlightTypeExpr(tokens, text, ast_unit, file_id, enum_row.discriminant.unwrap());
+                }
                 const fields = expr_store.efield_pool.slice(enum_row.fields);
                 for (fields) |field_id| {
                     const field = expr_store.EnumField.get(field_id);
@@ -803,6 +1041,19 @@ fn highlightExpressions(tokens: *TokenAccumulator, text: []const u8, ast_unit: *
                 for (fields) |field_id| {
                     const field = expr_store.VariantField.get(field_id);
                     try highlightLoc(tokens, text, expr_store.locs, field.loc, file_id, .enum_member);
+                    if (!field.payload_elems.isNone()) {
+                        const elems = expr_store.expr_pool.slice(field.payload_elems.asRange());
+                        for (elems) |elem_id| {
+                            try highlightTypeExpr(tokens, text, ast_unit, file_id, elem_id);
+                        }
+                    }
+                    if (!field.payload_fields.isNone()) {
+                        const sfields = expr_store.sfield_pool.slice(field.payload_fields.asRange());
+                        for (sfields) |sfield_id| {
+                            const sfield = expr_store.StructField.get(sfield_id);
+                            try highlightTypeExpr(tokens, text, ast_unit, file_id, sfield.ty);
+                        }
+                    }
                 }
             },
             .ErrorType => {
@@ -811,6 +1062,19 @@ fn highlightExpressions(tokens: *TokenAccumulator, text: []const u8, ast_unit: *
                 for (fields) |field_id| {
                     const field = expr_store.VariantField.get(field_id);
                     try highlightLoc(tokens, text, expr_store.locs, field.loc, file_id, .enum_member);
+                    if (!field.payload_elems.isNone()) {
+                        const elems = expr_store.expr_pool.slice(field.payload_elems.asRange());
+                        for (elems) |elem_id| {
+                            try highlightTypeExpr(tokens, text, ast_unit, file_id, elem_id);
+                        }
+                    }
+                    if (!field.payload_fields.isNone()) {
+                        const sfields = expr_store.sfield_pool.slice(field.payload_fields.asRange());
+                        for (sfields) |sfield_id| {
+                            const sfield = expr_store.StructField.get(sfield_id);
+                            try highlightTypeExpr(tokens, text, ast_unit, file_id, sfield.ty);
+                        }
+                    }
                 }
             },
             .UnionType => {
@@ -819,6 +1083,7 @@ fn highlightExpressions(tokens: *TokenAccumulator, text: []const u8, ast_unit: *
                 for (fields) |field_id| {
                     const field = expr_store.StructField.get(field_id);
                     try highlightLoc(tokens, text, expr_store.locs, field.loc, file_id, .property);
+                    try highlightTypeExpr(tokens, text, ast_unit, file_id, field.ty);
                 }
             },
             .StructLit => {
@@ -862,6 +1127,8 @@ fn classifyLexTokenTag(tag: lib.lexer.Token.Tag) ?SemanticTokenKind {
         .string_literal, .raw_string_literal, .char_literal, .raw_asm_block => .string,
         .integer_literal, .float_literal, .imaginary_literal => .number,
         .doc_comment, .container_doc_comment => .comment,
+        .plus, .minus, .star, .slash, .percent, .caret, .bang, .b_and, .b_or, .ltlt, .gtgt, .plus_equal, .minus_equal, .rarrow, .star_equal, .slash_equal, .percent_equal, .caret_equal, .and_equal, .or_equal, .shl_equal, .shr_equal, .shl_pipe, .shl_pipe_equal, .plus_pipe, .plus_pipe_equal, .minus_pipe, .minus_pipe_equal, .star_pipe, .star_pipe_equal, .plus_percent, .plus_percent_equal, .minus_percent, .minus_percent_equal, .star_percent, .star_percent_equal, .equal, .equal_equal, .not_equal, .greater_than, .less_than, .greater_equal, .less_equal => .operator,
+        .dot, .dotdot, .dotstar, .dotdotdot, .dotdoteq, .fatarrow, .question => .operator,
         else => if (isKeywordTag(tag)) .keyword else null,
     };
 }
@@ -876,6 +1143,18 @@ fn classifyIdentType(type_store: *types.TypeStore, ty_opt: ?types.TypeId) Semant
         };
     }
     return .variable;
+}
+
+fn classifyMemberAccessType(type_store: *types.TypeStore, ty_opt: ?types.TypeId) SemanticTokenKind {
+    if (ty_opt) |ty| {
+        return switch (type_store.getKind(ty)) {
+            .Function => .function,
+            .TypeType => .type,
+            .Ast => .namespace,
+            else => .property,
+        };
+    }
+    return .property;
 }
 
 fn highlightPattern(
@@ -1089,6 +1368,29 @@ fn severityToLsp(sev: Severity) ?u32 {
     };
 }
 
+fn resolvePointer(type_store: *types.TypeStore, type_id: types.TypeId) types.TypeId {
+    var current_id = type_id;
+    while (type_store.getKind(current_id) == .Ptr) {
+        const ptr_row = type_store.get(.Ptr, current_id);
+        current_id = ptr_row.elem;
+    }
+    return current_id;
+}
+
+fn printHoverFields(writer: *std.io.Writer, type_store: *types.TypeStore, fields_range: types.RangeField) !void {
+    const fields = type_store.field_pool.slice(fields_range);
+    if (fields.len > 0) {
+        try writer.print("\n\n---\n", .{});
+        for (fields) |field_id| {
+            const field_row = type_store.Field.get(field_id);
+            const field_name = type_store.strs.get(field_row.name);
+            try writer.print("{s}: ", .{field_name});
+            try type_store.fmt(field_row.ty, writer);
+            try writer.print("\n", .{});
+        }
+    }
+}
+
 fn computeHover(gpa: std.mem.Allocator, uri: []const u8, text: []const u8, offset_in: usize) !?HoverInfo {
     var context = lib.compile.Context.init(gpa);
     defer context.deinit();
@@ -1112,13 +1414,98 @@ fn computeHover(gpa: std.mem.Allocator, uri: []const u8, text: []const u8, offse
     const ast_unit = findAstForFile(&context.compilation_unit, file_id) orelse return null;
     const expr_id = findExprAt(ast_unit, offset) orelse return null;
     const loc = exprLoc(ast_unit, expr_id);
-    const type_id = getExprType(ast_unit, expr_id) orelse return null;
 
     var msg_builder = std.Io.Writer.Allocating.init(gpa);
     defer msg_builder.deinit();
-    try msg_builder.writer.print("```sr\n", .{});
-    try context.type_store.fmt(type_id, &msg_builder.writer);
-    try msg_builder.writer.print("\n```", .{});
+    const writer = &msg_builder.writer;
+
+    // Try to get method binding
+    if (ast_unit.type_info.getMethodBinding(expr_id)) |binding| {
+        const decl_ast = binding.decl_ast;
+        const decl_row = decl_ast.exprs.Decl.get(binding.decl_id);
+        const func_lit_expr_id = decl_row.value;
+        const kind = decl_ast.exprs.index.kinds.items[func_lit_expr_id.toRaw()];
+
+        if (kind == .FunctionLit) {
+            const func_lit_row = decl_ast.exprs.get(.FunctionLit, func_lit_expr_id);
+            var printer = ast.CodePrinter.init(writer, &decl_ast.exprs, &decl_ast.stmts, &decl_ast.pats);
+
+            try writer.print("```sr\n", .{});
+
+            if (!decl_row.pattern.isNone()) {
+                try printer.printPattern(patternFromOpt(decl_row.pattern));
+                try writer.print(": ", .{});
+            }
+
+            if (func_lit_row.flags.is_proc) {
+                try writer.print("proc (", .{});
+            } else {
+                try writer.print("fn (", .{});
+            }
+
+            const params = decl_ast.exprs.param_pool.slice(func_lit_row.params);
+            for (params, 0..) |param_id, i| {
+                if (i > 0) try writer.print(", ", .{});
+                const param = decl_ast.exprs.Param.get(param_id);
+                if (!param.pat.isNone()) {
+                    try printer.printPattern(patternFromOpt(param.pat));
+                }
+                if (!param.ty.isNone()) {
+                    try writer.print(": ", .{});
+                    try printer.printExpr(param.ty.unwrap());
+                }
+            }
+
+            try writer.print(")", .{});
+
+            if (!func_lit_row.result_ty.isNone()) {
+                try writer.print(" ", .{});
+                try printer.printExpr(func_lit_row.result_ty.unwrap());
+            }
+
+            try writer.print("\n```", .{});
+            const message = try msg_builder.toOwnedSlice();
+
+            return HoverInfo{
+                .message = message,
+                .range = locToRange(text, loc),
+            };
+        }
+    }
+
+    const type_id = getExprType(ast_unit, expr_id) orelse return null;
+
+    try writer.print("```sr\n", .{});
+    try context.type_store.fmt(type_id, writer);
+
+    const resolved_type_id = resolvePointer(context.type_store, type_id);
+    const type_kind = context.type_store.getKind(resolved_type_id);
+
+    switch (type_kind) {
+        .Struct => {
+            const struct_row = context.type_store.get(.Struct, resolved_type_id);
+            try printHoverFields(writer, context.type_store, struct_row.fields);
+        },
+        .Union => {
+            const union_row = context.type_store.get(.Union, resolved_type_id);
+            try printHoverFields(writer, context.type_store, union_row.fields);
+        },
+        .Enum => {
+            const enum_row = context.type_store.get(.Enum, resolved_type_id);
+            const members = context.type_store.enum_member_pool.slice(enum_row.members);
+            if (members.len > 0) {
+                try writer.print("\n\n---\n", .{});
+                for (members) |member_id| {
+                    const member_row = context.type_store.EnumMember.get(member_id);
+                    const member_name = context.type_store.strs.get(member_row.name);
+                    try writer.print("{s}\n", .{member_name});
+                }
+            }
+        },
+        else => {},
+    }
+
+    try writer.print("\n```", .{});
     const message = try msg_builder.toOwnedSlice();
 
     return HoverInfo{
