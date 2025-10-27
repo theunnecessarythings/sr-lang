@@ -1625,8 +1625,8 @@ fn lowerCall(
         }
     }
 
-    var vals = try self.gpa.alloc(tir.ValueId, arg_ids.len);
-    defer self.gpa.free(vals);
+    var vals_list: List(tir.ValueId) = .empty;
+    defer vals_list.deinit(self.gpa);
     var i: usize = 0;
     while (i < arg_ids.len) : (i += 1) {
         const want: ?types.TypeId = if (i < fixed) param_tys[i] else null;
@@ -1638,13 +1638,61 @@ fn lowerCall(
             }
             break :blk .rvalue;
         };
-        vals[i] = try self.lowerExpr(ctx, a, env, f, blk, arg_ids[i], want, lower_mode);
+        const v = try self.lowerExpr(ctx, a, env, f, blk, arg_ids[i], want, lower_mode);
+        try vals_list.append(self.gpa, v);
+    }
+
+    // Synthesize defaulted trailing arguments if callee declaration is known and not variadic.
+    if (!is_variadic and param_tys.len > vals_list.items.len) {
+        var decl_ctx_final: ?FunctionDeclContext = null;
+        if (method_decl_id) |mid| {
+            decl_ctx_final = .{ .ast = a, .decl_id = mid };
+        } else if (callee.fty) |_| {
+            decl_ctx_final = self.findFunctionDeclForCall(a, row, callee.name);
+        }
+        if (decl_ctx_final) |dctx| {
+            const decl_ast = dctx.ast;
+            const decl = decl_ast.exprs.Decl.get(dctx.decl_id);
+            if (decl_ast.exprs.index.kinds.items[decl.value.toRaw()] == .FunctionLit) {
+                const fnr = decl_ast.exprs.get(.FunctionLit, decl.value);
+                const params2 = decl_ast.exprs.param_pool.slice(fnr.params);
+                // Temporary scope where earlier params are bound by name to their already-lowered values
+                try env.pushScope(self.gpa);
+                var j: usize = 0;
+                while (j < vals_list.items.len and j < params2.len and j < param_tys.len) : (j += 1) {
+                    const p = decl_ast.exprs.Param.get(params2[j]);
+                    if (!p.pat.isNone()) {
+                        if (bindingNameOfPattern(decl_ast, p.pat.unwrap())) |pname| {
+                            try env.bind(self.gpa, decl_ast, pname, .{ .value = vals_list.items[j], .ty = param_tys[j], .is_slot = false });
+                        }
+                    }
+                }
+                while (vals_list.items.len < param_tys.len) {
+                    const idx: usize = vals_list.items.len;
+                    if (idx >= params2.len) break; // safety
+                    const p = decl_ast.exprs.Param.get(params2[idx]);
+                    if (p.value.isNone()) break; // no default available
+                    const def_expr = p.value.unwrap();
+                    const want_ty = if (idx < param_tys.len) param_tys[idx] else null;
+                    const def_v = try self.lowerExpr(ctx, decl_ast, env, f, blk, def_expr, want_ty, .rvalue);
+                    try vals_list.append(self.gpa, def_v);
+                    // Bind this param name for subsequent defaults
+                    if (!p.pat.isNone()) {
+                        if (bindingNameOfPattern(decl_ast, p.pat.unwrap())) |pname| {
+                            const bind_ty = if (want_ty) |wt| wt else self.getExprType(ctx, decl_ast, def_expr);
+                            try env.bind(self.gpa, decl_ast, pname, .{ .value = def_v, .ty = bind_ty, .is_slot = false });
+                        }
+                    }
+                }
+                _ = env.popScope();
+            }
+        }
     }
 
     // Final safety: if we know param types, coerce the fixed ones
     if (param_tys.len > 0) {
         i = 0;
-        while (i < vals.len and i < fixed) : (i += 1) {
+        while (i < vals_list.items.len and i < fixed) : (i += 1) {
             const want = param_tys[i];
             const got = blk: {
                 if (method_binding) |mb| {
@@ -1652,19 +1700,20 @@ fn lowerCall(
                         break :blk mb.self_param_type orelse want;
                     }
                 }
-                break :blk self.getExprType(ctx, a, arg_ids[i]);
+                if (i < arg_ids.len) break :blk self.getExprType(ctx, a, arg_ids[i]);
+                break :blk want; // defaulted args already lowered to wanted type
             };
             if (want.toRaw() != got.toRaw()) {
                 const arg_loc = optLoc(a, arg_ids[i]);
-                vals[i] = self.emitCoerce(blk, vals[i], got, want, arg_loc);
+                vals_list.items[i] = self.emitCoerce(blk, vals_list.items[i], got, want, arg_loc);
             }
         }
     }
 
-    if (is_variadic and vals.len > fixed) {
+    if (is_variadic and vals_list.items.len > fixed) {
         var j2: usize = fixed;
-        while (j2 < vals.len) : (j2 += 1) {
-            const got = self.getExprType(ctx, a, arg_ids[j2]);
+        while (j2 < vals_list.items.len) : (j2 += 1) {
+            const got = if (j2 < arg_ids.len) self.getExprType(ctx, a, arg_ids[j2]) else self.getExprType(ctx, a, id);
             // Apply default argument promotions for C varargs interop.
             const want_promoted: ?types.TypeId = switch (self.context.type_store.getKind(got)) {
                 .Bool, .I8, .U8, .I16, .U16 => self.context.type_store.tI32(),
@@ -1672,8 +1721,8 @@ fn lowerCall(
                 else => null,
             };
             if (want_promoted) |want_ty| {
-                const arg_loc = optLoc(a, arg_ids[j2]);
-                vals[j2] = self.emitCoerce(blk, vals[j2], got, want_ty, arg_loc);
+                const arg_loc = if (j2 < arg_ids.len) optLoc(a, arg_ids[j2]) else optLoc(a, id);
+                vals_list.items[j2] = self.emitCoerce(blk, vals_list.items[j2], got, want_ty, arg_loc);
                 continue;
             }
 
@@ -1692,7 +1741,9 @@ fn lowerCall(
                     },
                     else => self.context.type_store.tUsize(),
                 };
-                vals[j2] = try self.lowerExpr(ctx, a, env, f, blk, arg_ids[j2], want_any, .rvalue);
+                if (j2 < arg_ids.len) {
+                    vals_list.items[j2] = try self.lowerExpr(ctx, a, env, f, blk, arg_ids[j2], want_any, .rvalue);
+                }
             }
         }
     }
@@ -1702,7 +1753,7 @@ fn lowerCall(
             switch (builtin_kind) {
                 .dynarray_append => {
                     if (mode == .lvalue_addr) return error.LoweringBug;
-                    return try self.lowerDynArrayAppend(f, blk, loc, mb, vals);
+                    return try self.lowerDynArrayAppend(f, blk, loc, mb, vals_list.items);
                 },
             }
         }
@@ -1725,7 +1776,7 @@ fn lowerCall(
         a.type_info.setExprType(id, ret_ty);
         try self.noteExprType(ctx, id, ret_ty);
     }
-    const call_val = blk.builder.call(blk, ret_ty, callee.name, vals, loc);
+    const call_val = blk.builder.call(blk, ret_ty, callee.name, vals_list.items, loc);
 
     if (mode == .lvalue_addr) {
         const want_ptr_ty_opt: ?types.TypeId = blk: {
@@ -3330,10 +3381,15 @@ pub fn lowerExpr(
         },
         .UndefLit => {
             const loc = optLoc(a, id);
-            const ty0 = self.getExprType(ctx, a, id);
-            const v = blk.builder.tirValue(.ConstUndef, blk, ty0, loc, .{});
-            if (expected_ty) |want| return self.emitCoerce(blk, v, ty0, want, loc);
-            return v;
+            // If a target type is known, materialize a typed zero of that type.
+            // Otherwise, produce an undef of type Any to avoid Undef-typed IR.
+            if (expected_ty) |want| {
+                const v = blk.builder.constNull(blk, want, loc);
+                return v;
+            } else {
+                const any_ty = self.context.type_store.tAny();
+                return blk.builder.tirValue(.ConstUndef, blk, any_ty, loc, .{});
+            }
         },
         .Unary => self.lowerUnary(ctx, a, env, f, blk, id, expected_ty, mode),
         .Range => self.lowerRange(ctx, a, env, f, blk, id, expected_ty),

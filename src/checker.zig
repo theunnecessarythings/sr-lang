@@ -2218,6 +2218,36 @@ fn checkFunctionLit(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, id
         }
         // store in symbol table
         try self.bindParamPattern(ctx, ast_unit, params[i], p);
+
+        // If parameter has a default value, type-check it now and ensure it
+        // is assignable to the parameter type (when known).
+        if (!p.value.isNone()) {
+            const def_expr = p.value.unwrap();
+            var def_ty = (try self.checkExpr(ctx, ast_unit, def_expr)) orelse return null;
+            var def_kind = self.typeKind(def_ty);
+            const pt = pbuf[i];
+            if (!pt.eq(self.context.type_store.tAny())) {
+                if (self.assignable(def_ty, pt) != .success) {
+                    if (check_types.isNumericKind(self, self.typeKind(pt))) {
+                        if (try self.updateCoercedLiteral(ast_unit, def_expr, pt, &def_ty, &def_kind) and
+                            self.assignable(def_ty, pt) == .success)
+                        {
+                            // coerced OK
+                        } else {
+                            const expected_kind = self.typeKind(pt);
+                            const actual_kind = def_kind;
+                            try self.context.diags.addError(exprLocFromId(ast_unit, def_expr), .argument_type_mismatch, .{ expected_kind, actual_kind });
+                            return null;
+                        }
+                    } else {
+                        const expected_kind = self.typeKind(pt);
+                        const actual_kind = def_kind;
+                        try self.context.diags.addError(exprLocFromId(ast_unit, def_expr), .argument_type_mismatch, .{ expected_kind, actual_kind });
+                        return null;
+                    }
+                }
+            }
+        }
     }
 
     const res_opt: ?types.TypeId = if (!fnr.result_ty.isNone())
@@ -3296,7 +3326,26 @@ fn checkCall(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, id: ast.E
     // Arity & argument type checks
     const params = self.context.type_store.type_pool.slice(fnrow.params);
     if (!fnrow.is_variadic) {
-        if (args.len != params.len) {
+        var min_required = params.len;
+        // If callee is a direct identifier to a function declaration with defaulted trailing params,
+        // allow omitting those arguments.
+        if (callee_kind == .Ident) {
+            const idr = getExpr(ast_unit, .Ident, call_expr.callee);
+            if (self.lookup(ctx, idr.name)) |sid| {
+                const srow = ctx.symtab.syms.get(sid);
+                if (!srow.origin_decl.isNone()) {
+                    const did = srow.origin_decl.unwrap();
+                    if (ast_unit.exprs.index.kinds.items[ast_unit.exprs.Decl.get(did).value.toRaw()] == .FunctionLit) {
+                        if (self.countTrailingDefaultParams(ast_unit, did)) |defaults| {
+                            if (defaults <= params.len) {
+                                min_required = params.len - defaults;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        if (!(args.len >= min_required and args.len <= params.len)) {
             try self.context.diags.addError(call_loc, .argument_count_mismatch, .{});
             return null;
         }
@@ -3336,6 +3385,26 @@ fn checkCall(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, id: ast.E
     return fnrow.result;
 }
 
+fn countTrailingDefaultParams(self: *Checker, ast_unit: *ast.Ast, did: ast.DeclId) ?usize {
+    _ = self;
+    const decl = ast_unit.exprs.Decl.get(did);
+    if (ast_unit.exprs.index.kinds.items[decl.value.toRaw()] != .FunctionLit) return null;
+    const fnr = ast_unit.exprs.get(.FunctionLit, decl.value);
+    const params = ast_unit.exprs.param_pool.slice(fnr.params);
+    if (params.len == 0) return 0;
+    var count: usize = 0;
+    var i: usize = params.len;
+    while (i > 0) {
+        i -= 1;
+        const p = ast_unit.exprs.Param.get(params[i]);
+        // Only consider runtime params; comptime params are always required
+        if (p.is_comptime) break;
+        if (p.value.isNone()) break;
+        count += 1;
+    }
+    return count;
+}
+
 fn checkMethodCall(
     self: *Checker,
     ctx: *CheckerContext,
@@ -3362,7 +3431,22 @@ fn checkMethodCall(
     const total_args = args.len + implicit_count;
 
     if (!fn_row.is_variadic) {
-        if (params.len != total_args) {
+        var min_required = params.len;
+        // For method calls, allow defaulted trailing params defined on the method decl.
+        if (ast_unit == binding.decl_ast) {
+            if (self.countTrailingDefaultParams(binding.decl_ast, binding.decl_id)) |defaults| {
+                if (defaults <= params.len) {
+                    min_required = params.len - defaults;
+                }
+            }
+        } else {
+            if (self.countTrailingDefaultParams(binding.decl_ast, binding.decl_id)) |defaults| {
+                if (defaults <= params.len) {
+                    min_required = params.len - defaults;
+                }
+            }
+        }
+        if (!(total_args >= min_required and total_args <= params.len)) {
             try self.context.diags.addError(exprLoc(ast_unit, call_expr.*), .argument_count_mismatch, .{});
             return null;
         }
