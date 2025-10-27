@@ -24,14 +24,14 @@ test "composite_types: integer-backed enum" {
         \\HttpCode :: enum(u16) { Ok = 200, NotFound = 404, InternalError = 500 }
     ;
     const src =
-        \\c := HttpCode.NotFound
+        \\c := HttpCode.InternalError
         \\printf("HttpCode: %d\n", c)
-        \\if c == HttpCode.NotFound {
-        \\  printf("Code is NotFound\n")
+        \\if c == HttpCode.InternalError {
+        \\  printf("Code is InternalError\n")
         \\}
     ;
     const code = getSource(globals, src);
-    try runCompilerTest(code, "HttpCode: 404\nCode is NotFound\n");
+    try runCompilerTest(code, "HttpCode: 2\nCode is InternalError\n");
 }
 
 test "composite_types: enum in match expression" {

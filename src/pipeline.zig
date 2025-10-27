@@ -127,6 +127,7 @@ pub const Pipeline = struct {
         });
 
         var i: usize = 0;
+        var parse_failed = false;
         while (i < self.context.parse_worklist.items.len) {
             const work = self.context.parse_worklist.items[i];
             work.thread.join();
@@ -136,6 +137,13 @@ pub const Pipeline = struct {
             // If parsing this unit produced errors, skip consuming its CST.
             // Diagnostics are already merged; the pipeline will stop after the loop.
             if (work.diags.anyErrors()) {
+                parse_failed = true;
+                self.context.requestCancel();
+                i += 1;
+                continue;
+            }
+            if (self.context.isCancelled()) {
+                // Cancellation requested due to another thread's failure; skip consuming this unit.
                 i += 1;
                 continue;
             }
@@ -177,7 +185,7 @@ pub const Pipeline = struct {
         }
         self.context.parse_worklist.deinit(self.allocator);
 
-        if (self.context.diags.anyErrors()) {
+        if (parse_failed or self.context.diags.anyErrors()) {
             return error.ParseFailed;
         }
 
@@ -195,6 +203,7 @@ pub const Pipeline = struct {
         while (pkg_iter.next()) |pkg| {
             var source_iter = pkg.value_ptr.sources.iterator();
             while (source_iter.next()) |unit| {
+                if (self.context.isCancelled()) break;
                 const lower_pass = try self.allocator.create(lower_to_ast.Lower);
                 lower_pass.* = try lower_to_ast.Lower.init(
                     self.allocator,
@@ -205,14 +214,18 @@ pub const Pipeline = struct {
                 const thread = try std.Thread.spawn(.{}, runFn, .{lower_pass});
                 try threads.append(self.allocator, .{ thread, lower_pass, pkg.key_ptr.*, unit.key_ptr.* });
             }
+            if (self.context.isCancelled()) break;
         }
 
         for (threads.items) |thread| {
             thread.@"0".join();
-            self.context.compilation_unit.mutex.lock();
-            const pkg = self.context.compilation_unit.packages.getPtr(thread.@"2").?;
-            pkg.sources.getPtr(thread.@"3").?.ast = thread.@"1".ast_unit;
-            self.context.compilation_unit.mutex.unlock();
+            if (!self.context.isCancelled()) {
+                self.context.compilation_unit.mutex.lock();
+                const pkg = self.context.compilation_unit.packages.getPtr(thread.@"2").?;
+                pkg.sources.getPtr(thread.@"3").?.ast = thread.@"1".ast_unit;
+                self.context.compilation_unit.mutex.unlock();
+            }
+            // Always destroy per-thread state.
             self.allocator.destroy(thread.@"1");
         }
         var dep_levels = try compile.computeDependencyLevels(
@@ -229,7 +242,7 @@ pub const Pipeline = struct {
                 std.debug.print("Dep {}: {s}\n", .{ id, fname });
             }
         }
-        if (self.context.diags.anyErrors()) {
+        if (self.context.isCancelled() or self.context.diags.anyErrors()) {
             return error.LoweringFailed;
         }
 

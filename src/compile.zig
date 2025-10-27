@@ -119,6 +119,9 @@ pub const Context = struct {
 
     parse_worklist: std.ArrayList(ParseRequest) = .{},
 
+    // Cooperative cancellation flag used by threaded stages.
+    cancel_requested: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
+
     const ParseRequest = struct {
         path: []const u8,
         file_id: u32,
@@ -161,6 +164,14 @@ pub const Context = struct {
         self.gpa.destroy(self.source_manager);
         self.gpa.destroy(self.loc_store);
         self.gpa.destroy(self.type_store);
+    }
+
+    pub inline fn requestCancel(self: *Context) void {
+        self.cancel_requested.store(true, .seq_cst);
+    }
+
+    pub inline fn isCancelled(self: *const Context) bool {
+        return self.cancel_requested.load(.seq_cst);
     }
 };
 

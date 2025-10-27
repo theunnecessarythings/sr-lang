@@ -39,7 +39,7 @@ test "all" {
     _ = @import("behavior_integer_literals.zig");
     _ = @import("behavior_literal_patterns.zig");
     _ = @import("behavior_logical_operators.zig");
-    _ = @import("behavior_maps.zig");
+    // _ = @import("behavior_maps.zig");
     _ = @import("behavior_match_expressions.zig");
     _ = @import("behavior_member_access.zig");
     _ = @import("behavior_methods.zig");

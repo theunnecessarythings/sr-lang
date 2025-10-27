@@ -238,8 +238,14 @@ pub fn checkPattern(
                     const sl = ast_unit.exprs.get(.Literal, sid);
                     const el = ast_unit.exprs.get(.Literal, eid);
                     if (sl.kind == .int and el.kind == .int) {
-                        const sa = switch (sl.data) { .int => |info| info, else => null };
-                        const sb = switch (el.data) { .int => |info| info, else => null };
+                        const sa = switch (sl.data) {
+                            .int => |info| info,
+                            else => null,
+                        };
+                        const sb = switch (el.data) {
+                            .int => |info| info,
+                            else => null,
+                        };
                         if (sa != null and sb != null and sa.?.valid and sb.?.valid) {
                             const max_i64: u128 = @intCast(std.math.maxInt(i64));
                             if (sa.?.value <= max_i64 and sb.?.value <= max_i64) {
@@ -423,6 +429,11 @@ pub fn checkPattern(
             const pattern_loc = ast_unit.exprs.locs.get(lp.loc);
             const lit_expr_id = lp.expr;
             const lit_ty = (try self.checkExpr(ctx, ast_unit, lit_expr_id)) orelse return false;
+            const lit_kind = ast_unit.exprs.get(.Literal, lit_expr_id).kind;
+            if (lit_kind == .string) {
+                if (emit) try self.context.diags.addError(pattern_loc, .string_equality_in_match_not_supported, .{});
+                return false;
+            }
 
             if (self.assignable(value_ty, lit_ty) != .success) {
                 if (emit) try self.context.diags.addError(pattern_loc, .pattern_type_mismatch, .{});
