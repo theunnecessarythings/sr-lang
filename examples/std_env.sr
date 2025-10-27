@@ -4,7 +4,7 @@ io  :: import "std/io"
 env :: import "std/env"
 
 main :: proc() {
-    if (env.get("HOME")?) |p| {
+    if (env.get("HOME")?) {
         io.print0("HOME=\n")
         io.printf("%s\n".^*void, p.^*void)
     } else {

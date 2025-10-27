@@ -5,7 +5,7 @@ package main
 
 // The `import` expression returns a module object.
 // We assign it to a constant named `math`.
-math :: import "examples/imports/math"
+math :: import "math"
 
 // The main entry point of our program.
 main := proc() {

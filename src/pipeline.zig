@@ -133,16 +133,13 @@ pub const Pipeline = struct {
             if (i > 0) {
                 try self.context.diags.messages.appendSlice(try work.diags.messages.toOwnedSlice());
             }
+            // If parsing this unit produced errors, skip consuming its CST.
+            // Diagnostics are already merged; the pipeline will stop after the loop.
+            if (work.diags.anyErrors()) {
+                i += 1;
+                continue;
+            }
             self.context.compilation_unit.mutex.lock();
-            // if (work.parser.cst_u.program.package_name.isNone()) {
-            //     const loc = work.parser.cst_u.program.package_loc;
-            //     try self.context.diags.addError(
-            //         if (!loc.isNone()) self.context.loc_store.get(loc.unwrap()) else Loc.init(work.file_id, 0, 0),
-            //         .invalid_package_name,
-            //         .{},
-            //     );
-            //     return error.ParseFailed;
-            // }
             const package_id = work.parser.cst_u.program.package_name.unwrap();
             const package_name = self.context.interner.get(package_id);
             const package = self.context.compilation_unit.packages.getPtr(package_name);
