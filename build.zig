@@ -21,7 +21,11 @@ fn linkMLIR(LLVM_HOME: []const u8, exe: *std.Build.Step.Compile) !void {
     exe.linkSystemLibrary("m");
     exe.linkSystemLibrary("z");
     exe.linkSystemLibrary("zstd");
-    exe.linkLibCpp();
+    exe.addIncludePath(.{ .cwd_relative = "/usr/include/c++/v1" });
+    exe.addObjectFile(.{ .cwd_relative = "/usr/lib/libc++.so" });
+    exe.addObjectFile(.{ .cwd_relative = "/usr/lib/libc++abi.so" });
+    exe.linkSystemLibrary("libunwind");
+    exe.linkSystemLibrary("gcc_s");
     exe.linkLibC();
 }
 

@@ -7,8 +7,8 @@ Timespec :: struct { tv_sec: i64, tv_nsec: i64 }
 clock_gettime_c :: extern proc(i32, *Timespec) i32
 nanosleep_c     :: extern proc(*Timespec, *Timespec) i32
 
-CLOCK_REALTIME  :: i32 = 0
-CLOCK_MONOTONIC :: i32 = 1
+CLOCK_REALTIME  : i32 = 0
+CLOCK_MONOTONIC : i32 = 1
 
 now_realtime :: proc() Timespec {
     ts := Timespec{ tv_sec: 0, tv_nsec: 0 }
