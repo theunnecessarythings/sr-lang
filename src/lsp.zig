@@ -42,6 +42,36 @@ const HoverInfo = struct {
     range: LspRange,
 };
 
+const semantic_token_types = [_][]const u8{
+    "keyword",
+    "string",
+    "number",
+    "comment",
+    "function",
+    "type",
+    "namespace",
+    "variable",
+    "property",
+    "parameter",
+    "enumMember",
+};
+
+const semantic_token_modifiers = [_][]const u8{};
+
+const SemanticTokenKind = enum(u8) {
+    keyword,
+    string,
+    number,
+    comment,
+    function,
+    type,
+    namespace,
+    variable,
+    property,
+    parameter,
+    enum_member,
+};
+
 const DocumentStore = struct {
     gpa: std.mem.Allocator,
     map: std.StringHashMapUnmanaged(Document) = .{},
@@ -152,6 +182,8 @@ pub fn run(gpa: std.mem.Allocator) !void {
             if (req.params) |p| try onHover(Out, gpa, &docs, req.id orelse 0, p);
         } else if (std.mem.eql(u8, req.method, "textDocument/completion")) {
             try respondCompletion(Out, gpa, req.id orelse 0);
+        } else if (std.mem.eql(u8, req.method, "textDocument/semanticTokens/full")) {
+            if (req.params) |p| try onSemanticTokensFull(Out, gpa, &docs, req.id orelse 0, p);
         } else {
             if (req.id) |rid| try writeJson(Out, gpa, .{ .jsonrpc = "2.0", .id = rid, .result = null });
         }
@@ -243,6 +275,13 @@ fn respondInitialize(out: *std.Io.Writer, gpa: std.mem.Allocator, id: u64) !void
         textDocumentSync: u32 = 1, // Full sync (simple)
         hoverProvider: bool = true,
         completionProvider: struct { triggerCharacters: []const []const u8 } = .{ .triggerCharacters = &.{"."} },
+        semanticTokensProvider: struct {
+            legend: struct {
+                tokenTypes: []const []const u8,
+                tokenModifiers: []const []const u8,
+            },
+            full: bool = true,
+        } = .{ .legend = .{ .tokenTypes = semantic_token_types[0..], .tokenModifiers = semantic_token_modifiers[0..] } },
         positionEncoding: []const u8 = "utf-16",
     };
     const Resp = struct {
@@ -340,6 +379,30 @@ fn respondCompletion(out: *std.Io.Writer, gpa: std.mem.Allocator, id: u64) !void
     const Resp = struct { jsonrpc: []const u8 = "2.0", id: u64, result: []const Item };
     const items = [_]Item{ .{ .label = "hello" }, .{ .label = "world" } };
     try writeJson(out, gpa, Resp{ .id = id, .result = &items });
+}
+
+fn onSemanticTokensFull(out: *std.Io.Writer, gpa: std.mem.Allocator, docs: *DocumentStore, id: u64, params: json.Value) !void {
+    const P = struct {
+        textDocument: struct { uri: []const u8 },
+    };
+    var p = try json.parseFromValue(P, gpa, params, .{ .ignore_unknown_fields = true });
+    defer p.deinit();
+
+    const uri = p.value.textDocument.uri;
+    const Resp = struct {
+        jsonrpc: []const u8 = "2.0",
+        id: u64,
+        result: struct { data: []const u32 },
+    };
+
+    if (docs.get(uri)) |text| {
+        const data = try computeSemanticTokens(gpa, uri, text);
+        defer gpa.free(data);
+        try writeJson(out, gpa, Resp{ .id = id, .result = .{ .data = data } });
+    } else {
+        const empty = [_]u32{};
+        try writeJson(out, gpa, Resp{ .id = id, .result = .{ .data = &empty } });
+    }
 }
 
 fn publishDiagnostics(out: *std.Io.Writer, gpa: std.mem.Allocator, docs: *DocumentStore, uri: []const u8) !void {
@@ -446,6 +509,483 @@ fn publishDiagnostics(out: *std.Io.Writer, gpa: std.mem.Allocator, docs: *Docume
         params: struct { uri: []const u8, diagnostics: []const LspDiagnostic },
     };
     try writeJson(out, gpa, Msg{ .params = .{ .uri = uri, .diagnostics = diags.items } });
+}
+
+const TokenKey = struct {
+    start: usize,
+    end: usize,
+};
+
+const TokenEntry = struct {
+    start: usize,
+    end: usize,
+    kind: SemanticTokenKind,
+};
+
+const TokenAccumulator = struct {
+    map: std.AutoArrayHashMap(TokenKey, SemanticTokenKind),
+    gpa: std.mem.Allocator,
+
+    fn init(gpa: std.mem.Allocator) TokenAccumulator {
+        return .{ .map = std.AutoArrayHashMap(TokenKey, SemanticTokenKind).init(gpa), .gpa = gpa };
+    }
+
+    fn deinit(self: *TokenAccumulator) void {
+        self.map.deinit();
+    }
+
+    fn add(self: *TokenAccumulator, start: usize, end: usize, kind: SemanticTokenKind) !void {
+        if (start >= end) return;
+        const key = TokenKey{ .start = start, .end = end };
+        const gop = try self.map.getOrPut(key);
+        if (!gop.found_existing) {
+            gop.value_ptr.* = kind;
+        } else {
+            const existing = gop.value_ptr.*;
+            if (kindPriority(kind) > kindPriority(existing)) {
+                gop.value_ptr.* = kind;
+            }
+        }
+    }
+
+    fn toSortedEntries(self: *TokenAccumulator) ![]TokenEntry {
+        const count = self.map.count();
+        var out = try self.gpa.alloc(TokenEntry, count);
+        errdefer self.gpa.free(out);
+
+        var it = self.map.iterator();
+        var idx: usize = 0;
+        while (it.next()) |entry| {
+            out[idx] = .{
+                .start = entry.key_ptr.start,
+                .end = entry.key_ptr.end,
+                .kind = entry.value_ptr.*,
+            };
+            idx += 1;
+        }
+
+        std.sort.heap(TokenEntry, out, {}, struct {
+            fn lessThan(_: void, a: TokenEntry, b: TokenEntry) bool {
+                if (a.start == b.start) return a.end < b.end;
+                return a.start < b.start;
+            }
+        }.lessThan);
+
+        return out;
+    }
+
+    fn toEncodedSlice(self: *TokenAccumulator, text: []const u8) ![]u32 {
+        const entries = try self.toSortedEntries();
+        defer self.gpa.free(entries);
+
+        var data = std.ArrayList(u32){};
+        errdefer data.deinit(self.gpa);
+
+        var have_prev = false;
+        var last_line: u32 = 0;
+        var last_char: u32 = 0;
+
+        for (entries) |entry| {
+            const pos = offsetToPosition(text, entry.start);
+            const seg_len = entry.end - entry.start;
+
+            const delta_line: u32 = if (have_prev) pos.line - last_line else pos.line;
+            var delta_start: u32 = pos.character;
+            if (have_prev and delta_line == 0) {
+                delta_start = pos.character - last_char;
+            }
+
+            try data.append(self.gpa, delta_line);
+            try data.append(self.gpa, delta_start);
+            try data.append(self.gpa, @intCast(seg_len));
+            try data.append(self.gpa, @as(u32, @intFromEnum(entry.kind)));
+            try data.append(self.gpa, 0);
+
+            have_prev = true;
+            last_line = pos.line;
+            last_char = pos.character;
+        }
+
+        return try data.toOwnedSlice(self.gpa);
+    }
+};
+
+fn kindPriority(kind: SemanticTokenKind) u8 {
+    return switch (kind) {
+        .function, .type, .namespace, .variable, .property, .parameter, .enum_member => 2,
+        else => 1,
+    };
+}
+
+fn addSegmentMultiLine(tokens: *TokenAccumulator, text: []const u8, start: usize, end: usize, kind: SemanticTokenKind) !void {
+    var seg_start = start;
+    var idx = start;
+    while (idx < end) {
+        const c = text[idx];
+        if (c == '\n' or c == '\r') {
+            if (seg_start < idx) {
+                try tokens.add(seg_start, idx, kind);
+            }
+            if (c == '\r' and idx + 1 < end and text[idx + 1] == '\n') {
+                idx += 1;
+            }
+            idx += 1;
+            seg_start = idx;
+        } else {
+            idx += 1;
+        }
+    }
+
+    if (seg_start < end) {
+        try tokens.add(seg_start, end, kind);
+    }
+}
+
+fn computeSemanticTokens(gpa: std.mem.Allocator, uri: []const u8, text: []const u8) ![]u32 {
+    if (text.len == 0) {
+        return &[_]u32{};
+    }
+
+    const path = try fileUriToPath(gpa, uri);
+    defer gpa.free(path);
+
+    var tokens = TokenAccumulator.init(gpa);
+    defer tokens.deinit();
+
+    try collectLexicalTokens(&tokens, gpa, text);
+    try collectAstSemanticTokens(&tokens, gpa, text, path);
+
+    return try tokens.toEncodedSlice(text);
+}
+
+fn collectLexicalTokens(tokens: *TokenAccumulator, gpa: std.mem.Allocator, text: []const u8) !void {
+    if (text.len == 0) return;
+
+    const text_z = try gpa.dupeZ(u8, text);
+    defer gpa.free(text_z);
+
+    var tokenizer = lib.lexer.Tokenizer.init(text_z, 0, .normal);
+    while (true) {
+        const tok = tokenizer.next();
+        if (tok.tag == .eof) break;
+
+        const kind = classifyLexTokenTag(tok.tag) orelse continue;
+        const start = clampOffset(text, tok.loc.start);
+        const end = clampOffset(text, tok.loc.end);
+        if (start >= end) continue;
+        try addSegmentMultiLine(tokens, text, start, end, kind);
+    }
+}
+
+fn collectAstSemanticTokens(tokens: *TokenAccumulator, gpa: std.mem.Allocator, text: []const u8, path: []const u8) !void {
+    var context = lib.compile.Context.init(gpa);
+    defer context.deinit();
+
+    const file_id = try context.source_manager.setVirtualSourceByPath(path, text);
+    var pipeline = lib.pipeline.Pipeline.init(gpa, &context);
+
+    _ = pipeline.run(path, &.{}, .check) catch |err| switch (err) {
+        error.ParseFailed,
+        error.TypeCheckFailed,
+        error.LoweringFailed,
+        error.TirLoweringFailed,
+        error.TooManyErrors,
+        => {},
+        else => {
+            std.debug.print("[lsp] semantic token pipeline error: {s}\n", .{@errorName(err)});
+            return;
+        },
+    };
+
+    const ast_unit = findAstForFile(&context.compilation_unit, file_id) orelse return;
+    try gatherAstTokens(tokens, text, ast_unit, file_id);
+}
+
+fn gatherAstTokens(tokens: *TokenAccumulator, text: []const u8, ast_unit: *ast.Ast, file_id: u32) !void {
+    try highlightPackage(tokens, text, ast_unit, file_id);
+    try highlightDecls(tokens, text, ast_unit, file_id);
+    try highlightExpressions(tokens, text, ast_unit, file_id);
+}
+
+fn highlightPackage(tokens: *TokenAccumulator, text: []const u8, ast_unit: *ast.Ast, file_id: u32) !void {
+    if (ast_unit.unit.package_loc.isNone()) return;
+    const loc_idx = ast_unit.unit.package_loc.unwrap();
+    const loc_id = ast.LocId.fromRaw(loc_idx.toRaw());
+    try highlightLoc(tokens, text, ast_unit.exprs.locs, loc_id, file_id, .namespace);
+}
+
+fn highlightDecls(tokens: *TokenAccumulator, text: []const u8, ast_unit: *ast.Ast, file_id: u32) !void {
+    const decl_ids = ast_unit.exprs.decl_pool.slice(ast_unit.unit.decls);
+    for (decl_ids) |decl_id| {
+        const row = ast_unit.exprs.Decl.get(decl_id);
+        const decl_kind = classifyDeclKind(ast_unit, row.value);
+
+        if (!row.pattern.isNone()) {
+            const pat_id = patternFromOpt(row.pattern);
+            try highlightPattern(tokens, text, ast_unit, pat_id, decl_kind, file_id);
+        }
+
+        if (!row.method_path.isNone()) {
+            const seg_ids = ast_unit.exprs.method_path_pool.slice(row.method_path.asRange());
+            var i: usize = 0;
+            while (i < seg_ids.len) : (i += 1) {
+                const seg_id = seg_ids[i];
+                const seg = ast_unit.exprs.MethodPathSeg.get(seg_id);
+                const seg_kind = if (i + 1 == seg_ids.len) decl_kind else .type;
+                try highlightLoc(tokens, text, ast_unit.exprs.locs, seg.loc, file_id, seg_kind);
+            }
+        }
+    }
+}
+
+fn highlightExpressions(tokens: *TokenAccumulator, text: []const u8, ast_unit: *ast.Ast, file_id: u32) !void {
+    const expr_store = &ast_unit.exprs;
+    const kinds = expr_store.index.kinds.items;
+    const expr_types = ast_unit.type_info.expr_types.items;
+    const type_store = ast_unit.type_info.store;
+
+    var idx: usize = 0;
+    expr_loop: while (idx < kinds.len) : (idx += 1) {
+        const expr_kind = kinds[idx];
+        const expr_id = ast.ExprId.fromRaw(@intCast(idx));
+        switch (expr_kind) {
+            .Ident => {
+                const row = expr_store.get(.Ident, expr_id);
+                const loc = expr_store.locs.get(row.loc);
+                if (loc.file_id != file_id) continue :expr_loop;
+                const start = clampOffset(text, loc.start);
+                const end = clampOffset(text, loc.end);
+                const ty_opt = if (idx < expr_types.len) expr_types[idx] else null;
+                const kind = classifyIdentType(type_store, ty_opt);
+                try addSegmentMultiLine(tokens, text, start, end, kind);
+            },
+            .FunctionLit => {
+                const fn_row = expr_store.get(.FunctionLit, expr_id);
+                const params = expr_store.param_pool.slice(fn_row.params);
+                for (params) |param_id| {
+                    const param = expr_store.Param.get(param_id);
+                    if (!param.pat.isNone()) {
+                        const pat_id = patternFromOpt(param.pat);
+                        try highlightPattern(tokens, text, ast_unit, pat_id, .parameter, file_id);
+                    }
+                }
+            },
+            .Closure => {
+                const cl_row = expr_store.get(.Closure, expr_id);
+                const params = expr_store.param_pool.slice(cl_row.params);
+                for (params) |param_id| {
+                    const param = expr_store.Param.get(param_id);
+                    if (!param.pat.isNone()) {
+                        const pat_id = patternFromOpt(param.pat);
+                        try highlightPattern(tokens, text, ast_unit, pat_id, .parameter, file_id);
+                    }
+                }
+            },
+            .StructType => {
+                const struct_row = expr_store.get(.StructType, expr_id);
+                const fields = expr_store.sfield_pool.slice(struct_row.fields);
+                for (fields) |field_id| {
+                    const field = expr_store.StructField.get(field_id);
+                    try highlightLoc(tokens, text, expr_store.locs, field.loc, file_id, .property);
+                }
+            },
+            .EnumType => {
+                const enum_row = expr_store.get(.EnumType, expr_id);
+                const fields = expr_store.efield_pool.slice(enum_row.fields);
+                for (fields) |field_id| {
+                    const field = expr_store.EnumField.get(field_id);
+                    try highlightLoc(tokens, text, expr_store.locs, field.loc, file_id, .enum_member);
+                }
+            },
+            .VariantType => {
+                const variant_row = expr_store.get(.VariantType, expr_id);
+                const fields = expr_store.vfield_pool.slice(variant_row.fields);
+                for (fields) |field_id| {
+                    const field = expr_store.VariantField.get(field_id);
+                    try highlightLoc(tokens, text, expr_store.locs, field.loc, file_id, .enum_member);
+                }
+            },
+            .ErrorType => {
+                const err_row = expr_store.get(.ErrorType, expr_id);
+                const fields = expr_store.vfield_pool.slice(err_row.fields);
+                for (fields) |field_id| {
+                    const field = expr_store.VariantField.get(field_id);
+                    try highlightLoc(tokens, text, expr_store.locs, field.loc, file_id, .enum_member);
+                }
+            },
+            .UnionType => {
+                const union_row = expr_store.get(.UnionType, expr_id);
+                const fields = expr_store.sfield_pool.slice(union_row.fields);
+                for (fields) |field_id| {
+                    const field = expr_store.StructField.get(field_id);
+                    try highlightLoc(tokens, text, expr_store.locs, field.loc, file_id, .property);
+                }
+            },
+            .StructLit => {
+                const lit_row = expr_store.get(.StructLit, expr_id);
+                const fields = expr_store.sfv_pool.slice(lit_row.fields);
+                for (fields) |field_id| {
+                    const field = expr_store.StructFieldValue.get(field_id);
+                    if (field.name.isNone()) continue;
+                    try highlightLoc(tokens, text, expr_store.locs, field.loc, file_id, .property);
+                }
+            },
+            else => {},
+        }
+    }
+}
+
+fn classifyDeclKind(ast_unit: *ast.Ast, value_expr: ast.ExprId) SemanticTokenKind {
+    const expr_store = &ast_unit.exprs;
+    const expr_kind = expr_store.index.kinds.items[value_expr.toRaw()];
+    return switch (expr_kind) {
+        .FunctionLit => .function,
+        .StructType,
+        .EnumType,
+        .VariantType,
+        .ErrorType,
+        .UnionType,
+        => .type,
+        else => blk: {
+            const ty_opt = getExprType(ast_unit, value_expr);
+            if (ty_opt) |ty| {
+                const type_kind = ast_unit.type_info.store.getKind(ty);
+                if (type_kind == .TypeType) break :blk .type;
+            }
+            break :blk .variable;
+        },
+    };
+}
+
+fn classifyLexTokenTag(tag: lib.lexer.Token.Tag) ?SemanticTokenKind {
+    return switch (tag) {
+        .string_literal, .raw_string_literal, .char_literal, .raw_asm_block => .string,
+        .integer_literal, .float_literal, .imaginary_literal => .number,
+        .doc_comment, .container_doc_comment => .comment,
+        else => if (isKeywordTag(tag)) .keyword else null,
+    };
+}
+
+fn classifyIdentType(type_store: *types.TypeStore, ty_opt: ?types.TypeId) SemanticTokenKind {
+    if (ty_opt) |ty| {
+        return switch (type_store.getKind(ty)) {
+            .Function => .function,
+            .TypeType => .type,
+            .Ast => .namespace,
+            else => .variable,
+        };
+    }
+    return .variable;
+}
+
+fn highlightPattern(
+    tokens: *TokenAccumulator,
+    text: []const u8,
+    ast_unit: *ast.Ast,
+    pat_id: ast.PatternId,
+    binding_kind: SemanticTokenKind,
+    file_id: u32,
+) !void {
+    const pat_store = &ast_unit.pats;
+    const locs = ast_unit.exprs.locs;
+    const pat_kind = pat_store.index.kinds.items[pat_id.toRaw()];
+    switch (pat_kind) {
+        .Binding => {
+            const row = pat_store.get(.Binding, pat_id);
+            try highlightLoc(tokens, text, locs, row.loc, file_id, binding_kind);
+        },
+        .Tuple => {
+            const row = pat_store.get(.Tuple, pat_id);
+            const elems = pat_store.pat_pool.slice(row.elems);
+            for (elems) |elem| try highlightPattern(tokens, text, ast_unit, elem, binding_kind, file_id);
+        },
+        .Slice => {
+            const row = pat_store.get(.Slice, pat_id);
+            const elems = pat_store.pat_pool.slice(row.elems);
+            for (elems) |elem| try highlightPattern(tokens, text, ast_unit, elem, binding_kind, file_id);
+            if (!row.rest_binding.isNone()) {
+                const rest_id = patternFromOpt(row.rest_binding);
+                try highlightPattern(tokens, text, ast_unit, rest_id, binding_kind, file_id);
+            }
+        },
+        .Struct => {
+            const row = pat_store.get(.Struct, pat_id);
+            try highlightPatternPath(tokens, text, ast_unit, row.path, file_id);
+            const fields = pat_store.field_pool.slice(row.fields);
+            for (fields) |field_id| {
+                const field = pat_store.StructField.get(field_id);
+                try highlightLoc(tokens, text, locs, field.loc, file_id, .property);
+                try highlightPattern(tokens, text, ast_unit, field.pattern, binding_kind, file_id);
+            }
+        },
+        .VariantStruct => {
+            const row = pat_store.get(.VariantStruct, pat_id);
+            try highlightPatternPath(tokens, text, ast_unit, row.path, file_id);
+            const fields = pat_store.field_pool.slice(row.fields);
+            for (fields) |field_id| {
+                const field = pat_store.StructField.get(field_id);
+                try highlightLoc(tokens, text, locs, field.loc, file_id, .property);
+                try highlightPattern(tokens, text, ast_unit, field.pattern, binding_kind, file_id);
+            }
+        },
+        .VariantTuple => {
+            const row = pat_store.get(.VariantTuple, pat_id);
+            try highlightPatternPath(tokens, text, ast_unit, row.path, file_id);
+            const elems = pat_store.pat_pool.slice(row.elems);
+            for (elems) |elem| try highlightPattern(tokens, text, ast_unit, elem, binding_kind, file_id);
+        },
+        .Path => {
+            const row = pat_store.get(.Path, pat_id);
+            try highlightPatternPath(tokens, text, ast_unit, row.segments, file_id);
+        },
+        .Literal => {},
+        .Range => {},
+        .Or => {
+            const row = pat_store.get(.Or, pat_id);
+            const alts = pat_store.pat_pool.slice(row.alts);
+            for (alts) |alt| try highlightPattern(tokens, text, ast_unit, alt, binding_kind, file_id);
+        },
+        .At => {
+            const row = pat_store.get(.At, pat_id);
+            try highlightPattern(tokens, text, ast_unit, row.pattern, binding_kind, file_id);
+        },
+        else => {},
+    }
+}
+
+fn patternFromOpt(opt: ast.OptPatternId) ast.PatternId {
+    std.debug.assert(!opt.isNone());
+    const idx = opt.unwrap();
+    return ast.PatternId.fromRaw(idx.toRaw());
+}
+
+fn highlightPatternPath(tokens: *TokenAccumulator, text: []const u8, ast_unit: *ast.Ast, path: ast.RangePathSeg, file_id: u32) !void {
+    const pat_store = &ast_unit.pats;
+    const segs = pat_store.seg_pool.slice(path);
+    for (segs) |seg_id| {
+        const seg = pat_store.PathSeg.get(seg_id);
+        try highlightLoc(tokens, text, ast_unit.exprs.locs, seg.loc, file_id, .type);
+    }
+}
+
+fn highlightLoc(
+    tokens: *TokenAccumulator,
+    text: []const u8,
+    locs: *const ast.LocStore,
+    loc_id: ast.LocId,
+    file_id: u32,
+    kind: SemanticTokenKind,
+) !void {
+    const loc = locs.get(loc_id);
+    if (loc.file_id != file_id) return;
+    const start = clampOffset(text, loc.start);
+    const end = clampOffset(text, loc.end);
+    if (start >= end) return;
+    try addSegmentMultiLine(tokens, text, start, end, kind);
+}
+
+fn isKeywordTag(tag: lib.lexer.Token.Tag) bool {
+    return @intFromEnum(tag) >= @intFromEnum(lib.lexer.Token.Tag.keyword_align);
 }
 
 fn fileUriToPath(gpa: std.mem.Allocator, uri: []const u8) ![]u8 {
