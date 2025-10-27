@@ -134,6 +134,15 @@ pub const Pipeline = struct {
                 try self.context.diags.messages.appendSlice(try work.diags.messages.toOwnedSlice());
             }
             self.context.compilation_unit.mutex.lock();
+            // if (work.parser.cst_u.program.package_name.isNone()) {
+            //     const loc = work.parser.cst_u.program.package_loc;
+            //     try self.context.diags.addError(
+            //         if (!loc.isNone()) self.context.loc_store.get(loc.unwrap()) else Loc.init(work.file_id, 0, 0),
+            //         .invalid_package_name,
+            //         .{},
+            //     );
+            //     return error.ParseFailed;
+            // }
             const package_id = work.parser.cst_u.program.package_name.unwrap();
             const package_name = self.context.interner.get(package_id);
             const package = self.context.compilation_unit.packages.getPtr(package_name);
@@ -146,17 +155,18 @@ pub const Pipeline = struct {
                     .type_info = null,
                 });
             } else {
+                const pkg_name = try self.allocator.dupe(u8, package_name);
                 try self.context.compilation_unit.packages.put(
                     self.allocator,
-                    package_name,
+                    pkg_name,
                     .{
                         .gpa = self.allocator,
-                        .name = package_name,
+                        .name = pkg_name,
                         .source_manager = self.context.source_manager,
                         .sources = .{},
                     },
                 );
-                const pkg = self.context.compilation_unit.packages.getPtr(package_name).?;
+                const pkg = self.context.compilation_unit.packages.getPtr(pkg_name).?;
                 try pkg.sources.put(self.allocator, work.path, .{
                     .file_id = work.file_id,
                     .cst = work.parser.cst_u,
@@ -186,6 +196,7 @@ pub const Pipeline = struct {
         }.run;
         var threads = std.ArrayList(struct { std.Thread, *lower_to_ast.Lower, []const u8, []const u8 }){};
         while (pkg_iter.next()) |pkg| {
+            std.debug.print("pkg: {s}\n", .{pkg.key_ptr.*});
             var source_iter = pkg.value_ptr.sources.iterator();
             while (source_iter.next()) |unit| {
                 const lower_pass = try self.allocator.create(lower_to_ast.Lower);

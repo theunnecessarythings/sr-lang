@@ -1353,12 +1353,16 @@ pub const Tokenizer = struct {
             },
 
             .invalid => {
+                // Consume until we reach a boundary where we should end the invalid token
+                // without swallowing structural delimiters like '}'. This allows parsers
+                // that scan by tokens (e.g., MLIR blocks) to still observe closing braces.
                 self.advance();
                 switch (self.curr()) {
                     0 => if (self.index == self.buffer.len) {
                         result.tag = .invalid;
                     } else continue :state .invalid,
                     '\n' => result.tag = .invalid,
+                    '}' => result.tag = .invalid, // do not consume; let next token see rcurly
                     else => continue :state .invalid,
                 }
             },

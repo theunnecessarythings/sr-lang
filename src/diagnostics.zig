@@ -88,6 +88,7 @@ pub const DiagnosticCode = enum {
     expected_parameter_type_or_end, // payload: one (found)
     invalid_import_operand, // payload: one (found)
     import_not_found, // payload: one (path)
+    invalid_package_name,
 
     // Pattern / matching
     token_cannot_start_pattern, // payload: one (found)
@@ -316,6 +317,7 @@ pub fn diagnosticMessageFmt(code: DiagnosticCode) []const u8 {
         .expected_parameter_type_or_end => "expected ':', ',', or ')' after parameter, found {s}",
         .invalid_import_operand => "invalid import operand; expected string-like path, found {s}",
         .import_not_found => "the path specified in import was not found",
+        .invalid_package_name => "invalid package name",
 
         // Pattern / matching
         .token_cannot_start_pattern => "this token cannot start a pattern: {s}",

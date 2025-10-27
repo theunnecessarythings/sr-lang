@@ -384,7 +384,7 @@ fn parseProgram(self: *Parser) !void {
     } else {
         // default package, set to "main"
         self.cst_u.program.package_name = .some(self.intern("main"));
-        self.cst_u.program.package_loc = .none();
+        self.cst_u.program.package_loc = .some(self.toLocId(self.cur.loc));
     }
 
     // Top-level declarations
@@ -2419,7 +2419,6 @@ fn parseFunctionLike(self: *Parser, tag: Token.Tag, comptime is_extern: bool, is
         const tok = self.cur;
         try self.expect(.raw_asm_block);
         const raw = self.slice(tok);
-        self.advance();
         const s = self.intern(raw);
         raw_asm_opt = .some(s);
     }
@@ -2558,8 +2557,9 @@ fn parseMlir(self: *Parser) !cst.ExprId {
     var literal_start: usize = 0;
     var i: usize = 0;
     while (i < raw_text.len) {
-        // Backtick-delimited splice: `Name`
+        // Backtick-delimited splice: `Ident`
         if (raw_text[i] == '`') {
+            // Flush any preceding literal chunk first.
             if (i > literal_start) {
                 const lit = self.intern(raw_text[literal_start..i]);
                 const pid = self.cst_u.exprs.addMlirPieceRow(.{ .kind = .literal, .text = lit });
@@ -2569,7 +2569,7 @@ fn parseMlir(self: *Parser) !cst.ExprId {
             var j = i + 1;
             while (j < raw_text.len and raw_text[j] != '`') : (j += 1) {}
             if (j >= raw_text.len) {
-                // No closing backtick; emit the backtick as literal and continue.
+                // No closing backtick; treat the single backtick as literal.
                 const lit = self.intern(raw_text[i .. i + 1]);
                 const pid = self.cst_u.exprs.addMlirPieceRow(.{ .kind = .literal, .text = lit });
                 piece_ids.append(self.gpa, pid) catch @panic("OOM");
@@ -2577,14 +2577,37 @@ fn parseMlir(self: *Parser) !cst.ExprId {
                 literal_start = i;
                 continue;
             }
-            const ident_text = raw_text[(i + 1)..j];
-            const ident = self.intern(ident_text);
-            const sid = self.cst_u.exprs.addMlirPieceRow(.{ .kind = .splice, .text = ident });
-            piece_ids.append(self.gpa, sid) catch @panic("OOM");
 
-            literal_start = j + 1;
-            i = j + 1;
-            continue;
+            const ident_text = raw_text[(i + 1)..j];
+            // Only treat as splice if the content is a valid identifier.
+            var is_ident = ident_text.len > 0 and isIdentStart(ident_text[0]);
+            if (is_ident) {
+                var k: usize = 1;
+                while (k < ident_text.len) : (k += 1) {
+                    if (!isIdentContinue(ident_text[k])) {
+                        is_ident = false;
+                        break;
+                    }
+                }
+            }
+
+            if (is_ident) {
+                const ident = self.intern(ident_text);
+                const sid = self.cst_u.exprs.addMlirPieceRow(.{ .kind = .splice, .text = ident });
+                piece_ids.append(self.gpa, sid) catch @panic("OOM");
+                // Resume scanning after the closing backtick.
+                literal_start = j + 1;
+                i = j + 1;
+                continue;
+            } else {
+                // Not a valid identifier — emit the whole backtick pair as literal.
+                const lit = self.intern(raw_text[i .. j + 1]);
+                const pid = self.cst_u.exprs.addMlirPieceRow(.{ .kind = .literal, .text = lit });
+                piece_ids.append(self.gpa, pid) catch @panic("OOM");
+                i = j + 1;
+                literal_start = i;
+                continue;
+            }
         }
         i += 1;
     }

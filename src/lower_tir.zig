@@ -3135,7 +3135,8 @@ fn lowerCatch(
             const nm = row.binding_name.unwrap();
             try env.bind(self.gpa, a, nm, .{ .value = err_val, .ty = es.error_ty, .is_slot = false });
         }
-        try self.lowerExprAsStmtList(ctx, a, env, f, &err_blk, row.handler);
+        // Evaluate handler exactly once as a block expression to both run side-effects
+        // and produce the resulting value.
         if (err_blk.term.isNone()) {
             const hv = try self.lowerBlockExprValue(ctx, a, env, f, &err_blk, row.handler, es.value_ty);
             const true_v_err = err_blk.builder.tirValue(.ConstBool, &err_blk, one, loc, .{ .value = true });
@@ -3210,12 +3211,12 @@ fn lowerCatch(
             const name = row.binding_name.unwrap();
             try env.bind(self.gpa, a, name, .{ .value = err_val, .ty = es.error_ty, .is_slot = false });
         }
-        try self.lowerExprAsStmtList(ctx, a, env, f, &else_blk, row.handler);
-        _ = env.popScope(); // Pop scope after handler
+        // Evaluate handler exactly once and branch with the produced value.
         if (else_blk.term.isNone()) {
             const hv = try self.lowerBlockExprValue(ctx, a, env, f, &else_blk, row.handler, res_ty);
             try f.builder.br(&else_blk, join_blk.id, &.{hv}, loc);
         }
+        _ = env.popScope(); // Pop scope after handler
 
         try f.builder.endBlock(f, then_blk);
         try f.builder.endBlock(f, else_blk);

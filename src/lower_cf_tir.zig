@@ -175,8 +175,7 @@ pub fn lowerIf(
             try f.builder.endBlock(f, old);
         }
 
-        // then
-        try self.lowerExprAsStmtList(ctx, a, env, f, &then_blk, row.then_block);
+        // then: evaluate exactly once as value-producing block
         if (then_blk.term.isNone()) {
             var v_then = try self.lowerBlockExprValue(ctx, a, env, f, &then_blk, row.then_block, res_ty);
             if (expected_ty) |want| v_then = self.emitCoerce(&then_blk, v_then, self.getExprType(ctx, a, row.then_block), want, loc);
@@ -185,7 +184,6 @@ pub fn lowerIf(
 
         // else
         if (!row.else_block.isNone()) {
-            try self.lowerExprAsStmtList(ctx, a, env, f, &else_blk, row.else_block.unwrap());
             if (else_blk.term.isNone()) {
                 var v_else = try self.lowerBlockExprValue(ctx, a, env, f, &else_blk, row.else_block.unwrap(), res_ty);
                 if (expected_ty) |want| v_else = self.emitCoerce(&else_blk, v_else, self.getExprType(ctx, a, row.else_block.unwrap()), want, loc);
