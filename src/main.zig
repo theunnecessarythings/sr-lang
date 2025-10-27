@@ -524,6 +524,6 @@ pub fn main() !void {
         },
         .repl => try repl(gpa, writer, out_writer),
         .server => try server(gpa, writer),
-        .lsp => try lsp.run(gpa, writer, out_writer),
+        .lsp => try lsp.run(gpa),
     }
 }

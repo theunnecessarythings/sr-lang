@@ -1,553 +1,241 @@
 const std = @import("std");
 const lib = @import("compiler");
+const json = std.json;
 
-const JsonValue = std.json.Value;
+pub fn run(gpa: std.mem.Allocator) !void {
+    var in_buf: [64 * 1024]u8 = undefined;
+    var out_buf: [64 * 1024]u8 = undefined;
+    var in_r = std.fs.File.stdin().readerStreaming(&in_buf);
+    var out_w = std.fs.File.stdout().writerStreaming(&out_buf);
+    const In: *std.Io.Reader = &in_r.interface;
+    const Out: *std.Io.Writer = &out_w.interface;
 
-const Document = struct {
-    uri: []u8,
-    path: []u8,
-    text: []u8,
-    version: ?i64 = null,
+    while (true) {
+        var hdr = try readHeaders(gpa, In);
+        defer gpa.free(hdr.buf);
 
-    fn deinit(self: *Document, allocator: std.mem.Allocator) void {
-        allocator.free(self.uri);
-        allocator.free(self.path);
-        allocator.free(self.text);
+        const cl = try parseContentLength(hdr.buf[0..hdr.body_start]);
+        var body = try gpa.alloc(u8, cl);
+        defer gpa.free(body);
+
+        const prefix = hdr.buf[hdr.body_start..];
+        var off: usize = 0;
+        if (prefix.len != 0) {
+            const to_copy = @min(prefix.len, body.len);
+            @memcpy(body[0..to_copy], prefix[0..to_copy]);
+            off = to_copy;
+        }
+
+        try readExact(In, body[off..]);
+
+        const Request = struct {
+            jsonrpc: []const u8,
+            method: []const u8,
+            id: ?u64 = null,
+            params: ?json.Value = null,
+        };
+
+        var parsed = json.parseFromSlice(Request, gpa, body, .{ .ignore_unknown_fields = true }) catch |e| {
+            std.debug.print("[lsp] json parse error: {s}\n", .{@errorName(e)});
+            continue;
+        };
+        defer parsed.deinit();
+        const req = parsed.value;
+
+        // --- dispatch ---
+        if (std.mem.eql(u8, req.method, "initialize")) {
+            try respondInitialize(Out, gpa, req.id orelse 0);
+        } else if (std.mem.eql(u8, req.method, "initialized")) {
+            // no-op
+        } else if (std.mem.eql(u8, req.method, "shutdown")) {
+            try writeJson(Out, gpa, .{ .jsonrpc = "2.0", .id = req.id orelse 0, .result = null });
+        } else if (std.mem.eql(u8, req.method, "exit")) {
+            return;
+        } else if (std.mem.eql(u8, req.method, "textDocument/didOpen")) {
+            if (req.params) |p| try onDidOpen(Out, gpa, p);
+        } else if (std.mem.eql(u8, req.method, "textDocument/didChange")) {
+            if (req.params) |p| try onDidChange(Out, gpa, p);
+        } else if (std.mem.eql(u8, req.method, "textDocument/hover")) {
+            if (req.params) |p| try onHover(Out, gpa, req.id orelse 0, p);
+        } else if (std.mem.eql(u8, req.method, "textDocument/completion")) {
+            try respondCompletion(Out, gpa, req.id orelse 0);
+        } else {
+            if (req.id) |rid| try writeJson(Out, gpa, .{ .jsonrpc = "2.0", .id = rid, .result = null });
+        }
     }
-};
-
-const Position = struct {
-    line: usize,
-    character: usize,
-};
-
-pub fn run(allocator: std.mem.Allocator, err_writer: *std.io.Writer, out_writer: *std.io.Writer) !void {
-    var server = Server{
-        .gpa = allocator,
-        .err_writer = err_writer,
-        .out_writer = out_writer,
-        .documents = .empty,
-    };
-    defer server.deinit();
-
-    try server.loop();
 }
 
-const Server = struct {
-    gpa: std.mem.Allocator,
-    err_writer: *std.io.Writer,
-    out_writer: *std.io.Writer,
-    documents: std.ArrayList(Document),
-    shutdown_requested: bool = false,
-    running: bool = true,
-
-    fn deinit(self: *Server) void {
-        for (self.documents.items) |*doc| {
-            doc.deinit(self.gpa);
-        }
-        self.documents.deinit(self.gpa);
-    }
-
-    fn loop(self: *Server) !void {
-        var in_buf: [4096]u8 = undefined;
-        var stdin = std.fs.File.stdin().readerStreaming(&in_buf);
-
-        while (self.running) {
-            const message_opt = try self.readMessage(&stdin.interface);
-            if (message_opt == null) break;
-            const message = message_opt.?;
-            defer self.gpa.free(message);
-            self.handleMessage(message) catch |err| {
-                _ = self.err_writer.print("LSP error: {s}\n", .{@errorName(err)}) catch {};
-            };
-        }
-    }
-
-    fn readMessage(self: *Server, reader: anytype) !?[]u8 {
-        // Read  from stdin until we get a complete message
-        var in_buf: [4096]u8 = undefined;
-        var stdin = std.fs.File.stdin().readerStreaming(&in_buf);
-        var source = std.ArrayList(u8){};
-        defer source.deinit(self.gpa);
-
-        while (true) {
-            const byte = stdin.interface.takeByte() catch |err| switch (err) {
-                error.EndOfStream => break, // clean EOF
-                else => return err,
-            };
-            try source.append(self.gpa, byte);
-        }
-
-        const buffer = source.items;
-        std.debug.print("{s}\n", .{buffer});
-        var hp = std.http.HeadParser{};
-        const size = hp.feed(buffer);
-        const header = buffer[0..size];
-
-        var content_length: ?usize = null;
-        var lines = std.mem.splitSequence(u8, header, "\r\n");
-        while (lines.next()) |line| {
-            if (line.len == 0) continue;
-            const trimmed = std.mem.trim(u8, line, " \t");
-            if (trimmed.len == 0) continue;
-            const prefix = "Content-Length:";
-            if (std.mem.startsWith(u8, trimmed, prefix)) {
-                const value_slice = std.mem.trim(u8, trimmed[prefix.len..], " \t");
-                content_length = try std.fmt.parseInt(usize, value_slice, 10);
-            }
-        }
-
-        const length = content_length orelse return error.MissingContentLength;
-        const body = try self.gpa.alloc(u8, length);
-        if (length != 0) {
-            try reader.readSliceAll(body);
-        }
-        return body;
-    }
-
-    fn handleMessage(self: *Server, message: []u8) !void {
-        var tree = try std.json.parseFromSlice(JsonValue, self.gpa, message, .{});
-        defer tree.deinit();
-        const root = tree.value;
-        if (root != .object) return;
-        const obj = root.object;
-
-        const method_ptr = obj.get("method") orelse return;
-        if (method_ptr != .string) return;
-        const method = method_ptr.string;
-
-        var params_ptr = obj.get("params");
-        const id_ptr = obj.get("id");
-
-        if (std.mem.eql(u8, method, "initialize")) {
-            if (id_ptr) |id| {
-                try self.handleInitialize(id, if (params_ptr) |*p| p else null);
-            }
-            return;
-        }
-        if (std.mem.eql(u8, method, "initialized")) {
-            return;
-        }
-        if (std.mem.eql(u8, method, "shutdown")) {
-            if (id_ptr) |id| {
-                try self.handleShutdown(id);
-            }
-            return;
-        }
-        if (std.mem.eql(u8, method, "exit")) {
-            self.handleExit();
-            return;
-        }
-        if (std.mem.eql(u8, method, "textDocument/didOpen")) {
-            if (params_ptr) |p| try self.handleDidOpen(p);
-            return;
-        }
-        if (std.mem.eql(u8, method, "textDocument/didChange")) {
-            if (params_ptr) |p| try self.handleDidChange(p);
-            return;
-        }
-        if (std.mem.eql(u8, method, "textDocument/didClose")) {
-            if (params_ptr) |p| try self.handleDidClose(p);
-            return;
-        }
-        if (std.mem.eql(u8, method, "textDocument/didSave")) {
-            if (params_ptr) |p| try self.handleDidSave(p);
-            return;
-        }
-
-        if (id_ptr) |id| {
-            try self.sendMethodNotFound(id);
-        }
-    }
-
-    fn handleInitialize(self: *Server, id_value: JsonValue, params: ?*JsonValue) !void {
-        _ = params;
-        var payload = std.ArrayList(u8){};
-        defer payload.deinit(self.gpa);
-        var writer = payload.writer(self.gpa);
-        try writer.writeAll("{\"jsonrpc\":\"2.0\",\"id\":");
-        var buff: [100]u8 = undefined;
-        var iface = writer.adaptToNewApi(&buff).new_interface;
-        try std.json.Stringify.value(id_value, .{}, &iface);
-        try writer.writeAll(",\"result\":{\"capabilities\":{\"textDocumentSync\":{\"openClose\":true,\"change\":1},\"positionEncoding\":\"utf-8\"}}}");
-        try self.sendPayload(payload.items);
-    }
-
-    fn handleShutdown(self: *Server, id_value: JsonValue) !void {
-        self.shutdown_requested = true;
-        var payload = std.ArrayList(u8){};
-        defer payload.deinit(self.gpa);
-        var writer = payload.writer(self.gpa);
-        try writer.writeAll("{\"jsonrpc\":\"2.0\",\"id\":");
-        var buff: [100]u8 = undefined;
-        var iface = writer.adaptToNewApi(&buff).new_interface;
-        try std.json.Stringify.value(id_value, .{}, &iface);
-        try writer.writeAll(",\"result\":null}");
-        try self.sendPayload(payload.items);
-    }
-
-    fn handleExit(self: *Server) void {
-        self.running = false;
-    }
-
-    fn handleDidOpen(self: *Server, params: JsonValue) !void {
-        if (params != .object) return;
-        const params_obj = params.object;
-        const text_doc_ptr = params_obj.get("textDocument") orelse return;
-        if (text_doc_ptr != .object) return;
-        const text_doc = text_doc_ptr.object;
-
-        const uri_ptr = text_doc.get("uri") orelse return;
-        if (uri_ptr != .string) return;
-        const uri = uri_ptr.string;
-
-        const text_ptr = text_doc.get("text") orelse return;
-        if (text_ptr != .string) return;
-        const text_value = text_ptr.string;
-
-        const version = if (text_doc.getPtr("version")) |ver| parseVersion(ver) else null;
-
-        const text_copy = try self.gpa.dupe(u8, text_value);
-        var cleanup_text = true;
-        defer if (cleanup_text) self.gpa.free(text_copy);
-
-        const path = try self.uriToPath(uri);
-        var cleanup_path = true;
-        defer if (cleanup_path) self.gpa.free(path);
-
-        const doc = try self.upsertDocument(uri, path, text_copy, version);
-        cleanup_text = false;
-        cleanup_path = false;
-        try self.publishDocumentDiagnostics(doc);
-    }
-
-    fn handleDidChange(self: *Server, params: JsonValue) !void {
-        if (params != .object) return;
-        const params_obj = params.object;
-        const text_doc_ptr = params_obj.get("textDocument") orelse return;
-        if (text_doc_ptr != .object) return;
-        const text_doc = text_doc_ptr.object;
-
-        const uri_ptr = text_doc.get("uri") orelse return;
-        if (uri_ptr != .string) return;
-        const uri = uri_ptr.string;
-
-        const version = if (text_doc.getPtr("version")) |ver| parseVersion(ver) else null;
-
-        const changes_ptr = params_obj.get("contentChanges") orelse return;
-        if (changes_ptr != .array) return;
-        const changes = changes_ptr.array.items;
-        if (changes.len == 0) return;
-        const change_value = changes[changes.len - 1];
-        if (change_value != .object) return;
-        const change_obj = change_value.object;
-        const text_ptr = change_obj.get("text") orelse return;
-        if (text_ptr != .string) return;
-        const text_value = text_ptr.string;
-
-        const text_copy = try self.gpa.dupe(u8, text_value);
-        var cleanup_text = true;
-        defer if (cleanup_text) self.gpa.free(text_copy);
-
-        if (self.findDocumentIndex(uri)) |idx| {
-            var doc = &self.documents.items[idx];
-            self.gpa.free(doc.text);
-            doc.text = text_copy;
-            doc.version = version;
-            cleanup_text = false;
-            try self.publishDocumentDiagnostics(doc);
-        } else {
-            const path = try self.uriToPath(uri);
-            var cleanup_path = true;
-            defer if (cleanup_path) self.gpa.free(path);
-            const doc = try self.upsertDocument(uri, path, text_copy, version);
-            cleanup_path = false;
-            cleanup_text = false;
-            try self.publishDocumentDiagnostics(doc);
-        }
-    }
-
-    fn handleDidClose(self: *Server, params: JsonValue) !void {
-        if (params != .object) return;
-        const params_obj = params.object;
-        const text_doc_ptr = params_obj.get("textDocument") orelse return;
-        if (text_doc_ptr != .object) return;
-        const text_doc = text_doc_ptr.object;
-        const uri_ptr = text_doc.get("uri") orelse return;
-        if (uri_ptr != .string) return;
-        const uri = uri_ptr.string;
-
-        self.removeDocument(uri);
-        try self.sendEmptyDiagnostics(uri);
-    }
-
-    fn handleDidSave(self: *Server, params: JsonValue) !void {
-        if (params != .object) return;
-        const params_obj = params.object;
-        const text_doc_ptr = params_obj.get("textDocument") orelse return;
-        if (text_doc_ptr != .object) return;
-        const text_doc = text_doc_ptr.object;
-        const uri_ptr = text_doc.get("uri") orelse return;
-        if (uri_ptr != .string) return;
-        const uri = uri_ptr.string;
-
-        var new_text: ?[]u8 = null;
-        if (params_obj.get("text")) |text_ptr| {
-            if (text_ptr == .string) {
-                new_text = try self.gpa.dupe(u8, text_ptr.string);
-            }
-        }
-        defer if (new_text) |text_copy| self.gpa.free(text_copy);
-
-        if (self.findDocumentIndex(uri)) |idx| {
-            var doc = &self.documents.items[idx];
-            if (new_text) |text_copy| {
-                self.gpa.free(doc.text);
-                doc.text = text_copy;
-                new_text = null;
-            }
-            try self.publishDocumentDiagnostics(doc);
-        }
-    }
-
-    fn upsertDocument(self: *Server, uri: []const u8, path: []u8, text: []u8, version: ?i64) !*Document {
-        if (self.findDocumentIndex(uri)) |idx| {
-            var doc = &self.documents.items[idx];
-            self.gpa.free(doc.path);
-            self.gpa.free(doc.text);
-            doc.path = path;
-            doc.text = text;
-            doc.version = version;
-            return doc;
-        }
-        const uri_copy = try self.gpa.dupe(u8, uri);
-        errdefer self.gpa.free(uri_copy);
-        try self.documents.append(self.gpa, .{ .uri = uri_copy, .path = path, .text = text, .version = version });
-        return &self.documents.items[self.documents.items.len - 1];
-    }
-
-    fn removeDocument(self: *Server, uri: []const u8) void {
-        if (self.findDocumentIndex(uri)) |idx| {
-            var removed = self.documents.swapRemove(idx);
-            removed.deinit(self.gpa);
-        }
-    }
-
-    fn findDocumentIndex(self: *Server, uri: []const u8) ?usize {
-        for (self.documents.items, 0..) |doc, idx| {
-            if (std.mem.eql(u8, doc.uri, uri)) return idx;
-        }
-        return null;
-    }
-
-    fn publishDocumentDiagnostics(self: *Server, doc: *Document) !void {
-        var context = lib.compile.Context.init(self.gpa);
-        defer context.deinit();
-
-        const file_id = try context.source_manager.setVirtualSourceByPath(doc.path, doc.text);
-
-        var pipeline = lib.pipeline.Pipeline.init(self.gpa, &context);
-        const result_opt: ?lib.pipeline.Result = blk: {
-            const res = pipeline.run(doc.path, &.{}, .check) catch |err| {
-                if (context.diags.count() == 0) {
-                    return err;
-                }
-                break :blk null;
-            };
-            break :blk res;
-        };
-
-        if (result_opt) |_| {
-            // if (res.type_info) |ti| {
-            //     if (!context.module_graph.ownsTypeInfo(ti)) {
-            //         ti.deinit();
-            //         self.gpa.destroy(ti);
-            //     }
-            // }
-        }
-
-        try self.sendDiagnosticsForFile(doc, &context, file_id);
-    }
-
-    fn sendDiagnosticsForFile(self: *Server, doc: *Document, context: *lib.compile.Context, file_id: u32) !void {
-        var payload = std.ArrayList(u8){};
-        defer payload.deinit(self.gpa);
-        var writer = payload.writer(self.gpa);
-        try writer.writeAll("{\"jsonrpc\":\"2.0\",\"method\":\"textDocument/publishDiagnostics\",\"params\":{\"uri\":");
-        var buff: [100]u8 = undefined;
-        var iface = writer.adaptToNewApi(&buff).new_interface;
-        try std.json.Stringify.value(doc.uri, .{}, &iface);
-        try writer.writeAll(",\"diagnostics\":[");
-
-        var first = true;
-        for (context.diags.messages.items) |message| {
-            if (message.loc.file_id != file_id) continue;
-            if (!first) try writer.writeByte(',');
-            first = false;
-
-            const text_slice = doc.text;
-            const start_offset = if (message.loc.start <= text_slice.len) message.loc.start else text_slice.len;
-            const raw_end = if (message.loc.end <= text_slice.len) message.loc.end else text_slice.len;
-            const end_offset = if (raw_end < start_offset) start_offset else raw_end;
-            const start_pos = Server.computePosition(text_slice, start_offset);
-            const end_pos = Server.computePosition(text_slice, end_offset);
-
-            try writer.writeAll("{\"range\":{\"start\":{\"line\":");
-            try writer.print("{d},\"character\":{d}}}", .{ start_pos.line, start_pos.character });
-            try writer.writeAll(",\"end\":{\"line\":");
-            try writer.print("{d},\"character\":{d}}}", .{ end_pos.line, end_pos.character });
-            try writer.writeAll(",\"severity\":");
-            try writer.print("{d}", .{severityToLsp(message.severity)});
-            try writer.writeAll(",\"source\":\"sr-lang\",\"code\":");
-            try std.json.Stringify.value(@tagName(message.code), .{}, &iface);
-            try writer.writeAll(",\"message\":");
-
-            const base_message = try context.diags.messageToOwnedSlice(self.gpa, message);
-            defer self.gpa.free(base_message);
-            var final_message = base_message;
-            var owned_message: ?[]u8 = null;
-
-            if (message.notes.items.len != 0) {
-                var combined = std.ArrayList(u8){};
-                defer combined.deinit(self.gpa);
-                try combined.appendSlice(self.gpa, base_message);
-                for (message.notes.items) |note| {
-                    const note_text = try context.diags.noteToOwnedSlice(self.gpa, note);
-                    try combined.appendSlice(self.gpa, "\nNote: ");
-                    try combined.appendSlice(self.gpa, note_text);
-                    self.gpa.free(note_text);
-                }
-                owned_message = try combined.toOwnedSlice(self.gpa);
-                final_message = owned_message.?;
-            }
-
-            try std.json.Stringify.value(final_message, .{}, &iface);
-            if (owned_message) |owned| {
-                self.gpa.free(owned);
-            }
-
-            try writer.writeAll("}");
-        }
-
-        try writer.writeAll("]}}");
-        try self.sendPayload(payload.items);
-    }
-
-    fn sendEmptyDiagnostics(self: *Server, uri: []const u8) !void {
-        var payload = std.ArrayList(u8){};
-        defer payload.deinit(self.gpa);
-        var writer = payload.writer(self.gpa);
-        try writer.writeAll("{\"jsonrpc\":\"2.0\",\"method\":\"textDocument/publishDiagnostics\",\"params\":{\"uri\":");
-        var buff: [100]u8 = undefined;
-        var iface = writer.adaptToNewApi(&buff).new_interface;
-        try std.json.Stringify.value(uri, .{}, &iface);
-        try writer.writeAll(",\"diagnostics\":[]}}");
-        try self.sendPayload(payload.items);
-    }
-
-    fn sendPayload(self: *Server, payload: []const u8) !void {
-        try self.out_writer.print("Content-Length: {d}\r\n\r\n", .{payload.len});
-        try self.out_writer.writeAll(payload);
-        try self.out_writer.flush();
-    }
-
-    fn severityToLsp(sev: lib.diagnostics.Severity) u8 {
-        return switch (sev) {
-            .err => 1,
-            .warning => 2,
-            .note => 3,
-        };
-    }
-
-    fn parseVersion(value: *JsonValue) ?i64 {
-        return switch (value.*) {
-            .integer => value.integer,
-            else => null,
-        };
-    }
-
-    fn uriToPath(self: *Server, uri: []const u8) ![]u8 {
-        const prefix = "file://";
-        if (!std.mem.startsWith(u8, uri, prefix)) return error.InvalidUri;
-        const remainder = uri[prefix.len..];
-        var path_part = remainder;
-        if (path_part.len > 0 and path_part[0] != '/') {
-            if (std.mem.indexOfScalar(u8, path_part, '/')) |idx| {
-                path_part = path_part[idx..];
-            } else {
-                path_part = "";
-            }
-        }
-        if (path_part.len == 0) return error.InvalidUri;
-        return try self.decodeUriPath(path_part);
-    }
-
-    fn decodeUriPath(self: *Server, encoded: []const u8) ![]u8 {
-        var builder = std.ArrayList(u8){};
-        defer builder.deinit(self.gpa);
-        var i: usize = 0;
-        while (i < encoded.len) {
-            const c = encoded[i];
-            if (c == '%') {
-                if (i + 2 >= encoded.len) return error.InvalidUri;
-                const value = try decodeHexPair(encoded[i + 1], encoded[i + 2]);
-                try builder.append(self.gpa, value);
-                i += 3;
-            } else {
-                try builder.append(self.gpa, c);
-                i += 1;
-            }
-        }
-        return builder.toOwnedSlice(self.gpa);
-    }
-
-    fn decodeHexPair(hi: u8, lo: u8) !u8 {
-        const high = try decodeHexDigit(hi);
-        const low = try decodeHexDigit(lo);
-        return (high << 4) | low;
-    }
-
-    fn decodeHexDigit(c: u8) !u8 {
-        return switch (c) {
-            '0'...'9' => c - '0',
-            'A'...'F' => c - 'A' + 10,
-            'a'...'f' => c - 'a' + 10,
-            else => error.InvalidUri,
-        };
-    }
-
-    fn computePosition(text: []const u8, offset: usize) Position {
-        var line: usize = 0;
-        var last_line_start: usize = 0;
-        var index: usize = 0;
-        const limit = if (offset > text.len) text.len else offset;
-        while (index < limit) {
-            const c = text[index];
-            if (c == '\n') {
-                line += 1;
-                last_line_start = index + 1;
-            } else if (c == '\r') {
-                line += 1;
-                if (index + 1 < limit and text[index + 1] == '\n') {
-                    index += 1;
-                }
-                last_line_start = index + 1;
-            }
-            index += 1;
-        }
-        const character = limit - last_line_start;
-        return .{ .line = line, .character = character };
-    }
-
-    fn sendMethodNotFound(self: *Server, id_value: JsonValue) !void {
-        var payload = std.ArrayList(u8){};
-        defer payload.deinit(self.gpa);
-        var writer = payload.writer(self.gpa);
-        try writer.writeAll("{\"jsonrpc\":\"2.0\",\"id\":");
-        var buff: [100]u8 = undefined;
-        var iface = writer.adaptToNewApi(&buff).new_interface;
-        try std.json.Stringify.value(id_value, .{}, &iface);
-        try writer.writeAll(",\"error\":{\"code\":-32601,\"message\":\"Method not found\"}}");
-        try self.sendPayload(payload.items);
-    }
+const HeaderRead = struct {
+    buf: []u8, // header bytes + possibly some of the body already read
+    body_start: usize, // index within buf where the body begins
 };
+
+fn readHeaders(A: std.mem.Allocator, In: *std.Io.Reader) !HeaderRead {
+    var acc = std.ArrayList(u8){};
+    errdefer acc.deinit(A);
+
+    var tmp: [4096]u8 = undefined;
+
+    while (true) {
+        var b = [_][]u8{tmp[0..]};
+        const n = try In.readVec(&b);
+        if (n == 0) return error.EndOfStream;
+        try acc.appendSlice(A, tmp[0..n]);
+
+        if (findHeaderEnd(acc.items)) |start| {
+            // split position is start (index after the terminator)
+            const buf = try acc.toOwnedSlice(A);
+            return HeaderRead{ .buf = buf, .body_start = start };
+        }
+
+        // very defensive cap for pathological clients
+        if (acc.items.len > 1 * 1024 * 1024) return error.ResourceExhausted;
+    }
+}
+
+fn findHeaderEnd(buf: []const u8) ?usize {
+    if (std.mem.indexOf(u8, buf, "\r\n\r\n")) |i| return i + 4;
+    if (std.mem.indexOf(u8, buf, "\n\n")) |i| return i + 2;
+    return null;
+}
+
+fn parseContentLength(header_bytes: []const u8) !usize {
+    // Split on LF; trim trailing CR; case-insensitive key match
+    var it = std.mem.splitScalar(u8, header_bytes, '\n');
+    var seen = false;
+    var content_len: usize = 0;
+
+    while (it.next()) |line_raw| {
+        const line = std.mem.trimRight(u8, line_raw, "\r");
+        if (line.len == 0) continue;
+        if (std.ascii.startsWithIgnoreCase(line, "content-length:")) {
+            const after = std.mem.trim(u8, line["content-length:".len..], " \t");
+            content_len = try std.fmt.parseInt(usize, after, 10);
+            seen = true;
+        }
+    }
+    if (!seen) return error.Invalid;
+    return content_len;
+}
+
+fn readExact(in: *std.Io.Reader, dest: []u8) !void {
+    var off: usize = 0;
+    while (off < dest.len) {
+        var b = [_][]u8{dest[off..]};
+        const n = try in.readVec(&b);
+        if (n == 0) return error.EndOfStream;
+        off += n;
+    }
+}
+
+// ================== JSON send helpers ==================
+fn sendMessage(out: *std.Io.Writer, payload: []const u8) !void {
+    try out.print("Content-Length: {d}\r\n\r\n", .{payload.len});
+    try out.writeAll(payload);
+    try out.flush();
+}
+
+fn writeJson(out: *std.Io.Writer, gpa: std.mem.Allocator, value: anytype) !void {
+    var allocw = std.Io.Writer.Allocating.init(gpa);
+    defer allocw.deinit();
+    var s = json.Stringify{ .writer = &allocw.writer, .options = .{ .whitespace = .minified } };
+    try s.write(value);
+    try sendMessage(out, allocw.written());
+}
+
+// ================== LSP handlers ==================
+
+fn respondInitialize(out: *std.Io.Writer, gpa: std.mem.Allocator, id: u64) !void {
+    const Caps = struct {
+        textDocumentSync: u32 = 1, // Full sync (simple)
+        hoverProvider: bool = true,
+        completionProvider: struct { triggerCharacters: []const []const u8 } = .{ .triggerCharacters = &.{"."} },
+        positionEncoding: []const u8 = "utf-16",
+    };
+    const Resp = struct {
+        jsonrpc: []const u8 = "2.0",
+        id: u64,
+        result: struct {
+            capabilities: Caps = .{},
+            serverInfo: struct { name: []const u8 = "test_lsp", version: []const u8 = "0.1.0" } = .{},
+        } = .{},
+    };
+    try writeJson(out, gpa, Resp{ .id = id });
+}
+
+fn onDidOpen(out: *std.Io.Writer, gpa: std.mem.Allocator, params: json.Value) !void {
+    const P = struct {
+        textDocument: struct { uri: []const u8, text: []const u8 },
+    };
+    var p = try json.parseFromValue(P, gpa, params, .{ .ignore_unknown_fields = true });
+    defer p.deinit();
+    try publishDiagnostics(out, gpa, p.value.textDocument.uri, p.value.textDocument.text);
+}
+
+fn onDidChange(out: *std.Io.Writer, gpa: std.mem.Allocator, params: json.Value) !void {
+    const P = struct {
+        textDocument: struct { uri: []const u8 },
+        contentChanges: []const struct { text: []const u8 },
+    };
+    var p = try json.parseFromValue(P, gpa, params, .{ .ignore_unknown_fields = true });
+    defer p.deinit();
+    if (p.value.contentChanges.len == 0) return;
+    try publishDiagnostics(out, gpa, p.value.textDocument.uri, p.value.contentChanges[0].text);
+}
+
+fn onHover(out: *std.Io.Writer, gpa: std.mem.Allocator, id: u64, params: json.Value) !void {
+    _ = params; // toy
+    const Resp = struct {
+        jsonrpc: []const u8 = "2.0",
+        id: u64,
+        result: ?struct { contents: struct { kind: []const u8 = "markdown", value: []const u8 } } = null,
+    };
+    try writeJson(out, gpa, Resp{ .id = id, .result = .{ .contents = .{ .value = "**hover**: test_lsp" } } });
+}
+
+fn respondCompletion(out: *std.Io.Writer, gpa: std.mem.Allocator, id: u64) !void {
+    const Item = struct { label: []const u8, kind: u32 = 14, detail: []const u8 = "test_lsp" };
+    const Resp = struct { jsonrpc: []const u8 = "2.0", id: u64, result: []const Item };
+    const items = [_]Item{ .{ .label = "hello" }, .{ .label = "world" } };
+    try writeJson(out, gpa, Resp{ .id = id, .result = &items });
+}
+
+fn publishDiagnostics(out: *std.Io.Writer, gpa: std.mem.Allocator, uri: []const u8, text: []const u8) !void {
+    const Pos = struct { line: u32, character: u32 };
+    const Range = struct { start: Pos, end: Pos };
+    const Diag = struct {
+        range: Range,
+        severity: u32 = 2,
+        message: []const u8 = "Avoid 'foo'",
+        source: []const u8 = "test_lsp",
+    };
+
+    var list = std.ArrayList(Diag){};
+    defer list.deinit(gpa);
+
+    var line: u32 = 0;
+    var col: u32 = 0;
+    var i: usize = 0;
+    while (i < text.len) : (i += 1) {
+        const c = text[i];
+        if (c == '\n') {
+            line += 1;
+            col = 0;
+            continue;
+        }
+        if (i + 3 <= text.len and std.mem.eql(u8, text[i .. i + 3], "foo")) {
+            try list.append(gpa, .{ .range = .{ .start = .{ .line = line, .character = col }, .end = .{ .line = line, .character = col + 3 } } });
+            i += 2;
+            col += 3;
+        } else {
+            col += 1;
+        }
+    }
+
+    const Msg = struct {
+        jsonrpc: []const u8 = "2.0",
+        method: []const u8 = "textDocument/publishDiagnostics",
+        params: struct { uri: []const u8, diagnostics: []const Diag },
+    };
+    try writeJson(out, gpa, Msg{ .params = .{ .uri = uri, .diagnostics = list.items } });
+}
