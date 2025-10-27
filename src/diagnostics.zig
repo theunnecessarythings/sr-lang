@@ -96,6 +96,7 @@ pub const DiagnosticCode = enum {
     invalid_binding_name_in_at_pattern, // payload: one (found)
     underscore_not_const_in_range_pattern,
     left_side_not_const_like_in_range_pattern,
+    descending_range_pattern,
     pattern_shape_mismatch,
     pattern_type_mismatch,
     or_pattern_binding_mismatch,
@@ -325,6 +326,7 @@ pub fn diagnosticMessageFmt(code: DiagnosticCode) []const u8 {
         .invalid_binding_name_in_at_pattern => "only simple identifier paths can be used as binding names in '@' patterns; found {s}",
         .underscore_not_const_in_range_pattern => "'_' is not valid as a constant in a range pattern",
         .left_side_not_const_like_in_range_pattern => "left side of a range pattern must be const-like",
+        .descending_range_pattern => "descending or empty range pattern",
         .pattern_shape_mismatch => "pattern does not match the shape of the value",
         .pattern_type_mismatch => "pattern type does not match value type",
         .or_pattern_binding_mismatch => "bindings in 'or' pattern arms do not match",

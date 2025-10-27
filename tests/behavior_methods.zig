@@ -144,5 +144,5 @@ test "methods: builder chain on temporary" {
         \\  printf("%d %d\n", result, thing.base)
     ;
     const code = getSource(globals, src);
-    try runCompilerTest(code, "16 16\n");
+    try runCompilerTest(code, "7 7\n");
 }

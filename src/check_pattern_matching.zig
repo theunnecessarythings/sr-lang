@@ -228,6 +228,33 @@ pub fn checkPattern(
             if (!rp.end.isNone()) {
                 _ = try self.checkExpr(ctx, ast_unit, rp.end.unwrap());
             }
+            // If both bounds are integer literals, validate that the range is not descending/empty.
+            if (!rp.start.isNone() and !rp.end.isNone()) {
+                const sid = rp.start.unwrap();
+                const eid = rp.end.unwrap();
+                if (ast_unit.exprs.index.kinds.items[sid.toRaw()] == .Literal and
+                    ast_unit.exprs.index.kinds.items[eid.toRaw()] == .Literal)
+                {
+                    const sl = ast_unit.exprs.get(.Literal, sid);
+                    const el = ast_unit.exprs.get(.Literal, eid);
+                    if (sl.kind == .int and el.kind == .int) {
+                        const sa = switch (sl.data) { .int => |info| info, else => null };
+                        const sb = switch (el.data) { .int => |info| info, else => null };
+                        if (sa != null and sb != null and sa.?.valid and sb.?.valid) {
+                            const max_i64: u128 = @intCast(std.math.maxInt(i64));
+                            if (sa.?.value <= max_i64 and sb.?.value <= max_i64) {
+                                const a: i64 = @intCast(sa.?.value);
+                                const b_raw: i64 = @intCast(sb.?.value);
+                                const b: i64 = if (rp.inclusive_right) b_raw else b_raw - 1;
+                                if (b < a) {
+                                    try self.context.diags.addError(ast_unit.exprs.locs.get(rp.loc), .descending_range_pattern, .{});
+                                    return false;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
             // Accept integer subjects only.
             return check_types.isIntegerKind(self, self.typeKind(value_ty));
         },
