@@ -1,6 +1,9 @@
 const std = @import("std");
 const lib = @import("compiler");
 const json = std.json;
+const ast = lib.ast;
+const types = lib.types;
+const package_mod = lib.package;
 
 const default_source = "sr-lang";
 
@@ -34,6 +37,60 @@ const LspDiagnostic = struct {
     relatedInformation: ?[]RelatedInformation = null,
 };
 
+const HoverInfo = struct {
+    message: []u8,
+    range: LspRange,
+};
+
+const DocumentStore = struct {
+    gpa: std.mem.Allocator,
+    map: std.StringHashMapUnmanaged(Document) = .{},
+
+    const Document = struct { text: []u8 };
+
+    fn init(gpa: std.mem.Allocator) DocumentStore {
+        return .{ .gpa = gpa };
+    }
+
+    fn deinit(self: *DocumentStore) void {
+        var it = self.map.iterator();
+        while (it.next()) |entry| {
+            self.gpa.free(entry.key_ptr.*);
+            self.gpa.free(entry.value_ptr.text);
+        }
+        self.map.deinit(self.gpa);
+    }
+
+    fn set(self: *DocumentStore, uri: []const u8, text: []const u8) !void {
+        const dup_text = try self.gpa.dupe(u8, text);
+        errdefer self.gpa.free(dup_text);
+
+        if (self.map.getPtr(uri)) |doc| {
+            self.gpa.free(doc.text);
+            doc.text = dup_text;
+            return;
+        }
+
+        const dup_uri = try self.gpa.dupe(u8, uri);
+        errdefer self.gpa.free(dup_uri);
+        try self.map.put(self.gpa, dup_uri, .{ .text = dup_text });
+    }
+
+    fn get(self: *DocumentStore, uri: []const u8) ?[]u8 {
+        if (self.map.getPtr(uri)) |doc| {
+            return doc.text;
+        }
+        return null;
+    }
+
+    fn remove(self: *DocumentStore, uri: []const u8) void {
+        if (self.map.fetchRemove(uri)) |kv| {
+            self.gpa.free(kv.key);
+            self.gpa.free(kv.value.text);
+        }
+    }
+};
+
 pub fn run(gpa: std.mem.Allocator) !void {
     var in_buf: [64 * 1024]u8 = undefined;
     var out_buf: [64 * 1024]u8 = undefined;
@@ -41,6 +98,8 @@ pub fn run(gpa: std.mem.Allocator) !void {
     var out_w = std.fs.File.stdout().writerStreaming(&out_buf);
     const In: *std.Io.Reader = &in_r.interface;
     const Out: *std.Io.Writer = &out_w.interface;
+    var docs = DocumentStore.init(gpa);
+    defer docs.deinit();
 
     while (true) {
         var hdr = try readHeaders(gpa, In);
@@ -84,11 +143,13 @@ pub fn run(gpa: std.mem.Allocator) !void {
         } else if (std.mem.eql(u8, req.method, "exit")) {
             return;
         } else if (std.mem.eql(u8, req.method, "textDocument/didOpen")) {
-            if (req.params) |p| try onDidOpen(Out, gpa, p);
+            if (req.params) |p| try onDidOpen(Out, gpa, &docs, p);
         } else if (std.mem.eql(u8, req.method, "textDocument/didChange")) {
-            if (req.params) |p| try onDidChange(Out, gpa, p);
+            if (req.params) |p| try onDidChange(Out, gpa, &docs, p);
+        } else if (std.mem.eql(u8, req.method, "textDocument/didClose")) {
+            if (req.params) |p| try onDidClose(Out, gpa, &docs, p);
         } else if (std.mem.eql(u8, req.method, "textDocument/hover")) {
-            if (req.params) |p| try onHover(Out, gpa, req.id orelse 0, p);
+            if (req.params) |p| try onHover(Out, gpa, &docs, req.id orelse 0, p);
         } else if (std.mem.eql(u8, req.method, "textDocument/completion")) {
             try respondCompletion(Out, gpa, req.id orelse 0);
         } else {
@@ -195,16 +256,17 @@ fn respondInitialize(out: *std.Io.Writer, gpa: std.mem.Allocator, id: u64) !void
     try writeJson(out, gpa, Resp{ .id = id });
 }
 
-fn onDidOpen(out: *std.Io.Writer, gpa: std.mem.Allocator, params: json.Value) !void {
+fn onDidOpen(out: *std.Io.Writer, gpa: std.mem.Allocator, docs: *DocumentStore, params: json.Value) !void {
     const P = struct {
         textDocument: struct { uri: []const u8, text: []const u8 },
     };
     var p = try json.parseFromValue(P, gpa, params, .{ .ignore_unknown_fields = true });
     defer p.deinit();
-    try publishDiagnostics(out, gpa, p.value.textDocument.uri, p.value.textDocument.text);
+    try docs.set(p.value.textDocument.uri, p.value.textDocument.text);
+    try publishDiagnostics(out, gpa, docs, p.value.textDocument.uri);
 }
 
-fn onDidChange(out: *std.Io.Writer, gpa: std.mem.Allocator, params: json.Value) !void {
+fn onDidChange(out: *std.Io.Writer, gpa: std.mem.Allocator, docs: *DocumentStore, params: json.Value) !void {
     const P = struct {
         textDocument: struct { uri: []const u8 },
         contentChanges: []const struct { text: []const u8 },
@@ -212,17 +274,65 @@ fn onDidChange(out: *std.Io.Writer, gpa: std.mem.Allocator, params: json.Value) 
     var p = try json.parseFromValue(P, gpa, params, .{ .ignore_unknown_fields = true });
     defer p.deinit();
     if (p.value.contentChanges.len == 0) return;
-    try publishDiagnostics(out, gpa, p.value.textDocument.uri, p.value.contentChanges[0].text);
+    try docs.set(p.value.textDocument.uri, p.value.contentChanges[0].text);
+    try publishDiagnostics(out, gpa, docs, p.value.textDocument.uri);
 }
 
-fn onHover(out: *std.Io.Writer, gpa: std.mem.Allocator, id: u64, params: json.Value) !void {
-    _ = params; // toy
+fn onDidClose(out: *std.Io.Writer, gpa: std.mem.Allocator, docs: *DocumentStore, params: json.Value) !void {
+    const P = struct {
+        textDocument: struct { uri: []const u8 },
+    };
+    var p = try json.parseFromValue(P, gpa, params, .{ .ignore_unknown_fields = true });
+    defer p.deinit();
+    const uri = p.value.textDocument.uri;
+    docs.remove(uri);
+    const Msg = struct {
+        jsonrpc: []const u8 = "2.0",
+        method: []const u8 = "textDocument/publishDiagnostics",
+        params: struct { uri: []const u8, diagnostics: []const LspDiagnostic },
+    };
+    const empty_diags = [_]LspDiagnostic{};
+    try writeJson(out, gpa, Msg{ .params = .{ .uri = uri, .diagnostics = &empty_diags } });
+}
+
+fn onHover(out: *std.Io.Writer, gpa: std.mem.Allocator, docs: *DocumentStore, id: u64, params: json.Value) !void {
+    const P = struct {
+        textDocument: struct { uri: []const u8 },
+        position: struct { line: u32, character: u32 },
+    };
+    var p = try json.parseFromValue(P, gpa, params, .{ .ignore_unknown_fields = true });
+    defer p.deinit();
+
+    const uri = p.value.textDocument.uri;
+    const text = docs.get(uri) orelse {
+        try writeJson(out, gpa, .{ .jsonrpc = "2.0", .id = id, .result = null });
+        return;
+    };
+
+    const offset = positionToOffset(text, p.value.position.line, p.value.position.character);
+    const hover_info = try computeHover(gpa, uri, text, offset);
+
     const Resp = struct {
         jsonrpc: []const u8 = "2.0",
         id: u64,
-        result: ?struct { contents: struct { kind: []const u8 = "markdown", value: []const u8 } } = null,
+        result: ?struct {
+            contents: struct { kind: []const u8 = "markdown", value: []const u8 },
+            range: LspRange,
+        } = null,
     };
-    try writeJson(out, gpa, Resp{ .id = id, .result = .{ .contents = .{ .value = "**hover**: test_lsp" } } });
+
+    if (hover_info) |info| {
+        defer gpa.free(info.message);
+        try writeJson(out, gpa, Resp{
+            .id = id,
+            .result = .{
+                .contents = .{ .value = info.message },
+                .range = info.range,
+            },
+        });
+    } else {
+        try writeJson(out, gpa, Resp{ .id = id, .result = null });
+    }
 }
 
 fn respondCompletion(out: *std.Io.Writer, gpa: std.mem.Allocator, id: u64) !void {
@@ -232,7 +342,19 @@ fn respondCompletion(out: *std.Io.Writer, gpa: std.mem.Allocator, id: u64) !void
     try writeJson(out, gpa, Resp{ .id = id, .result = &items });
 }
 
-fn publishDiagnostics(out: *std.Io.Writer, gpa: std.mem.Allocator, uri: []const u8, text: []const u8) !void {
+fn publishDiagnostics(out: *std.Io.Writer, gpa: std.mem.Allocator, docs: *DocumentStore, uri: []const u8) !void {
+    const text_mut = docs.get(uri) orelse {
+        const Msg = struct {
+            jsonrpc: []const u8 = "2.0",
+            method: []const u8 = "textDocument/publishDiagnostics",
+            params: struct { uri: []const u8, diagnostics: []const LspDiagnostic },
+        };
+        const empty_diags = [_]LspDiagnostic{};
+        try writeJson(out, gpa, Msg{ .params = .{ .uri = uri, .diagnostics = &empty_diags } });
+        return;
+    };
+    const text: []const u8 = text_mut;
+
     var context = lib.compile.Context.init(gpa);
     defer context.deinit();
 
@@ -258,7 +380,7 @@ fn publishDiagnostics(out: *std.Io.Writer, gpa: std.mem.Allocator, uri: []const 
                 for (rel_slice) |rel| {
                     gpa.free(rel.message);
                 }
-                gpa.free(std.mem.sliceAsBytes(rel_slice));
+                gpa.free(rel_slice);
             }
         }
         diags.deinit(gpa);
@@ -425,4 +547,130 @@ fn severityToLsp(sev: Severity) ?u32 {
         .warning => 2,
         .note => 3,
     };
+}
+
+fn computeHover(gpa: std.mem.Allocator, uri: []const u8, text: []const u8, offset_in: usize) !?HoverInfo {
+    var context = lib.compile.Context.init(gpa);
+    defer context.deinit();
+
+    const path = try fileUriToPath(gpa, uri);
+    defer gpa.free(path);
+
+    const offset = if (offset_in > text.len) text.len else offset_in;
+    const file_id = try context.source_manager.setVirtualSourceByPath(path, text);
+    var pipeline = lib.pipeline.Pipeline.init(gpa, &context);
+
+    _ = pipeline.run(path, &.{}, .check) catch |err| switch (err) {
+        error.ParseFailed, error.TypeCheckFailed, error.LoweringFailed, error.TirLoweringFailed, error.TooManyErrors => return null,
+        else => {
+            std.debug.print("[lsp] hover pipeline error: {s}\n", .{@errorName(err)});
+            return null;
+        },
+    };
+    if (context.diags.anyErrors()) return null;
+
+    const ast_unit = findAstForFile(&context.compilation_unit, file_id) orelse return null;
+    const expr_id = findExprAt(ast_unit, offset) orelse return null;
+    const loc = exprLoc(ast_unit, expr_id);
+    const type_id = getExprType(ast_unit, expr_id) orelse return null;
+
+    var msg_builder = std.Io.Writer.Allocating.init(gpa);
+    defer msg_builder.deinit();
+    try msg_builder.writer.print("```sr\n", .{});
+    try context.type_store.fmt(type_id, &msg_builder.writer);
+    try msg_builder.writer.print("\n```", .{});
+    const message = try msg_builder.toOwnedSlice();
+
+    return HoverInfo{
+        .message = message,
+        .range = locToRange(text, loc),
+    };
+}
+
+fn findAstForFile(unit: *package_mod.CompilationUnit, file_id: u32) ?*ast.Ast {
+    var pkg_iter = unit.packages.iterator();
+    while (pkg_iter.next()) |pkg| {
+        var source_iter = pkg.value_ptr.sources.iterator();
+        while (source_iter.next()) |entry| {
+            if (entry.value_ptr.file_id == file_id) {
+                if (entry.value_ptr.ast) |ast_unit| return ast_unit;
+                return null;
+            }
+        }
+    }
+    return null;
+}
+
+fn findExprAt(ast_unit: *ast.Ast, offset: usize) ?ast.ExprId {
+    const kinds = ast_unit.exprs.index.kinds.items;
+    var best: ?ast.ExprId = null;
+    var best_span: usize = std.math.maxInt(usize);
+
+    var i: usize = 0;
+    while (i < kinds.len) : (i += 1) {
+        const expr_id = ast.ExprId.fromRaw(@intCast(i));
+        const loc = exprLoc(ast_unit, expr_id);
+        const start = loc.start;
+        const end = if (loc.end > loc.start) loc.end else loc.start + 1;
+        if (offset < start or offset >= end) continue;
+        const span = end - start;
+        if (span < best_span) {
+            best_span = span;
+            best = expr_id;
+        }
+    }
+    return best;
+}
+
+fn exprLoc(ast_unit: *ast.Ast, expr_id: ast.ExprId) Loc {
+    const kinds = ast_unit.exprs.index.kinds.items;
+    const kind = kinds[expr_id.toRaw()];
+    return switch (kind) {
+        inline else => |k| blk: {
+            const row = ast_unit.exprs.get(k, expr_id);
+            break :blk ast_unit.exprs.locs.get(row.loc);
+        },
+    };
+}
+
+fn getExprType(ast_unit: *ast.Ast, expr_id: ast.ExprId) ?types.TypeId {
+    const idx = expr_id.toRaw();
+    if (idx >= ast_unit.type_info.expr_types.items.len) return null;
+    return ast_unit.type_info.expr_types.items[idx];
+}
+
+fn positionToOffset(text: []const u8, target_line: u32, target_character: u32) usize {
+    var line: u32 = 0;
+    var idx: usize = 0;
+    var last_line_start: usize = 0;
+
+    while (idx < text.len and line < target_line) : (idx += 1) {
+        const c = text[idx];
+        if (c == '\n') {
+            line += 1;
+            last_line_start = idx + 1;
+        } else if (c == '\r') {
+            line += 1;
+            last_line_start = idx + 1;
+            if (idx + 1 < text.len and text[idx + 1] == '\n') idx += 1;
+        }
+    }
+
+    if (line != target_line) return text.len;
+
+    idx = last_line_start;
+    var character: u32 = 0;
+    while (idx < text.len and character < target_character) : (idx += 1) {
+        const c = text[idx];
+        if (c == '\n') break;
+        if (c == '\r') {
+            if (idx + 1 < text.len and text[idx + 1] == '\n') {
+                idx += 1;
+            }
+            break;
+        }
+        character += 1;
+    }
+
+    return idx;
 }

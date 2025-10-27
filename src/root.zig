@@ -14,3 +14,4 @@ pub const tir = @import("tir.zig");
 pub const ast = @import("ast.zig");
 pub const lower_to_ast = @import("lower_to_ast.zig");
 pub const json_printer = @import("json_printer.zig");
+pub const package = @import("package.zig");
