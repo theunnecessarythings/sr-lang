@@ -184,6 +184,8 @@ pub fn run(gpa: std.mem.Allocator) !void {
             if (req.params) |p| try onDidChange(Out, gpa, &docs, p);
         } else if (std.mem.eql(u8, req.method, "textDocument/didClose")) {
             if (req.params) |p| try onDidClose(Out, gpa, &docs, p);
+        } else if (std.mem.eql(u8, req.method, "textDocument/definition")) {
+            if (req.params) |p| try onGoToDefinition(Out, gpa, &docs, req.id orelse 0, p);
         } else if (std.mem.eql(u8, req.method, "textDocument/hover")) {
             if (req.params) |p| try onHover(Out, gpa, &docs, req.id orelse 0, p);
         } else if (std.mem.eql(u8, req.method, "textDocument/completion")) {
@@ -280,6 +282,7 @@ fn respondInitialize(out: *std.Io.Writer, gpa: std.mem.Allocator, id: u64) !void
     const Caps = struct {
         textDocumentSync: u32 = 1, // Full sync (simple)
         hoverProvider: bool = true,
+        definitionProvider: bool = true,
         completionProvider: struct { triggerCharacters: []const []const u8 } = .{ .triggerCharacters = &.{"."} },
         semanticTokensProvider: struct {
             legend: struct {
@@ -378,6 +381,576 @@ fn onHover(out: *std.Io.Writer, gpa: std.mem.Allocator, docs: *DocumentStore, id
     } else {
         try writeJson(out, gpa, Resp{ .id = id, .result = null });
     }
+}
+
+const Symbol = struct {
+    decl_loc: ast.LocId,
+};
+
+const Scope = struct {
+    symbols: std.StringHashMap(Symbol),
+    parent: ?*const Scope,
+    gpa: std.mem.Allocator,
+
+    fn init(gpa: std.mem.Allocator, parent: ?*const Scope) Scope {
+        return .{
+            .symbols = std.StringHashMap(Symbol).init(gpa),
+            .parent = parent,
+            .gpa = gpa,
+        };
+    }
+
+    fn deinit(self: *Scope) void {
+        self.symbols.deinit();
+    }
+
+    fn declare(self: *Scope, name: []const u8, loc: ast.LocId) !void {
+        try self.symbols.put(name, .{ .decl_loc = loc });
+    }
+
+    fn lookup(self: *const Scope, name: []const u8) ?Symbol {
+        if (self.symbols.get(name)) |symbol| {
+            return symbol;
+        }
+        if (self.parent) |p| {
+            return p.lookup(name);
+        }
+        return null;
+    }
+};
+
+const SymbolResolver = struct {
+    gpa: std.mem.Allocator,
+    ast_unit: *ast.Ast,
+    resolution_map: *std.AutoArrayHashMap(u32, ast.LocId),
+
+    pub fn run(gpa: std.mem.Allocator, ast_unit: *ast.Ast, resolution_map: *std.AutoArrayHashMap(u32, ast.LocId)) !void {
+        var self = SymbolResolver{
+            .gpa = gpa,
+            .ast_unit = ast_unit,
+            .resolution_map = resolution_map,
+        };
+
+        var global_scope = Scope.init(gpa, null);
+        defer global_scope.deinit();
+
+        try self.walkUnit(&global_scope);
+    }
+
+    fn walkUnit(self: *SymbolResolver, scope: *Scope) !void {
+        const decls = self.ast_unit.exprs.decl_pool.slice(self.ast_unit.unit.decls);
+        for (decls) |decl_id| {
+            try self.walkDecl(scope, decl_id);
+        }
+        for (decls) |decl_id| {
+            const decl_row = self.ast_unit.exprs.Decl.get(decl_id);
+            try self.walkExpr(scope, decl_row.value);
+            if (!decl_row.ty.isNone()) {
+                try self.walkExpr(scope, decl_row.ty.unwrap());
+            }
+        }
+    }
+
+    fn walkDecl(self: *SymbolResolver, scope: *Scope, decl_id: ast.DeclId) !void {
+        const decl_row = self.ast_unit.exprs.Decl.get(decl_id);
+        if (!decl_row.pattern.isNone()) {
+            try self.walkPattern(scope, patternFromOpt(decl_row.pattern));
+        }
+    }
+
+    fn walkStmt(self: *SymbolResolver, scope: *Scope, stmt_id: ast.StmtId) anyerror!void {
+        const stmt_store = &self.ast_unit.stmts;
+        const stmt_kind = stmt_store.index.kinds.items[stmt_id.toRaw()];
+        switch (stmt_kind) {
+            .Expr => {
+                const row = stmt_store.get(.Expr, stmt_id);
+                try self.walkExpr(scope, row.expr);
+            },
+            .Decl => {
+                const row = stmt_store.get(.Decl, stmt_id);
+                try self.walkDecl(scope, row.decl);
+                const decl_row = self.ast_unit.exprs.Decl.get(row.decl);
+                try self.walkExpr(scope, decl_row.value);
+                if (!decl_row.ty.isNone()) {
+                    try self.walkExpr(scope, decl_row.ty.unwrap());
+                }
+            },
+            .Assign => {
+                const row = stmt_store.get(.Assign, stmt_id);
+                try self.walkExpr(scope, row.left);
+                try self.walkExpr(scope, row.right);
+            },
+            else => {},
+        }
+    }
+
+    fn walkExpr(self: *SymbolResolver, scope: *const Scope, expr_id: ast.ExprId) !void {
+        const expr_store = &self.ast_unit.exprs;
+        const expr_kind = expr_store.index.kinds.items[expr_id.toRaw()];
+
+        switch (expr_kind) {
+            .Ident => {
+                const row = expr_store.get(.Ident, expr_id);
+                if (scope.lookup(expr_store.strs.get(row.name))) |symbol| {
+                    try self.resolution_map.put(expr_id.toRaw(), symbol.decl_loc);
+                }
+            },
+            .Block => {
+                const row = expr_store.get(.Block, expr_id);
+                var block_scope = Scope.init(self.gpa, scope);
+                defer block_scope.deinit();
+                const stmts = self.ast_unit.stmts.stmt_pool.slice(row.items);
+                for (stmts) |stmt_id| {
+                    try self.walkStmt(&block_scope, stmt_id);
+                }
+            },
+            .FunctionLit => {
+                const row = expr_store.get(.FunctionLit, expr_id);
+                var fn_scope = Scope.init(self.gpa, scope);
+                defer fn_scope.deinit();
+
+                const params = expr_store.param_pool.slice(row.params);
+                for (params) |param_id| {
+                    const param = expr_store.Param.get(param_id);
+                    if (!param.pat.isNone()) {
+                        try self.walkPattern(&fn_scope, patternFromOpt(param.pat));
+                    }
+                }
+
+                if (!row.body.isNone()) {
+                    try self.walkExpr(&fn_scope, row.body.unwrap());
+                }
+            },
+            .Closure => {
+                const row = expr_store.get(.Closure, expr_id);
+                var fn_scope = Scope.init(self.gpa, scope);
+                defer fn_scope.deinit();
+
+                const params = expr_store.param_pool.slice(row.params);
+                for (params) |param_id| {
+                    const param = expr_store.Param.get(param_id);
+                    if (!param.pat.isNone()) {
+                        try self.walkPattern(&fn_scope, patternFromOpt(param.pat));
+                    }
+                }
+                try self.walkExpr(&fn_scope, row.body);
+            },
+            .For => {
+                const row = expr_store.get(.For, expr_id);
+                var for_scope = Scope.init(self.gpa, scope);
+                defer for_scope.deinit();
+                try self.walkPattern(&for_scope, row.pattern);
+                try self.walkExpr(scope, row.iterable);
+                try self.walkExpr(&for_scope, row.body);
+            },
+            .While => {
+                const row = expr_store.get(.While, expr_id);
+                if (row.is_pattern and !row.pattern.isNone()) {
+                    var while_scope = Scope.init(self.gpa, scope);
+                    defer while_scope.deinit();
+                    try self.walkPattern(&while_scope, patternFromOpt(row.pattern));
+                    if (!row.cond.isNone()) {
+                        try self.walkExpr(scope, row.cond.unwrap());
+                    }
+                    try self.walkExpr(&while_scope, row.body);
+                } else {
+                    if (!row.cond.isNone()) {
+                        try self.walkExpr(scope, row.cond.unwrap());
+                    }
+                    try self.walkExpr(scope, row.body);
+                }
+            },
+            .Unary => {
+                const row = expr_store.get(.Unary, expr_id);
+                try self.walkExpr(scope, row.expr);
+            },
+            .Binary => {
+                const row = expr_store.get(.Binary, expr_id);
+                try self.walkExpr(scope, row.left);
+                try self.walkExpr(scope, row.right);
+            },
+            .Range => {
+                const row = expr_store.get(.Range, expr_id);
+                if (!row.start.isNone()) try self.walkExpr(scope, row.start.unwrap());
+                if (!row.end.isNone()) try self.walkExpr(scope, row.end.unwrap());
+            },
+            .Deref => {
+                const row = expr_store.get(.Deref, expr_id);
+                try self.walkExpr(scope, row.expr);
+            },
+            .ArrayLit => {
+                const row = expr_store.get(.ArrayLit, expr_id);
+                for (expr_store.expr_pool.slice(row.elems)) |elem| try self.walkExpr(scope, elem);
+            },
+            .TupleLit => {
+                const row = expr_store.get(.TupleLit, expr_id);
+                for (expr_store.expr_pool.slice(row.elems)) |elem| try self.walkExpr(scope, elem);
+            },
+            .MapLit => {
+                const row = expr_store.get(.MapLit, expr_id);
+                for (expr_store.kv_pool.slice(row.entries)) |kv_id| {
+                    const kv = expr_store.KeyValue.get(kv_id);
+                    try self.walkExpr(scope, kv.key);
+                    try self.walkExpr(scope, kv.value);
+                }
+            },
+            .Call => {
+                const row = expr_store.get(.Call, expr_id);
+                try self.walkExpr(scope, row.callee);
+                for (expr_store.expr_pool.slice(row.args)) |arg| try self.walkExpr(scope, arg);
+            },
+            .IndexAccess => {
+                const row = expr_store.get(.IndexAccess, expr_id);
+                try self.walkExpr(scope, row.collection);
+                try self.walkExpr(scope, row.index);
+            },
+            .FieldAccess => {
+                const row = expr_store.get(.FieldAccess, expr_id);
+                try self.walkExpr(scope, row.parent);
+            },
+            .StructLit => {
+                const row = expr_store.get(.StructLit, expr_id);
+                if (!row.ty.isNone()) try self.walkExpr(scope, row.ty.unwrap());
+                for (expr_store.sfv_pool.slice(row.fields)) |field_id| {
+                    const field = expr_store.StructFieldValue.get(field_id);
+                    try self.walkExpr(scope, field.value);
+                }
+            },
+            .ComptimeBlock => {
+                const row = expr_store.get(.ComptimeBlock, expr_id);
+                try self.walkExpr(scope, row.block);
+            },
+            .CodeBlock => {
+                const row = expr_store.get(.CodeBlock, expr_id);
+                try self.walkExpr(scope, row.block);
+            },
+            .AsyncBlock => {
+                const row = expr_store.get(.AsyncBlock, expr_id);
+                try self.walkExpr(scope, row.body);
+            },
+            .MlirBlock => {
+                const row = expr_store.get(.MlirBlock, expr_id);
+                for (expr_store.expr_pool.slice(row.args)) |arg| try self.walkExpr(scope, arg);
+            },
+            .Insert => {
+                const row = expr_store.get(.Insert, expr_id);
+                try self.walkExpr(scope, row.expr);
+            },
+            .Return => {
+                const row = expr_store.get(.Return, expr_id);
+                if (!row.value.isNone()) try self.walkExpr(scope, row.value.unwrap());
+            },
+            .If => {
+                const row = expr_store.get(.If, expr_id);
+                try self.walkExpr(scope, row.cond);
+                try self.walkExpr(scope, row.then_block);
+                if (!row.else_block.isNone()) try self.walkExpr(scope, row.else_block.unwrap());
+            },
+            .Match => {
+                const row = expr_store.get(.Match, expr_id);
+                try self.walkExpr(scope, row.expr);
+                const arms = expr_store.arm_pool.slice(row.arms);
+                for (arms) |arm_id| {
+                    const arm = expr_store.MatchArm.get(arm_id);
+                    var arm_scope = Scope.init(self.gpa, scope);
+                    defer arm_scope.deinit();
+                    try self.walkPattern(&arm_scope, arm.pattern);
+                    if (!arm.guard.isNone()) {
+                        try self.walkExpr(&arm_scope, arm.guard.unwrap());
+                    }
+                    try self.walkExpr(&arm_scope, arm.body);
+                }
+            },
+            .Break => {
+                const row = expr_store.get(.Break, expr_id);
+                if (!row.value.isNone()) try self.walkExpr(scope, row.value.unwrap());
+            },
+            .Defer => {
+                const row = expr_store.get(.Defer, expr_id);
+                try self.walkExpr(scope, row.expr);
+            },
+            .ErrDefer => {
+                const row = expr_store.get(.ErrDefer, expr_id);
+                try self.walkExpr(scope, row.expr);
+            },
+            .ErrUnwrap => {
+                const row = expr_store.get(.ErrUnwrap, expr_id);
+                try self.walkExpr(scope, row.expr);
+            },
+            .OptionalUnwrap => {
+                const row = expr_store.get(.OptionalUnwrap, expr_id);
+                try self.walkExpr(scope, row.expr);
+            },
+            .Await => {
+                const row = expr_store.get(.Await, expr_id);
+                try self.walkExpr(scope, row.expr);
+            },
+            .Cast => {
+                const row = expr_store.get(.Cast, expr_id);
+                try self.walkExpr(scope, row.expr);
+                try self.walkExpr(scope, row.ty);
+            },
+            .Catch => {
+                const row = expr_store.get(.Catch, expr_id);
+                try self.walkExpr(scope, row.expr);
+                var handler_scope = Scope.init(self.gpa, scope);
+                defer handler_scope.deinit();
+                if (!row.binding_name.isNone()) {
+                    try handler_scope.declare(expr_store.strs.get(row.binding_name.unwrap()), row.binding_loc.unwrap());
+                }
+                try self.walkExpr(&handler_scope, row.handler);
+            },
+            .TypeOf => {
+                const row = expr_store.get(.TypeOf, expr_id);
+                try self.walkExpr(scope, row.expr);
+            },
+            .TupleType => {
+                const row = expr_store.get(.TupleType, expr_id);
+                for (expr_store.expr_pool.slice(row.elems)) |elem| try self.walkExpr(scope, elem);
+            },
+            .ArrayType => {
+                const row = expr_store.get(.ArrayType, expr_id);
+                try self.walkExpr(scope, row.elem);
+                try self.walkExpr(scope, row.size);
+            },
+            .DynArrayType => {
+                const row = expr_store.get(.DynArrayType, expr_id);
+                try self.walkExpr(scope, row.elem);
+            },
+            .MapType => {
+                const row = expr_store.get(.MapType, expr_id);
+                try self.walkExpr(scope, row.key);
+                try self.walkExpr(scope, row.value);
+            },
+            .SliceType => {
+                const row = expr_store.get(.SliceType, expr_id);
+                try self.walkExpr(scope, row.elem);
+            },
+            .OptionalType => {
+                const row = expr_store.get(.OptionalType, expr_id);
+                try self.walkExpr(scope, row.elem);
+            },
+            .ErrorSetType => {
+                const row = expr_store.get(.ErrorSetType, expr_id);
+                try self.walkExpr(scope, row.err);
+                try self.walkExpr(scope, row.value);
+            },
+            .StructType => {
+                const row = expr_store.get(.StructType, expr_id);
+                for (expr_store.sfield_pool.slice(row.fields)) |field_id| {
+                    const field = expr_store.StructField.get(field_id);
+                    try self.walkExpr(scope, field.ty);
+                    if (!field.value.isNone()) try self.walkExpr(scope, field.value.unwrap());
+                }
+            },
+            .EnumType => {
+                const row = expr_store.get(.EnumType, expr_id);
+                if (!row.discriminant.isNone()) try self.walkExpr(scope, row.discriminant.unwrap());
+                for (expr_store.efield_pool.slice(row.fields)) |field_id| {
+                    const field = expr_store.EnumField.get(field_id);
+                    if (!field.value.isNone()) try self.walkExpr(scope, field.value.unwrap());
+                }
+            },
+            .VariantType => {
+                const row = expr_store.get(.VariantType, expr_id);
+                for (expr_store.vfield_pool.slice(row.fields)) |field_id| {
+                    const field = expr_store.VariantField.get(field_id);
+                    if (!field.value.isNone()) try self.walkExpr(scope, field.value.unwrap());
+                }
+            },
+            .UnionType => {
+                const row = expr_store.get(.UnionType, expr_id);
+                for (expr_store.sfield_pool.slice(row.fields)) |field_id| {
+                    const field = expr_store.StructField.get(field_id);
+                    try self.walkExpr(scope, field.ty);
+                    if (!field.value.isNone()) try self.walkExpr(scope, field.value.unwrap());
+                }
+            },
+            .PointerType => {
+                const row = expr_store.get(.PointerType, expr_id);
+                try self.walkExpr(scope, row.elem);
+            },
+            .SimdType => {
+                const row = expr_store.get(.SimdType, expr_id);
+                try self.walkExpr(scope, row.elem);
+                try self.walkExpr(scope, row.lanes);
+            },
+            .ComplexType => {
+                const row = expr_store.get(.ComplexType, expr_id);
+                try self.walkExpr(scope, row.elem);
+            },
+            .TensorType => {
+                const row = expr_store.get(.TensorType, expr_id);
+                try self.walkExpr(scope, row.elem);
+                for (expr_store.expr_pool.slice(row.shape)) |elem| try self.walkExpr(scope, elem);
+            },
+            else => {},
+        }
+    }
+
+    fn walkPattern(self: *SymbolResolver, scope: *Scope, pat_id: ast.PatternId) !void {
+        const pat_store = &self.ast_unit.pats;
+        const pat_kind = pat_store.index.kinds.items[pat_id.toRaw()];
+        switch (pat_kind) {
+            .Binding => {
+                const row = pat_store.get(.Binding, pat_id);
+                try scope.declare(self.ast_unit.pats.strs.get(row.name), row.loc);
+            },
+            .Tuple => {
+                const row = pat_store.get(.Tuple, pat_id);
+                const elems = pat_store.pat_pool.slice(row.elems);
+                for (elems) |elem| try self.walkPattern(scope, elem);
+            },
+            .Slice => {
+                const row = pat_store.get(.Slice, pat_id);
+                const elems = pat_store.pat_pool.slice(row.elems);
+                for (elems) |elem| try self.walkPattern(scope, elem);
+                if (!row.rest_binding.isNone()) {
+                    try self.walkPattern(scope, patternFromOpt(row.rest_binding));
+                }
+            },
+            .Struct => {
+                const row = pat_store.get(.Struct, pat_id);
+                const fields = pat_store.field_pool.slice(row.fields);
+                for (fields) |field_id| {
+                    const field = pat_store.StructField.get(field_id);
+                    try self.walkPattern(scope, field.pattern);
+                }
+            },
+            .VariantStruct => {
+                const row = pat_store.get(.VariantStruct, pat_id);
+                const fields = pat_store.field_pool.slice(row.fields);
+                for (fields) |field_id| {
+                    const field = pat_store.StructField.get(field_id);
+                    try self.walkPattern(scope, field.pattern);
+                }
+            },
+            .VariantTuple => {
+                const row = pat_store.get(.VariantTuple, pat_id);
+                const elems = pat_store.pat_pool.slice(row.elems);
+                for (elems) |elem| try self.walkPattern(scope, elem);
+            },
+            .Or => {
+                const row = pat_store.get(.Or, pat_id);
+                const alts = pat_store.pat_pool.slice(row.alts);
+                for (alts) |alt| try self.walkPattern(scope, alt);
+            },
+            .At => {
+                const row = pat_store.get(.At, pat_id);
+                try scope.declare(self.ast_unit.pats.strs.get(row.binder), row.loc);
+                try self.walkPattern(scope, row.pattern);
+            },
+            else => {},
+        }
+    }
+};
+
+fn onGoToDefinition(out: *std.io.Writer, gpa: std.mem.Allocator, docs: *DocumentStore, id: u64, params: json.Value) !void {
+    const P = struct {
+        textDocument: struct { uri: []const u8 },
+        position: struct { line: u32, character: u32 },
+    };
+    var p = try json.parseFromValue(P, gpa, params, .{ .ignore_unknown_fields = true });
+    defer p.deinit();
+
+    const uri = p.value.textDocument.uri;
+    const text = docs.get(uri) orelse {
+        try writeJson(out, gpa, .{ .jsonrpc = "2.0", .id = id, .result = null });
+        return;
+    };
+
+    var context = lib.compile.Context.init(gpa);
+    defer context.deinit();
+
+    const path = try fileUriToPath(gpa, uri);
+    defer gpa.free(path);
+
+    const offset = positionToOffset(text, p.value.position.line, p.value.position.character);
+    const file_id = try context.source_manager.setVirtualSourceByPath(path, text);
+    var pipeline = lib.pipeline.Pipeline.init(gpa, &context);
+
+    _ = pipeline.run(path, &.{}, .check) catch |err| switch (err) {
+        error.ParseFailed, error.TypeCheckFailed, error.LoweringFailed, error.TirLoweringFailed, error.TooManyErrors => {
+            try writeJson(out, gpa, .{ .jsonrpc = "2.0", .id = id, .result = null });
+            return;
+        },
+        else => {
+            std.debug.print("[lsp] definition pipeline error: {s}\n", .{@errorName(err)});
+            try writeJson(out, gpa, .{ .jsonrpc = "2.0", .id = id, .result = null });
+            return;
+        },
+    };
+    if (context.diags.anyErrors()) {
+        try writeJson(out, gpa, .{ .jsonrpc = "2.0", .id = id, .result = null });
+        return;
+    }
+
+    const ast_unit = findAstForFile(&context.compilation_unit, file_id) orelse {
+        try writeJson(out, gpa, .{ .jsonrpc = "2.0", .id = id, .result = null });
+        return;
+    };
+
+    var resolution_map = std.AutoArrayHashMap(u32, ast.LocId).init(gpa);
+    defer resolution_map.deinit();
+    try SymbolResolver.run(gpa, ast_unit, &resolution_map);
+
+    const expr_id = findExprAt(ast_unit, offset) orelse {
+        try writeJson(out, gpa, .{ .jsonrpc = "2.0", .id = id, .result = null });
+        return;
+    };
+
+    var result: ?struct { uri: []const u8, range: LspRange } = null;
+
+    if (resolution_map.get(expr_id.toRaw())) |decl_loc_id| {
+        const decl_loc = ast_unit.exprs.locs.get(decl_loc_id);
+        const decl_file_id = decl_loc.file_id;
+
+        const decl_path = context.source_manager.get(decl_file_id) orelse {
+            try writeJson(out, gpa, .{ .jsonrpc = "2.0", .id = id, .result = null });
+            return;
+        };
+        const decl_text = context.source_manager.read(decl_file_id) catch {
+            try writeJson(out, gpa, .{ .jsonrpc = "2.0", .id = id, .result = null });
+            return;
+        };
+        defer gpa.free(decl_text);
+
+        const decl_uri = try pathToUri(gpa, decl_path);
+        defer gpa.free(decl_uri);
+
+        const range = locToRange(decl_text, decl_loc);
+
+        const result_uri = try gpa.dupe(u8, decl_uri);
+        result = .{ .uri = result_uri, .range = range };
+    } else if (ast_unit.type_info.getMethodBinding(expr_id)) |binding| blk: {
+        const decl_ast = binding.decl_ast;
+        const decl_row = decl_ast.exprs.Decl.get(binding.decl_id);
+        const decl_loc = decl_ast.exprs.locs.get(decl_row.loc);
+        const decl_file_id = decl_loc.file_id;
+
+        const decl_path = context.source_manager.get(decl_file_id) orelse break :blk;
+        const decl_text = context.source_manager.read(decl_file_id) catch break :blk;
+        defer gpa.free(decl_text);
+
+        const decl_uri = try pathToUri(gpa, decl_path);
+        defer gpa.free(decl_uri);
+
+        const range = locToRange(decl_text, decl_loc);
+
+        const result_uri = try gpa.dupe(u8, decl_uri);
+        result = .{ .uri = result_uri, .range = range };
+    }
+
+    if (result) |r| {
+        try writeJson(out, gpa, .{ .jsonrpc = "2.0", .id = id, .result = r });
+        gpa.free(r.uri);
+    } else {
+        try writeJson(out, gpa, .{ .jsonrpc = "2.0", .id = id, .result = null });
+    }
+}
+
+fn pathToUri(gpa: std.mem.Allocator, path: []const u8) ![]u8 {
+    return std.fmt.allocPrint(gpa, "file://{s}", .{path});
 }
 
 fn respondCompletion(out: *std.Io.Writer, gpa: std.mem.Allocator, id: u64) !void {
