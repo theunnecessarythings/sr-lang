@@ -2,6 +2,38 @@ const std = @import("std");
 const lib = @import("compiler");
 const json = std.json;
 
+const default_source = "sr-lang";
+
+const Loc = lib.lexer.Token.Loc;
+const Severity = lib.diagnostics.Severity;
+
+const LspPosition = struct {
+    line: u32,
+    character: u32,
+};
+
+const LspRange = struct {
+    start: LspPosition,
+    end: LspPosition,
+};
+
+const RelatedInformation = struct {
+    location: struct {
+        uri: []const u8,
+        range: LspRange,
+    },
+    message: []u8,
+};
+
+const LspDiagnostic = struct {
+    range: LspRange,
+    severity: ?u32 = null,
+    source: []const u8 = default_source,
+    message: []u8,
+    code: ?[]u8 = null,
+    relatedInformation: ?[]RelatedInformation = null,
+};
+
 pub fn run(gpa: std.mem.Allocator) !void {
     var in_buf: [64 * 1024]u8 = undefined;
     var out_buf: [64 * 1024]u8 = undefined;
@@ -157,7 +189,7 @@ fn respondInitialize(out: *std.Io.Writer, gpa: std.mem.Allocator, id: u64) !void
         id: u64,
         result: struct {
             capabilities: Caps = .{},
-            serverInfo: struct { name: []const u8 = "test_lsp", version: []const u8 = "0.1.0" } = .{},
+            serverInfo: struct { name: []const u8 = "sr_lsp", version: []const u8 = "0.1.0" } = .{},
         } = .{},
     };
     try writeJson(out, gpa, Resp{ .id = id });
@@ -201,41 +233,196 @@ fn respondCompletion(out: *std.Io.Writer, gpa: std.mem.Allocator, id: u64) !void
 }
 
 fn publishDiagnostics(out: *std.Io.Writer, gpa: std.mem.Allocator, uri: []const u8, text: []const u8) !void {
-    const Pos = struct { line: u32, character: u32 };
-    const Range = struct { start: Pos, end: Pos };
-    const Diag = struct {
-        range: Range,
-        severity: u32 = 2,
-        message: []const u8 = "Avoid 'foo'",
-        source: []const u8 = "test_lsp",
+    var context = lib.compile.Context.init(gpa);
+    defer context.deinit();
+
+    const path = try fileUriToPath(gpa, uri);
+    defer gpa.free(path);
+
+    const file_id = try context.source_manager.setVirtualSourceByPath(path, text);
+    var pipeline = lib.pipeline.Pipeline.init(gpa, &context);
+
+    _ = pipeline.run(path, &.{}, .check) catch |err| switch (err) {
+        error.ParseFailed, error.TypeCheckFailed, error.LoweringFailed, error.TirLoweringFailed, error.TooManyErrors => {},
+        else => {
+            std.debug.print("[lsp] pipeline error: {s}\n", .{@errorName(err)});
+        },
     };
 
-    var list = std.ArrayList(Diag){};
-    defer list.deinit(gpa);
+    var diags = std.ArrayList(LspDiagnostic){};
+    defer {
+        for (diags.items) |diag| {
+            gpa.free(diag.message);
+            if (diag.code) |code_bytes| gpa.free(code_bytes);
+            if (diag.relatedInformation) |rel_slice| {
+                for (rel_slice) |rel| {
+                    gpa.free(rel.message);
+                }
+                gpa.free(std.mem.sliceAsBytes(rel_slice));
+            }
+        }
+        diags.deinit(gpa);
+    }
 
-    var line: u32 = 0;
-    var col: u32 = 0;
-    var i: usize = 0;
-    while (i < text.len) : (i += 1) {
-        const c = text[i];
-        if (c == '\n') {
-            line += 1;
-            col = 0;
+    for (context.diags.messages.items) |message| {
+        if (message.loc.file_id != file_id) continue;
+
+        const msg_text = context.diags.messageToOwnedSlice(gpa, message) catch |err| {
+            std.debug.print("[lsp] failed to render diagnostic: {s}\n", .{@errorName(err)});
             continue;
+        };
+
+        var diag = LspDiagnostic{
+            .range = locToRange(text, message.loc),
+            .severity = severityToLsp(message.severity),
+            .message = msg_text,
+        };
+
+        diag.code = std.fmt.allocPrint(gpa, "{s}", .{@tagName(message.code)}) catch |err| {
+            std.debug.print("[lsp] failed to format diagnostic code: {s}\n", .{@errorName(err)});
+            gpa.free(diag.message);
+            continue;
+        };
+
+        var related = std.ArrayList(RelatedInformation){};
+        defer related.deinit(gpa);
+
+        for (message.notes.items) |note| {
+            const note_loc = note.loc orelse continue;
+            if (note_loc.file_id != file_id) continue;
+
+            const note_msg = context.diags.noteToOwnedSlice(gpa, note) catch |err| {
+                std.debug.print("[lsp] failed to render note: {s}\n", .{@errorName(err)});
+                continue;
+            };
+
+            try related.append(gpa, .{
+                .location = .{ .uri = uri, .range = locToRange(text, note_loc) },
+                .message = note_msg,
+            });
         }
-        if (i + 3 <= text.len and std.mem.eql(u8, text[i .. i + 3], "foo")) {
-            try list.append(gpa, .{ .range = .{ .start = .{ .line = line, .character = col }, .end = .{ .line = line, .character = col + 3 } } });
-            i += 2;
-            col += 3;
-        } else {
-            col += 1;
+
+        if (related.items.len != 0) {
+            diag.relatedInformation = related.toOwnedSlice(gpa) catch |err| {
+                std.debug.print("[lsp] failed to materialize related information: {s}\n", .{@errorName(err)});
+                for (related.items) |rel| {
+                    gpa.free(rel.message);
+                }
+                gpa.free(diag.code.?);
+                gpa.free(diag.message);
+                diag.relatedInformation = null;
+                continue;
+            };
         }
+
+        try diags.append(gpa, diag);
     }
 
     const Msg = struct {
         jsonrpc: []const u8 = "2.0",
         method: []const u8 = "textDocument/publishDiagnostics",
-        params: struct { uri: []const u8, diagnostics: []const Diag },
+        params: struct { uri: []const u8, diagnostics: []const LspDiagnostic },
     };
-    try writeJson(out, gpa, Msg{ .params = .{ .uri = uri, .diagnostics = list.items } });
+    try writeJson(out, gpa, Msg{ .params = .{ .uri = uri, .diagnostics = diags.items } });
+}
+
+fn fileUriToPath(gpa: std.mem.Allocator, uri: []const u8) ![]u8 {
+    if (!std.mem.startsWith(u8, uri, "file://")) {
+        return gpa.dupe(u8, uri);
+    }
+
+    var rest = uri["file://".len..];
+
+    if (rest.len >= 2 and rest[0] == '/' and rest[1] == '/') {
+        rest = rest[2..];
+    }
+
+    if (std.mem.indexOfScalar(u8, rest, '/')) |idx| {
+        rest = rest[idx..];
+    } else {
+        rest = "";
+    }
+
+    var out_buf = std.ArrayList(u8){};
+    errdefer out_buf.deinit(gpa);
+
+    var i: usize = 0;
+    while (i < rest.len) : (i += 1) {
+        const ch = rest[i];
+        if (ch == '%' and i + 2 < rest.len) {
+            if (hexDigit(rest[i + 1])) |hi| {
+                if (hexDigit(rest[i + 2])) |lo| {
+                    try out_buf.append(gpa, hi << 4 | lo);
+                    i += 2;
+                    continue;
+                }
+            }
+        }
+
+        try out_buf.append(gpa, ch);
+    }
+
+    if (out_buf.items.len == 0) {
+        try out_buf.append(gpa, '/');
+    }
+
+    return out_buf.toOwnedSlice(gpa);
+}
+
+fn hexDigit(c: u8) ?u8 {
+    return switch (c) {
+        '0'...'9' => c - '0',
+        'a'...'f' => c - 'a' + 10,
+        'A'...'F' => c - 'A' + 10,
+        else => null,
+    };
+}
+
+fn locToRange(text: []const u8, loc: Loc) LspRange {
+    const start_idx = clampOffset(text, loc.start);
+    const raw_end = if (loc.end > loc.start) loc.end else loc.start;
+    const end_idx = clampOffset(text, raw_end);
+
+    return .{
+        .start = offsetToPosition(text, start_idx),
+        .end = offsetToPosition(text, end_idx),
+    };
+}
+
+fn clampOffset(text: []const u8, offset: usize) usize {
+    if (offset > text.len) return text.len;
+    return offset;
+}
+
+fn offsetToPosition(text: []const u8, offset: usize) LspPosition {
+    var line: u32 = 0;
+    var col: u32 = 0;
+
+    var i: usize = 0;
+    while (i < offset and i < text.len) : (i += 1) {
+        switch (text[i]) {
+            '\n' => {
+                line += 1;
+                col = 0;
+            },
+            '\r' => {
+                line += 1;
+                col = 0;
+                if (i + 1 < offset and text[i + 1] == '\n') {
+                    i += 1;
+                }
+            },
+            else => col += 1,
+        }
+    }
+
+    return .{ .line = line, .character = col };
+}
+
+fn severityToLsp(sev: Severity) ?u32 {
+    return switch (sev) {
+        .err => 1,
+        .warning => 2,
+        .note => 3,
+    };
 }
