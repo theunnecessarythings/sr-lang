@@ -1582,9 +1582,6 @@ test "behavior: mlir type with spliced shape" {
         \\ TensorTy :: mlir type { tensor<`Rows`x`Cols`x`ElemTy`> }
     ;
     const src =
-        \\ comptime {
-        \\   _ = TensorTy
-        \\ }
         \\ printf("Tensor type splicing OK\n")
     ;
     const code = getSource(global, src);

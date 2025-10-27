@@ -2140,7 +2140,7 @@ fn emitCall(self: *Codegen, p: tir.Rows.Call, t: *const tir.TIR) !mlir.Value {
             .IndirectByVal => {
                 // build a temp agg, pass pointer
                 const stTy = try self.llvmTypeOf(sr);
-                const tmp = self.spillAgg(v, stTy, cls.alignment);
+                const tmp = self.spillAgg(v, stTy, if (cls.alignment == 0) 8 else cls.alignment);
                 var passv = tmp;
                 if (formal_index < finfo.?.param_types.len) {
                     const want_ty = finfo.?.param_types[formal_index];
@@ -2152,14 +2152,16 @@ fn emitCall(self: *Codegen, p: tir.Rows.Call, t: *const tir.TIR) !mlir.Value {
             .DirectScalar => {
                 const stTy = try self.llvmTypeOf(sr);
                 var passv: mlir.Value = undefined;
-                if (!stTy.isAInteger() and !stTy.isAFloat() and !stTy.isAVector()) {
-                    // aggregate -> pack
-                    const tmp = self.spillAgg(v, stTy, 1);
-                    if (cls.scalar0.?.isAInteger()) {
-                        const bits = cls.scalar0.?.getIntegerBitwidth();
-                        passv = self.loadIntAt(tmp, bits, 0);
-                    } else {
-                        var ld = OpBuilder.init("llvm.load", self.loc).builder()
+            if (!stTy.isAInteger() and !stTy.isAFloat() and !stTy.isAVector()) {
+                // aggregate -> pack (use natural alignment for the SR type)
+                const natural_align_usize = abi.abiSizeAlign(self, sr).alignment;
+                const natural_align: u32 = @intCast(@min(natural_align_usize, @as(usize, std.math.maxInt(u32))));
+                const tmp = self.spillAgg(v, stTy, if (natural_align == 0) 8 else natural_align);
+                if (cls.scalar0.?.isAInteger()) {
+                    const bits = cls.scalar0.?.getIntegerBitwidth();
+                    passv = self.loadIntAt(tmp, bits, 0);
+                } else {
+                    var ld = OpBuilder.init("llvm.load", self.loc).builder()
                             .operands(&.{tmp})
                             .results(&.{cls.scalar0.?}).build();
                         self.append(ld);
@@ -2250,7 +2252,7 @@ fn emitCall(self: *Codegen, p: tir.Rows.Call, t: *const tir.TIR) !mlir.Value {
                 return coerced;
             }
             // Caller expects an aggregate: write scalar into buffer and reload as struct
-            const tmp = self.spillAgg(self.undefOf(want_res_mlir), want_res_mlir, 1);
+            const tmp = self.spillAgg(self.undefOf(want_res_mlir), want_res_mlir, 8);
             self.storeAt(tmp, rv, 0);
             var ld2 = OpBuilder.init("llvm.load", self.loc).builder()
                 .operands(&.{tmp})
@@ -2277,7 +2279,7 @@ fn emitCall(self: *Codegen, p: tir.Rows.Call, t: *const tir.TIR) !mlir.Value {
                 .build();
             self.append(ex1);
             // write into tmp at offsets 0 and 8, then reload as structural
-            const tmp = self.spillAgg(self.undefOf(want_res_mlir), want_res_mlir, 1);
+            const tmp = self.spillAgg(self.undefOf(want_res_mlir), want_res_mlir, 8);
             self.storeAt(tmp, ex0.getResult(0), 0);
             self.storeAt(tmp, ex1.getResult(0), 8);
             var ld3 = OpBuilder.init("llvm.load", self.loc).builder()

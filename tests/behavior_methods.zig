@@ -35,8 +35,8 @@ test "methods: enum value receiver" {
         \\Color.describe :: fn(self: Color) i32 { return 1 }
     ;
     const src =
-        \\  value := Color.Red.describe()
-        \\  printf("%d\n", value)
+        \\value := Color.Red.describe()
+        \\printf("%d\n", value)
     ;
     const code = getSource(globals, src);
     try runCompilerTest(code, "1\n");
@@ -103,7 +103,7 @@ test "methods: imported builder with pointer receiver" {
         \\  ptr := &thing
         \\  b := ptr.make_builder()
         \\  b_ptr := &b
-        \\  _ = b_ptr.add(3)
+        \\  b_ptr.add(3)
         \\  result := b_ptr.finish()
         \\  printf("%d\n", result)
     ;

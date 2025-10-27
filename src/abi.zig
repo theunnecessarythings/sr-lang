@@ -59,7 +59,8 @@ pub fn abiSizeAlign(self: *Codegen, ty: types.TypeId) SizeAlign {
         .F32 => .{ .size = 4, .alignment = 4, .hasFloat = true, .allIntsOnly = false },
         .F64 => .{ .size = 8, .alignment = 8, .hasFloat = true, .allIntsOnly = false },
 
-        .Ptr, .Any, .String, .Function, .MlirModule, .MlirAttribute, .MlirType => .{ .size = 8, .alignment = 8, .hasFloat = false, .allIntsOnly = true },
+        .Ptr, .Any, .Function, .MlirModule, .MlirAttribute, .MlirType => .{ .size = 8, .alignment = 8, .hasFloat = false, .allIntsOnly = true },
+        .String => .{ .size = 16, .alignment = 8, .hasFloat = false, .allIntsOnly = true },
         .Slice => .{ .size = 16, .alignment = 8, .hasFloat = false, .allIntsOnly = true },
         .DynArray => .{ .size = 24, .alignment = 8, .hasFloat = false, .allIntsOnly = true },
         .Enum => {

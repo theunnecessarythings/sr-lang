@@ -193,7 +193,6 @@ pub const Pipeline = struct {
         }.run;
         var threads = std.ArrayList(struct { std.Thread, *lower_to_ast.Lower, []const u8, []const u8 }){};
         while (pkg_iter.next()) |pkg| {
-            std.debug.print("pkg: {s}\n", .{pkg.key_ptr.*});
             var source_iter = pkg.value_ptr.sources.iterator();
             while (source_iter.next()) |unit| {
                 const lower_pass = try self.allocator.create(lower_to_ast.Lower);

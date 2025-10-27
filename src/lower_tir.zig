@@ -692,10 +692,14 @@ fn lowerTopDecl(self: *LowerTir, ctx: *LowerContext, a: *ast.Ast, b: *Builder, d
         }
         return;
     }
-    // Global: record type
+    // Global: emit only for value declarations. Type declarations (TypeType)
+    // should not materialize runtime globals.
     if (!d.pattern.isNone()) {
         const nm = bindingNameOfPattern(a, d.pattern.unwrap()) orelse return;
         const ty = getDeclType(a, did) orelse return;
+        if (self.context.type_store.getKind(ty) == .TypeType) {
+            return; // skip type declarations
+        }
         if (self.constInitFromLiteral(a, d.value, ty)) |ci| {
             _ = b.addGlobalWithInit(nm, ty, ci);
         } else {
@@ -954,6 +958,15 @@ fn lowerAssign(
 ) !void {
     const as = a.stmts.get(.Assign, sid);
     const stmt_loc = optLoc(a, sid);
+    // Handle discard assignment: `_ = rhs` should only evaluate RHS for side-effects.
+    if (a.exprs.index.kinds.items[as.left.toRaw()] == .Ident) {
+        const ident = a.exprs.get(.Ident, as.left);
+        if (std.mem.eql(u8, a.exprs.strs.get(ident.name), "_")) {
+            // Do not attempt to read a type for the LHS or perform a store.
+            _ = try self.lowerExpr(ctx, a, env, f, blk, as.right, null, .rvalue);
+            return;
+        }
+    }
     const rty = self.getExprType(ctx, a, as.left);
 
     if (a.exprs.index.kinds.items[as.left.toRaw()] == .Ident) {
@@ -2663,14 +2676,18 @@ fn lowerIdent(
             }
         }
 
-        // 2) If it's a top-level decl, bind its address as a slot and return.
+        // 2) If it's a top-level decl that names a value, bind its address as a slot and return.
+        //    Do NOT take an address of a type declaration (TypeType) — types are not lvalues.
         if (did_opt) |did| {
             const d = a.exprs.Decl.get(did);
             const gty = getDeclType(a, did) orelse unreachable;
-            const ptr_ty = self.context.type_store.mkPtr(gty, !d.flags.is_const);
-            const addr = blk.builder.tirValue(.GlobalAddr, blk, ptr_ty, loc, .{ .name = name });
-            try env.bind(self.gpa, a, name, .{ .value = addr, .ty = gty, .is_slot = true });
-            return addr;
+            if (self.context.type_store.getKind(gty) != .TypeType) {
+                const ptr_ty = self.context.type_store.mkPtr(gty, !d.flags.is_const);
+                const addr = blk.builder.tirValue(.GlobalAddr, blk, ptr_ty, loc, .{ .name = name });
+                try env.bind(self.gpa, a, name, .{ .value = addr, .ty = gty, .is_slot = true });
+                return addr;
+            }
+            // Fall through for TypeType: no addressable storage for types.
         }
 
         // 3) Otherwise it must be a local value binding that needs a slot.
@@ -2697,13 +2714,16 @@ fn lowerIdent(
         if (did_opt) |did| {
             const d = a.exprs.Decl.get(did);
             const gty = getDeclType(a, did) orelse unreachable;
-            const ptr_ty = self.context.type_store.mkPtr(gty, !d.flags.is_const);
-            const addr = blk.builder.tirValue(.GlobalAddr, blk, ptr_ty, loc, .{ .name = name });
-            try env.bind(self.gpa, a, name, .{ .value = addr, .ty = gty, .is_slot = true });
-            break :blk env.lookup(name).?;
+            if (self.context.type_store.getKind(gty) != .TypeType) {
+                const ptr_ty = self.context.type_store.mkPtr(gty, !d.flags.is_const);
+                const addr = blk.builder.tirValue(.GlobalAddr, blk, ptr_ty, loc, .{ .name = name });
+                try env.bind(self.gpa, a, name, .{ .value = addr, .ty = gty, .is_slot = true });
+                break :blk env.lookup(name).?;
+            }
+            // For type declarations, synthesize a non-addressable placeholder value.
         }
 
-        // Not a value binding or top-level decl (likely a type name etc.).
+        // Not a value binding or a value-like top-level decl (likely a type name etc.).
         // Bind a safe placeholder so downstream code can keep going.
         const ty0 = expr_ty;
         const placeholder = self.safeUndef(blk, ty0, loc);
