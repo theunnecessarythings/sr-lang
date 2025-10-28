@@ -81,6 +81,7 @@ pub fn build(b: *std.Build) void {
     // copy std lib and vendor libs to install dir
     var std_lib = std.fs.cwd().openDir("std", .{ .iterate = true }) catch unreachable;
     var iter = std_lib.iterate();
+    std.fs.makeDirAbsolute(b.install_path) catch {};
     var install_dir = std.fs.openDirAbsolute(b.install_path, .{}) catch unreachable;
     defer install_dir.close();
     install_dir.makeDir("std") catch |err| switch (err) {
