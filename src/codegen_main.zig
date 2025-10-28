@@ -10,6 +10,9 @@ const cast = @import("codegen_cast.zig");
 const debug = @import("codegen_debug.zig");
 const package = @import("package.zig");
 
+const BinArithOp = enum { add, sub, mul };
+const BinBitOp = enum { @"and", @"or", xor };
+
 const Allocator = std.mem.Allocator;
 const ArrayList = std.array_list.Managed;
 
@@ -1307,7 +1310,7 @@ fn emitAdd(self: *Codegen, p: tir.Rows.Bin2) !mlir.Value {
         self.append(op);
         return op.getResult(0);
     }
-    return self.binArith("llvm.add", "llvm.fadd", p);
+    return self.binArith(.add, p);
 }
 
 fn emitSub(self: *Codegen, p: tir.Rows.Bin2) !mlir.Value {
@@ -1323,7 +1326,7 @@ fn emitSub(self: *Codegen, p: tir.Rows.Bin2) !mlir.Value {
         self.append(op);
         return op.getResult(0);
     }
-    return self.binArith("llvm.sub", "llvm.fsub", p);
+    return self.binArith(.sub, p);
 }
 
 fn emitMul(self: *Codegen, p: tir.Rows.Bin2) !mlir.Value {
@@ -1339,7 +1342,7 @@ fn emitMul(self: *Codegen, p: tir.Rows.Bin2) !mlir.Value {
         self.append(op);
         return op.getResult(0);
     }
-    return self.binArith("llvm.mul", "llvm.fmul", p);
+    return self.binArith(.mul, p);
 }
 
 fn emitDiv(self: *Codegen, p: tir.Rows.Bin2) !mlir.Value {
@@ -2152,16 +2155,16 @@ fn emitCall(self: *Codegen, p: tir.Rows.Call, t: *const tir.TIR) !mlir.Value {
             .DirectScalar => {
                 const stTy = try self.llvmTypeOf(sr);
                 var passv: mlir.Value = undefined;
-            if (!stTy.isAInteger() and !stTy.isAFloat() and !stTy.isAVector()) {
-                // aggregate -> pack (use natural alignment for the SR type)
-                const natural_align_usize = abi.abiSizeAlign(self, sr).alignment;
-                const natural_align: u32 = @intCast(@min(natural_align_usize, @as(usize, std.math.maxInt(u32))));
-                const tmp = self.spillAgg(v, stTy, if (natural_align == 0) 8 else natural_align);
-                if (cls.scalar0.?.isAInteger()) {
-                    const bits = cls.scalar0.?.getIntegerBitwidth();
-                    passv = self.loadIntAt(tmp, bits, 0);
-                } else {
-                    var ld = OpBuilder.init("llvm.load", self.loc).builder()
+                if (!stTy.isAInteger() and !stTy.isAFloat() and !stTy.isAVector()) {
+                    // aggregate -> pack (use natural alignment for the SR type)
+                    const natural_align_usize = abi.abiSizeAlign(self, sr).alignment;
+                    const natural_align: u32 = @intCast(@min(natural_align_usize, @as(usize, std.math.maxInt(u32))));
+                    const tmp = self.spillAgg(v, stTy, if (natural_align == 0) 8 else natural_align);
+                    if (cls.scalar0.?.isAInteger()) {
+                        const bits = cls.scalar0.?.getIntegerBitwidth();
+                        passv = self.loadIntAt(tmp, bits, 0);
+                    } else {
+                        var ld = OpBuilder.init("llvm.load", self.loc).builder()
                             .operands(&.{tmp})
                             .results(&.{cls.scalar0.?}).build();
                         self.append(ld);
@@ -2570,9 +2573,9 @@ fn emitInstr(self: *Codegen, ins_id: tir.InstrId, t: *const tir.TIR) !mlir.Value
         .Add => self.emitAdd(t.instrs.get(.Add, ins_id)),
         .Sub => self.emitSub(t.instrs.get(.Sub, ins_id)),
         .Mul => self.emitMul(t.instrs.get(.Mul, ins_id)),
-        .BinWrapAdd => self.binArith("llvm.add", "llvm.fadd", t.instrs.get(.BinWrapAdd, ins_id)),
-        .BinWrapSub => self.binArith("llvm.sub", "llvm.fsub", t.instrs.get(.BinWrapSub, ins_id)),
-        .BinWrapMul => self.binArith("llvm.mul", "llvm.fmul", t.instrs.get(.BinWrapMul, ins_id)),
+        .BinWrapAdd => self.binArith(.add, t.instrs.get(.BinWrapAdd, ins_id)),
+        .BinWrapSub => self.binArith(.sub, t.instrs.get(.BinWrapSub, ins_id)),
+        .BinWrapMul => self.binArith(.mul, t.instrs.get(.BinWrapMul, ins_id)),
         .BinSatAdd => self.emitSaturatingIntBinary(t.instrs.get(.BinSatAdd, ins_id), "arith.addi", true),
         .BinSatSub => self.emitSaturatingIntBinary(t.instrs.get(.BinSatSub, ins_id), "arith.subi", true),
         .BinSatMul => self.emitSaturatingIntBinary(t.instrs.get(.BinSatMul, ins_id), "arith.muli", true),
@@ -2581,13 +2584,13 @@ fn emitInstr(self: *Codegen, ins_id: tir.InstrId, t: *const tir.TIR) !mlir.Value
         .Shl => self.emitShl(t.instrs.get(.Shl, ins_id)),
         .BinSatShl => self.emitSaturatingIntBinary(t.instrs.get(.BinSatShl, ins_id), "arith.shli", false),
         .Shr => self.emitShr(t.instrs.get(.Shr, ins_id)),
-        .BitAnd => try self.binBit("llvm.and", t.instrs.get(.BitAnd, ins_id)),
-        .BitOr => try self.binBit("llvm.or", t.instrs.get(.BitOr, ins_id)),
-        .BitXor => try self.binBit("llvm.xor", t.instrs.get(.BitXor, ins_id)),
+        .BitAnd => try self.binBit(.@"and", t.instrs.get(.BitAnd, ins_id)),
+        .BitOr => try self.binBit(.@"or", t.instrs.get(.BitOr, ins_id)),
+        .BitXor => try self.binBit(.xor, t.instrs.get(.BitXor, ins_id)),
 
         // ------------- Logical (arith.*) -------------
-        .LogicalAnd => try self.binBit("llvm.and", t.instrs.get(.LogicalAnd, ins_id)),
-        .LogicalOr => try self.binBit("llvm.or", t.instrs.get(.LogicalOr, ins_id)),
+        .LogicalAnd => try self.binBit(.@"and", t.instrs.get(.LogicalAnd, ins_id)),
+        .LogicalOr => try self.binBit(.@"or", t.instrs.get(.LogicalOr, ins_id)),
         .LogicalNot => blk: {
             const p = t.instrs.get(.LogicalNot, ins_id);
             const v = self.value_map.get(p.value).?;
@@ -3732,8 +3735,7 @@ fn isUnsigned(self: *Codegen, ty: types.TypeId) bool {
 
 fn binArith(
     self: *Codegen,
-    comptime int_name: []const u8, // caller passes "llvm.add"|"llvm.sub"|"llvm.mul"
-    comptime float_name: []const u8, // caller passes "llvm.fadd"|"llvm.fsub"|"llvm.fmul"
+    comptime op_kind: BinArithOp,
     p: tir.Rows.Bin2,
 ) !mlir.Value {
     const lhs = self.value_map.get(p.lhs).?;
@@ -3741,15 +3743,17 @@ fn binArith(
     const ty = try self.llvmTypeOf(p.ty);
     const elem_ty = if (ty.isAVector()) ty.getShapedElementType() else ty;
 
-    // Infer which of {add,sub,mul} from the names you already pass.
-    const is_add = std.mem.eql(u8, int_name, "llvm.add") and std.mem.eql(u8, float_name, "llvm.fadd");
-    const is_sub = std.mem.eql(u8, int_name, "llvm.sub") and std.mem.eql(u8, float_name, "llvm.fsub");
-    // const is_mul = std.mem.eql(u8, intName, "llvm.mul") and std.mem.eql(u8, floatName, "llvm.fmul");
-    //
     const op_name = if (elem_ty.isAFloat())
-        (if (is_add) "arith.addf" else if (is_sub) "arith.subf" else "arith.mulf")
-    else
-        (if (is_add) "arith.addi" else if (is_sub) "arith.subi" else "arith.muli");
+        switch (op_kind) {
+            .add => "arith.addf",
+            .sub => "arith.subf",
+            .mul => "arith.mulf",
+        }
+    else switch (op_kind) {
+        .add => "arith.addi",
+        .sub => "arith.subi",
+        .mul => "arith.muli",
+    };
 
     var op = OpBuilder.init(op_name, self.loc).builder()
         .operands(&.{ lhs, rhs })
@@ -3810,16 +3814,18 @@ fn emitSaturatingIntBinary(
 
 fn binBit(
     self: *Codegen,
-    name_hint: []const u8, // caller passes "llvm.and"|"llvm.or"|"llvm.xor"
+    comptime op_kind: BinBitOp,
     p: tir.Rows.Bin2,
 ) !mlir.Value {
     const lhs = self.value_map.get(p.lhs).?;
     const rhs = self.value_map.get(p.rhs).?;
     const ty = try self.llvmTypeOf(p.ty);
 
-    const is_and = std.mem.eql(u8, name_hint, "llvm.and");
-    const is_or = std.mem.eql(u8, name_hint, "llvm.or");
-    const op_name = if (is_and) "arith.andi" else if (is_or) "arith.ori" else "arith.xori";
+    const op_name = switch (op_kind) {
+        .@"and" => "arith.andi",
+        .@"or" => "arith.ori",
+        .xor => "arith.xori",
+    };
 
     var op = OpBuilder.init(op_name, self.loc).builder()
         .operands(&.{ lhs, rhs })
@@ -4394,19 +4400,42 @@ pub fn coerceOnBranch(
         return op.getResult(0);
     }
 
+    // vector float <-> vector int
+    if (v.getType().isAVector() and want.isAVector()) {
+        const v_elem = v.getType().getShapedElementType();
+        const want_elem = want.getShapedElementType();
+
+        if (v_elem.isAFloat() and want_elem.isAInteger()) {
+            const to_signed = self.isSignedInt(dst_sr_ty);
+            const op_name = if (to_signed) "arith.fptosi" else "arith.fptoui";
+            var op = OpBuilder.init(op_name, self.loc).builder()
+                .operands(&.{v}).results(&.{want}).build();
+            self.append(op);
+            return op.getResult(0);
+        }
+        if (v_elem.isAInteger() and want_elem.isAFloat()) {
+            const from_signed = self.isSignedInt(src_sr_ty);
+            const op_name = if (from_signed) "arith.sitofp" else "arith.uitofp";
+            var op = OpBuilder.init(op_name, self.loc).builder()
+                .operands(&.{v}).results(&.{want}).build();
+            self.append(op);
+            return op.getResult(0);
+        }
+    }
+
     // ints: zext/sext/trunc
     if (v.getType().isAInteger() and want.isAInteger()) {
         const fw = try cast.intOrFloatWidth(v.getType());
         const tw = try cast.intOrFloatWidth(want);
         if (fw == tw) return v;
         if (fw > tw) {
-            var tr = OpBuilder.init("llvm.trunc", self.loc).builder()
+            var tr = OpBuilder.init("arith.trunci", self.loc).builder()
                 .operands(&.{v}).results(&.{want}).build();
             self.append(tr);
             return tr.getResult(0);
         } else {
             const from_signed = self.isSignedInt(src_sr_ty);
-            var ex = OpBuilder.init(if (from_signed) "llvm.sext" else "llvm.zext", self.loc).builder()
+            var ex = OpBuilder.init(if (from_signed) "arith.extsi" else "arith.extui", self.loc).builder()
                 .operands(&.{v}).results(&.{want}).build();
             self.append(ex);
             return ex.getResult(0);
@@ -4419,12 +4448,12 @@ pub fn coerceOnBranch(
         const tw = try cast.intOrFloatWidth(want);
         if (fw == tw) return v;
         if (fw > tw) {
-            var tr = OpBuilder.init("llvm.fptrunc", self.loc).builder()
+            var tr = OpBuilder.init("arith.truncf", self.loc).builder()
                 .operands(&.{v}).results(&.{want}).build();
             self.append(tr);
             return tr.getResult(0);
         } else {
-            var ex = OpBuilder.init("llvm.fpext", self.loc).builder()
+            var ex = OpBuilder.init("arith.extf", self.loc).builder()
                 .operands(&.{v}).results(&.{want}).build();
             self.append(ex);
             return ex.getResult(0);
@@ -4433,15 +4462,15 @@ pub fn coerceOnBranch(
 
     // int<->float (rare here): use normal cast rules to avoid crashes
     if (v.getType().isAInteger() and want.isAFloat()) {
-        const from_signed = true; // branch-time info thin; assume signed
-        var op = OpBuilder.init(if (from_signed) "llvm.sitofp" else "llvm.uitofp", self.loc).builder()
+        const from_signed = self.isSignedInt(src_sr_ty);
+        var op = OpBuilder.init(if (from_signed) "arith.sitofp" else "arith.uitofp", self.loc).builder()
             .operands(&.{v}).results(&.{want}).build();
         self.append(op);
         return op.getResult(0);
     }
     if (v.getType().isAFloat() and want.isAInteger()) {
-        // pick signed based on 'want' SR type if you pass it; here default signed
-        var op = OpBuilder.init("llvm.fptosi", self.loc).builder()
+        const to_signed = self.isSignedInt(dst_sr_ty);
+        var op = OpBuilder.init(if (to_signed) "arith.fptosi" else "arith.fptoui", self.loc).builder()
             .operands(&.{v}).results(&.{want}).build();
         self.append(op);
         return op.getResult(0);

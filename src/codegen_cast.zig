@@ -41,7 +41,7 @@ pub fn saturateIntToInt(self: *Codegen, v: mlir.Value, from_signed: bool, to_ty:
     // Compare in source domain: extend to_ty limits up to source type
     const lim = intMinMax(self, to_ty, to_signed);
     const from_ty = v.getType();
-    const ext_opname = if (from_signed) "llvm.sext" else "llvm.zext";
+    const ext_opname = if (from_signed) "arith.extsi" else "arith.extui";
     const min_in_from = self.appendIfHasResult(OpBuilder.init(ext_opname, self.loc).builder()
         .operands(&.{lim.min}).results(&.{from_ty}).build());
     const max_in_from = self.appendIfHasResult(OpBuilder.init(ext_opname, self.loc).builder()
@@ -115,7 +115,7 @@ pub fn checkedIntToInt(self: *Codegen, v: mlir.Value, from_ty: mlir.Type, to_ty:
     const narrowed = self.castIntToInt(v, from_ty, to_ty, from_signed);
 
     // Re-extend to source width and compare equality (round-trip check)
-    const widened = self.appendIfHasResult(OpBuilder.init(if (from_signed) "llvm.sext" else "llvm.zext", self.loc).builder()
+    const widened = self.appendIfHasResult(OpBuilder.init(if (from_signed) "arith.extsi" else "arith.extui", self.loc).builder()
         .operands(&.{narrowed}).results(&.{from_ty}).build());
 
     const ok = OpBuilder.init("arith.cmpi", self.loc).builder()
@@ -248,10 +248,10 @@ pub fn emitCastNormal(self: *Codegen, dst_sr: types.TypeId, to_ty: mlir.Type, fr
     }
 
     // Scalars & pointers
-    const from_is_int = from_ty.isAInteger();
-    const to_is_int = to_ty.isAInteger();
-    const from_is_f = from_ty.isAFloat();
-    const to_is_f = to_ty.isAFloat();
+    const from_is_int = from_ty.isAInteger() or from_ty.isAVector();
+    const to_is_int = to_ty.isAInteger() or to_ty.isAVector();
+    const from_is_f = from_ty.isAFloat() or from_ty.isAVector();
+    const to_is_f = to_ty.isAFloat() or to_ty.isAVector();
     const from_is_ptr = from_ty.equal(self.llvm_ptr_ty);
     const to_is_ptr = to_ty.equal(self.llvm_ptr_ty);
 
@@ -274,7 +274,7 @@ pub fn emitCastNormal(self: *Codegen, dst_sr: types.TypeId, to_ty: mlir.Type, fr
     if (self.isUndefValue(from_v)) return self.undefOf(to_ty);
 
     // Fallback: bitcast (ensure size match upstream)
-    const op = OpBuilder.init("llvm.bitcast", self.loc).builder()
+    const op = OpBuilder.init("arith.bitcast", self.loc).builder()
         .operands(&.{from_v}).results(&.{to_ty}).build();
     return self.appendIfHasResult(op);
 }
@@ -332,7 +332,7 @@ pub fn emitCast(self: *Codegen, kind: tir.OpKind, dst_sr: types.TypeId, src_sr: 
                 } else if (fw > tw) {
                     // Truncation: check for overflow
                     const narrowed = castIntToInt(self, from_v, from_ty_mlir, optional_elem_mlir_ty, from_signed);
-                    const widened = self.appendIfHasResult(OpBuilder.init(if (from_signed) "llvm.sext" else "llvm.zext", self.loc).builder()
+                    const widened = self.appendIfHasResult(OpBuilder.init(if (from_signed) "arith.extsi" else "arith.extui", self.loc).builder()
                         .operands(&.{narrowed}).results(&.{from_ty_mlir}).build());
                     cast_ok = self.appendIfHasResult(OpBuilder.init("arith.cmpi", self.loc).builder()
                         .operands(&.{ from_v, widened })
@@ -406,7 +406,7 @@ pub fn emitCast(self: *Codegen, kind: tir.OpKind, dst_sr: types.TypeId, src_sr: 
 // --- Scalar cast helpers ---
 
 fn castPtrToPtr(self: *Codegen, v: mlir.Value, to_ty: mlir.Type) mlir.Value {
-    const op = OpBuilder.init("llvm.bitcast", self.loc).builder()
+    const op = OpBuilder.init("arith.bitcast", self.loc).builder()
         .operands(&.{v}).results(&.{to_ty}).build();
     return self.appendIfHasResult(op);
 }
@@ -426,24 +426,24 @@ fn castIntToInt(self: *Codegen, from_v: mlir.Value, from_ty: mlir.Type, to_ty: m
     const tw = intOrFloatWidth(to_ty) catch 0;
     if (fw == tw) return from_v;
     if (fw > tw) {
-        const op = OpBuilder.init("llvm.trunc", self.loc).builder()
+        const op = OpBuilder.init("arith.trunci", self.loc).builder()
             .operands(&.{from_v}).results(&.{to_ty}).build();
         return self.appendIfHasResult(op);
     }
-    const opname = if (signed_from) "llvm.sext" else "llvm.zext";
+    const opname = if (signed_from) "arith.extsi" else "arith.extui";
     const op = OpBuilder.init(opname, self.loc).builder()
         .operands(&.{from_v}).results(&.{to_ty}).build();
     return self.appendIfHasResult(op);
 }
 
 fn castIntToFloat(self: *Codegen, v: mlir.Value, to_ty: mlir.Type, signed_from: bool) mlir.Value {
-    const op = OpBuilder.init(if (signed_from) "llvm.sitofp" else "llvm.uitofp", self.loc).builder()
+    const op = OpBuilder.init(if (signed_from) "arith.sitofp" else "arith.uitofp", self.loc).builder()
         .operands(&.{v}).results(&.{to_ty}).build();
     return self.appendIfHasResult(op);
 }
 
 fn castFloatToInt(self: *Codegen, v: mlir.Value, to_ty: mlir.Type, signed_to: bool) mlir.Value {
-    const op = OpBuilder.init(if (signed_to) "llvm.fptosi" else "llvm.fptoui", self.loc).builder()
+    const op = OpBuilder.init(if (signed_to) "arith.fptosi" else "arith.fptoui", self.loc).builder()
         .operands(&.{v}).results(&.{to_ty}).build();
     return self.appendIfHasResult(op);
 }
@@ -452,7 +452,7 @@ fn resizeFloat(self: *Codegen, v: mlir.Value, from_ty: mlir.Type, to_ty: mlir.Ty
     const fw = intOrFloatWidth(from_ty) catch 0;
     const tw = intOrFloatWidth(to_ty) catch 0;
     if (fw == tw) return v;
-    const opname = if (fw > tw) "llvm.fptrunc" else "llvm.fpext";
+    const opname = if (fw > tw) "arith.truncf" else "arith.extf";
     const op = OpBuilder.init(opname, self.loc).builder()
         .operands(&.{v}).results(&.{to_ty}).build();
     return self.appendIfHasResult(op);

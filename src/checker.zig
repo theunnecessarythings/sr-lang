@@ -3824,6 +3824,23 @@ fn castable(self: *Checker, got: types.TypeId, expect: types.TypeId) bool {
         if (self.castable(got, opt.elem)) return true;
     }
 
+    // SIMD vector casts
+    if (gk == .Simd and ek == .Simd) {
+        const vsimd = self.context.type_store.get(.Simd, got);
+        const tsimd = self.context.type_store.get(.Simd, expect);
+        if (vsimd.lanes == tsimd.lanes) {
+            const velem_kind = self.typeKind(vsimd.elem);
+            const telem_kind = self.typeKind(tsimd.elem);
+
+            const velem_is_num = check_types.isNumericKind(self, velem_kind);
+            const telem_is_num = check_types.isNumericKind(self, telem_kind);
+
+            if (velem_is_num and telem_is_num) {
+                return true;
+            }
+        }
+    }
+
     // Numeric <-> numeric (no implicit *value* coercion, but casts allowed)
     const num_ok =
         switch (gk) {
