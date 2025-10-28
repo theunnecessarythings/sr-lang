@@ -188,6 +188,8 @@ pub fn run(gpa: std.mem.Allocator) !void {
             if (req.params) |p| try onGoToDefinition(Out, gpa, &docs, req.id orelse 0, p);
         } else if (std.mem.eql(u8, req.method, "textDocument/hover")) {
             if (req.params) |p| try onHover(Out, gpa, &docs, req.id orelse 0, p);
+        } else if (std.mem.eql(u8, req.method, "textDocument/rename")) {
+            if (req.params) |p| try onRename(Out, gpa, &docs, req.id orelse 0, p);
         } else if (std.mem.eql(u8, req.method, "textDocument/completion")) {
             try respondCompletion(Out, gpa, req.id orelse 0);
         } else if (std.mem.eql(u8, req.method, "textDocument/semanticTokens/full")) {
@@ -283,6 +285,7 @@ fn respondInitialize(out: *std.Io.Writer, gpa: std.mem.Allocator, id: u64) !void
         textDocumentSync: u32 = 1, // Full sync (simple)
         hoverProvider: bool = true,
         definitionProvider: bool = true,
+        renameProvider: bool = true,
         completionProvider: struct { triggerCharacters: []const []const u8 } = .{ .triggerCharacters = &.{"."} },
         semanticTokensProvider: struct {
             legend: struct {
@@ -385,6 +388,7 @@ fn onHover(out: *std.Io.Writer, gpa: std.mem.Allocator, docs: *DocumentStore, id
 
 const Symbol = struct {
     decl_loc: ast.LocId,
+    kind: SemanticTokenKind,
 };
 
 const Scope = struct {
@@ -404,8 +408,8 @@ const Scope = struct {
         self.symbols.deinit();
     }
 
-    fn declare(self: *Scope, name: []const u8, loc: ast.LocId) !void {
-        try self.symbols.put(name, .{ .decl_loc = loc });
+    fn declare(self: *Scope, name: []const u8, loc: ast.LocId, kind: SemanticTokenKind) !void {
+        try self.symbols.put(name, .{ .decl_loc = loc, .kind = kind });
     }
 
     fn lookup(self: *const Scope, name: []const u8) ?Symbol {
@@ -422,9 +426,9 @@ const Scope = struct {
 const SymbolResolver = struct {
     gpa: std.mem.Allocator,
     ast_unit: *ast.Ast,
-    resolution_map: *std.AutoArrayHashMap(u32, ast.LocId),
+    resolution_map: *std.AutoArrayHashMap(u32, Symbol),
 
-    pub fn run(gpa: std.mem.Allocator, ast_unit: *ast.Ast, resolution_map: *std.AutoArrayHashMap(u32, ast.LocId)) !void {
+    pub fn run(gpa: std.mem.Allocator, ast_unit: *ast.Ast, resolution_map: *std.AutoArrayHashMap(u32, Symbol)) !void {
         var self = SymbolResolver{
             .gpa = gpa,
             .ast_unit = ast_unit,
@@ -453,8 +457,9 @@ const SymbolResolver = struct {
 
     fn walkDecl(self: *SymbolResolver, scope: *Scope, decl_id: ast.DeclId) !void {
         const decl_row = self.ast_unit.exprs.Decl.get(decl_id);
+        const decl_kind = classifyDeclKind(self.ast_unit, decl_row.value);
         if (!decl_row.pattern.isNone()) {
-            try self.walkPattern(scope, patternFromOpt(decl_row.pattern));
+            try self.walkPattern(scope, patternFromOpt(decl_row.pattern), decl_kind);
         }
     }
 
@@ -492,7 +497,7 @@ const SymbolResolver = struct {
             .Ident => {
                 const row = expr_store.get(.Ident, expr_id);
                 if (scope.lookup(expr_store.strs.get(row.name))) |symbol| {
-                    try self.resolution_map.put(expr_id.toRaw(), symbol.decl_loc);
+                    try self.resolution_map.put(expr_id.toRaw(), symbol);
                 }
             },
             .Block => {
@@ -513,7 +518,7 @@ const SymbolResolver = struct {
                 for (params) |param_id| {
                     const param = expr_store.Param.get(param_id);
                     if (!param.pat.isNone()) {
-                        try self.walkPattern(&fn_scope, patternFromOpt(param.pat));
+                        try self.walkPattern(&fn_scope, patternFromOpt(param.pat), .parameter);
                     }
                 }
 
@@ -530,7 +535,7 @@ const SymbolResolver = struct {
                 for (params) |param_id| {
                     const param = expr_store.Param.get(param_id);
                     if (!param.pat.isNone()) {
-                        try self.walkPattern(&fn_scope, patternFromOpt(param.pat));
+                        try self.walkPattern(&fn_scope, patternFromOpt(param.pat), .parameter);
                     }
                 }
                 try self.walkExpr(&fn_scope, row.body);
@@ -539,7 +544,7 @@ const SymbolResolver = struct {
                 const row = expr_store.get(.For, expr_id);
                 var for_scope = Scope.init(self.gpa, scope);
                 defer for_scope.deinit();
-                try self.walkPattern(&for_scope, row.pattern);
+                try self.walkPattern(&for_scope, row.pattern, .variable);
                 try self.walkExpr(scope, row.iterable);
                 try self.walkExpr(&for_scope, row.body);
             },
@@ -548,7 +553,7 @@ const SymbolResolver = struct {
                 if (row.is_pattern and !row.pattern.isNone()) {
                     var while_scope = Scope.init(self.gpa, scope);
                     defer while_scope.deinit();
-                    try self.walkPattern(&while_scope, patternFromOpt(row.pattern));
+                    try self.walkPattern(&while_scope, patternFromOpt(row.pattern), .variable);
                     if (!row.cond.isNone()) {
                         try self.walkExpr(scope, row.cond.unwrap());
                     }
@@ -654,7 +659,7 @@ const SymbolResolver = struct {
                     const arm = expr_store.MatchArm.get(arm_id);
                     var arm_scope = Scope.init(self.gpa, scope);
                     defer arm_scope.deinit();
-                    try self.walkPattern(&arm_scope, arm.pattern);
+                    try self.walkPattern(&arm_scope, arm.pattern, .variable);
                     if (!arm.guard.isNone()) {
                         try self.walkExpr(&arm_scope, arm.guard.unwrap());
                     }
@@ -696,7 +701,7 @@ const SymbolResolver = struct {
                 var handler_scope = Scope.init(self.gpa, scope);
                 defer handler_scope.deinit();
                 if (!row.binding_name.isNone()) {
-                    try handler_scope.declare(expr_store.strs.get(row.binding_name.unwrap()), row.binding_loc.unwrap());
+                    try handler_scope.declare(expr_store.strs.get(row.binding_name.unwrap()), row.binding_loc.unwrap(), .variable);
                 }
                 try self.walkExpr(&handler_scope, row.handler);
             },
@@ -788,25 +793,25 @@ const SymbolResolver = struct {
         }
     }
 
-    fn walkPattern(self: *SymbolResolver, scope: *Scope, pat_id: ast.PatternId) !void {
+    fn walkPattern(self: *SymbolResolver, scope: *Scope, pat_id: ast.PatternId, kind: SemanticTokenKind) !void {
         const pat_store = &self.ast_unit.pats;
         const pat_kind = pat_store.index.kinds.items[pat_id.toRaw()];
         switch (pat_kind) {
             .Binding => {
                 const row = pat_store.get(.Binding, pat_id);
-                try scope.declare(self.ast_unit.pats.strs.get(row.name), row.loc);
+                try scope.declare(self.ast_unit.pats.strs.get(row.name), row.loc, kind);
             },
             .Tuple => {
                 const row = pat_store.get(.Tuple, pat_id);
                 const elems = pat_store.pat_pool.slice(row.elems);
-                for (elems) |elem| try self.walkPattern(scope, elem);
+                for (elems) |elem| try self.walkPattern(scope, elem, kind);
             },
             .Slice => {
                 const row = pat_store.get(.Slice, pat_id);
                 const elems = pat_store.pat_pool.slice(row.elems);
-                for (elems) |elem| try self.walkPattern(scope, elem);
+                for (elems) |elem| try self.walkPattern(scope, elem, kind);
                 if (!row.rest_binding.isNone()) {
-                    try self.walkPattern(scope, patternFromOpt(row.rest_binding));
+                    try self.walkPattern(scope, patternFromOpt(row.rest_binding), kind);
                 }
             },
             .Struct => {
@@ -814,7 +819,7 @@ const SymbolResolver = struct {
                 const fields = pat_store.field_pool.slice(row.fields);
                 for (fields) |field_id| {
                     const field = pat_store.StructField.get(field_id);
-                    try self.walkPattern(scope, field.pattern);
+                    try self.walkPattern(scope, field.pattern, kind);
                 }
             },
             .VariantStruct => {
@@ -822,23 +827,23 @@ const SymbolResolver = struct {
                 const fields = pat_store.field_pool.slice(row.fields);
                 for (fields) |field_id| {
                     const field = pat_store.StructField.get(field_id);
-                    try self.walkPattern(scope, field.pattern);
+                    try self.walkPattern(scope, field.pattern, kind);
                 }
             },
             .VariantTuple => {
                 const row = pat_store.get(.VariantTuple, pat_id);
                 const elems = pat_store.pat_pool.slice(row.elems);
-                for (elems) |elem| try self.walkPattern(scope, elem);
+                for (elems) |elem| try self.walkPattern(scope, elem, kind);
             },
             .Or => {
                 const row = pat_store.get(.Or, pat_id);
                 const alts = pat_store.pat_pool.slice(row.alts);
-                for (alts) |alt| try self.walkPattern(scope, alt);
+                for (alts) |alt| try self.walkPattern(scope, alt, kind);
             },
             .At => {
                 const row = pat_store.get(.At, pat_id);
-                try scope.declare(self.ast_unit.pats.strs.get(row.binder), row.loc);
-                try self.walkPattern(scope, row.pattern);
+                try scope.declare(self.ast_unit.pats.strs.get(row.binder), row.loc, kind);
+                try self.walkPattern(scope, row.pattern, kind);
             },
             else => {},
         }
@@ -890,7 +895,7 @@ fn onGoToDefinition(out: *std.io.Writer, gpa: std.mem.Allocator, docs: *Document
         return;
     };
 
-    var resolution_map = std.AutoArrayHashMap(u32, ast.LocId).init(gpa);
+    var resolution_map = std.AutoArrayHashMap(u32, Symbol).init(gpa);
     defer resolution_map.deinit();
     try SymbolResolver.run(gpa, ast_unit, &resolution_map);
 
@@ -901,8 +906,8 @@ fn onGoToDefinition(out: *std.io.Writer, gpa: std.mem.Allocator, docs: *Document
 
     var result: ?struct { uri: []const u8, range: LspRange } = null;
 
-    if (resolution_map.get(expr_id.toRaw())) |decl_loc_id| {
-        const decl_loc = ast_unit.exprs.locs.get(decl_loc_id);
+    if (resolution_map.get(expr_id.toRaw())) |symbol| {
+        const decl_loc = ast_unit.exprs.locs.get(symbol.decl_loc);
         const decl_file_id = decl_loc.file_id;
 
         const decl_path = context.source_manager.get(decl_file_id) orelse {
@@ -947,6 +952,125 @@ fn onGoToDefinition(out: *std.io.Writer, gpa: std.mem.Allocator, docs: *Document
     } else {
         try writeJson(out, gpa, .{ .jsonrpc = "2.0", .id = id, .result = null });
     }
+}
+
+fn onRename(out: *std.io.Writer, gpa: std.mem.Allocator, docs: *DocumentStore, id: u64, params: json.Value) !void {
+    const P = struct {
+        textDocument: struct { uri: []const u8 },
+        position: struct { line: u32, character: u32 },
+        newName: []const u8,
+    };
+    var p = try json.parseFromValue(P, gpa, params, .{ .ignore_unknown_fields = true });
+    defer p.deinit();
+
+    const uri = p.value.textDocument.uri;
+    const text = docs.get(uri) orelse {
+        try writeJson(out, gpa, .{ .jsonrpc = "2.0", .id = id, .result = null });
+        return;
+    };
+
+    var context = lib.compile.Context.init(gpa);
+    defer context.deinit();
+
+    const path = try fileUriToPath(gpa, uri);
+    defer gpa.free(path);
+
+    const offset = positionToOffset(text, p.value.position.line, p.value.position.character);
+    const file_id = try context.source_manager.setVirtualSourceByPath(path, text);
+    var pipeline = lib.pipeline.Pipeline.init(gpa, &context);
+
+    _ = pipeline.run(path, &.{}, .check) catch |err| switch (err) {
+        error.ParseFailed, error.TypeCheckFailed, error.LoweringFailed, error.TirLoweringFailed, error.TooManyErrors => {
+            try writeJson(out, gpa, .{ .jsonrpc = "2.0", .id = id, .result = null });
+            return;
+        },
+        else => {
+            std.debug.print("[lsp] rename pipeline error: {s}\n", .{@errorName(err)});
+            try writeJson(out, gpa, .{ .jsonrpc = "2.0", .id = id, .result = null });
+            return;
+        },
+    };
+    if (context.diags.anyErrors()) {
+        try writeJson(out, gpa, .{ .jsonrpc = "2.0", .id = id, .result = null });
+        return;
+    }
+
+    const ast_unit = findAstForFile(&context.compilation_unit, file_id) orelse {
+        try writeJson(out, gpa, .{ .jsonrpc = "2.0", .id = id, .result = null });
+        return;
+    };
+
+    var resolution_map = std.AutoArrayHashMap(u32, Symbol).init(gpa);
+    defer resolution_map.deinit();
+    try SymbolResolver.run(gpa, ast_unit, &resolution_map);
+
+    const expr_id = findExprAt(ast_unit, offset) orelse {
+        try writeJson(out, gpa, .{ .jsonrpc = "2.0", .id = id, .result = null });
+        return;
+    };
+
+    const symbol = resolution_map.get(expr_id.toRaw()) orelse {
+        try writeJson(out, gpa, .{ .jsonrpc = "2.0", .id = id, .result = null });
+        return;
+    };
+
+    var references = std.ArrayList(Loc){};
+    defer references.deinit(gpa);
+
+    try references.append(gpa, ast_unit.exprs.locs.get(symbol.decl_loc));
+
+    var it = resolution_map.iterator();
+    while (it.next()) |entry| {
+        if (entry.value_ptr.decl_loc.toRaw() == symbol.decl_loc.toRaw()) {
+            const ref_expr_id = ast.ExprId.fromRaw(entry.key_ptr.*);
+            const ref_loc = exprLoc(ast_unit, ref_expr_id);
+            try references.append(gpa, ref_loc);
+        }
+    }
+
+    const TextEdit = struct {
+        range: LspRange,
+        newText: []const u8,
+    };
+
+    const WorkspaceEdit = struct {
+        changes: std.StringHashMap([]const TextEdit),
+
+        pub fn jsonStringify(self: @This(), s: *json.Stringify) !void {
+            try s.beginObject();
+            try s.objectField("changes");
+            try s.beginObject();
+            var changes_it = self.changes.iterator();
+            while (changes_it.next()) |entry| {
+                try s.objectField(entry.key_ptr.*);
+                try s.write(entry.value_ptr.*);
+            }
+            try s.endObject();
+            try s.endObject();
+        }
+    };
+
+    var edits = std.ArrayList(TextEdit){};
+    defer edits.deinit(gpa);
+
+    for (references.items) |loc| {
+        const range = locToRange(text, loc);
+        try edits.append(gpa, .{ .range = range, .newText = p.value.newName });
+    }
+
+    var changes = std.StringHashMap([]const TextEdit).init(gpa);
+    defer {
+        if (changes.get(uri)) |owned_slice| {
+            gpa.free(owned_slice);
+        }
+        changes.deinit();
+    }
+
+    try changes.put(uri, try edits.toOwnedSlice(gpa));
+
+    const workspace_edit = WorkspaceEdit{ .changes = changes };
+
+    try writeJson(out, gpa, .{ .jsonrpc = "2.0", .id = id, .result = workspace_edit });
 }
 
 fn pathToUri(gpa: std.mem.Allocator, path: []const u8) ![]u8 {
@@ -1278,17 +1402,17 @@ fn collectAstSemanticTokens(tokens: *TokenAccumulator, gpa: std.mem.Allocator, t
 
     const ast_unit = findAstForFile(&context.compilation_unit, file_id) orelse return;
 
-    var all_param_names = std.StringHashMap(void).init(gpa);
-    defer all_param_names.deinit();
-    try collectAllParamNames(gpa, &all_param_names, ast_unit);
+    var resolution_map = std.AutoArrayHashMap(u32, Symbol).init(gpa);
+    defer resolution_map.deinit();
+    try SymbolResolver.run(gpa, ast_unit, &resolution_map);
 
-    try gatherAstTokens(tokens, gpa, text, ast_unit, file_id, &all_param_names);
+    try gatherAstTokens(tokens, gpa, text, ast_unit, file_id, &resolution_map);
 }
 
-fn gatherAstTokens(tokens: *TokenAccumulator, gpa: std.mem.Allocator, text: []const u8, ast_unit: *ast.Ast, file_id: u32, all_param_names: *std.StringHashMap(void)) !void {
+fn gatherAstTokens(tokens: *TokenAccumulator, gpa: std.mem.Allocator, text: []const u8, ast_unit: *ast.Ast, file_id: u32, resolution_map: *const std.AutoArrayHashMap(u32, Symbol)) !void {
     try highlightPackage(tokens, text, ast_unit, file_id);
     try highlightDecls(tokens, text, ast_unit, file_id);
-    try highlightExpressions(tokens, gpa, text, ast_unit, file_id, all_param_names);
+    try highlightExpressions(tokens, gpa, text, ast_unit, file_id, resolution_map);
 }
 
 fn highlightPackage(tokens: *TokenAccumulator, text: []const u8, ast_unit: *ast.Ast, file_id: u32) !void {
@@ -1467,7 +1591,7 @@ fn highlightTypeExpr(tokens: *TokenAccumulator, text: []const u8, ast_unit: *ast
     }
 }
 
-fn highlightExpressions(tokens: *TokenAccumulator, gpa: std.mem.Allocator, text: []const u8, ast_unit: *ast.Ast, file_id: u32, all_param_names: *std.StringHashMap(void)) !void {
+fn highlightExpressions(tokens: *TokenAccumulator, gpa: std.mem.Allocator, text: []const u8, ast_unit: *ast.Ast, file_id: u32, resolution_map: *const std.AutoArrayHashMap(u32, Symbol)) !void {
     _ = gpa;
     const expr_store = &ast_unit.exprs;
     const kinds = expr_store.index.kinds.items;
@@ -1487,9 +1611,8 @@ fn highlightExpressions(tokens: *TokenAccumulator, gpa: std.mem.Allocator, text:
                 const end = clampOffset(text, loc.end);
 
                 var kind: SemanticTokenKind = undefined;
-                const name = expr_store.strs.get(row.name);
-                if (all_param_names.contains(name)) {
-                    kind = .parameter;
+                if (resolution_map.get(expr_id.toRaw())) |symbol| {
+                    kind = symbol.kind;
                 } else {
                     const ty_opt = if (idx < expr_types.len) expr_types[idx] else null;
                     kind = classifyIdentType(type_store, ty_opt);
@@ -1985,6 +2108,11 @@ fn computeHover(gpa: std.mem.Allocator, uri: []const u8, text: []const u8, offse
     if (context.diags.anyErrors()) return null;
 
     const ast_unit = findAstForFile(&context.compilation_unit, file_id) orelse return null;
+
+    var resolution_map = std.AutoArrayHashMap(u32, Symbol).init(gpa);
+    defer resolution_map.deinit();
+    try SymbolResolver.run(gpa, ast_unit, &resolution_map);
+
     const expr_id = findExprAt(ast_unit, offset) orelse return null;
     const loc = exprLoc(ast_unit, expr_id);
 
@@ -1992,99 +2120,54 @@ fn computeHover(gpa: std.mem.Allocator, uri: []const u8, text: []const u8, offse
     defer msg_builder.deinit();
     const writer = &msg_builder.writer;
 
-    // Try to get method binding
-    if (ast_unit.type_info.getMethodBinding(expr_id)) |binding| {
-        const decl_ast = binding.decl_ast;
-        const decl_row = decl_ast.exprs.Decl.get(binding.decl_id);
-        const func_lit_expr_id = decl_row.value;
-        const kind = decl_ast.exprs.index.kinds.items[func_lit_expr_id.toRaw()];
+    if (resolution_map.get(expr_id.toRaw())) |symbol| {
+        const decl_loc = ast_unit.exprs.locs.get(symbol.decl_loc);
+        const decl_file_id = decl_loc.file_id;
 
-        if (kind == .FunctionLit) {
-            const func_lit_row = decl_ast.exprs.get(.FunctionLit, func_lit_expr_id);
-            var printer = ast.CodePrinter.init(writer, &decl_ast.exprs, &decl_ast.stmts, &decl_ast.pats);
+        const decl_text = context.source_manager.read(decl_file_id) catch return null;
+        defer gpa.free(decl_text);
 
-            try writer.print("```sr\n", .{});
-
-            if (!decl_row.pattern.isNone()) {
-                try printer.printPattern(patternFromOpt(decl_row.pattern));
-                try writer.print(": ", .{});
-            }
-
-            if (func_lit_row.flags.is_proc) {
-                try writer.print("proc (", .{});
-            } else {
-                try writer.print("fn (", .{});
-            }
-
-            const params = decl_ast.exprs.param_pool.slice(func_lit_row.params);
-            for (params, 0..) |param_id, i| {
-                if (i > 0) try writer.print(", ", .{});
-                const param = decl_ast.exprs.Param.get(param_id);
-                if (!param.pat.isNone()) {
-                    try printer.printPattern(patternFromOpt(param.pat));
-                }
-                if (!param.ty.isNone()) {
-                    try writer.print(": ", .{});
-                    try printer.printExpr(param.ty.unwrap());
-                }
-            }
-
-            try writer.print(")", .{});
-
-            if (!func_lit_row.result_ty.isNone()) {
-                try writer.print(" ", .{});
-                try printer.printExpr(func_lit_row.result_ty.unwrap());
-            }
-
-            try writer.print("\n```", .{});
-            const message = try msg_builder.toOwnedSlice();
-
-            return HoverInfo{
-                .message = message,
-                .range = locToRange(text, loc),
-            };
+        const start_offset = decl_loc.start;
+        var line_start = start_offset;
+        while (line_start > 0 and decl_text[line_start - 1] != '\n') {
+            line_start -= 1;
         }
+        var line_end = start_offset;
+        while (line_end < decl_text.len and decl_text[line_end] != '\n') {
+            line_end += 1;
+        }
+
+        const decl_line = std.mem.trim(u8, decl_text[line_start..line_end], " \t\r");
+
+        try writer.print("```sr\n{s}\n```", .{decl_line});
+
+        if (getExprType(ast_unit, expr_id)) |type_id| {
+            try writer.print("\n\n---\n\n", .{});
+            try writer.print("```sr\n", .{});
+            try context.type_store.fmt(type_id, writer);
+            try writer.print("\n```", .{});
+        }
+
+        const message = try msg_builder.toOwnedSlice();
+        return HoverInfo{
+            .message = message,
+            .range = locToRange(text, loc),
+        };
     }
 
-    const type_id = getExprType(ast_unit, expr_id) orelse return null;
-
-    try writer.print("```sr\n", .{});
-    try context.type_store.fmt(type_id, writer);
-
-    const resolved_type_id = resolvePointer(context.type_store, type_id);
-    const type_kind = context.type_store.getKind(resolved_type_id);
-
-    switch (type_kind) {
-        .Struct => {
-            const struct_row = context.type_store.get(.Struct, resolved_type_id);
-            try printHoverFields(writer, context.type_store, struct_row.fields);
-        },
-        .Union => {
-            const union_row = context.type_store.get(.Union, resolved_type_id);
-            try printHoverFields(writer, context.type_store, union_row.fields);
-        },
-        .Enum => {
-            const enum_row = context.type_store.get(.Enum, resolved_type_id);
-            const members = context.type_store.enum_member_pool.slice(enum_row.members);
-            if (members.len > 0) {
-                try writer.print("\n\n---\n", .{});
-                for (members) |member_id| {
-                    const member_row = context.type_store.EnumMember.get(member_id);
-                    const member_name = context.type_store.strs.get(member_row.name);
-                    try writer.print("{s}\n", .{member_name});
-                }
-            }
-        },
-        else => {},
+    // Fallback for unresolved symbols
+    if (getExprType(ast_unit, expr_id)) |type_id| {
+        try writer.print("```sr\n", .{});
+        try context.type_store.fmt(type_id, writer);
+        try writer.print("\n```", .{});
+        const message = try msg_builder.toOwnedSlice();
+        return HoverInfo{
+            .message = message,
+            .range = locToRange(text, loc),
+        };
     }
 
-    try writer.print("\n```", .{});
-    const message = try msg_builder.toOwnedSlice();
-
-    return HoverInfo{
-        .message = message,
-        .range = locToRange(text, loc),
-    };
+    return null;
 }
 
 fn findAstForFile(unit: *package_mod.CompilationUnit, file_id: u32) ?*ast.Ast {
