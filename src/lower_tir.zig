@@ -3614,7 +3614,7 @@ fn isNumeric(self: *const LowerTir, ty: types.TypeId) bool {
     if (self.isVoid(ty)) return false;
     const k = self.context.type_store.index.kinds.items[ty.toRaw()];
     return switch (k) {
-        .U8, .U16, .U32, .U64, .I8, .I16, .I32, .I64, .Usize, .F32, .F64 => true,
+        .U8, .U16, .U32, .U64, .I8, .I16, .I32, .I64, .Usize, .F32, .F64, .Simd, .Tensor => true,
         else => false,
     };
 }
@@ -3634,28 +3634,28 @@ fn commonNumeric(
     l: ?types.TypeId,
     r: ?types.TypeId,
 ) ?types.TypeId {
+    const ts = self.context.type_store;
     if (l) |lt| if (self.isNumeric(lt)) {
         if (r) |rt| {
             if (self.isNumeric(rt)) {
                 // naive widening preference: floats > signed > unsigned; 64 > 32 > 16 > 8
-                const kL = self.context.type_store.index.kinds.items[lt.toRaw()];
-                const kR = self.context.type_store.index.kinds.items[rt.toRaw()];
+                const kL = ts.index.kinds.items[lt.toRaw()];
+                const kR = ts.index.kinds.items[rt.toRaw()];
                 // if either side is float, pick the wider float
-                if ((kL == .F64) or (kR == .F64)) return self.context.type_store.tF64();
-                if ((kL == .F32) or (kR == .F32)) return self.context.type_store.tF32();
+                if ((kL == .F64) or (kR == .F64)) return ts.tF64();
+                if ((kL == .F32) or (kR == .F32)) return ts.tF32();
                 // prefer signed width of the wider side
-                const signedPref = [_]types.TypeId{
-                    self.context.type_store.tI64(), self.context.type_store.tI32(),
-                    self.context.type_store.tI16(), self.context.type_store.tI8(),
-                };
+                const signedPref = [_]types.TypeId{ ts.tI64(), ts.tI32(), ts.tI16(), ts.tI8() };
                 for (signedPref) |cand| {
                     if (lt.eq(cand) or rt.eq(cand)) return cand;
                 }
                 // otherwise fall back to the wider unsigned
-                if (lt.toRaw() == self.context.type_store.tU64().toRaw() or rt.toRaw() == self.context.type_store.tU64().toRaw()) return self.context.type_store.tU64();
-                if (lt.toRaw() == self.context.type_store.tU32().toRaw() or rt.toRaw() == self.context.type_store.tU32().toRaw()) return self.context.type_store.tU32();
-                if (lt.toRaw() == self.context.type_store.tU16().toRaw() or rt.toRaw() == self.context.type_store.tU16().toRaw()) return self.context.type_store.tU16();
-                return self.context.type_store.tU8();
+                if (lt.eq(ts.tU64()) or rt.eq(ts.tU64())) return ts.tU64();
+                if (lt.eq(ts.tU32()) or rt.eq(ts.tU32())) return ts.tU32();
+                if (lt.eq(ts.tU16()) or rt.eq(ts.tU16())) return ts.tU16();
+                if (lt.eq(ts.tU8()) or rt.eq(ts.tU8())) return ts.tU8();
+                // TODO: handle simd/tensor
+                return lt;
             }
             return lt; // one numeric, one non-numeric → pick numeric side
         }
