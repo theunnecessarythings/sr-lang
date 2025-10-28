@@ -1701,6 +1701,16 @@ fn emitRangeMake(self: *Codegen, p: tir.Rows.RangeMake) !mlir.Value {
     return acc;
 }
 
+fn emitBroadcast(self: *Codegen, p: tir.Rows.Broadcast) !mlir.Value {
+    const prev_loc = self.pushLocation(p.loc);
+    defer self.loc = prev_loc;
+    const vector_ty = try self.llvmTypeOf(p.ty);
+    const scalar_val = self.value_map.get(p.value).?;
+    var op = OpBuilder.init("vector.broadcast", self.loc).builder().operands(&.{scalar_val}).results(&.{vector_ty}).build();
+    self.append(op);
+    return op.getResult(0);
+}
+
 fn emitSimdMake(self: *Codegen, p: tir.Rows.ArrayMake, t: *const tir.TIR) !mlir.Value {
     const simd_ty = self.context.type_store.get(.Simd, p.ty);
     const lanes: usize = @intCast(simd_ty.lanes);
@@ -2621,6 +2631,7 @@ fn emitInstr(self: *Codegen, ins_id: tir.InstrId, t: *const tir.TIR) !mlir.Value
         // ------------- Aggregates -------------
         .TupleMake => self.emitTupleMake(t.instrs.get(.TupleMake, ins_id), t),
         .RangeMake => self.emitRangeMake(t.instrs.get(.RangeMake, ins_id)),
+        .Broadcast => self.emitBroadcast(t.instrs.get(.Broadcast, ins_id)),
         .ArrayMake => self.emitArrayMake(t.instrs.get(.ArrayMake, ins_id), t),
         .StructMake => blk: {
             const p = t.instrs.get(.StructMake, ins_id);

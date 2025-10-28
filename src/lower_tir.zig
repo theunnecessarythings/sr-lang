@@ -177,7 +177,7 @@ fn popExprTypeOverrideFrame(self: *LowerTir, ctx: *LowerContext) void {
 
 pub fn noteExprType(self: *LowerTir, ctx: *LowerContext, expr: ast.ExprId, ty: types.TypeId) !void {
     if (ctx.expr_type_override_stack.items.len == 0) return;
-    if (self.isAny(ty)) return;
+    if (self.isType(ty, .Any)) return;
     var frame = &ctx.expr_type_override_stack.items[ctx.expr_type_override_stack.items.len - 1];
     try frame.map.put(self.gpa, expr.toRaw(), ty);
 }
@@ -362,7 +362,7 @@ fn lowerMlirBlock(
     const row = a.exprs.get(.MlirBlock, id);
     const expr_ty = self.getExprType(ctx, a, id);
     var ty0 = expr_ty;
-    if (self.isAny(ty0)) {
+    if (self.isType(ty0, .Any)) {
         ty0 = switch (row.kind) {
             .Module => self.context.type_store.tMlirModule(),
             .Attribute => self.context.type_store.tMlirAttribute(),
@@ -371,7 +371,7 @@ fn lowerMlirBlock(
         };
     }
     if (expected_ty) |want| {
-        if (self.isAny(expr_ty) and !self.isAny(want)) {
+        if (self.isType(expr_ty, .Any) and !self.isType(want, .Any)) {
             ty0 = want;
         }
     }
@@ -646,7 +646,7 @@ fn tryLowerNamedFunction(
     const fn_ty_info = self.context.type_store.get(.Function, fn_ty);
     const param_tys = self.context.type_store.type_pool.slice(fn_ty_info.params);
     for (param_tys) |param_ty| {
-        if (self.isAny(param_ty)) return;
+        if (self.isType(param_ty, .Any)) return;
     }
 
     const fn_lit = a.exprs.get(.FunctionLit, decl.value);
@@ -1560,10 +1560,10 @@ fn lowerCall(
                                 param_tys[runtime_idx]
                             else
                                 self.context.type_store.tAny();
-                            if (!self.isAny(param_ty)) continue;
+                            if (!self.isType(param_ty, .Any)) continue;
 
                             const arg_ty = self.getExprType(ctx, a, original_args[runtime_idx]);
-                            if (self.isAny(arg_ty)) continue;
+                            if (self.isType(arg_ty, .Any)) continue;
 
                             try binding_infos.append(self.gpa, monomorphize.BindingInfo.runtimeParam(pname, arg_ty));
                         }
@@ -1727,7 +1727,7 @@ fn lowerCall(
             }
 
             // If argument was typed as 'any', pick a concrete type consistent with promotions.
-            if (self.isAny(got)) {
+            if (self.isType(got, .Any)) {
                 const k = a.exprs.index.kinds.items[arg_ids[j2].toRaw()];
                 const want_any: types.TypeId = switch (k) {
                     .Literal => blk: {
@@ -1765,14 +1765,14 @@ fn lowerCall(
             if (self.context.type_store.index.kinds.items[fty.toRaw()] == .Function) {
                 const fr2 = self.context.type_store.get(.Function, fty);
                 const rt = fr2.result;
-                if (!self.isVoid(rt) and !self.isAny(rt)) break :blk rt;
+                if (!self.isVoid(rt) and !self.isType(rt, .Any)) break :blk rt;
             }
         }
-        if (expected) |e| if (!self.isVoid(e) and !self.isAny(e)) break :blk e;
+        if (expected) |e| if (!self.isVoid(e) and !self.isType(e, .Any)) break :blk e;
         break :blk self.getExprType(ctx, a, id);
     };
 
-    if (!self.isAny(ret_ty)) {
+    if (!self.isType(ret_ty, .Any)) {
         a.type_info.setExprType(id, ret_ty);
         try self.noteExprType(ctx, id, ret_ty);
     }
@@ -1937,12 +1937,12 @@ fn lowerUnary(
 
     // If the stamp is void/any or non-numeric for +/-, fall back to operand numeric (or i64)
     const is_num = self.isNumeric(ty0);
-    if ((row.op == .pos or row.op == .neg) and (!is_num or self.isAny(ty0) or self.isVoid(ty0))) {
+    if ((row.op == .pos or row.op == .neg) and (!is_num or self.isType(ty0, .Any) or self.isVoid(ty0))) {
         const et = self.getExprType(ctx, a, row.expr);
         if (self.isNumeric(et)) {
             ty0 = et;
         }
-        if (self.isAny(ty0) or self.isVoid(ty0)) ty0 = self.context.type_store.tI64();
+        if (self.isType(ty0, .Any) or self.isVoid(ty0)) ty0 = self.context.type_store.tI64();
     }
 
     const operand_expect: ?types.TypeId = switch (row.op) {
@@ -1965,8 +1965,18 @@ fn lowerUnary(
                     const im0 = blk.builder.tirValue(.ConstFloat, blk, crow.elem, loc, .{ .value = 0.0 });
                     break :zblk blk.builder.tirValue(.ComplexMake, blk, ty0, loc, .{ .re = re0, .im = im0 });
                 }
-                if (self.isFloat(ty0)) break :zblk blk.builder.tirValue(.ConstFloat, blk, ty0, loc, .{ .value = 0.0 });
-                // break :zblk blk.builder.tirValue(.ConstInt, blk, ty0, loc, .{ .value = 0 });
+                if (self.isFloat(ty0))
+                    break :zblk blk.builder.tirValue(.ConstFloat, blk, ty0, loc, .{ .value = 0.0 });
+                if (self.isType(ty0, .Simd)) {
+                    const simd_info = self.context.type_store.get(.Simd, ty0);
+                    const elem_ty = simd_info.elem;
+                    const elem_kind = self.context.type_store.index.kinds.items[elem_ty.toRaw()];
+                    const zero_scalar = if (elem_kind == .F32 or elem_kind == .F64)
+                        blk.builder.tirValue(.ConstFloat, blk, elem_ty, loc, .{ .value = 0.0 })
+                    else
+                        blk.builder.tirValue(.ConstInt, blk, elem_ty, loc, .{ .value = 0 });
+                    break :zblk blk.builder.tirValue(.Broadcast, blk, ty0, loc, .{ .value = zero_scalar });
+                }
                 break :zblk blk.builder.tirValue(.ConstInt, blk, ty0, loc, .{ .value = 0 });
             };
             break :blk blk.builder.bin(blk, .Sub, ty0, zero, v0, loc);
@@ -2746,7 +2756,7 @@ fn lowerIdent(
             const slot_ty = self.context.type_store.mkPtr(want_elem, false);
             const slot = f.builder.tirValue(.Alloca, blk, slot_ty, loc, .{ .count = tir.OptValueId.none(), .@"align" = 0 });
 
-            const src_ty = if (!self.isAny(expr_ty)) expr_ty else bnd.ty;
+            const src_ty = if (!self.isType(expr_ty, .Any)) expr_ty else bnd.ty;
             const to_store = self.emitCoerce(blk, bnd.value, src_ty, want_elem, loc);
             _ = f.builder.tirValue(.Store, blk, want_elem, loc, .{ .ptr = slot, .value = to_store, .@"align" = 0 });
 
@@ -2783,7 +2793,7 @@ fn lowerIdent(
     };
 
     if (bnd.is_slot) {
-        const load_ty = if (!self.isAny(expr_ty)) expr_ty else bnd.ty;
+        const load_ty = if (!self.isType(expr_ty, .Any)) expr_ty else bnd.ty;
         // else if (expected_ty) |want|
         //     want
         // else
@@ -2794,7 +2804,7 @@ fn lowerIdent(
     }
 
     // Non-slot: coerce if a target type was requested.
-    const got_ty = if (!self.isAny(expr_ty)) expr_ty else bnd.ty;
+    const got_ty = if (!self.isType(expr_ty, .Any)) expr_ty else bnd.ty;
     // else if (expected_ty) |want|
     //     want
     // else
@@ -2873,13 +2883,13 @@ fn lowerBinary(
                     const want = self.commonNumeric(lhs_hint, rhs_hint) orelse (expected_ty orelse self.context.type_store.tI64());
                     lhs_expect = want;
                     rhs_expect = want;
-                    if (op_ty == null or self.isVoid(op_ty.?) or self.isAny(op_ty.?)) op_ty = want;
+                    if (op_ty == null or self.isVoid(op_ty.?) or self.isType(op_ty.?, .Any)) op_ty = want;
                 }
             } else {
                 const want = self.commonNumeric(lhs_hint, rhs_hint) orelse (expected_ty orelse self.context.type_store.tI64());
                 lhs_expect = want;
                 rhs_expect = want;
-                if (op_ty == null or self.isVoid(op_ty.?) or self.isAny(op_ty.?)) op_ty = want;
+                if (op_ty == null or self.isVoid(op_ty.?) or self.isType(op_ty.?, .Any)) op_ty = want;
             }
         },
         .eq, .neq, .lt, .lte, .gt, .gte => {
@@ -3431,7 +3441,7 @@ pub fn lowerExpr(
                 .{},
             );
         },
-        .VariantType, .EnumType, .StructType => self.lowerTypeExprOpaque(ctx, a, blk, id, expected_ty),
+        .VariantType, .EnumType, .StructType, .SimdType => self.lowerTypeExprOpaque(ctx, a, blk, id, expected_ty),
         .CodeBlock => blk: {
             // For now, treat as opaque and produce undef
             const ty0 = self.getExprType(ctx, a, id);
@@ -3620,12 +3630,11 @@ fn isNumeric(self: *const LowerTir, ty: types.TypeId) bool {
 }
 
 fn isFloat(self: *const LowerTir, ty: types.TypeId) bool {
-    const k = self.context.type_store.index.kinds.items[ty.toRaw()];
-    return (k == .F32) or (k == .F64);
+    return self.isType(ty, .F32) or self.isType(ty, .F64);
 }
 
-pub fn isAny(self: *const LowerTir, ty: types.TypeId) bool {
-    return self.context.type_store.index.kinds.items[ty.toRaw()] == .Any;
+pub fn isType(self: *const LowerTir, ty: types.TypeId, kind: types.TypeKind) bool {
+    return self.context.type_store.index.kinds.items[ty.toRaw()] == kind;
 }
 
 /// Choose a common numeric type for binary ops when the checker didn't provide one.
@@ -3940,7 +3949,7 @@ fn destructureDeclFromExpr(
         const resolved_ty = blk: {
             if (self.context.type_store.getKind(result_ty) == .TypeType) {
                 const tt = self.context.type_store.get(.TypeType, result_ty);
-                if (!self.isAny(tt.of)) break :blk tt.of;
+                if (!self.isType(tt.of, .Any)) break :blk tt.of;
                 const computed = try comp.runComptimeExpr(self, ctx, a, src_expr, result_ty, &[_]Pipeline.ComptimeBinding{});
                 break :blk switch (computed) {
                     .Type => |ty| ty,
@@ -3968,7 +3977,7 @@ fn destructureDeclFromExpr(
             var raw = try self.lowerExpr(ctx, a, env, f, blk, src_expr, expect_ty, .rvalue);
 
             const refined = try self.refineExprType(ctx, a, env, src_expr, self.getExprType(ctx, a, src_expr)) orelse unreachable;
-            const eff_ty = if (target_kind == .Any and !self.isAny(refined)) refined else target_ty;
+            const eff_ty = if (target_kind == .Any and !self.isType(refined, .Any)) refined else target_ty;
 
             if (!refined.eq(eff_ty)) {
                 raw = self.emitCoerce(blk, raw, refined, eff_ty, expr_loc);

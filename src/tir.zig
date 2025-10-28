@@ -120,6 +120,7 @@ pub const OpKind = enum(u16) {
     // Complex numbers
     ComplexMake,
     RangeMake,
+    Broadcast,
 };
 
 pub const TermKind = enum(u8) { Return, Br, CondBr, SwitchInt, Unreachable };
@@ -194,6 +195,7 @@ pub const Rows = struct {
     pub const UnionFieldPtr = struct { result: ValueId, ty: types.TypeId, base: ValueId, field_index: u32, loc: OptLocId };
     pub const ComplexMake = struct { result: ValueId, ty: types.TypeId, re: ValueId, im: ValueId, loc: OptLocId };
     pub const RangeMake = struct { result: ValueId, ty: types.TypeId, start: ValueId, end: ValueId, inclusive: ValueId, loc: OptLocId };
+    pub const Broadcast = struct { result: ValueId, ty: types.TypeId, value: ValueId, loc: OptLocId };
 
     // Terminator rows
     pub const Return = struct { value: OptValueId, loc: OptLocId };
@@ -256,6 +258,7 @@ inline fn RowT(comptime K: OpKind) type {
         .UnionFieldPtr => Rows.UnionFieldPtr,
         .ComplexMake => Rows.ComplexMake,
         .RangeMake => Rows.RangeMake,
+        .Broadcast => Rows.Broadcast,
     };
 }
 inline fn TermRowT(comptime K: TermKind) type {
@@ -341,6 +344,7 @@ pub const InstrStore = struct {
     UnionFieldPtr: Table(Rows.UnionFieldPtr) = .{},
     ComplexMake: Table(Rows.ComplexMake) = .{},
     RangeMake: Table(Rows.RangeMake) = .{},
+    Broadcast: Table(Rows.Broadcast) = .{},
 
     // aux tables
     GepIndex: Table(Rows.GepIndex) = .{},
@@ -1680,6 +1684,18 @@ pub const TirPrinter = struct {
                 try self.pv(r.end);
                 try self.writer.writeAll(" inclusive=");
                 try self.pv(r.inclusive);
+                try self.writer.print(" : {f})\n", .{self.tf(r.ty)});
+            },
+
+            .Broadcast => {
+                const r = self.tir.instrs.get(.Broadcast, iid);
+                try self.ws();
+                try self.writer.writeByte('(');
+                try self.pi(iid);
+                try self.writer.writeAll(" ");
+                try self.pv(r.result);
+                try self.writer.writeAll(" = Broadcast value=");
+                try self.pv(r.value);
                 try self.writer.print(" : {f})\n", .{self.tf(r.ty)});
             },
 

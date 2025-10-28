@@ -59,6 +59,12 @@ pub fn abiSizeAlign(self: *Codegen, ty: types.TypeId) SizeAlign {
         .F32 => .{ .size = 4, .alignment = 4, .hasFloat = true, .allIntsOnly = false },
         .F64 => .{ .size = 8, .alignment = 8, .hasFloat = true, .allIntsOnly = false },
 
+        .Simd => {
+            const S = self.context.type_store.get(.Simd, ty);
+            const elem = abiSizeAlign(self, S.elem);
+            return .{ .size = elem.size * S.lanes, .alignment = elem.alignment, .hasFloat = elem.hasFloat, .allIntsOnly = elem.allIntsOnly };
+        },
+
         .Ptr, .Any, .Function, .MlirModule, .MlirAttribute, .MlirType => .{ .size = 8, .alignment = 8, .hasFloat = false, .allIntsOnly = true },
         .String => .{ .size = 16, .alignment = 8, .hasFloat = false, .allIntsOnly = true },
         .Slice => .{ .size = 16, .alignment = 8, .hasFloat = false, .allIntsOnly = true },

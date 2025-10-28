@@ -137,7 +137,7 @@ pub fn runComptimeExpr(
     const result_kind = self.context.type_store.getKind(result_ty);
     if (result_kind == .TypeType) {
         const tt = self.context.type_store.get(.TypeType, result_ty);
-        if (!self.isAny(tt.of)) return .{ .Type = tt.of };
+        if (!self.isType(tt.of, .Any)) return .{ .Type = tt.of };
         // Otherwise, fall through and evaluate the expression to compute the concrete type.
     }
 
