@@ -2884,6 +2884,15 @@ fn lowerBinary(
                     lhs_expect = want;
                     rhs_expect = want;
                     if (op_ty == null or self.isVoid(op_ty.?) or self.isType(op_ty.?, .Any)) op_ty = want;
+
+                    const r_ty_promo = rhs_hint orelse rhs_stamped;
+                    if (self.context.type_store.getKind(lhs_expect orelse self.context.type_store.tAny()) == .Simd and self.isNumeric(r_ty_promo)) {
+                        rhs_expect = null;
+                    }
+                    const l_ty_promo = lhs_hint orelse lhs_stamped;
+                    if (self.context.type_store.getKind(rhs_expect orelse self.context.type_store.tAny()) == .Simd and self.isNumeric(l_ty_promo)) {
+                        lhs_expect = null;
+                    }
                 }
             } else {
                 const want = self.commonNumeric(lhs_hint, rhs_hint) orelse (expected_ty orelse self.context.type_store.tI64());
@@ -2931,8 +2940,33 @@ fn lowerBinary(
         },
     }
 
-    const l = try self.lowerExpr(ctx, a, env, f, blk, row.left, lhs_expect, .rvalue);
-    const r = try self.lowerExpr(ctx, a, env, f, blk, row.right, rhs_expect, .rvalue);
+    var l = try self.lowerExpr(ctx, a, env, f, blk, row.left, lhs_expect, .rvalue);
+    var r = try self.lowerExpr(ctx, a, env, f, blk, row.right, rhs_expect, .rvalue);
+
+    // --- Handle SIMD-scalar promotion ---
+    const l_ty_promo = self.getExprType(ctx, a, row.left);
+    const r_ty_promo = self.getExprType(ctx, a, row.right);
+    const lk_promo = self.context.type_store.getKind(l_ty_promo);
+    const rk_promo = self.context.type_store.getKind(r_ty_promo);
+
+    const r_is_scalar_numeric = switch (rk_promo) {
+        .U8, .U16, .U32, .U64, .I8, .I16, .I32, .I64, .Usize, .F32, .F64 => true,
+        else => false,
+    };
+    const l_is_scalar_numeric = switch (lk_promo) {
+        .U8, .U16, .U32, .U64, .I8, .I16, .I32, .I64, .Usize, .F32, .F64 => true,
+        else => false,
+    };
+
+    if (lk_promo == .Simd and r_is_scalar_numeric) {
+        const simd_info = self.context.type_store.get(.Simd, l_ty_promo);
+        const coerced_r = self.emitCoerce(blk, r, r_ty_promo, simd_info.elem, loc);
+        r = blk.builder.tirValue(.Broadcast, blk, l_ty_promo, loc, .{ .value = coerced_r });
+    } else if (rk_promo == .Simd and l_is_scalar_numeric) {
+        const simd_info = self.context.type_store.get(.Simd, r_ty_promo);
+        const coerced_l = self.emitCoerce(blk, l, l_ty_promo, simd_info.elem, loc);
+        l = blk.builder.tirValue(.Broadcast, blk, r_ty_promo, loc, .{ .value = coerced_l });
+    }
 
     // --- Handle Optional(T) equality/inequality cases ---
     const l_ty = self.getExprType(ctx, a, row.left);
@@ -3650,6 +3684,11 @@ fn commonNumeric(
                 // naive widening preference: floats > signed > unsigned; 64 > 32 > 16 > 8
                 const kL = ts.index.kinds.items[lt.toRaw()];
                 const kR = ts.index.kinds.items[rt.toRaw()];
+                if (kL == .Simd) return lt;
+                if (kR == .Simd) return rt;
+                if (kL == .Tensor) return lt;
+                if (kR == .Tensor) return rt;
+
                 // if either side is float, pick the wider float
                 if ((kL == .F64) or (kR == .F64)) return ts.tF64();
                 if ((kL == .F32) or (kR == .F32)) return ts.tF32();
@@ -3663,7 +3702,6 @@ fn commonNumeric(
                 if (lt.eq(ts.tU32()) or rt.eq(ts.tU32())) return ts.tU32();
                 if (lt.eq(ts.tU16()) or rt.eq(ts.tU16())) return ts.tU16();
                 if (lt.eq(ts.tU8()) or rt.eq(ts.tU8())) return ts.tU8();
-                // TODO: handle simd/tensor
                 return lt;
             }
             return lt; // one numeric, one non-numeric → pick numeric side

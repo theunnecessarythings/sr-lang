@@ -1870,10 +1870,6 @@ fn checkBinary(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, id: ast
     switch (bin.op) {
         .add, .sub, .mul, .div, .mod, .bit_and, .bit_or, .bit_xor, .shl, .shr => {
             if (lhs_kind == .Simd or rhs_kind == .Simd) {
-                if (!(lhs_kind == .Simd and rhs_kind == .Simd)) {
-                    try self.context.diags.addError(exprLoc(ast_unit, bin), .invalid_binary_op_operands, .{ bin.op, lhs_kind, rhs_kind });
-                    return null;
-                }
                 switch (bin.op) {
                     .add, .sub, .mul, .div => {},
                     else => {
@@ -1881,13 +1877,51 @@ fn checkBinary(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, id: ast
                         return null;
                     },
                 }
-                const ls = self.context.type_store.get(.Simd, l);
-                const rs = self.context.type_store.get(.Simd, r);
-                if (ls.lanes != rs.lanes or ls.elem.toRaw() != rs.elem.toRaw()) {
+
+                if (lhs_kind == .Simd and rhs_kind == .Simd) {
+                    const ls = self.context.type_store.get(.Simd, l);
+                    const rs = self.context.type_store.get(.Simd, r);
+                    if (ls.lanes != rs.lanes or !ls.elem.eq(rs.elem)) {
+                        try self.context.diags.addError(exprLoc(ast_unit, bin), .invalid_binary_op_operands, .{ bin.op, lhs_kind, rhs_kind });
+                        return null;
+                    }
+                    return l;
+                } else if (lhs_kind == .Simd and check_types.isNumericKind(self, rhs_kind)) {
+                    const ls = self.context.type_store.get(.Simd, l);
+                    if (self.assignable(r, ls.elem) != .success) {
+                        if (right_is_literal) {
+                            var r_copy = r;
+                            var rk_copy = rhs_kind;
+                            if (try self.updateCoercedLiteral(ast_unit, bin.right, ls.elem, &r_copy, &rk_copy)) {
+                                if (self.assignable(r_copy, ls.elem) == .success) {
+                                    return l;
+                                }
+                            }
+                        }
+                        try self.context.diags.addError(exprLoc(ast_unit, bin), .invalid_binary_op_operands, .{ bin.op, lhs_kind, rhs_kind });
+                        return null;
+                    }
+                    return l;
+                } else if (rhs_kind == .Simd and check_types.isNumericKind(self, lhs_kind)) {
+                    const rs = self.context.type_store.get(.Simd, r);
+                    if (self.assignable(l, rs.elem) != .success) {
+                        if (left_is_literal) {
+                            var l_copy = l;
+                            var lk_copy = lhs_kind;
+                            if (try self.updateCoercedLiteral(ast_unit, bin.left, rs.elem, &l_copy, &lk_copy)) {
+                                if (self.assignable(l_copy, rs.elem) == .success) {
+                                    return r;
+                                }
+                            }
+                        }
+                        try self.context.diags.addError(exprLoc(ast_unit, bin), .invalid_binary_op_operands, .{ bin.op, lhs_kind, rhs_kind });
+                        return null;
+                    }
+                    return r;
+                } else {
                     try self.context.diags.addError(exprLoc(ast_unit, bin), .invalid_binary_op_operands, .{ bin.op, lhs_kind, rhs_kind });
                     return null;
                 }
-                return l;
             }
             if (bin.op == .div) try self.checkDivByZero(ast_unit, bin.right, exprLoc(ast_unit, bin));
             if (bin.op == .mod) {
