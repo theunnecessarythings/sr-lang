@@ -43,18 +43,66 @@ pub const MlirSpliceInfo = union(enum) {
     },
 };
 
+pub const MethodReceiverKind = enum {
+    none,
+    value,
+    pointer,
+    pointer_const,
+};
+
+pub const BuiltinMethod = enum {
+    dynarray_append,
+};
+
+pub const MethodEntry = struct {
+    owner_type: TypeId,
+    method_name: ast.StrId,
+    decl_id: ast.DeclId,
+    decl_ast: *ast.Ast,
+    func_expr: ast.ExprId,
+    func_type: TypeId,
+    self_param_type: ?TypeId,
+    receiver_kind: MethodReceiverKind,
+    builtin: ?BuiltinMethod = null,
+};
+
+pub const MethodBinding = struct {
+    owner_type: TypeId,
+    method_name: ast.StrId,
+    decl_id: ast.DeclId,
+    decl_ast: *ast.Ast,
+    func_type: TypeId,
+    self_param_type: ?TypeId,
+    receiver_kind: MethodReceiverKind,
+    requires_implicit_receiver: bool,
+    needs_addr_of: bool,
+    builtin: ?BuiltinMethod = null,
+};
+
+const MethodKey = struct {
+    owner: usize,
+    name: usize,
+};
+
+fn makeMethodKey(owner: TypeId, name: ast.StrId) MethodKey {
+    return .{ .owner = owner.toRaw(), .name = name.toRaw() };
+}
+
 pub const TypeInfo = struct {
     gpa: std.mem.Allocator,
     store: *TypeStore,
-    module_id: usize = 0,
     expr_types: std.ArrayListUnmanaged(?TypeId) = .{},
     decl_types: std.ArrayListUnmanaged(?TypeId) = .{},
     field_index_for_expr: std.AutoArrayHashMapUnmanaged(u32, u32) = .{},
     comptime_values: std.AutoArrayHashMapUnmanaged(ast.ExprId, comp.ComptimeValue) = .{},
-    method_table: std.AutoArrayHashMapUnmanaged(MethodKey, MethodEntry) = .{},
     method_bindings: std.AutoArrayHashMapUnmanaged(u32, MethodBinding) = .{},
     mlir_splice_info: std.AutoArrayHashMapUnmanaged(u32, MlirSpliceInfo) = .{},
-    type_owner_modules: std.AutoArrayHashMapUnmanaged(u32, usize) = .{},
+    exports: std.AutoArrayHashMapUnmanaged(ast.StrId, ExportEntry) = .{},
+
+    pub const ExportEntry = struct {
+        ty: TypeId,
+        decl_id: ast.DeclId,
+    };
 
     pub fn init(gpa: std.mem.Allocator, store: *TypeStore) TypeInfo {
         return .{
@@ -72,14 +120,9 @@ pub const TypeInfo = struct {
             self.destroyComptimeValue(value_ptr.value_ptr);
         }
         self.comptime_values.deinit(self.gpa);
-        self.method_table.deinit(self.gpa);
         self.method_bindings.deinit(self.gpa);
         self.mlir_splice_info.deinit(self.gpa);
-        self.type_owner_modules.deinit(self.gpa);
-    }
-
-    pub fn setModule(self: *TypeInfo, module_id: usize) void {
-        self.module_id = module_id;
+        self.exports.deinit(self.gpa);
     }
 
     pub fn print(self: *TypeInfo) void {
@@ -145,70 +188,8 @@ pub const TypeInfo = struct {
         try self.field_index_for_expr.put(self.gpa, expr_id.toRaw(), 0xFFFF_FFFF);
     }
 
-    const MethodKey = struct {
-        owner: usize,
-        name: usize,
-    };
-
-    fn makeMethodKey(owner: TypeId, name: ast.StrId) MethodKey {
-        return .{ .owner = owner.toRaw(), .name = name.toRaw() };
-    }
-
-    pub const MethodReceiverKind = enum {
-        none,
-        value,
-        pointer,
-        pointer_const,
-    };
-
-    pub const BuiltinMethod = enum {
-        dynarray_append,
-    };
-
-    pub const MethodEntry = struct {
-        owner_type: TypeId,
-        method_name: ast.StrId,
-        decl_id: ast.DeclId,
-        func_expr: ast.ExprId,
-        func_type: TypeId,
-        self_param_type: ?TypeId,
-        receiver_kind: MethodReceiverKind,
-        module_id: usize,
-        builtin: ?BuiltinMethod = null,
-    };
-
-    pub const MethodBinding = struct {
-        owner_type: TypeId,
-        method_name: ast.StrId,
-        decl_id: ast.DeclId,
-        func_type: TypeId,
-        self_param_type: ?TypeId,
-        receiver_kind: MethodReceiverKind,
-        requires_implicit_receiver: bool,
-        needs_addr_of: bool,
-        module_id: usize,
-        builtin: ?BuiltinMethod = null,
-    };
-
-    pub fn addMethod(self: *TypeInfo, entry: MethodEntry) !bool {
-        const key = makeMethodKey(entry.owner_type, entry.method_name);
-        const gop = try self.method_table.getOrPut(self.gpa, key);
-        if (gop.found_existing) return false;
-        gop.value_ptr.* = entry;
-        return true;
-    }
-
-    pub fn getMethod(self: *const TypeInfo, owner: TypeId, name: ast.StrId) ?MethodEntry {
-        const key = makeMethodKey(owner, name);
-        return self.method_table.get(key);
-    }
-
-    pub fn setTypeOwnerModule(self: *TypeInfo, owner: TypeId, module_id: usize) !void {
-        try self.type_owner_modules.put(self.gpa, owner.toRaw(), module_id);
-    }
-
-    pub fn getTypeOwnerModule(self: *const TypeInfo, owner: TypeId) ?usize {
-        return self.type_owner_modules.get(owner.toRaw());
+    pub fn getMethodBinding(self: *const TypeInfo, expr_id: ast.ExprId) ?MethodBinding {
+        return self.method_bindings.get(expr_id.toRaw());
     }
 
     pub fn setMethodBinding(self: *TypeInfo, expr_id: ast.ExprId, binding: MethodBinding) !void {
@@ -216,8 +197,13 @@ pub const TypeInfo = struct {
         gop.value_ptr.* = binding;
     }
 
-    pub fn getMethodBinding(self: *const TypeInfo, expr_id: ast.ExprId) ?MethodBinding {
-        return self.method_bindings.get(expr_id.toRaw());
+    pub fn addExport(self: *TypeInfo, name: ast.StrId, ty: TypeId, decl_id: ast.DeclId) !void {
+        const gop = try self.exports.getOrPut(self.gpa, name);
+        gop.value_ptr.* = .{ .ty = ty, .decl_id = decl_id };
+    }
+
+    pub fn getExport(self: *const TypeInfo, name: ast.StrId) ?ExportEntry {
+        return self.exports.get(name);
     }
 
     pub fn hasComptimeValue(self: *TypeInfo, expr_id: ast.ExprId) bool {
@@ -301,6 +287,7 @@ pub const TypeKind = enum(u8) {
     MlirType,
     TypeType,
     Noreturn,
+    Ast,
 };
 
 pub const Rows = struct {
@@ -346,6 +333,7 @@ pub const Rows = struct {
     pub const MlirAttribute = struct {};
     pub const MlirType = struct {};
     pub const TypeType = struct { of: TypeId };
+    pub const Ast = struct { pkg_name: ast.StrId, filepath: ast.StrId };
 };
 
 inline fn RowT(comptime K: TypeKind) type {
@@ -355,6 +343,9 @@ inline fn RowT(comptime K: TypeKind) type {
 pub const TypeStore = struct {
     gpa: std.mem.Allocator,
     index: StoreIndex(TypeKind) = .{},
+    mutex: std.Thread.Mutex = .{},
+
+    method_table: std.AutoArrayHashMapUnmanaged(MethodKey, MethodEntry) = .{},
 
     // basic kinds
     Void: Table(Rows.Void) = .{},
@@ -400,6 +391,8 @@ pub const TypeStore = struct {
     ErrorSet: Table(Rows.ErrorSet) = .{},
     TypeType: Table(Rows.TypeType) = .{},
 
+    Ast: Table(Rows.Ast) = .{},
+
     type_pool: Pool(TypeId) = .{},
     field_pool: Pool(FieldId) = .{},
     enum_member_pool: Pool(EnumMemberId) = .{},
@@ -434,6 +427,7 @@ pub const TypeStore = struct {
     pub fn deinit(self: *TypeStore) void {
         const gpa = self.gpa;
         self.index.deinit(gpa);
+        self.method_table.deinit(gpa);
         inline for (@typeInfo(TypeKind).@"enum".fields) |f| @field(self, f.name).deinit(gpa);
         self.Field.deinit(gpa);
         self.EnumMember.deinit(gpa);
@@ -451,275 +445,457 @@ pub const TypeStore = struct {
         return tbl.get(.{ .index = self.index.rows.items[id.toRaw()] });
     }
 
-    pub fn add(self: *TypeStore, comptime K: TypeKind, row: RowT(K)) TypeId {
+    pub fn addMethod(self: *TypeStore, entry: MethodEntry) !bool {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        const key = makeMethodKey(entry.owner_type, entry.method_name);
+        const gop = try self.method_table.getOrPut(self.gpa, key);
+        if (gop.found_existing) return false;
+        gop.value_ptr.* = entry;
+        return true;
+    }
+
+    pub fn getMethod(self: *TypeStore, owner: TypeId, name: ast.StrId) ?MethodEntry {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        const key = makeMethodKey(owner, name);
+        return self.method_table.get(key);
+    }
+
+    fn addLocked(self: *TypeStore, comptime K: TypeKind, row: RowT(K)) TypeId {
         const tbl: *Table(RowT(K)) = &@field(self, @tagName(K));
         const idx = tbl.add(self.gpa, row);
         return self.index.newId(self.gpa, K, idx.toRaw(), TypeId);
     }
 
-    pub fn addField(self: *TypeStore, row: Rows.Field) FieldId {
+    pub fn add(self: *TypeStore, comptime K: TypeKind, row: RowT(K)) TypeId {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        return self.addLocked(K, row);
+    }
+
+    fn addFieldLocked(self: *TypeStore, row: Rows.Field) FieldId {
         return self.Field.add(self.gpa, row);
     }
 
-    pub fn addEnumMember(self: *TypeStore, row: Rows.EnumMember) EnumMemberId {
+    pub fn addField(self: *TypeStore, row: Rows.Field) FieldId {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        return self.addFieldLocked(row);
+    }
+
+    fn addEnumMemberLocked(self: *TypeStore, row: Rows.EnumMember) EnumMemberId {
         return self.EnumMember.add(self.gpa, row);
     }
 
+    pub fn addEnumMember(self: *TypeStore, row: Rows.EnumMember) EnumMemberId {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        return self.addEnumMemberLocked(row);
+    }
+
     // ---- builtin constructors (interned once) ----
-    pub fn tVoid(self: *TypeStore) TypeId {
+    fn tVoidLocked(self: *TypeStore) TypeId {
         if (self.t_void) |id| return id;
-        const id = self.add(.Void, .{});
+        const id = self.addLocked(.Void, .{});
         self.t_void = id;
         return id;
     }
-    pub fn tBool(self: *TypeStore) TypeId {
+    pub fn tVoid(self: *TypeStore) TypeId {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        return self.tVoidLocked();
+    }
+    fn tBoolLocked(self: *TypeStore) TypeId {
         if (self.t_bool) |id| return id;
-        const id = self.add(.Bool, .{});
+        const id = self.addLocked(.Bool, .{});
         self.t_bool = id;
         return id;
     }
-    pub fn tI8(self: *TypeStore) TypeId {
+    pub fn tBool(self: *TypeStore) TypeId {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        return self.tBoolLocked();
+    }
+    fn tI8Locked(self: *TypeStore) TypeId {
         if (self.t_i8) |id| return id;
-        const id = self.add(.I8, .{});
+        const id = self.addLocked(.I8, .{});
         self.t_i8 = id;
         return id;
     }
-    pub fn tI16(self: *TypeStore) TypeId {
+    pub fn tI8(self: *TypeStore) TypeId {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        return self.tI8Locked();
+    }
+    fn tI16Locked(self: *TypeStore) TypeId {
         if (self.t_i16) |id| return id;
-        const id = self.add(.I16, .{});
+        const id = self.addLocked(.I16, .{});
         self.t_i16 = id;
         return id;
     }
-    pub fn tI32(self: *TypeStore) TypeId {
+    pub fn tI16(self: *TypeStore) TypeId {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        return self.tI16Locked();
+    }
+    fn tI32Locked(self: *TypeStore) TypeId {
         if (self.t_i32) |id| return id;
-        const id = self.add(.I32, .{});
+        const id = self.addLocked(.I32, .{});
         self.t_i32 = id;
         return id;
     }
-    pub fn tI64(self: *TypeStore) TypeId {
+    pub fn tI32(self: *TypeStore) TypeId {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        return self.tI32Locked();
+    }
+    fn tI64Locked(self: *TypeStore) TypeId {
         if (self.t_i64) |id| return id;
-        const id = self.add(.I64, .{});
+        const id = self.addLocked(.I64, .{});
         self.t_i64 = id;
         return id;
     }
-    pub fn tU8(self: *TypeStore) TypeId {
+    pub fn tI64(self: *TypeStore) TypeId {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        return self.tI64Locked();
+    }
+    fn tU8Locked(self: *TypeStore) TypeId {
         if (self.t_u8) |id| return id;
-        const id = self.add(.U8, .{});
+        const id = self.addLocked(.U8, .{});
         self.t_u8 = id;
         return id;
     }
-    pub fn tU16(self: *TypeStore) TypeId {
+    pub fn tU8(self: *TypeStore) TypeId {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        return self.tU8Locked();
+    }
+    fn tU16Locked(self: *TypeStore) TypeId {
         if (self.t_u16) |id| return id;
-        const id = self.add(.U16, .{});
+        const id = self.addLocked(.U16, .{});
         self.t_u16 = id;
         return id;
     }
-    pub fn tU32(self: *TypeStore) TypeId {
+    pub fn tU16(self: *TypeStore) TypeId {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        return self.tU16Locked();
+    }
+    fn tU32Locked(self: *TypeStore) TypeId {
         if (self.t_u32) |id| return id;
-        const id = self.add(.U32, .{});
+        const id = self.addLocked(.U32, .{});
         self.t_u32 = id;
         return id;
     }
-    pub fn tU64(self: *TypeStore) TypeId {
+    pub fn tU32(self: *TypeStore) TypeId {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        return self.tU32Locked();
+    }
+    fn tU64Locked(self: *TypeStore) TypeId {
         if (self.t_u64) |id| return id;
-        const id = self.add(.U64, .{});
+        const id = self.addLocked(.U64, .{});
         self.t_u64 = id;
         return id;
     }
-    pub fn tF32(self: *TypeStore) TypeId {
+    pub fn tU64(self: *TypeStore) TypeId {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        return self.tU64Locked();
+    }
+    fn tF32Locked(self: *TypeStore) TypeId {
         if (self.t_f32) |id| return id;
-        const id = self.add(.F32, .{});
+        const id = self.addLocked(.F32, .{});
         self.t_f32 = id;
         return id;
     }
-    pub fn tF64(self: *TypeStore) TypeId {
+    pub fn tF32(self: *TypeStore) TypeId {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        return self.tF32Locked();
+    }
+    fn tF64Locked(self: *TypeStore) TypeId {
         if (self.t_f64) |id| return id;
-        const id = self.add(.F64, .{});
+        const id = self.addLocked(.F64, .{});
         self.t_f64 = id;
         return id;
     }
-    pub fn tUsize(self: *TypeStore) TypeId {
+    pub fn tF64(self: *TypeStore) TypeId {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        return self.tF64Locked();
+    }
+    fn tUsizeLocked(self: *TypeStore) TypeId {
         if (self.t_usize) |id| return id;
-        const id = self.add(.Usize, .{});
+        const id = self.addLocked(.Usize, .{});
         self.t_usize = id;
         return id;
     }
-    pub fn tString(self: *TypeStore) TypeId {
+    pub fn tUsize(self: *TypeStore) TypeId {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        return self.tUsizeLocked();
+    }
+    fn tStringLocked(self: *TypeStore) TypeId {
         if (self.t_string) |id| return id;
-        const id = self.add(.String, .{});
+        const id = self.addLocked(.String, .{});
         self.t_string = id;
         return id;
     }
-    pub fn tAny(self: *TypeStore) TypeId {
+    pub fn tString(self: *TypeStore) TypeId {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        return self.tStringLocked();
+    }
+    fn tAnyLocked(self: *TypeStore) TypeId {
         if (self.t_any) |id| return id;
-        const id = self.add(.Any, .{});
+        const id = self.addLocked(.Any, .{});
         self.t_any = id;
         return id;
     }
-    pub fn tUndef(self: *TypeStore) TypeId {
+    pub fn tAny(self: *TypeStore) TypeId {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        return self.tAnyLocked();
+    }
+    fn tUndefLocked(self: *TypeStore) TypeId {
         if (self.t_undef) |id| return id;
-        const id = self.add(.Undef, .{});
+        const id = self.addLocked(.Undef, .{});
         self.t_undef = id;
         return id;
     }
-    pub fn tType(self: *TypeStore) TypeId {
+    pub fn tUndef(self: *TypeStore) TypeId {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        return self.tUndefLocked();
+    }
+    fn tTypeLocked(self: *TypeStore) TypeId {
         if (self.t_type) |id| return id;
-        const id = self.add(.TypeType, .{ .of = self.tAny() });
+        const id = self.addLocked(.TypeType, .{ .of = self.tAnyLocked() });
         self.t_type = id;
         return id;
     }
-    pub fn tNoreturn(self: *TypeStore) TypeId {
+    pub fn tType(self: *TypeStore) TypeId {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        return self.tTypeLocked();
+    }
+    fn tNoreturnLocked(self: *TypeStore) TypeId {
         if (self.t_noreturn) |id| return id;
-        const id = self.add(.Noreturn, .{});
+        const id = self.addLocked(.Noreturn, .{});
         self.t_noreturn = id;
         return id;
+    }
+    pub fn tNoreturn(self: *TypeStore) TypeId {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        return self.tNoreturnLocked();
     }
     pub fn tNoReturn(self: *TypeStore) TypeId {
-        if (self.t_noreturn) |id| return id;
-        const id = self.add(.Noreturn, .{});
-        self.t_noreturn = id;
-        return id;
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        return self.tNoreturnLocked();
     }
 
-    pub fn tMlirModule(self: *TypeStore) TypeId {
+    fn tMlirModuleLocked(self: *TypeStore) TypeId {
         if (self.t_mlir_module) |id| return id;
-        const id = self.add(.MlirModule, .{});
+        const id = self.addLocked(.MlirModule, .{});
         self.t_mlir_module = id;
         return id;
     }
+    pub fn tMlirModule(self: *TypeStore) TypeId {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        return self.tMlirModuleLocked();
+    }
 
-    pub fn tMlirAttribute(self: *TypeStore) TypeId {
+    fn tMlirAttributeLocked(self: *TypeStore) TypeId {
         if (self.t_mlir_attribute) |id| return id;
-        const id = self.add(.MlirAttribute, .{});
+        const id = self.addLocked(.MlirAttribute, .{});
         self.t_mlir_attribute = id;
         return id;
     }
+    pub fn tMlirAttribute(self: *TypeStore) TypeId {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        return self.tMlirAttributeLocked();
+    }
 
-    pub fn tMlirType(self: *TypeStore) TypeId {
+    fn tMlirTypeLocked(self: *TypeStore) TypeId {
         if (self.t_mlir_type) |id| return id;
-        const id = self.add(.MlirType, .{});
+        const id = self.addLocked(.MlirType, .{});
         self.t_mlir_type = id;
         return id;
+    }
+    pub fn tMlirType(self: *TypeStore) TypeId {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        return self.tMlirTypeLocked();
     }
 
     // ---- constructors with interning (linear dedup) ----
     pub fn mkPtr(self: *TypeStore, elem: TypeId, is_const: bool) TypeId {
+        self.mutex.lock();
+        defer self.mutex.unlock();
         if (self.findPtr(elem, is_const)) |id| return id;
-        return self.add(.Ptr, .{ .elem = elem, .is_const = is_const });
+        return self.addLocked(.Ptr, .{ .elem = elem, .is_const = is_const });
     }
     pub fn mkSlice(self: *TypeStore, elem: TypeId) TypeId {
+        self.mutex.lock();
+        defer self.mutex.unlock();
         if (self.findSlice(elem)) |id| return id;
-        return self.add(.Slice, .{ .elem = elem });
+        return self.addLocked(.Slice, .{ .elem = elem });
     }
     pub fn mkArray(self: *TypeStore, elem: TypeId, len: ArraySize) TypeId {
+        self.mutex.lock();
+        defer self.mutex.unlock();
         if (self.findArray(elem, len)) |id| return id;
-        return self.add(.Array, .{ .elem = elem, .len = len });
+        return self.addLocked(.Array, .{ .elem = elem, .len = len });
     }
     pub fn mkDynArray(self: *TypeStore, elem: TypeId) TypeId {
+        self.mutex.lock();
+        defer self.mutex.unlock();
         if (self.findDynArray(elem)) |id| return id;
-        return self.add(.DynArray, .{ .elem = elem });
+        return self.addLocked(.DynArray, .{ .elem = elem });
     }
     pub fn mkMap(self: *TypeStore, key: TypeId, value: TypeId) TypeId {
+        self.mutex.lock();
+        defer self.mutex.unlock();
         if (self.findMap(key, value)) |id| return id;
-        return self.add(.Map, .{ .key = key, .value = value });
+        return self.addLocked(.Map, .{ .key = key, .value = value });
+    }
+    pub fn mkAst(self: *TypeStore, pkg_name: ast.StrId, filepath: StrId) TypeId {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        if (self.findAst(pkg_name, filepath)) |id| return id;
+        return self.addLocked(.Ast, .{
+            .pkg_name = pkg_name,
+            .filepath = filepath,
+        });
     }
     pub fn mkSimd(self: *TypeStore, elem: TypeId, lanes: u16) TypeId {
+        self.mutex.lock();
+        defer self.mutex.unlock();
         if (self.findSimd(elem, lanes)) |id| return id;
-        return self.add(.Simd, .{ .elem = elem, .lanes = lanes });
+        return self.addLocked(.Simd, .{ .elem = elem, .lanes = lanes });
     }
     pub fn mkTensor(self: *TypeStore, elem: TypeId, dims: []const usize) TypeId {
+        self.mutex.lock();
+        defer self.mutex.unlock();
         std.debug.assert(dims.len <= max_tensor_rank);
         if (self.findTensor(elem, dims)) |id| return id;
         var row_dims = [_]usize{0} ** max_tensor_rank;
         var i: usize = 0;
         while (i < dims.len) : (i += 1) row_dims[i] = dims[i];
-        return self.add(.Tensor, .{
+        return self.addLocked(.Tensor, .{
             .elem = elem,
             .rank = @intCast(dims.len),
             .dims = row_dims,
         });
     }
     pub fn mkOptional(self: *TypeStore, elem: TypeId) TypeId {
+        self.mutex.lock();
+        defer self.mutex.unlock();
         if (self.findOptional(elem)) |id| return id;
-        return self.add(.Optional, .{ .elem = elem });
+        return self.addLocked(.Optional, .{ .elem = elem });
     }
     pub fn mkTuple(self: *TypeStore, elems: []const TypeId) TypeId {
+        self.mutex.lock();
+        defer self.mutex.unlock();
         if (self.findTuple(elems)) |id| return id;
         const r = self.type_pool.pushMany(self.gpa, elems);
-        return self.add(.Tuple, .{ .elems = r });
+        return self.addLocked(.Tuple, .{ .elems = r });
     }
     pub fn mkFunction(self: *TypeStore, params: []const TypeId, result: TypeId, is_variadic: bool, is_pure: bool) TypeId {
+        self.mutex.lock();
+        defer self.mutex.unlock();
         if (self.findFunction(params, result, is_variadic, is_pure)) |id| return id;
         const r = self.type_pool.pushMany(self.gpa, params);
-        return self.add(.Function, .{ .params = r, .result = result, .is_variadic = is_variadic, .is_pure = is_pure });
+        return self.addLocked(.Function, .{ .params = r, .result = result, .is_variadic = is_variadic, .is_pure = is_pure });
     }
     pub const EnumMemberArg = struct { name: StrId, value: u64 };
     pub fn mkEnum(self: *TypeStore, members: []const EnumMemberArg, tag_type: TypeId) TypeId {
+        self.mutex.lock();
+        defer self.mutex.unlock();
         var ids = self.gpa.alloc(EnumMemberId, members.len) catch @panic("OOM");
         defer self.gpa.free(ids);
         var i: usize = 0;
         while (i < members.len) : (i += 1) {
-            const mid = self.addEnumMember(.{ .name = members[i].name, .value = members[i].value });
+            const mid = self.addEnumMemberLocked(.{ .name = members[i].name, .value = members[i].value });
             ids[i] = mid;
         }
         const r = self.enum_member_pool.pushMany(self.gpa, ids);
-        return self.add(.Enum, .{ .members = r, .tag_type = tag_type });
+        return self.addLocked(.Enum, .{ .members = r, .tag_type = tag_type });
     }
     pub fn mkVariant(self: *TypeStore, variants: []const StructFieldArg) TypeId {
+        self.mutex.lock();
+        defer self.mutex.unlock();
         if (self.findVariant(variants)) |id| return id;
         var ids = self.gpa.alloc(FieldId, variants.len) catch @panic("OOM");
         defer self.gpa.free(ids);
         var i: usize = 0;
         while (i < variants.len) : (i += 1) {
-            const fid = self.addField(.{ .name = variants[i].name, .ty = variants[i].ty });
+            const fid = self.addFieldLocked(.{ .name = variants[i].name, .ty = variants[i].ty });
             ids[i] = fid;
         }
         const r = self.field_pool.pushMany(self.gpa, ids);
-        return self.add(.Variant, .{ .variants = r });
+        return self.addLocked(.Variant, .{ .variants = r });
     }
     pub fn mkErrorSet(self: *TypeStore, value_ty: TypeId, error_ty: TypeId) TypeId {
+        self.mutex.lock();
+        defer self.mutex.unlock();
         if (self.findErrorSet(value_ty, error_ty)) |id| return id;
-        return self.add(.ErrorSet, .{ .value_ty = value_ty, .error_ty = error_ty });
+        return self.addLocked(.ErrorSet, .{ .value_ty = value_ty, .error_ty = error_ty });
     }
     pub fn mkTypeType(self: *TypeStore, of: TypeId) TypeId {
+        self.mutex.lock();
+        defer self.mutex.unlock();
         if (self.findTypeType(of)) |id| return id;
-        return self.add(.TypeType, .{ .of = of });
+        return self.addLocked(.TypeType, .{ .of = of });
     }
     pub const StructFieldArg = struct { name: StrId, ty: TypeId };
     pub fn mkStruct(self: *TypeStore, fields: []const StructFieldArg) TypeId {
+        self.mutex.lock();
+        defer self.mutex.unlock();
         // Build interning key arrays
         if (self.findStruct(fields)) |id| return id;
         var ids = self.gpa.alloc(FieldId, fields.len) catch @panic("OOM");
         defer self.gpa.free(ids);
         var i: usize = 0;
         while (i < fields.len) : (i += 1) {
-            const fid = self.addField(.{ .name = fields[i].name, .ty = fields[i].ty });
+            const fid = self.addFieldLocked(.{ .name = fields[i].name, .ty = fields[i].ty });
             ids[i] = fid;
         }
         const r = self.field_pool.pushMany(self.gpa, ids);
-        return self.add(.Struct, .{ .fields = r });
+        return self.addLocked(.Struct, .{ .fields = r });
     }
     pub fn mkUnion(self: *TypeStore, fields: []const StructFieldArg) TypeId {
+        self.mutex.lock();
+        defer self.mutex.unlock();
         var ids = self.gpa.alloc(FieldId, fields.len) catch @panic("OOM");
         defer self.gpa.free(ids);
         var i: usize = 0;
         while (i < fields.len) : (i += 1) {
-            const fid = self.addField(.{ .name = fields[i].name, .ty = fields[i].ty });
+            const fid = self.addFieldLocked(.{ .name = fields[i].name, .ty = fields[i].ty });
             ids[i] = fid;
         }
         const r = self.field_pool.pushMany(self.gpa, ids);
-        return self.add(.Union, .{ .fields = r });
+        return self.addLocked(.Union, .{ .fields = r });
     }
     pub fn mkError(self: *TypeStore, fields: []const StructFieldArg) TypeId {
+        self.mutex.lock();
+        defer self.mutex.unlock();
         var ids = self.gpa.alloc(FieldId, fields.len) catch @panic("OOM");
         defer self.gpa.free(ids);
         var i: usize = 0;
         while (i < fields.len) : (i += 1) {
-            const fid = self.addField(.{ .name = fields[i].name, .ty = fields[i].ty });
+            const fid = self.addFieldLocked(.{ .name = fields[i].name, .ty = fields[i].ty });
             ids[i] = fid;
         }
         const r = self.field_pool.pushMany(self.gpa, ids);
-        return self.add(.Error, .{ .variants = r });
+        return self.addLocked(.Error, .{ .variants = r });
     }
 
     // ---- finders ----
@@ -783,6 +959,16 @@ pub const TypeStore = struct {
             fn eq(s: *const TypeStore, row: Rows.Map, k: anytype) bool {
                 _ = s;
                 return row.key.toRaw() == k.k.toRaw() and row.value.toRaw() == k.v.toRaw();
+            }
+        });
+    }
+    fn findAst(self: *const TypeStore, pkg_name: ast.StrId, filepath: StrId) ?TypeId {
+        return self.findMatch(.Ast, struct { pkg: ast.StrId, filepath: StrId }{
+            .pkg = pkg_name,
+            .filepath = filepath,
+        }, struct {
+            fn eq(_: *const TypeStore, row: Rows.Ast, key: anytype) bool {
+                return row.filepath.toRaw() == key.filepath.toRaw() and row.pkg_name.toRaw() == key.pkg.toRaw();
             }
         });
     }
@@ -1100,6 +1286,15 @@ pub const TypeStore = struct {
                 const r = self.get(.TypeType, id);
                 try w.print("type(", .{});
                 try self.fmt(r.of, w);
+                try w.print(")", .{});
+            },
+            .Ast => {
+                const r = self.get(.Ast, id);
+                try w.print("ast(", .{});
+                const name = self.strs.get(r.pkg_name);
+                try w.print("{s}", .{name});
+                const filepath = self.strs.get(r.filepath);
+                try w.print("#{s}", .{filepath});
                 try w.print(")", .{});
             },
         }

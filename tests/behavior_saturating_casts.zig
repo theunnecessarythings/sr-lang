@@ -15,18 +15,16 @@ test "casts: i32 to i8 saturating (overflow max)" {
 }
 
 test "casts: i32 to i8 saturating (overflow min)" {
-    if (true) return error.SkipZigTest;
     const src =
         \\small_int: i32 = -99999
         \\saturated_to_i8 := small_int.|i8
-        \\printf("Result: %d\n", saturated_to_i8)
+        \\printf("Result: %d\n", saturated_to_i8.(i64))
     ;
     const code = getSource("", src);
     try runCompilerTest(code, "Result: -128\n"); // i8::MIN
 }
 
 test "casts: i32 to u8 saturating (negative)" {
-    if (true) return error.SkipZigTest;
     const src =
         \\neg_int: i32 = -10
         \\saturated_to_u8 := neg_int.|u8

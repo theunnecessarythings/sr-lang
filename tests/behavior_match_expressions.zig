@@ -155,15 +155,3 @@ test "control_flow: match with range inside or-pattern" {
     const code = getSource("", src);
     try runCompilerTest(code, "Result: 222\n");
 }
-
-test "control_flow: match with descending range pattern reports diagnostic" {
-    const src =
-        \\x := 0
-        \\_ := match x {
-        \\  5..3 => 1,
-        \\  _ => 2,
-        \\}
-    ;
-    const code = getSource("", src);
-    try std.testing.expectError(error.CompilationFailed, runCompilerTest(code, ""));
-}

@@ -1,0 +1,40 @@
+printf :: extern proc(string, any) void
+
+// Generic function to return the maximum of two values
+max :: fn(comptime T: type, a: T, b: T) T {
+    return if a > b { a } else { b }
+}
+
+max_any :: proc(a: any, b: any) void {
+  if a > b {
+      printf("a is bigger\n")
+  } else {
+      printf("b is bigger\n")
+  }
+}
+
+Test :: fn(comptime T: type) type {
+  return struct {
+    a: T,
+    b: usize,
+  }
+}
+
+main :: proc() {
+    // Call max with i32
+    result_i32 := max(i32, 10, 20)
+    printf("Max of 10 and 20 (i32): %d\n", result_i32)
+
+    // Call max with f64
+    result_f64 := max(f64, 10.5, 20.5)
+    printf("Max of 10.5 and 20.5 (f64): %f\n", result_f64)
+
+    max_any(10, 20)
+    max_any(20.5, 10.5)
+    
+    val_test := Test(f64){
+      a: 42.0,
+      b: 100,
+    }
+    printf("Test_i64 a: %f, b: %d\n", val_test.a, val_test.b)
+}

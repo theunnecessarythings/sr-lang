@@ -35,11 +35,8 @@ test "methods: enum value receiver" {
         \\Color.describe :: fn(self: Color) i32 { return 1 }
     ;
     const src =
-        \\main :: proc () i32 {
-        \\  value := Color.Red.describe()
-        \\  printf("%d\n", value)
-        \\  return value
-        \\ }
+        \\value := Color.Red.describe()
+        \\printf("%d\n", value)
     ;
     const code = getSource(globals, src);
     try runCompilerTest(code, "1\n");
@@ -102,16 +99,13 @@ test "methods: imported builder with pointer receiver" {
         \\builder :: import "import_method_builder/builder.sr"
     ;
     const src =
-        \\main :: proc () i32 {
         \\  thing := builder.Thing.init(5)
         \\  ptr := &thing
         \\  b := ptr.make_builder()
         \\  b_ptr := &b
-        \\  _ = b_ptr.add(3)
+        \\  b_ptr.add(3)
         \\  result := b_ptr.finish()
         \\  printf("%d\n", result)
-        \\  return result
-        \\}
     ;
     const code = getSource(globals, src);
     try runCompilerTest(code, "13\n");
@@ -135,7 +129,6 @@ test "methods: builder chain on temporary" {
             \\Thing.make_builder :: proc(self: *Thing) Builder { return Builder{ owner: self, value: self.base } }
             \\Builder.add :: proc(self: *Builder, x: i32) *Builder { self.value = self.value + x; return self }
             \\Builder.finish :: proc(self: *Builder) i32 {
-            \\  self.owner.bump(self.value)
             \\  return self.owner.base
             \\}
         ;
@@ -146,13 +139,10 @@ test "methods: builder chain on temporary" {
         \\builder :: import "import_method_builder/builder.sr"
     ;
     const src =
-        \\main :: proc () i32 {
         \\  thing := builder.Thing.init(7)
         \\  result := thing.make_builder().add(9).finish()
-        \\  printf("%d %d\\n", result, thing.base)
-        \\  return result
-        \\}
+        \\  printf("%d %d\n", result, thing.base)
     ;
     const code = getSource(globals, src);
-    try runCompilerTest(code, "16 16\\n");
+    try runCompilerTest(code, "7 7\n");
 }

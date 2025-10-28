@@ -10,7 +10,7 @@ itoa_i64 :: proc(n: i64, buf: *u8, cap: usize) usize {
     if (cap == 0) { return 0 }
     if (n == 0) { buf[0] = '0'; return 1 }
     neg := n < 0
-    u: u64 = if (neg) (0 - n).^u64 else n.^u64
+    u: u64 = if (neg) {(0 - n).^u64} else {n.^u64}
     i: usize = 0
     while (u > 0 and i < cap) {
         digit := (u % 10).^u8

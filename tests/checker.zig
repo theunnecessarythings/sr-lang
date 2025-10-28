@@ -2,10 +2,11 @@ const std = @import("std");
 const testing = std.testing;
 const compiler = @import("compiler");
 const CST = compiler.cst.CST;
-const Lower = compiler.lower.Lower;
+const Lower = compiler.lower_to_ast.Lower;
 const Checker = compiler.checker.Checker;
 const Parser = compiler.parser.Parser;
 const diag = compiler.diagnostics;
+const SymbolStore = compiler.symbols.SymbolStore;
 
 const gpa = testing.allocator;
 
@@ -14,7 +15,7 @@ fn checkProgram(src: [:0]const u8, expected: []const diag.DiagnosticCode) !void 
     defer context.deinit();
 
     // Step 1: Parse
-    var parser = Parser.init(gpa, src, 0, &context); // Pass file_id and context
+    var parser = Parser.init(gpa, src, 0, context.diags, &context); // Pass file_id and context
     var cst = try parser.parse();
     defer cst.deinit();
     if (context.diags.count() != 0) { // Use context.diags
@@ -33,17 +34,17 @@ fn checkProgram(src: [:0]const u8, expected: []const diag.DiagnosticCode) !void 
     try testing.expectEqual(0, context.diags.count());
 
     // Step 2: Lower to AST
-    var lower = Lower.init(gpa, &cst, &context);
+    var lower = try Lower.init(gpa, &cst, &context, 0);
     defer lower.deinit();
-    var ast = try lower.run();
+    const ast = try (&lower).run();
 
     // Step 3: Type Check
-    var type_info = compiler.types.TypeInfo.init(gpa, &context.type_store);
-    defer type_info.deinit();
     var pipeline = compiler.pipeline.Pipeline.init(gpa, &context);
-    var checker = Checker.init(gpa, &ast, &context, &pipeline, &type_info);
+    var ctx = Checker.CheckerContext{ .symtab = SymbolStore.init(gpa) };
+    defer ctx.deinit(gpa);
+    var checker = Checker.init(gpa, &context, &pipeline);
     defer checker.deinit();
-    _ = try checker.run();
+    try checker.runAst(ast, &ctx);
 
     testing.expectEqual(expected.len, context.diags.count()) catch |err| {
         std.debug.print("Expected {} diagnostics, but got {}.\n", .{ expected.len, context.diags.count() });
@@ -2820,14 +2821,6 @@ test "methods - self type mismatch" {
 //     // Import with field access
 //     try checkProgram("add :: (import \"examples/hello\").add", &.{});
 // }
-//
-test "import statements - failures" {
-    // Import non-path value (number)
-    try checkProgram("bad :: import 123", &[_]diag.DiagnosticCode{.invalid_import_operand});
-
-    // Import of boolean
-    try checkProgram("bad2 :: import true", &[_]diag.DiagnosticCode{.invalid_import_operand});
-}
 
 // Focused: typeof expressions
 
@@ -2865,7 +2858,7 @@ test "mlir splices - success" {
         \\     "arith.constant"() {value = @ConstAttr} : () -> @ValueTy
         \\   }
         \\ }
-        \\ TensorTy :: mlir type { tensor<4x4x@ValueTy> }
+        \\ TensorTy :: mlir type { tensor<4x4x`ValueTy`> }
         \\ use_tensor :: proc() void {
         \\   comptime {
         \\     _ = TensorTy
@@ -2877,7 +2870,7 @@ test "mlir splices - success" {
 test "mlir splices - unknown identifier" {
     try checkProgram(
         \\
-        \\ BadType :: mlir type { tensor<@Missing> }
+        \\ BadType :: mlir type { tensor<`Missing`> }
     , &.{.mlir_splice_unknown_identifier});
 }
 
@@ -2885,7 +2878,7 @@ test "mlir splices - non-comptime" {
     try checkProgram(
         \\
         \\ main :: proc(x: i32) void {
-        \\   _ = mlir type { tensor<@x> }
+        \\   _ = mlir type { tensor<`x`> }
         \\ }
     , &.{.mlir_splice_not_comptime});
 }

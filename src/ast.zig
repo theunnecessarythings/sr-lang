@@ -1,5 +1,7 @@
 const std = @import("std");
 const dod = @import("cst.zig");
+const TypeInfo = @import("types.zig").TypeInfo;
+const TypeStore = @import("types.zig").TypeStore;
 const ArrayList = std.array_list.Managed;
 
 pub const Index = dod.Index;
@@ -240,7 +242,7 @@ pub const Rows = struct {
     pub const Closure = struct { params: RangeParam, result_ty: OptExprId, body: ExprId, loc: LocId };
     pub const Cast = struct { expr: ExprId, ty: ExprId, kind: CastKind, loc: LocId };
     pub const Catch = struct { expr: ExprId, binding_name: OptStrId, binding_loc: OptLocId, handler: ExprId, loc: LocId };
-    pub const Import = struct { expr: ExprId, loc: LocId };
+    pub const Import = struct { path: StrId, loc: LocId };
     pub const TypeOf = struct { expr: ExprId, loc: LocId };
 
     pub const Param = struct {
@@ -737,24 +739,33 @@ pub const PatternStore = struct {
 
 pub const Ast = struct {
     gpa: std.mem.Allocator,
-    module_id: usize = 0,
+    file_id: usize,
     unit: Unit,
     exprs: ExprStore,
     stmts: StmtStore,
     pats: PatternStore,
+    type_info: TypeInfo,
 
-    pub fn init(gpa: std.mem.Allocator, interner: *StringInterner, locs: *const LocStore) Ast {
+    pub fn init(
+        gpa: std.mem.Allocator,
+        interner: *StringInterner,
+        locs: *const LocStore,
+        type_store: *TypeStore,
+        file_id: usize,
+    ) Ast {
         return .{
             .gpa = gpa,
-            .module_id = 0,
+            .file_id = file_id,
             .unit = Unit.empty(),
             .exprs = ExprStore.init(gpa, interner, locs),
             .stmts = StmtStore.init(gpa),
             .pats = PatternStore.init(gpa, interner),
+            .type_info = TypeInfo.init(gpa, type_store),
         };
     }
 
     pub fn deinit(self: *@This()) void {
+        self.type_info.deinit();
         self.exprs.deinit();
         self.stmts.deinit();
         self.pats.deinit();
@@ -1299,8 +1310,8 @@ pub const AstPrinter = struct {
             .Import => {
                 const node = self.exprs.get(.Import, id);
                 try self.open("(import", .{});
-                try self.open("(expr", .{});
-                try self.printExpr(node.expr);
+                try self.open("(path", .{});
+                try self.leaf("\"{s}\"", .{self.s(node.path)});
                 try self.close();
                 try self.close();
             },
@@ -2239,7 +2250,7 @@ pub const CodePrinter = struct {
             .Import => {
                 const node = self.exprs.get(.Import, id);
                 try self.printf("import ", .{});
-                try self.printExpr(node.expr);
+                try self.printf("\"{s}\"", .{self.s(node.path)});
             },
             .TypeOf => {
                 const node = self.exprs.get(.TypeOf, id);

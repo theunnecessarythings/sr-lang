@@ -18,11 +18,6 @@ literals::proc() {
   str1 := "Hello, world!\n"
   raw_str := r#"This is a raw string."# 
 
-  // Byte and byte string literals
-  byte1 := b'x'
-  byte_str := b"some bytes"
-  raw_byte_str := br#"raw bytes"# 
-
   // Boolean literals
   true_val := true
   false_val := false

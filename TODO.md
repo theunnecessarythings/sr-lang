@@ -1,0 +1,21 @@
+- [ ] Fix diagnostics payloads
+- [ ] Target Dependent, Proper ABI
+- [ ] Debug info
+- [ ] Inline MLIR, Call Syntax, move to parser etc
+- [ ] StableHLO, Torch dialects
+- [ ] Comptime Evaluation
+- [ ] Monomorphization
+- [ ] Parser bug fixes 
+- [ ] ASI Bug fixes
+- [ ] Feat: struct literal without field names
+- [ ] Stdlib
+- [ ] Runtime
+- [ ] Polish CLI
+- [ ] Polish error messages and Notes
+- [ ] Casting fixes
+- [ ] Add more tests
+- [ ] Add more examples
+- [ ] Doc generation
+- [ ] According to scope rules, add llvm.intr.lifetime.start/end
+
+

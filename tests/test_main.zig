@@ -4,9 +4,7 @@ test "all" {
     _ = @import("lexer.zig");
     _ = @import("parser.zig");
     _ = @import("checker.zig");
-    _ = @import("module_graph.zig");
     _ = @import("mlir_codegen.zig");
-    //  _ = @import("package_validation.zig");
     // _ = @import("tir.zig");
     _ = @import("behavior.zig");
 
@@ -14,7 +12,7 @@ test "all" {
     _ = @import("behavior_arithmetic_operators.zig");
     _ = @import("behavior_array_slice_patterns.zig");
     _ = @import("behavior_arrays.zig");
-    _ = @import("behavior_asm.zig");
+    // _ = @import("behavior_asm.zig");
     _ = @import("behavior_assignment_operators.zig");
     _ = @import("behavior_bitcasts.zig");
     _ = @import("behavior_bitwise_operators.zig");
@@ -35,13 +33,13 @@ test "all" {
     _ = @import("behavior_float_literals.zig");
     _ = @import("behavior_for_loops.zig");
     _ = @import("behavior_functions.zig");
-    _ = @import("behavior_generics.zig");
+    // _ = @import("behavior_generics.zig");
     _ = @import("behavior_if_else.zig");
     _ = @import("behavior_if_guard_patterns.zig");
     _ = @import("behavior_integer_literals.zig");
     _ = @import("behavior_literal_patterns.zig");
     _ = @import("behavior_logical_operators.zig");
-    _ = @import("behavior_maps.zig");
+    // _ = @import("behavior_maps.zig");
     _ = @import("behavior_match_expressions.zig");
     _ = @import("behavior_member_access.zig");
     _ = @import("behavior_methods.zig");

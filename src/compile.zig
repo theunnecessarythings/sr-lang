@@ -1,10 +1,12 @@
 const std = @import("std");
 const mlir = @import("mlir_bindings.zig");
 const cst = @import("cst.zig");
+const package = @import("package.zig");
+const CompilationUnit = package.CompilationUnit;
 const Diagnostics = @import("diagnostics.zig").Diagnostics;
-const ModuleGraph = @import("module_graph.zig").ModuleGraph;
 const TypeInfo = @import("types.zig").TypeInfo;
 const TypeStore = @import("types.zig").TypeStore;
+const Parser = @import("parser.zig").Parser;
 
 var g_passes_registered: bool = false;
 
@@ -37,13 +39,22 @@ pub const SourceManager = struct {
         return @intCast(self.files.items.len - 1);
     }
 
+    pub fn find(self: *SourceManager, file_path: []const u8) ?u32 {
+        const idx = self.findIndex(file_path) orelse return null;
+        return @intCast(idx);
+    }
+
     pub fn read(self: *SourceManager, index: u32) ![]const u8 {
         if (index >= self.files.items.len) return error.FileNotFound;
         const entry = self.files.items[index];
         if (entry.virtual_source) |src| {
             return try self.gpa.dupe(u8, src);
         }
-        var file = try std.fs.cwd().openFile(entry.path, .{});
+        var file = std.fs.cwd().openFile(entry.path, .{}) catch |err| {
+            std.debug.print("error: {s}\n", .{entry.path});
+            return err;
+        };
+
         defer file.close();
         const file_size = try file.getEndPos();
         const buffer = try self.gpa.alloc(u8, file_size);
@@ -102,8 +113,22 @@ pub const Context = struct {
     diags: *Diagnostics,
     interner: *cst.StringInterner,
     loc_store: *cst.LocStore,
-    module_graph: ModuleGraph,
-    type_store: TypeStore,
+    type_store: *TypeStore,
+    compilation_unit: CompilationUnit,
+    mutex: std.Thread.Mutex = .{},
+
+    parse_worklist: std.ArrayList(ParseRequest) = .{},
+
+    // Cooperative cancellation flag used by threaded stages.
+    cancel_requested: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
+
+    const ParseRequest = struct {
+        path: []const u8,
+        file_id: u32,
+        thread: std.Thread,
+        diags: *Diagnostics,
+        parser: *Parser,
+    };
 
     pub fn init(gpa: std.mem.Allocator) Context {
         const interner = gpa.create(cst.StringInterner) catch unreachable;
@@ -114,30 +139,195 @@ pub const Context = struct {
         source_manager.* = SourceManager{ .gpa = gpa };
         const loc_store = gpa.create(cst.LocStore) catch unreachable;
         loc_store.* = cst.LocStore{};
+        const type_store = gpa.create(TypeStore) catch unreachable;
+        type_store.* = TypeStore.init(gpa, interner);
         return .{
             .diags = diags,
             .interner = interner,
             .loc_store = loc_store,
             .gpa = gpa,
             .source_manager = source_manager,
-            .module_graph = ModuleGraph.init(gpa),
-            .type_store = TypeStore.init(gpa, interner),
+            .type_store = type_store,
+            .compilation_unit = CompilationUnit.init(gpa),
         };
     }
 
     pub fn deinit(self: *Context) void {
+        self.compilation_unit.deinit();
         self.source_manager.deinit();
         self.diags.deinit();
         self.interner.deinit();
         self.loc_store.deinit(self.gpa);
         self.type_store.deinit();
-        self.module_graph.deinit();
         self.gpa.destroy(self.interner);
         self.gpa.destroy(self.diags);
         self.gpa.destroy(self.source_manager);
         self.gpa.destroy(self.loc_store);
+        self.gpa.destroy(self.type_store);
+    }
+
+    pub inline fn requestCancel(self: *Context) void {
+        self.cancel_requested.store(true, .seq_cst);
+    }
+
+    pub inline fn isCancelled(self: *const Context) bool {
+        return self.cancel_requested.load(.seq_cst);
     }
 };
+
+pub const DependencyLevels = struct {
+    allocator: std.mem.Allocator,
+    levels: std.ArrayList(std.ArrayList(u32)),
+
+    pub fn init(allocator: std.mem.Allocator) DependencyLevels {
+        return .{ .allocator = allocator, .levels = .{} };
+    }
+
+    pub fn deinit(self: *DependencyLevels) void {
+        for (self.levels.items) |*level| {
+            level.deinit(self.allocator);
+        }
+        self.levels.deinit(self.allocator);
+    }
+};
+
+pub fn computeDependencyLevels(
+    allocator: std.mem.Allocator,
+    unit: *CompilationUnit,
+    interner: *cst.StringInterner,
+    source_manager: *SourceManager,
+) !DependencyLevels {
+    var result = DependencyLevels.init(allocator);
+    errdefer result.deinit();
+
+    var indegree = std.AutoHashMap(u32, usize).init(allocator);
+    defer indegree.deinit();
+
+    var adjacency = std.AutoHashMap(u32, std.ArrayList(u32)).init(allocator);
+    defer {
+        var adj_iter = adjacency.iterator();
+        while (adj_iter.next()) |entry| {
+            entry.value_ptr.deinit(allocator);
+        }
+        adjacency.deinit();
+    }
+
+    var ordered_nodes = std.ArrayList(u32){};
+    defer ordered_nodes.deinit(allocator);
+
+    var remaining = std.AutoHashMap(u32, void).init(allocator);
+    defer remaining.deinit();
+
+    var pkg_iter = unit.packages.iterator();
+    while (pkg_iter.next()) |pkg| {
+        var source_iter = pkg.value_ptr.sources.iterator();
+        while (source_iter.next()) |entry| {
+            const file_id = entry.value_ptr.file_id;
+            if (indegree.getPtr(file_id) == null) {
+                try indegree.put(file_id, 0);
+            }
+            if (!remaining.contains(file_id)) {
+                try remaining.put(file_id, {});
+                try ordered_nodes.append(allocator, file_id);
+            }
+        }
+    }
+
+    var dep_iter = unit.dependencies.iterator();
+    while (dep_iter.next()) |entry| {
+        const file_id = entry.key_ptr.*;
+        if (indegree.getPtr(file_id) == null) {
+            try indegree.put(file_id, 0);
+        }
+        if (!remaining.contains(file_id)) {
+            try remaining.put(file_id, {});
+            try ordered_nodes.append(allocator, file_id);
+        }
+
+        var set_iter = entry.value_ptr.iterator();
+        while (set_iter.next()) |dep_entry| {
+            const dep_str = interner.get(dep_entry.key_ptr.*);
+            const dep_file_id = source_manager.find(dep_str) orelse continue;
+            if (dep_file_id == file_id) continue;
+
+            const indegree_ptr = indegree.getPtr(file_id) orelse blk: {
+                try indegree.put(file_id, 0);
+                break :blk indegree.getPtr(file_id).?;
+            };
+            indegree_ptr.* += 1;
+
+            var adj_ptr = adjacency.getPtr(dep_file_id) orelse blk: {
+                const list = std.ArrayList(u32){};
+                try adjacency.put(dep_file_id, list);
+                break :blk adjacency.getPtr(dep_file_id).?;
+            };
+            try adj_ptr.append(allocator, file_id);
+
+            if (indegree.getPtr(dep_file_id) == null) {
+                try indegree.put(dep_file_id, 0);
+            }
+            if (!remaining.contains(dep_file_id)) {
+                try remaining.put(dep_file_id, {});
+                try ordered_nodes.append(allocator, dep_file_id);
+            }
+        }
+    }
+
+    var queue = std.ArrayList(u32){};
+    defer queue.deinit(allocator);
+    var next_queue = std.ArrayList(u32){};
+    defer next_queue.deinit(allocator);
+
+    var indegree_iter = indegree.iterator();
+    while (indegree_iter.next()) |entry| {
+        if (entry.value_ptr.* == 0) {
+            try queue.append(allocator, entry.key_ptr.*);
+        }
+    }
+
+    while (queue.items.len > 0) {
+        var level = std.ArrayList(u32){};
+        try level.appendSlice(allocator, queue.items);
+        for (queue.items) |node| {
+            _ = remaining.remove(node);
+        }
+        try result.levels.append(allocator, level);
+
+        next_queue.clearRetainingCapacity();
+        for (queue.items) |node| {
+            if (adjacency.getPtr(node)) |neighbors| {
+                for (neighbors.items) |neighbor| {
+                    const indegree_ptr = indegree.getPtr(neighbor) orelse continue;
+                    if (indegree_ptr.* == 0) continue;
+                    indegree_ptr.* -= 1;
+                    if (indegree_ptr.* == 0) {
+                        try next_queue.append(allocator, neighbor);
+                    }
+                }
+            }
+        }
+
+        queue.clearRetainingCapacity();
+        std.mem.swap(std.ArrayList(u32), &queue, &next_queue);
+    }
+
+    if (remaining.count() > 0) {
+        var cycle_level = std.ArrayList(u32){};
+        for (ordered_nodes.items) |node| {
+            if (remaining.contains(node)) {
+                _ = remaining.remove(node);
+                try cycle_level.append(allocator, node);
+            }
+        }
+        if (cycle_level.items.len > 0) {
+            try result.levels.append(allocator, cycle_level);
+        } else {
+            cycle_level.deinit(allocator);
+        }
+    }
+
+    return result;
+}
 
 pub fn initMLIR(alloc: std.mem.Allocator) mlir.Context {
     mlir.setGlobalAlloc(alloc);
@@ -168,6 +358,7 @@ pub fn run_passes(context: *mlir.Context, module: *mlir.Module) !void {
         "canonicalize,cse," ++
         "convert-bufferization-to-memref," ++
         "convert-linalg-to-loops," ++
+        "loop-invariant-code-motion," ++
         "lower-affine," ++
         "convert-vector-to-llvm," ++
 
@@ -323,12 +514,30 @@ pub fn convert_to_llvm_ir(module: mlir.c.MlirModule, print_ir: bool, link_args: 
     );
     defer allocator.free(runtime_path);
     try args.append(allocator, runtime_path);
-    // Append user-provided link args (e.g., -L/usr/local/lib, -lraylib)
-    for (link_args) |la| try args.append(allocator, la);
+    // Ensure local out dir is searched at link and runtime for shared libs
+    try args.append(allocator, "-Wl,-rpath,./out");
+    try args.append(allocator, "-Lout");
+
+    // Append user-provided link args (e.g., -L/usr/local/lib, -lraylib, ./out/mylib.so)
+    for (link_args) |la| {
+        try args.append(allocator, la);
+    }
 
     var child = std.process.Child.init(args.items, allocator);
-    child.spawn() catch unreachable;
-    _ = child.wait() catch unreachable;
+    child.spawn() catch {
+        return error.LinkFailed;
+    };
+    const term = child.wait() catch {
+        return error.LinkFailed;
+    };
+    switch (term) {
+        .Exited => |code| {
+            if (code != 0) {
+                return error.LinkFailed;
+            }
+        },
+        else => return error.LinkFailed,
+    }
 }
 
 pub fn run() void {

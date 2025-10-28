@@ -3,9 +3,10 @@ const std = @import("std");
 const lexer = compiler.lexer;
 const parser = compiler.parser;
 const diagnostics = compiler.diagnostics;
-const lower = compiler.lower;
+const lower = compiler.lower_to_ast;
 const ast = compiler.ast;
 const checker = compiler.checker;
+const SymbolStore = compiler.symbols.SymbolStore;
 
 fn testLexer(data: []const u8) !void {
     const source0 = try std.heap.page_allocator.dupeZ(u8, data);
@@ -69,7 +70,7 @@ fn testParser(data: []const u8) !void {
     const source0 = try gpa.dupeZ(u8, data);
     // diags and interner are now part of context, no need to create separately
 
-    var parser_mod = parser.Parser.init(gpa, source0, 0, &context); // Pass file_id and context
+    var parser_mod = parser.Parser.init(gpa, source0, 0, context.diags, &context); // Pass file_id and context
     var tree = parser_mod.parse() catch |err| switch (err) {
         error.UnexpectedToken => {
             try std.testing.expect(context.diags.anyErrors()); // Use context.diags
@@ -103,7 +104,7 @@ fn testLower(data: []const u8) !void {
     const source0 = try gpa.dupeZ(u8, data);
     // diags and interner are now part of context, no need to create separately
 
-    var parser_mod = parser.Parser.init(gpa, source0, 0, &context); // Pass file_id and context
+    var parser_mod = parser.Parser.init(gpa, source0, 0, context.diags, &context); // Pass file_id and context
     var tree = parser_mod.parse() catch |err| switch (err) {
         error.UnexpectedToken => return, // invalid input is fine for fuzzing
         error.OutOfMemory => std.debug.panic("parser OOM", .{}),
@@ -111,8 +112,8 @@ fn testLower(data: []const u8) !void {
     };
     defer tree.deinit();
 
-    var lower_mod = lower.Lower.init(gpa, &tree, &context); // Pass context
-    var a = try lower_mod.run();
+    var lower_mod = try lower.Lower.init(gpa, &tree, &context, 0); // Pass context
+    var a = try (&lower_mod).run();
     defer a.deinit();
 
     var buffer: [1024]u8 = undefined;
@@ -143,7 +144,7 @@ fn testChecker(data: []const u8) !void {
     const source0 = try gpa.dupeZ(u8, data);
     // diags and interner are now part of context, no need to create separately
 
-    var parser_mod = parser.Parser.init(gpa, source0, 0, &context); // Pass file_id and context
+    var parser_mod = parser.Parser.init(gpa, source0, 0, context.diags, &context); // Pass file_id and context
     var c = parser_mod.parse() catch |err| switch (err) {
         error.UnexpectedToken => return, // invalid input is fine for fuzzing
         error.OutOfMemory => std.debug.panic("parser OOM", .{}),
@@ -151,15 +152,14 @@ fn testChecker(data: []const u8) !void {
     };
     defer c.deinit();
 
-    var lower_mod = lower.Lower.init(gpa, &c, &context); // Pass context
-    var a = try lower_mod.run();
+    var lower_mod = try lower.Lower.init(gpa, &c, &context, 0); // Pass context
+    var a = try (&lower_mod).run();
     defer a.deinit();
 
-    var type_info = compiler.types.TypeInfo.init(gpa, &context.type_store);
-    defer type_info.deinit();
-    var chk = checker.Checker.init(gpa, &a, &context, &pipeline, &type_info); // Pass context and pipeline
+    var ctx = checker.Checker.CheckerContext{ .symtab = SymbolStore.init(gpa) };
+    var chk = checker.Checker.init(gpa, &context, &pipeline); // Pass context and pipeline
     defer chk.deinit();
-    _ = try chk.run();
+    try chk.runAst(a, &ctx);
 }
 
 pub export fn fuzz_checker(ptr: [*]const u8, len: usize) callconv(.c) void {

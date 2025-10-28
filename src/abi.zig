@@ -59,7 +59,8 @@ pub fn abiSizeAlign(self: *Codegen, ty: types.TypeId) SizeAlign {
         .F32 => .{ .size = 4, .alignment = 4, .hasFloat = true, .allIntsOnly = false },
         .F64 => .{ .size = 8, .alignment = 8, .hasFloat = true, .allIntsOnly = false },
 
-        .Ptr, .Any, .String, .Function, .MlirModule, .MlirAttribute, .MlirType => .{ .size = 8, .alignment = 8, .hasFloat = false, .allIntsOnly = true },
+        .Ptr, .Any, .Function, .MlirModule, .MlirAttribute, .MlirType => .{ .size = 8, .alignment = 8, .hasFloat = false, .allIntsOnly = true },
+        .String => .{ .size = 16, .alignment = 8, .hasFloat = false, .allIntsOnly = true },
         .Slice => .{ .size = 16, .alignment = 8, .hasFloat = false, .allIntsOnly = true },
         .DynArray => .{ .size = 24, .alignment = 8, .hasFloat = false, .allIntsOnly = true },
         .Enum => {
@@ -272,7 +273,7 @@ pub fn abiClassifyX64SysV(self: *Codegen, ty: types.TypeId, isReturn: bool) AbiC
         .I64, .U64, .Usize => return .{ .kind = .DirectScalar, .scalar0 = self.i64_ty, .size = 8, .alignment = 8 },
         .F32 => return .{ .kind = .DirectScalar, .scalar0 = self.f32_ty, .size = 4, .alignment = 4 },
         .F64 => return .{ .kind = .DirectScalar, .scalar0 = self.f64_ty, .size = 8, .alignment = 8 },
-        .Ptr, .Any, .Function, .Map, .MlirModule, .MlirAttribute, .MlirType => return .{ .kind = .DirectScalar, .scalar0 = self.llvm_ptr_ty, .size = 8, .alignment = 8 },
+        .Ptr, .Any, .Function, .String, .Map, .MlirModule, .MlirAttribute, .MlirType => return .{ .kind = .DirectScalar, .scalar0 = self.llvm_ptr_ty, .size = 8, .alignment = 8 },
         .Variant => {
             const sa = abiSizeAlign(self, ty);
             return if (isReturn) .{ .kind = .IndirectSRet, .alignment = @intCast(sa.alignment), .size = sa.size } else .{ .kind = .IndirectByVal, .alignment = @intCast(sa.alignment), .size = sa.size };
@@ -288,15 +289,15 @@ pub fn abiClassifyX64SysV(self: *Codegen, ty: types.TypeId, isReturn: bool) AbiC
     // MVP float handling (common cases)
     if (sa.hasFloat and !sa.allIntsOnly) {
         // 1x float -> float in XMM
-        if (sa.size == 4 and srIsExactlyFloat(&self.context.type_store, ty)) {
+        if (sa.size == 4 and srIsExactlyFloat(self.context.type_store, ty)) {
             return .{ .kind = .DirectScalar, .scalar0 = self.f32_ty, .size = 4 };
         }
         // 1x double -> double in XMM
-        if (sa.size == 8 and srIsExactlyDouble(&self.context.type_store, ty)) {
+        if (sa.size == 8 and srIsExactlyDouble(self.context.type_store, ty)) {
             return .{ .kind = .DirectScalar, .scalar0 = self.f64_ty, .size = 8 };
         }
         // 2x float -> <2 x float> (one XMM)
-        if (sa.size == 8 and srIsTwoFloats(&self.context.type_store, ty)) {
+        if (sa.size == 8 and srIsTwoFloats(self.context.type_store, ty)) {
             const vty = mlir.Type.getVectorType(1, &[_]i64{2}, self.f32_ty);
             return .{ .kind = .DirectScalar, .scalar0 = vty, .size = 8 };
         }

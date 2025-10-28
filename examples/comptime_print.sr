@@ -1,0 +1,8 @@
+
+comptime_print :: extern fn(string, any) void
+
+main :: proc() {
+    comptime {
+        comptime_print("Hello from comptime!");
+    }
+}

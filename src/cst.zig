@@ -119,6 +119,7 @@ pub const StringInterner = struct {
     map: std.StringHashMapUnmanaged(StrId) = .{},
     buf: std.ArrayListUnmanaged(u8) = .{},
     off: std.ArrayListUnmanaged(u32) = .{},
+    mutex: std.Thread.Mutex = .{},
 
     pub fn init(gpa: std.mem.Allocator) StringInterner {
         var si: StringInterner = .{ .gpa = gpa };
@@ -140,6 +141,8 @@ pub const StringInterner = struct {
     }
 
     pub fn intern(self: *StringInterner, s: []const u8) StrId {
+        self.mutex.lock();
+        defer self.mutex.unlock();
         // Fast path: already interned
         if (self.map.get(s)) |existing| return existing;
 
@@ -173,7 +176,10 @@ pub const LocId = Index(LocTag);
 
 pub const LocStore = struct {
     data: std.ArrayListUnmanaged(Loc) = .{},
+    mutex: std.Thread.Mutex = .{},
     pub fn add(self: *LocStore, gpa: std.mem.Allocator, loc: Loc) LocId {
+        self.mutex.lock();
+        defer self.mutex.unlock();
         const id = LocId.fromRaw(@intCast(self.data.items.len));
         self.data.append(gpa, loc) catch @panic("OOM");
         return id;
@@ -312,6 +318,7 @@ pub const InfixOp = enum(u16) {
 pub const MlirKind = enum(u8) { Module, Type, Attribute, Operation };
 pub const MlirPieceKind = enum(u8) { literal, splice };
 pub const CastKind = enum(u8) { normal, bitcast, saturate, wrap, checked };
+pub const LiteralKind = enum { int, float, string, raw_string, char, imaginary, true, false };
 
 ////////////////////////////////////////////////////////////////
 //                          IDs
@@ -423,7 +430,7 @@ pub const ExprKind = enum(u16) {
 
 pub const Rows = struct {
     // ---------- literals / identifiers ----------
-    pub const Literal = struct { value: StrId, tag_small: u16, loc: LocId };
+    pub const Literal = struct { value: StrId, tag_small: LiteralKind, loc: LocId };
     pub const Ident = struct { name: StrId, loc: LocId };
 
     // ---------- operators ----------
@@ -506,7 +513,7 @@ pub const Rows = struct {
     pub const Async = struct { body: ExprId, loc: LocId };
     pub const Cast = struct { expr: ExprId, ty: ExprId, kind: CastKind, loc: LocId };
     pub const Catch = struct { expr: ExprId, binding_name: OptStrId, binding_loc: OptLocId, handler: ExprId, loc: LocId };
-    pub const Import = struct { expr: ExprId, loc: LocId };
+    pub const Import = struct { path: StrId, loc: LocId };
     pub const TypeOf = struct { expr: ExprId, loc: LocId };
 
     // ---------- params & attributes ----------
@@ -1423,7 +1430,7 @@ pub const DodPrinter = struct {
             .Import => {
                 const n = self.exprs.get(.Import, id);
                 try self.open("(import", .{});
-                try self.printExpr(n.expr);
+                try self.leaf("(path \"{s}\")", .{self.s(n.path)});
                 try self.close();
             },
             .TypeOf => {

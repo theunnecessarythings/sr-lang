@@ -2,7 +2,7 @@ const std = @import("std");
 const cst_mod = @import("cst.zig");
 const ast_mod = @import("ast.zig");
 const tir_mod = @import("tir.zig");
-const lower = @import("lower.zig");
+const lower_to_ast = @import("lower_to_ast.zig");
 const lower_tir = @import("lower_tir.zig");
 const checker = @import("checker.zig");
 const lexer_mod = @import("lexer.zig");
@@ -14,25 +14,19 @@ const comp = @import("comptime.zig");
 const codegen = @import("codegen_main.zig");
 const mlir = @import("mlir_bindings.zig");
 const compile = @import("compile.zig");
-const module_graph = @import("module_graph.zig");
 const Diagnostics = @import("diagnostics.zig").Diagnostics;
-
-const PreludeSpec = module_graph.ModuleGraph.PreludeSpec;
+const Package = @import("package.zig").Package;
+const CompilationUnit = @import("package.zig").CompilationUnit;
 
 pub const Result = struct {
-    cst: ?cst_mod.CST = null,
-    ast: ?ast_mod.Ast = null,
-    tir: ?tir_mod.TIR = null,
+    compilation_unit: ?CompilationUnit,
     mlir_module: ?mlir.Module = null,
     gen: ?codegen.Codegen = null,
-    type_info: ?*types.TypeInfo = null,
-    module_id: usize = 0,
 };
 
 pub const Pipeline = struct {
     allocator: std.mem.Allocator,
     context: *compile.Context,
-    next_module_id: usize = 1,
     mlir_ctx: ?mlir.Context = null,
 
     pub const Mode = enum {
@@ -70,17 +64,23 @@ pub const Pipeline = struct {
     pub fn evalComptimeExpr(
         self: *Pipeline,
         chk: *checker.Checker,
-        ast_unit: *const ast_mod.Ast,
+        ast_unit: *ast_mod.Ast,
         expr: ast_mod.ExprId,
         result_ty: types.TypeId,
         bindings: []const ComptimeBinding,
     ) !comp.ComptimeValue {
+        const ctx = try self.allocator.create(lower_tir.LowerContext);
+        ctx.* = lower_tir.LowerContext{
+            .method_lowered = .init(self.allocator),
+            .module_call_cache = .init(self.allocator),
+            .monomorphizer = .init(self.allocator),
+        };
+
         return lower_tir.evalComptimeExpr(
             self.allocator,
+            ctx,
             self.context,
             self,
-            chk.type_info,
-            chk.type_info.module_id,
             chk,
             ast_unit,
             expr,
@@ -89,28 +89,12 @@ pub const Pipeline = struct {
         );
     }
 
-    // Run with import resolution: loads imported modules and appends their codegen into one MLIR module
-    pub fn runWithImports(
+    pub fn run(
         self: *Pipeline,
         filename_or_src: []const u8,
         link_args: []const []const u8,
         mode: Mode,
     ) anyerror!Result {
-        const runner_ctx: *anyopaque = @ptrCast(self);
-        self.context.module_graph.enterPipeline(runner_ctx, runModuleForGraph);
-        defer self.context.module_graph.leavePipeline(runner_ctx);
-        const is_entry = self.context.module_graph.runner_depth == 1;
-        const type_info = try self.allocator.create(types.TypeInfo);
-        type_info.* = types.TypeInfo.init(self.allocator, &self.context.type_store);
-        var type_info_cleanup = true;
-        defer if (type_info_cleanup) {
-            type_info.deinit();
-            self.context.gpa.destroy(type_info);
-        };
-        const module_id = self.next_module_id;
-        self.next_module_id += 1;
-        type_info.setModule(module_id);
-
         const filename = if (mode == .repl) "temp.sr" else filename_or_src;
         const file_id = try self.context.source_manager.add(filename);
         const source_path = self.context.source_manager.get(file_id) orelse filename;
@@ -121,96 +105,174 @@ pub const Pipeline = struct {
         defer self.allocator.free(source);
         const source0 = try self.allocator.dupeZ(u8, source);
 
-        var lexer = Lexer.init(source0, file_id, .semi);
         if (mode == .lex) {
+            var lexer = Lexer.init(source0, file_id, .semi);
             while (true) {
                 const token = lexer.next();
                 if (token.tag == .eof) break;
                 const lexeme = source0[token.loc.start..token.loc.end];
                 std.debug.print("{}({},{}) `{s}`\n", .{ token.tag, token.loc.start, token.loc.end, lexeme });
             }
-            type_info_cleanup = false;
-            return .{ .type_info = type_info, .module_id = module_id };
+            return .{ .compilation_unit = null };
         }
 
-        var parser = Parser.init(self.allocator, source0, file_id, self.context);
-        const cst_program = try parser.parse();
+        var parser = Parser.init(self.allocator, source0, file_id, self.context.diags, self.context);
+        const main_thread = try std.Thread.spawn(.{}, Parser.run, .{&parser});
+        try self.context.parse_worklist.append(self.allocator, .{
+            .path = filename,
+            .file_id = file_id,
+            .thread = main_thread,
+            .diags = self.context.diags,
+            .parser = &parser,
+        });
 
-        if (self.context.diags.anyErrors()) {
+        var i: usize = 0;
+        var parse_failed = false;
+        while (i < self.context.parse_worklist.items.len) {
+            const work = self.context.parse_worklist.items[i];
+            work.thread.join();
+            if (i > 0) {
+                try self.context.diags.messages.appendSlice(try work.diags.messages.toOwnedSlice());
+            }
+            // If parsing this unit produced errors, skip consuming its CST.
+            // Diagnostics are already merged; the pipeline will stop after the loop.
+            if (work.diags.anyErrors()) {
+                parse_failed = true;
+                self.context.requestCancel();
+                i += 1;
+                continue;
+            }
+            if (self.context.isCancelled()) {
+                // Cancellation requested due to another thread's failure; skip consuming this unit.
+                i += 1;
+                continue;
+            }
+            self.context.compilation_unit.mutex.lock();
+            const package_id = work.parser.cst_u.program.package_name.unwrap();
+            const package_name = self.context.interner.get(package_id);
+            const package = self.context.compilation_unit.packages.getPtr(package_name);
+            if (package) |pkg| {
+                try pkg.sources.put(self.allocator, work.path, .{
+                    .file_id = work.file_id,
+                    .cst = work.parser.cst_u,
+                    .ast = null,
+                    .tir = null,
+                    .type_info = null,
+                });
+            } else {
+                const pkg_name = try self.allocator.dupe(u8, package_name);
+                try self.context.compilation_unit.packages.put(
+                    self.allocator,
+                    pkg_name,
+                    .{
+                        .gpa = self.allocator,
+                        .name = pkg_name,
+                        .source_manager = self.context.source_manager,
+                        .sources = .{},
+                    },
+                );
+                const pkg = self.context.compilation_unit.packages.getPtr(pkg_name).?;
+                try pkg.sources.put(self.allocator, work.path, .{
+                    .file_id = work.file_id,
+                    .cst = work.parser.cst_u,
+                    .ast = null,
+                    .tir = null,
+                    .type_info = null,
+                });
+            }
+            self.context.compilation_unit.mutex.unlock();
+            i += 1;
+        }
+        self.context.parse_worklist.deinit(self.allocator);
+
+        if (parse_failed or self.context.diags.anyErrors()) {
             return error.ParseFailed;
         }
+
         if (mode == .parse) {
-            type_info_cleanup = false;
-            return .{ .cst = cst_program, .type_info = type_info, .module_id = module_id };
+            return .{ .compilation_unit = self.context.compilation_unit };
         }
 
-        var lower_pass = lower.Lower.init(self.allocator, &cst_program, self.context);
-        var ast = try lower_pass.run();
-        ast.module_id = module_id;
-        type_info.setModule(module_id);
-        if (self.context.diags.anyErrors()) {
-            return error.LoweringFailed;
+        var pkg_iter = self.context.compilation_unit.packages.iterator();
+        const runFn = struct {
+            fn run(lower_pass: *lower_to_ast.Lower) !void {
+                try lower_pass.runLower();
+            }
+        }.run;
+        var threads = std.ArrayList(struct { std.Thread, *lower_to_ast.Lower, []const u8, []const u8 }){};
+        while (pkg_iter.next()) |pkg| {
+            var source_iter = pkg.value_ptr.sources.iterator();
+            while (source_iter.next()) |unit| {
+                if (self.context.isCancelled()) break;
+                const lower_pass = try self.allocator.create(lower_to_ast.Lower);
+                lower_pass.* = try lower_to_ast.Lower.init(
+                    self.allocator,
+                    &unit.value_ptr.cst.?,
+                    self.context,
+                    unit.value_ptr.file_id,
+                );
+                const thread = try std.Thread.spawn(.{}, runFn, .{lower_pass});
+                try threads.append(self.allocator, .{ thread, lower_pass, pkg.key_ptr.*, unit.key_ptr.* });
+            }
+            if (self.context.isCancelled()) break;
         }
-        const package_issue = try self.verifyPackageDeclaration(&ast, file_id, source_path, is_entry);
-        if (package_issue) {
-            return error.PackageValidationFailed;
+
+        for (threads.items) |thread| {
+            thread.@"0".join();
+            if (!self.context.isCancelled()) {
+                self.context.compilation_unit.mutex.lock();
+                const pkg = self.context.compilation_unit.packages.getPtr(thread.@"2").?;
+                pkg.sources.getPtr(thread.@"3").?.ast = thread.@"1".ast_unit;
+                self.context.compilation_unit.mutex.unlock();
+            }
+            // Always destroy per-thread state.
+            self.allocator.destroy(thread.@"1");
+        }
+        var dep_levels = try compile.computeDependencyLevels(
+            self.allocator,
+            &self.context.compilation_unit,
+            self.context.interner,
+            self.context.source_manager,
+        );
+        defer dep_levels.deinit();
+        for (dep_levels.levels.items, 0..) |level, l| {
+            std.debug.print("Dep level {}:\n", .{l});
+            for (level.items) |id| {
+                const fname = self.context.source_manager.get(id) orelse "Not Found";
+                std.debug.print("Dep {}: {s}\n", .{ id, fname });
+            }
+        }
+        if (self.context.isCancelled() or self.context.diags.anyErrors()) {
+            return error.LoweringFailed;
         }
 
         const canonical_path_opt = try canonicalizePath(self.allocator, source_path);
         defer if (canonical_path_opt) |p| self.allocator.free(p);
-        const module_path = canonical_path_opt orelse source_path;
-        const canonical_module_path: ?[]const u8 = if (canonical_path_opt) |p| p else null;
-        const base_dir = moduleBaseDir(module_path);
-
-        var prelude_specs: std.ArrayList(PreludeSpec) = .empty;
-        defer prelude_specs.deinit(self.allocator);
-        if (is_entry) {
-            try self.context.module_graph.collectPreludeSpecsForModule(module_path, &prelude_specs);
-            try self.injectPreludeImports(&ast, file_id, base_dir, module_path, canonical_module_path, prelude_specs.items);
-        }
 
         if (mode == .ast) {
-            type_info_cleanup = false;
-            return .{ .cst = cst_program, .ast = ast, .type_info = type_info, .module_id = module_id };
+            return .{ .compilation_unit = self.context.compilation_unit };
         }
 
-        var chk = checker.Checker.init(self.allocator, &ast, self.context, self, type_info);
-        chk.import_base_dir = base_dir;
+        var chk = checker.Checker.init(self.allocator, self.context, self);
         defer chk.deinit();
-        try chk.run();
+        try chk.run(&dep_levels);
         if (self.context.diags.anyErrors()) {
             return error.TypeCheckFailed;
         }
         if (mode == .check) {
-            type_info_cleanup = false;
-            return .{ .cst = cst_program, .ast = ast, .type_info = type_info, .module_id = module_id };
+            return .{ .compilation_unit = self.context.compilation_unit };
         }
 
-        var tir_lowerer = lower_tir.LowerTir.init(self.allocator, self.context, self, type_info, module_id, &chk);
+        var tir_lowerer = lower_tir.LowerTir.init(self.allocator, self.context, self, &chk);
         defer tir_lowerer.deinit();
-        var alias_info_map = std.StringHashMap(lower_tir.LowerTir.ModuleAliasInfo).init(self.allocator);
-        defer {
-            var it = alias_info_map.iterator();
-            while (it.next()) |kv| {
-                self.allocator.free(kv.value_ptr.namespace);
-                self.allocator.free(kv.value_ptr.import_path);
-            }
-            alias_info_map.deinit();
-        }
-        try computeModuleNamespaces(self.allocator, &ast, &self.context.module_graph, &alias_info_map);
-        var iter = alias_info_map.iterator();
-        while (iter.next()) |kv| {
-            try tir_lowerer.setModuleAlias(kv.key_ptr.*, kv.value_ptr.*);
-        }
 
-        const root_mod = try tir_lowerer.run(&ast);
+        _ = try tir_lowerer.run(&dep_levels);
 
         if (self.context.diags.anyErrors()) {
             return error.TirLoweringFailed;
         }
         if (mode == .tir) {
-            type_info_cleanup = false;
-            return .{ .cst = cst_program, .ast = ast, .tir = root_mod, .type_info = type_info, .module_id = module_id };
+            return .{ .compilation_unit = self.context.compilation_unit };
         }
 
         // Print Types
@@ -220,28 +282,7 @@ pub const Pipeline = struct {
         var gen = codegen.Codegen.init(self.allocator, self.context, mlir_ctx_ptr.*);
         gen.resetDebugCaches();
 
-        var dependencies: std.ArrayList(*module_graph.ModuleEntry) = .empty;
-        defer dependencies.deinit(self.allocator);
-
-        tir_lowerer.import_base_dir = base_dir;
-        try self.context.module_graph.loadDependencies(
-            base_dir,
-            module_path,
-            &ast,
-            .tir,
-            &dependencies,
-        );
-        for (dependencies.items) |dep| {
-            const original_debug_flag = codegen.enable_debug_info;
-            codegen.enable_debug_info = false;
-            _ = try gen.emitModule(dep.tirRef(), dep.typeInfo());
-            codegen.enable_debug_info = original_debug_flag;
-            if (self.context.diags.anyErrors()) {
-                return error.MlirCodegenFailed;
-            }
-        }
-
-        var mlir_module = gen.emitModule(&root_mod, type_info) catch |err| {
+        var mlir_module = gen.emit(&dep_levels) catch |err| {
             switch (err) {
                 error.CompilationFailed => {
                     return error.MlirCodegenFailed;
@@ -277,8 +318,11 @@ pub const Pipeline = struct {
             std.debug.print("Generated MLIR module:\n", .{});
             var op = mlir_module.getOperation();
             op.dump();
-            type_info_cleanup = false;
-            return .{ .cst = cst_program, .ast = ast, .tir = root_mod, .mlir_module = mlir_module, .gen = gen, .type_info = type_info, .module_id = module_id };
+            return .{
+                .compilation_unit = self.context.compilation_unit,
+                .mlir_module = mlir_module,
+                .gen = gen,
+            };
         }
 
         try compile.run_passes(&gen.mlir_ctx, &mlir_module);
@@ -289,8 +333,11 @@ pub const Pipeline = struct {
             std.debug.print("Transformed MLIR module:\n", .{});
             var op = mlir_module.getOperation();
             op.dump();
-            type_info_cleanup = false;
-            return .{ .cst = cst_program, .ast = ast, .tir = root_mod, .mlir_module = mlir_module, .gen = gen, .type_info = type_info, .module_id = module_id };
+            return .{
+                .compilation_unit = self.context.compilation_unit,
+                .mlir_module = mlir_module,
+                .gen = gen,
+            };
         }
 
         try compile.convert_to_llvm_ir(mlir_module.handle, true, link_args, switch (mode) {
@@ -302,12 +349,18 @@ pub const Pipeline = struct {
             return error.LLVMIRFailed;
         }
         if (mode == .llvm_ir or mode == .llvm_passes) {
-            type_info_cleanup = false;
-            return .{ .cst = cst_program, .ast = ast, .tir = root_mod, .mlir_module = mlir_module, .gen = gen, .type_info = type_info, .module_id = module_id };
+            return .{
+                .compilation_unit = self.context.compilation_unit,
+                .mlir_module = mlir_module,
+                .gen = gen,
+            };
         }
         if (mode == .compile) {
-            type_info_cleanup = false;
-            return .{ .cst = cst_program, .ast = ast, .tir = root_mod, .mlir_module = mlir_module, .gen = gen, .type_info = type_info, .module_id = module_id };
+            return .{
+                .compilation_unit = self.context.compilation_unit,
+                .mlir_module = mlir_module,
+                .gen = gen,
+            };
         }
 
         if (mode == .jit) {
@@ -315,251 +368,21 @@ pub const Pipeline = struct {
             if (self.context.diags.anyErrors()) {
                 return error.JITFailed;
             }
-            type_info_cleanup = false;
-            return .{ .cst = cst_program, .ast = ast, .tir = root_mod, .mlir_module = mlir_module, .gen = gen, .type_info = type_info, .module_id = module_id };
+            return .{
+                .compilation_unit = self.context.compilation_unit,
+                .mlir_module = mlir_module,
+                .gen = gen,
+            };
         }
         // run
         compile.run();
-        type_info_cleanup = false;
-        return .{ .ast = ast, .tir = root_mod, .mlir_module = mlir_module, .gen = gen, .cst = cst_program, .type_info = type_info, .module_id = module_id };
-    }
-
-    fn runModuleArtifacts(
-        self: *Pipeline,
-        path: []const u8,
-        mode: module_graph.LoadMode,
-    ) anyerror!module_graph.ModuleGraph.Artifacts {
-        const result = try self.runWithImports(path, &.{}, toPipelineMode(mode));
         return .{
-            .cst = result.cst,
-            .ast = result.ast,
-            .tir = result.tir,
-            .type_info = result.type_info,
-            .module_id = result.module_id,
+            .compilation_unit = self.context.compilation_unit,
+            .mlir_module = mlir_module,
+            .gen = gen,
         };
     }
-
-    fn verifyPackageDeclaration(
-        self: *Pipeline,
-        ast: *const ast_mod.Ast,
-        file_id: u32,
-        source_path: []const u8,
-        is_entry: bool,
-    ) !bool {
-        var had_error = false;
-        const declared_name = declareName(ast);
-        const pkg_loc = packageLocOrDefault(ast, file_id);
-
-        if (is_entry) {
-            if (declared_name) |decl| {
-                if (!namesEqual(decl, "main")) {
-                    try self.context.diags.addError(pkg_loc, .entry_package_not_main, .{decl});
-                    return true;
-                }
-            } else {
-                try self.context.diags.addError(pkg_loc, .entry_package_missing, .{});
-                return true;
-            }
-        }
-
-        const canonical_path_opt = try canonicalizePath(self.allocator, source_path);
-        defer if (canonical_path_opt) |p| self.allocator.free(p);
-
-        const lookup_path = canonical_path_opt orelse source_path;
-        if (self.context.module_graph.findModuleByPath(lookup_path)) |match| {
-            if (declared_name == null) {
-                const expected = self.context.module_graph.config.discovery.expectedPackageName(match.key);
-                try self.context.diags.addError(pkg_loc, .package_missing_declaration, .{expected});
-                had_error = true;
-            }
-        }
-
-        return had_error;
-    }
-
-    fn injectPreludeImports(
-        self: *Pipeline,
-        ast: *ast_mod.Ast,
-        file_id: u32,
-        base_dir: []const u8,
-        module_path: []const u8,
-        canonical_module_path: ?[]const u8,
-        specs: []const PreludeSpec,
-    ) !void {
-        if (specs.len == 0) return;
-
-        var new_decl_ids: std.ArrayList(ast_mod.DeclId) = .empty;
-        defer new_decl_ids.deinit(self.allocator);
-
-        var seen_exports = std.StringHashMap(void).init(self.allocator);
-        defer {
-            var it = seen_exports.keyIterator();
-            while (it.next()) |name_ptr| self.allocator.free(name_ptr.*);
-            seen_exports.deinit();
-        }
-
-        for (specs, 0..) |spec, idx| {
-            if (try self.preludeResolvesToSelf(base_dir, module_path, canonical_module_path, spec.path)) {
-                continue;
-            }
-            const alias = try createPreludeAlias(self, ast, file_id, spec.path, idx);
-            try new_decl_ids.append(self.allocator, alias.decl_id);
-            try appendPreludeReexports(self, ast, file_id, base_dir, spec, alias, &seen_exports, &new_decl_ids);
-        }
-
-        const existing = ast.exprs.decl_pool.slice(ast.unit.decls);
-        try new_decl_ids.appendSlice(self.allocator, existing);
-
-        const range = ast.exprs.decl_pool.pushMany(ast.gpa, new_decl_ids.items);
-        ast.unit.decls = range;
-    }
-
-    fn preludeResolvesToSelf(
-        self: *Pipeline,
-        base_dir: []const u8,
-        module_path: []const u8,
-        canonical_module_path: ?[]const u8,
-        import_path: []const u8,
-    ) !bool {
-        const resolved = self.context.module_graph.resolvePath(base_dir, import_path) catch |err| switch (err) {
-            error.FileNotFound, error.AccessDenied => return false,
-            else => return err,
-        };
-        defer self.context.module_graph.gpa.free(resolved);
-
-        if (canonical_module_path) |canon| {
-            if (std.mem.eql(u8, resolved, canon)) return true;
-        } else {
-            if (std.mem.eql(u8, resolved, module_path)) return true;
-            if (try canonicalizePath(self.allocator, module_path)) |canon| {
-                defer self.allocator.free(canon);
-                if (std.mem.eql(u8, resolved, canon)) return true;
-            }
-        }
-
-        return false;
-    }
-
-    fn createPreludeAlias(
-        self: *Pipeline,
-        ast: *ast_mod.Ast,
-        file_id: u32,
-        import_path: []const u8,
-        index: usize,
-    ) !PreludeAliasInfo {
-        var loc_store = @constCast(ast.exprs.locs);
-        const loc_id = loc_store.add(ast.gpa, Loc.init(file_id, 0, 0));
-        const alias_name = try std.fmt.allocPrint(self.allocator, "{s}_{d}", .{ module_graph.ModuleGraph.prelude_alias_prefix, index });
-        defer self.allocator.free(alias_name);
-        const alias_sid = ast.exprs.strs.intern(alias_name);
-        const pattern_id = ast.pats.add(.Binding, .{ .name = alias_sid, .by_ref = false, .is_mut = false, .loc = loc_id });
-        const path_sid = ast.exprs.strs.intern(import_path);
-        const literal_id = ast.exprs.add(.Literal, .{ .kind = .string, .data = .{ .string = path_sid }, .loc = loc_id });
-        const import_expr = ast.exprs.add(.Import, .{ .expr = literal_id, .loc = loc_id });
-        const decl_id = ast.exprs.addDecl(.{
-            .pattern = ast_mod.OptPatternId.some(pattern_id),
-            .value = import_expr,
-            .ty = ast_mod.OptExprId.none(),
-            .method_path = ast_mod.OptRangeMethodPathSeg.none(),
-            .flags = .{ .is_const = true },
-            .loc = loc_id,
-        });
-        return .{ .alias_sid = alias_sid, .decl_id = decl_id };
-    }
-
-    fn appendPreludeReexports(
-        self: *Pipeline,
-        ast: *ast_mod.Ast,
-        file_id: u32,
-        base_dir: []const u8,
-        spec: PreludeSpec,
-        alias: PreludeAliasInfo,
-        seen: *std.StringHashMap(void),
-        out: *std.ArrayList(ast_mod.DeclId),
-    ) !void {
-        switch (spec.reexport) {
-            .none => return,
-            .all => {
-                const entry = try self.context.module_graph.ensureModule(base_dir, spec.path, .tir);
-                var it = entry.syms.keyIterator();
-                while (it.next()) |name_ptr| {
-                    const name = name_ptr.*;
-                    try appendPreludeReexportDecl(self, ast, file_id, alias.alias_sid, name, seen, out);
-                }
-            },
-            .symbols => |names| {
-                for (names) |name| {
-                    try appendPreludeReexportDecl(self, ast, file_id, alias.alias_sid, name, seen, out);
-                }
-            },
-        }
-    }
-
-    fn appendPreludeReexportDecl(
-        self: *Pipeline,
-        ast: *ast_mod.Ast,
-        file_id: u32,
-        alias_sid: ast_mod.StrId,
-        symbol_name: []const u8,
-        seen: *std.StringHashMap(void),
-        out: *std.ArrayList(ast_mod.DeclId),
-    ) !void {
-        if (symbol_name.len == 0) return;
-        if (std.mem.startsWith(u8, symbol_name, module_graph.ModuleGraph.prelude_alias_prefix)) return;
-
-        const gop = try seen.getOrPut(symbol_name);
-        if (gop.found_existing) return;
-        gop.key_ptr.* = try self.allocator.dupe(u8, symbol_name);
-
-        var loc_store = @constCast(ast.exprs.locs);
-        const loc_id = loc_store.add(ast.gpa, Loc.init(file_id, 0, 0));
-        const symbol_sid = ast.exprs.strs.intern(symbol_name);
-        const pattern_id = ast.pats.add(.Binding, .{ .name = symbol_sid, .by_ref = false, .is_mut = false, .loc = loc_id });
-        const alias_ident = ast.exprs.add(.Ident, .{ .name = alias_sid, .loc = loc_id });
-        const field_expr = ast.exprs.add(.FieldAccess, .{
-            .parent = alias_ident,
-            .field = symbol_sid,
-            .is_tuple = false,
-            .loc = loc_id,
-        });
-        const decl_id = ast.exprs.addDecl(.{
-            .pattern = ast_mod.OptPatternId.some(pattern_id),
-            .value = field_expr,
-            .ty = ast_mod.OptExprId.none(),
-            .method_path = ast_mod.OptRangeMethodPathSeg.none(),
-            .flags = .{ .is_const = true },
-            .loc = loc_id,
-        });
-        try out.append(ast.gpa, decl_id);
-    }
 };
-
-const PreludeAliasInfo = struct {
-    alias_sid: ast_mod.StrId,
-    decl_id: ast_mod.DeclId,
-};
-
-fn moduleBaseDir(path: []const u8) []const u8 {
-    if (path.len == 0) return ".";
-    if (std.mem.lastIndexOfScalar(u8, path, '/')) |idx| {
-        if (idx == 0) return path[0..1];
-        return path[0..idx];
-    }
-    if (std.mem.lastIndexOfScalar(u8, path, '\\')) |idx| {
-        if (idx == 0) return path[0..1];
-        return path[0..idx];
-    }
-    return ".";
-}
-
-fn runModuleForGraph(
-    ctx: *anyopaque,
-    path: []const u8,
-    mode: module_graph.LoadMode,
-) anyerror!module_graph.ModuleGraph.Artifacts {
-    const pipeline: *Pipeline = @ptrCast(@alignCast(ctx));
-    return pipeline.runModuleArtifacts(path, mode);
-}
 
 fn packageLocOrDefault(ast: *const ast_mod.Ast, file_id: u32) Loc {
     if (!ast.unit.package_loc.isNone()) {
@@ -587,68 +410,4 @@ fn declareName(ast: *const ast_mod.Ast) ?[]const u8 {
     if (ast.unit.package_name.isNone()) return null;
     const sid = ast.unit.package_name.unwrap();
     return ast.exprs.strs.get(sid);
-}
-
-fn toPipelineMode(mode: module_graph.LoadMode) Pipeline.Mode {
-    return switch (mode) {
-        .lex => .lex,
-        .parse => .parse,
-        .ast => .ast,
-        .check => .check,
-        .tir => .tir,
-    };
-}
-
-pub fn computeModuleNamespaces(
-    gpa: std.mem.Allocator,
-    a: *const ast_mod.Ast,
-    graph: *module_graph.ModuleGraph,
-    out: *std.StringHashMap(lower_tir.LowerTir.ModuleAliasInfo),
-) !void {
-    const decls = a.exprs.decl_pool.slice(a.unit.decls);
-    for (decls) |did| {
-        const d = a.exprs.Decl.get(did);
-        if (a.exprs.index.kinds.items[d.value.toRaw()] != .Import) continue;
-        if (d.pattern.isNone()) continue;
-        const pid = d.pattern.unwrap();
-        const pk = a.pats.index.kinds.items[pid.toRaw()];
-        if (pk != .Binding) continue;
-        const bind = a.pats.get(.Binding, pid);
-        const irr = a.exprs.get(.Import, d.value);
-        if (a.exprs.index.kinds.items[irr.expr.toRaw()] != .Literal) continue;
-        const lit = a.exprs.get(.Literal, irr.expr);
-        if (lit.kind != .string) continue;
-        const sid = switch (lit.data) {
-            .string => |str_id| str_id,
-            else => continue,
-        };
-        const imp = a.exprs.strs.get(sid);
-        const ns_info = try graph.namespaceForImport(gpa, imp);
-        const namespace_owned = ns_info.namespace;
-        const path = gpa.dupe(u8, imp) catch |err| {
-            gpa.free(namespace_owned);
-            return err;
-        };
-        const key = gpa.dupe(u8, a.exprs.strs.get(bind.name)) catch |err| {
-            gpa.free(namespace_owned);
-            gpa.free(path);
-            return err;
-        };
-        const gop = out.getOrPut(key) catch |err| {
-            gpa.free(namespace_owned);
-            gpa.free(path);
-            gpa.free(key);
-            return err;
-        };
-        if (gop.found_existing) {
-            gpa.free(key);
-            gpa.free(gop.value_ptr.namespace);
-            gpa.free(gop.value_ptr.import_path);
-        }
-        gop.value_ptr.* = .{
-            .namespace = namespace_owned,
-            .import_path = path,
-            .package_id = ns_info.package_id,
-        };
-    }
 }

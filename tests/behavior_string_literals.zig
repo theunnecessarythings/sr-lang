@@ -42,7 +42,6 @@ test "literals: string with double quote escape" {
 }
 
 test "literals: raw string" {
-    if (true) return error.SkipZigTest;
     const src =
         \\s := r"No\nEscapes"
         \\printf("s=%s\n", s)
@@ -52,7 +51,6 @@ test "literals: raw string" {
 }
 
 test "literals: hashed raw string" {
-    if (true) return error.SkipZigTest;
     const src =
         \\s := r#"Hash \" inside\n"#
         \\printf("s=%s\n", s)
@@ -60,4 +58,3 @@ test "literals: hashed raw string" {
     const code = getSource("", src);
     try runCompilerTest(code, "s=Hash \" inside\n\n");
 }
-

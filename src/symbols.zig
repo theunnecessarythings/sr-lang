@@ -116,8 +116,7 @@ pub const SymbolStore = struct {
         return id;
     }
 
-    pub fn lookup(self: *const SymbolStore, a: *const ast.Ast, scope_id: ScopeId, name: ast.StrId) ?SymbolId {
-        _ = a;
+    pub fn lookup(self: *const SymbolStore, scope_id: ScopeId, name: ast.StrId) ?SymbolId {
         // linear search current scope and parents
         var sid_opt: dod.SentinelIndex(ScopeRow) = .some(scope_id);
         while (!sid_opt.isNone()) {

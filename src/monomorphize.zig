@@ -3,6 +3,7 @@ const ast = @import("ast.zig");
 const comp = @import("comptime.zig");
 const types = @import("types.zig");
 const tir = @import("tir.zig");
+const LowerTir = @import("lower_tir.zig");
 const mlir = @import("mlir_bindings.zig");
 
 pub const BindingValue = struct {
@@ -198,7 +199,7 @@ pub const MonomorphizationContext = struct {
 };
 
 pub const MonomorphizationRequest = struct {
-    ast: *const ast.Ast,
+    ast: *ast.Ast,
     base_name: ast.StrId,
     decl_id: ast.DeclId,
     mangled_name: ast.StrId,
@@ -214,7 +215,8 @@ pub const RequestResult = struct {
 
 pub const LowerCallback = *const fn (
     ctx: ?*anyopaque,
-    a: *const ast.Ast,
+    lower_ctx: *LowerTir.LowerContext,
+    a: *ast.Ast,
     b: *tir.Builder,
     req: *const MonomorphizationRequest,
 ) anyerror!void;
@@ -323,7 +325,7 @@ pub const Monomorphizer = struct {
 
     pub fn request(
         self: *Monomorphizer,
-        ast_unit: *const ast.Ast,
+        ast_unit: *ast.Ast,
         ts: *types.TypeStore,
         base_name: ast.StrId,
         decl_id: ast.DeclId,
@@ -417,17 +419,11 @@ pub const Monomorphizer = struct {
         return .{ .mangled_name = mangled_name, .specialized_ty = specialized_ty };
     }
 
-    pub fn run(
-        self: *Monomorphizer,
-        ctx: ?*anyopaque,
-        _: *const ast.Ast,
-        b: *tir.Builder,
-        cb: LowerCallback,
-    ) !void {
+    pub fn run(self: *Monomorphizer, ctx: ?*anyopaque, lower_ctx: *LowerTir.LowerContext, b: *tir.Builder, cb: LowerCallback) !void {
         while (self.requests.items.len > 0) {
             var req = self.requests.pop().?;
             defer self.freeRequest(&req);
-            try cb(ctx, req.ast, b, &req);
+            try cb(ctx, lower_ctx, req.ast, b, &req);
         }
     }
 };

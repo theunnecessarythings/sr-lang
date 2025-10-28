@@ -649,8 +649,8 @@ pub const JsonPrinter = struct {
             .Import => {
                 const node = self.exprs.get(.Import, id);
                 try self.printLoc(node.loc);
-                try self.stream.objectField("expr");
-                try self.printExpr(node.expr);
+                try self.stream.objectField("path");
+                try self.stream.write(self.s(node.path));
             },
             .TypeOf => {
                 const node = self.exprs.get(.TypeOf, id);

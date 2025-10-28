@@ -1,4 +1,4 @@
-package defer
+package main
 
 // Defer and Errdefer
 

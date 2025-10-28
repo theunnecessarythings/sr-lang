@@ -1,0 +1,1 @@
+- [ ] struct literal without named field, silently fails in checker/lower_tir

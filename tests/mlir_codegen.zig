@@ -4,6 +4,7 @@ const compiler = @import("compiler");
 
 const Lowered = struct {
     tir: compiler.tir.TIR,
+    checker: *compiler.checker.Checker,
     type_info: *compiler.types.TypeInfo,
     context: *compiler.compile.Context,
 };
@@ -20,30 +21,37 @@ fn mlirContextOnce(alloc: std.mem.Allocator) compiler.mlir.Context {
 }
 
 fn lowerToTir(gpa: std.mem.Allocator, src: []const u8) !Lowered {
-    var context = compiler.compile.Context.init(gpa); // Create context
-    defer context.deinit();
+    const context = try gpa.create(compiler.compile.Context);
+    context.* = compiler.compile.Context.init(gpa);
+    errdefer {
+        context.deinit();
+        gpa.destroy(context);
+    }
 
     const src0 = try std.mem.concatWithSentinel(gpa, u8, &.{src}, 0);
     defer gpa.free(src0);
-    var parser = compiler.parser.Parser.init(gpa, src0, 0, &context); // Pass file_id and context
+    var parser = compiler.parser.Parser.init(gpa, src0, 0, context); // Pass file_id and context
     var cst = try parser.parse();
+    defer cst.deinit();
 
-    var lower1 = compiler.lower.Lower.init(gpa, &cst, &context); // Pass context
+    var lower1 = compiler.lower_to_ast.Lower.init(gpa, &cst, context, 0); // Pass context
     var hir = try lower1.run();
+    defer hir.deinit();
 
-    var pipeline = compiler.pipeline.Pipeline.init(gpa, &context); // Create pipeline
-    var chk = compiler.checker.Checker.init(gpa, &hir, &context, &pipeline); // Pass context and pipeline
-    try chk.run();
+    var pipeline = compiler.pipeline.Pipeline.init(gpa, context); // Create pipeline
+    const chk = try gpa.create(compiler.checker.Checker);
+    chk.* = compiler.checker.Checker.init(gpa, context, &pipeline);
+    errdefer {
+        chk.deinit();
+        gpa.destroy(chk);
+    }
+    try chk.runAst(&hir);
     if (context.diags.anyErrors()) return error.SemanticErrors; // Use context.diags
 
-    // Persist a copy of type info on the heap for TIR/MLIR lifetime
-    const ti = try gpa.create(compiler.types.TypeInfo);
-    ti.* = context.type_info; // shallow copy; we won't deinit chk, only ti
-
-    var lt = compiler.lower_tir.LowerTir.init(gpa, &context, &pipeline); // Pass context and pipeline
+    var lt = compiler.lower_tir.LowerTir.init(gpa, context, &pipeline, chk); // Pass context and pipeline
     defer lt.deinit();
-    const t = try lt.run(&hir);
-    return .{ .tir = t, .type_info = ti, .context = &context };
+    const t = try lt.runAst(&hir);
+    return .{ .tir = t, .checker = chk, .type_info = &chk.type_info, .context = context };
 }
 
 // test "mlir: match bool block arms codegen does not crash" {
@@ -56,8 +64,10 @@ fn lowerToTir(gpa: std.mem.Allocator, src: []const u8) !Lowered {
 //     var lowered = try lowerToTir(std.heap.page_allocator, src);
 //     defer {
 //         lowered.tir.deinit();
-//         lowered.type_info.deinit();
-//         std.heap.page_allocator.destroy(lowered.type_info);
+//         lowered.checker.deinit();
+//         std.heap.page_allocator.destroy(lowered.checker);
+//         lowered.context.deinit();
+//         std.heap.page_allocator.destroy(lowered.context);
 //     }
 //
 //     const ctx = mlirContextOnce(std.heap.page_allocator);
@@ -79,8 +89,10 @@ fn lowerToTir(gpa: std.mem.Allocator, src: []const u8) !Lowered {
 //     var lowered = try lowerToTir(std.heap.page_allocator, src);
 //     defer {
 //         lowered.tir.deinit();
-//         lowered.type_info.deinit();
-//         std.heap.page_allocator.destroy(lowered.type_info);
+//         lowered.checker.deinit();
+//         std.heap.page_allocator.destroy(lowered.checker);
+//         lowered.context.deinit();
+//         std.heap.page_allocator.destroy(lowered.context);
 //     }
 //
 //     const ctx = mlirContextOnce(std.heap.page_allocator);
@@ -100,8 +112,10 @@ fn lowerToTir(gpa: std.mem.Allocator, src: []const u8) !Lowered {
 //     var lowered = try lowerToTir(std.heap.page_allocator, src);
 //     defer {
 //         lowered.tir.deinit();
-//         lowered.type_info.deinit();
-//         std.heap.page_allocator.destroy(lowered.type_info);
+//         lowered.checker.deinit();
+//         std.heap.page_allocator.destroy(lowered.checker);
+//         lowered.context.deinit();
+//         std.heap.page_allocator.destroy(lowered.context);
 //     }
 //
 //     const ctx = mlirContextOnce(std.heap.page_allocator);

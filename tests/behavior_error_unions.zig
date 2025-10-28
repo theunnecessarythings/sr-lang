@@ -93,10 +93,10 @@ test "error_handling: catch expression with error binding" {
         \\r := do_something(true) catch |err| {
         \\  if err == MyError.SpecificError {
         \\    printf("Caught specific error\n")
-        \\    return -1
+        \\    -1
         \\  } else {
         \\    printf("Caught other error\n")
-        \\    return -2
+        \\    -2
         \\  }
         \\}
         \\printf("Final result: %d\n", r)

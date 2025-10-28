@@ -20,7 +20,9 @@ init :: proc(elem_size: usize, initial_cap: usize) Array {
     a := Array{ data: null, len: 0, cap: 0, elem_size: elem_size }
     if (initial_cap > 0) {
         sz := initial_cap * elem_size
-        if (alloc.alloc(sz)?) |p| {
+        maybe_p := alloc.alloc(sz)
+        if (maybe_p != null) {
+            p := maybe_p?
             a.data = p.^*u8
             a.cap = initial_cap
         }
@@ -47,7 +49,9 @@ reserve :: proc(self: *Array, min_cap: usize) void {
 
     new_size := new_cap * self.elem_size
     if (self.data == null) {
-        if (alloc.alloc(new_size)?) |np| {
+        maybe_np := alloc.alloc(new_size)
+        if (maybe_np != null) {
+            np := maybe_np?
             self.data = np.^*u8
             self.cap = new_cap
         }
@@ -55,11 +59,15 @@ reserve :: proc(self: *Array, min_cap: usize) void {
     }
 
     old_bytes := self.len * self.elem_size
-    if (alloc.realloc(self.data?, new_size)?) |np| {
+    realloc_result := alloc.realloc(self.data?, new_size)
+    if (realloc_result != null) {
+        np := realloc_result?
         self.data = np.^*u8
         self.cap = new_cap
     } else {
-        if (alloc.alloc(new_size)?) |np2| {
+        fallback := alloc.alloc(new_size)
+        if (fallback != null) {
+            np2 := fallback?
             mem.move(np2, self.data?, old_bytes)
             alloc.free(self.data?)
             self.data = np2.^*u8
@@ -75,7 +83,15 @@ capacity :: proc(self: *Array) usize { return self.cap }
 
 // Push an element by pointer to value
 push :: proc(self: *Array, value_ptr: *void) void {
-    if (self.len == self.cap) { reserve(self, if (self.cap == 0) 1 else self.cap * 2) }
+    if (self.len == self.cap) {
+        next_cap := self.cap
+        if (next_cap == 0) {
+            next_cap = 1
+        } else {
+            next_cap = next_cap * 2
+        }
+        reserve(self, next_cap)
+    }
     dst := rt_ptr_add(self.data?, self.len * self.elem_size)
     mem.move(dst, value_ptr, self.elem_size)
     self.len = self.len + 1
@@ -101,4 +117,3 @@ set :: proc(self: *Array, index: usize, value_ptr: *void) void {
     dst := rt_ptr_add(self.data?, index * self.elem_size)
     mem.move(dst, value_ptr, self.elem_size)
 }
-

@@ -7,16 +7,64 @@ const Diagnostics = compiler.diagnostics.Diagnostics;
 const Context = compiler.compile.Context;
 
 fn parseProgramFromText(gpa: std.mem.Allocator, context: *Context, src: [:0]const u8) !cst.CST {
-    var parser = Parser.init(gpa, src, 0, context); // Pass file_id and context
+    // Register an in-memory file with a stable path so relative import
+    // resolution in the parser has a directory to work from.
+    const file_path = "in_memory.sr";
+    const file_id = try context.source_manager.setVirtualSourceByPath(file_path, src);
+
+    var parser = Parser.init(gpa, src, file_id, context.diags, context);
     var ast = try parser.parse();
     errdefer ast.deinit();
-    if (context.diags.count() != 0) { // Use context.diags
+    // Drain any import work spawned during parsing to avoid leaks in tests.
+    if (context.parse_worklist.capacity != 0) {
+        var i: usize = 0;
+        while (i < context.parse_worklist.items.len) : (i += 1) {
+            const work = context.parse_worklist.items[i];
+            work.thread.join();
+            work.diags.deinit();
+            gpa.destroy(work.diags);
+            work.parser.cst_u.deinit();
+            gpa.free(work.parser.src);
+            gpa.destroy(work.parser);
+        }
+        context.parse_worklist.deinit(gpa);
+    }
+    if (context.diags.count() != 0) {
         std.debug.print(
             "Errors during parsing: {}\n",
             .{context.diags.messages.items[0]},
         );
     }
-    try testing.expectEqual(@as(usize, 0), context.diags.count()); // Use context.diags
+    try testing.expectEqual(@as(usize, 0), context.diags.count());
+    return ast;
+}
+
+fn parseProgramFromPath(gpa: std.mem.Allocator, context: *Context, path: []const u8, src: [:0]const u8) !cst.CST {
+    const file_id = try context.source_manager.setVirtualSourceByPath(path, src);
+    var parser = Parser.init(gpa, src, file_id, context.diags, context);
+    var ast = try parser.parse();
+    errdefer ast.deinit();
+    // Drain any import work spawned during parsing to avoid leaks in tests.
+    if (context.parse_worklist.capacity != 0) {
+        var i: usize = 0;
+        while (i < context.parse_worklist.items.len) : (i += 1) {
+            const work = context.parse_worklist.items[i];
+            work.thread.join();
+            work.diags.deinit();
+            gpa.destroy(work.diags);
+            work.parser.cst_u.deinit();
+            gpa.free(work.parser.src);
+            gpa.destroy(work.parser);
+        }
+        context.parse_worklist.deinit(gpa);
+    }
+    if (context.diags.count() != 0) {
+        std.debug.print(
+            "Errors during parsing: {}\n",
+            .{context.diags.messages.items[0]},
+        );
+    }
+    try testing.expectEqual(@as(usize, 0), context.diags.count());
     return ast;
 }
 
@@ -128,7 +176,7 @@ test "full success test" {
 
     const src0 = try gpa.dupeZ(u8, src);
     defer gpa.free(src0);
-    var result = try parseProgramFromText(gpa, &context, src0);
+    var result = try parseProgramFromPath(gpa, &context, "examples/test_success.sr", src0);
     defer result.deinit();
 }
 

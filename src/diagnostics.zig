@@ -88,6 +88,7 @@ pub const DiagnosticCode = enum {
     expected_parameter_type_or_end, // payload: one (found)
     invalid_import_operand, // payload: one (found)
     import_not_found, // payload: one (path)
+    invalid_package_name,
 
     // Pattern / matching
     token_cannot_start_pattern, // payload: one (found)
@@ -95,6 +96,8 @@ pub const DiagnosticCode = enum {
     invalid_binding_name_in_at_pattern, // payload: one (found)
     underscore_not_const_in_range_pattern,
     left_side_not_const_like_in_range_pattern,
+    descending_range_pattern,
+    string_equality_in_match_not_supported,
     pattern_shape_mismatch,
     pattern_type_mismatch,
     or_pattern_binding_mismatch,
@@ -117,6 +120,7 @@ pub const DiagnosticCode = enum {
     array_length_mismatch,
     heterogeneous_array_elements,
     cannot_infer_type_from_empty_array,
+    cannot_infer_range_type,
     could_not_resolve_type, // payload: one (offending token)
     map_wrong_key_type,
     map_mixed_key_types,
@@ -143,6 +147,8 @@ pub const DiagnosticCode = enum {
     non_boolean_condition,
     if_expression_requires_else,
     if_branch_type_mismatch,
+    range_type_mismatch,
+    range_requires_integer_operands,
     while_expression_not_value,
     non_iterable_in_for,
     tuple_arity_mismatch,
@@ -204,6 +210,7 @@ pub const DiagnosticCode = enum {
     defer_outside_function,
     errdefer_outside_function,
     errdefer_in_non_error_function,
+    nested_function_not_allowed,
 
     // Structs/tuples/enums/unions
     duplicate_field,
@@ -283,6 +290,7 @@ pub const DiagnosticCode = enum {
     package_missing_declaration,
     entry_package_missing,
     entry_package_not_main,
+    checker_internal_error,
 };
 
 pub fn diagnosticMessageFmt(code: DiagnosticCode) []const u8 {
@@ -311,6 +319,7 @@ pub fn diagnosticMessageFmt(code: DiagnosticCode) []const u8 {
         .expected_parameter_type_or_end => "expected ':', ',', or ')' after parameter, found {s}",
         .invalid_import_operand => "invalid import operand; expected string-like path, found {s}",
         .import_not_found => "the path specified in import was not found",
+        .invalid_package_name => "invalid package name",
 
         // Pattern / matching
         .token_cannot_start_pattern => "this token cannot start a pattern: {s}",
@@ -318,6 +327,8 @@ pub fn diagnosticMessageFmt(code: DiagnosticCode) []const u8 {
         .invalid_binding_name_in_at_pattern => "only simple identifier paths can be used as binding names in '@' patterns; found {s}",
         .underscore_not_const_in_range_pattern => "'_' is not valid as a constant in a range pattern",
         .left_side_not_const_like_in_range_pattern => "left side of a range pattern must be const-like",
+        .descending_range_pattern => "descending or empty range pattern",
+        .string_equality_in_match_not_supported => "string equality in 'match' is not supported",
         .pattern_shape_mismatch => "pattern does not match the shape of the value",
         .pattern_type_mismatch => "pattern type does not match value type",
         .or_pattern_binding_mismatch => "bindings in 'or' pattern arms do not match",
@@ -340,6 +351,7 @@ pub fn diagnosticMessageFmt(code: DiagnosticCode) []const u8 {
         .array_length_mismatch => "array literal length does not match declared size",
         .heterogeneous_array_elements => "array elements must have a uniform type",
         .cannot_infer_type_from_empty_array => "cannot infer type from empty array literal; add a type annotation",
+        .cannot_infer_range_type => "cannot infer type from range with no start or end value; add a type annotation to at least one side",
         .could_not_resolve_type => "could not resolve type: {s}",
         .map_wrong_key_type => "map index has wrong key type",
         .map_mixed_key_types => "map literal has mixed key types",
@@ -364,7 +376,9 @@ pub fn diagnosticMessageFmt(code: DiagnosticCode) []const u8 {
         .division_by_zero => "division by zero",
         .non_boolean_condition => "condition expression is not boolean",
         .if_expression_requires_else => "'if' used as an expression must have an 'else' branch",
-        .if_branch_type_mismatch => "'if' branches produce mismatched types",
+        .if_branch_type_mismatch => "if branches produce mismatched types",
+        .range_type_mismatch => "range expression has mismatched types",
+        .range_requires_integer_operands => "range expressions only work with integer operands",
         .while_expression_not_value => "'while' cannot be used as a value (no resulting expression)",
         .non_iterable_in_for => "value is not iterable in 'for' loop",
         .tuple_arity_mismatch => "tuple pattern arity does not match value",
@@ -426,6 +440,7 @@ pub fn diagnosticMessageFmt(code: DiagnosticCode) []const u8 {
         .defer_outside_function => "'defer' only valid inside a function",
         .errdefer_outside_function => "'errdefer' only valid inside a function",
         .errdefer_in_non_error_function => "'errdefer' only valid in functions returning an error union",
+        .nested_function_not_allowed => "function definitions are only allowed at top level",
 
         // Structs/tuples/enums/unions
         .duplicate_field => "duplicate field",
@@ -440,7 +455,7 @@ pub fn diagnosticMessageFmt(code: DiagnosticCode) []const u8 {
         .struct_missing_field => "struct literal missing required field",
         .unknown_struct_field => "unknown struct field",
         .unknown_tuple_field => "unknown tuple field",
-        .unknown_module_field => "member not found in module/file",
+        .unknown_module_field => "member `{s}` not found in module/file",
         .expected_pattern_on_decl_lhs => "lhs of decl should be a pattern",
         .missing_field_name_in_struct_literal => "missing field name in struct literal",
 
@@ -506,6 +521,7 @@ pub fn diagnosticMessageFmt(code: DiagnosticCode) []const u8 {
         .package_missing_declaration => "missing package declaration; expected 'package {s}'",
         .entry_package_missing => "entry modules must declare 'package main'",
         .entry_package_not_main => "entry modules must declare 'package main'; found '{s}'",
+        .checker_internal_error => "internal checker error: {s}",
     };
 }
 
