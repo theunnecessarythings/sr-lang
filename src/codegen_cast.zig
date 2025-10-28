@@ -248,10 +248,14 @@ pub fn emitCastNormal(self: *Codegen, dst_sr: types.TypeId, to_ty: mlir.Type, fr
     }
 
     // Scalars & pointers
-    const from_is_int = from_ty.isAInteger() or from_ty.isAVector();
-    const to_is_int = to_ty.isAInteger() or to_ty.isAVector();
-    const from_is_f = from_ty.isAFloat() or from_ty.isAVector();
-    const to_is_f = to_ty.isAFloat() or to_ty.isAVector();
+    const from_is_int = from_ty.isAInteger() or
+        (from_ty.isAVector() and from_ty.getShapedElementType().isAInteger());
+    const to_is_int = to_ty.isAInteger() or
+        (to_ty.isAVector() and to_ty.getShapedElementType().isAInteger());
+    const from_is_f = from_ty.isAFloat() or
+        (from_ty.isAVector() and from_ty.getShapedElementType().isAFloat());
+    const to_is_f = to_ty.isAFloat() or
+        (to_ty.isAVector() and to_ty.getShapedElementType().isAFloat());
     const from_is_ptr = from_ty.equal(self.llvm_ptr_ty);
     const to_is_ptr = to_ty.equal(self.llvm_ptr_ty);
 
