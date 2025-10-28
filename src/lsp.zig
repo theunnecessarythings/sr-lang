@@ -191,7 +191,7 @@ pub fn run(gpa: std.mem.Allocator) !void {
         } else if (std.mem.eql(u8, req.method, "textDocument/rename")) {
             if (req.params) |p| try onRename(Out, gpa, &docs, req.id orelse 0, p);
         } else if (std.mem.eql(u8, req.method, "textDocument/completion")) {
-            try respondCompletion(Out, gpa, req.id orelse 0);
+            if (req.params) |p| try onCompletion(Out, gpa, &docs, req.id orelse 0, p);
         } else if (std.mem.eql(u8, req.method, "textDocument/semanticTokens/full")) {
             if (req.params) |p| try onSemanticTokensFull(Out, gpa, &docs, req.id orelse 0, p);
         } else {
@@ -344,46 +344,6 @@ fn onDidClose(out: *std.Io.Writer, gpa: std.mem.Allocator, docs: *DocumentStore,
     };
     const empty_diags = [_]LspDiagnostic{};
     try writeJson(out, gpa, Msg{ .params = .{ .uri = uri, .diagnostics = &empty_diags } });
-}
-
-fn onHover(out: *std.Io.Writer, gpa: std.mem.Allocator, docs: *DocumentStore, id: u64, params: json.Value) !void {
-    const P = struct {
-        textDocument: struct { uri: []const u8 },
-        position: struct { line: u32, character: u32 },
-    };
-    var p = try json.parseFromValue(P, gpa, params, .{ .ignore_unknown_fields = true });
-    defer p.deinit();
-
-    const uri = p.value.textDocument.uri;
-    const text = docs.get(uri) orelse {
-        try writeJson(out, gpa, .{ .jsonrpc = "2.0", .id = id, .result = null });
-        return;
-    };
-
-    const offset = positionToOffset(text, p.value.position.line, p.value.position.character);
-    const hover_info = try computeHover(gpa, uri, text, offset);
-
-    const Resp = struct {
-        jsonrpc: []const u8 = "2.0",
-        id: u64,
-        result: ?struct {
-            contents: struct { kind: []const u8 = "markdown", value: []const u8 },
-            range: LspRange,
-        } = null,
-    };
-
-    if (hover_info) |info| {
-        defer gpa.free(info.message);
-        try writeJson(out, gpa, Resp{
-            .id = id,
-            .result = .{
-                .contents = .{ .value = info.message },
-                .range = info.range,
-            },
-        });
-    } else {
-        try writeJson(out, gpa, Resp{ .id = id, .result = null });
-    }
 }
 
 const Symbol = struct {
@@ -850,6 +810,46 @@ const SymbolResolver = struct {
     }
 };
 
+fn onHover(out: *std.Io.Writer, gpa: std.mem.Allocator, docs: *DocumentStore, id: u64, params: json.Value) !void {
+    const P = struct {
+        textDocument: struct { uri: []const u8 },
+        position: struct { line: u32, character: u32 },
+    };
+    var p = try json.parseFromValue(P, gpa, params, .{ .ignore_unknown_fields = true });
+    defer p.deinit();
+
+    const uri = p.value.textDocument.uri;
+    const text = docs.get(uri) orelse {
+        try writeJson(out, gpa, .{ .jsonrpc = "2.0", .id = id, .result = null });
+        return;
+    };
+
+    const offset = positionToOffset(text, p.value.position.line, p.value.position.character);
+    const hover_info = try computeHover(gpa, uri, text, offset);
+
+    const Resp = struct {
+        jsonrpc: []const u8 = "2.0",
+        id: u64,
+        result: ?struct {
+            contents: struct { kind: []const u8 = "markdown", value: []const u8 },
+            range: LspRange,
+        } = null,
+    };
+
+    if (hover_info) |info| {
+        defer gpa.free(info.message);
+        try writeJson(out, gpa, Resp{
+            .id = id,
+            .result = .{
+                .contents = .{ .value = info.message },
+                .range = info.range,
+            },
+        });
+    } else {
+        try writeJson(out, gpa, Resp{ .id = id, .result = null });
+    }
+}
+
 fn onGoToDefinition(out: *std.io.Writer, gpa: std.mem.Allocator, docs: *DocumentStore, id: u64, params: json.Value) !void {
     const P = struct {
         textDocument: struct { uri: []const u8 },
@@ -1077,11 +1077,177 @@ fn pathToUri(gpa: std.mem.Allocator, path: []const u8) ![]u8 {
     return std.fmt.allocPrint(gpa, "file://{s}", .{path});
 }
 
-fn respondCompletion(out: *std.Io.Writer, gpa: std.mem.Allocator, id: u64) !void {
-    const Item = struct { label: []const u8, kind: u32 = 14, detail: []const u8 = "test_lsp" };
-    const Resp = struct { jsonrpc: []const u8 = "2.0", id: u64, result: []const Item };
-    const items = [_]Item{ .{ .label = "hello" }, .{ .label = "world" } };
-    try writeJson(out, gpa, Resp{ .id = id, .result = &items });
+const CompletionItem = struct {
+    label: []const u8,
+    kind: ?u32 = null,
+    detail: ?[]const u8 = null,
+};
+
+const CompletionItemKind = enum(u32) {
+    Text = 1,
+    Method = 2,
+    Function = 3,
+    Constructor = 4,
+    Field = 5,
+    Variable = 6,
+    Class = 7,
+    Interface = 8,
+    Module = 9,
+    Property = 10,
+    Unit = 11,
+    Value = 12,
+    Enum = 13,
+    Keyword = 14,
+    Snippet = 15,
+    Color = 16,
+    File = 17,
+    Reference = 18,
+    Folder = 19,
+    EnumMember = 20,
+    Constant = 21,
+    Struct = 22,
+    Event = 23,
+    Operator = 24,
+    TypeParameter = 25,
+};
+
+fn lspCompletionKindFromSemantic(kind: SemanticTokenKind) CompletionItemKind {
+    return switch (kind) {
+        .keyword => .Keyword,
+        .string, .number, .comment => .Value,
+        .function => .Function,
+        .type, .@"struct", .@"enum" => .Struct,
+        .namespace => .Module,
+        .variable => .Variable,
+        .property => .Property,
+        .parameter => .Variable,
+        .enum_member => .EnumMember,
+        .operator => .Operator,
+    };
+}
+
+fn onCompletion(out: *std.Io.Writer, gpa: std.mem.Allocator, docs: *DocumentStore, id: u64, params: json.Value) !void {
+    const P = struct {
+        textDocument: struct { uri: []const u8 },
+        position: LspPosition,
+    };
+    var p = try json.parseFromValue(P, gpa, params, .{ .ignore_unknown_fields = true });
+    defer p.deinit();
+
+    const uri = p.value.textDocument.uri;
+    const text = docs.get(uri) orelse {
+        try writeJson(out, gpa, .{ .jsonrpc = "2.0", .id = id, .result = null });
+        return;
+    };
+
+    var items = std.ArrayList(CompletionItem){};
+    defer {
+        for (items.items) |item| {
+            gpa.free(item.label);
+            if (item.detail) |d| gpa.free(d);
+        }
+        items.deinit(gpa);
+    }
+
+    computeCompletions(gpa, uri, text, &items) catch |err| {
+        std.debug.print("[lsp] completion error: {s}\n", .{@errorName(err)});
+        const empty_items: ?[]const CompletionItem = null;
+        try writeJson(out, gpa, .{ .jsonrpc = "2.0", .id = id, .result = .{ .items = empty_items } });
+        return;
+    };
+
+    try writeJson(out, gpa, .{ .jsonrpc = "2.0", .id = id, .result = .{ .items = items.items } });
+}
+
+fn computeCompletions(gpa: std.mem.Allocator, uri: []const u8, text: []const u8, items: *std.ArrayList(CompletionItem)) !void {
+    // Add keywords
+    const keywords = [_][]const u8{ "fn", "struct", "enum", "let", "const", "if", "else", "for", "while", "match", "return", "true", "false", "import", "package", "defer", "errdefer", "async", "await", "try", "catch" };
+    for (keywords) |kw| {
+        try items.append(gpa, .{ .label = try gpa.dupe(u8, kw), .kind = @intFromEnum(CompletionItemKind.Keyword) });
+    }
+
+    var context = lib.compile.Context.init(gpa);
+    defer context.deinit();
+
+    const path = try fileUriToPath(gpa, uri);
+    defer gpa.free(path);
+
+    const file_id = try context.source_manager.setVirtualSourceByPath(path, text);
+    var pipeline = lib.pipeline.Pipeline.init(gpa, &context);
+
+    _ = pipeline.run(path, &.{}, .parse) catch |err| switch (err) {
+        error.ParseFailed, error.TooManyErrors => {},
+        else => |e| return e,
+    };
+
+    const ast_unit = findAstForFile(&context.compilation_unit, file_id) orelse return;
+
+    // Add global declarations
+    const decls = ast_unit.exprs.decl_pool.slice(ast_unit.unit.decls);
+    for (decls) |decl_id| {
+        const decl_row = ast_unit.exprs.Decl.get(decl_id);
+        const decl_kind = classifyDeclKind(ast_unit, decl_row.value);
+        if (decl_row.pattern.isNone()) continue;
+        try addPatternBindingsToCompletions(gpa, items, ast_unit, patternFromOpt(decl_row.pattern), decl_kind);
+    }
+}
+
+fn addPatternBindingsToCompletions(gpa: std.mem.Allocator, items: *std.ArrayList(CompletionItem), ast_unit: *ast.Ast, pat_id: ast.PatternId, kind: SemanticTokenKind) !void {
+    const pat_store = &ast_unit.pats;
+    const pat_kind = pat_store.index.kinds.items[pat_id.toRaw()];
+    switch (pat_kind) {
+        .Binding => {
+            const row = pat_store.get(.Binding, pat_id);
+            const name = ast_unit.pats.strs.get(row.name);
+            try items.append(gpa, .{
+                .label = try gpa.dupe(u8, name),
+                .kind = @intFromEnum(lspCompletionKindFromSemantic(kind)),
+            });
+        },
+        .Tuple => {
+            const row = pat_store.get(.Tuple, pat_id);
+            for (pat_store.pat_pool.slice(row.elems)) |elem| try addPatternBindingsToCompletions(gpa, items, ast_unit, elem, kind);
+        },
+        .Slice => {
+            const row = pat_store.get(.Slice, pat_id);
+            for (pat_store.pat_pool.slice(row.elems)) |elem| try addPatternBindingsToCompletions(gpa, items, ast_unit, elem, kind);
+            if (!row.rest_binding.isNone()) {
+                try addPatternBindingsToCompletions(gpa, items, ast_unit, patternFromOpt(row.rest_binding), kind);
+            }
+        },
+        .Struct => {
+            const row = pat_store.get(.Struct, pat_id);
+            for (pat_store.field_pool.slice(row.fields)) |field_id| {
+                const field = pat_store.StructField.get(field_id);
+                try addPatternBindingsToCompletions(gpa, items, ast_unit, field.pattern, kind);
+            }
+        },
+        .VariantStruct => {
+            const row = pat_store.get(.VariantStruct, pat_id);
+            for (pat_store.field_pool.slice(row.fields)) |field_id| {
+                const field = pat_store.StructField.get(field_id);
+                try addPatternBindingsToCompletions(gpa, items, ast_unit, field.pattern, kind);
+            }
+        },
+        .VariantTuple => {
+            const row = pat_store.get(.VariantTuple, pat_id);
+            for (pat_store.pat_pool.slice(row.elems)) |elem| try addPatternBindingsToCompletions(gpa, items, ast_unit, elem, kind);
+        },
+        .Or => {
+            const row = pat_store.get(.Or, pat_id);
+            for (pat_store.pat_pool.slice(row.alts)) |alt| try addPatternBindingsToCompletions(gpa, items, ast_unit, alt, kind);
+        },
+        .At => {
+            const row = pat_store.get(.At, pat_id);
+            const name = ast_unit.pats.strs.get(row.binder);
+            try items.append(gpa, .{
+                .label = try gpa.dupe(u8, name),
+                .kind = @intFromEnum(lspCompletionKindFromSemantic(kind)),
+            });
+            try addPatternBindingsToCompletions(gpa, items, ast_unit, row.pattern, kind);
+        },
+        else => {},
+    }
 }
 
 fn onSemanticTokensFull(out: *std.Io.Writer, gpa: std.mem.Allocator, docs: *DocumentStore, id: u64, params: json.Value) !void {
