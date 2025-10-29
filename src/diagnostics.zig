@@ -602,6 +602,7 @@ pub const Message = struct {
 pub const Diagnostics = struct {
     allocator: std.mem.Allocator,
     messages: std.array_list.Managed(Message),
+    mutex: std.Thread.Mutex = .{},
 
     pub fn init(allocator: std.mem.Allocator) Diagnostics {
         return .{ .allocator = allocator, .messages = std.array_list.Managed(Message).init(allocator) };
@@ -657,6 +658,9 @@ pub const Diagnostics = struct {
     }
 
     fn addMessage(self: *Diagnostics, sev: Severity, loc: Loc, comptime code: DiagnosticCode, args: anytype) !void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
         const info = @typeInfo(@TypeOf(args)).@"struct";
         const arg_count = info.fields.len;
         const payload: MessagePayload = if (arg_count == 0) .none else payloadFromArgs(args);
@@ -680,12 +684,16 @@ pub const Diagnostics = struct {
 
     /// Back-compat: simple attachNote without payload.
     pub fn attachNote(self: *Diagnostics, idx: usize, loc: ?Loc, comptime code: NoteCode) !void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
         if (idx >= self.messages.items.len) return;
         try self.messages.items[idx].notes.append(.{ .loc = loc, .code = code, .payload = .none });
     }
 
     /// New: attach a note with lightweight payload (Tag values)
     pub fn attachNoteArgs(self: *Diagnostics, idx: usize, loc: ?Loc, comptime code: NoteCode, args: anytype) !void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
         if (idx >= self.messages.items.len) return;
         const payload = payloadFromArgs(args);
         try self.messages.items[idx].notes.append(.{ .loc = loc, .code = code, .payload = payload });
