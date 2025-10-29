@@ -154,7 +154,7 @@ pub fn run(self: *Checker, levels: *const compile.DependencyLevels) !void {
 }
 
 pub fn runAst(self: *Checker, ast_unit: *ast.Ast, ctx: *CheckerContext) !void {
-    // pre-allocate type slots for all exprs & decls
+    // pre-allocate type slots
     const expr_len: usize = ast_unit.exprs.index.kinds.items.len;
     const decl_len: usize = ast_unit.exprs.Decl.list.len;
     try ast_unit.type_info.expr_types.appendNTimes(self.gpa, null, expr_len);
@@ -164,12 +164,22 @@ pub fn runAst(self: *Checker, ast_unit: *ast.Ast, ctx: *CheckerContext) !void {
     _ = try ctx.symtab.push(null);
 
     const decl_ids = ast_unit.exprs.decl_pool.slice(ast_unit.unit.decls);
-    // Pre-bind all top-level declaration patterns so forward references resolve.
+
+    // (1) Bind all top-level names so forward refs resolve
     for (decl_ids) |did| {
         const d = ast_unit.exprs.Decl.get(did);
         try self.bindDeclPattern(ctx, ast_unit, did, d);
     }
-    // Now type-check declarations with names available in scope
+
+    // (2) Predeclare signatures for all top-level functions
+    for (decl_ids) |did| {
+        const d = ast_unit.exprs.Decl.get(did);
+        if (exprKind(ast_unit, d.value) == .FunctionLit) {
+            try self.predeclareFunction(ctx, ast_unit, did);
+        }
+    }
+
+    // (3) Now type-check declarations (walk bodies, defaults, patterns, methods, etc.)
     for (decl_ids) |did| {
         try self.checkDecl(ctx, ast_unit, did);
     }
@@ -255,6 +265,58 @@ fn bindingNameOfPattern(ast_unit: *ast.Ast, pid: ast.PatternId) ?ast.StrId {
         .Binding => ast_unit.pats.get(.Binding, pid).name,
         else => null,
     };
+}
+
+fn predeclareFunction(
+    self: *Checker,
+    ctx: *CheckerContext,
+    ast_unit: *ast.Ast,
+    did: ast.DeclId,
+) !void {
+    const d = ast_unit.exprs.Decl.get(did);
+    if (exprKind(ast_unit, d.value) != .FunctionLit) return;
+
+    const fid = d.value;
+    const fnr = getExpr(ast_unit, .FunctionLit, fid);
+    const params = ast_unit.exprs.param_pool.slice(fnr.params);
+
+    var pbuf = try self.gpa.alloc(types.TypeId, params.len);
+    defer self.gpa.free(pbuf);
+
+    // Parameter types (no pattern checks, no default-value checks here)
+    var i: usize = 0;
+    while (i < params.len) : (i += 1) {
+        const p = ast_unit.exprs.Param.get(params[i]);
+        if (!p.ty.isNone()) {
+            const pt = (try check_types.typeFromTypeExpr(self, ctx, ast_unit, p.ty.unwrap())) orelse
+                self.context.type_store.tAny();
+            pbuf[i] = pt;
+        } else if (p.is_comptime) {
+            pbuf[i] = self.context.type_store.mkTypeType(self.context.type_store.tAny());
+        } else {
+            // Unannotated runtime param – unknown until body checking
+            pbuf[i] = self.context.type_store.tAny();
+        }
+    }
+
+    const res_opt: ?types.TypeId = if (!fnr.result_ty.isNone())
+        (try check_types.typeFromTypeExpr(self, ctx, ast_unit, fnr.result_ty.unwrap()))
+    else
+        self.context.type_store.tVoid();
+    if (res_opt == null) return; // diagnostics already emitted by typeFromTypeExpr
+    const res = res_opt.?;
+
+    // Be optimistic about purity here; we’ll finalize after body checking.
+    const sig_ty = self.context.type_store.mkFunction(pbuf, res, fnr.flags.is_variadic, true);
+
+    // Stamp both the decl type and the function literal expr type.
+    ast_unit.type_info.decl_types.items[did.toRaw()] = sig_ty;
+
+    // If this is a top-level binding with a pattern, export its bindings now so imports
+    // and same-file forward refs see the function in the module API.
+    // if (!self.inFunction(ctx) and (!d.pattern.isNone())) {
+    //     try self.recordExportsForDecl(ctx, ast_unit, did, sig_ty);
+    // }
 }
 
 fn lookupParamSpecialization(_: *const Checker, ctx: *CheckerContext, name: ast.StrId) ?types.TypeId {
@@ -1730,6 +1792,10 @@ fn checkIdent(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, id: ast.
                     };
                     break :blk ty;
                 };
+                const p_kind = ast_unit.pats.index.kinds.items[drow.pattern.unwrap().toRaw()];
+                if (p_kind == .Binding) {
+                    return rhs_ty;
+                }
                 const bt = pattern_matching.bindingTypeInPattern(self, ast_unit, drow.pattern.unwrap(), row.name, rhs_ty);
                 if (bt) |btid| return btid;
             }
@@ -2661,6 +2727,7 @@ fn checkFieldAccess(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, id
                 const did = sym.origin_decl.unwrap();
                 const drow = ast_unit.exprs.Decl.get(did);
                 if (exprKind(ast_unit, drow.value) == .Import) {
+                    _ = try self.checkExpr(ctx, ast_unit, field_expr.parent);
                     const member_ty = self.getMemberFromImport(ast_unit, drow.value, field_expr.field) orelse {
                         const name = ast_unit.exprs.strs.get(field_expr.field);
                         try self.context.diags.addError(exprLoc(ast_unit, field_expr), .unknown_module_field, .{name});
@@ -2669,6 +2736,9 @@ fn checkFieldAccess(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, id
                     return member_ty;
                 }
             }
+        } else {
+            try self.context.diags.addError(exprLoc(ast_unit, field_expr), .undefined_identifier, .{});
+            return null;
         }
     }
 
