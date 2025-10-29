@@ -2886,11 +2886,22 @@ fn lowerBinary(
                     if (op_ty == null or self.isVoid(op_ty.?) or self.isType(op_ty.?, .Any)) op_ty = want;
 
                     const r_ty_promo = rhs_hint orelse rhs_stamped;
-                    if (self.context.type_store.getKind(lhs_expect orelse self.context.type_store.tAny()) == .Simd and self.isNumeric(r_ty_promo)) {
+                    const rk = self.context.type_store.getKind(r_ty_promo);
+                    const r_is_scalar_numeric = switch (rk) {
+                        .U8, .U16, .U32, .U64, .I8, .I16, .I32, .I64, .Usize, .F32, .F64 => true,
+                        else => false,
+                    };
+                    if (self.context.type_store.getKind(lhs_expect orelse self.context.type_store.tAny()) == .Simd and r_is_scalar_numeric) {
                         rhs_expect = null;
                     }
+
                     const l_ty_promo = lhs_hint orelse lhs_stamped;
-                    if (self.context.type_store.getKind(rhs_expect orelse self.context.type_store.tAny()) == .Simd and self.isNumeric(l_ty_promo)) {
+                    const lk = self.context.type_store.getKind(l_ty_promo);
+                    const l_is_scalar_numeric = switch (lk) {
+                        .U8, .U16, .U32, .U64, .I8, .I16, .I32, .I64, .Usize, .F32, .F64 => true,
+                        else => false,
+                    };
+                    if (self.context.type_store.getKind(rhs_expect orelse self.context.type_store.tAny()) == .Simd and l_is_scalar_numeric) {
                         lhs_expect = null;
                     }
                 }

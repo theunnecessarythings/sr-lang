@@ -118,6 +118,7 @@ pub const Pipeline = struct {
 
         var parser = Parser.init(self.allocator, source0, file_id, self.context.diags, self.context);
         const main_thread = try std.Thread.spawn(.{}, Parser.run, .{&parser});
+        self.context.compilation_unit.mutex.lock();
         try self.context.parse_worklist.append(self.allocator, .{
             .path = filename,
             .file_id = file_id,
@@ -125,11 +126,19 @@ pub const Pipeline = struct {
             .diags = self.context.diags,
             .parser = &parser,
         });
+        self.context.compilation_unit.mutex.unlock();
 
         var i: usize = 0;
         var parse_failed = false;
-        while (i < self.context.parse_worklist.items.len) {
+        while (true) {
+            self.context.compilation_unit.mutex.lock();
+            if (i >= self.context.parse_worklist.items.len) {
+                self.context.compilation_unit.mutex.unlock();
+                break;
+            }
             const work = self.context.parse_worklist.items[i];
+            self.context.compilation_unit.mutex.unlock();
+
             work.thread.join();
             if (i > 0) {
                 try self.context.diags.messages.appendSlice(try work.diags.messages.toOwnedSlice());

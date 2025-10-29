@@ -1184,13 +1184,36 @@ fn parseImport(self: *Parser) !cst.ExprId {
     self.gpa.free(filepath);
     const sm_path = self.context.source_manager.get(file_id).?;
     const path = self.intern(sm_path);
-    const source = try self.context.source_manager.read(file_id);
-    defer self.gpa.free(source);
-    const source0 = try self.gpa.dupeZ(u8, source);
 
-    // Use a separate diagnostics buffer for this imported file, so pipeline
-    // can merge messages later. This is only used under the pipeline path
-    // (above), not in parser unit tests.
+    // Check if this file is already parsed or is in the worklist to prevent circular import loops.
+    self.context.compilation_unit.mutex.lock();
+    var already_exists = false;
+    var pkg_iter = self.context.compilation_unit.packages.iterator();
+    while (pkg_iter.next()) |pkg| {
+        if (pkg.value_ptr.sources.get(sm_path) != null) {
+            already_exists = true;
+            break;
+        }
+    }
+    if (!already_exists) {
+        for (self.context.parse_worklist.items) |item| {
+            if (item.file_id == file_id) {
+                already_exists = true;
+                break;
+            }
+        }
+    }
+
+    if (already_exists) {
+        self.context.compilation_unit.mutex.unlock();
+        return self.addExpr(.Import, .{ .path = path, .loc = loc });
+    }
+
+    const source = try self.context.source_manager.read(file_id);
+    const source0 = try self.gpa.dupeZ(u8, source);
+    self.gpa.free(source); // Free the original buffer after duplication
+
+    // Use a separate diagnostics buffer for this imported file
     const child_diags = try self.gpa.create(diag.Diagnostics);
     child_diags.* = diag.Diagnostics.init(self.gpa);
 
@@ -1205,6 +1228,7 @@ fn parseImport(self: *Parser) !cst.ExprId {
         .diags = child_diags,
         .parser = parser,
     });
+    self.context.compilation_unit.mutex.unlock();
     return self.addExpr(.Import, .{ .path = path, .loc = loc });
 }
 

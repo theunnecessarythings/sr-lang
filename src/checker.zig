@@ -3720,7 +3720,8 @@ fn checkIf(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, id: ast.Exp
     const if_expr = getExpr(ast_unit, .If, id);
     const cond = try self.checkExpr(ctx, ast_unit, if_expr.cond);
     if (cond == null or cond.?.toRaw() != self.context.type_store.tBool().toRaw()) {
-        try self.context.diags.addError(exprLoc(ast_unit, if_expr), .non_boolean_condition, .{});
+        const cond_ty = if (cond) |c| self.typeKind(c) else .Any;
+        try self.context.diags.addError(exprLoc(ast_unit, if_expr), .non_boolean_condition, .{cond_ty});
         return null;
     }
 
@@ -3767,7 +3768,7 @@ fn checkWhile(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, id: ast.
         const cond_ty = try self.checkExpr(ctx, ast_unit, wr.cond.unwrap()) orelse return null;
         const ck = self.typeKind(cond_ty);
         if (ck != .Bool and ck != .Any) {
-            try self.context.diags.addError(exprLoc(ast_unit, wr), .non_boolean_condition, .{});
+            try self.context.diags.addError(exprLoc(ast_unit, wr), .non_boolean_condition, .{ck});
             return null;
         }
     } else if (!wr.cond.isNone() and !wr.pattern.isNone()) {

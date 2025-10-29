@@ -374,7 +374,7 @@ pub fn diagnosticMessageFmt(code: DiagnosticCode) []const u8 {
         .invalid_binary_op_operands => "invalid operands for binary operator '{s}': '{s}' and '{s}'",
         .invalid_unary_op_operand => "invalid operand for unary operator '{s}': '{s}'",
         .division_by_zero => "division by zero",
-        .non_boolean_condition => "condition expression is not boolean",
+        .non_boolean_condition => "condition expression expected boolean type, got '{s}'",
         .if_expression_requires_else => "'if' used as an expression must have an 'else' branch",
         .if_branch_type_mismatch => "if branches produce mismatched types",
         .range_type_mismatch => "range expression has mismatched types",
@@ -657,11 +657,6 @@ pub const Diagnostics = struct {
     }
 
     fn addMessage(self: *Diagnostics, sev: Severity, loc: Loc, comptime code: DiagnosticCode, args: anytype) !void {
-        const error_limit = 20;
-        if (sev == .err and self.messages.items.len >= error_limit) {
-            return error.TooManyErrors;
-        }
-
         const info = @typeInfo(@TypeOf(args)).@"struct";
         const arg_count = info.fields.len;
         const payload: MessagePayload = if (arg_count == 0) .none else payloadFromArgs(args);
