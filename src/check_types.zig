@@ -126,18 +126,20 @@ pub fn isOptional(self: *Checker, id: types.TypeId) ?types.TypeId {
     return self.context.type_store.get(.Optional, id).elem;
 }
 
-pub fn checkTypeOf(self: *Checker, ctx: *Checker.CheckerContext, ast_unit: *ast.Ast, id: ast.ExprId) !?types.TypeId {
+pub fn checkTypeOf(self: *Checker, ctx: *Checker.CheckerContext, ast_unit: *ast.Ast, id: ast.ExprId) !types.TypeId {
     const tr = ast_unit.exprs.get(.TypeOf, id);
     // typeof should accept value expressions; get their type directly.
-    if (try self.checkExpr(ctx, ast_unit, tr.expr)) |et| {
+    const et = try self.checkExpr(ctx, ast_unit, tr.expr);
+    if (self.typeKind(et) != .TypeError) {
         return self.context.type_store.mkTypeType(et);
     }
     // As a fallback, allow typeof on a type expression (yielding that type).
-    if (try typeFromTypeExpr(self, ctx, ast_unit, tr.expr)) |tt| {
+    const tt = try typeFromTypeExpr(self, ctx, ast_unit, tr.expr);
+    if (self.typeKind(tt) != .TypeError) {
         return self.context.type_store.mkTypeType(tt);
     }
     try self.context.diags.addError(ast_unit.exprs.locs.get(tr.loc), .could_not_resolve_type, .{});
-    return null;
+    return self.context.type_store.tTypeError();
 }
 
 // =========================================================
@@ -296,7 +298,8 @@ fn resolveTypeFunctionCall(
         if (ast_unit.pats.index.kinds.items[pat_id.toRaw()] != .Binding) return null;
         const pname = ast_unit.pats.get(.Binding, pat_id).name;
 
-        const annotated = (try typeFromTypeExpr(self, ctx, ast_unit, param.ty.unwrap())) orelse return null;
+        const annotated = try typeFromTypeExpr(self, ctx, ast_unit, param.ty.unwrap());
+        if (self.typeKind(annotated) == .TypeError) return self.context.type_store.tTypeError();
         if (self.context.type_store.getKind(annotated) == .TypeType) {
             const arg_ty = (try typeFromTypeExprWithBindings(self, ctx, ast_unit, args[i], bindings_builder.items)) orelse return null;
             try bindings_builder.append(self.gpa, .{ .Type = .{ .name = pname, .ty = arg_ty } });
@@ -355,7 +358,7 @@ fn resolveTypeFunctionCall(
     return null;
 }
 
-pub fn typeFromTypeExpr(self: *Checker, ctx: *Checker.CheckerContext, ast_unit: *ast.Ast, id: ast.ExprId) anyerror!?types.TypeId {
+pub fn typeFromTypeExpr(self: *Checker, ctx: *Checker.CheckerContext, ast_unit: *ast.Ast, id: ast.ExprId) anyerror!types.TypeId {
     const k = ast_unit.exprs.index.kinds.items[id.toRaw()];
     return switch (k) {
         .Ident => blk_ident: {
@@ -398,20 +401,21 @@ pub fn typeFromTypeExpr(self: *Checker, ctx: *Checker.CheckerContext, ast_unit: 
                     // Lazy resolve: if the declaration's RHS is a type expression, resolve it now.
                     const drow = ast_unit.exprs.Decl.get(did);
                     const rhs_ty = try typeFromTypeExpr(self, ctx, ast_unit, drow.value);
-                    if (rhs_ty) |rt| {
+                    if (self.typeKind(rhs_ty) != .TypeError) {
                         // Record as a type constant for future queries
-                        const tt = self.context.type_store.mkTypeType(rt);
+                        const tt = self.context.type_store.mkTypeType(rhs_ty);
                         ast_unit.type_info.decl_types.items[did.toRaw()] = tt;
                         try ast_unit.type_info.ensureExpr(self.gpa, drow.value);
                         ast_unit.type_info.expr_types.items[drow.value.toRaw()] = tt;
-                        return rt;
+                        return rhs_ty;
                     }
                 }
                 if (!sym.origin_param.isNone()) {
                     const pid = sym.origin_param.unwrap();
                     const param_row = ast_unit.exprs.Param.get(pid);
                     if (!param_row.ty.isNone()) {
-                        const annotated = (try typeFromTypeExpr(self, ctx, ast_unit, param_row.ty.unwrap())) orelse return null;
+                        const annotated = try typeFromTypeExpr(self, ctx, ast_unit, param_row.ty.unwrap());
+                        if (self.typeKind(annotated) == .TypeError) return self.context.type_store.tTypeError();
                         if (param_row.is_comptime) {
                             if (self.context.type_store.getKind(annotated) == .TypeType) {
                                 return self.context.type_store.get(.TypeType, annotated).of;
@@ -425,7 +429,7 @@ pub fn typeFromTypeExpr(self: *Checker, ctx: *Checker.CheckerContext, ast_unit: 
             }
 
             try self.context.diags.addError(ast_unit.exprs.locs.get(ast_unit.exprs.get(.Ident, id).loc), .undefined_identifier, .{});
-            break :blk_ident null;
+            break :blk_ident self.context.type_store.tTypeError();
         },
         .MlirBlock => blk: {
             const row = ast_unit.exprs.get(.MlirBlock, id);
@@ -436,7 +440,7 @@ pub fn typeFromTypeExpr(self: *Checker, ctx: *Checker.CheckerContext, ast_unit: 
                 .Module => ts.tMlirModule(),
                 .Operation => blk_inner: {
                     try self.context.diags.addError(ast_unit.exprs.locs.get(row.loc), .mlir_block_not_a_type, .{});
-                    break :blk_inner null;
+                    break :blk_inner self.context.type_store.tTypeError();
                 },
             };
         },
@@ -446,7 +450,11 @@ pub fn typeFromTypeExpr(self: *Checker, ctx: *Checker.CheckerContext, ast_unit: 
             var buf = try self.context.type_store.gpa.alloc(types.TypeId, ids.len);
             defer self.context.type_store.gpa.free(buf);
             var i: usize = 0;
-            while (i < ids.len) : (i += 1) buf[i] = (try typeFromTypeExpr(self, ctx, ast_unit, ids[i])) orelse break :blk_tt null;
+            while (i < ids.len) : (i += 1) {
+                const ty = try typeFromTypeExpr(self, ctx, ast_unit, ids[i]);
+                if (self.typeKind(ty) == .TypeError) return self.context.type_store.tTypeError();
+                buf[i] = ty;
+            }
             break :blk_tt self.context.type_store.mkTuple(buf);
         },
         .TupleLit => blk_ttl: {
@@ -455,18 +463,25 @@ pub fn typeFromTypeExpr(self: *Checker, ctx: *Checker.CheckerContext, ast_unit: 
             var buf = try self.context.type_store.gpa.alloc(types.TypeId, ids.len);
             defer self.context.type_store.gpa.free(buf);
             var i: usize = 0;
-            while (i < ids.len) : (i += 1) buf[i] = (try typeFromTypeExpr(self, ctx, ast_unit, ids[i])) orelse break :blk_ttl null;
+            while (i < ids.len) : (i += 1) {
+                const ty = try typeFromTypeExpr(self, ctx, ast_unit, ids[i]);
+                if (self.typeKind(ty) == .TypeError) return self.context.type_store.tTypeError();
+                buf[i] = ty;
+            }
             break :blk_ttl self.context.type_store.mkTuple(buf);
         },
         .MapType => blk_mt: {
             const row = ast_unit.exprs.get(.MapType, id);
-            const key = (try typeFromTypeExpr(self, ctx, ast_unit, row.key)) orelse break :blk_mt null;
-            const val = (try typeFromTypeExpr(self, ctx, ast_unit, row.value)) orelse break :blk_mt null;
+            const key = try typeFromTypeExpr(self, ctx, ast_unit, row.key);
+            if (self.typeKind(key) == .TypeError) return self.context.type_store.tTypeError();
+            const val = try typeFromTypeExpr(self, ctx, ast_unit, row.value);
+            if (self.typeKind(val) == .TypeError) return self.context.type_store.tTypeError();
             break :blk_mt self.context.type_store.mkMap(key, val);
         },
         .ArrayType => blk_at: {
             const row = ast_unit.exprs.get(.ArrayType, id);
-            const elem = (try typeFromTypeExpr(self, ctx, ast_unit, row.elem)) orelse break :blk_at null;
+            const elem = try typeFromTypeExpr(self, ctx, ast_unit, row.elem);
+            if (self.typeKind(elem) == .TypeError) return self.context.type_store.tTypeError();
             const size_expr_kind = ast_unit.exprs.index.kinds.items[row.size.toRaw()];
             var size: types.ArraySize = .{ .Unresolved = row.size };
             if (size_expr_kind == .Literal) {
@@ -479,7 +494,7 @@ pub fn typeFromTypeExpr(self: *Checker, ctx: *Checker.CheckerContext, ast_unit: 
                     if (info.valid) {
                         const len = std.math.cast(usize, info.value) orelse {
                             try self.context.diags.addError(ast_unit.exprs.locs.get(lit.loc), .array_size_not_integer_literal, .{});
-                            break :blk_at null;
+                            return self.context.type_store.tTypeError();
                         };
                         size = .{ .Concrete = len };
                     }
@@ -491,41 +506,46 @@ pub fn typeFromTypeExpr(self: *Checker, ctx: *Checker.CheckerContext, ast_unit: 
         },
         .DynArrayType => blk_dt: {
             const row = ast_unit.exprs.get(.DynArrayType, id);
-            const elem = (try typeFromTypeExpr(self, ctx, ast_unit, row.elem)) orelse break :blk_dt null;
+            const elem = try typeFromTypeExpr(self, ctx, ast_unit, row.elem);
+            if (self.typeKind(elem) == .TypeError) return self.context.type_store.tTypeError();
             break :blk_dt self.context.type_store.mkDynArray(elem);
         },
         .SliceType => blk_st: {
             const row = ast_unit.exprs.get(.SliceType, id);
-            const elem = (try typeFromTypeExpr(self, ctx, ast_unit, row.elem)) orelse break :blk_st null;
+            const elem = try typeFromTypeExpr(self, ctx, ast_unit, row.elem);
+            if (self.typeKind(elem) == .TypeError) return self.context.type_store.tTypeError();
             break :blk_st self.context.type_store.mkSlice(elem);
         },
         .OptionalType => blk_ot: {
             const row = ast_unit.exprs.get(.OptionalType, id);
-            const elem = (try typeFromTypeExpr(self, ctx, ast_unit, row.elem)) orelse break :blk_ot null;
+            const elem = try typeFromTypeExpr(self, ctx, ast_unit, row.elem);
+            if (self.typeKind(elem) == .TypeError) return self.context.type_store.tTypeError();
             break :blk_ot self.context.type_store.mkOptional(elem);
         },
         .PointerType => blk_pt: {
             const row = ast_unit.exprs.get(.PointerType, id);
-            const elem = (try typeFromTypeExpr(self, ctx, ast_unit, row.elem)) orelse break :blk_pt null;
+            const elem = try typeFromTypeExpr(self, ctx, ast_unit, row.elem);
+            if (self.typeKind(elem) == .TypeError) return self.context.type_store.tTypeError();
             break :blk_pt self.context.type_store.mkPtr(elem, row.is_const);
         },
         .SimdType => blk_simd: {
             const row = ast_unit.exprs.get(.SimdType, id);
-            const elem_ty = (try typeFromTypeExpr(self, ctx, ast_unit, row.elem)) orelse break :blk_simd null;
+            const elem_ty = try typeFromTypeExpr(self, ctx, ast_unit, row.elem);
+            if (self.typeKind(elem_ty) == .TypeError) return self.context.type_store.tTypeError();
             const ek = self.context.type_store.index.kinds.items[elem_ty.toRaw()];
             if (!isNumericKind(self, ek)) {
                 try self.context.diags.addError(ast_unit.exprs.locs.get(row.loc), .simd_invalid_element_type, .{});
-                break :blk_simd null;
+                return self.context.type_store.tTypeError();
             }
             const lk = ast_unit.exprs.index.kinds.items[row.lanes.toRaw()];
             if (lk != .Literal) {
                 try self.context.diags.addError(ast_unit.exprs.locs.get(row.loc), .simd_lanes_not_integer_literal, .{});
-                break :blk_simd null;
+                return self.context.type_store.tTypeError();
             }
             const lit = ast_unit.exprs.get(.Literal, row.lanes);
             if (lit.kind != .int) {
                 try self.context.diags.addError(ast_unit.exprs.locs.get(row.loc), .simd_lanes_not_integer_literal, .{});
-                break :blk_simd null;
+                return self.context.type_store.tTypeError();
             }
             const lanes_val = switch (lit.data) {
                 .int => |int_info| blk: {
@@ -536,7 +556,7 @@ pub fn typeFromTypeExpr(self: *Checker, ctx: *Checker.CheckerContext, ast_unit: 
             };
             if (lanes_val == 0 or lanes_val > std.math.maxInt(u16)) {
                 try self.context.diags.addError(ast_unit.exprs.locs.get(row.loc), .simd_lanes_not_integer_literal, .{});
-                break :blk_simd null;
+                return self.context.type_store.tTypeError();
             }
             const simd_ty = self.context.type_store.mkSimd(elem_ty, @intCast(lanes_val));
             break :blk_simd simd_ty;
@@ -547,7 +567,7 @@ pub fn typeFromTypeExpr(self: *Checker, ctx: *Checker.CheckerContext, ast_unit: 
             const dims = ast_unit.exprs.expr_pool.slice(row.shape);
             if (dims.len > types.max_tensor_rank) {
                 try self.context.diags.addError(ast_unit.exprs.locs.get(row.loc), .tensor_rank_exceeds_limit, .{});
-                break :blk_tensor null;
+                return self.context.type_store.tTypeError();
             }
             var dim_values = [_]usize{0} ** types.max_tensor_rank;
             var i: usize = 0;
@@ -555,35 +575,35 @@ pub fn typeFromTypeExpr(self: *Checker, ctx: *Checker.CheckerContext, ast_unit: 
                 const dk = ast_unit.exprs.index.kinds.items[dims[i].toRaw()];
                 if (dk != .Literal) {
                     try self.context.diags.addError(ast_unit.exprs.locs.get(row.loc), .tensor_dimension_not_integer_literal, .{});
-                    break :blk_tensor null;
+                    return self.context.type_store.tTypeError();
                 }
                 const dl = ast_unit.exprs.get(.Literal, dims[i]);
                 if (dl.kind != .int) {
                     try self.context.diags.addError(ast_unit.exprs.locs.get(row.loc), .tensor_dimension_not_integer_literal, .{});
-                    break :blk_tensor null;
+                    return self.context.type_store.tTypeError();
                 }
                 const info = switch (dl.data) {
                     .int => |int_info| int_info,
-                    else => return null,
+                    else => return self.context.type_store.tTypeError(),
                 };
                 if (!info.valid) {
                     try self.context.diags.addError(ast_unit.exprs.locs.get(row.loc), .tensor_dimension_not_integer_literal, .{});
-                    break :blk_tensor null;
+                    return self.context.type_store.tTypeError();
                 }
                 const dim_val = std.math.cast(usize, info.value) orelse {
                     try self.context.diags.addError(ast_unit.exprs.locs.get(row.loc), .tensor_dimension_not_integer_literal, .{});
-                    break :blk_tensor null;
+                    return self.context.type_store.tTypeError();
                 };
                 dim_values[i] = dim_val;
             }
             // Validate element type present and resolvable
             const ety = try typeFromTypeExpr(self, ctx, ast_unit, row.elem);
-            if (ety == null) {
+            if (self.typeKind(ety) == .TypeError) {
                 try self.context.diags.addError(ast_unit.exprs.locs.get(row.loc), .tensor_missing_element_type, .{});
-                break :blk_tensor null;
+                return self.context.type_store.tTypeError();
             }
             const rank = dims.len;
-            const tensor_ty = self.context.type_store.mkTensor(ety.?, dim_values[0..rank]);
+            const tensor_ty = self.context.type_store.mkTensor(ety, dim_values[0..rank]);
             break :blk_tensor tensor_ty;
         },
         .StructType => blk_sty: {
@@ -599,9 +619,10 @@ pub fn typeFromTypeExpr(self: *Checker, ctx: *Checker.CheckerContext, ast_unit: 
                 const gop = try seen.getOrPut(self.gpa, f.name.toRaw());
                 if (gop.found_existing) {
                     try self.context.diags.addError(ast_unit.exprs.locs.get(f.loc), .duplicate_field, .{});
-                    return null;
+                    return self.context.type_store.tTypeError();
                 }
-                const ft = (try typeFromTypeExpr(self, ctx, ast_unit, f.ty)) orelse break :blk_sty null;
+                const ft = try typeFromTypeExpr(self, ctx, ast_unit, f.ty);
+                if (self.typeKind(ft) == .TypeError) return self.context.type_store.tTypeError();
                 buf[i] = .{ .name = f.name, .ty = ft };
             }
             break :blk_sty self.context.type_store.mkStruct(buf);
@@ -619,10 +640,11 @@ pub fn typeFromTypeExpr(self: *Checker, ctx: *Checker.CheckerContext, ast_unit: 
                 const gop = try seen.getOrPut(self.gpa, sf.name.toRaw());
                 if (gop.found_existing) {
                     try self.context.diags.addError(ast_unit.exprs.locs.get(sf.loc), .duplicate_field, .{});
-                    return null;
+                    return self.context.type_store.tTypeError();
                 }
                 // Validate field types resolve
-                const ft = (try typeFromTypeExpr(self, ctx, ast_unit, sf.ty)) orelse break :blk_un null;
+                const ft = try typeFromTypeExpr(self, ctx, ast_unit, sf.ty);
+                if (self.typeKind(ft) == .TypeError) return self.context.type_store.tTypeError();
                 buf[i] = .{ .name = sf.name, .ty = ft };
             }
             break :blk_un self.context.type_store.mkUnion(buf);
@@ -635,13 +657,14 @@ pub fn typeFromTypeExpr(self: *Checker, ctx: *Checker.CheckerContext, ast_unit: 
             const tag_ty = if (row.discriminant.isNone())
                 self.context.type_store.tI32()
             else
-                (try typeFromTypeExpr(self, ctx, ast_unit, row.discriminant.unwrap())) orelse return null;
+                (try typeFromTypeExpr(self, ctx, ast_unit, row.discriminant.unwrap()));
+            if (self.typeKind(tag_ty) == .TypeError) return self.context.type_store.tTypeError();
 
             // Ensure the tag type is an integer.
             const tk = self.context.type_store.index.kinds.items[tag_ty.toRaw()];
             if (!isIntegerKind(self, tk)) {
                 try self.context.diags.addError(ast_unit.exprs.locs.get(row.loc), .enum_discriminant_not_integer, .{});
-                break :blk_en null;
+                return self.context.type_store.tTypeError();
             }
 
             var member_buf = try self.gpa.alloc(types.TypeStore.EnumMemberArg, efs.len);
@@ -658,7 +681,7 @@ pub fn typeFromTypeExpr(self: *Checker, ctx: *Checker.CheckerContext, ast_unit: 
                 const gop = try seen.getOrPut(self.gpa, enum_field.name.toRaw());
                 if (gop.found_existing) {
                     try self.context.diags.addError(ast_unit.exprs.locs.get(enum_field.loc), .duplicate_enum_field, .{});
-                    return null;
+                    return self.context.type_store.tTypeError();
                 }
 
                 var current_value: u64 = next_value;
@@ -667,12 +690,12 @@ pub fn typeFromTypeExpr(self: *Checker, ctx: *Checker.CheckerContext, ast_unit: 
                     const val_kind = ast_unit.exprs.index.kinds.items[val_id.toRaw()];
                     if (val_kind != .Literal) {
                         try self.context.diags.addError(ast_unit.exprs.locs.get(enum_field.loc), .enum_discriminant_not_integer, .{});
-                        return null;
+                        return self.context.type_store.tTypeError();
                     }
                     const lit = ast_unit.exprs.get(.Literal, val_id);
                     if (lit.kind != .int) {
                         try self.context.diags.addError(ast_unit.exprs.locs.get(enum_field.loc), .enum_discriminant_not_integer, .{});
-                        return null;
+                        return self.context.type_store.tTypeError();
                     }
                     const parsed = switch (lit.data) {
                         .int => |int_info| blk: {
@@ -691,7 +714,7 @@ pub fn typeFromTypeExpr(self: *Checker, ctx: *Checker.CheckerContext, ast_unit: 
                             break :blk null;
                         },
                     };
-                    if (parsed == null) return null;
+                    if (parsed == null) return self.context.type_store.tTypeError();
                     current_value = parsed.?;
                 }
 
@@ -715,7 +738,7 @@ pub fn typeFromTypeExpr(self: *Checker, ctx: *Checker.CheckerContext, ast_unit: 
                 const gop = try seen.getOrPut(self.gpa, vf.name.toRaw());
                 if (gop.found_existing) {
                     try self.context.diags.addError(ast_unit.exprs.locs.get(vf.loc), .duplicate_error_variant, .{});
-                    return null;
+                    return self.context.type_store.tTypeError();
                 }
 
                 const payload_ty = switch (vf.payload_kind) {
@@ -729,7 +752,8 @@ pub fn typeFromTypeExpr(self: *Checker, ctx: *Checker.CheckerContext, ast_unit: 
                         defer self.gpa.free(elem_buf);
                         var j: usize = 0;
                         while (j < elems.len) : (j += 1) {
-                            elem_buf[j] = (try typeFromTypeExpr(self, ctx, ast_unit, elems[j])) orelse return null;
+                            elem_buf[j] = try typeFromTypeExpr(self, ctx, ast_unit, elems[j]);
+                            if (self.typeKind(elem_buf[j]) == .TypeError) return self.context.type_store.tTypeError();
                         }
                         break :blk_tuple self.context.type_store.mkTuple(elem_buf);
                     },
@@ -743,9 +767,11 @@ pub fn typeFromTypeExpr(self: *Checker, ctx: *Checker.CheckerContext, ast_unit: 
                         var j: usize = 0;
                         while (j < fields.len) : (j += 1) {
                             const sf = ast_unit.exprs.StructField.get(fields[j]);
+                            const ft = try typeFromTypeExpr(self, ctx, ast_unit, sf.ty);
+                            if (self.typeKind(ft) == .TypeError) return self.context.type_store.tTypeError();
                             field_buf[j] = .{
                                 .name = sf.name,
-                                .ty = (try typeFromTypeExpr(self, ctx, ast_unit, sf.ty)) orelse return null,
+                                .ty = ft,
                             };
                         }
                         break :blk_struct self.context.type_store.mkStruct(field_buf);
@@ -758,9 +784,10 @@ pub fn typeFromTypeExpr(self: *Checker, ctx: *Checker.CheckerContext, ast_unit: 
         .ErrorSetType => blk_est: {
             const row = ast_unit.exprs.get(.ErrorSetType, id);
             const val_ty = try typeFromTypeExpr(self, ctx, ast_unit, row.value);
+            if (self.typeKind(val_ty) == .TypeError) return self.context.type_store.tTypeError();
             const err_ty = try typeFromTypeExpr(self, ctx, ast_unit, row.err);
-            if (val_ty == null or err_ty == null) break :blk_est null;
-            break :blk_est self.context.type_store.mkErrorSet(val_ty.?, err_ty.?);
+            if (self.typeKind(err_ty) == .TypeError) return self.context.type_store.tTypeError();
+            break :blk_est self.context.type_store.mkErrorSet(val_ty, err_ty);
         },
         .VariantType => blk_var: {
             const row = ast_unit.exprs.get(.VariantType, id);
@@ -777,7 +804,7 @@ pub fn typeFromTypeExpr(self: *Checker, ctx: *Checker.CheckerContext, ast_unit: 
                 const gop = try seen.getOrPut(self.gpa, vf.name.toRaw());
                 if (gop.found_existing) {
                     try self.context.diags.addError(ast_unit.exprs.locs.get(vf.loc), .duplicate_variant, .{});
-                    return null;
+                    return self.context.type_store.tTypeError();
                 }
 
                 const payload_ty = switch (vf.payload_kind) {
@@ -791,7 +818,9 @@ pub fn typeFromTypeExpr(self: *Checker, ctx: *Checker.CheckerContext, ast_unit: 
                         defer self.gpa.free(elem_buf);
                         var j: usize = 0;
                         while (j < elems.len) : (j += 1) {
-                            elem_buf[j] = (try typeFromTypeExpr(self, ctx, ast_unit, elems[j])) orelse return null;
+                            const et = try typeFromTypeExpr(self, ctx, ast_unit, elems[j]);
+                            if (self.typeKind(et) == .TypeError) return self.context.type_store.tTypeError();
+                            elem_buf[j] = et;
                         }
                         break :blk_tuple self.context.type_store.mkTuple(elem_buf);
                     },
@@ -805,10 +834,9 @@ pub fn typeFromTypeExpr(self: *Checker, ctx: *Checker.CheckerContext, ast_unit: 
                         var j: usize = 0;
                         while (j < fields.len) : (j += 1) {
                             const sf = ast_unit.exprs.StructField.get(fields[j]);
-                            field_buf[j] = .{
-                                .name = sf.name,
-                                .ty = (try typeFromTypeExpr(self, ctx, ast_unit, sf.ty)) orelse return null,
-                            };
+                            const ft = try typeFromTypeExpr(self, ctx, ast_unit, sf.ty);
+                            if (self.typeKind(ft) == .TypeError) return self.context.type_store.tTypeError();
+                            field_buf[j] = .{ .name = sf.name, .ty = ft };
                         }
                         break :blk_struct self.context.type_store.mkStruct(field_buf);
                     },
@@ -827,21 +855,23 @@ pub fn typeFromTypeExpr(self: *Checker, ctx: *Checker.CheckerContext, ast_unit: 
             var i: usize = 0;
             while (i < params.len) : (i += 1) {
                 const p = ast_unit.exprs.Param.get(params[i]);
-                if (p.ty.isNone()) break :blk_fn null;
-                const pt = (try typeFromTypeExpr(self, ctx, ast_unit, p.ty.unwrap())) orelse break :blk_fn null;
+                if (p.ty.isNone()) break :blk_fn self.context.type_store.tTypeError();
+                const pt = try typeFromTypeExpr(self, ctx, ast_unit, p.ty.unwrap());
+                if (self.typeKind(pt) == .TypeError) return self.context.type_store.tTypeError();
                 pbuf[i] = pt;
             }
             const res = if (!fnr.result_ty.isNone()) (try typeFromTypeExpr(self, ctx, ast_unit, fnr.result_ty.unwrap())) else self.context.type_store.tVoid();
-            if (res == null) break :blk_fn null;
+            if (self.typeKind(res) == .TypeError) return self.context.type_store.tTypeError();
             const is_pure = !fnr.flags.is_proc;
-            break :blk_fn self.context.type_store.mkFunction(pbuf, res.?, fnr.flags.is_variadic, is_pure);
+            break :blk_fn self.context.type_store.mkFunction(pbuf, res, fnr.flags.is_variadic, is_pure);
         },
         .FieldAccess => blk_fa: {
             const fr = ast_unit.exprs.get(.FieldAccess, id);
             const parent_expr_kind = ast_unit.exprs.index.kinds.items[fr.parent.toRaw()];
 
             if (parent_expr_kind == .Import) {
-                if (self.getMemberFromImport(ast_unit, fr.parent, fr.field)) |mt| {
+                const mt = self.getMemberFromImport(ast_unit, fr.parent, fr.field);
+                if (self.typeKind(mt) != .TypeError) {
                     try ast_unit.type_info.ensureExpr(self.gpa, id);
                     ast_unit.type_info.expr_types.items[id.toRaw()] = mt;
                     const mt_kind = self.context.type_store.index.kinds.items[mt.toRaw()];
@@ -852,7 +882,7 @@ pub fn typeFromTypeExpr(self: *Checker, ctx: *Checker.CheckerContext, ast_unit: 
                 }
                 const name = ast_unit.exprs.strs.get(fr.field);
                 try self.context.diags.addError(ast_unit.exprs.locs.get(fr.loc), .unknown_module_field, .{name});
-                break :blk_fa null;
+                break :blk_fa self.context.type_store.tTypeError();
             }
 
             if (parent_expr_kind == .Ident) {
@@ -863,7 +893,8 @@ pub fn typeFromTypeExpr(self: *Checker, ctx: *Checker.CheckerContext, ast_unit: 
                         const did = sym.origin_decl.unwrap();
                         const drow = ast_unit.exprs.Decl.get(did);
                         if (ast_unit.exprs.index.kinds.items[drow.value.toRaw()] == .Import) {
-                            if (self.getMemberFromImport(ast_unit, drow.value, fr.field)) |mt| {
+                            const mt = self.getMemberFromImport(ast_unit, drow.value, fr.field);
+                            if (self.typeKind(mt) != .TypeError) {
                                 try ast_unit.type_info.ensureExpr(self.gpa, id);
                                 ast_unit.type_info.expr_types.items[id.toRaw()] = mt;
                                 const mt_kind = self.context.type_store.index.kinds.items[mt.toRaw()];
@@ -874,14 +905,14 @@ pub fn typeFromTypeExpr(self: *Checker, ctx: *Checker.CheckerContext, ast_unit: 
                             }
                             const name = ast_unit.exprs.strs.get(fr.field);
                             try self.context.diags.addError(ast_unit.exprs.locs.get(fr.loc), .unknown_module_field, .{name});
-                            break :blk_fa null;
+                            break :blk_fa self.context.type_store.tTypeError();
                         }
                     }
                 }
             }
 
-            const parent_ty = (try typeFromTypeExpr(self, ctx, ast_unit, fr.parent)) orelse break :blk_fa null;
-            const parent_kind = self.context.type_store.index.kinds.items[parent_ty.toRaw()];
+            const parent_ty = try typeFromTypeExpr(self, ctx, ast_unit, fr.parent);
+            const parent_kind = self.typeKind(parent_ty);
             switch (parent_kind) {
                 .Struct => {
                     const st = self.context.type_store.get(.Struct, parent_ty);
@@ -893,12 +924,12 @@ pub fn typeFromTypeExpr(self: *Checker, ctx: *Checker.CheckerContext, ast_unit: 
                         if (field.name.toRaw() == fr.field.toRaw()) return field.ty;
                     }
                     try self.context.diags.addError(ast_unit.exprs.locs.get(fr.loc), .unknown_struct_field, .{});
-                    break :blk_fa null;
+                    break :blk_fa self.context.type_store.tTypeError();
                 },
                 .Variant => {
                     if (variantPayloadType(self, parent_ty, fr.field)) |pt| return pt;
                     try self.context.diags.addError(ast_unit.exprs.locs.get(fr.loc), .unknown_variant_tag, .{});
-                    break :blk_fa null;
+                    break :blk_fa self.context.type_store.tTypeError();
                 },
                 .Enum => {
                     const et = self.context.type_store.get(.Enum, parent_ty);
@@ -911,11 +942,11 @@ pub fn typeFromTypeExpr(self: *Checker, ctx: *Checker.CheckerContext, ast_unit: 
                         }
                     }
                     try self.context.diags.addError(ast_unit.exprs.locs.get(fr.loc), .unknown_struct_field, .{});
-                    break :blk_fa null;
+                    break :blk_fa self.context.type_store.tTypeError();
                 },
                 else => {
                     try self.context.diags.addError(ast_unit.exprs.locs.get(fr.loc), .field_access_on_non_aggregate, .{});
-                    break :blk_fa null;
+                    break :blk_fa self.context.type_store.tTypeError();
                 },
             }
         },
@@ -928,7 +959,7 @@ pub fn typeFromTypeExpr(self: *Checker, ctx: *Checker.CheckerContext, ast_unit: 
             const callee_kind = ast_unit.exprs.index.kinds.items[call_row.callee.toRaw()];
             if (callee_kind == .FieldAccess or callee_kind == .Ident) {
                 const any_type_ty = self.context.type_store.mkTypeType(self.context.type_store.tAny());
-                var value = evalComptimeValueWithBindings(self, ast_unit, id, any_type_ty, &[_]Binding{}) catch break :blk_call null;
+                var value = evalComptimeValueWithBindings(self, ast_unit, id, any_type_ty, &[_]Binding{}) catch break :blk_call self.context.type_store.tTypeError();
                 defer value.destroy(self.gpa);
                 switch (value) {
                     .Type => |resolved| {
@@ -940,11 +971,11 @@ pub fn typeFromTypeExpr(self: *Checker, ctx: *Checker.CheckerContext, ast_unit: 
                     else => {},
                 }
             }
-            break :blk_call null;
+            break :blk_call self.context.type_store.tTypeError();
         },
         .AnyType => self.context.type_store.tAny(),
         .TypeType => self.context.type_store.tType(),
         .NoreturnType => self.context.type_store.tNoReturn(),
-        else => null,
+        else => self.context.type_store.tTypeError(),
     };
 }

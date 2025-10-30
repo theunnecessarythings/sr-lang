@@ -91,6 +91,7 @@ fn makeMethodKey(owner: TypeId, name: ast.StrId) MethodKey {
 pub const TypeInfo = struct {
     gpa: std.mem.Allocator,
     store: *TypeStore,
+    mutex: std.Thread.Mutex = .{},
     expr_types: std.ArrayListUnmanaged(?TypeId) = .{},
     decl_types: std.ArrayListUnmanaged(?TypeId) = .{},
     field_index_for_expr: std.AutoArrayHashMapUnmanaged(u32, u32) = .{},
@@ -112,6 +113,8 @@ pub const TypeInfo = struct {
         };
     }
     pub fn deinit(self: *TypeInfo) void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
         self.expr_types.deinit(self.gpa);
         self.decl_types.deinit(self.gpa);
         self.field_index_for_expr.deinit(self.gpa);
@@ -126,6 +129,8 @@ pub const TypeInfo = struct {
     }
 
     pub fn print(self: *TypeInfo) void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
         std.debug.print("TypeInfo:\n", .{});
         std.debug.print(" Expr types:\n", .{});
         var buffer: [1024]u8 = undefined;
@@ -156,6 +161,8 @@ pub const TypeInfo = struct {
 
     /// Ensure we have room up to (and including) `expr_id.toRaw()`
     pub fn ensureExpr(self: *TypeInfo, gpa: std.mem.Allocator, expr_id: ast.ExprId) !void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
         const need = expr_id.toRaw() + 1;
 
         if (self.expr_types.items.len < need) {
@@ -172,10 +179,14 @@ pub const TypeInfo = struct {
     }
 
     pub fn setExprType(self: *TypeInfo, expr_id: ast.ExprId, ty: TypeId) void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
         self.expr_types.items[expr_id.toRaw()] = ty;
     }
 
     pub fn setFieldIndex(self: *TypeInfo, expr_id: ast.ExprId, idx: u32) !void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
         try self.field_index_for_expr.put(self.gpa, expr_id.toRaw(), idx);
     }
 
@@ -185,6 +196,8 @@ pub const TypeInfo = struct {
     }
 
     pub fn clearFieldIndex(self: *TypeInfo, expr_id: ast.ExprId) !void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
         try self.field_index_for_expr.put(self.gpa, expr_id.toRaw(), 0xFFFF_FFFF);
     }
 
@@ -193,11 +206,15 @@ pub const TypeInfo = struct {
     }
 
     pub fn setMethodBinding(self: *TypeInfo, expr_id: ast.ExprId, binding: MethodBinding) !void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
         const gop = try self.method_bindings.getOrPut(self.gpa, expr_id.toRaw());
         gop.value_ptr.* = binding;
     }
 
     pub fn addExport(self: *TypeInfo, name: ast.StrId, ty: TypeId, decl_id: ast.DeclId) !void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
         const gop = try self.exports.getOrPut(self.gpa, name);
         gop.value_ptr.* = .{ .ty = ty, .decl_id = decl_id };
     }
@@ -206,15 +223,17 @@ pub const TypeInfo = struct {
         return self.exports.get(name);
     }
 
-    pub fn hasComptimeValue(self: *TypeInfo, expr_id: ast.ExprId) bool {
+    pub fn hasComptimeValue(self: *const TypeInfo, expr_id: ast.ExprId) bool {
         return self.comptime_values.get(expr_id) != null;
     }
 
-    pub fn getComptimeValue(self: *TypeInfo, expr_id: ast.ExprId) ?*comp.ComptimeValue {
+    pub fn getComptimeValue(self: *const TypeInfo, expr_id: ast.ExprId) ?*comp.ComptimeValue {
         return if (self.comptime_values.getEntry(expr_id)) |entry| entry.value_ptr else null;
     }
 
     pub fn setComptimeValue(self: *TypeInfo, expr_id: ast.ExprId, value: comp.ComptimeValue) !void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
         const gop = try self.comptime_values.getOrPut(self.gpa, expr_id);
         if (gop.found_existing) {
             self.destroyComptimeValue(gop.value_ptr);
@@ -237,6 +256,8 @@ pub const TypeInfo = struct {
     }
 
     pub fn setMlirSpliceInfo(self: *TypeInfo, piece_id: ast.MlirPieceId, info: MlirSpliceInfo) !void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
         const gop = try self.mlir_splice_info.getOrPut(self.gpa, piece_id.toRaw());
         gop.value_ptr.* = info;
     }
@@ -288,6 +309,7 @@ pub const TypeKind = enum(u8) {
     TypeType,
     Noreturn,
     Ast,
+    TypeError,
 };
 
 pub const Rows = struct {
@@ -334,6 +356,7 @@ pub const Rows = struct {
     pub const MlirType = struct {};
     pub const TypeType = struct { of: TypeId };
     pub const Ast = struct { pkg_name: ast.StrId, filepath: ast.StrId };
+    pub const TypeError = struct {};
 };
 
 inline fn RowT(comptime K: TypeKind) type {
@@ -390,6 +413,7 @@ pub const TypeStore = struct {
     Error: Table(Rows.Error) = .{},
     ErrorSet: Table(Rows.ErrorSet) = .{},
     TypeType: Table(Rows.TypeType) = .{},
+    TypeError: Table(Rows.TypeError) = .{},
 
     Ast: Table(Rows.Ast) = .{},
 
@@ -420,6 +444,7 @@ pub const TypeStore = struct {
     t_mlir_module: ?TypeId = null,
     t_mlir_attribute: ?TypeId = null,
     t_mlir_type: ?TypeId = null,
+    t_type_error: ?TypeId = null,
 
     pub fn init(gpa: std.mem.Allocator, strs: *StringInterner) TypeStore {
         return .{ .gpa = gpa, .strs = strs };
@@ -733,6 +758,18 @@ pub const TypeStore = struct {
         self.mutex.lock();
         defer self.mutex.unlock();
         return self.tMlirTypeLocked();
+    }
+
+    fn tTypeErrorLocked(self: *TypeStore) TypeId {
+        if (self.t_type_error) |id| return id;
+        const id = self.addLocked(.TypeError, .{});
+        self.t_type_error = id;
+        return id;
+    }
+    pub fn tTypeError(self: *TypeStore) TypeId {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        return self.tTypeErrorLocked();
     }
 
     // ---- constructors with interning (linear dedup) ----
@@ -1297,6 +1334,7 @@ pub const TypeStore = struct {
                 try w.print("#{s}", .{filepath});
                 try w.print(")", .{});
             },
+            .TypeError => try w.print("<type error>", .{}),
         }
     }
 };

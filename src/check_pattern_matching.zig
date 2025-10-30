@@ -428,7 +428,8 @@ pub fn checkPattern(
             const lp = ast_unit.pats.get(.Literal, pid);
             const pattern_loc = ast_unit.exprs.locs.get(lp.loc);
             const lit_expr_id = lp.expr;
-            const lit_ty = (try self.checkExpr(ctx, ast_unit, lit_expr_id)) orelse return false;
+            const lit_ty = try self.checkExpr(ctx, ast_unit, lit_expr_id);
+            if (self.typeKind(lit_ty) == .TypeError) return false;
             const lit_kind = ast_unit.exprs.get(.Literal, lit_expr_id).kind;
             if (lit_kind == .string) {
                 if (emit) try self.context.diags.addError(pattern_loc, .string_equality_in_match_not_supported, .{});
@@ -539,11 +540,10 @@ pub fn checkPattern(
     }
 }
 
-pub fn checkMatch(self: *Checker, ctx: *Checker.CheckerContext, ast_unit: *ast.Ast, id: ast.ExprId) !?types.TypeId {
+pub fn checkMatch(self: *Checker, ctx: *Checker.CheckerContext, ast_unit: *ast.Ast, id: ast.ExprId) !types.TypeId {
     const mr = ast_unit.exprs.get(.Match, id);
-    const subj_ty_opt = try self.checkExpr(ctx, ast_unit, mr.expr);
-    if (subj_ty_opt == null) return null;
-    const subj_ty = subj_ty_opt.?;
+    const subj_ty = try self.checkExpr(ctx, ast_unit, mr.expr);
+    if (self.typeKind(subj_ty) == .TypeError) return self.context.type_store.tTypeError();
     const subj_kind = self.typeKind(subj_ty);
     const value_required = self.isValueReq(ctx);
 
@@ -586,16 +586,16 @@ pub fn checkMatch(self: *Checker, ctx: *Checker.CheckerContext, ast_unit: *ast.A
         // Validate pattern against subject type.
         const ok = try checkPattern(self, ctx, ast_unit, arm.pattern, subj_ty, true);
         if (!ok) {
-            return null;
+            return self.context.type_store.tTypeError();
         }
 
         // Guard must be boolean if present.
         if (!arm.guard.isNone()) {
             const gty = try self.checkExpr(ctx, ast_unit, arm.guard.unwrap());
-            if (gty == null) return null;
-            if (gty.?.toRaw() != self.context.type_store.tBool().toRaw()) {
+            if (self.typeKind(gty) == .TypeError) return self.context.type_store.tTypeError();
+            if (gty.toRaw() != self.context.type_store.tBool().toRaw()) {
                 try self.context.diags.addError(ast_unit.exprs.locs.get(arm.loc), .non_boolean_condition, .{});
-                return null;
+                return self.context.type_store.tTypeError();
             }
             if (patternCoversWildcard(self, ast_unit, arm.pattern)) has_guarded_wildcard = true;
         } else {
@@ -611,20 +611,20 @@ pub fn checkMatch(self: *Checker, ctx: *Checker.CheckerContext, ast_unit: *ast.A
                 if (aset.wildcard) {
                     if (int_cov.wildcard) {
                         try self.context.diags.addError(loc, .unreachable_match_arm, .{});
-                        return null;
+                        return self.context.type_store.tTypeError();
                     }
                     int_cov.wildcard = true; // later unguarded int arms are unreachable
                 } else if (!aset.non_int) {
                     if (int_cov.wildcard) {
                         try self.context.diags.addError(loc, .unreachable_match_arm, .{});
-                        return null;
+                        return self.context.type_store.tTypeError();
                     }
                     // Points
                     var pi: usize = 0;
                     while (pi < aset.points.items.len) : (pi += 1) {
                         if (try coverAddPointDetectOverlap(self, &int_cov, aset.points.items[pi])) {
                             try self.context.diags.addError(loc, .overlapping_match_arm, .{});
-                            return null;
+                            return self.context.type_store.tTypeError();
                         }
                     }
                     // Ranges
@@ -632,7 +632,7 @@ pub fn checkMatch(self: *Checker, ctx: *Checker.CheckerContext, ast_unit: *ast.A
                     while (ri < aset.ranges.items.len) : (ri += 1) {
                         if (try coverAddRangeDetectOverlap(self, &int_cov, aset.ranges.items[ri])) {
                             try self.context.diags.addError(loc, .overlapping_match_arm, .{});
-                            return null;
+                            return self.context.type_store.tTypeError();
                         }
                     }
                 }
@@ -668,15 +668,15 @@ pub fn checkMatch(self: *Checker, ctx: *Checker.CheckerContext, ast_unit: *ast.A
 
         // Body type checking / unification when match is used as a value.
         const body_ty = try self.checkExpr(ctx, ast_unit, arm.body);
+        if (self.typeKind(body_ty) == .TypeError) return self.context.type_store.tTypeError();
         if (!value_required) continue;
-        if (body_ty == null) return null;
 
         if (result_ty == null) {
             result_ty = body_ty;
-        } else if (result_ty.?.toRaw() != body_ty.?.toRaw()) {
+        } else if (result_ty.?.toRaw() != body_ty.toRaw()) {
             // Reuse if-branch mismatch diagnostic.
             try self.context.diags.addError(ast_unit.exprs.locs.get(mr.loc), .if_branch_type_mismatch, .{});
-            return null;
+            return self.context.type_store.tTypeError();
         }
     }
 
@@ -698,11 +698,11 @@ pub fn checkMatch(self: *Checker, ctx: *Checker.CheckerContext, ast_unit: *ast.A
     }
     if (non_exhaustive) {
         try self.context.diags.addError(ast_unit.exprs.locs.get(mr.loc), .non_exhaustive_match, .{});
-        return null;
+        return self.context.type_store.tTypeError();
     }
 
     if (!value_required) return self.context.type_store.tVoid();
-    return result_ty;
+    return result_ty orelse self.context.type_store.tVoid();
 }
 
 fn patternIntLiteral(self: *Checker, ast_unit: *ast.Ast, pid: ast.PatternId) ?i64 {
