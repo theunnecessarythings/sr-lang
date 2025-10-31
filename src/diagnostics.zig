@@ -291,6 +291,9 @@ pub const DiagnosticCode = enum {
     entry_package_missing,
     entry_package_not_main,
     checker_internal_error,
+    // Module/import cycles
+    import_cycle_detected,
+    imports_blocked_by_cycle,
 };
 
 pub fn diagnosticMessageFmt(code: DiagnosticCode) []const u8 {
@@ -522,6 +525,8 @@ pub fn diagnosticMessageFmt(code: DiagnosticCode) []const u8 {
         .entry_package_missing => "entry modules must declare 'package main'",
         .entry_package_not_main => "entry modules must declare 'package main'; found '{s}'",
         .checker_internal_error => "internal checker error: {s}",
+        .import_cycle_detected => "import cycle detected: {s}",
+        .imports_blocked_by_cycle => "imports blocked by cycle: {s}",
     };
 }
 

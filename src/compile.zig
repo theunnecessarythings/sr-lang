@@ -329,6 +329,211 @@ pub fn computeDependencyLevels(
     return result;
 }
 
+pub const CycleReport = struct {
+    allocator: std.mem.Allocator,
+    cycles: std.ArrayList(std.ArrayList(u32)),
+    blocked: std.ArrayList(u32),
+
+    pub fn init(allocator: std.mem.Allocator) CycleReport {
+        return .{ .allocator = allocator, .cycles = .{}, .blocked = .{} };
+    }
+
+    pub fn deinit(self: *CycleReport) void {
+        for (self.cycles.items) |*cy| cy.deinit(self.allocator);
+        self.cycles.deinit(self.allocator);
+        self.blocked.deinit(self.allocator);
+    }
+};
+
+// Detect import cycles and identify nodes blocked by those cycles.
+// A cycle is any strongly recursive set discovered via DFS back-edges on the
+// unschedulable subgraph (nodes remaining after Kahn's algorithm).
+pub fn detectImportCycles(
+    allocator: std.mem.Allocator,
+    unit: *CompilationUnit,
+    interner: *cst.StringInterner,
+    source_manager: *SourceManager,
+) !CycleReport {
+    var report = CycleReport.init(allocator);
+    errdefer report.deinit();
+
+    // Build indegree and adjacency identical to computeDependencyLevels
+    var indegree = std.AutoHashMap(u32, usize).init(allocator);
+    defer indegree.deinit();
+
+    var adjacency = std.AutoHashMap(u32, std.ArrayList(u32)).init(allocator);
+    defer {
+        var it = adjacency.iterator();
+        while (it.next()) |entry| entry.value_ptr.deinit(allocator);
+        adjacency.deinit();
+    }
+
+    var nodes = std.AutoHashMap(u32, void).init(allocator);
+    defer nodes.deinit();
+
+    // Collect all nodes (files) known to the unit
+    var pkg_iter = unit.packages.iterator();
+    while (pkg_iter.next()) |pkg| {
+        var source_iter = pkg.value_ptr.sources.iterator();
+        while (source_iter.next()) |entry| {
+            const file_id = entry.value_ptr.file_id;
+            if (indegree.getPtr(file_id) == null) try indegree.put(file_id, 0);
+            if (!nodes.contains(file_id)) try nodes.put(file_id, {});
+        }
+    }
+
+    var dep_iter = unit.dependencies.iterator();
+    while (dep_iter.next()) |entry| {
+        const file_id = entry.key_ptr.*;
+        if (indegree.getPtr(file_id) == null) try indegree.put(file_id, 0);
+        if (!nodes.contains(file_id)) try nodes.put(file_id, {});
+
+        var set_iter = entry.value_ptr.iterator();
+        while (set_iter.next()) |dep_entry| {
+            const dep_str = interner.get(dep_entry.key_ptr.*);
+            const dep_file_id = source_manager.find(dep_str) orelse continue;
+            if (dep_file_id == file_id) continue;
+
+            const indegree_ptr = indegree.getPtr(file_id) orelse blk: {
+                try indegree.put(file_id, 0);
+                break :blk indegree.getPtr(file_id).?;
+            };
+            indegree_ptr.* += 1;
+
+            var adj_ptr = adjacency.getPtr(dep_file_id) orelse blk: {
+                const list = std.ArrayList(u32){};
+                try adjacency.put(dep_file_id, list);
+                break :blk adjacency.getPtr(dep_file_id).?;
+            };
+            try adj_ptr.append(allocator, file_id);
+
+            if (indegree.getPtr(dep_file_id) == null) try indegree.put(dep_file_id, 0);
+            if (!nodes.contains(dep_file_id)) try nodes.put(dep_file_id, {});
+        }
+    }
+
+    // Kahn's algorithm to remove acyclic nodes and find remaining
+    var queue = std.ArrayList(u32){};
+    defer queue.deinit(allocator);
+    var next_queue = std.ArrayList(u32){};
+    defer next_queue.deinit(allocator);
+
+    var remaining = std.AutoHashMap(u32, void).init(allocator);
+    defer remaining.deinit();
+    {
+        var itn = nodes.iterator();
+        while (itn.next()) |n| try remaining.put(n.key_ptr.*, {});
+    }
+
+    var indegree_iter = indegree.iterator();
+    while (indegree_iter.next()) |entry| {
+        if (entry.value_ptr.* == 0) try queue.append(allocator, entry.key_ptr.*);
+    }
+    while (queue.items.len > 0) {
+        for (queue.items) |node| {
+            _ = remaining.remove(node);
+        }
+        next_queue.clearRetainingCapacity();
+        for (queue.items) |node| {
+            if (adjacency.getPtr(node)) |neighbors| {
+                for (neighbors.items) |neighbor| {
+                    const indegree_ptr = indegree.getPtr(neighbor) orelse continue;
+                    if (indegree_ptr.* == 0) continue;
+                    indegree_ptr.* -= 1;
+                    if (indegree_ptr.* == 0) try next_queue.append(allocator, neighbor);
+                }
+            }
+        }
+        queue.clearRetainingCapacity();
+        std.mem.swap(std.ArrayList(u32), &queue, &next_queue);
+    }
+
+    if (remaining.count() == 0) return report; // no cycles
+
+    // DFS on remaining subgraph to find back edges (simple cycle reporting)
+    var visited = std.AutoHashMap(u32, bool).init(allocator);
+    defer visited.deinit();
+    var onstack = std.AutoHashMap(u32, bool).init(allocator);
+    defer onstack.deinit();
+    var in_cycle = std.AutoHashMap(u32, bool).init(allocator);
+    defer in_cycle.deinit();
+    var stack = std.ArrayList(u32){};
+    defer stack.deinit(allocator);
+
+    // Helper to push a detected cycle (slice of stack from pos..end plus start)
+    const pushCycle = struct {
+        fn go(rep: *CycleReport, st: *std.ArrayList(u32), pos: usize) !void {
+            var cyc = std.ArrayList(u32){};
+            try cyc.ensureTotalCapacity(rep.allocator, st.items.len - pos + 1);
+            for (st.items[pos..]) |n| try cyc.append(rep.allocator, n);
+            // close the loop by repeating the start node at end for display
+            try cyc.append(rep.allocator, st.items[pos]);
+            try rep.cycles.append(rep.allocator, cyc);
+        }
+    }.go;
+
+    const dfs = struct {
+        fn go(
+            rep: *CycleReport,
+            allocator2: std.mem.Allocator,
+            node: u32,
+            adjacency2: *std.AutoHashMap(u32, std.ArrayList(u32)),
+            remaining2: *std.AutoHashMap(u32, void),
+            visited2: *std.AutoHashMap(u32, bool),
+            onstack2: *std.AutoHashMap(u32, bool),
+            st: *std.ArrayList(u32),
+            in_cycle2: *std.AutoHashMap(u32, bool),
+        ) !void {
+            if (!remaining2.contains(node)) return; // ignore removed nodes
+            if (visited2.contains(node)) return;
+            try visited2.put(node, true);
+            try onstack2.put(node, true);
+            try st.append(allocator2, node);
+
+            if (adjacency2.getPtr(node)) |nbrs| {
+                for (nbrs.items) |nbr| {
+                    if (!remaining2.contains(nbr)) continue;
+                    if (!visited2.contains(nbr)) {
+                        try go(rep, allocator2, nbr, adjacency2, remaining2, visited2, onstack2, st, in_cycle2);
+                    } else if (onstack2.contains(nbr)) {
+                        // Found a back edge; extract cycle from stack
+                        var pos: usize = 0;
+                        while (pos < st.items.len and st.items[pos] != nbr) : (pos += 1) {}
+                        if (pos < st.items.len) {
+                            try pushCycle(rep, st, pos);
+                            // Mark nodes in this cycle
+                            for (st.items[pos..]) |n| _ = try in_cycle2.put(n, true);
+                        }
+                    }
+                }
+            }
+
+            _ = onstack2.remove(node);
+            _ = st.pop();
+        }
+    }.go;
+
+    // Run DFS from each remaining node
+    var rem_it = remaining.iterator();
+    while (rem_it.next()) |entry| {
+        const n = entry.key_ptr.*;
+        if (!visited.contains(n)) {
+            try dfs(&report, allocator, n, &adjacency, &remaining, &visited, &onstack, &stack, &in_cycle);
+        }
+    }
+
+    // Blocked are remaining nodes not in any cycle set
+    rem_it = remaining.iterator();
+    while (rem_it.next()) |entry| {
+        const n = entry.key_ptr.*;
+        if (!in_cycle.contains(n)) {
+            try report.blocked.append(allocator, n);
+        }
+    }
+
+    return report;
+}
+
 pub fn initMLIR(alloc: std.mem.Allocator) mlir.Context {
     mlir.setGlobalAlloc(alloc);
     var mlir_context = mlir.Context.create();

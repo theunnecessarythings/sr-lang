@@ -251,6 +251,50 @@ pub const Pipeline = struct {
                 std.debug.print("Dep {}: {s}\n", .{ id, fname });
             }
         }
+        // Detect import cycles and abort early with clear diagnostics
+        var cycle_report = try compile.detectImportCycles(
+            self.allocator,
+            &self.context.compilation_unit,
+            self.context.interner,
+            self.context.source_manager,
+        );
+        defer cycle_report.deinit();
+        if (cycle_report.cycles.items.len > 0) {
+            // Emit one error per cycle, summarizing the cycle chain
+            for (cycle_report.cycles.items) |cy| {
+                if (cy.items.len == 0) continue;
+                // Build message: path1 -> path2 -> ... -> path1
+                var buf = std.ArrayList(u8){};
+                defer buf.deinit(self.allocator);
+                var first = true;
+                for (cy.items) |fid| {
+                    const p = self.context.source_manager.get(fid) orelse "?";
+                    if (!first) _ = buf.appendSlice(self.allocator, " -> ") catch {};
+                    _ = buf.appendSlice(self.allocator, p) catch {};
+                    first = false;
+                }
+                const sid = self.context.interner.intern(buf.items);
+                const msg = self.context.interner.get(sid);
+                const anchor = Loc.init(cy.items[0], 0, 0);
+                _ = self.context.diags.addError(anchor, .import_cycle_detected, .{msg}) catch {};
+            }
+            if (cycle_report.blocked.items.len > 0) {
+                var buf = std.ArrayList(u8){};
+                defer buf.deinit(self.allocator);
+                var first = true;
+                for (cycle_report.blocked.items) |fid| {
+                    const p = self.context.source_manager.get(fid) orelse "?";
+                    if (!first) _ = buf.appendSlice(self.allocator, ", ") catch {};
+                    _ = buf.appendSlice(self.allocator, p) catch {};
+                    first = false;
+                }
+                const sid = self.context.interner.intern(buf.items);
+                const msg = self.context.interner.get(sid);
+                const anchor = Loc.init(cycle_report.blocked.items[0], 0, 0);
+                _ = self.context.diags.addError(anchor, .imports_blocked_by_cycle, .{msg}) catch {};
+            }
+            return error.CycleDetected;
+        }
         if (self.context.isCancelled() or self.context.diags.anyErrors()) {
             return error.LoweringFailed;
         }
