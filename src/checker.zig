@@ -75,7 +75,7 @@ pub const ParamSpecialization = struct {
 pub inline fn typeKind(self: *const Checker, t: types.TypeId) types.TypeKind {
     return self.context.type_store.index.kinds.items[t.toRaw()];
 }
-inline fn exprKind(ast_unit: *ast.Ast, eid: ast.ExprId) ast.ExprKind {
+inline fn exprKind(ast_unit: *const ast.Ast, eid: ast.ExprId) ast.ExprKind {
     return ast_unit.exprs.index.kinds.items[eid.toRaw()];
 }
 inline fn exprLocFromId(ast_unit: *ast.Ast, eid: ast.ExprId) Loc {
@@ -90,10 +90,10 @@ inline fn exprLoc(ast_unit: *ast.Ast, expr: anytype) Loc {
 inline fn getStmt(ast_unit: *ast.Ast, comptime K: ast.StmtKind, id: ast.StmtId) ast.StmtRowT(K) {
     return ast_unit.stmts.get(K, id);
 }
-pub inline fn getStr(ast_unit: *ast.Ast, sid: ast.StrId) []const u8 {
+pub inline fn getStr(ast_unit: *const ast.Ast, sid: ast.StrId) []const u8 {
     return ast_unit.exprs.strs.get(sid);
 }
-inline fn getExpr(ast_unit: *ast.Ast, comptime K: ast.ExprKind, id: ast.ExprId) ast.RowT(K) {
+inline fn getExpr(ast_unit: *const ast.Ast, comptime K: ast.ExprKind, id: ast.ExprId) ast.RowT(K) {
     return ast_unit.exprs.get(K, id);
 }
 
@@ -475,14 +475,15 @@ fn checkDecl(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, decl_id: 
     const rhs_ty = try self.checkExpr(ctx, ast_unit, decl.value);
     self.popValueReq(ctx);
 
+    if (!decl.method_path.isNone()) {
+        const success = try self.registerMethodDecl(ctx, ast_unit, decl_id, decl, rhs_ty);
+        if (!success) return;
+    }
+
     if (self.typeKind(rhs_ty) == .TypeError) return;
 
     // Try to coerce value type to expected type (if any)
     try self.tryTypeCoercion(ctx, ast_unit, decl_id, rhs_ty, expect_ty);
-
-    if (!decl.method_path.isNone()) {
-        if (!(try self.registerMethodDecl(ctx, ast_unit, decl_id, decl, rhs_ty))) return;
-    }
 
     // If LHS is a pattern, ensure the RHS type matches the pattern's shape.
     if (!decl.pattern.isNone()) {
@@ -507,10 +508,8 @@ fn checkDecl(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, decl_id: 
     // Record exports for top-level bindings only (not inside functions).
     if (!self.inFunction(ctx)) {
         // Prefer finalized decl type if present (post-coercion), otherwise use rhs type.
-        const final_rhs_ty: types.TypeId = blk: {
-            if (ast_unit.type_info.decl_types.items[decl_id.toRaw()]) |t| break :blk t;
-            break :blk rhs_ty;
-        };
+        const final_rhs_ty =
+            if (ast_unit.type_info.decl_types.items[decl_id.toRaw()]) |t| t else rhs_ty;
         try self.recordExportsForDecl(ctx, ast_unit, decl_id, final_rhs_ty);
     }
 }
@@ -1626,7 +1625,7 @@ pub fn checkExpr(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, id: a
 
     // Pre-fill expression type with error to prevent infinite recursion in case of errors.
     // The actual type will be filled in before returning.
-    ast_unit.type_info.expr_types.items[id.toRaw()] = self.context.type_store.tTypeError();
+    // ast_unit.type_info.expr_types.items[id.toRaw()] = self.context.type_store.tTypeError();
 
     const k = exprKind(ast_unit, id);
 
@@ -3112,15 +3111,21 @@ fn checkDeref(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, id: ast.
 // =========================
 
 pub fn getMemberFromImport(self: *Checker, ast_unit: *const ast.Ast, parent: ast.ExprId, field: ast.StrId) types.TypeId {
-    const parent_ty = ast_unit.type_info.expr_types.items[parent.toRaw()];
-    if (parent_ty) |pty| {
-        const ast_ty = self.context.type_store.get(.Ast, pty);
-        const pkg_name = self.context.interner.get(ast_ty.pkg_name);
-        const filepath = self.context.interner.get(ast_ty.filepath);
-        const pkg = self.context.compilation_unit.packages.getPtr(pkg_name) orelse return self.context.type_store.tTypeError();
-        const parent_unit = pkg.sources.getPtr(filepath) orelse return self.context.type_store.tTypeError();
-        if (parent_unit.ast) |a| {
-            if (a.type_info.getExport(field)) |ex| return ex.ty;
+    // Resolve directly from the import path instead of relying on parent expr types.
+    // This makes imported member lookup work during predeclaration, before decl bodies run.
+    const pk = exprKind(ast_unit, parent);
+    if (pk != .Import) return self.context.type_store.tTypeError();
+
+    const ir = getExpr(ast_unit, .Import, parent);
+    const path = getStr(ast_unit, ir.path);
+
+    var pkg_iter = self.context.compilation_unit.packages.iterator();
+    while (pkg_iter.next()) |pkg| {
+        if (pkg.value_ptr.sources.get(path)) |unit_ref| {
+            if (unit_ref.ast) |a| {
+                if (a.type_info.getExport(field)) |ex| return ex.ty;
+            }
+            break;
         }
     }
     return self.context.type_store.tTypeError();

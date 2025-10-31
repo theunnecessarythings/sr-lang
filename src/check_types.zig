@@ -917,6 +917,7 @@ pub fn typeFromTypeExpr(self: *Checker, ctx: *Checker.CheckerContext, ast_unit: 
                         const did = sym.origin_decl.unwrap();
                         const drow = ast_unit.exprs.Decl.get(did);
                         if (ast_unit.exprs.index.kinds.items[drow.value.toRaw()] == .Import) {
+                            const name = ast_unit.exprs.strs.get(fr.field);
                             const mt = self.getMemberFromImport(ast_unit, drow.value, fr.field);
                             if (self.typeKind(mt) != .TypeError) {
                                 try ast_unit.type_info.ensureExpr(self.gpa, id);
@@ -927,7 +928,6 @@ pub fn typeFromTypeExpr(self: *Checker, ctx: *Checker.CheckerContext, ast_unit: 
                                 else
                                     .{ true, mt };
                             }
-                            const name = ast_unit.exprs.strs.get(fr.field);
                             try self.context.diags.addError(ast_unit.exprs.locs.get(fr.loc), .unknown_module_field, .{name});
                             break :blk_fa .{ false, ts.tTypeError() };
                         }
