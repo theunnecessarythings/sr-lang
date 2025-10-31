@@ -288,7 +288,8 @@ fn predeclareFunction(
     while (i < params.len) : (i += 1) {
         const p = ast_unit.exprs.Param.get(params[i]);
         if (!p.ty.isNone()) {
-            const pt_or_err = try check_types.typeFromTypeExpr(self, ctx, ast_unit, p.ty.unwrap());
+            const res = try check_types.typeFromTypeExpr(self, ctx, ast_unit, p.ty.unwrap());
+            const pt_or_err = res[1];
             pbuf[i] = if (self.typeKind(pt_or_err) == .TypeError) self.context.type_store.tAny() else pt_or_err;
         } else if (p.is_comptime) {
             pbuf[i] = self.context.type_store.mkTypeType(self.context.type_store.tAny());
@@ -299,7 +300,7 @@ fn predeclareFunction(
     }
 
     const res_or_err = if (!fnr.result_ty.isNone())
-        (try check_types.typeFromTypeExpr(self, ctx, ast_unit, fnr.result_ty.unwrap()))
+        (try check_types.typeFromTypeExpr(self, ctx, ast_unit, fnr.result_ty.unwrap()))[1]
     else
         self.context.type_store.tVoid();
     if (self.typeKind(res_or_err) == .TypeError) return; // diagnostics already emitted
@@ -467,7 +468,7 @@ fn checkDecl(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, decl_id: 
     const expect_ty = if (decl.ty.isNone())
         null
     else
-        try check_types.typeFromTypeExpr(self, ctx, ast_unit, decl.ty.unwrap());
+        (try check_types.typeFromTypeExpr(self, ctx, ast_unit, decl.ty.unwrap()))[1];
 
     // Initializers must be evaluated in value context even inside statement blocks
     try self.pushValueReq(ctx, true);
@@ -1676,17 +1677,17 @@ pub fn checkExpr(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, id: a
         .NullLit => self.context.type_store.mkOptional(self.context.type_store.tAny()),
 
         .TupleType, .ArrayType, .DynArrayType, .SliceType, .OptionalType, .ErrorSetType, .ErrorType, .StructType, .EnumType, .VariantType, .UnionType, .PointerType, .SimdType, .ComplexType, .TensorType, .TypeType, .AnyType, .NoreturnType => blk: {
-            const ty = try check_types.typeFromTypeExpr(self, ctx, ast_unit, id);
-            if (self.typeKind(ty) == .TypeError) break :blk self.context.type_store.tTypeError();
-            break :blk self.context.type_store.mkTypeType(ty);
+            const res = try check_types.typeFromTypeExpr(self, ctx, ast_unit, id);
+            if (!res[0]) break :blk self.context.type_store.tTypeError();
+            break :blk self.context.type_store.mkTypeType(res[1]);
         },
         .MapType => blk_mt_expr: {
             // Try to interpret as a type expression first
             const row = getExpr(ast_unit, .MapType, id);
-            const key_ty = try check_types.typeFromTypeExpr(self, ctx, ast_unit, row.key);
-            const val_ty = try check_types.typeFromTypeExpr(self, ctx, ast_unit, row.value);
-            if (self.typeKind(key_ty) != .TypeError or self.typeKind(val_ty) != .TypeError) {
-                break :blk_mt_expr self.context.type_store.mkTypeType(self.context.type_store.mkMap(key_ty, val_ty));
+            const key_res = try check_types.typeFromTypeExpr(self, ctx, ast_unit, row.key);
+            const val_res = try check_types.typeFromTypeExpr(self, ctx, ast_unit, row.value);
+            if (key_res[0] or val_res[0]) {
+                break :blk_mt_expr self.context.type_store.mkTypeType(self.context.type_store.mkMap(key_res[1], val_res[1]));
             }
             // If not valid types, interpret operands as value expressions and produce a map value type
             const key_vt = try self.checkExpr(ctx, ast_unit, row.key);
@@ -1810,8 +1811,14 @@ fn checkIdent(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, id: ast.
             const pid = srow.origin_param.unwrap();
             const p = ast_unit.exprs.Param.get(pid);
             if (!p.ty.isNone()) {
-                const pt = try check_types.typeFromTypeExpr(self, ctx, ast_unit, p.ty.unwrap());
-                if (self.typeKind(pt) == .TypeError) return self.context.type_store.tTypeError();
+                const res = try check_types.typeFromTypeExpr(self, ctx, ast_unit, p.ty.unwrap());
+                if (!res[0]) {
+                    return self.context.type_store.tTypeError();
+                }
+                const pt = res[1];
+                if (self.typeKind(pt) == .TypeError) {
+                    return self.context.type_store.tTypeError();
+                }
                 if (!p.pat.isNone()) {
                     // If this param had a pattern, compute binding type from pattern and param type
                     if (pattern_matching.bindingTypeInPattern(self, ast_unit, p.pat.unwrap(), row.name, pt)) |bt| return bt;
@@ -1833,9 +1840,9 @@ fn checkIdent(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, id: ast.
         if (self.bindingTypeFromActiveLoops(ctx, ast_unit, row.name)) |btid2| return btid2;
         if (self.bindingTypeFromActiveMatches(ctx, ast_unit, row.name)) |btid2| return btid2;
     }
-    const ty = try check_types.typeFromTypeExpr(self, ctx, ast_unit, id);
-    if (self.typeKind(ty) != .TypeError)
-        return self.context.type_store.mkTypeType(ty);
+    const res = try check_types.typeFromTypeExpr(self, ctx, ast_unit, id);
+    if (res[0])
+        return self.context.type_store.mkTypeType(res[1]);
     try self.context.diags.addError(exprLoc(ast_unit, row), .undefined_identifier, .{});
     return self.context.type_store.tTypeError();
 }
@@ -2285,8 +2292,9 @@ fn checkFunctionLit(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, id
     while (i < params.len) : (i += 1) {
         const p = ast_unit.exprs.Param.get(params[i]);
         if (!p.ty.isNone()) {
-            const pt = try check_types.typeFromTypeExpr(self, ctx, ast_unit, p.ty.unwrap());
-            if (self.typeKind(pt) == .TypeError) return self.context.type_store.tTypeError();
+            const res = try check_types.typeFromTypeExpr(self, ctx, ast_unit, p.ty.unwrap());
+            if (!res[0]) return self.context.type_store.tTypeError();
+            const pt = res[1];
             // If parameter uses a pattern, ensure its shape matches the annotated type
             if (!p.pat.isNone()) {
                 const shape_ok = pattern_matching.checkPatternShapeForDecl(self, ast_unit, p.pat.unwrap(), pt);
@@ -2356,12 +2364,12 @@ fn checkFunctionLit(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, id
         }
     }
 
-    const res_opt: ?types.TypeId = if (!fnr.result_ty.isNone())
+    const res_opt = if (!fnr.result_ty.isNone())
         (try check_types.typeFromTypeExpr(self, ctx, ast_unit, fnr.result_ty.unwrap()))
     else
-        self.context.type_store.tVoid();
-    if (res_opt == null) return self.context.type_store.tTypeError();
-    const res = res_opt.?;
+        .{ true, self.context.type_store.tVoid() };
+    if (!res_opt[0]) return self.context.type_store.tTypeError();
+    const res = res_opt[1];
 
     // Temporarily record a function type (purity will be finalized after body analysis)
     const temp_ty = self.context.type_store.mkFunction(pbuf, res, fnr.flags.is_variadic, true);
@@ -2384,8 +2392,8 @@ fn checkFunctionLit(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, id
 
 fn checkTupleLit(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, id: ast.ExprId) !types.TypeId {
     // try as type expr first
-    const ty = try check_types.typeFromTypeExpr(self, ctx, ast_unit, id);
-    if (self.typeKind(ty) != .TypeError) return self.context.type_store.mkTypeType(ty);
+    const res = try check_types.typeFromTypeExpr(self, ctx, ast_unit, id);
+    if (res[0]) return self.context.type_store.mkTypeType(res[1]);
     const tuple_lit = getExpr(ast_unit, .TupleLit, id);
     const elems = ast_unit.exprs.expr_pool.slice(tuple_lit.elems);
 
@@ -3054,7 +3062,7 @@ fn checkStructLit(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, id: 
     const lit_ty = struct_lit.ty.unwrap();
     const expect_ty = blk: {
         const resolved = try check_types.typeFromTypeExpr(self, ctx, ast_unit, lit_ty);
-        if (self.typeKind(resolved) != .TypeError) break :blk resolved;
+        if (resolved[0]) break :blk resolved[1];
         try self.context.diags.addError(exprLocFromId(ast_unit, lit_ty), .undefined_identifier, .{});
         return self.context.type_store.tTypeError();
     };
@@ -3678,8 +3686,8 @@ fn checkMlirBlock(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, id: 
                 const param_row = ast_unit.exprs.Param.get(pid_param);
                 var param_ty = self.context.type_store.tAny();
                 if (!param_row.ty.isNone()) {
-                    const ty = try check_types.typeFromTypeExpr(self, ctx, ast_unit, param_row.ty.unwrap());
-                    if (self.typeKind(ty) != .TypeError) param_ty = ty;
+                    const res = try check_types.typeFromTypeExpr(self, ctx, ast_unit, param_row.ty.unwrap());
+                    if (res[0]) param_ty = res[1];
                 }
 
                 if (self.context.type_store.getKind(param_ty) == .TypeType) {
@@ -4097,9 +4105,10 @@ fn checkClosure(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, id: as
             try self.context.diags.addError(exprLoc(ast_unit, p), .type_annotation_mismatch, .{});
             return self.context.type_store.tTypeError();
         }
-        const pt = try check_types.typeFromTypeExpr(self, ctx, ast_unit, p.ty.unwrap());
-        if (self.typeKind(pt) == .TypeError)
+        const res = try check_types.typeFromTypeExpr(self, ctx, ast_unit, p.ty.unwrap());
+        if (!res[0])
             return self.context.type_store.tTypeError();
+        const pt = res[1];
         param_tys[i] = pt;
     }
 
@@ -4112,11 +4121,12 @@ fn checkClosure(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, id: as
 
 fn checkCast(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, id: ast.ExprId) !types.TypeId {
     const cr = getExpr(ast_unit, .Cast, id);
-    const et = try check_types.typeFromTypeExpr(self, ctx, ast_unit, cr.ty);
-    if (self.typeKind(et) == .TypeError) {
+    const et_res = try check_types.typeFromTypeExpr(self, ctx, ast_unit, cr.ty);
+    if (!et_res[0]) {
         try self.context.diags.addError(exprLoc(ast_unit, cr), .cast_target_not_type, .{});
         return self.context.type_store.tTypeError();
     }
+    const et = et_res[1];
     const vt = try self.checkExpr(ctx, ast_unit, cr.expr);
     if (self.typeKind(vt) == .TypeError)
         return self.context.type_store.tTypeError();
