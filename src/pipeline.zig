@@ -319,9 +319,13 @@ pub const Pipeline = struct {
         var tir_lowerer = lower_tir.LowerTir.init(self.allocator, self.context, self, &chk);
         defer tir_lowerer.deinit();
 
-        _ = try tir_lowerer.run(&dep_levels);
+        // If any TIR lowering thread fails, do not proceed further.
+        _ = tir_lowerer.run(&dep_levels) catch |err| {
+            self.context.requestCancel();
+            return err;
+        };
 
-        if (self.context.diags.anyErrors()) {
+        if (self.context.isCancelled() or self.context.diags.anyErrors()) {
             return error.TirLoweringFailed;
         }
         if (mode == .tir) {
@@ -344,15 +348,15 @@ pub const Pipeline = struct {
             }
         };
 
-        // var buf = std.array_list.Managed(u8).init(self.allocator);
-        // defer buf.deinit();
-        // var had_error = false;
-        // var sink = mlir_codegen.PrintBuffer{ .list = &buf, .had_error = &had_error };
-        // mlir_module.getOperation().print(mlir_codegen.printCallback, &sink);
-        // if (!had_error) {
-        //     const path = "temp.mlir";
-        //     try std.fs.cwd().writeFile(.{ .data = sink.list.items, .sub_path = path });
-        // }
+        var buf = std.array_list.Managed(u8).init(self.allocator);
+        defer buf.deinit();
+        var had_error = false;
+        var sink = codegen.PrintBuffer{ .list = &buf, .had_error = &had_error };
+        mlir_module.getOperation().print(codegen.printCallback, &sink);
+        if (!had_error) {
+            const path = "out/temp.mlir";
+            try std.fs.cwd().writeFile(.{ .data = sink.list.items, .sub_path = path });
+        }
 
         // verify module
         if (!mlir_module.getOperation().verify()) {

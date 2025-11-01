@@ -89,6 +89,16 @@ pub fn typeSize(ctx: *const compile.Context, ty_id: types.TypeId) ?usize {
         .I64, .U64, .F64, .Usize => 8, // best-effort default for 64-bit targets
         .Ptr => 8, // best-effort default for 64-bit targets
         .MlirModule, .MlirAttribute, .MlirType => 8,
+        // Enums lower to their tag type; assume 32-bit by default via tag_type
+        .Enum => blk_enum: {
+            const en = ctx.type_store.get(.Enum, ty_id);
+            break :blk_enum typeSize(ctx, en.tag_type) orelse return null;
+        },
+        .Simd => blk_simd: {
+            const simd = ctx.type_store.get(.Simd, ty_id);
+            const elem_size = typeSize(ctx, simd.elem) orelse return null;
+            break :blk_simd std.math.mul(usize, elem_size, @as(usize, simd.lanes)) catch return null;
+        },
         .Void => 0,
         .Any => 0, // Size is not known
         .String => 8, // best-effort: pointer-like handle; real impl is more complex
@@ -114,9 +124,61 @@ pub fn typeSize(ctx: *const compile.Context, ty_id: types.TypeId) ?usize {
             }
             break :blk total;
         },
+        .Tuple => blk_tup: {
+            const tp = ctx.type_store.get(.Tuple, ty_id);
+            const elems = ctx.type_store.type_pool.slice(tp.elems);
+            var total: usize = 0;
+            for (elems) |eid| {
+                const esz = typeSize(ctx, eid) orelse return null;
+                total = std.math.add(usize, total, esz) catch return null;
+            }
+            break :blk_tup total;
+        },
+        .Variant, .Error => blk_var: {
+            // Runtime shape: struct { tag: i32, payload: union {...} }
+            const fields = if (k == .Variant)
+                ctx.type_store.field_pool.slice(ctx.type_store.get(.Variant, ty_id).variants)
+            else
+                ctx.type_store.field_pool.slice(ctx.type_store.get(.Error, ty_id).variants);
+            var max_payload: usize = 0;
+            for (fields) |fid| {
+                const f = ctx.type_store.Field.get(fid);
+                const sz = typeSize(ctx, f.ty) orelse return null;
+                if (sz > max_payload) max_payload = sz;
+            }
+            // tag is 4 bytes (i32)
+            break :blk_var (4 + max_payload);
+        },
+        .ErrorSet => blk_es: {
+            const es = ctx.type_store.get(.ErrorSet, ty_id);
+            const v_sz = typeSize(ctx, es.value_ty) orelse return null;
+            const e_sz = typeSize(ctx, es.error_ty) orelse return null;
+            const max_payload = if (v_sz > e_sz) v_sz else e_sz;
+            break :blk_es (4 + max_payload);
+        },
+        .Union => blk_union: {
+            const u = ctx.type_store.get(.Union, ty_id);
+            const fields = ctx.type_store.field_pool.slice(u.fields);
+            var max_sz: usize = 0;
+            for (fields) |fid| {
+                const f = ctx.type_store.Field.get(fid);
+                const sz = typeSize(ctx, f.ty) orelse return null;
+                if (sz > max_sz) max_sz = sz;
+            }
+            break :blk_union max_sz;
+        },
+        .Optional => blk_opt: {
+            const o = ctx.type_store.get(.Optional, ty_id);
+            const elem_sz = typeSize(ctx, o.elem) orelse return null;
+            // Runtime shape: struct { is_some: bool, payload }
+            break :blk_opt (1 + elem_sz);
+        },
         // Optional/Struct/Tuple/Union/Map/Error/Variant/ErrorSet/Simd/Tensor:
         // ABI/padding/representation are not modeled here yet.
-        else => null,
+        else => blk: {
+            std.debug.print("typeSize: unhandled kind {}\n", .{k});
+            break :blk null;
+        },
     };
 }
 
@@ -891,55 +953,39 @@ pub fn typeFromTypeExpr(self: *Checker, ctx: *Checker.CheckerContext, ast_unit: 
         },
         .FieldAccess => blk_fa: {
             const fr = ast_unit.exprs.get(.FieldAccess, id);
-            const parent_expr_kind = ast_unit.exprs.index.kinds.items[fr.parent.toRaw()];
-
-            if (parent_expr_kind == .Import) {
-                const mt = self.getMemberFromImport(ast_unit, fr.parent, fr.field);
-                if (self.typeKind(mt) != .TypeError) {
-                    try ast_unit.type_info.ensureExpr(self.gpa, id);
-                    ast_unit.type_info.expr_types.items[id.toRaw()] = mt;
-                    const mt_kind = self.typeKind(mt);
-                    break :blk_fa if (mt_kind == .TypeType)
-                        .{ true, ts.get(.TypeType, mt).of }
-                    else
-                        .{ true, mt };
-                }
-                const name = ast_unit.exprs.strs.get(fr.field);
-                try self.context.diags.addError(ast_unit.exprs.locs.get(fr.loc), .unknown_module_field, .{name});
-                break :blk_fa .{ false, ts.tTypeError() };
-            }
-
-            if (parent_expr_kind == .Ident) {
-                const idr = ast_unit.exprs.get(.Ident, fr.parent);
-                if (self.lookup(ctx, idr.name)) |sid_sym| {
-                    const sym = ctx.symtab.syms.get(sid_sym);
-                    if (!sym.origin_decl.isNone()) {
-                        const did = sym.origin_decl.unwrap();
-                        const drow = ast_unit.exprs.Decl.get(did);
-                        if (ast_unit.exprs.index.kinds.items[drow.value.toRaw()] == .Import) {
-                            const name = ast_unit.exprs.strs.get(fr.field);
-                            const mt = self.getMemberFromImport(ast_unit, drow.value, fr.field);
-                            if (self.typeKind(mt) != .TypeError) {
-                                try ast_unit.type_info.ensureExpr(self.gpa, id);
-                                ast_unit.type_info.expr_types.items[id.toRaw()] = mt;
-                                const mt_kind = self.typeKind(mt);
-                                break :blk_fa if (mt_kind == .TypeType)
-                                    .{ true, ts.get(.TypeType, mt).of }
-                                else
-                                    .{ true, mt };
-                            }
-                            try self.context.diags.addError(ast_unit.exprs.locs.get(fr.loc), .unknown_module_field, .{name});
-                            break :blk_fa .{ false, ts.tTypeError() };
-                        }
-                    }
-                }
-            }
-
             const parent_res = try typeFromTypeExpr(self, ctx, ast_unit, fr.parent);
             status = status and parent_res[0];
             const parent_ty = parent_res[1];
             const parent_kind = self.typeKind(parent_ty);
             switch (parent_kind) {
+                .Ast => {
+                    // Accessing a member from an imported module in type position
+                    const ast_ty = ts.get(.Ast, parent_ty);
+                    const pkg_name = self.context.interner.get(ast_ty.pkg_name);
+                    const filepath = self.context.interner.get(ast_ty.filepath);
+                    const pkg = self.context.compilation_unit.packages.getPtr(pkg_name) orelse {
+                        try self.context.diags.addError(ast_unit.exprs.locs.get(fr.loc), .import_not_found, .{});
+                        break :blk_fa .{ false, ts.tTypeError() };
+                    };
+                    const parent_unit = pkg.sources.getPtr(filepath) orelse {
+                        try self.context.diags.addError(ast_unit.exprs.locs.get(fr.loc), .import_not_found, .{});
+                        break :blk_fa .{ false, ts.tTypeError() };
+                    };
+                    if (parent_unit.ast) |a| {
+                        // Re-intern field name in the imported unit's interner for lookup
+                        const name_bytes = ast_unit.exprs.strs.get(fr.field);
+                        const target_sid = a.exprs.strs.intern(name_bytes);
+                        if (a.type_info.getExport(target_sid)) |ex| {
+                            var ty = ex.ty;
+                            if (self.typeKind(ty) == .TypeType) {
+                                ty = ts.get(.TypeType, ty).of;
+                            }
+                            break :blk_fa .{ status, ty };
+                        }
+                    }
+                    try self.context.diags.addError(ast_unit.exprs.locs.get(fr.loc), .unknown_module_field, .{ast_unit.exprs.strs.get(fr.field)});
+                    break :blk_fa .{ false, ts.tTypeError() };
+                },
                 .Struct => {
                     const st = ts.get(.Struct, parent_ty);
                     const fields = ts.field_pool.slice(st.fields);
@@ -975,6 +1021,24 @@ pub fn typeFromTypeExpr(self: *Checker, ctx: *Checker.CheckerContext, ast_unit: 
                     break :blk_fa .{ false, ts.tTypeError() };
                 },
             }
+        },
+        .Import => blk_import: {
+            const ir = ast_unit.exprs.get(.Import, id);
+            const filepath = ast_unit.exprs.strs.get(ir.path);
+            var found = false;
+            for (self.context.compilation_unit.packages.values()) |pkg| {
+                if (pkg.sources.get(filepath) == null) continue;
+                const pkg_name = self.context.interner.intern(pkg.name);
+                const ast_ty = ts.mkAst(pkg_name, ir.path);
+                // Note: record type directly; no need to stamp expr_types here in type position
+                found = true;
+                break :blk_import .{ true, ast_ty };
+            }
+            if (!found) {
+                try self.context.diags.addError(ast_unit.exprs.locs.get(ir.loc), .import_not_found, .{});
+                break :blk_import .{ false, ts.tTypeError() };
+            }
+            unreachable; // handled above
         },
         .Call => blk_call: {
             const res = try typeFromTypeExpr(self, ctx, ast_unit, ast_unit.exprs.get(.Call, id).callee);

@@ -1413,7 +1413,9 @@ fn emitCastBit(self: *Codegen, p: tir.Rows.Un1) !mlir.Value {
         const spill = self.spillAgg(from_v, from_ty, 0);
         var load = OpBuilder.init("llvm.load", self.loc).builder()
             .operands(&.{spill})
-            .results(&.{to_ty}).build();
+            .results(&.{to_ty})
+            .attributes(&.{ self.named("alignment", mlir.Attribute.integerAttrGet(self.i64_ty, 1)) })
+            .build();
         self.append(load);
         return load.getResult(0);
     }
@@ -1429,7 +1431,17 @@ fn emitCastNormalInstr(self: *Codegen, p: tir.Rows.Un1) !mlir.Value {
     const prev_loc = self.pushLocation(p.loc);
     defer self.loc = prev_loc;
     const to_ty = try self.llvmTypeOf(p.ty);
-    const from_v = self.value_map.get(p.value).?;
+    const from_v_opt = self.value_map.get(p.value);
+    if (from_v_opt == null) {
+        // Produce a diagnostic at the original source location for debugging.
+        if (!p.loc.isNone()) {
+            const loc_id = p.loc.unwrap();
+            const loc_rec = self.context.loc_store.get(loc_id);
+            try self.context.diags.addError(loc_rec, .tir_codegen_missing_operand, .{});
+        }
+        return error.CompilationFailed;
+    }
+    const from_v = from_v_opt.?;
     const src_sr = self.srTypeOfValue(p.value);
     const val = try cast.emitCastNormal(self, p.ty, to_ty, from_v, src_sr);
     return val;
@@ -1550,7 +1562,9 @@ fn emitLoad(self: *Codegen, p: tir.Rows.Load, t: *const tir.TIR) !mlir.Value {
         const storage_ty = mlir.LLVM.getLLVMStructTypeLiteral(self.mlir_ctx, &[_]mlir.Type{ elem_ty, elem_ty }, false);
         var ld = OpBuilder.init("llvm.load", self.loc).builder()
             .operands(&.{ptr})
-            .results(&.{storage_ty}).build();
+            .results(&.{storage_ty})
+            .attributes(&.{ self.named("alignment", mlir.Attribute.integerAttrGet(self.i64_ty, 1)) })
+            .build();
         self.append(ld);
         const agg = ld.getResult(0);
         const re = self.extractAt(agg, elem_ty, &.{0});
@@ -1572,7 +1586,9 @@ fn emitLoad(self: *Codegen, p: tir.Rows.Load, t: *const tir.TIR) !mlir.Value {
         }
         var load = OpBuilder.init("llvm.load", self.loc).builder()
             .operands(&.{ptr})
-            .results(&.{res_ty}).build();
+            .results(&.{res_ty})
+            .attributes(&.{ self.named("alignment", mlir.Attribute.integerAttrGet(self.i64_ty, 1)) })
+            .build();
         self.append(load);
         return load.getResult(0);
     }
@@ -1609,11 +1625,15 @@ fn emitStore(self: *Codegen, p: tir.Rows.Store, t: *const tir.TIR) !mlir.Value {
         acc = self.insertAt(acc, reop.getResult(0), &.{0});
         acc = self.insertAt(acc, imop.getResult(0), &.{1});
         const st = OpBuilder.init("llvm.store", self.loc).builder()
-            .operands(&.{ acc, ptr }).build();
+            .operands(&.{ acc, ptr })
+            .attributes(&.{ self.named("alignment", mlir.Attribute.integerAttrGet(self.i64_ty, 1)) })
+            .build();
         self.append(st);
     } else {
         const st = OpBuilder.init("llvm.store", self.loc).builder()
-            .operands(&.{ v, ptr }).build();
+            .operands(&.{ v, ptr })
+            .attributes(&.{ self.named("alignment", mlir.Attribute.integerAttrGet(self.i64_ty, 1)) })
+            .build();
         self.append(st);
     }
     return .empty();
@@ -2030,7 +2050,9 @@ fn emitIndex(self: *Codegen, p: tir.Rows.Index, t: *const tir.TIR) !mlir.Value {
         const vptr = try self.emitGep(ptr0, elem_mlir, &.{.{ .Value = p.index }});
         var ld = OpBuilder.init("llvm.load", self.loc).builder()
             .operands(&.{vptr})
-            .results(&.{res_ty}).build();
+            .results(&.{res_ty})
+            .attributes(&.{ self.named("alignment", mlir.Attribute.integerAttrGet(self.i64_ty, 1)) })
+            .build();
         self.append(ld);
         return ld.getResult(0);
     }
@@ -2045,7 +2067,9 @@ fn emitIndex(self: *Codegen, p: tir.Rows.Index, t: *const tir.TIR) !mlir.Value {
         const vptr = try self.emitGep(base, elem_mlir2, &.{.{ .Value = p.index }});
         var ld = OpBuilder.init("llvm.load", self.loc).builder()
             .operands(&.{vptr})
-            .results(&.{res_ty}).build();
+            .results(&.{res_ty})
+            .attributes(&.{ self.named("alignment", mlir.Attribute.integerAttrGet(self.i64_ty, 1)) })
+            .build();
         self.append(ld);
         return ld.getResult(0);
     } else {
@@ -2248,9 +2272,11 @@ fn emitCall(self: *Codegen, p: tir.Rows.Call, t: *const tir.TIR) !mlir.Value {
     switch (retClass.kind) {
         .IndirectSRet => {
             // load structural result from retbuf
-            var ld = OpBuilder.init("llvm.load", self.loc).builder()
-                .operands(&.{retbuf})
-                .results(&.{want_res_mlir}).build();
+        var ld = OpBuilder.init("llvm.load", self.loc).builder()
+            .operands(&.{retbuf})
+            .results(&.{want_res_mlir})
+            .attributes(&.{ self.named("alignment", mlir.Attribute.integerAttrGet(self.i64_ty, 1)) })
+            .build();
             self.append(ld);
             return ld.getResult(0);
         },
@@ -2269,7 +2295,9 @@ fn emitCall(self: *Codegen, p: tir.Rows.Call, t: *const tir.TIR) !mlir.Value {
             self.storeAt(tmp, rv, 0);
             var ld2 = OpBuilder.init("llvm.load", self.loc).builder()
                 .operands(&.{tmp})
-                .results(&.{want_res_mlir}).build();
+                .results(&.{want_res_mlir})
+                .attributes(&.{ self.named("alignment", mlir.Attribute.integerAttrGet(self.i64_ty, 1)) })
+                .build();
             self.append(ld2);
             return ld2.getResult(0);
         },
@@ -2843,7 +2871,9 @@ fn emitInstr(self: *Codegen, ins_id: tir.InstrId, t: *const tir.TIR) !mlir.Value
             // load the field value from the pointer
             const load_op = OpBuilder.init("llvm.load", self.loc).builder()
                 .operands(&.{fptr})
-                .results(&.{f_mlir}).build();
+                .results(&.{f_mlir})
+                .attributes(&.{ self.named("alignment", mlir.Attribute.integerAttrGet(self.i64_ty, 1)) })
+                .build();
             self.append(load_op);
             break :blk load_op.getResult(0);
         },
@@ -3438,9 +3468,16 @@ fn emitGep(
         elem_ty.isAVector() or
         mlir.LLVM.isLLVMPointerType(elem_ty);
     if (!is_scalarish) {
-        const need_leading_zero = (idxs.len == 0) or switch (idxs[0]) {
+        // For opaque-pointer GEPs:
+        // - Reinterpretation GEP (idxs = [0]) needs a leading zero (handled by caller).
+        // - Array element access on pointer-to-array needs a leading zero to step into the array.
+        // - Pointer arithmetic across elements of pointer-to-struct MUST NOT insert an extra
+        //   leading zero, otherwise the dynamic index becomes a struct field index which must
+        //   be constant in MLIR/LLVM. In that case, we want a single dynamic index.
+        const is_struct = mlir.LLVM.isLLVMStructType(elem_ty);
+        const need_leading_zero = if (idxs.len == 0) true else switch (idxs[0]) {
             .Const => |c| c != 0,
-            .Value => true,
+            .Value => !is_struct,
         };
         if (need_leading_zero) {
             var tmp = try self.gpa.alloc(tir.Rows.GepIndex, idxs.len + 1);
@@ -3631,6 +3668,7 @@ fn extractAt(self: *Codegen, agg: mlir.Value, res_ty: mlir.Type, pos: []const i6
         var ld = OpBuilder.init("llvm.load", self.loc).builder()
             .operands(&.{agg})
             .results(&.{res_ty})
+            .attributes(&.{ self.named("alignment", mlir.Attribute.integerAttrGet(self.i64_ty, 1)) })
             .build();
         self.append(ld);
         return ld.getResult(0);
@@ -3690,7 +3728,9 @@ fn loadIntAt(self: *Codegen, base: mlir.Value, bits: u32, offset: usize) mlir.Va
     }
     var ld = OpBuilder.init("llvm.load", self.loc).builder()
         .operands(&.{p})
-        .results(&.{ity}).build();
+        .results(&.{ity})
+        .attributes(&.{ self.named("alignment", mlir.Attribute.integerAttrGet(self.i64_ty, 1)) })
+        .build();
     self.append(ld);
     return ld.getResult(0);
 }
@@ -3712,7 +3752,9 @@ pub fn storeAt(self: *Codegen, base: mlir.Value, val: mlir.Value, offset: usize)
         p = gep.getResult(0);
     }
     const st = OpBuilder.init("llvm.store", self.loc).builder()
-        .operands(&.{ val, p }).build();
+        .operands(&.{ val, p })
+        .attributes(&.{ self.named("alignment", mlir.Attribute.integerAttrGet(self.i64_ty, 1)) })
+        .build();
     self.append(st);
 }
 

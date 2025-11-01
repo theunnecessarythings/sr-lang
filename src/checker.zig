@@ -128,7 +128,17 @@ pub fn run(self: *Checker, levels: *const compile.DependencyLevels) !void {
         }
     }
 
-    try self.checker_ctx.resize(self.gpa, @intCast(ast_by_file.count()));
+    // Size the per-file checker context table by max file_id + 1 to allow
+    // direct indexing via ast_unit.file_id used during lowering.
+    var max_file_id: usize = 0;
+    {
+        var it = ast_by_file.iterator();
+        while (it.next()) |entry| {
+            const fid: usize = entry.key_ptr.*;
+            if (fid > max_file_id) max_file_id = fid;
+        }
+    }
+    try self.checker_ctx.resize(self.gpa, max_file_id + 1);
 
     var threads = std.ArrayList(std.Thread){};
     defer threads.deinit(self.gpa);
@@ -143,6 +153,10 @@ pub fn run(self: *Checker, levels: *const compile.DependencyLevels) !void {
             checker_ctx.* = CheckerContext{
                 .symtab = symbols.SymbolStore.init(self.gpa),
             };
+            // Expose this context by file id for TIR to use on-demand.
+            if (file_id >= 0 and file_id < self.checker_ctx.items.len) {
+                self.checker_ctx.items[file_id] = checker_ctx;
+            }
             const thread = try std.Thread.spawn(.{}, runAst, .{ self, ast_unit, checker_ctx });
             try threads.append(self.gpa, thread);
         }
@@ -535,6 +549,9 @@ fn recordExportsForDecl(
         if (!srow.origin_decl.isNone() and srow.origin_decl.unwrap().eq(decl_id)) {
             const nm = srow.name;
             const bty = pattern_matching.bindingTypeInPattern(self, ast_unit, decl.pattern.unwrap(), nm, value_ty) orelse value_ty;
+            // Export debug print silenced for cleaner checker output
+            // const filename = self.context.source_manager.get(@intCast(ast_unit.file_id)) orelse "unknown";
+            // std.debug.print("!!! EXPORTING {s} from {s}\n", .{ getStr(ast_unit, nm), filename });
             try ast_unit.type_info.addExport(nm, bty, decl_id);
         }
     }
@@ -547,6 +564,8 @@ fn recordExportsForDecl(
             if (!srow.origin_decl.isNone() and srow.origin_decl.unwrap().eq(decl_id)) {
                 const nm = srow.name;
                 const bty = pattern_matching.bindingTypeInPattern(self, ast_unit, decl.pattern.unwrap(), nm, value_ty) orelse value_ty;
+                // const filename = self.context.source_manager.get(@intCast(ast_unit.file_id)) orelse "unknown";
+                // std.debug.print("!!! EXPORTING {s} from {s} (from active frame)\n", .{ getStr(ast_unit, nm), filename });
                 try ast_unit.type_info.addExport(nm, bty, decl_id);
             }
         }
@@ -1622,10 +1641,6 @@ fn checkStmt(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, sid: ast.
 // =========================================================
 pub fn checkExpr(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, id: ast.ExprId) anyerror!types.TypeId {
     if (ast_unit.type_info.expr_types.items[id.toRaw()]) |cached| return cached;
-
-    // Pre-fill expression type with error to prevent infinite recursion in case of errors.
-    // The actual type will be filled in before returning.
-    // ast_unit.type_info.expr_types.items[id.toRaw()] = self.context.type_store.tTypeError();
 
     const k = exprKind(ast_unit, id);
 
@@ -2713,50 +2728,33 @@ fn checkFieldAccess(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, id
     const field_expr = getExpr(ast_unit, .FieldAccess, id);
     const field_loc = exprLoc(ast_unit, field_expr);
 
-    // -------- Module member access via import "path".member --------
-    const parent_kind = exprKind(ast_unit, field_expr.parent);
-    if (parent_kind == .Import) {
-        const member_ty = self.getMemberFromImport(ast_unit, field_expr.parent, field_expr.field);
-        if (self.typeKind(member_ty) == .TypeError) {
-            const name = ast_unit.exprs.strs.get(field_expr.field);
-            try self.context.diags.addError(exprLoc(ast_unit, field_expr), .unknown_module_field, .{name});
-            return self.context.type_store.tTypeError();
-        }
-        return member_ty;
-    }
-    // Also allow module access when parent is an identifier bound to an import declaration
-    if (parent_kind == .Ident) {
-        const idr = getExpr(ast_unit, .Ident, field_expr.parent);
-        if (self.lookup(ctx, idr.name)) |sid_sym| {
-            const sym = ctx.symtab.syms.get(sid_sym);
-            if (!sym.origin_decl.isNone()) {
-                const did = sym.origin_decl.unwrap();
-                const drow = ast_unit.exprs.Decl.get(did);
-                if (exprKind(ast_unit, drow.value) == .Import) {
-                    // Ensure the import expression is type-checked so its Ast type is stamped
-                    _ = try self.checkExpr(ctx, ast_unit, drow.value);
-                    const member_ty = self.getMemberFromImport(ast_unit, drow.value, field_expr.field);
-                    if (self.typeKind(member_ty) == .TypeError) {
-                        const name = ast_unit.exprs.strs.get(field_expr.field);
-                        try self.context.diags.addError(exprLoc(ast_unit, field_expr), .unknown_module_field, .{name});
-                        return self.context.type_store.tTypeError();
-                    }
-                    return member_ty;
-                }
-            }
-        } else {
-            try self.context.diags.addError(exprLoc(ast_unit, field_expr), .undefined_identifier, .{});
-            return self.context.type_store.tTypeError();
-        }
-    }
-
-    // -------- Normal value/type field access --------
     const parent_ty = try self.checkExpr(ctx, ast_unit, field_expr.parent);
     if (self.typeKind(parent_ty) == .TypeError) return self.context.type_store.tTypeError();
 
     var ty = parent_ty;
     const kind = self.typeKind(ty);
     if (kind == .Any) return self.context.type_store.tAny();
+
+    if (kind == .Ast) {
+        const ast_ty = self.context.type_store.get(.Ast, ty);
+        const pkg_name = self.context.interner.get(ast_ty.pkg_name);
+        const filepath = self.context.interner.get(ast_ty.filepath);
+        const pkg = self.context.compilation_unit.packages.getPtr(pkg_name) orelse
+            return self.context.type_store.tTypeError();
+        const parent_unit = pkg.sources.getPtr(filepath) orelse
+            return self.context.type_store.tTypeError();
+
+        if (parent_unit.ast) |a| {
+            // Re-intern field name into the imported unit's interner before lookup
+            const field_name = getStr(ast_unit, field_expr.field);
+            const target_sid = a.exprs.strs.intern(field_name);
+            if (a.type_info.getExport(target_sid)) |ex| {
+                return ex.ty;
+            }
+        }
+        try self.context.diags.addError(field_loc, .unknown_module_field, .{getStr(ast_unit, field_expr.field)});
+        return self.context.type_store.tTypeError();
+    }
 
     const field_name = getStr(ast_unit, field_expr.field);
     if (std.mem.eql(u8, field_name, "len")) {
@@ -2800,7 +2798,7 @@ fn checkFieldAccess(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, id
             var i: usize = 0;
             while (i < fields.len) : (i += 1) {
                 const f = self.context.type_store.Field.get(fields[i]);
-                if (f.name.toRaw() == field_expr.field.toRaw()) {
+                if (f.name.eq(field_expr.field)) {
                     try ast_unit.type_info.setFieldIndex(id, @intCast(i));
                     return f.ty;
                 }
@@ -2856,7 +2854,7 @@ fn checkFieldAccess(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, id
                 var i: usize = 0;
                 while (i < fields.len) : (i += 1) {
                     const f = self.context.type_store.Field.get(fields[i]);
-                    if (f.name.toRaw() == field_expr.field.toRaw()) {
+                    if (f.name.eq(field_expr.field)) {
                         try ast_unit.type_info.setFieldIndex(id, @intCast(i));
                         return f.ty;
                     }
@@ -2892,7 +2890,7 @@ fn checkFieldAccess(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, id
                 var i: usize = 0;
                 while (i < members.len) : (i += 1) {
                     const m = self.context.type_store.EnumMember.get(members[i]);
-                    if (m.name.toRaw() == field_expr.field.toRaw()) {
+                    if (m.name.eq(field_expr.field)) {
                         // Selecting an enum tag as a value of the enum type.
                         try ast_unit.type_info.setFieldIndex(id, @intCast(i));
                         return ty;
@@ -2906,7 +2904,7 @@ fn checkFieldAccess(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, id
                 var i: usize = 0;
                 while (i < variants.len) : (i += 1) {
                     const v = self.context.type_store.Field.get(variants[i]);
-                    if (v.name.toRaw() == field_expr.field.toRaw()) {
+                    if (v.name.eq(field_expr.field)) {
                         // In value position, selecting a variant *tag* without args:
                         // if payload is void => ok (value of the variant type)
                         // else => arity mismatch (should be constructed via call)
@@ -2927,12 +2925,32 @@ fn checkFieldAccess(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, id
                 var i: usize = 0;
                 while (i < tags.len) : (i += 1) {
                     const t = self.context.type_store.Field.get(tags[i]);
-                    if (t.name.toRaw() == field_expr.field.toRaw()) {
+                    if (t.name.eq(field_expr.field)) {
                         try ast_unit.type_info.setFieldIndex(id, @intCast(i));
                         return ty;
                     }
                 }
                 try self.context.diags.addError(exprLoc(ast_unit, field_expr), .unknown_error_tag, .{});
+                return self.context.type_store.tTypeError();
+            } else if (inner_kind == .Ast) {
+                // Accessing a member on a module in type position: treat like the .Ast branch
+                const ast_ty = self.context.type_store.get(.Ast, ty);
+                const pkg_name = self.context.interner.get(ast_ty.pkg_name);
+                const filepath = self.context.interner.get(ast_ty.filepath);
+                const pkg = self.context.compilation_unit.packages.getPtr(pkg_name) orelse
+                    return self.context.type_store.tTypeError();
+                const parent_unit = pkg.sources.getPtr(filepath) orelse
+                    return self.context.type_store.tTypeError();
+
+                if (parent_unit.ast) |a| {
+                    // Re-intern field name into the imported unit's interner before lookup
+                    const field_name_mod = getStr(ast_unit, field_expr.field);
+                    const target_sid = a.exprs.strs.intern(field_name_mod);
+                    if (a.type_info.getExport(target_sid)) |ex| {
+                        return ex.ty;
+                    }
+                }
+                try self.context.diags.addError(field_loc, .unknown_module_field, .{getStr(ast_unit, field_expr.field)});
                 return self.context.type_store.tTypeError();
             }
             if (inner_kind == .Struct or inner_kind == .Union or inner_kind == .Enum or inner_kind == .Variant or inner_kind == .Error) {
@@ -3110,98 +3128,6 @@ fn checkDeref(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, id: ast.
 // Calls & related helpers
 // =========================
 
-pub fn getMemberFromImport(self: *Checker, ast_unit: *const ast.Ast, parent: ast.ExprId, field: ast.StrId) types.TypeId {
-    // Resolve directly from the import path instead of relying on parent expr types.
-    // This makes imported member lookup work during predeclaration, before decl bodies run.
-    const pk = exprKind(ast_unit, parent);
-    if (pk != .Import) return self.context.type_store.tTypeError();
-
-    const ir = getExpr(ast_unit, .Import, parent);
-    const path = getStr(ast_unit, ir.path);
-
-    var pkg_iter = self.context.compilation_unit.packages.iterator();
-    while (pkg_iter.next()) |pkg| {
-        if (pkg.value_ptr.sources.get(path)) |unit_ref| {
-            if (unit_ref.ast) |a| {
-                if (a.type_info.getExport(field)) |ex| return ex.ty;
-            }
-            break;
-        }
-    }
-    return self.context.type_store.tTypeError();
-}
-
-fn resolveImportedMemberType(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, fr: ast.Rows.FieldAccess) types.TypeId {
-    // Prefer a direct resolution that doesn't rely on parent expr types.
-    // Works for both (import "x").foo and (ident-bound import).foo.
-    if (importedMemberDeclInfo(self, ctx, ast_unit, fr)) |info| {
-        // Return the exported type directly
-        if (info.a.type_info.getExport(fr.field)) |ex| return ex.ty;
-    }
-    // Fallback: legacy path (may rely on parent expr types)
-    const pk = exprKind(ast_unit, fr.parent);
-    if (pk == .Import) return self.getMemberFromImport(ast_unit, fr.parent, fr.field);
-    if (pk == .Ident) {
-        const idr = getExpr(ast_unit, .Ident, fr.parent);
-        if (self.lookup(ctx, idr.name)) |sid_sym| {
-            const sym = ctx.symtab.syms.get(sid_sym);
-            if (!sym.origin_decl.isNone()) {
-                const did = sym.origin_decl.unwrap();
-                const drow = ast_unit.exprs.Decl.get(did);
-                if (exprKind(ast_unit, drow.value) == .Import) {
-                    return self.getMemberFromImport(ast_unit, fr.parent, fr.field);
-                }
-            }
-        }
-    }
-    return self.context.type_store.tTypeError();
-}
-
-fn importedMemberDeclInfo(
-    self: *Checker,
-    ctx: *CheckerContext,
-    ast_unit: *ast.Ast,
-    fr: ast.Rows.FieldAccess,
-) ?struct { a: *ast.Ast, did: ast.DeclId } {
-    // Helper to locate the imported AST unit and the declaration id for a module member
-    // referenced via field access (e.g., mod.fn).
-    const pk = exprKind(ast_unit, fr.parent);
-    var path_sid_opt: ?ast.StrId = null;
-    if (pk == .Import) {
-        const ir = getExpr(ast_unit, .Import, fr.parent);
-        path_sid_opt = ir.path;
-    } else if (pk == .Ident) {
-        const idr = getExpr(ast_unit, .Ident, fr.parent);
-        if (self.lookup(ctx, idr.name)) |sid_sym| {
-            const sym = ctx.symtab.syms.get(sid_sym);
-            if (!sym.origin_decl.isNone()) {
-                const did = sym.origin_decl.unwrap();
-                const drow = ast_unit.exprs.Decl.get(did);
-                if (exprKind(ast_unit, drow.value) == .Import) {
-                    const ir = getExpr(ast_unit, .Import, drow.value);
-                    path_sid_opt = ir.path;
-                }
-            }
-        }
-    }
-    if (path_sid_opt == null) return null;
-    const path = getStr(ast_unit, path_sid_opt.?);
-
-    // Find the AST unit for this imported file
-    var pkg_iter = self.context.compilation_unit.packages.iterator();
-    while (pkg_iter.next()) |pkg| {
-        if (pkg.value_ptr.sources.get(path)) |unit_ref| {
-            if (unit_ref.ast) |a| {
-                if (a.type_info.getExport(fr.field)) |ex| {
-                    return .{ .a = a, .did = ex.decl_id };
-                }
-            }
-            break;
-        }
-    }
-    return null;
-}
-
 fn resolveTagPayloadType(self: *Checker, parent_ty: types.TypeId, tag: ast.StrId) ?types.TypeId {
     const pk = self.trow(parent_ty);
     switch (pk) {
@@ -3323,60 +3249,8 @@ fn checkCall(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, id: ast.E
     const callee_kind = exprKind(ast_unit, call_expr.callee);
     const args = ast_unit.exprs.expr_pool.slice(call_expr.args);
 
-    // Fast path A: module member call — resolve from import without evaluating callee.
     if (callee_kind == .FieldAccess) {
         const fr = getExpr(ast_unit, .FieldAccess, call_expr.callee);
-        const fty = self.resolveImportedMemberType(ctx, ast_unit, fr);
-        if (self.typeKind(fty) != .TypeError) {
-            const fk = self.typeKind(fty);
-            if (fk != .Function) {
-                try self.context.diags.addError(call_loc, .call_non_callable, .{});
-                return self.context.type_store.tTypeError();
-            }
-            const fnrow = self.context.type_store.get(.Function, fty);
-            const params = self.context.type_store.type_pool.slice(fnrow.params);
-
-            if (!fnrow.is_variadic) {
-                var min_required = params.len;
-                if (importedMemberDeclInfo(self, ctx, ast_unit, fr)) |info| {
-                    if (self.countTrailingDefaultParams(info.a, info.did)) |defaults| {
-                        if (defaults <= params.len) {
-                            min_required = params.len - defaults;
-                        }
-                    }
-                }
-                if (!(args.len >= min_required and args.len <= params.len)) {
-                    try self.context.diags.addError(call_loc, .argument_count_mismatch, .{});
-                    return self.context.type_store.tTypeError();
-                }
-            }
-            const fixed = if (params.len == 0) 0 else if (fnrow.is_variadic) params.len - 1 else params.len;
-
-            var i: usize = 0;
-            while (i < args.len) : (i += 1) {
-                var at = try self.checkExpr(ctx, ast_unit, args[i]);
-                if (self.typeKind(at) == .TypeError) return self.context.type_store.tTypeError();
-                var at_kind = self.typeKind(at);
-                const pt = if (i < fixed) params[i] else params[fixed];
-                // print types
-                if (self.assignable(at, pt) != .success) {
-                    if (check_types.isNumericKind(self, self.typeKind(pt))) {
-                        if (try self.updateCoercedLiteral(ast_unit, args[i], pt, &at, &at_kind) and
-                            self.assignable(at, pt) == .success)
-                        {
-                            continue;
-                        }
-                    }
-                    const expected_kind = self.typeKind(pt);
-                    const actual_kind = at_kind;
-                    const loc = exprLocFromId(ast_unit, args[i]);
-                    try self.context.diags.addError(loc, .argument_type_mismatch, .{ expected_kind, actual_kind });
-                    return self.context.type_store.tTypeError();
-                }
-            }
-            return fnrow.result;
-        }
-
         // Fast path B: (Type).Tag(...) for Variant/Error constructors — handle ONCE and return.
         const parent_of_field_access_ty = try self.checkExpr(ctx, ast_unit, fr.parent);
         const pk = self.typeKind(parent_of_field_access_ty);
@@ -3401,6 +3275,35 @@ fn checkCall(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, id: ast.E
                 }
                 return result_ty;
             }
+        }
+    }
+
+    // Builtin: sizeof(T) -> u64
+    if (callee_kind == .Ident) {
+        const idr = getExpr(ast_unit, .Ident, call_expr.callee);
+        const name = getStr(ast_unit, idr.name);
+        if (std.mem.eql(u8, name, "sizeof")) {
+            if (args.len != 1) {
+                try self.context.diags.addError(call_loc, .argument_count_mismatch, .{});
+                return self.context.type_store.tTypeError();
+            }
+            const res = try check_types.typeFromTypeExpr(self, ctx, ast_unit, args[0]);
+            if (!res[0]) return self.context.type_store.tTypeError();
+            const ty = res[1];
+            const sz = check_types.typeSize(self.context, ty) orelse {
+                try self.context.diags.addError(call_loc, .could_not_resolve_type, .{});
+                return self.context.type_store.tTypeError();
+            };
+            _ = sz; // ensure used
+            // Record a comptime value for potential constant folding (optional)
+            try ast_unit.type_info.ensureExpr(self.gpa, id);
+            ast_unit.type_info.expr_types.items[id.toRaw()] = self.context.type_store.tU64();
+            // Stamp callee type so lower_tir can query it
+            const any_type_ty = self.context.type_store.mkTypeType(self.context.type_store.tAny());
+            const fn_ty = self.context.type_store.mkFunction(&.{any_type_ty}, self.context.type_store.tU64(), false, true);
+            try ast_unit.type_info.ensureExpr(self.gpa, call_expr.callee);
+            ast_unit.type_info.expr_types.items[call_expr.callee.toRaw()] = fn_ty;
+            return self.context.type_store.tU64();
         }
     }
 
@@ -3517,6 +3420,47 @@ fn checkCall(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, id: ast.E
                                 min_required = params.len - defaults;
                             }
                         }
+                    }
+                }
+            }
+        } else if (callee_kind == .FieldAccess) {
+            // Also allow defaulted trailing params for module member functions accessed via field
+            const fr = getExpr(ast_unit, .FieldAccess, call_expr.callee);
+            // Detect if the parent is an import (direct or via identifier bound to an import decl)
+            var path_sid_opt: ?ast.StrId = null;
+            const pk = exprKind(ast_unit, fr.parent);
+            if (pk == .Import) {
+                const ir = getExpr(ast_unit, .Import, fr.parent);
+                path_sid_opt = ir.path;
+            } else if (pk == .Ident) {
+                const idr2 = getExpr(ast_unit, .Ident, fr.parent);
+                if (self.lookup(ctx, idr2.name)) |sid2| {
+                    const sym2 = ctx.symtab.syms.get(sid2);
+                    if (!sym2.origin_decl.isNone()) {
+                        const did2 = sym2.origin_decl.unwrap();
+                        const drow2 = ast_unit.exprs.Decl.get(did2);
+                        if (exprKind(ast_unit, drow2.value) == .Import) {
+                            const ir = getExpr(ast_unit, .Import, drow2.value);
+                            path_sid_opt = ir.path;
+                        }
+                    }
+                }
+            }
+            if (path_sid_opt) |path_sid| {
+                const path = getStr(ast_unit, path_sid);
+                var pkg_iter = self.context.compilation_unit.packages.iterator();
+                while (pkg_iter.next()) |pkg| {
+                    if (pkg.value_ptr.sources.get(path)) |unit_ref| {
+                        if (unit_ref.ast) |a| {
+                            if (a.type_info.getExport(fr.field)) |ex| {
+                                if (self.countTrailingDefaultParams(a, ex.decl_id)) |defaults| {
+                                    if (defaults <= params.len) {
+                                        min_required = params.len - defaults;
+                                    }
+                                }
+                            }
+                        }
+                        break;
                     }
                 }
             }
@@ -4289,6 +4233,7 @@ fn checkImport(self: *Checker, ast_unit: *ast.Ast, id: ast.ExprId) !types.TypeId
         if (pkg.sources.get(filepath) == null) continue;
         const pkg_name = self.context.interner.intern(pkg.name);
         const ast_ty = self.context.type_store.mkAst(pkg_name, ir.path);
+        ast_unit.type_info.expr_types.items[id.toRaw()] = ast_ty; // Explicitly store here
         return ast_ty;
     }
 

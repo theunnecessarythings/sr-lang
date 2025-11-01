@@ -14,6 +14,7 @@ const check_types = @import("check_types.zig");
 const pipeline_mod = @import("pipeline.zig");
 const cf = @import("lower_cf_tir.zig");
 const package = @import("package.zig");
+const Loc = @import("lexer.zig").Token.Loc;
 
 const StrId = @import("cst.zig").StrId;
 const OptStrId = @import("cst.zig").OptStrId;
@@ -107,7 +108,7 @@ pub fn run(self: *LowerTir, levels: *const compile.DependencyLevels) !*tir.TIR {
         }
     }
 
-    var threads = std.ArrayList(struct { std.Thread, *tir.TIR }){};
+    var threads = std.ArrayList(struct { std.Thread, *tir.TIR, *bool }){};
     defer threads.deinit(self.gpa);
 
     for (levels.levels.items) |level| {
@@ -125,20 +126,43 @@ pub fn run(self: *LowerTir, levels: *const compile.DependencyLevels) !*tir.TIR {
                 .module_call_cache = .init(self.gpa),
                 .monomorphizer = .init(self.gpa),
             };
-            const thread = try std.Thread.spawn(.{}, runAst, .{ self, unit.ast.?, t, ctx });
-            try threads.append(self.gpa, .{ thread, t });
+            const ok_ptr = try self.gpa.create(bool);
+            ok_ptr.* = true;
+            const thread = try std.Thread.spawn(.{}, runAstCatching, .{ self, unit.ast.?, t, ctx, ok_ptr });
+            try threads.append(self.gpa, .{ thread, t, ok_ptr });
         }
 
+        var any_failed = false;
         for (threads.items, 0..) |item, i| {
-            const thread, const t = item;
+            const thread = item.@"0";
+            const t = item.@"1";
+            const ok_ptr = item.@"2";
             thread.join();
             const unit = unit_by_file.get(level.items[i]) orelse continue;
             unit.tir = t;
+            if (!ok_ptr.*) {
+                any_failed = true;
+                // Emit a TIR-specific diagnostic at the file level for visibility
+                const where = Loc.init(level.items[i], 0, 0);
+                _ = self.context.diags.addError(where, .tir_lowering_failed, .{}) catch {};
+            }
+            self.gpa.destroy(ok_ptr);
+        }
+        if (any_failed) {
+            self.context.requestCancel();
+            return error.TirLoweringFailed;
         }
     }
 
     const main_pkg = self.context.compilation_unit.packages.getPtr("main") orelse return error.PackageNotFound;
     return main_pkg.sources.entries.get(0).value.tir.?;
+}
+
+fn runAstCatching(self: *LowerTir, ast_unit: *ast.Ast, t: *tir.TIR, ctx: *LowerContext, ok_ptr: *bool) void {
+    ok_ptr.* = true;
+    self.runAst(ast_unit, t, ctx) catch {
+        ok_ptr.* = false;
+    };
 }
 
 pub fn runAst(self: *LowerTir, ast_unit: *ast.Ast, t: *tir.TIR, ctx: *LowerContext) !void {
@@ -535,6 +559,11 @@ pub fn emitCoerce(
     loc: tir.OptLocId,
 ) tir.ValueId {
     if (got.eq(want)) return v;
+
+    // Special-case: coercions between type handles (TypeType) are no-ops for lowering.
+    const got_k0 = self.context.type_store.index.kinds.items[got.toRaw()];
+    const want_k0 = self.context.type_store.index.kinds.items[want.toRaw()];
+    if (got_k0 == .TypeType and want_k0 == .TypeType) return v;
 
     const ts = self.context.type_store;
     const gk = ts.index.kinds.items[got.toRaw()];
@@ -1120,6 +1149,10 @@ fn synthesizeMethodBinding(
     if (a.exprs.index.kinds.items[field_expr_id.toRaw()] != .FieldAccess) return null;
 
     const field_expr = a.exprs.get(.FieldAccess, field_expr_id);
+    if (a.type_info.expr_types.items[field_expr.parent.toRaw()] == null) {
+        const cctx = self.chk.checker_ctx.items[a.file_id];
+        _ = try self.chk.checkExpr(cctx, a, field_expr.parent);
+    }
     const refined = try self.refineExprType(ctx, a, env, field_expr.parent, self.getExprType(ctx, a, field_expr.parent));
     if (refined == null) return null;
 
@@ -1207,14 +1240,14 @@ fn buildVariantItem(
     loc: tir.OptLocId,
 ) !tir.ValueId {
     var cur = row.callee;
-    var last_name: ?StrId = null;
+    var first_field: ?StrId = null;
     while (a.exprs.index.kinds.items[cur.toRaw()] == .FieldAccess) {
         const fr = a.exprs.get(.FieldAccess, cur);
-        last_name = fr.field;
+        if (first_field == null) first_field = fr.field; // take outermost field (the tag name)
         cur = fr.parent;
     }
-    if (last_name == null) return error.LoweringBug;
-    const lname = last_name.?;
+    if (first_field == null) return error.LoweringBug;
+    const lname = first_field.?;
 
     const fields = if (k == .Variant)
         self.context.type_store.field_pool.slice(self.context.type_store.get(.Variant, ety).variants)
@@ -1233,7 +1266,19 @@ fn buildVariantItem(
             break;
         }
     }
-    if (!found) return error.LoweringBug;
+    if (!found) {
+        // Diagnostic: unknown variant tag at this call site (TIR-specific)
+        const where: Loc = if (!loc.isNone()) a.exprs.locs.get(loc.unwrap()) else Loc.init(@intCast(a.file_id), 0, 0);
+        // Compose message: "Tag 'Name' in <Type>"
+        var buf = std.ArrayList(u8){};
+        defer buf.deinit(self.gpa);
+        const w = buf.writer(self.gpa);
+        try w.print("tag '{s}' in ", .{a.exprs.strs.get(lname)});
+        try self.context.type_store.fmt(ety, w);
+        const sid = self.context.interner.intern(buf.items);
+        _ = self.context.diags.addError(where, .tir_variant_tag_not_found, .{self.context.interner.get(sid)}) catch {};
+        return error.LoweringBug;
+    }
 
     const args = a.exprs.expr_pool.slice(row.args);
     const payload_kind = self.context.type_store.getKind(payload_ty);
@@ -1329,8 +1374,13 @@ fn tryComptimeCall(
     id: ast.ExprId,
 ) !?tir.ValueId {
     const row = a.exprs.get(.Call, id);
-    const callee = try self.resolveCallee(ctx, a, f, row);
-    const callee_name = a.exprs.strs.get(callee.name);
+    // Avoid requiring a stamped callee type just to check the name.
+    const ck = a.exprs.index.kinds.items[row.callee.toRaw()];
+    const callee_name = blk: {
+        if (ck == .Ident) break :blk a.exprs.strs.get(a.exprs.get(.Ident, row.callee).name);
+        if (ck == .FieldAccess) break :blk a.exprs.strs.get(a.exprs.get(.FieldAccess, row.callee).field);
+        break :blk a.exprs.strs.get(f.builder.intern("<indirect>"));
+    };
     if (!(std.mem.eql(u8, callee_name, "get_type_by_name") or
         std.mem.eql(u8, callee_name, "comptime_print") or
         std.mem.eql(u8, callee_name, "type_of")))
@@ -1396,6 +1446,27 @@ fn lowerCall(
 
     const row = a.exprs.get(.Call, id);
     const loc = optLoc(a, id);
+
+    // Builtin: sizeof(T) -> constant u64 at TIR time
+    if (a.exprs.index.kinds.items[row.callee.toRaw()] == .Ident) {
+        const nm = a.exprs.get(.Ident, row.callee).name;
+        if (std.mem.eql(u8, a.exprs.strs.get(nm), "sizeof")) {
+            const args = a.exprs.expr_pool.slice(row.args);
+            if (args.len == 1) {
+                const cctx = self.chk.checker_ctx.items[a.file_id];
+                const res = try check_types.typeFromTypeExpr(self.chk, cctx, a, args[0]);
+                if (res[0]) {
+                    const target_ty = res[1];
+                    if (check_types.typeSize(self.context, target_ty)) |sz| {
+                        const want = self.getExprType(ctx, a, id);
+                        const sz_u64 = std.math.cast(u64, sz) orelse 0;
+                        return blk.builder.tirValue(.ConstInt, blk, want, loc, .{ .value = sz_u64 });
+                    }
+                }
+            }
+            // Fall through if unknown; general call path may still error nicely
+        }
+    }
 
     // Variant construction: if expected is a Variant/Error and callee is a path to a case, build VariantMake
     if (expected) |ety| {
@@ -1821,11 +1892,14 @@ fn lowerTypeExprOpaque(
     id: ast.ExprId,
     expected_ty: ?types.TypeId,
 ) tir.ValueId {
-    const ty0 = self.getExprType(ctx, a, id);
     const loc = optLoc(a, id);
-    const v = self.safeUndef(blk, ty0, loc);
-    if (expected_ty) |want| return self.emitCoerce(blk, v, ty0, want, loc);
-    return v;
+    if (expected_ty) |want| {
+        // For type expressions, materialize exactly the expected type to avoid
+        // inserting redundant CastNormal on opaque type handles.
+        return self.safeUndef(blk, want, loc);
+    }
+    const ty0 = self.getExprType(ctx, a, id);
+    return self.safeUndef(blk, ty0, loc);
 }
 
 fn lowerLiteral(
@@ -2563,11 +2637,16 @@ fn lowerFieldAccess(
         }
     }
 
-    // 1) imported module member (rvalue only)
-    if (mode == .rvalue and a.exprs.index.kinds.items[row.parent.toRaw()] == .Ident) {
-        // if (try self.lowerImportedModuleMember(a, blk, row.parent, row.field, expected_ty, loc)) |v| {
-        //     return v;
-        // }
+    // 1) imported module member (rvalue only): resolve `mod.name` to the imported
+    //    unit’s export and materialize it directly instead of treating the module as
+    //    a runtime struct value.
+    if (mode == .rvalue) {
+        const pk = a.exprs.index.kinds.items[row.parent.toRaw()];
+        if (pk == .Ident or pk == .Import) {
+            if (try self.tryLowerImportedModuleMember(ctx, a, env, f, blk, row.parent, row.field, expected_ty, loc)) |v| {
+                return v;
+            }
+        }
     }
 
     const idx_maybe = a.type_info.getFieldIndex(id);
@@ -2687,6 +2766,76 @@ fn lowerFieldAccess(
 
     if (expected_ty) |want| return self.emitCoerce(blk, v, ty0, want, loc);
     return v;
+}
+
+// Try to lower `parent.field` where parent is an imported module to the exported
+// declaration from the imported AST. Only used for rvalues.
+fn tryLowerImportedModuleMember(
+    self: *LowerTir,
+    ctx: *LowerContext,
+    caller_ast: *ast.Ast,
+    env: *cf.Env,
+    f: *Builder.FunctionFrame,
+    blk: *Builder.BlockFrame,
+    parent_expr: ast.ExprId,
+    field_name: ast.StrId,
+    expected_ty: ?types.TypeId,
+    loc: ast.OptLocId,
+) !?tir.ValueId {
+    _ = ctx; // unused for now
+    _ = env;
+    _ = f;
+
+    const parent_kind = caller_ast.exprs.index.kinds.items[parent_expr.toRaw()];
+
+    // Helper to look up the imported AST from an import path string
+    const field_slice = caller_ast.exprs.strs.get(field_name);
+
+    var target_ast: ?*ast.Ast = null;
+    if (parent_kind == .Import) {
+        const ir = caller_ast.exprs.get(.Import, parent_expr);
+        const path = caller_ast.exprs.strs.get(ir.path);
+        var it = self.context.compilation_unit.packages.iterator();
+        while (it.next()) |pkg| {
+            if (pkg.value_ptr.sources.get(path)) |unit_ref| {
+                target_ast = unit_ref.ast;
+                break;
+            }
+        }
+    } else if (parent_kind == .Ident) {
+        const parent_ident = caller_ast.exprs.get(.Ident, parent_expr);
+        if (self.findTopLevelImportByName(caller_ast, parent_ident.name)) |import_decl_id| {
+            const import_decl = caller_ast.exprs.Decl.get(import_decl_id);
+            const ir = caller_ast.exprs.get(.Import, import_decl.value);
+            const path = caller_ast.exprs.strs.get(ir.path);
+            var it2 = self.context.compilation_unit.packages.iterator();
+            while (it2.next()) |pkg| {
+                if (pkg.value_ptr.sources.get(path)) |unit_ref| {
+                    target_ast = unit_ref.ast;
+                    break;
+                }
+            }
+        }
+    } else {
+        return null;
+    }
+
+    const ta = target_ast orelse return null;
+    // Ask the imported AST for an exported decl with this field name
+    if (ta.type_info.getExport(field_name)) |ex| {
+        // If the export is a function, let normal call resolution handle it.
+        const ex_ty = ex.ty;
+        if (self.context.type_store.getKind(ex_ty) == .Function) return null;
+
+        // Materialize as a global load: &name then load, then coerce if needed.
+        const name = blk.builder.intern(field_slice);
+        const ptr_ty = self.context.type_store.mkPtr(ex_ty, false);
+        const addr = blk.builder.tirValue(.GlobalAddr, blk, ptr_ty, loc, .{ .name = name });
+        var val = blk.builder.tirValue(.Load, blk, ex_ty, loc, .{ .ptr = addr, .@"align" = 0 });
+        if (expected_ty) |want| val = self.emitCoerce(blk, val, ex_ty, want, loc);
+        return val;
+    }
+    return null;
 }
 
 fn lowerIdent(
@@ -3422,7 +3571,11 @@ pub fn lowerExpr(
     mode: LowerMode,
 ) anyerror!tir.ValueId {
     const expr_kind = a.exprs.index.kinds.items[id.toRaw()];
-
+    // Ensure we have a stamped type for this expression; if missing, invoke checker lazily.
+    if (a.type_info.expr_types.items[id.toRaw()] == null) {
+        const cctx = self.chk.checker_ctx.items[a.file_id];
+        _ = try self.chk.checkExpr(cctx, a, id);
+    }
     _ = try self.refineExprType(ctx, a, env, id, self.getExprType(ctx, a, id));
 
     return switch (expr_kind) {
@@ -3654,7 +3807,45 @@ fn findFunctionDeclForCall(
 
     const fr = caller_ast.exprs.get(.FieldAccess, row.callee);
     const parent_kind = caller_ast.exprs.index.kinds.items[fr.parent.toRaw()];
-    if (parent_kind != .Ident) return null;
+
+    // Case A: Direct import expression: (import "...").name(...)
+    if (parent_kind == .Import) {
+        const ir = caller_ast.exprs.get(.Import, fr.parent);
+        const path = caller_ast.exprs.strs.get(ir.path);
+        var pkg_iter = self.context.compilation_unit.packages.iterator();
+        while (pkg_iter.next()) |pkg| {
+            if (pkg.value_ptr.sources.get(path)) |unit_ref| {
+                if (unit_ref.ast) |a| {
+                    if (a.type_info.getExport(callee_name)) |ex| {
+                        return .{ .ast = a, .decl_id = ex.decl_id };
+                    }
+                }
+                break;
+            }
+        }
+        return null;
+    }
+
+    // Case B: Identifier bound to an import: mod.name(...)
+    if (parent_kind == .Ident) {
+        const parent_ident = caller_ast.exprs.get(.Ident, fr.parent);
+        if (self.findTopLevelImportByName(caller_ast, parent_ident.name)) |import_decl_id| {
+            const import_decl = caller_ast.exprs.Decl.get(import_decl_id);
+            const ir = caller_ast.exprs.get(.Import, import_decl.value);
+            const path = caller_ast.exprs.strs.get(ir.path);
+            var pkg_iter2 = self.context.compilation_unit.packages.iterator();
+            while (pkg_iter2.next()) |pkg| {
+                if (pkg.value_ptr.sources.get(path)) |unit_ref| {
+                    if (unit_ref.ast) |a| {
+                        if (a.type_info.getExport(callee_name)) |ex| {
+                            return .{ .ast = a, .decl_id = ex.decl_id };
+                        }
+                    }
+                    break;
+                }
+            }
+        }
+    }
 
     return null;
 }
@@ -4023,6 +4214,11 @@ fn destructureDeclFromExpr(
         .Binding => {
             const guess_ty = src_ty;
             const expect_ty = if (target_kind == .Any) guess_ty else target_ty;
+            // Ensure type info for source expr before lowering in case checker didn’t stamp it yet.
+            if (a.type_info.expr_types.items[src_expr.toRaw()] == null) {
+                const cctx2 = self.chk.checker_ctx.items[a.file_id];
+                _ = try self.chk.checkExpr(cctx2, a, src_expr);
+            }
             var raw = try self.lowerExpr(ctx, a, env, f, blk, src_expr, expect_ty, .rvalue);
 
             const refined = try self.refineExprType(ctx, a, env, src_expr, self.getExprType(ctx, a, src_expr)) orelse unreachable;
