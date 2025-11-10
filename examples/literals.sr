@@ -1,0 +1,24 @@
+package literals
+
+// Literals
+
+literals::proc() {
+  // Integer literals
+  int1 := 123
+  int2 := 0x_FF_00
+  int3 := 0o777
+  int4 := 0b1101_0101
+
+  // Float literals
+  float1 := 3.14
+  float2 := 1.0e-5
+
+  // Character and string literals
+  char1 := 'a'
+  str1 := "Hello, world!\n"
+  raw_str := r#"This is a raw string."# 
+
+  // Boolean literals
+  true_val := true
+  false_val := false
+}

@@ -1,0 +1,5 @@
+package prelude
+
+ptrcast :: proc(ptr: any) *void {
+  return ptr.^*void
+}

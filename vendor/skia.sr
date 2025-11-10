@@ -1,0 +1,523 @@
+package skia
+
+// Idiomatic wrapper over C bindings in vendor/skiac.sr
+
+skiac :: import "vendor/skiac"
+math :: import "std/math"
+
+// Re-export common enums and structs with shorter names
+SurfaceOrigin :: skiac.GrSurfaceOrigin
+ColorType :: skiac.SkColorType
+PaintStyle :: skiac.SkPaintStyle
+PaintCap :: skiac.SkPaintCap
+PaintJoin :: skiac.SkPaintJoin
+
+Rect :: skiac.Rect
+
+// 1) Struct wrappers around opaque handles (for methods)
+GLInterface :: struct { iface: *skiac.GrGLInterface }
+DirectContext :: struct { ctx: *skiac.GrDirectContext }
+BackendRenderTarget :: struct { target: *skiac.GrBackendRenderTarget }
+ColorSpace :: struct { cs: *skiac.SkColorSpace }
+SurfaceProps :: struct { props: *skiac.SkSurfaceProps }
+Surface :: struct { surface: *skiac.SkSurface }
+Canvas :: struct { canvas: *skiac.SkCanvas }
+Paint :: struct { paint: *skiac.SkPaint }
+Path :: struct { path: *skiac.SkPath }
+Image :: struct { image: *skiac.SkImage }
+Shader :: struct { shader: *skiac.SkShader }
+ColorFilter :: struct { cf: *skiac.SkColorFilter }
+ImageFilter :: struct { f: *skiac.SkImageFilter }
+PathEffect :: struct { pe: *skiac.SkPathEffect }
+MaskFilter :: struct { mf: *skiac.SkMaskFilter }
+RuntimeEffect :: struct { e: *skiac.SkRuntimeEffect }
+Font :: struct { font: *skiac.SkFont }
+Data :: struct { data: *skiac.SkData }
+Matrix :: skiac.Matrix
+PixelGeometry :: skiac.SkPixelGeometry
+TileMode :: skiac.SkTileMode
+
+// Convenience: ARGB color helper
+argb :: proc(a: u8, r: u8, g: u8, b: u8) u32 {
+    return skiac.skiac_sk_color_set_argb(a, r, g, b)
+}
+
+// ----------------------------
+// 2) Idiomatic constructors and methods
+// ----------------------------
+
+// GLInterface
+GLInterface.make :: proc(ctx: *void, get_proc: skiac.GrGLGetProc) GLInterface {
+    return GLInterface{ iface: skiac.skiac_gr_gl_make_assembled_interface(ctx, get_proc) }
+}
+
+GLInterface.is_null :: proc(self: *GLInterface) bool {
+    return self.iface.^i64 == 0
+}
+
+GLInterface.reset :: proc(self: *GLInterface) {
+    self.iface = 0.^*skiac.GrGLInterface
+}
+
+GLInterface.unref :: proc(self: *GLInterface) {
+    if self.iface.^i64 != 0 {
+        skiac.skiac_gr_gl_interface_unref(self.iface)
+        self.reset()
+    }
+}
+
+// DirectContext
+DirectContext.make_gl :: proc(iface: *GLInterface) DirectContext {
+    return DirectContext{ ctx: skiac.skiac_gr_direct_context_make_gl(iface.iface) }
+}
+
+DirectContext.is_null :: proc(self: *DirectContext) bool {
+    return self.ctx.^i64 == 0
+}
+
+DirectContext.reset :: proc(self: *DirectContext) {
+    self.ctx = 0.^*skiac.GrDirectContext
+}
+
+DirectContext.flush_and_submit :: proc(self: *DirectContext) {
+    skiac.skiac_gr_direct_context_flush_and_submit(self.ctx)
+}
+
+DirectContext.unref :: proc(self: *DirectContext) {
+    if self.ctx.^i64 != 0 {
+        skiac.skiac_gr_direct_context_unref(self.ctx)
+        self.reset()
+    }
+}
+
+// BackendRenderTarget
+BackendRenderTarget.make_gl :: proc(width: i32, height: i32, sample_cnt: i32, stencil_bits: i32, fbo_id: u32, format: u32) BackendRenderTarget {
+    return BackendRenderTarget{ target: skiac.skiac_gr_backend_render_target_make_gl(width, height, sample_cnt, stencil_bits, fbo_id, format) }
+}
+
+BackendRenderTarget.is_null :: proc(self: *BackendRenderTarget) bool {
+    return self.target.^i64 == 0
+}
+
+BackendRenderTarget.reset :: proc(self: *BackendRenderTarget) {
+    self.target = 0.^*skiac.GrBackendRenderTarget
+}
+
+BackendRenderTarget.unref :: proc(self: *BackendRenderTarget) {
+    if self.target.^i64 != 0 {
+        skiac.skiac_gr_backend_render_target_unref(self.target)
+        self.reset()
+    }
+}
+
+// ColorSpace
+ColorSpace.srgb :: proc() ColorSpace {
+    return ColorSpace{ cs: skiac.skiac_sk_color_space_make_srgb() }
+}
+
+ColorSpace.is_null :: proc(self: *ColorSpace) bool {
+    return self.cs.^i64 == 0
+}
+
+ColorSpace.reset :: proc(self: *ColorSpace) {
+    self.cs = 0.^*skiac.SkColorSpace
+}
+
+ColorSpace.unref :: proc(self: *ColorSpace) {
+    if self.cs.^i64 != 0 {
+        skiac.skiac_sk_color_space_unref(self.cs)
+        self.reset()
+    }
+}
+
+// SurfaceProps
+SurfaceProps.create :: proc(flags: u32, pixel_geometry: PixelGeometry) SurfaceProps {
+    return SurfaceProps{ props: skiac.skiac_sk_surface_props_create(flags, pixel_geometry) }
+}
+
+SurfaceProps.is_null :: proc(self: *SurfaceProps) bool {
+    return self.props.^i64 == 0
+}
+
+SurfaceProps.reset :: proc(self: *SurfaceProps) {
+    self.props = 0.^*skiac.SkSurfaceProps
+}
+
+SurfaceProps.unref :: proc(self: *SurfaceProps) {
+    if self.props.^i64 != 0 {
+        skiac.skiac_sk_surface_props_unref(self.props)
+        self.reset()
+    }
+}
+
+// Surface
+Surface.wrap_backend_render_target :: proc(
+    ctx: *DirectContext,
+    target: *BackendRenderTarget,
+    origin: SurfaceOrigin,
+    color_type: ColorType,
+    color_space: *ColorSpace,
+    props: *SurfaceProps,
+) Surface {
+    return Surface{ surface: skiac.skiac_sk_surface_wrap_backend_render_target(ctx.ctx, target.target, origin, color_type, color_space.cs, props.props) }
+}
+
+Surface.is_null :: proc(self: *Surface) bool {
+    return self.surface.^i64 == 0
+}
+
+Surface.get_canvas :: proc(self: *Surface) Canvas {
+    return Canvas{ canvas: skiac.skiac_sk_surface_get_canvas(self.surface) }
+}
+
+Surface.unref :: proc(self: *Surface) {
+    if self.surface.^i64 != 0 {
+        skiac.skiac_sk_surface_unref(self.surface)
+    }
+}
+
+// Canvas
+Canvas.clear :: proc(self: *Canvas, color: u32) {
+    skiac.skiac_sk_canvas_clear(self.canvas, color)
+}
+
+Canvas.draw_rect :: proc(self: *Canvas, rect: *Rect, paint: *Paint) {
+    skiac.skiac_sk_canvas_draw_rect(self.canvas, rect, paint.paint)
+}
+
+Canvas.draw_circle :: proc(self: *Canvas, cx: f32, cy: f32, radius: f32, paint: *Paint) {
+    skiac.skiac_sk_canvas_draw_circle(self.canvas, cx, cy, radius, paint.paint)
+}
+
+Canvas.draw_line :: proc(self: *Canvas, x0: f32, y0: f32, x1: f32, y1: f32, paint: *Paint) {
+    skiac.skiac_sk_canvas_draw_line(self.canvas, x0, y0, x1, y1, paint.paint)
+}
+
+Canvas.draw_point :: proc(self: *Canvas, x: f32, y: f32, paint: *Paint) {
+    skiac.skiac_sk_canvas_draw_point(self.canvas, x, y, paint.paint)
+}
+
+Canvas.draw_oval :: proc(self: *Canvas, bounds: *Rect, paint: *Paint) {
+    skiac.skiac_sk_canvas_draw_oval(self.canvas, bounds, paint.paint)
+}
+
+Canvas.draw_round_rect :: proc(self: *Canvas, rect: *Rect, rx: f32, ry: f32, paint: *Paint) {
+    skiac.skiac_sk_canvas_draw_round_rect(self.canvas, rect, rx, ry, paint.paint)
+}
+
+Canvas.draw_paint :: proc(self: *Canvas, paint: *Paint) {
+    skiac.skiac_sk_canvas_draw_paint(self.canvas, paint.paint)
+}
+
+// Canvas state/transform/clip
+Canvas.save :: proc(self: *Canvas) {
+    skiac.skiac_sk_canvas_save(self.canvas)
+}
+
+Canvas.restore :: proc(self: *Canvas) {
+    skiac.skiac_sk_canvas_restore(self.canvas)
+}
+
+Canvas.translate :: proc(self: *Canvas, dx: f32, dy: f32) {
+    skiac.skiac_sk_canvas_translate(self.canvas, dx, dy)
+}
+
+Canvas.scale :: proc(self: *Canvas, sx: f32, sy: f32) {
+    skiac.skiac_sk_canvas_scale(self.canvas, sx, sy)
+}
+
+Canvas.rotate :: proc(self: *Canvas, degrees: f32) {
+    skiac.skiac_sk_canvas_rotate(self.canvas, degrees)
+}
+
+Canvas.skew :: proc(self: *Canvas, sx: f32, sy: f32) {
+    skiac.skiac_sk_canvas_skew(self.canvas, sx, sy)
+}
+
+Canvas.clip_rect :: proc(self: *Canvas, rect: *Rect, do_aa: bool) {
+    skiac.skiac_sk_canvas_clip_rect(self.canvas, rect, do_aa)
+}
+
+Canvas.save_layer :: proc(self: *Canvas, bounds: *Rect, paint: *Paint) i32 {
+    return skiac.skiac_sk_canvas_save_layer(self.canvas, bounds, paint.paint)
+}
+
+Canvas.concat :: proc(self: *Canvas, mat: *Matrix) {
+    skiac.skiac_sk_canvas_concat(self.canvas, mat)
+}
+
+Canvas.clip_path :: proc(self: *Canvas, path: *Path, do_aa: bool) {
+    skiac.skiac_sk_canvas_clip_path(self.canvas, path.path, do_aa)
+}
+
+Canvas.save_count :: proc(self: *Canvas) i32 {
+    return skiac.skiac_sk_canvas_save_count(self.canvas)
+}
+
+Canvas.restore_to_count :: proc(self: *Canvas, save_count: i32) {
+    skiac.skiac_sk_canvas_restore_to_count(self.canvas, save_count)
+}
+
+Canvas.set_matrix :: proc(self: *Canvas, mat: *Matrix) {
+    skiac.skiac_sk_canvas_set_matrix(self.canvas, mat)
+}
+
+Canvas.reset_matrix :: proc(self: *Canvas) {
+    skiac.skiac_sk_canvas_reset_matrix(self.canvas)
+}
+
+Canvas.draw_arc :: proc(self: *Canvas, bounds: *Rect, start_angle_deg: f32, sweep_angle_deg: f32, use_center: bool, paint: *Paint) {
+    skiac.skiac_sk_canvas_draw_arc(self.canvas, bounds, start_angle_deg, sweep_angle_deg, use_center, paint.paint)
+}
+
+Canvas.clip_oval :: proc(self: *Canvas, bounds: *Rect, do_aa: bool) {
+    skiac.skiac_sk_canvas_clip_oval(self.canvas, bounds, do_aa)
+}
+
+Canvas.clip_round_rect :: proc(self: *Canvas, rect: *Rect, rx: f32, ry: f32, do_aa: bool) {
+    skiac.skiac_sk_canvas_clip_round_rect(self.canvas, rect, rx, ry, do_aa)
+}
+
+Canvas.draw_path :: proc(self: *Canvas, path: *Path, paint: *Paint) {
+    skiac.skiac_sk_canvas_draw_path(self.canvas, path.path, paint.paint)
+}
+
+Canvas.draw_image :: proc(self: *Canvas, image: *Image, x: f32, y: f32) {
+    skiac.skiac_sk_canvas_draw_image(self.canvas, image.image, x, y)
+}
+
+Canvas.draw_text :: proc(self: *Canvas, text: string, x: f32, y: f32, font: *Font, paint: *Paint) {
+    skiac.skiac_sk_canvas_draw_text(self.canvas, text, x, y, font.font, paint.paint)
+}
+
+Canvas.draw_rrect :: proc(self: *Canvas, rect: *Rect, rx: f32, ry: f32, paint: *Paint) {
+    skiac.skiac_sk_canvas_draw_rrect(self.canvas, rect, rx, ry, paint.paint)
+}
+
+Canvas.draw_drrect :: proc(self: *Canvas, outer_rect: *Rect, outer_rx: f32, outer_ry: f32, inner_rect: *Rect, inner_rx: f32, inner_ry: f32, paint: *Paint) {
+    skiac.skiac_sk_canvas_draw_drrect(self.canvas, outer_rect, outer_rx, outer_ry, inner_rect, inner_rx, inner_ry, paint.paint)
+}
+
+// Paint
+Paint.new :: proc() Paint {
+    return Paint{ paint: skiac.skiac_sk_paint_create() }
+}
+
+Paint.is_null :: proc(self: *Paint) bool {
+    return self.paint.^i64 == 0
+}
+
+Paint.reset :: proc(self: *Paint) {
+    self.paint = 0.^*skiac.SkPaint
+}
+
+Paint.unref :: proc(self: *Paint) {
+    if self.paint.^i64 != 0 {
+        skiac.skiac_sk_paint_unref(self.paint)
+        self.reset()
+    }
+}
+
+Paint.set_anti_alias :: proc(self: *Paint, anti_alias: bool) {
+    skiac.skiac_sk_paint_set_anti_alias(self.paint, anti_alias)
+}
+
+Paint.set_color :: proc(self: *Paint, color: u32) {
+    skiac.skiac_sk_paint_set_color(self.paint, color)
+}
+
+Paint.is_anti_alias :: proc(self: *Paint) bool {
+    return skiac.skiac_sk_paint_is_anti_alias(self.paint)
+}
+
+Paint.get_color :: proc(self: *Paint) u32 {
+    return skiac.skiac_sk_paint_get_color(self.paint)
+}
+
+Paint.set_alpha :: proc(self: *Paint, alpha: u8) {
+    skiac.skiac_sk_paint_set_alpha(self.paint, alpha)
+}
+
+Paint.get_alpha :: proc(self: *Paint) u8 {
+    return skiac.skiac_sk_paint_get_alpha(self.paint)
+}
+
+Paint.set_dither :: proc(self: *Paint, dither: bool) {
+    skiac.skiac_sk_paint_set_dither(self.paint, dither)
+}
+
+Paint.is_dither :: proc(self: *Paint) bool {
+    return skiac.skiac_sk_paint_is_dither(self.paint)
+}
+
+Paint.set_stroke_width :: proc(self: *Paint, width: f32) {
+    skiac.skiac_sk_paint_set_stroke_width(self.paint, width)
+}
+
+Paint.get_stroke_width :: proc(self: *Paint) f32 {
+    return skiac.skiac_sk_paint_get_stroke_width(self.paint)
+}
+
+Paint.set_stroke_miter :: proc(self: *Paint, miter: f32) {
+    skiac.skiac_sk_paint_set_stroke_miter(self.paint, miter)
+}
+
+Paint.get_stroke_miter :: proc(self: *Paint) f32 {
+    return skiac.skiac_sk_paint_get_stroke_miter(self.paint)
+}
+
+Paint.set_stroke_cap :: proc(self: *Paint, cap: PaintCap) {
+    skiac.skiac_sk_paint_set_stroke_cap(self.paint, cap)
+}
+
+Paint.get_stroke_cap :: proc(self: *Paint) PaintCap {
+    return skiac.skiac_sk_paint_get_stroke_cap(self.paint)
+}
+
+Paint.set_stroke_join :: proc(self: *Paint, join: PaintJoin) {
+    skiac.skiac_sk_paint_set_stroke_join(self.paint, join)
+}
+
+Paint.get_stroke_join :: proc(self: *Paint) PaintJoin {
+    return skiac.skiac_sk_paint_get_stroke_join(self.paint)
+}
+
+Paint.set_style :: proc(self: *Paint, style: PaintStyle) {
+    skiac.skiac_sk_paint_set_style(self.paint, style)
+}
+
+Paint.get_style :: proc(self: *Paint) PaintStyle {
+    return skiac.skiac_sk_paint_get_style(self.paint)
+}
+
+// Blend mode (alias skiac enum)
+BlendMode :: skiac.SkBlendMode
+
+Paint.set_blend_mode :: proc(self: *Paint, mode: BlendMode) {
+    skiac.skiac_sk_paint_set_blend_mode(self.paint, mode)
+}
+
+Paint.get_blend_mode :: proc(self: *Paint) BlendMode {
+    return skiac.skiac_sk_paint_get_blend_mode(self.paint)
+}
+
+// Path
+Path.new :: proc() Path { return Path{ path: skiac.skiac_sk_path_create() } }
+Path.is_null :: proc(self: *Path) bool { return self.path.^i64 == 0 }
+Path.reset :: proc(self: *Path) { self.path = 0.^*skiac.SkPath }
+Path.unref :: proc(self: *Path) {
+    if self.path.^i64 != 0 { skiac.skiac_sk_path_unref(self.path); self.reset() }
+}
+Path.move_to :: proc(self: *Path, x: f32, y: f32) { skiac.skiac_sk_path_move_to(self.path, x, y) }
+Path.line_to :: proc(self: *Path, x: f32, y: f32) { skiac.skiac_sk_path_line_to(self.path, x, y) }
+Path.quad_to :: proc(self: *Path, cx: f32, cy: f32, x: f32, y: f32) { skiac.skiac_sk_path_quad_to(self.path, cx, cy, x, y) }
+Path.cubic_to :: proc(self: *Path, cx1: f32, cy1: f32, cx2: f32, cy2: f32, x: f32, y: f32) { skiac.skiac_sk_path_cubic_to(self.path, cx1, cy1, cx2, cy2, x, y) }
+Path.close :: proc(self: *Path) { skiac.skiac_sk_path_close(self.path) }
+Path.add_rect :: proc(self: *Path, rect: *Rect) { skiac.skiac_sk_path_add_rect(self.path, rect) }
+Path.add_circle :: proc(self: *Path, cx: f32, cy: f32, r: f32) { skiac.skiac_sk_path_add_circle(self.path, cx, cy, r) }
+Path.add_oval :: proc(self: *Path, rect: *Rect) { skiac.skiac_sk_path_add_oval(self.path, rect) }
+Path.add_round_rect :: proc(self: *Path, rect: *Rect, rx: f32, ry: f32) { skiac.skiac_sk_path_add_round_rect(self.path, rect, rx, ry) }
+Path.add_arc :: proc(self: *Path, bounds: *Rect, start_angle_deg: f32, sweep_angle_deg: f32) { skiac.skiac_sk_path_add_arc(self.path, bounds, start_angle_deg, sweep_angle_deg) }
+
+// Matrix helpers
+Matrix_identity :: proc() Matrix {
+    return Matrix{ m00: 1.0, m01: 0.0, m02: 0.0, m10: 0.0, m11: 1.0, m12: 0.0, m20: 0.0, m21: 0.0, m22: 1.0 }
+}
+
+Matrix_make_translate :: proc(dx: f32, dy: f32) Matrix {
+    return Matrix{ m00: 1.0, m01: 0.0, m02: dx, m10: 0.0, m11: 1.0, m12: dy, m20: 0.0, m21: 0.0, m22: 1.0 }
+}
+
+Matrix_make_scale :: proc(sx: f32, sy: f32) Matrix {
+    return Matrix{ m00: sx, m01: 0.0, m02: 0.0, m10: 0.0, m11: sy, m12: 0.0, m20: 0.0, m21: 0.0, m22: 1.0 }
+}
+
+Matrix_make_rotate_deg :: proc(degrees: f32) Matrix {
+    rad := degrees * math.PI.(f32) / 180.0
+    c := math.cos(rad)
+    s := math.sin(rad)
+    return Matrix{ m00: c, m01: -s, m02: 0.0, m10: s, m11: c, m12: 0.0, m20: 0.0, m21: 0.0, m22: 1.0 }
+}
+
+// Image
+Surface.make_image_snapshot :: proc(self: *Surface) Image {
+    return Image{ image: skiac.skiac_sk_surface_make_image_snapshot(self.surface) }
+}
+Image.is_null :: proc(self: *Image) bool { return self.image.^i64 == 0 }
+Image.reset :: proc(self: *Image) { self.image = 0.^*skiac.SkImage }
+Image.unref :: proc(self: *Image) {
+    if self.image.^i64 != 0 { skiac.skiac_sk_image_unref(self.image); self.reset() }
+}
+
+// Shader
+Shader.solid :: proc(color: u32) Shader { return Shader{ shader: skiac.skiac_sk_shader_make_solid_color(color) } }
+Shader.linear2 :: proc(x0: f32, y0: f32, x1: f32, y1: f32, c0: u32, c1: u32, tm: TileMode) Shader {
+    return Shader{ shader: skiac.skiac_sk_shader_make_linear_gradient(x0, y0, x1, y1, c0, c1, tm) }
+}
+Shader.unref :: proc(self: *Shader) { if self.shader.^i64 != 0 { skiac.skiac_sk_shader_unref(self.shader); self.shader = 0.^*skiac.SkShader } }
+
+// ColorFilter
+ColorFilter.blend :: proc(color: u32, mode: i32) ColorFilter { return ColorFilter{ cf: skiac.skiac_sk_color_filter_make_blend(color, mode) } }
+ColorFilter.matrix :: proc(m: *f32, clamp: bool) ColorFilter { return ColorFilter{ cf: skiac.skiac_sk_color_filter_make_matrix(m, clamp) } }
+ColorFilter.unref :: proc(self: *ColorFilter) { if self.cf.^i64 != 0 { skiac.skiac_sk_color_filter_unref(self.cf); self.cf = 0.^*skiac.SkColorFilter } }
+
+// ImageFilter
+ImageFilter.blur :: proc(sx: f32, sy: f32) ImageFilter { return ImageFilter{ f: skiac.skiac_sk_image_filter_make_blur(sx, sy) } }
+ImageFilter.from_color_filter :: proc(cf: *ColorFilter) ImageFilter { return ImageFilter{ f: skiac.skiac_sk_image_filter_make_color_filter(cf.cf) } }
+ImageFilter.unref :: proc(self: *ImageFilter) { if self.f.^i64 != 0 { skiac.skiac_sk_image_filter_unref(self.f); self.f = 0.^*skiac.SkImageFilter } }
+
+// PathEffect
+PathEffect.dash :: proc(intervals: *f32, count: i32, phase: f32) PathEffect { return PathEffect{ pe: skiac.skiac_sk_path_effect_make_dash(intervals, count, phase) } }
+PathEffect.corner :: proc(radius: f32) PathEffect { return PathEffect{ pe: skiac.skiac_sk_path_effect_make_corner(radius) } }
+PathEffect.discrete :: proc(seg_length: f32, dev: f32) PathEffect { return PathEffect{ pe: skiac.skiac_sk_path_effect_make_discrete(seg_length, dev) } }
+PathEffect.unref :: proc(self: *PathEffect) { if self.pe.^i64 != 0 { skiac.skiac_sk_path_effect_unref(self.pe); self.pe = 0.^*skiac.SkPathEffect } }
+
+// MaskFilter
+MaskFilter.blur :: proc(style: i32, sigma: f32) MaskFilter { return MaskFilter{ mf: skiac.skiac_sk_mask_filter_make_blur(style, sigma) } }
+MaskFilter.unref :: proc(self: *MaskFilter) { if self.mf.^i64 != 0 { skiac.skiac_sk_mask_filter_unref(self.mf); self.mf = 0.^*skiac.SkMaskFilter } }
+
+// Paint attachments
+Paint.set_shader :: proc(self: *Paint, sh: *Shader) { skiac.skiac_sk_paint_set_shader(self.paint, sh.shader) }
+Paint.set_color_filter :: proc(self: *Paint, cf: *ColorFilter) { skiac.skiac_sk_paint_set_color_filter(self.paint, cf.cf) }
+Paint.set_image_filter :: proc(self: *Paint, f: *ImageFilter) { skiac.skiac_sk_paint_set_image_filter(self.paint, f.f) }
+Paint.set_path_effect :: proc(self: *Paint, pe: *PathEffect) { skiac.skiac_sk_paint_set_path_effect(self.paint, pe.pe) }
+Paint.set_mask_filter :: proc(self: *Paint, mf: *MaskFilter) { skiac.skiac_sk_paint_set_mask_filter(self.paint, mf.mf) }
+
+// Runtime shader
+RuntimeEffect.make_for_shader :: proc(sksl: string) RuntimeEffect { return RuntimeEffect{ e: skiac.skiac_runtime_effect_make_for_shader(sksl) } }
+RuntimeEffect.is_null :: proc(self: *RuntimeEffect) bool { return self.e.^i64 == 0 }
+RuntimeEffect.uniform_size :: proc(self: *RuntimeEffect) usize { return skiac.skiac_runtime_effect_uniform_size(self.e) }
+RuntimeEffect.unref :: proc(self: *RuntimeEffect) { if self.e.^i64 != 0 { skiac.skiac_runtime_effect_unref(self.e); self.e = 0.^*skiac.SkRuntimeEffect } }
+RuntimeEffect.make_shader :: proc(self: *RuntimeEffect, uniforms: *Data) Shader {
+    return Shader{ shader: skiac.skiac_runtime_effect_make_shader(self.e, uniforms.data) }
+}
+
+// Font
+Font.new_default :: proc(size: f32) Font { return Font{ font: skiac.skiac_sk_font_create_default(size) } }
+Font.new_from_file :: proc(path: string, size: f32) Font { return Font{ font: skiac.skiac_sk_font_create_from_file(path, size) } }
+Font.is_null :: proc(self: *Font) bool { return self.font.^i64 == 0 }
+Font.reset :: proc(self: *Font) { self.font = 0.^*skiac.SkFont }
+Font.unref :: proc(self: *Font) { if self.font.^i64 != 0 { skiac.skiac_sk_font_unref(self.font); self.reset() } }
+Font.set_size :: proc(self: *Font, size: f32) { skiac.skiac_sk_font_set_size(self.font, size) }
+Font.get_size :: proc(self: *Font) f32 { return skiac.skiac_sk_font_get_size(self.font) }
+Font.measure_text_width :: proc(self: *Font, text: string) f32 { return skiac.skiac_sk_font_measure_text_width_utf8(self.font, text) }
+Font.set_edging :: proc(self: *Font, edging: skiac.SkFontEdging) { skiac.skiac_sk_font_set_edging(self.font, edging) }
+Font.get_edging :: proc(self: *Font) skiac.SkFontEdging { return skiac.skiac_sk_font_get_edging(self.font) }
+Font.set_hinting :: proc(self: *Font, hinting: skiac.SkFontHinting) { skiac.skiac_sk_font_set_hinting(self.font, hinting) }
+Font.get_hinting :: proc(self: *Font) skiac.SkFontHinting { return skiac.skiac_sk_font_get_hinting(self.font) }
+Font.set_subpixel :: proc(self: *Font, subpixel: bool) { skiac.skiac_sk_font_set_subpixel(self.font, subpixel) }
+Font.set_linear_metrics :: proc(self: *Font, linear: bool) { skiac.skiac_sk_font_set_linear_metrics(self.font, linear) }
+Font.set_embolden :: proc(self: *Font, embolden: bool) { skiac.skiac_sk_font_set_embolden(self.font, embolden) }
+Font.set_baseline_snap :: proc(self: *Font, snap: bool) { skiac.skiac_sk_font_set_baseline_snap(self.font, snap) }
+Font.get_spacing :: proc(self: *Font) f32 { return skiac.skiac_sk_font_get_spacing(self.font) }
+Font.get_metrics :: proc(self: *Font, out: *skiac.FontMetrics) f32 { return skiac.skiac_sk_font_get_metrics(self.font, out) }
+Font.text_to_glyphs_utf8 :: proc(self: *Font, text: string, out_glyphs: *u16, max_glyphs: i32) i32 { return skiac.skiac_sk_font_text_to_glyphs_utf8(self.font, text, out_glyphs, max_glyphs) }
+
+// Data
+Data.from_slice :: proc(ptr: *void, len: usize) Data { return Data{ data: skiac.skiac_sk_data_make_with_copy(ptr, len) } }
+Data.from_file :: proc(path: string) Data { return Data{ data: skiac.skiac_sk_data_make_from_file(path) } }
+Data.is_null :: proc(self: *Data) bool { return self.data.^i64 == 0 }
+Data.reset :: proc(self: *Data) { self.data = 0.^*skiac.SkData }
+Data.unref :: proc(self: *Data) { if self.data.^i64 != 0 { skiac.skiac_sk_data_unref(self.data); self.reset() } }
+
+Image.from_encoded :: proc(data: *Data) Image { return Image{ image: skiac.skiac_sk_image_make_from_encoded(data.data) } }

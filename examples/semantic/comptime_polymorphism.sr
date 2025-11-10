@@ -1,0 +1,55 @@
+package comptime_polymorphism
+
+// Semantic Example: Compile-Time Polymorphism (Duck Typing)
+
+// This language does not require formal `interface` or `trait` declarations.
+// Instead, polymorphism can be achieved using generic functions that are
+// checked at compile-time to ensure the given types have the required functions
+// or fields. This is often called "static duck typing".
+
+// --- Define some unrelated types ---
+Dog :: struct { name: string }
+Cat :: struct { name: string }
+Duck :: struct { name: string }
+
+// --- Define functions that operate on these types ---
+// These are just free functions, not methods in a class.
+dog_speak :: proc(d: Dog) string { return "Woof!" }
+cat_speak :: proc(c: Cat) string { return "Meow!" }
+duck_speak :: proc(d: Duck) string { return "Quack!" }
+
+
+// --- A generic procedure that can accept any of the types ---
+// It takes a value of type `any`. The compiler will generate a specialized
+// version of this procedure for each type it's called with.
+make_it_speak :: proc(animal: any) {
+    // At compile time, the compiler resolves this `match` statement.
+    // It checks the type of `animal` and dispatches to the correct function call.
+    // If `make_it_speak` were called with a type that doesn't have a
+    // corresponding `speak` function, this would be a compile-time error.
+    sound := match typeof(animal) {
+        Dog => dog_speak(animal),
+        Cat => cat_speak(animal),
+        Duck => duck_speak(animal),
+        // The `else` branch would cause a compile error if reached,
+        // ensuring only supported types are used.
+        _ => comptime_error("Unsupported type in make_it_speak"),
+    }
+    print(animal.name, " says: ", sound)
+}
+
+main := proc() {
+    d := Dog{name: "Fido"}
+    c := Cat{name: "Whiskers"}
+    q := Duck{name: "Donald"}
+
+    // We can pass different, unrelated types to the same generic procedure.
+    // The correctness of these calls is verified at compile time.
+    make_it_speak(d)
+    make_it_speak(c)
+    make_it_speak(q)
+
+    // If you tried this, it would fail to compile because `i32` has no
+    // corresponding case in the `match` statement inside `make_it_speak`.
+    // make_it_speak(123)
+}

@@ -1,0 +1,59 @@
+package type_definitions
+
+// Semantic Example: Type Definitions
+
+// 1. Structs: A collection of named fields.
+Point :: struct {
+    x: f64,
+    y: f64,
+}
+
+// 2. Tuple-like Type Alias: A named alias for a tuple type.
+// Can be used for simple, fixed-size collections.
+Color :: (u8, u8, u8)
+
+// 3. C-Style Enums: A set of named integer constants.
+// Useful for simple states or flags.
+FileAccess :: enum {
+    Read,
+    Write,
+    ReadWrite,
+}
+
+// 4. Integer-Backed Enums: Explicitly set the underlying integer type and values.
+HttpCode :: enum(u16) {
+    Ok = 200,
+    NotFound = 404,
+    InternalError = 500,
+}
+
+// 5. Variants (Sum Types): A type that can be one of several different kinds.
+// This is the most powerful and flexible option for representing state.
+Shape :: variant {
+    Circle { radius: f64 },
+    Rectangle { width: f64, height: f64 },
+    Point, // Can hold a unit-like variant
+}
+
+// The main entry point is defined as a variable (:=)
+main := proc() {
+    // Using the defined types
+    p := Point{ x: 10.5, y: 20.0 }
+    c := Color(255, 128, 0)
+    
+    read_access := FileAccess.Read
+    status := HttpCode.NotFound
+
+    s1 := Shape.Circle{ radius: 5.0 }
+    s2 := Shape.Rectangle{ width: 10.0, height: 4.0 }
+
+    print("Created a Point at x=", p.x)
+    print("Created a Color with red=", c.0)
+    print("File access mode is: ", read_access.(int)) // Cast enum to int
+    print("HTTP status code is: ", status.%u16) // Cast to underlying type
+    
+    match s1 {
+        Shape.Circle{radius} => print("Shape is a circle with radius ", radius),
+        _ => print("Some other shape"),
+    }
+}

@@ -1,0 +1,122 @@
+package main
+
+// MNIST-like training demo using vendor/torch
+// - Trains a tiny 2-layer MLP on synthetic 28x28 images by default
+// - Shows how to build a training loop, compute loss/accuracy, and manage memory
+// - Swap the synthetic data generator with a real loader to train on MNIST PNG/IDX
+
+torch :: import "vendor/torch"
+
+// Dtype/device constants
+K_FLOAT32: i32 = 6;   // at::ScalarType::Float
+DEVICE_CPU: i32 = -1; // CPU
+
+// Linear layer params: returns (W, b)
+mk_linear :: proc(in_features: i64, out_features: i64) (torch.Tensor, torch.Tensor) {
+    // For torch.linear, weight is [out_features, in_features]
+    shape_w: [2] i64 = [out_features, in_features]
+    shape_b: [1] i64 = [out_features]
+    W := torch.Tensor.randn(&shape_w[0], 2, K_FLOAT32, DEVICE_CPU).requires_grad_(true)
+    b := torch.Tensor.zeros(&shape_b[0], 1, K_FLOAT32, DEVICE_CPU).requires_grad_(true)
+    return (W, b)
+}
+
+// Forward MLP: x[N,1,28,28] -> logits[N,10]
+forward_mlp :: proc(x: torch.Tensor, W1: torch.Tensor, b1: torch.Tensor, W2: torch.Tensor, b2: torch.Tensor) torch.Tensor {
+    // Flatten [N,1,28,28] -> [N, 784]
+    x2 := x.flatten(1, -1)
+    // Linear layers expect weight [out,in]; pass raw pointers W.t and b.t
+    h := x2.linear(W1.t, b1.t).leaky_relu()
+    logits := h.linear(W2.t, b2.t)
+    // Free temporaries
+    x2.free(); h.free()
+    return logits
+}
+
+// Cross-entropy like loss via log_softmax + gather
+cross_entropy :: proc(logits: torch.Tensor, targets: torch.Tensor) torch.Tensor {
+    logp := logits.log_softmax(1, -1)
+    t_ix := targets.unsqueeze(1)
+    picked := logp.gather(1, t_ix.t, false)
+    nll := picked.neg().mean(-1)
+    // Free temporaries
+    logp.free(); t_ix.free(); picked.free()
+    return nll
+}
+
+// Synthetic MNIST-like batch: returns (x: [N,1,28,28], y: [N])
+synthetic_batch :: proc(batch_size: i64, num_classes: i64) (torch.Tensor, torch.Tensor) {
+    xs: [4] i64 = [batch_size, 1, 28, 28]
+    x := torch.Tensor.randn(&xs[0], 4, K_FLOAT32, DEVICE_CPU)
+    y_shape: [1] i64 = [batch_size]
+    y := torch.Tensor.randint(num_classes, &y_shape[0], 1, 4, DEVICE_CPU)
+    return (x, y)
+}
+
+// Compute accuracy (%)
+accuracy :: proc(logits: torch.Tensor, targets: torch.Tensor) f64 {
+    pred := logits.argmax(1, 0, false)
+    eq := pred.eq_tensor(targets.t)
+    eq_f := eq.to_dtype(K_FLOAT32, false, false)
+    mean := eq_f.mean(-1)
+    // Extract scalar approximate value via printing or reduce
+    // Here we fake-convert by copying to CPU pointer not exposed; just print
+    // Return 0.0 to keep signature minimal; real pipelines can read back via at_copy_data.
+    // Free temporaries
+    pred.free(); eq.free(); eq_f.free()
+    // We can’t fetch scalars easily yet; return 0, but print mean.
+    mean.print(); mean.free()
+    return 0.0
+}
+
+main :: proc() {
+    // Hyperparams
+    batch_size: i64 = 64
+    iters: i64 = 50
+    in_features: i64 = 784
+    hidden: i64 = 128
+    out_features: i64 = 10
+
+    // Seed
+    torch.manual_seed(42)
+
+    // Model params
+    (W1, b1) := mk_linear(in_features, hidden)
+    (W2, b2) := mk_linear(hidden, out_features)
+
+    // Optimizer
+    opt := torch.Optimizer.sgd(0.1, 0.0, 0.0, 0.0, false)
+    opt.add_parameters(W1, 0)
+    opt.add_parameters(b1, 0)
+    opt.add_parameters(W2, 0)
+    opt.add_parameters(b2, 0)
+
+    i: i64 = 0
+    while (i < iters) {
+        // Data
+        (x, y) := synthetic_batch(batch_size, out_features)
+
+        // Forward
+        logits := forward_mlp(x, W1, b1, W2, b2)
+        loss := cross_entropy(logits, y)
+
+        // Optional: compute accuracy (also exercises the helper to avoid unused warnings)
+        accuracy(logits, y)
+
+        // Backward + step
+        loss.backward(false, false)
+        opt.step()
+        opt.zero_grad()
+
+        // Print progress
+        loss.print()
+
+        // Cleanup batch tensors
+        x.free(); y.free(); logits.free(); loss.free()
+        i += 1
+    }
+
+    // Free params and optimizer
+    opt.free()
+    W1.free(); b1.free(); W2.free(); b2.free()
+}

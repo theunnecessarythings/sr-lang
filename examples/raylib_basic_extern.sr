@@ -1,0 +1,33 @@
+package main
+
+Color :: struct {
+    r: u8,
+    g: u8,
+    b: u8,
+    a: u8,
+}
+InitWindow :: extern proc(width: i32, height: i32, title: *void) void
+SetTargetFPS :: extern proc(fps: i32) void
+WindowShouldClose :: extern proc() bool
+BeginDrawing :: extern proc() void
+ClearBackground :: extern proc(color: Color) void
+DrawText :: extern proc(text: *void, posX: i32, posY: i32, fontSize: i32, color: Color) void
+EndDrawing :: extern proc() void
+CloseWindow :: extern proc() void
+DrawFPS :: extern proc(posX: i32, posY: i32) void
+
+BLACK :: Color{r: 255, g: 0, b: 0, a: 255}
+BLUE :: Color{r: 0, g: 121, b: 241, a: 255}
+
+main :: proc() {
+    InitWindow(1280, 720, "raylib + sr".^*void)
+    SetTargetFPS(60)
+    while !WindowShouldClose() {
+        BeginDrawing()
+        ClearBackground(BLUE)
+        DrawText("Hello, raylib!".^*void, 190, 170, 20, BLACK)
+        EndDrawing()
+    }
+    CloseWindow()
+}
+

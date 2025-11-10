@@ -1,0 +1,8 @@
+main :: proc() {
+    x :: comptime { 100 / 2 + 5 } // 55
+    y :: comptime { 3.14 * 2.0 }     // 6.28
+    z :: comptime { true and (false or true) } // true
+
+    // The compiler should replace these with the computed constants.
+    // We will verify by inspecting the TIR output.
+}

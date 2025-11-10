@@ -1,0 +1,20 @@
+package main
+
+io  :: import "std/io"
+map :: import "std/map"
+
+main :: proc() {
+    hm := map.init_hm(8, 16) // value_size=8 (i64), initial cap 16
+    v: i64 = 123
+    map.set_hm(&hm, "key", (&v).^*void)
+    out: i64 = 0
+    if (map.get_hm(&hm, "key", (&out).^*void)) {
+        io.println("key=%d", out)
+    }
+    _ = map.remove_hm(&hm, "key")
+    if (!map.get_hm(&hm, "key", (&out).^*void)) {
+        io.println0("key missing")
+    }
+    map.deinit_hm(&hm)
+}
+

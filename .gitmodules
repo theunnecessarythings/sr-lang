@@ -1,0 +1,6 @@
+[submodule "docs/website"]
+	path = docs/website
+	url = https://github.com/theunnecessarythings/sr-lang-docs
+[submodule "tools/astexplorer"]
+	path = tools/astexplorer
+	url = https://github.com/theunnecessarythings/astexplorer

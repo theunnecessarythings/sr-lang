@@ -1,0 +1,124 @@
+package map
+
+// Map is an in-language associative container built on top of dynamic arrays.
+// It favours clarity over performance and keeps entries in insertion order.
+// The compiler can lower `[K: V]` forms to this implementation.
+
+Map :: fn(comptime K: type, comptime V: type) type {
+    Entry :: struct { key: K, value: V }
+
+    MapType :: struct {
+        len: usize,
+        entries: [dyn]Entry,
+    }
+
+    MapType.entry :: fn(key: K, value: V) Entry {
+        return Entry{ key: key, value: value }
+    }
+
+    MapType.init :: fn() MapType {
+        return MapType{ len: 0, entries: [] }
+    }
+
+    MapType.fromEntries :: fn(items: []Entry) MapType {
+        map := MapType.init()
+        i: usize = 0
+        while i < items.len {
+            map.entries.append(items[i])
+            i = i + 1
+        }
+        map.len = map.entries.len
+        return map
+    }
+
+    MapType.clone :: fn(self: *const MapType) MapType {
+        copy := MapType.init()
+        i: usize = 0
+        while i < self.entries.len {
+            copy.entries.append(self.entries[i])
+            i = i + 1
+        }
+        copy.len = copy.entries.len
+        return copy
+    }
+
+    MapType.find_index :: fn(self: *const MapType, key: K) ?usize {
+        i: usize = 0
+        while i < self.entries.len {
+            entry := self.entries[i]
+            if (entry.key == key) {
+                return i
+            }
+            i = i + 1
+        }
+        return null
+    }
+
+    MapType.contains :: fn(self: *const MapType, key: K) bool {
+        return self.find_index(key) != null
+    }
+
+    MapType.get :: fn(self: *const MapType, key: K) ?V {
+        idx := self.find_index(key)
+        if idx != null {
+            return self.entries[idx?].value
+        }
+        return null
+    }
+
+    MapType.get_ptr :: fn(self: *MapType, key: K) ?*V {
+        idx := self.find_index(key)
+        if idx != null {
+            return &self.entries[idx?].value
+        }
+        return null
+    }
+
+    MapType.set :: proc(self: *MapType, key: K, value: V) void {
+        updated: [dyn]Entry = []
+        found := false
+        i: usize = 0
+        while i < self.entries.len {
+            entry := self.entries[i]
+            if (!found and entry.key == key) {
+                updated.append(Entry{ key: key, value: value })
+                found = true
+            } else {
+                updated.append(entry)
+            }
+            i = i + 1
+        }
+        if (!found) {
+            updated.append(Entry{ key: key, value: value })
+        }
+        self.entries = updated
+        self.len = updated.len
+    }
+
+    MapType.clear :: proc(self: *MapType) void {
+        self.entries = []
+        self.len = 0
+    }
+
+    MapType.remove :: proc(self: *MapType, key: K) bool {
+        removed := false
+        filtered: [dyn]Entry = []
+        i: usize = 0
+        while i < self.entries.len {
+            entry := self.entries[i]
+            if (!removed and entry.key == key) {
+                removed = true
+            } else {
+                filtered.append(entry)
+            }
+            i = i + 1
+        }
+        if (removed) {
+            self.entries = filtered
+            self.len = filtered.len
+        }
+        return removed
+    }
+
+    return MapType
+}

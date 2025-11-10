@@ -1,0 +1,24 @@
+package main
+
+// Minimal example using vendor/torch wrappers
+// Creates a 2x3 random tensor on CPU (float32) and adds it to itself.
+
+torch :: import "vendor/torch"
+
+main :: proc() {
+    // Shape [2, 3]
+    shape: [2] i64 = [2, 3]
+
+    // Options: kind (float32) and device (CPU)
+    // at::ScalarType::Float = 6, CPU = -1 (per torch bindings)
+    kind: i32 = 6
+    device: i32 = -1
+
+    // Random 2x3 tensor
+    x := torch.Tensor.rand(&shape[0], 2, kind, device)
+
+    // y = x + x
+    y := x.add(x.t)
+
+    y.print()
+}

@@ -1,0 +1,34 @@
+package main
+
+printf :: extern proc(string, any) i32
+
+max :: fn(comptime T: type, a: T, b: T) T {
+  return if a > b { a } else { b };
+}
+
+clamp :: fn(comptime T: type, comptime Limit: T, value: T) T {
+  return if value > Limit { Limit } else { value };
+}
+
+Vec :: fn(comptime T: type, comptime N: usize) type {
+  return struct { data: [N]T };
+}
+
+Matrix :: fn(comptime T: type, comptime R: usize, comptime C: usize) type {
+  Row :: Vec(T, C)
+  return struct { rows: [R]Row };
+}
+
+MatrixI32x2x3 :: Matrix(i32, 2, 3)
+
+main :: proc () i32 {
+  printf("max=%d\n", max(i32, 21, 34));
+  printf("clamp=%d\n", clamp(i32, 10, 42));
+
+  top := Vec(i32, 3){ .data = [1, 2, 3] }
+  bottom := Vec(i32, 3){ .data = [4, 5, 6] }
+  mat := MatrixI32x2x3{ .rows = [top, bottom] }
+  printf("matrix=%d,%d\n", mat.rows[0].data[2], mat.rows[1].data[0]);
+
+  return 0;
+}

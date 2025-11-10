@@ -1,0 +1,92 @@
+package reflection
+
+// Semantic Example: Compile-Time and Runtime Reflection
+
+// This example demonstrates how reflection can be used both at compile time
+// to generate code and at runtime to inspect dynamic values.
+// It assumes the existence of standard library or built-in APIs for reflection.
+
+
+// --- Compile-Time Reflection ---
+
+// Compile-time reflection allows code to inspect and manipulate types and
+// program structures during compilation itself. This is useful for
+// metaprogramming, code generation, and static assertions.
+
+User :: struct {
+    id: u64,
+    name: string,
+    is_active: bool,
+}
+
+// This function takes a type `T` and an instance `val` of that type,
+// and generates a string representation of the struct at compile time.
+// It returns a `string` value that is computed entirely by the compiler.
+struct_to_string :: proc(T: type, val: T) string {
+    // This must be a comptime-known value.
+    comptime assert(is_struct(T))
+
+    // Hypothetical comptime APIs are used here.
+    fields := comptime_get_fields(T)
+    repr := "{"
+    for (field, i) in fields {
+        // `comptime_get_field_value` would get the value from a comptime-known struct instance.
+        field_val := comptime_get_field_value(val, field.name)
+        repr += field.name + ": " + to_string(field_val)
+        if i < len(fields) - 1 {
+            repr += ", "
+        }
+    }
+    repr += "}"
+    return repr
+}
+
+// Use the comptime function to generate a string.
+user_instance := User{id: 123, name: "Alice", is_active: true}
+// The `struct_to_string` call is fully executed by the compiler.
+// `user_repr` becomes a static, compile-time known string constant.
+user_repr :: comptime struct_to_string(User, user_instance)
+
+
+// --- Runtime Reflection ---
+
+// Runtime reflection allows a running program to inspect the type, fields,
+// and values of variables dynamically. This is useful for things like
+// serialization (e.g., to JSON), object inspectors, and debug tools.
+
+Player :: struct {
+    name: string,
+    hp: i32,
+    pos: Vec2,
+}
+Vec2 :: struct { x: f32, y: f32 }
+
+// This function takes any value and prints its type and fields at runtime.
+inspect :: proc(v: any) {
+    // Assume `runtime_type_of` returns a runtime type information object.
+    type_info := runtime_type_of(v)
+    print("Inspecting value of type: ", type_info.name)
+
+    if is_struct(type_info) {
+        fields := get_fields(type_info)
+        for field in fields {
+            // Assume `get_field_value` can dynamically access a field by name.
+            field_value := get_field_value(v, field.name)
+            print(" - Field: ", field.name, ", Type: ", field.type_.name, ", Value: ", field_value)
+        }
+    }
+}
+
+main := proc() {
+    // Use compile-time reflection result
+    print("Comptime representation: ", user_repr)
+
+    print("\n--- Runtime Inspection ---")
+    // Use runtime reflection on different instances
+    p1 := Player{name: "Gandalf", hp: 100, pos: Vec2{x: 10.0, y: 20.0}}
+    v1 := Vec2{x: -1.0, y: 1.0}
+
+    inspect(p1)
+    print("")
+    inspect(v1)
+}

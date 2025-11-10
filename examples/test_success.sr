@@ -1,0 +1,266 @@
+package test_success
+
+a := 31
+b :: 231.0i + a * 2.0
+c : f64 = b + 1.0
+d : string : "Hello, World!"
+
+test_proc :: proc (x: i32) i32 {
+    return x * 2
+}
+
+test_func :: fn ((a, b): (i32, i32), c: any) i32 {
+    e := a + b
+    e = e + c
+    f := 'a'
+    g := null
+    h := undefined
+    tuple := (1, 2.0, "three")
+    arr := [1, 2, 3, 4]
+    map := ["one": 1, "two": 2]
+    Position :: struct {
+        x: f64,
+        y: f64,
+    }
+    pos := Position { x: 1.0, y: 2.0 }
+    Color :: enum { Red, Green, Blue }
+    col := Color.Red
+    Result :: variant { Ok(i32), Err(string) }
+    Union :: union { A: i32, B: f64, C: string }
+    res := Result.Ok(0)
+
+    out := async {
+        return 5
+    }
+
+    r := -5 + 3 * (2 - 8) / 4 % 3 == 1 and true or false != !false
+    addr := &a
+    deref := addr.*
+    range := 1..10
+    range_inclusive := 1..=10
+
+    // bin ops
+    bin_and := 0b1100 & 0b1010
+    bin_or := 0b1100 | 0b1010
+    bin_xor := 0b1100 ^ 0b1010
+    // bin_not := ~0b1100
+    bin_shl := 0b0001 << 2
+    bin_shr := 0b1000 >> 2
+    not_bin_not := !0b1100
+
+    lt := 1 < 2
+    lte := 1 <= 2
+    gt := 2 > 1
+    gte := 2 >= 1 
+    eq := 1 == 1
+    neq := 1 != 2 
+    add := 1 + 2
+    sub := 2 - 1
+    mul := 2 * 3
+    div := 6 / 3
+    modu := 5 % 2 
+    and_ := true and false
+    or_ := true or false
+    orelse_ := true orelse false
+    catch_ := true catch false
+    catch_ = true catch |e| {
+        return e
+    }
+    optional: ?i32 = 5
+    a = optional?
+    err : !i32 = 4
+    a = err!
+    arr := [1, 2, 3]
+    arr[0] = 4
+    field := pos.x
+    map := ["one": 1, "two": 2]
+    map["one"] = 2
+    tup := (1, 2.0, "three")
+    tup.0 = 4
+    future := async_fn(5)
+    result := future.await
+    casting := a.(f64)
+    bit_cast := a.^f64
+    sat_cast := a.|f64
+    wrap_cast := a.%f64
+    checked_cast := a.?f64
+
+    if a > 0 {
+        a = a - 1
+    } else if a < 0 {
+        a = a + 1
+    } else {
+        a = 0
+    }
+    while a > 0 {
+        a = a - 1   
+    }
+
+    while is Some(val) := optional {
+        a = a + val
+        optional = null
+    }
+    
+    for i in 0..10 {
+        a = a + i
+    }
+
+    for x in arr {
+        a = a + x
+    }
+
+    match col {
+        Color.Red => {
+            a = a + 1
+        },
+        Color.Green => {a = a + 2;},
+        Color.Blue => {a = a + 3;},
+        0..=2 => {a = a + 4;},
+        3..5 => {a = a + 5;},
+        ..10 => {a = a + 6;},
+    //  11.. => {a = a + 7;},
+        8 | 9 => {a = a + 8;},
+        10 => {a = a + 9;},
+        (_, x) if x > 10 => {a = a + 10;},
+        [head @ x, ..] => {a = a + head;},
+        [first, second, ..] => {a = a + first + second;},
+        (x, y) => {a = a + x + y;},
+        Position {x, y} => {a = a + x + y;},
+        Color.Red | Color.Green => {a = a + 11;},
+        Color.Blue => {a = a + 12;},
+        A.B.C(2, 3) => {a = a + 13;},
+        A.B.C{field: 5} => {a = a + 14;},
+        Result.Ok(v) => {a = a + v;},
+
+          _ => {a = a + 6;},
+    }
+
+    match res {
+        Result.Ok(v) => {a = a + v;},
+        Result.Err(e) => {a = a - 1;},
+    }
+
+    match optional {
+        Some(v) => {a = a + v;},
+        None => {a = a - 1;},
+    }
+
+    {
+        nested_a := 10
+        a = a + nested_a
+    }
+
+    comptime {
+        comptime_a := 20
+        a = a + comptime_a
+    }
+
+    code_block :: code {
+        a = a + b0001
+    }
+
+    mlir_op :: mlir op {
+        %0 = arith.addi %a, %b : i32
+    }
+    mlir_attr :: mlir attribute {
+       #my_attr = #my_value
+    }
+    mlir_type :: mlir type {
+       !my_type<"param">
+    }
+    mlir_module :: mlir {
+       module {
+          func @my_func(%arg0: i32) -> i32 {
+              %0 = arith.addi %arg0, %arg0 : i32
+              return %0 : i32
+          }
+       }
+    }
+
+    math :: import "math"
+    sqrt := math.sqrt(16.0)
+
+    code_block_type :: typeof(code_block)
+    assert(code_block_type == Code)
+
+    insert code_block
+
+    for i in 0..10 {
+        if i == 5 {
+            break
+        }
+        if i == 8 {
+            continue
+        }
+    }
+
+    loop_label: while a < 100 {
+        a = a + 1
+        if a == 50 {
+            break :loop_label a
+        }
+        unreachable
+    }
+
+    loop_for: for i in 0..100 {
+        if i == 50 {
+            break :loop_for
+        }
+        a = a + 1
+    }
+
+    defer {
+        a = a + 1
+    }
+
+    errdefer {
+        a = a - 1
+    }
+
+    annotated_fn :: @[deprecated=true, inline] fn (x: i32) i32 {
+        return x * 2
+    }
+    Error :: error {
+        NotFound,
+        Unauthorized,
+        Unknown{message: string},
+    }
+    Enum :: enum (u8) {
+        A = 1,
+        B = 2,
+        C = 3,
+    }
+
+    closure = |x: i32| i32 {
+        return x * 2
+    }
+
+    lambda_expr = |x: i32| x * 2
+    untyped_lambda = |x| x * 2
+
+    A : type = i32
+    NoReturn : type = noreturn
+
+    a = A.B(){}
+    b = B.C[0]{}
+    a = const_ptr.*
+    simd_type : simd(f32, 4) = [1.0, 2.0, 3.0, 4.0]
+    complex_ty : complex(f64) = 1.0 + 2.0i
+    tensor_ty : tensor(f32, 2, 2) = [[1.0, 2.0], [3.0, 4.0]]
+    return a
+}
+
+
+
+extern_fn :: extern fn (a: i32) i32
+async_fn :: async fn (a: i32) i32 {
+    return a + 1
+}
+
+// asm_fn :: fn (a: i32) i32 asm {
+//    mov r0, a
+//    add r0, r0, #1
+//    bx lr
+//}
+
+

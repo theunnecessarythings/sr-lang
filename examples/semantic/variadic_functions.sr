@@ -1,0 +1,36 @@
+package variadic_functions
+
+// Semantic Example: Variadic Functions
+
+// This language handles variadic functions by bundling extra arguments
+// at the call site into a tuple, which is then passed to a final
+// parameter of type `any`.
+
+// This requires the compiler to perform compile-time specialization (generics)
+// to know the concrete type of the `args` tuple at each call site.
+
+print_variadic :: proc(prefix: string, args: any) {
+    print(prefix)
+
+    // The compiler can specialize this loop at compile time because it knows
+    // the exact types contained within the `args` tuple for each call.
+    // This is a form of "comptime ducktyping".
+    for arg in args {
+        print(" - ", arg)
+    }
+    print("\n")
+}
+
+main := proc() {
+    // Call with two extra arguments: an integer and a float
+    print_variadic("Numbers:", 10, 3.14)
+    // Inside this call, `args` is the tuple (10, 3.14)
+
+    // Call with three extra arguments of different types
+    print_variadic("Mixed Bag:", "hello", true, (1, 2))
+    // Inside this call, `args` is the tuple ("hello", true, (i32, i32))
+
+    // Call with just one extra argument
+    print_variadic("Singleton:", [1, 2, 3])
+    // Inside this call, `args` is the tuple ([3]i32)
+}

@@ -1,0 +1,8 @@
+main :: proc() {
+    // This will be our first test case. The compiler should evaluate
+    // the comptime block and replace it with a constant value 5.
+    x :: comptime { 2 + 3 }
+
+    // We will verify this by inspecting the TIR output, which should
+    // show `x` being initialized with a constant integer, not an expression.
+}

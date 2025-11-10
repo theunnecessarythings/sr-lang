@@ -1,0 +1,38 @@
+package main
+
+// Advanced Features
+
+main::proc() {
+
+    // Closure expression
+    add_one := |x: i32| i32 { return x + 1 }
+
+    // Closure with type inference
+    square := |x| x * x
+
+    // Using a closure
+    result := add_one(5)
+
+    // Async block
+    future_val := async {
+        // do some long-running work
+        return 42
+    }
+
+    // Await expression
+    awaited_val := future_val.await
+
+    // Error propagation
+    // Assumes a function `might_fail` that returns a value or an error.
+    // The `!` operator propagates the error.
+    successful_result := might_fail()!
+
+    // Dereference expression
+    // Assumes `ptr` is a pointer.
+    value := ptr.*
+
+    // Range expressions
+    range1 := 1..10
+    range2 := 1..=10
+
+}

@@ -1,0 +1,35 @@
+package main
+
+// Defer and Errdefer
+
+// A procedure demonstrating defer and errdefer.
+process_resource :: proc() bool!Error {
+    print("Opening resource...")
+    resource := acquire_resource()! // Assume this can fail
+
+    // `defer` runs when the procedure exits, for any reason (success or error).
+    // It's useful for cleanup like closing files or releasing locks.
+    defer print("Closing resource...")
+
+    // `errdefer` only runs if the procedure exits because of an error.
+    // It's useful for cleanup that's only needed on failure, like deleting
+    // a partially created file.
+    errdefer print("An error occurred. Rolling back transaction.")
+
+    // Use the resource, which might also produce an error.
+    use_resource(resource)! 
+
+    print("Resource processed successfully.")
+    return true
+}
+
+main := proc() {
+    print("--- Running successful case ---")
+    process_resource() catch {} // Ignore error for this example run
+
+    print("\n--- Running failure case ---")
+    // Assume `acquire_resource` is now rigged to fail
+    process_resource_that_fails() catch |err| {
+       print("Caught expected error: ", err)
+    }
+}

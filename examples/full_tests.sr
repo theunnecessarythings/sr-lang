@@ -1,0 +1,234 @@
+package main
+
+// =====================
+// Constants and Variables
+// =====================
+PI :: 3.14159
+ANSWER :: 42
+
+counter: i32 = 0
+name := "world"
+flag := true
+
+// Tuples, Arrays, Slices, Maps
+tup: (i32, string, bool) = (1, "x", false)
+arr: [5]i32 = [1, 2, 3, 4, 5]
+slice: []i32 = arr[1..4]
+idx := arr[2]
+mp: [string:i32] = ["one":1, "two":2]
+
+// =====================
+// Structs, Enums, Variants, Unions
+// =====================
+Point :: struct {
+  x: i32,
+  y: i32,
+}
+
+State :: enum {
+  Running,
+  Paused,
+}
+
+Msg :: variant {
+  Write(string),
+  Read(bool),
+  Nothing,
+}
+
+Either :: union {
+  i: i32,
+  f: f32,
+}
+
+pt := Point{ x: 10, y: 20 }
+state := State.Running
+msg := Msg.Write("hello")
+either := Either{ i: 123 }
+px := pt.x
+
+// =====================
+// Types as Expressions
+// =====================
+FnTy :: fn(i32, i32) i32
+ProcTy :: proc(i32, string)
+OptIntTy :: ?i32
+PtrIntTy :: *i32
+ConstPtrIntTy :: *const i32
+VecTy :: simd(f32, 4)
+CxTy :: complex(f32)
+TenTy :: tensor(2, 3, i32)
+
+// =====================
+// Functions and Procedures
+// =====================
+add := @[inline] fn(a: i32, b: i32) i32 {
+  return a + b
+}
+
+print_sum :: proc(a: i32, b: i32) {
+  sum := add(a, b)
+  print(sum)
+}
+
+// Closure-like value (body expression)
+inc := fn(x: i32) i32 { return x + 1 }
+
+// =====================
+// Control Flow
+// =====================
+main :: proc() {
+  // if/else
+  if flag {
+    counter = counter + 1
+  } else {
+    counter = counter - 1
+  }
+
+  // while loop with label
+  outer: while (counter < 5) {
+    counter = counter + 1
+    if counter == 3 {
+      break :outer
+    }
+  }
+
+  // for-in loop over array
+  total := 0
+  for x in arr {
+    total = total + x
+  }
+
+  // match over variant
+  res := match msg {
+    Msg.Write(s) => s.len,
+    Msg.Read(b) => if b { 1 } else { 0 },
+    Msg.Nothing => 0,
+  }
+  print(res)
+
+  // defer
+  defer print("done")
+
+  // block as expression
+  value := { tmp := 2; tmp + 3 }
+  print(value)
+
+  // optional unwrap, address-of and deref
+  opt: ?i32 = 123
+  got := opt?
+  p := &got
+  v := *p
+  print(v)
+
+  // casts
+  f: f32 = 123.45
+  i: i64 = 1000
+  _ = f.(i32)
+  _ = i.^f32
+  _ = i.|i8
+  _ = (254 + 5).%u8
+  _ = i.?i8
+
+  // comptime and code blocks (meta)
+  comptime {
+    counter = counter + 1
+  }
+  code {
+    x := 1
+    y := x + 2
+  }
+
+  // mlir block capture (opaque)
+  mod := mlir {
+    func.func @foo() {
+      return
+    }
+  }
+  _ = mod
+}
+
+// Async stub and extern
+async_task := async proc() {
+  // ...
+}
+
+extern_fn := extern fn(c: char) bool
+
+// =====================
+// Operators (brief)
+// =====================
+ops::proc() {
+  a := 10
+  b := 3
+  _ = a + b
+  _ = a - b
+  _ = a * b
+  _ = a / b
+  _ = a % b
+  _ = a == b
+  _ = a != b
+  _ = a > b
+  _ = a < b
+  _ = a >= b
+  _ = a <= b
+  _ = true and false
+  _ = true or false
+  _ = (a, b).0
+  _ = arr[1]
+  _ = arr[1..3]
+}
+
+// =====================
+// Intentional Errors Section
+// =====================
+
+// 1) Decl type mismatch
+mismatch1: i32 = 1.5
+
+// 2) Statements outside function
+_ := { return 1 }
+_ := { break }
+_ := { continue }
+_ := { defer print("x") }
+_ := { errdefer print("y") }
+
+// 3) Return value rules
+bad_ret1 :: proc() { return 1 }
+bad_ret2 :: fn() i32 { return }
+
+// 4) Non-boolean conditions
+cond_bad :: proc() {
+  if 1 { }
+}
+while_bad :: proc() {
+  while 123 { break }
+}
+
+// 5) Logical 'and'/'or' with non-bool operands
+logic_bad :: proc() {
+  _ = 1 and false
+  _ = true or 2
+}
+
+// 6) Duplicate parameter names
+dup_param := fn(a: i32, a: i32) i32 { return a }
+
+// 7) Function type errors
+BadFnTy1 :: fn(a, b) i32
+BadFnTy2 :: fn(i32, i32)
+
+// 8) Builtin type validation
+N :: 4
+BadArrTy :: [N]i32 // size must be an integer literal
+BadSimd :: simd(f32, 4.0)
+BadTensor :: tensor(i32, 2, 3.14)
+
+// 9) Aggregate duplicate fields/variants
+DupStruct :: struct { x: i32, x: i32 }
+DupEnum :: enum { A, A }
+DupVar :: variant { A, A }
+DupUnion :: union { x: i32, x: i32 }
+
+// 10) Enum discriminant warning (should be integer literal)
+EnumWarn :: enum(1.5) { X, Y }

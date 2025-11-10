@@ -1,0 +1,110 @@
+package metaprogramming
+
+// Metaprogramming and Low-Level Features
+
+
+test1::proc() {
+    // comptime: Execute code at compile time
+    comptime {
+        // This code runs during compilation. It can be used for
+        // assertions, generating data, or metaprogramming.
+        assert(1 + 1 == 2)
+        print("Hello from the compiler!")
+    }
+}
+
+// code: Represents a block of code as data (AST)
+build_add_function :: proc() Code {
+    // This returns a code block, not a function pointer.
+    // It's an abstract syntax tree that can be manipulated.
+    return code {
+        add := fn(a: i32, b: i32) i32 { return a + b }
+    }
+}
+
+test2 :: proc() {
+    // insert: Splice a `code` block into the current scope
+    comptime {
+        // Get the AST for an `add` function
+        add_func_ast := build_add_function()
+
+        // The `insert` statement splices the AST into the program here.
+        // After this, an `add` function will exist at the global scope.
+        insert add_func_ast
+    }
+}
+
+// Now the `add` function can be used, because it was inserted at compile time.
+result := add(10, 20)
+
+
+// --- MLIR Blocks ---
+// The `mlir` keyword introduces a block of raw MLIR text.
+// The parser correctly handles nested braces `{...}` inside.
+// The compiler's backend would then process this MLIR block.
+my_op := mlir {
+  module {
+    func.func @main() -> (i32) {
+      %c42 = arith.constant 42 : i32
+      return %c42 : i32
+    }
+  }
+}
+
+
+// --- Assembly Functions ---
+// The `asm` keyword can replace a function body to implement it directly
+// in assembly. The compiler handles the ABI (calling conventions).
+
+// A function that takes two i64 numbers and adds them.
+add_asm :: fn(a: i64, b: i64) i64 asm {
+    mov rax, a  // Compiler maps `a` to a register or stack location
+    add rax, b  // Add the second argument
+    // The result is returned in `rax` by convention
+}
+
+// Using the assembly function
+asm_result := add_asm(10, 20) // asm_result will be 30
+
+
+// --- AST Manipulation with `code` blocks ---
+
+// The `code` keyword captures a block of code into a compile-time value,
+// representing its Abstract Syntax Tree (AST). This AST can then be
+// manipulated by other `comptime` code before being inserted back
+// into the program.
+
+// This example assumes a hypothetical API for AST manipulation where AST
+// nodes have fields like `.kind`, `.lhs`, `.rhs`, `.op`, `.value` etc.
+
+// A comptime function that takes an AST of a binary operation
+// and changes its right-hand side to a new value.
+change_rhs_literal :: proc(ast_node: Code, new_val: any) Code {
+    // Hypothetical comptime checks on the AST structure
+    comptime assert(ast_node.kind == AstKind.BinaryOperation)
+    comptime assert(ast_node.rhs.kind == AstKind.Literal)
+
+    // Assume a stdlib constructor for creating a new literal AST node
+    ast_node.rhs = std.ast.make_literal(new_val)
+
+    return ast_node
+}
+
+
+test3 :: proc() {
+
+    comptime {
+        // 1. Capture an expression as an AST
+        original_expr := code { 10 + 2 }
+
+        // 2. Manipulate it: change the `2` to a `5`
+        modified_expr := change_rhs_literal(original_expr, 5)
+
+        // 3. Insert the modified code. This creates a new constant.
+        // The inserted code is `10 + 5`
+        NEW_RESULT :: modified_expr
+    }
+
+    // Verify the result of the inserted code
+    assert(NEW_RESULT == 15)
+}

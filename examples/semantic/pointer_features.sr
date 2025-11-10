@@ -1,0 +1,34 @@
+package pointer_features
+
+// Semantic Example: Pointer Features
+
+Point :: struct { x: i32, y: i32 }
+
+// Helper procedures are defined as constants (::)
+modify :: proc(p_ptr: *Point) {
+    // We can use `.*` to explicitly dereference the pointer first.
+    (p_ptr.*).x = 100
+
+    // Or, we can rely on auto-dereferencing for field access, which is more convenient.
+    p_ptr.y = 200
+}
+
+print_const :: proc(p_ptr: *const Point) {
+    // Reading is fine with auto-deref.
+    print("Point is (", p_ptr.x, ", ", p_ptr.y, ")")
+
+    // This would cause a compile-time error because p_ptr is a const pointer.
+    // p_ptr.x = 300
+}
+
+// The main entry point is defined as a variable (:=)
+main := proc() {
+    p := Point{ x: 10, y: 20 }
+    
+    print_const(&p) // Pass a pointer to p
+
+    modify(&p) // Pass a mutable pointer to p
+
+    print("After modification:")
+    print_const(&p)
+}

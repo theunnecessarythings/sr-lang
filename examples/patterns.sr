@@ -1,0 +1,55 @@
+package patterns
+
+// Pattern Matching Examples
+
+Point :: struct { x: i32, y: i32 }
+Option :: variant { Some(any), None }
+
+test_fn :: proc() {
+
+    // `match` expression with different patterns
+    match value {
+        1 => print("Number one"),
+        2 | 3 => print("Two or three"),
+        4..=10 => print("Between 4 and 10"),
+        Option.Some(x) => print("Got value: ", x), 
+        Point{ x: 0, y: y_val } => print("On the y-axis at", y_val),
+        [first, ..rest] => print("Array head and tail"),
+        _ => print("Default case"),
+    }
+  
+    // Patterns in variable declarations
+    (a, b) := (1, 2)
+  
+    // Patterns in `for` loops
+    for (index, value) in [(0, 'a'), (1, 'b')] {
+        print(index, value)
+    }
+  
+    // Identifier pattern with a sub-pattern
+    // Binds the value to `p` and also matches its contents.
+    match maybe_point {
+        p @ Option.Some(Point{ x, y }) => print("Point at", p),
+        _ => print("No point"),
+    }
+  
+    // Additional, explicit example of struct pattern matching
+    User :: struct { id: i32, name: string, role: string }
+    user_instance := User{ id: 1, name: "Alice", role: "admin" }
+  
+    match user_instance {
+        // Match on a field's value, and bind another field to a new variable.
+        User{ id: 1, name: user_name } => {
+            print("User 1 is named:", user_name)
+        },
+  
+        // Match and ignore certain fields using `..`
+        User{ role: "guest", .. } => {
+            print("A guest user was found.")
+        },
+  
+        // Default case
+        _ => print("Some other user."),
+    }
+
+}

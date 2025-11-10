@@ -1,0 +1,58 @@
+package attributes
+
+// Attribute syntax showcase
+// Syntax: @[a, b=ident, c=42, d=true]
+
+// Function with attributes and parameter attributes
+@[inline, export_name=my_add]
+add :: fn(
+    @[nonnull] a: i32,
+    @[nonnull, byref=true] b: i32,
+) i32 {
+    return a + b
+}
+
+// Procedure with attributes
+@[cold, noinline=true]
+main_proc :: proc() {
+    _ := add(1, 2)
+}
+
+// Struct with type-level and field-level attributes
+@[packed=true, repr=C]
+Point :: struct {
+    @[align=4] x: i32,
+    @[align=4] y: i32,
+}
+
+// Union with attributes
+@[repr=C]
+Value :: union {
+    @[tag=0] i: i32,
+    @[tag=1] f: f32,
+}
+
+// Enum with type-level and variant-level attributes
+@[repr=u8]
+Color :: enum {
+    @[val=0] Red,
+    @[val=1] Green,
+    @[val=2] Blue,
+}
+
+// Variant with attributes on variants and on payload fields
+@[repr=tagged]
+Result :: variant {
+    // Tuple-like payload with attribute
+    @[ok_attr=true] Ok(i32),
+
+    // Struct-like payload with attribute on the case and on fields
+    @[err_attr]
+    Err {
+        @[code=1] err_code: i32,
+        @[msg] msg: string,
+    },
+
+    // No payload with attribute
+    @[none_attr] None,
+}

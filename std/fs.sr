@@ -1,0 +1,32 @@
+package fs
+
+// Minimal filesystem wrappers (Linux)
+
+rt_strlen :: extern proc(*u8) usize
+
+// libc syscalls
+open  :: extern proc(*void, i32, u32) i32
+read  :: extern proc(i32, *void, usize) isize
+write :: extern proc(i32, *void, usize) isize
+close :: extern proc(i32) i32
+
+// Common flags (Linux)
+O_RDONLY :: i32 = 0
+O_WRONLY :: i32 = 1
+O_RDWR   :: i32 = 2
+O_CREAT  :: i32 = 64
+O_TRUNC  :: i32 = 512
+
+open_ro :: proc(path: string) i32 { return open(path.^*void, O_RDONLY, 0) }
+open_wo_create :: proc(path: string) i32 { return open(path.^*void, O_WRONLY | O_CREAT | O_TRUNC, 0o644) }
+fd_close :: proc(fd: i32) i32 { return close(fd) }
+
+fd_write :: proc(fd: i32, buf: *u8, len: usize) isize { return write(fd, buf.^*void, len) }
+fd_read  :: proc(fd: i32, buf: *u8, len: usize) isize { return read(fd, buf.^*void, len) }
+
+// Write all bytes; returns true if fully written
+write_all :: proc(fd: i32, buf: *u8, len: usize) bool {
+    // naive: assume single write succeeds for now
+    return write(fd, buf.^*void, len) == len.^isize
+}
+

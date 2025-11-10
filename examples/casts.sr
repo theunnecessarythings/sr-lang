@@ -1,0 +1,35 @@
+package main
+
+// Postfix Cast Operators
+
+main::proc() {
+
+  my_float: f32 = 123.45
+  my_int: i64 = 1000
+
+  // 1. Normal Cast (`.type`)
+  // Truncates the float to an integer.
+  cast_to_int: i32 = my_float.(i32)
+
+  // 2. Bitcast (`.^type`)
+  // Reinterprets the bits of the value as the new type.
+  // The types must have the same size.
+  some_bits: u32 = 0x42F6E979
+  bits_as_float: f32 = some_bits.^f32 // Interprets the integer bits as a float
+
+  // 3. Saturating Cast (`.|type`)
+  // Clamps the value to the min/max of the target type if it overflows.
+  big_int: i64 = 99999
+  saturated_to_i8: i8 = big_int.|i8 // Will be 127 (i8::MAX)
+
+  // 4. Wrapping Cast (`.%type`)
+  // Wraps the value around on overflow, using modular arithmetic.
+  val: u8 = 254
+  wrapped_add: u8 = (val + 5).%u8 // 254 + 5 wraps around to 3
+
+  // 5. Checked Cast (`.?type`)
+  // Returns an optional type. It will be `null` if the cast fails (i.e., out of range).
+  checked_cast: ?i8 = big_int.?i8 // This will be null, as 99999 doesn't fit in an i8
+  successful_checked_cast: ?i8 = (100).?i8 // This will be Some(100)
+
+}

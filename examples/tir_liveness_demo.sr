@@ -1,0 +1,42 @@
+package main
+
+// Minimal program to exercise TIR liveness across
+// straight-line code, branches, and a simple loop.
+
+add_branch :: proc(a: i32, b: i32) i32 {
+    c := a + b
+    if c > 0 {
+        d := c + 1
+        g := d + b
+        return g
+    } else {
+        e := b - a
+        f := e + c
+        return f
+    }
+}
+
+loop_sum :: proc(n: i32) i32 {
+    i: i32 = 0
+    s: i32 = 0
+    while i < n {
+        s = s + i
+        i += 1.(i32)
+    }
+    return s
+}
+
+main :: proc() i32 {
+    a: i32 = 3
+    b: i32 = 5
+    c := 0
+    x := add_branch(a, b)
+    y := loop_sum(4)
+    return x + y
+}
+
+// Unused function to demonstrate pruning
+dead_fn :: proc(a: i32) i32 {
+    t := 40 + 2
+    return t
+}

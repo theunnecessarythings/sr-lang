@@ -1,0 +1,15 @@
+package main
+
+printf :: extern proc(*void, any) i32
+
+add :: proc(a: i64, b: i64) i64 {
+    return a + b
+}
+
+main :: proc() {
+    fmt := "%d\n"
+    r := add(40, 2)
+    printf("Hello, World!\n".^*void)
+    printf(fmt.^*void, r)
+}
+

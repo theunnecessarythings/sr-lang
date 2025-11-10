@@ -1,0 +1,54 @@
+package main
+
+fmt :: import "std/fmt"
+glfw :: import "vendor/glfw3"
+
+
+main :: proc() {
+    fmt.println("Initializing GLFW...\n")
+    // Initialize GLFW
+    if glfw.glfwInit() == glfw.FALSE {
+        fmt.println("Failed to initialize GLFW\n")
+        return
+    }
+    defer glfw.glfwTerminate()
+    fmt.println("GLFW initialized.\n")
+
+    fmt.println("Creating window...\n")
+    glfw.glfwDefaultWindowHints()
+    glfw.glfwWindowHint(glfw.CLIENT_API, glfw.OPENGL_API)
+    glfw.glfwWindowHint(glfw.CONTEXT_VERSION_MAJOR, 3)
+    glfw.glfwWindowHint(glfw.CONTEXT_VERSION_MINOR, 3)
+    glfw.glfwWindowHint(glfw.OPENGL_PROFILE, glfw.OPENGL_CORE_PROFILE)
+    glfw.glfwWindowHint(glfw.OPENGL_FORWARD_COMPAT, glfw.TRUE)
+    // Create a windowed mode window and its OpenGL context
+    window := glfw.glfwCreateWindow(640, 480, "Hello GLFW", 0.^*void, 0.^*void)
+    if window.^i64 == 0 {
+        fmt.println("Failed to create GLFW window\n")
+        description: *i8 = undefined
+        errorCode := glfw.glfwGetError(&description)
+        fmt.println("GLFW Error (%d): %s\n", errorCode, description)
+        return
+    }
+    defer glfw.glfwDestroyWindow(window)
+    fmt.println("Window created.\n")
+
+    // Make the window's context current
+    glfw.glfwMakeContextCurrent(window)
+
+    fmt.println("Entering main loop...\n")
+    // Loop until the user closes the window
+    while glfw.glfwWindowShouldClose(window) == glfw.FALSE {
+        // Render here
+        // In a real application, you would put your OpenGL/Vulkan rendering calls here.
+        // For this example, we'll just simulate a clear.
+        // fmt.println("Rendering frame...")
+
+        // Swap front and back buffers
+        glfw.glfwSwapBuffers(window)
+
+        // Poll for and process events
+        glfw.glfwPollEvents()
+    }
+    fmt.println("Window closed. Exiting.\n")
+}

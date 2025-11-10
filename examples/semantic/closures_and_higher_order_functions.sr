@@ -1,0 +1,37 @@
+package closures_and_higher_order_functions
+
+// Semantic Example: Closures and Higher-Order Functions
+
+// A higher-order function that takes a list and a function (closure)
+// and returns a new list with the function applied to each element.
+map :: proc(list: []i32, f: fn(i32) i32) [dyn]i32 {
+    new_list : [dyn]i32 = []
+    for item in list {
+        new_list.append(f(item))
+    }
+    return new_list
+}
+
+// A closure that captures a variable from its environment.
+make_adder :: proc(amount: i32) fn(i32) i32 {
+    // The returned closure captures the `amount` variable.
+    add_amount := |x: i32| i32 {
+        return x + amount
+    }
+    return add_amount
+}
+
+main := proc() {
+    // 1. Using a higher-order function
+    numbers := [1, 2, 3, 4]
+    doubler := |x| x * 2
+    doubled_numbers := map(numbers, doubler)
+    print("Doubled numbers: ", doubled_numbers) // Expected: [2, 4, 6, 8]
+
+    // 2. Using a closure that captures its environment
+    add_5 := make_adder(5)
+    add_10 := make_adder(10)
+
+    print("7 + 5 = ", add_5(7))   // Expected: 12
+    print("7 + 10 = ", add_10(7)) // Expected: 17
+}

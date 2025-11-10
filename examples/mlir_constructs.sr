@@ -1,0 +1,47 @@
+package mlir_constructs
+
+// MLIR Construct Examples
+
+// The `mlir` keyword can be modified with an attribute to parse
+// different kinds of MLIR constructs.
+
+// The content of the block is captured as a stream of tokens, and the
+// parser correctly handles nested `{...}` braces.
+
+// 1. Default (Module)
+// If no attribute is provided, it is assumed to be a full module.
+my_module := mlir {
+    module {
+        func.func @main() {
+            return
+        }
+    }
+}
+
+// 2. Type
+my_ptr_type := mlir type {
+    !llvm.ptr<i32>
+}
+
+// 3. Attribute
+my_attr := mlir attribute {
+     #"my_dialect.my_attribute"<{
+         some_property = 42
+     }>
+}
+
+// 4. Operation
+// A single MLIR operation captured as text.
+// Backend or a later lowering phase can interpret this op.
+my_add_op := mlir op {
+    arith.addi %a, %b : i32
+}
+
+// 5. Operation with nested region
+my_region_op := mlir op {
+    scf.if %c0 {
+        %1 = arith.addi %a, %b : i32
+    } else {
+        %2 = arith.subi %a, %b : i32
+    }
+}

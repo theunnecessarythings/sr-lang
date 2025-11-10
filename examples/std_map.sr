@@ -1,0 +1,29 @@
+package main
+
+// Example: simple string-keyed map
+
+io  :: import "std/io"
+map :: import "std/map"
+
+main :: proc() {
+    m := map.init(8) // value_size = 8 (i64)
+
+    v1: i64 = 100
+    v2: i64 = 200
+
+    map.set(&m, "a", (&v1).^*void)
+    map.set(&m, "b", (&v2).^*void)
+
+    got: i64 = 0
+    if (map.get(&m, "a", (&got).^*void)) {
+        io.println("a=%d", got)
+    }
+
+    _ = map.remove(&m, "b")
+    if (!map.get(&m, "b", (&got).^*void)) {
+        io.println0("b missing")
+    }
+
+    map.deinit(&m)
+}
+

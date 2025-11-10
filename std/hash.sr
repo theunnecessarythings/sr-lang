@@ -1,0 +1,25 @@
+package hash
+
+// Hash utilities
+
+rt_strlen :: extern proc(*u8) usize
+
+// FNV-1a 64-bit
+fnv1a64 :: proc(buf: *u8, len: usize) u64 {
+    hash: u64 = 0xcbf29ce484222325
+    prime: u64 = 0x100000001b3
+    i: usize = 0
+    while (i < len) {
+        hash = hash ^ (buf[i]).^u64
+        hash = hash * prime
+        i = i + 1
+    }
+    return hash
+}
+
+hash_str :: proc(s: string) u64 {
+    p := s.^*u8
+    l := rt_strlen(p)
+    return fnv1a64(p, l)
+}
+

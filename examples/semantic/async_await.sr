@@ -1,0 +1,41 @@
+package async_await
+
+// Semantic Example: Async/Await
+
+User :: struct { id: i32, name: string }
+
+// Assume these procedures interact with external systems (e.g., network, disk)
+// and are thus asynchronous. They are `proc`s because they have side effects (I/O).
+
+// Fetches a user from a database or web service.
+fetch_user :: async proc(id: i32) User {
+    // In a real implementation, this would involve non-blocking I/O.
+    print("Fetching user...", id)
+    return User{ id: id, name: "Alice" }
+}
+
+// Fetches the user's friends.
+fetch_friends :: async proc(user: User) []User {
+    print("Fetching friends for user: ", user.name)
+    return [User{ id: 2, name: "Bob"}, User{ id: 3, name: "Charlie"}]
+}
+
+// An async procedure that coordinates other async procedures.
+get_friends_of_user :: async proc(id: i32) []User {
+    // `.await` suspends execution of this procedure until `fetch_user` completes,
+    // without blocking the entire thread.
+    user := fetch_user(id).await
+
+    // Once we have the user, we can fetch their friends.
+    friends := fetch_friends(user).await
+
+    return friends
+}
+
+// To run the top-level async procedure, we assume there's a runtime
+// that can block and wait for the final result.
+main := proc() {
+    print("Starting async operations...")
+    friends := get_friends_of_user(1).await // Top-level await
+    print("Finished! Friends are: ", friends)
+}

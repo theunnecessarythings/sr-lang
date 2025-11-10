@@ -1,0 +1,36 @@
+package dynamic_arrays
+
+// Semantic Example: Dynamic Arrays
+
+// The `[dyn]T` syntax defines a dynamic array (also known as a slice or vector).
+// It can grow in size at runtime.
+
+// The main entry point is defined as a variable (:=)
+main := proc() {
+    // Create an empty dynamic array of integers.
+    // Note the type annotation is needed here.
+    numbers: [dyn]i32 = []
+
+    print("Initial capacity:", numbers.capacity) // Assuming .capacity property
+    print("Initial length:", numbers.len)       // Assuming .len property
+
+    // Append items to the array. The array will handle resizing its capacity as needed.
+    // Assuming an `append` method is available for dynamic arrays.
+    numbers.append(10)
+    numbers.append(20)
+    numbers.append(30)
+
+    print("Appended 3 items.")
+    print("Current length:", numbers.len)
+
+    // Iterate over the items
+    sum := 0
+    for n in numbers {
+        sum += n
+    }
+
+    print("Sum of elements:", sum)
+
+    // Access elements by index
+    print("Second element is:", numbers[1])
+}

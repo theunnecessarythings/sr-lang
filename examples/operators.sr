@@ -1,0 +1,61 @@
+package operators
+
+operators::proc() {
+
+  // Operators
+
+  // Arithmetic operators
+  a := 10 + 20
+  b := a - 5
+  c := b * 2
+  d := c / 4
+  e := d % 3
+
+  // Comparison operators
+  eq := a == b
+  neq := a != b
+  gt := a > b
+  lt := a < b
+  ge := a >= b
+  le := a <= b
+
+  // Logical operators
+  and_op := true and false
+  or_op := true or false
+
+  // Bitwise operators
+  bit_and := 0b1010 & 0b1100
+  bit_or := 0b1010 | 0b1100
+  bit_xor := 0b1010 ^ 0b1100
+  shl := 0b1010 << 2
+  shr := 0b1010 >> 1
+
+  // Unary operators
+  neg := -a
+  not_op := !true
+
+  // Assignment operators
+  f := 10
+  f += 5
+  f -= 3
+  f *= 2
+  f /= 4
+  f %= 2
+
+  // Complex number expression
+  z: complex(f32) = 1.5 + 2.5i
+
+  // --- Wrapping and Saturating Operators ---
+
+  // Wrapping (or modular) arithmetic ignores overflow.
+  // e.g., for a u8, 255 +| 1 results in 0.
+  wrapped_add := a +| b
+
+  // Saturating arithmetic clamps the result to the min/max value for the type.
+  // e.g., for a u8, 250 +% 10 results in 255.
+  saturated_add := a +% b
+
+  // These also have compound assignment versions.
+  c +|= 10
+  d *%= 2
+}

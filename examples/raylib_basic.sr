@@ -1,0 +1,16 @@
+package main
+
+rl :: import "vendor/raylib"
+
+main :: proc() {
+    rl.init_window(640, 360, "raylib + sr")
+    rl.SetTargetFPS(60)
+    while !rl.WindowShouldClose() {
+        rl.BeginDrawing()
+        rl.ClearBackground(rl.RED)
+        rl.draw_text("Hello, raylib!", 190, 170, 20, rl.BLACK)
+        rl.EndDrawing()
+    }
+    rl.CloseWindow()
+}
+

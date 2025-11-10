@@ -1,0 +1,29 @@
+package main
+
+printf :: extern proc(*void, any) i32
+
+add :: @[mlir_fn] proc(i64, i64) i64 
+sub :: @[mlir_fn] proc(i64, i64) i64
+
+// TODO: global mlir is not supported yet
+mlir { 
+        func.func @sub(%a: i64, %b: i64) -> i64 {
+            %sum = arith.subi %a, %b : i64
+            func.return %sum : i64
+        }
+    }
+
+main :: proc() {
+    mlir { 
+        func.func @add(%a: i64, %b: i64) -> i64 {
+            %sum = arith.addi %a, %b : i64
+            func.return %sum : i64
+        }
+    }
+    c := mlir op { arith.constant 42 : i64 }
+    d := add(1728, 1)
+    e := sub(1728, 1)
+    printf("The sum is: %d\n".^*void, d)
+    printf("The difference is: %d\n".^*void, e)
+    printf("The constant value is: %d\n".^*void, c)
+}

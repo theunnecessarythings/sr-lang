@@ -1,0 +1,17 @@
+pub const lexer = @import("lexer.zig");
+pub const diagnostics = @import("diagnostics.zig");
+pub const checker = @import("checker.zig");
+pub const symbols = @import("symbols.zig");
+pub const pipeline = @import("pipeline.zig");
+pub const types = @import("types.zig");
+pub const lower_tir = @import("lower_tir.zig");
+pub const codegen = @import("codegen_main.zig");
+pub const mlir = @import("mlir_bindings.zig");
+pub const compile = @import("compile.zig");
+pub const parser = @import("parser.zig");
+pub const cst = @import("cst.zig");
+pub const tir = @import("tir.zig");
+pub const ast = @import("ast.zig");
+pub const lower_to_ast = @import("lower_to_ast.zig");
+pub const json_printer = @import("json_printer.zig");
+pub const package = @import("package.zig");

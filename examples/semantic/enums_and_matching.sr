@@ -1,0 +1,37 @@
+package enums_and_matching
+
+// Semantic Example: Variants, Enums and Pattern Matching
+
+// WebEvent is a constant that holds a variant type.
+WebEvent :: variant {
+    PageLoad, // Variant with no data
+    Click { x: i64, y: i64 }, // Struct-like variant
+    KeyPress(char), // Tuple-like variant
+}
+
+// A procedure that processes WebEvents using exhaustive pattern matching.
+process_event :: proc(event: WebEvent) {
+    match event {
+        WebEvent.PageLoad => print("Page loaded."),
+        WebEvent.Click{ x, y } => print("User clicked at: ", x, ",", y),
+        WebEvent.KeyPress(c) => {
+            if c == 'q' {
+                print("User pressed 'q', quitting.")
+            } else {
+                print("User pressed key: ", c)
+            }
+        },
+        // The match must be exhaustive. If a variant is missing, it should
+        // be a compile-time error.
+    }
+}
+
+main := proc() {
+    event1 := WebEvent.PageLoad
+    event2 := WebEvent.Click{ x: 100, y: 250 }
+    event3 := WebEvent.KeyPress('h')
+
+    process_event(event1)
+    process_event(event2)
+    process_event(event3)
+}

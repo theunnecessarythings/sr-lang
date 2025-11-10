@@ -1,0 +1,240 @@
+package main
+
+fmt :: import "std/fmt"
+glfw :: import "vendor/glfw3"
+skia :: import "vendor/skia"
+skiac :: import "vendor/skiac"
+
+get_proc_address_wrapper :: @[llvm_fn] proc(ctx: *void, name: *i8) skiac.GrGLFuncPtr {
+    _ = ctx;
+    return (glfw.glfwGetProcAddress((name).(*u8))).(skiac.GrGLFuncPtr);
+}
+
+main :: proc() {
+    if glfw.glfwInit() == glfw.FALSE {
+        fmt.println("Failed to initialize GLFW")
+        return
+    }
+    defer glfw.glfwTerminate()
+
+    glfw.glfwWindowHint(glfw.CONTEXT_VERSION_MAJOR, 3)
+    glfw.glfwWindowHint(glfw.CONTEXT_VERSION_MINOR, 3)
+    glfw.glfwWindowHint(glfw.OPENGL_PROFILE, glfw.OPENGL_CORE_PROFILE)
+
+    window := glfw.glfwCreateWindow(800, 600, "Skia Advanced (idiomatic)", 0.^*void, 0.^*void)
+    if window.^i64 == 0 {
+        fmt.println("Failed to create GLFW window")
+        return
+    }
+    defer glfw.glfwDestroyWindow(window)
+
+    glfw.glfwMakeContextCurrent(window)
+    glfw.glfwSwapInterval(1)
+
+    gl_interface := skia.GLInterface.make(0.^*void, get_proc_address_wrapper)
+    if gl_interface.is_null() {
+        fmt.println("skia.make_gl_interface failed")
+        return
+    }
+    defer gl_interface.unref()
+
+    dctx := skia.DirectContext.make_gl(&gl_interface)
+    if dctx.is_null() {
+        fmt.println("skia.direct_context_make_gl failed")
+        return
+    }
+    defer dctx.unref()
+
+    fb_w: i32 = 0
+    fb_h: i32 = 0
+    glfw.glfwGetFramebufferSize(window, &fb_w, &fb_h)
+
+    target := skia.BackendRenderTarget.make_gl(fb_w, fb_h, 1, 8, 0, 0x8058)
+    if target.is_null() {
+        fmt.println("skia.backend_render_target_make_gl failed")
+        return
+    }
+    defer target.unref()
+
+    color_space := skia.ColorSpace.srgb()
+    if color_space.is_null() {
+        fmt.println("skia.color_space_make_srgb failed")
+        return
+    }
+    defer color_space.unref()
+
+    // Prefer a concrete pixel geometry to allow subpixel text rendering (if supported)
+    props := skia.SurfaceProps.create(0, skia.PixelGeometry.RGB_H)
+    if props.is_null() {
+        fmt.println("skia.surface_props_create failed")
+        return
+    }
+    defer props.unref()
+
+    surface := skia.Surface.wrap_backend_render_target(
+        &dctx,
+        &target,
+        skia.SurfaceOrigin.BottomLeft,
+        skia.ColorType.N32,
+        &color_space,
+        &props)
+    if surface.is_null() {
+        fmt.println("skia.surface_wrap_backend_render_target failed")
+        return
+    }
+    defer surface.unref()
+
+    while glfw.glfwWindowShouldClose(window) == glfw.FALSE {
+        glfw.glfwPollEvents()
+
+        canvas := surface.get_canvas()
+
+        // Clear
+        canvas.clear(skia.argb(255, 0, 0, 0))
+
+        // Fill circle (demonstrate paint controls)
+        paint := skia.Paint.new()
+        paint.set_anti_alias(true)
+        paint.set_dither(true)
+        paint.set_color(skia.argb(255, 66, 133, 244)) // Google Blue
+        paint.set_alpha(220) // semi-opaque
+        canvas.draw_circle(fb_w.(f32) * 0.5, fb_h.(f32) * 0.5, (fb_w).(f32) * 0.25, &paint)
+
+        // Demonstrate transforms + draw_oval inside a pushed state
+        canvas.save()
+        canvas.translate(60.0, 60.0)
+        canvas.rotate(25.0)
+        oval_bounds := skia.Rect{x: 0.0, y: 0.0, width: 120.0, height: 80.0}
+        canvas.draw_oval(&oval_bounds, &paint)
+        // Demonstrate skew + draw_arc
+        canvas.skew(0.3, 0.0)
+        arc_bounds := skia.Rect{x: 140.0, y: 0.0, width: 100.0, height: 100.0}
+        canvas.draw_arc(&arc_bounds, 0.0, 270.0, true, &paint)
+        canvas.restore()
+
+        // Stroke rect
+        paint.set_color(skia.argb(255, 52, 168, 83)) // Google Green
+        paint.set_stroke_width(8)
+        paint.set_stroke_miter(4.0)
+        paint.set_stroke_cap(skia.PaintCap.Round)
+        paint.set_stroke_join(skia.PaintJoin.Bevel)
+        paint.set_style(skia.PaintStyle.Stroke)
+        rect := skia.Rect{x: 40.0, y: 40.0, width: fb_w.(f32) - 80.0, height: fb_h.(f32) - 80.0}
+        canvas.draw_rect(&rect, &paint)
+
+        // Demonstrate save_count/restore_to_count and draw_rrect
+        base_count := canvas.save_count()
+        canvas.save()
+        rr := skia.Rect{x: 80.0, y: 80.0, width: 140.0, height: 100.0}
+        // Apply a linear gradient shader to fill the round-rect
+        grad := skia.Shader.linear2(rr.x, rr.y, rr.x + rr.width, rr.y, skia.argb(255, 255, 0, 128), skia.argb(255, 0, 255, 255), skia.TileMode.Clamp)
+        fill := skia.Paint.new()
+        fill.set_anti_alias(true)
+        fill.set_style(skia.PaintStyle.Fill)
+        fill.set_shader(&grad)
+        canvas.draw_rrect(&rr, 16.0, 16.0, &fill)
+        // Slight blur image filter on subsequent draws
+        blur := skia.ImageFilter.blur(4.0, 4.0)
+        fill.set_image_filter(&blur)
+        rr2 := skia.Rect{x: rr.x + 16.0, y: rr.y + 16.0, width: rr.width, height: rr.height}
+        canvas.draw_rrect(&rr2, 24.0, 24.0, &fill)
+        // Cleanup
+        blur.unref(); fill.unref(); grad.unref()
+        canvas.restore_to_count(base_count)
+
+        // Clip + draw a line and a point to showcase more APIs
+        canvas.save()
+        clip := skia.Rect{x: 100.0, y: 100.0, width: 200.0, height: 120.0}
+        canvas.clip_rect(&clip, true)
+        // line across the clip
+        canvas.draw_line(clip.x, clip.y, clip.x + clip.width, clip.y + clip.height, &paint)
+        // point at clip center
+        canvas.draw_point(clip.x + clip.width * 0.5, clip.y + clip.height * 0.5, &paint)
+        canvas.restore()
+
+        // Draw a simple path (triangle) with a stroke
+        path := skia.Path.new()
+        path.move_to(200.0, 160.0)
+        path.line_to(260.0, 260.0)
+        path.line_to(140.0, 260.0)
+        path.close()
+        p2 := skia.Paint.new()
+        p2.set_color(skia.argb(255, 244, 180, 0)) // Google Yellow
+        p2.set_style(skia.PaintStyle.Stroke)
+        p2.set_stroke_width(4.0)
+        // Dashed and rounded path effect
+        intervals :=  [12.0, 6.0, 3.0, 6.0]
+        dash := skia.PathEffect.dash(&intervals[0], 4, 0.0)
+        corner := skia.PathEffect.corner(6.0)
+        p2.set_path_effect(&dash)
+        canvas.draw_path(&path, &p2)
+        dash.unref(); corner.unref()
+        p2.unref()
+        path.unref()
+
+        // Save layer with blend mode and semi-transparent fill over the rect
+        overlay := skia.Paint.new()
+        overlay.set_color(skia.argb(160, 255, 255, 255))
+        overlay.set_blend_mode(skia.BlendMode.Multiply)
+        _ = canvas.save_layer(&rect, &overlay)
+        // Fill the layer region using draw_paint
+        overlay.set_style(skia.PaintStyle.Fill)
+        canvas.draw_paint(&overlay)
+        canvas.restore()
+        overlay.unref()
+
+        // Text rendering demo
+        // Prefer loading a real font from file to ensure glyphs render
+        // Adjust the path for your system if needed.
+        font_path := "/usr/share/fonts/TTF/JetBrainsMonoNLNerdFont-Regular.ttf"
+        font := skia.Font.new_from_file(font_path, 48.0)
+        if font.is_null() { font = skia.Font.new_default(48.0) }
+        font.set_edging(skiac.SkFontEdging.SubpixelAntiAlias)
+        font.set_hinting(skiac.SkFontHinting.Normal)
+        text_paint := skia.Paint.new()
+        text_paint.set_anti_alias(true)
+        text_paint.set_style(skia.PaintStyle.Fill)
+        text_paint.set_stroke_width(0.0)
+        text_paint.set_color(skia.argb(255, 255, 255, 255))
+        msg := "Hello, Skia!"
+        // Simple right-aligned position via measure; align baseline Y to pixel grid
+        tw := font.measure_text_width(msg)
+        base_y := (fb_h.(f32) - 24.0)
+        base_y_px := (base_y).(i32).(f32)
+        canvas.draw_text(msg, (fb_w.(f32) - tw - 12.0), base_y_px, &font, &text_paint)
+        font.unref()
+        text_paint.unref()
+
+        // Runtime SkSL shader demo: fills a rect using inCoords
+        sksl := "uniform float s;\nvec4 main(vec2 p){ float u = fract(p.x/200.0); float v = fract(p.y/200.0); return vec4(u, v, 1.0 - u, 1); }"
+        re := skia.RuntimeEffect.make_for_shader(sksl)
+        if !re.is_null() {
+            uniforms := skia.Data.from_slice(0.^*void, 0) // no uniforms used
+            rsh := re.make_shader(&uniforms)
+            re.unref()
+            uniforms.unref()
+            if rsh.shader.^i64 != 0 {
+                rp := skia.Paint.new()
+                rp.set_anti_alias(true)
+                rp.set_style(skia.PaintStyle.Fill)
+                rp.set_shader(&rsh)
+                area := skia.Rect{x: 20.0, y: fb_h.(f32) - 160.0, width: 180.0, height: 120.0}
+                canvas.draw_rect(&area, &rp)
+                rp.unref()
+                rsh.unref()
+            }
+        }
+
+        // Snapshot the current surface and draw it offset in the corner
+        snapshot := surface.make_image_snapshot()
+        if !snapshot.is_null() {
+            canvas.draw_image(&snapshot, 12.0, 12.0)
+            snapshot.unref()
+        }
+
+        paint.unref()
+
+        dctx.flush_and_submit()
+        glfw.glfwSwapBuffers(window)
+    }
+}

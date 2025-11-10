@@ -1,0 +1,82 @@
+// Variable and Constant Declarations
+package main
+
+printf :: extern proc(string, any) i32
+
+// Constant declaration
+PI :: 3.14159
+
+// Variable declaration with type and initializer
+x: i32 = 10
+
+// Variable declaration with initializer (type inferred)
+y := 20
+
+// Declaration with a pattern
+//(a, b): (i32, f64) = (1, 2.0)
+
+// Explicitly typed complex variable
+z: complex(f32) = 1.5 + 2.5i
+
+// Struct type used for destructuring
+Pair :: struct { i: i32, d: f64 }
+V :: variant { A, B(i32), C{ x: i32, y: i32 } }
+// Nested struct type
+Outer :: struct { p: Pair, extra: i32 }
+// Another variant to test nested payloads
+W :: variant { D((i32, f64)), E{ p: Pair } }
+
+
+main :: proc () {
+
+    (a, b): (i32, f64) = (1, 2.0)
+    // Struct destructuring declaration
+    Pair{ i: ai, d: bd }: Pair = Pair{ i: 3, d: 4.5 }
+    // Variant destructuring declarations from variant literals
+    V.B(n): V = V.B(42)
+    V.C{ x: cx, y: cy }: V = V.C{ x: 7, y: 9 }
+    // Using the declared variables and constant
+    printf("Value of PI: %f\n", PI)
+    printf("Value of x: %d\n", x)
+    printf("Value of y: %d\n", y)
+    printf("Values of a and b: %d, %f\n", a, b)
+    printf("Values of ai and bd: %d, %f\n", ai, bd)
+    printf("Variant B n: %d\n", n)
+    printf("Variant C cx, cy: %d, %d\n", cx, cy)
+    printf("Value of z: %f + %fi\n", z.real, z.imag) 
+
+    // Nested struct destructuring: Outer contains Pair
+    Outer{ p: Pair{ i: nai, d: nbd }, extra: ne }: Outer = Outer{ p: Pair{ i: 11, d: 22.5 }, extra: 33 }
+    printf("Nested Pair: %d, %f, %d\n", nai, nbd, ne)
+
+    // Tuple + Struct mixed nested destructuring
+    ((t1, Pair{ i: tai, d: tbd }), t2): ((i32, Pair), i32) = ((5, Pair{ i: 6, d: 7.5 }), 8)
+    printf("Tuple-Struct: %d, %d, %f, %d\n", t1, tai, tbd, t2)
+
+    // Variant with nested tuple payload
+    W.D((vd1, vd2)): W = W.D((44, 55.5))
+    printf("Variant D payload: %d, %f\n", vd1, vd2)
+
+    // Variant with nested struct payload
+    W.E{ p: Pair{ i: wpi, d: wpd } }: W = W.E{ p: Pair{ i: 77, d: 88.25 } }
+    printf("Variant E payload: %d, %f\n", wpi, wpd)
+
+    // Complex arithmetic examples
+    c1 := (1.0 + 2.0i) + (3.0 + 4.0i)
+    printf("c1: %f, %f\n", c1.real, c1.imag)
+
+    c2 := z + 2.0
+    printf("c2: %f, %f\n", c2.real, c2.imag)
+
+    c3 := 2.0 + z
+    printf("c3: %f, %f\n", c3.real, c3.imag)
+
+    c4 := (2.0i) * (3.0i)
+    printf("c4: %f, %f\n", c4.real, c4.imag)
+
+    c5 := (1.0 + 2.0i) / (3.0 - 4.0i)
+    printf("c5: %f, %f\n", c5.real, c5.imag)
+
+    c6 := -z
+    printf("c6: %f, %f\n", c6.real, c6.imag)
+}

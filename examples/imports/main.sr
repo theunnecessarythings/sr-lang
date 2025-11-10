@@ -1,0 +1,21 @@
+package main
+
+// examples/imports/main.sr
+// A file that imports and uses the `math` module.
+
+// The `import` expression returns a module object.
+// We assign it to a constant named `math`.
+math :: import "math"
+
+// The main entry point of our program.
+main := proc() {
+    // We can now access the public types and functions
+    // from the `math` module.
+    v1 := math.Vector{ x: 10.0, y: 20.0 }
+    v2 := math.Vector{ x: 5.5, y: 1.5 }
+
+    result := math.add(v1, v2)
+
+    print("Result of vector addition:")
+    print("x=", result.x, ", y=", result.y)
+}

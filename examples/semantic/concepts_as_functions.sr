@@ -1,0 +1,66 @@
+package concepts_as_functions
+
+// Semantic Example: Concepts as Compile-Time Functions
+
+// This example demonstrates a powerful way to enforce generic constraints
+// without `interface` or `trait` keywords. Instead of `any`, a parameter's
+// type can be a compile-time function that acts as a "concept" or "contract".
+
+// The compiler will execute this function at compile time, passing the
+// type of the argument to it. If the function returns `true`, the code
+// compiles. If it returns `false`, it's a compile-time error.
+
+
+// --- Step 1: Define the "Concept" as a compile-time function ---
+
+// `is_drawable` is a function that takes a type (`T`) and returns a boolean.
+// It checks if the given type satisfies the contract of being "drawable".
+// (This assumes the language has comptime built-ins for reflection).
+is_drawable :: proc(T: type) bool {
+    // A drawable type must have:
+    // 1. A field `color` of type `string`.
+    // 2. A function `draw(T)` available in the current scope.
+    return comptime_has_field(T, "color", string) and
+           comptime_has_function("draw", T);
+}
+
+
+// --- Step 2: Define some types and their functions ---
+
+Circle :: struct { radius: f32, color: string }
+draw :: proc(c: Circle) { print("Drawing a circle") }
+
+Square :: struct { side: f32, color: string }
+draw :: proc(s: Square) { print("Drawing a square") }
+
+User :: struct { name: string } // Does not have .color or a draw() function
+
+
+// --- Step 3: Write a generic function that uses the concept ---
+
+// Instead of `thing: any`, we use `thing: is_drawable`.
+// This tells the compiler to only allow types that pass the `is_drawable` check.
+draw_entity :: proc(thing: is_drawable) {
+    // Because the `is_drawable` check passed at compile time, we can safely
+    // assume that `.color` and a `draw(thing)` function exist.
+    print("Drawing a ", thing.color, " entity.")
+    draw(thing)
+}
+
+
+// --- Step 4: Use the generic function --- 
+
+main := proc() {
+    c := Circle{ radius: 10.0, color: "blue" }
+    s := Square{ side: 5.0, color: "red" }
+    u := User{ name: "Alice" }
+
+    // These calls are valid because `Circle` and `Square` both
+    // satisfy the `is_drawable` concept.
+    draw_entity(c)
+    draw_entity(s)
+
+    // This call would produce a compile-time error because the type `User`
+    // does not satisfy the `is_drawable` concept (it returns `false`).
+    // draw_entity(u)
+}

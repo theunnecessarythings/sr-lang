@@ -1,0 +1,12 @@
+package main
+
+io   :: import "std/io"
+time :: import "std/time"
+
+main :: proc() {
+    t1 := time.now_monotonic()
+    time.sleep_ms(10)
+    t2 := time.now_monotonic()
+    io.println("dt(ns)=%d", (t2.tv_nsec - t1.tv_nsec).^i64)
+}
+

@@ -1,0 +1,20 @@
+package alloc
+
+// Allocation wrappers over runtime allocator
+
+rt_alloc   :: extern proc(usize) ?*void
+rt_realloc :: extern proc(*void, usize) ?*void
+rt_free    :: extern proc(*void) void
+
+alloc :: proc(size: usize) ?*void {
+    return rt_alloc(size)
+}
+
+realloc :: proc(ptr: *void, new_size: usize) ?*void {
+    return rt_realloc(ptr, new_size)
+}
+
+free :: proc(ptr: *void) void {
+    rt_free(ptr)
+}
+

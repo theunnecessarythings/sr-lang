@@ -1,0 +1,76 @@
+package main
+
+// Control Flow
+printf :: extern proc(*void, any) i32
+scanf :: extern proc(*void, *any) i32
+
+main :: proc() {
+    x: i32 = 10
+    y: i32 = 20
+    scanf("%d".^*void, &x)
+    printf("You entered: %d\n".^*void, x)
+
+    // If expression
+    if x > 5 { 
+        y = 1 
+    } else {
+        y = 2
+    }
+
+    printf("Value of y is %d\n".^*void, y)
+
+    // `while` loop with a boolean condition
+    keep_looping := true
+    while keep_looping {
+        // loop body
+        printf("x is %d\n".^*void, x)
+        x += 1.(i32)
+        if x > 15 {
+            keep_looping = false    
+        }
+    }
+
+
+    // `for` loop for iteration
+    for i in 0..5 { 
+        printf("i is %d\n".^*void, i)
+    }
+
+    // `while` loop with a pattern match
+    Option :: variant { None, Some(i32) }
+    maybe_value := Option.Some(42)
+    // This is the replacement for `while let`
+    while is Some(x) := maybe_value {
+        printf("Value is %d\n".^*void, x)
+    }
+
+    //// Infinite loop
+    //while {
+    //    if should_break {
+    //        break
+    //    }
+    //}
+    //
+    //// Match expression
+    //match x {
+    //    1 => print("one"),
+    //    2 => print("two"),
+    //    _ => print("other"),
+    //}
+    //
+    //// Match with `unreachable` expression
+    //MyBool :: enum { True, False }
+    //val: MyBool = MyBool.True
+    //match val {
+    //    MyBool.True => print("It was true!"),
+    //    MyBool.False => print("It was false!"),
+    //    // The compiler knows all cases are covered, so a `_` case is not needed.
+    //}
+    //
+    //// Example where unreachable might be used
+    //match some_integer {
+    //    0..100 => print("Small number"),
+    //    _ => if some_condition { print("Large number") } else { unreachable },
+    //}
+
+}

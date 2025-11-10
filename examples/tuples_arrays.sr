@@ -1,0 +1,55 @@
+package main
+
+printf :: extern proc(string, any) i32
+
+// Tuples and Arrays
+main::proc() {
+  // Tuple expression
+  my_tuple := (1, "hello", true)
+  printf("Tuple: (%d, %s, %b)\n", my_tuple.0, my_tuple.1, my_tuple.2)
+
+  // Accessing tuple elements
+  first := my_tuple.0
+  second := my_tuple.1
+
+  printf("First: %d, Second: %s\n", first, second)
+  
+  // Array expression
+  my_array := [1, 2, 3, 4, 5]
+  printf("Array: [%d, %d, %d, %d, %d]\n", my_array[0], my_array[1], my_array[2], my_array[3], my_array[4])
+
+  // Array with type
+  typed_array: [5]i32 = [1, 2, 3, 4, 5]
+  printf("Typed Array: [%d, %d, %d, %d, %d]\n", typed_array[0], typed_array[1], typed_array[2], typed_array[3], typed_array[4])
+
+  // Accessing array elements
+  val := my_array[2]
+  printf("Third element: %d\n", val)
+
+  // Array slicing 
+  slice := my_array[1..3]
+
+  printf("Slice: [%d, %d, %d]\n", slice[0], slice[1], slice[2])
+  
+
+  //// --- Hash Maps ---
+  //
+  //// Map literal expression. The type is inferred from the entries.
+  //my_map := ["one": 1, "two": 2, "three": 3]
+  //
+  //printf("Map: {one: %d, two: %d, three: %d}\n", my_map["one"], my_map["two"], my_map["three"])
+  //
+  //// An empty map requires a type annotation for the compiler to know
+  //// whether to create a map or an array.
+  //empty_map: [string:f64] = []
+  //
+  //// Accessing map elements using the standard index expression
+  //val_two := my_map["two"] // val_two is 2
+  //
+  //// Adding or updating an element
+  //my_map["two"] = 22       // Update existing key
+  //my_map["four"] = 4       // Add new key-value pair
+  //
+  //printf("Updated Map: {one: %d, two: %d, three: %d, four: %d}\n", my_map["one"], my_map["two"], my_map["three"], my_map["four"])
+}
+

@@ -1,0 +1,85 @@
+package structs_enums
+
+event := Event.Click{ x: 100, y: 50 }
+
+// Structs, Unions, Enums, and Variants
+
+// Struct definition
+Point :: struct {
+  x: i32,
+  y: i32,
+}
+
+//// TODO: Idea
+//Box :: struct {
+// // attributes are some comptime constraint that get checked on every field access
+// @[some_comptime_constraint] width: i32, 
+//  height: i32,
+//}
+
+some_comptime_constraint :: proc(field: Field) bool {
+  // Example set the field to private
+  print("Field {} is set to private", field.name)
+  return false // false indicates compile-time error
+}
+
+
+
+
+// Struct instantiation
+point := Point{ x: 10, y: 20 }
+
+// Union definition
+// A union can hold one of its fields at a time.
+// All fields share the same memory.
+IntOrFloat :: union {
+    i: i32,
+    f: f32,
+}
+u := IntOrFloat{ i: 123 }
+
+// Tuple-like struct (using a type alias for a tuple type)
+Color :: (u8, u8, u8)
+color := Color(255, 0, 128)
+
+// Unit-like struct
+UnitStruct :: struct {}
+unit_struct := UnitStruct{}
+
+// C-style enum
+State :: enum {
+  Running,
+  Walking,
+}
+state := State.Running
+
+// Integer-backed enum
+MyInt :: enum(u8) {
+  Two = 2,
+  Three = 24,
+}
+
+// Variant definition (sum type)
+Message :: variant {
+  Write([]u8),
+  Read(bool),
+  Nothing,
+}
+message := Message.Write("hello")
+
+// Variant with named fields (struct-like variants)
+Event :: variant {
+  Click {x: i32, y: i32},
+  Resize {width: i32, height: i32},
+}
+event := Event.Click{ x: 100, y: 50 }
+
+// Accessing struct fields
+x_val := point.x
+
+// Struct update syntax (functional update)
+point2 := Point{ x: 5, ..point }
+
+// Method call on a struct instance
+// (Assuming `distance` is a function that can be called like a method)
+dist := point.distance()

@@ -1,0 +1,25 @@
+package main
+
+rl :: import "vendor/raylib"
+
+main :: proc() {
+    screenWidth :: 800;
+    screenHeight :: 600;
+
+    rl.InitWindow(screenWidth, screenHeight, "raylib bindings test");
+    rl.SetTargetFPS(60);
+
+    while !rl.WindowShouldClose() {
+        rl.BeginDrawing();
+        rl.ClearBackground(rl.RAYWHITE);
+        rl.DrawText("Congrats! You created your first window!", 190, 200, 20, rl.LIGHTGRAY);
+
+        rl.DrawCircle(screenWidth / 2, screenHeight / 2, 50.0, rl.MAROON);
+        rl.DrawRectangle(10, 10, 100, 50, rl.BLUE);
+        rl.DrawLine(0, 0, screenWidth, screenHeight, rl.GREEN);
+
+        rl.EndDrawing();
+    }
+
+    rl.CloseWindow();
+}

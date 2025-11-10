@@ -1,0 +1,119 @@
+package array
+
+// Dynamic array implemented in std using runtime alloc/mem and pointer helpers.
+
+alloc :: import "std/alloc"
+mem   :: import "std/mem"
+
+// pointer add helper from runtime
+rt_ptr_add :: extern proc(*u8, usize) *u8
+
+Array :: struct {
+    data: ?*u8,
+    len: usize,
+    cap: usize,
+    elem_size: usize,
+}
+
+// Initialize with element size and optional initial capacity
+init :: proc(elem_size: usize, initial_cap: usize) Array {
+    a := Array{ data: null, len: 0, cap: 0, elem_size: elem_size }
+    if (initial_cap > 0) {
+        sz := initial_cap * elem_size
+        maybe_p := alloc.alloc(sz)
+        if (maybe_p != null) {
+            p := maybe_p?
+            a.data = p.^*u8
+            a.cap = initial_cap
+        }
+    }
+    return a
+}
+
+// Free underlying storage
+deinit :: proc(self: *Array) void {
+    if (self.data != null) {
+        alloc.free(self.data?)
+        self.data = null
+        self.len = 0
+        self.cap = 0
+    }
+}
+
+// Ensure capacity >= min_cap
+reserve :: proc(self: *Array, min_cap: usize) void {
+    if (self.cap >= min_cap) { return }
+    new_cap := self.cap
+    if (new_cap == 0) { new_cap = 1 }
+    while (new_cap < min_cap) { new_cap = new_cap * 2 }
+
+    new_size := new_cap * self.elem_size
+    if (self.data == null) {
+        maybe_np := alloc.alloc(new_size)
+        if (maybe_np != null) {
+            np := maybe_np?
+            self.data = np.^*u8
+            self.cap = new_cap
+        }
+        return
+    }
+
+    old_bytes := self.len * self.elem_size
+    realloc_result := alloc.realloc(self.data?, new_size)
+    if (realloc_result != null) {
+        np := realloc_result?
+        self.data = np.^*u8
+        self.cap = new_cap
+    } else {
+        fallback := alloc.alloc(new_size)
+        if (fallback != null) {
+            np2 := fallback?
+            mem.move(np2, self.data?, old_bytes)
+            alloc.free(self.data?)
+            self.data = np2.^*u8
+            self.cap = new_cap
+        }
+    }
+}
+
+clear :: proc(self: *Array) void { self.len = 0 }
+
+length :: proc(self: *Array) usize { return self.len }
+capacity :: proc(self: *Array) usize { return self.cap }
+
+// Push an element by pointer to value
+push :: proc(self: *Array, value_ptr: *void) void {
+    if (self.len == self.cap) {
+        next_cap := self.cap
+        if (next_cap == 0) {
+            next_cap = 1
+        } else {
+            next_cap = next_cap * 2
+        }
+        reserve(self, next_cap)
+    }
+    dst := rt_ptr_add(self.data?, self.len * self.elem_size)
+    mem.move(dst, value_ptr, self.elem_size)
+    self.len = self.len + 1
+}
+
+// Pop last element into out_ptr; returns false if empty
+pop :: proc(self: *Array, out_ptr: *void) bool {
+    if (self.len == 0) { return false }
+    idx := self.len - 1
+    src := rt_ptr_add(self.data?, idx * self.elem_size)
+    mem.move(out_ptr, src, self.elem_size)
+    self.len = idx
+    return true
+}
+
+// Get pointer to element at index (unchecked)
+get_ptr :: proc(self: *Array, index: usize) *void {
+    return rt_ptr_add(self.data?, index * self.elem_size).^*void
+}
+
+// Set element at index from value_ptr (unchecked)
+set :: proc(self: *Array, index: usize, value_ptr: *void) void {
+    dst := rt_ptr_add(self.data?, index * self.elem_size)
+    mem.move(dst, value_ptr, self.elem_size)
+}

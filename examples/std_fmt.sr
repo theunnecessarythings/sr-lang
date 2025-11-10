@@ -1,0 +1,14 @@
+package main
+
+io  :: import "std/io"
+fmt :: import "std/fmt"
+
+main :: proc() {
+    w := io.stdout()
+    fmt.write_str(&w, "answer=")
+    fmt.write_i64(&w, 42)
+    fmt.write_str(&w, ", hex=")
+    fmt.write_hex_u64(&w, 42)
+    fmt.write_str(&w, "\n")
+}
+

@@ -1,0 +1,46 @@
+package error_handling
+
+// Error Handling
+
+// This language uses error union types for handleable errors.
+// The type `SuccessType!ErrorType` means the operation can return
+// either a `SuccessType` or an `ErrorType`.
+
+// An error type can be any type, but structs or enums are common.
+FileSystemError :: variant {
+    NotFound,
+    PermissionDenied,
+    DiskFull { bytes_needed: u64 },
+}
+
+// A function that can fail returns an error union.
+read_file :: proc(path: string) string!FileSystemError {
+    if !exists(path) {
+        return FileSystemError.NotFound
+    }
+    // ... more logic ...
+    return "file content"
+}
+
+// The `!` operator propagates an error. If `read_file` returns an
+// error, the current function will immediately return that same error.
+read_and_process :: proc() void!FileSystemError {
+    content := read_file("my_file.txt")!
+    print("File content:", content)
+}
+
+// The `catch` expression handles an error.
+main := proc() {
+    // `catch` executes a block if an error is returned.
+    read_and_process() catch |err| {
+        match err {
+            FileSystemError.NotFound => print("Error: File not found!"),
+            FileSystemError.PermissionDenied => print("Error: No permission!"),
+            FileSystemError.DiskFull{bytes} => print("Error: Disk full, need", bytes),
+        }
+    }
+
+    // `orelse` provides a default value in case of an error.
+    content := read_file("another.txt") orelse "[default content]"
+    print("Content is:", content)
+}

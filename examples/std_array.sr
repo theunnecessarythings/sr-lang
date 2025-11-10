@@ -1,0 +1,37 @@
+package main
+
+// Example: dynamic array from std/array
+
+io   :: import "std/io"
+arr  :: import "std/array"
+
+main :: proc() {
+    a := arr.init(8, 0) // elem_size = 8 (i64)
+
+    x: i64 = 10
+    y: i64 = 20
+    z: i64 = 30
+
+    arr.push(&a, (&x).^*void)
+    arr.push(&a, (&y).^*void)
+    arr.push(&a, (&z).^*void)
+
+    io.println("len=%d", a.len)
+    io.println("cap=%d", a.cap)
+
+    v: i64 = 0
+    _ = arr.pop(&a, (&v).^*void)
+    io.println("pop=%d", v)
+
+    // Access by index using get_ptr
+    p := arr.get_ptr(&a, 0)
+    // Print first element by passing it as i64 via *void cast and printf format
+    // We need a temporary to load value; pop used above. For demo, set index 1 to 99 and pop again.
+    n: i64 = 99
+    arr.set(&a, 1, (&n).^*void)
+    _ = arr.pop(&a, (&v).^*void)
+    io.println("pop=%d", v)
+
+    arr.deinit(&a)
+}
+

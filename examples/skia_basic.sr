@@ -1,0 +1,109 @@
+package main
+
+fmt :: import "std/fmt"
+glfw :: import "vendor/glfw3"
+skiac :: import "vendor/skiac"
+
+get_proc_address_wrapper :: @[llvm_fn] proc(ctx: *void, name: *i8) skiac.GrGLFuncPtr {
+    _ = ctx;
+    return (glfw.glfwGetProcAddress((name).(*u8))).(skiac.GrGLFuncPtr);
+}
+
+main :: proc() {
+    if glfw.glfwInit() == glfw.FALSE {
+        fmt.println("Failed to initialize GLFW")
+        return
+    }
+    defer glfw.glfwTerminate()
+
+    glfw.glfwWindowHint(glfw.CONTEXT_VERSION_MAJOR, 3)
+    glfw.glfwWindowHint(glfw.CONTEXT_VERSION_MINOR, 3)
+    glfw.glfwWindowHint(glfw.OPENGL_PROFILE, glfw.OPENGL_CORE_PROFILE)
+
+    window := glfw.glfwCreateWindow(800, 600, "Skia + GLFW", 0.^*void, 0.^*void)
+    if window.^i64 == 0 {
+        fmt.println("Failed to create GLFW window")
+        return
+    }
+    defer glfw.glfwDestroyWindow(window)
+
+    glfw.glfwMakeContextCurrent(window)
+    glfw.glfwSwapInterval(1) // vsync
+
+    gl_interface := skiac.skiac_gr_gl_make_assembled_interface(0.^*void, get_proc_address_wrapper)
+    if gl_interface.^i64 == 0 {
+        fmt.println("skiac.gr_gl_make_assembled_interface failed")
+        return
+    }
+    defer skiac.skiac_gr_gl_interface_unref(gl_interface)
+
+    dctx := skiac.skiac_gr_direct_context_make_gl(gl_interface)
+    if dctx.^i64 == 0 {
+        fmt.println("skiac.gr_direct_context_make_gl failed")
+        return
+    }
+    defer skiac.skiac_gr_direct_context_unref(dctx)
+
+    fb_w: i32 = 0
+    fb_h: i32 = 0
+    glfw.glfwGetFramebufferSize(window, &fb_w, &fb_h)
+
+    target := skiac.skiac_gr_backend_render_target_make_gl(fb_w, fb_h, 1, 8, 0, 0x8058)
+    if target.^i64 == 0 {
+        fmt.println("skiac.gr_backend_render_target_make_gl failed")
+        return
+    }
+    color_space := skiac.skiac_sk_color_space_make_srgb()
+    if color_space.^i64 == 0 {
+        fmt.println("skiac.sk_color_space_make_srgb failed")
+        return
+    }
+    props := skiac.skiac_sk_surface_props_create(0, 1) // kUnknown_SkPixelGeometry
+    if props.^i64 == 0 {
+        fmt.println("skiac.sk_surface_props_create failed")
+        return
+    }
+
+    surface := skiac.skiac_sk_surface_wrap_backend_render_target(
+        dctx,
+        target,
+        skiac.GrSurfaceOrigin.BottomLeft,
+        skiac.SkColorType.N32,
+        color_space,
+        props)
+
+    if surface.^i64 == 0 {
+        fmt.println("skiac.sk_surface_wrap_backend_render_target failed")
+        return
+    }
+    defer skiac.skiac_sk_surface_unref(surface)
+
+    while glfw.glfwWindowShouldClose(window) == glfw.FALSE {
+        glfw.glfwPollEvents()
+
+        canvas := skiac.skiac_sk_surface_get_canvas(surface)
+
+        skiac.skiac_sk_canvas_clear(canvas, skiac.skiac_sk_color_set_argb(255, 0, 0, 0))
+
+        paint := skiac.skiac_sk_paint_create()
+        skiac.skiac_sk_paint_set_anti_alias(paint, true)
+        skiac.skiac_sk_paint_set_color(paint, skiac.skiac_sk_color_set_argb(255, 66, 133, 244)) // Google Blue
+        skiac.skiac_sk_canvas_draw_circle(canvas, fb_w.(f32) * 0.5, fb_h.(f32) * 0.5, (fb_w).(f32) * 0.25, paint)
+
+        skiac.skiac_sk_paint_set_color(paint, skiac.skiac_sk_color_set_argb(255, 52, 168, 83)) // Google Green
+        skiac.skiac_sk_paint_set_stroke_width(paint, 8)
+        skiac.skiac_sk_paint_set_style(paint, skiac.SkPaintStyle.Stroke)
+        rect := skiac.Rect{x: 40.0, y: 40.0, width: fb_w.(f32) - 80.0, height: fb_h.(f32) - 80.0}
+        skiac.skiac_sk_canvas_draw_rect(canvas, &rect, paint)
+
+        skiac.skiac_sk_paint_unref(paint)
+
+        skiac.skiac_gr_direct_context_flush_and_submit(dctx)
+
+        glfw.glfwSwapBuffers(window)
+    }
+
+    skiac.skiac_sk_surface_props_unref(props)
+    skiac.skiac_sk_color_space_unref(color_space)
+    skiac.skiac_gr_backend_render_target_unref(target)
+}

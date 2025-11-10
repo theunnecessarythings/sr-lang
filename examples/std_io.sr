@@ -1,0 +1,12 @@
+package main
+
+// Examples using std/io wrappers
+
+io :: import "std/io"
+
+main :: proc() {
+    io.print0("Hello from std/io")
+    io.println("Answer: %d", 42)
+    io.println0("Done")
+}
+

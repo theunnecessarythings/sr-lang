@@ -1,0 +1,35 @@
+package ownership_and_borrowing
+
+// Semantic Example: Pass-by-value vs. Pass-by-pointer
+
+// A type is a value that can be assigned to a constant.
+// Point is a constant that holds a struct type.
+Point :: struct { x: i32, y: i32 }
+
+// TODO: update this semantics
+// This procedure receives a copy of the Point.
+// Modifications to `p` inside this procedure will not affect the original.
+modify_copy :: proc(p: Point) {
+    p.x = 100
+    print("Inside modify_copy, p.x is: ", p.x) // prints 100
+}
+
+// This procedure receives a pointer to a Point.
+// Modifications via the pointer will affect the original data.
+modify_original :: proc(p_ptr: *Point) {
+    p_ptr.*.x = 200 // `.*` dereferences the pointer
+    print("Inside modify_original, p_ptr.x is: ", p_ptr.x) // auto deref, prints 200
+}
+
+main := proc() {
+    p1 := Point{ x: 10, y: 20 }
+
+    // A copy of p1 is passed to the procedure.
+    modify_copy(p1)
+    print("Back in main, p1.x is still: ", p1.x) // prints 10
+
+    // A pointer to p1 is passed to the procedure.
+    // Assume `&` is the address-of operator.
+    modify_original(&p1)
+    print("Back in main, p1.x is now: ", p1.x) // prints 200
+}

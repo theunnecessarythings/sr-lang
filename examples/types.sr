@@ -1,0 +1,39 @@
+package types
+
+// Type Examples
+
+// Raw pointer types
+const_ptr: *const i32 = get_ptr()
+mut_ptr: *i32 = get_mut_ptr()
+
+// Array and Slice types
+array_type :: [10]f64
+slice_type :: []u8
+
+// Dynamic array type
+dyn_array_type :: [dyn]u8
+
+// Tuple type
+tuple_type :: (i32, f64, char)
+
+// Noreturn type for a function that never returns
+diverging_fn :: fn() noreturn
+
+// Bare function type
+function_pointer :: fn(i32) bool
+
+// Inferred type, just aliasing
+inferred :: any
+
+// SIMD vector type (4 x f32)
+simd_vec :: simd(f32, 4)
+
+// Tensor type (2x3 matrix of i32)
+tensor_mat :: tensor(2, 3, i32)
+
+// Complex number types
+complex_f32 :: complex(f32)
+complex_i64 :: complex(i64)
+
+// Map type (associative array)
+map_type :: [string: i32]
