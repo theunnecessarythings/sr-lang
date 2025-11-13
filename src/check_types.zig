@@ -1038,7 +1038,7 @@ pub fn typeFromTypeExpr(self: *Checker, ctx: *Checker.CheckerContext, ast_unit: 
             status = status and res_res[0];
             const res = res_res[1];
             const is_pure = !fnr.flags.is_proc;
-            break :blk_fn .{ status, ts.mkFunction(pbuf, res, fnr.flags.is_variadic, is_pure) };
+            break :blk_fn .{ status, ts.mkFunction(pbuf, res, fnr.flags.is_variadic, is_pure, fnr.flags.is_extern) };
         },
         .FieldAccess => blk_fa: {
             const fr = ast_unit.exprs.get(.FieldAccess, id);

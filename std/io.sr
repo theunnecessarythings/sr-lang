@@ -12,25 +12,25 @@ rt_panic  :: extern proc(*u8, usize) noreturn
 rt_strlen :: extern proc(*u8) usize
 
 // Writer interface
-Writer :: struct { ctx: *void, write: proc(*void, *u8, usize) isize }
+Writer :: struct { ctx: *void, write: proc(*void, *u8, usize) usize }
 
 // Write all helper: attempts to write the full buffer; returns whether succeeded
 write_all :: proc(w: *Writer, buf: *u8, len: usize) bool {
     // For stdout/stderr we assume full writes; loop kept for future fd writers
     n := w.write(w.ctx, buf, len)
-    return n == len.^isize
+    return n == len
 }
 
 // stdout writer implementation
-stdout_write_impl :: proc(ctx: *void, buf: *u8, len: usize) isize {
+stdout_write_impl :: proc(ctx: *void, buf: *u8, len: usize) usize {
     rt_print(buf, len)
-    return len.^isize
+    return len
 }
 
 // stderr writer implementation
-stderr_write_impl :: proc(ctx: *void, buf: *u8, len: usize) isize {
+stderr_write_impl :: proc(ctx: *void, buf: *u8, len: usize) usize {
     rt_eprint(buf, len)
-    return len.^isize
+    return len
 }
 
 stdout :: proc() Writer { return Writer{ ctx: 0.^*void, write: stdout_write_impl } }

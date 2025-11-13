@@ -382,6 +382,9 @@ pub const Pipeline = struct {
         var sink = codegen.PrintBuffer{ .list = &buf, .had_error = &had_error };
         mlir_module.getOperation().print(codegen.printCallback, &sink);
         if (!had_error) {
+            std.fs.cwd().makePath("out") catch |err| {
+                if (err != error.PathAlreadyExists) return err;
+            };
             const path = "out/temp.mlir";
             try std.fs.cwd().writeFile(.{ .data = sink.list.items, .sub_path = path });
         }

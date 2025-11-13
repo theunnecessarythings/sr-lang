@@ -331,7 +331,7 @@ fn predeclareFunction(
     const res = res_or_err;
 
     // Be optimistic about purity here; we’ll finalize after body checking.
-    const sig_ty = self.context.type_store.mkFunction(pbuf, res, fnr.flags.is_variadic, true);
+    const sig_ty = self.context.type_store.mkFunction(pbuf, res, fnr.flags.is_variadic, true, fnr.flags.is_extern);
 
     // Stamp both the decl type and the function literal expr type.
     ast_unit.type_info.decl_types.items[did.toRaw()] = sig_ty;
@@ -2397,8 +2397,10 @@ fn checkFunctionLit(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, id
     if (!res_opt[0]) return self.context.type_store.tTypeError();
     const res = res_opt[1];
 
+    const is_variadic = fnr.flags.is_variadic and fnr.flags.is_extern;
+
     // Temporarily record a function type (purity will be finalized after body analysis)
-    const temp_ty = self.context.type_store.mkFunction(pbuf, res, fnr.flags.is_variadic, true);
+    const temp_ty = self.context.type_store.mkFunction(pbuf, res, is_variadic, true, fnr.flags.is_extern);
     ast_unit.type_info.expr_types.items[id.toRaw()] = temp_ty;
 
     try self.pushFunc(ctx, res, !fnr.result_ty.isNone(), !fnr.flags.is_proc);
@@ -2411,7 +2413,7 @@ fn checkFunctionLit(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, id
     }
     // Extern procs are considered impure; otherwise proc purity comes from body analysis.
     const is_pure = if (fnr.flags.is_proc) false else true;
-    const final_ty = self.context.type_store.mkFunction(pbuf, res, fnr.flags.is_variadic, is_pure);
+    const final_ty = self.context.type_store.mkFunction(pbuf, res, is_variadic, is_pure, fnr.flags.is_extern);
     ast_unit.type_info.expr_types.items[id.toRaw()] = final_ty;
     return final_ty;
 }
@@ -2630,7 +2632,7 @@ fn tryRegisterDynArrayBuiltin(
         const elem_ty = dyn_info.elem;
         const ptr_owner_ty = self.context.type_store.mkPtr(owner_ty, false);
         const params = [_]types.TypeId{ ptr_owner_ty, elem_ty };
-        const fn_ty = self.context.type_store.mkFunction(&params, self.context.type_store.tVoid(), false, false);
+        const fn_ty = self.context.type_store.mkFunction(&params, self.context.type_store.tVoid(), false, false, false);
 
         var needs_addr_of = true;
         if (parent_kind == .Ptr) {
@@ -2719,7 +2721,7 @@ fn resolveMethodFieldAccess(
     const trimmed = blk: {
         if (implicit_receiver) {
             const rest = if (params.len <= 1) params[0..0] else params[1..];
-            break :blk self.context.type_store.mkFunction(rest, fn_row.result, fn_row.is_variadic, fn_row.is_pure);
+            break :blk self.context.type_store.mkFunction(rest, fn_row.result, fn_row.is_variadic, fn_row.is_pure, false);
         }
         break :blk entry.func_type;
     };
@@ -3304,7 +3306,7 @@ fn checkCall(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, id: ast.E
                             self.context.type_store.type_pool.slice(self.context.type_store.get(.Tuple, payload_ty).elems)
                         else
                             &.{payload_ty};
-                        const fn_ty = self.context.type_store.mkFunction(params, inner_ty, false, false);
+                        const fn_ty = self.context.type_store.mkFunction(params, inner_ty, false, false, false);
                         ast_unit.type_info.expr_types.items[call_expr.callee.toRaw()] = fn_ty;
                     }
                 }
@@ -3336,7 +3338,7 @@ fn checkCall(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, id: ast.E
             ast_unit.type_info.expr_types.items[id.toRaw()] = self.context.type_store.tU64();
             // Stamp callee type so lower_tir can query it
             const any_type_ty = self.context.type_store.mkTypeType(self.context.type_store.tAny());
-            const fn_ty = self.context.type_store.mkFunction(&.{any_type_ty}, self.context.type_store.tU64(), false, true);
+            const fn_ty = self.context.type_store.mkFunction(&.{any_type_ty}, self.context.type_store.tU64(), false, true, false);
             try ast_unit.type_info.ensureExpr(self.gpa, call_expr.callee);
             ast_unit.type_info.expr_types.items[call_expr.callee.toRaw()] = fn_ty;
             return self.context.type_store.tU64();
@@ -3443,7 +3445,9 @@ fn checkCall(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, id: ast.E
 
     // Arity & argument type checks
     const params = self.context.type_store.type_pool.slice(fnrow.params);
-    if (!fnrow.is_variadic) {
+    const is_non_extern_any_variadic_candidate = !fnrow.is_extern and params.len > 0 and self.typeKind(params[params.len - 1]) == .Any;
+
+    if (!fnrow.is_variadic) { // This branch is taken for non-extern functions
         var min_required = params.len;
         // If callee is a direct identifier to a function declaration with defaulted trailing params,
         // allow omitting those arguments.
@@ -3504,11 +3508,25 @@ fn checkCall(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, id: ast.E
                 }
             }
         }
-        if (!(args.len >= min_required and args.len <= params.len)) {
-            try self.context.diags.addError(call_loc, .argument_count_mismatch, .{});
-            return self.context.type_store.tTypeError();
+
+        if (is_non_extern_any_variadic_candidate) {
+            // For non-extern functions with a final 'any' parameter,
+            // allow any number of arguments >= (params.len - 1).
+            // The 'any' parameter will consume all arguments from params.len - 1 onwards.
+            min_required = params.len - 1; // All but the last 'any' param are fixed
+            if (args.len < min_required) {
+                try self.context.diags.addError(call_loc, .argument_count_mismatch, .{});
+                return self.context.type_store.tTypeError();
+            }
+            // No upper bound on args.len here, as 'any' consumes the rest.
+        } else {
+            // Original arity check for non-variadic, non-any-last-param functions
+            if (!(args.len >= min_required and args.len <= params.len)) {
+                try self.context.diags.addError(call_loc, .argument_count_mismatch, .{});
+                return self.context.type_store.tTypeError();
+            }
         }
-    } else {
+    } else { // fnrow.is_variadic is true (only for extern functions now)
         const min_required = if (params.len == 0) 0 else params.len - 1;
         if (args.len < min_required) {
             try self.context.diags.addError(call_loc, .argument_count_mismatch, .{});
@@ -3524,12 +3542,24 @@ fn checkCall(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, id: ast.E
         self.popValueReq(ctx);
         if (self.typeKind(at) == .TypeError) return self.context.type_store.tTypeError();
         var at_kind = self.typeKind(at);
-        const pt = if (!fnrow.is_variadic)
+
+        const pt = if (is_non_extern_any_variadic_candidate and i >= params.len - 1)
+            params[params.len - 1]
+        else if (!fnrow.is_variadic)
             (if (i < params.len) params[i] else params[params.len - 1])
         else blk: {
             const fixed = if (params.len == 0) 0 else params.len - 1;
             break :blk if (i < fixed) params[i] else params[params.len - 1];
         };
+        // If this argument is part of the 'any' packing, we don't need to check
+        // its individual type against 'any' because 'any' accepts anything.
+        // The packing logic in lower_tir will handle creating the tuple.
+        if (is_non_extern_any_variadic_candidate and i >= params.len - 1) {
+            // No individual type check needed here, as 'any' accepts anything.
+            // The 'at' (type of args[i]) is already checked for TypeError.
+            continue; // Move to the next argument
+        }
+
         // If the parameter expects a type (TypeType), interpret the argument as a type-expression when possible.
         if (self.typeKind(pt) == .TypeType and at_kind != .TypeType) {
             const type_res = try check_types.typeFromTypeExpr(self, ctx, ast_unit, args[i]);
@@ -4263,7 +4293,7 @@ fn checkClosure(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, id: as
     if (self.typeKind(body_ty) == .TypeError)
         return self.context.type_store.tTypeError();
     // Closures are always pure function *types* (no side-effect tracking here).
-    return self.context.type_store.mkFunction(param_tys, body_ty, false, true);
+    return self.context.type_store.mkFunction(param_tys, body_ty, false, true, false);
 }
 
 fn checkCast(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, id: ast.ExprId) !types.TypeId {

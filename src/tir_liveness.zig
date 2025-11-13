@@ -427,7 +427,10 @@ pub fn dump(allocator: Allocator, t: *tir.TIR) !void {
                 var equal = true;
                 var bi: usize = 0;
                 while (bi < bit_len) : (bi += 1) {
-                    if (new_out.isSet(bi) != live_out_bits[i].isSet(bi)) { equal = false; break; }
+                    if (new_out.isSet(bi) != live_out_bits[i].isSet(bi)) {
+                        equal = false;
+                        break;
+                    }
                 }
                 if (!equal) {
                     live_out_bits[i].deinit();
@@ -510,7 +513,10 @@ pub fn dump(allocator: Allocator, t: *tir.TIR) !void {
                 var equal_in = true;
                 var bi: usize = 0;
                 while (bi < bit_len) : (bi += 1) {
-                    if (live.isSet(bi) != live_in_bits[i].isSet(bi)) { equal_in = false; break; }
+                    if (live.isSet(bi) != live_in_bits[i].isSet(bi)) {
+                        equal_in = false;
+                        break;
+                    }
                 }
                 if (!equal_in) {
                     live_in_bits[i].deinit();

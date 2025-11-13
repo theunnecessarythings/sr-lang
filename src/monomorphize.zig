@@ -396,7 +396,7 @@ pub const Monomorphizer = struct {
             result_ty = ts.get(.TypeType, result_ty).of;
         }
 
-        const specialized_ty = ts.mkFunction(runtime_params, result_ty, fn_kind.is_variadic, fn_kind.is_pure);
+        const specialized_ty = ts.mkFunction(runtime_params, result_ty, fn_kind.is_variadic, fn_kind.is_pure, fn_kind.is_extern);
 
         const owned_bindings = try self.dupBindings(bindings);
         errdefer {

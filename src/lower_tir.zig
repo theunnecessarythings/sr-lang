@@ -768,11 +768,8 @@ fn tryLowerNamedFunction(
     const fn_ty = self.getExprType(ctx, a, decl.value);
     if (self.context.type_store.getKind(fn_ty) != .Function) return;
 
-    const fn_ty_info = self.context.type_store.get(.Function, fn_ty);
-    const param_tys = self.context.type_store.type_pool.slice(fn_ty_info.params);
-    for (param_tys) |param_ty| {
-        if (self.isType(param_ty, .Any)) return;
-    }
+    // const fn_ty_info = self.context.type_store.get(.Function, fn_ty);
+    // Removed: for (param_tys) |param_ty| { if (self.isType(param_ty, .Any)) return; }
 
     const fn_lit = a.exprs.get(.FunctionLit, decl.value);
     const params = a.exprs.param_pool.slice(fn_lit.params);
@@ -1650,6 +1647,8 @@ fn lowerCall(
     var param_tys: []const types.TypeId = &.{};
     var fixed: usize = 0;
     var is_variadic = false;
+    var treat_trailing_any = false;
+    var trailing_any_tuple_ty: ?types.TypeId = null;
     if (callee.fty) |fty| {
         if (self.context.type_store.index.kinds.items[fty.toRaw()] == .Function) {
             const fr2 = self.context.type_store.get(.Function, fty);
@@ -1657,6 +1656,9 @@ fn lowerCall(
             is_variadic = fr2.is_variadic;
             fixed = param_tys.len;
             if (is_variadic and fixed > 0) fixed -= 1; // last param is the vararg pack type
+            if (!fr2.is_extern and param_tys.len > 0 and self.isType(param_tys[param_tys.len - 1], .Any)) {
+                treat_trailing_any = true;
+            }
         }
     }
     if (callee.fty) |fty| {
@@ -1753,14 +1755,18 @@ fn lowerCall(
 
                     if (ok) {
                         const original_args = arg_ids;
+                        const trailing_start = if (treat_trailing_any and params.len > 0) params.len - 1 else params.len;
                         var runtime_idx: usize = skip_params;
                         while (runtime_idx < params.len and runtime_idx < original_args.len) : (runtime_idx += 1) {
+                            if (treat_trailing_any and runtime_idx >= trailing_start) break;
+
                             const param = decl_ast.exprs.Param.get(params[runtime_idx]);
                             if (param.pat.isNone()) continue;
                             const pname = bindingNameOfPattern(decl_ast, param.pat.unwrap()) orelse continue;
 
-                            const param_ty = if (runtime_idx < param_tys.len)
-                                param_tys[runtime_idx]
+                            const param_ty_idx = runtime_idx - skip_params;
+                            const param_ty = if (param_ty_idx < param_tys.len)
+                                param_tys[param_ty_idx]
                             else
                                 self.context.type_store.tAny();
                             if (!self.isType(param_ty, .Any)) continue;
@@ -1769,6 +1775,18 @@ fn lowerCall(
                             if (self.isType(arg_ty, .Any)) continue;
 
                             try binding_infos.append(self.gpa, monomorphize.BindingInfo.runtimeParam(pname, arg_ty));
+                        }
+
+                        if (treat_trailing_any and params.len > 0) {
+                            const tuple_start = params.len - 1;
+                            const tuple_ty = try self.computeTrailingAnyTupleType(ctx, a, original_args, tuple_start);
+                            trailing_any_tuple_ty = tuple_ty;
+                            const last_param = decl_ast.exprs.Param.get(params[params.len - 1]);
+                            if (!last_param.pat.isNone()) {
+                                if (bindingNameOfPattern(decl_ast, last_param.pat.unwrap())) |pname| {
+                                    try binding_infos.append(self.gpa, monomorphize.BindingInfo.runtimeParam(pname, tuple_ty));
+                                }
+                            }
                         }
                     }
 
@@ -1783,16 +1801,12 @@ fn lowerCall(
                             }
                         }
 
-                        if (runtime_specs.items.len > 0) {
-                            if (decl_ast == a) {
-                                const context = self.chk.checker_ctx.items[a.file_id];
-                                const specialized_fn_ty = try self.chk.checkSpecializedFunction(context, decl_ast, decl.value, runtime_specs.items);
-                                if (self.chk.typeKind(specialized_fn_ty) != .TypeError) {
-                                    const fn_info_override = self.context.type_store.get(.Function, specialized_fn_ty);
-                                    specialized_result_override = fn_info_override.result;
-                                } else {
-                                    ok = false;
-                                }
+                        if (runtime_specs.items.len > 0 and decl_ast == a) {
+                            const context = self.chk.checker_ctx.items[a.file_id];
+                            const specialized_fn_ty = try self.chk.checkSpecializedFunction(context, decl_ast, decl.value, runtime_specs.items);
+                            if (self.chk.typeKind(specialized_fn_ty) != .TypeError) {
+                                const fn_info_override = self.context.type_store.get(.Function, specialized_fn_ty);
+                                specialized_result_override = fn_info_override.result;
                             } else {
                                 ok = false;
                             }
@@ -1830,9 +1844,30 @@ fn lowerCall(
 
     var vals_list: List(tir.ValueId) = .empty;
     defer vals_list.deinit(self.gpa);
+
+    var fixed_params_count: usize = 0;
+    var is_variadic_extern = false;
+    if (callee.fty) |fty| {
+        if (self.context.type_store.index.kinds.items[fty.toRaw()] == .Function) {
+            const fnrow = self.context.type_store.get(.Function, fty);
+            param_tys = self.context.type_store.type_pool.slice(fnrow.params);
+            is_variadic_extern = fnrow.is_variadic;
+            fixed_params_count = param_tys.len;
+            if (is_variadic_extern and fixed_params_count > 0) fixed_params_count -= 1;
+        }
+    }
+    const is_non_extern_any_variadic_candidate = treat_trailing_any;
+    if (is_non_extern_any_variadic_candidate and fixed_params_count > 0) {
+        fixed_params_count -= 1;
+    }
+    // Handle fixed arguments
     var i: usize = 0;
     while (i < arg_ids.len) : (i += 1) {
-        const want: ?types.TypeId = if (i < fixed) param_tys[i] else null;
+        if (is_non_extern_any_variadic_candidate and i >= fixed_params_count) {
+            break; // Stop here, the 'any' parameter and subsequent args will be packed
+        }
+
+        const want: ?types.TypeId = if (i < fixed_params_count) param_tys[i] else null;
         const lower_mode: LowerMode = blk: {
             if (method_binding) |mb| {
                 if (mb.requires_implicit_receiver and mb.needs_addr_of and i == 0) {
@@ -1845,8 +1880,53 @@ fn lowerCall(
         try vals_list.append(self.gpa, v);
     }
 
+    // Handle extra arguments for non-extern functions with 'any' as last parameter
+    if (is_non_extern_any_variadic_candidate) {
+        var extra_vals: List(tir.ValueId) = .empty;
+        defer extra_vals.deinit(self.gpa);
+
+        // Collect and lower all arguments from the 'any' parameter's position onwards
+        var j = fixed_params_count; // Start from the 'any' parameter's position
+        while (j < arg_ids.len) : (j += 1) {
+            try extra_vals.append(self.gpa, try self.lowerExpr(ctx, a, env, f, blk, arg_ids[j], null, .rvalue));
+        }
+
+        const packed_tuple_ty = trailing_any_tuple_ty orelse blk: {
+            const ty = try self.computeTrailingAnyTupleType(ctx, a, arg_ids, fixed_params_count);
+            trailing_any_tuple_ty = ty;
+            break :blk ty;
+        };
+
+        // Create the TIR tuple literal
+        const packed_tuple_val = blk.builder.tupleMake(blk, packed_tuple_ty, extra_vals.items, loc);
+        try vals_list.append(self.gpa, packed_tuple_val);
+    } else {
+        // For other cases, continue lowering remaining arguments normally
+        // This loop is only needed if there were arguments not covered by the fixed_params_count
+        // and not handled by the is_non_extern_any_variadic_candidate block.
+        // In the current logic, 'i' already covers fixed_params_count, so this loop is for
+        // the original variadic case or if fixed_params_count was 0.
+        while (i < arg_ids.len) : (i += 1) {
+            const want: ?types.TypeId = if (i < fixed_params_count) param_tys[i] else null;
+            const lower_mode: LowerMode = blk: {
+                if (method_binding) |mb| {
+                    if (mb.requires_implicit_receiver and mb.needs_addr_of and i == 0) {
+                        break :blk .lvalue_addr;
+                    }
+                }
+                break :blk .rvalue;
+            };
+            const v = try self.lowerExpr(ctx, a, env, f, blk, arg_ids[i], want, lower_mode);
+            try vals_list.append(self.gpa, v);
+        }
+    }
+
     // Synthesize defaulted trailing arguments if callee declaration is known and not variadic.
-    if (!is_variadic and param_tys.len > vals_list.items.len) {
+    // This block needs to be adjusted to account for the new vals_list structure.
+    // If is_non_extern_any_variadic_candidate is true, vals_list.items.len will be fixed_params_count + 1.
+    // The original logic for defaulted arguments should still apply to the fixed parameters.
+    // The 'any' parameter does not have default arguments in this context.
+    if (!is_variadic_extern and !is_non_extern_any_variadic_candidate and param_tys.len > vals_list.items.len) {
         var decl_ctx_final: ?FunctionDeclContext = null;
         if (method_decl_id) |mid| {
             decl_ctx_final = .{ .ast = a, .decl_id = mid };
@@ -1893,9 +1973,12 @@ fn lowerCall(
     }
 
     // Final safety: if we know param types, coerce the fixed ones
+    // This loop needs to be adjusted to account for the new vals_list structure.
+    // If is_non_extern_any_variadic_candidate is true, the last element of vals_list is the tuple.
+    // Coercion should only apply to fixed parameters.
     if (param_tys.len > 0) {
         i = 0;
-        while (i < vals_list.items.len and i < fixed) : (i += 1) {
+        while (i < vals_list.items.len and i < fixed_params_count) : (i += 1) {
             const want = param_tys[i];
             const got = blk: {
                 if (method_binding) |mb| {
@@ -1913,8 +1996,8 @@ fn lowerCall(
         }
     }
 
-    if (is_variadic and vals_list.items.len > fixed) {
-        var j2: usize = fixed;
+    if (is_variadic_extern and vals_list.items.len > fixed_params_count) {
+        var j2: usize = fixed_params_count;
         while (j2 < vals_list.items.len) : (j2 += 1) {
             const got = if (j2 < arg_ids.len) self.getExprType(ctx, a, arg_ids[j2]) else self.getExprType(ctx, a, id);
             // Apply default argument promotions for C varargs interop.
@@ -2042,6 +2125,28 @@ fn lowerCall(
     }
 
     return call_val;
+}
+
+fn computeTrailingAnyTupleType(
+    self: *LowerTir,
+    ctx: *LowerContext,
+    a: *ast.Ast,
+    args: []const ast.ExprId,
+    start_index: usize,
+) !types.TypeId {
+    if (start_index >= args.len) {
+        return self.context.type_store.mkTuple(&.{});
+    }
+
+    var elem_types = std.ArrayList(types.TypeId){};
+    defer elem_types.deinit(self.gpa);
+
+    var idx = start_index;
+    while (idx < args.len) : (idx += 1) {
+        try elem_types.append(self.gpa, self.getExprType(ctx, a, args[idx]));
+    }
+
+    return self.context.type_store.mkTuple(elem_types.items);
 }
 
 fn lowerTypeExprOpaque(

@@ -342,7 +342,7 @@ pub const Rows = struct {
     pub const Map = struct { key: TypeId, value: TypeId };
     pub const Optional = struct { elem: TypeId };
     pub const Tuple = struct { elems: RangeType };
-    pub const Function = struct { params: RangeType, result: TypeId, is_variadic: bool, is_pure: bool };
+    pub const Function = struct { params: RangeType, result: TypeId, is_variadic: bool, is_pure: bool, is_extern: bool };
     pub const Field = struct { name: StrId, ty: TypeId };
     pub const EnumMember = struct { name: StrId, value: u64 };
     pub const Struct = struct { fields: RangeField };
@@ -845,10 +845,10 @@ pub const TypeStore = struct {
         const r = self.type_pool.pushMany(self.gpa, elems);
         return self.addLocked(.Tuple, .{ .elems = r });
     }
-    pub fn mkFunction(self: *TypeStore, params: []const TypeId, result: TypeId, is_variadic: bool, is_pure: bool) TypeId {
+    pub fn mkFunction(self: *TypeStore, params: []const TypeId, result: TypeId, is_variadic: bool, is_pure: bool, is_extern: bool) TypeId {
         self.mutex.lock();
         defer self.mutex.unlock();
-        if (self.findFunction(params, result, is_variadic, is_pure)) |id| return id;
+        if (self.findFunction(params, result, is_variadic, is_pure, is_extern)) |id| return id;
 
         // Copy params to a temporary buffer to avoid use-after-free if params is a slice of self.type_pool
         const params_copy = self.gpa.alloc(TypeId, params.len) catch @panic("OOM");
@@ -856,7 +856,7 @@ pub const TypeStore = struct {
         @memcpy(params_copy, params);
 
         const r = self.type_pool.pushMany(self.gpa, params_copy);
-        return self.addLocked(.Function, .{ .params = r, .result = result, .is_variadic = is_variadic, .is_pure = is_pure });
+        return self.addLocked(.Function, .{ .params = r, .result = result, .is_variadic = is_variadic, .is_pure = is_pure, .is_extern = is_extern });
     }
     pub const EnumMemberArg = struct { name: StrId, value: u64 };
     pub fn mkEnum(self: *TypeStore, members: []const EnumMemberArg, tag_type: TypeId) TypeId {
@@ -1041,10 +1041,10 @@ pub const TypeStore = struct {
             }
         });
     }
-    fn findFunction(self: *const TypeStore, params: []const TypeId, result: TypeId, is_variadic: bool, is_pure: bool) ?TypeId {
-        return self.findMatch(.Function, struct { p: []const TypeId, r: TypeId, v: bool, pure: bool }{ .p = params, .r = result, .v = is_variadic, .pure = is_pure }, struct {
+    fn findFunction(self: *const TypeStore, params: []const TypeId, result: TypeId, is_variadic: bool, is_pure: bool, is_extern: bool) ?TypeId {
+        return self.findMatch(.Function, struct { p: []const TypeId, r: TypeId, v: bool, pure: bool, ext: bool }{ .p = params, .r = result, .v = is_variadic, .pure = is_pure, .ext = is_extern }, struct {
             fn eq(s: *const TypeStore, row: Rows.Function, key: anytype) bool {
-                if (row.result.toRaw() != key.r.toRaw() or row.is_variadic != key.v or row.is_pure != key.pure) return false;
+                if (row.result.toRaw() != key.r.toRaw() or row.is_variadic != key.v or row.is_pure != key.pure or row.is_extern != key.ext) return false;
                 const ids = s.type_pool.slice(row.params);
                 if (ids.len != key.p.len) return false;
                 var i: usize = 0;
