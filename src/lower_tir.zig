@@ -1997,40 +1997,98 @@ fn lowerCall(
     }
 
     if (is_variadic_extern and vals_list.items.len > fixed_params_count) {
-        var j2: usize = fixed_params_count;
-        while (j2 < vals_list.items.len) : (j2 += 1) {
-            const got = if (j2 < arg_ids.len) self.getExprType(ctx, a, arg_ids[j2]) else self.getExprType(ctx, a, id);
-            // Apply default argument promotions for C varargs interop.
-            const want_promoted: ?types.TypeId = switch (self.context.type_store.getKind(got)) {
+        const VarArgEntry = struct {
+            value: tir.ValueId,
+            ty: types.TypeId,
+            loc: tir.OptLocId,
+            expr: ?ast.ExprId,
+        };
+        var var_entries: List(VarArgEntry) = .empty;
+        defer var_entries.deinit(self.gpa);
+
+        const total_len = vals_list.items.len;
+        const original_vararg_count = total_len - fixed_params_count;
+        var remove_index: usize = 0;
+        while (remove_index < original_vararg_count) : (remove_index += 1) {
+            const arg_pos = fixed_params_count + remove_index;
+            const removed_val = vals_list.items[arg_pos];
+            const expr_id: ?ast.ExprId = if (arg_pos < arg_ids.len) arg_ids[arg_pos] else null;
+            const loc_entry = if (expr_id) |eid| optLoc(a, eid) else optLoc(a, id);
+            const ty_entry = if (expr_id) |eid| self.getExprType(ctx, a, eid) else self.getExprType(ctx, a, id);
+            try var_entries.append(self.gpa, .{
+                .value = removed_val,
+                .ty = ty_entry,
+                .loc = loc_entry,
+                .expr = expr_id,
+            });
+        }
+        vals_list.items.len = fixed_params_count;
+
+        var ve_idx: usize = 0;
+        while (ve_idx < var_entries.items.len) {
+            const entry = var_entries.items[ve_idx];
+            if (self.context.type_store.getKind(entry.ty) == .Tuple) {
+                const tuple_row = self.context.type_store.get(.Tuple, entry.ty);
+                const elem_types = self.context.type_store.type_pool.slice(tuple_row.elems);
+                var shift = ve_idx;
+                while (shift + 1 < var_entries.items.len) : (shift += 1) {
+                    var_entries.items[shift] = var_entries.items[shift + 1];
+                }
+                var_entries.items.len -= 1;
+                var elem_idx: usize = 0;
+                while (elem_idx < elem_types.len) : (elem_idx += 1) {
+                    const elem_ty = elem_types[elem_idx];
+                    const elem_val = blk.builder.extractField(blk, elem_ty, entry.value, @intCast(elem_idx), entry.loc);
+                    try var_entries.insert(self.gpa, ve_idx + elem_idx, .{
+                        .value = elem_val,
+                        .ty = elem_ty,
+                        .loc = entry.loc,
+                        .expr = entry.expr,
+                    });
+                }
+                continue;
+            }
+            ve_idx += 1;
+        }
+
+        ve_idx = 0;
+        while (ve_idx < var_entries.items.len) : (ve_idx += 1) {
+            var entry = &var_entries.items[ve_idx];
+            const entry_kind = self.context.type_store.getKind(entry.ty);
+            const want_promoted: ?types.TypeId = switch (entry_kind) {
                 .Bool, .I8, .U8, .I16, .U16 => self.context.type_store.tI32(),
                 .F32 => self.context.type_store.tF64(),
                 else => null,
             };
             if (want_promoted) |want_ty| {
-                const arg_loc = if (j2 < arg_ids.len) optLoc(a, arg_ids[j2]) else optLoc(a, id);
-                vals_list.items[j2] = self.emitCoerce(blk, vals_list.items[j2], got, want_ty, arg_loc);
+                entry.value = self.emitCoerce(blk, entry.value, entry.ty, want_ty, entry.loc);
+                entry.ty = want_ty;
                 continue;
             }
 
-            // If argument was typed as 'any', pick a concrete type consistent with promotions.
-            if (self.isType(got, .Any)) {
-                const k = a.exprs.index.kinds.items[arg_ids[j2].toRaw()];
-                const want_any: types.TypeId = switch (k) {
-                    .Literal => blk: {
-                        const lit = a.exprs.get(.Literal, arg_ids[j2]);
-                        break :blk switch (lit.kind) {
-                            .int, .char => self.context.type_store.tI64(),
-                            .float, .imaginary => self.context.type_store.tF64(),
-                            .bool => self.context.type_store.tI32(),
-                            .string => self.context.type_store.tString(),
-                        };
-                    },
-                    else => self.context.type_store.tUsize(),
-                };
-                if (j2 < arg_ids.len) {
-                    vals_list.items[j2] = try self.lowerExpr(ctx, a, env, f, blk, arg_ids[j2], want_any, .rvalue);
+            if (entry_kind == .Any) {
+                if (entry.expr) |expr_id| {
+                    const expr_kind = a.exprs.index.kinds.items[expr_id.toRaw()];
+                    const want_any: types.TypeId = switch (expr_kind) {
+                        .Literal => blk: {
+                            const lit = a.exprs.get(.Literal, expr_id);
+                            break :blk switch (lit.kind) {
+                                .int, .char => self.context.type_store.tI64(),
+                                .float, .imaginary => self.context.type_store.tF64(),
+                                .bool => self.context.type_store.tI32(),
+                                .string => self.context.type_store.tString(),
+                            };
+                        },
+                        else => self.context.type_store.tUsize(),
+                    };
+                    entry.value = try self.lowerExpr(ctx, a, env, f, blk, expr_id, want_any, .rvalue);
+                    entry.ty = want_any;
                 }
             }
+        }
+
+        for (var_entries.items) |entry| {
+            try vals_list.append(self.gpa, entry.value);
         }
     }
 
@@ -2632,8 +2690,8 @@ fn lowerStructLit(
     }
 
     const fids = a.exprs.sfv_pool.slice(row.fields);
-    var fields = try self.gpa.alloc(tir.Rows.StructFieldInit, fids.len);
-    defer self.gpa.free(fields);
+    var field_inits = List(tir.Rows.StructFieldInit){};
+    defer field_inits.deinit(self.gpa);
 
     const ty0_kind = self.context.type_store.getKind(ty0);
     var type_fields: []const types.FieldId = &.{};
@@ -2642,6 +2700,15 @@ fn lowerStructLit(
     } else if (ty0_kind == .Union) {
         type_fields = self.context.type_store.field_pool.slice(self.context.type_store.get(.Union, ty0).fields);
     }
+
+    var provided_mask: ?[]bool = null;
+    if (ty0_kind == .Struct and !row.ty.isNone()) {
+        const count = type_fields.len;
+        const mask = try self.gpa.alloc(bool, count);
+        @memset(mask, false);
+        provided_mask = mask;
+    }
+    defer if (provided_mask) |mask| self.gpa.free(mask);
 
     var i: usize = 0;
     while (i < fids.len) : (i += 1) {
@@ -2668,17 +2735,41 @@ fn lowerStructLit(
 
         const v_val = try self.lowerExpr(ctx, a, env, f, blk, sfv.value, want, .rvalue);
         const final_idx = field_idx orelse i;
-        fields[i] = .{ .index = @intCast(final_idx), .name = sfv.name, .value = v_val };
+        if (provided_mask) |mask| {
+            if (field_idx) |idx| mask[idx] = true;
+        }
+        try field_inits.append(self.gpa, .{ .index = @intCast(final_idx), .name = sfv.name, .value = v_val });
     }
 
+    if (provided_mask) |mask| {
+        const type_expr = row.ty.unwrap();
+        var j: usize = 0;
+        while (j < mask.len) : (j += 1) {
+            if (mask[j]) continue;
+            const fid = type_fields[j];
+            const field_def = self.context.type_store.Field.get(fid);
+            if (self.structFieldDefaultExpr(a, type_expr, field_def.name)) |default_expr| {
+                const default_val = try self.lowerExpr(ctx, a, env, f, blk, default_expr, field_def.ty, .rvalue);
+                try field_inits.append(self.gpa, .{
+                    .index = @intCast(j),
+                    .name = ast.OptStrId.some(field_def.name),
+                    .value = default_val,
+                });
+            }
+        }
+    }
+
+    const field_slice = try field_inits.toOwnedSlice(self.gpa);
+    defer self.gpa.free(field_slice);
+
     const v = if (ty0_kind == .Union) blk: {
-        std.debug.assert(fields.len == 1);
-        const field = fields[0];
+        std.debug.assert(field_slice.len == 1);
+        const field = field_slice[0];
         break :blk blk.builder.tirValue(.UnionMake, blk, ty0, loc, .{
             .field_index = field.index,
             .value = field.value,
         });
-    } else blk.builder.structMake(blk, ty0, fields, loc);
+    } else blk.builder.structMake(blk, ty0, field_slice, loc);
 
     if (expected_ty) |want| return self.emitCoerce(blk, v, ty0, want, loc);
     return v;
@@ -3320,6 +3411,7 @@ fn lowerBinary(
     var op_ty: ?types.TypeId = stamped_result;
 
     switch (row.op) {
+        else => unreachable,
         .add, .sub, .mul, .div, .mod, .shl, .shr, .bit_and, .bit_or, .bit_xor => {
             // Decide the operation type first: prefer the stamped/checker type when meaningful,
             // otherwise fall back to a common numeric type (or expected type / i64).
@@ -3522,6 +3614,7 @@ fn lowerBinary(
     try self.noteExprType(ctx, id, ty0);
 
     const v = switch (row.op) {
+        else => unreachable,
         .add => if (row.saturate)
             blk.builder.bin(blk, .BinSatAdd, ty0, l, r, loc)
         else if (row.wrap)
@@ -4162,6 +4255,41 @@ fn findFunctionDeclForCall(
         }
     }
 
+    return null;
+}
+
+fn structFieldDefaultExpr(self: *LowerTir, a: *ast.Ast, type_expr: ast.ExprId, field_name: ast.StrId) ?ast.ExprId {
+    const struct_expr = self.structTypeExprFromTypeRef(a, type_expr) orelse return null;
+    return structFieldDefaultInStructExpr(a, struct_expr, field_name);
+}
+
+fn structTypeExprFromTypeRef(self: *LowerTir, a: *ast.Ast, type_expr: ast.ExprId) ?ast.ExprId {
+    const kind = a.exprs.index.kinds.items[type_expr.toRaw()];
+    return switch (kind) {
+        .StructType => type_expr,
+        .Ident => blk: {
+            const ident = a.exprs.get(.Ident, type_expr);
+            if (self.findTopLevelDeclByName(a, ident.name)) |decl_id| {
+                const decl = a.exprs.Decl.get(decl_id);
+                if (a.exprs.index.kinds.items[decl.value.toRaw()] == .StructType) {
+                    break :blk decl.value;
+                }
+            }
+            break :blk null;
+        },
+        else => null,
+    };
+}
+
+fn structFieldDefaultInStructExpr(a: *ast.Ast, struct_expr: ast.ExprId, field_name: ast.StrId) ?ast.ExprId {
+    const row = a.exprs.get(.StructType, struct_expr);
+    const sfields = a.exprs.sfield_pool.slice(row.fields);
+    for (sfields) |fid| {
+        const sf = a.exprs.StructField.get(fid);
+        if (sf.name.eq(field_name) and !sf.value.isNone()) {
+            return sf.value.unwrap();
+        }
+    }
     return null;
 }
 fn findTopLevelImportByName(self: *const LowerTir, a: *ast.Ast, name: ast.StrId) ?ast.DeclId {

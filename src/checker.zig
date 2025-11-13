@@ -2272,6 +2272,7 @@ fn checkBinary(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, id: ast
             try self.context.diags.addError(exprLoc(ast_unit, bin), .invalid_use_of_orelse_on_non_optional, .{});
             return self.context.type_store.tTypeError();
         },
+        else => unreachable,
     }
     return self.context.type_store.tTypeError();
 }
@@ -3125,6 +3126,9 @@ fn checkStructLit(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, id: 
     switch (is_assignable) {
         .success => {},
         .struct_field_count_mismatch => {
+            if (self.structMissingFieldsCoveredByDefaults(ctx, ast_unit, struct_lit, struct_ty, expect_ty)) {
+                return expect_ty;
+            }
             try self.context.diags.addError(exprLoc(ast_unit, struct_lit), .struct_missing_field, .{});
             return self.context.type_store.tTypeError();
         },
@@ -3146,6 +3150,83 @@ fn checkStructLit(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, id: 
         },
     }
     return expect_ty;
+}
+
+fn structMissingFieldsCoveredByDefaults(
+    self: *Checker,
+    ctx: *CheckerContext,
+    ast_unit: *ast.Ast,
+    struct_lit: ast.Rows.StructLit,
+    provided_ty: types.TypeId,
+    expect_ty: types.TypeId,
+) bool {
+    if (struct_lit.ty.isNone()) return false;
+    if (self.typeKind(provided_ty) != .Struct or self.typeKind(expect_ty) != .Struct) return false;
+
+    const ty_expr = struct_lit.ty.unwrap();
+    const got_struct = self.context.type_store.get(.Struct, provided_ty);
+    const expect_struct = self.context.type_store.get(.Struct, expect_ty);
+    const got_fields = self.context.type_store.field_pool.slice(got_struct.fields);
+    const expect_fields = self.context.type_store.field_pool.slice(expect_struct.fields);
+
+    for (expect_fields) |efid| {
+        const expected_field = self.context.type_store.Field.get(efid);
+        var present = false;
+        for (got_fields) |gfid| {
+            const provided_field = self.context.type_store.Field.get(gfid);
+            if (provided_field.name.eq(expected_field.name)) {
+                present = true;
+                break;
+            }
+        }
+        if (present) continue;
+        if (!self.structFieldHasDefault(ctx, ast_unit, ty_expr, expected_field.name)) {
+            return false;
+        }
+    }
+    return true;
+}
+
+fn structFieldHasDefault(
+    self: *Checker,
+    ctx: *CheckerContext,
+    ast_unit: *ast.Ast,
+    ty_expr: ast.ExprId,
+    field_name: ast.StrId,
+) bool {
+    return switch (exprKind(ast_unit, ty_expr)) {
+        .StructType => structFieldHasDefaultInStructExpr(ast_unit, ty_expr, field_name),
+        .Ident => blk: {
+            const idr = getExpr(ast_unit, .Ident, ty_expr);
+            if (self.lookup(ctx, idr.name)) |sid| {
+                const sym = ctx.symtab.syms.get(sid);
+                if (!sym.origin_decl.isNone()) {
+                    const decl = ast_unit.exprs.Decl.get(sym.origin_decl.unwrap());
+                    if (exprKind(ast_unit, decl.value) == .StructType) {
+                        break :blk structFieldHasDefaultInStructExpr(ast_unit, decl.value, field_name);
+                    }
+                }
+            }
+            break :blk false;
+        },
+        else => false,
+    };
+}
+
+fn structFieldHasDefaultInStructExpr(
+    ast_unit: *ast.Ast,
+    struct_expr: ast.ExprId,
+    field_name: ast.StrId,
+) bool {
+    const struct_row = ast_unit.exprs.get(.StructType, struct_expr);
+    const sfield_ids = ast_unit.exprs.sfield_pool.slice(struct_row.fields);
+    for (sfield_ids) |sfid| {
+        const sf = ast_unit.exprs.StructField.get(sfid);
+        if (sf.name.eq(field_name)) {
+            return !sf.value.isNone();
+        }
+    }
+    return false;
 }
 
 fn checkDeref(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, id: ast.ExprId) !types.TypeId {

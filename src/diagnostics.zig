@@ -144,6 +144,7 @@ pub const DiagnosticCode = enum {
     invalid_binary_op_operands, // payload: three (op, lhs token, rhs token)
     invalid_unary_op_operand, // payload: two (op, operand token)
     division_by_zero,
+    in_operator_not_supported,
     non_boolean_condition,
     if_expression_requires_else,
     if_branch_type_mismatch,
@@ -384,6 +385,7 @@ pub fn diagnosticMessageFmt(code: DiagnosticCode) []const u8 {
         .invalid_binary_op_operands => "invalid operands for binary operator '{s}': '{s}' and '{s}'",
         .invalid_unary_op_operand => "invalid operand for unary operator '{s}': '{s}'",
         .division_by_zero => "division by zero",
+        .in_operator_not_supported => "'in' operator is not implemented yet",
         .non_boolean_condition => "condition expression expected boolean type, got '{s}'",
         .if_expression_requires_else => "'if' used as an expression must have an 'else' branch",
         .if_branch_type_mismatch => "if branches produce mismatched types",

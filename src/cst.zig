@@ -314,6 +314,7 @@ pub const InfixOp = enum(u16) {
     add_sat_assign,
     sub_sat_assign,
     shl_sat_assign,
+    contains,
 };
 pub const MlirKind = enum(u8) { Module, Type, Attribute, Operation };
 pub const MlirPieceKind = enum(u8) { literal, splice };

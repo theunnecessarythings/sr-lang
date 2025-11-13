@@ -95,6 +95,7 @@ pub const BinaryOp = enum(u8) {
     logical_and,
     logical_or,
     @"orelse",
+    contains,
 };
 pub const VariantPayloadKind = enum(u2) { none, tuple, @"struct" };
 
@@ -1902,6 +1903,7 @@ pub const CodePrinter = struct {
                     .logical_and => "and",
                     .logical_or => "or",
                     .@"orelse" => "orelse",
+                    .contains => "in",
                 };
                 if (node.wrap) {
                     try self.printf(" {s}w ", .{op_str});

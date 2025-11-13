@@ -1165,6 +1165,7 @@ fn lowerInfix(self: *Lower, id: cst.ExprId) !ast.ExprId {
                 .gte => .{ .op = .gte, .wrap = false, .sat = false },
                 .logical_and => .{ .op = .logical_and, .wrap = false, .sat = false },
                 .logical_or => .{ .op = .logical_or, .wrap = false, .sat = false },
+                .contains => .{ .op = .contains, .wrap = false, .sat = false },
                 .add_wrap => .{ .op = .add, .wrap = true, .sat = false },
                 .add_sat => .{ .op = .add, .wrap = false, .sat = true },
                 .sub_wrap => .{ .op = .sub, .wrap = true, .sat = false },

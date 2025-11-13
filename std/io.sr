@@ -56,3 +56,8 @@ eprintln0 :: proc(s: string) void { rt_eprint(s.^*u8, rt_strlen(s.^*u8)); rt_epr
 
 // Panic with message (noreturn)
 panic :: proc(msg: string) noreturn { rt_panic(msg.^*u8, rt_strlen(msg.^*u8)) }
+
+// Assert
+assert :: proc(cond: bool, msg: string) noreturn {
+    if !cond  { panic(msg) }
+}
