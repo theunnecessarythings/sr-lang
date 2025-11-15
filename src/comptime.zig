@@ -367,7 +367,8 @@ fn evaluateTypeExpr(
                                     var skip_m: usize = 0;
                                     var xi: usize = 0;
                                     while (xi < param_ids0.len and a.exprs.Param.get(param_ids0[xi]).is_comptime) : (xi += 1) skip_m += 1;
-                                    const base_name = try self.methodSymbolName(a, d_stmt.decl);
+                                    const base_raw = try self.methodSymbolName(a, d_stmt.decl);
+                                    const base_name = try self.qualifySymbolName(a, base_raw);
                                     const mangled = try mangleMonomorphName(self, base_name, infos.items);
                                     _ = try ctx.monomorphizer.request(a, self.context.type_store, base_name, d_stmt.decl, fnty0, infos.items, skip_m, mangled, null);
                                 }
@@ -937,7 +938,8 @@ fn lowerSpecializedFunction(
                         var it_idx: usize = 0;
                         while (it_idx < param_ids.len and a.exprs.Param.get(param_ids[it_idx]).is_comptime) : (it_idx += 1) skip_params_m += 1;
 
-                        const base_name = try self.methodSymbolName(a, sd.decl);
+                        const base_raw = try self.methodSymbolName(a, sd.decl);
+                        const base_name = try self.qualifySymbolName(a, base_raw);
                         const mangled = try mangleMonomorphName(self, base_name, infos.items);
                         _ = try ctx.monomorphizer.request(
                             a,

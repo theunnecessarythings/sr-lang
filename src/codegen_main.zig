@@ -1294,6 +1294,63 @@ fn ensureCallArgType(
     return value;
 }
 
+const CallParamInfo = struct {
+    types: []const mlir.Type,
+    owned: ?[]mlir.Type,
+};
+
+const emptyFunctionParamSlice: []const mlir.Type = &[_]mlir.Type{};
+
+fn resolveCallParamTypes(self: *Codegen, finfo: FuncInfo) !CallParamInfo {
+    if (finfo.param_types.len != 0) {
+        return .{ .types = finfo.param_types, .owned = null };
+    }
+    const func_type_attr = finfo.op.getInherentAttributeByName(mlir.StringRef.from("function_type"));
+    if (func_type_attr.isNull()) {
+        return .{ .types = emptyFunctionParamSlice, .owned = null };
+    }
+    const func_type = func_type_attr.typeAttrGetValue();
+    if (!func_type.isAFunction()) {
+        return .{ .types = emptyFunctionParamSlice, .owned = null };
+    }
+    const num_inputs: usize = @intCast(func_type.getFunctionNumInputs());
+    if (num_inputs == 0) {
+        return .{ .types = emptyFunctionParamSlice, .owned = null };
+    }
+    var owned = try self.gpa.alloc(mlir.Type, num_inputs);
+    var idx: usize = 0;
+    while (idx < num_inputs) : (idx += 1) {
+        owned[idx] = func_type.getFunctionInput(@intCast(idx));
+    }
+    return .{ .types = owned, .owned = owned };
+}
+
+fn prepareInternalCallArgs(
+    self: *Codegen,
+    src_vals: []const mlir.Value,
+    src_sr: []const types.TypeId,
+    finfo: FuncInfo,
+) ![]mlir.Value {
+    const param_info = try self.resolveCallParamTypes(finfo);
+    defer if (param_info.owned) |owned| self.gpa.free(owned);
+    var args = try self.gpa.alloc(mlir.Value, src_vals.len);
+    var i: usize = 0;
+    while (i < src_vals.len) : (i += 1) {
+        const want_ty = if (i < param_info.types.len) param_info.types[i] else src_vals[i].getType();
+        var passv = src_vals[i];
+        if (!passv.getType().equal(want_ty)) {
+            if (mlir.LLVM.isLLVMPointerType(want_ty) and !mlir.LLVM.isLLVMPointerType(passv.getType())) {
+                const tmp = self.spillAgg(passv, passv.getType(), 0);
+                passv = try self.ensureCallArgType(tmp, src_sr[i], want_ty);
+            } else {
+                passv = try self.ensureCallArgType(passv, src_sr[i], want_ty);
+            }
+        }
+        args[i] = passv;
+    }
+    return args;
+}
+
 fn emitConstInt(self: *Codegen, p: tir.Rows.ConstInt) !mlir.Value {
     const prev_loc = self.pushLocation(p.loc);
     defer self.loc = prev_loc;
@@ -1758,10 +1815,17 @@ fn emitTupleMake(self: *Codegen, p: tir.Rows.TupleMake, t: *const tir.TIR) !mlir
     const prev_loc = self.pushLocation(p.loc);
     defer self.loc = prev_loc;
     const tup_ty = try self.llvmTypeOf(p.ty);
+    const tuple_row = self.context.type_store.get(.Tuple, p.ty);
+    const elem_srs = self.context.type_store.type_pool.slice(tuple_row.elems);
     var acc = self.zeroOf(tup_ty);
     const elems = t.instrs.value_pool.slice(p.elems);
+    std.debug.assert(elem_srs.len == elems.len);
     for (elems, 0..) |vid, i| {
-        const v = self.value_map.get(vid).?;
+        const elem_sr = elem_srs[@intCast(i)];
+        const elem_mlir = try self.llvmTypeOf(elem_sr);
+        var v = self.value_map.get(vid).?;
+        const src_sr = self.srTypeOfValue(vid);
+        v = try self.coerceOnBranch(v, elem_mlir, elem_sr, src_sr);
         acc = self.insertAt(acc, v, &.{@intCast(i)});
     }
     return acc;
@@ -2307,11 +2371,13 @@ fn emitCall(self: *Codegen, p: tir.Rows.Call, t: *const tir.TIR) !mlir.Value {
 
     if (!isExternLL) {
         // Internal call: unchanged (func.call)
+        const call_args = try self.prepareInternalCallArgs(src_vals, src_sr, finfo.?);
+        defer self.gpa.free(call_args);
         const attrs = [_]mlir.NamedAttribute{
             self.named("callee", mlir.Attribute.flatSymbolRefAttrGet(self.mlir_ctx, mlir.StringRef.from(callee_name))),
         };
         var call = OpBuilder.init("func.call", self.loc).builder()
-            .operands(src_vals)
+            .operands(call_args)
             .results(if (want_has_res) &.{want_res_mlir} else &.{})
             .attributes(&attrs)
             .build();

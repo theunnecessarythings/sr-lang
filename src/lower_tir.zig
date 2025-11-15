@@ -61,6 +61,17 @@ pub const LowerContext = struct {
     expr_type_override_stack: List(ExprTypeOverrideFrame) = .{},
 };
 
+pub fn qualifySymbolName(self: *LowerTir, a: *ast.Ast, base: StrId) !StrId {
+    if (a.unit.package_name.isNone()) return base;
+    const pkg_id = a.unit.package_name.unwrap();
+    const pkg_name = self.context.type_store.strs.get(pkg_id);
+    if (std.mem.eql(u8, pkg_name, "main")) return base;
+    const base_name = self.context.type_store.strs.get(base);
+    const symbol = try std.fmt.allocPrint(self.gpa, "{s}__{s}", .{ pkg_name, base_name });
+    defer self.gpa.free(symbol);
+    return self.context.type_store.strs.intern(symbol);
+}
+
 pub var g_mlir_inited: bool = false;
 pub var g_mlir_ctx: mlir.Context = undefined;
 
@@ -190,8 +201,8 @@ pub fn runAst(self: *LowerTir, ast_unit: *ast.Ast, t: *tir.TIR, ctx: *LowerConte
         if (ctx.method_lowered.contains(decl_id.toRaw())) continue;
         // Skip lowering generic Any variants; only lower specialized methods
         if (self.shouldSkipGenericMethod(method.func_type)) continue;
-        const name = try self.methodSymbolName(ast_unit, decl_id);
-        try self.tryLowerNamedFunction(ctx, ast_unit, &b, decl_id, name, true);
+        const base_name = try self.methodSymbolName(ast_unit, decl_id);
+        try self.tryLowerNamedFunction(ctx, ast_unit, &b, decl_id, base_name, true, true);
     }
 
     try ctx.monomorphizer.run(self, ctx, &b, comp.monomorphLowerCallback);
@@ -339,8 +350,7 @@ fn lowerDynArrayAppend(
         const new_bytes = grow_blk.builder.bin(&grow_blk, .Mul, usize_ty, new_cap, elem_size_const, loc);
 
         const data_ptr_void = grow_blk.builder.tirValue(.CastBit, &grow_blk, ptr_void_ty, loc, .{ .value = data_ptr });
-        const realloc_name = grow_blk.builder.intern("rt_realloc");
-        const new_data_void = grow_blk.builder.call(&grow_blk, ptr_void_ty, realloc_name, &.{ data_ptr_void, new_bytes }, loc);
+        const new_data_void = self.callRuntimeReallocPtr(&grow_blk, data_ptr_void, new_bytes, loc);
         const new_data_ptr = grow_blk.builder.tirValue(.CastBit, &grow_blk, ptr_elem_ty, loc, .{ .value = new_data_void });
 
         _ = grow_blk.builder.tirValue(.Store, &grow_blk, ptr_elem_ty, loc, .{ .ptr = data_ptr_ptr, .value = new_data_ptr, .@"align" = 0 });
@@ -633,6 +643,35 @@ pub fn safeUndef(self: *LowerTir, blk: *Builder.BlockFrame, ty: types.TypeId, lo
     return blk.builder.tirValue(.ConstUndef, blk, ty, loc, .{});
 }
 
+fn callRuntimeAllocPtr(
+    self: *LowerTir,
+    blk: *Builder.BlockFrame,
+    size_bytes: tir.ValueId,
+    loc: tir.OptLocId,
+) tir.ValueId {
+    const ts = self.context.type_store;
+    const void_ptr_ty = ts.mkPtr(ts.tVoid(), false);
+    const opt_ptr_ty = ts.mkOptional(void_ptr_ty);
+    const alloc_name = blk.builder.intern("rt_alloc");
+    const alloc_result = blk.builder.call(blk, opt_ptr_ty, alloc_name, &.{size_bytes}, loc);
+    return blk.builder.extractField(blk, void_ptr_ty, alloc_result, 1, loc);
+}
+
+fn callRuntimeReallocPtr(
+    self: *LowerTir,
+    blk: *Builder.BlockFrame,
+    old_ptr: tir.ValueId,
+    size_bytes: tir.ValueId,
+    loc: tir.OptLocId,
+) tir.ValueId {
+    const ts = self.context.type_store;
+    const void_ptr_ty = ts.mkPtr(ts.tVoid(), false);
+    const opt_ptr_ty = ts.mkOptional(void_ptr_ty);
+    const realloc_name = blk.builder.intern("rt_realloc");
+    const realloc_result = blk.builder.call(blk, opt_ptr_ty, realloc_name, &.{ old_ptr, size_bytes }, loc);
+    return blk.builder.extractField(blk, void_ptr_ty, realloc_result, 1, loc);
+}
+
 fn coerceArrayToDynArray(
     self: *LowerTir,
     blk: *Builder.BlockFrame,
@@ -667,10 +706,8 @@ fn coerceArrayToDynArray(
     const elem_size_u64 = std.math.cast(u64, elem_size) orelse return null;
     const total_bytes = std.math.mul(u64, elem_size_u64, len_u64) catch return null;
 
-    const ptr_void_ty = ts.mkPtr(ts.tVoid(), false);
     const bytes_const = blk.builder.tirValue(.ConstInt, blk, usize_ty, loc, .{ .value = total_bytes });
-    const alloc_name = blk.builder.intern("rt_alloc");
-    const raw_ptr = blk.builder.call(blk, ptr_void_ty, alloc_name, &.{bytes_const}, loc);
+    const raw_ptr = self.callRuntimeAllocPtr(blk, bytes_const, loc);
     const data_ptr = blk.builder.tirValue(.CastBit, blk, ptr_ty, loc, .{ .value = raw_ptr });
 
     var idx: usize = 0;
@@ -818,7 +855,8 @@ fn tryLowerNamedFunction(
     a: *ast.Ast,
     b: *Builder,
     did: ast.DeclId,
-    name: StrId,
+    base_name: StrId,
+    should_mangle: bool,
     is_method: bool,
 ) !void {
     if (is_method and ctx.method_lowered.contains(did.toRaw())) return;
@@ -839,6 +877,7 @@ fn tryLowerNamedFunction(
     while (skip_params < params.len and a.exprs.Param.get(params[skip_params]).is_comptime) : (skip_params += 1) {}
     if (skip_params != 0) return;
 
+    const name = if (should_mangle) try self.qualifySymbolName(a, base_name) else base_name;
     try self.lowerFunction(ctx, a, b, name, decl.value, null);
 
     if (is_method) {
@@ -872,7 +911,7 @@ fn lowerTopDecl(self: *LowerTir, ctx: *LowerContext, a: *ast.Ast, b: *Builder, d
 
         if (name_opt) |nm| {
             const is_method = !d.method_path.isNone();
-            try self.tryLowerNamedFunction(ctx, a, b, did, nm, is_method);
+            try self.tryLowerNamedFunction(ctx, a, b, did, nm, true, is_method);
         }
         return;
     }
@@ -1203,6 +1242,7 @@ fn lowerStmt(
 
 const CalleeInfo = struct {
     name: StrId,
+    qualified_name: ?StrId,
     fty: ?types.TypeId,
     expr: ast.ExprId,
 };
@@ -1270,7 +1310,8 @@ fn prepareMethodCall(
 
     const symbol_ast = binding.decl_ast;
 
-    const symbol = try self.methodSymbolName(symbol_ast, binding.decl_id);
+    const base_symbol = try self.methodSymbolName(symbol_ast, binding.decl_id);
+    const symbol = try self.qualifySymbolName(symbol_ast, base_symbol);
     callee.name = symbol;
     callee.fty = binding.func_type;
     method_binding_out.* = binding;
@@ -1418,17 +1459,17 @@ fn resolveCallee(self: *LowerTir, ctx: *LowerContext, a: *ast.Ast, f: *Builder.F
                         }
                     }
                 }
-                return .{ .name = ident.name, .fty = self.getExprType(ctx, a, row.callee), .expr = current };
+                return .{ .name = ident.name, .qualified_name = null, .fty = self.getExprType(ctx, a, row.callee), .expr = current };
             },
             .FieldAccess => {
                 const resolved_name = self.resolveFieldAccessName(ctx, a, current);
-                return .{ .name = resolved_name, .fty = self.getExprType(ctx, a, row.callee), .expr = current };
+                return .{ .name = resolved_name, .qualified_name = null, .fty = self.getExprType(ctx, a, row.callee), .expr = current };
             },
             else => break,
         }
     }
 
-    return .{ .name = f.builder.intern("<indirect>"), .fty = self.getExprType(ctx, a, row.callee), .expr = row.callee };
+    return .{ .name = f.builder.intern("<indirect>"), .qualified_name = null, .fty = self.getExprType(ctx, a, row.callee), .expr = row.callee };
 }
 
 fn buildVariantItem(
@@ -1743,6 +1784,11 @@ fn lowerCall(
                 const decl_ast = decl_ctx.ast;
                 const decl = decl_ast.exprs.Decl.get(decl_ctx.decl_id);
                 const base_kind = decl_ast.exprs.index.kinds.items[decl.value.toRaw()];
+                if (callee.qualified_name == null) {
+                    if (try symbolNameForDecl(self, decl_ast, decl_ctx.decl_id)) |sym| {
+                        callee.qualified_name = sym;
+                    }
+                }
                 if (base_kind == .FunctionLit) {
                     const params = decl_ast.exprs.param_pool.slice(decl_ast.exprs.get(.FunctionLit, decl.value).params);
                     var skip_params: usize = 0;
@@ -1890,6 +1936,7 @@ fn lowerCall(
 
                     if (ok and binding_infos.items.len > 0) {
                         const mangled = try comp.mangleMonomorphName(self, callee.name, binding_infos.items);
+                        const qualified_mangled = try self.qualifySymbolName(decl_ast, mangled);
                         const result = try ctx.monomorphizer.request(
                             decl_ast,
                             self.context.type_store,
@@ -1898,10 +1945,11 @@ fn lowerCall(
                             fty,
                             binding_infos.items,
                             skip_params,
-                            mangled,
+                            qualified_mangled,
                             specialized_result_override,
                         );
-                        callee.name = result.mangled_name;
+                        callee.name = mangled;
+                        callee.qualified_name = result.mangled_name;
                         callee.fty = result.specialized_ty;
                         callee_name = self.context.type_store.strs.get(callee.name);
                         arg_ids = arg_ids[skip_params..];
@@ -2223,7 +2271,8 @@ fn lowerCall(
     } else {
         // For plain functions (including imported module members), do a direct call
         // and let ensureFuncDeclFromCall/ensureDeclFromCall set up the symbol.
-        call_val = blk.builder.call(blk, ret_ty, callee.name, vals_list.items, loc);
+        const callee_sym = if (callee.qualified_name) |sym| sym else callee.name;
+        call_val = blk.builder.call(blk, ret_ty, callee_sym, vals_list.items, loc);
     }
 
     if (mode == .lvalue_addr) {
@@ -2576,7 +2625,6 @@ fn lowerArrayLit(
             const elem_ty = dyn_ty.elem;
             const ptr_elem_ty = self.context.type_store.mkPtr(elem_ty, false);
             const usize_ty = self.context.type_store.tUsize();
-            const ptr_void_ty = self.context.type_store.mkPtr(self.context.type_store.tVoid(), false);
             const ids = a.exprs.expr_pool.slice(row.elems);
 
             if (ids.len == 0) {
@@ -2603,8 +2651,7 @@ fn lowerArrayLit(
 
             const total_bytes: u64 = @intCast(elem_size * ids.len);
             const bytes_const = blk.builder.tirValue(.ConstInt, blk, usize_ty, loc, .{ .value = total_bytes });
-            const alloc_name = blk.builder.intern("rt_alloc");
-            const raw_ptr = blk.builder.call(blk, ptr_void_ty, alloc_name, &.{bytes_const}, loc);
+            const raw_ptr = self.callRuntimeAllocPtr(blk, bytes_const, loc);
             const data_ptr = blk.builder.tirValue(.CastBit, blk, ptr_elem_ty, loc, .{ .value = raw_ptr });
 
             var idx: usize = 0;
@@ -4355,6 +4402,26 @@ fn findFunctionDeclForCall(
         }
     }
 
+    return null;
+}
+
+fn symbolNameForDecl(self: *LowerTir, decl_ast: *ast.Ast, did: ast.DeclId) !?StrId {
+    const decl = decl_ast.exprs.Decl.get(did);
+    const is_extern_fn = switch (decl_ast.exprs.index.kinds.items[decl.value.toRaw()]) {
+        .FunctionLit => decl_ast.exprs.get(.FunctionLit, decl.value).flags.is_extern,
+        else => false,
+    };
+    if (!decl.pattern.isNone()) {
+        const pat = decl.pattern.unwrap();
+        if (bindingNameOfPattern(decl_ast, pat)) |name| {
+            return if (is_extern_fn) name else try self.qualifySymbolName(decl_ast, name);
+        }
+        return null;
+    }
+    if (!decl.method_path.isNone()) {
+        const base = try self.methodSymbolName(decl_ast, did);
+        return if (is_extern_fn) base else try self.qualifySymbolName(decl_ast, base);
+    }
     return null;
 }
 
