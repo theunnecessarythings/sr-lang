@@ -2160,15 +2160,55 @@ fn expandVariadicArgTuple(
     out_vals: *ArrayList(mlir.Value),
     out_sr: *ArrayList(types.TypeId),
 ) anyerror!void {
-    if (self.context.type_store.getKind(sr_ty) == .Tuple) {
-        const tuple_row = self.context.type_store.get(.Tuple, sr_ty);
-        const elems = self.context.type_store.type_pool.slice(tuple_row.elems);
-        for (elems, 0..) |elem_sr, idx| {
-            const elem_ty = try self.llvmTypeOf(elem_sr);
-            const elem_val = self.extractAt(value, elem_ty, &.{@intCast(idx)});
-            try self.expandVariadicArgTuple(elem_val, elem_sr, out_vals, out_sr);
-        }
-        return;
+    const kind = self.context.type_store.getKind(sr_ty);
+    switch (kind) {
+        .Tuple => {
+            const tuple_row = self.context.type_store.get(.Tuple, sr_ty);
+            const elems = self.context.type_store.type_pool.slice(tuple_row.elems);
+            for (elems, 0..) |elem_sr, idx| {
+                const elem_ty = try self.llvmTypeOf(elem_sr);
+                const elem_val = self.extractAt(value, elem_ty, &.{@intCast(idx)});
+                try self.expandVariadicArgTuple(elem_val, elem_sr, out_vals, out_sr);
+            }
+            return;
+        },
+        .String => {
+            const ptr_sr = self.context.type_store.mkPtr(self.context.type_store.tU8(), false);
+            const ptr_ty = try self.llvmTypeOf(ptr_sr);
+            const ptr_val = self.extractAt(value, ptr_ty, &.{0});
+            try out_vals.append(ptr_val);
+            try out_sr.append(ptr_sr);
+            return;
+        },
+        .Slice => {
+            const slice_row = self.context.type_store.get(.Slice, sr_ty);
+            const ptr_sr = self.context.type_store.mkPtr(slice_row.elem, false);
+            const ptr_ty = try self.llvmTypeOf(ptr_sr);
+            const ptr_val = self.extractAt(value, ptr_ty, &.{0});
+            try out_vals.append(ptr_val);
+            try out_sr.append(ptr_sr);
+            return;
+        },
+        .DynArray => {
+            const dyn = self.context.type_store.get(.DynArray, sr_ty);
+            const ptr_sr = self.context.type_store.mkPtr(dyn.elem, false);
+            const ptr_ty = try self.llvmTypeOf(ptr_sr);
+            const ptr_val = self.extractAt(value, ptr_ty, &.{0});
+            try out_vals.append(ptr_val);
+            try out_sr.append(ptr_sr);
+            return;
+        },
+        .Bool => {
+            var ext = OpBuilder.init("arith.extui", self.loc).builder()
+                .operands(&.{value})
+                .results(&.{self.i32_ty})
+                .build();
+            self.append(ext);
+            try out_vals.append(ext.getResult(0));
+            try out_sr.append(self.context.type_store.tI32());
+            return;
+        },
+        else => {},
     }
 
     try out_vals.append(value);
@@ -2212,6 +2252,27 @@ fn emitCall(self: *Codegen, p: tir.Rows.Call, t: *const tir.TIR) !mlir.Value {
     for (args_slice, 0..) |vid, i| {
         src_vals[i] = self.value_map.get(vid).?;
         src_sr[i] = self.srTypeOfValue(vid);
+    }
+
+    if (isExternLL and finfo.?.is_variadic and src_vals.len > finfo.?.n_formals) {
+        var expanded_vals = ArrayList(mlir.Value).init(self.gpa);
+        defer expanded_vals.deinit();
+        var expanded_sr = ArrayList(types.TypeId).init(self.gpa);
+        defer expanded_sr.deinit();
+
+        for (src_vals, 0..) |val, idx| {
+            if (idx < finfo.?.n_formals) {
+                try expanded_vals.append(val);
+                try expanded_sr.append(src_sr[idx]);
+                continue;
+            }
+            try self.expandVariadicArgTuple(val, src_sr[idx], &expanded_vals, &expanded_sr);
+        }
+
+        self.gpa.free(src_vals);
+        self.gpa.free(src_sr);
+        src_vals = try expanded_vals.toOwnedSlice();
+        src_sr = try expanded_sr.toOwnedSlice();
     }
 
     if (isExternLL and finfo.?.is_variadic and src_vals.len > finfo.?.n_formals) {

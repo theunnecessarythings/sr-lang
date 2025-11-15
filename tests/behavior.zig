@@ -5,7 +5,7 @@ const test_harness =
     \\ io :: import "std/io"
     \\ printf :: io.print
     \\ __assert_fail :: extern proc(*const u8, *const u8, i32, *const u8) void
-    \\ assert :: proc (cond: bool) {{
+    \\ _assert :: proc (cond: bool) {{
     \\     if (!cond) {{
     \\        __assert_fail("Assertion failed".ptr, "test".ptr, -1, "assert".ptr)  
     \\     }}
@@ -107,11 +107,11 @@ test "behavior: simple addition" {
 
 test "behavior: arithmetic operations" {
     const src =
-        \\ assert(10 - 5 == 5)
-        \\ assert(10 * 2 == 20)
-        \\ assert(20 / 4 == 5)
-        \\ assert(10 % 3 == 1)
-        \\ assert(1 + 2 * 3 == 7)
+        \\_assert(10 - 5 == 5)
+        \\_assert(10 * 2 == 20)
+        \\_assert(20 / 4 == 5)
+        \\_assert(10 % 3 == 1)
+        \\_assert(1 + 2 * 3 == 7)
         \\ printf("Arithmetic OK\n")
     ;
     const code = getSource("", src);
@@ -120,13 +120,13 @@ test "behavior: arithmetic operations" {
 
 test "behavior: boolean logic" {
     const src =
-        \\ assert(true and true == true)
-        \\ assert(true and false == false)
-        \\ assert(false or true == true)
-        \\ assert(false or false == false)
-        \\ assert(!true == false)
-        \\ assert(!false == true)
-        \\ assert((true and false) or !false == true)
+        \\_assert(true and true == true)
+        \\_assert(true and false == false)
+        \\_assert(false or true == true)
+        \\_assert(false or false == false)
+        \\_assert(!true == false)
+        \\_assert(!false == true)
+        \\_assert((true and false) or !false == true)
         \\ printf("Boolean OK\n")
     ;
     const code = getSource("", src);
@@ -135,13 +135,13 @@ test "behavior: boolean logic" {
 
 test "behavior: comparison operations" {
     const src =
-        \\ assert(10 == 10)
-        \\ assert(10 != 5)
-        \\ assert(5 < 10)
-        \\ assert(10 > 5)
-        \\ assert(5 <= 5)
-        \\ assert(10 >= 10)
-        \\ assert(10 <= 10)
+        \\_assert(10 == 10)
+        \\_assert(10 != 5)
+        \\_assert(5 < 10)
+        \\_assert(10 > 5)
+        \\_assert(5 <= 5)
+        \\_assert(10 >= 10)
+        \\_assert(10 <= 10)
         \\ printf("Comparison OK\n")
     ;
     const code = getSource("", src);
@@ -337,7 +337,7 @@ test "behavior: enum definition and usage" {
     const src =
         \\ State :: enum { Running, Paused }
         \\ s := State.Running
-        \\ assert(s == State.Running)
+        \\ _assert(s == State.Running)
         \\ printf("Enum state=%d\n", s)
     ;
     const code = getSource("", src);
@@ -681,9 +681,9 @@ test "behavior: checked cast" {
     const src =
         \\ big_int: i64 = 99999
         \\ checked_cast: ?i8 = big_int.?i8
-        \\ assert(checked_cast == null)
+        \\ _assert(checked_cast == null)
         \\ successful_checked_cast: ?i8 = (100).?i8
-        \\ assert(successful_checked_cast == 100)
+        \\ _assert(successful_checked_cast == 100)
         \\ printf("Checked cast null=%b, successful=%d\n", checked_cast == null, successful_checked_cast?)
     ;
     const code = getSource("", src);
@@ -1186,7 +1186,7 @@ test "behavior: error type definition and usage" {
     ;
     const src =
         \\ err := get_error()
-        \\ assert(err == FileSystemError.PermissionDenied)
+        \\ _assert(err == FileSystemError.PermissionDenied)
         \\ printf("Error type usage OK\n")
     ;
     const code = getSource(globals, src);

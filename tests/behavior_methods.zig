@@ -52,7 +52,7 @@ test "methods: imported multi-segment access" {
         var file = try std.fs.cwd().createFile("out/import_method_chain/io.sr", .{ .truncate = true });
         defer file.close();
         const io_src =
-            \\package io
+            \\package i
             \\Vec2 :: struct { x: i32, y: i32 }
             \\Vec2.init :: fn(x: i32, y: i32) Vec2 { return Vec2{ x: x, y: y } }
         ;
@@ -60,10 +60,10 @@ test "methods: imported multi-segment access" {
     }
 
     const globals =
-        \\io :: import "import_method_chain/io.sr"
+        \\i :: import "import_method_chain/io.sr"
     ;
     const src =
-        \\vec := io.Vec2.init(11, 42)
+        \\vec := i.Vec2.init(11, 42)
         \\printf("Vec2=%d,%d\n", vec.x, vec.y)
     ;
     const code = getSource(globals, src);
