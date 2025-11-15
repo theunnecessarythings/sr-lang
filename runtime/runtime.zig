@@ -6,13 +6,26 @@ const c = @cImport({
     @cInclude("unistd.h");
 });
 
-// Allocation API (C ABI)
-pub export fn rt_alloc(size: usize) callconv(.c) ?*anyopaque {
-    return @ptrCast(c.malloc(size));
+const OptionalPtr = extern struct {
+    tag: u8,
+    value: ?*anyopaque,
+};
+
+fn wrapOptional(ptr: ?*anyopaque) OptionalPtr {
+    return if (ptr) |p| OptionalPtr{ .tag = 1, .value = p } else OptionalPtr{ .tag = 0, .value = null };
 }
 
-pub export fn rt_realloc(ptr: ?*anyopaque, new_size: usize) callconv(.c) ?*anyopaque {
-    return @ptrCast(c.realloc(ptr, new_size));
+// Allocation API (C ABI)
+pub export fn rt_alloc(size: usize) callconv(.c) OptionalPtr {
+    const raw = c.malloc(size);
+    const as_any: ?*anyopaque = @ptrCast(raw);
+    return wrapOptional(as_any);
+}
+
+pub export fn rt_realloc(ptr: ?*anyopaque, new_size: usize) callconv(.c) OptionalPtr {
+    const raw = c.realloc(@ptrCast(ptr), new_size);
+    const as_any: ?*anyopaque = @ptrCast(raw);
+    return wrapOptional(as_any);
 }
 
 pub export fn rt_free(ptr: ?*anyopaque) callconv(.c) void {

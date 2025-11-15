@@ -286,6 +286,20 @@ pub fn abiClassifyX64SysV(self: *Codegen, ty: types.TypeId, isReturn: bool) AbiC
             const sa = abiSizeAlign(self, ty);
             return if (isReturn) .{ .kind = .IndirectSRet, .alignment = @intCast(sa.alignment), .size = sa.size } else .{ .kind = .IndirectByVal, .alignment = @intCast(sa.alignment), .size = sa.size };
         },
+        .Optional => {
+            const opt_ty = self.context.type_store.get(.Optional, ty);
+            const elem_kind = self.context.type_store.getKind(opt_ty.elem);
+            if (elem_kind == .Ptr) {
+                const sa = abiSizeAlign(self, ty);
+                return .{
+                    .kind = .DirectPair,
+                    .scalar0 = self.i1_ty,
+                    .scalar1 = self.llvm_ptr_ty,
+                    .size = sa.size,
+                    .alignment = @intCast(sa.alignment),
+                };
+            }
+        },
         else => {},
     }
     const sa = abiSizeAlign(self, ty);

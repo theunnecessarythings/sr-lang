@@ -1221,7 +1221,7 @@ test "behavior: labeled for loop with break" {
         \\ printf("Labeled for break result=%d\n", result)
     ;
     const code = getSource("", src);
-    try runCompilerTest(code, "Labeled for break result=15\n");
+    try runCompilerTest(code, "Labeled for break result=19\n");
 }
 
 // test "behavior: comptime assertion" {

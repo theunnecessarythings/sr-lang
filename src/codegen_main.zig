@@ -568,6 +568,20 @@ fn attributeFromConstInit(self: *Codegen, ci: tir.ConstInit, ty: mlir.Type) !mli
         else => return error.Unsupported,
     };
 }
+fn appendReturnInBlock(self: *Codegen, block: *mlir.Block, val: mlir.Value) void {
+    const op = OpBuilder.init("llvm.return", self.loc).builder()
+        .operands(&.{ val })
+        .build();
+    block.appendOwnedOperation(op);
+}
+
+fn appendZeroValueInBlock(self: *Codegen, block: *mlir.Block, ty: mlir.Type) mlir.Value {
+    var op = OpBuilder.init("llvm.mlir.zero", self.loc).builder()
+        .results(&.{ ty })
+        .build();
+    block.appendOwnedOperation(op);
+    return op.getResult(0);
+}
 
 fn emitExternDecls(self: *Codegen, t: *const tir.TIR) !void {
     const global_ids = t.funcs.global_pool.data.items;
@@ -729,17 +743,24 @@ fn emitExternDecls(self: *Codegen, t: *const tir.TIR) !void {
                 mlir.LLVMAttributes.getLLVMLinkageAttr(self.mlir_ctx, mlir.LLVMLinkage.Internal),
             ));
 
+            var init_region = mlir.Region.create();
             if (g.init != .none) {
                 const attr = try self.attributeFromConstInit(g.init, var_mlir_ty);
                 try attr_buf.append(self.gpa, self.named("value", attr));
+            } else if (self.context.type_store.getKind(g.ty) == .DynArray) {
+                var block = mlir.Block.create(&.{}, &.{});
+                init_region.appendOwnedBlock(block);
+                const zero = self.appendZeroValueInBlock(&block, var_mlir_ty);
+                self.appendReturnInBlock(&block, zero);
             }
 
             const attrs = attr_buf.items;
             // Likewise, synthesized globals are emitted with the module location
             // because they are not backed by user-written syntax.
+            var regions = [_]mlir.Region{ init_region };
             const global_op = OpBuilder.init("llvm.mlir.global", self.loc).builder()
                 .attributes(attrs)
-                .regions(&.{mlir.Region.create()})
+                .regions(&regions)
                 .build();
 
             var body = self.module.getBody();
@@ -2558,15 +2579,10 @@ fn emitCall(self: *Codegen, p: tir.Rows.Call, t: *const tir.TIR) !mlir.Value {
                 .attributes(&.{self.named("position", mlir.Attribute.denseI64ArrayGet(self.mlir_ctx, &[_]i64{1}))})
                 .build();
             self.append(ex1);
-            // write into tmp at offsets 0 and 8, then reload as structural
-            const tmp = self.spillAgg(self.undefOf(want_res_mlir), want_res_mlir, 8);
-            self.storeAt(tmp, ex0.getResult(0), 0);
-            self.storeAt(tmp, ex1.getResult(0), 8);
-            var ld3 = OpBuilder.init("llvm.load", self.loc).builder()
-                .operands(&.{tmp})
-                .results(&.{want_res_mlir}).build();
-            self.append(ld3);
-            return ld3.getResult(0);
+            // Compose the aggregate via insertvalue instead of spilling to memory
+            var agg = self.insertAt(self.undefOf(want_res_mlir), ex0.getResult(0), &.{0});
+            agg = self.insertAt(agg, ex1.getResult(0), &.{1});
+            return agg;
         },
         else => unreachable,
     }

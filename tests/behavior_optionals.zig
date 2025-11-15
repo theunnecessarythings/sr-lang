@@ -27,10 +27,10 @@ test "special_types: optional declaration with null" {
 test "special_types: optional compare with payload" {
     const src =
         \\opt: ?i32 = 42
-        \\assert(opt == 42)
-        \\assert(42 == opt)
-        \\assert(opt != 13)
-        \\assert(13 != opt)
+        \\_assert(opt == 42)
+        \\_assert(42 == opt)
+        \\_assert(opt != 13)
+        \\_assert(13 != opt)
         \\printf("optional compare ok\n")
     ;
     const code = getSource("", src);

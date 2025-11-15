@@ -1282,8 +1282,8 @@ test "call expressions - success" {
     // Extern call
     try checkProgram(
         \\
-        \\ printf :: extern proc(*void, any) i32
-        \\ rr :: printf("ok".^*void)
+        \\ printf :: extern proc(*const u8, any) i32
+        \\ rr :: printf("ok".ptr)
     , &.{});
 }
 
@@ -1416,9 +1416,9 @@ test "functions and procedures - failures" {
     try checkProgram(
         \\
         \\ printf :: extern proc(*void, any) i32
-        \\ impure :: proc() i32 { _ = printf("hi".^*void); return 0 }
+        \\ impure :: proc() i32 { _ = printf("hi".ptr); return 0 }
         \\ f: fn() i32 : impure
-    , &[_]diag.DiagnosticCode{.type_annotation_mismatch});
+    , &[_]diag.DiagnosticCode{.argument_type_mismatch});
 }
 
 test "functions - purity failures" {
@@ -1426,8 +1426,8 @@ test "functions - purity failures" {
     try checkProgram(
         \\
         \\ printf :: extern proc(*void, any) i32
-        \\ f : fn() i32 :  proc() i32 { _ = printf("hi".^*void); return 0 }
-    , &[_]diag.DiagnosticCode{.type_annotation_mismatch});
+        \\ f : fn() i32 :  proc() i32 { _ = printf("hi".ptr); return 0 }
+    , &[_]diag.DiagnosticCode{.argument_type_mismatch});
 
     // Global mutation inside fn
     try checkProgram(

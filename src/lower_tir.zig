@@ -4354,9 +4354,11 @@ fn findFunctionDeclForCall(
     callee_name: ast.StrId,
 ) ?FunctionDeclContext {
     if (self.findTopLevelDeclByName(caller_ast, callee_name)) |decl_id| {
-        return .{ .ast = caller_ast, .decl_id = decl_id };
+        const decl = caller_ast.exprs.Decl.get(decl_id);
+        if (caller_ast.exprs.index.kinds.items[decl.value.toRaw()] != .Import) {
+            return .{ .ast = caller_ast, .decl_id = decl_id };
+        }
     }
-
     const callee_kind = caller_ast.exprs.index.kinds.items[callee_expr.toRaw()];
     if (callee_kind != .FieldAccess) return null;
 
@@ -4371,8 +4373,8 @@ fn findFunctionDeclForCall(
         while (pkg_iter.next()) |pkg| {
             if (pkg.value_ptr.sources.get(path)) |unit_ref| {
                 if (unit_ref.ast) |a| {
-                    if (a.type_info.getExport(callee_name)) |ex| {
-                        return .{ .ast = a, .decl_id = ex.decl_id };
+                    if (findDeclIdByName(a, callee_name)) |decl_id| {
+                        return .{ .ast = a, .decl_id = decl_id };
                     }
                 }
                 break;
@@ -4392,8 +4394,8 @@ fn findFunctionDeclForCall(
             while (pkg_iter2.next()) |pkg| {
                 if (pkg.value_ptr.sources.get(path)) |unit_ref| {
                     if (unit_ref.ast) |a| {
-                        if (a.type_info.getExport(callee_name)) |ex| {
-                            return .{ .ast = a, .decl_id = ex.decl_id };
+                        if (findDeclIdByName(a, callee_name)) |decl_id| {
+                            return .{ .ast = a, .decl_id = decl_id };
                         }
                     }
                     break;
@@ -4402,6 +4404,24 @@ fn findFunctionDeclForCall(
         }
     }
 
+    return null;
+}
+
+fn findDeclIdByName(a: *ast.Ast, name: ast.StrId) ?ast.DeclId {
+    if (a.type_info.getExport(name)) |ex| {
+        return ex.decl_id;
+    }
+    const decls = a.exprs.decl_pool.slice(a.unit.decls);
+    for (decls) |did| {
+        const d = a.exprs.Decl.get(did);
+        if (d.pattern.isNone()) continue;
+        const pat = d.pattern.unwrap();
+        if (bindingNameOfPattern(a, pat)) |nm| {
+            if (nm.toRaw() == name.toRaw()) {
+                return did;
+            }
+        }
+    }
     return null;
 }
 
