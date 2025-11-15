@@ -11,6 +11,7 @@
 #include <torch/csrc/jit/runtime/graph_executor.h>
 #include <torch/script.h>
 #include <torch/torch.h>
+#include <torch/version.h>
 #include <vector>
 
 #define STB_IMAGE_IMPLEMENTATION
@@ -28,6 +29,14 @@ char *get_and_reset_last_err() {
   char *tmp = torch_last_err;
   torch_last_err = nullptr;
   return tmp;
+}
+
+char *torch_version() {
+  PROTECT(std::string version = std::to_string(TORCH_VERSION_MAJOR) + "." +
+                                std::to_string(TORCH_VERSION_MINOR) + "." +
+                                std::to_string(TORCH_VERSION_PATCH);
+          return strdup(version.c_str());)
+  return nullptr;
 }
 
 void at_manual_seed(int64_t seed) { torch::manual_seed(seed); }
@@ -61,6 +70,26 @@ at::Device device_of_int(int d) {
 tensor at_new_tensor() {
   PROTECT(return new torch::Tensor();)
   return nullptr;
+}
+
+tensor at_new_long(int64_t v) {
+  PROTECT(return new torch::Tensor(torch::tensor(v));)
+  return nullptr;
+}
+
+tensor at_new_double(double v) {
+  PROTECT(return new torch::Tensor(torch::tensor(v));)
+  return nullptr;
+}
+
+float at_tensor_item_float(tensor t) {
+  PROTECT(return t->item<float>();)
+  return 0;
+}
+
+int64_t at_tensor_item_int64(tensor t) {
+  PROTECT(return t->item<int64_t>();)
+  return 0;
 }
 
 tensor at_tensor_of_blob(void *data, int64_t *dims, size_t ndims,

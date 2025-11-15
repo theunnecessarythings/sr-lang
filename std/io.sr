@@ -3,13 +3,13 @@ package io
 // Minimal std I/O wrappers built on C printf and runtime helpers.
 
 // C stdio printf (varargs enabled by trailing `any`).
-printf :: extern proc(*void, any) i32
+printf :: extern proc(*const u8, any) i32
 
 // Runtime helpers for raw printing and panic.
-rt_print  :: extern proc(*u8, usize) void
-rt_eprint :: extern proc(*u8, usize) void
-rt_panic  :: extern proc(*u8, usize) noreturn
-rt_strlen :: extern proc(*u8) usize
+rt_print  :: extern proc(*const u8, usize) void
+rt_eprint :: extern proc(*const u8, usize) void
+rt_panic  :: extern proc(*const u8, usize) noreturn
+rt_strlen :: extern proc(*const u8) usize
 
 // Writer interface
 Writer :: struct { ctx: *void, write: proc(*void, *u8, usize) usize }
@@ -37,27 +37,17 @@ stdout :: proc() Writer { return Writer{ ctx: 0.^*void, write: stdout_write_impl
 stderr :: proc() Writer { return Writer{ ctx: 0.^*void, write: stderr_write_impl } }
 
 // Print with one argument. Example: print("%d", 42)
-print :: proc(fmt: string, arg: any) void { printf(fmt.^*void, arg) }
+print :: proc(fmt: string, arg: any) void { printf(fmt.ptr, arg) }
 
-// Print a format string with no additional args.
-print0 :: proc(fmt: string) void { printf(fmt.^*void) }
 
 // Print line with one argument (appends newline)
-println :: proc(fmt: string, arg: any) void { printf(fmt.^*void, arg); printf("\n".^*void) }
+println :: proc(fmt: string, arg: any) void { printf(fmt.ptr, arg); printf("\n".ptr) }
 
-// Print line with no args (just prints fmt then newline)
-println0 :: proc(fmt: string) void { printf(fmt.^*void); printf("\n".^*void) }
-
-// Write a raw string to stderr (no formatting)
-eprint0 :: proc(s: string) void { rt_eprint(s.^*u8, rt_strlen(s.^*u8)) }
-
-// Write a raw string to stderr with newline
-eprintln0 :: proc(s: string) void { rt_eprint(s.^*u8, rt_strlen(s.^*u8)); rt_eprint("\n".^*u8, 1) }
 
 // Panic with message (noreturn)
-panic :: proc(msg: string) noreturn { rt_panic(msg.^*u8, rt_strlen(msg.^*u8)) }
+panic :: proc(msg: string) noreturn { rt_panic(msg.ptr, rt_strlen(msg.ptr)) }
 
 // Assert
-assert :: proc(cond: bool, msg: string) noreturn {
-    if !cond  { panic(msg) }
+assert :: proc(cond: bool, msg: string) void {
+    if !cond { panic(msg) }
 }

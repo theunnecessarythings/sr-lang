@@ -120,6 +120,317 @@ pub fn pushComptimeBindings(self: *LowerTir, ctx: *LowerTir.LowerContext, bindin
     return true;
 }
 
+fn evaluateTypeExpr(
+    self: *LowerTir,
+    ctx: *LowerTir.LowerContext,
+    a: *ast.Ast,
+    expr: ast.ExprId,
+) anyerror!types.TypeId {
+    const kind = a.exprs.index.kinds.items[expr.toRaw()];
+    switch (kind) {
+        .Ident => {
+            const ident = a.exprs.get(.Ident, expr);
+            // Check monomorphization context first
+            var i = ctx.monomorph_context_stack.items.len;
+            while (i > 0) {
+                i -= 1;
+                const mono_ctx = ctx.monomorph_context_stack.items[i];
+                if (mono_ctx.lookupType(ident.name)) |ty| {
+                    return ty;
+                }
+            }
+
+            const name_slice = self.context.type_store.strs.get(ident.name);
+            if (std.mem.eql(u8, name_slice, "bool")) return self.context.type_store.tBool();
+            if (std.mem.eql(u8, name_slice, "i8")) return self.context.type_store.tI8();
+            if (std.mem.eql(u8, name_slice, "i16")) return self.context.type_store.tI16();
+            if (std.mem.eql(u8, name_slice, "i32")) return self.context.type_store.tI32();
+            if (std.mem.eql(u8, name_slice, "i64")) return self.context.type_store.tI64();
+            if (std.mem.eql(u8, name_slice, "u8")) return self.context.type_store.tU8();
+            if (std.mem.eql(u8, name_slice, "u16")) return self.context.type_store.tU16();
+            if (std.mem.eql(u8, name_slice, "u32")) return self.context.type_store.tU32();
+            if (std.mem.eql(u8, name_slice, "u64")) return self.context.type_store.tU64();
+            if (std.mem.eql(u8, name_slice, "f32")) return self.context.type_store.tF32();
+            if (std.mem.eql(u8, name_slice, "f64")) return self.context.type_store.tF64();
+            if (std.mem.eql(u8, name_slice, "usize")) return self.context.type_store.tUsize();
+            if (std.mem.eql(u8, name_slice, "char")) return self.context.type_store.tU32();
+            if (std.mem.eql(u8, name_slice, "string")) return self.context.type_store.tString();
+            if (std.mem.eql(u8, name_slice, "void")) return self.context.type_store.tVoid();
+            if (std.mem.eql(u8, name_slice, "any")) return self.context.type_store.tAny();
+
+            return error.TypeNotFound;
+        },
+        .StructType => {
+            const st = a.exprs.get(.StructType, expr);
+            var fields: std.ArrayList(types.TypeStore.StructFieldArg) = .empty;
+            defer fields.deinit(self.gpa);
+
+            const field_ids = a.exprs.sfield_pool.slice(st.fields);
+            for (field_ids) |field_id| {
+                const field_def = a.exprs.StructField.get(field_id);
+                const field_type = try evaluateTypeExpr(self, ctx, a, field_def.ty);
+                try fields.append(self.gpa, .{ .name = field_def.name, .ty = field_type });
+            }
+
+            const fields_slice = try fields.toOwnedSlice(self.gpa);
+            return self.context.type_store.mkStruct(fields_slice);
+        },
+        .Call => {
+            const call = a.exprs.get(.Call, expr);
+            const callee_expr = call.callee;
+
+            const checker_ctx = self.chk.checker_ctx.items[a.file_id];
+
+            const proc_node = switch (a.exprs.index.kinds.items[callee_expr.toRaw()]) {
+                .Ident => blk: {
+                    const ident = a.exprs.get(.Ident, callee_expr);
+                    const sym_id = checker_ctx.symtab.lookup(checker_ctx.symtab.currentId(), ident.name) orelse return error.SymbolNotFound;
+                    const sym = checker_ctx.symtab.syms.get(sym_id);
+                    const decl_id = if (sym.origin_decl.isNone()) return error.NotAProcedure else sym.origin_decl.unwrap();
+                    const decl = a.exprs.Decl.get(decl_id);
+                    if (a.exprs.index.kinds.items[decl.value.toRaw()] != .FunctionLit) return error.NotAProcedure;
+                    break :blk a.exprs.get(.FunctionLit, decl.value);
+                },
+                else => return error.NotAProcedure,
+            };
+
+            const callee_ty = self.getExprType(ctx, a, call.callee);
+            const proc_ty = self.context.type_store.get(.Function, callee_ty);
+
+            var bindings_list = std.ArrayList(Pipeline.ComptimeBinding).empty;
+            defer bindings_list.deinit(self.gpa);
+            const params = a.exprs.param_pool.slice(proc_node.params);
+            const args = a.exprs.expr_pool.slice(call.args);
+
+            for (params, args) |param_id, arg_expr| {
+                const param = a.exprs.Param.get(param_id);
+                if (!param.is_comptime) continue;
+
+                // Resolve the parameter name (must be a simple binding for comptime params)
+                var param_name: ast.StrId = undefined;
+                if (param.pat.isNone()) {
+                    return error.MissingParameterName;
+                } else {
+                    const pattern_id = param.pat.unwrap();
+                    const pattern_kind = a.pats.index.kinds.items[pattern_id.toRaw()];
+                    if (pattern_kind != .Binding) {
+                        return error.UnsupportedPatternType;
+                    }
+                    param_name = a.pats.get(.Binding, pattern_id).name;
+                }
+
+                // Decide binding kind using the declared param type first.
+                var is_type_param = false;
+                if (!param.ty.isNone()) {
+                    const ty_expr = param.ty.unwrap();
+                    const ty_kind = a.exprs.index.kinds.items[ty_expr.toRaw()];
+                    // If the parameter type is `type`, it's a type-parameter.
+                    if (ty_kind == .TypeType or ty_kind == .AnyType) {
+                        is_type_param = true;
+                    }
+                }
+
+                if (is_type_param) {
+                    // Treat argument as a type expression regardless of getExprType result.
+                    const arg_type_val = try evaluateTypeExpr(self, ctx, a, arg_expr);
+                    try bindings_list.append(self.gpa, .{ .type_param = .{ .name = param_name, .ty = arg_type_val } });
+                    continue;
+                }
+
+                // Fall back to previous behavior when param is not explicitly `type`.
+                const arg_ty = self.getExprType(ctx, a, arg_expr);
+                if (self.context.type_store.getKind(arg_ty) == .TypeType) {
+                    const arg_type_val = try evaluateTypeExpr(self, ctx, a, arg_expr);
+                    try bindings_list.append(self.gpa, .{ .type_param = .{ .name = param_name, .ty = arg_type_val } });
+                } else {
+                    const comptime_val = try runComptimeExpr(self, ctx, a, arg_expr, arg_ty, &[_]Pipeline.ComptimeBinding{});
+                    try bindings_list.append(self.gpa, .{ .value_param = .{ .name = param_name, .ty = arg_ty, .value = comptime_val } });
+                }
+            }
+
+            var body_expr: ast.ExprId = undefined;
+            if (proc_node.body.isNone()) {
+                return error.MissingFunctionBody;
+            } else {
+                body_expr = proc_node.body.unwrap();
+            }
+
+            const result_comptime_val = try runComptimeExpr(self, ctx, a, body_expr, proc_ty.result, bindings_list.items);
+
+            return switch (result_comptime_val) {
+                .Type => |t| t,
+                else => error.UnsupportedComptimeType,
+            };
+        },
+        .Block => {
+            const block = a.exprs.get(.Block, expr);
+            if (block.items.len == 0) return self.context.type_store.tVoid();
+            const stmts = a.stmts.stmt_pool.slice(block.items);
+
+            // Track how many temporary type-bindings we push for local aliases.
+            var pushed_bindings: usize = 0;
+            var last_ty: ?types.TypeId = null;
+            var alias_names: std.ArrayList(ast.StrId) = std.ArrayList(ast.StrId).empty;
+            var alias_types: std.ArrayList(types.TypeId) = std.ArrayList(types.TypeId).empty;
+            defer {
+                while (pushed_bindings > 0) {
+                    pushed_bindings -= 1;
+                    var popped = ctx.monomorph_context_stack.pop();
+                    if (popped) |*context| context.deinit(self.gpa);
+                }
+                alias_names.deinit(self.gpa);
+                alias_types.deinit(self.gpa);
+            }
+
+            for (stmts) |stmt_id| {
+                const stmt_kind = a.stmts.index.kinds.items[stmt_id.toRaw()];
+                switch (stmt_kind) {
+                    .Decl => {
+                        const d_stmt = a.stmts.get(.Decl, stmt_id);
+                        const d = a.exprs.Decl.get(d_stmt.decl);
+                        // Handle method declarations (Alias.method :: proc ...)
+                        if (!d.method_path.isNone() and a.exprs.index.kinds.items[d.value.toRaw()] == .FunctionLit) {
+                            const seg_ids0 = a.exprs.method_path_pool.slice(d.method_path.asRange());
+                            if (seg_ids0.len >= 2) {
+                                const owner_seg0 = a.exprs.MethodPathSeg.get(seg_ids0[0]);
+                                const method_seg0 = a.exprs.MethodPathSeg.get(seg_ids0[seg_ids0.len - 1]);
+                                // resolve owner from recorded aliases first
+                                var owner_ty0: types.TypeId = self.context.type_store.tAny();
+                                var j: usize = 0;
+                                var found_owner = false;
+                                while (j < alias_names.items.len) : (j += 1) {
+                                    if (alias_names.items[j].eq(owner_seg0.name)) {
+                                        owner_ty0 = alias_types.items[j];
+                                        found_owner = true;
+                                        break;
+                                    }
+                                }
+                                if (!found_owner) {
+                                    var i_mon: usize = ctx.monomorph_context_stack.items.len;
+                                    while (i_mon > 0) {
+                                        i_mon -= 1;
+                                        const mono_ctx0 = ctx.monomorph_context_stack.items[i_mon];
+                                        if (mono_ctx0.lookupType(owner_seg0.name)) |t0| {
+                                            owner_ty0 = t0;
+                                            found_owner = true;
+                                            break;
+                                        }
+                                    }
+                                }
+                                if (found_owner) {
+                                    const fn_lit0 = a.exprs.get(.FunctionLit, d.value);
+                                    const param_ids0 = a.exprs.param_pool.slice(fn_lit0.params);
+                                    var param_types0 = std.ArrayList(types.TypeId).empty;
+                                    defer param_types0.deinit(self.gpa);
+                                    for (param_ids0) |pid0| {
+                                        const p0 = a.exprs.Param.get(pid0);
+                                        if (!p0.ty.isNone()) {
+                                            const pty0 = evaluateTypeExpr(self, ctx, a, p0.ty.unwrap()) catch self.context.type_store.tAny();
+                                            param_types0.append(self.gpa, pty0) catch {};
+                                        } else {
+                                            param_types0.append(self.gpa, self.context.type_store.tAny()) catch {};
+                                        }
+                                    }
+                                    const res_ty0 = if (!fn_lit0.result_ty.isNone())
+                                        (evaluateTypeExpr(self, ctx, a, fn_lit0.result_ty.unwrap()) catch self.context.type_store.tVoid())
+                                    else
+                                        self.context.type_store.tVoid();
+                                    const fnty0 = self.context.type_store.mkFunction(param_types0.items, res_ty0, fn_lit0.flags.is_variadic, true, fn_lit0.flags.is_extern);
+                                    const entry0: types.MethodEntry = .{
+                                        .owner_type = owner_ty0,
+                                        .method_name = method_seg0.name,
+                                        .decl_id = d_stmt.decl,
+                                        .decl_ast = a,
+                                        .func_expr = d.value,
+                                        .func_type = fnty0,
+                                        .self_param_type = null,
+                                        .receiver_kind = .none,
+                                        .builtin = null,
+                                    };
+                                    _ = self.context.type_store.addMethod(entry0) catch {};
+                                    // Enqueue specialization to be lowered later
+                                    var infos: std.ArrayList(monomorphize.BindingInfo) = .empty;
+                                    defer {
+                                        for (infos.items) |*inf| inf.deinit(self.gpa);
+                                        infos.deinit(self.gpa);
+                                    }
+                                    if (ctx.monomorph_context_stack.items.len > 0) {
+                                        for (ctx.monomorph_context_stack.items[ctx.monomorph_context_stack.items.len - 1].bindings) |binfo| {
+                                            switch (binfo.kind) {
+                                                .type_param => |typ| infos.append(self.gpa, monomorphize.BindingInfo.typeParam(binfo.name, typ)) catch {},
+                                                else => {},
+                                            }
+                                        }
+                                    }
+                                    const owner_sid = a.exprs.strs.intern("__owner");
+                                    infos.append(self.gpa, monomorphize.BindingInfo.runtimeParam(owner_sid, owner_ty0)) catch {};
+                                    var skip_m: usize = 0;
+                                    var xi: usize = 0;
+                                    while (xi < param_ids0.len and a.exprs.Param.get(param_ids0[xi]).is_comptime) : (xi += 1) skip_m += 1;
+                                    const base_name = try self.methodSymbolName(a, d_stmt.decl);
+                                    const mangled = try mangleMonomorphName(self, base_name, infos.items);
+                                    _ = try ctx.monomorphizer.request(a, self.context.type_store, base_name, d_stmt.decl, fnty0, infos.items, skip_m, mangled, null);
+                                }
+                            }
+                            // Continue scanning; do not treat method decl as alias
+                            continue;
+                        }
+                        // Type alias declaration
+                        if (d.pattern.isNone()) break; // skip unnamed
+                        const pat_id = d.pattern.unwrap();
+                        const pat_kind = a.pats.index.kinds.items[pat_id.toRaw()];
+                        if (pat_kind != .Binding) break; // only simple names
+                        const name = a.pats.get(.Binding, pat_id).name;
+                        const ty = evaluateTypeExpr(self, ctx, a, d.value) catch |e| switch (e) {
+                            error.UnsupportedComptimeType, error.TypeNotFound, error.NotAProcedure, error.MissingFunctionBody => break,
+                            else => return e,
+                        };
+                        const binding = Pipeline.ComptimeBinding{ .type_param = .{ .name = name, .ty = ty } };
+                        if (try pushComptimeBindings(self, ctx, &[_]Pipeline.ComptimeBinding{binding})) {
+                            pushed_bindings += 1;
+                        }
+                        last_ty = ty; // remember most recent type value
+                        alias_names.append(self.gpa, name) catch {};
+                        alias_types.append(self.gpa, ty) catch {};
+                    },
+                    .Return => {
+                        const ret = a.stmts.get(.Return, stmt_id);
+                        if (!ret.value.isNone()) {
+                            const ret_val_expr = ret.value.unwrap();
+                            return try evaluateTypeExpr(self, ctx, a, ret_val_expr);
+                        }
+                    },
+                    .Expr => {
+                        const ex_stmt = a.stmts.get(.Expr, stmt_id);
+                        const ek = a.exprs.index.kinds.items[ex_stmt.expr.toRaw()];
+                        if (ek == .Return) {
+                            const ret = a.exprs.get(.Return, ex_stmt.expr);
+                            if (!ret.value.isNone()) {
+                                const ret_val_expr = ret.value.unwrap();
+                                return try evaluateTypeExpr(self, ctx, a, ret_val_expr);
+                            }
+                        } else {
+                            // Try to interpret a bare expression statement as a type expression
+                            const ty_try = evaluateTypeExpr(self, ctx, a, ex_stmt.expr) catch |e| switch (e) {
+                                error.UnsupportedComptimeType, error.TypeNotFound, error.NotAProcedure, error.MissingFunctionBody => null,
+                                else => return e,
+                            };
+                            if (ty_try) |t| last_ty = t;
+                        }
+                    },
+                    else => {},
+                }
+            }
+            if (last_ty) |t| return t;
+            return error.NoReturnValueInBlock;
+        },
+        else => {
+            std.debug.print("evaluateTypeExpr: Unhandled expr type {}\n", .{kind});
+            return error.UnsupportedComptimeType;
+        },
+    }
+}
+
 pub fn runComptimeExpr(
     self: *LowerTir,
     ctx: *LowerTir.LowerContext,
@@ -137,8 +448,12 @@ pub fn runComptimeExpr(
     const result_kind = self.context.type_store.getKind(result_ty);
     if (result_kind == .TypeType) {
         const tt = self.context.type_store.get(.TypeType, result_ty);
-        if (!self.isType(tt.of, .Any)) return .{ .Type = tt.of };
-        // Otherwise, fall through and evaluate the expression to compute the concrete type.
+        if (!self.isType(tt.of, .Any)) {
+            return .{ .Type = tt.of };
+        }
+
+        const computed_type = try evaluateTypeExpr(self, ctx, a, expr);
+        return ComptimeValue{ .Type = computed_type };
     }
 
     var tmp_tir = tir.TIR.init(self.gpa, self.context.type_store);
@@ -170,7 +485,6 @@ pub fn runComptimeExpr(
     try tmp_env.bind(self.gpa, a, tmp_builder.intern("comptime_api_ptr"), .{ .value = api_ptr_val, .ty = ptr_ty, .is_slot = false });
 
     const result_val_id = try self.lowerExpr(ctx, a, &tmp_env, &thunk_fn, &thunk_blk, expr, result_ty, .rvalue);
-    try ctx.monomorphizer.run(self, ctx, &tmp_builder, monomorphLowerCallback);
     if (result_kind != .Void) {
         if (thunk_blk.term.isNone()) {
             try tmp_builder.setReturnVal(&thunk_blk, result_val_id, expr_loc);
@@ -474,6 +788,174 @@ fn lowerSpecializedFunction(
 
     const active_ctx = &ctx.monomorph_context_stack.items[ctx.monomorph_context_stack.items.len - 1];
     const decl = a.exprs.Decl.get(req.decl_id);
+
+    // During lowering of a specialized generic, register any local methods in this function's body
+    // against the concrete owner types for this instantiation.
+    if (a.exprs.index.kinds.items[decl.value.toRaw()] == .FunctionLit) {
+        const fn_lit = a.exprs.get(.FunctionLit, decl.value);
+        if (!fn_lit.body.isNone()) {
+            const body_eid = fn_lit.body.unwrap();
+            if (a.exprs.index.kinds.items[body_eid.toRaw()] == .Block) {
+                const blk = a.exprs.get(.Block, body_eid);
+                const stmts = a.stmts.stmt_pool.slice(blk.items);
+
+                // Track simple type aliases by name within this block to resolve owners.
+                var alias_names: std.ArrayList(ast.StrId) = std.ArrayList(ast.StrId).empty;
+                var alias_types: std.ArrayList(types.TypeId) = std.ArrayList(types.TypeId).empty;
+                defer {
+                    alias_names.deinit(self.gpa);
+                    alias_types.deinit(self.gpa);
+                }
+
+                for (stmts) |sid| {
+                    const sk = a.stmts.index.kinds.items[sid.toRaw()];
+                    if (sk != .Decl) continue;
+                    const sd = a.stmts.get(.Decl, sid);
+                    const d2 = a.exprs.Decl.get(sd.decl);
+
+                    // Record alias types as we go
+                    if (!d2.pattern.isNone()) {
+                        const pid = d2.pattern.unwrap();
+                        if (a.pats.index.kinds.items[pid.toRaw()] == .Binding) {
+                            const bname = a.pats.get(.Binding, pid).name;
+                            const ty_opt = evaluateTypeExpr(self, ctx, a, d2.value) catch |e| switch (e) {
+                                error.UnsupportedComptimeType, error.TypeNotFound, error.MissingFunctionBody, error.NotAProcedure => null,
+                                else => return e,
+                            };
+                            if (ty_opt) |tval| {
+                                alias_names.append(self.gpa, bname) catch {};
+                                alias_types.append(self.gpa, tval) catch {};
+                            }
+                        }
+                    }
+
+                    // Register local methods for this instantiation
+                    if (!d2.method_path.isNone() and a.exprs.index.kinds.items[d2.value.toRaw()] == .FunctionLit) {
+                        const seg_ids = a.exprs.method_path_pool.slice(d2.method_path.asRange());
+                        if (seg_ids.len < 2) continue;
+                        const owner_seg = a.exprs.MethodPathSeg.get(seg_ids[0]);
+                        const method_seg = a.exprs.MethodPathSeg.get(seg_ids[seg_ids.len - 1]);
+
+                        // Resolve owner type from aliases first, then from monomorph context.
+                        var owner_ty: types.TypeId = self.context.type_store.tAny();
+                        var found = false;
+                        var i: usize = 0;
+                        while (i < alias_names.items.len) : (i += 1) {
+                            if (alias_names.items[i].eq(owner_seg.name)) {
+                                owner_ty = alias_types.items[i];
+                                found = true;
+                                break;
+                            }
+                        }
+                        if (!found) {
+                            if (active_ctx.lookupType(owner_seg.name)) |t| {
+                                owner_ty = t;
+                                found = true;
+                            }
+                        }
+                        if (!found) continue;
+
+                        // Compute function type from annotated params and result under current instantiation
+                        const mfn = a.exprs.get(.FunctionLit, d2.value);
+                        const param_ids = a.exprs.param_pool.slice(mfn.params);
+                        var param_types = std.ArrayList(types.TypeId).empty;
+                        defer param_types.deinit(self.gpa);
+                        for (param_ids) |pid2| {
+                            const p = a.exprs.Param.get(pid2);
+                            if (!p.ty.isNone()) {
+                                const pty = evaluateTypeExpr(self, ctx, a, p.ty.unwrap()) catch self.context.type_store.tAny();
+                                param_types.append(self.gpa, pty) catch {};
+                            } else {
+                                param_types.append(self.gpa, self.context.type_store.tAny()) catch {};
+                            }
+                        }
+                        const res_ty = if (!mfn.result_ty.isNone())
+                            (evaluateTypeExpr(self, ctx, a, mfn.result_ty.unwrap()) catch self.context.type_store.tVoid())
+                        else
+                            self.context.type_store.tVoid();
+                        const fnty = self.context.type_store.mkFunction(param_types.items, res_ty, mfn.flags.is_variadic, true, mfn.flags.is_extern);
+
+                        // Determine receiver_kind (basic support): if first param is named 'self' matching owner
+                        var receiver_kind: types.MethodReceiverKind = .none;
+                        if (param_ids.len > 0) {
+                            const first_p = a.exprs.Param.get(param_ids[0]);
+                            if (!first_p.pat.isNone()) {
+                                const pat_id = first_p.pat.unwrap();
+                                if (a.pats.index.kinds.items[pat_id.toRaw()] == .Binding) {
+                                    const sb = a.pats.get(.Binding, pat_id);
+                                    if (std.mem.eql(u8, a.exprs.strs.get(sb.name), "self")) {
+                                        if (!first_p.ty.isNone()) {
+                                            const self_ty = evaluateTypeExpr(self, ctx, a, first_p.ty.unwrap()) catch self.context.type_store.tAny();
+                                            const k = self.context.type_store.getKind(self_ty);
+                                            if (k == .Ptr) {
+                                                const pr = self.context.type_store.get(.Ptr, self_ty);
+                                                if (pr.elem.eq(owner_ty)) {
+                                                    receiver_kind = if (pr.is_const) .pointer_const else .pointer;
+                                                }
+                                            } else if (self_ty.eq(owner_ty)) {
+                                                receiver_kind = .value;
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        const entry: types.MethodEntry = .{
+                            .owner_type = owner_ty,
+                            .method_name = method_seg.name,
+                            .decl_id = sd.decl,
+                            .decl_ast = a,
+                            .func_expr = d2.value,
+                            .func_type = fnty,
+                            .self_param_type = null,
+                            .receiver_kind = receiver_kind,
+                            .builtin = null,
+                        };
+                        _ = self.context.type_store.addMethod(entry) catch {};
+
+                        // Also enqueue a monomorphization request for this method with current bindings
+                        // so that a specialized body is lowered even if not directly called yet.
+                        var infos: std.ArrayList(monomorphize.BindingInfo) = .empty;
+                        defer {
+                            for (infos.items) |*inf| inf.deinit(self.gpa);
+                            infos.deinit(self.gpa);
+                        }
+                        // Capture current type parameter bindings
+                        for (active_ctx.bindings) |binfo| {
+                            switch (binfo.kind) {
+                                .type_param => |typ| infos.append(self.gpa, monomorphize.BindingInfo.typeParam(binfo.name, typ)) catch {},
+                                else => {},
+                            }
+                        }
+                        // Include owner as a synthetic runtime param to affect cache/mangle uniqueness
+                        const owner_sid = a.exprs.strs.intern("__owner");
+                        infos.append(self.gpa, monomorphize.BindingInfo.runtimeParam(owner_sid, owner_ty)) catch {};
+
+                        // Count initial comptime params to skip in specialization
+                        var skip_params_m: usize = 0;
+                        var it_idx: usize = 0;
+                        while (it_idx < param_ids.len and a.exprs.Param.get(param_ids[it_idx]).is_comptime) : (it_idx += 1) skip_params_m += 1;
+
+                        const base_name = try self.methodSymbolName(a, sd.decl);
+                        const mangled = try mangleMonomorphName(self, base_name, infos.items);
+                        _ = try ctx.monomorphizer.request(
+                            a,
+                            self.context.type_store,
+                            base_name,
+                            sd.decl,
+                            fnty,
+                            infos.items,
+                            skip_params_m,
+                            mangled,
+                            null,
+                        );
+                    }
+                }
+            }
+        }
+    }
+
     try self.lowerFunction(ctx, a, b, req.mangled_name, decl.value, active_ctx);
 }
 

@@ -2,11 +2,12 @@ const std = @import("std");
 
 const test_harness =
     \\ package main
-    \\ printf :: extern proc(string, any) i32
-    \\ __assert_fail :: extern proc(string, string, i32, string) void
+    \\ io :: import "std/io"
+    \\ printf :: io.print
+    \\ __assert_fail :: extern proc(*const u8, *const u8, i32, *const u8) void
     \\ assert :: proc (cond: bool) {{
     \\     if (!cond) {{
-    \\        __assert_fail("Assertion failed", "test", -1, "assert")  
+    \\        __assert_fail("Assertion failed".ptr, "test".ptr, -1, "assert".ptr)  
     \\     }}
     \\ }}
     \\ {s}

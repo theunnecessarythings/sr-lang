@@ -150,7 +150,7 @@ pub fn run(self: *LowerTir, levels: *const compile.DependencyLevels) !*tir.TIR {
                 any_failed = true;
                 // Emit a TIR-specific diagnostic at the file level for visibility
                 const where = Loc.init(level.items[i], 0, 0);
-                _ = self.context.diags.addError(where, .tir_lowering_failed, .{}) catch {};
+                self.throwErr(where) catch {};
             }
             self.gpa.destroy(ok_ptr);
         }
@@ -164,10 +164,11 @@ pub fn run(self: *LowerTir, levels: *const compile.DependencyLevels) !*tir.TIR {
     return main_pkg.sources.entries.get(0).value.tir.?;
 }
 
-fn runAstCatching(self: *LowerTir, ast_unit: *ast.Ast, t: *tir.TIR, ctx: *LowerContext, ok_ptr: *bool) void {
+fn runAstCatching(self: *LowerTir, ast_unit: *ast.Ast, t: *tir.TIR, ctx: *LowerContext, ok_ptr: *bool) !void {
     ok_ptr.* = true;
-    self.runAst(ast_unit, t, ctx) catch {
+    self.runAst(ast_unit, t, ctx) catch |err| {
         ok_ptr.* = false;
+        return err;
     };
 }
 
@@ -187,11 +188,25 @@ pub fn runAst(self: *LowerTir, ast_unit: *ast.Ast, t: *tir.TIR, ctx: *LowerConte
 
         const decl_id = method.decl_id;
         if (ctx.method_lowered.contains(decl_id.toRaw())) continue;
+        // Skip lowering generic Any variants; only lower specialized methods
+        if (self.shouldSkipGenericMethod(method.func_type)) continue;
         const name = try self.methodSymbolName(ast_unit, decl_id);
         try self.tryLowerNamedFunction(ctx, ast_unit, &b, decl_id, name, true);
     }
 
     try ctx.monomorphizer.run(self, ctx, &b, comp.monomorphLowerCallback);
+}
+
+fn shouldSkipGenericMethod(self: *const LowerTir, fn_ty: types.TypeId) bool {
+    if (self.context.type_store.getKind(fn_ty) != .Function) return false;
+    const info = self.context.type_store.get(.Function, fn_ty);
+    if (self.isType(info.result, .Any)) return true;
+    const params = self.context.type_store.type_pool.slice(info.params);
+    var i: usize = 0;
+    while (i < params.len) : (i += 1) {
+        if (self.isType(params[i], .Any)) return true;
+    }
+    return false;
 }
 
 fn pushExprTypeOverrideFrame(self: *LowerTir, ctx: *LowerContext) !void {
@@ -319,9 +334,8 @@ fn lowerDynArrayAppend(
             .else_value = doubled,
         });
 
-        const elem_size = check_types.typeSize(self.context, elem_ty) orelse unreachable;
-        const elem_size_u64 = std.math.cast(u64, elem_size) orelse unreachable;
-        const elem_size_const = grow_blk.builder.tirValue(.ConstInt, &grow_blk, usize_ty, loc, .{ .value = elem_size_u64 });
+        const elem_size: u64 = @intCast(check_types.typeSize(self.context, elem_ty));
+        const elem_size_const = grow_blk.builder.tirValue(.ConstInt, &grow_blk, usize_ty, loc, .{ .value = elem_size });
         const new_bytes = grow_blk.builder.bin(&grow_blk, .Mul, usize_ty, new_cap, elem_size_const, loc);
 
         const data_ptr_void = grow_blk.builder.tirValue(.CastBit, &grow_blk, ptr_void_ty, loc, .{ .value = data_ptr });
@@ -618,6 +632,68 @@ pub fn safeUndef(self: *LowerTir, blk: *Builder.BlockFrame, ty: types.TypeId, lo
     }
     return blk.builder.tirValue(.ConstUndef, blk, ty, loc, .{});
 }
+
+fn coerceArrayToDynArray(
+    self: *LowerTir,
+    blk: *Builder.BlockFrame,
+    array_value: tir.ValueId,
+    array_ty: types.TypeId,
+    dyn_ty: types.TypeId,
+    loc: tir.OptLocId,
+) ?tir.ValueId {
+    const ts = self.context.type_store;
+    const arr = ts.get(.Array, array_ty);
+    const dyn = ts.get(.DynArray, dyn_ty);
+    const len = switch (arr.len) {
+        .Concrete => |l| l,
+        .Unresolved => return null,
+    };
+
+    const ptr_ty = ts.mkPtr(dyn.elem, false);
+    const usize_ty = ts.tUsize();
+
+    if (len == 0) {
+        const null_ptr = blk.builder.constNull(blk, ptr_ty, loc);
+        const zero = blk.builder.tirValue(.ConstInt, blk, usize_ty, loc, .{ .value = 0 });
+        return blk.builder.structMake(blk, dyn_ty, &[_]tir.Rows.StructFieldInit{
+            .{ .index = 0, .name = .none(), .value = null_ptr },
+            .{ .index = 1, .name = .none(), .value = zero },
+            .{ .index = 2, .name = .none(), .value = zero },
+        }, loc);
+    }
+
+    const len_u64 = std.math.cast(u64, len) orelse return null;
+    const elem_size = check_types.typeSize(self.context, dyn.elem);
+    const elem_size_u64 = std.math.cast(u64, elem_size) orelse return null;
+    const total_bytes = std.math.mul(u64, elem_size_u64, len_u64) catch return null;
+
+    const ptr_void_ty = ts.mkPtr(ts.tVoid(), false);
+    const bytes_const = blk.builder.tirValue(.ConstInt, blk, usize_ty, loc, .{ .value = total_bytes });
+    const alloc_name = blk.builder.intern("rt_alloc");
+    const raw_ptr = blk.builder.call(blk, ptr_void_ty, alloc_name, &.{bytes_const}, loc);
+    const data_ptr = blk.builder.tirValue(.CastBit, blk, ptr_ty, loc, .{ .value = raw_ptr });
+
+    var idx: usize = 0;
+    while (idx < len) : (idx += 1) {
+        const idx_u64 = std.math.cast(u64, idx) orelse return null;
+        const idx_val = blk.builder.tirValue(.ConstInt, blk, usize_ty, loc, .{ .value = idx_u64 });
+        var elem_val = blk.builder.indexOp(blk, arr.elem, array_value, idx_val, loc);
+        if (!arr.elem.eq(dyn.elem)) {
+            elem_val = self.emitCoerce(blk, elem_val, arr.elem, dyn.elem, loc);
+        }
+        const offset = blk.builder.gepConst(idx_u64);
+        const elem_ptr = blk.builder.gep(blk, ptr_ty, data_ptr, &.{offset}, loc);
+        _ = blk.builder.tirValue(.Store, blk, dyn.elem, loc, .{ .ptr = elem_ptr, .value = elem_val, .@"align" = 0 });
+    }
+
+    const len_const = blk.builder.tirValue(.ConstInt, blk, usize_ty, loc, .{ .value = len_u64 });
+    return blk.builder.structMake(blk, dyn_ty, &[_]tir.Rows.StructFieldInit{
+        .{ .index = 0, .name = .none(), .value = data_ptr },
+        .{ .index = 1, .name = .none(), .value = len_const },
+        .{ .index = 2, .name = .none(), .value = len_const },
+    }, loc);
+}
+
 /// Insert an explicit coercion that realizes what the checker proved assignable/castable.
 pub fn emitCoerce(
     self: *LowerTir,
@@ -639,6 +715,7 @@ pub fn emitCoerce(
     const wk = ts.index.kinds.items[want.toRaw()];
 
     switch (wk) {
+        else => {},
         .ErrorSet => blk: {
             const es = ts.get(.ErrorSet, want);
             const tag_value: u32, const field_index: u32 = if (got.toRaw() == es.value_ty.toRaw())
@@ -670,23 +747,9 @@ pub fn emitCoerce(
             }, loc);
         },
         .DynArray => {
-            const dyn = ts.get(.DynArray, want);
             if (gk == .Array) {
-                const arr = ts.get(.Array, got);
-                switch (arr.len) {
-                    .Concrete => |l| {
-                        if (l == 0) {
-                            const ptr_ty = ts.mkPtr(dyn.elem, false);
-                            const null_ptr = blk.builder.constNull(blk, ptr_ty, loc);
-                            const zero = blk.builder.tirValue(.ConstInt, blk, ts.tUsize(), loc, .{ .value = 0 });
-                            return blk.builder.structMake(blk, want, &[_]tir.Rows.StructFieldInit{
-                                .{ .index = 0, .name = .none(), .value = null_ptr },
-                                .{ .index = 1, .name = .none(), .value = zero },
-                                .{ .index = 2, .name = .none(), .value = zero },
-                            }, loc);
-                        }
-                    },
-                    .Unresolved => {},
+                if (self.coerceArrayToDynArray(blk, v, got, want, loc)) |dyn_val| {
+                    return dyn_val;
                 }
             }
             // Fall through: no special coercion, let other cases handle
@@ -740,7 +803,6 @@ pub fn emitCoerce(
         },
         .Ptr => if (gk == .Ptr)
             return blk.builder.tirValue(.CastBit, blk, want, loc, .{ .value = v }),
-        else => {},
     }
     // Fallback: materialize/assignable
     return blk.builder.tirValue(.CastNormal, blk, want, loc, .{ .value = v });
@@ -1023,13 +1085,8 @@ fn lowerReturn(
         const expect = frow.result;
         const value_expr = r.value.unwrap();
         const value_loc = optLoc(a, value_expr);
-        // Do not pass the expected type to lowerExpr; perform coercion once here.
-        const v_raw = try self.lowerExpr(ctx, a, env, f, blk, value_expr, null, .rvalue);
-        var v = v_raw;
-        if (!self.isVoid(expect)) {
-            const got_ty = self.getExprType(ctx, a, value_expr);
-            v = self.emitCoerce(blk, v_raw, got_ty, expect, value_loc);
-        }
+        // Pass expected type down so literals construct with the concrete type directly
+        const v = try self.lowerExpr(ctx, a, env, f, blk, value_expr, expect, .rvalue);
 
         const expect_kind = self.context.type_store.index.kinds.items[expect.toRaw()];
         const has_err_defers = expect_kind == .ErrorSet and cf.hasErrDefersFrom(self, env, defer_mark);
@@ -1147,6 +1204,7 @@ fn lowerStmt(
 const CalleeInfo = struct {
     name: StrId,
     fty: ?types.TypeId,
+    expr: ast.ExprId,
 };
 
 fn resolveTypeArg(self: *LowerTir, ctx: *LowerContext, a: *ast.Ast, expr: ast.ExprId) ?types.TypeId {
@@ -1159,7 +1217,7 @@ fn moduleCallKey(alias: ast.StrId, field: StrId) u64 {
     return (@as(u64, alias.toRaw()) << 32) | @as(u64, field.toRaw());
 }
 
-fn methodSymbolName(
+pub fn methodSymbolName(
     self: *LowerTir,
     a: *ast.Ast,
     did: ast.DeclId,
@@ -1305,59 +1363,72 @@ fn synthesizeMethodBinding(
     };
 }
 
-fn resolveCallee(self: *LowerTir, ctx: *LowerContext, a: *ast.Ast, f: *Builder.FunctionFrame, row: ast.Rows.Call) !CalleeInfo {
-    const ck = a.exprs.index.kinds.items[row.callee.toRaw()];
-    if (ck == .Ident) {
-        const ident = a.exprs.get(.Ident, row.callee);
-        const nm = ident.name;
+fn resolveFieldAccessName(self: *LowerTir, ctx: *LowerContext, a: *ast.Ast, field_expr_id: ast.ExprId) ast.StrId {
+    const field_access = a.exprs.get(.FieldAccess, field_expr_id);
+    const parent_ty = self.getExprType(ctx, a, field_access.parent);
 
-        const cctx = self.chk.checker_ctx.items[a.file_id];
-        if (cctx.symtab.lookup(cctx.symtab.currentId(), nm)) |sid| {
-            const srow = cctx.symtab.syms.get(sid);
-            if (!srow.origin_decl.isNone()) {
-                const did = srow.origin_decl.unwrap();
-                const drow = a.exprs.Decl.get(did);
-                if (a.exprs.index.kinds.items[drow.value.toRaw()] == .Ident) {
-                    const rhs_ident = a.exprs.get(.Ident, drow.value);
-                    return .{ .name = rhs_ident.name, .fty = self.getExprType(ctx, a, row.callee) };
-                }
+    if (self.context.type_store.getKind(parent_ty) == .Ast) {
+        const ast_ty = self.context.type_store.get(.Ast, parent_ty);
+        const pkg_name = self.context.interner.get(ast_ty.pkg_name);
+        const filepath = self.context.interner.get(ast_ty.filepath);
+        const pkg = self.context.compilation_unit.packages.getPtr(pkg_name) orelse
+            unreachable;
+        const parent_unit = pkg.sources.getPtr(filepath) orelse
+            unreachable;
+
+        if (parent_unit.ast) |imported_ast| {
+            const field_name = a.exprs.strs.get(field_access.field);
+            const target_sid = imported_ast.exprs.strs.intern(field_name);
+            if (imported_ast.type_info.getExport(target_sid)) |ex| {
+                const drow = imported_ast.exprs.Decl.get(ex.decl_id);
+                return switch (imported_ast.exprs.index.kinds.items[drow.value.toRaw()]) {
+                    .Ident => imported_ast.exprs.get(.Ident, drow.value).name,
+                    .FieldAccess => self.resolveFieldAccessName(ctx, imported_ast, drow.value),
+                    else => field_access.field,
+                };
             }
         }
-
-        return .{ .name = nm, .fty = self.getExprType(ctx, a, row.callee) };
     }
-    if (ck == .FieldAccess) {
-        const field_access = a.exprs.get(.FieldAccess, row.callee);
-        const parent_ty = self.getExprType(ctx, a, field_access.parent);
 
-        if (self.context.type_store.getKind(parent_ty) == .Ast) {
-            const ast_ty = self.context.type_store.get(.Ast, parent_ty);
-            const pkg_name = self.context.interner.get(ast_ty.pkg_name);
-            const filepath = self.context.interner.get(ast_ty.filepath);
-            const pkg = self.context.compilation_unit.packages.getPtr(pkg_name) orelse
-                unreachable;
-            const parent_unit = pkg.sources.getPtr(filepath) orelse
-                unreachable;
+    return field_access.field;
+}
 
-            if (parent_unit.ast) |imported_ast| {
-                const field_name = a.exprs.strs.get(field_access.field);
-                const target_sid = imported_ast.exprs.strs.intern(field_name);
-                if (imported_ast.type_info.getExport(target_sid)) |ex| {
-                    const drow = imported_ast.exprs.Decl.get(ex.decl_id);
-                    if (imported_ast.exprs.index.kinds.items[drow.value.toRaw()] == .Ident) {
-                        const rhs_ident = imported_ast.exprs.get(.Ident, drow.value);
-                        return .{ .name = rhs_ident.name, .fty = self.getExprType(ctx, a, row.callee) };
+fn resolveCallee(self: *LowerTir, ctx: *LowerContext, a: *ast.Ast, f: *Builder.FunctionFrame, row: ast.Rows.Call) !CalleeInfo {
+    const cctx = self.chk.checker_ctx.items[a.file_id];
+    var current = row.callee;
+    var depth: usize = 0;
+
+    while (depth < 32) : (depth += 1) {
+        const ck = a.exprs.index.kinds.items[current.toRaw()];
+        switch (ck) {
+            .Ident => {
+                const ident = a.exprs.get(.Ident, current);
+                if (cctx.symtab.lookup(cctx.symtab.currentId(), ident.name)) |sid| {
+                    const srow = cctx.symtab.syms.get(sid);
+                    if (!srow.origin_decl.isNone()) {
+                        const did = srow.origin_decl.unwrap();
+                        const drow = a.exprs.Decl.get(did);
+                        const rhs_kind = a.exprs.index.kinds.items[drow.value.toRaw()];
+                        switch (rhs_kind) {
+                            .Ident, .FieldAccess => {
+                                current = drow.value;
+                                continue;
+                            },
+                            else => {},
+                        }
                     }
                 }
-            }
+                return .{ .name = ident.name, .fty = self.getExprType(ctx, a, row.callee), .expr = current };
+            },
+            .FieldAccess => {
+                const resolved_name = self.resolveFieldAccessName(ctx, a, current);
+                return .{ .name = resolved_name, .fty = self.getExprType(ctx, a, row.callee), .expr = current };
+            },
+            else => break,
         }
-
-        return .{
-            .name = field_access.field,
-            .fty = self.getExprType(ctx, a, row.callee),
-        };
     }
-    return .{ .name = f.builder.intern("<indirect>"), .fty = self.getExprType(ctx, a, row.callee) };
+
+    return .{ .name = f.builder.intern("<indirect>"), .fty = self.getExprType(ctx, a, row.callee), .expr = row.callee };
 }
 
 fn buildVariantItem(
@@ -1587,11 +1658,9 @@ fn lowerCall(
             const args = a.exprs.expr_pool.slice(row.args);
             if (args.len == 1) {
                 const target_ty = self.getExprType(ctx, a, args[0]);
-                if (check_types.typeSize(self.context, target_ty)) |sz| {
-                    const want = self.getExprType(ctx, a, id);
-                    const sz_u64 = std.math.cast(u64, sz) orelse 0;
-                    return blk.builder.tirValue(.ConstInt, blk, want, loc, .{ .value = sz_u64 });
-                }
+                const sz: u64 = @intCast(check_types.typeSize(self.context, target_ty));
+                const want = self.getExprType(ctx, a, id);
+                return blk.builder.tirValue(.ConstInt, blk, want, loc, .{ .value = sz });
             }
             // Fall through if unknown; general call path may still error nicely
         }
@@ -1606,6 +1675,7 @@ fn lowerCall(
 
     var callee = try self.resolveCallee(ctx, a, f, row);
     var callee_name = a.exprs.strs.get(callee.name);
+    const callee_expr = callee.expr;
     var arg_ids = a.exprs.expr_pool.slice(row.args);
     var method_arg_buf: []ast.ExprId = &.{};
     var method_decl_id: ?ast.DeclId = null;
@@ -1613,8 +1683,8 @@ fn lowerCall(
     defer {
         if (method_arg_buf.len != 0) self.gpa.free(method_arg_buf);
     }
-    if (a.type_info.getMethodBinding(row.callee)) |binding| {
-        if (a.exprs.index.kinds.items[row.callee.toRaw()] == .FieldAccess) {
+    if (a.type_info.getMethodBinding(callee_expr)) |binding| {
+        if (a.exprs.index.kinds.items[callee_expr.toRaw()] == .FieldAccess) {
             try self.prepareMethodCall(
                 a,
                 row,
@@ -1627,8 +1697,8 @@ fn lowerCall(
                 &method_arg_buf,
             );
         }
-    } else if (a.exprs.index.kinds.items[row.callee.toRaw()] == .FieldAccess) {
-        if (try self.synthesizeMethodBinding(ctx, a, env, row.callee)) |binding| {
+    } else if (a.exprs.index.kinds.items[callee_expr.toRaw()] == .FieldAccess) {
+        if (try self.synthesizeMethodBinding(ctx, a, env, callee_expr)) |binding| {
             try self.prepareMethodCall(
                 a,
                 row,
@@ -1667,7 +1737,7 @@ fn lowerCall(
             if (method_decl_id) |mid| {
                 decl_ctx_opt = .{ .ast = a, .decl_id = mid };
             } else {
-                decl_ctx_opt = self.findFunctionDeclForCall(a, row, callee.name);
+                decl_ctx_opt = self.findFunctionDeclForCall(a, row, callee_expr, callee.name);
             }
             if (decl_ctx_opt) |decl_ctx| {
                 const decl_ast = decl_ctx.ast;
@@ -1682,6 +1752,11 @@ fn lowerCall(
                     defer {
                         for (binding_infos.items) |*info| info.deinit(self.gpa);
                         binding_infos.deinit(self.gpa);
+                    }
+
+                    if (method_binding) |mb| {
+                        const owner_sid = a.exprs.strs.intern("__owner");
+                        try binding_infos.append(self.gpa, monomorphize.BindingInfo.runtimeParam(owner_sid, mb.owner_type));
                     }
 
                     var ok = true;
@@ -1801,8 +1876,8 @@ fn lowerCall(
                             }
                         }
 
-                        if (runtime_specs.items.len > 0 and decl_ast == a) {
-                            const context = self.chk.checker_ctx.items[a.file_id];
+                        if (runtime_specs.items.len > 0) {
+                            const context = self.chk.checker_ctx.items[decl_ast.file_id];
                             const specialized_fn_ty = try self.chk.checkSpecializedFunction(context, decl_ast, decl.value, runtime_specs.items);
                             if (self.chk.typeKind(specialized_fn_ty) != .TypeError) {
                                 const fn_info_override = self.context.type_store.get(.Function, specialized_fn_ty);
@@ -1841,6 +1916,7 @@ fn lowerCall(
             }
         }
     }
+    // }
 
     var vals_list: List(tir.ValueId) = .empty;
     defer vals_list.deinit(self.gpa);
@@ -1931,7 +2007,7 @@ fn lowerCall(
         if (method_decl_id) |mid| {
             decl_ctx_final = .{ .ast = a, .decl_id = mid };
         } else if (callee.fty) |_| {
-            decl_ctx_final = self.findFunctionDeclForCall(a, row, callee.name);
+            decl_ctx_final = self.findFunctionDeclForCall(a, row, callee_expr, callee.name);
         }
         if (decl_ctx_final) |dctx| {
             const decl_ast = dctx.ast;
@@ -2129,8 +2205,8 @@ fn lowerCall(
 
     // Detect if callee is a module member function: mod.name(...)
     var callee_is_import_member = false;
-    if (a.exprs.index.kinds.items[row.callee.toRaw()] == .FieldAccess) {
-        const fr2 = a.exprs.get(.FieldAccess, row.callee);
+    if (a.exprs.index.kinds.items[callee_expr.toRaw()] == .FieldAccess) {
+        const fr2 = a.exprs.get(.FieldAccess, callee_expr);
         const pk2 = a.exprs.index.kinds.items[fr2.parent.toRaw()];
         callee_is_import_member = (pk2 == .Import or pk2 == .Ident and self.findTopLevelImportByName(a, a.exprs.get(.Ident, fr2.parent).name) != null);
     }
@@ -2254,7 +2330,7 @@ fn lowerLiteral(
                 else => unreachable,
             };
             std.debug.assert(info.valid);
-            const value64 = std.math.cast(u64, info.value) orelse unreachable;
+            const value64: u64 = @intCast(info.value);
             break :blk blk.builder.tirValue(.ConstInt, blk, base_ty, loc, .{ .value = value64 });
         },
         .imaginary => blk: {
@@ -2516,7 +2592,7 @@ fn lowerArrayLit(
                 return dyn_val;
             }
 
-            const elem_size = check_types.typeSize(self.context, elem_ty) orelse unreachable;
+            const elem_size = check_types.typeSize(self.context, elem_ty);
 
             var elems = try self.gpa.alloc(tir.ValueId, ids.len);
             defer self.gpa.free(elems);
@@ -2525,9 +2601,8 @@ fn lowerArrayLit(
                 elems[i] = try self.lowerExpr(ctx, a, env, f, blk, ids[i], elem_ty, .rvalue);
             }
 
-            const total_bytes = elem_size * ids.len;
-            const total_bytes_u64 = std.math.cast(u64, total_bytes) orelse unreachable;
-            const bytes_const = blk.builder.tirValue(.ConstInt, blk, usize_ty, loc, .{ .value = total_bytes_u64 });
+            const total_bytes: u64 = @intCast(elem_size * ids.len);
+            const bytes_const = blk.builder.tirValue(.ConstInt, blk, usize_ty, loc, .{ .value = total_bytes });
             const alloc_name = blk.builder.intern("rt_alloc");
             const raw_ptr = blk.builder.call(blk, ptr_void_ty, alloc_name, &.{bytes_const}, loc);
             const data_ptr = blk.builder.tirValue(.CastBit, blk, ptr_elem_ty, loc, .{ .value = raw_ptr });
@@ -2996,8 +3071,19 @@ fn lowerFieldAccess(
     const parent_kind = self.context.type_store.getKind(parent_ty);
     const field_name = a.exprs.strs.get(row.field);
     if (std.mem.eql(u8, field_name, "len")) {
+        if (parent_kind == .Array) {
+            const arr = self.context.type_store.get(.Array, parent_ty);
+            const len_u64: u64 = switch (arr.len) {
+                .Concrete => |n| std.math.cast(u64, n) orelse unreachable,
+                .Unresolved => unreachable, // array lengths should be resolved before lowering
+            };
+            const ty0 = self.context.type_store.tUsize();
+            const v = blk.builder.tirValue(.ConstInt, blk, ty0, loc, .{ .value = len_u64 });
+            if (expected_ty) |want| return self.emitCoerce(blk, v, ty0, want, loc);
+            return v;
+        }
         switch (parent_kind) {
-            .Array, .Slice, .DynArray, .String => {
+            .Slice, .DynArray, .String => {
                 const base = try self.lowerExpr(ctx, a, env, f, blk, row.parent, null, .rvalue);
                 const ty0 = self.context.type_store.tUsize();
                 const v = blk.builder.extractFieldNamed(blk, ty0, base, row.field, loc);
@@ -3005,6 +3091,19 @@ fn lowerFieldAccess(
                 return v;
             },
             else => {},
+        }
+    } else if (std.mem.eql(u8, field_name, "ptr")) {
+        const ptr_ty: ?types.TypeId = switch (parent_kind) {
+            .Slice => self.context.type_store.mkPtr(self.context.type_store.get(.Slice, parent_ty).elem, false),
+            .DynArray => self.context.type_store.mkPtr(self.context.type_store.get(.DynArray, parent_ty).elem, false),
+            .String => self.context.type_store.mkPtr(self.context.type_store.tU8(), true),
+            else => null,
+        };
+        if (ptr_ty) |ty0| {
+            const base = try self.lowerExpr(ctx, a, env, f, blk, row.parent, null, .rvalue);
+            const v = blk.builder.extractFieldNamed(blk, ty0, base, row.field, loc);
+            if (expected_ty) |want| return self.emitCoerce(blk, v, ty0, want, loc);
+            return v;
         }
     } else if (std.mem.eql(u8, field_name, "capacity")) {
         switch (parent_kind) {
@@ -4203,17 +4302,18 @@ fn patternContainsNameStr(
 fn findFunctionDeclForCall(
     self: *LowerTir,
     caller_ast: *ast.Ast,
-    row: ast.Rows.Call,
+    _: ast.Rows.Call,
+    callee_expr: ast.ExprId,
     callee_name: ast.StrId,
 ) ?FunctionDeclContext {
     if (self.findTopLevelDeclByName(caller_ast, callee_name)) |decl_id| {
         return .{ .ast = caller_ast, .decl_id = decl_id };
     }
 
-    const callee_kind = caller_ast.exprs.index.kinds.items[row.callee.toRaw()];
+    const callee_kind = caller_ast.exprs.index.kinds.items[callee_expr.toRaw()];
     if (callee_kind != .FieldAccess) return null;
 
-    const fr = caller_ast.exprs.get(.FieldAccess, row.callee);
+    const fr = caller_ast.exprs.get(.FieldAccess, callee_expr);
     const parent_kind = caller_ast.exprs.index.kinds.items[fr.parent.toRaw()];
 
     // Case A: Direct import expression: (import "...").name(...)
@@ -4448,6 +4548,10 @@ fn destructureDeclPattern(self: *LowerTir, a: *ast.Ast, env: *cf.Env, f: *Builde
     switch (pk) {
         .Binding => {
             const nm = a.pats.get(.Binding, pid).name;
+            if (self.isVoid(vty)) {
+                // Nothing to bind: expression already evaluated for side effects.
+                return;
+            }
             if (to_slots) {
                 const slot_ty = self.context.type_store.mkPtr(vty, false);
                 const slot = f.builder.tirValue(.Alloca, blk, slot_ty, loc, .{ .count = tir.OptValueId.none(), .@"align" = 0 });

@@ -68,3 +68,28 @@ test "generics: struct field uses comptime array length" {
     const code = getSource(globals, src);
     try runCompilerTest(code, "1,2,3|4,5,6\n");
 }
+
+test "generics: nested method specialization per owner" {
+    const globals =
+        \\        A :: proc(comptime T: type) type {
+        \\   Type :: struct { item: T }
+        \\    Type.init :: proc(val: T) Type {
+        \\        return Type { item: val }
+        \\    }
+        \\    return Type
+        \\}
+    ;
+    const src =
+        \\    TI32 :: A(i32)
+        \\    x := TI32.init(5)
+        \\    printf("x: %d\n", x.item)
+        \\
+        \\    TI64 :: A(i64)
+        \\    y := TI64.init(7)
+        \\    printf("y: %d\n", y.item)
+        \\}
+    ;
+
+    const code = getSource(globals, src);
+    try runCompilerTest(code, "x: 5\ny: 7\n");
+}

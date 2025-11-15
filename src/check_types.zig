@@ -150,7 +150,7 @@ fn typeAlign(ctx: *const compile.Context, ty_id: types.TypeId) usize {
     };
 }
 
-pub fn typeSize(ctx: *const compile.Context, ty_id: types.TypeId) ?usize {
+pub fn typeSize(ctx: *const compile.Context, ty_id: types.TypeId) usize {
     const k = ctx.type_store.index.kinds.items[ty_id.toRaw()];
     return switch (k) {
         .I8, .U8, .Bool => 1,
@@ -162,26 +162,26 @@ pub fn typeSize(ctx: *const compile.Context, ty_id: types.TypeId) ?usize {
         // Enums lower to their tag type; assume 32-bit by default via tag_type
         .Enum => blk_enum: {
             const en = ctx.type_store.get(.Enum, ty_id);
-            break :blk_enum typeSize(ctx, en.tag_type) orelse return null;
+            break :blk_enum typeSize(ctx, en.tag_type);
         },
         .Simd => blk_simd: {
             const simd = ctx.type_store.get(.Simd, ty_id);
-            const elem_size = typeSize(ctx, simd.elem) orelse return null;
-            break :blk_simd std.math.mul(usize, elem_size, @as(usize, simd.lanes)) catch return null;
+            const elem_size = typeSize(ctx, simd.elem);
+            break :blk_simd std.math.mul(usize, elem_size, @as(usize, simd.lanes)) catch unreachable;
         },
         .Void => 0,
         .Any => 0, // Size is not known
-        .String => 8, // best-effort: pointer-like handle; real impl is more complex
+        .String => 16, // ptr + len on 64-bit targets
         .Slice => 16, // best-effort: ptr + len on 64-bit
         .DynArray => 24, // ptr + len + cap (3 * usize) on 64-bit
         .Array => blk: {
             const arr = ctx.type_store.get(.Array, ty_id);
-            const elem_size = typeSize(ctx, arr.elem) orelse return null;
+            const elem_size = typeSize(ctx, arr.elem);
             const len = switch (arr.len) {
                 .Concrete => |l| l,
-                .Unresolved => return null,
+                .Unresolved => unreachable,
             };
-            break :blk std.math.mul(usize, elem_size, len) catch return null;
+            break :blk std.math.mul(usize, elem_size, len) catch unreachable;
         },
         .Struct => blk: {
             const st = ctx.type_store.get(.Struct, ty_id);
@@ -191,10 +191,10 @@ pub fn typeSize(ctx: *const compile.Context, ty_id: types.TypeId) ?usize {
             for (fields) |fid| {
                 const f = ctx.type_store.Field.get(fid);
                 const a = typeAlign(ctx, f.ty);
-                const sz = typeSize(ctx, f.ty) orelse return null;
+                const sz = typeSize(ctx, f.ty);
                 if (a > max_a) max_a = a;
                 offset = std.mem.alignForward(usize, offset, a);
-                offset = std.math.add(usize, offset, sz) catch return null;
+                offset = std.math.add(usize, offset, sz) catch unreachable;
             }
             const total = std.mem.alignForward(usize, offset, max_a);
             break :blk total;
@@ -204,8 +204,8 @@ pub fn typeSize(ctx: *const compile.Context, ty_id: types.TypeId) ?usize {
             const elems = ctx.type_store.type_pool.slice(tp.elems);
             var total: usize = 0;
             for (elems) |eid| {
-                const esz = typeSize(ctx, eid) orelse return null;
-                total = std.math.add(usize, total, esz) catch return null;
+                const esz = typeSize(ctx, eid);
+                total = std.math.add(usize, total, esz) catch unreachable;
             }
             break :blk_tup total;
         },
@@ -219,7 +219,7 @@ pub fn typeSize(ctx: *const compile.Context, ty_id: types.TypeId) ?usize {
             var max_align: usize = 1;
             for (fields) |fid| {
                 const f = ctx.type_store.Field.get(fid);
-                const sz = typeSize(ctx, f.ty) orelse return null;
+                const sz = typeSize(ctx, f.ty);
                 if (sz > max_payload) max_payload = sz;
                 const a = typeAlign(ctx, f.ty);
                 if (a > max_align) max_align = a;
@@ -230,8 +230,8 @@ pub fn typeSize(ctx: *const compile.Context, ty_id: types.TypeId) ?usize {
         },
         .ErrorSet => blk_es: {
             const es = ctx.type_store.get(.ErrorSet, ty_id);
-            const v_sz = typeSize(ctx, es.value_ty) orelse return null;
-            const e_sz = typeSize(ctx, es.error_ty) orelse return null;
+            const v_sz = typeSize(ctx, es.value_ty);
+            const e_sz = typeSize(ctx, es.error_ty);
             const max_payload = if (v_sz > e_sz) v_sz else e_sz;
             break :blk_es (4 + max_payload);
         },
@@ -242,7 +242,7 @@ pub fn typeSize(ctx: *const compile.Context, ty_id: types.TypeId) ?usize {
             var max_align: usize = 1;
             for (fields) |fid| {
                 const f = ctx.type_store.Field.get(fid);
-                const sz = typeSize(ctx, f.ty) orelse return null;
+                const sz = typeSize(ctx, f.ty);
                 if (sz > max_sz) max_sz = sz;
                 const a = typeAlign(ctx, f.ty);
                 if (a > max_align) max_align = a;
@@ -251,7 +251,7 @@ pub fn typeSize(ctx: *const compile.Context, ty_id: types.TypeId) ?usize {
         },
         .Optional => blk_opt: {
             const o = ctx.type_store.get(.Optional, ty_id);
-            const elem_sz = typeSize(ctx, o.elem) orelse return null;
+            const elem_sz = typeSize(ctx, o.elem);
             const elem_align = typeAlign(ctx, o.elem);
             // Runtime shape: struct { is_some: bool, payload } with natural alignment
             const after_flag = std.mem.alignForward(usize, 1, elem_align);
@@ -264,9 +264,9 @@ pub fn typeSize(ctx: *const compile.Context, ty_id: types.TypeId) ?usize {
         },
         // Optional/Struct/Tuple/Union/Map/Error/Variant/ErrorSet/Simd/Tensor:
         // ABI/padding/representation are not modeled here yet.
-        else => blk: {
+        else => {
             std.debug.print("typeSize: unhandled kind {}\n", .{k});
-            break :blk null;
+            unreachable;
         },
     };
 }

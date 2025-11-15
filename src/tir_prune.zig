@@ -23,8 +23,13 @@ pub fn pruneUnusedFunctions(
     comp_unit: *package.CompilationUnit,
     opts: Options,
 ) !void {
+    const FuncRef = struct {
+        unit: *package.FileUnit,
+        fid: tir.FuncId,
+    };
+
     // Build name -> functions map across all units, and find roots.
-    var name_to_funcs = std.AutoHashMap(tir.StrId, std.ArrayListUnmanaged(tir.FuncId)).init(gpa);
+    var name_to_funcs = std.AutoHashMap(tir.StrId, std.ArrayListUnmanaged(FuncRef)).init(gpa);
     defer {
         var it = name_to_funcs.valueIterator();
         while (it.next()) |lst| lst.deinit(gpa);
@@ -49,7 +54,7 @@ pub fn pruneUnusedFunctions(
                 const frow = t.funcs.Function.get(fid);
                 const gop = try name_to_funcs.getOrPut(frow.name);
                 if (!gop.found_existing) gop.value_ptr.* = .{};
-                try gop.value_ptr.append(gpa, fid);
+                try gop.value_ptr.append(gpa, .{ .unit = unit, .fid = fid });
             }
             // No-op scan here
         }
@@ -78,49 +83,25 @@ pub fn pruneUnusedFunctions(
         _ = try reachable_names.put(gpa, name, {});
         // For each function with this name, traverse its calls
         if (name_to_funcs.get(name)) |lst| {
-            for (lst.items) |fid| {
-                // Locate the owning module for this fid by scanning (cheap enough)
-                var found_unit: ?*package.FileUnit = null;
-                var pkg_it3 = comp_unit.packages.iterator();
-                search_unit: while (pkg_it3.next()) |pkg| {
-                    var src_it3 = pkg.value_ptr.sources.iterator();
-                    while (src_it3.next()) |unit_entry| {
-                        const unit = unit_entry.value_ptr;
-                        if (unit.tir == null) continue;
-                        const t = unit.tir.?;
-                        const funcs = t.funcs.func_pool.data.items;
-                        var matched = false;
-                        for (funcs) |cand| {
-                            if (cand.toRaw() == fid.toRaw()) {
-                                matched = true;
-                                break;
-                            }
-                        }
-                        if (matched) {
-                            found_unit = unit;
-                            break :search_unit;
-                        }
-                    }
-                }
-                if (found_unit) |unit| {
-                    const t = unit.tir.?;
-                    const frow = t.funcs.Function.get(fid);
-                    const blocks = t.funcs.block_pool.slice(frow.blocks);
-                    for (blocks) |bid| {
-                        const b = t.funcs.Block.get(bid);
-                        const instrs = t.instrs.instr_pool.slice(b.instrs);
-                        for (instrs) |iid| {
-                            const k = t.instrs.index.kinds.items[iid.toRaw()];
-                            if (k == .Call) {
-                                const row = t.instrs.get(.Call, iid);
-                                try wl.append(gpa, row.callee);
-                            } else if (k == .GlobalAddr) {
-                                // Treat taking the address of a function as a use that makes it reachable.
-                                // If the referenced symbol name corresponds to a function, add it to the worklist.
-                                const row = t.instrs.get(.GlobalAddr, iid);
-                                if (name_to_funcs.get(row.name) != null) {
-                                    try wl.append(gpa, row.name);
-                                }
+            for (lst.items) |ref| {
+                if (ref.unit.tir == null) continue;
+                const t = ref.unit.tir.?;
+                const frow = t.funcs.Function.get(ref.fid);
+                const blocks = t.funcs.block_pool.slice(frow.blocks);
+                for (blocks) |bid| {
+                    const b = t.funcs.Block.get(bid);
+                    const instrs = t.instrs.instr_pool.slice(b.instrs);
+                    for (instrs) |iid| {
+                        const k = t.instrs.index.kinds.items[iid.toRaw()];
+                        if (k == .Call) {
+                            const row = t.instrs.get(.Call, iid);
+                            try wl.append(gpa, row.callee);
+                        } else if (k == .GlobalAddr) {
+                            // Treat taking the address of a function as a use that makes it reachable.
+                            // If the referenced symbol name corresponds to a function, add it to the worklist.
+                            const row = t.instrs.get(.GlobalAddr, iid);
+                            if (name_to_funcs.get(row.name) != null) {
+                                try wl.append(gpa, row.name);
                             }
                         }
                     }

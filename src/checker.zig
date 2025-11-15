@@ -32,6 +32,8 @@ pub const CheckerContext = struct {
     func_stack: List(FunctionCtx) = .{},
     loop_stack: List(LoopCtx) = .{},
     value_ctx: List(bool) = .{},
+    // Controls whether nested function literals are permitted in the current context.
+    allow_nested_fn: List(bool) = .{},
     warned_meta: bool = false,
     warned_comptime: bool = false,
     warned_code: bool = false,
@@ -46,6 +48,7 @@ pub const CheckerContext = struct {
         self.func_stack.deinit(gpa);
         self.loop_stack.deinit(gpa);
         self.value_ctx.deinit(gpa);
+        self.allow_nested_fn.deinit(gpa);
         self.loop_binding_stack.deinit(gpa);
         self.catch_binding_stack.deinit(gpa);
         self.match_binding_stack.deinit(gpa);
@@ -95,6 +98,17 @@ pub inline fn getStr(ast_unit: *const ast.Ast, sid: ast.StrId) []const u8 {
 }
 inline fn getExpr(ast_unit: *const ast.Ast, comptime K: ast.ExprKind, id: ast.ExprId) ast.RowT(K) {
     return ast_unit.exprs.get(K, id);
+}
+
+fn pushAllowNestedFn(self: *Checker, ctx: *CheckerContext, v: bool) !void {
+    try ctx.allow_nested_fn.append(self.gpa, v);
+}
+fn popAllowNestedFn(_: *Checker, ctx: *CheckerContext) void {
+    if (ctx.allow_nested_fn.items.len > 0) _ = ctx.allow_nested_fn.pop();
+}
+fn isNestedFnAllowed(_: *const Checker, ctx: *CheckerContext) bool {
+    if (ctx.allow_nested_fn.items.len == 0) return false;
+    return ctx.allow_nested_fn.items[ctx.allow_nested_fn.items.len - 1];
 }
 
 pub fn init(
@@ -498,7 +512,13 @@ fn checkDecl(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, decl_id: 
 
     // Initializers must be evaluated in value context even inside statement blocks
     try self.pushValueReq(ctx, true);
+    var pushed_nested = false;
+    if (self.inFunction(ctx) and !decl.method_path.isNone() and exprKind(ast_unit, decl.value) == .FunctionLit) {
+        try self.pushAllowNestedFn(ctx, true);
+        pushed_nested = true;
+    }
     const rhs_ty = try self.checkExpr(ctx, ast_unit, decl.value);
+    if (pushed_nested) self.popAllowNestedFn(ctx);
     self.popValueReq(ctx);
 
     if (self.typeKind(rhs_ty) == .TypeError) return;
@@ -525,6 +545,8 @@ fn checkDecl(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, decl_id: 
             },
         }
     }
+
+    // Method registration happens in runAst pre-pass; avoid re-registering here.
 
     // Record exports for top-level bindings only (not inside functions).
     if (!self.inFunction(ctx)) {
@@ -2303,8 +2325,9 @@ fn checkUnary(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, id: ast.
 }
 
 fn checkFunctionLit(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, id: ast.ExprId) !types.TypeId {
-    // Disallow nested function definitions (functions inside functions).
-    if (self.inFunction(ctx)) {
+    // Disallow nested function definitions unless explicitly allowed by the current context
+    // (e.g., when defining methods inside functions before hoisting at lowering).
+    if (self.inFunction(ctx) and !self.isNestedFnAllowed(ctx)) {
         try self.context.diags.addError(exprLoc(ast_unit, getExpr(ast_unit, .FunctionLit, id)), .nested_function_not_allowed, .{});
         return self.context.type_store.tTypeError();
     }
@@ -2500,6 +2523,7 @@ fn checkIndexAccess(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, id
     if (col_kind == .TypeError) return self.context.type_store.tTypeError();
     switch (col_kind) {
         .Array, .Slice, .DynArray => return self.indexElemTypeFromArrayLike(ctx, ast_unit, col_ty, index_expr.index, exprLoc(ast_unit, index_expr)),
+        .Ptr => return self.indexElemTypeFromPointer(ctx, ast_unit, col_ty, index_expr.index, exprLoc(ast_unit, index_expr)),
         .Tensor => return self.indexElemTypeFromTensor(ctx, ast_unit, col_ty, index_expr.index, exprLoc(ast_unit, index_expr)),
         .Simd => {
             const idx_kind = exprKind(ast_unit, index_expr.index);
@@ -2581,6 +2605,23 @@ fn indexElemTypeFromArrayLike(self: *Checker, ctx: *CheckerContext, ast_unit: *a
         .DynArray => self.context.type_store.get(.DynArray, col_ty).elem,
         else => self.context.type_store.tTypeError(),
     };
+}
+
+fn indexElemTypeFromPointer(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, col_ty: types.TypeId, idx_expr: ast.ExprId, loc: Loc) !types.TypeId {
+    const ptr_row = self.context.type_store.get(.Ptr, col_ty);
+    const idx_kind = exprKind(ast_unit, idx_expr);
+    if (idx_kind == .Range) {
+        _ = self.checkExpr(ctx, ast_unit, idx_expr) catch return self.context.type_store.tTypeError();
+        return self.context.type_store.mkSlice(ptr_row.elem);
+    }
+
+    const it = try self.checkExpr(ctx, ast_unit, idx_expr);
+    if (self.typeKind(it) == .TypeError) return self.context.type_store.tTypeError();
+    if (!check_types.isIntegerKind(self, self.typeKind(it))) {
+        try self.context.diags.addError(loc, .non_integer_index, .{});
+        return self.context.type_store.tTypeError();
+    }
+    return ptr_row.elem;
 }
 
 fn indexElemTypeFromTensor(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, col_ty: types.TypeId, idx_expr: ast.ExprId, loc: Loc) !types.TypeId {
@@ -2783,6 +2824,18 @@ fn checkFieldAccess(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, id
                 return self.context.type_store.tUsize();
             },
             else => {},
+        }
+    } else if (std.mem.eql(u8, field_name, "ptr")) {
+        const ptr_ty: ?types.TypeId = switch (kind) {
+            .Array => self.context.type_store.mkPtr(self.context.type_store.get(.Array, ty).elem, false),
+            .Slice => self.context.type_store.mkPtr(self.context.type_store.get(.Slice, ty).elem, false),
+            .DynArray => self.context.type_store.mkPtr(self.context.type_store.get(.DynArray, ty).elem, false),
+            .String => self.context.type_store.mkPtr(self.context.type_store.tU8(), true),
+            else => null,
+        };
+        if (ptr_ty) |pty| {
+            try ast_unit.type_info.setFieldIndex(id, 0);
+            return pty;
         }
     } else if (std.mem.eql(u8, field_name, "capacity")) {
         switch (kind) {
@@ -3408,12 +3461,6 @@ fn checkCall(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, id: ast.E
             const res = try check_types.typeFromTypeExpr(self, ctx, ast_unit, args[0]);
             ast_unit.type_info.expr_types.items[args[0].toRaw()] = self.context.type_store.mkTypeType(res[1]);
             if (!res[0]) return self.context.type_store.tTypeError();
-            const ty = res[1];
-            const sz = check_types.typeSize(self.context, ty) orelse {
-                try self.context.diags.addError(call_loc, .could_not_resolve_type, .{});
-                return self.context.type_store.tTypeError();
-            };
-            _ = sz; // ensure used
             // Record a comptime value for potential constant folding (optional)
             try ast_unit.type_info.ensureExpr(self.gpa, id);
             ast_unit.type_info.expr_types.items[id.toRaw()] = self.context.type_store.tU64();
@@ -4083,10 +4130,8 @@ fn unifyNumeric(self: *Checker, a: types.TypeId, b: types.TypeId) types.TypeId {
     if (ak == .Usize or bk == .Usize) return self.context.type_store.tUsize();
 
     // Otherwise, choose the wider integer width; on tie, prefer unsigned if one side is unsigned.
-    const asz_opt = check_types.typeSize(self.context, a);
-    const bsz_opt = check_types.typeSize(self.context, b);
-    const asz: usize = asz_opt orelse 0;
-    const bsz: usize = bsz_opt orelse 0;
+    const asz = check_types.typeSize(self.context, a);
+    const bsz = check_types.typeSize(self.context, b);
     if (asz > bsz) return a;
     if (bsz > asz) return b;
 
@@ -4402,7 +4447,7 @@ fn checkCast(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, id: ast.E
         .bitcast => {
             const gsize = check_types.typeSize(self.context, vt);
             const tsize = check_types.typeSize(self.context, et);
-            if (vk == .Any or ek == .Any) {} else if (gsize == null or tsize == null or gsize.? != tsize.?) {
+            if (vk == .Any or ek == .Any) {} else if (gsize != tsize) {
                 try self.context.diags.addError(exprLoc(ast_unit, cr), .invalid_bitcast, .{ vk, ek });
             }
         },

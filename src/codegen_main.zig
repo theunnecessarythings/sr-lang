@@ -2064,6 +2064,13 @@ fn emitIndex(self: *Codegen, p: tir.Rows.Index, t: *const tir.TIR) !mlir.Value {
                 const elem_mlir = try self.llvmTypeOf(elem_sr);
                 data_ptr = try self.emitGep(ptr0, elem_mlir, &idxs);
             },
+            .Ptr => {
+                const ptr_row = self.context.type_store.get(.Ptr, base_sr_ty);
+                elem_sr = ptr_row.elem;
+                const elem_mlir = try self.llvmTypeOf(elem_sr);
+                const idxs = [_]tir.Rows.GepIndex{.{ .Value = start_vid }};
+                data_ptr = try self.emitGep(base, elem_mlir, &idxs);
+            },
             else => return self.zeroOf(res_ty),
         }
 
@@ -2146,6 +2153,28 @@ fn emitIndex(self: *Codegen, p: tir.Rows.Index, t: *const tir.TIR) !mlir.Value {
     }
 }
 
+fn expandVariadicArgTuple(
+    self: *Codegen,
+    value: mlir.Value,
+    sr_ty: types.TypeId,
+    out_vals: *ArrayList(mlir.Value),
+    out_sr: *ArrayList(types.TypeId),
+) anyerror!void {
+    if (self.context.type_store.getKind(sr_ty) == .Tuple) {
+        const tuple_row = self.context.type_store.get(.Tuple, sr_ty);
+        const elems = self.context.type_store.type_pool.slice(tuple_row.elems);
+        for (elems, 0..) |elem_sr, idx| {
+            const elem_ty = try self.llvmTypeOf(elem_sr);
+            const elem_val = self.extractAt(value, elem_ty, &.{@intCast(idx)});
+            try self.expandVariadicArgTuple(elem_val, elem_sr, out_vals, out_sr);
+        }
+        return;
+    }
+
+    try out_vals.append(value);
+    try out_sr.append(sr_ty);
+}
+
 fn emitCall(self: *Codegen, p: tir.Rows.Call, t: *const tir.TIR) !mlir.Value {
     const prev_loc = self.pushLocation(p.loc);
     defer self.loc = prev_loc;
@@ -2183,6 +2212,27 @@ fn emitCall(self: *Codegen, p: tir.Rows.Call, t: *const tir.TIR) !mlir.Value {
     for (args_slice, 0..) |vid, i| {
         src_vals[i] = self.value_map.get(vid).?;
         src_sr[i] = self.srTypeOfValue(vid);
+    }
+
+    if (isExternLL and finfo.?.is_variadic and src_vals.len > finfo.?.n_formals) {
+        var expanded_vals = ArrayList(mlir.Value).init(self.gpa);
+        defer expanded_vals.deinit();
+        var expanded_sr = ArrayList(types.TypeId).init(self.gpa);
+        defer expanded_sr.deinit();
+
+        for (src_vals, 0..) |val, idx| {
+            if (idx < finfo.?.n_formals) {
+                try expanded_vals.append(val);
+                try expanded_sr.append(src_sr[idx]);
+                continue;
+            }
+            try self.expandVariadicArgTuple(val, src_sr[idx], &expanded_vals, &expanded_sr);
+        }
+
+        self.gpa.free(src_vals);
+        self.gpa.free(src_sr);
+        src_vals = try expanded_vals.toOwnedSlice();
+        src_sr = try expanded_sr.toOwnedSlice();
     }
 
     const want_res_sr = p.ty;

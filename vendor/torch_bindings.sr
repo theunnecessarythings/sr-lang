@@ -18,7 +18,7 @@ at_print :: extern proc(t: Tensor)
 // --- Manual Torch API helpers (from torch_api.h) ---
 
 // Error utilities
-get_and_reset_last_err :: extern fn() *u8
+get_and_reset_last_err :: extern fn() *const u8
 
 // RNG / seeding
 at_manual_seed :: extern proc(seed: i64)
@@ -26,6 +26,7 @@ at_manual_seed :: extern proc(seed: i64)
 // Tensor construction and data access
 at_new_tensor :: extern fn() Tensor
 at_tensor_of_data :: extern fn(vs: *void, dims: *i64, ndims: usize, element_size_in_bytes: usize, type_: i32) Tensor
+at_tensor_of_blob :: extern fn(data: *void, dims: *i64, ndims: usize, strides: *i64, nstrides: usize, type_: i32, device: i32) Tensor
 at_copy_data :: extern proc(t: Tensor, vs: *void, numel: usize, element_size_in_bytes: usize)
 at_shallow_clone :: extern fn(t: Tensor) Tensor
 at_data_ptr :: extern fn(t: Tensor) *void
@@ -66,19 +67,19 @@ at_set_int64_value_at_indexes :: extern proc(t: Tensor, indexes: *i32, indexes_l
 at_copy_ :: extern proc(dst: Tensor, src: Tensor)
 
 // IO helpers
-at_to_string :: extern fn(t: Tensor, line_size: i32) *u8
-at_save :: extern proc(t: Tensor, filename: *u8)
+at_to_string :: extern fn(t: Tensor, line_size: i32) *const u8
+at_save :: extern proc(t: Tensor, filename: *const u8)
 at_save_to_stream :: extern proc(t: Tensor, stream_ptr: *void)
-at_load :: extern fn(filename: *u8) Tensor
+at_load :: extern fn(filename: *const u8) Tensor
 at_load_from_stream :: extern fn(stream_ptr: *void) Tensor
-at_load_image :: extern fn(filename: *u8) Tensor
-at_load_image_from_memory :: extern fn(img_data: *u8, img_size: usize) Tensor
-at_save_image :: extern fn(t: Tensor, filename: *u8) i32
+at_load_image :: extern fn(filename: *const u8) Tensor
+at_load_image_from_memory :: extern fn(img_data: *const u8, img_size: usize) Tensor
+at_save_image :: extern fn(t: Tensor, filename: *const u8) i32
 at_resize_image :: extern fn(t: Tensor, w: i32, h: i32) Tensor
-at_save_multi :: extern proc(tensors: *Tensor, tensor_names: **u8, ntensors: i32, filename: *u8)
+at_save_multi :: extern proc(tensors: *Tensor, tensor_names: **u8, ntensors: i32, filename: *const u8)
 at_save_multi_to_stream :: extern proc(tensors: *Tensor, tensor_names: **u8, ntensors: i32, stream_ptr: *void)
-at_load_multi :: extern proc(tensors: *Tensor, tensor_names: **u8, ntensors: i32, filename: *u8)
-at_load_multi_ :: extern proc(tensors: *Tensor, tensor_names: **u8, ntensors: i32, filename: *u8)
+at_load_multi :: extern proc(tensors: *Tensor, tensor_names: **u8, ntensors: i32, filename: *const u8)
+at_load_multi_ :: extern proc(tensors: *Tensor, tensor_names: **u8, ntensors: i32, filename: *const u8)
 
 // Threading and engine
 at_get_num_interop_threads :: extern fn() i32
@@ -111,8 +112,9 @@ ats_int :: extern fn(v: i64) Scalar
 ats_float :: extern fn(v: f64) Scalar
 ats_to_int :: extern fn(s: Scalar) i64
 ats_to_float :: extern fn(s: Scalar) f64
-ats_to_string :: extern fn(s: Scalar) *u8
+ats_to_string :: extern fn(s: Scalar) *const u8
 ats_free :: extern proc(s: Scalar)
+at_tensor_item_float :: extern proc(t: Tensor) f32
 
 // Build/context capabilities
 at_context_has_openmp :: extern fn() bool
@@ -144,13 +146,13 @@ atc_set_user_enabled_cudnn :: extern proc(b: i32)
 atc_set_benchmark_cudnn :: extern proc(b: i32)
 
 // TorchScript module (subset)
-atm_load :: extern fn(path: *u8) Module
-atm_load_on_device :: extern fn(path: *u8, device: i32) Module
+atm_load :: extern fn(path: *const u8) Module
+atm_load_on_device :: extern fn(path: *const u8, device: i32) Module
 atm_eval :: extern proc(m: Module)
 atm_train :: extern proc(m: Module)
 atm_free :: extern proc(m: Module)
 atm_to :: extern proc(m: Module, device: i32, dtype: i32, non_blocking: bool)
-atm_save :: extern proc(m: Module, path: *u8)
+atm_save :: extern proc(m: Module, path: *const u8)
 atm_forward :: extern fn(m: Module, tensors: *Tensor, ntensors: i32) Tensor
 
 // IValue (subset)
@@ -158,7 +160,7 @@ ati_tensor :: extern fn(t: Tensor) IValue
 ati_int :: extern fn(v: i64) IValue
 ati_double :: extern fn(v: f64) IValue
 ati_bool :: extern fn(v: i32) IValue
-ati_string :: extern fn(ptr: *u8) IValue
+ati_string :: extern fn(ptr: *const u8) IValue
 ati_free :: extern proc(v: IValue)
 
 atg___and__ :: extern proc(out__: *Tensor, self: Tensor, other: Scalar)
@@ -209,7 +211,7 @@ atg__aminmax_out :: extern proc(out__: *Tensor, out0: Tensor, out1: Tensor, self
 atg__amp_update_scale :: extern proc(out__: *Tensor, self: Tensor, growth_tracker: Tensor, found_inf: Tensor, scale_growth_factor: f64, scale_backoff_factor: f64, growth_interval: i64)
 atg__amp_update_scale_ :: extern proc(out__: *Tensor, self: Tensor, growth_tracker: Tensor, found_inf: Tensor, scale_growth_factor: f64, scale_backoff_factor: f64, growth_interval: i64)
 atg__amp_update_scale_out :: extern proc(out__: *Tensor, out: Tensor, self: Tensor, growth_tracker: Tensor, found_inf: Tensor, scale_growth_factor: f64, scale_backoff_factor: f64, growth_interval: i64)
-atg__assert_scalar :: extern proc(self_scalar: Scalar, assert_msg_ptr: *u8, assert_msg_len: i32)
+atg__assert_scalar :: extern proc(self_scalar: Scalar, assert_msg_ptr: *const u8, assert_msg_len: i32)
 atg__assert_tensor_metadata :: extern proc(a: Tensor, size_data: *i64, size_len: i32, stride_data: *i64, stride_len: i32, dtype: i32, device: i32, layout: i8)
 atg__autocast_to_full_precision :: extern proc(out__: *Tensor, self: Tensor, cuda_enabled: bool, cpu_enabled: bool)
 atg__autocast_to_reduced_precision :: extern proc(out__: *Tensor, self: Tensor, cuda_enabled: bool, cpu_enabled: bool, cuda_dtype: i32, cpu_dtype: i32)
@@ -325,8 +327,8 @@ atg__fill_mem_eff_dropout_mask_ :: extern proc(out__: *Tensor, self: Tensor, dro
 atg__flash_attention_backward :: extern proc(out__: *Tensor, grad_out: Tensor, query: Tensor, key: Tensor, value: Tensor, out: Tensor, logsumexp: Tensor, cum_seq_q: Tensor, cum_seq_k: Tensor, max_q: i64, max_k: i64, dropout_p: f64, is_causal: bool, rng_state: Tensor, unused: Tensor, scale_v: f64, scale_null: u8, window_size_left_v: i64, window_size_left_null: u8, window_size_right_v: i64, window_size_right_null: u8)
 atg__foobar :: extern proc(out__: *Tensor, self: Tensor, arg1: bool, arg2: bool, arg3: bool)
 atg__foobar_out :: extern proc(out__: *Tensor, out: Tensor, self: Tensor, arg1: bool, arg2: bool, arg3: bool)
-atg__functional_assert_async :: extern proc(out__: *Tensor, self: Tensor, assert_msg_ptr: *u8, assert_msg_len: i32, dep_token: Tensor)
-atg__functional_assert_scalar :: extern proc(out__: *Tensor, self_scalar: Scalar, assert_msg_ptr: *u8, assert_msg_len: i32, dep_token: Tensor)
+atg__functional_assert_async :: extern proc(out__: *Tensor, self: Tensor, assert_msg_ptr: *const u8, assert_msg_len: i32, dep_token: Tensor)
+atg__functional_assert_scalar :: extern proc(out__: *Tensor, self_scalar: Scalar, assert_msg_ptr: *const u8, assert_msg_len: i32, dep_token: Tensor)
 atg__functional_sym_constrain_range :: extern proc(out__: *Tensor, size: Scalar, min_v: i64, min_null: u8, max_v: i64, max_null: u8, dep_token: Tensor)
 atg__functional_sym_constrain_range_for_size :: extern proc(out__: *Tensor, size: Scalar, min_v: i64, min_null: u8, max_v: i64, max_null: u8, dep_token: Tensor)
 atg__fused_dropout :: extern proc(out__: *Tensor, self: Tensor, p: f64)
@@ -364,7 +366,7 @@ atg__is_all_true :: extern proc(out__: *Tensor, self: Tensor)
 atg__is_any_true :: extern proc(out__: *Tensor, self: Tensor)
 atg__is_zerotensor :: extern fn(self: Tensor) bool
 atg__lazy_clone :: extern proc(out__: *Tensor, self: Tensor)
-atg__linalg_check_errors :: extern proc(info: Tensor, api_name_ptr: *u8, api_name_len: i32, is_matrix: bool)
+atg__linalg_check_errors :: extern proc(info: Tensor, api_name_ptr: *const u8, api_name_len: i32, is_matrix: bool)
 atg__linalg_det :: extern proc(out__: *Tensor, A: Tensor)
 atg__linalg_det_result :: extern proc(out__: *Tensor, result: Tensor, LU: Tensor, pivots: Tensor, A: Tensor)
 atg__linalg_eigh :: extern proc(out__: *Tensor, A: Tensor, UPLO_ptr: *u8, UPLO_len: i32, compute_v: bool)
