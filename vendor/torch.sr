@@ -169,7 +169,7 @@ LayerNorm.init :: proc(opts: LayerNormOptions) LayerNorm {
 }
 
 LayerNorm.forward :: proc(self: *LayerNorm, input: *Tensor) Tensor {
-    (output, _, _) := input.native_layer_norm(&self.opts.normalized_shape[0], self.opts.normalized_shape.len.(i32), self.weight, self.bias, self.opts.eps)
+    (output, _, _) := input.native_layer_norm(self.opts.normalized_shape.ptr, self.opts.normalized_shape.len.(i32), self.weight, self.bias, self.opts.eps)
     return output
 }
 
@@ -14663,17 +14663,13 @@ Tensor.special_zeta_self_scalar_out :: proc(out: Tensor, self_scalar: torch_bind
 Tensor.split :: proc(self: *Tensor, split_size: i64, dim: i64) [dyn] Tensor {
     ptr := torch_bindings.atg_split(self.t, split_size, dim)
     arr: [dyn] Tensor = []
-    ptr_addr := ptr.^i64
     i := 0
     while true {
-        elem_addr := ptr_addr + i * 8
-        elem_ptr := elem_addr.^*(*torch_bindings.Tensor)
-        c := elem_ptr.^torch_bindings.Tensor
+        c := ptr[i]
         if c.^i64 == 0 { break }
-        arr.append(wrap_and_track(c))
+        arr.append(Tensor{t: c})
         i += 1
     }
-    torch_bindings.free(ptr.^*void)
     return arr
 }
 

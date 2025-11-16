@@ -740,7 +740,7 @@ fn registerMethodDecl(
     return true;
 }
 
-const AssignErrors = enum {
+const AssignErrors = union(enum) {
     array_length_mismatch,
     tuple_arity_mismatch,
     assign_null_to_non_optional,
@@ -766,6 +766,7 @@ const AssignErrors = enum {
     tensor_rank_mismatch,
     tensor_dimension_mismatch,
     tensor_element_type_mismatch,
+    struct_field_type_mismatch: struct { index: usize, tag_index: usize },
     failure,
     success,
 };
@@ -794,10 +795,22 @@ pub fn assignable(self: *Checker, got: types.TypeId, expect: types.TypeId) Assig
 
     switch (expected_kind) {
         .Slice => {
-            if (got_kind != .Slice) return .failure;
             const expected_ty = self.context.type_store.get(.Slice, expect);
-            const got_ty = self.context.type_store.get(.Slice, got);
-            return self.assignable(got_ty.elem, expected_ty.elem);
+            switch (got_kind) {
+                .Slice => {
+                    const got_ty = self.context.type_store.get(.Slice, got);
+                    return self.assignable(got_ty.elem, expected_ty.elem);
+                },
+                .Array => {
+                    const got_ty = self.context.type_store.get(.Array, got);
+                    return self.assignable(got_ty.elem, expected_ty.elem);
+                },
+                .DynArray => {
+                    const got_ty = self.context.type_store.get(.DynArray, got);
+                    return self.assignable(got_ty.elem, expected_ty.elem);
+                },
+                else => return .failure,
+            }
         },
         .Array => {
             if (got_kind != .Array) return .expected_array_type;
@@ -991,12 +1004,16 @@ pub fn assignable(self: *Checker, got: types.TypeId, expect: types.TypeId) Assig
             for (expected_fields) |efid| {
                 const ef = self.context.type_store.Field.get(efid);
                 var found = false;
-                for (got_fields) |gfid| {
+                for (got_fields, 0..) |gfid, i| {
                     const gf = self.context.type_store.Field.get(gfid);
                     if (ef.name.toRaw() == gf.name.toRaw()) {
                         found = true;
                         const res = self.assignable(gf.ty, ef.ty);
-                        if (res != .success) return res;
+                        if (res != .success)
+                            return .{ .struct_field_type_mismatch = .{
+                                .index = i,
+                                .tag_index = @intFromEnum(res),
+                            } };
                         break;
                     }
                 }
@@ -1547,7 +1564,7 @@ fn tryTypeCoercion(
             ast_unit.type_info.expr_types.items[decl.value.toRaw()] = expect_ty.?;
         },
         .failure => try self.context.diags.addError(exprLoc(ast_unit, decl), .type_annotation_mismatch, .{}),
-        inline else => |x| {
+        inline else => |_, x| {
             const diag_code = @field(diag.DiagnosticCode, @tagName(x));
             try self.context.diags.addError(exprLoc(ast_unit, decl), diag_code, .{});
         },
@@ -3195,6 +3212,12 @@ fn checkStructLit(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, id: 
         },
         .union_empty_literal => {
             try self.context.diags.addError(exprLoc(ast_unit, struct_lit), .union_empty_literal, .{});
+            return self.context.type_store.tTypeError();
+        },
+        .struct_field_type_mismatch => |err| {
+            const f = ast_unit.exprs.StructFieldValue.get(lit_fields[err.index]);
+            const loc = ast_unit.exprs.locs.get(f.loc);
+            try self.context.diags.addError(loc, .struct_field_type_mismatch, .{});
             return self.context.type_store.tTypeError();
         },
         else => {

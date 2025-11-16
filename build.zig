@@ -45,7 +45,7 @@ pub fn build(b: *std.Build) void {
     });
 
     const exe = b.addExecutable(.{
-        .name = "sr_lang",
+        .name = if (optimize != .Debug) "src" else "sr_lang",
         .root_module = b.createModule(.{
             .root_source_file = b.path("src/main.zig"),
             .target = target,

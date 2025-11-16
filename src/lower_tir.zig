@@ -2620,6 +2620,55 @@ fn lowerArrayLit(
             if (expected_ty) |want| return self.emitCoerce(blk, v, ty0, want, loc);
             return v;
         },
+        .Slice => {
+            const slice_ty = self.context.type_store.get(.Slice, ty0);
+            const elem_ty = slice_ty.elem;
+            const ptr_ty = self.context.type_store.mkPtr(elem_ty, false);
+            const usize_ty = self.context.type_store.tUsize();
+            const ids = a.exprs.expr_pool.slice(row.elems);
+
+            if (ids.len == 0) {
+                const null_ptr = blk.builder.constNull(blk, ptr_ty, loc);
+                const zero = blk.builder.tirValue(.ConstInt, blk, usize_ty, loc, .{ .value = 0 });
+                const slice_val = blk.builder.structMake(blk, ty0, &[_]tir.Rows.StructFieldInit{
+                    .{ .index = 0, .name = .none(), .value = null_ptr },
+                    .{ .index = 1, .name = .none(), .value = zero },
+                }, loc);
+                if (expected_ty) |want| return self.emitCoerce(blk, slice_val, ty0, want, loc);
+                return slice_val;
+            }
+
+            const elem_size = check_types.typeSize(self.context, elem_ty);
+
+            var elems = try self.gpa.alloc(tir.ValueId, ids.len);
+            defer self.gpa.free(elems);
+            var i: usize = 0;
+            while (i < ids.len) : (i += 1) {
+                elems[i] = try self.lowerExpr(ctx, a, env, f, blk, ids[i], elem_ty, .rvalue);
+            }
+
+            const total_bytes: u64 = @intCast(elem_size * ids.len);
+            const bytes_const = blk.builder.tirValue(.ConstInt, blk, usize_ty, loc, .{ .value = total_bytes });
+            const raw_ptr = self.callRuntimeAllocPtr(blk, bytes_const, loc);
+            const data_ptr = blk.builder.tirValue(.CastBit, blk, ptr_ty, loc, .{ .value = raw_ptr });
+
+            var idx: usize = 0;
+            while (idx < elems.len) : (idx += 1) {
+                const idx_u64 = std.math.cast(u64, idx) orelse unreachable;
+                const offset = blk.builder.gepConst(idx_u64);
+                const elem_ptr = blk.builder.gep(blk, ptr_ty, data_ptr, &.{offset}, loc);
+                _ = blk.builder.tirValue(.Store, blk, elem_ty, loc, .{ .ptr = elem_ptr, .value = elems[idx], .@"align" = 0 });
+            }
+
+            const len_u64 = std.math.cast(u64, ids.len) orelse unreachable;
+            const len_const = blk.builder.tirValue(.ConstInt, blk, usize_ty, loc, .{ .value = len_u64 });
+            const slice_val = blk.builder.structMake(blk, ty0, &[_]tir.Rows.StructFieldInit{
+                .{ .index = 0, .name = .none(), .value = data_ptr },
+                .{ .index = 1, .name = .none(), .value = len_const },
+            }, loc);
+            if (expected_ty) |want| return self.emitCoerce(blk, slice_val, ty0, want, loc);
+            return slice_val;
+        },
         .DynArray => {
             const dyn_ty = self.context.type_store.get(.DynArray, ty0);
             const elem_ty = dyn_ty.elem;
