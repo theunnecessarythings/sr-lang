@@ -20,25 +20,66 @@ pub const ComptimeApi = struct {
     type_of: *const fn (context: ?*anyopaque, expr_id: u32) callconv(.c) u32,
 };
 
+pub const FunctionValue = struct {
+    expr: ast.ExprId,
+};
+
+pub const Sequence = struct {
+    values: std.ArrayList(ComptimeValue),
+};
+
+pub const StructField = struct {
+    name: ast.StrId,
+    value: ComptimeValue,
+};
+
+pub const StructValue = struct {
+    fields: std.ArrayList(StructField),
+    owner: ?ast.StrId,
+};
+
+pub const RangeValue = struct {
+    start: i128,
+    end: i128,
+    inclusive: bool,
+};
+
 pub const ComptimeValue = union(enum) {
     Void,
     Int: i128,
     Float: f64,
     Bool: bool,
     String: []const u8,
+    Sequence: Sequence,
+    Struct: StructValue,
+    Range: RangeValue,
     Type: types.TypeId,
     MlirType: mlir.Type,
     MlirAttribute: mlir.Attribute,
     MlirModule: mlir.Module,
+    Function: FunctionValue,
 
     pub fn destroy(self: *ComptimeValue, gpa: std.mem.Allocator) void {
         switch (self.*) {
             .String => |s| {
                 gpa.free(s);
             },
+            .Sequence => |*seq| {
+                for (seq.values.items) |*item| {
+                    item.destroy(gpa);
+                }
+                seq.values.deinit(gpa);
+            },
+            .Struct => |*sv| {
+                for (sv.fields.items) |*field| {
+                    field.value.destroy(gpa);
+                }
+                sv.fields.deinit(gpa);
+            },
             .MlirModule => |*mod| {
                 mod.destroy();
             },
+            .Function => |_| {},
             else => {},
         }
         self.* = .Void;
@@ -636,6 +677,7 @@ pub fn jitEvalComptimeBlock(
         .MlirType => blk.builder.tirValue(.ConstUndef, blk, result_ty, loc, .{}),
         .MlirAttribute => blk.builder.tirValue(.ConstUndef, blk, result_ty, loc, .{}),
         .MlirModule => blk.builder.tirValue(.ConstUndef, blk, result_ty, loc, .{}),
+        else => @panic("unimplemented"),
     };
 }
 
@@ -680,6 +722,10 @@ pub fn constValueFromComptime(
         .Bool => |val| blk.builder.tirValue(.ConstBool, blk, ty, tir.OptLocId.none(), .{ .value = val }),
         .Void => blk.builder.tirValue(.ConstUndef, blk, ty, tir.OptLocId.none(), .{}),
         .String => |s| blk.builder.tirValue(.ConstString, blk, ty, tir.OptLocId.none(), .{ .text = blk.builder.intern(s) }),
+        .Sequence => return error.UnsupportedComptimeType,
+        .Struct => return error.UnsupportedComptimeType,
+        .Range => return error.UnsupportedComptimeType,
+        .Function => return error.UnsupportedComptimeType,
         .Type => return error.UnsupportedComptimeType,
         .MlirType => blk.builder.tirValue(.ConstUndef, blk, ty, tir.OptLocId.none(), .{}),
         .MlirAttribute => blk.builder.tirValue(.ConstUndef, blk, ty, tir.OptLocId.none(), .{}),
@@ -687,13 +733,32 @@ pub fn constValueFromComptime(
     };
 }
 
-pub fn cloneComptimeValue(self: *LowerTir, value: ComptimeValue) !ComptimeValue {
+pub fn cloneComptimeValue(gpa: std.mem.Allocator, value: ComptimeValue) !ComptimeValue {
     return switch (value) {
         .Void => .Void,
         .Int => |v| .{ .Int = v },
         .Float => |v| .{ .Float = v },
         .Bool => |v| .{ .Bool = v },
-        .String => |s| .{ .String = try self.gpa.dupe(u8, s) },
+        .String => |s| .{ .String = try gpa.dupe(u8, s) },
+        .Sequence => |seq| blk: {
+            var values = std.ArrayList(ComptimeValue){};
+            try values.resize(gpa, seq.values.items.len);
+            for (seq.values.items, 0..) |item, idx| {
+                values.items[idx] = try cloneComptimeValue(gpa, item);
+            }
+            break :blk .{ .Sequence = .{ .values = values } };
+        },
+        .Struct => |sv| blk: {
+            var fields = std.ArrayList(StructField){};
+            try fields.resize(gpa, sv.fields.items.len);
+            for (sv.fields.items, 0..) |item, idx| {
+                fields.items[idx] = StructField{
+                    .name = item.name,
+                    .value = try cloneComptimeValue(gpa, item.value),
+                };
+            }
+            break :blk .{ .Struct = .{ .fields = fields, .owner = sv.owner } };
+        },
         .Type => |ty| .{ .Type = ty },
         .MlirType => |ty| .{ .MlirType = ty },
         .MlirAttribute => |attr| .{ .MlirAttribute = attr },
@@ -701,6 +766,8 @@ pub fn cloneComptimeValue(self: *LowerTir, value: ComptimeValue) !ComptimeValue 
             const cloned_op = mlir.Operation.clone(mod.getOperation());
             break :blk .{ .MlirModule = mlir.Module.fromOperation(cloned_op) };
         },
+        .Range => |rng| .{ .Range = rng },
+        .Function => |func| .{ .Function = func },
     };
 }
 
@@ -731,6 +798,29 @@ fn hashComptimeValue(value: ComptimeValue) u64 {
         .MlirType => |ty| hasher.update(std.mem.asBytes(&ty.handle)),
         .MlirAttribute => |attr| hasher.update(std.mem.asBytes(&attr.handle)),
         .MlirModule => |mod| hasher.update(std.mem.asBytes(&mod.handle)),
+        .Sequence => |seq| {
+            hasher.update(std.mem.asBytes(&seq.values.items.len));
+            var idx: usize = 0;
+            while (idx < seq.values.items.len) : (idx += 1) {
+                const child_hash = hashComptimeValue(seq.values.items[idx]);
+                hasher.update(std.mem.asBytes(&child_hash));
+            }
+        },
+        .Struct => |sv| {
+            hasher.update(std.mem.asBytes(&sv.fields.items.len));
+            var idx: usize = 0;
+            while (idx < sv.fields.items.len) : (idx += 1) {
+                hasher.update(std.mem.asBytes(&sv.fields.items[idx].name));
+                const child_hash = hashComptimeValue(sv.fields.items[idx].value);
+                hasher.update(std.mem.asBytes(&child_hash));
+            }
+            if (sv.owner) |owner| hasher.update(std.mem.asBytes(&owner));
+        },
+        .Function => |func| {
+            const raw: u32 = func.expr.toRaw();
+            hasher.update(std.mem.asBytes(&raw));
+        },
+        .Range => |rng| hasher.update(std.mem.asBytes(&.{ rng.start, rng.end, rng.inclusive })),
     }
     return hasher.final();
 }

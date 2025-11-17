@@ -578,7 +578,7 @@ fn resolveMlirSpliceValue(
                 i -= 1;
                 const context = &ctx.monomorph_context_stack.items[i];
                 if (context.lookupValue(param_info.name)) |binding| {
-                    return comp.cloneComptimeValue(self, binding.value);
+                    return comp.cloneComptimeValue(self.gpa, binding.value);
                 }
             }
             try self.context.diags.addError(diag_loc, .mlir_splice_unbound, .{name_str});
@@ -610,6 +610,50 @@ pub fn resolveArrayLen(
     size_expr: ast.ExprId,
     loc: tir.OptLocId,
 ) !usize {
+    // Fast path for literals
+    if (a.exprs.index.kinds.items[size_expr.toRaw()] == .Literal) {
+        const lit = a.exprs.get(.Literal, size_expr);
+        if (lit.kind == .int) {
+            const info = switch (lit.data) {
+                .int => |i| i,
+                else => null,
+            };
+            if (info) |inf| {
+                if (inf.valid) {
+                    return @intCast(inf.value);
+                }
+            }
+        }
+    }
+    // Fast path for simple constant identifiers
+    if (a.exprs.index.kinds.items[size_expr.toRaw()] == .Ident) {
+        const name = a.exprs.get(.Ident, size_expr).name;
+        const checker_ctx = self.chk.checker_ctx.items[a.file_id];
+        if (self.chk.lookup(checker_ctx, name)) |sid| {
+            const sym = checker_ctx.symtab.syms.get(sid);
+            if (!sym.origin_decl.isNone()) {
+                const did = sym.origin_decl.unwrap();
+                const d = a.exprs.Decl.get(did);
+                if (d.flags.is_const) {
+                    if (a.exprs.index.kinds.items[d.value.toRaw()] == .Literal) {
+                        const lit = a.exprs.get(.Literal, d.value);
+                        if (lit.kind == .int) {
+                            const info = switch (lit.data) {
+                                .int => |i| i,
+                                else => null,
+                            };
+                            if (info) |inf| {
+                                if (inf.valid) {
+                                    return @intCast(inf.value);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     const comptime_val = comp.runComptimeExpr(self, ctx, a, size_expr, self.context.type_store.tUsize(), &.{}) catch {
         try self.context.diags.addError(a.exprs.locs.get(loc.unwrap()), .array_size_not_integer_literal, .{});
         return error.ComptimeEvalFailed;
@@ -1125,7 +1169,8 @@ fn lowerDecl(
     const drow = a.stmts.get(.Decl, sid);
     const d = a.exprs.Decl.get(drow.decl);
     const value_ty = self.getExprType(ctx, a, d.value);
-    const decl_ty = getDeclType(a, drow.decl) orelse value_ty;
+    var decl_ty = getDeclType(a, drow.decl) orelse value_ty;
+    decl_ty = try self.resolveArrayLengthsInType(ctx, a, decl_ty, optLoc(a, sid));
     if (!d.pattern.isNone()) {
         // Destructure once for all names: bind as values for const, or slots for mut.
         try self.destructureDeclFromExpr(ctx, a, env, f, blk, d.pattern.unwrap(), d.value, decl_ty, !d.flags.is_const);
@@ -4201,6 +4246,74 @@ fn lowerCast(
     return out;
 }
 
+fn resolveArrayLengthsInType(self: *LowerTir, ctx: *LowerContext, a: *ast.Ast, ty: types.TypeId, loc: tir.OptLocId) !types.TypeId {
+    const kind = self.context.type_store.getKind(ty);
+    return switch (kind) {
+        .Array => blk: {
+            const arr_ty = self.context.type_store.get(.Array, ty);
+            const elem_ty = try self.resolveArrayLengthsInType(ctx, a, arr_ty.elem, loc);
+            switch (arr_ty.len) {
+                .Unresolved => |len_expr| {
+                    const resolved_len = try self.resolveArrayLen(ctx, a, len_expr, loc);
+                    break :blk self.context.type_store.mkArray(elem_ty, .{ .Concrete = resolved_len });
+                },
+                .Concrete => {
+                    if (elem_ty.toRaw() == arr_ty.elem.toRaw()) break :blk ty;
+                    break :blk self.context.type_store.mkArray(elem_ty, arr_ty.len);
+                },
+            }
+        },
+        .Struct => blk: {
+            const struct_ty = self.context.type_store.get(.Struct, ty);
+            const fields = self.context.type_store.field_pool.slice(struct_ty.fields);
+            var new_fields = try self.gpa.alloc(types.TypeStore.StructFieldArg, fields.len);
+            defer self.gpa.free(new_fields);
+            var changed = false;
+            for (fields, 0..) |field_id, i| {
+                const field = self.context.type_store.Field.get(field_id);
+                const new_field_ty = try self.resolveArrayLengthsInType(ctx, a, field.ty, loc);
+                if (new_field_ty.toRaw() != field.ty.toRaw()) {
+                    changed = true;
+                }
+                new_fields[i] = .{ .name = field.name, .ty = new_field_ty };
+            }
+            if (changed) {
+                break :blk self.context.type_store.mkStruct(new_fields);
+            } else {
+                break :blk ty;
+            }
+        },
+        .Tuple => blk: {
+            const tuple_ty = self.context.type_store.get(.Tuple, ty);
+            const elems = self.context.type_store.type_pool.slice(tuple_ty.elems);
+            var new_elems = try self.gpa.alloc(types.TypeId, elems.len);
+            defer self.gpa.free(new_elems);
+            var changed = false;
+            for (elems, 0..) |elem_ty, i| {
+                const new_elem_ty = try self.resolveArrayLengthsInType(ctx, a, elem_ty, loc);
+                if (new_elem_ty.toRaw() != elem_ty.toRaw()) {
+                    changed = true;
+                }
+                new_elems[i] = new_elem_ty;
+            }
+            if (changed) {
+                break :blk self.context.type_store.mkTuple(new_elems);
+            } else {
+                break :blk ty;
+            }
+        },
+        .Optional => blk: {
+            const opt_ty = self.context.type_store.get(.Optional, ty);
+            const new_elem_ty = try self.resolveArrayLengthsInType(ctx, a, opt_ty.elem, loc);
+            if (new_elem_ty.toRaw() != opt_ty.elem.toRaw()) {
+                break :blk self.context.type_store.mkOptional(new_elem_ty);
+            }
+            break :blk ty;
+        },
+        else => return ty,
+    };
+}
+
 pub fn lowerExpr(
     self: *LowerTir,
     ctx: *LowerContext,
@@ -4225,7 +4338,8 @@ pub fn lowerExpr(
         .Literal => self.lowerLiteral(ctx, a, blk, id, expected_ty),
         .NullLit => {
             const loc = optLoc(a, id);
-            const ty0 = self.getExprType(ctx, a, id);
+            var ty0 = self.getExprType(ctx, a, id);
+            ty0 = try self.resolveArrayLengthsInType(ctx, a, ty0, loc);
             const v = blk.builder.constNull(blk, ty0, loc);
             if (expected_ty) |want| return self.emitCoerce(blk, v, ty0, want, loc);
             return v;
@@ -4234,7 +4348,8 @@ pub fn lowerExpr(
             const loc = optLoc(a, id);
             // If a target type is known, materialize a typed zero of that type.
             // Otherwise, produce an undef of type Any to avoid Undef-typed IR.
-            if (expected_ty) |want| {
+            if (expected_ty) |want_raw| {
+                const want = try self.resolveArrayLengthsInType(ctx, a, want_raw, loc);
                 const v = blk.builder.constNull(blk, want, loc);
                 return v;
             } else {

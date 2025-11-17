@@ -12,12 +12,12 @@ const Colors = struct {
     pub const green = "\x1b[32m";
 };
 
-const CliArgs = struct {
-    subcommand: Subcommand,
-    filename: ?[]const u8 = null,
-    output_path: ?[]const u8 = null,
-    emit_mlir: bool = false,
-    run_mlir: bool = false,
+    const CliArgs = struct {
+        subcommand: Subcommand,
+        filename: ?[]const u8 = null,
+        output_path: ?[]const u8 = null,
+        emit_mlir: bool = false,
+        run_mlir: bool = false,
     no_color: bool = false,
     verbose: bool = false,
     optimization_level: ?[]const u8 = null,
@@ -34,6 +34,7 @@ const CliArgs = struct {
         tir_liveness,
         help,
         lex,
+        interpret,
         mlir,
         mlir_passes,
         llvm_passes,
@@ -64,6 +65,7 @@ fn printUsage(writer: anytype, exec_name: []const u8) !void {
     try writer.print("  {s}cst{s}     <file>      Print the Concrete Syntax Tree (CST) of a source file.\n", .{ Colors.cyan, Colors.reset });
     try writer.print("  {s}tir{s}     <file>      Print the Typed Intermediate Representation (TIR) of a source file.\n", .{ Colors.cyan, Colors.reset });
     try writer.print("  {s}tir-liveness{s} <file> Analyze and dump TIR liveness per block.\n", .{ Colors.cyan, Colors.reset });
+    try writer.print("  {s}interpret{s} <file>  Run the comptime interpreter stage to evaluate comptime blocks.\n", .{ Colors.cyan, Colors.reset });
     try writer.print("  {s}mlir{s}     <file>      Print the MLIR representation of a source file.\n", .{ Colors.cyan, Colors.reset });
     try writer.print("  {s}mlir_passes{s} <file>  Run MLIR pipeline (print after passes).\n", .{ Colors.cyan, Colors.reset });
     try writer.print("  {s}llvm_passes{s} <file>  Run LLVM IR pipeline (print after passes).\n", .{ Colors.cyan, Colors.reset });
@@ -313,6 +315,7 @@ fn process_file(
         .tir_liveness => .tir_liveness,
         .lex => .lex,
         .mlir => .mlir,
+        .interpret => .interpret,
         .mlir_passes => .passes,
         .llvm_passes => .llvm_passes,
         .pretty_print => .ast,
@@ -357,6 +360,13 @@ fn process_file(
                 try cst_printer.printProgram(&cst.program);
             }
         }
+        if (compiler_ctx.diags.count() > 0) {
+            try compiler_ctx.diags.emitStyled(compiler_ctx, err_writer, !cli_args.no_color);
+        }
+        try out_writer.flush();
+        return;
+    }
+    if (cli_args.subcommand == .interpret) {
         if (compiler_ctx.diags.count() > 0) {
             try compiler_ctx.diags.emitStyled(compiler_ctx, err_writer, !cli_args.no_color);
         }
@@ -498,6 +508,8 @@ pub fn main() !void {
                     cli_args.subcommand = .mlir;
                 } else if (std.mem.eql(u8, arg, "mlir_passes")) {
                     cli_args.subcommand = .mlir_passes;
+                } else if (std.mem.eql(u8, arg, "interpret")) {
+                    cli_args.subcommand = .interpret;
                 } else if (std.mem.eql(u8, arg, "llvm_passes")) {
                     cli_args.subcommand = .llvm_passes;
                 } else if (std.mem.eql(u8, arg, "pretty-print")) {
@@ -569,6 +581,19 @@ pub fn main() !void {
             try printUsage(out_writer, exec_name);
         },
         .compile, .mlir, .mlir_passes, .llvm_passes, .run, .check, .ast, .cst, .tir, .tir_liveness, .lex, .pretty_print, .json_ast => {
+            if (cli_args.filename == null) {
+                try writer.print("{s}Error:{s} Missing source file for '{s}' command.\n", .{ Colors.red, Colors.reset, @tagName(cli_args.subcommand) });
+                try printUsage(writer, exec_name);
+                std.process.exit(1);
+            }
+            process_file(&compiler_ctx, gpa, cli_args.filename.?, &cli_args, writer, out_writer, link_args_list.items) catch |e| {
+                if (compiler_ctx.diags.anyErrors()) {
+                    try compiler_ctx.diags.emitStyled(&compiler_ctx, writer, !cli_args.no_color);
+                }
+                return e;
+            };
+        },
+        .interpret => {
             if (cli_args.filename == null) {
                 try writer.print("{s}Error:{s} Missing source file for '{s}' command.\n", .{ Colors.red, Colors.reset, @tagName(cli_args.subcommand) });
                 try printUsage(writer, exec_name);

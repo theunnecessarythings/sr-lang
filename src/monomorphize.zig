@@ -11,11 +11,11 @@ pub const BindingValue = struct {
     value: comp.ComptimeValue,
 
     pub fn init(gpa: std.mem.Allocator, ty: types.TypeId, value: comp.ComptimeValue) !BindingValue {
-        return .{ .ty = ty, .value = try cloneComptimeValue(gpa, value) };
+        return .{ .ty = ty, .value = try comp.cloneComptimeValue(gpa, value) };
     }
 
     fn clone(self: BindingValue, gpa: std.mem.Allocator) !BindingValue {
-        return .{ .ty = self.ty, .value = try cloneComptimeValue(gpa, self.value) };
+        return .{ .ty = self.ty, .value = try comp.cloneComptimeValue(gpa, self.value) };
     }
 
     fn deinit(self: *BindingValue, gpa: std.mem.Allocator) void {
@@ -96,35 +96,8 @@ pub const Binding = struct {
     }
 };
 
-fn cloneComptimeValue(gpa: std.mem.Allocator, value: comp.ComptimeValue) !comp.ComptimeValue {
-    return switch (value) {
-        .Void => .Void,
-        .Int => |v| .{ .Int = v },
-        .Float => |v| .{ .Float = v },
-        .Bool => |v| .{ .Bool = v },
-        .String => |s| .{ .String = try gpa.dupe(u8, s) },
-        .Type => |ty| .{ .Type = ty },
-        .MlirType => |ty| .{ .MlirType = ty },
-        .MlirAttribute => |attr| .{ .MlirAttribute = attr },
-        .MlirModule => |mod| blk: {
-            const cloned_op = mlir.Operation.clone(mod.getOperation());
-            break :blk .{ .MlirModule = mlir.Module.fromOperation(cloned_op) };
-        },
-    };
-}
-
 fn destroyComptimeValue(gpa: std.mem.Allocator, value: *comp.ComptimeValue) void {
-    switch (value.*) {
-        .String => |s| {
-            const mut: []u8 = @constCast(s);
-            gpa.free(mut);
-        },
-        .MlirModule => |*mod| {
-            mod.destroy();
-        },
-        else => {},
-    }
-    value.* = .Void;
+    value.destroy(gpa);
 }
 
 pub const MonomorphizationContext = struct {
@@ -272,6 +245,32 @@ pub const Monomorphizer = struct {
             .MlirModule => |mod| {
                 const ptr_val: usize = if (mod.handle.ptr) |p| @intFromPtr(p) else 0;
                 hasher.update(std.mem.asBytes(&ptr_val));
+            },
+            .Function => |func| {
+                const raw: u32 = func.expr.toRaw();
+                hasher.update(std.mem.asBytes(&raw));
+            },
+            .Sequence => |seq| {
+                hasher.update(std.mem.asBytes(&seq.values.items.len));
+                var idx: usize = 0;
+                while (idx < seq.values.items.len) : (idx += 1) {
+                    hashComptimeValue(hasher, seq.values.items[idx]);
+                }
+            },
+            .Struct => |sv| {
+                hasher.update(std.mem.asBytes(&sv.fields.items.len));
+                var idx: usize = 0;
+                while (idx < sv.fields.items.len) : (idx += 1) {
+                    hasher.update(std.mem.asBytes(&sv.fields.items[idx].name));
+                    hashComptimeValue(hasher, sv.fields.items[idx].value);
+                }
+                if (sv.owner) |owner| hasher.update(std.mem.asBytes(&owner));
+            },
+            .Range => |rng| {
+                hasher.update(std.mem.asBytes(&rng.start));
+                hasher.update(std.mem.asBytes(&rng.end));
+                const flag: u8 = if (rng.inclusive) 1 else 0;
+                hasher.update(std.mem.asBytes(&flag));
             },
         }
     }

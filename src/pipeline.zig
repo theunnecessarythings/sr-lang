@@ -11,6 +11,7 @@ const Loc = lexer_mod.Token.Loc;
 const Parser = @import("parser.zig").Parser;
 const types = @import("types.zig");
 const comp = @import("comptime.zig");
+const interpreter = @import("interpreter.zig");
 const codegen = @import("codegen_main.zig");
 const mlir = @import("mlir_bindings.zig");
 const compile = @import("compile.zig");
@@ -47,6 +48,7 @@ pub const Pipeline = struct {
         jit,
         compile,
         run,
+        interpret,
 
         repl,
     };
@@ -327,6 +329,11 @@ pub const Pipeline = struct {
             return .{ .compilation_unit = self.context.compilation_unit };
         }
 
+        if (mode == .interpret) {
+            try runInterpreterStage(self);
+            return .{ .compilation_unit = self.context.compilation_unit };
+        }
+
         var tir_lowerer = lower_tir.LowerTir.init(self.allocator, self.context, self, &chk);
         defer tir_lowerer.deinit();
 
@@ -503,4 +510,71 @@ fn declareName(ast: *const ast_mod.Ast) ?[]const u8 {
     if (ast.unit.package_name.isNone()) return null;
     const sid = ast.unit.package_name.unwrap();
     return ast.exprs.strs.get(sid);
+}
+
+fn runInterpreterStage(self: *Pipeline) anyerror!void {
+    var found_any: bool = false;
+    var pkg_iter = self.context.compilation_unit.packages.iterator();
+    while (pkg_iter.next()) |pkg| {
+        var src_iter = pkg.value_ptr.sources.iterator();
+        while (src_iter.next()) |unit| {
+            if (unit.value_ptr.ast) |ast_unit| {
+                const found = try interpretAstUnit(self, ast_unit);
+                found_any = found_any or found;
+            }
+        }
+    }
+    if (!found_any) {
+        std.debug.print("Interpreter stage: no comptime blocks found in ASTs\n", .{});
+    }
+}
+
+fn interpretAstUnit(self: *Pipeline, ast_unit: *ast_mod.Ast) anyerror!bool {
+    var interp = try interpreter.Interpreter.init(self.allocator, ast_unit);
+    defer interp.deinit();
+
+    var found_block = false;
+    const decl_ids = ast_unit.exprs.decl_pool.slice(ast_unit.unit.decls);
+    for (decl_ids) |decl_id| {
+        const decl = ast_unit.exprs.Decl.get(decl_id);
+        var result = interp.evalExpr(decl.value) catch |err| switch (err) {
+            interpreter.Interpreter.Error.UnsupportedExpr => continue,
+            interpreter.Interpreter.Error.InvalidStatement => continue,
+            else => return err,
+        };
+        found_block = true;
+        if (decl.pattern.isNone()) {
+            // no binding to register
+        } else {
+            const pat_id = decl.pattern.unwrap();
+            if (ast_unit.pats.index.kinds.items[pat_id.toRaw()] == .Binding) {
+                const binding = ast_unit.pats.get(.Binding, pat_id);
+                const bound_value = try interp.cloneValue(result);
+                try interp.setBinding(binding.name, bound_value);
+            }
+        }
+        std.debug.print("Interpreter: decl {d} -> ", .{decl_id.toRaw()});
+        printComptimeValue(&result);
+        std.debug.print("\n", .{});
+        result.destroy(self.allocator);
+    }
+    return found_block;
+}
+
+fn printComptimeValue(value: *const comp.ComptimeValue) void {
+    switch (value.*) {
+        .Void => std.debug.print("<void>", .{}),
+        .Int => |i| std.debug.print("{d}", .{i}),
+        .Float => |f| std.debug.print("{}", .{f}),
+        .Bool => |b| std.debug.print("{s}", .{if (b) "true" else "false"}),
+        .String => |s| std.debug.print("\"{s}\"", .{s}),
+        .Sequence => |seq| std.debug.print("<sequence len={d}>", .{seq.values.items.len}),
+        .Struct => |sv| std.debug.print("<struct len={d}>", .{sv.fields.items.len}),
+        .Range => |rg| std.debug.print("range({d}..{d}{s})", .{ rg.start, rg.end, if (rg.inclusive) "=" else "" }),
+        .Type => |ty| std.debug.print("type({d})", .{ty.toRaw()}),
+        .MlirType => std.debug.print("<mlir-type>", .{}),
+        .MlirAttribute => std.debug.print("<mlir-attribute>", .{}),
+        .MlirModule => std.debug.print("<mlir-module>", .{}),
+        .Function => std.debug.print("<function>", .{}),
+    }
 }

@@ -658,6 +658,14 @@ pub fn typeFromTypeExpr(self: *Checker, ctx: *Checker.CheckerContext, ast_unit: 
         .ArrayType => blk_at: {
             const row = ast_unit.exprs.get(.ArrayType, id);
             const res = try typeFromTypeExpr(self, ctx, ast_unit, row.elem);
+            if (!res[0]) {
+                const elem_kind = ast_unit.exprs.index.kinds.items[row.elem.toRaw()];
+                const loc = switch (elem_kind) {
+                    inline else => |kind| ast_unit.exprs.get(kind, row.elem).loc,
+                };
+                try self.context.diags.addError(ast_unit.exprs.locs.get(loc), .type_value_mismatch, .{});
+                return .{ false, ts.tTypeError() };
+            }
             status = status and res[0];
             const elem = res[1];
             const size_expr_kind = ast_unit.exprs.index.kinds.items[row.size.toRaw()];

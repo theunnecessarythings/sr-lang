@@ -264,6 +264,18 @@ fn appendMlirSpliceValue(
         .String => |s| {
             try buf.appendSlice(s);
         },
+        .Sequence => |seq| {
+            var writer = buf.writer();
+            try writer.print("[sequence len={d}]", .{seq.values.items.len});
+        },
+        .Struct => |sv| {
+            var writer = buf.writer();
+            try writer.print("<struct len={d}>", .{sv.fields.items.len});
+        },
+        .Range => |rg| {
+            var writer = buf.writer();
+            try writer.print("range({d}..{d}{s})", .{ rg.start, rg.end, if (rg.inclusive) "=" else "" });
+        },
         .Type => |ty| {
             const writer = buf.writer();
             try self.context.type_store.fmt(ty, writer);
@@ -271,6 +283,7 @@ fn appendMlirSpliceValue(
         .MlirType => |ty| try self.appendMlirTypeText(buf, ty),
         .MlirAttribute => |attr| try self.appendMlirAttributeText(buf, attr),
         .MlirModule => |module| try self.appendMlirModuleText(buf, module),
+        .Function => |_| return error.MlirSpliceMissingValue,
     }
 }
 
@@ -5148,6 +5161,7 @@ pub fn llvmTypeOf(self: *Codegen, ty: types.TypeId) !mlir.Type {
         },
 
         .TypeType, .Ast => return self.llvm_ptr_ty,
+        .TypeError => return error.CompilationFailed,
         else => std.debug.panic("unhandled type: {}", .{self.context.type_store.getKind(ty)}),
     };
 }
