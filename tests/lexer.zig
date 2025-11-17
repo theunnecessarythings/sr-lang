@@ -723,6 +723,8 @@ test "mlir block" {
         .lcurly,
         .identifier,
         .invalid,
+        .rcurly,
+        .rcurly,
     });
 }
 

@@ -344,7 +344,7 @@ pub const Rows = struct {
     pub const Tuple = struct { elems: RangeType };
     pub const Function = struct { params: RangeType, result: TypeId, is_variadic: bool, is_pure: bool, is_extern: bool };
     pub const Field = struct { name: StrId, ty: TypeId };
-    pub const EnumMember = struct { name: StrId, value: u64 };
+    pub const EnumMember = struct { name: StrId, value: i64 };
     pub const Struct = struct { fields: RangeField };
     pub const Union = struct { fields: RangeField };
     pub const Enum = struct { members: RangeEnumMember, tag_type: TypeId };
@@ -858,7 +858,7 @@ pub const TypeStore = struct {
         const r = self.type_pool.pushMany(self.gpa, params_copy);
         return self.addLocked(.Function, .{ .params = r, .result = result, .is_variadic = is_variadic, .is_pure = is_pure, .is_extern = is_extern });
     }
-    pub const EnumMemberArg = struct { name: StrId, value: u64 };
+    pub const EnumMemberArg = struct { name: StrId, value: i64 };
     pub fn mkEnum(self: *TypeStore, members: []const EnumMemberArg, tag_type: TypeId) TypeId {
         self.mutex.lock();
         defer self.mutex.unlock();

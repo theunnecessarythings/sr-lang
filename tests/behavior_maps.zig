@@ -48,3 +48,13 @@ test "composite_types: removing map elements" {
     const code = getSource("", src);
     try runCompilerTest(code, "Map size after remove: 1\n");
 }
+
+test "map in" {
+    const src =
+        \\m: [string:i32] = ["one": 1, "two": 2];
+        \\printf("one exists: %d\n", "one" in m);
+    ;
+
+    const code = getSource("", src);
+    try runCompilerTest(code, "one exists: 1\n");
+}

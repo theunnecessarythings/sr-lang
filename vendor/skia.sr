@@ -287,7 +287,7 @@ Canvas.draw_image :: proc(self: *Canvas, image: *Image, x: f32, y: f32) {
 }
 
 Canvas.draw_text :: proc(self: *Canvas, text: string, x: f32, y: f32, font: *Font, paint: *Paint) {
-    skiac.skiac_sk_canvas_draw_text(self.canvas, text, x, y, font.font, paint.paint)
+    skiac.skiac_sk_canvas_draw_text(self.canvas, text.ptr, x, y, font.font, paint.paint)
 }
 
 Canvas.draw_rrect :: proc(self: *Canvas, rect: *Rect, rx: f32, ry: f32, paint: *Paint) {
@@ -484,7 +484,7 @@ Paint.set_path_effect :: proc(self: *Paint, pe: *PathEffect) { skiac.skiac_sk_pa
 Paint.set_mask_filter :: proc(self: *Paint, mf: *MaskFilter) { skiac.skiac_sk_paint_set_mask_filter(self.paint, mf.mf) }
 
 // Runtime shader
-RuntimeEffect.make_for_shader :: proc(sksl: string) RuntimeEffect { return RuntimeEffect{ e: skiac.skiac_runtime_effect_make_for_shader(sksl) } }
+RuntimeEffect.make_for_shader :: proc(sksl: string) RuntimeEffect { return RuntimeEffect{ e: skiac.skiac_runtime_effect_make_for_shader(sksl.ptr) } }
 RuntimeEffect.is_null :: proc(self: *RuntimeEffect) bool { return self.e.^i64 == 0 }
 RuntimeEffect.uniform_size :: proc(self: *RuntimeEffect) usize { return skiac.skiac_runtime_effect_uniform_size(self.e) }
 RuntimeEffect.unref :: proc(self: *RuntimeEffect) { if self.e.^i64 != 0 { skiac.skiac_runtime_effect_unref(self.e); self.e = 0.^*skiac.SkRuntimeEffect } }
@@ -494,13 +494,13 @@ RuntimeEffect.make_shader :: proc(self: *RuntimeEffect, uniforms: *Data) Shader 
 
 // Font
 Font.new_default :: proc(size: f32) Font { return Font{ font: skiac.skiac_sk_font_create_default(size) } }
-Font.new_from_file :: proc(path: string, size: f32) Font { return Font{ font: skiac.skiac_sk_font_create_from_file(path, size) } }
+Font.new_from_file :: proc(path: string, size: f32) Font { return Font{ font: skiac.skiac_sk_font_create_from_file(path.ptr, size) } }
 Font.is_null :: proc(self: *Font) bool { return self.font.^i64 == 0 }
 Font.reset :: proc(self: *Font) { self.font = 0.^*skiac.SkFont }
 Font.unref :: proc(self: *Font) { if self.font.^i64 != 0 { skiac.skiac_sk_font_unref(self.font); self.reset() } }
 Font.set_size :: proc(self: *Font, size: f32) { skiac.skiac_sk_font_set_size(self.font, size) }
 Font.get_size :: proc(self: *Font) f32 { return skiac.skiac_sk_font_get_size(self.font) }
-Font.measure_text_width :: proc(self: *Font, text: string) f32 { return skiac.skiac_sk_font_measure_text_width_utf8(self.font, text) }
+Font.measure_text_width :: proc(self: *Font, text: string) f32 { return skiac.skiac_sk_font_measure_text_width_utf8(self.font, text.ptr) }
 Font.set_edging :: proc(self: *Font, edging: skiac.SkFontEdging) { skiac.skiac_sk_font_set_edging(self.font, edging) }
 Font.get_edging :: proc(self: *Font) skiac.SkFontEdging { return skiac.skiac_sk_font_get_edging(self.font) }
 Font.set_hinting :: proc(self: *Font, hinting: skiac.SkFontHinting) { skiac.skiac_sk_font_set_hinting(self.font, hinting) }
@@ -511,11 +511,11 @@ Font.set_embolden :: proc(self: *Font, embolden: bool) { skiac.skiac_sk_font_set
 Font.set_baseline_snap :: proc(self: *Font, snap: bool) { skiac.skiac_sk_font_set_baseline_snap(self.font, snap) }
 Font.get_spacing :: proc(self: *Font) f32 { return skiac.skiac_sk_font_get_spacing(self.font) }
 Font.get_metrics :: proc(self: *Font, out: *skiac.FontMetrics) f32 { return skiac.skiac_sk_font_get_metrics(self.font, out) }
-Font.text_to_glyphs_utf8 :: proc(self: *Font, text: string, out_glyphs: *u16, max_glyphs: i32) i32 { return skiac.skiac_sk_font_text_to_glyphs_utf8(self.font, text, out_glyphs, max_glyphs) }
+Font.text_to_glyphs_utf8 :: proc(self: *Font, text: string, out_glyphs: *u16, max_glyphs: i32) i32 { return skiac.skiac_sk_font_text_to_glyphs_utf8(self.font, text.ptr, out_glyphs, max_glyphs) }
 
 // Data
 Data.from_slice :: proc(ptr: *void, len: usize) Data { return Data{ data: skiac.skiac_sk_data_make_with_copy(ptr, len) } }
-Data.from_file :: proc(path: string) Data { return Data{ data: skiac.skiac_sk_data_make_from_file(path) } }
+Data.from_file :: proc(path: string) Data { return Data{ data: skiac.skiac_sk_data_make_from_file(path.ptr) } }
 Data.is_null :: proc(self: *Data) bool { return self.data.^i64 == 0 }
 Data.reset :: proc(self: *Data) { self.data = 0.^*skiac.SkData }
 Data.unref :: proc(self: *Data) { if self.data.^i64 != 0 { skiac.skiac_sk_data_unref(self.data); self.reset() } }

@@ -44,6 +44,8 @@ fn checkProgram(src: [:0]const u8, expected: []const diag.DiagnosticCode) !void 
     defer ctx.deinit(gpa);
     var checker = Checker.init(gpa, &context, &pipeline);
     defer checker.deinit();
+    try checker.checker_ctx.resize(gpa, ast.file_id + 1);
+    checker.checker_ctx.items[ast.file_id] = &ctx;
     try checker.runAst(ast, &ctx);
 
     testing.expectEqual(expected.len, context.diags.count()) catch |err| {
@@ -72,7 +74,7 @@ test "hello world" {
     const src =
         \\ printf :: extern proc(*void, any) i32
         \\ main :: proc() {
-        \\   printf("Hello, World!\n".^*void)
+        \\   printf("Hello, World!\n".ptr.^*void)
         \\ }
     ;
     try checkProgram(src, &.{});

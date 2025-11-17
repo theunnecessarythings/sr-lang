@@ -1,0 +1,3896 @@
+package sdl
+
+
+Sint8 :: i8
+Uint8 :: u8
+Sint16 :: i16
+Uint16 :: u16
+Sint32 :: i32
+Uint32 :: u32
+Sint64 :: i64
+Uint64 :: u64
+
+SDL_GL_CONTEXT_PROFILE_CORE          :: 0x0001  
+SDL_GL_CONTEXT_PROFILE_COMPATIBILITY :: 0x0002  
+SDL_GL_CONTEXT_PROFILE_ES            :: 0x0004  
+
+SDL_WINDOW_FULLSCREEN          :: 0x0000000000000001    
+SDL_WINDOW_OPENGL              :: 0x0000000000000002    
+SDL_WINDOW_OCCLUDED            :: 0x0000000000000004    
+SDL_WINDOW_HIDDEN              :: 0x0000000000000008    
+SDL_WINDOW_BORDERLESS          :: 0x0000000000000010    
+SDL_WINDOW_RESIZABLE           :: 0x0000000000000020    
+SDL_WINDOW_MINIMIZED           :: 0x0000000000000040    
+SDL_WINDOW_MAXIMIZED           :: 0x0000000000000080    
+SDL_WINDOW_MOUSE_GRABBED       :: 0x0000000000000100    
+SDL_WINDOW_INPUT_FOCUS         :: 0x0000000000000200    
+SDL_WINDOW_MOUSE_FOCUS         :: 0x0000000000000400    
+SDL_WINDOW_EXTERNAL            :: 0x0000000000000800    
+SDL_WINDOW_MODAL               :: 0x0000000000001000    
+SDL_WINDOW_HIGH_PIXEL_DENSITY  :: 0x0000000000002000    
+SDL_WINDOW_MOUSE_CAPTURE       :: 0x0000000000004000    
+SDL_WINDOW_MOUSE_RELATIVE_MODE :: 0x0000000000008000    
+SDL_WINDOW_ALWAYS_ON_TOP       :: 0x0000000000010000    
+SDL_WINDOW_UTILITY             :: 0x0000000000020000    
+SDL_WINDOW_TOOLTIP             :: 0x0000000000040000    
+SDL_WINDOW_POPUP_MENU          :: 0x0000000000080000    
+SDL_WINDOW_KEYBOARD_GRABBED    :: 0x0000000000100000    
+SDL_WINDOW_VULKAN              :: 0x0000000010000000    
+SDL_WINDOW_METAL               :: 0x0000000020000000    
+SDL_WINDOW_TRANSPARENT         :: 0x0000000040000000    
+SDL_WINDOW_NOT_FOCUSABLE       :: 0x0000000080000000    
+
+
+
+SDL_Time :: Sint64
+
+wchar_t :: i32
+va_list :: *void
+SDL_CameraID :: u32
+
+SDL_alignment_test :: struct {
+    a: Uint8,
+    b: *void,
+}
+
+SDL_DUMMY_ENUM :: enum (i32) {
+    DUMMY_ENUM_VALUE,
+}
+
+SDL_malloc_func :: fn(size: usize) *void
+SDL_calloc_func :: fn(nmemb: usize, size: usize) *void
+SDL_realloc_func :: fn(mem: *void, size: usize) *void
+SDL_free_func :: fn(mem: *void) void
+SDL_FunctionPointer :: fn() void
+
+SDL_GetOriginalMemoryFunctions :: extern proc(malloc_func: *SDL_malloc_func,
+                                               calloc_func: *SDL_calloc_func,
+                                               realloc_func: *SDL_realloc_func,
+                                               free_func: *SDL_free_func)
+SDL_GetMemoryFunctions :: extern proc(malloc_func: *SDL_malloc_func,
+                                     calloc_func: *SDL_calloc_func,
+                                     realloc_func: *SDL_realloc_func,
+                                     free_func: *SDL_free_func)
+SDL_SetMemoryFunctions :: extern proc(malloc_func: SDL_malloc_func,
+                                    calloc_func: SDL_calloc_func,
+                                    realloc_func: SDL_realloc_func,
+                                    free_func: SDL_free_func) bool
+SDL_aligned_alloc :: extern proc(alignment: usize, size: usize) *void
+SDL_aligned_free :: extern proc(mem: *void)
+SDL_GetNumAllocations :: extern proc() i32
+
+SDL_Environment :: struct {}
+SDL_GetEnvironment :: extern proc() *SDL_Environment
+SDL_CreateEnvironment :: extern proc(populated: bool) *SDL_Environment
+SDL_GetEnvironmentVariable :: extern proc(env: *SDL_Environment, name: *const u8) *const u8
+SDL_GetEnvironmentVariables :: extern proc(env: *SDL_Environment) **u8
+SDL_SetEnvironmentVariable :: extern proc(env: *SDL_Environment, name: *const u8, value: *const u8, overwrite: bool) bool
+SDL_UnsetEnvironmentVariable :: extern proc(env: *SDL_Environment, name: *const u8) bool
+SDL_DestroyEnvironment :: extern proc(env: *SDL_Environment)
+SDL_getenv :: extern proc(name: *const u8) *const u8
+SDL_getenv_unsafe :: extern proc(name: *const u8) *const u8
+SDL_setenv_unsafe :: extern proc(name: *const u8, value: *const u8, overwrite: i32) i32
+SDL_unsetenv_unsafe :: extern proc(name: *const u8) i32
+
+SDL_CompareCallback :: fn(a: *const void, b: *const void) i32
+SDL_qsort :: extern proc(base: *void, nmemb: usize, size: usize, compare: SDL_CompareCallback)
+SDL_bsearch :: extern proc(key: *const void, base: *const void, nmemb: usize, size: usize, compare: SDL_CompareCallback) *void
+SDL_CompareCallback_r :: fn(userdata: *void, a: *const void, b: *const void) i32
+SDL_qsort_r :: extern proc(base: *void, nmemb: usize, size: usize, compare: SDL_CompareCallback_r, userdata: *void)
+SDL_bsearch_r :: extern proc(key: *const void, base: *const void, nmemb: usize, size: usize, compare: SDL_CompareCallback_r, userdata: *void) *void
+
+SDL_abs :: extern proc(x: i32) i32
+SDL_isalpha :: extern proc(x: i32) i32
+SDL_isalnum :: extern proc(x: i32) i32
+SDL_isblank :: extern proc(x: i32) i32
+SDL_iscntrl :: extern proc(x: i32) i32
+SDL_isdigit :: extern proc(x: i32) i32
+SDL_isxdigit :: extern proc(x: i32) i32
+SDL_ispunct :: extern proc(x: i32) i32
+SDL_isspace :: extern proc(x: i32) i32
+SDL_isupper :: extern proc(x: i32) i32
+SDL_islower :: extern proc(x: i32) i32
+SDL_isprint :: extern proc(x: i32) i32
+SDL_isgraph :: extern proc(x: i32) i32
+SDL_toupper :: extern proc(x: i32) i32
+SDL_tolower :: extern proc(x: i32) i32
+
+SDL_crc16 :: extern proc(crc: Uint16, data: *const void, len: usize) Uint16
+SDL_crc32 :: extern proc(crc: Uint32, data: *const void, len: usize) Uint32
+SDL_murmur3_32 :: extern proc(data: *const void, len: usize, seed: Uint32) Uint32
+
+SDL_memcpy :: extern proc(dst: *void, src: *const void, len: usize) *void
+SDL_memmove :: extern proc(dst: *void, src: *const void, len: usize) *void
+SDL_memset :: extern proc(dst: *void, c: i32, len: usize) *void
+SDL_memset4 :: extern proc(dst: *void, val: Uint32, dwords: usize) *void
+SDL_memcmp :: extern proc(s1: *const void, s2: *const void, len: usize) i32
+
+SDL_wcslen :: extern proc(wstr: *const wchar_t) usize
+SDL_wcsnlen :: extern proc(wstr: *const wchar_t, maxlen: usize) usize
+SDL_wcslcpy :: extern proc(dst: *wchar_t, src: *const wchar_t, maxlen: usize) usize
+SDL_wcslcat :: extern proc(dst: *wchar_t, src: *const wchar_t, maxlen: usize) usize
+SDL_wcsdup :: extern proc(wstr: *const wchar_t) *wchar_t
+SDL_wcsstr :: extern proc(haystack: *const wchar_t, needle: *const wchar_t) *wchar_t
+SDL_wcsnstr :: extern proc(haystack: *const wchar_t, needle: *const wchar_t, maxlen: usize) *wchar_t
+SDL_wcscmp :: extern proc(str1: *const wchar_t, str2: *const wchar_t) i32
+SDL_wcsncmp :: extern proc(str1: *const wchar_t, str2: *const wchar_t, maxlen: usize) i32
+SDL_wcscasecmp :: extern proc(str1: *const wchar_t, str2: *const wchar_t) i32
+SDL_wcsncasecmp :: extern proc(str1: *const wchar_t, str2: *const wchar_t, maxlen: usize) i32
+SDL_wcstol :: extern proc(str: *const wchar_t, endp: **wchar_t, base: i32) i64
+
+SDL_strlen :: extern proc(str: *const u8) usize
+SDL_strnlen :: extern proc(str: *const u8, maxlen: usize) usize
+SDL_strlcpy :: extern proc(dst: *u8, src: *const u8, maxlen: usize) usize
+SDL_utf8strlcpy :: extern proc(dst: *u8, src: *const u8, dst_bytes: usize) usize
+SDL_strlcat :: extern proc(dst: *u8, src: *const u8, maxlen: usize) usize
+SDL_strdup :: extern proc(str: *const u8) *u8
+SDL_strndup :: extern proc(str: *const u8, maxlen: usize) *u8
+SDL_strrev :: extern proc(str: *u8) *u8
+SDL_strupr :: extern proc(str: *u8) *u8
+SDL_strlwr :: extern proc(str: *u8) *u8
+SDL_strchr :: extern proc(str: *const u8, c: i32) *u8
+SDL_strrchr :: extern proc(str: *const u8, c: i32) *u8
+SDL_strstr :: extern proc(haystack: *const u8, needle: *const u8) *u8
+SDL_strnstr :: extern proc(haystack: *const u8, needle: *const u8, maxlen: usize) *u8
+SDL_strcasestr :: extern proc(haystack: *const u8, needle: *const u8) *u8
+SDL_strtok_r :: extern proc(str: *u8, delim: *const u8, saveptr: **u8) *u8
+SDL_utf8strlen :: extern proc(str: *const u8) usize
+SDL_utf8strnlen :: extern proc(str: *const u8, bytes: usize) usize
+SDL_itoa :: extern proc(value: i32, str: *u8, radix: i32) *u8
+SDL_uitoa :: extern proc(value: u32, str: *u8, radix: i32) *u8
+SDL_ltoa :: extern proc(value: i64, str: *u8, radix: i32) *u8
+SDL_ultoa :: extern proc(value: u64, str: *u8, radix: i32) *u8
+SDL_lltoa :: extern proc(value: i64, str: *u8, radix: i32) *u8
+SDL_ulltoa :: extern proc(value: u64, str: *u8, radix: i32) *u8
+SDL_atoi :: extern proc(str: *const u8) i32
+SDL_atof :: extern proc(str: *const u8) f64
+SDL_strtol :: extern proc(str: *const u8, endp: **u8, base: i32) i64
+SDL_strtoul :: extern proc(str: *const u8, endp: **u8, base: i32) u64
+SDL_strtoll :: extern proc(str: *const u8, endp: **u8, base: i32) i64
+SDL_strtoull :: extern proc(str: *const u8, endp: **u8, base: i32) u64
+SDL_strtod :: extern proc(str: *const u8, endp: **u8) f64
+SDL_strcmp :: extern proc(str1: *const u8, str2: *const u8) i32
+SDL_strncmp :: extern proc(str1: *const u8, str2: *const u8, maxlen: usize) i32
+SDL_strcasecmp :: extern proc(str1: *const u8, str2: *const u8) i32
+SDL_strncasecmp :: extern proc(str1: *const u8, str2: *const u8, maxlen: usize) i32
+SDL_strpbrk :: extern proc(str: *const u8, breakset: *const u8) *u8
+SDL_StepUTF8 :: extern proc(pstr: **const u8, pslen: *usize) Uint32
+SDL_StepBackUTF8 :: extern proc(start: *const u8, pstr: **const u8) Uint32
+SDL_UCS4ToUTF8 :: extern proc(codepoint: Uint32, dst: *u8) *u8
+
+SDL_sscanf :: extern proc(text: *const u8, fmt: *const u8, any) i32
+SDL_vsscanf :: extern proc(text: *const u8, fmt: *const u8, ap: va_list) i32
+SDL_snprintf :: extern proc(text: *u8, maxlen: usize, fmt: *const u8, any) i32
+SDL_swprintf :: extern proc(text: *wchar_t, maxlen: usize, fmt: *const wchar_t, any) i32
+SDL_vsnprintf :: extern proc(text: *u8, maxlen: usize, fmt: *const u8, ap: va_list) i32
+SDL_vswprintf :: extern proc(text: *wchar_t, maxlen: usize, fmt: *const wchar_t, ap: va_list) i32
+SDL_asprintf :: extern proc(strp: **u8, fmt: *const u8, any) i32
+SDL_vasprintf :: extern proc(strp: **u8, fmt: *const u8, ap: va_list) i32
+
+SDL_srand :: extern proc(seed: Uint64)
+SDL_rand :: extern proc(n: Sint32) Sint32
+SDL_randf :: extern proc() f32
+SDL_rand_bits :: extern proc() Uint32
+SDL_rand_r :: extern proc(state: *Uint64, n: Sint32) Sint32
+SDL_randf_r :: extern proc(state: *Uint64) f32
+SDL_rand_bits_r :: extern proc(state: *Uint64) Uint32
+
+SDL_acos :: extern proc(x: f64) f64
+SDL_acosf :: extern proc(x: f32) f32
+SDL_asin :: extern proc(x: f64) f64
+SDL_asinf :: extern proc(x: f32) f32
+SDL_atan :: extern proc(x: f64) f64
+SDL_atanf :: extern proc(x: f32) f32
+SDL_atan2 :: extern proc(y: f64, x: f64) f64
+SDL_atan2f :: extern proc(y: f32, x: f32) f32
+SDL_ceil :: extern proc(x: f64) f64
+SDL_ceilf :: extern proc(x: f32) f32
+SDL_copysign :: extern proc(x: f64, y: f64) f64
+SDL_copysignf :: extern proc(x: f32, y: f32) f32
+SDL_cos :: extern proc(x: f64) f64
+SDL_cosf :: extern proc(x: f32) f32
+SDL_exp :: extern proc(x: f64) f64
+SDL_expf :: extern proc(x: f32) f32
+SDL_fabs :: extern proc(x: f64) f64
+SDL_fabsf :: extern proc(x: f32) f32
+SDL_floor :: extern proc(x: f64) f64
+SDL_floorf :: extern proc(x: f32) f32
+SDL_trunc :: extern proc(x: f64) f64
+SDL_truncf :: extern proc(x: f32) f32
+SDL_fmod :: extern proc(x: f64, y: f64) f64
+SDL_fmodf :: extern proc(x: f32, y: f32) f32
+SDL_isinf :: extern proc(x: f64) i32
+SDL_isinff :: extern proc(x: f32) i32
+SDL_isnan :: extern proc(x: f64) i32
+SDL_isnanf :: extern proc(x: f32) i32
+SDL_log :: extern proc(x: f64) f64
+SDL_logf :: extern proc(x: f32) f32
+SDL_log10 :: extern proc(x: f64) f64
+SDL_log10f :: extern proc(x: f32) f32
+SDL_modf :: extern proc(x: f64, y: *f64) f64
+SDL_modff :: extern proc(x: f32, y: *f32) f32
+SDL_pow :: extern proc(x: f64, y: f64) f64
+SDL_powf :: extern proc(x: f32, y: f32) f32
+SDL_round :: extern proc(x: f64) f64
+SDL_roundf :: extern proc(x: f32) f32
+SDL_lround :: extern proc(x: f64) i64
+SDL_lroundf :: extern proc(x: f32) i64
+SDL_scalbn :: extern proc(x: f64, n: i32) f64
+SDL_scalbnf :: extern proc(x: f32, n: i32) f32
+SDL_sin :: extern proc(x: f64) f64
+SDL_sinf :: extern proc(x: f32) f32
+SDL_sqrt :: extern proc(x: f64) f64
+SDL_sqrtf :: extern proc(x: f32) f32
+SDL_tan :: extern proc(x: f64) f64
+SDL_tanf :: extern proc(x: f32) f32
+
+SDL_iconv_t :: *void
+SDL_iconv_open :: extern proc(tocode: *const u8, fromcode: *const u8) SDL_iconv_t
+SDL_iconv_close :: extern proc(cd: SDL_iconv_t) i32
+SDL_iconv :: extern proc(cd: SDL_iconv_t, inbuf: **const u8, inbytesleft: *usize, outbuf: **u8, outbytesleft: *usize) usize
+SDL_iconv_string :: extern proc(tocode: *const u8, fromcode: *const u8, inbuf: *const u8, inbytesleft: usize) *u8
+
+SDL_size_mul_check_overflow :: proc(a: usize, b: usize, ret: *usize) bool {
+    product := a * b
+    if (a != 0 and product / a != b) {
+        return false
+    }
+    ret.* = product
+    return true
+}
+SDL_size_mul_check_overflow_builtin :: proc(a: usize, b: usize, ret: *usize) bool {
+    return SDL_size_mul_check_overflow(a, b, ret)
+}
+SDL_size_add_check_overflow :: proc(a: usize, b: usize, ret: *usize) bool {
+    sum := a + b
+    if (sum < a) {
+        return false
+    }
+    ret.* = sum
+    return true
+}
+SDL_size_add_check_overflow_builtin :: proc(a: usize, b: usize, ret: *usize) bool {
+    return SDL_size_add_check_overflow(a, b, ret)
+}
+
+SDL_AssertState :: enum (i32) {
+    SDL_ASSERTION_RETRY,
+    SDL_ASSERTION_BREAK,
+    SDL_ASSERTION_ABORT,
+    SDL_ASSERTION_IGNORE,
+    SDL_ASSERTION_ALWAYS_IGNORE,
+}
+SDL_AssertData :: struct {
+    always_ignore: bool,
+    trigger_count: u32,
+    condition: *const u8,
+    filename: *const u8,
+    linenum: i32,
+    function: *const u8,
+    next: *SDL_AssertData,
+}
+SDL_ReportAssertion :: extern proc(data: *SDL_AssertData, func: *const u8, file: *const u8, line: i32) SDL_AssertState
+SDL_AssertionHandler :: fn(data: *const SDL_AssertData, userdata: *void) SDL_AssertState
+SDL_SetAssertionHandler :: extern proc(handler: SDL_AssertionHandler, userdata: *void)
+SDL_GetDefaultAssertionHandler :: extern proc() SDL_AssertionHandler
+SDL_GetAssertionHandler :: extern proc(puserdata: **void) SDL_AssertionHandler
+SDL_GetAssertionReport :: extern proc() *const SDL_AssertData
+SDL_ResetAssertionReport :: extern proc()
+
+SDL_AsyncIO :: struct {}
+SDL_AsyncIOQueue :: struct {}
+SDL_AsyncIOTaskType :: enum (i32) {
+    SDL_ASYNCIO_TASK_READ,
+    SDL_ASYNCIO_TASK_WRITE,
+    SDL_ASYNCIO_TASK_CLOSE,
+}
+SDL_AsyncIOResult :: enum (i32) {
+    SDL_ASYNCIO_COMPLETE,
+    SDL_ASYNCIO_FAILURE,
+    SDL_ASYNCIO_CANCELED,
+}
+SDL_AsyncIOOutcome :: struct {
+    asyncio: *SDL_AsyncIO,
+    r#type: SDL_AsyncIOTaskType,
+    result: SDL_AsyncIOResult,
+    buffer: *void,
+    offset: Uint64,
+    bytes_requested: Uint64,
+    bytes_transferred: Uint64,
+    userdata: *void,
+}
+SDL_AsyncIOFromFile :: extern proc(file: *const u8, mode: *const u8) *SDL_AsyncIO
+SDL_GetAsyncIOSize :: extern proc(asyncio: *SDL_AsyncIO) Sint64
+SDL_ReadAsyncIO :: extern proc(asyncio: *SDL_AsyncIO, ptr: *void, offset: Uint64, size: Uint64, queue: *SDL_AsyncIOQueue, userdata: *void) bool
+SDL_WriteAsyncIO :: extern proc(asyncio: *SDL_AsyncIO, ptr: *void, offset: Uint64, size: Uint64, queue: *SDL_AsyncIOQueue, userdata: *void) bool
+SDL_CloseAsyncIO :: extern proc(asyncio: *SDL_AsyncIO, flush: bool, queue: *SDL_AsyncIOQueue, userdata: *void) bool
+SDL_CreateAsyncIOQueue :: extern proc() *SDL_AsyncIOQueue
+SDL_DestroyAsyncIOQueue :: extern proc(queue: *SDL_AsyncIOQueue)
+SDL_GetAsyncIOResult :: extern proc(queue: *SDL_AsyncIOQueue, outcome: *SDL_AsyncIOOutcome) bool
+SDL_WaitAsyncIOResult :: extern proc(queue: *SDL_AsyncIOQueue, outcome: *SDL_AsyncIOOutcome, timeoutMS: Sint32) bool
+SDL_SignalAsyncIOQueue :: extern proc(queue: *SDL_AsyncIOQueue)
+SDL_LoadFileAsync :: extern proc(file: *const u8, queue: *SDL_AsyncIOQueue, userdata: *void) bool
+
+SDL_SpinLock :: i32
+SDL_TryLockSpinlock :: extern proc(lock: *SDL_SpinLock) bool
+SDL_LockSpinlock :: extern proc(lock: *SDL_SpinLock)
+SDL_UnlockSpinlock :: extern proc(lock: *SDL_SpinLock)
+SDL_MemoryBarrierReleaseFunction :: extern proc()
+SDL_MemoryBarrierAcquireFunction :: extern proc()
+
+SDL_AtomicInt :: struct { value: i32 }
+SDL_CompareAndSwapAtomicInt :: extern proc(a: *SDL_AtomicInt, oldval: i32, newval: i32) bool
+SDL_SetAtomicInt :: extern proc(a: *SDL_AtomicInt, v: i32) i32
+SDL_GetAtomicInt :: extern proc(a: *SDL_AtomicInt) i32
+SDL_AddAtomicInt :: extern proc(a: *SDL_AtomicInt, v: i32) i32
+SDL_AtomicU32 :: struct { value: Uint32 }
+SDL_CompareAndSwapAtomicU32 :: extern proc(a: *SDL_AtomicU32, oldval: Uint32, newval: Uint32) bool
+SDL_SetAtomicU32 :: extern proc(a: *SDL_AtomicU32, v: Uint32) Uint32
+SDL_GetAtomicU32 :: extern proc(a: *SDL_AtomicU32) Uint32
+SDL_CompareAndSwapAtomicPointer :: extern proc(a: **void, oldval: *void, newval: *void) bool
+SDL_SetAtomicPointer :: extern proc(a: **void, v: *void) *void
+SDL_GetAtomicPointer :: extern proc(a: **void) *void
+
+SDL_SwapFloat :: proc(x: f32) f32 {
+    return x
+}
+
+SDL_SetError :: extern proc(fmt: *const u8, any) bool
+SDL_SetErrorV :: extern proc(fmt: *const u8, ap: va_list) bool
+SDL_OutOfMemory :: extern proc() bool
+SDL_GetError :: extern proc() *const u8
+SDL_ClearError :: extern proc() bool
+
+SDL_PropertiesID :: Uint32
+SDL_PropertyType :: enum (i32) {
+    SDL_PROPERTY_TYPE_INVALID,
+    SDL_PROPERTY_TYPE_POINTER,
+    SDL_PROPERTY_TYPE_STRING,
+    SDL_PROPERTY_TYPE_NUMBER,
+    SDL_PROPERTY_TYPE_FLOAT,
+    SDL_PROPERTY_TYPE_BOOLEAN,
+}
+SDL_GetGlobalProperties :: extern proc() SDL_PropertiesID
+SDL_CreateProperties :: extern proc() SDL_PropertiesID
+SDL_CopyProperties :: extern proc(src: SDL_PropertiesID, dst: SDL_PropertiesID) bool
+SDL_LockProperties :: extern proc(props: SDL_PropertiesID) bool
+SDL_UnlockProperties :: extern proc(props: SDL_PropertiesID)
+SDL_CleanupPropertyCallback :: fn(userdata: *void, value: *void) void
+SDL_SetPointerPropertyWithCleanup :: extern proc(props: SDL_PropertiesID, name: *const u8, value: *void, cleanup: SDL_CleanupPropertyCallback, userdata: *void) bool
+SDL_SetPointerProperty :: extern proc(props: SDL_PropertiesID, name: *const u8, value: *void) bool
+SDL_SetStringProperty :: extern proc(props: SDL_PropertiesID, name: *const u8, value: *const u8) bool
+SDL_SetNumberProperty :: extern proc(props: SDL_PropertiesID, name: *const u8, value: Sint64) bool
+SDL_SetFloatProperty :: extern proc(props: SDL_PropertiesID, name: *const u8, value: f32) bool
+SDL_SetBooleanProperty :: extern proc(props: SDL_PropertiesID, name: *const u8, value: bool) bool
+SDL_HasProperty :: extern proc(props: SDL_PropertiesID, name: *const u8) bool
+SDL_GetPropertyType :: extern proc(props: SDL_PropertiesID, name: *const u8) SDL_PropertyType
+SDL_GetPointerProperty :: extern proc(props: SDL_PropertiesID, name: *const u8, default_value: *void) *void
+SDL_GetStringProperty :: extern proc(props: SDL_PropertiesID, name: *const u8, default_value: *const u8) *const u8
+SDL_GetNumberProperty :: extern proc(props: SDL_PropertiesID, name: *const u8, default_value: Sint64) Sint64
+SDL_GetFloatProperty :: extern proc(props: SDL_PropertiesID, name: *const u8, default_value: f32) f32
+SDL_GetBooleanProperty :: extern proc(props: SDL_PropertiesID, name: *const u8, default_value: bool) bool
+SDL_ClearProperty :: extern proc(props: SDL_PropertiesID, name: *const u8) bool
+SDL_EnumeratePropertiesCallback :: fn(userdata: *void, props: SDL_PropertiesID, name: *const u8) void
+SDL_EnumerateProperties :: extern proc(props: SDL_PropertiesID, callback: SDL_EnumeratePropertiesCallback, userdata: *void) bool
+SDL_DestroyProperties :: extern proc(props: SDL_PropertiesID)
+
+SDL_Thread :: struct {}
+SDL_ThreadPriority :: enum (i32) {
+    SDL_THREAD_PRIORITY_LOW,
+    SDL_THREAD_PRIORITY_NORMAL,
+    SDL_THREAD_PRIORITY_HIGH,
+    SDL_THREAD_PRIORITY_TIME_CRITICAL,
+}
+SDL_ThreadFunction :: fn(data: *void) i32
+SDL_CreateThreadRuntime :: extern proc(fn_: SDL_ThreadFunction, name: *const u8, data: *void, pfnBeginThread: SDL_FunctionPointer, pfnEndThread: SDL_FunctionPointer) *SDL_Thread
+SDL_CreateThreadWithPropertiesRuntime :: extern proc(props: SDL_PropertiesID, pfnBeginThread: SDL_FunctionPointer, pfnEndThread: SDL_FunctionPointer) *SDL_Thread
+SDL_GetThreadName :: extern proc(thread: *SDL_Thread) *const u8
+SDL_ThreadID :: Uint64
+SDL_GetCurrentThreadID :: extern proc() SDL_ThreadID
+SDL_GetThreadID :: extern proc(thread: *SDL_Thread) SDL_ThreadID
+SDL_ThreadState :: enum (i32) {
+    SDL_THREAD_UNKNOWN,
+    SDL_THREAD_ALIVE,
+    SDL_THREAD_DETACHED,
+    SDL_THREAD_COMPLETE,
+}
+SDL_SetCurrentThreadPriority :: extern proc(priority: SDL_ThreadPriority) bool
+SDL_WaitThread :: extern proc(thread: *SDL_Thread, status: *i32)
+SDL_GetThreadState :: extern proc(thread: *SDL_Thread) SDL_ThreadState
+SDL_DetachThread :: extern proc(thread: *SDL_Thread)
+SDL_TLSID :: SDL_AtomicInt
+SDL_GetTLS :: extern proc(id: *SDL_TLSID) *void
+SDL_TLSDestructorCallback :: fn(value: *void) void
+SDL_SetTLS :: extern proc(id: *SDL_TLSID, value: *const void, destructor: SDL_TLSDestructorCallback) bool
+SDL_CleanupTLS :: extern proc()
+
+SDL_Mutex :: struct {}
+SDL_CreateMutex :: extern proc() *SDL_Mutex
+SDL_LockMutex :: extern proc(mutex: *SDL_Mutex)
+SDL_TryLockMutex :: extern proc(mutex: *SDL_Mutex) bool
+SDL_UnlockMutex :: extern proc(mutex: *SDL_Mutex)
+SDL_DestroyMutex :: extern proc(mutex: *SDL_Mutex)
+
+SDL_RWLock :: struct {}
+SDL_CreateRWLock :: extern proc() *SDL_RWLock
+SDL_LockRWLockForReading :: extern proc(rwlock: *SDL_RWLock)
+SDL_LockRWLockForWriting :: extern proc(rwlock: *SDL_RWLock)
+SDL_TryLockRWLockForReading :: extern proc(rwlock: *SDL_RWLock) bool
+SDL_TryLockRWLockForWriting :: extern proc(rwlock: *SDL_RWLock) bool
+SDL_UnlockRWLock :: extern proc(rwlock: *SDL_RWLock)
+SDL_DestroyRWLock :: extern proc(rwlock: *SDL_RWLock)
+
+SDL_Semaphore :: struct {}
+SDL_CreateSemaphore :: extern proc(initial_value: Uint32) *SDL_Semaphore
+SDL_DestroySemaphore :: extern proc(sem: *SDL_Semaphore)
+SDL_WaitSemaphore :: extern proc(sem: *SDL_Semaphore)
+SDL_TryWaitSemaphore :: extern proc(sem: *SDL_Semaphore) bool
+SDL_WaitSemaphoreTimeout :: extern proc(sem: *SDL_Semaphore, timeoutMS: Sint32) bool
+SDL_SignalSemaphore :: extern proc(sem: *SDL_Semaphore)
+SDL_GetSemaphoreValue :: extern proc(sem: *SDL_Semaphore) Uint32
+
+SDL_Condition :: struct {}
+SDL_CreateCondition :: extern proc() *SDL_Condition
+SDL_DestroyCondition :: extern proc(cond: *SDL_Condition)
+SDL_SignalCondition :: extern proc(cond: *SDL_Condition)
+SDL_BroadcastCondition :: extern proc(cond: *SDL_Condition)
+SDL_WaitCondition :: extern proc(cond: *SDL_Condition, mutex: *SDL_Mutex)
+SDL_WaitConditionTimeout :: extern proc(cond: *SDL_Condition, mutex: *SDL_Mutex, timeoutMS: Sint32) bool
+
+SDL_InitStatus :: enum (i32) {
+    SDL_INIT_STATUS_UNINITIALIZED,
+    SDL_INIT_STATUS_INITIALIZING,
+    SDL_INIT_STATUS_INITIALIZED,
+    SDL_INIT_STATUS_UNINITIALIZING,
+}
+SDL_InitState :: struct {
+    status: SDL_AtomicInt,
+    thread: SDL_ThreadID,
+    reserved: *void,
+}
+SDL_ShouldInit :: extern proc(state: *SDL_InitState) bool
+SDL_ShouldQuit :: extern proc(state: *SDL_InitState) bool
+SDL_SetInitialized :: extern proc(state: *SDL_InitState, initialized: bool)
+
+SDL_IOStatus :: enum (i32) {
+    SDL_IO_STATUS_READY,
+    SDL_IO_STATUS_ERROR,
+    SDL_IO_STATUS_EOF,
+    SDL_IO_STATUS_NOT_READY,
+    SDL_IO_STATUS_READONLY,
+    SDL_IO_STATUS_WRITEONLY,
+}
+SDL_IOWhence :: enum (i32) {
+    SDL_IO_SEEK_SET,
+    SDL_IO_SEEK_CUR,
+    SDL_IO_SEEK_END,
+}
+SDL_IOStreamInterface :: struct {
+    version: Uint32,
+    size: extern proc(userdata: *void) Sint64,
+    seek: extern proc(userdata: *void, offset: Sint64, whence: SDL_IOWhence) Sint64,
+    read: extern proc(userdata: *void, ptr: *void, size: usize, status: *SDL_IOStatus) usize,
+    write: extern proc(userdata: *void, ptr: *const void, size: usize, status: *SDL_IOStatus) usize,
+    flush: extern proc(userdata: *void, status: *SDL_IOStatus) bool,
+    close: extern proc(userdata: *void) bool,
+}
+SDL_IOStream :: struct {}
+SDL_IOFromFile :: extern proc(file: *const u8, mode: *const u8) *SDL_IOStream
+SDL_IOFromMem :: extern proc(mem: *void, size: usize) *SDL_IOStream
+SDL_IOFromConstMem :: extern proc(mem: *const void, size: usize) *SDL_IOStream
+SDL_IOFromDynamicMem :: extern proc() *SDL_IOStream
+SDL_OpenIO :: extern proc(iface: *const SDL_IOStreamInterface, userdata: *void) *SDL_IOStream
+SDL_CloseIO :: extern proc(context: *SDL_IOStream) bool
+SDL_GetIOProperties :: extern proc(context: *SDL_IOStream) SDL_PropertiesID
+SDL_GetIOStatus :: extern proc(context: *SDL_IOStream) SDL_IOStatus
+SDL_GetIOSize :: extern proc(context: *SDL_IOStream) Sint64
+SDL_SeekIO :: extern proc(context: *SDL_IOStream, offset: Sint64, whence: SDL_IOWhence) Sint64
+SDL_TellIO :: extern proc(context: *SDL_IOStream) Sint64
+SDL_ReadIO :: extern proc(context: *SDL_IOStream, ptr: *void, size: usize) usize
+SDL_WriteIO :: extern proc(context: *SDL_IOStream, ptr: *const void, size: usize) usize
+SDL_IOprintf :: extern proc(context: *SDL_IOStream, fmt: *const u8, any) usize
+SDL_IOvprintf :: extern proc(context: *SDL_IOStream, fmt: *const u8, ap: va_list) usize
+SDL_FlushIO :: extern proc(context: *SDL_IOStream) bool
+SDL_LoadFile_IO :: extern proc(src: *SDL_IOStream, datasize: *usize, closeio: bool) *void
+SDL_LoadFile :: extern proc(file: *const u8, datasize: *usize) *void
+SDL_SaveFile_IO :: extern proc(src: *SDL_IOStream, data: *const void, datasize: usize, closeio: bool) bool
+SDL_SaveFile :: extern proc(file: *const u8, data: *const void, datasize: usize) bool
+
+SDL_ReadU8 :: extern proc(src: *SDL_IOStream, value: *Uint8) bool
+SDL_ReadS8 :: extern proc(src: *SDL_IOStream, value: *Sint8) bool
+SDL_ReadU16LE :: extern proc(src: *SDL_IOStream, value: *Uint16) bool
+SDL_ReadS16LE :: extern proc(src: *SDL_IOStream, value: *Sint16) bool
+SDL_ReadU16BE :: extern proc(src: *SDL_IOStream, value: *Uint16) bool
+SDL_ReadS16BE :: extern proc(src: *SDL_IOStream, value: *Sint16) bool
+SDL_ReadU32LE :: extern proc(src: *SDL_IOStream, value: *Uint32) bool
+SDL_ReadS32LE :: extern proc(src: *SDL_IOStream, value: *Sint32) bool
+SDL_ReadU32BE :: extern proc(src: *SDL_IOStream, value: *Uint32) bool
+SDL_ReadS32BE :: extern proc(src: *SDL_IOStream, value: *Sint32) bool
+SDL_ReadU64LE :: extern proc(src: *SDL_IOStream, value: *Uint64) bool
+SDL_ReadS64LE :: extern proc(src: *SDL_IOStream, value: *Sint64) bool
+SDL_ReadU64BE :: extern proc(src: *SDL_IOStream, value: *Uint64) bool
+SDL_ReadS64BE :: extern proc(src: *SDL_IOStream, value: *Sint64) bool
+SDL_WriteU8 :: extern proc(dst: *SDL_IOStream, value: Uint8) bool
+SDL_WriteS8 :: extern proc(dst: *SDL_IOStream, value: Sint8) bool
+SDL_WriteU16LE :: extern proc(dst: *SDL_IOStream, value: Uint16) bool
+SDL_WriteS16LE :: extern proc(dst: *SDL_IOStream, value: Sint16) bool
+SDL_WriteU16BE :: extern proc(dst: *SDL_IOStream, value: Uint16) bool
+SDL_WriteS16BE :: extern proc(dst: *SDL_IOStream, value: Sint16) bool
+SDL_WriteU32LE :: extern proc(dst: *SDL_IOStream, value: Uint32) bool
+SDL_WriteS32LE :: extern proc(dst: *SDL_IOStream, value: Sint32) bool
+SDL_WriteU32BE :: extern proc(dst: *SDL_IOStream, value: Uint32) bool
+SDL_WriteS32BE :: extern proc(dst: *SDL_IOStream, value: Sint32) bool
+SDL_WriteU64LE :: extern proc(dst: *SDL_IOStream, value: Uint64) bool
+SDL_WriteS64LE :: extern proc(dst: *SDL_IOStream, value: Sint64) bool
+SDL_WriteU64BE :: extern proc(dst: *SDL_IOStream, value: Uint64) bool
+SDL_WriteS64BE :: extern proc(dst: *SDL_IOStream, value: Sint64) bool
+
+SDL_AudioFormat :: enum (u32) {
+    SDL_AUDIO_UNKNOWN = 0x0000,
+    SDL_AUDIO_U8 = 0x0008,
+    SDL_AUDIO_S8 = 0x8008,
+    SDL_AUDIO_S16LE = 0x8010,
+    SDL_AUDIO_S16BE = 0x9010,
+    SDL_AUDIO_S32LE = 0x8020,
+    SDL_AUDIO_S32BE = 0x9020,
+    SDL_AUDIO_F32LE = 0x8120,
+    SDL_AUDIO_F32BE = 0x9120,
+    SDL_AUDIO_S16 = SDL_AUDIO_S16LE,
+    SDL_AUDIO_S32 = SDL_AUDIO_S32LE,
+    SDL_AUDIO_F32 = SDL_AUDIO_F32LE,
+}
+SDL_AudioDeviceID :: Uint32
+SDL_AudioSpec :: struct {
+    format: SDL_AudioFormat,
+    channels: i32,
+    freq: i32,
+}
+SDL_AudioStream :: struct {}
+
+SDL_GetNumAudioDrivers :: extern proc() i32
+SDL_GetAudioDriver :: extern proc(index: i32) *const u8
+SDL_GetCurrentAudioDriver :: extern proc() *const u8
+SDL_GetAudioPlaybackDevices :: extern proc(count: *i32) *SDL_AudioDeviceID
+SDL_GetAudioRecordingDevices :: extern proc(count: *i32) *SDL_AudioDeviceID
+SDL_GetAudioDeviceName :: extern proc(devid: SDL_AudioDeviceID) *const u8
+SDL_GetAudioDeviceFormat :: extern proc(devid: SDL_AudioDeviceID, spec: *SDL_AudioSpec, sample_frames: *i32) bool
+SDL_GetAudioDeviceChannelMap :: extern proc(devid: SDL_AudioDeviceID, count: *i32) *i32
+SDL_OpenAudioDevice :: extern proc(devid: SDL_AudioDeviceID, spec: *const SDL_AudioSpec) SDL_AudioDeviceID
+SDL_IsAudioDevicePhysical :: extern proc(devid: SDL_AudioDeviceID) bool
+SDL_IsAudioDevicePlayback :: extern proc(devid: SDL_AudioDeviceID) bool
+SDL_PauseAudioDevice :: extern proc(devid: SDL_AudioDeviceID) bool
+SDL_ResumeAudioDevice :: extern proc(devid: SDL_AudioDeviceID) bool
+SDL_AudioDevicePaused :: extern proc(devid: SDL_AudioDeviceID) bool
+SDL_GetAudioDeviceGain :: extern proc(devid: SDL_AudioDeviceID) f32
+SDL_SetAudioDeviceGain :: extern proc(devid: SDL_AudioDeviceID, gain: f32) bool
+SDL_CloseAudioDevice :: extern proc(devid: SDL_AudioDeviceID)
+SDL_BindAudioStreams :: extern proc(devid: SDL_AudioDeviceID, streams: *const *SDL_AudioStream, num_streams: i32) bool
+SDL_BindAudioStream :: extern proc(devid: SDL_AudioDeviceID, stream: *SDL_AudioStream) bool
+SDL_UnbindAudioStreams :: extern proc(streams: *const *SDL_AudioStream, num_streams: i32)
+SDL_UnbindAudioStream :: extern proc(stream: *SDL_AudioStream)
+SDL_GetAudioStreamDevice :: extern proc(stream: *SDL_AudioStream) SDL_AudioDeviceID
+SDL_CreateAudioStream :: extern proc(src_spec: *const SDL_AudioSpec, dst_spec: *const SDL_AudioSpec) *SDL_AudioStream
+SDL_GetAudioStreamProperties :: extern proc(stream: *SDL_AudioStream) SDL_PropertiesID
+SDL_GetAudioStreamFormat :: extern proc(stream: *SDL_AudioStream, src_spec: *SDL_AudioSpec, dst_spec: *SDL_AudioSpec) bool
+SDL_SetAudioStreamFormat :: extern proc(stream: *SDL_AudioStream, src_spec: *const SDL_AudioSpec, dst_spec: *const SDL_AudioSpec) bool
+SDL_GetAudioStreamFrequencyRatio :: extern proc(stream: *SDL_AudioStream) f32
+SDL_SetAudioStreamFrequencyRatio :: extern proc(stream: *SDL_AudioStream, ratio: f32) bool
+SDL_GetAudioStreamGain :: extern proc(stream: *SDL_AudioStream) f32
+SDL_SetAudioStreamGain :: extern proc(stream: *SDL_AudioStream, gain: f32) bool
+SDL_GetAudioStreamInputChannelMap :: extern proc(stream: *SDL_AudioStream, count: *i32) *i32
+SDL_GetAudioStreamOutputChannelMap :: extern proc(stream: *SDL_AudioStream, count: *i32) *i32
+SDL_SetAudioStreamInputChannelMap :: extern proc(stream: *SDL_AudioStream, chmap: *const i32, count: i32) bool
+SDL_SetAudioStreamOutputChannelMap :: extern proc(stream: *SDL_AudioStream, chmap: *const i32, count: i32) bool
+SDL_PutAudioStreamData :: extern proc(stream: *SDL_AudioStream, buf: *const void, len: i32) bool
+SDL_GetAudioStreamData :: extern proc(stream: *SDL_AudioStream, buf: *void, len: i32) i32
+SDL_GetAudioStreamAvailable :: extern proc(stream: *SDL_AudioStream) i32
+SDL_GetAudioStreamQueued :: extern proc(stream: *SDL_AudioStream) i32
+SDL_FlushAudioStream :: extern proc(stream: *SDL_AudioStream) bool
+SDL_ClearAudioStream :: extern proc(stream: *SDL_AudioStream) bool
+SDL_PauseAudioStreamDevice :: extern proc(stream: *SDL_AudioStream) bool
+SDL_ResumeAudioStreamDevice :: extern proc(stream: *SDL_AudioStream) bool
+SDL_AudioStreamDevicePaused :: extern proc(stream: *SDL_AudioStream) bool
+SDL_LockAudioStream :: extern proc(stream: *SDL_AudioStream) bool
+SDL_UnlockAudioStream :: extern proc(stream: *SDL_AudioStream) bool
+SDL_AudioStreamCallback :: fn(userdata: *void, stream: *SDL_AudioStream, additional_amount: i32, total_amount: i32) void
+SDL_SetAudioStreamGetCallback :: extern proc(stream: *SDL_AudioStream, callback: SDL_AudioStreamCallback, userdata: *void) bool
+SDL_SetAudioStreamPutCallback :: extern proc(stream: *SDL_AudioStream, callback: SDL_AudioStreamCallback, userdata: *void) bool
+SDL_DestroyAudioStream :: extern proc(stream: *SDL_AudioStream)
+SDL_OpenAudioDeviceStream :: extern proc(devid: SDL_AudioDeviceID, spec: *const SDL_AudioSpec, callback: SDL_AudioStreamCallback, userdata: *void) *SDL_AudioStream
+SDL_AudioPostmixCallback :: fn(userdata: *void, spec: *const SDL_AudioSpec, buffer: *f32, buflen: i32) void
+SDL_SetAudioPostmixCallback :: extern proc(devid: SDL_AudioDeviceID, callback: SDL_AudioPostmixCallback, userdata: *void) bool
+SDL_LoadWAV_IO :: extern proc(src: *SDL_IOStream, closeio: bool, spec: *SDL_AudioSpec, audio_buf: **Uint8, audio_len: *Uint32) bool
+SDL_LoadWAV :: extern proc(path: *const u8, spec: *SDL_AudioSpec, audio_buf: **Uint8, audio_len: *Uint32) bool
+SDL_MixAudio :: extern proc(dst: *Uint8, src: *const Uint8, format: SDL_AudioFormat, len: Uint32, volume: f32) bool
+SDL_ConvertAudioSamples :: extern proc(src_spec: *const SDL_AudioSpec, src_data: *const Uint8, src_len: i32, dst_spec: *const SDL_AudioSpec, dst_data: **Uint8, dst_len: *i32) bool
+SDL_GetAudioFormatName :: extern proc(format: SDL_AudioFormat) *const u8
+SDL_GetSilenceValueForFormat :: extern proc(format: SDL_AudioFormat) i32
+
+SDL_MostSignificantBitIndex32 :: proc(x: Uint32) i32 {
+    if (x == 0) {
+        return -1
+    }
+    index: i32 = 31
+    mask: Uint32 = 1 << 31
+    while ((x & mask) == 0) {
+        index = index - 1
+        mask = mask >> 1.(u32)
+    }
+    return index
+}
+SDL_HasExactlyOneBitSet32 :: proc(x: Uint32) bool {
+    return x != 0 and ((x & (x - 1)) == 0)
+}
+
+SDL_BlendMode :: Uint32
+SDL_BlendOperation :: enum (i32) {
+    SDL_BLENDOPERATION_ADD = 0x1,
+    SDL_BLENDOPERATION_SUBTRACT = 0x2,
+    SDL_BLENDOPERATION_REV_SUBTRACT = 0x3,
+    SDL_BLENDOPERATION_MINIMUM = 0x4,
+    SDL_BLENDOPERATION_MAXIMUM = 0x5,
+}
+SDL_BlendFactor :: enum (i32) {
+    SDL_BLENDFACTOR_ZERO = 0x1,
+    SDL_BLENDFACTOR_ONE = 0x2,
+    SDL_BLENDFACTOR_SRC_COLOR = 0x3,
+    SDL_BLENDFACTOR_ONE_MINUS_SRC_COLOR = 0x4,
+    SDL_BLENDFACTOR_SRC_ALPHA = 0x5,
+    SDL_BLENDFACTOR_ONE_MINUS_SRC_ALPHA = 0x6,
+    SDL_BLENDFACTOR_DST_COLOR = 0x7,
+    SDL_BLENDFACTOR_ONE_MINUS_DST_COLOR = 0x8,
+    SDL_BLENDFACTOR_DST_ALPHA = 0x9,
+    SDL_BLENDFACTOR_ONE_MINUS_DST_ALPHA = 0xA,
+}
+SDL_ComposeCustomBlendMode :: extern proc(
+    srcColorFactor: SDL_BlendFactor,
+    dstColorFactor: SDL_BlendFactor,
+    colorOperation: SDL_BlendOperation,
+    srcAlphaFactor: SDL_BlendFactor,
+    dstAlphaFactor: SDL_BlendFactor,
+    alphaOperation: SDL_BlendOperation,
+) SDL_BlendMode
+SDL_PixelType :: enum (i32) {
+    SDL_PIXELTYPE_UNKNOWN,
+    SDL_PIXELTYPE_INDEX1,
+    SDL_PIXELTYPE_INDEX4,
+    SDL_PIXELTYPE_INDEX8,
+    SDL_PIXELTYPE_PACKED8,
+    SDL_PIXELTYPE_PACKED16,
+    SDL_PIXELTYPE_PACKED32,
+    SDL_PIXELTYPE_ARRAYU8,
+    SDL_PIXELTYPE_ARRAYU16,
+    SDL_PIXELTYPE_ARRAYU32,
+    SDL_PIXELTYPE_ARRAYF16,
+    SDL_PIXELTYPE_ARRAYF32,
+    SDL_PIXELTYPE_INDEX2,
+}
+SDL_BitmapOrder :: enum (i32) {
+    SDL_BITMAPORDER_NONE,
+    SDL_BITMAPORDER_4321,
+    SDL_BITMAPORDER_1234,
+}
+SDL_PackedOrder :: enum (i32) {
+    SDL_PACKEDORDER_NONE,
+    SDL_PACKEDORDER_XRGB,
+    SDL_PACKEDORDER_RGBX,
+    SDL_PACKEDORDER_ARGB,
+    SDL_PACKEDORDER_RGBA,
+    SDL_PACKEDORDER_XBGR,
+    SDL_PACKEDORDER_BGRX,
+    SDL_PACKEDORDER_ABGR,
+    SDL_PACKEDORDER_BGRA,
+}
+SDL_ArrayOrder :: enum (i32) {
+    SDL_ARRAYORDER_NONE,
+    SDL_ARRAYORDER_RGB,
+    SDL_ARRAYORDER_RGBA,
+    SDL_ARRAYORDER_ARGB,
+    SDL_ARRAYORDER_BGR,
+    SDL_ARRAYORDER_BGRA,
+    SDL_ARRAYORDER_ABGR,
+}
+SDL_PackedLayout :: enum (i32) {
+    SDL_PACKEDLAYOUT_NONE,
+    SDL_PACKEDLAYOUT_332,
+    SDL_PACKEDLAYOUT_4444,
+    SDL_PACKEDLAYOUT_1555,
+    SDL_PACKEDLAYOUT_5551,
+    SDL_PACKEDLAYOUT_565,
+    SDL_PACKEDLAYOUT_8888,
+    SDL_PACKEDLAYOUT_2101010,
+    SDL_PACKEDLAYOUT_1010102,
+}
+SDL_PixelFormat :: enum (u32) {
+    SDL_PIXELFORMAT_UNKNOWN = 0,
+    SDL_PIXELFORMAT_INDEX1LSB = 0x11100100,
+    SDL_PIXELFORMAT_INDEX1MSB = 0x11200100,
+    SDL_PIXELFORMAT_INDEX2LSB = 0x1c100200,
+    SDL_PIXELFORMAT_INDEX2MSB = 0x1c200200,
+    SDL_PIXELFORMAT_INDEX4LSB = 0x12100400,
+    SDL_PIXELFORMAT_INDEX4MSB = 0x12200400,
+    SDL_PIXELFORMAT_INDEX8 = 0x13000801,
+    SDL_PIXELFORMAT_RGB332 = 0x14110801,
+    SDL_PIXELFORMAT_XRGB4444 = 0x15120c02,
+    SDL_PIXELFORMAT_XBGR4444 = 0x15520c02,
+    SDL_PIXELFORMAT_XRGB1555 = 0x15130f02,
+    SDL_PIXELFORMAT_XBGR1555 = 0x15530f02,
+    SDL_PIXELFORMAT_ARGB4444 = 0x15321002,
+    SDL_PIXELFORMAT_RGBA4444 = 0x15421002,
+    SDL_PIXELFORMAT_ABGR4444 = 0x15721002,
+    SDL_PIXELFORMAT_BGRA4444 = 0x15821002,
+    SDL_PIXELFORMAT_ARGB1555 = 0x15331002,
+    SDL_PIXELFORMAT_RGBA5551 = 0x15441002,
+    SDL_PIXELFORMAT_ABGR1555 = 0x15731002,
+    SDL_PIXELFORMAT_BGRA5551 = 0x15841002,
+    SDL_PIXELFORMAT_RGB565 = 0x15151002,
+    SDL_PIXELFORMAT_BGR565 = 0x15551002,
+    SDL_PIXELFORMAT_RGB24 = 0x17101803,
+    SDL_PIXELFORMAT_BGR24 = 0x17401803,
+    SDL_PIXELFORMAT_XRGB8888 = 0x16161804,
+    SDL_PIXELFORMAT_RGBX8888 = 0x16261804,
+    SDL_PIXELFORMAT_XBGR8888 = 0x16561804,
+    SDL_PIXELFORMAT_BGRX8888 = 0x16661804,
+    SDL_PIXELFORMAT_ARGB8888 = 0x16362004,
+    SDL_PIXELFORMAT_RGBA8888 = 0x16462004,
+    SDL_PIXELFORMAT_ABGR8888 = 0x16762004,
+    SDL_PIXELFORMAT_BGRA8888 = 0x16862004,
+    SDL_PIXELFORMAT_XRGB2101010 = 0x16172004,
+    SDL_PIXELFORMAT_XBGR2101010 = 0x16572004,
+    SDL_PIXELFORMAT_ARGB2101010 = 0x16372004,
+    SDL_PIXELFORMAT_ABGR2101010 = 0x16772004,
+    SDL_PIXELFORMAT_RGB48 = 0x18103006,
+    SDL_PIXELFORMAT_BGR48 = 0x18403006,
+    SDL_PIXELFORMAT_RGBA64 = 0x18204008,
+    SDL_PIXELFORMAT_ARGB64 = 0x18304008,
+    SDL_PIXELFORMAT_BGRA64 = 0x18504008,
+    SDL_PIXELFORMAT_ABGR64 = 0x18604008,
+    SDL_PIXELFORMAT_RGB48_FLOAT = 0x1a103006,
+    SDL_PIXELFORMAT_BGR48_FLOAT = 0x1a403006,
+    SDL_PIXELFORMAT_RGBA64_FLOAT = 0x1a204008,
+    SDL_PIXELFORMAT_ARGB64_FLOAT = 0x1a304008,
+    SDL_PIXELFORMAT_BGRA64_FLOAT = 0x1a504008,
+    SDL_PIXELFORMAT_ABGR64_FLOAT = 0x1a604008,
+    SDL_PIXELFORMAT_RGB96_FLOAT = 0x1b10600c,
+    SDL_PIXELFORMAT_BGR96_FLOAT = 0x1b40600c,
+    SDL_PIXELFORMAT_RGBA128_FLOAT = 0x1b208010,
+    SDL_PIXELFORMAT_ARGB128_FLOAT = 0x1b308010,
+    SDL_PIXELFORMAT_BGRA128_FLOAT = 0x1b508010,
+    SDL_PIXELFORMAT_ABGR128_FLOAT = 0x1b608010,
+    SDL_PIXELFORMAT_YV12 = 0x32315659,
+    SDL_PIXELFORMAT_IYUV = 0x56555949,
+    SDL_PIXELFORMAT_YUY2 = 0x32595559,
+    SDL_PIXELFORMAT_UYVY = 0x59565955,
+    SDL_PIXELFORMAT_YVYU = 0x55595659,
+    SDL_PIXELFORMAT_NV12 = 0x3231564e,
+    SDL_PIXELFORMAT_NV21 = 0x3132564e,
+    SDL_PIXELFORMAT_P010 = 0x30313050,
+    SDL_PIXELFORMAT_EXTERNAL_OES = 0x2053454f,
+    SDL_PIXELFORMAT_MJPG = 0x47504a4d,
+    SDL_PIXELFORMAT_RGBA32 = SDL_PIXELFORMAT_ABGR8888,
+    SDL_PIXELFORMAT_ARGB32 = SDL_PIXELFORMAT_BGRA8888,
+    SDL_PIXELFORMAT_BGRA32 = SDL_PIXELFORMAT_ARGB8888,
+    SDL_PIXELFORMAT_ABGR32 = SDL_PIXELFORMAT_RGBA8888,
+    SDL_PIXELFORMAT_RGBX32 = SDL_PIXELFORMAT_XBGR8888,
+    SDL_PIXELFORMAT_XRGB32 = SDL_PIXELFORMAT_BGRX8888,
+    SDL_PIXELFORMAT_BGRX32 = SDL_PIXELFORMAT_XRGB8888,
+    SDL_PIXELFORMAT_XBGR32 = SDL_PIXELFORMAT_RGBX8888,
+}
+SDL_ColorType :: enum (i32) {
+    SDL_COLOR_TYPE_UNKNOWN = 0,
+    SDL_COLOR_TYPE_RGB = 1,
+    SDL_COLOR_TYPE_YCBCR = 2,
+}
+SDL_ColorRange :: enum (i32) {
+    SDL_COLOR_RANGE_UNKNOWN = 0,
+    SDL_COLOR_RANGE_LIMITED = 1,
+    SDL_COLOR_RANGE_FULL = 2,
+}
+SDL_ColorPrimaries :: enum (i32) {
+    SDL_COLOR_PRIMARIES_UNKNOWN = 0,
+    SDL_COLOR_PRIMARIES_BT709 = 1,
+    SDL_COLOR_PRIMARIES_UNSPECIFIED = 2,
+    SDL_COLOR_PRIMARIES_BT470M = 4,
+    SDL_COLOR_PRIMARIES_BT470BG = 5,
+    SDL_COLOR_PRIMARIES_BT601 = 6,
+    SDL_COLOR_PRIMARIES_SMPTE240 = 7,
+    SDL_COLOR_PRIMARIES_GENERIC_FILM = 8,
+    SDL_COLOR_PRIMARIES_BT2020 = 9,
+    SDL_COLOR_PRIMARIES_XYZ = 10,
+    SDL_COLOR_PRIMARIES_SMPTE431 = 11,
+    SDL_COLOR_PRIMARIES_SMPTE432 = 12,
+    SDL_COLOR_PRIMARIES_EBU3213 = 22,
+    SDL_COLOR_PRIMARIES_CUSTOM = 31,
+}
+SDL_TransferCharacteristics :: enum (i32) {
+    SDL_TRANSFER_CHARACTERISTICS_UNKNOWN = 0,
+    SDL_TRANSFER_CHARACTERISTICS_BT709 = 1,
+    SDL_TRANSFER_CHARACTERISTICS_UNSPECIFIED = 2,
+    SDL_TRANSFER_CHARACTERISTICS_GAMMA22 = 4,
+    SDL_TRANSFER_CHARACTERISTICS_GAMMA28 = 5,
+    SDL_TRANSFER_CHARACTERISTICS_BT601 = 6,
+    SDL_TRANSFER_CHARACTERISTICS_SMPTE240 = 7,
+    SDL_TRANSFER_CHARACTERISTICS_LINEAR = 8,
+    SDL_TRANSFER_CHARACTERISTICS_LOG100 = 9,
+    SDL_TRANSFER_CHARACTERISTICS_LOG100_SQRT10 = 10,
+    SDL_TRANSFER_CHARACTERISTICS_IEC61966 = 11,
+    SDL_TRANSFER_CHARACTERISTICS_BT1361 = 12,
+    SDL_TRANSFER_CHARACTERISTICS_SRGB = 13,
+    SDL_TRANSFER_CHARACTERISTICS_BT2020_10BIT = 14,
+    SDL_TRANSFER_CHARACTERISTICS_BT2020_12BIT = 15,
+    SDL_TRANSFER_CHARACTERISTICS_PQ = 16,
+    SDL_TRANSFER_CHARACTERISTICS_SMPTE428 = 17,
+    SDL_TRANSFER_CHARACTERISTICS_HLG = 18,
+    SDL_TRANSFER_CHARACTERISTICS_CUSTOM = 31,
+}
+SDL_MatrixCoefficients :: enum (i32) {
+    SDL_MATRIX_COEFFICIENTS_IDENTITY = 0,
+    SDL_MATRIX_COEFFICIENTS_BT709 = 1,
+    SDL_MATRIX_COEFFICIENTS_UNSPECIFIED = 2,
+    SDL_MATRIX_COEFFICIENTS_FCC = 4,
+    SDL_MATRIX_COEFFICIENTS_BT470BG = 5,
+    SDL_MATRIX_COEFFICIENTS_BT601 = 6,
+    SDL_MATRIX_COEFFICIENTS_SMPTE240 = 7,
+    SDL_MATRIX_COEFFICIENTS_YCGCO = 8,
+    SDL_MATRIX_COEFFICIENTS_BT2020_NCL = 9,
+    SDL_MATRIX_COEFFICIENTS_BT2020_CL = 10,
+    SDL_MATRIX_COEFFICIENTS_SMPTE2085 = 11,
+    SDL_MATRIX_COEFFICIENTS_CHROMA_DERIVED_NCL = 12,
+    SDL_MATRIX_COEFFICIENTS_CHROMA_DERIVED_CL = 13,
+    SDL_MATRIX_COEFFICIENTS_ICTCP = 14,
+    SDL_MATRIX_COEFFICIENTS_CUSTOM = 31,
+}
+SDL_ChromaLocation :: enum (i32) {
+    SDL_CHROMA_LOCATION_NONE = 0,
+    SDL_CHROMA_LOCATION_LEFT = 1,
+    SDL_CHROMA_LOCATION_CENTER = 2,
+    SDL_CHROMA_LOCATION_TOPLEFT = 3,
+}
+SDL_Colorspace :: enum (u32) {
+    SDL_COLORSPACE_UNKNOWN = 0,
+    SDL_COLORSPACE_SRGB = 0x120005a0,
+    SDL_COLORSPACE_SRGB_LINEAR = 0x12000500,
+    SDL_COLORSPACE_HDR10 = 0x12002600,
+    SDL_COLORSPACE_JPEG = 0x220004c6,
+    SDL_COLORSPACE_BT601_LIMITED = 0x211018c6,
+    SDL_COLORSPACE_BT601_FULL = 0x221018c6,
+    SDL_COLORSPACE_BT709_LIMITED = 0x21100421,
+    SDL_COLORSPACE_BT709_FULL = 0x22100421,
+    SDL_COLORSPACE_BT2020_LIMITED = 0x21102609,
+    SDL_COLORSPACE_BT2020_FULL = 0x22102609,
+    SDL_COLORSPACE_RGB_DEFAULT = SDL_COLORSPACE_SRGB,
+    SDL_COLORSPACE_YUV_DEFAULT = SDL_COLORSPACE_JPEG,
+}
+SDL_Color :: struct { r: Uint8, g: Uint8, b: Uint8, a: Uint8 }
+SDL_FColor :: struct { r: f32, g: f32, b: f32, a: f32 }
+SDL_Palette :: struct {
+    ncolors: i32,
+    colors: *SDL_Color,
+    version: Uint32,
+    refcount: i32,
+}
+SDL_PixelFormatDetails :: struct {
+    format: SDL_PixelFormat,
+    bits_per_pixel: Uint8,
+    bytes_per_pixel: Uint8,
+    padding: [2]Uint8,
+    Rmask: Uint32,
+    Gmask: Uint32,
+    Bmask: Uint32,
+    Amask: Uint32,
+    Rbits: Uint8,
+    Gbits: Uint8,
+    Bbits: Uint8,
+    Abits: Uint8,
+    Rshift: Uint8,
+    Gshift: Uint8,
+    Bshift: Uint8,
+    Ashift: Uint8,
+}
+SDL_GetPixelFormatName :: extern proc(format: SDL_PixelFormat) *const u8
+SDL_GetMasksForPixelFormat :: extern proc(format: SDL_PixelFormat, bpp: *i32, Rmask: *Uint32, Gmask: *Uint32, Bmask: *Uint32, Amask: *Uint32) bool
+SDL_GetPixelFormatForMasks :: extern proc(bpp: i32, Rmask: Uint32, Gmask: Uint32, Bmask: Uint32, Amask: Uint32) SDL_PixelFormat
+SDL_GetPixelFormatDetails :: extern proc(format: SDL_PixelFormat) *const SDL_PixelFormatDetails
+SDL_CreatePalette :: extern proc(ncolors: i32) *SDL_Palette
+SDL_SetPaletteColors :: extern proc(palette: *SDL_Palette, colors: *const SDL_Color, firstcolor: i32, ncolors: i32) bool
+SDL_DestroyPalette :: extern proc(palette: *SDL_Palette)
+SDL_MapRGB :: extern proc(format: *const SDL_PixelFormatDetails, palette: *const SDL_Palette, r: Uint8, g: Uint8, b: Uint8) Uint32
+SDL_MapRGBA :: extern proc(format: *const SDL_PixelFormatDetails, palette: *const SDL_Palette, r: Uint8, g: Uint8, b: Uint8, a: Uint8) Uint32
+SDL_GetRGB :: extern proc(pixel: Uint32, format: *const SDL_PixelFormatDetails, palette: *const SDL_Palette, r: *Uint8, g: *Uint8, b: *Uint8)
+SDL_GetRGBA :: extern proc(pixel: Uint32, format: *const SDL_PixelFormatDetails, palette: *const SDL_Palette, r: *Uint8, g: *Uint8, b: *Uint8, a: *Uint8)
+
+SDL_Point :: struct { x: i32, y: i32 }
+SDL_FPoint :: struct { x: f32, y: f32 }
+SDL_Rect :: struct { x: i32, y: i32, w: i32, h: i32 }
+SDL_FRect :: struct { x: f32, y: f32, w: f32, h: f32 }
+SDL_RectToFRect :: proc(rect: *const SDL_Rect, frect: *SDL_FRect) void {
+    frect.x = rect.x.(f32)
+    frect.y = rect.y.(f32)
+    frect.w = rect.w.(f32)
+    frect.h = rect.h.(f32)
+}
+SDL_PointInRect :: proc(p: *const SDL_Point, r: *const SDL_Rect) bool {
+    if p.^i64 == 0 or r.^i64 == 0 {
+        return false
+    }
+    return p.x >= r.x and p.x < (r.x + r.w) and p.y >= r.y and p.y < (r.y + r.h)
+}
+SDL_RectEmpty :: proc(r: *const SDL_Rect) bool {
+    if r.^i64 == 0 {
+        return true
+    }
+    return r.w <= 0 or r.h <= 0
+}
+SDL_RectsEqual :: proc(a: *const SDL_Rect, b: *const SDL_Rect) bool {
+    if a.^i64 == 0 or b.^i64 == 0 {
+        return false
+    }
+    return a.x == b.x and a.y == b.y and a.w == b.w and a.h == b.h
+}
+SDL_HasRectIntersection :: extern proc(A: *const SDL_Rect, B: *const SDL_Rect) bool
+SDL_GetRectIntersection :: extern proc(A: *const SDL_Rect, B: *const SDL_Rect, result: *SDL_Rect) bool
+SDL_GetRectUnion :: extern proc(A: *const SDL_Rect, B: *const SDL_Rect, result: *SDL_Rect) bool
+SDL_GetRectEnclosingPoints :: extern proc(points: *const SDL_Point, count: i32, clip: *const SDL_Rect, result: *SDL_Rect) bool
+SDL_GetRectAndLineIntersection :: extern proc(rect: *const SDL_Rect, X1: *i32, Y1: *i32, X2: *i32, Y2: *i32) bool
+
+SDL_PointInRectFloat :: proc(p: *const SDL_FPoint, r: *const SDL_FRect) bool {
+    if p.^i64 == 0 or r.^i64 == 0 {
+        return false
+    }
+    return p.x >= r.x and p.x <= (r.x + r.w) and p.y >= r.y and p.y <= (r.y + r.h)
+}
+
+SDL_RectEmptyFloat :: proc(r: *const SDL_FRect) bool {
+    if r.^i64 == 0 {
+        return true
+    }
+    return r.w < 0.0 or r.h < 0.0
+}
+
+SDL_RectsEqualEpsilon :: proc(a: *const SDL_FRect, b: *const SDL_FRect, epsilon: f32) bool {
+    if (a.^i64 == b.^i64) {
+        return true
+    }
+    if a.^i64 == 0 or b.^i64 == 0 {
+        return false
+    }
+    return SDL_fabsf(a.x - b.x) <= epsilon and SDL_fabsf(a.y - b.y) <= epsilon and SDL_fabsf(a.w - b.w) <= epsilon and SDL_fabsf(a.h - b.h) <= epsilon
+}
+
+SDL_RectsEqualFloat :: proc(a: *const SDL_FRect, b: *const SDL_FRect) bool {
+    return SDL_RectsEqualEpsilon(a, b, 1.1920929e-07)
+}
+
+SDL_HasRectIntersectionFloat :: extern proc(A: *const SDL_FRect, B: *const SDL_FRect) bool
+SDL_GetRectIntersectionFloat :: extern proc(A: *const SDL_FRect, B: *const SDL_FRect, result: *SDL_FRect) bool
+SDL_GetRectUnionFloat :: extern proc(A: *const SDL_FRect, B: *const SDL_FRect, result: *SDL_FRect) bool
+SDL_GetRectEnclosingPointsFloat :: extern proc(points: *const SDL_FPoint, count: i32, clip: *const SDL_FRect, result: *SDL_FRect) bool
+SDL_GetRectAndLineIntersectionFloat :: extern proc(rect: *const SDL_FRect, X1: *f32, Y1: *f32, X2: *f32, Y2: *f32) bool
+
+SDL_SurfaceFlags :: Uint32
+SDL_ScaleMode :: enum (i32) {
+    SDL_SCALEMODE_INVALID = -1,
+    SDL_SCALEMODE_NEAREST,
+    SDL_SCALEMODE_LINEAR,
+}
+SDL_FlipMode :: enum (i32) {
+    SDL_FLIP_NONE,
+    SDL_FLIP_HORIZONTAL,
+    SDL_FLIP_VERTICAL,
+}
+SDL_Surface :: struct {
+    flags: SDL_SurfaceFlags,
+    format: SDL_PixelFormat,
+    w: i32,
+    h: i32,
+    pitch: i32,
+    pixels: *void,
+    refcount: i32,
+    reserved: *void,
+}
+
+SDL_CreateSurface :: extern proc(width: i32, height: i32, format: SDL_PixelFormat) *SDL_Surface
+SDL_CreateSurfaceFrom :: extern proc(width: i32, height: i32, format: SDL_PixelFormat, pixels: *void, pitch: i32) *SDL_Surface
+SDL_DestroySurface :: extern proc(surface: *SDL_Surface)
+SDL_GetSurfaceProperties :: extern proc(surface: *SDL_Surface) SDL_PropertiesID
+SDL_SetSurfaceColorspace :: extern proc(surface: *SDL_Surface, colorspace: SDL_Colorspace) bool
+SDL_GetSurfaceColorspace :: extern proc(surface: *SDL_Surface) SDL_Colorspace
+SDL_CreateSurfacePalette :: extern proc(surface: *SDL_Surface) *SDL_Palette
+SDL_SetSurfacePalette :: extern proc(surface: *SDL_Surface, palette: *SDL_Palette) bool
+SDL_GetSurfacePalette :: extern proc(surface: *SDL_Surface) *SDL_Palette
+SDL_AddSurfaceAlternateImage :: extern proc(surface: *SDL_Surface, image: *SDL_Surface) bool
+SDL_SurfaceHasAlternateImages :: extern proc(surface: *SDL_Surface) bool
+SDL_GetSurfaceImages :: extern proc(surface: *SDL_Surface, count: *i32) **SDL_Surface
+SDL_RemoveSurfaceAlternateImages :: extern proc(surface: *SDL_Surface)
+SDL_LockSurface :: extern proc(surface: *SDL_Surface) bool
+SDL_UnlockSurface :: extern proc(surface: *SDL_Surface)
+SDL_LoadBMP_IO :: extern proc(src: *SDL_IOStream, closeio: bool) *SDL_Surface
+SDL_LoadBMP :: extern proc(file: *const u8) *SDL_Surface
+SDL_SaveBMP_IO :: extern proc(surface: *SDL_Surface, dst: *SDL_IOStream, closeio: bool) bool
+SDL_SaveBMP :: extern proc(surface: *SDL_Surface, file: *const u8) bool
+SDL_SetSurfaceRLE :: extern proc(surface: *SDL_Surface, enabled: bool) bool
+SDL_SurfaceHasRLE :: extern proc(surface: *SDL_Surface) bool
+SDL_SetSurfaceColorKey :: extern proc(surface: *SDL_Surface, enabled: bool, key: Uint32) bool
+SDL_SurfaceHasColorKey :: extern proc(surface: *SDL_Surface) bool
+SDL_GetSurfaceColorKey :: extern proc(surface: *SDL_Surface, key: *Uint32) bool
+SDL_SetSurfaceColorMod :: extern proc(surface: *SDL_Surface, r: Uint8, g: Uint8, b: Uint8) bool
+SDL_GetSurfaceColorMod :: extern proc(surface: *SDL_Surface, r: *Uint8, g: *Uint8, b: *Uint8) bool
+SDL_SetSurfaceAlphaMod :: extern proc(surface: *SDL_Surface, alpha: Uint8) bool
+SDL_GetSurfaceAlphaMod :: extern proc(surface: *SDL_Surface, alpha: *Uint8) bool
+SDL_SetSurfaceBlendMode :: extern proc(surface: *SDL_Surface, blendMode: SDL_BlendMode) bool
+SDL_GetSurfaceBlendMode :: extern proc(surface: *SDL_Surface, blendMode: *SDL_BlendMode) bool
+SDL_SetSurfaceClipRect :: extern proc(surface: *SDL_Surface, rect: *const SDL_Rect) bool
+SDL_GetSurfaceClipRect :: extern proc(surface: *SDL_Surface, rect: *SDL_Rect) bool
+SDL_FlipSurface :: extern proc(surface: *SDL_Surface, flip: SDL_FlipMode) bool
+SDL_DuplicateSurface :: extern proc(surface: *SDL_Surface) *SDL_Surface
+SDL_ScaleSurface :: extern proc(surface: *SDL_Surface, width: i32, height: i32, scaleMode: SDL_ScaleMode) *SDL_Surface
+SDL_ConvertSurface :: extern proc(surface: *SDL_Surface, format: SDL_PixelFormat) *SDL_Surface
+SDL_ConvertSurfaceAndColorspace :: extern proc(surface: *SDL_Surface, format: SDL_PixelFormat, palette: *SDL_Palette, colorspace: SDL_Colorspace, props: SDL_PropertiesID) *SDL_Surface
+SDL_ConvertPixels :: extern proc(width: i32, height: i32, src_format: SDL_PixelFormat, src: *const void, src_pitch: i32, dst_format: SDL_PixelFormat, dst: *void, dst_pitch: i32) bool
+SDL_ConvertPixelsAndColorspace :: extern proc(width: i32, height: i32, src_format: SDL_PixelFormat, src_colorspace: SDL_Colorspace, src_properties: SDL_PropertiesID, src: *const void, src_pitch: i32, dst_format: SDL_PixelFormat, dst_colorspace: SDL_Colorspace, dst_properties: SDL_PropertiesID, dst: *void, dst_pitch: i32) bool
+SDL_PremultiplyAlpha :: extern proc(width: i32, height: i32, src_format: SDL_PixelFormat, src: *const void, src_pitch: i32, dst_format: SDL_PixelFormat, dst: *void, dst_pitch: i32, linear: bool) bool
+SDL_PremultiplySurfaceAlpha :: extern proc(surface: *SDL_Surface, linear: bool) bool
+SDL_ClearSurface :: extern proc(surface: *SDL_Surface, r: f32, g: f32, b: f32, a: f32) bool
+SDL_FillSurfaceRect :: extern proc(dst: *SDL_Surface, rect: *const SDL_Rect, color: Uint32) bool
+SDL_FillSurfaceRects :: extern proc(dst: *SDL_Surface, rects: *const SDL_Rect, count: i32, color: Uint32) bool
+SDL_BlitSurface :: extern proc(src: *SDL_Surface, srcrect: *const SDL_Rect, dst: *SDL_Surface, dstrect: *SDL_Rect) bool
+SDL_BlitSurfaceUnchecked :: extern proc(src: *SDL_Surface, srcrect: *const SDL_Rect, dst: *SDL_Surface, dstrect: *SDL_Rect) bool
+SDL_BlitSurfaceScaled :: extern proc(src: *SDL_Surface, srcrect: *const SDL_Rect, dst: *SDL_Surface, dstrect: *SDL_Rect, scaleMode: SDL_ScaleMode) bool
+SDL_BlitSurfaceUncheckedScaled :: extern proc(src: *SDL_Surface, srcrect: *const SDL_Rect, dst: *SDL_Surface, dstrect: *SDL_Rect, scaleMode: SDL_ScaleMode) bool
+SDL_StretchSurface :: extern proc(src: *SDL_Surface, srcrect: *const SDL_Rect, dst: *SDL_Surface, dstrect: *SDL_Rect, scaleMode: SDL_ScaleMode) bool
+
+SDL_SetClipboardText :: extern proc(text: *const u8) bool
+SDL_GetClipboardText :: extern proc() *u8
+SDL_HasClipboardText :: extern proc() bool
+SDL_SetPrimarySelectionText :: extern proc(text: *const u8) bool
+SDL_GetPrimarySelectionText :: extern proc() *u8
+SDL_HasPrimarySelectionText :: extern proc() bool
+SDL_ClipboardDataCallback :: fn(userdata: *void, mime_type: *const u8, size: *usize) *const void
+SDL_ClipboardCleanupCallback :: fn(userdata: *void) void
+SDL_SetClipboardData :: extern proc(callback: SDL_ClipboardDataCallback, cleanup: SDL_ClipboardCleanupCallback, userdata: *void, mime_types: **const u8, num_mime_types: usize) bool
+SDL_ClearClipboardData :: extern proc() bool
+SDL_GetClipboardData :: extern proc(mime_type: *const u8, size: *usize) *void
+SDL_HasClipboardData :: extern proc(mime_type: *const u8) bool
+SDL_GetClipboardMimeTypes :: extern proc(num_mime_types: *usize) **u8
+
+SDL_GetNumLogicalCPUCores :: extern proc() i32
+SDL_GetCPUCacheLineSize :: extern proc() i32
+SDL_HasAltiVec :: extern proc() bool
+SDL_HasMMX :: extern proc() bool
+SDL_HasSSE :: extern proc() bool
+SDL_HasSSE2 :: extern proc() bool
+SDL_HasSSE3 :: extern proc() bool
+SDL_HasSSE41 :: extern proc() bool
+SDL_HasSSE42 :: extern proc() bool
+SDL_HasAVX :: extern proc() bool
+SDL_HasAVX2 :: extern proc() bool
+SDL_HasAVX512F :: extern proc() bool
+SDL_HasARMSIMD :: extern proc() bool
+SDL_HasNEON :: extern proc() bool
+SDL_HasLSX :: extern proc() bool
+SDL_HasLASX :: extern proc() bool
+SDL_GetSystemRAM :: extern proc() i32
+SDL_GetSIMDAlignment :: extern proc() usize
+
+SDL_DisplayID :: Uint32
+SDL_WindowID :: Uint32
+SDL_SystemTheme :: enum (i32) {
+    SDL_SYSTEM_THEME_UNKNOWN,
+    SDL_SYSTEM_THEME_LIGHT,
+    SDL_SYSTEM_THEME_DARK,
+}
+SDL_DisplayModeData :: struct {}
+SDL_DisplayMode :: struct {
+    displayID: SDL_DisplayID,
+    format: SDL_PixelFormat,
+    w: i32,
+    h: i32,
+    pixel_density: f32,
+    refresh_rate: f32,
+    refresh_rate_numerator: i32,
+    refresh_rate_denominator: i32,
+    internal: *SDL_DisplayModeData,
+}
+SDL_DisplayOrientation :: enum (i32) {
+    SDL_ORIENTATION_UNKNOWN,
+    SDL_ORIENTATION_LANDSCAPE,
+    SDL_ORIENTATION_LANDSCAPE_FLIPPED,
+    SDL_ORIENTATION_PORTRAIT,
+    SDL_ORIENTATION_PORTRAIT_FLIPPED,
+}
+SDL_Window :: struct {}
+SDL_WindowFlags :: u64
+SDL_FlashOperation :: enum (i32) {
+    SDL_FLASH_CANCEL,
+    SDL_FLASH_BRIEFLY,
+    SDL_FLASH_UNTIL_FOCUSED,
+}
+SDL_GLContextState :: struct {}
+SDL_GLContext :: *SDL_GLContextState
+SDL_EGLDisplay :: *void
+SDL_EGLConfig :: *void
+SDL_EGLSurface :: *void
+SDL_EGLAttrib :: i64
+SDL_EGLint :: i32
+SDL_EGLAttribArrayCallback :: fn(userdata: *void) *SDL_EGLAttrib
+SDL_EGLIntArrayCallback :: fn(userdata: *void, display: SDL_EGLDisplay, config: SDL_EGLConfig) *SDL_EGLint
+SDL_GLAttr :: enum (i32) {
+    SDL_GL_RED_SIZE,
+    SDL_GL_GREEN_SIZE,
+    SDL_GL_BLUE_SIZE,
+    SDL_GL_ALPHA_SIZE,
+    SDL_GL_BUFFER_SIZE,
+    SDL_GL_DOUBLEBUFFER,
+    SDL_GL_DEPTH_SIZE,
+    SDL_GL_STENCIL_SIZE,
+    SDL_GL_ACCUM_RED_SIZE,
+    SDL_GL_ACCUM_GREEN_SIZE,
+    SDL_GL_ACCUM_BLUE_SIZE,
+    SDL_GL_ACCUM_ALPHA_SIZE,
+    SDL_GL_STEREO,
+    SDL_GL_MULTISAMPLEBUFFERS,
+    SDL_GL_MULTISAMPLESAMPLES,
+    SDL_GL_ACCELERATED_VISUAL,
+    SDL_GL_RETAINED_BACKING,
+    SDL_GL_CONTEXT_MAJOR_VERSION,
+    SDL_GL_CONTEXT_MINOR_VERSION,
+    SDL_GL_CONTEXT_FLAGS,
+    SDL_GL_CONTEXT_PROFILE_MASK,
+    SDL_GL_SHARE_WITH_CURRENT_CONTEXT,
+    SDL_GL_FRAMEBUFFER_SRGB_CAPABLE,
+    SDL_GL_CONTEXT_RELEASE_BEHAVIOR,
+    SDL_GL_CONTEXT_RESET_NOTIFICATION,
+    SDL_GL_CONTEXT_NO_ERROR,
+    SDL_GL_FLOATBUFFERS,
+    SDL_GL_EGL_PLATFORM,
+}
+SDL_GLProfile :: u32
+SDL_GLContextFlag :: u32
+SDL_GLContextReleaseFlag :: u32
+SDL_GLContextResetNotification :: u32
+
+SDL_GetNumVideoDrivers :: extern proc() i32
+SDL_GetVideoDriver :: extern proc(index: i32) *const u8
+SDL_GetCurrentVideoDriver :: extern proc() *const u8
+SDL_GetSystemTheme :: extern proc() SDL_SystemTheme
+SDL_GetDisplays :: extern proc(count: *i32) *SDL_DisplayID
+SDL_GetPrimaryDisplay :: extern proc() SDL_DisplayID
+SDL_GetDisplayProperties :: extern proc(displayID: SDL_DisplayID) SDL_PropertiesID
+SDL_GetDisplayName :: extern proc(displayID: SDL_DisplayID) *const u8
+SDL_GetDisplayBounds :: extern proc(displayID: SDL_DisplayID, rect: *SDL_Rect) bool
+SDL_GetDisplayUsableBounds :: extern proc(displayID: SDL_DisplayID, rect: *SDL_Rect) bool
+SDL_GetNaturalDisplayOrientation :: extern proc(displayID: SDL_DisplayID) SDL_DisplayOrientation
+SDL_GetCurrentDisplayOrientation :: extern proc(displayID: SDL_DisplayID) SDL_DisplayOrientation
+SDL_GetDisplayContentScale :: extern proc(displayID: SDL_DisplayID) f32
+SDL_GetFullscreenDisplayModes :: extern proc(displayID: SDL_DisplayID, count: *i32) **SDL_DisplayMode
+SDL_GetClosestFullscreenDisplayMode :: extern proc(displayID: SDL_DisplayID, w: i32, h: i32, refresh_rate: f32, include_high_density_modes: bool, closest: *SDL_DisplayMode) bool
+SDL_GetDesktopDisplayMode :: extern proc(displayID: SDL_DisplayID) *const SDL_DisplayMode
+SDL_GetCurrentDisplayMode :: extern proc(displayID: SDL_DisplayID) *const SDL_DisplayMode
+SDL_GetDisplayForPoint :: extern proc(point: *const SDL_Point) SDL_DisplayID
+SDL_GetDisplayForRect :: extern proc(rect: *const SDL_Rect) SDL_DisplayID
+SDL_GetDisplayForWindow :: extern proc(window: *SDL_Window) SDL_DisplayID
+SDL_GetWindowPixelDensity :: extern proc(window: *SDL_Window) f32
+SDL_GetWindowDisplayScale :: extern proc(window: *SDL_Window) f32
+SDL_SetWindowFullscreenMode :: extern proc(window: *SDL_Window, mode: *const SDL_DisplayMode) bool
+SDL_GetWindowFullscreenMode :: extern proc(window: *SDL_Window) *const SDL_DisplayMode
+SDL_GetWindowICCProfile :: extern proc(window: *SDL_Window, size: *usize) *void
+SDL_GetWindowPixelFormat :: extern proc(window: *SDL_Window) SDL_PixelFormat
+SDL_GetWindows :: extern proc(count: *i32) **SDL_Window
+SDL_CreateWindow :: extern proc(title: *const u8, w: i32, h: i32, flags: SDL_WindowFlags) *SDL_Window
+SDL_CreatePopupWindow :: extern proc(parent: *SDL_Window, offset_x: i32, offset_y: i32, w: i32, h: i32, flags: SDL_WindowFlags) *SDL_Window
+SDL_CreateWindowWithProperties :: extern proc(props: SDL_PropertiesID) *SDL_Window
+SDL_GetWindowID :: extern proc(window: *SDL_Window) SDL_WindowID
+SDL_GetWindowFromID :: extern proc(id: SDL_WindowID) *SDL_Window
+SDL_GetWindowParent :: extern proc(window: *SDL_Window) *SDL_Window
+SDL_GetWindowProperties :: extern proc(window: *SDL_Window) SDL_PropertiesID
+SDL_GetWindowFlags :: extern proc(window: *SDL_Window) SDL_WindowFlags
+SDL_SetWindowTitle :: extern proc(window: *SDL_Window, title: *const u8) bool
+SDL_GetWindowTitle :: extern proc(window: *SDL_Window) *const u8
+SDL_SetWindowIcon :: extern proc(window: *SDL_Window, icon: *SDL_Surface) bool
+SDL_SetWindowPosition :: extern proc(window: *SDL_Window, x: i32, y: i32) bool
+SDL_GetWindowPosition :: extern proc(window: *SDL_Window, x: *i32, y: *i32) bool
+SDL_SetWindowSize :: extern proc(window: *SDL_Window, w: i32, h: i32) bool
+SDL_GetWindowSize :: extern proc(window: *SDL_Window, w: *i32, h: *i32) bool
+SDL_GetWindowSafeArea :: extern proc(window: *SDL_Window, rect: *SDL_Rect) bool
+SDL_SetWindowAspectRatio :: extern proc(window: *SDL_Window, min_aspect: f32, max_aspect: f32) bool
+SDL_GetWindowAspectRatio :: extern proc(window: *SDL_Window, min_aspect: *f32, max_aspect: *f32) bool
+SDL_GetWindowBordersSize :: extern proc(window: *SDL_Window, top: *i32, left: *i32, bottom: *i32, right: *i32) bool
+SDL_GetWindowSizeInPixels :: extern proc(window: *SDL_Window, w: *i32, h: *i32) bool
+SDL_SetWindowMinimumSize :: extern proc(window: *SDL_Window, min_w: i32, min_h: i32) bool
+SDL_GetWindowMinimumSize :: extern proc(window: *SDL_Window, w: *i32, h: *i32) bool
+SDL_SetWindowMaximumSize :: extern proc(window: *SDL_Window, max_w: i32, max_h: i32) bool
+SDL_GetWindowMaximumSize :: extern proc(window: *SDL_Window, w: *i32, h: *i32) bool
+SDL_SetWindowBordered :: extern proc(window: *SDL_Window, bordered: bool) bool
+SDL_SetWindowResizable :: extern proc(window: *SDL_Window, resizable: bool) bool
+SDL_HitTestResult :: enum (i32) {
+    SDL_HITTEST_NORMAL,
+    SDL_HITTEST_DRAGGABLE,
+    SDL_HITTEST_RESIZE_TOPLEFT,
+    SDL_HITTEST_RESIZE_TOP,
+    SDL_HITTEST_RESIZE_TOPRIGHT,
+    SDL_HITTEST_RESIZE_RIGHT,
+    SDL_HITTEST_RESIZE_BOTTOMRIGHT,
+    SDL_HITTEST_RESIZE_BOTTOM,
+    SDL_HITTEST_RESIZE_BOTTOMLEFT,
+    SDL_HITTEST_RESIZE_LEFT,
+}
+SDL_HitTest :: fn(win: *SDL_Window, area: *const SDL_Point, data: *void) SDL_HitTestResult
+SDL_SetWindowHitTest :: extern proc(window: *SDL_Window, callback: SDL_HitTest, callback_data: *void) bool
+SDL_SetWindowShape :: extern proc(window: *SDL_Window, shape: *SDL_Surface) bool
+SDL_FlashWindow :: extern proc(window: *SDL_Window, operation: SDL_FlashOperation) bool
+SDL_DestroyWindow :: extern proc(window: *SDL_Window)
+SDL_ScreenSaverEnabled :: extern proc() bool
+SDL_EnableScreenSaver :: extern proc() bool
+SDL_DisableScreenSaver :: extern proc() bool
+SDL_GL_LoadLibrary :: extern proc(path: *const u8) bool
+SDL_GL_GetProcAddress :: extern proc(proc_: *const u8) SDL_FunctionPointer
+SDL_EGL_GetProcAddress :: extern proc(proc_: *const u8) SDL_FunctionPointer
+SDL_GL_UnloadLibrary :: extern proc()
+SDL_GL_ExtensionSupported :: extern proc(extension: *const u8) bool
+SDL_GL_ResetAttributes :: extern proc()
+SDL_GL_SetAttribute :: extern proc(attr: SDL_GLAttr, value: i32) bool
+SDL_GL_GetAttribute :: extern proc(attr: SDL_GLAttr, value: *i32) bool
+SDL_GL_CreateContext :: extern proc(window: *SDL_Window) SDL_GLContext
+SDL_GL_MakeCurrent :: extern proc(window: *SDL_Window, context: SDL_GLContext) bool
+SDL_GL_GetCurrentWindow :: extern proc() *SDL_Window
+SDL_GL_GetCurrentContext :: extern proc() SDL_GLContext
+SDL_EGL_GetCurrentDisplay :: extern proc() SDL_EGLDisplay
+SDL_EGL_GetCurrentConfig :: extern proc() SDL_EGLConfig
+SDL_EGL_GetWindowSurface :: extern proc(window: *SDL_Window) SDL_EGLSurface
+SDL_EGL_SetAttributeCallbacks :: extern proc(platformAttribCallback: SDL_EGLAttribArrayCallback, surfaceAttribCallback: SDL_EGLIntArrayCallback, contextAttribCallback: SDL_EGLIntArrayCallback, userdata: *void)
+SDL_GL_SetSwapInterval :: extern proc(interval: i32) bool
+SDL_GL_GetSwapInterval :: extern proc(interval: *i32) bool
+SDL_GL_SwapWindow :: extern proc(window: *SDL_Window) bool
+SDL_GL_DestroyContext :: extern proc(context: SDL_GLContext) bool
+
+SDL_DialogFileFilter :: struct { name: *const u8, pattern: *const u8 }
+SDL_DialogFileCallback :: fn(userdata: *void, filelist: **const u8, filter: i32) void
+SDL_ShowOpenFileDialog :: extern proc(callback: SDL_DialogFileCallback, userdata: *void, window: *SDL_Window, filters: *const SDL_DialogFileFilter, nfilters: i32, default_location: *const u8, allow_many: bool)
+SDL_ShowSaveFileDialog :: extern proc(callback: SDL_DialogFileCallback, userdata: *void, window: *SDL_Window, filters: *const SDL_DialogFileFilter, nfilters: i32, default_location: *const u8)
+SDL_ShowOpenFolderDialog :: extern proc(callback: SDL_DialogFileCallback, userdata: *void, window: *SDL_Window, default_location: *const u8, allow_many: bool)
+SDL_FileDialogType :: enum (i32) {
+    SDL_FILEDIALOG_OPENFILE,
+    SDL_FILEDIALOG_SAVEFILE,
+    SDL_FILEDIALOG_OPENFOLDER,
+}
+SDL_ShowFileDialogWithProperties :: extern proc(r#type: SDL_FileDialogType, callback: SDL_DialogFileCallback, userdata: *void, props: SDL_PropertiesID)
+
+SDL_GUID :: struct { data: [16]Uint8 }
+SDL_GUIDToString :: extern proc(guid: SDL_GUID, pszGUID: *u8, cbGUID: i32)
+SDL_StringToGUID :: extern proc(pchGUID: *const u8) SDL_GUID
+
+SDL_PowerState :: enum (i32) {
+    SDL_POWERSTATE_ERROR = -1,
+    SDL_POWERSTATE_UNKNOWN,
+    SDL_POWERSTATE_ON_BATTERY,
+    SDL_POWERSTATE_NO_BATTERY,
+    SDL_POWERSTATE_CHARGING,
+    SDL_POWERSTATE_CHARGED,
+}
+SDL_GetPowerInfo :: extern proc(seconds: *i32, percent: *i32) SDL_PowerState
+
+SDL_Sensor :: struct {}
+SDL_SensorID :: Uint32
+SDL_SensorType :: enum (i32) {
+    SDL_SENSOR_INVALID = -1,
+    SDL_SENSOR_UNKNOWN,
+    SDL_SENSOR_ACCEL,
+    SDL_SENSOR_GYRO,
+    SDL_SENSOR_ACCEL_L,
+    SDL_SENSOR_GYRO_L,
+    SDL_SENSOR_ACCEL_R,
+    SDL_SENSOR_GYRO_R,
+    SDL_SENSOR_COUNT,
+}
+SDL_GetSensors :: extern proc(count: *i32) *SDL_SensorID
+SDL_GetSensorNameForID :: extern proc(instance_id: SDL_SensorID) *const u8
+SDL_GetSensorTypeForID :: extern proc(instance_id: SDL_SensorID) SDL_SensorType
+SDL_GetSensorNonPortableTypeForID :: extern proc(instance_id: SDL_SensorID) i32
+SDL_OpenSensor :: extern proc(instance_id: SDL_SensorID) *SDL_Sensor
+SDL_GetSensorFromID :: extern proc(instance_id: SDL_SensorID) *SDL_Sensor
+SDL_GetSensorProperties :: extern proc(sensor: *SDL_Sensor) SDL_PropertiesID
+SDL_GetSensorName :: extern proc(sensor: *SDL_Sensor) *const u8
+SDL_GetSensorType :: extern proc(sensor: *SDL_Sensor) SDL_SensorType
+SDL_GetSensorNonPortableType :: extern proc(sensor: *SDL_Sensor) i32
+SDL_GetSensorID :: extern proc(sensor: *SDL_Sensor) SDL_SensorID
+SDL_GetSensorData :: extern proc(sensor: *SDL_Sensor, data: *f32, num_values: i32) bool
+SDL_CloseSensor :: extern proc(sensor: *SDL_Sensor)
+SDL_UpdateSensors :: extern proc()
+
+SDL_Joystick :: struct {}
+SDL_JoystickID :: Uint32
+SDL_JoystickType :: enum (i32) {
+    SDL_JOYSTICK_TYPE_UNKNOWN,
+    SDL_JOYSTICK_TYPE_GAMEPAD,
+    SDL_JOYSTICK_TYPE_WHEEL,
+    SDL_JOYSTICK_TYPE_ARCADE_STICK,
+    SDL_JOYSTICK_TYPE_FLIGHT_STICK,
+    SDL_JOYSTICK_TYPE_DANCE_PAD,
+    SDL_JOYSTICK_TYPE_GUITAR,
+    SDL_JOYSTICK_TYPE_DRUM_KIT,
+    SDL_JOYSTICK_TYPE_ARCADE_PAD,
+    SDL_JOYSTICK_TYPE_THROTTLE,
+    SDL_JOYSTICK_TYPE_COUNT,
+}
+SDL_JoystickConnectionState :: enum (i32) {
+    SDL_JOYSTICK_CONNECTION_INVALID = -1,
+    SDL_JOYSTICK_CONNECTION_UNKNOWN,
+    SDL_JOYSTICK_CONNECTION_WIRED,
+    SDL_JOYSTICK_CONNECTION_WIRELESS,
+}
+SDL_LockJoysticks :: extern proc()
+SDL_UnlockJoysticks :: extern proc()
+SDL_HasJoystick :: extern proc() bool
+SDL_GetJoysticks :: extern proc(count: *i32) *SDL_JoystickID
+SDL_GetJoystickNameForID :: extern proc(instance_id: SDL_JoystickID) *const u8
+SDL_GetJoystickPathForID :: extern proc(instance_id: SDL_JoystickID) *const u8
+SDL_GetJoystickPlayerIndexForID :: extern proc(instance_id: SDL_JoystickID) i32
+SDL_GetJoystickGUIDForID :: extern proc(instance_id: SDL_JoystickID) SDL_GUID
+SDL_GetJoystickVendorForID :: extern proc(instance_id: SDL_JoystickID) Uint16
+SDL_GetJoystickProductForID :: extern proc(instance_id: SDL_JoystickID) Uint16
+SDL_GetJoystickProductVersionForID :: extern proc(instance_id: SDL_JoystickID) Uint16
+SDL_GetJoystickTypeForID :: extern proc(instance_id: SDL_JoystickID) SDL_JoystickType
+SDL_OpenJoystick :: extern proc(instance_id: SDL_JoystickID) *SDL_Joystick
+SDL_GetJoystickFromID :: extern proc(instance_id: SDL_JoystickID) *SDL_Joystick
+SDL_GetJoystickFromPlayerIndex :: extern proc(player_index: i32) *SDL_Joystick
+
+SDL_VirtualJoystickTouchpadDesc :: struct {
+    nfingers: Uint16,
+    padding: [3]Uint16,
+}
+SDL_VirtualJoystickSensorDesc :: struct {
+    r#type: SDL_SensorType,
+    rate: f32,
+}
+SDL_VirtualJoystickDesc :: struct {
+    version: Uint32,
+    r#type: Uint16,
+    padding: Uint16,
+    vendor_id: Uint16,
+    product_id: Uint16,
+    naxes: Uint16,
+    nbuttons: Uint16,
+    nballs: Uint16,
+    nhats: Uint16,
+    ntouchpads: Uint16,
+    nsensors: Uint16,
+    padding2: [2]Uint16,
+    button_mask: Uint32,
+    axis_mask: Uint32,
+    name: *const u8,
+    touchpads: *const SDL_VirtualJoystickTouchpadDesc,
+    sensors: *const SDL_VirtualJoystickSensorDesc,
+    userdata: *void,
+    Update: fn(userdata: *void) void,
+    SetPlayerIndex: fn(userdata: *void, player_index: i32) void,
+    Rumble: fn(userdata: *void, low_frequency_rumble: Uint16, high_frequency_rumble: Uint16) bool,
+    RumbleTriggers: fn(userdata: *void, left_rumble: Uint16, right_rumble: Uint16) bool,
+    SetLED: fn(userdata: *void, red: Uint8, green: Uint8, blue: Uint8) bool,
+    SendEffect: fn(userdata: *void, data: *const void, size: i32) bool,
+    SetSensorsEnabled: fn(userdata: *void, enabled: bool) bool,
+    Cleanup: fn(userdata: *void) void,
+}
+SDL_AttachVirtualJoystick :: extern proc(desc: *SDL_VirtualJoystickDesc) SDL_JoystickID
+SDL_DetachVirtualJoystick :: extern proc(instance_id: SDL_JoystickID) bool
+SDL_IsJoystickVirtual :: extern proc(instance_id: SDL_JoystickID) bool
+SDL_SetJoystickVirtualAxis :: extern proc(joystick: *SDL_Joystick, axis: i32, value: Sint16) bool
+SDL_SetJoystickVirtualBall :: extern proc(joystick: *SDL_Joystick, ball: i32, xrel: Sint16, yrel: Sint16) bool
+SDL_SetJoystickVirtualButton :: extern proc(joystick: *SDL_Joystick, button: i32, down: bool) bool
+SDL_SetJoystickVirtualHat :: extern proc(joystick: *SDL_Joystick, hat: i32, value: Uint8) bool
+SDL_SetJoystickVirtualTouchpad :: extern proc(joystick: *SDL_Joystick, touchpad: i32, finger: i32, down: bool, x: f32, y: f32, pressure: f32) bool
+SDL_SendJoystickVirtualSensorData :: extern proc(joystick: *SDL_Joystick, r#type: SDL_SensorType, sensor_timestamp: Uint64, data: *const f32, num_values: i32) bool
+SDL_GetJoystickProperties :: extern proc(joystick: *SDL_Joystick) SDL_PropertiesID
+SDL_GetJoystickName :: extern proc(joystick: *SDL_Joystick) *const u8
+SDL_GetJoystickPath :: extern proc(joystick: *SDL_Joystick) *const u8
+SDL_GetJoystickPlayerIndex :: extern proc(joystick: *SDL_Joystick) i32
+SDL_SetJoystickPlayerIndex :: extern proc(joystick: *SDL_Joystick, player_index: i32) bool
+SDL_GetJoystickGUID :: extern proc(joystick: *SDL_Joystick) SDL_GUID
+SDL_GetJoystickVendor :: extern proc(joystick: *SDL_Joystick) Uint16
+SDL_GetJoystickProduct :: extern proc(joystick: *SDL_Joystick) Uint16
+SDL_GetJoystickProductVersion :: extern proc(joystick: *SDL_Joystick) Uint16
+SDL_GetJoystickFirmwareVersion :: extern proc(joystick: *SDL_Joystick) Uint16
+SDL_GetJoystickSerial :: extern proc(joystick: *SDL_Joystick) *const u8
+SDL_GetJoystickType :: extern proc(joystick: *SDL_Joystick) SDL_JoystickType
+SDL_GetJoystickGUIDInfo :: extern proc(guid: SDL_GUID, vendor: *Uint16, product: *Uint16, version: *Uint16, crc16: *Uint16)
+SDL_JoystickConnected :: extern proc(joystick: *SDL_Joystick) bool
+SDL_GetJoystickID :: extern proc(joystick: *SDL_Joystick) SDL_JoystickID
+SDL_GetNumJoystickAxes :: extern proc(joystick: *SDL_Joystick) i32
+SDL_GetNumJoystickBalls :: extern proc(joystick: *SDL_Joystick) i32
+SDL_GetNumJoystickHats :: extern proc(joystick: *SDL_Joystick) i32
+SDL_GetNumJoystickButtons :: extern proc(joystick: *SDL_Joystick) i32
+SDL_SetJoystickEventsEnabled :: extern proc(enabled: bool)
+SDL_JoystickEventsEnabled :: extern proc() bool
+SDL_UpdateJoysticks :: extern proc()
+SDL_GetJoystickAxis :: extern proc(joystick: *SDL_Joystick, axis: i32) Sint16
+SDL_GetJoystickAxisInitialState :: extern proc(joystick: *SDL_Joystick, axis: i32, state: *Sint16) bool
+SDL_GetJoystickBall :: extern proc(joystick: *SDL_Joystick, ball: i32, dx: *i32, dy: *i32) bool
+SDL_GetJoystickHat :: extern proc(joystick: *SDL_Joystick, hat: i32) Uint8
+SDL_GetJoystickButton :: extern proc(joystick: *SDL_Joystick, button: i32) bool
+SDL_RumbleJoystick :: extern proc(joystick: *SDL_Joystick, low_frequency_rumble: Uint16, high_frequency_rumble: Uint16, duration_ms: Uint32) bool
+SDL_RumbleJoystickTriggers :: extern proc(joystick: *SDL_Joystick, left_rumble: Uint16, right_rumble: Uint16, duration_ms: Uint32) bool
+SDL_SetJoystickLED :: extern proc(joystick: *SDL_Joystick, red: Uint8, green: Uint8, blue: Uint8) bool
+SDL_SendJoystickEffect :: extern proc(joystick: *SDL_Joystick, data: *const void, size: i32) bool
+SDL_CloseJoystick :: extern proc(joystick: *SDL_Joystick)
+SDL_GetJoystickConnectionState :: extern proc(joystick: *SDL_Joystick) SDL_JoystickConnectionState
+SDL_GetJoystickPowerInfo :: extern proc(joystick: *SDL_Joystick, percent: *i32) SDL_PowerState
+
+SDL_Gamepad :: struct {}
+SDL_GamepadType :: enum (i32) {
+    SDL_GAMEPAD_TYPE_UNKNOWN = 0,
+    SDL_GAMEPAD_TYPE_STANDARD,
+    SDL_GAMEPAD_TYPE_XBOX360,
+    SDL_GAMEPAD_TYPE_XBOXONE,
+    SDL_GAMEPAD_TYPE_PS3,
+    SDL_GAMEPAD_TYPE_PS4,
+    SDL_GAMEPAD_TYPE_PS5,
+    SDL_GAMEPAD_TYPE_NINTENDO_SWITCH_PRO,
+    SDL_GAMEPAD_TYPE_NINTENDO_SWITCH_JOYCON_LEFT,
+    SDL_GAMEPAD_TYPE_NINTENDO_SWITCH_JOYCON_RIGHT,
+    SDL_GAMEPAD_TYPE_NINTENDO_SWITCH_JOYCON_PAIR,
+    SDL_GAMEPAD_TYPE_COUNT,
+}
+SDL_GamepadButton :: enum (i32) {
+    SDL_GAMEPAD_BUTTON_INVALID = -1,
+    SDL_GAMEPAD_BUTTON_SOUTH,
+    SDL_GAMEPAD_BUTTON_EAST,
+    SDL_GAMEPAD_BUTTON_WEST,
+    SDL_GAMEPAD_BUTTON_NORTH,
+    SDL_GAMEPAD_BUTTON_BACK,
+    SDL_GAMEPAD_BUTTON_GUIDE,
+    SDL_GAMEPAD_BUTTON_START,
+    SDL_GAMEPAD_BUTTON_LEFT_STICK,
+    SDL_GAMEPAD_BUTTON_RIGHT_STICK,
+    SDL_GAMEPAD_BUTTON_LEFT_SHOULDER,
+    SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER,
+    SDL_GAMEPAD_BUTTON_DPAD_UP,
+    SDL_GAMEPAD_BUTTON_DPAD_DOWN,
+    SDL_GAMEPAD_BUTTON_DPAD_LEFT,
+    SDL_GAMEPAD_BUTTON_DPAD_RIGHT,
+    SDL_GAMEPAD_BUTTON_MISC1,
+    SDL_GAMEPAD_BUTTON_RIGHT_PADDLE1,
+    SDL_GAMEPAD_BUTTON_LEFT_PADDLE1,
+    SDL_GAMEPAD_BUTTON_RIGHT_PADDLE2,
+    SDL_GAMEPAD_BUTTON_LEFT_PADDLE2,
+    SDL_GAMEPAD_BUTTON_TOUCHPAD,
+    SDL_GAMEPAD_BUTTON_MISC2,
+    SDL_GAMEPAD_BUTTON_MISC3,
+    SDL_GAMEPAD_BUTTON_MISC4,
+    SDL_GAMEPAD_BUTTON_MISC5,
+    SDL_GAMEPAD_BUTTON_MISC6,
+    SDL_GAMEPAD_BUTTON_COUNT,
+}
+SDL_GamepadButtonLabel :: enum (i32) {
+    SDL_GAMEPAD_BUTTON_LABEL_UNKNOWN,
+    SDL_GAMEPAD_BUTTON_LABEL_A,
+    SDL_GAMEPAD_BUTTON_LABEL_B,
+    SDL_GAMEPAD_BUTTON_LABEL_X,
+    SDL_GAMEPAD_BUTTON_LABEL_Y,
+    SDL_GAMEPAD_BUTTON_LABEL_CROSS,
+    SDL_GAMEPAD_BUTTON_LABEL_CIRCLE,
+    SDL_GAMEPAD_BUTTON_LABEL_SQUARE,
+    SDL_GAMEPAD_BUTTON_LABEL_TRIANGLE,
+}
+SDL_GamepadAxis :: enum (i32) {
+    SDL_GAMEPAD_AXIS_INVALID = -1,
+    SDL_GAMEPAD_AXIS_LEFTX,
+    SDL_GAMEPAD_AXIS_LEFTY,
+    SDL_GAMEPAD_AXIS_RIGHTX,
+    SDL_GAMEPAD_AXIS_RIGHTY,
+    SDL_GAMEPAD_AXIS_LEFT_TRIGGER,
+    SDL_GAMEPAD_AXIS_RIGHT_TRIGGER,
+    SDL_GAMEPAD_AXIS_COUNT,
+}
+SDL_GamepadBindingType :: enum (i32) {
+    SDL_GAMEPAD_BINDTYPE_NONE = 0,
+    SDL_GAMEPAD_BINDTYPE_BUTTON,
+    SDL_GAMEPAD_BINDTYPE_AXIS,
+    SDL_GAMEPAD_BINDTYPE_HAT,
+}
+SDL_GamepadBindingInputAxis :: struct {
+    axis: i32,
+    axis_min: i32,
+    axis_max: i32,
+}
+SDL_GamepadBindingInputHat :: struct {
+    hat: i32,
+    hat_mask: i32,
+}
+SDL_GamepadBindingInput :: union {
+    button: i32,
+    axis: SDL_GamepadBindingInputAxis,
+    hat: SDL_GamepadBindingInputHat,
+}
+SDL_GamepadBindingOutputAxis :: struct {
+    axis: SDL_GamepadAxis,
+    axis_min: i32,
+    axis_max: i32,
+}
+SDL_GamepadBindingOutput :: union {
+    button: SDL_GamepadButton,
+    axis: SDL_GamepadBindingOutputAxis,
+}
+SDL_GamepadBinding :: struct {
+    input_type: SDL_GamepadBindingType,
+    input: SDL_GamepadBindingInput,
+    output_type: SDL_GamepadBindingType,
+    output: SDL_GamepadBindingOutput,
+}
+SDL_AddGamepadMapping :: extern proc(mapping: *const u8) i32
+SDL_AddGamepadMappingsFromIO :: extern proc(src: *SDL_IOStream, closeio: bool) i32
+SDL_AddGamepadMappingsFromFile :: extern proc(file: *const u8) i32
+SDL_ReloadGamepadMappings :: extern proc() bool
+SDL_GetGamepadMappings :: extern proc(count: *i32) **u8
+SDL_GetGamepadMappingForGUID :: extern proc(guid: SDL_GUID) *u8
+SDL_GetGamepadMapping :: extern proc(gamepad: *SDL_Gamepad) *u8
+SDL_SetGamepadMapping :: extern proc(instance_id: SDL_JoystickID, mapping: *const u8) bool
+SDL_HasGamepad :: extern proc() bool
+SDL_GetGamepads :: extern proc(count: *i32) *SDL_JoystickID
+SDL_IsGamepad :: extern proc(instance_id: SDL_JoystickID) bool
+SDL_GetGamepadNameForID :: extern proc(instance_id: SDL_JoystickID) *const u8
+SDL_GetGamepadPathForID :: extern proc(instance_id: SDL_JoystickID) *const u8
+SDL_GetGamepadPlayerIndexForID :: extern proc(instance_id: SDL_JoystickID) i32
+SDL_GetGamepadGUIDForID :: extern proc(instance_id: SDL_JoystickID) SDL_GUID
+SDL_GetGamepadVendorForID :: extern proc(instance_id: SDL_JoystickID) Uint16
+SDL_GetGamepadProductForID :: extern proc(instance_id: SDL_JoystickID) Uint16
+SDL_GetGamepadProductVersionForID :: extern proc(instance_id: SDL_JoystickID) Uint16
+SDL_GetGamepadTypeForID :: extern proc(instance_id: SDL_JoystickID) SDL_GamepadType
+SDL_GetRealGamepadTypeForID :: extern proc(instance_id: SDL_JoystickID) SDL_GamepadType
+SDL_GetGamepadMappingForID :: extern proc(instance_id: SDL_JoystickID) *u8
+SDL_OpenGamepad :: extern proc(instance_id: SDL_JoystickID) *SDL_Gamepad
+SDL_GetGamepadFromID :: extern proc(instance_id: SDL_JoystickID) *SDL_Gamepad
+SDL_GetGamepadFromPlayerIndex :: extern proc(player_index: i32) *SDL_Gamepad
+SDL_GetGamepadProperties :: extern proc(gamepad: *SDL_Gamepad) SDL_PropertiesID
+SDL_GetGamepadID :: extern proc(gamepad: *SDL_Gamepad) SDL_JoystickID
+SDL_GetGamepadName :: extern proc(gamepad: *SDL_Gamepad) *const u8
+SDL_GetGamepadPath :: extern proc(gamepad: *SDL_Gamepad) *const u8
+SDL_GetGamepadType :: extern proc(gamepad: *SDL_Gamepad) SDL_GamepadType
+SDL_GetRealGamepadType :: extern proc(gamepad: *SDL_Gamepad) SDL_GamepadType
+SDL_GetGamepadPlayerIndex :: extern proc(gamepad: *SDL_Gamepad) i32
+SDL_SetGamepadPlayerIndex :: extern proc(gamepad: *SDL_Gamepad, player_index: i32) bool
+SDL_GetGamepadVendor :: extern proc(gamepad: *SDL_Gamepad) Uint16
+SDL_GetGamepadProduct :: extern proc(gamepad: *SDL_Gamepad) Uint16
+SDL_GetGamepadProductVersion :: extern proc(gamepad: *SDL_Gamepad) Uint16
+SDL_GetGamepadFirmwareVersion :: extern proc(gamepad: *SDL_Gamepad) Uint16
+SDL_GetGamepadSerial :: extern proc(gamepad: *SDL_Gamepad) *const u8
+SDL_GetGamepadSteamHandle :: extern proc(gamepad: *SDL_Gamepad) Uint64
+SDL_GetGamepadConnectionState :: extern proc(gamepad: *SDL_Gamepad) SDL_JoystickConnectionState
+SDL_GetGamepadPowerInfo :: extern proc(gamepad: *SDL_Gamepad, percent: *i32) SDL_PowerState
+SDL_GamepadConnected :: extern proc(gamepad: *SDL_Gamepad) bool
+SDL_GetGamepadJoystick :: extern proc(gamepad: *SDL_Gamepad) *SDL_Joystick
+SDL_SetGamepadEventsEnabled :: extern proc(enabled: bool)
+SDL_GamepadEventsEnabled :: extern proc() bool
+SDL_GetGamepadBindings :: extern proc(gamepad: *SDL_Gamepad, count: *i32) **SDL_GamepadBinding
+SDL_UpdateGamepads :: extern proc()
+SDL_GetGamepadTypeFromString :: extern proc(str: *const u8) SDL_GamepadType
+SDL_GetGamepadStringForType :: extern proc(r#type: SDL_GamepadType) *const u8
+SDL_GetGamepadAxisFromString :: extern proc(str: *const u8) SDL_GamepadAxis
+SDL_GetGamepadStringForAxis :: extern proc(axis: SDL_GamepadAxis) *const u8
+SDL_GamepadHasAxis :: extern proc(gamepad: *SDL_Gamepad, axis: SDL_GamepadAxis) bool
+SDL_GetGamepadAxis :: extern proc(gamepad: *SDL_Gamepad, axis: SDL_GamepadAxis) Sint16
+SDL_GetGamepadButtonFromString :: extern proc(str: *const u8) SDL_GamepadButton
+SDL_GetGamepadStringForButton :: extern proc(button: SDL_GamepadButton) *const u8
+SDL_GamepadHasButton :: extern proc(gamepad: *SDL_Gamepad, button: SDL_GamepadButton) bool
+SDL_GetGamepadButton :: extern proc(gamepad: *SDL_Gamepad, button: SDL_GamepadButton) bool
+SDL_GetGamepadButtonLabelForType :: extern proc(r#type: SDL_GamepadType, button: SDL_GamepadButton) SDL_GamepadButtonLabel
+SDL_GetGamepadButtonLabel :: extern proc(gamepad: *SDL_Gamepad, button: SDL_GamepadButton) SDL_GamepadButtonLabel
+SDL_GetNumGamepadTouchpads :: extern proc(gamepad: *SDL_Gamepad) i32
+SDL_GetNumGamepadTouchpadFingers :: extern proc(gamepad: *SDL_Gamepad, touchpad: i32) i32
+SDL_GetGamepadTouchpadFinger :: extern proc(gamepad: *SDL_Gamepad, touchpad: i32, finger: i32, down: *bool, x: *f32, y: *f32, pressure: *f32) bool
+SDL_GamepadHasSensor :: extern proc(gamepad: *SDL_Gamepad, r#type: SDL_SensorType) bool
+SDL_SetGamepadSensorEnabled :: extern proc(gamepad: *SDL_Gamepad, r#type: SDL_SensorType, enabled: bool) bool
+SDL_GamepadSensorEnabled :: extern proc(gamepad: *SDL_Gamepad, r#type: SDL_SensorType) bool
+SDL_GetGamepadSensorDataRate :: extern proc(gamepad: *SDL_Gamepad, r#type: SDL_SensorType) f32
+SDL_GetGamepadSensorData :: extern proc(gamepad: *SDL_Gamepad, r#type: SDL_SensorType, data: *f32, num_values: i32) bool
+SDL_RumbleGamepad :: extern proc(gamepad: *SDL_Gamepad, low_frequency_rumble: Uint16, high_frequency_rumble: Uint16, duration_ms: Uint32) bool
+SDL_RumbleGamepadTriggers :: extern proc(gamepad: *SDL_Gamepad, left_rumble: Uint16, right_rumble: Uint16, duration_ms: Uint32) bool
+SDL_SetGamepadLED :: extern proc(gamepad: *SDL_Gamepad, red: Uint8, green: Uint8, blue: Uint8) bool
+SDL_SendGamepadEffect :: extern proc(gamepad: *SDL_Gamepad, data: *const void, size: i32) bool
+SDL_CloseGamepad :: extern proc(gamepad: *SDL_Gamepad)
+SDL_GetGamepadAppleSFSymbolsNameForButton :: extern proc(gamepad: *SDL_Gamepad, button: SDL_GamepadButton) *const u8
+SDL_GetGamepadAppleSFSymbolsNameForAxis :: extern proc(gamepad: *SDL_Gamepad, axis: SDL_GamepadAxis) *const u8
+
+SDL_Scancode :: enum (i32) {
+    SDL_SCANCODE_UNKNOWN = 0,
+    SDL_SCANCODE_A = 4,
+    SDL_SCANCODE_B = 5,
+    SDL_SCANCODE_C = 6,
+    SDL_SCANCODE_D = 7,
+    SDL_SCANCODE_E = 8,
+    SDL_SCANCODE_F = 9,
+    SDL_SCANCODE_G = 10,
+    SDL_SCANCODE_H = 11,
+    SDL_SCANCODE_I = 12,
+    SDL_SCANCODE_J = 13,
+    SDL_SCANCODE_K = 14,
+    SDL_SCANCODE_L = 15,
+    SDL_SCANCODE_M = 16,
+    SDL_SCANCODE_N = 17,
+    SDL_SCANCODE_O = 18,
+    SDL_SCANCODE_P = 19,
+    SDL_SCANCODE_Q = 20,
+    SDL_SCANCODE_R = 21,
+    SDL_SCANCODE_S = 22,
+    SDL_SCANCODE_T = 23,
+    SDL_SCANCODE_U = 24,
+    SDL_SCANCODE_V = 25,
+    SDL_SCANCODE_W = 26,
+    SDL_SCANCODE_X = 27,
+    SDL_SCANCODE_Y = 28,
+    SDL_SCANCODE_Z = 29,
+    SDL_SCANCODE_1 = 30,
+    SDL_SCANCODE_2 = 31,
+    SDL_SCANCODE_3 = 32,
+    SDL_SCANCODE_4 = 33,
+    SDL_SCANCODE_5 = 34,
+    SDL_SCANCODE_6 = 35,
+    SDL_SCANCODE_7 = 36,
+    SDL_SCANCODE_8 = 37,
+    SDL_SCANCODE_9 = 38,
+    SDL_SCANCODE_0 = 39,
+    SDL_SCANCODE_RETURN = 40,
+    SDL_SCANCODE_ESCAPE = 41,
+    SDL_SCANCODE_BACKSPACE = 42,
+    SDL_SCANCODE_TAB = 43,
+    SDL_SCANCODE_SPACE = 44,
+    SDL_SCANCODE_MINUS = 45,
+    SDL_SCANCODE_EQUALS = 46,
+    SDL_SCANCODE_LEFTBRACKET = 47,
+    SDL_SCANCODE_RIGHTBRACKET = 48,
+    SDL_SCANCODE_BACKSLASH = 49,
+    SDL_SCANCODE_NONUSHASH = 50,
+    SDL_SCANCODE_SEMICOLON = 51,
+    SDL_SCANCODE_APOSTROPHE = 52,
+    SDL_SCANCODE_GRAVE = 53,
+    SDL_SCANCODE_COMMA = 54,
+    SDL_SCANCODE_PERIOD = 55,
+    SDL_SCANCODE_SLASH = 56,
+    SDL_SCANCODE_CAPSLOCK = 57,
+    SDL_SCANCODE_F1 = 58,
+    SDL_SCANCODE_F2 = 59,
+    SDL_SCANCODE_F3 = 60,
+    SDL_SCANCODE_F4 = 61,
+    SDL_SCANCODE_F5 = 62,
+    SDL_SCANCODE_F6 = 63,
+    SDL_SCANCODE_F7 = 64,
+    SDL_SCANCODE_F8 = 65,
+    SDL_SCANCODE_F9 = 66,
+    SDL_SCANCODE_F10 = 67,
+    SDL_SCANCODE_F11 = 68,
+    SDL_SCANCODE_F12 = 69,
+    SDL_SCANCODE_PRINTSCREEN = 70,
+    SDL_SCANCODE_SCROLLLOCK = 71,
+    SDL_SCANCODE_PAUSE = 72,
+    SDL_SCANCODE_INSERT = 73,
+    SDL_SCANCODE_HOME = 74,
+    SDL_SCANCODE_PAGEUP = 75,
+    SDL_SCANCODE_DELETE = 76,
+    SDL_SCANCODE_END = 77,
+    SDL_SCANCODE_PAGEDOWN = 78,
+    SDL_SCANCODE_RIGHT = 79,
+    SDL_SCANCODE_LEFT = 80,
+    SDL_SCANCODE_DOWN = 81,
+    SDL_SCANCODE_UP = 82,
+    SDL_SCANCODE_NUMLOCKCLEAR = 83,
+    SDL_SCANCODE_KP_DIVIDE = 84,
+    SDL_SCANCODE_KP_MULTIPLY = 85,
+    SDL_SCANCODE_KP_MINUS = 86,
+    SDL_SCANCODE_KP_PLUS = 87,
+    SDL_SCANCODE_KP_ENTER = 88,
+    SDL_SCANCODE_KP_1 = 89,
+    SDL_SCANCODE_KP_2 = 90,
+    SDL_SCANCODE_KP_3 = 91,
+    SDL_SCANCODE_KP_4 = 92,
+    SDL_SCANCODE_KP_5 = 93,
+    SDL_SCANCODE_KP_6 = 94,
+    SDL_SCANCODE_KP_7 = 95,
+    SDL_SCANCODE_KP_8 = 96,
+    SDL_SCANCODE_KP_9 = 97,
+    SDL_SCANCODE_KP_0 = 98,
+    SDL_SCANCODE_KP_PERIOD = 99,
+    SDL_SCANCODE_NONUSBACKSLASH = 100,
+    SDL_SCANCODE_APPLICATION = 101,
+    SDL_SCANCODE_POWER = 102,
+    SDL_SCANCODE_KP_EQUALS = 103,
+    SDL_SCANCODE_F13 = 104,
+    SDL_SCANCODE_F14 = 105,
+    SDL_SCANCODE_F15 = 106,
+    SDL_SCANCODE_F16 = 107,
+    SDL_SCANCODE_F17 = 108,
+    SDL_SCANCODE_F18 = 109,
+    SDL_SCANCODE_F19 = 110,
+    SDL_SCANCODE_F20 = 111,
+    SDL_SCANCODE_F21 = 112,
+    SDL_SCANCODE_F22 = 113,
+    SDL_SCANCODE_F23 = 114,
+    SDL_SCANCODE_F24 = 115,
+    SDL_SCANCODE_EXECUTE = 116,
+    SDL_SCANCODE_HELP = 117,
+    SDL_SCANCODE_MENU = 118,
+    SDL_SCANCODE_SELECT = 119,
+    SDL_SCANCODE_STOP = 120,
+    SDL_SCANCODE_AGAIN = 121,
+    SDL_SCANCODE_UNDO = 122,
+    SDL_SCANCODE_CUT = 123,
+    SDL_SCANCODE_COPY = 124,
+    SDL_SCANCODE_PASTE = 125,
+    SDL_SCANCODE_FIND = 126,
+    SDL_SCANCODE_MUTE = 127,
+    SDL_SCANCODE_VOLUMEUP = 128,
+    SDL_SCANCODE_VOLUMEDOWN = 129,
+    SDL_SCANCODE_KP_COMMA = 133,
+    SDL_SCANCODE_KP_EQUALSAS400 = 134,
+    SDL_SCANCODE_INTERNATIONAL1 = 135,
+    SDL_SCANCODE_INTERNATIONAL2 = 136,
+    SDL_SCANCODE_INTERNATIONAL3 = 137,
+    SDL_SCANCODE_INTERNATIONAL4 = 138,
+    SDL_SCANCODE_INTERNATIONAL5 = 139,
+    SDL_SCANCODE_INTERNATIONAL6 = 140,
+    SDL_SCANCODE_INTERNATIONAL7 = 141,
+    SDL_SCANCODE_INTERNATIONAL8 = 142,
+    SDL_SCANCODE_INTERNATIONAL9 = 143,
+    SDL_SCANCODE_LANG1 = 144,
+    SDL_SCANCODE_LANG2 = 145,
+    SDL_SCANCODE_LANG3 = 146,
+    SDL_SCANCODE_LANG4 = 147,
+    SDL_SCANCODE_LANG5 = 148,
+    SDL_SCANCODE_LANG6 = 149,
+    SDL_SCANCODE_LANG7 = 150,
+    SDL_SCANCODE_LANG8 = 151,
+    SDL_SCANCODE_LANG9 = 152,
+    SDL_SCANCODE_ALTERASE = 153,
+    SDL_SCANCODE_SYSREQ = 154,
+    SDL_SCANCODE_CANCEL = 155,
+    SDL_SCANCODE_CLEAR = 156,
+    SDL_SCANCODE_PRIOR = 157,
+    SDL_SCANCODE_RETURN2 = 158,
+    SDL_SCANCODE_SEPARATOR = 159,
+    SDL_SCANCODE_OUT = 160,
+    SDL_SCANCODE_OPER = 161,
+    SDL_SCANCODE_CLEARAGAIN = 162,
+    SDL_SCANCODE_CRSEL = 163,
+    SDL_SCANCODE_EXSEL = 164,
+    SDL_SCANCODE_KP_00 = 176,
+    SDL_SCANCODE_KP_000 = 177,
+    SDL_SCANCODE_THOUSANDSSEPARATOR = 178,
+    SDL_SCANCODE_DECIMALSEPARATOR = 179,
+    SDL_SCANCODE_CURRENCYUNIT = 180,
+    SDL_SCANCODE_CURRENCYSUBUNIT = 181,
+    SDL_SCANCODE_KP_LEFTPAREN = 182,
+    SDL_SCANCODE_KP_RIGHTPAREN = 183,
+    SDL_SCANCODE_KP_LEFTBRACE = 184,
+    SDL_SCANCODE_KP_RIGHTBRACE = 185,
+    SDL_SCANCODE_KP_TAB = 186,
+    SDL_SCANCODE_KP_BACKSPACE = 187,
+    SDL_SCANCODE_KP_A = 188,
+    SDL_SCANCODE_KP_B = 189,
+    SDL_SCANCODE_KP_C = 190,
+    SDL_SCANCODE_KP_D = 191,
+    SDL_SCANCODE_KP_E = 192,
+    SDL_SCANCODE_KP_F = 193,
+    SDL_SCANCODE_KP_XOR = 194,
+    SDL_SCANCODE_KP_POWER = 195,
+    SDL_SCANCODE_KP_PERCENT = 196,
+    SDL_SCANCODE_KP_LESS = 197,
+    SDL_SCANCODE_KP_GREATER = 198,
+    SDL_SCANCODE_KP_AMPERSAND = 199,
+    SDL_SCANCODE_KP_DBLAMPERSAND = 200,
+    SDL_SCANCODE_KP_VERTICALBAR = 201,
+    SDL_SCANCODE_KP_DBLVERTICALBAR = 202,
+    SDL_SCANCODE_KP_COLON = 203,
+    SDL_SCANCODE_KP_HASH = 204,
+    SDL_SCANCODE_KP_SPACE = 205,
+    SDL_SCANCODE_KP_AT = 206,
+    SDL_SCANCODE_KP_EXCLAM = 207,
+    SDL_SCANCODE_KP_MEMSTORE = 208,
+    SDL_SCANCODE_KP_MEMRECALL = 209,
+    SDL_SCANCODE_KP_MEMCLEAR = 210,
+    SDL_SCANCODE_KP_MEMADD = 211,
+    SDL_SCANCODE_KP_MEMSUBTRACT = 212,
+    SDL_SCANCODE_KP_MEMMULTIPLY = 213,
+    SDL_SCANCODE_KP_MEMDIVIDE = 214,
+    SDL_SCANCODE_KP_PLUSMINUS = 215,
+    SDL_SCANCODE_KP_CLEAR = 216,
+    SDL_SCANCODE_KP_CLEARENTRY = 217,
+    SDL_SCANCODE_KP_BINARY = 218,
+    SDL_SCANCODE_KP_OCTAL = 219,
+    SDL_SCANCODE_KP_DECIMAL = 220,
+    SDL_SCANCODE_KP_HEXADECIMAL = 221,
+    SDL_SCANCODE_LCTRL = 224,
+    SDL_SCANCODE_LSHIFT = 225,
+    SDL_SCANCODE_LALT = 226,
+    SDL_SCANCODE_LGUI = 227,
+    SDL_SCANCODE_RCTRL = 228,
+    SDL_SCANCODE_RSHIFT = 229,
+    SDL_SCANCODE_RALT = 230,
+    SDL_SCANCODE_RGUI = 231,
+    SDL_SCANCODE_MODE = 257,
+    SDL_SCANCODE_SLEEP = 258,
+    SDL_SCANCODE_WAKE = 259,
+    SDL_SCANCODE_CHANNEL_INCREMENT = 260,
+    SDL_SCANCODE_CHANNEL_DECREMENT = 261,
+    SDL_SCANCODE_MEDIA_PLAY = 262,
+    SDL_SCANCODE_MEDIA_PAUSE = 263,
+    SDL_SCANCODE_MEDIA_RECORD = 264,
+    SDL_SCANCODE_MEDIA_FAST_FORWARD = 265,
+    SDL_SCANCODE_MEDIA_REWIND = 266,
+    SDL_SCANCODE_MEDIA_NEXT_TRACK = 267,
+    SDL_SCANCODE_MEDIA_PREVIOUS_TRACK = 268,
+    SDL_SCANCODE_MEDIA_STOP = 269,
+    SDL_SCANCODE_MEDIA_EJECT = 270,
+    SDL_SCANCODE_MEDIA_PLAY_PAUSE = 271,
+    SDL_SCANCODE_MEDIA_SELECT = 272,
+    SDL_SCANCODE_AC_NEW = 273,
+    SDL_SCANCODE_AC_OPEN = 274,
+    SDL_SCANCODE_AC_CLOSE = 275,
+    SDL_SCANCODE_AC_EXIT = 276,
+    SDL_SCANCODE_AC_SAVE = 277,
+    SDL_SCANCODE_AC_PRINT = 278,
+    SDL_SCANCODE_AC_PROPERTIES = 279,
+    SDL_SCANCODE_AC_SEARCH = 280,
+    SDL_SCANCODE_AC_HOME = 281,
+    SDL_SCANCODE_AC_BACK = 282,
+    SDL_SCANCODE_AC_FORWARD = 283,
+    SDL_SCANCODE_AC_STOP = 284,
+    SDL_SCANCODE_AC_REFRESH = 285,
+    SDL_SCANCODE_AC_BOOKMARKS = 286,
+    SDL_SCANCODE_SOFTLEFT = 287,
+    SDL_SCANCODE_SOFTRIGHT = 288,
+    SDL_SCANCODE_CALL = 289,
+    SDL_SCANCODE_ENDCALL = 290,
+    SDL_SCANCODE_RESERVED = 400,
+    SDL_SCANCODE_COUNT = 512,
+}
+
+SDL_Keycode :: u32
+SDL_Keymod :: u16
+SDL_KeyboardID :: u32
+SDL_HasKeyboard :: extern proc() bool
+SDL_GetKeyboards :: extern proc(count: *i32) *SDL_KeyboardID
+SDL_GetKeyboardNameForID :: extern proc(instance_id: SDL_KeyboardID) *const u8
+SDL_GetKeyboardFocus :: extern proc() *SDL_Window
+SDL_GetKeyboardState :: extern proc(numkeys: *i32) *const bool
+SDL_ResetKeyboard :: extern proc()
+SDL_GetModState :: extern proc() SDL_Keymod
+SDL_SetModState :: extern proc(modstate: SDL_Keymod)
+SDL_GetKeyFromScancode :: extern proc(scancode: SDL_Scancode, modstate: SDL_Keymod, key_event: bool) SDL_Keycode
+SDL_GetScancodeFromKey :: extern proc(key: SDL_Keycode, modstate: *SDL_Keymod) SDL_Scancode
+SDL_SetScancodeName :: extern proc(scancode: SDL_Scancode, name: *const u8) bool
+SDL_GetScancodeName :: extern proc(scancode: SDL_Scancode) *const u8
+SDL_GetScancodeFromName :: extern proc(name: *const u8) SDL_Scancode
+SDL_GetKeyName :: extern proc(key: SDL_Keycode) *const u8
+SDL_GetKeyFromName :: extern proc(name: *const u8) SDL_Keycode
+SDL_StartTextInput :: extern proc(window: *SDL_Window) bool
+SDL_TextInputType :: enum (i32) {
+    SDL_TEXTINPUT_TYPE_TEXT,
+    SDL_TEXTINPUT_TYPE_TEXT_NAME,
+    SDL_TEXTINPUT_TYPE_TEXT_EMAIL,
+    SDL_TEXTINPUT_TYPE_TEXT_USERNAME,
+    SDL_TEXTINPUT_TYPE_TEXT_PASSWORD_HIDDEN,
+    SDL_TEXTINPUT_TYPE_TEXT_PASSWORD_VISIBLE,
+    SDL_TEXTINPUT_TYPE_NUMBER,
+    SDL_TEXTINPUT_TYPE_NUMBER_PASSWORD_HIDDEN,
+    SDL_TEXTINPUT_TYPE_NUMBER_PASSWORD_VISIBLE,
+}
+SDL_Capitalization :: enum (i32) {
+    SDL_CAPITALIZE_NONE,
+    SDL_CAPITALIZE_SENTENCES,
+    SDL_CAPITALIZE_WORDS,
+    SDL_CAPITALIZE_LETTERS,
+}
+SDL_StartTextInputWithProperties :: extern proc(window: *SDL_Window, props: SDL_PropertiesID) bool
+SDL_TextInputActive :: extern proc(window: *SDL_Window) bool
+SDL_StopTextInput :: extern proc(window: *SDL_Window) bool
+SDL_ClearComposition :: extern proc(window: *SDL_Window) bool
+SDL_SetTextInputArea :: extern proc(window: *SDL_Window, rect: *const SDL_Rect, cursor: i32) bool
+SDL_GetTextInputArea :: extern proc(window: *SDL_Window, rect: *SDL_Rect, cursor: *i32) bool
+SDL_HasScreenKeyboardSupport :: extern proc() bool
+SDL_ScreenKeyboardShown :: extern proc(window: *SDL_Window) bool
+
+SDL_MouseID :: Uint32
+SDL_Cursor :: struct {}
+SDL_SystemCursor :: enum (i32) {
+    SDL_SYSTEM_CURSOR_DEFAULT,
+    SDL_SYSTEM_CURSOR_TEXT,
+    SDL_SYSTEM_CURSOR_WAIT,
+    SDL_SYSTEM_CURSOR_CROSSHAIR,
+    SDL_SYSTEM_CURSOR_PROGRESS,
+    SDL_SYSTEM_CURSOR_NWSE_RESIZE,
+    SDL_SYSTEM_CURSOR_NESW_RESIZE,
+    SDL_SYSTEM_CURSOR_EW_RESIZE,
+    SDL_SYSTEM_CURSOR_NS_RESIZE,
+    SDL_SYSTEM_CURSOR_MOVE,
+    SDL_SYSTEM_CURSOR_NOT_ALLOWED,
+    SDL_SYSTEM_CURSOR_POINTER,
+    SDL_SYSTEM_CURSOR_NW_RESIZE,
+    SDL_SYSTEM_CURSOR_N_RESIZE,
+    SDL_SYSTEM_CURSOR_NE_RESIZE,
+    SDL_SYSTEM_CURSOR_E_RESIZE,
+    SDL_SYSTEM_CURSOR_SE_RESIZE,
+    SDL_SYSTEM_CURSOR_S_RESIZE,
+    SDL_SYSTEM_CURSOR_SW_RESIZE,
+    SDL_SYSTEM_CURSOR_W_RESIZE,
+    SDL_SYSTEM_CURSOR_COUNT,
+}
+SDL_MouseWheelDirection :: enum (i32) {
+    SDL_MOUSEWHEEL_NORMAL,
+    SDL_MOUSEWHEEL_FLIPPED,
+}
+SDL_MouseButtonFlags :: Uint32
+SDL_HasMouse :: extern proc() bool
+SDL_GetMice :: extern proc(count: *i32) *SDL_MouseID
+SDL_GetMouseNameForID :: extern proc(instance_id: SDL_MouseID) *const u8
+SDL_GetMouseFocus :: extern proc() *SDL_Window
+SDL_GetMouseState :: extern proc(x: *f32, y: *f32) SDL_MouseButtonFlags
+SDL_GetGlobalMouseState :: extern proc(x: *f32, y: *f32) SDL_MouseButtonFlags
+SDL_GetRelativeMouseState :: extern proc(x: *f32, y: *f32) SDL_MouseButtonFlags
+SDL_WarpMouseInWindow :: extern proc(window: *SDL_Window, x: f32, y: f32)
+SDL_WarpMouseGlobal :: extern proc(x: f32, y: f32) bool
+SDL_SetWindowRelativeMouseMode :: extern proc(window: *SDL_Window, enabled: bool) bool
+SDL_GetWindowRelativeMouseMode :: extern proc(window: *SDL_Window) bool
+SDL_CaptureMouse :: extern proc(enabled: bool) bool
+SDL_CreateCursor :: extern proc(data: *const u8, mask: *const u8, w: i32, h: i32, hot_x: i32, hot_y: i32) *SDL_Cursor
+SDL_CreateColorCursor :: extern proc(surface: *SDL_Surface, hot_x: i32, hot_y: i32) *SDL_Cursor
+SDL_CreateSystemCursor :: extern proc(id: SDL_SystemCursor) *SDL_Cursor
+SDL_SetCursor :: extern proc(cursor: *SDL_Cursor) bool
+SDL_GetCursor :: extern proc() *SDL_Cursor
+SDL_GetDefaultCursor :: extern proc() *SDL_Cursor
+SDL_DestroyCursor :: extern proc(cursor: *SDL_Cursor)
+
+SDL_TouchID :: u64
+SDL_FingerID :: u64
+SDL_TouchDeviceType :: enum (i32) {
+    SDL_TOUCH_DEVICE_INVALID = -1,
+    SDL_TOUCH_DEVICE_DIRECT,
+    SDL_TOUCH_DEVICE_INDIRECT_ABSOLUTE,
+    SDL_TOUCH_DEVICE_INDIRECT_RELATIVE,
+}
+SDL_Finger :: struct {
+    id: SDL_FingerID,
+    x: f32,
+    y: f32,
+    pressure: f32,
+}
+SDL_GetTouchDevices :: extern proc(count: *i32) *SDL_TouchID
+SDL_GetTouchDeviceName :: extern proc(touchID: SDL_TouchID) *const u8
+SDL_GetTouchDeviceType :: extern proc(touchID: SDL_TouchID) SDL_TouchDeviceType
+SDL_GetTouchFingers :: extern proc(touchID: SDL_TouchID, count: *i32) **SDL_Finger
+
+SDL_PenID :: u32
+SDL_PenInputFlags :: u32
+SDL_PenAxis :: enum (i32) {
+    SDL_PEN_AXIS_PRESSURE,
+    SDL_PEN_AXIS_XTILT,
+    SDL_PEN_AXIS_YTILT,
+    SDL_PEN_AXIS_DISTANCE,
+    SDL_PEN_AXIS_ROTATION,
+    SDL_PEN_AXIS_SLIDER,
+    SDL_PEN_AXIS_TANGENTIAL_PRESSURE,
+    SDL_PEN_AXIS_COUNT,
+}
+
+SDL_EventType :: enum (i32) {
+    SDL_EVENT_FIRST = 0,
+    SDL_EVENT_QUIT = 0x100,
+    SDL_EVENT_TERMINATING,
+    SDL_EVENT_LOW_MEMORY,
+    SDL_EVENT_WILL_ENTER_BACKGROUND,
+    SDL_EVENT_DID_ENTER_BACKGROUND,
+    SDL_EVENT_WILL_ENTER_FOREGROUND,
+    SDL_EVENT_DID_ENTER_FOREGROUND,
+    SDL_EVENT_LOCALE_CHANGED,
+    SDL_EVENT_SYSTEM_THEME_CHANGED,
+    SDL_EVENT_DISPLAY_ORIENTATION = 0x151,
+    SDL_EVENT_DISPLAY_ADDED,
+    SDL_EVENT_DISPLAY_REMOVED,
+    SDL_EVENT_DISPLAY_MOVED,
+    SDL_EVENT_DISPLAY_DESKTOP_MODE_CHANGED,
+    SDL_EVENT_DISPLAY_CURRENT_MODE_CHANGED,
+    SDL_EVENT_DISPLAY_CONTENT_SCALE_CHANGED,
+    SDL_EVENT_DISPLAY_FIRST = SDL_EVENT_DISPLAY_ORIENTATION,
+    SDL_EVENT_DISPLAY_LAST = SDL_EVENT_DISPLAY_CONTENT_SCALE_CHANGED,
+    SDL_EVENT_WINDOW_SHOWN = 0x202,
+    SDL_EVENT_WINDOW_HIDDEN,
+    SDL_EVENT_WINDOW_EXPOSED,
+    SDL_EVENT_WINDOW_MOVED,
+    SDL_EVENT_WINDOW_RESIZED,
+    SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED,
+    SDL_EVENT_WINDOW_METAL_VIEW_RESIZED,
+    SDL_EVENT_WINDOW_MINIMIZED,
+    SDL_EVENT_WINDOW_MAXIMIZED,
+    SDL_EVENT_WINDOW_RESTORED,
+    SDL_EVENT_WINDOW_MOUSE_ENTER,
+    SDL_EVENT_WINDOW_MOUSE_LEAVE,
+    SDL_EVENT_WINDOW_FOCUS_GAINED,
+    SDL_EVENT_WINDOW_FOCUS_LOST,
+    SDL_EVENT_WINDOW_CLOSE_REQUESTED,
+    SDL_EVENT_WINDOW_HIT_TEST,
+    SDL_EVENT_WINDOW_ICCPROF_CHANGED,
+    SDL_EVENT_WINDOW_DISPLAY_CHANGED,
+    SDL_EVENT_WINDOW_DISPLAY_SCALE_CHANGED,
+    SDL_EVENT_WINDOW_SAFE_AREA_CHANGED,
+    SDL_EVENT_WINDOW_OCCLUDED,
+    SDL_EVENT_WINDOW_ENTER_FULLSCREEN,
+    SDL_EVENT_WINDOW_LEAVE_FULLSCREEN,
+    SDL_EVENT_WINDOW_DESTROYED,
+    SDL_EVENT_WINDOW_HDR_STATE_CHANGED,
+    SDL_EVENT_WINDOW_FIRST = SDL_EVENT_WINDOW_SHOWN,
+    SDL_EVENT_WINDOW_LAST = SDL_EVENT_WINDOW_HDR_STATE_CHANGED,
+    SDL_EVENT_KEY_DOWN = 0x300,
+    SDL_EVENT_KEY_UP,
+    SDL_EVENT_TEXT_EDITING,
+    SDL_EVENT_TEXT_INPUT,
+    SDL_EVENT_KEYMAP_CHANGED,
+    SDL_EVENT_KEYBOARD_ADDED,
+    SDL_EVENT_KEYBOARD_REMOVED,
+    SDL_EVENT_TEXT_EDITING_CANDIDATES,
+    SDL_EVENT_MOUSE_MOTION = 0x400,
+    SDL_EVENT_MOUSE_BUTTON_DOWN,
+    SDL_EVENT_MOUSE_BUTTON_UP,
+    SDL_EVENT_MOUSE_WHEEL,
+    SDL_EVENT_MOUSE_ADDED,
+    SDL_EVENT_MOUSE_REMOVED,
+    SDL_EVENT_JOYSTICK_AXIS_MOTION = 0x600,
+    SDL_EVENT_JOYSTICK_BALL_MOTION,
+    SDL_EVENT_JOYSTICK_HAT_MOTION,
+    SDL_EVENT_JOYSTICK_BUTTON_DOWN,
+    SDL_EVENT_JOYSTICK_BUTTON_UP,
+    SDL_EVENT_JOYSTICK_ADDED,
+    SDL_EVENT_JOYSTICK_REMOVED,
+    SDL_EVENT_JOYSTICK_BATTERY_UPDATED,
+    SDL_EVENT_JOYSTICK_UPDATE_COMPLETE,
+    SDL_EVENT_GAMEPAD_AXIS_MOTION = 0x650,
+    SDL_EVENT_GAMEPAD_BUTTON_DOWN,
+    SDL_EVENT_GAMEPAD_BUTTON_UP,
+    SDL_EVENT_GAMEPAD_ADDED,
+    SDL_EVENT_GAMEPAD_REMOVED,
+    SDL_EVENT_GAMEPAD_REMAPPED,
+    SDL_EVENT_GAMEPAD_TOUCHPAD_DOWN,
+    SDL_EVENT_GAMEPAD_TOUCHPAD_MOTION,
+    SDL_EVENT_GAMEPAD_TOUCHPAD_UP,
+    SDL_EVENT_GAMEPAD_SENSOR_UPDATE,
+    SDL_EVENT_GAMEPAD_UPDATE_COMPLETE,
+    SDL_EVENT_GAMEPAD_STEAM_HANDLE_UPDATED,
+    SDL_EVENT_FINGER_DOWN = 0x700,
+    SDL_EVENT_FINGER_UP,
+    SDL_EVENT_FINGER_MOTION,
+    SDL_EVENT_FINGER_CANCELED,
+    SDL_EVENT_CLIPBOARD_UPDATE = 0x900,
+    SDL_EVENT_DROP_FILE = 0x1000,
+    SDL_EVENT_DROP_TEXT,
+    SDL_EVENT_DROP_BEGIN,
+    SDL_EVENT_DROP_COMPLETE,
+    SDL_EVENT_DROP_POSITION,
+    SDL_EVENT_AUDIO_DEVICE_ADDED = 0x1100,
+    SDL_EVENT_AUDIO_DEVICE_REMOVED,
+    SDL_EVENT_AUDIO_DEVICE_FORMAT_CHANGED,
+    SDL_EVENT_SENSOR_UPDATE = 0x1200,
+    SDL_EVENT_PEN_PROXIMITY_IN = 0x1300,
+    SDL_EVENT_PEN_PROXIMITY_OUT,
+    SDL_EVENT_PEN_DOWN,
+    SDL_EVENT_PEN_UP,
+    SDL_EVENT_PEN_BUTTON_DOWN,
+    SDL_EVENT_PEN_BUTTON_UP,
+    SDL_EVENT_PEN_MOTION,
+    SDL_EVENT_PEN_AXIS,
+    SDL_EVENT_CAMERA_DEVICE_ADDED = 0x1400,
+    SDL_EVENT_CAMERA_DEVICE_REMOVED,
+    SDL_EVENT_CAMERA_DEVICE_APPROVED,
+    SDL_EVENT_CAMERA_DEVICE_DENIED,
+    SDL_EVENT_RENDER_TARGETS_RESET = 0x2000,
+    SDL_EVENT_RENDER_DEVICE_RESET,
+    SDL_EVENT_RENDER_DEVICE_LOST,
+    SDL_EVENT_PRIVATE0 = 0x4000,
+    SDL_EVENT_PRIVATE1,
+    SDL_EVENT_PRIVATE2,
+    SDL_EVENT_PRIVATE3,
+    SDL_EVENT_POLL_SENTINEL = 0x7F00,
+    SDL_EVENT_USER = 0x8000,
+    SDL_EVENT_LAST = 0xFFFF,
+    SDL_EVENT_ENUM_PADDING = 0x7FFFFFFF,
+}
+SDL_CommonEvent :: struct {
+    r#type: SDL_EventType,
+    reserved: u32,
+    timestamp: u64,
+}
+SDL_DisplayEvent :: struct {
+    r#type: SDL_EventType,
+    reserved: u32,
+    timestamp: u64,
+    displayID: SDL_DisplayID,
+    data1: i32,
+    data2: i32,
+}
+SDL_WindowEvent :: struct {
+    r#type: SDL_EventType,
+    reserved: u32,
+    timestamp: u64,
+    windowID: SDL_WindowID,
+    data1: i32,
+    data2: i32,
+}
+SDL_KeyboardDeviceEvent :: struct {
+    r#type: SDL_EventType,
+    reserved: u32,
+    timestamp: u64,
+    which: SDL_KeyboardID,
+}
+SDL_KeyboardEvent :: struct {
+    r#type: SDL_EventType,
+    reserved: u32,
+    timestamp: u64,
+    windowID: SDL_WindowID,
+    which: SDL_KeyboardID,
+    scancode: SDL_Scancode,
+    key: SDL_Keycode,
+    mod: SDL_Keymod,
+    raw: u16,
+    down: bool,
+    repeat: bool,
+}
+SDL_TextEditingEvent :: struct {
+    r#type: SDL_EventType,
+    reserved: u32,
+    timestamp: u64,
+    windowID: SDL_WindowID,
+    text: *const u8,
+    start: i32,
+    length: i32,
+}
+SDL_TextEditingCandidatesEvent :: struct {
+    r#type: SDL_EventType,
+    reserved: u32,
+    timestamp: u64,
+    windowID: SDL_WindowID,
+    candidates: **const u8,
+    num_candidates: i32,
+    selected_candidate: i32,
+    horizontal: bool,
+    padding1: u8,
+    padding2: u8,
+    padding3: u8,
+}
+SDL_TextInputEvent :: struct {
+    r#type: SDL_EventType,
+    reserved: u32,
+    timestamp: u64,
+    windowID: SDL_WindowID,
+    text: *const u8,
+}
+SDL_MouseDeviceEvent :: struct {
+    r#type: SDL_EventType,
+    reserved: u32,
+    timestamp: u64,
+    which: SDL_MouseID,
+}
+SDL_MouseMotionEvent :: struct {
+    r#type: SDL_EventType,
+    reserved: u32,
+    timestamp: u64,
+    windowID: SDL_WindowID,
+    which: SDL_MouseID,
+    state: SDL_MouseButtonFlags,
+    x: f32,
+    y: f32,
+    xrel: f32,
+    yrel: f32,
+}
+SDL_MouseButtonEvent :: struct {
+    r#type: SDL_EventType,
+    reserved: u32,
+    timestamp: u64,
+    windowID: SDL_WindowID,
+    which: SDL_MouseID,
+    button: u8,
+    down: bool,
+    clicks: u8,
+    padding: u8,
+    x: f32,
+    y: f32,
+}
+SDL_MouseWheelEvent :: struct {
+    r#type: SDL_EventType,
+    reserved: u32,
+    timestamp: u64,
+    windowID: SDL_WindowID,
+    which: SDL_MouseID,
+    x: f32,
+    y: f32,
+    direction: SDL_MouseWheelDirection,
+    mouse_x: f32,
+    mouse_y: f32,
+    integer_x: i32,
+    integer_y: i32,
+}
+
+SDL_JoyAxisEvent :: struct {
+    r#type: SDL_EventType,
+    reserved: u32,
+    timestamp: u64,
+    which: SDL_JoystickID,
+    axis: u8,
+    padding1: u8,
+    padding2: u8,
+    padding3: u8,
+    value: i16,
+    padding4: u16,
+}
+SDL_JoyBallEvent :: struct {
+    r#type: SDL_EventType,
+    reserved: u32,
+    timestamp: u64,
+    which: SDL_JoystickID,
+    ball: u8,
+    padding1: u8,
+    padding2: u8,
+    padding3: u8,
+    xrel: i16,
+    yrel: i16,
+}
+SDL_JoyHatEvent :: struct {
+    r#type: SDL_EventType,
+    reserved: u32,
+    timestamp: u64,
+    which: SDL_JoystickID,
+    hat: u8,
+    value: u8,
+    padding1: u8,
+    padding2: u8,
+}
+SDL_JoyButtonEvent :: struct {
+    r#type: SDL_EventType,
+    reserved: u32,
+    timestamp: u64,
+    which: SDL_JoystickID,
+    button: u8,
+    down: bool,
+    padding1: u8,
+    padding2: u8,
+}
+SDL_JoyDeviceEvent :: struct {
+    r#type: SDL_EventType,
+    reserved: u32,
+    timestamp: u64,
+    which: SDL_JoystickID,
+}
+SDL_JoyBatteryEvent :: struct {
+    r#type: SDL_EventType,
+    reserved: u32,
+    timestamp: u64,
+    which: SDL_JoystickID,
+    state: SDL_PowerState,
+    percent: i32,
+}
+SDL_GamepadAxisEvent :: struct {
+    r#type: SDL_EventType,
+    reserved: u32,
+    timestamp: u64,
+    which: SDL_JoystickID,
+    axis: u8,
+    padding1: u8,
+    padding2: u8,
+    padding3: u8,
+    value: i16,
+    padding4: u16,
+}
+SDL_GamepadButtonEvent :: struct {
+    r#type: SDL_EventType,
+    reserved: u32,
+    timestamp: u64,
+    which: SDL_JoystickID,
+    button: u8,
+    down: bool,
+    padding1: u8,
+    padding2: u8,
+}
+SDL_GamepadDeviceEvent :: struct {
+    r#type: SDL_EventType,
+    reserved: u32,
+    timestamp: u64,
+    which: SDL_JoystickID,
+}
+SDL_GamepadTouchpadEvent :: struct {
+    r#type: SDL_EventType,
+    reserved: u32,
+    timestamp: u64,
+    which: SDL_JoystickID,
+    touchpad: i32,
+    finger: i32,
+    x: f32,
+    y: f32,
+    pressure: f32,
+}
+SDL_GamepadSensorEvent :: struct {
+    r#type: SDL_EventType,
+    reserved: u32,
+    timestamp: u64,
+    which: SDL_JoystickID,
+    sensor: i32,
+    data: [3]f32,
+    sensor_timestamp: u64,
+}
+SDL_AudioDeviceEvent :: struct {
+    r#type: SDL_EventType,
+    reserved: u32,
+    timestamp: u64,
+    which: SDL_AudioDeviceID,
+    recording: bool,
+    padding1: u8,
+    padding2: u8,
+    padding3: u8,
+}
+SDL_CameraDeviceEvent :: struct {
+    r#type: SDL_EventType,
+    reserved: u32,
+    timestamp: u64,
+    which: u32,
+}
+SDL_RenderEvent :: struct {
+    r#type: SDL_EventType,
+    reserved: u32,
+    timestamp: u64,
+    windowID: SDL_WindowID,
+}
+SDL_TouchFingerEvent :: struct {
+    r#type: SDL_EventType,
+    reserved: u32,
+    timestamp: u64,
+    touchID: SDL_TouchID,
+    fingerID: SDL_FingerID,
+    x: f32,
+    y: f32,
+    dx: f32,
+    dy: f32,
+    pressure: f32,
+    windowID: SDL_WindowID,
+}
+SDL_PenProximityEvent :: struct {
+    r#type: SDL_EventType,
+    reserved: u32,
+    timestamp: u64,
+    windowID: SDL_WindowID,
+    which: SDL_PenID,
+}
+SDL_PenMotionEvent :: struct {
+    r#type: SDL_EventType,
+    reserved: u32,
+    timestamp: u64,
+    windowID: SDL_WindowID,
+    which: SDL_PenID,
+    pen_state: SDL_PenInputFlags,
+    x: f32,
+    y: f32,
+}
+SDL_PenTouchEvent :: struct {
+    r#type: SDL_EventType,
+    reserved: u32,
+    timestamp: u64,
+    windowID: SDL_WindowID,
+    which: SDL_PenID,
+    pen_state: SDL_PenInputFlags,
+    x: f32,
+    y: f32,
+    eraser: bool,
+    down: bool,
+}
+SDL_PenButtonEvent :: struct {
+    r#type: SDL_EventType,
+    reserved: u32,
+    timestamp: u64,
+    windowID: SDL_WindowID,
+    which: SDL_PenID,
+    pen_state: SDL_PenInputFlags,
+    x: f32,
+    y: f32,
+    button: u8,
+    down: bool,
+}
+SDL_PenAxisEvent :: struct {
+    r#type: SDL_EventType,
+    reserved: u32,
+    timestamp: u64,
+    windowID: SDL_WindowID,
+    which: SDL_PenID,
+    pen_state: SDL_PenInputFlags,
+    x: f32,
+    y: f32,
+    axis: SDL_PenAxis,
+    value: f32,
+}
+SDL_DropEvent :: struct {
+    r#type: SDL_EventType,
+    reserved: u32,
+    timestamp: u64,
+    windowID: SDL_WindowID,
+    x: f32,
+    y: f32,
+    source: *const u8,
+    data: *const u8,
+}
+SDL_ClipboardEvent :: struct {
+    r#type: SDL_EventType,
+    reserved: u32,
+    timestamp: u64,
+    owner: bool,
+    num_mime_types: i32,
+    mime_types: **const u8,
+}
+SDL_SensorEvent :: struct {
+    r#type: SDL_EventType,
+    reserved: u32,
+    timestamp: u64,
+    which: SDL_SensorID,
+    data: [6]f32,
+    sensor_timestamp: u64,
+}
+SDL_QuitEvent :: struct {
+    r#type: SDL_EventType,
+    reserved: u32,
+    timestamp: u64,
+}
+SDL_UserEvent :: struct {
+    r#type: u32,
+    reserved: u32,
+    timestamp: u64,
+    windowID: SDL_WindowID,
+    r#code: i32,
+    data1: *void,
+    data2: *void,
+}
+
+SDL_Event :: union {
+    r#type: u32,
+    common: SDL_CommonEvent,
+    display: SDL_DisplayEvent,
+    window: SDL_WindowEvent,
+    kdevice: SDL_KeyboardDeviceEvent,
+    key: SDL_KeyboardEvent,
+    edit: SDL_TextEditingEvent,
+    edit_candidates: SDL_TextEditingCandidatesEvent,
+    text: SDL_TextInputEvent,
+    mdevice: SDL_MouseDeviceEvent,
+    motion: SDL_MouseMotionEvent,
+    button: SDL_MouseButtonEvent,
+    wheel: SDL_MouseWheelEvent,
+    jdevice: SDL_JoyDeviceEvent,
+    jaxis: SDL_JoyAxisEvent,
+    jball: SDL_JoyBallEvent,
+    jhat: SDL_JoyHatEvent,
+    jbutton: SDL_JoyButtonEvent,
+    jbattery: SDL_JoyBatteryEvent,
+    gdevice: SDL_GamepadDeviceEvent,
+    gaxis: SDL_GamepadAxisEvent,
+    gbutton: SDL_GamepadButtonEvent,
+    gtouchpad: SDL_GamepadTouchpadEvent,
+    gsensor: SDL_GamepadSensorEvent,
+    adevice: SDL_AudioDeviceEvent,
+    cdevice: SDL_CameraDeviceEvent,
+    sensor: SDL_SensorEvent,
+    quit: SDL_QuitEvent,
+    user: SDL_UserEvent,
+    tfinger: SDL_TouchFingerEvent,
+    pproximity: SDL_PenProximityEvent,
+    ptouch: SDL_PenTouchEvent,
+    pmotion: SDL_PenMotionEvent,
+    pbutton: SDL_PenButtonEvent,
+    paxis: SDL_PenAxisEvent,
+    render: SDL_RenderEvent,
+    drop: SDL_DropEvent,
+    clipboard: SDL_ClipboardEvent,
+    padding: [128]u8,
+}
+SDL_PumpEvents :: extern proc()
+SDL_EventAction :: enum (i32) {
+    SDL_ADDEVENT,
+    SDL_PEEKEVENT,
+    SDL_GETEVENT,
+}
+SDL_PeepEvents :: extern proc(events: *SDL_Event, numevents: i32, action: SDL_EventAction, minType: u32, maxType: u32) i32
+SDL_HasEvent :: extern proc(r#type: u32) bool
+SDL_HasEvents :: extern proc(minType: u32, maxType: u32) bool
+SDL_FlushEvent :: extern proc(r#type: u32)
+SDL_FlushEvents :: extern proc(minType: u32, maxType: u32)
+SDL_PollEvent :: extern proc(event: *SDL_Event) bool
+SDL_WaitEvent :: extern proc(event: *SDL_Event) bool
+SDL_WaitEventTimeout :: extern proc(event: *SDL_Event, timeoutMS: i32) bool
+SDL_PushEvent :: extern proc(event: *SDL_Event) bool
+SDL_EventFilter :: fn(userdata: *void, event: *SDL_Event) bool
+SDL_SetEventFilter :: extern proc(filter: SDL_EventFilter, userdata: *void)
+SDL_GetEventFilter :: extern proc(filter: *SDL_EventFilter, userdata: **void) bool
+SDL_AddEventWatch :: extern proc(filter: SDL_EventFilter, userdata: *void) bool
+SDL_RemoveEventWatch :: extern proc(filter: SDL_EventFilter, userdata: *void)
+SDL_FilterEvents :: extern proc(filter: SDL_EventFilter, userdata: *void)
+SDL_SetEventEnabled :: extern proc(r#type: u32, enabled: bool)
+SDL_EventEnabled :: extern proc(r#type: u32) bool
+SDL_RegisterEvents :: extern proc(numevents: i32) u32
+SDL_GetWindowFromEvent :: extern proc(event: *const SDL_Event) *SDL_Window
+SDL_GetBasePath :: extern proc() *const u8
+SDL_GetPrefPath :: extern proc(org: *const u8, app: *const u8) *u8
+SDL_Folder :: enum (i32) {
+    SDL_FOLDER_HOME,
+    SDL_FOLDER_DESKTOP,
+    SDL_FOLDER_DOCUMENTS,
+    SDL_FOLDER_DOWNLOADS,
+    SDL_FOLDER_MUSIC,
+    SDL_FOLDER_PICTURES,
+    SDL_FOLDER_PUBLICSHARE,
+    SDL_FOLDER_SAVEDGAMES,
+    SDL_FOLDER_SCREENSHOTS,
+    SDL_FOLDER_TEMPLATES,
+    SDL_FOLDER_VIDEOS,
+    SDL_FOLDER_COUNT,
+}
+SDL_GetUserFolder :: extern proc(folder: SDL_Folder) *const u8
+SDL_PathType :: enum (i32) {
+    SDL_PATHTYPE_NONE,
+    SDL_PATHTYPE_FILE,
+    SDL_PATHTYPE_DIRECTORY,
+    SDL_PATHTYPE_OTHER,
+}
+SDL_PathInfo :: struct {
+    r#type: SDL_PathType,
+    size: usize,
+    create_time: SDL_Time,
+    modify_time: SDL_Time,
+    access_time: SDL_Time,
+}
+SDL_GlobFlags :: u32
+SDL_CreateDirectory :: extern proc(path: *const u8) bool
+SDL_EnumerationResult :: enum (i32) {
+    SDL_ENUM_CONTINUE,
+    SDL_ENUM_SUCCESS,
+    SDL_ENUM_FAILURE,
+}
+SDL_EnumerateDirectoryCallback :: fn(userdata: *void, dirname: *const u8, fname: *const u8) SDL_EnumerationResult
+SDL_EnumerateDirectory :: extern proc(path: *const u8, callback: SDL_EnumerateDirectoryCallback, userdata: *void) bool
+SDL_RemovePath :: extern proc(path: *const u8) bool
+SDL_RenamePath :: extern proc(oldpath: *const u8, newpath: *const u8) bool
+SDL_CopyFile :: extern proc(oldpath: *const u8, newpath: *const u8) bool
+SDL_GetPathInfo :: extern proc(path: *const u8, info: *SDL_PathInfo) bool
+SDL_GlobDirectory :: extern proc(path: *const u8, pattern: *const u8, flags: SDL_GlobFlags, count: *i32) **u8
+SDL_GetCurrentDirectory :: extern proc() *u8
+
+SDL_GPUDevice :: struct {}
+SDL_GPUBuffer :: struct {}
+SDL_GPUTransferBuffer :: struct {}
+SDL_GPUTexture :: struct {}
+SDL_GPUSampler :: struct {}
+SDL_GPUShader :: struct {}
+SDL_GPUComputePipeline :: struct {}
+SDL_GPUGraphicsPipeline :: struct {}
+SDL_GPUCommandBuffer :: struct {}
+SDL_GPURenderPass :: struct {}
+SDL_GPUComputePass :: struct {}
+SDL_GPUCopyPass :: struct {}
+SDL_GPUFence :: struct {}
+SDL_GPUPrimitiveType :: enum (i32) {
+    SDL_GPU_PRIMITIVETYPE_TRIANGLELIST,
+    SDL_GPU_PRIMITIVETYPE_TRIANGLESTRIP,
+    SDL_GPU_PRIMITIVETYPE_LINELIST,
+    SDL_GPU_PRIMITIVETYPE_LINESTRIP,
+    SDL_GPU_PRIMITIVETYPE_POINTLIST,
+}
+SDL_GPULoadOp :: enum (i32) {
+    SDL_GPU_LOADOP_LOAD,
+    SDL_GPU_LOADOP_CLEAR,
+    SDL_GPU_LOADOP_DONT_CARE,
+}
+SDL_GPUStoreOp :: enum (i32) {
+    SDL_GPU_STOREOP_STORE,
+    SDL_GPU_STOREOP_DONT_CARE,
+    SDL_GPU_STOREOP_RESOLVE,
+    SDL_GPU_STOREOP_RESOLVE_AND_STORE,
+}
+SDL_GPUIndexElementSize :: enum (i32) {
+    SDL_GPU_INDEXELEMENTSIZE_16BIT,
+    SDL_GPU_INDEXELEMENTSIZE_32BIT,
+}
+SDL_GPUTextureFormat :: enum (i32) {
+    SDL_GPU_TEXTUREFORMAT_INVALID,
+    SDL_GPU_TEXTUREFORMAT_A8_UNORM,
+    SDL_GPU_TEXTUREFORMAT_R8_UNORM,
+    SDL_GPU_TEXTUREFORMAT_R8G8_UNORM,
+    SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM,
+    SDL_GPU_TEXTUREFORMAT_R16_UNORM,
+    SDL_GPU_TEXTUREFORMAT_R16G16_UNORM,
+    SDL_GPU_TEXTUREFORMAT_R16G16B16A16_UNORM,
+    SDL_GPU_TEXTUREFORMAT_R10G10B10A2_UNORM,
+    SDL_GPU_TEXTUREFORMAT_B5G6R5_UNORM,
+    SDL_GPU_TEXTUREFORMAT_B5G5R5A1_UNORM,
+    SDL_GPU_TEXTUREFORMAT_B4G4R4A4_UNORM,
+    SDL_GPU_TEXTUREFORMAT_B8G8R8A8_UNORM,
+    SDL_GPU_TEXTUREFORMAT_BC1_RGBA_UNORM,
+    SDL_GPU_TEXTUREFORMAT_BC2_RGBA_UNORM,
+    SDL_GPU_TEXTUREFORMAT_BC3_RGBA_UNORM,
+    SDL_GPU_TEXTUREFORMAT_BC4_R_UNORM,
+    SDL_GPU_TEXTUREFORMAT_BC5_RG_UNORM,
+    SDL_GPU_TEXTUREFORMAT_BC7_RGBA_UNORM,
+    SDL_GPU_TEXTUREFORMAT_BC6H_RGB_FLOAT,
+    SDL_GPU_TEXTUREFORMAT_BC6H_RGB_UFLOAT,
+    SDL_GPU_TEXTUREFORMAT_R8_SNORM,
+    SDL_GPU_TEXTUREFORMAT_R8G8_SNORM,
+    SDL_GPU_TEXTUREFORMAT_R8G8B8A8_SNORM,
+    SDL_GPU_TEXTUREFORMAT_R16_SNORM,
+    SDL_GPU_TEXTUREFORMAT_R16G16_SNORM,
+    SDL_GPU_TEXTUREFORMAT_R16G16B16A16_SNORM,
+    SDL_GPU_TEXTUREFORMAT_R16_FLOAT,
+    SDL_GPU_TEXTUREFORMAT_R16G16_FLOAT,
+    SDL_GPU_TEXTUREFORMAT_R16G16B16A16_FLOAT,
+    SDL_GPU_TEXTUREFORMAT_R32_FLOAT,
+    SDL_GPU_TEXTUREFORMAT_R32G32_FLOAT,
+    SDL_GPU_TEXTUREFORMAT_R32G32B32A32_FLOAT,
+    SDL_GPU_TEXTUREFORMAT_R11G11B10_UFLOAT,
+    SDL_GPU_TEXTUREFORMAT_R8_UINT,
+    SDL_GPU_TEXTUREFORMAT_R8G8_UINT,
+    SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UINT,
+    SDL_GPU_TEXTUREFORMAT_R16_UINT,
+    SDL_GPU_TEXTUREFORMAT_R16G16_UINT,
+    SDL_GPU_TEXTUREFORMAT_R16G16B16A16_UINT,
+    SDL_GPU_TEXTUREFORMAT_R32_UINT,
+    SDL_GPU_TEXTUREFORMAT_R32G32_UINT,
+    SDL_GPU_TEXTUREFORMAT_R32G32B32A32_UINT,
+    SDL_GPU_TEXTUREFORMAT_R8_INT,
+    SDL_GPU_TEXTUREFORMAT_R8G8_INT,
+    SDL_GPU_TEXTUREFORMAT_R8G8B8A8_INT,
+    SDL_GPU_TEXTUREFORMAT_R16_INT,
+    SDL_GPU_TEXTUREFORMAT_R16G16_INT,
+    SDL_GPU_TEXTUREFORMAT_R16G16B16A16_INT,
+    SDL_GPU_TEXTUREFORMAT_R32_INT,
+    SDL_GPU_TEXTUREFORMAT_R32G32_INT,
+    SDL_GPU_TEXTUREFORMAT_R32G32B32A32_INT,
+    SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM_SRGB,
+    SDL_GPU_TEXTUREFORMAT_B8G8R8A8_UNORM_SRGB,
+    SDL_GPU_TEXTUREFORMAT_BC1_RGBA_UNORM_SRGB,
+    SDL_GPU_TEXTUREFORMAT_BC2_RGBA_UNORM_SRGB,
+    SDL_GPU_TEXTUREFORMAT_BC3_RGBA_UNORM_SRGB,
+    SDL_GPU_TEXTUREFORMAT_BC7_RGBA_UNORM_SRGB,
+    SDL_GPU_TEXTUREFORMAT_D16_UNORM,
+    SDL_GPU_TEXTUREFORMAT_D24_UNORM,
+    SDL_GPU_TEXTUREFORMAT_D32_FLOAT,
+    SDL_GPU_TEXTUREFORMAT_D24_UNORM_S8_UINT,
+    SDL_GPU_TEXTUREFORMAT_D32_FLOAT_S8_UINT,
+    SDL_GPU_TEXTUREFORMAT_ASTC_4x4_UNORM,
+    SDL_GPU_TEXTUREFORMAT_ASTC_5x4_UNORM,
+    SDL_GPU_TEXTUREFORMAT_ASTC_5x5_UNORM,
+    SDL_GPU_TEXTUREFORMAT_ASTC_6x5_UNORM,
+    SDL_GPU_TEXTUREFORMAT_ASTC_6x6_UNORM,
+    SDL_GPU_TEXTUREFORMAT_ASTC_8x5_UNORM,
+    SDL_GPU_TEXTUREFORMAT_ASTC_8x6_UNORM,
+    SDL_GPU_TEXTUREFORMAT_ASTC_8x8_UNORM,
+    SDL_GPU_TEXTUREFORMAT_ASTC_10x5_UNORM,
+    SDL_GPU_TEXTUREFORMAT_ASTC_10x6_UNORM,
+    SDL_GPU_TEXTUREFORMAT_ASTC_10x8_UNORM,
+    SDL_GPU_TEXTUREFORMAT_ASTC_10x10_UNORM,
+    SDL_GPU_TEXTUREFORMAT_ASTC_12x10_UNORM,
+    SDL_GPU_TEXTUREFORMAT_ASTC_12x12_UNORM,
+    SDL_GPU_TEXTUREFORMAT_ASTC_4x4_UNORM_SRGB,
+    SDL_GPU_TEXTUREFORMAT_ASTC_5x4_UNORM_SRGB,
+    SDL_GPU_TEXTUREFORMAT_ASTC_5x5_UNORM_SRGB,
+    SDL_GPU_TEXTUREFORMAT_ASTC_6x5_UNORM_SRGB,
+    SDL_GPU_TEXTUREFORMAT_ASTC_6x6_UNORM_SRGB,
+    SDL_GPU_TEXTUREFORMAT_ASTC_8x5_UNORM_SRGB,
+    SDL_GPU_TEXTUREFORMAT_ASTC_8x6_UNORM_SRGB,
+    SDL_GPU_TEXTUREFORMAT_ASTC_8x8_UNORM_SRGB,
+    SDL_GPU_TEXTUREFORMAT_ASTC_10x5_UNORM_SRGB,
+    SDL_GPU_TEXTUREFORMAT_ASTC_10x6_UNORM_SRGB,
+    SDL_GPU_TEXTUREFORMAT_ASTC_10x8_UNORM_SRGB,
+    SDL_GPU_TEXTUREFORMAT_ASTC_10x10_UNORM_SRGB,
+    SDL_GPU_TEXTUREFORMAT_ASTC_12x10_UNORM_SRGB,
+    SDL_GPU_TEXTUREFORMAT_ASTC_12x12_UNORM_SRGB,
+    SDL_GPU_TEXTUREFORMAT_ASTC_4x4_FLOAT,
+    SDL_GPU_TEXTUREFORMAT_ASTC_5x4_FLOAT,
+    SDL_GPU_TEXTUREFORMAT_ASTC_5x5_FLOAT,
+    SDL_GPU_TEXTUREFORMAT_ASTC_6x5_FLOAT,
+    SDL_GPU_TEXTUREFORMAT_ASTC_6x6_FLOAT,
+    SDL_GPU_TEXTUREFORMAT_ASTC_8x5_FLOAT,
+    SDL_GPU_TEXTUREFORMAT_ASTC_8x6_FLOAT,
+    SDL_GPU_TEXTUREFORMAT_ASTC_8x8_FLOAT,
+    SDL_GPU_TEXTUREFORMAT_ASTC_10x5_FLOAT,
+    SDL_GPU_TEXTUREFORMAT_ASTC_10x6_FLOAT,
+    SDL_GPU_TEXTUREFORMAT_ASTC_10x8_FLOAT,
+    SDL_GPU_TEXTUREFORMAT_ASTC_10x10_FLOAT,
+    SDL_GPU_TEXTUREFORMAT_ASTC_12x10_FLOAT,
+    SDL_GPU_TEXTUREFORMAT_ASTC_12x12_FLOAT,
+}
+SDL_GPUTextureUsageFlags :: u32
+SDL_GPUTextureType :: enum (i32) {
+    SDL_GPU_TEXTURETYPE_2D,
+    SDL_GPU_TEXTURETYPE_2D_ARRAY,
+    SDL_GPU_TEXTURETYPE_3D,
+    SDL_GPU_TEXTURETYPE_CUBE,
+    SDL_GPU_TEXTURETYPE_CUBE_ARRAY,
+}
+SDL_GPUSampleCount :: enum (i32) {
+    SDL_GPU_SAMPLECOUNT_1,
+    SDL_GPU_SAMPLECOUNT_2,
+    SDL_GPU_SAMPLECOUNT_4,
+    SDL_GPU_SAMPLECOUNT_8,
+}
+SDL_GPUCubeMapFace :: enum (i32) {
+    SDL_GPU_CUBEMAPFACE_POSITIVEX,
+    SDL_GPU_CUBEMAPFACE_NEGATIVEX,
+    SDL_GPU_CUBEMAPFACE_POSITIVEY,
+    SDL_GPU_CUBEMAPFACE_NEGATIVEY,
+    SDL_GPU_CUBEMAPFACE_POSITIVEZ,
+    SDL_GPU_CUBEMAPFACE_NEGATIVEZ,
+}
+SDL_GPUBufferUsageFlags :: u32
+SDL_GPUTransferBufferUsage :: enum (i32) {
+    SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD,
+    SDL_GPU_TRANSFERBUFFERUSAGE_DOWNLOAD,
+}
+SDL_GPUShaderStage :: enum (i32) {
+    SDL_GPU_SHADERSTAGE_VERTEX,
+    SDL_GPU_SHADERSTAGE_FRAGMENT,
+}
+SDL_GPUShaderFormat :: u32
+SDL_GPUVertexElementFormat :: enum (i32) {
+    SDL_GPU_VERTEXELEMENTFORMAT_INVALID,
+    SDL_GPU_VERTEXELEMENTFORMAT_INT,
+    SDL_GPU_VERTEXELEMENTFORMAT_INT2,
+    SDL_GPU_VERTEXELEMENTFORMAT_INT3,
+    SDL_GPU_VERTEXELEMENTFORMAT_INT4,
+    SDL_GPU_VERTEXELEMENTFORMAT_UINT,
+    SDL_GPU_VERTEXELEMENTFORMAT_UINT2,
+    SDL_GPU_VERTEXELEMENTFORMAT_UINT3,
+    SDL_GPU_VERTEXELEMENTFORMAT_UINT4,
+    SDL_GPU_VERTEXELEMENTFORMAT_FLOAT,
+    SDL_GPU_VERTEXELEMENTFORMAT_FLOAT2,
+    SDL_GPU_VERTEXELEMENTFORMAT_FLOAT3,
+    SDL_GPU_VERTEXELEMENTFORMAT_FLOAT4,
+    SDL_GPU_VERTEXELEMENTFORMAT_BYTE2,
+    SDL_GPU_VERTEXELEMENTFORMAT_BYTE4,
+    SDL_GPU_VERTEXELEMENTFORMAT_UBYTE2,
+    SDL_GPU_VERTEXELEMENTFORMAT_UBYTE4,
+    SDL_GPU_VERTEXELEMENTFORMAT_BYTE2_NORM,
+    SDL_GPU_VERTEXELEMENTFORMAT_BYTE4_NORM,
+    SDL_GPU_VERTEXELEMENTFORMAT_UBYTE2_NORM,
+    SDL_GPU_VERTEXELEMENTFORMAT_UBYTE4_NORM,
+    SDL_GPU_VERTEXELEMENTFORMAT_SHORT2,
+    SDL_GPU_VERTEXELEMENTFORMAT_SHORT4,
+    SDL_GPU_VERTEXELEMENTFORMAT_USHORT2,
+    SDL_GPU_VERTEXELEMENTFORMAT_USHORT4,
+    SDL_GPU_VERTEXELEMENTFORMAT_SHORT2_NORM,
+    SDL_GPU_VERTEXELEMENTFORMAT_SHORT4_NORM,
+    SDL_GPU_VERTEXELEMENTFORMAT_USHORT2_NORM,
+    SDL_GPU_VERTEXELEMENTFORMAT_USHORT4_NORM,
+    SDL_GPU_VERTEXELEMENTFORMAT_HALF2,
+    SDL_GPU_VERTEXELEMENTFORMAT_HALF4,
+}
+SDL_GPUVertexInputRate :: enum (i32) {
+    SDL_GPU_VERTEXINPUTRATE_VERTEX,
+    SDL_GPU_VERTEXINPUTRATE_INSTANCE,
+}
+SDL_GPUFillMode :: enum (i32) {
+    SDL_GPU_FILLMODE_FILL,
+    SDL_GPU_FILLMODE_LINE,
+}
+SDL_GPUCullMode :: enum (i32) {
+    SDL_GPU_CULLMODE_NONE,
+    SDL_GPU_CULLMODE_FRONT,
+    SDL_GPU_CULLMODE_BACK,
+}
+SDL_GPUFrontFace :: enum (i32) {
+    SDL_GPU_FRONTFACE_COUNTER_CLOCKWISE,
+    SDL_GPU_FRONTFACE_CLOCKWISE,
+}
+SDL_GPUCompareOp :: enum (i32) {
+    SDL_GPU_COMPAREOP_INVALID,
+    SDL_GPU_COMPAREOP_NEVER,
+    SDL_GPU_COMPAREOP_LESS,
+    SDL_GPU_COMPAREOP_EQUAL,
+    SDL_GPU_COMPAREOP_LESS_OR_EQUAL,
+    SDL_GPU_COMPAREOP_GREATER,
+    SDL_GPU_COMPAREOP_NOT_EQUAL,
+    SDL_GPU_COMPAREOP_GREATER_OR_EQUAL,
+    SDL_GPU_COMPAREOP_ALWAYS,
+}
+SDL_GPUStencilOp :: enum (i32) {
+    SDL_GPU_STENCILOP_INVALID,
+    SDL_GPU_STENCILOP_KEEP,
+    SDL_GPU_STENCILOP_ZERO,
+    SDL_GPU_STENCILOP_REPLACE,
+    SDL_GPU_STENCILOP_INCREMENT_AND_CLAMP,
+    SDL_GPU_STENCILOP_DECREMENT_AND_CLAMP,
+    SDL_GPU_STENCILOP_INVERT,
+    SDL_GPU_STENCILOP_INCREMENT_AND_WRAP,
+    SDL_GPU_STENCILOP_DECREMENT_AND_WRAP,
+}
+SDL_GPUBlendOp :: enum (i32) {
+    SDL_GPU_BLENDOP_INVALID,
+    SDL_GPU_BLENDOP_ADD,
+    SDL_GPU_BLENDOP_SUBTRACT,
+    SDL_GPU_BLENDOP_REVERSE_SUBTRACT,
+    SDL_GPU_BLENDOP_MIN,
+    SDL_GPU_BLENDOP_MAX,
+}
+SDL_GPUBlendFactor :: enum (i32) {
+    SDL_GPU_BLENDFACTOR_INVALID,
+    SDL_GPU_BLENDFACTOR_ZERO,
+    SDL_GPU_BLENDFACTOR_ONE,
+    SDL_GPU_BLENDFACTOR_SRC_COLOR,
+    SDL_GPU_BLENDFACTOR_ONE_MINUS_SRC_COLOR,
+    SDL_GPU_BLENDFACTOR_DST_COLOR,
+    SDL_GPU_BLENDFACTOR_ONE_MINUS_DST_COLOR,
+    SDL_GPU_BLENDFACTOR_SRC_ALPHA,
+    SDL_GPU_BLENDFACTOR_ONE_MINUS_SRC_ALPHA,
+    SDL_GPU_BLENDFACTOR_DST_ALPHA,
+    SDL_GPU_BLENDFACTOR_ONE_MINUS_DST_ALPHA,
+    SDL_GPU_BLENDFACTOR_CONSTANT_COLOR,
+    SDL_GPU_BLENDFACTOR_ONE_MINUS_CONSTANT_COLOR,
+    SDL_GPU_BLENDFACTOR_SRC_ALPHA_SATURATE,
+}
+SDL_GPUColorComponentFlags :: u8
+SDL_GPUFilter :: enum (i32) {
+    SDL_GPU_FILTER_NEAREST,
+    SDL_GPU_FILTER_LINEAR,
+}
+SDL_GPUSamplerMipmapMode :: enum (i32) {
+    SDL_GPU_SAMPLERMIPMAPMODE_NEAREST,
+    SDL_GPU_SAMPLERMIPMAPMODE_LINEAR,
+}
+SDL_GPUSamplerAddressMode :: enum (i32) {
+    SDL_GPU_SAMPLERADDRESSMODE_REPEAT,
+    SDL_GPU_SAMPLERADDRESSMODE_MIRRORED_REPEAT,
+    SDL_GPU_SAMPLERADDRESSMODE_CLAMP_TO_EDGE,
+}
+SDL_GPUPresentMode :: enum (i32) {
+    SDL_GPU_PRESENTMODE_VSYNC,
+    SDL_GPU_PRESENTMODE_IMMEDIATE,
+    SDL_GPU_PRESENTMODE_MAILBOX,
+}
+SDL_GPUSwapchainComposition :: enum (i32) {
+    SDL_GPU_SWAPCHAINCOMPOSITION_SDR,
+    SDL_GPU_SWAPCHAINCOMPOSITION_SDR_LINEAR,
+    SDL_GPU_SWAPCHAINCOMPOSITION_HDR_EXTENDED_LINEAR,
+    SDL_GPU_SWAPCHAINCOMPOSITION_HDR10_ST2084,
+}
+SDL_GPUViewport :: struct {
+    x: f32,
+    y: f32,
+    w: f32,
+    h: f32,
+    min_depth: f32,
+    max_depth: f32,
+}
+SDL_GPUTextureTransferInfo :: struct {
+    transfer_buffer: *SDL_GPUTransferBuffer,
+    offset: u32,
+    pixels_per_row: u32,
+    rows_per_layer: u32,
+}
+SDL_GPUTransferBufferLocation :: struct {
+    transfer_buffer: *SDL_GPUTransferBuffer,
+    offset: u32,
+}
+SDL_GPUTextureLocation :: struct {
+    texture: *SDL_GPUTexture,
+    mip_level: u32,
+    layer: u32,
+    x: u32,
+    y: u32,
+    z: u32,
+}
+SDL_GPUTextureRegion :: struct {
+    texture: *SDL_GPUTexture,
+    mip_level: u32,
+    layer: u32,
+    x: u32,
+    y: u32,
+    z: u32,
+    w: u32,
+    h: u32,
+    d: u32,
+}
+SDL_GPUBlitRegion :: struct {
+    texture: *SDL_GPUTexture,
+    mip_level: u32,
+    layer_or_depth_plane: u32,
+    x: u32,
+    y: u32,
+    w: u32,
+    h: u32,
+}
+SDL_GPUBufferLocation :: struct {
+    buffer: *SDL_GPUBuffer,
+    offset: u32,
+}
+SDL_GPUBufferRegion :: struct {
+    buffer: *SDL_GPUBuffer,
+    offset: u32,
+    size: u32,
+}
+SDL_GPUIndirectDrawCommand :: struct {
+    num_vertices: u32,
+    num_instances: u32,
+    first_vertex: u32,
+    first_instance: u32,
+}
+SDL_GPUIndexedIndirectDrawCommand :: struct {
+    num_indices: u32,
+    num_instances: u32,
+    first_index: u32,
+    vertex_offset: i32,
+    first_instance: u32,
+}
+SDL_GPUIndirectDispatchCommand :: struct {
+    groupcount_x: u32,
+    groupcount_y: u32,
+    groupcount_z: u32,
+}
+SDL_GPUSamplerCreateInfo :: struct {
+    min_filter: SDL_GPUFilter,
+    mag_filter: SDL_GPUFilter,
+    mipmap_mode: SDL_GPUSamplerMipmapMode,
+    address_mode_u: SDL_GPUSamplerAddressMode,
+    address_mode_v: SDL_GPUSamplerAddressMode,
+    address_mode_w: SDL_GPUSamplerAddressMode,
+    mip_lod_bias: f32,
+    max_anisotropy: f32,
+    compare_op: SDL_GPUCompareOp,
+    min_lod: f32,
+    max_lod: f32,
+    enable_anisotropy: bool,
+    enable_compare: bool,
+    padding1: u8,
+    padding2: u8,
+    props: SDL_PropertiesID,
+}
+SDL_GPUVertexBufferDescription :: struct {
+    slot: u32,
+    pitch: u32,
+    input_rate: SDL_GPUVertexInputRate,
+    instance_step_rate: u32,
+}
+SDL_GPUVertexAttribute :: struct {
+    location: u32,
+    buffer_slot: u32,
+    format: SDL_GPUVertexElementFormat,
+    offset: u32,
+}
+SDL_GPUVertexInputState :: struct {
+    vertex_buffer_descriptions: *const SDL_GPUVertexBufferDescription,
+    num_vertex_buffers: u32,
+    vertex_attributes: *const SDL_GPUVertexAttribute,
+    num_vertex_attributes: u32,
+}
+SDL_GPUStencilOpState :: struct {
+    fail_op: SDL_GPUStencilOp,
+    pass_op: SDL_GPUStencilOp,
+    depth_fail_op: SDL_GPUStencilOp,
+    compare_op: SDL_GPUCompareOp,
+}
+SDL_GPUColorTargetBlendState :: struct {
+    src_color_blendfactor: SDL_GPUBlendFactor,
+    dst_color_blendfactor: SDL_GPUBlendFactor,
+    src_alpha_blendfactor: SDL_GPUBlendFactor,
+    dst_alpha_blendfactor: SDL_GPUBlendFactor,
+    color_blendop: SDL_GPUBlendOp,
+    alpha_blendop: SDL_GPUBlendOp,
+    blend_constants: [4]f32,
+    enable_blend: bool,
+}
+SDL_GPUSamplerCreateInfo :: struct {
+    min_filter: SDL_GPUFilter,
+    mag_filter: SDL_GPUFilter,
+    mipmap_mode: SDL_GPUSamplerMipmapMode,
+    address_mode_u: SDL_GPUSamplerAddressMode,
+    address_mode_v: SDL_GPUSamplerAddressMode,
+    address_mode_w: SDL_GPUSamplerAddressMode,
+    mip_lod_bias: f32,
+    max_anisotropy: f32,
+    compare_op: SDL_GPUCompareOp,
+    min_lod: f32,
+    max_lod: f32,
+    enable_anisotropy: bool,
+    enable_compare: bool,
+    padding1: u8,
+    padding2: u8,
+    props: SDL_PropertiesID,
+}
+SDL_GPUShaderCreateInfo :: struct {
+    code_size: usize,
+    r#code: *const u8,
+    entrypoint: *const u8,
+    format: SDL_GPUShaderFormat,
+    stage: SDL_GPUShaderStage,
+    num_samplers: u32,
+    num_storage_textures: u32,
+    num_storage_buffers: u32,
+    num_uniform_buffers: u32,
+    props: SDL_PropertiesID,
+}
+SDL_GPUTextureCreateInfo :: struct {
+    r#type_: SDL_GPUTextureType,
+    format: SDL_GPUTextureFormat,
+    usage: SDL_GPUTextureUsageFlags,
+    width: u32,
+    height: u32,
+    layer_count_or_depth: u32,
+    num_levels: u32,
+    sample_count: SDL_GPUSampleCount,
+    props: SDL_PropertiesID,
+}
+SDL_GPUBufferCreateInfo :: struct {
+    usage: SDL_GPUBufferUsageFlags,
+    size: u32,
+    props: SDL_PropertiesID,
+}
+SDL_GPUTransferBufferCreateInfo :: struct {
+    usage: SDL_GPUTransferBufferUsage,
+    size: u32,
+    props: SDL_PropertiesID,
+}
+SDL_GPURasterizerState :: struct {
+    fill_mode: SDL_GPUFillMode,
+    cull_mode: SDL_GPUCullMode,
+    front_face: SDL_GPUFrontFace,
+    depth_bias_constant_factor: f32,
+    depth_bias_clamp: f32,
+    depth_bias_slope_factor: f32,
+    enable_depth_bias: bool,
+    enable_depth_clip: bool,
+    padding1: u8,
+    padding2: u8,
+}
+SDL_GPUMultisampleState :: struct {
+    sample_count: SDL_GPUSampleCount,
+    sample_mask: u32,
+    enable_mask: bool,
+    padding1: u8,
+    padding2: u8,
+    padding3: u8,
+}
+SDL_GPUDepthStencilState :: struct {
+    compare_op: SDL_GPUCompareOp,
+    back_stencil_state: SDL_GPUStencilOpState,
+    front_stencil_state: SDL_GPUStencilOpState,
+    compare_mask: u8,
+    write_mask: u8,
+    enable_depth_test: bool,
+    enable_depth_write: bool,
+    enable_stencil_test: bool,
+    padding1: u8,
+    padding2: u8,
+    padding3: u8,
+}
+SDL_GPUColorTargetDescription :: struct {
+    format: SDL_GPUTextureFormat,
+    blend_state: SDL_GPUColorTargetBlendState,
+}
+SDL_GPUGraphicsPipelineTargetInfo :: struct {
+    color_target_descriptions: *const SDL_GPUColorTargetDescription,
+    num_color_targets: u32,
+    depth_stencil_format: SDL_GPUTextureFormat,
+    has_depth_stencil_target: bool,
+    padding1: u8,
+    padding2: u8,
+    padding3: u8,
+}
+SDL_GPUGraphicsPipelineCreateInfo :: struct {
+    vertex_shader: *SDL_GPUShader,
+    fragment_shader: *SDL_GPUShader,
+    vertex_input_state: SDL_GPUVertexInputState,
+    primitive_type: SDL_GPUPrimitiveType,
+    rasterizer_state: SDL_GPURasterizerState,
+    multisample_state: SDL_GPUMultisampleState,
+    depth_stencil_state: SDL_GPUDepthStencilState,
+    target_info: SDL_GPUGraphicsPipelineTargetInfo,
+    props: SDL_PropertiesID,
+}
+SDL_GPUComputePipelineCreateInfo :: struct {
+    code_size: usize,
+    r#code: *const u8,
+    entrypoint: *const u8,
+    format: SDL_GPUShaderFormat,
+    num_samplers: u32,
+    num_readonly_storage_textures: u32,
+    num_readonly_storage_buffers: u32,
+    num_readwrite_storage_textures: u32,
+    num_readwrite_storage_buffers: u32,
+    num_uniform_buffers: u32,
+    threadcount_x: u32,
+    threadcount_y: u32,
+    threadcount_z: u32,
+    props: SDL_PropertiesID,
+}
+SDL_GPUColorTargetInfo :: struct {
+    texture: *SDL_GPUTexture,
+    mip_level: u32,
+    layer_or_depth_plane: u32,
+    clear_color: SDL_FColor,
+    load_op: SDL_GPULoadOp,
+    store_op: SDL_GPUStoreOp,
+    resolve_texture: *SDL_GPUTexture,
+    resolve_mip_level: u32,
+    resolve_layer: u32,
+    cycle: bool,
+    cycle_resolve_texture: bool,
+    padding1: u8,
+    padding2: u8,
+}
+SDL_GPUDepthStencilTargetInfo :: struct {
+    texture: *SDL_GPUTexture,
+    clear_depth: f32,
+    load_op: SDL_GPULoadOp,
+    store_op: SDL_GPUStoreOp,
+    stencil_load_op: SDL_GPULoadOp,
+    stencil_store_op: SDL_GPUStoreOp,
+    cycle: bool,
+    clear_stencil: u8,
+    padding1: u8,
+    padding2: u8,
+}
+SDL_GPUBlitInfo :: struct {
+    source: SDL_GPUBlitRegion,
+    destination: SDL_GPUBlitRegion,
+    load_op: SDL_GPULoadOp,
+    clear_color: SDL_FColor,
+    flip_mode: SDL_FlipMode,
+    filter: SDL_GPUFilter,
+    cycle: bool,
+    padding1: u8,
+    padding2: u8,
+    padding3: u8,
+}
+SDL_GPUBufferBinding :: struct {
+    buffer: *SDL_GPUBuffer,
+    offset: u32,
+}
+SDL_GPUTextureSamplerBinding :: struct {
+    texture: *SDL_GPUTexture,
+    sampler: *SDL_GPUSampler,
+}
+SDL_GPUStorageBufferReadWriteBinding :: struct {
+    buffer: *SDL_GPUBuffer,
+    cycle: bool,
+    padding1: u8,
+    padding2: u8,
+    padding3: u8,
+}
+SDL_GPUStorageTextureReadWriteBinding :: struct {
+    texture: *SDL_GPUTexture,
+    mip_level: u32,
+    layer: u32,
+    cycle: bool,
+    padding1: u8,
+    padding2: u8,
+    padding3: u8,
+}
+
+SDL_GPUSupportsShaderFormats :: extern proc(format_flags: SDL_GPUShaderFormat, name: *const u8) bool
+SDL_GPUSupportsProperties :: extern proc(props: SDL_PropertiesID) bool
+SDL_CreateGPUDevice :: extern proc(format_flags: SDL_GPUShaderFormat, debug_mode: bool, name: *const u8) *SDL_GPUDevice
+SDL_CreateGPUDeviceWithProperties :: extern proc(props: SDL_PropertiesID) *SDL_GPUDevice
+SDL_DestroyGPUDevice :: extern proc(device: *SDL_GPUDevice)
+SDL_GetNumGPUDrivers :: extern proc() i32
+SDL_GetGPUDriver :: extern proc(index: i32) *const u8
+SDL_GetGPUDeviceDriver :: extern proc(device: *SDL_GPUDevice) *const u8
+SDL_GetGPUShaderFormats :: extern proc(device: *SDL_GPUDevice) SDL_GPUShaderFormat
+SDL_CreateGPUComputePipeline :: extern proc(device: *SDL_GPUDevice, createinfo: *const SDL_GPUComputePipelineCreateInfo) *SDL_GPUComputePipeline
+SDL_CreateGPUGraphicsPipeline :: extern proc(device: *SDL_GPUDevice, createinfo: *const SDL_GPUGraphicsPipelineCreateInfo) *SDL_GPUGraphicsPipeline
+SDL_CreateGPUSampler :: extern proc(device: *SDL_GPUDevice, createinfo: *const SDL_GPUSamplerCreateInfo) *SDL_GPUSampler
+SDL_CreateGPUShader :: extern proc(device: *SDL_GPUDevice, createinfo: *const SDL_GPUShaderCreateInfo) *SDL_GPUShader
+SDL_CreateGPUTexture :: extern proc(device: *SDL_GPUDevice, createinfo: *const SDL_GPUTextureCreateInfo) *SDL_GPUTexture
+SDL_CreateGPUBuffer :: extern proc(device: *SDL_GPUDevice, createinfo: *const SDL_GPUBufferCreateInfo) *SDL_GPUBuffer
+SDL_CreateGPUTransferBuffer :: extern proc(device: *SDL_GPUDevice, createinfo: *const SDL_GPUTransferBufferCreateInfo) *SDL_GPUTransferBuffer
+SDL_SetGPUBufferName :: extern proc(device: *SDL_GPUDevice, buffer: *SDL_GPUBuffer, text: *const u8)
+SDL_SetGPUTextureName :: extern proc(device: *SDL_GPUDevice, texture: *SDL_GPUTexture, text: *const u8)
+SDL_InsertGPUDebugLabel :: extern proc(command_buffer: *SDL_GPUCommandBuffer, text: *const u8)
+SDL_PushGPUDebugGroup :: extern proc(command_buffer: *SDL_GPUCommandBuffer, name: *const u8)
+SDL_PopGPUDebugGroup :: extern proc(command_buffer: *SDL_GPUCommandBuffer)
+SDL_ReleaseGPUTexture :: extern proc(device: *SDL_GPUDevice, texture: *SDL_GPUTexture)
+SDL_ReleaseGPUSampler :: extern proc(device: *SDL_GPUDevice, sampler: *SDL_GPUSampler)
+SDL_ReleaseGPUBuffer :: extern proc(device: *SDL_GPUDevice, buffer: *SDL_GPUBuffer)
+SDL_ReleaseGPUTransferBuffer :: extern proc(device: *SDL_GPUDevice, transfer_buffer: *SDL_GPUTransferBuffer)
+SDL_ReleaseGPUComputePipeline :: extern proc(device: *SDL_GPUDevice, compute_pipeline: *SDL_GPUComputePipeline)
+SDL_ReleaseGPUShader :: extern proc(device: *SDL_GPUDevice, shader: *SDL_GPUShader)
+SDL_ReleaseGPUGraphicsPipeline :: extern proc(device: *SDL_GPUDevice, graphics_pipeline: *SDL_GPUGraphicsPipeline)
+SDL_AcquireGPUCommandBuffer :: extern proc(device: *SDL_GPUDevice) *SDL_GPUCommandBuffer
+SDL_PushGPUVertexUniformData :: extern proc(command_buffer: *SDL_GPUCommandBuffer, slot_index: u32, data: *const void, length: u32)
+SDL_PushGPUFragmentUniformData :: extern proc(command_buffer: *SDL_GPUCommandBuffer, slot_index: u32, data: *const void, length: u32)
+SDL_PushGPUComputeUniformData :: extern proc(command_buffer: *SDL_GPUCommandBuffer, slot_index: u32, data: *const void, length: u32)
+SDL_BeginGPURenderPass :: extern proc(command_buffer: *SDL_GPUCommandBuffer, color_target_infos: *const SDL_GPUColorTargetInfo, num_color_targets: u32, depth_stencil_target_info: *const SDL_GPUDepthStencilTargetInfo) *SDL_GPURenderPass
+SDL_BindGPUGraphicsPipeline :: extern proc(render_pass: *SDL_GPURenderPass, graphics_pipeline: *SDL_GPUGraphicsPipeline)
+SDL_SetGPUViewport :: extern proc(render_pass: *SDL_GPURenderPass, viewport: *const SDL_GPUViewport)
+SDL_SetGPUScissor :: extern proc(render_pass: *SDL_GPURenderPass, scissor: *const SDL_Rect)
+SDL_SetGPUBlendConstants :: extern proc(render_pass: *SDL_GPURenderPass, blend_constants: SDL_FColor)
+SDL_SetGPUStencilReference :: extern proc(render_pass: *SDL_GPURenderPass, reference: u8)
+SDL_BindGPUVertexBuffers :: extern proc(render_pass: *SDL_GPURenderPass, first_slot: u32, bindings: *const SDL_GPUBufferBinding, num_bindings: u32)
+SDL_BindGPUIndexBuffer :: extern proc(render_pass: *SDL_GPURenderPass, binding: *const SDL_GPUBufferBinding, index_element_size: SDL_GPUIndexElementSize)
+SDL_BindGPUVertexSamplers :: extern proc(render_pass: *SDL_GPURenderPass, first_slot: u32, texture_sampler_bindings: *const SDL_GPUTextureSamplerBinding, num_bindings: u32)
+SDL_BindGPUVertexStorageTextures :: extern proc(render_pass: *SDL_GPURenderPass, first_slot: u32, storage_textures: **SDL_GPUTexture, num_bindings: u32)
+SDL_BindGPUVertexStorageBuffers :: extern proc(render_pass: *SDL_GPURenderPass, first_slot: u32, storage_buffers: **SDL_GPUBuffer, num_bindings: u32)
+SDL_BindGPUFragmentSamplers :: extern proc(render_pass: *SDL_GPURenderPass, first_slot: u32, texture_sampler_bindings: *const SDL_GPUTextureSamplerBinding, num_bindings: u32)
+SDL_BindGPUFragmentStorageTextures :: extern proc(render_pass: *SDL_GPURenderPass, first_slot: u32, storage_textures: **SDL_GPUTexture, num_bindings: u32)
+SDL_BindGPUFragmentStorageBuffers :: extern proc(render_pass: *SDL_GPURenderPass, first_slot: u32, storage_buffers: **SDL_GPUBuffer, num_bindings: u32)
+SDL_DrawGPUIndexedPrimitives :: extern proc(render_pass: *SDL_GPURenderPass, num_indices: u32, num_instances: u32, first_index: u32, vertex_offset: i32, first_instance: u32)
+SDL_DrawGPUPrimitives :: extern proc(render_pass: *SDL_GPURenderPass, num_vertices: u32, num_instances: u32, first_vertex: u32, first_instance: u32)
+SDL_DrawGPUPrimitivesIndirect :: extern proc(render_pass: *SDL_GPURenderPass, buffer: *SDL_GPUBuffer, offset: u32, draw_count: u32)
+SDL_DrawGPUIndexedPrimitivesIndirect :: extern proc(render_pass: *SDL_GPURenderPass, buffer: *SDL_GPUBuffer, offset: u32, draw_count: u32)
+SDL_EndGPURenderPass :: extern proc(render_pass: *SDL_GPURenderPass)
+SDL_BeginGPUComputePass :: extern proc(command_buffer: *SDL_GPUCommandBuffer, storage_texture_bindings: *const SDL_GPUStorageTextureReadWriteBinding, num_storage_texture_bindings: u32, storage_buffer_bindings: *const SDL_GPUStorageBufferReadWriteBinding, num_storage_buffer_bindings: u32) *SDL_GPUComputePass
+SDL_BindGPUComputePipeline :: extern proc(compute_pass: *SDL_GPUComputePass, compute_pipeline: *SDL_GPUComputePipeline)
+SDL_BindGPUComputeSamplers :: extern proc(compute_pass: *SDL_GPUComputePass, first_slot: u32, texture_sampler_bindings: *const SDL_GPUTextureSamplerBinding, num_bindings: u32)
+SDL_BindGPUComputeStorageTextures :: extern proc(compute_pass: *SDL_GPUComputePass, first_slot: u32, storage_textures: **SDL_GPUTexture, num_bindings: u32)
+SDL_BindGPUComputeStorageBuffers :: extern proc(compute_pass: *SDL_GPUComputePass, first_slot: u32, storage_buffers: **SDL_GPUBuffer, num_bindings: u32)
+SDL_DispatchGPUCompute :: extern proc(compute_pass: *SDL_GPUComputePass, groupcount_x: u32, groupcount_y: u32, groupcount_z: u32)
+SDL_DispatchGPUComputeIndirect :: extern proc(compute_pass: *SDL_GPUComputePass, buffer: *SDL_GPUBuffer, offset: u32)
+SDL_EndGPUComputePass :: extern proc(compute_pass: *SDL_GPUComputePass)
+SDL_MapGPUTransferBuffer :: extern proc(device: *SDL_GPUDevice, transfer_buffer: *SDL_GPUTransferBuffer, size: u32) *void
+SDL_UnmapGPUTransferBuffer :: extern proc(device: *SDL_GPUDevice, transfer_buffer: *SDL_GPUTransferBuffer)
+
+SDL_LogCategory :: enum (i32) {
+    SDL_LOG_CATEGORY_APPLICATION = 0,
+    SDL_LOG_CATEGORY_ERROR,
+    SDL_LOG_CATEGORY_ASSERT,
+    SDL_LOG_CATEGORY_SYSTEM,
+    SDL_LOG_CATEGORY_AUDIO,
+    SDL_LOG_CATEGORY_VIDEO,
+    SDL_LOG_CATEGORY_RENDER,
+    SDL_LOG_CATEGORY_INPUT,
+    SDL_LOG_CATEGORY_TEST,
+    SDL_LOG_CATEGORY_RESERVED1,
+    SDL_LOG_CATEGORY_RESERVED2,
+    SDL_LOG_CATEGORY_RESERVED3,
+    SDL_LOG_CATEGORY_RESERVED4,
+    SDL_LOG_CATEGORY_RESERVED5,
+    SDL_LOG_CATEGORY_RESERVED6,
+    SDL_LOG_CATEGORY_RESERVED7,
+    SDL_LOG_CATEGORY_RESERVED8,
+    SDL_LOG_CATEGORY_RESERVED9,
+    SDL_LOG_CATEGORY_RESERVED10,
+    SDL_LOG_CATEGORY_CUSTOM,
+}
+SDL_LogPriority :: enum (i32) {
+    SDL_LOG_PRIORITY_INVALID,
+    SDL_LOG_PRIORITY_TRACE,
+    SDL_LOG_PRIORITY_VERBOSE,
+    SDL_LOG_PRIORITY_DEBUG,
+    SDL_LOG_PRIORITY_INFO,
+    SDL_LOG_PRIORITY_WARN,
+    SDL_LOG_PRIORITY_ERROR,
+    SDL_LOG_PRIORITY_CRITICAL,
+    SDL_LOG_PRIORITY_COUNT,
+}
+SDL_SetLogPriorities :: extern proc(priority: SDL_LogPriority)
+SDL_SetLogPriority :: extern proc(category: i32, priority: SDL_LogPriority)
+SDL_GetLogPriority :: extern proc(category: i32) SDL_LogPriority
+SDL_ResetLogPriorities :: extern proc()
+SDL_SetLogPriorityPrefix :: extern proc(priority: SDL_LogPriority, prefix: *const u8) bool
+SDL_Log :: extern proc(fmt: *const u8, any) void
+SDL_LogTrace :: extern proc(category: i32, fmt: *const u8, any) void
+SDL_LogVerbose :: extern proc(category: i32, fmt: *const u8, any) void
+SDL_LogDebug :: extern proc(category: i32, fmt: *const u8, any) void
+SDL_LogInfo :: extern proc(category: i32, fmt: *const u8, any) void
+SDL_LogWarn :: extern proc(category: i32, fmt: *const u8, any) void
+SDL_LogError :: extern proc(category: i32, fmt: *const u8, any) void
+SDL_LogCritical :: extern proc(category: i32, fmt: *const u8, any) void
+SDL_LogMessage :: extern proc(category: i32, priority: SDL_LogPriority, fmt: *const u8, any) void
+SDL_LogMessageV :: extern proc(category: i32, priority: SDL_LogPriority, fmt: *const u8, ap: va_list) void
+SDL_LogOutputFunction :: fn(userdata: *void, category: i32, priority: SDL_LogPriority, message: *const u8) void
+SDL_GetDefaultLogOutputFunction :: extern proc() SDL_LogOutputFunction
+SDL_GetLogOutputFunction :: extern proc(callback: *SDL_LogOutputFunction, userdata: **void)
+SDL_SetLogOutputFunction :: extern proc(callback: SDL_LogOutputFunction, userdata: *void)
+SDL_MessageBoxFlags :: u32
+SDL_MessageBoxButtonFlags :: u32
+SDL_MessageBoxButtonData :: struct {
+    flags: SDL_MessageBoxButtonFlags,
+    buttonID: i32,
+    text: *const u8,
+}
+SDL_MessageBoxColor :: struct { r: u8, g: u8, b: u8 }
+SDL_MessageBoxColorType :: enum (i32) {
+    SDL_MESSAGEBOX_COLOR_BACKGROUND,
+    SDL_MESSAGEBOX_COLOR_TEXT,
+    SDL_MESSAGEBOX_COLOR_BUTTON_BORDER,
+    SDL_MESSAGEBOX_COLOR_BUTTON_BACKGROUND,
+    SDL_MESSAGEBOX_COLOR_BUTTON_SELECTED,
+    SDL_MESSAGEBOX_COLOR_COUNT,
+}
+SDL_MessageBoxColorScheme :: struct { colors: [SDL_MESSAGEBOX_COLOR_COUNT]SDL_MessageBoxColor }
+SDL_MessageBoxData :: struct {
+    flags: SDL_MessageBoxFlags,
+    window: *SDL_Window,
+    title: *const u8,
+    message: *const u8,
+    numbuttons: i32,
+    buttons: *const SDL_MessageBoxButtonData,
+    colorScheme: *const SDL_MessageBoxColorScheme,
+}
+SDL_ShowMessageBox :: extern proc(messageboxdata: *const SDL_MessageBoxData, buttonid: *i32) bool
+SDL_ShowSimpleMessageBox :: extern proc(flags: SDL_MessageBoxFlags, title: *const u8, message: *const u8, window: *SDL_Window) bool
+SDL_MetalView :: *void
+SDL_Metal_CreateView :: extern proc(window: *SDL_Window) SDL_MetalView
+SDL_Metal_DestroyView :: extern proc(view: SDL_MetalView)
+SDL_Metal_GetLayer :: extern proc(view: SDL_MetalView) *void
+SDL_OpenURL :: extern proc(url: *const u8) bool
+SDL_GetPlatform :: extern proc() *const u8
+
+SDL_Process :: struct {}
+SDL_CreateProcess :: extern proc(args: **const u8, pipe_stdio: bool) *SDL_Process
+SDL_ProcessIO :: enum (i32) {
+    SDL_PROCESS_STDIO_INHERITED,
+    SDL_PROCESS_STDIO_NULL,
+    SDL_PROCESS_STDIO_APP,
+    SDL_PROCESS_STDIO_REDIRECT,
+}
+SDL_CreateProcessWithProperties :: extern proc(props: SDL_PropertiesID) *SDL_Process
+SDL_GetProcessProperties :: extern proc(process: *SDL_Process) SDL_PropertiesID
+SDL_ReadProcess :: extern proc(process: *SDL_Process, datasize: *usize, exitcode: *i32) *void
+SDL_GetProcessInput :: extern proc(process: *SDL_Process) *SDL_IOStream
+SDL_GetProcessOutput :: extern proc(process: *SDL_Process) *SDL_IOStream
+SDL_KillProcess :: extern proc(process: *SDL_Process, force: bool) bool
+SDL_WaitProcess :: extern proc(process: *SDL_Process, block: bool, exitcode: *i32) bool
+SDL_DestroyProcess :: extern proc(process: *SDL_Process)
+
+SDL_Vertex :: struct {
+    position: SDL_FPoint,
+    color: SDL_FColor,
+    tex_coord: SDL_FPoint,
+}
+SDL_TextureAccess :: enum (i32) {
+    SDL_TEXTUREACCESS_STATIC,
+    SDL_TEXTUREACCESS_STREAMING,
+    SDL_TEXTUREACCESS_TARGET,
+}
+SDL_RendererLogicalPresentation :: enum (i32) {
+    SDL_LOGICAL_PRESENTATION_DISABLED,
+    SDL_LOGICAL_PRESENTATION_STRETCH,
+    SDL_LOGICAL_PRESENTATION_LETTERBOX,
+    SDL_LOGICAL_PRESENTATION_OVERSCAN,
+    SDL_LOGICAL_PRESENTATION_INTEGER_SCALE,
+}
+SDL_Renderer :: struct {}
+SDL_Texture :: struct {
+    format: SDL_PixelFormat,
+    w: i32,
+    h: i32,
+    refcount: i32,
+}
+
+SDL_GetNumRenderDrivers :: extern proc() i32
+SDL_GetRenderDriver :: extern proc(index: i32) *const u8
+SDL_CreateWindowAndRenderer :: extern proc(title: *const u8, width: i32, height: i32, window_flags: SDL_WindowFlags, window: **SDL_Window, renderer: **SDL_Renderer) bool
+SDL_CreateRenderer :: extern proc(window: *SDL_Window, name: *const u8) *SDL_Renderer
+SDL_CreateRendererWithProperties :: extern proc(props: SDL_PropertiesID) *SDL_Renderer
+SDL_CreateSoftwareRenderer :: extern proc(surface: *SDL_Surface) *SDL_Renderer
+SDL_GetRenderer :: extern proc(window: *SDL_Window) *SDL_Renderer
+SDL_GetRenderWindow :: extern proc(renderer: *SDL_Renderer) *SDL_Window
+SDL_GetRendererName :: extern proc(renderer: *SDL_Renderer) *const u8
+SDL_GetRendererProperties :: extern proc(renderer: *SDL_Renderer) SDL_PropertiesID
+SDL_GetRenderOutputSize :: extern proc(renderer: *SDL_Renderer, w: *i32, h: *i32) bool
+SDL_GetCurrentRenderOutputSize :: extern proc(renderer: *SDL_Renderer, w: *i32, h: *i32) bool
+SDL_CreateTexture :: extern proc(renderer: *SDL_Renderer, format: SDL_PixelFormat, access: SDL_TextureAccess, w: i32, h: i32) *SDL_Texture
+SDL_CreateTextureFromSurface :: extern proc(renderer: *SDL_Renderer, surface: *SDL_Surface) *SDL_Texture
+SDL_CreateTextureWithProperties :: extern proc(renderer: *SDL_Renderer, props: SDL_PropertiesID) *SDL_Texture
+SDL_GetTextureProperties :: extern proc(texture: *SDL_Texture) SDL_PropertiesID
+SDL_GetRendererFromTexture :: extern proc(texture: *SDL_Texture) *SDL_Renderer
+SDL_GetTextureSize :: extern proc(texture: *SDL_Texture, w: *f32, h: *f32) bool
+SDL_SetTextureColorMod :: extern proc(texture: *SDL_Texture, r: Uint8, g: Uint8, b: Uint8) bool
+SDL_SetTextureColorModFloat :: extern proc(texture: *SDL_Texture, r: f32, g: f32, b: f32) bool
+SDL_GetTextureColorMod :: extern proc(texture: *SDL_Texture, r: *Uint8, g: *Uint8, b: *Uint8) bool
+SDL_GetTextureColorModFloat :: extern proc(texture: *SDL_Texture, r: *f32, g: *f32, b: *f32) bool
+SDL_SetTextureAlphaMod :: extern proc(texture: *SDL_Texture, alpha: Uint8) bool
+SDL_SetTextureAlphaModFloat :: extern proc(texture: *SDL_Texture, alpha: f32) bool
+SDL_GetTextureAlphaMod :: extern proc(texture: *SDL_Texture, alpha: *Uint8) bool
+SDL_GetTextureAlphaModFloat :: extern proc(texture: *SDL_Texture, alpha: *f32) bool
+SDL_SetTextureBlendMode :: extern proc(texture: *SDL_Texture, blendMode: SDL_BlendMode) bool
+SDL_GetTextureBlendMode :: extern proc(texture: *SDL_Texture, blendMode: *SDL_BlendMode) bool
+SDL_SetTextureScaleMode :: extern proc(texture: *SDL_Texture, scaleMode: SDL_ScaleMode) bool
+SDL_GetTextureScaleMode :: extern proc(texture: *SDL_Texture, scaleMode: *SDL_ScaleMode) bool
+SDL_UpdateTexture :: extern proc(texture: *SDL_Texture, rect: *const SDL_Rect, pixels: *const void, pitch: i32) bool
+SDL_UpdateYUVTexture :: extern proc(texture: *SDL_Texture, rect: *const SDL_Rect, Yplane: *const Uint8, Ypitch: i32, Uplane: *const Uint8, Upitch: i32, Vplane: *const Uint8, Vpitch: i32) bool
+SDL_UpdateNVTexture :: extern proc(texture: *SDL_Texture, rect: *const SDL_Rect, Yplane: *const Uint8, Ypitch: i32, UVplane: *const Uint8, UVpitch: i32) bool
+SDL_LockTexture :: extern proc(texture: *SDL_Texture, rect: *const SDL_Rect, pixels: **void, pitch: *i32) bool
+SDL_LockTextureToSurface :: extern proc(texture: *SDL_Texture, rect: *const SDL_Rect, surface: **SDL_Surface) bool
+SDL_UnlockTexture :: extern proc(texture: *SDL_Texture)
+SDL_SetRenderTarget :: extern proc(renderer: *SDL_Renderer, texture: *SDL_Texture) bool
+SDL_GetRenderTarget :: extern proc(renderer: *SDL_Renderer) *SDL_Texture
+SDL_SetRenderLogicalPresentation :: extern proc(renderer: *SDL_Renderer, w: i32, h: i32, mode: SDL_RendererLogicalPresentation) bool
+SDL_GetRenderLogicalPresentation :: extern proc(renderer: *SDL_Renderer, w: *i32, h: *i32, mode: *SDL_RendererLogicalPresentation) bool
+SDL_GetRenderLogicalPresentationRect :: extern proc(renderer: *SDL_Renderer, rect: *SDL_FRect) bool
+SDL_RenderCoordinatesFromWindow :: extern proc(renderer: *SDL_Renderer, window_x: f32, window_y: f32, renderer_x: *f32, renderer_y: *f32) bool
+SDL_WindowCoordinatesFromRender :: extern proc(renderer: *SDL_Renderer, renderer_x: f32, renderer_y: f32, window_x: *f32, window_y: *f32) bool
+SDL_RenderClear :: extern proc(renderer: *SDL_Renderer) bool
+SDL_RenderClearColor :: extern proc(renderer: *SDL_Renderer, r: f32, g: f32, b: f32, a: f32) bool
+SDL_RenderDrawPoint :: extern proc(renderer: *SDL_Renderer, x: f32, y: f32) bool
+SDL_RenderDrawPoints :: extern proc(renderer: *SDL_Renderer, points: *const SDL_FPoint, count: i32) bool
+SDL_RenderDrawLine :: extern proc(renderer: *SDL_Renderer, x1: f32, y1: f32, x2: f32, y2: f32) bool
+SDL_RenderDrawLines :: extern proc(renderer: *SDL_Renderer, points: *const SDL_FPoint, count: i32) bool
+SDL_RenderDrawRect :: extern proc(renderer: *SDL_Renderer, rect: *const SDL_FRect) bool
+SDL_RenderDrawRects :: extern proc(renderer: *SDL_Renderer, rects: *const SDL_FRect, count: i32) bool
+SDL_RenderFillRect :: extern proc(renderer: *SDL_Renderer, rect: *const SDL_FRect) bool
+SDL_RenderFillRects :: extern proc(renderer: *SDL_Renderer, rects: *const SDL_FRect, count: i32) bool
+SDL_RenderTexture :: extern proc(renderer: *SDL_Renderer, texture: *SDL_Texture, srcrect: *const SDL_FRect, dstrect: *const SDL_FRect) bool
+SDL_RenderTextureRotated :: extern proc(renderer: *SDL_Renderer, texture: *SDL_Texture, srcrect: *const SDL_FRect, dstrect: *const SDL_FRect, angle: f64, center: *const SDL_FPoint, flip: SDL_FlipMode) bool
+SDL_RenderTextureAffine :: extern proc(renderer: *SDL_Renderer, texture: *SDL_Texture, srcrect: *const SDL_FRect, origin: *const SDL_FPoint, right: *const SDL_FPoint, down: *const SDL_FPoint) bool
+SDL_RenderTextureTiled :: extern proc(renderer: *SDL_Renderer, texture: *SDL_Texture, srcrect: *const SDL_FRect, scale: f32, dstrect: *const SDL_FRect) bool
+SDL_RenderTexture9Grid :: extern proc(renderer: *SDL_Renderer, texture: *SDL_Texture, srcrect: *const SDL_FRect, left_width: f32, right_width: f32, top_height: f32, bottom_height: f32, scale: f32, dstrect: *const SDL_FRect) bool
+SDL_RenderGeometry :: extern proc(renderer: *SDL_Renderer, texture: *SDL_Texture, vertices: *const SDL_Vertex, num_vertices: i32, indices: *const i32, num_indices: i32) bool
+SDL_RenderGeometryRaw :: extern proc(renderer: *SDL_Renderer, texture: *SDL_Texture, xy: *const f32, xy_stride: i32, color: *const SDL_FColor, color_stride: i32, uv: *const f32, uv_stride: i32, num_vertices: i32, indices: *const void, num_indices: i32, size_indices: i32) bool
+SDL_RenderReadPixels :: extern proc(renderer: *SDL_Renderer, rect: *const SDL_Rect) *SDL_Surface
+SDL_RenderPresent :: extern proc(renderer: *SDL_Renderer) bool
+SDL_DestroyTexture :: extern proc(texture: *SDL_Texture)
+SDL_DestroyRenderer :: extern proc(renderer: *SDL_Renderer)
+SDL_FlushRenderer :: extern proc(renderer: *SDL_Renderer) bool
+SDL_GetRenderMetalLayer :: extern proc(renderer: *SDL_Renderer) *void
+SDL_GetRenderMetalCommandEncoder :: extern proc(renderer: *SDL_Renderer) *void
+SDL_AddVulkanRenderSemaphores :: extern proc(renderer: *SDL_Renderer, wait_stage_mask: Uint32, wait_semaphore: i64, signal_semaphore: i64) bool
+SDL_SetRenderVSync :: extern proc(renderer: *SDL_Renderer, vsync: i32) bool
+SDL_GetRenderVSync :: extern proc(renderer: *SDL_Renderer, vsync: *i32) bool
+SDL_RenderDebugText :: extern proc(renderer: *SDL_Renderer, x: f32, y: f32, str: *const u8) bool
+SDL_RenderDebugTextFormat :: extern proc(renderer: *SDL_Renderer, x: f32, y: f32, fmt: *const u8, any) bool
+
+SDL_StorageInterface :: struct {
+    version: u32,
+    close: fn(userdata: *void) bool,
+    ready: fn(userdata: *void) bool,
+    enumerate: fn(userdata: *void, path: *const u8, callback: SDL_EnumerateDirectoryCallback, callback_userdata: *void) bool,
+    info: fn(userdata: *void, path: *const u8, info: *SDL_PathInfo) bool,
+    read_file: fn(userdata: *void, path: *const u8, destination: *void, length: u64) bool,
+    write_file: fn(userdata: *void, path: *const u8, source: *const void, length: u64) bool,
+    mkdir: fn(userdata: *void, path: *const u8) bool,
+    remove: fn(userdata: *void, path: *const u8) bool,
+    rename: fn(userdata: *void, oldpath: *const u8, newpath: *const u8) bool,
+    copy: fn(userdata: *void, oldpath: *const u8, newpath: *const u8) bool,
+    space_remaining: fn(userdata: *void) u64,
+}
+SDL_Storage :: struct {}
+SDL_OpenTitleStorage :: extern proc(override: *const u8, props: SDL_PropertiesID) *SDL_Storage
+SDL_OpenUserStorage :: extern proc(org: *const u8, app: *const u8, props: SDL_PropertiesID) *SDL_Storage
+SDL_OpenFileStorage :: extern proc(path: *const u8) *SDL_Storage
+SDL_OpenStorage :: extern proc(iface: *const SDL_StorageInterface, userdata: *void) *SDL_Storage
+SDL_CloseStorage :: extern proc(storage: *SDL_Storage) bool
+SDL_StorageReady :: extern proc(storage: *SDL_Storage) bool
+SDL_GetStorageFileSize :: extern proc(storage: *SDL_Storage, path: *const u8, length: *u64) bool
+SDL_ReadStorageFile :: extern proc(storage: *SDL_Storage, path: *const u8, destination: *void, length: u64) bool
+SDL_WriteStorageFile :: extern proc(storage: *SDL_Storage, path: *const u8, source: *const void, length: u64) bool
+SDL_CreateStorageDirectory :: extern proc(storage: *SDL_Storage, path: *const u8) bool
+SDL_EnumerateStorageDirectory :: extern proc(storage: *SDL_Storage, path: *const u8, callback: SDL_EnumerateDirectoryCallback, userdata: *void) bool
+SDL_RemoveStoragePath :: extern proc(storage: *SDL_Storage, path: *const u8) bool
+SDL_RenameStoragePath :: extern proc(storage: *SDL_Storage, oldpath: *const u8, newpath: *const u8) bool
+SDL_CopyStorageFile :: extern proc(storage: *SDL_Storage, oldpath: *const u8, newpath: *const u8) bool
+SDL_GetStoragePathInfo :: extern proc(storage: *SDL_Storage, path: *const u8, info: *SDL_PathInfo) bool
+SDL_GetStorageSpaceRemaining :: extern proc(storage: *SDL_Storage) u64
+SDL_GlobStorageDirectory :: extern proc(storage: *SDL_Storage, path: *const u8, pattern: *const u8, flags: SDL_GlobFlags, count: *i32) **u8
+XEvent :: union {}
+SDL_X11EventHook :: fn(userdata: *void, xevent: *XEvent) bool
+SDL_SetX11EventHook :: extern proc(callback: SDL_X11EventHook, userdata: *void)
+SDL_SetLinuxThreadPriority :: extern proc(threadID: i64, priority: i32) bool
+SDL_SetLinuxThreadPriorityAndPolicy :: extern proc(threadID: i64, sdlPriority: i32, schedPolicy: i32) bool
+SDL_IsTablet :: extern proc() bool
+SDL_IsTV :: extern proc() bool
+SDL_Sandbox :: enum (i32) {
+    SDL_SANDBOX_NONE = 0,
+    SDL_SANDBOX_UNKNOWN_CONTAINER,
+    SDL_SANDBOX_FLATPAK,
+    SDL_SANDBOX_SNAP,
+    SDL_SANDBOX_MACOS,
+}
+SDL_GetSandbox :: extern proc() SDL_Sandbox
+SDL_OnApplicationWillTerminate :: extern proc()
+SDL_OnApplicationDidReceiveMemoryWarning :: extern proc()
+SDL_OnApplicationWillEnterBackground :: extern proc()
+SDL_OnApplicationDidEnterBackground :: extern proc()
+SDL_OnApplicationWillEnterForeground :: extern proc()
+SDL_OnApplicationDidEnterForeground :: extern proc()
+
+SDL_DateTime :: struct {
+    year: i32,
+    month: i32,
+    day: i32,
+    hour: i32,
+    minute: i32,
+    second: i32,
+    nanosecond: i32,
+    day_of_week: i32,
+    utc_offset: i32,
+}
+SDL_DateFormat :: enum (i32) {
+    SDL_DATE_FORMAT_YYYYMMDD = 0,
+    SDL_DATE_FORMAT_DDMMYYYY = 1,
+    SDL_DATE_FORMAT_MMDDYYYY = 2,
+}
+SDL_TimeFormat :: enum (i32) {
+    SDL_TIME_FORMAT_24HR = 0,
+    SDL_TIME_FORMAT_12HR = 1,
+}
+SDL_GetDateTimeLocalePreferences :: extern proc(dateFormat: *SDL_DateFormat, timeFormat: *SDL_TimeFormat) bool
+SDL_GetCurrentTime :: extern proc(ticks: *SDL_Time) bool
+SDL_TimeToDateTime :: extern proc(ticks: SDL_Time, dt: *SDL_DateTime, localTime: bool) bool
+SDL_DateTimeToTime :: extern proc(dt: *const SDL_DateTime, ticks: *SDL_Time) bool
+SDL_TimeToWindows :: extern proc(ticks: SDL_Time, dwLowDateTime: *Uint32, dwHighDateTime: *Uint32)
+SDL_TimeFromWindows :: extern proc(dwLowDateTime: Uint32, dwHighDateTime: Uint32) SDL_Time
+SDL_GetDaysInMonth :: extern proc(year: i32, month: i32) i32
+SDL_GetDayOfYear :: extern proc(year: i32, month: i32, day: i32) i32
+SDL_GetDayOfWeek :: extern proc(year: i32, month: i32, day: i32) i32
+SDL_GetTicks :: extern proc() u64
+SDL_GetTicksNS :: extern proc() u64
+SDL_GetPerformanceCounter :: extern proc() u64
+SDL_GetPerformanceFrequency :: extern proc() u64
+SDL_Delay :: extern proc(ms: Uint32)
+SDL_DelayNS :: extern proc(ns: u64)
+SDL_DelayPrecise :: extern proc(ns: u64)
+SDL_TimerID :: u32
+SDL_TimerCallback :: fn(userdata: *void, timerID: SDL_TimerID, interval: u32) u32
+SDL_AddTimer :: extern proc(interval: u32, callback: SDL_TimerCallback, userdata: *void) SDL_TimerID
+SDL_NSTimerCallback :: fn(userdata: *void, timerID: SDL_TimerID, interval: u64) u64
+SDL_AddTimerNS :: extern proc(interval: u64, callback: SDL_NSTimerCallback, userdata: *void) SDL_TimerID
+SDL_RemoveTimer :: extern proc(id: SDL_TimerID) bool
+SDL_Tray :: struct {}
+SDL_TrayMenu :: struct {}
+SDL_TrayEntry :: struct {}
+SDL_TrayEntryFlags :: u32
+SDL_TrayCallback :: fn(userdata: *void, entry: *SDL_TrayEntry)
+SDL_CreateTray :: extern proc(icon: *SDL_Surface, tooltip: *const u8) *SDL_Tray
+SDL_SetTrayIcon :: extern proc(tray: *SDL_Tray, icon: *SDL_Surface)
+SDL_SetTrayTooltip :: extern proc(tray: *SDL_Tray, tooltip: *const u8)
+SDL_CreateTrayMenu :: extern proc(tray: *SDL_Tray) *SDL_TrayMenu
+SDL_CreateTraySubmenu :: extern proc(entry: *SDL_TrayEntry) *SDL_TrayMenu
+SDL_GetTrayMenu :: extern proc(tray: *SDL_Tray) *SDL_TrayMenu
+SDL_GetTraySubmenu :: extern proc(entry: *SDL_TrayEntry) *SDL_TrayMenu
+SDL_GetTrayEntries :: extern proc(menu: *SDL_TrayMenu, count: *i32) **SDL_TrayEntry
+SDL_RemoveTrayEntry :: extern proc(entry: *SDL_TrayEntry)
+SDL_InsertTrayEntryAt :: extern proc(menu: *SDL_TrayMenu, pos: i32, label: *const u8, flags: SDL_TrayEntryFlags) *SDL_TrayEntry
+SDL_SetTrayEntryLabel :: extern proc(entry: *SDL_TrayEntry, label: *const u8)
+SDL_GetTrayEntryLabel :: extern proc(entry: *SDL_TrayEntry) *const u8
+SDL_SetTrayEntryChecked :: extern proc(entry: *SDL_TrayEntry, checked: bool)
+SDL_GetTrayEntryChecked :: extern proc(entry: *SDL_TrayEntry) bool
+SDL_SetTrayEntryEnabled :: extern proc(entry: *SDL_TrayEntry, enabled: bool)
+SDL_GetTrayEntryEnabled :: extern proc(entry: *SDL_TrayEntry) bool
+SDL_SetTrayEntryCallback :: extern proc(entry: *SDL_TrayEntry, callback: SDL_TrayCallback, userdata: *void)
+SDL_ClickTrayEntry :: extern proc(entry: *SDL_TrayEntry)
+SDL_DestroyTray :: extern proc(tray: *SDL_Tray)
+SDL_GetTrayEntryParent :: extern proc(entry: *SDL_TrayEntry) *SDL_TrayMenu
+SDL_GetTrayMenuParentEntry :: extern proc(menu: *SDL_TrayMenu) *SDL_TrayEntry
+SDL_GetTrayMenuParentTray :: extern proc(menu: *SDL_TrayMenu) *SDL_Tray
+SDL_UpdateTrays :: extern proc()
+SDL_GetVersion :: extern proc() i32
+SDL_GetRevision :: extern proc() *const u8
+
+SDL_CameraSpec :: struct {
+  format: SDL_PixelFormat,
+  colorspace: SDL_Colorspace,
+  width: i32,
+  height: i32,
+  framerate_numerator: i32,
+  framerate_denominator: i32,
+} 
+
+SDL_Camera :: struct {}
+  
+SDL_CameraPosition :: enum  {
+  SDL_CAMERA_POSITION_UNKNOWN,
+  SDL_CAMERA_POSITION_FRONT_FACING,
+  SDL_CAMERA_POSITION_BACK_FACING,
+} 
+
+
+SDL_Haptic :: struct {}
+SDL_HapticDirection :: struct {
+    r#type: Uint8,
+    dir: [3]Sint32,
+}
+SDL_HapticConstant :: struct {
+    r#type: Uint16,
+    direction: SDL_HapticDirection,
+    length: Uint32,
+    delay: Uint16,
+    button: Uint16,
+    interval: Uint16,
+    level: Sint16,
+    attack_length: Uint16,
+    attack_level: Uint16,
+    fade_length: Uint16,
+    fade_level: Uint16,
+}
+SDL_HapticPeriodic :: struct {
+    r#type: Uint16,
+    direction: SDL_HapticDirection,
+    length: Uint32,
+    delay: Uint16,
+    button: Uint16,
+    interval: Uint16,
+    period: Uint16,
+    magnitude: Sint16,
+    offset: Sint16,
+    phase: Uint16,
+    attack_length: Uint16,
+    attack_level: Uint16,
+    fade_length: Uint16,
+    fade_level: Uint16,
+}
+SDL_HapticCondition :: struct {
+    r#type: Uint16,
+    direction: SDL_HapticDirection,
+    length: Uint32,
+    delay: Uint16,
+    button: Uint16,
+    interval: Uint16,
+    right_sat: [3]Uint16,
+    left_sat: [3]Uint16,
+    right_coeff: [3]Sint16,
+    left_coeff: [3]Sint16,
+    deadband: [3]Uint16,
+    center: [3]Sint16,
+}
+SDL_HapticRamp :: struct {
+    r#type: Uint16,
+    direction: SDL_HapticDirection,
+    length: Uint32,
+    delay: Uint16,
+    button: Uint16,
+    interval: Uint16,
+    start: Sint16,
+    end: Sint16,
+    attack_length: Uint16,
+    attack_level: Uint16,
+    fade_length: Uint16,
+    fade_level: Uint16,
+}
+SDL_HapticLeftRight :: struct {
+    r#type: Uint16,
+    length: Uint32,
+    large_magnitude: Uint16,
+    small_magnitude: Uint16,
+}
+SDL_HapticCustom :: struct {
+    r#type: Uint16,
+    direction: SDL_HapticDirection,
+    length: Uint32,
+    delay: Uint16,
+    button: Uint16,
+    interval: Uint16,
+    channels: Uint8,
+    period: Uint16,
+    samples: Uint16,
+    data: *Uint16,
+    attack_length: Uint16,
+    attack_level: Uint16,
+    fade_length: Uint16,
+    fade_level: Uint16,
+}
+SDL_HapticEffect :: union {
+    r#type: Uint16,
+    constant: SDL_HapticConstant,
+    periodic: SDL_HapticPeriodic,
+    condition: SDL_HapticCondition,
+    ramp: SDL_HapticRamp,
+    leftright: SDL_HapticLeftRight,
+    custom: SDL_HapticCustom,
+}
+SDL_HapticID :: Uint32
+
+SDL_hid_bus_type :: enum (i32) {
+    SDL_HID_API_BUS_UNKNOWN = 0x00,
+    SDL_HID_API_BUS_USB = 0x01,
+    SDL_HID_API_BUS_BLUETOOTH = 0x02,
+    SDL_HID_API_BUS_I2C = 0x03,
+    SDL_HID_API_BUS_SPI = 0x04,
+}
+SDL_hid_device :: struct {}
+SDL_hid_device_info :: struct {
+    path: *u8,
+    vendor_id: Uint16,
+    product_id: Uint16,
+    serial_number: *wchar_t,
+    release_number: Uint16,
+    manufacturer_string: *wchar_t,
+    product_string: *wchar_t,
+    usage_page: Uint16,
+    usage: Uint16,
+    interface_number: i32,
+    interface_class: i32,
+    interface_subclass: i32,
+    interface_protocol: i32,
+    bus_type: SDL_hid_bus_type,
+    next: *SDL_hid_device_info,
+}
+
+SDL_HintPriority :: enum (i32) {
+    SDL_HINT_DEFAULT,
+    SDL_HINT_NORMAL,
+    SDL_HINT_OVERRIDE,
+}
+SDL_HintCallback :: fn(userdata: *void, name: *const u8, oldValue: *const u8, newValue: *const u8) void
+
+SDL_InitFlags :: enum (Uint32) {
+    SDL_INIT_TIMER = 0x00000001,
+    SDL_INIT_AUDIO = 0x00000010,
+    SDL_INIT_VIDEO = 0x00000020,
+    SDL_INIT_JOYSTICK = 0x00000200,
+    SDL_INIT_HAPTIC = 0x00001000,
+    SDL_INIT_GAMECONTROLLER = 0x00002000,
+    SDL_INIT_EVENTS = 0x00004000,
+    SDL_INIT_SENSOR = 0x00008000,
+    SDL_INIT_NOPARACHUTE = 0x00100000,
+    SDL_INIT_EVERYTHING = 0x0000F231,
+}
+SDL_MainThreadCallback :: fn(userdata: *void) void
+SDL_SharedObject :: struct {}
+
+SDL_calloc :: extern proc(nmemb: usize, size: usize) *void
+SDL_free :: extern proc(mem: *void)
+SDL_BlitSurfaceTiled :: extern proc(src: *SDL_Surface, srcrect: *const SDL_Rect, dst: *SDL_Surface, dstrect: *const SDL_Rect) bool
+SDL_BlitSurfaceTiledWithScale :: extern proc(src: *SDL_Surface, srcrect: *const SDL_Rect, scale: f32, scaleMode: SDL_ScaleMode, dst: *SDL_Surface, dstrect: *const SDL_Rect) bool
+SDL_BlitSurface9Grid :: extern proc(src: *SDL_Surface, srcrect: *const SDL_Rect, left_width: i32, right_width: i32, top_height: i32, bottom_height: i32, scale: f32, scaleMode: SDL_ScaleMode, dst: *SDL_Surface, dstrect: *const SDL_Rect) bool
+SDL_MapSurfaceRGB :: extern proc(surface: *SDL_Surface, r: Uint8, g: Uint8, b: Uint8) Uint32
+SDL_MapSurfaceRGBA :: extern proc(surface: *SDL_Surface, r: Uint8, g: Uint8, b: Uint8, a: Uint8) Uint32
+SDL_ReadSurfacePixel :: extern proc(surface: *SDL_Surface, x: i32, y: i32, r: *Uint8, g: *Uint8, b: *Uint8, a: *Uint8) bool
+SDL_ReadSurfacePixelFloat :: extern proc(surface: *SDL_Surface, x: i32, y: i32, r: *f32, g: *f32, b: *f32, a: *f32) bool
+SDL_WriteSurfacePixel :: extern proc(surface: *SDL_Surface, x: i32, y: i32, r: Uint8, g: Uint8, b: Uint8, a: Uint8) bool
+SDL_WriteSurfacePixelFloat :: extern proc(surface: *SDL_Surface, x: i32, y: i32, r: f32, g: f32, b: f32, a: f32) bool
+SDL_GetNumCameraDrivers :: extern proc() i32
+SDL_GetCameraPosition :: extern proc(instance_id: SDL_CameraID) SDL_CameraPosition
+SDL_GetCameraPermissionState :: extern proc(camera: *SDL_Camera) i32
+SDL_GetCameraID :: extern proc(camera: *SDL_Camera) SDL_CameraID
+SDL_GetCameraProperties :: extern proc(camera: *SDL_Camera) SDL_PropertiesID
+SDL_GetCameraFormat :: extern proc(camera: *SDL_Camera, spec: *SDL_CameraSpec) bool
+SDL_ReleaseCameraFrame :: extern proc(camera: *SDL_Camera, frame: *SDL_Surface)
+SDL_CloseCamera :: extern proc(camera: *SDL_Camera)
+SDL_SetWindowAlwaysOnTop :: extern proc(window: *SDL_Window, on_top: bool) bool
+SDL_ShowWindow :: extern proc(window: *SDL_Window) bool
+SDL_HideWindow :: extern proc(window: *SDL_Window) bool
+SDL_RaiseWindow :: extern proc(window: *SDL_Window) bool
+SDL_MaximizeWindow :: extern proc(window: *SDL_Window) bool
+SDL_MinimizeWindow :: extern proc(window: *SDL_Window) bool
+SDL_RestoreWindow :: extern proc(window: *SDL_Window) bool
+SDL_SetWindowFullscreen :: extern proc(window: *SDL_Window, fullscreen: bool) bool
+SDL_SyncWindow :: extern proc(window: *SDL_Window) bool
+SDL_WindowHasSurface :: extern proc(window: *SDL_Window) bool
+SDL_SetWindowSurfaceVSync :: extern proc(window: *SDL_Window, vsync: i32) bool
+SDL_GetWindowSurfaceVSync :: extern proc(window: *SDL_Window, vsync: *i32) bool
+SDL_UpdateWindowSurface :: extern proc(window: *SDL_Window) bool
+SDL_UpdateWindowSurfaceRects :: extern proc(window: *SDL_Window, rects: *const SDL_Rect, numrects: i32) bool
+SDL_DestroyWindowSurface :: extern proc(window: *SDL_Window) bool
+SDL_SetWindowKeyboardGrab :: extern proc(window: *SDL_Window, grabbed: bool) bool
+SDL_SetWindowMouseGrab :: extern proc(window: *SDL_Window, grabbed: bool) bool
+SDL_GetWindowKeyboardGrab :: extern proc(window: *SDL_Window) bool
+SDL_GetWindowMouseGrab :: extern proc(window: *SDL_Window) bool
+SDL_SetWindowMouseRect :: extern proc(window: *SDL_Window, rect: *const SDL_Rect) bool
+SDL_SetWindowOpacity :: extern proc(window: *SDL_Window, opacity: f32) bool
+SDL_GetWindowOpacity :: extern proc(window: *SDL_Window) f32
+SDL_SetWindowParent :: extern proc(window: *SDL_Window, parent: *SDL_Window) bool
+SDL_SetWindowModal :: extern proc(window: *SDL_Window, modal: bool) bool
+SDL_SetWindowFocusable :: extern proc(window: *SDL_Window, focusable: bool) bool
+SDL_ShowWindowSystemMenu :: extern proc(window: *SDL_Window, x: i32, y: i32) bool
+SDL_ShowCursor :: extern proc() bool
+SDL_HideCursor :: extern proc() bool
+SDL_CursorVisible :: extern proc() bool
+SDL_BeginGPUCopyPass :: extern proc(command_buffer: *SDL_GPUCommandBuffer) *SDL_GPUCopyPass
+SDL_UploadToGPUTexture :: extern proc(copy_pass: *SDL_GPUCopyPass, source: *const SDL_GPUTextureTransferInfo, destination: *const SDL_GPUTextureRegion, cycle: bool)
+SDL_UploadToGPUBuffer :: extern proc(copy_pass: *SDL_GPUCopyPass, source: *const SDL_GPUTransferBufferLocation, destination: *const SDL_GPUBufferRegion, cycle: bool)
+SDL_CopyGPUTextureToTexture :: extern proc(copy_pass: *SDL_GPUCopyPass, source: *const SDL_GPUTextureLocation, destination: *const SDL_GPUTextureLocation, w: Uint32, h: Uint32, d: Uint32, cycle: bool)
+SDL_CopyGPUBufferToBuffer :: extern proc(copy_pass: *SDL_GPUCopyPass, source: *const SDL_GPUBufferLocation, destination: *const SDL_GPUBufferLocation, size: Uint32, cycle: bool)
+SDL_DownloadFromGPUTexture :: extern proc(copy_pass: *SDL_GPUCopyPass, source: *const SDL_GPUTextureRegion, destination: *const SDL_GPUTextureTransferInfo)
+SDL_DownloadFromGPUBuffer :: extern proc(copy_pass: *SDL_GPUCopyPass, source: *const SDL_GPUBufferRegion, destination: *const SDL_GPUTransferBufferLocation)
+SDL_EndGPUCopyPass :: extern proc(copy_pass: *SDL_GPUCopyPass)
+SDL_GenerateMipmapsForGPUTexture :: extern proc(command_buffer: *SDL_GPUCommandBuffer, texture: *SDL_GPUTexture)
+SDL_BlitGPUTexture :: extern proc(command_buffer: *SDL_GPUCommandBuffer, info: *const SDL_GPUBlitInfo)
+SDL_WindowSupportsGPUSwapchainComposition :: extern proc(device: *SDL_GPUDevice, window: *SDL_Window, swapchain_composition: SDL_GPUSwapchainComposition) bool
+SDL_WindowSupportsGPUPresentMode :: extern proc(device: *SDL_GPUDevice, window: *SDL_Window, present_mode: SDL_GPUPresentMode) bool
+SDL_ClaimWindowForGPUDevice :: extern proc(device: *SDL_GPUDevice, window: *SDL_Window) bool
+SDL_ReleaseWindowFromGPUDevice :: extern proc(device: *SDL_GPUDevice, window: *SDL_Window)
+SDL_SetGPUSwapchainParameters :: extern proc(device: *SDL_GPUDevice, window: *SDL_Window, swapchain_composition: SDL_GPUSwapchainComposition, present_mode: SDL_GPUPresentMode) bool
+SDL_SetGPUAllowedFramesInFlight :: extern proc(device: *SDL_GPUDevice, allowed_frames_in_flight: Uint32) bool
+SDL_GetGPUSwapchainTextureFormat :: extern proc(device: *SDL_GPUDevice, window: *SDL_Window) SDL_GPUTextureFormat
+SDL_AcquireGPUSwapchainTexture :: extern proc(command_buffer: *SDL_GPUCommandBuffer, window: *SDL_Window, swapchain_texture: **SDL_GPUTexture, swapchain_texture_width: *Uint32, swapchain_texture_height: *Uint32) bool
+SDL_WaitForGPUSwapchain :: extern proc(device: *SDL_GPUDevice, window: *SDL_Window) bool
+SDL_WaitAndAcquireGPUSwapchainTexture :: extern proc(command_buffer: *SDL_GPUCommandBuffer, window: *SDL_Window, swapchain_texture: **SDL_GPUTexture, swapchain_texture_width: *Uint32, swapchain_texture_height: *Uint32) bool
+SDL_SubmitGPUCommandBuffer :: extern proc(command_buffer: *SDL_GPUCommandBuffer) bool
+SDL_SubmitGPUCommandBufferAndAcquireFence :: extern proc(command_buffer: *SDL_GPUCommandBuffer) *SDL_GPUFence
+SDL_CancelGPUCommandBuffer :: extern proc(command_buffer: *SDL_GPUCommandBuffer) bool
+SDL_WaitForGPUIdle :: extern proc(device: *SDL_GPUDevice) bool
+SDL_WaitForGPUFences :: extern proc(device: *SDL_GPUDevice, wait_all: bool, fences: **const SDL_GPUFence, num_fences: Uint32) bool
+SDL_QueryGPUFence :: extern proc(device: *SDL_GPUDevice, fence: *SDL_GPUFence) bool
+SDL_ReleaseGPUFence :: extern proc(device: *SDL_GPUDevice, fence: *SDL_GPUFence)
+SDL_GPUTextureFormatTexelBlockSize :: extern proc(format: SDL_GPUTextureFormat) Uint32
+SDL_GPUTextureSupportsFormat :: extern proc(device: *SDL_GPUDevice, format: SDL_GPUTextureFormat, r#type: SDL_GPUTextureType, usage: SDL_GPUTextureUsageFlags) bool
+SDL_GPUTextureSupportsSampleCount :: extern proc(device: *SDL_GPUDevice, format: SDL_GPUTextureFormat, sample_count: SDL_GPUSampleCount) bool
+SDL_CalculateGPUTextureFormatSize :: extern proc(format: SDL_GPUTextureFormat, width: Uint32, height: Uint32, depth_or_layer_count: Uint32) Uint32
+SDL_GetHapticID :: extern proc(haptic: *SDL_Haptic) SDL_HapticID
+SDL_IsMouseHaptic :: extern proc() bool
+SDL_IsJoystickHaptic :: extern proc(joystick: *SDL_Joystick) bool
+SDL_CloseHaptic :: extern proc(haptic: *SDL_Haptic)
+SDL_GetMaxHapticEffects :: extern proc(haptic: *SDL_Haptic) i32
+SDL_GetMaxHapticEffectsPlaying :: extern proc(haptic: *SDL_Haptic) i32
+SDL_GetHapticFeatures :: extern proc(haptic: *SDL_Haptic) Uint32
+SDL_GetNumHapticAxes :: extern proc(haptic: *SDL_Haptic) i32
+SDL_HapticEffectSupported :: extern proc(haptic: *SDL_Haptic, effect: *const SDL_HapticEffect) bool
+SDL_CreateHapticEffect :: extern proc(haptic: *SDL_Haptic, effect: *const SDL_HapticEffect) i32
+SDL_UpdateHapticEffect :: extern proc(haptic: *SDL_Haptic, effect: i32, data: *const SDL_HapticEffect) bool
+SDL_RunHapticEffect :: extern proc(haptic: *SDL_Haptic, effect: i32, iterations: Uint32) bool
+SDL_StopHapticEffect :: extern proc(haptic: *SDL_Haptic, effect: i32) bool
+SDL_DestroyHapticEffect :: extern proc(haptic: *SDL_Haptic, effect: i32)
+SDL_GetHapticEffectStatus :: extern proc(haptic: *SDL_Haptic, effect: i32) bool
+SDL_SetHapticGain :: extern proc(haptic: *SDL_Haptic, gain: i32) bool
+SDL_SetHapticAutocenter :: extern proc(haptic: *SDL_Haptic, autocenter: i32) bool
+SDL_PauseHaptic :: extern proc(haptic: *SDL_Haptic) bool
+SDL_ResumeHaptic :: extern proc(haptic: *SDL_Haptic) bool
+SDL_StopHapticEffects :: extern proc(haptic: *SDL_Haptic) bool
+SDL_HapticRumbleSupported :: extern proc(haptic: *SDL_Haptic) bool
+SDL_InitHapticRumble :: extern proc(haptic: *SDL_Haptic) bool
+SDL_PlayHapticRumble :: extern proc(haptic: *SDL_Haptic, strength: f32, length: Uint32) bool
+SDL_StopHapticRumble :: extern proc(haptic: *SDL_Haptic) bool
+SDL_hid_init :: extern proc() i32
+SDL_hid_exit :: extern proc() i32
+SDL_hid_device_change_count :: extern proc() Uint32
+SDL_hid_free_enumeration :: extern proc(devs: *SDL_hid_device_info)
+SDL_hid_write :: extern proc(dev: *SDL_hid_device, data: *const u8, length: usize) i32
+SDL_hid_read_timeout :: extern proc(dev: *SDL_hid_device, data: *u8, length: usize, milliseconds: i32) i32
+SDL_hid_read :: extern proc(dev: *SDL_hid_device, data: *u8, length: usize) i32
+SDL_hid_set_nonblocking :: extern proc(dev: *SDL_hid_device, nonblock: i32) i32
+SDL_hid_send_feature_report :: extern proc(dev: *SDL_hid_device, data: *const u8, length: usize) i32
+SDL_hid_get_feature_report :: extern proc(dev: *SDL_hid_device, data: *u8, length: usize) i32
+SDL_hid_get_input_report :: extern proc(dev: *SDL_hid_device, data: *u8, length: usize) i32
+SDL_hid_close :: extern proc(dev: *SDL_hid_device) i32
+SDL_hid_get_manufacturer_string :: extern proc(dev: *SDL_hid_device, string: *wchar_t, maxlen: usize) i32
+SDL_hid_get_product_string :: extern proc(dev: *SDL_hid_device, string: *wchar_t, maxlen: usize) i32
+SDL_hid_get_serial_number_string :: extern proc(dev: *SDL_hid_device, string: *wchar_t, maxlen: usize) i32
+SDL_hid_get_indexed_string :: extern proc(dev: *SDL_hid_device, string_index: i32, string: *wchar_t, maxlen: usize) i32
+SDL_hid_get_report_descriptor :: extern proc(dev: *SDL_hid_device, buf: *u8, buf_size: usize) i32
+SDL_hid_ble_scan :: extern proc(active: bool)
+SDL_SetHintWithPriority :: extern proc(name: *const u8, value: *const u8, priority: SDL_HintPriority) bool
+SDL_SetHint :: extern proc(name: *const u8, value: *const u8) bool
+SDL_ResetHint :: extern proc(name: *const u8) bool
+SDL_ResetHints :: extern proc()
+SDL_GetHintBoolean :: extern proc(name: *const u8, default_value: bool) bool
+SDL_AddHintCallback :: extern proc(name: *const u8, callback: SDL_HintCallback, userdata: *void) bool
+SDL_RemoveHintCallback :: extern proc(name: *const u8, callback: SDL_HintCallback, userdata: *void)
+SDL_Init :: extern proc(flags: SDL_InitFlags) bool
+SDL_InitSubSystem :: extern proc(flags: SDL_InitFlags) bool
+SDL_QuitSubSystem :: extern proc(flags: SDL_InitFlags)
+SDL_WasInit :: extern proc(flags: SDL_InitFlags) SDL_InitFlags
+SDL_Quit :: extern proc()
+SDL_IsMainThread :: extern proc() bool
+SDL_RunOnMainThread :: extern proc(callback: SDL_MainThreadCallback, userdata: *void, wait_complete: bool) bool
+SDL_SetAppMetadata :: extern proc(appname: *const u8, appversion: *const u8, appidentifier: *const u8) bool
+SDL_SetAppMetadataProperty :: extern proc(name: *const u8, value: *const u8) bool
+SDL_LoadFunction :: extern proc(handle: *SDL_SharedObject, name: *const u8) SDL_FunctionPointer
+SDL_UnloadObject :: extern proc(handle: *SDL_SharedObject)
+SDL_RenderCoordinatesToWindow :: extern proc(renderer: *SDL_Renderer, x: f32, y: f32, window_x: *f32, window_y: *f32) bool
+SDL_ConvertEventToRenderCoordinates :: extern proc(renderer: *SDL_Renderer, event: *SDL_Event) bool
+SDL_SetRenderViewport :: extern proc(renderer: *SDL_Renderer, rect: *const SDL_Rect) bool
+SDL_GetRenderViewport :: extern proc(renderer: *SDL_Renderer, rect: *SDL_Rect) bool
+SDL_RenderViewportSet :: extern proc(renderer: *SDL_Renderer) bool
+SDL_GetRenderSafeArea :: extern proc(renderer: *SDL_Renderer, rect: *SDL_Rect) bool
+SDL_SetRenderClipRect :: extern proc(renderer: *SDL_Renderer, rect: *const SDL_Rect) bool
+SDL_GetRenderClipRect :: extern proc(renderer: *SDL_Renderer, rect: *SDL_Rect) bool
+SDL_RenderClipEnabled :: extern proc(renderer: *SDL_Renderer) bool
+SDL_SetRenderScale :: extern proc(renderer: *SDL_Renderer, scaleX: f32, scaleY: f32) bool
+SDL_GetRenderScale :: extern proc(renderer: *SDL_Renderer, scaleX: *f32, scaleY: *f32) bool
+SDL_SetRenderDrawColor :: extern proc(renderer: *SDL_Renderer, r: Uint8, g: Uint8, b: Uint8, a: Uint8) bool
+SDL_SetRenderDrawColorFloat :: extern proc(renderer: *SDL_Renderer, r: f32, g: f32, b: f32, a: f32) bool
+SDL_GetRenderDrawColor :: extern proc(renderer: *SDL_Renderer, r: *Uint8, g: *Uint8, b: *Uint8, a: *Uint8) bool
+SDL_GetRenderDrawColorFloat :: extern proc(renderer: *SDL_Renderer, r: *f32, g: *f32, b: *f32, a: *f32) bool
+SDL_SetRenderColorScale :: extern proc(renderer: *SDL_Renderer, scale: f32) bool
+SDL_GetRenderColorScale :: extern proc(renderer: *SDL_Renderer, scale: *f32) bool
+SDL_SetRenderDrawBlendMode :: extern proc(renderer: *SDL_Renderer, blendMode: SDL_BlendMode) bool
+SDL_GetRenderDrawBlendMode :: extern proc(renderer: *SDL_Renderer, blendMode: *SDL_BlendMode) bool
+SDL_RenderPoint :: extern proc(renderer: *SDL_Renderer, x: f32, y: f32) bool
+SDL_RenderPoints :: extern proc(renderer: *SDL_Renderer, points: *const SDL_FPoint, count: i32) bool
+SDL_RenderLine :: extern proc(renderer: *SDL_Renderer, x1: f32, y1: f32, x2: f32, y2: f32) bool
+SDL_RenderLines :: extern proc(renderer: *SDL_Renderer, points: *const SDL_FPoint, count: i32) bool
+SDL_RenderRect :: extern proc(renderer: *SDL_Renderer, rect: *const SDL_FRect) bool
+SDL_RenderRects :: extern proc(renderer: *SDL_Renderer, rects: *const SDL_FRect, count: i32) bool

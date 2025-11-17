@@ -139,7 +139,7 @@ pub const Rows = struct {
     pub const Bin2 = struct { result: ValueId, ty: types.TypeId, lhs: ValueId, rhs: ValueId, loc: OptLocId };
     pub const Un1 = struct { result: ValueId, ty: types.TypeId, value: ValueId, loc: OptLocId };
 
-    pub const ConstInt = struct { result: ValueId, ty: types.TypeId, value: u64, loc: OptLocId };
+    pub const ConstInt = struct { result: ValueId, ty: types.TypeId, value: i128, loc: OptLocId };
     pub const ConstFloat = struct { result: ValueId, ty: types.TypeId, value: f64, loc: OptLocId };
     pub const ConstBool = struct { result: ValueId, ty: types.TypeId, value: bool, loc: OptLocId };
     pub const ConstString = struct { result: ValueId, ty: types.TypeId, text: StrId, loc: OptLocId };

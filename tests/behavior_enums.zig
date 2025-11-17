@@ -31,7 +31,7 @@ test "composite_types: integer-backed enum" {
         \\}
     ;
     const code = getSource(globals, src);
-    try runCompilerTest(code, "HttpCode: 2\nCode is InternalError\n");
+    try runCompilerTest(code, "HttpCode: 500\nCode is InternalError\n");
 }
 
 test "composite_types: enum in match expression" {

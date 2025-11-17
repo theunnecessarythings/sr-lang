@@ -403,7 +403,7 @@ DONT_CARE :: -1
 GLProc :: extern fn()
 VKProc :: extern fn()
 
-GLFWerrorfun :: extern fn(error_code: i32, description: string)
+GLFWerrorfun :: extern fn(error_code: i32, description: *const u8)
 GLFWwindowposfun :: extern fn(window: Window, xpos: i32, ypos: i32)
 GLFWwindowsizefun :: extern fn(window: Window, width: i32, height: i32)
 GLFWwindowclosefun :: extern fn(window: Window)
@@ -432,7 +432,7 @@ glfwInit :: extern proc() i32
 glfwTerminate :: extern proc() 
 glfwInitHint :: extern proc(hint: i32, value: i32)
 glfwGetVersion :: extern proc(major: *i32, minor: *i32, rev: *i32)
-glfwGetVersionString :: extern fn() string
+glfwGetVersionString :: extern fn() *const u8
 glfwGetError :: extern fn(description: **i8) i32
 glfwSetErrorCallback :: extern fn(callback: GLFWerrorfun) GLFWerrorfun
 glfwGetMonitors :: extern fn(count: *i32) *Monitor
@@ -441,7 +441,7 @@ glfwGetMonitorPos :: extern proc(monitor: Monitor, xpos: *i32, ypos: *i32)
 glfwGetMonitorWorkarea :: extern proc(monitor: Monitor, xpos: *i32, ypos: *i32, width: *i32, height: *i32)
 glfwGetMonitorPhysicalSize :: extern proc(monitor: Monitor, widthMM: *i32, heightMM: *i32)
 glfwGetMonitorContentScale :: extern proc(monitor: Monitor, xscale: *f32, yscale: *f32)
-glfwGetMonitorName :: extern fn(monitor: Monitor) string
+glfwGetMonitorName :: extern fn(monitor: Monitor) *const u8
 glfwSetMonitorUserPointer :: extern proc(monitor: Monitor, pointer: ?*void)
 glfwGetMonitorUserPointer :: extern fn(monitor: Monitor) ?*void
 glfwSetMonitorCallback :: extern fn(callback: GLFWmonitorfun) GLFWmonitorfun
@@ -452,12 +452,12 @@ glfwGetGammaRamp :: extern fn(monitor: Monitor) *GammaRamp
 glfwSetGammaRamp :: extern proc(monitor: Monitor, ramp: *GammaRamp)
 glfwDefaultWindowHints :: extern proc()
 glfwWindowHint :: extern proc(hint: i32, value: i32)
-glfwWindowHintString :: extern proc(hint: i32, value: string)
-glfwCreateWindow :: extern fn(width: i32, height: i32, title: string, monitor: Monitor, share: Window) Window
+glfwWindowHintString :: extern proc(hint: i32, value: *const u8)
+glfwCreateWindow :: extern fn(width: i32, height: i32, title: *const u8, monitor: Monitor, share: Window) Window
 glfwDestroyWindow :: extern proc(window: Window)
 glfwWindowShouldClose :: extern fn(window: Window) i32
 glfwSetWindowShouldClose :: extern proc(window: Window, value: i32)
-glfwSetWindowTitle :: extern proc(window: Window, title: string)
+glfwSetWindowTitle :: extern proc(window: Window, title: *const u8)
 glfwSetWindowIcon :: extern proc(window: Window, count: i32, images: *Image)
 glfwGetWindowPos :: extern proc(window: Window, xpos: *i32, ypos: *i32)
 glfwSetWindowPos :: extern proc(window: Window, xpos: i32, ypos: i32)
@@ -499,7 +499,7 @@ glfwPostEmptyEvent :: extern proc()
 glfwGetInputMode :: extern fn(window: Window, mode: i32) i32
 glfwSetInputMode :: extern proc(window: Window, mode: i32, value: i32)
 glfwRawMouseMotionSupported :: extern fn() i32
-glfwGetKeyName :: extern fn(key: i32, scancode: i32) string
+glfwGetKeyName :: extern fn(key: i32, scancode: i32) *const u8
 glfwGetKeyScancode :: extern fn(key: i32) i32
 glfwGetKey :: extern fn(window: Window, key: i32) i32
 glfwGetMouseButton :: extern fn(window: Window, button: i32) i32
@@ -521,17 +521,17 @@ glfwJoystickPresent :: extern fn(jid: i32) i32
 glfwGetJoystickAxes :: extern fn(jid: i32, count: *i32) *f32
 glfwGetJoystickButtons :: extern fn(jid: i32, count: *i32) *u8
 glfwGetJoystickHats :: extern fn(jid: i32, count: *i32) *u8
-glfwGetJoystickName :: extern fn(jid: i32) string
-glfwGetJoystickGUID :: extern fn(jid: i32) string
+glfwGetJoystickName :: extern fn(jid: i32) *const u8
+glfwGetJoystickGUID :: extern fn(jid: i32) *const u8
 glfwSetJoystickUserPointer :: extern proc(jid: i32, pointer: ?*void)
 glfwGetJoystickUserPointer :: extern fn(jid: i32) ?*void
 glfwJoystickIsGamepad :: extern fn(jid: i32) i32
 glfwSetJoystickCallback :: extern fn(callback: GLFWjoystickfun) GLFWjoystickfun
-glfwUpdateGamepadMappings :: extern fn(string: string) i32
-glfwGetGamepadName :: extern fn(jid: i32) string
+glfwUpdateGamepadMappings :: extern fn(String: *const u8) i32
+glfwGetGamepadName :: extern fn(jid: i32) *const u8
 glfwGetGamepadState :: extern fn(jid: i32, state: *GamepadState) i32
-glfwSetClipboardString :: extern proc(window: Window, string: string)
-glfwGetClipboardString :: extern fn(window: Window) string
+glfwSetClipboardString :: extern proc(window: Window, String: *const u8)
+glfwGetClipboardString :: extern fn(window: Window) *const u8
 glfwGetTime :: extern fn() f64
 glfwSetTime :: extern proc(time: f64)
 glfwGetTimerValue :: extern fn() u64
@@ -540,12 +540,12 @@ glfwMakeContextCurrent :: extern proc(window: Window)
 glfwGetCurrentContext :: extern fn() Window
 glfwSwapBuffers :: extern proc(window: Window)
 glfwSwapInterval :: extern proc(interval: i32)
-glfwExtensionSupported :: extern fn(extension: string) i32
+glfwExtensionSupported :: extern fn(extension: *const u8) i32
 glfwGetProcAddress :: extern fn(procname: *u8) GLProc
 
 // Vulkan specific
 glfwVulkanSupported :: extern fn() i32
 glfwGetRequiredInstanceExtensions :: extern fn(count: *u32) **i8
-glfwGetInstanceProcAddress :: extern fn(instance: ?*void, procname: string) VKProc
+glfwGetInstanceProcAddress :: extern fn(instance: ?*void, procname: *const u8) VKProc
 glfwGetPhysicalDevicePresentationSupport :: extern fn(instance: ?*void, device: ?*void, queuefamily: u32) i32
 glfwCreateWindowSurface :: extern fn(instance: ?*void, window: Window, allocator: ?*void, surface: *u64) i32

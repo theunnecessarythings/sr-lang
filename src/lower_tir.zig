@@ -59,6 +59,22 @@ pub const LowerContext = struct {
     monomorphizer: monomorphize.Monomorphizer,
     monomorph_context_stack: List(monomorphize.MonomorphizationContext) = .{},
     expr_type_override_stack: List(ExprTypeOverrideFrame) = .{},
+
+    pub fn deinit(self: *LowerContext, gpa: std.mem.Allocator) void {
+        self.loop_stack.deinit(gpa);
+        self.module_call_cache.deinit();
+        self.method_lowered.deinit();
+        for (self.monomorph_context_stack.items) |*item| {
+            item.deinit(gpa);
+        }
+        self.monomorph_context_stack.deinit(gpa);
+        while (self.expr_type_override_stack.items.len > 0) {
+            self.expr_type_override_stack.items[self.expr_type_override_stack.items.len - 1].deinit(gpa);
+            self.expr_type_override_stack.items.len -= 1;
+        }
+        self.expr_type_override_stack.deinit(gpa);
+        self.monomorphizer.deinit();
+    }
 };
 
 pub fn qualifySymbolName(self: *LowerTir, a: *ast.Ast, base: StrId) !StrId {
@@ -641,6 +657,23 @@ pub fn safeUndef(self: *LowerTir, blk: *Builder.BlockFrame, ty: types.TypeId, lo
         return blk.builder.tirValue(.ConstUndef, blk, self.context.type_store.tAny(), loc, .{});
     }
     return blk.builder.tirValue(.ConstUndef, blk, ty, loc, .{});
+}
+
+fn exprDiagLoc(a: *ast.Ast, id: ast.ExprId) Loc {
+    const loc_id = optLoc(a, id);
+    if (!loc_id.isNone()) {
+        return a.exprs.locs.get(loc_id.unwrap());
+    }
+    return Loc{ .file_id = @intCast(a.file_id), .start = 0, .end = 0 };
+}
+
+fn ensureExprTypeNotError(self: *LowerTir, ctx: *LowerContext, a: *ast.Ast, id: ast.ExprId) anyerror!void {
+    const ty = self.getExprType(ctx, a, id);
+    if (self.context.type_store.getKind(ty) == .TypeError) {
+        const diag_loc = exprDiagLoc(a, id);
+        try self.context.diags.addError(diag_loc, .tir_lowering_failed, .{});
+        return error.LoweringBug;
+    }
 }
 
 fn callRuntimeAllocPtr(
@@ -3072,16 +3105,22 @@ fn lowerEnumMember(
 ) !?tir.ValueId {
     const parent_ty = self.getExprType(ctx, a, parent_expr);
     const parent_kind = self.context.type_store.getKind(parent_ty);
-    if (parent_kind != .Enum and parent_kind != .TypeType) return null;
-    if (parent_kind == .TypeType) {
-        const tr = self.context.type_store.get(.TypeType, parent_ty);
-        const of_kind = self.context.type_store.getKind(tr.of);
-        if (of_kind != .Enum) return null;
+    var enum_ty: types.TypeId = undefined;
+    switch (parent_kind) {
+        .Enum => enum_ty = parent_ty,
+        .TypeType => {
+            const tr = self.context.type_store.get(.TypeType, parent_ty);
+            const of_kind = self.context.type_store.getKind(tr.of);
+            if (of_kind != .Enum) return null;
+            enum_ty = tr.of;
+        },
+        else => return null,
     }
     const ty0 = self.getExprType(ctx, a, id);
     const loc = optLoc(a, id);
-    const idx = a.type_info.getFieldIndex(id) orelse unreachable; // enum members should be indexed by the checker
-    var ev = blk.builder.tirValue(.ConstInt, blk, ty0, loc, .{ .value = idx });
+    const row = a.exprs.get(.FieldAccess, id);
+    const value = self.enumMemberValue(enum_ty, row.field) orelse return null;
+    var ev = blk.builder.tirValue(.ConstInt, blk, ty0, loc, .{ .value = value });
     if (expected_ty) |want| ev = self.emitCoerce(blk, ev, ty0, want, loc);
     return ev;
 }
@@ -4180,6 +4219,7 @@ pub fn lowerExpr(
         _ = try self.chk.checkExpr(cctx, a, id);
     }
     _ = try self.refineExprType(ctx, a, env, id, self.getExprType(ctx, a, id));
+    try self.ensureExprTypeNotError(ctx, a, id);
 
     return switch (expr_kind) {
         .Literal => self.lowerLiteral(ctx, a, blk, id, expected_ty),
@@ -5108,14 +5148,14 @@ pub fn tagIndexForCase(self: *const LowerTir, case_ty: types.TypeId, name: StrId
     return null;
 }
 
-pub fn enumMemberValue(self: *const LowerTir, enum_ty: types.TypeId, name: StrId) ?u64 {
+pub fn enumMemberValue(self: *const LowerTir, enum_ty: types.TypeId, name: StrId) ?i64 {
     const k = self.context.type_store.getKind(enum_ty);
     if (k != .Enum) return null;
     const er = self.context.type_store.get(.Enum, enum_ty);
     const members = self.context.type_store.enum_member_pool.slice(er.members);
-    for (members, 0..) |mid, i| {
+    for (members) |mid| {
         const m = self.context.type_store.EnumMember.get(mid);
-        if (m.name.eq(name)) return i;
+        if (m.name.eq(name)) return @intCast(m.value);
     }
     return null;
 }
@@ -5191,6 +5231,6 @@ pub fn evalComptimeExpr(
     bindings: []const Pipeline.ComptimeBinding,
 ) !comp.ComptimeValue {
     var lowerer = LowerTir.init(gpa, context, pipeline, chk);
-    // defer lowerer.deinit();
+    defer lowerer.deinit();
     return comp.runComptimeExpr(&lowerer, ctx, ast_unit, expr, result_ty, bindings);
 }

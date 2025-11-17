@@ -189,12 +189,12 @@ skiac_sk_surface_make_image_snapshot :: extern fn(surface: *SkSurface) *SkImage
 skiac_sk_image_unref :: extern proc(image: *SkImage)
 // SkFont
 skiac_sk_font_create_default :: extern fn(size: f32) *SkFont
-skiac_sk_font_create_from_file :: extern fn(path: string, size: f32) *SkFont
+skiac_sk_font_create_from_file :: extern fn(path: *const u8, size: f32) *SkFont
 skiac_sk_font_unref :: extern proc(font: *SkFont)
 skiac_sk_font_set_size :: extern proc(font: *SkFont, size: f32)
 skiac_sk_font_get_size :: extern fn(font: *SkFont) f32
-skiac_sk_font_measure_text_width_utf8 :: extern fn(font: *SkFont, text: string) f32
-skiac_sk_canvas_draw_text :: extern proc(canvas: *SkCanvas, text: string, x: f32, y: f32, font: *SkFont, paint: *SkPaint)
+skiac_sk_font_measure_text_width_utf8 :: extern fn(font: *SkFont, text: *const u8) f32
+skiac_sk_canvas_draw_text :: extern proc(canvas: *SkCanvas, text: *const u8, x: f32, y: f32, font: *SkFont, paint: *SkPaint)
 SkFontEdging :: enum { Alias, AntiAlias, SubpixelAntiAlias }
 SkFontHinting :: enum { None, Slight, Normal, Full }
 skiac_sk_font_set_edging :: extern proc(font: *SkFont, edging: SkFontEdging)
@@ -225,11 +225,11 @@ FontMetrics :: struct {
     strikeout_position: f32,
 }
 skiac_sk_font_get_metrics :: extern fn(font: *SkFont, out: *FontMetrics) f32
-skiac_sk_font_text_to_glyphs_utf8 :: extern fn(font: *SkFont, text: string, out_glyphs: *u16, max_glyphs: i32) i32
+skiac_sk_font_text_to_glyphs_utf8 :: extern fn(font: *SkFont, text: *const u8, out_glyphs: *u16, max_glyphs: i32) i32
 
 // SkData + Image decode
 skiac_sk_data_make_with_copy :: extern fn(ptr: *void, len: usize) *SkData
-skiac_sk_data_make_from_file :: extern fn(path: string) *SkData
+skiac_sk_data_make_from_file :: extern fn(path: *const u8) *SkData
 skiac_sk_data_unref :: extern proc(data: *SkData)
 skiac_sk_image_make_from_encoded :: extern fn(data: *SkData) *SkImage
 
@@ -270,7 +270,7 @@ skiac_sk_paint_set_path_effect :: extern proc(paint: *SkPaint, pe: *SkPathEffect
 skiac_sk_paint_set_mask_filter :: extern proc(paint: *SkPaint, mf: *SkMaskFilter)
 
 // Runtime shader (SkSL)
-skiac_runtime_effect_make_for_shader :: extern fn(sksl: string) *SkRuntimeEffect
+skiac_runtime_effect_make_for_shader :: extern fn(sksl: *const u8) *SkRuntimeEffect
 skiac_runtime_effect_unref :: extern proc(e: *SkRuntimeEffect)
 skiac_runtime_effect_uniform_size :: extern fn(e: *SkRuntimeEffect) usize
 skiac_runtime_effect_make_shader :: extern fn(e: *SkRuntimeEffect, uniforms: *SkData) *SkShader

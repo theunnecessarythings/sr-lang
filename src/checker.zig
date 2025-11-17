@@ -41,6 +41,7 @@ pub const CheckerContext = struct {
     loop_binding_stack: List(LoopBindingCtx) = .{},
     catch_binding_stack: List(CatchBindingCtx) = .{},
     match_binding_stack: List(MatchBindingCtx) = .{},
+    resolving_type_decls: List(ast.DeclId) = .{},
     param_specializations: List(ParamSpecialization) = .{},
 
     pub fn deinit(self: *CheckerContext, gpa: std.mem.Allocator) void {
@@ -52,6 +53,7 @@ pub const CheckerContext = struct {
         self.loop_binding_stack.deinit(gpa);
         self.catch_binding_stack.deinit(gpa);
         self.match_binding_stack.deinit(gpa);
+        self.resolving_type_decls.deinit(gpa);
         self.param_specializations.deinit(gpa);
     }
 };
@@ -4303,6 +4305,9 @@ fn castable(self: *Checker, got: types.TypeId, expect: types.TypeId) bool {
             else => false,
         };
     if (num_ok) return true;
+
+    if (gk == .Enum and check_types.isIntegerKind(self, ek)) return true;
+    if (ek == .Enum and check_types.isIntegerKind(self, gk)) return true;
 
     // Pointer-to-pointer
     if (gk == .Ptr and ek == .Ptr) return true;

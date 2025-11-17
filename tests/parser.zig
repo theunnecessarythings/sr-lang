@@ -53,7 +53,8 @@ fn parseProgramFromPath(gpa: std.mem.Allocator, context: *Context, path: []const
             work.diags.deinit();
             gpa.destroy(work.diags);
             work.parser.cst_u.deinit();
-            gpa.free(work.parser.src);
+            const to_free = work.parser.src.ptr[0 .. work.parser.src.len + 1];
+            gpa.free(to_free);
             gpa.destroy(work.parser);
         }
         context.parse_worklist.deinit(gpa);

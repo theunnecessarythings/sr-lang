@@ -411,8 +411,10 @@ pub fn resetDebugCaches(self: *Codegen) void {
 fn getFileSource(self: *Codegen, file_id: u32) ![]const u8 {
     if (self.file_cache.get(file_id)) |buf| return buf;
     const data = try self.context.source_manager.read(file_id);
-    errdefer self.context.source_manager.gpa.free(@constCast(data));
+    var owned = true;
+    defer if (owned) self.context.source_manager.gpa.free(@constCast(data));
     try self.file_cache.put(file_id, data);
+    owned = false;
     return data;
 }
 
@@ -570,14 +572,14 @@ fn attributeFromConstInit(self: *Codegen, ci: tir.ConstInit, ty: mlir.Type) !mli
 }
 fn appendReturnInBlock(self: *Codegen, block: *mlir.Block, val: mlir.Value) void {
     const op = OpBuilder.init("llvm.return", self.loc).builder()
-        .operands(&.{ val })
+        .operands(&.{val})
         .build();
     block.appendOwnedOperation(op);
 }
 
 fn appendZeroValueInBlock(self: *Codegen, block: *mlir.Block, ty: mlir.Type) mlir.Value {
     var op = OpBuilder.init("llvm.mlir.zero", self.loc).builder()
-        .results(&.{ ty })
+        .results(&.{ty})
         .build();
     block.appendOwnedOperation(op);
     return op.getResult(0);
@@ -757,7 +759,7 @@ fn emitExternDecls(self: *Codegen, t: *const tir.TIR) !void {
             const attrs = attr_buf.items;
             // Likewise, synthesized globals are emitted with the module location
             // because they are not backed by user-written syntax.
-            var regions = [_]mlir.Region{ init_region };
+            var regions = [_]mlir.Region{init_region};
             const global_op = OpBuilder.init("llvm.mlir.global", self.loc).builder()
                 .attributes(attrs)
                 .regions(&regions)
@@ -789,9 +791,6 @@ fn emitFunctionHeader(self: *Codegen, f_id: tir.FuncId, t: *const tir.TIR) !void
     };
     if (n_res == 1) results[0] = try self.llvmTypeOf(f.result);
 
-    const func_name = t.instrs.strs.get(f.name);
-    if (self.func_syms.contains(func_name)) return;
-
     // Decide whether to emit as func.func or llvm.func based on an attribute.
     const f_attrs = t.instrs.attribute_pool.slice(f.attrs);
     const emit_c_iface = t.instrs.strs.intern("llvm.emit_c_interface");
@@ -814,6 +813,9 @@ fn emitFunctionHeader(self: *Codegen, f_id: tir.FuncId, t: *const tir.TIR) !void
             break :blk mlir.Type.getFunctionType(self.mlir_ctx, @intCast(param_tys.len), param_tys, @intCast(n_res), results[0..n_res]);
         }
     };
+
+    const func_name = t.instrs.strs.get(f.name);
+    if (self.func_syms.contains(func_name)) return;
 
     var attrs: std.ArrayList(mlir.NamedAttribute) = .empty;
     defer attrs.deinit(self.gpa);
@@ -4355,7 +4357,7 @@ fn srTypeOfValue(self: *Codegen, vid: tir.ValueId) types.TypeId {
     return types.TypeId.fromRaw(0);
 }
 
-fn constIntOf(self: *Codegen, t: *const tir.TIR, vid: tir.ValueId) ?u64 {
+fn constIntOf(self: *Codegen, t: *const tir.TIR, vid: tir.ValueId) ?i128 {
     if (self.def_instr.get(vid)) |iid| {
         const k = t.instrs.index.kinds.items[iid.toRaw()];
         if (k == .ConstInt) {

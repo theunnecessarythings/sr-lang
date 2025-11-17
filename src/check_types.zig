@@ -561,6 +561,18 @@ pub fn typeFromTypeExpr(self: *Checker, ctx: *Checker.CheckerContext, ast_unit: 
                             return .{ true, ty };
                         }
                     }
+
+                    // Recursion guard for lazy type resolution.
+                    for (ctx.resolving_type_decls.items) |resolving_did| {
+                        if (resolving_did.eq(did)) {
+                            // Recursive type definition detected. Return `any` to avoid a crash.
+                            // A proper fix requires more advanced type system features (e.g. opaque types).
+                            return .{ true, ts.tAny() };
+                        }
+                    }
+                    try ctx.resolving_type_decls.append(self.gpa, did);
+                    defer _ = ctx.resolving_type_decls.pop();
+
                     // Lazy resolve: if the declaration\'s RHS is a type expression, resolve it now.
                     const drow = ast_unit.exprs.Decl.get(did);
                     const rhs_res = try typeFromTypeExpr(self, ctx, ast_unit, drow.value);
@@ -745,11 +757,13 @@ pub fn typeFromTypeExpr(self: *Checker, ctx: *Checker.CheckerContext, ast_unit: 
                 if (dk != .Literal) {
                     try self.context.diags.addError(ast_unit.exprs.locs.get(row.loc), .tensor_dimension_not_integer_literal, .{});
                     status = false;
+                    continue;
                 }
                 const dl = ast_unit.exprs.get(.Literal, dims[i]);
                 if (dl.kind != .int) {
                     try self.context.diags.addError(ast_unit.exprs.locs.get(row.loc), .tensor_dimension_not_integer_literal, .{});
                     status = false;
+                    continue;
                 }
                 const info = switch (dl.data) {
                     .int => |int_info| int_info,
@@ -844,8 +858,10 @@ pub fn typeFromTypeExpr(self: *Checker, ctx: *Checker.CheckerContext, ast_unit: 
 
             var seen = std.AutoArrayHashMapUnmanaged(u32, void){};
             defer seen.deinit(self.gpa);
+            var enum_value_bindings: std.ArrayList(Binding) = .empty;
+            defer enum_value_bindings.deinit(self.gpa);
 
-            var next_value: u64 = 0;
+            var next_value: i128 = 0;
             var i: usize = 0;
             while (i < efs.len) : (i += 1) {
                 const enum_field = ast_unit.exprs.EnumField.get(efs[i]);
@@ -856,41 +872,49 @@ pub fn typeFromTypeExpr(self: *Checker, ctx: *Checker.CheckerContext, ast_unit: 
                     status = false;
                 }
 
-                var current_value: u64 = next_value;
+                var current_value: i128 = next_value;
+                const binding_slice = enum_value_bindings.items[0..enum_value_bindings.items.len];
                 if (!enum_field.value.isNone()) {
                     const val_id = enum_field.value.unwrap();
-                    const val_kind = ast_unit.exprs.index.kinds.items[val_id.toRaw()];
-                    if (val_kind != .Literal) {
-                        try self.context.diags.addError(ast_unit.exprs.locs.get(enum_field.loc), .enum_discriminant_not_integer, .{});
-                        status = false;
-                    }
-                    const lit = ast_unit.exprs.get(.Literal, val_id);
-                    if (lit.kind != .int) {
-                        try self.context.diags.addError(ast_unit.exprs.locs.get(enum_field.loc), .enum_discriminant_not_integer, .{});
-                        status = false;
-                    }
-                    const parsed = switch (lit.data) {
-                        .int => |int_info| blk: {
-                            if (!int_info.valid) {
-                                try self.context.diags.addError(ast_unit.exprs.locs.get(enum_field.loc), .invalid_integer_literal, .{});
-                                break :blk null;
+                    var resolved_from_binding = false;
+                    if (ast_unit.exprs.index.kinds.items[val_id.toRaw()] == .Ident) {
+                        const ident = ast_unit.exprs.get(.Ident, val_id);
+                        if (lookupValueBinding(binding_slice, ident.name)) |binding_val| {
+                            switch (binding_val) {
+                                .Int => |v| {
+                                    current_value = v;
+                                    resolved_from_binding = true;
+                                },
+                                else => {},
                             }
-                            const casted = std.math.cast(u64, int_info.value) orelse {
-                                try self.context.diags.addError(ast_unit.exprs.locs.get(enum_field.loc), .invalid_integer_literal, .{});
-                                break :blk null;
+                        }
+                    }
+
+                    if (!resolved_from_binding) {
+                        const comptime_eval_ok = comptime_block: {
+                            var comptime_val = evalComptimeValueWithBindings(self, ast_unit, val_id, tag_ty, binding_slice) catch {
+                                break :comptime_block false;
                             };
-                            break :blk casted;
-                        },
-                        else => blk: {
+                            defer comptime_val.destroy(self.gpa);
+
+                            switch (comptime_val) {
+                                .Int => |v| current_value = v,
+                                else => break :comptime_block false,
+                            }
+                            break :comptime_block true;
+                        };
+
+                        if (!comptime_eval_ok) {
                             try self.context.diags.addError(ast_unit.exprs.locs.get(enum_field.loc), .enum_discriminant_not_integer, .{});
-                            break :blk null;
-                        },
-                    };
-                    if (parsed == null) status = false;
-                    current_value = parsed orelse 0;
+                            status = false;
+                        }
+                    }
                 }
 
-                member_buf[i] = .{ .name = enum_field.name, .value = current_value };
+                member_buf[i] = .{ .name = enum_field.name, .value = @intCast(current_value) };
+                try enum_value_bindings.append(self.gpa, .{
+                    .Value = .{ .name = enum_field.name, .value = comp.ComptimeValue{ .Int = current_value }, .ty = tag_ty },
+                });
                 next_value = current_value + 1;
             }
             break :blk_en .{ status, ts.mkEnum(member_buf, tag_ty) };

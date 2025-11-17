@@ -21,7 +21,7 @@ main :: proc() {
     glfw.glfwWindowHint(glfw.CONTEXT_VERSION_MINOR, 3)
     glfw.glfwWindowHint(glfw.OPENGL_PROFILE, glfw.OPENGL_CORE_PROFILE)
 
-    window := glfw.glfwCreateWindow(800, 600, "Skia Advanced (idiomatic)", 0.^*void, 0.^*void)
+    window := glfw.glfwCreateWindow(800, 600, "Skia Advanced (idiomatic)".ptr, 0.^*void, 0.^*void)
     if window.^i64 == 0 {
         fmt.println("Failed to create GLFW window")
         return

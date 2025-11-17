@@ -75,6 +75,11 @@ pub const Pipeline = struct {
         bindings: []const ComptimeBinding,
     ) !comp.ComptimeValue {
         const ctx = try self.allocator.create(lower_tir.LowerContext);
+        defer {
+            ctx.deinit(self.allocator);
+            self.allocator.destroy(ctx);
+        }
+
         ctx.* = lower_tir.LowerContext{
             .method_lowered = .init(self.allocator),
             .module_call_cache = .init(self.allocator),
