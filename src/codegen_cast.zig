@@ -252,15 +252,8 @@ pub fn emitCastNormal(self: *Codegen, dst_sr: types.TypeId, to_ty: mlir.Type, fr
     // when early-returning an empty dynamic array from an empty literal.
     if (self.context.type_store.getKind(dst_sr) == .DynArray and self.context.type_store.getKind(src_sr) == .Array) {
         const arr = self.context.type_store.get(.Array, src_sr);
-        switch (arr.len) {
-            .Concrete => |l| {
-                if (l == 0) {
-                    // Zero-initialized dyn array is already a valid empty value.
-                    return self.zeroOf(to_ty);
-                }
-            },
-            .Unresolved => {},
-        }
+        if (arr.len == 0)
+            return self.zeroOf(to_ty);
         // Non-zero-length array -> dyn array is not yet supported here; fall through to other paths.
     }
 
@@ -291,11 +284,7 @@ pub fn emitCastNormal(self: *Codegen, dst_sr: types.TypeId, to_ty: mlir.Type, fr
         const arr = self.context.type_store.get(.Array, src_sr);
         // Only handle concrete fixed-size arrays that match the lane count
         const lanes: usize = @intCast(simd.lanes);
-        const arr_len: usize = switch (arr.len) {
-            .Concrete => |l| l,
-            .Unresolved => 0,
-        };
-        if (arr_len == lanes and lanes > 0) {
+        if (arr.len == lanes and lanes > 0) {
             const elem_mlir = try self.llvmTypeOf(simd.elem);
             const vec_ty = to_ty;
             // Collect elements by extracting from the array and coercing to vector element type

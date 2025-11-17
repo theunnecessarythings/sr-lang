@@ -43,7 +43,7 @@ fn evalComptimeValueWithBindings(
 ) !comp.ComptimeValue {
     const pb = try pipelineBindingsFor(self, bindings);
     defer if (pb.owns) self.gpa.free(pb.items);
-    return self.pipeline.evalComptimeExpr(self, ast_unit, expr, expected_ty, pb.items);
+    return self.evalComptimeExpr(ast_unit, expr, expected_ty, pb.items);
 }
 
 fn lookupTypeBinding(bindings: []const Binding, name: ast.StrId) ?types.TypeId {
@@ -177,11 +177,7 @@ pub fn typeSize(ctx: *const compile.Context, ty_id: types.TypeId) usize {
         .Array => blk: {
             const arr = ctx.type_store.get(.Array, ty_id);
             const elem_size = typeSize(ctx, arr.elem);
-            const len = switch (arr.len) {
-                .Concrete => |l| l,
-                .Unresolved => unreachable,
-            };
-            break :blk std.math.mul(usize, elem_size, len) catch unreachable;
+            break :blk std.math.mul(usize, elem_size, arr.len) catch unreachable;
         },
         .Struct => blk: {
             const st = ctx.type_store.get(.Struct, ty_id);
@@ -366,25 +362,30 @@ fn typeFromTypeExprWithBindings(
             const res = try typeFromTypeExprWithBindings(self, ctx, ast_unit, row.elem, bindings);
             status = status and res[0];
             const elem = res[1];
-            const size_expr_kind = ast_unit.exprs.index.kinds.items[row.size.toRaw()];
-            var size: types.ArraySize = .{ .Unresolved = row.size };
-            if (size_expr_kind == .Literal) {
-                const lit = ast_unit.exprs.get(.Literal, row.size);
-                if (lit.kind == .int) {
-                    const info = switch (lit.data) {
-                        .int => |i| i,
-                        else => return .{ false, ts.tTypeError() },
+            var size: usize = 0;
+            const size_loc = ast_unit.exprs.locs.get(row.loc);
+            var size_eval = evalComptimeValueWithBindings(self, ast_unit, row.size, self.context.type_store.tUsize(), bindings) catch {
+                try self.context.diags.addError(size_loc, .array_size_not_integer_literal, .{});
+                status = false;
+                break :blk_at .{ status, ts.mkArray(elem, size) };
+            };
+            defer size_eval.destroy(self.gpa);
+
+            switch (size_eval) {
+                .Int => |len| {
+                    const concrete = std.math.cast(usize, len) orelse {
+                        try self.context.diags.addError(size_loc, .array_size_not_integer_literal, .{});
+                        status = false;
+                        break :blk_at .{ status, ts.mkArray(elem, size) };
                     };
-                    if (info.valid) {
-                        const len = std.math.cast(usize, info.value) orelse v: {
-                            try self.context.diags.addError(ast_unit.exprs.locs.get(lit.loc), .array_size_not_integer_literal, .{});
-                            status = false;
-                            break :v 0;
-                        };
-                        size = .{ .Concrete = len };
-                    }
-                }
+                    size = concrete;
+                },
+                else => {
+                    try self.context.diags.addError(size_loc, .array_size_not_integer_literal, .{});
+                    status = false;
+                },
             }
+
             break :blk_at .{ status, ts.mkArray(elem, size) };
         },
         .Call => blk_call: {
@@ -656,41 +657,8 @@ pub fn typeFromTypeExpr(self: *Checker, ctx: *Checker.CheckerContext, ast_unit: 
             break :blk_mt .{ status, ts.mkMap(key_res[1], val_res[1]) };
         },
         .ArrayType => blk_at: {
-            const row = ast_unit.exprs.get(.ArrayType, id);
-            const res = try typeFromTypeExpr(self, ctx, ast_unit, row.elem);
-            if (!res[0]) {
-                const elem_kind = ast_unit.exprs.index.kinds.items[row.elem.toRaw()];
-                const loc = switch (elem_kind) {
-                    inline else => |kind| ast_unit.exprs.get(kind, row.elem).loc,
-                };
-                try self.context.diags.addError(ast_unit.exprs.locs.get(loc), .type_value_mismatch, .{});
-                return .{ false, ts.tTypeError() };
-            }
-            status = status and res[0];
-            const elem = res[1];
-            const size_expr_kind = ast_unit.exprs.index.kinds.items[row.size.toRaw()];
-            var size: types.ArraySize = .{ .Unresolved = row.size };
-            if (size_expr_kind == .Literal) {
-                const lit = ast_unit.exprs.get(.Literal, row.size);
-                if (lit.kind == .int) {
-                    const info = switch (lit.data) {
-                        .int => |i| i,
-                        else => return .{ false, ts.tTypeError() },
-                    };
-                    if (info.valid) {
-                        const len = std.math.cast(usize, info.value) orelse len: {
-                            try self.context.diags.addError(ast_unit.exprs.locs.get(lit.loc), .array_size_not_integer_literal, .{});
-                            status = false;
-                            break :len 0;
-                        };
-                        size = .{ .Concrete = len };
-                    }
-                } else {
-                    try self.context.diags.addError(ast_unit.exprs.locs.get(row.loc), .array_size_not_integer_literal, .{});
-                    status = false;
-                }
-            }
-            break :blk_at .{ status, ts.mkArray(elem, size) };
+            const res = try typeFromTypeExprWithBindings(self, ctx, ast_unit, id, &[_]Binding{});
+            break :blk_at res;
         },
         .DynArrayType => blk_dt: {
             const row = ast_unit.exprs.get(.DynArrayType, id);

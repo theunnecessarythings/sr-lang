@@ -405,12 +405,10 @@ fn constInitFromExpr(self: *LowerTir, ctx: *LowerContext, a: *ast.Ast, expr_id: 
         else => false,
     };
     if (allow_ct_scalar) {
-        const comptime_val = comp.runComptimeExpr(self, ctx, a, expr_id, ty, &.{}) catch |err| blk: {
-            std.debug.print("comptime error: {}\n", .{err});
-            break :blk null;
-        };
-        if (comptime_val) |cv| {
-            switch (cv) {
+        var cv = try self.getCachedComptimeValue(a, expr_id);
+        if (cv) |*val| {
+            defer val.destroy(self.gpa);
+            switch (val.*) {
                 .Int => |v| return tir.ConstInit{ .int = @intCast(v) },
                 .Float => |v| return tir.ConstInit{ .float = v },
                 .Bool => |v| return tir.ConstInit{ .bool = v },
@@ -568,9 +566,11 @@ fn resolveMlirSpliceValue(
     switch (info) {
         .decl => |decl_info| {
             const decl = a.exprs.Decl.get(decl_info.decl_id);
-            const expect_ty = getDeclType(a, decl_info.decl_id) orelse
-                self.getExprType(ctx, a, decl.value);
-            return comp.evalComptimeExprValue(self, ctx, a, decl.value, expect_ty);
+            if (try self.getCachedComptimeValue(a, decl.value)) |value| {
+                return value;
+            }
+            try self.context.diags.addError(diag_loc, .mlir_splice_not_comptime, .{name_str});
+            return error.LoweringBug;
         },
         .value_param => |param_info| {
             var i: usize = ctx.monomorph_context_stack.items.len;
@@ -599,74 +599,17 @@ fn resolveMlirSpliceValue(
     }
 }
 
+fn getCachedComptimeValue(self: *LowerTir, a: *ast.Ast, expr: ast.ExprId) !?comp.ComptimeValue {
+    if (a.type_info.getComptimeValue(expr)) |cached| {
+        const cloned = try comp.cloneComptimeValue(self.gpa, cached.*);
+        return cloned;
+    }
+    return null;
+}
+
 // ============================
 // Utilities / common helpers
 // ============================
-
-pub fn resolveArrayLen(
-    self: *LowerTir,
-    ctx: *LowerContext,
-    a: *ast.Ast,
-    size_expr: ast.ExprId,
-    loc: tir.OptLocId,
-) !usize {
-    // Fast path for literals
-    if (a.exprs.index.kinds.items[size_expr.toRaw()] == .Literal) {
-        const lit = a.exprs.get(.Literal, size_expr);
-        if (lit.kind == .int) {
-            const info = switch (lit.data) {
-                .int => |i| i,
-                else => null,
-            };
-            if (info) |inf| {
-                if (inf.valid) {
-                    return @intCast(inf.value);
-                }
-            }
-        }
-    }
-    // Fast path for simple constant identifiers
-    if (a.exprs.index.kinds.items[size_expr.toRaw()] == .Ident) {
-        const name = a.exprs.get(.Ident, size_expr).name;
-        const checker_ctx = self.chk.checker_ctx.items[a.file_id];
-        if (self.chk.lookup(checker_ctx, name)) |sid| {
-            const sym = checker_ctx.symtab.syms.get(sid);
-            if (!sym.origin_decl.isNone()) {
-                const did = sym.origin_decl.unwrap();
-                const d = a.exprs.Decl.get(did);
-                if (d.flags.is_const) {
-                    if (a.exprs.index.kinds.items[d.value.toRaw()] == .Literal) {
-                        const lit = a.exprs.get(.Literal, d.value);
-                        if (lit.kind == .int) {
-                            const info = switch (lit.data) {
-                                .int => |i| i,
-                                else => null,
-                            };
-                            if (info) |inf| {
-                                if (inf.valid) {
-                                    return @intCast(inf.value);
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    const comptime_val = comp.runComptimeExpr(self, ctx, a, size_expr, self.context.type_store.tUsize(), &.{}) catch {
-        try self.context.diags.addError(a.exprs.locs.get(loc.unwrap()), .array_size_not_integer_literal, .{});
-        return error.ComptimeEvalFailed;
-    };
-
-    return switch (comptime_val) {
-        .Int => |i| @intCast(i),
-        else => {
-            try self.context.diags.addError(a.exprs.locs.get(loc.unwrap()), .array_size_not_integer_literal, .{});
-            return error.ComptimeEvalFailed;
-        },
-    };
-}
 
 const LowerMode = enum { rvalue, lvalue_addr };
 
@@ -760,15 +703,10 @@ fn coerceArrayToDynArray(
     const ts = self.context.type_store;
     const arr = ts.get(.Array, array_ty);
     const dyn = ts.get(.DynArray, dyn_ty);
-    const len = switch (arr.len) {
-        .Concrete => |l| l,
-        .Unresolved => return null,
-    };
-
     const ptr_ty = ts.mkPtr(dyn.elem, false);
     const usize_ty = ts.tUsize();
 
-    if (len == 0) {
+    if (arr.len == 0) {
         const null_ptr = blk.builder.constNull(blk, ptr_ty, loc);
         const zero = blk.builder.tirValue(.ConstInt, blk, usize_ty, loc, .{ .value = 0 });
         return blk.builder.structMake(blk, dyn_ty, &[_]tir.Rows.StructFieldInit{
@@ -778,7 +716,7 @@ fn coerceArrayToDynArray(
         }, loc);
     }
 
-    const len_u64 = std.math.cast(u64, len) orelse return null;
+    const len_u64 = std.math.cast(u64, arr.len) orelse return null;
     const elem_size = check_types.typeSize(self.context, dyn.elem);
     const elem_size_u64 = std.math.cast(u64, elem_size) orelse return null;
     const total_bytes = std.math.mul(u64, elem_size_u64, len_u64) catch return null;
@@ -788,7 +726,7 @@ fn coerceArrayToDynArray(
     const data_ptr = blk.builder.tirValue(.CastBit, blk, ptr_ty, loc, .{ .value = raw_ptr });
 
     var idx: usize = 0;
-    while (idx < len) : (idx += 1) {
+    while (idx < arr.len) : (idx += 1) {
         const idx_u64 = std.math.cast(u64, idx) orelse return null;
         const idx_val = blk.builder.tirValue(.ConstInt, blk, usize_ty, loc, .{ .value = idx_u64 });
         var elem_val = blk.builder.indexOp(blk, arr.elem, array_value, idx_val, loc);
@@ -1169,8 +1107,7 @@ fn lowerDecl(
     const drow = a.stmts.get(.Decl, sid);
     const d = a.exprs.Decl.get(drow.decl);
     const value_ty = self.getExprType(ctx, a, d.value);
-    var decl_ty = getDeclType(a, drow.decl) orelse value_ty;
-    decl_ty = try self.resolveArrayLengthsInType(ctx, a, decl_ty, optLoc(a, sid));
+    const decl_ty = getDeclType(a, drow.decl) orelse value_ty;
     if (!d.pattern.isNone()) {
         // Destructure once for all names: bind as values for const, or slots for mut.
         try self.destructureDeclFromExpr(ctx, a, env, f, blk, d.pattern.unwrap(), d.value, decl_ty, !d.flags.is_const);
@@ -1930,13 +1867,11 @@ fn lowerCall(
                                 else
                                     null;
 
-                                const comptime_val = if (comptime_val_opt) |cv|
-                                    cv
-                                else
-                                    comp.evalComptimeExprValue(self, ctx, a, arg_expr, param_ty) catch {
-                                        ok = false;
-                                        break;
-                                    };
+                                const comptime_val = comptime_val_opt orelse blk: {
+                                    if (try self.getCachedComptimeValue(a, arg_expr)) |cached| break :blk cached;
+                                    ok = false;
+                                    break :blk comp.ComptimeValue{ .Void = {} };
+                                };
 
                                 var info = monomorphize.BindingInfo.valueParam(self.gpa, pname, param_ty, comptime_val) catch {
                                     ok = false;
@@ -2665,13 +2600,9 @@ fn lowerArrayLit(
     switch (vk) {
         .Array => {
             const array_ty = self.context.type_store.get(.Array, ty0);
-            const len = switch (array_ty.len) {
-                .Concrete => |l| l,
-                .Unresolved => |expr_id| try self.resolveArrayLen(ctx, a, expr_id, loc),
-            };
 
             const ids = a.exprs.expr_pool.slice(row.elems);
-            std.debug.assert(len == ids.len);
+            std.debug.assert(array_ty.len == ids.len);
 
             var vals = try self.gpa.alloc(tir.ValueId, ids.len);
             defer self.gpa.free(vals);
@@ -3253,12 +3184,8 @@ fn lowerFieldAccess(
     if (std.mem.eql(u8, field_name, "len")) {
         if (parent_kind == .Array) {
             const arr = self.context.type_store.get(.Array, parent_ty);
-            const len_u64: u64 = switch (arr.len) {
-                .Concrete => |n| std.math.cast(u64, n) orelse unreachable,
-                .Unresolved => unreachable, // array lengths should be resolved before lowering
-            };
             const ty0 = self.context.type_store.tUsize();
-            const v = blk.builder.tirValue(.ConstInt, blk, ty0, loc, .{ .value = len_u64 });
+            const v = blk.builder.tirValue(.ConstInt, blk, ty0, loc, .{ .value = @as(u64, @intCast(arr.len)) });
             if (expected_ty) |want| return self.emitCoerce(blk, v, ty0, want, loc);
             return v;
         }
@@ -4246,74 +4173,6 @@ fn lowerCast(
     return out;
 }
 
-fn resolveArrayLengthsInType(self: *LowerTir, ctx: *LowerContext, a: *ast.Ast, ty: types.TypeId, loc: tir.OptLocId) !types.TypeId {
-    const kind = self.context.type_store.getKind(ty);
-    return switch (kind) {
-        .Array => blk: {
-            const arr_ty = self.context.type_store.get(.Array, ty);
-            const elem_ty = try self.resolveArrayLengthsInType(ctx, a, arr_ty.elem, loc);
-            switch (arr_ty.len) {
-                .Unresolved => |len_expr| {
-                    const resolved_len = try self.resolveArrayLen(ctx, a, len_expr, loc);
-                    break :blk self.context.type_store.mkArray(elem_ty, .{ .Concrete = resolved_len });
-                },
-                .Concrete => {
-                    if (elem_ty.toRaw() == arr_ty.elem.toRaw()) break :blk ty;
-                    break :blk self.context.type_store.mkArray(elem_ty, arr_ty.len);
-                },
-            }
-        },
-        .Struct => blk: {
-            const struct_ty = self.context.type_store.get(.Struct, ty);
-            const fields = self.context.type_store.field_pool.slice(struct_ty.fields);
-            var new_fields = try self.gpa.alloc(types.TypeStore.StructFieldArg, fields.len);
-            defer self.gpa.free(new_fields);
-            var changed = false;
-            for (fields, 0..) |field_id, i| {
-                const field = self.context.type_store.Field.get(field_id);
-                const new_field_ty = try self.resolveArrayLengthsInType(ctx, a, field.ty, loc);
-                if (new_field_ty.toRaw() != field.ty.toRaw()) {
-                    changed = true;
-                }
-                new_fields[i] = .{ .name = field.name, .ty = new_field_ty };
-            }
-            if (changed) {
-                break :blk self.context.type_store.mkStruct(new_fields);
-            } else {
-                break :blk ty;
-            }
-        },
-        .Tuple => blk: {
-            const tuple_ty = self.context.type_store.get(.Tuple, ty);
-            const elems = self.context.type_store.type_pool.slice(tuple_ty.elems);
-            var new_elems = try self.gpa.alloc(types.TypeId, elems.len);
-            defer self.gpa.free(new_elems);
-            var changed = false;
-            for (elems, 0..) |elem_ty, i| {
-                const new_elem_ty = try self.resolveArrayLengthsInType(ctx, a, elem_ty, loc);
-                if (new_elem_ty.toRaw() != elem_ty.toRaw()) {
-                    changed = true;
-                }
-                new_elems[i] = new_elem_ty;
-            }
-            if (changed) {
-                break :blk self.context.type_store.mkTuple(new_elems);
-            } else {
-                break :blk ty;
-            }
-        },
-        .Optional => blk: {
-            const opt_ty = self.context.type_store.get(.Optional, ty);
-            const new_elem_ty = try self.resolveArrayLengthsInType(ctx, a, opt_ty.elem, loc);
-            if (new_elem_ty.toRaw() != opt_ty.elem.toRaw()) {
-                break :blk self.context.type_store.mkOptional(new_elem_ty);
-            }
-            break :blk ty;
-        },
-        else => return ty,
-    };
-}
-
 pub fn lowerExpr(
     self: *LowerTir,
     ctx: *LowerContext,
@@ -4338,19 +4197,15 @@ pub fn lowerExpr(
         .Literal => self.lowerLiteral(ctx, a, blk, id, expected_ty),
         .NullLit => {
             const loc = optLoc(a, id);
-            var ty0 = self.getExprType(ctx, a, id);
-            ty0 = try self.resolveArrayLengthsInType(ctx, a, ty0, loc);
+            const ty0 = self.getExprType(ctx, a, id);
             const v = blk.builder.constNull(blk, ty0, loc);
             if (expected_ty) |want| return self.emitCoerce(blk, v, ty0, want, loc);
             return v;
         },
         .UndefLit => {
             const loc = optLoc(a, id);
-            // If a target type is known, materialize a typed zero of that type.
-            // Otherwise, produce an undef of type Any to avoid Undef-typed IR.
             if (expected_ty) |want_raw| {
-                const want = try self.resolveArrayLengthsInType(ctx, a, want_raw, loc);
-                const v = blk.builder.constNull(blk, want, loc);
+                const v = blk.builder.constNull(blk, want_raw, loc);
                 return v;
             } else {
                 const any_ty = self.context.type_store.tAny();
@@ -4404,7 +4259,16 @@ pub fn lowerExpr(
             const loc = optLoc(a, id);
             break :blk self.safeUndef(blk, ty0, loc);
         },
-        .ComptimeBlock => comp.jitEvalComptimeBlock(self, ctx, a, blk, id),
+        .ComptimeBlock => {
+            const cb = a.exprs.get(.ComptimeBlock, id);
+            const result_ty = self.getExprType(ctx, a, cb.block);
+            var cval = try self.getCachedComptimeValue(a, cb.block);
+            if (cval) |*comptime_val| {
+                defer comptime_val.destroy(self.gpa);
+                return try comp.constValueFromComptime(self, blk, result_ty, comptime_val.*);
+            }
+            return error.LoweringBug;
+        },
         else => {
             std.debug.print("lowerExpr: unhandled expr kind {}\n", .{expr_kind});
             return error.LoweringBug;
@@ -5028,18 +4892,16 @@ fn destructureDeclFromExpr(
             if (self.context.type_store.getKind(result_ty) == .TypeType) {
                 const tt = self.context.type_store.get(.TypeType, result_ty);
                 if (!self.isType(tt.of, .Any)) break :blk tt.of;
-                const computed = try comp.runComptimeExpr(self, ctx, a, src_expr, result_ty, &[_]Pipeline.ComptimeBinding{});
-                break :blk switch (computed) {
+            }
+            var cval = try self.getCachedComptimeValue(a, src_expr);
+            if (cval) |*computed| {
+                defer computed.destroy(self.gpa);
+                break :blk switch (computed.*) {
                     .Type => |ty| ty,
                     else => return error.UnsupportedComptimeType,
                 };
             }
-            const type_wrapper = self.context.type_store.mkTypeType(result_ty);
-            const computed = try comp.runComptimeExpr(self, ctx, a, src_expr, type_wrapper, &[_]Pipeline.ComptimeBinding{});
-            break :blk switch (computed) {
-                .Type => |ty| ty,
-                else => return error.UnsupportedComptimeType,
-            };
+            return error.UnsupportedComptimeType;
         };
         const type_ty = self.context.type_store.mkTypeType(resolved_ty);
         try self.noteExprType(ctx, src_expr, type_ty);
@@ -5332,20 +5194,4 @@ pub fn restoreBindings(self: *LowerTir, env: *cf.Env, saved: []const BindingSnap
         const entry = saved[i - 1];
         try env.restoreBinding(self.gpa, entry.name, entry.prev);
     }
-}
-
-pub fn evalComptimeExpr(
-    gpa: std.mem.Allocator,
-    ctx: *LowerContext,
-    context: *Context,
-    pipeline: *Pipeline,
-    chk: *checker.Checker,
-    ast_unit: *ast.Ast,
-    expr: ast.ExprId,
-    result_ty: types.TypeId,
-    bindings: []const Pipeline.ComptimeBinding,
-) !comp.ComptimeValue {
-    var lowerer = LowerTir.init(gpa, context, pipeline, chk);
-    defer lowerer.deinit();
-    return comp.runComptimeExpr(&lowerer, ctx, ast_unit, expr, result_ty, bindings);
 }

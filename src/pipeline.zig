@@ -68,39 +68,6 @@ pub const Pipeline = struct {
         value_param: struct { name: ast_mod.StrId, ty: types.TypeId, value: comp.ComptimeValue },
     };
 
-    pub fn evalComptimeExpr(
-        self: *Pipeline,
-        chk: *checker.Checker,
-        ast_unit: *ast_mod.Ast,
-        expr: ast_mod.ExprId,
-        result_ty: types.TypeId,
-        bindings: []const ComptimeBinding,
-    ) !comp.ComptimeValue {
-        const ctx = try self.allocator.create(lower_tir.LowerContext);
-        defer {
-            ctx.deinit(self.allocator);
-            self.allocator.destroy(ctx);
-        }
-
-        ctx.* = lower_tir.LowerContext{
-            .method_lowered = .init(self.allocator),
-            .module_call_cache = .init(self.allocator),
-            .monomorphizer = .init(self.allocator),
-        };
-
-        return lower_tir.evalComptimeExpr(
-            self.allocator,
-            ctx,
-            self.context,
-            self,
-            chk,
-            ast_unit,
-            expr,
-            result_ty,
-            bindings,
-        );
-    }
-
     pub fn run(
         self: *Pipeline,
         filename_or_src: []const u8,

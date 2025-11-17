@@ -4487,27 +4487,14 @@ fn copyArrayAggregate(
 ) anyerror!?mlir.Value {
     const dst_info = self.context.type_store.get(.Array, dst_sr);
     const src_info = self.context.type_store.get(.Array, src_sr);
-    const len_match = blk: {
-        switch (dst_info.len) {
-            .Concrete => |l1| switch (src_info.len) {
-                .Concrete => |l2| break :blk l1 == l2,
-                .Unresolved => break :blk true,
-            },
-            .Unresolved => break :blk true,
-        }
-    };
-    if (!len_match) return null;
+    if (dst_info.len != src_info.len) return null;
 
     const dst_elem_ty = try self.llvmTypeOf(dst_info.elem);
     const src_elem_ty = try self.llvmTypeOf(src_info.elem);
 
     var result = self.undefOf(dst_ty);
-    const len = switch (dst_info.len) {
-        .Concrete => |l| l,
-        .Unresolved => std.debug.panic("copyArrayAggregate on unresolved array", .{}),
-    };
     var i: usize = 0;
-    while (i < len) : (i += 1) {
+    while (i < dst_info.len) : (i += 1) {
         const idx = [_]i64{@intCast(i)};
         const elem_val = self.extractAt(src_val, src_elem_ty, &idx);
         const coerced = try elemCoercer(self, dst_info.elem, dst_elem_ty, elem_val, src_info.elem);
@@ -5013,11 +5000,7 @@ pub fn llvmTypeOf(self: *Codegen, ty: types.TypeId) !mlir.Type {
         .Array => blk: {
             const arr_ty = self.context.type_store.get(.Array, ty);
             const e = try self.llvmTypeOf(arr_ty.elem);
-            const len = switch (arr_ty.len) {
-                .Concrete => |l| l,
-                .Unresolved => std.debug.panic("llvmTypeOf on unresolved array", .{}),
-            };
-            break :blk mlir.LLVM.getLLVMArrayType(e, @intCast(len));
+            break :blk mlir.LLVM.getLLVMArrayType(e, @intCast(arr_ty.len));
         },
         .DynArray => blk: {
             const dyn_ty = self.context.type_store.get(.DynArray, ty);

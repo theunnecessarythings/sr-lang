@@ -6,11 +6,6 @@ const comp = @import("comptime.zig");
 // DOD Type Store
 pub const TypeTag = struct {};
 
-pub const ArraySize = union(enum) {
-    Concrete: usize,
-    Unresolved: ast.ExprId,
-};
-
 pub const max_tensor_rank: usize = 4;
 
 pub const TypeId = cst.Index(TypeTag);
@@ -88,6 +83,13 @@ fn makeMethodKey(owner: TypeId, name: ast.StrId) MethodKey {
     return .{ .owner = owner.toRaw(), .name = name.toRaw() };
 }
 
+const StoredComptimeBinding = struct {
+    ty: TypeId,
+    value: comp.ComptimeValue,
+};
+
+pub const ComptimeBindingVisitor = fn (?*anyopaque, ast.StrId, comp.ComptimeValue, TypeId) anyerror!void;
+
 pub const TypeInfo = struct {
     gpa: std.mem.Allocator,
     store: *TypeStore,
@@ -96,6 +98,7 @@ pub const TypeInfo = struct {
     decl_types: std.ArrayListUnmanaged(?TypeId) = .{},
     field_index_for_expr: std.AutoArrayHashMapUnmanaged(u32, u32) = .{},
     comptime_values: std.AutoArrayHashMapUnmanaged(ast.ExprId, comp.ComptimeValue) = .{},
+    comptime_bindings: std.AutoArrayHashMapUnmanaged(ast.StrId, StoredComptimeBinding) = .{},
     method_bindings: std.AutoArrayHashMapUnmanaged(u32, MethodBinding) = .{},
     mlir_splice_info: std.AutoArrayHashMapUnmanaged(u32, MlirSpliceInfo) = .{},
     exports: std.AutoArrayHashMapUnmanaged(ast.StrId, ExportEntry) = .{},
@@ -110,6 +113,7 @@ pub const TypeInfo = struct {
             .gpa = gpa,
             .store = store,
             .comptime_values = .{},
+            .comptime_bindings = .{},
         };
     }
     pub fn deinit(self: *TypeInfo) void {
@@ -123,6 +127,11 @@ pub const TypeInfo = struct {
             self.destroyComptimeValue(value_ptr.value_ptr);
         }
         self.comptime_values.deinit(self.gpa);
+        var cb_it = self.comptime_bindings.iterator();
+        while (cb_it.next()) |entry| {
+            self.destroyStoredComptimeBinding(entry.value_ptr);
+        }
+        self.comptime_bindings.deinit(self.gpa);
         self.method_bindings.deinit(self.gpa);
         self.mlir_splice_info.deinit(self.gpa);
         self.exports.deinit(self.gpa);
@@ -241,18 +250,40 @@ pub const TypeInfo = struct {
         gop.value_ptr.* = value;
     }
 
-    fn destroyComptimeValue(self: *TypeInfo, value_ptr: *comp.ComptimeValue) void {
-        switch (value_ptr.*) {
-            .String => |s| {
-                const mut: []u8 = @constCast(s);
-                self.gpa.free(mut);
-            },
-            .MlirModule => |*mod| {
-                mod.destroy();
-            },
-            else => {},
+    pub fn setComptimeBinding(self: *TypeInfo, name: ast.StrId, ty: TypeId, value: comp.ComptimeValue) !void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        const gop = try self.comptime_bindings.getOrPut(self.gpa, name);
+        if (gop.found_existing) {
+            self.destroyStoredComptimeBinding(gop.value_ptr);
         }
-        value_ptr.* = .Void;
+        gop.value_ptr.* = StoredComptimeBinding{ .ty = ty, .value = value };
+    }
+
+    pub fn forEachComptimeBinding(
+        self: *TypeInfo,
+        gpa: std.mem.Allocator,
+        ctx: ?*anyopaque,
+        visitor: ComptimeBindingVisitor,
+    ) anyerror!void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        var iter = self.comptime_bindings.iterator();
+        while (iter.next()) |entry| {
+            const ty = entry.value_ptr.ty;
+            var value = try comp.cloneComptimeValue(gpa, entry.value_ptr.value);
+            defer if (value != .Void) value.destroy(gpa);
+            try visitor(ctx, entry.key_ptr.*, value, ty);
+            value = .Void;
+        }
+    }
+
+    fn destroyStoredComptimeBinding(self: *TypeInfo, binding: *StoredComptimeBinding) void {
+        binding.value.destroy(self.gpa);
+    }
+
+    fn destroyComptimeValue(self: *TypeInfo, value_ptr: *comp.ComptimeValue) void {
+        value_ptr.destroy(self.gpa);
     }
 
     pub fn setMlirSpliceInfo(self: *TypeInfo, piece_id: ast.MlirPieceId, info: MlirSpliceInfo) !void {
@@ -337,7 +368,7 @@ pub const Rows = struct {
 
     pub const Ptr = struct { elem: TypeId, is_const: bool };
     pub const Slice = struct { elem: TypeId };
-    pub const Array = struct { elem: TypeId, len: ArraySize };
+    pub const Array = struct { elem: TypeId, len: usize };
     pub const DynArray = struct { elem: TypeId };
     pub const Map = struct { key: TypeId, value: TypeId };
     pub const Optional = struct { elem: TypeId };
@@ -785,7 +816,7 @@ pub const TypeStore = struct {
         if (self.findSlice(elem)) |id| return id;
         return self.addLocked(.Slice, .{ .elem = elem });
     }
-    pub fn mkArray(self: *TypeStore, elem: TypeId, len: ArraySize) TypeId {
+    pub fn mkArray(self: *TypeStore, elem: TypeId, len: usize) TypeId {
         self.mutex.lock();
         defer self.mutex.unlock();
         if (self.findArray(elem, len)) |id| return id;
@@ -966,21 +997,11 @@ pub const TypeStore = struct {
             }
         });
     }
-    fn findArray(self: *const TypeStore, elem: TypeId, len: ArraySize) ?TypeId {
-        return self.findMatch(.Array, struct { e: TypeId, l: ArraySize }{ .e = elem, .l = len }, struct {
+    fn findArray(self: *const TypeStore, elem: TypeId, len: usize) ?TypeId {
+        return self.findMatch(.Array, struct { e: TypeId, l: usize }{ .e = elem, .l = len }, struct {
             fn eq(s: *const TypeStore, row: Rows.Array, key: anytype) bool {
                 _ = s;
-                if (row.elem.toRaw() != key.e.toRaw()) return false;
-                return switch (row.len) {
-                    .Concrete => |l1| switch (key.l) {
-                        .Concrete => |l2| l1 == l2,
-                        else => false,
-                    },
-                    .Unresolved => |e1| switch (key.l) {
-                        .Unresolved => |e2| e1.toRaw() == e2.toRaw(),
-                        else => false,
-                    },
-                };
+                return row.elem.toRaw() == key.e.toRaw() and row.len == key.l;
             }
         });
     }
@@ -1198,10 +1219,7 @@ pub const TypeStore = struct {
             },
             .Array => {
                 const r = self.get(.Array, id);
-                switch (r.len) {
-                    .Concrete => |l| try w.print("[{}]", .{l}),
-                    .Unresolved => try w.print("[]", .{}),
-                }
+                try w.print("[{}]", .{r.len});
                 try self.fmt(r.elem, w);
             },
             .DynArray => {

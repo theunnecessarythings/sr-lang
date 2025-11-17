@@ -10,6 +10,7 @@ const Loc = @import("lexer.zig").Token.Loc;
 const pattern_matching = @import("check_pattern_matching.zig");
 const Pipeline = @import("pipeline.zig").Pipeline;
 const comp = @import("comptime.zig");
+const interpreter = @import("interpreter.zig");
 const symbols = @import("symbols.zig");
 const types = @import("types.zig");
 const TypeInfo = types.TypeInfo;
@@ -111,6 +112,62 @@ fn popAllowNestedFn(_: *Checker, ctx: *CheckerContext) void {
 fn isNestedFnAllowed(_: *const Checker, ctx: *CheckerContext) bool {
     if (ctx.allow_nested_fn.items.len == 0) return false;
     return ctx.allow_nested_fn.items[ctx.allow_nested_fn.items.len - 1];
+}
+
+fn bindingVisitor(
+    ctx: ?*anyopaque,
+    name: ast.StrId,
+    value: comp.ComptimeValue,
+    ty: types.TypeId,
+) anyerror!void {
+    _ = ty;
+    const interp: *interpreter.Interpreter = @ptrCast(@alignCast(ctx.?));
+    return interp.setBinding(name, value);
+}
+
+fn installInterpreterBindings(
+    self: *Checker,
+    interp: *interpreter.Interpreter,
+    ast_unit: *ast.Ast,
+    bindings: []const Pipeline.ComptimeBinding,
+) anyerror!void {
+    for (bindings) |binding| {
+        switch (binding) {
+            .type_param => |tp| try interp.setBinding(tp.name, comp.ComptimeValue{ .Type = tp.ty }),
+            .value_param => |vp| {
+                var value = try comp.cloneComptimeValue(self.gpa, vp.value);
+                interp.setBinding(vp.name, value) catch |err| {
+                    value.destroy(self.gpa);
+                    return err;
+                };
+            },
+        }
+    }
+    try ast_unit.type_info.forEachComptimeBinding(
+        self.gpa,
+        @ptrCast(interp),
+        bindingVisitor,
+    );
+}
+
+pub fn evalComptimeExpr(
+    self: *Checker,
+    ast_unit: *ast.Ast,
+    expr: ast.ExprId,
+    _: types.TypeId,
+    bindings: []const Pipeline.ComptimeBinding,
+) anyerror!comp.ComptimeValue {
+    if (ast_unit.type_info.getComptimeValue(expr)) |cached| {
+        return comp.cloneComptimeValue(self.gpa, cached.*);
+    }
+
+    var interp = try interpreter.Interpreter.init(self.gpa, ast_unit);
+    defer interp.deinit();
+    try installInterpreterBindings(self, &interp, ast_unit, bindings);
+    const computed = try interp.evalExpr(expr);
+    const stored = try comp.cloneComptimeValue(self.gpa, computed);
+    try ast_unit.type_info.setComptimeValue(expr, stored);
+    return computed;
 }
 
 pub fn init(
@@ -548,6 +605,18 @@ fn checkDecl(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, decl_id: 
         }
     }
 
+    if (!decl.pattern.isNone()) {
+        const pat_id = decl.pattern.unwrap();
+        if (ast_unit.pats.index.kinds.items[pat_id.toRaw()] == .Binding) {
+            const binding = ast_unit.pats.get(.Binding, pat_id);
+            const binding_ty = if (expect_ty) |et| et else rhs_ty;
+            const stored = self.evalComptimeExpr(ast_unit, decl.value, rhs_ty, &[_]Pipeline.ComptimeBinding{}) catch null;
+            if (stored) |value| {
+                try ast_unit.type_info.setComptimeBinding(binding.name, binding_ty, value);
+            }
+        }
+    }
+
     // Method registration happens in runAst pre-pass; avoid re-registering here.
 
     // Record exports for top-level bindings only (not inside functions).
@@ -819,16 +888,7 @@ pub fn assignable(self: *Checker, got: types.TypeId, expect: types.TypeId) Assig
             const expected_ty = self.context.type_store.get(.Array, expect);
             const got_ty = self.context.type_store.get(.Array, got);
             const elem_ok = self.assignable(got_ty.elem, expected_ty.elem);
-            const len_match = blk: {
-                switch (expected_ty.len) {
-                    .Concrete => |l1| switch (got_ty.len) {
-                        .Concrete => |l2| break :blk l1 == l2,
-                        .Unresolved => break :blk true, // compatible for now
-                    },
-                    .Unresolved => break :blk true, // compatible for now
-                }
-            };
-            if (!len_match) return .array_length_mismatch;
+            if (got_ty.len != expected_ty.len) return .array_length_mismatch;
             return elem_ok;
         },
         .DynArray => {
@@ -868,11 +928,7 @@ pub fn assignable(self: *Checker, got: types.TypeId, expect: types.TypeId) Assig
             // Allow "empty array" sugar to coerce to any map type.
             if (got_kind == .Array) {
                 const got_ty = self.context.type_store.get(.Array, got);
-                const is_zero = switch (got_ty.len) {
-                    .Concrete => |l| l == 0,
-                    .Unresolved => false,
-                };
-                if (!is_zero) return .expected_map_type;
+                if (got_ty.len != 0) return .expected_map_type;
                 return .success;
             }
             if (got_kind != .Map) return .expected_map_type;
@@ -894,11 +950,7 @@ pub fn assignable(self: *Checker, got: types.TypeId, expect: types.TypeId) Assig
                 },
                 .Array => {
                     const got_ty = self.context.type_store.get(.Array, got);
-                    const len_ok = switch (got_ty.len) {
-                        .Concrete => |l| l == expected_ty.lanes,
-                        .Unresolved => false,
-                    };
-                    if (!len_ok) return .array_length_mismatch;
+                    if (got_ty.len != expected_ty.lanes) return .array_length_mismatch;
                     return self.assignable(got_ty.elem, expected_ty.elem);
                 },
                 else => return .failure,
@@ -926,10 +978,7 @@ pub fn assignable(self: *Checker, got: types.TypeId, expect: types.TypeId) Assig
                     while (current_kind == .Array) : (rank += 1) {
                         if (rank >= types.max_tensor_rank) return .tensor_rank_mismatch;
                         const arr = self.context.type_store.get(.Array, current_ty);
-                        dims_buf[rank] = switch (arr.len) {
-                            .Concrete => |l| l,
-                            .Unresolved => return .failure,
-                        };
+                        dims_buf[rank] = arr.len;
                         elem_ty = arr.elem;
                         current_ty = arr.elem;
                         current_kind = self.typeKind(current_ty);
@@ -1073,11 +1122,7 @@ fn typeInferFromRHS(self: *Checker, ast_unit: *ast.Ast, decl_id: ast.DeclId, rhs
     switch (rhs_kind) {
         .Array => {
             const arr = self.context.type_store.get(.Array, rhs_ty);
-            const is_zero = switch (arr.len) {
-                .Concrete => |l| l == 0,
-                .Unresolved => false,
-            };
-            if (is_zero)
+            if (arr.len == 0)
                 try self.context.diags.addError(
                     exprLoc(ast_unit, ast_unit.exprs.Decl.get(decl_id)),
                     .cannot_infer_type_from_empty_array,
@@ -2490,7 +2535,7 @@ fn checkArrayLit(
 
     // infer from first element, homogeneous requirement
     if (elems.len == 0) {
-        return self.context.type_store.mkArray(self.context.type_store.tAny(), .{ .Concrete = 0 });
+        return self.context.type_store.mkArray(self.context.type_store.tAny(), 0);
     }
     const first_ty = try self.checkExpr(ctx, ast_unit, elems[0]);
     if (self.typeKind(first_ty) == .TypeError) return self.context.type_store.tTypeError();
@@ -2502,7 +2547,7 @@ fn checkArrayLit(
             return self.context.type_store.tTypeError();
         }
     }
-    return self.context.type_store.mkArray(first_ty, .{ .Concrete = elems.len });
+    return self.context.type_store.mkArray(first_ty, elems.len);
 }
 
 fn checkMapLit(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, id: ast.ExprId) !types.TypeId {

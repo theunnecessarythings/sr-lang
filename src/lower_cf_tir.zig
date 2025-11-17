@@ -384,11 +384,7 @@ pub fn matchPattern(
             const scrut_ty_kind = self.context.type_store.getKind(scrut_ty);
             if (scrut_ty_kind == .Array) {
                 const arr_ty = self.context.type_store.get(.Array, scrut_ty);
-                const len = switch (arr_ty.len) {
-                    .Concrete => |l| l,
-                    .Unresolved => |expr_id| try self.resolveArrayLen(ctx, a, expr_id, loc),
-                };
-                len_val = blk.builder.tirValue(.ConstInt, blk, self.context.type_store.tUsize(), loc, .{ .value = len });
+                len_val = blk.builder.tirValue(.ConstInt, blk, self.context.type_store.tUsize(), loc, .{ .value = arr_ty.len });
             } else {
                 len_val = blk.builder.extractFieldNamed(blk, self.context.type_store.tUsize(), scrut, f.builder.intern("len"), loc);
             }
@@ -1047,8 +1043,6 @@ pub fn lowerWhile(
 
 fn getIterableLen(
     self: *LowerTir,
-    ctx: *LowerTir.LowerContext,
-    a: *ast.Ast,
     blk: *tir.Builder.BlockFrame,
     iterable_val: tir.ValueId,
     iter_ty: types.TypeId,
@@ -1059,11 +1053,7 @@ fn getIterableLen(
     return switch (iter_ty_kind) {
         .Array => blk: {
             const at = self.context.type_store.get(.Array, iter_ty);
-            const len = switch (at.len) {
-                .Concrete => |l| l,
-                .Unresolved => |expr_id| try self.resolveArrayLen(ctx, a, expr_id, loc),
-            };
-            break :blk blk.builder.tirValue(.ConstInt, blk, idx_ty, loc, .{ .value = @as(u64, @intCast(len)) });
+            break :blk blk.builder.tirValue(.ConstInt, blk, idx_ty, loc, .{ .value = @as(u64, @intCast(at.len)) });
         },
         .Slice, .DynArray => blk: {
             const v = blk.builder.extractField(blk, idx_ty, iterable_val, 1, loc);
@@ -1161,7 +1151,7 @@ pub fn lowerFor(
             const arr_v = try self.lowerExpr(ctx, a, env, f, blk, row.iterable, null, .rvalue);
             const idx_ty = self.context.type_store.tUsize();
             const iter_ty = self.getExprType(ctx, a, row.iterable);
-            const len_v = try getIterableLen(self, ctx, a, blk, arr_v, iter_ty, idx_ty, iterable_loc);
+            const len_v = try getIterableLen(self, blk, arr_v, iter_ty, idx_ty, iterable_loc);
 
             const zero = blk.builder.tirValue(.ConstInt, blk, idx_ty, loc, .{ .value = 0 });
             const idx_param = try f.builder.addBlockParam(&header, null, idx_ty);
@@ -1282,7 +1272,7 @@ pub fn lowerFor(
             const arr_v = try self.lowerExpr(ctx, a, env, f, blk, row.iterable, null, .rvalue);
             const idx_ty = self.context.type_store.tUsize();
             const iter_ty = self.getExprType(ctx, a, row.iterable);
-            const len_v = try getIterableLen(self, ctx, a, blk, arr_v, iter_ty, idx_ty, iterable_loc);
+            const len_v = try getIterableLen(self, blk, arr_v, iter_ty, idx_ty, iterable_loc);
 
             const zero = blk.builder.tirValue(.ConstInt, blk, idx_ty, loc, .{ .value = 0 });
             const idx_param = try f.builder.addBlockParam(&header, null, idx_ty);
@@ -1398,11 +1388,7 @@ pub fn bindPattern(
                 const vty_kind = self.context.type_store.getKind(vty);
                 if (vty_kind == .Array) {
                     const arr_ty = self.context.type_store.get(.Array, vty);
-                    const len = switch (arr_ty.len) {
-                        .Concrete => |l| l,
-                        .Unresolved => |expr_id| try self.resolveArrayLen(ctx, a, expr_id, loc),
-                    };
-                    len_val = blk.builder.tirValue(.ConstInt, blk, self.context.type_store.tUsize(), loc, .{ .value = len });
+                    len_val = blk.builder.tirValue(.ConstInt, blk, self.context.type_store.tUsize(), loc, .{ .value = arr_ty.len });
                 } else {
                     len_val = blk.builder.extractFieldNamed(blk, self.context.type_store.tUsize(), value, f.builder.intern("len"), loc);
                 }

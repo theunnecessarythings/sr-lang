@@ -483,15 +483,10 @@ pub fn checkPattern(
             if (vk == .Array) {
                 const arr = self.context.type_store.get(.Array, value_ty);
                 // Allow rest to capture an empty slice; just require explicit <= length.
-                switch (arr.len) {
-                    .Concrete => |l| {
-                        if (ap.has_rest) {
-                            if (pattern_elems.len > l) return false;
-                        } else {
-                            if (pattern_elems.len != l) return false;
-                        }
-                    },
-                    .Unresolved => {},
+                if (ap.has_rest) {
+                    if (pattern_elems.len > arr.len) return false;
+                } else {
+                    if (pattern_elems.len != arr.len) return false;
                 }
             }
 
@@ -1070,15 +1065,10 @@ pub fn checkPatternShapeForDecl(
             if (pkind == .Array) {
                 const arr = self.context.type_store.get(.Array, value_ty);
                 // Align with checkPattern: allow rest to capture empty.
-                switch (arr.len) {
-                    .Concrete => |l| {
-                        if (sl.has_rest) {
-                            if (elems.len > l) return .pattern_shape_mismatch;
-                        } else {
-                            if (elems.len != l) return .pattern_shape_mismatch;
-                        }
-                    },
-                    .Unresolved => {},
+                if (sl.has_rest) {
+                    if (elems.len > arr.len) return .pattern_shape_mismatch;
+                } else {
+                    if (elems.len != arr.len) return .pattern_shape_mismatch;
                 }
             }
 
@@ -1184,15 +1174,10 @@ pub fn checkPatternShapeForAssignExpr(
 
             if (vk == .Array) {
                 const arr = self.context.type_store.get(.Array, value_ty);
-                switch (arr.len) {
-                    .Concrete => |l| {
-                        if (has_rest) {
-                            if (elems.len - 1 > l) return .pattern_shape_mismatch;
-                        } else {
-                            if (elems.len != l) return .pattern_shape_mismatch;
-                        }
-                    },
-                    .Unresolved => {},
+                if (has_rest) {
+                    if (elems.len - 1 > arr.len) return .pattern_shape_mismatch;
+                } else {
+                    if (elems.len != arr.len) return .pattern_shape_mismatch;
                 }
             }
 
