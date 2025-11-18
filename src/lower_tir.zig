@@ -1743,12 +1743,23 @@ fn tryComptimeCall(
         if (ck == .FieldAccess) break :blk a.exprs.strs.get(a.exprs.get(.FieldAccess, row.callee).field);
         break :blk a.exprs.strs.get(f.builder.intern("<indirect>"));
     };
+    const loc = optLoc(a, id);
+    const arg_ids = a.exprs.expr_pool.slice(row.args);
+
+    if (std.mem.eql(u8, callee_name, "sizeof")) {
+        if (arg_ids.len == 1) {
+            const target_ty = self.getExprType(ctx, a, arg_ids[0]);
+            const sz: u64 = @intCast(check_types.typeSize(self.context, target_ty));
+            const want = self.getExprType(ctx, a, id);
+            return blk.builder.tirValue(.ConstInt, blk, want, loc, .{ .value = sz });
+        }
+        return null;
+    }
+
     if (!(std.mem.eql(u8, callee_name, "get_type_by_name") or
         std.mem.eql(u8, callee_name, "comptime_print") or
         std.mem.eql(u8, callee_name, "type_of")))
         return null;
-    const loc = optLoc(a, id);
-    const arg_ids = a.exprs.expr_pool.slice(row.args);
     const api_ptr_bnd = env.lookup(f.builder.intern("comptime_api_ptr")) orelse unreachable;
     const api_ptr = api_ptr_bnd.value;
 
@@ -1793,6 +1804,314 @@ fn tryComptimeCall(
     return blk.builder.indirectCall(blk, ret_ty, fn_ptr, all_args.items, loc);
 }
 
+fn trySpecializeFunctionCall(
+    self: *LowerTir,
+    ctx: *LowerContext,
+    a: *ast.Ast,
+    callee: *CalleeInfo,
+    callee_expr: ast.ExprId,
+    callee_name_ptr: *[]const u8,
+    method_decl_id: ?ast.DeclId,
+    method_binding: ?types.MethodBinding,
+    arg_ids_ptr: *[]const ast.ExprId,
+    param_tys_ptr: *[]const types.TypeId,
+    fixed_ptr: *usize,
+    is_variadic_ptr: *bool,
+    treat_trailing_any_ptr: *bool,
+    trailing_any_tuple_ty_ptr: *?types.TypeId,
+) !void {
+    if (callee.fty == null) return;
+    const callee_fty = callee.fty.?;
+    if (self.context.type_store.index.kinds.items[callee_fty.toRaw()] != .Function) return;
+
+    var param_tys = param_tys_ptr.*;
+    var fixed = fixed_ptr.*;
+    var is_variadic = is_variadic_ptr.*;
+    var treat_trailing_any = treat_trailing_any_ptr.*;
+    var trailing_any_tuple_ty = trailing_any_tuple_ty_ptr.*;
+    var arg_ids = arg_ids_ptr.*;
+    var callee_name = callee_name_ptr.*;
+    defer {
+        param_tys_ptr.* = param_tys;
+        fixed_ptr.* = fixed;
+        is_variadic_ptr.* = is_variadic;
+        treat_trailing_any_ptr.* = treat_trailing_any;
+        trailing_any_tuple_ty_ptr.* = trailing_any_tuple_ty;
+        arg_ids_ptr.* = arg_ids;
+        callee_name_ptr.* = callee_name;
+    }
+
+    const fty = self.context.type_store.get(.Function, callee_fty);
+    param_tys = self.context.type_store.type_pool.slice(fty.params);
+    is_variadic = fty.is_variadic;
+    fixed = param_tys.len;
+    if (is_variadic and fixed > 0) fixed -= 1; // last param is the vararg pack type
+    if (!fty.is_extern and param_tys.len > 0 and self.isType(param_tys[param_tys.len - 1], .Any)) {
+        treat_trailing_any = true;
+    }
+    const decl_ctx_opt: ?FunctionDeclContext = if (method_decl_id) |mid|
+        .{ .ast = a, .decl_id = mid }
+    else
+        self.findFunctionDeclForCall(a, callee_expr, callee.name);
+    const decl_ctx = decl_ctx_opt orelse return;
+    const decl_ast = decl_ctx.ast;
+    const decl = decl_ast.exprs.Decl.get(decl_ctx.decl_id);
+
+    const base_kind = decl_ast.exprs.index.kinds.items[decl.value.toRaw()];
+    if (callee.qualified_name == null) {
+        if (try symbolNameForDecl(self, decl_ast, decl_ctx.decl_id)) |sym| {
+            callee.qualified_name = sym;
+        }
+    }
+    if (base_kind != .FunctionLit) return;
+    const params = decl_ast.exprs.param_pool.slice(decl_ast.exprs.get(.FunctionLit, decl.value).params);
+    var skip_params: usize = 0;
+    while (skip_params < params.len and decl_ast.exprs.Param.get(params[skip_params]).is_comptime) : (skip_params += 1) {}
+
+    var binding_infos: List(comp.BindingInfo) = .empty;
+    var interpreter_bindings: List(interpreter.Binding) = .empty;
+    defer {
+        for (binding_infos.items) |*info| info.deinit(self.gpa);
+        binding_infos.deinit(self.gpa);
+        for (interpreter_bindings.items) |*binding| binding.value.destroy(self.gpa);
+        interpreter_bindings.deinit(self.gpa);
+    }
+
+    if (method_binding) |mb| {
+        const owner_sid = a.exprs.strs.intern("__owner");
+        try binding_infos.append(self.gpa, comp.BindingInfo.runtimeParam(owner_sid, mb.owner_type));
+        try interpreter_bindings.append(self.gpa, .{ .name = owner_sid, .value = comp.ComptimeValue{ .Type = mb.owner_type } });
+    }
+
+    var ok = true;
+    if (arg_ids.len >= skip_params) {
+        var idx: usize = 0;
+        while (idx < skip_params) : (idx += 1) {
+            const param = decl_ast.exprs.Param.get(params[idx]);
+            if (param.pat.isNone()) {
+                ok = false;
+                break;
+            }
+
+            const pname = bindingNameOfPattern(decl_ast, param.pat.unwrap()) orelse {
+                ok = false;
+                break;
+            };
+
+            var param_ty = if (idx < param_tys.len)
+                param_tys[idx]
+            else
+                self.context.type_store.tAny();
+
+            if (!param.ty.isNone()) {
+                const ty_expr_id = param.ty.unwrap();
+                if (decl_ast.exprs.index.kinds.items[ty_expr_id.toRaw()] == .Ident) {
+                    const ident_name = decl_ast.exprs.get(.Ident, ty_expr_id).name;
+                    for (binding_infos.items) |info| {
+                        if (info.name.eq(ident_name) and info.kind == .type_param) {
+                            param_ty = info.kind.type_param;
+                            break;
+                        }
+                    }
+                }
+            }
+            const arg_expr = arg_ids[idx];
+            const param_kind = self.context.type_store.getKind(param_ty);
+
+            if (param_kind == .TypeType) {
+                const targ = self.resolveTypeArg(ctx, a, arg_expr) orelse {
+                    ok = false;
+                    break;
+                };
+                try binding_infos.append(self.gpa, comp.BindingInfo.typeParam(pname, targ));
+                try interpreter_bindings.append(self.gpa, .{ .name = pname, .value = comp.ComptimeValue{ .Type = targ } });
+            } else {
+                const comptime_val_opt = if (a.exprs.index.kinds.items[arg_expr.toRaw()] == .Literal)
+                    try self.constValueFromLiteral(a, arg_expr)
+                else
+                    null;
+
+                const comptime_val = comptime_val_opt orelse blk: {
+                    if (try self.getCachedComptimeValue(a, arg_expr)) |cached| break :blk cached;
+                    ok = false;
+                    break :blk comp.ComptimeValue{ .Void = {} };
+                };
+
+                var info = comp.BindingInfo.valueParam(self.gpa, pname, param_ty, comptime_val) catch {
+                    ok = false;
+                    break;
+                };
+                binding_infos.append(self.gpa, info) catch |err| {
+                    info.deinit(self.gpa);
+                    return err;
+                };
+                try interpreter_bindings.append(self.gpa, .{ .name = pname, .value = comptime_val });
+            }
+        }
+    }
+
+    var specialized_result_override: ?types.TypeId = null;
+
+    if (ok) {
+        const original_args = arg_ids;
+        const trailing_start = if (treat_trailing_any and params.len > 0) params.len - 1 else params.len;
+        var runtime_idx: usize = skip_params;
+        while (runtime_idx < params.len and runtime_idx < original_args.len) : (runtime_idx += 1) {
+            if (treat_trailing_any and runtime_idx >= trailing_start) break;
+
+            const param = decl_ast.exprs.Param.get(params[runtime_idx]);
+            if (param.pat.isNone()) continue;
+            const pname = bindingNameOfPattern(decl_ast, param.pat.unwrap()) orelse continue;
+
+            const param_ty_idx = runtime_idx - skip_params;
+            const param_ty = if (param_ty_idx < param_tys.len)
+                param_tys[param_ty_idx]
+            else
+                self.context.type_store.tAny();
+            if (!self.isType(param_ty, .Any)) continue;
+
+            const arg_ty = self.getExprType(ctx, a, original_args[runtime_idx]);
+            if (self.isType(arg_ty, .Any)) continue;
+
+            try binding_infos.append(self.gpa, comp.BindingInfo.runtimeParam(pname, arg_ty));
+        }
+
+        if (treat_trailing_any and params.len > 0) {
+            const tuple_start = params.len - 1;
+            const tuple_ty = try self.computeTrailingAnyTupleType(ctx, a, original_args, tuple_start);
+            trailing_any_tuple_ty = tuple_ty;
+            const last_param = decl_ast.exprs.Param.get(params[params.len - 1]);
+            if (!last_param.pat.isNone()) {
+                if (bindingNameOfPattern(decl_ast, last_param.pat.unwrap())) |pname| {
+                    try binding_infos.append(self.gpa, comp.BindingInfo.runtimeParam(pname, tuple_ty));
+                }
+            }
+        }
+    }
+
+    if (ok and binding_infos.items.len > 0) {
+        var runtime_specs: List(checker.Checker.ParamSpecialization) = .empty;
+        defer runtime_specs.deinit(self.gpa);
+
+        for (binding_infos.items) |info| {
+            switch (info.kind) {
+                .runtime_param => |ty| try runtime_specs.append(self.gpa, .{ .name = info.name, .ty = ty }),
+                else => {},
+            }
+        }
+
+        if (runtime_specs.items.len > 0) {
+            const context = self.chk.checker_ctx.items[decl_ast.file_id];
+            const specialized_fn_ty = try self.chk.checkSpecializedFunction(context, decl_ast, decl.value, runtime_specs.items);
+            if (self.chk.typeKind(specialized_fn_ty) != .TypeError) {
+                const fn_info_override = self.context.type_store.get(.Function, specialized_fn_ty);
+                specialized_result_override = fn_info_override.result;
+            } else {
+                ok = false;
+            }
+        }
+    }
+
+    if (!ok or binding_infos.items.len <= 0) return;
+
+    const mangled = try comp.mangleMonomorphName(self, callee.name, binding_infos.items);
+    const qualified_mangled = try self.qualifySymbolName(decl_ast, mangled);
+
+    const base_params = self.context.type_store.type_pool.slice(fty.params);
+    std.debug.assert(skip_params <= base_params.len);
+
+    const runtime_count = base_params.len - skip_params;
+    var runtime_params = try self.gpa.alloc(types.TypeId, runtime_count);
+    defer self.gpa.free(runtime_params);
+
+    var idx: usize = 0;
+    var i: usize = skip_params;
+    while (i < base_params.len) : (i += 1) {
+        const base_ty = base_params[i];
+        const param = decl_ast.exprs.Param.get(params[i]);
+        var specialized_ty = base_ty;
+        if (!param.ty.isNone()) {
+            if (resolveSpecializedType(self.context.type_store, binding_infos.items, decl_ast, param.ty.unwrap())) |resolved| {
+                specialized_ty = resolved;
+            }
+        }
+        if (!param.pat.isNone()) {
+            if (bindingNameOfPattern(decl_ast, param.pat.unwrap())) |pname| {
+                if (lookupRuntimeOverride(binding_infos.items, pname)) |override_ty| {
+                    specialized_ty = override_ty;
+                }
+            }
+        }
+        const param_kind = self.context.type_store.getKind(specialized_ty);
+        runtime_params[idx] = if (param_kind == .TypeType)
+            self.context.type_store.get(.TypeType, specialized_ty).of
+        else
+            specialized_ty;
+        idx += 1;
+    }
+
+    var result_ty = if (specialized_result_override) |override|
+        override
+    else blk: {
+        if (!decl_ast.exprs.get(.FunctionLit, decl.value).result_ty.isNone()) {
+            if (resolveSpecializedType(
+                self.context.type_store,
+                binding_infos.items,
+                decl_ast,
+                decl_ast.exprs.get(.FunctionLit, decl.value).result_ty.unwrap(),
+            )) |resolved| {
+                break :blk resolved;
+            }
+        }
+        break :blk fty.result;
+    };
+
+    if (specialized_result_override == null and self.context.type_store.getKind(result_ty) == .Any) {
+        if (runtimeResultType(binding_infos.items)) |override| {
+            result_ty = override;
+        }
+    }
+
+    if (self.context.type_store.getKind(result_ty) == .TypeType) {
+        result_ty = self.context.type_store.get(.TypeType, result_ty).of;
+    }
+
+    const specialized_ty = self.context.type_store.mkFunction(
+        runtime_params,
+        result_ty,
+        fty.is_variadic,
+        fty.is_pure,
+        fty.is_extern,
+    );
+
+    var req = comp.SpecializationRequest{
+        .decl_id = decl_ctx.decl_id,
+        .mangled_name = qualified_mangled,
+        .specialized_ty = specialized_ty,
+        .skip_params = skip_params,
+        .bindings = binding_infos.items,
+    };
+
+    const target_interp = try ctx.getInterpreterFor(decl_ast);
+    const specialized = try target_interp.specializeFunction(decl_ctx.decl_id, &interpreter_bindings);
+    try ctx.pushSnapshot(specialized.snapshot, target_interp);
+    defer ctx.popSnapshot();
+    const builder = ctx.builder orelse unreachable;
+    try comp.lowerSpecializedFunction(self, ctx, decl_ast, builder, &req);
+
+    callee.name = mangled;
+    callee.qualified_name = qualified_mangled;
+    callee.fty = specialized_ty;
+    callee_name = self.context.type_store.strs.get(callee.name);
+    arg_ids = arg_ids[skip_params..];
+
+    const spec_info = self.context.type_store.get(.Function, specialized_ty);
+    param_tys = self.context.type_store.type_pool.slice(spec_info.params);
+    is_variadic = spec_info.is_variadic;
+    fixed = param_tys.len;
+    if (is_variadic and fixed > 0) fixed -= 1;
+}
+
 fn lowerCall(
     self: *LowerTir,
     ctx: *LowerContext,
@@ -1808,21 +2127,6 @@ fn lowerCall(
 
     const row = a.exprs.get(.Call, id);
     const loc = optLoc(a, id);
-
-    // Builtin: sizeof(T) -> constant u64 at TIR time
-    if (a.exprs.index.kinds.items[row.callee.toRaw()] == .Ident) {
-        const nm = a.exprs.get(.Ident, row.callee).name;
-        if (std.mem.eql(u8, a.exprs.strs.get(nm), "sizeof")) {
-            const args = a.exprs.expr_pool.slice(row.args);
-            if (args.len == 1) {
-                const target_ty = self.getExprType(ctx, a, args[0]);
-                const sz: u64 = @intCast(check_types.typeSize(self.context, target_ty));
-                const want = self.getExprType(ctx, a, id);
-                return blk.builder.tirValue(.ConstInt, blk, want, loc, .{ .value = sz });
-            }
-            // Fall through if unknown; general call path may still error nicely
-        }
-    }
 
     // Variant construction: if expected is a Variant/Error and callee is a path to a case, build VariantMake
     if (expected) |ety| {
@@ -1877,288 +2181,21 @@ fn lowerCall(
     var is_variadic = false;
     var treat_trailing_any = false;
     var trailing_any_tuple_ty: ?types.TypeId = null;
-    if (callee.fty) |fty| {
-        if (self.context.type_store.index.kinds.items[fty.toRaw()] == .Function) {
-            const fr2 = self.context.type_store.get(.Function, fty);
-            param_tys = self.context.type_store.type_pool.slice(fr2.params);
-            is_variadic = fr2.is_variadic;
-            fixed = param_tys.len;
-            if (is_variadic and fixed > 0) fixed -= 1; // last param is the vararg pack type
-            if (!fr2.is_extern and param_tys.len > 0 and self.isType(param_tys[param_tys.len - 1], .Any)) {
-                treat_trailing_any = true;
-            }
-        }
-    }
-    if (callee.fty) |fty| {
-        if (self.context.type_store.index.kinds.items[fty.toRaw()] == .Function) {
-            var decl_ctx_opt: ?FunctionDeclContext = null;
-            if (method_decl_id) |mid| {
-                decl_ctx_opt = .{ .ast = a, .decl_id = mid };
-            } else {
-                decl_ctx_opt = self.findFunctionDeclForCall(a, row, callee_expr, callee.name);
-            }
-            if (decl_ctx_opt) |decl_ctx| {
-                const decl_ast = decl_ctx.ast;
-                const decl = decl_ast.exprs.Decl.get(decl_ctx.decl_id);
-                const base_kind = decl_ast.exprs.index.kinds.items[decl.value.toRaw()];
-                if (callee.qualified_name == null) {
-                    if (try symbolNameForDecl(self, decl_ast, decl_ctx.decl_id)) |sym| {
-                        callee.qualified_name = sym;
-                    }
-                }
-                if (base_kind == .FunctionLit) {
-                    const params = decl_ast.exprs.param_pool.slice(decl_ast.exprs.get(.FunctionLit, decl.value).params);
-                    var skip_params: usize = 0;
-                    while (skip_params < params.len and decl_ast.exprs.Param.get(params[skip_params]).is_comptime) : (skip_params += 1) {}
-
-                    var binding_infos: List(comp.BindingInfo) = .empty;
-                    var interpreter_bindings: List(interpreter.Binding) = .empty;
-                    defer {
-                        for (binding_infos.items) |*info| info.deinit(self.gpa);
-                        binding_infos.deinit(self.gpa);
-                        for (interpreter_bindings.items) |*binding| binding.value.destroy(self.gpa);
-                        interpreter_bindings.deinit(self.gpa);
-                    }
-
-                    if (method_binding) |mb| {
-                        const owner_sid = a.exprs.strs.intern("__owner");
-                        try binding_infos.append(self.gpa, comp.BindingInfo.runtimeParam(owner_sid, mb.owner_type));
-                        try interpreter_bindings.append(self.gpa, .{ .name = owner_sid, .value = comp.ComptimeValue{ .Type = mb.owner_type } });
-                    }
-
-                    var ok = true;
-                    if (arg_ids.len >= skip_params) {
-                        var idx: usize = 0;
-                        while (idx < skip_params) : (idx += 1) {
-                            const param = decl_ast.exprs.Param.get(params[idx]);
-                            if (param.pat.isNone()) {
-                                ok = false;
-                                break;
-                            }
-
-                            const pname = bindingNameOfPattern(decl_ast, param.pat.unwrap()) orelse {
-                                ok = false;
-                                break;
-                            };
-
-                            var param_ty = if (idx < param_tys.len)
-                                param_tys[idx]
-                            else
-                                self.context.type_store.tAny();
-
-                            if (!param.ty.isNone()) {
-                                const ty_expr_id = param.ty.unwrap();
-                                if (decl_ast.exprs.index.kinds.items[ty_expr_id.toRaw()] == .Ident) {
-                                    const ident_name = decl_ast.exprs.get(.Ident, ty_expr_id).name;
-                                    for (binding_infos.items) |info| {
-                                        if (info.name.eq(ident_name) and info.kind == .type_param) {
-                                            param_ty = info.kind.type_param;
-                                            break;
-                                        }
-                                    }
-                                }
-                            }
-                            const arg_expr = arg_ids[idx];
-                            const param_kind = self.context.type_store.getKind(param_ty);
-
-                            if (param_kind == .TypeType) {
-                                const targ = self.resolveTypeArg(ctx, a, arg_expr) orelse {
-                                    ok = false;
-                                    break;
-                                };
-                                try binding_infos.append(self.gpa, comp.BindingInfo.typeParam(pname, targ));
-                                try interpreter_bindings.append(self.gpa, .{ .name = pname, .value = comp.ComptimeValue{ .Type = targ } });
-                            } else {
-                                const comptime_val_opt = if (a.exprs.index.kinds.items[arg_expr.toRaw()] == .Literal)
-                                    try self.constValueFromLiteral(a, arg_expr)
-                                else
-                                    null;
-
-                                const comptime_val = comptime_val_opt orelse blk: {
-                                    if (try self.getCachedComptimeValue(a, arg_expr)) |cached| break :blk cached;
-                                    ok = false;
-                                    break :blk comp.ComptimeValue{ .Void = {} };
-                                };
-
-                                var info = comp.BindingInfo.valueParam(self.gpa, pname, param_ty, comptime_val) catch {
-                                    ok = false;
-                                    break;
-                                };
-                                binding_infos.append(self.gpa, info) catch |err| {
-                                    info.deinit(self.gpa);
-                                    return err;
-                                };
-                                try interpreter_bindings.append(self.gpa, .{ .name = pname, .value = comptime_val });
-                            }
-                        }
-                    }
-
-                    var specialized_result_override: ?types.TypeId = null;
-
-                    if (ok) {
-                        const original_args = arg_ids;
-                        const trailing_start = if (treat_trailing_any and params.len > 0) params.len - 1 else params.len;
-                        var runtime_idx: usize = skip_params;
-                        while (runtime_idx < params.len and runtime_idx < original_args.len) : (runtime_idx += 1) {
-                            if (treat_trailing_any and runtime_idx >= trailing_start) break;
-
-                            const param = decl_ast.exprs.Param.get(params[runtime_idx]);
-                            if (param.pat.isNone()) continue;
-                            const pname = bindingNameOfPattern(decl_ast, param.pat.unwrap()) orelse continue;
-
-                            const param_ty_idx = runtime_idx - skip_params;
-                            const param_ty = if (param_ty_idx < param_tys.len)
-                                param_tys[param_ty_idx]
-                            else
-                                self.context.type_store.tAny();
-                            if (!self.isType(param_ty, .Any)) continue;
-
-                            const arg_ty = self.getExprType(ctx, a, original_args[runtime_idx]);
-                            if (self.isType(arg_ty, .Any)) continue;
-
-                            try binding_infos.append(self.gpa, comp.BindingInfo.runtimeParam(pname, arg_ty));
-                        }
-
-                        if (treat_trailing_any and params.len > 0) {
-                            const tuple_start = params.len - 1;
-                            const tuple_ty = try self.computeTrailingAnyTupleType(ctx, a, original_args, tuple_start);
-                            trailing_any_tuple_ty = tuple_ty;
-                            const last_param = decl_ast.exprs.Param.get(params[params.len - 1]);
-                            if (!last_param.pat.isNone()) {
-                                if (bindingNameOfPattern(decl_ast, last_param.pat.unwrap())) |pname| {
-                                    try binding_infos.append(self.gpa, comp.BindingInfo.runtimeParam(pname, tuple_ty));
-                                }
-                            }
-                        }
-                    }
-
-                    if (ok and binding_infos.items.len > 0) {
-                        var runtime_specs: List(checker.Checker.ParamSpecialization) = .empty;
-                        defer runtime_specs.deinit(self.gpa);
-
-                        for (binding_infos.items) |info| {
-                            switch (info.kind) {
-                                .runtime_param => |ty| try runtime_specs.append(self.gpa, .{ .name = info.name, .ty = ty }),
-                                else => {},
-                            }
-                        }
-
-                        if (runtime_specs.items.len > 0) {
-                            const context = self.chk.checker_ctx.items[decl_ast.file_id];
-                            const specialized_fn_ty = try self.chk.checkSpecializedFunction(context, decl_ast, decl.value, runtime_specs.items);
-                            if (self.chk.typeKind(specialized_fn_ty) != .TypeError) {
-                                const fn_info_override = self.context.type_store.get(.Function, specialized_fn_ty);
-                                specialized_result_override = fn_info_override.result;
-                            } else {
-                                ok = false;
-                            }
-                        }
-                    }
-
-                    if (ok and binding_infos.items.len > 0) {
-                        const mangled = try comp.mangleMonomorphName(self, callee.name, binding_infos.items);
-                        const qualified_mangled = try self.qualifySymbolName(decl_ast, mangled);
-
-                        const fn_kind = self.context.type_store.get(.Function, fty);
-                        const base_params = self.context.type_store.type_pool.slice(fn_kind.params);
-                        std.debug.assert(skip_params <= base_params.len);
-
-                        const runtime_count = base_params.len - skip_params;
-                        var runtime_params = try self.gpa.alloc(types.TypeId, runtime_count);
-                        defer self.gpa.free(runtime_params);
-
-                        var idx: usize = 0;
-                        var i: usize = skip_params;
-                        while (i < base_params.len) : (i += 1) {
-                            const base_ty = base_params[i];
-                            const param = decl_ast.exprs.Param.get(params[i]);
-                            var specialized_ty = base_ty;
-                            if (!param.ty.isNone()) {
-                                if (resolveSpecializedType(self.context.type_store, binding_infos.items, decl_ast, param.ty.unwrap())) |resolved| {
-                                    specialized_ty = resolved;
-                                }
-                            }
-                            if (!param.pat.isNone()) {
-                                if (bindingNameOfPattern(decl_ast, param.pat.unwrap())) |pname| {
-                                    if (lookupRuntimeOverride(binding_infos.items, pname)) |override_ty| {
-                                        specialized_ty = override_ty;
-                                    }
-                                }
-                            }
-                            const param_kind = self.context.type_store.getKind(specialized_ty);
-                            runtime_params[idx] = if (param_kind == .TypeType)
-                                self.context.type_store.get(.TypeType, specialized_ty).of
-                            else
-                                specialized_ty;
-                            idx += 1;
-                        }
-
-                        var result_ty = if (specialized_result_override) |override|
-                            override
-                        else blk: {
-                            if (!decl_ast.exprs.get(.FunctionLit, decl.value).result_ty.isNone()) {
-                                if (resolveSpecializedType(
-                                    self.context.type_store,
-                                    binding_infos.items,
-                                    decl_ast,
-                                    decl_ast.exprs.get(.FunctionLit, decl.value).result_ty.unwrap(),
-                                )) |resolved| {
-                                    break :blk resolved;
-                                }
-                            }
-                            break :blk fn_kind.result;
-                        };
-
-                        if (specialized_result_override == null and self.context.type_store.getKind(result_ty) == .Any) {
-                            if (runtimeResultType(binding_infos.items)) |override| {
-                                result_ty = override;
-                            }
-                        }
-
-                        if (self.context.type_store.getKind(result_ty) == .TypeType) {
-                            result_ty = self.context.type_store.get(.TypeType, result_ty).of;
-                        }
-
-                        const specialized_ty = self.context.type_store.mkFunction(
-                            runtime_params,
-                            result_ty,
-                            fn_kind.is_variadic,
-                            fn_kind.is_pure,
-                            fn_kind.is_extern,
-                        );
-
-                        var req = comp.SpecializationRequest{
-                            .decl_id = decl_ctx.decl_id,
-                            .mangled_name = qualified_mangled,
-                            .specialized_ty = specialized_ty,
-                            .skip_params = skip_params,
-                            .bindings = binding_infos.items,
-                        };
-
-                        const target_interp = try ctx.getInterpreterFor(decl_ast);
-                        const specialized = try target_interp.specializeFunction(decl_ctx.decl_id, &interpreter_bindings);
-                        try ctx.pushSnapshot(specialized.snapshot, target_interp);
-                        defer ctx.popSnapshot();
-                        const builder = ctx.builder orelse unreachable;
-                        try comp.lowerSpecializedFunction(self, ctx, decl_ast, builder, &req);
-
-                        callee.name = mangled;
-                        callee.qualified_name = qualified_mangled;
-                        callee.fty = specialized_ty;
-                        callee_name = self.context.type_store.strs.get(callee.name);
-                        arg_ids = arg_ids[skip_params..];
-
-                        const spec_info = self.context.type_store.get(.Function, specialized_ty);
-                        param_tys = self.context.type_store.type_pool.slice(spec_info.params);
-                        is_variadic = spec_info.is_variadic;
-                        fixed = param_tys.len;
-                        if (is_variadic and fixed > 0) fixed -= 1;
-                    }
-                }
-            }
-        }
-    }
-    // }
+    try self.trySpecializeFunctionCall(
+        ctx,
+        a,
+        &callee,
+        callee_expr,
+        &callee_name,
+        method_decl_id,
+        method_binding,
+        &arg_ids,
+        &param_tys,
+        &fixed,
+        &is_variadic,
+        &treat_trailing_any,
+        &trailing_any_tuple_ty,
+    );
 
     var vals_list: List(tir.ValueId) = .empty;
     defer vals_list.deinit(self.gpa);
@@ -2198,216 +2235,50 @@ fn lowerCall(
         try vals_list.append(self.gpa, v);
     }
 
-    // Handle extra arguments for non-extern functions with 'any' as last parameter
-    if (is_non_extern_any_variadic_candidate) {
-        var extra_vals: List(tir.ValueId) = .empty;
-        defer extra_vals.deinit(self.gpa);
+    try self.lowerRemainingArgs(
+        ctx,
+        a,
+        env,
+        f,
+        blk,
+        arg_ids,
+        param_tys,
+        &vals_list,
+        fixed_params_count,
+        is_non_extern_any_variadic_candidate,
+        &trailing_any_tuple_ty,
+        method_binding,
+        loc,
+        i,
+    );
 
-        // Collect and lower all arguments from the 'any' parameter's position onwards
-        var j = fixed_params_count; // Start from the 'any' parameter's position
-        while (j < arg_ids.len) : (j += 1) {
-            try extra_vals.append(self.gpa, try self.lowerExpr(ctx, a, env, f, blk, arg_ids[j], null, .rvalue));
-        }
-
-        const packed_tuple_ty = trailing_any_tuple_ty orelse blk: {
-            const ty = try self.computeTrailingAnyTupleType(ctx, a, arg_ids, fixed_params_count);
-            trailing_any_tuple_ty = ty;
-            break :blk ty;
-        };
-
-        // Create the TIR tuple literal
-        const packed_tuple_val = blk.builder.tupleMake(blk, packed_tuple_ty, extra_vals.items, loc);
-        try vals_list.append(self.gpa, packed_tuple_val);
-    } else {
-        // For other cases, continue lowering remaining arguments normally
-        // This loop is only needed if there were arguments not covered by the fixed_params_count
-        // and not handled by the is_non_extern_any_variadic_candidate block.
-        // In the current logic, 'i' already covers fixed_params_count, so this loop is for
-        // the original variadic case or if fixed_params_count was 0.
-        while (i < arg_ids.len) : (i += 1) {
-            const want: ?types.TypeId = if (i < fixed_params_count) param_tys[i] else null;
-            const lower_mode: LowerMode = blk: {
-                if (method_binding) |mb| {
-                    if (mb.requires_implicit_receiver and mb.needs_addr_of and i == 0) {
-                        break :blk .lvalue_addr;
-                    }
-                }
-                break :blk .rvalue;
-            };
-            const v = try self.lowerExpr(ctx, a, env, f, blk, arg_ids[i], want, lower_mode);
-            try vals_list.append(self.gpa, v);
-        }
-    }
-
-    // Synthesize defaulted trailing arguments if callee declaration is known and not variadic.
-    // This block needs to be adjusted to account for the new vals_list structure.
-    // If is_non_extern_any_variadic_candidate is true, vals_list.items.len will be fixed_params_count + 1.
-    // The original logic for defaulted arguments should still apply to the fixed parameters.
-    // The 'any' parameter does not have default arguments in this context.
-    if (!is_variadic_extern and !is_non_extern_any_variadic_candidate and param_tys.len > vals_list.items.len) {
-        var decl_ctx_final: ?FunctionDeclContext = null;
-        if (method_decl_id) |mid| {
-            decl_ctx_final = .{ .ast = a, .decl_id = mid };
-        } else if (callee.fty) |_| {
-            decl_ctx_final = self.findFunctionDeclForCall(a, row, callee_expr, callee.name);
-        }
-        if (decl_ctx_final) |dctx| {
-            const decl_ast = dctx.ast;
-            const decl = decl_ast.exprs.Decl.get(dctx.decl_id);
-            if (decl_ast.exprs.index.kinds.items[decl.value.toRaw()] == .FunctionLit) {
-                const fnr = decl_ast.exprs.get(.FunctionLit, decl.value);
-                const params2 = decl_ast.exprs.param_pool.slice(fnr.params);
-                // Temporary scope where earlier params are bound by name to their already-lowered values
-                try env.pushScope(self.gpa);
-                var j: usize = 0;
-                while (j < vals_list.items.len and j < params2.len and j < param_tys.len) : (j += 1) {
-                    const p = decl_ast.exprs.Param.get(params2[j]);
-                    if (!p.pat.isNone()) {
-                        if (bindingNameOfPattern(decl_ast, p.pat.unwrap())) |pname| {
-                            try env.bind(self.gpa, decl_ast, pname, .{ .value = vals_list.items[j], .ty = param_tys[j], .is_slot = false });
-                        }
-                    }
-                }
-                while (vals_list.items.len < param_tys.len) {
-                    const idx: usize = vals_list.items.len;
-                    if (idx >= params2.len) break; // safety
-                    const p = decl_ast.exprs.Param.get(params2[idx]);
-                    if (p.value.isNone()) break; // no default available
-                    const def_expr = p.value.unwrap();
-                    const want_ty = if (idx < param_tys.len) param_tys[idx] else null;
-                    const def_v = try self.lowerExpr(ctx, decl_ast, env, f, blk, def_expr, want_ty, .rvalue);
-                    try vals_list.append(self.gpa, def_v);
-                    // Bind this param name for subsequent defaults
-                    if (!p.pat.isNone()) {
-                        if (bindingNameOfPattern(decl_ast, p.pat.unwrap())) |pname| {
-                            const bind_ty = if (want_ty) |wt| wt else self.getExprType(ctx, decl_ast, def_expr);
-                            try env.bind(self.gpa, decl_ast, pname, .{ .value = def_v, .ty = bind_ty, .is_slot = false });
-                        }
-                    }
-                }
-                _ = env.popScope();
-            }
-        }
-    }
-
-    // Final safety: if we know param types, coerce the fixed ones
-    // This loop needs to be adjusted to account for the new vals_list structure.
-    // If is_non_extern_any_variadic_candidate is true, the last element of vals_list is the tuple.
-    // Coercion should only apply to fixed parameters.
-    if (param_tys.len > 0) {
-        i = 0;
-        while (i < vals_list.items.len and i < fixed_params_count) : (i += 1) {
-            const want = param_tys[i];
-            const got = blk: {
-                if (method_binding) |mb| {
-                    if (mb.requires_implicit_receiver and mb.needs_addr_of and i == 0) {
-                        break :blk mb.self_param_type orelse want;
-                    }
-                }
-                if (i < arg_ids.len) break :blk self.getExprType(ctx, a, arg_ids[i]);
-                break :blk want; // defaulted args already lowered to wanted type
-            };
-            if (want.toRaw() != got.toRaw()) {
-                const arg_loc = optLoc(a, arg_ids[i]);
-                vals_list.items[i] = self.emitCoerce(blk, vals_list.items[i], got, want, arg_loc);
-            }
-        }
-    }
+    try self.synthesizeDefaultTrailingArgs(
+        ctx,
+        a,
+        env,
+        f,
+        blk,
+        &callee,
+        callee_expr,
+        method_decl_id,
+        param_tys,
+        &vals_list,
+        is_variadic_extern,
+        is_non_extern_any_variadic_candidate,
+    );
 
     if (is_variadic_extern and vals_list.items.len > fixed_params_count) {
-        const VarArgEntry = struct {
-            value: tir.ValueId,
-            ty: types.TypeId,
-            loc: tir.OptLocId,
-            expr: ?ast.ExprId,
-        };
-        var var_entries: List(VarArgEntry) = .empty;
-        defer var_entries.deinit(self.gpa);
-
-        const total_len = vals_list.items.len;
-        const original_vararg_count = total_len - fixed_params_count;
-        var remove_index: usize = 0;
-        while (remove_index < original_vararg_count) : (remove_index += 1) {
-            const arg_pos = fixed_params_count + remove_index;
-            const removed_val = vals_list.items[arg_pos];
-            const expr_id: ?ast.ExprId = if (arg_pos < arg_ids.len) arg_ids[arg_pos] else null;
-            const loc_entry = if (expr_id) |eid| optLoc(a, eid) else optLoc(a, id);
-            const ty_entry = if (expr_id) |eid| self.getExprType(ctx, a, eid) else self.getExprType(ctx, a, id);
-            try var_entries.append(self.gpa, .{
-                .value = removed_val,
-                .ty = ty_entry,
-                .loc = loc_entry,
-                .expr = expr_id,
-            });
-        }
-        vals_list.items.len = fixed_params_count;
-
-        var ve_idx: usize = 0;
-        while (ve_idx < var_entries.items.len) {
-            const entry = var_entries.items[ve_idx];
-            if (self.context.type_store.getKind(entry.ty) == .Tuple) {
-                const tuple_row = self.context.type_store.get(.Tuple, entry.ty);
-                const elem_types = self.context.type_store.type_pool.slice(tuple_row.elems);
-                var shift = ve_idx;
-                while (shift + 1 < var_entries.items.len) : (shift += 1) {
-                    var_entries.items[shift] = var_entries.items[shift + 1];
-                }
-                var_entries.items.len -= 1;
-                var elem_idx: usize = 0;
-                while (elem_idx < elem_types.len) : (elem_idx += 1) {
-                    const elem_ty = elem_types[elem_idx];
-                    const elem_val = blk.builder.extractField(blk, elem_ty, entry.value, @intCast(elem_idx), entry.loc);
-                    try var_entries.insert(self.gpa, ve_idx + elem_idx, .{
-                        .value = elem_val,
-                        .ty = elem_ty,
-                        .loc = entry.loc,
-                        .expr = entry.expr,
-                    });
-                }
-                continue;
-            }
-            ve_idx += 1;
-        }
-
-        ve_idx = 0;
-        while (ve_idx < var_entries.items.len) : (ve_idx += 1) {
-            var entry = &var_entries.items[ve_idx];
-            const entry_kind = self.context.type_store.getKind(entry.ty);
-            const want_promoted: ?types.TypeId = switch (entry_kind) {
-                .Bool, .I8, .U8, .I16, .U16 => self.context.type_store.tI32(),
-                .F32 => self.context.type_store.tF64(),
-                else => null,
-            };
-            if (want_promoted) |want_ty| {
-                entry.value = self.emitCoerce(blk, entry.value, entry.ty, want_ty, entry.loc);
-                entry.ty = want_ty;
-                continue;
-            }
-
-            if (entry_kind == .Any) {
-                if (entry.expr) |expr_id| {
-                    const expr_kind = a.exprs.index.kinds.items[expr_id.toRaw()];
-                    const want_any: types.TypeId = switch (expr_kind) {
-                        .Literal => blk: {
-                            const lit = a.exprs.get(.Literal, expr_id);
-                            break :blk switch (lit.kind) {
-                                .int, .char => self.context.type_store.tI64(),
-                                .float, .imaginary => self.context.type_store.tF64(),
-                                .bool => self.context.type_store.tI32(),
-                                .string => self.context.type_store.tString(),
-                            };
-                        },
-                        else => self.context.type_store.tUsize(),
-                    };
-                    entry.value = try self.lowerExpr(ctx, a, env, f, blk, expr_id, want_any, .rvalue);
-                    entry.ty = want_any;
-                }
-            }
-        }
-
-        for (var_entries.items) |entry| {
-            try vals_list.append(self.gpa, entry.value);
-        }
+        try self.handleExternVariadicArgs(
+            ctx,
+            a,
+            env,
+            f,
+            blk,
+            id,
+            arg_ids,
+            &vals_list,
+            fixed_params_count,
+        );
     }
 
     if (method_binding) |mb| {
@@ -2421,6 +2292,159 @@ fn lowerCall(
         }
     }
 
+    return self.emitCallValue(
+        ctx,
+        a,
+        env,
+        f,
+        blk,
+        id,
+        row,
+        &callee,
+        callee_expr,
+        expected,
+        mode,
+        vals_list.items,
+        loc,
+    );
+}
+
+fn lowerRemainingArgs(
+    self: *LowerTir,
+    ctx: *LowerContext,
+    a: *ast.Ast,
+    env: *cf.Env,
+    f: *Builder.FunctionFrame,
+    blk: *Builder.BlockFrame,
+    arg_ids: []const ast.ExprId,
+    param_tys: []const types.TypeId,
+    vals_list: *List(tir.ValueId),
+    fixed_params_count: usize,
+    is_non_extern_any_variadic_candidate: bool,
+    trailing_any_tuple_ty_ptr: *?types.TypeId,
+    method_binding: ?types.MethodBinding,
+    loc: tir.OptLocId,
+    start_index: usize,
+) !void {
+    if (is_non_extern_any_variadic_candidate) {
+        var extra_vals: List(tir.ValueId) = .empty;
+        defer extra_vals.deinit(self.gpa);
+
+        var j = fixed_params_count;
+        while (j < arg_ids.len) : (j += 1) {
+            try extra_vals.append(self.gpa, try self.lowerExpr(ctx, a, env, f, blk, arg_ids[j], null, .rvalue));
+        }
+
+        const packed_tuple_ty = trailing_any_tuple_ty_ptr.* orelse blk: {
+            const ty = try self.computeTrailingAnyTupleType(ctx, a, arg_ids, fixed_params_count);
+            trailing_any_tuple_ty_ptr.* = ty;
+            break :blk ty;
+        };
+
+        const packed_tuple_val = blk.builder.tupleMake(blk, packed_tuple_ty, extra_vals.items, loc);
+        try vals_list.append(self.gpa, packed_tuple_val);
+        return;
+    }
+
+    var idx = start_index;
+    while (idx < arg_ids.len) : (idx += 1) {
+        const want: ?types.TypeId = if (idx < fixed_params_count) param_tys[idx] else null;
+        const lower_mode: LowerMode = blk: {
+            if (method_binding) |mb| {
+                if (mb.requires_implicit_receiver and mb.needs_addr_of and idx == 0) {
+                    break :blk .lvalue_addr;
+                }
+            }
+            break :blk .rvalue;
+        };
+        const v = try self.lowerExpr(ctx, a, env, f, blk, arg_ids[idx], want, lower_mode);
+        try vals_list.append(self.gpa, v);
+    }
+}
+
+fn synthesizeDefaultTrailingArgs(
+    self: *LowerTir,
+    ctx: *LowerContext,
+    a: *ast.Ast,
+    env: *cf.Env,
+    f: *Builder.FunctionFrame,
+    blk: *Builder.BlockFrame,
+    callee: *CalleeInfo,
+    callee_expr: ast.ExprId,
+    method_decl_id: ?ast.DeclId,
+    param_tys: []const types.TypeId,
+    vals_list: *List(tir.ValueId),
+    is_variadic_extern: bool,
+    is_non_extern_any_variadic_candidate: bool,
+) !void {
+    if (is_variadic_extern or is_non_extern_any_variadic_candidate or param_tys.len <= vals_list.items.len) {
+        return;
+    }
+
+    const dctx = if (method_decl_id) |mid|
+        FunctionDeclContext{ .ast = a, .decl_id = mid }
+    else if (callee.fty) |_|
+        self.findFunctionDeclForCall(a, callee_expr, callee.name) orelse return
+    else
+        return;
+
+    const decl_ast = dctx.ast;
+    const decl = decl_ast.exprs.Decl.get(dctx.decl_id);
+    if (decl_ast.exprs.index.kinds.items[decl.value.toRaw()] != .FunctionLit)
+        return;
+
+    const fnr = decl_ast.exprs.get(.FunctionLit, decl.value);
+    const params2 = decl_ast.exprs.param_pool.slice(fnr.params);
+    try env.pushScope(self.gpa);
+    defer _ = env.popScope();
+
+    var j: usize = 0;
+    while (j < vals_list.items.len and j < params2.len and j < param_tys.len) : (j += 1) {
+        const p = decl_ast.exprs.Param.get(params2[j]);
+        if (!p.pat.isNone()) {
+            if (bindingNameOfPattern(decl_ast, p.pat.unwrap())) |pname| {
+                try env.bind(self.gpa, decl_ast, pname, .{
+                    .value = vals_list.items[j],
+                    .ty = param_tys[j],
+                    .is_slot = false,
+                });
+            }
+        }
+    }
+    while (vals_list.items.len < param_tys.len) {
+        const idx: usize = vals_list.items.len;
+        if (idx >= params2.len) break;
+        const p = decl_ast.exprs.Param.get(params2[idx]);
+        if (p.value.isNone()) break;
+        const def_expr = p.value.unwrap();
+        const want_ty = if (idx < param_tys.len) param_tys[idx] else null;
+        const def_v = try self.lowerExpr(ctx, decl_ast, env, f, blk, def_expr, want_ty, .rvalue);
+        try vals_list.append(self.gpa, def_v);
+        if (!p.pat.isNone()) {
+            if (bindingNameOfPattern(decl_ast, p.pat.unwrap())) |pname| {
+                const bind_ty = if (want_ty) |wt| wt else self.getExprType(ctx, decl_ast, def_expr);
+                try env.bind(self.gpa, decl_ast, pname, .{ .value = def_v, .ty = bind_ty, .is_slot = false });
+            }
+        }
+    }
+}
+
+fn emitCallValue(
+    self: *LowerTir,
+    ctx: *LowerContext,
+    a: *ast.Ast,
+    env: *cf.Env,
+    f: *Builder.FunctionFrame,
+    blk: *Builder.BlockFrame,
+    id: ast.ExprId,
+    row: ast.Rows.Call,
+    callee: *CalleeInfo,
+    callee_expr: ast.ExprId,
+    expected: ?types.TypeId,
+    mode: LowerMode,
+    vals: []tir.ValueId,
+    loc: tir.OptLocId,
+) !tir.ValueId {
     // Choose a concrete return type: callee.fty.ret -> expected -> stamped -> void
     const ret_ty = blk: {
         if (callee.fty) |fty| {
@@ -2438,8 +2462,7 @@ fn lowerCall(
         a.type_info.setExprType(id, ret_ty);
         try self.noteExprType(ctx, id, ret_ty);
     }
-    // If calling through a function pointer or a dereferenced function pointer,
-    // lower as an indirect call. Otherwise, emit a direct call.
+
     const callee_ty = self.getExprType(ctx, a, row.callee);
     var call_val: tir.ValueId = undefined;
     const callee_name_str = self.context.type_store.strs.get(callee.name);
@@ -2454,19 +2477,15 @@ fn lowerCall(
     }
 
     if (callee_kind == .Ptr and self.context.type_store.getKind(self.context.type_store.get(.Ptr, callee_ty).elem) == .Function) {
-        // Pointer to function: lower callee expression to a pointer value and build IndirectCall
         const fn_ptr_val = try self.lowerExpr(ctx, a, env, f, blk, row.callee, callee_ty, .rvalue);
-        call_val = blk.builder.indirectCall(blk, ret_ty, fn_ptr_val, vals_list.items, loc);
+        call_val = blk.builder.indirectCall(blk, ret_ty, fn_ptr_val, vals, loc);
     } else if (std.mem.eql(u8, callee_name_str, "<indirect>")) {
-        // Function value (likely from explicit deref) or unknown callee name: request lvalue address
         const want_ptr_ty = self.context.type_store.mkPtr(callee_ty, false);
         const fn_ptr_val = try self.lowerExpr(ctx, a, env, f, blk, row.callee, want_ptr_ty, .lvalue_addr);
-        call_val = blk.builder.indirectCall(blk, ret_ty, fn_ptr_val, vals_list.items, loc);
+        call_val = blk.builder.indirectCall(blk, ret_ty, fn_ptr_val, vals, loc);
     } else {
-        // For plain functions (including imported module members), do a direct call
-        // and let ensureFuncDeclFromCall/ensureDeclFromCall set up the symbol.
         const callee_sym = if (callee.qualified_name) |sym| sym else callee.name;
-        call_val = blk.builder.call(blk, ret_ty, callee_sym, vals_list.items, loc);
+        call_val = blk.builder.call(blk, ret_ty, callee_sym, vals, loc);
     }
 
     if (mode == .lvalue_addr) {
@@ -2502,6 +2521,110 @@ fn lowerCall(
     }
 
     return call_val;
+}
+
+fn handleExternVariadicArgs(
+    self: *LowerTir,
+    ctx: *LowerContext,
+    a: *ast.Ast,
+    env: *cf.Env,
+    f: *Builder.FunctionFrame,
+    blk: *Builder.BlockFrame,
+    id: ast.ExprId,
+    arg_ids: []const ast.ExprId,
+    vals_list: *List(tir.ValueId),
+    fixed_params_count: usize,
+) !void {
+    const VarArgEntry = struct {
+        value: tir.ValueId,
+        ty: types.TypeId,
+        loc: tir.OptLocId,
+        expr: ?ast.ExprId,
+    };
+    var var_entries: List(VarArgEntry) = .empty;
+    defer var_entries.deinit(self.gpa);
+
+    const total_len = vals_list.items.len;
+    const original_vararg_count = total_len - fixed_params_count;
+    var remove_index: usize = 0;
+    while (remove_index < original_vararg_count) : (remove_index += 1) {
+        const arg_pos = fixed_params_count + remove_index;
+        const removed_val = vals_list.items[arg_pos];
+        const expr_id: ?ast.ExprId = if (arg_pos < arg_ids.len) arg_ids[arg_pos] else null;
+        const loc_entry = if (expr_id) |eid| optLoc(a, eid) else optLoc(a, id);
+        const ty_entry = if (expr_id) |eid| self.getExprType(ctx, a, eid) else self.getExprType(ctx, a, id);
+        try var_entries.append(self.gpa, .{
+            .value = removed_val,
+            .ty = ty_entry,
+            .loc = loc_entry,
+            .expr = expr_id,
+        });
+    }
+    vals_list.items.len = fixed_params_count;
+
+    var ve_idx: usize = 0;
+    while (ve_idx < var_entries.items.len) {
+        const entry = var_entries.items[ve_idx];
+        if (self.context.type_store.getKind(entry.ty) == .Tuple) {
+            const tuple_row = self.context.type_store.get(.Tuple, entry.ty);
+            const elem_types = self.context.type_store.type_pool.slice(tuple_row.elems);
+            var shift = ve_idx;
+            while (shift + 1 < var_entries.items.len) : (shift += 1) {
+                var_entries.items[shift] = var_entries.items[shift + 1];
+            }
+            var_entries.items.len -= 1;
+            var elem_idx: usize = 0;
+            while (elem_idx < elem_types.len) : (elem_idx += 1) {
+                const elem_ty = elem_types[elem_idx];
+                const elem_val = blk.builder.extractField(blk, elem_ty, entry.value, @intCast(elem_idx), entry.loc);
+                try var_entries.insert(self.gpa, ve_idx + elem_idx, .{
+                    .value = elem_val,
+                    .ty = elem_ty,
+                    .loc = entry.loc,
+                    .expr = entry.expr,
+                });
+            }
+            continue;
+        }
+        ve_idx += 1;
+    }
+
+    ve_idx = 0;
+    while (ve_idx < var_entries.items.len) : (ve_idx += 1) {
+        var entry = &var_entries.items[ve_idx];
+        const entry_kind = self.context.type_store.getKind(entry.ty);
+        const want_promoted: ?types.TypeId = switch (entry_kind) {
+            .Bool, .I8, .U8, .I16, .U16 => self.context.type_store.tI32(),
+            .F32 => self.context.type_store.tF64(),
+            else => null,
+        };
+        if (want_promoted) |want_ty| {
+            entry.value = self.emitCoerce(blk, entry.value, entry.ty, want_ty, entry.loc);
+            entry.ty = want_ty;
+            continue;
+        }
+
+        if (entry_kind == .Any) {
+            if (entry.expr) |expr_id| {
+                const expr_kind = a.exprs.index.kinds.items[expr_id.toRaw()];
+                const want_any = switch (expr_kind) {
+                    .Literal => switch (a.exprs.get(.Literal, expr_id).kind) {
+                        .int, .char => self.context.type_store.tI64(),
+                        .float, .imaginary => self.context.type_store.tF64(),
+                        .bool => self.context.type_store.tI32(),
+                        .string => self.context.type_store.tString(),
+                    },
+                    else => self.context.type_store.tUsize(),
+                };
+                entry.value = try self.lowerExpr(ctx, a, env, f, blk, expr_id, want_any, .rvalue);
+                entry.ty = want_any;
+            }
+        }
+    }
+
+    for (var_entries.items) |entry| {
+        try vals_list.append(self.gpa, entry.value);
+    }
 }
 
 fn computeTrailingAnyTupleType(
@@ -4595,7 +4718,6 @@ fn patternContainsNameStr(
 fn findFunctionDeclForCall(
     self: *LowerTir,
     caller_ast: *ast.Ast,
-    _: ast.Rows.Call,
     callee_expr: ast.ExprId,
     callee_name: ast.StrId,
 ) ?FunctionDeclContext {
