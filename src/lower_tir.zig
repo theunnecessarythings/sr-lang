@@ -9,7 +9,7 @@ const mlir = @import("mlir_bindings.zig");
 const compile = @import("compile.zig");
 const codegen = @import("codegen_main.zig");
 const comp = @import("comptime.zig");
-const monomorphize = @import("monomorphize.zig");
+const interpreter = @import("interpreter.zig");
 const check_types = @import("check_types.zig");
 const pipeline_mod = @import("pipeline.zig");
 const cf = @import("lower_cf_tir.zig");
@@ -22,6 +22,12 @@ const Context = @import("compile.zig").Context;
 const Pipeline = pipeline_mod.Pipeline;
 const Builder = tir.Builder;
 const List = std.ArrayList;
+const SnapshotEntry = struct {
+    snapshot: interpreter.BindingSnapshot,
+    interp: *interpreter.Interpreter,
+};
+
+const SnapshotList = std.ArrayList(*SnapshotEntry);
 
 pub const ValueBinding = struct { value: tir.ValueId, ty: types.TypeId, is_slot: bool };
 
@@ -56,24 +62,89 @@ pub const LowerContext = struct {
     loop_stack: List(cf.LoopCtx) = .{},
     module_call_cache: std.AutoHashMap(u64, StrId),
     method_lowered: std.AutoHashMap(usize, void),
-    monomorphizer: monomorphize.Monomorphizer,
-    monomorph_context_stack: List(monomorphize.MonomorphizationContext) = .{},
+    interpreter: *interpreter.Interpreter,
+    specialization_stack: SnapshotList = .empty,
     expr_type_override_stack: List(ExprTypeOverrideFrame) = .{},
+    interp_cache: std.AutoHashMap(usize, *interpreter.Interpreter),
+    gpa: std.mem.Allocator,
+    builder: ?*tir.Builder = null,
+
+    pub fn lookupBindingValue(self: *LowerContext, name: ast.StrId) ?*const comp.ComptimeValue {
+        var i: usize = self.specialization_stack.items.len;
+        while (i > 0) {
+            i -= 1;
+            const entry = self.specialization_stack.items[i];
+            if (entry.snapshot.lookup(name)) |binding| {
+                return &binding.value;
+            }
+        }
+        return null;
+    }
+
+    pub fn lookupBindingType(self: *LowerContext, name: ast.StrId) ?types.TypeId {
+        if (self.lookupBindingValue(name)) |value| {
+            return switch (value.*) {
+                .Type => |ty| ty,
+                else => null,
+            };
+        }
+        return null;
+    }
+
+    pub fn activeSnapshot(self: *LowerContext) ?*interpreter.BindingSnapshot {
+        if (self.specialization_stack.items.len == 0) return null;
+        return &self.specialization_stack.items[self.specialization_stack.items.len - 1].snapshot;
+    }
+
+    pub fn pushSnapshot(self: *LowerContext, snapshot: interpreter.BindingSnapshot, interp: *interpreter.Interpreter) anyerror!void {
+        const entry = try self.gpa.create(SnapshotEntry);
+        entry.* = SnapshotEntry{ .snapshot = snapshot, .interp = interp };
+        try self.specialization_stack.append(self.gpa, entry);
+    }
+
+    pub fn popSnapshot(self: *LowerContext) void {
+        if (self.specialization_stack.pop()) |entry| {
+            entry.snapshot.destroy(entry.interp.allocator);
+            self.gpa.destroy(entry);
+        }
+    }
+
+    pub fn getInterpreterFor(self: *LowerContext, target_ast: *ast.Ast) anyerror!(*interpreter.Interpreter) {
+        if (self.interpreter.ast == target_ast) return self.interpreter;
+        const key = @intFromPtr(target_ast);
+        if (self.interp_cache.get(key)) |entry| {
+            return entry;
+        }
+        const interp = try self.gpa.create(interpreter.Interpreter);
+        interp.* = try interpreter.Interpreter.init(self.gpa, target_ast);
+        try self.interp_cache.put(key, interp);
+        return interp;
+    }
 
     pub fn deinit(self: *LowerContext, gpa: std.mem.Allocator) void {
         self.loop_stack.deinit(gpa);
         self.module_call_cache.deinit();
         self.method_lowered.deinit();
-        for (self.monomorph_context_stack.items) |*item| {
-            item.deinit(gpa);
-        }
-        self.monomorph_context_stack.deinit(gpa);
         while (self.expr_type_override_stack.items.len > 0) {
             self.expr_type_override_stack.items[self.expr_type_override_stack.items.len - 1].deinit(gpa);
             self.expr_type_override_stack.items.len -= 1;
         }
         self.expr_type_override_stack.deinit(gpa);
-        self.monomorphizer.deinit();
+        while (self.specialization_stack.items.len > 0) {
+            if (self.specialization_stack.pop()) |entry| {
+                entry.snapshot.destroy(entry.interp.allocator);
+                self.gpa.destroy(entry);
+            }
+        }
+        self.specialization_stack.deinit(gpa);
+        self.interpreter.deinit();
+        self.gpa.destroy(self.interpreter);
+        var iter = self.interp_cache.iterator();
+        while (iter.next()) |entry| {
+            entry.value_ptr.*.deinit(self.gpa);
+            self.gpa.destroy(entry.value_ptr.*);
+        }
+        self.interp_cache.deinit();
     }
 };
 
@@ -106,22 +177,7 @@ pub fn init(
     };
 }
 
-pub fn deinit(_: *LowerTir) void {
-    //     ctx.loop_stack.deinit(self.gpa);
-    //     ctx.module_call_cache.deinit();
-    //     ctx.method_lowered.deinit();
-    //     while (ctx.monomorph_context_stack.items.len > 0) {
-    //         var ctx = ctx.monomorph_context_stack.pop().?;
-    //         ctx.deinit(self.gpa);
-    //     }
-    //     ctx.monomorph_context_stack.deinit(self.gpa);
-    //     while (ctx.expr_type_override_stack.items.len > 0) {
-    //         ctx.expr_type_override_stack.items[ctx.expr_type_override_stack.items.len - 1].deinit(self.gpa);
-    //         ctx.expr_type_override_stack.items.len -= 1;
-    //     }
-    //     ctx.expr_type_override_stack.deinit(self.gpa);
-    //     self.monomorphizer.deinit();
-}
+pub fn deinit(_: *LowerTir) void {}
 
 fn throwErr(self: *LowerTir, loc: Loc) anyerror {
     std.debug.dumpCurrentStackTrace(null);
@@ -153,11 +209,18 @@ pub fn run(self: *LowerTir, levels: *const compile.DependencyLevels) !*tir.TIR {
             if (unit.ast == null) continue;
             const t = try self.gpa.create(tir.TIR);
             t.* = tir.TIR.init(self.gpa, self.context.type_store);
+            const interp = try self.gpa.create(interpreter.Interpreter);
+            interp.* = try interpreter.Interpreter.init(self.gpa, unit.ast.?);
             const ctx = try self.gpa.create(LowerContext);
             ctx.* = LowerContext{
                 .method_lowered = .init(self.gpa),
                 .module_call_cache = .init(self.gpa),
-                .monomorphizer = .init(self.gpa),
+                .interpreter = interp,
+                .specialization_stack = .empty,
+                .expr_type_override_stack = .{},
+                .interp_cache = .init(self.gpa),
+                .gpa = self.gpa,
+                .builder = null,
             };
             const ok_ptr = try self.gpa.create(bool);
             ok_ptr.* = true;
@@ -201,6 +264,7 @@ fn runAstCatching(self: *LowerTir, ast_unit: *ast.Ast, t: *tir.TIR, ctx: *LowerC
 
 pub fn runAst(self: *LowerTir, ast_unit: *ast.Ast, t: *tir.TIR, ctx: *LowerContext) !void {
     var b = Builder.init(self.gpa, t);
+    ctx.builder = &b;
 
     try self.lowerGlobalMlir(ctx, ast_unit, &b);
 
@@ -220,8 +284,6 @@ pub fn runAst(self: *LowerTir, ast_unit: *ast.Ast, t: *tir.TIR, ctx: *LowerConte
         const base_name = try self.methodSymbolName(ast_unit, decl_id);
         try self.tryLowerNamedFunction(ctx, ast_unit, &b, decl_id, base_name, true, true);
     }
-
-    try ctx.monomorphizer.run(self, ctx, &b, comp.monomorphLowerCallback);
 }
 
 fn shouldSkipGenericMethod(self: *const LowerTir, fn_ty: types.TypeId) bool {
@@ -573,25 +635,15 @@ fn resolveMlirSpliceValue(
             return error.LoweringBug;
         },
         .value_param => |param_info| {
-            var i: usize = ctx.monomorph_context_stack.items.len;
-            while (i > 0) {
-                i -= 1;
-                const context = &ctx.monomorph_context_stack.items[i];
-                if (context.lookupValue(param_info.name)) |binding| {
-                    return comp.cloneComptimeValue(self.gpa, binding.value);
-                }
+            if (ctx.lookupBindingValue(param_info.name)) |value| {
+                return comp.cloneComptimeValue(self.gpa, value.*);
             }
             try self.context.diags.addError(diag_loc, .mlir_splice_unbound, .{name_str});
             return error.LoweringBug;
         },
         .type_param => |param_info| {
-            var i: usize = ctx.monomorph_context_stack.items.len;
-            while (i > 0) {
-                i -= 1;
-                const context = &ctx.monomorph_context_stack.items[i];
-                if (context.lookupType(param_info.name)) |ty| {
-                    return comp.ComptimeValue{ .Type = ty };
-                }
+            if (ctx.lookupBindingType(param_info.name)) |ty| {
+                return comp.ComptimeValue{ .Type = ty };
             }
             try self.context.diags.addError(diag_loc, .mlir_splice_unbound, .{name_str});
             return error.LoweringBug;
@@ -908,6 +960,56 @@ fn bindingNameOfPattern(a: *ast.Ast, pid: ast.PatternId) ?StrId {
     };
 }
 
+fn resolveSpecializedType(
+    _: *types.TypeStore,
+    bindings: []const comp.BindingInfo,
+    a: *ast.Ast,
+    expr: ast.ExprId,
+) ?types.TypeId {
+    const kind = a.exprs.index.kinds.items[expr.toRaw()];
+    switch (kind) {
+        .Ident => {
+            const name = a.exprs.get(.Ident, expr).name;
+            for (bindings) |info| {
+                if (!info.name.eq(name)) continue;
+                return switch (info.kind) {
+                    .type_param => |ty| ty,
+                    .value_param => |vp| vp.ty,
+                    .runtime_param => |_| null,
+                };
+            }
+            return null;
+        },
+        else => return null,
+    }
+}
+
+fn lookupRuntimeOverride(bindings: []const comp.BindingInfo, name: ast.StrId) ?types.TypeId {
+    for (bindings) |info| {
+        if (!info.name.eq(name)) continue;
+        switch (info.kind) {
+            .runtime_param => |ty| return ty,
+            else => {},
+        }
+    }
+    return null;
+}
+
+fn runtimeResultType(bindings: []const comp.BindingInfo) ?types.TypeId {
+    var candidate: ?types.TypeId = null;
+    for (bindings) |info| {
+        if (info.kind == .runtime_param) {
+            const ty = info.kind.runtime_param;
+            if (candidate) |existing| {
+                if (existing.toRaw() != ty.toRaw()) return null;
+            } else {
+                candidate = ty;
+            }
+        }
+    }
+    return candidate;
+}
+
 fn lowerTopDecl(self: *LowerTir, ctx: *LowerContext, a: *ast.Ast, b: *Builder, did: ast.DeclId) !void {
     const d = a.exprs.Decl.get(did);
     const kind = a.exprs.index.kinds.items[d.value.toRaw()];
@@ -972,7 +1074,7 @@ pub fn lowerFunction(
     b: *Builder,
     name: StrId,
     fun_eid: ast.ExprId,
-    ctx: ?*const monomorphize.MonomorphizationContext,
+    ctx: ?*const comp.SpecializationContext,
 ) !void {
     const fid = if (ctx) |c|
         c.specialized_ty
@@ -1809,15 +1911,19 @@ fn lowerCall(
                     var skip_params: usize = 0;
                     while (skip_params < params.len and decl_ast.exprs.Param.get(params[skip_params]).is_comptime) : (skip_params += 1) {}
 
-                    var binding_infos: List(monomorphize.BindingInfo) = .empty;
+                    var binding_infos: List(comp.BindingInfo) = .empty;
+                    var interpreter_bindings: List(interpreter.Binding) = .empty;
                     defer {
                         for (binding_infos.items) |*info| info.deinit(self.gpa);
                         binding_infos.deinit(self.gpa);
+                        for (interpreter_bindings.items) |*binding| binding.value.destroy(self.gpa);
+                        interpreter_bindings.deinit(self.gpa);
                     }
 
                     if (method_binding) |mb| {
                         const owner_sid = a.exprs.strs.intern("__owner");
-                        try binding_infos.append(self.gpa, monomorphize.BindingInfo.runtimeParam(owner_sid, mb.owner_type));
+                        try binding_infos.append(self.gpa, comp.BindingInfo.runtimeParam(owner_sid, mb.owner_type));
+                        try interpreter_bindings.append(self.gpa, .{ .name = owner_sid, .value = comp.ComptimeValue{ .Type = mb.owner_type } });
                     }
 
                     var ok = true;
@@ -1860,7 +1966,8 @@ fn lowerCall(
                                     ok = false;
                                     break;
                                 };
-                                try binding_infos.append(self.gpa, monomorphize.BindingInfo.typeParam(pname, targ));
+                                try binding_infos.append(self.gpa, comp.BindingInfo.typeParam(pname, targ));
+                                try interpreter_bindings.append(self.gpa, .{ .name = pname, .value = comp.ComptimeValue{ .Type = targ } });
                             } else {
                                 const comptime_val_opt = if (a.exprs.index.kinds.items[arg_expr.toRaw()] == .Literal)
                                     try self.constValueFromLiteral(a, arg_expr)
@@ -1873,7 +1980,7 @@ fn lowerCall(
                                     break :blk comp.ComptimeValue{ .Void = {} };
                                 };
 
-                                var info = monomorphize.BindingInfo.valueParam(self.gpa, pname, param_ty, comptime_val) catch {
+                                var info = comp.BindingInfo.valueParam(self.gpa, pname, param_ty, comptime_val) catch {
                                     ok = false;
                                     break;
                                 };
@@ -1881,6 +1988,7 @@ fn lowerCall(
                                     info.deinit(self.gpa);
                                     return err;
                                 };
+                                try interpreter_bindings.append(self.gpa, .{ .name = pname, .value = comptime_val });
                             }
                         }
                     }
@@ -1908,7 +2016,7 @@ fn lowerCall(
                             const arg_ty = self.getExprType(ctx, a, original_args[runtime_idx]);
                             if (self.isType(arg_ty, .Any)) continue;
 
-                            try binding_infos.append(self.gpa, monomorphize.BindingInfo.runtimeParam(pname, arg_ty));
+                            try binding_infos.append(self.gpa, comp.BindingInfo.runtimeParam(pname, arg_ty));
                         }
 
                         if (treat_trailing_any and params.len > 0) {
@@ -1918,7 +2026,7 @@ fn lowerCall(
                             const last_param = decl_ast.exprs.Param.get(params[params.len - 1]);
                             if (!last_param.pat.isNone()) {
                                 if (bindingNameOfPattern(decl_ast, last_param.pat.unwrap())) |pname| {
-                                    try binding_infos.append(self.gpa, monomorphize.BindingInfo.runtimeParam(pname, tuple_ty));
+                                    try binding_infos.append(self.gpa, comp.BindingInfo.runtimeParam(pname, tuple_ty));
                                 }
                             }
                         }
@@ -1950,24 +2058,97 @@ fn lowerCall(
                     if (ok and binding_infos.items.len > 0) {
                         const mangled = try comp.mangleMonomorphName(self, callee.name, binding_infos.items);
                         const qualified_mangled = try self.qualifySymbolName(decl_ast, mangled);
-                        const result = try ctx.monomorphizer.request(
-                            decl_ast,
-                            self.context.type_store,
-                            callee.name,
-                            decl_ctx.decl_id,
-                            fty,
-                            binding_infos.items,
-                            skip_params,
-                            qualified_mangled,
-                            specialized_result_override,
+
+                        const fn_kind = self.context.type_store.get(.Function, fty);
+                        const base_params = self.context.type_store.type_pool.slice(fn_kind.params);
+                        std.debug.assert(skip_params <= base_params.len);
+
+                        const runtime_count = base_params.len - skip_params;
+                        var runtime_params = try self.gpa.alloc(types.TypeId, runtime_count);
+                        defer self.gpa.free(runtime_params);
+
+                        var idx: usize = 0;
+                        var i: usize = skip_params;
+                        while (i < base_params.len) : (i += 1) {
+                            const base_ty = base_params[i];
+                            const param = decl_ast.exprs.Param.get(params[i]);
+                            var specialized_ty = base_ty;
+                            if (!param.ty.isNone()) {
+                                if (resolveSpecializedType(self.context.type_store, binding_infos.items, decl_ast, param.ty.unwrap())) |resolved| {
+                                    specialized_ty = resolved;
+                                }
+                            }
+                            if (!param.pat.isNone()) {
+                                if (bindingNameOfPattern(decl_ast, param.pat.unwrap())) |pname| {
+                                    if (lookupRuntimeOverride(binding_infos.items, pname)) |override_ty| {
+                                        specialized_ty = override_ty;
+                                    }
+                                }
+                            }
+                            const param_kind = self.context.type_store.getKind(specialized_ty);
+                            runtime_params[idx] = if (param_kind == .TypeType)
+                                self.context.type_store.get(.TypeType, specialized_ty).of
+                            else
+                                specialized_ty;
+                            idx += 1;
+                        }
+
+                        var result_ty = if (specialized_result_override) |override|
+                            override
+                        else blk: {
+                            if (!decl_ast.exprs.get(.FunctionLit, decl.value).result_ty.isNone()) {
+                                if (resolveSpecializedType(
+                                    self.context.type_store,
+                                    binding_infos.items,
+                                    decl_ast,
+                                    decl_ast.exprs.get(.FunctionLit, decl.value).result_ty.unwrap(),
+                                )) |resolved| {
+                                    break :blk resolved;
+                                }
+                            }
+                            break :blk fn_kind.result;
+                        };
+
+                        if (specialized_result_override == null and self.context.type_store.getKind(result_ty) == .Any) {
+                            if (runtimeResultType(binding_infos.items)) |override| {
+                                result_ty = override;
+                            }
+                        }
+
+                        if (self.context.type_store.getKind(result_ty) == .TypeType) {
+                            result_ty = self.context.type_store.get(.TypeType, result_ty).of;
+                        }
+
+                        const specialized_ty = self.context.type_store.mkFunction(
+                            runtime_params,
+                            result_ty,
+                            fn_kind.is_variadic,
+                            fn_kind.is_pure,
+                            fn_kind.is_extern,
                         );
+
+                        var req = comp.SpecializationRequest{
+                            .decl_id = decl_ctx.decl_id,
+                            .mangled_name = qualified_mangled,
+                            .specialized_ty = specialized_ty,
+                            .skip_params = skip_params,
+                            .bindings = binding_infos.items,
+                        };
+
+                        const target_interp = try ctx.getInterpreterFor(decl_ast);
+                        const specialized = try target_interp.specializeFunction(decl_ctx.decl_id, &interpreter_bindings);
+                        try ctx.pushSnapshot(specialized.snapshot, target_interp);
+                        defer ctx.popSnapshot();
+                        const builder = ctx.builder orelse unreachable;
+                        try comp.lowerSpecializedFunction(self, ctx, decl_ast, builder, &req);
+
                         callee.name = mangled;
-                        callee.qualified_name = result.mangled_name;
-                        callee.fty = result.specialized_ty;
+                        callee.qualified_name = qualified_mangled;
+                        callee.fty = specialized_ty;
                         callee_name = self.context.type_store.strs.get(callee.name);
                         arg_ids = arg_ids[skip_params..];
 
-                        const spec_info = self.context.type_store.get(.Function, result.specialized_ty);
+                        const spec_info = self.context.type_store.get(.Function, specialized_ty);
                         param_tys = self.context.type_store.type_pool.slice(spec_info.params);
                         is_variadic = spec_info.is_variadic;
                         fixed = param_tys.len;
@@ -3446,11 +3627,8 @@ fn lowerIdent(
     var expr_ty = self.getExprType(ctx, a, id);
     const did_opt = self.findTopLevelDeclByName(a, name);
 
-    if (ctx.monomorph_context_stack.items.len > 0) {
-        const context = &ctx.monomorph_context_stack.items[ctx.monomorph_context_stack.items.len - 1];
-        if (context.lookupType(name)) |bound_ty| {
-            expr_ty = self.context.type_store.mkTypeType(bound_ty);
-        }
+    if (ctx.lookupBindingType(name)) |bound_ty| {
+        expr_ty = self.context.type_store.mkTypeType(bound_ty);
     }
 
     // Helper: when an expected type is a pointer, use its element;
@@ -4628,19 +4806,10 @@ fn refineExprType(
                 return bnd.ty;
             }
 
-            var i: usize = ctx.monomorph_context_stack.items.len;
-            while (i > 0) {
-                i -= 1;
-                const context = &ctx.monomorph_context_stack.items[i];
-                if (context.lookupValue(name)) |vp| {
-                    try self.noteExprType(ctx, expr, vp.ty);
-                    return vp.ty;
-                }
-                if (context.lookupType(name)) |ty| {
-                    const type_ty = self.context.type_store.mkTypeType(ty);
-                    try self.noteExprType(ctx, expr, type_ty);
-                    return type_ty;
-                }
+            if (ctx.lookupBindingType(name)) |ty| {
+                const type_ty = self.context.type_store.mkTypeType(ty);
+                try self.noteExprType(ctx, expr, type_ty);
+                return type_ty;
             }
         },
         else => {},

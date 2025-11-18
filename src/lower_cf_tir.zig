@@ -1,5 +1,4 @@
 const LowerTir = @import("lower_tir.zig");
-const monomorphize = @import("monomorphize.zig");
 const ast = @import("ast.zig");
 const tir = @import("tir.zig");
 const types = @import("types.zig");

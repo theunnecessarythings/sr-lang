@@ -5,9 +5,9 @@ const types = @import("types.zig");
 const mlir = @import("mlir_bindings.zig");
 const LowerTir = @import("lower_tir.zig");
 const Pipeline = @import("pipeline.zig").Pipeline;
-const monomorphize = @import("monomorphize.zig");
 const checker = @import("checker.zig");
 const ast = @import("ast.zig");
+const interpreter = @import("interpreter.zig");
 const List = std.ArrayList;
 
 pub const ComptimeApi = struct {
@@ -83,6 +83,66 @@ pub const ComptimeValue = union(enum) {
     }
 };
 
+pub const BindingValue = struct {
+    ty: types.TypeId,
+    value: ComptimeValue,
+
+    pub fn init(gpa: std.mem.Allocator, ty: types.TypeId, value: ComptimeValue) !BindingValue {
+        return .{ .ty = ty, .value = try cloneComptimeValue(gpa, value) };
+    }
+
+    fn clone(self: BindingValue, gpa: std.mem.Allocator) !BindingValue {
+        return .{ .ty = self.ty, .value = try cloneComptimeValue(gpa, self.value) };
+    }
+
+    fn deinit(self: *BindingValue, gpa: std.mem.Allocator) void {
+        self.value.destroy(gpa);
+        self.* = .{ .ty = types.TypeId.fromRaw(0), .value = .Void };
+    }
+};
+
+pub const BindingInfo = struct {
+    name: ast.StrId,
+    kind: Kind,
+
+    pub const Kind = union(enum) {
+        type_param: types.TypeId,
+        value_param: BindingValue,
+        runtime_param: types.TypeId,
+    };
+
+    pub fn typeParam(name: ast.StrId, ty: types.TypeId) BindingInfo {
+        return .{ .name = name, .kind = .{ .type_param = ty } };
+    }
+
+    pub fn valueParam(gpa: std.mem.Allocator, name: ast.StrId, ty: types.TypeId, value: ComptimeValue) !BindingInfo {
+        return .{ .name = name, .kind = .{ .value_param = try BindingValue.init(gpa, ty, value) } };
+    }
+
+    pub fn runtimeParam(name: ast.StrId, ty: types.TypeId) BindingInfo {
+        return .{ .name = name, .kind = .{ .runtime_param = ty } };
+    }
+
+    pub fn deinit(self: *BindingInfo, gpa: std.mem.Allocator) void {
+        switch (self.kind) {
+            .value_param => |*vp| vp.deinit(gpa),
+            else => {},
+        }
+        self.* = .{ .name = ast.StrId.fromRaw(0), .kind = .{ .type_param = types.TypeId.fromRaw(0) } };
+    }
+
+    fn clone(self: BindingInfo, gpa: std.mem.Allocator) !BindingInfo {
+        return switch (self.kind) {
+            .type_param => |ty| BindingInfo.typeParam(self.name, ty),
+            .value_param => |vp| blk: {
+                const cloned = try vp.clone(gpa);
+                break :blk .{ .name = self.name, .kind = .{ .value_param = cloned } };
+            },
+            .runtime_param => |ty| BindingInfo.runtimeParam(self.name, ty),
+        };
+    }
+};
+
 pub fn type_of_impl(context: ?*anyopaque, type_id_raw: u32) callconv(.c) u32 {
     const ctx: *Context = @ptrCast(@alignCast(context.?));
     const type_id = types.TypeId.fromRaw(type_id_raw);
@@ -128,33 +188,29 @@ pub fn get_type_by_name_impl(context: ?*anyopaque, name: [*c]const u8) callconv(
 pub fn pushComptimeBindings(self: *LowerTir, ctx: *LowerTir.LowerContext, bindings: []const Pipeline.ComptimeBinding) !bool {
     if (bindings.len == 0) return false;
 
-    var infos = try self.gpa.alloc(monomorphize.BindingInfo, bindings.len);
-    var init_count: usize = 0;
-    const info_cleanup = true;
-    defer {
-        if (info_cleanup) {
-            var j: usize = 0;
-            while (j < init_count) : (j += 1) infos[j].deinit(self.gpa);
-            self.gpa.free(infos);
-        }
-    }
+    var alias_bindings: std.ArrayList(interpreter.Binding) = std.ArrayList(interpreter.Binding).empty;
+    defer alias_bindings.deinit(self.gpa);
+    var success = false;
+    defer if (!success) {
+        for (alias_bindings.items) |*binding| binding.value.destroy(self.gpa);
+    };
 
-    for (bindings, 0..) |binding, i| {
-        infos[i] = switch (binding) {
-            .type_param => |tp| monomorphize.BindingInfo.typeParam(tp.name, tp.ty),
-            .value_param => |vp| try monomorphize.BindingInfo.valueParam(self.gpa, vp.name, vp.ty, vp.value),
+    for (bindings) |binding| {
+        const value = switch (binding) {
+            .type_param => |tp| interpreter.Binding{ .name = tp.name, .value = .{ .Type = tp.ty } },
+            .value_param => |vp| blk: {
+                const cloned = try cloneComptimeValue(self.gpa, vp.value);
+                break :blk interpreter.Binding{ .name = vp.name, .value = cloned };
+            },
         };
-        init_count = i + 1;
+        try alias_bindings.append(self.gpa, value);
     }
 
-    var context = try monomorphize.MonomorphizationContext.init(
-        self.gpa,
-        infos[0..init_count],
-        0,
-        self.context.type_store.tVoid(),
-    );
-    errdefer context.deinit(self.gpa);
-    try ctx.monomorph_context_stack.append(self.gpa, context);
+    const snapshot = try ctx.interpreter.captureBindingSnapshot(&alias_bindings);
+    success = true;
+    for (alias_bindings.items) |*binding| binding.value.destroy(self.gpa);
+
+    try ctx.pushSnapshot(snapshot, ctx.interpreter);
     return true;
 }
 
@@ -168,14 +224,8 @@ fn evaluateTypeExpr(
     switch (kind) {
         .Ident => {
             const ident = a.exprs.get(.Ident, expr);
-            // Check monomorphization context first
-            var i = ctx.monomorph_context_stack.items.len;
-            while (i > 0) {
-                i -= 1;
-                const mono_ctx = ctx.monomorph_context_stack.items[i];
-                if (mono_ctx.lookupType(ident.name)) |ty| {
-                    return ty;
-                }
+            if (ctx.lookupBindingType(ident.name)) |ty| {
+                return ty;
             }
 
             const name_slice = self.context.type_store.strs.get(ident.name);
@@ -313,8 +363,7 @@ fn evaluateTypeExpr(
             defer {
                 while (pushed_bindings > 0) {
                     pushed_bindings -= 1;
-                    var popped = ctx.monomorph_context_stack.pop();
-                    if (popped) |*context| context.deinit(self.gpa);
+                    ctx.popSnapshot();
                 }
                 alias_names.deinit(self.gpa);
                 alias_types.deinit(self.gpa);
@@ -344,15 +393,9 @@ fn evaluateTypeExpr(
                                     }
                                 }
                                 if (!found_owner) {
-                                    var i_mon: usize = ctx.monomorph_context_stack.items.len;
-                                    while (i_mon > 0) {
-                                        i_mon -= 1;
-                                        const mono_ctx0 = ctx.monomorph_context_stack.items[i_mon];
-                                        if (mono_ctx0.lookupType(owner_seg0.name)) |t0| {
-                                            owner_ty0 = t0;
-                                            found_owner = true;
-                                            break;
-                                        }
+                                    if (ctx.lookupBindingType(owner_seg0.name)) |t0| {
+                                        owner_ty0 = t0;
+                                        found_owner = true;
                                     }
                                 }
                                 if (found_owner) {
@@ -386,29 +429,6 @@ fn evaluateTypeExpr(
                                         .builtin = null,
                                     };
                                     _ = self.context.type_store.addMethod(entry0) catch {};
-                                    // Enqueue specialization to be lowered later
-                                    var infos: std.ArrayList(monomorphize.BindingInfo) = .empty;
-                                    defer {
-                                        for (infos.items) |*inf| inf.deinit(self.gpa);
-                                        infos.deinit(self.gpa);
-                                    }
-                                    if (ctx.monomorph_context_stack.items.len > 0) {
-                                        for (ctx.monomorph_context_stack.items[ctx.monomorph_context_stack.items.len - 1].bindings) |binfo| {
-                                            switch (binfo.kind) {
-                                                .type_param => |typ| infos.append(self.gpa, monomorphize.BindingInfo.typeParam(binfo.name, typ)) catch {},
-                                                else => {},
-                                            }
-                                        }
-                                    }
-                                    const owner_sid = a.exprs.strs.intern("__owner");
-                                    infos.append(self.gpa, monomorphize.BindingInfo.runtimeParam(owner_sid, owner_ty0)) catch {};
-                                    var skip_m: usize = 0;
-                                    var xi: usize = 0;
-                                    while (xi < param_ids0.len and a.exprs.Param.get(param_ids0[xi]).is_comptime) : (xi += 1) skip_m += 1;
-                                    const base_raw = try self.methodSymbolName(a, d_stmt.decl);
-                                    const base_name = try self.qualifySymbolName(a, base_raw);
-                                    const mangled = try mangleMonomorphName(self, base_name, infos.items);
-                                    _ = try ctx.monomorphizer.request(a, self.context.type_store, base_name, d_stmt.decl, fnty0, infos.items, skip_m, mangled, null);
                                 }
                             }
                             // Continue scanning; do not treat method decl as alias
@@ -562,7 +582,7 @@ pub fn cloneComptimeValue(gpa: std.mem.Allocator, value: ComptimeValue) !Comptim
     };
 }
 
-fn hashComptimeValue(value: ComptimeValue) u64 {
+pub fn hashComptimeValue(value: ComptimeValue) u64 {
     var hasher = std.hash.Wyhash.init(0);
     const tag: u8 = @intFromEnum(value);
     hasher.update(&.{tag});
@@ -619,7 +639,7 @@ fn hashComptimeValue(value: ComptimeValue) u64 {
 pub fn mangleMonomorphName(
     self: *LowerTir,
     base: tir.StrId,
-    bindings: []const monomorphize.BindingInfo,
+    bindings: []const BindingInfo,
 ) !tir.StrId {
     var buf: List(u8) = .empty;
     defer buf.deinit(self.gpa);
@@ -644,35 +664,34 @@ pub fn mangleMonomorphName(
     return self.context.type_store.strs.intern(buf.items);
 }
 
-fn lowerSpecializedFunction(
+pub const SpecializationContext = struct {
+    specialized_ty: types.TypeId,
+    skip_params: usize,
+    bindings: []const BindingInfo,
+};
+
+pub const SpecializationRequest = struct {
+    decl_id: ast.DeclId,
+    mangled_name: tir.StrId,
+    specialized_ty: types.TypeId,
+    skip_params: usize,
+    bindings: []const BindingInfo,
+};
+
+pub fn lowerSpecializedFunction(
     self: *LowerTir,
     ctx: *LowerTir.LowerContext,
     a: *ast.Ast,
     b: *tir.Builder,
-    req: *const monomorphize.MonomorphizationRequest,
+    req: *const SpecializationRequest,
 ) !void {
-    var context = try monomorphize.MonomorphizationContext.init(
-        self.gpa,
-        req.bindings,
-        req.skip_params,
-        req.specialized_ty,
-    );
-
-    ctx.monomorph_context_stack.append(self.gpa, context) catch |err| {
-        context.deinit(self.gpa);
-        return err;
+    const spec_ctx = SpecializationContext{
+        .specialized_ty = req.specialized_ty,
+        .skip_params = req.skip_params,
+        .bindings = req.bindings,
     };
-    defer {
-        var popped = ctx.monomorph_context_stack.pop();
-        if (popped) |*p|
-            p.deinit(self.gpa);
-    }
-
-    const active_ctx = &ctx.monomorph_context_stack.items[ctx.monomorph_context_stack.items.len - 1];
     const decl = a.exprs.Decl.get(req.decl_id);
 
-    // During lowering of a specialized generic, register any local methods in this function's body
-    // against the concrete owner types for this instantiation.
     if (a.exprs.index.kinds.items[decl.value.toRaw()] == .FunctionLit) {
         const fn_lit = a.exprs.get(.FunctionLit, decl.value);
         if (!fn_lit.body.isNone()) {
@@ -681,7 +700,6 @@ fn lowerSpecializedFunction(
                 const blk = a.exprs.get(.Block, body_eid);
                 const stmts = a.stmts.stmt_pool.slice(blk.items);
 
-                // Track simple type aliases by name within this block to resolve owners.
                 var alias_names: std.ArrayList(ast.StrId) = std.ArrayList(ast.StrId).empty;
                 var alias_types: std.ArrayList(types.TypeId) = std.ArrayList(types.TypeId).empty;
                 defer {
@@ -695,7 +713,6 @@ fn lowerSpecializedFunction(
                     const sd = a.stmts.get(.Decl, sid);
                     const d2 = a.exprs.Decl.get(sd.decl);
 
-                    // Record alias types as we go
                     if (!d2.pattern.isNone()) {
                         const pid = d2.pattern.unwrap();
                         if (a.pats.index.kinds.items[pid.toRaw()] == .Binding) {
@@ -711,14 +728,12 @@ fn lowerSpecializedFunction(
                         }
                     }
 
-                    // Register local methods for this instantiation
                     if (!d2.method_path.isNone() and a.exprs.index.kinds.items[d2.value.toRaw()] == .FunctionLit) {
                         const seg_ids = a.exprs.method_path_pool.slice(d2.method_path.asRange());
                         if (seg_ids.len < 2) continue;
                         const owner_seg = a.exprs.MethodPathSeg.get(seg_ids[0]);
                         const method_seg = a.exprs.MethodPathSeg.get(seg_ids[seg_ids.len - 1]);
 
-                        // Resolve owner type from aliases first, then from monomorph context.
                         var owner_ty: types.TypeId = self.context.type_store.tAny();
                         var found = false;
                         var i: usize = 0;
@@ -730,14 +745,13 @@ fn lowerSpecializedFunction(
                             }
                         }
                         if (!found) {
-                            if (active_ctx.lookupType(owner_seg.name)) |t| {
+                            if (ctx.lookupBindingType(owner_seg.name)) |t| {
                                 owner_ty = t;
                                 found = true;
                             }
                         }
                         if (!found) continue;
 
-                        // Compute function type from annotated params and result under current instantiation
                         const mfn = a.exprs.get(.FunctionLit, d2.value);
                         const param_ids = a.exprs.param_pool.slice(mfn.params);
                         var param_types = std.ArrayList(types.TypeId).empty;
@@ -757,7 +771,6 @@ fn lowerSpecializedFunction(
                             self.context.type_store.tVoid();
                         const fnty = self.context.type_store.mkFunction(param_types.items, res_ty, mfn.flags.is_variadic, true, mfn.flags.is_extern);
 
-                        // Determine receiver_kind (basic support): if first param is named 'self' matching owner
                         var receiver_kind: types.MethodReceiverKind = .none;
                         if (param_ids.len > 0) {
                             const first_p = a.exprs.Param.get(param_ids[0]);
@@ -795,61 +808,11 @@ fn lowerSpecializedFunction(
                             .builtin = null,
                         };
                         _ = self.context.type_store.addMethod(entry) catch {};
-
-                        // Also enqueue a monomorphization request for this method with current bindings
-                        // so that a specialized body is lowered even if not directly called yet.
-                        var infos: std.ArrayList(monomorphize.BindingInfo) = .empty;
-                        defer {
-                            for (infos.items) |*inf| inf.deinit(self.gpa);
-                            infos.deinit(self.gpa);
-                        }
-                        // Capture current type parameter bindings
-                        for (active_ctx.bindings) |binfo| {
-                            switch (binfo.kind) {
-                                .type_param => |typ| infos.append(self.gpa, monomorphize.BindingInfo.typeParam(binfo.name, typ)) catch {},
-                                else => {},
-                            }
-                        }
-                        // Include owner as a synthetic runtime param to affect cache/mangle uniqueness
-                        const owner_sid = a.exprs.strs.intern("__owner");
-                        infos.append(self.gpa, monomorphize.BindingInfo.runtimeParam(owner_sid, owner_ty)) catch {};
-
-                        // Count initial comptime params to skip in specialization
-                        var skip_params_m: usize = 0;
-                        var it_idx: usize = 0;
-                        while (it_idx < param_ids.len and a.exprs.Param.get(param_ids[it_idx]).is_comptime) : (it_idx += 1) skip_params_m += 1;
-
-                        const base_raw = try self.methodSymbolName(a, sd.decl);
-                        const base_name = try self.qualifySymbolName(a, base_raw);
-                        const mangled = try mangleMonomorphName(self, base_name, infos.items);
-                        _ = try ctx.monomorphizer.request(
-                            a,
-                            self.context.type_store,
-                            base_name,
-                            sd.decl,
-                            fnty,
-                            infos.items,
-                            skip_params_m,
-                            mangled,
-                            null,
-                        );
                     }
                 }
             }
         }
     }
 
-    try self.lowerFunction(ctx, a, b, req.mangled_name, decl.value, active_ctx);
-}
-
-pub fn monomorphLowerCallback(
-    ctx: ?*anyopaque,
-    lower_ctx: *LowerTir.LowerContext,
-    a: *ast.Ast,
-    b: *tir.Builder,
-    req: *const monomorphize.MonomorphizationRequest,
-) anyerror!void {
-    std.debug.assert(ctx != null);
-    const self: *LowerTir = @ptrCast(@alignCast(ctx.?));
-    try lowerSpecializedFunction(self, lower_ctx, a, b, req);
+    try self.lowerFunction(ctx, a, b, req.mangled_name, decl.value, &spec_ctx);
 }

@@ -18,9 +18,49 @@ const NumericValue = union(enum) {
     Float: f64,
 };
 
-const Binding = struct {
+pub const Binding = struct {
     name: ast.StrId,
     value: Value,
+};
+
+const FunctionKey = struct {
+    decl_id: ast.DeclId,
+    bindings_hash: u64,
+};
+
+fn keysEqual(a: FunctionKey, b: FunctionKey) bool {
+    return a.decl_id.toRaw() == b.decl_id.toRaw() and a.bindings_hash == b.bindings_hash;
+}
+
+const FunctionSpecializationEntry = struct {
+    key: FunctionKey,
+    func_expr: ast.ExprId,
+    bindings: BindingSnapshot,
+
+    fn destroy(self: *FunctionSpecializationEntry, allocator: std.mem.Allocator) void {
+        self.bindings.destroy(allocator);
+    }
+};
+
+pub const SpecializationResult = struct {
+    func: FunctionValue,
+    snapshot: BindingSnapshot,
+};
+
+pub const BindingSnapshot = struct {
+    bindings: std.ArrayList(Binding),
+    hash: u64,
+
+    pub fn lookup(self: *BindingSnapshot, name: ast.StrId) ?*Binding {
+        for (self.bindings.items) |*binding| if (binding.name.eq(name)) return binding;
+        return null;
+    }
+
+    pub fn destroy(self: *BindingSnapshot, allocator: std.mem.Allocator) void {
+        for (self.bindings.items) |*binding| binding.value.destroy(allocator);
+        self.bindings.deinit(allocator);
+        self.hash = 0;
+    }
 };
 
 pub const Interpreter = struct {
@@ -28,6 +68,7 @@ pub const Interpreter = struct {
     ast: *ast.Ast,
     bindings: std.ArrayList(Binding),
     method_table: MethodMap,
+    specializations: std.AutoHashMap(u128, FunctionSpecializationEntry),
 
     pub const Error = error{
         UnsupportedExpr,
@@ -50,9 +91,11 @@ pub const Interpreter = struct {
             .ast = ast_unit,
             .bindings = std.ArrayList(Binding).empty,
             .method_table = MethodMap.init(allocator),
+            .specializations = std.AutoHashMap(u128, FunctionSpecializationEntry).init(allocator),
         };
         var success = false;
         defer if (!success) interp.method_table.deinit();
+        defer if (!success) interp.specializations.deinit();
         try interp.registerMethods();
         success = true;
         return interp;
@@ -62,6 +105,9 @@ pub const Interpreter = struct {
         for (self.bindings.items) |*binding| binding.value.destroy(self.allocator);
         self.bindings.deinit(self.allocator);
         self.method_table.deinit();
+        var iter = self.specializations.iterator();
+        while (iter.next()) |entry| entry.value_ptr.*.destroy(self.allocator);
+        self.specializations.deinit();
     }
 
     pub fn evalExpr(self: *Interpreter, expr: ast.ExprId) anyerror!Value {
@@ -992,6 +1038,86 @@ pub const Interpreter = struct {
             matches.items[current - 1].value.destroy(self.allocator);
         }
         matches.shrinkRetainingCapacity(target_len);
+    }
+
+    fn bindingHash(bindings: []const Binding) u64 {
+        var hasher = std.hash.Wyhash.init(0);
+        for (bindings) |binding| {
+            const name_raw: u32 = binding.name.toRaw();
+            hasher.update(std.mem.asBytes(&name_raw));
+            const val_hash: u64 = comptime_mod.hashComptimeValue(binding.value);
+            hasher.update(std.mem.asBytes(&val_hash));
+        }
+        return hasher.final();
+    }
+
+    pub fn captureBindingSnapshot(self: *Interpreter, matches: *std.ArrayList(Binding)) anyerror!BindingSnapshot {
+        var snapshot = try std.ArrayList(Binding).initCapacity(self.allocator, matches.items.len);
+        var hasher = std.hash.Wyhash.init(0);
+        var success = false;
+        defer if (!success) {
+            for (snapshot.items) |*binding| binding.value.destroy(self.allocator);
+            snapshot.deinit(self.allocator);
+        };
+        for (matches.items) |binding| {
+            const cloned = try self.cloneValue(binding.value);
+            try snapshot.append(self.allocator, .{ .name = binding.name, .value = cloned });
+            const name_raw: u32 = binding.name.toRaw();
+            hasher.update(std.mem.asBytes(&name_raw));
+            const val_hash: u64 = comptime_mod.hashComptimeValue(binding.value);
+            hasher.update(std.mem.asBytes(&val_hash));
+        }
+        success = true;
+        return BindingSnapshot{ .bindings = snapshot, .hash = hasher.final() };
+    }
+
+    fn cloneSnapshot(self: *Interpreter, source: *BindingSnapshot) anyerror!BindingSnapshot {
+        var cloned = try std.ArrayList(Binding).initCapacity(self.allocator, source.bindings.items.len);
+        var success = false;
+        defer if (!success) {
+            for (cloned.items) |*binding| binding.value.destroy(self.allocator);
+            cloned.deinit(self.allocator);
+        };
+        for (source.bindings.items) |binding| {
+            const dup = try self.cloneValue(binding.value);
+            try cloned.append(self.allocator, .{ .name = binding.name, .value = dup });
+        }
+        success = true;
+        return BindingSnapshot{ .bindings = cloned, .hash = source.hash };
+    }
+
+    fn hashFunctionKey(key: FunctionKey) u128 {
+        const decl_raw: u32 = key.decl_id.toRaw();
+        return (@as(u128, key.bindings_hash) << 32) | @as(u128, decl_raw);
+    }
+
+    pub fn specializeFunction(self: *Interpreter, decl_id: ast.DeclId, matches: *std.ArrayList(Binding)) anyerror!SpecializationResult {
+        const binding_hash = bindingHash(matches.items);
+        const key = FunctionKey{ .decl_id = decl_id, .bindings_hash = binding_hash };
+        const map_hash = hashFunctionKey(key);
+        if (self.specializations.getPtr(map_hash)) |existing| {
+            if (keysEqual(existing.key, key)) {
+                return SpecializationResult{
+                    .func = FunctionValue{ .expr = existing.func_expr },
+                    .snapshot = try self.cloneSnapshot(&existing.bindings),
+                };
+            }
+        }
+        var snapshot = try self.captureBindingSnapshot(matches);
+        const return_snapshot = try self.cloneSnapshot(&snapshot);
+        var entry = FunctionSpecializationEntry{
+            .key = key,
+            .func_expr = self.ast.exprs.Decl.get(decl_id).value,
+            .bindings = snapshot,
+        };
+        var success = false;
+        defer if (!success) entry.destroy(self.allocator);
+        try self.specializations.put(map_hash, entry);
+        success = true;
+        return SpecializationResult{
+            .func = FunctionValue{ .expr = entry.func_expr },
+            .snapshot = return_snapshot,
+        };
     }
 
     const BindingScope = struct {
