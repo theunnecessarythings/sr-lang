@@ -14,6 +14,7 @@ const check_types = @import("check_types.zig");
 const pipeline_mod = @import("pipeline.zig");
 const cf = @import("lower_cf_tir.zig");
 const package = @import("package.zig");
+const call_resolution = @import("call_resolution.zig");
 const Loc = @import("lexer.zig").Token.Loc;
 
 const StrId = @import("cst.zig").StrId;
@@ -44,10 +45,7 @@ const ExprTypeOverrideFrame = struct {
     }
 };
 
-const FunctionDeclContext = struct {
-    ast: *ast.Ast,
-    decl_id: ast.DeclId,
-};
+const FunctionDeclContext = call_resolution.FunctionDeclContext;
 
 pub const LowerTir = @This();
 
@@ -296,6 +294,15 @@ fn shouldSkipGenericMethod(self: *const LowerTir, fn_ty: types.TypeId) bool {
         if (self.isType(params[i], .Any)) return true;
     }
     return false;
+}
+
+fn hasTrailingAnyRuntimeParam(self: *const LowerTir, fty: types.TypeId) bool {
+    if (self.context.type_store.getKind(fty) != .Function) return false;
+    const info = self.context.type_store.get(.Function, fty);
+    if (info.is_extern) return false;
+    const params = self.context.type_store.type_pool.slice(info.params);
+    if (params.len == 0) return false;
+    return self.isType(params[params.len - 1], .Any);
 }
 
 fn pushExprTypeOverrideFrame(self: *LowerTir, ctx: *LowerContext) !void {
@@ -1809,9 +1816,9 @@ fn trySpecializeFunctionCall(
     ctx: *LowerContext,
     a: *ast.Ast,
     callee: *CalleeInfo,
-    callee_expr: ast.ExprId,
+    _: ast.ExprId,
     callee_name_ptr: *[]const u8,
-    method_decl_id: ?ast.DeclId,
+    _: ?ast.DeclId,
     method_binding: ?types.MethodBinding,
     arg_ids_ptr: *[]const ast.ExprId,
     param_tys_ptr: *[]const types.TypeId,
@@ -1819,6 +1826,7 @@ fn trySpecializeFunctionCall(
     is_variadic_ptr: *bool,
     treat_trailing_any_ptr: *bool,
     trailing_any_tuple_ty_ptr: *?types.TypeId,
+    decl_ctx: call_resolution.FunctionDeclContext,
 ) !void {
     if (callee.fty == null) return;
     const callee_fty = callee.fty.?;
@@ -1849,11 +1857,6 @@ fn trySpecializeFunctionCall(
     if (!fty.is_extern and param_tys.len > 0 and self.isType(param_tys[param_tys.len - 1], .Any)) {
         treat_trailing_any = true;
     }
-    const decl_ctx_opt: ?FunctionDeclContext = if (method_decl_id) |mid|
-        .{ .ast = a, .decl_id = mid }
-    else
-        self.findFunctionDeclForCall(a, callee_expr, callee.name);
-    const decl_ctx = decl_ctx_opt orelse return;
     const decl_ast = decl_ctx.ast;
     const decl = decl_ast.exprs.Decl.get(decl_ctx.decl_id);
 
@@ -2138,6 +2141,9 @@ fn lowerCall(
     var callee = try self.resolveCallee(ctx, a, f, row);
     var callee_name = a.exprs.strs.get(callee.name);
     const callee_expr = callee.expr;
+    if (callee.fty == null) {
+        callee.fty = self.getExprType(ctx, a, callee_expr);
+    }
     var arg_ids = a.exprs.expr_pool.slice(row.args);
     var method_arg_buf: []ast.ExprId = &.{};
     var method_decl_id: ?ast.DeclId = null;
@@ -2181,21 +2187,35 @@ fn lowerCall(
     var is_variadic = false;
     var treat_trailing_any = false;
     var trailing_any_tuple_ty: ?types.TypeId = null;
-    try self.trySpecializeFunctionCall(
-        ctx,
-        a,
-        &callee,
-        callee_expr,
-        &callee_name,
-        method_decl_id,
-        method_binding,
-        &arg_ids,
-        &param_tys,
-        &fixed,
-        &is_variadic,
-        &treat_trailing_any,
-        &trailing_any_tuple_ty,
-    );
+    if (callee.fty) |fty| {
+        treat_trailing_any = self.hasTrailingAnyRuntimeParam(fty);
+    }
+    if (a.type_info.getSpecializedCall(id)) |decl_ctx| {
+        try self.trySpecializeFunctionCall(
+            ctx,
+            a,
+            &callee,
+            callee_expr,
+            &callee_name,
+            method_decl_id,
+            method_binding,
+            &arg_ids,
+            &param_tys,
+            &fixed,
+            &is_variadic,
+            &treat_trailing_any,
+            &trailing_any_tuple_ty,
+            decl_ctx,
+        );
+    }
+
+    if (callee.qualified_name == null and method_decl_id == null) {
+        if (call_resolution.findFunctionDeclForCall(self.context, a, callee_expr, callee.name)) |decl_ctx| {
+            if (try symbolNameForDecl(self, decl_ctx.ast, decl_ctx.decl_id)) |sym| {
+                callee.qualified_name = sym;
+            }
+        }
+    }
 
     var vals_list: List(tir.ValueId) = .empty;
     defer vals_list.deinit(self.gpa);
@@ -2384,7 +2404,7 @@ fn synthesizeDefaultTrailingArgs(
     const dctx = if (method_decl_id) |mid|
         FunctionDeclContext{ .ast = a, .decl_id = mid }
     else if (callee.fty) |_|
-        self.findFunctionDeclForCall(a, callee_expr, callee.name) orelse return
+        call_resolution.findFunctionDeclForCall(self.context, a, callee_expr, callee.name) orelse return
     else
         return;
 
@@ -2473,7 +2493,7 @@ fn emitCallValue(
     if (a.exprs.index.kinds.items[callee_expr.toRaw()] == .FieldAccess) {
         const fr2 = a.exprs.get(.FieldAccess, callee_expr);
         const pk2 = a.exprs.index.kinds.items[fr2.parent.toRaw()];
-        callee_is_import_member = (pk2 == .Import or pk2 == .Ident and self.findTopLevelImportByName(a, a.exprs.get(.Ident, fr2.parent).name) != null);
+        callee_is_import_member = (pk2 == .Import or pk2 == .Ident and call_resolution.findTopLevelImportByName(a, a.exprs.get(.Ident, fr2.parent).name) != null);
     }
 
     if (callee_kind == .Ptr and self.context.type_store.getKind(self.context.type_store.get(.Ptr, callee_ty).elem) == .Function) {
@@ -3697,7 +3717,7 @@ fn tryLowerImportedModuleMember(
         }
     } else if (parent_kind == .Ident) {
         const parent_ident = caller_ast.exprs.get(.Ident, parent_expr);
-        if (self.findTopLevelImportByName(caller_ast, parent_ident.name)) |import_decl_id| {
+        if (call_resolution.findTopLevelImportByName(caller_ast, parent_ident.name)) |import_decl_id| {
             const import_decl = caller_ast.exprs.Decl.get(import_decl_id);
             const ir = caller_ast.exprs.get(.Import, import_decl.value);
             const path = caller_ast.exprs.strs.get(ir.path);
@@ -3748,7 +3768,7 @@ fn lowerIdent(
 
     // Pre-lift a couple things we end up consulting a few times.
     var expr_ty = self.getExprType(ctx, a, id);
-    const did_opt = self.findTopLevelDeclByName(a, name);
+    const did_opt = call_resolution.findTopLevelDeclByName(a, name);
 
     if (ctx.lookupBindingType(name)) |bound_ty| {
         expr_ty = self.context.type_store.mkTypeType(bound_ty);
@@ -4626,173 +4646,6 @@ pub fn lowerBlockExprValue(
         return self.safeUndef(blk, expected_ty, loc);
     }
 }
-
-// ============================
-// Import materialization
-// ============================
-
-fn findTopLevelDeclByName(self: *const LowerTir, a: *ast.Ast, name: ast.StrId) ?ast.DeclId {
-    const target = a.exprs.strs.get(name);
-    return self.findTopLevelDeclByNameSlice(a, target);
-}
-
-fn findTopLevelDeclByNameSlice(self: *const LowerTir, a: *ast.Ast, target: []const u8) ?ast.DeclId {
-    const decls = a.exprs.decl_pool.slice(a.unit.decls);
-    var i: usize = 0;
-    while (i < decls.len) : (i += 1) {
-        const d = a.exprs.Decl.get(decls[i]);
-        if (d.pattern.isNone()) continue;
-        const pid = d.pattern.unwrap();
-        if (self.patternContainsNameStr(a, pid, target)) return decls[i];
-    }
-    return null;
-}
-
-fn patternContainsNameStr(
-    self: *const LowerTir,
-    a: *ast.Ast,
-    pid: ast.PatternId,
-    target: []const u8,
-) bool {
-    const pk = a.pats.index.kinds.items[pid.toRaw()];
-    return switch (pk) {
-        .Binding => {
-            const nm = a.pats.get(.Binding, pid).name;
-            return std.mem.eql(u8, a.exprs.strs.get(nm), target);
-        },
-        .Tuple => {
-            const row = a.pats.get(.Tuple, pid);
-            const elems = a.pats.pat_pool.slice(row.elems);
-            for (elems) |eid| if (self.patternContainsNameStr(a, eid, target)) return true;
-            return false;
-        },
-        .Struct => {
-            const row = a.pats.get(.Struct, pid);
-            const fields = a.pats.field_pool.slice(row.fields);
-            for (fields) |fid| {
-                const frow = a.pats.StructField.get(fid);
-                if (self.patternContainsNameStr(a, frow.pattern, target)) return true;
-            }
-            return false;
-        },
-        .VariantTuple => {
-            const row = a.pats.get(.VariantTuple, pid);
-            const elems = a.pats.pat_pool.slice(row.elems);
-            for (elems) |eid| if (self.patternContainsNameStr(a, eid, target)) return true;
-            return false;
-        },
-        .VariantStruct => {
-            const row = a.pats.get(.VariantStruct, pid);
-            const fields = a.pats.field_pool.slice(row.fields);
-            for (fields) |fid| {
-                const frow = a.pats.StructField.get(fid);
-                if (self.patternContainsNameStr(a, frow.pattern, target)) return true;
-            }
-            return false;
-        },
-        .Slice => {
-            const row = a.pats.get(.Slice, pid);
-            const elems = a.pats.pat_pool.slice(row.elems);
-            for (elems) |eid| if (self.patternContainsNameStr(a, eid, target)) return true;
-            if (!row.rest_binding.isNone()) {
-                if (self.patternContainsNameStr(a, row.rest_binding.unwrap(), target)) return true;
-            }
-            return false;
-        },
-        .Or => {
-            const row = a.pats.get(.Or, pid);
-            const alts = a.pats.pat_pool.slice(row.alts);
-            for (alts) |aid| if (self.patternContainsNameStr(a, aid, target)) return true;
-            return false;
-        },
-        .At => {
-            const row = a.pats.get(.At, pid);
-            const binder = a.exprs.strs.get(row.binder);
-            if (std.mem.eql(u8, binder, target)) return true;
-            return self.patternContainsNameStr(a, row.pattern, target);
-        },
-        else => false,
-    };
-}
-
-fn findFunctionDeclForCall(
-    self: *LowerTir,
-    caller_ast: *ast.Ast,
-    callee_expr: ast.ExprId,
-    callee_name: ast.StrId,
-) ?FunctionDeclContext {
-    if (self.findTopLevelDeclByName(caller_ast, callee_name)) |decl_id| {
-        const decl = caller_ast.exprs.Decl.get(decl_id);
-        if (caller_ast.exprs.index.kinds.items[decl.value.toRaw()] != .Import) {
-            return .{ .ast = caller_ast, .decl_id = decl_id };
-        }
-    }
-    const callee_kind = caller_ast.exprs.index.kinds.items[callee_expr.toRaw()];
-    if (callee_kind != .FieldAccess) return null;
-
-    const fr = caller_ast.exprs.get(.FieldAccess, callee_expr);
-    const parent_kind = caller_ast.exprs.index.kinds.items[fr.parent.toRaw()];
-
-    // Case A: Direct import expression: (import "...").name(...)
-    if (parent_kind == .Import) {
-        const ir = caller_ast.exprs.get(.Import, fr.parent);
-        const path = caller_ast.exprs.strs.get(ir.path);
-        var pkg_iter = self.context.compilation_unit.packages.iterator();
-        while (pkg_iter.next()) |pkg| {
-            if (pkg.value_ptr.sources.get(path)) |unit_ref| {
-                if (unit_ref.ast) |a| {
-                    if (findDeclIdByName(a, callee_name)) |decl_id| {
-                        return .{ .ast = a, .decl_id = decl_id };
-                    }
-                }
-                break;
-            }
-        }
-        return null;
-    }
-
-    // Case B: Identifier bound to an import: mod.name(...)
-    if (parent_kind == .Ident) {
-        const parent_ident = caller_ast.exprs.get(.Ident, fr.parent);
-        if (self.findTopLevelImportByName(caller_ast, parent_ident.name)) |import_decl_id| {
-            const import_decl = caller_ast.exprs.Decl.get(import_decl_id);
-            const ir = caller_ast.exprs.get(.Import, import_decl.value);
-            const path = caller_ast.exprs.strs.get(ir.path);
-            var pkg_iter2 = self.context.compilation_unit.packages.iterator();
-            while (pkg_iter2.next()) |pkg| {
-                if (pkg.value_ptr.sources.get(path)) |unit_ref| {
-                    if (unit_ref.ast) |a| {
-                        if (findDeclIdByName(a, callee_name)) |decl_id| {
-                            return .{ .ast = a, .decl_id = decl_id };
-                        }
-                    }
-                    break;
-                }
-            }
-        }
-    }
-
-    return null;
-}
-
-fn findDeclIdByName(a: *ast.Ast, name: ast.StrId) ?ast.DeclId {
-    if (a.type_info.getExport(name)) |ex| {
-        return ex.decl_id;
-    }
-    const decls = a.exprs.decl_pool.slice(a.unit.decls);
-    for (decls) |did| {
-        const d = a.exprs.Decl.get(did);
-        if (d.pattern.isNone()) continue;
-        const pat = d.pattern.unwrap();
-        if (bindingNameOfPattern(a, pat)) |nm| {
-            if (nm.toRaw() == name.toRaw()) {
-                return did;
-            }
-        }
-    }
-    return null;
-}
-
 fn symbolNameForDecl(self: *LowerTir, decl_ast: *ast.Ast, did: ast.DeclId) !?StrId {
     const decl = decl_ast.exprs.Decl.get(did);
     const is_extern_fn = switch (decl_ast.exprs.index.kinds.items[decl.value.toRaw()]) {
@@ -4818,13 +4671,13 @@ fn structFieldDefaultExpr(self: *LowerTir, a: *ast.Ast, type_expr: ast.ExprId, f
     return structFieldDefaultInStructExpr(a, struct_expr, field_name);
 }
 
-fn structTypeExprFromTypeRef(self: *LowerTir, a: *ast.Ast, type_expr: ast.ExprId) ?ast.ExprId {
+fn structTypeExprFromTypeRef(_: *LowerTir, a: *ast.Ast, type_expr: ast.ExprId) ?ast.ExprId {
     const kind = a.exprs.index.kinds.items[type_expr.toRaw()];
     return switch (kind) {
         .StructType => type_expr,
         .Ident => blk: {
             const ident = a.exprs.get(.Ident, type_expr);
-            if (self.findTopLevelDeclByName(a, ident.name)) |decl_id| {
+            if (call_resolution.findTopLevelDeclByName(a, ident.name)) |decl_id| {
                 const decl = a.exprs.Decl.get(decl_id);
                 if (a.exprs.index.kinds.items[decl.value.toRaw()] == .StructType) {
                     break :blk decl.value;
@@ -4846,11 +4699,6 @@ fn structFieldDefaultInStructExpr(a: *ast.Ast, struct_expr: ast.ExprId, field_na
         }
     }
     return null;
-}
-fn findTopLevelImportByName(self: *const LowerTir, a: *ast.Ast, name: ast.StrId) ?ast.DeclId {
-    const did = self.findTopLevelDeclByName(a, name) orelse return null;
-    const d = a.exprs.Decl.get(did);
-    return if (a.exprs.index.kinds.items[d.value.toRaw()] == .Import) did else null;
 }
 
 /// True if `ty` is a numeric scalar type.

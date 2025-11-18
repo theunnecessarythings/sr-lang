@@ -10,6 +10,7 @@ const Loc = @import("lexer.zig").Token.Loc;
 const pattern_matching = @import("check_pattern_matching.zig");
 const Pipeline = @import("pipeline.zig").Pipeline;
 const comp = @import("comptime.zig");
+const call_resolution = @import("call_resolution.zig");
 const interpreter = @import("interpreter.zig");
 const symbols = @import("symbols.zig");
 const types = @import("types.zig");
@@ -3583,7 +3584,10 @@ fn checkCall(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, id: ast.E
         }
     }
     if (ast_unit.type_info.getMethodBinding(call_expr.callee)) |binding| {
-        return try self.checkMethodCall(ctx, ast_unit, &call_expr, binding, args);
+        return try self.checkMethodCall(ctx, ast_unit, id, &call_expr, binding, args);
+    }
+    if (calleeNameForCall(ast_unit, call_expr.callee)) |name| {
+        try self.maybeRecordRuntimeSpecialization(ctx, ast_unit, id, call_expr.callee, name, args, func_ty);
     }
     func_kind = self.typeKind(func_ty);
     if (func_kind == .Any) return self.context.type_store.tTypeError();
@@ -3811,6 +3815,7 @@ fn checkMethodCall(
     self: *Checker,
     ctx: *CheckerContext,
     ast_unit: *ast.Ast,
+    call_id: ast.ExprId,
     call_expr: *const ast.Rows.Call,
     binding: types.MethodBinding,
     args: []const ast.ExprId,
@@ -3920,7 +3925,159 @@ fn checkMethodCall(
         }
     }
 
+    var method_args: List(ast.ExprId) = .empty;
+    defer method_args.deinit(self.gpa);
+    if (binding.requires_implicit_receiver) {
+        try method_args.append(self.gpa, field_expr.parent);
+    }
+    for (args) |arg| {
+        try method_args.append(self.gpa, arg);
+    }
+    try self.maybeRecordRuntimeSpecialization(
+        ctx,
+        ast_unit,
+        call_id,
+        call_expr.callee,
+        binding.method_name,
+        method_args.items,
+        binding.func_type,
+    );
+
     return fn_row.result;
+}
+
+fn calleeNameForCall(ast_unit: *ast.Ast, callee_expr: ast.ExprId) ?ast.StrId {
+    const kind = ast_unit.exprs.index.kinds.items[callee_expr.toRaw()];
+    return switch (kind) {
+        .Ident => ast_unit.exprs.get(.Ident, callee_expr).name,
+        .FieldAccess => ast_unit.exprs.get(.FieldAccess, callee_expr).field,
+        else => null,
+    };
+}
+
+fn exprTypeFromInfo(self: *Checker, ast_unit: *ast.Ast, expr_id: ast.ExprId) types.TypeId {
+    if (expr_id.toRaw() < ast_unit.type_info.expr_types.items.len) {
+        if (ast_unit.type_info.expr_types.items[expr_id.toRaw()]) |ty| {
+            return ty;
+        }
+    }
+    return self.context.type_store.tAny();
+}
+
+fn computeTrailingAnyTupleTypeChecker(
+    self: *Checker,
+    ast_unit: *ast.Ast,
+    args: []const ast.ExprId,
+    start_index: usize,
+) anyerror!types.TypeId {
+    if (start_index >= args.len) {
+        return self.context.type_store.mkTuple(&.{});
+    }
+    var elem_types = std.ArrayList(types.TypeId){};
+    defer elem_types.deinit(self.gpa);
+
+    var idx = start_index;
+    while (idx < args.len) : (idx += 1) {
+        try elem_types.append(self.gpa, self.exprTypeFromInfo(ast_unit, args[idx]));
+    }
+
+    return self.context.type_store.mkTuple(elem_types.items);
+}
+
+fn maybeRecordRuntimeSpecialization(
+    self: *Checker,
+    ctx: *CheckerContext,
+    ast_unit: *ast.Ast,
+    call_id: ast.ExprId,
+    callee_expr: ast.ExprId,
+    callee_name: ast.StrId,
+    args: []const ast.ExprId,
+    fn_ty: types.TypeId,
+) !void {
+    _ = ctx;
+    if (ast_unit.type_info.getSpecializedCall(call_id)) |_| {
+        return;
+    }
+    var decl_ctx = call_resolution.findFunctionDeclForCall(self.context, ast_unit, callee_expr, callee_name) orelse return;
+    decl_ctx = resolveFunctionDeclAlias(self, decl_ctx) orelse decl_ctx;
+    const decl = decl_ctx.ast.exprs.Decl.get(decl_ctx.decl_id);
+    if (decl_ctx.ast.exprs.index.kinds.items[decl.value.toRaw()] != .FunctionLit) return;
+    const fn_lit = decl_ctx.ast.exprs.get(.FunctionLit, decl.value);
+    const params = decl_ctx.ast.exprs.param_pool.slice(fn_lit.params);
+
+    var skip_params: usize = 0;
+    while (skip_params < params.len and decl_ctx.ast.exprs.Param.get(params[skip_params]).is_comptime) : (skip_params += 1) {}
+
+    const fnrow = self.context.type_store.get(.Function, fn_ty);
+    const param_tys = self.context.type_store.type_pool.slice(fnrow.params);
+    const treat_trailing_any = !fnrow.is_extern and param_tys.len > 0 and self.typeKind(param_tys[param_tys.len - 1]) == .Any;
+
+    var runtime_specs: List(ParamSpecialization) = .empty;
+    defer runtime_specs.deinit(self.gpa);
+
+    var runtime_idx: usize = skip_params;
+    while (runtime_idx < params.len and runtime_idx < args.len) : (runtime_idx += 1) {
+        const param = decl_ctx.ast.exprs.Param.get(params[runtime_idx]);
+        if (param.pat.isNone()) continue;
+        const pname = bindingNameOfPattern(decl_ctx.ast, param.pat.unwrap()) orelse continue;
+        const param_ty = if (runtime_idx < param_tys.len) param_tys[runtime_idx] else self.context.type_store.tAny();
+        if (self.typeKind(param_ty) != .Any) continue;
+        const arg_ty = self.exprTypeFromInfo(ast_unit, args[runtime_idx]);
+        if (self.typeKind(arg_ty) == .Any) continue;
+        try runtime_specs.append(self.gpa, .{ .name = pname, .ty = arg_ty });
+    }
+
+    if (treat_trailing_any and params.len > 0) {
+        const tuple_start = params.len - 1;
+        const tuple_ty = try self.computeTrailingAnyTupleTypeChecker(ast_unit, args, tuple_start);
+        const last_param = decl_ctx.ast.exprs.Param.get(params[tuple_start]);
+        if (!last_param.pat.isNone()) {
+            if (bindingNameOfPattern(decl_ctx.ast, last_param.pat.unwrap())) |pname| {
+                try runtime_specs.append(self.gpa, .{ .name = pname, .ty = tuple_ty });
+            }
+        }
+    }
+
+    if (runtime_specs.items.len == 0) {
+        return;
+    }
+    var target_ctx: ?*CheckerContext = null;
+    if (decl_ctx.ast.file_id < self.checker_ctx.items.len) {
+        target_ctx = self.checker_ctx.items[decl_ctx.ast.file_id];
+    }
+    if (target_ctx == null) {
+        return;
+    }
+    _ = try self.checkSpecializedFunction(target_ctx.?, decl_ctx.ast, decl.value, runtime_specs.items);
+    try ast_unit.type_info.markSpecializedCall(self.gpa, call_id, decl_ctx);
+}
+
+fn aliasTargetName(ast_unit: *ast.Ast, expr: ast.ExprId) ?ast.StrId {
+    const kind = ast_unit.exprs.index.kinds.items[expr.toRaw()];
+    return switch (kind) {
+        .Ident => ast_unit.exprs.get(.Ident, expr).name,
+        .FieldAccess => ast_unit.exprs.get(.FieldAccess, expr).field,
+        else => null,
+    };
+}
+
+fn resolveFunctionDeclAlias(
+    self: *Checker,
+    start: call_resolution.FunctionDeclContext,
+) ?call_resolution.FunctionDeclContext {
+    var current = start;
+    var depth: usize = 0;
+    while (depth < 16) : (depth += 1) {
+        const decl = current.ast.exprs.Decl.get(current.decl_id);
+        const kind = current.ast.exprs.index.kinds.items[decl.value.toRaw()];
+        if (kind == .FunctionLit) return current;
+        if (kind == .Import) return null;
+        const alias_name = aliasTargetName(current.ast, decl.value) orelse return current;
+        const next = call_resolution.findFunctionDeclForCall(self.context, current.ast, decl.value, alias_name) orelse return current;
+        if (next.ast == current.ast and next.decl_id.toRaw() == current.decl_id.toRaw()) return current;
+        current = next;
+    }
+    return current;
 }
 
 // =========================

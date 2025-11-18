@@ -2,6 +2,7 @@ const std = @import("std");
 const cst = @import("cst.zig");
 const ast = @import("ast.zig");
 const comp = @import("comptime.zig");
+const call_resolution = @import("call_resolution.zig");
 
 // DOD Type Store
 pub const TypeTag = struct {};
@@ -102,6 +103,7 @@ pub const TypeInfo = struct {
     method_bindings: std.AutoArrayHashMapUnmanaged(u32, MethodBinding) = .{},
     mlir_splice_info: std.AutoArrayHashMapUnmanaged(u32, MlirSpliceInfo) = .{},
     exports: std.AutoArrayHashMapUnmanaged(ast.StrId, ExportEntry) = .{},
+    specialized_calls: std.AutoArrayHashMapUnmanaged(u32, call_resolution.FunctionDeclContext) = .{},
 
     pub const ExportEntry = struct {
         ty: TypeId,
@@ -135,6 +137,7 @@ pub const TypeInfo = struct {
         self.method_bindings.deinit(self.gpa);
         self.mlir_splice_info.deinit(self.gpa);
         self.exports.deinit(self.gpa);
+        self.specialized_calls.deinit(self.gpa);
     }
 
     pub fn print(self: *TypeInfo) void {
@@ -230,6 +233,16 @@ pub const TypeInfo = struct {
 
     pub fn getExport(self: *const TypeInfo, name: ast.StrId) ?ExportEntry {
         return self.exports.get(name);
+    }
+
+    pub fn markSpecializedCall(self: *TypeInfo, gpa: std.mem.Allocator, expr_id: ast.ExprId, ctx: call_resolution.FunctionDeclContext) !void {
+        const key = expr_id.toRaw();
+        const gop = try self.specialized_calls.getOrPut(gpa, key);
+        gop.value_ptr.* = ctx;
+    }
+
+    pub fn getSpecializedCall(self: *const TypeInfo, expr_id: ast.ExprId) ?call_resolution.FunctionDeclContext {
+        return self.specialized_calls.get(expr_id.toRaw());
     }
 
     pub fn hasComptimeValue(self: *const TypeInfo, expr_id: ast.ExprId) bool {
