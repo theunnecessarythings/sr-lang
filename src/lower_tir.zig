@@ -1821,6 +1821,7 @@ fn trySpecializeFunctionCall(
     self: *LowerTir,
     ctx: *LowerContext,
     a: *ast.Ast,
+    env: *cf.Env,
     callee: *CalleeInfo,
     _: ast.ExprId,
     callee_name_ptr: *[]const u8,
@@ -1979,7 +1980,7 @@ fn trySpecializeFunctionCall(
                 self.context.type_store.tAny();
             if (!self.isType(param_ty, .Any)) continue;
 
-            const arg_ty = self.getExprType(ctx, a, original_args[runtime_idx]);
+            const arg_ty = self.exprTypeWithEnv(ctx, a, env, original_args[runtime_idx]);
             if (self.isType(arg_ty, .Any)) continue;
 
             try binding_infos.append(self.gpa, comp.BindingInfo.runtimeParam(pname, arg_ty));
@@ -1987,7 +1988,7 @@ fn trySpecializeFunctionCall(
 
         if (treat_trailing_any and params.len > 0) {
             const tuple_start = params.len - 1;
-            const tuple_ty = try self.computeTrailingAnyTupleType(ctx, a, original_args, tuple_start);
+            const tuple_ty = try self.computeTrailingAnyTupleType(ctx, a, env, original_args, tuple_start);
             trailing_any_tuple_ty = tuple_ty;
             const last_param = decl_ast.exprs.Param.get(params[params.len - 1]);
             if (!last_param.pat.isNone()) {
@@ -2200,6 +2201,7 @@ fn lowerCall(
         try self.trySpecializeFunctionCall(
             ctx,
             a,
+            env,
             &callee,
             callee_expr,
             &callee_name,
@@ -2356,7 +2358,7 @@ fn lowerRemainingArgs(
         const trailing_len = if (arg_ids.len > start_index) arg_ids.len - start_index else 0;
         if (trailing_len == 1) {
             const idx = start_index;
-            if (!self.isSpreadArgExpr(ctx, a, arg_ids[idx])) {
+            if (!self.isSpreadArgExpr(ctx, a, env, arg_ids[idx])) {
                 const single_val = try self.lowerExpr(ctx, a, env, f, blk, arg_ids[idx], null, .rvalue);
                 try vals_list.append(self.gpa, single_val);
                 return;
@@ -2372,7 +2374,7 @@ fn lowerRemainingArgs(
         }
 
         const packed_tuple_ty = trailing_any_tuple_ty_ptr.* orelse blk: {
-            const ty = try self.computeTrailingAnyTupleType(ctx, a, arg_ids, fixed_params_count);
+            const ty = try self.computeTrailingAnyTupleType(ctx, a, env, arg_ids, fixed_params_count);
             trailing_any_tuple_ty_ptr.* = ty;
             break :blk ty;
         };
@@ -2588,7 +2590,7 @@ fn handleExternVariadicArgs(
         const removed_val = vals_list.items[arg_pos];
         const expr_id: ?ast.ExprId = if (arg_pos < arg_ids.len) arg_ids[arg_pos] else null;
         const loc_entry = if (expr_id) |eid| optLoc(a, eid) else optLoc(a, id);
-        const ty_entry = if (expr_id) |eid| self.getExprType(ctx, a, eid) else self.getExprType(ctx, a, id);
+        const ty_entry = if (expr_id) |eid| self.exprTypeWithEnv(ctx, a, env, eid) else self.exprTypeWithEnv(ctx, a, env, id);
         try var_entries.append(self.gpa, .{
             .value = removed_val,
             .ty = ty_entry,
@@ -2602,7 +2604,7 @@ fn handleExternVariadicArgs(
     while (ve_idx < var_entries.items.len) {
         const entry = var_entries.items[ve_idx];
         if (self.context.type_store.getKind(entry.ty) == .Tuple and
-            self.isSpreadArgExpr(ctx, a, entry.expr))
+            self.isSpreadArgExpr(ctx, a, env, entry.expr))
         {
             const tuple_row = self.context.type_store.get(.Tuple, entry.ty);
             const elem_types = self.context.type_store.type_pool.slice(tuple_row.elems);
@@ -2669,24 +2671,30 @@ fn isSpreadRangeExpr(
     self: *LowerTir,
     ctx: *LowerContext,
     a: *ast.Ast,
+    env: *cf.Env,
     expr: ast.ExprId,
 ) bool {
     if (a.exprs.index.kinds.items[expr.toRaw()] != .Range) return false;
+    if (a.type_info.isRangeSpread(expr)) return true;
     const row = a.exprs.get(.Range, expr);
     if (!row.start.isNone() or row.end.isNone()) return false;
     const end_expr = row.end.unwrap();
-    const end_ty = self.getExprType(ctx, a, end_expr);
-    const end_kind = self.context.type_store.getKind(end_ty);
-    return end_kind == .Tuple or end_kind == .Any;
+    const refined_ty = self.exprTypeWithEnv(ctx, a, env, end_expr);
+    const refined_kind = self.context.type_store.getKind(refined_ty);
+    if (refined_kind == .Tuple or refined_kind == .Any) return true;
+    const stamped_ty = self.getExprType(ctx, a, end_expr);
+    const stamped_kind = self.context.type_store.getKind(stamped_ty);
+    return stamped_kind == .Any;
 }
 
 fn isSpreadArgExpr(
     self: *LowerTir,
     ctx: *LowerContext,
     a: *ast.Ast,
+    env: *cf.Env,
     expr: ?ast.ExprId,
 ) bool {
-    if (expr) |eid| return self.isSpreadRangeExpr(ctx, a, eid);
+    if (expr) |eid| return self.isSpreadRangeExpr(ctx, a, env, eid);
     return false;
 }
 
@@ -2694,6 +2702,7 @@ fn computeTrailingAnyTupleType(
     self: *LowerTir,
     ctx: *LowerContext,
     a: *ast.Ast,
+    env: *cf.Env,
     args: []const ast.ExprId,
     start_index: usize,
 ) !types.TypeId {
@@ -2702,8 +2711,8 @@ fn computeTrailingAnyTupleType(
     }
 
     const trailing_len = args.len - start_index;
-    if (trailing_len == 1 and !self.isSpreadArgExpr(ctx, a, args[start_index])) {
-        return self.getExprType(ctx, a, args[start_index]);
+    if (trailing_len == 1 and !self.isSpreadArgExpr(ctx, a, env, args[start_index])) {
+        return self.exprTypeWithEnv(ctx, a, env, args[start_index]);
     }
 
     var elem_types = std.ArrayList(types.TypeId){};
@@ -2711,7 +2720,7 @@ fn computeTrailingAnyTupleType(
 
     var idx = start_index;
     while (idx < args.len) : (idx += 1) {
-        try elem_types.append(self.gpa, self.getExprType(ctx, a, args[idx]));
+        try elem_types.append(self.gpa, self.exprTypeWithEnv(ctx, a, env, args[idx]));
     }
 
     return self.context.type_store.mkTuple(elem_types.items);
@@ -2914,7 +2923,7 @@ fn lowerRange(
     const row = a.exprs.get(.Range, id);
     const ty0 = self.getExprType(ctx, a, id);
     const loc = optLoc(a, id);
-    if (self.isSpreadRangeExpr(ctx, a, id)) {
+    if (self.isSpreadRangeExpr(ctx, a, env, id)) {
         const inner = row.end.unwrap();
         return self.lowerExpr(ctx, a, env, f, blk, inner, expected_ty, .rvalue);
     }
@@ -4834,10 +4843,37 @@ fn refineExprType(
                 return type_ty;
             }
         },
+        .Range => {
+            if (self.isSpreadRangeExpr(ctx, a, env, expr)) {
+                const row = a.exprs.get(.Range, expr);
+                if (!row.end.isNone()) {
+                    const inner = row.end.unwrap();
+                    const inner_stamped = self.getExprType(ctx, a, inner);
+                    if (try self.refineExprType(ctx, a, env, inner, inner_stamped)) |inner_refined| {
+                        try self.noteExprType(ctx, expr, inner_refined);
+                        return inner_refined;
+                    }
+                    try self.noteExprType(ctx, expr, inner_stamped);
+                    return inner_stamped;
+                }
+            }
+        },
         else => {},
     }
 
     return stamped;
+}
+
+fn exprTypeWithEnv(
+    self: *LowerTir,
+    ctx: *LowerContext,
+    a: *ast.Ast,
+    env: *cf.Env,
+    expr: ast.ExprId,
+) types.TypeId {
+    const stamped = self.getExprType(ctx, a, expr);
+    const refined = self.refineExprType(ctx, a, env, expr, stamped) catch return stamped;
+    return refined orelse stamped;
 }
 
 // ============================

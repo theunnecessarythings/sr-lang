@@ -653,9 +653,6 @@ fn recordExportsForDecl(
         if (!srow.origin_decl.isNone() and srow.origin_decl.unwrap().eq(decl_id)) {
             const nm = srow.name;
             const bty = pattern_matching.bindingTypeInPattern(self, ast_unit, decl.pattern.unwrap(), nm, value_ty) orelse value_ty;
-            // Export debug print silenced for cleaner checker output
-            // const filename = self.context.source_manager.get(@intCast(ast_unit.file_id)) orelse "unknown";
-            // std.debug.print("!!! EXPORTING {s} from {s}\n", .{ getStr(ast_unit, nm), filename });
             try ast_unit.type_info.addExport(nm, bty, decl_id);
         }
     }
@@ -668,8 +665,6 @@ fn recordExportsForDecl(
             if (!srow.origin_decl.isNone() and srow.origin_decl.unwrap().eq(decl_id)) {
                 const nm = srow.name;
                 const bty = pattern_matching.bindingTypeInPattern(self, ast_unit, decl.pattern.unwrap(), nm, value_ty) orelse value_ty;
-                // const filename = self.context.source_manager.get(@intCast(ast_unit.file_id)) orelse "unknown";
-                // std.debug.print("!!! EXPORTING {s} from {s} (from active frame)\n", .{ getStr(ast_unit, nm), filename });
                 try ast_unit.type_info.addExport(nm, bty, decl_id);
             }
         }
@@ -3178,7 +3173,12 @@ fn checkRange(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, id: ast.
 
     if (start_ty == null and end_ty != null) {
         const end_t = end_ty.?;
-        if (self.typeKind(end_t) == .Tuple) {
+        const end_kind = self.typeKind(end_t);
+        if (end_kind == .Tuple) {
+            return end_t;
+        }
+        if (end_kind == .Any) {
+            try ast_unit.type_info.markRangeSpread(self.gpa, id);
             return end_t;
         }
     }
@@ -4063,17 +4063,13 @@ fn maybeRecordRuntimeSpecialization(
         }
     }
 
-    if (runtime_specs.items.len == 0) {
+    if (runtime_specs.items.len == 0)
         return;
-    }
-    var target_ctx: ?*CheckerContext = null;
-    if (decl_ctx.ast.file_id < self.checker_ctx.items.len) {
-        target_ctx = self.checker_ctx.items[decl_ctx.ast.file_id];
-    }
-    if (target_ctx == null) {
+    if (decl_ctx.ast.file_id >= self.checker_ctx.items.len)
         return;
-    }
-    _ = try self.checkSpecializedFunction(target_ctx.?, decl_ctx.ast, decl.value, runtime_specs.items);
+
+    const target_ctx = self.checker_ctx.items[decl_ctx.ast.file_id];
+    _ = try self.checkSpecializedFunction(target_ctx, decl_ctx.ast, decl.value, runtime_specs.items);
     try ast_unit.type_info.markSpecializedCall(self.gpa, call_id, decl_ctx);
 }
 
@@ -4156,7 +4152,6 @@ fn checkMlirBlock(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, id: 
         const sym = ctx.symtab.syms.get(sym_id);
 
         if (!sym.is_comptime) {
-            std.debug.print("sym: {}\n", .{sym});
             try self.context.diags.addError(loc, .mlir_splice_not_comptime, .{getStr(ast_unit, name)});
             return self.context.type_store.tTypeError();
         }

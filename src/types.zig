@@ -104,6 +104,7 @@ pub const TypeInfo = struct {
     mlir_splice_info: std.AutoArrayHashMapUnmanaged(u32, MlirSpliceInfo) = .{},
     exports: std.AutoArrayHashMapUnmanaged(ast.StrId, ExportEntry) = .{},
     specialized_calls: std.AutoArrayHashMapUnmanaged(u32, call_resolution.FunctionDeclContext) = .{},
+    spread_ranges: std.AutoArrayHashMapUnmanaged(u32, void) = .{},
 
     pub const ExportEntry = struct {
         ty: TypeId,
@@ -138,6 +139,7 @@ pub const TypeInfo = struct {
         self.mlir_splice_info.deinit(self.gpa);
         self.exports.deinit(self.gpa);
         self.specialized_calls.deinit(self.gpa);
+        self.spread_ranges.deinit(self.gpa);
     }
 
     pub fn print(self: *TypeInfo) void {
@@ -239,6 +241,16 @@ pub const TypeInfo = struct {
         const key = expr_id.toRaw();
         const gop = try self.specialized_calls.getOrPut(gpa, key);
         gop.value_ptr.* = ctx;
+    }
+
+    pub fn markRangeSpread(self: *TypeInfo, gpa: std.mem.Allocator, expr_id: ast.ExprId) !void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        try self.spread_ranges.put(gpa, expr_id.toRaw(), {});
+    }
+
+    pub fn isRangeSpread(self: *const TypeInfo, expr_id: ast.ExprId) bool {
+        return self.spread_ranges.contains(expr_id.toRaw());
     }
 
     pub fn getSpecializedCall(self: *const TypeInfo, expr_id: ast.ExprId) ?call_resolution.FunctionDeclContext {
