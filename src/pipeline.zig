@@ -497,7 +497,7 @@ fn runInterpreterStage(self: *Pipeline) anyerror!void {
 }
 
 fn interpretAstUnit(self: *Pipeline, ast_unit: *ast_mod.Ast) anyerror!bool {
-    var interp = try interpreter.Interpreter.init(self.allocator, ast_unit);
+    var interp = try interpreter.Interpreter.init(self.allocator, ast_unit, null);
     defer interp.deinit();
 
     var found_block = false;
@@ -543,5 +543,7 @@ fn printComptimeValue(value: *const comp.ComptimeValue) void {
         .MlirAttribute => std.debug.print("<mlir-attribute>", .{}),
         .MlirModule => std.debug.print("<mlir-module>", .{}),
         .Function => std.debug.print("<function>", .{}),
+        .Pointer => |_| std.debug.print("<pointer>", .{}),
+        .Map => |map| std.debug.print("<map len={d}>", .{map.entries.items.len}),
     }
 }

@@ -143,23 +143,21 @@ pub const StringInterner = struct {
     pub fn intern(self: *StringInterner, s: []const u8) StrId {
         self.mutex.lock();
         defer self.mutex.unlock();
-        // Fast path: already interned
         if (self.map.get(s)) |existing| return existing;
 
-        // Compute id BEFORE extending off[]
-        const id = StrId.fromRaw(@intCast(self.off.items.len - 1));
+        const key_copy = self.gpa.dupe(u8, s) catch @panic("OOM");
 
-        // Commit bytes for id→string table
+        const gop = self.map.getOrPut(self.gpa, key_copy) catch @panic("OOM");
+
+        if (gop.found_existing) {
+            self.gpa.free(key_copy);
+            return gop.value_ptr.*;
+        }
+
+        const id = StrId.fromRaw(@intCast(self.off.items.len - 1));
         self.buf.appendSlice(self.gpa, s) catch @panic("OOM");
         self.off.append(self.gpa, @intCast(self.buf.items.len)) catch @panic("OOM");
 
-        // Stable key for hashmap: duplicate s into arena
-        const key_copy = self.gpa.dupe(u8, s) catch @panic("OOM");
-
-        // Insert into map
-        const gop = self.map.getOrPut(self.gpa, key_copy) catch @panic("OOM");
-        // Because we did a .get() above, this should be a fresh slot
-        if (gop.found_existing) return gop.value_ptr.*; // defensive
         gop.value_ptr.* = id;
         return id;
     }

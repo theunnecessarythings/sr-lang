@@ -272,6 +272,10 @@ fn appendMlirSpliceValue(
             var writer = buf.writer();
             try writer.print("<struct len={d}>", .{sv.fields.items.len});
         },
+        .Map => |mp| {
+            var writer = buf.writer();
+            try writer.print("<map len={d}>", .{mp.entries.items.len});
+        },
         .Range => |rg| {
             var writer = buf.writer();
             try writer.print("range({d}..{d}{s})", .{ rg.start, rg.end, if (rg.inclusive) "=" else "" });
@@ -283,6 +287,7 @@ fn appendMlirSpliceValue(
         .MlirType => |ty| try self.appendMlirTypeText(buf, ty),
         .MlirAttribute => |attr| try self.appendMlirAttributeText(buf, attr),
         .MlirModule => |module| try self.appendMlirModuleText(buf, module),
+        .Pointer => |_| try buf.appendSlice("<pointer>"),
         .Function => |_| return error.MlirSpliceMissingValue,
     }
 }

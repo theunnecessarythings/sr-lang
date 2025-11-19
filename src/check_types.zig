@@ -36,6 +36,7 @@ fn pipelineBindingsFor(self: *Checker, bindings: []const Binding) !PipelineBindi
 
 fn evalComptimeValueWithBindings(
     self: *Checker,
+    ctx: *Checker.CheckerContext,
     ast_unit: *ast.Ast,
     expr: ast.ExprId,
     expected_ty: types.TypeId,
@@ -43,7 +44,7 @@ fn evalComptimeValueWithBindings(
 ) !comp.ComptimeValue {
     const pb = try pipelineBindingsFor(self, bindings);
     defer if (pb.owns) self.gpa.free(pb.items);
-    return self.evalComptimeExpr(ast_unit, expr, expected_ty, pb.items);
+    return self.evalComptimeExpr(ctx, ast_unit, expr, expected_ty, pb.items);
 }
 
 fn lookupTypeBinding(bindings: []const Binding, name: ast.StrId) ?types.TypeId {
@@ -364,7 +365,8 @@ fn typeFromTypeExprWithBindings(
             const elem = res[1];
             var size: usize = 0;
             const size_loc = ast_unit.exprs.locs.get(row.loc);
-            var size_eval = evalComptimeValueWithBindings(self, ast_unit, row.size, self.context.type_store.tUsize(), bindings) catch {
+            var size_eval = evalComptimeValueWithBindings(self, ctx, ast_unit, row.size, self.context.type_store.tUsize(), bindings) catch |err| {
+                std.debug.print("Size eval error: {}\n", .{err});
                 try self.context.diags.addError(size_loc, .array_size_not_integer_literal, .{});
                 status = false;
                 break :blk_at .{ status, ts.mkArray(elem, size) };
@@ -399,7 +401,7 @@ fn typeFromTypeExprWithBindings(
             const callee_kind = ast_unit.exprs.index.kinds.items[call_row.callee.toRaw()];
             if (callee_kind == .FieldAccess or callee_kind == .Ident) {
                 const any_type_ty = ts.mkTypeType(ts.tAny());
-                var value = evalComptimeValueWithBindings(self, ast_unit, id, any_type_ty, bindings) catch break :blk_call .{ false, ts.tTypeError() };
+                var value = evalComptimeValueWithBindings(self, ctx, ast_unit, id, any_type_ty, bindings) catch break :blk_call .{ false, ts.tTypeError() };
                 defer value.destroy(self.gpa);
                 switch (value) {
                     .Type => |resolved| {
@@ -483,7 +485,7 @@ fn resolveTypeFunctionCall(
 
             if (!have_value) {
                 value = blk: {
-                    const computed = evalComptimeValueWithBindings(self, ast_unit, arg_expr, annotated, bindings_builder.items) catch {
+                    const computed = evalComptimeValueWithBindings(self, ctx, ast_unit, arg_expr, annotated, bindings_builder.items) catch {
                         if (arg_kind == .Literal) {
                             const literal_val = (try evalLiteralToComptime(ast_unit, arg_expr)) orelse return null;
                             break :blk literal_val;
@@ -868,7 +870,7 @@ pub fn typeFromTypeExpr(self: *Checker, ctx: *Checker.CheckerContext, ast_unit: 
 
                     if (!resolved_from_binding) {
                         const comptime_eval_ok = comptime_block: {
-                            var comptime_val = evalComptimeValueWithBindings(self, ast_unit, val_id, tag_ty, binding_slice) catch {
+                            var comptime_val = evalComptimeValueWithBindings(self, ctx, ast_unit, val_id, tag_ty, binding_slice) catch {
                                 break :comptime_block false;
                             };
                             defer comptime_val.destroy(self.gpa);
@@ -1141,7 +1143,7 @@ pub fn typeFromTypeExpr(self: *Checker, ctx: *Checker.CheckerContext, ast_unit: 
             const callee_kind = ast_unit.exprs.index.kinds.items[call_row.callee.toRaw()];
             if (callee_kind == .FieldAccess or callee_kind == .Ident) {
                 const any_type_ty = ts.mkTypeType(ts.tAny());
-                var value = evalComptimeValueWithBindings(self, ast_unit, id, any_type_ty, &[_]Binding{}) catch break :blk_call .{ false, ts.tTypeError() };
+                var value = evalComptimeValueWithBindings(self, ctx, ast_unit, id, any_type_ty, &[_]Binding{}) catch break :blk_call .{ false, ts.tTypeError() };
                 defer value.destroy(self.gpa);
                 switch (value) {
                     .Type => |resolved| {

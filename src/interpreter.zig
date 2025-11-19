@@ -1,12 +1,15 @@
 const std = @import("std");
 const ast = @import("ast.zig");
 const comptime_mod = @import("comptime.zig");
+const types = @import("types.zig");
 
 const Value = comptime_mod.ComptimeValue;
 const Sequence = comptime_mod.Sequence;
 const StructField = comptime_mod.StructField;
 const StructValue = comptime_mod.StructValue;
 const RangeValue = comptime_mod.RangeValue;
+const MapEntry = comptime_mod.MapEntry;
+const MapValue = comptime_mod.MapValue;
 const MethodKey = struct {
     owner: ast.StrId,
     method: ast.StrId,
@@ -66,6 +69,7 @@ pub const BindingSnapshot = struct {
 pub const Interpreter = struct {
     allocator: std.mem.Allocator,
     ast: *ast.Ast,
+    symtab: ?*const @import("symbols.zig").SymbolStore,
     bindings: std.ArrayList(Binding),
     method_table: MethodMap,
     specializations: std.AutoHashMap(u128, FunctionSpecializationEntry),
@@ -85,10 +89,11 @@ pub const Interpreter = struct {
         InvalidIndexAccess,
     };
 
-    pub fn init(allocator: std.mem.Allocator, ast_unit: *ast.Ast) anyerror!Interpreter {
+    pub fn init(allocator: std.mem.Allocator, ast_unit: *ast.Ast, symtab: ?*const @import("symbols.zig").SymbolStore) anyerror!Interpreter {
         var interp = Interpreter{
             .allocator = allocator,
             .ast = ast_unit,
+            .symtab = symtab,
             .bindings = std.ArrayList(Binding).empty,
             .method_table = MethodMap.init(allocator),
             .specializations = std.AutoHashMap(u128, FunctionSpecializationEntry).init(allocator),
@@ -114,7 +119,10 @@ pub const Interpreter = struct {
         const kind = self.ast.exprs.index.kinds.items[expr.toRaw()];
         return switch (kind) {
             .Literal => self.evalLiteral(self.ast.exprs.get(.Literal, expr)),
-            .Ident => self.evalIdent(self.ast.exprs.get(.Ident, expr)),
+            .NullLit => Value{ .Void = {} },
+            .UndefLit => Value{ .Void = {} },
+            .Ident => self.evalIdent(expr, self.ast.exprs.get(.Ident, expr)),
+            .Import => self.evalImport(expr),
             .Block => self.evalBlock(self.ast.exprs.get(.Block, expr)),
             .ComptimeBlock => {
                 const block_row = self.ast.exprs.get(.ComptimeBlock, expr);
@@ -127,6 +135,7 @@ pub const Interpreter = struct {
             .FunctionLit => evalFunctionLit(expr),
             .ArrayLit => self.evalSequence(self.ast.exprs.get(.ArrayLit, expr).elems),
             .TupleLit => self.evalSequence(self.ast.exprs.get(.TupleLit, expr).elems),
+            .MapLit => self.evalMapLit(self.ast.exprs.get(.MapLit, expr)),
             .Call => self.evalCall(self.ast.exprs.get(.Call, expr)),
             .FieldAccess => self.evalFieldAccess(self.ast.exprs.get(.FieldAccess, expr)),
             .IndexAccess => self.evalIndexAccess(self.ast.exprs.get(.IndexAccess, expr)),
@@ -136,7 +145,31 @@ pub const Interpreter = struct {
             .For => self.evalFor(self.ast.exprs.get(.For, expr)),
             .While => self.evalWhile(self.ast.exprs.get(.While, expr)),
             .Return => self.evalReturn(self.ast.exprs.get(.Return, expr)),
-            else => return Error.UnsupportedExpr,
+            .EnumType => self.evalEnumType(self.ast.exprs.get(.EnumType, expr)),
+            .ArrayType => self.evalArrayType(self.ast.exprs.get(.ArrayType, expr)),
+            .DynArrayType => self.evalDynArrayType(self.ast.exprs.get(.DynArrayType, expr)),
+            .SliceType => self.evalSliceType(self.ast.exprs.get(.SliceType, expr)),
+            .MapType => self.evalMapType(self.ast.exprs.get(.MapType, expr)),
+            .OptionalType => self.evalOptionalType(self.ast.exprs.get(.OptionalType, expr)),
+            .VariantType => self.evalVariantType(self.ast.exprs.get(.VariantType, expr)),
+            .ErrorType => self.evalVariantType(self.ast.exprs.get(.ErrorType, expr)),
+            .ErrorSetType => self.evalErrorSetType(self.ast.exprs.get(.ErrorSetType, expr)),
+            .StructType => self.evalStructType(self.ast.exprs.get(.StructType, expr)),
+            .UnionType => self.evalUnionType(self.ast.exprs.get(.UnionType, expr)),
+            .Cast => self.evalCast(self.ast.exprs.get(.Cast, expr)),
+            .PointerType => self.evalPointerType(self.ast.exprs.get(.PointerType, expr)),
+            .Deref => self.evalDeref(self.ast.exprs.get(.Deref, expr)),
+            .SimdType => self.evalSimdType(self.ast.exprs.get(.SimdType, expr)),
+            .TensorType => self.evalTensorType(self.ast.exprs.get(.TensorType, expr)),
+            .TypeType => Value{ .Type = self.ast.type_info.store.tType() },
+            .AnyType => Value{ .Type = self.ast.type_info.store.tAny() },
+            .NoreturnType => Value{ .Type = self.ast.type_info.store.tNoreturn() },
+            .Catch => self.evalCatch(self.ast.exprs.get(.Catch, expr)),
+            .OptionalUnwrap => self.evalOptionalUnwrap(self.ast.exprs.get(.OptionalUnwrap, expr)),
+            .Defer => self.evalDefer(self.ast.exprs.get(.Defer, expr)),
+            .TypeOf => self.evalTypeOf(self.ast.exprs.get(.TypeOf, expr)),
+            .MlirBlock => Value{ .Void = {} },
+            else => std.debug.panic("Unsupported expr: {}", .{kind}),
         };
     }
 
@@ -209,6 +242,276 @@ pub const Interpreter = struct {
         const ident = self.ast.exprs.get(.Ident, row.left);
         const value = try self.evalExpr(row.right);
         try self.setBinding(ident.name, value);
+    }
+
+    fn evalCast(self: *Interpreter, row: ast.Rows.Cast) anyerror!Value {
+        return self.evalExpr(row.expr);
+    }
+
+    fn evalCatch(self: *Interpreter, row: ast.Rows.Catch) anyerror!Value {
+        var value = try self.evalExpr(row.expr);
+        const result = try self.cloneValue(value);
+        value.destroy(self.allocator);
+        return result;
+    }
+
+    fn evalOptionalUnwrap(self: *Interpreter, row: ast.Rows.OptionalUnwrap) anyerror!Value {
+        var value = try self.evalExpr(row.expr);
+        const result = try self.cloneValue(value);
+        value.destroy(self.allocator);
+        return result;
+    }
+
+    fn evalDefer(self: *Interpreter, row: ast.Rows.Defer) anyerror!Value {
+        var value = try self.evalExpr(row.expr);
+        value.destroy(self.allocator);
+        return Value{ .Void = {} };
+    }
+
+    fn evalTypeOf(self: *Interpreter, row: ast.Rows.TypeOf) anyerror!Value {
+        const idx = row.expr.toRaw();
+        if (idx < self.ast.type_info.expr_types.items.len) {
+            if (self.ast.type_info.expr_types.items[idx]) |type_id| {
+                return Value{ .Type = type_id };
+            }
+        }
+        return Error.InvalidType;
+    }
+
+    fn evalPointerType(self: *Interpreter, row: ast.Rows.PointerType) anyerror!Value {
+        var elem_value = try self.evalExpr(row.elem);
+        defer elem_value.destroy(self.allocator);
+        return switch (elem_value) {
+            .Type => |elem_ty| {
+                const ts = self.ast.type_info.store;
+                return Value{ .Type = ts.mkPtr(elem_ty, row.is_const) };
+            },
+            else => Error.InvalidType,
+        };
+    }
+
+    fn evalDeref(self: *Interpreter, row: ast.Rows.Deref) anyerror!Value {
+        var ptr_value = try self.evalExpr(row.expr);
+        defer ptr_value.destroy(self.allocator);
+        return switch (ptr_value) {
+            .Pointer => |target| try self.cloneValue(target.*),
+            else => Error.InvalidType,
+        };
+    }
+
+    fn evalSimdType(self: *Interpreter, row: ast.Rows.SimdType) anyerror!Value {
+        const elem_ty = try self.typeIdFromTypeExpr(row.elem);
+        var lanes_value = try self.evalExpr(row.lanes);
+        defer lanes_value.destroy(self.allocator);
+        const lanes = switch (lanes_value) {
+            .Int => |val| std.math.cast(u16, val) orelse return Error.InvalidType,
+            else => return Error.InvalidType,
+        };
+        const ts = self.ast.type_info.store;
+        return Value{ .Type = ts.mkSimd(elem_ty, lanes) };
+    }
+
+    fn evalTensorType(self: *Interpreter, row: ast.Rows.TensorType) anyerror!Value {
+        const elem_ty = try self.typeIdFromTypeExpr(row.elem);
+        const shape_exprs = self.ast.exprs.expr_pool.slice(row.shape);
+        const ts = self.ast.type_info.store;
+        var dims = try ts.gpa.alloc(usize, shape_exprs.len);
+        defer ts.gpa.free(dims);
+        var idx: usize = 0;
+        while (idx < shape_exprs.len) : (idx += 1) {
+            var dim_value = try self.evalExpr(shape_exprs[idx]);
+            const dim = switch (dim_value) {
+                .Int => |val| std.math.cast(usize, val) orelse {
+                    dim_value.destroy(self.allocator);
+                    return Error.InvalidType;
+                },
+                else => {
+                    dim_value.destroy(self.allocator);
+                    return Error.InvalidType;
+                },
+            };
+            dim_value.destroy(self.allocator);
+            dims[idx] = dim;
+        }
+        return Value{ .Type = ts.mkTensor(elem_ty, dims) };
+    }
+
+    fn evalArrayType(self: *Interpreter, row: ast.Rows.ArrayType) anyerror!Value {
+        const elem_ty = try self.typeIdFromTypeExpr(row.elem);
+        var size_value = try self.evalExpr(row.size);
+        defer size_value.destroy(self.allocator);
+        const len = switch (size_value) {
+            .Int => |val| std.math.cast(usize, val) orelse return Error.InvalidType,
+            else => return Error.InvalidType,
+        };
+        return Value{ .Type = self.ast.type_info.store.mkArray(elem_ty, len) };
+    }
+
+    fn evalDynArrayType(self: *Interpreter, row: ast.Rows.DynArrayType) anyerror!Value {
+        const elem_ty = try self.typeIdFromTypeExpr(row.elem);
+        const ts = self.ast.type_info.store;
+        return Value{ .Type = ts.mkDynArray(elem_ty) };
+    }
+
+    fn evalSliceType(self: *Interpreter, row: ast.Rows.SliceType) anyerror!Value {
+        const elem_ty = try self.typeIdFromTypeExpr(row.elem);
+        const ts = self.ast.type_info.store;
+        return Value{ .Type = ts.mkSlice(elem_ty) };
+    }
+
+    fn evalMapType(self: *Interpreter, row: ast.Rows.MapType) anyerror!Value {
+        const ts = self.ast.type_info.store;
+        const key_ty = try self.typeIdFromTypeExpr(row.key);
+        const val_ty = try self.typeIdFromTypeExpr(row.value);
+        return Value{ .Type = ts.mkMap(key_ty, val_ty) };
+    }
+
+    fn evalOptionalType(self: *Interpreter, row: ast.Rows.OptionalType) anyerror!Value {
+        const elem_ty = try self.typeIdFromTypeExpr(row.elem);
+        const ts = self.ast.type_info.store;
+        return Value{ .Type = ts.mkOptional(elem_ty) };
+    }
+
+    fn evalStructType(self: *Interpreter, row: ast.Rows.StructType) anyerror!Value {
+        const ts = self.ast.type_info.store;
+        const sfs = self.ast.exprs.sfield_pool.slice(row.fields);
+        var buf = try ts.gpa.alloc(types.TypeStore.StructFieldArg, sfs.len);
+        defer ts.gpa.free(buf);
+        var i: usize = 0;
+        while (i < sfs.len) : (i += 1) {
+            const field = self.ast.exprs.StructField.get(sfs[i]);
+            const field_ty = try self.typeIdFromTypeExpr(field.ty);
+            buf[i] = .{ .name = field.name, .ty = field_ty };
+        }
+        const struct_ty = ts.mkStruct(buf);
+        return Value{ .Type = struct_ty };
+    }
+
+    fn evalVariantType(self: *Interpreter, row: ast.Rows.VariantType) anyerror!Value {
+        const ts = self.ast.type_info.store;
+        const vfs = self.ast.exprs.vfield_pool.slice(row.fields);
+        var buf = try ts.gpa.alloc(types.TypeStore.StructFieldArg, vfs.len);
+        defer ts.gpa.free(buf);
+        var i: usize = 0;
+        while (i < vfs.len) : (i += 1) {
+            const vf = self.ast.exprs.VariantField.get(vfs[i]);
+            const payload_ty = try self.evalVariantFieldPayloadType(vf);
+            buf[i] = .{ .name = vf.name, .ty = payload_ty };
+        }
+        return Value{ .Type = ts.mkVariant(buf) };
+    }
+
+    fn evalVariantFieldPayloadType(self: *Interpreter, field: ast.Rows.VariantField) anyerror!types.TypeId {
+        const ts = self.ast.type_info.store;
+        return switch (field.payload_kind) {
+            .none => ts.tVoid(),
+            .tuple => blk_tuple: {
+                if (field.payload_elems.isNone()) break :blk_tuple ts.tVoid();
+                const elems = self.ast.exprs.expr_pool.slice(field.payload_elems.asRange());
+                var tuple_buf = try ts.gpa.alloc(types.TypeId, elems.len);
+                defer ts.gpa.free(tuple_buf);
+                var j: usize = 0;
+                while (j < elems.len) : (j += 1) {
+                    tuple_buf[j] = try self.typeIdFromTypeExpr(elems[j]);
+                }
+                return ts.mkTuple(tuple_buf);
+            },
+            .@"struct" => blk_struct: {
+                if (field.payload_fields.isNone()) break :blk_struct ts.tVoid();
+                const fields = self.ast.exprs.sfield_pool.slice(field.payload_fields.asRange());
+                var field_buf = try ts.gpa.alloc(types.TypeStore.StructFieldArg, fields.len);
+                defer ts.gpa.free(field_buf);
+                var j: usize = 0;
+                while (j < fields.len) : (j += 1) {
+                    const sf = self.ast.exprs.StructField.get(fields[j]);
+                    const ty = try self.typeIdFromTypeExpr(sf.ty);
+                    field_buf[j] = .{ .name = sf.name, .ty = ty };
+                }
+                return ts.mkStruct(field_buf);
+            },
+        };
+    }
+
+    fn evalErrorSetType(self: *Interpreter, row: ast.Rows.ErrorSetType) anyerror!Value {
+        const ts = self.ast.type_info.store;
+        const value_ty = try self.typeIdFromTypeExpr(row.value);
+        const err_ty = try self.typeIdFromTypeExpr(row.err);
+        return Value{ .Type = ts.mkErrorSet(value_ty, err_ty) };
+    }
+
+    fn evalImport(self: *Interpreter, expr: ast.ExprId) anyerror!Value {
+        const idx = expr.toRaw();
+        if (idx >= self.ast.type_info.expr_types.items.len) return Error.InvalidType;
+        if (self.ast.type_info.expr_types.items[idx]) |ty| {
+            return Value{ .Type = ty };
+        }
+        return Error.InvalidType;
+    }
+
+    fn evalUnionType(self: *Interpreter, row: ast.Rows.UnionType) anyerror!Value {
+        const ts = self.ast.type_info.store;
+        const sfs = self.ast.exprs.sfield_pool.slice(row.fields);
+        var buf = try ts.gpa.alloc(types.TypeStore.StructFieldArg, sfs.len);
+        defer ts.gpa.free(buf);
+        var i: usize = 0;
+        while (i < sfs.len) : (i += 1) {
+            const field = self.ast.exprs.StructField.get(sfs[i]);
+            const field_ty = try self.typeIdFromTypeExpr(field.ty);
+            buf[i] = .{ .name = field.name, .ty = field_ty };
+        }
+        const union_ty = ts.mkUnion(buf);
+        return Value{ .Type = union_ty };
+    }
+
+    fn evalEnumType(self: *Interpreter, row: ast.Rows.EnumType) anyerror!Value {
+        const ts = self.ast.type_info.store;
+        var tag_ty = ts.tI32();
+        if (!row.discriminant.isNone()) {
+            tag_ty = try self.typeIdFromTypeExpr(row.discriminant.unwrap());
+        }
+
+        const efs = self.ast.exprs.efield_pool.slice(row.fields);
+        var member_buf = try ts.gpa.alloc(types.TypeStore.EnumMemberArg, efs.len);
+        defer ts.gpa.free(member_buf);
+        var next_value: i128 = 0;
+        var i: usize = 0;
+        while (i < efs.len) : (i += 1) {
+            const enum_field = self.ast.exprs.EnumField.get(efs[i]);
+            var current_value: i128 = next_value;
+            if (!enum_field.value.isNone()) {
+                var val = try self.evalExpr(enum_field.value.unwrap());
+                current_value = switch (val) {
+                    .Int => |v| v,
+                    else => {
+                        val.destroy(self.allocator);
+                        return Error.InvalidType;
+                    },
+                };
+                val.destroy(self.allocator);
+            }
+            member_buf[i] = .{ .name = enum_field.name, .value = @intCast(current_value) };
+            next_value = current_value + 1;
+        }
+        const enum_ty = ts.mkEnum(member_buf, tag_ty);
+        return Value{ .Type = enum_ty };
+    }
+
+    fn typeIdFromTypeExpr(self: *Interpreter, expr: ast.ExprId) anyerror!types.TypeId {
+        const expr_index = expr.toRaw();
+        if (expr_index < self.ast.type_info.expr_types.items.len) {
+            if (self.ast.type_info.expr_types.items[expr_index]) |type_ty| {
+                const kind = self.ast.type_info.store.index.kinds.items[type_ty.toRaw()];
+                if (kind == .TypeType) {
+                    return self.ast.type_info.store.get(.TypeType, type_ty).of;
+                }
+            }
+        }
+        var value = try self.evalExpr(expr);
+        defer value.destroy(self.allocator);
+        return switch (value) {
+            .Type => |ty| ty,
+            else => Error.InvalidType,
+        };
     }
 
     fn evalCall(self: *Interpreter, row: ast.Rows.Call) anyerror!Value {
@@ -368,6 +671,32 @@ pub const Interpreter = struct {
         return Value{ .Struct = .{ .fields = list, .owner = owner } };
     }
 
+    fn evalMapLit(self: *Interpreter, row: ast.Rows.MapLit) anyerror!Value {
+        const entries = self.ast.exprs.kv_pool.slice(row.entries);
+        if (entries.len == 0) return Value{ .Map = .{ .entries = .empty } };
+        var map = try std.ArrayList(MapEntry).initCapacity(self.allocator, entries.len);
+        var success = false;
+        defer if (!success) {
+            for (map.items) |*entry| {
+                entry.key.destroy(self.allocator);
+                entry.value.destroy(self.allocator);
+            }
+            map.deinit(self.allocator);
+        };
+        var idx: usize = 0;
+        while (idx < entries.len) : (idx += 1) {
+            const kv = self.ast.exprs.KeyValue.get(entries[idx]);
+            const key = try self.evalExpr(kv.key);
+            const value = try self.evalExpr(kv.value);
+            map.appendAssumeCapacity(MapEntry{
+                .key = key,
+                .value = value,
+            });
+        }
+        success = true;
+        return Value{ .Map = .{ .entries = map } };
+    }
+
     fn structTypeName(self: *Interpreter, ty: ast.OptExprId) ?ast.StrId {
         if (ty.isNone()) return null;
         return self.exprName(ty.unwrap());
@@ -417,10 +746,29 @@ pub const Interpreter = struct {
             };
         }
         return switch (parent.*) {
+            .Pointer => |ptr| {
+                var target = try self.cloneValue(ptr.*);
+                return self.evalFieldAccessWithParent(row, &target, true);
+            },
             .Struct => |sv| {
                 const struct_field = findStructField(sv, row.field);
                 if (struct_field) |field| {
                     return try self.cloneValue(field.*.value);
+                }
+                return Error.InvalidFieldAccess;
+            },
+            .Type => |type_id| {
+                const ts = self.ast.type_info.store;
+                const kind = ts.index.kinds.items[type_id.toRaw()];
+                if (kind == .Enum) {
+                    const enum_type = ts.get(.Enum, type_id);
+                    const members = ts.enum_member_pool.slice(enum_type.members);
+                    for (members) |member_id| {
+                        const member = ts.EnumMember.get(member_id);
+                        if (member.name.eq(row.field)) {
+                            return Value{ .Int = member.value };
+                        }
+                    }
                 }
                 return Error.InvalidFieldAccess;
             },
@@ -433,15 +781,26 @@ pub const Interpreter = struct {
         defer collection.destroy(self.allocator);
         var index_val = try self.evalExpr(row.index);
         defer index_val.destroy(self.allocator);
-        const idx = try expectIndex(index_val);
         return switch (collection) {
             .Sequence => |seq| {
+                const idx = try expectIndex(index_val);
                 if (idx >= seq.values.items.len) return Error.InvalidIndexAccess;
                 return try self.cloneValue(seq.values.items[idx]);
             },
             .String => |s| {
+                const idx = try expectIndex(index_val);
                 if (idx >= s.len) return Error.InvalidIndexAccess;
                 return Value{ .Int = @intCast(s[idx]) };
+            },
+            .Map => |map| {
+                var idx: usize = 0;
+                while (idx < map.entries.items.len) : (idx += 1) {
+                    const entry = map.entries.items[idx];
+                    if (valuesEqual(index_val, entry.key)) {
+                        return try self.cloneValue(entry.value);
+                    }
+                }
+                return Error.InvalidIndexAccess;
             },
             else => Error.InvalidIndexAccess,
         };
@@ -571,10 +930,106 @@ pub const Interpreter = struct {
         };
     }
 
-    fn evalIdent(self: *Interpreter, ident: ast.Rows.Ident) anyerror!Value {
-        const found = try self.lookup(ident.name);
-        if (found) |value| return value;
+    fn evalIdent(self: *Interpreter, expr_id: ast.ExprId, ident: ast.Rows.Ident) anyerror!Value {
+        // 1. Check local comptime bindings
+        if (try self.lookup(ident.name)) |value| {
+            return value;
+        }
+
+        const ident_name = self.ast.exprs.strs.get(ident.name);
+
+        // 2. Fallback to checker's symbol table if available
+        if (self.symtab) |symtab| {
+            if (symtab.lookup(symtab.currentId(), ident.name)) |sid| {
+                const srow = symtab.syms.get(sid);
+                if (!srow.origin_decl.isNone()) {
+                    const did = srow.origin_decl.unwrap();
+                    if (did.toRaw() < self.ast.type_info.decl_types.items.len) {
+                        if (self.ast.type_info.decl_types.items[did.toRaw()]) |ty| {
+                            const ts = self.ast.type_info.store;
+                            if (ts.getKind(ty) == .TypeType) {
+                                const tt = ts.get(.TypeType, ty);
+                                return Value{ .Type = tt.of };
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        // 3. If the ident is already typed as TypeType, return the underlying type
+        const expr_index = expr_id.toRaw();
+        if (expr_index < self.ast.type_info.expr_types.items.len) {
+            if (self.ast.type_info.expr_types.items[expr_index]) |type_ty| {
+                const ts = self.ast.type_info.store;
+                if (ts.getKind(type_ty) == .TypeType) {
+                    const tt = ts.get(.TypeType, type_ty);
+                    return Value{ .Type = tt.of };
+                }
+            }
+        }
+
+        if (self.ast.type_info.getExport(ident.name)) |entry|
+            return Value{ .Type = entry.ty };
+
+        if (self.lookupBuiltinType(ident_name)) |builtin_ty|
+            return Value{ .Type = builtin_ty };
+
+        if (self.findDeclByName(ident.name)) |did| {
+            const row = self.ast.exprs.Decl.get(did);
+            const kind = self.ast.exprs.index.kinds.items[row.value.toRaw()];
+
+            if (isTypeExprKind(kind)) {
+                var value = try self.evalExpr(row.value);
+                defer value.destroy(self.allocator);
+                return switch (value) {
+                    .Type => |ty| Value{ .Type = ty },
+                    else => Error.InvalidType,
+                };
+            }
+        }
+
         return Error.BindingNotFound;
+    }
+
+    fn findDeclByName(self: *Interpreter, name: ast.StrId) ?ast.DeclId {
+        const decls = self.ast.exprs.decl_pool.slice(self.ast.unit.decls);
+        for (decls) |did| {
+            const row = self.ast.exprs.Decl.get(did);
+            if (row.pattern.isNone()) continue;
+            const pat_id = row.pattern.unwrap();
+            if (self.ast.pats.index.kinds.items[pat_id.toRaw()] != .Binding) continue;
+            const binding = self.ast.pats.get(.Binding, pat_id);
+            if (binding.name.eq(name)) return did;
+        }
+        return null;
+    }
+
+    fn isTypeExprKind(kind: ast.ExprKind) bool {
+        return switch (kind) {
+            .TupleType, .ArrayType, .DynArrayType, .MapType, .SliceType, .OptionalType, .ErrorSetType, .ErrorType, .StructType, .EnumType, .VariantType, .UnionType, .PointerType, .SimdType, .ComplexType, .TensorType, .TypeType, .AnyType, .NoreturnType => true,
+            else => false,
+        };
+    }
+
+    fn lookupBuiltinType(self: *Interpreter, name: []const u8) ?types.TypeId {
+        const ts = self.ast.type_info.store;
+        if (std.mem.eql(u8, name, "bool")) return ts.tBool();
+        if (std.mem.eql(u8, name, "i8")) return ts.tI8();
+        if (std.mem.eql(u8, name, "i16")) return ts.tI16();
+        if (std.mem.eql(u8, name, "i32")) return ts.tI32();
+        if (std.mem.eql(u8, name, "i64")) return ts.tI64();
+        if (std.mem.eql(u8, name, "u8")) return ts.tU8();
+        if (std.mem.eql(u8, name, "u16")) return ts.tU16();
+        if (std.mem.eql(u8, name, "u32")) return ts.tU32();
+        if (std.mem.eql(u8, name, "u64")) return ts.tU64();
+        if (std.mem.eql(u8, name, "usize")) return ts.tUsize();
+        if (std.mem.eql(u8, name, "f32")) return ts.tF32();
+        if (std.mem.eql(u8, name, "f64")) return ts.tF64();
+        if (std.mem.eql(u8, name, "void")) return ts.tVoid();
+        if (std.mem.eql(u8, name, "string")) return ts.tString();
+        if (std.mem.eql(u8, name, "any")) return ts.tAny();
+        if (std.mem.eql(u8, name, "char")) return ts.tU32();
+        return null;
     }
 
     fn evalBinary(self: *Interpreter, row: ast.Rows.Binary) anyerror!Value {
@@ -634,6 +1089,9 @@ pub const Interpreter = struct {
 
     fn evalUnary(self: *Interpreter, row: ast.Rows.Unary) anyerror!Value {
         var value = try self.evalExpr(row.expr);
+        if (row.op == .address_of) {
+            return self.moveValueToPointer(value);
+        }
         defer value.destroy(self.allocator);
         return switch (row.op) {
             .pos => Value{ .Int = try expectInt(value) },
@@ -641,6 +1099,12 @@ pub const Interpreter = struct {
             .logical_not => Value{ .Bool = !try valueToBool(value) },
             else => return Error.InvalidBinaryOperand,
         };
+    }
+
+    fn moveValueToPointer(self: *Interpreter, value: Value) anyerror!Value {
+        const target = try self.allocator.create(Value);
+        target.* = value;
+        return Value{ .Pointer = target };
     }
 
     fn evalIf(self: *Interpreter, row: ast.Rows.If) anyerror!Value {
@@ -770,6 +1234,8 @@ pub const Interpreter = struct {
             },
             .Sequence => |seq| try self.cloneSequence(seq),
             .Struct => |sv| try self.cloneStruct(sv),
+            .Map => |mv| try self.cloneMap(mv),
+            .Pointer => |ptr| try self.clonePointer(ptr),
             .Function => |func| Value{ .Function = func },
             else => value,
         };
@@ -828,6 +1294,10 @@ pub const Interpreter = struct {
                 .Struct => structValuesEqual(sv, right.Struct),
                 else => false,
             },
+            .Map => |mv| switch (right) {
+                .Map => mapsEqual(mv, right.Map),
+                else => false,
+            },
             .Range => |rv| switch (right) {
                 .Range => rv.start == right.Range.start and rv.end == right.Range.end and rv.inclusive == right.Range.inclusive,
                 else => false,
@@ -860,6 +1330,19 @@ pub const Interpreter = struct {
             const right_field = b.fields.items[idx];
             if (!left_field.name.eq(right_field.name)) return false;
             if (!valuesEqual(left_field.value, right_field.value)) return false;
+        }
+        return true;
+    }
+
+    fn mapsEqual(a: MapValue, b: MapValue) bool {
+        if (a.entries.items.len != b.entries.items.len) return false;
+        if (a.entries.items.len == 0) return true;
+        var idx: usize = 0;
+        while (idx < a.entries.items.len) : (idx += 1) {
+            const left = a.entries.items[idx];
+            const right = b.entries.items[idx];
+            if (!valuesEqual(left.key, right.key)) return false;
+            if (!valuesEqual(left.value, right.value)) return false;
         }
         return true;
     }
@@ -903,6 +1386,36 @@ pub const Interpreter = struct {
         }
         success = true;
         return Value{ .Struct = .{ .fields = list, .owner = sv.owner } };
+    }
+
+    fn cloneMap(self: *Interpreter, mv: MapValue) anyerror!Value {
+        if (mv.entries.items.len == 0) return Value{ .Map = .{ .entries = .empty } };
+        var list = try std.ArrayList(MapEntry).initCapacity(self.allocator, mv.entries.items.len);
+        var success = false;
+        defer if (!success) {
+            for (list.items) |*entry| {
+                entry.key.destroy(self.allocator);
+                entry.value.destroy(self.allocator);
+            }
+            list.deinit(self.allocator);
+        };
+        var idx: usize = 0;
+        while (idx < mv.entries.items.len) : (idx += 1) {
+            const entry = mv.entries.items[idx];
+            list.appendAssumeCapacity(MapEntry{
+                .key = try self.cloneValue(entry.key),
+                .value = try self.cloneValue(entry.value),
+            });
+        }
+        success = true;
+        return Value{ .Map = .{ .entries = list } };
+    }
+
+    fn clonePointer(self: *Interpreter, target: *Value) anyerror!Value {
+        const cloned = try self.cloneValue(target.*);
+        const ptr = try self.allocator.create(Value);
+        ptr.* = cloned;
+        return Value{ .Pointer = ptr };
     }
 
     fn findStructField(sv: StructValue, name: ast.StrId) ?*StructField {

@@ -153,6 +153,7 @@ fn installInterpreterBindings(
 
 pub fn evalComptimeExpr(
     self: *Checker,
+    ctx: *CheckerContext,
     ast_unit: *ast.Ast,
     expr: ast.ExprId,
     _: types.TypeId,
@@ -162,7 +163,7 @@ pub fn evalComptimeExpr(
         return comp.cloneComptimeValue(self.gpa, cached.*);
     }
 
-    var interp = try interpreter.Interpreter.init(self.gpa, ast_unit);
+    var interp = try interpreter.Interpreter.init(self.gpa, ast_unit, &ctx.symtab);
     defer interp.deinit();
     try installInterpreterBindings(self, &interp, ast_unit, bindings);
     const computed = try interp.evalExpr(expr);
@@ -613,7 +614,7 @@ fn checkDecl(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, decl_id: 
         if (ast_unit.pats.index.kinds.items[pat_id.toRaw()] == .Binding) {
             const binding = ast_unit.pats.get(.Binding, pat_id);
             const binding_ty = if (expect_ty) |et| et else rhs_ty;
-            const stored = self.evalComptimeExpr(ast_unit, decl.value, rhs_ty, &[_]Pipeline.ComptimeBinding{}) catch null;
+            const stored = self.evalComptimeExpr(ctx, ast_unit, decl.value, rhs_ty, &[_]Pipeline.ComptimeBinding{}) catch null;
             if (stored) |value| {
                 try ast_unit.type_info.setComptimeBinding(binding.name, binding_ty, value);
             }

@@ -79,8 +79,8 @@ pub const SymbolStore = struct {
 
         const num_scopes = self.scopes.list.len;
         for (0..num_scopes) |i| {
-            const scope = self.scopes.get(@intCast(i));
             const scope_id = ScopeId.fromRaw(@intCast(i));
+            const scope = self.scopes.get(scope_id);
             const parent_to_print: ?ScopeId = if (scope.parent.isNone()) null else scope.parent.unwrap();
             std.debug.print("{s}Scope({d}) parent: {?}\n", .{ scope_indent_str, i, parent_to_print });
 
@@ -90,7 +90,7 @@ pub const SymbolStore = struct {
                 if (frame.id.eq(scope_id)) {
                     on_stack = true;
                     for (frame.list.items) |sym_id| {
-                        const row = self.syms.get(sym_id.toRaw());
+                        const row = self.syms.get(sym_id);
                         const name = a.exprs.strs.get(row.name);
                         std.debug.print("{s}{s}: {s} (loc={d})\n", .{ sym_indent_str, @tagName(row.kind), name, row.loc.toRaw() });
                     }
@@ -101,7 +101,7 @@ pub const SymbolStore = struct {
             if (!on_stack) {
                 const ids = self.sym_pool.slice(scope.symbols);
                 for (ids) |sym_id| {
-                    const row = self.syms.get(sym_id.toRaw());
+                    const row = self.syms.get(sym_id);
                     const name = a.exprs.strs.get(row.name);
                     std.debug.print("{s}{s}: {s} (loc={d})\n", .{ sym_indent_str, @tagName(row.kind), name, row.loc.toRaw() });
                 }

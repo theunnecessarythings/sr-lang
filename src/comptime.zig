@@ -25,6 +25,15 @@ pub const Sequence = struct {
     values: std.ArrayList(ComptimeValue),
 };
 
+pub const MapEntry = struct {
+    key: ComptimeValue,
+    value: ComptimeValue,
+};
+
+pub const MapValue = struct {
+    entries: std.ArrayList(MapEntry),
+};
+
 pub const StructField = struct {
     name: ast.StrId,
     value: ComptimeValue,
@@ -49,6 +58,8 @@ pub const ComptimeValue = union(enum) {
     String: []const u8,
     Sequence: Sequence,
     Struct: StructValue,
+    Map: MapValue,
+    Pointer: *ComptimeValue,
     Range: RangeValue,
     Type: types.TypeId,
     MlirType: mlir.Type,
@@ -72,6 +83,17 @@ pub const ComptimeValue = union(enum) {
                     field.value.destroy(gpa);
                 }
                 sv.fields.deinit(gpa);
+            },
+            .Map => |*map| {
+                for (map.entries.items) |*entry| {
+                    entry.key.destroy(gpa);
+                    entry.value.destroy(gpa);
+                }
+                map.entries.deinit(gpa);
+            },
+            .Pointer => |ptr| {
+                ptr.*.destroy(gpa);
+                gpa.destroy(ptr);
             },
             .MlirModule => |*mod| {
                 mod.destroy();
@@ -499,7 +521,7 @@ pub fn runComptimeExpr(
     bindings: []const Pipeline.ComptimeBinding,
 ) !ComptimeValue {
     _ = ctx;
-    return self.chk.evalComptimeExpr(a, expr, result_ty, bindings);
+    return self.chk.evalComptimeExpr(self.chk.checker_ctx.items[a.file_id], a, expr, result_ty, bindings);
 }
 
 pub fn constValueFromComptime(
@@ -537,6 +559,8 @@ pub fn constValueFromComptime(
         .Struct => return error.UnsupportedComptimeType,
         .Range => return error.UnsupportedComptimeType,
         .Function => return error.UnsupportedComptimeType,
+        .Pointer => return error.UnsupportedComptimeType,
+        .Map => return error.UnsupportedComptimeType,
         .Type => return error.UnsupportedComptimeType,
         .MlirType => blk.builder.tirValue(.ConstUndef, blk, ty, tir.OptLocId.none(), .{}),
         .MlirAttribute => blk.builder.tirValue(.ConstUndef, blk, ty, tir.OptLocId.none(), .{}),
@@ -569,6 +593,23 @@ pub fn cloneComptimeValue(gpa: std.mem.Allocator, value: ComptimeValue) !Comptim
                 };
             }
             break :blk .{ .Struct = .{ .fields = fields, .owner = sv.owner } };
+        },
+        .Map => |map| blk: {
+            var entries = std.ArrayList(MapEntry){};
+            try entries.resize(gpa, map.entries.items.len);
+            for (map.entries.items, 0..) |entry, idx| {
+                entries.items[idx] = MapEntry{
+                    .key = try cloneComptimeValue(gpa, entry.key),
+                    .value = try cloneComptimeValue(gpa, entry.value),
+                };
+            }
+            break :blk .{ .Map = .{ .entries = entries } };
+        },
+        .Pointer => |ptr| blk: {
+            const target_clone = try cloneComptimeValue(gpa, ptr.*);
+            const target = try gpa.create(ComptimeValue);
+            target.* = target_clone;
+            break :blk .{ .Pointer = target };
         },
         .Type => |ty| .{ .Type = ty },
         .MlirType => |ty| .{ .MlirType = ty },
@@ -626,6 +667,21 @@ pub fn hashComptimeValue(value: ComptimeValue) u64 {
                 hasher.update(std.mem.asBytes(&child_hash));
             }
             if (sv.owner) |owner| hasher.update(std.mem.asBytes(&owner));
+        },
+        .Map => |map| {
+            hasher.update(std.mem.asBytes(&map.entries.items.len));
+            var idx: usize = 0;
+            while (idx < map.entries.items.len) : (idx += 1) {
+                const entry = map.entries.items[idx];
+                const key_hash = hashComptimeValue(entry.key);
+                const value_hash = hashComptimeValue(entry.value);
+                hasher.update(std.mem.asBytes(&key_hash));
+                hasher.update(std.mem.asBytes(&value_hash));
+            }
+        },
+        .Pointer => |ptr| {
+            const target_hash = hashComptimeValue(ptr.*);
+            hasher.update(std.mem.asBytes(&target_hash));
         },
         .Function => |func| {
             const raw: u32 = func.expr.toRaw();
