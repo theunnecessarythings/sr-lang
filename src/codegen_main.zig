@@ -82,7 +82,7 @@ f64_ty: mlir.Type,
 llvm_ptr_ty: mlir.Type, // !llvm.ptr (opaque)
 
 // per-module caches
-func_syms: std.StringHashMap(FuncInfo),
+func_syms: std.AutoHashMap(tir.StrId, FuncInfo),
 global_syms: std.StringHashMap(void),
 str_pool: std.StringHashMap(mlir.Operation), // text -> llvm.mlir.global op
 
@@ -365,7 +365,7 @@ pub fn init(gpa: Allocator, context: *compile.Context, ctx: mlir.Context) Codege
         .f32_ty = mlir.Type.getFloat32Type(ctx),
         .f64_ty = mlir.Type.getFloat64Type(ctx),
         .llvm_ptr_ty = mlir.LLVM.getPointerType(ctx, 0),
-        .func_syms = std.StringHashMap(FuncInfo).init(gpa),
+        .func_syms = std.AutoHashMap(tir.StrId, FuncInfo).init(gpa),
         .global_syms = std.StringHashMap(void).init(gpa),
         .str_pool = std.StringHashMap(mlir.Operation).init(gpa),
         .block_map = std.AutoHashMap(tir.BlockId, mlir.Block).init(gpa),
@@ -604,10 +604,11 @@ fn emitExternDecls(self: *Codegen, t: *const tir.TIR) !void {
     for (global_ids) |global_id| {
         const g = t.funcs.Global.get(global_id);
         const name = t.instrs.strs.get(g.name);
+        const sym_id = g.name;
 
         if (self.context.type_store.getKind(g.ty) == .Function) {
             // If already present, return it.
-            if (self.func_syms.contains(name)) continue;
+            if (self.func_syms.contains(sym_id)) continue;
 
             const fnty = self.context.type_store.get(.Function, g.ty);
             var params_sr = self.context.type_store.type_pool.slice(fnty.params);
@@ -739,7 +740,7 @@ fn emitExternDecls(self: *Codegen, t: *const tir.TIR) !void {
                 .owns_param_types = true,
                 .dbg_subprogram = null,
             };
-            _ = try self.func_syms.put(name, info);
+            _ = try self.func_syms.put(sym_id, info);
         } else {
             // Handle global variables
             if (self.global_syms.contains(name)) {
@@ -828,7 +829,8 @@ fn emitFunctionHeader(self: *Codegen, f_id: tir.FuncId, t: *const tir.TIR) !void
     };
 
     const func_name = t.instrs.strs.get(f.name);
-    if (self.func_syms.contains(func_name)) return;
+    const func_name_id = f.name;
+    if (self.func_syms.contains(func_name_id)) return;
 
     var attrs: std.ArrayList(mlir.NamedAttribute) = .empty;
     defer attrs.deinit(self.gpa);
@@ -921,7 +923,7 @@ fn emitFunctionHeader(self: *Codegen, f_id: tir.FuncId, t: *const tir.TIR) !void
         };
     };
 
-    _ = try self.func_syms.put(func_name, finfo);
+    _ = try self.func_syms.put(func_name_id, finfo);
 }
 
 fn getI64OneInEntry(self: *Codegen) mlir.Value {
@@ -958,8 +960,7 @@ fn emitFunctionBody(self: *Codegen, f_id: tir.FuncId, t: *const tir.TIR) !void {
 
     const f = t.funcs.Function.get(f_id);
     const fn_opt_loc = self.functionOptLoc(f_id, t);
-    const func_name = t.instrs.strs.get(f.name);
-    const finfo = self.func_syms.get(func_name).?;
+    const finfo = self.func_syms.get(f.name).?;
     self.current_scope = finfo.dbg_subprogram;
     defer self.current_scope = null;
     var func_op = finfo.op;
@@ -1134,17 +1135,18 @@ fn instrResultSrType(_: *Codegen, t: *const tir.TIR, id: tir.InstrId) ?types.Typ
 
 fn ensureFuncDeclFromCall(self: *Codegen, p: tir.Rows.Call, t: *const tir.TIR) !FuncInfo {
     const name = t.instrs.strs.get(p.callee);
+    const callee_id = p.callee;
 
     // If already present, return it.
-    if (self.func_syms.get(name)) |fi| return fi;
+    if (self.func_syms.get(callee_id)) |fi| return fi;
 
     // If this name matches a function defined in the current TIR module,
     // ensure a func.func declaration instead of llvm.func.
     const func_ids = t.funcs.func_pool.data.items;
     var i: usize = 0;
     while (i < func_ids.len) : (i += 1) {
-        const fname = t.instrs.strs.get(t.funcs.Function.get(func_ids[i]).name);
-        if (std.mem.eql(u8, fname, name)) {
+        const fname_id = t.funcs.Function.get(func_ids[i]).name;
+        if (fname_id.eq(callee_id)) {
             return try self.ensureDeclFromCall(p, t);
         }
     }
@@ -1276,7 +1278,7 @@ fn ensureFuncDeclFromCall(self: *Codegen, p: tir.Rows.Call, t: *const tir.TIR) !
         .owns_param_types = true,
         .dbg_subprogram = null,
     };
-    _ = try self.func_syms.put(name, info);
+    _ = try self.func_syms.put(callee_id, info);
     return info;
 }
 
@@ -2319,23 +2321,24 @@ fn emitCall(self: *Codegen, p: tir.Rows.Call, t: *const tir.TIR) !mlir.Value {
     const prev_loc = self.pushLocation(p.loc);
     defer self.loc = prev_loc;
     const callee_name = t.instrs.strs.get(p.callee);
+    const callee_id = p.callee;
 
-    var finfo = self.func_syms.get(callee_name);
+    var finfo = self.func_syms.get(callee_id);
     if (finfo == null) {
         // If callee is in this module, ensure a func.func decl; else extern (llvm.func)
         var is_local = false;
         const fids = t.funcs.func_pool.data.items;
         var ii: usize = 0;
         while (ii < fids.len) : (ii += 1) {
-            const fname = t.instrs.strs.get(t.funcs.Function.get(fids[ii]).name);
-            if (std.mem.eql(u8, fname, callee_name)) {
+            const fname_id = t.funcs.Function.get(fids[ii]).name;
+            if (fname_id.eq(callee_id)) {
                 is_local = true;
                 break;
             }
         }
         if (is_local) {
             _ = try self.ensureDeclFromCall(p, t);
-            finfo = self.func_syms.get(callee_name);
+            finfo = self.func_syms.get(callee_id);
         } else {
             finfo = try self.ensureFuncDeclFromCall(p, t);
         }
@@ -2639,8 +2642,9 @@ fn emitMlirBlock(self: *Codegen, p: tir.Rows.MlirBlock, t: *const tir.TIR) !mlir
                                     if (std.mem.eql(u8, op_name_ref.toSlice(), "func.func")) {
                                         const sym_name_attr = current_op.getInherentAttributeByName(mlir.StringRef.from("sym_name"));
                                         if (!sym_name_attr.isNull()) {
-                                            const sym_name = sym_name_attr.stringAttrGetValue().toSlice();
-                                            if (!self.func_syms.contains(sym_name)) {
+                                            const sym_name_text = sym_name_attr.stringAttrGetValue().toSlice();
+                                            const sym_name_id = self.context.interner.intern(sym_name_text);
+                                            if (!self.func_syms.contains(sym_name_id)) {
                                                 const func_type_attr = current_op.getInherentAttributeByName(mlir.StringRef.from("function_type"));
                                                 const func_type = func_type_attr.typeAttrGetValue();
                                                 const n_formals = func_type.getFunctionNumInputs();
@@ -2662,7 +2666,7 @@ fn emitMlirBlock(self: *Codegen, p: tir.Rows.MlirBlock, t: *const tir.TIR) !mlir
                                                     .owns_param_types = true,
                                                     .dbg_subprogram = null,
                                                 };
-                                                _ = try self.func_syms.put(sym_name, info);
+                                                _ = try self.func_syms.put(sym_name_id, info);
                                             }
                                         }
                                     }
@@ -2783,8 +2787,9 @@ fn emitMlirBlock(self: *Codegen, p: tir.Rows.MlirBlock, t: *const tir.TIR) !mlir
                 if (std.mem.eql(u8, op_name_ref.toSlice(), "func.func")) {
                     const sym_name_attr = current_op.getInherentAttributeByName(mlir.StringRef.from("sym_name"));
                     if (!sym_name_attr.isNull()) {
-                        const sym_name = sym_name_attr.stringAttrGetValue().toSlice();
-                        if (!self.func_syms.contains(sym_name)) {
+                        const sym_name_text = sym_name_attr.stringAttrGetValue().toSlice();
+                        const sym_name_id = self.context.interner.intern(sym_name_text);
+                        if (!self.func_syms.contains(sym_name_id)) {
                             const func_type_attr = current_op.getInherentAttributeByName(mlir.StringRef.from("function_type"));
                             const func_type = func_type_attr.typeAttrGetValue();
                             const n_formals = func_type.getFunctionNumInputs();
@@ -2806,7 +2811,7 @@ fn emitMlirBlock(self: *Codegen, p: tir.Rows.MlirBlock, t: *const tir.TIR) !mlir
                                 .owns_param_types = true,
                                 .dbg_subprogram = null,
                             };
-                            _ = try self.func_syms.put(sym_name, info);
+                            _ = try self.func_syms.put(sym_name_id, info);
                         }
                     }
                 }
@@ -3419,7 +3424,9 @@ fn emitTerminator(self: *Codegen, term_id: tir.TermId, t: *const tir.TIR) !void 
             defer self.loc = prev_loc;
             var func_op = self.cur_block.?.getParentOperation();
             var name_attr = func_op.getInherentAttributeByName(mlir.StringRef.from("sym_name"));
-            const finfo = self.func_syms.get(name_attr.stringAttrGetValue().toSlice()).?;
+            const name_attr_value = name_attr.stringAttrGetValue().toSlice();
+            const sym_name_id = self.context.interner.intern(name_attr_value);
+            const finfo = self.func_syms.get(sym_name_id).?;
             const ret_ty = finfo.ret_type;
             const in_llvm_func = std.mem.eql(u8, func_op.getName().str().toSlice(), "llvm.func");
             if (in_llvm_func) {
@@ -4237,6 +4244,7 @@ fn ensureDeclFromCall(self: *Codegen, p: tir.Rows.Call, t: *const tir.TIR) !Func
     for (args_slice, 0..) |vid, i| arg_tys[i] = self.value_map.get(vid).?.getType();
     const ret_ty = try self.llvmTypeOf(p.ty);
     const name = t.instrs.strs.get(p.callee);
+    const callee_id = p.callee;
 
     if (std.mem.startsWith(u8, name, "m$")) {
         return .{
@@ -4279,7 +4287,7 @@ fn ensureDeclFromCall(self: *Codegen, p: tir.Rows.Call, t: *const tir.TIR) !Func
         .owns_param_types = true,
         .dbg_subprogram = null,
     };
-    _ = try self.func_syms.put(name, info);
+    _ = try self.func_syms.put(callee_id, info);
     return info;
 }
 

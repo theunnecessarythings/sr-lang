@@ -540,8 +540,8 @@ pub fn diagnosticMessageFmt(code: DiagnosticCode) []const u8 {
         .import_cycle_detected => "import cycle detected: {s}",
         .imports_blocked_by_cycle => "imports blocked by cycle: {s}",
         .unused_function => "unused function '{s}' is never referenced",
-        .unused_param => "unused parameter '{s}' is never used",
-        .unused_variable => "unused local variable is never used",
+        .unused_param => "unused parameter",
+        .unused_variable => "unused local variable",
     };
 }
 

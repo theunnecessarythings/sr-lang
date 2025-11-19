@@ -26,46 +26,8 @@ pub fn findFunctionDeclForCall(
     if (callee_kind != .FieldAccess) return null;
 
     const fr = caller_ast.exprs.get(.FieldAccess, callee_expr);
-    const parent_kind = caller_ast.exprs.index.kinds.items[fr.parent.toRaw()];
 
-    if (parent_kind == .Import) {
-        const ir = caller_ast.exprs.get(.Import, fr.parent);
-        const path = caller_ast.exprs.strs.get(ir.path);
-        var pkg_iter = ctx.compilation_unit.packages.iterator();
-        while (pkg_iter.next()) |pkg| {
-            if (pkg.value_ptr.sources.get(path)) |unit_ref| {
-                if (unit_ref.ast) |a| {
-                    if (findDeclIdByName(a, callee_name)) |decl_id| {
-                        return FunctionDeclContext{ .ast = a, .decl_id = decl_id };
-                    }
-                }
-                break;
-            }
-        }
-        return null;
-    }
-
-    if (parent_kind == .Ident) {
-        const parent_ident = caller_ast.exprs.get(.Ident, fr.parent);
-        if (findTopLevelImportByName(caller_ast, parent_ident.name)) |import_decl_id| {
-            const import_decl = caller_ast.exprs.Decl.get(import_decl_id);
-            const ir = caller_ast.exprs.get(.Import, import_decl.value);
-            const path = caller_ast.exprs.strs.get(ir.path);
-            var pkg_iter2 = ctx.compilation_unit.packages.iterator();
-            while (pkg_iter2.next()) |pkg| {
-                if (pkg.value_ptr.sources.get(path)) |unit_ref| {
-                    if (unit_ref.ast) |a| {
-                        if (findDeclIdByName(a, callee_name)) |decl_id| {
-                            return FunctionDeclContext{ .ast = a, .decl_id = decl_id };
-                        }
-                    }
-                    break;
-                }
-            }
-        }
-    }
-
-    return null;
+    return findFunctionDeclFromFieldAccess(ctx, caller_ast, fr, callee_name);
 }
 
 pub fn findDeclIdByName(a: *ast.Ast, name: ast.StrId) ?ast.DeclId {
@@ -177,4 +139,51 @@ pub fn findTopLevelImportByName(a: *ast.Ast, name: ast.StrId) ?ast.DeclId {
     const did = findTopLevelDeclByName(a, name) orelse return null;
     const d = a.exprs.Decl.get(did);
     return if (a.exprs.index.kinds.items[d.value.toRaw()] == .Import) did else null;
+}
+
+pub fn findFunctionDeclFromFieldAccess(
+    ctx: *compile.Context,
+    caller_ast: *ast.Ast,
+    fr: ast.Rows.FieldAccess,
+    callee_name: ast.StrId,
+) ?FunctionDeclContext {
+    const parent_kind = caller_ast.exprs.index.kinds.items[fr.parent.toRaw()];
+    if (parent_kind == .Import) {
+        const ir = caller_ast.exprs.get(.Import, fr.parent);
+        const path = caller_ast.exprs.strs.get(ir.path);
+        var pkg_iter = ctx.compilation_unit.packages.iterator();
+        while (pkg_iter.next()) |pkg| {
+            if (pkg.value_ptr.sources.get(path)) |unit_ref| {
+                if (unit_ref.ast) |a| {
+                    if (findDeclIdByName(a, callee_name)) |decl_id| {
+                        return FunctionDeclContext{ .ast = a, .decl_id = decl_id };
+                    }
+                }
+                break;
+            }
+        }
+        return null;
+    }
+
+    if (parent_kind == .Ident) {
+        const parent_ident = caller_ast.exprs.get(.Ident, fr.parent);
+        if (findTopLevelImportByName(caller_ast, parent_ident.name)) |import_decl_id| {
+            const import_decl = caller_ast.exprs.Decl.get(import_decl_id);
+            const ir = caller_ast.exprs.get(.Import, import_decl.value);
+            const path = caller_ast.exprs.strs.get(ir.path);
+            var pkg_iter2 = ctx.compilation_unit.packages.iterator();
+            while (pkg_iter2.next()) |pkg| {
+                if (pkg.value_ptr.sources.get(path)) |unit_ref| {
+                    if (unit_ref.ast) |a| {
+                        if (findDeclIdByName(a, callee_name)) |decl_id| {
+                            return FunctionDeclContext{ .ast = a, .decl_id = decl_id };
+                        }
+                    }
+                    break;
+                }
+            }
+        }
+    }
+
+    return null;
 }

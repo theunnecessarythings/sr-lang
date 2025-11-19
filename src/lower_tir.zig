@@ -60,6 +60,7 @@ pub const LowerContext = struct {
     loop_stack: List(cf.LoopCtx) = .{},
     module_call_cache: std.AutoHashMap(u64, StrId),
     method_lowered: std.AutoHashMap(usize, void),
+    lowered_functions: std.AutoHashMap(tir.StrId, void),
     interpreter: *interpreter.Interpreter,
     specialization_stack: SnapshotList = .empty,
     expr_type_override_stack: List(ExprTypeOverrideFrame) = .{},
@@ -122,6 +123,7 @@ pub const LowerContext = struct {
     pub fn deinit(self: *LowerContext, gpa: std.mem.Allocator) void {
         self.loop_stack.deinit(gpa);
         self.module_call_cache.deinit();
+        self.lowered_functions.deinit();
         self.method_lowered.deinit();
         while (self.expr_type_override_stack.items.len > 0) {
             self.expr_type_override_stack.items[self.expr_type_override_stack.items.len - 1].deinit(gpa);
@@ -213,6 +215,7 @@ pub fn run(self: *LowerTir, levels: *const compile.DependencyLevels) !*tir.TIR {
             ctx.* = LowerContext{
                 .method_lowered = .init(self.gpa),
                 .module_call_cache = .init(self.gpa),
+                .lowered_functions = std.AutoHashMap(tir.StrId, void).init(self.gpa),
                 .interpreter = interp,
                 .specialization_stack = .empty,
                 .expr_type_override_stack = .{},
@@ -1083,6 +1086,9 @@ pub fn lowerFunction(
     fun_eid: ast.ExprId,
     ctx: ?*const comp.SpecializationContext,
 ) !void {
+    if (lower_ctx.lowered_functions.contains(name)) return;
+    try lower_ctx.lowered_functions.put(name, {});
+
     const fid = if (ctx) |c|
         c.specialized_ty
     else
@@ -2226,7 +2232,7 @@ fn lowerCall(
         if (self.context.type_store.index.kinds.items[fty.toRaw()] == .Function) {
             const fnrow = self.context.type_store.get(.Function, fty);
             param_tys = self.context.type_store.type_pool.slice(fnrow.params);
-            is_variadic_extern = fnrow.is_variadic;
+            is_variadic_extern = fnrow.is_variadic and fnrow.is_extern;
             fixed_params_count = param_tys.len;
             if (is_variadic_extern and fixed_params_count > 0) fixed_params_count -= 1;
         }
@@ -2347,6 +2353,16 @@ fn lowerRemainingArgs(
     start_index: usize,
 ) !void {
     if (is_non_extern_any_variadic_candidate) {
+        const trailing_len = if (arg_ids.len > start_index) arg_ids.len - start_index else 0;
+        if (trailing_len == 1) {
+            const idx = start_index;
+            if (!self.isSpreadArgExpr(ctx, a, arg_ids[idx])) {
+                const single_val = try self.lowerExpr(ctx, a, env, f, blk, arg_ids[idx], null, .rvalue);
+                try vals_list.append(self.gpa, single_val);
+                return;
+            }
+        }
+
         var extra_vals: List(tir.ValueId) = .empty;
         defer extra_vals.deinit(self.gpa);
 
@@ -2585,7 +2601,9 @@ fn handleExternVariadicArgs(
     var ve_idx: usize = 0;
     while (ve_idx < var_entries.items.len) {
         const entry = var_entries.items[ve_idx];
-        if (self.context.type_store.getKind(entry.ty) == .Tuple) {
+        if (self.context.type_store.getKind(entry.ty) == .Tuple and
+            self.isSpreadArgExpr(ctx, a, entry.expr))
+        {
             const tuple_row = self.context.type_store.get(.Tuple, entry.ty);
             const elem_types = self.context.type_store.type_pool.slice(tuple_row.elems);
             var shift = ve_idx;
@@ -2647,6 +2665,31 @@ fn handleExternVariadicArgs(
     }
 }
 
+fn isSpreadRangeExpr(
+    self: *LowerTir,
+    ctx: *LowerContext,
+    a: *ast.Ast,
+    expr: ast.ExprId,
+) bool {
+    if (a.exprs.index.kinds.items[expr.toRaw()] != .Range) return false;
+    const row = a.exprs.get(.Range, expr);
+    if (!row.start.isNone() or row.end.isNone()) return false;
+    const end_expr = row.end.unwrap();
+    const end_ty = self.getExprType(ctx, a, end_expr);
+    const end_kind = self.context.type_store.getKind(end_ty);
+    return end_kind == .Tuple or end_kind == .Any;
+}
+
+fn isSpreadArgExpr(
+    self: *LowerTir,
+    ctx: *LowerContext,
+    a: *ast.Ast,
+    expr: ?ast.ExprId,
+) bool {
+    if (expr) |eid| return self.isSpreadRangeExpr(ctx, a, eid);
+    return false;
+}
+
 fn computeTrailingAnyTupleType(
     self: *LowerTir,
     ctx: *LowerContext,
@@ -2656,6 +2699,11 @@ fn computeTrailingAnyTupleType(
 ) !types.TypeId {
     if (start_index >= args.len) {
         return self.context.type_store.mkTuple(&.{});
+    }
+
+    const trailing_len = args.len - start_index;
+    if (trailing_len == 1 and !self.isSpreadArgExpr(ctx, a, args[start_index])) {
+        return self.getExprType(ctx, a, args[start_index]);
     }
 
     var elem_types = std.ArrayList(types.TypeId){};
@@ -2866,6 +2914,10 @@ fn lowerRange(
     const row = a.exprs.get(.Range, id);
     const ty0 = self.getExprType(ctx, a, id);
     const loc = optLoc(a, id);
+    if (self.isSpreadRangeExpr(ctx, a, id)) {
+        const inner = row.end.unwrap();
+        return self.lowerExpr(ctx, a, env, f, blk, inner, expected_ty, .rvalue);
+    }
     const usize_ty = self.context.type_store.tUsize();
     const start_v = if (!row.start.isNone())
         try self.lowerExpr(ctx, a, env, f, blk, row.start.unwrap(), usize_ty, .rvalue)

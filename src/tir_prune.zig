@@ -355,9 +355,8 @@ pub fn pruneUnusedFunctions(
                                 const anchor2 = paramNameLocFromAst(unit, frow.name.toRaw(), pname_sid_raw) orelse
                                     functionNameLocFromAst(unit, frow.name.toRaw()) orelse
                                     functionFirstLoc(context, t, frow, unit.file_id);
-                                const pname = if (!p.name.isNone()) t.instrs.strs.get(p.name.unwrap()) else "param";
                                 if (!isThirdPartyUnit(context, unit))
-                                    _ = try context.diags.addWarning(anchor2, .unused_param, .{pname});
+                                    _ = try context.diags.addWarning(anchor2, .unused_param, .{});
                             }
                         }
                         // Unused local warning: alloca with no read
@@ -594,13 +593,12 @@ pub fn pruneUnusedFunctions(
                         for (params2) |pid2| {
                             const p2 = t.funcs.Param.get(pid2);
                             if (used2.get(p2.value.toRaw()) == null) {
-                                const pname = if (!p2.name.isNone()) t.instrs.strs.get(p2.name.unwrap()) else "param";
                                 const pname_sid2: ?u32 = if (!p2.name.isNone()) p2.name.unwrap().toRaw() else null;
                                 const ploc = paramNameLocFromAst(unit, frow.name.toRaw(), pname_sid2) orelse
                                     functionNameLocFromAst(unit, frow.name.toRaw()) orelse
                                     functionFirstLoc(context, t, frow, unit.file_id);
                                 if (!isThirdPartyUnit(context, unit))
-                                    _ = try context.diags.addWarning(ploc, .unused_param, .{pname});
+                                    _ = try context.diags.addWarning(ploc, .unused_param, .{});
                             }
                         }
                         // Simple unused local warning: alloca with no direct load

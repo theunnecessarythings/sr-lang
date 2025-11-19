@@ -464,6 +464,8 @@ pub fn checkSpecializedFunction(
         self.gpa.free(backup);
     }
 
+    try self.pushAllowNestedFn(ctx, true);
+    defer self.popAllowNestedFn(ctx);
     return try self.checkFunctionLit(ctx, ast_unit, id);
 }
 
@@ -3173,6 +3175,13 @@ fn checkRange(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, id: ast.
     var start_ty = if (!range.start.isNone()) try self.checkExpr(ctx, ast_unit, range.start.unwrap()) else null;
     var end_ty = if (!range.end.isNone()) try self.checkExpr(ctx, ast_unit, range.end.unwrap()) else null;
 
+    if (start_ty == null and end_ty != null) {
+        const end_t = end_ty.?;
+        if (self.typeKind(end_t) == .Tuple) {
+            return end_t;
+        }
+    }
+
     if (start_ty == null and end_ty == null) {
         try self.context.diags.addError(exprLoc(ast_unit, range), .cannot_infer_range_type, .{});
         return self.context.type_store.tTypeError();
@@ -3964,6 +3973,17 @@ fn exprTypeFromInfo(self: *Checker, ast_unit: *ast.Ast, expr_id: ast.ExprId) typ
     return self.context.type_store.tAny();
 }
 
+fn isSpreadRangeExprChecker(self: *Checker, ast_unit: *ast.Ast, expr: ast.ExprId) bool {
+    if (ast_unit.exprs.index.kinds.items[expr.toRaw()] != .Range) return false;
+    const row = ast_unit.exprs.get(.Range, expr);
+    if (!row.start.isNone()) return false;
+    if (row.end.isNone()) return false;
+    const end_expr = row.end.unwrap();
+    const end_ty = self.exprTypeFromInfo(ast_unit, end_expr);
+    const end_kind = self.typeKind(end_ty);
+    return end_kind == .Tuple or end_kind == .Any;
+}
+
 fn computeTrailingAnyTupleTypeChecker(
     self: *Checker,
     ast_unit: *ast.Ast,
@@ -3972,6 +3992,10 @@ fn computeTrailingAnyTupleTypeChecker(
 ) anyerror!types.TypeId {
     if (start_index >= args.len) {
         return self.context.type_store.mkTuple(&.{});
+    }
+    const trailing_len = args.len - start_index;
+    if (trailing_len == 1 and !self.isSpreadRangeExprChecker(ast_unit, args[start_index])) {
+        return self.exprTypeFromInfo(ast_unit, args[start_index]);
     }
     var elem_types = std.ArrayList(types.TypeId){};
     defer elem_types.deinit(self.gpa);
@@ -4072,6 +4096,15 @@ fn resolveFunctionDeclAlias(
         const kind = current.ast.exprs.index.kinds.items[decl.value.toRaw()];
         if (kind == .FunctionLit) return current;
         if (kind == .Import) return null;
+        if (kind == .FieldAccess) {
+            const fr = current.ast.exprs.get(.FieldAccess, decl.value);
+            if (call_resolution.findFunctionDeclFromFieldAccess(self.context, current.ast, fr, fr.field)) |resolved| {
+                if (resolved.ast != current.ast or resolved.decl_id.toRaw() != current.decl_id.toRaw()) {
+                    return resolved;
+                }
+            }
+            return current;
+        }
         const alias_name = aliasTargetName(current.ast, decl.value) orelse return current;
         const next = call_resolution.findFunctionDeclForCall(self.context, current.ast, decl.value, alias_name) orelse return current;
         if (next.ast == current.ast and next.decl_id.toRaw() == current.decl_id.toRaw()) return current;
