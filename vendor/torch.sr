@@ -114,7 +114,7 @@ Linear.forward :: proc(self: *Linear, input: *Tensor) Tensor {
     // input.linear already tracks the result
     return r2
 }
-linear_forward_call :: @[llvm_fn] proc(ctx: *void, input: *Tensor) Tensor {
+linear_forward_call :: proc(ctx: *void, input: *Tensor) Tensor {
     lin: *Linear = ctx.^*Linear
     return lin.forward(input)
 }
@@ -132,7 +132,7 @@ ReLU.forward :: proc(self: *ReLU, input: *Tensor) Tensor {
     // input.relu already tracks the result
     return t
 }
-relu_forward_call :: @[llvm_fn] proc(ctx: *void, input: *Tensor) Tensor {
+relu_forward_call :: proc(ctx: *void, input: *Tensor) Tensor {
     m: *ReLU = ctx.^*ReLU
     return m.forward(input)
 }

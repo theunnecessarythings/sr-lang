@@ -4,7 +4,7 @@ fmt :: import "std/fmt"
 glfw :: import "vendor/glfw3"
 skiac :: import "vendor/skiac"
 
-get_proc_address_wrapper :: @[llvm_fn] proc(ctx: *void, name: *i8) skiac.GrGLFuncPtr {
+get_proc_address_wrapper :: proc(ctx: *void, name: *i8) skiac.GrGLFuncPtr {
     _ = ctx;
     return (glfw.glfwGetProcAddress((name).(*u8))).(skiac.GrGLFuncPtr);
 }
@@ -20,8 +20,7 @@ main :: proc() {
     glfw.glfwWindowHint(glfw.CONTEXT_VERSION_MINOR, 3)
     glfw.glfwWindowHint(glfw.OPENGL_PROFILE, glfw.OPENGL_CORE_PROFILE)
 
-    window := glfw.glfwCreateWindow(800, 600, "Skia + GLFW".ptr, 0.^*void, 0.^*void)
-    if window.^i64 == 0 {
+    window := glfw.glfwCreateWindow(800, 600, "Skia + GLFW".ptr, null, null) orelse {
         fmt.println("Failed to create GLFW window")
         return
     }
@@ -30,15 +29,13 @@ main :: proc() {
     glfw.glfwMakeContextCurrent(window)
     glfw.glfwSwapInterval(1) // vsync
 
-    gl_interface := skiac.skiac_gr_gl_make_assembled_interface(0.^*void, get_proc_address_wrapper)
-    if gl_interface.^i64 == 0 {
+    gl_interface := skiac.skiac_gr_gl_make_assembled_interface(null, get_proc_address_wrapper) orelse {
         fmt.println("skiac.gr_gl_make_assembled_interface failed")
         return
     }
     defer skiac.skiac_gr_gl_interface_unref(gl_interface)
 
-    dctx := skiac.skiac_gr_direct_context_make_gl(gl_interface)
-    if dctx.^i64 == 0 {
+    dctx := skiac.skiac_gr_direct_context_make_gl(gl_interface) orelse {
         fmt.println("skiac.gr_direct_context_make_gl failed")
         return
     }
@@ -48,18 +45,15 @@ main :: proc() {
     fb_h: i32 = 0
     glfw.glfwGetFramebufferSize(window, &fb_w, &fb_h)
 
-    target := skiac.skiac_gr_backend_render_target_make_gl(fb_w, fb_h, 1, 8, 0, 0x8058)
-    if target.^i64 == 0 {
+    target := skiac.skiac_gr_backend_render_target_make_gl(fb_w, fb_h, 1, 8, 0, 0x8058) orelse {
         fmt.println("skiac.gr_backend_render_target_make_gl failed")
         return
     }
-    color_space := skiac.skiac_sk_color_space_make_srgb()
-    if color_space.^i64 == 0 {
+    color_space := skiac.skiac_sk_color_space_make_srgb() orelse {
         fmt.println("skiac.sk_color_space_make_srgb failed")
         return
     }
-    props := skiac.skiac_sk_surface_props_create(0, skiac.SkPixelGeometry.RGB_H) // kUnknown_SkPixelGeometry
-    if props.^i64 == 0 {
+    props := skiac.skiac_sk_surface_props_create(0, skiac.SkPixelGeometry.RGB_H) orelse {
         fmt.println("skiac.sk_surface_props_create failed")
         return
     }
@@ -70,9 +64,7 @@ main :: proc() {
         skiac.GrSurfaceOrigin.BottomLeft,
         skiac.SkColorType.N32,
         color_space,
-        props)
-
-    if surface.^i64 == 0 {
+        props) orelse {
         fmt.println("skiac.sk_surface_wrap_backend_render_target failed")
         return
     }
@@ -81,11 +73,11 @@ main :: proc() {
     while glfw.glfwWindowShouldClose(window) == glfw.FALSE {
         glfw.glfwPollEvents()
 
-        canvas := skiac.skiac_sk_surface_get_canvas(surface)
+        canvas := skiac.skiac_sk_surface_get_canvas(surface) orelse continue
 
         skiac.skiac_sk_canvas_clear(canvas, skiac.skiac_sk_color_set_argb(255, 0, 0, 0))
 
-        paint := skiac.skiac_sk_paint_create()
+        paint := skiac.skiac_sk_paint_create() orelse continue
         skiac.skiac_sk_paint_set_anti_alias(paint, true)
         skiac.skiac_sk_paint_set_color(paint, skiac.skiac_sk_color_set_argb(255, 66, 133, 244)) // Google Blue
         skiac.skiac_sk_canvas_draw_circle(canvas, fb_w.(f32) * 0.5, fb_h.(f32) * 0.5, (fb_w).(f32) * 0.25, paint)

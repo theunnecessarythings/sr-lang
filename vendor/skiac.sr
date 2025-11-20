@@ -4,25 +4,25 @@ package skiac
 // Opaque Types
 // ------------------------------------------------------------
 
-GrDirectContext :: *void
-SkSurface :: *void
-SkCanvas :: *void
-SkPaint :: *void
-SkColorSpace :: *void
-SkSurfaceProps :: *void
-SkPath :: *void
-SkImage :: *void
-SkFont :: *void
-SkData :: *void
-SkShader :: *void
-SkColorFilter :: *void
-SkImageFilter :: *void
-SkPathEffect :: *void
-SkMaskFilter :: *void
-SkRuntimeEffect :: *void
-GrGLFramebufferInfo :: *void
-GrBackendRenderTarget :: *void
-GrGLInterface :: *void
+GrDirectContext :: ?*void
+SkSurface :: ?*void
+SkCanvas :: ?*void
+SkPaint :: ?*void
+SkColorSpace :: ?*void
+SkSurfaceProps :: ?*void
+SkPath :: ?*void
+SkImage :: ?*void
+SkFont :: ?*void
+SkData :: ?*void
+SkShader :: ?*void
+SkColorFilter :: ?*void
+SkImageFilter :: ?*void
+SkPathEffect :: ?*void
+SkMaskFilter :: ?*void
+SkRuntimeEffect :: ?*void
+GrGLFramebufferInfo :: ?*void
+GrBackendRenderTarget :: ?*void
+GrGLInterface :: ?*void
 
 // ------------------------------------------------------------
 // Enums
@@ -72,15 +72,15 @@ Rect :: struct {
 // Function Pointers
 // ------------------------------------------------------------
 
-GrGLFuncPtr :: extern fn() *void
-GrGLGetProc :: extern fn(ctx: *void, name: *i8) GrGLFuncPtr
+GrGLFuncPtr :: extern fn() ?*void
+GrGLGetProc :: extern fn(ctx: ?*void, name: *i8) GrGLFuncPtr
 
 // ------------------------------------------------------------
 // Functions
 // ------------------------------------------------------------
 
 // GrGLInterface
-skiac_gr_gl_make_assembled_interface :: extern fn(ctx: *void, get_proc: GrGLGetProc) ?*GrGLInterface
+skiac_gr_gl_make_assembled_interface :: extern fn(ctx: ?*void, get_proc: GrGLGetProc) ?*GrGLInterface
 skiac_gr_gl_interface_unref :: extern proc(interface: *GrGLInterface)
 
 // GrDirectContext
@@ -228,7 +228,7 @@ skiac_sk_font_get_metrics :: extern fn(font: *SkFont, out: *FontMetrics) f32
 skiac_sk_font_text_to_glyphs_utf8 :: extern fn(font: *SkFont, text: *const u8, out_glyphs: *u16, max_glyphs: i32) i32
 
 // SkData + Image decode
-skiac_sk_data_make_with_copy :: extern fn(ptr: *void, len: usize) ?*SkData
+skiac_sk_data_make_with_copy :: extern fn(ptr: ?*void, len: usize) ?*SkData
 skiac_sk_data_make_from_file :: extern fn(path: *const u8) ?*SkData
 skiac_sk_data_unref :: extern proc(data: *SkData)
 skiac_sk_image_make_from_encoded :: extern fn(data: *SkData) ?*SkImage

@@ -1132,7 +1132,8 @@ fn lowerTopDecl(self: *LowerTir, ctx: *LowerContext, a: *ast.Ast, b: *Builder, d
     // Global: emit only for value declarations. Type declarations (TypeType)
     // should not materialize runtime globals.
     if (!d.pattern.isNone()) {
-        const nm = bindingNameOfPattern(a, d.pattern.unwrap()) orelse return;
+        // Global names should be fully qualified to avoid clashes across packages.
+        const nm = try self.symbolNameForDecl(a, did) orelse return;
         const ty = getDeclType(a, did) orelse return;
         if (self.context.type_store.getKind(ty) == .TypeType) {
             return; // skip type declarations
@@ -2572,6 +2573,26 @@ fn synthesizeDefaultTrailingArgs(
     }
 }
 
+fn isImportMemberExpr(a: *ast.Ast, expr: ast.ExprId) bool {
+    var current = expr;
+    while (true) {
+        const kind = a.exprs.index.kinds.items[current.toRaw()];
+        switch (kind) {
+            .FieldAccess => {
+                const row = a.exprs.get(.FieldAccess, current);
+                current = row.parent;
+                continue;
+            },
+            .Ident => {
+                const ident = a.exprs.get(.Ident, current);
+                return call_resolution.findTopLevelImportByName(a, ident.name) != null;
+            },
+            .Import => return true,
+            else => return false,
+        }
+    }
+}
+
 fn emitCallValue(
     self: *LowerTir,
     ctx: *LowerContext,
@@ -2612,14 +2633,16 @@ fn emitCallValue(
     const callee_kind = self.context.type_store.getKind(callee_ty);
 
     // Detect if callee is a module member function: mod.name(...)
-    var callee_is_import_member = false;
-    if (a.exprs.index.kinds.items[callee_expr.toRaw()] == .FieldAccess) {
-        const fr2 = a.exprs.get(.FieldAccess, callee_expr);
-        const pk2 = a.exprs.index.kinds.items[fr2.parent.toRaw()];
-        callee_is_import_member = (pk2 == .Import or pk2 == .Ident and call_resolution.findTopLevelImportByName(a, a.exprs.get(.Ident, fr2.parent).name) != null);
-    }
+    const callee_expr_kind = a.exprs.index.kinds.items[callee_expr.toRaw()];
+    const callee_is_import_member = isImportMemberExpr(a, callee_expr);
+    const callee_is_method_call = a.type_info.getMethodBinding(callee_expr) != null;
+    const should_force_indirect = switch (callee_expr_kind) {
+        .Ident => false,
+        .FieldAccess => !callee_is_import_member and !callee_is_method_call,
+        else => true,
+    };
 
-    if (callee_kind == .Ptr and self.context.type_store.getKind(self.context.type_store.get(.Ptr, callee_ty).elem) == .Function) {
+    if (should_force_indirect or (callee_kind == .Ptr and self.context.type_store.getKind(self.context.type_store.get(.Ptr, callee_ty).elem) == .Function)) {
         const fn_ptr_val = try self.lowerExpr(ctx, a, env, f, blk, row.callee, callee_ty, .rvalue);
         call_val = blk.builder.indirectCall(blk, ret_ty, fn_ptr_val, vals, loc);
     } else if (std.mem.eql(u8, callee_name_str, "<indirect>")) {
@@ -3886,9 +3909,6 @@ fn tryLowerImportedModuleMember(
 
     const parent_kind = caller_ast.exprs.index.kinds.items[parent_expr.toRaw()];
 
-    // Helper to look up the imported AST from an import path string
-    const field_slice = caller_ast.exprs.strs.get(field_name);
-
     var target_ast: ?*ast.Ast = null;
     if (parent_kind == .Import) {
         const ir = caller_ast.exprs.get(.Import, parent_expr);
@@ -3926,7 +3946,8 @@ fn tryLowerImportedModuleMember(
         if (self.context.type_store.getKind(ex_ty) == .Function) return null;
 
         // Materialize as a global load: &name then load, then coerce if needed.
-        const name = blk.builder.intern(field_slice);
+        // Use the fully qualified symbol name so it matches the emitted global.
+        const name = try self.qualifySymbolName(ta, field_name);
         const ptr_ty = self.context.type_store.mkPtr(ex_ty, false);
         const addr = blk.builder.tirValue(.GlobalAddr, blk, ptr_ty, loc, .{ .name = name });
         var val = blk.builder.tirValue(.Load, blk, ex_ty, loc, .{ .ptr = addr, .@"align" = 0 });
@@ -3988,7 +4009,8 @@ fn lowerIdent(
             const gty = getDeclType(a, did) orelse unreachable;
             if (self.context.type_store.getKind(gty) != .TypeType) {
                 const ptr_ty = self.context.type_store.mkPtr(gty, !d.flags.is_const);
-                const addr = blk.builder.tirValue(.GlobalAddr, blk, ptr_ty, loc, .{ .name = name });
+                const sym = (try self.symbolNameForDecl(a, did)) orelse name;
+                const addr = blk.builder.tirValue(.GlobalAddr, blk, ptr_ty, loc, .{ .name = sym });
                 try env.bind(self.gpa, a, name, .{ .value = addr, .ty = gty, .is_slot = true });
                 return addr;
             }
@@ -4023,7 +4045,8 @@ fn lowerIdent(
             const gty = getDeclType(a, did) orelse unreachable;
             if (self.context.type_store.getKind(gty) != .TypeType) {
                 const ptr_ty = self.context.type_store.mkPtr(gty, !d.flags.is_const);
-                const addr = blk.builder.tirValue(.GlobalAddr, blk, ptr_ty, loc, .{ .name = name });
+                const sym = (try self.symbolNameForDecl(a, did)) orelse name;
+                const addr = blk.builder.tirValue(.GlobalAddr, blk, ptr_ty, loc, .{ .name = sym });
                 // For function declarations, the global address is already the rvalue we want;
                 // do not treat it as an addressable slot to avoid emitting a spurious load.
                 const is_fn = self.context.type_store.getKind(gty) == .Function;
@@ -4200,9 +4223,8 @@ fn lowerBinary(
             op_ty = self.context.type_store.tBool();
         },
         .@"orelse" => {
-            lhs_expect = self.getExprType(ctx, a, row.left);
-            rhs_expect = expected_ty;
-            if (op_ty == null or self.isVoid(op_ty.?)) op_ty = (expected_ty orelse self.context.type_store.tAny());
+            // Short-circuited optional handling; lowered separately.
+            return self.lowerOrelse(ctx, a, env, f, blk, id, expected_ty);
         },
     }
 
@@ -4662,6 +4684,107 @@ fn lowerCatch(
     }
 }
 
+fn lowerOrelse(
+    self: *LowerTir,
+    ctx: *LowerContext,
+    a: *ast.Ast,
+    env: *cf.Env,
+    f: *Builder.FunctionFrame,
+    blk: *Builder.BlockFrame,
+    id: ast.ExprId,
+    expected_ty: ?types.TypeId,
+) anyerror!tir.ValueId {
+    const row = a.exprs.get(.Binary, id);
+    const loc = optLoc(a, id);
+
+    const lhs_ty = self.getExprType(ctx, a, row.left);
+    if (self.context.type_store.index.kinds.items[lhs_ty.toRaw()] != .Optional) return error.LoweringBug;
+
+    // Only compute the LHS eagerly; RHS is lowered lazily in the else branch to preserve short-circuiting.
+    const lhs_val = try self.lowerExpr(ctx, a, env, f, blk, row.left, lhs_ty, .rvalue);
+    const opt_info = self.context.type_store.get(.Optional, lhs_ty);
+    const flag = self.optionalFlag(blk, lhs_ty, lhs_val, loc);
+    const payload = self.optionalPayload(blk, lhs_ty, lhs_val, loc);
+
+    var then_blk = try f.builder.beginBlock(f);
+    var else_blk = try f.builder.beginBlock(f);
+    var join_blk = try f.builder.beginBlock(f);
+
+    const elem_kind = self.context.type_store.getKind(opt_info.elem);
+
+    if (elem_kind != .ErrorSet) {
+        const res_ty = expected_ty orelse opt_info.elem;
+        const res_param = try f.builder.addBlockParam(&join_blk, null, res_ty);
+        const then_param = try f.builder.addBlockParam(&then_blk, null, opt_info.elem);
+
+        try f.builder.condBr(blk, flag, then_blk.id, &.{payload}, else_blk.id, &.{}, loc);
+        const orig_blk = blk.*;
+        try f.builder.endBlock(f, orig_blk);
+
+        var unwrapped = then_param;
+        if (expected_ty) |want| unwrapped = self.emitCoerce(&then_blk, unwrapped, opt_info.elem, want, loc);
+        try f.builder.br(&then_blk, join_blk.id, &.{unwrapped}, loc);
+        try f.builder.endBlock(f, then_blk);
+
+        if (else_blk.term.isNone()) {
+            const rhs_val = try self.lowerExpr(ctx, a, env, f, &else_blk, row.right, res_ty, .rvalue);
+            const rhs_ty = self.getExprType(ctx, a, row.right);
+            const rhs_kind = self.context.type_store.index.kinds.items[rhs_ty.toRaw()];
+            if (else_blk.term.isNone()) {
+                if (rhs_kind == .Void) {
+                    try f.builder.setReturnVoid(&else_blk, loc);
+                } else if (rhs_kind != .Noreturn) {
+                    const coerced = self.emitCoerce(&else_blk, rhs_val, rhs_ty, res_ty, loc);
+                    try f.builder.br(&else_blk, join_blk.id, &.{coerced}, loc);
+                }
+            }
+            try f.builder.endBlock(f, else_blk);
+        }
+
+        blk.* = join_blk;
+        try self.noteExprType(ctx, id, res_ty);
+        return res_param;
+    } else {
+        // Optional(ErrorSet(V,E)) orelse R -> ErrorSet(V,E)
+        const es = self.context.type_store.get(.ErrorSet, opt_info.elem);
+        const res_es_ty = self.context.type_store.mkErrorSet(es.value_ty, es.error_ty);
+        const res_param = try f.builder.addBlockParam(&join_blk, null, res_es_ty);
+        const then_param = try f.builder.addBlockParam(&then_blk, null, res_es_ty);
+
+        try f.builder.condBr(blk, flag, then_blk.id, &.{payload}, else_blk.id, &.{}, loc);
+        const orig_blk = blk.*;
+        try f.builder.endBlock(f, orig_blk);
+
+        try f.builder.br(&then_blk, join_blk.id, &.{then_param}, loc);
+        try f.builder.endBlock(f, then_blk);
+
+        if (else_blk.term.isNone()) {
+            var rhs_val = try self.lowerExpr(ctx, a, env, f, &else_blk, row.right, es.value_ty, .rvalue);
+            const rhs_ty = self.getExprType(ctx, a, row.right);
+            if (rhs_ty.toRaw() != es.value_ty.toRaw()) {
+                rhs_val = self.emitCoerce(&else_blk, rhs_val, rhs_ty, es.value_ty, loc);
+            }
+
+            const ok_name = f.builder.intern("Ok");
+            const err_name = f.builder.intern("Err");
+            const union_ty = self.context.type_store.mkUnion(&.{ .{ .name = ok_name, .ty = es.value_ty }, .{ .name = err_name, .ty = es.error_ty } });
+            const union_val = else_blk.builder.tirValue(.UnionMake, &else_blk, union_ty, loc, .{ .field_index = 0, .value = rhs_val });
+            const tag0 = else_blk.builder.tirValue(.ConstInt, &else_blk, self.context.type_store.tI32(), loc, .{ .value = 0 });
+            const fields = [_]tir.Rows.StructFieldInit{
+                .{ .index = 0, .name = .none(), .value = tag0 },
+                .{ .index = 1, .name = .none(), .value = union_val },
+            };
+            const es_val = else_blk.builder.structMake(&else_blk, res_es_ty, &fields, loc);
+            try f.builder.br(&else_blk, join_blk.id, &.{es_val}, loc);
+            try f.builder.endBlock(f, else_blk);
+        }
+
+        blk.* = join_blk;
+        try self.noteExprType(ctx, id, res_es_ty);
+        return res_param;
+    }
+}
+
 fn lowerCast(
     self: *LowerTir,
     ctx: *LowerContext,
@@ -4748,6 +4871,22 @@ pub fn lowerExpr(
             const ty0 = self.getExprType(ctx, a, id);
             const poison = self.safeUndef(blk, ty0, loc);
             try self.lowerReturnCommon(ctx, a, env, f, blk, row.value, loc);
+            break :blk poison;
+        },
+        .Break => blk: {
+            const row = a.exprs.get(.Break, id);
+            const loc = optLoc(a, id);
+            const ty0 = expected_ty orelse self.getExprType(ctx, a, id);
+            const poison = self.safeUndef(blk, ty0, loc);
+            try cf.lowerBreakCommon(self, ctx, a, env, f, blk, row.label, row.value, loc);
+            break :blk poison;
+        },
+        .Continue => blk: {
+            const row = a.exprs.get(.Continue, id);
+            const loc = optLoc(a, id);
+            const ty0 = expected_ty orelse self.getExprType(ctx, a, id);
+            const poison = self.safeUndef(blk, ty0, loc);
+            try cf.lowerContinueCommon(self, ctx, a, env, f, blk, row.label, loc);
             break :blk poison;
         },
         .If => cf.lowerIf(self, ctx, a, env, f, blk, id, expected_ty),

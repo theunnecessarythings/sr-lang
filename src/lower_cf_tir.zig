@@ -127,6 +127,8 @@ fn runDefersForLoopExit(
         const ent = env.defers.items[@intCast(j)];
         if (!ent.is_err) _ = try self.lowerExpr(ctx, a, env, f, blk, ent.expr, null, .rvalue);
     }
+    // Defers belong to the loop/body scope being exited; drop them to avoid re-running later.
+    env.defers.items.len = lc.defer_len_at_entry;
 }
 
 fn loopCtxForLabel(_: *LowerTir, ctx: *LowerTir.LowerContext, opt_label: ast.OptStrId) ?*LoopCtx {
@@ -236,11 +238,25 @@ pub fn lowerBreak(
 ) !void {
     const br = a.stmts.get(.Break, sid);
     const loc = LowerTir.optLoc(a, sid);
+    try lowerBreakCommon(self, ctx, a, env, f, blk, br.label, br.value, loc);
+}
+
+pub fn lowerBreakCommon(
+    self: *LowerTir,
+    ctx: *LowerTir.LowerContext,
+    a: *ast.Ast,
+    env: *Env,
+    f: *tir.Builder.FunctionFrame,
+    blk: *tir.Builder.BlockFrame,
+    label: ast.OptStrId,
+    value: ast.OptExprId,
+    loc: tir.OptLocId,
+) !void {
     var target: ?LoopCtx = null;
     var i: isize = @as(isize, @intCast(ctx.loop_stack.items.len)) - 1;
     while (i >= 0) : (i -= 1) {
         const lc = ctx.loop_stack.items[@intCast(i)];
-        if (br.label.isNone() or (!lc.label.isNone() and std.mem.eql(u8, a.exprs.strs.get(lc.label.unwrap()), a.exprs.strs.get(br.label.unwrap())))) {
+        if (label.isNone() or (!lc.label.isNone() and std.mem.eql(u8, a.exprs.strs.get(lc.label.unwrap()), a.exprs.strs.get(label.unwrap())))) {
             target = lc;
             break;
         }
@@ -248,10 +264,10 @@ pub fn lowerBreak(
     if (target) |lc| {
         try runDefersForLoopExit(self, ctx, a, env, f, blk, lc);
         if (lc.has_result) {
-            const v = if (!br.value.isNone())
-                try self.lowerExpr(ctx, a, env, f, blk, br.value.unwrap(), lc.res_ty, .rvalue)
+            const v = if (!value.isNone())
+                try self.lowerExpr(ctx, a, env, f, blk, value.unwrap(), lc.res_ty, .rvalue)
             else
-                f.builder.tirValue(.ConstUndef, blk, lc.res_ty.?, loc, .{});
+                self.safeUndef(blk, lc.res_ty.?, loc);
             try f.builder.br(blk, lc.join_block, &.{v}, loc);
         } else {
             try f.builder.br(blk, lc.break_block, &.{}, loc);
@@ -270,7 +286,20 @@ pub fn lowerContinue(
 ) !void {
     const cid = a.stmts.get(.Continue, sid);
     const loc = LowerTir.optLoc(a, sid);
-    const lc = loopCtxForLabel(self, ctx, cid.label) orelse return error.LoweringBug;
+    try lowerContinueCommon(self, ctx, a, env, f, blk, cid.label, loc);
+}
+
+pub fn lowerContinueCommon(
+    self: *LowerTir,
+    ctx: *LowerTir.LowerContext,
+    a: *ast.Ast,
+    env: *Env,
+    f: *tir.Builder.FunctionFrame,
+    blk: *tir.Builder.BlockFrame,
+    label: ast.OptStrId,
+    loc: tir.OptLocId,
+) !void {
+    const lc = loopCtxForLabel(self, ctx, label) orelse return error.LoweringBug;
     try runDefersForLoopExit(self, ctx, a, env, f, blk, lc.*);
     switch (lc.continue_info) {
         .none => try f.builder.br(blk, lc.continue_block, &.{}, loc),

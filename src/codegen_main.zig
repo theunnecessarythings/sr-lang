@@ -96,21 +96,23 @@ ret_join_block: ?mlir.Block = null,
 ret_has_value: bool = false,
 ret_type_cache: ?mlir.Type = null,
 current_scope: ?mlir.Attribute = null,
-block_map: std.AutoHashMap(tir.BlockId, mlir.Block),
-value_map: std.AutoHashMap(tir.ValueId, mlir.Value),
-tensor_slots: std.AutoHashMap(tir.ValueId, mlir.Value),
-tensor_elem_ptrs: std.AutoHashMap(tir.ValueId, TensorElemPtrInfo),
+    block_map: std.AutoHashMap(tir.BlockId, mlir.Block),
+    value_map: std.AutoHashMap(tir.ValueId, mlir.Value),
+    tensor_slots: std.AutoHashMap(tir.ValueId, mlir.Value),
+    tensor_elem_ptrs: std.AutoHashMap(tir.ValueId, TensorElemPtrInfo),
 
 // NEW: for correctness decisions (signedness, etc.)
 val_types: std.AutoHashMap(tir.ValueId, types.TypeId), // SR types of SSA values
 def_instr: std.AutoHashMap(tir.ValueId, tir.InstrId), // SSA def site
 inline_mlir_counter: u32 = 0,
 
-global_addr_cache: std.StringHashMap(mlir.Value),
+    global_addr_cache: std.StringHashMap(mlir.Value),
+    // Functions that must be emitted as llvm.func because we take their address.
+    force_llvm_func_syms: std.AutoHashMap(tir.StrId, void),
 
-diagnostic_handler: mlir.c.MlirDiagnosticHandlerID,
-diagnostic_data: *DiagnosticData,
-active_type_info: ?*types.TypeInfo = null,
+    diagnostic_handler: mlir.c.MlirDiagnosticHandlerID,
+    diagnostic_data: *DiagnosticData,
+    active_type_info: ?*types.TypeInfo = null,
 
 pub const FuncInfo = struct {
     op: mlir.Operation,
@@ -380,6 +382,7 @@ pub fn init(gpa: Allocator, context: *compile.Context, ctx: mlir.Context) Codege
         .val_types = std.AutoHashMap(tir.ValueId, types.TypeId).init(gpa),
         .def_instr = std.AutoHashMap(tir.ValueId, tir.InstrId).init(gpa),
         .global_addr_cache = std.StringHashMap(mlir.Value).init(gpa),
+        .force_llvm_func_syms = std.AutoHashMap(tir.StrId, void).init(gpa),
         .diagnostic_handler = mlir.c.mlirContextAttachDiagnosticHandler(ctx.handle, diagnosticHandler, @ptrCast(diag_data), null),
         .diagnostic_data = diag_data,
         .active_type_info = null,
@@ -408,6 +411,7 @@ pub fn deinit(self: *Codegen) void {
     self.val_types.deinit();
     self.def_instr.deinit();
     self.global_addr_cache.deinit();
+    self.force_llvm_func_syms.deinit();
     var it = self.file_cache.valueIterator();
     while (it.next()) |src| {
         self.context.source_manager.gpa.free(@constCast(src.*));
@@ -458,6 +462,29 @@ fn blockOptLoc(self: *Codegen, block_id: tir.BlockId, t: *const tir.TIR) tir.Opt
         if (!loc.isNone()) return loc;
     }
     return self.termOptLoc(t, block.term);
+}
+
+fn collectForceLlvmFuncSyms(self: *Codegen, t: *const tir.TIR) !void {
+    self.force_llvm_func_syms.clearRetainingCapacity();
+
+    const type_store = self.context.type_store;
+    const funcs = t.funcs.func_pool.data.items;
+    for (funcs) |fid| {
+        const f = t.funcs.Function.get(fid);
+        const blocks = t.funcs.block_pool.slice(f.blocks);
+        for (blocks) |bid| {
+            const b = t.funcs.Block.get(bid);
+            const instrs = t.instrs.instr_pool.slice(b.instrs);
+            for (instrs) |iid| {
+                if (t.instrs.index.kinds.items[iid.toRaw()] != .GlobalAddr) continue;
+                const row = t.instrs.get(.GlobalAddr, iid);
+                if (type_store.getKind(row.ty) != .Ptr) continue;
+                const ptr = type_store.get(.Ptr, row.ty);
+                if (type_store.getKind(ptr.elem) != .Function) continue;
+                _ = try self.force_llvm_func_syms.put(row.name, {});
+            }
+        }
+    }
 }
 
 fn functionOptLoc(self: *Codegen, f_id: tir.FuncId, t: *const tir.TIR) tir.OptLocId {
@@ -512,6 +539,7 @@ pub fn emitModule(
     // defer self.active_type_info = prev_type_info;
 
     self.loc_cache.clearRetainingCapacity();
+    try self.collectForceLlvmFuncSyms(t);
     try debug.attachTargetInfo(self);
     try debug.ensureDebugModuleAttrs(self);
     try self.emitExternDecls(t);
@@ -810,22 +838,14 @@ fn emitFunctionHeader(self: *Codegen, f_id: tir.FuncId, t: *const tir.TIR) !void
     };
     if (n_res == 1) results[0] = try self.llvmTypeOf(f.result);
 
-    // Decide whether to emit as func.func or llvm.func based on an attribute.
+    // Decide whether to emit as func.func or llvm.func. We force llvm.func when
+    // we know the function's address is taken (collected earlier).
     const f_attrs = t.instrs.attribute_pool.slice(f.attrs);
     const emit_c_iface = t.instrs.strs.intern("llvm.emit_c_interface");
-    const llvm_fn_attr = t.instrs.strs.intern("llvm_fn");
-    const llvm_func_attr = t.instrs.strs.intern("llvm.func");
-    var emit_as_llvm_func = false;
+    const emit_as_llvm_func = self.force_llvm_func_syms.get(f.name) != null;
     // NOTE: language-defined functions here are assumed non-variadic
     const fn_ret_ty: mlir.Type = if (n_res == 0) self.void_ty else results[0];
     const fty = blk: {
-        for (f_attrs) |attr_id| {
-            const attr = t.instrs.Attribute.get(attr_id);
-            if (attr.name.eq(llvm_fn_attr) or attr.name.eq(llvm_func_attr)) {
-                emit_as_llvm_func = true;
-                break;
-            }
-        }
         if (emit_as_llvm_func) {
             break :blk mlir.LLVM.getLLVMFunctionType(fn_ret_ty, param_tys, false);
         } else {

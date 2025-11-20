@@ -5,7 +5,7 @@ glfw :: import "vendor/glfw3"
 skia :: import "vendor/skia"
 skiac :: import "vendor/skiac"
 
-get_proc_address_wrapper :: @[llvm_fn] proc(ctx: *void, name: *i8) skiac.GrGLFuncPtr {
+get_proc_address_wrapper :: proc(ctx: *void, name: *i8) skiac.GrGLFuncPtr {
     _ = ctx;
     return (glfw.glfwGetProcAddress((name).(*u8))).(skiac.GrGLFuncPtr);
 }
@@ -21,8 +21,7 @@ main :: proc() {
     glfw.glfwWindowHint(glfw.CONTEXT_VERSION_MINOR, 3)
     glfw.glfwWindowHint(glfw.OPENGL_PROFILE, glfw.OPENGL_CORE_PROFILE)
 
-    window := glfw.glfwCreateWindow(800, 600, "Skia Advanced (idiomatic)".ptr, 0.^*void, 0.^*void)
-    if window.^i64 == 0 {
+    window := glfw.glfwCreateWindow(800, 600, "Skia Advanced (idiomatic)".ptr, null, null) orelse {
         fmt.println("Failed to create GLFW window")
         return
     }
@@ -31,7 +30,7 @@ main :: proc() {
     glfw.glfwMakeContextCurrent(window)
     glfw.glfwSwapInterval(1)
 
-    gl_interface := skia.GLInterface.make(0.^*void, get_proc_address_wrapper)
+    gl_interface := skia.GLInterface.make(null, get_proc_address_wrapper)
     if gl_interface.is_null() {
         fmt.println("skia.make_gl_interface failed")
         return
@@ -213,7 +212,7 @@ main :: proc() {
             rsh := re.make_shader(&uniforms)
             re.unref()
             uniforms.unref()
-            if rsh.shader.^i64 != 0 {
+            if rsh.shader != null {
                 rp := skia.Paint.new()
                 rp.set_anti_alias(true)
                 rp.set_style(skia.PaintStyle.Fill)

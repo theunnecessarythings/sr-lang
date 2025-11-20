@@ -4,9 +4,9 @@ package glfw3
 // Basic Types
 // ------------------------------------------------------------
 
-Monitor :: *void
-Window :: *void
-Cursor :: *void
+Monitor :: ?*void
+Window :: ?*void
+Cursor :: ?*void
 
 VidMode :: struct {
     width: i32,
