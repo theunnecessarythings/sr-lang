@@ -736,7 +736,7 @@ fn callRuntimeAllocPtr(
     const opt_ptr_ty = ts.mkOptional(void_ptr_ty);
     const alloc_name = blk.builder.intern("rt_alloc");
     const alloc_result = blk.builder.call(blk, opt_ptr_ty, alloc_name, &.{size_bytes}, loc);
-    return blk.builder.extractField(blk, void_ptr_ty, alloc_result, 1, loc);
+    return self.optionalPayload(blk, opt_ptr_ty, alloc_result, loc);
 }
 
 fn callRuntimeReallocPtr(
@@ -751,7 +751,7 @@ fn callRuntimeReallocPtr(
     const opt_ptr_ty = ts.mkOptional(void_ptr_ty);
     const realloc_name = blk.builder.intern("rt_realloc");
     const realloc_result = blk.builder.call(blk, opt_ptr_ty, realloc_name, &.{ old_ptr, size_bytes }, loc);
-    return blk.builder.extractField(blk, void_ptr_ty, realloc_result, 1, loc);
+    return self.optionalPayload(blk, opt_ptr_ty, realloc_result, loc);
 }
 
 fn coerceArrayToDynArray(
@@ -871,11 +871,28 @@ pub fn emitCoerce(
         .Optional => {
             const opt = ts.get(.Optional, want);
             const bool_ty = ts.tBool();
+            const want_ptr = ts.isOptionalPointer(want);
 
             if (gk == .Optional) {
                 // Case: ?U -> ?T
                 const got_opt = ts.get(.Optional, got);
-                if (got_opt.elem.eq(opt.elem)) return v; // ?T -> ?T (no-op)
+                if (got_opt.elem.eq(opt.elem) and want_ptr == ts.isOptionalPointer(got)) {
+                    return v; // identical layout
+                }
+
+                if (want_ptr) {
+                    if (ts.isOptionalPointer(got)) {
+                        var payload = blk.builder.tirValue(.CastBit, blk, got_opt.elem, loc, .{ .value = v });
+                        if (!got_opt.elem.eq(opt.elem)) {
+                            payload = self.emitCoerce(blk, payload, got_opt.elem, opt.elem, loc);
+                        }
+                        return blk.builder.tirValue(.CastBit, blk, want, loc, .{ .value = payload });
+                    }
+                    const flag = self.optionalFlag(blk, got, v, loc);
+                    var payload = self.optionalPayload(blk, got, v, loc);
+                    payload = self.emitCoerce(blk, payload, got_opt.elem, opt.elem, loc);
+                    return self.optionalWrapWithFlag(blk, want, flag, payload, loc);
+                }
 
                 // Extract fields from ?U
                 const flag = blk.builder.extractField(blk, bool_ty, v, 0, loc);
@@ -900,11 +917,7 @@ pub fn emitCoerce(
                 const payload = self.emitCoerce(blk, v, got, opt.elem, loc);
 
                 // Build ?T with a 'true' flag
-                const some_flag = blk.builder.tirValue(.ConstBool, blk, bool_ty, loc, .{ .value = true });
-                return blk.builder.structMake(blk, want, &[_]tir.Rows.StructFieldInit{
-                    .{ .index = 0, .name = .none(), .value = some_flag },
-                    .{ .index = 1, .name = .none(), .value = payload },
-                }, loc);
+                return self.optionalWrapSome(blk, want, payload, loc);
             }
         },
         .I8, .I16, .I32, .I64, .U8, .U16, .U32, .U64, .Usize, .F32, .F64 => {
@@ -1003,6 +1016,80 @@ fn lookupRuntimeOverride(bindings: []const comp.BindingInfo, name: ast.StrId) ?t
         }
     }
     return null;
+}
+
+pub fn optionalPayload(
+    self: *LowerTir,
+    blk: *Builder.BlockFrame,
+    opt_ty: types.TypeId,
+    opt_val: tir.ValueId,
+    loc: tir.OptLocId,
+) tir.ValueId {
+    const opt = self.context.type_store.get(.Optional, opt_ty);
+    if (self.context.type_store.isOptionalPointer(opt_ty)) {
+        return blk.builder.tirValue(.CastBit, blk, opt.elem, loc, .{ .value = opt_val });
+    }
+    return blk.builder.extractField(blk, opt.elem, opt_val, 1, loc);
+}
+
+pub fn optionalFlag(
+    self: *LowerTir,
+    blk: *Builder.BlockFrame,
+    opt_ty: types.TypeId,
+    opt_val: tir.ValueId,
+    loc: tir.OptLocId,
+) tir.ValueId {
+    if (self.context.type_store.isOptionalPointer(opt_ty)) {
+        const opt = self.context.type_store.get(.Optional, opt_ty);
+        const payload = blk.builder.tirValue(.CastBit, blk, opt.elem, loc, .{ .value = opt_val });
+        const usize_ty = self.context.type_store.tUsize();
+        const payload_bits = blk.builder.tirValue(.CastBit, blk, usize_ty, loc, .{ .value = payload });
+        const zero = blk.builder.constNull(blk, usize_ty, loc);
+        return blk.builder.binBool(blk, .CmpNe, payload_bits, zero, loc);
+    }
+    const bool_ty = self.context.type_store.tBool();
+    return blk.builder.extractField(blk, bool_ty, opt_val, 0, loc);
+}
+
+pub fn optionalWrapWithFlag(
+    self: *LowerTir,
+    blk: *Builder.BlockFrame,
+    opt_ty: types.TypeId,
+    flag: tir.ValueId,
+    payload: tir.ValueId,
+    loc: tir.OptLocId,
+) tir.ValueId {
+    if (self.context.type_store.isOptionalPointer(opt_ty)) {
+        const some_val = blk.builder.tirValue(.CastBit, blk, opt_ty, loc, .{ .value = payload });
+        const none_val = blk.builder.constNull(blk, opt_ty, loc);
+        return blk.builder.tirValue(.Select, blk, opt_ty, loc, .{
+            .cond = flag,
+            .then_value = some_val,
+            .else_value = none_val,
+        });
+    }
+    return blk.builder.structMake(blk, opt_ty, &[_]tir.Rows.StructFieldInit{
+        .{ .index = 0, .name = .none(), .value = flag },
+        .{ .index = 1, .name = .none(), .value = payload },
+    }, loc);
+}
+
+pub fn optionalWrapSome(
+    self: *LowerTir,
+    blk: *Builder.BlockFrame,
+    opt_ty: types.TypeId,
+    payload: tir.ValueId,
+    loc: tir.OptLocId,
+) tir.ValueId {
+    if (self.context.type_store.isOptionalPointer(opt_ty)) {
+        return blk.builder.tirValue(.CastBit, blk, opt_ty, loc, .{ .value = payload });
+    }
+    const bool_ty = self.context.type_store.tBool();
+    const some_flag = blk.builder.tirValue(.ConstBool, blk, bool_ty, loc, .{ .value = true });
+    return blk.builder.structMake(blk, opt_ty, &[_]tir.Rows.StructFieldInit{
+        .{ .index = 0, .name = .none(), .value = some_flag },
+        .{ .index = 1, .name = .none(), .value = payload },
+    }, loc);
 }
 
 fn runtimeResultType(bindings: []const comp.BindingInfo) ?types.TypeId {
@@ -1990,10 +2077,16 @@ fn trySpecializeFunctionCall(
             const tuple_start = params.len - 1;
             const tuple_ty = try self.computeTrailingAnyTupleType(ctx, a, env, original_args, tuple_start);
             trailing_any_tuple_ty = tuple_ty;
-            const last_param = decl_ast.exprs.Param.get(params[params.len - 1]);
-            if (!last_param.pat.isNone()) {
-                if (bindingNameOfPattern(decl_ast, last_param.pat.unwrap())) |pname| {
-                    try binding_infos.append(self.gpa, comp.BindingInfo.runtimeParam(pname, tuple_ty));
+            const tuple_kind = self.context.type_store.getKind(tuple_ty);
+            const is_empty_tuple = tuple_kind == .Tuple and self.context.type_store.type_pool.slice(
+                self.context.type_store.get(.Tuple, tuple_ty).elems,
+            ).len == 0;
+            if (!is_empty_tuple) {
+                const last_param = decl_ast.exprs.Param.get(params[params.len - 1]);
+                if (!last_param.pat.isNone()) {
+                    if (bindingNameOfPattern(decl_ast, last_param.pat.unwrap())) |pname| {
+                        try binding_infos.append(self.gpa, comp.BindingInfo.runtimeParam(pname, tuple_ty));
+                    }
                 }
             }
         }
@@ -2602,11 +2695,30 @@ fn handleExternVariadicArgs(
 
     var ve_idx: usize = 0;
     while (ve_idx < var_entries.items.len) {
-        const entry = var_entries.items[ve_idx];
-        if (self.context.type_store.getKind(entry.ty) == .Tuple and
-            self.isSpreadArgExpr(ctx, a, env, entry.expr))
-        {
-            const tuple_row = self.context.type_store.get(.Tuple, entry.ty);
+        var entry = &var_entries.items[ve_idx];
+        var entry_kind = self.context.type_store.getKind(entry.ty);
+
+        if (entry_kind == .Any and entry.expr != null and self.isSpreadArgExpr(ctx, a, env, entry.expr)) {
+            const expr_id = entry.expr.?;
+            const range_row = a.exprs.get(.Range, expr_id);
+            if (!range_row.end.isNone()) {
+                const payload_expr = range_row.end.unwrap();
+                const payload_ty = self.exprTypeWithEnv(ctx, a, env, payload_expr);
+                if (self.context.type_store.getKind(payload_ty) == .Tuple) {
+                    entry.value = try self.lowerExpr(ctx, a, env, f, blk, payload_expr, payload_ty, .rvalue);
+                    entry.ty = payload_ty;
+                    entry_kind = .Tuple;
+                }
+            }
+        }
+
+        if (entry_kind == .Tuple and self.isSpreadArgExpr(ctx, a, env, entry.expr)) {
+            const tuple_value = entry.value;
+            const tuple_loc = entry.loc;
+            const tuple_expr = entry.expr;
+            const tuple_ty = entry.ty;
+
+            const tuple_row = self.context.type_store.get(.Tuple, tuple_ty);
             const elem_types = self.context.type_store.type_pool.slice(tuple_row.elems);
             var shift = ve_idx;
             while (shift + 1 < var_entries.items.len) : (shift += 1) {
@@ -2616,12 +2728,12 @@ fn handleExternVariadicArgs(
             var elem_idx: usize = 0;
             while (elem_idx < elem_types.len) : (elem_idx += 1) {
                 const elem_ty = elem_types[elem_idx];
-                const elem_val = blk.builder.extractField(blk, elem_ty, entry.value, @intCast(elem_idx), entry.loc);
+                const elem_val = blk.builder.extractField(blk, elem_ty, tuple_value, @intCast(elem_idx), tuple_loc);
                 try var_entries.insert(self.gpa, ve_idx + elem_idx, .{
                     .value = elem_val,
                     .ty = elem_ty,
-                    .loc = entry.loc,
-                    .expr = entry.expr,
+                    .loc = tuple_loc,
+                    .expr = tuple_expr,
                 });
             }
             continue;
@@ -4137,7 +4249,8 @@ fn lowerBinary(
         if (l_is_optional and r_is_optional) {
             if (l_ty.eq(null_ty) or r_ty.eq(null_ty)) { // One of them is explicitly the null type
                 const optional_val = if (l_ty.eq(null_ty)) r else l; // The non-null optional
-                const flag = blk.builder.extractField(blk, bool_ty, optional_val, 0, loc); // Extract is_some flag
+                const optional_ty = if (l_ty.eq(null_ty)) r_ty else l_ty;
+                const flag = self.optionalFlag(blk, optional_ty, optional_val, loc); // Extract is_some flag
 
                 const result = if (row.op == .eq)
                     blk.builder.binBool(blk, .CmpEq, flag, blk.builder.tirValue(.ConstBool, blk, bool_ty, loc, .{ .value = false }), .none())
@@ -4161,8 +4274,8 @@ fn lowerBinary(
                 coerced_other = self.emitCoerce(blk, other_val, other_ty_raw, opt_info.elem, loc);
             }
 
-            const flag = blk.builder.extractField(blk, bool_ty, opt_val, 0, loc);
-            const payload = blk.builder.extractField(blk, opt_info.elem, opt_val, 1, loc);
+            const flag = self.optionalFlag(blk, opt_ty, opt_val, loc);
+            const payload = self.optionalPayload(blk, opt_ty, opt_val, loc);
 
             var then_blk = try f.builder.beginBlock(f);
             var else_blk = try f.builder.beginBlock(f);
@@ -4246,8 +4359,8 @@ fn lowerBinary(
             const lhs_ty = self.getExprType(ctx, a, row.left);
             if (self.context.type_store.index.kinds.items[lhs_ty.toRaw()] != .Optional) return error.LoweringBug;
             const opt_info = self.context.type_store.get(.Optional, lhs_ty);
-            const flag = blk.builder.extractField(blk, bool_ty, l, 0, loc);
-            const payload = blk.builder.extractField(blk, opt_info.elem, l, 1, loc);
+            const flag = self.optionalFlag(blk, lhs_ty, l, loc);
+            const payload = self.optionalPayload(blk, lhs_ty, l, loc);
 
             const elem_kind = self.context.type_store.getKind(opt_info.elem);
 
@@ -4349,8 +4462,8 @@ fn lowerCatch(
     if (is_optional_es) {
         // Optional(ErrorSet(V,E)) catch handler -> Optional(V)
         // optional info not required explicitly here
-        const some_flag = blk.builder.extractField(blk, self.context.type_store.tBool(), lhs_val, 0, expr_loc);
-        const es_payload = blk.builder.extractField(blk, es_ty, lhs_val, 1, expr_loc);
+        const some_flag = self.optionalFlag(blk, lhs_ty0, lhs_val, expr_loc);
+        const es_payload = self.optionalPayload(blk, lhs_ty0, lhs_val, expr_loc);
 
         var some_blk = try f.builder.beginBlock(f);
         var none_blk = try f.builder.beginBlock(f);

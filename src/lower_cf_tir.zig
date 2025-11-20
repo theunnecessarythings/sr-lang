@@ -510,9 +510,8 @@ pub fn lowerOptionalUnwrap(
     const expr_loc = LowerTir.optLoc(a, row.expr);
 
     const opt_val = try self.lowerExpr(ctx, a, env, f, blk, row.expr, null, .rvalue);
-    const bool_ty = self.context.type_store.tBool();
-    const flag = blk.builder.extractField(blk, bool_ty, opt_val, 0, expr_loc);
-    const payload = blk.builder.extractField(blk, opt_info.elem, opt_val, 1, expr_loc);
+    const flag = self.optionalFlag(blk, opt_ty, opt_val, expr_loc);
+    const payload = self.optionalPayload(blk, opt_ty, opt_val, expr_loc);
 
     var then_blk = try f.builder.beginBlock(f);
     var none_blk = try f.builder.beginBlock(f);

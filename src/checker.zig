@@ -2490,7 +2490,9 @@ fn checkFunctionLit(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, id
     const temp_ty = self.context.type_store.mkFunction(pbuf, res, is_variadic, true, fnr.flags.is_extern);
     ast_unit.type_info.expr_types.items[id.toRaw()] = temp_ty;
 
-    try self.pushFunc(ctx, res, !fnr.result_ty.isNone(), !fnr.flags.is_proc);
+    const result_kind = self.typeKind(res);
+    const returns_value = result_kind != .Void and result_kind != .Noreturn;
+    try self.pushFunc(ctx, res, returns_value, !fnr.flags.is_proc);
     defer self.popFunc(ctx);
     if (!fnr.body.isNone()) {
         // Function bodies are in statement context: no value required from the block
@@ -4055,10 +4057,13 @@ fn maybeRecordRuntimeSpecialization(
     if (treat_trailing_any and params.len > 0) {
         const tuple_start = params.len - 1;
         const tuple_ty = try self.computeTrailingAnyTupleTypeChecker(ast_unit, args, tuple_start);
-        const last_param = decl_ctx.ast.exprs.Param.get(params[tuple_start]);
-        if (!last_param.pat.isNone()) {
-            if (bindingNameOfPattern(decl_ctx.ast, last_param.pat.unwrap())) |pname| {
-                try runtime_specs.append(self.gpa, .{ .name = pname, .ty = tuple_ty });
+        const tuple_kind = self.typeKind(tuple_ty);
+        if (!(tuple_kind == .Tuple and self.context.type_store.get(.Tuple, tuple_ty).elems.len == 0)) {
+            const last_param = decl_ctx.ast.exprs.Param.get(params[tuple_start]);
+            if (!last_param.pat.isNone()) {
+                if (bindingNameOfPattern(decl_ctx.ast, last_param.pat.unwrap())) |pname| {
+                    try runtime_specs.append(self.gpa, .{ .name = pname, .ty = tuple_ty });
+                }
             }
         }
     }

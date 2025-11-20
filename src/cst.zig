@@ -117,15 +117,11 @@ pub const StrId = Index(StrTag);
 pub const StringInterner = struct {
     gpa: std.mem.Allocator,
     map: std.StringHashMapUnmanaged(StrId) = .{},
-    buf: std.ArrayListUnmanaged(u8) = .{},
-    off: std.ArrayListUnmanaged(u32) = .{},
+    strings: std.ArrayListUnmanaged([]const u8) = .{},
     mutex: std.Thread.Mutex = .{},
 
     pub fn init(gpa: std.mem.Allocator) StringInterner {
-        var si: StringInterner = .{ .gpa = gpa };
-        // sentinel offset so id 0 maps to [0..off[1])
-        si.off.append(si.gpa, 0) catch @panic("OOM");
-        return si;
+        return .{ .gpa = gpa };
     }
 
     pub fn deinit(self: *StringInterner) void {
@@ -136,8 +132,7 @@ pub const StringInterner = struct {
         }
 
         self.map.deinit(self.gpa);
-        self.buf.deinit(self.gpa);
-        self.off.deinit(self.gpa);
+        self.strings.deinit(self.gpa);
     }
 
     pub fn intern(self: *StringInterner, s: []const u8) StrId {
@@ -154,18 +149,19 @@ pub const StringInterner = struct {
             return gop.value_ptr.*;
         }
 
-        const id = StrId.fromRaw(@intCast(self.off.items.len - 1));
-        self.buf.appendSlice(self.gpa, s) catch @panic("OOM");
-        self.off.append(self.gpa, @intCast(self.buf.items.len)) catch @panic("OOM");
+        const id = StrId.fromRaw(@intCast(self.strings.items.len));
+        self.strings.append(self.gpa, key_copy) catch @panic("OOM");
 
         gop.value_ptr.* = id;
         return id;
     }
 
     pub fn get(self: *const StringInterner, id: StrId) []const u8 {
-        const lo = self.off.items[id.toRaw()];
-        const hi = self.off.items[id.toRaw() + 1];
-        return self.buf.items[lo..hi];
+        const self_mut: *StringInterner = @constCast(self);
+        self_mut.mutex.lock();
+        defer self_mut.mutex.unlock();
+        std.debug.assert(id.toRaw() < self_mut.strings.items.len);
+        return self_mut.strings.items[id.toRaw()];
     }
 };
 

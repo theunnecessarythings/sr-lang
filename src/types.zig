@@ -894,6 +894,11 @@ pub const TypeStore = struct {
         if (self.findOptional(elem)) |id| return id;
         return self.addLocked(.Optional, .{ .elem = elem });
     }
+    pub fn isOptionalPointer(self: *const TypeStore, ty: TypeId) bool {
+        if (self.index.kinds.items[ty.toRaw()] != .Optional) return false;
+        const elem = self.get(.Optional, ty).elem;
+        return self.index.kinds.items[elem.toRaw()] == .Ptr;
+    }
     pub fn mkTuple(self: *TypeStore, elems: []const TypeId) TypeId {
         self.mutex.lock();
         defer self.mutex.unlock();

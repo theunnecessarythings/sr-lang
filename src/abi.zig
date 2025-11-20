@@ -139,8 +139,11 @@ pub fn abiSizeAlign(self: *Codegen, ty: types.TypeId) SizeAlign {
 
             return SizeAlign{ .size = total_size, .alignment = alignment, .hasFloat = has_float, .allIntsOnly = all_ints };
         },
-        .Optional => { // {i1, T}
+        .Optional => { // {i1, T} unless pointer-backed
             const O = self.context.type_store.get(.Optional, ty);
+            if (self.context.type_store.isOptionalPointer(ty)) {
+                return abiSizeAlign(self, O.elem);
+            }
             const a_tag = SizeAlign{ .size = 1, .alignment = 1, .hasFloat = false, .allIntsOnly = true };
             const v = abiSizeAlign(self, O.elem);
             var off: usize = 0;
@@ -283,14 +286,11 @@ pub fn abiClassifyX64SysV(self: *Codegen, ty: types.TypeId, isReturn: bool) AbiC
             return if (isReturn) .{ .kind = .IndirectSRet, .alignment = @intCast(sa.alignment), .size = sa.size } else .{ .kind = .IndirectByVal, .alignment = @intCast(sa.alignment), .size = sa.size };
         },
         .Optional => {
-            const opt_ty = self.context.type_store.get(.Optional, ty);
-            const elem_kind = self.context.type_store.getKind(opt_ty.elem);
-            if (elem_kind == .Ptr) {
+            if (self.context.type_store.isOptionalPointer(ty)) {
                 const sa = abiSizeAlign(self, ty);
                 return .{
-                    .kind = .DirectPair,
-                    .scalar0 = self.i1_ty,
-                    .scalar1 = self.llvm_ptr_ty,
+                    .kind = .DirectScalar,
+                    .scalar0 = self.llvm_ptr_ty,
                     .size = sa.size,
                     .alignment = @intCast(sa.alignment),
                 };

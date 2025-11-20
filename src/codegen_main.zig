@@ -1425,7 +1425,7 @@ fn emitConstNull(self: *Codegen, p: tir.Rows.ConstNull) !mlir.Value {
         .results(&.{ty}).build();
     self.append(zero);
     const sr_kind = self.context.type_store.getKind(p.ty);
-    if (sr_kind == .Optional) {
+    if (sr_kind == .Optional and !self.context.type_store.isOptionalPointer(p.ty)) {
         const flag = self.constBool(false);
         const v = self.insertAt(zero.getResult(0), flag, &.{0});
         return v;
@@ -1449,9 +1449,11 @@ fn emitConstString(self: *Codegen, p: tir.Rows.ConstString) !mlir.Value {
     const str_text = self.context.interner.get(p.text);
     var ptr_op = try self.constStringPtr(str_text);
     const ptr_val = ptr_op.getResult(0);
-    const len_val = self.constInt(self.i64_ty, @intCast(str_text.len));
 
     const string_ty = try self.llvmTypeOf(p.ty);
+    if (mlir.LLVM.isLLVMPointerType(string_ty)) return ptr_val;
+
+    const len_val = self.constInt(self.i64_ty, @intCast(str_text.len));
     var agg = self.undefOf(string_ty);
     agg = self.insertAt(agg, ptr_val, &.{0});
     agg = self.insertAt(agg, len_val, &.{1});
@@ -3031,11 +3033,37 @@ fn emitInstr(self: *Codegen, ins_id: tir.InstrId, t: *const tir.TIR) !mlir.Value
             // For Optionals, trust the container layout for field types.
             var eff_res_ty = res_ty;
             if (parent_kind == .Optional) {
-                if (p.index == 0) {
-                    eff_res_ty = self.i1_ty;
-                } else if (p.index == 1) {
+                if (self.context.type_store.isOptionalPointer(parent_sr)) {
+                    if (p.index == 0) {
+                        var ptr_int = OpBuilder.init("llvm.ptrtoint", self.loc).builder()
+                            .operands(&.{agg})
+                            .results(&.{self.i64_ty}).build();
+                        self.append(ptr_int);
+                        const zero = self.constInt(self.i64_ty, 0);
+                        var cmp = OpBuilder.init("arith.cmpi", self.loc).builder()
+                            .operands(&.{ ptr_int.getResult(0), zero })
+                            .results(&.{self.i1_ty})
+                            .attributes(&.{ self.named("predicate", self.arithCmpIPredAttr("ne")) })
+                            .build();
+                        self.append(cmp);
+                        break :blk cmp.getResult(0);
+                    } else if (p.index == 1) {
+                        if (!agg.getType().equal(res_ty)) {
+                            var bc = OpBuilder.init("llvm.bitcast", self.loc).builder()
+                                .operands(&.{agg})
+                                .results(&.{res_ty}).build();
+                            self.append(bc);
+                            break :blk bc.getResult(0);
+                        }
+                        break :blk agg;
+                    }
+                } else {
                     const opt = self.context.type_store.get(.Optional, parent_sr);
-                    eff_res_ty = try self.llvmTypeOf(opt.elem);
+                    if (p.index == 0) {
+                        eff_res_ty = self.i1_ty;
+                    } else if (p.index == 1) {
+                        eff_res_ty = try self.llvmTypeOf(opt.elem);
+                    }
                 }
             }
             const v = self.extractAt(agg, eff_res_ty, &.{@as(i64, @intCast(p.index))});
@@ -3391,8 +3419,23 @@ fn emitCmp(
 ) !mlir.Value {
     const prev_loc = self.pushLocation(p.loc);
     defer self.loc = prev_loc;
-    const lhs = self.value_map.get(p.lhs).?;
-    const rhs = self.value_map.get(p.rhs).?;
+    var lhs = self.value_map.get(p.lhs).?;
+    var rhs = self.value_map.get(p.rhs).?;
+
+    if (mlir.LLVM.isLLVMPointerType(lhs.getType())) {
+        var op = OpBuilder.init("llvm.ptrtoint", self.loc).builder()
+            .operands(&.{lhs})
+            .results(&.{self.i64_ty}).build();
+        self.append(op);
+        lhs = op.getResult(0);
+    }
+    if (mlir.LLVM.isLLVMPointerType(rhs.getType())) {
+        var op = OpBuilder.init("llvm.ptrtoint", self.loc).builder()
+            .operands(&.{rhs})
+            .results(&.{self.i64_ty}).build();
+        self.append(op);
+        rhs = op.getResult(0);
+    }
 
     if (lhs.getType().isAFloat()) {
         var op = OpBuilder.init("arith.cmpf", self.loc).builder()
@@ -4584,6 +4627,16 @@ fn copyOptionalAggregate(
 ) anyerror!?mlir.Value {
     const dst_info = self.context.type_store.get(.Optional, dst_sr);
     const src_info = self.context.type_store.get(.Optional, src_sr);
+
+    const dst_ptr_opt = self.context.type_store.isOptionalPointer(dst_sr);
+    const src_ptr_opt = self.context.type_store.isOptionalPointer(src_sr);
+    if (dst_ptr_opt or src_ptr_opt) {
+        if (!(dst_ptr_opt and src_ptr_opt)) return null;
+        const dst_payload_ty = try self.llvmTypeOf(dst_info.elem);
+        const coerced_payload = try elem_coercer(self, dst_info.elem, dst_payload_ty, src_val, src_info.elem);
+        return coerced_payload;
+    }
+
     const dst_payload_ty = try self.llvmTypeOf(dst_info.elem);
     const src_payload_ty = try self.llvmTypeOf(src_info.elem);
 
@@ -5051,6 +5104,9 @@ pub fn llvmTypeOf(self: *Codegen, ty: types.TypeId) !mlir.Type {
 
         .Optional => blk: {
             const opt_ty = self.context.type_store.get(.Optional, ty);
+            if (self.context.type_store.isOptionalPointer(ty)) {
+                break :blk try self.llvmTypeOf(opt_ty.elem);
+            }
             const inner = try self.llvmTypeOf(opt_ty.elem);
             const fields = [_]mlir.Type{ self.i1_ty, inner };
             break :blk mlir.LLVM.getLLVMStructTypeLiteral(self.mlir_ctx, &fields, false);
