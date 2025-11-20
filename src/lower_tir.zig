@@ -1334,14 +1334,26 @@ fn lowerReturn(
 ) !void {
     const r = a.stmts.get(.Return, sid);
     const stmt_loc = optLoc(a, sid);
+    try self.lowerReturnCommon(ctx, a, env, f, blk, r.value, stmt_loc);
+}
+
+fn lowerReturnCommon(
+    self: *LowerTir,
+    ctx: *LowerContext,
+    a: *ast.Ast,
+    env: *cf.Env,
+    f: *Builder.FunctionFrame,
+    blk: *Builder.BlockFrame,
+    value_opt: ast.OptExprId,
+    stmt_loc: tir.OptLocId,
+) !void {
     const defer_mark: u32 = 0;
 
-    if (!r.value.isNone()) {
+    if (!value_opt.isNone()) {
         const frow = f.builder.t.funcs.Function.get(f.id);
         const expect = frow.result;
-        const value_expr = r.value.unwrap();
+        const value_expr = value_opt.unwrap();
         const value_loc = optLoc(a, value_expr);
-        // Pass expected type down so literals construct with the concrete type directly
         const v = try self.lowerExpr(ctx, a, env, f, blk, value_expr, expect, .rvalue);
 
         const expect_kind = self.context.type_store.index.kinds.items[expect.toRaw()];
@@ -4379,8 +4391,15 @@ fn lowerBinary(
 
                 var rhs_v = r;
                 const rhs_ty = self.getExprType(ctx, a, row.right);
-                rhs_v = self.emitCoerce(&else_blk, rhs_v, rhs_ty, res_ty, loc);
-                try f.builder.br(&else_blk, join_blk.id, &.{rhs_v}, loc);
+                const rhs_kind = self.context.type_store.index.kinds.items[rhs_ty.toRaw()];
+                if (rhs_kind == .Void) {
+                    try f.builder.setReturnVoid(&else_blk, loc);
+                } else if (rhs_kind == .Noreturn) {
+                    // RHS already terminated the block (e.g., return/panic); nothing to branch.
+                } else {
+                    rhs_v = self.emitCoerce(&else_blk, rhs_v, rhs_ty, res_ty, loc);
+                    try f.builder.br(&else_blk, join_blk.id, &.{rhs_v}, loc);
+                }
                 try f.builder.endBlock(f, then_blk);
                 try f.builder.endBlock(f, else_blk);
                 blk.* = join_blk;
@@ -4723,6 +4742,14 @@ pub fn lowerExpr(
         .Ident => self.lowerIdent(ctx, a, env, f, blk, id, expected_ty, mode),
         .Binary => self.lowerBinary(ctx, a, env, f, blk, id, expected_ty),
         .Catch => self.lowerCatch(ctx, a, env, f, blk, id, expected_ty),
+        .Return => blk: {
+            const row = a.exprs.get(.Return, id);
+            const loc = optLoc(a, id);
+            const ty0 = self.getExprType(ctx, a, id);
+            const poison = self.safeUndef(blk, ty0, loc);
+            try self.lowerReturnCommon(ctx, a, env, f, blk, row.value, loc);
+            break :blk poison;
+        },
         .If => cf.lowerIf(self, ctx, a, env, f, blk, id, expected_ty),
         .Call => self.lowerCall(ctx, a, env, f, blk, id, expected_ty, mode),
         .Cast => self.lowerCast(ctx, a, env, f, blk, id, expected_ty),

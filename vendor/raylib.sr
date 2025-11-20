@@ -886,7 +886,7 @@ TextLength :: extern fn(text: string) u32
 TextFormat :: extern fn(text: string, args: any) string
 TextSubtext :: extern fn(text: string, position: i32, length: i32) string
 TextReplace :: extern fn(text: string, replace: string, by: string) string
-TextInsert :: extern fn(text: string, insert: string, position: i32) string
+TextInsert :: extern fn(text: string, r#insert: string, position: i32) string
 TextJoin :: extern fn(textList: **const string, count: i32, delimiter: string) string
 TextSplit :: extern fn(text: string, delimiter: i8, count: *i32) **string
 TextAppend :: extern proc(text: *i8, append: string, position: *i32)

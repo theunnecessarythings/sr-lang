@@ -5,12 +5,12 @@ package time
 Timespec :: struct { tv_sec: i64, tv_nsec: i64 }
 
 clock_gettime :: extern proc(i32, *Timespec) i32
-nanosleep     :: extern proc(*Timespec, *Timespec) i32
+nanosleep     :: extern proc(*Timespec, ?*Timespec) i32
 
 clock_gettime_c :: proc(clk_id: i32, ts: *Timespec) i32 {
     return clock_gettime(clk_id, ts)
 }
-nanosleep_c :: proc(req: *Timespec, rem: *Timespec) i32 {
+nanosleep_c :: proc(req: *Timespec, rem: ?*Timespec) i32 {
     return nanosleep(req, rem)
 }
 
@@ -31,5 +31,5 @@ now_monotonic :: proc() Timespec {
 
 sleep_ms :: proc(ms: u64) void {
     ts := Timespec{ tv_sec: (ms / 1000).(i64), tv_nsec: ((ms % 1000.(u64)) * 1000000).(i64) }
-    _ = nanosleep_c(&ts, 0.^*Timespec)
+    _ = nanosleep_c(&ts, null)
 }

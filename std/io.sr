@@ -4,6 +4,7 @@ package io
 
 // C stdio printf (varargs enabled by trailing `any`).
 printf :: extern proc(*const u8, any) i32
+fflush :: extern proc(*void) i32
 
 // Runtime helpers for raw printing and panic.
 rt_print  :: extern proc(*const u8, usize) void
@@ -12,7 +13,7 @@ rt_panic  :: extern proc(*const u8, usize) noreturn
 rt_strlen :: extern proc(*const u8) usize
 
 // Writer interface
-Writer :: struct { ctx: *void, write: proc(*void, *u8, usize) usize }
+Writer :: struct { ctx: ?*void, write: proc(?*void, *u8, usize) usize }
 
 // Write all helper: attempts to write the full buffer; returns whether succeeded
 write_all :: proc(w: *Writer, buf: *u8, len: usize) bool {
@@ -22,26 +23,31 @@ write_all :: proc(w: *Writer, buf: *u8, len: usize) bool {
 }
 
 // stdout writer implementation
-stdout_write_impl :: proc(ctx: *void, buf: *u8, len: usize) usize {
+stdout_write_impl :: proc(ctx: ?*void, buf: *u8, len: usize) usize {
     rt_print(buf, len)
     return len
 }
 
 // stderr writer implementation
-stderr_write_impl :: proc(ctx: *void, buf: *u8, len: usize) usize {
+stderr_write_impl :: proc(ctx: ?*void, buf: *u8, len: usize) usize {
     rt_eprint(buf, len)
     return len
 }
 
-stdout :: proc() Writer { return Writer{ ctx: 0.^*void, write: stdout_write_impl } }
-stderr :: proc() Writer { return Writer{ ctx: 0.^*void, write: stderr_write_impl } }
+stdout :: proc() Writer { return Writer{ ctx: null, write: stdout_write_impl } }
+stderr :: proc() Writer { return Writer{ ctx: null, write: stderr_write_impl } }
 
 // Print with one argument. Example: print("%d", 42)
-print :: proc(fmt: string, arg: any) void { printf(fmt.ptr, arg) }
+print :: proc(fmt: string, arg: any) void { 
+    printf(fmt.ptr, ..arg) 
+}
 
 
 // Print line with one argument (appends newline)
-println :: proc(fmt: string, arg: any) void { printf(fmt.ptr, arg); printf("\n".ptr) }
+println :: proc(fmt: string, arg: any) void { 
+    printf(fmt.ptr, ..arg)
+    printf("\n".ptr) 
+}
 
 
 // Panic with message (noreturn)

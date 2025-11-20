@@ -77,3 +77,64 @@ test "special_types: optional chaining" {
     const code = getSource(globals, src);
     try runCompilerTest(code, "Optional chained x: 10\n");
 }
+
+test "special_types: optional pointer equality and deref" {
+    const src =
+        \\value: i32 = 123
+        \\ptr := &value
+        \\maybe_ptr: ?*i32 = ptr
+        \\_assert(maybe_ptr != null)
+        \\_assert(maybe_ptr == ptr)
+        \\_assert(ptr == maybe_ptr)
+        \\deref := maybe_ptr?
+        \\printf("optional pointer value: %d\n", deref.*)
+    ;
+    const code = getSource("", src);
+    try runCompilerTest(code, "optional pointer value: 123\n");
+}
+
+test "special_types: optional pointer orelse fallback" {
+    const src =
+        \\stored: i32 = 777
+        \\stored_ptr := &stored
+        \\missing: ?*i32 = null
+        \\result_ptr := missing orelse stored_ptr
+        \\printf("pointer orelse result: %d\n", result_ptr.*)
+    ;
+    const code = getSource("", src);
+    try runCompilerTest(code, "pointer orelse result: 777\n");
+}
+
+test "special_types: optional void pointer interop" {
+    const src =
+        \\value: i32 = 55
+        \\void_ptr: *void = (&value).^*void
+        \\maybe_ctx: ?*void = void_ptr
+        \\missing_ctx: ?*void = null
+        \\payload := maybe_ctx?.^*i32
+        \\printf("void optional payload: %d\n", payload.*)
+        \\if missing_ctx == null {
+        \\    printf("void optional missing is null\n")
+        \\}
+    ;
+    const code = getSource("", src);
+    try runCompilerTest(code, "void optional payload: 55\nvoid optional missing is null\n");
+}
+
+test "special_types: optional orelse return expression" {
+    const globals =
+        \\use_optional :: proc(value: ?i32) {
+        \\    payload := value orelse return
+        \\    printf("orelse payload: %d\n", payload)
+        \\}
+    ;
+    const src =
+        \\some: ?i32 = 321
+        \\none: ?i32 = null
+        \\use_optional(some)
+        \\use_optional(none)
+        \\printf("orelse done\n")
+    ;
+    const code = getSource(globals, src);
+    try runCompilerTest(code, "orelse payload: 321\norelse done\n");
+}

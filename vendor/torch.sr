@@ -84,7 +84,7 @@ LinearOptions.default :: proc(in_f: i64, out_f: i64) LinearOptions {
 Linear :: struct { base: NNModule, weight: Tensor, has_bias: bool, bias: Tensor, opts: LinearOptions }
 Linear.init :: proc(opts: LinearOptions) Linear {
     m := NNModule.init()
-    lin := Linear{ base: m, weight: Tensor{ t: 0.^*void }, has_bias: false, bias: Tensor{ t: 0.^*void }, opts: opts }
+    lin := Linear{ base: m, weight: Tensor{ t: null }, has_bias: false, bias: Tensor{ t: null }, opts: opts }
     Linear.reset(&lin)
     return lin
 }
@@ -110,7 +110,7 @@ Linear.forward :: proc(self: *Linear, input: *Tensor) Tensor {
         // input.linear already tracks the result
         return r
     }
-    r2 := input.linear(self.weight, Tensor{ t: 0.^*void })
+    r2 := input.linear(self.weight, Tensor{ t: null })
     // input.linear already tracks the result
     return r2
 }
@@ -158,7 +158,7 @@ LayerNorm :: struct {
 
 LayerNorm.init :: proc(opts: LayerNormOptions) LayerNorm {
     m := NNModule.init()
-    ln := LayerNorm{ base: m, weight: Tensor{ t: 0.^*void }, bias: Tensor{ t: 0.^*void }, opts: opts }
+    ln := LayerNorm{ base: m, weight: Tensor{ t: null }, bias: Tensor{ t: null }, opts: opts }
     if ln.opts.elementwise_affine {
         ln.weight = Tensor.empty(ln.opts.normalized_shape.ptr, ln.opts.normalized_shape.len.(i32), 6, -1)
         ln.bias = Tensor.empty(ln.opts.normalized_shape.ptr, ln.opts.normalized_shape.len.(i32), 6, -1)
@@ -183,7 +183,7 @@ Embedding :: struct {
 
 Embedding.init :: proc(num_embeddings: i64, embedding_dim: i64) Embedding {
     m := NNModule.init()
-    emb := Embedding{ base: m, weight: Tensor{t: 0.^*void}, num_embeddings: num_embeddings, embedding_dim: embedding_dim, padding_idx: -1 }
+    emb := Embedding{ base: m, weight: Tensor{ t: null }, num_embeddings: num_embeddings, embedding_dim: embedding_dim, padding_idx: -1 }
     dims: [2]i64 = [num_embeddings, embedding_dim]
     emb.weight = Tensor.empty(&dims[0], 2, 6, -1)
     _ = emb.weight.set_requires_grad(true)
@@ -1446,9 +1446,9 @@ Tensor._histogramdd_bin_edges :: proc(self: *Tensor, bins_data: *i64, bins_len: 
     i := 0
     while true {
         elem_addr := ptr_addr + i * 8
-        elem_ptr := elem_addr.^*(*torch_bindings.Tensor)
-        c := elem_ptr.^torch_bindings.Tensor
-        if c.^i64 == 0 { break }
+        elem_ptr := elem_addr.^*torch_bindings.Tensor
+        c := elem_ptr.*
+        if (c == null) { break }
         arr.append(wrap_and_track(c))
         i += 1
     }
@@ -2875,9 +2875,9 @@ Tensor._to_cpu :: proc(tensors_data: *torch_bindings.Tensor, tensors_len: i32) [
     i := 0
     while true {
         elem_addr := ptr_addr + i * 8
-        elem_ptr := elem_addr.^*(*torch_bindings.Tensor)
-        c := elem_ptr.^torch_bindings.Tensor
-        if c.^i64 == 0 { break }
+        elem_ptr := elem_addr.^*torch_bindings.Tensor
+        c := elem_ptr.*
+        if (c == null) { break }
         arr.append(wrap_and_track(c))
         i += 1
     }
@@ -3760,9 +3760,9 @@ Tensor.align_tensors :: proc(tensors_data: *torch_bindings.Tensor, tensors_len: 
     i := 0
     while true {
         elem_addr := ptr_addr + i * 8
-        elem_ptr := elem_addr.^*(*torch_bindings.Tensor)
-        c := elem_ptr.^torch_bindings.Tensor
-        if c.^i64 == 0 { break }
+        elem_ptr := elem_addr.^*torch_bindings.Tensor
+        c := elem_ptr.*
+        if (c == null) { break }
         arr.append(wrap_and_track(c))
         i += 1
     }
@@ -4237,9 +4237,9 @@ Tensor.atleast_1d_sequence :: proc(tensors_data: *torch_bindings.Tensor, tensors
     i := 0
     while true {
         elem_addr := ptr_addr + i * 8
-        elem_ptr := elem_addr.^*(*torch_bindings.Tensor)
-        c := elem_ptr.^torch_bindings.Tensor
-        if c.^i64 == 0 { break }
+        elem_ptr := elem_addr.^*torch_bindings.Tensor
+        c := elem_ptr.*
+        if (c == null) { break }
         arr.append(wrap_and_track(c))
         i += 1
     }
@@ -4260,9 +4260,9 @@ Tensor.atleast_2d_sequence :: proc(tensors_data: *torch_bindings.Tensor, tensors
     i := 0
     while true {
         elem_addr := ptr_addr + i * 8
-        elem_ptr := elem_addr.^*(*torch_bindings.Tensor)
-        c := elem_ptr.^torch_bindings.Tensor
-        if c.^i64 == 0 { break }
+        elem_ptr := elem_addr.^*torch_bindings.Tensor
+        c := elem_ptr.*
+        if (c == null) { break }
         arr.append(wrap_and_track(c))
         i += 1
     }
@@ -4283,9 +4283,9 @@ Tensor.atleast_3d_sequence :: proc(tensors_data: *torch_bindings.Tensor, tensors
     i := 0
     while true {
         elem_addr := ptr_addr + i * 8
-        elem_ptr := elem_addr.^*(*torch_bindings.Tensor)
-        c := elem_ptr.^torch_bindings.Tensor
-        if c.^i64 == 0 { break }
+        elem_ptr := elem_addr.^*torch_bindings.Tensor
+        c := elem_ptr.*
+        if (c == null) { break }
         arr.append(wrap_and_track(c))
         i += 1
     }
@@ -4918,9 +4918,9 @@ Tensor.broadcast_tensors :: proc(tensors_data: *torch_bindings.Tensor, tensors_l
     i := 0
     while true {
         elem_addr := ptr_addr + i * 8
-        elem_ptr := elem_addr.^*(*torch_bindings.Tensor)
-        c := elem_ptr.^torch_bindings.Tensor
-        if c.^i64 == 0 { break }
+        elem_ptr := elem_addr.^*torch_bindings.Tensor
+        c := elem_ptr.*
+        if (c == null) { break }
         arr.append(wrap_and_track(c))
         i += 1
     }
@@ -5137,9 +5137,9 @@ Tensor.chunk :: proc(self: *Tensor, chunks: i64, dim: i64) [dyn] Tensor {
     i := 0
     while true {
         elem_addr := ptr_addr + i * 8
-        elem_ptr := elem_addr.^*(*torch_bindings.Tensor)
-        c := elem_ptr.^torch_bindings.Tensor
-        if c.^i64 == 0 { break }
+        elem_ptr := elem_addr.^*torch_bindings.Tensor
+        c := elem_ptr.*
+        if (c == null) { break }
         arr.append(wrap_and_track(c))
         i += 1
     }
@@ -5978,9 +5978,9 @@ Tensor.dequantize_tensors :: proc(tensors_data: *torch_bindings.Tensor, tensors_
     i := 0
     while true {
         elem_addr := ptr_addr + i * 8
-        elem_ptr := elem_addr.^*(*torch_bindings.Tensor)
-        c := elem_ptr.^torch_bindings.Tensor
-        if c.^i64 == 0 { break }
+        elem_ptr := elem_addr.^*torch_bindings.Tensor
+        c := elem_ptr.*
+        if (c == null) { break }
         arr.append(wrap_and_track(c))
         i += 1
     }
@@ -6299,9 +6299,9 @@ Tensor.dsplit :: proc(self: *Tensor, sections: i64) [dyn] Tensor {
     i := 0
     while true {
         elem_addr := ptr_addr + i * 8
-        elem_ptr := elem_addr.^*(*torch_bindings.Tensor)
-        c := elem_ptr.^torch_bindings.Tensor
-        if c.^i64 == 0 { break }
+        elem_ptr := elem_addr.^*torch_bindings.Tensor
+        c := elem_ptr.*
+        if (c == null) { break }
         arr.append(wrap_and_track(c))
         i += 1
     }
@@ -6316,9 +6316,9 @@ Tensor.dsplit_array :: proc(self: *Tensor, indices_data: *i64, indices_len: i32)
     i := 0
     while true {
         elem_addr := ptr_addr + i * 8
-        elem_ptr := elem_addr.^*(*torch_bindings.Tensor)
-        c := elem_ptr.^torch_bindings.Tensor
-        if c.^i64 == 0 { break }
+        elem_ptr := elem_addr.^*torch_bindings.Tensor
+        c := elem_ptr.*
+        if (c == null) { break }
         arr.append(wrap_and_track(c))
         i += 1
     }
@@ -8059,9 +8059,9 @@ Tensor.hsplit :: proc(self: *Tensor, sections: i64) [dyn] Tensor {
     i := 0
     while true {
         elem_addr := ptr_addr + i * 8
-        elem_ptr := elem_addr.^*(*torch_bindings.Tensor)
-        c := elem_ptr.^torch_bindings.Tensor
-        if c.^i64 == 0 { break }
+        elem_ptr := elem_addr.^*torch_bindings.Tensor
+        c := elem_ptr.*
+        if (c == null) { break }
         arr.append(wrap_and_track(c))
         i += 1
     }
@@ -8076,9 +8076,9 @@ Tensor.hsplit_array :: proc(self: *Tensor, indices_data: *i64, indices_len: i32)
     i := 0
     while true {
         elem_addr := ptr_addr + i * 8
-        elem_ptr := elem_addr.^*(*torch_bindings.Tensor)
-        c := elem_ptr.^torch_bindings.Tensor
-        if c.^i64 == 0 { break }
+        elem_ptr := elem_addr.^*torch_bindings.Tensor
+        c := elem_ptr.*
+        if (c == null) { break }
         arr.append(wrap_and_track(c))
         i += 1
     }
@@ -10289,9 +10289,9 @@ Tensor.meshgrid :: proc(tensors_data: *torch_bindings.Tensor, tensors_len: i32) 
     i := 0
     while true {
         elem_addr := ptr_addr + i * 8
-        elem_ptr := elem_addr.^*(*torch_bindings.Tensor)
-        c := elem_ptr.^torch_bindings.Tensor
-        if c.^i64 == 0 { break }
+        elem_ptr := elem_addr.^*torch_bindings.Tensor
+        c := elem_ptr.*
+        if (c == null) { break }
         arr.append(wrap_and_track(c))
         i += 1
     }
@@ -10306,9 +10306,9 @@ Tensor.meshgrid_indexing :: proc(tensors_data: *torch_bindings.Tensor, tensors_l
     i := 0
     while true {
         elem_addr := ptr_addr + i * 8
-        elem_ptr := elem_addr.^*(*torch_bindings.Tensor)
-        c := elem_ptr.^torch_bindings.Tensor
-        if c.^i64 == 0 { break }
+        elem_ptr := elem_addr.^*torch_bindings.Tensor
+        c := elem_ptr.*
+        if (c == null) { break }
         arr.append(wrap_and_track(c))
         i += 1
     }
@@ -11319,9 +11319,9 @@ Tensor.nonzero_numpy :: proc(self: *Tensor) [dyn] Tensor {
     i := 0
     while true {
         elem_addr := ptr_addr + i * 8
-        elem_ptr := elem_addr.^*(*torch_bindings.Tensor)
-        c := elem_ptr.^torch_bindings.Tensor
-        if c.^i64 == 0 { break }
+        elem_ptr := elem_addr.^*torch_bindings.Tensor
+        c := elem_ptr.*
+        if (c == null) { break }
         arr.append(wrap_and_track(c))
         i += 1
     }
@@ -11904,9 +11904,9 @@ Tensor.quantize_per_tensor_tensors :: proc(tensors_data: *torch_bindings.Tensor,
     i := 0
     while true {
         elem_addr := ptr_addr + i * 8
-        elem_ptr := elem_addr.^*(*torch_bindings.Tensor)
-        c := elem_ptr.^torch_bindings.Tensor
-        if c.^i64 == 0 { break }
+        elem_ptr := elem_addr.^*torch_bindings.Tensor
+        c := elem_ptr.*
+        if (c == null) { break }
         arr.append(wrap_and_track(c))
         i += 1
     }
@@ -14666,7 +14666,7 @@ Tensor.split :: proc(self: *Tensor, split_size: i64, dim: i64) [dyn] Tensor {
     i := 0
     while true {
         c := ptr[i]
-        if c.^i64 == 0 { break }
+        if (c == null) { break }
         arr.append(Tensor{t: c})
         i += 1
     }
@@ -14680,9 +14680,9 @@ Tensor.split_copy :: proc(self: *Tensor, split_size: i64, dim: i64) [dyn] Tensor
     i := 0
     while true {
         elem_addr := ptr_addr + i * 8
-        elem_ptr := elem_addr.^*(*torch_bindings.Tensor)
-        c := elem_ptr.^torch_bindings.Tensor
-        if c.^i64 == 0 { break }
+        elem_ptr := elem_addr.^*torch_bindings.Tensor
+        c := elem_ptr.*
+        if (c == null) { break }
         arr.append(wrap_and_track(c))
         i += 1
     }
@@ -14701,9 +14701,9 @@ Tensor.split_sizes :: proc(self: *Tensor, split_size_data: *i64, split_size_len:
     i := 0
     while true {
         elem_addr := ptr_addr + i * 8
-        elem_ptr := elem_addr.^*(*torch_bindings.Tensor)
-        c := elem_ptr.^torch_bindings.Tensor
-        if c.^i64 == 0 { break }
+        elem_ptr := elem_addr.^*torch_bindings.Tensor
+        c := elem_ptr.*
+        if (c == null) { break }
         arr.append(wrap_and_track(c))
         i += 1
     }
@@ -14718,9 +14718,9 @@ Tensor.split_with_sizes :: proc(self: *Tensor, split_sizes_data: *i64, split_siz
     i := 0
     while true {
         elem_addr := ptr_addr + i * 8
-        elem_ptr := elem_addr.^*(*torch_bindings.Tensor)
-        c := elem_ptr.^torch_bindings.Tensor
-        if c.^i64 == 0 { break }
+        elem_ptr := elem_addr.^*torch_bindings.Tensor
+        c := elem_ptr.*
+        if (c == null) { break }
         arr.append(wrap_and_track(c))
         i += 1
     }
@@ -14735,9 +14735,9 @@ Tensor.split_with_sizes_copy :: proc(self: *Tensor, split_sizes_data: *i64, spli
     i := 0
     while true {
         elem_addr := ptr_addr + i * 8
-        elem_ptr := elem_addr.^*(*torch_bindings.Tensor)
-        c := elem_ptr.^torch_bindings.Tensor
-        if c.^i64 == 0 { break }
+        elem_ptr := elem_addr.^*torch_bindings.Tensor
+        c := elem_ptr.*
+        if (c == null) { break }
         arr.append(wrap_and_track(c))
         i += 1
     }
@@ -15182,9 +15182,9 @@ Tensor.tensor_split :: proc(self: *Tensor, sections: i64, dim: i64) [dyn] Tensor
     i := 0
     while true {
         elem_addr := ptr_addr + i * 8
-        elem_ptr := elem_addr.^*(*torch_bindings.Tensor)
-        c := elem_ptr.^torch_bindings.Tensor
-        if c.^i64 == 0 { break }
+        elem_ptr := elem_addr.^*torch_bindings.Tensor
+        c := elem_ptr.*
+        if (c == null) { break }
         arr.append(wrap_and_track(c))
         i += 1
     }
@@ -15199,9 +15199,9 @@ Tensor.tensor_split_indices :: proc(self: *Tensor, indices_data: *i64, indices_l
     i := 0
     while true {
         elem_addr := ptr_addr + i * 8
-        elem_ptr := elem_addr.^*(*torch_bindings.Tensor)
-        c := elem_ptr.^torch_bindings.Tensor
-        if c.^i64 == 0 { break }
+        elem_ptr := elem_addr.^*torch_bindings.Tensor
+        c := elem_ptr.*
+        if (c == null) { break }
         arr.append(wrap_and_track(c))
         i += 1
     }
@@ -15216,9 +15216,9 @@ Tensor.tensor_split_tensor_indices_or_sections :: proc(self: *Tensor, tensor_ind
     i := 0
     while true {
         elem_addr := ptr_addr + i * 8
-        elem_ptr := elem_addr.^*(*torch_bindings.Tensor)
-        c := elem_ptr.^torch_bindings.Tensor
-        if c.^i64 == 0 { break }
+        elem_ptr := elem_addr.^*torch_bindings.Tensor
+        c := elem_ptr.*
+        if (c == null) { break }
         arr.append(wrap_and_track(c))
         i += 1
     }
@@ -15605,9 +15605,9 @@ Tensor.unbind :: proc(self: *Tensor, dim: i64) [dyn] Tensor {
     i := 0
     while true {
         elem_addr := ptr_addr + i * 8
-        elem_ptr := elem_addr.^*(*torch_bindings.Tensor)
-        c := elem_ptr.^torch_bindings.Tensor
-        if c.^i64 == 0 { break }
+        elem_ptr := elem_addr.^*torch_bindings.Tensor
+        c := elem_ptr.*
+        if (c == null) { break }
         arr.append(wrap_and_track(c))
         i += 1
     }
@@ -15622,9 +15622,9 @@ Tensor.unbind_copy :: proc(self: *Tensor, dim: i64) [dyn] Tensor {
     i := 0
     while true {
         elem_addr := ptr_addr + i * 8
-        elem_ptr := elem_addr.^*(*torch_bindings.Tensor)
-        c := elem_ptr.^torch_bindings.Tensor
-        if c.^i64 == 0 { break }
+        elem_ptr := elem_addr.^*torch_bindings.Tensor
+        c := elem_ptr.*
+        if (c == null) { break }
         arr.append(wrap_and_track(c))
         i += 1
     }
@@ -15649,9 +15649,9 @@ Tensor.unflatten_dense_tensors :: proc(flat: Tensor, tensors_data: *torch_bindin
     i := 0
     while true {
         elem_addr := ptr_addr + i * 8
-        elem_ptr := elem_addr.^*(*torch_bindings.Tensor)
-        c := elem_ptr.^torch_bindings.Tensor
-        if c.^i64 == 0 { break }
+        elem_ptr := elem_addr.^*torch_bindings.Tensor
+        c := elem_ptr.*
+        if (c == null) { break }
         arr.append(wrap_and_track(c))
         i += 1
     }
@@ -15750,9 +15750,9 @@ Tensor.unsafe_chunk :: proc(self: *Tensor, chunks: i64, dim: i64) [dyn] Tensor {
     i := 0
     while true {
         elem_addr := ptr_addr + i * 8
-        elem_ptr := elem_addr.^*(*torch_bindings.Tensor)
-        c := elem_ptr.^torch_bindings.Tensor
-        if c.^i64 == 0 { break }
+        elem_ptr := elem_addr.^*torch_bindings.Tensor
+        c := elem_ptr.*
+        if (c == null) { break }
         arr.append(wrap_and_track(c))
         i += 1
     }
@@ -15767,9 +15767,9 @@ Tensor.unsafe_split :: proc(self: *Tensor, split_size: i64, dim: i64) [dyn] Tens
     i := 0
     while true {
         elem_addr := ptr_addr + i * 8
-        elem_ptr := elem_addr.^*(*torch_bindings.Tensor)
-        c := elem_ptr.^torch_bindings.Tensor
-        if c.^i64 == 0 { break }
+        elem_ptr := elem_addr.^*torch_bindings.Tensor
+        c := elem_ptr.*
+        if (c == null) { break }
         arr.append(wrap_and_track(c))
         i += 1
     }
@@ -15788,9 +15788,9 @@ Tensor.unsafe_split_with_sizes :: proc(self: *Tensor, split_sizes_data: *i64, sp
     i := 0
     while true {
         elem_addr := ptr_addr + i * 8
-        elem_ptr := elem_addr.^*(*torch_bindings.Tensor)
-        c := elem_ptr.^torch_bindings.Tensor
-        if c.^i64 == 0 { break }
+        elem_ptr := elem_addr.^*torch_bindings.Tensor
+        c := elem_ptr.*
+        if (c == null) { break }
         arr.append(wrap_and_track(c))
         i += 1
     }
@@ -16229,9 +16229,9 @@ Tensor.vsplit :: proc(self: *Tensor, sections: i64) [dyn] Tensor {
     i := 0
     while true {
         elem_addr := ptr_addr + i * 8
-        elem_ptr := elem_addr.^*(*torch_bindings.Tensor)
-        c := elem_ptr.^torch_bindings.Tensor
-        if c.^i64 == 0 { break }
+        elem_ptr := elem_addr.^*torch_bindings.Tensor
+        c := elem_ptr.*
+        if (c == null) { break }
         arr.append(wrap_and_track(c))
         i += 1
     }
@@ -16246,9 +16246,9 @@ Tensor.vsplit_array :: proc(self: *Tensor, indices_data: *i64, indices_len: i32)
     i := 0
     while true {
         elem_addr := ptr_addr + i * 8
-        elem_ptr := elem_addr.^*(*torch_bindings.Tensor)
-        c := elem_ptr.^torch_bindings.Tensor
-        if c.^i64 == 0 { break }
+        elem_ptr := elem_addr.^*torch_bindings.Tensor
+        c := elem_ptr.*
+        if (c == null) { break }
         arr.append(wrap_and_track(c))
         i += 1
     }
@@ -16275,9 +16275,9 @@ Tensor.where :: proc(condition: Tensor) [dyn] Tensor {
     i := 0
     while true {
         elem_addr := ptr_addr + i * 8
-        elem_ptr := elem_addr.^*(*torch_bindings.Tensor)
-        c := elem_ptr.^torch_bindings.Tensor
-        if c.^i64 == 0 { break }
+        elem_ptr := elem_addr.^*torch_bindings.Tensor
+        c := elem_ptr.*
+        if (c == null) { break }
         arr.append(wrap_and_track(c))
         i += 1
     }

@@ -87,7 +87,7 @@ fn typeAlign(ctx: *const compile.Context, ty_id: types.TypeId) usize {
         .Bool, .I8, .U8 => 1,
         .I16, .U16 => 2,
         .I32, .U32, .F32 => 4,
-        .I64, .U64, .Usize, .F64, .Ptr, .MlirModule, .MlirAttribute, .MlirType => 8,
+        .I64, .U64, .Usize, .F64, .Ptr, .MlirModule, .MlirAttribute, .MlirType, .Function => 8,
         .Simd => blk: {
             // Assume natural vector alignment (at least 16) on 64-bit targets
             const elem_align = typeAlign(ctx, ctx.type_store.get(.Simd, ty_id).elem);
@@ -255,6 +255,7 @@ pub fn typeSize(ctx: *const compile.Context, ty_id: types.TypeId) usize {
             const total = std.mem.alignForward(usize, after_flag + elem_sz, if (elem_align > 1) elem_align else 1);
             break :blk_opt total;
         },
+        .Function => 8,
         .TypeType => blk: {
             const tt = ctx.type_store.get(.TypeType, ty_id);
             break :blk typeSize(ctx, tt.of);

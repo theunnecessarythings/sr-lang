@@ -2349,8 +2349,9 @@ fn checkBinary(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, id: ast
                     try self.context.diags.addError(exprLoc(ast_unit, bin), .invalid_binary_op_operands, .{ bin.op, lhs_kind, rhs_kind });
                     return self.context.type_store.tTypeError();
                 }
-                // Plain optional: require R assignable to T
-                if (self.assignable(elem, r) == .success) return elem;
+                // Plain optional: require R assignable to T unless RHS is void/noreturn
+                const rhs_operand_kind = self.typeKind(r);
+                if (self.assignable(elem, r) == .success or rhs_operand_kind == .Void or rhs_operand_kind == .Noreturn) return elem;
                 try self.context.diags.addError(exprLoc(ast_unit, bin), .invalid_binary_op_operands, .{ bin.op, lhs_kind, rhs_kind });
                 return self.context.type_store.tTypeError();
             }

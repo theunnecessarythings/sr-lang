@@ -80,25 +80,25 @@ GrGLGetProc :: extern fn(ctx: *void, name: *i8) GrGLFuncPtr
 // ------------------------------------------------------------
 
 // GrGLInterface
-skiac_gr_gl_make_assembled_interface :: extern fn(ctx: *void, get_proc: GrGLGetProc) *GrGLInterface
+skiac_gr_gl_make_assembled_interface :: extern fn(ctx: *void, get_proc: GrGLGetProc) ?*GrGLInterface
 skiac_gr_gl_interface_unref :: extern proc(interface: *GrGLInterface)
 
 // GrDirectContext
-skiac_gr_direct_context_make_gl :: extern fn(gl_interface: *GrGLInterface) *GrDirectContext
+skiac_gr_direct_context_make_gl :: extern fn(gl_interface: *GrGLInterface) ?*GrDirectContext
 skiac_gr_direct_context_unref :: extern proc(context: *GrDirectContext)
 skiac_gr_direct_context_flush_and_submit :: extern proc(context: *GrDirectContext)
 
 // GrBackendRenderTarget
-skiac_gr_backend_render_target_make_gl :: extern fn(width: i32, height: i32, sample_cnt: i32, stencil_bits: i32, fbo_id: u32, format: u32) *GrBackendRenderTarget
+skiac_gr_backend_render_target_make_gl :: extern fn(width: i32, height: i32, sample_cnt: i32, stencil_bits: i32, fbo_id: u32, format: u32) ?*GrBackendRenderTarget
 skiac_gr_backend_render_target_unref :: extern proc(target: *GrBackendRenderTarget)
 
 // SkColorSpace
-skiac_sk_color_space_make_srgb :: extern fn() *SkColorSpace
+skiac_sk_color_space_make_srgb :: extern fn() ?*SkColorSpace
 skiac_sk_color_space_unref :: extern proc(color_space: *SkColorSpace)
 
 // SkSurfaceProps
 SkPixelGeometry :: enum { Unknown, RGB_H, BGR_H, RGB_V, BGR_V }
-skiac_sk_surface_props_create :: extern fn(flags: u32, pixel_geometry: SkPixelGeometry) *SkSurfaceProps
+skiac_sk_surface_props_create :: extern fn(flags: u32, pixel_geometry: SkPixelGeometry) ?*SkSurfaceProps
 skiac_sk_surface_props_unref :: extern proc(props: *SkSurfaceProps)
 
 // SkSurface
@@ -108,9 +108,9 @@ skiac_sk_surface_wrap_backend_render_target :: extern fn(
     origin: GrSurfaceOrigin,
     color_type: SkColorType,
     color_space: *SkColorSpace,
-    props: *SkSurfaceProps) *SkSurface
+    props: *SkSurfaceProps) ?*SkSurface
 skiac_sk_surface_unref :: extern proc(surface: *SkSurface)
-skiac_sk_surface_get_canvas :: extern fn(surface: *SkSurface) *SkCanvas
+skiac_sk_surface_get_canvas :: extern fn(surface: *SkSurface) ?*SkCanvas
 
 // SkCanvas
 skiac_sk_canvas_clear :: extern proc(canvas: *SkCanvas, color: u32)
@@ -146,7 +146,7 @@ skiac_sk_canvas_draw_rrect :: extern proc(canvas: *SkCanvas, rect: *Rect, rx: f3
 skiac_sk_canvas_draw_drrect :: extern proc(canvas: *SkCanvas, outer_rect: *Rect, outer_rx: f32, outer_ry: f32, inner_rect: *Rect, inner_rx: f32, inner_ry: f32, paint: *SkPaint)
 
 // SkPaint
-skiac_sk_paint_create :: extern fn() *SkPaint
+skiac_sk_paint_create :: extern fn() ?*SkPaint
 skiac_sk_paint_unref :: extern proc(paint: *SkPaint)
 skiac_sk_paint_set_anti_alias :: extern proc(paint: *SkPaint, anti_alias: bool)
 skiac_sk_paint_is_anti_alias :: extern fn(paint: *SkPaint) bool
@@ -171,7 +171,7 @@ skiac_sk_paint_set_blend_mode :: extern proc(paint: *SkPaint, mode: SkBlendMode)
 skiac_sk_paint_get_blend_mode :: extern fn(paint: *SkPaint) SkBlendMode
 
 // SkPath
-skiac_sk_path_create :: extern fn() *SkPath
+skiac_sk_path_create :: extern fn() ?*SkPath
 skiac_sk_path_unref :: extern proc(path: *SkPath)
 skiac_sk_path_move_to :: extern proc(path: *SkPath, x: f32, y: f32)
 skiac_sk_path_line_to :: extern proc(path: *SkPath, x: f32, y: f32)
@@ -185,11 +185,11 @@ skiac_sk_path_add_round_rect :: extern proc(path: *SkPath, rect: *Rect, rx: f32,
 skiac_sk_path_add_arc :: extern proc(path: *SkPath, oval_bounds: *Rect, start_angle_deg: f32, sweep_angle_deg: f32)
 
 // SkImage
-skiac_sk_surface_make_image_snapshot :: extern fn(surface: *SkSurface) *SkImage
+skiac_sk_surface_make_image_snapshot :: extern fn(surface: *SkSurface) ?*SkImage
 skiac_sk_image_unref :: extern proc(image: *SkImage)
 // SkFont
-skiac_sk_font_create_default :: extern fn(size: f32) *SkFont
-skiac_sk_font_create_from_file :: extern fn(path: *const u8, size: f32) *SkFont
+skiac_sk_font_create_default :: extern fn(size: f32) ?*SkFont
+skiac_sk_font_create_from_file :: extern fn(path: *const u8, size: f32) ?*SkFont
 skiac_sk_font_unref :: extern proc(font: *SkFont)
 skiac_sk_font_set_size :: extern proc(font: *SkFont, size: f32)
 skiac_sk_font_get_size :: extern fn(font: *SkFont) f32
@@ -228,10 +228,10 @@ skiac_sk_font_get_metrics :: extern fn(font: *SkFont, out: *FontMetrics) f32
 skiac_sk_font_text_to_glyphs_utf8 :: extern fn(font: *SkFont, text: *const u8, out_glyphs: *u16, max_glyphs: i32) i32
 
 // SkData + Image decode
-skiac_sk_data_make_with_copy :: extern fn(ptr: *void, len: usize) *SkData
-skiac_sk_data_make_from_file :: extern fn(path: *const u8) *SkData
+skiac_sk_data_make_with_copy :: extern fn(ptr: *void, len: usize) ?*SkData
+skiac_sk_data_make_from_file :: extern fn(path: *const u8) ?*SkData
 skiac_sk_data_unref :: extern proc(data: *SkData)
-skiac_sk_image_make_from_encoded :: extern fn(data: *SkData) *SkImage
+skiac_sk_image_make_from_encoded :: extern fn(data: *SkData) ?*SkImage
 
 // Effects and styles
 SkTileMode :: enum { Clamp, Repeat, Mirror, Decal }
@@ -242,25 +242,25 @@ skiac_sk_path_effect_unref :: extern proc(pe: *SkPathEffect)
 skiac_sk_mask_filter_unref :: extern proc(mf: *SkMaskFilter)
 
 // Color filters
-skiac_sk_color_filter_make_blend :: extern fn(rgba: u32, blend_mode: i32) *SkColorFilter
-skiac_sk_color_filter_make_matrix :: extern fn(row_major_20: *f32, clamp: bool) *SkColorFilter
+skiac_sk_color_filter_make_blend :: extern fn(rgba: u32, blend_mode: i32) ?*SkColorFilter
+skiac_sk_color_filter_make_matrix :: extern fn(row_major_20: *f32, clamp: bool) ?*SkColorFilter
 
 // Image filters
-skiac_sk_image_filter_make_blur :: extern fn(sigma_x: f32, sigma_y: f32) *SkImageFilter
-skiac_sk_image_filter_make_color_filter :: extern fn(cf: *SkColorFilter) *SkImageFilter
+skiac_sk_image_filter_make_blur :: extern fn(sigma_x: f32, sigma_y: f32) ?*SkImageFilter
+skiac_sk_image_filter_make_color_filter :: extern fn(cf: *SkColorFilter) ?*SkImageFilter
 
 // Shaders
-skiac_sk_shader_make_solid_color :: extern fn(rgba: u32) *SkShader
-skiac_sk_shader_make_linear_gradient :: extern fn(x0: f32, y0: f32, x1: f32, y1: f32, c0: u32, c1: u32, tile_mode: SkTileMode) *SkShader
+skiac_sk_shader_make_solid_color :: extern fn(rgba: u32) ?*SkShader
+skiac_sk_shader_make_linear_gradient :: extern fn(x0: f32, y0: f32, x1: f32, y1: f32, c0: u32, c1: u32, tile_mode: SkTileMode) ?*SkShader
 
 // Path effects
-skiac_sk_path_effect_make_dash :: extern fn(intervals: *f32, count: i32, phase: f32) *SkPathEffect
-skiac_sk_path_effect_make_corner :: extern fn(radius: f32) *SkPathEffect
-skiac_sk_path_effect_make_discrete :: extern fn(seg_length: f32, dev: f32) *SkPathEffect
+skiac_sk_path_effect_make_dash :: extern fn(intervals: *f32, count: i32, phase: f32) ?*SkPathEffect
+skiac_sk_path_effect_make_corner :: extern fn(radius: f32) ?*SkPathEffect
+skiac_sk_path_effect_make_discrete :: extern fn(seg_length: f32, dev: f32) ?*SkPathEffect
 
 // Mask filters
 // Blur style values per SkBlurStyle (0: Normal, 1: Solid, 2: Outer, 3: Inner)
-skiac_sk_mask_filter_make_blur :: extern fn(style: i32, sigma: f32) *SkMaskFilter
+skiac_sk_mask_filter_make_blur :: extern fn(style: i32, sigma: f32) ?*SkMaskFilter
 
 // Paint setters
 skiac_sk_paint_set_shader :: extern proc(paint: *SkPaint, shader: *SkShader)
@@ -270,10 +270,10 @@ skiac_sk_paint_set_path_effect :: extern proc(paint: *SkPaint, pe: *SkPathEffect
 skiac_sk_paint_set_mask_filter :: extern proc(paint: *SkPaint, mf: *SkMaskFilter)
 
 // Runtime shader (SkSL)
-skiac_runtime_effect_make_for_shader :: extern fn(sksl: *const u8) *SkRuntimeEffect
+skiac_runtime_effect_make_for_shader :: extern fn(sksl: *const u8) ?*SkRuntimeEffect
 skiac_runtime_effect_unref :: extern proc(e: *SkRuntimeEffect)
 skiac_runtime_effect_uniform_size :: extern fn(e: *SkRuntimeEffect) usize
-skiac_runtime_effect_make_shader :: extern fn(e: *SkRuntimeEffect, uniforms: *SkData) *SkShader
+skiac_runtime_effect_make_shader :: extern fn(e: *SkRuntimeEffect, uniforms: *SkData) ?*SkShader
 skiac_sk_canvas_draw_path :: extern proc(canvas: *SkCanvas, path: *SkPath, paint: *SkPaint)
 skiac_sk_canvas_draw_image :: extern proc(canvas: *SkCanvas, image: *SkImage, x: f32, y: f32)
 
