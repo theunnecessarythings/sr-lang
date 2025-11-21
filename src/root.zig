@@ -8,6 +8,7 @@ pub const lower_tir = @import("lower_tir.zig");
 pub const codegen = @import("codegen_main.zig");
 pub const mlir = @import("mlir_bindings.zig");
 pub const compile = @import("compile.zig");
+pub const formatter = @import("formatter.zig");
 pub const parser = @import("parser.zig");
 pub const cst = @import("cst.zig");
 pub const tir = @import("tir.zig");

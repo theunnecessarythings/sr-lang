@@ -72,6 +72,7 @@ test "line comment followed by top-level comptime" {
         \\comptime {}
         \\
     , &.{
+        .line_comment,
         .keyword_comptime,
         .lcurly,
         .rcurly,
@@ -197,35 +198,35 @@ test "invalid literal/comment characters" {
     try testSingle("\"\x00\"", &.{.invalid});
     try testSingle("`\x00`", &.{.invalid});
     try testSingle("//\x00", &.{.invalid});
-    try testSingle("//\x1f", &.{.invalid});
-    try testSingle("//\x7f", &.{.invalid});
+    try testSingle("//\x1f", &.{.line_comment});
+    try testSingle("//\x7f", &.{.line_comment});
 }
 
 test "utf8" {
-    try testSingle("//\xc2\x80", &.{});
-    try testSingle("//\xf4\x8f\xbf\xbf", &.{});
+    try testSingle("//\xc2\x80", &.{.line_comment});
+    try testSingle("//\xf4\x8f\xbf\xbf", &.{.line_comment});
 }
 
 test "invalid utf8" {
-    try testSingle("//\x80", &.{});
-    try testSingle("//\xbf", &.{});
-    try testSingle("//\xf8", &.{});
-    try testSingle("//\xff", &.{});
-    try testSingle("//\xc2\xc0", &.{});
-    try testSingle("//\xe0", &.{});
-    try testSingle("//\xf0", &.{});
-    try testSingle("//\xf0\x90\x80\xc0", &.{});
+    try testSingle("//\x80", &.{.line_comment});
+    try testSingle("//\xbf", &.{.line_comment});
+    try testSingle("//\xf8", &.{.line_comment});
+    try testSingle("//\xff", &.{.line_comment});
+    try testSingle("//\xc2\xc0", &.{.line_comment});
+    try testSingle("//\xe0", &.{.line_comment});
+    try testSingle("//\xf0", &.{.line_comment});
+    try testSingle("//\xf0\x90\x80\xc0", &.{.line_comment});
 }
 
 test "illegal unicode codepoints" {
     // unicode newline characters.U+0085, U+2028, U+2029
-    try testSingle("//\xc2\x84", &.{});
-    try testSingle("//\xc2\x85", &.{});
-    try testSingle("//\xc2\x86", &.{});
-    try testSingle("//\xe2\x80\xa7", &.{});
-    try testSingle("//\xe2\x80\xa8", &.{});
-    try testSingle("//\xe2\x80\xa9", &.{});
-    try testSingle("//\xe2\x80\xaa", &.{});
+    try testSingle("//\xc2\x84", &.{.line_comment});
+    try testSingle("//\xc2\x85", &.{.line_comment});
+    try testSingle("//\xc2\x86", &.{.line_comment});
+    try testSingle("//\xe2\x80\xa7", &.{.line_comment});
+    try testSingle("//\xe2\x80\xa8", &.{.line_comment});
+    try testSingle("//\xe2\x80\xa9", &.{.line_comment});
+    try testSingle("//\xe2\x80\xaa", &.{.line_comment});
 }
 
 test "float literal e exponent" {
@@ -237,12 +238,12 @@ test "float literal p exponent" {
 }
 
 test "line comment and doc comment" {
-    try testSingle("//", &.{});
-    try testSingle("// a / b", &.{});
-    try testSingle("// /", &.{});
+    try testSingle("//", &.{.line_comment});
+    try testSingle("// a / b", &.{.line_comment});
+    try testSingle("// /", &.{.line_comment});
     try testSingle("/// a", &.{.doc_comment});
     try testSingle("///", &.{.doc_comment});
-    try testSingle("////", &.{});
+    try testSingle("////", &.{.doc_comment});
     try testSingle("//!", &.{.container_doc_comment});
     try testSingle("//!!", &.{.container_doc_comment});
 }
@@ -255,6 +256,7 @@ test "line comment followed by identifier" {
     , &.{
         .identifier,
         .comma,
+        .line_comment,
         .identifier,
         .comma,
     });
@@ -558,8 +560,8 @@ test "null byte before eof" {
     try testSingle("\\\\\x00", &.{.invalid});
     try testSingle("\x00", &.{.invalid});
     try testSingle("// NUL\x00\n", &.{.invalid});
-    try testSingle("///\x00\n", &.{ .doc_comment, .invalid });
-    try testSingle("/// NUL\x00\n", &.{ .doc_comment, .invalid });
+    try testSingle("///\x00\n", &.{.invalid});
+    try testSingle("/// NUL\x00\n", &.{.invalid});
 }
 
 test "multi line string literal with only 1 backslash" {
@@ -573,29 +575,29 @@ test "invalid token with unfinished escape right before eof" {
 }
 
 test "invalid tabs and carriage returns" {
-    try testSingle("//\t", &.{.invalid});
-    try testSingle("// \t", &.{.invalid});
-    try testSingle("///\t", &.{.invalid});
-    try testSingle("/// \t", &.{.invalid});
-    try testSingle("//!\t", &.{.invalid});
-    try testSingle("//! \t", &.{.invalid});
+    try testSingle("//\t", &.{.line_comment});
+    try testSingle("// \t", &.{.line_comment});
+    try testSingle("///\t", &.{.doc_comment});
+    try testSingle("/// \t", &.{.doc_comment});
+    try testSingle("//!\t", &.{.container_doc_comment});
+    try testSingle("//! \t", &.{.container_doc_comment});
 
-    try testSingle("//\r", &.{.invalid});
-    try testSingle("// \r", &.{.invalid});
-    try testSingle("///\r", &.{.invalid});
-    try testSingle("/// \r", &.{.invalid});
-    try testSingle("//\r ", &.{.invalid});
-    try testSingle("// \r ", &.{.invalid});
-    try testSingle("///\r ", &.{.invalid});
-    try testSingle("/// \r ", &.{.invalid});
-    try testSingle("//\r\n", &.{});
-    try testSingle("// \r\n", &.{});
+    try testSingle("//\r", &.{ .line_comment, .invalid });
+    try testSingle("// \r", &.{ .line_comment, .invalid });
+    try testSingle("///\r", &.{ .doc_comment, .invalid });
+    try testSingle("/// \r", &.{ .doc_comment, .invalid });
+    try testSingle("//\r ", &.{ .line_comment, .invalid });
+    try testSingle("// \r ", &.{ .line_comment, .invalid });
+    try testSingle("///\r ", &.{ .doc_comment, .invalid });
+    try testSingle("/// \r ", &.{ .doc_comment, .invalid });
+    try testSingle("//\r\n", &.{.line_comment});
+    try testSingle("// \r\n", &.{.line_comment});
     try testSingle("///\r\n", &.{.doc_comment});
     try testSingle("/// \r\n", &.{.doc_comment});
-    try testSingle("//!\r", &.{.invalid});
-    try testSingle("//! \r", &.{.invalid});
-    try testSingle("//!\r ", &.{.invalid});
-    try testSingle("//! \r ", &.{.invalid});
+    try testSingle("//!\r", &.{ .container_doc_comment, .invalid });
+    try testSingle("//! \r", &.{ .container_doc_comment, .invalid });
+    try testSingle("//!\r ", &.{ .container_doc_comment, .invalid });
+    try testSingle("//! \r ", &.{ .container_doc_comment, .invalid });
     try testSingle("//!\r\n", &.{.container_doc_comment});
     try testSingle("//! \r\n", &.{.container_doc_comment});
 
@@ -641,8 +643,8 @@ test "ASI: closing delimiters cause insert" {
 }
 
 test "ASI: after line comments (LF and CRLF)" {
-    try testSemi("1// cmt\n2\n", &.{ .integer_literal, .eos, .integer_literal, .eos });
-    try testSemi("1// cmt\r\n2\r\n", &.{ .integer_literal, .eos, .integer_literal, .eos });
+    try testSemi("1// cmt\n2\n", &.{ .integer_literal, .line_comment, .eos, .integer_literal, .eos });
+    try testSemi("1// cmt\r\n2\r\n", &.{ .integer_literal, .line_comment, .eos, .integer_literal, .eos });
 }
 
 test "ASI: control keywords" {
@@ -668,7 +670,7 @@ test "ASI: string literal then newline inserts" {
 }
 
 test "ASI: eof after comment" {
-    try testSemi("// comment\n", &.{});
+    try testSemi("// comment\n", &.{.line_comment});
 }
 
 test "block comment" {
@@ -676,7 +678,7 @@ test "block comment" {
         \\/* block comment */
         \\fn main() void {}
     , &.{
-        .keyword_fn, .identifier, .lparen, .rparen, .identifier, .lcurly, .rcurly,
+        .block_comment, .keyword_fn, .identifier, .lparen, .rparen, .identifier, .lcurly, .rcurly,
     });
     try testSingle("/*\x00*/", &.{.invalid});
 }

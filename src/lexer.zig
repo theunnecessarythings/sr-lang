@@ -169,6 +169,8 @@ pub const Token = struct {
         lparen,
         rparen,
 
+        line_comment,
+        block_comment,
         container_doc_comment,
         doc_comment,
 
@@ -240,6 +242,8 @@ pub const Token = struct {
                 .integer_literal,
                 .float_literal,
                 .imaginary_literal,
+                .line_comment,
+                .block_comment,
                 .doc_comment,
                 .container_doc_comment,
                 => null,
@@ -376,6 +380,7 @@ pub const Token = struct {
                 .integer_literal => "an integer literal",
                 .float_literal => "a float literal",
                 .imaginary_literal => "an imaginary literal",
+                .line_comment, .block_comment => "a comment",
                 .doc_comment, .container_doc_comment => "a document comment",
                 else => unreachable,
             };
@@ -734,8 +739,59 @@ pub const Tokenizer = struct {
                         result.tag = .slash_equal;
                         self.advance();
                     },
-                    '/' => continue :state .line_comment_start,
-                    '*' => continue :state .block_comment_start,
+                    '/' => {
+                        // Line or doc comment
+                        self.advance(); // consume second '/'
+                        var tag: Token.Tag = .line_comment;
+                        switch (self.curr()) {
+                            '/' => {
+                                tag = .doc_comment;
+                                self.advance();
+                            },
+                            '!' => {
+                                tag = .container_doc_comment;
+                                self.advance();
+                            },
+                            else => {},
+                        }
+                        result.tag = tag;
+                        while (true) {
+                            const c = self.curr();
+                            if (c == 0) {
+                                if (self.index != self.buffer.len) {
+                                    continue :state .invalid;
+                                }
+                                break;
+                            }
+                            if (c == '\n' or c == '\r') {
+                                break;
+                            }
+                            self.advance();
+                        }
+                    },
+                    '*' => {
+                        result.tag = .block_comment;
+                        self.advance(); // consume '*'
+                        while (true) {
+                            const c = self.curr();
+                            switch (c) {
+                                0 => {
+                                    if (self.index == self.buffer.len) {
+                                        result.tag = .invalid;
+                                        break;
+                                    } else continue :state .invalid;
+                                },
+                                '*' => {
+                                    self.advance();
+                                    if (self.curr() == '/') {
+                                        self.advance();
+                                        break;
+                                    }
+                                },
+                                else => self.advance(),
+                            }
+                        }
+                    },
                     else => result.tag = .slash,
                 }
             },
@@ -1368,7 +1424,10 @@ pub const Tokenizer = struct {
             },
         }
         result.loc.end = self.index;
-        self.last_tag = result.tag;
+        switch (result.tag) {
+            .line_comment, .block_comment, .doc_comment, .container_doc_comment => {},
+            else => self.last_tag = result.tag,
+        }
         return result;
     }
 };

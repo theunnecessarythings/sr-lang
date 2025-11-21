@@ -29,19 +29,19 @@ pub fn init(
     diags: *diag.Diagnostics,
     context: *compile.Context,
 ) Parser {
-    var lex = Lexer.init(source, file_id, .semi);
-    const cur = lex.next();
-    const nxt = lex.next();
-    return .{
+    var parser = Parser{
         .gpa = gpa,
         .src = source,
-        .lex = lex,
-        .cur = cur,
-        .nxt = nxt,
+        .lex = Lexer.init(source, file_id, .semi),
+        .cur = undefined,
+        .nxt = undefined,
         .context = context,
         .diags = diags,
         .cst_u = .init(gpa, context.interner, context.loc_store),
     };
+    parser.cur = parser.fetchNext();
+    parser.nxt = parser.fetchNext();
+    return parser;
 }
 
 // ---------- entry ----------
@@ -55,7 +55,7 @@ pub fn parse(self: *Parser) !cst.CST {
 // =================================================================
 inline fn advance(self: *Parser) void {
     self.cur = self.nxt;
-    self.nxt = self.lex.next();
+    self.nxt = self.fetchNext();
 }
 inline fn consumeIf(self: *Parser, tag: Token.Tag) bool {
     if (self.cur.tag == tag) {
@@ -79,6 +79,30 @@ inline fn expect(self: *Parser, tag: Token.Tag) !void {
 }
 inline fn slice(self: *const Parser, token: Token) []const u8 {
     return self.src[token.loc.start..token.loc.end];
+}
+fn isComment(tag: Token.Tag) bool {
+    return switch (tag) {
+        .line_comment, .block_comment, .doc_comment, .container_doc_comment => true,
+        else => false,
+    };
+}
+fn recordComment(self: *Parser, tok: Token) void {
+    const kind = switch (tok.tag) {
+        .line_comment => cst.CommentKind.line,
+        .block_comment => cst.CommentKind.block,
+        .doc_comment => cst.CommentKind.doc,
+        .container_doc_comment => cst.CommentKind.container_doc,
+        else => unreachable,
+    };
+    _ = self.cst_u.comments.add(self.gpa, .{ .kind = kind, .loc = self.toLocId(tok.loc) });
+}
+fn fetchNext(self: *Parser) Token {
+    var tok = self.lex.next();
+    while (isComment(tok.tag)) {
+        self.recordComment(tok);
+        tok = self.lex.next();
+    }
+    return tok;
 }
 fn intern(self: *Parser, bytes: []const u8) cst.StrId {
     return self.cst_u.exprs.strs.intern(bytes);
@@ -129,8 +153,10 @@ inline fn beginBrace(self: *Parser) !Loc {
     try self.expect(.lcurly);
     return start;
 }
-inline fn endBrace(self: *Parser) !void {
+inline fn endBrace(self: *Parser) !Loc {
+    const tok = self.cur;
     try self.expect(.rcurly);
+    return tok.loc;
 }
 inline fn isLiteralTag(_: *const Parser, tag: Token.Tag) bool {
     return switch (tag) {
@@ -763,13 +789,16 @@ fn parseExpr(self: *Parser, min_bp: u8, comptime mode: ParseMode) anyerror!cst.E
                 if (tag == .bang and mode != .type and self.isTypeStart(self.nxt.tag)) {
                     // Do nothing here; the infix phase below will consume and build error_union
                 } else if (!should_let_infix_win) {
+                    const tok_loc = self.cur.loc;
                     self.advance();
                     left = switch (tag) {
                         .lparen => try self.parseCall(left),
                         .lsquare => try self.parseIndex(left),
                         .dot => try self.parsePostfixAfterDot(left),
                         .dotlparen => try self.parseCastParen(left),
-                        .lcurly => try self.parseStructLiteralWithHead(left),
+                        .lcurly => blk: {
+                            break :blk try self.parseStructLiteralWithHead(left, tok_loc);
+                        },
                         .dotstar => try self.parseDeref(left),
                         .question => try self.parseOptionalUnwrap(left),
                         .keyword_catch => try self.parseCatchExpr(left),
@@ -808,11 +837,12 @@ fn parseExpr(self: *Parser, min_bp: u8, comptime mode: ParseMode) anyerror!cst.E
 //=================================================================
 // Common element parsers
 //=================================================================
-fn parseStructLiteral(self: *Parser) !cst.ExprId {
-    const loc = self.toLocId(self.cur.loc);
+fn parseStructLiteral(self: *Parser, lcurly_loc: Token.Loc) !cst.ExprId {
+    const start_loc = lcurly_loc;
 
     var sfv_ids: List(cst.StructFieldValueId) = .empty;
     defer sfv_ids.deinit(self.gpa);
+    var trailing = false;
 
     while (self.cur.tag != .rcurly and self.cur.tag != .eof) {
         const field_tok = self.cur;
@@ -834,20 +864,28 @@ fn parseStructLiteral(self: *Parser) !cst.ExprId {
         const sfv_id = self.cst_u.exprs.addStructFieldValue(sfv_row);
         try sfv_ids.append(self.gpa, sfv_id);
 
-        if (!self.consumeIf(.comma)) break;
+        if (!self.consumeIf(.comma)) {
+            trailing = false;
+            break;
+        }
+        trailing = true;
+        if (self.cur.tag == .rcurly) break;
     }
+    const end_loc = self.cur.loc;
     try self.expect(.rcurly);
 
     const fields_range = self.cst_u.exprs.sfv_pool.pushMany(self.gpa, sfv_ids.items);
-    return self.addExpr(.StructLit, .{ .fields = fields_range, .ty = cst.OptExprId.none(), .loc = loc });
+    const loc_id = self.toLocId(start_loc.merge(end_loc));
+    return self.addExpr(.StructLit, .{ .fields = fields_range, .ty = cst.OptExprId.none(), .trailing_comma = trailing, .loc = loc_id });
 }
 
-fn parseStructLiteralWithHead(self: *Parser, head: cst.ExprId) !cst.ExprId {
+fn parseStructLiteralWithHead(self: *Parser, head: cst.ExprId, lcurly_loc: Token.Loc) !cst.ExprId {
     // Current token is '{' (already consumed by caller switch advance)
-    const loc = self.toLocId(self.cur.loc);
+    const start_loc = lcurly_loc;
 
     var sfv_ids: List(cst.StructFieldValueId) = .empty;
     defer sfv_ids.deinit(self.gpa);
+    var trailing = false;
 
     while (self.cur.tag != .rcurly and self.cur.tag != .eof) {
         const field_tok = self.cur;
@@ -869,12 +907,19 @@ fn parseStructLiteralWithHead(self: *Parser, head: cst.ExprId) !cst.ExprId {
         const sfv_id = self.cst_u.exprs.addStructFieldValue(sfv_row);
         try sfv_ids.append(self.gpa, sfv_id);
 
-        if (!self.consumeIf(.comma)) break;
+        if (!self.consumeIf(.comma)) {
+            trailing = false;
+            break;
+        }
+        trailing = true;
+        if (self.cur.tag == .rcurly) break;
     }
+    const end_loc = self.cur.loc;
     try self.expect(.rcurly);
 
     const fields_range = self.cst_u.exprs.sfv_pool.pushMany(self.gpa, sfv_ids.items);
-    return self.addExpr(.StructLit, .{ .fields = fields_range, .ty = cst.OptExprId.some(head), .loc = loc });
+    const loc_id = self.toLocId(start_loc.merge(end_loc));
+    return self.addExpr(.StructLit, .{ .fields = fields_range, .ty = cst.OptExprId.some(head), .trailing_comma = trailing, .loc = loc_id });
 }
 
 fn parseIndex(self: *Parser, collection: cst.ExprId) anyerror!cst.ExprId {
@@ -910,25 +955,34 @@ fn parseField(self: *Parser, parent: cst.ExprId) !cst.ExprId {
 
 // Parse a comma-separated list of expressions until `end_tag`,
 // then convert to a RangeOf(ExprId) using the expr_pool.
-fn parseCommaExprListUntil(self: *Parser, comptime end_tag: Token.Tag) anyerror!cst.RangeOf(cst.ExprId) {
+fn parseCommaExprListUntil(self: *Parser, comptime end_tag: Token.Tag) anyerror!struct { range: cst.RangeOf(cst.ExprId), trailing: bool } {
     var items: List(cst.ExprId) = .empty;
     defer items.deinit(self.gpa);
 
+    var trailing = false;
     if (self.cur.tag != end_tag) {
         while (true) {
             try items.append(self.gpa, try self.parseExpr(0, .expr));
-            if (!self.consumeIf(.comma)) break;
+            if (!self.consumeIf(.comma)) {
+                trailing = false;
+                break;
+            }
+            trailing = true;
+            if (self.cur.tag == end_tag) break;
         }
     }
     try self.expect(end_tag);
-    return self.cst_u.exprs.expr_pool.pushMany(self.gpa, items.items);
+    return .{
+        .range = self.cst_u.exprs.expr_pool.pushMany(self.gpa, items.items),
+        .trailing = trailing,
+    };
 }
 
 // '(' was already consumed. This parses args and emits the Call row.
 fn parseCall(self: *Parser, callee: cst.ExprId) !cst.ExprId {
     const loc = self.toLocId(self.cur.loc);
     const args = try self.parseCommaExprListUntil(.rparen);
-    return self.addExpr(.Call, .{ .callee = callee, .args = args, .loc = loc });
+    return self.addExpr(.Call, .{ .callee = callee, .args = args.range, .trailing_arg_comma = args.trailing, .loc = loc });
 }
 
 // ================================
@@ -1007,10 +1061,10 @@ fn parseBlock(self: *Parser) !cst.ExprId {
         };
         try decl_ids.append(self.gpa, did);
     }
-    try self.endBrace();
+    const close_loc = try self.endBrace();
 
     const range = self.cst_u.exprs.decl_pool.pushMany(self.gpa, decl_ids.items);
-    return self.addExpr(.Block, .{ .items = range, .loc = self.toLocId(brace_loc) });
+    return self.addExpr(.Block, .{ .items = range, .loc = self.toLocId(brace_loc.merge(close_loc)) });
 }
 
 fn parseBlockExpr(self: *Parser) !cst.ExprId {
@@ -1137,6 +1191,11 @@ fn parseImport(self: *Parser) !cst.ExprId {
     // Grab the raw string literal contents.
     const name_raw = std.mem.trim(u8, self.slice(self.cur), "\"");
     try self.expect(.string_literal);
+
+    if (!self.context.load_imports) {
+        const path_id = self.intern(name_raw);
+        return self.addExpr(.Import, .{ .path = path_id, .loc = loc });
+    }
 
     // Normal pipeline-driven parsing: resolve and enqueue.
     var buf: [std.fs.max_path_bytes]u8 = undefined;
@@ -1836,17 +1895,26 @@ fn parseStructField(self: *Parser) !cst.StructFieldId {
     });
 }
 
-fn parseStructFieldList(self: *Parser, end_tag: Token.Tag) !cst.RangeOf(cst.StructFieldId) {
+fn parseStructFieldList(self: *Parser, end_tag: Token.Tag) !struct { range: cst.RangeOf(cst.StructFieldId), trailing: bool } {
     var ids: List(cst.StructFieldId) = .empty;
     defer ids.deinit(self.gpa);
 
+    var trailing = false;
     while (self.cur.tag != end_tag and self.cur.tag != .eof) {
         try ids.append(self.gpa, try self.parseStructField());
-        if (!self.consumeIf(.comma)) break;
+        if (!self.consumeIf(.comma)) {
+            trailing = false;
+            break;
+        }
+        trailing = true;
+        if (self.cur.tag == end_tag) break;
     }
     try self.expect(end_tag);
 
-    return self.cst_u.exprs.sfield_pool.pushMany(self.gpa, ids.items);
+    return .{
+        .range = self.cst_u.exprs.sfield_pool.pushMany(self.gpa, ids.items),
+        .trailing = trailing,
+    };
 }
 
 fn parseStructLikeType(self: *Parser, comptime tag: Token.Tag, comptime is_extern: bool) !cst.ExprId {
@@ -1857,9 +1925,9 @@ fn parseStructLikeType(self: *Parser, comptime tag: Token.Tag, comptime is_exter
     const fields = try self.parseStructFieldList(.rcurly);
 
     return if (tag == .keyword_struct)
-        self.addExpr(.StructType, .{ .fields = fields, .is_extern = is_extern, .attrs = cst.OptRangeAttr.none(), .loc = loc })
+        self.addExpr(.StructType, .{ .fields = fields.range, .is_extern = is_extern, .attrs = cst.OptRangeAttr.none(), .trailing_field_comma = fields.trailing, .loc = loc })
     else
-        self.addExpr(.UnionType, .{ .fields = fields, .is_extern = is_extern, .attrs = cst.OptRangeAttr.none(), .loc = loc });
+        self.addExpr(.UnionType, .{ .fields = fields.range, .is_extern = is_extern, .attrs = cst.OptRangeAttr.none(), .trailing_field_comma = fields.trailing, .loc = loc });
 }
 
 //==============================================================
@@ -2302,7 +2370,7 @@ fn parseParenExpr(self: *Parser) !cst.ExprId {
             } else {
                 // parenthesized expression: just return inner
                 try self.expect(.rparen);
-                break :blk first;
+                break :blk self.addExpr(.Parenthesized, .{ .inner = first, .loc = loc });
             }
         },
     };
@@ -2371,6 +2439,7 @@ fn parseFunctionLike(self: *Parser, tag: Token.Tag, comptime is_extern: bool, is
     defer param_ids.deinit(self.gpa);
 
     var lcst_param_ty: cst.OptExprId = .none();
+    var trailing_params = false;
 
     while (self.cur.tag != .rparen and self.cur.tag != .eof) {
         const attr_range = try self.parseOptionalAttributes(); // DOD: returns OptRangeAttr
@@ -2427,8 +2496,13 @@ fn parseFunctionLike(self: *Parser, tag: Token.Tag, comptime is_extern: bool, is
         });
         try param_ids.append(self.gpa, pid);
 
-        if (self.cur.tag != .comma) break;
+        if (self.cur.tag != .comma) {
+            trailing_params = false;
+            break;
+        }
         self.advance();
+        trailing_params = true;
+        if (self.cur.tag == .rparen) break;
     }
     try self.expect(.rparen);
 
@@ -2476,6 +2550,7 @@ fn parseFunctionLike(self: *Parser, tag: Token.Tag, comptime is_extern: bool, is
         .raw_asm = raw_asm_opt,
         .attrs = .none(), // may be attached later via '@[...] <fn>'
         .flags = flags,
+        .trailing_param_comma = trailing_params,
         .loc = start_loc,
     });
 }
@@ -2535,7 +2610,7 @@ fn parseMlir(self: *Parser) !cst.ExprId {
     var args_range = cst.OptRangeOf(cst.ExprId).none();
     if (self.cur.tag == .lparen) {
         self.advance();
-        args_range = .some(try self.parseCommaExprListUntil(.rparen));
+        args_range = .some((try self.parseCommaExprListUntil(.rparen)).range);
     }
 
     if (self.cur.tag != .lcurly) {
@@ -2688,6 +2763,7 @@ inline fn parseEnumType(self: *Parser, comptime is_extern: bool) !cst.ExprId {
     var field_ids: List(cst.EnumFieldId) = .empty;
     defer field_ids.deinit(self.gpa);
 
+    var trailing = false;
     while (self.cur.tag != .rcurly and self.cur.tag != .eof) {
         const f_loc = self.toLocId(self.cur.loc);
         const attrs = try self.parseOptionalAttributes(); // OptRangeAttr
@@ -2705,7 +2781,12 @@ inline fn parseEnumType(self: *Parser, comptime is_extern: bool) !cst.ExprId {
         });
         try field_ids.append(self.gpa, fid);
 
-        if (!self.consumeIf(.comma)) break;
+        if (!self.consumeIf(.comma)) {
+            trailing = false;
+            break;
+        }
+        trailing = true;
+        if (self.cur.tag == .rcurly) break;
     }
 
     try self.expect(.rcurly);
@@ -2720,6 +2801,7 @@ inline fn parseEnumType(self: *Parser, comptime is_extern: bool) !cst.ExprId {
         .discriminant = backing,
         .is_extern = is_extern,
         .attrs = .none(), // attach via '@' before if needed
+        .trailing_field_comma = trailing,
         .loc = start_loc,
     });
 }
@@ -2740,6 +2822,7 @@ fn parseVariantLikeType(self: *Parser, comptime is_error: bool) !cst.ExprId {
     var vfield_ids: List(cst.VariantFieldId) = .empty;
     defer vfield_ids.deinit(self.gpa);
 
+    var trailing = false;
     while (self.cur.tag != .rcurly and self.cur.tag != .eof) {
         const case_loc = self.toLocId(self.cur.loc);
         const attrs = try self.parseOptionalAttributes(); // OptRangeAttr
@@ -2757,10 +2840,16 @@ fn parseVariantLikeType(self: *Parser, comptime is_error: bool) !cst.ExprId {
                 var elems: List(cst.ExprId) = .empty;
                 defer elems.deinit(self.gpa);
 
+                var tuple_trailing = false;
                 if (self.cur.tag != .rparen) {
                     while (true) {
                         try elems.append(self.gpa, try self.parseExpr(0, .type));
-                        if (!self.consumeIf(.comma)) break;
+                        if (!self.consumeIf(.comma)) {
+                            tuple_trailing = false;
+                            break;
+                        }
+                        tuple_trailing = true;
+                        if (self.cur.tag == .rparen) break;
                     }
                 }
                 try self.expect(.rparen);
@@ -2778,12 +2867,18 @@ fn parseVariantLikeType(self: *Parser, comptime is_error: bool) !cst.ExprId {
                     .struct_fields = .empty(),
                     .value = value,
                     .attrs = attrs,
+                    .tuple_trailing_comma = tuple_trailing,
+                    .struct_trailing_comma = false,
                     .loc = case_loc,
                 });
                 try vfield_ids.append(self.gpa, id);
 
-                if (self.cur.tag != .comma) break;
+                if (self.cur.tag != .comma) {
+                    trailing = false;
+                    break;
+                }
                 self.advance();
+                trailing = true;
             },
             .lcurly => {
                 // Struct-like payload
@@ -2795,14 +2890,20 @@ fn parseVariantLikeType(self: *Parser, comptime is_error: bool) !cst.ExprId {
                     .name = name_id,
                     .ty_tag = .Struct,
                     .tuple_elems = .empty(),
-                    .struct_fields = struct_fields,
+                    .struct_fields = struct_fields.range,
+                    .struct_trailing_comma = struct_fields.trailing,
+                    .tuple_trailing_comma = false,
                     .value = value,
                     .attrs = attrs,
                     .loc = case_loc,
                 });
                 try vfield_ids.append(self.gpa, id);
 
-                if (!self.consumeIf(.comma)) break;
+                if (!self.consumeIf(.comma)) {
+                    trailing = false;
+                    break;
+                }
+                trailing = true;
             },
             else => {
                 // No payload
@@ -2814,11 +2915,17 @@ fn parseVariantLikeType(self: *Parser, comptime is_error: bool) !cst.ExprId {
                     .struct_fields = .empty(),
                     .value = value,
                     .attrs = attrs,
+                    .tuple_trailing_comma = false,
+                    .struct_trailing_comma = false,
                     .loc = case_loc,
                 });
                 try vfield_ids.append(self.gpa, id);
 
-                if (!self.consumeIf(.comma)) break;
+                if (!self.consumeIf(.comma)) {
+                    trailing = false;
+                    break;
+                }
+                trailing = true;
             },
         }
     }
@@ -2831,7 +2938,7 @@ fn parseVariantLikeType(self: *Parser, comptime is_error: bool) !cst.ExprId {
         self.cst_u.exprs.vfield_pool.pushMany(self.gpa, vfield_ids.items);
 
     if (is_error) {
-        return self.addExpr(.ErrorType, .{ .fields = fields, .loc = start_loc });
+        return self.addExpr(.ErrorType, .{ .fields = fields, .trailing_field_comma = trailing, .loc = start_loc });
     }
-    return self.addExpr(.VariantLikeType, .{ .fields = fields, .loc = start_loc });
+    return self.addExpr(.VariantLikeType, .{ .fields = fields, .trailing_field_comma = trailing, .loc = start_loc });
 }

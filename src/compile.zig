@@ -115,6 +115,7 @@ pub const Context = struct {
     loc_store: *cst.LocStore,
     type_store: *TypeStore,
     compilation_unit: CompilationUnit,
+    load_imports: bool = true,
     mutex: std.Thread.Mutex = .{},
 
     parse_worklist: std.ArrayList(ParseRequest) = .{},

@@ -621,6 +621,10 @@ fn lowerExpr(self: *Lower, id: cst.ExprId) anyerror!ast.ExprId {
                 });
             }
         },
+        .Parenthesized => blk: {
+            const r = self.cst_program.exprs.get(.Parenthesized, id);
+            break :blk self.lowerExpr(r.inner);
+        },
         .MapLit => blk: {
             const r = self.cst_program.exprs.get(.MapLit, id);
             break :blk self.ast_unit.exprs.add(.MapLit, .{

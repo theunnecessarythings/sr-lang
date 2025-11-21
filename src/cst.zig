@@ -366,6 +366,30 @@ pub const OptRangeField = OptRangeOf(StructFieldId);
 pub const OptRangePat = OptRangeOf(PatternId);
 pub const OptRangeMethodPathSeg = OptRangeOf(MethodPathSegId);
 
+pub const CommentTag = struct {};
+pub const CommentId = Index(CommentTag);
+pub const CommentKind = enum { line, block, doc, container_doc };
+
+pub const CommentStore = struct {
+    list: std.ArrayListUnmanaged(Comment) = .{},
+
+    pub fn add(self: *@This(), gpa: std.mem.Allocator, comment: Comment) CommentId {
+        const idx: u32 = @intCast(self.list.items.len);
+        self.list.append(gpa, comment) catch @panic("OOM");
+        return .{ .index = idx };
+    }
+
+    pub fn slice(self: *const @This()) []const Comment {
+        return self.list.items;
+    }
+
+    pub fn deinit(self: *@This(), gpa: std.mem.Allocator) void {
+        self.list.deinit(gpa);
+    }
+};
+
+pub const Comment = struct { kind: CommentKind, loc: LocId };
+
 ////////////////////////////////////////////////////////////////
 //                    Expression Kinds & Rows
 ////////////////////////////////////////////////////////////////
@@ -379,6 +403,7 @@ pub const ExprKind = enum(u16) {
     Deref,
     ArrayLit,
     Tuple,
+    Parenthesized,
     MapLit,
     Call,
     IndexAccess,
@@ -449,17 +474,18 @@ pub const Rows = struct {
     // ---------- collections / literals ----------
     pub const ArrayLit = struct { elems: RangeOf(ExprId), loc: LocId };
     pub const Tuple = struct { elems: RangeOf(ExprId), is_type: bool, loc: LocId };
+    pub const Parenthesized = struct { inner: ExprId, loc: LocId };
     pub const MapLit = struct { entries: RangeOf(KeyValueId), loc: LocId };
     pub const KeyValue = struct { key: ExprId, value: ExprId, loc: LocId };
 
     // ---------- calls / selectors ----------
-    pub const Call = struct { callee: ExprId, args: RangeOf(ExprId), loc: LocId };
+    pub const Call = struct { callee: ExprId, args: RangeOf(ExprId), trailing_arg_comma: bool, loc: LocId };
     pub const IndexAccess = struct { collection: ExprId, index: ExprId, loc: LocId };
     pub const FieldAccess = struct { parent: ExprId, field: StrId, is_tuple: bool, loc: LocId };
 
     // ---------- struct literal ----------
     pub const StructFieldValue = struct { name: OptStrId, value: ExprId, loc: LocId };
-    pub const StructLit = struct { fields: RangeOf(StructFieldValueId), ty: OptExprId, loc: LocId };
+    pub const StructLit = struct { fields: RangeOf(StructFieldValueId), ty: OptExprId, trailing_comma: bool, loc: LocId };
 
     // ---------- function / block ----------
     pub const FnFlags = packed struct(u8) { is_proc: bool, is_async: bool, is_variadic: bool, is_extern: bool, _pad: u4 = 0 };
@@ -470,6 +496,7 @@ pub const Rows = struct {
         raw_asm: OptStrId,
         attrs: OptRangeAttr,
         flags: FnFlags,
+        trailing_param_comma: bool,
         loc: LocId,
     };
     pub const Block = struct { items: RangeOf(DeclId), loc: LocId };
@@ -556,10 +583,10 @@ pub const Rows = struct {
     pub const ErrorSetType = struct { err: ExprId, value: ExprId, loc: LocId };
 
     pub const StructField = struct { name: StrId, ty: ExprId, value: OptExprId, attrs: OptRangeAttr, loc: LocId };
-    pub const StructType = struct { fields: RangeOf(StructFieldId), is_extern: bool, attrs: OptRangeAttr, loc: LocId };
+    pub const StructType = struct { fields: RangeOf(StructFieldId), is_extern: bool, attrs: OptRangeAttr, trailing_field_comma: bool, loc: LocId };
 
     pub const EnumField = struct { name: StrId, value: OptExprId, attrs: OptRangeAttr, loc: LocId };
-    pub const EnumType = struct { fields: RangeOf(EnumFieldId), discriminant: OptExprId, is_extern: bool, attrs: OptRangeAttr, loc: LocId };
+    pub const EnumType = struct { fields: RangeOf(EnumFieldId), discriminant: OptExprId, is_extern: bool, attrs: OptRangeAttr, trailing_field_comma: bool, loc: LocId };
 
     pub const VariantFieldTyTag = enum(u8) { none, Tuple, Struct };
     pub const VariantField = struct {
@@ -569,11 +596,13 @@ pub const Rows = struct {
         struct_fields: RangeOf(StructFieldId), // valid if Struct
         value: OptExprId,
         attrs: OptRangeAttr,
+        tuple_trailing_comma: bool,
+        struct_trailing_comma: bool,
         loc: LocId,
     };
-    pub const VariantLikeType = struct { fields: RangeOf(VariantFieldId), loc: LocId };
+    pub const VariantLikeType = struct { fields: RangeOf(VariantFieldId), trailing_field_comma: bool, loc: LocId };
 
-    pub const UnionType = struct { fields: RangeOf(StructFieldId), is_extern: bool, attrs: OptRangeAttr, loc: LocId };
+    pub const UnionType = struct { fields: RangeOf(StructFieldId), is_extern: bool, attrs: OptRangeAttr, trailing_field_comma: bool, loc: LocId };
     pub const PointerType = struct { elem: ExprId, is_const: bool, loc: LocId };
     pub const SimdType = struct { elem: ExprId, lanes: ExprId, loc: LocId };
     pub const ComplexType = struct { elem: ExprId, loc: LocId };
@@ -707,6 +736,7 @@ pub const ExprStore = struct {
 
     ArrayLit: Table(Rows.ArrayLit) = .{},
     Tuple: Table(Rows.Tuple) = .{},
+    Parenthesized: Table(Rows.Parenthesized) = .{},
     MapLit: Table(Rows.MapLit) = .{},
     KeyValue: Table(Rows.KeyValue) = .{},
 
@@ -977,6 +1007,7 @@ pub const CST = struct {
     pats: PatternStore,
     program: ProgramDO,
     interner: *StringInterner,
+    comments: CommentStore = .{},
 
     pub fn init(gpa: std.mem.Allocator, interner: *StringInterner, locs: *LocStore) CST {
         return .{
@@ -990,6 +1021,7 @@ pub const CST = struct {
     pub fn deinit(self: *@This()) void {
         self.exprs.deinit();
         self.pats.deinit();
+        self.comments.deinit(self.gpa);
     }
 };
 
@@ -1109,6 +1141,12 @@ pub const DodPrinter = struct {
                 const n = self.exprs.get(.Tuple, id);
                 try self.open("(tuple is_type={})", .{n.is_type});
                 try self.printExprRange("elems", n.elems);
+                try self.close();
+            },
+            .Parenthesized => {
+                const n = self.exprs.get(.Parenthesized, id);
+                try self.open("(parenthesized", .{});
+                try self.printExpr(n.inner);
                 try self.close();
             },
             .MapLit => {

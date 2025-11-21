@@ -20,6 +20,13 @@ const LspRange = struct {
     end: LspPosition,
 };
 
+const TextEdit = struct {
+    range: LspRange,
+    newText: []const u8,
+};
+
+const emptyTextEdits: []const TextEdit = &[_]TextEdit{};
+
 const RelatedInformation = struct {
     location: struct {
         uri: []const u8,
@@ -197,6 +204,8 @@ pub fn run(gpa: std.mem.Allocator) !void {
             if (req.params) |p| try onCompletion(Out, gpa, &docs, req.id orelse 0, p);
         } else if (std.mem.eql(u8, req.method, "textDocument/semanticTokens/full")) {
             if (req.params) |p| try onSemanticTokensFull(Out, gpa, &docs, req.id orelse 0, p);
+        } else if (std.mem.eql(u8, req.method, "textDocument/formatting")) {
+            if (req.params) |p| try onFormatting(Out, gpa, &docs, req.id orelse 0, p);
         } else {
             if (req.id) |rid| try writeJson(Out, gpa, .{ .jsonrpc = "2.0", .id = rid, .result = null });
         }
@@ -289,6 +298,7 @@ fn respondInitialize(out: *std.Io.Writer, gpa: std.mem.Allocator, id: u64) !void
         hoverProvider: bool = true,
         definitionProvider: bool = true,
         renameProvider: bool = true,
+        documentFormattingProvider: bool = true,
         completionProvider: struct { triggerCharacters: []const []const u8 } = .{ .triggerCharacters = &.{"."} },
         semanticTokensProvider: struct {
             legend: struct {
@@ -1019,11 +1029,6 @@ fn onRename(out: *std.io.Writer, gpa: std.mem.Allocator, docs: *DocumentStore, i
         }
     }
 
-    const TextEdit = struct {
-        range: LspRange,
-        newText: []const u8,
-    };
-
     const WorkspaceEdit = struct {
         changes: std.StringHashMap([]const TextEdit),
 
@@ -1263,6 +1268,58 @@ fn onSemanticTokensFull(out: *std.Io.Writer, gpa: std.mem.Allocator, docs: *Docu
         const empty = [_]u32{};
         try writeJson(out, gpa, Resp{ .id = id, .result = .{ .data = &empty } });
     }
+}
+
+fn onFormatting(out: *std.Io.Writer, gpa: std.mem.Allocator, docs: *DocumentStore, id: u64, params: json.Value) !void {
+    const P = struct {
+        textDocument: struct { uri: []const u8 },
+    };
+    var p = try json.parseFromValue(P, gpa, params, .{ .ignore_unknown_fields = true });
+    defer p.deinit();
+
+    const uri = p.value.textDocument.uri;
+
+    const source = docs.get(uri) orelse {
+        const Resp = struct {
+            jsonrpc: []const u8 = "2.0",
+            id: u64,
+            result: []const TextEdit,
+        };
+        try writeJson(out, gpa, Resp{ .id = id, .result = emptyTextEdits });
+        return;
+    };
+
+    const path = try fileUriToPath(gpa, uri);
+    defer gpa.free(path);
+
+    const source_z = try std.mem.concatWithSentinel(gpa, u8, &.{source}, 0);
+    defer gpa.free(source_z);
+
+    const formatted = lib.formatter.formatSource(gpa, source_z, path) catch |err| {
+        std.debug.print("[lsp] formatter failed: {s}\n", .{@errorName(err)});
+        const Resp = struct {
+            jsonrpc: []const u8 = "2.0",
+            id: u64,
+            result: []const TextEdit,
+        };
+        try writeJson(out, gpa, Resp{ .id = id, .result = emptyTextEdits });
+        return;
+    };
+    defer gpa.free(formatted);
+
+    const edit = TextEdit{
+        .range = fullRange(source),
+        .newText = formatted,
+    };
+    const edits = [_]TextEdit{ edit };
+    const Resp = struct {
+        jsonrpc: []const u8 = "2.0",
+        id: u64,
+        result: []const TextEdit,
+    };
+    try writeJson(out, gpa, Resp{ .id = id, .result = edits[0..] });
+
+    try docs.set(uri, formatted);
 }
 
 fn publishDiagnostics(out: *std.Io.Writer, gpa: std.mem.Allocator, docs: *DocumentStore, uri: []const u8) !void {
@@ -2180,6 +2237,13 @@ fn locToRange(text: []const u8, loc: Loc) LspRange {
     return .{
         .start = offsetToPosition(text, start_idx),
         .end = offsetToPosition(text, end_idx),
+    };
+}
+
+fn fullRange(text: []const u8) LspRange {
+    return .{
+        .start = .{ .line = 0, .character = 0 },
+        .end = offsetToPosition(text, text.len),
     };
 }
 

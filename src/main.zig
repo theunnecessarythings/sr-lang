@@ -44,6 +44,7 @@ const CliArgs = struct {
         json_ast,
         server,
         lsp,
+        format,
     };
 };
 
@@ -70,6 +71,7 @@ fn printUsage(writer: anytype, exec_name: []const u8) !void {
     try writer.print("  {s}mlir_passes{s} <file>  Run MLIR pipeline (print after passes).\n", .{ Colors.cyan, Colors.reset });
     try writer.print("  {s}llvm_passes{s} <file>  Run LLVM IR pipeline (print after passes).\n", .{ Colors.cyan, Colors.reset });
     try writer.print("  {s}pretty-print{s} <file> Format and print the source file.\n", .{ Colors.cyan, Colors.reset });
+    try writer.print("  {s}format{s} <file>        Reformat a source file in-place.\n", .{ Colors.cyan, Colors.reset });
     try writer.print("  {s}json-ast{s}     <file> Print the Abstract Syntax Tree (AST) of a source file as JSON.\n", .{ Colors.cyan, Colors.reset });
     try writer.print("  {s}server{s}              Run a server for AST Explorer.\n", .{ Colors.cyan, Colors.reset });
     try writer.print("  {s}lsp{s}                Start the language server.\n", .{ Colors.cyan, Colors.reset });
@@ -298,6 +300,24 @@ fn process_file(
     var abs_filename_buf: [std.fs.max_path_bytes]u8 = undefined;
     const abs_filename = std.fs.cwd().realpath(filename, &abs_filename_buf) catch filename;
 
+    if (cli_args.subcommand == .format or cli_args.subcommand == .pretty_print) {
+        const src = try std.fs.cwd().readFileAlloc(allocator, abs_filename, 10 * 1024 * 1024);
+        defer allocator.free(src);
+        const source_z = try std.mem.concatWithSentinel(allocator, u8, &.{src}, 0);
+        defer allocator.free(source_z);
+        const formatted = try lib.formatter.formatSource(allocator, source_z, abs_filename);
+        defer allocator.free(formatted);
+        if (cli_args.subcommand == .pretty_print) {
+            try out_writer.writeAll(formatted);
+            try out_writer.flush();
+        } else {
+            var file = try std.fs.cwd().openFile(abs_filename, .{ .mode = .read_write });
+            defer file.close();
+            try file.writeAll(formatted);
+        }
+        return;
+    }
+
     var pipeline = lib.pipeline.Pipeline.init(allocator, compiler_ctx);
     pipeline.tir_prune_unused = cli_args.tir_prune_unused;
     pipeline.tir_warn_unused = cli_args.tir_warn_unused;
@@ -320,6 +340,7 @@ fn process_file(
         .llvm_passes => .llvm_passes,
         .pretty_print => .ast,
         .json_ast => .ast,
+        .format => unreachable,
         else => unreachable,
     }, cli_args.optimization_level);
 
@@ -367,27 +388,6 @@ fn process_file(
         return;
     }
     if (cli_args.subcommand == .interpret) {
-        if (compiler_ctx.diags.count() > 0) {
-            try compiler_ctx.diags.emitStyled(compiler_ctx, err_writer, !cli_args.no_color);
-        }
-        try out_writer.flush();
-        return;
-    }
-
-    // For 'pretty-print' command, print formatted code and exit
-    if (cli_args.subcommand == .pretty_print) {
-        for (result.compilation_unit.?.packages.values()) |pkg| {
-            for (pkg.sources.values()) |entry| {
-                const hir = entry.ast.?;
-                var code_printer = lib.ast.CodePrinter.init(
-                    out_writer,
-                    &hir.exprs,
-                    &hir.stmts,
-                    &hir.pats,
-                );
-                try code_printer.printUnit(&hir.unit);
-            }
-        }
         if (compiler_ctx.diags.count() > 0) {
             try compiler_ctx.diags.emitStyled(compiler_ctx, err_writer, !cli_args.no_color);
         }
@@ -514,6 +514,8 @@ pub fn main() !void {
                     cli_args.subcommand = .llvm_passes;
                 } else if (std.mem.eql(u8, arg, "pretty-print")) {
                     cli_args.subcommand = .pretty_print;
+                } else if (std.mem.eql(u8, arg, "format")) {
+                    cli_args.subcommand = .format;
                 } else if (std.mem.eql(u8, arg, "lex")) {
                     cli_args.subcommand = .lex;
                 } else if (std.mem.eql(u8, arg, "help")) {
@@ -580,7 +582,7 @@ pub fn main() !void {
         .help => {
             try printUsage(out_writer, exec_name);
         },
-        .compile, .mlir, .mlir_passes, .llvm_passes, .run, .check, .ast, .cst, .tir, .tir_liveness, .lex, .pretty_print, .json_ast => {
+        .compile, .mlir, .mlir_passes, .llvm_passes, .run, .check, .ast, .cst, .tir, .tir_liveness, .lex, .pretty_print, .json_ast, .format => {
             if (cli_args.filename == null) {
                 try writer.print("{s}Error:{s} Missing source file for '{s}' command.\n", .{ Colors.red, Colors.reset, @tagName(cli_args.subcommand) });
                 try printUsage(writer, exec_name);
