@@ -396,10 +396,10 @@ pub const InstrStore = struct {
         return self.index.newId(self.gpa, K, idx.toRaw(), InstrId);
     }
 
-    pub fn get(self: *const @This(), comptime K: OpKind, id: InstrId) RowT(K) {
+    pub fn get(self: *@This(), comptime K: OpKind, id: InstrId) RowT(K) {
         std.debug.assert(self.index.kinds.items[id.toRaw()] == K);
         const row_idx = self.index.rows.items[id.toRaw()];
-        const tbl: *const Table(RowT(K)) = &@field(self, @tagName(K));
+        const tbl: *Table(RowT(K)) = &@field(self, @tagName(K));
         return tbl.get(.{ .index = row_idx });
     }
 
@@ -444,10 +444,10 @@ pub const TermStore = struct {
         const idx = tbl.add(self.gpa, row);
         return self.index.newId(self.gpa, K, idx.toRaw(), TermId);
     }
-    pub fn get(self: *const @This(), comptime K: TermKind, id: TermId) TermRowT(K) {
+    pub fn get(self: *@This(), comptime K: TermKind, id: TermId) TermRowT(K) {
         std.debug.assert(self.index.kinds.items[id.toRaw()] == K);
         const row_idx = self.index.rows.items[id.toRaw()];
-        const tbl: *const Table(TermRowT(K)) = &@field(self, @tagName(K));
+        const tbl: *Table(TermRowT(K)) = &@field(self, @tagName(K));
         return tbl.get(.{ .index = row_idx });
     }
 };
@@ -1006,14 +1006,14 @@ pub const TirPrinter = struct {
 
     writer: *std.io.Writer,
     indent: usize = 0,
-    tir: *const TIR,
+    tir: *TIR,
 
-    pub fn init(writer: anytype, tir: *const TIR) TirPrinter {
+    pub fn init(writer: anytype, tir: *TIR) TirPrinter {
         return .{ .writer = writer, .tir = tir };
     }
 
     const TypeFmt = struct {
-        store: *const types.TypeStore,
+        store: *types.TypeStore,
         ty: types.TypeId,
         pub fn format(self: @This(), w: anytype) !void {
             try self.store.fmt(self.ty, w);

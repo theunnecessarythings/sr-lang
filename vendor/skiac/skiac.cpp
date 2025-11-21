@@ -19,6 +19,7 @@
 #include "include/core/SkRect.h"
 #include "include/core/SkSamplingOptions.h"
 #include "include/core/SkShader.h"
+#include "include/core/SkPicture.h"
 #include "include/core/SkTileMode.h"
 #include "include/core/SkColorFilter.h"
 #include "include/core/SkSurface.h"
@@ -35,11 +36,21 @@
 #include "include/effects/SkImageFilters.h"
 #include "include/effects/SkRuntimeEffect.h"
 #include "include/effects/SkGradientShader.h"
+#include "include/effects/SkPerlinNoiseShader.h"
 #include "include/effects/SkDashPathEffect.h"
 #include "include/effects/SkCornerPathEffect.h"
 #include "include/effects/SkDiscretePathEffect.h"
 #include "include/effects/SkBlurMaskFilter.h"
 #include <optional>
+
+static SkTileMode toTileMode(skiac_sk_tile_mode_t m) {
+  switch (m) {
+    case SK_TILEMODE_REPEAT: return SkTileMode::kRepeat;
+    case SK_TILEMODE_MIRROR: return SkTileMode::kMirror;
+    case SK_TILEMODE_DECAL:  return SkTileMode::kDecal;
+    case SK_TILEMODE_CLAMP: default: return SkTileMode::kClamp;
+  }
+}
 
 //=================================================================================================
 // Opaque Type Implementations
@@ -100,6 +111,18 @@ struct skiac_sk_path_effect_t { SkPathEffect *pe; };
 struct skiac_sk_mask_filter_t { SkMaskFilter *mf; };
 struct skiac_sk_runtime_effect_t { SkRuntimeEffect *e; };
 
+struct skiac_sk_picture_t {
+  SkPicture *picture;
+};
+
+struct skiac_sk_runtime_effect_builder_t {
+  SkRuntimeEffectBuilder *builder;
+};
+
+struct skiac_sk_blender_t {
+  SkBlender *blender;
+};
+
 extern "C" {
 
 //=================================================================================================
@@ -111,6 +134,50 @@ extern "C" {
 const GrGLInterface *
 skiac_gr_gl_make_assembled_interface(void *ctx, GrGLGetProc get_proc) {
   return GrGLMakeAssembledInterface(ctx, get_proc).release();
+}
+
+//=================================================================================================
+// Shaders
+//=================================================================================================
+skiac_sk_shader_t* skiac_sk_shader_make_radial_gradient(const skiac_point_t* center_in, float radius, const uint32_t colors_in[], const float pos_in[], int count, skiac_sk_tile_mode_t tile_mode, uint32_t flags) {
+  SkPoint center = SkPoint::Make(center_in->x, center_in->y);
+  std::vector<SkColor> colors(count);
+  for (int i = 0; i < count; ++i) {
+    colors[i] = colors_in[i];
+  }
+  const SkScalar* sk_pos = pos_in;
+  auto shader = SkGradientShader::MakeRadial(center, radius, colors.data(), sk_pos, count, toTileMode(tile_mode), flags, nullptr);
+  return shader ? new skiac_sk_shader_t{shader.release()} : nullptr;
+}
+
+// Convenience: fixed 2-stop radial gradient
+skiac_sk_shader_t* skiac_sk_shader_make_radial_simple(float cx, float cy, float radius, uint32_t c0, uint32_t c1, skiac_sk_tile_mode_t tile_mode) {
+  SkPoint center = SkPoint::Make(cx, cy);
+  SkColor colors[2] = {c0, c1};
+  auto shader = SkGradientShader::MakeRadial(center, radius, colors, nullptr, 2, toTileMode(tile_mode), 0, nullptr);
+  return shader ? new skiac_sk_shader_t{shader.release()} : nullptr;
+}
+
+skiac_sk_shader_t* skiac_sk_shader_make_two_point_conical(const skiac_point_t* start_in, float start_radius, const skiac_point_t* end_in, float end_radius, const uint32_t colors_in[], const float pos_in[], int count, skiac_sk_tile_mode_t tile_mode, uint32_t flags) {
+  SkPoint start = SkPoint::Make(start_in->x, start_in->y);
+  SkPoint end = SkPoint::Make(end_in->x, end_in->y);
+  std::vector<SkColor> colors(count);
+  for (int i = 0; i < count; ++i) {
+    colors[i] = colors_in[i];
+  }
+  const SkScalar* sk_pos = pos_in;
+  auto shader = SkGradientShader::MakeTwoPointConical(start, start_radius, end, end_radius, colors.data(), sk_pos, count, toTileMode(tile_mode), flags, nullptr);
+  return shader ? new skiac_sk_shader_t{shader.release()} : nullptr;
+}
+
+skiac_sk_shader_t* skiac_sk_shader_make_sweep(float cx, float cy, const uint32_t colors_in[], const float pos_in[], int count, skiac_sk_tile_mode_t mode, float start_angle, float end_angle, uint32_t flags) {
+  std::vector<SkColor> colors(count);
+  for (int i = 0; i < count; ++i) {
+    colors[i] = colors_in[i];
+  }
+  const SkScalar* sk_pos = pos_in;
+  auto shader = SkGradientShader::MakeSweep(cx, cy, colors.data(), sk_pos, count, toTileMode(mode), start_angle, end_angle, flags, nullptr);
+  return shader ? new skiac_sk_shader_t{shader.release()} : nullptr;
 }
 
 void skiac_gr_gl_interface_unref(const GrGLInterface *interface) {
@@ -735,6 +802,14 @@ void skiac_sk_image_unref(skiac_sk_image_t *image) {
   }
 }
 
+void skiac_sk_picture_unref(skiac_sk_picture_t *picture) {
+  if (picture) {
+    if (picture->picture)
+      picture->picture->unref();
+    delete picture;
+  }
+}
+
 //=================================================================================================
 // SkFont
 //=================================================================================================
@@ -954,6 +1029,49 @@ uint32_t skiac_sk_color_set_argb(uint8_t a, uint8_t r, uint8_t g, uint8_t b) {
   return SkColorSetARGB(a, r, g, b);
 }
 
+// SkMatrix
+void skiac_matrix_set_identity(skiac_matrix_t* out_matrix) {
+    SkMatrix m;
+    m.setIdentity();
+    out_matrix->m00 = m.get(0); out_matrix->m01 = m.get(1); out_matrix->m02 = m.get(2);
+    out_matrix->m10 = m.get(3); out_matrix->m11 = m.get(4); out_matrix->m12 = m.get(5);
+    out_matrix->m20 = m.get(6); out_matrix->m21 = m.get(7); out_matrix->m22 = m.get(8);
+}
+
+void skiac_matrix_set_translate(skiac_matrix_t* out_matrix, float dx, float dy) {
+    SkMatrix m;
+    m.setTranslate(dx, dy);
+    out_matrix->m00 = m.get(0); out_matrix->m01 = m.get(1); out_matrix->m02 = m.get(2);
+    out_matrix->m10 = m.get(3); out_matrix->m11 = m.get(4); out_matrix->m12 = m.get(5);
+    out_matrix->m20 = m.get(6); out_matrix->m21 = m.get(7); out_matrix->m22 = m.get(8);
+}
+
+void skiac_matrix_set_scale(skiac_matrix_t* out_matrix, float sx, float sy) {
+    SkMatrix m;
+    m.setScale(sx, sy);
+    out_matrix->m00 = m.get(0); out_matrix->m01 = m.get(1); out_matrix->m02 = m.get(2);
+    out_matrix->m10 = m.get(3); out_matrix->m11 = m.get(4); out_matrix->m12 = m.get(5);
+    out_matrix->m20 = m.get(6); out_matrix->m21 = m.get(7); out_matrix->m22 = m.get(8);
+}
+
+void skiac_matrix_set_rotate(skiac_matrix_t* out_matrix, float degrees) {
+    SkMatrix m;
+    m.setRotate(degrees);
+    out_matrix->m00 = m.get(0); out_matrix->m01 = m.get(1); out_matrix->m02 = m.get(2);
+    out_matrix->m10 = m.get(3); out_matrix->m11 = m.get(4); out_matrix->m12 = m.get(5);
+    out_matrix->m20 = m.get(6); out_matrix->m21 = m.get(7); out_matrix->m22 = m.get(8);
+}
+
+void skiac_matrix_concat(skiac_matrix_t* out_matrix, const skiac_matrix_t* a, const skiac_matrix_t* b) {
+    SkMatrix sk_a, sk_b, sk_out;
+    sk_a.setAll(a->m00, a->m01, a->m02, a->m10, a->m11, a->m12, a->m20, a->m21, a->m22);
+    sk_b.setAll(b->m00, b->m01, b->m02, b->m10, b->m11, b->m12, b->m20, b->m21, b->m22);
+    sk_out.setConcat(sk_a, sk_b);
+    out_matrix->m00 = sk_out.get(0); out_matrix->m01 = sk_out.get(1); out_matrix->m02 = sk_out.get(2);
+    out_matrix->m10 = sk_out.get(3); out_matrix->m11 = sk_out.get(4); out_matrix->m12 = sk_out.get(5);
+    out_matrix->m20 = sk_out.get(6); out_matrix->m21 = sk_out.get(7); out_matrix->m22 = sk_out.get(8);
+}
+
 } // extern "C"
 
 // ============================= RuntimeEffect (SkSL) =============================
@@ -983,6 +1101,47 @@ skiac_sk_shader_t *skiac_runtime_effect_make_shader(const skiac_sk_runtime_effec
   return s ? new skiac_sk_shader_t{s} : nullptr;
 }
 
+skiac_sk_runtime_effect_builder_t* skiac_sk_runtime_effect_builder_create(skiac_sk_runtime_effect_t* effect) {
+  if (!effect || !effect->e) return nullptr;
+  return new skiac_sk_runtime_effect_builder_t{new SkRuntimeEffectBuilder(sk_ref_sp(effect->e))};
+}
+
+void skiac_sk_runtime_effect_builder_unref(skiac_sk_runtime_effect_builder_t* builder) {
+  if (builder) {
+    delete builder->builder;
+    delete builder;
+  }
+}
+
+void skiac_sk_runtime_effect_builder_set_uniform_float(skiac_sk_runtime_effect_builder_t* builder, const char* name, float value) {
+  if (!builder || !builder->builder || !name) return;
+  builder->builder->uniform(name) = value;
+}
+
+void skiac_sk_runtime_effect_builder_set_child_shader(skiac_sk_runtime_effect_builder_t* builder, const char* name, skiac_sk_shader_t* shader) {
+  if (!builder || !builder->builder || !name) return;
+  builder->builder->child(name) = sk_ref_sp(shader->shader);
+}
+
+skiac_sk_shader_t* skiac_sk_runtime_effect_builder_make_shader(skiac_sk_runtime_effect_builder_t* builder) {
+  if (!builder || !builder->builder) return nullptr;
+  auto s = builder->builder->makeShader().release();
+  return s ? new skiac_sk_shader_t{s} : nullptr;
+}
+
+skiac_sk_color_filter_t* skiac_sk_runtime_effect_builder_make_color_filter(skiac_sk_runtime_effect_builder_t* builder) {
+  if (!builder || !builder->builder) return nullptr;
+  auto cf = builder->builder->makeColorFilter().release();
+  return cf ? new skiac_sk_color_filter_t{cf} : nullptr;
+}
+
+skiac_sk_blender_t* skiac_sk_runtime_effect_builder_make_blender(skiac_sk_runtime_effect_builder_t* builder) {
+  if (!builder || !builder->builder) return nullptr;
+  auto b = builder->builder->makeBlender().release();
+  return b ? new skiac_sk_blender_t{b} : nullptr;
+}
+
+
 } // extern "C"
 
 // ============================= Effects / Styles impls =============================
@@ -990,6 +1149,7 @@ extern "C" {
 
 void skiac_sk_shader_unref(skiac_sk_shader_t *shader) { if (shader) { if (shader->shader) shader->shader->unref(); delete shader; } }
 void skiac_sk_color_filter_unref(skiac_sk_color_filter_t *cf) { if (cf) { if (cf->cf) cf->cf->unref(); delete cf; } }
+void skiac_sk_blender_unref(skiac_sk_blender_t *blender) { if (blender) { if (blender->blender) blender->blender->unref(); delete blender; } }
 void skiac_sk_image_filter_unref(skiac_sk_image_filter_t *f) { if (f) { if (f->f) f->f->unref(); delete f; } }
 void skiac_sk_path_effect_unref(skiac_sk_path_effect_t *pe) { if (pe) { if (pe->pe) pe->pe->unref(); delete pe; } }
 void skiac_sk_mask_filter_unref(skiac_sk_mask_filter_t *mf) { if (mf) { if (mf->mf) mf->mf->unref(); delete mf; } }
@@ -1006,40 +1166,360 @@ skiac_sk_color_filter_t *skiac_sk_color_filter_make_matrix(const float row_major
 }
 
 // Image filters
-skiac_sk_image_filter_t *skiac_sk_image_filter_make_blur(float sx, float sy) {
-  auto f = SkImageFilters::Blur(sx, sy, SkTileMode::kDecal, nullptr).release();
-  return f ? new skiac_sk_image_filter_t{f} : nullptr;
-}
-
-skiac_sk_image_filter_t *skiac_sk_image_filter_make_color_filter(skiac_sk_color_filter_t *cf) {
-  if (!cf) return nullptr;
-  auto f = SkImageFilters::ColorFilter(sk_ref_sp(cf->cf), nullptr).release();
-  return f ? new skiac_sk_image_filter_t{f} : nullptr;
-}
-
-// Shaders
-static SkTileMode toTileMode(skiac_sk_tile_mode_t m) {
-  switch (m) {
-    case SK_TILEMODE_REPEAT: return SkTileMode::kRepeat;
-    case SK_TILEMODE_MIRROR: return SkTileMode::kMirror;
-    case SK_TILEMODE_DECAL:  return SkTileMode::kDecal;
-    case SK_TILEMODE_CLAMP: default: return SkTileMode::kClamp;
+skiac_sk_image_filter_t *skiac_sk_image_filter_make_blur(float sx, float sy, skiac_sk_tile_mode_t tile_mode, skiac_sk_image_filter_t* input, const skiac_rect_t* crop_rect) {
+  sk_sp<SkImageFilter> input_filter = input ? sk_ref_sp(input->f) : nullptr;
+  SkImageFilters::CropRect crop;
+  if (crop_rect) {
+    crop = SkRect::MakeXYWH(crop_rect->x, crop_rect->y, crop_rect->width, crop_rect->height);
   }
+  auto f = SkImageFilters::Blur(sx, sy, toTileMode(tile_mode), input_filter, crop).release();
+  return f ? new skiac_sk_image_filter_t{f} : nullptr;
 }
+
+skiac_sk_image_filter_t *skiac_sk_image_filter_make_color_filter(skiac_sk_color_filter_t *cf, skiac_sk_image_filter_t* input, const skiac_rect_t* crop_rect) {
+  if (!cf) return nullptr;
+  sk_sp<SkImageFilter> input_filter = input ? sk_ref_sp(input->f) : nullptr;
+  SkImageFilters::CropRect crop;
+  if (crop_rect) {
+    crop = SkRect::MakeXYWH(crop_rect->x, crop_rect->y, crop_rect->width, crop_rect->height);
+  }
+  auto f = SkImageFilters::ColorFilter(sk_ref_sp(cf->cf), input_filter, crop).release();
+  return f ? new skiac_sk_image_filter_t{f} : nullptr;
+}
+
+skiac_sk_image_filter_t* skiac_sk_image_filter_make_merge(skiac_sk_image_filter_t** const filters, int count, const skiac_rect_t* crop_rect) {
+  std::vector<sk_sp<SkImageFilter>> sk_filters;
+  for (int i = 0; i < count; ++i) {
+    sk_filters.push_back(filters[i] ? sk_ref_sp(filters[i]->f) : nullptr);
+  }
+
+  SkImageFilters::CropRect crop;
+  if (crop_rect) {
+    crop = SkRect::MakeXYWH(crop_rect->x, crop_rect->y, crop_rect->width, crop_rect->height);
+  }
+
+  auto f = SkImageFilters::Merge(sk_filters.data(), count, crop).release();
+  return f ? new skiac_sk_image_filter_t{f} : nullptr;
+}
+
+skiac_sk_image_filter_t* skiac_sk_image_filter_make_offset(float dx, float dy, skiac_sk_image_filter_t* input, const skiac_rect_t* crop_rect) {
+  sk_sp<SkImageFilter> input_filter = input ? sk_ref_sp(input->f) : nullptr;
+  SkImageFilters::CropRect crop;
+  if (crop_rect) {
+    crop = SkRect::MakeXYWH(crop_rect->x, crop_rect->y, crop_rect->width, crop_rect->height);
+  }
+  auto f = SkImageFilters::Offset(dx, dy, input_filter, crop).release();
+  return f ? new skiac_sk_image_filter_t{f} : nullptr;
+}
+
+skiac_sk_image_filter_t* skiac_sk_image_filter_make_drop_shadow(float dx, float dy, float sigma_x, float sigma_y, uint32_t color, skiac_sk_image_filter_t* input, const skiac_rect_t* crop_rect) {
+  sk_sp<SkImageFilter> input_filter = input ? sk_ref_sp(input->f) : nullptr;
+  SkImageFilters::CropRect crop;
+  if (crop_rect) {
+    crop = SkRect::MakeXYWH(crop_rect->x, crop_rect->y, crop_rect->width, crop_rect->height);
+  }
+  auto f = SkImageFilters::DropShadow(dx, dy, sigma_x, sigma_y, (SkColor)color, input_filter, crop).release();
+  return f ? new skiac_sk_image_filter_t{f} : nullptr;
+}
+
+skiac_sk_image_filter_t* skiac_sk_image_filter_make_drop_shadow_only(float dx, float dy, float sigma_x, float sigma_y, uint32_t color, skiac_sk_image_filter_t* input, const skiac_rect_t* crop_rect) {
+  sk_sp<SkImageFilter> input_filter = input ? sk_ref_sp(input->f) : nullptr;
+  SkImageFilters::CropRect crop;
+  if (crop_rect) {
+    crop = SkRect::MakeXYWH(crop_rect->x, crop_rect->y, crop_rect->width, crop_rect->height);
+  }
+  auto f = SkImageFilters::DropShadowOnly(dx, dy, sigma_x, sigma_y, (SkColor)color, input_filter, crop).release();
+  return f ? new skiac_sk_image_filter_t{f} : nullptr;
+}
+
+// Morphology filter effects
+skiac_sk_image_filter_t* skiac_sk_image_filter_make_dilate(float radius_x, float radius_y, skiac_sk_image_filter_t* input, const skiac_rect_t* crop_rect) {
+  sk_sp<SkImageFilter> input_filter = input ? sk_ref_sp(input->f) : nullptr;
+  SkImageFilters::CropRect crop;
+  if (crop_rect) {
+    crop = SkRect::MakeXYWH(crop_rect->x, crop_rect->y, crop_rect->width, crop_rect->height);
+  }
+  auto f = SkImageFilters::Dilate(radius_x, radius_y, input_filter, crop).release();
+  return f ? new skiac_sk_image_filter_t{f} : nullptr;
+}
+
+skiac_sk_image_filter_t* skiac_sk_image_filter_make_erode(float radius_x, float radius_y, skiac_sk_image_filter_t* input, const skiac_rect_t* crop_rect) {
+  sk_sp<SkImageFilter> input_filter = input ? sk_ref_sp(input->f) : nullptr;
+  SkImageFilters::CropRect crop;
+  if (crop_rect) {
+    crop = SkRect::MakeXYWH(crop_rect->x, crop_rect->y, crop_rect->width, crop_rect->height);
+  }
+  auto f = SkImageFilters::Erode(radius_x, radius_y, input_filter, crop).release();
+  return f ? new skiac_sk_image_filter_t{f} : nullptr;
+}
+
+// Other image filters
+skiac_sk_image_filter_t* skiac_sk_image_filter_make_compose(skiac_sk_image_filter_t* outer, skiac_sk_image_filter_t* inner) {
+  sk_sp<SkImageFilter> outer_filter = outer ? sk_ref_sp(outer->f) : nullptr;
+  sk_sp<SkImageFilter> inner_filter = inner ? sk_ref_sp(inner->f) : nullptr;
+  auto f = SkImageFilters::Compose(outer_filter, inner_filter).release();
+  return f ? new skiac_sk_image_filter_t{f} : nullptr;
+}
+
+skiac_sk_image_filter_t* skiac_sk_image_filter_make_tile(const skiac_rect_t* src, const skiac_rect_t* dst, skiac_sk_image_filter_t* input) {
+  SkRect src_rect = SkRect::MakeXYWH(src->x, src->y, src->width, src->height);
+  SkRect dst_rect = SkRect::MakeXYWH(dst->x, dst->y, dst->width, dst->height);
+  sk_sp<SkImageFilter> input_filter = input ? sk_ref_sp(input->f) : nullptr;
+  auto f = SkImageFilters::Tile(src_rect, dst_rect, input_filter).release();
+  return f ? new skiac_sk_image_filter_t{f} : nullptr;
+}
+
+skiac_sk_image_filter_t* skiac_sk_image_filter_make_arithmetic(float k1, float k2, float k3, float k4, bool enforce_pm_color, skiac_sk_image_filter_t* background, skiac_sk_image_filter_t* foreground, const skiac_rect_t* crop_rect) {
+  sk_sp<SkImageFilter> background_filter = background ? sk_ref_sp(background->f) : nullptr;
+  sk_sp<SkImageFilter> foreground_filter = foreground ? sk_ref_sp(foreground->f) : nullptr;
+  SkImageFilters::CropRect crop;
+  if (crop_rect) {
+    crop = SkRect::MakeXYWH(crop_rect->x, crop_rect->y, crop_rect->width, crop_rect->height);
+  }
+  auto f = SkImageFilters::Arithmetic(k1, k2, k3, k4, enforce_pm_color, background_filter, foreground_filter, crop).release();
+  return f ? new skiac_sk_image_filter_t{f} : nullptr;
+}
+
+skiac_sk_image_filter_t* skiac_sk_image_filter_make_blend(skiac_sk_blend_mode_t mode, skiac_sk_image_filter_t* background, skiac_sk_image_filter_t* foreground, const skiac_rect_t* crop_rect) {
+    sk_sp<SkImageFilter> background_filter = background ? sk_ref_sp(background->f) : nullptr;
+    sk_sp<SkImageFilter> foreground_filter = foreground ? sk_ref_sp(foreground->f) : nullptr;
+    SkImageFilters::CropRect crop;
+    if (crop_rect) {
+        crop = SkRect::MakeXYWH(crop_rect->x, crop_rect->y, crop_rect->width, crop_rect->height);
+    }
+    auto f = SkImageFilters::Blend((SkBlendMode)mode, background_filter, foreground_filter, crop).release();
+    return f ? new skiac_sk_image_filter_t{f} : nullptr;
+}
+
+skiac_sk_image_filter_t* skiac_sk_image_filter_make_crop(const skiac_rect_t* rect, skiac_sk_tile_mode_t tile_mode, skiac_sk_image_filter_t* input) {
+    SkRect sk_rect = SkRect::MakeXYWH(rect->x, rect->y, rect->width, rect->height);
+    sk_sp<SkImageFilter> input_filter = input ? sk_ref_sp(input->f) : nullptr;
+    auto f = SkImageFilters::Crop(sk_rect, toTileMode(tile_mode), input_filter).release();
+    return f ? new skiac_sk_image_filter_t{f} : nullptr;
+}
+
+SkColorChannel toSkColorChannel(skiac_sk_color_channel_t channel) {
+    switch (channel) {
+        case SK_COLOR_CHANNEL_R: return SkColorChannel::kR;
+        case SK_COLOR_CHANNEL_G: return SkColorChannel::kG;
+        case SK_COLOR_CHANNEL_B: return SkColorChannel::kB;
+        case SK_COLOR_CHANNEL_A: return SkColorChannel::kA;
+    }
+}
+
+skiac_sk_image_filter_t* skiac_sk_image_filter_make_displacement_map(skiac_sk_color_channel_t x_channel_selector, skiac_sk_color_channel_t y_channel_selector, float scale, skiac_sk_image_filter_t* displacement, skiac_sk_image_filter_t* color, const skiac_rect_t* crop_rect) {
+    sk_sp<SkImageFilter> displacement_filter = displacement ? sk_ref_sp(displacement->f) : nullptr;
+    sk_sp<SkImageFilter> color_filter = color ? sk_ref_sp(color->f) : nullptr;
+    SkImageFilters::CropRect crop;
+    if (crop_rect) {
+        crop = SkRect::MakeXYWH(crop_rect->x, crop_rect->y, crop_rect->width, crop_rect->height);
+    }
+    auto f = SkImageFilters::DisplacementMap(toSkColorChannel(x_channel_selector), toSkColorChannel(y_channel_selector), scale, displacement_filter, color_filter, crop).release();
+    return f ? new skiac_sk_image_filter_t{f} : nullptr;
+}
+
+skiac_sk_image_filter_t* skiac_sk_image_filter_make_empty() {
+  auto f = SkImageFilters::Empty().release();
+  return f ? new skiac_sk_image_filter_t{f} : nullptr;
+}
+
+SkFilterMode toSkFilterMode(skiac_sk_filter_mode_t mode) {
+    switch (mode) {
+        case SK_FILTER_MODE_NEAREST: return SkFilterMode::kNearest;
+        case SK_FILTER_MODE_LINEAR: return SkFilterMode::kLinear;
+        case SK_FILTER_MODE_CUBIC:
+        default: return SkFilterMode::kLinear; // Fallback for cubic as it's not a direct enum in SkFilterMode
+    }
+}
+
+SkMipmapMode toSkMipmapMode(skiac_sk_mipmap_mode_t mode) {
+    switch (mode) {
+        case SK_MIPMAP_MODE_NONE: return SkMipmapMode::kNone;
+        case SK_MIPMAP_MODE_NEAREST: return SkMipmapMode::kNearest;
+        case SK_MIPMAP_MODE_LINEAR: return SkMipmapMode::kLinear;
+    }
+}
+
+skiac_sk_image_filter_t* skiac_sk_image_filter_make_image(skiac_sk_image_t* image, const skiac_rect_t* src_rect, const skiac_rect_t* dst_rect, const skiac_sk_sampling_options_t* sampling) {
+    if (!image) return nullptr;
+    SkRect sk_src_rect = SkRect::MakeXYWH(src_rect->x, src_rect->y, src_rect->width, src_rect->height);
+    SkRect sk_dst_rect = SkRect::MakeXYWH(dst_rect->x, dst_rect->y, dst_rect->width, dst_rect->height);
+    SkSamplingOptions sk_sampling(toSkFilterMode(sampling->filter_mode), toSkMipmapMode(sampling->mipmap_mode));
+    auto f = SkImageFilters::Image(sk_ref_sp(image->image), sk_src_rect, sk_dst_rect, sk_sampling).release();
+    return f ? new skiac_sk_image_filter_t{f} : nullptr;
+}
+
+skiac_sk_image_filter_t* skiac_sk_image_filter_make_magnifier(const skiac_rect_t* lens_bounds, float zoom_amount, float inset, const skiac_sk_sampling_options_t* sampling, skiac_sk_image_filter_t* input, const skiac_rect_t* crop_rect) {
+    SkRect sk_lens_bounds = SkRect::MakeXYWH(lens_bounds->x, lens_bounds->y, lens_bounds->width, lens_bounds->height);
+    SkSamplingOptions sk_sampling(toSkFilterMode(sampling->filter_mode), toSkMipmapMode(sampling->mipmap_mode));
+    sk_sp<SkImageFilter> input_filter = input ? sk_ref_sp(input->f) : nullptr;
+    SkImageFilters::CropRect crop;
+    if (crop_rect) {
+        crop = SkRect::MakeXYWH(crop_rect->x, crop_rect->y, crop_rect->width, crop_rect->height);
+    }
+    auto f = SkImageFilters::Magnifier(sk_lens_bounds, zoom_amount, inset, sk_sampling, input_filter, crop).release();
+    return f ? new skiac_sk_image_filter_t{f} : nullptr;
+}
+
+skiac_sk_image_filter_t* skiac_sk_image_filter_make_matrix_convolution(const skiac_isize_t* kernel_size, const float kernel[], float gain, float bias, const skiac_ipoint_t* kernel_offset, skiac_sk_tile_mode_t tile_mode, bool convolve_alpha, skiac_sk_image_filter_t* input, const skiac_rect_t* crop_rect) {
+    SkISize sk_kernel_size = SkISize::Make(kernel_size->width, kernel_size->height);
+    SkIPoint sk_kernel_offset = SkIPoint::Make(kernel_offset->x, kernel_offset->y);
+    sk_sp<SkImageFilter> input_filter = input ? sk_ref_sp(input->f) : nullptr;
+    SkImageFilters::CropRect crop;
+    if (crop_rect) {
+        crop = SkRect::MakeXYWH(crop_rect->x, crop_rect->y, crop_rect->width, crop_rect->height);
+    }
+    auto f = SkImageFilters::MatrixConvolution(sk_kernel_size, kernel, gain, bias, sk_kernel_offset, toTileMode(tile_mode), convolve_alpha, input_filter, crop).release();
+    return f ? new skiac_sk_image_filter_t{f} : nullptr;
+}
+
+skiac_sk_image_filter_t* skiac_sk_image_filter_make_matrix_transform(const skiac_matrix_t* matrix_in, const skiac_sk_sampling_options_t* sampling, skiac_sk_image_filter_t* input) {
+    SkMatrix sk_matrix;
+    sk_matrix.setAll(matrix_in->m00, matrix_in->m01, matrix_in->m02,
+                     matrix_in->m10, matrix_in->m11, matrix_in->m12,
+                     matrix_in->m20, matrix_in->m21, matrix_in->m22);
+    SkSamplingOptions sk_sampling(toSkFilterMode(sampling->filter_mode), toSkMipmapMode(sampling->mipmap_mode));
+    sk_sp<SkImageFilter> input_filter = input ? sk_ref_sp(input->f) : nullptr;
+    auto f = SkImageFilters::MatrixTransform(sk_matrix, sk_sampling, input_filter).release();
+    return f ? new skiac_sk_image_filter_t{f} : nullptr;
+}
+
+skiac_sk_image_filter_t* skiac_sk_image_filter_make_picture(skiac_sk_picture_t* pic, const skiac_rect_t* target_rect) {
+    if (!pic) return nullptr;
+    // Assuming SkPicture has a 'picture' member. Need to include "include/core/SkPicture.h"
+    SkRect sk_target_rect = SkRect::MakeXYWH(target_rect->x, target_rect->y, target_rect->width, target_rect->height);
+    auto f = SkImageFilters::Picture(sk_ref_sp(pic->picture), sk_target_rect).release();
+    return f ? new skiac_sk_image_filter_t{f} : nullptr;
+}
+
+skiac_sk_image_filter_t* skiac_sk_image_filter_make_shader(skiac_sk_shader_t* shader, const skiac_rect_t* crop_rect) {
+    if (!shader) return nullptr;
+    SkImageFilters::CropRect crop;
+    if (crop_rect) {
+        crop = SkRect::MakeXYWH(crop_rect->x, crop_rect->y, crop_rect->width, crop_rect->height);
+    }
+    auto f = SkImageFilters::Shader(sk_ref_sp(shader->shader), crop).release();
+    return f ? new skiac_sk_image_filter_t{f} : nullptr;
+}
+
+
+
+
+
+// Lighting filter effects
+skiac_sk_image_filter_t* skiac_sk_image_filter_make_distant_lit_diffuse(const skiac_point3_t* direction, uint32_t light_color, float surface_scale, float kd, skiac_sk_image_filter_t* input, const skiac_rect_t* crop_rect) {
+    SkPoint3 sk_direction = SkPoint3::Make(direction->x, direction->y, direction->z);
+    sk_sp<SkImageFilter> input_filter = input ? sk_ref_sp(input->f) : nullptr;
+    SkImageFilters::CropRect crop;
+    if (crop_rect) {
+        crop = SkRect::MakeXYWH(crop_rect->x, crop_rect->y, crop_rect->width, crop_rect->height);
+    }
+    auto f = SkImageFilters::DistantLitDiffuse(sk_direction, light_color, surface_scale, kd, input_filter, crop).release();
+    return f ? new skiac_sk_image_filter_t{f} : nullptr;
+}
+
+skiac_sk_image_filter_t* skiac_sk_image_filter_make_point_lit_diffuse(const skiac_point3_t* location, uint32_t light_color, float surface_scale, float kd, skiac_sk_image_filter_t* input, const skiac_rect_t* crop_rect) {
+    SkPoint3 sk_location = SkPoint3::Make(location->x, location->y, location->z);
+    sk_sp<SkImageFilter> input_filter = input ? sk_ref_sp(input->f) : nullptr;
+    SkImageFilters::CropRect crop;
+    if (crop_rect) {
+        crop = SkRect::MakeXYWH(crop_rect->x, crop_rect->y, crop_rect->width, crop_rect->height);
+    }
+    auto f = SkImageFilters::PointLitDiffuse(sk_location, light_color, surface_scale, kd, input_filter, crop).release();
+    return f ? new skiac_sk_image_filter_t{f} : nullptr;
+}
+
+skiac_sk_image_filter_t* skiac_sk_image_filter_make_spot_lit_diffuse(const skiac_point3_t* location, const skiac_point3_t* target, float falloff_exponent, float cutoff_angle, uint32_t light_color, float surface_scale, float kd, skiac_sk_image_filter_t* input, const skiac_rect_t* crop_rect) {
+    SkPoint3 sk_location = SkPoint3::Make(location->x, location->y, location->z);
+    SkPoint3 sk_target = SkPoint3::Make(target->x, target->y, target->z);
+    sk_sp<SkImageFilter> input_filter = input ? sk_ref_sp(input->f) : nullptr;
+    SkImageFilters::CropRect crop;
+    if (crop_rect) {
+        crop = SkRect::MakeXYWH(crop_rect->x, crop_rect->y, crop_rect->width, crop_rect->height);
+    }
+    auto f = SkImageFilters::SpotLitDiffuse(sk_location, sk_target, falloff_exponent, cutoff_angle, light_color, surface_scale, kd, input_filter, crop).release();
+    return f ? new skiac_sk_image_filter_t{f} : nullptr;
+}
+
+skiac_sk_image_filter_t* skiac_sk_image_filter_make_distant_lit_specular(const skiac_point3_t* direction, uint32_t light_color, float surface_scale, float ks, float shininess, skiac_sk_image_filter_t* input, const skiac_rect_t* crop_rect) {
+    SkPoint3 sk_direction = SkPoint3::Make(direction->x, direction->y, direction->z);
+    sk_sp<SkImageFilter> input_filter = input ? sk_ref_sp(input->f) : nullptr;
+    SkImageFilters::CropRect crop;
+    if (crop_rect) {
+        crop = SkRect::MakeXYWH(crop_rect->x, crop_rect->y, crop_rect->width, crop_rect->height);
+    }
+    auto f = SkImageFilters::DistantLitSpecular(sk_direction, light_color, surface_scale, ks, shininess, input_filter, crop).release();
+    return f ? new skiac_sk_image_filter_t{f} : nullptr;
+}
+
+skiac_sk_image_filter_t* skiac_sk_image_filter_make_point_lit_specular(const skiac_point3_t* location, uint32_t light_color, float surface_scale, float ks, float shininess, skiac_sk_image_filter_t* input, const skiac_rect_t* crop_rect) {
+    SkPoint3 sk_location = SkPoint3::Make(location->x, location->y, location->z);
+    sk_sp<SkImageFilter> input_filter = input ? sk_ref_sp(input->f) : nullptr;
+    SkImageFilters::CropRect crop;
+    if (crop_rect) {
+        crop = SkRect::MakeXYWH(crop_rect->x, crop_rect->y, crop_rect->width, crop_rect->height);
+    }
+    auto f = SkImageFilters::PointLitSpecular(sk_location, light_color, surface_scale, ks, shininess, input_filter, crop).release();
+    return f ? new skiac_sk_image_filter_t{f} : nullptr;
+}
+
+skiac_sk_image_filter_t* skiac_sk_image_filter_make_spot_lit_specular(const skiac_point3_t* location, const skiac_point3_t* target, float falloff_exponent, float cutoff_angle, uint32_t light_color, float surface_scale, float ks, float shininess, skiac_sk_image_filter_t* input, const skiac_rect_t* crop_rect) {
+    SkPoint3 sk_location = SkPoint3::Make(location->x, location->y, location->z);
+    SkPoint3 sk_target = SkPoint3::Make(target->x, target->y, target->z);
+    sk_sp<SkImageFilter> input_filter = input ? sk_ref_sp(input->f) : nullptr;
+    SkImageFilters::CropRect crop;
+    if (crop_rect) {
+        crop = SkRect::MakeXYWH(crop_rect->x, crop_rect->y, crop_rect->width, crop_rect->height);
+    }
+    auto f = SkImageFilters::SpotLitSpecular(sk_location, sk_target, falloff_exponent, cutoff_angle, light_color, surface_scale, ks, shininess, input_filter, crop).release();
+    return f ? new skiac_sk_image_filter_t{f} : nullptr;
+}
+
+
+
+
+
+
+
 
 skiac_sk_shader_t *skiac_sk_shader_make_solid_color(uint32_t rgba) {
   auto s = SkShaders::Color(rgba).release();
   return s ? new skiac_sk_shader_t{s} : nullptr;
 }
 
-skiac_sk_shader_t *skiac_sk_shader_make_linear_gradient(float x0, float y0, float x1, float y1,
-                                                        uint32_t c0, uint32_t c1,
-                                                        skiac_sk_tile_mode_t tile_mode) {
-  SkPoint pts[2] = { {x0, y0}, {x1, y1} };
-  SkColor colors[2] = { c0, c1 };
-  auto s = SkGradientShader::MakeLinear(pts, colors, nullptr, 2, toTileMode(tile_mode)).release();
-  return s ? new skiac_sk_shader_t{s} : nullptr;
+skiac_sk_shader_t* skiac_sk_shader_make_linear_gradient(const skiac_point_t* pts_in, const uint32_t colors_in[], const float pos_in[], int count, skiac_sk_tile_mode_t tile_mode, uint32_t flags) {
+  SkPoint pts[2] = { {pts_in[0].x, pts_in[0].y}, {pts_in[1].x, pts_in[1].y} };
+  std::vector<SkColor> colors(count);
+  for (int i = 0; i < count; ++i) {
+    colors[i] = colors_in[i];
+  }
+  const SkScalar* sk_pos = pos_in;
+  auto shader = SkGradientShader::MakeLinear(pts, colors.data(), sk_pos, count, toTileMode(tile_mode), flags, nullptr);
+  return shader ? new skiac_sk_shader_t{shader.release()} : nullptr;
 }
+
+skiac_sk_shader_t* skiac_sk_shader_make_fractal_noise(float base_frequency_x, float base_frequency_y, int num_octaves, float seed, const skiac_isize_t* tile_size) {
+    const SkISize* sk_tile_size = nullptr;
+    SkISize temp_tile_size;
+    if (tile_size) {
+        temp_tile_size = SkISize::Make(tile_size->width, tile_size->height);
+        sk_tile_size = &temp_tile_size;
+    }
+    auto s = SkShaders::MakeFractalNoise(base_frequency_x, base_frequency_y, num_octaves, seed, sk_tile_size).release();
+    return s ? new skiac_sk_shader_t{s} : nullptr;
+}
+
+skiac_sk_shader_t* skiac_sk_shader_make_turbulence(float base_frequency_x, float base_frequency_y, int num_octaves, float seed, const skiac_isize_t* tile_size) {
+    const SkISize* sk_tile_size = nullptr;
+    SkISize temp_tile_size;
+    if (tile_size) {
+        temp_tile_size = SkISize::Make(tile_size->width, tile_size->height);
+        sk_tile_size = &temp_tile_size;
+    }
+    auto s = SkShaders::MakeTurbulence(base_frequency_x, base_frequency_y, num_octaves, seed, sk_tile_size).release();
+    return s ? new skiac_sk_shader_t{s} : nullptr;
+}
+
 
 // Path effects
 skiac_sk_path_effect_t *skiac_sk_path_effect_make_dash(const float *intervals, int count, float phase) {

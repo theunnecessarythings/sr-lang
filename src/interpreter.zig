@@ -69,7 +69,7 @@ pub const BindingSnapshot = struct {
 pub const Interpreter = struct {
     allocator: std.mem.Allocator,
     ast: *ast.Ast,
-    symtab: ?*const @import("symbols.zig").SymbolStore,
+    symtab: ?*@import("symbols.zig").SymbolStore,
     bindings: std.ArrayList(Binding),
     method_table: MethodMap,
     specializations: std.AutoHashMap(u128, FunctionSpecializationEntry),
@@ -89,7 +89,7 @@ pub const Interpreter = struct {
         InvalidIndexAccess,
     };
 
-    pub fn init(allocator: std.mem.Allocator, ast_unit: *ast.Ast, symtab: ?*const @import("symbols.zig").SymbolStore) anyerror!Interpreter {
+    pub fn init(allocator: std.mem.Allocator, ast_unit: *ast.Ast, symtab: ?*@import("symbols.zig").SymbolStore) anyerror!Interpreter {
         var interp = Interpreter{
             .allocator = allocator,
             .ast = ast_unit,

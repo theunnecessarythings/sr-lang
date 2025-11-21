@@ -78,19 +78,19 @@ fn parseOneExpr(gpa: std.mem.Allocator, context: *Context, src: [:0]const u8) !s
     return .{ .ast = ast, .id = decl_row.rhs };
 }
 
-fn expectKind(ast: *const cst.CST, id: cst.ExprId, k: cst.ExprKind) !void {
+fn expectKind(ast: *cst.CST, id: cst.ExprId, k: cst.ExprKind) !void {
     const got = ast.exprs.index.kinds.items[id.toRaw()];
     try testing.expectEqual(k, got);
 }
 
-fn expectLit(ast: *const cst.CST, id: cst.ExprId, s: []const u8) !void {
+fn expectLit(ast: *cst.CST, id: cst.ExprId, s: []const u8) !void {
     try expectKind(ast, id, .Literal);
     const row = ast.exprs.get(.Literal, id);
     const got = ast.exprs.strs.get(row.value);
     try testing.expectEqualStrings(s, got);
 }
 
-fn expectInfix(ast: *const cst.CST, id: cst.ExprId, op: cst.InfixOp) !struct { left: cst.ExprId, right: cst.ExprId } {
+fn expectInfix(ast: *cst.CST, id: cst.ExprId, op: cst.InfixOp) !struct { left: cst.ExprId, right: cst.ExprId } {
     try expectKind(ast, id, .Infix);
     const row = ast.exprs.get(.Infix, id);
     try testing.expectEqual(op, row.op);

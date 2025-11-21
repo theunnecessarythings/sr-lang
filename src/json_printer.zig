@@ -5,11 +5,11 @@ const JsonStream = std.json.Stream;
 
 pub const JsonPrinter = struct {
     stream: std.json.Stringify,
-    exprs: *const ast.ExprStore,
-    stmts: *const ast.StmtStore,
-    pats: *const ast.PatternStore,
+    exprs: *ast.ExprStore,
+    stmts: *ast.StmtStore,
+    pats: *ast.PatternStore,
 
-    pub fn init(writer: anytype, exprs: *const ast.ExprStore, stmts: *const ast.StmtStore, pats: *const ast.PatternStore) JsonPrinter {
+    pub fn init(writer: anytype, exprs: *ast.ExprStore, stmts: *ast.StmtStore, pats: *ast.PatternStore) JsonPrinter {
         return .{
             .stream = .{ .writer = writer, .options = .{ .whitespace = .indent_2 } },
             .exprs = exprs,

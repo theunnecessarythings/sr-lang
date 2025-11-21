@@ -99,7 +99,13 @@ pub fn Pool(comptime IdT: type) type {
             return .{ .start = start, .len = @intCast(items.len) };
         }
         pub fn slice(self: *const @This(), r: RangeOf(IdT)) []const IdT {
-            return self.data.items[r.start .. r.start + r.len];
+            const start: usize = @intCast(r.start);
+            const len: usize = @intCast(r.len);
+            const end = start + len;
+            if (end > self.data.items.len) {
+                std.debug.panic("Pool.slice range out of bounds: {} + {} > {}", .{ start, len, self.data.items.len });
+            }
+            return self.data.items[start..end];
         }
         pub fn deinit(self: *@This(), gpa: std.mem.Allocator) void {
             self.data.deinit(gpa);
@@ -224,14 +230,19 @@ pub fn Table(comptime T: type) type {
     } else {
         return struct {
             list: std.MultiArrayList(T) = .{},
+            mutex: std.Thread.Mutex = .{},
 
             pub fn add(self: *@This(), gpa: std.mem.Allocator, row: T) Index(T) {
+                self.mutex.lock();
+                defer self.mutex.unlock();
                 const idx: u32 = @intCast(self.list.len);
                 _ = self.list.addOne(gpa) catch @panic("OOM");
                 self.list.set(idx, row);
                 return .{ .index = idx };
             }
-            pub fn get(self: *const @This(), idx: Index(T)) T {
+            pub fn get(self: *@This(), idx: Index(T)) T {
+                self.mutex.lock();
+                defer self.mutex.unlock();
                 return self.list.get(idx.toRaw());
             }
 
@@ -248,6 +259,8 @@ pub fn Table(comptime T: type) type {
                 return self.list.items(@as(F, @enumFromInt(idx)));
             }
             pub fn deinit(self: *@This(), gpa: std.mem.Allocator) void {
+                self.mutex.lock();
+                defer self.mutex.unlock();
                 self.list.deinit(gpa);
             }
         };
@@ -831,11 +844,11 @@ pub const ExprStore = struct {
         return self.index.newId(self.gpa, K, r.toRaw(), ExprId);
     }
 
-    pub fn get(self: *const @This(), comptime K: ExprKind, id: ExprId) RowT(K) {
+    pub fn get(self: *@This(), comptime K: ExprKind, id: ExprId) RowT(K) {
         std.debug.assert(self.index.kinds.items[id.toRaw()] == K);
         const row = self.index.rows.items[id.toRaw()];
         const TblT = Table(RowT(K));
-        const p: *const TblT = &@field(self, @tagName(K));
+        const p: *TblT = &@field(self, @tagName(K));
         return p.get(.{ .index = row });
     }
 
@@ -937,11 +950,11 @@ pub const PatternStore = struct {
         return self.index.newId(self.gpa, K, r.toRaw(), PatternId);
     }
 
-    pub fn get(self: *const @This(), comptime K: PatternKind, id: PatternId) PatRowT(K) {
+    pub fn get(self: *@This(), comptime K: PatternKind, id: PatternId) PatRowT(K) {
         std.debug.assert(self.index.kinds.items[id.toRaw()] == K);
         const row = self.index.rows.items[id.toRaw()];
         const TblT = Table(PatRowT(K));
-        const p: *const TblT = &@field(self, @tagName(K));
+        const p: *TblT = &@field(self, @tagName(K));
         return p.get(.{ .index = row });
     }
 
@@ -1005,10 +1018,10 @@ pub const DodPrinter = struct {
     writer: *std.io.Writer,
     indent: usize = 0,
 
-    exprs: *const ExprStore,
-    pats: *const PatternStore,
+    exprs: *ExprStore,
+    pats: *PatternStore,
 
-    pub fn init(writer: anytype, exprs: *const ExprStore, pats: *const PatternStore) DodPrinter {
+    pub fn init(writer: anytype, exprs: *ExprStore, pats: *PatternStore) DodPrinter {
         return .{ .writer = writer, .exprs = exprs, .pats = pats };
     }
 

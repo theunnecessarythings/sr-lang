@@ -521,8 +521,8 @@ pub const TypeStore = struct {
         return self.index.kinds.items[id.toRaw()];
     }
 
-    pub fn get(self: *const TypeStore, comptime K: TypeKind, id: TypeId) RowT(K) {
-        const tbl: *const Table(RowT(K)) = &@field(self, @tagName(K));
+    pub fn get(self: *TypeStore, comptime K: TypeKind, id: TypeId) RowT(K) {
+        const tbl: *Table(RowT(K)) = &@field(self, @tagName(K));
         return tbl.get(.{ .index = self.index.rows.items[id.toRaw()] });
     }
 
@@ -894,7 +894,7 @@ pub const TypeStore = struct {
         if (self.findOptional(elem)) |id| return id;
         return self.addLocked(.Optional, .{ .elem = elem });
     }
-    pub fn isOptionalPointer(self: *const TypeStore, ty: TypeId) bool {
+    pub fn isOptionalPointer(self: *TypeStore, ty: TypeId) bool {
         if (self.index.kinds.items[ty.toRaw()] != .Optional) return false;
         const elem = self.get(.Optional, ty).elem;
         return self.index.kinds.items[elem.toRaw()] == .Ptr;
@@ -1003,7 +1003,7 @@ pub const TypeStore = struct {
     }
 
     // ---- finders ----
-    fn findPtr(self: *const TypeStore, elem: TypeId, is_const: bool) ?TypeId {
+    fn findPtr(self: *TypeStore, elem: TypeId, is_const: bool) ?TypeId {
         return self.findMatch(.Ptr, struct { e: TypeId, c: bool }{ .e = elem, .c = is_const }, struct {
             fn eq(s: *const TypeStore, row: Rows.Ptr, key: anytype) bool {
                 _ = s;
@@ -1011,7 +1011,7 @@ pub const TypeStore = struct {
             }
         });
     }
-    fn findSlice(self: *const TypeStore, elem: TypeId) ?TypeId {
+    fn findSlice(self: *TypeStore, elem: TypeId) ?TypeId {
         return self.findMatch(.Slice, elem, struct {
             fn eq(s: *const TypeStore, row: Rows.Slice, key: TypeId) bool {
                 _ = s;
@@ -1019,7 +1019,7 @@ pub const TypeStore = struct {
             }
         });
     }
-    fn findDynArray(self: *const TypeStore, elem: TypeId) ?TypeId {
+    fn findDynArray(self: *TypeStore, elem: TypeId) ?TypeId {
         return self.findMatch(.DynArray, elem, struct {
             fn eq(s: *const TypeStore, row: Rows.DynArray, key: TypeId) bool {
                 _ = s;
@@ -1027,7 +1027,7 @@ pub const TypeStore = struct {
             }
         });
     }
-    fn findArray(self: *const TypeStore, elem: TypeId, len: usize) ?TypeId {
+    fn findArray(self: *TypeStore, elem: TypeId, len: usize) ?TypeId {
         return self.findMatch(.Array, struct { e: TypeId, l: usize }{ .e = elem, .l = len }, struct {
             fn eq(s: *const TypeStore, row: Rows.Array, key: anytype) bool {
                 _ = s;
@@ -1035,7 +1035,7 @@ pub const TypeStore = struct {
             }
         });
     }
-    fn findTensor(self: *const TypeStore, elem: TypeId, dims: []const usize) ?TypeId {
+    fn findTensor(self: *TypeStore, elem: TypeId, dims: []const usize) ?TypeId {
         return self.findMatch(.Tensor, struct { e: TypeId, d: []const usize }{ .e = elem, .d = dims }, struct {
             fn eq(_: *const TypeStore, row: Rows.Tensor, key: anytype) bool {
                 if (row.elem.toRaw() != key.e.toRaw()) return false;
@@ -1048,7 +1048,7 @@ pub const TypeStore = struct {
             }
         });
     }
-    fn findMap(self: *const TypeStore, key: TypeId, value: TypeId) ?TypeId {
+    fn findMap(self: *TypeStore, key: TypeId, value: TypeId) ?TypeId {
         return self.findMatch(.Map, struct { k: TypeId, v: TypeId }{ .k = key, .v = value }, struct {
             fn eq(s: *const TypeStore, row: Rows.Map, k: anytype) bool {
                 _ = s;
@@ -1056,7 +1056,7 @@ pub const TypeStore = struct {
             }
         });
     }
-    fn findAst(self: *const TypeStore, pkg_name: ast.StrId, filepath: StrId) ?TypeId {
+    fn findAst(self: *TypeStore, pkg_name: ast.StrId, filepath: StrId) ?TypeId {
         return self.findMatch(.Ast, struct { pkg: ast.StrId, filepath: StrId }{
             .pkg = pkg_name,
             .filepath = filepath,
@@ -1066,14 +1066,14 @@ pub const TypeStore = struct {
             }
         });
     }
-    fn findSimd(self: *const TypeStore, elem: TypeId, lanes: u16) ?TypeId {
+    fn findSimd(self: *TypeStore, elem: TypeId, lanes: u16) ?TypeId {
         return self.findMatch(.Simd, struct { e: TypeId, l: u16 }{ .e = elem, .l = lanes }, struct {
             fn eq(_: *const TypeStore, row: Rows.Simd, key: anytype) bool {
                 return row.elem.toRaw() == key.e.toRaw() and row.lanes == key.l;
             }
         });
     }
-    fn findOptional(self: *const TypeStore, elem: TypeId) ?TypeId {
+    fn findOptional(self: *TypeStore, elem: TypeId) ?TypeId {
         return self.findMatch(.Optional, elem, struct {
             fn eq(s: *const TypeStore, row: Rows.Optional, key: TypeId) bool {
                 _ = s;
@@ -1081,7 +1081,7 @@ pub const TypeStore = struct {
             }
         });
     }
-    fn findTuple(self: *const TypeStore, elems: []const TypeId) ?TypeId {
+    fn findTuple(self: *TypeStore, elems: []const TypeId) ?TypeId {
         return self.findMatch(.Tuple, elems, struct {
             fn eq(s: *const TypeStore, row: Rows.Tuple, key: []const TypeId) bool {
                 const ids = s.type_pool.slice(row.elems);
@@ -1092,7 +1092,7 @@ pub const TypeStore = struct {
             }
         });
     }
-    fn findFunction(self: *const TypeStore, params: []const TypeId, result: TypeId, is_variadic: bool, is_pure: bool, is_extern: bool) ?TypeId {
+    fn findFunction(self: *TypeStore, params: []const TypeId, result: TypeId, is_variadic: bool, is_pure: bool, is_extern: bool) ?TypeId {
         return self.findMatch(.Function, struct { p: []const TypeId, r: TypeId, v: bool, pure: bool, ext: bool }{ .p = params, .r = result, .v = is_variadic, .pure = is_pure, .ext = is_extern }, struct {
             fn eq(s: *const TypeStore, row: Rows.Function, key: anytype) bool {
                 if (row.result.toRaw() != key.r.toRaw() or row.is_variadic != key.v or row.is_pure != key.pure or row.is_extern != key.ext) return false;
@@ -1105,7 +1105,7 @@ pub const TypeStore = struct {
         });
     }
 
-    fn findVariant(self: *const TypeStore, variants: []const StructFieldArg) ?TypeId {
+    fn findVariant(self: *TypeStore, variants: []const StructFieldArg) ?TypeId {
         // Compare by name + type sequence
         const key_names_and_tys = struct { names: []const StrId, tys: []const TypeId };
         var names = self.gpa.alloc(StrId, variants.len) catch @panic("OOM");
@@ -1119,7 +1119,7 @@ pub const TypeStore = struct {
         }
         const key_val = key_names_and_tys{ .names = names, .tys = tys };
         return self.findMatch(.Variant, key_val, struct {
-            fn eq(s: *const TypeStore, row: Rows.Variant, k: anytype) bool {
+            fn eq(s: *TypeStore, row: Rows.Variant, k: anytype) bool {
                 const ids = s.field_pool.slice(row.variants);
                 if (ids.len != k.names.len) return false;
                 var j: usize = 0;
@@ -1132,7 +1132,7 @@ pub const TypeStore = struct {
             }
         });
     }
-    fn findErrorSet(self: *const TypeStore, value_ty: TypeId, error_ty: TypeId) ?TypeId {
+    fn findErrorSet(self: *TypeStore, value_ty: TypeId, error_ty: TypeId) ?TypeId {
         return self.findMatch(.ErrorSet, struct { v: TypeId, e: TypeId }{ .v = value_ty, .e = error_ty }, struct {
             fn eq(s: *const TypeStore, row: Rows.ErrorSet, k: anytype) bool {
                 _ = s;
@@ -1141,14 +1141,14 @@ pub const TypeStore = struct {
         });
     }
 
-    fn findTypeType(self: *const TypeStore, of: TypeId) ?TypeId {
+    fn findTypeType(self: *TypeStore, of: TypeId) ?TypeId {
         return self.findMatch(.TypeType, of, struct {
             fn eq(_: *const TypeStore, row: Rows.TypeType, key: TypeId) bool {
                 return row.of.eq(key);
             }
         });
     }
-    fn findStruct(self: *const TypeStore, fields: []const StructFieldArg) ?TypeId {
+    fn findStruct(self: *TypeStore, fields: []const StructFieldArg) ?TypeId {
         // Compare by name + type sequence
         const key_names_and_tys = struct { names: []const StrId, tys: []const TypeId };
         var names = self.gpa.alloc(StrId, fields.len) catch @panic("OOM");
@@ -1162,7 +1162,7 @@ pub const TypeStore = struct {
         }
         const key_val = key_names_and_tys{ .names = names, .tys = tys };
         return self.findMatch(.Struct, key_val, struct {
-            fn eq(s: *const TypeStore, row: Rows.Struct, k: anytype) bool {
+            fn eq(s: *TypeStore, row: Rows.Struct, k: anytype) bool {
                 const ids = s.field_pool.slice(row.fields);
                 if (ids.len != k.names.len) return false;
                 var j: usize = 0;
@@ -1176,7 +1176,7 @@ pub const TypeStore = struct {
         });
     }
 
-    fn findMatch(self: *const TypeStore, comptime K: TypeKind, key: anytype, comptime Helper: type) ?TypeId {
+    fn findMatch(self: *TypeStore, comptime K: TypeKind, key: anytype, comptime Helper: type) ?TypeId {
         // Scan all types and find first matching row of kind K
         const kinds = self.index.kinds.items;
         const rows = self.index.rows.items;
@@ -1184,7 +1184,7 @@ pub const TypeStore = struct {
         while (i < kinds.len) : (i += 1) {
             if (kinds[i] != K) continue;
             const row_idx = rows[i];
-            const tbl: *const Table(RowT(K)) = &@field(self, @tagName(K));
+            const tbl: *Table(RowT(K)) = &@field(self, @tagName(K));
             const row = tbl.get(.{ .index = row_idx });
             if (Helper.eq(self, row, key)) return TypeId.fromRaw(@intCast(i));
         }
@@ -1192,7 +1192,7 @@ pub const TypeStore = struct {
     }
 
     // ---- formatting ----
-    pub fn fmt(self: *const TypeStore, id: TypeId, w: anytype) !void {
+    pub fn fmt(self: *TypeStore, id: TypeId, w: anytype) !void {
         const k = self.getKind(id);
         switch (k) {
             .Void => try w.print("void", .{}),

@@ -24,11 +24,11 @@ C_OBJ          := $(C_SRC:.c=.o)
 
 .PHONY: all clean run run_c shared
 
-all: $(C_TARGET)
+all: $(C_TARGET) shared
 
 shared: $(SO_TARGET)
 
-$(SO_TARGET): $(SKIAC_OBJ)
+$(SO_TARGET): $(SKIAC_OBJ) skiac.h
 	$(CXX) $(CXXFLAGS) -shared -o $@ $< $(SO_LDFLAGS)
 
 $(C_TARGET): $(C_OBJ) $(SKIAC_OBJ)

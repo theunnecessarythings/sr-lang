@@ -680,7 +680,7 @@ pub fn isVoid(self: *const LowerTir, ty: types.TypeId) bool {
 }
 
 pub fn optLoc(a: *ast.Ast, id: anytype) tir.OptLocId {
-    const store, const Kind = switch (@TypeOf(id)) {
+    var store, const Kind = switch (@TypeOf(id)) {
         ast.ExprId => .{ a.exprs, ast.ExprKind },
         ast.PatternId => .{ a.pats, ast.PatternKind },
         ast.StmtId => .{ a.stmts, ast.StmtKind },

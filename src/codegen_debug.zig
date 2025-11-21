@@ -130,7 +130,7 @@ pub fn ensureDebugSubprogram(
     loc: tir.OptLocId,
     ret_ty: types.TypeId,
     params: []const tir.ParamId,
-    t: *const tir.TIR,
+    t: *tir.TIR,
 ) !*DebugSubprogramInfo {
     if (self.di_subprograms.getPtr(f_id)) |info| return info;
 
@@ -354,7 +354,7 @@ fn buildDISubroutineTypeAttr(
     self: *Codegen,
     ret_ty: types.TypeId,
     params: []const tir.ParamId,
-    t: *const tir.TIR,
+    t: *tir.TIR,
 ) !mlir.Attribute {
     var types_buf: std.ArrayList(mlir.Attribute) = .empty;
     defer types_buf.deinit(self.gpa);
@@ -392,7 +392,7 @@ pub fn emitParameterDebugInfo(
     f_id: tir.FuncId,
     params: []const tir.ParamId,
     entry_block: mlir.Block,
-    t: *const tir.TIR,
+    t: *tir.TIR,
 ) !void {
     if (!codegen.enable_debug_info) return;
     const subp_ptr = self.di_subprograms.getPtr(f_id) orelse return;

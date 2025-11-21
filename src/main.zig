@@ -12,12 +12,12 @@ const Colors = struct {
     pub const green = "\x1b[32m";
 };
 
-    const CliArgs = struct {
-        subcommand: Subcommand,
-        filename: ?[]const u8 = null,
-        output_path: ?[]const u8 = null,
-        emit_mlir: bool = false,
-        run_mlir: bool = false,
+const CliArgs = struct {
+    subcommand: Subcommand,
+    filename: ?[]const u8 = null,
+    output_path: ?[]const u8 = null,
+    emit_mlir: bool = false,
+    run_mlir: bool = false,
     no_color: bool = false,
     verbose: bool = false,
     optimization_level: ?[]const u8 = null,
@@ -123,7 +123,7 @@ fn repl(
 
     const result = try pipeline.run(source, &.{}, .repl, null);
     const main_pkg = result.compilation_unit.?.packages.getPtr("main") orelse return error.NoMainPackage;
-    const cst_program = main_pkg.sources.entries.get(0).value.cst.?;
+    var cst_program = main_pkg.sources.entries.get(0).value.cst.?;
     const hir = main_pkg.sources.entries.get(0).value.ast.?;
     const tir_mod = main_pkg.sources.entries.get(0).value.tir.?;
 
@@ -355,7 +355,7 @@ fn process_file(
     if (cli_args.subcommand == .cst) {
         for (result.compilation_unit.?.packages.values()) |pkg| {
             for (pkg.sources.values()) |entry| {
-                const cst = entry.cst.?;
+                var cst = entry.cst.?;
                 var cst_printer = lib.cst.DodPrinter.init(out_writer, &cst.exprs, &cst.pats);
                 try cst_printer.printProgram(&cst.program);
             }

@@ -100,7 +100,7 @@ inline fn getStmt(ast_unit: *ast.Ast, comptime K: ast.StmtKind, id: ast.StmtId) 
 pub inline fn getStr(ast_unit: *const ast.Ast, sid: ast.StrId) []const u8 {
     return ast_unit.exprs.strs.get(sid);
 }
-inline fn getExpr(ast_unit: *const ast.Ast, comptime K: ast.ExprKind, id: ast.ExprId) ast.RowT(K) {
+inline fn getExpr(ast_unit: *ast.Ast, comptime K: ast.ExprKind, id: ast.ExprId) ast.RowT(K) {
     return ast_unit.exprs.get(K, id);
 }
 
@@ -3345,6 +3345,26 @@ fn structFieldHasDefault(
                 }
             }
             break :blk false;
+        },
+        .FieldAccess => {
+            const field_expr = getExpr(ast_unit, .FieldAccess, ty_expr);
+            const parent_ty = self.checkExpr(ctx, ast_unit, field_expr.parent) catch return false;
+            if (self.typeKind(parent_ty) != .Ast) return false;
+
+            const ast_ty = self.context.type_store.get(.Ast, parent_ty);
+            const pkg_name = self.context.interner.get(ast_ty.pkg_name);
+            const filepath = self.context.interner.get(ast_ty.filepath);
+            const pkg = self.context.compilation_unit.packages.getPtr(pkg_name) orelse return false;
+            const parent_unit = pkg.sources.getPtr(filepath) orelse return false;
+            if (parent_unit.ast) |module_ast| {
+                if (module_ast.type_info.getExport(field_expr.field)) |export_entry| {
+                    const decl = module_ast.exprs.Decl.get(export_entry.decl_id);
+                    if (exprKind(module_ast, decl.value) == .StructType) {
+                        return structFieldHasDefaultInStructExpr(module_ast, decl.value, field_name);
+                    }
+                }
+            }
+            return false;
         },
         else => false,
     };

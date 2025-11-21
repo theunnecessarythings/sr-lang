@@ -139,7 +139,7 @@ inline fn isLiteralTag(_: *const Parser, tag: Token.Tag) bool {
         else => false,
     };
 }
-inline fn exprIsIntegerLiteral(self: *const Parser, expr_id: cst.ExprId) bool {
+inline fn exprIsIntegerLiteral(self: *Parser, expr_id: cst.ExprId) bool {
     const kind = self.cst_u.exprs.index.kinds.items[expr_id.toRaw()];
     if (kind != .Literal) return false;
     const lit = self.cst_u.exprs.get(.Literal, expr_id);
@@ -339,7 +339,7 @@ fn isTerminator(_: *const Parser, t: Token.Tag) bool {
     };
 }
 
-inline fn exprGet(self: *const Parser, comptime kind: cst.ExprKind, id: cst.ExprId) cst.RowT(kind) {
+inline fn exprGet(self: *Parser, comptime kind: cst.ExprKind, id: cst.ExprId) cst.RowT(kind) {
     return self.cst_u.exprs.get(kind, id);
 }
 

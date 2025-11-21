@@ -573,10 +573,10 @@ pub const ExprStore = struct {
         return self.index.newId(self.gpa, K, idx.toRaw(), ExprId);
     }
 
-    pub fn get(self: *const @This(), comptime K: ExprKind, id: ExprId) RowT(K) {
+    pub fn get(self: *@This(), comptime K: ExprKind, id: ExprId) RowT(K) {
         std.debug.assert(self.index.kinds.items[id.toRaw()] == K);
         const row_idx = self.index.rows.items[id.toRaw()];
-        const tbl: *const Table(RowT(K)) = &@field(self, @tagName(K));
+        const tbl: *Table(RowT(K)) = &@field(self, @tagName(K));
         return tbl.get(.{ .index = row_idx });
     }
 
@@ -661,10 +661,10 @@ pub const StmtStore = struct {
         return self.index.newId(self.gpa, K, idx.toRaw(), StmtId);
     }
 
-    pub fn get(self: *const @This(), comptime K: StmtKind, id: StmtId) StmtRowT(K) {
+    pub fn get(self: *@This(), comptime K: StmtKind, id: StmtId) StmtRowT(K) {
         std.debug.assert(self.index.kinds.items[id.toRaw()] == K);
         const row_idx = self.index.rows.items[id.toRaw()];
-        const tbl: *const Table(StmtRowT(K)) = &@field(self, @tagName(K));
+        const tbl: *Table(StmtRowT(K)) = &@field(self, @tagName(K));
         return tbl.get(.{ .index = row_idx });
     }
 };
@@ -720,10 +720,10 @@ pub const PatternStore = struct {
         return self.index.newId(self.gpa, K, idx.toRaw(), PatternId);
     }
 
-    pub fn get(self: *const @This(), comptime K: PatternKind, id: PatternId) PatRowT(K) {
+    pub fn get(self: *@This(), comptime K: PatternKind, id: PatternId) PatRowT(K) {
         std.debug.assert(self.index.kinds.items[id.toRaw()] == K);
         const row_idx = self.index.rows.items[id.toRaw()];
-        const tbl: *const Table(PatRowT(K)) = &@field(self, @tagName(K));
+        const tbl: *Table(PatRowT(K)) = &@field(self, @tagName(K));
         return tbl.get(.{ .index = row_idx });
     }
 
@@ -777,11 +777,11 @@ pub const AstPrinter = struct {
     writer: *std.io.Writer,
     indent: usize = 0,
 
-    exprs: *const ExprStore,
-    stmts: *const StmtStore,
-    pats: *const PatternStore,
+    exprs: *ExprStore,
+    stmts: *StmtStore,
+    pats: *PatternStore,
 
-    pub fn init(writer: anytype, exprs: *const ExprStore, stmts: *const StmtStore, pats: *const PatternStore) AstPrinter {
+    pub fn init(writer: anytype, exprs: *ExprStore, stmts: *StmtStore, pats: *PatternStore) AstPrinter {
         return .{ .writer = writer, .exprs = exprs, .stmts = stmts, .pats = pats };
     }
 
@@ -1699,11 +1699,11 @@ pub const CodePrinter = struct {
     indent: usize = 0,
     needs_indent: bool = true,
 
-    exprs: *const ExprStore,
-    stmts: *const StmtStore,
-    pats: *const PatternStore,
+    exprs: *ExprStore,
+    stmts: *StmtStore,
+    pats: *PatternStore,
 
-    pub fn init(writer: anytype, exprs: *const ExprStore, stmts: *const StmtStore, pats: *const PatternStore) CodePrinter {
+    pub fn init(writer: anytype, exprs: *ExprStore, stmts: *StmtStore, pats: *PatternStore) CodePrinter {
         return .{ .writer = writer, .exprs = exprs, .stmts = stmts, .pats = pats };
     }
 

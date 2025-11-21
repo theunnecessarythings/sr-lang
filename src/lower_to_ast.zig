@@ -6,14 +6,14 @@ const diagnostics = @import("diagnostics.zig");
 
 pub const Lower = @This();
 gpa: std.mem.Allocator,
-cst_program: *const cst.CST,
+cst_program: *cst.CST,
 ast_unit: *ast.Ast,
 context: *compile.Context,
 file_id: u32,
 
 pub fn init(
     gpa: std.mem.Allocator,
-    program: *const cst.CST,
+    program: *cst.CST,
     context: *compile.Context,
     file_id: u32,
 ) !Lower {
