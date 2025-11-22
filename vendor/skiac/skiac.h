@@ -1,9 +1,9 @@
 #ifndef SKIAC_H
 #define SKIAC_H
 
+#include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
-#include <stdbool.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -30,33 +30,35 @@ typedef struct skiac_sk_runtime_effect_t skiac_sk_runtime_effect_t;
 typedef struct skiac_sk_color_space_t skiac_sk_color_space_t;
 typedef struct skiac_sk_surface_props_t skiac_sk_surface_props_t;
 typedef struct skiac_gr_gl_framebuffer_info_t skiac_gr_gl_framebuffer_info_t;
-typedef struct skiac_gr_backend_render_target_t skiac_gr_backend_render_target_t;
+typedef struct skiac_gr_backend_render_target_t
+    skiac_gr_backend_render_target_t;
 typedef struct skiac_sk_rect_t skiac_sk_rect_t;
 typedef struct GrGLInterface GrGLInterface;
 typedef struct skiac_sk_picture_t skiac_sk_picture_t;
-typedef struct skiac_sk_runtime_effect_builder_t skiac_sk_runtime_effect_builder_t;
+typedef struct skiac_sk_runtime_effect_builder_t
+    skiac_sk_runtime_effect_builder_t;
 typedef struct skiac_sk_blender_t skiac_sk_blender_t;
 
 typedef struct {
-    float m00, m01, m02;
-    float m10, m11, m12;
-    float m20, m21, m22;
+  float m00, m01, m02;
+  float m10, m11, m12;
+  float m20, m21, m22;
 } skiac_matrix_t;
 
 typedef struct {
-    float x, y, z;
+  float x, y, z;
 } skiac_point3_t;
 
 typedef struct {
-    int width, height;
+  int width, height;
 } skiac_isize_t;
 
 typedef struct {
-    float x, y;
+  float x, y;
 } skiac_point_t;
 
 typedef struct {
-    int x, y;
+  int x, y;
 } skiac_ipoint_t;
 
 //=================================================================================================
@@ -64,69 +66,91 @@ typedef struct {
 //=================================================================================================
 
 typedef enum {
-    GR_SURFACE_ORIGIN_TOP_LEFT,
-    GR_SURFACE_ORIGIN_BOTTOM_LEFT,
+  GR_SURFACE_ORIGIN_TOP_LEFT,
+  GR_SURFACE_ORIGIN_BOTTOM_LEFT,
 } skiac_gr_surface_origin_t;
 
 typedef enum {
-    SK_COLOR_TYPE_UNKNOWN,
-    SK_COLOR_TYPE_RGBA_8888,
-    SK_COLOR_TYPE_N32,
+  SK_COLOR_TYPE_UNKNOWN,
+  SK_COLOR_TYPE_RGBA_8888,
+  SK_COLOR_TYPE_N32,
 } skiac_sk_color_type_t;
 
 typedef enum {
-    SK_COLOR_CHANNEL_R,
-    SK_COLOR_CHANNEL_G,
-    SK_COLOR_CHANNEL_B,
-    SK_COLOR_CHANNEL_A,
+  SK_COLOR_CHANNEL_R,
+  SK_COLOR_CHANNEL_G,
+  SK_COLOR_CHANNEL_B,
+  SK_COLOR_CHANNEL_A,
 } skiac_sk_color_channel_t;
 
 typedef enum {
-    SK_FILTER_MODE_NEAREST,
-    SK_FILTER_MODE_LINEAR,
-    SK_FILTER_MODE_CUBIC,
+  SK_FILTER_MODE_NEAREST,
+  SK_FILTER_MODE_LINEAR,
+  SK_FILTER_MODE_CUBIC,
 } skiac_sk_filter_mode_t;
 
 typedef enum {
-    SK_MIPMAP_MODE_NONE,
-    SK_MIPMAP_MODE_NEAREST,
-    SK_MIPMAP_MODE_LINEAR,
+  SK_MIPMAP_MODE_NONE,
+  SK_MIPMAP_MODE_NEAREST,
+  SK_MIPMAP_MODE_LINEAR,
 } skiac_sk_mipmap_mode_t;
 
 typedef struct {
-    skiac_sk_filter_mode_t filter_mode;
-    skiac_sk_mipmap_mode_t mipmap_mode;
+  skiac_sk_filter_mode_t filter_mode;
+  skiac_sk_mipmap_mode_t mipmap_mode;
 } skiac_sk_sampling_options_t;
 
 typedef enum {
-    SK_PAINT_STYLE_FILL,
-    SK_PAINT_STYLE_STROKE,
-    SK_PAINT_STYLE_STROKE_AND_FILL,
+  SK_PAINT_STYLE_FILL,
+  SK_PAINT_STYLE_STROKE,
+  SK_PAINT_STYLE_STROKE_AND_FILL,
 } skiac_sk_paint_style_t;
 
 typedef enum {
-    SK_BLENDMODE_CLEAR,
-    SK_BLENDMODE_SRC,
-    SK_BLENDMODE_DST,
-    SK_BLENDMODE_SRC_OVER,
-    SK_BLENDMODE_DST_OVER,
-    SK_BLENDMODE_MULTIPLY,
-    SK_BLENDMODE_SCREEN,
-    SK_BLENDMODE_OVERLAY,
-    SK_BLENDMODE_DARKEN,
-    SK_BLENDMODE_LIGHTEN,
+  SK_BLENDMODE_CLEAR,
+  SK_BLENDMODE_SRC,
+  SK_BLENDMODE_DST,
+  SK_BLENDMODE_SRC_OVER,
+  SK_BLENDMODE_DST_OVER,
+  SK_BLENDMODE_SRC_IN,
+  SK_BLENDMODE_DST_IN,
+  SK_BLENDMODE_SRC_OUT,
+  SK_BLENDMODE_DST_OUT,
+  SK_BLENDMODE_SRC_ATOP,
+  SK_BLENDMODE_DST_ATOP,
+  SK_BLENDMODE_XOR,
+  SK_BLENDMODE_PLUS,
+  SK_BLENDMODE_MODULATE,
+  SK_BLENDMODE_SCREEN,
+  SK_BLENDMODE_OVERLAY,
+  SK_BLENDMODE_DARKEN,
+  SK_BLENDMODE_LIGHTEN,
+  SK_BLENDMODE_COLOR_DODGE,
+  SK_BLENDMODE_COLOR_BURN,
+  SK_BLENDMODE_HARD_LIGHT,
+  SK_BLENDMODE_SOFT_LIGHT,
+  SK_BLENDMODE_DIFFERENCE,
+  SK_BLENDMODE_EXCLUSION,
+  SK_BLENDMODE_MULTIPLY,
+  SK_BLENDMODE_HUE,
+  SK_BLENDMODE_SATURATION,
+  SK_BLENDMODE_COLOR,
+  SK_BLENDMODE_LUMINOSITY,
+  SK_BLENDMODE_LAST_COEFF_MODE = SK_BLENDMODE_SCREEN,
+  SK_BLENDMODE_LAST_SEPARABLE_MODE = SK_BLENDMODE_MULTIPLY,
+  SK_BLENDMODE_LAST_MODE = SK_BLENDMODE_LUMINOSITY
 } skiac_sk_blend_mode_t;
 
 typedef enum {
-    SK_PAINT_CAP_BUTT,
-    SK_PAINT_CAP_ROUND,
-    SK_PAINT_CAP_SQUARE,
+  SK_PAINT_CAP_BUTT,
+  SK_PAINT_CAP_ROUND,
+  SK_PAINT_CAP_SQUARE,
 } skiac_sk_paint_cap_t;
 
 typedef enum {
-    SK_PAINT_JOIN_MITER,
-    SK_PAINT_JOIN_ROUND,
-    SK_PAINT_JOIN_BEVEL,
+  SK_PAINT_JOIN_MITER,
+  SK_PAINT_JOIN_ROUND,
+  SK_PAINT_JOIN_BEVEL,
 } skiac_sk_paint_join_t;
 
 //=================================================================================================
@@ -134,10 +158,10 @@ typedef enum {
 //=================================================================================================
 
 typedef struct {
-    float x;
-    float y;
-    float width;
-    float height;
+  float x;
+  float y;
+  float width;
+  float height;
 } skiac_rect_t;
 
 //=================================================================================================
@@ -145,299 +169,463 @@ typedef struct {
 //=================================================================================================
 
 typedef void (*GrGLFuncPtr)();
-typedef GrGLFuncPtr (*GrGLGetProc)(void* ctx, const char name[]);
+typedef GrGLFuncPtr (*GrGLGetProc)(void *ctx, const char name[]);
 
 //=================================================================================================
 // Function Declarations
 //=================================================================================================
 
 // GrGLInterface
-const GrGLInterface* skiac_gr_gl_make_assembled_interface(void* ctx, GrGLGetProc get_proc);
-void skiac_gr_gl_interface_unref(const GrGLInterface* interface);
+const GrGLInterface *skiac_gr_gl_make_assembled_interface(void *ctx,
+                                                          GrGLGetProc get_proc);
+void skiac_gr_gl_interface_unref(const GrGLInterface *interface);
 
 // GrDirectContext
-skiac_gr_direct_context_t* skiac_gr_direct_context_make_gl(const GrGLInterface* gl_interface);
-void skiac_gr_direct_context_unref(skiac_gr_direct_context_t* context);
-void skiac_gr_direct_context_flush_and_submit(skiac_gr_direct_context_t* context);
+skiac_gr_direct_context_t *
+skiac_gr_direct_context_make_gl(const GrGLInterface *gl_interface);
+void skiac_gr_direct_context_unref(skiac_gr_direct_context_t *context);
+void skiac_gr_direct_context_flush_and_submit(
+    skiac_gr_direct_context_t *context);
 
 // GrBackendRenderTarget
-skiac_gr_backend_render_target_t* skiac_gr_backend_render_target_make_gl(int width, int height, int sample_cnt, int stencil_bits, unsigned int fbo_id, unsigned int format);
-void skiac_gr_backend_render_target_unref(skiac_gr_backend_render_target_t* target);
+skiac_gr_backend_render_target_t *
+skiac_gr_backend_render_target_make_gl(int width, int height, int sample_cnt,
+                                       int stencil_bits, unsigned int fbo_id,
+                                       unsigned int format);
+void skiac_gr_backend_render_target_unref(
+    skiac_gr_backend_render_target_t *target);
 
 // SkColorSpace
-skiac_sk_color_space_t* skiac_sk_color_space_make_srgb();
-void skiac_sk_color_space_unref(skiac_sk_color_space_t* color_space);
+skiac_sk_color_space_t *skiac_sk_color_space_make_srgb();
+void skiac_sk_color_space_unref(skiac_sk_color_space_t *color_space);
 
 // SkSurfaceProps
-skiac_sk_surface_props_t* skiac_sk_surface_props_create(uint32_t flags, int pixel_geometry);
-void skiac_sk_surface_props_unref(skiac_sk_surface_props_t* props);
+skiac_sk_surface_props_t *skiac_sk_surface_props_create(uint32_t flags,
+                                                        int pixel_geometry);
+void skiac_sk_surface_props_unref(skiac_sk_surface_props_t *props);
 
 // SkSurface
-skiac_sk_surface_t* skiac_sk_surface_wrap_backend_render_target(
-    skiac_gr_direct_context_t* context,
-    skiac_gr_backend_render_target_t* target,
-    skiac_gr_surface_origin_t origin,
-    skiac_sk_color_type_t color_type,
-    skiac_sk_color_space_t* color_space,
-    skiac_sk_surface_props_t* props
-);
-void skiac_sk_surface_unref(skiac_sk_surface_t* surface);
-skiac_sk_canvas_t* skiac_sk_surface_get_canvas(skiac_sk_surface_t* surface);
+skiac_sk_surface_t *skiac_sk_surface_wrap_backend_render_target(
+    skiac_gr_direct_context_t *context,
+    skiac_gr_backend_render_target_t *target, skiac_gr_surface_origin_t origin,
+    skiac_sk_color_type_t color_type, skiac_sk_color_space_t *color_space,
+    skiac_sk_surface_props_t *props);
+void skiac_sk_surface_unref(skiac_sk_surface_t *surface);
+skiac_sk_canvas_t *skiac_sk_surface_get_canvas(skiac_sk_surface_t *surface);
 
 // SkCanvas
-void skiac_sk_canvas_clear(skiac_sk_canvas_t* canvas, uint32_t color);
-void skiac_sk_canvas_draw_rect(skiac_sk_canvas_t* canvas, const skiac_rect_t* rect, const skiac_sk_paint_t* paint);
-void skiac_sk_canvas_draw_circle(skiac_sk_canvas_t* canvas, float cx, float cy, float radius, const skiac_sk_paint_t* paint);
-void skiac_sk_canvas_draw_line(skiac_sk_canvas_t* canvas, float x0, float y0, float x1, float y1, const skiac_sk_paint_t* paint);
-void skiac_sk_canvas_draw_point(skiac_sk_canvas_t* canvas, float x, float y, const skiac_sk_paint_t* paint);
-void skiac_sk_canvas_draw_oval(skiac_sk_canvas_t* canvas, const skiac_rect_t* oval_bounds, const skiac_sk_paint_t* paint);
-void skiac_sk_canvas_draw_round_rect(skiac_sk_canvas_t* canvas, const skiac_rect_t* rect, float rx, float ry, const skiac_sk_paint_t* paint);
-void skiac_sk_canvas_draw_paint(skiac_sk_canvas_t* canvas, const skiac_sk_paint_t* paint);
-void skiac_sk_canvas_draw_path(skiac_sk_canvas_t* canvas, const skiac_sk_path_t* path, const skiac_sk_paint_t* paint);
-void skiac_sk_canvas_draw_image(skiac_sk_canvas_t* canvas, const skiac_sk_image_t* image, float x, float y);
+void skiac_sk_canvas_clear(skiac_sk_canvas_t *canvas, uint32_t color);
+void skiac_sk_canvas_draw_rect(skiac_sk_canvas_t *canvas,
+                               const skiac_rect_t *rect,
+                               const skiac_sk_paint_t *paint);
+void skiac_sk_canvas_draw_circle(skiac_sk_canvas_t *canvas, float cx, float cy,
+                                 float radius, const skiac_sk_paint_t *paint);
+void skiac_sk_canvas_draw_line(skiac_sk_canvas_t *canvas, float x0, float y0,
+                               float x1, float y1,
+                               const skiac_sk_paint_t *paint);
+void skiac_sk_canvas_draw_point(skiac_sk_canvas_t *canvas, float x, float y,
+                                const skiac_sk_paint_t *paint);
+void skiac_sk_canvas_draw_oval(skiac_sk_canvas_t *canvas,
+                               const skiac_rect_t *oval_bounds,
+                               const skiac_sk_paint_t *paint);
+void skiac_sk_canvas_draw_round_rect(skiac_sk_canvas_t *canvas,
+                                     const skiac_rect_t *rect, float rx,
+                                     float ry, const skiac_sk_paint_t *paint);
+void skiac_sk_canvas_draw_paint(skiac_sk_canvas_t *canvas,
+                                const skiac_sk_paint_t *paint);
+void skiac_sk_canvas_draw_path(skiac_sk_canvas_t *canvas,
+                               const skiac_sk_path_t *path,
+                               const skiac_sk_paint_t *paint);
+void skiac_sk_canvas_draw_image(skiac_sk_canvas_t *canvas,
+                                const skiac_sk_image_t *image, float x,
+                                float y);
 
 // SkCanvas state/transform/clip
-void skiac_sk_canvas_save(skiac_sk_canvas_t* canvas);
-void skiac_sk_canvas_restore(skiac_sk_canvas_t* canvas);
-void skiac_sk_canvas_translate(skiac_sk_canvas_t* canvas, float dx, float dy);
-void skiac_sk_canvas_scale(skiac_sk_canvas_t* canvas, float sx, float sy);
-void skiac_sk_canvas_rotate(skiac_sk_canvas_t* canvas, float degrees);
-void skiac_sk_canvas_skew(skiac_sk_canvas_t* canvas, float sx, float sy);
-void skiac_sk_canvas_clip_rect(skiac_sk_canvas_t* canvas, const skiac_rect_t* rect, bool do_aa);
-int  skiac_sk_canvas_save_layer(skiac_sk_canvas_t* canvas, const skiac_rect_t* bounds_or_null, const skiac_sk_paint_t* paint_or_null);
-void skiac_sk_canvas_concat(skiac_sk_canvas_t* canvas, const skiac_matrix_t* mat);
-void skiac_sk_canvas_clip_path(skiac_sk_canvas_t* canvas, const skiac_sk_path_t* path, bool do_aa);
-void skiac_sk_canvas_set_matrix(skiac_sk_canvas_t* canvas, const skiac_matrix_t* mat);
-void skiac_sk_canvas_reset_matrix(skiac_sk_canvas_t* canvas);
-void skiac_sk_canvas_draw_arc(skiac_sk_canvas_t* canvas, const skiac_rect_t* oval_bounds, float start_angle_deg, float sweep_angle_deg, bool use_center, const skiac_sk_paint_t* paint);
-void skiac_sk_canvas_clip_oval(skiac_sk_canvas_t* canvas, const skiac_rect_t* oval_bounds, bool do_aa);
-void skiac_sk_canvas_clip_round_rect(skiac_sk_canvas_t* canvas, const skiac_rect_t* rect, float rx, float ry, bool do_aa);
-int  skiac_sk_canvas_save_count(const skiac_sk_canvas_t* canvas);
-void skiac_sk_canvas_restore_to_count(skiac_sk_canvas_t* canvas, int save_count);
-void skiac_sk_canvas_draw_rrect(skiac_sk_canvas_t* canvas, const skiac_rect_t* rect, float rx, float ry, const skiac_sk_paint_t* paint);
-void skiac_sk_canvas_draw_drrect(skiac_sk_canvas_t* canvas, const skiac_rect_t* outer_rect, float outer_rx, float outer_ry, const skiac_rect_t* inner_rect, float inner_rx, float inner_ry, const skiac_sk_paint_t* paint);
+void skiac_sk_canvas_save(skiac_sk_canvas_t *canvas);
+void skiac_sk_canvas_restore(skiac_sk_canvas_t *canvas);
+void skiac_sk_canvas_translate(skiac_sk_canvas_t *canvas, float dx, float dy);
+void skiac_sk_canvas_scale(skiac_sk_canvas_t *canvas, float sx, float sy);
+void skiac_sk_canvas_rotate(skiac_sk_canvas_t *canvas, float degrees);
+void skiac_sk_canvas_skew(skiac_sk_canvas_t *canvas, float sx, float sy);
+void skiac_sk_canvas_clip_rect(skiac_sk_canvas_t *canvas,
+                               const skiac_rect_t *rect, bool do_aa);
+int skiac_sk_canvas_save_layer(skiac_sk_canvas_t *canvas,
+                               const skiac_rect_t *bounds_or_null,
+                               const skiac_sk_paint_t *paint_or_null);
+void skiac_sk_canvas_concat(skiac_sk_canvas_t *canvas,
+                            const skiac_matrix_t *mat);
+void skiac_sk_canvas_clip_path(skiac_sk_canvas_t *canvas,
+                               const skiac_sk_path_t *path, bool do_aa);
+void skiac_sk_canvas_set_matrix(skiac_sk_canvas_t *canvas,
+                                const skiac_matrix_t *mat);
+void skiac_sk_canvas_reset_matrix(skiac_sk_canvas_t *canvas);
+void skiac_sk_canvas_draw_arc(skiac_sk_canvas_t *canvas,
+                              const skiac_rect_t *oval_bounds,
+                              float start_angle_deg, float sweep_angle_deg,
+                              bool use_center, const skiac_sk_paint_t *paint);
+void skiac_sk_canvas_clip_oval(skiac_sk_canvas_t *canvas,
+                               const skiac_rect_t *oval_bounds, bool do_aa);
+void skiac_sk_canvas_clip_round_rect(skiac_sk_canvas_t *canvas,
+                                     const skiac_rect_t *rect, float rx,
+                                     float ry, bool do_aa);
+int skiac_sk_canvas_save_count(const skiac_sk_canvas_t *canvas);
+void skiac_sk_canvas_restore_to_count(skiac_sk_canvas_t *canvas,
+                                      int save_count);
+void skiac_sk_canvas_draw_rrect(skiac_sk_canvas_t *canvas,
+                                const skiac_rect_t *rect, float rx, float ry,
+                                const skiac_sk_paint_t *paint);
+void skiac_sk_canvas_draw_drrect(skiac_sk_canvas_t *canvas,
+                                 const skiac_rect_t *outer_rect, float outer_rx,
+                                 float outer_ry, const skiac_rect_t *inner_rect,
+                                 float inner_rx, float inner_ry,
+                                 const skiac_sk_paint_t *paint);
 
 // SkPaint
-skiac_sk_paint_t* skiac_sk_paint_create();
-void skiac_sk_paint_unref(skiac_sk_paint_t* paint);
-void skiac_sk_paint_set_anti_alias(skiac_sk_paint_t* paint, bool anti_alias);
-bool skiac_sk_paint_is_anti_alias(const skiac_sk_paint_t* paint);
-void skiac_sk_paint_set_color(skiac_sk_paint_t* paint, uint32_t color);
-uint32_t skiac_sk_paint_get_color(const skiac_sk_paint_t* paint);
-void skiac_sk_paint_set_alpha(skiac_sk_paint_t* paint, uint8_t alpha);
-uint8_t skiac_sk_paint_get_alpha(const skiac_sk_paint_t* paint);
-void skiac_sk_paint_set_dither(skiac_sk_paint_t* paint, bool dither);
-bool skiac_sk_paint_is_dither(const skiac_sk_paint_t* paint);
-void skiac_sk_paint_set_stroke_width(skiac_sk_paint_t* paint, float width);
-float skiac_sk_paint_get_stroke_width(const skiac_sk_paint_t* paint);
-void skiac_sk_paint_set_stroke_miter(skiac_sk_paint_t* paint, float miter);
-float skiac_sk_paint_get_stroke_miter(const skiac_sk_paint_t* paint);
-void skiac_sk_paint_set_stroke_cap(skiac_sk_paint_t* paint, skiac_sk_paint_cap_t cap);
-skiac_sk_paint_cap_t skiac_sk_paint_get_stroke_cap(const skiac_sk_paint_t* paint);
-void skiac_sk_paint_set_stroke_join(skiac_sk_paint_t* paint, skiac_sk_paint_join_t join);
-skiac_sk_paint_join_t skiac_sk_paint_get_stroke_join(const skiac_sk_paint_t* paint);
-void skiac_sk_paint_set_style(skiac_sk_paint_t* paint, skiac_sk_paint_style_t style);
-skiac_sk_paint_style_t skiac_sk_paint_get_style(const skiac_sk_paint_t* paint);
-void skiac_sk_paint_set_blend_mode(skiac_sk_paint_t* paint, skiac_sk_blend_mode_t mode);
-skiac_sk_blend_mode_t skiac_sk_paint_get_blend_mode(const skiac_sk_paint_t* paint);
+skiac_sk_paint_t *skiac_sk_paint_create();
+void skiac_sk_paint_unref(skiac_sk_paint_t *paint);
+void skiac_sk_paint_set_anti_alias(skiac_sk_paint_t *paint, bool anti_alias);
+bool skiac_sk_paint_is_anti_alias(const skiac_sk_paint_t *paint);
+void skiac_sk_paint_set_color(skiac_sk_paint_t *paint, uint32_t color);
+uint32_t skiac_sk_paint_get_color(const skiac_sk_paint_t *paint);
+void skiac_sk_paint_set_alpha(skiac_sk_paint_t *paint, uint8_t alpha);
+uint8_t skiac_sk_paint_get_alpha(const skiac_sk_paint_t *paint);
+void skiac_sk_paint_set_dither(skiac_sk_paint_t *paint, bool dither);
+bool skiac_sk_paint_is_dither(const skiac_sk_paint_t *paint);
+void skiac_sk_paint_set_stroke_width(skiac_sk_paint_t *paint, float width);
+float skiac_sk_paint_get_stroke_width(const skiac_sk_paint_t *paint);
+void skiac_sk_paint_set_stroke_miter(skiac_sk_paint_t *paint, float miter);
+float skiac_sk_paint_get_stroke_miter(const skiac_sk_paint_t *paint);
+void skiac_sk_paint_set_stroke_cap(skiac_sk_paint_t *paint,
+                                   skiac_sk_paint_cap_t cap);
+skiac_sk_paint_cap_t
+skiac_sk_paint_get_stroke_cap(const skiac_sk_paint_t *paint);
+void skiac_sk_paint_set_stroke_join(skiac_sk_paint_t *paint,
+                                    skiac_sk_paint_join_t join);
+skiac_sk_paint_join_t
+skiac_sk_paint_get_stroke_join(const skiac_sk_paint_t *paint);
+void skiac_sk_paint_set_style(skiac_sk_paint_t *paint,
+                              skiac_sk_paint_style_t style);
+skiac_sk_paint_style_t skiac_sk_paint_get_style(const skiac_sk_paint_t *paint);
+void skiac_sk_paint_set_blend_mode(skiac_sk_paint_t *paint,
+                                   skiac_sk_blend_mode_t mode);
+skiac_sk_blend_mode_t
+skiac_sk_paint_get_blend_mode(const skiac_sk_paint_t *paint);
 
 // SkPath
-skiac_sk_path_t* skiac_sk_path_create();
-void skiac_sk_path_unref(skiac_sk_path_t* path);
-void skiac_sk_path_move_to(skiac_sk_path_t* path, float x, float y);
-void skiac_sk_path_line_to(skiac_sk_path_t* path, float x, float y);
-void skiac_sk_path_quad_to(skiac_sk_path_t* path, float cx, float cy, float x, float y);
-void skiac_sk_path_cubic_to(skiac_sk_path_t* path, float cx1, float cy1, float cx2, float cy2, float x, float y);
-void skiac_sk_path_close(skiac_sk_path_t* path);
-void skiac_sk_path_add_rect(skiac_sk_path_t* path, const skiac_rect_t* rect);
-void skiac_sk_path_add_circle(skiac_sk_path_t* path, float cx, float cy, float r);
-void skiac_sk_path_add_oval(skiac_sk_path_t* path, const skiac_rect_t* rect);
-void skiac_sk_path_add_round_rect(skiac_sk_path_t* path, const skiac_rect_t* rect, float rx, float ry);
-void skiac_sk_path_add_arc(skiac_sk_path_t* path, const skiac_rect_t* oval_bounds, float start_angle_deg, float sweep_angle_deg);
+skiac_sk_path_t *skiac_sk_path_create();
+void skiac_sk_path_unref(skiac_sk_path_t *path);
+void skiac_sk_path_move_to(skiac_sk_path_t *path, float x, float y);
+void skiac_sk_path_line_to(skiac_sk_path_t *path, float x, float y);
+void skiac_sk_path_quad_to(skiac_sk_path_t *path, float cx, float cy, float x,
+                           float y);
+void skiac_sk_path_cubic_to(skiac_sk_path_t *path, float cx1, float cy1,
+                            float cx2, float cy2, float x, float y);
+void skiac_sk_path_close(skiac_sk_path_t *path);
+void skiac_sk_path_add_rect(skiac_sk_path_t *path, const skiac_rect_t *rect);
+void skiac_sk_path_add_circle(skiac_sk_path_t *path, float cx, float cy,
+                              float r);
+void skiac_sk_path_add_oval(skiac_sk_path_t *path, const skiac_rect_t *rect);
+void skiac_sk_path_add_round_rect(skiac_sk_path_t *path,
+                                  const skiac_rect_t *rect, float rx, float ry);
+void skiac_sk_path_add_arc(skiac_sk_path_t *path,
+                           const skiac_rect_t *oval_bounds,
+                           float start_angle_deg, float sweep_angle_deg);
 
 // Font enums and metrics struct
 typedef enum {
-    SK_FONT_EDGING_ALIAS,
-    SK_FONT_EDGING_ANTIALIAS,
-    SK_FONT_EDGING_SUBPIXEL_ANTIALIAS,
+  SK_FONT_EDGING_ALIAS,
+  SK_FONT_EDGING_ANTIALIAS,
+  SK_FONT_EDGING_SUBPIXEL_ANTIALIAS,
 } skiac_sk_font_edging_t;
 
 typedef enum {
-    SK_FONT_HINTING_NONE,
-    SK_FONT_HINTING_SLIGHT,
-    SK_FONT_HINTING_NORMAL,
-    SK_FONT_HINTING_FULL,
+  SK_FONT_HINTING_NONE,
+  SK_FONT_HINTING_SLIGHT,
+  SK_FONT_HINTING_NORMAL,
+  SK_FONT_HINTING_FULL,
 } skiac_sk_font_hinting_t;
 
 typedef struct {
-    uint32_t flags;
-    float top;
-    float ascent;
-    float descent;
-    float bottom;
-    float leading;
-    float avgCharWidth;
-    float maxCharWidth;
-    float xMin;
-    float xMax;
-    float xHeight;
-    float capHeight;
-    float underlineThickness;
-    float underlinePosition;
-    float strikeoutThickness;
-    float strikeoutPosition;
+  uint32_t flags;
+  float top;
+  float ascent;
+  float descent;
+  float bottom;
+  float leading;
+  float avgCharWidth;
+  float maxCharWidth;
+  float xMin;
+  float xMax;
+  float xHeight;
+  float capHeight;
+  float underlineThickness;
+  float underlinePosition;
+  float strikeoutThickness;
+  float strikeoutPosition;
 } skiac_sk_font_metrics_t;
 
 // SkImage
-skiac_sk_image_t* skiac_sk_surface_make_image_snapshot(skiac_sk_surface_t* surface);
-void skiac_sk_image_unref(skiac_sk_image_t* image);
-void skiac_sk_picture_unref(skiac_sk_picture_t* picture);
+skiac_sk_image_t *
+skiac_sk_surface_make_image_snapshot(skiac_sk_surface_t *surface);
+void skiac_sk_image_unref(skiac_sk_image_t *image);
+void skiac_sk_picture_unref(skiac_sk_picture_t *picture);
 
 // SkFont
-skiac_sk_font_t* skiac_sk_font_create_default(float size);
-skiac_sk_font_t* skiac_sk_font_create_from_file(const char* path, float size);
-void skiac_sk_font_unref(skiac_sk_font_t* font);
-void skiac_sk_font_set_size(skiac_sk_font_t* font, float size);
-float skiac_sk_font_get_size(const skiac_sk_font_t* font);
-float skiac_sk_font_measure_text_width_utf8(const skiac_sk_font_t* font, const char* text);
-void skiac_sk_canvas_draw_text(skiac_sk_canvas_t* canvas, const char* text, float x, float y, const skiac_sk_font_t* font, const skiac_sk_paint_t* paint);
-void skiac_sk_font_set_edging(skiac_sk_font_t* font, skiac_sk_font_edging_t edging);
-skiac_sk_font_edging_t skiac_sk_font_get_edging(const skiac_sk_font_t* font);
-void skiac_sk_font_set_hinting(skiac_sk_font_t* font, skiac_sk_font_hinting_t hinting);
-skiac_sk_font_hinting_t skiac_sk_font_get_hinting(const skiac_sk_font_t* font);
-void skiac_sk_font_set_subpixel(skiac_sk_font_t* font, bool subpixel);
-void skiac_sk_font_set_linear_metrics(skiac_sk_font_t* font, bool linear);
-void skiac_sk_font_set_embolden(skiac_sk_font_t* font, bool embolden);
-void skiac_sk_font_set_baseline_snap(skiac_sk_font_t* font, bool snap);
-float skiac_sk_font_get_spacing(const skiac_sk_font_t* font);
-float skiac_sk_font_get_metrics(const skiac_sk_font_t* font, skiac_sk_font_metrics_t* out_metrics_or_null);
-int   skiac_sk_font_text_to_glyphs_utf8(const skiac_sk_font_t* font, const char* text, uint16_t* out_glyphs_or_null, int max_glyphs);
+skiac_sk_font_t *skiac_sk_font_create_default(float size);
+skiac_sk_font_t *skiac_sk_font_create_from_file(const char *path, float size);
+void skiac_sk_font_unref(skiac_sk_font_t *font);
+void skiac_sk_font_set_size(skiac_sk_font_t *font, float size);
+float skiac_sk_font_get_size(const skiac_sk_font_t *font);
+float skiac_sk_font_measure_text_width_utf8(const skiac_sk_font_t *font,
+                                            const char *text);
+void skiac_sk_canvas_draw_text(skiac_sk_canvas_t *canvas, const char *text,
+                               float x, float y, const skiac_sk_font_t *font,
+                               const skiac_sk_paint_t *paint);
+void skiac_sk_font_set_edging(skiac_sk_font_t *font,
+                              skiac_sk_font_edging_t edging);
+skiac_sk_font_edging_t skiac_sk_font_get_edging(const skiac_sk_font_t *font);
+void skiac_sk_font_set_hinting(skiac_sk_font_t *font,
+                               skiac_sk_font_hinting_t hinting);
+skiac_sk_font_hinting_t skiac_sk_font_get_hinting(const skiac_sk_font_t *font);
+void skiac_sk_font_set_subpixel(skiac_sk_font_t *font, bool subpixel);
+void skiac_sk_font_set_linear_metrics(skiac_sk_font_t *font, bool linear);
+void skiac_sk_font_set_embolden(skiac_sk_font_t *font, bool embolden);
+void skiac_sk_font_set_baseline_snap(skiac_sk_font_t *font, bool snap);
+float skiac_sk_font_get_spacing(const skiac_sk_font_t *font);
+float skiac_sk_font_get_metrics(const skiac_sk_font_t *font,
+                                skiac_sk_font_metrics_t *out_metrics_or_null);
+int skiac_sk_font_text_to_glyphs_utf8(const skiac_sk_font_t *font,
+                                      const char *text,
+                                      uint16_t *out_glyphs_or_null,
+                                      int max_glyphs);
 
 // SkData + Image decode
-skiac_sk_data_t* skiac_sk_data_make_with_copy(const void* ptr, size_t len);
-skiac_sk_data_t* skiac_sk_data_make_from_file(const char* path);
-void skiac_sk_data_unref(skiac_sk_data_t* data);
-skiac_sk_image_t* skiac_sk_image_make_from_encoded(skiac_sk_data_t* data);
+skiac_sk_data_t *skiac_sk_data_make_with_copy(const void *ptr, size_t len);
+skiac_sk_data_t *skiac_sk_data_make_from_file(const char *path);
+void skiac_sk_data_unref(skiac_sk_data_t *data);
+skiac_sk_image_t *skiac_sk_image_make_from_encoded(skiac_sk_data_t *data);
 
 // ------------------------------------------------------------------------------------
 // Effects and styles
 // ------------------------------------------------------------------------------------
 typedef enum {
-    SK_TILEMODE_CLAMP,
-    SK_TILEMODE_REPEAT,
-    SK_TILEMODE_MIRROR,
-    SK_TILEMODE_DECAL,
+  SK_TILEMODE_CLAMP,
+  SK_TILEMODE_REPEAT,
+  SK_TILEMODE_MIRROR,
+  SK_TILEMODE_DECAL,
 } skiac_sk_tile_mode_t;
 
 // Unref helpers
-void skiac_sk_shader_unref(skiac_sk_shader_t* shader);
-void skiac_sk_color_filter_unref(skiac_sk_color_filter_t* cf);
-void skiac_sk_blender_unref(skiac_sk_blender_t* blender);
-void skiac_sk_image_filter_unref(skiac_sk_image_filter_t* f);
-void skiac_sk_path_effect_unref(skiac_sk_path_effect_t* pe);
-void skiac_sk_mask_filter_unref(skiac_sk_mask_filter_t* mf);
+void skiac_sk_shader_unref(skiac_sk_shader_t *shader);
+void skiac_sk_color_filter_unref(skiac_sk_color_filter_t *cf);
+void skiac_sk_blender_unref(skiac_sk_blender_t *blender);
+void skiac_sk_image_filter_unref(skiac_sk_image_filter_t *f);
+void skiac_sk_path_effect_unref(skiac_sk_path_effect_t *pe);
+void skiac_sk_mask_filter_unref(skiac_sk_mask_filter_t *mf);
 
 // Color filters
-skiac_sk_color_filter_t* skiac_sk_color_filter_make_blend(uint32_t rgba, int blend_mode);
-skiac_sk_color_filter_t* skiac_sk_color_filter_make_matrix(const float row_major_20[20], bool clamp);
+skiac_sk_color_filter_t *skiac_sk_color_filter_make_blend(uint32_t rgba,
+                                                          int blend_mode);
+skiac_sk_color_filter_t *
+skiac_sk_color_filter_make_matrix(const float row_major_20[20], bool clamp);
 
 // Image filters (simple)
-skiac_sk_image_filter_t* skiac_sk_image_filter_make_blur(float sigma_x, float sigma_y, skiac_sk_tile_mode_t tile_mode, skiac_sk_image_filter_t* input, const skiac_rect_t* crop_rect);
-skiac_sk_image_filter_t* skiac_sk_image_filter_make_color_filter(skiac_sk_color_filter_t* cf, skiac_sk_image_filter_t* input, const skiac_rect_t* crop_rect);
-skiac_sk_image_filter_t* skiac_sk_image_filter_make_merge(skiac_sk_image_filter_t** const filters, int count, const skiac_rect_t* crop_rect);
-skiac_sk_image_filter_t* skiac_sk_image_filter_make_offset(float dx, float dy, skiac_sk_image_filter_t* input, const skiac_rect_t* crop_rect);
-skiac_sk_image_filter_t* skiac_sk_image_filter_make_drop_shadow(float dx, float dy, float sigma_x, float sigma_y, uint32_t color, skiac_sk_image_filter_t* input, const skiac_rect_t* crop_rect);
-skiac_sk_image_filter_t* skiac_sk_image_filter_make_drop_shadow_only(float dx, float dy, float sigma_x, float sigma_y, uint32_t color, skiac_sk_image_filter_t* input, const skiac_rect_t* crop_rect);
+skiac_sk_image_filter_t *skiac_sk_image_filter_make_blur(
+    float sigma_x, float sigma_y, skiac_sk_tile_mode_t tile_mode,
+    skiac_sk_image_filter_t *input, const skiac_rect_t *crop_rect);
+skiac_sk_image_filter_t *
+skiac_sk_image_filter_make_color_filter(skiac_sk_color_filter_t *cf,
+                                        skiac_sk_image_filter_t *input,
+                                        const skiac_rect_t *crop_rect);
+skiac_sk_image_filter_t *
+skiac_sk_image_filter_make_merge(skiac_sk_image_filter_t **const filters,
+                                 int count, const skiac_rect_t *crop_rect);
+skiac_sk_image_filter_t *
+skiac_sk_image_filter_make_offset(float dx, float dy,
+                                  skiac_sk_image_filter_t *input,
+                                  const skiac_rect_t *crop_rect);
+skiac_sk_image_filter_t *skiac_sk_image_filter_make_drop_shadow(
+    float dx, float dy, float sigma_x, float sigma_y, uint32_t color,
+    skiac_sk_image_filter_t *input, const skiac_rect_t *crop_rect);
+skiac_sk_image_filter_t *skiac_sk_image_filter_make_drop_shadow_only(
+    float dx, float dy, float sigma_x, float sigma_y, uint32_t color,
+    skiac_sk_image_filter_t *input, const skiac_rect_t *crop_rect);
 
 // Morphology filter effects
-skiac_sk_image_filter_t* skiac_sk_image_filter_make_dilate(float radius_x, float radius_y, skiac_sk_image_filter_t* input, const skiac_rect_t* crop_rect);
-skiac_sk_image_filter_t* skiac_sk_image_filter_make_erode(float radius_x, float radius_y, skiac_sk_image_filter_t* input, const skiac_rect_t* crop_rect);
+skiac_sk_image_filter_t *
+skiac_sk_image_filter_make_dilate(float radius_x, float radius_y,
+                                  skiac_sk_image_filter_t *input,
+                                  const skiac_rect_t *crop_rect);
+skiac_sk_image_filter_t *
+skiac_sk_image_filter_make_erode(float radius_x, float radius_y,
+                                 skiac_sk_image_filter_t *input,
+                                 const skiac_rect_t *crop_rect);
 
 // Other image filters
-skiac_sk_image_filter_t* skiac_sk_image_filter_make_compose(skiac_sk_image_filter_t* outer, skiac_sk_image_filter_t* inner);
-skiac_sk_image_filter_t* skiac_sk_image_filter_make_tile(const skiac_rect_t* src, const skiac_rect_t* dst, skiac_sk_image_filter_t* input);
-skiac_sk_image_filter_t* skiac_sk_image_filter_make_blend(skiac_sk_blend_mode_t mode, skiac_sk_image_filter_t* background, skiac_sk_image_filter_t* foreground, const skiac_rect_t* crop_rect);
-skiac_sk_image_filter_t* skiac_sk_image_filter_make_crop(const skiac_rect_t* rect, skiac_sk_tile_mode_t tile_mode, skiac_sk_image_filter_t* input);
-skiac_sk_image_filter_t* skiac_sk_image_filter_make_displacement_map(skiac_sk_color_channel_t x_channel_selector, skiac_sk_color_channel_t y_channel_selector, float scale, skiac_sk_image_filter_t* displacement, skiac_sk_image_filter_t* color, const skiac_rect_t* crop_rect);
-skiac_sk_image_filter_t* skiac_sk_image_filter_make_empty();
-skiac_sk_image_filter_t* skiac_sk_image_filter_make_image(skiac_sk_image_t* image, const skiac_rect_t* src_rect, const skiac_rect_t* dst_rect, const skiac_sk_sampling_options_t* sampling);
-skiac_sk_image_filter_t* skiac_sk_image_filter_make_magnifier(const skiac_rect_t* lens_bounds, float zoom_amount, float inset, const skiac_sk_sampling_options_t* sampling, skiac_sk_image_filter_t* input, const skiac_rect_t* crop_rect);
-skiac_sk_image_filter_t* skiac_sk_image_filter_make_matrix_convolution(const skiac_isize_t* kernel_size, const float kernel[], float gain, float bias, const skiac_ipoint_t* kernel_offset, skiac_sk_tile_mode_t tile_mode, bool convolve_alpha, skiac_sk_image_filter_t* input, const skiac_rect_t* crop_rect);
-skiac_sk_image_filter_t* skiac_sk_image_filter_make_matrix_transform(const skiac_matrix_t* matrix, const skiac_sk_sampling_options_t* sampling, skiac_sk_image_filter_t* input);
-skiac_sk_image_filter_t* skiac_sk_image_filter_make_picture(skiac_sk_picture_t* pic, const skiac_rect_t* target_rect);
-skiac_sk_image_filter_t* skiac_sk_image_filter_make_shader(skiac_sk_shader_t* shader, const skiac_rect_t* crop_rect);
+skiac_sk_image_filter_t *
+skiac_sk_image_filter_make_compose(skiac_sk_image_filter_t *outer,
+                                   skiac_sk_image_filter_t *inner);
+skiac_sk_image_filter_t *
+skiac_sk_image_filter_make_tile(const skiac_rect_t *src,
+                                const skiac_rect_t *dst,
+                                skiac_sk_image_filter_t *input);
+skiac_sk_image_filter_t *skiac_sk_image_filter_make_blend(
+    skiac_sk_blend_mode_t mode, skiac_sk_image_filter_t *background,
+    skiac_sk_image_filter_t *foreground, const skiac_rect_t *crop_rect);
+skiac_sk_image_filter_t *
+skiac_sk_image_filter_make_crop(const skiac_rect_t *rect,
+                                skiac_sk_tile_mode_t tile_mode,
+                                skiac_sk_image_filter_t *input);
+skiac_sk_image_filter_t *skiac_sk_image_filter_make_displacement_map(
+    skiac_sk_color_channel_t x_channel_selector,
+    skiac_sk_color_channel_t y_channel_selector, float scale,
+    skiac_sk_image_filter_t *displacement, skiac_sk_image_filter_t *color,
+    const skiac_rect_t *crop_rect);
+skiac_sk_image_filter_t *skiac_sk_image_filter_make_empty();
+skiac_sk_image_filter_t *skiac_sk_image_filter_make_image(
+    skiac_sk_image_t *image, const skiac_rect_t *src_rect,
+    const skiac_rect_t *dst_rect, const skiac_sk_sampling_options_t *sampling);
+skiac_sk_image_filter_t *skiac_sk_image_filter_make_magnifier(
+    const skiac_rect_t *lens_bounds, float zoom_amount, float inset,
+    const skiac_sk_sampling_options_t *sampling, skiac_sk_image_filter_t *input,
+    const skiac_rect_t *crop_rect);
+skiac_sk_image_filter_t *skiac_sk_image_filter_make_matrix_convolution(
+    const skiac_isize_t *kernel_size, const float kernel[], float gain,
+    float bias, const skiac_ipoint_t *kernel_offset,
+    skiac_sk_tile_mode_t tile_mode, bool convolve_alpha,
+    skiac_sk_image_filter_t *input, const skiac_rect_t *crop_rect);
+skiac_sk_image_filter_t *skiac_sk_image_filter_make_matrix_transform(
+    const skiac_matrix_t *matrix, const skiac_sk_sampling_options_t *sampling,
+    skiac_sk_image_filter_t *input);
+skiac_sk_image_filter_t *
+skiac_sk_image_filter_make_picture(skiac_sk_picture_t *pic,
+                                   const skiac_rect_t *target_rect);
+skiac_sk_image_filter_t *
+skiac_sk_image_filter_make_shader(skiac_sk_shader_t *shader,
+                                  const skiac_rect_t *crop_rect);
 
-
-
-skiac_sk_image_filter_t* skiac_sk_image_filter_make_arithmetic(float k1, float k2, float k3, float k4, bool enforce_pm_color, skiac_sk_image_filter_t* background, skiac_sk_image_filter_t* foreground, const skiac_rect_t* crop_rect);
-
+skiac_sk_image_filter_t *skiac_sk_image_filter_make_arithmetic(
+    float k1, float k2, float k3, float k4, bool enforce_pm_color,
+    skiac_sk_image_filter_t *background, skiac_sk_image_filter_t *foreground,
+    const skiac_rect_t *crop_rect);
 
 // Lighting filter effects
-skiac_sk_image_filter_t* skiac_sk_image_filter_make_distant_lit_diffuse(const skiac_point3_t* direction, uint32_t light_color, float surface_scale, float kd, skiac_sk_image_filter_t* input, const skiac_rect_t* crop_rect);
-skiac_sk_image_filter_t* skiac_sk_image_filter_make_point_lit_diffuse(const skiac_point3_t* location, uint32_t light_color, float surface_scale, float kd, skiac_sk_image_filter_t* input, const skiac_rect_t* crop_rect);
-skiac_sk_image_filter_t* skiac_sk_image_filter_make_spot_lit_diffuse(const skiac_point3_t* location, const skiac_point3_t* target, float falloff_exponent, float cutoff_angle, uint32_t light_color, float surface_scale, float kd, skiac_sk_image_filter_t* input, const skiac_rect_t* crop_rect);
-skiac_sk_image_filter_t* skiac_sk_image_filter_make_distant_lit_specular(const skiac_point3_t* direction, uint32_t light_color, float surface_scale, float ks, float shininess, skiac_sk_image_filter_t* input, const skiac_rect_t* crop_rect);
-skiac_sk_image_filter_t* skiac_sk_image_filter_make_point_lit_specular(const skiac_point3_t* location, uint32_t light_color, float surface_scale, float ks, float shininess, skiac_sk_image_filter_t* input, const skiac_rect_t* crop_rect);
-skiac_sk_image_filter_t* skiac_sk_image_filter_make_spot_lit_specular(const skiac_point3_t* location, const skiac_point3_t* target, float falloff_exponent, float cutoff_angle, uint32_t light_color, float surface_scale, float ks, float shininess, skiac_sk_image_filter_t* input, const skiac_rect_t* crop_rect);
-
-
-
-
+skiac_sk_image_filter_t *skiac_sk_image_filter_make_distant_lit_diffuse(
+    const skiac_point3_t *direction, uint32_t light_color, float surface_scale,
+    float kd, skiac_sk_image_filter_t *input, const skiac_rect_t *crop_rect);
+skiac_sk_image_filter_t *skiac_sk_image_filter_make_point_lit_diffuse(
+    const skiac_point3_t *location, uint32_t light_color, float surface_scale,
+    float kd, skiac_sk_image_filter_t *input, const skiac_rect_t *crop_rect);
+skiac_sk_image_filter_t *skiac_sk_image_filter_make_spot_lit_diffuse(
+    const skiac_point3_t *location, const skiac_point3_t *target,
+    float falloff_exponent, float cutoff_angle, uint32_t light_color,
+    float surface_scale, float kd, skiac_sk_image_filter_t *input,
+    const skiac_rect_t *crop_rect);
+skiac_sk_image_filter_t *skiac_sk_image_filter_make_distant_lit_specular(
+    const skiac_point3_t *direction, uint32_t light_color, float surface_scale,
+    float ks, float shininess, skiac_sk_image_filter_t *input,
+    const skiac_rect_t *crop_rect);
+skiac_sk_image_filter_t *skiac_sk_image_filter_make_point_lit_specular(
+    const skiac_point3_t *location, uint32_t light_color, float surface_scale,
+    float ks, float shininess, skiac_sk_image_filter_t *input,
+    const skiac_rect_t *crop_rect);
+skiac_sk_image_filter_t *skiac_sk_image_filter_make_spot_lit_specular(
+    const skiac_point3_t *location, const skiac_point3_t *target,
+    float falloff_exponent, float cutoff_angle, uint32_t light_color,
+    float surface_scale, float ks, float shininess,
+    skiac_sk_image_filter_t *input, const skiac_rect_t *crop_rect);
 
 // Shaders
-skiac_sk_shader_t* skiac_sk_shader_make_solid_color(uint32_t rgba);
-skiac_sk_shader_t* skiac_sk_shader_make_linear_gradient(const skiac_point_t* pts, const uint32_t colors[], const float pos[], int count, skiac_sk_tile_mode_t tile_mode, uint32_t flags);
-skiac_sk_shader_t* skiac_sk_shader_make_fractal_noise(float base_frequency_x, float base_frequency_y,
-                                                      int num_octaves, float seed,
-                                                      const skiac_isize_t* tile_size);
-skiac_sk_shader_t* skiac_sk_shader_make_turbulence(float base_frequency_x, float base_frequency_y,
-                                                   int num_octaves, float seed,
-                                                   const skiac_isize_t* tile_size);
-skiac_sk_shader_t* skiac_sk_shader_make_two_point_conical(const skiac_point_t* start, float start_radius, const skiac_point_t* end, float end_radius, const uint32_t colors[], const float pos[], int count, skiac_sk_tile_mode_t tile_mode, uint32_t flags);
-skiac_sk_shader_t* skiac_sk_shader_make_sweep(float cx, float cy, const uint32_t colors[], const float pos[], int count, skiac_sk_tile_mode_t mode, float start_angle, float end_angle, uint32_t flags);
+skiac_sk_shader_t *skiac_sk_shader_make_solid_color(uint32_t rgba);
+skiac_sk_shader_t *skiac_sk_shader_make_linear_gradient(
+    const skiac_point_t *pts, const uint32_t colors[], const float pos[],
+    int count, skiac_sk_tile_mode_t tile_mode, uint32_t flags);
+skiac_sk_shader_t *
+skiac_sk_shader_make_fractal_noise(float base_frequency_x,
+                                   float base_frequency_y, int num_octaves,
+                                   float seed, const skiac_isize_t *tile_size);
+skiac_sk_shader_t *
+skiac_sk_shader_make_turbulence(float base_frequency_x, float base_frequency_y,
+                                int num_octaves, float seed,
+                                const skiac_isize_t *tile_size);
+skiac_sk_shader_t *skiac_sk_shader_make_two_point_conical(
+    const skiac_point_t *start, float start_radius, const skiac_point_t *end,
+    float end_radius, const uint32_t colors[], const float pos[], int count,
+    skiac_sk_tile_mode_t tile_mode, uint32_t flags);
+skiac_sk_shader_t *skiac_sk_shader_make_sweep(float cx, float cy,
+                                              const uint32_t colors[],
+                                              const float pos[], int count,
+                                              skiac_sk_tile_mode_t mode,
+                                              float start_angle,
+                                              float end_angle, uint32_t flags);
 
 // Path effects
-skiac_sk_path_effect_t* skiac_sk_path_effect_make_dash(const float* intervals, int count, float phase);
-skiac_sk_path_effect_t* skiac_sk_path_effect_make_corner(float radius);
-skiac_sk_path_effect_t* skiac_sk_path_effect_make_discrete(float seg_length, float dev);
+skiac_sk_path_effect_t *skiac_sk_path_effect_make_dash(const float *intervals,
+                                                       int count, float phase);
+skiac_sk_path_effect_t *skiac_sk_path_effect_make_corner(float radius);
+skiac_sk_path_effect_t *skiac_sk_path_effect_make_discrete(float seg_length,
+                                                           float dev);
 
 // Mask filters
-skiac_sk_mask_filter_t* skiac_sk_mask_filter_make_blur(int style, float sigma);
+skiac_sk_mask_filter_t *skiac_sk_mask_filter_make_blur(int style, float sigma);
 
 // Paint setters
-void skiac_sk_paint_set_shader(skiac_sk_paint_t* paint, const skiac_sk_shader_t* shader);
-void skiac_sk_paint_set_color_filter(skiac_sk_paint_t* paint, const skiac_sk_color_filter_t* cf);
-void skiac_sk_paint_set_image_filter(skiac_sk_paint_t* paint, const skiac_sk_image_filter_t* f);
-void skiac_sk_paint_set_path_effect(skiac_sk_paint_t* paint, const skiac_sk_path_effect_t* pe);
-void skiac_sk_paint_set_mask_filter(skiac_sk_paint_t* paint, const skiac_sk_mask_filter_t* mf);
-skiac_sk_shader_t* skiac_sk_shader_make_radial_gradient(const skiac_point_t* center, float radius, const uint32_t colors[], const float pos[], int count, skiac_sk_tile_mode_t tile_mode, uint32_t flags);
-skiac_sk_shader_t* skiac_sk_shader_make_radial_simple(float cx, float cy, float radius, uint32_t c0, uint32_t c1, skiac_sk_tile_mode_t tile_mode);
+void skiac_sk_paint_set_shader(skiac_sk_paint_t *paint,
+                               const skiac_sk_shader_t *shader);
+void skiac_sk_paint_set_color_filter(skiac_sk_paint_t *paint,
+                                     const skiac_sk_color_filter_t *cf);
+void skiac_sk_paint_set_image_filter(skiac_sk_paint_t *paint,
+                                     const skiac_sk_image_filter_t *f);
+void skiac_sk_paint_set_path_effect(skiac_sk_paint_t *paint,
+                                    const skiac_sk_path_effect_t *pe);
+void skiac_sk_paint_set_mask_filter(skiac_sk_paint_t *paint,
+                                    const skiac_sk_mask_filter_t *mf);
+skiac_sk_shader_t *
+skiac_sk_shader_make_radial_gradient(const skiac_point_t *center, float radius,
+                                     const uint32_t colors[], const float pos[],
+                                     int count, skiac_sk_tile_mode_t tile_mode,
+                                     uint32_t flags);
+skiac_sk_shader_t *
+skiac_sk_shader_make_radial_simple(float cx, float cy, float radius,
+                                   uint32_t c0, uint32_t c1,
+                                   skiac_sk_tile_mode_t tile_mode);
 
 // Runtime shader (SkSL)
-skiac_sk_runtime_effect_t* skiac_runtime_effect_make_for_shader(const char* sksl);
-void skiac_runtime_effect_unref(skiac_sk_runtime_effect_t* e);
-size_t skiac_runtime_effect_uniform_size(const skiac_sk_runtime_effect_t* e);
-skiac_sk_shader_t* skiac_runtime_effect_make_shader(const skiac_sk_runtime_effect_t* e, const skiac_sk_data_t* uniforms_or_null);
-skiac_sk_runtime_effect_builder_t* skiac_sk_runtime_effect_builder_create(skiac_sk_runtime_effect_t* effect);
-void skiac_sk_runtime_effect_builder_unref(skiac_sk_runtime_effect_builder_t* builder);
+skiac_sk_runtime_effect_t *
+skiac_runtime_effect_make_for_shader(const char *sksl);
+void skiac_runtime_effect_unref(skiac_sk_runtime_effect_t *e);
+size_t skiac_runtime_effect_uniform_size(const skiac_sk_runtime_effect_t *e);
+skiac_sk_shader_t *
+skiac_runtime_effect_make_shader(const skiac_sk_runtime_effect_t *e,
+                                 const skiac_sk_data_t *uniforms_or_null);
+skiac_sk_runtime_effect_builder_t *
+skiac_sk_runtime_effect_builder_create(skiac_sk_runtime_effect_t *effect);
+void skiac_sk_runtime_effect_builder_unref(
+    skiac_sk_runtime_effect_builder_t *builder);
 
-void skiac_sk_runtime_effect_builder_set_uniform_float(skiac_sk_runtime_effect_builder_t* builder, const char* name, float value);
-void skiac_sk_runtime_effect_builder_set_child_shader(skiac_sk_runtime_effect_builder_t* builder, const char* name, skiac_sk_shader_t* shader);
+void skiac_sk_runtime_effect_builder_set_uniform_float(
+    skiac_sk_runtime_effect_builder_t *builder, const char *name, float value);
+void skiac_sk_runtime_effect_builder_set_child_shader(
+    skiac_sk_runtime_effect_builder_t *builder, const char *name,
+    skiac_sk_shader_t *shader);
 
-skiac_sk_shader_t* skiac_sk_runtime_effect_builder_make_shader(skiac_sk_runtime_effect_builder_t* builder);
-skiac_sk_color_filter_t* skiac_sk_runtime_effect_builder_make_color_filter(skiac_sk_runtime_effect_builder_t* builder);
-skiac_sk_blender_t* skiac_sk_runtime_effect_builder_make_blender(skiac_sk_runtime_effect_builder_t* builder);
+skiac_sk_shader_t *skiac_sk_runtime_effect_builder_make_shader(
+    skiac_sk_runtime_effect_builder_t *builder);
+skiac_sk_color_filter_t *skiac_sk_runtime_effect_builder_make_color_filter(
+    skiac_sk_runtime_effect_builder_t *builder);
+skiac_sk_blender_t *skiac_sk_runtime_effect_builder_make_blender(
+    skiac_sk_runtime_effect_builder_t *builder);
 
 // SkColor
 uint32_t skiac_sk_color_set_argb(uint8_t a, uint8_t r, uint8_t g, uint8_t b);
 
 // SkMatrix
-void skiac_matrix_set_identity(skiac_matrix_t* out_matrix);
-void skiac_matrix_set_translate(skiac_matrix_t* out_matrix, float dx, float dy);
-void skiac_matrix_set_scale(skiac_matrix_t* out_matrix, float sx, float sy);
-void skiac_matrix_set_rotate(skiac_matrix_t* out_matrix, float degrees);
-void skiac_matrix_concat(skiac_matrix_t* out_matrix, const skiac_matrix_t* a, const skiac_matrix_t* b);
-
+void skiac_matrix_set_identity(skiac_matrix_t *out_matrix);
+void skiac_matrix_set_translate(skiac_matrix_t *out_matrix, float dx, float dy);
+void skiac_matrix_set_scale(skiac_matrix_t *out_matrix, float sx, float sy);
+void skiac_matrix_set_rotate(skiac_matrix_t *out_matrix, float degrees);
+void skiac_matrix_concat(skiac_matrix_t *out_matrix, const skiac_matrix_t *a,
+                         const skiac_matrix_t *b);
 
 #ifdef __cplusplus
 }

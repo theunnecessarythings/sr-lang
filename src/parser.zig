@@ -2164,7 +2164,7 @@ fn parseArrayLike(self: *Parser, comptime mode: ParseMode) !cst.ExprId {
                 break :blk self.addExpr(.SliceType, .{ .elem = elem, .loc = start_loc });
             } else {
                 // [] => empty array literal in expression context
-                break :blk self.addExpr(.ArrayLit, .{ .elems = .empty(), .loc = start_loc });
+                break :blk self.addExpr(.ArrayLit, .{ .elems = .empty(), .trailing_comma = false, .loc = start_loc });
             }
         },
 
@@ -2199,7 +2199,7 @@ fn parseArrayLike(self: *Parser, comptime mode: ParseMode) !cst.ExprId {
                         defer items.deinit(self.gpa);
                         try items.append(self.gpa, first);
                         const elems = self.cst_u.exprs.expr_pool.pushMany(self.gpa, items.items);
-                        break :blk self.addExpr(.ArrayLit, .{ .elems = elems, .loc = start_loc });
+                        break :blk self.addExpr(.ArrayLit, .{ .elems = elems, .trailing_comma = false, .loc = start_loc });
                     }
                 },
                 .colon => {
@@ -2215,14 +2215,19 @@ fn parseArrayLike(self: *Parser, comptime mode: ParseMode) !cst.ExprId {
                     defer items.deinit(self.gpa);
 
                     try items.append(self.gpa, first);
+                    var trailing = false;
                     while (self.cur.tag != .rsquare and self.cur.tag != .eof) {
                         try items.append(self.gpa, try self.parseExpr(0, .expr));
-                        if (!self.consumeIf(.comma)) break;
+                        if (!self.consumeIf(.comma)) {
+                            trailing = false;
+                            break;
+                        }
+                        trailing = true;
                     }
                     try self.expect(.rsquare);
 
                     const elems = self.cst_u.exprs.expr_pool.pushMany(self.gpa, items.items);
-                    break :blk self.addExpr(.ArrayLit, .{ .elems = elems, .loc = start_loc });
+                    break :blk self.addExpr(.ArrayLit, .{ .elems = elems, .trailing_comma = trailing, .loc = start_loc });
                 },
                 else => {
                     self.errorNote(

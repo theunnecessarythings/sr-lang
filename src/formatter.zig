@@ -51,12 +51,17 @@ const Formatter = struct {
     needs_indent: bool = true,
     comment_idx: usize = 0,
 
+    // Tracks the end index of the last printed token/node.
+    last_written_loc: usize = 0,
+
     fn format(self: *Formatter) ![]u8 {
         self.builder = .{};
+        self.last_written_loc = 0;
+        self.comment_idx = 0;
         errdefer self.builder.deinit(self.gpa);
 
         try self.printProgram();
-        try self.emitRemainingComments();
+        try self.flushComments(self.source.len);
 
         if (self.builder.items.len == 0 or self.builder.items[self.builder.items.len - 1] != '\n') {
             try self.builder.append(self.gpa, '\n');
@@ -65,7 +70,7 @@ const Formatter = struct {
     }
 
     // ------------------------------------------------------------
-    // Basics
+    // Basics & Comment Logic
     // ------------------------------------------------------------
     fn ws(self: *Formatter) !void {
         if (!self.needs_indent) return;
@@ -81,6 +86,16 @@ const Formatter = struct {
         self.needs_indent = true;
     }
 
+    fn lastCharIsNewline(self: *Formatter) bool {
+        return self.builder.items.len > 0 and self.builder.items[self.builder.items.len - 1] == '\n';
+    }
+
+    fn endsWithDoubleNewline(self: *Formatter) bool {
+        return self.builder.items.len >= 2 and
+            self.builder.items[self.builder.items.len - 1] == '\n' and
+            self.builder.items[self.builder.items.len - 2] == '\n';
+    }
+
     fn printf(self: *Formatter, comptime fmt: []const u8, args: anytype) !void {
         try self.ws();
         try std.fmt.format(self.builder.writer(self.gpa), fmt, args);
@@ -94,83 +109,179 @@ const Formatter = struct {
         return self.locs.get(loc).start;
     }
 
+    inline fn locEnd(self: *const Formatter, loc: cst.LocId) usize {
+        return self.locs.get(loc).end;
+    }
+
+    fn updateLastWritten(self: *Formatter, loc: cst.LocId) void {
+        const end = self.locEnd(loc);
+        if (end > self.last_written_loc) self.last_written_loc = end;
+    }
+
     fn emitCommentsBefore(self: *Formatter, pos: usize) !void {
+        try self.flushComments(pos);
+    }
+
+    // Scans backwards in the source to determine if the comment is on a new line.
+    fn isLineComment(self: *Formatter, comment_start: usize) bool {
+        var i: usize = comment_start;
+        while (i > 0) {
+            i -= 1;
+            const c = self.source[i];
+            if (c == '\n') return true;
+            if (c != ' ' and c != '\t' and c != '\r') return false; // Found code -> Trailing
+        }
+        return true; // Start of file
+    }
+
+    fn flushComments(self: *Formatter, limit: usize) !void {
         while (self.comment_idx < self.comments.len) {
             const c = self.comments[self.comment_idx];
             const loc = self.locs.get(c.loc);
-            if (loc.start >= pos) break;
-            try self.writeComment(c, loc);
+
+            if (loc.start >= limit) break;
+
+            const is_line_comment = self.isLineComment(loc.start);
+            const gap_has_blank = self.gapHasExtraBlank(self.last_written_loc, loc.start);
+
+            if (is_line_comment) {
+                // Only add newline if we're not at the very start of the file
+                if (self.builder.items.len > 0 and !self.lastCharIsNewline()) {
+                    try self.newline();
+                }
+                if (gap_has_blank) {
+                    if (!self.endsWithDoubleNewline()) {
+                        try self.newline();
+                    }
+                }
+                try self.ws();
+            } else {
+                // Trailing comment: Ensure exactly one space separator
+                if (self.builder.items.len > 0 and
+                    self.builder.items[self.builder.items.len - 1] != ' ' and
+                    self.builder.items[self.builder.items.len - 1] != '\n')
+                {
+                    try self.builder.append(self.gpa, ' ');
+                }
+            }
+
+            try self.printCommentBody(c, loc);
+
+            switch (c.kind) {
+                .line, .doc, .container_doc => {
+                    try self.newline();
+                },
+                .block => {
+                    // Inline block comments do not force a newline
+                },
+            }
+
+            self.last_written_loc = loc.end;
             self.comment_idx += 1;
         }
     }
 
-    fn emitRemainingComments(self: *Formatter) !void {
-        while (self.comment_idx < self.comments.len) {
-            const c = self.comments[self.comment_idx];
-            const loc = self.locs.get(c.loc);
-            try self.writeComment(c, loc);
-            self.comment_idx += 1;
-        }
-    }
-
-    fn writeComment(self: *Formatter, _: cst.Comment, loc: Loc) !void {
-        const inline_source = lineHasCodeBefore(self.source, loc.start);
-        if (inline_source and self.builder.items.len > 0 and self.builder.items[self.builder.items.len - 1] == '\n') {
-            // Pull the comment up to the previous line.
-            self.builder.items[self.builder.items.len - 1] = ' ';
-            self.needs_indent = false;
-        }
-
-        const inline_possible = (self.builder.items.len > 0 and self.builder.items[self.builder.items.len - 1] != '\n') or inline_source;
+    fn printCommentBody(self: *Formatter, c: cst.Comment, loc: Loc) !void {
         const text = self.source[loc.start..loc.end];
-        if (inline_possible and self.builder.items[self.builder.items.len - 1] != ' ') {
-            try self.builder.append(self.gpa, ' ');
+        switch (c.kind) {
+            .line => {
+                if (!std.mem.startsWith(u8, text, "//")) try self.builder.appendSlice(self.gpa, "//");
+                try self.builder.appendSlice(self.gpa, text);
+            },
+            .doc => {
+                if (!std.mem.startsWith(u8, text, "///")) try self.builder.appendSlice(self.gpa, "///");
+                try self.builder.appendSlice(self.gpa, text);
+            },
+            .container_doc => {
+                if (!std.mem.startsWith(u8, text, "//!")) try self.builder.appendSlice(self.gpa, "//!");
+                try self.builder.appendSlice(self.gpa, text);
+            },
+            .block => {
+                try self.builder.appendSlice(self.gpa, text);
+            },
         }
-        if (!inline_possible) try self.ws();
-        self.needs_indent = false;
-        try self.builder.appendSlice(self.gpa, text);
-        try self.newline();
+    }
+
+    fn gapHasExtraBlank(self: *Formatter, start: usize, end: usize) bool {
+        if (start >= end or end > self.source.len) return false;
+        const slice = self.source[start..end];
+        var nl: usize = 0;
+        for (slice) |byte| {
+            if (byte == '\n') nl += 1;
+            if (nl >= 2) return true;
+        }
+        return false;
     }
 
     // ------------------------------------------------------------
     // Program / Decl printing
     // ------------------------------------------------------------
     fn printProgram(self: *Formatter) !void {
-        if (!self.program.package_name.isNone()) {
-            const pkg_loc = if (!self.program.package_loc.isNone()) blk: {
-                break :blk self.locStart(self.program.package_loc.unwrap());
-            } else 0;
-            try self.emitCommentsBefore(pkg_loc);
-            try self.printf("package {s}", .{self.s(self.program.package_name.unwrap())});
-            try self.newline();
-            try self.newline();
+        if (!self.program.package_name.isNone() and !self.program.package_loc.isNone()) {
+            const pkg_loc_id = self.program.package_loc.unwrap();
+            const pkg_loc = self.locs.get(pkg_loc_id);
+            const text = self.source[pkg_loc.start..pkg_loc.end];
+
+            if (std.mem.eql(u8, text, "package")) {
+                try self.emitCommentsBefore(pkg_loc.start);
+                try self.printf("package {s}", .{self.s(self.program.package_name.unwrap())});
+
+                // Find the end of the line to handle any inline comments
+                var line_end = pkg_loc.end;
+                while (line_end < self.source.len and self.source[line_end] != '\n') : (line_end += 1) {}
+                
+                // Emit any comments on the same line as the package declaration
+                try self.flushComments(line_end);
+                self.last_written_loc = line_end;
+                
+                try self.newline();
+                try self.newline();
+            }
         }
 
         const decl_ids = self.exprs.decl_pool.slice(self.program.top_decls);
-        var prev_kind: u8 = 0; // 0 none, 1 import, 2 other
-        for (decl_ids, 0..) |did, i| {
-            const loc = self.exprs.Decl.get(did).loc;
-            try self.emitCommentsBefore(self.locStart(loc));
+        var prev_kind: u8 = 0; // 0: start, 1: import, 2: function, 3: other
+        var prev_has_body = false;
 
-            const kind: u8 = if (self.isImportDecl(did)) 1 else 2;
+        for (decl_ids, 0..) |did, i| {
+            const row = self.exprs.Decl.get(did);
+            const start_loc = self.locStart(row.loc);
+            const is_import = self.isImportDecl(did);
+            const is_function = self.isFunctionDecl(did);
+            const has_body = self.isFunctionWithBody(did);
+            const kind: u8 = if (is_import) 1 else if (is_function) 2 else 3;
+
+            var needs_blank = false;
             if (i > 0) {
-                switch (prev_kind) {
-                    1 => switch (kind) {
-                        1 => try self.newline(), // keep imports tight
-                        else => {
-                            try self.newline();
-                            try self.newline();
-                        },
-                    },
-                    else => {
-                        try self.newline();
-                        try self.newline();
-                    },
+                // Rule: Blank line when transitioning from imports to other declarations
+                if (prev_kind == 1 and kind != 1) {
+                    needs_blank = true;
+                }
+                // Rule: Blank line between functions with bodies (not extern declarations)
+                if (has_body and prev_has_body) {
+                    needs_blank = true;
+                }
+                // Rule: Respect manual blank lines in source
+                if (self.gapHasExtraBlank(self.last_written_loc, start_loc)) {
+                    needs_blank = true;
                 }
             }
 
+            if (i > 0) {
+                if (needs_blank) {
+                    if (!self.lastCharIsNewline()) try self.newline();
+                    if (!self.endsWithDoubleNewline()) try self.newline();
+                } else {
+                    if (!self.lastCharIsNewline()) try self.newline();
+                }
+            }
+
+            try self.emitCommentsBefore(start_loc);
             try self.printDecl(did);
+
+            self.updateLastWritten(row.loc);
             prev_kind = kind;
+            prev_has_body = has_body;
         }
         try self.newline();
     }
@@ -179,6 +290,21 @@ const Formatter = struct {
         const row = self.exprs.Decl.get(did);
         const rhs_kind = self.exprs.index.kinds.items[row.rhs.toRaw()];
         return rhs_kind == .Import;
+    }
+
+    fn isFunctionDecl(self: *Formatter, did: cst.DeclId) bool {
+        const row = self.exprs.Decl.get(did);
+        const rhs_kind = self.exprs.index.kinds.items[row.rhs.toRaw()];
+        return rhs_kind == .Function;
+    }
+
+    fn isFunctionWithBody(self: *Formatter, did: cst.DeclId) bool {
+        const row = self.exprs.Decl.get(did);
+        const rhs_kind = self.exprs.index.kinds.items[row.rhs.toRaw()];
+        if (rhs_kind != .Function) return false;
+        
+        const func = self.exprs.get(.Function, row.rhs);
+        return !func.body.isNone();
     }
 
     fn printDecl(self: *Formatter, id: cst.DeclId) !void {
@@ -213,8 +339,15 @@ const Formatter = struct {
             return;
         }
 
-        // Expression statement
         try self.printExpr(row.rhs);
+    }
+
+    inline fn exprLocFromId(exprs: *cst.ExprStore, eid: cst.ExprId) Loc {
+        @setEvalBranchQuota(10000);
+        const k = exprs.index.kinds.items[eid.toRaw()];
+        return switch (k) {
+            inline else => |x| exprs.locs.get(exprs.get(x, eid).loc),
+        };
     }
 
     // ------------------------------------------------------------
@@ -222,7 +355,55 @@ const Formatter = struct {
     // ------------------------------------------------------------
     pub fn printExpr(self: *Formatter, id: cst.ExprId) anyerror!void {
         const kind = self.exprs.index.kinds.items[id.toRaw()];
+
+        // Auto-update cursor at the end of the expression
+        defer {
+            @setEvalBranchQuota(100000);
+            const loc = exprLocFromId(self.exprs, id);
+            if (loc.end > self.last_written_loc) {
+                self.last_written_loc = loc.end;
+            }
+        }
+
         switch (kind) {
+            .Block => {
+                const node = self.exprs.get(.Block, id);
+                const block_loc = self.exprs.locs.get(node.loc);
+
+                try self.printf("{{", .{});
+
+                // Update cursor past '{'
+                if (block_loc.start + 1 > self.last_written_loc) {
+                    self.last_written_loc = block_loc.start + 1;
+                }
+
+                self.indent += 4;
+                const decls = self.exprs.decl_pool.slice(node.items);
+
+                for (decls) |did| {
+                    const row = self.exprs.Decl.get(did);
+                    const start = self.locStart(row.loc);
+
+                    try self.emitCommentsBefore(start);
+
+                    if (!self.lastCharIsNewline()) try self.newline();
+                    // Preserve blank lines inside blocks
+                    if (self.gapHasExtraBlank(self.last_written_loc, start)) {
+                        if (!self.endsWithDoubleNewline()) try self.newline();
+                    }
+
+                    try self.printDecl(did);
+                    self.updateLastWritten(row.loc);
+                }
+
+                try self.emitCommentsBefore(block_loc.end);
+
+                self.indent -= 4;
+                if (!self.lastCharIsNewline()) {
+                    try self.newline();
+                }
+                try self.printf("}}", .{});
+            },
             .Literal => {
                 const node = self.exprs.get(.Literal, id);
                 try self.printf("{s}", .{self.s(node.value)});
@@ -247,14 +428,26 @@ const Formatter = struct {
                 try self.printExpr(node.expr);
                 try self.printf(".*", .{});
             },
-
             .ArrayLit => {
                 const node = self.exprs.get(.ArrayLit, id);
                 try self.printf("[", .{});
                 const elems = self.exprs.expr_pool.slice(node.elems);
-                for (elems, 0..) |el, i| {
-                    if (i > 0) try self.printf(", ", .{});
-                    try self.printExpr(el);
+                if (node.trailing_comma and elems.len > 0) {
+                    self.indent += 4;
+                    for (elems) |el| {
+                        try self.newline();
+                        try self.ws();
+                        try self.printExpr(el);
+                        try self.printf(",", .{});
+                    }
+                    self.indent -= 4;
+                    try self.newline();
+                    try self.ws();
+                } else {
+                    for (elems, 0..) |el, i| {
+                        if (i > 0) try self.printf(", ", .{});
+                        try self.printExpr(el);
+                    }
                 }
                 try self.printf("]", .{});
             },
@@ -287,7 +480,6 @@ const Formatter = struct {
                 }
                 try self.printf("]", .{});
             },
-
             .Call => {
                 const node = self.exprs.get(.Call, id);
                 try self.printExpr(node.callee);
@@ -328,12 +520,11 @@ const Formatter = struct {
                 try self.printExpr(node.parent);
                 try self.printf(".{s}", .{self.s(node.field)});
             },
-
             .StructLit => {
                 const node = self.exprs.get(.StructLit, id);
                 if (!node.ty.isNone()) {
                     try self.printExpr(node.ty.unwrap());
-                    try self.printf(" ", .{});
+                    // try self.printf(" ", .{}); // Removed space
                 }
                 const fields = self.exprs.sfv_pool.slice(node.fields);
                 if (node.trailing_comma and fields.len > 0) {
@@ -355,6 +546,7 @@ const Formatter = struct {
                     try self.printf("}}", .{});
                 } else {
                     try self.printf("{{", .{});
+                    if (fields.len > 0) try self.printf(" ", .{});
                     for (fields, 0..) |fid, i| {
                         if (i > 0) try self.printf(", ", .{});
                         const field = self.exprs.StructFieldValue.get(fid);
@@ -363,10 +555,10 @@ const Formatter = struct {
                         }
                         try self.printExpr(field.value);
                     }
+                    if (fields.len > 0) try self.printf(" ", .{});
                     try self.printf("}}", .{});
                 }
             },
-
             .Function => {
                 const node = self.exprs.get(.Function, id);
                 try self.printAttrs(node.attrs, .Before);
@@ -391,27 +583,6 @@ const Formatter = struct {
                     try self.printf(" asm {s}", .{self.s(node.raw_asm.unwrap())});
                 }
             },
-            .Block => {
-                const node = self.exprs.get(.Block, id);
-                try self.printf("{{", .{});
-                self.indent += 4;
-                var prev_end: ?usize = null;
-                const decls = self.exprs.decl_pool.slice(node.items);
-                for (decls) |did| {
-                    const loc = self.exprs.Decl.get(did).loc;
-                    const start = self.locStart(loc);
-                    const extra_blank = if (prev_end) |pe| gapHasExtraBlank(self.source, pe, start) else false;
-                    try self.newline();
-                    if (extra_blank) try self.newline();
-                    try self.printDecl(did);
-                    prev_end = self.locs.get(loc).end;
-                }
-
-                self.indent -= 4;
-                try self.newline();
-                try self.printf("}}", .{});
-            },
-
             .Comptime => {
                 const node = self.exprs.get(.Comptime, id);
                 try self.printf("comptime ", .{});
@@ -460,7 +631,6 @@ const Formatter = struct {
                     try self.printf(" }}", .{});
                 }
             },
-
             .Return => {
                 const node = self.exprs.get(.Return, id);
                 try self.printf("return", .{});
@@ -644,7 +814,6 @@ const Formatter = struct {
                 try self.printExpr(node.expr);
                 try self.printf(")", .{});
             },
-
             .ArrayType => {
                 const node = self.exprs.get(.ArrayType, id);
                 try self.printf("[", .{});
@@ -654,7 +823,7 @@ const Formatter = struct {
             },
             .DynArrayType => {
                 const node = self.exprs.get(.DynArrayType, id);
-                try self.printf("[]", .{});
+                try self.printf("[dyn]", .{});
                 try self.printExpr(node.elem);
             },
             .MapType => {
@@ -898,11 +1067,6 @@ const Formatter = struct {
                 }
                 try self.printf(",", .{});
             }
-            // if (is_variadic) {
-            //     try self.newline();
-            //     try self.ws();
-            //     try self.printf("...,", .{});
-            // }
             self.indent -= 4;
             try self.newline();
             try self.ws();
@@ -930,10 +1094,6 @@ const Formatter = struct {
                 try self.printExpr(param.value.unwrap());
             }
         }
-        // if (is_variadic) {
-        //     if (params.len > 0) try self.printf(", ", .{});
-        //     try self.printf("...", .{});
-        // }
     }
 
     fn printStructField(self: *Formatter, id: cst.StructFieldId) !void {
@@ -1234,23 +1394,4 @@ fn infixOpStr(op: cst.InfixOp) []const u8 {
         .shl_sat_assign => "<<|=",
         .contains => "in",
     };
-}
-
-fn gapHasExtraBlank(source: []const u8, prev_end: usize, curr_start: usize) bool {
-    if (curr_start <= prev_end or prev_end >= source.len) return false;
-    const slice = source[prev_end..@min(curr_start, source.len)];
-    var newline_count: usize = 0;
-    for (slice) |c| {
-        if (c == '\n') newline_count += 1;
-    }
-    return newline_count >= 2;
-}
-
-fn lineHasCodeBefore(source: []const u8, idx: usize) bool {
-    const start = std.mem.lastIndexOfScalar(u8, source[0..idx], '\n') orelse 0;
-    const line = source[start..idx];
-    for (line) |c| {
-        if (c != ' ' and c != '\t' and c != '\r' and c != '\n') return true;
-    }
-    return false;
 }

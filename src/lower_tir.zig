@@ -3572,7 +3572,7 @@ fn lowerIndexAccess(
         // otherwise, index is a single usize.
         const idx = blk: {
             const rk = self.context.type_store.index.kinds.items[ty0.toRaw()];
-            if (rk == .Slice) {
+            if (rk == .Slice or rk == .String) {
                 const want = self.context.type_store.mkSlice(self.context.type_store.tUsize());
                 break :blk try self.lowerExpr(ctx, a, env, f, blk, row.index, want, .rvalue);
             } else {

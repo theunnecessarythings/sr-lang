@@ -1,6 +1,7 @@
 const std = @import("std");
 
 test "all" {
+    _ = @import("formatter.zig");
     _ = @import("lexer.zig");
     _ = @import("parser.zig");
     _ = @import("checker.zig");

@@ -9,11 +9,10 @@ ArrayList :: fn(comptime T: type) type {
     }
 
     Type.init :: proc() Type {
-        return Type {
+        return Type{
             items: alloc.alloc(sizeof(T) * 4).^[]T,
             capacity: 4,
         }
     }
     return Type
 }
-

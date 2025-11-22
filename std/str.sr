@@ -1,46 +1,61 @@
 package str
 
 // ASCII string utilities
-
 rt_strlen :: extern proc(*const u8) usize
 rt_memcmp :: extern proc(*const u8, *const u8, usize) i32
 rt_ptr_add :: extern proc(*const u8, usize) *u8
 
-length :: proc(s: string) usize { return s.len }
+length :: proc(s: string) usize {
+    return s.len
+}
 
 eq :: proc(a: string, b: string) bool {
     al := length(a)
     bl := length(b)
-    if (al != bl) { return false }
+    if (al != bl) {
+        return false
+    }
     return rt_memcmp(a.ptr, b.ptr, al) == 0
 }
 
 starts_with :: proc(s: string, prefix: string) bool {
     sl := length(s)
     pl := length(prefix)
-    if (pl > sl) { return false }
+    if (pl > sl) {
+        return false
+    }
     return rt_memcmp(s.ptr, prefix.ptr, pl) == 0
 }
 
 ends_with :: proc(s: string, suffix: string) bool {
     sl := length(s)
     tl := length(suffix)
-    if (tl > sl) { return false }
+    if (tl > sl) {
+        return false
+    }
     off := sl - tl
     return rt_memcmp(rt_ptr_add(s.ptr, off), suffix.ptr, tl) == 0
 }
 
-contains :: proc(s: string, sub: string) bool { return find(s, sub) != null }
+contains :: proc(s: string, sub: string) bool {
+    return find(s, sub) != null
+}
 
 // Naive search; returns index or null if not found
 find :: proc(s: string, sub: string) ?usize {
     sl := length(s)
     tl := length(sub)
-    if (tl == 0) { return 0 }
-    if (tl > sl) { return null }
+    if (tl == 0) {
+        return 0
+    }
+    if (tl > sl) {
+        return null
+    }
     i: usize = 0
     while (i + tl <= sl) {
-        if (rt_memcmp(rt_ptr_add(s.ptr, i), sub.ptr, tl) == 0) { return i }
+        if (rt_memcmp(rt_ptr_add(s.ptr, i), sub.ptr, tl) == 0) {
+            return i
+        }
         i = i + 1
     }
     return null

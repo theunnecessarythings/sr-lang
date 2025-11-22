@@ -3,7 +3,6 @@ package glfw3
 // ------------------------------------------------------------
 // Basic Types
 // ------------------------------------------------------------
-
 Monitor :: ?*void
 Window :: ?*void
 Cursor :: ?*void
@@ -38,7 +37,6 @@ GamepadState :: struct {
 // ------------------------------------------------------------
 // Constants
 // ------------------------------------------------------------
-
 VERSION_MAJOR :: 3
 VERSION_MINOR :: 4
 VERSION_REVISION :: 0
@@ -399,7 +397,6 @@ DONT_CARE :: -1
 // ------------------------------------------------------------
 // Function Pointer Types
 // ------------------------------------------------------------
-
 GLProc :: extern fn()
 VKProc :: extern fn()
 
@@ -427,9 +424,8 @@ GLFWjoystickfun :: extern fn(jid: i32, event: i32)
 // ------------------------------------------------------------
 // Functions
 // ------------------------------------------------------------
-
 glfwInit :: extern proc() i32
-glfwTerminate :: extern proc() 
+glfwTerminate :: extern proc()
 glfwInitHint :: extern proc(hint: i32, value: i32)
 glfwGetVersion :: extern proc(major: *i32, minor: *i32, rev: *i32)
 glfwGetVersionString :: extern fn() *const u8

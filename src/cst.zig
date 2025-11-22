@@ -472,7 +472,7 @@ pub const Rows = struct {
     pub const Deref = struct { expr: ExprId, loc: LocId };
 
     // ---------- collections / literals ----------
-    pub const ArrayLit = struct { elems: RangeOf(ExprId), loc: LocId };
+    pub const ArrayLit = struct { elems: RangeOf(ExprId), trailing_comma: bool, loc: LocId };
     pub const Tuple = struct { elems: RangeOf(ExprId), is_type: bool, loc: LocId };
     pub const Parenthesized = struct { inner: ExprId, loc: LocId };
     pub const MapLit = struct { entries: RangeOf(KeyValueId), loc: LocId };

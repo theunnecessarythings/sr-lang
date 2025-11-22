@@ -7,13 +7,13 @@ printf :: extern proc(*const u8, any) i32
 fflush :: extern proc(*void) i32
 
 // Runtime helpers for raw printing and panic.
-rt_print  :: extern proc(*const u8, usize) void
+rt_print :: extern proc(*const u8, usize) void
 rt_eprint :: extern proc(*const u8, usize) void
-rt_panic  :: extern proc(*const u8, usize) noreturn
+rt_panic :: extern proc(*const u8, usize) noreturn
 rt_strlen :: extern proc(*const u8) usize
 
 // Writer interface
-Writer :: struct { ctx: ?*void, write: proc(?*void, *u8, usize) usize }
+Writer :: struct {ctx: ?*void, write: proc(?*void, *u8, usize) usize}
 
 // Write all helper: attempts to write the full buffer; returns whether succeeded
 write_all :: proc(w: *Writer, buf: *u8, len: usize) bool {
@@ -34,26 +34,33 @@ stderr_write_impl :: proc(ctx: ?*void, buf: *u8, len: usize) usize {
     return len
 }
 
-stdout :: proc() Writer { return Writer{ ctx: null, write: stdout_write_impl } }
-stderr :: proc() Writer { return Writer{ ctx: null, write: stderr_write_impl } }
+stdout :: proc() Writer {
+    return Writer{ ctx: null, write: stdout_write_impl }
+}
+
+stderr :: proc() Writer {
+    return Writer{ ctx: null, write: stderr_write_impl }
+}
 
 // Print with one argument. Example: print("%d", 42)
-print :: proc(fmt: string, arg: any) void { 
-    printf(fmt.ptr, ..arg) 
+print :: proc(fmt: string, arg: any) void {
+    printf(fmt.ptr, ..arg)
 }
-
 
 // Print line with one argument (appends newline)
-println :: proc(fmt: string, arg: any) void { 
+println :: proc(fmt: string, arg: any) void {
     printf(fmt.ptr, ..arg)
-    printf("\n".ptr) 
+    printf("\n".ptr)
 }
 
-
 // Panic with message (noreturn)
-panic :: proc(msg: string) noreturn { rt_panic(msg.ptr, rt_strlen(msg.ptr)) }
+panic :: proc(msg: string) noreturn {
+    rt_panic(msg.ptr, rt_strlen(msg.ptr))
+}
 
 // Assert
 assert :: proc(cond: bool, msg: string) void {
-    if !cond { panic(msg) }
+    if !cond {
+        panic(msg)
+    }
 }

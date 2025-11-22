@@ -135,7 +135,7 @@ main :: proc() {
         // Slight blur image filter on subsequent draws
         blur := skia.ImageFilter.blur(4.0, 4.0)
         fill.set_image_filter(&blur)
-        rr2 := skia.Rect{x: rr.x + 16.0, y: rr.y + 16.0, width: rr.width, height: rr.height}
+        rr2 := skia.Rect{x: rr.x + 16.0, y: rr.y + 16.0, width: rr.width, height: rr.height,}
         canvas.draw_rrect(&rr2, 24.0, 24.0, &fill)
         // Cleanup
         blur.unref(); fill.unref(); grad.unref()

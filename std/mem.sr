@@ -1,10 +1,9 @@
 package mem
 
 // Memory operations: wrappers over runtime functions
-
-rt_memcpy  :: extern proc(*u8, *u8, usize) void
+rt_memcpy :: extern proc(*u8, *u8, usize) void
 rt_memmove :: extern proc(*u8, *u8, usize) void
-rt_memset  :: extern proc(*u8, u8, usize) void
+rt_memset :: extern proc(*u8, u8, usize) void
 
 // Copy memory from src to dst
 copy :: proc(dst: *void, src: *void, len: usize) void {
@@ -20,4 +19,3 @@ move :: proc(dst: *void, src: *void, len: usize) void {
 set :: proc(dst: *void, value: u8, len: usize) void {
     rt_memset(dst.^*u8, value, len)
 }
-

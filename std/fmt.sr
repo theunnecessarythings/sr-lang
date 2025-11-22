@@ -1,6 +1,5 @@
 package fmt
 
-
 printf :: extern proc(string, any) i32
 
 println :: printf

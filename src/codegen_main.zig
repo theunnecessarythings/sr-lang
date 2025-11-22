@@ -2118,7 +2118,7 @@ fn emitIndex(self: *Codegen, p: tir.Rows.Index, t: *tir.TIR) !mlir.Value {
         return op.getResult(0);
     }
 
-    if (res_sr_kind == .Slice) {
+    if (res_sr_kind == .Slice or res_sr_kind == .String) {
         // Peel optional CastNormal from the index to find builtin.range.make
         var idx_vid: tir.ValueId = p.index;
         if (self.def_instr.get(idx_vid)) |iid1| {
@@ -2199,6 +2199,13 @@ fn emitIndex(self: *Codegen, p: tir.Rows.Index, t: *tir.TIR) !mlir.Value {
                 const elem_mlir = try self.llvmTypeOf(elem_sr);
                 const idxs = [_]tir.Rows.GepIndex{.{ .Value = start_vid }};
                 data_ptr = try self.emitGep(base, elem_mlir, &idxs);
+            },
+            .String => {
+                elem_sr = self.context.type_store.tU8();
+                const ptr0 = self.extractAt(base, self.llvm_ptr_ty, &.{0});
+                const idxs = [_]tir.Rows.GepIndex{.{ .Value = start_vid }};
+                const elem_mlir = self.i8_ty;
+                data_ptr = try self.emitGep(ptr0, elem_mlir, &idxs);
             },
             else => return self.zeroOf(res_ty),
         }

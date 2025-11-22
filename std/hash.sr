@@ -1,7 +1,6 @@
 package hash
 
 // Hash utilities
-
 rt_strlen :: extern proc(*u8) usize
 
 // FNV-1a 64-bit
@@ -22,4 +21,3 @@ hash_str :: proc(s: string) u64 {
     l := rt_strlen(p)
     return fnv1a64(p, l)
 }
-

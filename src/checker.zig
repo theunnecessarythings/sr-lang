@@ -2588,7 +2588,7 @@ fn checkIndexAccess(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, id
     const col_kind = self.typeKind(col_ty);
     if (col_kind == .TypeError) return self.context.type_store.tTypeError();
     switch (col_kind) {
-        .Array, .Slice, .DynArray => return self.indexElemTypeFromArrayLike(ctx, ast_unit, col_ty, index_expr.index, exprLoc(ast_unit, index_expr)),
+        .Array, .Slice, .DynArray, .String => return self.indexElemTypeFromArrayLike(ctx, ast_unit, col_ty, index_expr.index, exprLoc(ast_unit, index_expr)),
         .Ptr => return self.indexElemTypeFromPointer(ctx, ast_unit, col_ty, index_expr.index, exprLoc(ast_unit, index_expr)),
         .Tensor => return self.indexElemTypeFromTensor(ctx, ast_unit, col_ty, index_expr.index, exprLoc(ast_unit, index_expr)),
         .Simd => {
@@ -2616,16 +2616,6 @@ fn checkIndexAccess(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, id
             }
             return m.value;
         },
-
-        .String => {
-            const it = try self.checkExpr(ctx, ast_unit, index_expr.index);
-            if (self.typeKind(it) == .TypeError) return self.context.type_store.tTypeError();
-            if (!check_types.isIntegerKind(self, self.typeKind(it))) {
-                try self.context.diags.addError(exprLoc(ast_unit, index_expr), .non_integer_index, .{});
-                return self.context.type_store.tTypeError();
-            }
-            return self.context.type_store.tU8();
-        },
         else => {
             try self.context.diags.addError(exprLoc(ast_unit, index_expr), .not_indexable, .{});
         },
@@ -2635,7 +2625,7 @@ fn checkIndexAccess(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, id
 
 fn indexElemTypeFromArrayLike(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, col_ty: types.TypeId, idx_expr: ast.ExprId, loc: Loc) !types.TypeId {
     const col_kind = self.typeKind(col_ty);
-    if (!(col_kind == .Array or col_kind == .Slice or col_kind == .DynArray)) {
+    if (!(col_kind == .Array or col_kind == .Slice or col_kind == .String or col_kind == .DynArray)) {
         // Defensive: caller promised an array-like, but was not. Avoid panic.
         try self.context.diags.addError(loc, .not_indexable, .{});
         return self.context.type_store.tTypeError();
@@ -2656,6 +2646,7 @@ fn indexElemTypeFromArrayLike(self: *Checker, ctx: *CheckerContext, ast_unit: *a
                 const r = self.context.type_store.get(.DynArray, col_ty);
                 break :blk3 self.context.type_store.mkSlice(r.elem);
             },
+            .String => self.context.type_store.tString(),
             else => return self.context.type_store.tTypeError(),
         };
     }
@@ -2669,6 +2660,7 @@ fn indexElemTypeFromArrayLike(self: *Checker, ctx: *CheckerContext, ast_unit: *a
         .Array => self.context.type_store.get(.Array, col_ty).elem,
         .Slice => self.context.type_store.get(.Slice, col_ty).elem,
         .DynArray => self.context.type_store.get(.DynArray, col_ty).elem,
+        .String => self.context.type_store.tU8(),
         else => self.context.type_store.tTypeError(),
     };
 }

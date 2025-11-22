@@ -311,7 +311,7 @@ fn process_file(
             try out_writer.writeAll(formatted);
             try out_writer.flush();
         } else {
-            var file = try std.fs.cwd().openFile(abs_filename, .{ .mode = .read_write });
+            var file = try std.fs.cwd().createFile(abs_filename, .{ .truncate = true });
             defer file.close();
             try file.writeAll(formatted);
         }

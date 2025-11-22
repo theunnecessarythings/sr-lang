@@ -3,9 +3,8 @@ package map
 // Map is an in-language associative container built on top of dynamic arrays.
 // It favours clarity over performance and keeps entries in insertion order.
 // The compiler can lower `[K: V]` forms to this implementation.
-
 Map :: fn(comptime K: type, comptime V: type) type {
-    Entry :: struct { key: K, value: V }
+    Entry :: struct {key: K, value: V}
 
     MapType :: struct {
         len: usize,

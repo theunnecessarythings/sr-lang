@@ -1,21 +1,21 @@
 package time
 
 // Time utilities using clock_gettime and nanosleep (Linux)
-
-Timespec :: struct { tv_sec: i64, tv_nsec: i64 }
+Timespec :: struct {tv_sec: i64, tv_nsec: i64}
 
 clock_gettime :: extern proc(i32, *Timespec) i32
-nanosleep     :: extern proc(*Timespec, ?*Timespec) i32
+nanosleep :: extern proc(*Timespec, ?*Timespec) i32
 
 clock_gettime_c :: proc(clk_id: i32, ts: *Timespec) i32 {
     return clock_gettime(clk_id, ts)
 }
+
 nanosleep_c :: proc(req: *Timespec, rem: ?*Timespec) i32 {
     return nanosleep(req, rem)
 }
 
-CLOCK_REALTIME  : i32 = 0
-CLOCK_MONOTONIC : i32 = 1
+CLOCK_REALTIME: i32 = 0
+CLOCK_MONOTONIC: i32 = 1
 
 now_realtime :: proc() Timespec {
     ts := Timespec{ tv_sec: 0, tv_nsec: 0 }
