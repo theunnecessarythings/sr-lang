@@ -1044,6 +1044,17 @@ pub fn typeFromTypeExpr(self: *Checker, ctx: *Checker.CheckerContext, ast_unit: 
             break :blk_fn .{ status, ts.mkFunction(pbuf, res, fnr.flags.is_variadic, is_pure, fnr.flags.is_extern) };
         },
         .FieldAccess => blk_fa: {
+            // Recursion guard: check if we're already resolving this expression
+            for (ctx.resolving_type_exprs.items) |resolving_id| {
+                if (resolving_id.eq(id)) {
+                    // Circular type expression detected. Return type error to avoid stack overflow.
+                    try self.context.diags.addError(ast_unit.exprs.locs.get(ast_unit.exprs.get(.FieldAccess, id).loc), .field_access_on_non_aggregate, .{});
+                    break :blk_fa .{ false, ts.tTypeError() };
+                }
+            }
+            try ctx.resolving_type_exprs.append(self.gpa, id);
+            defer _ = ctx.resolving_type_exprs.pop();
+
             const fr = ast_unit.exprs.get(.FieldAccess, id);
             const parent_res = try typeFromTypeExpr(self, ctx, ast_unit, fr.parent);
             status = status and parent_res[0];

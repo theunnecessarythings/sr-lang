@@ -306,8 +306,15 @@ fn respondInitialize(out: *std.Io.Writer, gpa: std.mem.Allocator, id: u64) !void
                 tokenModifiers: []const []const u8,
             },
             full: bool = true,
-        } = .{ .legend = .{ .tokenTypes = semantic_token_types[0..], .tokenModifiers = semantic_token_modifiers[0..] } },
-        positionEncoding: []const u8 = "utf-16",
+            range: bool = true,
+        } = .{
+            .legend = .{
+                .tokenTypes = semantic_token_types[0..],
+                .tokenModifiers = semantic_token_modifiers[0..],
+            },
+            .range = true,
+        },
+        positionEncoding: []const u8 = "utf-8",
     };
     const Resp = struct {
         jsonrpc: []const u8 = "2.0",
@@ -1311,7 +1318,7 @@ fn onFormatting(out: *std.Io.Writer, gpa: std.mem.Allocator, docs: *DocumentStor
         .range = fullRange(source),
         .newText = formatted,
     };
-    const edits = [_]TextEdit{ edit };
+    const edits = [_]TextEdit{edit};
     const Resp = struct {
         jsonrpc: []const u8 = "2.0",
         id: u64,

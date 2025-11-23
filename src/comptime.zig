@@ -19,6 +19,7 @@ pub const ComptimeApi = struct {
 
 pub const FunctionValue = struct {
     expr: ast.ExprId,
+    ast: *ast.Ast,
 };
 
 pub const Sequence = struct {

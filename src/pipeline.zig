@@ -497,7 +497,7 @@ fn runInterpreterStage(self: *Pipeline) anyerror!void {
 }
 
 fn interpretAstUnit(self: *Pipeline, ast_unit: *ast_mod.Ast) anyerror!bool {
-    var interp = try interpreter.Interpreter.init(self.allocator, ast_unit, null);
+    var interp = try interpreter.Interpreter.init(self.allocator, ast_unit, null, null);
     defer interp.deinit();
 
     var found_block = false;

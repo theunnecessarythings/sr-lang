@@ -70,6 +70,7 @@ pub const Interpreter = struct {
     allocator: std.mem.Allocator,
     ast: *ast.Ast,
     symtab: ?*@import("symbols.zig").SymbolStore,
+    compilation_unit: ?*@import("package.zig").CompilationUnit,
     bindings: std.ArrayList(Binding),
     method_table: MethodMap,
     specializations: std.AutoHashMap(u128, FunctionSpecializationEntry),
@@ -89,11 +90,12 @@ pub const Interpreter = struct {
         InvalidIndexAccess,
     };
 
-    pub fn init(allocator: std.mem.Allocator, ast_unit: *ast.Ast, symtab: ?*@import("symbols.zig").SymbolStore) anyerror!Interpreter {
+    pub fn init(allocator: std.mem.Allocator, ast_unit: *ast.Ast, symtab: ?*@import("symbols.zig").SymbolStore, compilation_unit: ?*@import("package.zig").CompilationUnit) anyerror!Interpreter {
         var interp = Interpreter{
             .allocator = allocator,
             .ast = ast_unit,
             .symtab = symtab,
+            .compilation_unit = compilation_unit,
             .bindings = std.ArrayList(Binding).empty,
             .method_table = MethodMap.init(allocator),
             .specializations = std.AutoHashMap(u128, FunctionSpecializationEntry).init(allocator),
@@ -132,7 +134,7 @@ pub const Interpreter = struct {
             .Binary => self.evalBinary(self.ast.exprs.get(.Binary, expr)),
             .Unary => self.evalUnary(self.ast.exprs.get(.Unary, expr)),
             .If => self.evalIf(self.ast.exprs.get(.If, expr)),
-            .FunctionLit => evalFunctionLit(expr),
+            .FunctionLit => self.evalFunctionLit(expr),
             .ArrayLit => self.evalSequence(self.ast.exprs.get(.ArrayLit, expr).elems),
             .TupleLit => self.evalSequence(self.ast.exprs.get(.TupleLit, expr).elems),
             .MapLit => self.evalMapLit(self.ast.exprs.get(.MapLit, expr)),
@@ -232,8 +234,8 @@ pub const Interpreter = struct {
         }
     }
 
-    fn evalFunctionLit(expr: ast.ExprId) anyerror!Value {
-        return Value{ .Function = .{ .expr = expr } };
+    fn evalFunctionLit(self: *Interpreter, expr: ast.ExprId) anyerror!Value {
+        return Value{ .Function = .{ .expr = expr, .ast = self.ast } };
     }
 
     fn evalAssignment(self: *Interpreter, row: ast.StmtRows.Assign) anyerror!void {
@@ -525,7 +527,7 @@ pub const Interpreter = struct {
             var parent = try self.evalExpr(field_row.parent);
             if (structOwner(parent)) |owner_name| {
                 if (self.lookupMethod(owner_name, field_row.field)) |expr| {
-                    callee_value = Value{ .Function = .{ .expr = expr } };
+                    callee_value = Value{ .Function = .{ .expr = expr, .ast = self.ast } };
                     method_receiver = parent;
                 } else {
                     callee_value = try self.evalFieldAccessWithParent(field_row, &parent, true);
@@ -571,14 +573,14 @@ pub const Interpreter = struct {
     }
 
     fn callFunction(self: *Interpreter, func: FunctionValue, args: *std.ArrayList(Value)) anyerror!Value {
-        const row = self.ast.exprs.get(.FunctionLit, func.expr);
-        const params = self.ast.exprs.param_pool.slice(row.params);
+        const row = func.ast.exprs.get(.FunctionLit, func.expr);
+        const params = func.ast.exprs.param_pool.slice(row.params);
         if (!row.flags.is_variadic and args.items.len > params.len) return Error.TooManyArguments;
         var matches = std.ArrayList(Binding){};
         defer matches.deinit(self.allocator);
         var idx: usize = 0;
         while (idx < params.len) : (idx += 1) {
-            const param = self.ast.exprs.Param.get(params[idx]);
+            const param = func.ast.exprs.Param.get(params[idx]);
             const is_variadic_param = row.flags.is_variadic and idx == params.len - 1;
             var value: Value = .Void;
             if (is_variadic_param) {
@@ -597,7 +599,7 @@ pub const Interpreter = struct {
             }
             const pattern = param.pat.unwrap();
             const before = matches.items.len;
-            if (!try self.matchPattern(value, pattern, &matches)) {
+            if (!try self.matchPattern(func.ast, value, pattern, &matches)) {
                 self.rollbackBindings(&matches, before);
                 value.destroy(self.allocator);
                 return Error.InvalidCall;
@@ -607,6 +609,12 @@ pub const Interpreter = struct {
         var scope = try self.pushBindings(&matches);
         defer scope.deinit();
         if (row.body.isNone()) return Value{ .Void = {} };
+        
+        // Temporarily switch to the function's AST for evaluating the body
+        const saved_ast = self.ast;
+        self.ast = func.ast;
+        defer self.ast = saved_ast;
+        
         return try self.evalExpr(row.body.unwrap());
     }
 
@@ -742,8 +750,16 @@ pub const Interpreter = struct {
                     if (idx >= seq.values.items.len) return Error.InvalidFieldAccess;
                     return try self.cloneValue(seq.values.items[idx]);
                 },
-                else => Error.InvalidFieldAccess,
+                else => return Error.InvalidFieldAccess,
             };
+        }
+        const field_name = self.ast.exprs.strs.get(row.field);
+        if (std.mem.eql(u8, field_name, "len")) {
+            switch (parent.*) {
+                .Sequence => |seq| return Value{ .Int = @intCast(seq.values.items.len) },
+                .String => |s| return Value{ .Int = @intCast(s.len) },
+                else => return Error.InvalidFieldAccess,
+            }
         }
         return switch (parent.*) {
             .Pointer => |ptr| {
@@ -758,10 +774,41 @@ pub const Interpreter = struct {
                 return Error.InvalidFieldAccess;
             },
             .Type => |type_id| {
+                var id = type_id;
                 const ts = self.ast.type_info.store;
-                const kind = ts.index.kinds.items[type_id.toRaw()];
+                var kind = ts.index.kinds.items[id.toRaw()];
+                if (kind == .TypeType) {
+                    const type_type = ts.get(.TypeType, id);
+                    id = type_type.of;
+                }
+                if (kind == .Ast) {
+                    const ast_ty = ts.get(.Ast, id);
+                    // Accessing a member from an imported module
+                    if (self.compilation_unit) |compilation_unit| {
+                        const pkg_name = self.ast.exprs.strs.get(ast_ty.pkg_name);
+                        const filepath = self.ast.exprs.strs.get(ast_ty.filepath);
+                        if (compilation_unit.packages.getPtr(pkg_name)) |pkg| {
+                            if (pkg.sources.getPtr(filepath)) |parent_unit| {
+                                if (parent_unit.ast) |a| {
+                                    // Re-intern field name into the imported unit's interner
+                                    const fname = self.ast.exprs.strs.get(row.field);
+                                    const target_sid = a.exprs.strs.intern(fname);
+                                    if (a.type_info.getExport(target_sid)) |ex| {
+                                        // Try to get the comptime value for this export
+                                        const decl = a.exprs.Decl.get(ex.decl_id);
+                                        if (a.type_info.getComptimeValue(decl.value)) |val_ptr| {
+                                            return try self.cloneValue(val_ptr.*);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    return Error.InvalidFieldAccess;
+                }
+                kind = ts.index.kinds.items[id.toRaw()];
                 if (kind == .Enum) {
-                    const enum_type = ts.get(.Enum, type_id);
+                    const enum_type = ts.get(.Enum, id);
                     const members = ts.enum_member_pool.slice(enum_type.members);
                     for (members) |member_id| {
                         const member = ts.EnumMember.get(member_id);
@@ -769,10 +816,22 @@ pub const Interpreter = struct {
                             return Value{ .Int = member.value };
                         }
                     }
+                } else if (kind == .Struct) {
+                    const struct_ty = ts.get(.Struct, id);
+                    const fields = ts.field_pool.slice(struct_ty.fields);
+                    for (fields) |field_id| {
+                        const field = ts.Field.get(field_id);
+                        if (field.name.eq(row.field)) {
+                            // Return the field's type wrapped in TypeType
+                            return Value{ .Type = ts.mkTypeType(field.ty) };
+                        }
+                    }
                 }
                 return Error.InvalidFieldAccess;
             },
-            else => Error.InvalidFieldAccess,
+            else => {
+                return Error.InvalidFieldAccess;
+            },
         };
     }
 
@@ -831,7 +890,7 @@ pub const Interpreter = struct {
             const arm = self.ast.exprs.MatchArm.get(arm_id);
             var matches = std.ArrayList(Binding){};
             defer matches.deinit(self.allocator);
-            if (!try self.matchPattern(scrut, arm.pattern, &matches)) continue;
+            if (!try self.matchPattern(self.ast, scrut, arm.pattern, &matches)) continue;
             var scope = try self.pushBindings(&matches);
             defer scope.deinit();
             if (!arm.guard.isNone()) {
@@ -880,7 +939,7 @@ pub const Interpreter = struct {
     fn runLoopIteration(self: *Interpreter, pattern: ast.PatternId, body: ast.ExprId, value: Value) anyerror!bool {
         var matches = std.ArrayList(Binding){};
         defer matches.deinit(self.allocator);
-        if (!try self.matchPattern(value, pattern, &matches)) return false;
+        if (!try self.matchPattern(self.ast, value, pattern, &matches)) return false;
         var scope = try self.pushBindings(&matches);
         defer scope.deinit();
         var body_val = try self.evalExpr(body);
@@ -895,7 +954,7 @@ pub const Interpreter = struct {
             if (row.is_pattern and !row.pattern.isNone()) {
                 var matches = std.ArrayList(Binding){};
                 defer matches.deinit(self.allocator);
-                if (!try self.matchPattern(cond_value, row.pattern.unwrap(), &matches)) {
+                if (!try self.matchPattern(self.ast, cond_value, row.pattern.unwrap(), &matches)) {
                     cond_value.destroy(self.allocator);
                     break;
                 }
@@ -979,12 +1038,7 @@ pub const Interpreter = struct {
             const kind = self.ast.exprs.index.kinds.items[row.value.toRaw()];
 
             if (isTypeExprKind(kind)) {
-                var value = try self.evalExpr(row.value);
-                defer value.destroy(self.allocator);
-                return switch (value) {
-                    .Type => |ty| Value{ .Type = ty },
-                    else => Error.InvalidType,
-                };
+                return try self.evalExpr(row.value);
             }
         }
 
@@ -1006,7 +1060,7 @@ pub const Interpreter = struct {
 
     fn isTypeExprKind(kind: ast.ExprKind) bool {
         return switch (kind) {
-            .TupleType, .ArrayType, .DynArrayType, .MapType, .SliceType, .OptionalType, .ErrorSetType, .ErrorType, .StructType, .EnumType, .VariantType, .UnionType, .PointerType, .SimdType, .ComplexType, .TensorType, .TypeType, .AnyType, .NoreturnType => true,
+            .TupleType, .ArrayType, .DynArrayType, .MapType, .SliceType, .OptionalType, .ErrorSetType, .ErrorType, .StructType, .EnumType, .VariantType, .UnionType, .PointerType, .SimdType, .ComplexType, .TensorType, .TypeType, .AnyType, .NoreturnType, .Literal => true,
             else => false,
         };
     }
@@ -1426,18 +1480,18 @@ pub const Interpreter = struct {
         return null;
     }
 
-    fn matchPattern(self: *Interpreter, value: Value, pid: ast.PatternId, matches: *std.ArrayList(Binding)) anyerror!bool {
-        const kind = self.ast.pats.index.kinds.items[pid.toRaw()];
+    fn matchPattern(self: *Interpreter, pattern_ast: *ast.Ast, value: Value, pid: ast.PatternId, matches: *std.ArrayList(Binding)) anyerror!bool {
+        const kind = pattern_ast.pats.index.kinds.items[pid.toRaw()];
         switch (kind) {
             .Wildcard => return true,
             .Literal => {
-                const row = self.ast.pats.get(.Literal, pid);
+                const row = pattern_ast.pats.get(.Literal, pid);
                 var literal = try self.evalExpr(row.expr);
                 defer literal.destroy(self.allocator);
                 return valuesEqual(value, literal);
             },
             .Binding => {
-                const row = self.ast.pats.get(.Binding, pid);
+                const row = pattern_ast.pats.get(.Binding, pid);
                 var binding_value = try self.cloneValue(value);
                 var success = false;
                 defer if (!success) binding_value.destroy(self.allocator);
@@ -1445,25 +1499,25 @@ pub const Interpreter = struct {
                 success = true;
                 return true;
             },
-            .Tuple => return try self.matchTuplePattern(value, self.ast.pats.get(.Tuple, pid), matches),
-            .Slice => return try self.matchSlicePattern(value, self.ast.pats.get(.Slice, pid), matches),
-            .Struct => return try self.matchStructPattern(value, self.ast.pats.get(.Struct, pid), matches),
-            .At => return try self.matchAtPattern(value, self.ast.pats.get(.At, pid), matches),
+            .Tuple => return try self.matchTuplePattern(pattern_ast, value, pattern_ast.pats.get(.Tuple, pid), matches),
+            .Slice => return try self.matchSlicePattern(pattern_ast, value, pattern_ast.pats.get(.Slice, pid), matches),
+            .Struct => return try self.matchStructPattern(pattern_ast, value, pattern_ast.pats.get(.Struct, pid), matches),
+            .At => return try self.matchAtPattern(pattern_ast, value, pattern_ast.pats.get(.At, pid), matches),
             else => return false,
         }
     }
 
-    fn matchTuplePattern(self: *Interpreter, value: Value, row: ast.PatRows.Tuple, matches: *std.ArrayList(Binding)) anyerror!bool {
+    fn matchTuplePattern(self: *Interpreter, pattern_ast: *ast.Ast, value: Value, row: ast.PatRows.Tuple, matches: *std.ArrayList(Binding)) anyerror!bool {
         return switch (value) {
             .Sequence => |seq| {
-                const patterns = self.ast.pats.pat_pool.slice(row.elems);
+                const patterns = pattern_ast.pats.pat_pool.slice(row.elems);
                 if (seq.values.items.len != patterns.len) return false;
                 if (seq.values.items.len == 0) return true;
                 const elems = seq.values.items[0..seq.values.items.len];
                 var idx: usize = 0;
                 while (idx < patterns.len) : (idx += 1) {
                     const before = matches.items.len;
-                    if (!try self.matchPattern(elems[idx], patterns[idx], matches)) {
+                    if (!try self.matchPattern(pattern_ast, elems[idx], patterns[idx], matches)) {
                         self.rollbackBindings(matches, before);
                         return false;
                     }
@@ -1474,10 +1528,10 @@ pub const Interpreter = struct {
         };
     }
 
-    fn matchSlicePattern(self: *Interpreter, value: Value, row: ast.PatRows.Slice, matches: *std.ArrayList(Binding)) anyerror!bool {
+    fn matchSlicePattern(self: *Interpreter, pattern_ast: *ast.Ast, value: Value, row: ast.PatRows.Slice, matches: *std.ArrayList(Binding)) anyerror!bool {
         return switch (value) {
             .Sequence => |seq| {
-                const patterns = self.ast.pats.pat_pool.slice(row.elems);
+                const patterns = pattern_ast.pats.pat_pool.slice(row.elems);
                 const fixed: usize = if (row.has_rest) @intCast(row.rest_index) else patterns.len;
                 if (seq.values.items.len < fixed) return false;
                 if (fixed > 0) {
@@ -1485,7 +1539,7 @@ pub const Interpreter = struct {
                     var idx: usize = 0;
                     while (idx < fixed) : (idx += 1) {
                         const before = matches.items.len;
-                        if (!try self.matchPattern(elems[idx], patterns[idx], matches)) {
+                        if (!try self.matchPattern(pattern_ast, elems[idx], patterns[idx], matches)) {
                             self.rollbackBindings(matches, before);
                             return false;
                         }
@@ -1498,7 +1552,7 @@ pub const Interpreter = struct {
                 const rest_pattern = row.rest_binding.unwrap();
                 var rest_value = try self.cloneSequence(seq);
                 const before_rest = matches.items.len;
-                const matched_rest = try self.matchPattern(rest_value, rest_pattern, matches);
+                const matched_rest = try self.matchPattern(pattern_ast, rest_value, rest_pattern, matches);
                 rest_value.destroy(self.allocator);
                 if (!matched_rest) {
                     self.rollbackBindings(matches, before_rest);
@@ -1510,17 +1564,17 @@ pub const Interpreter = struct {
         };
     }
 
-    fn matchStructPattern(self: *Interpreter, value: Value, row: ast.PatRows.Struct, matches: *std.ArrayList(Binding)) anyerror!bool {
+    fn matchStructPattern(self: *Interpreter, pattern_ast: *ast.Ast, value: Value, row: ast.PatRows.Struct, matches: *std.ArrayList(Binding)) anyerror!bool {
         return switch (value) {
             .Struct => |sv| {
-                const fields = self.ast.pats.field_pool.slice(row.fields);
+                const fields = pattern_ast.pats.field_pool.slice(row.fields);
                 if (!row.has_rest and sv.fields.items.len != fields.len) return false;
                 for (fields) |field_id| {
-                    const field = self.ast.pats.StructField.get(field_id);
+                    const field = pattern_ast.pats.StructField.get(field_id);
                     const struct_field = findStructField(sv, field.name);
                     if (struct_field == null) return false;
                     const before = matches.items.len;
-                    if (!try self.matchPattern(struct_field.?.value, field.pattern, matches)) {
+                    if (!try self.matchPattern(pattern_ast, struct_field.?.value, field.pattern, matches)) {
                         self.rollbackBindings(matches, before);
                         return false;
                     }
@@ -1531,9 +1585,9 @@ pub const Interpreter = struct {
         };
     }
 
-    fn matchAtPattern(self: *Interpreter, value: Value, row: ast.PatRows.At, matches: *std.ArrayList(Binding)) anyerror!bool {
+    fn matchAtPattern(self: *Interpreter, pattern_ast: *ast.Ast, value: Value, row: ast.PatRows.At, matches: *std.ArrayList(Binding)) anyerror!bool {
         const before = matches.items.len;
-        if (!try self.matchPattern(value, row.pattern, matches)) {
+        if (!try self.matchPattern(pattern_ast, value, row.pattern, matches)) {
             self.rollbackBindings(matches, before);
             return false;
         }
@@ -1611,7 +1665,7 @@ pub const Interpreter = struct {
         if (self.specializations.getPtr(map_hash)) |existing| {
             if (keysEqual(existing.key, key)) {
                 return SpecializationResult{
-                    .func = FunctionValue{ .expr = existing.func_expr },
+                    .func = FunctionValue{ .expr = existing.func_expr, .ast = self.ast },
                     .snapshot = try self.cloneSnapshot(&existing.bindings),
                 };
             }
@@ -1628,7 +1682,7 @@ pub const Interpreter = struct {
         try self.specializations.put(map_hash, entry);
         success = true;
         return SpecializationResult{
-            .func = FunctionValue{ .expr = entry.func_expr },
+            .func = FunctionValue{ .expr = entry.func_expr, .ast = self.ast },
             .snapshot = return_snapshot,
         };
     }

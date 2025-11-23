@@ -44,6 +44,7 @@ pub const CheckerContext = struct {
     catch_binding_stack: List(CatchBindingCtx) = .{},
     match_binding_stack: List(MatchBindingCtx) = .{},
     resolving_type_decls: List(ast.DeclId) = .{},
+    resolving_type_exprs: List(ast.ExprId) = .{},
     param_specializations: List(ParamSpecialization) = .{},
 
     pub fn deinit(self: *CheckerContext, gpa: std.mem.Allocator) void {
@@ -56,6 +57,7 @@ pub const CheckerContext = struct {
         self.catch_binding_stack.deinit(gpa);
         self.match_binding_stack.deinit(gpa);
         self.resolving_type_decls.deinit(gpa);
+        self.resolving_type_exprs.deinit(gpa);
         self.param_specializations.deinit(gpa);
     }
 };
@@ -163,7 +165,7 @@ pub fn evalComptimeExpr(
         return comp.cloneComptimeValue(self.gpa, cached.*);
     }
 
-    var interp = try interpreter.Interpreter.init(self.gpa, ast_unit, &ctx.symtab);
+    var interp = try interpreter.Interpreter.init(self.gpa, ast_unit, &ctx.symtab, &self.context.compilation_unit);
     defer interp.deinit();
     try installInterpreterBindings(self, &interp, ast_unit, bindings);
     const computed = try interp.evalExpr(expr);

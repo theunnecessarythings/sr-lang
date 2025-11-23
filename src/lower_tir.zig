@@ -115,7 +115,7 @@ pub const LowerContext = struct {
             return entry;
         }
         const interp = try self.gpa.create(interpreter.Interpreter);
-        interp.* = try interpreter.Interpreter.init(self.gpa, target_ast, null);
+        interp.* = try interpreter.Interpreter.init(self.gpa, target_ast, null, null);
         try self.interp_cache.put(key, interp);
         return interp;
     }
@@ -210,7 +210,7 @@ pub fn run(self: *LowerTir, levels: *const compile.DependencyLevels) !*tir.TIR {
             const t = try self.gpa.create(tir.TIR);
             t.* = tir.TIR.init(self.gpa, self.context.type_store);
             const interp = try self.gpa.create(interpreter.Interpreter);
-            interp.* = try interpreter.Interpreter.init(self.gpa, unit.ast.?, null);
+            interp.* = try interpreter.Interpreter.init(self.gpa, unit.ast.?, null, null);
             const ctx = try self.gpa.create(LowerContext);
             ctx.* = LowerContext{
                 .method_lowered = .init(self.gpa),
