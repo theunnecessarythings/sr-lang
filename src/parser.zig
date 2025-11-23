@@ -1276,7 +1276,7 @@ fn parseImport(self: *Parser) !cst.ExprId {
 
     // Use a separate diagnostics buffer for this imported file
     const child_diags = try self.gpa.create(diag.Diagnostics);
-    child_diags.* = diag.Diagnostics.init(self.gpa);
+    child_diags.* = diag.Diagnostics.init(self.gpa, self.context.type_store, self.context.interner);
 
     const parser = try self.gpa.create(Parser);
     parser.* = Parser.init(self.gpa, source0, file_id, child_diags, self.context);

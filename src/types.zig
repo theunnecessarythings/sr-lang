@@ -415,6 +415,27 @@ pub const Rows = struct {
     pub const TypeError = struct {};
 };
 
+/// Options for formatting types in diagnostic messages
+pub const FormatOptions = struct {
+    /// Maximum depth for nested types (default: 2)
+    max_depth: u8 = 2,
+    
+    /// Maximum parameters to show in function (default: 5)
+    max_params: u8 = 5,
+    
+    /// Maximum fields to show in struct/enum (default: 3)
+    max_fields: u8 = 3,
+    
+    /// Show module path for named types (default: true)
+    show_module_path: bool = true,
+    
+    /// Use type names instead of structure (default: true)
+    prefer_names: bool = true,
+    
+    /// Show constness for pointers (default: true)
+    show_const: bool = true,
+};
+
 inline fn RowT(comptime K: TypeKind) type {
     return @field(Rows, @tagName(K));
 }
@@ -1389,6 +1410,264 @@ pub const TypeStore = struct {
                 try w.print(")", .{});
             },
             .TypeError => try w.print("<type error>", .{}),
+        }
+    }
+
+    /// Format a type for use in diagnostic messages.
+    /// Returns a concise, human-readable string representation.
+    /// Caller owns returned memory.
+    pub fn formatTypeForDiagnostic(
+        self: *TypeStore,
+        type_id: TypeId,
+        options: FormatOptions,
+        writer: anytype,
+    ) !void {
+        try self.fmtDiagnostic(type_id, writer, options, 0);
+    }
+
+    /// Internal function for diagnostic-friendly type formatting
+    fn fmtDiagnostic(
+        self: *TypeStore,
+        type_id: TypeId,
+        writer: anytype,
+        options: FormatOptions,
+        depth: u8,
+    ) !void {
+        // Prevent infinite recursion
+        if (depth >= options.max_depth) {
+            try writer.print("...", .{});
+            return;
+        }
+
+        const kind = self.getKind(type_id);
+        
+        switch (kind) {
+            // Primitives: use existing lowercase format
+            .Void, .Bool, .I8, .I16, .I32, .I64,
+            .U8, .U16, .U32, .U64, .F32, .F64,
+            .Usize, .String, .Any, .Noreturn, .Undef,
+            .MlirModule, .MlirAttribute, .MlirType,
+            .TypeType, .TypeError, .Ast
+            => try self.fmt(type_id, writer),
+            
+            // Pointers: add const support
+            .Ptr => {
+                const r = self.get(.Ptr, type_id);
+                if (options.show_const and r.is_const) {
+                    try writer.print("*const ", .{});
+                } else {
+                    try writer.print("*", .{});
+                }
+                try self.fmtDiagnostic(r.elem, writer, options, depth + 1);
+            },
+            
+            // Slices, Arrays, DynArrays, Optional: delegate with depth tracking
+            .Slice => {
+                const r = self.get(.Slice, type_id);
+                try writer.print("[]", .{});
+                try self.fmtDiagnostic(r.elem, writer, options, depth + 1);
+            },
+            .Array => {
+                const r = self.get(.Array, type_id);
+                try writer.print("[{}]", .{r.len});
+                try self.fmtDiagnostic(r.elem, writer, options, depth + 1);
+            },
+            .DynArray => {
+                const r = self.get(.DynArray, type_id);
+                try writer.print("dyn[]", .{});
+                try self.fmtDiagnostic(r.elem, writer, options, depth + 1);
+            },
+            .Optional => {
+                const r = self.get(.Optional, type_id);
+                try writer.print("?", .{});
+                try self.fmtDiagnostic(r.elem, writer, options, depth + 1);
+            },
+            
+            // Complex types
+            .Complex => {
+                const r = self.get(.Complex, type_id);
+                try writer.print("complex@", .{});
+                try self.fmtDiagnostic(r.elem, writer, options, depth + 1);
+            },
+            .Tensor => {
+                const r = self.get(.Tensor, type_id);
+                try writer.print("tensor{}@", .{r.rank});
+                try self.fmtDiagnostic(r.elem, writer, options, depth + 1);
+                try writer.print("[", .{});
+                var i: u8 = 0;
+                while (i < r.rank) : (i += 1) {
+                    if (i != 0) try writer.print(" x ", .{});
+                    try writer.print("{}", .{r.dims[i]});
+                }
+                try writer.print("]", .{});
+            },
+            .Simd => {
+                const r = self.get(.Simd, type_id);
+                try writer.print("simd{}@", .{r.lanes});
+                try self.fmtDiagnostic(r.elem, writer, options, depth + 1);
+            },
+            
+            // Tuples: with truncation
+            .Tuple => {
+                const r = self.get(.Tuple, type_id);
+                try writer.print("(", .{});
+                const ids = self.type_pool.slice(r.elems);
+                const show_count = @min(ids.len, options.max_fields);
+                
+                for (ids[0..show_count], 0..) |elem_id, idx| {
+                    if (idx > 0) try writer.print(", ", .{});
+                    try self.fmtDiagnostic(elem_id, writer, options, depth + 1);
+                }
+                
+                if (ids.len > show_count) {
+                    try writer.print(", ... ({d} more)", .{ids.len - show_count});
+                }
+                
+                try writer.print(")", .{});
+            },
+            
+            // Maps
+            .Map => {
+                const r = self.get(.Map, type_id);
+                try writer.print("map[", .{});
+                try self.fmtDiagnostic(r.key, writer, options, depth + 1);
+                try writer.print("] ", .{});
+                try self.fmtDiagnostic(r.value, writer, options, depth + 1);
+            },
+            
+            // Functions: with parameter truncation
+            .Function => {
+                const r = self.get(.Function, type_id);
+                const kind_str = if (r.is_pure) "fn" else "proc";
+                try writer.print("{s}(", .{kind_str});
+                
+                const params = self.type_pool.slice(r.params);
+                const show_count = @min(params.len, options.max_params);
+                
+                for (params[0..show_count], 0..) |param, idx| {
+                    if (idx > 0) try writer.print(", ", .{});
+                    try self.fmtDiagnostic(param, writer, options, depth + 1);
+                }
+                
+                if (params.len > show_count) {
+                    try writer.print(", ... ({d} more)", .{params.len - show_count});
+                }
+                
+                try writer.print(") ", .{});
+                try self.fmtDiagnostic(r.result, writer, options, depth + 1);
+                
+                if (r.is_variadic) try writer.print(" variadic", .{});
+            },
+            
+            // Structs: with field truncation (type names will be added in Phase 3)
+            .Struct => {
+                const r = self.get(.Struct, type_id);
+                try writer.print("struct {{ ", .{});
+                const fields = self.field_pool.slice(r.fields);
+                const show_count = @min(fields.len, options.max_fields);
+                
+                for (fields[0..show_count], 0..) |field_id, idx| {
+                    if (idx > 0) try writer.print(", ", .{});
+                    const f = self.Field.get(field_id);
+                    try writer.print("{s}: ", .{self.strs.get(f.name)});
+                    try self.fmtDiagnostic(f.ty, writer, options, depth + 1);
+                }
+                
+                if (fields.len > show_count) {
+                    try writer.print(", ... ({d} more)", .{fields.len - show_count});
+                }
+                
+                try writer.print(" }}", .{});
+            },
+            
+            // Enums: with member truncation
+            .Enum => {
+                const r = self.get(.Enum, type_id);
+                try writer.print("enum(", .{});
+                try self.fmtDiagnostic(r.tag_type, writer, options, depth + 1);
+                try writer.print(") {{ ", .{});
+                const members = self.enum_member_pool.slice(r.members);
+                const show_count = @min(members.len, options.max_fields);
+                
+                for (members[0..show_count], 0..) |member_id, idx| {
+                    if (idx > 0) try writer.print(", ", .{});
+                    const member = self.EnumMember.get(member_id);
+                    try writer.print("{s}", .{self.strs.get(member.name)});
+                }
+                
+                if (members.len > show_count) {
+                    try writer.print(", ... ({d} more)", .{members.len - show_count});
+                }
+                
+                try writer.print(" }}", .{});
+            },
+            
+            // Variants: with truncation
+            .Variant => {
+                const r = self.get(.Variant, type_id);
+                try writer.print("variant {{ ", .{});
+                const variants = self.field_pool.slice(r.variants);
+                const show_count = @min(variants.len, options.max_fields);
+                
+                for (variants[0..show_count], 0..) |variant_id, idx| {
+                    if (idx > 0) try writer.print(", ", .{});
+                    const v = self.Field.get(variant_id);
+                    try writer.print("{s}", .{self.strs.get(v.name)});
+                }
+                
+                if (variants.len > show_count) {
+                    try writer.print(", ... ({d} more)", .{variants.len - show_count});
+                }
+                
+                try writer.print(" }}", .{});
+            },
+            
+            // Errors: with truncation
+            .Error => {
+                const r = self.get(.Error, type_id);
+                try writer.print("error {{ ", .{});
+                const errors = self.field_pool.slice(r.variants);
+                const show_count = @min(errors.len, options.max_fields);
+                
+                for (errors[0..show_count], 0..) |error_id, idx| {
+                    if (idx > 0) try writer.print(", ", .{});
+                    const e = self.Field.get(error_id);
+                    try writer.print("{s}", .{self.strs.get(e.name)});
+                }
+                
+                if (errors.len > show_count) {
+                    try writer.print(", ... ({d} more)", .{errors.len - show_count});
+                }
+                
+                try writer.print(" }}", .{});
+            },
+            
+            // ErrorSet
+            .ErrorSet => {
+                const r = self.get(.ErrorSet, type_id);
+                try writer.print("!", .{});
+                try self.fmtDiagnostic(r.value_ty, writer, options, depth + 1);
+            },
+            
+            // Union
+            .Union => {
+                const r = self.get(.Union, type_id);
+                try writer.print("union {{ ", .{});
+                const fields = self.field_pool.slice(r.fields);
+                const show_count = @min(fields.len, options.max_fields);
+                
+                for (fields[0..show_count], 0..) |field_id, idx| {
+                    if (idx > 0) try writer.print(", ", .{});
+                    const f = self.Field.get(field_id);
+                    try writer.print("{s}", .{self.strs.get(f.name)});
+                }
+                
+                if (fields.len > show_count) {
+                    try writer.print(", ... ({d} more)", .{fields.len - show_count});
+                }
+                
+                try writer.print(" }}", .{});
+            },
         }
     }
 };

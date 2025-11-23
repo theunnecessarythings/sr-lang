@@ -8,7 +8,7 @@ const comp = @import("comptime.zig");
 const PipelineBinding = @import("pipeline.zig").Pipeline.ComptimeBinding;
 const Loc = @import("lexer.zig").Token.Loc;
 
-const Binding = union(enum) {
+pub const Binding = union(enum) {
     Type: struct { name: ast.StrId, ty: types.TypeId },
     Value: struct { name: ast.StrId, value: comp.ComptimeValue, ty: types.TypeId },
 };
@@ -321,7 +321,7 @@ fn evalLiteralToComptime(ast_unit: *ast.Ast, id: ast.ExprId) !?comp.ComptimeValu
     };
 }
 
-fn typeFromTypeExprWithBindings(
+pub fn typeFromTypeExprWithBindings(
     self: *Checker,
     ctx: *Checker.CheckerContext,
     ast_unit: *ast.Ast,
@@ -343,15 +343,21 @@ fn typeFromTypeExprWithBindings(
             const sfs = ast_unit.exprs.sfield_pool.slice(row.fields);
             var buf = try ts.gpa.alloc(types.TypeStore.StructFieldArg, sfs.len);
             defer ts.gpa.free(buf);
-            var seen = std.AutoArrayHashMapUnmanaged(u32, void){};
+            var seen = std.AutoArrayHashMapUnmanaged(u32, ast.LocId){};
             defer seen.deinit(self.gpa);
             var i: usize = 0;
             while (i < sfs.len) : (i += 1) {
                 const f = ast_unit.exprs.StructField.get(sfs[i]);
                 const gop = try seen.getOrPut(self.gpa, f.name.toRaw());
                 if (gop.found_existing) {
-                    try self.context.diags.addError(ast_unit.exprs.locs.get(f.loc), .duplicate_field, .{});
+                    const field_name = ast_unit.exprs.strs.get(f.name);
+                    const first_loc = ast_unit.exprs.locs.get(gop.value_ptr.*);
+                    const diag_idx = self.context.diags.count();
+                    try self.context.diags.addError(ast_unit.exprs.locs.get(f.loc), .duplicate_field, .{field_name});
+                    try self.context.diags.attachNote(diag_idx, first_loc, .first_defined_here);
                     status = false;
+                } else {
+                    gop.value_ptr.* = f.loc;
                 }
                 const res = try typeFromTypeExprWithBindings(self, ctx, ast_unit, f.ty, bindings);
                 status = status and res[0];
@@ -610,7 +616,9 @@ pub fn typeFromTypeExpr(self: *Checker, ctx: *Checker.CheckerContext, ast_unit: 
                 }
             }
 
-            try self.context.diags.addError(ast_unit.exprs.locs.get(ast_unit.exprs.get(.Ident, id).loc), .undefined_identifier, .{});
+            const ident = ast_unit.exprs.get(.Ident, id);
+            const ident_name = ast_unit.exprs.strs.get(ident.name);
+            try self.context.diags.addError(ast_unit.exprs.locs.get(ident.loc), .undefined_identifier, .{ident_name});
             break :blk .{ false, ts.tTypeError() };
         },
         .MlirBlock => blk: {
@@ -775,15 +783,22 @@ pub fn typeFromTypeExpr(self: *Checker, ctx: *Checker.CheckerContext, ast_unit: 
             const sfs = ast_unit.exprs.sfield_pool.slice(row.fields);
             var buf = try ts.gpa.alloc(types.TypeStore.StructFieldArg, sfs.len);
             defer ts.gpa.free(buf);
-            var seen = std.AutoArrayHashMapUnmanaged(u32, void){};
+            var seen = std.AutoArrayHashMapUnmanaged(u32, ast.LocId){};
             defer seen.deinit(self.gpa);
             var i: usize = 0;
             while (i < sfs.len) : (i += 1) {
                 const f = ast_unit.exprs.StructField.get(sfs[i]);
                 const gop = try seen.getOrPut(self.gpa, f.name.toRaw());
                 if (gop.found_existing) {
-                    try self.context.diags.addError(ast_unit.exprs.locs.get(f.loc), .duplicate_field, .{});
+                    const field_name = ast_unit.exprs.strs.get(f.name);
+                    const first_loc = ast_unit.exprs.locs.get(gop.value_ptr.*);
+                    const diag_idx = self.context.diags.count();
+                    try self.context.diags.addError(ast_unit.exprs.locs.get(f.loc), .duplicate_field, .{field_name});
+                    try self.context.diags.attachNote(diag_idx, first_loc, .first_defined_here);
                     status = false;
+                }
+                else {
+                    gop.value_ptr.* = f.loc;
                 }
                 const res = try typeFromTypeExpr(self, ctx, ast_unit, f.ty);
                 status = status and res[0];
@@ -796,15 +811,21 @@ pub fn typeFromTypeExpr(self: *Checker, ctx: *Checker.CheckerContext, ast_unit: 
             const sfs = ast_unit.exprs.sfield_pool.slice(row.fields);
             var buf = try ts.gpa.alloc(types.TypeStore.StructFieldArg, sfs.len);
             defer ts.gpa.free(buf);
-            var seen = std.AutoArrayHashMapUnmanaged(u32, void){};
+            var seen = std.AutoArrayHashMapUnmanaged(u32, ast.LocId){};
             defer seen.deinit(self.gpa);
             var i: usize = 0;
             while (i < sfs.len) : (i += 1) {
                 const sf = ast_unit.exprs.StructField.get(sfs[i]);
                 const gop = try seen.getOrPut(self.gpa, sf.name.toRaw());
                 if (gop.found_existing) {
-                    try self.context.diags.addError(ast_unit.exprs.locs.get(sf.loc), .duplicate_field, .{});
+                    const field_name = ast_unit.exprs.strs.get(sf.name);
+                    const first_loc = ast_unit.exprs.locs.get(gop.value_ptr.*);
+                    const diag_idx = self.context.diags.count();
+                    try self.context.diags.addError(ast_unit.exprs.locs.get(sf.loc), .duplicate_field, .{field_name});
+                    try self.context.diags.attachNote(diag_idx, first_loc, .first_defined_here);
                     status = false;
+                } else {
+                    gop.value_ptr.* = sf.loc;
                 }
                 // Validate field types resolve
                 const res = try typeFromTypeExpr(self, ctx, ast_unit, sf.ty);
@@ -813,7 +834,6 @@ pub fn typeFromTypeExpr(self: *Checker, ctx: *Checker.CheckerContext, ast_unit: 
             }
             break :blk_un .{ status, ts.mkUnion(buf) };
         },
-
         .EnumType => blk_en: {
             const row = ast_unit.exprs.get(.EnumType, id);
             const efs = ast_unit.exprs.efield_pool.slice(row.fields);
@@ -835,7 +855,7 @@ pub fn typeFromTypeExpr(self: *Checker, ctx: *Checker.CheckerContext, ast_unit: 
             var member_buf = try self.gpa.alloc(types.TypeStore.EnumMemberArg, efs.len);
             defer self.gpa.free(member_buf);
 
-            var seen = std.AutoArrayHashMapUnmanaged(u32, void){};
+            var seen = std.AutoArrayHashMapUnmanaged(u32, ast.LocId){};
             defer seen.deinit(self.gpa);
             var enum_value_bindings: std.ArrayList(Binding) = .empty;
             defer enum_value_bindings.deinit(self.gpa);
@@ -847,8 +867,14 @@ pub fn typeFromTypeExpr(self: *Checker, ctx: *Checker.CheckerContext, ast_unit: 
 
                 const gop = try seen.getOrPut(self.gpa, enum_field.name.toRaw());
                 if (gop.found_existing) {
-                    try self.context.diags.addError(ast_unit.exprs.locs.get(enum_field.loc), .duplicate_enum_field, .{});
+                    const tag_name = ast_unit.exprs.strs.get(enum_field.name);
+                    const first_loc = ast_unit.exprs.locs.get(gop.value_ptr.*);
+                    const diag_idx = self.context.diags.count();
+                    try self.context.diags.addError(ast_unit.exprs.locs.get(enum_field.loc), .duplicate_enum_field, .{tag_name});
+                    try self.context.diags.attachNote(diag_idx, first_loc, .first_defined_here);
                     status = false;
+                } else {
+                    gop.value_ptr.* = enum_field.loc;
                 }
 
                 var current_value: i128 = next_value;
@@ -904,7 +930,7 @@ pub fn typeFromTypeExpr(self: *Checker, ctx: *Checker.CheckerContext, ast_unit: 
             var case_buf = try self.gpa.alloc(types.TypeStore.StructFieldArg, vfs.len);
             defer self.gpa.free(case_buf);
 
-            var seen = std.AutoArrayHashMapUnmanaged(u32, void){};
+            var seen = std.AutoArrayHashMapUnmanaged(u32, ast.LocId){};
             defer seen.deinit(self.gpa);
 
             var i: usize = 0;
@@ -912,7 +938,14 @@ pub fn typeFromTypeExpr(self: *Checker, ctx: *Checker.CheckerContext, ast_unit: 
                 const vf = ast_unit.exprs.VariantField.get(vfs[i]);
                 const gop = try seen.getOrPut(self.gpa, vf.name.toRaw());
                 if (gop.found_existing) {
-                    try self.context.diags.addError(ast_unit.exprs.locs.get(vf.loc), .duplicate_error_variant, .{});
+                    const tag_name = ast_unit.exprs.strs.get(vf.name);
+                    const first_loc = ast_unit.exprs.locs.get(gop.value_ptr.*);
+                    const diag_idx = self.context.diags.count();
+                    try self.context.diags.addError(ast_unit.exprs.locs.get(vf.loc), .duplicate_error_variant, .{tag_name});
+                    try self.context.diags.attachNote(diag_idx, first_loc, .first_defined_here);
+                }
+                else {
+                    gop.value_ptr.* = vf.loc;
                 }
 
                 const payload_ty = switch (vf.payload_kind) {
@@ -970,7 +1003,7 @@ pub fn typeFromTypeExpr(self: *Checker, ctx: *Checker.CheckerContext, ast_unit: 
             var case_buf = try self.gpa.alloc(types.TypeStore.StructFieldArg, vfs.len);
             defer self.gpa.free(case_buf);
 
-            var seen = std.AutoArrayHashMapUnmanaged(u32, void){};
+            var seen = std.AutoArrayHashMapUnmanaged(u32, ast.LocId){};
             defer seen.deinit(self.gpa);
 
             var i: usize = 0;
@@ -978,8 +1011,14 @@ pub fn typeFromTypeExpr(self: *Checker, ctx: *Checker.CheckerContext, ast_unit: 
                 const vf = ast_unit.exprs.VariantField.get(vfs[i]);
                 const gop = try seen.getOrPut(self.gpa, vf.name.toRaw());
                 if (gop.found_existing) {
-                    try self.context.diags.addError(ast_unit.exprs.locs.get(vf.loc), .duplicate_variant, .{});
+                    const tag_name = ast_unit.exprs.strs.get(vf.name);
+                    const first_loc = ast_unit.exprs.locs.get(gop.value_ptr.*);
+                    const diag_idx = self.context.diags.count();
+                    try self.context.diags.addError(ast_unit.exprs.locs.get(vf.loc), .duplicate_variant, .{tag_name});
+                    try self.context.diags.attachNote(diag_idx, first_loc, .first_defined_here);
                     status = false;
+                } else {
+                    gop.value_ptr.* = vf.loc;
                 }
 
                 const payload_ty = switch (vf.payload_kind) {

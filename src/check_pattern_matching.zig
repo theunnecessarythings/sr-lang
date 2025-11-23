@@ -2,7 +2,9 @@ const std = @import("std");
 
 const ast = @import("ast.zig");
 const check_types = @import("check_types.zig");
-const Checker = @import("checker.zig").Checker;
+const checker = @import("checker.zig");
+const Checker = checker.Checker;
+const diag = @import("diagnostics.zig");
 const symbols = @import("symbols.zig");
 const types = @import("types.zig");
 
@@ -173,8 +175,9 @@ pub fn checkPattern(
                 try collectPatternBindings(self, ast_unit, alt_id, &alt_bindings);
 
                 if (first_bindings.items.len != alt_bindings.items.len) {
-                    std.debug.print("binding mismatch: first={}, alt_len={}\n", .{ first_bindings.items.len, alt_bindings.items.len });
+                    const idx = self.context.diags.messages.items.len;
                     try self.context.diags.addError(ast_unit.exprs.locs.get(op.loc), .or_pattern_binding_mismatch, .{});
+                    try self.context.diags.attachNote(idx, null, .pattern_binding_help);
                     return false;
                 }
 
@@ -185,7 +188,9 @@ pub fn checkPattern(
                             const b1_ty = bindingTypeInPattern(self, ast_unit, alts[0], b1_name, value_ty);
                             const b2_ty = bindingTypeInPattern(self, ast_unit, alt_id, b2_name, value_ty);
                             if (b1_ty == null or b2_ty == null or !b1_ty.?.eq(b2_ty.?)) {
+                                const idx = self.context.diags.messages.items.len;
                                 try self.context.diags.addError(ast_unit.exprs.locs.get(op.loc), .or_pattern_binding_type_mismatch, .{});
+                                try self.context.diags.attachNote(idx, null, .pattern_binding_help);
                                 return false;
                             }
                             found = true;
@@ -692,7 +697,20 @@ pub fn checkMatch(self: *Checker, ctx: *Checker.CheckerContext, ast_unit: *ast.A
         },
     }
     if (non_exhaustive) {
+        var missing_cases: ?ast.StrId = null;
+        switch (subj_kind) {
+            .Bool => missing_cases = try missingBoolMatchCases(self, covered_true, covered_false),
+            .Enum => missing_cases = try missingEnumMatchCases(self, subj_ty, &enum_covered),
+            else => {},
+        }
+        const diag_idx = self.context.diags.count();
         try self.context.diags.addError(ast_unit.exprs.locs.get(mr.loc), .non_exhaustive_match, .{});
+
+        if (missing_cases) |cases| {
+            try self.context.diags.attachNoteArgs(diag_idx, null, .exhaustiveness_hint, checker.StringNotePayload{ .value = cases });
+        }
+        const wildcard_example: []const u8 = "_ => {}"[0..];
+        try self.context.diags.attachNoteArgs(diag_idx, null, .add_wildcard, .{wildcard_example});
         return self.context.type_store.tTypeError();
     }
 
@@ -896,6 +914,39 @@ fn structPatternFieldsMatch(self: *Checker, ast_unit: *ast.Ast, pid: ast.Pattern
         if (!found) return false;
     }
     return true;
+}
+
+fn missingBoolMatchCases(self: *Checker, covered_true: bool, covered_false: bool) !?ast.StrId {
+    var missing = std.ArrayList([]const u8){};
+    defer missing.deinit(self.gpa);
+    if (!covered_true) try missing.append(self.gpa, "true");
+    if (!covered_false) try missing.append(self.gpa, "false");
+    if (missing.items.len == 0) return null;
+    const joined = try diag.joinStrings(self.gpa, ", ", missing.items);
+    const joined_id = self.context.interner.intern(joined);
+    self.gpa.free(joined);
+    return joined_id;
+}
+
+fn missingEnumMatchCases(
+    self: *Checker,
+    enum_ty: types.TypeId,
+    covered: *std.AutoArrayHashMapUnmanaged(u32, void),
+ ) !?ast.StrId {
+    var missing = std.ArrayList([]const u8){};
+    defer missing.deinit(self.gpa);
+    const members = self.context.type_store.enum_member_pool.slice(self.context.type_store.get(.Enum, enum_ty).members);
+    for (members) |mid| {
+        const member = self.context.type_store.EnumMember.get(mid);
+        if (covered.get(member.name.toRaw()) != null) continue;
+        const name = self.context.interner.get(member.name);
+        try missing.append(self.gpa, name);
+    }
+    if (missing.items.len == 0) return null;
+    const joined = try diag.joinStrings(self.gpa, ", ", missing.items);
+    const joined_id = self.context.interner.intern(joined);
+    self.gpa.free(joined);
+    return joined_id;
 }
 
 pub const BindingOrigin = union(enum) { decl: ast.DeclId, param: ast.ParamId, anonymous };

@@ -384,14 +384,32 @@ fn predeclareFunction(
     var pbuf = try self.gpa.alloc(types.TypeId, params.len);
     defer self.gpa.free(pbuf);
 
+    var bindings = std.ArrayList(check_types.Binding){};
+    defer bindings.deinit(self.gpa);
+
     // Parameter types (no pattern checks, no default-value checks here)
     var i: usize = 0;
     while (i < params.len) : (i += 1) {
         const p = ast_unit.exprs.Param.get(params[i]);
         if (!p.ty.isNone()) {
-            const res = try check_types.typeFromTypeExpr(self, ctx, ast_unit, p.ty.unwrap());
+            const res = try check_types.typeFromTypeExprWithBindings(self, ctx, ast_unit, p.ty.unwrap(), bindings.items);
             const pt_or_err = res[1];
             pbuf[i] = if (self.typeKind(pt_or_err) == .TypeError) self.context.type_store.tAny() else pt_or_err;
+
+            if (p.is_comptime) {
+                if (!p.pat.isNone()) {
+                    const pat_id = p.pat.unwrap();
+                    if (ast_unit.pats.index.kinds.items[pat_id.toRaw()] == .Binding) {
+                        const pname = ast_unit.pats.get(.Binding, pat_id).name;
+                        if (self.typeKind(pbuf[i]) == .TypeType) {
+                            try bindings.append(self.gpa, .{ .Type = .{
+                                .name = pname,
+                                .ty = self.context.type_store.tAny(),
+                            } });
+                        }
+                    }
+                }
+            }
         } else if (p.is_comptime) {
             pbuf[i] = self.context.type_store.mkTypeType(self.context.type_store.tAny());
         } else {
@@ -401,7 +419,7 @@ fn predeclareFunction(
     }
 
     const res_or_err = if (!fnr.result_ty.isNone())
-        (try check_types.typeFromTypeExpr(self, ctx, ast_unit, fnr.result_ty.unwrap()))[1]
+        (try check_types.typeFromTypeExprWithBindings(self, ctx, ast_unit, fnr.result_ty.unwrap(), bindings.items))[1]
     else
         self.context.type_store.tVoid();
     if (self.typeKind(res_or_err) == .TypeError) return; // diagnostics already emitted
@@ -695,7 +713,8 @@ fn registerMethodDecl(
     const method_seg = ast_unit.exprs.MethodPathSeg.get(seg_ids[seg_ids.len - 1]);
 
     const owner_sym_id = self.lookup(ctx, owner_seg.name) orelse {
-        try self.context.diags.addError(ast_unit.exprs.locs.get(owner_seg.loc), .undefined_identifier, .{});
+        const owner_name = ast_unit.exprs.strs.get(owner_seg.name);
+        try self.context.diags.addError(ast_unit.exprs.locs.get(owner_seg.loc), .undefined_identifier, .{owner_name});
         return false;
     };
     const owner_sym = ctx.symtab.syms.get(owner_sym_id);
@@ -1956,7 +1975,43 @@ fn checkIdent(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, id: ast.
     const res = try check_types.typeFromTypeExpr(self, ctx, ast_unit, id);
     if (res[0])
         return self.context.type_store.mkTypeType(res[1]);
-    try self.context.diags.addError(exprLoc(ast_unit, row), .undefined_identifier, .{});
+
+    const ident_name = ast_unit.exprs.strs.get(row.name);
+    const last_diag_idx = self.context.diags.count();
+    try self.context.diags.addError(exprLoc(ast_unit, row), .undefined_identifier, .{ident_name});
+
+    // --- "Did you mean?" suggestion logic ---
+    var best_suggestion: ?[]const u8 = null;
+    var min_dist: usize = 3; // Keep threshold low to avoid bad suggestions
+
+    var seen_names = std.ArrayList(ast.StrId){};
+    defer seen_names.deinit(self.gpa);
+
+    var current_scope_id: ?symbols.ScopeId = ctx.symtab.currentId();
+    while (current_scope_id) |scope_id| {
+        const scope = ctx.symtab.scopes.get(scope_id);
+
+        const pool_ids = ctx.symtab.sym_pool.slice(scope.symbols);
+        for (pool_ids) |sid| {
+            try considerSymbolSuggestion(self, ctx, ast_unit, ident_name, &seen_names, &best_suggestion, &min_dist, sid);
+        }
+
+        for (ctx.symtab.stack.items) |frame| {
+            if (frame.id.eq(scope_id)) {
+                for (frame.list.items) |sym_id| {
+                    try considerSymbolSuggestion(self, ctx, ast_unit, ident_name, &seen_names, &best_suggestion, &min_dist, sym_id);
+                }
+                break;
+            }
+        }
+
+        current_scope_id = if (scope.parent.isNone()) null else scope.parent.unwrap();
+    }
+
+    if (best_suggestion) |suggestion| {
+        try self.context.diags.attachNoteArgs(last_diag_idx, null, .did_you_mean, .{suggestion});
+    }
+
     return self.context.type_store.tTypeError();
 }
 
@@ -2466,13 +2521,17 @@ fn checkFunctionLit(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, id
                         } else {
                             const expected_kind = self.typeKind(pt);
                             const actual_kind = def_kind;
+                            const diag_idx = self.context.diags.count();
                             try self.context.diags.addError(exprLocFromId(ast_unit, def_expr), .argument_type_mismatch, .{ expected_kind, actual_kind });
+                            try self.attachTryCastNote(diag_idx, pt);
                             return self.context.type_store.tTypeError();
                         }
                     } else {
                         const expected_kind = self.typeKind(pt);
                         const actual_kind = def_kind;
+                        const diag_idx = self.context.diags.count();
                         try self.context.diags.addError(exprLocFromId(ast_unit, def_expr), .argument_type_mismatch, .{ expected_kind, actual_kind });
+                        try self.attachTryCastNote(diag_idx, pt);
                         return self.context.type_store.tTypeError();
                     }
                 }
@@ -2864,15 +2923,32 @@ fn checkFieldAccess(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, id
         const parent_unit = pkg.sources.getPtr(filepath) orelse
             return self.context.type_store.tTypeError();
 
+        const field_name_str = getStr(ast_unit, field_expr.field);
+
         if (parent_unit.ast) |a| {
-            // Re-intern field name into the imported unit's interner before lookup
-            const field_name = getStr(ast_unit, field_expr.field);
-            const target_sid = a.exprs.strs.intern(field_name);
+            const target_sid = a.exprs.strs.intern(field_name_str);
             if (a.type_info.getExport(target_sid)) |ex| {
                 return ex.ty;
             }
+
+            const last_diag_idx = self.context.diags.count();
+            try self.context.diags.addError(field_loc, .unknown_module_field, .{field_name_str});
+
+            var all_exports = std.ArrayList([]const u8){};
+            defer all_exports.deinit(self.gpa);
+
+            var it = a.type_info.exports.iterator();
+            while (it.next()) |entry| {
+                const export_name = a.exprs.strs.get(entry.key_ptr.*);
+                _ = all_exports.append(self.gpa, export_name) catch {};
+            }
+
+            try self.attachSuggestionListNotes(last_diag_idx, field_name_str, all_exports.items, .did_you_mean_field, .available_fields);
+
+            return self.context.type_store.tTypeError();
         }
-        try self.context.diags.addError(field_loc, .unknown_module_field, .{getStr(ast_unit, field_expr.field)});
+
+        try self.context.diags.addError(field_loc, .unknown_module_field, .{field_name_str});
         return self.context.type_store.tTypeError();
     }
 
@@ -2919,7 +2995,7 @@ fn checkFieldAccess(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, id
                 try ast_unit.type_info.setFieldIndex(id, 1);
                 return complex.elem;
             }
-            try self.context.diags.addError(exprLoc(ast_unit, field_expr), .unknown_struct_field, .{});
+            try self.context.diags.addError(exprLoc(ast_unit, field_expr), .unknown_struct_field, .{field_name});
             return self.context.type_store.tTypeError();
         },
         .Struct, .Union => {
@@ -2939,7 +3015,20 @@ fn checkFieldAccess(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, id
                 else => return self.context.type_store.tTypeError(),
             };
             if (self.typeKind(method_ty) != .TypeError) return method_ty;
-            try self.context.diags.addError(field_loc, .unknown_struct_field, .{});
+
+            const last_diag_idx = self.context.diags.count();
+            try self.context.diags.addError(field_loc, .unknown_struct_field, .{field_name});
+
+            var all_fields = std.ArrayList([]const u8){};
+            defer all_fields.deinit(self.gpa);
+
+            for (fields) |fid| {
+                const f = self.context.type_store.Field.get(fid);
+                const field_name_str = self.context.interner.get(f.name);
+                try all_fields.append(self.gpa, field_name_str);
+            }
+            try self.attachSuggestionListNotes(last_diag_idx, field_name, all_fields.items, .did_you_mean_field, .available_fields);
+
             return self.context.type_store.tTypeError();
         },
         .Tuple => {
@@ -3019,16 +3108,20 @@ fn checkFieldAccess(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, id
             if (inner_kind == .Enum) {
                 const en = self.context.type_store.get(.Enum, ty);
                 const members = self.context.type_store.enum_member_pool.slice(en.members);
-                var i: usize = 0;
-                while (i < members.len) : (i += 1) {
-                    const m = self.context.type_store.EnumMember.get(members[i]);
+                for (members, 0..) |member_id, i| {
+                    const m = self.context.type_store.EnumMember.get(member_id);
                     if (m.name.eq(field_expr.field)) {
-                        // Selecting an enum tag as a value of the enum type.
                         try ast_unit.type_info.setFieldIndex(id, @intCast(i));
                         return ty;
                     }
                 }
-                try self.context.diags.addError(exprLoc(ast_unit, field_expr), .unknown_enum_tag, .{});
+                const field_name_str = getStr(ast_unit, field_expr.field);
+                const last_diag_idx = self.context.diags.count();
+                try self.context.diags.addError(exprLoc(ast_unit, field_expr), .unknown_enum_tag, .{field_name_str});
+                var all_tags = std.ArrayList([]const u8){};
+                defer all_tags.deinit(self.gpa);
+                try self.appendEnumMemberNames(&all_tags, members);
+                try self.attachSuggestionListNotes(last_diag_idx, field_name_str, all_tags.items, .did_you_mean_tag, .available_tags);
                 return self.context.type_store.tTypeError();
             } else if (inner_kind == .Struct) {
                 const sr = self.context.type_store.get(.Struct, ty);
@@ -3041,7 +3134,6 @@ fn checkFieldAccess(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, id
                         return ty;
                     }
                 }
-                // Not a struct field; attempt associated method/func resolution on the type.
                 const method_ty = self.resolveMethodFieldAccess(ast_unit, id, ty, parent_ty, field_expr.field, field_loc) catch |err| switch (err) {
                     else => return self.context.type_store.tTypeError(),
                 };
@@ -3051,13 +3143,9 @@ fn checkFieldAccess(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, id
             } else if (inner_kind == .Variant) {
                 const vr = self.context.type_store.get(.Variant, ty);
                 const variants = self.context.type_store.field_pool.slice(vr.variants);
-                var i: usize = 0;
-                while (i < variants.len) : (i += 1) {
-                    const v = self.context.type_store.Field.get(variants[i]);
+                for (variants, 0..) |variant_id, i| {
+                    const v = self.context.type_store.Field.get(variant_id);
                     if (v.name.eq(field_expr.field)) {
-                        // In value position, selecting a variant *tag* without args:
-                        // if payload is void => ok (value of the variant type)
-                        // else => arity mismatch (should be constructed via call)
                         const pk = self.typeKind(v.ty);
                         if (pk == .Void) {
                             try ast_unit.type_info.setFieldIndex(id, @intCast(i));
@@ -3067,23 +3155,33 @@ fn checkFieldAccess(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, id
                         return self.context.type_store.tTypeError();
                     }
                 }
-                try self.context.diags.addError(exprLoc(ast_unit, field_expr), .unknown_variant_tag, .{});
+                const field_name_str = getStr(ast_unit, field_expr.field);
+                const last_diag_idx = self.context.diags.count();
+                try self.context.diags.addError(exprLoc(ast_unit, field_expr), .unknown_variant_tag, .{field_name_str});
+                var all_tags = std.ArrayList([]const u8){};
+                defer all_tags.deinit(self.gpa);
+                try self.appendFieldNames(&all_tags, variants);
+                try self.attachSuggestionListNotes(last_diag_idx, field_name_str, all_tags.items, .did_you_mean_tag, .available_tags);
                 return self.context.type_store.tTypeError();
             } else if (inner_kind == .Error) {
                 const er = self.context.type_store.get(.Error, ty);
                 const tags = self.context.type_store.field_pool.slice(er.variants);
-                var i: usize = 0;
-                while (i < tags.len) : (i += 1) {
-                    const t = self.context.type_store.Field.get(tags[i]);
+                for (tags, 0..) |tag_id, i| {
+                    const t = self.context.type_store.Field.get(tag_id);
                     if (t.name.eq(field_expr.field)) {
                         try ast_unit.type_info.setFieldIndex(id, @intCast(i));
                         return ty;
                     }
                 }
-                try self.context.diags.addError(exprLoc(ast_unit, field_expr), .unknown_error_tag, .{});
+                const field_name_str = getStr(ast_unit, field_expr.field);
+                const last_diag_idx = self.context.diags.count();
+                try self.context.diags.addError(exprLoc(ast_unit, field_expr), .unknown_error_tag, .{field_name_str});
+                var all_tags = std.ArrayList([]const u8){};
+                defer all_tags.deinit(self.gpa);
+                try self.appendFieldNames(&all_tags, tags);
+                try self.attachSuggestionListNotes(last_diag_idx, field_name_str, all_tags.items, .did_you_mean_tag, .available_tags);
                 return self.context.type_store.tTypeError();
             } else if (inner_kind == .Ast) {
-                // Accessing a member on a module in type position: treat like the .Ast branch
                 const ast_ty = self.context.type_store.get(.Ast, ty);
                 const pkg_name = self.context.interner.get(ast_ty.pkg_name);
                 const filepath = self.context.interner.get(ast_ty.filepath);
@@ -3093,7 +3191,6 @@ fn checkFieldAccess(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, id
                     return self.context.type_store.tTypeError();
 
                 if (parent_unit.ast) |a| {
-                    // Re-intern field name into the imported unit's interner before lookup
                     const field_name_mod = getStr(ast_unit, field_expr.field);
                     const target_sid = a.exprs.strs.intern(field_name_mod);
                     if (a.type_info.getExport(target_sid)) |ex| {
@@ -3143,7 +3240,6 @@ fn checkFieldAccess(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, id
                 const variant = self.context.type_store.Field.get(variants[i]);
                 if (variant.name.eq(field_expr.field)) {
                     try ast_unit.type_info.setFieldIndex(id, @intCast(i));
-                    // get variant payload type
                     const ty_kind = self.typeKind(variant.ty);
                     if (ty_kind == .Void) return self.context.type_store.tI32();
                     return variant.ty;
@@ -3244,7 +3340,9 @@ fn checkStructLit(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, id: 
     const expect_ty = blk: {
         const resolved = try check_types.typeFromTypeExpr(self, ctx, ast_unit, lit_ty);
         if (resolved[0]) break :blk resolved[1];
-        try self.context.diags.addError(exprLocFromId(ast_unit, lit_ty), .undefined_identifier, .{});
+        const ident = ast_unit.exprs.get(.Ident, lit_ty);
+        const ident_name = ast_unit.exprs.strs.get(ident.name);
+        try self.context.diags.addError(exprLocFromId(ast_unit, lit_ty), .undefined_identifier, .{ident_name});
         return self.context.type_store.tTypeError();
     };
     const is_assignable = self.assignable(struct_ty, expect_ty);
@@ -3254,7 +3352,11 @@ fn checkStructLit(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, id: 
             if (self.structMissingFieldsCoveredByDefaults(ctx, ast_unit, struct_lit, struct_ty, expect_ty)) {
                 return expect_ty;
             }
+            const diag_idx = self.context.diags.count();
             try self.context.diags.addError(exprLoc(ast_unit, struct_lit), .struct_missing_field, .{});
+            if (try self.collectMissingStructFields(ctx, ast_unit, struct_lit, struct_ty, expect_ty)) |missing| {
+                try self.context.diags.attachNoteArgs(diag_idx, null, .missing_fields_list, StringNotePayload{ .value = missing });
+            }
             return self.context.type_store.tTypeError();
         },
         .unknown_struct_field => {
@@ -3316,6 +3418,49 @@ fn structMissingFieldsCoveredByDefaults(
         }
     }
     return true;
+}
+
+fn collectMissingStructFields(
+    self: *Checker,
+    ctx: *CheckerContext,
+    ast_unit: *ast.Ast,
+    struct_lit: ast.Rows.StructLit,
+    provided_ty: types.TypeId,
+    expect_ty: types.TypeId,
+) !?ast.StrId {
+    if (struct_lit.ty.isNone()) return null;
+    if (self.typeKind(provided_ty) != .Struct or self.typeKind(expect_ty) != .Struct) return null;
+
+    const ty_expr = struct_lit.ty.unwrap();
+    const provided_struct = self.context.type_store.get(.Struct, provided_ty);
+    const expect_struct = self.context.type_store.get(.Struct, expect_ty);
+    const provided_fields = self.context.type_store.field_pool.slice(provided_struct.fields);
+    const expect_fields = self.context.type_store.field_pool.slice(expect_struct.fields);
+
+    var missing = std.ArrayList([]const u8){};
+    defer missing.deinit(self.gpa);
+
+    for (expect_fields) |efid| {
+        const expected_field = self.context.type_store.Field.get(efid);
+        var present = false;
+        for (provided_fields) |pfid| {
+            const provided_field = self.context.type_store.Field.get(pfid);
+            if (provided_field.name.eq(expected_field.name)) {
+                present = true;
+                break;
+            }
+        }
+        if (present) continue;
+        if (self.structFieldHasDefault(ctx, ast_unit, ty_expr, expected_field.name)) continue;
+        const field_name = self.context.interner.get(expected_field.name);
+        try missing.append(self.gpa, field_name);
+    }
+
+    if (missing.items.len == 0) return null;
+    const joined = try diag.joinStrings(self.gpa, ", ", missing.items);
+    const joined_id = self.context.interner.intern(joined);
+    self.gpa.free(joined);
+    return joined_id;
 }
 
 fn structFieldHasDefault(
@@ -3744,21 +3889,27 @@ fn checkCall(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, id: ast.E
             // The 'any' parameter will consume all arguments from params.len - 1 onwards.
             min_required = params.len - 1; // All but the last 'any' param are fixed
             if (args.len < min_required) {
+                const diag_idx = self.context.diags.count();
                 try self.context.diags.addError(call_loc, .argument_count_mismatch, .{});
+                try self.attachFunctionSignatureNote(diag_idx, func_ty);
                 return self.context.type_store.tTypeError();
             }
             // No upper bound on args.len here, as 'any' consumes the rest.
         } else {
             // Original arity check for non-variadic, non-any-last-param functions
             if (!(args.len >= min_required and args.len <= params.len)) {
+                const diag_idx = self.context.diags.count();
                 try self.context.diags.addError(call_loc, .argument_count_mismatch, .{});
+                try self.attachFunctionSignatureNote(diag_idx, func_ty);
                 return self.context.type_store.tTypeError();
             }
         }
     } else { // fnrow.is_variadic is true (only for extern functions now)
         const min_required = if (params.len == 0) 0 else params.len - 1;
         if (args.len < min_required) {
+            const diag_idx = self.context.diags.count();
             try self.context.diags.addError(call_loc, .argument_count_mismatch, .{});
+            try self.attachFunctionSignatureNote(diag_idx, func_ty);
             return self.context.type_store.tTypeError();
         }
     }
@@ -3812,7 +3963,9 @@ fn checkCall(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, id: ast.E
             const expected_kind = self.typeKind(pt);
             const actual_kind = at_kind;
             const loc = exprLocFromId(ast_unit, args[i]);
+            const diag_idx = self.context.diags.count();
             try self.context.diags.addError(loc, .argument_type_mismatch, .{ expected_kind, actual_kind });
+            try self.attachTryCastNote(diag_idx, pt);
             return self.context.type_store.tTypeError();
         }
     }
@@ -3880,13 +4033,17 @@ fn checkMethodCall(
             }
         }
         if (!(total_args >= min_required and total_args <= params.len)) {
+            const diag_idx = self.context.diags.count();
             try self.context.diags.addError(exprLoc(ast_unit, call_expr.*), .argument_count_mismatch, .{});
+            try self.attachFunctionSignatureNote(diag_idx, binding.func_type);
             return self.context.type_store.tTypeError();
         }
     } else {
         const min_required = if (params.len == 0) 0 else params.len - 1;
         if (total_args < min_required) {
+            const diag_idx = self.context.diags.count();
             try self.context.diags.addError(exprLoc(ast_unit, call_expr.*), .argument_count_mismatch, .{});
+            try self.attachFunctionSignatureNote(diag_idx, binding.func_type);
             return self.context.type_store.tTypeError();
         }
     }
@@ -3947,7 +4104,9 @@ fn checkMethodCall(
             const expected_kind = self.typeKind(pt);
             const actual_kind = at_kind;
             const loc = exprLocFromId(ast_unit, args[i]);
+            const diag_idx = self.context.diags.count();
             try self.context.diags.addError(loc, .argument_type_mismatch, .{ expected_kind, actual_kind });
+            try self.attachTryCastNote(diag_idx, pt);
             return self.context.type_store.tTypeError();
         }
     }
@@ -4898,4 +5057,138 @@ fn lvalueRootKind(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, expr
         },
         else => return .Unknown,
     }
+}
+
+pub const StringNotePayload = struct { value: ast.StrId };
+
+fn levenshteinDistance(allocator: std.mem.Allocator, s1: []const u8, s2: []const u8) ?usize {
+    const s1_len = s1.len;
+    const s2_len = s2.len;
+
+    if (s1_len == 0) return s2_len;
+    if (s2_len == 0) return s1_len;
+
+    var dp = allocator.alloc(usize, s1_len + 1) catch return null;
+    defer allocator.free(dp);
+
+    for (0..s1_len + 1) |i| {
+        dp[i] = i;
+    }
+
+    for (1..s2_len + 1) |j| {
+        var prev_dist: usize = dp[0];
+        dp[0] = j;
+        for (1..s1_len + 1) |i| {
+            const temp = dp[i];
+            const substitution_cost: usize = if (s1[i - 1] == s2[j - 1]) 0 else 1;
+            dp[i] = @min(@min(dp[i - 1] + 1, dp[i] + 1), prev_dist + substitution_cost);
+            prev_dist = temp;
+        }
+    }
+
+    return dp[s1_len];
+}
+
+fn findBestSuggestion(self: *Checker, target: []const u8, candidates: []const []const u8) ?[]const u8 {
+    var best: ?[]const u8 = null;
+    var min_dist: usize = 3;
+    for (candidates) |candidate| {
+        if (levenshteinDistance(self.gpa, target, candidate)) |dist| {
+            if (dist < min_dist) {
+                min_dist = dist;
+                best = candidate;
+            }
+        }
+    }
+    return best;
+}
+
+fn appendFieldNames(self: *Checker, list: *std.ArrayList([]const u8), fields: []const types.FieldId) !void {
+    for (fields) |fid| {
+        const f = self.context.type_store.Field.get(fid);
+        try list.append(self.gpa, self.context.interner.get(f.name));
+    }
+}
+
+fn appendEnumMemberNames(self: *Checker, list: *std.ArrayList([]const u8), members: []const types.EnumMemberId) !void {
+    for (members) |mid| {
+        const m = self.context.type_store.EnumMember.get(mid);
+        try list.append(self.gpa, self.context.interner.get(m.name));
+    }
+}
+
+fn attachSuggestionListNotes(
+    self: *Checker,
+    diag_idx: usize,
+    target: []const u8,
+    candidates: []const []const u8,
+    comptime suggestion_code: diag.NoteCode,
+    comptime available_code: ?diag.NoteCode,
+) !void {
+    if (candidates.len == 0) return;
+    if (self.findBestSuggestion(target, candidates)) |suggestion| {
+        try self.context.diags.attachNoteArgs(diag_idx, null, suggestion_code, .{suggestion});
+    }
+    if (available_code) |code| {
+        const joined = try diag.joinStrings(self.gpa, ", ", candidates);
+        if (joined.len > 0) {
+            const joined_id = self.context.interner.intern(joined);
+            self.gpa.free(joined);
+            try self.context.diags.attachNoteArgs(diag_idx, null, code, StringNotePayload{ .value = joined_id });
+        } else {
+            self.gpa.free(joined);
+        }
+    }
+}
+
+fn considerSymbolSuggestion(
+    self: *Checker,
+    ctx: *CheckerContext,
+    ast_unit: *ast.Ast,
+    ident_name: []const u8,
+    seen: *std.ArrayList(ast.StrId),
+    best_suggestion: *?[]const u8,
+    min_dist: *usize,
+    sym_id: symbols.SymbolId,
+) !void {
+    const sym = ctx.symtab.syms.get(sym_id);
+    for (seen.items) |sid| {
+        if (sid.eq(sym.name)) return;
+    }
+    try seen.append(self.gpa, sym.name);
+
+    const sym_name = ast_unit.exprs.strs.get(sym.name);
+    if (sym_name.len == 0) return;
+
+    if (levenshteinDistance(self.gpa, ident_name, sym_name)) |dist| {
+        if (dist < min_dist.*) {
+            min_dist.* = dist;
+            best_suggestion.* = sym_name;
+        }
+    }
+}
+
+fn formatTypeForNote(self: *Checker, type_id: types.TypeId) !ast.StrId {
+    var buf = std.ArrayList(u8){};
+    defer buf.deinit(self.gpa);
+    const writer = buf.writer(self.gpa);
+    try self.context.type_store.formatTypeForDiagnostic(type_id, .{}, writer);
+    const slice = buf.items[0..buf.items.len];
+    return self.context.interner.intern(slice);
+}
+
+fn attachFunctionSignatureNote(self: *Checker, diag_idx: usize, func_ty: types.TypeId) !void {
+    const signature = try formatTypeForNote(self, func_ty);
+    try self.context.diags.attachNoteArgs(diag_idx, null, .function_signature, StringNotePayload{ .value = signature });
+}
+
+fn attachTryCastNote(self: *Checker, diag_idx: usize, expected_ty: types.TypeId) !void {
+    var buf = std.ArrayList(u8){};
+    defer buf.deinit(self.gpa);
+    var writer = buf.writer(self.gpa);
+    try writer.print("cast to ", .{});
+    try self.context.type_store.formatTypeForDiagnostic(expected_ty, .{}, writer);
+    const suggestion = buf.items[0..buf.items.len];
+    const suggestion_id = self.context.interner.intern(suggestion);
+    try self.context.diags.attachNoteArgs(diag_idx, null, .try_cast, StringNotePayload{ .value = suggestion_id });
 }

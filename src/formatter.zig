@@ -14,7 +14,7 @@ pub fn formatSource(gpa: std.mem.Allocator, source: [:0]const u8, file_path: []c
     const file_id = try ctx.source_manager.setVirtualSourceByPath(file_path, source);
     defer ctx.source_manager.clearVirtualSource(file_id);
 
-    var diagnostics = diag.Diagnostics.init(gpa);
+    var diagnostics = diag.Diagnostics.init(gpa, ctx.type_store, ctx.interner);
     defer diagnostics.deinit();
 
     var parser = Parser.init(gpa, source, file_id, &diagnostics, &ctx);

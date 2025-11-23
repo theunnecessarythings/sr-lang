@@ -134,14 +134,19 @@ pub const Context = struct {
     pub fn init(gpa: std.mem.Allocator) Context {
         const interner = gpa.create(cst.StringInterner) catch unreachable;
         interner.* = cst.StringInterner.init(gpa);
-        const diags = gpa.create(Diagnostics) catch unreachable;
-        diags.* = Diagnostics.init(gpa);
-        const source_manager = gpa.create(SourceManager) catch unreachable;
-        source_manager.* = SourceManager{ .gpa = gpa };
-        const loc_store = gpa.create(cst.LocStore) catch unreachable;
-        loc_store.* = cst.LocStore{};
+        
         const type_store = gpa.create(TypeStore) catch unreachable;
         type_store.* = TypeStore.init(gpa, interner);
+
+        const diags = gpa.create(Diagnostics) catch unreachable;
+        diags.* = Diagnostics.init(gpa, type_store, interner);
+
+        const source_manager = gpa.create(SourceManager) catch unreachable;
+        source_manager.* = SourceManager{ .gpa = gpa };
+        
+        const loc_store = gpa.create(cst.LocStore) catch unreachable;
+        loc_store.* = cst.LocStore{};
+        
         return .{
             .diags = diags,
             .interner = interner,
