@@ -566,12 +566,27 @@ test "builtin types - slice - success" {
 
     // Slice initialization from array slice expression
     try checkProgram("sv: []i32 = ([1,2,3,4])[1..3]", &.{});
+
+    // Assign slice to const slice
+    try checkProgram(
+        \\
+        \\ arr: [3]i32 = [1, 2, 3]
+        \\ cs: []const i32 = arr[0..2]
+    , &.{});
 }
 
 test "builtin types - slice - failures" {
     // Invalid initializer types
     try checkProgram("sx: []i32 = 123", &[_]diag.DiagnosticCode{.type_annotation_mismatch});
     try checkProgram("sn: []i32 = null", &[_]diag.DiagnosticCode{.assign_null_to_non_optional});
+
+    // Assign const slice to mutable slice
+    try checkProgram(
+        \\
+        \\ arr: [3]i32 = [1, 2, 3]
+        \\ cs: []const i32 = arr[0..2]
+        \\ ms: []i32 = cs
+    , &[_]diag.DiagnosticCode{.slice_constness_violation});
 }
 
 test "builtin types - map - success" {

@@ -1414,7 +1414,7 @@ pub fn typeFromTypeExpr(self: *Checker, ctx: *Checker.CheckerContext, ast_unit: 
             const row = ast_unit.exprs.get(.SliceType, id);
             const res = try typeFromTypeExpr(self, ctx, ast_unit, row.elem);
             status = status and res[0];
-            break :blk_st .{ status, ts.mkSlice(res[1]) };
+            break :blk_st .{ status, ts.mkSlice(res[1], row.is_const) };
         },
         .OptionalType => blk_ot: {
             const row = ast_unit.exprs.get(.OptionalType, id);

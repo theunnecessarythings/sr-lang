@@ -2154,14 +2154,15 @@ fn parseArrayLike(self: *Parser, comptime mode: ParseMode) !cst.ExprId {
         // "[]T" slice type OR "[]" empty array literal
         .rsquare => blk: {
             self.advance(); // "]"
-            if (mode != .type and self.isTypeStart(self.cur.tag)) {
-                // []T => slice type in expression context when followed by a type
+            var slice_is_const = false;
+            if (self.cur.tag == .keyword_const) {
+                slice_is_const = true;
+                self.advance();
+            }
+            const treat_as_type = slice_is_const or (mode == .type) or self.isTypeStart(self.cur.tag);
+            if (treat_as_type) {
                 const elem = try self.parseExpr(0, .type);
-                break :blk self.addExpr(.SliceType, .{ .elem = elem, .loc = start_loc });
-            } else if (mode == .type) {
-                // []T => slice type in type context
-                const elem = try self.parseExpr(0, .type);
-                break :blk self.addExpr(.SliceType, .{ .elem = elem, .loc = start_loc });
+                break :blk self.addExpr(.SliceType, .{ .elem = elem, .is_const = slice_is_const, .loc = start_loc });
             } else {
                 // [] => empty array literal in expression context
                 break :blk self.addExpr(.ArrayLit, .{ .elems = .empty(), .trailing_comma = false, .loc = start_loc });

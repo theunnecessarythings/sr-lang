@@ -279,6 +279,7 @@ pub const DiagnosticCode = enum {
     pointer_type_mismatch,
     deref_non_pointer,
     pointer_constness_violation,
+    slice_constness_violation,
 
     // Calls
     wrong_arity_in_call,
@@ -538,6 +539,7 @@ pub fn diagnosticMessageFmt(code: DiagnosticCode) []const u8 {
         .pointer_type_mismatch => "pointer type mismatch: expected {s}, found {s}",
         .deref_non_pointer => "cannot dereference non-pointer type {s}",
         .pointer_constness_violation => "cannot assign a *const pointer to a mutable * pointer",
+        .slice_constness_violation => "cannot assign a []const slice to a mutable [] slice",
 
         // Calls
         .wrong_arity_in_call => "wrong number of arguments: expected {d}, found {d}",

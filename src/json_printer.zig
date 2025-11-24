@@ -689,6 +689,8 @@ pub const JsonPrinter = struct {
             .SliceType => {
                 const node = self.exprs.get(.SliceType, id);
                 try self.printLoc(node.loc);
+                try self.stream.objectField("is_const");
+                try self.writeValue(node.is_const);
                 try self.stream.objectField("elem");
                 try self.printExpr(node.elem);
             },

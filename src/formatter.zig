@@ -837,6 +837,7 @@ const Formatter = struct {
             .SliceType => {
                 const node = self.exprs.get(.SliceType, id);
                 try self.printf("[]", .{});
+                if (node.is_const) try self.printf("const ", .{});
                 try self.printExpr(node.elem);
             },
             .OptionalType => {

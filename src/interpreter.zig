@@ -358,7 +358,7 @@ pub const Interpreter = struct {
     fn evalSliceType(self: *Interpreter, row: ast.Rows.SliceType) anyerror!Value {
         const elem_ty = try self.typeIdFromTypeExpr(row.elem);
         const ts = self.ast.type_info.store;
-        return Value{ .Type = ts.mkSlice(elem_ty) };
+        return Value{ .Type = ts.mkSlice(elem_ty, row.is_const) };
     }
 
     fn evalMapType(self: *Interpreter, row: ast.Rows.MapType) anyerror!Value {

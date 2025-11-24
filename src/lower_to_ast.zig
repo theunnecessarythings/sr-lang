@@ -928,6 +928,7 @@ fn lowerExpr(self: *Lower, id: cst.ExprId) anyerror!ast.ExprId {
             const t = self.cst_program.exprs.get(.SliceType, id);
             break :blk self.ast_unit.exprs.add(.SliceType, .{
                 .elem = try self.lowerExpr(t.elem),
+                .is_const = t.is_const,
                 .loc = t.loc,
             });
         },

@@ -501,7 +501,11 @@ pub fn checkPattern(
             }
 
             if (ap.has_rest and !ap.rest_binding.isNone()) {
-                if (!(try checkPattern(self, ctx, ast_unit, ap.rest_binding.unwrap(), self.context.type_store.mkSlice(elem_ty), false)))
+                const rest_const = if (vk == .Slice)
+                    self.context.type_store.get(.Slice, value_ty).is_const
+                else
+                    false;
+                if (!(try checkPattern(self, ctx, ast_unit, ap.rest_binding.unwrap(), self.context.type_store.mkSlice(elem_ty, rest_const), false)))
                     return false;
             }
             return true;
@@ -1128,7 +1132,11 @@ pub fn checkPatternShapeForDecl(
                 if (res != .ok) return res;
             }
             if (sl.has_rest and !sl.rest_binding.isNone()) {
-                const rest_res = checkPatternShapeForDecl(self, ast_unit, sl.rest_binding.unwrap(), self.context.type_store.mkSlice(elem_ty));
+                const rest_const = if (pkind == .Slice)
+                    self.context.type_store.get(.Slice, value_ty).is_const
+                else
+                    false;
+                const rest_res = checkPatternShapeForDecl(self, ast_unit, sl.rest_binding.unwrap(), self.context.type_store.mkSlice(elem_ty, rest_const));
                 if (rest_res != .ok) return rest_res;
             }
             return .ok;
@@ -1378,7 +1386,11 @@ pub fn bindingTypeInPattern(
             const elems = ast_unit.pats.pat_pool.slice(sl.elems);
             for (elems) |eid| if (bindingTypeInPattern(self, ast_unit, eid, name, elem_ty)) |bt| return bt;
             if (sl.has_rest and !sl.rest_binding.isNone()) {
-                const rest_ty = self.context.type_store.mkSlice(elem_ty);
+                const rest_const = if (pk == .Slice)
+                    self.context.type_store.get(.Slice, value_ty).is_const
+                else
+                    false;
+                const rest_ty = self.context.type_store.mkSlice(elem_ty, rest_const);
                 if (bindingTypeInPattern(self, ast_unit, sl.rest_binding.unwrap(), name, rest_ty)) |bt| return bt;
             }
             return null;

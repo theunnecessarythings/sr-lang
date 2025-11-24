@@ -578,7 +578,7 @@ pub const Rows = struct {
     pub const ArrayType = struct { elem: ExprId, size: ExprId, loc: LocId };
     pub const DynArrayType = struct { elem: ExprId, loc: LocId };
     pub const MapType = struct { key: ExprId, value: ExprId, loc: LocId };
-    pub const SliceType = struct { elem: ExprId, loc: LocId };
+    pub const SliceType = struct { elem: ExprId, is_const: bool, loc: LocId };
     pub const OptionalType = struct { elem: ExprId, loc: LocId };
     pub const ErrorSetType = struct { err: ExprId, value: ExprId, loc: LocId };
 
@@ -1517,7 +1517,7 @@ pub const DodPrinter = struct {
             },
             .SliceType => {
                 const n = self.exprs.get(.SliceType, id);
-                try self.open("(slice_type", .{});
+                try self.open("(slice_type is_const={})", .{n.is_const});
                 try self.printExpr(n.elem);
                 try self.close();
             },

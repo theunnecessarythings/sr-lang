@@ -445,7 +445,7 @@ pub const Rows = struct {
     pub const Simd = struct { elem: TypeId, lanes: u16 };
 
     pub const Ptr = struct { elem: TypeId, is_const: bool };
-    pub const Slice = struct { elem: TypeId };
+    pub const Slice = struct { elem: TypeId, is_const: bool };
     pub const Array = struct { elem: TypeId, len: usize };
     pub const DynArray = struct { elem: TypeId };
     pub const Map = struct { key: TypeId, value: TypeId };
@@ -916,11 +916,11 @@ pub const TypeStore = struct {
         if (self.findPtr(elem, is_const)) |id| return id;
         return self.addLocked(.Ptr, .{ .elem = elem, .is_const = is_const });
     }
-    pub fn mkSlice(self: *TypeStore, elem: TypeId) TypeId {
+    pub fn mkSlice(self: *TypeStore, elem: TypeId, is_const: bool) TypeId {
         self.mutex.lock();
         defer self.mutex.unlock();
-        if (self.findSlice(elem)) |id| return id;
-        return self.addLocked(.Slice, .{ .elem = elem });
+        if (self.findSlice(elem, is_const)) |id| return id;
+        return self.addLocked(.Slice, .{ .elem = elem, .is_const = is_const });
     }
     pub fn mkArray(self: *TypeStore, elem: TypeId, len: usize) TypeId {
         self.mutex.lock();
@@ -1092,11 +1092,11 @@ pub const TypeStore = struct {
             }
         });
     }
-    fn findSlice(self: *TypeStore, elem: TypeId) ?TypeId {
-        return self.findMatch(.Slice, elem, struct {
-            fn eq(s: *const TypeStore, row: Rows.Slice, key: TypeId) bool {
+    fn findSlice(self: *TypeStore, elem: TypeId, is_const: bool) ?TypeId {
+        return self.findMatch(.Slice, struct { e: TypeId, c: bool }{ .e = elem, .c = is_const }, struct {
+            fn eq(s: *const TypeStore, row: Rows.Slice, key: anytype) bool {
                 _ = s;
-                return row.elem.eq(key);
+                return row.elem.eq(key.e) and row.is_const == key.c;
             }
         });
     }
@@ -1519,7 +1519,11 @@ pub const TypeStore = struct {
             // Slices, Arrays, DynArrays, Optional: delegate with depth tracking
             .Slice => {
                 const r = self.get(.Slice, type_id);
-                try writer.print("[]", .{});
+                if (options.show_const and r.is_const) {
+                    try writer.print("[]const ", .{});
+                } else {
+                    try writer.print("[]", .{});
+                }
                 try self.fmtDiagnostic(r.elem, writer, options, depth + 1);
             },
             .Array => {

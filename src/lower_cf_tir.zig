@@ -1408,11 +1408,15 @@ pub fn bindPattern(
 
             if (sl.has_rest and !sl.rest_binding.isNone()) {
                 const rest_pat = sl.rest_binding.unwrap();
-                const slice_ty = self.context.type_store.mkSlice(elem_ty);
+                const vty_kind = self.context.type_store.getKind(vty);
+                const slice_const = if (vty_kind == .Slice)
+                    self.context.type_store.get(.Slice, vty).is_const
+                else
+                    false;
+                const slice_ty = self.context.type_store.mkSlice(elem_ty, slice_const);
                 const start = blk.builder.tirValue(.ConstInt, blk, self.context.type_store.tUsize(), loc, .{ .value = sl.rest_index });
 
                 var len_val: tir.ValueId = undefined;
-                const vty_kind = self.context.type_store.getKind(vty);
                 if (vty_kind == .Array) {
                     const arr_ty = self.context.type_store.get(.Array, vty);
                     len_val = blk.builder.tirValue(.ConstInt, blk, self.context.type_store.tUsize(), loc, .{ .value = arr_ty.len });
@@ -1420,7 +1424,7 @@ pub fn bindPattern(
                     len_val = blk.builder.extractFieldNamed(blk, self.context.type_store.tUsize(), value, f.builder.intern("len"), loc);
                 }
 
-                const range_ty = self.context.type_store.mkSlice(self.context.type_store.tUsize());
+                const range_ty = self.context.type_store.mkSlice(self.context.type_store.tUsize(), false);
                 const inclusive = blk.builder.tirValue(.ConstBool, blk, self.context.type_store.tBool(), loc, .{ .value = false });
                 const range_val = blk.builder.rangeMake(blk, range_ty, start, len_val, inclusive, loc);
                 const rest_slice = blk.builder.indexOp(blk, slice_ty, value, range_val, loc);

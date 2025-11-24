@@ -845,6 +845,7 @@ const AssignErrors = union(enum) {
     assign_null_to_non_optional,
     pointer_type_mismatch,
     pointer_constness_violation,
+    slice_constness_violation,
     expected_array_type,
     expected_tuple_type,
     expected_map_type,
@@ -898,6 +899,9 @@ pub fn assignable(self: *Checker, got: types.TypeId, expect: types.TypeId) Assig
             switch (got_kind) {
                 .Slice => {
                     const got_ty = self.context.type_store.get(.Slice, got);
+                    if (!expected_ty.is_const and got_ty.is_const) {
+                        return .slice_constness_violation;
+                    }
                     return self.assignable(got_ty.elem, expected_ty.elem);
                 },
                 .Array => {
@@ -2705,15 +2709,15 @@ fn indexElemTypeFromArrayLike(self: *Checker, ctx: *CheckerContext, ast_unit: *a
         return switch (col_kind) {
             .Array => blk: {
                 const r = self.context.type_store.get(.Array, col_ty);
-                break :blk self.context.type_store.mkSlice(r.elem);
+                break :blk self.context.type_store.mkSlice(r.elem, false);
             },
             .Slice => blk2: {
                 const r = self.context.type_store.get(.Slice, col_ty);
-                break :blk2 self.context.type_store.mkSlice(r.elem);
+                break :blk2 self.context.type_store.mkSlice(r.elem, r.is_const);
             },
             .DynArray => blk3: {
                 const r = self.context.type_store.get(.DynArray, col_ty);
-                break :blk3 self.context.type_store.mkSlice(r.elem);
+                break :blk3 self.context.type_store.mkSlice(r.elem, false);
             },
             .String => self.context.type_store.tString(),
             else => return self.context.type_store.tTypeError(),
@@ -2739,7 +2743,7 @@ fn indexElemTypeFromPointer(self: *Checker, ctx: *CheckerContext, ast_unit: *ast
     const idx_kind = exprKind(ast_unit, idx_expr);
     if (idx_kind == .Range) {
         _ = self.checkExpr(ctx, ast_unit, idx_expr) catch return self.context.type_store.tTypeError();
-        return self.context.type_store.mkSlice(ptr_row.elem);
+        return self.context.type_store.mkSlice(ptr_row.elem, ptr_row.is_const);
     }
 
     const it = try self.checkExpr(ctx, ast_unit, idx_expr);
@@ -3319,7 +3323,7 @@ fn checkRange(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, id: ast.
         try self.context.diags.addError(exprLoc(ast_unit, range), .range_requires_integer_operands, .{});
         return self.context.type_store.tTypeError();
     }
-    return self.context.type_store.mkSlice(self.context.type_store.tUsize());
+    return self.context.type_store.mkSlice(self.context.type_store.tUsize(), false);
 }
 
 fn typeExprNameForDiag(ast_unit: *ast.Ast, expr: ast.ExprId) ?ast.StrId {
