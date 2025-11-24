@@ -943,7 +943,6 @@ pub const Diagnostics = struct {
 
     // Pretty-print diagnostics Rust-like with optional ANSI colors
     pub fn emitStyled(self: *Diagnostics, context: *Context, writer: anytype, color: bool) !void {
-        std.debug.print("emitStyled called. Messages: {}\n", .{self.messages.items.len});
         const diag_ctx = DiagnosticContext{
             .type_store = context.type_store,
             .str_interner = context.interner,

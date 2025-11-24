@@ -18,6 +18,375 @@ const PipelineBindingSlice = struct {
     owns: bool,
 };
 
+fn collectExprIds(gpa: std.mem.Allocator, ast_unit: *ast.Ast, expr_id: ast.ExprId, out: *std.ArrayList(ast.ExprId)) !void {
+    try out.append(gpa, expr_id);
+    const expr_store = &ast_unit.exprs;
+    const kind = expr_store.index.kinds.items[expr_id.toRaw()];
+    switch (kind) {
+        .Literal, .Ident, .NullLit, .UndefLit, .AnyType, .TypeType, .NoreturnType => {},
+        .Unary => try collectExprIds(gpa, ast_unit, expr_store.get(.Unary, expr_id).expr, out),
+        .Binary => {
+            const row = expr_store.get(.Binary, expr_id);
+            try collectExprIds(gpa, ast_unit, row.left, out);
+            try collectExprIds(gpa, ast_unit, row.right, out);
+        },
+        .Range => {
+            const row = expr_store.get(.Range, expr_id);
+            if (!row.start.isNone()) try collectExprIds(gpa, ast_unit, row.start.unwrap(), out);
+            if (!row.end.isNone()) try collectExprIds(gpa, ast_unit, row.end.unwrap(), out);
+        },
+        .Deref => try collectExprIds(gpa, ast_unit, expr_store.get(.Deref, expr_id).expr, out),
+        .ArrayLit => {
+            const row = expr_store.get(.ArrayLit, expr_id);
+            const elems = expr_store.expr_pool.slice(row.elems);
+            for (elems) |elem| try collectExprIds(gpa, ast_unit, elem, out);
+        },
+        .TupleLit => {
+            const row = expr_store.get(.TupleLit, expr_id);
+            const elems = expr_store.expr_pool.slice(row.elems);
+            for (elems) |elem| try collectExprIds(gpa, ast_unit, elem, out);
+        },
+        .MapLit => {
+            const row = expr_store.get(.MapLit, expr_id);
+            const entries = expr_store.kv_pool.slice(row.entries);
+            for (entries) |entry_id| {
+                const entry = expr_store.KeyValue.get(entry_id);
+                try collectExprIds(gpa, ast_unit, entry.key, out);
+                try collectExprIds(gpa, ast_unit, entry.value, out);
+            }
+        },
+        .Call => {
+            const row = expr_store.get(.Call, expr_id);
+            try collectExprIds(gpa, ast_unit, row.callee, out);
+            const args = expr_store.expr_pool.slice(row.args);
+            for (args) |arg| try collectExprIds(gpa, ast_unit, arg, out);
+        },
+        .IndexAccess => {
+            const row = expr_store.get(.IndexAccess, expr_id);
+            try collectExprIds(gpa, ast_unit, row.collection, out);
+            try collectExprIds(gpa, ast_unit, row.index, out);
+        },
+        .FieldAccess => try collectExprIds(gpa, ast_unit, expr_store.get(.FieldAccess, expr_id).parent, out),
+        .StructLit => {
+            const row = expr_store.get(.StructLit, expr_id);
+            if (!row.ty.isNone()) try collectExprIds(gpa, ast_unit, row.ty.unwrap(), out);
+            const fields = expr_store.sfv_pool.slice(row.fields);
+            for (fields) |fid| {
+                const field = expr_store.StructFieldValue.get(fid);
+                try collectExprIds(gpa, ast_unit, field.value, out);
+            }
+        },
+        .FunctionLit => {
+            const row = expr_store.get(.FunctionLit, expr_id);
+            const params = expr_store.param_pool.slice(row.params);
+            for (params) |pid| {
+                const param = expr_store.Param.get(pid);
+                if (!param.ty.isNone()) try collectExprIds(gpa, ast_unit, param.ty.unwrap(), out);
+                if (!param.value.isNone()) try collectExprIds(gpa, ast_unit, param.value.unwrap(), out);
+                if (!param.pat.isNone()) try collectPatternExprs(gpa, ast_unit, param.pat.unwrap(), out);
+            }
+            if (!row.result_ty.isNone()) try collectExprIds(gpa, ast_unit, row.result_ty.unwrap(), out);
+            if (!row.body.isNone()) try collectExprIds(gpa, ast_unit, row.body.unwrap(), out);
+        },
+        .Block => {
+            const row = expr_store.get(.Block, expr_id);
+            const stmts = ast_unit.stmts.stmt_pool.slice(row.items);
+            for (stmts) |sid| try collectStmtExprs(gpa, ast_unit, sid, out);
+        },
+        .ComptimeBlock => try collectExprIds(gpa, ast_unit, expr_store.get(.ComptimeBlock, expr_id).block, out),
+        .CodeBlock => try collectExprIds(gpa, ast_unit, expr_store.get(.CodeBlock, expr_id).block, out),
+        .AsyncBlock => try collectExprIds(gpa, ast_unit, expr_store.get(.AsyncBlock, expr_id).body, out),
+        .MlirBlock => {
+            const row = expr_store.get(.MlirBlock, expr_id);
+            const args = expr_store.expr_pool.slice(row.args);
+            for (args) |arg| try collectExprIds(gpa, ast_unit, arg, out);
+        },
+        .Insert => try collectExprIds(gpa, ast_unit, expr_store.get(.Insert, expr_id).expr, out),
+        .Return => {
+            const row = expr_store.get(.Return, expr_id);
+            if (!row.value.isNone()) try collectExprIds(gpa, ast_unit, row.value.unwrap(), out);
+        },
+        .If => {
+            const row = expr_store.get(.If, expr_id);
+            try collectExprIds(gpa, ast_unit, row.cond, out);
+            try collectExprIds(gpa, ast_unit, row.then_block, out);
+            if (!row.else_block.isNone()) try collectExprIds(gpa, ast_unit, row.else_block.unwrap(), out);
+        },
+        .While => {
+            const row = expr_store.get(.While, expr_id);
+            if (!row.cond.isNone()) try collectExprIds(gpa, ast_unit, row.cond.unwrap(), out);
+            if (!row.pattern.isNone()) try collectPatternExprs(gpa, ast_unit, row.pattern.unwrap(), out);
+            try collectExprIds(gpa, ast_unit, row.body, out);
+        },
+        .For => {
+            const row = expr_store.get(.For, expr_id);
+            try collectPatternExprs(gpa, ast_unit, row.pattern, out);
+            try collectExprIds(gpa, ast_unit, row.iterable, out);
+            try collectExprIds(gpa, ast_unit, row.body, out);
+        },
+        .Match => {
+            const row = expr_store.get(.Match, expr_id);
+            try collectExprIds(gpa, ast_unit, row.expr, out);
+            const arms = expr_store.arm_pool.slice(row.arms);
+            for (arms) |arm_id| {
+                const arm = expr_store.MatchArm.get(arm_id);
+                try collectPatternExprs(gpa, ast_unit, arm.pattern, out);
+                if (!arm.guard.isNone()) try collectExprIds(gpa, ast_unit, arm.guard.unwrap(), out);
+                try collectExprIds(gpa, ast_unit, arm.body, out);
+            }
+        },
+        .Break => {
+            const row = expr_store.get(.Break, expr_id);
+            if (!row.value.isNone()) try collectExprIds(gpa, ast_unit, row.value.unwrap(), out);
+        },
+        .Continue => {},
+        .Defer => try collectExprIds(gpa, ast_unit, expr_store.get(.Defer, expr_id).expr, out),
+        .ErrDefer => try collectExprIds(gpa, ast_unit, expr_store.get(.ErrDefer, expr_id).expr, out),
+        .ErrUnwrap => try collectExprIds(gpa, ast_unit, expr_store.get(.ErrUnwrap, expr_id).expr, out),
+        .OptionalUnwrap => try collectExprIds(gpa, ast_unit, expr_store.get(.OptionalUnwrap, expr_id).expr, out),
+        .Await => try collectExprIds(gpa, ast_unit, expr_store.get(.Await, expr_id).expr, out),
+        .Closure => {
+            const row = expr_store.get(.Closure, expr_id);
+            const params = expr_store.param_pool.slice(row.params);
+            for (params) |pid| {
+                const param = expr_store.Param.get(pid);
+                if (!param.ty.isNone()) try collectExprIds(gpa, ast_unit, param.ty.unwrap(), out);
+                if (!param.value.isNone()) try collectExprIds(gpa, ast_unit, param.value.unwrap(), out);
+                if (!param.pat.isNone()) try collectPatternExprs(gpa, ast_unit, param.pat.unwrap(), out);
+            }
+            if (!row.result_ty.isNone()) try collectExprIds(gpa, ast_unit, row.result_ty.unwrap(), out);
+            try collectExprIds(gpa, ast_unit, row.body, out);
+        },
+        .Cast => {
+            const row = expr_store.get(.Cast, expr_id);
+            try collectExprIds(gpa, ast_unit, row.expr, out);
+            try collectExprIds(gpa, ast_unit, row.ty, out);
+        },
+        .Catch => {
+            const row = expr_store.get(.Catch, expr_id);
+            try collectExprIds(gpa, ast_unit, row.expr, out);
+            try collectExprIds(gpa, ast_unit, row.handler, out);
+        },
+        .TypeOf => try collectExprIds(gpa, ast_unit, expr_store.get(.TypeOf, expr_id).expr, out),
+        .TupleType => {
+            const row = expr_store.get(.TupleType, expr_id);
+            const elems = expr_store.expr_pool.slice(row.elems);
+            for (elems) |elem| try collectExprIds(gpa, ast_unit, elem, out);
+        },
+        .ArrayType => {
+            const row = expr_store.get(.ArrayType, expr_id);
+            try collectExprIds(gpa, ast_unit, row.elem, out);
+            try collectExprIds(gpa, ast_unit, row.size, out);
+        },
+        .DynArrayType => try collectExprIds(gpa, ast_unit, expr_store.get(.DynArrayType, expr_id).elem, out),
+        .MapType => {
+            const row = expr_store.get(.MapType, expr_id);
+            try collectExprIds(gpa, ast_unit, row.key, out);
+            try collectExprIds(gpa, ast_unit, row.value, out);
+        },
+        .SliceType => try collectExprIds(gpa, ast_unit, expr_store.get(.SliceType, expr_id).elem, out),
+        .OptionalType => try collectExprIds(gpa, ast_unit, expr_store.get(.OptionalType, expr_id).elem, out),
+        .ErrorSetType => {
+            const row = expr_store.get(.ErrorSetType, expr_id);
+            try collectExprIds(gpa, ast_unit, row.err, out);
+            try collectExprIds(gpa, ast_unit, row.value, out);
+        },
+        .StructType => {
+            const row = expr_store.get(.StructType, expr_id);
+            const fields = expr_store.sfield_pool.slice(row.fields);
+            for (fields) |fid| {
+                const field = expr_store.StructField.get(fid);
+                try collectExprIds(gpa, ast_unit, field.ty, out);
+                if (!field.value.isNone()) try collectExprIds(gpa, ast_unit, field.value.unwrap(), out);
+            }
+        },
+        .EnumType => {
+            const row = expr_store.get(.EnumType, expr_id);
+            if (!row.discriminant.isNone()) try collectExprIds(gpa, ast_unit, row.discriminant.unwrap(), out);
+            const fields = expr_store.efield_pool.slice(row.fields);
+            for (fields) |fid| {
+                const field = expr_store.EnumField.get(fid);
+                if (!field.value.isNone()) try collectExprIds(gpa, ast_unit, field.value.unwrap(), out);
+            }
+        },
+        .VariantType => {
+            const row = expr_store.get(.VariantType, expr_id);
+            const fields = expr_store.vfield_pool.slice(row.fields);
+            for (fields) |fid| {
+                const field = expr_store.VariantField.get(fid);
+                if (!field.value.isNone()) try collectExprIds(gpa, ast_unit, field.value.unwrap(), out);
+            }
+        },
+        .ErrorType => {
+            const row = expr_store.get(.ErrorType, expr_id);
+            const fields = expr_store.vfield_pool.slice(row.fields);
+            for (fields) |fid| {
+                const field = expr_store.VariantField.get(fid);
+                if (!field.value.isNone()) try collectExprIds(gpa, ast_unit, field.value.unwrap(), out);
+            }
+        },
+        .UnionType => {
+            const row = expr_store.get(.UnionType, expr_id);
+            const fields = expr_store.sfield_pool.slice(row.fields);
+            for (fields) |fid| {
+                const field = expr_store.StructField.get(fid);
+                try collectExprIds(gpa, ast_unit, field.ty, out);
+                if (!field.value.isNone()) try collectExprIds(gpa, ast_unit, field.value.unwrap(), out);
+            }
+        },
+        .PointerType => try collectExprIds(gpa, ast_unit, expr_store.get(.PointerType, expr_id).elem, out),
+        .SimdType => {
+            const row = expr_store.get(.SimdType, expr_id);
+            try collectExprIds(gpa, ast_unit, row.elem, out);
+            try collectExprIds(gpa, ast_unit, row.lanes, out);
+        },
+        .ComplexType => try collectExprIds(gpa, ast_unit, expr_store.get(.ComplexType, expr_id).elem, out),
+        .TensorType => {
+            const row = expr_store.get(.TensorType, expr_id);
+            try collectExprIds(gpa, ast_unit, row.elem, out);
+            const shape = expr_store.expr_pool.slice(row.shape);
+            for (shape) |dim| try collectExprIds(gpa, ast_unit, dim, out);
+        },
+        else => {},
+    }
+}
+
+fn collectPatternExprs(
+    gpa: std.mem.Allocator,
+    ast_unit: *ast.Ast,
+    pat_id: ast.PatternId,
+    out: *std.ArrayList(ast.ExprId),
+) anyerror!void {
+    const pats = &ast_unit.pats;
+    const kind = pats.index.kinds.items[pat_id.toRaw()];
+    switch (kind) {
+        .Literal => {
+            const row = pats.get(.Literal, pat_id);
+            try collectExprIds(gpa, ast_unit, row.expr, out);
+        },
+        .Range => {
+            const row = pats.get(.Range, pat_id);
+            if (!row.start.isNone()) try collectExprIds(gpa, ast_unit, row.start.unwrap(), out);
+            if (!row.end.isNone()) try collectExprIds(gpa, ast_unit, row.end.unwrap(), out);
+        },
+        .Tuple => {
+            const row = pats.get(.Tuple, pat_id);
+            const elems = pats.pat_pool.slice(row.elems);
+            for (elems) |elem| try collectPatternExprs(gpa, ast_unit, elem, out);
+        },
+        .Slice => {
+            const row = pats.get(.Slice, pat_id);
+            const elems = pats.pat_pool.slice(row.elems);
+            for (elems) |elem| try collectPatternExprs(gpa, ast_unit, elem, out);
+            if (!row.rest_binding.isNone()) try collectPatternExprs(gpa, ast_unit, row.rest_binding.unwrap(), out);
+        },
+        .Struct => {
+            const row = pats.get(.Struct, pat_id);
+            const fields = pats.field_pool.slice(row.fields);
+            for (fields) |fid| {
+                const field = pats.StructField.get(fid);
+                try collectPatternExprs(gpa, ast_unit, field.pattern, out);
+            }
+        },
+        .VariantStruct => {
+            const row = pats.get(.VariantStruct, pat_id);
+            const fields = pats.field_pool.slice(row.fields);
+            for (fields) |fid| {
+                const field = pats.StructField.get(fid);
+                try collectPatternExprs(gpa, ast_unit, field.pattern, out);
+            }
+        },
+        .VariantTuple => {
+            const row = pats.get(.VariantTuple, pat_id);
+            const elems = pats.pat_pool.slice(row.elems);
+            for (elems) |elem| try collectPatternExprs(gpa, ast_unit, elem, out);
+        },
+        .Or => {
+            const row = pats.get(.Or, pat_id);
+            const alts = pats.pat_pool.slice(row.alts);
+            for (alts) |alt| try collectPatternExprs(gpa, ast_unit, alt, out);
+        },
+        .At => {
+            const row = pats.get(.At, pat_id);
+            try collectPatternExprs(gpa, ast_unit, row.pattern, out);
+        },
+        else => {},
+    }
+}
+
+fn collectStmtExprs(
+    gpa: std.mem.Allocator,
+    ast_unit: *ast.Ast,
+    stmt_id: ast.StmtId,
+    out: *std.ArrayList(ast.ExprId),
+) anyerror!void {
+    const stmt_store = &ast_unit.stmts;
+    const kind = stmt_store.index.kinds.items[stmt_id.toRaw()];
+    switch (kind) {
+        .Expr => try collectExprIds(gpa, ast_unit, stmt_store.get(.Expr, stmt_id).expr, out),
+        .Decl => {
+            const row = stmt_store.get(.Decl, stmt_id);
+            try collectDeclExprs(gpa, ast_unit, row.decl, out);
+        },
+        .Assign => {
+            const row = stmt_store.get(.Assign, stmt_id);
+            try collectExprIds(gpa, ast_unit, row.left, out);
+            try collectExprIds(gpa, ast_unit, row.right, out);
+        },
+        .Insert => try collectExprIds(gpa, ast_unit, stmt_store.get(.Insert, stmt_id).expr, out),
+        .Return => {
+            const row = stmt_store.get(.Return, stmt_id);
+            if (!row.value.isNone()) try collectExprIds(gpa, ast_unit, row.value.unwrap(), out);
+        },
+        .Break => {
+            const row = stmt_store.get(.Break, stmt_id);
+            if (!row.value.isNone()) try collectExprIds(gpa, ast_unit, row.value.unwrap(), out);
+        },
+        .Continue => {},
+        .Unreachable => {},
+        .Defer => try collectExprIds(gpa, ast_unit, stmt_store.get(.Defer, stmt_id).expr, out),
+        .ErrDefer => try collectExprIds(gpa, ast_unit, stmt_store.get(.ErrDefer, stmt_id).expr, out),
+    }
+}
+
+fn collectDeclExprs(gpa: std.mem.Allocator, ast_unit: *ast.Ast, decl_id: ast.DeclId, out: *std.ArrayList(ast.ExprId)) !void {
+    const decl = ast_unit.exprs.Decl.get(decl_id);
+    if (!decl.pattern.isNone()) try collectPatternExprs(gpa, ast_unit, decl.pattern.unwrap(), out);
+    if (!decl.ty.isNone()) try collectExprIds(gpa, ast_unit, decl.ty.unwrap(), out);
+    try collectExprIds(gpa, ast_unit, decl.value, out);
+}
+
+pub fn storeMethodExprTypes(
+    self: *Checker,
+    ast_unit: *ast.Ast,
+    owner_ty: types.TypeId,
+    method_name: ast.StrId,
+    fn_expr: ast.ExprId,
+) !void {
+    var expr_ids = std.ArrayList(ast.ExprId){};
+    defer expr_ids.deinit(self.gpa);
+    try collectExprIds(self.gpa, ast_unit, fn_expr, &expr_ids);
+    if (expr_ids.items.len == 0) return;
+
+    var raw_ids = try self.gpa.alloc(u32, expr_ids.items.len);
+    defer self.gpa.free(raw_ids);
+    var type_buf = try self.gpa.alloc(types.TypeId, expr_ids.items.len);
+    defer self.gpa.free(type_buf);
+
+    var count: usize = 0;
+    for (expr_ids.items) |eid| {
+        const raw = eid.toRaw();
+        if (raw >= ast_unit.type_info.expr_types.items.len) continue;
+        if (ast_unit.type_info.expr_types.items[raw]) |ty| {
+            raw_ids[count] = raw;
+            type_buf[count] = ty;
+            count += 1;
+        }
+    }
+    if (count == 0) return;
+    try ast_unit.type_info.storeMethodExprSnapshot(owner_ty, method_name, raw_ids[0..count], type_buf[0..count]);
+}
+
 fn pipelineBindingsFor(self: *Checker, bindings: []const Binding) !PipelineBindingSlice {
     if (bindings.len == 0) return .{ .items = &[_]PipelineBinding{}, .owns = false };
 
@@ -65,6 +434,343 @@ fn lookupValueBinding(bindings: []const Binding, name: ast.StrId) ?comp.Comptime
         }
     }
     return null;
+}
+
+fn clearPatternTypes(ast_unit: *ast.Ast, pat_id: ast.PatternId) void {
+    const pats = &ast_unit.pats;
+    const kind = pats.index.kinds.items[pat_id.toRaw()];
+    switch (kind) {
+        .Literal => {
+            const row = pats.get(.Literal, pat_id);
+            clearExprTypes(ast_unit, row.expr);
+        },
+        .Range => {
+            const row = pats.get(.Range, pat_id);
+            if (!row.start.isNone()) clearExprTypes(ast_unit, row.start.unwrap());
+            if (!row.end.isNone()) clearExprTypes(ast_unit, row.end.unwrap());
+        },
+        .Tuple => {
+            const row = pats.get(.Tuple, pat_id);
+            const elems = pats.pat_pool.slice(row.elems);
+            for (elems) |elem| clearPatternTypes(ast_unit, elem);
+        },
+        .Slice => {
+            const row = pats.get(.Slice, pat_id);
+            const elems = pats.pat_pool.slice(row.elems);
+            for (elems) |elem| clearPatternTypes(ast_unit, elem);
+            if (!row.rest_binding.isNone()) clearPatternTypes(ast_unit, row.rest_binding.unwrap());
+        },
+        .Struct => {
+            const row = pats.get(.Struct, pat_id);
+            const fields = pats.field_pool.slice(row.fields);
+            for (fields) |fid| {
+                const field = pats.StructField.get(fid);
+                clearPatternTypes(ast_unit, field.pattern);
+            }
+        },
+        .VariantStruct => {
+            const row = pats.get(.VariantStruct, pat_id);
+            const fields = pats.field_pool.slice(row.fields);
+            for (fields) |fid| {
+                const field = pats.StructField.get(fid);
+                clearPatternTypes(ast_unit, field.pattern);
+            }
+        },
+        .VariantTuple => {
+            const row = pats.get(.VariantTuple, pat_id);
+            const elems = pats.pat_pool.slice(row.elems);
+            for (elems) |elem| clearPatternTypes(ast_unit, elem);
+        },
+        .Or => {
+            const row = pats.get(.Or, pat_id);
+            const alts = pats.pat_pool.slice(row.alts);
+            for (alts) |alt| clearPatternTypes(ast_unit, alt);
+        },
+        .At => {
+            const row = pats.get(.At, pat_id);
+            clearPatternTypes(ast_unit, row.pattern);
+        },
+        else => {},
+    }
+}
+
+fn clearExprTypes(ast_unit: *ast.Ast, expr_id: ast.ExprId) void {
+    const ti = &ast_unit.type_info;
+    if (expr_id.toRaw() < ti.expr_types.items.len) {
+        ti.expr_types.items[expr_id.toRaw()] = null;
+    }
+    _ = ti.method_bindings.swapRemove(expr_id.toRaw());
+    ti.clearFieldIndex(expr_id) catch {};
+
+    const expr_store = &ast_unit.exprs;
+    const kind = expr_store.index.kinds.items[expr_id.toRaw()];
+    switch (kind) {
+        .Literal, .Ident, .NullLit, .UndefLit, .AnyType, .TypeType, .NoreturnType => {},
+        .Unary => {
+            const row = expr_store.get(.Unary, expr_id);
+            clearExprTypes(ast_unit, row.expr);
+        },
+        .Binary => {
+            const row = expr_store.get(.Binary, expr_id);
+            clearExprTypes(ast_unit, row.left);
+            clearExprTypes(ast_unit, row.right);
+        },
+        .Range => {
+            const row = expr_store.get(.Range, expr_id);
+            if (!row.start.isNone()) clearExprTypes(ast_unit, row.start.unwrap());
+            if (!row.end.isNone()) clearExprTypes(ast_unit, row.end.unwrap());
+        },
+        .Deref => clearExprTypes(ast_unit, expr_store.get(.Deref, expr_id).expr),
+        .ArrayLit => {
+            const row = expr_store.get(.ArrayLit, expr_id);
+            const elems = expr_store.expr_pool.slice(row.elems);
+            for (elems) |elem| clearExprTypes(ast_unit, elem);
+        },
+        .TupleLit => {
+            const row = expr_store.get(.TupleLit, expr_id);
+            const elems = expr_store.expr_pool.slice(row.elems);
+            for (elems) |elem| clearExprTypes(ast_unit, elem);
+        },
+        .MapLit => {
+            const row = expr_store.get(.MapLit, expr_id);
+            const entries = expr_store.kv_pool.slice(row.entries);
+            for (entries) |entry_id| {
+                const entry = expr_store.KeyValue.get(entry_id);
+                clearExprTypes(ast_unit, entry.key);
+                clearExprTypes(ast_unit, entry.value);
+            }
+        },
+        .Call => {
+            const row = expr_store.get(.Call, expr_id);
+            clearExprTypes(ast_unit, row.callee);
+            const args = expr_store.expr_pool.slice(row.args);
+            for (args) |arg| clearExprTypes(ast_unit, arg);
+        },
+        .IndexAccess => {
+            const row = expr_store.get(.IndexAccess, expr_id);
+            clearExprTypes(ast_unit, row.collection);
+            clearExprTypes(ast_unit, row.index);
+        },
+        .FieldAccess => clearExprTypes(ast_unit, expr_store.get(.FieldAccess, expr_id).parent),
+        .StructLit => {
+            const row = expr_store.get(.StructLit, expr_id);
+            if (!row.ty.isNone()) clearExprTypes(ast_unit, row.ty.unwrap());
+            const fields = expr_store.sfv_pool.slice(row.fields);
+            for (fields) |fid| {
+                const field = expr_store.StructFieldValue.get(fid);
+                clearExprTypes(ast_unit, field.value);
+            }
+        },
+        .FunctionLit => {
+            const row = expr_store.get(.FunctionLit, expr_id);
+            const params = expr_store.param_pool.slice(row.params);
+            for (params) |pid| {
+                const param = expr_store.Param.get(pid);
+                if (!param.ty.isNone()) clearExprTypes(ast_unit, param.ty.unwrap());
+                if (!param.value.isNone()) clearExprTypes(ast_unit, param.value.unwrap());
+                if (!param.pat.isNone()) clearPatternTypes(ast_unit, param.pat.unwrap());
+            }
+            if (!row.result_ty.isNone()) clearExprTypes(ast_unit, row.result_ty.unwrap());
+            if (!row.body.isNone()) clearExprTypes(ast_unit, row.body.unwrap());
+        },
+        .Block => {
+            const row = expr_store.get(.Block, expr_id);
+            const stmts = ast_unit.stmts.stmt_pool.slice(row.items);
+            for (stmts) |sid| clearStmtTypes(ast_unit, sid);
+        },
+        .ComptimeBlock => clearExprTypes(ast_unit, expr_store.get(.ComptimeBlock, expr_id).block),
+        .CodeBlock => clearExprTypes(ast_unit, expr_store.get(.CodeBlock, expr_id).block),
+        .AsyncBlock => clearExprTypes(ast_unit, expr_store.get(.AsyncBlock, expr_id).body),
+        .MlirBlock => {
+            const row = expr_store.get(.MlirBlock, expr_id);
+            const args = expr_store.expr_pool.slice(row.args);
+            for (args) |arg| clearExprTypes(ast_unit, arg);
+        },
+        .Insert => clearExprTypes(ast_unit, expr_store.get(.Insert, expr_id).expr),
+        .Return => {
+            const row = expr_store.get(.Return, expr_id);
+            if (!row.value.isNone()) clearExprTypes(ast_unit, row.value.unwrap());
+        },
+        .If => {
+            const row = expr_store.get(.If, expr_id);
+            clearExprTypes(ast_unit, row.cond);
+            clearExprTypes(ast_unit, row.then_block);
+            if (!row.else_block.isNone()) clearExprTypes(ast_unit, row.else_block.unwrap());
+        },
+        .While => {
+            const row = expr_store.get(.While, expr_id);
+            if (!row.cond.isNone()) clearExprTypes(ast_unit, row.cond.unwrap());
+            if (!row.pattern.isNone()) clearPatternTypes(ast_unit, row.pattern.unwrap());
+            clearExprTypes(ast_unit, row.body);
+        },
+        .For => {
+            const row = expr_store.get(.For, expr_id);
+            clearPatternTypes(ast_unit, row.pattern);
+            clearExprTypes(ast_unit, row.iterable);
+            clearExprTypes(ast_unit, row.body);
+        },
+        .Match => {
+            const row = expr_store.get(.Match, expr_id);
+            clearExprTypes(ast_unit, row.expr);
+            const arms = expr_store.arm_pool.slice(row.arms);
+            for (arms) |arm_id| {
+                const arm = expr_store.MatchArm.get(arm_id);
+                clearPatternTypes(ast_unit, arm.pattern);
+                if (!arm.guard.isNone()) clearExprTypes(ast_unit, arm.guard.unwrap());
+                clearExprTypes(ast_unit, arm.body);
+            }
+        },
+        .Break => {
+            const row = expr_store.get(.Break, expr_id);
+            if (!row.value.isNone()) clearExprTypes(ast_unit, row.value.unwrap());
+        },
+        .Continue => {},
+        .Defer => clearExprTypes(ast_unit, expr_store.get(.Defer, expr_id).expr),
+        .ErrDefer => clearExprTypes(ast_unit, expr_store.get(.ErrDefer, expr_id).expr),
+        .ErrUnwrap => clearExprTypes(ast_unit, expr_store.get(.ErrUnwrap, expr_id).expr),
+        .OptionalUnwrap => clearExprTypes(ast_unit, expr_store.get(.OptionalUnwrap, expr_id).expr),
+        .Await => clearExprTypes(ast_unit, expr_store.get(.Await, expr_id).expr),
+        .Closure => {
+            const row = expr_store.get(.Closure, expr_id);
+            const params = expr_store.param_pool.slice(row.params);
+            for (params) |pid| {
+                const param = expr_store.Param.get(pid);
+                if (!param.ty.isNone()) clearExprTypes(ast_unit, param.ty.unwrap());
+                if (!param.value.isNone()) clearExprTypes(ast_unit, param.value.unwrap());
+                if (!param.pat.isNone()) clearPatternTypes(ast_unit, param.pat.unwrap());
+            }
+            if (!row.result_ty.isNone()) clearExprTypes(ast_unit, row.result_ty.unwrap());
+            clearExprTypes(ast_unit, row.body);
+        },
+        .Cast => {
+            const row = expr_store.get(.Cast, expr_id);
+            clearExprTypes(ast_unit, row.expr);
+            clearExprTypes(ast_unit, row.ty);
+        },
+        .Catch => {
+            const row = expr_store.get(.Catch, expr_id);
+            clearExprTypes(ast_unit, row.expr);
+            clearExprTypes(ast_unit, row.handler);
+        },
+        .TypeOf => clearExprTypes(ast_unit, expr_store.get(.TypeOf, expr_id).expr),
+        .TupleType => {
+            const row = expr_store.get(.TupleType, expr_id);
+            const elems = expr_store.expr_pool.slice(row.elems);
+            for (elems) |elem| clearExprTypes(ast_unit, elem);
+        },
+        .ArrayType => {
+            const row = expr_store.get(.ArrayType, expr_id);
+            clearExprTypes(ast_unit, row.elem);
+            clearExprTypes(ast_unit, row.size);
+        },
+        .DynArrayType => clearExprTypes(ast_unit, expr_store.get(.DynArrayType, expr_id).elem),
+        .MapType => {
+            const row = expr_store.get(.MapType, expr_id);
+            clearExprTypes(ast_unit, row.key);
+            clearExprTypes(ast_unit, row.value);
+        },
+        .SliceType => clearExprTypes(ast_unit, expr_store.get(.SliceType, expr_id).elem),
+        .OptionalType => clearExprTypes(ast_unit, expr_store.get(.OptionalType, expr_id).elem),
+        .ErrorSetType => {
+            const row = expr_store.get(.ErrorSetType, expr_id);
+            clearExprTypes(ast_unit, row.err);
+            clearExprTypes(ast_unit, row.value);
+        },
+        .StructType => {
+            const row = expr_store.get(.StructType, expr_id);
+            const fields = expr_store.sfield_pool.slice(row.fields);
+            for (fields) |fid| {
+                const field = expr_store.StructField.get(fid);
+                clearExprTypes(ast_unit, field.ty);
+                if (!field.value.isNone()) clearExprTypes(ast_unit, field.value.unwrap());
+            }
+        },
+        .EnumType => {
+            const row = expr_store.get(.EnumType, expr_id);
+            if (!row.discriminant.isNone()) clearExprTypes(ast_unit, row.discriminant.unwrap());
+            const fields = expr_store.efield_pool.slice(row.fields);
+            for (fields) |fid| {
+                const field = expr_store.EnumField.get(fid);
+                if (!field.value.isNone()) clearExprTypes(ast_unit, field.value.unwrap());
+            }
+        },
+        .VariantType => {
+            const row = expr_store.get(.VariantType, expr_id);
+            const fields = expr_store.vfield_pool.slice(row.fields);
+            for (fields) |fid| {
+                const field = expr_store.VariantField.get(fid);
+                if (!field.value.isNone()) clearExprTypes(ast_unit, field.value.unwrap());
+            }
+        },
+        .ErrorType => {
+            const row = expr_store.get(.ErrorType, expr_id);
+            const fields = expr_store.vfield_pool.slice(row.fields);
+            for (fields) |fid| {
+                const field = expr_store.VariantField.get(fid);
+                if (!field.value.isNone()) clearExprTypes(ast_unit, field.value.unwrap());
+            }
+        },
+        .UnionType => {
+            const row = expr_store.get(.UnionType, expr_id);
+            const fields = expr_store.sfield_pool.slice(row.fields);
+            for (fields) |fid| {
+                const field = expr_store.StructField.get(fid);
+                clearExprTypes(ast_unit, field.ty);
+                if (!field.value.isNone()) clearExprTypes(ast_unit, field.value.unwrap());
+            }
+        },
+        .PointerType => clearExprTypes(ast_unit, expr_store.get(.PointerType, expr_id).elem),
+        .SimdType => {
+            const row = expr_store.get(.SimdType, expr_id);
+            clearExprTypes(ast_unit, row.elem);
+            clearExprTypes(ast_unit, row.lanes);
+        },
+        .ComplexType => clearExprTypes(ast_unit, expr_store.get(.ComplexType, expr_id).elem),
+        .TensorType => {
+            const row = expr_store.get(.TensorType, expr_id);
+            clearExprTypes(ast_unit, row.elem);
+            const shape = expr_store.expr_pool.slice(row.shape);
+            for (shape) |dim| clearExprTypes(ast_unit, dim);
+        },
+        else => {},
+    }
+}
+
+fn clearStmtTypes(ast_unit: *ast.Ast, stmt_id: ast.StmtId) void {
+    const stmt_store = &ast_unit.stmts;
+    const kind = stmt_store.index.kinds.items[stmt_id.toRaw()];
+    switch (kind) {
+        .Expr => clearExprTypes(ast_unit, stmt_store.get(.Expr, stmt_id).expr),
+        .Decl => clearDeclTypes(ast_unit, stmt_store.get(.Decl, stmt_id).decl),
+        .Assign => {
+            const row = stmt_store.get(.Assign, stmt_id);
+            clearExprTypes(ast_unit, row.left);
+            clearExprTypes(ast_unit, row.right);
+        },
+        .Insert => clearExprTypes(ast_unit, stmt_store.get(.Insert, stmt_id).expr),
+        .Return => {
+            const row = stmt_store.get(.Return, stmt_id);
+            if (!row.value.isNone()) clearExprTypes(ast_unit, row.value.unwrap());
+        },
+        .Break => {
+            const row = stmt_store.get(.Break, stmt_id);
+            if (!row.value.isNone()) clearExprTypes(ast_unit, row.value.unwrap());
+        },
+        .Continue => {},
+        .Unreachable => {},
+        .Defer => clearExprTypes(ast_unit, stmt_store.get(.Defer, stmt_id).expr),
+        .ErrDefer => clearExprTypes(ast_unit, stmt_store.get(.ErrDefer, stmt_id).expr),
+    }
+}
+
+fn clearDeclTypes(ast_unit: *ast.Ast, decl_id: ast.DeclId) void {
+    if (decl_id.toRaw() < ast_unit.type_info.decl_types.items.len) {
+        ast_unit.type_info.decl_types.items[decl_id.toRaw()] = null;
+    }
+    const decl = ast_unit.exprs.Decl.get(decl_id);
+    if (!decl.pattern.isNone()) clearPatternTypes(ast_unit, decl.pattern.unwrap());
+    if (!decl.ty.isNone()) clearExprTypes(ast_unit, decl.ty.unwrap());
+    clearExprTypes(ast_unit, decl.value);
 }
 
 // --------- type helpers
@@ -457,6 +1163,10 @@ fn resolveTypeFunctionCall(
     if (existing_bindings.len > 0) {
         try bindings_builder.appendSlice(self.gpa, existing_bindings);
     }
+    var callee_ctx = ctx;
+    if (ast_unit.file_id < self.checker_ctx.items.len) {
+        callee_ctx = self.checker_ctx.items[ast_unit.file_id];
+    }
 
     var i: usize = 0;
     var status = true;
@@ -468,11 +1178,11 @@ fn resolveTypeFunctionCall(
         if (ast_unit.pats.index.kinds.items[pat_id.toRaw()] != .Binding) return null;
         const pname = ast_unit.pats.get(.Binding, pat_id).name;
 
-        const res = try typeFromTypeExpr(self, ctx, ast_unit, param.ty.unwrap());
+        const res = try typeFromTypeExpr(self, callee_ctx, ast_unit, param.ty.unwrap());
         status = status and res[0];
         const annotated = res[1];
         if (self.typeKind(annotated) == .TypeType) {
-            const arg_res = try typeFromTypeExprWithBindings(self, ctx, ast_unit, args[i], bindings_builder.items);
+            const arg_res = try typeFromTypeExprWithBindings(self, callee_ctx, ast_unit, args[i], bindings_builder.items);
             status = status and arg_res[0];
             try bindings_builder.append(self.gpa, .{ .Type = .{ .name = pname, .ty = arg_res[1] } });
         } else {
@@ -514,11 +1224,32 @@ fn resolveTypeFunctionCall(
     if (ast_unit.exprs.index.kinds.items[body_id.toRaw()] != .Block) return null;
     const block = ast_unit.exprs.get(.Block, body_id);
     const stmts = ast_unit.stmts.stmt_pool.slice(block.items);
+    _ = try callee_ctx.symtab.push(callee_ctx.symtab.currentId());
+    defer callee_ctx.symtab.pop();
+    const base_param_specs = callee_ctx.param_specializations.items.len;
+    defer callee_ctx.param_specializations.items.len = base_param_specs;
+    for (bindings_builder.items) |binding| {
+        switch (binding) {
+            .Type => |t| {
+                try callee_ctx.param_specializations.append(self.gpa, .{ .name = t.name, .ty = t.ty });
+            },
+            else => {},
+        }
+    }
+
     for (stmts) |sid| {
-        if (ast_unit.stmts.index.kinds.items[sid.toRaw()] != .Return) continue;
+        const stmt_kind = ast_unit.stmts.index.kinds.items[sid.toRaw()];
+        if (stmt_kind == .Decl) {
+            const row = ast_unit.stmts.get(.Decl, sid);
+            clearDeclTypes(ast_unit, row.decl);
+            try self.checkDecl(callee_ctx, ast_unit, row.decl);
+            continue;
+        }
+        if (stmt_kind != .Return) continue;
         const ret = ast_unit.stmts.get(.Return, sid);
         if (ret.value.isNone()) return null;
-        const res = try typeFromTypeExprWithBindings(self, ctx, ast_unit, ret.value.unwrap(), bindings_builder.items);
+        clearExprTypes(ast_unit, ret.value.unwrap());
+        const res = try typeFromTypeExprWithBindings(self, callee_ctx, ast_unit, ret.value.unwrap(), bindings_builder.items);
         status = status and res[0];
         const resolved = res[1];
         try ast_unit.type_info.ensureExpr(self.gpa, call_id);
@@ -555,6 +1286,8 @@ pub fn typeFromTypeExpr(self: *Checker, ctx: *Checker.CheckerContext, ast_unit: 
             if (std.mem.eql(u8, s, "any")) break :blk .{ true, ts.tAny() };
             if (std.mem.eql(u8, s, "type"))
                 break :blk .{ true, ts.mkTypeType(ts.tAny()) };
+
+            if (self.lookupParamSpecialization(ctx, name)) |ty| return .{ status, ty };
 
             if (self.lookup(ctx, name)) |sid| {
                 const sym = ctx.symtab.syms.get(sid);
@@ -796,8 +1529,7 @@ pub fn typeFromTypeExpr(self: *Checker, ctx: *Checker.CheckerContext, ast_unit: 
                     try self.context.diags.addError(ast_unit.exprs.locs.get(f.loc), .duplicate_field, .{field_name});
                     try self.context.diags.attachNote(diag_idx, first_loc, .first_defined_here);
                     status = false;
-                }
-                else {
+                } else {
                     gop.value_ptr.* = f.loc;
                 }
                 const res = try typeFromTypeExpr(self, ctx, ast_unit, f.ty);
@@ -943,8 +1675,7 @@ pub fn typeFromTypeExpr(self: *Checker, ctx: *Checker.CheckerContext, ast_unit: 
                     const diag_idx = self.context.diags.count();
                     try self.context.diags.addError(ast_unit.exprs.locs.get(vf.loc), .duplicate_error_variant, .{tag_name});
                     try self.context.diags.attachNote(diag_idx, first_loc, .first_defined_here);
-                }
-                else {
+                } else {
                     gop.value_ptr.* = vf.loc;
                 }
 

@@ -229,11 +229,11 @@ const Formatter = struct {
                 // Find the end of the line to handle any inline comments
                 var line_end = pkg_loc.end;
                 while (line_end < self.source.len and self.source[line_end] != '\n') : (line_end += 1) {}
-                
+
                 // Emit any comments on the same line as the package declaration
                 try self.flushComments(line_end);
                 self.last_written_loc = line_end;
-                
+
                 try self.newline();
                 try self.newline();
             }
@@ -302,7 +302,7 @@ const Formatter = struct {
         const row = self.exprs.Decl.get(did);
         const rhs_kind = self.exprs.index.kinds.items[row.rhs.toRaw()];
         if (rhs_kind != .Function) return false;
-        
+
         const func = self.exprs.get(.Function, row.rhs);
         return !func.body.isNone();
     }
@@ -683,8 +683,8 @@ const Formatter = struct {
                 try self.printExpr(node.expr);
                 try self.printf(" {{", .{});
                 const arms = self.exprs.arm_pool.slice(node.arms);
-                for (arms, 0..) |aid, i| {
-                    if (i > 0) try self.printf(",", .{});
+                for (arms) |aid| {
+                    try self.printf(",", .{});
                     const arm = self.exprs.MatchArm.get(aid);
                     try self.newline();
                     self.indent += 4;

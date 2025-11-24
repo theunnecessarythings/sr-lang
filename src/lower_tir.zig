@@ -23,6 +23,7 @@ const Context = @import("compile.zig").Context;
 const Pipeline = pipeline_mod.Pipeline;
 const Builder = tir.Builder;
 const List = std.ArrayList;
+const MethodKey = types.MethodKey;
 const SnapshotEntry = struct {
     snapshot: interpreter.BindingSnapshot,
     interp: *interpreter.Interpreter,
@@ -59,7 +60,7 @@ lower_context: List(*LowerContext) = .{},
 pub const LowerContext = struct {
     loop_stack: List(cf.LoopCtx) = .{},
     module_call_cache: std.AutoHashMap(u64, StrId),
-    method_lowered: std.AutoHashMap(usize, void),
+    method_lowered: std.AutoHashMap(MethodKey, void),
     lowered_functions: std.AutoHashMap(tir.StrId, void),
     interpreter: *interpreter.Interpreter,
     specialization_stack: SnapshotList = .empty,
@@ -278,23 +279,28 @@ pub fn runAst(self: *LowerTir, ast_unit: *ast.Ast, t: *tir.TIR, ctx: *LowerConte
         const method = entry.value_ptr.*;
         if (method.decl_ast != ast_unit) continue;
 
-        const decl_id = method.decl_id;
-        if (ctx.method_lowered.contains(decl_id.toRaw())) continue;
+        const key = methodLowerKey(method.owner_type, method.method_name);
+        if (ctx.method_lowered.contains(key)) continue;
         // Skip lowering generic Any variants; only lower specialized methods
         if (self.shouldSkipGenericMethod(method.func_type)) continue;
-        const base_name = try self.methodSymbolName(ast_unit, decl_id);
-        try self.tryLowerNamedFunction(ctx, ast_unit, &b, decl_id, base_name, true, true);
+        _ = ast_unit.type_info.applyMethodExprSnapshot(method.owner_type, method.method_name);
+        const base_name = try self.methodSymbolName(ast_unit, method.decl_id, method.owner_type);
+        try self.tryLowerNamedFunction(ctx, ast_unit, &b, method.decl_id, base_name, true, true, key);
     }
 }
 
 fn shouldSkipGenericMethod(self: *const LowerTir, fn_ty: types.TypeId) bool {
     if (self.context.type_store.getKind(fn_ty) != .Function) return false;
     const info = self.context.type_store.get(.Function, fn_ty);
-    if (self.isType(info.result, .Any)) return true;
+    if (self.isType(info.result, .Any)) {
+        return true;
+    }
     const params = self.context.type_store.type_pool.slice(info.params);
     var i: usize = 0;
     while (i < params.len) : (i += 1) {
-        if (self.isType(params[i], .Any)) return true;
+        if (self.isType(params[i], .Any)) {
+            return true;
+        }
     }
     return false;
 }
@@ -948,8 +954,11 @@ fn tryLowerNamedFunction(
     base_name: StrId,
     should_mangle: bool,
     is_method: bool,
+    method_key: ?MethodKey,
 ) !void {
-    if (is_method and ctx.method_lowered.contains(did.toRaw())) return;
+    if (is_method and method_key != null) {
+        if (ctx.method_lowered.contains(method_key.?)) return;
+    }
 
     const decl = a.exprs.Decl.get(did);
     const kind = a.exprs.index.kinds.items[decl.value.toRaw()];
@@ -970,8 +979,8 @@ fn tryLowerNamedFunction(
     const name = if (should_mangle) try self.qualifySymbolName(a, base_name) else base_name;
     try self.lowerFunction(ctx, a, b, name, decl.value, null);
 
-    if (is_method) {
-        try ctx.method_lowered.put(did.toRaw(), {});
+    if (is_method and method_key != null) {
+        try ctx.method_lowered.put(method_key.?, {});
     }
 }
 
@@ -1120,12 +1129,19 @@ fn lowerTopDecl(self: *LowerTir, ctx: *LowerContext, a: *ast.Ast, b: *Builder, d
         if (!d.pattern.isNone()) {
             name_opt = bindingNameOfPattern(a, d.pattern.unwrap());
         } else if (!d.method_path.isNone()) {
-            name_opt = try self.methodSymbolName(a, did);
+            name_opt = try methodSymbolShortName(self, a, did);
         }
 
         if (name_opt) |nm| {
             const is_method = !d.method_path.isNone();
-            try self.tryLowerNamedFunction(ctx, a, b, did, nm, true, is_method);
+            const method_info = if (is_method) self.methodKeyForDecl(did) else null;
+            if (is_method and method_info == null) return;
+            const method_key = if (method_info) |info| info.key else null;
+            const base_name = if (method_info) |info|
+                try self.methodSymbolName(a, did, info.owner_type)
+            else
+                nm;
+            try self.tryLowerNamedFunction(ctx, a, b, did, base_name, true, is_method, method_key);
         }
         return;
     }
@@ -1487,7 +1503,7 @@ fn moduleCallKey(alias: ast.StrId, field: StrId) u64 {
     return (@as(u64, alias.toRaw()) << 32) | @as(u64, field.toRaw());
 }
 
-pub fn methodSymbolName(
+fn methodSymbolShortName(
     self: *LowerTir,
     a: *ast.Ast,
     did: ast.DeclId,
@@ -1505,6 +1521,42 @@ pub fn methodSymbolName(
     const symbol = try std.fmt.allocPrint(self.gpa, "{s}__{s}", .{ owner_name, method_name });
     defer self.gpa.free(symbol);
     return self.context.type_store.strs.intern(symbol);
+}
+
+fn methodLowerKey(owner_type: types.TypeId, method_name: ast.StrId) MethodKey {
+    return MethodKey{ .owner = owner_type.toRaw(), .name = method_name.toRaw() };
+}
+
+const MethodLowerInfo = struct {
+    key: MethodKey,
+    owner_type: types.TypeId,
+};
+
+pub fn methodSymbolName(
+    self: *LowerTir,
+    a: *ast.Ast,
+    did: ast.DeclId,
+    owner_type: types.TypeId,
+) !StrId {
+    const short_name = try methodSymbolShortName(self, a, did);
+    const short_str = self.context.type_store.strs.get(short_name);
+    const symbol = try std.fmt.allocPrint(self.gpa, "{s}_T{d}", .{ short_str, owner_type.toRaw() });
+    defer self.gpa.free(symbol);
+    return self.context.type_store.strs.intern(symbol);
+}
+
+fn methodKeyForDecl(self: *LowerTir, decl_id: ast.DeclId) ?MethodLowerInfo {
+    var it = self.context.type_store.method_table.iterator();
+    while (it.next()) |entry| {
+        const method = entry.value_ptr.*;
+        if (method.decl_id.toRaw() == decl_id.toRaw()) {
+            return MethodLowerInfo{
+                .key = methodLowerKey(method.owner_type, method.method_name),
+                .owner_type = method.owner_type,
+            };
+        }
+    }
+    return null;
 }
 
 fn prepareMethodCall(
@@ -1540,7 +1592,7 @@ fn prepareMethodCall(
 
     const symbol_ast = binding.decl_ast;
 
-    const base_symbol = try self.methodSymbolName(symbol_ast, binding.decl_id);
+    const base_symbol = try self.methodSymbolName(symbol_ast, binding.decl_id, binding.owner_type);
     const symbol = try self.qualifySymbolName(symbol_ast, base_symbol);
     callee.name = symbol;
     callee.fty = binding.func_type;
@@ -5000,7 +5052,7 @@ fn symbolNameForDecl(self: *LowerTir, decl_ast: *ast.Ast, did: ast.DeclId) !?Str
         return null;
     }
     if (!decl.method_path.isNone()) {
-        const base = try self.methodSymbolName(decl_ast, did);
+        const base = try methodSymbolShortName(self, decl_ast, did);
         return if (is_extern_fn) base else try self.qualifySymbolName(decl_ast, base);
     }
     return null;

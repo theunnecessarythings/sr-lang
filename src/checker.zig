@@ -299,7 +299,7 @@ const LoopCtx = struct {
     result_ty: ?types.TypeId = null,
 };
 
-fn bindDeclPattern(
+pub fn bindDeclPattern(
     self: *Checker,
     ctx: *CheckerContext,
     ast_unit: *ast.Ast,
@@ -438,7 +438,7 @@ fn predeclareFunction(
     // }
 }
 
-fn lookupParamSpecialization(_: *const Checker, ctx: *CheckerContext, name: ast.StrId) ?types.TypeId {
+pub fn lookupParamSpecialization(_: *const Checker, ctx: *CheckerContext, name: ast.StrId) ?types.TypeId {
     var i: usize = ctx.param_specializations.items.len;
     while (i > 0) {
         i -= 1;
@@ -576,7 +576,7 @@ fn loopCtxForLabel(_: *Checker, ctx: *CheckerContext, opt_label: ast.OptStrId) ?
 // =========================================================
 // Declarations & Statements
 // =========================================================
-fn checkDecl(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, decl_id: ast.DeclId) !void {
+pub fn checkDecl(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, decl_id: ast.DeclId) !void {
     // pattern : expect_ty = value
     const decl = ast_unit.exprs.Decl.get(decl_id);
 
@@ -591,7 +591,7 @@ fn checkDecl(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, decl_id: 
     else
         (try check_types.typeFromTypeExpr(self, ctx, ast_unit, decl.ty.unwrap()))[1];
 
-    // Method registration happens in runAst() pre-pass.
+    // Method registration happens in runAst() pre-pass for top-level methods.
 
     // Initializers must be evaluated in value context even inside statement blocks
     try self.pushValueReq(ctx, true);
@@ -605,6 +605,10 @@ fn checkDecl(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, decl_id: 
     self.popValueReq(ctx);
 
     if (self.typeKind(rhs_ty) == .TypeError) return;
+
+    if (self.inFunction(ctx) and !decl.method_path.isNone() and exprKind(ast_unit, decl.value) == .FunctionLit) {
+        _ = try self.registerMethodDecl(ctx, ast_unit, decl_id, decl, rhs_ty);
+    }
 
     // Try to coerce value type to expected type (if any)
     try self.tryTypeCoercion(ctx, ast_unit, decl_id, rhs_ty, expect_ty);
@@ -819,14 +823,18 @@ fn registerMethodDecl(
         .receiver_kind = receiver_kind,
         .builtin = null,
     };
-    if (!try self.context.type_store.addMethod(entry)) {
-        try self.context.diags.addError(
-            ast_unit.exprs.locs.get(method_seg.loc),
-            .duplicate_method_on_type,
-            .{getStr(ast_unit, method_seg.name)},
-        );
-        return false;
+    if (self.context.type_store.getMethod(owner_ty, method_seg.name)) |existing| {
+        if (!existing.decl_id.eq(decl_id)) {
+            try self.context.diags.addError(
+                ast_unit.exprs.locs.get(method_seg.loc),
+                .duplicate_method_on_type,
+                .{getStr(ast_unit, method_seg.name)},
+            );
+            return false;
+        }
     }
+    try self.context.type_store.putMethod(entry);
+    try check_types.storeMethodExprTypes(self, ast_unit, owner_ty, method_seg.name, decl.value);
 
     return true;
 }
@@ -2837,9 +2845,8 @@ fn resolveMethodFieldAccess(
     field_name: ast.StrId,
     loc: Loc,
 ) !types.TypeId {
-    const entry_opt = self.context.type_store.getMethod(owner_ty, field_name);
-
     const parent_kind = self.typeKind(receiver_ty);
+    const entry_opt = self.context.type_store.getMethod(owner_ty, field_name);
     if (entry_opt == null) {
         return try self.tryRegisterDynArrayBuiltin(ast_unit, expr_id, owner_ty, receiver_ty, field_name, parent_kind, loc);
     }
@@ -3315,6 +3322,16 @@ fn checkRange(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, id: ast.
     return self.context.type_store.mkSlice(self.context.type_store.tUsize());
 }
 
+fn typeExprNameForDiag(ast_unit: *ast.Ast, expr: ast.ExprId) ?ast.StrId {
+    const kind = exprKind(ast_unit, expr);
+    return switch (kind) {
+        .Ident => ast_unit.exprs.get(.Ident, expr).name,
+        .FieldAccess => ast_unit.exprs.get(.FieldAccess, expr).field,
+        .Call => typeExprNameForDiag(ast_unit, ast_unit.exprs.get(.Call, expr).callee),
+        else => null,
+    };
+}
+
 fn checkStructLit(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, id: ast.ExprId) !types.TypeId {
     const struct_lit = getExpr(ast_unit, .StructLit, id);
     const lit_fields = ast_unit.exprs.sfv_pool.slice(struct_lit.fields);
@@ -3340,9 +3357,12 @@ fn checkStructLit(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, id: 
     const expect_ty = blk: {
         const resolved = try check_types.typeFromTypeExpr(self, ctx, ast_unit, lit_ty);
         if (resolved[0]) break :blk resolved[1];
-        const ident = ast_unit.exprs.get(.Ident, lit_ty);
-        const ident_name = ast_unit.exprs.strs.get(ident.name);
-        try self.context.diags.addError(exprLocFromId(ast_unit, lit_ty), .undefined_identifier, .{ident_name});
+        if (typeExprNameForDiag(ast_unit, lit_ty)) |name| {
+            const ident_name = ast_unit.exprs.strs.get(name);
+            try self.context.diags.addError(exprLocFromId(ast_unit, lit_ty), .undefined_identifier, .{ident_name});
+        } else {
+            try self.context.diags.addError(exprLocFromId(ast_unit, lit_ty), .could_not_resolve_type, struct { value: []const u8 }{ .value = "type expression" });
+        }
         return self.context.type_store.tTypeError();
     };
     const is_assignable = self.assignable(struct_ty, expect_ty);

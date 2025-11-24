@@ -75,7 +75,7 @@ pub const MethodBinding = struct {
     builtin: ?BuiltinMethod = null,
 };
 
-const MethodKey = struct {
+pub const MethodKey = struct {
     owner: usize,
     name: usize,
 };
@@ -101,6 +101,7 @@ pub const TypeInfo = struct {
     comptime_values: std.AutoArrayHashMapUnmanaged(ast.ExprId, comp.ComptimeValue) = .{},
     comptime_bindings: std.AutoArrayHashMapUnmanaged(ast.StrId, StoredComptimeBinding) = .{},
     method_bindings: std.AutoArrayHashMapUnmanaged(u32, MethodBinding) = .{},
+    method_expr_snapshots: std.AutoArrayHashMapUnmanaged(MethodKey, MethodExprSnapshot) = .{},
     mlir_splice_info: std.AutoArrayHashMapUnmanaged(u32, MlirSpliceInfo) = .{},
     exports: std.AutoArrayHashMapUnmanaged(ast.StrId, ExportEntry) = .{},
     specialized_calls: std.AutoArrayHashMapUnmanaged(u32, call_resolution.FunctionDeclContext) = .{},
@@ -109,6 +110,11 @@ pub const TypeInfo = struct {
     pub const ExportEntry = struct {
         ty: TypeId,
         decl_id: ast.DeclId,
+    };
+
+    const MethodExprSnapshot = struct {
+        expr_ids: []u32,
+        expr_types: []TypeId,
     };
 
     pub fn init(gpa: std.mem.Allocator, store: *TypeStore) TypeInfo {
@@ -136,6 +142,12 @@ pub const TypeInfo = struct {
         }
         self.comptime_bindings.deinit(self.gpa);
         self.method_bindings.deinit(self.gpa);
+        var snapshot_it = self.method_expr_snapshots.iterator();
+        while (snapshot_it.next()) |entry| {
+            self.gpa.free(entry.value_ptr.expr_ids);
+            self.gpa.free(entry.value_ptr.expr_types);
+        }
+        self.method_expr_snapshots.deinit(self.gpa);
         self.mlir_splice_info.deinit(self.gpa);
         self.exports.deinit(self.gpa);
         self.specialized_calls.deinit(self.gpa);
@@ -224,6 +236,47 @@ pub const TypeInfo = struct {
         defer self.mutex.unlock();
         const gop = try self.method_bindings.getOrPut(self.gpa, expr_id.toRaw());
         gop.value_ptr.* = binding;
+    }
+
+    pub fn storeMethodExprSnapshot(
+        self: *TypeInfo,
+        owner: TypeId,
+        method_name: ast.StrId,
+        expr_ids: []const u32,
+        expr_types: []const TypeId,
+    ) !void {
+        std.debug.assert(expr_ids.len == expr_types.len);
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        const key = makeMethodKey(owner, method_name);
+        const gop = try self.method_expr_snapshots.getOrPut(self.gpa, key);
+        if (gop.found_existing) {
+            self.gpa.free(gop.value_ptr.expr_ids);
+            self.gpa.free(gop.value_ptr.expr_types);
+        }
+        const ids_copy = try self.gpa.alloc(u32, expr_ids.len);
+        const tys_copy = try self.gpa.alloc(TypeId, expr_types.len);
+        std.mem.copyForwards(u32, ids_copy, expr_ids);
+        std.mem.copyForwards(TypeId, tys_copy, expr_types);
+        gop.value_ptr.* = .{ .expr_ids = ids_copy, .expr_types = tys_copy };
+    }
+
+    pub fn applyMethodExprSnapshot(
+        self: *TypeInfo,
+        owner: TypeId,
+        method_name: ast.StrId,
+    ) bool {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        const key = makeMethodKey(owner, method_name);
+        const snapshot = self.method_expr_snapshots.get(key) orelse return false;
+        var i: usize = 0;
+        while (i < snapshot.expr_ids.len) : (i += 1) {
+            const raw = snapshot.expr_ids[i];
+            if (raw >= self.expr_types.items.len) continue;
+            self.expr_types.items[raw] = snapshot.expr_types[i];
+        }
+        return true;
     }
 
     pub fn addExport(self: *TypeInfo, name: ast.StrId, ty: TypeId, decl_id: ast.DeclId) !void {
@@ -419,19 +472,19 @@ pub const Rows = struct {
 pub const FormatOptions = struct {
     /// Maximum depth for nested types (default: 2)
     max_depth: u8 = 2,
-    
+
     /// Maximum parameters to show in function (default: 5)
     max_params: u8 = 5,
-    
+
     /// Maximum fields to show in struct/enum (default: 3)
     max_fields: u8 = 3,
-    
+
     /// Show module path for named types (default: true)
     show_module_path: bool = true,
-    
+
     /// Use type names instead of structure (default: true)
     prefer_names: bool = true,
-    
+
     /// Show constness for pointers (default: true)
     show_const: bool = true,
 };
@@ -555,6 +608,13 @@ pub const TypeStore = struct {
         if (gop.found_existing) return false;
         gop.value_ptr.* = entry;
         return true;
+    }
+
+    pub fn putMethod(self: *TypeStore, entry: MethodEntry) !void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        const key = makeMethodKey(entry.owner_type, entry.method_name);
+        try self.method_table.put(self.gpa, key, entry);
     }
 
     pub fn getMethod(self: *TypeStore, owner: TypeId, name: ast.StrId) ?MethodEntry {
@@ -1440,16 +1500,11 @@ pub const TypeStore = struct {
         }
 
         const kind = self.getKind(type_id);
-        
+
         switch (kind) {
             // Primitives: use existing lowercase format
-            .Void, .Bool, .I8, .I16, .I32, .I64,
-            .U8, .U16, .U32, .U64, .F32, .F64,
-            .Usize, .String, .Any, .Noreturn, .Undef,
-            .MlirModule, .MlirAttribute, .MlirType,
-            .TypeType, .TypeError, .Ast
-            => try self.fmt(type_id, writer),
-            
+            .Void, .Bool, .I8, .I16, .I32, .I64, .U8, .U16, .U32, .U64, .F32, .F64, .Usize, .String, .Any, .Noreturn, .Undef, .MlirModule, .MlirAttribute, .MlirType, .TypeType, .TypeError, .Ast => try self.fmt(type_id, writer),
+
             // Pointers: add const support
             .Ptr => {
                 const r = self.get(.Ptr, type_id);
@@ -1460,7 +1515,7 @@ pub const TypeStore = struct {
                 }
                 try self.fmtDiagnostic(r.elem, writer, options, depth + 1);
             },
-            
+
             // Slices, Arrays, DynArrays, Optional: delegate with depth tracking
             .Slice => {
                 const r = self.get(.Slice, type_id);
@@ -1482,7 +1537,7 @@ pub const TypeStore = struct {
                 try writer.print("?", .{});
                 try self.fmtDiagnostic(r.elem, writer, options, depth + 1);
             },
-            
+
             // Complex types
             .Complex => {
                 const r = self.get(.Complex, type_id);
@@ -1506,26 +1561,26 @@ pub const TypeStore = struct {
                 try writer.print("simd{}@", .{r.lanes});
                 try self.fmtDiagnostic(r.elem, writer, options, depth + 1);
             },
-            
+
             // Tuples: with truncation
             .Tuple => {
                 const r = self.get(.Tuple, type_id);
                 try writer.print("(", .{});
                 const ids = self.type_pool.slice(r.elems);
                 const show_count = @min(ids.len, options.max_fields);
-                
+
                 for (ids[0..show_count], 0..) |elem_id, idx| {
                     if (idx > 0) try writer.print(", ", .{});
                     try self.fmtDiagnostic(elem_id, writer, options, depth + 1);
                 }
-                
+
                 if (ids.len > show_count) {
                     try writer.print(", ... ({d} more)", .{ids.len - show_count});
                 }
-                
+
                 try writer.print(")", .{});
             },
-            
+
             // Maps
             .Map => {
                 const r = self.get(.Map, type_id);
@@ -1534,52 +1589,52 @@ pub const TypeStore = struct {
                 try writer.print("] ", .{});
                 try self.fmtDiagnostic(r.value, writer, options, depth + 1);
             },
-            
+
             // Functions: with parameter truncation
             .Function => {
                 const r = self.get(.Function, type_id);
                 const kind_str = if (r.is_pure) "fn" else "proc";
                 try writer.print("{s}(", .{kind_str});
-                
+
                 const params = self.type_pool.slice(r.params);
                 const show_count = @min(params.len, options.max_params);
-                
+
                 for (params[0..show_count], 0..) |param, idx| {
                     if (idx > 0) try writer.print(", ", .{});
                     try self.fmtDiagnostic(param, writer, options, depth + 1);
                 }
-                
+
                 if (params.len > show_count) {
                     try writer.print(", ... ({d} more)", .{params.len - show_count});
                 }
-                
+
                 try writer.print(") ", .{});
                 try self.fmtDiagnostic(r.result, writer, options, depth + 1);
-                
+
                 if (r.is_variadic) try writer.print(" variadic", .{});
             },
-            
+
             // Structs: with field truncation (type names will be added in Phase 3)
             .Struct => {
                 const r = self.get(.Struct, type_id);
                 try writer.print("struct {{ ", .{});
                 const fields = self.field_pool.slice(r.fields);
                 const show_count = @min(fields.len, options.max_fields);
-                
+
                 for (fields[0..show_count], 0..) |field_id, idx| {
                     if (idx > 0) try writer.print(", ", .{});
                     const f = self.Field.get(field_id);
                     try writer.print("{s}: ", .{self.strs.get(f.name)});
                     try self.fmtDiagnostic(f.ty, writer, options, depth + 1);
                 }
-                
+
                 if (fields.len > show_count) {
                     try writer.print(", ... ({d} more)", .{fields.len - show_count});
                 }
-                
+
                 try writer.print(" }}", .{});
             },
-            
+
             // Enums: with member truncation
             .Enum => {
                 const r = self.get(.Enum, type_id);
@@ -1588,84 +1643,84 @@ pub const TypeStore = struct {
                 try writer.print(") {{ ", .{});
                 const members = self.enum_member_pool.slice(r.members);
                 const show_count = @min(members.len, options.max_fields);
-                
+
                 for (members[0..show_count], 0..) |member_id, idx| {
                     if (idx > 0) try writer.print(", ", .{});
                     const member = self.EnumMember.get(member_id);
                     try writer.print("{s}", .{self.strs.get(member.name)});
                 }
-                
+
                 if (members.len > show_count) {
                     try writer.print(", ... ({d} more)", .{members.len - show_count});
                 }
-                
+
                 try writer.print(" }}", .{});
             },
-            
+
             // Variants: with truncation
             .Variant => {
                 const r = self.get(.Variant, type_id);
                 try writer.print("variant {{ ", .{});
                 const variants = self.field_pool.slice(r.variants);
                 const show_count = @min(variants.len, options.max_fields);
-                
+
                 for (variants[0..show_count], 0..) |variant_id, idx| {
                     if (idx > 0) try writer.print(", ", .{});
                     const v = self.Field.get(variant_id);
                     try writer.print("{s}", .{self.strs.get(v.name)});
                 }
-                
+
                 if (variants.len > show_count) {
                     try writer.print(", ... ({d} more)", .{variants.len - show_count});
                 }
-                
+
                 try writer.print(" }}", .{});
             },
-            
+
             // Errors: with truncation
             .Error => {
                 const r = self.get(.Error, type_id);
                 try writer.print("error {{ ", .{});
                 const errors = self.field_pool.slice(r.variants);
                 const show_count = @min(errors.len, options.max_fields);
-                
+
                 for (errors[0..show_count], 0..) |error_id, idx| {
                     if (idx > 0) try writer.print(", ", .{});
                     const e = self.Field.get(error_id);
                     try writer.print("{s}", .{self.strs.get(e.name)});
                 }
-                
+
                 if (errors.len > show_count) {
                     try writer.print(", ... ({d} more)", .{errors.len - show_count});
                 }
-                
+
                 try writer.print(" }}", .{});
             },
-            
+
             // ErrorSet
             .ErrorSet => {
                 const r = self.get(.ErrorSet, type_id);
                 try writer.print("!", .{});
                 try self.fmtDiagnostic(r.value_ty, writer, options, depth + 1);
             },
-            
+
             // Union
             .Union => {
                 const r = self.get(.Union, type_id);
                 try writer.print("union {{ ", .{});
                 const fields = self.field_pool.slice(r.fields);
                 const show_count = @min(fields.len, options.max_fields);
-                
+
                 for (fields[0..show_count], 0..) |field_id, idx| {
                     if (idx > 0) try writer.print(", ", .{});
                     const f = self.Field.get(field_id);
                     try writer.print("{s}", .{self.strs.get(f.name)});
                 }
-                
+
                 if (fields.len > show_count) {
                     try writer.print(", ... ({d} more)", .{fields.len - show_count});
                 }
-                
+
                 try writer.print(" }}", .{});
             },
         }
