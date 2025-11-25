@@ -10,24 +10,47 @@ const cast = @import("codegen_cast.zig");
 const debug = @import("codegen_debug.zig");
 const package = @import("package.zig");
 
-const BinArithOp = enum { add, sub, mul };
-const BinBitOp = enum { @"and", @"or", xor };
+/// Operation kinds for binary arithmetic lowering helpers.
+const BinArithOp = enum {
+    /// Addition between SSA values.
+    add,
+    /// Subtraction between SSA values.
+    sub,
+    /// Multiplication between SSA values.
+    mul,
+};
+/// Binary bitwise/logical helpers emitted during lowering.
+const BinBitOp = enum {
+    /// Logical AND operation.
+    @"and",
+    /// Logical OR operation.
+    @"or",
+    /// Bitwise XOR operation.
+    xor,
+};
 
 const Allocator = std.mem.Allocator;
 const ArrayList = std.array_list.Managed;
 
 pub var enable_debug_info: bool = false;
 
+/// Recorded line and column numbers computed from a source index.
 const LineInfo = struct {
+    /// 0-based line number.
     line: usize,
+    /// 0-based column offset from start of the line.
     col: usize,
 };
 
+/// Thin wrapper used by `mlir.Module.dump` callbacks to capture output as bytes.
 pub const PrintBuffer = struct {
+    /// Destination byte buffer where MLIR output is appended.
     list: *ArrayList(u8),
+    /// Flag set when writing to `list` fails.
     had_error: *bool,
 };
 
+/// Callback invoked by MLIR printing helpers to stream characters into a buffer.
 pub fn printCallback(str: mlir.c.MlirStringRef, user_data: ?*anyopaque) callconv(.c) void {
     const buf: *PrintBuffer = @ptrCast(@alignCast(user_data));
     const bytes = str.data[0..str.length];
@@ -36,6 +59,7 @@ pub fn printCallback(str: mlir.c.MlirStringRef, user_data: ?*anyopaque) callconv
     };
 }
 
+/// Convert a byte index into a `LineInfo` so diagnostics can report (line,col).
 fn computeLineCol(src: []const u8, index: usize) LineInfo {
     var i: usize = 0;
     var line: usize = 0;
@@ -51,90 +75,150 @@ fn computeLineCol(src: []const u8, index: usize) LineInfo {
     return .{ .line = line, .col = col };
 }
 
+/// Primary code generation driver that lowers TIR to MLIR/LLVM IR.
 pub const Codegen = @This();
 
+/// Arena allocator driving MLIR metadata/temp storage.
 gpa: Allocator,
+/// Primary compilation context shared across pipeline phases.
 context: *compile.Context,
+/// MLIR context containing dialect registrations.
 mlir_ctx: mlir.Context,
+/// Current source location recorded during lowering.
 loc: mlir.Location,
+/// MLIR module under construction.
 module: mlir.Module,
 
+/// Cached mapping from SR location IDs to MLIR location objects.
 loc_cache: std.AutoHashMap(cst.LocId, mlir.Location),
+/// Cache for original source files looked up via IDs.
 file_cache: std.AutoHashMap(u32, []const u8),
+/// Debug file metadata entries stored per file ID.
 di_files: std.AutoHashMap(u32, debug.DebugFileInfo),
+/// Cached subprogram metadata keyed by function ID.
 di_subprograms: std.AutoHashMap(tir.FuncId, debug.DebugSubprogramInfo),
 
+/// Cached `llvm.null.di.type` attribute used for empty slots.
 di_null_type_attr: mlir.Attribute,
+/// Cached `llvm.null.di.subroutineType` attribute for optional entries.
 di_subroutine_null_type_attr: mlir.Attribute,
+/// Cached empty DI expression attribute.
 di_empty_expr_attr: mlir.Attribute,
+/// DI type cache for SR type IDs.
 di_type_cache: std.AutoHashMap(types.TypeId, mlir.Attribute),
+/// Counter used when generating unique DI node names.
 next_di_id: usize = 0,
+/// Whether module-level debug attributes were already emitted.
 debug_module_attrs_initialized: bool = false,
 
 // common LLVM/arith types (opaque pointers on master)
+/// Void MLIR type reference.
 void_ty: mlir.Type,
+/// 1-bit boolean type.
 i1_ty: mlir.Type,
+/// 8-bit integer type.
 i8_ty: mlir.Type,
+/// 32-bit integer type.
 i32_ty: mlir.Type,
+/// 64-bit integer type.
 i64_ty: mlir.Type,
+/// 32-bit float type.
 f32_ty: mlir.Type,
+/// 64-bit float type.
 f64_ty: mlir.Type,
+/// Opaque pointer type used for raw pointer casting.
 llvm_ptr_ty: mlir.Type, // !llvm.ptr (opaque)
 
 // per-module caches
+/// Map from function StrId to emitted MLIR FuncOp info.
 func_syms: std.AutoHashMap(tir.StrId, FuncInfo),
+/// Global symbol table for functions/globals requiring linker visibility.
 global_syms: std.StringHashMap(void),
+/// Cache from string literals to the `llvm.mlir.global` operations.
 str_pool: std.StringHashMap(mlir.Operation), // text -> llvm.mlir.global op
 
 // per-function state (reset each function)
+/// Current MLIR region used for lowering the active function.
 cur_region: ?mlir.Region = null,
+/// Current block being emitted.
 cur_block: ?mlir.Block = null,
+/// Entry block for the active function.
 func_entry_block: ?mlir.Block = null,
+/// Cached constant `1` used when constructing branch arguments.
 i64_one_in_entry: ?mlir.Value = null,
-// join-return block for func.func lowering
+/// Join block that receives the control flow when returning from multiple sites.
 ret_join_block: ?mlir.Block = null,
+/// Tracks whether the current function returns a value.
 ret_has_value: bool = false,
+/// Cached return type for the function being lowered.
 ret_type_cache: ?mlir.Type = null,
+/// Tracks the current lexical scope/DI attribute.
 current_scope: ?mlir.Attribute = null,
+/// Mapping from TIR blocks to MLIR blocks.
 block_map: std.AutoHashMap(tir.BlockId, mlir.Block),
+/// SSA value to MLIR value mapping.
 value_map: std.AutoHashMap(tir.ValueId, mlir.Value),
+/// Storage assigned to spilled tensor values.
 tensor_slots: std.AutoHashMap(tir.ValueId, mlir.Value),
+/// Tensor element pointer metadata for multi-index stores.
 tensor_elem_ptrs: std.AutoHashMap(tir.ValueId, TensorElemPtrInfo),
 
-// NEW: for correctness decisions (signedness, etc.)
+/// SR type of each SSA value – used for signedness/casting decisions.
 val_types: std.AutoHashMap(tir.ValueId, types.TypeId), // SR types of SSA values
+/// Tracks the defining instruction for each value to facilitate diagnostics.
 def_instr: std.AutoHashMap(tir.ValueId, tir.InstrId), // SSA def site
+/// Counter used when emitting and naming inline helper operations.
 inline_mlir_counter: u32 = 0,
 
+/// Cache for LLVM values that represent constant addresses.
 global_addr_cache: std.StringHashMap(mlir.Value),
-// Functions that must be emitted as llvm.func because we take their address.
+/// Functions that must remain as `llvm.func` due to taking addresses.
 force_llvm_func_syms: std.AutoHashMap(tir.StrId, void),
 
+/// MLIR diagnostic handler ID configured during module emission.
 diagnostic_handler: mlir.c.MlirDiagnosticHandlerID,
+/// Optional pointer to the active diagnostic data.
 diagnostic_data: *DiagnosticData,
+/// Tracks the type info context currently active during lowering.
 active_type_info: ?*types.TypeInfo = null,
 
+/// Metadata cached per emitted function so we can re-enter or reference it.
 pub const FuncInfo = struct {
+    /// MLIR operation representing the function (FuncOp or llvm.func).
     op: mlir.Operation,
+    /// Whether the function accepts varargs.
     is_variadic: bool,
-    n_formals: usize, // MLIR visible formals after dropping trailing Any
+    /// Number of formal parameters visible in MLIR after stripping trailing `Any`.
+    n_formals: usize,
+    /// Return type of the lowered function.
     ret_type: mlir.Type,
+    /// Parameter MLIR types, either borrowed or owned.
     param_types: []mlir.Type = @constCast((&[_]mlir.Type{})[0..]),
+    /// Whether `param_types` slices own heap storage.
     owns_param_types: bool = false,
+    /// Optional debug subprogram attribute for this function.
     dbg_subprogram: ?mlir.Attribute = null,
 };
 
+/// Describes how to index into a tensor: constant offset or SSA value.
 const TensorIndex = union(enum) {
+    /// Fixed element index.
     constant: i64,
+    /// SSA-defined index value.
     value: tir.ValueId,
 };
 
+/// Tracks tensor-related SSA metadata needed for pointer arithmetic helpers.
 const TensorElemPtrInfo = struct {
+    /// SSA value pointing to the root tensor storage.
     root_ptr: tir.ValueId,
+    /// Element type carried by the tensor.
     elem_ty: types.TypeId,
+    /// Indices used for nested element access.
     indices: []TensorIndex,
 };
 
+/// Release the index buffer owned by `info` when it’s no longer needed.
 fn freeTensorElemPtrInfo(self: *Codegen, info: *TensorElemPtrInfo) void {
     if (info.indices.len != 0) {
         self.gpa.free(info.indices);
@@ -142,12 +226,14 @@ fn freeTensorElemPtrInfo(self: *Codegen, info: *TensorElemPtrInfo) void {
     }
 }
 
+/// Clear the per-function tensor element pointer cache without freeing capacity.
 fn clearTensorElemPtrs(self: *Codegen) void {
     var it = self.tensor_elem_ptrs.valueIterator();
     while (it.next()) |info| self.freeTensorElemPtrInfo(info);
     self.tensor_elem_ptrs.clearRetainingCapacity();
 }
 
+/// Free all tensor element pointer entries and release their buffers.
 fn releaseTensorElemPtrs(self: *Codegen) void {
     var it = self.tensor_elem_ptrs.valueIterator();
     while (it.next()) |info| self.freeTensorElemPtrInfo(info);
@@ -157,41 +243,57 @@ fn releaseTensorElemPtrs(self: *Codegen) void {
 // ----------------------------------------------------------------
 // Op builder
 // ----------------------------------------------------------------
+/// Helper builder that accumulates operands/results/regions before creating an MLIR operation.
 pub const OpBuilder = struct {
+    /// Optional operands used when building the operation.
     ops: ?[]const mlir.Value = null,
+    /// Optional result types for the new op.
     tys: ?[]const mlir.Type = null,
+    /// Optional attributes attached to the op.
     attrs: ?[]const mlir.NamedAttribute = null,
+    /// Owned regions to move into the operation.
     regs: ?[]const mlir.Region = null,
+    /// Successor blocks for branch-style ops.
     succs: ?[]const mlir.Block = null,
+    /// Operation name (e.g., "arith.add").
     name: []const u8,
+    /// Location to attribute to `name`.
     loc: mlir.Location,
 
+    /// Initialize an `OpBuilder` for `name` at `loc`.
     pub fn init(name: []const u8, loc: mlir.Location) OpBuilder {
         return .{ .name = name, .loc = loc };
     }
+    /// Cast away const so callers can mutate the builder API fluently.
     pub fn builder(self: *const OpBuilder) *OpBuilder {
         return @constCast(self);
     }
+    /// Set the operand list used when building the op.
     pub fn operands(self: *OpBuilder, ops: []const mlir.Value) *OpBuilder {
         self.ops = ops;
         return self;
     }
+    /// Set the expected result types on the new operation.
     pub fn results(self: *OpBuilder, tys: []const mlir.Type) *OpBuilder {
         self.tys = tys;
         return self;
     }
+    /// Set attributes that should attach to the operation.
     pub fn attributes(self: *OpBuilder, attrs: []const mlir.NamedAttribute) *OpBuilder {
         self.attrs = attrs;
         return self;
     }
+    /// Provide regions that the new operation should own.
     pub fn regions(self: *OpBuilder, regs: []const mlir.Region) *OpBuilder {
         self.regs = regs;
         return self;
     }
+    /// Provide successor blocks for ops that branch.
     pub fn successors(self: *OpBuilder, succs: []const mlir.Block) *OpBuilder {
         self.succs = succs;
         return self;
     }
+    /// Emit the MLIR operation by populating `OperationState` and instantiating it.
     pub fn build(self: *OpBuilder) mlir.Operation {
         var st = mlir.OperationState.get(mlir.StringRef.from(self.name), self.loc);
         if (self.tys) |r| st.addResults(r);
@@ -203,6 +305,7 @@ pub const OpBuilder = struct {
     }
 };
 
+/// Capture the printed form of `attr` into an owned byte slice.
 pub fn ownedAttributeText(self: *Codegen, attr: mlir.Attribute) ![]u8 {
     var list = ArrayList(u8).init(self.gpa);
     errdefer list.deinit();
@@ -215,6 +318,7 @@ pub fn ownedAttributeText(self: *Codegen, attr: mlir.Attribute) ![]u8 {
     return try list.toOwnedSlice();
 }
 
+/// Append the text representation of `ty` into `buf`.
 fn appendMlirTypeText(self: *Codegen, buf: *ArrayList(u8), ty: mlir.Type) !void {
     var tmp = ArrayList(u8).init(self.gpa);
     defer tmp.deinit();
@@ -225,6 +329,7 @@ fn appendMlirTypeText(self: *Codegen, buf: *ArrayList(u8), ty: mlir.Type) !void 
     try buf.appendSlice(tmp.items);
 }
 
+/// Append the textual dump of `attr` into `buf`.
 fn appendMlirAttributeText(self: *Codegen, buf: *ArrayList(u8), attr: mlir.Attribute) !void {
     var tmp = ArrayList(u8).init(self.gpa);
     defer tmp.deinit();
@@ -235,6 +340,7 @@ fn appendMlirAttributeText(self: *Codegen, buf: *ArrayList(u8), attr: mlir.Attri
     try buf.appendSlice(tmp.items);
 }
 
+/// Append the `module` textual dump to `buf`.
 fn appendMlirModuleText(self: *Codegen, buf: *ArrayList(u8), module: mlir.Module) !void {
     var tmp = ArrayList(u8).init(self.gpa);
     defer tmp.deinit();
@@ -245,6 +351,7 @@ fn appendMlirModuleText(self: *Codegen, buf: *ArrayList(u8), module: mlir.Module
     try buf.appendSlice(tmp.items);
 }
 
+/// Convert a comptime splice value into its textual form appended to `buf`.
 fn appendMlirSpliceValue(
     self: *Codegen,
     buf: *ArrayList(u8),
@@ -294,6 +401,7 @@ fn appendMlirSpliceValue(
     }
 }
 
+/// Evaluate the MLIR template pieces for a function and return the concatenated text.
 fn renderMlirTemplate(
     self: *Codegen,
     t: *tir.TIR,
@@ -316,12 +424,17 @@ fn renderMlirTemplate(
     return try buf.toOwnedSlice();
 }
 
+/// Diagnostic data passed into the MLIR diagnostic callback.
 const DiagnosticData = struct {
+    /// Compilation context for ownership and message formatting.
     context: *compile.Context,
+    /// Captured diagnostic payload as text.
     msg: ?[]const u8 = null,
+    /// Byte range/span for the diagnostic message.
     span: ?struct { start: u32, end: u32 } = null,
 };
 
+/// MLIR diagnostic callback that captures the error message and location span.
 fn diagnosticHandler(diag: mlir.c.MlirDiagnostic, userdata: ?*anyopaque) callconv(.c) mlir.c.MlirLogicalResult {
     const data: *DiagnosticData = @ptrCast(@alignCast(userdata));
     var buf = ArrayList(u8).init(data.context.gpa);
@@ -343,6 +456,7 @@ fn diagnosticHandler(diag: mlir.c.MlirDiagnostic, userdata: ?*anyopaque) callcon
 // ----------------------------------------------------------------
 // Init / Deinit
 // ----------------------------------------------------------------
+/// Create a fresh `Codegen` driver with initialized caches and DI metadata.
 pub fn init(gpa: Allocator, context: *compile.Context, ctx: mlir.Context) Codegen {
     const loc = mlir.Location.unknownGet(ctx);
     const module = mlir.Module.createEmpty(loc);
@@ -389,6 +503,7 @@ pub fn init(gpa: Allocator, context: *compile.Context, ctx: mlir.Context) Codege
     };
 }
 
+/// Tear down `Codegen`, releasing all MLIR/diagnostic caches and allocator ownership.
 pub fn deinit(self: *Codegen) void {
     self.resetDebugCaches();
     self.di_subprograms.deinit();
@@ -426,10 +541,12 @@ pub fn deinit(self: *Codegen) void {
     self.module.destroy();
 }
 
+/// Empty cached debug metadata so future functions regenerate DI entries.
 pub fn resetDebugCaches(self: *Codegen) void {
     debug.resetDebugCaches(self);
 }
 
+/// Fetch and cache the source buffer for `file_id`, reusing previous reads.
 fn getFileSource(self: *Codegen, file_id: u32) ![]const u8 {
     if (self.file_cache.get(file_id)) |buf| return buf;
     const data = try self.context.source_manager.read(file_id);
@@ -440,6 +557,7 @@ fn getFileSource(self: *Codegen, file_id: u32) ![]const u8 {
     return data;
 }
 
+/// Read the optional source location attached to `ins_id` inside `t`.
 fn instrOptLoc(_: *Codegen, t: *tir.TIR, ins_id: tir.InstrId) tir.OptLocId {
     const kind = t.instrs.index.kinds.items[ins_id.toRaw()];
     return switch (kind) {
@@ -447,6 +565,7 @@ fn instrOptLoc(_: *Codegen, t: *tir.TIR, ins_id: tir.InstrId) tir.OptLocId {
     };
 }
 
+/// Return the optional location stored on terminator `term_id` within `t`.
 fn termOptLoc(_: *Codegen, t: *tir.TIR, term_id: tir.TermId) tir.OptLocId {
     const kind = t.terms.index.kinds.items[term_id.toRaw()];
     return switch (kind) {
@@ -454,6 +573,7 @@ fn termOptLoc(_: *Codegen, t: *tir.TIR, term_id: tir.TermId) tir.OptLocId {
     };
 }
 
+/// Scan `block_id` for any instruction/terminator location and return the first one.
 fn blockOptLoc(self: *Codegen, block_id: tir.BlockId, t: *tir.TIR) tir.OptLocId {
     const block = t.funcs.Block.get(block_id);
     const instrs = t.instrs.instr_pool.slice(block.instrs);
@@ -464,6 +584,7 @@ fn blockOptLoc(self: *Codegen, block_id: tir.BlockId, t: *tir.TIR) tir.OptLocId 
     return self.termOptLoc(t, block.term);
 }
 
+/// Populate a list of functions whose LLVM symbols must be emitted because addresses are taken.
 fn collectForceLlvmFuncSyms(self: *Codegen, t: *tir.TIR) !void {
     self.force_llvm_func_syms.clearRetainingCapacity();
 
@@ -487,6 +608,7 @@ fn collectForceLlvmFuncSyms(self: *Codegen, t: *tir.TIR) !void {
     }
 }
 
+/// Return the first non-empty location associated with function `f_id`.
 fn functionOptLoc(self: *Codegen, f_id: tir.FuncId, t: *tir.TIR) tir.OptLocId {
     const f = t.funcs.Function.get(f_id);
     const blocks = t.funcs.block_pool.slice(f.blocks);
@@ -503,6 +625,7 @@ fn functionOptLoc(self: *Codegen, f_id: tir.FuncId, t: *tir.TIR) tir.OptLocId {
 // Public entry
 // ----------------------------------------------------------------
 
+/// Lower all dependency levels into MLIR by iterating through TIR units.
 pub fn emit(self: *Codegen, levels: *const compile.DependencyLevels) !mlir.Module {
     var unit_by_file = std.AutoHashMap(u32, *package.FileUnit).init(self.gpa);
     defer unit_by_file.deinit();
@@ -527,6 +650,7 @@ pub fn emit(self: *Codegen, levels: *const compile.DependencyLevels) !mlir.Modul
     return self.module;
 }
 
+/// Lower a single TIR unit into MLIR, emitting functions and debug info.
 pub fn emitModule(
     self: *Codegen,
     t: *tir.TIR,
@@ -554,6 +678,7 @@ pub fn emitModule(
     return self.module;
 }
 
+/// Map `opt_loc` to an MLIR `Location`, caching repeated lookups.
 fn mlirFileLineColLocation(self: *Codegen, opt_loc: tir.OptLocId) mlir.Location {
     if (opt_loc.isNone())
         // Preserve the current ambient location so callers can deliberately
@@ -578,6 +703,7 @@ fn mlirFileLineColLocation(self: *Codegen, opt_loc: tir.OptLocId) mlir.Location 
     return mlir_loc;
 }
 
+/// Update the current MLIR location to `opt_loc` and return the previous location.
 pub fn pushLocation(self: *Codegen, opt_loc: tir.OptLocId) mlir.Location {
     const prev = self.loc;
     const file_loc = self.mlirFileLineColLocation(opt_loc);
@@ -593,6 +719,7 @@ pub fn pushLocation(self: *Codegen, opt_loc: tir.OptLocId) mlir.Location {
     return prev;
 }
 
+/// Convert a TIR constant initializer into an MLIR attribute of type `ty`.
 fn attributeFromConstInit(self: *Codegen, ci: tir.ConstInit, ty: mlir.Type) !mlir.Attribute {
     return switch (ci) {
         .int => |val| mlir.Attribute.integerAttrGet(ty, val),
@@ -616,6 +743,7 @@ fn attributeFromConstInit(self: *Codegen, ci: tir.ConstInit, ty: mlir.Type) !mli
         else => return error.Unsupported,
     };
 }
+/// Append an `llvm.return` operation carrying `val` into `block`.
 fn appendReturnInBlock(self: *Codegen, block: *mlir.Block, val: mlir.Value) void {
     const op = OpBuilder.init("llvm.return", self.loc).builder()
         .operands(&.{val})
@@ -623,6 +751,7 @@ fn appendReturnInBlock(self: *Codegen, block: *mlir.Block, val: mlir.Value) void
     block.appendOwnedOperation(op);
 }
 
+/// Append an `llvm.mlir.zero` of type `ty` into `block` and return the new value.
 fn appendZeroValueInBlock(self: *Codegen, block: *mlir.Block, ty: mlir.Type) mlir.Value {
     var op = OpBuilder.init("llvm.mlir.zero", self.loc).builder()
         .results(&.{ty})
@@ -631,6 +760,7 @@ fn appendZeroValueInBlock(self: *Codegen, block: *mlir.Block, ty: mlir.Type) mli
     return op.getResult(0);
 }
 
+/// Emit MLIR declarations for the extern globals and functions referenced in `t`.
 fn emitExternDecls(self: *Codegen, t: *tir.TIR) !void {
     const global_ids = t.funcs.global_pool.data.items;
 
@@ -819,6 +949,7 @@ fn emitExternDecls(self: *Codegen, t: *tir.TIR) !void {
     }
 }
 
+/// Prepare the MLIR function declaration/operator for `f_id` before emitting its body.
 fn emitFunctionHeader(self: *Codegen, f_id: tir.FuncId, t: *tir.TIR) !void {
     const f = t.funcs.Function.get(f_id);
     const params = t.funcs.param_pool.slice(f.params);
@@ -951,6 +1082,7 @@ fn emitFunctionHeader(self: *Codegen, f_id: tir.FuncId, t: *tir.TIR) !void {
     _ = try self.func_syms.put(func_name_id, finfo);
 }
 
+/// Return a cached `i64` constant that lives in the entry block.
 fn getI64OneInEntry(self: *Codegen) mlir.Value {
     if (self.i64_one_in_entry) |v| return v;
 
@@ -966,6 +1098,7 @@ fn getI64OneInEntry(self: *Codegen) mlir.Value {
     return v;
 }
 
+/// Lower the instructions of function `f_id` after its header has been emitted.
 fn emitFunctionBody(self: *Codegen, f_id: tir.FuncId, t: *tir.TIR) !void {
     // reset per-function state
     self.block_map.clearRetainingCapacity();
@@ -1132,6 +1265,7 @@ fn emitFunctionBody(self: *Codegen, f_id: tir.FuncId, t: *tir.TIR) !void {
     self.ret_type_cache = null;
 }
 
+/// Return the lowered SSA value corresponding to `id` if it was already emitted.
 fn getInstrResultId(self: *Codegen, t: *tir.TIR, id: tir.InstrId) ?tir.ValueId {
     _ = self;
     const K = t.instrs.index.kinds.items[id.toRaw()];
@@ -1148,6 +1282,7 @@ fn getInstrResultId(self: *Codegen, t: *tir.TIR, id: tir.InstrId) ?tir.ValueId {
     }
 }
 
+/// Retrieve the source-level type stamped on the result of `id`, if recorded.
 fn instrResultSrType(_: *Codegen, t: *tir.TIR, id: tir.InstrId) ?types.TypeId {
     const K = t.instrs.index.kinds.items[id.toRaw()];
     return switch (K) {
@@ -1158,6 +1293,7 @@ fn instrResultSrType(_: *Codegen, t: *tir.TIR, id: tir.InstrId) ?types.TypeId {
     };
 }
 
+/// Ensure the callee referenced by `p` has been emitted and return its `FuncInfo`.
 fn ensureFuncDeclFromCall(self: *Codegen, p: tir.Rows.Call, t: *tir.TIR) !FuncInfo {
     const name = t.instrs.strs.get(p.callee);
     const callee_id = p.callee;
@@ -1307,6 +1443,7 @@ fn ensureFuncDeclFromCall(self: *Codegen, p: tir.Rows.Call, t: *tir.TIR) !FuncIn
     return info;
 }
 
+/// Make sure the lowered argument list can satisfy the callee's parameter types.
 fn ensureCallArgType(
     self: *Codegen,
     value: mlir.Value,
@@ -1357,13 +1494,17 @@ fn ensureCallArgType(
     return value;
 }
 
+/// Cached parameter/return information produced by `resolveCallParamTypes`.
 const CallParamInfo = struct {
+    /// Flattened MLIR argument/return types for the function call.
     types: []const mlir.Type,
+    /// Non-null when ownership was granted by the resolver.
     owned: ?[]mlir.Type,
 };
 
 const emptyFunctionParamSlice: []const mlir.Type = &[_]mlir.Type{};
 
+/// Compute the lowered parameter/return types and ABI attributes for `finfo`.
 fn resolveCallParamTypes(self: *Codegen, finfo: FuncInfo) !CallParamInfo {
     if (finfo.param_types.len != 0) {
         return .{ .types = finfo.param_types, .owned = null };
@@ -1388,6 +1529,7 @@ fn resolveCallParamTypes(self: *Codegen, finfo: FuncInfo) !CallParamInfo {
     return .{ .types = owned, .owned = owned };
 }
 
+/// Build the SSA operand list when calling a known function, handling ABI lowering.
 fn prepareInternalCallArgs(
     self: *Codegen,
     src_vals: []const mlir.Value,
@@ -1414,6 +1556,7 @@ fn prepareInternalCallArgs(
     return args;
 }
 
+/// Emit an MLIR constant for the signed/unsigned integer `p`.
 fn emitConstInt(self: *Codegen, p: tir.Rows.ConstInt) !mlir.Value {
     const prev_loc = self.pushLocation(p.loc);
     defer self.loc = prev_loc;
@@ -1424,6 +1567,7 @@ fn emitConstInt(self: *Codegen, p: tir.Rows.ConstInt) !mlir.Value {
     return self.constInt(ty, p.value);
 }
 
+/// Emit an MLIR constant floating-point value.
 fn emitConstFloat(self: *Codegen, p: tir.Rows.ConstFloat) !mlir.Value {
     const prev_loc = self.pushLocation(p.loc);
     defer self.loc = prev_loc;
@@ -1431,12 +1575,14 @@ fn emitConstFloat(self: *Codegen, p: tir.Rows.ConstFloat) !mlir.Value {
     return self.constFloat(ty, p.value);
 }
 
+/// Emit an MLIR boolean constant from `p`.
 fn emitConstBool(self: *Codegen, p: tir.Rows.ConstBool) !mlir.Value {
     const prev_loc = self.pushLocation(p.loc);
     defer self.loc = prev_loc;
     return self.constBool(p.value);
 }
 
+/// Emit an MLIR null pointer constant for `p`.
 fn emitConstNull(self: *Codegen, p: tir.Rows.ConstNull) !mlir.Value {
     const prev_loc = self.pushLocation(p.loc);
     defer self.loc = prev_loc;
@@ -1453,6 +1599,7 @@ fn emitConstNull(self: *Codegen, p: tir.Rows.ConstNull) !mlir.Value {
     return zero.getResult(0);
 }
 
+/// Emit an MLIR `undef` value specializing to the target type.
 fn emitConstUndef(self: *Codegen, p: tir.Rows.ConstUndef) !mlir.Value {
     const prev_loc = self.pushLocation(p.loc);
     defer self.loc = prev_loc;
@@ -1463,6 +1610,7 @@ fn emitConstUndef(self: *Codegen, p: tir.Rows.ConstUndef) !mlir.Value {
     return op.getResult(0);
 }
 
+/// Emit an MLIR constant string filled with `p`’s text data.
 fn emitConstString(self: *Codegen, p: tir.Rows.ConstString) !mlir.Value {
     const prev_loc = self.pushLocation(p.loc);
     defer self.loc = prev_loc;
@@ -1480,6 +1628,7 @@ fn emitConstString(self: *Codegen, p: tir.Rows.ConstString) !mlir.Value {
     return agg;
 }
 
+/// Emit the MLIR representation of integer/floating point addition.
 fn emitAdd(self: *Codegen, p: tir.Rows.Bin2) !mlir.Value {
     const prev_loc = self.pushLocation(p.loc);
     defer self.loc = prev_loc;
@@ -1497,6 +1646,7 @@ fn emitAdd(self: *Codegen, p: tir.Rows.Bin2) !mlir.Value {
     return self.binArith(.add, p);
 }
 
+/// Emit subtraction for the binary pair `p`.
 fn emitSub(self: *Codegen, p: tir.Rows.Bin2) !mlir.Value {
     const prev_loc = self.pushLocation(p.loc);
     defer self.loc = prev_loc;
@@ -1513,6 +1663,7 @@ fn emitSub(self: *Codegen, p: tir.Rows.Bin2) !mlir.Value {
     return self.binArith(.sub, p);
 }
 
+/// Emit multiplication for `p`.
 fn emitMul(self: *Codegen, p: tir.Rows.Bin2) !mlir.Value {
     const prev_loc = self.pushLocation(p.loc);
     defer self.loc = prev_loc;
@@ -1529,6 +1680,7 @@ fn emitMul(self: *Codegen, p: tir.Rows.Bin2) !mlir.Value {
     return self.binArith(.mul, p);
 }
 
+/// Emit division for `p`.
 fn emitDiv(self: *Codegen, p: tir.Rows.Bin2) !mlir.Value {
     const prev_loc = self.pushLocation(p.loc);
     defer self.loc = prev_loc;
@@ -1549,6 +1701,7 @@ fn emitDiv(self: *Codegen, p: tir.Rows.Bin2) !mlir.Value {
     return self.arithDiv(lhs, rhs, ty, signed);
 }
 
+/// Emit modulo/remainder operations for `p`.
 fn emitMod(self: *Codegen, p: tir.Rows.Bin2) !mlir.Value {
     const prev_loc = self.pushLocation(p.loc);
     defer self.loc = prev_loc;
@@ -1559,6 +1712,7 @@ fn emitMod(self: *Codegen, p: tir.Rows.Bin2) !mlir.Value {
     return self.arithRem(lhs, rhs, ty, signed);
 }
 
+/// Emit a left shift instruction for `p`.
 fn emitShl(self: *Codegen, p: tir.Rows.Bin2) !mlir.Value {
     const prev_loc = self.pushLocation(p.loc);
     defer self.loc = prev_loc;
@@ -1568,6 +1722,7 @@ fn emitShl(self: *Codegen, p: tir.Rows.Bin2) !mlir.Value {
     return self.arithShl(lhs, rhs, ty);
 }
 
+/// Emit a right shift instruction for `p`.
 fn emitShr(self: *Codegen, p: tir.Rows.Bin2) !mlir.Value {
     const prev_loc = self.pushLocation(p.loc);
     defer self.loc = prev_loc;
@@ -1578,6 +1733,7 @@ fn emitShr(self: *Codegen, p: tir.Rows.Bin2) !mlir.Value {
     return self.arithShr(lhs, rhs, ty, signed);
 }
 
+/// Emit a bitcast for the single-operand `p`.
 fn emitCastBit(self: *Codegen, p: tir.Rows.Un1) !mlir.Value {
     const prev_loc = self.pushLocation(p.loc);
     defer self.loc = prev_loc;
@@ -1611,6 +1767,7 @@ fn emitCastBit(self: *Codegen, p: tir.Rows.Un1) !mlir.Value {
     return op.getResult(0);
 }
 
+/// Emit the normal cast instruction (usually zero/sign extend or truncate).
 fn emitCastNormalInstr(self: *Codegen, p: tir.Rows.Un1) !mlir.Value {
     const prev_loc = self.pushLocation(p.loc);
     defer self.loc = prev_loc;
@@ -1631,6 +1788,7 @@ fn emitCastNormalInstr(self: *Codegen, p: tir.Rows.Un1) !mlir.Value {
     return val;
 }
 
+/// Emit a saturating cast for `p`.
 fn emitCastSaturate(self: *Codegen, p: tir.Rows.Un1) !mlir.Value {
     const prev_loc = self.pushLocation(p.loc);
     defer self.loc = prev_loc;
@@ -1640,6 +1798,7 @@ fn emitCastSaturate(self: *Codegen, p: tir.Rows.Un1) !mlir.Value {
     return val;
 }
 
+/// Emit a wrapping cast when truncating down to a narrower type.
 fn emitCastWrap(self: *Codegen, comptime x: tir.OpKind, p: tir.Rows.Un1) !mlir.Value {
     const prev_loc = self.pushLocation(p.loc);
     defer self.loc = prev_loc;
@@ -1649,12 +1808,14 @@ fn emitCastWrap(self: *Codegen, comptime x: tir.OpKind, p: tir.Rows.Un1) !mlir.V
     return val;
 }
 
+/// Append `op` into the current function’s entry block.
 fn appendInFuncEntry(self: *Codegen, op: mlir.Operation) void {
     var entry = self.func_entry_block orelse self.cur_block.?;
     const term = entry.getTerminator();
     if (!term.isNull()) entry.insertOwnedOperationBefore(term, op) else entry.appendOwnedOperation(op);
 }
 
+/// Emit an LLVM `alloca` for the stack allocation described by `p`.
 fn emitAlloca(self: *Codegen, p: tir.Rows.Alloca) !mlir.Value {
     const prev_loc = self.pushLocation(p.loc);
     defer self.loc = prev_loc;
@@ -1701,6 +1862,7 @@ fn emitAlloca(self: *Codegen, p: tir.Rows.Alloca) !mlir.Value {
     return alloca.getResult(0);
 }
 
+/// Emit the MLIR instructions for a load operation `p`.
 fn emitLoad(self: *Codegen, p: tir.Rows.Load, t: *tir.TIR) !mlir.Value {
     const prev_loc = self.pushLocation(p.loc);
     defer self.loc = prev_loc;
@@ -1778,6 +1940,7 @@ fn emitLoad(self: *Codegen, p: tir.Rows.Load, t: *tir.TIR) !mlir.Value {
     }
 }
 
+/// Emit the MLIR instructions for the store operation described by `p`.
 fn emitStore(self: *Codegen, p: tir.Rows.Store, t: *tir.TIR) !mlir.Value {
     const prev_loc = self.pushLocation(p.loc);
     defer self.loc = prev_loc;
@@ -1823,6 +1986,7 @@ fn emitStore(self: *Codegen, p: tir.Rows.Store, t: *tir.TIR) !mlir.Value {
     return .empty();
 }
 
+/// Emit a GEP instruction and cache the resulting pointer value.
 fn emitGepInstr(self: *Codegen, ins_id: tir.InstrId, t: *tir.TIR) !mlir.Value {
     if (try self.tryEmitTensorGep(ins_id, t)) |special| return special;
 
@@ -1846,6 +2010,7 @@ fn emitGepInstr(self: *Codegen, ins_id: tir.InstrId, t: *tir.TIR) !mlir.Value {
     return self.emitGep(base, elem_mlir, indices_data);
 }
 
+/// Emit an LLVM global address constant for `p`.
 fn emitGlobalAddr(self: *Codegen, p: tir.Rows.GlobalAddr) !mlir.Value {
     const prev_loc = self.pushLocation(p.loc);
     defer self.loc = prev_loc;
@@ -1876,6 +2041,7 @@ fn emitGlobalAddr(self: *Codegen, p: tir.Rows.GlobalAddr) !mlir.Value {
     return value;
 }
 
+/// Emit a tuple construction operation for `p`.
 fn emitTupleMake(self: *Codegen, p: tir.Rows.TupleMake, t: *const tir.TIR) !mlir.Value {
     const prev_loc = self.pushLocation(p.loc);
     defer self.loc = prev_loc;
@@ -1896,6 +2062,7 @@ fn emitTupleMake(self: *Codegen, p: tir.Rows.TupleMake, t: *const tir.TIR) !mlir
     return acc;
 }
 
+/// Emit the runtime representation for a range literal.
 fn emitRangeMake(self: *Codegen, p: tir.Rows.RangeMake) !mlir.Value {
     const prev_loc = self.pushLocation(p.loc);
     defer self.loc = prev_loc;
@@ -1912,6 +2079,7 @@ fn emitRangeMake(self: *Codegen, p: tir.Rows.RangeMake) !mlir.Value {
     return acc;
 }
 
+/// Emit a broadcast operation for SIMD values described by `p`.
 fn emitBroadcast(self: *Codegen, p: tir.Rows.Broadcast) !mlir.Value {
     const prev_loc = self.pushLocation(p.loc);
     defer self.loc = prev_loc;
@@ -1922,6 +2090,7 @@ fn emitBroadcast(self: *Codegen, p: tir.Rows.Broadcast) !mlir.Value {
     return op.getResult(0);
 }
 
+/// Emit a SIMD vector literal from `p`.
 fn emitSimdMake(self: *Codegen, p: tir.Rows.ArrayMake, t: *const tir.TIR) !mlir.Value {
     const simd_ty = self.context.type_store.get(.Simd, p.ty);
     const lanes: usize = @intCast(simd_ty.lanes);
@@ -1948,6 +2117,7 @@ fn emitSimdMake(self: *Codegen, p: tir.Rows.ArrayMake, t: *const tir.TIR) !mlir.
     return literal.getResult(0);
 }
 
+/// Emit a tensor literal materializing `p`’s values into `t`.
 fn emitTensorMake(self: *Codegen, p: tir.Rows.ArrayMake, t: *const tir.TIR) !mlir.Value {
     const tensor_sr = self.context.type_store.get(.Tensor, p.ty);
     const tensor_ty = try self.llvmTypeOf(p.ty);
@@ -1980,6 +2150,7 @@ fn emitTensorMake(self: *Codegen, p: tir.Rows.ArrayMake, t: *const tir.TIR) !mli
     return literal.getResult(0);
 }
 
+/// Emit the general array literal building logic for `p`.
 fn emitArrayMake(self: *Codegen, p: tir.Rows.ArrayMake, t: *const tir.TIR) !mlir.Value {
     const prev_loc = self.pushLocation(p.loc);
     defer self.loc = prev_loc;
@@ -2007,6 +2178,7 @@ fn emitArrayMake(self: *Codegen, p: tir.Rows.ArrayMake, t: *const tir.TIR) !mlir
     return acc;
 }
 
+/// Emit the index access operation `p`.
 fn emitIndex(self: *Codegen, p: tir.Rows.Index, t: *tir.TIR) !mlir.Value {
     const prev_loc = self.pushLocation(p.loc);
     defer self.loc = prev_loc;
@@ -2289,6 +2461,7 @@ fn emitIndex(self: *Codegen, p: tir.Rows.Index, t: *tir.TIR) !mlir.Value {
     }
 }
 
+/// Expand a trailing tuple argument into individual elements for variadic calls.
 fn expandVariadicArgTuple(
     self: *Codegen,
     value: mlir.Value,
@@ -2351,6 +2524,7 @@ fn expandVariadicArgTuple(
     try out_sr.append(sr_ty);
 }
 
+/// Emit an MLIR call instruction for `p`, wiring argument lists and return types.
 fn emitCall(self: *Codegen, p: tir.Rows.Call, t: *tir.TIR) !mlir.Value {
     const prev_loc = self.pushLocation(p.loc);
     defer self.loc = prev_loc;
@@ -2640,6 +2814,7 @@ fn emitCall(self: *Codegen, p: tir.Rows.Call, t: *tir.TIR) !mlir.Value {
     }
 }
 
+/// Emit an MLIR block, including splices and argument lowering.
 fn emitMlirBlock(self: *Codegen, p: tir.Rows.MlirBlock, t: *tir.TIR) !mlir.Value {
     const prev_loc = self.pushLocation(p.loc);
     defer self.loc = prev_loc;
@@ -2905,6 +3080,7 @@ fn emitMlirBlock(self: *Codegen, p: tir.Rows.MlirBlock, t: *tir.TIR) !mlir.Value
 // ----------------------------------------------------------------
 // Instructions
 // ----------------------------------------------------------------
+/// Lower a single SSA instruction `ins_id` from `t` into MLIR and return its result value.
 fn emitInstr(self: *Codegen, ins_id: tir.InstrId, t: *tir.TIR) !mlir.Value {
     const kind = t.instrs.index.kinds.items[ins_id.toRaw()];
     return switch (kind) {
@@ -3316,6 +3492,7 @@ fn emitInstr(self: *Codegen, ins_id: tir.InstrId, t: *tir.TIR) !mlir.Value {
     };
 }
 
+/// Inline the given MLIR operation within the current block.
 fn emitInlineMlirOperation(
     self: *Codegen,
     mlir_text_raw: []const u8,
@@ -3437,6 +3614,7 @@ fn emitInlineMlirOperation(
     }
 }
 
+/// Emit comparison instructions for binary compare operations recorded in `p`.
 fn emitCmp(
     self: *Codegen,
     comptime pred_u: []const u8, // for unsigned ints (ult, ule, ugt, uge)
@@ -3489,6 +3667,7 @@ fn emitCmp(
     }
 }
 
+/// Emit the terminator instruction corresponding to `term_id`.
 fn emitTerminator(self: *Codegen, term_id: tir.TermId, t: *tir.TIR) !void {
     const kind = t.terms.index.kinds.items[term_id.toRaw()];
 
@@ -3619,6 +3798,7 @@ fn emitTerminator(self: *Codegen, term_id: tir.TermId, t: *tir.TIR) !void {
     }
 }
 
+/// Try to emit a specialized GEP for tensor operations, returning null if not applicable.
 fn tryEmitTensorGep(self: *Codegen, ins_id: tir.InstrId, t: *tir.TIR) !?mlir.Value {
     const p = t.instrs.get(.Gep, ins_id);
     if (self.context.type_store.getKind(p.ty) != .Ptr) return null;
@@ -3665,6 +3845,7 @@ fn tryEmitTensorGep(self: *Codegen, ins_id: tir.InstrId, t: *tir.TIR) !?mlir.Val
     return placeholder;
 }
 
+/// Combine tensor index operands into the format expected by the lowered tensor GEP.
 fn combineTensorIndexIds(
     self: *Codegen,
     t: *tir.TIR,
@@ -3692,6 +3873,7 @@ fn combineTensorIndexIds(
     return buf;
 }
 
+/// Lower tensor index expressions into LLVM values based on the given f_id.
 fn buildTensorIndexValues(
     self: *Codegen,
     t: *tir.TIR,
@@ -3721,6 +3903,7 @@ fn buildTensorIndexValues(
     return out;
 }
 
+/// Ensure the TIR value `vid` has a corresponding MLIR value, emitting it if needed.
 fn ensureValue(self: *Codegen, t: *tir.TIR, vid: tir.ValueId) anyerror!mlir.Value {
     if (self.value_map.get(vid)) |v| return v;
     if (self.def_instr.get(vid)) |iid| {
@@ -3729,6 +3912,7 @@ fn ensureValue(self: *Codegen, t: *tir.TIR, vid: tir.ValueId) anyerror!mlir.Valu
     return error.CompileError;
 }
 
+/// Handle storing a scalar into a tensor element using indexed GEPs.
 fn handleTensorElementStore(
     self: *Codegen,
     p: tir.Rows.Store,
@@ -3752,6 +3936,7 @@ fn handleTensorElementStore(
     return false;
 }
 
+/// Attempt to lower scalar loads from tensor elements by following tensor GEP helpers.
 fn tryEmitTensorElementLoad(
     self: *Codegen,
     p: tir.Rows.Load,
@@ -3773,6 +3958,7 @@ fn tryEmitTensorElementLoad(
     return null;
 }
 
+/// Insert a scalar into a tensor value at the computed index.
 fn tensorInsertScalar(
     self: *Codegen,
     tensor_ty: types.TypeId,
@@ -3795,6 +3981,7 @@ fn tensorInsertScalar(
     return insert.getResult(0);
 }
 
+/// Extract a scalar from the tensor located at the computed index.
 fn tensorExtractScalar(
     self: *Codegen,
     elem_ty: types.TypeId,
@@ -3813,6 +4000,7 @@ fn tensorExtractScalar(
     return extract.getResult(0);
 }
 
+/// Emit a pointer `getelementptr` operation for the TIR `p`.
 fn emitGep(
     self: *Codegen,
     base: mlir.Value,
@@ -3897,6 +4085,7 @@ fn emitGep(
 // ----------------------------------------------------------------
 // Helpers
 // ----------------------------------------------------------------
+/// Build an MLIR integer predicate attribute from the string `pred`.
 fn arithCmpIPredAttr(self: *Codegen, comptime pred: []const u8) mlir.Attribute {
     const val: i64 = if (std.mem.eql(u8, pred, "eq")) 0 else if (std.mem.eql(u8, pred, "ne"))
         1
@@ -3913,6 +4102,7 @@ fn arithCmpIPredAttr(self: *Codegen, comptime pred: []const u8) mlir.Attribute {
     return mlir.Attribute.integerAttrGet(self.i64_ty, val);
 }
 
+/// Build an MLIR floating-point predicate attribute from the string `pred`.
 fn arithCmpFPredAttr(self: *Codegen, comptime pred: []const u8) mlir.Attribute {
     const val: i64 = if (std.mem.eql(u8, pred, "false")) 0 else if (std.mem.eql(u8, pred, "oeq"))
         1
@@ -3935,10 +4125,12 @@ fn arithCmpFPredAttr(self: *Codegen, comptime pred: []const u8) mlir.Attribute {
     return mlir.Attribute.integerAttrGet(self.i64_ty, val);
 }
 
+/// Append `op` into the current block held by `Codegen`.
 pub fn append(self: *Codegen, op: mlir.Operation) void {
     self.cur_block.?.appendOwnedOperation(op);
 }
 
+/// Check whether `v` represents an `llvm.mlir.undef` placeholder.
 pub fn isUndefValue(self: *const Codegen, v: mlir.Value) bool {
     _ = self;
     if (!v.isAOpResult()) return false;
@@ -3949,6 +4141,7 @@ pub fn isUndefValue(self: *const Codegen, v: mlir.Value) bool {
     return std.mem.eql(u8, name, "llvm.mlir.undef");
 }
 
+/// Wrap `attr` and `name` into a MLIR `NamedAttribute`.
 pub fn named(self: *const Codegen, name: []const u8, attr: mlir.Attribute) mlir.NamedAttribute {
     return .{
         .inner = .{
@@ -3957,10 +4150,12 @@ pub fn named(self: *const Codegen, name: []const u8, attr: mlir.Attribute) mlir.
         },
     };
 }
+/// Helper that interns a string into an MLIR StringAttr.
 pub fn strAttr(self: *const Codegen, s: []const u8) mlir.Attribute {
     return mlir.Attribute.stringAttrGet(self.mlir_ctx, mlir.StringRef.from(s));
 }
 
+/// Emit a zero constant for `ty`, using splat for vectors and `llvm.mlir.zero` otherwise.
 pub fn zeroOf(self: *Codegen, ty: mlir.Type) mlir.Value {
     if (ty.isAVector()) {
         const elem_ty = ty.getShapedElementType();
@@ -3986,6 +4181,7 @@ pub fn zeroOf(self: *Codegen, ty: mlir.Type) mlir.Value {
     return op.getResult(0);
 }
 
+/// Convert `value` to the MLIR `index` type, emitting a cast if needed.
 fn ensureIndexValue(self: *Codegen, value: mlir.Value) !mlir.Value {
     const idx_ty = mlir.Type.getIndexType(self.mlir_ctx);
     if (value.getType().equal(idx_ty)) return value;
@@ -3999,6 +4195,7 @@ fn ensureIndexValue(self: *Codegen, value: mlir.Value) !mlir.Value {
     return value;
 }
 
+/// Emit a null pointer constant of `llvm_ptr_ty`.
 fn llvmNullPtr(self: *Codegen) mlir.Value {
     // Create a null pointer via constant integer 0 casted to ptr
     const zero = self.constInt(self.i64_ty, 0);
@@ -4009,6 +4206,7 @@ fn llvmNullPtr(self: *Codegen) mlir.Value {
     return op.getResult(0);
 }
 
+/// Emit an `llvm.mlir.undef` of type `ty`.
 pub fn undefOf(self: *Codegen, ty: mlir.Type) mlir.Value {
     var op = OpBuilder.init("llvm.mlir.undef", self.loc).builder()
         .results(&.{ty}).build();
@@ -4016,6 +4214,7 @@ pub fn undefOf(self: *Codegen, ty: mlir.Type) mlir.Value {
     return op.getResult(0);
 }
 
+/// Insert `val` at `pos` into the aggregate `agg`.
 pub fn insertAt(self: *Codegen, agg: mlir.Value, val: mlir.Value, pos: []const i64) mlir.Value {
     std.debug.assert(!mlir.LLVM.isLLVMPointerType(agg.getType()));
     const pos_attr = mlir.Attribute.denseI64ArrayGet(self.mlir_ctx, pos);
@@ -4029,6 +4228,7 @@ pub fn insertAt(self: *Codegen, agg: mlir.Value, val: mlir.Value, pos: []const i
     return op.getResult(0);
 }
 
+/// Extract the element at `pos` from `agg` and cast it to `res_ty`.
 pub fn extractAt(self: *Codegen, agg: mlir.Value, res_ty: mlir.Type, pos: []const i64) mlir.Value {
     // If the source is a pointer, load the requested type directly. This avoids
     // invalid extractvalue-on-pointer and matches our opaque-pointer lowering model.
@@ -4051,8 +4251,7 @@ pub fn extractAt(self: *Codegen, agg: mlir.Value, res_ty: mlir.Type, pos: []cons
     return op.getResult(0);
 }
 
-// Spill an aggregate SSA to memory (%tmp = alloca T ; store T %v, %tmp)
-// If alignment != 0, request that alignment (in bytes) on the alloca.
+/// Spill `aggVal` into a temporary alloca and return the pointer, honoring `alignment` bytes.
 pub fn spillAgg(self: *Codegen, aggVal: mlir.Value, elemTy: mlir.Type, alignment: u32) mlir.Value {
     var n_attrs: usize = 1;
     var attrs_buf: [2]mlir.NamedAttribute = undefined;
@@ -4078,6 +4277,7 @@ pub fn spillAgg(self: *Codegen, aggVal: mlir.Value, elemTy: mlir.Type, alignment
 }
 
 // Load iN from ptr + offset
+/// Load an integer of `bits` width from the buffer at `base` plus `offset`.
 fn loadIntAt(self: *Codegen, base: mlir.Value, bits: u32, offset: usize) mlir.Value {
     const ity = mlir.Type.getSignlessIntegerType(self.mlir_ctx, bits);
     var p = base;
@@ -4104,6 +4304,7 @@ fn loadIntAt(self: *Codegen, base: mlir.Value, bits: u32, offset: usize) mlir.Va
 }
 
 // Store scalar at ptr + offset
+/// Store `val` at the byte offset `offset` relative to `base`.
 pub fn storeAt(self: *Codegen, base: mlir.Value, val: mlir.Value, offset: usize) void {
     var p = base;
     if (offset != 0) {
@@ -4126,6 +4327,7 @@ pub fn storeAt(self: *Codegen, base: mlir.Value, val: mlir.Value, offset: usize)
     self.append(st);
 }
 
+/// Emit a constant integer `v` of MLIR type `ty`.
 pub fn constInt(self: *Codegen, ty: mlir.Type, v: i128) mlir.Value {
     var op = OpBuilder.init("llvm.mlir.constant", self.loc).builder()
         .results(&.{ty})
@@ -4134,6 +4336,7 @@ pub fn constInt(self: *Codegen, ty: mlir.Type, v: i128) mlir.Value {
     return op.getResult(0);
 }
 
+/// Emit a constant floating-point value `v` of MLIR type `ty`.
 pub fn constFloat(self: *Codegen, ty: mlir.Type, v: f64) mlir.Value {
     const attr = mlir.Attribute.floatAttrDoubleGet(self.mlir_ctx, ty, v);
     var op = OpBuilder.init("llvm.mlir.constant", self.loc).builder()
@@ -4143,10 +4346,12 @@ pub fn constFloat(self: *Codegen, ty: mlir.Type, v: f64) mlir.Value {
     return op.getResult(0);
 }
 
+/// Emit an MLIR `i1` constant representing `v`.
 pub fn constBool(self: *Codegen, v: bool) mlir.Value {
     return self.constInt(self.i1_ty, if (v) 1 else 0);
 }
 
+/// Return true when `ty` represents an unsigned integer kind.
 fn isUnsigned(self: *Codegen, ty: types.TypeId) bool {
     return switch (self.context.type_store.getKind(ty)) {
         .U8, .U16, .U32, .U64, .Usize => true,
@@ -4154,6 +4359,7 @@ fn isUnsigned(self: *Codegen, ty: types.TypeId) bool {
     };
 }
 
+/// Emit binary arithmetic operations (add/sub/mul/div/mod/shl/shr) for `p`.
 fn binArith(
     self: *Codegen,
     comptime op_kind: BinArithOp,
@@ -4184,6 +4390,7 @@ fn binArith(
     return op.getResult(0);
 }
 
+/// Extend or truncate `v` to `to_ty` respecting signedness.
 fn extendIntegerValue(self: *Codegen, v: mlir.Value, signed: bool, to_ty: mlir.Type) mlir.Value {
     const from_ty = v.getType();
     const from_w = cast.intOrFloatWidth(from_ty) catch 0;
@@ -4197,6 +4404,7 @@ fn extendIntegerValue(self: *Codegen, v: mlir.Value, signed: bool, to_ty: mlir.T
     return op.getResult(0);
 }
 
+/// Emit integer binary ops that saturate (used only when requested).
 fn emitSaturatingIntBinary(
     self: *Codegen,
     p: tir.Rows.Bin2,
@@ -4233,6 +4441,7 @@ fn emitSaturatingIntBinary(
     return cast.saturateIntToInt(self, wide, lhs_signed, res_ty, lhs_signed);
 }
 
+/// Emit bitwise binary operations (and/or/xor) for `p`.
 fn binBit(
     self: *Codegen,
     comptime op_kind: BinBitOp,
@@ -4256,6 +4465,7 @@ fn binBit(
     return op.getResult(0);
 }
 
+/// Emit division operations (signed or unsigned) for the arithmetic lowerings.
 fn arithDiv(self: *Codegen, lhs: mlir.Value, rhs: mlir.Value, res_ty: mlir.Type, signed: bool) mlir.Value {
     const elem_ty = if (res_ty.isAVector()) res_ty.getShapedElementType() else res_ty;
     const op_name = if (elem_ty.isAFloat()) "arith.divf" else (if (signed) "arith.divsi" else "arith.divui");
@@ -4266,6 +4476,7 @@ fn arithDiv(self: *Codegen, lhs: mlir.Value, rhs: mlir.Value, res_ty: mlir.Type,
     return op.getResult(0);
 }
 
+/// Emit remainder operations for signed/unsigned integers.
 fn arithRem(self: *Codegen, lhs: mlir.Value, rhs: mlir.Value, res_ty: mlir.Type, signed: bool) mlir.Value {
     const elem_ty = if (res_ty.isAVector()) res_ty.getShapedElementType() else res_ty;
     const op_name = if (elem_ty.isAFloat()) "arith.remf" else (if (signed) "arith.remsi" else "arith.remui");
@@ -4276,6 +4487,7 @@ fn arithRem(self: *Codegen, lhs: mlir.Value, rhs: mlir.Value, res_ty: mlir.Type,
     return op.getResult(0);
 }
 
+/// Emit a shift-left operation for `lhs` and `rhs`.
 fn arithShl(self: *Codegen, lhs: mlir.Value, rhs: mlir.Value, res_ty: mlir.Type) mlir.Value {
     var op = OpBuilder.init("arith.shli", self.loc).builder()
         .operands(&.{ lhs, rhs })
@@ -4284,6 +4496,7 @@ fn arithShl(self: *Codegen, lhs: mlir.Value, rhs: mlir.Value, res_ty: mlir.Type)
     return op.getResult(0);
 }
 
+/// Emit a shift-right operation, choosing arithmetic vs logical based on `signed`.
 fn arithShr(self: *Codegen, lhs: mlir.Value, rhs: mlir.Value, res_ty: mlir.Type, signed: bool) mlir.Value {
     const op_name = if (signed) "arith.shrsi" else "arith.shrui";
     var op = OpBuilder.init(op_name, self.loc).builder()
@@ -4293,6 +4506,7 @@ fn arithShr(self: *Codegen, lhs: mlir.Value, rhs: mlir.Value, res_ty: mlir.Type,
     return op.getResult(0);
 }
 
+/// Emit a logical-not operation on i1 values.
 fn arithLogicalNotI1(self: *Codegen, v: mlir.Value, loc: tir.OptLocId) mlir.Value {
     const prev_loc = self.pushLocation(loc);
     defer self.loc = prev_loc;
@@ -4304,6 +4518,7 @@ fn arithLogicalNotI1(self: *Codegen, v: mlir.Value, loc: tir.OptLocId) mlir.Valu
     return op.getResult(0);
 }
 
+/// Emit a select operation `c ? tv : ev` returning `res_ty`.
 fn arithSelect(self: *Codegen, c: mlir.Value, tv: mlir.Value, ev: mlir.Value, res_ty: mlir.Type) mlir.Value {
     var op = OpBuilder.init("arith.select", self.loc).builder()
         .operands(&.{ c, tv, ev })
@@ -4312,6 +4527,7 @@ fn arithSelect(self: *Codegen, c: mlir.Value, tv: mlir.Value, ev: mlir.Value, re
     return op.getResult(0);
 }
 
+/// Lookup or rebuild the `FuncInfo` for the call target `p`.
 fn ensureDeclFromCall(self: *Codegen, p: tir.Rows.Call, t: *const tir.TIR) !FuncInfo {
     const args_slice = t.instrs.val_list_pool.slice(p.args);
     var arg_tys = try self.gpa.alloc(mlir.Type, args_slice.len);
@@ -4366,6 +4582,7 @@ fn ensureDeclFromCall(self: *Codegen, p: tir.Rows.Call, t: *const tir.TIR) !Func
     return info;
 }
 
+/// Emit an LLVM global string literal for `text`.
 fn constStringPtr(self: *Codegen, text: []const u8) !mlir.Operation {
     if (self.str_pool.get(text)) |*g| {
         // known length: bytes + NUL
@@ -4400,6 +4617,7 @@ fn constStringPtr(self: *Codegen, text: []const u8) !mlir.Operation {
     return self.addrOfFirstCharLen(&global_op, text.len + 1);
 }
 
+/// Return a pointer to an element inside `global_op` at `n_bytes` offset (first char).
 fn addrOfFirstCharLen(self: *Codegen, global_op: *mlir.Operation, n_bytes: usize) !mlir.Operation {
     // &@global
     const name_attr = global_op.getInherentAttributeByName(mlir.StringRef.from("sym_name"));
@@ -4425,6 +4643,7 @@ fn addrOfFirstCharLen(self: *Codegen, global_op: *mlir.Operation, n_bytes: usize
     return gep;
 }
 
+/// Escape special characters in `s` so it can be used as an MLIR string literal.
 fn escapeForMlirString(self: *Codegen, s: []const u8) ![]u8 {
     var out = ArrayList(u8).init(self.gpa);
     for (s) |c| {
@@ -4440,6 +4659,7 @@ fn escapeForMlirString(self: *Codegen, s: []const u8) ![]u8 {
     return out.toOwnedSlice();
 }
 
+/// Return true when `ty` is a signed integer in the SR type store.
 pub fn isSignedInt(self: *Codegen, ty: types.TypeId) bool {
     return switch (self.context.type_store.getKind(ty)) {
         .I8, .I16, .I32, .I64 => true,
@@ -4447,12 +4667,14 @@ pub fn isSignedInt(self: *Codegen, ty: types.TypeId) bool {
     };
 }
 
+/// Lookup the source-level type recorded for TIR value `vid`.
 fn srTypeOfValue(self: *Codegen, vid: tir.ValueId) types.TypeId {
     if (self.val_types.get(vid)) |ty| return ty;
     // fallback: if unknown, prefer signed behavior
     return types.TypeId.fromRaw(0);
 }
 
+/// Retrieve the integer constant value stored by `vid`, if any.
 fn constIntOf(self: *Codegen, t: *tir.TIR, vid: tir.ValueId) ?i128 {
     if (self.def_instr.get(vid)) |iid| {
         const k = t.instrs.index.kinds.items[iid.toRaw()];
@@ -4472,6 +4694,7 @@ const AggregateElemCoercer = fn (
     types.TypeId,
 ) anyerror!mlir.Value;
 
+/// Return true if `kind` represents an aggregate (tuple/struct/array etc.) type.
 fn isAggregateKind(kind: types.TypeKind) bool {
     return switch (kind) {
         .Struct, .Tuple, .Array, .Optional, .Union, .ErrorSet, .Error => true,
@@ -4479,6 +4702,7 @@ fn isAggregateKind(kind: types.TypeKind) bool {
     };
 }
 
+/// Attempt to copy `src_val` from `src_sr` into `dst_ty` for `dst_sr` aggregates.
 pub fn tryCopyAggregateValue(
     self: *Codegen,
     dst_sr: types.TypeId,
@@ -4512,6 +4736,7 @@ pub fn tryCopyAggregateValue(
     return null;
 }
 
+/// Copy the contents of an error aggregate to the destination block.
 fn copyErrorAggregate(
     self: *Codegen,
     dst_sr: types.TypeId,
@@ -4560,6 +4785,7 @@ fn copyErrorAggregate(
     return result;
 }
 
+/// Copy the elements of an array aggregate into the destination region.
 fn copyArrayAggregate(
     self: *Codegen,
     dst_sr: types.TypeId,
@@ -4586,6 +4812,7 @@ fn copyArrayAggregate(
     return result;
 }
 
+/// Copy struct fields into the target aggregate storage.
 fn copyStructAggregate(
     self: *Codegen,
     dst_sr: types.TypeId,
@@ -4616,6 +4843,7 @@ fn copyStructAggregate(
     return result;
 }
 
+/// Copy tuple elements into the destination.
 fn copyTupleAggregate(
     self: *Codegen,
     dst_sr: types.TypeId,
@@ -4644,6 +4872,7 @@ fn copyTupleAggregate(
     return result;
 }
 
+/// Copy optional aggregate elements, preserving flag/payload layout.
 fn copyOptionalAggregate(
     self: *Codegen,
     dst_sr: types.TypeId,
@@ -4677,6 +4906,7 @@ fn copyOptionalAggregate(
     return result;
 }
 
+/// Copy union aggregate data, selecting the active tag payload.
 fn copyUnionAggregate(
     self: *Codegen,
     dst_sr: types.TypeId,
@@ -4698,6 +4928,7 @@ fn copyUnionAggregate(
     return result;
 }
 
+/// Copy the fields of an error set aggregate, including tag/payload.
 fn copyErrorSetAggregate(
     self: *Codegen,
     dst_sr: types.TypeId,
@@ -4736,6 +4967,7 @@ fn copyErrorSetAggregate(
     return result;
 }
 
+/// Reinterpret `src_val` as `dst_sr` by spilling aggregates to memory and copying bytes.
 pub fn reinterpretAggregateViaSpill(
     self: *Codegen,
     dst_sr: types.TypeId,
@@ -4774,6 +5006,7 @@ pub fn reinterpretAggregateViaSpill(
     return ld.getResult(0);
 }
 
+/// Coerce an aggregate element when two branches need to reconcile differing layouts.
 fn coerceAggregateElementOnBranch(
     self: *Codegen,
     dst_sr: types.TypeId,
@@ -4784,6 +5017,7 @@ fn coerceAggregateElementOnBranch(
     return self.coerceOnBranch(src_val, dst_ty, dst_sr, src_sr);
 }
 
+/// Coerce `v` to `want` type when branching requires a typed value of `dst_sr_ty`.
 pub fn coerceOnBranch(
     self: *Codegen,
     v: mlir.Value,
@@ -4939,6 +5173,7 @@ pub fn coerceOnBranch(
     return bc.getResult(0);
 }
 
+/// Extract the `Err` case from an `ErrorSet` value and coerce it into the `Error` union.
 fn errorSetToError(
     self: *Codegen,
     dst_err_sr: types.TypeId,
@@ -4979,6 +5214,7 @@ fn errorSetToError(
 // src_val has SR type ErrorSet(V,E) with MLIR type { i32, union }.
 // We extract field 1 (the union storage), spill to memory, GEP as a pointer to V,
 // then perform a typed load of V.
+/// Load the `Ok` payload from an `ErrorSet` when the tag indicates success.
 fn loadOkFromErrorSet(
     self: *Codegen,
     src_errset_sr: types.TypeId,
@@ -5006,6 +5242,7 @@ fn loadOkFromErrorSet(
     return load_op.getResult(0);
 }
 
+/// Append `op` to the current block and return its single result if present.
 pub fn appendIfHasResult(self: *Codegen, op: mlir.Operation) mlir.Value {
     if (op.getNumResults() == 0) return mlir.Value.empty();
     self.append(op);
@@ -5013,16 +5250,19 @@ pub fn appendIfHasResult(self: *Codegen, op: mlir.Operation) mlir.Value {
 }
 
 // boolean ops
+/// Emit a boolean OR between `a` and `b`.
 pub fn boolOr(self: *Codegen, a: mlir.Value, b: mlir.Value) mlir.Value {
     const op = OpBuilder.init("arith.ori", self.loc).builder()
         .operands(&.{ a, b }).results(&.{self.i1_ty}).build();
     return appendIfHasResult(self, op);
 }
+/// Emit a boolean AND between `a` and `b`.
 pub fn boolAnd(self: *Codegen, a: mlir.Value, b: mlir.Value) mlir.Value {
     const op = OpBuilder.init("arith.andi", self.loc).builder()
         .operands(&.{ a, b }).results(&.{self.i1_ty}).build();
     return appendIfHasResult(self, op);
 }
+/// Emit a boolean NOT of `a`.
 pub fn boolNot(self: *Codegen, a: mlir.Value) mlir.Value {
     const t = OpBuilder.init("llvm.mlir.constant", self.loc).builder()
         .attributes(&.{self.named("value", mlir.Attribute.integerAttrGet(self.i1_ty, 1))})
@@ -5034,6 +5274,7 @@ pub fn boolNot(self: *Codegen, a: mlir.Value) mlir.Value {
 }
 
 // call the lowered @assert(bool)
+/// Emit a runtime `assert` call that aborts when `cond` is false.
 fn emitAssertCall(self: *Codegen, cond: mlir.Value) void {
     _ = appendIfHasResult(self, OpBuilder.init("func.call", self.loc).builder()
         .operands(&.{cond})
@@ -5048,18 +5289,21 @@ fn emitAssertCall(self: *Codegen, cond: mlir.Value) void {
 
 // --- Complex helpers ---
 
+/// Extract the real part of the complex value `v`.
 pub fn complexRe(self: *Codegen, v: mlir.Value, elem_ty: mlir.Type) mlir.Value {
     const op = OpBuilder.init("complex.re", self.loc).builder()
         .operands(&.{v}).results(&.{elem_ty}).build();
     return appendIfHasResult(self, op);
 }
 
+/// Extract the imaginary part of the complex value `v`.
 pub fn complexIm(self: *Codegen, v: mlir.Value, elem_ty: mlir.Type) mlir.Value {
     const op = OpBuilder.init("complex.im", self.loc).builder()
         .operands(&.{v}).results(&.{elem_ty}).build();
     return appendIfHasResult(self, op);
 }
 
+/// Compose a complex value of type `complex_ty` from `re` and `im`.
 pub fn complexFromParts(self: *Codegen, re: mlir.Value, im: mlir.Value, complex_ty: mlir.Type) mlir.Value {
     const make = OpBuilder.init("complex.create", self.loc).builder()
         .operands(&.{ re, im }).results(&.{complex_ty}).build();
@@ -5067,6 +5311,7 @@ pub fn complexFromParts(self: *Codegen, re: mlir.Value, im: mlir.Value, complex_
     return make.getResult(0);
 }
 
+/// Map an SR type id to the corresponding MLIR type used during lowering.
 pub fn llvmTypeOf(self: *Codegen, ty: types.TypeId) !mlir.Type {
     return switch (self.context.type_store.getKind(ty)) {
         .Void => self.void_ty,

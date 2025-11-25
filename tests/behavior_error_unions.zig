@@ -1,14 +1,13 @@
 const std = @import("std");
-const behavior = @import("behavior.zig"); // Import the behavior.zig file
+const behavior = @import("behavior.zig");
 
-// Use the functions from behavior.zig
 const getSource = behavior.getSource;
 const runCompilerTest = behavior.runCompilerTest;
 
 test "error_handling: basic error union return (success)" {
     const globals =
         \\MyError :: error { Failed }
-        \\might_succeed :: fn() i32!MyError {
+        \\might_succeed :: fn() MyError!i32 {
         \\  return 100
         \\}
     ;
@@ -23,7 +22,7 @@ test "error_handling: basic error union return (success)" {
 test "error_handling: basic error union return (error)" {
     const globals =
         \\MyError :: error { Failed }
-        \\might_fail :: fn() i32!MyError {
+        \\might_fail :: fn() MyError!i32 {
         \\  return MyError.Failed
         \\}
     ;
@@ -38,10 +37,10 @@ test "error_handling: basic error union return (error)" {
 test "error_handling: error propagation (!) operator" {
     const globals =
         \\MyError :: error { InnerError }
-        \\inner_func :: fn() i32!MyError {
+        \\inner_func :: fn() MyError!i32 {
         \\  return MyError.InnerError
         \\}
-        \\outer_func :: fn() i32!MyError {
+        \\outer_func :: fn() MyError!i32 {
         \\  return inner_func()!
         \\}
     ;
@@ -61,7 +60,7 @@ test "error_handling: error propagation (!) operator" {
 test "error_handling: expression" {
     const globals =
         \\MyError :: error { NotFound }
-        \\get_value :: fn(found: bool) i32!MyError {
+        \\get_value :: fn(found: bool) MyError!i32 {
         \\  if found {
         \\    return 50
         \\  } else {
@@ -81,7 +80,7 @@ test "error_handling: expression" {
 test "error_handling: catch expression with error binding" {
     const globals =
         \\MyError :: error { SpecificError, OtherError }
-        \\do_something :: fn(fail: bool) i32!MyError {
+        \\do_something :: fn(fail: bool) MyError!i32 {
         \\  if fail {
         \\    return MyError.SpecificError
         \\  } else {

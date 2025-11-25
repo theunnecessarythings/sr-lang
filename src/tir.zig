@@ -9,8 +9,11 @@ pub const OptLocId = dod.OptLocId;
 // Typed IR (TIR)
 // Columnar stores with typed indices and contiguous pools.
 
+/// ValueTag struct definition used by the compiler.
 pub const ValueTag = struct {};
+/// InstrTag struct definition used by the compiler.
 pub const InstrTag = struct {};
+/// TermTag struct definition used by the compiler.
 pub const TermTag = struct {};
 
 pub const ValueId = dod.Index(ValueTag);
@@ -45,6 +48,7 @@ pub const StringInterner = dod.StringInterner;
 pub const StrId = dod.StrId;
 
 // ---------------- Ops and Terms ----------------
+/// OpKind enum definition used by the compiler.
 pub const OpKind = enum(u16) {
     // Constants
     ConstInt,
@@ -123,8 +127,10 @@ pub const OpKind = enum(u16) {
     Broadcast,
 };
 
+/// TermKind enum definition used by the compiler.
 pub const TermKind = enum(u8) { Return, Br, CondBr, SwitchInt, Unreachable };
 
+/// ConstInit union definition used by the compiler.
 pub const ConstInit = union(enum) {
     none,
     int: i64,
@@ -134,22 +140,36 @@ pub const ConstInit = union(enum) {
     aggregate: []const ConstInit,
 };
 
+/// Rows struct definition used by the compiler.
 pub const Rows = struct {
     // All rows that produce a value carry (result, ty)
+    /// Bin2 struct definition used by the compiler.
     pub const Bin2 = struct { result: ValueId, ty: types.TypeId, lhs: ValueId, rhs: ValueId, loc: OptLocId };
+    /// Un1 struct definition used by the compiler.
     pub const Un1 = struct { result: ValueId, ty: types.TypeId, value: ValueId, loc: OptLocId };
 
+    /// ConstInt struct definition used by the compiler.
     pub const ConstInt = struct { result: ValueId, ty: types.TypeId, value: i128, loc: OptLocId };
+    /// ConstFloat struct definition used by the compiler.
     pub const ConstFloat = struct { result: ValueId, ty: types.TypeId, value: f64, loc: OptLocId };
+    /// ConstBool struct definition used by the compiler.
     pub const ConstBool = struct { result: ValueId, ty: types.TypeId, value: bool, loc: OptLocId };
+    /// ConstString struct definition used by the compiler.
     pub const ConstString = struct { result: ValueId, ty: types.TypeId, text: StrId, loc: OptLocId };
+    /// ConstNull struct definition used by the compiler.
     pub const ConstNull = struct { result: ValueId, ty: types.TypeId, loc: OptLocId };
+    /// ConstUndef struct definition used by the compiler.
     pub const ConstUndef = struct { result: ValueId, ty: types.TypeId, loc: OptLocId };
 
+    /// Alloca struct definition used by the compiler.
     pub const Alloca = struct { result: ValueId, ty: types.TypeId, count: OptValueId, @"align": u32, loc: OptLocId };
+    /// Load struct definition used by the compiler.
     pub const Load = struct { result: ValueId, ty: types.TypeId, ptr: ValueId, @"align": u32, loc: OptLocId };
+    /// Store struct definition used by the compiler.
     pub const Store = struct { result: ValueId, ty: types.TypeId, ptr: ValueId, value: ValueId, @"align": u32, loc: OptLocId };
+    /// GepIndex union definition used by the compiler.
     pub const GepIndex = union(enum) { Const: u64, Value: ValueId };
+    /// Gep struct definition used by the compiler.
     pub const Gep = struct {
         result: ValueId,
         ty: types.TypeId,
@@ -158,27 +178,44 @@ pub const Rows = struct {
         loc: OptLocId,
     };
 
+    /// TupleMake struct definition used by the compiler.
     pub const TupleMake = struct { result: ValueId, ty: types.TypeId, elems: RangeValue, loc: OptLocId };
+    /// ArrayMake struct definition used by the compiler.
     pub const ArrayMake = struct { result: ValueId, ty: types.TypeId, elems: RangeValue, loc: OptLocId };
+    /// StructFieldInit struct definition used by the compiler.
     pub const StructFieldInit = struct { index: u32, name: dod.OptStrId, value: ValueId };
+    /// Attribute struct definition used by the compiler.
     pub const Attribute = struct { name: StrId, value: OptValueId };
 
+    /// StructMake struct definition used by the compiler.
     pub const StructMake = struct { result: ValueId, ty: types.TypeId, fields: RangeStructFieldInit, loc: OptLocId };
 
+    /// ExtractElem struct definition used by the compiler.
     pub const ExtractElem = struct { result: ValueId, ty: types.TypeId, agg: ValueId, index: u32, loc: OptLocId };
+    /// InsertElem struct definition used by the compiler.
     pub const InsertElem = struct { result: ValueId, ty: types.TypeId, agg: ValueId, index: u32, value: ValueId, loc: OptLocId };
+    /// ExtractField struct definition used by the compiler.
     pub const ExtractField = struct { result: ValueId, ty: types.TypeId, agg: ValueId, index: u32, name: dod.OptStrId, loc: OptLocId };
+    /// InsertField struct definition used by the compiler.
     pub const InsertField = struct { result: ValueId, ty: types.TypeId, agg: ValueId, index: u32, value: ValueId, name: dod.OptStrId, loc: OptLocId };
 
+    /// Index struct definition used by the compiler.
     pub const Index = struct { result: ValueId, ty: types.TypeId, base: ValueId, index: ValueId, loc: OptLocId };
+    /// AddressOf struct definition used by the compiler.
     pub const AddressOf = struct { result: ValueId, ty: types.TypeId, value: ValueId, loc: OptLocId };
+    /// GlobalAddr struct definition used by the compiler.
     pub const GlobalAddr = struct { result: ValueId, ty: types.TypeId, name: StrId, loc: OptLocId };
 
+    /// Select struct definition used by the compiler.
     pub const Select = struct { result: ValueId, ty: types.TypeId, cond: ValueId, then_value: ValueId, else_value: ValueId, loc: OptLocId };
 
+    /// Call struct definition used by the compiler.
     pub const Call = struct { result: ValueId, ty: types.TypeId, callee: StrId, args: RangeValue, loc: OptLocId };
+    /// IndirectCall struct definition used by the compiler.
     pub const IndirectCall = struct { result: ValueId, ty: types.TypeId, callee: ValueId, args: RangeValue, loc: OptLocId };
+    /// MlirPiece struct definition used by the compiler.
     pub const MlirPiece = struct { kind: ast.MlirPieceKind, text: StrId, value: comp.ComptimeValue };
+    /// MlirBlock struct definition used by the compiler.
     pub const MlirBlock = struct {
         result: OptValueId,
         ty: types.TypeId,
@@ -189,23 +226,39 @@ pub const Rows = struct {
         args: RangeValue,
         loc: OptLocId,
     };
+    /// VariantMake struct definition used by the compiler.
     pub const VariantMake = struct { result: ValueId, ty: types.TypeId, tag: u32, payload: OptValueId, payload_ty: types.TypeId, loc: OptLocId };
+    /// VariantTag struct definition used by the compiler.
     pub const VariantTag = struct { result: ValueId, ty: types.TypeId, value: ValueId, loc: OptLocId };
+    /// VariantPayloadPtr struct definition used by the compiler.
     pub const VariantPayloadPtr = struct { result: ValueId, ty: types.TypeId, value: ValueId, loc: OptLocId };
+    /// UnionMake struct definition used by the compiler.
     pub const UnionMake = struct { result: ValueId, ty: types.TypeId, field_index: u32, value: ValueId, loc: OptLocId };
+    /// UnionField struct definition used by the compiler.
     pub const UnionField = struct { result: ValueId, ty: types.TypeId, base: ValueId, field_index: u32, loc: OptLocId };
+    /// UnionFieldPtr struct definition used by the compiler.
     pub const UnionFieldPtr = struct { result: ValueId, ty: types.TypeId, base: ValueId, field_index: u32, loc: OptLocId };
+    /// ComplexMake struct definition used by the compiler.
     pub const ComplexMake = struct { result: ValueId, ty: types.TypeId, re: ValueId, im: ValueId, loc: OptLocId };
+    /// RangeMake struct definition used by the compiler.
     pub const RangeMake = struct { result: ValueId, ty: types.TypeId, start: ValueId, end: ValueId, inclusive: ValueId, loc: OptLocId };
+    /// Broadcast struct definition used by the compiler.
     pub const Broadcast = struct { result: ValueId, ty: types.TypeId, value: ValueId, loc: OptLocId };
 
     // Terminator rows
+    /// Return struct definition used by the compiler.
     pub const Return = struct { value: OptValueId, loc: OptLocId };
+    /// Edge struct definition used by the compiler.
     pub const Edge = struct { dest: BlockId, args: RangeValue, loc: OptLocId };
+    /// Br struct definition used by the compiler.
     pub const Br = struct { edge: EdgeId, loc: OptLocId };
+    /// CondBr struct definition used by the compiler.
     pub const CondBr = struct { cond: ValueId, then_edge: EdgeId, else_edge: EdgeId, loc: OptLocId };
+    /// Case struct definition used by the compiler.
     pub const Case = struct { value: u64, edge: EdgeId, loc: OptLocId };
+    /// SwitchInt struct definition used by the compiler.
     pub const SwitchInt = struct { scrut: ValueId, cases: RangeCase, default_edge: EdgeId, loc: OptLocId };
+    /// Unreachable struct definition used by the compiler.
     pub const Unreachable = struct { loc: OptLocId };
 };
 
@@ -215,6 +268,7 @@ pub const StructFieldInitId = dod.Index(Rows.StructFieldInit);
 pub const RangeGepIndex = dod.RangeOf(GepIndexId);
 pub const RangeStructFieldInit = dod.RangeOf(StructFieldInitId);
 
+/// RowT TIR builder helper.
 pub inline fn RowT(comptime K: OpKind) type {
     return switch (K) {
         .ConstInt => Rows.ConstInt,
@@ -263,11 +317,13 @@ pub inline fn RowT(comptime K: OpKind) type {
         .Broadcast => Rows.Broadcast,
     };
 }
+/// TermRowT TIR builder helper.
 inline fn TermRowT(comptime K: TermKind) type {
     return @field(Rows, @tagName(K));
 }
 
 // ---------------- Stores ----------------
+/// InstrStore struct definition used by the compiler.
 pub const InstrStore = struct {
     gpa: std.mem.Allocator,
     index: StoreIndex(OpKind) = .{},
@@ -364,9 +420,11 @@ pub const InstrStore = struct {
 
     strs: *StringInterner,
 
+    /// init TIR builder helper.
     pub fn init(gpa: std.mem.Allocator, interner: *StringInterner) InstrStore {
         return .{ .gpa = gpa, .strs = interner };
     }
+    /// deinit TIR builder helper.
     pub fn deinit(self: *@This()) void {
         const gpa = self.gpa;
         self.index.deinit(gpa);
@@ -390,12 +448,14 @@ pub const InstrStore = struct {
         self.mlir_piece_pool.deinit(gpa);
     }
 
+    /// add TIR builder helper.
     pub fn add(self: *@This(), comptime K: OpKind, row: RowT(K)) InstrId {
         const tbl: *Table(RowT(K)) = &@field(self, @tagName(K));
         const idx = tbl.add(self.gpa, row);
         return self.index.newId(self.gpa, K, idx.toRaw(), InstrId);
     }
 
+    /// get TIR builder helper.
     pub fn get(self: *@This(), comptime K: OpKind, id: InstrId) RowT(K) {
         std.debug.assert(self.index.kinds.items[id.toRaw()] == K);
         const row_idx = self.index.rows.items[id.toRaw()];
@@ -403,11 +463,13 @@ pub const InstrStore = struct {
         return tbl.get(.{ .index = row_idx });
     }
 
+    /// addMlirPieceRow TIR builder helper.
     pub fn addMlirPieceRow(self: *@This(), row: Rows.MlirPiece) MlirPieceId {
         return self.MlirPiece.add(self.gpa, row);
     }
 };
 
+/// TermStore struct definition used by the compiler.
 pub const TermStore = struct {
     gpa: std.mem.Allocator,
     index: StoreIndex(TermKind) = .{},
@@ -425,9 +487,11 @@ pub const TermStore = struct {
     edge_pool: Pool(EdgeId) = .{},
     case_pool: Pool(CaseId) = .{},
 
+    /// init TIR builder helper.
     pub fn init(gpa: std.mem.Allocator) TermStore {
         return .{ .gpa = gpa };
     }
+    /// deinit TIR builder helper.
     pub fn deinit(self: *@This()) void {
         const gpa = self.gpa;
         self.index.deinit(gpa);
@@ -439,11 +503,13 @@ pub const TermStore = struct {
         self.case_pool.deinit(gpa);
     }
 
+    /// add TIR builder helper.
     pub fn add(self: *@This(), comptime K: TermKind, row: TermRowT(K)) TermId {
         const tbl: *Table(TermRowT(K)) = &@field(self, @tagName(K));
         const idx = tbl.add(self.gpa, row);
         return self.index.newId(self.gpa, K, idx.toRaw(), TermId);
     }
+    /// get TIR builder helper.
     pub fn get(self: *@This(), comptime K: TermKind, id: TermId) TermRowT(K) {
         std.debug.assert(self.index.kinds.items[id.toRaw()] == K);
         const row_idx = self.index.rows.items[id.toRaw()];
@@ -452,9 +518,13 @@ pub const TermStore = struct {
     }
 };
 
+/// FuncRows struct definition used by the compiler.
 pub const FuncRows = struct {
+    /// Param struct definition used by the compiler.
     pub const Param = struct { value: ValueId, name: dod.OptStrId, ty: types.TypeId };
+    /// Block struct definition used by the compiler.
     pub const Block = struct { params: RangeParam, instrs: RangeInstr, term: TermId };
+    /// Function struct definition used by the compiler.
     pub const Function = struct {
         name: StrId,
         params: RangeParam,
@@ -463,9 +533,11 @@ pub const FuncRows = struct {
         is_variadic: bool,
         attrs: RangeAttribute,
     };
+    /// Global struct definition used by the compiler.
     pub const Global = struct { name: StrId, ty: types.TypeId, init: ConstInit };
 };
 
+/// FuncStore struct definition used by the compiler.
 pub const FuncStore = struct {
     gpa: std.mem.Allocator,
 
@@ -479,9 +551,11 @@ pub const FuncStore = struct {
     param_pool: Pool(ParamId) = .{},
     global_pool: Pool(GlobalId) = .{},
 
+    /// init TIR builder helper.
     pub fn init(gpa: std.mem.Allocator) FuncStore {
         return .{ .gpa = gpa };
     }
+    /// deinit TIR builder helper.
     pub fn deinit(self: *@This()) void {
         const gpa = self.gpa;
         self.Param.deinit(gpa);
@@ -495,6 +569,7 @@ pub const FuncStore = struct {
     }
 };
 
+/// TIR struct definition used by the compiler.
 pub const TIR = struct {
     gpa: std.mem.Allocator,
     type_store: *types.TypeStore,
@@ -503,6 +578,7 @@ pub const TIR = struct {
     funcs: FuncStore,
     loc_store: ?*const dod.LocStore = null,
 
+    /// init TIR builder helper.
     pub fn init(gpa: std.mem.Allocator, store: *types.TypeStore) TIR {
         return .{
             .gpa = gpa,
@@ -513,6 +589,7 @@ pub const TIR = struct {
             .loc_store = null,
         };
     }
+    /// deinit TIR builder helper.
     pub fn deinit(self: *@This()) void {
         self.instrs.deinit();
         self.terms.deinit();
@@ -524,27 +601,32 @@ pub const TIR = struct {
 // Builder facade over TIR
 // ============================
 
+/// Builder struct definition used by the compiler.
 pub const Builder = struct {
     gpa: std.mem.Allocator,
     t: *TIR,
     next_value: u32 = 0,
 
+    /// init TIR builder helper.
     pub fn init(gpa: std.mem.Allocator, t: *TIR) Builder {
         return .{ .gpa = gpa, .t = t };
     }
 
+    /// freshValue TIR builder helper.
     pub fn freshValue(self: *Builder) ValueId {
         const id = ValueId.fromRaw(self.next_value);
         self.next_value += 1;
         return id;
     }
 
+    /// FunctionFrame struct definition used by the compiler.
     pub const FunctionFrame = struct {
         builder: *Builder,
         id: FuncId,
         param_vals: std.ArrayListUnmanaged(ValueId) = .{},
         param_ids: std.ArrayListUnmanaged(ParamId) = .{},
         blocks: std.ArrayListUnmanaged(BlockId) = .{},
+        /// deinit TIR builder helper.
         pub fn deinit(self: *FunctionFrame, gpa: std.mem.Allocator) void {
             self.param_vals.deinit(gpa);
             self.param_ids.deinit(gpa);
@@ -552,19 +634,23 @@ pub const Builder = struct {
         }
     };
 
+    /// BlockFrame struct definition used by the compiler.
     pub const BlockFrame = struct {
         builder: *Builder,
         id: BlockId,
         instrs: std.ArrayListUnmanaged(InstrId) = .{},
         params: std.ArrayListUnmanaged(ParamId) = .{},
         term: OptTermId = .none(),
+        /// deinit TIR builder helper.
         pub fn deinit(self: *BlockFrame, gpa: std.mem.Allocator) void {
             self.instrs.deinit(gpa);
             self.params.deinit(gpa);
         }
     };
+    /// SwitchDest struct definition used by the compiler.
     pub const SwitchDest = struct { dest: BlockId, args: []const ValueId };
 
+    /// beginFunction TIR builder helper.
     pub fn beginFunction(
         self: *Builder,
         name: StrId,
@@ -583,6 +669,7 @@ pub const Builder = struct {
         return .{ .builder = self, .id = idx };
     }
 
+    /// addParam TIR builder helper.
     pub fn addParam(self: *Builder, f: *FunctionFrame, name: ?StrId, ty: types.TypeId) !ValueId {
         const vid = self.freshValue();
         const pid_u32 = self.t.funcs.Param.add(self.gpa, .{ .value = vid, .name = if (name) |n| .some(n) else .none(), .ty = ty });
@@ -591,12 +678,14 @@ pub const Builder = struct {
         return vid;
     }
 
+    /// beginBlock TIR builder helper.
     pub fn beginBlock(self: *Builder, f: *FunctionFrame) !BlockFrame {
         const idx = self.t.funcs.Block.add(self.gpa, .{ .params = .empty(), .instrs = .empty(), .term = TermId.fromRaw(0) });
         try f.blocks.append(self.gpa, idx);
         return .{ .builder = self, .id = idx };
     }
 
+    /// endBlock TIR builder helper.
     pub fn endBlock(self: *Builder, f: *FunctionFrame, blk: BlockFrame) !void {
         const instr_range = self.t.instrs.instr_pool.pushMany(self.gpa, blk.instrs.items);
         const param_range = self.t.funcs.param_pool.pushMany(self.gpa, blk.params.items);
@@ -609,6 +698,7 @@ pub const Builder = struct {
         _ = f;
     }
 
+    /// endFunction TIR builder helper.
     pub fn endFunction(self: *Builder, f: FunctionFrame) !void {
         const prange = self.t.funcs.param_pool.pushMany(self.gpa, f.param_ids.items);
         const brange = self.t.funcs.block_pool.pushMany(self.gpa, f.blocks.items);
@@ -621,6 +711,7 @@ pub const Builder = struct {
     }
 
     // ---- instruction helpers ----
+    /// tirValue TIR builder helper.
     pub fn tirValue(
         self: *Builder,
         comptime kind: OpKind,
@@ -641,6 +732,7 @@ pub const Builder = struct {
         blk.instrs.append(self.gpa, instr_id) catch @panic("OOM");
         return vid;
     }
+    /// bin TIR builder helper.
     pub fn bin(
         self: *Builder,
         blk: *BlockFrame,
@@ -655,6 +747,7 @@ pub const Builder = struct {
         blk.instrs.append(self.gpa, iid) catch @panic("OOM");
         return vid;
     }
+    /// binBool TIR builder helper.
     pub fn binBool(
         self: *Builder,
         blk: *BlockFrame,
@@ -669,6 +762,7 @@ pub const Builder = struct {
         blk.instrs.append(self.gpa, iid) catch @panic("OOM");
         return vid;
     }
+    /// call TIR builder helper.
     pub fn call(
         self: *Builder,
         blk: *BlockFrame,
@@ -683,6 +777,7 @@ pub const Builder = struct {
         blk.instrs.append(self.gpa, iid) catch @panic("OOM");
         return vid;
     }
+    /// indirectCall TIR builder helper.
     pub fn indirectCall(
         self: *Builder,
         blk: *BlockFrame,
@@ -697,6 +792,7 @@ pub const Builder = struct {
         blk.instrs.append(self.gpa, iid) catch @panic("OOM");
         return vid;
     }
+    /// indexOp TIR builder helper.
     pub fn indexOp(
         self: *Builder,
         blk: *BlockFrame,
@@ -710,6 +806,7 @@ pub const Builder = struct {
         blk.instrs.append(self.gpa, iid) catch @panic("OOM");
         return vid;
     }
+    /// rangeMake TIR builder helper.
     pub fn rangeMake(
         self: *Builder,
         blk: *BlockFrame,
@@ -727,9 +824,11 @@ pub const Builder = struct {
         blk.instrs.append(self.gpa, iid) catch @panic("OOM");
         return vid;
     }
+    /// intern TIR builder helper.
     pub fn intern(self: *Builder, s: []const u8) StrId {
         return self.t.instrs.strs.intern(s);
     }
+    /// un1 TIR builder helper.
     pub fn un1(
         self: *Builder,
         blk: *BlockFrame,
@@ -743,12 +842,14 @@ pub const Builder = struct {
         blk.instrs.append(self.gpa, iid) catch @panic("OOM");
         return vid;
     }
+    /// constNull TIR builder helper.
     pub fn constNull(self: *Builder, blk: *BlockFrame, ty: types.TypeId, loc: OptLocId) ValueId {
         const vid = self.freshValue();
         const iid = self.t.instrs.add(.ConstNull, Rows.ConstNull{ .result = vid, .ty = ty, .loc = loc });
         blk.instrs.append(self.gpa, iid) catch @panic("OOM");
         return vid;
     }
+    /// tupleMake TIR builder helper.
     pub fn tupleMake(self: *Builder, blk: *BlockFrame, ty: types.TypeId, elems: []const ValueId, loc: OptLocId) ValueId {
         const r = self.t.instrs.value_pool.pushMany(self.gpa, elems);
         const vid = self.freshValue();
@@ -756,6 +857,7 @@ pub const Builder = struct {
         blk.instrs.append(self.gpa, iid) catch @panic("OOM");
         return vid;
     }
+    /// arrayMake TIR builder helper.
     pub fn arrayMake(self: *Builder, blk: *BlockFrame, ty: types.TypeId, elems: []const ValueId, loc: OptLocId) ValueId {
         const r = self.t.instrs.value_pool.pushMany(self.gpa, elems);
         const vid = self.freshValue();
@@ -763,6 +865,7 @@ pub const Builder = struct {
         blk.instrs.append(self.gpa, iid) catch @panic("OOM");
         return vid;
     }
+    /// structMake TIR builder helper.
     pub fn structMake(
         self: *Builder,
         blk: *BlockFrame,
@@ -782,6 +885,7 @@ pub const Builder = struct {
         blk.instrs.append(self.gpa, iid) catch @panic("OOM");
         return vid;
     }
+    /// extractElem TIR builder helper.
     pub fn extractElem(
         self: *Builder,
         blk: *BlockFrame,
@@ -795,6 +899,7 @@ pub const Builder = struct {
         blk.instrs.append(self.gpa, iid) catch @panic("OOM");
         return vid;
     }
+    /// insertElem TIR builder helper.
     pub fn insertElem(
         self: *Builder,
         blk: *BlockFrame,
@@ -812,6 +917,7 @@ pub const Builder = struct {
         blk.instrs.append(self.gpa, iid) catch @panic("OOM");
         return vid;
     }
+    /// extractField TIR builder helper.
     pub fn extractField(
         self: *Builder,
         blk: *BlockFrame,
@@ -828,6 +934,7 @@ pub const Builder = struct {
         blk.instrs.append(self.gpa, iid) catch @panic("OOM");
         return vid;
     }
+    /// extractFieldNamed TIR builder helper.
     pub fn extractFieldNamed(
         self: *Builder,
         blk: *BlockFrame,
@@ -851,6 +958,7 @@ pub const Builder = struct {
         blk.instrs.append(self.gpa, iid) catch @panic("OOM");
         return vid;
     }
+    /// addBlockParam TIR builder helper.
     pub fn addBlockParam(self: *Builder, blk: *BlockFrame, name: ?[]const u8, ty: types.TypeId) !ValueId {
         const vid = self.freshValue();
         const sid: ast.OptStrId = if (name) |n| .some(self.intern(n)) else .none();
@@ -858,24 +966,29 @@ pub const Builder = struct {
         try blk.params.append(self.gpa, pid);
         return vid;
     }
+    /// addGlobal TIR builder helper.
     pub fn addGlobal(self: *Builder, name: StrId, ty: types.TypeId) GlobalId {
         return self.addGlobalWithInit(name, ty, .none);
     }
 
+    /// addGlobalWithInit TIR builder helper.
     pub fn addGlobalWithInit(self: *Builder, name: StrId, ty: types.TypeId, initial: ConstInit) GlobalId {
         const idx = self.t.funcs.Global.add(self.gpa, .{ .name = name, .ty = ty, .init = initial });
         _ = self.t.funcs.global_pool.push(self.gpa, idx);
         return idx;
     }
+    /// edge TIR builder helper.
     pub fn edge(self: *Builder, dest: BlockId, args: []const ValueId, loc: OptLocId) EdgeId {
         const r = self.t.instrs.value_pool.pushMany(self.gpa, args);
         return self.t.terms.Edge.add(self.gpa, .{ .dest = dest, .args = r, .loc = loc });
     }
+    /// br TIR builder helper.
     pub fn br(self: *Builder, blk: *BlockFrame, dest: BlockId, args: []const ValueId, loc: OptLocId) !void {
         const e = self.edge(dest, args, loc);
         const tid = self.t.terms.add(.Br, .{ .edge = e, .loc = loc });
         blk.term = .some(tid);
     }
+    /// condBr TIR builder helper.
     pub fn condBr(
         self: *Builder,
         blk: *BlockFrame,
@@ -891,21 +1004,26 @@ pub const Builder = struct {
         const tid = self.t.terms.add(.CondBr, .{ .cond = cond, .then_edge = te, .else_edge = ee, .loc = loc });
         blk.term = OptTermId.some(tid);
     }
+    /// setReturn TIR builder helper.
     pub fn setReturn(self: *Builder, blk: *BlockFrame, value: OptValueId, loc: OptLocId) !void {
         const tid = self.t.terms.add(.Return, .{ .value = value, .loc = loc });
         blk.term = OptTermId.some(tid);
     }
+    /// setReturnVal TIR builder helper.
     pub fn setReturnVal(self: *Builder, blk: *BlockFrame, v: ValueId, loc: OptLocId) !void {
         return self.setReturn(blk, OptValueId.some(v), loc);
     }
+    /// setReturnVoid TIR builder helper.
     pub fn setReturnVoid(self: *Builder, blk: *BlockFrame, loc: OptLocId) !void {
         return self.setReturn(blk, OptValueId.none(), loc);
     }
+    /// setUnreachable TIR builder helper.
     pub fn setUnreachable(self: *Builder, blk: *BlockFrame, loc: OptLocId) !void {
         const tid = self.t.terms.add(.Unreachable, .{ .loc = loc });
         blk.term = OptTermId.some(tid);
     }
 
+    /// switchInt TIR builder helper.
     pub fn switchInt(
         self: *Builder,
         blk: *BlockFrame,
@@ -930,6 +1048,7 @@ pub const Builder = struct {
         blk.term = .some(tid);
     }
 
+    /// addCall TIR builder helper.
     pub fn addCall(
         self: *Builder,
         blk: *BlockFrame,
@@ -946,6 +1065,7 @@ pub const Builder = struct {
         return id;
     }
 
+    /// addMlirBlock TIR builder helper.
     pub fn addMlirBlock(
         self: *Builder,
         blk: *BlockFrame,
@@ -976,12 +1096,15 @@ pub const Builder = struct {
     }
 
     // GEP helpers
+    /// gepConst TIR builder helper.
     pub fn gepConst(self: *Builder, v: u64) GepIndexId {
         return self.t.instrs.GepIndex.add(self.gpa, .{ .Const = v });
     }
+    /// gepValue TIR builder helper.
     pub fn gepValue(self: *Builder, val: ValueId) GepIndexId {
         return self.t.instrs.GepIndex.add(self.gpa, .{ .Value = val });
     }
+    /// gep TIR builder helper.
     pub fn gep(
         self: *Builder,
         blk: *BlockFrame,
@@ -998,6 +1121,7 @@ pub const Builder = struct {
     }
 };
 
+/// TirPrinter struct definition used by the compiler.
 pub const TirPrinter = struct {
     // Writes readable SSA with distinct namespaces:
     //   fN = function, bN = block, iN = instr, vN = value, gN = global
@@ -1008,59 +1132,73 @@ pub const TirPrinter = struct {
     indent: usize = 0,
     tir: *TIR,
 
+    /// init TIR builder helper.
     pub fn init(writer: anytype, tir: *TIR) TirPrinter {
         return .{ .writer = writer, .tir = tir };
     }
 
+    /// TypeFmt struct definition used by the compiler.
     const TypeFmt = struct {
         store: *types.TypeStore,
         ty: types.TypeId,
+        /// format TIR builder helper.
         pub fn format(self: @This(), w: anytype) !void {
             try self.store.fmt(self.ty, w);
         }
     };
+    /// tf TIR builder helper.
     inline fn tf(self: *const TirPrinter, ty: types.TypeId) TypeFmt {
         return .{ .store = self.tir.type_store, .ty = ty };
     }
 
+    /// s TIR builder helper.
     inline fn s(self: *const TirPrinter, id: StrId) []const u8 {
         return self.tir.instrs.strs.get(id);
     }
 
+    /// ws TIR builder helper.
     fn ws(self: *TirPrinter) !void {
         var i: usize = 0;
         while (i < self.indent) : (i += 1) try self.writer.writeByte(' ');
     }
+    /// open TIR builder helper.
     fn open(self: *TirPrinter, comptime head: []const u8, args: anytype) !void {
         try self.ws();
         try self.writer.print(head, args);
         try self.writer.writeAll("\n");
         self.indent += 2;
     }
+    /// close TIR builder helper.
     fn close(self: *TirPrinter) !void {
         self.indent = if (self.indent >= 2) self.indent - 2 else 0;
         try self.ws();
         try self.writer.writeAll(")\n");
     }
+    /// leaf TIR builder helper.
     fn leaf(self: *TirPrinter, comptime fmt: []const u8, args: anytype) !void {
         try self.ws();
         try self.writer.print(fmt, args);
         try self.writer.writeAll("\n");
     }
 
+    /// pv TIR builder helper.
     inline fn pv(self: *TirPrinter, v: ValueId) !void {
         try self.writer.print("v{}", .{v.toRaw()});
     }
+    /// pi TIR builder helper.
     inline fn pi(self: *TirPrinter, i: InstrId) !void {
         try self.writer.print("i{}", .{i.toRaw()});
     }
+    /// pb TIR builder helper.
     inline fn pb(self: *TirPrinter, b: BlockId) !void {
         try self.writer.print("block_{}", .{b.toRaw()});
     }
+    /// pg TIR builder helper.
     inline fn pg(self: *TirPrinter, g: GlobalId) !void {
         try self.writer.print("g{}", .{g.toRaw()});
     }
 
+    /// printValueList TIR builder helper.
     fn printValueList(self: *TirPrinter, vals: []const ValueId) !void {
         try self.writer.writeAll("[");
         var first = true;
@@ -1072,6 +1210,7 @@ pub const TirPrinter = struct {
         try self.writer.writeAll("]");
     }
 
+    /// printEdge TIR builder helper.
     fn printEdge(self: *TirPrinter, e: Rows.Edge) !void {
         try self.writer.writeAll("dest=");
         try self.pb(e.dest);
@@ -1082,6 +1221,7 @@ pub const TirPrinter = struct {
         }
     }
 
+    /// print TIR builder helper.
     pub fn print(self: *TirPrinter) !void {
         try self.open("(tir", .{});
 
@@ -1120,6 +1260,7 @@ pub const TirPrinter = struct {
         try self.writer.flush();
     }
 
+    /// printFunc TIR builder helper.
     fn printFunc(self: *TirPrinter, fid: FuncId) !void {
         const f = self.tir.funcs.Function.get(fid);
         try self.open("(function ", .{});
@@ -1151,6 +1292,7 @@ pub const TirPrinter = struct {
         try self.close(); // function
     }
 
+    /// printBlock TIR builder helper.
     fn printBlock(self: *TirPrinter, bid: BlockId) !void {
         const b = self.tir.funcs.Block.get(bid);
         try self.open("(block ", .{});
@@ -1256,6 +1398,7 @@ pub const TirPrinter = struct {
         try self.close(); // block
     }
 
+    /// printInstr TIR builder helper.
     pub fn printInstr(self: *TirPrinter, iid: InstrId) !void {
         const k = self.tir.instrs.index.kinds.items[iid.toRaw()];
         switch (k) {

@@ -6,21 +6,29 @@ const BinaryOp = @import("ast.zig").BinaryOp;
 const UnaryOp = @import("ast.zig").UnaryOp;
 const ast = @import("ast.zig");
 
-/// Context for formatting types and resolving strings in diagnostic messages
+/// Context used while formatting diagnostics to look up type names and interned strings.
 pub const DiagnosticContext = struct {
+    /// Type store used to print SR types referenced in diagnostics.
     type_store: *types.TypeStore,
+    /// String interner used to resolve identifiers within messages.
     str_interner: *types.StringInterner,
+    /// Allocator used for temporary diagnostic buffers.
     gpa: std.mem.Allocator,
 };
 const types = @import("types.zig");
 const TypeKind = types.TypeKind;
 
+/// Severity level for diagnostics emitted by the compiler.
 pub const Severity = enum {
+    /// Reported error that stops compilation.
     err,
+    /// Warning that does not halt compilation.
     warning,
+    /// Supplemental note attached to another diagnostic.
     note,
 };
 
+/// Build a synthetic enum type that can tag all payload sources used in diagnostics.
 fn payloadTag() type {
     // combine Tag enum BinOp enum and UnOp enum into one
     const tag_fields = std.meta.fields(Tag);
@@ -49,6 +57,7 @@ fn payloadTag() type {
 
 const PayloadTag = payloadTag();
 
+/// Map an AST/lexer enum value into the unified `PayloadTag` range.
 fn convertToPayloadTag(value: anytype) PayloadTag {
     const tag_field_count = std.meta.fields(Tag).len;
     const binop_field_count = std.meta.fields(BinaryOp).len;
@@ -63,21 +72,35 @@ fn convertToPayloadTag(value: anytype) PayloadTag {
     }
 }
 
+/// Payload attached to a diagnostic for formatting context-specific information.
 const MessagePayload = union(enum) {
+    /// No payload attached to the diagnostic.
     none,
+    /// Raw string slice appended directly into the diagnostic text.
     string: []const u8,
+    /// Single tag (e.g., found token or operator).
     one: struct { a: PayloadTag },
+    /// Two tags when diagnostics compare two tokens or kinds.
     two: struct { a: PayloadTag, b: PayloadTag },
+    /// Three tags when more context is needed (e.g., binary op + operands).
     three: struct { a: PayloadTag, b: PayloadTag, c: PayloadTag },
-    str_id: ast.StrId, // For identifier/field names
-    type_id: types.TypeId, // For type information
-    two_type_ids: struct { a: types.TypeId, b: types.TypeId }, // For type mismatches (expected, found)
+    /// Identifier reference stored as an interned string ID.
+    str_id: ast.StrId,
+    /// Type reference stored as a `TypeId`.
+    type_id: types.TypeId,
+    /// Pair of type IDs for expected vs. found comparisons.
+    two_type_ids: struct { a: types.TypeId, b: types.TypeId },
+    /// Integer literal payload.
     integer: i64,
+    /// Two integers, useful for ranges or mismatched sizes.
     two_integers: struct { a: i64, b: i64 },
+    /// String plus type, used when a name and type are both mentioned.
     string_and_type: struct { s: ast.StrId, t: types.TypeId },
+    /// Two strings plus a type, used for more detailed templates.
     two_strings_and_type: struct { s1: ast.StrId, s2: ast.StrId, t: types.TypeId },
 };
 
+/// Enumerates every diagnostic emitted by the compiler with optional payload hints.
 pub const DiagnosticCode = enum {
     // Lexer / parser level
     unexpected_token, // payload: one (found)
@@ -320,6 +343,7 @@ pub const DiagnosticCode = enum {
     unused_variable,
 };
 
+/// Concatenate `items` with `sep` joining them, allocating via `allocator`.
 pub fn joinStrings(allocator: std.mem.Allocator, sep: []const u8, items: []const []const u8) ![]const u8 {
     if (items.len == 0) return try allocator.alloc(u8, 0);
     var total_len: usize = sep.len * (items.len - 1);
@@ -338,6 +362,7 @@ pub fn joinStrings(allocator: std.mem.Allocator, sep: []const u8, items: []const
     return buffer[0..buffer.len];
 }
 
+/// Return the formatting string associated with `code`.
 pub fn diagnosticMessageFmt(code: DiagnosticCode) []const u8 {
     return switch (code) {
         // Lexer / parser level
@@ -580,6 +605,7 @@ pub fn diagnosticMessageFmt(code: DiagnosticCode) []const u8 {
     };
 }
 
+/// Codes for supplemental notes attached to diagnostics.
 pub const NoteCode = enum {
     unexpected_token_here, // no payload
     expected_identifier_or_keyword, // no payload
@@ -660,6 +686,7 @@ pub const NoteCode = enum {
     mlir_help, // payload: string (link)
     comptime_limitation, // payload: none
 };
+/// Return the formatting template string for `code`.
 pub fn diagnosticNoteFmt(code: NoteCode) []const u8 {
     return switch (code) {
         .unexpected_token_here => "unexpected token here",
@@ -742,27 +769,44 @@ pub fn diagnosticNoteFmt(code: NoteCode) []const u8 {
     };
 }
 
+/// Supplementary note attached to a diagnostic, capturing optional location/context.
 pub const Note = struct {
+    /// Optional secondary location.
     loc: ?Loc = null,
+    /// Note code describing the message template.
     code: NoteCode,
+    /// Payload used to interpolate tokens into the note.
     payload: MessagePayload = .none,
 };
 
+/// Recorded diagnostic message (errors, warnings, notes).
 pub const Message = struct {
+    /// Severity level (error/warning/note).
     severity: Severity,
+    /// Location of the diagnostic.
     loc: Loc,
+    /// Primary diagnostic code.
     code: DiagnosticCode,
+    /// Payload used to format the diagnostic message.
     payload: MessagePayload,
+    /// Attached notes providing extra guidance.
     notes: std.array_list.Managed(Note),
 };
 
+/// Central diagnostics collector, thread-safe guard around `Message`.
 pub const Diagnostics = struct {
+    /// Allocator used for message storage.
     allocator: std.mem.Allocator,
+    /// Container of recorded messages.
     messages: std.array_list.Managed(Message),
+    /// Mutex protecting concurrent access to the container.
     mutex: std.Thread.Mutex = .{},
+    /// Optional type store used when formatting type strings.
     type_store: ?*types.TypeStore = null,
+    /// Optional string interner used for resolving identifiers.
     str_interner: ?*types.StringInterner = null,
 
+    /// Construct a diagnostics collector with optional type/string context.
     pub fn init(allocator: std.mem.Allocator, type_store: ?*types.TypeStore, str_interner: ?*types.StringInterner) Diagnostics {
         return .{
             .allocator = allocator,
@@ -772,6 +816,7 @@ pub const Diagnostics = struct {
         };
     }
 
+    /// Release all stored messages and their notes.
     pub fn deinit(self: *Diagnostics) void {
         for (self.messages.items) |*m| {
             m.notes.deinit();
@@ -779,18 +824,22 @@ pub const Diagnostics = struct {
         self.messages.deinit();
     }
 
+    /// Record an error at `loc` with the supplied payload.
     pub fn addError(self: *Diagnostics, loc: Loc, comptime code: DiagnosticCode, args: anytype) !void {
         try self.addMessage(.err, loc, code, args);
     }
 
+    /// Record a warning diagnostic.
     pub fn addWarning(self: *Diagnostics, loc: Loc, comptime code: DiagnosticCode, args: anytype) !void {
         try self.addMessage(.warning, loc, code, args);
     }
 
+    /// Record a note-level diagnostic.
     pub fn addNote(self: *Diagnostics, loc: Loc, comptime code: DiagnosticCode, args: anytype) !void {
         try self.addMessage(.note, loc, code, args);
     }
 
+    /// Convert the anonymous payload `args` into a `MessagePayload`.
     fn payloadFromArgs(args: anytype) MessagePayload {
         const info = @typeInfo(@TypeOf(args)).@"struct";
         const n = info.fields.len;
@@ -849,6 +898,7 @@ pub const Diagnostics = struct {
         }
     }
 
+    /// Internal helper that deduplicates and stores messages with `sev`.
     fn addMessage(self: *Diagnostics, sev: Severity, loc: Loc, comptime code: DiagnosticCode, args: anytype) !void {
         self.mutex.lock();
         defer self.mutex.unlock();
@@ -875,6 +925,7 @@ pub const Diagnostics = struct {
     }
 
     /// Back-compat: simple attachNote without payload.
+    /// Append a note to message `idx` (no payload).
     pub fn attachNote(self: *Diagnostics, idx: usize, loc: ?Loc, comptime code: NoteCode) !void {
         self.mutex.lock();
         defer self.mutex.unlock();
@@ -883,6 +934,7 @@ pub const Diagnostics = struct {
     }
 
     /// New: attach a note with lightweight payload (Tag values)
+    /// Append a note with payload to message `idx`.
     pub fn attachNoteArgs(self: *Diagnostics, idx: usize, loc: ?Loc, comptime code: NoteCode, args: anytype) !void {
         self.mutex.lock();
         defer self.mutex.unlock();
@@ -891,20 +943,24 @@ pub const Diagnostics = struct {
         try self.messages.items[idx].notes.append(.{ .loc = loc, .code = code, .payload = payload });
     }
 
+    /// Return true if any recorded message has error severity.
     pub fn anyErrors(self: *Diagnostics) bool {
         for (self.messages.items) |m| if (m.severity == .err) return true;
         return false;
     }
 
+    /// Return true if any recorded message is a warning.
     pub fn anyWarnings(self: *Diagnostics) bool {
         for (self.messages.items) |m| if (m.severity == .warn) return true;
         return false;
     }
 
+    /// Return the total number of messages tracked.
     pub fn count(self: *Diagnostics) usize {
         return self.messages.items.len;
     }
 
+    /// Format `message` into an owned string, capturing payload values.
     pub fn messageToOwnedSlice(self: *Diagnostics, allocator: std.mem.Allocator, message: Message) ![]u8 {
         var buffer: std.ArrayList(u8) = .empty;
         defer buffer.deinit(allocator);
@@ -922,6 +978,7 @@ pub const Diagnostics = struct {
         return buffer.toOwnedSlice(allocator);
     }
 
+    /// Format `note` into an owned string using the current interner/type context.
     pub fn noteToOwnedSlice(self: *Diagnostics, allocator: std.mem.Allocator, note: Note) ![]u8 {
         var buffer: std.ArrayList(u8) = .empty;
         defer buffer.deinit(allocator);
@@ -939,11 +996,13 @@ pub const Diagnostics = struct {
     }
 
     // Pretty-print diagnostics with source excerpt and caret span (unstyled)
+    /// Emit diagnostics using default styling (with color if supported).
     pub fn emit(self: *Diagnostics, context: *Context, writer: anytype) !void {
         try self.emitStyled(context, writer, true);
     }
 
     // Pretty-print diagnostics Rust-like with optional ANSI colors
+    /// Emit diagnostics with optional ANSI `color`, dumping source snippets/notes.
     pub fn emitStyled(self: *Diagnostics, context: *Context, writer: anytype, color: bool) !void {
         const diag_ctx = DiagnosticContext{
             .type_store = context.type_store,
@@ -1058,6 +1117,7 @@ pub const Diagnostics = struct {
         try writer.flush();
     }
 
+    /// Walk `fmt` and substitute each `{}` with the appropriate payload argument.
     fn writeInterpolated(writer: anytype, fmt: []const u8, payload: MessagePayload, context: DiagnosticContext) !void {
         var args_idx: usize = 0;
         var i: usize = 0;
@@ -1073,6 +1133,7 @@ pub const Diagnostics = struct {
         }
     }
 
+    /// Render the payload argument at `index` according to the specifier `spec`.
     fn printPayloadArg(writer: anytype, payload: MessagePayload, index: usize, context: DiagnosticContext, spec: u8) !void {
         switch (payload) {
             .none => {},
@@ -1150,6 +1211,7 @@ pub const Diagnostics = struct {
         }
     }
 
+    /// Print the lowercase name of a `PayloadTag`.
     fn printTag(writer: anytype, tag: PayloadTag) !void {
         var buf: [64]u8 = undefined;
         const tag_str = @tagName(tag);
@@ -1158,6 +1220,7 @@ pub const Diagnostics = struct {
     }
 
     // (Old helper retained for reference; no longer used)
+    /// Legacy formatter retained for reference.
     fn printMessage(writer: anytype, comptime fmt: []const u8, payload: MessagePayload) !void {
         switch (payload) {
             .none => try writer.print("{s}", .{fmt}),
@@ -1167,7 +1230,18 @@ pub const Diagnostics = struct {
         }
     }
 
-    const LineCol = struct { line: usize, col: usize, line_start: usize, line_end: usize };
+    /// Position information for a source location (line/column/span).
+    const LineCol = struct {
+        /// Line number (0-based).
+        line: usize,
+        /// Column offset of `idx`.
+        col: usize,
+        /// Byte index of line start.
+        line_start: usize,
+        /// Byte index one past the line end.
+        line_end: usize,
+    };
+    /// Compute the line/column/span covering `idx` within `src`.
     fn lineCol(src: []const u8, idx: usize) LineCol {
         var i: usize = 0;
         var line: usize = 0;
@@ -1184,6 +1258,7 @@ pub const Diagnostics = struct {
         return .{ .line = line, .col = idx - last_nl, .line_start = last_nl, .line_end = end };
     }
 
+    /// Count digits in `n` used for gutter width computation.
     fn digits(n: usize) usize {
         var v: usize = n;
         var c: usize = 1;
@@ -1191,6 +1266,7 @@ pub const Diagnostics = struct {
         return c;
     }
 
+    /// Return a slice of spaces for `width` padding (max 16).
     fn gutterPad(width: usize) []const u8 {
         // Return a short run of spaces for gutter alignment (max 16)
         const max = 16;
@@ -1200,18 +1276,26 @@ pub const Diagnostics = struct {
 
     const space_buf = [_]u8{' '} ** 16;
 
+    /// Compute pre-row padding so line numbers align in the gutter.
     fn numPad(width: usize, n: usize) []const u8 {
         const d = digits(n);
         const pad = if (width > d) width - d else 0;
         return gutterPad(pad);
     }
 
+    /// ANSI coloring used when emitting diagnostics.
     const Colors = struct {
+        /// Reset all ANSI attributes.
         pub const reset = "\x1b[0m";
+        /// Bold text attribute.
         pub const bold = "\x1b[1m";
+        /// Red text attribute (errors).
         pub const red = "\x1b[31m";
+        /// Yellow text attribute (warnings).
         pub const yellow = "\x1b[33m";
+        /// Blue text attribute (notes).
         pub const blue = "\x1b[34m";
+        /// Cyan text used for gutter/labels.
         pub const cyan = "\x1b[36m";
     };
 };

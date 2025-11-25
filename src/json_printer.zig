@@ -3,12 +3,18 @@ const ast = @import("ast.zig");
 
 const JsonStream = std.json.Stream;
 
+/// Helper that walks AST stores and renders them as JSON.
 pub const JsonPrinter = struct {
+    /// JSON stream writer used for emitting nodes.
     stream: std.json.Stringify,
+    /// Expression store supplying nodes and metadata.
     exprs: *ast.ExprStore,
+    /// Statement store referenced while printing expressions.
     stmts: *ast.StmtStore,
+    /// Pattern store for match-related metadata.
     pats: *ast.PatternStore,
 
+    /// Build a JSON printer that targets `writer` and walks the provided AST stores.
     pub fn init(writer: anytype, exprs: *ast.ExprStore, stmts: *ast.StmtStore, pats: *ast.PatternStore) JsonPrinter {
         return .{
             .stream = .{ .writer = writer, .options = .{ .whitespace = .indent_2 } },
@@ -18,18 +24,22 @@ pub const JsonPrinter = struct {
         };
     }
 
+    /// Resolve string identifier `id` from the shared interner.
     inline fn s(self: *const JsonPrinter, id: ast.StrId) []const u8 {
         return self.exprs.strs.get(id);
     }
 
+    /// Serialize `value` into JSON using the configured writer.
     inline fn writeValue(self: *JsonPrinter, value: anytype) anyerror!void {
         try self.stream.print("{}", .{value});
     }
 
+    /// Emit the `null` literal.
     inline fn writeNull(self: *JsonPrinter) anyerror!void {
         try self.stream.write("null");
     }
 
+    /// Print the span information for `loc_id`.
     fn printLoc(self: *JsonPrinter, loc_id: ast.LocId) !void {
         const loc = self.exprs.locs.get(loc_id);
         try self.stream.objectField("loc");
@@ -41,6 +51,7 @@ pub const JsonPrinter = struct {
         try self.stream.endObject();
     }
 
+    /// Print optional location metadata when present.
     fn printOptLoc(self: *JsonPrinter, loc_id: ast.OptLocId) !void {
         if (loc_id.isNone()) {
             try self.stream.objectField("loc");
@@ -50,6 +61,7 @@ pub const JsonPrinter = struct {
         }
     }
 
+    /// Dump the entire AST unit as JSON.
     pub fn printUnit(self: *JsonPrinter, unit: *const ast.Unit) anyerror!void {
         try self.stream.beginObject();
         try self.stream.objectField("kind");
@@ -70,6 +82,7 @@ pub const JsonPrinter = struct {
         try self.stream.endObject();
     }
 
+    /// Emit JSON array entries for every declaration in `r`.
     fn printDeclRange(self: *JsonPrinter, r: ast.RangeDecl) anyerror!void {
         try self.stream.beginArray();
         const decl_ids = self.exprs.decl_pool.slice(r);
@@ -79,6 +92,7 @@ pub const JsonPrinter = struct {
         try self.stream.endArray();
     }
 
+    /// Serialize declaration `id` and its children.
     fn printDecl(self: *JsonPrinter, id: ast.DeclId) anyerror!void {
         const row = self.exprs.Decl.get(id);
         try self.stream.beginObject();
@@ -132,6 +146,7 @@ pub const JsonPrinter = struct {
         try self.stream.endObject();
     }
 
+    /// Serialize statement `id` into JSON form.
     fn printStmt(self: *JsonPrinter, id: ast.StmtId) anyerror!void {
         const kind = self.stmts.index.kinds.items[id.toRaw()];
         try self.stream.beginObject();
@@ -210,6 +225,7 @@ pub const JsonPrinter = struct {
         try self.stream.endObject();
     }
 
+    /// Serialize expression `id`, recursing into nested nodes.
     pub fn printExpr(self: *JsonPrinter, id: ast.ExprId) anyerror!void {
         const kind = self.exprs.index.kinds.items[id.toRaw()];
         try self.stream.beginObject();
@@ -800,6 +816,7 @@ pub const JsonPrinter = struct {
         try self.stream.endObject();
     }
 
+    /// Print an array of expressions described by `r`.
     fn printExprRange(self: *JsonPrinter, r: ast.RangeExpr) anyerror!void {
         try self.stream.beginArray();
         const ids = self.exprs.expr_pool.slice(r);
@@ -807,6 +824,7 @@ pub const JsonPrinter = struct {
         try self.stream.endArray();
     }
 
+    /// Serialize attribute list `opt_r` when present.
     fn printAttrs(self: *JsonPrinter, opt_r: ast.OptRangeAttr) anyerror!void {
         if (!opt_r.isNone()) {
             try self.stream.beginArray();
@@ -830,6 +848,7 @@ pub const JsonPrinter = struct {
         }
     }
 
+    /// Serialize a sequence of parameters `r`.
     fn printParams(self: *JsonPrinter, r: ast.RangeParam) anyerror!void {
         try self.stream.beginArray();
         const params = self.exprs.param_pool.slice(r);
@@ -859,6 +878,7 @@ pub const JsonPrinter = struct {
         try self.stream.endArray();
     }
 
+    /// Serialize struct field metadata `id`.
     fn printStructField(self: *JsonPrinter, id: ast.StructFieldId) anyerror!void {
         const field = self.exprs.StructField.get(id);
         try self.stream.beginObject();
@@ -877,6 +897,7 @@ pub const JsonPrinter = struct {
         try self.stream.endObject();
     }
 
+    /// Serialize every struct field ID in `r`.
     fn printStructFieldRange(self: *JsonPrinter, r: ast.RangeField) anyerror!void {
         try self.stream.beginArray();
         const fields = self.exprs.sfield_pool.slice(r);
@@ -884,6 +905,7 @@ pub const JsonPrinter = struct {
         try self.stream.endArray();
     }
 
+    /// Serialize variant field metadata `id`.
     fn printVariantField(self: *JsonPrinter, id: ast.VariantFieldId) anyerror!void {
         const field = self.exprs.VariantField.get(id);
         try self.stream.beginObject();
@@ -913,6 +935,7 @@ pub const JsonPrinter = struct {
         try self.stream.endObject();
     }
 
+    /// Serialize a range of variant fields described by `r`.
     fn printVariantFieldRange(self: *JsonPrinter, r: ast.RangeVariantField) anyerror!void {
         try self.stream.beginArray();
         const fields = self.exprs.vfield_pool.slice(r);
@@ -920,6 +943,7 @@ pub const JsonPrinter = struct {
         try self.stream.endArray();
     }
 
+    /// Emit metadata for pattern `id` and all of its nested nodes.
     pub fn printPattern(self: *JsonPrinter, id: ast.PatternId) anyerror!void {
         const kind = self.pats.index.kinds.items[id.toRaw()];
         try self.stream.beginObject();
@@ -1036,6 +1060,7 @@ pub const JsonPrinter = struct {
         try self.stream.endObject();
     }
 
+    /// Serialize the sequence of patterns inside `r`.
     fn printPatternRange(self: *JsonPrinter, r: ast.RangePat) anyerror!void {
         try self.stream.beginArray();
         const pids = self.pats.pat_pool.slice(r);
@@ -1043,6 +1068,7 @@ pub const JsonPrinter = struct {
         try self.stream.endArray();
     }
 
+    /// Serialize the path segments recorded in `r`.
     fn printPathSegRange(self: *JsonPrinter, r: ast.RangePathSeg) anyerror!void {
         try self.stream.beginArray();
         const segs = self.pats.seg_pool.slice(r);
@@ -1061,6 +1087,7 @@ pub const JsonPrinter = struct {
         try self.stream.endArray();
     }
 
+    /// Serialize each pattern field entry listed in `r`.
     fn printPatFieldRange(self: *JsonPrinter, r: ast.RangePatField) anyerror!void {
         try self.stream.beginArray();
         const fields = self.pats.field_pool.slice(r);

@@ -10,42 +10,66 @@ const default_source = "sr-lang";
 const Loc = lib.lexer.Token.Loc;
 const Severity = lib.diagnostics.Severity;
 
+/// Line/character pair that identifies a position inside a text buffer.
 const LspPosition = struct {
+    /// Zero-based line number.
     line: u32,
+    /// Zero-based column offset within the line.
     character: u32,
 };
 
+/// Inclusive range on a text document defined by two positions.
 const LspRange = struct {
+    /// Start position of the range.
     start: LspPosition,
+    /// End position (exclusive) for the range.
     end: LspPosition,
 };
 
+/// Represents a text replacement inside a document.
 const TextEdit = struct {
+    /// Range covered by the edit.
     range: LspRange,
+    /// Replacement text that should be inserted.
     newText: []const u8,
 };
 
 const emptyTextEdits: []const TextEdit = &[_]TextEdit{};
 
+/// Supplemental diagnostic locations reported alongside the main diagnostic.
 const RelatedInformation = struct {
+    /// Location and URI describing the related range.
     location: struct {
+        /// Document URI where the related issue resides.
         uri: []const u8,
+        /// Range within `uri` that the related issue covers.
         range: LspRange,
     },
+    /// Message describing the related issue.
     message: []u8,
 };
 
+/// LSP diagnostic payload describing an issue in a document.
 const LspDiagnostic = struct {
+    /// Range where the diagnostic applies.
     range: LspRange,
+    /// Optional severity (see LSP spec).
     severity: ?u32 = null,
+    /// Source label for this diagnostic.
     source: []const u8 = default_source,
+    /// Human-readable diagnostic message.
     message: []u8,
+    /// Optional diagnostic code identifier.
     code: ?[]u8 = null,
+    /// Additional related diagnostic locations.
     relatedInformation: ?[]RelatedInformation = null,
 };
 
+/// Data carried when responding to hover requests.
 const HoverInfo = struct {
+    /// Hover text rendered in the editor.
     message: []u8,
+    /// Range associated with the hover.
     range: LspRange,
 };
 
@@ -68,6 +92,7 @@ const semantic_token_types = [_][]const u8{
 
 const semantic_token_modifiers = [_][]const u8{};
 
+/// Canonical semantic token categories for syntax highlighting.
 const SemanticTokenKind = enum(u8) {
     keyword,
     string,
@@ -85,16 +110,25 @@ const SemanticTokenKind = enum(u8) {
     operator,
 };
 
+/// In-memory store for LSP document contents keyed by URI.
 const DocumentStore = struct {
+    /// Allocator backing stored document buffers.
     gpa: std.mem.Allocator,
+    /// Mapping from URI strings to document entries.
     map: std.StringHashMapUnmanaged(Document) = .{},
 
-    const Document = struct { text: []u8 };
+    /// Entry that owns the buffered text for a document.
+    const Document = struct {
+        /// Owned text bytes for the document.
+        text: []u8,
+    };
 
+    /// Create an empty document store backed by `gpa`.
     fn init(gpa: std.mem.Allocator) DocumentStore {
         return .{ .gpa = gpa };
     }
 
+    /// Release all stored document bytes and free the hash map.
     fn deinit(self: *DocumentStore) void {
         var it = self.map.iterator();
         while (it.next()) |entry| {
@@ -104,6 +138,7 @@ const DocumentStore = struct {
         self.map.deinit(self.gpa);
     }
 
+    /// Associate `text` with `uri`, replacing existing content if present.
     fn set(self: *DocumentStore, uri: []const u8, text: []const u8) !void {
         const dup_text = try self.gpa.dupe(u8, text);
         errdefer self.gpa.free(dup_text);
@@ -119,6 +154,7 @@ const DocumentStore = struct {
         try self.map.put(self.gpa, dup_uri, .{ .text = dup_text });
     }
 
+    /// Return the buffered text for `uri`, or `null` when missing.
     fn get(self: *DocumentStore, uri: []const u8) ?[]u8 {
         if (self.map.getPtr(uri)) |doc| {
             return doc.text;
@@ -126,6 +162,7 @@ const DocumentStore = struct {
         return null;
     }
 
+    /// Drop the stored document for `uri` if it exists.
     fn remove(self: *DocumentStore, uri: []const u8) void {
         if (self.map.fetchRemove(uri)) |kv| {
             self.gpa.free(kv.key);
@@ -134,6 +171,7 @@ const DocumentStore = struct {
     }
 };
 
+/// Start the LSP server loop reading from stdin/stdout using `gpa`.
 pub fn run(gpa: std.mem.Allocator) !void {
     var in_buf: [64 * 1024]u8 = undefined;
     var out_buf: [64 * 1024]u8 = undefined;
@@ -165,10 +203,15 @@ pub fn run(gpa: std.mem.Allocator) !void {
 
         try readExact(In, body[off..]);
 
+        // Incoming JSON-RPC request representation.
         const Request = struct {
+            /// JSON-RPC protocol version (always "2.0").
             jsonrpc: []const u8,
+            /// Method identifier string.
             method: []const u8,
+            /// Optional numeric identifier for matching responses.
             id: ?u64 = null,
+            /// Optional parameters object.
             params: ?json.Value = null,
         };
 
@@ -212,11 +255,15 @@ pub fn run(gpa: std.mem.Allocator) !void {
     }
 }
 
+/// Raw header capture returned by `readHeaders`.
 const HeaderRead = struct {
+    /// Buffer that includes headers and any body slice already read.
     buf: []u8, // header bytes + possibly some of the body already read
+    /// Byte index where the JSON body begins inside `buf`.
     body_start: usize, // index within buf where the body begins
 };
 
+/// Read the HTTP-like LSP headers from `In`, returning header bytes and body offset.
 fn readHeaders(A: std.mem.Allocator, In: *std.Io.Reader) !HeaderRead {
     var acc = std.ArrayList(u8){};
     errdefer acc.deinit(A);
@@ -240,12 +287,14 @@ fn readHeaders(A: std.mem.Allocator, In: *std.Io.Reader) !HeaderRead {
     }
 }
 
+/// Locate the split between headers and body within `buf`.
 fn findHeaderEnd(buf: []const u8) ?usize {
     if (std.mem.indexOf(u8, buf, "\r\n\r\n")) |i| return i + 4;
     if (std.mem.indexOf(u8, buf, "\n\n")) |i| return i + 2;
     return null;
 }
 
+/// Parse the `Content-Length` header field from `header_bytes`.
 fn parseContentLength(header_bytes: []const u8) !usize {
     // Split on LF; trim trailing CR; case-insensitive key match
     var it = std.mem.splitScalar(u8, header_bytes, '\n');
@@ -265,6 +314,7 @@ fn parseContentLength(header_bytes: []const u8) !usize {
     return content_len;
 }
 
+/// Read exactly `dest.len` bytes from `in` into `dest`.
 fn readExact(in: *std.Io.Reader, dest: []u8) !void {
     var off: usize = 0;
     while (off < dest.len) {
@@ -276,12 +326,14 @@ fn readExact(in: *std.Io.Reader, dest: []u8) !void {
 }
 
 // ================== JSON send helpers ==================
+/// Emit an LSP response with the given JSON `payload`.
 fn sendMessage(out: *std.Io.Writer, payload: []const u8) !void {
     try out.print("Content-Length: {d}\r\n\r\n", .{payload.len});
     try out.writeAll(payload);
     try out.flush();
 }
 
+/// Serialize `value` as JSON and send it through `out`.
 fn writeJson(out: *std.Io.Writer, gpa: std.mem.Allocator, value: anytype) !void {
     var allocw = std.Io.Writer.Allocating.init(gpa);
     defer allocw.deinit();
@@ -292,14 +344,23 @@ fn writeJson(out: *std.Io.Writer, gpa: std.mem.Allocator, value: anytype) !void 
 
 // ================== LSP handlers ==================
 
+/// Respond to `initialize` requests with capabilities and `id`.
 fn respondInitialize(out: *std.Io.Writer, gpa: std.mem.Allocator, id: u64) !void {
+    // Capability descriptor broadcast during `initialize` responses.
     const Caps = struct {
-        textDocumentSync: u32 = 1, // Full sync (simple)
+        /// Synchronization mode requested by the client.
+        textDocumentSync: u32 = 1, // Full sync
+        /// Indicates hover support.
         hoverProvider: bool = true,
+        /// Indicates definition lookup support.
         definitionProvider: bool = true,
+        /// Indicates rename support.
         renameProvider: bool = true,
+        /// Indicates formatting support.
         documentFormattingProvider: bool = true,
+        /// Completion provider metadata.
         completionProvider: struct { triggerCharacters: []const []const u8 } = .{ .triggerCharacters = &.{"."} },
+        /// Semantic token capability metadata.
         semanticTokensProvider: struct {
             legend: struct {
                 tokenTypes: []const []const u8,
@@ -316,6 +377,7 @@ fn respondInitialize(out: *std.Io.Writer, gpa: std.mem.Allocator, id: u64) !void
         },
         positionEncoding: []const u8 = "utf-8",
     };
+    // Response envelope for the `initialize` request containing capabilities.
     const Resp = struct {
         jsonrpc: []const u8 = "2.0",
         id: u64,
@@ -327,7 +389,9 @@ fn respondInitialize(out: *std.Io.Writer, gpa: std.mem.Allocator, id: u64) !void
     try writeJson(out, gpa, Resp{ .id = id });
 }
 
+/// Handle `textDocument/didOpen` by caching the document's text.
 fn onDidOpen(out: *std.Io.Writer, gpa: std.mem.Allocator, docs: *DocumentStore, params: json.Value) !void {
+    // Parameters payload for `textDocument/didOpen` notifications.
     const P = struct {
         textDocument: struct { uri: []const u8, text: []const u8 },
     };
@@ -337,8 +401,12 @@ fn onDidOpen(out: *std.Io.Writer, gpa: std.mem.Allocator, docs: *DocumentStore, 
     try publishDiagnostics(out, gpa, docs, p.value.textDocument.uri);
 }
 
+/// Handle `textDocument/didChange` by updating stored text ranges.
 fn onDidChange(out: *std.Io.Writer, gpa: std.mem.Allocator, docs: *DocumentStore, params: json.Value) !void {
+    // JSON parameters for `textDocument/didChange`.
+    // Parameters payload for `textDocument/didChange` notifications.
     const P = struct {
+        /// Semantic tokens request payload describing the document to highlight.
         textDocument: struct { uri: []const u8 },
         contentChanges: []const struct { text: []const u8 },
     };
@@ -349,14 +417,19 @@ fn onDidChange(out: *std.Io.Writer, gpa: std.mem.Allocator, docs: *DocumentStore
     try publishDiagnostics(out, gpa, docs, p.value.textDocument.uri);
 }
 
+/// Handle `textDocument/didClose` by removing the cached document.
 fn onDidClose(out: *std.Io.Writer, gpa: std.mem.Allocator, docs: *DocumentStore, params: json.Value) !void {
+    // JSON parameters for `textDocument/didClose`.
+    // Parameters payload for `textDocument/didClose` notifications.
     const P = struct {
+        /// Formatting request payload specifying the document URI.
         textDocument: struct { uri: []const u8 },
     };
     var p = try json.parseFromValue(P, gpa, params, .{ .ignore_unknown_fields = true });
     defer p.deinit();
     const uri = p.value.textDocument.uri;
     docs.remove(uri);
+    // Notification payload sent to acknowledge diagnostics removal.
     const Msg = struct {
         jsonrpc: []const u8 = "2.0",
         method: []const u8 = "textDocument/publishDiagnostics",
@@ -366,16 +439,24 @@ fn onDidClose(out: *std.Io.Writer, gpa: std.mem.Allocator, docs: *DocumentStore,
     try writeJson(out, gpa, Msg{ .params = .{ .uri = uri, .diagnostics = &empty_diags } });
 }
 
+/// Represents an identifier declared within a scope for semantic token highlights.
 const Symbol = struct {
+    /// Location of the declaration used for highlighting references.
     decl_loc: ast.LocId,
+    /// Semantic token kind assigned to this symbol.
     kind: SemanticTokenKind,
 };
 
+/// Represents the symbol table kept for a lexical scope during semantic analysis.
 const Scope = struct {
+    /// Symbol table for the current scope.
     symbols: std.StringHashMap(Symbol),
+    /// Optional parent scope used for fallback lookup.
     parent: ?*const Scope,
+    /// Allocator backing nested scope storage.
     gpa: std.mem.Allocator,
 
+    /// Create a nested scope optionally chained to `parent`.
     fn init(gpa: std.mem.Allocator, parent: ?*const Scope) Scope {
         return .{
             .symbols = std.StringHashMap(Symbol).init(gpa),
@@ -384,14 +465,17 @@ const Scope = struct {
         };
     }
 
+    /// Release the storage backing the scope.
     fn deinit(self: *Scope) void {
         self.symbols.deinit();
     }
 
+    /// Register a symbol named `name` in this scope.
     fn declare(self: *Scope, name: []const u8, loc: ast.LocId, kind: SemanticTokenKind) !void {
         try self.symbols.put(name, .{ .decl_loc = loc, .kind = kind });
     }
 
+    /// Lookup `name` within this scope or any parent scopes.
     fn lookup(self: *const Scope, name: []const u8) ?Symbol {
         if (self.symbols.get(name)) |symbol| {
             return symbol;
@@ -403,11 +487,16 @@ const Scope = struct {
     }
 };
 
+/// Builds lookup tables that map AST locations to symbol metadata.
 const SymbolResolver = struct {
+    /// Allocator used for temporary scope tracking.
     gpa: std.mem.Allocator,
+    /// AST unit being analyzed.
     ast_unit: *ast.Ast,
+    /// Map storing the resolved symbols keyed by declaration ID.
     resolution_map: *std.AutoArrayHashMap(u32, Symbol),
 
+    /// Build symbol map by walking the AST and recording definitions.
     pub fn run(gpa: std.mem.Allocator, ast_unit: *ast.Ast, resolution_map: *std.AutoArrayHashMap(u32, Symbol)) !void {
         var self = SymbolResolver{
             .gpa = gpa,
@@ -421,6 +510,7 @@ const SymbolResolver = struct {
         try self.walkUnit(&global_scope);
     }
 
+    /// Walk every declaration in `ast_unit` to register symbol bindings.
     fn walkUnit(self: *SymbolResolver, scope: *Scope) !void {
         const decls = self.ast_unit.exprs.decl_pool.slice(self.ast_unit.unit.decls);
         for (decls) |decl_id| {
@@ -435,6 +525,7 @@ const SymbolResolver = struct {
         }
     }
 
+    /// Walk declaration `decl_id`, storing its bindings (patterns/types).
     fn walkDecl(self: *SymbolResolver, scope: *Scope, decl_id: ast.DeclId) !void {
         const decl_row = self.ast_unit.exprs.Decl.get(decl_id);
         const decl_kind = classifyDeclKind(self.ast_unit, decl_row.value);
@@ -443,6 +534,7 @@ const SymbolResolver = struct {
         }
     }
 
+    /// Walk statement `stmt_id`, using patterns as necessary to populate symbols.
     fn walkStmt(self: *SymbolResolver, scope: *Scope, stmt_id: ast.StmtId) anyerror!void {
         const stmt_store = &self.ast_unit.stmts;
         const stmt_kind = stmt_store.index.kinds.items[stmt_id.toRaw()];
@@ -469,6 +561,7 @@ const SymbolResolver = struct {
         }
     }
 
+    /// Walk expression `expr_id` to gather potential bindings (e.g., function literals).
     fn walkExpr(self: *SymbolResolver, scope: *const Scope, expr_id: ast.ExprId) !void {
         const expr_store = &self.ast_unit.exprs;
         const expr_kind = expr_store.index.kinds.items[expr_id.toRaw()];
@@ -773,6 +866,7 @@ const SymbolResolver = struct {
         }
     }
 
+    /// Record each binding introduced by pattern `pat_id` using `kind`.
     fn walkPattern(self: *SymbolResolver, scope: *Scope, pat_id: ast.PatternId, kind: SemanticTokenKind) !void {
         const pat_store = &self.ast_unit.pats;
         const pat_kind = pat_store.index.kinds.items[pat_id.toRaw()];
@@ -830,7 +924,10 @@ const SymbolResolver = struct {
     }
 };
 
+/// Respond to hover requests by computing `HoverInfo` at the caret.
 fn onHover(out: *std.Io.Writer, gpa: std.mem.Allocator, docs: *DocumentStore, id: u64, params: json.Value) !void {
+    // JSON parameters for hover requests.
+    // Parameters payload for `textDocument/hover` requests.
     const P = struct {
         textDocument: struct { uri: []const u8 },
         position: struct { line: u32, character: u32 },
@@ -847,6 +944,8 @@ fn onHover(out: *std.Io.Writer, gpa: std.mem.Allocator, docs: *DocumentStore, id
     const offset = positionToOffset(text, p.value.position.line, p.value.position.character);
     const hover_info = try computeHover(gpa, uri, text, offset);
 
+    // Response payload sent for semantic token requests.
+    // Response envelope for the hover request.
     const Resp = struct {
         jsonrpc: []const u8 = "2.0",
         id: u64,
@@ -870,7 +969,10 @@ fn onHover(out: *std.Io.Writer, gpa: std.mem.Allocator, docs: *DocumentStore, id
     }
 }
 
+/// Handle go-to-definition requests by locating the symbol at the caret.
 fn onGoToDefinition(out: *std.io.Writer, gpa: std.mem.Allocator, docs: *DocumentStore, id: u64, params: json.Value) !void {
+    // JSON parameters for `textDocument/definition`.
+    // Parameters payload for `textDocument/definition` requests.
     const P = struct {
         textDocument: struct { uri: []const u8 },
         position: struct { line: u32, character: u32 },
@@ -968,7 +1070,10 @@ fn onGoToDefinition(out: *std.io.Writer, gpa: std.mem.Allocator, docs: *Document
     }
 }
 
+/// Handle rename requests by recomputing AST and emitting edits.
 fn onRename(out: *std.io.Writer, gpa: std.mem.Allocator, docs: *DocumentStore, id: u64, params: json.Value) !void {
+    // Rename request JSON payload describing the document and caret.
+    // Parameters payload for `textDocument/rename` requests.
     const P = struct {
         textDocument: struct { uri: []const u8 },
         position: struct { line: u32, character: u32 },
@@ -1036,9 +1141,11 @@ fn onRename(out: *std.io.Writer, gpa: std.mem.Allocator, docs: *DocumentStore, i
         }
     }
 
+    // Encoded workspace edits returned by rename operations.
     const WorkspaceEdit = struct {
         changes: std.StringHashMap([]const TextEdit),
 
+        /// Emit JSON for this workspace edit (helper for rename responses).
         pub fn jsonStringify(self: @This(), s: *json.Stringify) !void {
             try s.beginObject();
             try s.objectField("changes");
@@ -1076,16 +1183,19 @@ fn onRename(out: *std.io.Writer, gpa: std.mem.Allocator, docs: *DocumentStore, i
     try writeJson(out, gpa, .{ .jsonrpc = "2.0", .id = id, .result = workspace_edit });
 }
 
+/// Convert filesystem `path` into a UTF-8 URI string.
 fn pathToUri(gpa: std.mem.Allocator, path: []const u8) ![]u8 {
     return std.fmt.allocPrint(gpa, "file://{s}", .{path});
 }
 
+/// Represents a completion candidate returned to the client.
 const CompletionItem = struct {
     label: []const u8,
     kind: ?u32 = null,
     detail: ?[]const u8 = null,
 };
 
+/// Enumeration of semantic completion categories exposed over LSP.
 const CompletionItemKind = enum(u32) {
     Text = 1,
     Method = 2,
@@ -1114,6 +1224,7 @@ const CompletionItemKind = enum(u32) {
     TypeParameter = 25,
 };
 
+/// Map semantic token kinds to their completion item analog in LSP.
 fn lspCompletionKindFromSemantic(kind: SemanticTokenKind) CompletionItemKind {
     return switch (kind) {
         .keyword => .Keyword,
@@ -1129,7 +1240,10 @@ fn lspCompletionKindFromSemantic(kind: SemanticTokenKind) CompletionItemKind {
     };
 }
 
+/// Provide completion items in response to client requests.
 fn onCompletion(out: *std.Io.Writer, gpa: std.mem.Allocator, docs: *DocumentStore, id: u64, params: json.Value) !void {
+    // Completion request payload describing the document and cursor position.
+    // Parameters payload for completion requests.
     const P = struct {
         textDocument: struct { uri: []const u8 },
         position: LspPosition,
@@ -1162,6 +1276,7 @@ fn onCompletion(out: *std.Io.Writer, gpa: std.mem.Allocator, docs: *DocumentStor
     try writeJson(out, gpa, .{ .jsonrpc = "2.0", .id = id, .result = .{ .items = items.items } });
 }
 
+/// Populate `items` with completion candidates derived from `uri` and `text`.
 fn computeCompletions(gpa: std.mem.Allocator, uri: []const u8, text: []const u8, items: *std.ArrayList(CompletionItem)) !void {
     // Add keywords
     const keywords = [_][]const u8{ "fn", "struct", "enum", "let", "const", "if", "else", "for", "while", "match", "return", "true", "false", "import", "package", "defer", "errdefer", "async", "await", "try", "catch" };
@@ -1195,6 +1310,7 @@ fn computeCompletions(gpa: std.mem.Allocator, uri: []const u8, text: []const u8,
     }
 }
 
+/// Add completion entries based on bindings found within `pat_id`.
 fn addPatternBindingsToCompletions(gpa: std.mem.Allocator, items: *std.ArrayList(CompletionItem), ast_unit: *ast.Ast, pat_id: ast.PatternId, kind: SemanticTokenKind) !void {
     const pat_store = &ast_unit.pats;
     const pat_kind = pat_store.index.kinds.items[pat_id.toRaw()];
@@ -1253,7 +1369,10 @@ fn addPatternBindingsToCompletions(gpa: std.mem.Allocator, items: *std.ArrayList
     }
 }
 
+/// Generate a full semantic token response for the given document.
 fn onSemanticTokensFull(out: *std.Io.Writer, gpa: std.mem.Allocator, docs: *DocumentStore, id: u64, params: json.Value) !void {
+    // Semantic tokens request payload describing the document to highlight.
+    // Parameters payload used for full semantic tokens requests.
     const P = struct {
         textDocument: struct { uri: []const u8 },
     };
@@ -1261,6 +1380,7 @@ fn onSemanticTokensFull(out: *std.Io.Writer, gpa: std.mem.Allocator, docs: *Docu
     defer p.deinit();
 
     const uri = p.value.textDocument.uri;
+    // Response payload delivered for semantic token queries.
     const Resp = struct {
         jsonrpc: []const u8 = "2.0",
         id: u64,
@@ -1277,7 +1397,10 @@ fn onSemanticTokensFull(out: *std.Io.Writer, gpa: std.mem.Allocator, docs: *Docu
     }
 }
 
+/// Produce formatting edits for the document at `uri`.
 fn onFormatting(out: *std.Io.Writer, gpa: std.mem.Allocator, docs: *DocumentStore, id: u64, params: json.Value) !void {
+    // Formatting request payload specifying the document URI.
+    // Parameters payload for `textDocument/formatting` requests.
     const P = struct {
         textDocument: struct { uri: []const u8 },
     };
@@ -1287,6 +1410,7 @@ fn onFormatting(out: *std.Io.Writer, gpa: std.mem.Allocator, docs: *DocumentStor
     const uri = p.value.textDocument.uri;
 
     const source = docs.get(uri) orelse {
+        // Response payload emitted when formatting cannot read the document.
         const Resp = struct {
             jsonrpc: []const u8 = "2.0",
             id: u64,
@@ -1304,6 +1428,7 @@ fn onFormatting(out: *std.Io.Writer, gpa: std.mem.Allocator, docs: *DocumentStor
 
     const formatted = lib.formatter.formatSource(gpa, source_z, path) catch |err| {
         std.debug.print("[lsp] formatter failed: {s}\n", .{@errorName(err)});
+        // Response payload emitted when the formatter fails.
         const Resp = struct {
             jsonrpc: []const u8 = "2.0",
             id: u64,
@@ -1319,6 +1444,7 @@ fn onFormatting(out: *std.Io.Writer, gpa: std.mem.Allocator, docs: *DocumentStor
         .newText = formatted,
     };
     const edits = [_]TextEdit{edit};
+    // Response payload containing the formatting edits.
     const Resp = struct {
         jsonrpc: []const u8 = "2.0",
         id: u64,
@@ -1329,8 +1455,10 @@ fn onFormatting(out: *std.Io.Writer, gpa: std.mem.Allocator, docs: *DocumentStor
     try docs.set(uri, formatted);
 }
 
+/// Run the checker and publish diagnostics for `uri`.
 fn publishDiagnostics(out: *std.Io.Writer, gpa: std.mem.Allocator, docs: *DocumentStore, uri: []const u8) !void {
     const text_mut = docs.get(uri) orelse {
+        // Notification payload used when no diagnostics are available.
         const Msg = struct {
             jsonrpc: []const u8 = "2.0",
             method: []const u8 = "textDocument/publishDiagnostics",
@@ -1427,6 +1555,7 @@ fn publishDiagnostics(out: *std.Io.Writer, gpa: std.mem.Allocator, docs: *Docume
         try diags.append(gpa, diag);
     }
 
+    // Notification payload used to publish diagnostics to the editor.
     const Msg = struct {
         jsonrpc: []const u8 = "2.0",
         method: []const u8 = "textDocument/publishDiagnostics",
@@ -1435,29 +1564,35 @@ fn publishDiagnostics(out: *std.Io.Writer, gpa: std.mem.Allocator, docs: *Docume
     try writeJson(out, gpa, Msg{ .params = .{ .uri = uri, .diagnostics = diags.items } });
 }
 
+/// Key describing a semantic token span.
 const TokenKey = struct {
     start: usize,
     end: usize,
 };
 
+/// Semantic token record used when sorting/encoding tokens.
 const TokenEntry = struct {
     start: usize,
     end: usize,
     kind: SemanticTokenKind,
 };
 
+/// Deduplicates and orders semantic tokens before encoding them for LSP.
 const TokenAccumulator = struct {
     map: std.AutoArrayHashMap(TokenKey, SemanticTokenKind),
     gpa: std.mem.Allocator,
 
+    /// Initialize a token accumulator that deduplicates semantic tokens.
     fn init(gpa: std.mem.Allocator) TokenAccumulator {
         return .{ .map = std.AutoArrayHashMap(TokenKey, SemanticTokenKind).init(gpa), .gpa = gpa };
     }
 
+    /// Release resources held by the accumulator.
     fn deinit(self: *TokenAccumulator) void {
         self.map.deinit();
     }
 
+    /// Record a semantic token covering `[start,end)` of `kind`.
     fn add(self: *TokenAccumulator, start: usize, end: usize, kind: SemanticTokenKind) !void {
         if (start >= end) return;
         const key = TokenKey{ .start = start, .end = end };
@@ -1472,6 +1607,7 @@ const TokenAccumulator = struct {
         }
     }
 
+    /// Return sorted token entries computed from accumulated ranges.
     fn toSortedEntries(self: *TokenAccumulator) ![]TokenEntry {
         const count = self.map.count();
         var out = try self.gpa.alloc(TokenEntry, count);
@@ -1489,6 +1625,7 @@ const TokenAccumulator = struct {
         }
 
         std.sort.heap(TokenEntry, out, {}, struct {
+            /// Sorting helper that orders token entries by start/end positions.
             fn lessThan(_: void, a: TokenEntry, b: TokenEntry) bool {
                 if (a.start == b.start) return a.end < b.end;
                 return a.start < b.start;
@@ -1498,6 +1635,7 @@ const TokenAccumulator = struct {
         return out;
     }
 
+    /// Encode the accumulated tokens into the compact LSP semantic token format.
     fn toEncodedSlice(self: *TokenAccumulator, text: []const u8) ![]u32 {
         const entries = try self.toSortedEntries();
         defer self.gpa.free(entries);
@@ -1534,6 +1672,7 @@ const TokenAccumulator = struct {
     }
 };
 
+/// Assign a priority used to resolve overlapping tokens.
 fn kindPriority(kind: SemanticTokenKind) u8 {
     return switch (kind) {
         .function, .type, .namespace, .variable, .property, .parameter, .enum_member => 2,
@@ -1541,6 +1680,7 @@ fn kindPriority(kind: SemanticTokenKind) u8 {
     };
 }
 
+/// Add a multi-line segment `kind` spanning `[start,end)` to `tokens`.
 fn addSegmentMultiLine(tokens: *TokenAccumulator, text: []const u8, start: usize, end: usize, kind: SemanticTokenKind) !void {
     var seg_start = start;
     var idx = start;
@@ -1565,6 +1705,7 @@ fn addSegmentMultiLine(tokens: *TokenAccumulator, text: []const u8, start: usize
     }
 }
 
+/// Compute semantic tokens for `text` and return their LSP encoding.
 fn computeSemanticTokens(gpa: std.mem.Allocator, uri: []const u8, text: []const u8) ![]u32 {
     if (text.len == 0) {
         return &[_]u32{};
@@ -1582,6 +1723,7 @@ fn computeSemanticTokens(gpa: std.mem.Allocator, uri: []const u8, text: []const 
     return try tokens.toEncodedSlice(text);
 }
 
+/// Collect lexical tokens from `text` into `tokens`.
 fn collectLexicalTokens(tokens: *TokenAccumulator, gpa: std.mem.Allocator, text: []const u8) !void {
     if (text.len == 0) return;
 
@@ -1601,6 +1743,7 @@ fn collectLexicalTokens(tokens: *TokenAccumulator, gpa: std.mem.Allocator, text:
     }
 }
 
+/// Collect semantic tokens derived from AST nodes along `path`.
 fn collectAstSemanticTokens(tokens: *TokenAccumulator, gpa: std.mem.Allocator, text: []const u8, path: []const u8) !void {
     var context = lib.compile.Context.init(gpa);
     defer context.deinit();
@@ -1630,12 +1773,14 @@ fn collectAstSemanticTokens(tokens: *TokenAccumulator, gpa: std.mem.Allocator, t
     try gatherAstTokens(tokens, gpa, text, ast_unit, file_id, &resolution_map);
 }
 
+/// Gather semantic tokens from the AST and add them to `tokens`.
 fn gatherAstTokens(tokens: *TokenAccumulator, gpa: std.mem.Allocator, text: []const u8, ast_unit: *ast.Ast, file_id: u32, resolution_map: *const std.AutoArrayHashMap(u32, Symbol)) !void {
     try highlightPackage(tokens, text, ast_unit, file_id);
     try highlightDecls(tokens, text, ast_unit, file_id);
     try highlightExpressions(tokens, gpa, text, ast_unit, file_id, resolution_map);
 }
 
+/// Highlight package declarations within `ast_unit`.
 fn highlightPackage(tokens: *TokenAccumulator, text: []const u8, ast_unit: *ast.Ast, file_id: u32) !void {
     if (ast_unit.unit.package_loc.isNone()) return;
     const loc_idx = ast_unit.unit.package_loc.unwrap();
@@ -1643,6 +1788,7 @@ fn highlightPackage(tokens: *TokenAccumulator, text: []const u8, ast_unit: *ast.
     try highlightLoc(tokens, text, ast_unit.exprs.locs, loc_id, file_id, .namespace);
 }
 
+/// Highlight top-level declarations and add to `tokens`.
 fn highlightDecls(tokens: *TokenAccumulator, text: []const u8, ast_unit: *ast.Ast, file_id: u32) !void {
     const decl_ids = ast_unit.exprs.decl_pool.slice(ast_unit.unit.decls);
     for (decl_ids) |decl_id| {
@@ -1671,6 +1817,7 @@ fn highlightDecls(tokens: *TokenAccumulator, text: []const u8, ast_unit: *ast.As
     }
 }
 
+/// Collect binding identifiers introduced by `pat_id`.
 fn collectPatternBindingNames(gpa: std.mem.Allocator, names: *std.StringHashMap(void), ast_unit: *ast.Ast, pat_id: ast.PatternId) !void {
     const pat_store = &ast_unit.pats;
     const pat_kind = pat_store.index.kinds.items[pat_id.toRaw()];
@@ -1727,6 +1874,7 @@ fn collectPatternBindingNames(gpa: std.mem.Allocator, names: *std.StringHashMap(
     }
 }
 
+/// Collect descriptors for every parameter declared in the AST.
 fn collectAllParamNames(gpa: std.mem.Allocator, names: *std.StringHashMap(void), ast_unit: *ast.Ast) !void {
     const expr_store = &ast_unit.exprs;
     const kinds = expr_store.index.kinds.items;
@@ -1760,6 +1908,7 @@ fn collectAllParamNames(gpa: std.mem.Allocator, names: *std.StringHashMap(void),
     }
 }
 
+/// Highlight type expressions as semantic tokens.
 fn highlightTypeExpr(tokens: *TokenAccumulator, text: []const u8, ast_unit: *ast.Ast, file_id: u32, expr_id: ast.ExprId) !void {
     const expr_store = &ast_unit.exprs;
     const expr_kind = expr_store.index.kinds.items[expr_id.toRaw()];
@@ -1812,6 +1961,7 @@ fn highlightTypeExpr(tokens: *TokenAccumulator, text: []const u8, ast_unit: *ast
     }
 }
 
+/// Highlight expressions and binding occurrences in `ast_unit`.
 fn highlightExpressions(tokens: *TokenAccumulator, gpa: std.mem.Allocator, text: []const u8, ast_unit: *ast.Ast, file_id: u32, resolution_map: *const std.AutoArrayHashMap(u32, Symbol)) !void {
     _ = gpa;
     const expr_store = &ast_unit.exprs;
@@ -2017,6 +2167,7 @@ fn highlightExpressions(tokens: *TokenAccumulator, gpa: std.mem.Allocator, text:
     }
 }
 
+/// Classify the semantic kind for a declaration represented by `value_expr`.
 fn classifyDeclKind(ast_unit: *ast.Ast, value_expr: ast.ExprId) SemanticTokenKind {
     const expr_store = &ast_unit.exprs;
     const expr_kind = expr_store.index.kinds.items[value_expr.toRaw()];
@@ -2039,6 +2190,7 @@ fn classifyDeclKind(ast_unit: *ast.Ast, value_expr: ast.ExprId) SemanticTokenKin
     };
 }
 
+/// Map lexical token tags to semantic token kinds when possible.
 fn classifyLexTokenTag(tag: lib.lexer.Token.Tag) ?SemanticTokenKind {
     return switch (tag) {
         .string_literal, .raw_string_literal, .char_literal, .raw_asm_block => .string,
@@ -2050,6 +2202,7 @@ fn classifyLexTokenTag(tag: lib.lexer.Token.Tag) ?SemanticTokenKind {
     };
 }
 
+/// Determine a semantic kind from `ty_opt` when classifying identifiers.
 fn classifyIdentType(type_store: *types.TypeStore, ty_opt: ?types.TypeId) SemanticTokenKind {
     if (ty_opt) |ty| {
         return switch (type_store.getKind(ty)) {
@@ -2062,6 +2215,7 @@ fn classifyIdentType(type_store: *types.TypeStore, ty_opt: ?types.TypeId) Semant
     return .variable;
 }
 
+/// Classify a semantic kind for member access based on `ty_opt`.
 fn classifyMemberAccessType(type_store: *types.TypeStore, ty_opt: ?types.TypeId) SemanticTokenKind {
     if (ty_opt) |ty| {
         return switch (type_store.getKind(ty)) {
@@ -2074,6 +2228,7 @@ fn classifyMemberAccessType(type_store: *types.TypeStore, ty_opt: ?types.TypeId)
     return .property;
 }
 
+/// Highlight the nodes inside pattern expressions for semantic tokens.
 fn highlightPattern(
     tokens: *TokenAccumulator,
     text: []const u8,
@@ -2149,12 +2304,14 @@ fn highlightPattern(
     }
 }
 
+/// Convert `OptPatternId` to `PatternId` using sentinel lookup.
 fn patternFromOpt(opt: ast.OptPatternId) ast.PatternId {
     std.debug.assert(!opt.isNone());
     const idx = opt.unwrap();
     return ast.PatternId.fromRaw(idx.toRaw());
 }
 
+/// Highlight each segment of an identifier path used in semantic tokens.
 fn highlightPatternPath(tokens: *TokenAccumulator, text: []const u8, ast_unit: *ast.Ast, path: ast.RangePathSeg, file_id: u32) !void {
     const pat_store = &ast_unit.pats;
     const segs = pat_store.seg_pool.slice(path);
@@ -2164,6 +2321,7 @@ fn highlightPatternPath(tokens: *TokenAccumulator, text: []const u8, ast_unit: *
     }
 }
 
+/// Highlight the location `loc` as a semantic token.
 fn highlightLoc(
     tokens: *TokenAccumulator,
     text: []const u8,
@@ -2180,10 +2338,12 @@ fn highlightLoc(
     try addSegmentMultiLine(tokens, text, start, end, kind);
 }
 
+/// Return true when `tag` corresponds to an LSP keyword token.
 fn isKeywordTag(tag: lib.lexer.Token.Tag) bool {
     return @intFromEnum(tag) >= @intFromEnum(lib.lexer.Token.Tag.keyword_align);
 }
 
+/// Convert URI strings to filesystem paths.
 fn fileUriToPath(gpa: std.mem.Allocator, uri: []const u8) ![]u8 {
     if (!std.mem.startsWith(u8, uri, "file://")) {
         return gpa.dupe(u8, uri);
@@ -2227,6 +2387,7 @@ fn fileUriToPath(gpa: std.mem.Allocator, uri: []const u8) ![]u8 {
     return out_buf.toOwnedSlice(gpa);
 }
 
+/// Return the numeric value of hexadecimal digit `c`.
 fn hexDigit(c: u8) ?u8 {
     return switch (c) {
         '0'...'9' => c - '0',
@@ -2236,6 +2397,7 @@ fn hexDigit(c: u8) ?u8 {
     };
 }
 
+/// Convert `loc` into an LSP `Range` relative to `text`.
 fn locToRange(text: []const u8, loc: Loc) LspRange {
     const start_idx = clampOffset(text, loc.start);
     const raw_end = if (loc.end > loc.start) loc.end else loc.start;
@@ -2247,6 +2409,7 @@ fn locToRange(text: []const u8, loc: Loc) LspRange {
     };
 }
 
+/// Return the `LspRange` covering the entire `text`.
 fn fullRange(text: []const u8) LspRange {
     return .{
         .start = .{ .line = 0, .character = 0 },
@@ -2254,11 +2417,13 @@ fn fullRange(text: []const u8) LspRange {
     };
 }
 
+/// Clamp `offset` to the bounds of `text`.
 fn clampOffset(text: []const u8, offset: usize) usize {
     if (offset > text.len) return text.len;
     return offset;
 }
 
+/// Convert byte `offset` inside `text` to an LSP position (line/char).
 fn offsetToPosition(text: []const u8, offset: usize) LspPosition {
     var line: u32 = 0;
     var col: u32 = 0;
@@ -2284,6 +2449,7 @@ fn offsetToPosition(text: []const u8, offset: usize) LspPosition {
     return .{ .line = line, .character = col };
 }
 
+/// Translate diagnostic `Severity` into LSP severity codes.
 fn severityToLsp(sev: Severity) ?u32 {
     return switch (sev) {
         .err => 1,
@@ -2292,6 +2458,7 @@ fn severityToLsp(sev: Severity) ?u32 {
     };
 }
 
+/// Resolve alias/indirection of `type_id` to its concrete type.
 fn resolvePointer(type_store: *types.TypeStore, type_id: types.TypeId) types.TypeId {
     var current_id = type_id;
     while (type_store.getKind(current_id) == .Ptr) {
@@ -2301,6 +2468,7 @@ fn resolvePointer(type_store: *types.TypeStore, type_id: types.TypeId) types.Typ
     return current_id;
 }
 
+/// Print the struct `fields_range` into hover output.
 fn printHoverFields(writer: *std.io.Writer, type_store: *types.TypeStore, fields_range: types.RangeField) !void {
     const fields = type_store.field_pool.slice(fields_range);
     if (fields.len > 0) {
@@ -2315,6 +2483,7 @@ fn printHoverFields(writer: *std.io.Writer, type_store: *types.TypeStore, fields
     }
 }
 
+/// Compute hover message for offset `offset_in` inside `uri`.
 fn computeHover(gpa: std.mem.Allocator, uri: []const u8, text: []const u8, offset_in: usize) !?HoverInfo {
     var context = lib.compile.Context.init(gpa);
     defer context.deinit();
@@ -2396,6 +2565,7 @@ fn computeHover(gpa: std.mem.Allocator, uri: []const u8, text: []const u8, offse
     return null;
 }
 
+/// Return the AST corresponding to `file_id` inside `unit`, if loaded.
 fn findAstForFile(unit: *package_mod.CompilationUnit, file_id: u32) ?*ast.Ast {
     var pkg_iter = unit.packages.iterator();
     while (pkg_iter.next()) |pkg| {
@@ -2410,6 +2580,7 @@ fn findAstForFile(unit: *package_mod.CompilationUnit, file_id: u32) ?*ast.Ast {
     return null;
 }
 
+/// Find the expression at byte `offset` in `ast_unit`, if any.
 fn findExprAt(ast_unit: *ast.Ast, offset: usize) ?ast.ExprId {
     const kinds = ast_unit.exprs.index.kinds.items;
     var best: ?ast.ExprId = null;
@@ -2431,6 +2602,7 @@ fn findExprAt(ast_unit: *ast.Ast, offset: usize) ?ast.ExprId {
     return best;
 }
 
+/// Return the location metadata for expression `expr_id`.
 fn exprLoc(ast_unit: *ast.Ast, expr_id: ast.ExprId) Loc {
     const kinds = ast_unit.exprs.index.kinds.items;
     const kind = kinds[expr_id.toRaw()];
@@ -2442,12 +2614,14 @@ fn exprLoc(ast_unit: *ast.Ast, expr_id: ast.ExprId) Loc {
     };
 }
 
+/// Lookup the inferred type of `expr_id`, if available.
 fn getExprType(ast_unit: *ast.Ast, expr_id: ast.ExprId) ?types.TypeId {
     const idx = expr_id.toRaw();
     if (idx >= ast_unit.type_info.expr_types.items.len) return null;
     return ast_unit.type_info.expr_types.items[idx];
 }
 
+/// Convert LSP position to byte offset within `text`.
 fn positionToOffset(text: []const u8, target_line: u32, target_character: u32) usize {
     var line: u32 = 0;
     var idx: usize = 0;

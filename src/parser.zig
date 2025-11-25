@@ -9,19 +9,29 @@ const List = std.ArrayList;
 
 pub const Parser = @This();
 
+/// Allocator used for CST storage, interner operations, and diagnostics.
 gpa: std.mem.Allocator,
+/// Source buffer currently parsed.
 src: []const u8,
+/// Tokenizer instance producing lexical tokens.
 lex: Lexer,
+/// Current token being consumed.
 cur: Token,
+/// Lookahead token.
 nxt: Token,
 
+/// CST being built/returned to the caller.
 cst_u: cst.CST,
+/// Shared compilation context for access to interner/locations.
 context: *compile.Context,
+/// Diagnostic sink for parser errors, warnings, notes.
 diags: *diag.Diagnostics,
 
+/// Contextual parsing mode for Pratt table recursion (expressions vs type expressions).
 const ParseMode = enum { expr, type, expr_no_struct };
 
 // ---------- lifecycle ----------
+/// Build a parser that will lex `source` associated with `file_id`, wiring diagnostics/context.
 pub fn init(
     gpa: std.mem.Allocator,
     source: [:0]const u8,
@@ -45,6 +55,7 @@ pub fn init(
 }
 
 // ---------- entry ----------
+/// Parse the entire source file and return the constructed CST (or error).
 pub fn parse(self: *Parser) !cst.CST {
     try self.parseProgram();
     return self.cst_u;
@@ -53,10 +64,12 @@ pub fn parse(self: *Parser) !cst.CST {
 //=================================================================
 // Utilities
 // =================================================================
+/// Move `cur`/`nxt` forward by consuming the current token.
 inline fn advance(self: *Parser) void {
     self.cur = self.nxt;
     self.nxt = self.fetchNext();
 }
+/// If the current token matches `tag`, consume it and return true.
 inline fn consumeIf(self: *Parser, tag: Token.Tag) bool {
     if (self.cur.tag == tag) {
         self.advance();
@@ -64,6 +77,7 @@ inline fn consumeIf(self: *Parser, tag: Token.Tag) bool {
     }
     return false;
 }
+/// Demand that the current token is `tag`, otherwise emit an error.
 inline fn expect(self: *Parser, tag: Token.Tag) !void {
     if (self.cur.tag != tag) {
         self.errorNote(
@@ -77,15 +91,18 @@ inline fn expect(self: *Parser, tag: Token.Tag) !void {
     }
     self.advance();
 }
+/// Return the source slice representing `token`.
 inline fn slice(self: *const Parser, token: Token) []const u8 {
     return self.src[token.loc.start..token.loc.end];
 }
+/// Return true when `tag` corresponds to a comment/literature node.
 fn isComment(tag: Token.Tag) bool {
     return switch (tag) {
         .line_comment, .block_comment, .doc_comment, .container_doc_comment => true,
         else => false,
     };
 }
+/// Record the comment `tok` into the CST's comment list.
 fn recordComment(self: *Parser, tok: Token) void {
     const kind = switch (tok.tag) {
         .line_comment => cst.CommentKind.line,
@@ -96,6 +113,7 @@ fn recordComment(self: *Parser, tok: Token) void {
     };
     _ = self.cst_u.comments.add(self.gpa, .{ .kind = kind, .loc = self.toLocId(tok.loc) });
 }
+/// Fetch the next non-comment token from the lexer.
 fn fetchNext(self: *Parser) Token {
     var tok = self.lex.next();
     while (isComment(tok.tag)) {
@@ -104,9 +122,11 @@ fn fetchNext(self: *Parser) Token {
     }
     return tok;
 }
+/// Intern `bytes` as an identifier string for the CST.
 fn intern(self: *Parser, bytes: []const u8) cst.StrId {
     return self.cst_u.exprs.strs.intern(bytes);
 }
+/// Convert a token location into the CST module's `LocId`.
 fn toLocId(self: *Parser, tl: Token.Loc) cst.LocId {
     return self.cst_u.exprs.locs.add(self.gpa, tl);
 }
@@ -114,6 +134,7 @@ fn toLocId(self: *Parser, tl: Token.Loc) cst.LocId {
 //=================================================================
 // Diagnostics helpers
 //=================================================================
+/// Emit `error_code` at `loc` and attach `note_code` as a follow-up note.
 inline fn errorNote(
     self: *Parser,
     loc: Loc,
@@ -130,34 +151,41 @@ inline fn errorNote(
     }
 }
 
+/// Return true when current token can end a statement.
 inline fn isStmtTerminator(self: *const Parser) bool {
     return switch (self.cur.tag) {
         .eos, .rcurly, .eof => true,
         else => false,
     };
 }
+/// Returns true when the current identifier is the `_` discard token.
 inline fn isUnderscore(self: *const Parser) bool {
     return self.cur.tag == .identifier and std.mem.eql(u8, self.slice(self.cur), "_");
 }
+/// Expect the keyword `tag` followed by `(` and return the location of the keyword.
 inline fn beginKeywordParen(self: *Parser, comptime tag: Token.Tag) !Loc {
     const start = self.cur.loc;
     try self.expect(tag);
     try self.expect(.lparen);
     return start;
 }
+/// Expect a closing parenthesis, emitting diagnostics on mismatch.
 inline fn endParen(self: *Parser) !void {
     try self.expect(.rparen);
 }
+/// Expect `{` and return its start location.
 inline fn beginBrace(self: *Parser) !Loc {
     const start = self.cur.loc;
     try self.expect(.lcurly);
     return start;
 }
+/// Consume `}` and return the token it replaced.
 inline fn endBrace(self: *Parser) !Loc {
     const tok = self.cur;
     try self.expect(.rcurly);
     return tok.loc;
 }
+/// Return true if `tag` denotes a literal token.
 inline fn isLiteralTag(_: *const Parser, tag: Token.Tag) bool {
     return switch (tag) {
         .char_literal, .string_literal, .raw_string_literal, .raw_asm_block => true,
@@ -165,21 +193,25 @@ inline fn isLiteralTag(_: *const Parser, tag: Token.Tag) bool {
         else => false,
     };
 }
+/// Determine whether `expr_id` stores an integer literal (used during numeric parsing).
 inline fn exprIsIntegerLiteral(self: *Parser, expr_id: cst.ExprId) bool {
     const kind = self.cst_u.exprs.index.kinds.items[expr_id.toRaw()];
     if (kind != .Literal) return false;
     const lit = self.cst_u.exprs.get(.Literal, expr_id);
     return lit.tag_small == litTag(.integer_literal);
 }
+/// Return true if the lookahead token can terminate a list or expression.
 inline fn nextIsTerminator(self: *const Parser) bool {
     return switch (self.nxt.tag) {
         .comma, .rsquare, .rparen, .rcurly, .eos, .eof => true,
         else => false,
     };
 }
+/// Add a CST expression node of `kind` and return its ID.
 inline fn addExpr(self: *Parser, comptime kind: cst.ExprKind, value: cst.RowT(kind)) cst.ExprId {
     return self.cst_u.exprs.add(kind, value);
 }
+/// Add a CST pattern node of `kind` and return its ID.
 inline fn addPat(self: *Parser, comptime kind: cst.PatternKind, value: cst.PatRowT(kind)) cst.PatternId {
     return self.cst_u.pats.add(kind, value);
 }
@@ -187,12 +219,14 @@ inline fn addPat(self: *Parser, comptime kind: cst.PatternKind, value: cst.PatRo
 // ===============================================================
 // Pratt tables / token helpers
 // ===============================================================
+/// Return true when token `t` represents a literal in the Pratt table.
 fn isLiteral(_: *const Parser, t: Token.Tag) bool {
     return switch (t) {
         .char_literal, .string_literal, .raw_string_literal, .integer_literal, .float_literal, .imaginary_literal, .keyword_true, .keyword_false => true,
         else => false,
     };
 }
+/// Convert a token literal tag into the CST literal kind.
 fn litTag(t: Token.Tag) cst.LiteralKind {
     return switch (t) {
         .integer_literal => .int,
@@ -207,12 +241,14 @@ fn litTag(t: Token.Tag) cst.LiteralKind {
     };
 }
 
+/// Return the binding power (precedence) for prefix expressions with token `t`.
 fn prefixBp(_: *const Parser, t: Token.Tag) u8 {
     return switch (t) {
         .plus, .minus, .b_and, .bang, .dotdot, .dotdoteq => 90,
         else => 0,
     };
 }
+/// Return the binding power of postfix operators or `null` when none apply.
 fn postfixBp(_: *const Parser, t: Token.Tag) ?u8 {
     return switch (t) {
         .lparen,
@@ -230,6 +266,7 @@ fn postfixBp(_: *const Parser, t: Token.Tag) ?u8 {
         else => null,
     };
 }
+/// Return the left/right binding powers for infix token `tag`, enabling Pratt parsing.
 inline fn infixBp(_: *const Parser, tag: Token.Tag) ?struct { u8, u8 } {
     return switch (tag) {
         .star, .slash, .percent, .star_pipe, .star_percent => .{ 80, 81 },
@@ -269,6 +306,7 @@ inline fn infixBp(_: *const Parser, tag: Token.Tag) ?struct { u8, u8 } {
     };
 }
 
+/// Return true if `tag` can begin a type expression (generic, builtin, pointer, etc.).
 fn isTypeStart(_: *const Parser, tag: Token.Tag) bool {
     return switch (tag) {
         .identifier,
@@ -294,6 +332,7 @@ fn isTypeStart(_: *const Parser, tag: Token.Tag) bool {
     };
 }
 
+/// Map a punctuator token `t` into the corresponding CST prefix operator.
 fn toPrefixOp(_: *const Parser, t: Token.Tag) cst.PrefixOp {
     return switch (t) {
         .plus => .plus,
@@ -305,6 +344,7 @@ fn toPrefixOp(_: *const Parser, t: Token.Tag) cst.PrefixOp {
         else => unreachable,
     };
 }
+/// Map token `tag` into the corresponding CST infix operator enum.
 inline fn toInfixOp(_: *const Parser, tag: Token.Tag) cst.InfixOp {
     return switch (tag) {
         .plus => .add,
@@ -358,6 +398,7 @@ inline fn toInfixOp(_: *const Parser, tag: Token.Tag) cst.InfixOp {
     };
 }
 
+/// Return true when `t` terminates an expression or declaration.
 fn isTerminator(_: *const Parser, t: Token.Tag) bool {
     return switch (t) {
         .comma, .rsquare, .rparen, .rcurly, .eos, .eof => true,
@@ -365,10 +406,12 @@ fn isTerminator(_: *const Parser, t: Token.Tag) bool {
     };
 }
 
+/// Convenience helper to fetch the row data of `id` when its kind is `kind`.
 inline fn exprGet(self: *Parser, comptime kind: cst.ExprKind, id: cst.ExprId) cst.RowT(kind) {
     return self.cst_u.exprs.get(kind, id);
 }
 
+/// Determine whether expression `id` resembles a constructor head (ident/field chain).
 fn looksLikeCtorHead(self: *Parser, id: cst.ExprId) bool {
     const kind = self.cst_u.exprs.index.kinds.items[id.toRaw()];
     return switch (kind) {
@@ -388,6 +431,7 @@ fn looksLikeCtorHead(self: *Parser, id: cst.ExprId) bool {
 //=================================================================
 // Parsing
 //=================================================================
+/// Fast-forward to the next occurrence of `tag`, used for error recovery.
 fn sync(self: *Parser, comptime tag: Token.Tag) void {
     while (self.cur.tag != tag and self.cur.tag != .eof) {
         self.advance();
@@ -395,6 +439,8 @@ fn sync(self: *Parser, comptime tag: Token.Tag) void {
     if (self.cur.tag == tag) self.advance();
 }
 
+/// Parse top-level declarations until end-of-stream, populating the CST.
+/// Parse top-level declarations until EOF, recording package metadata.
 fn parseProgram(self: *Parser) !void {
     var decls: List(cst.DeclId) = .empty;
     defer decls.deinit(self.gpa);
@@ -427,6 +473,7 @@ fn parseProgram(self: *Parser) !void {
     self.cst_u.program.top_decls = range;
 }
 
+/// Parse a declaration (function, const, import, etc.) and return its CST id.
 fn parseDecl(self: *Parser) anyerror!cst.DeclId {
     const loc = self.toLocId(self.cur.loc);
     const lhs_or_rhs = try self.parseExpr(0, .expr);
@@ -536,6 +583,7 @@ fn parseDecl(self: *Parser) anyerror!cst.DeclId {
     return self.cst_u.exprs.addDeclRow(row);
 }
 
+/// Attempt to extract a method path from `lhs_expr`, returning optional range.
 fn tryMethodPath(self: *Parser, lhs_expr: cst.ExprId) !cst.OptRangeMethodPathSeg {
     var segs: List(cst.Rows.MethodPathSeg) = .empty;
     defer segs.deinit(self.gpa);
@@ -556,6 +604,7 @@ fn tryMethodPath(self: *Parser, lhs_expr: cst.ExprId) !cst.OptRangeMethodPathSeg
     return cst.OptRangeMethodPathSeg.some(range);
 }
 
+/// Collect the chain of identifiers composing `expr` for method resolution.
 fn collectMethodPathSegments(
     self: *Parser,
     expr: cst.ExprId,
@@ -579,6 +628,7 @@ fn collectMethodPathSegments(
     };
 }
 
+/// Parse prefix expressions (nud) driven by Pratt parsing rules.
 fn nud(self: *Parser, tag: Token.Tag, comptime mode: ParseMode) anyerror!cst.ExprId {
     // -------- prefix operators --------
     switch (tag) {
@@ -751,6 +801,7 @@ fn nud(self: *Parser, tag: Token.Tag, comptime mode: ParseMode) anyerror!cst.Exp
     };
 }
 
+/// Parse an expression using Pratt parsing with binding power `min_bp` and mode `mode`.
 fn parseExpr(self: *Parser, min_bp: u8, comptime mode: ParseMode) anyerror!cst.ExprId {
     var left = try self.nud(self.cur.tag, mode);
 
@@ -837,6 +888,7 @@ fn parseExpr(self: *Parser, min_bp: u8, comptime mode: ParseMode) anyerror!cst.E
 //=================================================================
 // Common element parsers
 //=================================================================
+/// Parse a struct literal without a preceding type head (i.e. anonymous literal).
 fn parseStructLiteral(self: *Parser, lcurly_loc: Token.Loc) !cst.ExprId {
     const start_loc = lcurly_loc;
 
@@ -879,6 +931,7 @@ fn parseStructLiteral(self: *Parser, lcurly_loc: Token.Loc) !cst.ExprId {
     return self.addExpr(.StructLit, .{ .fields = fields_range, .ty = cst.OptExprId.none(), .trailing_comma = trailing, .loc = loc_id });
 }
 
+/// Parse a struct literal that follows a type head (`T { ... }`).
 fn parseStructLiteralWithHead(self: *Parser, head: cst.ExprId, lcurly_loc: Token.Loc) !cst.ExprId {
     // Current token is '{' (already consumed by caller switch advance)
     const start_loc = lcurly_loc;
@@ -922,6 +975,7 @@ fn parseStructLiteralWithHead(self: *Parser, head: cst.ExprId, lcurly_loc: Token
     return self.addExpr(.StructLit, .{ .fields = fields_range, .ty = cst.OptExprId.some(head), .trailing_comma = trailing, .loc = loc_id });
 }
 
+/// Parse an index access expression using `collection` as the base.
 fn parseIndex(self: *Parser, collection: cst.ExprId) anyerror!cst.ExprId {
     // '[' was already consumed.
     const loc = self.toLocId(self.cur.loc);
@@ -930,6 +984,7 @@ fn parseIndex(self: *Parser, collection: cst.ExprId) anyerror!cst.ExprId {
     return self.addExpr(.IndexAccess, .{ .collection = collection, .index = index, .loc = loc });
 }
 
+/// Parse a field access or method call candidate on `parent`.
 fn parseField(self: *Parser, parent: cst.ExprId) !cst.ExprId {
     // '.' was already consumed.
     const tok = self.cur;
@@ -955,6 +1010,7 @@ fn parseField(self: *Parser, parent: cst.ExprId) !cst.ExprId {
 
 // Parse a comma-separated list of expressions until `end_tag`,
 // then convert to a RangeOf(ExprId) using the expr_pool.
+/// Parse comma-separated expressions until `end_tag`, returning range + trailing flag.
 fn parseCommaExprListUntil(self: *Parser, comptime end_tag: Token.Tag) anyerror!struct { range: cst.RangeOf(cst.ExprId), trailing: bool } {
     var items: List(cst.ExprId) = .empty;
     defer items.deinit(self.gpa);
@@ -979,6 +1035,7 @@ fn parseCommaExprListUntil(self: *Parser, comptime end_tag: Token.Tag) anyerror!
 }
 
 // '(' was already consumed. This parses args and emits the Call row.
+/// Parse a call expression with previously parsed `callee`.
 fn parseCall(self: *Parser, callee: cst.ExprId) !cst.ExprId {
     const loc = self.toLocId(self.cur.loc);
     const args = try self.parseCommaExprListUntil(.rparen);
@@ -989,16 +1046,19 @@ fn parseCall(self: *Parser, callee: cst.ExprId) !cst.ExprId {
 // Statements / blocks
 // ================================
 
+/// Parse dereference (`*expr` or `expr.*`) syntax.
 inline fn parseDeref(self: *Parser, expr: cst.ExprId) !cst.ExprId {
     const loc = self.toLocId(self.cur.loc); // '. *' already consumed
     return self.addExpr(.Deref, .{ .expr = expr, .loc = loc });
 }
 
+/// Parse optional unwrap (`expr?`) expressions.
 inline fn parseOptionalUnwrap(self: *Parser, expr: cst.ExprId) !cst.ExprId {
     const loc = self.toLocId(self.cur.loc); // '?' already consumed
     return self.addExpr(.OptionalUnwrap, .{ .expr = expr, .loc = loc });
 }
 
+/// Parse postfix operations that follow a dot (field/method access).
 inline fn parsePostfixAfterDot(self: *Parser, left: cst.ExprId) anyerror!cst.ExprId {
     return switch (self.cur.tag) {
         .keyword_await => try self.parseAwait(left),
@@ -1007,6 +1067,7 @@ inline fn parsePostfixAfterDot(self: *Parser, left: cst.ExprId) anyerror!cst.Exp
     };
 }
 
+/// Handle casts written as `(type) expr`.
 fn parseCastParen(self: *Parser, expr: cst.ExprId) !cst.ExprId {
     const loc = self.toLocId(self.cur.loc); // '.(' already consumed
     const ty = try self.parseExpr(0, .type);
@@ -1014,6 +1075,7 @@ fn parseCastParen(self: *Parser, expr: cst.ExprId) !cst.ExprId {
     return self.addExpr(.Cast, .{ .expr = expr, .ty = ty, .kind = .normal, .loc = loc });
 }
 
+/// Parse signed/unsigned cast sigils (using `&`/`!`).
 fn parseCastSigil(self: *Parser, expr: cst.ExprId) anyerror!cst.ExprId {
     const loc = self.toLocId(self.cur.loc);
     const kind: cst.CastKind = switch (self.cur.tag) {
@@ -1028,12 +1090,14 @@ fn parseCastSigil(self: *Parser, expr: cst.ExprId) anyerror!cst.ExprId {
     return self.addExpr(.Cast, .{ .expr = expr, .ty = ty, .kind = kind, .loc = loc });
 }
 
+/// Parse an `await` expression operating on `expr`.
 inline fn parseAwait(self: *Parser, expr: cst.ExprId) !cst.ExprId {
     const loc = self.toLocId(self.cur.loc);
     try self.expect(.keyword_await);
     return self.addExpr(.Await, .{ .expr = expr, .loc = loc });
 }
 
+/// Parse a `return` expression (with optional value).
 inline fn parseReturn(self: *Parser) !cst.ExprId {
     const tok = self.cur;
     const loc = self.toLocId(tok.loc);
@@ -1049,6 +1113,7 @@ inline fn parseReturn(self: *Parser) !cst.ExprId {
 }
 
 // Make block emit a Block expr directly.
+/// Parse a block expression `{ ... }`, building a `Block` node.
 fn parseBlock(self: *Parser) !cst.ExprId {
     var decl_ids: List(cst.DeclId) = .empty;
     defer decl_ids.deinit(self.gpa);
@@ -1067,10 +1132,12 @@ fn parseBlock(self: *Parser) !cst.ExprId {
     return self.addExpr(.Block, .{ .items = range, .loc = self.toLocId(brace_loc.merge(close_loc)) });
 }
 
+/// Parse an expression that may either be a block or inline expression.
 fn parseBlockExpr(self: *Parser) !cst.ExprId {
     return self.parseBlock();
 }
 
+/// Parse either an expression or a block expression, whichever matches.
 inline fn parseExprOrBlock(self: *Parser) !cst.ExprId {
     if (self.cur.tag == .lcurly) {
         return self.parseBlock();
@@ -1078,6 +1145,7 @@ inline fn parseExprOrBlock(self: *Parser) !cst.ExprId {
 }
 
 // -------------------- Closures --------------------
+/// Parse a closure literal (proc or fn) starting with `{ }`.
 fn parseClosure(self: *Parser) !cst.ExprId {
     const loc = self.toLocId(self.cur.loc);
     try self.expect(.b_or);
@@ -1158,6 +1226,7 @@ fn parseClosure(self: *Parser) !cst.ExprId {
 }
 
 // -------------------- catch postfix --------------------
+/// Parse a catch-expression `expr catch |name| handler`.
 fn parseCatchExpr(self: *Parser, expr: cst.ExprId) !cst.ExprId {
     const loc = self.toLocId(self.cur.loc); // 'catch' was consumed by caller
     var b_name: cst.OptStrId = .none();
@@ -1184,6 +1253,7 @@ fn parseCatchExpr(self: *Parser, expr: cst.ExprId) !cst.ExprId {
     });
 }
 
+/// Parse an `import` expression (path literal + optional config).
 fn parseImport(self: *Parser) !cst.ExprId {
     const loc = self.toLocId(self.cur.loc);
     self.advance(); // 'import'
@@ -1293,6 +1363,7 @@ fn parseImport(self: *Parser) !cst.ExprId {
     return self.addExpr(.Import, .{ .path = path, .loc = loc });
 }
 
+/// Entry point invoked by worker threads to parse one CST unit.
 pub fn run(
     parser: *Parser,
 ) !void {
@@ -1300,6 +1371,7 @@ pub fn run(
 }
 
 // -------------------- if / while / for --------------------
+/// Parse an `if` expression, including condition, then-branch, and optional else/elif.
 fn parseIfExpr(self: *Parser) !cst.ExprId {
     const if_loc = self.toLocId(self.cur.loc);
     self.advance(); // "if"
@@ -1319,6 +1391,7 @@ fn parseIfExpr(self: *Parser) !cst.ExprId {
     });
 }
 
+/// Parse a `while` loop, optionally labeled with `label`.
 fn parseWhileExprWithLabel(self: *Parser, label: cst.OptStrId) !cst.ExprId {
     const w_loc = self.toLocId(self.cur.loc);
     self.advance(); // "while"
@@ -1356,10 +1429,12 @@ fn parseWhileExprWithLabel(self: *Parser, label: cst.OptStrId) !cst.ExprId {
     });
 }
 
+/// Parse a `while` loop expression, possibly with labels or pattern subjects.
 fn parseWhileExpr(self: *Parser) !cst.ExprId {
     return self.parseWhileExprWithLabel(.none());
 }
 
+/// Parse a `match` expression with multiple arms.
 fn parseMatchExpr(self: *Parser) !cst.ExprId {
     const start_loc_tok = self.cur; // "match"
     self.advance();
@@ -1412,6 +1487,7 @@ fn parseMatchExpr(self: *Parser) !cst.ExprId {
     return match_id;
 }
 
+/// Parse a `for` loop (pattern+iterable) optionally labeled.
 fn parseForExprWithLabel(self: *Parser, label: cst.OptStrId) !cst.ExprId {
     const f_loc = self.toLocId(self.cur.loc);
     self.advance(); // "for"
@@ -1429,11 +1505,13 @@ fn parseForExprWithLabel(self: *Parser, label: cst.OptStrId) !cst.ExprId {
     });
 }
 
+/// Parse a `for` loop, including pattern binding and iterable.
 fn parseForExpr(self: *Parser) !cst.ExprId {
     return self.parseForExprWithLabel(.none());
 }
 
 // label: for/while ...
+/// Parse a loop that may carry a label `lbl`.
 fn parseLabeledLoop(self: *Parser, lbl: cst.OptStrId) !cst.ExprId {
     return switch (self.cur.tag) {
         .keyword_for => self.parseForExprWithLabel(lbl),
@@ -1456,10 +1534,12 @@ fn parseLabeledLoop(self: *Parser, lbl: cst.OptStrId) !cst.ExprId {
 // =============================
 // Patterns
 // =============================
+/// Parse a pattern literal (used in match/let destructuring).
 fn parsePattern(self: *Parser) !cst.PatternId {
     return try self.parsePatOr();
 }
 
+/// Parse pattern disjunctions separated by `|`.
 fn parsePatOr(self: *Parser) !cst.PatternId {
     const loc = self.toLocId(self.cur.loc);
     const first = try self.parsePatRange();
@@ -1477,6 +1557,7 @@ fn parsePatOr(self: *Parser) !cst.PatternId {
     return self.addPat(.Or, .{ .alts = alts_range, .loc = loc });
 }
 
+/// Determine if token `tag` can start a pattern literal.
 fn canStartPattern(self: *Parser, tag: Token.Tag) bool {
     if (self.isLiteralTag(tag)) {
         return true;
@@ -1487,6 +1568,7 @@ fn canStartPattern(self: *Parser, tag: Token.Tag) bool {
     };
 }
 
+/// Parse a numeric range pattern `start..end`.
 fn parsePatRange(self: *Parser) !cst.PatternId {
     // prefix/open: ..X or ..=X
     if (self.cur.tag == .dotdot or self.cur.tag == .dotdoteq) {
@@ -1529,7 +1611,7 @@ fn parsePatRange(self: *Parser) !cst.PatternId {
     return left;
 }
 
-// Convert a PatternId into a const-capable expr (Ident/Field/Literal).
+/// Convert literal pattern `pat` into a constant expression for analysis.
 fn patternToConstExpr(self: *Parser, pat: cst.PatternId) !cst.ExprId {
     const kind = self.cst_u.pats.index.kinds.items[pat.toRaw()];
     return switch (kind) {
@@ -1541,6 +1623,10 @@ fn patternToConstExpr(self: *Parser, pat: cst.PatternId) !cst.ExprId {
         .Binding => blk: {
             const row = self.cst_u.pats.get(.Binding, pat);
             break :blk self.addExpr(.Ident, .{ .name = row.name, .loc = row.loc });
+        },
+        .Parenthesized => blk: {
+            const row = self.cst_u.pats.get(.Parenthesized, pat);
+            break :blk try self.patternToConstExpr(row.pattern);
         },
         .Wildcard => {
             self.errorNote(self.cur.loc, .underscore_not_const_in_range_pattern, .{}, null, .use_literal_constant_or_binding);
@@ -1555,7 +1641,7 @@ fn patternToConstExpr(self: *Parser, pat: cst.PatternId) !cst.ExprId {
     };
 }
 
-// Extract a binding name for '@' patterns. Returns StrId.
+/// Extract the binding name associated with a `@` pattern, if any.
 fn patternToBindingName(self: *Parser, pat: cst.PatternId) !cst.StrId {
     const kind = self.cst_u.pats.index.kinds.items[pat.toRaw()];
     return switch (kind) {
@@ -1572,6 +1658,10 @@ fn patternToBindingName(self: *Parser, pat: cst.PatternId) !cst.StrId {
             self.errorNote(self.cur.loc, .invalid_binding_name_in_at_pattern, .{}, null, .use_single_identifier);
             return error.InvalidPatternForBinding;
         },
+        .Parenthesized => blk: {
+            const row = self.cst_u.pats.get(.Parenthesized, pat);
+            break :blk try self.patternToBindingName(row.pattern);
+        },
 
         else => {
             self.errorNote(self.cur.loc, .invalid_binding_name_in_at_pattern, .{}, null, .use_single_identifier);
@@ -1580,6 +1670,7 @@ fn patternToBindingName(self: *Parser, pat: cst.PatternId) !cst.StrId {
     };
 }
 
+/// Parse an `@binder pattern` form.
 fn parsePatAt(self: *Parser) !cst.PatternId {
     const p = try self.parsePatPrimary();
 
@@ -1593,6 +1684,7 @@ fn parsePatAt(self: *Parser) !cst.PatternId {
     return p;
 }
 
+/// Parse primary pattern forms (literal, identifier, tuple, struct, etc.).
 fn parsePatPrimary(self: *Parser) !cst.PatternId {
     switch (self.cur.tag) {
         .char_literal, .string_literal, .raw_string_literal, .integer_literal, .float_literal, .keyword_true, .keyword_false => {
@@ -1623,6 +1715,7 @@ fn parsePatPrimary(self: *Parser) !cst.PatternId {
     }
 }
 
+/// Parse tuple-like pattern `(p1, p2, ...)`.
 fn parseTuplePattern(self: *Parser) anyerror!cst.PatternId {
     const loc_tok = self.cur.loc;
     try self.expect(.lparen);
@@ -1645,13 +1738,14 @@ fn parseTuplePattern(self: *Parser) anyerror!cst.PatternId {
     try self.expect(.rparen);
 
     if (elems.items.len == 1 and !trailing_comma) {
-        return elems.items[0];
+        return self.addPat(.Parenthesized, .{ .pattern = elems.items[0], .loc = self.toLocId(loc_tok) });
     }
 
     const range = self.cst_u.pats.pat_pool.pushMany(self.gpa, elems.items);
     return self.addPat(.Tuple, .{ .elems = range, .loc = self.toLocId(loc_tok) });
 }
 
+/// Parse path-like patterns referencing constructors or fields.
 fn parsePathishPattern(self: *Parser) anyerror!cst.PatternId {
     // collect dotted path: Foo.Bar.Baz
     var seg_ids: List(cst.PathSegId) = .empty;
@@ -1776,6 +1870,7 @@ fn parsePathishPattern(self: *Parser) anyerror!cst.PatternId {
 //==============================================================
 // Slice pattern  […, .. rest]
 //==============================================================
+/// Parse slice-style patterns (like `[head, ...rest]`).
 fn parseSlicePattern(self: *Parser) anyerror!cst.PatternId {
     try self.expect(.lsquare);
 
@@ -1834,6 +1929,7 @@ fn parseSlicePattern(self: *Parser) anyerror!cst.PatternId {
 //==============================================================
 // Const-expr helper for ranges
 //==============================================================
+/// Parse the expression used for the end of a range pattern.
 fn parseConstExprForRangeEnd(self: *Parser) !cst.ExprId {
     return self.parseExpr(0, .expr_no_struct);
 }
@@ -1841,6 +1937,7 @@ fn parseConstExprForRangeEnd(self: *Parser) !cst.ExprId {
 //==============================================================
 // Path → const expr  (for temporary Name lists)
 //==============================================================
+/// Convert a path expression into the corresponding const expression.
 fn pathToConstExpr(self: *Parser, segs_range: cst.RangeOf(cst.PathSegId)) !cst.ExprId {
     const ids = self.cst_u.pats.seg_pool.slice(segs_range); // []const PathSegId
     std.debug.assert(ids.len >= 1);
@@ -1869,6 +1966,7 @@ fn pathToConstExpr(self: *Parser, segs_range: cst.RangeOf(cst.PathSegId)) !cst.E
 //==============================================================
 // Types: struct fields & aggregates
 //==============================================================
+/// Parse a struct literal or type field definition.
 fn parseStructField(self: *Parser) !cst.StructFieldId {
     const start_loc = self.toLocId(self.cur.loc);
 
@@ -1895,6 +1993,7 @@ fn parseStructField(self: *Parser) !cst.StructFieldId {
     });
 }
 
+/// Parse a comma-separated list of struct-style fields until `end_tag`.
 fn parseStructFieldList(self: *Parser, end_tag: Token.Tag) !struct { range: cst.RangeOf(cst.StructFieldId), trailing: bool } {
     var ids: List(cst.StructFieldId) = .empty;
     defer ids.deinit(self.gpa);
@@ -1917,6 +2016,7 @@ fn parseStructFieldList(self: *Parser, end_tag: Token.Tag) !struct { range: cst.
     };
 }
 
+/// Parse struct/union/variant type declarations (`struct/union` keywords).
 fn parseStructLikeType(self: *Parser, comptime tag: Token.Tag, comptime is_extern: bool) !cst.ExprId {
     const loc = self.toLocId(self.cur.loc);
     self.advance(); // "struct" / "union"
@@ -1933,6 +2033,7 @@ fn parseStructLikeType(self: *Parser, comptime tag: Token.Tag, comptime is_exter
 //==============================================================
 // Types: pointer / optional / complex / simd / tensor
 //==============================================================
+/// Parse a pointer (`*T`) type expression.
 fn parsePointerType(self: *Parser) !cst.ExprId {
     const tok = self.cur;
     self.advance(); // "*"
@@ -1951,6 +2052,7 @@ fn parsePointerType(self: *Parser) !cst.ExprId {
     });
 }
 
+/// Parse an optional type (`?T`) expression.
 fn parseOptionalType(self: *Parser) !cst.ExprId {
     const tok = self.cur;
     self.advance(); // "?"
@@ -1958,6 +2060,7 @@ fn parseOptionalType(self: *Parser) !cst.ExprId {
     return self.addExpr(.OptionalType, .{ .elem = elem, .loc = self.toLocId(tok.loc) });
 }
 
+/// Parse a complex number type expression.
 fn parseComplexType(self: *Parser) !cst.ExprId {
     const start = try self.beginKeywordParen(.keyword_complex);
     const elem = try self.parseExpr(0, .type);
@@ -1965,6 +2068,7 @@ fn parseComplexType(self: *Parser) !cst.ExprId {
     return self.addExpr(.ComplexType, .{ .elem = elem, .loc = self.toLocId(start) });
 }
 
+/// Parse a SIMD type expression with lane count.
 fn parseSimdType(self: *Parser) !cst.ExprId {
     const start = try self.beginKeywordParen(.keyword_simd);
     const elem = try self.parseExpr(0, .type);
@@ -1974,6 +2078,7 @@ fn parseSimdType(self: *Parser) !cst.ExprId {
     return self.addExpr(.SimdType, .{ .elem = elem, .lanes = lanes, .loc = self.toLocId(start) });
 }
 
+/// Parse a tensor type expression specifying rank/shape.
 fn parseTensorType(self: *Parser) !cst.ExprId {
     const start = try self.beginKeywordParen(.keyword_tensor);
 
@@ -2022,6 +2127,7 @@ fn parseTensorType(self: *Parser) !cst.ExprId {
     return self.addExpr(.TensorType, .{ .elem = elem, .shape = shape_range, .loc = self.toLocId(start) });
 }
 
+/// Parse an optional initializer expression following `=` or type annotations.
 inline fn parseOptionalInitializer(self: *Parser, comptime mode: ParseMode) !cst.OptExprId {
     if (self.cur.tag == .equal) {
         self.advance();
@@ -2031,6 +2137,7 @@ inline fn parseOptionalInitializer(self: *Parser, comptime mode: ParseMode) !cst
 }
 
 // Parse @[ ... ] into Attribute rows; return OptRangeAttr.
+/// Parse optional attribute annotations attached to declarations.
 fn parseOptionalAttributesRange(self: *Parser) !cst.OptRangeAttr {
     if (self.cur.tag != .at) return .none();
 
@@ -2083,6 +2190,7 @@ fn parseOptionalAttributesRange(self: *Parser) !cst.OptRangeAttr {
 // Array-like / Map (type or literal) — DOD
 //=================================================================
 
+/// Parse either a map literal or a map type beginning with `key_expr`.
 fn parseMapTypeOrLiteral(self: *Parser, key_expr: cst.ExprId, start_loc: cst.LocId) !cst.ExprId {
     // caller consumed ":" already
     const value_expr = try self.parseExpr(0, .type);
@@ -2145,6 +2253,7 @@ fn parseMapTypeOrLiteral(self: *Parser, key_expr: cst.ExprId, start_loc: cst.Loc
     };
 }
 
+/// Parse array, dynarray, or slice expressions/types depending on `mode`.
 fn parseArrayLike(self: *Parser, comptime mode: ParseMode) !cst.ExprId {
     const lbrack_tok = self.cur;
     const start_loc = self.toLocId(lbrack_tok.loc);
@@ -2246,6 +2355,7 @@ fn parseArrayLike(self: *Parser, comptime mode: ParseMode) !cst.ExprId {
     };
 }
 
+/// Parse a bracketed list of attributes and return their range.
 fn parseAttributesList(self: *Parser) !cst.RangeOf(cst.AttributeId) {
     try self.expect(.at);
     try self.expect(.lsquare);
@@ -2316,6 +2426,7 @@ fn parseAttributesList(self: *Parser) !cst.RangeOf(cst.AttributeId) {
         self.cst_u.exprs.attr_pool.pushMany(self.gpa, ids.items);
 }
 
+/// Parse optional attributes (returning none when none present).
 fn parseOptionalAttributes(self: *Parser) !cst.OptRangeAttr {
     if (self.cur.tag == .at) {
         const r = try self.parseAttributesList();
@@ -2324,6 +2435,7 @@ fn parseOptionalAttributes(self: *Parser) !cst.OptRangeAttr {
     return .none();
 }
 
+/// Parse an annotated expression (`@annot(...)` or similar metadata).
 fn parseAnnotated(self: *Parser, comptime mode: ParseMode) !cst.ExprId {
     const r = try self.parseAttributesList();
     while (self.cur.tag == .eos) self.advance();
@@ -2345,6 +2457,7 @@ fn parseAnnotated(self: *Parser, comptime mode: ParseMode) !cst.ExprId {
     return id;
 }
 
+/// Parse a parenthesized expression, handling type tuples or grouping.
 fn parseParenExpr(self: *Parser) !cst.ExprId {
     const lparen_tok = self.cur;
     const loc = self.toLocId(lparen_tok.loc);
@@ -2386,6 +2499,7 @@ fn parseParenExpr(self: *Parser) !cst.ExprId {
 // Functions (DOD)
 //=================================================================
 
+/// Parse optional return type annotation after function parameters.
 inline fn parseOptionalReturnType(self: *Parser) !cst.OptExprId {
     return switch (self.cur.tag) {
         .lcurly, .eos => .none(),
@@ -2396,6 +2510,8 @@ inline fn parseOptionalReturnType(self: *Parser) !cst.OptExprId {
     };
 }
 
+/// Parse an `extern` declaration attached to a function or variable.
+/// Parse an `extern` declaration specifier.
 fn parseExternDecl(self: *Parser) !cst.ExprId {
     self.advance(); // "extern"
     return switch (self.cur.tag) {
@@ -2434,6 +2550,7 @@ fn parseExternDecl(self: *Parser) !cst.ExprId {
     };
 }
 
+/// Parse a function or procedure declaration (optionally extern/async) identified by `tag`.
 fn parseFunctionLike(self: *Parser, tag: Token.Tag, comptime is_extern: bool, is_async: bool) !cst.ExprId {
     const start_tok = self.cur;
     const start_loc = self.toLocId(start_tok.loc);
@@ -2565,6 +2682,7 @@ fn parseFunctionLike(self: *Parser, tag: Token.Tag, comptime is_extern: bool, is
 // Metaprogramming (DOD)
 //=================================================================
 
+/// Parse a `comptime` block expression.
 fn parseComptime(self: *Parser) !cst.ExprId {
     const loc = self.toLocId(self.cur.loc);
     self.advance(); // "comptime"
@@ -2577,6 +2695,7 @@ fn parseComptime(self: *Parser) !cst.ExprId {
     }
 }
 
+/// Parse a `code` block literal interpreted as raw code to embed.
 fn parseCodeBlock(self: *Parser) !cst.ExprId {
     const loc = self.toLocId(self.cur.loc);
     self.advance(); // "code"
@@ -2584,6 +2703,7 @@ fn parseCodeBlock(self: *Parser) !cst.ExprId {
     return self.addExpr(.Code, .{ .block = blk, .loc = loc });
 }
 
+/// Parse an `insert` directive for macro-style code injection.
 fn parseInsert(self: *Parser) !cst.ExprId {
     const loc = self.toLocId(self.cur.loc);
     self.advance(); // "insert"
@@ -2591,6 +2711,7 @@ fn parseInsert(self: *Parser) !cst.ExprId {
     return self.addExpr(.Insert, .{ .expr = e, .loc = loc });
 }
 
+/// Parse an MLIR block literal embedded inside SR source.
 fn parseMlir(self: *Parser) !cst.ExprId {
     self.advance(); // "mlir"
 
@@ -2740,10 +2861,12 @@ fn parseMlir(self: *Parser) !cst.ExprId {
     });
 }
 
+/// Return true if `ch` is valid as the first character of an identifier.
 fn isIdentStart(ch: u8) bool {
     return ch == '_' or std.ascii.isAlphabetic(ch);
 }
 
+/// Return true if `ch` can appear after the first character of an identifier.
 fn isIdentContinue(ch: u8) bool {
     return ch == '_' or std.ascii.isAlphanumeric(ch);
 }
@@ -2752,6 +2875,7 @@ fn isIdentContinue(ch: u8) bool {
 // Enums / Variants (DOD)
 //=================================================================
 
+/// Parse an `enum` type declaration, possibly marked `extern`.
 inline fn parseEnumType(self: *Parser, comptime is_extern: bool) !cst.ExprId {
     const start_loc = self.toLocId(self.cur.loc);
     self.advance(); // "enum"
@@ -2812,14 +2936,17 @@ inline fn parseEnumType(self: *Parser, comptime is_extern: bool) !cst.ExprId {
     });
 }
 
+/// Parse an `error` type declaration.
 inline fn parseErrorType(self: *Parser) !cst.ExprId {
     return self.parseVariantLikeType(true);
 }
 
+/// Parse a `variant` type declaration.
 inline fn parseVariantType(self: *Parser) !cst.ExprId {
     return self.parseVariantLikeType(false);
 }
 
+/// Parse a variant-like or error type depending on `is_error`.
 fn parseVariantLikeType(self: *Parser, comptime is_error: bool) !cst.ExprId {
     const start_loc = self.toLocId(self.cur.loc);
     self.advance(); // "variant"

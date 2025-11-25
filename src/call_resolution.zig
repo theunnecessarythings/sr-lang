@@ -2,19 +2,27 @@ const std = @import("std");
 const ast = @import("ast.zig");
 const compile = @import("compile.zig");
 
+/// Utility module that resolves function declarations for call expressions.
 pub const CallResolution = @This();
 
+/// Captures the AST and declaration id that match a call target.
 pub const FunctionDeclContext = struct {
+    /// AST container that owns the resolved declaration.
     ast: *ast.Ast,
+    /// Identifier of the declaration that matches the call.
     decl_id: ast.DeclId,
 };
 
+/// Resolve the function declaration corresponding to `callee_expr` and `callee_name`.
+/// `caller_ast` provides the current AST context while `ctx` supplies imports/packages.
 pub fn findFunctionDeclForCall(
     ctx: *compile.Context,
     caller_ast: *ast.Ast,
     callee_expr: ast.ExprId,
     callee_name: ast.StrId,
 ) ?FunctionDeclContext {
+    // Resolve the function declaration context for the call expression `callee_expr`.
+    // Looks for a top-level declaration or follows a field access via imports.
     if (findTopLevelDeclByName(caller_ast, callee_name)) |decl_id| {
         const decl = caller_ast.exprs.Decl.get(decl_id);
         if (caller_ast.exprs.index.kinds.items[decl.value.toRaw()] != .Import) {
@@ -30,6 +38,7 @@ pub fn findFunctionDeclForCall(
     return findFunctionDeclFromFieldAccess(ctx, caller_ast, fr, callee_name);
 }
 
+/// Locate the declaration id for `name` within AST `a`, preferring exported symbols.
 pub fn findDeclIdByName(a: *ast.Ast, name: ast.StrId) ?ast.DeclId {
     if (a.type_info.getExport(name)) |ex| {
         return ex.decl_id;
@@ -48,6 +57,7 @@ pub fn findDeclIdByName(a: *ast.Ast, name: ast.StrId) ?ast.DeclId {
     return null;
 }
 
+/// Return the identifier name bound by pattern `pid`, if it is a simple binding.
 fn bindingNameOfPattern(ast_unit: *ast.Ast, pid: ast.PatternId) ?ast.StrId {
     const pkind = ast_unit.pats.index.kinds.items[pid.toRaw()];
     return switch (pkind) {
@@ -56,11 +66,13 @@ fn bindingNameOfPattern(ast_unit: *ast.Ast, pid: ast.PatternId) ?ast.StrId {
     };
 }
 
+/// Find a top-level declaration whose bound pattern contains `name`.
 pub fn findTopLevelDeclByName(a: *ast.Ast, name: ast.StrId) ?ast.DeclId {
     const target = a.exprs.strs.get(name);
     return findTopLevelDeclByNameSlice(a, target);
 }
 
+/// Iterate decls to see if `target` is bound by a declaration pattern.
 fn findTopLevelDeclByNameSlice(a: *ast.Ast, target: []const u8) ?ast.DeclId {
     const decls = a.exprs.decl_pool.slice(a.unit.decls);
     var i: usize = 0;
@@ -73,6 +85,7 @@ fn findTopLevelDeclByNameSlice(a: *ast.Ast, target: []const u8) ?ast.DeclId {
     return null;
 }
 
+/// Recursively check whether pattern `pid` binds the identifier spelled by `target`.
 fn patternContainsNameStr(a: *ast.Ast, pid: ast.PatternId, target: []const u8) bool {
     const pk = a.pats.index.kinds.items[pid.toRaw()];
     return switch (pk) {
@@ -135,12 +148,14 @@ fn patternContainsNameStr(a: *ast.Ast, pid: ast.PatternId, target: []const u8) b
     };
 }
 
+/// Return the declaration id for an import whose alias `name` matches, if any.
 pub fn findTopLevelImportByName(a: *ast.Ast, name: ast.StrId) ?ast.DeclId {
     const did = findTopLevelDeclByName(a, name) orelse return null;
     const d = a.exprs.Decl.get(did);
     return if (a.exprs.index.kinds.items[d.value.toRaw()] == .Import) did else null;
 }
 
+/// Look up a function declaration when the callee is a field access (`A.B()`).
 pub fn findFunctionDeclFromFieldAccess(
     ctx: *compile.Context,
     caller_ast: *ast.Ast,

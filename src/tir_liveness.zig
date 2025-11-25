@@ -4,6 +4,7 @@ const tir = @import("tir.zig");
 const Allocator = std.mem.Allocator;
 const DynBitSet = std.bit_set.DynamicBitSet;
 
+/// Liveness struct definition used by the compiler.
 pub const Liveness = struct {
     // Per-function liveness dump only; not retained beyond dump() call.
     // This struct is a placeholder in case we want to expose results later.
@@ -11,20 +12,25 @@ pub const Liveness = struct {
 
 const U32Set = std.AutoHashMapUnmanaged(u32, void);
 
+/// setHas liveness analysis helper.
 fn setHas(set: *const U32Set, key: u32) bool {
     return set.get(key) != null;
 }
+/// setInsert liveness analysis helper.
 fn setInsert(gpa: Allocator, set: *U32Set, key: u32) !bool {
     if (set.get(key) != null) return false;
     try set.put(gpa, key, {});
     return true;
 }
+/// setRemove liveness analysis helper.
 fn setRemove(set: *U32Set, key: u32) void {
     _ = set.remove(key);
 }
+/// setClearRetainingCapacity liveness analysis helper.
 fn setClearRetainingCapacity(set: *U32Set) void {
     set.clearRetainingCapacity();
 }
+/// setClone liveness analysis helper.
 fn setClone(gpa: Allocator, src: *const U32Set) !U32Set {
     var dst: U32Set = .{};
     if (src.count() == 0) return dst;
@@ -32,38 +38,47 @@ fn setClone(gpa: Allocator, src: *const U32Set) !U32Set {
     while (it.next()) |e| try dst.put(gpa, e.key_ptr.*, {});
     return dst;
 }
+/// setEqual liveness analysis helper.
 fn setEqual(a: *const U32Set, b: *const U32Set) bool {
     if (a.count() != b.count()) return false;
     var it = a.iterator();
     while (it.next()) |e| if (b.get(e.key_ptr.*) == null) return false;
     return true;
 }
+/// setSwap liveness analysis helper.
 fn setSwap(a: *U32Set, b: *U32Set) void {
     std.mem.swap(U32Set, a, b);
 }
 
+/// SuccEdge struct definition used by the compiler.
 const SuccEdge = struct { succ: tir.BlockId, edge: tir.EdgeId };
 
+/// UseCtx struct definition used by the compiler.
 const UseCtx = struct {
     gpa: Allocator,
     t: *tir.TIR,
     set: *U32Set,
 };
 
+/// useAddVal liveness analysis helper.
 fn useAddVal(ctx: *UseCtx, v: tir.ValueId) !void {
     _ = try setInsert(ctx.gpa, ctx.set, v.toRaw());
 }
+/// useAddOptVal liveness analysis helper.
 fn useAddOptVal(ctx: *UseCtx, v: tir.OptValueId) !void {
     if (!v.isNone()) _ = try setInsert(ctx.gpa, ctx.set, v.unwrap().toRaw());
 }
+/// useAddRangeValues liveness analysis helper.
 fn useAddRangeValues(ctx: *UseCtx, r: tir.RangeValue) !void {
     const vals = ctx.t.instrs.value_pool.slice(r);
     for (vals) |v| _ = try setInsert(ctx.gpa, ctx.set, v.toRaw());
 }
+/// useAddRangeValuesFromValList liveness analysis helper.
 fn useAddRangeValuesFromValList(ctx: *UseCtx, r: tir.RangeValue) !void {
     const vals = ctx.t.instrs.val_list_pool.slice(r);
     for (vals) |v| _ = try setInsert(ctx.gpa, ctx.set, v.toRaw());
 }
+/// useAddGepIndices liveness analysis helper.
 fn useAddGepIndices(ctx: *UseCtx, r: tir.RangeGepIndex) !void {
     const idxs = ctx.t.instrs.gep_pool.slice(r);
     for (idxs) |gid| {
@@ -74,6 +89,7 @@ fn useAddGepIndices(ctx: *UseCtx, r: tir.RangeGepIndex) !void {
         }
     }
 }
+/// useAddStructFieldInits liveness analysis helper.
 fn useAddStructFieldInits(ctx: *UseCtx, r: tir.RangeStructFieldInit) !void {
     const fields = ctx.t.instrs.sfi_pool.slice(r);
     for (fields) |fid| {
@@ -82,6 +98,7 @@ fn useAddStructFieldInits(ctx: *UseCtx, r: tir.RangeStructFieldInit) !void {
     }
 }
 
+/// collectInstrUses liveness analysis helper.
 fn collectInstrUses(ctx: *UseCtx, iid: tir.InstrId) !void {
     const k = ctx.t.instrs.index.kinds.items[iid.toRaw()];
     switch (k) {
@@ -235,6 +252,7 @@ fn collectInstrUses(ctx: *UseCtx, iid: tir.InstrId) !void {
     }
 }
 
+/// removeInstrDef liveness analysis helper.
 fn removeInstrDef(t: *tir.TIR, k: tir.OpKind, iid: tir.InstrId, set: *U32Set) void {
     switch (k) {
         inline else => |kind| setRemove(set, t.instrs.get(kind, iid).result.toRaw()),
@@ -245,6 +263,7 @@ fn removeInstrDef(t: *tir.TIR, k: tir.OpKind, iid: tir.InstrId, set: *U32Set) vo
     }
 }
 
+/// dump liveness analysis helper.
 pub fn dump(allocator: Allocator, t: *tir.TIR) !void {
     var out_buf: [4096]u8 = undefined;
     var out = std.fs.File.stdout().writer(&out_buf);
@@ -263,7 +282,9 @@ pub fn dump(allocator: Allocator, t: *tir.TIR) !void {
         var index_to_value = std.ArrayListUnmanaged(u32){};
         defer index_to_value.deinit(allocator);
 
+        // Helper struct that interns values into the liveness index.
         const ensureIndex = struct {
+            /// go liveness analysis helper.
             fn go(gpa: Allocator, map: *std.AutoHashMapUnmanaged(u32, u32), rev: *std.ArrayListUnmanaged(u32), vraw: u32) !u32 {
                 if (map.get(vraw)) |idx| return idx;
                 const idx: u32 = @intCast(rev.items.len);
@@ -574,6 +595,7 @@ pub fn dump(allocator: Allocator, t: *tir.TIR) !void {
     try writer.flush();
 }
 
+/// indexOfBlock liveness analysis helper.
 fn indexOfBlock(blocks: []const tir.BlockId, bid: tir.BlockId) ?usize {
     for (blocks, 0..) |b, i| if (b.toRaw() == bid.toRaw()) return i;
     return null;

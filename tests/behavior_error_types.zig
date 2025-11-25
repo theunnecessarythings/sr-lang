@@ -1,7 +1,6 @@
 const std = @import("std");
-const behavior = @import("behavior.zig"); // Import the behavior.zig file
+const behavior = @import("behavior.zig");
 
-// Use the functions from behavior.zig
 const getSource = behavior.getSource;
 const runCompilerTest = behavior.runCompilerTest;
 
@@ -20,7 +19,7 @@ test "error_handling: basic error type definition" {
 test "error_handling: returning error from procedure" {
     const globals =
         \\MyError :: error { NotFound, PermissionDenied }
-        \\might_fail :: proc() void!MyError {
+        \\might_fail :: proc() MyError!void {
         \\  return MyError.NotFound
         \\}
     ;
@@ -40,7 +39,7 @@ test "error_handling: returning error from procedure" {
 test "error_handling: returning error from function" {
     const globals =
         \\MyError :: error { InvalidInput }
-        \\parse_int :: fn(s: string) i32!MyError {
+        \\parse_int :: fn(s: string) MyError!i32 {
         \\  return MyError.InvalidInput
         \\}
     ;

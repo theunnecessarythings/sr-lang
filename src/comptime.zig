@@ -10,64 +10,106 @@ const ast = @import("ast.zig");
 const interpreter = @import("interpreter.zig");
 const List = std.ArrayList;
 
+/// Handles the callback interface exposed to user-defined comptime evaluations.
 pub const ComptimeApi = struct {
+    /// Untyped context forwarded to each callback.
     context: ?*anyopaque,
+    /// Callback used when the comptime script wants to print text.
     print: *const fn (context: ?*anyopaque, format: [*c]const u8, ...) callconv(.c) void,
+    /// Callback that looks up a type id by name.
     get_type_by_name: *const fn (context: ?*anyopaque, name: [*c]const u8) callconv(.c) u32,
+    /// Callback exposing `type_of(expr)` for debugging helpers.
     type_of: *const fn (context: ?*anyopaque, expr_id: u32) callconv(.c) u32,
 };
 
+/// Represents a reference to a function literal captured for comptime evaluation.
 pub const FunctionValue = struct {
+    /// Expression id pointing at the function literal.
     expr: ast.ExprId,
+    /// AST containing the function definition.
     ast: *ast.Ast,
 };
 
+/// List wrapper used by comptime sequence literals.
 pub const Sequence = struct {
+    /// Values collected inside this sequence.
     values: std.ArrayList(ComptimeValue),
 };
 
+/// A single key/value pair stored inside a comptime map.
 pub const MapEntry = struct {
+    /// Key used to index the map.
     key: ComptimeValue,
+    /// Value stored for the key.
     value: ComptimeValue,
 };
 
+/// Container for the entries inside a comptime map literal.
 pub const MapValue = struct {
+    /// Storage for individual map entries.
     entries: std.ArrayList(MapEntry),
 };
 
+/// Field descriptor used when building comptime struct values.
 pub const StructField = struct {
+    /// Field name stored in the struct.
     name: ast.StrId,
+    /// Computed value assigned to this field.
     value: ComptimeValue,
 };
 
+/// Aggregate representation for comptime struct literals.
 pub const StructValue = struct {
+    /// Fields captured in declaration order.
     fields: std.ArrayList(StructField),
+    /// Optional name of the struct type that owns these fields.
     owner: ?ast.StrId,
 };
 
+/// Captures the bounds of a `range` literal evaluated at comptime.
 pub const RangeValue = struct {
+    /// Inclusive start of the range.
     start: i128,
+    /// Inclusive end of the range.
     end: i128,
+    /// Whether `end` should be treated as inclusive (`..=`) or exclusive (`..`).
     inclusive: bool,
 };
 
+/// The universe of values that may be produced while executing comptime metadata.
 pub const ComptimeValue = union(enum) {
+    /// Represents the absence of a runtime value.
     Void,
+    /// Signed integer literal captured at comptime.
     Int: i128,
+    /// Floating-point literal captured at comptime.
     Float: f64,
+    /// Boolean literal captured at comptime.
     Bool: bool,
+    /// String literal stored as an owned slice.
     String: []const u8,
+    /// Sequence (list) literal made of other `ComptimeValue` instances.
     Sequence: Sequence,
+    /// Struct literal containing named fields.
     Struct: StructValue,
+    /// Map literal collected as entries.
     Map: MapValue,
+    /// Pointer to another `ComptimeValue` (used for aliasing during evaluation).
     Pointer: *ComptimeValue,
+    /// Range literal with start/end/inclusivity metadata.
     Range: RangeValue,
+    /// Embedded type reference.
     Type: types.TypeId,
+    /// MLIR type handle produced by the interpreter.
     MlirType: mlir.Type,
+    /// MLIR attribute handle produced by the interpreter.
     MlirAttribute: mlir.Attribute,
+    /// MLIR module handle produced by the interpreter.
     MlirModule: mlir.Module,
+    /// Function literal captured during evaluation.
     Function: FunctionValue,
 
+    /// Free any allocator-backed contents inside `self`.
     pub fn destroy(self: *ComptimeValue, gpa: std.mem.Allocator) void {
         switch (self.*) {
             .String => |s| {
@@ -106,46 +148,63 @@ pub const ComptimeValue = union(enum) {
     }
 };
 
+/// Holds the type/value pair used when binding comptime arguments.
 pub const BindingValue = struct {
+    /// The type id associated with this binding.
     ty: types.TypeId,
+    /// The copied comptime value provided for the binding.
     value: ComptimeValue,
 
+    /// Allocate and clone `value` so the binding owns its own copy.
     pub fn init(gpa: std.mem.Allocator, ty: types.TypeId, value: ComptimeValue) !BindingValue {
         return .{ .ty = ty, .value = try cloneComptimeValue(gpa, value) };
     }
 
+    /// Clone the binding so the caller owns its own copy of the stored value.
     fn clone(self: BindingValue, gpa: std.mem.Allocator) !BindingValue {
         return .{ .ty = self.ty, .value = try cloneComptimeValue(gpa, self.value) };
     }
 
+    /// Release storage held by the binding value.
     fn deinit(self: *BindingValue, gpa: std.mem.Allocator) void {
         self.value.destroy(gpa);
         self.* = .{ .ty = types.TypeId.fromRaw(0), .value = .Void };
     }
 };
 
+/// Describes a binding that the compiler can inject when running comptime code.
 pub const BindingInfo = struct {
+    /// Identifier used to refer to the binding in alias lookups.
     name: ast.StrId,
+    /// Kind of binding (type, value, runtime).
     kind: Kind,
 
+    /// Distinguishes between the binding forms that can be supplied at comptime.
     pub const Kind = union(enum) {
+        /// A named type parameter.
         type_param: types.TypeId,
+        /// A value parameter that holds a `ComptimeValue`.
         value_param: BindingValue,
+        /// A runtime parameter provided by the runtime.
         runtime_param: types.TypeId,
     };
 
+    /// Construct a type binding.
     pub fn typeParam(name: ast.StrId, ty: types.TypeId) BindingInfo {
         return .{ .name = name, .kind = .{ .type_param = ty } };
     }
 
+    /// Clone `value` and bundle it with `name` and `ty` for a value binding.
     pub fn valueParam(gpa: std.mem.Allocator, name: ast.StrId, ty: types.TypeId, value: ComptimeValue) !BindingInfo {
         return .{ .name = name, .kind = .{ .value_param = try BindingValue.init(gpa, ty, value) } };
     }
 
+    /// Create a runtime-only binding that forwards the provided `ty`.
     pub fn runtimeParam(name: ast.StrId, ty: types.TypeId) BindingInfo {
         return .{ .name = name, .kind = .{ .runtime_param = ty } };
     }
 
+    /// Release owned resources (e.g., cloned values stored in `value_param`).
     pub fn deinit(self: *BindingInfo, gpa: std.mem.Allocator) void {
         switch (self.kind) {
             .value_param => |*vp| vp.deinit(gpa),
@@ -154,6 +213,7 @@ pub const BindingInfo = struct {
         self.* = .{ .name = ast.StrId.fromRaw(0), .kind = .{ .type_param = types.TypeId.fromRaw(0) } };
     }
 
+    /// Deep clone any owned resources inside `BindingInfo`.
     fn clone(self: BindingInfo, gpa: std.mem.Allocator) !BindingInfo {
         return switch (self.kind) {
             .type_param => |ty| BindingInfo.typeParam(self.name, ty),
@@ -166,6 +226,7 @@ pub const BindingInfo = struct {
     }
 };
 
+/// Exposed to C to report the kind of a type id for debugging.
 pub fn type_of_impl(context: ?*anyopaque, type_id_raw: u32) callconv(.c) u32 {
     const ctx: *Context = @ptrCast(@alignCast(context.?));
     const type_id = types.TypeId.fromRaw(type_id_raw);
@@ -174,11 +235,13 @@ pub fn type_of_impl(context: ?*anyopaque, type_id_raw: u32) callconv(.c) u32 {
     return @intFromEnum(kind);
 }
 
+/// Print helper exposed to C so comptime scripts can emit diagnostics.
 pub fn comptime_print_impl(context: ?*anyopaque, format: [*c]const u8, ...) callconv(.c) void {
     _ = context;
     std.debug.print("comptime> {s}\n", .{@as([]const u8, std.mem.sliceTo(format, 0))});
 }
 
+/// Lookup a built-in type name for the embedded runtime, returning its id.
 pub fn get_type_by_name_impl(context: ?*anyopaque, name: [*c]const u8) callconv(.c) u32 {
     const ctx: *Context = @ptrCast(@alignCast(context.?));
     const name_slice = std.mem.sliceTo(name, 0);
@@ -208,6 +271,7 @@ pub fn get_type_by_name_impl(context: ?*anyopaque, name: [*c]const u8) callconv(
 // Comptime Lower TIR API
 // =============================
 
+/// Install comptime alias bindings in the interpreter so localized lookup sees them.
 pub fn pushComptimeBindings(self: *LowerTir, ctx: *LowerTir.LowerContext, bindings: []const Pipeline.ComptimeBinding) !bool {
     if (bindings.len == 0) return false;
 
@@ -237,6 +301,7 @@ pub fn pushComptimeBindings(self: *LowerTir, ctx: *LowerTir.LowerContext, bindin
     return true;
 }
 
+/// Evaluate an AST expression as a type literal and return its computed `TypeId`.
 fn evaluateTypeExpr(
     self: *LowerTir,
     ctx: *LowerTir.LowerContext,
@@ -513,6 +578,7 @@ fn evaluateTypeExpr(
     }
 }
 
+/// Evaluate `expr` at comptime and return its resulting `ComptimeValue`.
 pub fn runComptimeExpr(
     self: *LowerTir,
     ctx: *LowerTir.LowerContext,
@@ -525,6 +591,7 @@ pub fn runComptimeExpr(
     return self.chk.evalComptimeExpr(self.chk.checker_ctx.items[a.file_id], a, expr, result_ty, bindings);
 }
 
+/// Materialize a `tir.ValueId` for the supplied `ComptimeValue` in lowered code.
 pub fn constValueFromComptime(
     self: *LowerTir,
     blk: *tir.Builder.BlockFrame,
@@ -569,6 +636,7 @@ pub fn constValueFromComptime(
     };
 }
 
+/// Deep-copy `value` so it can be reused safely by other code paths.
 pub fn cloneComptimeValue(gpa: std.mem.Allocator, value: ComptimeValue) !ComptimeValue {
     return switch (value) {
         .Void => .Void,
@@ -624,6 +692,7 @@ pub fn cloneComptimeValue(gpa: std.mem.Allocator, value: ComptimeValue) !Comptim
     };
 }
 
+/// Fingerprint `value`, used when mangling specialization identifiers.
 pub fn hashComptimeValue(value: ComptimeValue) u64 {
     var hasher = std.hash.Wyhash.init(0);
     const tag: u8 = @intFromEnum(value);
@@ -693,6 +762,7 @@ pub fn hashComptimeValue(value: ComptimeValue) u64 {
     return hasher.final();
 }
 
+/// Append specialization metadata onto `base` to build a unique monomorph name.
 pub fn mangleMonomorphName(
     self: *LowerTir,
     base: tir.StrId,
@@ -721,20 +791,31 @@ pub fn mangleMonomorphName(
     return self.context.type_store.strs.intern(buf.items);
 }
 
+/// Carries metadata for the current specialization being lowered.
 pub const SpecializationContext = struct {
+    /// Type that we are instantiating.
     specialized_ty: types.TypeId,
+    /// Number of leading parameters that should be skipped (already baked in).
     skip_params: usize,
+    /// Bindings that override comptime arguments for this specialization.
     bindings: []const BindingInfo,
 };
 
+/// Request generated by the pipeline to specialize a function for `specialized_ty`.
 pub const SpecializationRequest = struct {
+    /// Declaration that should be lowered with substitutions.
     decl_id: ast.DeclId,
+    /// Monomorphized symbol name to emit for the specialized function.
     mangled_name: tir.StrId,
+    /// Type for which the function is specialized.
     specialized_ty: types.TypeId,
+    /// Number of parameters already satisfied by the specialization.
     skip_params: usize,
+    /// Bindings that drive the specialization (type/value/runtime).
     bindings: []const BindingInfo,
 };
 
+/// Lower the function referenced by `req` using the provided specialization metadata.
 pub fn lowerSpecializedFunction(
     self: *LowerTir,
     ctx: *LowerTir.LowerContext,

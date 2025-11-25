@@ -1,39 +1,24 @@
 const std = @import("std");
 const behavior = @import("behavior.zig");
 
-// Import functions from behavior.zig
 const getSource = behavior.getSource;
 const runCompilerTest = behavior.runCompilerTest;
 
-test "special_types: assign different types to any" {
-    if (true) return error.SkipZigTest;
-    const src =
-        \\x: any = 10
-        \\printf("Any as int: %d\n", x)
-        \\x = "hello"
-        \\printf("Any as string: %s\n", x)
-        \\x = true
-        \\printf("Any as bool: %b\n", x)
-    ;
-
-    const code = getSource("", src);
-    try runCompilerTest(code, "Any as int: 10\nAny as string: hello\nAny as bool: true\n");
-}
-
 test "special_types: passing any to function" {
     const globals =
-        \\print_any :: proc(val: any) {
-        \\    printf("Value: %s\n", val)
+        \\calc :: proc(a: any, b: any) {
+        \\    result := (a + b) * 100
+        \\    printf("Result: %d\n", result.(i64))
         \\}
     ;
 
     const src =
-        \\print_any(123)
-        \\print_any("world")
+        \\calc(123, 345)
+        \\calc(3.1415, 2.71828)
     ;
 
     const code = getSource(globals, src);
-    try runCompilerTest(code, "Value: 123\nValue: world\n");
+    try runCompilerTest(code, "Result: 468\nResult: 585\n");
 }
 
 test "special_types: type checking any with typeof" {

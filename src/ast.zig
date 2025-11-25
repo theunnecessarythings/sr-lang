@@ -4,77 +4,143 @@ const TypeInfo = @import("types.zig").TypeInfo;
 const TypeStore = @import("types.zig").TypeStore;
 const ArrayList = std.array_list.Managed;
 
+/// Alias to the generic indexed storage helper used for expression ids.
 pub const Index = dod.Index;
+/// Alias for sentinel ids that denote optional presence.
 pub const SentinelIndex = dod.SentinelIndex;
+/// Range type helper for sequential pools.
 pub const RangeOf = dod.RangeOf;
+/// Optional range helper for pools that may be empty.
 pub const OptRangeOf = dod.OptRangeOf;
+/// Pool helper storing identifiers for rows.
 pub const Pool = dod.Pool;
+/// Table helper wrapping lookup/storage for row structs.
 pub const Table = dod.Table;
+/// Store index helper that maps between kinds and raw ids.
 pub const StoreIndex = dod.StoreIndex;
+/// Re-exported name interner used for identifiers.
 pub const StringInterner = dod.StringInterner;
+/// Re-exported location storage used by AST nodes.
 pub const LocStore = dod.LocStore;
+/// Identifier type for interned strings.
 pub const StrId = dod.StrId;
+/// Identifier type for source locations.
 pub const LocId = dod.LocId;
+/// Optional identifier type for interned strings.
 pub const OptStrId = dod.OptStrId;
+/// Optional identifier type for source locations.
 pub const OptLocId = dod.OptLocId;
+/// MLIR kind discriminator reused by AST MLIR nodes.
 pub const MlirKind = dod.MlirKind;
+/// MLIR cast kind discriminator reused by AST `cast`.
 pub const CastKind = dod.CastKind;
+/// MLIR piece kind discriminator used by MLIR snippets.
 pub const MlirPieceKind = dod.MlirPieceKind;
 
+/// Zero-sized tag that distinguishes expression indexes from other pools.
 pub const ExprTag = struct {};
+/// Zero-sized tag used for statement allocations.
 pub const StmtTag = struct {};
+/// Zero-sized tag for pattern storage identifiers.
 pub const PatternTag = struct {};
 
+/// Index for expressions stored in `Rows`.
 pub const ExprId = Index(ExprTag);
+/// Identifier for declarations in the global declaration storage.
 pub const DeclId = Index(Rows.Decl);
+/// Index for AST statements.
 pub const StmtId = Index(StmtTag);
+/// Index for attribute nodes (e.g., annotations).
 pub const AttributeId = Index(Rows.Attribute);
+/// Identifier for function/closure parameters.
 pub const ParamId = Index(Rows.Param);
+/// ID for struct field declarations.
 pub const StructFieldId = Index(Rows.StructField);
+/// ID for enum field definitions.
 pub const EnumFieldId = Index(Rows.EnumField);
+/// Index for variant field descriptors.
 pub const VariantFieldId = Index(Rows.VariantField);
+/// Storage index for map literal key/value entries.
 pub const KeyValueId = Index(Rows.KeyValue);
+/// Index for a match arm.
 pub const MatchArmId = Index(Rows.MatchArm);
+/// ID that tracks struct literal field values.
 pub const StructFieldValueId = Index(Rows.StructFieldValue);
+/// Identifier for method path segments.
 pub const MethodPathSegId = Index(Rows.MethodPathSeg);
+/// Identifier for embedded MLIR snippets.
 pub const MlirPieceId = Index(Rows.MlirPiece);
+/// Index for path segments within pattern paths.
 pub const PathSegId = Index(PatRows.PathSeg);
+/// Identifier for patterns stored in `PatRows`.
 pub const PatternId = Index(PatternTag);
+/// Index for pattern struct fields.
 pub const PatFieldId = Index(PatRows.StructField);
 
+/// Optional expression index (allows sentinel for none).
 pub const OptExprId = SentinelIndex(ExprTag);
+/// Optional statement index (sentinel when missing).
 pub const OptStmtId = SentinelIndex(StmtTag);
+/// Optional declaration index.
 pub const OptDeclId = SentinelIndex(Rows.Decl);
+/// Optional parameter identifier.
 pub const OptParamId = SentinelIndex(Rows.Param);
+/// Optional pattern identifier.
 pub const OptPatternId = SentinelIndex(PatternTag);
 
+/// Dense range covering a contiguous segment of expressions.
 pub const RangeExpr = RangeOf(ExprId);
+/// Range that walks a run of statements.
 pub const RangeStmt = RangeOf(StmtId);
+/// Range used for declaration sequences.
 pub const RangeDecl = RangeOf(DeclId);
+/// Range covering parameter slots.
 pub const RangeParam = RangeOf(ParamId);
+/// Range of attribute entries.
 pub const RangeAttr = RangeOf(AttributeId);
+/// Range over struct field declarations.
 pub const RangeField = RangeOf(StructFieldId);
+/// Range over enum field declarations.
 pub const RangeEnumField = RangeOf(EnumFieldId);
+/// Range over variant field declarations.
 pub const RangeVariantField = RangeOf(VariantFieldId);
+/// Range mapping map literal entries.
 pub const RangeKeyValue = RangeOf(KeyValueId);
+/// Range over struct literal field values.
 pub const RangeStructFieldValue = RangeOf(StructFieldValueId);
+/// Range covering all arms of a match.
 pub const RangeMatchArm = RangeOf(MatchArmId);
+/// Range that represents method path segments.
 pub const RangeMethodPathSeg = RangeOf(MethodPathSegId);
+/// Range for embedded MLIR pieces.
 pub const RangeMlirPiece = RangeOf(MlirPieceId);
+/// Range covering multiple patterns.
 pub const RangePat = RangeOf(PatternId);
+/// Range delimiting path segments in patterns.
 pub const RangePathSeg = RangeOf(PathSegId);
+/// Range for struct fields inside patterns.
 pub const RangePatField = RangeOf(PatFieldId);
 
+/// Optional range of expressions.
 pub const OptRangeExpr = OptRangeOf(ExprId);
+/// Optional range of statements.
 pub const OptRangeStmt = OptRangeOf(StmtId);
+/// Optional range of declarations.
 pub const OptRangeDecl = OptRangeOf(DeclId);
+/// Optional range of attributes.
 pub const OptRangeAttr = OptRangeOf(AttributeId);
+/// Optional range of struct fields.
 pub const OptRangeField = OptRangeOf(StructFieldId);
+/// Optional range of patterns.
 pub const OptRangePat = OptRangeOf(PatternId);
+/// Optional range of path segments.
 pub const OptRangeMethodPathSeg = OptRangeOf(MethodPathSegId);
 
+/// Tags that distinguish literal flavors parsed from source.
 pub const LiteralKind = enum(u8) { int, float, bool, string, char, imaginary };
+/// Operators that operate on a single operand.
 pub const UnaryOp = enum(u8) { pos, neg, address_of, logical_not };
+/// Operators that combine two operands or operate as comparisons.
 pub const BinaryOp = enum(u8) {
     add,
     sub,
@@ -97,13 +163,19 @@ pub const BinaryOp = enum(u8) {
     @"orelse",
     contains,
 };
+/// Layout patterns for variant payloads.
 pub const VariantPayloadKind = enum(u2) { none, tuple, @"struct" };
 
+/// AST translation unit plus metadata captured after parsing a package.
 pub const Unit = struct {
+    /// All declarations that belong to this translation unit.
     decls: RangeDecl,
+    /// Interned name of the package containing this unit, if any.
     package_name: OptStrId,
+    /// Source location of the package declaration, if present.
     package_loc: OptLocId,
 
+    /// Construct an empty `Unit` with no declarations or package info.
     pub fn empty() Unit {
         return .{
             .decls = RangeDecl.empty(),
@@ -113,6 +185,7 @@ pub const Unit = struct {
     }
 };
 
+/// Discriminates every kind of expression node in the AST.
 pub const ExprKind = enum(u16) {
     Literal,
     Ident,
@@ -175,139 +248,599 @@ pub const ExprKind = enum(u16) {
     NoreturnType,
 };
 
+/// Storage layout for each AST row kind.
 pub const Rows = struct {
+    /// Row describing a literal expression and its payload.
     pub const Literal = struct {
+        /// Discriminator identifying the literal flavor (int, float, etc.).
         kind: LiteralKind,
+        /// Actual literal payload.
         data: LiteralValue,
+        /// Source span of the literal.
         loc: LocId,
     };
-    pub const Ident = struct { name: StrId, loc: LocId };
-    pub const Unary = struct { expr: ExprId, op: UnaryOp, loc: LocId };
-    pub const Binary = struct { left: ExprId, right: ExprId, op: BinaryOp, wrap: bool, saturate: bool, loc: LocId };
-    pub const Range = struct { start: OptExprId, end: OptExprId, inclusive_right: bool, loc: LocId };
-    pub const Deref = struct { expr: ExprId, loc: LocId };
-    pub const ArrayLit = struct { elems: RangeExpr, loc: LocId };
-    pub const TupleLit = struct { elems: RangeExpr, loc: LocId };
-    pub const MapLit = struct { entries: RangeKeyValue, loc: LocId };
-    pub const KeyValue = struct { key: ExprId, value: ExprId, loc: LocId };
-    pub const Call = struct { callee: ExprId, args: RangeExpr, loc: LocId };
-    pub const IndexAccess = struct { collection: ExprId, index: ExprId, loc: LocId };
-    pub const FieldAccess = struct { parent: ExprId, field: StrId, is_tuple: bool, loc: LocId };
-    pub const StructFieldValue = struct { name: OptStrId, value: ExprId, loc: LocId };
-    pub const StructLit = struct { fields: RangeStructFieldValue, ty: OptExprId, loc: LocId };
+    /// Row capturing identifier name and location.
+    pub const Ident = struct {
+        /// Identifier name in the string interner.
+        name: StrId,
+        /// Location where the identifier was parsed.
+        loc: LocId,
+    };
+    /// Row storing the operand and operator for unary ops.
+    pub const Unary = struct {
+        /// Operand of the unary operation.
+        expr: ExprId,
+        /// Operator applied to `expr`.
+        op: UnaryOp,
+        /// Location of the operator token.
+        loc: LocId,
+    };
+    /// Row containing both operands for a binary operation.
+    pub const Binary = struct {
+        /// Left-hand operand.
+        left: ExprId,
+        /// Right-hand operand.
+        right: ExprId,
+        /// Binary operator.
+        op: BinaryOp,
+        /// Whether the operation wraps on overflow (wrapping semantics).
+        wrap: bool,
+        /// Whether the operation saturates on overflow.
+        saturate: bool,
+        /// Location covering the entire binary expression.
+        loc: LocId,
+    };
+    /// Row representing a range literal used with `..`.
+    pub const Range = struct {
+        /// Optional start expression (inclusive).
+        start: OptExprId,
+        /// Optional end expression (inclusive or exclusive depending on the flag).
+        end: OptExprId,
+        /// Whether the right bound is inclusive.
+        inclusive_right: bool,
+        /// Location of the range expression.
+        loc: LocId,
+    };
+    /// Row for dereference expressions.
+    pub const Deref = struct {
+        /// Value being dereferenced.
+        expr: ExprId,
+        /// Location of the dereference.
+        loc: LocId,
+    };
+    /// Row storing array literal elements and location.
+    pub const ArrayLit = struct {
+        /// Elements of the array literal.
+        elems: RangeExpr,
+        /// Location of the literal.
+        loc: LocId,
+    };
+    /// Row representing tuple literals with element spans.
+    pub const TupleLit = struct {
+        /// Elements of the tuple literal.
+        elems: RangeExpr,
+        /// Location of the literal.
+        loc: LocId,
+    };
+    /// Row representing map literals with entries.
+    pub const MapLit = struct {
+        /// Key/value entries in the map literal.
+        entries: RangeKeyValue,
+        /// Location of the literal.
+        loc: LocId,
+    };
+    /// Row for individual key-value entries inside map literals.
+    pub const KeyValue = struct {
+        /// Expression used for the key.
+        key: ExprId,
+        /// Expression used for the value.
+        value: ExprId,
+        /// Location of the key/value pair.
+        loc: LocId,
+    };
+    /// Row for a generic call expression and its arguments.
+    pub const Call = struct {
+        /// Expression representing the function being invoked.
+        callee: ExprId,
+        /// Argument list passed to the call.
+        args: RangeExpr,
+        /// Source range covering the call expression.
+        loc: LocId,
+    };
+    /// Row for indexing expressions (e.g., `foo[bar]`).
+    pub const IndexAccess = struct {
+        /// Collection being indexed.
+        collection: ExprId,
+        /// Index expression applied to the collection.
+        index: ExprId,
+        /// Location of the access expression.
+        loc: LocId,
+    };
+    /// Row describing field access or tuple element reads.
+    pub const FieldAccess = struct {
+        /// Base expression from which the field is read.
+        parent: ExprId,
+        /// Name of the field or tuple index.
+        field: StrId,
+        /// Set when the field-access is tuple-like.
+        is_tuple: bool,
+        /// Location of the field access.
+        loc: LocId,
+    };
+    /// Row holding struct literal fields that include an optional name.
+    pub const StructFieldValue = struct {
+        /// Optional explicit field name.
+        name: OptStrId,
+        /// Expression supplying the field value.
+        value: ExprId,
+        /// Location of the initializer.
+        loc: LocId,
+    };
+    /// Row representing a literal struct construction.
+    pub const StructLit = struct {
+        /// Field initializers.
+        fields: RangeStructFieldValue,
+        /// Optional explicit type annotation for the struct literal.
+        ty: OptExprId,
+        /// Location of the struct literal.
+        loc: LocId,
+    };
 
-    pub const FnFlags = packed struct(u8) { is_proc: bool, is_async: bool, is_variadic: bool, is_extern: bool, _pad: u4 = 0 };
+    /// Packed flags describing function literal qualifiers.
+    pub const FnFlags = packed struct(u8) {
+        /// Literal declared as `proc`.
+        is_proc: bool,
+        /// Literal marked `async`.
+        is_async: bool,
+        /// Literal accepts variadic arguments.
+        is_variadic: bool,
+        /// Literal declared `extern`.
+        is_extern: bool,
+        _pad: u4 = 0,
+    };
 
+    /// Row for function literal declarations.
     pub const FunctionLit = struct {
+        /// Declared parameters for the literal.
         params: RangeParam,
+        /// Optional explicit return type.
         result_ty: OptExprId,
+        /// Body expression for inline literals.
         body: OptExprId,
+        /// Optional raw `asm` text attached to the literal.
         raw_asm: OptStrId,
+        /// Attributes applied to this literal.
         attrs: OptRangeAttr,
+        /// Qualifying flags such as `proc`, `async`, or `extern`.
         flags: FnFlags,
+        /// Location of the literal keyword/token span.
         loc: LocId,
     };
 
-    pub const Block = struct { items: RangeStmt, loc: LocId };
-    pub const ComptimeBlock = struct { block: ExprId, loc: LocId };
-    pub const CodeBlock = struct { block: ExprId, loc: LocId };
-    pub const AsyncBlock = struct { body: ExprId, loc: LocId };
-    pub const MlirPiece = struct { kind: MlirPieceKind, text: StrId };
-    pub const MlirBlock = struct { kind: MlirKind, text: StrId, pieces: RangeMlirPiece, args: RangeExpr, loc: LocId };
-    pub const Insert = struct { expr: ExprId, loc: LocId };
-
-    pub const Return = struct { value: OptExprId, loc: LocId };
-    pub const If = struct { cond: ExprId, then_block: ExprId, else_block: OptExprId, loc: LocId };
-    pub const While = struct {
-        cond: OptExprId,
-        pattern: OptPatternId,
+    /// Row for explicit block expressions.
+    pub const Block = struct {
+        /// Statements contained in the block.
+        items: RangeStmt,
+        /// Location covering the block braces.
+        loc: LocId,
+    };
+    /// Row for compile-time evaluated block expressions.
+    pub const ComptimeBlock = struct {
+        /// Expression representing the block body.
+        block: ExprId,
+        /// Location of the block.
+        loc: LocId,
+    };
+    /// Row representing `code { ... }` injections.
+    pub const CodeBlock = struct {
+        /// Expression containing the injected code.
+        block: ExprId,
+        /// Location of the injection.
+        loc: LocId,
+    };
+    /// Row for `async` block expressions.
+    pub const AsyncBlock = struct {
+        /// Body expression executed asynchronously.
         body: ExprId,
-        is_pattern: bool,
-        label: OptStrId,
+        /// Location of the `async` block.
         loc: LocId,
     };
-    pub const For = struct { pattern: PatternId, iterable: ExprId, body: ExprId, label: OptStrId, loc: LocId };
-    pub const Match = struct { expr: ExprId, arms: RangeMatchArm, loc: LocId };
-    pub const MatchArm = struct { pattern: PatternId, guard: OptExprId, body: ExprId, loc: LocId };
+    /// Row storing a literal MLIR snippet.
+    pub const MlirPiece = struct {
+        /// Kind of MLIR fragment (literal vs splice).
+        kind: MlirPieceKind,
+        /// Interned text for the fragment.
+        text: StrId,
+    };
+    /// Row for embedded MLIR blocks with pieces and argument ranges.
+    pub const MlirBlock = struct {
+        /// MLIR object kind (Module, Operation, etc.).
+        kind: MlirKind,
+        /// Raw MLIR text for the block.
+        text: StrId,
+        /// Pieces that reference interpolated values.
+        pieces: RangeMlirPiece,
+        /// External arguments supplied to the block.
+        args: RangeExpr,
+        /// Location of the `mlir { }` block.
+        loc: LocId,
+    };
+    /// Row representing MLIR piece insertions.
+    pub const Insert = struct {
+        /// Expression whose result should be inserted.
+        expr: ExprId,
+        /// Location of the insertion.
+        loc: LocId,
+    };
 
-    pub const Break = struct { label: OptStrId, value: OptExprId, loc: LocId };
-    pub const Continue = struct { label: OptStrId, loc: LocId };
+    /// Row for return statements, optionally carrying a value.
+    pub const Return = struct {
+        /// Expression being returned (if any).
+        value: OptExprId,
+        /// Location of the `return`.
+        loc: LocId,
+    };
+    /// Row for `if` expressions with optional `else`.
+    pub const If = struct {
+        /// Condition determining which branch runs.
+        cond: ExprId,
+        /// Block executed when `cond` is truthy.
+        then_block: ExprId,
+        /// Optional `else` expression.
+        else_block: OptExprId,
+        /// Location of the entire `if`.
+        loc: LocId,
+    };
+    /// Row for `while` loops capturing condition, pattern, and body.
+    pub const While = struct {
+        /// Optional condition expression.
+        cond: OptExprId,
+        /// Optional `while let` pattern.
+        pattern: OptPatternId,
+        /// Loop body expression.
+        body: ExprId,
+        /// Set when the loop uses a pattern guard.
+        is_pattern: bool,
+        /// Optional label on the loop.
+        label: OptStrId,
+        /// Location covering the loop keywords/braces.
+        loc: LocId,
+    };
+    /// Row for `for` loops with their pattern and iterable.
+    pub const For = struct {
+        /// Pattern binding each item.
+        pattern: PatternId,
+        /// Expression providing the iteration source.
+        iterable: ExprId,
+        /// Body executed every iteration.
+        body: ExprId,
+        /// Optional label for nested loops.
+        label: OptStrId,
+        /// Location covering the `for`.
+        loc: LocId,
+    };
+    /// Row for `match` expressions with arms.
+    pub const Match = struct {
+        /// Expression being matched.
+        expr: ExprId,
+        /// Arms within the match.
+        arms: RangeMatchArm,
+        /// Location covering the `match`.
+        loc: LocId,
+    };
+    /// Row describing a single match arm, guard, and body.
+    pub const MatchArm = struct {
+        /// Pattern tested by this arm.
+        pattern: PatternId,
+        /// Optional guard expression.
+        guard: OptExprId,
+        /// Body expression for the arm.
+        body: ExprId,
+        /// Location of the arm.
+        loc: LocId,
+    };
+
+    /// Row for `break` statements with optional value and label.
+    pub const Break = struct {
+        /// Optional label that is broken out of.
+        label: OptStrId,
+        /// Optional result passed to the label.
+        value: OptExprId,
+        /// Location of the break.
+        loc: LocId,
+    };
+    /// Row for `continue` statements within loops.
+    pub const Continue = struct {
+        /// Optional label target for `continue`.
+        label: OptStrId,
+        /// Location of the statement.
+        loc: LocId,
+    };
+    /// Row for `unreachable` markers.
     pub const Unreachable = struct { loc: LocId };
+    /// Row for literal `null`.
     pub const NullLit = struct { loc: LocId };
+    /// Row for literal `undefined`.
     pub const UndefLit = struct { loc: LocId };
+    /// Row for `defer` statements.
     pub const Defer = struct { expr: ExprId, loc: LocId };
+    /// Row for `errdefer` statements.
     pub const ErrDefer = struct { expr: ExprId, loc: LocId };
+    /// Row for `err` unwrap expressions.
     pub const ErrUnwrap = struct { expr: ExprId, loc: LocId };
+    /// Row for optional unwrap operations.
     pub const OptionalUnwrap = struct { expr: ExprId, loc: LocId };
+    /// Row for `await` expressions.
     pub const Await = struct { expr: ExprId, loc: LocId };
+    /// Row capturing closure literals with params and body.
     pub const Closure = struct { params: RangeParam, result_ty: OptExprId, body: ExprId, loc: LocId };
+    /// Row for `cast` expressions detailing target type and kind.
     pub const Cast = struct { expr: ExprId, ty: ExprId, kind: CastKind, loc: LocId };
+    /// Row for `catch` clauses including optional binding info.
     pub const Catch = struct { expr: ExprId, binding_name: OptStrId, binding_loc: OptLocId, handler: ExprId, loc: LocId };
+    /// Row holding an `import` declaration with path metadata.
     pub const Import = struct { path: StrId, loc: LocId };
+    /// Row representing `typeof` expressions.
     pub const TypeOf = struct { expr: ExprId, loc: LocId };
 
+    /// Row storing parameter metadata for functions or closures.
     pub const Param = struct {
+        /// Optional pattern that binds the parameter.
         pat: OptPatternId,
+        /// Optional type annotation.
         ty: OptExprId,
+        /// Default value expression when provided.
         value: OptExprId,
+        /// Attributes applied to the parameter.
         attrs: OptRangeAttr,
+        /// Set when the parameter is a compile-time binding.
         is_comptime: bool,
+        /// Location of the parameter declaration.
         loc: LocId,
     };
-    pub const Attribute = struct { name: StrId, value: OptExprId, loc: LocId };
-
-    pub const MethodPathSeg = struct { name: StrId, loc: LocId };
-    pub const DeclFlags = packed struct(u8) { is_const: bool, _pad: u7 = 0 };
-    pub const Decl = struct {
-        pattern: OptPatternId,
-        value: ExprId,
-        ty: OptExprId,
-        method_path: OptRangeMethodPathSeg,
-        flags: DeclFlags,
-        loc: LocId,
-    };
-
-    pub const TupleType = struct { elems: RangeExpr, loc: LocId };
-    pub const ArrayType = struct { elem: ExprId, size: ExprId, loc: LocId };
-    pub const DynArrayType = struct { elem: ExprId, loc: LocId };
-    pub const MapType = struct { key: ExprId, value: ExprId, loc: LocId };
-    pub const SliceType = struct { elem: ExprId, is_const: bool, loc: LocId };
-    pub const OptionalType = struct { elem: ExprId, loc: LocId };
-    pub const ErrorSetType = struct { err: ExprId, value: ExprId, loc: LocId };
-
-    pub const StructField = struct { name: StrId, ty: ExprId, value: OptExprId, attrs: OptRangeAttr, loc: LocId };
-    pub const StructType = struct { fields: RangeField, is_extern: bool, attrs: OptRangeAttr, loc: LocId };
-
-    pub const EnumField = struct { name: StrId, value: OptExprId, attrs: OptRangeAttr, loc: LocId };
-    pub const EnumType = struct { fields: RangeEnumField, discriminant: OptExprId, is_extern: bool, attrs: OptRangeAttr, loc: LocId };
-
-    pub const VariantField = struct {
+    /// Row describing an attribute (annotation) and its optional value.
+    pub const Attribute = struct {
+        /// Attribute name.
         name: StrId,
-        payload_kind: VariantPayloadKind,
-        payload_elems: OptRangeExpr,
-        payload_fields: OptRangeField,
+        /// Optional value attached to the attribute.
         value: OptExprId,
-        attrs: OptRangeAttr,
+        /// Location of the attribute token.
         loc: LocId,
     };
-    pub const VariantType = struct { fields: RangeVariantField, loc: LocId };
+
+    /// Row for a segment inside a method path (`foo.bar`).
+    pub const MethodPathSeg = struct {
+        /// Name of the path segment.
+        name: StrId,
+        /// Location of the segment.
+        loc: LocId,
+    };
+    /// Flags that describe declaration qualifiers.
+    pub const DeclFlags = packed struct(u8) {
+        /// Whether the declaration is marked `const`.
+        is_const: bool,
+        _pad: u7 = 0,
+    };
+    /// Row that attaches an expression to a declaration pattern.
+    pub const Decl = struct {
+        /// Optional pattern that binds the declared name(s).
+        pattern: OptPatternId,
+        /// Expression/value belonging to the declaration.
+        value: ExprId,
+        /// Optional explicit type annotation.
+        ty: OptExprId,
+        /// Optional method path when declaring associated functions.
+        method_path: OptRangeMethodPathSeg,
+        /// Declaration qualifiers.
+        flags: DeclFlags,
+        /// Location covering the declaration statement.
+        loc: LocId,
+    };
+
+    /// Row for tuple type annotations.
+    pub const TupleType = struct {
+        /// Element type expressions.
+        elems: RangeExpr,
+        /// Location of the tuple type.
+        loc: LocId,
+    };
+    /// Row for array type annotations.
+    pub const ArrayType = struct {
+        /// Element type expression.
+        elem: ExprId,
+        /// Length expression.
+        size: ExprId,
+        /// Location of the array type.
+        loc: LocId,
+    };
+    /// Row for dynamic array type annotations.
+    pub const DynArrayType = struct {
+        /// Element type expression.
+        elem: ExprId,
+        /// Location of the type.
+        loc: LocId,
+    };
+    /// Row for map type annotations.
+    pub const MapType = struct {
+        /// Key type expression.
+        key: ExprId,
+        /// Value type expression.
+        value: ExprId,
+        /// Location of the map type.
+        loc: LocId,
+    };
+    /// Row for slice type annotations.
+    pub const SliceType = struct {
+        /// Element type expression.
+        elem: ExprId,
+        /// Whether the slice is `const`.
+        is_const: bool,
+        /// Location of the slice type.
+        loc: LocId,
+    };
+    /// Row for optional type annotations.
+    pub const OptionalType = struct {
+        /// Element type expression.
+        elem: ExprId,
+        /// Location of the optional type.
+        loc: LocId,
+    };
+    /// Row for error set type annotations (Ok/Err).
+    pub const ErrorSetType = struct {
+        /// Error type expression.
+        err: ExprId,
+        /// Value type expression.
+        value: ExprId,
+        /// Location of the error set type.
+        loc: LocId,
+    };
+
+    /// Row describing a struct field declaration.
+    pub const StructField = struct {
+        /// Field name.
+        name: StrId,
+        /// Field type expression.
+        ty: ExprId,
+        /// Optional initializer value.
+        value: OptExprId,
+        /// Attributes applied to the field.
+        attrs: OptRangeAttr,
+        /// Location of the field.
+        loc: LocId,
+    };
+    /// Row for struct type annotations.
+    pub const StructType = struct {
+        /// Fields contained in the struct.
+        fields: RangeField,
+        /// Whether the struct is declared `extern`.
+        is_extern: bool,
+        /// Attributes on the struct.
+        attrs: OptRangeAttr,
+        /// Location of the struct type.
+        loc: LocId,
+    };
+
+    /// Row describing an enum member.
+    pub const EnumField = struct {
+        /// Variant name.
+        name: StrId,
+        /// Optional discriminant initializer.
+        value: OptExprId,
+        /// Attributes on the variant.
+        attrs: OptRangeAttr,
+        /// Location of the variant.
+        loc: LocId,
+    };
+    /// Row for enum type annotations.
+    pub const EnumType = struct {
+        /// Enum variant list.
+        fields: RangeEnumField,
+        /// Optional discriminant type expression.
+        discriminant: OptExprId,
+        /// Whether the enum is `extern`.
+        is_extern: bool,
+        /// Attributes applied to the enum.
+        attrs: OptRangeAttr,
+        /// Location of the enum type.
+        loc: LocId,
+    };
+
+    /// Row describing a variant (sum type) field.
+    pub const VariantField = struct {
+        /// Name of the variant.
+        name: StrId,
+        /// Layout kind (none, tuple, struct).
+        payload_kind: VariantPayloadKind,
+        /// Expression operands when the payload is tuple-like.
+        payload_elems: OptRangeExpr,
+        /// Field definitions when the payload is struct-like.
+        payload_fields: OptRangeField,
+        /// Optional initializer.
+        value: OptExprId,
+        /// Attributes attached to the variant.
+        attrs: OptRangeAttr,
+        /// Location of the variant.
+        loc: LocId,
+    };
+    /// Row for variant type annotations.
+    pub const VariantType = struct {
+        /// Fields representing each variant.
+        fields: RangeVariantField,
+        /// Location of the variant type.
+        loc: LocId,
+    };
+    /// Alias for variant types reused as error type rows.
     pub const ErrorType = VariantType;
 
-    pub const UnionType = struct { fields: RangeField, is_extern: bool, attrs: OptRangeAttr, loc: LocId };
+    /// Row for anonymous union type annotations.
+    pub const UnionType = struct {
+        /// Variant fields stored in the union.
+        fields: RangeField,
+        /// Whether the union is externally defined.
+        is_extern: bool,
+        /// Attributes applied to the union.
+        attrs: OptRangeAttr,
+        /// Location of the union type.
+        loc: LocId,
+    };
 
-    pub const PointerType = struct { elem: ExprId, is_const: bool, loc: LocId };
-    pub const SimdType = struct { elem: ExprId, lanes: ExprId, loc: LocId };
-    pub const ComplexType = struct { elem: ExprId, loc: LocId };
-    pub const TensorType = struct { elem: ExprId, shape: RangeExpr, loc: LocId };
-    pub const TypeType = struct { loc: LocId };
-    pub const AnyType = struct { loc: LocId };
-    pub const NoreturnType = struct { loc: LocId };
+    /// Row for pointer type annotations.
+    pub const PointerType = struct {
+        /// Element being pointed to.
+        elem: ExprId,
+        /// Whether the pointer is const.
+        is_const: bool,
+        /// Location of the pointer type.
+        loc: LocId,
+    };
+    /// Row for SIMD type annotations.
+    pub const SimdType = struct {
+        /// Element type of the vector.
+        elem: ExprId,
+        /// Lane count expression.
+        lanes: ExprId,
+        /// Location of the SIMD type.
+        loc: LocId,
+    };
+    /// Row for complex number type annotations.
+    pub const ComplexType = struct {
+        /// Element type expression (real/imag parts).
+        elem: ExprId,
+        /// Location of the complex type.
+        loc: LocId,
+    };
+    /// Row for tensor type annotations.
+    pub const TensorType = struct {
+        /// Element type expression.
+        elem: ExprId,
+        /// Shape dimensions.
+        shape: RangeExpr,
+        /// Location of the tensor type.
+        loc: LocId,
+    };
+    /// Row representing the `type` metatype.
+    pub const TypeType = struct {
+        /// Location of the `type` literal.
+        loc: LocId,
+    };
+    /// Row for the `any` type placeholder.
+    pub const AnyType = struct {
+        /// Location of the `any` expression.
+        loc: LocId,
+    };
+    /// Row for the `noreturn` type.
+    pub const NoreturnType = struct {
+        /// Location of the `noreturn` annotation.
+        loc: LocId,
+    };
 };
 
+/// Map an `ExprKind` discriminant to the matching `Rows` struct descriptor.
 pub inline fn RowT(comptime K: ExprKind) type {
     return @field(Rows, @tagName(K));
 }
 
+/// Identifies which statement form a `StmtId` refers to.
 pub const StmtKind = enum(u8) {
     Expr,
     Decl,
@@ -321,23 +854,49 @@ pub const StmtKind = enum(u8) {
     ErrDefer,
 };
 
+/// Repository of statement row layouts.
 pub const StmtRows = struct {
-    pub const Expr = struct { expr: ExprId };
-    pub const Decl = struct { decl: DeclId };
-    pub const Assign = struct { left: ExprId, right: ExprId, loc: LocId };
+    /// Expression statements.
+    pub const Expr = struct {
+        /// Expression executed as a statement.
+        expr: ExprId,
+    };
+    /// Declaration statements.
+    pub const Decl = struct {
+        /// Declaration stored by this statement.
+        decl: DeclId,
+    };
+    /// Assignment statements.
+    pub const Assign = struct {
+        /// Left-hand target of the assignment.
+        left: ExprId,
+        /// Right-hand value expression.
+        right: ExprId,
+        /// Location covering the assignment.
+        loc: LocId,
+    };
+    /// MLIR insert statements (reuse `Rows.Insert` layout).
     pub const Insert = Rows.Insert;
+    /// Return statements (reuse `Rows.Return` layout).
     pub const Return = Rows.Return;
+    /// Break statements (reuse `Rows.Break` layout).
     pub const Break = Rows.Break;
+    /// Continue statements (reuse `Rows.Continue` layout).
     pub const Continue = Rows.Continue;
+    /// Unreachable statements (reuse `Rows.Unreachable` layout).
     pub const Unreachable = Rows.Unreachable;
+    /// Defer statements (reuse `Rows.Defer` layout).
     pub const Defer = Rows.Defer;
+    /// Errdefer statements (reuse `Rows.ErrDefer` layout).
     pub const ErrDefer = Rows.ErrDefer;
 };
 
+/// Map a `StmtKind` discriminant to the corresponding `StmtRows` layout.
 pub inline fn StmtRowT(comptime K: StmtKind) type {
     return @field(StmtRows, @tagName(K));
 }
 
+/// Discriminates all pattern forms.
 pub const PatternKind = enum(u16) {
     Wildcard,
     Literal,
@@ -353,185 +912,387 @@ pub const PatternKind = enum(u16) {
     At,
 };
 
+/// Storage for pattern-specific rows used to instantiate `PatternId`s.
 pub const PatRows = struct {
-    pub const Wildcard = struct { loc: LocId };
-    pub const Literal = struct { expr: ExprId, loc: LocId };
+    /// Row for wildcard (`_`) patterns.
+    pub const Wildcard = struct {
+        /// Location of the wildcard token.
+        loc: LocId,
+    };
+    /// Row for literal matching patterns.
+    pub const Literal = struct {
+        /// Expression containing the literal value.
+        expr: ExprId,
+        /// Location of the literal pattern.
+        loc: LocId,
+    };
 
-    pub const PathSeg = struct { name: StrId, by_ref: bool, is_mut: bool, loc: LocId };
-    pub const Path = struct { segments: RangePathSeg, loc: LocId };
+    /// Row for a path segment used inside pattern matching.
+    pub const PathSeg = struct {
+        /// Segment name.
+        name: StrId,
+        /// Whether the path is borrowed.
+        by_ref: bool,
+        /// Whether the path is mutable.
+        is_mut: bool,
+        /// Location of the segment.
+        loc: LocId,
+    };
+    /// Row for pattern paths composed of multiple segments.
+    pub const Path = struct {
+        /// Segments describing the path.
+        segments: RangePathSeg,
+        /// Location of the entire path.
+        loc: LocId,
+    };
 
-    pub const Binding = struct { name: StrId, by_ref: bool, is_mut: bool, loc: LocId };
+    /// Row for binding patterns (naming a value).
+    pub const Binding = struct {
+        /// Name being introduced.
+        name: StrId,
+        /// Whether the binding borrows the matched value.
+        by_ref: bool,
+        /// Whether the binding is mutable.
+        is_mut: bool,
+        /// Location recording the binding.
+        loc: LocId,
+    };
 
-    pub const Tuple = struct { elems: RangePat, loc: LocId };
+    /// Row for tuple patterns.
+    pub const Tuple = struct {
+        /// Element patterns inside the tuple.
+        elems: RangePat,
+        /// Location of the tuple pattern.
+        loc: LocId,
+    };
 
+    /// Row for slice patterns (`[head, tail...]`).
     pub const Slice = struct {
+        /// Element patterns before the rest.
         elems: RangePat,
+        /// Whether the slice uses a rest pattern.
         has_rest: bool,
+        /// Index where the rest begins.
         rest_index: u32,
+        /// Optional pattern binding for the rest.
         rest_binding: OptPatternId,
+        /// Location of the slice pattern.
         loc: LocId,
     };
 
-    pub const StructField = struct { name: StrId, pattern: PatternId, loc: LocId };
+    /// Row for a single field inside a struct pattern.
+    pub const StructField = struct {
+        /// Field name.
+        name: StrId,
+        /// Pattern matching the field value.
+        pattern: PatternId,
+        /// Location of the field binding.
+        loc: LocId,
+    };
 
+    /// Row for struct patterns.
     pub const Struct = struct {
+        /// Path describing the struct type.
         path: RangePathSeg,
+        /// Field patterns matching each struct field.
         fields: RangePatField,
+        /// Whether the pattern allows unspecified fields.
         has_rest: bool,
+        /// Location of the struct pattern.
         loc: LocId,
     };
 
+    /// Row for tuple-like variant patterns.
     pub const VariantTuple = struct {
+        /// Variant path being matched.
         path: RangePathSeg,
+        /// Element patterns inside the variant payload.
         elems: RangePat,
+        /// Location of the pattern.
         loc: LocId,
     };
 
+    /// Row for struct-like variant patterns.
     pub const VariantStruct = struct {
+        /// Variant path identifier.
         path: RangePathSeg,
+        /// Field patterns within the payload.
         fields: RangePatField,
+        /// Whether the struct variant permits rest fields.
         has_rest: bool,
+        /// Location of the variant pattern.
         loc: LocId,
     };
 
-    pub const Range = struct { start: OptExprId, end: OptExprId, inclusive_right: bool, loc: LocId };
-    pub const Or = struct { alts: RangePat, loc: LocId };
-    pub const At = struct { binder: StrId, pattern: PatternId, loc: LocId };
+    /// Row for range patterns (`x..y`).
+    pub const Range = struct {
+        /// Optional start expression.
+        start: OptExprId,
+        /// Optional end expression.
+        end: OptExprId,
+        /// Whether the end bound is inclusive.
+        inclusive_right: bool,
+        /// Location of the range.
+        loc: LocId,
+    };
+    /// Row for pattern alternatives (`p1 | p2`).
+    pub const Or = struct {
+        /// Alternative patterns.
+        alts: RangePat,
+        /// Location covering the alternatives.
+        loc: LocId,
+    };
+    /// Row for `@binder` patterns.
+    pub const At = struct {
+        /// Name bound by the `@`.
+        binder: StrId,
+        /// Pattern being bound.
+        pattern: PatternId,
+        /// Location of the `@`.
+        loc: LocId,
+    };
 };
 
+/// Resolve storage row type for a `PatternKind`.
 inline fn PatRowT(comptime K: PatternKind) type {
     return @field(PatRows, @tagName(K));
 }
 
+/// Metadata for integer literals.
 pub const LiteralInt = struct {
+    /// Interned literal text.
     text: StrId,
+    /// Parsed numeric value.
     value: u128,
+    /// Radix/base of the literal.
     base: u8,
+    /// Whether the literal parsed successfully.
     valid: bool,
 };
 
+/// Metadata for floating-point literals.
 pub const LiteralFloat = struct {
+    /// Interned literal text.
     text: StrId,
+    /// Parsed floating-point value.
     value: f64,
+    /// Whether parsing succeeded.
     valid: bool,
 };
 
+/// Union storing the payload of literal expressions.
 pub const LiteralValue = union(enum) {
+    /// No payload (placeholder).
     none,
+    /// Boolean literal payload.
     bool: bool,
+    /// Character literal payload.
     char: u32,
+    /// String literal payload.
     string: StrId,
+    /// Integer literal payload.
     int: LiteralInt,
+    /// Floating-point literal payload.
     float: LiteralFloat,
+    /// Imaginary literal payload (float metadata).
     imaginary: LiteralFloat,
 };
 
+/// Central storage for AST expression rows and their pools.
 pub const ExprStore = struct {
+    /// Allocator that backs all tables and pools within the expression store.
     gpa: std.mem.Allocator,
+    /// Global indexer that maps kinds to `ExprId`.
     index: StoreIndex(ExprKind) = .{},
 
+    /// Storage for literal AST nodes.
     Literal: Table(Rows.Literal) = .{},
+    /// Storage for identifier nodes tied to `StrId`.
     Ident: Table(Rows.Ident) = .{},
+    /// Storage for unary operator expressions.
     Unary: Table(Rows.Unary) = .{},
+    /// Storage for binary operator expressions.
     Binary: Table(Rows.Binary) = .{},
+    /// Storage for range expressions (e.g., `start..end`).
     Range: Table(Rows.Range) = .{},
+    /// Storage for dereference operations.
     Deref: Table(Rows.Deref) = .{},
 
+    /// Storage for array literal nodes.
     ArrayLit: Table(Rows.ArrayLit) = .{},
+    /// Storage for tuple literal nodes.
     TupleLit: Table(Rows.TupleLit) = .{},
+    /// Storage for map literal entries.
     MapLit: Table(Rows.MapLit) = .{},
+    /// Storage for key/value literal rows.
     KeyValue: Table(Rows.KeyValue) = .{},
 
+    /// Storage for call expressions.
     Call: Table(Rows.Call) = .{},
+    /// Storage for index access expressions (collection[index]).
     IndexAccess: Table(Rows.IndexAccess) = .{},
+    /// Storage for field/tuple-slot access expressions.
     FieldAccess: Table(Rows.FieldAccess) = .{},
 
+    /// Storage for struct literal field initializer metadata.
     StructFieldValue: Table(Rows.StructFieldValue) = .{},
+    /// Storage for struct literal nodes.
     StructLit: Table(Rows.StructLit) = .{},
 
+    /// Storage for function literal nodes.
     FunctionLit: Table(Rows.FunctionLit) = .{},
+    /// Storage for block literals.
     Block: Table(Rows.Block) = .{},
+    /// Storage for comptime block wrappers.
     ComptimeBlock: Table(Rows.ComptimeBlock) = .{},
+    /// Storage for code block literals (lambda-like).
     CodeBlock: Table(Rows.CodeBlock) = .{},
+    /// Storage for async block expressions.
     AsyncBlock: Table(Rows.AsyncBlock) = .{},
+    /// Storage for MLIR block literals embedded in the AST.
     MlirBlock: Table(Rows.MlirBlock) = .{},
+    /// Storage for pieces belonging to MLIR blocks.
     MlirPiece: Table(Rows.MlirPiece) = .{},
+    /// Storage for `insert` statements (macro-like).
     Insert: Table(Rows.Insert) = .{},
 
+    /// Storage for return statements.
     Return: Table(Rows.Return) = .{},
+    /// Storage for `if` statements/expressions.
     If: Table(Rows.If) = .{},
+    /// Storage for `while` loops.
     While: Table(Rows.While) = .{},
+    /// Storage for `for` loops.
     For: Table(Rows.For) = .{},
+    /// Storage for `match` expressions.
     Match: Table(Rows.Match) = .{},
+    /// Storage for each match arm inside a `match`.
     MatchArm: Table(Rows.MatchArm) = .{},
 
+    /// Storage for `break` statements.
     Break: Table(Rows.Break) = .{},
+    /// Storage for `continue` statements.
     Continue: Table(Rows.Continue) = .{},
+    /// Storage for explicit `unreachable`.
     Unreachable: Table(Rows.Unreachable) = .{},
+    /// Storage for explicit `null` literals.
     NullLit: Table(Rows.NullLit) = .{},
+    /// Storage for explicit `undef` literals.
     UndefLit: Table(Rows.UndefLit) = .{},
+    /// Storage for `defer` statements.
     Defer: Table(Rows.Defer) = .{},
+    /// Storage for `err defer` statements.
     ErrDefer: Table(Rows.ErrDefer) = .{},
+    /// Storage for `err.unwrap` expressions.
     ErrUnwrap: Table(Rows.ErrUnwrap) = .{},
+    /// Storage for optional `unwrap` expressions.
     OptionalUnwrap: Table(Rows.OptionalUnwrap) = .{},
+    /// Storage for `await` expressions.
     Await: Table(Rows.Await) = .{},
+    /// Storage for closure expressions.
     Closure: Table(Rows.Closure) = .{},
+    /// Storage for explicit cast expressions.
     Cast: Table(Rows.Cast) = .{},
+    /// Storage for `catch` expressions.
     Catch: Table(Rows.Catch) = .{},
+    /// Storage for `import` directives.
     Import: Table(Rows.Import) = .{},
+    /// Storage for `typeof` expressions.
     TypeOf: Table(Rows.TypeOf) = .{},
 
+    /// Storage for tuple type nodes.
     TupleType: Table(Rows.TupleType) = .{},
+    /// Storage for array type nodes.
     ArrayType: Table(Rows.ArrayType) = .{},
+    /// Storage for dynamic array type nodes.
     DynArrayType: Table(Rows.DynArrayType) = .{},
+    /// Storage for map type nodes.
     MapType: Table(Rows.MapType) = .{},
+    /// Storage for slice type nodes.
     SliceType: Table(Rows.SliceType) = .{},
+    /// Storage for optional type nodes.
     OptionalType: Table(Rows.OptionalType) = .{},
+    /// Storage for error-set type annotations.
     ErrorSetType: Table(Rows.ErrorSetType) = .{},
 
+    /// Storage for individual struct field definitions.
     StructField: Table(Rows.StructField) = .{},
+    /// Storage for struct type declarations.
     StructType: Table(Rows.StructType) = .{},
 
+    /// Storage for enum field declarations.
     EnumField: Table(Rows.EnumField) = .{},
+    /// Storage for enum type declarations.
     EnumType: Table(Rows.EnumType) = .{},
 
+    /// Storage for variant field declarations.
     VariantField: Table(Rows.VariantField) = .{},
+    /// Storage for variant type declarations.
     VariantType: Table(Rows.VariantType) = .{},
+    /// Storage for error type declarations.
     ErrorType: Table(Rows.ErrorType) = .{},
+    /// Storage for union type declarations.
     UnionType: Table(Rows.UnionType) = .{},
+    /// Storage for pointer type nodes.
     PointerType: Table(Rows.PointerType) = .{},
+    /// Storage for SIMD type nodes.
     SimdType: Table(Rows.SimdType) = .{},
+    /// Storage for complex number type nodes.
     ComplexType: Table(Rows.ComplexType) = .{},
+    /// Storage for tensor type declarations.
     TensorType: Table(Rows.TensorType) = .{},
+    /// Storage for the `type` literal nodes.
     TypeType: Table(Rows.TypeType) = .{},
+    /// Storage for the `any` type node.
     AnyType: Table(Rows.AnyType) = .{},
+    /// Storage for the `noreturn` type node.
     NoreturnType: Table(Rows.NoreturnType) = .{},
 
+    /// Storage for function parameter definitions.
     Param: Table(Rows.Param) = .{},
+    /// Storage for function attributes (e.g., visibility, comptime).
     Attribute: Table(Rows.Attribute) = .{},
+    /// Storage for top-level declarations.
     Decl: Table(Rows.Decl) = .{},
+    /// Storage for method-path segments used during type resolution.
     MethodPathSeg: Table(Rows.MethodPathSeg) = .{},
 
+    /// Pool that keeps each expression identifier.
     expr_pool: Pool(ExprId) = .{},
+    /// Pool that keeps declaration identifiers.
     decl_pool: Pool(DeclId) = .{},
+    /// Pool backing parameter identifiers.
     param_pool: Pool(ParamId) = .{},
+    /// Pool backing attribute identifiers.
     attr_pool: Pool(AttributeId) = .{},
+    /// Pool for struct field value ids.
     sfv_pool: Pool(StructFieldValueId) = .{},
+    /// Pool for key/value argument nodes.
     kv_pool: Pool(KeyValueId) = .{},
+    /// Pool for match arm identifiers.
     arm_pool: Pool(MatchArmId) = .{},
+    /// Pool for defined struct fields.
     sfield_pool: Pool(StructFieldId) = .{},
+    /// Pool for defined enum fields.
     efield_pool: Pool(EnumFieldId) = .{},
+    /// Pool for defined variant fields.
     vfield_pool: Pool(VariantFieldId) = .{},
+    /// Pool for method path segments.
     method_path_pool: Pool(MethodPathSegId) = .{},
+    /// Pool for MLIR pieces attached to AST nodes.
     mlir_piece_pool: Pool(MlirPieceId) = .{},
 
+    /// Shared string interner used for identifier names.
     strs: *StringInterner,
+    /// Immutable location table for source spans.
     locs: *const LocStore,
 
+    /// Initialize the expression store with its allocator, interner, and locations table.
     pub fn init(gpa: std.mem.Allocator, strs: *StringInterner, locs: *const LocStore) ExprStore {
         return .{ .gpa = gpa, .strs = strs, .locs = locs };
     }
 
+    /// Release all resources owned by the store, including tables and pools.
     pub fn deinit(self: *@This()) void {
         const gpa = self.gpa;
 
@@ -567,12 +1328,14 @@ pub const ExprStore = struct {
         self.mlir_piece_pool.deinit(gpa);
     }
 
+    /// Add a row of kind `K` to the store and return the newly issued `ExprId`.
     pub fn add(self: *@This(), comptime K: ExprKind, row: RowT(K)) ExprId {
         const tbl: *Table(RowT(K)) = &@field(self, @tagName(K));
         const idx = tbl.add(self.gpa, row);
         return self.index.newId(self.gpa, K, idx.toRaw(), ExprId);
     }
 
+    /// Retrieve the stored row for `id`, asserting that it matches kind `K`.
     pub fn get(self: *@This(), comptime K: ExprKind, id: ExprId) RowT(K) {
         std.debug.assert(self.index.kinds.items[id.toRaw()] == K);
         const row_idx = self.index.rows.items[id.toRaw()];
@@ -580,71 +1343,99 @@ pub const ExprStore = struct {
         return tbl.get(.{ .index = row_idx });
     }
 
+    /// Add a key/value literal row and return its identifier.
     pub fn addKeyValue(self: *@This(), row: Rows.KeyValue) KeyValueId {
         return self.KeyValue.add(self.gpa, row);
     }
 
+    /// Insert a struct field value initializer row.
     pub fn addStructFieldValue(self: *@This(), row: Rows.StructFieldValue) StructFieldValueId {
         return self.StructFieldValue.add(self.gpa, row);
     }
 
+    /// Push a match arm definition into its storage table.
     pub fn addMatchArm(self: *@This(), row: Rows.MatchArm) MatchArmId {
         return self.MatchArm.add(self.gpa, row);
     }
 
+    /// Store a parameter row and return its identifier.
     pub fn addParam(self: *@This(), row: Rows.Param) ParamId {
         return self.Param.add(self.gpa, row);
     }
 
+    /// Store an attribute row (e.g., visibility or extern) and return its `AttributeId`.
     pub fn addAttribute(self: *@This(), row: Rows.Attribute) AttributeId {
         return self.Attribute.add(self.gpa, row);
     }
 
+    /// Store a declaration row (function, struct, etc.) and return its `DeclId`.
     pub fn addDecl(self: *@This(), row: Rows.Decl) DeclId {
         return self.Decl.add(self.gpa, row);
     }
 
+    /// Insert a method path segment used during method lookup.
     pub fn addMethodPathSeg(self: *@This(), row: Rows.MethodPathSeg) MethodPathSegId {
         return self.MethodPathSeg.add(self.gpa, row);
     }
 
+    /// Store a struct field definition.
     pub fn addStructField(self: *@This(), row: Rows.StructField) StructFieldId {
         return self.StructField.add(self.gpa, row);
     }
 
+    /// Store an enum field definition.
     pub fn addEnumField(self: *@This(), row: Rows.EnumField) EnumFieldId {
         return self.EnumField.add(self.gpa, row);
     }
 
+    /// Store a variant field definition.
     pub fn addVariantField(self: *@This(), row: Rows.VariantField) VariantFieldId {
         return self.VariantField.add(self.gpa, row);
     }
+
+    /// Store an MLIR piece node and return its identifier.
     pub fn addMlirPiece(self: *@This(), row: Rows.MlirPiece) MlirPieceId {
         return self.MlirPiece.add(self.gpa, row);
     }
 };
 
+/// Statement-specific tables coordinating `StmtKind` to `StmtId`.
 pub const StmtStore = struct {
+    /// Allocator backing every statement table.
     gpa: std.mem.Allocator,
+    /// Index tracker for mapping `StmtKind` to `StmtId`.
     index: StoreIndex(StmtKind) = .{},
 
+    /// Table holding expression statements.
     Expr: Table(StmtRows.Expr) = .{},
+    /// Table holding declaration statements.
     Decl: Table(StmtRows.Decl) = .{},
+    /// Table holding assignment statements.
     Assign: Table(StmtRows.Assign) = .{},
+    /// Table holding `insert` statements.
     Insert: Table(StmtRows.Insert) = .{},
+    /// Table holding `return` statements.
     Return: Table(StmtRows.Return) = .{},
+    /// Table holding `break` statements.
     Break: Table(StmtRows.Break) = .{},
+    /// Table holding `continue` statements.
     Continue: Table(StmtRows.Continue) = .{},
+    /// Table holding `unreachable` statements.
     Unreachable: Table(StmtRows.Unreachable) = .{},
+    /// Table holding `defer` statements.
     Defer: Table(StmtRows.Defer) = .{},
+    /// Table holding `err defer` statements.
     ErrDefer: Table(StmtRows.ErrDefer) = .{},
 
+    /// Pool for statement identifiers.
     stmt_pool: Pool(StmtId) = .{},
 
+    /// Initialize statement storage with allocator `gpa`.
     pub fn init(gpa: std.mem.Allocator) StmtStore {
         return .{ .gpa = gpa };
     }
 
+    /// Deinitialize tables and release their memory through `gpa`.
     pub fn deinit(self: *@This()) void {
         const gpa = self.gpa;
 
@@ -655,12 +1446,14 @@ pub const StmtStore = struct {
         self.stmt_pool.deinit(gpa);
     }
 
+    /// Add a statement row of kind `K` and get its `StmtId`.
     pub fn add(self: *@This(), comptime K: StmtKind, row: StmtRowT(K)) StmtId {
         const tbl: *Table(StmtRowT(K)) = &@field(self, @tagName(K));
         const idx = tbl.add(self.gpa, row);
         return self.index.newId(self.gpa, K, idx.toRaw(), StmtId);
     }
 
+    /// Fetch the statement row for identifier `id`, verifying its kind.
     pub fn get(self: *@This(), comptime K: StmtKind, id: StmtId) StmtRowT(K) {
         std.debug.assert(self.index.kinds.items[id.toRaw()] == K);
         const row_idx = self.index.rows.items[id.toRaw()];
@@ -669,35 +1462,58 @@ pub const StmtStore = struct {
     }
 };
 
+/// Storage for pattern nodes used by matches, loops, and bindings.
 pub const PatternStore = struct {
+    /// Allocator backing pattern tables and pools.
     gpa: std.mem.Allocator,
+    /// Tracks `PatternKind` to the assigned ones.
     index: StoreIndex(PatternKind) = .{},
 
+    /// Table for wildcard patterns.
     Wildcard: Table(PatRows.Wildcard) = .{},
+    /// Table for literal patterns.
     Literal: Table(PatRows.Literal) = .{},
+    /// Table for method path segments referenced from paths.
     PathSeg: Table(PatRows.PathSeg) = .{},
+    /// Table for path patterns.
     Path: Table(PatRows.Path) = .{},
+    /// Table for binding patterns (name + qualifiers).
     Binding: Table(PatRows.Binding) = .{},
+    /// Table for tuple patterns.
     Tuple: Table(PatRows.Tuple) = .{},
+    /// Table for slice patterns.
     Slice: Table(PatRows.Slice) = .{},
+    /// Table for struct field patterns.
     StructField: Table(PatRows.StructField) = .{},
+    /// Table for struct patterns.
     Struct: Table(PatRows.Struct) = .{},
+    /// Table for variant tuple patterns.
     VariantTuple: Table(PatRows.VariantTuple) = .{},
+    /// Table for variant struct patterns.
     VariantStruct: Table(PatRows.VariantStruct) = .{},
+    /// Table for range patterns.
     Range: Table(PatRows.Range) = .{},
+    /// Table for disjunctive (`|`) patterns.
     Or: Table(PatRows.Or) = .{},
+    /// Table for `@` binder patterns.
     At: Table(PatRows.At) = .{},
 
+    /// Pool storing assigned `PatternId`s.
     pat_pool: Pool(PatternId) = .{},
+    /// Pool storing path segment identifiers.
     seg_pool: Pool(PathSegId) = .{},
+    /// Pool storing struct field identifiers.
     field_pool: Pool(PatFieldId) = .{},
 
+    /// Shared string interner used while constructing patterns.
     strs: *StringInterner,
 
+    /// Initialize the pattern store with `gpa` and string interner.
     pub fn init(gpa: std.mem.Allocator, strs: *StringInterner) PatternStore {
         return .{ .gpa = gpa, .strs = strs };
     }
 
+    /// Deinitialize pattern tables/pools and release memory.
     pub fn deinit(self: *@This()) void {
         const gpa = self.gpa;
 
@@ -714,12 +1530,14 @@ pub const PatternStore = struct {
         self.field_pool.deinit(gpa);
     }
 
+    /// Insert a pattern row of kind `K` and return its identifier.
     pub fn add(self: *@This(), comptime K: PatternKind, row: PatRowT(K)) PatternId {
         const tbl: *Table(PatRowT(K)) = &@field(self, @tagName(K));
         const idx = tbl.add(self.gpa, row);
         return self.index.newId(self.gpa, K, idx.toRaw(), PatternId);
     }
 
+    /// Retrieve the stored pattern row for `id`.
     pub fn get(self: *@This(), comptime K: PatternKind, id: PatternId) PatRowT(K) {
         std.debug.assert(self.index.kinds.items[id.toRaw()] == K);
         const row_idx = self.index.rows.items[id.toRaw()];
@@ -727,26 +1545,37 @@ pub const PatternStore = struct {
         return tbl.get(.{ .index = row_idx });
     }
 
+    /// Add a path-segment row and obtain its `PathSegId`.
     pub fn addPathSeg(self: *@This(), row: PatRows.PathSeg) PathSegId {
         const idx = self.PathSeg.add(self.gpa, row);
         return PathSegId.fromRaw(idx);
     }
 
+    /// Add a struct field pattern row and obtain its identifier.
     pub fn addPatField(self: *@This(), row: PatRows.StructField) PatFieldId {
         const idx = self.StructField.add(self.gpa, row);
         return PatFieldId.fromRaw(idx);
     }
 };
 
+/// Top-level AST context that owns stores for expressions, statements, and patterns.
 pub const Ast = struct {
+    /// Allocator shared across the AST stores in this unit.
     gpa: std.mem.Allocator,
+    /// Identifier assigned to the source file for diagnostics.
     file_id: usize,
+    /// Root declaration unit containing global declarations.
     unit: Unit,
+    /// Expression storage used throughout the AST.
     exprs: ExprStore,
+    /// Statement storage used by blocks and functions.
     stmts: StmtStore,
+    /// Pattern storage required for match/loop constructs.
     pats: PatternStore,
+    /// Auxiliary type info pulled from `types.zig`.
     type_info: TypeInfo,
 
+    /// Build an AST container for `file_id` backed by `gpa`, `interner`, `locs`, and `type_store`.
     pub fn init(
         gpa: std.mem.Allocator,
         interner: *StringInterner,
@@ -765,6 +1594,7 @@ pub const Ast = struct {
         };
     }
 
+    /// Tear down every internal store and release the allocator-backed memory.
     pub fn deinit(self: *@This()) void {
         self.type_info.deinit();
         self.exprs.deinit();
@@ -773,23 +1603,32 @@ pub const Ast = struct {
     }
 };
 
+/// Debug printer that writes the AST tree structure in a s-expression-like form.
 pub const AstPrinter = struct {
+    /// Output writer that receives the formatted AST tree.
     writer: *std.io.Writer,
+    /// Current indentation depth used by `ws`.
     indent: usize = 0,
 
+    /// Expression store read by the printer.
     exprs: *ExprStore,
+    /// Statement store read by the printer.
     stmts: *StmtStore,
+    /// Pattern store read by the printer.
     pats: *PatternStore,
 
+    /// Create an AST printer bound to the provided stores and writer.
     pub fn init(writer: anytype, exprs: *ExprStore, stmts: *StmtStore, pats: *PatternStore) AstPrinter {
         return .{ .writer = writer, .exprs = exprs, .stmts = stmts, .pats = pats };
     }
 
+    /// Emit the indentation prefix corresponding to `self.indent`.
     fn ws(self: *AstPrinter) anyerror!void {
         var i: usize = 0;
         while (i < self.indent) : (i += 1) try self.writer.writeByte(' ');
     }
 
+    /// Emit `head` at the current indent and then increase the indent depth.
     fn open(self: *AstPrinter, comptime head: []const u8, args: anytype) anyerror!void {
         try self.ws();
         try self.writer.print(head, args);
@@ -797,22 +1636,26 @@ pub const AstPrinter = struct {
         self.indent += 2;
     }
 
+    /// Decrease the indent depth and emit a closing parenthesis line.
     fn close(self: *AstPrinter) anyerror!void {
         self.indent = if (self.indent >= 2) self.indent - 2 else 0;
         try self.ws();
         try self.writer.writeAll(")\n");
     }
 
+    /// Print a single-line entry at the current indent using `fmt`.
     fn leaf(self: *AstPrinter, comptime fmt: []const u8, args: anytype) anyerror!void {
         try self.ws();
         try self.writer.print(fmt, args);
         try self.writer.writeAll("\n");
     }
 
+    /// Resolve a `StrId` to its string bytes via the shared interner.
     inline fn s(self: *const AstPrinter, id: StrId) []const u8 {
         return self.exprs.strs.get(id);
     }
 
+    /// Print the entire contents of `unit` (declarations, package info, etc.).
     pub fn printUnit(self: *AstPrinter, unit: *const Unit) anyerror!void {
         try self.open("(unit", .{});
         if (!unit.package_name.isNone()) {
@@ -827,6 +1670,7 @@ pub const AstPrinter = struct {
         try self.writer.flush();
     }
 
+    /// Pretty-print the declaration referred to by `id`.
     fn printDecl(self: *AstPrinter, id: DeclId) anyerror!void {
         const row = self.exprs.Decl.get(id);
         try self.open("(decl is_const={})", .{row.flags.is_const});
@@ -860,6 +1704,7 @@ pub const AstPrinter = struct {
         try self.close();
     }
 
+    /// Dispatch and print the statement identified by `id`.
     fn printStmt(self: *AstPrinter, id: StmtId) anyerror!void {
         const kind = self.stmts.index.kinds.items[id.toRaw()];
         return switch (kind) {
@@ -934,6 +1779,7 @@ pub const AstPrinter = struct {
         };
     }
 
+    /// Print an expression subtree rooted at `id`.
     pub fn printExpr(self: *AstPrinter, id: ExprId) anyerror!void {
         const kind = self.exprs.index.kinds.items[id.toRaw()];
         switch (kind) {
@@ -1489,6 +2335,7 @@ pub const AstPrinter = struct {
         }
     }
 
+    /// Print multiple expressions from `r` labeled by `name`.
     fn printExprRange(self: *AstPrinter, comptime name: []const u8, r: RangeOf(ExprId)) anyerror!void {
         try self.open("(" ++ name, .{});
         const ids = self.exprs.expr_pool.slice(r);
@@ -1496,6 +2343,7 @@ pub const AstPrinter = struct {
         try self.close();
     }
 
+    /// Print the attribute range `opt_r`, if present, using `(attr ...)` nodes.
     fn printAttrs(self: *AstPrinter, opt_r: OptRangeAttr) anyerror!void {
         if (opt_r.isNone()) return;
         const r = opt_r.asRange();
@@ -1518,6 +2366,7 @@ pub const AstPrinter = struct {
         try self.close();
     }
 
+    /// Print each parameter referenced by `r`, including attributes/ty/value.
     fn printParams(self: *AstPrinter, r: RangeOf(ParamId)) anyerror!void {
         const params = self.exprs.param_pool.slice(r);
         for (params) |pid| {
@@ -1544,6 +2393,7 @@ pub const AstPrinter = struct {
         }
     }
 
+    /// Print a struct field definition referenced by `id`, including type/value.
     fn printStructField(self: *AstPrinter, id: StructFieldId) anyerror!void {
         const field = self.exprs.StructField.get(id);
         try self.open("(field name=\"{s}\"", .{self.s(field.name)});
@@ -1559,6 +2409,7 @@ pub const AstPrinter = struct {
         try self.close();
     }
 
+    /// Print the variant field payload structure for the given `id`.
     fn printVariantField(self: *AstPrinter, id: VariantFieldId) anyerror!void {
         const field = self.exprs.VariantField.get(id);
         try self.open("(field name=\"{s}\"", .{self.s(field.name)});
@@ -1585,6 +2436,7 @@ pub const AstPrinter = struct {
         try self.close();
     }
 
+    /// Print the pattern `id` tree, using nested `(pattern ...)` nodes.
     pub fn printPattern(self: *AstPrinter, id: PatternId) anyerror!void {
         const kind = self.pats.index.kinds.items[id.toRaw()];
         switch (kind) {
@@ -1675,6 +2527,7 @@ pub const AstPrinter = struct {
         }
     }
 
+    /// Print the components of a pattern path from `path`.
     fn printPatternPath(self: *AstPrinter, path: RangeOf(PathSegId)) anyerror!void {
         const segs = self.pats.seg_pool.slice(path);
         if (segs.len == 0) return;
@@ -1686,6 +2539,7 @@ pub const AstPrinter = struct {
         try self.close();
     }
 
+    /// Print a struct pattern field entry identified by `id`.
     fn printPatternField(self: *AstPrinter, id: PatFieldId) anyerror!void {
         const field = self.pats.StructField.get(id);
         try self.open("(field name=\"{s}\"", .{self.s(field.name)});
@@ -1694,19 +2548,28 @@ pub const AstPrinter = struct {
     }
 };
 
+/// Source-like pretty-printer for the AST, emitting human-readable syntax.
 pub const CodePrinter = struct {
+    /// Writer used to emit source-like text.
     writer: *std.io.Writer,
+    /// Current indentation width for structured output.
     indent: usize = 0,
+    /// Tracks whether the indentation prefix has been emitted yet.
     needs_indent: bool = true,
 
+    /// Expression store that backs code printing.
     exprs: *ExprStore,
+    /// Statement store that backs code printing.
     stmts: *StmtStore,
+    /// Pattern store that backs code printing.
     pats: *PatternStore,
 
+    /// Create a code printer wired to the given stores and writer.
     pub fn init(writer: anytype, exprs: *ExprStore, stmts: *StmtStore, pats: *PatternStore) CodePrinter {
         return .{ .writer = writer, .exprs = exprs, .stmts = stmts, .pats = pats };
     }
 
+    /// Emit indentation spaces if they have not been emitted since the last newline.
     fn ws(self: *CodePrinter) anyerror!void {
         if (!self.needs_indent) return;
         var i: usize = 0;
@@ -1714,20 +2577,24 @@ pub const CodePrinter = struct {
         self.needs_indent = false;
     }
 
+    /// Emit a newline and mark that indentation needs to be written on the next line.
     fn newline(self: *CodePrinter) anyerror!void {
         try self.writer.writeByte('\n');
         self.needs_indent = true;
     }
 
+    /// Write formatted text after ensuring indentation has been printed.
     fn printf(self: *CodePrinter, comptime fmt: []const u8, args: anytype) anyerror!void {
         try self.ws();
         try self.writer.print(fmt, args);
     }
 
+    /// Resolve a `StrId` to bytes using the shared interner.
     inline fn s(self: *const CodePrinter, id: StrId) []const u8 {
         return self.exprs.strs.get(id);
     }
 
+    /// Print source-like code for the translation `unit`.
     pub fn printUnit(self: *CodePrinter, unit: *const Unit) anyerror!void {
         if (!unit.package_name.isNone()) {
             try self.printf("package {s}", .{self.s(unit.package_name.unwrap())});
@@ -1747,6 +2614,7 @@ pub const CodePrinter = struct {
         try self.writer.flush();
     }
 
+    /// Emit source syntax for the declaration identified by `id`.
     fn printDecl(self: *CodePrinter, id: DeclId) anyerror!void {
         const row = self.exprs.Decl.get(id);
 
@@ -1772,6 +2640,7 @@ pub const CodePrinter = struct {
         try self.printExpr(row.value);
     }
 
+    /// Emit the statement `id` in source form, preserving indentation.
     fn printStmt(self: *CodePrinter, id: StmtId) anyerror!void {
         const kind = self.stmts.index.kinds.items[id.toRaw()];
         try self.ws();
@@ -1833,6 +2702,7 @@ pub const CodePrinter = struct {
         };
     }
 
+    /// Emit code for the expression tree rooted at `id`.
     pub fn printExpr(self: *CodePrinter, id: ExprId) anyerror!void {
         const kind = self.exprs.index.kinds.items[id.toRaw()];
         switch (kind) {
@@ -2461,6 +3331,7 @@ pub const CodePrinter = struct {
         }
     }
 
+    /// Print expressions from `r` separated by `sep`.
     fn printExprs(self: *CodePrinter, r: RangeOf(ExprId), sep: []const u8) anyerror!void {
         const ids = self.exprs.expr_pool.slice(r);
         for (ids, 0..) |eid, i| {
@@ -2469,7 +3340,9 @@ pub const CodePrinter = struct {
         }
     }
 
+    /// Position hint for attribute printing relative to the main node.
     const AttrPos = enum { Before, After };
+    /// Print the attribute list `opt_r` at the given `pos` (before or after the node).
     fn printAttrs(self: *CodePrinter, opt_r: OptRangeAttr, pos: AttrPos) anyerror!void {
         if (opt_r.isNone()) return;
         const r = opt_r.asRange();
@@ -2495,6 +3368,7 @@ pub const CodePrinter = struct {
         try self.printf("] ", .{});
     }
 
+    /// Print function/closure parameters contained in `r`.
     fn printParams(self: *CodePrinter, r: RangeOf(ParamId)) anyerror!void {
         const params = self.exprs.param_pool.slice(r);
         for (params, 0..) |pid, i| {
@@ -2520,6 +3394,7 @@ pub const CodePrinter = struct {
         }
     }
 
+    /// Emit source text for the struct field referenced by `id`.
     fn printStructField(self: *CodePrinter, id: StructFieldId) anyerror!void {
         const field = self.exprs.StructField.get(id);
         try self.printAttrs(field.attrs, .Before);
@@ -2531,6 +3406,7 @@ pub const CodePrinter = struct {
         }
     }
 
+    /// Emit source text for the variant field `id`, including payload description.
     fn printVariantField(self: *CodePrinter, id: VariantFieldId) anyerror!void {
         const field = self.exprs.VariantField.get(id);
         try self.printAttrs(field.attrs, .Before);
@@ -2560,6 +3436,7 @@ pub const CodePrinter = struct {
         }
     }
 
+    /// Emit source form for the pattern tree rooted at `id`.
     pub fn printPattern(self: *CodePrinter, id: PatternId) anyerror!void {
         const kind = self.pats.index.kinds.items[id.toRaw()];
         switch (kind) {
@@ -2679,6 +3556,7 @@ pub const CodePrinter = struct {
         }
     }
 
+    /// Print the dotted pattern path described by `path`.
     fn printPatternPath(self: *CodePrinter, path: RangeOf(PathSegId)) anyerror!void {
         const segs = self.pats.seg_pool.slice(path);
         for (segs, 0..) |sid, i| {
@@ -2688,6 +3566,7 @@ pub const CodePrinter = struct {
         }
     }
 
+    /// Print the struct pattern field `id` along with its nested pattern.
     fn printPatternField(self: *CodePrinter, id: PatFieldId) anyerror!void {
         const field = self.pats.StructField.get(id);
         try self.printf("{s}: ", .{self.s(field.name)});

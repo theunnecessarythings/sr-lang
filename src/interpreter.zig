@@ -10,55 +10,80 @@ const StructValue = comptime_mod.StructValue;
 const RangeValue = comptime_mod.RangeValue;
 const MapEntry = comptime_mod.MapEntry;
 const MapValue = comptime_mod.MapValue;
+/// Key identifying a method implementation by owner type + method name.
 const MethodKey = struct {
+    /// Owner type or module for this method entry.
     owner: ast.StrId,
+    /// Method identifier within the owner.
     method: ast.StrId,
 };
+/// Mapping from method signatures to AST expression IDs.
 const MethodMap = std.AutoHashMap(MethodKey, ast.ExprId);
 const FunctionValue = comptime_mod.FunctionValue;
+/// Helper type for comparing numeric values regardless of int/float representation.
 const NumericValue = union(enum) {
     Int: i128,
     Float: f64,
 };
 
+/// Represents a single runtime binding (name → comptime value).
 pub const Binding = struct {
+    /// Interned identifier for the bound name.
     name: ast.StrId,
+    /// Stored comptime value for the binding.
     value: Value,
 };
 
+/// Identifies a specialized function by its declaration and bound arguments.
 const FunctionKey = struct {
+    /// Declaration ID of the specialized function.
     decl_id: ast.DeclId,
+    /// Hash of the binding snapshot driving the specialization.
     bindings_hash: u64,
 };
 
+/// Compare two function specialization keys for equality.
 fn keysEqual(a: FunctionKey, b: FunctionKey) bool {
     return a.decl_id.toRaw() == b.decl_id.toRaw() and a.bindings_hash == b.bindings_hash;
 }
 
+/// Cache entry for a function specialization computed via its bindings.
 const FunctionSpecializationEntry = struct {
+    /// Signature that identifies this specialization.
     key: FunctionKey,
+    /// Expression ID of the specialized function body.
     func_expr: ast.ExprId,
+    /// Snapshot of bindings captured when the specialization was created.
     bindings: BindingSnapshot,
 
+    /// Release resources held by this specialization entry.
     fn destroy(self: *FunctionSpecializationEntry, allocator: std.mem.Allocator) void {
         self.bindings.destroy(allocator);
     }
 };
 
+/// Result of specializing a function: the runtime function + binding snapshot.
 pub const SpecializationResult = struct {
+    /// Runtime `FunctionValue` that represents the specialized body.
     func: FunctionValue,
+    /// Binding snapshot captured when the specialization was produced.
     snapshot: BindingSnapshot,
 };
 
+/// Immutable snapshot of bindings captured for memoizing function calls.
 pub const BindingSnapshot = struct {
+    /// Ordered list of bound names/values.
     bindings: std.ArrayList(Binding),
+    /// Hash of the bindings used for quick lookup.
     hash: u64,
 
+    /// Lookup a binding by its name inside the snapshot.
     pub fn lookup(self: *BindingSnapshot, name: ast.StrId) ?*Binding {
         for (self.bindings.items) |*binding| if (binding.name.eq(name)) return binding;
         return null;
     }
 
+    /// Release all owned values and reset the hash.
     pub fn destroy(self: *BindingSnapshot, allocator: std.mem.Allocator) void {
         for (self.bindings.items) |*binding| binding.value.destroy(allocator);
         self.bindings.deinit(allocator);
@@ -66,15 +91,24 @@ pub const BindingSnapshot = struct {
     }
 };
 
+/// Light-weight interpreter used during `comptime` evaluation.
 pub const Interpreter = struct {
+    /// Allocator used for overriding temporaries and stored values.
     allocator: std.mem.Allocator,
+    /// AST unit being interpreted.
     ast: *ast.Ast,
+    /// Symbol table for resolver requiring package-level context.
     symtab: ?*@import("symbols.zig").SymbolStore,
+    /// Compilation unit used for import resolution and exports.
     compilation_unit: ?*@import("package.zig").CompilationUnit,
+    /// Top-level binding list managed by the interpreter.
     bindings: std.ArrayList(Binding),
+    /// Registered methods available for dispatch.
     method_table: MethodMap,
+    /// Cached function specializations keyed by binding states.
     specializations: std.AutoHashMap(u128, FunctionSpecializationEntry),
 
+    /// Errors that the interpreter can emit when the AST is malformed or runtime errors occur.
     pub const Error = error{
         UnsupportedExpr,
         InvalidStatement,
@@ -90,6 +124,7 @@ pub const Interpreter = struct {
         InvalidIndexAccess,
     };
 
+    /// Initialize an interpreter for `ast_unit` with optional `symtab`/`compilation_unit`.
     pub fn init(allocator: std.mem.Allocator, ast_unit: *ast.Ast, symtab: ?*@import("symbols.zig").SymbolStore, compilation_unit: ?*@import("package.zig").CompilationUnit) anyerror!Interpreter {
         var interp = Interpreter{
             .allocator = allocator,
@@ -108,6 +143,7 @@ pub const Interpreter = struct {
         return interp;
     }
 
+    /// Release all owned bindings, methods, and specialization caches.
     pub fn deinit(self: *Interpreter) void {
         for (self.bindings.items) |*binding| binding.value.destroy(self.allocator);
         self.bindings.deinit(self.allocator);
@@ -117,6 +153,7 @@ pub const Interpreter = struct {
         self.specializations.deinit();
     }
 
+    /// Evaluate the AST expression `expr` and return its runtime value.
     pub fn evalExpr(self: *Interpreter, expr: ast.ExprId) anyerror!Value {
         const kind = self.ast.exprs.index.kinds.items[expr.toRaw()];
         return switch (kind) {
@@ -175,10 +212,12 @@ pub const Interpreter = struct {
         };
     }
 
+    /// Insert or replace `value` into the interpreter’s binding table under `name`.
     pub fn bind(self: *Interpreter, name: ast.StrId, value: Value) !void {
         try self.setBinding(name, value);
     }
 
+    /// Retrieve a binding value by `name`, cloning it for the caller.
     pub fn lookup(self: *Interpreter, name: ast.StrId) anyerror!?Value {
         for (self.bindings.items) |binding| {
             if (binding.name.eq(name)) return try self.cloneValue(binding.value);
@@ -186,6 +225,8 @@ pub const Interpreter = struct {
         return null;
     }
 
+    /// Evaluate a block of statements, returning the last value or void.
+    /// Evaluate `block`, returning the last expression value or `Void`.
     fn evalBlock(self: *Interpreter, block: ast.Rows.Block) anyerror!Value {
         var last_value: ?Value = null;
         const stmts = self.ast.stmts.stmt_pool.slice(block.items);
@@ -199,6 +240,7 @@ pub const Interpreter = struct {
         return Value{ .Void = {} };
     }
 
+    /// Execute a statement, updating `last_value` when expression statements occur.
     fn evalStatement(self: *Interpreter, stmt_id: ast.StmtId, last_value: *?Value) anyerror!?Value {
         const kind = self.ast.stmts.index.kinds.items[stmt_id.toRaw()];
         switch (kind) {
@@ -234,10 +276,12 @@ pub const Interpreter = struct {
         }
     }
 
+    /// Return a `FunctionValue` that refers back to `expr`.
     fn evalFunctionLit(self: *Interpreter, expr: ast.ExprId) anyerror!Value {
         return Value{ .Function = .{ .expr = expr, .ast = self.ast } };
     }
 
+    /// Evaluate an assignment statement and update the corresponding binding.
     fn evalAssignment(self: *Interpreter, row: ast.StmtRows.Assign) anyerror!void {
         const kind = self.ast.exprs.index.kinds.items[row.left.toRaw()];
         if (kind != .Ident) return Error.InvalidStatement;
@@ -246,10 +290,12 @@ pub const Interpreter = struct {
         try self.setBinding(ident.name, value);
     }
 
+    /// Evaluate a cast expression by delegating to its inner expression.
     fn evalCast(self: *Interpreter, row: ast.Rows.Cast) anyerror!Value {
         return self.evalExpr(row.expr);
     }
 
+    /// Evaluate a `catch` expression and clone the result.
     fn evalCatch(self: *Interpreter, row: ast.Rows.Catch) anyerror!Value {
         var value = try self.evalExpr(row.expr);
         const result = try self.cloneValue(value);
@@ -257,6 +303,7 @@ pub const Interpreter = struct {
         return result;
     }
 
+    /// Evaluate `optional.unwrap` by cloning the underlying value.
     fn evalOptionalUnwrap(self: *Interpreter, row: ast.Rows.OptionalUnwrap) anyerror!Value {
         var value = try self.evalExpr(row.expr);
         const result = try self.cloneValue(value);
@@ -264,12 +311,14 @@ pub const Interpreter = struct {
         return result;
     }
 
+    /// Evaluate a `defer` block by executing the expression and discarding the result.
     fn evalDefer(self: *Interpreter, row: ast.Rows.Defer) anyerror!Value {
         var value = try self.evalExpr(row.expr);
         value.destroy(self.allocator);
         return Value{ .Void = {} };
     }
 
+    /// Evaluate `typeof(expr)` by returning the stored compile-time type.
     fn evalTypeOf(self: *Interpreter, row: ast.Rows.TypeOf) anyerror!Value {
         const idx = row.expr.toRaw();
         if (idx < self.ast.type_info.expr_types.items.len) {
@@ -280,6 +329,7 @@ pub const Interpreter = struct {
         return Error.InvalidType;
     }
 
+    /// Evaluate a pointer type expression, returning its `TypeId`.
     fn evalPointerType(self: *Interpreter, row: ast.Rows.PointerType) anyerror!Value {
         var elem_value = try self.evalExpr(row.elem);
         defer elem_value.destroy(self.allocator);
@@ -292,6 +342,7 @@ pub const Interpreter = struct {
         };
     }
 
+    /// Evaluate a dereference expression by unwrapping the pointer value.
     fn evalDeref(self: *Interpreter, row: ast.Rows.Deref) anyerror!Value {
         var ptr_value = try self.evalExpr(row.expr);
         defer ptr_value.destroy(self.allocator);
@@ -301,6 +352,7 @@ pub const Interpreter = struct {
         };
     }
 
+    /// Evaluate a `simd` type expression and return its `TypeId`.
     fn evalSimdType(self: *Interpreter, row: ast.Rows.SimdType) anyerror!Value {
         const elem_ty = try self.typeIdFromTypeExpr(row.elem);
         var lanes_value = try self.evalExpr(row.lanes);
@@ -313,6 +365,7 @@ pub const Interpreter = struct {
         return Value{ .Type = ts.mkSimd(elem_ty, lanes) };
     }
 
+    /// Evaluate a `tensor` type expression, collecting each dimension.
     fn evalTensorType(self: *Interpreter, row: ast.Rows.TensorType) anyerror!Value {
         const elem_ty = try self.typeIdFromTypeExpr(row.elem);
         const shape_exprs = self.ast.exprs.expr_pool.slice(row.shape);
@@ -338,6 +391,7 @@ pub const Interpreter = struct {
         return Value{ .Type = ts.mkTensor(elem_ty, dims) };
     }
 
+    /// Evaluate a fixed-size array type expression.
     fn evalArrayType(self: *Interpreter, row: ast.Rows.ArrayType) anyerror!Value {
         const elem_ty = try self.typeIdFromTypeExpr(row.elem);
         var size_value = try self.evalExpr(row.size);
@@ -349,18 +403,21 @@ pub const Interpreter = struct {
         return Value{ .Type = self.ast.type_info.store.mkArray(elem_ty, len) };
     }
 
+    /// Evaluate a dynamic array type expression.
     fn evalDynArrayType(self: *Interpreter, row: ast.Rows.DynArrayType) anyerror!Value {
         const elem_ty = try self.typeIdFromTypeExpr(row.elem);
         const ts = self.ast.type_info.store;
         return Value{ .Type = ts.mkDynArray(elem_ty) };
     }
 
+    /// Evaluate a slice type expression, honoring the constness flag.
     fn evalSliceType(self: *Interpreter, row: ast.Rows.SliceType) anyerror!Value {
         const elem_ty = try self.typeIdFromTypeExpr(row.elem);
         const ts = self.ast.type_info.store;
         return Value{ .Type = ts.mkSlice(elem_ty, row.is_const) };
     }
 
+    /// Evaluate a map type expression with key/value type parameters.
     fn evalMapType(self: *Interpreter, row: ast.Rows.MapType) anyerror!Value {
         const ts = self.ast.type_info.store;
         const key_ty = try self.typeIdFromTypeExpr(row.key);
@@ -368,12 +425,14 @@ pub const Interpreter = struct {
         return Value{ .Type = ts.mkMap(key_ty, val_ty) };
     }
 
+    /// Evaluate an optional type expression wrapping a single element type.
     fn evalOptionalType(self: *Interpreter, row: ast.Rows.OptionalType) anyerror!Value {
         const elem_ty = try self.typeIdFromTypeExpr(row.elem);
         const ts = self.ast.type_info.store;
         return Value{ .Type = ts.mkOptional(elem_ty) };
     }
 
+    /// Construct a struct type from its named fields.
     fn evalStructType(self: *Interpreter, row: ast.Rows.StructType) anyerror!Value {
         const ts = self.ast.type_info.store;
         const sfs = self.ast.exprs.sfield_pool.slice(row.fields);
@@ -389,6 +448,7 @@ pub const Interpreter = struct {
         return Value{ .Type = struct_ty };
     }
 
+    /// Evaluate a variant type expression by describing each field payload.
     fn evalVariantType(self: *Interpreter, row: ast.Rows.VariantType) anyerror!Value {
         const ts = self.ast.type_info.store;
         const vfs = self.ast.exprs.vfield_pool.slice(row.fields);
@@ -403,6 +463,7 @@ pub const Interpreter = struct {
         return Value{ .Type = ts.mkVariant(buf) };
     }
 
+    /// Resolve the payload type for a variant field, supporting tuples/structs.
     fn evalVariantFieldPayloadType(self: *Interpreter, field: ast.Rows.VariantField) anyerror!types.TypeId {
         const ts = self.ast.type_info.store;
         return switch (field.payload_kind) {
@@ -434,6 +495,7 @@ pub const Interpreter = struct {
         };
     }
 
+    /// Evaluate an error set type, returning its element/error pair.
     fn evalErrorSetType(self: *Interpreter, row: ast.Rows.ErrorSetType) anyerror!Value {
         const ts = self.ast.type_info.store;
         const value_ty = try self.typeIdFromTypeExpr(row.value);
@@ -441,6 +503,7 @@ pub const Interpreter = struct {
         return Value{ .Type = ts.mkErrorSet(value_ty, err_ty) };
     }
 
+    /// Evaluate an import expression by retrieving the type of the referenced module.
     fn evalImport(self: *Interpreter, expr: ast.ExprId) anyerror!Value {
         const idx = expr.toRaw();
         if (idx >= self.ast.type_info.expr_types.items.len) return Error.InvalidType;
@@ -450,6 +513,7 @@ pub const Interpreter = struct {
         return Error.InvalidType;
     }
 
+    /// Evaluate a union type expression by collecting variant fields.
     fn evalUnionType(self: *Interpreter, row: ast.Rows.UnionType) anyerror!Value {
         const ts = self.ast.type_info.store;
         const sfs = self.ast.exprs.sfield_pool.slice(row.fields);
@@ -465,6 +529,7 @@ pub const Interpreter = struct {
         return Value{ .Type = union_ty };
     }
 
+    /// Evaluate an enum literal by emitting its tag type and member list.
     fn evalEnumType(self: *Interpreter, row: ast.Rows.EnumType) anyerror!Value {
         const ts = self.ast.type_info.store;
         var tag_ty = ts.tI32();
@@ -498,6 +563,7 @@ pub const Interpreter = struct {
         return Value{ .Type = enum_ty };
     }
 
+    /// Evaluate a type expression and return its `TypeId`, using `typeof` fallback when needed.
     fn typeIdFromTypeExpr(self: *Interpreter, expr: ast.ExprId) anyerror!types.TypeId {
         const expr_index = expr.toRaw();
         if (expr_index < self.ast.type_info.expr_types.items.len) {
@@ -516,6 +582,7 @@ pub const Interpreter = struct {
         };
     }
 
+    /// Evaluate a function call expression, handling methods and variadic dispatch.
     fn evalCall(self: *Interpreter, row: ast.Rows.Call) anyerror!Value {
         var callee_value: Value = .Void;
         var method_receiver: ?Value = null;
@@ -555,6 +622,7 @@ pub const Interpreter = struct {
         };
     }
 
+    /// Evaluate a range of expressions used as call arguments.
     fn evalCallArgs(self: *Interpreter, range: ast.RangeExpr) anyerror!std.ArrayList(Value) {
         const exprs = self.ast.exprs.expr_pool.slice(range);
         if (exprs.len == 0) return .empty;
@@ -572,6 +640,7 @@ pub const Interpreter = struct {
         return list;
     }
 
+    /// Bind arguments/bindings and execute the `FunctionValue` body.
     fn callFunction(self: *Interpreter, func: FunctionValue, args: *std.ArrayList(Value)) anyerror!Value {
         const row = func.ast.exprs.get(.FunctionLit, func.expr);
         const params = func.ast.exprs.param_pool.slice(row.params);
@@ -609,15 +678,16 @@ pub const Interpreter = struct {
         var scope = try self.pushBindings(&matches);
         defer scope.deinit();
         if (row.body.isNone()) return Value{ .Void = {} };
-        
+
         // Temporarily switch to the function's AST for evaluating the body
         const saved_ast = self.ast;
         self.ast = func.ast;
         defer self.ast = saved_ast;
-        
+
         return try self.evalExpr(row.body.unwrap());
     }
 
+    /// Collect remaining arguments starting at `start_idx` into a sequence value.
     fn collectVariadicArgs(self: *Interpreter, args: *std.ArrayList(Value), start_idx: usize) anyerror!Value {
         if (start_idx >= args.items.len) return Value{ .Sequence = .{ .values = .empty } };
         const extra = args.items.len - start_idx;
@@ -636,6 +706,7 @@ pub const Interpreter = struct {
         return Value{ .Sequence = .{ .values = list } };
     }
 
+    /// Evaluate a literal sequence expression and return a sequence value.
     fn evalSequence(self: *Interpreter, expr_range: ast.RangeExpr) anyerror!Value {
         const exprs = self.ast.exprs.expr_pool.slice(expr_range);
         if (exprs.len == 0) return Value{ .Sequence = .{ .values = .empty } };
@@ -654,6 +725,7 @@ pub const Interpreter = struct {
         return Value{ .Sequence = .{ .values = list } };
     }
 
+    /// Evaluate a struct literal by mapping field expressions to values.
     fn evalStructLit(self: *Interpreter, row: ast.Rows.StructLit) anyerror!Value {
         const field_ids = self.ast.exprs.sfv_pool.slice(row.fields);
         const count = field_ids.len;
@@ -679,6 +751,7 @@ pub const Interpreter = struct {
         return Value{ .Struct = .{ .fields = list, .owner = owner } };
     }
 
+    /// Evaluate a map literal by computing key/value pairs.
     fn evalMapLit(self: *Interpreter, row: ast.Rows.MapLit) anyerror!Value {
         const entries = self.ast.exprs.kv_pool.slice(row.entries);
         if (entries.len == 0) return Value{ .Map = .{ .entries = .empty } };
@@ -705,11 +778,13 @@ pub const Interpreter = struct {
         return Value{ .Map = .{ .entries = map } };
     }
 
+    /// Decode the owner’s identifier from a type expression, if present.
     fn structTypeName(self: *Interpreter, ty: ast.OptExprId) ?ast.StrId {
         if (ty.isNone()) return null;
         return self.exprName(ty.unwrap());
     }
 
+    /// Extract an identifier or field name from `expr` when possible.
     fn exprName(self: *Interpreter, expr: ast.ExprId) ?ast.StrId {
         const kind = self.ast.exprs.index.kinds.items[expr.toRaw()];
         return switch (kind) {
@@ -719,6 +794,7 @@ pub const Interpreter = struct {
         };
     }
 
+    /// Evaluate a range literal, returning start/end values.
     fn evalRange(self: *Interpreter, row: ast.Rows.Range) anyerror!Value {
         if (row.start.isNone() or row.end.isNone()) return Error.InvalidStatement;
         var start = try self.evalExpr(row.start.unwrap());
@@ -730,11 +806,13 @@ pub const Interpreter = struct {
         return Value{ .Range = RangeValue{ .start = start_int, .end = end_int, .inclusive = row.inclusive_right } };
     }
 
+    /// Evaluate field access expressions for sequences, structs, pointer targets, or types.
     fn evalFieldAccess(self: *Interpreter, row: ast.Rows.FieldAccess) anyerror!Value {
         var parent = try self.evalExpr(row.parent);
         return self.evalFieldAccessWithParent(row, &parent, true);
     }
 
+    /// Evaluate a field access using a pre-evaluated parent value.
     fn evalFieldAccessWithParent(
         self: *Interpreter,
         row: ast.Rows.FieldAccess,
@@ -835,6 +913,7 @@ pub const Interpreter = struct {
         };
     }
 
+    /// Evaluate indices into sequences, strings, and maps.
     fn evalIndexAccess(self: *Interpreter, row: ast.Rows.IndexAccess) anyerror!Value {
         var collection = try self.evalExpr(row.collection);
         defer collection.destroy(self.allocator);
@@ -865,11 +944,13 @@ pub const Interpreter = struct {
         };
     }
 
+    /// Parse a tuple literal field index from a string identifier.
     fn parseTupleIndex(self: *Interpreter, id: ast.StrId) anyerror!usize {
         const slice = self.ast.exprs.strs.get(id);
         return std.fmt.parseInt(usize, slice, 10) catch Error.InvalidFieldAccess;
     }
 
+    /// Convert `value` to a non-negative integer suitable for an index.
     fn expectIndex(value: Value) anyerror!usize {
         return switch (value) {
             .Int => |int_val| {
@@ -882,6 +963,7 @@ pub const Interpreter = struct {
         };
     }
 
+    /// Evaluate a match expression by trying each arm sequentially.
     fn evalMatch(self: *Interpreter, row: ast.Rows.Match) anyerror!Value {
         var scrut = try self.evalExpr(row.expr);
         defer scrut.destroy(self.allocator);
@@ -903,6 +985,7 @@ pub const Interpreter = struct {
         return Value{ .Void = {} };
     }
 
+    /// Return the owner name of a struct value, if any.
     fn structOwner(value: Value) ?ast.StrId {
         return switch (value) {
             .Struct => value.Struct.owner,
@@ -910,6 +993,7 @@ pub const Interpreter = struct {
         };
     }
 
+    /// Evaluate a `for` loop over a range or sequence.
     fn evalFor(self: *Interpreter, row: ast.Rows.For) anyerror!Value {
         var iterable = try self.evalExpr(row.iterable);
         defer iterable.destroy(self.allocator);
@@ -936,6 +1020,7 @@ pub const Interpreter = struct {
         return Value{ .Void = {} };
     }
 
+    /// Bind `value` to `pattern`, execute `body`, and clean up bindings.
     fn runLoopIteration(self: *Interpreter, pattern: ast.PatternId, body: ast.ExprId, value: Value) anyerror!bool {
         var matches = std.ArrayList(Binding){};
         defer matches.deinit(self.allocator);
@@ -947,6 +1032,7 @@ pub const Interpreter = struct {
         return true;
     }
 
+    /// Evaluate a `while` or `while pattern` loop.
     fn evalWhile(self: *Interpreter, row: ast.Rows.While) anyerror!Value {
         const body = row.body;
         while (true) {
@@ -974,6 +1060,7 @@ pub const Interpreter = struct {
         return Value{ .Void = {} };
     }
 
+    /// Evaluate a literal expression (number, string, bool, etc.).
     fn evalLiteral(self: *Interpreter, literal: ast.Rows.Literal) anyerror!Value {
         return switch (literal.kind) {
             .int => Value{ .Int = @intCast(literal.data.int.value) },
@@ -989,6 +1076,7 @@ pub const Interpreter = struct {
         };
     }
 
+    /// Resolve an identifier to a binding, builtin type, or exported declaration.
     fn evalIdent(self: *Interpreter, expr_id: ast.ExprId, ident: ast.Rows.Ident) anyerror!Value {
         // 1. Check local comptime bindings
         if (try self.lookup(ident.name)) |value| {
@@ -1045,6 +1133,7 @@ pub const Interpreter = struct {
         return Error.BindingNotFound;
     }
 
+    /// Look up the declaration that binds `name` within the current AST unit.
     fn findDeclByName(self: *Interpreter, name: ast.StrId) ?ast.DeclId {
         const decls = self.ast.exprs.decl_pool.slice(self.ast.unit.decls);
         for (decls) |did| {
@@ -1058,6 +1147,7 @@ pub const Interpreter = struct {
         return null;
     }
 
+    /// Return whether `kind` represents a type-level expression.
     fn isTypeExprKind(kind: ast.ExprKind) bool {
         return switch (kind) {
             .TupleType, .ArrayType, .DynArrayType, .MapType, .SliceType, .OptionalType, .ErrorSetType, .ErrorType, .StructType, .EnumType, .VariantType, .UnionType, .PointerType, .SimdType, .ComplexType, .TensorType, .TypeType, .AnyType, .NoreturnType, .Literal => true,
@@ -1065,6 +1155,7 @@ pub const Interpreter = struct {
         };
     }
 
+    /// Map builtin type names to their `TypeId` equivalents.
     fn lookupBuiltinType(self: *Interpreter, name: []const u8) ?types.TypeId {
         const ts = self.ast.type_info.store;
         if (std.mem.eql(u8, name, "bool")) return ts.tBool();
@@ -1086,6 +1177,7 @@ pub const Interpreter = struct {
         return null;
     }
 
+    /// Perform binary operations during interpretation.
     fn evalBinary(self: *Interpreter, row: ast.Rows.Binary) anyerror!Value {
         var left = try self.evalExpr(row.left);
         defer left.destroy(self.allocator);
@@ -1141,6 +1233,7 @@ pub const Interpreter = struct {
         }
     }
 
+    /// Perform unary operations (including `&` which produces a pointer).
     fn evalUnary(self: *Interpreter, row: ast.Rows.Unary) anyerror!Value {
         var value = try self.evalExpr(row.expr);
         if (row.op == .address_of) {
@@ -1155,12 +1248,14 @@ pub const Interpreter = struct {
         };
     }
 
+    /// Allocate a pointer value that owns `value`.
     fn moveValueToPointer(self: *Interpreter, value: Value) anyerror!Value {
         const target = try self.allocator.create(Value);
         target.* = value;
         return Value{ .Pointer = target };
     }
 
+    /// Evaluate an `if` expression and return the selected branch’s value.
     fn evalIf(self: *Interpreter, row: ast.Rows.If) anyerror!Value {
         var cond_val = try self.evalExpr(row.cond);
         defer cond_val.destroy(self.allocator);
@@ -1171,11 +1266,13 @@ pub const Interpreter = struct {
         return try self.evalExpr(row.else_block.unwrap());
     }
 
+    /// Evaluate a return statement by computing its optional value.
     fn evalReturn(self: *Interpreter, row: ast.Rows.Return) anyerror!Value {
         if (row.value.isNone()) return Value{ .Void = {} };
         return try self.evalExpr(row.value.unwrap());
     }
 
+    /// Compare `left` and `right` for `<`.
     fn compareLt(left: Value, right: Value) anyerror!bool {
         const l = try numericValue(left);
         const r = try numericValue(right);
@@ -1191,6 +1288,7 @@ pub const Interpreter = struct {
         };
     }
 
+    /// Compare `left` and `right` for `<=`.
     fn compareLte(left: Value, right: Value) anyerror!bool {
         const l = try numericValue(left);
         const r = try numericValue(right);
@@ -1206,6 +1304,7 @@ pub const Interpreter = struct {
         };
     }
 
+    /// Compare `left` and `right` for `>`.
     fn compareGt(left: Value, right: Value) anyerror!bool {
         const l = try numericValue(left);
         const r = try numericValue(right);
@@ -1221,6 +1320,7 @@ pub const Interpreter = struct {
         };
     }
 
+    /// Compare `left` and `right` for `>=`.
     fn compareGte(left: Value, right: Value) anyerror!bool {
         const l = try numericValue(left);
         const r = try numericValue(right);
@@ -1236,6 +1336,7 @@ pub const Interpreter = struct {
         };
     }
 
+    /// Normalize a numeric `Value` to `NumericValue` for comparison.
     fn numericValue(value: Value) anyerror!NumericValue {
         return switch (value) {
             .Int => NumericValue{ .Int = value.Int },
@@ -1245,6 +1346,7 @@ pub const Interpreter = struct {
         };
     }
 
+    /// Insert or update a top-level binding with `name`.
     pub fn setBinding(self: *Interpreter, name: ast.StrId, value: Value) !void {
         if (self.findBinding(name)) |binding| {
             binding.value.destroy(self.allocator);
@@ -1254,6 +1356,7 @@ pub const Interpreter = struct {
         try self.bindings.append(self.allocator, .{ .name = name, .value = value });
     }
 
+    /// Register all methods defined on structs so they can be looked up by name.
     fn registerMethods(self: *Interpreter) anyerror!void {
         const decl_ids = self.ast.exprs.decl_pool.slice(self.ast.unit.decls);
         for (decl_ids) |decl_id| {
@@ -1269,17 +1372,20 @@ pub const Interpreter = struct {
         }
     }
 
+    /// Return the expression ID implementing `owner.method` if registered.
     fn lookupMethod(self: *Interpreter, owner: ast.StrId, method: ast.StrId) ?ast.ExprId {
         const key = MethodKey{ .owner = owner, .method = method };
         if (self.method_table.get(key)) |entry| return entry;
         return null;
     }
 
+    /// Return the binding entry for `name`, if already present.
     fn findBinding(self: *Interpreter, name: ast.StrId) ?*Binding {
         for (self.bindings.items) |*binding| if (binding.name.eq(name)) return binding;
         return null;
     }
 
+    /// Produce a deep copy of `value` when ownership must be duplicated.
     pub fn cloneValue(self: *Interpreter, value: Value) !Value {
         return switch (value) {
             .String => |s| blk: {
@@ -1295,6 +1401,7 @@ pub const Interpreter = struct {
         };
     }
 
+    /// Coerce `value` to an integer, erroring if non-numeric.
     fn expectInt(value: Value) anyerror!i128 {
         return switch (value) {
             .Int => value.Int,
@@ -1303,6 +1410,7 @@ pub const Interpreter = struct {
         };
     }
 
+    /// Convert `value` to boolean following builtin truthiness rules.
     fn valueToBool(value: Value) anyerror!bool {
         return switch (value) {
             .Bool => value.Bool,
@@ -1312,10 +1420,12 @@ pub const Interpreter = struct {
         };
     }
 
+    /// Small helper to convert bool to integer.
     fn toInt(value: bool) i128 {
         return @intFromBool(value);
     }
 
+    /// Structural equality test used in patterns and comparisons.
     fn valuesEqual(left: Value, right: Value) bool {
         return switch (left) {
             .Int => |l| switch (right) {
@@ -1364,6 +1474,7 @@ pub const Interpreter = struct {
         };
     }
 
+    /// Compare two sequences element-wise.
     fn sequencesEqual(a: Sequence, b: Sequence) bool {
         if (a.values.items.len != b.values.items.len) return false;
         if (a.values.items.len == 0) return true;
@@ -1374,6 +1485,7 @@ pub const Interpreter = struct {
         return true;
     }
 
+    /// Compare two struct values including owner metadata.
     fn structValuesEqual(a: StructValue, b: StructValue) bool {
         if (a.fields.items.len != b.fields.items.len) return false;
         if (!ownersEqual(a.owner, b.owner)) return false;
@@ -1388,6 +1500,7 @@ pub const Interpreter = struct {
         return true;
     }
 
+    /// Compare two maps by iterating entries.
     fn mapsEqual(a: MapValue, b: MapValue) bool {
         if (a.entries.items.len != b.entries.items.len) return false;
         if (a.entries.items.len == 0) return true;
@@ -1401,12 +1514,14 @@ pub const Interpreter = struct {
         return true;
     }
 
+    /// Whether two optional struct owners refer to the same module/type.
     fn ownersEqual(a: ?ast.StrId, b: ?ast.StrId) bool {
         if (a == null and b == null) return true;
         if (a == null or b == null) return false;
         return a.?.eq(b.?);
     }
 
+    /// Clone a sequence value along with its entries.
     fn cloneSequence(self: *Interpreter, seq: Sequence) anyerror!Value {
         if (seq.values.items.len == 0) return Value{ .Sequence = .{ .values = .empty } };
         var list = try std.ArrayList(Value).initCapacity(self.allocator, seq.values.items.len);
@@ -1423,6 +1538,7 @@ pub const Interpreter = struct {
         return Value{ .Sequence = .{ .values = list } };
     }
 
+    /// Clone a struct value (fields + owner) for reuse in bindings.
     fn cloneStruct(self: *Interpreter, sv: StructValue) anyerror!Value {
         if (sv.fields.items.len == 0) return Value{ .Struct = .{ .fields = .empty, .owner = sv.owner } };
         var list = try std.ArrayList(StructField).initCapacity(self.allocator, sv.fields.items.len);
@@ -1442,6 +1558,7 @@ pub const Interpreter = struct {
         return Value{ .Struct = .{ .fields = list, .owner = sv.owner } };
     }
 
+    /// Deep clone of a map value so lookups do not share mutable entries.
     fn cloneMap(self: *Interpreter, mv: MapValue) anyerror!Value {
         if (mv.entries.items.len == 0) return Value{ .Map = .{ .entries = .empty } };
         var list = try std.ArrayList(MapEntry).initCapacity(self.allocator, mv.entries.items.len);
@@ -1465,6 +1582,7 @@ pub const Interpreter = struct {
         return Value{ .Map = .{ .entries = list } };
     }
 
+    /// Clone a pointer value by cloning the pointee.
     fn clonePointer(self: *Interpreter, target: *Value) anyerror!Value {
         const cloned = try self.cloneValue(target.*);
         const ptr = try self.allocator.create(Value);
@@ -1472,6 +1590,7 @@ pub const Interpreter = struct {
         return Value{ .Pointer = ptr };
     }
 
+    /// Find a field entry by name within a struct value.
     fn findStructField(sv: StructValue, name: ast.StrId) ?*StructField {
         var idx: usize = 0;
         while (idx < sv.fields.items.len) : (idx += 1) {
@@ -1480,6 +1599,7 @@ pub const Interpreter = struct {
         return null;
     }
 
+    /// Match `value` against pattern `pid`, recording bound identifiers.
     fn matchPattern(self: *Interpreter, pattern_ast: *ast.Ast, value: Value, pid: ast.PatternId, matches: *std.ArrayList(Binding)) anyerror!bool {
         const kind = pattern_ast.pats.index.kinds.items[pid.toRaw()];
         switch (kind) {
@@ -1507,6 +1627,7 @@ pub const Interpreter = struct {
         }
     }
 
+    /// Match a tuple pattern against a sequence value.
     fn matchTuplePattern(self: *Interpreter, pattern_ast: *ast.Ast, value: Value, row: ast.PatRows.Tuple, matches: *std.ArrayList(Binding)) anyerror!bool {
         return switch (value) {
             .Sequence => |seq| {
@@ -1528,6 +1649,7 @@ pub const Interpreter = struct {
         };
     }
 
+    /// Match a slice pattern, handling rest bindings.
     fn matchSlicePattern(self: *Interpreter, pattern_ast: *ast.Ast, value: Value, row: ast.PatRows.Slice, matches: *std.ArrayList(Binding)) anyerror!bool {
         return switch (value) {
             .Sequence => |seq| {
@@ -1564,6 +1686,7 @@ pub const Interpreter = struct {
         };
     }
 
+    /// Match a struct pattern by comparing fields and nested patterns.
     fn matchStructPattern(self: *Interpreter, pattern_ast: *ast.Ast, value: Value, row: ast.PatRows.Struct, matches: *std.ArrayList(Binding)) anyerror!bool {
         return switch (value) {
             .Struct => |sv| {
@@ -1585,6 +1708,7 @@ pub const Interpreter = struct {
         };
     }
 
+    /// Handle `@` patterns that bind the entire matched value.
     fn matchAtPattern(self: *Interpreter, pattern_ast: *ast.Ast, value: Value, row: ast.PatRows.At, matches: *std.ArrayList(Binding)) anyerror!bool {
         const before = matches.items.len;
         if (!try self.matchPattern(pattern_ast, value, row.pattern, matches)) {
@@ -1599,6 +1723,7 @@ pub const Interpreter = struct {
         return true;
     }
 
+    /// Revert `matches` back to `target_len`, freeing extra values.
     fn rollbackBindings(self: *Interpreter, matches: *std.ArrayList(Binding), target_len: usize) void {
         var current = matches.items.len;
         while (current > target_len) : (current -= 1) {
@@ -1607,6 +1732,7 @@ pub const Interpreter = struct {
         matches.shrinkRetainingCapacity(target_len);
     }
 
+    /// Compute a hash over the provided bindings for memoization.
     fn bindingHash(bindings: []const Binding) u64 {
         var hasher = std.hash.Wyhash.init(0);
         for (bindings) |binding| {
@@ -1618,6 +1744,7 @@ pub const Interpreter = struct {
         return hasher.final();
     }
 
+    /// Capture bindings into a snapshot alongside its hash for reuse.
     pub fn captureBindingSnapshot(self: *Interpreter, matches: *std.ArrayList(Binding)) anyerror!BindingSnapshot {
         var snapshot = try std.ArrayList(Binding).initCapacity(self.allocator, matches.items.len);
         var hasher = std.hash.Wyhash.init(0);
@@ -1638,6 +1765,7 @@ pub const Interpreter = struct {
         return BindingSnapshot{ .bindings = snapshot, .hash = hasher.final() };
     }
 
+    /// Clone an existing binding snapshot to keep a copy for future lookups.
     fn cloneSnapshot(self: *Interpreter, source: *BindingSnapshot) anyerror!BindingSnapshot {
         var cloned = try std.ArrayList(Binding).initCapacity(self.allocator, source.bindings.items.len);
         var success = false;
@@ -1653,11 +1781,13 @@ pub const Interpreter = struct {
         return BindingSnapshot{ .bindings = cloned, .hash = source.hash };
     }
 
+    /// Pack a function key into a 128-bit hash for the specialization map.
     fn hashFunctionKey(key: FunctionKey) u128 {
         const decl_raw: u32 = key.decl_id.toRaw();
         return (@as(u128, key.bindings_hash) << 32) | @as(u128, decl_raw);
     }
 
+    /// Create or reuse a specialized function definition using `matches`.
     pub fn specializeFunction(self: *Interpreter, decl_id: ast.DeclId, matches: *std.ArrayList(Binding)) anyerror!SpecializationResult {
         const binding_hash = bindingHash(matches.items);
         const key = FunctionKey{ .decl_id = decl_id, .bindings_hash = binding_hash };
@@ -1687,12 +1817,19 @@ pub const Interpreter = struct {
         };
     }
 
+    /// Tracks bound variables pushed during a function/pattern invocation.
+    /// Temporary frame used when binding matched variables to new values.
     const BindingScope = struct {
+        /// Interpreter owning the current scope.
         interpreter: *Interpreter,
+        /// Length of the binding list before the scope began.
         prev_len: usize,
+        /// Bindings that replaced existing entries.
         replaced: std.ArrayList(Binding),
+        /// Whether the scope is still active and needs restoration.
         active: bool,
 
+        /// Restore bindings to their prior state when the scope closes.
         fn restore(self: *BindingScope) void {
             if (!self.active) return;
             var len = self.interpreter.bindings.items.len;
@@ -1710,12 +1847,14 @@ pub const Interpreter = struct {
             self.active = false;
         }
 
+        /// Cleanup resources associated with the scope.
         fn deinit(self: *BindingScope) void {
             self.restore();
             self.replaced.deinit(self.interpreter.allocator);
         }
     };
 
+    /// Push the `matches` bindings into the interpreter, saving replaced bindings.
     fn pushBindings(self: *Interpreter, matches: *std.ArrayList(Binding)) anyerror!BindingScope {
         var scope = BindingScope{
             .interpreter = self,

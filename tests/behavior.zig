@@ -380,7 +380,7 @@ test "behavior: union literal initialization" {
 test "behavior: error propagation and catch" {
     const globals =
         \\ MyErr :: error { NotFound }
-        \\ might_fail :: proc() i32!MyErr { return MyErr.NotFound }
+        \\ might_fail :: proc() MyErr!i32 { return MyErr.NotFound }
         \\ handle_error :: proc() i32 {
         \\   val := might_fail() catch |err| {
         \\     if err == MyErr.NotFound {
@@ -841,8 +841,8 @@ test "behavior: match at-pattern" {
 test "behavior: error union catch" {
     const globals =
         \\ MyErr :: error { Failed }
-        \\ might_fail :: proc() i32!MyErr { return MyErr.Failed }
-        \\ might_succeed :: proc() i32!MyErr { return 100 }
+        \\ might_fail :: proc() MyErr!i32 { return MyErr.Failed }
+        \\ might_succeed :: proc() MyErr!i32 { return 100 }
     ;
     const src =
         \\ r1 := might_fail() catch 0
@@ -1084,7 +1084,7 @@ test "behavior: array slice with rest pattern" {
 test "behavior: error union orelse with success" {
     const globals =
         \\ MyErr :: error { Failed }
-        \\ might_succeed :: proc() i32!MyErr { return 100 }
+        \\ might_succeed :: proc() MyErr!i32 { return 100 }
     ;
     const src =
         \\ r := might_succeed() catch 0
@@ -1097,7 +1097,7 @@ test "behavior: error union orelse with success" {
 test "behavior: catch with error binding" {
     const globals =
         \\ MyErr :: error { NotFound, PermissionDenied }
-        \\ might_fail :: proc() i32!MyErr { return MyErr.PermissionDenied }
+        \\ might_fail :: proc() MyErr!i32 { return MyErr.PermissionDenied }
     ;
     const src =
         \\ r := might_fail() catch |err| {
@@ -1293,7 +1293,7 @@ test "behavior: array of structs" {
 test "behavior: error union orelse with different types" {
     const globals =
         \\ MyErr :: error { Failed }
-        \\ might_fail :: proc() f64!MyErr { return MyErr.Failed }
+        \\ might_fail :: proc() MyErr!f64 { return MyErr.Failed }
     ;
     const src =
         \\ r := might_fail() catch 10.0
@@ -1307,8 +1307,8 @@ test "behavior: catch with nested errors" {
     const globals =
         \\ ErrA :: error { A }
         \\ ErrB :: error { B }
-        \\ func_a :: proc() i32!ErrA { return ErrA.A }
-        \\ func_b :: proc() i32!ErrB { return func_a()! catch |err| { return ErrB.B } }
+        \\ func_a :: proc() ErrA!i32 { return ErrA.A }
+        \\ func_b :: proc() ErrB!i32 { return func_a()! catch |err| { return ErrB.B } }
     ;
     const src =
         \\ r := func_b() catch |err| {
@@ -1436,7 +1436,7 @@ test "behavior: recursive function" {
 test "behavior: error union orelse and catch combined" {
     const globals =
         \\ MyErr :: error { Failed, Other }
-        \\ might_fail :: proc(val: i32) ?i32!MyErr {
+        \\ might_fail :: proc(val: i32) ?MyErr!i32 {
         \\   if val == 0 { return MyErr.Failed }
         \\   if val == 1 { return MyErr.Other }
         \\   return val

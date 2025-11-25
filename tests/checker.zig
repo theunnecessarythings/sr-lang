@@ -884,15 +884,15 @@ test "error sets - success" {
     try checkProgram(
         \\
         \\ MyErr :: error { NotFound, PermissionDenied }
-        \\ RetType :: i32!MyErr
+        \\ RetType :: MyErr!i32
     , &.{});
 
     // Error union variables: value and error assignment
     try checkProgram(
         \\
         \\ MyErr :: error { NotFound, PermissionDenied }
-        \\ ok: i32!MyErr = 123
-        \\ er: i32!MyErr = MyErr.NotFound
+        \\ ok: MyErr!i32 = 123
+        \\ er: MyErr!i32 = MyErr.NotFound
     , &.{});
 }
 
@@ -905,7 +905,7 @@ test "error sets - failures" {
         \\
         \\ MyErr :: error { A }
         \\ OtherErr :: error { B }
-        \\ v: i32!MyErr = OtherErr.B
+        \\ v: MyErr!i32 = OtherErr.B
     , &[_]diag.DiagnosticCode{.type_annotation_mismatch});
 
     // Assign error to non error-union variable
@@ -1208,7 +1208,7 @@ test "error handling - success" {
     try checkProgram(
         \\
         \\ MyErr :: error { A, B }
-        \\ x: i32!MyErr = 1
+        \\ x: MyErr!i32 = 1
         \\ y :: x catch |err| { 0 }
         \\ z :: x catch { 0 }
     , &.{});
@@ -1216,8 +1216,8 @@ test "error handling - success" {
     try checkProgram(
         \\
         \\ MyErr :: error { A }
-        \\ e1: i32!MyErr = 1
-        \\ e2: i32!MyErr = MyErr.A
+        \\ e1: MyErr!i32 = 1
+        \\ e2: MyErr!i32 = MyErr.A
         \\ r1 :: e1 catch 0
         \\ r2 :: e2 catch 5
     , &.{});
@@ -1233,8 +1233,8 @@ test "error handling - success" {
     try checkProgram(
         \\
         \\ MyErr :: error { A }
-        \\ f :: proc() i32!MyErr {
-        \\   x: i32!MyErr = 1
+        \\ f :: proc() MyErr!i32 {
+        \\   x: MyErr!i32 = 1
         \\   return x!
         \\ }
     , &.{});
@@ -1251,7 +1251,7 @@ test "error handling - failures" {
     try checkProgram(
         \\
         \\ MyErr :: error { A }
-        \\ y: i32!MyErr = MyErr.A
+        \\ y: MyErr!i32 = MyErr.A
         \\ r2 :: y orelse 2.0
     , &[_]diag.DiagnosticCode{.invalid_use_of_orelse_on_non_optional});
 
@@ -1266,7 +1266,7 @@ test "error handling - failures" {
         \\
         \\ MyErr :: error { A }
         \\ g :: proc() i32 {
-        \\   x: i32!MyErr = 1
+        \\   x: MyErr!i32 = 1
         \\   return x!
         \\ }
     , &[_]diag.DiagnosticCode{.error_propagation_mismatched_function_result});
@@ -2255,7 +2255,7 @@ test "errdefer - success" {
         \\
         \\ MyErr :: error { A }
         \\ cleanup :: proc() { }
-        \\ f :: proc() i32!MyErr {
+        \\ f :: proc() MyErr!i32 {
         \\   errdefer cleanup()
         \\   return 1
         \\ }
@@ -2266,7 +2266,7 @@ test "errdefer - success" {
         \\
         \\ MyErr :: error { A }
         \\ tidy :: proc() { }
-        \\ g :: proc() i32!MyErr {
+        \\ g :: proc() MyErr!i32 {
         \\   errdefer tidy()
         \\   return MyErr.A
         \\ }

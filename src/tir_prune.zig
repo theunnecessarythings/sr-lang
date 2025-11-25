@@ -8,23 +8,32 @@ const Loc = @import("lexer.zig").Token.Loc;
 
 const Allocator = std.mem.Allocator;
 
+/// Configuration knobs controlling the pruning run.
 pub const Options = struct {
+    /// Emit warnings for reachable functions that expose unused values.
     warn_unused: bool = false,
 };
 
+/// Determine whether `unit` was loaded from a third-party / vendor path.
+/// This lets pruning ignore standard library and vendor packages.
 inline fn isThirdPartyUnit(context: *compile.Context, unit: *package.FileUnit) bool {
     const path = context.source_manager.get(unit.file_id) orelse return false;
     return std.mem.indexOf(u8, path, "/vendor/") != null or std.mem.indexOf(u8, path, "/std/") != null;
 }
 
+/// Prune unreferenced functions/globals from every TIR module.
+/// `opts` controls optional warnings emitted during the pass.
 pub fn pruneUnusedFunctions(
     gpa: Allocator,
     context: *compile.Context,
     comp_unit: *package.CompilationUnit,
     opts: Options,
 ) !void {
+    // Helper that keeps track of the `FileUnit` owning a function while scanning calls.
     const FuncRef = struct {
+        /// File unit that owns the referenced function.
         unit: *package.FileUnit,
+        /// Identifier of the function within its owning TIR module.
         fid: tir.FuncId,
     };
 
@@ -658,6 +667,7 @@ pub fn pruneUnusedFunctions(
     }
 }
 
+/// buildDefMap pruning helper.
 fn buildDefMap(
     gpa: std.mem.Allocator,
     t: *tir.TIR,
@@ -694,6 +704,7 @@ fn buildDefMap(
     return defmap;
 }
 
+/// computeReadAllocas pruning helper.
 fn computeReadAllocas(
     gpa: std.mem.Allocator,
     t: *tir.TIR,
@@ -765,6 +776,7 @@ fn computeReadAllocas(
     return read_allocas;
 }
 
+/// instrOptLoc pruning helper.
 fn instrOptLoc(t: *tir.TIR, iid: tir.InstrId) tir.OptLocId {
     const k = t.instrs.index.kinds.items[iid.toRaw()];
     return switch (k) {
@@ -772,6 +784,7 @@ fn instrOptLoc(t: *tir.TIR, iid: tir.InstrId) tir.OptLocId {
     };
 }
 
+/// functionFirstLoc pruning helper.
 fn functionFirstLoc(context: *compile.Context, t: *tir.TIR, frow: tir.FuncRows.Function, file_id: u32) Loc {
     const blocks = t.funcs.block_pool.slice(frow.blocks);
     for (blocks) |bid| {
@@ -798,16 +811,19 @@ fn functionFirstLoc(context: *compile.Context, t: *tir.TIR, frow: tir.FuncRows.F
 // AST location utilities
 // =========================
 
+/// exprLocFromId pruning helper.
 inline fn exprLocFromId(ast_unit: *ast.Ast, eid: ast.ExprId) Loc {
     const k = ast_unit.exprs.index.kinds.items[eid.toRaw()];
     return switch (k) {
         inline else => |x| exprLoc(ast_unit, ast_unit.exprs.get(x, eid)),
     };
 }
+/// exprLoc pruning helper.
 inline fn exprLoc(ast_unit: *ast.Ast, expr: anytype) Loc {
     return ast_unit.exprs.locs.get(expr.loc);
 }
 
+/// bindingNameOfPattern pruning helper.
 fn bindingNameOfPattern(a: *ast.Ast, pid: ast.PatternId) ?ast.StrId {
     const k = a.pats.index.kinds.items[pid.toRaw()];
     return switch (k) {
@@ -816,6 +832,7 @@ fn bindingNameOfPattern(a: *ast.Ast, pid: ast.PatternId) ?ast.StrId {
     };
 }
 
+/// bindingLocOfPattern pruning helper.
 fn bindingLocOfPattern(a: *ast.Ast, pid: ast.PatternId) ?Loc {
     const k = a.pats.index.kinds.items[pid.toRaw()];
     return switch (k) {
@@ -827,6 +844,7 @@ fn bindingLocOfPattern(a: *ast.Ast, pid: ast.PatternId) ?Loc {
     };
 }
 
+/// findTopFuncDeclByName pruning helper.
 fn findTopFuncDeclByName(a: *ast.Ast, name_sid_raw: u32) ?ast.DeclId {
     const decls = a.exprs.decl_pool.slice(a.unit.decls);
     for (decls) |did| {
@@ -843,6 +861,7 @@ fn findTopFuncDeclByName(a: *ast.Ast, name_sid_raw: u32) ?ast.DeclId {
     return null;
 }
 
+/// functionNameLocFromAst pruning helper.
 fn functionNameLocFromAst(unit: *package.FileUnit, fname_sid_raw: u32) ?Loc {
     const a = unit.ast orelse return null;
     if (findTopFuncDeclByName(a, fname_sid_raw)) |did| {
@@ -856,6 +875,7 @@ fn functionNameLocFromAst(unit: *package.FileUnit, fname_sid_raw: u32) ?Loc {
     return null;
 }
 
+/// paramNameLocFromAst pruning helper.
 fn paramNameLocFromAst(unit: *package.FileUnit, func_name_sid_raw: u32, param_name_sid_raw: ?u32) ?Loc {
     const a = unit.ast orelse return null;
     const did_opt = findTopFuncDeclByName(a, func_name_sid_raw) orelse return null;

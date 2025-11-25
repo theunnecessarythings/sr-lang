@@ -21,32 +21,52 @@ const mlir = @import("mlir_bindings.zig");
 
 const List = std.ArrayList;
 
+/// Primary semantic analysis driver that owns global/checker-wide data.
 pub const Checker = @This();
 
+/// Allocator that backs all checker-internal data structures.
 gpa: std.mem.Allocator,
+/// Shared compilation context.
 context: *Context,
+/// Pipeline that drives the compilation phases.
 pipeline: *Pipeline,
+/// Stack of per-file checker contexts currently active.
 checker_ctx: List(*CheckerContext),
 
+/// Per-AST context that tracks symbol tables, loops, matches, and diagnostic state.
 pub const CheckerContext = struct {
+    /// Symbol table used for name lookup inside the current AST unit.
     symtab: symbols.SymbolStore,
 
+    /// Stack of function contexts currently being type-checked.
     func_stack: List(FunctionCtx) = .{},
+    /// Stack of loop contexts for break/continue resolution.
     loop_stack: List(LoopCtx) = .{},
+    /// Stack tracking whether the current block expects values.
     value_ctx: List(bool) = .{},
-    // Controls whether nested function literals are permitted in the current context.
+    /// Records whether nested function literals are allowed at each depth.
     allow_nested_fn: List(bool) = .{},
+    /// Whether metadata diagnostics have already been emitted.
     warned_meta: bool = false,
+    /// Whether comptime diagnostics have already been emitted.
     warned_comptime: bool = false,
+    /// Whether code diagnostics have already been emitted.
     warned_code: bool = false,
 
+    /// Loop bindings currently in scope (for labelled breaks).
     loop_binding_stack: List(LoopBindingCtx) = .{},
+    /// Exception/catch bindings currently in scope.
     catch_binding_stack: List(CatchBindingCtx) = .{},
+    /// Match-binding contexts currently in scope.
     match_binding_stack: List(MatchBindingCtx) = .{},
+    /// Declarations whose types are currently being resolved to prevent recursion.
     resolving_type_decls: List(ast.DeclId) = .{},
+    /// Expressions whose types are currently being resolved.
     resolving_type_exprs: List(ast.ExprId) = .{},
+    /// Pending parameter specializations for generics.
     param_specializations: List(ParamSpecialization) = .{},
 
+    /// Release all lists and the symbol table managed by this context.
     pub fn deinit(self: *CheckerContext, gpa: std.mem.Allocator) void {
         self.symtab.deinit();
         self.func_stack.deinit(gpa);
@@ -62,61 +82,84 @@ pub const CheckerContext = struct {
     }
 };
 
+/// Tracks a loop-specific binding introduced by `for`/`while` constructs.
 const LoopBindingCtx = struct {
+    /// Pattern bound by the loop (if any) for `for`/`while` binding checks.
     pat: ast.OptPatternId,
+    /// Type of the loop subject that the pattern must match.
     subject_ty: types.TypeId,
 };
+/// Records the active pattern and type information for a match arm.
 const MatchBindingCtx = struct {
+    /// Pattern used by the current match arm.
     pat: ast.PatternId,
+    /// Type of the value being matched against.
     subject_ty: types.TypeId,
 };
+/// Captures the name and type produced by a `catch` clause.
 const CatchBindingCtx = struct {
+    /// Name bound inside the catch handler.
     name: ast.StrId,
+    /// Type assigned to the caught exception.
     ty: types.TypeId,
 };
 
+/// Associates a generic parameter name with the concrete type chosen for a specialization.
 pub const ParamSpecialization = struct {
+    /// Parameter name being specialized.
     name: ast.StrId,
+    /// Concrete type chosen for the specialization.
     ty: types.TypeId,
 };
 
 // --------- tiny helpers (readability & consistency) ----------
+/// Return the `TypeKind` of `t` using the checker's type store.
 pub inline fn typeKind(self: *const Checker, t: types.TypeId) types.TypeKind {
     return self.context.type_store.index.kinds.items[t.toRaw()];
 }
+/// Read the kind of expression `eid` from `ast_unit`.
 inline fn exprKind(ast_unit: *const ast.Ast, eid: ast.ExprId) ast.ExprKind {
     return ast_unit.exprs.index.kinds.items[eid.toRaw()];
 }
+/// Determine the source location for expression `eid`.
 inline fn exprLocFromId(ast_unit: *ast.Ast, eid: ast.ExprId) Loc {
     const k = exprKind(ast_unit, eid);
     return switch (k) {
         inline else => |x| exprLoc(ast_unit, getExpr(ast_unit, x, eid)),
     };
 }
+/// Fetch the location stored in `expr` (literal struct/row) within `ast_unit`.
 inline fn exprLoc(ast_unit: *ast.Ast, expr: anytype) Loc {
     return ast_unit.exprs.locs.get(expr.loc);
 }
+/// Retrieve the `StmtRow` of kind `K` for statement `id`.
 inline fn getStmt(ast_unit: *ast.Ast, comptime K: ast.StmtKind, id: ast.StmtId) ast.StmtRowT(K) {
     return ast_unit.stmts.get(K, id);
 }
+/// Resolve an interned string `sid` within `ast_unit`.
 pub inline fn getStr(ast_unit: *const ast.Ast, sid: ast.StrId) []const u8 {
     return ast_unit.exprs.strs.get(sid);
 }
+/// Fetch the expression row of kind `K` identified by `id`.
 inline fn getExpr(ast_unit: *ast.Ast, comptime K: ast.ExprKind, id: ast.ExprId) ast.RowT(K) {
     return ast_unit.exprs.get(K, id);
 }
 
+/// Push a new nested-function permission `v` onto the current context.
 fn pushAllowNestedFn(self: *Checker, ctx: *CheckerContext, v: bool) !void {
     try ctx.allow_nested_fn.append(self.gpa, v);
 }
+/// Pop the most-recent nested-function permission flag.
 fn popAllowNestedFn(_: *Checker, ctx: *CheckerContext) void {
     if (ctx.allow_nested_fn.items.len > 0) _ = ctx.allow_nested_fn.pop();
 }
+/// Test whether nested function literals are currently permitted.
 fn isNestedFnAllowed(_: *const Checker, ctx: *CheckerContext) bool {
     if (ctx.allow_nested_fn.items.len == 0) return false;
     return ctx.allow_nested_fn.items[ctx.allow_nested_fn.items.len - 1];
 }
 
+/// Helper invoked for each comptime binding during interpreter setup.
 fn bindingVisitor(
     ctx: ?*anyopaque,
     name: ast.StrId,
@@ -128,6 +171,7 @@ fn bindingVisitor(
     return interp.setBinding(name, value);
 }
 
+/// Populate `interp` with the compile-time bindings declared in `bindings`.
 fn installInterpreterBindings(
     self: *Checker,
     interp: *interpreter.Interpreter,
@@ -153,6 +197,7 @@ fn installInterpreterBindings(
     );
 }
 
+/// Evaluate expression `expr` at compile time, caching the result in `ast_unit`.
 pub fn evalComptimeExpr(
     self: *Checker,
     ctx: *CheckerContext,
@@ -174,6 +219,7 @@ pub fn evalComptimeExpr(
     return computed;
 }
 
+/// Construct a new `Checker` wired to `pipeline`, `context`, and allocator `gpa`.
 pub fn init(
     gpa: std.mem.Allocator,
     context: *Context,
@@ -187,10 +233,12 @@ pub fn init(
     };
 }
 
+/// Deinitialize the checker, releasing all per-file contexts.
 pub fn deinit(self: *Checker) void {
     self.checker_ctx.deinit(self.gpa);
 }
 
+/// Execute the checker across all AST units ordered by `levels`.
 pub fn run(self: *Checker, levels: *const compile.DependencyLevels) !void {
     var ast_by_file = std.AutoHashMap(u32, *ast.Ast).init(self.gpa);
     defer ast_by_file.deinit();
@@ -244,6 +292,7 @@ pub fn run(self: *Checker, levels: *const compile.DependencyLevels) !void {
     }
 }
 
+/// Walk the AST for `ast_unit`, binding top-level declarations and checking each node.
 pub fn runAst(self: *Checker, ast_unit: *ast.Ast, ctx: *CheckerContext) !void {
     // pre-allocate type slots
     const expr_len: usize = ast_unit.exprs.index.kinds.items.len;
@@ -287,18 +336,28 @@ pub fn runAst(self: *Checker, ast_unit: *ast.Ast, ctx: *CheckerContext) !void {
 }
 
 // --------- context
+/// Tracks the currently-checked function’s type expectations and local captures.
 const FunctionCtx = struct {
+    /// Function return type (possibly inferred).
     result: types.TypeId,
+    /// True when the function declares a return value.
     has_result: bool,
+    /// Whether the function has been proven pure so far.
     pure: bool,
+    /// Whether purity is required by the declaration/context.
     require_pure: bool,
+    /// Locally-defined entities tracked for resolution.
     locals: std.AutoArrayHashMapUnmanaged(u32, void) = .{},
 };
+/// Tracks the innermost loop label and result type for break/continue resolution.
 const LoopCtx = struct {
+    /// Optional label attached to the loop.
     label: ast.OptStrId,
+    /// Inferred result type for loops that return expressions.
     result_ty: ?types.TypeId = null,
 };
 
+/// Declare bindings introduced by `d.pattern` (if any) in the current symbol scope.
 pub fn bindDeclPattern(
     self: *Checker,
     ctx: *CheckerContext,
@@ -310,11 +369,13 @@ pub fn bindDeclPattern(
     try pattern_matching.declareBindingsInPattern(self, ctx, ast_unit, d.pattern.unwrap(), d.loc, .{ .decl = did });
 }
 
+/// Register bindings created by a parameter pattern prior to its use.
 fn bindParamPattern(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, pid: ast.ParamId, p: ast.Rows.Param) !void {
     if (p.pat.isNone()) return;
     try pattern_matching.declareBindingsInPattern(self, ctx, ast_unit, p.pat.unwrap(), p.loc, .{ .param = pid });
 }
 
+/// Push a new function context with the declared result type and purity requirements.
 fn pushFunc(
     self: *Checker,
     ctx: *CheckerContext,
@@ -329,6 +390,7 @@ fn pushFunc(
         .require_pure = require_pure,
     });
 }
+/// Pop the current function context, releasing any locals map.
 fn popFunc(self: *Checker, ctx: *CheckerContext) void {
     if (ctx.func_stack.items.len > 0) {
         var context = &ctx.func_stack.items[ctx.func_stack.items.len - 1];
@@ -336,30 +398,38 @@ fn popFunc(self: *Checker, ctx: *CheckerContext) void {
         _ = ctx.func_stack.pop();
     }
 }
+/// Return true when the checker is currently inside a function literal.
 fn inFunction(_: *const Checker, ctx: *CheckerContext) bool {
     return ctx.func_stack.items.len > 0;
 }
+/// Fetch the active function context, if any.
 fn currentFunc(_: *const Checker, ctx: *CheckerContext) ?FunctionCtx {
     if (ctx.func_stack.items.len == 0) return null;
     return ctx.func_stack.items[ctx.func_stack.items.len - 1];
 }
 
+/// Push loop metadata (label) on entry to a loop.
 fn pushLoop(self: *Checker, ctx: *CheckerContext, label: ast.OptStrId) !void {
     try ctx.loop_stack.append(self.gpa, .{ .label = label, .result_ty = null });
 }
+/// Pop the current loop metadata on exit.
 fn popLoop(_: *Checker, ctx: *CheckerContext) void {
     if (ctx.loop_stack.items.len > 0) _ = ctx.loop_stack.pop();
 }
+/// Return true while inside a loop construct.
 fn inLoop(_: *const Checker, ctx: *CheckerContext) bool {
     return ctx.loop_stack.items.len > 0;
 }
+/// Track the binding created by a loop pattern matched against `subj`.
 inline fn pushLoopBinding(self: *Checker, ctx: *CheckerContext, pat: ast.OptPatternId, subj: types.TypeId) !void {
     try ctx.loop_binding_stack.append(self.gpa, .{ .pat = pat, .subject_ty = subj });
 }
+/// Remove the loop binding once the loop scope ends.
 inline fn popLoopBinding(_: *Checker, ctx: *CheckerContext) void {
     if (ctx.loop_binding_stack.items.len > 0) _ = ctx.loop_binding_stack.pop();
 }
 
+/// Return the identifier bound by `pid` when it is a simple binding pattern.
 fn bindingNameOfPattern(ast_unit: *ast.Ast, pid: ast.PatternId) ?ast.StrId {
     const pkind = ast_unit.pats.index.kinds.items[pid.toRaw()];
     return switch (pkind) {
@@ -368,6 +438,7 @@ fn bindingNameOfPattern(ast_unit: *ast.Ast, pid: ast.PatternId) ?ast.StrId {
     };
 }
 
+/// Predeclare the signature of function literal `did` so later calls can resolve against it.
 fn predeclareFunction(
     self: *Checker,
     ctx: *CheckerContext,
@@ -438,6 +509,7 @@ fn predeclareFunction(
     // }
 }
 
+/// Search for the most recent specialization for generic parameter `name`.
 pub fn lookupParamSpecialization(_: *const Checker, ctx: *CheckerContext, name: ast.StrId) ?types.TypeId {
     var i: usize = ctx.param_specializations.items.len;
     while (i > 0) {
@@ -448,6 +520,7 @@ pub fn lookupParamSpecialization(_: *const Checker, ctx: *CheckerContext, name: 
     return null;
 }
 
+/// Type check the specialized function literal `id` using parameter overrides `specs`.
 pub fn checkSpecializedFunction(
     self: *Checker,
     ctx: *CheckerContext,
@@ -490,20 +563,25 @@ pub fn checkSpecializedFunction(
     return try self.checkFunctionLit(ctx, ast_unit, id);
 }
 
+/// Track a match binding introduced by `pat` for the current subject type.
 pub inline fn pushMatchBinding(self: *Checker, ctx: *CheckerContext, pat: ast.PatternId, subj: types.TypeId) !void {
     try ctx.match_binding_stack.append(self.gpa, .{ .pat = pat, .subject_ty = subj });
 }
+/// Remove the most-recent match binding when leaving the match scope.
 pub inline fn popMatchBinding(_: *Checker, ctx: *CheckerContext) void {
     if (ctx.match_binding_stack.items.len > 0) _ = ctx.match_binding_stack.pop();
 }
 
+/// Push a catch handler binding named `name` with type `ty`.
 inline fn pushCatchBinding(self: *Checker, ctx: *CheckerContext, name: ast.StrId, ty: types.TypeId) !void {
     try ctx.catch_binding_stack.append(self.gpa, .{ .name = name, .ty = ty });
 }
+/// Drop the latest catch binding on scope exit.
 inline fn popCatchBinding(_: *Checker, ctx: *CheckerContext) void {
     if (ctx.catch_binding_stack.items.len > 0) _ = ctx.catch_binding_stack.pop();
 }
 
+/// Lookup the type previously bound to `name` by an active catch context.
 inline fn bindingTypeFromActiveCatches(_: *Checker, ctx: *CheckerContext, name: ast.StrId) ?types.TypeId {
     var i: isize = @as(isize, @intCast(ctx.catch_binding_stack.items.len)) - 1;
     while (i >= 0) : (i -= 1) {
@@ -513,6 +591,7 @@ inline fn bindingTypeFromActiveCatches(_: *Checker, ctx: *CheckerContext, name: 
     return null;
 }
 
+/// Walk active match bindings to find the type bound to `name`.
 inline fn bindingTypeFromActiveMatches(
     self: *Checker,
     ctx: *CheckerContext,
@@ -528,6 +607,7 @@ inline fn bindingTypeFromActiveMatches(
     return null;
 }
 
+/// Walk the loop binding stack to find a binding for `name`.
 inline fn bindingTypeFromActiveLoops(
     self: *Checker,
     ctx: *CheckerContext,
@@ -545,21 +625,26 @@ inline fn bindingTypeFromActiveLoops(
     return null;
 }
 
+/// Record whether the next expressions must produce a value (true => value required).
 fn pushValueReq(self: *Checker, ctx: *CheckerContext, v: bool) !void {
     try ctx.value_ctx.append(self.gpa, v);
 }
+/// Restore the previous value requirement flag.
 fn popValueReq(_: *Checker, ctx: *CheckerContext) void {
     if (ctx.value_ctx.items.len > 0) _ = ctx.value_ctx.pop();
 }
+/// Test whether values are required in the current checking context.
 pub fn isValueReq(_: *const Checker, ctx: *CheckerContext) bool {
     if (ctx.value_ctx.items.len == 0) return true; // default: value required
     return ctx.value_ctx.items[ctx.value_ctx.items.len - 1];
 }
 
+/// Lookup symbol `name` in the current scope.
 pub fn lookup(_: *Checker, ctx: *CheckerContext, name: ast.StrId) ?symbols.SymbolId {
     return ctx.symtab.lookup(ctx.symtab.currentId(), name);
 }
 
+/// Return the `LoopCtx` matching `opt_label`, defaulting to the innermost loop.
 fn loopCtxForLabel(_: *Checker, ctx: *CheckerContext, opt_label: ast.OptStrId) ?*LoopCtx {
     if (ctx.loop_stack.items.len == 0) return null;
     const want: ?u32 = if (!opt_label.isNone()) opt_label.unwrap().toRaw() else null;
@@ -576,6 +661,7 @@ fn loopCtxForLabel(_: *Checker, ctx: *CheckerContext, opt_label: ast.OptStrId) ?
 // =========================================================
 // Declarations & Statements
 // =========================================================
+/// Type-check the declaration `decl_id`, including its initializer and patterns.
 pub fn checkDecl(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, decl_id: ast.DeclId) !void {
     // pattern : expect_ty = value
     const decl = ast_unit.exprs.Decl.get(decl_id);
@@ -656,6 +742,7 @@ pub fn checkDecl(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, decl_
     }
 }
 
+/// Record exported bindings produced by `decl_id` with runtime type `value_ty`.
 fn recordExportsForDecl(
     self: *Checker,
     ctx: *CheckerContext,
@@ -696,6 +783,7 @@ fn recordExportsForDecl(
     }
 }
 
+/// Register the method declaration `decl_id` with receiver type and signature `fn_ty`.
 fn registerMethodDecl(
     self: *Checker,
     ctx: *CheckerContext,
@@ -839,38 +927,69 @@ fn registerMethodDecl(
     return true;
 }
 
+/// Diagnostics representing why `got` cannot be assigned to `expect`.
 const AssignErrors = union(enum) {
+    /// Source array has the wrong length for target array.
     array_length_mismatch,
+    /// Tuple arity differs from expected target arity.
     tuple_arity_mismatch,
+    /// `null` assigned to non-optional target.
     assign_null_to_non_optional,
+    /// Pointer element types differ.
     pointer_type_mismatch,
+    /// Pointer const-correctness violated.
     pointer_constness_violation,
+    /// Slice loses const qualifier during assignment.
     slice_constness_violation,
+    /// Expected an array type but got something else.
     expected_array_type,
+    /// Expected a tuple type but got something else.
     expected_tuple_type,
+    /// Expected a map type but got something else.
     expected_map_type,
+    /// Expected a pointer type but got something else.
     expected_pointer_type,
+    /// Expected integer kind but didn't find one.
     expected_integer_type,
+    /// Expected float kind but got another type.
     expected_float_type,
+    /// Expected enum type mismatch.
     expected_enum_type,
+    /// Map key type mismatch.
     map_wrong_key_type,
+    /// Expected a literal type but got a value.
     type_value_mismatch,
+    /// Null assigned where `noreturn` expected.
     noreturn_not_storable,
+    /// Expected struct target but type differs.
     expected_struct_type,
+    /// Struct declared fewer fields than provided.
     struct_field_count_mismatch,
+    /// Struct literal refers to an unknown field.
     unknown_struct_field,
+    /// Struct field names don't align.
     struct_field_name_mismatch,
+    /// Union literal sets more than one field.
     union_literal_multiple_fields,
+    /// Union literal leaves no field set.
     union_empty_literal,
+    /// Expected a tensor type but got different kind.
     expected_tensor_type,
+    /// Tensor ranks differ.
     tensor_rank_mismatch,
+    /// Tensor dimensions mismatch.
     tensor_dimension_mismatch,
+    /// Tensor element type mismatch.
     tensor_element_type_mismatch,
+    /// Struct field type mismatch with indexes for diagnostics.
     struct_field_type_mismatch: struct { index: usize, tag_index: usize },
+    /// General failure when no other case matched.
     failure,
+    /// Assignment succeeded.
     success,
 };
 
+/// Determine if `got` can be assigned to `expect`, returning an `AssignErrors` tag.
 pub fn assignable(self: *Checker, got: types.TypeId, expect: types.TypeId) AssignErrors {
     if (got.eq(expect)) return .success;
     const got_kind = self.typeKind(got);
@@ -1147,6 +1266,7 @@ pub fn assignable(self: *Checker, got: types.TypeId, expect: types.TypeId) Assig
     return .failure;
 }
 
+/// Infer the declaration type using `rhs_ty` when no annotation is provided.
 fn typeInferFromRHS(self: *Checker, ast_unit: *ast.Ast, decl_id: ast.DeclId, rhs_ty: types.TypeId) !void {
     const decl = ast_unit.exprs.Decl.get(decl_id);
     // Degenerate cases where we don't infer from RHS
@@ -1168,6 +1288,7 @@ fn typeInferFromRHS(self: *Checker, ast_unit: *ast.Ast, decl_id: ast.DeclId, rhs
     }
 }
 
+/// Update literal `expr_id` to `target_ty` when numeric coercion succeeds.
 fn updateCoercedLiteral(
     self: *Checker,
     ast_unit: *ast.Ast,
@@ -1187,8 +1308,10 @@ fn updateCoercedLiteral(
 }
 
 // Determine if an expression is a comptime numeric expression (integer or float).
+/// Kind of compile-time numeric expression (int or float).
 const ConstNumKind = enum { none, int, float };
 
+/// Determine whether `expr_id` is a compile-time numeric literal/expression.
 fn constNumericKind(self: *Checker, ast_unit: *ast.Ast, expr_id: ast.ExprId) ConstNumKind {
     switch (exprKind(ast_unit, expr_id)) {
         .Literal => {
@@ -1223,6 +1346,7 @@ fn constNumericKind(self: *Checker, ast_unit: *ast.Ast, expr_id: ast.ExprId) Con
     }
 }
 
+/// Attempt to coerce a compile-time numeric expression to `target_ty`.
 fn coerceComptimeNumericExpr(
     self: *Checker,
     ast_unit: *ast.Ast,
@@ -1242,6 +1366,7 @@ fn coerceComptimeNumericExpr(
     };
 }
 
+/// Update compile-time numeric constant `expr_id` to `target_ty` on successful coercion.
 fn updateCoercedConstNumeric(
     self: *Checker,
     ast_unit: *ast.Ast,
@@ -1260,6 +1385,7 @@ fn updateCoercedConstNumeric(
     return true;
 }
 
+/// Coerce literal `expr_id` to `target_ty` (int, float, imaginary).
 fn coerceNumericLiteral(
     self: *Checker,
     ast_unit: *ast.Ast,
@@ -1277,6 +1403,7 @@ fn coerceNumericLiteral(
     };
 }
 
+/// Attempt to coerce integer literal `expr_id` to `target_ty`.
 fn coerceIntLiteral(
     ast_unit: *ast.Ast,
     expr_id: ast.ExprId,
@@ -1342,6 +1469,7 @@ fn coerceIntLiteral(
     return true;
 }
 
+/// Attempt to coerce floating literal `expr_id` to `target_ty`.
 fn coerceFloatLiteral(
     ast_unit: *ast.Ast,
     expr_id: ast.ExprId,
@@ -1371,6 +1499,7 @@ fn coerceFloatLiteral(
     return true;
 }
 
+/// Attempt to coerce imaginary literal `expr_id` to complex `target_ty`.
 fn coerceImaginaryLiteral(
     self: *Checker,
     ast_unit: *ast.Ast,
@@ -1404,6 +1533,7 @@ fn coerceImaginaryLiteral(
     return true;
 }
 
+/// Try to coerce variant/error literals like `V.C(...)` or `V.C{...}` to `expect_ty`.
 fn tryCoerceVariantOrErrorLiteral(
     self: *Checker,
     ctx: *CheckerContext,
@@ -1425,6 +1555,7 @@ fn tryCoerceVariantOrErrorLiteral(
     };
 }
 
+/// Try to coerce call-like expressions that target a variant/error case payload.
 fn tryCoerceCallLike(
     self: *Checker,
     ctx: *CheckerContext,
@@ -1447,6 +1578,7 @@ fn tryCoerceCallLike(
     return false;
 }
 
+/// Try to coerce struct literal `sl` to the payload type of `expect_ty`.
 fn tryCoerceStructLitLike(
     self: *Checker,
     ctx: *CheckerContext,
@@ -1471,6 +1603,7 @@ fn tryCoerceStructLitLike(
     return false;
 }
 
+/// Look up the payload type for case `lname` inside the variant/error `expect_ty`.
 fn getPayloadTypeForCase(
     self: *Checker,
     expect_ty: types.TypeId,
@@ -1489,6 +1622,7 @@ fn getPayloadTypeForCase(
     return null;
 }
 
+/// Verify that call arguments match the payload `pay_ty`.
 fn checkCallArgsAgainstPayload(
     self: *Checker,
     ctx: *CheckerContext,
@@ -1547,6 +1681,7 @@ fn checkCallArgsAgainstPayload(
     return false;
 }
 
+/// Verify that struct literal `sl` matches the payload struct type `pay_ty`.
 fn checkStructLitAgainstPayload(
     self: *Checker,
     ctx: *CheckerContext,
@@ -1596,6 +1731,7 @@ fn checkStructLitAgainstPayload(
     return true;
 }
 
+/// Attempt to coerce the RHS type `rhs_ty` to `expect_ty` for declaration `decl_id`.
 fn tryTypeCoercion(
     self: *Checker,
     ctx: *CheckerContext,
@@ -1650,6 +1786,7 @@ fn tryTypeCoercion(
     }
 }
 
+/// Validate the assignment statement `stmt`, handling destructuring and coercions.
 fn checkAssign(
     self: *Checker,
     ctx: *CheckerContext,
@@ -1721,6 +1858,7 @@ fn checkAssign(
     }
 }
 
+/// Type-check statement `sid`, returning the resulting type (usually void).
 fn checkStmt(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, sid: ast.StmtId) !types.TypeId {
     switch (ast_unit.stmts.index.kinds.items[sid.toRaw()]) {
         .Expr => {
@@ -1769,6 +1907,7 @@ fn checkStmt(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, sid: ast.
 // =========================================================
 // Expressions
 // =========================================================
+/// Type-check expression `id` while caching the result in `ast_unit.type_info`.
 pub fn checkExpr(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, id: ast.ExprId) anyerror!types.TypeId {
     if (ast_unit.type_info.expr_types.items[id.toRaw()]) |cached| return cached;
 
@@ -1847,6 +1986,7 @@ pub fn checkExpr(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, id: a
     return tid;
 }
 
+/// Determine the declared type for literal expression `id`.
 fn checkLiteral(self: *Checker, ast_unit: *ast.Ast, id: ast.ExprId) !types.TypeId {
     const lit = getExpr(ast_unit, .Literal, id);
     return switch (lit.kind) {
@@ -1919,6 +2059,7 @@ fn checkLiteral(self: *Checker, ast_unit: *ast.Ast, id: ast.ExprId) !types.TypeI
         .char => self.context.type_store.tU32(),
     };
 }
+/// Resolve identifier `id` to its type by looking up scopes/patterns.
 fn checkIdent(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, id: ast.ExprId) !types.TypeId {
     const row = getExpr(ast_unit, .Ident, id);
     // First try dynamic bindings from active loop/match contexts to support
@@ -2027,6 +2168,7 @@ fn checkIdent(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, id: ast.
     return self.context.type_store.tTypeError();
 }
 
+/// Type-check block expression `id` while respecting value vs statement context.
 fn checkBlock(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, id: ast.ExprId) !types.TypeId {
     const br = getExpr(ast_unit, .Block, id);
     const stmts = ast_unit.stmts.stmt_pool.slice(br.items);
@@ -2094,6 +2236,7 @@ fn checkBlock(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, id: ast.
     return self.context.type_store.tVoid();
 }
 
+/// Fetch the source location for the statement `sid`.
 fn stmtLoc(ast_unit: *ast.Ast, sid: ast.StmtId) Loc {
     return switch (ast_unit.stmts.index.kinds.items[sid.toRaw()]) {
         .Expr => exprLocFromId(ast_unit, getStmt(ast_unit, .Expr, sid).expr),
@@ -2106,6 +2249,7 @@ fn stmtLoc(ast_unit: *ast.Ast, sid: ast.StmtId) Loc {
     };
 }
 
+/// Validate binary operation `id`, ensuring operand types/coercion rules hold.
 fn checkBinary(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, id: ast.ExprId) !types.TypeId {
     const bin: ast.Rows.Binary = getExpr(ast_unit, .Binary, id);
     var l = try self.checkExpr(ctx, ast_unit, bin.left);
@@ -2432,6 +2576,7 @@ fn checkBinary(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, id: ast
     return self.context.type_store.tTypeError();
 }
 
+/// Validate the unary expression `id`, ensuring operand types and operators align.
 fn checkUnary(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, id: ast.ExprId) !types.TypeId {
     const unary_expr = getExpr(ast_unit, .Unary, id);
     const expr_ty = try self.checkExpr(ctx, ast_unit, unary_expr.expr);
@@ -2457,6 +2602,7 @@ fn checkUnary(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, id: ast.
     }
 }
 
+/// Type-check function literal `id`, handling parameters, defaults, body, and purity.
 fn checkFunctionLit(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, id: ast.ExprId) !types.TypeId {
     // Disallow nested function definitions unless explicitly allowed by the current context
     // (e.g., when defining methods inside functions before hoisting at lowering).
@@ -2568,7 +2714,7 @@ fn checkFunctionLit(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, id
     const returns_value = result_kind != .Void and result_kind != .Noreturn;
     try self.pushFunc(ctx, res, returns_value, !fnr.flags.is_proc);
     defer self.popFunc(ctx);
-    if (!fnr.body.isNone()) {
+    if (!fnr.body.isNone() and result_kind != .TypeType) {
         // Function bodies are in statement context: no value required from the block
         try self.pushValueReq(ctx, false);
         defer self.popValueReq(ctx);
@@ -2581,6 +2727,7 @@ fn checkFunctionLit(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, id
     return final_ty;
 }
 
+/// Type-check tuple literal `id` and produce a tuple type of element types.
 fn checkTupleLit(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, id: ast.ExprId) !types.TypeId {
     // Disambiguation: tuple literal vs tuple type share syntax.
     // We only interpret tuples as types when the checker is already in a type position
@@ -2599,6 +2746,7 @@ fn checkTupleLit(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, id: a
     return self.context.type_store.mkTuple(tbuf);
 }
 
+/// Type-check array literal `id`, ensuring homogenous element types.
 fn checkArrayLit(
     self: *Checker,
     ctx: *CheckerContext,
@@ -2625,6 +2773,7 @@ fn checkArrayLit(
     return self.context.type_store.mkArray(first_ty, elems.len);
 }
 
+/// Type-check map literal `id`, enforcing consistent key/value types.
 fn checkMapLit(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, id: ast.ExprId) !types.TypeId {
     const row = getExpr(ast_unit, .MapLit, id);
     const kvs = ast_unit.exprs.kv_pool.slice(row.entries);
@@ -2655,6 +2804,7 @@ fn checkMapLit(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, id: ast
     return self.context.type_store.mkMap(key_ty, val_ty);
 }
 
+/// Resolve the index access expression `id` and compute the fetched element type.
 fn checkIndexAccess(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, id: ast.ExprId) !types.TypeId {
     const index_expr = getExpr(ast_unit, .IndexAccess, id);
     const col_ty = try self.checkExpr(ctx, ast_unit, index_expr.collection);
@@ -2696,6 +2846,7 @@ fn checkIndexAccess(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, id
     return self.context.type_store.tTypeError();
 }
 
+/// Compute the element or slice type for array-like `col_ty` indexed by `idx_expr`.
 fn indexElemTypeFromArrayLike(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, col_ty: types.TypeId, idx_expr: ast.ExprId, loc: Loc) !types.TypeId {
     const col_kind = self.typeKind(col_ty);
     if (!(col_kind == .Array or col_kind == .Slice or col_kind == .String or col_kind == .DynArray)) {
@@ -2738,6 +2889,7 @@ fn indexElemTypeFromArrayLike(self: *Checker, ctx: *CheckerContext, ast_unit: *a
     };
 }
 
+/// Compute the type referenced by pointer `col_ty` when indexed by `idx_expr`.
 fn indexElemTypeFromPointer(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, col_ty: types.TypeId, idx_expr: ast.ExprId, loc: Loc) !types.TypeId {
     const ptr_row = self.context.type_store.get(.Ptr, col_ty);
     const idx_kind = exprKind(ast_unit, idx_expr);
@@ -2755,6 +2907,7 @@ fn indexElemTypeFromPointer(self: *Checker, ctx: *CheckerContext, ast_unit: *ast
     return ptr_row.elem;
 }
 
+/// Determine the element type after indexing tensor `col_ty`.
 fn indexElemTypeFromTensor(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, col_ty: types.TypeId, idx_expr: ast.ExprId, loc: Loc) !types.TypeId {
     const tensor = self.context.type_store.get(.Tensor, col_ty);
     const rank: usize = @intCast(tensor.rank);
@@ -2787,6 +2940,7 @@ fn indexElemTypeFromTensor(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.
     return self.context.type_store.mkTensor(tensor.elem, dims[0 .. rank - 1]);
 }
 
+/// Offer builtin `dynarray` methods (e.g., `append`) when resolving `owner_ty.field_name`.
 fn tryRegisterDynArrayBuiltin(
     self: *Checker,
     ast_unit: *ast.Ast,
@@ -2840,6 +2994,7 @@ fn tryRegisterDynArrayBuiltin(
     return self.context.type_store.tTypeError();
 }
 
+/// Resolve a field access that might refer to a method on `owner_ty`.
 fn resolveMethodFieldAccess(
     self: *Checker,
     ast_unit: *ast.Ast,
@@ -2914,6 +3069,7 @@ fn resolveMethodFieldAccess(
     return trimmed;
 }
 
+/// Determine the type denoted by the field access expression `id`.
 fn checkFieldAccess(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, id: ast.ExprId) !types.TypeId {
     const field_expr = getExpr(ast_unit, .FieldAccess, id);
     const field_loc = exprLoc(ast_unit, field_expr);
@@ -3270,6 +3426,7 @@ fn checkFieldAccess(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, id
     }
 }
 
+/// Type-check range literal `id`, ensuring bounds share compatible numeric types.
 fn checkRange(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, id: ast.ExprId) !types.TypeId {
     const range = getExpr(ast_unit, .Range, id);
     var start_ty = if (!range.start.isNone()) try self.checkExpr(ctx, ast_unit, range.start.unwrap()) else null;
@@ -3326,6 +3483,7 @@ fn checkRange(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, id: ast.
     return self.context.type_store.mkSlice(self.context.type_store.tUsize(), false);
 }
 
+/// Extract an identifier token or field name from a type expression for diagnostics.
 fn typeExprNameForDiag(ast_unit: *ast.Ast, expr: ast.ExprId) ?ast.StrId {
     const kind = exprKind(ast_unit, expr);
     return switch (kind) {
@@ -3336,6 +3494,7 @@ fn typeExprNameForDiag(ast_unit: *ast.Ast, expr: ast.ExprId) ?ast.StrId {
     };
 }
 
+/// Validate struct literal `id` against its optional type annotation, generating diagnostics on mismatch.
 fn checkStructLit(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, id: ast.ExprId) !types.TypeId {
     const struct_lit = getExpr(ast_unit, .StructLit, id);
     const lit_fields = ast_unit.exprs.sfv_pool.slice(struct_lit.fields);
@@ -3409,6 +3568,7 @@ fn checkStructLit(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, id: 
     return expect_ty;
 }
 
+/// Return true when missing struct literal fields have defaults within `expect_ty`.
 fn structMissingFieldsCoveredByDefaults(
     self: *Checker,
     ctx: *CheckerContext,
@@ -3444,6 +3604,7 @@ fn structMissingFieldsCoveredByDefaults(
     return true;
 }
 
+/// Collect missing struct field names that lack defaults for diagnostics.
 fn collectMissingStructFields(
     self: *Checker,
     ctx: *CheckerContext,
@@ -3487,6 +3648,7 @@ fn collectMissingStructFields(
     return joined_id;
 }
 
+/// Return true if `field_name` has a default value within `ty_expr`.
 fn structFieldHasDefault(
     self: *Checker,
     ctx: *CheckerContext,
@@ -3533,6 +3695,7 @@ fn structFieldHasDefault(
     };
 }
 
+/// Helper checking for defaults inside a direct struct type expression.
 fn structFieldHasDefaultInStructExpr(
     ast_unit: *ast.Ast,
     struct_expr: ast.ExprId,
@@ -3549,6 +3712,7 @@ fn structFieldHasDefaultInStructExpr(
     return false;
 }
 
+/// Type-check dereference expression `id`, ensuring pointer operand.
 fn checkDeref(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, id: ast.ExprId) !types.TypeId {
     const row = getExpr(ast_unit, .Deref, id);
     const ptr_ty = try self.checkExpr(ctx, ast_unit, row.expr);
@@ -3566,6 +3730,7 @@ fn checkDeref(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, id: ast.
 // Calls & related helpers
 // =========================
 
+/// Resolve the payload type associated with tag `tag` in variant/error type `parent_ty`.
 fn resolveTagPayloadType(self: *Checker, parent_ty: types.TypeId, tag: ast.StrId) ?types.TypeId {
     const pk = self.trow(parent_ty);
     switch (pk) {
@@ -3590,8 +3755,7 @@ fn resolveTagPayloadType(self: *Checker, parent_ty: types.TypeId, tag: ast.StrId
     return self.context.type_store.tTypeError();
 }
 
-/// Handles `(Type).Tag(args...)` where `Type` is a Variant or Error.
-/// Supports payload kinds: Void, Tuple, Struct (new).
+/// Handle `(Type).Tag(...)` calls that construct variant/error cases.
 fn checkTagConstructorCall(
     self: *Checker,
     ctx: *CheckerContext,
@@ -3681,6 +3845,7 @@ fn checkTagConstructorCall(
     }
 }
 
+/// Validate the call expression `id`, checking argument arity/types, methods, and builtins.
 fn checkCall(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, id: ast.ExprId) !types.TypeId {
     const call_expr = getExpr(ast_unit, .Call, id);
     const call_loc = exprLoc(ast_unit, call_expr);
@@ -3996,6 +4161,7 @@ fn checkCall(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, id: ast.E
     return fnrow.result;
 }
 
+/// Count how many trailing parameters of `did` have default values (runtime ones only).
 fn countTrailingDefaultParams(_: *Checker, ast_unit: *ast.Ast, did: ast.DeclId) ?usize {
     const decl = ast_unit.exprs.Decl.get(did);
     if (ast_unit.exprs.index.kinds.items[decl.value.toRaw()] != .FunctionLit) return null;
@@ -4015,6 +4181,7 @@ fn countTrailingDefaultParams(_: *Checker, ast_unit: *ast.Ast, did: ast.DeclId) 
     return count;
 }
 
+/// Validate a method call using the resolved `binding` info.
 fn checkMethodCall(
     self: *Checker,
     ctx: *CheckerContext,
@@ -4156,6 +4323,7 @@ fn checkMethodCall(
     return fn_row.result;
 }
 
+/// Extract the identifier name used by the callee expression if applicable.
 fn calleeNameForCall(ast_unit: *ast.Ast, callee_expr: ast.ExprId) ?ast.StrId {
     const kind = ast_unit.exprs.index.kinds.items[callee_expr.toRaw()];
     return switch (kind) {
@@ -4165,6 +4333,7 @@ fn calleeNameForCall(ast_unit: *ast.Ast, callee_expr: ast.ExprId) ?ast.StrId {
     };
 }
 
+/// Return the cached type for `expr_id`, defaulting to `any` if unknown.
 fn exprTypeFromInfo(self: *Checker, ast_unit: *ast.Ast, expr_id: ast.ExprId) types.TypeId {
     if (expr_id.toRaw() < ast_unit.type_info.expr_types.items.len) {
         if (ast_unit.type_info.expr_types.items[expr_id.toRaw()]) |ty| {
@@ -4174,6 +4343,7 @@ fn exprTypeFromInfo(self: *Checker, ast_unit: *ast.Ast, expr_id: ast.ExprId) typ
     return self.context.type_store.tAny();
 }
 
+/// Recognize range expressions used as spreads in trailing `any` tuples.
 fn isSpreadRangeExprChecker(self: *Checker, ast_unit: *ast.Ast, expr: ast.ExprId) bool {
     if (ast_unit.exprs.index.kinds.items[expr.toRaw()] != .Range) return false;
     const row = ast_unit.exprs.get(.Range, expr);
@@ -4185,6 +4355,7 @@ fn isSpreadRangeExprChecker(self: *Checker, ast_unit: *ast.Ast, expr: ast.ExprId
     return end_kind == .Tuple or end_kind == .Any;
 }
 
+/// Compute the tuple type for trailing `any` arguments starting at `start_index`.
 fn computeTrailingAnyTupleTypeChecker(
     self: *Checker,
     ast_unit: *ast.Ast,
@@ -4209,6 +4380,7 @@ fn computeTrailingAnyTupleTypeChecker(
     return self.context.type_store.mkTuple(elem_types.items);
 }
 
+/// Record runtime specializations when generic/defaulted parameters are passed concrete types.
 fn maybeRecordRuntimeSpecialization(
     self: *Checker,
     ctx: *CheckerContext,
@@ -4276,6 +4448,7 @@ fn maybeRecordRuntimeSpecialization(
     try ast_unit.type_info.markSpecializedCall(self.gpa, call_id, decl_ctx);
 }
 
+/// Extract identifier name for alias resolution when `expr` represents a dotted path.
 fn aliasTargetName(ast_unit: *ast.Ast, expr: ast.ExprId) ?ast.StrId {
     const kind = ast_unit.exprs.index.kinds.items[expr.toRaw()];
     return switch (kind) {
@@ -4285,6 +4458,7 @@ fn aliasTargetName(ast_unit: *ast.Ast, expr: ast.ExprId) ?ast.StrId {
     };
 }
 
+/// Walk through alias declarations to find the actual source function definition.
 fn resolveFunctionDeclAlias(
     self: *Checker,
     start: call_resolution.FunctionDeclContext,
@@ -4317,6 +4491,7 @@ fn resolveFunctionDeclAlias(
 // Blocks, Return & Control
 // =========================
 
+/// Type-check a `code { ... }` block and warn once that it is not executed regularly.
 fn checkCodeBlock(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, id: ast.ExprId) !types.TypeId {
     const cb = getExpr(ast_unit, .CodeBlock, id);
     if (!ctx.warned_code) {
@@ -4326,12 +4501,14 @@ fn checkCodeBlock(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, id: 
     return try self.checkExpr(ctx, ast_unit, cb.block);
 }
 
+/// Treat async blocks opaquely by always returning `Any`.
 fn checkAsyncBlock(self: *Checker, id: ast.ExprId) !types.TypeId {
     _ = id;
     // Treat async blocks as opaque for typing.
     return self.context.type_store.tAny();
 }
 
+/// Validate an `mlir` block: check args, enforce comptime splices, and stamp the resulting type.
 fn checkMlirBlock(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, id: ast.ExprId) !types.TypeId {
     const row = ast_unit.exprs.get(.MlirBlock, id);
     const args = ast_unit.exprs.expr_pool.slice(row.args);
@@ -4446,12 +4623,14 @@ fn checkMlirBlock(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, id: 
     };
 }
 
+/// Type-check the `.insert` expression by checking its operand (returns `Any`).
 fn checkInsert(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, id: ast.ExprId) !types.TypeId {
     const r = getExpr(ast_unit, .Insert, id);
     _ = try self.checkExpr(ctx, ast_unit, r.expr);
     return self.context.type_store.tAny();
 }
 
+/// Ensure a `return` statement matches enclosing function requirements and emit diagnostics.
 fn checkReturn(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, rr: ast.Rows.Return) !types.TypeId {
     if (ctx.func_stack.items.len == 0) {
         try self.context.diags.addError(exprLoc(ast_unit, rr), .return_outside_function, .{});
@@ -4494,6 +4673,7 @@ fn checkReturn(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, rr: ast
     return ret_ty;
 }
 
+/// Type-check an `if` expression or statement, ensuring both branches agree on types.
 fn checkIf(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, id: ast.ExprId) !types.TypeId {
     const if_expr = getExpr(ast_unit, .If, id);
     const cond = try self.checkExpr(ctx, ast_unit, if_expr.cond);
@@ -4543,6 +4723,7 @@ fn checkIf(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, id: ast.Exp
     return then_ty;
 }
 
+/// Try to reconcile `a` and `b` by picking a castable/superset type when possible.
 fn unifyTypes(self: *Checker, a: types.TypeId, b: types.TypeId) ?types.TypeId {
     if (a.toRaw() == b.toRaw()) return a;
     const ak = self.typeKind(a);
@@ -4573,6 +4754,7 @@ fn unifyTypes(self: *Checker, a: types.TypeId, b: types.TypeId) ?types.TypeId {
     return null;
 }
 
+/// Normalize the numeric types `a` and `b` to a common type for comparison purposes.
 fn unifyNumeric(self: *Checker, a: types.TypeId, b: types.TypeId) types.TypeId {
     const ak = self.typeKind(a);
     const bk = self.typeKind(b);
@@ -4603,6 +4785,7 @@ fn unifyNumeric(self: *Checker, a: types.TypeId, b: types.TypeId) types.TypeId {
     return a;
 }
 
+/// Type-check `while` loops, including pattern matching and loop result tracking.
 fn checkWhile(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, id: ast.ExprId) !types.TypeId {
     const wr = getExpr(ast_unit, .While, id);
 
@@ -4649,10 +4832,12 @@ fn checkWhile(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, id: ast.
     return body_ty;
 }
 
+/// Handle `unreachable` expressions (no-op besides returning `any`).
 fn checkUnreachable(self: *Checker, _: ast.ExprId) !types.TypeId {
     return self.context.type_store.tAny();
 }
 
+/// Validate `for` loops over iterable collections and establish loop bindings.
 fn checkFor(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, id: ast.ExprId) !types.TypeId {
     const fr = getExpr(ast_unit, .For, id);
     const it = try self.checkExpr(ctx, ast_unit, fr.iterable);
@@ -4698,6 +4883,7 @@ fn checkFor(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, id: ast.Ex
 // Casts, Catch, Optionals
 // =========================
 
+/// Return true when `got` is allowed to be cast to `expect` (even if not assignable).
 fn castable(self: *Checker, got: types.TypeId, expect: types.TypeId) bool {
     if (got.eq(expect)) return true;
     const gk = self.typeKind(got);
@@ -4749,6 +4935,7 @@ fn castable(self: *Checker, got: types.TypeId, expect: types.TypeId) bool {
     return false;
 }
 
+/// Validate a `break` statement, ensuring loop contexts/values align.
 fn checkBreak(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, br: ast.Rows.Break) !types.TypeId {
     if (!self.inLoop(ctx)) {
         try self.context.diags.addError(exprLoc(ast_unit, br), .break_outside_loop, .{});
@@ -4778,11 +4965,13 @@ fn checkBreak(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, br: ast.
     return self.context.type_store.tTypeError();
 }
 
+/// Handle `continue` expressions (no type, but ensures location is tracked).
 fn checkContinue(self: *Checker, id: ast.ExprId) !types.TypeId {
     _ = id;
     return self.context.type_store.tVoid();
 }
 
+/// Validate `defer` expressions inside functions only.
 fn checkDefer(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, defer_expr: ast.Rows.Defer) !types.TypeId {
     if (!self.inFunction(ctx)) {
         try self.context.diags.addError(exprLoc(ast_unit, defer_expr), .defer_outside_function, .{});
@@ -4791,6 +4980,7 @@ fn checkDefer(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, defer_ex
     return self.context.type_store.tVoid();
 }
 
+/// Validate `err defer` expressions, requiring enclosing error functions.
 fn checkErrDefer(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, errdefer_expr: ast.Rows.ErrDefer) !types.TypeId {
     if (!self.inFunction(ctx)) {
         try self.context.diags.addError(exprLoc(ast_unit, errdefer_expr), .errdefer_outside_function, .{});
@@ -4807,6 +4997,7 @@ fn checkErrDefer(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, errde
     return self.context.type_store.tVoid();
 }
 
+/// Type-check `err.unwrap` ensuring the enclosing function returns an `ErrorSet`.
 fn checkErrUnwrap(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, id: ast.ExprId) !types.TypeId {
     const eur = getExpr(ast_unit, .ErrUnwrap, id);
     const et = try self.checkExpr(ctx, ast_unit, eur.expr);
@@ -4838,6 +5029,7 @@ fn checkErrUnwrap(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, id: 
     return er.value_ty;
 }
 
+/// Validate optional unwrap (`?`) operations.
 fn checkOptionalUnwrap(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, id: ast.ExprId) !types.TypeId {
     const our = getExpr(ast_unit, .OptionalUnwrap, id);
     const ot = try self.checkExpr(ctx, ast_unit, our.expr);
@@ -4851,11 +5043,13 @@ fn checkOptionalUnwrap(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast,
     return ore.elem;
 }
 
+/// Placeholder handling for `await` expressions (currently permits `any`).
 fn checkAwait(self: *Checker, id: ast.ExprId) !types.TypeId {
     _ = id;
     return self.context.type_store.tAny();
 }
 
+/// Type-check closure literals, requiring explicit parameter annotations.
 fn checkClosure(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, id: ast.ExprId) !types.TypeId {
     const cr = getExpr(ast_unit, .Closure, id);
     const params = ast_unit.exprs.param_pool.slice(cr.params);
@@ -4884,6 +5078,7 @@ fn checkClosure(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, id: as
     return self.context.type_store.mkFunction(param_tys, body_ty, false, true, false);
 }
 
+/// Handle different cast/kind modifiers, validating safety and recording results.
 fn checkCast(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, id: ast.ExprId) !types.TypeId {
     const cr = getExpr(ast_unit, .Cast, id);
     const et_res = try check_types.typeFromTypeExpr(self, ctx, ast_unit, cr.ty);
@@ -4930,6 +5125,7 @@ fn checkCast(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, id: ast.E
     return et;
 }
 
+/// Type-check `catch` expressions, ensuring handler types match automations.
 fn checkCatch(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, id: ast.ExprId) !types.TypeId {
     const row = getExpr(ast_unit, .Catch, id);
     const lhs_ty = try self.checkExpr(ctx, ast_unit, row.expr);
@@ -4986,6 +5182,7 @@ fn checkCatch(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, id: ast.
     return result_ty;
 }
 
+/// Resolve import expressions to module-type proxies used during checking.
 fn checkImport(self: *Checker, ast_unit: *ast.Ast, id: ast.ExprId) !types.TypeId {
     const ir = getExpr(ast_unit, .Import, id);
     const filepath = getStr(ast_unit, ir.path);
@@ -5005,6 +5202,7 @@ fn checkImport(self: *Checker, ast_unit: *ast.Ast, id: ast.ExprId) !types.TypeId
 // Misc helpers
 // =========================
 
+/// Emit diagnostics when literal `rhs` divides by zero.
 fn checkDivByZero(self: *Checker, ast_unit: *ast.Ast, rhs: ast.ExprId, loc: Loc) !void {
     if (exprKind(ast_unit, rhs) != .Literal) return;
     const lit = getExpr(ast_unit, .Literal, rhs);
@@ -5032,6 +5230,7 @@ fn checkDivByZero(self: *Checker, ast_unit: *ast.Ast, rhs: ast.ExprId, loc: Loc)
     }
 }
 
+/// Emit error when integer literal `rhs` is zero in division/mod contexts.
 fn checkIntZeroLiteral(self: *Checker, ast_unit: *ast.Ast, rhs: ast.ExprId, loc: Loc) !void {
     if (exprKind(ast_unit, rhs) != .Literal) return;
     const lit = getExpr(ast_unit, .Literal, rhs);
@@ -5045,7 +5244,18 @@ fn checkIntZeroLiteral(self: *Checker, ast_unit: *ast.Ast, rhs: ast.ExprId, loc:
     }
 }
 
-const LvalueRootKind = enum { LocalDecl, Param, NonLocalDecl, Unknown };
+/// Categories describing where an lvalue ultimately resolves.
+const LvalueRootKind = enum {
+    /// The lvalue refers to a declaration tied to the current function body.
+    LocalDecl,
+    /// The lvalue resolves to a formal parameter.
+    Param,
+    /// The lvalue points to a global or outer declaration.
+    NonLocalDecl,
+    /// Unable to determine the origin of the lvalue.
+    Unknown,
+};
+/// Determine whether the lvalue rooted at `expr` refers to a local, param, or other decl.
 fn lvalueRootKind(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, expr: ast.ExprId) LvalueRootKind {
     const k = exprKind(ast_unit, expr);
     switch (k) {
@@ -5083,8 +5293,10 @@ fn lvalueRootKind(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, expr
     }
 }
 
+/// Payload type used for diagnostics that require a string argument (e.g., missing case lists).
 pub const StringNotePayload = struct { value: ast.StrId };
 
+/// Compute the Levenshtein distance between `s1` and `s2`, returning null on allocation failure.
 fn levenshteinDistance(allocator: std.mem.Allocator, s1: []const u8, s2: []const u8) ?usize {
     const s1_len = s1.len;
     const s2_len = s2.len;
@@ -5113,6 +5325,7 @@ fn levenshteinDistance(allocator: std.mem.Allocator, s1: []const u8, s2: []const
     return dp[s1_len];
 }
 
+/// Among `candidates`, pick the best string-similarity match for `target`.
 fn findBestSuggestion(self: *Checker, target: []const u8, candidates: []const []const u8) ?[]const u8 {
     var best: ?[]const u8 = null;
     var min_dist: usize = 3;
@@ -5127,6 +5340,7 @@ fn findBestSuggestion(self: *Checker, target: []const u8, candidates: []const []
     return best;
 }
 
+/// Append field names from `fields` to `list` (used for diagnostics).
 fn appendFieldNames(self: *Checker, list: *std.ArrayList([]const u8), fields: []const types.FieldId) !void {
     for (fields) |fid| {
         const f = self.context.type_store.Field.get(fid);
@@ -5134,6 +5348,7 @@ fn appendFieldNames(self: *Checker, list: *std.ArrayList([]const u8), fields: []
     }
 }
 
+/// Append enum member names from `members` into `list`.
 fn appendEnumMemberNames(self: *Checker, list: *std.ArrayList([]const u8), members: []const types.EnumMemberId) !void {
     for (members) |mid| {
         const m = self.context.type_store.EnumMember.get(mid);
@@ -5141,6 +5356,7 @@ fn appendEnumMemberNames(self: *Checker, list: *std.ArrayList([]const u8), membe
     }
 }
 
+/// Attach suggestion notes referencing `candidates` to diagnostic `diag_idx`.
 fn attachSuggestionListNotes(
     self: *Checker,
     diag_idx: usize,
@@ -5165,6 +5381,7 @@ fn attachSuggestionListNotes(
     }
 }
 
+/// Consider `sym_id` for typo suggestions against `ident_name`.
 fn considerSymbolSuggestion(
     self: *Checker,
     ctx: *CheckerContext,
@@ -5192,6 +5409,7 @@ fn considerSymbolSuggestion(
     }
 }
 
+/// Format `type_id` into a string interner entry for diagnostics.
 fn formatTypeForNote(self: *Checker, type_id: types.TypeId) !ast.StrId {
     var buf = std.ArrayList(u8){};
     defer buf.deinit(self.gpa);
@@ -5201,11 +5419,13 @@ fn formatTypeForNote(self: *Checker, type_id: types.TypeId) !ast.StrId {
     return self.context.interner.intern(slice);
 }
 
+/// Attach a note displaying the signature of `func_ty` to diagnostic `diag_idx`.
 fn attachFunctionSignatureNote(self: *Checker, diag_idx: usize, func_ty: types.TypeId) !void {
     const signature = try formatTypeForNote(self, func_ty);
     try self.context.diags.attachNoteArgs(diag_idx, null, .function_signature, StringNotePayload{ .value = signature });
 }
 
+/// Add a `try_cast` note suggesting an explicit cast to `expected_ty`.
 fn attachTryCastNote(self: *Checker, diag_idx: usize, expected_ty: types.TypeId) !void {
     var buf = std.ArrayList(u8){};
     defer buf.deinit(self.gpa);

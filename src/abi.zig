@@ -4,26 +4,34 @@ const types = @import("types.zig");
 const std = @import("std");
 
 // ===== ABI: x86_64 SysV  =====
+/// Describes how a value is encoded for SysV x86_64 calling conventions.
 const AbiKind = enum {
-    DirectScalar, // coerce to one scalar (i8/i16/i32/i64/i128 or float/double/<2 x float>)
-    DirectPair, // split into two integer scalars (lo 64, hi remainder)
-    IndirectByVal, // pass pointer with byval(T) align K
-    IndirectSRet, // return via sret(T) align K (handled via first arg)
+    /// Coerce the value into a single scalar (integer or floating).
+    DirectScalar,
+    /// Split the value into two pointer-sized scalars (low/high).
+    DirectPair,
+    /// Pass a pointer to the value (byval) with a specified alignment.
+    IndirectByVal,
+    /// Return the value via the first sret argument pointer.
+    IndirectSRet,
 };
 
+/// ABI classification for passing or returning SR values according to SysV x86_64.
 pub const AbiClass = struct {
+    /// Which ABI classification applies to this type.
     kind: AbiKind,
-    // For DirectScalar: scalar0 used
-    // For DirectPair:   scalar0 + scalar1 used
+    /// First scalar slot used for direct scalar or pair cases.
     scalar0: ?mlir.Type = null,
+    /// Optional second scalar slot for direct pair cases.
     scalar1: ?mlir.Type = null,
-    // For Indirect: alignment
+    /// Required alignment when the value is passed indirectly.
     alignment: u32 = 1,
-
-    // Size in bytes (handy for pack/unpack loads/stores)
+    /// Total size in bytes of the value.
     size: usize = 0,
 };
 
+/// Return true when `ty` is represented using integer-like or pointer-sized scalars.
+/// `store` drives the lookup while `ty` is the type identifier being inspected.
 fn srIsIntLike(store: *types.TypeStore, ty: types.TypeId) bool {
     return switch (store.getKind(ty)) {
         .I8, .U8, .I16, .U16, .I32, .U32, .I64, .U64, .Usize, .Bool => true,
@@ -31,6 +39,8 @@ fn srIsIntLike(store: *types.TypeStore, ty: types.TypeId) bool {
         else => false,
     };
 }
+/// Return true when `ty` is a floating-point scalar type.
+/// `store` provides the type table and `ty` chooses which entry to examine.
 fn srIsFloatLike(store: *types.TypeStore, ty: types.TypeId) bool {
     return switch (store.getKind(ty)) {
         .F32, .F64 => true,
@@ -38,14 +48,20 @@ fn srIsFloatLike(store: *types.TypeStore, ty: types.TypeId) bool {
     };
 }
 
-// Compute size/align for SR type under x86_64 SysV (natural layout, no packed attr).
+/// Encapsulates the computed size, alignment, and component information for ABI rules.
 const SizeAlign = struct {
+    /// Size in bytes after layout/shuffling.
     size: usize,
+    /// Alignment requirement in bytes.
     alignment: usize,
+    /// Whether the type contains any floating-point data.
     hasFloat: bool,
+    /// Whether the type is comprised solely of integer-like parts.
     allIntsOnly: bool,
 };
 
+/// Determine the SysV ABI size/alignment characteristics for `ty`.
+/// `self` provides access to the current codegen context.
 pub fn abiSizeAlign(self: *Codegen, ty: types.TypeId) SizeAlign {
     return switch (self.context.type_store.getKind(ty)) {
         .Void => .{ .size = 0, .alignment = 1, .hasFloat = false, .allIntsOnly = true },
@@ -245,12 +261,17 @@ pub fn abiSizeAlign(self: *Codegen, ty: types.TypeId) SizeAlign {
 }
 
 // Simple FP pattern recognizers (for MVP SSE cases)
+/// Check whether `ty` is exactly the `f32` scalar.
 fn srIsExactlyFloat(store: *types.TypeStore, ty: types.TypeId) bool {
     return store.getKind(ty) == .F32;
 }
+
+/// Check whether `ty` is exactly the `f64` scalar.
 fn srIsExactlyDouble(store: *types.TypeStore, ty: types.TypeId) bool {
     return store.getKind(ty) == .F64;
 }
+
+/// Return true if `ty` represents two consecutive `f32` scalars in a struct/tuple.
 fn srIsTwoFloats(store: *types.TypeStore, ty: types.TypeId) bool {
     if (store.getKind(ty) == .Struct) {
         const S = store.get(.Struct, ty);
@@ -268,7 +289,9 @@ fn srIsTwoFloats(store: *types.TypeStore, ty: types.TypeId) bool {
     return false;
 }
 
-// Main classifier for a *parameter* or *return* SR type.
+/// Compute how `ty` should be passed or returned under the x86_64 SysV ABI.
+/// `self` is the codegen context, `ty` is the SR type in flight, and `isReturn`
+/// indicates whether the current slot belongs to a return value instead of a parameter.
 pub fn abiClassifyX64SysV(self: *Codegen, ty: types.TypeId, isReturn: bool) AbiClass {
     // Scalars: map 1:1, don't ABI-mangle
     switch (self.context.type_store.getKind(ty)) {

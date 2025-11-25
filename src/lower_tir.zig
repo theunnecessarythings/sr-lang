@@ -24,23 +24,40 @@ const Pipeline = pipeline_mod.Pipeline;
 const Builder = tir.Builder;
 const List = std.ArrayList;
 const MethodKey = types.MethodKey;
+/// Links a previously captured binding snapshot with its interpreter instance.
 const SnapshotEntry = struct {
+    /// Captured binding snapshot paired with its interpreter.
     snapshot: interpreter.BindingSnapshot,
+    /// Interpreter instance responsible for this snapshot.
     interp: *interpreter.Interpreter,
 };
 
 const SnapshotList = std.ArrayList(*SnapshotEntry);
 
-pub const ValueBinding = struct { value: tir.ValueId, ty: types.TypeId, is_slot: bool };
+/// Metadata for a value binding tracked during lowering (value id + type info).
+pub const ValueBinding = struct {
+    /// SSA value identifier produced for the binding.
+    value: tir.ValueId,
+    /// Declared or inferred type for the bound value.
+    ty: types.TypeId,
+    /// Indicates whether the binding refers to a storage slot instead of a pure value.
+    is_slot: bool,
+};
 
+/// Snapshot entry showing the previous binding for a name so it can be restored.
 pub const BindingSnapshot = struct {
+    /// Identifier whose binding is being restored.
     name: ast.StrId,
+    /// Prior binding that should be reinstated after specialization.
     prev: ?ValueBinding,
 };
 
+/// Tracks temporary expression type overrides introduced during lowering.
 const ExprTypeOverrideFrame = struct {
+    /// Stores temporary overrides from lowering heuristics keyed by expr ID.
     map: std.AutoArrayHashMapUnmanaged(u32, types.TypeId) = .{},
 
+    /// Release the map that tracks temporary type overrides.
     fn deinit(self: *ExprTypeOverrideFrame, gpa: std.mem.Allocator) void {
         self.map.deinit(gpa);
     }
@@ -48,27 +65,44 @@ const ExprTypeOverrideFrame = struct {
 
 const FunctionDeclContext = call_resolution.FunctionDeclContext;
 
+/// Driver for lowering AST units into TIR, managing interpreter state and builder contexts.
 pub const LowerTir = @This();
 
+/// Allocator for TIR lowering resources.
 gpa: std.mem.Allocator,
+/// Compilation context shared across pipeline stages.
 context: *Context,
+/// Pipeline configuration controlling which passes run.
 pipeline: *Pipeline,
+/// Checker used to validate AST nodes during lowering.
 chk: *checker.Checker,
+/// Stack of lowering contexts per file/function scope.
 lower_context: List(*LowerContext) = .{},
 
-// Simple loop stack to support break/continue in While/For (+ value loops)
+/// Per-function/module lowering state that tracks loops, snapshots, and interpreter caches.
 pub const LowerContext = struct {
+    /// Stack of active loop contexts for control-flow lowering.
     loop_stack: List(cf.LoopCtx) = .{},
+    /// Cache mapping method calls to symbol names to avoid re-lowering.
     module_call_cache: std.AutoHashMap(u64, StrId),
+    /// Record whether a given method key has been lowered.
     method_lowered: std.AutoHashMap(MethodKey, void),
+    /// Track functions that already have TIR emitted.
     lowered_functions: std.AutoHashMap(tir.StrId, void),
+    /// Interpreter instance used for comptime evaluation (per file).
     interpreter: *interpreter.Interpreter,
+    /// Stack of current binding snapshots for specialization contexts.
     specialization_stack: SnapshotList = .empty,
+    /// Stack storing expression type overrides introduced by lowering heuristics.
     expr_type_override_stack: List(ExprTypeOverrideFrame) = .{},
+    /// Cache of interpreters keyed by AST pointers.
     interp_cache: std.AutoHashMap(usize, *interpreter.Interpreter),
+    /// Allocator owned by the lowering context.
     gpa: std.mem.Allocator,
+    /// Active TIR builder emitting instructions for the current function.
     builder: ?*tir.Builder = null,
 
+    /// Return the comptime value previously bound to `name` from active snapshots.
     pub fn lookupBindingValue(self: *LowerContext, name: ast.StrId) ?*const comp.ComptimeValue {
         var i: usize = self.specialization_stack.items.len;
         while (i > 0) {
@@ -81,6 +115,7 @@ pub const LowerContext = struct {
         return null;
     }
 
+    /// Return the type binding for `name` by inspecting the active binding stack.
     pub fn lookupBindingType(self: *LowerContext, name: ast.StrId) ?types.TypeId {
         if (self.lookupBindingValue(name)) |value| {
             return switch (value.*) {
@@ -91,17 +126,20 @@ pub const LowerContext = struct {
         return null;
     }
 
+    /// Return the active binding snapshot if any.
     pub fn activeSnapshot(self: *LowerContext) ?*interpreter.BindingSnapshot {
         if (self.specialization_stack.items.len == 0) return null;
         return &self.specialization_stack.items[self.specialization_stack.items.len - 1].snapshot;
     }
 
+    /// Push a new interpreter binding snapshot for the current specialization context.
     pub fn pushSnapshot(self: *LowerContext, snapshot: interpreter.BindingSnapshot, interp: *interpreter.Interpreter) anyerror!void {
         const entry = try self.gpa.create(SnapshotEntry);
         entry.* = SnapshotEntry{ .snapshot = snapshot, .interp = interp };
         try self.specialization_stack.append(self.gpa, entry);
     }
 
+    /// Pop the most recent snapshot and release its interpreter resources.
     pub fn popSnapshot(self: *LowerContext) void {
         if (self.specialization_stack.pop()) |entry| {
             entry.snapshot.destroy(entry.interp.allocator);
@@ -109,6 +147,7 @@ pub const LowerContext = struct {
         }
     }
 
+    /// Return a cached interpreter for `target_ast`, creating one if necessary.
     pub fn getInterpreterFor(self: *LowerContext, target_ast: *ast.Ast) anyerror!(*interpreter.Interpreter) {
         if (self.interpreter.ast == target_ast) return self.interpreter;
         const key = @intFromPtr(target_ast);
@@ -121,6 +160,7 @@ pub const LowerContext = struct {
         return interp;
     }
 
+    /// Destroy all interpreter state and snapshots owned by this context.
     pub fn deinit(self: *LowerContext, gpa: std.mem.Allocator) void {
         self.loop_stack.deinit(gpa);
         self.module_call_cache.deinit();
@@ -149,6 +189,7 @@ pub const LowerContext = struct {
     }
 };
 
+/// Prefix exported symbols with their package name unless they belong to `main`.
 pub fn qualifySymbolName(self: *LowerTir, a: *ast.Ast, base: StrId) !StrId {
     if (a.unit.package_name.isNone()) return base;
     const pkg_id = a.unit.package_name.unwrap();
@@ -160,9 +201,12 @@ pub fn qualifySymbolName(self: *LowerTir, a: *ast.Ast, base: StrId) !StrId {
     return self.context.type_store.strs.intern(symbol);
 }
 
+/// Global flag tracking whether MLIR dialect/pass registrations were initialized.
 pub var g_mlir_inited: bool = false;
+/// Cached MLIR context shared across lowering runs.
 pub var g_mlir_ctx: mlir.Context = undefined;
 
+/// Instantiate a TIR lowering driver with the provided context/pipeline/checker.
 pub fn init(
     gpa: std.mem.Allocator,
     context: *Context,
@@ -178,14 +222,17 @@ pub fn init(
     };
 }
 
+/// No-op teardown (LowerTir uses externally owned resources).
 pub fn deinit(_: *LowerTir) void {}
 
+/// Report a lowering failure at `loc`, emit a diagnostic, and surface `LoweringBug`.
 fn throwErr(self: *LowerTir, loc: Loc) anyerror {
     std.debug.dumpCurrentStackTrace(null);
     try self.context.diags.addError(loc, .tir_lowering_failed, .{});
     return error.LoweringBug;
 }
 
+/// Lower every file in dependency order, producing a complete TIR module for main.
 pub fn run(self: *LowerTir, levels: *const compile.DependencyLevels) !*tir.TIR {
     var unit_by_file = std.AutoHashMap(u32, *package.FileUnit).init(self.gpa);
     defer unit_by_file.deinit();
@@ -256,6 +303,7 @@ pub fn run(self: *LowerTir, levels: *const compile.DependencyLevels) !*tir.TIR {
     return main_pkg.sources.entries.get(0).value.tir.?;
 }
 
+/// Wrap `runAst`, setting `ok_ptr` to false if an error occurs.
 fn runAstCatching(self: *LowerTir, ast_unit: *ast.Ast, t: *tir.TIR, ctx: *LowerContext, ok_ptr: *bool) !void {
     ok_ptr.* = true;
     self.runAst(ast_unit, t, ctx) catch |err| {
@@ -264,6 +312,7 @@ fn runAstCatching(self: *LowerTir, ast_unit: *ast.Ast, t: *tir.TIR, ctx: *LowerC
     };
 }
 
+/// Lower a single AST unit into the provided TIR builder/context.
 pub fn runAst(self: *LowerTir, ast_unit: *ast.Ast, t: *tir.TIR, ctx: *LowerContext) !void {
     var b = Builder.init(self.gpa, t);
     ctx.builder = &b;
@@ -289,6 +338,7 @@ pub fn runAst(self: *LowerTir, ast_unit: *ast.Ast, t: *tir.TIR, ctx: *LowerConte
     }
 }
 
+/// Return true if the method type is fully generic (`Any`) and shouldn't be lowered.
 fn shouldSkipGenericMethod(self: *const LowerTir, fn_ty: types.TypeId) bool {
     if (self.context.type_store.getKind(fn_ty) != .Function) return false;
     const info = self.context.type_store.get(.Function, fn_ty);
@@ -305,6 +355,7 @@ fn shouldSkipGenericMethod(self: *const LowerTir, fn_ty: types.TypeId) bool {
     return false;
 }
 
+/// Check whether `fty` ends with an `Any` parameter that is not fully lowered.
 fn hasTrailingAnyRuntimeParam(self: *const LowerTir, fty: types.TypeId) bool {
     if (self.context.type_store.getKind(fty) != .Function) return false;
     const info = self.context.type_store.get(.Function, fty);
@@ -314,10 +365,12 @@ fn hasTrailingAnyRuntimeParam(self: *const LowerTir, fty: types.TypeId) bool {
     return self.isType(params[params.len - 1], .Any);
 }
 
+/// Push a fresh expression-type override frame into `ctx`.
 fn pushExprTypeOverrideFrame(self: *LowerTir, ctx: *LowerContext) !void {
     try ctx.expr_type_override_stack.append(self.gpa, .{});
 }
 
+/// Pop the last expression-type override frame.
 fn popExprTypeOverrideFrame(self: *LowerTir, ctx: *LowerContext) void {
     if (ctx.expr_type_override_stack.items.len == 0) return;
     const idx = ctx.expr_type_override_stack.items.len - 1;
@@ -325,6 +378,7 @@ fn popExprTypeOverrideFrame(self: *LowerTir, ctx: *LowerContext) void {
     ctx.expr_type_override_stack.items.len -= 1;
 }
 
+/// Record that `expr` should temporarily be treated as `ty`.
 pub fn noteExprType(self: *LowerTir, ctx: *LowerContext, expr: ast.ExprId, ty: types.TypeId) !void {
     if (ctx.expr_type_override_stack.items.len == 0) return;
     if (self.isType(ty, .Any)) return;
@@ -332,6 +386,7 @@ pub fn noteExprType(self: *LowerTir, ctx: *LowerContext, expr: ast.ExprId, ty: t
     try frame.map.put(self.gpa, expr.toRaw(), ty);
 }
 
+/// Look for an expression type override associated with `expr`.
 fn lookupExprTypeOverride(_: *const LowerTir, ctx: *LowerContext, expr: ast.ExprId) ?types.TypeId {
     var i: usize = ctx.expr_type_override_stack.items.len;
     while (i > 0) {
@@ -344,6 +399,7 @@ fn lookupExprTypeOverride(_: *const LowerTir, ctx: *LowerContext, expr: ast.Expr
     return null;
 }
 
+/// Turn a literal expression into a `ConstInit` when it matches the desired `ty`.
 fn constInitFromLiteral(self: *LowerTir, a: *ast.Ast, expr: ast.ExprId, ty: types.TypeId) ?tir.ConstInit {
     const kind = a.exprs.index.kinds.items[expr.toRaw()];
     if (kind != .Literal) return null;
@@ -380,6 +436,7 @@ fn constInitFromLiteral(self: *LowerTir, a: *ast.Ast, expr: ast.ExprId, ty: type
     };
 }
 
+/// Lower the built-in `dynarray.append` call by invoking the runtime helper.
 fn lowerDynArrayAppend(
     self: *LowerTir,
     f: *Builder.FunctionFrame,
@@ -470,6 +527,7 @@ fn lowerDynArrayAppend(
     return self.safeUndef(blk, ts.tVoid(), loc);
 }
 
+/// Attempt to lower `expr_id` to a `ConstInit` consistent with `ty`, consulting the checker if needed.
 fn constInitFromExpr(self: *LowerTir, ctx: *LowerContext, a: *ast.Ast, expr_id: ast.ExprId, ty: types.TypeId) !?tir.ConstInit {
     if (self.constInitFromLiteral(a, expr_id, ty)) |ci| {
         return ci;
@@ -523,6 +581,7 @@ fn constInitFromExpr(self: *LowerTir, ctx: *LowerContext, a: *ast.Ast, expr_id: 
     return null;
 }
 
+/// Emit an init function that lowers every global `mlir` declaration in `a`.
 fn lowerGlobalMlir(self: *LowerTir, ctx: *LowerContext, a: *ast.Ast, b: *Builder) !void {
     var global_mlir_decls: List(ast.DeclId) = .empty;
     defer global_mlir_decls.deinit(self.gpa);
@@ -557,6 +616,7 @@ fn lowerGlobalMlir(self: *LowerTir, ctx: *LowerContext, a: *ast.Ast, b: *Builder
     try b.endFunction(f);
 }
 
+/// Lower a single `mlir` block expression, translating its pieces and args.
 fn lowerMlirBlock(
     self: *LowerTir,
     ctx: *LowerContext,
@@ -630,6 +690,7 @@ fn lowerMlirBlock(
     return result_id;
 }
 
+/// Resolve the `ComptimeValue` that a splice `piece_id` should inject into the MLIR block.
 fn resolveMlirSpliceValue(
     self: *LowerTir,
     ctx: *LowerContext,
@@ -667,6 +728,7 @@ fn resolveMlirSpliceValue(
     }
 }
 
+/// Return a cloned cached comptime value for `expr`, if the checker already computed one.
 fn getCachedComptimeValue(self: *LowerTir, a: *ast.Ast, expr: ast.ExprId) !?comp.ComptimeValue {
     if (a.type_info.getComptimeValue(expr)) |cached| {
         const cloned = try comp.cloneComptimeValue(self.gpa, cached.*);
@@ -679,12 +741,20 @@ fn getCachedComptimeValue(self: *LowerTir, a: *ast.Ast, expr: ast.ExprId) !?comp
 // Utilities / common helpers
 // ============================
 
-const LowerMode = enum { rvalue, lvalue_addr };
+/// Distinguishes whether lowering expects an rvalue or the address of an lvalue.
+const LowerMode = enum {
+    /// Evaluate expressions to their computed value.
+    rvalue,
+    /// Produce the address/location of an lvalue.
+    lvalue_addr,
+};
 
+/// Determine whether `ty` represents a void/`()` value.
 pub fn isVoid(self: *const LowerTir, ty: types.TypeId) bool {
     return self.context.type_store.index.kinds.items[ty.toRaw()] == .Void;
 }
 
+/// Return the optional source location associated with `id` (expr/pattern/stmt), if any.
 pub fn optLoc(a: *ast.Ast, id: anytype) tir.OptLocId {
     var store, const Kind = switch (@TypeOf(id)) {
         ast.ExprId => .{ a.exprs, ast.ExprKind },
@@ -706,7 +776,7 @@ pub fn optLoc(a: *ast.Ast, id: anytype) tir.OptLocId {
     return .none();
 }
 
-// Produce an undef that is never-void; if asked for void, give Any instead.
+/// Produce an undef value of `ty`, falling back to `Any` when `ty` is void so that SSA stays valid.
 pub fn safeUndef(self: *LowerTir, blk: *Builder.BlockFrame, ty: types.TypeId, loc: tir.OptLocId) tir.ValueId {
     if (self.isVoid(ty)) {
         return blk.builder.tirValue(.ConstUndef, blk, self.context.type_store.tAny(), loc, .{});
@@ -714,6 +784,7 @@ pub fn safeUndef(self: *LowerTir, blk: *Builder.BlockFrame, ty: types.TypeId, lo
     return blk.builder.tirValue(.ConstUndef, blk, ty, loc, .{});
 }
 
+/// Helper that returns an expression's source location for diagnostics.
 fn exprDiagLoc(a: *ast.Ast, id: ast.ExprId) Loc {
     const loc_id = optLoc(a, id);
     if (!loc_id.isNone()) {
@@ -722,6 +793,7 @@ fn exprDiagLoc(a: *ast.Ast, id: ast.ExprId) Loc {
     return Loc{ .file_id = @intCast(a.file_id), .start = 0, .end = 0 };
 }
 
+/// Confirm the recorded type for `id` is not a type error while lowering.
 fn ensureExprTypeNotError(self: *LowerTir, ctx: *LowerContext, a: *ast.Ast, id: ast.ExprId) anyerror!void {
     const ty = self.getExprType(ctx, a, id);
     if (self.context.type_store.getKind(ty) == .TypeError) {
@@ -731,6 +803,7 @@ fn ensureExprTypeNotError(self: *LowerTir, ctx: *LowerContext, a: *ast.Ast, id: 
     }
 }
 
+/// Call the runtime `rt_alloc` helper and unwrap the returned optional pointer.
 fn callRuntimeAllocPtr(
     self: *LowerTir,
     blk: *Builder.BlockFrame,
@@ -745,6 +818,7 @@ fn callRuntimeAllocPtr(
     return self.optionalPayload(blk, opt_ptr_ty, alloc_result, loc);
 }
 
+/// Call the runtime `rt_realloc` helper and return its normalized pointer result.
 fn callRuntimeReallocPtr(
     self: *LowerTir,
     blk: *Builder.BlockFrame,
@@ -760,6 +834,7 @@ fn callRuntimeReallocPtr(
     return self.optionalPayload(blk, opt_ptr_ty, realloc_result, loc);
 }
 
+/// Cast the fixed-size array value into a dynarray representation for slicing.
 fn coerceArrayToDynArray(
     self: *LowerTir,
     blk: *Builder.BlockFrame,
@@ -945,6 +1020,7 @@ pub fn emitCoerce(
 // Top-level lowering
 // ============================
 
+/// Attempt to lower a specific declaration `did` when it resolves to a function literal.
 fn tryLowerNamedFunction(
     self: *LowerTir,
     ctx: *LowerContext,
@@ -984,6 +1060,7 @@ fn tryLowerNamedFunction(
     }
 }
 
+/// Extract the binding name if `pid` is a simple identifier binding.
 fn bindingNameOfPattern(a: *ast.Ast, pid: ast.PatternId) ?StrId {
     const k = a.pats.index.kinds.items[pid.toRaw()];
     return switch (k) {
@@ -992,6 +1069,7 @@ fn bindingNameOfPattern(a: *ast.Ast, pid: ast.PatternId) ?StrId {
     };
 }
 
+/// Resolve a specialized type argument from bindings by inspecting `expr`.
 fn resolveSpecializedType(
     _: *types.TypeStore,
     bindings: []const comp.BindingInfo,
@@ -1016,6 +1094,7 @@ fn resolveSpecializedType(
     }
 }
 
+/// Lookup an override type provided by runtime-only bindings.
 fn lookupRuntimeOverride(bindings: []const comp.BindingInfo, name: ast.StrId) ?types.TypeId {
     for (bindings) |info| {
         if (!info.name.eq(name)) continue;
@@ -1027,6 +1106,7 @@ fn lookupRuntimeOverride(bindings: []const comp.BindingInfo, name: ast.StrId) ?t
     return null;
 }
 
+/// Extract the payload value from the optional `opt_val` (pointer or struct-backed).
 pub fn optionalPayload(
     self: *LowerTir,
     blk: *Builder.BlockFrame,
@@ -1041,6 +1121,7 @@ pub fn optionalPayload(
     return blk.builder.extractField(blk, opt.elem, opt_val, 1, loc);
 }
 
+/// Read the flag that indicates whether `opt_val` actually contains a value.
 pub fn optionalFlag(
     self: *LowerTir,
     blk: *Builder.BlockFrame,
@@ -1060,6 +1141,7 @@ pub fn optionalFlag(
     return blk.builder.extractField(blk, bool_ty, opt_val, 0, loc);
 }
 
+/// Build an optional value by combining an explicit `flag` with a `payload`.
 pub fn optionalWrapWithFlag(
     self: *LowerTir,
     blk: *Builder.BlockFrame,
@@ -1083,6 +1165,7 @@ pub fn optionalWrapWithFlag(
     }, loc);
 }
 
+/// Construct a `Some(payload)` optional value with the payload already available.
 pub fn optionalWrapSome(
     self: *LowerTir,
     blk: *Builder.BlockFrame,
@@ -1101,6 +1184,7 @@ pub fn optionalWrapSome(
     }, loc);
 }
 
+/// Determine whether the runtime bindings provide a consistent result type.
 fn runtimeResultType(bindings: []const comp.BindingInfo) ?types.TypeId {
     var candidate: ?types.TypeId = null;
     for (bindings) |info| {
@@ -1116,6 +1200,7 @@ fn runtimeResultType(bindings: []const comp.BindingInfo) ?types.TypeId {
     return candidate;
 }
 
+/// Handle top-level declarations (globals/methods) by emitting lowered functions or globals.
 fn lowerTopDecl(self: *LowerTir, ctx: *LowerContext, a: *ast.Ast, b: *Builder, did: ast.DeclId) !void {
     const d = a.exprs.Decl.get(did);
     const kind = a.exprs.index.kinds.items[d.value.toRaw()];
@@ -1162,6 +1247,7 @@ fn lowerTopDecl(self: *LowerTir, ctx: *LowerContext, a: *ast.Ast, b: *Builder, d
     }
 }
 
+/// Lower the AST attribute range into a list of TIR attribute ids.
 fn lowerAttrs(
     self: *LowerTir,
     a: *ast.Ast,
@@ -1181,6 +1267,7 @@ fn lowerAttrs(
     return b.t.instrs.attribute_pool.pushMany(self.gpa, attr_list.items);
 }
 
+/// Lower a function literal into TIR and emit its body once per specialization.
 pub fn lowerFunction(
     self: *LowerTir,
     lower_ctx: *LowerContext,
@@ -1284,7 +1371,7 @@ pub fn lowerFunction(
     try b.endFunction(f);
 }
 
-// Lower a block or expression as a list of statements (ignores resulting value)
+/// Evaluate `id` as a sequence of statements, running any defers and ignoring the final value.
 pub fn lowerExprAsStmtList(
     self: *LowerTir,
     ctx: *LowerContext,
@@ -1314,6 +1401,7 @@ pub fn lowerExprAsStmtList(
     }
 }
 
+/// Lower a declaration statement, destructuring patterns or evaluating the RHS for side effects.
 fn lowerDecl(
     self: *LowerTir,
     ctx: *LowerContext,
@@ -1340,6 +1428,7 @@ fn lowerDecl(
     }
 }
 
+/// Lower a `return` statement by computing the result value and emitting the terminator.
 fn lowerReturn(
     self: *LowerTir,
     ctx: *LowerContext,
@@ -1354,6 +1443,7 @@ fn lowerReturn(
     try self.lowerReturnCommon(ctx, a, env, f, blk, r.value, stmt_loc);
 }
 
+/// Shared lowering logic for a `return` value that runs normal/err defers and emits the terminator.
 fn lowerReturnCommon(
     self: *LowerTir,
     ctx: *LowerContext,
@@ -1411,6 +1501,7 @@ fn lowerReturnCommon(
     }
 }
 
+/// Emit stores/destructures for a top-level assignment, supporting `_` discard and slots.
 fn lowerAssign(
     self: *LowerTir,
     ctx: *LowerContext,
@@ -1449,6 +1540,7 @@ fn lowerAssign(
     _ = f.builder.tirValue(.Store, blk, rty, stmt_loc, .{ .ptr = lhs_ptr, .value = rhs, .@"align" = 0 });
 }
 
+/// Lower a statement ID by dispatching to the appropriate handler (expr, loop, return, etc.).
 fn lowerStmt(
     self: *LowerTir,
     ctx: *LowerContext,
@@ -1486,23 +1578,31 @@ fn lowerStmt(
 // Expressions
 // ============================
 
+/// Entry describing the callee metadata used by `lowerCall`.
 const CalleeInfo = struct {
+    /// Interned string representing the callee's unqualified name.
     name: StrId,
+    /// Optional fully-qualified symbol name used for diagnostics.
     qualified_name: ?StrId,
+    /// Optional type reported for the callee expression.
     fty: ?types.TypeId,
+    /// AST node that triggered this call/lookup.
     expr: ast.ExprId,
 };
 
+/// Interpret `expr` as a type argument, returning the referenced type when possible.
 fn resolveTypeArg(self: *LowerTir, ctx: *LowerContext, a: *ast.Ast, expr: ast.ExprId) ?types.TypeId {
     const ty = self.getExprType(ctx, a, expr);
     if (self.context.type_store.getKind(ty) != .TypeType) return null;
     return self.context.type_store.get(.TypeType, ty).of;
 }
 
+/// Build a key used to cache method lookups by module alias and member name.
 fn moduleCallKey(alias: ast.StrId, field: StrId) u64 {
     return (@as(u64, alias.toRaw()) << 32) | @as(u64, field.toRaw());
 }
 
+/// Build a short symbol name combining the owner and method segments.
 fn methodSymbolShortName(
     self: *LowerTir,
     a: *ast.Ast,
@@ -1523,15 +1623,20 @@ fn methodSymbolShortName(
     return self.context.type_store.strs.intern(symbol);
 }
 
+/// Create a key identifying a lowered method based on owner type and method name.
 fn methodLowerKey(owner_type: types.TypeId, method_name: ast.StrId) MethodKey {
     return MethodKey{ .owner = owner_type.toRaw(), .name = method_name.toRaw() };
 }
 
+/// Memoized data describing a previously lowered method symbol.
 const MethodLowerInfo = struct {
+    /// Derived key used to memoize lowered method declarations.
     key: MethodKey,
+    /// Owner type that originally declared the method.
     owner_type: types.TypeId,
 };
 
+/// Compute a lowered symbol name for method `did` bound to `owner_type`, ensuring uniqueness.
 pub fn methodSymbolName(
     self: *LowerTir,
     a: *ast.Ast,
@@ -1545,6 +1650,7 @@ pub fn methodSymbolName(
     return self.context.type_store.strs.intern(symbol);
 }
 
+/// Lookup the stored `MethodLowerInfo` for `decl_id` if it was previously lowered.
 fn methodKeyForDecl(self: *LowerTir, decl_id: ast.DeclId) ?MethodLowerInfo {
     var it = self.context.type_store.method_table.iterator();
     while (it.next()) |entry| {
@@ -1559,6 +1665,7 @@ fn methodKeyForDecl(self: *LowerTir, decl_id: ast.DeclId) ?MethodLowerInfo {
     return null;
 }
 
+/// Arrange arguments and runtime metadata before lowering a method or builtin call.
 fn prepareMethodCall(
     self: *LowerTir,
     a: *ast.Ast,
@@ -1613,6 +1720,7 @@ fn prepareMethodCall(
     }
 }
 
+/// Try to resolve the binding represented by a field-access into an actual method entry.
 fn synthesizeMethodBinding(
     self: *LowerTir,
     ctx: *LowerContext,
@@ -1686,6 +1794,7 @@ fn synthesizeMethodBinding(
     };
 }
 
+/// Resolve the name that should be used when calling `field_expr_id`, accounting for imports.
 fn resolveFieldAccessName(self: *LowerTir, ctx: *LowerContext, a: *ast.Ast, field_expr_id: ast.ExprId) ast.StrId {
     const field_access = a.exprs.get(.FieldAccess, field_expr_id);
     const parent_ty = self.getExprType(ctx, a, field_access.parent);
@@ -1716,6 +1825,7 @@ fn resolveFieldAccessName(self: *LowerTir, ctx: *LowerContext, a: *ast.Ast, fiel
     return field_access.field;
 }
 
+/// Trace a call expression to identify the callee symbol plus qualified name if any.
 fn resolveCallee(self: *LowerTir, ctx: *LowerContext, a: *ast.Ast, f: *Builder.FunctionFrame, row: ast.Rows.Call) !CalleeInfo {
     const cctx = self.chk.checker_ctx.items[a.file_id];
     var current = row.callee;
@@ -1754,6 +1864,7 @@ fn resolveCallee(self: *LowerTir, ctx: *LowerContext, a: *ast.Ast, f: *Builder.F
     return .{ .name = f.builder.intern("<indirect>"), .qualified_name = null, .fty = self.getExprType(ctx, a, row.callee), .expr = row.callee };
 }
 
+/// Create the payload value for a variant literal call based on the variant type `ety`.
 fn buildVariantItem(
     self: *LowerTir,
     ctx: *LowerContext,
@@ -1850,6 +1961,7 @@ fn buildVariantItem(
     }, loc);
 }
 
+/// Convert a literal AST node into a `ComptimeValue` when possible.
 fn constValueFromLiteral(self: *LowerTir, a: *ast.Ast, expr: ast.ExprId) !?comp.ComptimeValue {
     const kind = a.exprs.index.kinds.items[expr.toRaw()];
     if (kind != .Literal) return null;
@@ -1891,6 +2003,7 @@ fn constValueFromLiteral(self: *LowerTir, a: *ast.Ast, expr: ast.ExprId) !?comp.
     };
 }
 
+/// Attempt to evaluate a call expression at comptime so it can be folded into the lowered IR.
 fn tryComptimeCall(
     self: *LowerTir,
     ctx: *LowerContext,
@@ -1969,6 +2082,7 @@ fn tryComptimeCall(
     return blk.builder.indirectCall(blk, ret_ty, fn_ptr, all_args.items, loc);
 }
 
+/// Try to request a specialization for the target function when the call carries comptime bindings.
 fn trySpecializeFunctionCall(
     self: *LowerTir,
     ctx: *LowerContext,
@@ -2280,6 +2394,7 @@ fn trySpecializeFunctionCall(
     if (is_variadic and fixed > 0) fixed -= 1;
 }
 
+/// Emit the TIR form of a call expression, handling attributes, comptime args, and lowering the callee.
 fn lowerCall(
     self: *LowerTir,
     ctx: *LowerContext,
@@ -2495,6 +2610,7 @@ fn lowerCall(
     );
 }
 
+/// Lower the remaining argument expressions, injecting a packed tuple for `any` trailing parameters.
 fn lowerRemainingArgs(
     self: *LowerTir,
     ctx: *LowerContext,
@@ -2558,6 +2674,7 @@ fn lowerRemainingArgs(
     }
 }
 
+/// Inject default trailing args for methods/functions when the caller omits them.
 fn synthesizeDefaultTrailingArgs(
     self: *LowerTir,
     ctx: *LowerContext,
@@ -2625,6 +2742,7 @@ fn synthesizeDefaultTrailingArgs(
     }
 }
 
+/// Detect whether `expr` references an imported module member via dotted access.
 fn isImportMemberExpr(a: *ast.Ast, expr: ast.ExprId) bool {
     var current = expr;
     while (true) {
@@ -2645,6 +2763,7 @@ fn isImportMemberExpr(a: *ast.Ast, expr: ast.ExprId) bool {
     }
 }
 
+/// Emit the actual call instruction (direct or indirect) and adjust for `.lvalue_addr` mode.
 fn emitCallValue(
     self: *LowerTir,
     ctx: *LowerContext,
@@ -2741,6 +2860,7 @@ fn emitCallValue(
     return call_val;
 }
 
+/// Lower variadic arguments passed to extern functions, expanding spreads and promoting scalars.
 fn handleExternVariadicArgs(
     self: *LowerTir,
     ctx: *LowerContext,
@@ -2753,10 +2873,15 @@ fn handleExternVariadicArgs(
     vals_list: *List(tir.ValueId),
     fixed_params_count: usize,
 ) !void {
+    // Tracks the lowered state of each variadic argument before emission.
     const VarArgEntry = struct {
+        /// SSA value that carries the lowered argument.
         value: tir.ValueId,
+        /// Recorded SR type for the argument value.
         ty: types.TypeId,
+        /// Optional source location tied to this argument.
         loc: tir.OptLocId,
+        /// Original AST identifier, if available.
         expr: ?ast.ExprId,
     };
     var var_entries: List(VarArgEntry) = .empty;
@@ -2866,6 +2991,7 @@ fn handleExternVariadicArgs(
     }
 }
 
+/// Return true if `expr` is `a..b` where the end expands to multiple arguments.
 fn isSpreadRangeExpr(
     self: *LowerTir,
     ctx: *LowerContext,
@@ -2886,6 +3012,7 @@ fn isSpreadRangeExpr(
     return stamped_kind == .Any;
 }
 
+/// Check whether the optional `expr` should be treated as a spread argument.
 fn isSpreadArgExpr(
     self: *LowerTir,
     ctx: *LowerContext,
@@ -2897,6 +3024,7 @@ fn isSpreadArgExpr(
     return false;
 }
 
+/// Compute the tuple type to pack trailing `any` arguments starting at `start_index`.
 fn computeTrailingAnyTupleType(
     self: *LowerTir,
     ctx: *LowerContext,
@@ -2925,6 +3053,7 @@ fn computeTrailingAnyTupleType(
     return self.context.type_store.mkTuple(elem_types.items);
 }
 
+/// Lower opaque type expressions by returning undef/expected type placeholders.
 fn lowerTypeExprOpaque(
     self: *LowerTir,
     ctx: *LowerContext,
@@ -2943,6 +3072,7 @@ fn lowerTypeExprOpaque(
     return self.safeUndef(blk, ty0, loc);
 }
 
+/// Lower literal expressions to the corresponding constant SSA values.
 fn lowerLiteral(
     self: *LowerTir,
     ctx: *LowerContext,
@@ -3023,6 +3153,7 @@ fn lowerLiteral(
     return v;
 }
 
+/// Lower unary operations, handling address-of, numeric negation, and logical not.
 fn lowerUnary(
     self: *LowerTir,
     ctx: *LowerContext,
@@ -3109,6 +3240,7 @@ fn lowerUnary(
     return v;
 }
 
+/// Lower `range` expressions by materializing the tenable `RangeMake` value.
 fn lowerRange(
     self: *LowerTir,
     ctx: *LowerContext,
@@ -3142,6 +3274,7 @@ fn lowerRange(
     return v;
 }
 
+/// Lower dereference expressions, emitting a load or reusing pointer addresses when requested.
 fn lowerDeref(
     self: *LowerTir,
     ctx: *LowerContext,
@@ -3167,6 +3300,7 @@ fn lowerDeref(
     return v;
 }
 
+/// Lower array literals (including simd/slice/dynarray/tensor cases) into concrete TIR constructs.
 fn lowerArrayLit(
     self: *LowerTir,
     ctx: *LowerContext,
@@ -3324,6 +3458,7 @@ fn lowerArrayLit(
     }
 }
 
+/// Lower tensor-style array literals by flattening nested arrays into element sequences.
 fn lowerTensorArrayLiteral(
     self: *LowerTir,
     ctx: *LowerContext,
@@ -3349,6 +3484,7 @@ fn lowerTensorArrayLiteral(
     return blk.builder.arrayMake(blk, tensor_ty, slice, loc);
 }
 
+/// Recursively collect element values for multi-dimensional tensor literals.
 fn collectTensorLiteralValues(
     self: *LowerTir,
     ctx: *LowerContext,
@@ -3392,6 +3528,7 @@ fn collectTensorLiteralValues(
     try out.append(self.gpa, value);
 }
 
+/// Lower tuple literals by constructing a struct-like aggregate with ordered fields.
 fn lowerTupleLit(
     self: *LowerTir,
     ctx: *LowerContext,
@@ -3432,6 +3569,7 @@ fn lowerTupleLit(
     return v;
 }
 
+/// Lower struct literals by computing each field init and applying defaults when needed.
 fn lowerStructLit(
     self: *LowerTir,
     ctx: *LowerContext,
@@ -3539,6 +3677,7 @@ fn lowerStructLit(
     return v;
 }
 
+/// Lower map literals by emitting a runtime call that constructs the map from key/value pairs.
 fn lowerMapLit(
     self: *LowerTir,
     ctx: *LowerContext,
@@ -3578,6 +3717,7 @@ fn lowerMapLit(
     return v;
 }
 
+/// Lower index access expressions to the appropriate GEP/load or optional indexing form.
 fn lowerIndexAccess(
     self: *LowerTir,
     ctx: *LowerContext,
@@ -3654,6 +3794,7 @@ fn lowerIndexAccess(
     }
 }
 
+/// Lower an enum member reference to its integer discriminant constant.
 fn lowerEnumMember(
     self: *LowerTir,
     ctx: *LowerContext,
@@ -3685,6 +3826,7 @@ fn lowerEnumMember(
     return ev;
 }
 
+/// Lower a literal variant tag (`T::Case`) when its payload is void.
 fn lowerVariantTagLiteral(
     self: *LowerTir,
     ctx: *LowerContext,
@@ -3722,6 +3864,7 @@ fn lowerVariantTagLiteral(
     return tag_val;
 }
 
+/// Lookup the position of `field_name` inside `parent_ty`, recursing through pointers.
 fn getFieldIndex(
     self: *LowerTir,
     parent_ty: types.TypeId,
@@ -3748,6 +3891,7 @@ fn getFieldIndex(
     return null;
 }
 
+/// Lower field access expressions, covering len/ptr/capacity, module members, variants, and structs.
 fn lowerFieldAccess(
     self: *LowerTir,
     ctx: *LowerContext,
@@ -4009,6 +4153,7 @@ fn tryLowerImportedModuleMember(
     return null;
 }
 
+/// Lower identifier expressions, resolving globals/locals/types/slots and emitting loads or errors.
 fn lowerIdent(
     self: *LowerTir,
     ctx: *LowerContext,
@@ -4136,6 +4281,7 @@ fn lowerIdent(
     return if (expected_ty) |want| self.emitCoerce(blk, bnd.value, got_ty, want, loc) else bnd.value;
 }
 
+/// Lower binary expressions, including comparisons, arithmetic, and short-circuit helpers.
 fn lowerBinary(
     self: *LowerTir,
     ctx: *LowerContext,
@@ -4524,6 +4670,7 @@ fn lowerBinary(
     return v;
 }
 
+/// Lower the `catch` expression by wiring error/result handlers and running defers.
 fn lowerCatch(
     self: *LowerTir,
     ctx: *LowerContext,
@@ -4736,6 +4883,7 @@ fn lowerCatch(
     }
 }
 
+/// Lower the `orelse` expression by evaluating the left side and branching on errors.
 fn lowerOrelse(
     self: *LowerTir,
     ctx: *LowerContext,
@@ -4837,6 +4985,7 @@ fn lowerOrelse(
     }
 }
 
+/// Lower cast expressions by delegating to TypeKind-specific builders (normal/bitcast/etc.).
 fn lowerCast(
     self: *LowerTir,
     ctx: *LowerContext,
@@ -4862,6 +5011,7 @@ fn lowerCast(
     return out;
 }
 
+/// Lower expression `id` into TIR, targeting `expected_ty`/`mode` and respecting the current env.
 pub fn lowerExpr(
     self: *LowerTir,
     ctx: *LowerContext,
@@ -4989,7 +5139,7 @@ pub fn lowerExpr(
     };
 }
 
-// Compute the value of a block expression (value position)
+/// Evaluate the block expression `block_expr` and return its resulting TIR value.
 pub fn lowerBlockExprValue(
     self: *LowerTir,
     ctx: *LowerContext,
@@ -5038,6 +5188,7 @@ pub fn lowerBlockExprValue(
         return self.safeUndef(blk, expected_ty, loc);
     }
 }
+/// Compute the symbol name representing `did` if it introduces a runtime value.
 fn symbolNameForDecl(self: *LowerTir, decl_ast: *ast.Ast, did: ast.DeclId) !?StrId {
     const decl = decl_ast.exprs.Decl.get(did);
     const is_extern_fn = switch (decl_ast.exprs.index.kinds.items[decl.value.toRaw()]) {
@@ -5058,11 +5209,13 @@ fn symbolNameForDecl(self: *LowerTir, decl_ast: *ast.Ast, did: ast.DeclId) !?Str
     return null;
 }
 
+/// Return the declared default expression for `field_name` in `type_expr`, if present.
 fn structFieldDefaultExpr(self: *LowerTir, a: *ast.Ast, type_expr: ast.ExprId, field_name: ast.StrId) ?ast.ExprId {
     const struct_expr = self.structTypeExprFromTypeRef(a, type_expr) orelse return null;
     return structFieldDefaultInStructExpr(a, struct_expr, field_name);
 }
 
+/// Resolve a struct literal expression pointer from a type reference, if it names a struct.
 fn structTypeExprFromTypeRef(_: *LowerTir, a: *ast.Ast, type_expr: ast.ExprId) ?ast.ExprId {
     const kind = a.exprs.index.kinds.items[type_expr.toRaw()];
     return switch (kind) {
@@ -5081,6 +5234,7 @@ fn structTypeExprFromTypeRef(_: *LowerTir, a: *ast.Ast, type_expr: ast.ExprId) ?
     };
 }
 
+/// Look for a default initializer for `field_name` inside `struct_expr`.
 fn structFieldDefaultInStructExpr(a: *ast.Ast, struct_expr: ast.ExprId, field_name: ast.StrId) ?ast.ExprId {
     const row = a.exprs.get(.StructType, struct_expr);
     const sfields = a.exprs.sfield_pool.slice(row.fields);
@@ -5103,10 +5257,12 @@ fn isNumeric(self: *const LowerTir, ty: types.TypeId) bool {
     };
 }
 
+/// Return true when `ty` is either `f32` or `f64`.
 fn isFloat(self: *const LowerTir, ty: types.TypeId) bool {
     return self.isType(ty, .F32) or self.isType(ty, .F64);
 }
 
+/// Test whether `ty` currently maps to `kind` in the type store index.
 pub fn isType(self: *const LowerTir, ty: types.TypeId, kind: types.TypeKind) bool {
     return self.context.type_store.index.kinds.items[ty.toRaw()] == kind;
 }
@@ -5151,6 +5307,7 @@ fn commonNumeric(
     return null;
 }
 
+/// Optionally adjust the type recorded for `expr` by considering surrounding bindings.
 fn refineExprType(
     self: *LowerTir,
     ctx: *LowerContext,
@@ -5195,6 +5352,7 @@ fn refineExprType(
     return stamped;
 }
 
+/// Compute the effective type for `expr` by combining stamped type and any local refinements.
 fn exprTypeWithEnv(
     self: *LowerTir,
     ctx: *LowerContext,
@@ -5211,12 +5369,14 @@ fn exprTypeWithEnv(
 // Misc helpers
 // ============================
 
+/// Return the recorded type for expression `id`, honoring any override entries in `ctx`.
 pub fn getExprType(self: *const LowerTir, ctx: *LowerContext, a: *ast.Ast, id: ast.ExprId) types.TypeId {
     if (self.lookupExprTypeOverride(ctx, id)) |override| return override;
     const i = id.toRaw();
     std.debug.assert(i < a.type_info.expr_types.items.len);
     return a.type_info.expr_types.items[i] orelse unreachable;
 }
+/// Return the recorded type for declaration `did`, if the checker produced one.
 fn getDeclType(a: *ast.Ast, did: ast.DeclId) ?types.TypeId {
     const i = did.toRaw();
     std.debug.assert(i < a.type_info.decl_types.items.len);
@@ -5224,6 +5384,7 @@ fn getDeclType(a: *ast.Ast, did: ast.DeclId) ?types.TypeId {
     return a.type_info.decl_types.items[i];
 }
 
+/// Construct the anonymous union that represents the payload fields of `vty` (variant/error).
 pub fn getUnionTypeFromVariant(self: *const LowerTir, vty: types.TypeId) ?types.TypeId {
     const ts = self.context.type_store;
     const k = ts.getKind(vty);
@@ -5255,6 +5416,7 @@ pub fn getUnionTypeFromVariant(self: *const LowerTir, vty: types.TypeId) ?types.
 }
 
 // Destructure a declaration pattern and bind its sub-bindings either as values (const) or slots (mutable).
+/// Walk `pid` and bind every leaf to `value`, optionally storing into slots for mut bindings.
 fn destructureDeclPattern(self: *LowerTir, a: *ast.Ast, env: *cf.Env, f: *Builder.FunctionFrame, blk: *Builder.BlockFrame, pid: ast.PatternId, value: tir.ValueId, vty: types.TypeId, to_slots: bool) !void {
     const pk = a.pats.index.kinds.items[pid.toRaw()];
     const loc = optLoc(a, pid);
@@ -5335,6 +5497,7 @@ fn destructureDeclPattern(self: *LowerTir, a: *ast.Ast, env: *cf.Env, f: *Builde
 }
 
 // Prefer destructuring directly from the source expression when available (avoids building temp tuples).
+/// When the RHS is a tuple literal, destructure its elements directly into the pattern.
 fn destructureDeclFromTupleLit(
     self: *LowerTir,
     ctx: *LowerContext,
@@ -5372,6 +5535,7 @@ fn destructureDeclFromTupleLit(
     }
 }
 
+/// When the RHS is a struct literal, match named fields against the pattern to bind them.
 fn destructureDeclFromStructLit(
     self: *LowerTir,
     ctx: *LowerContext,
@@ -5426,6 +5590,7 @@ fn destructureDeclFromStructLit(
     }
 }
 
+/// Destructure an arbitrary expression `src_expr` according to `pid`, emitting stores and binds.
 fn destructureDeclFromExpr(
     self: *LowerTir,
     ctx: *LowerContext,
@@ -5669,6 +5834,7 @@ fn destructureDeclFromExpr(
     }
 }
 
+/// Look up the tag index for `name` within the variant/error `case_ty`, if it exists.
 pub fn tagIndexForCase(self: *const LowerTir, case_ty: types.TypeId, name: StrId) ?u32 {
     const k = self.context.type_store.getKind(case_ty);
     if (k != .Variant and k != .Error) return null;
@@ -5683,6 +5849,7 @@ pub fn tagIndexForCase(self: *const LowerTir, case_ty: types.TypeId, name: StrId
     return null;
 }
 
+/// Return the numeric value assigned to enum member `name`, or null if missing.
 pub fn enumMemberValue(self: *const LowerTir, enum_ty: types.TypeId, name: StrId) ?i64 {
     const k = self.context.type_store.getKind(enum_ty);
     if (k != .Enum) return null;
@@ -5708,6 +5875,7 @@ pub fn forceLocalCond(
     return blk.builder.tirValue(.CastBit, blk, tBool, loc, .{ .value = cond });
 }
 
+/// Return true when `ty` represents either a variant or error type.
 fn isVariantLike(self: *const LowerTir, ty: types.TypeId) bool {
     const k = self.context.type_store.getKind(ty);
     return k == .Variant or k == .Error;
@@ -5746,6 +5914,7 @@ fn tagConstFromTypePath(
     return .{ .of_ty = of_ty, .tag_idx = @intCast(idx) };
 }
 
+/// Reapply a snapshot of symbol bindings (e.g., after destructuring) in reverse order.
 pub fn restoreBindings(self: *LowerTir, env: *cf.Env, saved: []const BindingSnapshot) !void {
     var i: usize = saved.len;
     while (i > 0) : (i -= 1) {

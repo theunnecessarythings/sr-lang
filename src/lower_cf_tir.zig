@@ -11,41 +11,73 @@ const check_pattern_matching = @import("check_pattern_matching.zig");
 // Context structs
 // ============================
 
+/// Additional bookkeeping needed while lowering `continue` and range loops.
 const ContinueInfo = union(enum) {
+    /// Loop does not require special handling.
     none,
-    range: struct { update_block: tir.BlockId, idx_value: tir.ValueId },
+    /// Extra data required when continuing a ranged loop.
+    range: struct {
+        /// Block where range iteration bookkeeping runs before jumping back.
+        update_block: tir.BlockId,
+        /// SSA value tracking the current index in the range.
+        idx_value: tir.ValueId,
+    },
 };
 
-pub const DeferEntry = struct { expr: ast.ExprId, is_err: bool };
+/// Represents a deferred expression that should run when the surrounding scope exits.
+pub const DeferEntry = struct {
+    /// AST expression to lower when the defer fires.
+    expr: ast.ExprId,
+    /// Whether this defer runs only during error unwinds.
+    is_err: bool,
+};
 
+/// Track the active loop's jump targets, result tracking, and defers.
 pub const LoopCtx = struct {
+    /// Optional label supplied by the user for this loop.
     label: ast.OptStrId,
+    /// Block that handles exiting the loop normally.
     break_block: tir.BlockId,
+    /// Block that handles continuing the loop.
     continue_block: tir.BlockId,
+    /// Block where broken-out values join with the rest of the function.
     join_block: tir.BlockId,
+    /// Type expected from `break`/`return` inside this loop.
     res_ty: ?types.TypeId,
+    /// Tracks whether `break`/`return` carried a value.
     has_result: bool,
+    /// Block parameter used to pass the loop result to callers.
     res_param: tir.OptValueId,
+    /// Additional information needed by loop `continue` handling.
     continue_info: ContinueInfo,
+    /// Number of deferred expressions when the loop started (used for cleanup).
     defer_len_at_entry: u32,
 };
 
+/// Tracks local bindings, defers, and scope markers while lowering control flow constructs.
 pub const Env = struct {
+    /// Current binding map used for lowering variables and temporaries.
     map: std.AutoArrayHashMapUnmanaged(ast.StrId, ValueBinding) = .{},
+    /// Stack of defers registered while entering statements.
     defers: List(DeferEntry) = .{},
+    /// Markers that capture the defer depth for each pushed scope.
     marks: List(u32) = .{},
 
+    /// Release allocator-backed resources owned by the environment.
     pub fn deinit(self: *Env, gpa: std.mem.Allocator) void {
         self.map.deinit(gpa);
         self.defers.deinit(gpa);
         self.marks.deinit(gpa);
     }
+    /// Bind `name` to `vb` for the remainder of this scope.
     pub fn bind(self: *Env, gpa: std.mem.Allocator, _: *ast.Ast, name: tir.StrId, vb: ValueBinding) !void {
         try self.map.put(gpa, name, vb);
     }
+    /// Lookup the current binding for `s`, if any.
     pub fn lookup(self: *Env, s: ast.StrId) ?ValueBinding {
         return self.map.get(s);
     }
+    /// Restore the previous binding for `name`, erasing or re-inserting as needed.
     pub fn restoreBinding(self: *Env, gpa: std.mem.Allocator, name: tir.StrId, prev: ?ValueBinding) !void {
         if (prev) |val| {
             try self.map.put(gpa, name, val);
@@ -53,9 +85,11 @@ pub const Env = struct {
             _ = self.map.swapRemove(name);
         }
     }
+    /// Start a new lexical scope by recording the current defer depth.
     pub fn pushScope(self: *Env, gpa: std.mem.Allocator) !void {
         try self.marks.append(gpa, @intCast(self.defers.items.len));
     }
+    /// Exit the most recent scope, rolling back defers to the saved mark.
     pub fn popScope(self: *Env) u32 {
         if (self.marks.items.len == 0) return 0;
         const mark = self.marks.items[self.marks.items.len - 1];
@@ -86,6 +120,7 @@ pub fn runNormalDefersFrom(
     env.defers.items.len = from;
 }
 
+/// Check if error-path defers exist on or after `from`, used to include them when unwinding.
 pub fn hasErrDefersFrom(_: *LowerTir, env: *Env, from: u32) bool {
     var i: usize = env.defers.items.len;
     while (i > from) : (i -= 1) {
@@ -94,6 +129,7 @@ pub fn hasErrDefersFrom(_: *LowerTir, env: *Env, from: u32) bool {
     return false;
 }
 
+/// Run defers from `slice` matching `want_err`, lowering each guarded expression.
 pub fn emitDefers(
     self: *LowerTir,
     ctx: *LowerTir.LowerContext,
@@ -113,6 +149,7 @@ pub fn emitDefers(
     }
 }
 
+/// Run non-error defers that belong to `lc` as the loop exits so resources are released.
 fn runDefersForLoopExit(
     self: *LowerTir,
     ctx: *LowerTir.LowerContext,
@@ -131,6 +168,7 @@ fn runDefersForLoopExit(
     env.defers.items.len = lc.defer_len_at_entry;
 }
 
+/// Lookup the active loop context that matches `opt_label`, if any.
 fn loopCtxForLabel(_: *LowerTir, ctx: *LowerTir.LowerContext, opt_label: ast.OptStrId) ?*LoopCtx {
     if (ctx.loop_stack.items.len == 0) return null;
     const want: ?u32 = if (!opt_label.isNone()) opt_label.unwrap().toRaw() else null;
@@ -144,6 +182,7 @@ fn loopCtxForLabel(_: *LowerTir, ctx: *LowerTir.LowerContext, opt_label: ast.Opt
     return null;
 }
 
+/// Lower `if` statements/expressions so both branches appropriately target `expected_ty`.
 pub fn lowerIf(
     self: *LowerTir,
     ctx: *LowerTir.LowerContext,
@@ -227,6 +266,7 @@ pub fn lowerIf(
     }
 }
 
+/// Lower a `break` expression by running appropriate defers and branching to the loop join block.
 pub fn lowerBreak(
     self: *LowerTir,
     ctx: *LowerTir.LowerContext,
@@ -241,6 +281,7 @@ pub fn lowerBreak(
     try lowerBreakCommon(self, ctx, a, env, f, blk, br.label, br.value, loc);
 }
 
+/// Helper used by `lowerBreak` to jump through a loop's exit logic while tracking defers.
 pub fn lowerBreakCommon(
     self: *LowerTir,
     ctx: *LowerTir.LowerContext,
@@ -275,6 +316,7 @@ pub fn lowerBreakCommon(
     } else return error.LoweringBug;
 }
 
+/// Lower a `continue` statement, jumping into the loop`s continue block and honoring defers.
 pub fn lowerContinue(
     self: *LowerTir,
     ctx: *LowerTir.LowerContext,
@@ -289,6 +331,7 @@ pub fn lowerContinue(
     try lowerContinueCommon(self, ctx, a, env, f, blk, cid.label, loc);
 }
 
+/// Shared logic for running defers and branching that powers `continue`.
 pub fn lowerContinueCommon(
     self: *LowerTir,
     ctx: *LowerTir.LowerContext,
@@ -307,6 +350,7 @@ pub fn lowerContinueCommon(
     }
 }
 
+/// Lower `match`/`switch` cases by testing the subject and emitting arm-specific code.
 pub fn matchPattern(
     self: *LowerTir,
     ctx: *LowerTir.LowerContext,
@@ -482,6 +526,7 @@ pub fn matchPattern(
     }
 }
 
+/// Emit comparisons that test whether `scrut` falls between the optional `start`/`end` of a range.
 fn matchRangeBounds(
     self: *LowerTir,
     ctx: *LowerTir.LowerContext,
@@ -519,6 +564,7 @@ fn matchRangeBounds(
     return result;
 }
 
+/// Desugar `optional.unwrap` expressions into explicit control flow with maybes.
 pub fn lowerOptionalUnwrap(
     self: *LowerTir,
     ctx: *LowerTir.LowerContext,
@@ -581,6 +627,7 @@ pub fn lowerOptionalUnwrap(
     return res_param;
 }
 
+/// Lower `try`/`?` unwraps so error propagation defers can fire correctly.
 pub fn lowerErrUnwrap(
     self: *LowerTir,
     ctx: *LowerTir.LowerContext,
@@ -654,6 +701,7 @@ pub fn lowerErrUnwrap(
     return res_param;
 }
 
+/// Check whether every match arm is an integer literal, recording their values in `values_buf`.
 fn isAllIntMatch(_: *LowerTir, a: *ast.Ast, arms_slice: []const ast.MatchArmId, values_buf: []u64) bool {
     if (arms_slice.len != values_buf.len) return false;
     for (arms_slice, 0..) |arm_id, i| {
@@ -676,6 +724,7 @@ fn isAllIntMatch(_: *LowerTir, a: *ast.Ast, arms_slice: []const ast.MatchArmId, 
     return true;
 }
 
+/// Lower the high-level `match` expression into a chain of basic blocks and comparisons.
 pub fn lowerMatch(
     self: *LowerTir,
     ctx: *LowerTir.LowerContext,
@@ -938,6 +987,7 @@ pub fn lowerMatch(
     }
 }
 
+/// Lower a `while` loop by lowering its condition, body, and associated defers/continuations.
 pub fn lowerWhile(
     self: *LowerTir,
     ctx: *LowerTir.LowerContext,
@@ -1068,6 +1118,7 @@ pub fn lowerWhile(
     }
 }
 
+/// Produce the iteration count for `iterable_val`, either from a constant array size or slice length.
 fn getIterableLen(
     self: *LowerTir,
     blk: *tir.Builder.BlockFrame,
@@ -1090,6 +1141,7 @@ fn getIterableLen(
     };
 }
 
+/// Lower a `for` loop by iterating over the subject and mapping its body to blocks.
 pub fn lowerFor(
     self: *LowerTir,
     ctx: *LowerTir.LowerContext,
@@ -1352,6 +1404,7 @@ pub fn lowerFor(
     }
 }
 
+/// Lower a pattern binding during `match` or `for` lowering and record introduced symbols.
 pub fn bindPattern(
     self: *LowerTir,
     ctx: *LowerTir.LowerContext,

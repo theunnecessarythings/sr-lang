@@ -5,6 +5,7 @@ const comp = @import("comptime.zig");
 const call_resolution = @import("call_resolution.zig");
 
 // DOD Type Store
+/// TypeTag struct definition used by the compiler.
 pub const TypeTag = struct {};
 
 pub const max_tensor_rank: usize = 4;
@@ -22,6 +23,7 @@ pub const Pool = cst.Pool;
 pub const StoreIndex = cst.StoreIndex;
 pub const StrId = cst.StrId;
 
+/// MlirSpliceInfo union definition used by the compiler.
 pub const MlirSpliceInfo = union(enum) {
     decl: struct {
         decl_id: ast.DeclId,
@@ -39,6 +41,7 @@ pub const MlirSpliceInfo = union(enum) {
     },
 };
 
+/// MethodReceiverKind enum definition used by the compiler.
 pub const MethodReceiverKind = enum {
     none,
     value,
@@ -46,10 +49,12 @@ pub const MethodReceiverKind = enum {
     pointer_const,
 };
 
+/// BuiltinMethod enum definition used by the compiler.
 pub const BuiltinMethod = enum {
     dynarray_append,
 };
 
+/// MethodEntry struct definition used by the compiler.
 pub const MethodEntry = struct {
     owner_type: TypeId,
     method_name: ast.StrId,
@@ -62,6 +67,7 @@ pub const MethodEntry = struct {
     builtin: ?BuiltinMethod = null,
 };
 
+/// MethodBinding struct definition used by the compiler.
 pub const MethodBinding = struct {
     owner_type: TypeId,
     method_name: ast.StrId,
@@ -75,15 +81,18 @@ pub const MethodBinding = struct {
     builtin: ?BuiltinMethod = null,
 };
 
+/// MethodKey struct definition used by the compiler.
 pub const MethodKey = struct {
     owner: usize,
     name: usize,
 };
 
+/// makeMethodKey type system helper.
 fn makeMethodKey(owner: TypeId, name: ast.StrId) MethodKey {
     return .{ .owner = owner.toRaw(), .name = name.toRaw() };
 }
 
+/// StoredComptimeBinding struct definition used by the compiler.
 const StoredComptimeBinding = struct {
     ty: TypeId,
     value: comp.ComptimeValue,
@@ -91,6 +100,7 @@ const StoredComptimeBinding = struct {
 
 pub const ComptimeBindingVisitor = fn (?*anyopaque, ast.StrId, comp.ComptimeValue, TypeId) anyerror!void;
 
+/// TypeInfo struct definition used by the compiler.
 pub const TypeInfo = struct {
     gpa: std.mem.Allocator,
     store: *TypeStore,
@@ -107,16 +117,19 @@ pub const TypeInfo = struct {
     specialized_calls: std.AutoArrayHashMapUnmanaged(u32, call_resolution.FunctionDeclContext) = .{},
     spread_ranges: std.AutoArrayHashMapUnmanaged(u32, void) = .{},
 
+    /// ExportEntry struct definition used by the compiler.
     pub const ExportEntry = struct {
         ty: TypeId,
         decl_id: ast.DeclId,
     };
 
+    /// MethodExprSnapshot struct definition used by the compiler.
     const MethodExprSnapshot = struct {
         expr_ids: []u32,
         expr_types: []TypeId,
     };
 
+    /// init type system helper.
     pub fn init(gpa: std.mem.Allocator, store: *TypeStore) TypeInfo {
         return .{
             .gpa = gpa,
@@ -125,6 +138,7 @@ pub const TypeInfo = struct {
             .comptime_bindings = .{},
         };
     }
+    /// deinit type system helper.
     pub fn deinit(self: *TypeInfo) void {
         self.mutex.lock();
         defer self.mutex.unlock();
@@ -154,6 +168,7 @@ pub const TypeInfo = struct {
         self.spread_ranges.deinit(self.gpa);
     }
 
+    /// print type system helper.
     pub fn print(self: *TypeInfo) void {
         self.mutex.lock();
         defer self.mutex.unlock();
@@ -204,33 +219,39 @@ pub const TypeInfo = struct {
         }
     }
 
+    /// setExprType type system helper.
     pub fn setExprType(self: *TypeInfo, expr_id: ast.ExprId, ty: TypeId) void {
         self.mutex.lock();
         defer self.mutex.unlock();
         self.expr_types.items[expr_id.toRaw()] = ty;
     }
 
+    /// setFieldIndex type system helper.
     pub fn setFieldIndex(self: *TypeInfo, expr_id: ast.ExprId, idx: u32) !void {
         self.mutex.lock();
         defer self.mutex.unlock();
         try self.field_index_for_expr.put(self.gpa, expr_id.toRaw(), idx);
     }
 
+    /// getFieldIndex type system helper.
     pub fn getFieldIndex(self: *const TypeInfo, expr_id: ast.ExprId) ?u32 {
         const v = self.field_index_for_expr.get(expr_id.toRaw()) orelse 0xFFFF_FFFF;
         return if (v == 0xFFFF_FFFF) null else v;
     }
 
+    /// clearFieldIndex type system helper.
     pub fn clearFieldIndex(self: *TypeInfo, expr_id: ast.ExprId) !void {
         self.mutex.lock();
         defer self.mutex.unlock();
         try self.field_index_for_expr.put(self.gpa, expr_id.toRaw(), 0xFFFF_FFFF);
     }
 
+    /// getMethodBinding type system helper.
     pub fn getMethodBinding(self: *const TypeInfo, expr_id: ast.ExprId) ?MethodBinding {
         return self.method_bindings.get(expr_id.toRaw());
     }
 
+    /// setMethodBinding type system helper.
     pub fn setMethodBinding(self: *TypeInfo, expr_id: ast.ExprId, binding: MethodBinding) !void {
         self.mutex.lock();
         defer self.mutex.unlock();
@@ -238,6 +259,7 @@ pub const TypeInfo = struct {
         gop.value_ptr.* = binding;
     }
 
+    /// storeMethodExprSnapshot type system helper.
     pub fn storeMethodExprSnapshot(
         self: *TypeInfo,
         owner: TypeId,
@@ -261,6 +283,7 @@ pub const TypeInfo = struct {
         gop.value_ptr.* = .{ .expr_ids = ids_copy, .expr_types = tys_copy };
     }
 
+    /// applyMethodExprSnapshot type system helper.
     pub fn applyMethodExprSnapshot(
         self: *TypeInfo,
         owner: TypeId,
@@ -279,6 +302,7 @@ pub const TypeInfo = struct {
         return true;
     }
 
+    /// addExport type system helper.
     pub fn addExport(self: *TypeInfo, name: ast.StrId, ty: TypeId, decl_id: ast.DeclId) !void {
         self.mutex.lock();
         defer self.mutex.unlock();
@@ -286,38 +310,46 @@ pub const TypeInfo = struct {
         gop.value_ptr.* = .{ .ty = ty, .decl_id = decl_id };
     }
 
+    /// getExport type system helper.
     pub fn getExport(self: *const TypeInfo, name: ast.StrId) ?ExportEntry {
         return self.exports.get(name);
     }
 
+    /// markSpecializedCall type system helper.
     pub fn markSpecializedCall(self: *TypeInfo, gpa: std.mem.Allocator, expr_id: ast.ExprId, ctx: call_resolution.FunctionDeclContext) !void {
         const key = expr_id.toRaw();
         const gop = try self.specialized_calls.getOrPut(gpa, key);
         gop.value_ptr.* = ctx;
     }
 
+    /// markRangeSpread type system helper.
     pub fn markRangeSpread(self: *TypeInfo, gpa: std.mem.Allocator, expr_id: ast.ExprId) !void {
         self.mutex.lock();
         defer self.mutex.unlock();
         try self.spread_ranges.put(gpa, expr_id.toRaw(), {});
     }
 
+    /// isRangeSpread type system helper.
     pub fn isRangeSpread(self: *const TypeInfo, expr_id: ast.ExprId) bool {
         return self.spread_ranges.contains(expr_id.toRaw());
     }
 
+    /// getSpecializedCall type system helper.
     pub fn getSpecializedCall(self: *const TypeInfo, expr_id: ast.ExprId) ?call_resolution.FunctionDeclContext {
         return self.specialized_calls.get(expr_id.toRaw());
     }
 
+    /// hasComptimeValue type system helper.
     pub fn hasComptimeValue(self: *const TypeInfo, expr_id: ast.ExprId) bool {
         return self.comptime_values.get(expr_id) != null;
     }
 
+    /// getComptimeValue type system helper.
     pub fn getComptimeValue(self: *const TypeInfo, expr_id: ast.ExprId) ?*comp.ComptimeValue {
         return if (self.comptime_values.getEntry(expr_id)) |entry| entry.value_ptr else null;
     }
 
+    /// setComptimeValue type system helper.
     pub fn setComptimeValue(self: *TypeInfo, expr_id: ast.ExprId, value: comp.ComptimeValue) !void {
         self.mutex.lock();
         defer self.mutex.unlock();
@@ -328,6 +360,7 @@ pub const TypeInfo = struct {
         gop.value_ptr.* = value;
     }
 
+    /// setComptimeBinding type system helper.
     pub fn setComptimeBinding(self: *TypeInfo, name: ast.StrId, ty: TypeId, value: comp.ComptimeValue) !void {
         self.mutex.lock();
         defer self.mutex.unlock();
@@ -338,6 +371,7 @@ pub const TypeInfo = struct {
         gop.value_ptr.* = StoredComptimeBinding{ .ty = ty, .value = value };
     }
 
+    /// forEachComptimeBinding type system helper.
     pub fn forEachComptimeBinding(
         self: *TypeInfo,
         gpa: std.mem.Allocator,
@@ -356,14 +390,17 @@ pub const TypeInfo = struct {
         }
     }
 
+    /// destroyStoredComptimeBinding type system helper.
     fn destroyStoredComptimeBinding(self: *TypeInfo, binding: *StoredComptimeBinding) void {
         binding.value.destroy(self.gpa);
     }
 
+    /// destroyComptimeValue type system helper.
     fn destroyComptimeValue(self: *TypeInfo, value_ptr: *comp.ComptimeValue) void {
         value_ptr.destroy(self.gpa);
     }
 
+    /// setMlirSpliceInfo type system helper.
     pub fn setMlirSpliceInfo(self: *TypeInfo, piece_id: ast.MlirPieceId, info: MlirSpliceInfo) !void {
         self.mutex.lock();
         defer self.mutex.unlock();
@@ -371,6 +408,7 @@ pub const TypeInfo = struct {
         gop.value_ptr.* = info;
     }
 
+    /// getMlirSpliceInfo type system helper.
     pub fn getMlirSpliceInfo(self: *const TypeInfo, piece_id: ast.MlirPieceId) ?MlirSpliceInfo {
         if (self.mlir_splice_info.get(piece_id.toRaw())) |info_ptr|
             return info_ptr;
@@ -378,6 +416,7 @@ pub const TypeInfo = struct {
     }
 };
 
+/// TypeKind enum definition used by the compiler.
 pub const TypeKind = enum(u8) {
     Void,
     Bool,
@@ -421,6 +460,7 @@ pub const TypeKind = enum(u8) {
     TypeError,
 };
 
+/// Rows struct definition used by the compiler.
 pub const Rows = struct {
     pub const Void = struct {};
     pub const Bool = struct {};
@@ -489,10 +529,12 @@ pub const FormatOptions = struct {
     show_const: bool = true,
 };
 
+/// RowT type system helper.
 inline fn RowT(comptime K: TypeKind) type {
     return @field(Rows, @tagName(K));
 }
 
+/// TypeStore struct definition used by the compiler.
 pub const TypeStore = struct {
     gpa: std.mem.Allocator,
     index: StoreIndex(TypeKind) = .{},
@@ -576,9 +618,11 @@ pub const TypeStore = struct {
     t_mlir_type: ?TypeId = null,
     t_type_error: ?TypeId = null,
 
+    /// init type system helper.
     pub fn init(gpa: std.mem.Allocator, strs: *StringInterner) TypeStore {
         return .{ .gpa = gpa, .strs = strs };
     }
+    /// deinit type system helper.
     pub fn deinit(self: *TypeStore) void {
         const gpa = self.gpa;
         self.index.deinit(gpa);
@@ -591,15 +635,18 @@ pub const TypeStore = struct {
         self.enum_member_pool.deinit(gpa);
     }
 
+    /// getKind type system helper.
     pub fn getKind(self: *const TypeStore, id: TypeId) TypeKind {
         return self.index.kinds.items[id.toRaw()];
     }
 
+    /// get type system helper.
     pub fn get(self: *TypeStore, comptime K: TypeKind, id: TypeId) RowT(K) {
         const tbl: *Table(RowT(K)) = &@field(self, @tagName(K));
         return tbl.get(.{ .index = self.index.rows.items[id.toRaw()] });
     }
 
+    /// addMethod type system helper.
     pub fn addMethod(self: *TypeStore, entry: MethodEntry) !bool {
         self.mutex.lock();
         defer self.mutex.unlock();
@@ -610,6 +657,7 @@ pub const TypeStore = struct {
         return true;
     }
 
+    /// putMethod type system helper.
     pub fn putMethod(self: *TypeStore, entry: MethodEntry) !void {
         self.mutex.lock();
         defer self.mutex.unlock();
@@ -617,6 +665,7 @@ pub const TypeStore = struct {
         try self.method_table.put(self.gpa, key, entry);
     }
 
+    /// getMethod type system helper.
     pub fn getMethod(self: *TypeStore, owner: TypeId, name: ast.StrId) ?MethodEntry {
         self.mutex.lock();
         defer self.mutex.unlock();
@@ -624,32 +673,38 @@ pub const TypeStore = struct {
         return self.method_table.get(key);
     }
 
+    /// addLocked type system helper.
     fn addLocked(self: *TypeStore, comptime K: TypeKind, row: RowT(K)) TypeId {
         const tbl: *Table(RowT(K)) = &@field(self, @tagName(K));
         const idx = tbl.add(self.gpa, row);
         return self.index.newId(self.gpa, K, idx.toRaw(), TypeId);
     }
 
+    /// add type system helper.
     pub fn add(self: *TypeStore, comptime K: TypeKind, row: RowT(K)) TypeId {
         self.mutex.lock();
         defer self.mutex.unlock();
         return self.addLocked(K, row);
     }
 
+    /// addFieldLocked type system helper.
     fn addFieldLocked(self: *TypeStore, row: Rows.Field) FieldId {
         return self.Field.add(self.gpa, row);
     }
 
+    /// addField type system helper.
     pub fn addField(self: *TypeStore, row: Rows.Field) FieldId {
         self.mutex.lock();
         defer self.mutex.unlock();
         return self.addFieldLocked(row);
     }
 
+    /// addEnumMemberLocked type system helper.
     fn addEnumMemberLocked(self: *TypeStore, row: Rows.EnumMember) EnumMemberId {
         return self.EnumMember.add(self.gpa, row);
     }
 
+    /// addEnumMember type system helper.
     pub fn addEnumMember(self: *TypeStore, row: Rows.EnumMember) EnumMemberId {
         self.mutex.lock();
         defer self.mutex.unlock();
@@ -657,252 +712,297 @@ pub const TypeStore = struct {
     }
 
     // ---- builtin constructors (interned once) ----
+    /// tVoidLocked type system helper.
     fn tVoidLocked(self: *TypeStore) TypeId {
         if (self.t_void) |id| return id;
         const id = self.addLocked(.Void, .{});
         self.t_void = id;
         return id;
     }
+    /// tVoid type system helper.
     pub fn tVoid(self: *TypeStore) TypeId {
         self.mutex.lock();
         defer self.mutex.unlock();
         return self.tVoidLocked();
     }
+    /// tBoolLocked type system helper.
     fn tBoolLocked(self: *TypeStore) TypeId {
         if (self.t_bool) |id| return id;
         const id = self.addLocked(.Bool, .{});
         self.t_bool = id;
         return id;
     }
+    /// tBool type system helper.
     pub fn tBool(self: *TypeStore) TypeId {
         self.mutex.lock();
         defer self.mutex.unlock();
         return self.tBoolLocked();
     }
+    /// tI8Locked type system helper.
     fn tI8Locked(self: *TypeStore) TypeId {
         if (self.t_i8) |id| return id;
         const id = self.addLocked(.I8, .{});
         self.t_i8 = id;
         return id;
     }
+    /// tI8 type system helper.
     pub fn tI8(self: *TypeStore) TypeId {
         self.mutex.lock();
         defer self.mutex.unlock();
         return self.tI8Locked();
     }
+    /// tI16Locked type system helper.
     fn tI16Locked(self: *TypeStore) TypeId {
         if (self.t_i16) |id| return id;
         const id = self.addLocked(.I16, .{});
         self.t_i16 = id;
         return id;
     }
+    /// tI16 type system helper.
     pub fn tI16(self: *TypeStore) TypeId {
         self.mutex.lock();
         defer self.mutex.unlock();
         return self.tI16Locked();
     }
+    /// tI32Locked type system helper.
     fn tI32Locked(self: *TypeStore) TypeId {
         if (self.t_i32) |id| return id;
         const id = self.addLocked(.I32, .{});
         self.t_i32 = id;
         return id;
     }
+    /// tI32 type system helper.
     pub fn tI32(self: *TypeStore) TypeId {
         self.mutex.lock();
         defer self.mutex.unlock();
         return self.tI32Locked();
     }
+    /// tI64Locked type system helper.
     fn tI64Locked(self: *TypeStore) TypeId {
         if (self.t_i64) |id| return id;
         const id = self.addLocked(.I64, .{});
         self.t_i64 = id;
         return id;
     }
+    /// tI64 type system helper.
     pub fn tI64(self: *TypeStore) TypeId {
         self.mutex.lock();
         defer self.mutex.unlock();
         return self.tI64Locked();
     }
+    /// tU8Locked type system helper.
     fn tU8Locked(self: *TypeStore) TypeId {
         if (self.t_u8) |id| return id;
         const id = self.addLocked(.U8, .{});
         self.t_u8 = id;
         return id;
     }
+    /// tU8 type system helper.
     pub fn tU8(self: *TypeStore) TypeId {
         self.mutex.lock();
         defer self.mutex.unlock();
         return self.tU8Locked();
     }
+    /// tU16Locked type system helper.
     fn tU16Locked(self: *TypeStore) TypeId {
         if (self.t_u16) |id| return id;
         const id = self.addLocked(.U16, .{});
         self.t_u16 = id;
         return id;
     }
+    /// tU16 type system helper.
     pub fn tU16(self: *TypeStore) TypeId {
         self.mutex.lock();
         defer self.mutex.unlock();
         return self.tU16Locked();
     }
+    /// tU32Locked type system helper.
     fn tU32Locked(self: *TypeStore) TypeId {
         if (self.t_u32) |id| return id;
         const id = self.addLocked(.U32, .{});
         self.t_u32 = id;
         return id;
     }
+    /// tU32 type system helper.
     pub fn tU32(self: *TypeStore) TypeId {
         self.mutex.lock();
         defer self.mutex.unlock();
         return self.tU32Locked();
     }
+    /// tU64Locked type system helper.
     fn tU64Locked(self: *TypeStore) TypeId {
         if (self.t_u64) |id| return id;
         const id = self.addLocked(.U64, .{});
         self.t_u64 = id;
         return id;
     }
+    /// tU64 type system helper.
     pub fn tU64(self: *TypeStore) TypeId {
         self.mutex.lock();
         defer self.mutex.unlock();
         return self.tU64Locked();
     }
+    /// tF32Locked type system helper.
     fn tF32Locked(self: *TypeStore) TypeId {
         if (self.t_f32) |id| return id;
         const id = self.addLocked(.F32, .{});
         self.t_f32 = id;
         return id;
     }
+    /// tF32 type system helper.
     pub fn tF32(self: *TypeStore) TypeId {
         self.mutex.lock();
         defer self.mutex.unlock();
         return self.tF32Locked();
     }
+    /// tF64Locked type system helper.
     fn tF64Locked(self: *TypeStore) TypeId {
         if (self.t_f64) |id| return id;
         const id = self.addLocked(.F64, .{});
         self.t_f64 = id;
         return id;
     }
+    /// tF64 type system helper.
     pub fn tF64(self: *TypeStore) TypeId {
         self.mutex.lock();
         defer self.mutex.unlock();
         return self.tF64Locked();
     }
+    /// tUsizeLocked type system helper.
     fn tUsizeLocked(self: *TypeStore) TypeId {
         if (self.t_usize) |id| return id;
         const id = self.addLocked(.Usize, .{});
         self.t_usize = id;
         return id;
     }
+    /// tUsize type system helper.
     pub fn tUsize(self: *TypeStore) TypeId {
         self.mutex.lock();
         defer self.mutex.unlock();
         return self.tUsizeLocked();
     }
+    /// tStringLocked type system helper.
     fn tStringLocked(self: *TypeStore) TypeId {
         if (self.t_string) |id| return id;
         const id = self.addLocked(.String, .{});
         self.t_string = id;
         return id;
     }
+    /// tString type system helper.
     pub fn tString(self: *TypeStore) TypeId {
         self.mutex.lock();
         defer self.mutex.unlock();
         return self.tStringLocked();
     }
+    /// tAnyLocked type system helper.
     fn tAnyLocked(self: *TypeStore) TypeId {
         if (self.t_any) |id| return id;
         const id = self.addLocked(.Any, .{});
         self.t_any = id;
         return id;
     }
+    /// tAny type system helper.
     pub fn tAny(self: *TypeStore) TypeId {
         self.mutex.lock();
         defer self.mutex.unlock();
         return self.tAnyLocked();
     }
+    /// tUndefLocked type system helper.
     fn tUndefLocked(self: *TypeStore) TypeId {
         if (self.t_undef) |id| return id;
         const id = self.addLocked(.Undef, .{});
         self.t_undef = id;
         return id;
     }
+    /// tUndef type system helper.
     pub fn tUndef(self: *TypeStore) TypeId {
         self.mutex.lock();
         defer self.mutex.unlock();
         return self.tUndefLocked();
     }
+    /// tTypeLocked type system helper.
     fn tTypeLocked(self: *TypeStore) TypeId {
         if (self.t_type) |id| return id;
         const id = self.addLocked(.TypeType, .{ .of = self.tAnyLocked() });
         self.t_type = id;
         return id;
     }
+    /// tType type system helper.
     pub fn tType(self: *TypeStore) TypeId {
         self.mutex.lock();
         defer self.mutex.unlock();
         return self.tTypeLocked();
     }
+    /// tNoreturnLocked type system helper.
     fn tNoreturnLocked(self: *TypeStore) TypeId {
         if (self.t_noreturn) |id| return id;
         const id = self.addLocked(.Noreturn, .{});
         self.t_noreturn = id;
         return id;
     }
+    /// tNoreturn type system helper.
     pub fn tNoreturn(self: *TypeStore) TypeId {
         self.mutex.lock();
         defer self.mutex.unlock();
         return self.tNoreturnLocked();
     }
+    /// tNoReturn type system helper.
     pub fn tNoReturn(self: *TypeStore) TypeId {
         self.mutex.lock();
         defer self.mutex.unlock();
         return self.tNoreturnLocked();
     }
 
+    /// tMlirModuleLocked type system helper.
     fn tMlirModuleLocked(self: *TypeStore) TypeId {
         if (self.t_mlir_module) |id| return id;
         const id = self.addLocked(.MlirModule, .{});
         self.t_mlir_module = id;
         return id;
     }
+    /// tMlirModule type system helper.
     pub fn tMlirModule(self: *TypeStore) TypeId {
         self.mutex.lock();
         defer self.mutex.unlock();
         return self.tMlirModuleLocked();
     }
 
+    /// tMlirAttributeLocked type system helper.
     fn tMlirAttributeLocked(self: *TypeStore) TypeId {
         if (self.t_mlir_attribute) |id| return id;
         const id = self.addLocked(.MlirAttribute, .{});
         self.t_mlir_attribute = id;
         return id;
     }
+    /// tMlirAttribute type system helper.
     pub fn tMlirAttribute(self: *TypeStore) TypeId {
         self.mutex.lock();
         defer self.mutex.unlock();
         return self.tMlirAttributeLocked();
     }
 
+    /// tMlirTypeLocked type system helper.
     fn tMlirTypeLocked(self: *TypeStore) TypeId {
         if (self.t_mlir_type) |id| return id;
         const id = self.addLocked(.MlirType, .{});
         self.t_mlir_type = id;
         return id;
     }
+    /// tMlirType type system helper.
     pub fn tMlirType(self: *TypeStore) TypeId {
         self.mutex.lock();
         defer self.mutex.unlock();
         return self.tMlirTypeLocked();
     }
 
+    /// tTypeErrorLocked type system helper.
     fn tTypeErrorLocked(self: *TypeStore) TypeId {
         if (self.t_type_error) |id| return id;
         const id = self.addLocked(.TypeError, .{});
         self.t_type_error = id;
         return id;
     }
+    /// tTypeError type system helper.
     pub fn tTypeError(self: *TypeStore) TypeId {
         self.mutex.lock();
         defer self.mutex.unlock();
@@ -910,36 +1010,42 @@ pub const TypeStore = struct {
     }
 
     // ---- constructors with interning (linear dedup) ----
+    /// mkPtr type system helper.
     pub fn mkPtr(self: *TypeStore, elem: TypeId, is_const: bool) TypeId {
         self.mutex.lock();
         defer self.mutex.unlock();
         if (self.findPtr(elem, is_const)) |id| return id;
         return self.addLocked(.Ptr, .{ .elem = elem, .is_const = is_const });
     }
+    /// mkSlice type system helper.
     pub fn mkSlice(self: *TypeStore, elem: TypeId, is_const: bool) TypeId {
         self.mutex.lock();
         defer self.mutex.unlock();
         if (self.findSlice(elem, is_const)) |id| return id;
         return self.addLocked(.Slice, .{ .elem = elem, .is_const = is_const });
     }
+    /// mkArray type system helper.
     pub fn mkArray(self: *TypeStore, elem: TypeId, len: usize) TypeId {
         self.mutex.lock();
         defer self.mutex.unlock();
         if (self.findArray(elem, len)) |id| return id;
         return self.addLocked(.Array, .{ .elem = elem, .len = len });
     }
+    /// mkDynArray type system helper.
     pub fn mkDynArray(self: *TypeStore, elem: TypeId) TypeId {
         self.mutex.lock();
         defer self.mutex.unlock();
         if (self.findDynArray(elem)) |id| return id;
         return self.addLocked(.DynArray, .{ .elem = elem });
     }
+    /// mkMap type system helper.
     pub fn mkMap(self: *TypeStore, key: TypeId, value: TypeId) TypeId {
         self.mutex.lock();
         defer self.mutex.unlock();
         if (self.findMap(key, value)) |id| return id;
         return self.addLocked(.Map, .{ .key = key, .value = value });
     }
+    /// mkAst type system helper.
     pub fn mkAst(self: *TypeStore, pkg_name: ast.StrId, filepath: StrId) TypeId {
         self.mutex.lock();
         defer self.mutex.unlock();
@@ -949,12 +1055,14 @@ pub const TypeStore = struct {
             .filepath = filepath,
         });
     }
+    /// mkSimd type system helper.
     pub fn mkSimd(self: *TypeStore, elem: TypeId, lanes: u16) TypeId {
         self.mutex.lock();
         defer self.mutex.unlock();
         if (self.findSimd(elem, lanes)) |id| return id;
         return self.addLocked(.Simd, .{ .elem = elem, .lanes = lanes });
     }
+    /// mkTensor type system helper.
     pub fn mkTensor(self: *TypeStore, elem: TypeId, dims: []const usize) TypeId {
         self.mutex.lock();
         defer self.mutex.unlock();
@@ -969,17 +1077,20 @@ pub const TypeStore = struct {
             .dims = row_dims,
         });
     }
+    /// mkOptional type system helper.
     pub fn mkOptional(self: *TypeStore, elem: TypeId) TypeId {
         self.mutex.lock();
         defer self.mutex.unlock();
         if (self.findOptional(elem)) |id| return id;
         return self.addLocked(.Optional, .{ .elem = elem });
     }
+    /// isOptionalPointer type system helper.
     pub fn isOptionalPointer(self: *TypeStore, ty: TypeId) bool {
         if (self.index.kinds.items[ty.toRaw()] != .Optional) return false;
         const elem = self.get(.Optional, ty).elem;
         return self.index.kinds.items[elem.toRaw()] == .Ptr;
     }
+    /// mkTuple type system helper.
     pub fn mkTuple(self: *TypeStore, elems: []const TypeId) TypeId {
         self.mutex.lock();
         defer self.mutex.unlock();
@@ -987,6 +1098,7 @@ pub const TypeStore = struct {
         const r = self.type_pool.pushMany(self.gpa, elems);
         return self.addLocked(.Tuple, .{ .elems = r });
     }
+    /// mkFunction type system helper.
     pub fn mkFunction(self: *TypeStore, params: []const TypeId, result: TypeId, is_variadic: bool, is_pure: bool, is_extern: bool) TypeId {
         self.mutex.lock();
         defer self.mutex.unlock();
@@ -1000,7 +1112,9 @@ pub const TypeStore = struct {
         const r = self.type_pool.pushMany(self.gpa, params_copy);
         return self.addLocked(.Function, .{ .params = r, .result = result, .is_variadic = is_variadic, .is_pure = is_pure, .is_extern = is_extern });
     }
+    /// EnumMemberArg struct definition used by the compiler.
     pub const EnumMemberArg = struct { name: StrId, value: i64 };
+    /// mkEnum type system helper.
     pub fn mkEnum(self: *TypeStore, members: []const EnumMemberArg, tag_type: TypeId) TypeId {
         self.mutex.lock();
         defer self.mutex.unlock();
@@ -1014,6 +1128,7 @@ pub const TypeStore = struct {
         const r = self.enum_member_pool.pushMany(self.gpa, ids);
         return self.addLocked(.Enum, .{ .members = r, .tag_type = tag_type });
     }
+    /// mkVariant type system helper.
     pub fn mkVariant(self: *TypeStore, variants: []const StructFieldArg) TypeId {
         self.mutex.lock();
         defer self.mutex.unlock();
@@ -1028,19 +1143,23 @@ pub const TypeStore = struct {
         const r = self.field_pool.pushMany(self.gpa, ids);
         return self.addLocked(.Variant, .{ .variants = r });
     }
+    /// mkErrorSet type system helper.
     pub fn mkErrorSet(self: *TypeStore, value_ty: TypeId, error_ty: TypeId) TypeId {
         self.mutex.lock();
         defer self.mutex.unlock();
         if (self.findErrorSet(value_ty, error_ty)) |id| return id;
         return self.addLocked(.ErrorSet, .{ .value_ty = value_ty, .error_ty = error_ty });
     }
+    /// mkTypeType type system helper.
     pub fn mkTypeType(self: *TypeStore, of: TypeId) TypeId {
         self.mutex.lock();
         defer self.mutex.unlock();
         if (self.findTypeType(of)) |id| return id;
         return self.addLocked(.TypeType, .{ .of = of });
     }
+    /// StructFieldArg struct definition used by the compiler.
     pub const StructFieldArg = struct { name: StrId, ty: TypeId };
+    /// mkStruct type system helper.
     pub fn mkStruct(self: *TypeStore, fields: []const StructFieldArg) TypeId {
         self.mutex.lock();
         defer self.mutex.unlock();
@@ -1056,6 +1175,7 @@ pub const TypeStore = struct {
         const r = self.field_pool.pushMany(self.gpa, ids);
         return self.addLocked(.Struct, .{ .fields = r });
     }
+    /// mkUnion type system helper.
     pub fn mkUnion(self: *TypeStore, fields: []const StructFieldArg) TypeId {
         self.mutex.lock();
         defer self.mutex.unlock();
@@ -1069,6 +1189,7 @@ pub const TypeStore = struct {
         const r = self.field_pool.pushMany(self.gpa, ids);
         return self.addLocked(.Union, .{ .fields = r });
     }
+    /// mkError type system helper.
     pub fn mkError(self: *TypeStore, fields: []const StructFieldArg) TypeId {
         self.mutex.lock();
         defer self.mutex.unlock();
@@ -1084,40 +1205,50 @@ pub const TypeStore = struct {
     }
 
     // ---- finders ----
+    /// findPtr type system helper.
     fn findPtr(self: *TypeStore, elem: TypeId, is_const: bool) ?TypeId {
         return self.findMatch(.Ptr, struct { e: TypeId, c: bool }{ .e = elem, .c = is_const }, struct {
+            /// eq type system helper.
             fn eq(s: *const TypeStore, row: Rows.Ptr, key: anytype) bool {
                 _ = s;
                 return row.elem.toRaw() == key.e.toRaw() and row.is_const == key.c;
             }
         });
     }
+    /// findSlice type system helper.
     fn findSlice(self: *TypeStore, elem: TypeId, is_const: bool) ?TypeId {
         return self.findMatch(.Slice, struct { e: TypeId, c: bool }{ .e = elem, .c = is_const }, struct {
+            /// eq type system helper.
             fn eq(s: *const TypeStore, row: Rows.Slice, key: anytype) bool {
                 _ = s;
                 return row.elem.eq(key.e) and row.is_const == key.c;
             }
         });
     }
+    /// findDynArray type system helper.
     fn findDynArray(self: *TypeStore, elem: TypeId) ?TypeId {
         return self.findMatch(.DynArray, elem, struct {
+            /// eq type system helper.
             fn eq(s: *const TypeStore, row: Rows.DynArray, key: TypeId) bool {
                 _ = s;
                 return row.elem.eq(key);
             }
         });
     }
+    /// findArray type system helper.
     fn findArray(self: *TypeStore, elem: TypeId, len: usize) ?TypeId {
         return self.findMatch(.Array, struct { e: TypeId, l: usize }{ .e = elem, .l = len }, struct {
+            /// eq type system helper.
             fn eq(s: *const TypeStore, row: Rows.Array, key: anytype) bool {
                 _ = s;
                 return row.elem.toRaw() == key.e.toRaw() and row.len == key.l;
             }
         });
     }
+    /// findTensor type system helper.
     fn findTensor(self: *TypeStore, elem: TypeId, dims: []const usize) ?TypeId {
         return self.findMatch(.Tensor, struct { e: TypeId, d: []const usize }{ .e = elem, .d = dims }, struct {
+            /// eq type system helper.
             fn eq(_: *const TypeStore, row: Rows.Tensor, key: anytype) bool {
                 if (row.elem.toRaw() != key.e.toRaw()) return false;
                 if (row.rank != key.d.len) return false;
@@ -1129,41 +1260,51 @@ pub const TypeStore = struct {
             }
         });
     }
+    /// findMap type system helper.
     fn findMap(self: *TypeStore, key: TypeId, value: TypeId) ?TypeId {
         return self.findMatch(.Map, struct { k: TypeId, v: TypeId }{ .k = key, .v = value }, struct {
+            /// eq type system helper.
             fn eq(s: *const TypeStore, row: Rows.Map, k: anytype) bool {
                 _ = s;
                 return row.key.toRaw() == k.k.toRaw() and row.value.toRaw() == k.v.toRaw();
             }
         });
     }
+    /// findAst type system helper.
     fn findAst(self: *TypeStore, pkg_name: ast.StrId, filepath: StrId) ?TypeId {
         return self.findMatch(.Ast, struct { pkg: ast.StrId, filepath: StrId }{
             .pkg = pkg_name,
             .filepath = filepath,
         }, struct {
+            /// eq type system helper.
             fn eq(_: *const TypeStore, row: Rows.Ast, key: anytype) bool {
                 return row.filepath.toRaw() == key.filepath.toRaw() and row.pkg_name.toRaw() == key.pkg.toRaw();
             }
         });
     }
+    /// findSimd type system helper.
     fn findSimd(self: *TypeStore, elem: TypeId, lanes: u16) ?TypeId {
         return self.findMatch(.Simd, struct { e: TypeId, l: u16 }{ .e = elem, .l = lanes }, struct {
+            /// eq type system helper.
             fn eq(_: *const TypeStore, row: Rows.Simd, key: anytype) bool {
                 return row.elem.toRaw() == key.e.toRaw() and row.lanes == key.l;
             }
         });
     }
+    /// findOptional type system helper.
     fn findOptional(self: *TypeStore, elem: TypeId) ?TypeId {
         return self.findMatch(.Optional, elem, struct {
+            /// eq type system helper.
             fn eq(s: *const TypeStore, row: Rows.Optional, key: TypeId) bool {
                 _ = s;
                 return row.elem.eq(key);
             }
         });
     }
+    /// findTuple type system helper.
     fn findTuple(self: *TypeStore, elems: []const TypeId) ?TypeId {
         return self.findMatch(.Tuple, elems, struct {
+            /// eq type system helper.
             fn eq(s: *const TypeStore, row: Rows.Tuple, key: []const TypeId) bool {
                 const ids = s.type_pool.slice(row.elems);
                 if (ids.len != key.len) return false;
@@ -1173,8 +1314,10 @@ pub const TypeStore = struct {
             }
         });
     }
+    /// findFunction type system helper.
     fn findFunction(self: *TypeStore, params: []const TypeId, result: TypeId, is_variadic: bool, is_pure: bool, is_extern: bool) ?TypeId {
         return self.findMatch(.Function, struct { p: []const TypeId, r: TypeId, v: bool, pure: bool, ext: bool }{ .p = params, .r = result, .v = is_variadic, .pure = is_pure, .ext = is_extern }, struct {
+            /// eq type system helper.
             fn eq(s: *const TypeStore, row: Rows.Function, key: anytype) bool {
                 if (row.result.toRaw() != key.r.toRaw() or row.is_variadic != key.v or row.is_pure != key.pure or row.is_extern != key.ext) return false;
                 const ids = s.type_pool.slice(row.params);
@@ -1186,8 +1329,10 @@ pub const TypeStore = struct {
         });
     }
 
+    /// findVariant type system helper.
     fn findVariant(self: *TypeStore, variants: []const StructFieldArg) ?TypeId {
         // Compare by name + type sequence
+        // Key that pairs variant field names with their types for equality checks.
         const key_names_and_tys = struct { names: []const StrId, tys: []const TypeId };
         var names = self.gpa.alloc(StrId, variants.len) catch @panic("OOM");
         defer self.gpa.free(names);
@@ -1200,6 +1345,7 @@ pub const TypeStore = struct {
         }
         const key_val = key_names_and_tys{ .names = names, .tys = tys };
         return self.findMatch(.Variant, key_val, struct {
+            /// eq type system helper.
             fn eq(s: *TypeStore, row: Rows.Variant, k: anytype) bool {
                 const ids = s.field_pool.slice(row.variants);
                 if (ids.len != k.names.len) return false;
@@ -1213,8 +1359,10 @@ pub const TypeStore = struct {
             }
         });
     }
+    /// findErrorSet type system helper.
     fn findErrorSet(self: *TypeStore, value_ty: TypeId, error_ty: TypeId) ?TypeId {
         return self.findMatch(.ErrorSet, struct { v: TypeId, e: TypeId }{ .v = value_ty, .e = error_ty }, struct {
+            /// eq type system helper.
             fn eq(s: *const TypeStore, row: Rows.ErrorSet, k: anytype) bool {
                 _ = s;
                 return row.value_ty.toRaw() == k.v.toRaw() and row.error_ty.toRaw() == k.e.toRaw();
@@ -1222,15 +1370,19 @@ pub const TypeStore = struct {
         });
     }
 
+    /// findTypeType type system helper.
     fn findTypeType(self: *TypeStore, of: TypeId) ?TypeId {
         return self.findMatch(.TypeType, of, struct {
+            /// eq type system helper.
             fn eq(_: *const TypeStore, row: Rows.TypeType, key: TypeId) bool {
                 return row.of.eq(key);
             }
         });
     }
+    /// findStruct type system helper.
     fn findStruct(self: *TypeStore, fields: []const StructFieldArg) ?TypeId {
         // Compare by name + type sequence
+        // Key that pairs struct field names with their types for equality checks.
         const key_names_and_tys = struct { names: []const StrId, tys: []const TypeId };
         var names = self.gpa.alloc(StrId, fields.len) catch @panic("OOM");
         defer self.gpa.free(names);
@@ -1243,6 +1395,7 @@ pub const TypeStore = struct {
         }
         const key_val = key_names_and_tys{ .names = names, .tys = tys };
         return self.findMatch(.Struct, key_val, struct {
+            /// eq type system helper.
             fn eq(s: *TypeStore, row: Rows.Struct, k: anytype) bool {
                 const ids = s.field_pool.slice(row.fields);
                 if (ids.len != k.names.len) return false;
@@ -1257,6 +1410,7 @@ pub const TypeStore = struct {
         });
     }
 
+    /// findMatch type system helper.
     fn findMatch(self: *TypeStore, comptime K: TypeKind, key: anytype, comptime Helper: type) ?TypeId {
         // Scan all types and find first matching row of kind K
         const kinds = self.index.kinds.items;
@@ -1273,6 +1427,7 @@ pub const TypeStore = struct {
     }
 
     // ---- formatting ----
+    /// fmt type system helper.
     pub fn fmt(self: *TypeStore, id: TypeId, w: anytype) !void {
         const k = self.getKind(id);
         switch (k) {

@@ -8,6 +8,7 @@ const diag = @import("diagnostics.zig");
 const symbols = @import("symbols.zig");
 const types = @import("types.zig");
 
+/// Return field IDs for Variant/Error types so the same logic handles both.
 inline fn getVariantOrErrorCases(self: *Checker, ty: types.TypeId) []const types.FieldId {
     const k = self.typeKind(ty);
     return if (k == .Variant)
@@ -15,6 +16,8 @@ inline fn getVariantOrErrorCases(self: *Checker, ty: types.TypeId) []const types
     else
         self.context.type_store.field_pool.slice(self.context.type_store.get(.Error, ty).variants);
 }
+
+/// Look up the payload type associated with `case_name` for variant/error `ty`.
 inline fn findCasePayload(self: *Checker, ty: types.TypeId, case_name: ast.StrId) ?types.TypeId {
     const cases = getVariantOrErrorCases(self, ty);
     for (cases) |fid| {
@@ -24,43 +27,58 @@ inline fn findCasePayload(self: *Checker, ty: types.TypeId, case_name: ast.StrId
     return null;
 }
 
-const Interval = struct { a: i64, b: i64 };
+/// Inclusive integer interval used while tracking range patterns.
+const Interval = struct {
+    /// Start of the inclusive interval.
+    a: i64,
+    /// End of the inclusive interval.
+    b: i64,
+};
 
+/// Accumulates the literals/ranges extracted from an integer pattern.
 const IntSet = struct {
-    wildcard: bool = false, // matches everything (e.g. `_` or contains `_` via `Or`)
-    non_int: bool = false, // contains non-integer patterns; skip special int analysis
+    /// Tracks whether the pattern covers every integer (wildcard `_` or similar).
+    wildcard: bool = false,
+    /// Set when encountering non-integer patterns so we skip specialized analysis.
+    non_int: bool = false,
+    /// Individual literal integers collected from the pattern.
     points: std.ArrayListUnmanaged(i64) = .{},
+    /// Inclusive intervals derived from range patterns.
     ranges: std.ArrayListUnmanaged(Interval) = .{},
 
+    /// Release the temporary lists that track matched integers/ranges.
     pub fn deinit(self: *IntSet, gpa: std.mem.Allocator) void {
         self.points.deinit(gpa);
         self.ranges.deinit(gpa);
     }
 };
 
+/// Tracks which integer values/intervals have been covered so far.
 const IntCoverage = struct {
+    /// Wildcard coverage indicates `_` matched already.
     wildcard: bool = false,
+    /// Covered literal integers (no duplicates).
     points: std.AutoArrayHashMapUnmanaged(i64, void) = .{},
-    // invariant: non-overlapping, sorted by a; merged on insert
+    /// Non-overlapping, sorted intervals (merged when adjacent).
     ranges: std.ArrayListUnmanaged(Interval) = .{},
 
+    /// Release the coverage tracking maps/lists that were allocated.
     pub fn deinit(self: *IntCoverage, gpa: std.mem.Allocator) void {
         self.points.deinit(gpa);
         self.ranges.deinit(gpa);
     }
 };
 
+/// Return true if intervals `a` and `b` overlap or touch.
 inline fn intervalOverlaps(a: Interval, b: Interval) bool {
     return !(a.b < b.a or a.a > b.b);
 }
+/// Return true when point `p` falls within interval `r`.
 inline fn pointInInterval(p: i64, r: Interval) bool {
     return p >= r.a and p <= r.b;
 }
 
-/// Flattens a pattern into integer “points” and “intervals”, handling `Or` and `At`.
-/// Leaves `non_int` set if we encounter shapes that aren't int literal/range/wildcard.
-/// Treats `_` as wildcard; **NOTE:** a Binding is *not* treated as wildcard here
-/// (consistent with existing exhaustiveness logic).
+/// Flattens `pid` into integer points/intervals for exhaustiveness checks.
 fn collectIntSet(self: *Checker, ast_unit: *ast.Ast, pid: ast.PatternId, out: *IntSet) !void {
     const k = ast_unit.pats.index.kinds.items[pid.toRaw()];
     switch (k) {
@@ -99,7 +117,7 @@ fn collectIntSet(self: *Checker, ast_unit: *ast.Ast, pid: ast.PatternId, out: *I
     }
 }
 
-/// Returns true if adding `lit` overlaps *already-covered* space.
+/// Try adding literal `lit` into `cov` and report whether it overlaps earlier points.
 fn coverAddPointDetectOverlap(self: *Checker, cov: *IntCoverage, lit: i64) !bool {
     if (cov.points.contains(lit)) return true;
     var i: usize = 0;
@@ -110,7 +128,7 @@ fn coverAddPointDetectOverlap(self: *Checker, cov: *IntCoverage, lit: i64) !bool
     return false;
 }
 
-/// Insert interval with detection + merge. Returns true if it overlapped existing.
+/// Insert interval `new` into the coverage set, merging and detecting overlaps.
 fn coverAddRangeDetectOverlap(self: *Checker, cov: *IntCoverage, new: Interval) !bool {
     // Check points against interval
     var it = cov.points.iterator();
@@ -146,6 +164,7 @@ fn coverAddRangeDetectOverlap(self: *Checker, cov: *IntCoverage, new: Interval) 
     return false;
 }
 
+/// Validate that `pid` matches `value_ty`, emitting diagnostics when pattern shapes deviate.
 pub fn checkPattern(
     self: *Checker,
     ctx: *Checker.CheckerContext,
@@ -544,6 +563,7 @@ pub fn checkPattern(
     }
 }
 
+/// Check the `match` expression at `id`, ensuring all arms are consistent and returning its resultant type.
 pub fn checkMatch(self: *Checker, ctx: *Checker.CheckerContext, ast_unit: *ast.Ast, id: ast.ExprId) !types.TypeId {
     const mr = ast_unit.exprs.get(.Match, id);
     const subj_ty = try self.checkExpr(ctx, ast_unit, mr.expr);
@@ -722,6 +742,8 @@ pub fn checkMatch(self: *Checker, ctx: *Checker.CheckerContext, ast_unit: *ast.A
     return result_ty orelse self.context.type_store.tVoid();
 }
 
+/// Extract an integer literal value if `pid` is an integer literal (possibly wrapped with `@`).
+/// If `pid` is an integer literal pattern, return its value.
 fn patternIntLiteral(self: *Checker, ast_unit: *ast.Ast, pid: ast.PatternId) ?i64 {
     const k = ast_unit.pats.index.kinds.items[pid.toRaw()];
     switch (k) {
@@ -747,6 +769,7 @@ fn patternIntLiteral(self: *Checker, ast_unit: *ast.Ast, pid: ast.PatternId) ?i6
     }
 }
 
+/// Extract the inclusive integer interval described by `pid`, returning null for invalid ranges.
 fn patternIntRange(self: *Checker, ast_unit: *ast.Ast, pid: ast.PatternId) !?struct { a: i64, b: i64 } {
     const k = ast_unit.pats.index.kinds.items[pid.toRaw()];
     switch (k) {
@@ -786,6 +809,7 @@ fn patternIntRange(self: *Checker, ast_unit: *ast.Ast, pid: ast.PatternId) !?str
     }
 }
 
+/// Return true when the pattern `pid` definitely matches all values (e.g., `_` or `Or` of wildcards).
 fn patternCoversWildcard(self: *Checker, ast_unit: *ast.Ast, pid: ast.PatternId) bool {
     const k = ast_unit.pats.index.kinds.items[pid.toRaw()];
     return switch (k) {
@@ -801,6 +825,7 @@ fn patternCoversWildcard(self: *Checker, ast_unit: *ast.Ast, pid: ast.PatternId)
     };
 }
 
+/// Determine whether pattern `pid` covers the boolean literal `val`.
 fn patternCoversBoolValue(self: *Checker, ast_unit: *ast.Ast, pid: ast.PatternId, val: bool) bool {
     const k = ast_unit.pats.index.kinds.items[pid.toRaw()];
     return switch (k) {
@@ -837,6 +862,7 @@ fn patternCoversBoolValue(self: *Checker, ast_unit: *ast.Ast, pid: ast.PatternId
     };
 }
 
+/// Record which enum tags are present in `rst` and return whether `tag` already covered.
 fn recordEnumTagsCovered(
     self: *Checker,
     ast_unit: *ast.Ast,
@@ -871,6 +897,7 @@ fn recordEnumTagsCovered(
     }
 }
 
+/// Return true when `pid` looks like it matches enum tags only (no nested structure).
 fn isEnumTagPattern(self: *Checker, ast_unit: *ast.Ast, pid: ast.PatternId, enum_ty: types.TypeId) bool {
     const k = ast_unit.pats.index.kinds.items[pid.toRaw()];
     return switch (k) {
@@ -899,6 +926,7 @@ fn isEnumTagPattern(self: *Checker, ast_unit: *ast.Ast, pid: ast.PatternId, enum
     };
 }
 
+/// Return true when struct pattern `pid` references only existing fields of `value_ty`.
 fn structPatternFieldsMatch(self: *Checker, ast_unit: *ast.Ast, pid: ast.PatternId, value_ty: types.TypeId) bool {
     if (self.typeKind(value_ty) != .Struct) return false;
     const sp = ast_unit.pats.get(.Struct, pid);
@@ -920,6 +948,7 @@ fn structPatternFieldsMatch(self: *Checker, ast_unit: *ast.Ast, pid: ast.Pattern
     return true;
 }
 
+/// Return a comma-separated list of missing boolean match cases (if any) for diagnostics.
 fn missingBoolMatchCases(self: *Checker, covered_true: bool, covered_false: bool) !?ast.StrId {
     var missing = std.ArrayList([]const u8){};
     defer missing.deinit(self.gpa);
@@ -932,11 +961,12 @@ fn missingBoolMatchCases(self: *Checker, covered_true: bool, covered_false: bool
     return joined_id;
 }
 
+/// Format enum tag names that remain uncovered by match arms for diagnostics.
 fn missingEnumMatchCases(
     self: *Checker,
     enum_ty: types.TypeId,
     covered: *std.AutoArrayHashMapUnmanaged(u32, void),
- ) !?ast.StrId {
+) !?ast.StrId {
     var missing = std.ArrayList([]const u8){};
     defer missing.deinit(self.gpa);
     const members = self.context.type_store.enum_member_pool.slice(self.context.type_store.get(.Enum, enum_ty).members);
@@ -953,8 +983,17 @@ fn missingEnumMatchCases(
     return joined_id;
 }
 
-pub const BindingOrigin = union(enum) { decl: ast.DeclId, param: ast.ParamId, anonymous };
+/// Metadata that records whether a pattern binding stems from a declaration, parameter, or is anonymous.
+pub const BindingOrigin = union(enum) {
+    /// Binding declared as part of a declaration (maps to `DeclId`).
+    decl: ast.DeclId,
+    /// Binding associated with a parameter (maps to `ParamId`).
+    param: ast.ParamId,
+    /// Anonymous binding (no declaration/parameter metadata).
+    anonymous,
+};
 
+/// Register bindings introduced by `pid` into the symbol table with origin metadata.
 pub fn declareBindingsInPattern(
     self: *Checker,
     ctx: *Checker.CheckerContext,
@@ -1048,8 +1087,19 @@ pub fn declareBindingsInPattern(
     }
 }
 
-const PatternShapeCheck = enum { ok, tuple_arity_mismatch, struct_pattern_field_mismatch, pattern_shape_mismatch };
+/// Result of aligning a pattern with a target value type.
+const PatternShapeCheck = enum {
+    /// Pattern matches the target shape without issues.
+    ok,
+    /// Tuple literal has a different number of elements than the type.
+    tuple_arity_mismatch,
+    /// Struct pattern names fields that the type does not expose.
+    struct_pattern_field_mismatch,
+    /// The pattern and type belong to entirely different data shapes.
+    pattern_shape_mismatch,
+};
 
+/// Ensure the pattern `pid` fits the shape of `value_ty` when used in a declaration binding.
 pub fn checkPatternShapeForDecl(
     self: *Checker,
     ast_unit: *ast.Ast,
@@ -1147,6 +1197,7 @@ pub fn checkPatternShapeForDecl(
     }
 }
 
+/// Check destructuring shape when evaluating an assignment expression `expr` against `value_ty`.
 pub fn checkPatternShapeForAssignExpr(
     self: *Checker,
     ast_unit: *ast.Ast,
@@ -1255,6 +1306,7 @@ pub fn checkPatternShapeForAssignExpr(
     }
 }
 
+/// Collect all binding names referenced by pattern `pid` into `list`.
 pub fn collectPatternBindings(self: *Checker, ast_unit: *ast.Ast, pid: ast.PatternId, list: *std.ArrayList(ast.StrId)) !void {
     const kind = ast_unit.pats.index.kinds.items[pid.toRaw()];
     switch (kind) {
@@ -1310,6 +1362,7 @@ pub fn collectPatternBindings(self: *Checker, ast_unit: *ast.Ast, pid: ast.Patte
     }
 }
 
+/// Return the inferred type for binding `name` within pattern `pid`, if any.
 pub fn bindingTypeInPattern(
     self: *Checker,
     ast_unit: *ast.Ast,

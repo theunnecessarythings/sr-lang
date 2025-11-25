@@ -8,17 +8,23 @@ const TypeInfo = @import("types.zig").TypeInfo;
 const TypeStore = @import("types.zig").TypeStore;
 const Parser = @import("parser.zig").Parser;
 
+/// Tracks whether MLIR passes have already been registered globally.
 var g_passes_registered: bool = false;
 
+/// Manages file paths, cached contents, and virtual overrides used across compilation.
 pub const SourceManager = struct {
     gpa: std.mem.Allocator,
     files: std.ArrayList(Entry) = .empty,
 
+    /// Managed metadata for each tracked file path or virtual source.
     const Entry = struct {
+        /// File path stored as owned bytes.
         path: []u8,
+        /// Optional in-memory override contents.
         virtual_source: ?[]u8 = null,
     };
 
+    /// Release every buffer tracked by the manager along with its allocator.
     pub fn deinit(self: *SourceManager) void {
         for (self.files.items) |*entry| {
             self.gpa.free(entry.path);
@@ -29,6 +35,7 @@ pub const SourceManager = struct {
         self.files.deinit(self.gpa);
     }
 
+    /// Register `file_path` and return its managed index (avoids duplicates).
     pub fn add(self: *SourceManager, file_path: []const u8) !u32 {
         if (self.findIndex(file_path)) |idx| {
             return @intCast(idx);
@@ -39,11 +46,13 @@ pub const SourceManager = struct {
         return @intCast(self.files.items.len - 1);
     }
 
+    /// Look up an existing file entry by path, returning its index.
     pub fn find(self: *SourceManager, file_path: []const u8) ?u32 {
         const idx = self.findIndex(file_path) orelse return null;
         return @intCast(idx);
     }
 
+    /// Read `index` either from the virtual source override or disk and return contents.
     pub fn read(self: *SourceManager, index: u32) ![]const u8 {
         if (index >= self.files.items.len) return error.FileNotFound;
         const entry = self.files.items[index];
@@ -66,6 +75,7 @@ pub const SourceManager = struct {
         return buffer;
     }
 
+    /// Return the stored file path for `index`, if available.
     pub fn get(self: *const SourceManager, index: u32) ?[]const u8 {
         if (index < self.files.items.len) {
             return self.files.items[index].path;
@@ -73,6 +83,7 @@ pub const SourceManager = struct {
         return null;
     }
 
+    /// Override the contents of `index` with the provided virtual source buffer.
     pub fn setVirtualSource(self: *SourceManager, index: u32, contents: []const u8) !void {
         if (index >= self.files.items.len) return error.FileNotFound;
         var entry = &self.files.items[index];
@@ -82,6 +93,7 @@ pub const SourceManager = struct {
         entry.virtual_source = try self.gpa.dupe(u8, contents);
     }
 
+    /// Remove any virtual override for `index`, falling back to file contents.
     pub fn clearVirtualSource(self: *SourceManager, index: u32) void {
         if (index >= self.files.items.len) return;
         var entry = &self.files.items[index];
@@ -91,12 +103,14 @@ pub const SourceManager = struct {
         }
     }
 
+    /// Add or locate `file_path` and set its virtual source contents.
     pub fn setVirtualSourceByPath(self: *SourceManager, file_path: []const u8, contents: []const u8) !u32 {
         const idx = try self.add(file_path);
         try self.setVirtualSource(idx, contents);
         return idx;
     }
 
+    /// Locate the entry index for `file_path`, if already registered.
     fn findIndex(self: *SourceManager, file_path: []const u8) ?usize {
         for (self.files.items, 0..) |entry, idx| {
             if (std.mem.eql(u8, entry.path, file_path)) {
@@ -107,34 +121,52 @@ pub const SourceManager = struct {
     }
 };
 
+/// Shared compilation context passed through parsing/checking/codegen stages.
 pub const Context = struct {
+    /// Allocator for the context and derived storages.
     gpa: std.mem.Allocator,
+    /// Source manager handling file registrations and virtual overlays.
     source_manager: *SourceManager,
+    /// Diagnostic engine for capturing errors/warnings/notes.
     diags: *Diagnostics,
+    /// Shared string interner backing CST/compilation units.
     interner: *cst.StringInterner,
+    /// Location store used for token spans.
     loc_store: *cst.LocStore,
+    /// Global type store for the compiler.
     type_store: *TypeStore,
+    /// Aggregated unit that stores packages, modules, and files.
     compilation_unit: CompilationUnit,
+    /// Toggle that controls whether imported files are automatically loaded.
     load_imports: bool = true,
+    /// Mutex guarding shared mutable state for threaded stages.
     mutex: std.Thread.Mutex = .{},
 
+    /// Parsers currently created/executing on worker threads.
     parse_worklist: std.ArrayList(ParseRequest) = .{},
 
-    // Cooperative cancellation flag used by threaded stages.
+    /// Cooperative cancellation flag for long-running stages.
     cancel_requested: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
 
+    /// Work item describing a parser running on a thread.
     const ParseRequest = struct {
+        /// Path string for this parse request.
         path: []const u8,
+        /// File id assigned by the source manager.
         file_id: u32,
+        /// Worker thread handling the parse.
         thread: std.Thread,
+        /// Diagnostics sink for the parse.
         diags: *Diagnostics,
+        /// Parser instance performing the work.
         parser: *Parser,
     };
 
+    /// Initialize a context with fresh diagnostics, type store, interner, and source manager.
     pub fn init(gpa: std.mem.Allocator) Context {
         const interner = gpa.create(cst.StringInterner) catch unreachable;
         interner.* = cst.StringInterner.init(gpa);
-        
+
         const type_store = gpa.create(TypeStore) catch unreachable;
         type_store.* = TypeStore.init(gpa, interner);
 
@@ -143,10 +175,10 @@ pub const Context = struct {
 
         const source_manager = gpa.create(SourceManager) catch unreachable;
         source_manager.* = SourceManager{ .gpa = gpa };
-        
+
         const loc_store = gpa.create(cst.LocStore) catch unreachable;
         loc_store.* = cst.LocStore{};
-        
+
         return .{
             .diags = diags,
             .interner = interner,
@@ -158,6 +190,7 @@ pub const Context = struct {
         };
     }
 
+    /// Tear down the context and all associated storages (type store, interner, etc.).
     pub fn deinit(self: *Context) void {
         self.compilation_unit.deinit();
         self.source_manager.deinit();
@@ -172,23 +205,30 @@ pub const Context = struct {
         self.gpa.destroy(self.type_store);
     }
 
+    /// Signal cancellation to any cooperating threads by flipping the atomic flag.
     pub inline fn requestCancel(self: *Context) void {
         self.cancel_requested.store(true, .seq_cst);
     }
 
+    /// Check whether cancellation has been requested.
     pub inline fn isCancelled(self: *const Context) bool {
         return self.cancel_requested.load(.seq_cst);
     }
 };
 
+/// Tracks dependency orderings between source files for staged processing.
 pub const DependencyLevels = struct {
+    /// Allocator used for storing the level arrays.
     allocator: std.mem.Allocator,
+    /// Each level contains file ids that can be processed concurrently.
     levels: std.ArrayList(std.ArrayList(u32)),
 
+    /// Create an empty dependency level tracker.
     pub fn init(allocator: std.mem.Allocator) DependencyLevels {
         return .{ .allocator = allocator, .levels = .{} };
     }
 
+    /// Deinitialize the stored levels and release the arrays.
     pub fn deinit(self: *DependencyLevels) void {
         for (self.levels.items) |*level| {
             level.deinit(self.allocator);
@@ -197,6 +237,8 @@ pub const DependencyLevels = struct {
     }
 };
 
+/// Determine a dependency-respecting processing order by grouping files into levels.
+/// Each level contains files whose dependencies are satisfied by earlier levels.
 pub fn computeDependencyLevels(
     allocator: std.mem.Allocator,
     unit: *CompilationUnit,
@@ -335,15 +377,21 @@ pub fn computeDependencyLevels(
     return result;
 }
 
+/// Captures import cycles detected and the set of nodes blocked by them.
 pub const CycleReport = struct {
+    /// Allocator used for storing cycles/blocked lists.
     allocator: std.mem.Allocator,
+    /// Each recorded cycle contains file ids in the cycle.
     cycles: std.ArrayList(std.ArrayList(u32)),
+    /// Nodes blocked (not schedulable) because they participate in cycles.
     blocked: std.ArrayList(u32),
 
+    /// Initialize the report data structures.
     pub fn init(allocator: std.mem.Allocator) CycleReport {
         return .{ .allocator = allocator, .cycles = .{}, .blocked = .{} };
     }
 
+    /// Free all internal vectors used to record cycles/blocked nodes.
     pub fn deinit(self: *CycleReport) void {
         for (self.cycles.items) |*cy| cy.deinit(self.allocator);
         self.cycles.deinit(self.allocator);
@@ -351,9 +399,8 @@ pub const CycleReport = struct {
     }
 };
 
-// Detect import cycles and identify nodes blocked by those cycles.
-// A cycle is any strongly recursive set discovered via DFS back-edges on the
-// unschedulable subgraph (nodes remaining after Kahn's algorithm).
+/// Find import cycles by DFS over the leftover dependency graph (after leveling).
+/// Each detected cycle is reported along with any remaining nodes blocked because of it.
 pub fn detectImportCycles(
     allocator: std.mem.Allocator,
     unit: *CompilationUnit,
@@ -466,8 +513,9 @@ pub fn detectImportCycles(
     var stack = std.ArrayList(u32){};
     defer stack.deinit(allocator);
 
-    // Helper to push a detected cycle (slice of stack from pos..end plus start)
+    // Helper that serializes cycle nodes when DFS discovers a back edge.
     const pushCycle = struct {
+        /// Capture nodes forming the cycle from `pos` onward.
         fn go(rep: *CycleReport, st: *std.ArrayList(u32), pos: usize) !void {
             var cyc = std.ArrayList(u32){};
             try cyc.ensureTotalCapacity(rep.allocator, st.items.len - pos + 1);
@@ -478,7 +526,9 @@ pub fn detectImportCycles(
         }
     }.go;
 
+    // DFS routine that walks the subgraph, marking cycles and back edges.
     const dfs = struct {
+        /// Visit nodes starting at `node`, recording cycles/back edges.
         fn go(
             rep: *CycleReport,
             allocator2: std.mem.Allocator,
@@ -540,6 +590,7 @@ pub fn detectImportCycles(
     return report;
 }
 
+/// Create an MLIR context with all dialects, translations, and pass registrations.
 pub fn initMLIR(alloc: std.mem.Allocator) mlir.Context {
     mlir.setGlobalAlloc(alloc);
     var mlir_context = mlir.Context.create();
@@ -559,6 +610,7 @@ pub fn initMLIR(alloc: std.mem.Allocator) mlir.Context {
     return mlir_context;
 }
 
+/// Run the canonical MLIR lowering pipeline on `module`.
 pub fn run_passes(context: *mlir.Context, module: *mlir.Module) !void {
     const pm = mlir.c.mlirPassManagerCreate(context.handle);
     defer mlir.c.mlirPassManagerDestroy(pm);
@@ -612,12 +664,14 @@ pub fn run_passes(context: *mlir.Context, module: *mlir.Module) !void {
     }
 }
 
+/// Logging hook invoked by the MLIR pass manager when emitting diagnostics.
 fn callback(msg: mlir.c.MlirStringRef, data: ?*anyopaque) callconv(.c) void {
     const message = std.mem.sliceAsBytes(msg.data[0..msg.length]);
     std.debug.print("{s}", .{message});
     _ = data;
 }
 
+/// JIT the given MLIR `module` via MLIR's execution engine (suitable for tests).
 pub fn runJit(module: mlir.c.MlirModule) void {
     _ = mlir.c.LLVMInitializeNativeTarget();
     _ = mlir.c.LLVMInitializeNativeAsmPrinter();
@@ -635,12 +689,17 @@ pub fn runJit(module: mlir.c.MlirModule) void {
     }
 }
 
+/// Mode that determines how far we lower/run the generated LLVM module.
 const Mode = enum {
+    /// Only print raw LLVM IR.
     llvm_ir,
+    /// Execute LLVM passes and print optimized IR.
     llvm_passes,
+    /// Run full compile+link pipeline and produce executable.
     compile,
 };
 
+/// Translate `module` through MLIR to LLVM IR, optionally running passes or invoking clang.
 pub fn convert_to_llvm_ir(module: mlir.c.MlirModule, link_args: []const []const u8, mode: Mode, optimization_level: ?[]const u8) !void {
     const print_ir = mode != .compile;
     _ = mlir.c.LLVMInitializeNativeTarget();
@@ -759,6 +818,7 @@ pub fn convert_to_llvm_ir(module: mlir.c.MlirModule, link_args: []const []const 
     }
 }
 
+/// Run the compiled `out/output_program` executable (helper used by tests).
 pub fn run() void {
     const argv = &[_][]const u8{"out/output_program"};
     var child = std.process.Child.init(argv, std.heap.page_allocator);

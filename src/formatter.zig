@@ -37,23 +37,36 @@ pub fn formatSource(gpa: std.mem.Allocator, source: [:0]const u8, file_path: []c
     return try fmt.format();
 }
 
+/// Tracks formatter-specific state while printing a CST program.
 const Formatter = struct {
+    /// Allocator used to build intermediate buffers.
     gpa: std.mem.Allocator,
+    /// Original source text that is being formatted.
     source: []const u8,
+    /// The parser's expression store for lookup during formatting.
     exprs: *cst.ExprStore,
+    /// Pattern store consulted when formatting match expressions.
     pats: *cst.PatternStore,
+    /// CST representation of the program being formatted.
     program: cst.ProgramDO,
+    /// Comments extracted from the parser to preserve placement.
     comments: []const cst.Comment,
+    /// Location table used to resolve node positions.
     locs: *cst.LocStore,
 
+    /// Builder that accumulates the emitted bytes.
     builder: std.ArrayList(u8) = .{},
+    /// Current indentation level (in spaces).
     indent: usize = 0,
+    /// Whether the next printed byte needs indentation padding.
     needs_indent: bool = true,
+    /// Index of the next comment that should be emitted.
     comment_idx: usize = 0,
 
-    // Tracks the end index of the last printed token/node.
+    /// Tracks the end index of the last printed token/node.
     last_written_loc: usize = 0,
 
+    /// Generate formatted source text for the current program/builder.
     fn format(self: *Formatter) ![]u8 {
         self.builder = .{};
         self.last_written_loc = 0;
@@ -72,6 +85,7 @@ const Formatter = struct {
     // ------------------------------------------------------------
     // Basics & Comment Logic
     // ------------------------------------------------------------
+    /// Ensure indentation spaces are emitted before the next token.
     fn ws(self: *Formatter) !void {
         if (!self.needs_indent) return;
         var i: usize = 0;
@@ -81,48 +95,58 @@ const Formatter = struct {
         self.needs_indent = false;
     }
 
+    /// Append a newline and reset indentation tracking.
     fn newline(self: *Formatter) !void {
         try self.builder.append(self.gpa, '\n');
         self.needs_indent = true;
     }
 
+    /// Return true if the last emitted character is a newline.
     fn lastCharIsNewline(self: *Formatter) bool {
         return self.builder.items.len > 0 and self.builder.items[self.builder.items.len - 1] == '\n';
     }
 
+    /// Return true when the builder ends with two consecutive newlines.
     fn endsWithDoubleNewline(self: *Formatter) bool {
         return self.builder.items.len >= 2 and
             self.builder.items[self.builder.items.len - 1] == '\n' and
             self.builder.items[self.builder.items.len - 2] == '\n';
     }
 
+    /// Format text into the current line after ensuring indentation.
     fn printf(self: *Formatter, comptime fmt: []const u8, args: anytype) !void {
         try self.ws();
         try std.fmt.format(self.builder.writer(self.gpa), fmt, args);
     }
 
+    /// Resolve interned string `id` into its byte slice.
     inline fn s(self: *const Formatter, id: cst.StrId) []const u8 {
         return self.exprs.strs.get(id);
     }
 
+    /// Return the source offset where `loc` begins.
     inline fn locStart(self: *const Formatter, loc: cst.LocId) usize {
         return self.locs.get(loc).start;
     }
 
+    /// Return the source offset immediately after `loc`.
     inline fn locEnd(self: *const Formatter, loc: cst.LocId) usize {
         return self.locs.get(loc).end;
     }
 
+    /// Track `loc` as the most recently emitted AST fragment.
     fn updateLastWritten(self: *Formatter, loc: cst.LocId) void {
         const end = self.locEnd(loc);
         if (end > self.last_written_loc) self.last_written_loc = end;
     }
 
+    /// Emit comments that precede byte position `pos`.
     fn emitCommentsBefore(self: *Formatter, pos: usize) !void {
         try self.flushComments(pos);
     }
 
     // Scans backwards in the source to determine if the comment is on a new line.
+    /// Return true if the comment at `comment_start` starts on a fresh line.
     fn isLineComment(self: *Formatter, comment_start: usize) bool {
         var i: usize = comment_start;
         while (i > 0) {
@@ -134,6 +158,7 @@ const Formatter = struct {
         return true; // Start of file
     }
 
+    /// Flush recorded comments up to `limit`, preserving spacing rules.
     fn flushComments(self: *Formatter, limit: usize) !void {
         while (self.comment_idx < self.comments.len) {
             const c = self.comments[self.comment_idx];
@@ -181,6 +206,7 @@ const Formatter = struct {
         }
     }
 
+    /// Append the syntax for comment `c` (line/block/docs) to the builder.
     fn printCommentBody(self: *Formatter, c: cst.Comment, loc: Loc) !void {
         const text = self.source[loc.start..loc.end];
         switch (c.kind) {
@@ -202,6 +228,7 @@ const Formatter = struct {
         }
     }
 
+    /// Return whether `source[start..end]` contains at least two blank lines.
     fn gapHasExtraBlank(self: *Formatter, start: usize, end: usize) bool {
         if (start >= end or end > self.source.len) return false;
         const slice = self.source[start..end];
@@ -216,6 +243,7 @@ const Formatter = struct {
     // ------------------------------------------------------------
     // Program / Decl printing
     // ------------------------------------------------------------
+    /// Emit top-level package/import/function declarations and associated comments.
     fn printProgram(self: *Formatter) !void {
         if (!self.program.package_name.isNone() and !self.program.package_loc.isNone()) {
             const pkg_loc_id = self.program.package_loc.unwrap();
@@ -286,18 +314,21 @@ const Formatter = struct {
         try self.newline();
     }
 
+    /// Return true when `did` is an import declaration.
     fn isImportDecl(self: *Formatter, did: cst.DeclId) bool {
         const row = self.exprs.Decl.get(did);
         const rhs_kind = self.exprs.index.kinds.items[row.rhs.toRaw()];
         return rhs_kind == .Import;
     }
 
+    /// Return true when `did` names a function declaration.
     fn isFunctionDecl(self: *Formatter, did: cst.DeclId) bool {
         const row = self.exprs.Decl.get(did);
         const rhs_kind = self.exprs.index.kinds.items[row.rhs.toRaw()];
         return rhs_kind == .Function;
     }
 
+    /// Return true when `did` is a function declaration that includes a body.
     fn isFunctionWithBody(self: *Formatter, did: cst.DeclId) bool {
         const row = self.exprs.Decl.get(did);
         const rhs_kind = self.exprs.index.kinds.items[row.rhs.toRaw()];
@@ -307,6 +338,7 @@ const Formatter = struct {
         return !func.body.isNone();
     }
 
+    /// Format declaration `id` with comments and spacing.
     fn printDecl(self: *Formatter, id: cst.DeclId) !void {
         const row = self.exprs.Decl.get(id);
         try self.emitCommentsBefore(self.locStart(row.loc));
@@ -342,6 +374,7 @@ const Formatter = struct {
         try self.printExpr(row.rhs);
     }
 
+    /// Return the source location recorded for expression `eid`.
     inline fn exprLocFromId(exprs: *cst.ExprStore, eid: cst.ExprId) Loc {
         @setEvalBranchQuota(10000);
         const k = exprs.index.kinds.items[eid.toRaw()];
@@ -353,6 +386,7 @@ const Formatter = struct {
     // ------------------------------------------------------------
     // Expressions
     // ------------------------------------------------------------
+    /// Print expression `id` recursively with indentation and comments.
     pub fn printExpr(self: *Formatter, id: cst.ExprId) anyerror!void {
         const kind = self.exprs.index.kinds.items[id.toRaw()];
 
@@ -684,7 +718,6 @@ const Formatter = struct {
                 try self.printf(" {{", .{});
                 const arms = self.exprs.arm_pool.slice(node.arms);
                 for (arms) |aid| {
-                    try self.printf(",", .{});
                     const arm = self.exprs.MatchArm.get(aid);
                     try self.newline();
                     self.indent += 4;
@@ -697,6 +730,7 @@ const Formatter = struct {
                     try self.printf(" => ", .{});
                     try self.printExpr(arm.body);
                     self.indent -= 4;
+                    try self.printf(",", .{});
                 }
                 try self.newline();
                 try self.printf("}}", .{});
@@ -848,7 +882,9 @@ const Formatter = struct {
             .ErrorSetType => {
                 const node = self.exprs.get(.ErrorSetType, id);
                 try self.printExpr(node.err);
-                try self.printf("!", .{});
+                self.needs_indent = false;
+                try self.builder.append(self.gpa, '!');
+                self.needs_indent = false;
                 try self.printExpr(node.value);
             },
             .StructType => {
@@ -1040,6 +1076,7 @@ const Formatter = struct {
     // ------------------------------------------------------------
     // Helpers for expressions / patterns
     // ------------------------------------------------------------
+    /// Emit the parameter list described by `r`.
     fn printParams(self: *Formatter, r: cst.RangeOf(cst.ParamId), is_variadic: bool, trailing: bool) !void {
         _ = is_variadic;
         const params = self.exprs.param_pool.slice(r);
@@ -1097,6 +1134,7 @@ const Formatter = struct {
         }
     }
 
+    /// Print a struct field declaration with its type/attrs.
     fn printStructField(self: *Formatter, id: cst.StructFieldId) !void {
         const field = self.exprs.StructField.get(id);
         try self.printAttrs(field.attrs, .Before);
@@ -1108,6 +1146,7 @@ const Formatter = struct {
         }
     }
 
+    /// Print a variant payload field description.
     fn printVariantField(self: *Formatter, id: cst.VariantFieldId) !void {
         const field = self.exprs.VariantField.get(id);
         try self.printAttrs(field.attrs, .Before);
@@ -1166,6 +1205,7 @@ const Formatter = struct {
         }
     }
 
+    /// Print every expression in `r`, separating them with `sep`.
     fn printExprs(self: *Formatter, r: cst.RangeOf(cst.ExprId), sep: []const u8) !void {
         const ids = self.exprs.expr_pool.slice(r);
         for (ids, 0..) |eid, i| {
@@ -1174,7 +1214,14 @@ const Formatter = struct {
         }
     }
 
-    const AttrPos = enum { Before, After };
+    /// Positions that dictate whether attributes precede or follow the declaration.
+    const AttrPos = enum {
+        /// Emit attributes before the declaration/pattern.
+        Before,
+        /// Emit attributes after the declaration/pattern.
+        After,
+    };
+    /// Print attributes associated with declarations/patterns at `pos`.
     fn printAttrs(self: *Formatter, opt_r: cst.OptRangeAttr, pos: AttrPos) anyerror!void {
         if (opt_r.isNone()) return;
         const r = opt_r.asRange();
@@ -1199,6 +1246,7 @@ const Formatter = struct {
     // ------------------------------------------------------------
     // Patterns
     // ------------------------------------------------------------
+    /// Format the pattern `id`, recursing for nested structures.
     fn printPattern(self: *Formatter, id: cst.PatternId) anyerror!void {
         const kind = self.pats.index.kinds.items[id.toRaw()];
         switch (kind) {
@@ -1221,6 +1269,12 @@ const Formatter = struct {
                 if (node.by_ref) try self.printf("ref ", .{});
                 if (node.is_mut) try self.printf("mut ", .{});
                 try self.printf("{s}", .{self.s(node.name)});
+            },
+            .Parenthesized => {
+                const node = self.pats.get(.Parenthesized, id);
+                try self.printf("(", .{});
+                try self.printPattern(node.pattern);
+                try self.printf(")", .{});
             },
             .Tuple => {
                 const node = self.pats.get(.Tuple, id);
@@ -1316,6 +1370,7 @@ const Formatter = struct {
         }
     }
 
+    /// Print the segments of `path` joined by dots.
     fn printPatternPath(self: *Formatter, path: cst.RangeOf(cst.PathSegId)) !void {
         const segs = self.pats.seg_pool.slice(path);
         for (segs, 0..) |sid, i| {
@@ -1325,6 +1380,7 @@ const Formatter = struct {
         }
     }
 
+    /// Print a pattern field entry (name + nested pattern).
     fn printPatternField(self: *Formatter, id: cst.PatFieldId) !void {
         const field = self.pats.StructField.get(id);
         try self.printf("{s}: ", .{self.s(field.name)});
@@ -1332,6 +1388,7 @@ const Formatter = struct {
     }
 };
 
+/// Return the textual representation of a prefix operator.
 fn prefixOpStr(op: cst.PrefixOp) []const u8 {
     return switch (op) {
         .plus => "+",
@@ -1343,6 +1400,7 @@ fn prefixOpStr(op: cst.PrefixOp) []const u8 {
     };
 }
 
+/// Return the textual representation of an infix operator.
 fn infixOpStr(op: cst.InfixOp) []const u8 {
     return switch (op) {
         .add => "+",

@@ -8,16 +8,35 @@ const comp = @import("comptime.zig");
 const PipelineBinding = @import("pipeline.zig").Pipeline.ComptimeBinding;
 const Loc = @import("lexer.zig").Token.Loc;
 
+/// Describes compile-time bindings introduced during type resolution (type/value).
 pub const Binding = union(enum) {
-    Type: struct { name: ast.StrId, ty: types.TypeId },
-    Value: struct { name: ast.StrId, value: comp.ComptimeValue, ty: types.TypeId },
+    /// Type binding (name -> type id).
+    Type: struct {
+        /// Identifier bound to a type.
+        name: ast.StrId,
+        /// Assigned type for the identifier.
+        ty: types.TypeId,
+    },
+    /// Value binding (name -> constant value + type).
+    Value: struct {
+        /// Identifier bound to a value.
+        name: ast.StrId,
+        /// Constant value assigned to the identifier.
+        value: comp.ComptimeValue,
+        /// Type describing the stored value.
+        ty: types.TypeId,
+    },
 };
 
+/// View into pipeline source bindings optionally owning the buffer.
 const PipelineBindingSlice = struct {
+    /// Array of pipeline bindings used to populate the interpreter.
     items: []PipelineBinding,
+    /// Whether this slice owns the memory (needs freeing).
     owns: bool,
 };
 
+/// Recursively collect all expression IDs reachable from `expr_id`.
 fn collectExprIds(gpa: std.mem.Allocator, ast_unit: *ast.Ast, expr_id: ast.ExprId, out: *std.ArrayList(ast.ExprId)) !void {
     try out.append(gpa, expr_id);
     const expr_store = &ast_unit.exprs;
@@ -251,6 +270,7 @@ fn collectExprIds(gpa: std.mem.Allocator, ast_unit: *ast.Ast, expr_id: ast.ExprI
     }
 }
 
+/// Recursively collect expression ids referenced from pattern `pat_id`.
 fn collectPatternExprs(
     gpa: std.mem.Allocator,
     ast_unit: *ast.Ast,
@@ -314,6 +334,7 @@ fn collectPatternExprs(
     }
 }
 
+/// Collect expression ids touched by statement `stmt_id`.
 fn collectStmtExprs(
     gpa: std.mem.Allocator,
     ast_unit: *ast.Ast,
@@ -349,6 +370,7 @@ fn collectStmtExprs(
     }
 }
 
+/// Collect expressions from declaration `decl_id`, including patterns, annotations, and initializer.
 fn collectDeclExprs(gpa: std.mem.Allocator, ast_unit: *ast.Ast, decl_id: ast.DeclId, out: *std.ArrayList(ast.ExprId)) !void {
     const decl = ast_unit.exprs.Decl.get(decl_id);
     if (!decl.pattern.isNone()) try collectPatternExprs(gpa, ast_unit, decl.pattern.unwrap(), out);
@@ -356,6 +378,8 @@ fn collectDeclExprs(gpa: std.mem.Allocator, ast_unit: *ast.Ast, decl_id: ast.Dec
     try collectExprIds(gpa, ast_unit, decl.value, out);
 }
 
+/// Snapshot the expression types for `fn_expr` so later specializations can reuse them.
+/// Record the expression types for a method so future lookups can reuse them.
 pub fn storeMethodExprTypes(
     self: *Checker,
     ast_unit: *ast.Ast,
@@ -387,6 +411,7 @@ pub fn storeMethodExprTypes(
     try ast_unit.type_info.storeMethodExprSnapshot(owner_ty, method_name, raw_ids[0..count], type_buf[0..count]);
 }
 
+/// Convert `bindings` into a pipeline binding slice suitable for `evalComptimeExpr`.
 fn pipelineBindingsFor(self: *Checker, bindings: []const Binding) !PipelineBindingSlice {
     if (bindings.len == 0) return .{ .items = &[_]PipelineBinding{}, .owns = false };
 
@@ -403,6 +428,7 @@ fn pipelineBindingsFor(self: *Checker, bindings: []const Binding) !PipelineBindi
     return .{ .items = out, .owns = true };
 }
 
+/// Evaluate `expr` at comptime, applying additional `bindings` to the interpreter.
 fn evalComptimeValueWithBindings(
     self: *Checker,
     ctx: *Checker.CheckerContext,
@@ -416,6 +442,7 @@ fn evalComptimeValueWithBindings(
     return self.evalComptimeExpr(ctx, ast_unit, expr, expected_ty, pb.items);
 }
 
+/// Search `bindings` for a type binding named `name`.
 fn lookupTypeBinding(bindings: []const Binding, name: ast.StrId) ?types.TypeId {
     for (bindings) |binding| {
         switch (binding) {
@@ -426,6 +453,7 @@ fn lookupTypeBinding(bindings: []const Binding, name: ast.StrId) ?types.TypeId {
     return null;
 }
 
+/// Search `bindings` for a value binding named `name`.
 fn lookupValueBinding(bindings: []const Binding, name: ast.StrId) ?comp.ComptimeValue {
     for (bindings) |binding| {
         switch (binding) {
@@ -436,6 +464,7 @@ fn lookupValueBinding(bindings: []const Binding, name: ast.StrId) ?comp.Comptime
     return null;
 }
 
+/// Reset cached type info for the pattern subtree rooted at `pat_id`.
 fn clearPatternTypes(ast_unit: *ast.Ast, pat_id: ast.PatternId) void {
     const pats = &ast_unit.pats;
     const kind = pats.index.kinds.items[pat_id.toRaw()];
@@ -494,6 +523,7 @@ fn clearPatternTypes(ast_unit: *ast.Ast, pat_id: ast.PatternId) void {
     }
 }
 
+/// Clear cached expression types and related metadata for `expr_id`.
 fn clearExprTypes(ast_unit: *ast.Ast, expr_id: ast.ExprId) void {
     const ti = &ast_unit.type_info;
     if (expr_id.toRaw() < ti.expr_types.items.len) {
@@ -736,6 +766,7 @@ fn clearExprTypes(ast_unit: *ast.Ast, expr_id: ast.ExprId) void {
     }
 }
 
+/// Reset expression type caches referenced by statement `stmt_id`.
 fn clearStmtTypes(ast_unit: *ast.Ast, stmt_id: ast.StmtId) void {
     const stmt_store = &ast_unit.stmts;
     const kind = stmt_store.index.kinds.items[stmt_id.toRaw()];
@@ -763,6 +794,7 @@ fn clearStmtTypes(ast_unit: *ast.Ast, stmt_id: ast.StmtId) void {
     }
 }
 
+/// Clear type caches tied to declaration `decl_id`, including patterns and value.
 fn clearDeclTypes(ast_unit: *ast.Ast, decl_id: ast.DeclId) void {
     if (decl_id.toRaw() < ast_unit.type_info.decl_types.items.len) {
         ast_unit.type_info.decl_types.items[decl_id.toRaw()] = null;
@@ -774,12 +806,14 @@ fn clearDeclTypes(ast_unit: *ast.Ast, decl_id: ast.DeclId) void {
 }
 
 // --------- type helpers
+/// Return true when `k` represents a numeric type (including tensors/complex).
 pub fn isNumericKind(_: *const Checker, k: types.TypeKind) bool {
     return switch (k) {
         .I8, .I16, .I32, .I64, .U8, .U16, .U32, .U64, .F32, .F64, .Usize, .Tensor, .Simd, .Complex => true,
         else => false,
     };
 }
+/// Return true when `k` is an integer kind (signed or unsigned).
 pub fn isIntegerKind(_: *const Checker, k: types.TypeKind) bool {
     return switch (k) {
         .I8, .I16, .I32, .I64, .U8, .U16, .U32, .U64, .Usize => true,
@@ -787,6 +821,7 @@ pub fn isIntegerKind(_: *const Checker, k: types.TypeKind) bool {
     };
 }
 
+/// Estimate alignment requirements for `ty_id` based on structural layout rules.
 fn typeAlign(ctx: *const compile.Context, ty_id: types.TypeId) usize {
     const k = ctx.type_store.index.kinds.items[ty_id.toRaw()];
     return switch (k) {
@@ -857,6 +892,7 @@ fn typeAlign(ctx: *const compile.Context, ty_id: types.TypeId) usize {
     };
 }
 
+/// Return the size in bytes of `ty_id` using the target type store.
 pub fn typeSize(ctx: *const compile.Context, ty_id: types.TypeId) usize {
     const k = ctx.type_store.index.kinds.items[ty_id.toRaw()];
     return switch (k) {
@@ -975,12 +1011,14 @@ pub fn typeSize(ctx: *const compile.Context, ty_id: types.TypeId) usize {
     };
 }
 
+/// If `id` is an optional type, return its element type, else `null`.
 pub fn isOptional(self: *Checker, id: types.TypeId) ?types.TypeId {
     const k = self.context.type_store.index.kinds.items[id.toRaw()];
     if (k != .Optional) return null;
     return self.context.type_store.get(.Optional, id).elem;
 }
 
+/// Resolve `typeof(expr)` expressions via the checker.
 pub fn checkTypeOf(self: *Checker, ctx: *Checker.CheckerContext, ast_unit: *ast.Ast, id: ast.ExprId) !types.TypeId {
     const tr = ast_unit.exprs.get(.TypeOf, id);
     // typeof should accept value expressions; get their type directly.
@@ -1000,6 +1038,7 @@ pub fn checkTypeOf(self: *Checker, ctx: *Checker.CheckerContext, ast_unit: *ast.
 // =========================================================
 // Type expressions
 // =========================================================
+/// Return the payload type for `tag` within variant type `variant_ty`.
 fn variantPayloadType(self: *Checker, variant_ty: types.TypeId, tag: ast.StrId) ?types.TypeId {
     const vt = self.context.type_store.get(.Variant, variant_ty);
     const cases = self.context.type_store.field_pool.slice(vt.variants);
@@ -1011,6 +1050,7 @@ fn variantPayloadType(self: *Checker, variant_ty: types.TypeId, tag: ast.StrId) 
     return null;
 }
 
+/// Evaluate literal expression `id` to a comptime integer value when possible.
 fn evalLiteralToComptime(ast_unit: *ast.Ast, id: ast.ExprId) !?comp.ComptimeValue {
     if (ast_unit.exprs.index.kinds.items[id.toRaw()] != .Literal) return null;
     const lit = ast_unit.exprs.get(.Literal, id);
@@ -1027,6 +1067,7 @@ fn evalLiteralToComptime(ast_unit: *ast.Ast, id: ast.ExprId) !?comp.ComptimeValu
     };
 }
 
+/// Resolve a type expression while providing `bindings` that shadow names during evaluation.
 pub fn typeFromTypeExprWithBindings(
     self: *Checker,
     ctx: *Checker.CheckerContext,
@@ -1132,6 +1173,7 @@ pub fn typeFromTypeExprWithBindings(
     };
 }
 
+/// When a call expression refers to a type-level function, try resolving its return type.
 fn resolveTypeFunctionCall(
     self: *Checker,
     ctx: *Checker.CheckerContext,
@@ -1182,10 +1224,12 @@ fn resolveTypeFunctionCall(
         status = status and res[0];
         const annotated = res[1];
         if (self.typeKind(annotated) == .TypeType) {
-            const arg_res = try typeFromTypeExprWithBindings(self, callee_ctx, ast_unit, args[i], bindings_builder.items);
+            const current_bindings = bindings_builder.items[0..bindings_builder.items.len];
+            const arg_res = try typeFromTypeExprWithBindings(self, callee_ctx, ast_unit, args[i], current_bindings);
             status = status and arg_res[0];
             try bindings_builder.append(self.gpa, .{ .Type = .{ .name = pname, .ty = arg_res[1] } });
         } else {
+            const current_bindings = bindings_builder.items[0..bindings_builder.items.len];
             const arg_expr = args[i];
             const arg_kind = ast_unit.exprs.index.kinds.items[arg_expr.toRaw()];
 
@@ -1194,7 +1238,7 @@ fn resolveTypeFunctionCall(
 
             if (arg_kind == .Ident) {
                 const ident_name = ast_unit.exprs.get(.Ident, arg_expr).name;
-                if (lookupValueBinding(bindings_builder.items, ident_name)) |existing| {
+                if (lookupValueBinding(current_bindings, ident_name)) |existing| {
                     value = existing;
                     have_value = true;
                 }
@@ -1202,7 +1246,7 @@ fn resolveTypeFunctionCall(
 
             if (!have_value) {
                 value = blk: {
-                    const computed = evalComptimeValueWithBindings(self, ctx, ast_unit, arg_expr, annotated, bindings_builder.items) catch {
+                    const computed = evalComptimeValueWithBindings(self, ctx, ast_unit, arg_expr, annotated, current_bindings) catch {
                         if (arg_kind == .Literal) {
                             const literal_val = (try evalLiteralToComptime(ast_unit, arg_expr)) orelse return null;
                             break :blk literal_val;
@@ -1260,6 +1304,7 @@ fn resolveTypeFunctionCall(
     return null;
 }
 
+/// Evaluate a type expression, reporting whether it is a nominal type and its ID.
 pub fn typeFromTypeExpr(self: *Checker, ctx: *Checker.CheckerContext, ast_unit: *ast.Ast, id: ast.ExprId) anyerror!struct { bool, types.TypeId } {
     const k = ast_unit.exprs.index.kinds.items[id.toRaw()];
     const ts = self.context.type_store;

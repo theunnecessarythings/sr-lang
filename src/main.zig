@@ -2,6 +2,7 @@ const std = @import("std");
 const lib = @import("compiler");
 const lsp = @import("lsp.zig");
 
+/// ANSI escape sequences used for colored CLI output.
 const Colors = struct {
     pub const reset = "\x1b[0m";
     pub const bold = "\x1b[1m";
@@ -12,6 +13,7 @@ const Colors = struct {
     pub const green = "\x1b[32m";
 };
 
+/// Stores parsed CLI options before dispatching to the requested command.
 const CliArgs = struct {
     subcommand: Subcommand,
     filename: ?[]const u8 = null,
@@ -24,6 +26,7 @@ const CliArgs = struct {
     tir_prune_unused: bool = true,
     tir_warn_unused: bool = true,
 
+    /// Supported subcommands exposed through the CLI.
     const Subcommand = enum {
         compile,
         run,
@@ -48,7 +51,7 @@ const CliArgs = struct {
     };
 };
 
-// Function to print usage information
+/// Print the CLI usage message and supported commands/options.
 fn printUsage(writer: anytype, exec_name: []const u8) !void {
     try writer.print(
         "{s}Usage:{s} {s} <command> [options] <file>\n\n",
@@ -92,6 +95,7 @@ fn printUsage(writer: anytype, exec_name: []const u8) !void {
     try writer.flush();
 }
 
+/// Launch the interactive REPL session.
 fn repl(
     allocator: std.mem.Allocator,
     err_writer: anytype,
@@ -149,6 +153,7 @@ fn repl(
     defer allocator.free(source);
 }
 
+/// Start the AST explorer HTTP server on localhost.
 fn server(
     allocator: std.mem.Allocator,
     err_writer: anytype,
@@ -288,6 +293,7 @@ fn server(
     }
 }
 
+/// Compile/interpret `filename` according to `mode` and emit artifacts.
 fn process_file(
     compiler_ctx: *lib.compile.Context,
     allocator: std.mem.Allocator,
@@ -444,6 +450,7 @@ fn process_file(
     }
 }
 
+/// Entry point handling CLI args and dispatching pipeline modes.
 pub fn main() !void {
     const gpa = std.heap.page_allocator;
     var args_iter = std.process.args();

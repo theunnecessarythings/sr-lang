@@ -4,13 +4,20 @@ const ast = @import("ast.zig");
 const compile = @import("compile.zig");
 const diagnostics = @import("diagnostics.zig");
 
+/// Converts CST nodes into AST nodes per source file.
 pub const Lower = @This();
+/// Allocator used for AST/CST buffers.
 gpa: std.mem.Allocator,
+/// CST representing the parse result for this file.
 cst_program: *cst.CST,
+/// AST buffer being constructed.
 ast_unit: *ast.Ast,
+/// Compilation context providing type store, diagnostics, etc.
 context: *compile.Context,
+/// File id assigned by the source manager.
 file_id: u32,
 
+/// Create a lower-pass bound to `program`/`file_id` that emits AST nodes into `context`.
 pub fn init(
     gpa: std.mem.Allocator,
     program: *cst.CST,
@@ -28,15 +35,18 @@ pub fn init(
     };
 }
 
+/// Release resources associated with `self`, including the owned AST unit.
 pub fn deinit(self: *Lower) void {
     self.ast_unit.deinit();
     self.gpa.destroy(self.ast_unit);
 }
 
+/// Run lowering and ignore the returned AST value.
 pub fn runLower(self: *Lower) !void {
     _ = try self.run();
 }
 
+/// Lower the entire CST into an AST unit and return it.
 pub fn run(self: *Lower) !*ast.Ast {
     var unit: ast.Unit = .empty();
 
@@ -50,10 +60,12 @@ pub fn run(self: *Lower) !*ast.Ast {
     return self.ast_unit;
 }
 
+/// Track that the currently lowered file references `dependency`.
 fn recordDependency(self: *Lower, dependency: ast.StrId) !void {
     try self.context.compilation_unit.addDependency(self.file_id, dependency);
 }
 
+/// Parse a string literal (raw or escaped) and intern the resulting text.
 fn unescapeString(self: *Lower, quoted_str: []const u8, raw: bool) !ast.StrId {
     const inner_str = if (raw)
         std.mem.trim(u8, quoted_str[1..], "\"#")
@@ -91,6 +103,7 @@ fn unescapeString(self: *Lower, quoted_str: []const u8, raw: bool) !ast.StrId {
     return self.ast_unit.exprs.strs.intern(unescaped_list.items);
 }
 
+/// Interpret `quoted_char` as a Unicode scalar, handling escape sequences.
 fn unescapeChar(_: *Lower, quoted_char: []const u8) !u32 {
     const inner_char_str = quoted_char[1 .. quoted_char.len - 1];
 
@@ -116,6 +129,7 @@ fn unescapeChar(_: *Lower, quoted_char: []const u8) !u32 {
     return char_val;
 }
 
+/// Parse integer literal text, returning numeric value, base, and validity.
 fn parseIntLiteralText(self: *Lower, text: []const u8) !struct { value: u128, base: u8, valid: bool } {
     if (text.len == 0) return .{ .value = 0, .base = 10, .valid = false };
 
@@ -161,6 +175,7 @@ fn parseIntLiteralText(self: *Lower, text: []const u8) !struct { value: u128, ba
     return .{ .value = value, .base = base, .valid = valid };
 }
 
+/// Parse floating-point literal text and report the parsed value plus validity.
 fn parseFloatLiteralText(self: *Lower, text: []const u8) !struct { value: f64, valid: bool } {
     if (text.len == 0) return .{ .value = 0.0, .valid = false };
     var buf: std.ArrayList(u8) = .empty;
@@ -180,6 +195,7 @@ fn parseFloatLiteralText(self: *Lower, text: []const u8) !struct { value: f64, v
     return .{ .value = value, .valid = valid };
 }
 
+/// Translate a CST attribute range (optional) into an AST attribute metadata range.
 fn mapAttrRange(self: *Lower, r: cst.OptRangeAttr) !ast.OptRangeAttr {
     if (r.isNone()) return .none();
     const rr = r.asRange();
@@ -199,6 +215,7 @@ fn mapAttrRange(self: *Lower, r: cst.OptRangeAttr) !ast.OptRangeAttr {
     return .some(self.ast_unit.exprs.attr_pool.pushMany(self.gpa, out_ids));
 }
 
+/// Lower a range of CST parameters to their AST equivalents.
 fn lowerParamRange(self: *Lower, r: cst.RangeOf(cst.ParamId)) !ast.RangeParam {
     const items = self.cst_program.exprs.param_pool.slice(r);
     var out_ids = try self.gpa.alloc(ast.ParamId, items.len);
@@ -219,6 +236,7 @@ fn lowerParamRange(self: *Lower, r: cst.RangeOf(cst.ParamId)) !ast.RangeParam {
     return self.ast_unit.exprs.param_pool.pushMany(self.gpa, out_ids);
 }
 
+/// Lower a range of CST key-value pairs (e.g., map entries, attributes).
 fn lowerKeyValues(self: *Lower, r: cst.RangeOf(cst.KeyValueId)) !ast.RangeKeyValue {
     const items = self.cst_program.exprs.kv_pool.slice(r);
     var out_ids = try self.gpa.alloc(ast.KeyValueId, items.len);
@@ -236,6 +254,7 @@ fn lowerKeyValues(self: *Lower, r: cst.RangeOf(cst.KeyValueId)) !ast.RangeKeyVal
     return self.ast_unit.exprs.kv_pool.pushMany(self.gpa, out_ids);
 }
 
+/// Lower struct literal field values from CST to AST storage.
 fn lowerStructFieldValues(self: *Lower, r: cst.RangeOf(cst.StructFieldValueId)) !ast.RangeStructFieldValue {
     const items = self.cst_program.exprs.sfv_pool.slice(r);
     var out_ids = try self.gpa.alloc(ast.StructFieldValueId, items.len);
@@ -253,6 +272,7 @@ fn lowerStructFieldValues(self: *Lower, r: cst.RangeOf(cst.StructFieldValueId)) 
     return self.ast_unit.exprs.sfv_pool.pushMany(self.gpa, out_ids);
 }
 
+/// Lower declared struct fields in CST into AST field entries.
 fn lowerStructFields(self: *Lower, r: cst.RangeOf(cst.StructFieldId)) !ast.RangeField {
     const items = self.cst_program.exprs.sfield_pool.slice(r);
     var out_ids = try self.gpa.alloc(ast.StructFieldId, items.len);
@@ -272,6 +292,7 @@ fn lowerStructFields(self: *Lower, r: cst.RangeOf(cst.StructFieldId)) !ast.Range
     return self.ast_unit.exprs.sfield_pool.pushMany(self.gpa, out_ids);
 }
 
+/// Transform enum field declarations from CST into AST enum members.
 fn lowerEnumFields(self: *Lower, r: cst.RangeOf(cst.EnumFieldId)) !ast.RangeEnumField {
     const items = self.cst_program.exprs.efield_pool.slice(r);
     var out_ids = try self.gpa.alloc(ast.EnumFieldId, items.len);
@@ -290,6 +311,7 @@ fn lowerEnumFields(self: *Lower, r: cst.RangeOf(cst.EnumFieldId)) !ast.RangeEnum
     return self.ast_unit.exprs.efield_pool.pushMany(self.gpa, out_ids);
 }
 
+/// Lower variant field metadata for AST variant type definitions.
 fn lowerVariantFields(self: *Lower, r: cst.RangeOf(cst.VariantFieldId)) !ast.RangeVariantField {
     const items = self.cst_program.exprs.vfield_pool.slice(r);
     var out_ids = try self.gpa.alloc(ast.VariantFieldId, items.len);
@@ -316,6 +338,7 @@ fn lowerVariantFields(self: *Lower, r: cst.RangeOf(cst.VariantFieldId)) !ast.Ran
     return self.ast_unit.exprs.vfield_pool.pushMany(self.gpa, out_ids);
 }
 
+/// Lower a continuous range of expressions from CST to AST.
 fn lowerExprRange(self: *Lower, r: cst.RangeOf(cst.ExprId)) !ast.RangeExpr {
     const items = self.cst_program.exprs.expr_pool.slice(r);
     var out_ids = try self.gpa.alloc(ast.ExprId, items.len);
@@ -326,6 +349,7 @@ fn lowerExprRange(self: *Lower, r: cst.RangeOf(cst.ExprId)) !ast.RangeExpr {
 }
 
 // ---------------- Top-level decls ----------------
+/// Lower the top-level declarations for this file.
 fn lowerTopDecls(self: *Lower, r: cst.RangeOf(cst.DeclId)) !ast.RangeDecl {
     const items = self.cst_program.exprs.decl_pool.slice(r);
     var out_ids = try self.gpa.alloc(ast.DeclId, items.len);
@@ -335,6 +359,7 @@ fn lowerTopDecls(self: *Lower, r: cst.RangeOf(cst.DeclId)) !ast.RangeDecl {
     return self.ast_unit.exprs.decl_pool.pushMany(self.gpa, out_ids);
 }
 
+/// Lower a single top-level declaration from CST to AST.
 fn lowerTopDecl(self: *Lower, id: cst.DeclId) !ast.DeclId {
     const d = self.cst_program.exprs.Decl.get(id);
     const pattern = try self.lowerOptionalPatternFromExpr(d.lhs);
@@ -370,6 +395,7 @@ fn lowerTopDecl(self: *Lower, id: cst.DeclId) !ast.DeclId {
 }
 
 // ---------------- Statements & Blocks ----------------
+/// Lower a block expression from CST, returning the AST expression id.
 fn lowerBlockExpr(self: *Lower, id: cst.ExprId) !ast.ExprId {
     const b = self.cst_program.exprs.get(.Block, id);
     const stmts_range = try self.lowerStmtRangeFromDecls(b.items);
@@ -377,6 +403,7 @@ fn lowerBlockExpr(self: *Lower, id: cst.ExprId) !ast.ExprId {
     return self.ast_unit.exprs.add(.Block, row);
 }
 
+/// Lower a range of declaration-based statements into AST statements.
 fn lowerStmtRangeFromDecls(self: *Lower, r: cst.RangeOf(cst.DeclId)) !ast.RangeStmt {
     const decls = self.cst_program.exprs.decl_pool.slice(r);
     var out_ids = try self.gpa.alloc(ast.StmtId, decls.len);
@@ -386,6 +413,7 @@ fn lowerStmtRangeFromDecls(self: *Lower, r: cst.RangeOf(cst.DeclId)) !ast.RangeS
     return self.ast_unit.stmts.stmt_pool.pushMany(self.gpa, out_ids);
 }
 
+/// Convert a declaration into a statement when lowering block bodies.
 fn lowerStmtFromDecl(self: *Lower, id: cst.DeclId) !ast.StmtId {
     const d = self.cst_program.exprs.Decl.get(id);
 
@@ -456,12 +484,15 @@ fn lowerStmtFromDecl(self: *Lower, id: cst.DeclId) !ast.StmtId {
     };
 }
 
+/// Attempt to rebuild a compound assignment (`+=`, `-=`) as a primitive AST statement.
 fn tryLowerCompoundAssign(self: *Lower, i: *const cst.Rows.Infix) !?ast.StmtId {
     const op = i.op;
     const L = try self.lowerExpr(i.left);
     const R = try self.lowerExpr(i.right);
     const base_loc = i.loc;
+    // Helper struct that builds the synthetic binary expression used by compound assignment lowering.
     const mk = struct {
+        /// Helper to build the binary operation used by the compound assignment lowering.
         fn bin(self_: *Lower, left: ast.ExprId, right: ast.ExprId, op2: ast.BinaryOp, wrap: bool, sat: bool, loc: ast.LocId) !ast.ExprId {
             const row: ast.Rows.Binary = .{
                 .left = left,
@@ -549,6 +580,7 @@ fn tryLowerCompoundAssign(self: *Lower, i: *const cst.Rows.Infix) !?ast.StmtId {
 }
 
 // ---------------- Expressions ----------------
+/// Lower any expression node by dispatching on its variant.
 fn lowerExpr(self: *Lower, id: cst.ExprId) anyerror!ast.ExprId {
     const kind = self.cst_program.exprs.index.kinds.items[id.toRaw()];
     return switch (kind) {
@@ -1038,6 +1070,7 @@ fn lowerExpr(self: *Lower, id: cst.ExprId) anyerror!ast.ExprId {
     };
 }
 
+/// Convert literal CST expressions (ints, strings, bools) into AST nodes.
 fn lowerLiteral(self: *Lower, id: cst.ExprId) !ast.ExprId {
     const lit = self.cst_program.exprs.get(.Literal, id);
     // tag_small mapping: 1=int, 2=float, 3=string, 4=char, 5=imag, 6=true, 7=false
@@ -1108,6 +1141,7 @@ fn lowerLiteral(self: *Lower, id: cst.ExprId) !ast.ExprId {
     };
 }
 
+/// Lower infix/binary expressions, including special-case compound assignments.
 fn lowerInfix(self: *Lower, id: cst.ExprId) !ast.ExprId {
     const i = self.cst_program.exprs.get(.Infix, id);
     const L = try self.lowerExpr(i.left);
@@ -1148,8 +1182,18 @@ fn lowerInfix(self: *Lower, id: cst.ExprId) !ast.ExprId {
     }
 
     // arithmetic/bitwise/logical
+    // Helper that maps CST infix operators to AST binary metadata.
     const map_bin = struct {
-        const Map = struct { op: ast.BinaryOp, wrap: bool, sat: bool };
+        /// Descriptor that records the binary operation and safety flags.
+        const Map = struct {
+            /// AST binary operator to emit.
+            op: ast.BinaryOp,
+            /// Whether wrapping semantics are requested.
+            wrap: bool,
+            /// Whether saturation semantics are requested.
+            sat: bool,
+        };
+        /// Helper returning the arithmetic/binary metadata map for `op`.
         fn m(op: cst.InfixOp) ?Map {
             return switch (op) {
                 .add => .{ .op = .add, .wrap = false, .sat = false },
@@ -1184,7 +1228,7 @@ fn lowerInfix(self: *Lower, id: cst.ExprId) !ast.ExprId {
     };
 
     if (i.op == .error_union) {
-        return self.ast_unit.exprs.add(.ErrorSetType, .{ .err = R, .value = L, .loc = loc });
+        return self.ast_unit.exprs.add(.ErrorSetType, .{ .err = L, .value = R, .loc = loc });
     }
     if (map_bin.m(i.op)) |mm| {
         return self.ast_unit.exprs.add(.Binary, .{
@@ -1208,6 +1252,7 @@ fn lowerInfix(self: *Lower, id: cst.ExprId) !ast.ExprId {
     });
 }
 
+/// Lower match arms (pattern + guard + body) for AST match expressions.
 fn lowerMatchArms(self: *Lower, r: cst.RangeOf(cst.MatchArmId)) !ast.RangeMatchArm {
     const items = self.cst_program.exprs.arm_pool.slice(r);
     var out_ids = try self.gpa.alloc(ast.MatchArmId, items.len);
@@ -1227,6 +1272,7 @@ fn lowerMatchArms(self: *Lower, r: cst.RangeOf(cst.MatchArmId)) !ast.RangeMatchA
 }
 
 // ---------------- Patterns ----------------
+/// Lower a pattern CST node into its AST counterpart.
 fn lowerPattern(self: *Lower, id: cst.PatternId) !ast.PatternId {
     const kind = self.cst_program.pats.index.kinds.items[id.toRaw()];
     return switch (kind) {
@@ -1254,6 +1300,10 @@ fn lowerPattern(self: *Lower, id: cst.PatternId) !ast.PatternId {
                 .is_mut = b.is_mut,
                 .loc = b.loc,
             });
+        },
+        .Parenthesized => blk: {
+            const p = self.cst_program.pats.get(.Parenthesized, id);
+            break :blk try self.lowerPattern(p.pattern);
         },
         .Tuple => blk: {
             const t = self.cst_program.pats.get(.Tuple, id);
@@ -1327,6 +1377,7 @@ fn lowerPattern(self: *Lower, id: cst.PatternId) !ast.PatternId {
     };
 }
 
+/// Lower a sequence of path segments into AST `PathSeg`s.
 fn lowerPathSegs(self: *Lower, r: cst.RangeOf(cst.PathSegId)) !ast.RangePathSeg {
     const items = self.cst_program.pats.seg_pool.slice(r);
     var out_ids = try self.gpa.alloc(ast.PathSegId, items.len);
@@ -1345,6 +1396,7 @@ fn lowerPathSegs(self: *Lower, r: cst.RangeOf(cst.PathSegId)) !ast.RangePathSeg 
     return self.ast_unit.pats.seg_pool.pushMany(self.gpa, out_ids);
 }
 
+/// Lower struct pattern fields within a pattern clause.
 fn lowerPatFields(self: *Lower, r: cst.RangeOf(cst.PatFieldId)) anyerror!ast.RangePatField {
     const items = self.cst_program.pats.field_pool.slice(r);
     var out_ids = try self.gpa.alloc(ast.PatFieldId, items.len);
@@ -1362,6 +1414,7 @@ fn lowerPatFields(self: *Lower, r: cst.RangeOf(cst.PatFieldId)) anyerror!ast.Ran
     return self.ast_unit.pats.field_pool.pushMany(self.gpa, out_ids);
 }
 
+/// Lower a range of pattern elements (e.g., tuple patterns).
 fn lowerPatRange(self: *Lower, r: cst.RangeOf(cst.PatternId)) anyerror!ast.RangePat {
     const items = self.cst_program.pats.pat_pool.slice(r);
     var out_ids = try self.gpa.alloc(ast.PatternId, items.len);
@@ -1371,6 +1424,7 @@ fn lowerPatRange(self: *Lower, r: cst.RangeOf(cst.PatternId)) anyerror!ast.Range
     return self.ast_unit.pats.pat_pool.pushMany(self.gpa, out_ids);
 }
 
+/// Extract path segments from a type expression for matching/lookup.
 fn pathSegsFromTypeExpr(self: *Lower, id: cst.ExprId) !ast.RangePathSeg {
     var segs: std.ArrayList(ast.PathSegId) = .empty;
     defer segs.deinit(self.gpa);
@@ -1378,6 +1432,7 @@ fn pathSegsFromTypeExpr(self: *Lower, id: cst.ExprId) !ast.RangePathSeg {
     try self.collectPathSegs(id, &segs);
     return self.ast_unit.pats.seg_pool.pushMany(self.gpa, segs.items);
 }
+/// Gather path segments recursively for a dotted identifier or module path.
 fn collectPathSegs(self: *Lower, id: cst.ExprId, segs: *std.ArrayList(ast.PathSegId)) anyerror!void {
     const kind = self.cst_program.exprs.index.kinds.items[id.toRaw()];
     switch (kind) {
@@ -1410,12 +1465,14 @@ fn collectPathSegs(self: *Lower, id: cst.ExprId, segs: *std.ArrayList(ast.PathSe
     }
 }
 
+/// Treat an optional expression as an optional pattern when lowering.
 fn lowerOptionalPatternFromExpr(self: *Lower, e: cst.OptExprId) !ast.OptPatternId {
     if (e.isNone()) return .none();
     if (try self.patternFromExpr(e.unwrap())) |pid| return .some(pid);
     return .none();
 }
 
+/// Try to interpret an expression as a pattern literal, returning `null` if not applicable.
 fn patternFromExpr(self: *Lower, id: cst.ExprId) !?ast.PatternId {
     const kind = self.cst_program.exprs.index.kinds.items[id.toRaw()];
     return switch (kind) {

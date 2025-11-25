@@ -20,54 +20,85 @@ const Diagnostics = @import("diagnostics.zig").Diagnostics;
 const Package = @import("package.zig").Package;
 const CompilationUnit = @import("package.zig").CompilationUnit;
 
+/// Outcome of running part of the pipeline (contains compilation unit/IR if produced).
 pub const Result = struct {
+    /// Optional compilation unit produced by the pipeline stages.
     compilation_unit: ?CompilationUnit,
+    /// Generated MLIR module when code generation completed.
     mlir_module: ?mlir.Module = null,
+    /// Active codegen emitter (needed when emitting debug output or diagnostics).
     gen: ?codegen.Codegen = null,
 };
 
+/// Manages the compilation pipeline stages driven by CLI modes.
 pub const Pipeline = struct {
+    /// Allocator used for temporary passes and intermediate buffers.
     allocator: std.mem.Allocator,
+    /// Shared compilation context.
     context: *compile.Context,
+    /// Cached MLIR context reused across runs.
     mlir_ctx: ?mlir.Context = null,
-    // Optional analysis/transform passes (TIR level)
+    /// Whether to prune unused TIR entities.
     tir_prune_unused: bool = true,
+    /// Emit warnings for unused TIR during pruning.
     tir_warn_unused: bool = true,
 
+    /// Execution modes supported by the pipeline (lex, parse, analyze, codegen...).
     pub const Mode = enum {
+        /// Tokenize the source and print tokens.
         lex,
+        /// Stop after parsing and return the CST.
         parse,
+        /// Stop after building the AST.
         ast,
+        /// Run the checker stage.
         check,
+        /// Dump the lowered TIR.
         tir,
+        /// Dump TIR liveness analysis.
         tir_liveness,
+        /// Emit MLIR and stop.
         mlir,
+        /// Run MLIR passes and show the transformed module.
         passes,
+        /// Emit LLVM IR without further actions.
         llvm_ir,
+        /// Run LLVM passes and dump the IR.
         llvm_passes,
+        /// JIT the generated module and run it.
         jit,
+        /// Full compile pipeline producing an executable.
         compile,
+        /// Build, emit, and run the compiled binary (run only path, CLI handles launch).
         run,
+        /// Execute the interpreter stage (comptime only).
         interpret,
 
+        /// REPL mode that incrementally evaluates source lines.
         repl,
     };
 
+    /// Create a pipeline instance bound to the given allocator/context.
     pub fn init(allocator: std.mem.Allocator, context: *compile.Context) Pipeline {
         return .{ .allocator = allocator, .context = context };
     }
 
+    /// Lazily create an MLIR context if not already available.
     pub fn ensureMlirContext(self: *Pipeline) *mlir.Context {
         if (self.mlir_ctx) |*ctx| return ctx;
         self.mlir_ctx = compile.initMLIR(self.allocator);
         return &self.mlir_ctx.?;
     }
 
+    /// Represent compile-time bindings injected into the interpreter.
     pub const ComptimeBinding = union(enum) {
+        /// A type parameter binding (name + `TypeId`).
         type_param: struct { name: ast_mod.StrId, ty: types.TypeId },
+        /// A value parameter binding with its runtime `ComptimeValue`.
         value_param: struct { name: ast_mod.StrId, ty: types.TypeId, value: comp.ComptimeValue },
     };
 
+    /// Run the pipeline beginning from `filename_or_src` up to `mode`, optionally linking/optimizing.
     pub fn run(
         self: *Pipeline,
         filename_or_src: []const u8,
@@ -183,7 +214,9 @@ pub const Pipeline = struct {
         }
 
         var pkg_iter = self.context.compilation_unit.packages.iterator();
+        // Helper thread entry that executes a lowering pass.
         const runFn = struct {
+            /// Thread entry that invokes `runLower` on the provided pass.
             fn run(lower_pass: *lower_to_ast.Lower) !void {
                 try lower_pass.runLower();
             }
@@ -451,6 +484,7 @@ pub const Pipeline = struct {
     }
 };
 
+/// Return the package location if present, otherwise fall back to zero-width span at `file_id`.
 fn packageLocOrDefault(ast: *const ast_mod.Ast, file_id: u32) Loc {
     if (!ast.unit.package_loc.isNone()) {
         const loc_id = ast.unit.package_loc.unwrap();
@@ -459,10 +493,12 @@ fn packageLocOrDefault(ast: *const ast_mod.Ast, file_id: u32) Loc {
     return Loc.init(file_id, 0, 0);
 }
 
+/// Case-sensitive comparison of two name slices (wrapper around `std.mem.eql`).
 fn namesEqual(a: []const u8, b: []const u8) bool {
     return std.mem.eql(u8, a, b);
 }
 
+/// Attempt to canonicalize `path`; return `null` if the file cannot be resolved.
 fn canonicalizePath(
     allocator: std.mem.Allocator,
     path: []const u8,
@@ -473,12 +509,14 @@ fn canonicalizePath(
     };
 }
 
+/// Return the declared package name for `ast`, if any.
 fn declareName(ast: *const ast_mod.Ast) ?[]const u8 {
     if (ast.unit.package_name.isNone()) return null;
     const sid = ast.unit.package_name.unwrap();
     return ast.exprs.strs.get(sid);
 }
 
+/// Execute the interpreter stage once all ASTs are available.
 fn runInterpreterStage(self: *Pipeline) anyerror!void {
     var found_any: bool = false;
     var pkg_iter = self.context.compilation_unit.packages.iterator();
@@ -496,6 +534,7 @@ fn runInterpreterStage(self: *Pipeline) anyerror!void {
     }
 }
 
+/// Interpret the comptime declarations in `ast_unit` and install bindings.
 fn interpretAstUnit(self: *Pipeline, ast_unit: *ast_mod.Ast) anyerror!bool {
     var interp = try interpreter.Interpreter.init(self.allocator, ast_unit, null, null);
     defer interp.deinit();
@@ -528,6 +567,7 @@ fn interpretAstUnit(self: *Pipeline, ast_unit: *ast_mod.Ast) anyerror!bool {
     return found_block;
 }
 
+/// Human-friendly printer used by the interpreter stage.
 fn printComptimeValue(value: *const comp.ComptimeValue) void {
     switch (value.*) {
         .Void => std.debug.print("<void>", .{}),

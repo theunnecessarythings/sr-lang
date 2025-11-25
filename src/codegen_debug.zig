@@ -6,23 +6,36 @@ const tir = @import("tir.zig");
 const types = @import("types.zig");
 const std = @import("std");
 
+/// DWARF tag value for basic scalar types.
 const DW_TAG_base_type: u32 = 0x24;
+/// DWARF tag value used when describing pointer types.
 const DW_TAG_pointer_type: u32 = 0x0f;
+/// Pointer width assumed when emitting LLVM Debug info (64 bits for the target triple).
 const POINTER_SIZE_BITS: u64 = 64;
 
+/// Cache for the MLIR attributes describing a source file and its compile unit.
 pub const DebugFileInfo = struct {
+    /// `llvm.di.file` attribute that encodes basename/directory.
     file_attr: mlir.Attribute,
+    /// Compile unit attribute referencing the file-level metadata.
     compile_unit_attr: mlir.Attribute,
 };
 
+/// Represents the DWARF metadata attached to a function definition.
 pub const DebugSubprogramInfo = struct {
+    /// `llvm.disubprogram` attribute describing the function signature/scope.
     attr: mlir.Attribute,
+    /// Source file identifier for `attr`.
     file_id: u32,
+    /// Line number where the function begins.
     line: u32,
+    /// Line number where the lexical scope starts (usually same as `line`).
     scope_line: u32,
+    /// Optional location ID for the prologue.
     loc: tir.OptLocId,
 };
 
+/// Clear the per-module debug caches so they can be rebuilt (used between compilations).
 pub fn resetDebugCaches(self: *Codegen) void {
     self.di_files.clearRetainingCapacity();
     self.di_subprograms.clearRetainingCapacity();
@@ -38,12 +51,14 @@ pub fn resetDebugCaches(self: *Codegen) void {
     _ = mod_op.removeDiscardableAttributeByName(mlir.StringRef.from("llvm.ident"));
 }
 
+/// Generate a new monotonic ID for naming debug metadata nodes.
 fn nextDistinctId(self: *Codegen) usize {
     const id = self.next_di_id;
     self.next_di_id += 1;
     return id;
 }
 
+/// Create or reuse the debug metadata entry that describes `file_id`'s source file.
 fn ensureDebugFile(self: *Codegen, file_id: u32) !*DebugFileInfo {
     if (self.di_files.getPtr(file_id)) |info| return info;
 
@@ -66,6 +81,7 @@ fn ensureDebugFile(self: *Codegen, file_id: u32) !*DebugFileInfo {
     return self.di_files.getPtr(file_id).?;
 }
 
+/// Serialize a `llvm.di.compile_unit` attribute for the given file.
 fn buildDICompileUnit(self: *Codegen, file_attr: mlir.Attribute) !mlir.Attribute {
     const producer_attr = self.strAttr("sr-lang");
     const id_payload = try std.fmt.allocPrint(self.gpa, "cu_{d}", .{nextDistinctId(self)});
@@ -91,6 +107,7 @@ fn buildDICompileUnit(self: *Codegen, file_attr: mlir.Attribute) !mlir.Attribute
     return cu_attr;
 }
 
+/// Attach `cu_attr` to the module-level debug `llvm.dbg.cu` attribute list, avoiding duplicates.
 fn addCompileUnitToModule(self: *Codegen, cu_attr: mlir.Attribute) !void {
     var mod_op = self.module.getOperation();
     const dbg_name = mlir.StringRef.from("llvm.dbg.cu");
@@ -121,6 +138,8 @@ fn addCompileUnitToModule(self: *Codegen, cu_attr: mlir.Attribute) !void {
     }
 }
 
+/// Build the `llvm.disubprogram` attribute for `f_id` and cache it for reused emissions.
+/// `loc` represents the initial location, and `params` describe the signature in `t`.
 pub fn ensureDebugSubprogram(
     self: *Codegen,
     f_id: tir.FuncId,
@@ -174,6 +193,7 @@ pub fn ensureDebugSubprogram(
     return self.di_subprograms.getPtr(f_id).?;
 }
 
+/// Set the LLVM target triple/data layout attributes emitted via MLIR.
 pub fn attachTargetInfo(self: *Codegen) !void {
     const triple = self.strAttr("x86_64-unknown-linux-gnu");
     const dl = self.strAttr("e-m:e-p270:32:32-p271:32:32-p272:64:64-i64:64-i128:128-f80:128-n8:16:32:64-S128");
@@ -182,6 +202,7 @@ pub fn attachTargetInfo(self: *Codegen) !void {
     mod_op.setDiscardableAttributeByName(mlir.StringRef.from("llvm.data_layout"), dl);
 }
 
+/// Format a module-flag attribute for the given `behavior`, `key`, and `value_repr`.
 fn moduleFlagAttr(self: *Codegen, behavior: []const u8, key: []const u8, value_repr: []const u8) !mlir.Attribute {
     const text = try std.fmt.allocPrint(
         self.gpa,
@@ -194,6 +215,7 @@ fn moduleFlagAttr(self: *Codegen, behavior: []const u8, key: []const u8, value_r
     return attr;
 }
 
+/// Check whether `attr` already encodes a module flag with the given `key`.
 fn moduleFlagMatchesKey(self: *Codegen, attr: mlir.Attribute, key: []const u8) !bool {
     const text = try self.ownedAttributeText(attr);
     defer self.gpa.free(text);
@@ -201,7 +223,7 @@ fn moduleFlagMatchesKey(self: *Codegen, attr: mlir.Attribute, key: []const u8) !
     defer self.gpa.free(needle);
     return std.mem.indexOf(u8, text, needle) != null;
 }
-
+/// Append a new module flag entry if a flag with `key` is not already present.
 fn appendModuleFlag(
     self: *Codegen,
     flags: *std.ArrayList(mlir.Attribute),
@@ -216,6 +238,7 @@ fn appendModuleFlag(
     try flags.append(self.gpa, attr);
 }
 
+/// Configure module-level debug attributes (flags, identifiers) once per module.
 pub fn ensureDebugModuleAttrs(self: *Codegen) !void {
     if (!codegen.enable_debug_info) return;
     if (self.debug_module_attrs_initialized) return;
@@ -252,6 +275,7 @@ pub fn ensureDebugModuleAttrs(self: *Codegen) !void {
     self.debug_module_attrs_initialized = true;
 }
 
+/// Lazily fetch the MLIR attribute that represents a null debug type.
 fn ensureDINullTypeAttr(self: *Codegen) !mlir.Attribute {
     if (!self.di_null_type_attr.isNull()) return self.di_null_type_attr;
     const attr = mlir.LLVMAttributes.getLLVMDINullTypeAttr(self.mlir_ctx);
@@ -260,6 +284,7 @@ fn ensureDINullTypeAttr(self: *Codegen) !mlir.Attribute {
     return attr;
 }
 
+/// Map SR `ty` to an LLVM DI attribute, caching the result after creation.
 fn ensureDIType(self: *Codegen, ty: types.TypeId) !mlir.Attribute {
     if (self.di_type_cache.get(ty)) |cached| return cached;
 
@@ -330,6 +355,7 @@ fn ensureDIType(self: *Codegen, ty: types.TypeId) !mlir.Attribute {
     return attr;
 }
 
+/// Helper to build a signed integer debug descriptor for `bits` width.
 fn diSignedIntType(self: *Codegen, name: []const u8, bits: u64) mlir.Attribute {
     return mlir.LLVMAttributes.getLLVMDIBasicTypeAttr(
         self.mlir_ctx,
@@ -340,6 +366,7 @@ fn diSignedIntType(self: *Codegen, name: []const u8, bits: u64) mlir.Attribute {
     );
 }
 
+/// Helper to build an unsigned integer debug descriptor for `bits` width.
 fn diUnsignedIntType(self: *Codegen, name: []const u8, bits: u64) mlir.Attribute {
     return mlir.LLVMAttributes.getLLVMDIBasicTypeAttr(
         self.mlir_ctx,
@@ -350,6 +377,7 @@ fn diUnsignedIntType(self: *Codegen, name: []const u8, bits: u64) mlir.Attribute
     );
 }
 
+/// Construct the DI subroutine type attribute for a function given its return/param types.
 fn buildDISubroutineTypeAttr(
     self: *Codegen,
     ret_ty: types.TypeId,
@@ -379,6 +407,7 @@ fn buildDISubroutineTypeAttr(
     return attr;
 }
 
+/// Get (caching) an empty DI expression used for fixed locations.
 fn ensureEmptyDIExpression(self: *Codegen) !mlir.Attribute {
     if (!self.di_empty_expr_attr.isNull()) return self.di_empty_expr_attr;
     const attr = mlir.LLVMAttributes.getLLVMDIExpressionAttr(self.mlir_ctx, &[_]mlir.Attribute{});
@@ -387,6 +416,7 @@ fn ensureEmptyDIExpression(self: *Codegen) !mlir.Attribute {
     return attr;
 }
 
+/// Emit `llvm.dbg.value` intrinsics for each named parameter of `f_id`.
 pub fn emitParameterDebugInfo(
     self: *Codegen,
     f_id: tir.FuncId,

@@ -8,34 +8,55 @@ const mlir = @import("mlir_bindings.zig");
 
 const Builder = tir.Builder;
 
+/// External hooks needed when lowering MLIR fragments.
 pub const Hooks = struct {
+    /// Host-provided context pointer forwarded to every callback.
     host: *anyopaque,
+    /// Callback that lowers expressions inside MLIR fragments.
     lowerExprValue: *const fn (*anyopaque, *ast.Ast, *anyopaque, *Builder.FunctionFrame, *Builder.BlockFrame, ast.ExprId, ?types.TypeId) anyerror!tir.ValueId,
+    /// Callback used to evaluate embedded comptime expressions inside MLIR.
     evalComptimeExpr: *const fn (*anyopaque, *ast.Ast, *anyopaque, *Builder.FunctionFrame, *Builder.BlockFrame, ast.ExprId, types.TypeId) anyerror!comp.ComptimeValue,
+    /// Callback that coerces MLIR result values into expected types.
     emitCoerce: *const fn (*anyopaque, *Builder.BlockFrame, tir.ValueId, types.TypeId, types.TypeId, tir.OptLocId) anyerror!tir.ValueId,
+    /// Callback returning the current type of an AST expression.
     getExprType: *const fn (*anyopaque, *ast.Ast, ast.ExprId) ?types.TypeId,
+    /// Callback that fetches the declared type of a declaration.
     getDeclType: *const fn (*anyopaque, *ast.Ast, ast.DeclId) ?types.TypeId,
+    /// Indicates whether a type maps to the wildcard `Any` placeholder.
     isAny: *const fn (*anyopaque, types.TypeId) bool,
+    /// Lookup a previously bound comptime value for a monomorph parameter.
     lookupMonomorphValue: *const fn (*anyopaque, ast.StrId) anyerror!?comp.ComptimeValue,
+    /// Lookup a previously bound type for a monomorph parameter.
     lookupMonomorphType: *const fn (*anyopaque, ast.StrId) ?types.TypeId,
+    /// Create a fresh environment used by MLIR lowering hooks.
     createEnv: *const fn (*anyopaque) anyerror!*anyopaque,
+    /// Destroy an environment that was created earlier.
     destroyEnv: *const fn (*anyopaque, *anyopaque) void,
 };
 
+/// Wrapper managing MLIR context and lowering helpers.
 pub const LowerMlir = struct {
+    /// Allocator used for temporary structures.
     gpa: std.mem.Allocator,
+    /// Compiler context that owns the type store.
     context: *compile.Context,
-    state: State = .{},
+    /// Tracks whether the MLIR context has been initialized.
+    state: State = {},
 
+    /// Tracks the lifecycle of the lazily-created MLIR context handle.
     const State = struct {
+        /// Indicates whether the MLIR context has already been created.
         initialized: bool = false,
+        /// Cached MLIR context handle.
         ctx: mlir.Context = undefined,
     };
 
+    /// Initialize a `LowerMlir` handle with the provided allocator and compiler context.
     pub fn init(gpa: std.mem.Allocator, context: *compile.Context) LowerMlir {
         return .{ .gpa = gpa, .context = context };
     }
 
+    /// Destroy any owned MLIR state if it was created.
     pub fn deinit(self: *LowerMlir) void {
         if (self.state.initialized) {
             self.state.ctx.destroy();
@@ -43,6 +64,7 @@ pub const LowerMlir = struct {
         }
     }
 
+    /// Lazily create the MLIR context and return it.
     pub fn ensureContext(self: *LowerMlir) mlir.Context {
         if (!self.state.initialized) {
             self.state.ctx = compile.initMLIR(self.gpa);
@@ -51,6 +73,7 @@ pub const LowerMlir = struct {
         return self.state.ctx;
     }
 
+    /// Emit a global initialization function for embedded MLIR fragments collected from `a`.
     pub fn emitGlobalInit(self: *LowerMlir, hooks: Hooks, a: *ast.Ast, b: *Builder) !void {
         var global_mlir_decls = std.ArrayList(ast.DeclId){};
         defer global_mlir_decls.deinit(self.gpa);
@@ -84,6 +107,7 @@ pub const LowerMlir = struct {
         try b.endFunction(f);
     }
 
+    /// Lower the MLIR block expression `id`, handling slices and splices using `hooks`.
     pub fn lowerBlock(
         self: *LowerMlir,
         hooks: Hooks,
@@ -160,6 +184,7 @@ pub const LowerMlir = struct {
         return result_id;
     }
 
+    /// Resolve the value that should be spliced into MLIR for `piece_id`.
     fn resolveSpliceValue(
         self: *LowerMlir,
         hooks: Hooks,

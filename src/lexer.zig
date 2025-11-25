@@ -1,19 +1,28 @@
 const std = @import("std");
 const cst = @import("cst.zig"); // Import cst to get FileId
 
+/// Lexed token plus its location span.
 pub const Token = struct {
+    /// Category identifying the kind of lexeme represented by the token.
     tag: Tag,
+    /// Source location describing where the token occurred.
     loc: Loc,
 
+    /// Precise source span covering a lexeme.
     pub const Loc = struct {
+        /// File identifier from the CST source manager.
         file_id: cst.FileId,
+        /// Start byte index of the token.
         start: usize,
+        /// End byte index of the token (exclusive).
         end: usize,
 
+        /// Create a location span covering `[start,end)` in `file_id`.
         pub fn init(file_id: cst.FileId, start: usize, end: usize) Loc {
             return .{ .file_id = file_id, .start = start, .end = end };
         }
 
+        /// Merge `self` with `other`, extending the span but keeping the file constant.
         pub fn merge(self: Loc, other: Loc) Loc {
             std.debug.assert(self.file_id == other.file_id); // Spans must be from the same file to be merged.
             return .{
@@ -81,10 +90,12 @@ pub const Token = struct {
         .{ "while", .keyword_while },
     });
 
+    /// Return the keyword tag for `bytes`, if it matches a reserved word.
     pub fn getKeyword(bytes: []const u8) ?Tag {
         return keywords.get(bytes);
     }
 
+    /// Kinds of tokens recognized by the lexer.
     pub const Tag = enum {
         // control
         invalid,
@@ -229,6 +240,7 @@ pub const Token = struct {
         keyword_unreachable,
         keyword_variant,
         keyword_while,
+        /// Return the literal representation of printable tokens or `null` otherwise.
         pub fn lexeme(tag: Tag) ?[]const u8 {
             return switch (tag) {
                 .invalid,
@@ -369,6 +381,7 @@ pub const Token = struct {
             };
         }
 
+        /// Provide a human-readable description for diagnostics when the lexeme is missing.
         pub fn symbol(tag: Tag) []const u8 {
             return tag.lexeme() orelse switch (tag) {
                 .invalid => "invalid token",
@@ -388,15 +401,24 @@ pub const Token = struct {
     };
 };
 
+/// Stateful tokenizer that emits tokens while scanning source bytes.
 pub const Tokenizer = struct {
+    /// Byte slice currently being scanned.
     buffer: [:0]const u8,
+    /// Offset into `buffer` of the next inspected byte.
     index: usize,
+    /// Mode controlling semicolon insertion and other lookahead rules.
     mode: Mode = .normal,
+    /// Most recently produced token kind.
     last_tag: Token.Tag = .invalid,
+    /// Whether we are inside an `asm` block where semicolons behave differently.
     asm_pending: bool = false,
+    /// Hash seed used for raw string delimiters.
     raw_string_hashes: usize = 0,
+    /// File identifier associated with the current buffer.
     file_id: u32 = 0,
 
+    /// Initialize the tokenizer over `source`, returning the initial state for `file_id`.
     pub fn init(source: [:0]const u8, file_id: u32, mode: Mode) Tokenizer {
         return .{
             .buffer = source,
@@ -406,11 +428,13 @@ pub const Tokenizer = struct {
         };
     }
 
+    /// Modes that change how tokens are emitted (e.g., semicolon handling).
     const Mode = enum {
         normal,
         semi,
     };
 
+    /// Finite-state machine states used while scanning the next token.
     const State = enum {
         start,
         plus,
@@ -466,18 +490,22 @@ pub const Tokenizer = struct {
         invalid,
     };
 
+    /// Return the current byte under the tokenizer cursor.
     inline fn curr(self: *Tokenizer) u8 {
         return self.buffer[self.index];
     }
 
+    /// Advance the tokenizer past the current byte.
     inline fn advance(self: *Tokenizer) void {
         self.index += 1;
     }
 
+    /// Determine if an auto-inserted semicolon should be emitted.
     inline fn shouldInsertSemi(self: *Tokenizer) bool {
         return asiEnd(self.last_tag);
     }
 
+    /// Return true when `tag` qualifies as an automatic semicolon terminator.
     inline fn asiEnd(tag: Token.Tag) bool {
         return switch (tag) {
             // identifiers
@@ -522,6 +550,7 @@ pub const Tokenizer = struct {
         };
     }
 
+    /// Advance and return the next token, handling comments/strings/semicolons.
     pub fn next(self: *Tokenizer) Token {
         var result = Token{
             .tag = .invalid,

@@ -6,7 +6,7 @@ const tir = @import("tir.zig");
 const types = @import("types.zig");
 const std = @import("std");
 
-// arith.cmpi predicates (MLIR enum values)
+/// MLIR `arith.cmpi` predicates used by integer-based cast helpers.
 const CMP_EQ: i64 = 0;
 const CMP_NE: i64 = 1;
 const CMP_SLT: i64 = 2;
@@ -14,18 +14,22 @@ const CMP_SGT: i64 = 4;
 const CMP_ULT: i64 = 6;
 const CMP_UGT: i64 = 8;
 
-// arith.cmpf predicates (MLIR enum values)
+/// MLIR `arith.cmpf` predicates used when comparing floating-point inputs.
 const F_CMP_OEQ: i64 = 1;
 const F_CMP_OGT: i64 = 2;
 const F_CMP_OLT: i64 = 4;
 const F_CMP_UNO: i64 = 14;
 
+/// Get the bitwidth of `t` when it represents an integer or floating-point type.
+/// Returns `error.NotIntOrFloat` if `t` is neither.
 pub fn intOrFloatWidth(t: mlir.Type) !u32 {
     if (t.isAInteger()) return t.getIntegerBitwidth();
     if (t.isAFloat()) return t.getFloatBitwidth();
     return error.NotIntOrFloat;
 }
 
+/// Adapter called when lowering individual aggregate elements during casts.
+/// It forwards the parameters into `emitCastNormal` so aggregates behave consistently.
 fn emitCastAggregateElement(
     self: *Codegen,
     dst_sr: types.TypeId,
@@ -37,6 +41,8 @@ fn emitCastAggregateElement(
 }
 
 // --- Saturating helpers ---
+/// Convert `v` into `to_ty` while clamping values that lie outside the integer domain.
+/// `from_signed`/`to_signed` describe the signedness of the source and destination types.
 pub fn saturateIntToInt(self: *Codegen, v: mlir.Value, from_signed: bool, to_ty: mlir.Type, to_signed: bool) mlir.Value {
     // Compare in source domain: extend to_ty limits up to source type
     const lim = intMinMax(self, to_ty, to_signed);
@@ -73,6 +79,8 @@ pub fn saturateIntToInt(self: *Codegen, v: mlir.Value, from_signed: bool, to_ty:
     return castIntToInt(self, sel_hi.getResult(0), from_ty, to_ty, from_signed);
 }
 
+/// Clamp float `v` to the integer bounds of `to_ty`, treating NaN as a safe zero value.
+/// `signed_to` describes whether the destination integer is signed.
 pub fn saturateFloatToInt(self: *Codegen, v: mlir.Value, to_ty: mlir.Type, signed_to: bool) mlir.Value {
     const lim = intMinMax(self, to_ty, signed_to);
     const ft = v.getType();
@@ -110,6 +118,8 @@ pub fn saturateFloatToInt(self: *Codegen, v: mlir.Value, to_ty: mlir.Type, signe
 }
 
 // --- Checked helpers ---
+/// Perform an integer-to-integer cast and raise if the value cannot round-trip to `from_ty`.
+/// `from_signed` indicates if the original value is signed so we choose the correct extension.
 pub fn checkedIntToInt(self: *Codegen, v: mlir.Value, from_ty: mlir.Type, to_ty: mlir.Type, from_signed: bool) mlir.Value {
     // Convert normally (trunc/extend)
     const narrowed = self.castIntToInt(v, from_ty, to_ty, from_signed);
@@ -128,6 +138,8 @@ pub fn checkedIntToInt(self: *Codegen, v: mlir.Value, from_ty: mlir.Type, to_ty:
     return narrowed;
 }
 
+/// Convert a float to `to_ty` while asserting that the value is finite and within the integer range.
+/// `signed_to` controls whether signed or unsigned integer semantics apply.
 pub fn checkedFloatToInt(self: *Codegen, v: mlir.Value, to_ty: mlir.Type, signed_to: bool) mlir.Value {
     const lim = self.intMinMax(to_ty, signed_to);
     const ft = v.getType();
@@ -161,6 +173,8 @@ pub fn checkedFloatToInt(self: *Codegen, v: mlir.Value, to_ty: mlir.Type, signed
 }
 
 // --- The normalized "normal cast" (includes Complex + slice→int quirk) ---
+/// Emit the “normal” cast of `from_v` from `src_sr` to `dst_sr`, covering aggregates, pointers, Complex, etc.
+/// The caller must supply the destination LLVM `to_ty` so that special-case conversions can be handled.
 pub fn emitCastNormal(self: *Codegen, dst_sr: types.TypeId, to_ty: mlir.Type, from_v: mlir.Value, src_sr: types.TypeId) !mlir.Value {
     var from_ty = from_v.getType();
 
@@ -330,6 +344,8 @@ pub fn emitCastNormal(self: *Codegen, dst_sr: types.TypeId, to_ty: mlir.Type, fr
 }
 
 // --- Public dispatcher for all cast kinds ---
+/// Dispatch the appropriate cast strategy for `kind` (normal, wrap, saturate, checked) between SR types.
+/// `dst_sr` and `src_sr` describe the source/destination semantics needed for MLIR emission.
 pub fn emitCast(self: *Codegen, kind: tir.OpKind, dst_sr: types.TypeId, src_sr: types.TypeId, from_v: mlir.Value) !mlir.Value {
     const to_ty = try self.llvmTypeOf(dst_sr);
     const from_ty = from_v.getType();
@@ -455,23 +471,27 @@ pub fn emitCast(self: *Codegen, kind: tir.OpKind, dst_sr: types.TypeId, src_sr: 
 
 // --- Scalar cast helpers ---
 
+/// Bitcast a pointer value `v` into another pointer type `to_ty`.
 fn castPtrToPtr(self: *Codegen, v: mlir.Value, to_ty: mlir.Type) mlir.Value {
     // Use LLVM dialect bitcast for pointer-to-pointer casts
     const op = OpBuilder.init("llvm.bitcast", self.loc).builder()
         .operands(&.{v}).results(&.{to_ty}).build();
     return self.appendIfHasResult(op);
 }
+/// Convert a pointer value into an integer of `to_ty`.
 fn castPtrToInt(self: *Codegen, v: mlir.Value, to_ty: mlir.Type) mlir.Value {
     const op = OpBuilder.init("llvm.ptrtoint", self.loc).builder()
         .operands(&.{v}).results(&.{to_ty}).build();
     return self.appendIfHasResult(op);
 }
+/// Convert an integer value into a pointer type `to_ty`.
 fn castIntToPtr(self: *Codegen, v: mlir.Value, to_ty: mlir.Type) mlir.Value {
     const op = OpBuilder.init("llvm.inttoptr", self.loc).builder()
         .operands(&.{v}).results(&.{to_ty}).build();
     return self.appendIfHasResult(op);
 }
 
+/// Emit integer truncation/extension from `from_ty` to `to_ty`, honoring `signed_from`.
 fn castIntToInt(self: *Codegen, from_v: mlir.Value, from_ty: mlir.Type, to_ty: mlir.Type, signed_from: bool) mlir.Value {
     const fw = intOrFloatWidth(from_ty) catch 0;
     const tw = intOrFloatWidth(to_ty) catch 0;
@@ -487,18 +507,21 @@ fn castIntToInt(self: *Codegen, from_v: mlir.Value, from_ty: mlir.Type, to_ty: m
     return self.appendIfHasResult(op);
 }
 
+/// Convert integer `v` to the floating-point `to_ty`, using signed/unsigned conversion.
 fn castIntToFloat(self: *Codegen, v: mlir.Value, to_ty: mlir.Type, signed_from: bool) mlir.Value {
     const op = OpBuilder.init(if (signed_from) "arith.sitofp" else "arith.uitofp", self.loc).builder()
         .operands(&.{v}).results(&.{to_ty}).build();
     return self.appendIfHasResult(op);
 }
 
+/// Convert floating-point `v` into integer `to_ty`, choosing signed or unsigned semantics.
 fn castFloatToInt(self: *Codegen, v: mlir.Value, to_ty: mlir.Type, signed_to: bool) mlir.Value {
     const op = OpBuilder.init(if (signed_to) "arith.fptosi" else "arith.fptoui", self.loc).builder()
         .operands(&.{v}).results(&.{to_ty}).build();
     return self.appendIfHasResult(op);
 }
 
+/// Adjust the floating-point `v` from `from_ty` to `to_ty`, using truncation or extension.
 fn resizeFloat(self: *Codegen, v: mlir.Value, from_ty: mlir.Type, to_ty: mlir.Type) mlir.Value {
     const fw = intOrFloatWidth(from_ty) catch 0;
     const tw = intOrFloatWidth(to_ty) catch 0;
@@ -510,6 +533,8 @@ fn resizeFloat(self: *Codegen, v: mlir.Value, from_ty: mlir.Type, to_ty: mlir.Ty
 }
 
 // --- Integer limits as MLIR constants (destination type) ---
+/// Build MLIR constants holding the min/max bounds for `to_ty` given `signed_to`.
+/// The returned values are ready to seed comparison/select operations.
 fn intMinMax(self: *Codegen, to_ty: mlir.Type, signed_to: bool) struct { min: mlir.Value, max: mlir.Value } {
     const w: u32 = intOrFloatWidth(to_ty) catch 1;
     if (signed_to) {
