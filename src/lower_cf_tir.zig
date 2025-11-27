@@ -169,15 +169,13 @@ fn runDefersForLoopExit(
 }
 
 /// Lookup the active loop context that matches `opt_label`, if any.
-fn loopCtxForLabel(_: *LowerTir, ctx: *LowerTir.LowerContext, opt_label: ast.OptStrId) ?*LoopCtx {
+fn loopCtxForLabel(_: *LowerTir, ctx: *LowerTir.LowerContext, want: ast.OptStrId) ?*LoopCtx {
     if (ctx.loop_stack.items.len == 0) return null;
-    const want: ?u32 = if (!opt_label.isNone()) opt_label.unwrap().toRaw() else null;
     var i: isize = @as(isize, @intCast(ctx.loop_stack.items.len)) - 1;
     while (i >= 0) : (i -= 1) {
-        const idx: usize = @intCast(i);
-        const lc = &ctx.loop_stack.items[idx];
-        if (want == null) return lc;
-        if (!lc.label.isNone() and lc.label.unwrap().toRaw() == want.?) return lc;
+        const lc = &ctx.loop_stack.items[@intCast(i)];
+        if (want.isNone()) return lc;
+        if (!lc.label.isNone() and lc.label.unwrap().eq(want.unwrap())) return lc;
     }
     return null;
 }
@@ -363,13 +361,11 @@ pub fn matchPattern(
     scrut_ty: types.TypeId,
     loc: tir.OptLocId,
 ) !tir.ValueId {
-    const k = a.pats.index.kinds.items[pid.toRaw()];
-    switch (k) {
+    switch (a.kind(pid)) {
         .Wildcard => return blk.builder.tirValue(.ConstBool, blk, self.context.type_store.tBool(), loc, .{ .value = true }),
         .Literal => {
             const pr = a.pats.get(.Literal, pid);
-            const expr_kind = a.exprs.index.kinds.items[pr.expr.toRaw()];
-            if (expr_kind == .Range) {
+            if (a.kind(pr.expr) == .Range) {
                 const range = a.exprs.get(.Range, pr.expr);
                 return matchRangeBounds(
                     self,
@@ -578,7 +574,7 @@ pub fn lowerOptionalUnwrap(
     const row = a.exprs.get(.OptionalUnwrap, id);
     const elem_ty = self.getExprType(ctx, a, id);
     const opt_ty = self.getExprType(ctx, a, row.expr);
-    if (self.context.type_store.index.kinds.items[opt_ty.toRaw()] != .Optional)
+    if (self.context.type_store.getKind(opt_ty) != .Optional)
         return error.LoweringBug;
     const opt_info = self.context.type_store.get(.Optional, opt_ty);
     const loc = LowerTir.optLoc(a, id);
@@ -646,7 +642,7 @@ pub fn lowerErrUnwrap(
     // Lower the error-union expression
     const es_val = try self.lowerExpr(ctx, a, env, f, blk, row.expr, null, .rvalue);
     const es_ty = self.getExprType(ctx, a, row.expr);
-    if (self.context.type_store.index.kinds.items[es_ty.toRaw()] != .ErrorSet)
+    if (self.context.type_store.getKind(es_ty) != .ErrorSet)
         return error.LoweringBug;
     const es = self.context.type_store.get(.ErrorSet, es_ty);
 
@@ -690,7 +686,7 @@ pub fn lowerErrUnwrap(
     const frow = f.builder.t.funcs.Function.get(f.id);
     const expect = frow.result;
     var ret_val = es_val;
-    if (!self.isVoid(expect) and expect.toRaw() != es_ty.toRaw()) {
+    if (!self.isVoid(expect) and !expect.eq(es_ty)) {
         ret_val = self.emitCoerce(&else_blk, es_val, es_ty, expect, loc);
     }
     try f.builder.setReturnVal(&else_blk, ret_val, loc);
@@ -707,10 +703,9 @@ fn isAllIntMatch(_: *LowerTir, a: *ast.Ast, arms_slice: []const ast.MatchArmId, 
     for (arms_slice, 0..) |arm_id, i| {
         const arm = a.exprs.MatchArm.get(arm_id);
         if (!arm.guard.isNone()) return false;
-        const pk = a.pats.index.kinds.items[arm.pattern.toRaw()];
-        if (pk != .Literal) return false;
+        if (a.kind(arm.pattern) != .Literal) return false;
         const plit = a.pats.get(.Literal, arm.pattern);
-        if (a.exprs.index.kinds.items[plit.expr.toRaw()] != .Literal) return false;
+        if (a.kind(plit.expr) != .Literal) return false;
         const lit = a.exprs.get(.Literal, plit.expr);
         if (lit.kind != .int) return false;
         const info = switch (lit.data) {
@@ -822,7 +817,7 @@ pub fn lowerMatch(
             const ok = try matchPattern(self, ctx, a, env, f, &test_blk, arm.pattern, scrut, arm_scrut_ty, loc);
 
             // if last arm fails, feed an undef to the join
-            const else_args = if (next_blk.id.toRaw() == join_blk.id.toRaw()) blkargs: {
+            const else_args = if (next_blk.id.eq(join_blk.id)) blkargs: {
                 const uv = self.safeUndef(&test_blk, res_ty, loc);
                 break :blkargs &.{uv};
             } else &.{};
@@ -1127,8 +1122,7 @@ fn getIterableLen(
     idx_ty: types.TypeId,
     loc: tir.OptLocId,
 ) !tir.ValueId {
-    const iter_ty_kind = self.context.type_store.index.kinds.items[iter_ty.toRaw()];
-    return switch (iter_ty_kind) {
+    return switch (self.context.type_store.getKind(iter_ty)) {
         .Array => blk: {
             const at = self.context.type_store.get(.Array, iter_ty);
             break :blk blk.builder.tirValue(.ConstInt, blk, idx_ty, loc, .{ .value = @as(u64, @intCast(at.len)) });
@@ -1181,7 +1175,7 @@ pub fn lowerFor(
             .continue_info = .none,
             .defer_len_at_entry = @intCast(env.defers.items.len),
         });
-        if (a.exprs.index.kinds.items[row.iterable.toRaw()] == .Range) {
+        if (a.kind(row.iterable) == .Range) {
             // for i in start..end
             const rg = a.exprs.get(.Range, row.iterable);
             if (rg.start.isNone() or rg.end.isNone()) return error.LoweringBug;
@@ -1256,7 +1250,7 @@ pub fn lowerFor(
             // Determine element type
             var elem_ty = self.context.type_store.tAny();
             const it_ty = self.getExprType(ctx, a, row.iterable);
-            const ik = self.context.type_store.index.kinds.items[it_ty.toRaw()];
+            const ik = self.context.type_store.getKind(it_ty);
             if (ik == .Array)
                 elem_ty = self.context.type_store.get(.Array, it_ty).elem
             else if (ik == .Slice)
@@ -1304,7 +1298,7 @@ pub fn lowerFor(
             .defer_len_at_entry = @intCast(env.defers.items.len),
         });
 
-        if (a.exprs.index.kinds.items[row.iterable.toRaw()] == .Range) {
+        if (a.kind(row.iterable) == .Range) {
             const rg = a.exprs.get(.Range, row.iterable);
             if (rg.start.isNone() or rg.end.isNone()) return error.LoweringBug;
 
@@ -1376,7 +1370,7 @@ pub fn lowerFor(
 
             var elem_ty = self.context.type_store.tAny();
             const it_ty = self.getExprType(ctx, a, row.iterable);
-            const ik = self.context.type_store.index.kinds.items[it_ty.toRaw()];
+            const ik = self.context.type_store.getKind(it_ty);
             if (ik == .Array)
                 elem_ty = self.context.type_store.get(.Array, it_ty).elem
             else if (ik == .Slice)
@@ -1416,9 +1410,8 @@ pub fn bindPattern(
     value: tir.ValueId,
     vty: types.TypeId,
 ) !void {
-    const k = a.pats.index.kinds.items[pid.toRaw()];
     const loc = LowerTir.optLoc(a, pid);
-    switch (k) {
+    switch (a.kind(pid)) {
         .Binding => {
             const nm = a.pats.get(.Binding, pid).name;
             try env.bind(self.gpa, a, nm, .{ .value = value, .ty = vty, .is_slot = false });

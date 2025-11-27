@@ -401,8 +401,7 @@ fn lookupExprTypeOverride(_: *const LowerTir, ctx: *LowerContext, expr: ast.Expr
 
 /// Turn a literal expression into a `ConstInit` when it matches the desired `ty`.
 fn constInitFromLiteral(self: *LowerTir, a: *ast.Ast, expr: ast.ExprId, ty: types.TypeId) ?tir.ConstInit {
-    const kind = a.exprs.index.kinds.items[expr.toRaw()];
-    if (kind != .Literal) return null;
+    if (a.kind(expr) != .Literal) return null;
     const lit = a.exprs.get(.Literal, expr);
 
     const ty_kind = self.context.type_store.getKind(ty);
@@ -553,8 +552,7 @@ fn constInitFromExpr(self: *LowerTir, ctx: *LowerContext, a: *ast.Ast, expr_id: 
         }
     }
 
-    const kind = a.exprs.index.kinds.items[expr_id.toRaw()];
-    if (kind == .StructLit) {
+    if (a.kind(expr_id) == .StructLit) {
         const struct_lit = a.exprs.get(.StructLit, expr_id);
         const struct_ty = self.context.type_store.get(.Struct, ty);
         const field_decls = self.context.type_store.field_pool.slice(struct_ty.fields);
@@ -589,8 +587,7 @@ fn lowerGlobalMlir(self: *LowerTir, ctx: *LowerContext, a: *ast.Ast, b: *Builder
     const decls = a.exprs.decl_pool.slice(a.unit.decls);
     for (decls) |did| {
         const d = a.exprs.Decl.get(did);
-        const kind = a.exprs.index.kinds.items[d.value.toRaw()];
-        if (kind == .MlirBlock and d.pattern.isNone()) {
+        if (a.kind(d.value) == .MlirBlock and d.pattern.isNone()) {
             try global_mlir_decls.append(self.gpa, did);
         }
     }
@@ -751,7 +748,7 @@ const LowerMode = enum {
 
 /// Determine whether `ty` represents a void/`()` value.
 pub fn isVoid(self: *const LowerTir, ty: types.TypeId) bool {
-    return self.context.type_store.index.kinds.items[ty.toRaw()] == .Void;
+    return self.context.type_store.getKind(ty) == .Void;
 }
 
 /// Return the optional source location associated with `id` (expr/pattern/stmt), if any.
@@ -900,22 +897,22 @@ pub fn emitCoerce(
 ) tir.ValueId {
     if (got.eq(want)) return v;
 
+    const ts = self.context.type_store;
     // Special-case: coercions between type handles (TypeType) are no-ops for lowering.
-    const got_k0 = self.context.type_store.index.kinds.items[got.toRaw()];
-    const want_k0 = self.context.type_store.index.kinds.items[want.toRaw()];
+    const got_k0 = ts.getKind(got);
+    const want_k0 = ts.getKind(want);
     if (got_k0 == .TypeType and want_k0 == .TypeType) return v;
 
-    const ts = self.context.type_store;
-    const gk = ts.index.kinds.items[got.toRaw()];
-    const wk = ts.index.kinds.items[want.toRaw()];
+    const gk = ts.getKind(got);
+    const wk = ts.getKind(want);
 
     switch (wk) {
         else => {},
         .ErrorSet => blk: {
             const es = ts.get(.ErrorSet, want);
-            const tag_value: u32, const field_index: u32 = if (got.toRaw() == es.value_ty.toRaw())
+            const tag_value: u32, const field_index: u32 = if (got.eq(es.value_ty))
                 .{ 0, 0 } // Ok(T)
-            else if (got.toRaw() == es.error_ty.toRaw())
+            else if (got.eq(es.error_ty))
                 .{ 1, 1 } // Err(E)
             else
                 break :blk; // (e.g., for anyerror -> !T).
@@ -1037,8 +1034,7 @@ fn tryLowerNamedFunction(
     }
 
     const decl = a.exprs.Decl.get(did);
-    const kind = a.exprs.index.kinds.items[decl.value.toRaw()];
-    if (kind != .FunctionLit) return;
+    if (a.kind(decl.value) != .FunctionLit) return;
 
     const fn_ty = self.getExprType(ctx, a, decl.value);
     if (self.context.type_store.getKind(fn_ty) != .Function) return;
@@ -1062,8 +1058,7 @@ fn tryLowerNamedFunction(
 
 /// Extract the binding name if `pid` is a simple identifier binding.
 fn bindingNameOfPattern(a: *ast.Ast, pid: ast.PatternId) ?StrId {
-    const k = a.pats.index.kinds.items[pid.toRaw()];
-    return switch (k) {
+    return switch (a.kind(pid)) {
         .Binding => a.pats.get(.Binding, pid).name,
         else => null,
     };
@@ -1076,8 +1071,7 @@ fn resolveSpecializedType(
     a: *ast.Ast,
     expr: ast.ExprId,
 ) ?types.TypeId {
-    const kind = a.exprs.index.kinds.items[expr.toRaw()];
-    switch (kind) {
+    switch (a.kind(expr)) {
         .Ident => {
             const name = a.exprs.get(.Ident, expr).name;
             for (bindings) |info| {
@@ -1191,7 +1185,7 @@ fn runtimeResultType(bindings: []const comp.BindingInfo) ?types.TypeId {
         if (info.kind == .runtime_param) {
             const ty = info.kind.runtime_param;
             if (candidate) |existing| {
-                if (existing.toRaw() != ty.toRaw()) return null;
+                if (!existing.eq(ty)) return null;
             } else {
                 candidate = ty;
             }
@@ -1203,8 +1197,7 @@ fn runtimeResultType(bindings: []const comp.BindingInfo) ?types.TypeId {
 /// Handle top-level declarations (globals/methods) by emitting lowered functions or globals.
 fn lowerTopDecl(self: *LowerTir, ctx: *LowerContext, a: *ast.Ast, b: *Builder, did: ast.DeclId) !void {
     const d = a.exprs.Decl.get(did);
-    const kind = a.exprs.index.kinds.items[d.value.toRaw()];
-
+    const kind = a.kind(d.value);
     if (kind == .MlirBlock and d.pattern.isNone()) {
         return; // handled by lowerGlobalMlir
     }
@@ -1284,7 +1277,7 @@ pub fn lowerFunction(
         c.specialized_ty
     else
         self.getExprType(lower_ctx, a, fun_eid);
-    if (self.context.type_store.index.kinds.items[fid.toRaw()] != .Function) return;
+    if (self.context.type_store.getKind(fid) != .Function) return;
     const fnty = self.context.type_store.get(.Function, fid);
 
     const fnr = a.exprs.get(.FunctionLit, fun_eid);
@@ -1381,7 +1374,7 @@ pub fn lowerExprAsStmtList(
     blk: *Builder.BlockFrame,
     id: ast.ExprId,
 ) !void {
-    if (a.exprs.index.kinds.items[id.toRaw()] == .Block) {
+    if (a.kind(id) == .Block) {
         const b = a.exprs.get(.Block, id);
         const stmts = a.stmts.stmt_pool.slice(b.items);
         const start: u32 = @intCast(env.defers.items.len);
@@ -1420,8 +1413,7 @@ fn lowerDecl(
         try self.destructureDeclFromExpr(ctx, a, env, f, blk, d.pattern.unwrap(), d.value, decl_ty, !d.flags.is_const);
     } else {
         if (!d.method_path.isNone()) {
-            const vk = a.exprs.index.kinds.items[d.value.toRaw()];
-            if (vk == .FunctionLit) return;
+            if (a.kind(d.value) == .FunctionLit) return;
         }
         // No pattern: just evaluate for side-effects.
         _ = try self.lowerExpr(ctx, a, env, f, blk, d.value, decl_ty, .rvalue);
@@ -1463,7 +1455,7 @@ fn lowerReturnCommon(
         const value_loc = optLoc(a, value_expr);
         const v = try self.lowerExpr(ctx, a, env, f, blk, value_expr, expect, .rvalue);
 
-        const expect_kind = self.context.type_store.index.kinds.items[expect.toRaw()];
+        const expect_kind = self.context.type_store.getKind(expect);
         const has_err_defers = expect_kind == .ErrorSet and cf.hasErrDefersFrom(self, env, defer_mark);
 
         if (has_err_defers) {
@@ -1514,7 +1506,7 @@ fn lowerAssign(
     const as = a.stmts.get(.Assign, sid);
     const stmt_loc = optLoc(a, sid);
     // Handle discard assignment: `_ = rhs` should only evaluate RHS for side-effects.
-    if (a.exprs.index.kinds.items[as.left.toRaw()] == .Ident) {
+    if (a.kind(as.left) == .Ident) {
         const ident = a.exprs.get(.Ident, as.left);
         if (std.mem.eql(u8, a.exprs.strs.get(ident.name), "_")) {
             // Do not attempt to read a type for the LHS or perform a store.
@@ -1524,7 +1516,7 @@ fn lowerAssign(
     }
     const rty = self.getExprType(ctx, a, as.left);
 
-    if (a.exprs.index.kinds.items[as.left.toRaw()] == .Ident) {
+    if (a.kind(as.left) == .Ident) {
         const ident = a.exprs.get(.Ident, as.left);
         if (env.lookup(ident.name)) |bnd| {
             if (!bnd.is_slot) {
@@ -1550,8 +1542,7 @@ fn lowerStmt(
     blk: *Builder.BlockFrame,
     sid: ast.StmtId,
 ) !void {
-    const k = a.stmts.index.kinds.items[sid.toRaw()];
-    switch (k) {
+    switch (a.kind(sid)) {
         .Expr => {
             const e = a.stmts.get(.Expr, sid).expr;
             _ = try self.lowerExpr(ctx, a, env, f, blk, e, null, .rvalue);
@@ -1655,7 +1646,7 @@ fn methodKeyForDecl(self: *LowerTir, decl_id: ast.DeclId) ?MethodLowerInfo {
     var it = self.context.type_store.method_table.iterator();
     while (it.next()) |entry| {
         const method = entry.value_ptr.*;
-        if (method.decl_id.toRaw() == decl_id.toRaw()) {
+        if (method.decl_id.eq(decl_id)) {
             return MethodLowerInfo{
                 .key = methodLowerKey(method.owner_type, method.method_name),
                 .owner_type = method.owner_type,
@@ -1683,7 +1674,7 @@ fn prepareMethodCall(
         method_decl_id.* = null;
         method_binding_out.* = binding;
         if (binding.requires_implicit_receiver) {
-            std.debug.assert(a.exprs.index.kinds.items[row.callee.toRaw()] == .FieldAccess);
+            std.debug.assert(a.kind(row.callee) == .FieldAccess);
             const field_expr = a.exprs.get(.FieldAccess, row.callee);
             if (method_arg_buf.*.len != 0) {
                 self.gpa.free(method_arg_buf.*);
@@ -1707,7 +1698,7 @@ fn prepareMethodCall(
     callee_name.* = self.context.type_store.strs.get(callee.name);
 
     if (binding.requires_implicit_receiver) {
-        std.debug.assert(a.exprs.index.kinds.items[row.callee.toRaw()] == .FieldAccess);
+        std.debug.assert(a.kind(row.callee) == .FieldAccess);
         const field_expr = a.exprs.get(.FieldAccess, row.callee);
         if (method_arg_buf.*.len != 0) {
             self.gpa.free(method_arg_buf.*);
@@ -1728,11 +1719,11 @@ fn synthesizeMethodBinding(
     env: *cf.Env,
     field_expr_id: ast.ExprId,
 ) !?types.MethodBinding {
-    if (a.exprs.index.kinds.items[field_expr_id.toRaw()] != .FieldAccess) return null;
+    if (a.kind(field_expr_id) != .FieldAccess) return null;
 
     const field_expr = a.exprs.get(.FieldAccess, field_expr_id);
     if (a.type_info.expr_types.items[field_expr.parent.toRaw()] == null) {
-        const cctx = self.chk.checker_ctx.items[a.file_id];
+        const cctx = &self.chk.checker_ctx.items[a.file_id];
         _ = try self.chk.checkExpr(cctx, a, field_expr.parent);
     }
     const refined = try self.refineExprType(ctx, a, env, field_expr.parent, self.getExprType(ctx, a, field_expr.parent));
@@ -1813,7 +1804,7 @@ fn resolveFieldAccessName(self: *LowerTir, ctx: *LowerContext, a: *ast.Ast, fiel
             const target_sid = imported_ast.exprs.strs.intern(field_name);
             if (imported_ast.type_info.getExport(target_sid)) |ex| {
                 const drow = imported_ast.exprs.Decl.get(ex.decl_id);
-                return switch (imported_ast.exprs.index.kinds.items[drow.value.toRaw()]) {
+                return switch (imported_ast.kind(drow.value)) {
                     .Ident => imported_ast.exprs.get(.Ident, drow.value).name,
                     .FieldAccess => self.resolveFieldAccessName(ctx, imported_ast, drow.value),
                     else => field_access.field,
@@ -1827,13 +1818,12 @@ fn resolveFieldAccessName(self: *LowerTir, ctx: *LowerContext, a: *ast.Ast, fiel
 
 /// Trace a call expression to identify the callee symbol plus qualified name if any.
 fn resolveCallee(self: *LowerTir, ctx: *LowerContext, a: *ast.Ast, f: *Builder.FunctionFrame, row: ast.Rows.Call) !CalleeInfo {
-    const cctx = self.chk.checker_ctx.items[a.file_id];
+    const cctx = &self.chk.checker_ctx.items[a.file_id];
     var current = row.callee;
     var depth: usize = 0;
 
     while (depth < 32) : (depth += 1) {
-        const ck = a.exprs.index.kinds.items[current.toRaw()];
-        switch (ck) {
+        switch (a.kind(current)) {
             .Ident => {
                 const ident = a.exprs.get(.Ident, current);
                 if (cctx.symtab.lookup(cctx.symtab.currentId(), ident.name)) |sid| {
@@ -1841,8 +1831,7 @@ fn resolveCallee(self: *LowerTir, ctx: *LowerContext, a: *ast.Ast, f: *Builder.F
                     if (!srow.origin_decl.isNone()) {
                         const did = srow.origin_decl.unwrap();
                         const drow = a.exprs.Decl.get(did);
-                        const rhs_kind = a.exprs.index.kinds.items[drow.value.toRaw()];
-                        switch (rhs_kind) {
+                        switch (a.kind(drow.value)) {
                             .Ident, .FieldAccess => {
                                 current = drow.value;
                                 continue;
@@ -1879,7 +1868,7 @@ fn buildVariantItem(
 ) !tir.ValueId {
     var cur = row.callee;
     var first_field: ?StrId = null;
-    while (a.exprs.index.kinds.items[cur.toRaw()] == .FieldAccess) {
+    while (a.kind(cur) == .FieldAccess) {
         const fr = a.exprs.get(.FieldAccess, cur);
         if (first_field == null) first_field = fr.field; // take outermost field (the tag name)
         cur = fr.parent;
@@ -1963,8 +1952,7 @@ fn buildVariantItem(
 
 /// Convert a literal AST node into a `ComptimeValue` when possible.
 fn constValueFromLiteral(self: *LowerTir, a: *ast.Ast, expr: ast.ExprId) !?comp.ComptimeValue {
-    const kind = a.exprs.index.kinds.items[expr.toRaw()];
-    if (kind != .Literal) return null;
+    if (a.kind(expr) != .Literal) return null;
     const lit = a.exprs.get(.Literal, expr);
 
     return switch (lit.kind) {
@@ -2015,7 +2003,7 @@ fn tryComptimeCall(
 ) !?tir.ValueId {
     const row = a.exprs.get(.Call, id);
     // Avoid requiring a stamped callee type just to check the name.
-    const ck = a.exprs.index.kinds.items[row.callee.toRaw()];
+    const ck = a.kind(row.callee);
     const callee_name = blk: {
         if (ck == .Ident) break :blk a.exprs.strs.get(a.exprs.get(.Ident, row.callee).name);
         if (ck == .FieldAccess) break :blk a.exprs.strs.get(a.exprs.get(.FieldAccess, row.callee).field);
@@ -2103,7 +2091,7 @@ fn trySpecializeFunctionCall(
 ) !void {
     if (callee.fty == null) return;
     const callee_fty = callee.fty.?;
-    if (self.context.type_store.index.kinds.items[callee_fty.toRaw()] != .Function) return;
+    if (self.context.type_store.getKind(callee_fty) != .Function) return;
 
     var param_tys = param_tys_ptr.*;
     var fixed = fixed_ptr.*;
@@ -2133,13 +2121,12 @@ fn trySpecializeFunctionCall(
     const decl_ast = decl_ctx.ast;
     const decl = decl_ast.exprs.Decl.get(decl_ctx.decl_id);
 
-    const base_kind = decl_ast.exprs.index.kinds.items[decl.value.toRaw()];
     if (callee.qualified_name == null) {
         if (try symbolNameForDecl(self, decl_ast, decl_ctx.decl_id)) |sym| {
             callee.qualified_name = sym;
         }
     }
-    if (base_kind != .FunctionLit) return;
+    if (decl_ast.kind(decl.value) != .FunctionLit) return;
     const params = decl_ast.exprs.param_pool.slice(decl_ast.exprs.get(.FunctionLit, decl.value).params);
     var skip_params: usize = 0;
     while (skip_params < params.len and decl_ast.exprs.Param.get(params[skip_params]).is_comptime) : (skip_params += 1) {}
@@ -2181,7 +2168,7 @@ fn trySpecializeFunctionCall(
 
             if (!param.ty.isNone()) {
                 const ty_expr_id = param.ty.unwrap();
-                if (decl_ast.exprs.index.kinds.items[ty_expr_id.toRaw()] == .Ident) {
+                if (decl_ast.kind(ty_expr_id) == .Ident) {
                     const ident_name = decl_ast.exprs.get(.Ident, ty_expr_id).name;
                     for (binding_infos.items) |info| {
                         if (info.name.eq(ident_name) and info.kind == .type_param) {
@@ -2202,7 +2189,7 @@ fn trySpecializeFunctionCall(
                 try binding_infos.append(self.gpa, comp.BindingInfo.typeParam(pname, targ));
                 try interpreter_bindings.append(self.gpa, .{ .name = pname, .value = comp.ComptimeValue{ .Type = targ } });
             } else {
-                const comptime_val_opt = if (a.exprs.index.kinds.items[arg_expr.toRaw()] == .Literal)
+                const comptime_val_opt = if (a.kind(arg_expr) == .Literal)
                     try self.constValueFromLiteral(a, arg_expr)
                 else
                     null;
@@ -2283,7 +2270,7 @@ fn trySpecializeFunctionCall(
         }
 
         if (runtime_specs.items.len > 0) {
-            const context = self.chk.checker_ctx.items[decl_ast.file_id];
+            const context = &self.chk.checker_ctx.items[decl_ast.file_id];
             const specialized_fn_ty = try self.chk.checkSpecializedFunction(context, decl_ast, decl.value, runtime_specs.items);
             if (self.chk.typeKind(specialized_fn_ty) != .TypeError) {
                 const fn_info_override = self.context.type_store.get(.Function, specialized_fn_ty);
@@ -2332,9 +2319,15 @@ fn trySpecializeFunctionCall(
         idx += 1;
     }
 
-    var result_ty = if (specialized_result_override) |override|
-        override
-    else blk: {
+    var resolved_result: ?types.TypeId = null;
+
+    if (specialized_result_override) |override| {
+        if (self.context.type_store.getKind(override) != .Any) {
+            resolved_result = override;
+        }
+    }
+
+    if (resolved_result == null) {
         if (!decl_ast.exprs.get(.FunctionLit, decl.value).result_ty.isNone()) {
             if (resolveSpecializedType(
                 self.context.type_store,
@@ -2342,21 +2335,25 @@ fn trySpecializeFunctionCall(
                 decl_ast,
                 decl_ast.exprs.get(.FunctionLit, decl.value).result_ty.unwrap(),
             )) |resolved| {
-                break :blk resolved;
+                resolved_result = resolved;
             }
         }
-        break :blk fty.result;
-    };
-
-    if (specialized_result_override == null and self.context.type_store.getKind(result_ty) == .Any) {
-        if (runtimeResultType(binding_infos.items)) |override| {
-            result_ty = override;
+        if (resolved_result == null) {
+            resolved_result = fty.result;
         }
     }
 
-    if (self.context.type_store.getKind(result_ty) == .TypeType) {
-        result_ty = self.context.type_store.get(.TypeType, result_ty).of;
+    if (self.context.type_store.getKind(resolved_result.?) == .Any) {
+        if (runtimeResultType(binding_infos.items)) |override| {
+            resolved_result = override;
+        }
     }
+
+    if (self.context.type_store.getKind(resolved_result.?) == .TypeType) {
+        resolved_result = self.context.type_store.get(.TypeType, resolved_result.?).of;
+    }
+
+    const result_ty = resolved_result.?;
 
     const specialized_ty = self.context.type_store.mkFunction(
         runtime_params,
@@ -2432,7 +2429,7 @@ fn lowerCall(
         if (method_arg_buf.len != 0) self.gpa.free(method_arg_buf);
     }
     if (a.type_info.getMethodBinding(callee_expr)) |binding| {
-        if (a.exprs.index.kinds.items[callee_expr.toRaw()] == .FieldAccess) {
+        if (a.kind(callee_expr) == .FieldAccess) {
             try self.prepareMethodCall(
                 a,
                 row,
@@ -2445,7 +2442,7 @@ fn lowerCall(
                 &method_arg_buf,
             );
         }
-    } else if (a.exprs.index.kinds.items[callee_expr.toRaw()] == .FieldAccess) {
+    } else if (a.kind(callee_expr) == .FieldAccess) {
         if (try self.synthesizeMethodBinding(ctx, a, env, callee_expr)) |binding| {
             try self.prepareMethodCall(
                 a,
@@ -2504,7 +2501,7 @@ fn lowerCall(
     var fixed_params_count: usize = 0;
     var is_variadic_extern = false;
     if (callee.fty) |fty| {
-        if (self.context.type_store.index.kinds.items[fty.toRaw()] == .Function) {
+        if (self.context.type_store.getKind(fty) == .Function) {
             const fnrow = self.context.type_store.get(.Function, fty);
             param_tys = self.context.type_store.type_pool.slice(fnrow.params);
             is_variadic_extern = fnrow.is_variadic and fnrow.is_extern;
@@ -2703,7 +2700,7 @@ fn synthesizeDefaultTrailingArgs(
 
     const decl_ast = dctx.ast;
     const decl = decl_ast.exprs.Decl.get(dctx.decl_id);
-    if (decl_ast.exprs.index.kinds.items[decl.value.toRaw()] != .FunctionLit)
+    if (decl_ast.kind(decl.value) != .FunctionLit)
         return;
 
     const fnr = decl_ast.exprs.get(.FunctionLit, decl.value);
@@ -2746,8 +2743,7 @@ fn synthesizeDefaultTrailingArgs(
 fn isImportMemberExpr(a: *ast.Ast, expr: ast.ExprId) bool {
     var current = expr;
     while (true) {
-        const kind = a.exprs.index.kinds.items[current.toRaw()];
-        switch (kind) {
+        switch (a.kind(current)) {
             .FieldAccess => {
                 const row = a.exprs.get(.FieldAccess, current);
                 current = row.parent;
@@ -2783,7 +2779,7 @@ fn emitCallValue(
     // Choose a concrete return type: callee.fty.ret -> expected -> stamped -> void
     const ret_ty = blk: {
         if (callee.fty) |fty| {
-            if (self.context.type_store.index.kinds.items[fty.toRaw()] == .Function) {
+            if (self.context.type_store.getKind(fty) == .Function) {
                 const fr2 = self.context.type_store.get(.Function, fty);
                 const rt = fr2.result;
                 if (!self.isVoid(rt) and !self.isType(rt, .Any)) break :blk rt;
@@ -2804,10 +2800,9 @@ fn emitCallValue(
     const callee_kind = self.context.type_store.getKind(callee_ty);
 
     // Detect if callee is a module member function: mod.name(...)
-    const callee_expr_kind = a.exprs.index.kinds.items[callee_expr.toRaw()];
     const callee_is_import_member = isImportMemberExpr(a, callee_expr);
     const callee_is_method_call = a.type_info.getMethodBinding(callee_expr) != null;
-    const should_force_indirect = switch (callee_expr_kind) {
+    const should_force_indirect = switch (a.kind(callee_expr)) {
         .Ident => false,
         .FieldAccess => !callee_is_import_member and !callee_is_method_call,
         else => true,
@@ -2970,8 +2965,7 @@ fn handleExternVariadicArgs(
 
         if (entry_kind == .Any) {
             if (entry.expr) |expr_id| {
-                const expr_kind = a.exprs.index.kinds.items[expr_id.toRaw()];
-                const want_any = switch (expr_kind) {
+                const want_any = switch (a.kind(expr_id)) {
                     .Literal => switch (a.exprs.get(.Literal, expr_id).kind) {
                         .int, .char => self.context.type_store.tI64(),
                         .float, .imaginary => self.context.type_store.tF64(),
@@ -2999,7 +2993,7 @@ fn isSpreadRangeExpr(
     env: *cf.Env,
     expr: ast.ExprId,
 ) bool {
-    if (a.exprs.index.kinds.items[expr.toRaw()] != .Range) return false;
+    if (a.kind(expr) != .Range) return false;
     if (a.type_info.isRangeSpread(expr)) return true;
     const row = a.exprs.get(.Range, expr);
     if (!row.start.isNone() or row.end.isNone()) return false;
@@ -3085,14 +3079,10 @@ fn lowerLiteral(
     // If the checker didn’t stamp a type, use the caller’s expected type.
     const ty0 = self.getExprType(ctx, a, id);
     const loc = optLoc(a, id);
-    const base_ty = blk: {
-        const kind = self.context.type_store.index.kinds.items[ty0.toRaw()];
-        if (kind == .Optional) {
-            const opt = self.context.type_store.get(.Optional, ty0);
-            break :blk opt.elem;
-        }
-        break :blk ty0;
-    };
+    const base_ty = if (self.context.type_store.getKind(ty0) == .Optional)
+        self.context.type_store.get(.Optional, ty0).elem
+    else
+        ty0;
 
     var literal_ty = base_ty;
     const v = switch (lit.kind) {
@@ -3204,7 +3194,7 @@ fn lowerUnary(
         .neg => blk: {
             // Use a zero that matches ty0’s kind; if Complex, build complex(0,0)
             const zero = zblk: {
-                const k = self.context.type_store.index.kinds.items[ty0.toRaw()];
+                const k = self.context.type_store.getKind(ty0);
                 if (k == .Complex) {
                     const crow = self.context.type_store.get(.Complex, ty0);
                     const re0 = blk.builder.tirValue(.ConstFloat, blk, crow.elem, loc, .{ .value = 0.0 });
@@ -3216,7 +3206,7 @@ fn lowerUnary(
                 if (self.isType(ty0, .Simd)) {
                     const simd_info = self.context.type_store.get(.Simd, ty0);
                     const elem_ty = simd_info.elem;
-                    const elem_kind = self.context.type_store.index.kinds.items[elem_ty.toRaw()];
+                    const elem_kind = self.context.type_store.getKind(elem_ty);
                     const zero_scalar = if (elem_kind == .F32 or elem_kind == .F64)
                         blk.builder.tirValue(.ConstFloat, blk, elem_ty, loc, .{ .value = 0.0 })
                     else
@@ -3314,7 +3304,7 @@ fn lowerArrayLit(
     const row = a.exprs.get(.ArrayLit, id);
     const ty0 = expected_ty orelse (self.getExprType(ctx, a, id));
     const loc = optLoc(a, id);
-    const vk = self.context.type_store.index.kinds.items[ty0.toRaw()];
+    const vk = self.context.type_store.getKind(ty0);
     switch (vk) {
         .Array => {
             const array_ty = self.context.type_store.get(.Array, ty0);
@@ -3498,7 +3488,7 @@ fn collectTensorLiteralValues(
 ) !void {
     const kind = self.context.type_store.getKind(current_ty);
     if (kind == .Tensor) {
-        if (a.exprs.index.kinds.items[expr_id.toRaw()] != .ArrayLit) unreachable;
+        if (a.kind(expr_id) != .ArrayLit) unreachable;
         const row = a.exprs.get(.ArrayLit, expr_id);
         const ids = a.exprs.expr_pool.slice(row.elems);
         const tensor_info = self.context.type_store.get(.Tensor, current_ty);
@@ -3549,8 +3539,7 @@ fn lowerTupleLit(
     while (i < ids.len) : (i += 1) {
         // coerce element to tuple element type if known
         var expect_elem = self.context.type_store.tAny();
-        const vk = self.context.type_store.index.kinds.items[ty0.toRaw()];
-        if (vk == .Tuple) {
+        if (self.context.type_store.getKind(ty0) == .Tuple) {
             const trow = self.context.type_store.get(.Tuple, ty0);
             const elems = self.context.type_store.type_pool.slice(trow.elems);
             if (i < elems.len) expect_elem = elems[i];
@@ -3700,8 +3689,7 @@ fn lowerMapLit(
         // best-effort: use expected key/value if map type is known
         var key_want = self.context.type_store.tAny();
         var val_want = self.context.type_store.tAny();
-        const mk = self.context.type_store.index.kinds.items[ty0.toRaw()];
-        if (mk == .Map) {
+        if (self.context.type_store.getKind(ty0) == .Map) {
             const mr = self.context.type_store.get(.Map, ty0);
             key_want = mr.key;
             val_want = mr.value;
@@ -3735,8 +3723,7 @@ fn lowerIndexAccess(
         const base_ptr = try self.lowerExpr(ctx, a, env, f, blk, row.collection, null, .lvalue_addr);
         // Prefer a usize constant for literal indices to avoid casts in TIR
         const idx_v = blk: {
-            const ik = a.exprs.index.kinds.items[row.index.toRaw()];
-            if (ik == .Literal) {
+            if (a.kind(row.index) == .Literal) {
                 const lit = a.exprs.get(.Literal, row.index);
                 if (lit.kind == .int) {
                     const info = switch (lit.data) {
@@ -3763,14 +3750,13 @@ fn lowerIndexAccess(
         // If result is a slice, the index expression should be a range ([]usize);
         // otherwise, index is a single usize.
         const idx = blk: {
-            const rk = self.context.type_store.index.kinds.items[ty0.toRaw()];
+            const rk = self.context.type_store.getKind(ty0);
             if (rk == .Slice or rk == .String) {
                 const want = self.context.type_store.mkSlice(self.context.type_store.tUsize(), false);
                 break :blk try self.lowerExpr(ctx, a, env, f, blk, row.index, want, .rvalue);
             } else {
                 // Prefer a usize constant for literal indices to avoid casts in TIR
-                const ik = a.exprs.index.kinds.items[row.index.toRaw()];
-                if (ik == .Literal) {
+                if (a.kind(row.index) == .Literal) {
                     const lit = a.exprs.get(.Literal, row.index);
                     if (lit.kind == .int) {
                         const info = switch (lit.data) {
@@ -3957,7 +3943,7 @@ fn lowerFieldAccess(
     //    unit’s export and materialize it directly instead of treating the module as
     //    a runtime struct value.
     if (mode == .rvalue) {
-        const pk = a.exprs.index.kinds.items[row.parent.toRaw()];
+        const pk = a.kind(row.parent);
         if (pk == .Ident or pk == .Import) {
             if (try self.tryLowerImportedModuleMember(ctx, a, env, f, blk, row.parent, row.field, expected_ty, loc)) |v| {
                 return v;
@@ -4000,8 +3986,7 @@ fn lowerFieldAccess(
     const ty0 = self.getExprType(ctx, a, id);
     var base = try self.lowerExpr(ctx, a, env, f, blk, row.parent, null, .rvalue);
 
-    const is_tuple =
-        self.context.type_store.index.kinds.items[parent_ty.toRaw()] == .Tuple;
+    const is_tuple = self.context.type_store.getKind(parent_ty) == .Tuple;
 
     var v: tir.ValueId = undefined;
     if (idx_maybe) |resolved_idx| {
@@ -4103,8 +4088,7 @@ fn tryLowerImportedModuleMember(
     _ = env;
     _ = f;
 
-    const parent_kind = caller_ast.exprs.index.kinds.items[parent_expr.toRaw()];
-
+    const parent_kind = caller_ast.kind(parent_expr);
     var target_ast: ?*ast.Ast = null;
     if (parent_kind == .Import) {
         const ir = caller_ast.exprs.get(.Import, parent_expr);
@@ -4303,7 +4287,7 @@ fn lowerBinary(
         // left is value, right is tag literal
         if (self.isVariantLike(l_ty)) {
             if (self.tagConstFromTypePath(ctx, a, row.right)) |info| {
-                if (info.of_ty.toRaw() == l_ty.toRaw()) {
+                if (info.of_ty.eq(l_ty)) {
                     const lhs_val = try self.lowerExpr(ctx, a, env, f, blk, row.left, l_ty, .rvalue);
                     const lhs_tag = blk.builder.extractField(blk, self.context.type_store.tI32(), lhs_val, 0, loc);
                     const want_tag = blk.builder.tirValue(.ConstInt, blk, self.context.type_store.tI32(), loc, .{ .value = info.tag_idx });
@@ -4318,7 +4302,7 @@ fn lowerBinary(
         // right is value, left is tag literal
         if (self.isVariantLike(r_ty)) {
             if (self.tagConstFromTypePath(ctx, a, row.left)) |info| {
-                if (info.of_ty.toRaw() == r_ty.toRaw()) {
+                if (info.of_ty.eq(r_ty)) {
                     const rhs_val = try self.lowerExpr(ctx, a, env, f, blk, row.right, r_ty, .rvalue);
                     const rhs_tag = blk.builder.extractField(blk, self.context.type_store.tI32(), rhs_val, 0, loc);
                     const want_tag = blk.builder.tirValue(.ConstInt, blk, self.context.type_store.tI32(), loc, .{ .value = info.tag_idx });
@@ -4356,7 +4340,7 @@ fn lowerBinary(
             };
 
             // If Complex, both operands must be Complex of the same element type.
-            if (self.context.type_store.index.kinds.items[chosen.toRaw()] == .Complex) {
+            if (self.context.type_store.getKind(chosen) == .Complex) {
                 lhs_expect = chosen;
                 rhs_expect = chosen;
             } else {
@@ -4397,15 +4381,15 @@ fn lowerBinary(
                 const ts = self.context.type_store;
                 const lh = lhs_hint orelse lhs_stamped;
                 const rh = rhs_hint orelse rhs_stamped;
-                const lhs_kind = ts.index.kinds.items[lh.toRaw()];
+                const lhs_kind = ts.getKind(lh);
                 if (lhs_kind == .Optional) {
-                    const rhs_kind = ts.index.kinds.items[rh.toRaw()];
+                    const rhs_kind = ts.getKind(rh);
                     if (rhs_kind != .Optional) {
                         lhs_expect = lh;
                         rhs_expect = ts.get(.Optional, lh).elem;
                     }
                 }
-                const rhs_kind = ts.index.kinds.items[rh.toRaw()];
+                const rhs_kind = ts.getKind(rh);
                 if (rhs_kind == .Optional) {
                     if (lhs_kind != .Optional) {
                         rhs_expect = rh;
@@ -4431,13 +4415,13 @@ fn lowerBinary(
 
     if (lhs_expect) |l_want| {
         const l_got = self.getExprType(ctx, a, row.left);
-        if (l_got.toRaw() != l_want.toRaw()) {
+        if (!l_got.eq(l_want)) {
             l = self.emitCoerce(blk, l, l_got, l_want, optLoc(a, row.left));
         }
     }
     if (rhs_expect) |r_want| {
         const r_got = self.getExprType(ctx, a, row.right);
-        if (r_got.toRaw() != r_want.toRaw()) {
+        if (!r_got.eq(r_want)) {
             r = self.emitCoerce(blk, r, r_got, r_want, optLoc(a, row.right));
         }
     }
@@ -4589,7 +4573,7 @@ fn lowerBinary(
             var else_blk = try f.builder.beginBlock(f);
             var join_blk = try f.builder.beginBlock(f);
             const lhs_ty = self.getExprType(ctx, a, row.left);
-            if (self.context.type_store.index.kinds.items[lhs_ty.toRaw()] != .Optional) return error.LoweringBug;
+            if (self.context.type_store.getKind(lhs_ty) != .Optional) return error.LoweringBug;
             const opt_info = self.context.type_store.get(.Optional, lhs_ty);
             const flag = self.optionalFlag(blk, lhs_ty, l, loc);
             const payload = self.optionalPayload(blk, lhs_ty, l, loc);
@@ -4611,7 +4595,7 @@ fn lowerBinary(
 
                 var rhs_v = r;
                 const rhs_ty = self.getExprType(ctx, a, row.right);
-                const rhs_kind = self.context.type_store.index.kinds.items[rhs_ty.toRaw()];
+                const rhs_kind = self.context.type_store.getKind(rhs_ty);
                 if (rhs_kind == .Void) {
                     try f.builder.setReturnVoid(&else_blk, loc);
                 } else if (rhs_kind == .Noreturn) {
@@ -4643,7 +4627,7 @@ fn lowerBinary(
                 // else: wrap default RHS as Ok in ErrorSet
                 var rhs_v = r;
                 const rhs_ty = self.getExprType(ctx, a, row.right);
-                if (rhs_ty.toRaw() != es.value_ty.toRaw()) rhs_v = self.emitCoerce(&else_blk, rhs_v, rhs_ty, es.value_ty, loc);
+                if (!rhs_ty.eq(es.value_ty)) rhs_v = self.emitCoerce(&else_blk, rhs_v, rhs_ty, es.value_ty, loc);
                 // Build union payload {Ok: V, Err: E}
                 const ok_name = f.builder.intern("Ok");
                 const err_name = f.builder.intern("Err");
@@ -4688,7 +4672,7 @@ fn lowerCatch(
 
     const lhs_val = try self.lowerExpr(ctx, a, env, f, blk, row.expr, null, .rvalue);
     const lhs_ty0 = self.getExprType(ctx, a, row.expr);
-    const lhs_kind = self.context.type_store.index.kinds.items[lhs_ty0.toRaw()];
+    const lhs_kind = self.context.type_store.getKind(lhs_ty0);
     var es_ty = lhs_ty0;
     var is_optional_es = false;
     if (lhs_kind == .Optional) {
@@ -4898,7 +4882,7 @@ fn lowerOrelse(
     const loc = optLoc(a, id);
 
     const lhs_ty = self.getExprType(ctx, a, row.left);
-    if (self.context.type_store.index.kinds.items[lhs_ty.toRaw()] != .Optional) return error.LoweringBug;
+    if (self.context.type_store.getKind(lhs_ty) != .Optional) return error.LoweringBug;
 
     // Only compute the LHS eagerly; RHS is lowered lazily in the else branch to preserve short-circuiting.
     const lhs_val = try self.lowerExpr(ctx, a, env, f, blk, row.left, lhs_ty, .rvalue);
@@ -4929,7 +4913,7 @@ fn lowerOrelse(
         if (else_blk.term.isNone()) {
             const rhs_val = try self.lowerExpr(ctx, a, env, f, &else_blk, row.right, res_ty, .rvalue);
             const rhs_ty = self.getExprType(ctx, a, row.right);
-            const rhs_kind = self.context.type_store.index.kinds.items[rhs_ty.toRaw()];
+            const rhs_kind = self.context.type_store.getKind(rhs_ty);
             if (else_blk.term.isNone()) {
                 if (rhs_kind == .Void) {
                     try f.builder.setReturnVoid(&else_blk, loc);
@@ -4961,7 +4945,7 @@ fn lowerOrelse(
         if (else_blk.term.isNone()) {
             var rhs_val = try self.lowerExpr(ctx, a, env, f, &else_blk, row.right, es.value_ty, .rvalue);
             const rhs_ty = self.getExprType(ctx, a, row.right);
-            if (rhs_ty.toRaw() != es.value_ty.toRaw()) {
+            if (!rhs_ty.eq(es.value_ty)) {
                 rhs_val = self.emitCoerce(&else_blk, rhs_val, rhs_ty, es.value_ty, loc);
             }
 
@@ -5023,16 +5007,15 @@ pub fn lowerExpr(
     expected_ty: ?types.TypeId,
     mode: LowerMode,
 ) anyerror!tir.ValueId {
-    const expr_kind = a.exprs.index.kinds.items[id.toRaw()];
     // Ensure we have a stamped type for this expression; if missing, invoke checker lazily.
     if (a.type_info.expr_types.items[id.toRaw()] == null) {
-        const cctx = self.chk.checker_ctx.items[a.file_id];
+        const cctx = &self.chk.checker_ctx.items[a.file_id];
         _ = try self.chk.checkExpr(cctx, a, id);
     }
     _ = try self.refineExprType(ctx, a, env, id, self.getExprType(ctx, a, id));
     try self.ensureExprTypeNotError(ctx, a, id);
 
-    return switch (expr_kind) {
+    return switch (a.kind(id)) {
         .Literal => self.lowerLiteral(ctx, a, blk, id, expected_ty),
         .NullLit => {
             const loc = optLoc(a, id);
@@ -5133,7 +5116,7 @@ pub fn lowerExpr(
             return error.LoweringBug;
         },
         else => {
-            std.debug.print("lowerExpr: unhandled expr kind {}\n", .{expr_kind});
+            std.debug.print("lowerExpr: unhandled expr kind {}\n", .{a.kind(id)});
             return error.LoweringBug;
         },
     };
@@ -5150,7 +5133,7 @@ pub fn lowerBlockExprValue(
     block_expr: ast.ExprId,
     expected_ty: types.TypeId,
 ) anyerror!tir.ValueId {
-    if (a.exprs.index.kinds.items[block_expr.toRaw()] != .Block) {
+    if (a.kind(block_expr) != .Block) {
         return self.lowerExpr(ctx, a, env, f, blk, block_expr, expected_ty, .rvalue);
     }
     const b = a.exprs.get(.Block, block_expr);
@@ -5168,8 +5151,7 @@ pub fn lowerBlockExprValue(
         try self.lowerStmt(ctx, a, env, f, blk, stmts[i]);
     }
     const last = stmts[stmts.len - 1];
-    const lk = a.stmts.index.kinds.items[last.toRaw()];
-    if (lk == .Expr) {
+    if (a.kind(last) == .Expr) {
         const le = a.stmts.get(.Expr, last).expr;
         // Evaluate the last expression value-first, then run defers belonging to this block,
         // then return the computed value. This preserves the "defer runs at scope exit" rule.
@@ -5191,7 +5173,7 @@ pub fn lowerBlockExprValue(
 /// Compute the symbol name representing `did` if it introduces a runtime value.
 fn symbolNameForDecl(self: *LowerTir, decl_ast: *ast.Ast, did: ast.DeclId) !?StrId {
     const decl = decl_ast.exprs.Decl.get(did);
-    const is_extern_fn = switch (decl_ast.exprs.index.kinds.items[decl.value.toRaw()]) {
+    const is_extern_fn = switch (decl_ast.kind(decl.value)) {
         .FunctionLit => decl_ast.exprs.get(.FunctionLit, decl.value).flags.is_extern,
         else => false,
     };
@@ -5217,14 +5199,13 @@ fn structFieldDefaultExpr(self: *LowerTir, a: *ast.Ast, type_expr: ast.ExprId, f
 
 /// Resolve a struct literal expression pointer from a type reference, if it names a struct.
 fn structTypeExprFromTypeRef(_: *LowerTir, a: *ast.Ast, type_expr: ast.ExprId) ?ast.ExprId {
-    const kind = a.exprs.index.kinds.items[type_expr.toRaw()];
-    return switch (kind) {
+    return switch (a.kind(type_expr)) {
         .StructType => type_expr,
         .Ident => blk: {
             const ident = a.exprs.get(.Ident, type_expr);
             if (call_resolution.findTopLevelDeclByName(a, ident.name)) |decl_id| {
                 const decl = a.exprs.Decl.get(decl_id);
-                if (a.exprs.index.kinds.items[decl.value.toRaw()] == .StructType) {
+                if (a.kind(decl.value) == .StructType) {
                     break :blk decl.value;
                 }
             }
@@ -5250,8 +5231,7 @@ fn structFieldDefaultInStructExpr(a: *ast.Ast, struct_expr: ast.ExprId, field_na
 /// True if `ty` is a numeric scalar type.
 fn isNumeric(self: *const LowerTir, ty: types.TypeId) bool {
     if (self.isVoid(ty)) return false;
-    const k = self.context.type_store.index.kinds.items[ty.toRaw()];
-    return switch (k) {
+    return switch (self.context.type_store.getKind(ty)) {
         .U8, .U16, .U32, .U64, .I8, .I16, .I32, .I64, .Usize, .F32, .F64, .Simd, .Tensor => true,
         else => false,
     };
@@ -5264,7 +5244,7 @@ fn isFloat(self: *const LowerTir, ty: types.TypeId) bool {
 
 /// Test whether `ty` currently maps to `kind` in the type store index.
 pub fn isType(self: *const LowerTir, ty: types.TypeId, kind: types.TypeKind) bool {
-    return self.context.type_store.index.kinds.items[ty.toRaw()] == kind;
+    return self.context.type_store.getKind(ty) == kind;
 }
 
 /// Choose a common numeric type for binary ops when the checker didn't provide one.
@@ -5278,8 +5258,8 @@ fn commonNumeric(
         if (r) |rt| {
             if (self.isNumeric(rt)) {
                 // naive widening preference: floats > signed > unsigned; 64 > 32 > 16 > 8
-                const kL = ts.index.kinds.items[lt.toRaw()];
-                const kR = ts.index.kinds.items[rt.toRaw()];
+                const kL = ts.getKind(lt);
+                const kR = ts.getKind(rt);
                 if (kL == .Simd) return lt;
                 if (kR == .Simd) return rt;
                 if (kL == .Tensor) return lt;
@@ -5316,8 +5296,7 @@ fn refineExprType(
     expr: ast.ExprId,
     stamped: types.TypeId,
 ) !?types.TypeId {
-    const kind = a.exprs.index.kinds.items[expr.toRaw()];
-    switch (kind) {
+    switch (a.kind(expr)) {
         .Ident => {
             const name = a.exprs.get(.Ident, expr).name;
             if (env.lookup(name)) |bnd| {
@@ -5418,9 +5397,8 @@ pub fn getUnionTypeFromVariant(self: *const LowerTir, vty: types.TypeId) ?types.
 // Destructure a declaration pattern and bind its sub-bindings either as values (const) or slots (mutable).
 /// Walk `pid` and bind every leaf to `value`, optionally storing into slots for mut bindings.
 fn destructureDeclPattern(self: *LowerTir, a: *ast.Ast, env: *cf.Env, f: *Builder.FunctionFrame, blk: *Builder.BlockFrame, pid: ast.PatternId, value: tir.ValueId, vty: types.TypeId, to_slots: bool) !void {
-    const pk = a.pats.index.kinds.items[pid.toRaw()];
     const loc = optLoc(a, pid);
-    switch (pk) {
+    switch (a.kind(pid)) {
         .Binding => {
             const nm = a.pats.get(.Binding, pid).name;
             if (self.isVoid(vty)) {
@@ -5440,8 +5418,7 @@ fn destructureDeclPattern(self: *LowerTir, a: *ast.Ast, env: *cf.Env, f: *Builde
             const row = a.pats.get(.Tuple, pid);
             const elems = a.pats.pat_pool.slice(row.elems);
             var etys: []const types.TypeId = &[_]types.TypeId{};
-            const vk = self.context.type_store.index.kinds.items[vty.toRaw()];
-            if (vk == .Tuple) {
+            if (self.context.type_store.getKind(vty) == .Tuple) {
                 const vrow = self.context.type_store.get(.Tuple, vty);
                 etys = self.context.type_store.type_pool.slice(vrow.elems);
             }
@@ -5472,7 +5449,7 @@ fn destructureDeclPattern(self: *LowerTir, a: *ast.Ast, env: *cf.Env, f: *Builde
                     var j: usize = 0;
                     while (j < field_ids.len) : (j += 1) {
                         const stf = self.context.type_store.Field.get(field_ids[j]);
-                        if (stf.name.toRaw() == pf.name.toRaw()) {
+                        if (stf.name.eq(pf.name)) {
                             fty = stf.ty;
                             extracted = blk.builder.extractField(blk, fty, value, @intCast(j), loc);
                             found = true;
@@ -5515,8 +5492,7 @@ fn destructureDeclFromTupleLit(
     const elr = a.exprs.get(.TupleLit, src_expr);
     const elems_expr = a.exprs.expr_pool.slice(elr.elems);
     var etys: []const types.TypeId = &[_]types.TypeId{};
-    const vk = self.context.type_store.index.kinds.items[vty.toRaw()];
-    if (vk == .Tuple) {
+    if (self.context.type_store.getKind(vty) == .Tuple) {
         const vrow = self.context.type_store.get(.Tuple, vty);
         etys = self.context.type_store.type_pool.slice(vrow.elems);
     }
@@ -5565,7 +5541,7 @@ fn destructureDeclFromStructLit(
         var val_expr: ?ast.ExprId = null;
         for (sfields) |sfid| {
             const sf = a.exprs.StructFieldValue.get(sfid);
-            if (sf.name.toRaw() == pf.name.toRaw()) {
+            if (sf.name.eq(pf.name)) {
                 val_expr = sf.value;
                 break;
             }
@@ -5574,7 +5550,7 @@ fn destructureDeclFromStructLit(
         // find field type by name if known
         for (type_fields) |tfid| {
             const tf = self.context.type_store.Field.get(tfid);
-            if (tf.name.toRaw() == pf.name.toRaw()) {
+            if (tf.name.eq(pf.name)) {
                 fty = tf.ty;
                 break;
             }
@@ -5603,8 +5579,7 @@ fn destructureDeclFromExpr(
     target_ty: types.TypeId,
     to_slots: bool,
 ) anyerror!void {
-    const pk = a.pats.index.kinds.items[pid.toRaw()];
-    const target_kind = self.context.type_store.index.kinds.items[target_ty.toRaw()];
+    const target_kind = self.context.type_store.getKind(target_ty);
     const src_ty = self.getExprType(ctx, a, src_expr);
     const vty = if (target_kind == .Any) src_ty else target_ty;
     const expr_loc = optLoc(a, src_expr);
@@ -5633,13 +5608,13 @@ fn destructureDeclFromExpr(
         return;
     }
 
-    switch (pk) {
+    switch (a.kind(pid)) {
         .Binding => {
             const guess_ty = src_ty;
             const expect_ty = if (target_kind == .Any) guess_ty else target_ty;
             // Ensure type info for source expr before lowering in case checker didn’t stamp it yet.
             if (a.type_info.expr_types.items[src_expr.toRaw()] == null) {
-                const cctx2 = self.chk.checker_ctx.items[a.file_id];
+                const cctx2 = &self.chk.checker_ctx.items[a.file_id];
                 _ = try self.chk.checkExpr(cctx2, a, src_expr);
             }
             var raw = try self.lowerExpr(ctx, a, env, f, blk, src_expr, expect_ty, .rvalue);
@@ -5655,7 +5630,7 @@ fn destructureDeclFromExpr(
         },
         .Tuple => {
             // If RHS is a tuple-literal, lower elements individually to avoid creating a temporary aggregate.
-            if (a.exprs.index.kinds.items[src_expr.toRaw()] == .TupleLit) {
+            if (a.kind(src_expr) == .TupleLit) {
                 const eff_ty = if (target_kind == .Any) src_ty else target_ty;
                 try self.destructureDeclFromTupleLit(ctx, a, env, f, blk, pid, src_expr, eff_ty, to_slots);
                 return;
@@ -5667,7 +5642,7 @@ fn destructureDeclFromExpr(
             return try self.destructureDeclPattern(a, env, f, blk, pid, val, eff_ty, to_slots);
         },
         .Struct => {
-            if (a.exprs.index.kinds.items[src_expr.toRaw()] == .StructLit) {
+            if (a.kind(src_expr) == .StructLit) {
                 const eff_ty = if (target_kind == .Any) src_ty else target_ty;
                 try self.destructureDeclFromStructLit(ctx, a, env, f, blk, pid, src_expr, eff_ty, to_slots);
                 return;
@@ -5683,17 +5658,17 @@ fn destructureDeclFromExpr(
             const pr = a.pats.get(.VariantTuple, pid);
             const p_segs = a.pats.seg_pool.slice(pr.path);
             const case_name = a.pats.PathSeg.get(p_segs[p_segs.len - 1]).name;
-            if (a.exprs.index.kinds.items[src_expr.toRaw()] == .Call) {
+            if (a.kind(src_expr) == .Call) {
                 const call = a.exprs.get(.Call, src_expr);
                 // Extract last path segment from callee
                 var callee_last: ?ast.StrId = null;
                 var cur = call.callee;
-                while (a.exprs.index.kinds.items[cur.toRaw()] == .FieldAccess) {
+                while (a.kind(cur) == .FieldAccess) {
                     const fr = a.exprs.get(.FieldAccess, cur);
                     callee_last = fr.field;
                     cur = fr.parent;
                 }
-                if (callee_last != null and callee_last.?.toRaw() == case_name.toRaw()) {
+                if (callee_last != null and callee_last.?.eq(case_name)) {
                     // Use args directly
                     const args = a.exprs.expr_pool.slice(call.args);
                     var elem_tys: []const types.TypeId = &[_]types.TypeId{};
@@ -5756,18 +5731,18 @@ fn destructureDeclFromExpr(
             const segs = a.pats.seg_pool.slice(pr.path);
             const case_name = a.pats.PathSeg.get(segs[segs.len - 1]).name;
             // Handle struct-literal with typed path: V.C{ ... }
-            if (a.exprs.index.kinds.items[src_expr.toRaw()] == .StructLit) {
+            if (a.kind(src_expr) == .StructLit) {
                 const sl = a.exprs.get(.StructLit, src_expr);
                 if (!sl.ty.isNone()) {
                     // Extract last segment from type path
                     var cur = sl.ty.unwrap();
                     var last_seg: ?ast.StrId = null;
-                    while (a.exprs.index.kinds.items[cur.toRaw()] == .FieldAccess) {
+                    while (a.kind(cur) == .FieldAccess) {
                         const fr = a.exprs.get(.FieldAccess, cur);
                         last_seg = fr.field;
                         cur = fr.parent;
                     }
-                    if (last_seg != null and last_seg.?.toRaw() == case_name.toRaw()) {
+                    if (last_seg != null and last_seg.?.eq(case_name)) {
                         // Compute field tys for this case if known
                         var field_tys: []const types.FieldId = &[_]types.FieldId{};
                         if (self.context.type_store.getKind(vty) == .Variant) {
@@ -5791,7 +5766,7 @@ fn destructureDeclFromExpr(
                             var val_expr: ?ast.ExprId = null;
                             for (sfields) |sfid| {
                                 const sf = a.exprs.StructFieldValue.get(sfid);
-                                if (sf.name.toRaw() == pf.name.toRaw()) {
+                                if (sf.name.eq(pf.name)) {
                                     val_expr = sf.value;
                                     break;
                                 }
@@ -5800,7 +5775,7 @@ fn destructureDeclFromExpr(
                             // lookup field type by name
                             for (field_tys) |tfid| {
                                 const tf = self.context.type_store.Field.get(tfid);
-                                if (tf.name.toRaw() == pf.name.toRaw()) {
+                                if (tf.name.eq(pf.name)) {
                                     fty = tf.ty;
                                     break;
                                 }
@@ -5890,7 +5865,7 @@ fn tagConstFromTypePath(
     a: *ast.Ast,
     expr: ast.ExprId,
 ) ?struct { of_ty: types.TypeId, tag_idx: u32 } {
-    if (a.exprs.index.kinds.items[expr.toRaw()] != .FieldAccess) return null;
+    if (a.kind(expr) != .FieldAccess) return null;
     const fr = a.exprs.get(.FieldAccess, expr);
     const pty = self.getExprType(ctx, a, fr.parent);
     if (self.context.type_store.getKind(pty) != .TypeType) return null;

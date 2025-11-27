@@ -73,6 +73,28 @@ const HoverInfo = struct {
     range: LspRange,
 };
 
+const TextDocumentIdentifier = struct { uri: []const u8 };
+const TextDocumentParams = struct { textDocument: TextDocumentIdentifier };
+const TextDocumentPositionParams = struct {
+    textDocument: TextDocumentIdentifier,
+    position: LspPosition,
+};
+const RenameParams = struct {
+    textDocument: TextDocumentIdentifier,
+    position: LspPosition,
+    newName: []const u8,
+};
+const TextDocumentOpenParams = struct {
+    textDocument: struct {
+        uri: []const u8,
+        text: []const u8,
+    },
+};
+const TextDocumentChangeParams = struct {
+    textDocument: TextDocumentIdentifier,
+    contentChanges: []const struct { text: []const u8 },
+};
+
 const semantic_token_types = [_][]const u8{
     "keyword",
     "string",
@@ -342,6 +364,24 @@ fn writeJson(out: *std.Io.Writer, gpa: std.mem.Allocator, value: anytype) !void 
     try sendMessage(out, allocw.written());
 }
 
+/// Send a null result for a request identified by `id`.
+fn respondNullResult(out: *std.Io.Writer, gpa: std.mem.Allocator, id: u64) !void {
+    try writeJson(out, gpa, .{ .jsonrpc = "2.0", .id = id, .result = null });
+}
+
+/// Return the document text or respond with a null result when missing.
+fn requireDocumentOrRespondNull(
+    out: *std.Io.Writer,
+    gpa: std.mem.Allocator,
+    docs: *DocumentStore,
+    uri: []const u8,
+    id: u64,
+) !?[]const u8 {
+    if (docs.get(uri)) |text| return text;
+    try respondNullResult(out, gpa, id);
+    return null;
+}
+
 // ================== LSP handlers ==================
 
 /// Respond to `initialize` requests with capabilities and `id`.
@@ -392,10 +432,7 @@ fn respondInitialize(out: *std.Io.Writer, gpa: std.mem.Allocator, id: u64) !void
 /// Handle `textDocument/didOpen` by caching the document's text.
 fn onDidOpen(out: *std.Io.Writer, gpa: std.mem.Allocator, docs: *DocumentStore, params: json.Value) !void {
     // Parameters payload for `textDocument/didOpen` notifications.
-    const P = struct {
-        textDocument: struct { uri: []const u8, text: []const u8 },
-    };
-    var p = try json.parseFromValue(P, gpa, params, .{ .ignore_unknown_fields = true });
+    var p = try json.parseFromValue(TextDocumentOpenParams, gpa, params, .{ .ignore_unknown_fields = true });
     defer p.deinit();
     try docs.set(p.value.textDocument.uri, p.value.textDocument.text);
     try publishDiagnostics(out, gpa, docs, p.value.textDocument.uri);
@@ -405,12 +442,7 @@ fn onDidOpen(out: *std.Io.Writer, gpa: std.mem.Allocator, docs: *DocumentStore, 
 fn onDidChange(out: *std.Io.Writer, gpa: std.mem.Allocator, docs: *DocumentStore, params: json.Value) !void {
     // JSON parameters for `textDocument/didChange`.
     // Parameters payload for `textDocument/didChange` notifications.
-    const P = struct {
-        /// Semantic tokens request payload describing the document to highlight.
-        textDocument: struct { uri: []const u8 },
-        contentChanges: []const struct { text: []const u8 },
-    };
-    var p = try json.parseFromValue(P, gpa, params, .{ .ignore_unknown_fields = true });
+    var p = try json.parseFromValue(TextDocumentChangeParams, gpa, params, .{ .ignore_unknown_fields = true });
     defer p.deinit();
     if (p.value.contentChanges.len == 0) return;
     try docs.set(p.value.textDocument.uri, p.value.contentChanges[0].text);
@@ -421,11 +453,7 @@ fn onDidChange(out: *std.Io.Writer, gpa: std.mem.Allocator, docs: *DocumentStore
 fn onDidClose(out: *std.Io.Writer, gpa: std.mem.Allocator, docs: *DocumentStore, params: json.Value) !void {
     // JSON parameters for `textDocument/didClose`.
     // Parameters payload for `textDocument/didClose` notifications.
-    const P = struct {
-        /// Formatting request payload specifying the document URI.
-        textDocument: struct { uri: []const u8 },
-    };
-    var p = try json.parseFromValue(P, gpa, params, .{ .ignore_unknown_fields = true });
+    var p = try json.parseFromValue(TextDocumentParams, gpa, params, .{ .ignore_unknown_fields = true });
     defer p.deinit();
     const uri = p.value.textDocument.uri;
     docs.remove(uri);
@@ -537,7 +565,7 @@ const SymbolResolver = struct {
     /// Walk statement `stmt_id`, using patterns as necessary to populate symbols.
     fn walkStmt(self: *SymbolResolver, scope: *Scope, stmt_id: ast.StmtId) anyerror!void {
         const stmt_store = &self.ast_unit.stmts;
-        const stmt_kind = stmt_store.index.kinds.items[stmt_id.toRaw()];
+        const stmt_kind = stmt_store.kind(stmt_id);
         switch (stmt_kind) {
             .Expr => {
                 const row = stmt_store.get(.Expr, stmt_id);
@@ -564,7 +592,7 @@ const SymbolResolver = struct {
     /// Walk expression `expr_id` to gather potential bindings (e.g., function literals).
     fn walkExpr(self: *SymbolResolver, scope: *const Scope, expr_id: ast.ExprId) !void {
         const expr_store = &self.ast_unit.exprs;
-        const expr_kind = expr_store.index.kinds.items[expr_id.toRaw()];
+        const expr_kind = expr_store.kind(expr_id);
 
         switch (expr_kind) {
             .Ident => {
@@ -869,7 +897,7 @@ const SymbolResolver = struct {
     /// Record each binding introduced by pattern `pat_id` using `kind`.
     fn walkPattern(self: *SymbolResolver, scope: *Scope, pat_id: ast.PatternId, kind: SemanticTokenKind) !void {
         const pat_store = &self.ast_unit.pats;
-        const pat_kind = pat_store.index.kinds.items[pat_id.toRaw()];
+        const pat_kind = pat_store.kind(pat_id);
         switch (pat_kind) {
             .Binding => {
                 const row = pat_store.get(.Binding, pat_id);
@@ -928,18 +956,11 @@ const SymbolResolver = struct {
 fn onHover(out: *std.Io.Writer, gpa: std.mem.Allocator, docs: *DocumentStore, id: u64, params: json.Value) !void {
     // JSON parameters for hover requests.
     // Parameters payload for `textDocument/hover` requests.
-    const P = struct {
-        textDocument: struct { uri: []const u8 },
-        position: struct { line: u32, character: u32 },
-    };
-    var p = try json.parseFromValue(P, gpa, params, .{ .ignore_unknown_fields = true });
+    var p = try json.parseFromValue(TextDocumentPositionParams, gpa, params, .{ .ignore_unknown_fields = true });
     defer p.deinit();
 
     const uri = p.value.textDocument.uri;
-    const text = docs.get(uri) orelse {
-        try writeJson(out, gpa, .{ .jsonrpc = "2.0", .id = id, .result = null });
-        return;
-    };
+    const text = try requireDocumentOrRespondNull(out, gpa, docs, uri, id) orelse return;
 
     const offset = positionToOffset(text, p.value.position.line, p.value.position.character);
     const hover_info = try computeHover(gpa, uri, text, offset);
@@ -973,30 +994,19 @@ fn onHover(out: *std.Io.Writer, gpa: std.mem.Allocator, docs: *DocumentStore, id
 fn onGoToDefinition(out: *std.io.Writer, gpa: std.mem.Allocator, docs: *DocumentStore, id: u64, params: json.Value) !void {
     // JSON parameters for `textDocument/definition`.
     // Parameters payload for `textDocument/definition` requests.
-    const P = struct {
-        textDocument: struct { uri: []const u8 },
-        position: struct { line: u32, character: u32 },
-    };
-    var p = try json.parseFromValue(P, gpa, params, .{ .ignore_unknown_fields = true });
+    var p = try json.parseFromValue(TextDocumentPositionParams, gpa, params, .{ .ignore_unknown_fields = true });
     defer p.deinit();
 
     const uri = p.value.textDocument.uri;
-    const text = docs.get(uri) orelse {
-        try writeJson(out, gpa, .{ .jsonrpc = "2.0", .id = id, .result = null });
-        return;
-    };
+    const text = try requireDocumentOrRespondNull(out, gpa, docs, uri, id) orelse return;
 
-    var context = lib.compile.Context.init(gpa);
-    defer context.deinit();
-
-    const path = try fileUriToPath(gpa, uri);
-    defer gpa.free(path);
+    var session = try CompilationSession.init(gpa, uri, text);
+    defer session.deinit();
 
     const offset = positionToOffset(text, p.value.position.line, p.value.position.character);
-    const file_id = try context.source_manager.setVirtualSourceByPath(path, text);
-    var pipeline = lib.pipeline.Pipeline.init(gpa, &context);
+    var pipeline = lib.pipeline.Pipeline.init(gpa, &session.context);
 
-    _ = pipeline.run(path, &.{}, .check, null) catch |err| switch (err) {
+    _ = pipeline.run(session.path, &.{}, .check, null) catch |err| switch (err) {
         error.ParseFailed => {
             try writeJson(out, gpa, .{ .jsonrpc = "2.0", .id = id, .result = null });
             return;
@@ -1006,14 +1016,13 @@ fn onGoToDefinition(out: *std.io.Writer, gpa: std.mem.Allocator, docs: *Document
         },
     };
 
-    const ast_unit = findAstForFile(&context.compilation_unit, file_id) orelse {
+    const ast_unit = findAstForFile(&session.context.compilation_unit, session.file_id) orelse {
         try writeJson(out, gpa, .{ .jsonrpc = "2.0", .id = id, .result = null });
         return;
     };
 
-    var resolution_map = std.AutoArrayHashMap(u32, Symbol).init(gpa);
+    var resolution_map = try buildResolutionMap(gpa, ast_unit);
     defer resolution_map.deinit();
-    try SymbolResolver.run(gpa, ast_unit, &resolution_map);
 
     const expr_id = findExprAt(ast_unit, offset) orelse {
         try writeJson(out, gpa, .{ .jsonrpc = "2.0", .id = id, .result = null });
@@ -1026,11 +1035,11 @@ fn onGoToDefinition(out: *std.io.Writer, gpa: std.mem.Allocator, docs: *Document
         const decl_loc = ast_unit.exprs.locs.get(symbol.decl_loc);
         const decl_file_id = decl_loc.file_id;
 
-        const decl_path = context.source_manager.get(decl_file_id) orelse {
+        const decl_path = session.context.source_manager.get(decl_file_id) orelse {
             try writeJson(out, gpa, .{ .jsonrpc = "2.0", .id = id, .result = null });
             return;
         };
-        const decl_text = context.source_manager.read(decl_file_id) catch {
+        const decl_text = session.context.source_manager.read(decl_file_id) catch {
             try writeJson(out, gpa, .{ .jsonrpc = "2.0", .id = id, .result = null });
             return;
         };
@@ -1049,8 +1058,8 @@ fn onGoToDefinition(out: *std.io.Writer, gpa: std.mem.Allocator, docs: *Document
         const decl_loc = decl_ast.exprs.locs.get(decl_row.loc);
         const decl_file_id = decl_loc.file_id;
 
-        const decl_path = context.source_manager.get(decl_file_id) orelse break :blk;
-        const decl_text = context.source_manager.read(decl_file_id) catch break :blk;
+        const decl_path = session.context.source_manager.get(decl_file_id) orelse break :blk;
+        const decl_text = session.context.source_manager.read(decl_file_id) catch break :blk;
         defer gpa.free(decl_text);
 
         const decl_uri = try pathToUri(gpa, decl_path);
@@ -1074,31 +1083,18 @@ fn onGoToDefinition(out: *std.io.Writer, gpa: std.mem.Allocator, docs: *Document
 fn onRename(out: *std.io.Writer, gpa: std.mem.Allocator, docs: *DocumentStore, id: u64, params: json.Value) !void {
     // Rename request JSON payload describing the document and caret.
     // Parameters payload for `textDocument/rename` requests.
-    const P = struct {
-        textDocument: struct { uri: []const u8 },
-        position: struct { line: u32, character: u32 },
-        newName: []const u8,
-    };
-    var p = try json.parseFromValue(P, gpa, params, .{ .ignore_unknown_fields = true });
+    var p = try json.parseFromValue(RenameParams, gpa, params, .{ .ignore_unknown_fields = true });
     defer p.deinit();
 
     const uri = p.value.textDocument.uri;
-    const text = docs.get(uri) orelse {
-        try writeJson(out, gpa, .{ .jsonrpc = "2.0", .id = id, .result = null });
-        return;
-    };
-
-    var context = lib.compile.Context.init(gpa);
-    defer context.deinit();
-
-    const path = try fileUriToPath(gpa, uri);
-    defer gpa.free(path);
+    const text = try requireDocumentOrRespondNull(out, gpa, docs, uri, id) orelse return;
 
     const offset = positionToOffset(text, p.value.position.line, p.value.position.character);
-    const file_id = try context.source_manager.setVirtualSourceByPath(path, text);
-    var pipeline = lib.pipeline.Pipeline.init(gpa, &context);
+    var session = try CompilationSession.init(gpa, uri, text);
+    defer session.deinit();
+    var pipeline = lib.pipeline.Pipeline.init(gpa, &session.context);
 
-    _ = pipeline.run(path, &.{}, .check, null) catch |err| switch (err) {
+    _ = pipeline.run(session.path, &.{}, .check, null) catch |err| switch (err) {
         error.ParseFailed => {
             try writeJson(out, gpa, .{ .jsonrpc = "2.0", .id = id, .result = null });
             return;
@@ -1108,14 +1104,13 @@ fn onRename(out: *std.io.Writer, gpa: std.mem.Allocator, docs: *DocumentStore, i
         },
     };
 
-    const ast_unit = findAstForFile(&context.compilation_unit, file_id) orelse {
+    const ast_unit = findAstForFile(&session.context.compilation_unit, session.file_id) orelse {
         try writeJson(out, gpa, .{ .jsonrpc = "2.0", .id = id, .result = null });
         return;
     };
 
-    var resolution_map = std.AutoArrayHashMap(u32, Symbol).init(gpa);
+    var resolution_map = try buildResolutionMap(gpa, ast_unit);
     defer resolution_map.deinit();
-    try SymbolResolver.run(gpa, ast_unit, &resolution_map);
 
     const expr_id = findExprAt(ast_unit, offset) orelse {
         try writeJson(out, gpa, .{ .jsonrpc = "2.0", .id = id, .result = null });
@@ -1134,7 +1129,7 @@ fn onRename(out: *std.io.Writer, gpa: std.mem.Allocator, docs: *DocumentStore, i
 
     var it = resolution_map.iterator();
     while (it.next()) |entry| {
-        if (entry.value_ptr.decl_loc.toRaw() == symbol.decl_loc.toRaw()) {
+        if (entry.value_ptr.decl_loc.eq(symbol.decl_loc)) {
             const ref_expr_id = ast.ExprId.fromRaw(entry.key_ptr.*);
             const ref_loc = exprLoc(ast_unit, ref_expr_id);
             try references.append(gpa, ref_loc);
@@ -1244,18 +1239,11 @@ fn lspCompletionKindFromSemantic(kind: SemanticTokenKind) CompletionItemKind {
 fn onCompletion(out: *std.Io.Writer, gpa: std.mem.Allocator, docs: *DocumentStore, id: u64, params: json.Value) !void {
     // Completion request payload describing the document and cursor position.
     // Parameters payload for completion requests.
-    const P = struct {
-        textDocument: struct { uri: []const u8 },
-        position: LspPosition,
-    };
-    var p = try json.parseFromValue(P, gpa, params, .{ .ignore_unknown_fields = true });
+    var p = try json.parseFromValue(TextDocumentPositionParams, gpa, params, .{ .ignore_unknown_fields = true });
     defer p.deinit();
 
     const uri = p.value.textDocument.uri;
-    const text = docs.get(uri) orelse {
-        try writeJson(out, gpa, .{ .jsonrpc = "2.0", .id = id, .result = null });
-        return;
-    };
+    const text = try requireDocumentOrRespondNull(out, gpa, docs, uri, id) orelse return;
 
     var items = std.ArrayList(CompletionItem){};
     defer {
@@ -1284,21 +1272,17 @@ fn computeCompletions(gpa: std.mem.Allocator, uri: []const u8, text: []const u8,
         try items.append(gpa, .{ .label = try gpa.dupe(u8, kw), .kind = @intFromEnum(CompletionItemKind.Keyword) });
     }
 
-    var context = lib.compile.Context.init(gpa);
-    defer context.deinit();
+    var session = try CompilationSession.init(gpa, uri, text);
+    defer session.deinit();
 
-    const path = try fileUriToPath(gpa, uri);
-    defer gpa.free(path);
+    var pipeline = lib.pipeline.Pipeline.init(gpa, &session.context);
 
-    const file_id = try context.source_manager.setVirtualSourceByPath(path, text);
-    var pipeline = lib.pipeline.Pipeline.init(gpa, &context);
-
-    _ = pipeline.run(path, &.{}, .parse, null) catch |err| switch (err) {
+    _ = pipeline.run(session.path, &.{}, .parse, null) catch |err| switch (err) {
         error.ParseFailed, error.TooManyErrors => {},
         else => |e| return e,
     };
 
-    const ast_unit = findAstForFile(&context.compilation_unit, file_id) orelse return;
+    const ast_unit = findAstForFile(&session.context.compilation_unit, session.file_id) orelse return;
 
     // Add global declarations
     const decls = ast_unit.exprs.decl_pool.slice(ast_unit.unit.decls);
@@ -1313,7 +1297,7 @@ fn computeCompletions(gpa: std.mem.Allocator, uri: []const u8, text: []const u8,
 /// Add completion entries based on bindings found within `pat_id`.
 fn addPatternBindingsToCompletions(gpa: std.mem.Allocator, items: *std.ArrayList(CompletionItem), ast_unit: *ast.Ast, pat_id: ast.PatternId, kind: SemanticTokenKind) !void {
     const pat_store = &ast_unit.pats;
-    const pat_kind = pat_store.index.kinds.items[pat_id.toRaw()];
+    const pat_kind = pat_store.kind(pat_id);
     switch (pat_kind) {
         .Binding => {
             const row = pat_store.get(.Binding, pat_id);
@@ -1373,10 +1357,7 @@ fn addPatternBindingsToCompletions(gpa: std.mem.Allocator, items: *std.ArrayList
 fn onSemanticTokensFull(out: *std.Io.Writer, gpa: std.mem.Allocator, docs: *DocumentStore, id: u64, params: json.Value) !void {
     // Semantic tokens request payload describing the document to highlight.
     // Parameters payload used for full semantic tokens requests.
-    const P = struct {
-        textDocument: struct { uri: []const u8 },
-    };
-    var p = try json.parseFromValue(P, gpa, params, .{ .ignore_unknown_fields = true });
+    var p = try json.parseFromValue(TextDocumentParams, gpa, params, .{ .ignore_unknown_fields = true });
     defer p.deinit();
 
     const uri = p.value.textDocument.uri;
@@ -1401,10 +1382,7 @@ fn onSemanticTokensFull(out: *std.Io.Writer, gpa: std.mem.Allocator, docs: *Docu
 fn onFormatting(out: *std.Io.Writer, gpa: std.mem.Allocator, docs: *DocumentStore, id: u64, params: json.Value) !void {
     // Formatting request payload specifying the document URI.
     // Parameters payload for `textDocument/formatting` requests.
-    const P = struct {
-        textDocument: struct { uri: []const u8 },
-    };
-    var p = try json.parseFromValue(P, gpa, params, .{ .ignore_unknown_fields = true });
+    var p = try json.parseFromValue(TextDocumentParams, gpa, params, .{ .ignore_unknown_fields = true });
     defer p.deinit();
 
     const uri = p.value.textDocument.uri;
@@ -1470,16 +1448,12 @@ fn publishDiagnostics(out: *std.Io.Writer, gpa: std.mem.Allocator, docs: *Docume
     };
     const text: []const u8 = text_mut;
 
-    var context = lib.compile.Context.init(gpa);
-    defer context.deinit();
+    var session = try CompilationSession.init(gpa, uri, text);
+    defer session.deinit();
 
-    const path = try fileUriToPath(gpa, uri);
-    defer gpa.free(path);
+    var pipeline = lib.pipeline.Pipeline.init(gpa, &session.context);
 
-    const file_id = try context.source_manager.setVirtualSourceByPath(path, text);
-    var pipeline = lib.pipeline.Pipeline.init(gpa, &context);
-
-    _ = pipeline.run(path, &.{}, .check, null) catch |err| switch (err) {
+    _ = pipeline.run(session.path, &.{}, .check, null) catch |err| switch (err) {
         error.ParseFailed, error.TypeCheckFailed, error.LoweringFailed, error.TirLoweringFailed, error.TooManyErrors => {},
         else => {
             std.debug.print("[lsp] pipeline error: {s}\n", .{@errorName(err)});
@@ -1501,10 +1475,10 @@ fn publishDiagnostics(out: *std.Io.Writer, gpa: std.mem.Allocator, docs: *Docume
         diags.deinit(gpa);
     }
 
-    for (context.diags.messages.items) |message| {
-        if (message.loc.file_id != file_id) continue;
+    for (session.context.diags.messages.items) |message| {
+        if (message.loc.file_id != session.file_id) continue;
 
-        const msg_text = context.diags.messageToOwnedSlice(gpa, message) catch |err| {
+        const msg_text = session.context.diags.messageToOwnedSlice(gpa, message) catch |err| {
             std.debug.print("[lsp] failed to render diagnostic: {s}\n", .{@errorName(err)});
             continue;
         };
@@ -1526,9 +1500,9 @@ fn publishDiagnostics(out: *std.Io.Writer, gpa: std.mem.Allocator, docs: *Docume
 
         for (message.notes.items) |note| {
             const note_loc = note.loc orelse continue;
-            if (note_loc.file_id != file_id) continue;
+            if (note_loc.file_id != session.file_id) continue;
 
-            const note_msg = context.diags.noteToOwnedSlice(gpa, note) catch |err| {
+            const note_msg = session.context.diags.noteToOwnedSlice(gpa, note) catch |err| {
                 std.debug.print("[lsp] failed to render note: {s}\n", .{@errorName(err)});
                 continue;
             };
@@ -1766,9 +1740,8 @@ fn collectAstSemanticTokens(tokens: *TokenAccumulator, gpa: std.mem.Allocator, t
 
     const ast_unit = findAstForFile(&context.compilation_unit, file_id) orelse return;
 
-    var resolution_map = std.AutoArrayHashMap(u32, Symbol).init(gpa);
+    var resolution_map = try buildResolutionMap(gpa, ast_unit);
     defer resolution_map.deinit();
-    try SymbolResolver.run(gpa, ast_unit, &resolution_map);
 
     try gatherAstTokens(tokens, gpa, text, ast_unit, file_id, &resolution_map);
 }
@@ -1778,6 +1751,64 @@ fn gatherAstTokens(tokens: *TokenAccumulator, gpa: std.mem.Allocator, text: []co
     try highlightPackage(tokens, text, ast_unit, file_id);
     try highlightDecls(tokens, text, ast_unit, file_id);
     try highlightExpressions(tokens, gpa, text, ast_unit, file_id, resolution_map);
+}
+
+/// Holds shared compilation state used across LSP handlers.
+const CompilationSession = struct {
+    gpa: std.mem.Allocator,
+    context: lib.compile.Context,
+    path: []const u8,
+    file_id: u32,
+
+    /// Allocate a compilation session for `uri`/`text`.
+    pub fn init(gpa: std.mem.Allocator, uri: []const u8, text: []const u8) !CompilationSession {
+        var context = lib.compile.Context.init(gpa);
+        const path = try fileUriToPath(gpa, uri);
+        const file_id = try context.source_manager.setVirtualSourceByPath(path, text);
+        return CompilationSession{ .gpa = gpa, .context = context, .path = path, .file_id = file_id };
+    }
+
+    /// Release session resources.
+    pub fn deinit(self: *CompilationSession) void {
+        self.context.deinit();
+        self.gpa.free(self.path);
+    }
+};
+
+/// Resolve symbols for `ast_unit` and return the populated map.
+fn buildResolutionMap(gpa: std.mem.Allocator, ast_unit: *ast.Ast) !std.AutoArrayHashMap(u32, Symbol) {
+    var map = std.AutoArrayHashMap(u32, Symbol).init(gpa);
+    try SymbolResolver.run(gpa, ast_unit, &map);
+    return map;
+}
+
+/// Highlight function/closure signature (result + parameters).
+fn highlightFunctionSignature(
+    tokens: *TokenAccumulator,
+    text: []const u8,
+    ast_unit: *ast.Ast,
+    file_id: u32,
+    params_range: ast.RangeParam,
+    result_ty: ?ast.ExprId,
+    binding_kind: SemanticTokenKind,
+) !void {
+    const expr_store = &ast_unit.exprs;
+
+    if (result_ty) |ty| {
+        try highlightTypeExpr(tokens, text, ast_unit, file_id, ty);
+    }
+
+    const params = expr_store.param_pool.slice(params_range);
+    for (params) |param_id| {
+        const param = expr_store.Param.get(param_id);
+        if (!param.ty.isNone()) {
+            try highlightTypeExpr(tokens, text, ast_unit, file_id, param.ty.unwrap());
+        }
+        if (!param.pat.isNone()) {
+            const pat_id = patternFromOpt(param.pat);
+            try highlightPattern(tokens, text, ast_unit, pat_id, binding_kind, file_id);
+        }
+    }
 }
 
 /// Highlight package declarations within `ast_unit`.
@@ -1820,7 +1851,7 @@ fn highlightDecls(tokens: *TokenAccumulator, text: []const u8, ast_unit: *ast.As
 /// Collect binding identifiers introduced by `pat_id`.
 fn collectPatternBindingNames(gpa: std.mem.Allocator, names: *std.StringHashMap(void), ast_unit: *ast.Ast, pat_id: ast.PatternId) !void {
     const pat_store = &ast_unit.pats;
-    const pat_kind = pat_store.index.kinds.items[pat_id.toRaw()];
+    const pat_kind = pat_store.kind(pat_id);
     switch (pat_kind) {
         .Binding => {
             const row = pat_store.get(.Binding, pat_id);
@@ -1877,11 +1908,11 @@ fn collectPatternBindingNames(gpa: std.mem.Allocator, names: *std.StringHashMap(
 /// Collect descriptors for every parameter declared in the AST.
 fn collectAllParamNames(gpa: std.mem.Allocator, names: *std.StringHashMap(void), ast_unit: *ast.Ast) !void {
     const expr_store = &ast_unit.exprs;
-    const kinds = expr_store.index.kinds.items;
+    const kinds_len = expr_store.index.kinds.items.len;
     var idx: usize = 0;
-    while (idx < kinds.len) : (idx += 1) {
-        const expr_kind = kinds[idx];
+    while (idx < kinds_len) : (idx += 1) {
         const expr_id = ast.ExprId.fromRaw(@intCast(idx));
+        const expr_kind = expr_store.kind(expr_id);
         switch (expr_kind) {
             .FunctionLit => {
                 const fn_row = expr_store.get(.FunctionLit, expr_id);
@@ -1911,7 +1942,7 @@ fn collectAllParamNames(gpa: std.mem.Allocator, names: *std.StringHashMap(void),
 /// Highlight type expressions as semantic tokens.
 fn highlightTypeExpr(tokens: *TokenAccumulator, text: []const u8, ast_unit: *ast.Ast, file_id: u32, expr_id: ast.ExprId) !void {
     const expr_store = &ast_unit.exprs;
-    const expr_kind = expr_store.index.kinds.items[expr_id.toRaw()];
+    const expr_kind = expr_store.kind(expr_id);
     switch (expr_kind) {
         .Ident => {
             const row = expr_store.get(.Ident, expr_id);
@@ -1965,14 +1996,14 @@ fn highlightTypeExpr(tokens: *TokenAccumulator, text: []const u8, ast_unit: *ast
 fn highlightExpressions(tokens: *TokenAccumulator, gpa: std.mem.Allocator, text: []const u8, ast_unit: *ast.Ast, file_id: u32, resolution_map: *const std.AutoArrayHashMap(u32, Symbol)) !void {
     _ = gpa;
     const expr_store = &ast_unit.exprs;
-    const kinds = expr_store.index.kinds.items;
+    const kinds_len = expr_store.index.kinds.items.len;
     const expr_types = ast_unit.type_info.expr_types.items;
     const type_store = ast_unit.type_info.store;
 
     var idx: usize = 0;
-    expr_loop: while (idx < kinds.len) : (idx += 1) {
-        const expr_kind = kinds[idx];
+    expr_loop: while (idx < kinds_len) : (idx += 1) {
         const expr_id = ast.ExprId.fromRaw(@intCast(idx));
+        const expr_kind = expr_store.kind(expr_id);
         switch (expr_kind) {
             .Ident => {
                 const row = expr_store.get(.Ident, expr_id);
@@ -2050,37 +2081,13 @@ fn highlightExpressions(tokens: *TokenAccumulator, gpa: std.mem.Allocator, text:
             },
             .FunctionLit => {
                 const fn_row = expr_store.get(.FunctionLit, expr_id);
-                if (!fn_row.result_ty.isNone()) {
-                    try highlightTypeExpr(tokens, text, ast_unit, file_id, fn_row.result_ty.unwrap());
-                }
-                const params = expr_store.param_pool.slice(fn_row.params);
-                for (params) |param_id| {
-                    const param = expr_store.Param.get(param_id);
-                    if (!param.ty.isNone()) {
-                        try highlightTypeExpr(tokens, text, ast_unit, file_id, param.ty.unwrap());
-                    }
-                    if (!param.pat.isNone()) {
-                        const pat_id = patternFromOpt(param.pat);
-                        try highlightPattern(tokens, text, ast_unit, pat_id, .parameter, file_id);
-                    }
-                }
+                const result_ty_opt = exprFromOpt(fn_row.result_ty);
+                try highlightFunctionSignature(tokens, text, ast_unit, file_id, fn_row.params, result_ty_opt, .parameter);
             },
             .Closure => {
                 const cl_row = expr_store.get(.Closure, expr_id);
-                if (!cl_row.result_ty.isNone()) {
-                    try highlightTypeExpr(tokens, text, ast_unit, file_id, cl_row.result_ty.unwrap());
-                }
-                const params = expr_store.param_pool.slice(cl_row.params);
-                for (params) |param_id| {
-                    const param = expr_store.Param.get(param_id);
-                    if (!param.ty.isNone()) {
-                        try highlightTypeExpr(tokens, text, ast_unit, file_id, param.ty.unwrap());
-                    }
-                    if (!param.pat.isNone()) {
-                        const pat_id = patternFromOpt(param.pat);
-                        try highlightPattern(tokens, text, ast_unit, pat_id, .parameter, file_id);
-                    }
-                }
+                const result_ty_opt = exprFromOpt(cl_row.result_ty);
+                try highlightFunctionSignature(tokens, text, ast_unit, file_id, cl_row.params, result_ty_opt, .parameter);
             },
             .StructType => {
                 const struct_row = expr_store.get(.StructType, expr_id);
@@ -2170,7 +2177,7 @@ fn highlightExpressions(tokens: *TokenAccumulator, gpa: std.mem.Allocator, text:
 /// Classify the semantic kind for a declaration represented by `value_expr`.
 fn classifyDeclKind(ast_unit: *ast.Ast, value_expr: ast.ExprId) SemanticTokenKind {
     const expr_store = &ast_unit.exprs;
-    const expr_kind = expr_store.index.kinds.items[value_expr.toRaw()];
+    const expr_kind = expr_store.kind(value_expr);
     return switch (expr_kind) {
         .FunctionLit => .function,
         .StructType,
@@ -2239,7 +2246,7 @@ fn highlightPattern(
 ) !void {
     const pat_store = &ast_unit.pats;
     const locs = ast_unit.exprs.locs;
-    const pat_kind = pat_store.index.kinds.items[pat_id.toRaw()];
+    const pat_kind = pat_store.kind(pat_id);
     switch (pat_kind) {
         .Binding => {
             const row = pat_store.get(.Binding, pat_id);
@@ -2309,6 +2316,12 @@ fn patternFromOpt(opt: ast.OptPatternId) ast.PatternId {
     std.debug.assert(!opt.isNone());
     const idx = opt.unwrap();
     return ast.PatternId.fromRaw(idx.toRaw());
+}
+
+fn exprFromOpt(opt: ast.OptExprId) ?ast.ExprId {
+    if (opt.isNone()) return null;
+    const idx = opt.unwrap();
+    return ast.ExprId.fromRaw(idx.toRaw());
 }
 
 /// Highlight each segment of an identifier path used in semantic tokens.
@@ -2485,29 +2498,23 @@ fn printHoverFields(writer: *std.io.Writer, type_store: *types.TypeStore, fields
 
 /// Compute hover message for offset `offset_in` inside `uri`.
 fn computeHover(gpa: std.mem.Allocator, uri: []const u8, text: []const u8, offset_in: usize) !?HoverInfo {
-    var context = lib.compile.Context.init(gpa);
-    defer context.deinit();
-
-    const path = try fileUriToPath(gpa, uri);
-    defer gpa.free(path);
+    var session = try CompilationSession.init(gpa, uri, text);
+    defer session.deinit();
 
     const offset = if (offset_in > text.len) text.len else offset_in;
-    const file_id = try context.source_manager.setVirtualSourceByPath(path, text);
-    var pipeline = lib.pipeline.Pipeline.init(gpa, &context);
+    var pipeline = lib.pipeline.Pipeline.init(gpa, &session.context);
 
-    _ = pipeline.run(path, &.{}, .check, null) catch |err| switch (err) {
+    _ = pipeline.run(session.path, &.{}, .check, null) catch |err| switch (err) {
         error.ParseFailed => return null,
         else => {
             // Proceed with partial AST-based hover if available
         },
     };
 
-    const ast_unit = findAstForFile(&context.compilation_unit, file_id) orelse return null;
+    const ast_unit = findAstForFile(&session.context.compilation_unit, session.file_id) orelse return null;
 
-    var resolution_map = std.AutoArrayHashMap(u32, Symbol).init(gpa);
+    var resolution_map = try buildResolutionMap(gpa, ast_unit);
     defer resolution_map.deinit();
-    try SymbolResolver.run(gpa, ast_unit, &resolution_map);
-
     const expr_id = findExprAt(ast_unit, offset) orelse return null;
     const loc = exprLoc(ast_unit, expr_id);
 
@@ -2519,7 +2526,7 @@ fn computeHover(gpa: std.mem.Allocator, uri: []const u8, text: []const u8, offse
         const decl_loc = ast_unit.exprs.locs.get(symbol.decl_loc);
         const decl_file_id = decl_loc.file_id;
 
-        const decl_text = context.source_manager.read(decl_file_id) catch return null;
+        const decl_text = session.context.source_manager.read(decl_file_id) catch return null;
         defer gpa.free(decl_text);
 
         const start_offset = decl_loc.start;
@@ -2539,7 +2546,7 @@ fn computeHover(gpa: std.mem.Allocator, uri: []const u8, text: []const u8, offse
         if (getExprType(ast_unit, expr_id)) |type_id| {
             try writer.print("\n\n---\n\n", .{});
             try writer.print("```sr\n", .{});
-            try context.type_store.fmt(type_id, writer);
+            try session.context.type_store.fmt(type_id, writer);
             try writer.print("\n```", .{});
         }
 
@@ -2553,7 +2560,7 @@ fn computeHover(gpa: std.mem.Allocator, uri: []const u8, text: []const u8, offse
     // Fallback for unresolved symbols
     if (getExprType(ast_unit, expr_id)) |type_id| {
         try writer.print("```sr\n", .{});
-        try context.type_store.fmt(type_id, writer);
+        try session.context.type_store.fmt(type_id, writer);
         try writer.print("\n```", .{});
         const message = try msg_builder.toOwnedSlice();
         return HoverInfo{
@@ -2582,12 +2589,12 @@ fn findAstForFile(unit: *package_mod.CompilationUnit, file_id: u32) ?*ast.Ast {
 
 /// Find the expression at byte `offset` in `ast_unit`, if any.
 fn findExprAt(ast_unit: *ast.Ast, offset: usize) ?ast.ExprId {
-    const kinds = ast_unit.exprs.index.kinds.items;
+    const total = ast_unit.exprs.index.kinds.items.len;
     var best: ?ast.ExprId = null;
     var best_span: usize = std.math.maxInt(usize);
 
     var i: usize = 0;
-    while (i < kinds.len) : (i += 1) {
+    while (i < total) : (i += 1) {
         const expr_id = ast.ExprId.fromRaw(@intCast(i));
         const loc = exprLoc(ast_unit, expr_id);
         const start = loc.start;
@@ -2604,8 +2611,7 @@ fn findExprAt(ast_unit: *ast.Ast, offset: usize) ?ast.ExprId {
 
 /// Return the location metadata for expression `expr_id`.
 fn exprLoc(ast_unit: *ast.Ast, expr_id: ast.ExprId) Loc {
-    const kinds = ast_unit.exprs.index.kinds.items;
-    const kind = kinds[expr_id.toRaw()];
+    const kind = ast_unit.kind(expr_id);
     return switch (kind) {
         inline else => |k| blk: {
             const row = ast_unit.exprs.get(k, expr_id);

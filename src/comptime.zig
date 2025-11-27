@@ -308,8 +308,7 @@ fn evaluateTypeExpr(
     a: *ast.Ast,
     expr: ast.ExprId,
 ) anyerror!types.TypeId {
-    const kind = a.exprs.index.kinds.items[expr.toRaw()];
-    switch (kind) {
+    switch (a.kind(expr)) {
         .Ident => {
             const ident = a.exprs.get(.Ident, expr);
             if (ctx.lookupBindingType(ident.name)) |ty| {
@@ -355,16 +354,17 @@ fn evaluateTypeExpr(
             const call = a.exprs.get(.Call, expr);
             const callee_expr = call.callee;
 
-            const checker_ctx = self.chk.checker_ctx.items[a.file_id];
+            const checker_ctx = &self.chk.checker_ctx.items[a.file_id];
 
-            const proc_node = switch (a.exprs.index.kinds.items[callee_expr.toRaw()]) {
+            const proc_node = switch (a.kind(callee_expr)) {
                 .Ident => blk: {
                     const ident = a.exprs.get(.Ident, callee_expr);
                     const sym_id = checker_ctx.symtab.lookup(checker_ctx.symtab.currentId(), ident.name) orelse return error.SymbolNotFound;
                     const sym = checker_ctx.symtab.syms.get(sym_id);
                     const decl_id = if (sym.origin_decl.isNone()) return error.NotAProcedure else sym.origin_decl.unwrap();
                     const decl = a.exprs.Decl.get(decl_id);
-                    if (a.exprs.index.kinds.items[decl.value.toRaw()] != .FunctionLit) return error.NotAProcedure;
+                    if (a.kind(decl.value) != .FunctionLit) return error.NotAProcedure;
+
                     break :blk a.exprs.get(.FunctionLit, decl.value);
                 },
                 else => return error.NotAProcedure,
@@ -388,8 +388,7 @@ fn evaluateTypeExpr(
                     return error.MissingParameterName;
                 } else {
                     const pattern_id = param.pat.unwrap();
-                    const pattern_kind = a.pats.index.kinds.items[pattern_id.toRaw()];
-                    if (pattern_kind != .Binding) {
+                    if (a.kind(pattern_id) != .Binding) {
                         return error.UnsupportedPatternType;
                     }
                     param_name = a.pats.get(.Binding, pattern_id).name;
@@ -399,7 +398,7 @@ fn evaluateTypeExpr(
                 var is_type_param = false;
                 if (!param.ty.isNone()) {
                     const ty_expr = param.ty.unwrap();
-                    const ty_kind = a.exprs.index.kinds.items[ty_expr.toRaw()];
+                    const ty_kind = a.kind(ty_expr);
                     // If the parameter type is `type`, it's a type-parameter.
                     if (ty_kind == .TypeType or ty_kind == .AnyType) {
                         is_type_param = true;
@@ -458,13 +457,12 @@ fn evaluateTypeExpr(
             }
 
             for (stmts) |stmt_id| {
-                const stmt_kind = a.stmts.index.kinds.items[stmt_id.toRaw()];
-                switch (stmt_kind) {
+                switch (a.kind(stmt_id)) {
                     .Decl => {
                         const d_stmt = a.stmts.get(.Decl, stmt_id);
                         const d = a.exprs.Decl.get(d_stmt.decl);
                         // Handle method declarations (Alias.method :: proc ...)
-                        if (!d.method_path.isNone() and a.exprs.index.kinds.items[d.value.toRaw()] == .FunctionLit) {
+                        if (!d.method_path.isNone() and a.kind(d.value) == .FunctionLit) {
                             const seg_ids0 = a.exprs.method_path_pool.slice(d.method_path.asRange());
                             if (seg_ids0.len >= 2) {
                                 const owner_seg0 = a.exprs.MethodPathSeg.get(seg_ids0[0]);
@@ -525,8 +523,7 @@ fn evaluateTypeExpr(
                         // Type alias declaration
                         if (d.pattern.isNone()) break; // skip unnamed
                         const pat_id = d.pattern.unwrap();
-                        const pat_kind = a.pats.index.kinds.items[pat_id.toRaw()];
-                        if (pat_kind != .Binding) break; // only simple names
+                        if (a.kind(pat_id) != .Binding) break; // only simple names
                         const name = a.pats.get(.Binding, pat_id).name;
                         const ty = evaluateTypeExpr(self, ctx, a, d.value) catch |e| switch (e) {
                             error.UnsupportedComptimeType, error.TypeNotFound, error.NotAProcedure, error.MissingFunctionBody => break,
@@ -549,8 +546,7 @@ fn evaluateTypeExpr(
                     },
                     .Expr => {
                         const ex_stmt = a.stmts.get(.Expr, stmt_id);
-                        const ek = a.exprs.index.kinds.items[ex_stmt.expr.toRaw()];
-                        if (ek == .Return) {
+                        if (a.kind(ex_stmt.expr) == .Return) {
                             const ret = a.exprs.get(.Return, ex_stmt.expr);
                             if (!ret.value.isNone()) {
                                 const ret_val_expr = ret.value.unwrap();
@@ -572,7 +568,7 @@ fn evaluateTypeExpr(
             return error.NoReturnValueInBlock;
         },
         else => {
-            std.debug.print("evaluateTypeExpr: Unhandled expr type {}\n", .{kind});
+            std.debug.print("evaluateTypeExpr: Unhandled expr type {}\n", .{a.kind(expr)});
             return error.UnsupportedComptimeType;
         },
     }
@@ -588,7 +584,7 @@ pub fn runComptimeExpr(
     bindings: []const Pipeline.ComptimeBinding,
 ) !ComptimeValue {
     _ = ctx;
-    return self.chk.evalComptimeExpr(self.chk.checker_ctx.items[a.file_id], a, expr, result_ty, bindings);
+    return self.chk.evalComptimeExpr(&self.chk.checker_ctx.items[a.file_id], a, expr, result_ty, bindings);
 }
 
 /// Materialize a `tir.ValueId` for the supplied `ComptimeValue` in lowered code.
@@ -830,11 +826,11 @@ pub fn lowerSpecializedFunction(
     };
     const decl = a.exprs.Decl.get(req.decl_id);
 
-    if (a.exprs.index.kinds.items[decl.value.toRaw()] == .FunctionLit) {
+    if (a.kind(decl.value) == .FunctionLit) {
         const fn_lit = a.exprs.get(.FunctionLit, decl.value);
         if (!fn_lit.body.isNone()) {
             const body_eid = fn_lit.body.unwrap();
-            if (a.exprs.index.kinds.items[body_eid.toRaw()] == .Block) {
+            if (a.kind(body_eid) == .Block) {
                 const blk = a.exprs.get(.Block, body_eid);
                 const stmts = a.stmts.stmt_pool.slice(blk.items);
 
@@ -846,14 +842,13 @@ pub fn lowerSpecializedFunction(
                 }
 
                 for (stmts) |sid| {
-                    const sk = a.stmts.index.kinds.items[sid.toRaw()];
-                    if (sk != .Decl) continue;
+                    if (a.kind(sid) != .Decl) continue;
                     const sd = a.stmts.get(.Decl, sid);
                     const d2 = a.exprs.Decl.get(sd.decl);
 
                     if (!d2.pattern.isNone()) {
                         const pid = d2.pattern.unwrap();
-                        if (a.pats.index.kinds.items[pid.toRaw()] == .Binding) {
+                        if (a.kind(pid) == .Binding) {
                             const bname = a.pats.get(.Binding, pid).name;
                             const ty_opt = evaluateTypeExpr(self, ctx, a, d2.value) catch |e| switch (e) {
                                 error.UnsupportedComptimeType, error.TypeNotFound, error.MissingFunctionBody, error.NotAProcedure => null,
@@ -866,7 +861,7 @@ pub fn lowerSpecializedFunction(
                         }
                     }
 
-                    if (!d2.method_path.isNone() and a.exprs.index.kinds.items[d2.value.toRaw()] == .FunctionLit) {
+                    if (!d2.method_path.isNone() and a.kind(d2.value) == .FunctionLit) {
                         const seg_ids = a.exprs.method_path_pool.slice(d2.method_path.asRange());
                         if (seg_ids.len < 2) continue;
                         const owner_seg = a.exprs.MethodPathSeg.get(seg_ids[0]);
@@ -914,7 +909,7 @@ pub fn lowerSpecializedFunction(
                             const first_p = a.exprs.Param.get(param_ids[0]);
                             if (!first_p.pat.isNone()) {
                                 const pat_id = first_p.pat.unwrap();
-                                if (a.pats.index.kinds.items[pat_id.toRaw()] == .Binding) {
+                                if (a.kind(pat_id) == .Binding) {
                                     const sb = a.pats.get(.Binding, pat_id);
                                     if (std.mem.eql(u8, a.exprs.strs.get(sb.name), "self")) {
                                         if (!first_p.ty.isNone()) {

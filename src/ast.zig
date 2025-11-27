@@ -616,10 +616,9 @@ pub const Rows = struct {
         loc: LocId,
     };
     /// Flags that describe declaration qualifiers.
-    pub const DeclFlags = packed struct(u8) {
+    pub const DeclFlags = struct {
         /// Whether the declaration is marked `const`.
         is_const: bool,
-        _pad: u7 = 0,
     };
     /// Row that attaches an expression to a declaration pattern.
     pub const Decl = struct {
@@ -1328,6 +1327,10 @@ pub const ExprStore = struct {
         self.mlir_piece_pool.deinit(gpa);
     }
 
+    pub fn kind(self: *const @This(), id: ExprId) ExprKind {
+        return self.index.kinds.items[id.toRaw()];
+    }
+
     /// Add a row of kind `K` to the store and return the newly issued `ExprId`.
     pub fn add(self: *@This(), comptime K: ExprKind, row: RowT(K)) ExprId {
         const tbl: *Table(RowT(K)) = &@field(self, @tagName(K));
@@ -1460,6 +1463,11 @@ pub const StmtStore = struct {
         const tbl: *Table(StmtRowT(K)) = &@field(self, @tagName(K));
         return tbl.get(.{ .index = row_idx });
     }
+
+    /// Return the kind associated with statement `id`.
+    pub fn kind(self: *StmtStore, id: StmtId) StmtKind {
+        return self.index.kinds.items[id.toRaw()];
+    }
 };
 
 /// Storage for pattern nodes used by matches, loops, and bindings.
@@ -1530,6 +1538,10 @@ pub const PatternStore = struct {
         self.field_pool.deinit(gpa);
     }
 
+    pub fn kind(self: *@This(), id: PatternId) PatternKind {
+        return self.index.kinds.items[id.toRaw()];
+    }
+
     /// Insert a pattern row of kind `K` and return its identifier.
     pub fn add(self: *@This(), comptime K: PatternKind, row: PatRowT(K)) PatternId {
         const tbl: *Table(PatRowT(K)) = &@field(self, @tagName(K));
@@ -1594,8 +1606,25 @@ pub const Ast = struct {
         };
     }
 
+    fn KindType(T: type) type {
+        if (T == ExprId) return ExprKind;
+        if (T == PatternId) return PatternKind;
+        if (T == StmtId) return StmtKind;
+        @compileError("Unsupported id type: " ++ @typeName(T));
+    }
+
+    pub fn kind(self: *Ast, id: anytype) KindType(@TypeOf(id)) {
+        if (@TypeOf(id) == ExprId)
+            return self.exprs.kind(id);
+        if (@TypeOf(id) == PatternId)
+            return self.pats.kind(id);
+        if (@TypeOf(id) == StmtId)
+            return self.stmts.index.kinds.items[id.toRaw()];
+        @compileError("Unsupported id type: " ++ @typeName(@TypeOf(id)));
+    }
+
     /// Tear down every internal store and release the allocator-backed memory.
-    pub fn deinit(self: *@This()) void {
+    pub fn deinit(self: *Ast) void {
         self.type_info.deinit();
         self.exprs.deinit();
         self.stmts.deinit();
@@ -1781,7 +1810,7 @@ pub const AstPrinter = struct {
 
     /// Print an expression subtree rooted at `id`.
     pub fn printExpr(self: *AstPrinter, id: ExprId) anyerror!void {
-        const kind = self.exprs.index.kinds.items[id.toRaw()];
+        const kind = self.exprs.kind(id);
         switch (kind) {
             .Literal => {
                 const node = self.exprs.get(.Literal, id);
@@ -2438,7 +2467,7 @@ pub const AstPrinter = struct {
 
     /// Print the pattern `id` tree, using nested `(pattern ...)` nodes.
     pub fn printPattern(self: *AstPrinter, id: PatternId) anyerror!void {
-        const kind = self.pats.index.kinds.items[id.toRaw()];
+        const kind = self.pats.kind(id);
         switch (kind) {
             .Wildcard => try self.leaf("(wildcard)", .{}),
             .Literal => {
@@ -2704,7 +2733,7 @@ pub const CodePrinter = struct {
 
     /// Emit code for the expression tree rooted at `id`.
     pub fn printExpr(self: *CodePrinter, id: ExprId) anyerror!void {
-        const kind = self.exprs.index.kinds.items[id.toRaw()];
+        const kind = self.exprs.kind(id);
         switch (kind) {
             .Literal => {
                 const node = self.exprs.get(.Literal, id);
@@ -3438,7 +3467,7 @@ pub const CodePrinter = struct {
 
     /// Emit source form for the pattern tree rooted at `id`.
     pub fn printPattern(self: *CodePrinter, id: PatternId) anyerror!void {
-        const kind = self.pats.index.kinds.items[id.toRaw()];
+        const kind = self.pats.kind(id);
         switch (kind) {
             .Wildcard => try self.printf("_", .{}),
             .Literal => {

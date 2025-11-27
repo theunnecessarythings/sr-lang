@@ -40,8 +40,7 @@ const PipelineBindingSlice = struct {
 fn collectExprIds(gpa: std.mem.Allocator, ast_unit: *ast.Ast, expr_id: ast.ExprId, out: *std.ArrayList(ast.ExprId)) !void {
     try out.append(gpa, expr_id);
     const expr_store = &ast_unit.exprs;
-    const kind = expr_store.index.kinds.items[expr_id.toRaw()];
-    switch (kind) {
+    switch (ast_unit.kind(expr_id)) {
         .Literal, .Ident, .NullLit, .UndefLit, .AnyType, .TypeType, .NoreturnType => {},
         .Unary => try collectExprIds(gpa, ast_unit, expr_store.get(.Unary, expr_id).expr, out),
         .Binary => {
@@ -270,6 +269,148 @@ fn collectExprIds(gpa: std.mem.Allocator, ast_unit: *ast.Ast, expr_id: ast.ExprI
     }
 }
 
+pub const PatternChildDesc = union(enum) {
+    TupleElem: usize,
+    StructField: ast.StrId,
+    VariantTupleElem: struct { case_name: ast.StrId, index: usize },
+    VariantStructField: struct { case_name: ast.StrId, field_name: ast.StrId },
+    SliceElem: usize,
+    SliceRest: void,
+    OrAlt: usize,
+    AtPattern: void,
+};
+
+pub const PatternWalkerContext = struct {
+    ctx: *void,
+    onExpr: ?*const fn (*void, *ast.Ast, ast.ExprId) anyerror!void,
+    onBinding: ?*const fn (*void, *ast.Ast, ast.PatternId, ast.StrId, ?types.TypeId) anyerror!void,
+    onChildType: ?*const fn (*void, *ast.Ast, ast.PatternId, ?types.TypeId, ast.PatternId, PatternChildDesc) ?types.TypeId,
+};
+
+fn callOnExpr(ctx: *PatternWalkerContext, ast_unit: *ast.Ast, expr: ast.ExprId) anyerror!void {
+    if (ctx.onExpr) |hook| try hook(ctx.ctx, ast_unit, expr);
+    return;
+}
+
+fn callOnBinding(ctx: *PatternWalkerContext, ast_unit: *ast.Ast, pid: ast.PatternId, name: ast.StrId, value_ty: ?types.TypeId) anyerror!void {
+    if (ctx.onBinding) |hook| try hook(ctx.ctx, ast_unit, pid, name, value_ty);
+    return;
+}
+
+fn patternCaseName(ast_unit: *ast.Ast, path: ast.RangePathSeg) ?ast.StrId {
+    const segs = ast_unit.pats.seg_pool.slice(path);
+    if (segs.len == 0) return null;
+    return ast_unit.pats.PathSeg.get(segs[segs.len - 1]).name;
+}
+
+fn walkChild(
+    ctx: *PatternWalkerContext,
+    ast_unit: *ast.Ast,
+    parent_pid: ast.PatternId,
+    parent_ty: ?types.TypeId,
+    child_pid: ast.PatternId,
+    desc: PatternChildDesc,
+) anyerror!void {
+    const child_ty = if (ctx.onChildType) |hook| hook(ctx.ctx, ast_unit, parent_pid, parent_ty, child_pid, desc) else null;
+    const next_ty = if (child_ty) |ty| ty else parent_ty;
+    try walkPattern(ctx, ast_unit, child_pid, next_ty);
+}
+
+pub fn walkPattern(ctx: *PatternWalkerContext, ast_unit: *ast.Ast, pid: ast.PatternId, value_ty: ?types.TypeId) anyerror!void {
+    const pats = &ast_unit.pats;
+    switch (ast_unit.kind(pid)) {
+        .Wildcard, .Path => {},
+        .Literal => {
+            const row = pats.get(.Literal, pid);
+            try callOnExpr(ctx, ast_unit, row.expr);
+        },
+        .Binding => {
+            const row = pats.get(.Binding, pid);
+            try callOnBinding(ctx, ast_unit, pid, row.name, value_ty);
+        },
+        .Tuple => {
+            const row = pats.get(.Tuple, pid);
+            const elems = pats.pat_pool.slice(row.elems);
+            for (elems, 0..) |elem, index| {
+                try walkChild(ctx, ast_unit, pid, value_ty, elem, .{ .TupleElem = index });
+            }
+        },
+        .Slice => {
+            const row = pats.get(.Slice, pid);
+            const elems = pats.pat_pool.slice(row.elems);
+            for (elems, 0..) |elem, index| {
+                try walkChild(ctx, ast_unit, pid, value_ty, elem, .{ .SliceElem = index });
+            }
+            if (!row.rest_binding.isNone()) {
+                try walkChild(
+                    ctx,
+                    ast_unit,
+                    pid,
+                    value_ty,
+                    row.rest_binding.unwrap(),
+                    .SliceRest,
+                );
+            }
+        },
+        .Struct => {
+            const row = pats.get(.Struct, pid);
+            const fields = pats.field_pool.slice(row.fields);
+            for (fields) |fid| {
+                const field = pats.StructField.get(fid);
+                try walkChild(ctx, ast_unit, pid, value_ty, field.pattern, .{ .StructField = field.name });
+            }
+        },
+        .VariantTuple => {
+            const row = pats.get(.VariantTuple, pid);
+            const elems = pats.pat_pool.slice(row.elems);
+            const case_name = patternCaseName(ast_unit, row.path) orelse ast.StrId.fromRaw(0);
+            for (elems, 0..) |elem, index| {
+                try walkChild(
+                    ctx,
+                    ast_unit,
+                    pid,
+                    value_ty,
+                    elem,
+                    .{ .VariantTupleElem = .{ .case_name = case_name, .index = index } },
+                );
+            }
+        },
+        .VariantStruct => {
+            const row = pats.get(.VariantStruct, pid);
+            const fields = pats.field_pool.slice(row.fields);
+            const case_name = patternCaseName(ast_unit, row.path) orelse ast.StrId.fromRaw(0);
+            for (fields) |fid| {
+                const field = pats.StructField.get(fid);
+                try walkChild(
+                    ctx,
+                    ast_unit,
+                    pid,
+                    value_ty,
+                    field.pattern,
+                    .{ .VariantStructField = .{ .case_name = case_name, .field_name = field.name } },
+                );
+            }
+        },
+        .Range => {
+            const row = pats.get(.Range, pid);
+            if (!row.start.isNone()) try callOnExpr(ctx, ast_unit, row.start.unwrap());
+            if (!row.end.isNone()) try callOnExpr(ctx, ast_unit, row.end.unwrap());
+        },
+        .Or => {
+            const row = pats.get(.Or, pid);
+            const alts = pats.pat_pool.slice(row.alts);
+            for (alts, 0..) |alt, index| {
+                try walkChild(ctx, ast_unit, pid, value_ty, alt, .{ .OrAlt = index });
+            }
+        },
+        .At => {
+            const row = pats.get(.At, pid);
+            try callOnBinding(ctx, ast_unit, pid, row.binder, value_ty);
+            try walkChild(ctx, ast_unit, pid, value_ty, row.pattern, .AtPattern);
+        },
+    }
+}
+
 /// Recursively collect expression ids referenced from pattern `pat_id`.
 fn collectPatternExprs(
     gpa: std.mem.Allocator,
@@ -277,61 +418,29 @@ fn collectPatternExprs(
     pat_id: ast.PatternId,
     out: *std.ArrayList(ast.ExprId),
 ) anyerror!void {
-    const pats = &ast_unit.pats;
-    const kind = pats.index.kinds.items[pat_id.toRaw()];
-    switch (kind) {
-        .Literal => {
-            const row = pats.get(.Literal, pat_id);
-            try collectExprIds(gpa, ast_unit, row.expr, out);
-        },
-        .Range => {
-            const row = pats.get(.Range, pat_id);
-            if (!row.start.isNone()) try collectExprIds(gpa, ast_unit, row.start.unwrap(), out);
-            if (!row.end.isNone()) try collectExprIds(gpa, ast_unit, row.end.unwrap(), out);
-        },
-        .Tuple => {
-            const row = pats.get(.Tuple, pat_id);
-            const elems = pats.pat_pool.slice(row.elems);
-            for (elems) |elem| try collectPatternExprs(gpa, ast_unit, elem, out);
-        },
-        .Slice => {
-            const row = pats.get(.Slice, pat_id);
-            const elems = pats.pat_pool.slice(row.elems);
-            for (elems) |elem| try collectPatternExprs(gpa, ast_unit, elem, out);
-            if (!row.rest_binding.isNone()) try collectPatternExprs(gpa, ast_unit, row.rest_binding.unwrap(), out);
-        },
-        .Struct => {
-            const row = pats.get(.Struct, pat_id);
-            const fields = pats.field_pool.slice(row.fields);
-            for (fields) |fid| {
-                const field = pats.StructField.get(fid);
-                try collectPatternExprs(gpa, ast_unit, field.pattern, out);
-            }
-        },
-        .VariantStruct => {
-            const row = pats.get(.VariantStruct, pat_id);
-            const fields = pats.field_pool.slice(row.fields);
-            for (fields) |fid| {
-                const field = pats.StructField.get(fid);
-                try collectPatternExprs(gpa, ast_unit, field.pattern, out);
-            }
-        },
-        .VariantTuple => {
-            const row = pats.get(.VariantTuple, pat_id);
-            const elems = pats.pat_pool.slice(row.elems);
-            for (elems) |elem| try collectPatternExprs(gpa, ast_unit, elem, out);
-        },
-        .Or => {
-            const row = pats.get(.Or, pat_id);
-            const alts = pats.pat_pool.slice(row.alts);
-            for (alts) |alt| try collectPatternExprs(gpa, ast_unit, alt, out);
-        },
-        .At => {
-            const row = pats.get(.At, pat_id);
-            try collectPatternExprs(gpa, ast_unit, row.pattern, out);
-        },
-        else => {},
-    }
+    var visitor = PatternExprCollector{
+        .gpa = gpa,
+        .out = out,
+    };
+    var ctx = PatternWalkerContext{
+        .ctx = @ptrCast(@alignCast(&visitor)),
+        .onExpr = patternExprOnExpr,
+        .onBinding = null,
+        .onChildType = null,
+    };
+    try walkPattern(&ctx, ast_unit, pat_id, null);
+}
+
+const PatternExprCollector = struct {
+    gpa: std.mem.Allocator,
+    out: *std.ArrayList(ast.ExprId),
+};
+
+fn patternExprOnExpr(ctx: *void, ast_unit: *ast.Ast, expr: ast.ExprId) anyerror!void {
+    _ = ast_unit;
+    const collector: *PatternExprCollector = @ptrCast(@alignCast(ctx));
+    try collector.out.append(collector.gpa, expr);
+    return;
 }
 
 /// Collect expression ids touched by statement `stmt_id`.
@@ -342,8 +451,7 @@ fn collectStmtExprs(
     out: *std.ArrayList(ast.ExprId),
 ) anyerror!void {
     const stmt_store = &ast_unit.stmts;
-    const kind = stmt_store.index.kinds.items[stmt_id.toRaw()];
-    switch (kind) {
+    switch (ast_unit.kind(stmt_id)) {
         .Expr => try collectExprIds(gpa, ast_unit, stmt_store.get(.Expr, stmt_id).expr, out),
         .Decl => {
             const row = stmt_store.get(.Decl, stmt_id);
@@ -467,8 +575,7 @@ fn lookupValueBinding(bindings: []const Binding, name: ast.StrId) ?comp.Comptime
 /// Reset cached type info for the pattern subtree rooted at `pat_id`.
 fn clearPatternTypes(ast_unit: *ast.Ast, pat_id: ast.PatternId) void {
     const pats = &ast_unit.pats;
-    const kind = pats.index.kinds.items[pat_id.toRaw()];
-    switch (kind) {
+    switch (ast_unit.kind(pat_id)) {
         .Literal => {
             const row = pats.get(.Literal, pat_id);
             clearExprTypes(ast_unit, row.expr);
@@ -533,8 +640,7 @@ fn clearExprTypes(ast_unit: *ast.Ast, expr_id: ast.ExprId) void {
     ti.clearFieldIndex(expr_id) catch {};
 
     const expr_store = &ast_unit.exprs;
-    const kind = expr_store.index.kinds.items[expr_id.toRaw()];
-    switch (kind) {
+    switch (ast_unit.kind(expr_id)) {
         .Literal, .Ident, .NullLit, .UndefLit, .AnyType, .TypeType, .NoreturnType => {},
         .Unary => {
             const row = expr_store.get(.Unary, expr_id);
@@ -769,8 +875,7 @@ fn clearExprTypes(ast_unit: *ast.Ast, expr_id: ast.ExprId) void {
 /// Reset expression type caches referenced by statement `stmt_id`.
 fn clearStmtTypes(ast_unit: *ast.Ast, stmt_id: ast.StmtId) void {
     const stmt_store = &ast_unit.stmts;
-    const kind = stmt_store.index.kinds.items[stmt_id.toRaw()];
-    switch (kind) {
+    switch (ast_unit.kind(stmt_id)) {
         .Expr => clearExprTypes(ast_unit, stmt_store.get(.Expr, stmt_id).expr),
         .Decl => clearDeclTypes(ast_unit, stmt_store.get(.Decl, stmt_id).decl),
         .Assign => {
@@ -823,8 +928,7 @@ pub fn isIntegerKind(_: *const Checker, k: types.TypeKind) bool {
 
 /// Estimate alignment requirements for `ty_id` based on structural layout rules.
 fn typeAlign(ctx: *const compile.Context, ty_id: types.TypeId) usize {
-    const k = ctx.type_store.index.kinds.items[ty_id.toRaw()];
-    return switch (k) {
+    return switch (ctx.type_store.getKind(ty_id)) {
         .Bool, .I8, .U8 => 1,
         .I16, .U16 => 2,
         .I32, .U32, .F32 => 4,
@@ -859,7 +963,7 @@ fn typeAlign(ctx: *const compile.Context, ty_id: types.TypeId) usize {
             break :blk_t max_a;
         },
         .Variant, .Error => {
-            const fields = if (k == .Variant)
+            const fields = if (ctx.type_store.getKind(ty_id) == .Variant)
                 ctx.type_store.field_pool.slice(ctx.type_store.get(.Variant, ty_id).variants)
             else
                 ctx.type_store.field_pool.slice(ctx.type_store.get(.Error, ty_id).variants);
@@ -894,8 +998,7 @@ fn typeAlign(ctx: *const compile.Context, ty_id: types.TypeId) usize {
 
 /// Return the size in bytes of `ty_id` using the target type store.
 pub fn typeSize(ctx: *const compile.Context, ty_id: types.TypeId) usize {
-    const k = ctx.type_store.index.kinds.items[ty_id.toRaw()];
-    return switch (k) {
+    return switch (ctx.type_store.getKind(ty_id)) {
         .I8, .U8, .Bool => 1,
         .I16, .U16 => 2,
         .I32, .U32, .F32 => 4,
@@ -950,7 +1053,7 @@ pub fn typeSize(ctx: *const compile.Context, ty_id: types.TypeId) usize {
         },
         .Variant, .Error => blk_var: {
             // Runtime shape: struct { tag: i32, payload: union {...} }
-            const fields = if (k == .Variant)
+            const fields = if (ctx.type_store.getKind(ty_id) == .Variant)
                 ctx.type_store.field_pool.slice(ctx.type_store.get(.Variant, ty_id).variants)
             else
                 ctx.type_store.field_pool.slice(ctx.type_store.get(.Error, ty_id).variants);
@@ -1005,7 +1108,7 @@ pub fn typeSize(ctx: *const compile.Context, ty_id: types.TypeId) usize {
         // Optional/Struct/Tuple/Union/Map/Error/Variant/ErrorSet/Simd/Tensor:
         // ABI/padding/representation are not modeled here yet.
         else => {
-            std.debug.print("typeSize: unhandled kind {}\n", .{k});
+            std.debug.print("typeSize: unhandled kind {}\n", .{ctx.type_store.getKind(ty_id)});
             unreachable;
         },
     };
@@ -1013,8 +1116,7 @@ pub fn typeSize(ctx: *const compile.Context, ty_id: types.TypeId) usize {
 
 /// If `id` is an optional type, return its element type, else `null`.
 pub fn isOptional(self: *Checker, id: types.TypeId) ?types.TypeId {
-    const k = self.context.type_store.index.kinds.items[id.toRaw()];
-    if (k != .Optional) return null;
+    if (self.context.type_store.getKind(id) != .Optional) return null;
     return self.context.type_store.get(.Optional, id).elem;
 }
 
@@ -1052,7 +1154,7 @@ fn variantPayloadType(self: *Checker, variant_ty: types.TypeId, tag: ast.StrId) 
 
 /// Evaluate literal expression `id` to a comptime integer value when possible.
 fn evalLiteralToComptime(ast_unit: *ast.Ast, id: ast.ExprId) !?comp.ComptimeValue {
-    if (ast_unit.exprs.index.kinds.items[id.toRaw()] != .Literal) return null;
+    if (ast_unit.kind(id) != .Literal) return null;
     const lit = ast_unit.exprs.get(.Literal, id);
     return switch (lit.kind) {
         .int => blk: {
@@ -1075,10 +1177,9 @@ pub fn typeFromTypeExprWithBindings(
     id: ast.ExprId,
     bindings: []const Binding,
 ) anyerror!struct { bool, types.TypeId } {
-    const kind = ast_unit.exprs.index.kinds.items[id.toRaw()];
     const ts = self.context.type_store;
     var status = true;
-    return switch (kind) {
+    return switch (ast_unit.kind(id)) {
         .Ident => blk_ident: {
             const name = ast_unit.exprs.get(.Ident, id).name;
             if (lookupTypeBinding(bindings, name)) |ty|
@@ -1152,7 +1253,7 @@ pub fn typeFromTypeExprWithBindings(
                 break :blk_call .{ status, ty_res[1] };
             }
             const call_row = ast_unit.exprs.get(.Call, id);
-            const callee_kind = ast_unit.exprs.index.kinds.items[call_row.callee.toRaw()];
+            const callee_kind = ast_unit.kind(call_row.callee);
             if (callee_kind == .FieldAccess or callee_kind == .Ident) {
                 const any_type_ty = ts.mkTypeType(ts.tAny());
                 var value = evalComptimeValueWithBindings(self, ctx, ast_unit, id, any_type_ty, bindings) catch break :blk_call .{ false, ts.tTypeError() };
@@ -1182,8 +1283,7 @@ fn resolveTypeFunctionCall(
     existing_bindings: []const Binding,
 ) anyerror!?struct { bool, types.TypeId } {
     const call = ast_unit.exprs.get(.Call, call_id);
-    const callee_kind = ast_unit.exprs.index.kinds.items[call.callee.toRaw()];
-    if (callee_kind != .Ident) return null;
+    if (ast_unit.kind(call.callee) != .Ident) return null;
 
     const callee_ident = ast_unit.exprs.get(.Ident, call.callee);
     const sym_id = self.lookup(ctx, callee_ident.name) orelse return null;
@@ -1192,8 +1292,7 @@ fn resolveTypeFunctionCall(
 
     const decl_id = sym.origin_decl.unwrap();
     const decl = ast_unit.exprs.Decl.get(decl_id);
-    const value_kind = ast_unit.exprs.index.kinds.items[decl.value.toRaw()];
-    if (value_kind != .FunctionLit) return null;
+    if (ast_unit.kind(decl.value) != .FunctionLit) return null;
 
     const fn_lit = ast_unit.exprs.get(.FunctionLit, decl.value);
     const params = ast_unit.exprs.param_pool.slice(fn_lit.params);
@@ -1207,7 +1306,7 @@ fn resolveTypeFunctionCall(
     }
     var callee_ctx = ctx;
     if (ast_unit.file_id < self.checker_ctx.items.len) {
-        callee_ctx = self.checker_ctx.items[ast_unit.file_id];
+        callee_ctx = &self.checker_ctx.items[ast_unit.file_id];
     }
 
     var i: usize = 0;
@@ -1217,7 +1316,7 @@ fn resolveTypeFunctionCall(
         if (!param.is_comptime or param.pat.isNone() or param.ty.isNone()) return null;
 
         const pat_id = param.pat.unwrap();
-        if (ast_unit.pats.index.kinds.items[pat_id.toRaw()] != .Binding) return null;
+        if (ast_unit.kind(pat_id) != .Binding) return null;
         const pname = ast_unit.pats.get(.Binding, pat_id).name;
 
         const res = try typeFromTypeExpr(self, callee_ctx, ast_unit, param.ty.unwrap());
@@ -1231,7 +1330,7 @@ fn resolveTypeFunctionCall(
         } else {
             const current_bindings = bindings_builder.items[0..bindings_builder.items.len];
             const arg_expr = args[i];
-            const arg_kind = ast_unit.exprs.index.kinds.items[arg_expr.toRaw()];
+            const arg_kind = ast_unit.kind(arg_expr);
 
             var have_value = false;
             var value: comp.ComptimeValue = undefined;
@@ -1265,7 +1364,7 @@ fn resolveTypeFunctionCall(
 
     if (fn_lit.body.isNone()) return null;
     const body_id = fn_lit.body.unwrap();
-    if (ast_unit.exprs.index.kinds.items[body_id.toRaw()] != .Block) return null;
+    if (ast_unit.kind(body_id) != .Block) return null;
     const block = ast_unit.exprs.get(.Block, body_id);
     const stmts = ast_unit.stmts.stmt_pool.slice(block.items);
     _ = try callee_ctx.symtab.push(callee_ctx.symtab.currentId());
@@ -1282,14 +1381,13 @@ fn resolveTypeFunctionCall(
     }
 
     for (stmts) |sid| {
-        const stmt_kind = ast_unit.stmts.index.kinds.items[sid.toRaw()];
-        if (stmt_kind == .Decl) {
+        if (ast_unit.kind(sid) == .Decl) {
             const row = ast_unit.stmts.get(.Decl, sid);
             clearDeclTypes(ast_unit, row.decl);
             try self.checkDecl(callee_ctx, ast_unit, row.decl);
             continue;
         }
-        if (stmt_kind != .Return) continue;
+        if (ast_unit.kind(sid) != .Return) continue;
         const ret = ast_unit.stmts.get(.Return, sid);
         if (ret.value.isNone()) return null;
         clearExprTypes(ast_unit, ret.value.unwrap());
@@ -1306,10 +1404,9 @@ fn resolveTypeFunctionCall(
 
 /// Evaluate a type expression, reporting whether it is a nominal type and its ID.
 pub fn typeFromTypeExpr(self: *Checker, ctx: *Checker.CheckerContext, ast_unit: *ast.Ast, id: ast.ExprId) anyerror!struct { bool, types.TypeId } {
-    const k = ast_unit.exprs.index.kinds.items[id.toRaw()];
     const ts = self.context.type_store;
     var status = true;
-    return switch (k) {
+    return switch (ast_unit.kind(id)) {
         .Ident => blk: {
             const name = ast_unit.exprs.get(.Ident, id).name;
             const s = ast_unit.exprs.strs.get(name);
@@ -1351,15 +1448,11 @@ pub fn typeFromTypeExpr(self: *Checker, ctx: *Checker.CheckerContext, ast_unit: 
                     }
 
                     // Recursion guard for lazy type resolution.
-                    for (ctx.resolving_type_decls.items) |resolving_did| {
-                        if (resolving_did.eq(did)) {
-                            // Recursive type definition detected. Return `any` to avoid a crash.
-                            // A proper fix requires more advanced type system features (e.g. opaque types).
-                            return .{ true, ts.tAny() };
-                        }
+                    if (ctx.resolving_type_decls.get(did)) |_| {
+                        return .{ true, ts.tAny() };
                     }
-                    try ctx.resolving_type_decls.append(self.gpa, did);
-                    defer _ = ctx.resolving_type_decls.pop();
+                    try ctx.resolving_type_decls.put(self.gpa, did, {});
+                    defer _ = ctx.resolving_type_decls.swapRemove(did);
 
                     // Lazy resolve: if the declaration\'s RHS is a type expression, resolve it now.
                     const drow = ast_unit.exprs.Decl.get(did);
@@ -1483,8 +1576,7 @@ pub fn typeFromTypeExpr(self: *Checker, ctx: *Checker.CheckerContext, ast_unit: 
                 try self.context.diags.addError(ast_unit.exprs.locs.get(row.loc), .simd_invalid_element_type, .{});
                 status = false;
             }
-            const lk = ast_unit.exprs.index.kinds.items[row.lanes.toRaw()];
-            if (lk != .Literal) {
+            if (ast_unit.kind(row.lanes) != .Literal) {
                 try self.context.diags.addError(ast_unit.exprs.locs.get(row.loc), .simd_lanes_not_integer_literal, .{});
                 status = false;
             }
@@ -1518,8 +1610,7 @@ pub fn typeFromTypeExpr(self: *Checker, ctx: *Checker.CheckerContext, ast_unit: 
             var dim_values = [_]usize{0} ** types.max_tensor_rank;
             var i: usize = 0;
             while (i < dims.len) : (i += 1) {
-                const dk = ast_unit.exprs.index.kinds.items[dims[i].toRaw()];
-                if (dk != .Literal) {
+                if (ast_unit.kind(dims[i]) != .Literal) {
                     try self.context.diags.addError(ast_unit.exprs.locs.get(row.loc), .tensor_dimension_not_integer_literal, .{});
                     status = false;
                     continue;
@@ -1659,7 +1750,7 @@ pub fn typeFromTypeExpr(self: *Checker, ctx: *Checker.CheckerContext, ast_unit: 
                 if (!enum_field.value.isNone()) {
                     const val_id = enum_field.value.unwrap();
                     var resolved_from_binding = false;
-                    if (ast_unit.exprs.index.kinds.items[val_id.toRaw()] == .Ident) {
+                    if (ast_unit.kind(val_id) == .Ident) {
                         const ident = ast_unit.exprs.get(.Ident, val_id);
                         if (lookupValueBinding(binding_slice, ident.name)) |binding_val| {
                             switch (binding_val) {
@@ -1860,15 +1951,13 @@ pub fn typeFromTypeExpr(self: *Checker, ctx: *Checker.CheckerContext, ast_unit: 
         },
         .FieldAccess => blk_fa: {
             // Recursion guard: check if we're already resolving this expression
-            for (ctx.resolving_type_exprs.items) |resolving_id| {
-                if (resolving_id.eq(id)) {
-                    // Circular type expression detected. Return type error to avoid stack overflow.
-                    try self.context.diags.addError(ast_unit.exprs.locs.get(ast_unit.exprs.get(.FieldAccess, id).loc), .field_access_on_non_aggregate, .{});
-                    break :blk_fa .{ false, ts.tTypeError() };
-                }
+            if (ctx.resolving_type_exprs.get(id)) |_| {
+                // Circular type expression detected. Return type error to avoid stack overflow.
+                try self.context.diags.addError(ast_unit.exprs.locs.get(ast_unit.exprs.get(.FieldAccess, id).loc), .field_access_on_non_aggregate, .{});
+                break :blk_fa .{ false, ts.tTypeError() };
             }
-            try ctx.resolving_type_exprs.append(self.gpa, id);
-            defer _ = ctx.resolving_type_exprs.pop();
+            try ctx.resolving_type_exprs.put(self.gpa, id, void{});
+            defer _ = ctx.resolving_type_exprs.swapRemove(id);
 
             const fr = ast_unit.exprs.get(.FieldAccess, id);
             const parent_res = try typeFromTypeExpr(self, ctx, ast_unit, fr.parent);
@@ -1911,7 +2000,7 @@ pub fn typeFromTypeExpr(self: *Checker, ctx: *Checker.CheckerContext, ast_unit: 
                     while (i < fields.len) : (i += 1) {
                         const f = fields[i];
                         const field = ts.Field.get(f);
-                        if (field.name.toRaw() == fr.field.toRaw()) return .{ status, field.ty };
+                        if (field.name.eq(fr.field)) return .{ status, field.ty };
                     }
                     try self.context.diags.addError(ast_unit.exprs.locs.get(fr.loc), .unknown_struct_field, .{});
                     break :blk_fa .{ false, ts.tTypeError() };
@@ -1927,7 +2016,7 @@ pub fn typeFromTypeExpr(self: *Checker, ctx: *Checker.CheckerContext, ast_unit: 
                     var i: usize = 0;
                     while (i < members.len) : (i += 1) {
                         const member = ts.EnumMember.get(members[i]);
-                        if (member.name.toRaw() == fr.field.toRaw()) {
+                        if (member.name.eq(fr.field)) {
                             return .{ status, parent_ty };
                         }
                     }
@@ -1967,7 +2056,7 @@ pub fn typeFromTypeExpr(self: *Checker, ctx: *Checker.CheckerContext, ast_unit: 
                 break :blk_call .{ status, ty_res[1] };
             }
             const call_row = ast_unit.exprs.get(.Call, id);
-            const callee_kind = ast_unit.exprs.index.kinds.items[call_row.callee.toRaw()];
+            const callee_kind = ast_unit.kind(call_row.callee);
             if (callee_kind == .FieldAccess or callee_kind == .Ident) {
                 const any_type_ty = ts.mkTypeType(ts.tAny());
                 var value = evalComptimeValueWithBindings(self, ctx, ast_unit, id, any_type_ty, &[_]Binding{}) catch break :blk_call .{ false, ts.tTypeError() };

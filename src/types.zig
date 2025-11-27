@@ -1211,7 +1211,7 @@ pub const TypeStore = struct {
             /// eq type system helper.
             fn eq(s: *const TypeStore, row: Rows.Ptr, key: anytype) bool {
                 _ = s;
-                return row.elem.toRaw() == key.e.toRaw() and row.is_const == key.c;
+                return row.elem.eq(key.e) and row.is_const == key.c;
             }
         });
     }
@@ -1241,7 +1241,7 @@ pub const TypeStore = struct {
             /// eq type system helper.
             fn eq(s: *const TypeStore, row: Rows.Array, key: anytype) bool {
                 _ = s;
-                return row.elem.toRaw() == key.e.toRaw() and row.len == key.l;
+                return row.elem.eq(key.e) and row.len == key.l;
             }
         });
     }
@@ -1250,7 +1250,7 @@ pub const TypeStore = struct {
         return self.findMatch(.Tensor, struct { e: TypeId, d: []const usize }{ .e = elem, .d = dims }, struct {
             /// eq type system helper.
             fn eq(_: *const TypeStore, row: Rows.Tensor, key: anytype) bool {
-                if (row.elem.toRaw() != key.e.toRaw()) return false;
+                if (!row.elem.eq(key.e)) return false;
                 if (row.rank != key.d.len) return false;
                 var i: usize = 0;
                 while (i < row.rank) : (i += 1) {
@@ -1266,7 +1266,7 @@ pub const TypeStore = struct {
             /// eq type system helper.
             fn eq(s: *const TypeStore, row: Rows.Map, k: anytype) bool {
                 _ = s;
-                return row.key.toRaw() == k.k.toRaw() and row.value.toRaw() == k.v.toRaw();
+                return row.key.eq(k.k) and row.value.eq(k.v);
             }
         });
     }
@@ -1278,7 +1278,7 @@ pub const TypeStore = struct {
         }, struct {
             /// eq type system helper.
             fn eq(_: *const TypeStore, row: Rows.Ast, key: anytype) bool {
-                return row.filepath.toRaw() == key.filepath.toRaw() and row.pkg_name.toRaw() == key.pkg.toRaw();
+                return row.filepath.eq(key.filepath) and row.pkg_name.eq(key.pkg);
             }
         });
     }
@@ -1287,7 +1287,7 @@ pub const TypeStore = struct {
         return self.findMatch(.Simd, struct { e: TypeId, l: u16 }{ .e = elem, .l = lanes }, struct {
             /// eq type system helper.
             fn eq(_: *const TypeStore, row: Rows.Simd, key: anytype) bool {
-                return row.elem.toRaw() == key.e.toRaw() and row.lanes == key.l;
+                return row.elem.eq(key.e) and row.lanes == key.l;
             }
         });
     }
@@ -1309,7 +1309,7 @@ pub const TypeStore = struct {
                 const ids = s.type_pool.slice(row.elems);
                 if (ids.len != key.len) return false;
                 var i: usize = 0;
-                while (i < ids.len) : (i += 1) if (ids[i].toRaw() != key[i].toRaw()) return false;
+                while (i < ids.len) : (i += 1) if (!ids[i].eq(key[i])) return false;
                 return true;
             }
         });
@@ -1319,11 +1319,11 @@ pub const TypeStore = struct {
         return self.findMatch(.Function, struct { p: []const TypeId, r: TypeId, v: bool, pure: bool, ext: bool }{ .p = params, .r = result, .v = is_variadic, .pure = is_pure, .ext = is_extern }, struct {
             /// eq type system helper.
             fn eq(s: *const TypeStore, row: Rows.Function, key: anytype) bool {
-                if (row.result.toRaw() != key.r.toRaw() or row.is_variadic != key.v or row.is_pure != key.pure or row.is_extern != key.ext) return false;
+                if (!row.result.eq(key.r) or row.is_variadic != key.v or row.is_pure != key.pure or row.is_extern != key.ext) return false;
                 const ids = s.type_pool.slice(row.params);
                 if (ids.len != key.p.len) return false;
                 var i: usize = 0;
-                while (i < ids.len) : (i += 1) if (ids[i].toRaw() != key.p[i].toRaw()) return false;
+                while (i < ids.len) : (i += 1) if (!ids[i].eq(key.p[i])) return false;
                 return true;
             }
         });
@@ -1352,8 +1352,8 @@ pub const TypeStore = struct {
                 var j: usize = 0;
                 while (j < ids.len) : (j += 1) {
                     const f = s.Field.get(ids[j]);
-                    if (f.name.toRaw() != k.names[j].toRaw()) return false;
-                    if (f.ty.toRaw() != k.tys[j].toRaw()) return false;
+                    if (!f.name.eq(k.names[j])) return false;
+                    if (!f.ty.eq(k.tys[j])) return false;
                 }
                 return true;
             }
@@ -1365,7 +1365,7 @@ pub const TypeStore = struct {
             /// eq type system helper.
             fn eq(s: *const TypeStore, row: Rows.ErrorSet, k: anytype) bool {
                 _ = s;
-                return row.value_ty.toRaw() == k.v.toRaw() and row.error_ty.toRaw() == k.e.toRaw();
+                return row.value_ty.eq(k.v) and row.error_ty.eq(k.e);
             }
         });
     }
@@ -1402,8 +1402,8 @@ pub const TypeStore = struct {
                 var j: usize = 0;
                 while (j < ids.len) : (j += 1) {
                     const f = s.Field.get(ids[j]);
-                    if (f.name.toRaw() != k.names[j].toRaw()) return false;
-                    if (f.ty.toRaw() != k.tys[j].toRaw()) return false;
+                    if (!f.name.eq(k.names[j])) return false;
+                    if (!f.ty.eq(k.tys[j])) return false;
                 }
                 return true;
             }

@@ -431,13 +431,13 @@ fn lowerStmtFromDecl(self: *Lower, id: cst.DeclId) !ast.StmtId {
     }
 
     // Compound assigns desugaring: Infix at top-level
-    if (self.cst_program.exprs.index.kinds.items[d.rhs.toRaw()] == .Infix) {
+    if (self.cst_program.kind(d.rhs) == .Infix) {
         const irow = self.cst_program.exprs.get(.Infix, d.rhs);
         if (try self.tryLowerCompoundAssign(&irow)) |stmt| return stmt;
     }
 
     // Statement-like RHS
-    const kind = self.cst_program.exprs.index.kinds.items[d.rhs.toRaw()];
+    const kind = self.cst_program.kind(d.rhs);
     return switch (kind) {
         .Return => blk: {
             const r = self.cst_program.exprs.get(.Return, d.rhs);
@@ -582,7 +582,7 @@ fn tryLowerCompoundAssign(self: *Lower, i: *const cst.Rows.Infix) !?ast.StmtId {
 // ---------------- Expressions ----------------
 /// Lower any expression node by dispatching on its variant.
 fn lowerExpr(self: *Lower, id: cst.ExprId) anyerror!ast.ExprId {
-    const kind = self.cst_program.exprs.index.kinds.items[id.toRaw()];
+    const kind = self.cst_program.kind(id);
     return switch (kind) {
         .Ident => blk: {
             const row = self.cst_program.exprs.get(.Ident, id);
@@ -1274,7 +1274,7 @@ fn lowerMatchArms(self: *Lower, r: cst.RangeOf(cst.MatchArmId)) !ast.RangeMatchA
 // ---------------- Patterns ----------------
 /// Lower a pattern CST node into its AST counterpart.
 fn lowerPattern(self: *Lower, id: cst.PatternId) !ast.PatternId {
-    const kind = self.cst_program.pats.index.kinds.items[id.toRaw()];
+    const kind = self.cst_program.kind(id);
     return switch (kind) {
         .Wildcard => blk: {
             const w = self.cst_program.pats.get(.Wildcard, id);
@@ -1434,7 +1434,7 @@ fn pathSegsFromTypeExpr(self: *Lower, id: cst.ExprId) !ast.RangePathSeg {
 }
 /// Gather path segments recursively for a dotted identifier or module path.
 fn collectPathSegs(self: *Lower, id: cst.ExprId, segs: *std.ArrayList(ast.PathSegId)) anyerror!void {
-    const kind = self.cst_program.exprs.index.kinds.items[id.toRaw()];
+    const kind = self.cst_program.kind(id);
     switch (kind) {
         .Ident => {
             const r = self.cst_program.exprs.get(.Ident, id);
@@ -1474,7 +1474,7 @@ fn lowerOptionalPatternFromExpr(self: *Lower, e: cst.OptExprId) !ast.OptPatternI
 
 /// Try to interpret an expression as a pattern literal, returning `null` if not applicable.
 fn patternFromExpr(self: *Lower, id: cst.ExprId) !?ast.PatternId {
-    const kind = self.cst_program.exprs.index.kinds.items[id.toRaw()];
+    const kind = self.cst_program.kind(id);
     return switch (kind) {
         .Ident => blk: {
             const r = self.cst_program.exprs.get(.Ident, id);
@@ -1501,7 +1501,7 @@ fn patternFromExpr(self: *Lower, id: cst.ExprId) !?ast.PatternId {
             var out_i: usize = 0;
             var i: usize = 0;
             while (i < xs.len) : (i += 1) {
-                const ek = self.cst_program.exprs.index.kinds.items[xs[i].toRaw()];
+                const ek = self.cst_program.kind(xs[i]);
                 if (ek == .Prefix) {
                     const p = self.cst_program.exprs.get(.Prefix, xs[i]);
                     if (p.op == .range) {

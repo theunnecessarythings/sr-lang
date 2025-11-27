@@ -20,6 +20,7 @@ const MethodEntry = types.MethodEntry;
 const mlir = @import("mlir_bindings.zig");
 
 const List = std.ArrayList;
+const Map = std.AutoArrayHashMapUnmanaged;
 
 /// Primary semantic analysis driver that owns global/checker-wide data.
 pub const Checker = @This();
@@ -31,7 +32,7 @@ context: *Context,
 /// Pipeline that drives the compilation phases.
 pipeline: *Pipeline,
 /// Stack of per-file checker contexts currently active.
-checker_ctx: List(*CheckerContext),
+checker_ctx: List(CheckerContext),
 
 /// Per-AST context that tracks symbol tables, loops, matches, and diagnostic state.
 pub const CheckerContext = struct {
@@ -48,8 +49,6 @@ pub const CheckerContext = struct {
     allow_nested_fn: List(bool) = .{},
     /// Whether metadata diagnostics have already been emitted.
     warned_meta: bool = false,
-    /// Whether comptime diagnostics have already been emitted.
-    warned_comptime: bool = false,
     /// Whether code diagnostics have already been emitted.
     warned_code: bool = false,
 
@@ -59,10 +58,11 @@ pub const CheckerContext = struct {
     catch_binding_stack: List(CatchBindingCtx) = .{},
     /// Match-binding contexts currently in scope.
     match_binding_stack: List(MatchBindingCtx) = .{},
+
     /// Declarations whose types are currently being resolved to prevent recursion.
-    resolving_type_decls: List(ast.DeclId) = .{},
+    resolving_type_decls: Map(ast.DeclId, void) = .{},
     /// Expressions whose types are currently being resolved.
-    resolving_type_exprs: List(ast.ExprId) = .{},
+    resolving_type_exprs: Map(ast.ExprId, void) = .{},
     /// Pending parameter specializations for generics.
     param_specializations: List(ParamSpecialization) = .{},
 
@@ -89,6 +89,7 @@ const LoopBindingCtx = struct {
     /// Type of the loop subject that the pattern must match.
     subject_ty: types.TypeId,
 };
+
 /// Records the active pattern and type information for a match arm.
 const MatchBindingCtx = struct {
     /// Pattern used by the current match arm.
@@ -96,6 +97,7 @@ const MatchBindingCtx = struct {
     /// Type of the value being matched against.
     subject_ty: types.TypeId,
 };
+
 /// Captures the name and type produced by a `catch` clause.
 const CatchBindingCtx = struct {
     /// Name bound inside the catch handler.
@@ -112,34 +114,161 @@ pub const ParamSpecialization = struct {
     ty: types.TypeId,
 };
 
-// --------- tiny helpers (readability & consistency) ----------
+/// Tracks the currently-checked function’s type expectations and local captures.
+const FunctionCtx = struct {
+    /// Function return type (possibly inferred).
+    result: types.TypeId,
+    /// True when the function declares a return value.
+    has_result: bool,
+    /// Whether the function has been proven pure so far.
+    pure: bool,
+    /// Whether purity is required by the declaration/context.
+    require_pure: bool,
+    /// Locally-defined entities tracked for resolution.
+    locals: std.AutoArrayHashMapUnmanaged(u32, void) = .{},
+};
+
+/// Tracks the innermost loop label and result type for break/continue resolution.
+const LoopCtx = struct {
+    /// Optional label attached to the loop.
+    label: ast.OptStrId,
+    /// Inferred result type for loops that return expressions.
+    result_ty: ?types.TypeId = null,
+};
+
+/// Construct a new `Checker` wired to `pipeline`, `context`, and allocator `gpa`.
+pub fn init(
+    gpa: std.mem.Allocator,
+    context: *Context,
+    pipeline: *Pipeline,
+) Checker {
+    return .{
+        .gpa = gpa,
+        .context = context,
+        .pipeline = pipeline,
+        .checker_ctx = .{},
+    };
+}
+
+/// Deinitialize the checker, releasing all per-file contexts.
+pub fn deinit(self: *Checker) void {
+    self.checker_ctx.deinit(self.gpa);
+}
+
+/// Execute the checker across all AST units ordered by `levels`.
+pub fn run(self: *Checker, levels: *const compile.DependencyLevels) !void {
+    var ast_by_file_id = std.AutoArrayHashMap(u32, *ast.Ast).init(self.gpa);
+    defer ast_by_file_id.deinit();
+
+    var pkg_iter = self.context.compilation_unit.packages.iterator();
+    while (pkg_iter.next()) |pkg| {
+        var source_iter = pkg.value_ptr.sources.iterator();
+        while (source_iter.next()) |unit| {
+            if (unit.value_ptr.ast) |ast_unit| {
+                try ast_by_file_id.put(unit.value_ptr.file_id, ast_unit);
+            }
+        }
+    }
+
+    // Size the per-file checker context table by max file_id + 1 to allow
+    // direct indexing via ast_unit.file_id used during lowering.
+    const max_file_id = std.mem.max(u32, ast_by_file_id.keys());
+    try self.checker_ctx.resize(self.gpa, max_file_id + 1);
+
+    var threads = List(std.Thread){};
+    defer threads.deinit(self.gpa);
+
+    for (levels.levels.items) |level| {
+        threads.clearRetainingCapacity();
+        if (level.items.len == 0) continue;
+
+        for (level.items) |file_id| {
+            const ast_unit = ast_by_file_id.get(file_id) orelse continue;
+            self.checker_ctx.items[file_id] = CheckerContext{
+                .symtab = symbols.SymbolStore.init(self.gpa),
+            };
+            const thread = try std.Thread.spawn(.{}, runAst, .{
+                self,
+                ast_unit,
+                &self.checker_ctx.items[file_id],
+            });
+            try threads.append(self.gpa, thread);
+        }
+
+        for (threads.items) |thread| {
+            thread.join();
+        }
+    }
+}
+
+/// Walk the AST for `ast_unit`, binding top-level declarations and checking each node.
+pub fn runAst(self: *Checker, ast_unit: *ast.Ast, ctx: *CheckerContext) !void {
+    // pre-allocate type slots
+    const expr_len: usize = ast_unit.exprs.index.kinds.items.len;
+    const decl_len: usize = ast_unit.exprs.Decl.list.len;
+    try ast_unit.type_info.expr_types.appendNTimes(self.gpa, null, expr_len);
+    try ast_unit.type_info.decl_types.appendNTimes(self.gpa, null, decl_len);
+
+    // Add builtin symbols to the global scope
+    _ = try ctx.symtab.push(null);
+
+    const decl_ids = ast_unit.exprs.decl_pool.slice(ast_unit.unit.decls);
+
+    // (1) Bind all top-level names so forward refs resolve
+    for (decl_ids) |did|
+        try self.bindDeclPattern(ctx, ast_unit, did);
+
+    // (2) Predeclare signatures for all top-level functions
+    for (decl_ids) |did| {
+        const decl = ast_unit.exprs.Decl.get(did);
+        if (ast_unit.kind(decl.value) == .FunctionLit) {
+            try self.predeclareFunction(ctx, ast_unit, did);
+        }
+    }
+
+    // (2b) Pre-register all methods using their predeclared signatures so that
+    // method calls can resolve across declarations and ordering.
+    for (decl_ids) |did| {
+        const decl = ast_unit.exprs.Decl.get(did);
+        if (decl.method_path.isNone()) continue;
+        if (ast_unit.kind(decl.value) != .FunctionLit) continue;
+        const sig_ty = ast_unit.type_info.decl_types.items[did.toRaw()] orelse self.context.type_store.tAny();
+        _ = try self.registerMethodDecl(ctx, ast_unit, did, decl, sig_ty);
+    }
+
+    // (3) Now type-check declarations (walk bodies, defaults, patterns, methods, etc.)
+    for (decl_ids) |did| {
+        try self.checkDecl(ctx, ast_unit, did);
+    }
+}
+
 /// Return the `TypeKind` of `t` using the checker's type store.
 pub inline fn typeKind(self: *const Checker, t: types.TypeId) types.TypeKind {
-    return self.context.type_store.index.kinds.items[t.toRaw()];
+    return self.context.type_store.getKind(t);
 }
-/// Read the kind of expression `eid` from `ast_unit`.
-inline fn exprKind(ast_unit: *const ast.Ast, eid: ast.ExprId) ast.ExprKind {
-    return ast_unit.exprs.index.kinds.items[eid.toRaw()];
-}
+
 /// Determine the source location for expression `eid`.
 inline fn exprLocFromId(ast_unit: *ast.Ast, eid: ast.ExprId) Loc {
-    const k = exprKind(ast_unit, eid);
-    return switch (k) {
+    return switch (ast_unit.kind(eid)) {
         inline else => |x| exprLoc(ast_unit, getExpr(ast_unit, x, eid)),
     };
 }
+
 /// Fetch the location stored in `expr` (literal struct/row) within `ast_unit`.
 inline fn exprLoc(ast_unit: *ast.Ast, expr: anytype) Loc {
     return ast_unit.exprs.locs.get(expr.loc);
 }
+
 /// Retrieve the `StmtRow` of kind `K` for statement `id`.
 inline fn getStmt(ast_unit: *ast.Ast, comptime K: ast.StmtKind, id: ast.StmtId) ast.StmtRowT(K) {
     return ast_unit.stmts.get(K, id);
 }
+
 /// Resolve an interned string `sid` within `ast_unit`.
 pub inline fn getStr(ast_unit: *const ast.Ast, sid: ast.StrId) []const u8 {
     return ast_unit.exprs.strs.get(sid);
 }
+
 /// Fetch the expression row of kind `K` identified by `id`.
 inline fn getExpr(ast_unit: *ast.Ast, comptime K: ast.ExprKind, id: ast.ExprId) ast.RowT(K) {
     return ast_unit.exprs.get(K, id);
@@ -149,10 +278,12 @@ inline fn getExpr(ast_unit: *ast.Ast, comptime K: ast.ExprKind, id: ast.ExprId) 
 fn pushAllowNestedFn(self: *Checker, ctx: *CheckerContext, v: bool) !void {
     try ctx.allow_nested_fn.append(self.gpa, v);
 }
+
 /// Pop the most-recent nested-function permission flag.
 fn popAllowNestedFn(_: *Checker, ctx: *CheckerContext) void {
     if (ctx.allow_nested_fn.items.len > 0) _ = ctx.allow_nested_fn.pop();
 }
+
 /// Test whether nested function literals are currently permitted.
 fn isNestedFnAllowed(_: *const Checker, ctx: *CheckerContext) bool {
     if (ctx.allow_nested_fn.items.len == 0) return false;
@@ -219,160 +350,36 @@ pub fn evalComptimeExpr(
     return computed;
 }
 
-/// Construct a new `Checker` wired to `pipeline`, `context`, and allocator `gpa`.
-pub fn init(
-    gpa: std.mem.Allocator,
-    context: *Context,
-    pipeline: *Pipeline,
-) Checker {
-    return .{
-        .gpa = gpa,
-        .context = context,
-        .pipeline = pipeline,
-        .checker_ctx = .{},
-    };
-}
-
-/// Deinitialize the checker, releasing all per-file contexts.
-pub fn deinit(self: *Checker) void {
-    self.checker_ctx.deinit(self.gpa);
-}
-
-/// Execute the checker across all AST units ordered by `levels`.
-pub fn run(self: *Checker, levels: *const compile.DependencyLevels) !void {
-    var ast_by_file = std.AutoHashMap(u32, *ast.Ast).init(self.gpa);
-    defer ast_by_file.deinit();
-
-    var pkg_iter = self.context.compilation_unit.packages.iterator();
-    while (pkg_iter.next()) |pkg| {
-        var source_iter = pkg.value_ptr.sources.iterator();
-        while (source_iter.next()) |unit| {
-            if (unit.value_ptr.ast) |ast_unit| {
-                try ast_by_file.put(unit.value_ptr.file_id, ast_unit);
-            }
-        }
-    }
-
-    // Size the per-file checker context table by max file_id + 1 to allow
-    // direct indexing via ast_unit.file_id used during lowering.
-    var max_file_id: usize = 0;
-    {
-        var it = ast_by_file.iterator();
-        while (it.next()) |entry| {
-            const fid: usize = entry.key_ptr.*;
-            if (fid > max_file_id) max_file_id = fid;
-        }
-    }
-    try self.checker_ctx.resize(self.gpa, max_file_id + 1);
-
-    var threads = std.ArrayList(std.Thread){};
-    defer threads.deinit(self.gpa);
-
-    for (levels.levels.items) |level| {
-        threads.clearRetainingCapacity();
-        if (level.items.len == 0) continue;
-
-        for (level.items) |file_id| {
-            const ast_unit = ast_by_file.get(file_id) orelse continue;
-            const checker_ctx = try self.gpa.create(CheckerContext);
-            checker_ctx.* = CheckerContext{
-                .symtab = symbols.SymbolStore.init(self.gpa),
-            };
-            // Expose this context by file id for TIR to use on-demand.
-            if (file_id >= 0 and file_id < self.checker_ctx.items.len) {
-                self.checker_ctx.items[file_id] = checker_ctx;
-            }
-            const thread = try std.Thread.spawn(.{}, runAst, .{ self, ast_unit, checker_ctx });
-            try threads.append(self.gpa, thread);
-        }
-
-        for (threads.items) |thread| {
-            thread.join();
-        }
-    }
-}
-
-/// Walk the AST for `ast_unit`, binding top-level declarations and checking each node.
-pub fn runAst(self: *Checker, ast_unit: *ast.Ast, ctx: *CheckerContext) !void {
-    // pre-allocate type slots
-    const expr_len: usize = ast_unit.exprs.index.kinds.items.len;
-    const decl_len: usize = ast_unit.exprs.Decl.list.len;
-    try ast_unit.type_info.expr_types.appendNTimes(self.gpa, null, expr_len);
-    try ast_unit.type_info.decl_types.appendNTimes(self.gpa, null, decl_len);
-
-    // Add builtin symbols to the global scope
-    _ = try ctx.symtab.push(null);
-
-    const decl_ids = ast_unit.exprs.decl_pool.slice(ast_unit.unit.decls);
-
-    // (1) Bind all top-level names so forward refs resolve
-    for (decl_ids) |did| {
-        const d = ast_unit.exprs.Decl.get(did);
-        try self.bindDeclPattern(ctx, ast_unit, did, d);
-    }
-
-    // (2) Predeclare signatures for all top-level functions
-    for (decl_ids) |did| {
-        const d = ast_unit.exprs.Decl.get(did);
-        if (exprKind(ast_unit, d.value) == .FunctionLit) {
-            try self.predeclareFunction(ctx, ast_unit, did);
-        }
-    }
-
-    // (2b) Pre-register all methods using their predeclared signatures so that
-    // method calls can resolve across declarations and ordering.
-    for (decl_ids) |did| {
-        const d = ast_unit.exprs.Decl.get(did);
-        if (d.method_path.isNone()) continue;
-        if (exprKind(ast_unit, d.value) != .FunctionLit) continue;
-        const sig_ty = ast_unit.type_info.decl_types.items[did.toRaw()] orelse self.context.type_store.tAny();
-        _ = try self.registerMethodDecl(ctx, ast_unit, did, d, sig_ty);
-    }
-
-    // (3) Now type-check declarations (walk bodies, defaults, patterns, methods, etc.)
-    for (decl_ids) |did| {
-        try self.checkDecl(ctx, ast_unit, did);
-    }
-}
-
-// --------- context
-/// Tracks the currently-checked function’s type expectations and local captures.
-const FunctionCtx = struct {
-    /// Function return type (possibly inferred).
-    result: types.TypeId,
-    /// True when the function declares a return value.
-    has_result: bool,
-    /// Whether the function has been proven pure so far.
-    pure: bool,
-    /// Whether purity is required by the declaration/context.
-    require_pure: bool,
-    /// Locally-defined entities tracked for resolution.
-    locals: std.AutoArrayHashMapUnmanaged(u32, void) = .{},
-};
-/// Tracks the innermost loop label and result type for break/continue resolution.
-const LoopCtx = struct {
-    /// Optional label attached to the loop.
-    label: ast.OptStrId,
-    /// Inferred result type for loops that return expressions.
-    result_ty: ?types.TypeId = null,
-};
-
 /// Declare bindings introduced by `d.pattern` (if any) in the current symbol scope.
 pub fn bindDeclPattern(
     self: *Checker,
     ctx: *CheckerContext,
     ast_unit: *ast.Ast,
     did: ast.DeclId,
-    d: ast.Rows.Decl,
 ) !void {
-    if (d.pattern.isNone()) return;
-    try pattern_matching.declareBindingsInPattern(self, ctx, ast_unit, d.pattern.unwrap(), d.loc, .{ .decl = did });
+    const decl = ast_unit.exprs.Decl.get(did);
+    if (decl.pattern.isNone()) return;
+    try pattern_matching.declareBindingsInPattern(
+        self,
+        ctx,
+        ast_unit,
+        decl.pattern.unwrap(),
+        decl.loc,
+        .{ .decl = did },
+    );
 }
 
 /// Register bindings created by a parameter pattern prior to its use.
 fn bindParamPattern(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, pid: ast.ParamId, p: ast.Rows.Param) !void {
     if (p.pat.isNone()) return;
-    try pattern_matching.declareBindingsInPattern(self, ctx, ast_unit, p.pat.unwrap(), p.loc, .{ .param = pid });
+    try pattern_matching.declareBindingsInPattern(
+        self,
+        ctx,
+        ast_unit,
+        p.pat.unwrap(),
+        p.loc,
+        .{ .param = pid },
+    );
 }
 
 /// Push a new function context with the declared result type and purity requirements.
@@ -431,8 +438,7 @@ inline fn popLoopBinding(_: *Checker, ctx: *CheckerContext) void {
 
 /// Return the identifier bound by `pid` when it is a simple binding pattern.
 fn bindingNameOfPattern(ast_unit: *ast.Ast, pid: ast.PatternId) ?ast.StrId {
-    const pkind = ast_unit.pats.index.kinds.items[pid.toRaw()];
-    return switch (pkind) {
+    return switch (ast_unit.kind(pid)) {
         .Binding => ast_unit.pats.get(.Binding, pid).name,
         else => null,
     };
@@ -445,68 +451,64 @@ fn predeclareFunction(
     ast_unit: *ast.Ast,
     did: ast.DeclId,
 ) !void {
-    const d = ast_unit.exprs.Decl.get(did);
-    if (exprKind(ast_unit, d.value) != .FunctionLit) return;
+    const decl = ast_unit.exprs.Decl.get(did);
+    std.debug.assert(ast_unit.kind(decl.value) == .FunctionLit);
 
-    const fid = d.value;
-    const fnr = getExpr(ast_unit, .FunctionLit, fid);
-    const params = ast_unit.exprs.param_pool.slice(fnr.params);
+    const func_id = decl.value;
+    const func = getExpr(ast_unit, .FunctionLit, func_id);
+    const params = ast_unit.exprs.param_pool.slice(func.params);
 
-    var pbuf = try self.gpa.alloc(types.TypeId, params.len);
-    defer self.gpa.free(pbuf);
+    var param_types = try self.gpa.alloc(types.TypeId, params.len);
+    defer self.gpa.free(param_types);
 
-    var bindings = std.ArrayList(check_types.Binding){};
+    var bindings = List(check_types.Binding){};
     defer bindings.deinit(self.gpa);
 
     // Parameter types (no pattern checks, no default-value checks here)
     var i: usize = 0;
     while (i < params.len) : (i += 1) {
-        const p = ast_unit.exprs.Param.get(params[i]);
-        if (!p.ty.isNone()) {
-            const res = try check_types.typeFromTypeExprWithBindings(self, ctx, ast_unit, p.ty.unwrap(), bindings.items);
+        const param = ast_unit.exprs.Param.get(params[i]);
+        if (!param.ty.isNone()) {
+            const res = try check_types.typeFromTypeExprWithBindings(self, ctx, ast_unit, param.ty.unwrap(), bindings.items);
             const pt_or_err = res[1];
-            pbuf[i] = if (self.typeKind(pt_or_err) == .TypeError) self.context.type_store.tAny() else pt_or_err;
+            param_types[i] = if (self.typeKind(pt_or_err) == .TypeError)
+                self.context.type_store.tAny()
+            else
+                pt_or_err;
 
-            if (p.is_comptime) {
-                if (!p.pat.isNone()) {
-                    const pat_id = p.pat.unwrap();
-                    if (ast_unit.pats.index.kinds.items[pat_id.toRaw()] == .Binding) {
-                        const pname = ast_unit.pats.get(.Binding, pat_id).name;
-                        if (self.typeKind(pbuf[i]) == .TypeType) {
-                            try bindings.append(self.gpa, .{ .Type = .{
-                                .name = pname,
-                                .ty = self.context.type_store.tAny(),
-                            } });
-                        }
-                    }
+            if (!param.is_comptime) continue;
+            if (param.pat.isNone()) continue;
+
+            const pat_id = param.pat.unwrap();
+            if (ast_unit.kind(pat_id) == .Binding) {
+                const pname = ast_unit.pats.get(.Binding, pat_id).name;
+                if (self.typeKind(param_types[i]) == .TypeType) {
+                    try bindings.append(self.gpa, .{ .Type = .{
+                        .name = pname,
+                        .ty = self.context.type_store.tAny(),
+                    } });
                 }
             }
-        } else if (p.is_comptime) {
-            pbuf[i] = self.context.type_store.mkTypeType(self.context.type_store.tAny());
+        } else if (param.is_comptime) {
+            param_types[i] = self.context.type_store.mkTypeType(self.context.type_store.tAny());
         } else {
             // Unannotated runtime param – unknown until body checking
-            pbuf[i] = self.context.type_store.tAny();
+            param_types[i] = self.context.type_store.tAny();
         }
     }
 
-    const res_or_err = if (!fnr.result_ty.isNone())
-        (try check_types.typeFromTypeExprWithBindings(self, ctx, ast_unit, fnr.result_ty.unwrap(), bindings.items))[1]
+    const res_or_err = if (!func.result_ty.isNone())
+        (try check_types.typeFromTypeExprWithBindings(self, ctx, ast_unit, func.result_ty.unwrap(), bindings.items))[1]
     else
         self.context.type_store.tVoid();
     if (self.typeKind(res_or_err) == .TypeError) return; // diagnostics already emitted
     const res = res_or_err;
 
     // Be optimistic about purity here; we’ll finalize after body checking.
-    const sig_ty = self.context.type_store.mkFunction(pbuf, res, fnr.flags.is_variadic, true, fnr.flags.is_extern);
+    const sig_ty = self.context.type_store.mkFunction(param_types, res, func.flags.is_variadic, true, func.flags.is_extern);
 
     // Stamp both the decl type and the function literal expr type.
     ast_unit.type_info.decl_types.items[did.toRaw()] = sig_ty;
-
-    // If this is a top-level binding with a pattern, export its bindings now so imports
-    // and same-file forward refs see the function in the module API.
-    // if (!self.inFunction(ctx) and (!d.pattern.isNone())) {
-    //     try self.recordExportsForDecl(ctx, ast_unit, did, sig_ty);
-    // }
 }
 
 /// Search for the most recent specialization for generic parameter `name`.
@@ -533,8 +535,7 @@ pub fn checkSpecializedFunction(
         _ = try ctx.symtab.push(null);
         const decl_ids = ast_unit.exprs.decl_pool.slice(ast_unit.unit.decls);
         for (decl_ids) |did| {
-            const d = ast_unit.exprs.Decl.get(did);
-            try self.bindDeclPattern(ctx, ast_unit, did, d);
+            try self.bindDeclPattern(ctx, ast_unit, did);
         }
     }
     defer if (need_scope) ctx.symtab.pop();
@@ -653,7 +654,7 @@ fn loopCtxForLabel(_: *Checker, ctx: *CheckerContext, opt_label: ast.OptStrId) ?
         const idx: usize = @intCast(i);
         const lc = &ctx.loop_stack.items[idx];
         if (want == null) return lc;
-        if (!lc.label.isNone() and lc.label.unwrap().toRaw() == want.?) return lc;
+        if (!lc.label.isNone() and lc.label.unwrap().eq(ast.StrId.fromRaw(want.?))) return lc;
     }
     return null;
 }
@@ -682,7 +683,7 @@ pub fn checkDecl(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, decl_
     // Initializers must be evaluated in value context even inside statement blocks
     try self.pushValueReq(ctx, true);
     var pushed_nested = false;
-    if (self.inFunction(ctx) and !decl.method_path.isNone() and exprKind(ast_unit, decl.value) == .FunctionLit) {
+    if (self.inFunction(ctx) and !decl.method_path.isNone() and ast_unit.kind(decl.value) == .FunctionLit) {
         try self.pushAllowNestedFn(ctx, true);
         pushed_nested = true;
     }
@@ -692,7 +693,7 @@ pub fn checkDecl(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, decl_
 
     if (self.typeKind(rhs_ty) == .TypeError) return;
 
-    if (self.inFunction(ctx) and !decl.method_path.isNone() and exprKind(ast_unit, decl.value) == .FunctionLit) {
+    if (self.inFunction(ctx) and !decl.method_path.isNone() and ast_unit.kind(decl.value) == .FunctionLit) {
         _ = try self.registerMethodDecl(ctx, ast_unit, decl_id, decl, rhs_ty);
     }
 
@@ -721,7 +722,7 @@ pub fn checkDecl(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, decl_
 
     if (!decl.pattern.isNone()) {
         const pat_id = decl.pattern.unwrap();
-        if (ast_unit.pats.index.kinds.items[pat_id.toRaw()] == .Binding) {
+        if (ast_unit.kind(pat_id) == .Binding) {
             const binding = ast_unit.pats.get(.Binding, pat_id);
             const binding_ty = if (expect_ty) |et| et else rhs_ty;
             const stored = self.evalComptimeExpr(ctx, ast_unit, decl.value, rhs_ty, &[_]Pipeline.ComptimeBinding{}) catch null;
@@ -783,6 +784,168 @@ fn recordExportsForDecl(
     }
 }
 
+fn ensureMethodIsFunction(
+    self: *Checker,
+    ast_unit: *ast.Ast,
+    decl: ast.Rows.Decl,
+    func_ty_id: types.TypeId,
+) !bool {
+    const loc = exprLoc(ast_unit, decl);
+
+    if (self.typeKind(func_ty_id) != .Function or ast_unit.kind(decl.value) != .FunctionLit) {
+        try self.context.diags.addError(loc, .method_requires_function_value, .{});
+        return false;
+    }
+
+    return true;
+}
+
+fn resolveOwnerType(
+    self: *Checker,
+    ctx: *CheckerContext,
+    ast_unit: *ast.Ast,
+    owner_seg: ast.Rows.MethodPathSeg,
+    out_owner_ty: *types.TypeId,
+) !bool {
+    const owner_loc = ast_unit.exprs.locs.get(owner_seg.loc);
+
+    const owner_sym_id = self.lookup(ctx, owner_seg.name) orelse {
+        const owner_name = ast_unit.exprs.strs.get(owner_seg.name);
+        try self.context.diags.addError(
+            owner_loc,
+            .undefined_identifier,
+            .{owner_name},
+        );
+        return false;
+    };
+
+    const owner_sym = ctx.symtab.syms.get(owner_sym_id);
+    if (owner_sym.origin_decl.isNone()) {
+        try self.context.diags.addError(
+            owner_loc,
+            .method_owner_not_struct,
+            .{},
+        );
+        return false;
+    }
+
+    const owner_decl_id = owner_sym.origin_decl.unwrap();
+
+    var owner_ty: types.TypeId = if (ast_unit.type_info.decl_types.items[owner_decl_id.toRaw()]) |t|
+        t
+    else blk: {
+        const owner_decl = ast_unit.exprs.Decl.get(owner_decl_id);
+        const ty = try self.checkExpr(ctx, ast_unit, owner_decl.value);
+        if (self.typeKind(ty) == .TypeError) return false;
+        ast_unit.type_info.decl_types.items[owner_decl_id.toRaw()] = ty;
+        break :blk ty;
+    };
+
+    // If we got a `TypeType`, use its underlying `of` type.
+    if (self.typeKind(owner_ty) == .TypeType) {
+        owner_ty = self.context.type_store.get(.TypeType, owner_ty).of;
+    }
+
+    switch (self.typeKind(owner_ty)) {
+        .Struct, .Union, .Enum, .Variant, .Error => {},
+        else => {
+            try self.context.diags.addError(
+                owner_loc,
+                .method_owner_not_struct,
+                .{},
+            );
+            return false;
+        },
+    }
+
+    out_owner_ty.* = owner_ty;
+    return true;
+}
+
+fn analyzeSelfParam(
+    self: *Checker,
+    ast_unit: *ast.Ast,
+    owner_ty: types.TypeId,
+    fn_lit: ast.Rows.FunctionLit,
+    func_params: []const types.TypeId,
+    receiver_kind_out: *types.MethodReceiverKind,
+    self_param_type_out: *?types.TypeId,
+) !bool {
+    const params = ast_unit.exprs.param_pool.slice(fn_lit.params);
+    std.debug.assert(params.len == func_params.len);
+
+    if (params.len == 0) {
+        // No parameters -> no implicit receiver. This is allowed.
+        return true;
+    }
+
+    const first_param = ast_unit.exprs.Param.get(params[0]);
+    const param_loc = ast_unit.exprs.locs.get(first_param.loc);
+
+    // Detect `self` binding in the first parameter pattern.
+    var is_self_binding = false;
+    if (!first_param.pat.isNone()) {
+        const pat_id = first_param.pat.unwrap();
+        if (ast_unit.kind(pat_id) == .Binding) {
+            const binding = ast_unit.pats.get(.Binding, pat_id);
+            if (std.mem.eql(u8, getStr(ast_unit, binding.name), "self")) {
+                is_self_binding = true;
+            }
+        }
+    }
+
+    if (!is_self_binding) {
+        // No `self` -> leave receiver_kind = .none, self_param_type = null.
+        return true;
+    }
+
+    if (first_param.ty.isNone()) {
+        try self.context.diags.addError(
+            param_loc,
+            .method_self_requires_type,
+            .{},
+        );
+        return false;
+    }
+
+    const self_param_ty = func_params[0];
+    const self_param_kind = self.typeKind(self_param_ty);
+
+    switch (self_param_kind) {
+        .Ptr => {
+            const ptr_row = self.context.type_store.get(.Ptr, self_param_ty);
+            if (!ptr_row.elem.eq(owner_ty)) {
+                try self.context.diags.addError(
+                    param_loc,
+                    .method_self_type_mismatch,
+                    .{},
+                );
+                return false;
+            }
+
+            receiver_kind_out.* = if (ptr_row.is_const)
+                .pointer_const
+            else
+                .pointer;
+        },
+        else => {
+            if (!self_param_ty.eq(owner_ty)) {
+                try self.context.diags.addError(
+                    param_loc,
+                    .method_self_type_mismatch,
+                    .{},
+                );
+                return false;
+            }
+
+            receiver_kind_out.* = .value;
+        },
+    }
+
+    self_param_type_out.* = self_param_ty;
+    return true;
+}
+
 /// Register the method declaration `decl_id` with receiver type and signature `fn_ty`.
 fn registerMethodDecl(
     self: *Checker,
@@ -790,127 +953,71 @@ fn registerMethodDecl(
     ast_unit: *ast.Ast,
     decl_id: ast.DeclId,
     decl: ast.Rows.Decl,
-    fn_ty: types.TypeId,
+    func_ty_id: types.TypeId,
 ) !bool {
     const seg_range = decl.method_path.asRange();
     const seg_ids = ast_unit.exprs.method_path_pool.slice(seg_range);
     if (seg_ids.len < 2) return false;
 
     const owner_seg = ast_unit.exprs.MethodPathSeg.get(seg_ids[0]);
+
+    // For now we only allow `Owner.method`.
     if (seg_ids.len != 2) {
-        try self.context.diags.addError(ast_unit.exprs.locs.get(owner_seg.loc), .method_invalid_owner_path, .{});
+        try self.context.diags.addError(
+            ast_unit.exprs.locs.get(owner_seg.loc),
+            .method_invalid_owner_path,
+            .{},
+        );
         return false;
     }
 
     const method_seg = ast_unit.exprs.MethodPathSeg.get(seg_ids[seg_ids.len - 1]);
 
-    const owner_sym_id = self.lookup(ctx, owner_seg.name) orelse {
-        const owner_name = ast_unit.exprs.strs.get(owner_seg.name);
-        try self.context.diags.addError(ast_unit.exprs.locs.get(owner_seg.loc), .undefined_identifier, .{owner_name});
-        return false;
-    };
-    const owner_sym = ctx.symtab.syms.get(owner_sym_id);
-    if (owner_sym.origin_decl.isNone()) {
-        try self.context.diags.addError(ast_unit.exprs.locs.get(owner_seg.loc), .method_owner_not_struct, .{});
-        return false;
-    }
-    const owner_decl_id = owner_sym.origin_decl.unwrap();
-
-    var owner_ty = if (ast_unit.type_info.decl_types.items[owner_decl_id.toRaw()]) |t| t else blk: {
-        const owner_decl = ast_unit.exprs.Decl.get(owner_decl_id);
-        const ty = try self.checkExpr(ctx, ast_unit, owner_decl.value);
-        if (self.typeKind(ty) == .TypeError) return false;
-        ast_unit.type_info.decl_types.items[owner_decl_id.toRaw()] = ty;
-        break :blk ty;
-    };
-    if (self.typeKind(owner_ty) == .TypeType) {
-        owner_ty = self.context.type_store.get(.TypeType, owner_ty).of;
-    }
-    const owner_kind = self.typeKind(owner_ty);
-    switch (owner_kind) {
-        .Struct, .Union, .Enum, .Variant, .Error => {},
-        else => {
-            try self.context.diags.addError(ast_unit.exprs.locs.get(owner_seg.loc), .method_owner_not_struct, .{});
-            return false;
-        },
-    }
-
-    if (self.typeKind(fn_ty) != .Function) {
-        try self.context.diags.addError(exprLoc(ast_unit, decl), .method_requires_function_value, .{});
-        return false;
-    }
-    if (exprKind(ast_unit, decl.value) != .FunctionLit) {
-        try self.context.diags.addError(exprLoc(ast_unit, decl), .method_requires_function_value, .{});
+    // Resolve owner type.
+    var owner_ty: types.TypeId = undefined;
+    if (!try self.resolveOwnerType(ctx, ast_unit, owner_seg, &owner_ty)) {
         return false;
     }
 
+    // Check value is a function and expression is a function literal.
+    if (!try self.ensureMethodIsFunction(ast_unit, decl, func_ty_id)) {
+        return false;
+    }
+
+    // Extract function literal + parameter types.
     const fn_lit = getExpr(ast_unit, .FunctionLit, decl.value);
-    const params = ast_unit.exprs.param_pool.slice(fn_lit.params);
-    const fn_row = self.context.type_store.get(.Function, fn_ty);
-    const fn_params = self.context.type_store.type_pool.slice(fn_row.params);
+    const func_ty = self.context.type_store.get(.Function, func_ty_id);
+    const func_params = self.context.type_store.type_pool.slice(func_ty.params);
 
+    // Analyze optional `self` parameter.
     var receiver_kind: types.MethodReceiverKind = .none;
     var self_param_type_opt: ?types.TypeId = null;
 
-    if (params.len > 0 and fn_params.len > 0) {
-        const first_param_id = params[0];
-        const first_param = ast_unit.exprs.Param.get(first_param_id);
-        const param_loc = ast_unit.exprs.locs.get(first_param.loc);
-        var is_self_binding = false;
-        if (!first_param.pat.isNone()) {
-            const pat_id = first_param.pat.unwrap();
-            if (ast_unit.pats.index.kinds.items[pat_id.toRaw()] == .Binding) {
-                const binding = ast_unit.pats.get(.Binding, pat_id);
-                if (std.mem.eql(u8, getStr(ast_unit, binding.name), "self")) {
-                    is_self_binding = true;
-                }
-            }
-        }
-
-        if (is_self_binding) {
-            if (first_param.ty.isNone()) {
-                try self.context.diags.addError(param_loc, .method_self_requires_type, .{});
-                return false;
-            }
-
-            const self_param_ty = fn_params[0];
-            const self_param_kind = self.typeKind(self_param_ty);
-            switch (self_param_kind) {
-                .Ptr => {
-                    const ptr_row = self.context.type_store.get(.Ptr, self_param_ty);
-                    if (!ptr_row.elem.eq(owner_ty)) {
-                        try self.context.diags.addError(param_loc, .method_self_type_mismatch, .{});
-                        return false;
-                    }
-                    receiver_kind = if (ptr_row.is_const)
-                        .pointer_const
-                    else
-                        .pointer;
-                },
-                else => {
-                    if (!self_param_ty.eq(owner_ty)) {
-                        try self.context.diags.addError(param_loc, .method_self_type_mismatch, .{});
-                        return false;
-                    }
-                    receiver_kind = .value;
-                },
-            }
-
-            self_param_type_opt = self_param_ty;
-        }
+    if (!try self.analyzeSelfParam(
+        ast_unit,
+        owner_ty,
+        fn_lit,
+        func_params,
+        &receiver_kind,
+        &self_param_type_opt,
+    )) {
+        return false;
     }
 
+    // Build the method entry.
     const entry: types.MethodEntry = .{
         .owner_type = owner_ty,
         .method_name = method_seg.name,
         .decl_id = decl_id,
         .decl_ast = ast_unit,
         .func_expr = decl.value,
-        .func_type = fn_ty,
+        .func_type = func_ty_id,
         .self_param_type = self_param_type_opt,
         .receiver_kind = receiver_kind,
         .builtin = null,
     };
+
+    // Check for duplicate methods on this type.
     if (self.context.type_store.getMethod(owner_ty, method_seg.name)) |existing| {
         if (!existing.decl_id.eq(decl_id)) {
             try self.context.diags.addError(
@@ -921,6 +1028,8 @@ fn registerMethodDecl(
             return false;
         }
     }
+
+    // Store the method and its expression types.
     try self.context.type_store.putMethod(entry);
     try check_types.storeMethodExprTypes(self, ast_unit, owner_ty, method_seg.name, decl.value);
 
@@ -989,11 +1098,302 @@ const AssignErrors = union(enum) {
     success,
 };
 
+fn assignableSlice(self: *Checker, got: types.TypeId, expect: types.TypeId) AssignErrors {
+    const expected_ty = self.context.type_store.get(.Slice, expect);
+    const got_kind = self.typeKind(got);
+
+    switch (got_kind) {
+        .Slice => {
+            const got_ty = self.context.type_store.get(.Slice, got);
+            if (!expected_ty.is_const and got_ty.is_const) {
+                return .slice_constness_violation;
+            }
+            return self.assignable(got_ty.elem, expected_ty.elem);
+        },
+        .Array => {
+            const got_ty = self.context.type_store.get(.Array, got);
+            return self.assignable(got_ty.elem, expected_ty.elem);
+        },
+        .DynArray => {
+            const got_ty = self.context.type_store.get(.DynArray, got);
+            return self.assignable(got_ty.elem, expected_ty.elem);
+        },
+        else => return .failure,
+    }
+}
+
+fn assignableArray(self: *Checker, got: types.TypeId, expect: types.TypeId) AssignErrors {
+    const got_kind = self.typeKind(got);
+    if (got_kind != .Array) return .expected_array_type;
+
+    const expected_ty = self.context.type_store.get(.Array, expect);
+    const got_ty = self.context.type_store.get(.Array, got);
+    const elem_ok = self.assignable(got_ty.elem, expected_ty.elem);
+    if (got_ty.len != expected_ty.len) return .array_length_mismatch;
+    return elem_ok;
+}
+
+fn assignableDynArray(self: *Checker, got: types.TypeId, expect: types.TypeId) AssignErrors {
+    // BUGFIX: allow assigning from DynArray itself AND from Array/Slice (element-compatible).
+    const expected_ty = self.context.type_store.get(.DynArray, expect);
+    const got_kind = self.typeKind(got);
+
+    switch (got_kind) {
+        .DynArray => {
+            const got_ty = self.context.type_store.get(.DynArray, got);
+            return self.assignable(got_ty.elem, expected_ty.elem);
+        },
+        .Array => {
+            const got_ty = self.context.type_store.get(.Array, got);
+            return self.assignable(got_ty.elem, expected_ty.elem);
+        },
+        .Slice => {
+            const got_ty = self.context.type_store.get(.Slice, got);
+            return self.assignable(got_ty.elem, expected_ty.elem);
+        },
+        else => return .expected_array_type,
+    }
+}
+
+fn assignableTuple(self: *Checker, got: types.TypeId, expect: types.TypeId) AssignErrors {
+    const got_kind = self.typeKind(got);
+    if (got_kind != .Tuple) return .expected_tuple_type;
+
+    const expected_ty = self.context.type_store.get(.Tuple, expect);
+    const got_ty = self.context.type_store.get(.Tuple, got);
+
+    if (expected_ty.elems.len != got_ty.elems.len) return .tuple_arity_mismatch;
+
+    const got_elems = self.context.type_store.type_pool.slice(got_ty.elems);
+    const expected_elems = self.context.type_store.type_pool.slice(expected_ty.elems);
+
+    for (expected_elems, 0..) |et, i| {
+        const gt = got_elems[i];
+        const res = self.assignable(gt, et);
+        if (res != .success) return res;
+    }
+    return .success;
+}
+
+fn assignableMap(self: *Checker, got: types.TypeId, expect: types.TypeId) AssignErrors {
+    const got_kind = self.typeKind(got);
+
+    // Allow "empty array" sugar to coerce to any map type.
+    if (got_kind == .Array) {
+        const got_ty = self.context.type_store.get(.Array, got);
+        if (got_ty.len != 0) return .expected_map_type;
+        return .success;
+    }
+
+    if (got_kind != .Map) return .expected_map_type;
+
+    const expected_ty = self.context.type_store.get(.Map, expect);
+    const got_ty = self.context.type_store.get(.Map, got);
+
+    const key_ok = self.assignable(got_ty.key, expected_ty.key);
+    const value_ok = self.assignable(got_ty.value, expected_ty.value);
+
+    if (key_ok != .success) return .map_wrong_key_type;
+    if (value_ok != .success) return value_ok;
+    return .success;
+}
+
+fn assignableSimd(self: *Checker, got: types.TypeId, expect: types.TypeId) AssignErrors {
+    const expected_ty = self.context.type_store.get(.Simd, expect);
+    const got_kind = self.typeKind(got);
+
+    switch (got_kind) {
+        .Simd => {
+            const got_ty = self.context.type_store.get(.Simd, got);
+            if (got_ty.lanes != expected_ty.lanes) return .array_length_mismatch;
+            return self.assignable(got_ty.elem, expected_ty.elem);
+        },
+        .Array => {
+            const got_ty = self.context.type_store.get(.Array, got);
+            if (got_ty.len != expected_ty.lanes) return .array_length_mismatch;
+            return self.assignable(got_ty.elem, expected_ty.elem);
+        },
+        else => return .failure,
+    }
+}
+
+fn assignableTensor(self: *Checker, got: types.TypeId, expect: types.TypeId) AssignErrors {
+    const expected_ty = self.context.type_store.get(.Tensor, expect);
+    const expected_rank: usize = @intCast(expected_ty.rank);
+    const got_kind = self.typeKind(got);
+
+    switch (got_kind) {
+        .Tensor => {
+            const got_ty = self.context.type_store.get(.Tensor, got);
+            if (got_ty.rank != expected_ty.rank) return .tensor_rank_mismatch;
+
+            var i: usize = 0;
+            while (i < expected_rank) : (i += 1) {
+                if (got_ty.dims[i] != expected_ty.dims[i]) return .tensor_dimension_mismatch;
+            }
+            return self.assignable(got_ty.elem, expected_ty.elem);
+        },
+        .Array => {
+            var dims_buf = [_]usize{0} ** types.max_tensor_rank;
+            var rank: usize = 0;
+            var current_ty = got;
+            var current_kind = got_kind;
+            var elem_ty = got;
+
+            while (current_kind == .Array) : (rank += 1) {
+                if (rank >= types.max_tensor_rank) return .tensor_rank_mismatch;
+                const arr = self.context.type_store.get(.Array, current_ty);
+                dims_buf[rank] = arr.len;
+                elem_ty = arr.elem;
+                current_ty = arr.elem;
+                current_kind = self.typeKind(current_ty);
+            }
+
+            if (rank == 0) return .expected_tensor_type;
+            if (rank != expected_rank) return .tensor_rank_mismatch;
+
+            var j: usize = 0;
+            while (j < expected_rank) : (j += 1) {
+                if (dims_buf[j] != expected_ty.dims[j]) return .tensor_dimension_mismatch;
+            }
+
+            return self.assignable(elem_ty, expected_ty.elem);
+        },
+        else => return .expected_tensor_type,
+    }
+}
+
+fn assignableOptional(self: *Checker, got: types.TypeId, expect: types.TypeId) AssignErrors {
+    const expected_ty = self.context.type_store.get(.Optional, expect);
+    const got_kind = self.typeKind(got);
+
+    if (got_kind == .Optional) {
+        const got_ty = self.context.type_store.get(.Optional, got);
+        return self.assignable(got_ty.elem, expected_ty.elem);
+    }
+
+    // Non-optional value into Optional(T) – allow if value is assignable to T.
+    return self.assignable(got, expected_ty.elem);
+}
+
+fn assignablePtr(self: *Checker, got: types.TypeId, expect: types.TypeId) AssignErrors {
+    const got_kind = self.typeKind(got);
+    if (got_kind != .Ptr) return .expected_pointer_type;
+
+    const expected_ty = self.context.type_store.get(.Ptr, expect);
+    const got_ty = self.context.type_store.get(.Ptr, got);
+
+    if (!expected_ty.is_const and got_ty.is_const) {
+        return .pointer_constness_violation;
+    }
+    if (self.assignable(got_ty.elem, expected_ty.elem) != .success) {
+        return .pointer_type_mismatch;
+    }
+    return .success;
+}
+
+fn findFieldByName(
+    self: *Checker,
+    fields: []const types.FieldId,
+    name: ast.StrId,
+) ?struct { index: usize, field: types.Rows.Field } {
+    for (fields, 0..) |fid, i| {
+        const f = self.context.type_store.Field.get(fid);
+        if (f.name.eq(name)) {
+            return .{ .index = i, .field = f };
+        }
+    }
+    return null;
+}
+
+fn assignableUnion(self: *Checker, got: types.TypeId, expect: types.TypeId) AssignErrors {
+    const got_kind = self.typeKind(got);
+    if (got_kind != .Struct) return .expected_struct_type;
+
+    const expected_ty = self.context.type_store.get(.Union, expect);
+    const got_ty = self.context.type_store.get(.Struct, got);
+
+    const expected_fields = self.context.type_store.field_pool.slice(expected_ty.fields);
+    const got_fields = self.context.type_store.field_pool.slice(got_ty.fields);
+
+    // Should only have one field set in union
+    if (got_fields.len == 0) return .union_empty_literal;
+    if (got_fields.len != 1) return .union_literal_multiple_fields;
+
+    const gf = self.context.type_store.Field.get(got_fields[0]);
+
+    const match = self.findFieldByName(expected_fields, gf.name) orelse {
+        return .unknown_struct_field;
+    };
+
+    const res = self.assignable(gf.ty, match.field.ty);
+    if (res != .success) return res;
+
+    return .success;
+}
+
+fn assignableStruct(self: *Checker, got: types.TypeId, expect: types.TypeId) AssignErrors {
+    const got_kind = self.typeKind(got);
+    if (got_kind != .Struct) return .expected_struct_type;
+
+    const expected_ty = self.context.type_store.get(.Struct, expect);
+    const got_ty = self.context.type_store.get(.Struct, got);
+
+    const expected_fields = self.context.type_store.field_pool.slice(expected_ty.fields);
+    const got_fields = self.context.type_store.field_pool.slice(got_ty.fields);
+
+    if (expected_fields.len < got_fields.len) return .unknown_struct_field;
+    if (expected_fields.len > got_fields.len) return .struct_field_count_mismatch;
+
+    // Check fields by name, not by order.
+    for (expected_fields) |efid| {
+        const ef = self.context.type_store.Field.get(efid);
+
+        const match = self.findFieldByName(got_fields, ef.name) orelse
+            return .struct_field_name_mismatch;
+
+        const res = self.assignable(match.field.ty, ef.ty);
+        if (res != .success) {
+            return .{ .struct_field_type_mismatch = .{
+                .index = match.index,
+                .tag_index = @intFromEnum(res),
+            } };
+        }
+    }
+
+    return .success;
+}
+
+fn assignableErrorSet(self: *Checker, got: types.TypeId, expect: types.TypeId) AssignErrors {
+    const expected_ty = self.context.type_store.get(.ErrorSet, expect);
+    const got_kind = self.typeKind(got);
+
+    if (got_kind == .Error) {
+        return self.assignable(got, expected_ty.error_ty);
+    } else {
+        return self.assignable(got, expected_ty.value_ty);
+    }
+}
+
+fn assignableInteger(self: *Checker, got: types.TypeId) AssignErrors {
+    const got_kind = self.typeKind(got);
+    if (!check_types.isIntegerKind(self, got_kind)) return .expected_integer_type;
+    return .success;
+}
+
+fn assignableFloat(self: *Checker, got: types.TypeId) AssignErrors {
+    const got_kind = self.typeKind(got);
+    if (got_kind != .F32 and got_kind != .F64) return .expected_float_type;
+    return .success;
+}
+
 /// Determine if `got` can be assigned to `expect`, returning an `AssignErrors` tag.
 pub fn assignable(self: *Checker, got: types.TypeId, expect: types.TypeId) AssignErrors {
     if (got.eq(expect)) return .success;
+
     const got_kind = self.typeKind(got);
     const expected_kind = self.typeKind(expect);
+
     if (expected_kind == .Any or got_kind == .Any) return .success;
 
     if (got_kind == .Undef) {
@@ -1013,216 +1413,22 @@ pub fn assignable(self: *Checker, got: types.TypeId, expect: types.TypeId) Assig
     }
 
     switch (expected_kind) {
-        .Slice => {
-            const expected_ty = self.context.type_store.get(.Slice, expect);
-            switch (got_kind) {
-                .Slice => {
-                    const got_ty = self.context.type_store.get(.Slice, got);
-                    if (!expected_ty.is_const and got_ty.is_const) {
-                        return .slice_constness_violation;
-                    }
-                    return self.assignable(got_ty.elem, expected_ty.elem);
-                },
-                .Array => {
-                    const got_ty = self.context.type_store.get(.Array, got);
-                    return self.assignable(got_ty.elem, expected_ty.elem);
-                },
-                .DynArray => {
-                    const got_ty = self.context.type_store.get(.DynArray, got);
-                    return self.assignable(got_ty.elem, expected_ty.elem);
-                },
-                else => return .failure,
-            }
-        },
-        .Array => {
-            if (got_kind != .Array) return .expected_array_type;
-            const expected_ty = self.context.type_store.get(.Array, expect);
-            const got_ty = self.context.type_store.get(.Array, got);
-            const elem_ok = self.assignable(got_ty.elem, expected_ty.elem);
-            if (got_ty.len != expected_ty.len) return .array_length_mismatch;
-            return elem_ok;
-        },
-        .DynArray => {
-            // BUGFIX: allow assigning from DynArray itself AND from Array/Slice (element-compatible).
-            const expected_ty = self.context.type_store.get(.DynArray, expect);
-            switch (got_kind) {
-                .DynArray => {
-                    const got_ty = self.context.type_store.get(.DynArray, got);
-                    return self.assignable(got_ty.elem, expected_ty.elem);
-                },
-                .Array => {
-                    const got_ty = self.context.type_store.get(.Array, got);
-                    return self.assignable(got_ty.elem, expected_ty.elem);
-                },
-                .Slice => {
-                    const got_ty = self.context.type_store.get(.Slice, got);
-                    return self.assignable(got_ty.elem, expected_ty.elem);
-                },
-                else => return .expected_array_type,
-            }
-        },
-        .Tuple => {
-            if (got_kind != .Tuple) return .expected_tuple_type;
-            const expected_ty = self.context.type_store.get(.Tuple, expect);
-            const got_ty = self.context.type_store.get(.Tuple, got);
-            if (expected_ty.elems.len != got_ty.elems.len) return .tuple_arity_mismatch;
-            const got_elems = self.context.type_store.type_pool.slice(got_ty.elems);
-            const expected_elems = self.context.type_store.type_pool.slice(expected_ty.elems);
-            for (expected_elems, 0..) |et, i| {
-                const gt = got_elems[i];
-                const res = self.assignable(gt, et);
-                if (res != .success) return res;
-            }
-            return .success;
-        },
-        .Map => {
-            // Allow "empty array" sugar to coerce to any map type.
-            if (got_kind == .Array) {
-                const got_ty = self.context.type_store.get(.Array, got);
-                if (got_ty.len != 0) return .expected_map_type;
-                return .success;
-            }
-            if (got_kind != .Map) return .expected_map_type;
-            const expected_ty = self.context.type_store.get(.Map, expect);
-            const got_ty = self.context.type_store.get(.Map, got);
-            const key_ok = self.assignable(got_ty.key, expected_ty.key);
-            const value_ok = self.assignable(got_ty.value, expected_ty.value);
-            if (key_ok != .success) return .map_wrong_key_type;
-            if (value_ok != .success) return value_ok;
-            return .success;
-        },
-        .Simd => {
-            const expected_ty = self.context.type_store.get(.Simd, expect);
-            switch (got_kind) {
-                .Simd => {
-                    const got_ty = self.context.type_store.get(.Simd, got);
-                    if (got_ty.lanes != expected_ty.lanes) return .array_length_mismatch;
-                    return self.assignable(got_ty.elem, expected_ty.elem);
-                },
-                .Array => {
-                    const got_ty = self.context.type_store.get(.Array, got);
-                    if (got_ty.len != expected_ty.lanes) return .array_length_mismatch;
-                    return self.assignable(got_ty.elem, expected_ty.elem);
-                },
-                else => return .failure,
-            }
-        },
-        .Tensor => {
-            const expected_ty = self.context.type_store.get(.Tensor, expect);
-            const expected_rank: usize = @intCast(expected_ty.rank);
-            switch (got_kind) {
-                .Tensor => {
-                    const got_ty = self.context.type_store.get(.Tensor, got);
-                    if (got_ty.rank != expected_ty.rank) return .tensor_rank_mismatch;
-                    var i: usize = 0;
-                    while (i < expected_rank) : (i += 1) {
-                        if (got_ty.dims[i] != expected_ty.dims[i]) return .tensor_dimension_mismatch;
-                    }
-                    return self.assignable(got_ty.elem, expected_ty.elem);
-                },
-                .Array => {
-                    var dims_buf = [_]usize{0} ** types.max_tensor_rank;
-                    var rank: usize = 0;
-                    var current_ty = got;
-                    var current_kind = got_kind;
-                    var elem_ty = got;
-                    while (current_kind == .Array) : (rank += 1) {
-                        if (rank >= types.max_tensor_rank) return .tensor_rank_mismatch;
-                        const arr = self.context.type_store.get(.Array, current_ty);
-                        dims_buf[rank] = arr.len;
-                        elem_ty = arr.elem;
-                        current_ty = arr.elem;
-                        current_kind = self.typeKind(current_ty);
-                    }
-                    if (rank == 0) return .expected_tensor_type;
-                    if (rank != expected_rank) return .tensor_rank_mismatch;
-                    var j: usize = 0;
-                    while (j < expected_rank) : (j += 1) {
-                        if (dims_buf[j] != expected_ty.dims[j]) return .tensor_dimension_mismatch;
-                    }
-                    return self.assignable(elem_ty, expected_ty.elem);
-                },
-                else => return .expected_tensor_type,
-            }
-        },
-        .Optional => {
-            const expected_ty = self.context.type_store.get(.Optional, expect);
-            if (got_kind == .Optional) {
-                const got_ty = self.context.type_store.get(.Optional, got);
-                return self.assignable(got_ty.elem, expected_ty.elem);
-            }
-            return self.assignable(got, expected_ty.elem);
-        },
-        .Ptr => {
-            if (got_kind != .Ptr) return .expected_pointer_type;
-            const expected_ty = self.context.type_store.get(.Ptr, expect);
-            const got_ty = self.context.type_store.get(.Ptr, got);
-            if (!expected_ty.is_const and got_ty.is_const) {
-                return .pointer_constness_violation;
-            }
-            if (self.assignable(got_ty.elem, expected_ty.elem) != .success) {
-                return .pointer_type_mismatch;
-            }
-            return .success;
-        },
+        .Slice => return self.assignableSlice(got, expect),
+        .Array => return self.assignableArray(got, expect),
+        .DynArray => return self.assignableDynArray(got, expect),
+        .Tuple => return self.assignableTuple(got, expect),
+        .Map => return self.assignableMap(got, expect),
+        .Simd => return self.assignableSimd(got, expect),
+        .Tensor => return self.assignableTensor(got, expect),
+        .Optional => return self.assignableOptional(got, expect),
+        .Ptr => return self.assignablePtr(got, expect),
         .TypeType => {
             if (got_kind != .TypeType) return .type_value_mismatch;
             return .success;
         },
         .Noreturn => return .noreturn_not_storable,
-        .Union => {
-            if (got_kind != .Struct) return .expected_struct_type;
-            const expected_ty = self.context.type_store.get(.Union, expect);
-            const got_ty = self.context.type_store.get(.Struct, got);
-            const expected_fields = self.context.type_store.field_pool.slice(expected_ty.fields);
-            const got_fields = self.context.type_store.field_pool.slice(got_ty.fields);
-            // Should only have one field set in union
-            if (got_fields.len == 0) return .union_empty_literal;
-            if (got_fields.len != 1) return .union_literal_multiple_fields;
-            const gf = self.context.type_store.Field.get(got_fields[0]);
-            var found = false;
-            for (expected_fields) |efid| {
-                const ef = self.context.type_store.Field.get(efid);
-                if (ef.name.toRaw() == gf.name.toRaw()) {
-                    found = true;
-                    const res = self.assignable(gf.ty, ef.ty);
-                    if (res != .success) return res;
-                    break;
-                }
-            }
-            if (!found) return .unknown_struct_field;
-            return .success;
-        },
-        .Struct => {
-            if (got_kind != .Struct) return .expected_struct_type;
-            const expected_ty = self.context.type_store.get(.Struct, expect);
-            const got_ty = self.context.type_store.get(.Struct, got);
-            const expected_fields = self.context.type_store.field_pool.slice(expected_ty.fields);
-            const got_fields = self.context.type_store.field_pool.slice(got_ty.fields);
-            if (expected_fields.len < got_fields.len) return .unknown_struct_field;
-            if (expected_fields.len > got_fields.len) return .struct_field_count_mismatch;
-
-            // Check fields by name, not by order.
-            for (expected_fields) |efid| {
-                const ef = self.context.type_store.Field.get(efid);
-                var found = false;
-                for (got_fields, 0..) |gfid, i| {
-                    const gf = self.context.type_store.Field.get(gfid);
-                    if (ef.name.toRaw() == gf.name.toRaw()) {
-                        found = true;
-                        const res = self.assignable(gf.ty, ef.ty);
-                        if (res != .success)
-                            return .{ .struct_field_type_mismatch = .{
-                                .index = i,
-                                .tag_index = @intFromEnum(res),
-                            } };
-                        break;
-                    }
-                }
-                if (!found) return .struct_field_name_mismatch;
-            }
-            return .success;
-        },
+        .Union => return self.assignableUnion(got, expect),
+        .Struct => return self.assignableStruct(got, expect),
         .Enum => {
             if (got_kind != .Enum) return .expected_enum_type;
             if (!got.eq(expect)) return .failure;
@@ -1230,39 +1436,15 @@ pub fn assignable(self: *Checker, got: types.TypeId, expect: types.TypeId) Assig
         },
         .Function => {
             if (got_kind != .Function) return .failure;
-            // const efn = self.context.type_store.get(.Function, expect);
-            // const gfn = self.context.type_store.get(.Function, got);
-            // if (efn.is_variadic != gfn.is_variadic) return .failure;
-            // const eparams = self.context.type_store.type_pool.slice(efn.params);
-            // const gparams = self.context.type_store.type_pool.slice(gfn.params);
-            // if (eparams.len != gparams.len) return .failure;
-            // var i: usize = 0;
-            // while (i < eparams.len) : (i += 1) {
-            //     if (!eparams[i].eq(gparams[i])) return .failure;
-            // }
-            // if (!efn.result.eq(gfn.result)) return .failure;
-            // if (efn.is_pure and !gfn.is_pure) return .failure;
+            // Keeping existing behavior: functions are assignable if both are .Function.
+            // (Detailed param/result checking is commented out in original.)
             return .success;
         },
-        .ErrorSet => {
-            const expected_ty = self.context.type_store.get(.ErrorSet, expect);
-            if (got_kind == .Error) {
-                return self.assignable(got, expected_ty.error_ty);
-            } else {
-                return self.assignable(got, expected_ty.value_ty);
-            }
-        },
-        .I8, .I16, .I32, .I64, .U8, .U16, .U32, .U64, .Usize => {
-            if (!check_types.isIntegerKind(self, got_kind)) return .expected_integer_type;
-            return .success;
-        },
-        .F32, .F64 => {
-            if (got_kind != .F32 and got_kind != .F64) return .expected_float_type;
-            return .success;
-        },
+        .ErrorSet => return self.assignableErrorSet(got, expect),
+        .I8, .I16, .I32, .I64, .U8, .U16, .U32, .U64, .Usize => return self.assignableInteger(got),
+        .F32, .F64 => return self.assignableFloat(got),
         else => {},
     }
-
     return .failure;
 }
 
@@ -1313,7 +1495,7 @@ const ConstNumKind = enum { none, int, float };
 
 /// Determine whether `expr_id` is a compile-time numeric literal/expression.
 fn constNumericKind(self: *Checker, ast_unit: *ast.Ast, expr_id: ast.ExprId) ConstNumKind {
-    switch (exprKind(ast_unit, expr_id)) {
+    switch (ast_unit.kind(expr_id)) {
         .Literal => {
             const lit = getExpr(ast_unit, .Literal, expr_id);
             return switch (lit.kind) {
@@ -1392,7 +1574,7 @@ fn coerceNumericLiteral(
     expr_id: ast.ExprId,
     target_ty: types.TypeId,
 ) !bool {
-    if (exprKind(ast_unit, expr_id) != .Literal) return false;
+    if (ast_unit.kind(expr_id) != .Literal) return false;
     const lit = getExpr(ast_unit, .Literal, expr_id);
     const target_kind = self.typeKind(target_ty);
     return switch (lit.kind) {
@@ -1419,42 +1601,15 @@ fn coerceIntLiteral(
 
     const value = info.value;
     const ok = switch (target_kind) {
-        .I8 => value <= blk: {
-            const max: u128 = @intCast(std.math.maxInt(i8));
-            break :blk max;
-        },
-        .I16 => value <= blk: {
-            const max: u128 = @intCast(std.math.maxInt(i16));
-            break :blk max;
-        },
-        .I32 => value <= blk: {
-            const max: u128 = @intCast(std.math.maxInt(i32));
-            break :blk max;
-        },
-        .I64 => value <= blk: {
-            const max: u128 = @intCast(std.math.maxInt(i64));
-            break :blk max;
-        },
-        .U8 => value <= blk: {
-            const max: u128 = @intCast(std.math.maxInt(u8));
-            break :blk max;
-        },
-        .U16 => value <= blk: {
-            const max: u128 = @intCast(std.math.maxInt(u16));
-            break :blk max;
-        },
-        .U32 => value <= blk: {
-            const max: u128 = @intCast(std.math.maxInt(u32));
-            break :blk max;
-        },
-        .U64 => value <= blk: {
-            const max: u128 = @intCast(std.math.maxInt(u64));
-            break :blk max;
-        },
-        .Usize => value <= blk: {
-            const max: u128 = @intCast(std.math.maxInt(usize));
-            break :blk max;
-        },
+        .I8 => value <= @as(u128, @intCast(std.math.maxInt(i8))),
+        .I16 => value <= @as(u128, @intCast(std.math.maxInt(i16))),
+        .I32 => value <= @as(u128, @intCast(std.math.maxInt(i32))),
+        .I64 => value <= @as(u128, @intCast(std.math.maxInt(i64))),
+        .U8 => value <= @as(u128, @intCast(std.math.maxInt(u8))),
+        .U16 => value <= @as(u128, @intCast(std.math.maxInt(u16))),
+        .U32 => value <= @as(u128, @intCast(std.math.maxInt(u32))),
+        .U64 => value <= @as(u128, @intCast(std.math.maxInt(u64))),
+        .Usize => value <= @as(u128, @intCast(std.math.maxInt(usize))),
         .F32 => blk: {
             const limit: f128 = @floatCast(std.math.floatMax(f32));
             const as_float: f128 = @floatFromInt(value);
@@ -1541,8 +1696,7 @@ fn tryCoerceVariantOrErrorLiteral(
     expr_id: ast.ExprId,
     expect_ty: types.TypeId,
 ) !bool {
-    const value_kind = exprKind(ast_unit, expr_id);
-    return switch (value_kind) {
+    return switch (ast_unit.kind(expr_id)) {
         .Call => blk: { // Path 1: V.C(...) form
             const call = getExpr(ast_unit, .Call, expr_id);
             break :blk try self.tryCoerceCallLike(ctx, ast_unit, &call, expect_ty);
@@ -1565,7 +1719,7 @@ fn tryCoerceCallLike(
 ) !bool {
     var cur = call_like.callee;
     var last: ?ast.StrId = null;
-    while (exprKind(ast_unit, cur) == .FieldAccess) {
+    while (ast_unit.kind(cur) == .FieldAccess) {
         const fr = getExpr(ast_unit, .FieldAccess, cur);
         last = fr.field;
         cur = fr.parent;
@@ -1590,7 +1744,7 @@ fn tryCoerceStructLitLike(
 
     var cur = sl.ty.unwrap();
     var last: ?ast.StrId = null;
-    while (exprKind(ast_unit, cur) == .FieldAccess) {
+    while (ast_unit.kind(cur) == .FieldAccess) {
         const fr = getExpr(ast_unit, .FieldAccess, cur);
         last = fr.field;
         cur = fr.parent;
@@ -1794,7 +1948,7 @@ fn checkAssign(
     stmt: *const ast.StmtRows.Assign,
 ) !void {
     // Handle `_ = rhs` as a special discard operation.
-    if (exprKind(ast_unit, stmt.left) == .Ident) {
+    if (ast_unit.kind(stmt.left) == .Ident) {
         const ident = getExpr(ast_unit, .Ident, stmt.left);
         const name = ast_unit.exprs.strs.get(ident.name);
         if (std.mem.eql(u8, name, "_")) {
@@ -1808,7 +1962,7 @@ fn checkAssign(
     }
 
     // Pattern-shaped LHS support: tuple/struct/array destructuring
-    const lkind = exprKind(ast_unit, stmt.left);
+    const lkind = ast_unit.kind(stmt.left);
     if (lkind == .TupleLit or lkind == .StructLit or lkind == .ArrayLit) {
         // RHS of assignment should be checked in value context
         try self.pushValueReq(ctx, true);
@@ -1860,7 +2014,7 @@ fn checkAssign(
 
 /// Type-check statement `sid`, returning the resulting type (usually void).
 fn checkStmt(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, sid: ast.StmtId) !types.TypeId {
-    switch (ast_unit.stmts.index.kinds.items[sid.toRaw()]) {
+    switch (ast_unit.kind(sid)) {
         .Expr => {
             const expr = getStmt(ast_unit, .Expr, sid);
             // Statement expression: no value required
@@ -1911,9 +2065,7 @@ fn checkStmt(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, sid: ast.
 pub fn checkExpr(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, id: ast.ExprId) anyerror!types.TypeId {
     if (ast_unit.type_info.expr_types.items[id.toRaw()]) |cached| return cached;
 
-    const k = exprKind(ast_unit, id);
-
-    const tid: types.TypeId = switch (k) {
+    const tid: types.TypeId = switch (ast_unit.kind(id)) {
         .Literal => try self.checkLiteral(ast_unit, id),
         .Ident => try self.checkIdent(ctx, ast_unit, id),
         .Binary => try self.checkBinary(ctx, ast_unit, id),
@@ -2082,8 +2234,7 @@ fn checkIdent(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, id: ast.
                     // Fallback: check rhs now
                     break :blk try self.checkExpr(ctx, ast_unit, drow.value);
                 };
-                const p_kind = ast_unit.pats.index.kinds.items[drow.pattern.unwrap().toRaw()];
-                if (p_kind == .Binding) {
+                if (ast_unit.kind(drow.pattern.unwrap()) == .Binding) {
                     return rhs_ty;
                 }
                 const bt = pattern_matching.bindingTypeInPattern(self, ast_unit, drow.pattern.unwrap(), row.name, rhs_ty);
@@ -2189,10 +2340,10 @@ fn checkBlock(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, id: ast.
             }
             _ = try self.checkStmt(ctx, ast_unit, stmts[i]);
             // Track unconditional break at top-level in this block
-            const sk = ast_unit.stmts.index.kinds.items[stmts[i].toRaw()];
+            const sk = ast_unit.kind(stmts[i]);
             if (sk == .Break) after_break = true else if (sk == .Expr) {
                 const se = getStmt(ast_unit, .Expr, stmts[i]).expr;
-                if (exprKind(ast_unit, se) == .Break) after_break = true;
+                if (ast_unit.kind(se) == .Break) after_break = true;
             }
         }
         return self.context.type_store.tVoid();
@@ -2205,15 +2356,15 @@ fn checkBlock(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, id: ast.
             return self.context.type_store.tTypeError();
         }
         _ = try self.checkStmt(ctx, ast_unit, stmts[i]);
-        const sk = ast_unit.stmts.index.kinds.items[stmts[i].toRaw()];
+        const sk = ast_unit.kind(stmts[i]);
         if (sk == .Break) after_break = true else if (sk == .Expr) {
             const se = getStmt(ast_unit, .Expr, stmts[i]).expr;
-            if (exprKind(ast_unit, se) == .Break) after_break = true;
+            if (ast_unit.kind(se) == .Break) after_break = true;
         }
     }
     // If last is an expression, evaluate it in value context directly
     const last = stmts[stmts.len - 1];
-    const last_kind = ast_unit.stmts.index.kinds.items[last.toRaw()];
+    const last_kind = ast_unit.kind(last);
     if (last_kind == .Expr) {
         if (after_break) {
             const loc = stmtLoc(ast_unit, last);
@@ -2238,7 +2389,7 @@ fn checkBlock(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, id: ast.
 
 /// Fetch the source location for the statement `sid`.
 fn stmtLoc(ast_unit: *ast.Ast, sid: ast.StmtId) Loc {
-    return switch (ast_unit.stmts.index.kinds.items[sid.toRaw()]) {
+    return switch (ast_unit.kind(sid)) {
         .Expr => exprLocFromId(ast_unit, getStmt(ast_unit, .Expr, sid).expr),
         .Decl => blk: {
             const row = getStmt(ast_unit, .Decl, sid);
@@ -2259,10 +2410,8 @@ fn checkBinary(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, id: ast
 
     if (lhs_kind == .TypeError or rhs_kind == .TypeError) return self.context.type_store.tTypeError();
 
-    const left_expr_kind = exprKind(ast_unit, bin.left);
-    const right_expr_kind = exprKind(ast_unit, bin.right);
-    const left_is_literal = left_expr_kind == .Literal;
-    const right_is_literal = right_expr_kind == .Literal;
+    const left_is_literal = ast_unit.kind(bin.left) == .Literal;
+    const right_is_literal = ast_unit.kind(bin.right) == .Literal;
 
     if (lhs_kind == .Undef or rhs_kind == .Undef) {
         try self.context.diags.addError(exprLoc(ast_unit, bin), .invalid_binary_op_operands, .{ bin.op, lhs_kind, rhs_kind });
@@ -2355,7 +2504,7 @@ fn checkBinary(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, id: ast
                     // Require same element type for now
                     const lc = self.context.type_store.get(.Complex, l);
                     const rc = self.context.type_store.get(.Complex, r);
-                    if (lc.elem.toRaw() == rc.elem.toRaw()) return l;
+                    if (lc.elem.eq(rc.elem)) return l;
                     try self.context.diags.addError(exprLoc(ast_unit, bin), .invalid_binary_op_operands, .{ bin.op, lhs_kind, rhs_kind });
                     return self.context.type_store.tTypeError();
                 }
@@ -2459,7 +2608,7 @@ fn checkBinary(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, id: ast
             if (both_complex) {
                 const lc = self.context.type_store.get(.Complex, l);
                 const rc = self.context.type_store.get(.Complex, r);
-                both_complex = (lc.elem.toRaw() == rc.elem.toRaw());
+                both_complex = lc.elem.eq(rc.elem);
             }
             var both_same_enum = lhs_kind == .Enum and rhs_kind == .Enum and l.eq(r);
             var both_same_error = lhs_kind == .Error and rhs_kind == .Error and l.eq(r);
@@ -2500,7 +2649,7 @@ fn checkBinary(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, id: ast
                         if (both_complex) {
                             const lc = self.context.type_store.get(.Complex, l);
                             const rc = self.context.type_store.get(.Complex, r);
-                            both_complex = (lc.elem.toRaw() == rc.elem.toRaw());
+                            both_complex = lc.elem.eq(rc.elem);
                         }
                         both_same_enum = lhs_kind == .Enum and rhs_kind == .Enum and l.eq(r);
                         both_same_error = lhs_kind == .Error and rhs_kind == .Error and l.eq(r);
@@ -2514,7 +2663,7 @@ fn checkBinary(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, id: ast
                         if (both_complex) {
                             const lc = self.context.type_store.get(.Complex, l);
                             const rc = self.context.type_store.get(.Complex, r);
-                            both_complex = (lc.elem.toRaw() == rc.elem.toRaw());
+                            both_complex = lc.elem.eq(rc.elem);
                         }
                         both_same_enum = lhs_kind == .Enum and rhs_kind == .Enum and l.eq(r);
                         both_same_error = lhs_kind == .Error and rhs_kind == .Error and l.eq(r);
@@ -2528,7 +2677,7 @@ fn checkBinary(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, id: ast
                         if (both_complex) {
                             const lc = self.context.type_store.get(.Complex, l);
                             const rc = self.context.type_store.get(.Complex, r);
-                            both_complex = (lc.elem.toRaw() == rc.elem.toRaw());
+                            both_complex = lc.elem.eq(rc.elem);
                         }
                         both_same_enum = lhs_kind == .Enum and rhs_kind == .Enum and l.eq(r);
                         both_same_error = lhs_kind == .Error and rhs_kind == .Error and l.eq(r);
@@ -2543,8 +2692,8 @@ fn checkBinary(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, id: ast
         },
 
         .logical_and, .logical_or => {
-            if (l.toRaw() == self.context.type_store.tBool().toRaw() and
-                r.toRaw() == self.context.type_store.tBool().toRaw())
+                if (l.eq(self.context.type_store.tBool()) and
+                    r.eq(self.context.type_store.tBool()))
                 return self.context.type_store.tBool();
             try self.context.diags.addError(exprLoc(ast_unit, bin), .invalid_binary_op_operands, .{ bin.op, lhs_kind, rhs_kind });
             return self.context.type_store.tTypeError();
@@ -2677,18 +2826,18 @@ fn checkFunctionLit(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, id
                         {
                             // coerced OK
                         } else {
-                            const expected_kind = self.typeKind(pt);
-                            const actual_kind = def_kind;
+                            const expected_ty = pt;
+                            const actual_ty = def_ty;
                             const diag_idx = self.context.diags.count();
-                            try self.context.diags.addError(exprLocFromId(ast_unit, def_expr), .argument_type_mismatch, .{ expected_kind, actual_kind });
+                            try self.context.diags.addError(exprLocFromId(ast_unit, def_expr), .argument_type_mismatch, .{ expected_ty, actual_ty });
                             try self.attachTryCastNote(diag_idx, pt);
                             return self.context.type_store.tTypeError();
                         }
                     } else {
-                        const expected_kind = self.typeKind(pt);
-                        const actual_kind = def_kind;
+                        const expected_ty = pt;
+                        const actual_ty = def_ty;
                         const diag_idx = self.context.diags.count();
-                        try self.context.diags.addError(exprLocFromId(ast_unit, def_expr), .argument_type_mismatch, .{ expected_kind, actual_kind });
+                        try self.context.diags.addError(exprLocFromId(ast_unit, def_expr), .argument_type_mismatch, .{ expected_ty, actual_ty });
                         try self.attachTryCastNote(diag_idx, pt);
                         return self.context.type_store.tTypeError();
                     }
@@ -2765,7 +2914,7 @@ fn checkArrayLit(
     var i: usize = 1;
     while (i < elems.len) : (i += 1) {
         const ety = try self.checkExpr(ctx, ast_unit, elems[i]);
-        if (ety.toRaw() != first_ty.toRaw()) {
+        if (!ety.eq(first_ty)) {
             try self.context.diags.addError(exprLoc(ast_unit, array_lit), .heterogeneous_array_elements, .{});
             return self.context.type_store.tTypeError();
         }
@@ -2792,11 +2941,11 @@ fn checkMapLit(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, id: ast
         const kv = ast_unit.exprs.KeyValue.get(kvs[i]);
         const kt = try self.checkExpr(ctx, ast_unit, kv.key);
         const vt = try self.checkExpr(ctx, ast_unit, kv.value);
-        if (kt.toRaw() != key_ty.toRaw()) {
+        if (!kt.eq(key_ty)) {
             try self.context.diags.addError(exprLoc(ast_unit, row), .map_mixed_key_types, .{});
             return self.context.type_store.tTypeError();
         }
-        if (vt.toRaw() != val_ty.toRaw()) {
+        if (!vt.eq(val_ty)) {
             try self.context.diags.addError(exprLoc(ast_unit, row), .map_mixed_value_types, .{});
             return self.context.type_store.tTypeError();
         }
@@ -2815,8 +2964,7 @@ fn checkIndexAccess(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, id
         .Ptr => return self.indexElemTypeFromPointer(ctx, ast_unit, col_ty, index_expr.index, exprLoc(ast_unit, index_expr)),
         .Tensor => return self.indexElemTypeFromTensor(ctx, ast_unit, col_ty, index_expr.index, exprLoc(ast_unit, index_expr)),
         .Simd => {
-            const idx_kind = exprKind(ast_unit, index_expr.index);
-            if (idx_kind == .Range) {
+            if (ast_unit.kind(index_expr.index) == .Range) {
                 try self.context.diags.addError(exprLoc(ast_unit, index_expr), .non_integer_index, .{});
                 return self.context.type_store.tTypeError();
             }
@@ -2833,7 +2981,7 @@ fn checkIndexAccess(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, id
             const m = self.context.type_store.get(.Map, col_ty);
             const it = try self.checkExpr(ctx, ast_unit, index_expr.index);
             if (self.typeKind(it) == .TypeError) return self.context.type_store.tTypeError();
-            if (it.toRaw() != m.key.toRaw()) {
+            if (!it.eq(m.key)) {
                 try self.context.diags.addError(exprLoc(ast_unit, index_expr), .map_wrong_key_type, .{});
                 return self.context.type_store.tTypeError();
             }
@@ -2854,8 +3002,7 @@ fn indexElemTypeFromArrayLike(self: *Checker, ctx: *CheckerContext, ast_unit: *a
         try self.context.diags.addError(loc, .not_indexable, .{});
         return self.context.type_store.tTypeError();
     }
-    const idx_kind = exprKind(ast_unit, idx_expr);
-    if (idx_kind == .Range) {
+    if (ast_unit.kind(idx_expr) == .Range) {
         _ = self.checkExpr(ctx, ast_unit, idx_expr) catch return self.context.type_store.tTypeError(); // validate range endpoints
         return switch (col_kind) {
             .Array => blk: {
@@ -2892,8 +3039,7 @@ fn indexElemTypeFromArrayLike(self: *Checker, ctx: *CheckerContext, ast_unit: *a
 /// Compute the type referenced by pointer `col_ty` when indexed by `idx_expr`.
 fn indexElemTypeFromPointer(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, col_ty: types.TypeId, idx_expr: ast.ExprId, loc: Loc) !types.TypeId {
     const ptr_row = self.context.type_store.get(.Ptr, col_ty);
-    const idx_kind = exprKind(ast_unit, idx_expr);
-    if (idx_kind == .Range) {
+    if (ast_unit.kind(idx_expr) == .Range) {
         _ = self.checkExpr(ctx, ast_unit, idx_expr) catch return self.context.type_store.tTypeError();
         return self.context.type_store.mkSlice(ptr_row.elem, ptr_row.is_const);
     }
@@ -2916,8 +3062,7 @@ fn indexElemTypeFromTensor(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.
         return self.context.type_store.tTypeError();
     }
 
-    const idx_kind = exprKind(ast_unit, idx_expr);
-    if (idx_kind == .Range) {
+    if (ast_unit.kind(idx_expr) == .Range) {
         // Tensor slicing is not yet supported.
         try self.context.diags.addError(loc, .non_integer_index, .{});
         return self.context.type_store.tTypeError();
@@ -3454,8 +3599,8 @@ fn checkRange(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, id: ast.
         var r = end_ty.?;
         var lkind = self.typeKind(l);
         var rkind = self.typeKind(r);
-        const l_is_lit = if (!range.start.isNone()) exprKind(ast_unit, range.start.unwrap()) == .Literal else false;
-        const r_is_lit = if (!range.end.isNone()) exprKind(ast_unit, range.end.unwrap()) == .Literal else false;
+        const l_is_lit = if (!range.start.isNone()) ast_unit.kind(range.start.unwrap()) == .Literal else false;
+        const r_is_lit = if (!range.end.isNone()) ast_unit.kind(range.end.unwrap()) == .Literal else false;
 
         if (l_is_lit and check_types.isIntegerKind(self, rkind)) {
             if (try self.updateCoercedLiteral(ast_unit, range.start.unwrap(), r, &l, &lkind)) {
@@ -3485,8 +3630,7 @@ fn checkRange(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, id: ast.
 
 /// Extract an identifier token or field name from a type expression for diagnostics.
 fn typeExprNameForDiag(ast_unit: *ast.Ast, expr: ast.ExprId) ?ast.StrId {
-    const kind = exprKind(ast_unit, expr);
-    return switch (kind) {
+    return switch (ast_unit.kind(expr)) {
         .Ident => ast_unit.exprs.get(.Ident, expr).name,
         .FieldAccess => ast_unit.exprs.get(.FieldAccess, expr).field,
         .Call => typeExprNameForDiag(ast_unit, ast_unit.exprs.get(.Call, expr).callee),
@@ -3656,7 +3800,7 @@ fn structFieldHasDefault(
     ty_expr: ast.ExprId,
     field_name: ast.StrId,
 ) bool {
-    return switch (exprKind(ast_unit, ty_expr)) {
+    return switch (ast_unit.kind(ty_expr)) {
         .StructType => structFieldHasDefaultInStructExpr(ast_unit, ty_expr, field_name),
         .Ident => blk: {
             const idr = getExpr(ast_unit, .Ident, ty_expr);
@@ -3664,7 +3808,7 @@ fn structFieldHasDefault(
                 const sym = ctx.symtab.syms.get(sid);
                 if (!sym.origin_decl.isNone()) {
                     const decl = ast_unit.exprs.Decl.get(sym.origin_decl.unwrap());
-                    if (exprKind(ast_unit, decl.value) == .StructType) {
+                    if (ast_unit.kind(decl.value) == .StructType) {
                         break :blk structFieldHasDefaultInStructExpr(ast_unit, decl.value, field_name);
                     }
                 }
@@ -3684,7 +3828,7 @@ fn structFieldHasDefault(
             if (parent_unit.ast) |module_ast| {
                 if (module_ast.type_info.getExport(field_expr.field)) |export_entry| {
                     const decl = module_ast.exprs.Decl.get(export_entry.decl_id);
-                    if (exprKind(module_ast, decl.value) == .StructType) {
+                    if (module_ast.kind(decl.value) == .StructType) {
                         return structFieldHasDefaultInStructExpr(module_ast, decl.value, field_name);
                     }
                 }
@@ -3828,10 +3972,10 @@ fn checkTagConstructorCall(
                             continue;
                         }
                     }
-                    const expected_kind = self.typeKind(params[i]);
-                    const actual_kind = at_kind;
+                    const expected_ty = params[i];
+                    const actual_ty = at;
                     // IMPORTANT: only one type diagnostic
-                    try self.context.diags.addError(loc, .argument_type_mismatch, .{ expected_kind, actual_kind });
+                    try self.context.diags.addError(loc, .argument_type_mismatch, .{ expected_ty, actual_ty });
                     return self.context.type_store.tTypeError();
                 }
             }
@@ -3849,7 +3993,7 @@ fn checkTagConstructorCall(
 fn checkCall(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, id: ast.ExprId) !types.TypeId {
     const call_expr = getExpr(ast_unit, .Call, id);
     const call_loc = exprLoc(ast_unit, call_expr);
-    const callee_kind = exprKind(ast_unit, call_expr.callee);
+    const callee_kind = ast_unit.kind(call_expr.callee);
     const args = ast_unit.exprs.expr_pool.slice(call_expr.args);
 
     if (callee_kind == .FieldAccess) {
@@ -3977,10 +4121,10 @@ fn checkCall(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, id: ast.E
                         continue;
                     }
                 }
-                const expected_kind = self.typeKind(params[i]);
-                const actual_kind = at_kind;
+                const expected_ty = params[i];
+                const actual_ty = at;
                 const loc = exprLocFromId(ast_unit, args[i]);
-                try self.context.diags.addError(loc, .argument_type_mismatch, .{ expected_kind, actual_kind });
+                try self.context.diags.addError(loc, .argument_type_mismatch, .{ expected_ty, actual_ty });
                 return self.context.type_store.tTypeError();
             }
         }
@@ -4020,7 +4164,7 @@ fn checkCall(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, id: ast.E
                 const srow = ctx.symtab.syms.get(sid);
                 if (!srow.origin_decl.isNone()) {
                     const did = srow.origin_decl.unwrap();
-                    if (ast_unit.exprs.index.kinds.items[ast_unit.exprs.Decl.get(did).value.toRaw()] == .FunctionLit) {
+                    if (ast_unit.kind(ast_unit.exprs.Decl.get(did).value) == .FunctionLit) {
                         if (self.countTrailingDefaultParams(ast_unit, did)) |defaults| {
                             if (defaults <= params.len) {
                                 min_required = params.len - defaults;
@@ -4034,7 +4178,7 @@ fn checkCall(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, id: ast.E
             const fr = getExpr(ast_unit, .FieldAccess, call_expr.callee);
             // Detect if the parent is an import (direct or via identifier bound to an import decl)
             var path_sid_opt: ?ast.StrId = null;
-            const pk = exprKind(ast_unit, fr.parent);
+            const pk = ast_unit.kind(fr.parent);
             if (pk == .Import) {
                 const ir = getExpr(ast_unit, .Import, fr.parent);
                 path_sid_opt = ir.path;
@@ -4045,7 +4189,7 @@ fn checkCall(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, id: ast.E
                     if (!sym2.origin_decl.isNone()) {
                         const did2 = sym2.origin_decl.unwrap();
                         const drow2 = ast_unit.exprs.Decl.get(did2);
-                        if (exprKind(ast_unit, drow2.value) == .Import) {
+                        if (ast_unit.kind(drow2.value) == .Import) {
                             const ir = getExpr(ast_unit, .Import, drow2.value);
                             path_sid_opt = ir.path;
                         }
@@ -4149,11 +4293,11 @@ fn checkCall(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, id: ast.E
                     continue;
                 }
             }
-            const expected_kind = self.typeKind(pt);
-            const actual_kind = at_kind;
+            const expected_ty = pt;
+            const actual_ty = at;
             const loc = exprLocFromId(ast_unit, args[i]);
             const diag_idx = self.context.diags.count();
-            try self.context.diags.addError(loc, .argument_type_mismatch, .{ expected_kind, actual_kind });
+            try self.context.diags.addError(loc, .argument_type_mismatch, .{ expected_ty, actual_ty });
             try self.attachTryCastNote(diag_idx, pt);
             return self.context.type_store.tTypeError();
         }
@@ -4164,7 +4308,7 @@ fn checkCall(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, id: ast.E
 /// Count how many trailing parameters of `did` have default values (runtime ones only).
 fn countTrailingDefaultParams(_: *Checker, ast_unit: *ast.Ast, did: ast.DeclId) ?usize {
     const decl = ast_unit.exprs.Decl.get(did);
-    if (ast_unit.exprs.index.kinds.items[decl.value.toRaw()] != .FunctionLit) return null;
+    if (ast_unit.kind(decl.value) != .FunctionLit) return null;
     const fnr = ast_unit.exprs.get(.FunctionLit, decl.value);
     const params = ast_unit.exprs.param_pool.slice(fnr.params);
     if (params.len == 0) return 0;
@@ -4247,9 +4391,9 @@ fn checkMethodCall(
         const self_param_ty = params[0];
         if (!binding.needs_addr_of) {
             if (self.assignable(receiver_ty, self_param_ty) != .success) {
-                const expected_kind = self.typeKind(self_param_ty);
-                const actual_kind = self.typeKind(receiver_ty);
-                try self.context.diags.addError(exprLoc(ast_unit, field_expr), .argument_type_mismatch, .{ expected_kind, actual_kind });
+                const expected_ty = self_param_ty;
+                const actual_ty = receiver_ty;
+                try self.context.diags.addError(exprLoc(ast_unit, field_expr), .argument_type_mismatch, .{ expected_ty, actual_ty });
                 return self.context.type_store.tTypeError();
             }
         } else if (!receiver_ty.eq(binding.owner_type)) {
@@ -4292,11 +4436,11 @@ fn checkMethodCall(
                     continue;
                 }
             }
-            const expected_kind = self.typeKind(pt);
-            const actual_kind = at_kind;
+            const expected_ty = pt;
+            const actual_ty = at;
             const loc = exprLocFromId(ast_unit, args[i]);
             const diag_idx = self.context.diags.count();
-            try self.context.diags.addError(loc, .argument_type_mismatch, .{ expected_kind, actual_kind });
+            try self.context.diags.addError(loc, .argument_type_mismatch, .{ expected_ty, actual_ty });
             try self.attachTryCastNote(diag_idx, pt);
             return self.context.type_store.tTypeError();
         }
@@ -4325,8 +4469,7 @@ fn checkMethodCall(
 
 /// Extract the identifier name used by the callee expression if applicable.
 fn calleeNameForCall(ast_unit: *ast.Ast, callee_expr: ast.ExprId) ?ast.StrId {
-    const kind = ast_unit.exprs.index.kinds.items[callee_expr.toRaw()];
-    return switch (kind) {
+    return switch (ast_unit.kind(callee_expr)) {
         .Ident => ast_unit.exprs.get(.Ident, callee_expr).name,
         .FieldAccess => ast_unit.exprs.get(.FieldAccess, callee_expr).field,
         else => null,
@@ -4345,7 +4488,7 @@ fn exprTypeFromInfo(self: *Checker, ast_unit: *ast.Ast, expr_id: ast.ExprId) typ
 
 /// Recognize range expressions used as spreads in trailing `any` tuples.
 fn isSpreadRangeExprChecker(self: *Checker, ast_unit: *ast.Ast, expr: ast.ExprId) bool {
-    if (ast_unit.exprs.index.kinds.items[expr.toRaw()] != .Range) return false;
+    if (ast_unit.kind(expr) != .Range) return false;
     const row = ast_unit.exprs.get(.Range, expr);
     if (!row.start.isNone()) return false;
     if (row.end.isNone()) return false;
@@ -4398,7 +4541,7 @@ fn maybeRecordRuntimeSpecialization(
     var decl_ctx = call_resolution.findFunctionDeclForCall(self.context, ast_unit, callee_expr, callee_name) orelse return;
     decl_ctx = resolveFunctionDeclAlias(self, decl_ctx) orelse decl_ctx;
     const decl = decl_ctx.ast.exprs.Decl.get(decl_ctx.decl_id);
-    if (decl_ctx.ast.exprs.index.kinds.items[decl.value.toRaw()] != .FunctionLit) return;
+    if (decl_ctx.ast.kind(decl.value) != .FunctionLit) return;
     const fn_lit = decl_ctx.ast.exprs.get(.FunctionLit, decl.value);
     const params = decl_ctx.ast.exprs.param_pool.slice(fn_lit.params);
 
@@ -4443,15 +4586,14 @@ fn maybeRecordRuntimeSpecialization(
     if (decl_ctx.ast.file_id >= self.checker_ctx.items.len)
         return;
 
-    const target_ctx = self.checker_ctx.items[decl_ctx.ast.file_id];
+    const target_ctx = &self.checker_ctx.items[decl_ctx.ast.file_id];
     _ = try self.checkSpecializedFunction(target_ctx, decl_ctx.ast, decl.value, runtime_specs.items);
     try ast_unit.type_info.markSpecializedCall(self.gpa, call_id, decl_ctx);
 }
 
 /// Extract identifier name for alias resolution when `expr` represents a dotted path.
 fn aliasTargetName(ast_unit: *ast.Ast, expr: ast.ExprId) ?ast.StrId {
-    const kind = ast_unit.exprs.index.kinds.items[expr.toRaw()];
-    return switch (kind) {
+    return switch (ast_unit.kind(expr)) {
         .Ident => ast_unit.exprs.get(.Ident, expr).name,
         .FieldAccess => ast_unit.exprs.get(.FieldAccess, expr).field,
         else => null,
@@ -4467,13 +4609,13 @@ fn resolveFunctionDeclAlias(
     var depth: usize = 0;
     while (depth < 16) : (depth += 1) {
         const decl = current.ast.exprs.Decl.get(current.decl_id);
-        const kind = current.ast.exprs.index.kinds.items[decl.value.toRaw()];
+        const kind = current.ast.kind(decl.value);
         if (kind == .FunctionLit) return current;
         if (kind == .Import) return null;
         if (kind == .FieldAccess) {
             const fr = current.ast.exprs.get(.FieldAccess, decl.value);
             if (call_resolution.findFunctionDeclFromFieldAccess(self.context, current.ast, fr, fr.field)) |resolved| {
-                if (resolved.ast != current.ast or resolved.decl_id.toRaw() != current.decl_id.toRaw()) {
+                if (resolved.ast != current.ast or !resolved.decl_id.eq(current.decl_id)) {
                     return resolved;
                 }
             }
@@ -4481,7 +4623,7 @@ fn resolveFunctionDeclAlias(
         }
         const alias_name = aliasTargetName(current.ast, decl.value) orelse return current;
         const next = call_resolution.findFunctionDeclForCall(self.context, current.ast, decl.value, alias_name) orelse return current;
-        if (next.ast == current.ast and next.decl_id.toRaw() == current.decl_id.toRaw()) return current;
+        if (next.ast == current.ast and next.decl_id.eq(current.decl_id)) return current;
         current = next;
     }
     return current;
@@ -4677,7 +4819,7 @@ fn checkReturn(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, rr: ast
 fn checkIf(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, id: ast.ExprId) !types.TypeId {
     const if_expr = getExpr(ast_unit, .If, id);
     const cond = try self.checkExpr(ctx, ast_unit, if_expr.cond);
-    if (cond.toRaw() != self.context.type_store.tBool().toRaw()) {
+    if (!cond.eq(self.context.type_store.tBool())) {
         const cond_ty = self.typeKind(cond);
         try self.context.diags.addError(exprLoc(ast_unit, if_expr), .non_boolean_condition, .{cond_ty});
         return self.context.type_store.tTypeError();
@@ -4713,7 +4855,7 @@ fn checkIf(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, id: ast.Exp
         return then_ty;
     }
 
-    if (then_ty.toRaw() != else_ty.toRaw()) {
+    if (!then_ty.eq(else_ty)) {
         if (self.unifyTypes(then_ty, else_ty)) |u| {
             return u;
         }
@@ -4725,7 +4867,7 @@ fn checkIf(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, id: ast.Exp
 
 /// Try to reconcile `a` and `b` by picking a castable/superset type when possible.
 fn unifyTypes(self: *Checker, a: types.TypeId, b: types.TypeId) ?types.TypeId {
-    if (a.toRaw() == b.toRaw()) return a;
+    if (a.eq(b)) return a;
     const ak = self.typeKind(a);
     const bk = self.typeKind(b);
 
@@ -4845,8 +4987,7 @@ fn checkFor(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, id: ast.Ex
 
     switch (kind) {
         .Array, .Slice, .DynArray => {
-            const pat_kind = ast_unit.pats.index.kinds.items[fr.pattern.toRaw()];
-            const subject_ty: types.TypeId = switch (pat_kind) {
+            const subject_ty: types.TypeId = switch (ast_unit.kind(fr.pattern)) {
                 .Slice => it,
                 else => switch (kind) {
                     .Array => self.context.type_store.get(.Array, it).elem,
@@ -4888,6 +5029,9 @@ fn castable(self: *Checker, got: types.TypeId, expect: types.TypeId) bool {
     if (got.eq(expect)) return true;
     const gk = self.typeKind(got);
     const ek = self.typeKind(expect);
+
+    if (self.isSliceOfU8(got) and ek == .String) return true;
+    if (gk == .String and self.isSliceOfU8(expect)) return true;
 
     // Optional promotion: allow T -> Optional(T)
     if (ek == .Optional) {
@@ -4935,6 +5079,12 @@ fn castable(self: *Checker, got: types.TypeId, expect: types.TypeId) bool {
     return false;
 }
 
+fn isSliceOfU8(self: *Checker, ty: types.TypeId) bool {
+    if (self.typeKind(ty) != .Slice) return false;
+    const slice = self.context.type_store.get(.Slice, ty);
+    return slice.elem.eq(self.context.type_store.tU8());
+}
+
 /// Validate a `break` statement, ensuring loop contexts/values align.
 fn checkBreak(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, br: ast.Rows.Break) !types.TypeId {
     if (!self.inLoop(ctx)) {
@@ -4951,7 +5101,7 @@ fn checkBreak(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, br: ast.
     if (self.loopCtxForLabel(ctx, br.label)) |context| {
         if (!br.value.isNone()) {
             if (context.result_ty) |rt| {
-                if (val_ty.?.toRaw() != rt.toRaw()) {
+                if (!val_ty.?.eq(rt)) {
                     try self.context.diags.addError(exprLoc(ast_unit, br), .loop_break_value_type_conflict, .{});
                     return self.context.type_store.tTypeError();
                 }
@@ -5204,7 +5354,7 @@ fn checkImport(self: *Checker, ast_unit: *ast.Ast, id: ast.ExprId) !types.TypeId
 
 /// Emit diagnostics when literal `rhs` divides by zero.
 fn checkDivByZero(self: *Checker, ast_unit: *ast.Ast, rhs: ast.ExprId, loc: Loc) !void {
-    if (exprKind(ast_unit, rhs) != .Literal) return;
+    if (ast_unit.kind(rhs) != .Literal) return;
     const lit = getExpr(ast_unit, .Literal, rhs);
     switch (lit.kind) {
         .int => {
@@ -5232,7 +5382,7 @@ fn checkDivByZero(self: *Checker, ast_unit: *ast.Ast, rhs: ast.ExprId, loc: Loc)
 
 /// Emit error when integer literal `rhs` is zero in division/mod contexts.
 fn checkIntZeroLiteral(self: *Checker, ast_unit: *ast.Ast, rhs: ast.ExprId, loc: Loc) !void {
-    if (exprKind(ast_unit, rhs) != .Literal) return;
+    if (ast_unit.kind(rhs) != .Literal) return;
     const lit = getExpr(ast_unit, .Literal, rhs);
     if (lit.kind == .int) {
         const info = switch (lit.data) {
@@ -5257,8 +5407,7 @@ const LvalueRootKind = enum {
 };
 /// Determine whether the lvalue rooted at `expr` refers to a local, param, or other decl.
 fn lvalueRootKind(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, expr: ast.ExprId) LvalueRootKind {
-    const k = exprKind(ast_unit, expr);
-    switch (k) {
+    switch (ast_unit.kind(expr)) {
         .Ident => {
             const idr = getExpr(ast_unit, .Ident, expr);
             // Discard assignment '_' is considered local

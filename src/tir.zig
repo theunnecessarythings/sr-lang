@@ -595,6 +595,12 @@ pub const TIR = struct {
         self.terms.deinit();
         self.funcs.deinit();
     }
+
+    pub fn kind(self: *TIR, id: anytype) if (@TypeOf(id) == TermId) TermKind else OpKind {
+        if (@TypeOf(id) == InstrId)
+            return self.instrs.index.kinds.items[id.toRaw()];
+        return self.terms.index.kinds.items[id.toRaw()];
+    }
 };
 
 // ============================

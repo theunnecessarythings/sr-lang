@@ -559,7 +559,7 @@ fn getFileSource(self: *Codegen, file_id: u32) ![]const u8 {
 
 /// Read the optional source location attached to `ins_id` inside `t`.
 fn instrOptLoc(_: *Codegen, t: *tir.TIR, ins_id: tir.InstrId) tir.OptLocId {
-    const kind = t.instrs.index.kinds.items[ins_id.toRaw()];
+    const kind = t.kind(ins_id);
     return switch (kind) {
         inline else => |k| t.instrs.get(k, ins_id).loc,
     };
@@ -567,8 +567,7 @@ fn instrOptLoc(_: *Codegen, t: *tir.TIR, ins_id: tir.InstrId) tir.OptLocId {
 
 /// Return the optional location stored on terminator `term_id` within `t`.
 fn termOptLoc(_: *Codegen, t: *tir.TIR, term_id: tir.TermId) tir.OptLocId {
-    const kind = t.terms.index.kinds.items[term_id.toRaw()];
-    return switch (kind) {
+    return switch (t.kind(term_id)) {
         inline else => |k| t.terms.get(k, term_id).loc,
     };
 }
@@ -597,7 +596,7 @@ fn collectForceLlvmFuncSyms(self: *Codegen, t: *tir.TIR) !void {
             const b = t.funcs.Block.get(bid);
             const instrs = t.instrs.instr_pool.slice(b.instrs);
             for (instrs) |iid| {
-                if (t.instrs.index.kinds.items[iid.toRaw()] != .GlobalAddr) continue;
+                if (t.kind(iid) != .GlobalAddr) continue;
                 const row = t.instrs.get(.GlobalAddr, iid);
                 if (type_store.getKind(row.ty) != .Ptr) continue;
                 const ptr = type_store.get(.Ptr, row.ty);
@@ -1268,8 +1267,7 @@ fn emitFunctionBody(self: *Codegen, f_id: tir.FuncId, t: *tir.TIR) !void {
 /// Return the lowered SSA value corresponding to `id` if it was already emitted.
 fn getInstrResultId(self: *Codegen, t: *tir.TIR, id: tir.InstrId) ?tir.ValueId {
     _ = self;
-    const K = t.instrs.index.kinds.items[id.toRaw()];
-    switch (K) {
+    switch (t.kind(id)) {
         inline else => |k| return t.instrs.get(k, id).result,
         inline .Add, .Sub, .Mul, .BinWrapAdd, .BinWrapSub, .BinWrapMul, .BinSatAdd, .BinSatSub, .BinSatMul, .BinSatShl, .Div, .Mod, .Shl, .Shr, .BitAnd, .BitOr, .BitXor, .CmpEq, .CmpNe, .CmpLt, .CmpLe, .CmpGt, .CmpGe, .LogicalAnd, .LogicalOr => |k| return t.instrs.get(k, id).result,
         inline .CastNormal, .CastBit, .CastSaturate, .CastWrap, .CastChecked => |k| return t.instrs.get(k, id).result,
@@ -1284,8 +1282,7 @@ fn getInstrResultId(self: *Codegen, t: *tir.TIR, id: tir.InstrId) ?tir.ValueId {
 
 /// Retrieve the source-level type stamped on the result of `id`, if recorded.
 fn instrResultSrType(_: *Codegen, t: *tir.TIR, id: tir.InstrId) ?types.TypeId {
-    const K = t.instrs.index.kinds.items[id.toRaw()];
-    return switch (K) {
+    return switch (t.kind(id)) {
         inline else => |k| t.instrs.get(k, id).ty,
         inline .Add, .Sub, .Mul, .BinWrapAdd, .BinWrapSub, .BinWrapMul, .BinSatAdd, .BinSatSub, .BinSatMul, .BinSatShl, .Div, .Mod, .Shl, .Shr, .BitAnd, .BitOr, .BitXor, .CmpEq, .CmpNe, .CmpLt, .CmpLe, .CmpGt, .CmpGe, .LogicalAnd, .LogicalOr => |k| t.instrs.get(k, id).ty,
         inline .CastNormal, .CastBit, .CastSaturate, .CastWrap, .CastChecked => |k| t.instrs.get(k, id).ty,
@@ -1871,7 +1868,7 @@ fn emitLoad(self: *Codegen, p: tir.Rows.Load, t: *tir.TIR) !mlir.Value {
     if (ptr_val_opt == null) {
         // Try materializing or folding known-constant pointers directly to values as a last resort.
         if (self.def_instr.get(p.ptr)) |pid| {
-            const kdef = t.instrs.index.kinds.items[pid.toRaw()];
+            const kdef = t.kind(pid);
             const res_ty = try self.llvmTypeOf(p.ty);
             switch (kdef) {
                 .ConstFloat => {
@@ -2294,7 +2291,7 @@ fn emitIndex(self: *Codegen, p: tir.Rows.Index, t: *tir.TIR) !mlir.Value {
         // Peel optional CastNormal from the index to find builtin.range.make
         var idx_vid: tir.ValueId = p.index;
         if (self.def_instr.get(idx_vid)) |iid1| {
-            const k1 = t.instrs.index.kinds.items[iid1.toRaw()];
+            const k1 = t.kind(iid1);
             if (k1 == .CastNormal) {
                 const crow = t.instrs.get(.CastNormal, iid1);
                 idx_vid = crow.value;
@@ -2304,7 +2301,7 @@ fn emitIndex(self: *Codegen, p: tir.Rows.Index, t: *tir.TIR) !mlir.Value {
         var end_vid: tir.ValueId = undefined;
         var incl_vid: tir.ValueId = undefined;
         if (self.def_instr.get(idx_vid)) |iid2| {
-            const k2 = t.instrs.index.kinds.items[iid2.toRaw()];
+            const k2 = t.kind(iid2);
             if (k2 == .RangeMake) {
                 const r = t.instrs.get(.RangeMake, iid2);
                 start_vid = r.start;
@@ -3082,8 +3079,7 @@ fn emitMlirBlock(self: *Codegen, p: tir.Rows.MlirBlock, t: *tir.TIR) !mlir.Value
 // ----------------------------------------------------------------
 /// Lower a single SSA instruction `ins_id` from `t` into MLIR and return its result value.
 fn emitInstr(self: *Codegen, ins_id: tir.InstrId, t: *tir.TIR) !mlir.Value {
-    const kind = t.instrs.index.kinds.items[ins_id.toRaw()];
-    return switch (kind) {
+    return switch (t.kind(ins_id)) {
         // ------------- Constants -------------
         .ConstInt => self.emitConstInt(t.instrs.get(.ConstInt, ins_id)),
         .ConstFloat => self.emitConstFloat(t.instrs.get(.ConstFloat, ins_id)),
@@ -3669,9 +3665,7 @@ fn emitCmp(
 
 /// Emit the terminator instruction corresponding to `term_id`.
 fn emitTerminator(self: *Codegen, term_id: tir.TermId, t: *tir.TIR) !void {
-    const kind = t.terms.index.kinds.items[term_id.toRaw()];
-
-    switch (kind) {
+    switch (t.kind(term_id)) {
         .Return => {
             const p = t.terms.get(.Return, term_id);
             const prev_loc = self.pushLocation(p.loc);
@@ -4677,10 +4671,8 @@ fn srTypeOfValue(self: *Codegen, vid: tir.ValueId) types.TypeId {
 /// Retrieve the integer constant value stored by `vid`, if any.
 fn constIntOf(self: *Codegen, t: *tir.TIR, vid: tir.ValueId) ?i128 {
     if (self.def_instr.get(vid)) |iid| {
-        const k = t.instrs.index.kinds.items[iid.toRaw()];
-        if (k == .ConstInt) {
-            const row = t.instrs.get(.ConstInt, iid);
-            return row.value;
+        if (t.kind(iid) == .ConstInt) {
+            return t.instrs.get(.ConstInt, iid).value;
         }
     }
     return null;
@@ -4761,7 +4753,7 @@ fn copyErrorAggregate(
         const src_field_id = src_variants[i];
         const dst_field = self.context.type_store.Field.get(dst_field_id);
         const src_field = self.context.type_store.Field.get(src_field_id);
-        if (dst_field.name.toRaw() != src_field.name.toRaw()) return null;
+        if (!dst_field.name.eq(src_field.name)) return null;
         dst_union_fields[i] = .{ .name = dst_field.name, .ty = dst_field.ty };
         src_union_fields[i] = .{ .name = src_field.name, .ty = src_field.ty };
     }
@@ -4975,7 +4967,8 @@ pub fn reinterpretAggregateViaSpill(
     src_val: mlir.Value,
     src_sr: types.TypeId,
 ) anyerror!?mlir.Value {
-    if (dst_sr.toRaw() == 0 or src_sr.toRaw() == 0) return null;
+    const zero_sr = types.TypeId.fromRaw(0);
+    if (dst_sr.eq(zero_sr) or src_sr.eq(zero_sr)) return null;
 
     const dst_kind = self.context.type_store.getKind(dst_sr);
     const src_kind = self.context.type_store.getKind(src_sr);
@@ -5129,7 +5122,8 @@ pub fn coerceOnBranch(
         return op.getResult(0);
     }
 
-    if (dst_sr_ty.toRaw() != 0 and src_sr_ty.toRaw() != 0) {
+    const zero_sr_ty = types.TypeId.fromRaw(0);
+    if (!dst_sr_ty.eq(zero_sr_ty) and !src_sr_ty.eq(zero_sr_ty)) {
         const dst_kind = self.context.type_store.getKind(dst_sr_ty);
         const src_kind = self.context.type_store.getKind(src_sr_ty);
 
@@ -5145,7 +5139,7 @@ pub fn coerceOnBranch(
         return agg;
 
     // Avoid unsafe fallback bitcasts between aggregates and scalars.
-    if (dst_sr_ty.toRaw() != 0 and src_sr_ty.toRaw() != 0) {
+    if (!dst_sr_ty.eq(zero_sr_ty) and !src_sr_ty.eq(zero_sr_ty)) {
         const dst_kind = self.context.type_store.getKind(dst_sr_ty);
         const src_kind = self.context.type_store.getKind(src_sr_ty);
         // If asked to coerce an ErrorSet to its Ok payload type, perform a

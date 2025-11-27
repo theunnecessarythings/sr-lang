@@ -63,6 +63,11 @@ pub fn SentinelIndex(comptime T: type) type {
         pub fn toRaw(self: @This()) u32 {
             return self.raw;
         }
+
+        pub fn eq(self: @This(), other: anytype) bool {
+            if (@TypeOf(other) == @This()) return self.raw == other.raw;
+            return self.raw == other.index;
+        }
     };
 }
 
@@ -1201,6 +1206,10 @@ pub const ExprStore = struct {
         return p.get(.{ .index = row });
     }
 
+    pub fn kind(self: *ExprStore, id: ExprId) ExprKind {
+        return self.index.kinds.items[id.toRaw()];
+    }
+
     /// Access the underlying MultiArrayList for kind `K`.
     pub fn table(self: *@This(), comptime K: ExprKind) *std.MultiArrayList(RowT(K)) {
         const TblT = Table(RowT(K));
@@ -1324,6 +1333,10 @@ pub const PatternStore = struct {
         return p.get(.{ .index = row });
     }
 
+    pub fn kind(self: *PatternStore, id: PatternId) PatternKind {
+        return self.index.kinds.items[id.toRaw()];
+    }
+
     // non-kind tables adders
     /// Store a pattern path segment.
     pub fn addPathSeg(self: *@This(), row: PatRows.PathSeg) PathSegId {
@@ -1362,6 +1375,20 @@ pub const CST = struct {
         self.exprs.deinit();
         self.pats.deinit();
         self.comments.deinit(self.gpa);
+    }
+
+    fn KindType(T: type) type {
+        if (T == ExprId) return ExprKind;
+        if (T == PatternId) return PatternKind;
+        @compileError("Unsupported id type: " ++ @typeName(T));
+    }
+
+    pub fn kind(self: *CST, id: anytype) KindType(@TypeOf(id)) {
+        if (@TypeOf(id) == ExprId)
+            return self.exprs.kind(id);
+        if (@TypeOf(id) == PatternId)
+            return self.pats.kind(id);
+        @compileError("Unsupported id type: " ++ @typeName(@TypeOf(id)));
     }
 };
 
@@ -1449,7 +1476,7 @@ pub const DodPrinter = struct {
 
     /// Recursively print expression `id`.
     pub fn printExpr(self: *DodPrinter, id: ExprId) anyerror!void {
-        const kind = self.exprs.index.kinds.items[id.toRaw()];
+        const kind = self.exprs.kind(id);
         switch (kind) {
             .Literal => {
                 const n = self.exprs.get(.Literal, id);
@@ -2131,7 +2158,7 @@ pub const DodPrinter = struct {
     // ------------------------------------------------------------
     /// Print pattern `id` and its nested branches.
     pub fn printPattern(self: *DodPrinter, id: PatternId) anyerror!void {
-        const kind = self.pats.index.kinds.items[id.toRaw()];
+        const kind = self.pats.kind(id);
         switch (kind) {
             .Wildcard => {
                 _ = self.pats.get(.Wildcard, id);

@@ -195,7 +195,7 @@ inline fn isLiteralTag(_: *const Parser, tag: Token.Tag) bool {
 }
 /// Determine whether `expr_id` stores an integer literal (used during numeric parsing).
 inline fn exprIsIntegerLiteral(self: *Parser, expr_id: cst.ExprId) bool {
-    const kind = self.cst_u.exprs.index.kinds.items[expr_id.toRaw()];
+    const kind = self.cst_u.kind(expr_id);
     if (kind != .Literal) return false;
     const lit = self.cst_u.exprs.get(.Literal, expr_id);
     return lit.tag_small == litTag(.integer_literal);
@@ -413,7 +413,7 @@ inline fn exprGet(self: *Parser, comptime kind: cst.ExprKind, id: cst.ExprId) cs
 
 /// Determine whether expression `id` resembles a constructor head (ident/field chain).
 fn looksLikeCtorHead(self: *Parser, id: cst.ExprId) bool {
-    const kind = self.cst_u.exprs.index.kinds.items[id.toRaw()];
+    const kind = self.cst_u.kind(id);
     return switch (kind) {
         .Ident, .FieldAccess => true,
         .Call => self.looksLikeCtorHead(self.exprGet(.Call, id).callee),
@@ -610,7 +610,7 @@ fn collectMethodPathSegments(
     expr: cst.ExprId,
     segs: *List(cst.Rows.MethodPathSeg),
 ) anyerror!bool {
-    const kind = self.cst_u.exprs.index.kinds.items[expr.toRaw()];
+    const kind = self.cst_u.kind(expr);
     return switch (kind) {
         .Ident => blk: {
             const row = self.cst_u.exprs.get(.Ident, expr);
@@ -1613,7 +1613,7 @@ fn parsePatRange(self: *Parser) !cst.PatternId {
 
 /// Convert literal pattern `pat` into a constant expression for analysis.
 fn patternToConstExpr(self: *Parser, pat: cst.PatternId) !cst.ExprId {
-    const kind = self.cst_u.pats.index.kinds.items[pat.toRaw()];
+    const kind = self.cst_u.kind(pat);
     return switch (kind) {
         .Literal => self.cst_u.pats.get(.Literal, pat).expr,
         .Path => blk: {
@@ -1643,7 +1643,7 @@ fn patternToConstExpr(self: *Parser, pat: cst.PatternId) !cst.ExprId {
 
 /// Extract the binding name associated with a `@` pattern, if any.
 fn patternToBindingName(self: *Parser, pat: cst.PatternId) !cst.StrId {
-    const kind = self.cst_u.pats.index.kinds.items[pat.toRaw()];
+    const kind = self.cst_u.kind(pat);
     return switch (kind) {
         .Binding => self.cst_u.pats.get(.Binding, pat).name,
 
@@ -2443,7 +2443,7 @@ fn parseAnnotated(self: *Parser, comptime mode: ParseMode) !cst.ExprId {
     const id = try self.parseExpr(0, mode);
 
     const idx = id.toRaw();
-    const kind = self.cst_u.exprs.index.kinds.items[idx];
+    const kind = self.cst_u.kind(id);
     const row = self.cst_u.exprs.index.rows.items[idx];
     const some = cst.OptRangeAttr.some(r);
 
@@ -2650,7 +2650,7 @@ fn parseFunctionLike(self: *Parser, tag: Token.Tag, comptime is_extern: bool, is
     var is_variadic: bool = false;
     if (!lcst_param_ty.isNone()) {
         const lcst_ty = lcst_param_ty.unwrap();
-        const k = self.cst_u.exprs.index.kinds.items[lcst_ty.toRaw()];
+        const k = self.cst_u.kind(lcst_ty);
         is_variadic = (k == .AnyType);
     }
 

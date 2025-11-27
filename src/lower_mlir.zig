@@ -81,8 +81,7 @@ pub const LowerMlir = struct {
         const decls = a.exprs.decl_pool.slice(a.unit.decls);
         for (decls) |did| {
             const d = a.exprs.Decl.get(did);
-            const kind = a.exprs.index.kinds.items[d.value.toRaw()];
-            if (kind == .MlirBlock and d.pattern.isNone()) {
+            if (a.kind(d.value) == .MlirBlock and d.pattern.isNone()) {
                 try global_mlir_decls.append(self.gpa, did);
             }
         }

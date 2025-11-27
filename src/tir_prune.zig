@@ -8,6 +8,36 @@ const Loc = @import("lexer.zig").Token.Loc;
 
 const Allocator = std.mem.Allocator;
 
+inline fn insertValueKey(gpa: Allocator, map: *std.AutoHashMapUnmanaged(u32, void), value: tir.ValueId) void {
+    _ = map.put(gpa, value.toRaw(), {}) catch {};
+}
+
+inline fn containsValueKey(map: *std.AutoHashMapUnmanaged(u32, void), value: tir.ValueId) bool {
+    return map.get(value.toRaw()) != null;
+}
+
+inline fn insertValueBool(gpa: Allocator, map: *std.AutoHashMapUnmanaged(u32, bool), value: tir.ValueId) void {
+    _ = map.put(gpa, value.toRaw(), true) catch {};
+}
+
+inline fn valueBool(map: *std.AutoHashMapUnmanaged(u32, bool), value: tir.ValueId) bool {
+    return map.get(value.toRaw()) orelse false;
+}
+
+inline fn insertValueInstr(gpa: Allocator, map: *std.AutoHashMapUnmanaged(u32, tir.InstrId), value: tir.ValueId, iid: tir.InstrId) void {
+    _ = map.put(gpa, value.toRaw(), iid) catch {};
+}
+
+inline fn insertOptValueInstr(gpa: Allocator, map: *std.AutoHashMapUnmanaged(u32, tir.InstrId), value: tir.OptValueId, iid: tir.InstrId) void {
+    if (value.isNone()) return;
+    insertValueInstr(gpa, map, value.unwrap(), iid);
+}
+
+inline fn lookupValueInstr(map: *std.AutoHashMapUnmanaged(u32, tir.InstrId), value: tir.ValueId) ?tir.InstrId {
+    if (map.get(value.toRaw())) |entry| return entry;
+    return null;
+}
+
 /// Configuration knobs controlling the pruning run.
 pub const Options = struct {
     /// Emit warnings for reachable functions that expose unused values.
@@ -101,11 +131,10 @@ pub fn pruneUnusedFunctions(
                     const b = t.funcs.Block.get(bid);
                     const instrs = t.instrs.instr_pool.slice(b.instrs);
                     for (instrs) |iid| {
-                        const k = t.instrs.index.kinds.items[iid.toRaw()];
-                        if (k == .Call) {
+                        if (t.kind(iid) == .Call) {
                             const row = t.instrs.get(.Call, iid);
                             try wl.append(gpa, row.callee);
-                        } else if (k == .GlobalAddr) {
+                        } else if (t.kind(iid) == .GlobalAddr) {
                             // Treat taking the address of a function as a use that makes it reachable.
                             // If the referenced symbol name corresponds to a function, add it to the worklist.
                             const row = t.instrs.get(.GlobalAddr, iid);
@@ -138,8 +167,7 @@ pub fn pruneUnusedFunctions(
                     const b = t.funcs.Block.get(bid);
                     const instrs = t.instrs.instr_pool.slice(b.instrs);
                     for (instrs) |iid| {
-                        const k = t.instrs.index.kinds.items[iid.toRaw()];
-                        if (k == .GlobalAddr) {
+                        if (t.kind(iid) == .GlobalAddr) {
                             const row = t.instrs.get(.GlobalAddr, iid);
                             _ = try referenced_globals.put(gpa, row.name, {});
                         }
@@ -179,34 +207,32 @@ pub fn pruneUnusedFunctions(
                         for (blocks) |bid| {
                             const b = t.funcs.Block.get(bid);
                             // Terminators
-                            const term_k = t.terms.index.kinds.items[b.term.toRaw()];
-                            switch (term_k) {
+                            switch (t.kind(b.term)) {
                                 .Return => {
                                     const r = t.terms.get(.Return, b.term);
-                                    if (!r.value.isNone()) _ = used.put(gpa, r.value.unwrap().toRaw(), {}) catch {};
+                                    if (!r.value.isNone()) insertValueKey(gpa, &used, r.value.unwrap());
                                 },
                                 .CondBr => {
                                     const c = t.terms.get(.CondBr, b.term);
-                                    _ = used.put(gpa, c.cond.toRaw(), {}) catch {};
+                                    insertValueKey(gpa, &used, c.cond);
                                 },
                                 .SwitchInt => {
                                     const s = t.terms.get(.SwitchInt, b.term);
-                                    _ = used.put(gpa, s.scrut.toRaw(), {}) catch {};
+                                    insertValueKey(gpa, &used, s.scrut);
                                 },
                                 else => {},
                             }
                             // Instructions
                             const instrs = t.instrs.instr_pool.slice(b.instrs);
                             for (instrs) |iid| {
-                                const k = t.instrs.index.kinds.items[iid.toRaw()];
-                                switch (k) {
+                                switch (t.kind(iid)) {
                                     .Gep => {
                                         const row = t.instrs.get(.Gep, iid);
-                                        _ = used.put(gpa, row.base.toRaw(), {}) catch {};
+                                        insertValueKey(gpa, &used, row.base);
                                         const idxs = t.instrs.gep_pool.slice(row.indices);
                                         for (idxs) |gid| switch (t.instrs.GepIndex.get(gid)) {
                                             .Const => {},
-                                            .Value => |vv| _ = used.put(gpa, vv.toRaw(), {}) catch {},
+                                            .Value => |vv| insertValueKey(gpa, &used, vv),
                                         };
                                     },
                                     .StructMake => {
@@ -214,94 +240,94 @@ pub fn pruneUnusedFunctions(
                                         const fields = t.instrs.sfi_pool.slice(row.fields);
                                         for (fields) |fid_s| {
                                             const f = t.instrs.StructFieldInit.get(fid_s);
-                                            _ = used.put(gpa, f.value.toRaw(), {}) catch {};
+                                            insertValueKey(gpa, &used, f.value);
                                         }
                                     },
                                     .TupleMake => {
                                         const row = t.instrs.get(.TupleMake, iid);
-                                        for (t.instrs.value_pool.slice(row.elems)) |v| _ = used.put(gpa, v.toRaw(), {}) catch {};
+                                        for (t.instrs.value_pool.slice(row.elems)) |v| insertValueKey(gpa, &used, v);
                                     },
                                     .ArrayMake => {
                                         const row = t.instrs.get(.ArrayMake, iid);
-                                        for (t.instrs.value_pool.slice(row.elems)) |v| _ = used.put(gpa, v.toRaw(), {}) catch {};
+                                        for (t.instrs.value_pool.slice(row.elems)) |v| insertValueKey(gpa, &used, v);
                                     },
                                     .Select => {
                                         const row = t.instrs.get(.Select, iid);
-                                        _ = used.put(gpa, row.cond.toRaw(), {}) catch {};
-                                        _ = used.put(gpa, row.then_value.toRaw(), {}) catch {};
-                                        _ = used.put(gpa, row.else_value.toRaw(), {}) catch {};
+                                        insertValueKey(gpa, &used, row.cond);
+                                        insertValueKey(gpa, &used, row.then_value);
+                                        insertValueKey(gpa, &used, row.else_value);
                                     },
                                     .Call => {
                                         const row = t.instrs.get(.Call, iid);
-                                        for (t.instrs.val_list_pool.slice(row.args)) |v| _ = used.put(gpa, v.toRaw(), {}) catch {};
+                                        for (t.instrs.val_list_pool.slice(row.args)) |v| insertValueKey(gpa, &used, v);
                                     },
                                     .IndirectCall => {
                                         const row = t.instrs.get(.IndirectCall, iid);
-                                        _ = used.put(gpa, row.callee.toRaw(), {}) catch {};
-                                        for (t.instrs.val_list_pool.slice(row.args)) |v| _ = used.put(gpa, v.toRaw(), {}) catch {};
+                                        insertValueKey(gpa, &used, row.callee);
+                                        for (t.instrs.val_list_pool.slice(row.args)) |v| insertValueKey(gpa, &used, v);
                                     },
                                     .MlirBlock => {
                                         const row = t.instrs.get(.MlirBlock, iid);
-                                        for (t.instrs.value_pool.slice(row.args)) |v| _ = used.put(gpa, v.toRaw(), {}) catch {};
+                                        for (t.instrs.value_pool.slice(row.args)) |v| insertValueKey(gpa, &used, v);
                                     },
                                     .Load => {
                                         const row = t.instrs.get(.Load, iid);
-                                        _ = used.put(gpa, row.ptr.toRaw(), {}) catch {};
+                                        insertValueKey(gpa, &used, row.ptr);
                                     },
                                     .Store => {
                                         const row = t.instrs.get(.Store, iid);
-                                        _ = used.put(gpa, row.ptr.toRaw(), {}) catch {};
-                                        _ = used.put(gpa, row.value.toRaw(), {}) catch {};
+                                        insertValueKey(gpa, &used, row.ptr);
+                                        insertValueKey(gpa, &used, row.value);
                                     },
                                     .Index => {
                                         const row = t.instrs.get(.Index, iid);
-                                        _ = used.put(gpa, row.base.toRaw(), {}) catch {};
-                                        _ = used.put(gpa, row.index.toRaw(), {}) catch {};
+                                        insertValueKey(gpa, &used, row.base);
+                                        insertValueKey(gpa, &used, row.index);
                                     },
                                     .AddressOf => {
                                         const row = t.instrs.get(.AddressOf, iid);
-                                        _ = used.put(gpa, row.value.toRaw(), {}) catch {};
+                                        insertValueKey(gpa, &used, row.value);
                                     },
                                     .ExtractElem => {
                                         const row = t.instrs.get(.ExtractElem, iid);
-                                        _ = used.put(gpa, row.agg.toRaw(), {}) catch {};
+                                        insertValueKey(gpa, &used, row.agg);
                                     },
                                     .InsertElem => {
                                         const row = t.instrs.get(.InsertElem, iid);
-                                        _ = used.put(gpa, row.agg.toRaw(), {}) catch {};
-                                        _ = used.put(gpa, row.value.toRaw(), {}) catch {};
+                                        insertValueKey(gpa, &used, row.agg);
+                                        insertValueKey(gpa, &used, row.value);
                                     },
                                     .ExtractField => {
                                         const row = t.instrs.get(.ExtractField, iid);
-                                        _ = used.put(gpa, row.agg.toRaw(), {}) catch {};
+                                        insertValueKey(gpa, &used, row.agg);
                                     },
                                     .InsertField => {
                                         const row = t.instrs.get(.InsertField, iid);
-                                        _ = used.put(gpa, row.agg.toRaw(), {}) catch {};
-                                        _ = used.put(gpa, row.value.toRaw(), {}) catch {};
+                                        insertValueKey(gpa, &used, row.agg);
+                                        insertValueKey(gpa, &used, row.value);
                                     },
                                     .VariantMake => {
                                         const row = t.instrs.get(.VariantMake, iid);
-                                        if (!row.payload.isNone()) _ = used.put(gpa, row.payload.unwrap().toRaw(), {}) catch {};
+                                        if (!row.payload.isNone()) insertValueKey(gpa, &used, row.payload.unwrap());
                                     },
                                     .UnionField => {
                                         const row = t.instrs.get(.UnionField, iid);
-                                        _ = used.put(gpa, row.base.toRaw(), {}) catch {};
+                                        insertValueKey(gpa, &used, row.base);
                                     },
                                     .UnionFieldPtr => {
                                         const row = t.instrs.get(.UnionFieldPtr, iid);
-                                        _ = used.put(gpa, row.base.toRaw(), {}) catch {};
+                                        insertValueKey(gpa, &used, row.base);
                                     },
                                     .ComplexMake => {
                                         const row = t.instrs.get(.ComplexMake, iid);
-                                        _ = used.put(gpa, row.re.toRaw(), {}) catch {};
-                                        _ = used.put(gpa, row.im.toRaw(), {}) catch {};
+                                        insertValueKey(gpa, &used, row.re);
+                                        insertValueKey(gpa, &used, row.im);
                                     },
                                     .RangeMake => {
                                         const row = t.instrs.get(.RangeMake, iid);
-                                        _ = used.put(gpa, row.start.toRaw(), {}) catch {};
-                                        _ = used.put(gpa, row.end.toRaw(), {}) catch {};
-                                        _ = used.put(gpa, row.inclusive.toRaw(), {}) catch {};
+                                        insertValueKey(gpa, &used, row.start);
+                                        insertValueKey(gpa, &used, row.end);
+                                        insertValueKey(gpa, &used, row.inclusive);
                                     },
 
                                     inline .VariantTag,
@@ -316,7 +342,7 @@ pub fn pruneUnusedFunctions(
                                     .CastSaturate,
                                     => |kind| {
                                         const row = t.instrs.get(kind, iid);
-                                        try used.put(gpa, row.value.toRaw(), {});
+                                        insertValueKey(gpa, &used, row.value);
                                     },
                                     // binary group
                                     inline .Add,
@@ -346,8 +372,8 @@ pub fn pruneUnusedFunctions(
                                     .CmpGe,
                                     => |kind| {
                                         const row = t.instrs.get(kind, iid);
-                                        try used.put(gpa, row.lhs.toRaw(), {});
-                                        try used.put(gpa, row.rhs.toRaw(), {});
+                                        insertValueKey(gpa, &used, row.lhs);
+                                        insertValueKey(gpa, &used, row.rhs);
                                     },
 
                                     else => {},
@@ -358,7 +384,7 @@ pub fn pruneUnusedFunctions(
                         const params = t.funcs.param_pool.slice(frow.params);
                         for (params) |pid| {
                             const p = t.funcs.Param.get(pid);
-                            if (used.get(p.value.toRaw()) == null) {
+                            if (!containsValueKey(&used, p.value)) {
                                 // Prefer precise AST param location if available
                                 const pname_sid_raw: ?u32 = if (!p.name.isNone()) p.name.unwrap().toRaw() else null;
                                 const anchor2 = paramNameLocFromAst(unit, frow.name.toRaw(), pname_sid_raw) orelse
@@ -377,9 +403,9 @@ pub fn pruneUnusedFunctions(
                             const b2 = t.funcs.Block.get(bb);
                             const instrs2 = t.instrs.instr_pool.slice(b2.instrs);
                             for (instrs2) |iid2| {
-                                if (t.instrs.index.kinds.items[iid2.toRaw()] == .Alloca) {
+                                if (t.kind(iid2) == .Alloca) {
                                     const arow = t.instrs.get(.Alloca, iid2);
-                                    const hadr = read_allocas0.get(arow.result.toRaw()) orelse false;
+                                    const hadr = valueBool(&read_allocas0, arow.result);
                                     if (!hadr) {
                                         const loc = if (!arow.loc.isNone()) context.loc_store.get(arow.loc.unwrap()) else Loc.init(unit.file_id, 0, 0);
                                         if (!isThirdPartyUnit(context, unit))
@@ -415,9 +441,9 @@ pub fn pruneUnusedFunctions(
                             const b = t.funcs.Block.get(bid);
                             const instrs = t.instrs.instr_pool.slice(b.instrs);
                             for (instrs) |iid2| {
-                                if (t.instrs.index.kinds.items[iid2.toRaw()] == .Load) {
+                                if (t.kind(iid2) == .Load) {
                                     const lr = t.instrs.get(.Load, iid2);
-                                    _ = read_map.put(gpa, lr.ptr.toRaw(), true) catch {};
+                                    insertValueBool(gpa, &read_map, lr.ptr);
                                 }
                             }
                         }
@@ -425,34 +451,32 @@ pub fn pruneUnusedFunctions(
                         for (blocks) |bid| {
                             const b = t.funcs.Block.get(bid);
                             // Terminators
-                            const term_k = t.terms.index.kinds.items[b.term.toRaw()];
-                            switch (term_k) {
+                            switch (t.kind(b.term)) {
                                 .Return => {
                                     const r = t.terms.get(.Return, b.term);
-                                    if (!r.value.isNone()) _ = used2.put(gpa, r.value.unwrap().toRaw(), {}) catch {};
+                                    if (!r.value.isNone()) insertValueKey(gpa, &used2, r.value.unwrap());
                                 },
                                 .CondBr => {
                                     const c = t.terms.get(.CondBr, b.term);
-                                    _ = used2.put(gpa, c.cond.toRaw(), {}) catch {};
+                                    insertValueKey(gpa, &used2, c.cond);
                                 },
                                 .SwitchInt => {
                                     const s = t.terms.get(.SwitchInt, b.term);
-                                    _ = used2.put(gpa, s.scrut.toRaw(), {}) catch {};
+                                    insertValueKey(gpa, &used2, s.scrut);
                                 },
                                 else => {},
                             }
                             // Instructions
                             const instrs = t.instrs.instr_pool.slice(b.instrs);
                             for (instrs) |iid3| {
-                                const k3 = t.instrs.index.kinds.items[iid3.toRaw()];
-                                switch (k3) {
+                                switch (t.kind(iid3)) {
                                     .Gep => {
                                         const row = t.instrs.get(.Gep, iid3);
-                                        _ = used2.put(gpa, row.base.toRaw(), {}) catch {};
+                                        insertValueKey(gpa, &used2, row.base);
                                         const idxs = t.instrs.gep_pool.slice(row.indices);
                                         for (idxs) |gid| switch (t.instrs.GepIndex.get(gid)) {
                                             .Const => {},
-                                            .Value => |vv| _ = used2.put(gpa, vv.toRaw(), {}) catch {},
+                                            .Value => |vv| insertValueKey(gpa, &used2, vv),
                                         };
                                     },
                                     .StructMake => {
@@ -460,94 +484,94 @@ pub fn pruneUnusedFunctions(
                                         const f = t.instrs.sfi_pool.slice(row.fields);
                                         for (f) |sfid| {
                                             const sf = t.instrs.StructFieldInit.get(sfid);
-                                            _ = used2.put(gpa, sf.value.toRaw(), {}) catch {};
+                                            insertValueKey(gpa, &used2, sf.value);
                                         }
                                     },
                                     .TupleMake => {
                                         const row = t.instrs.get(.TupleMake, iid3);
-                                        for (t.instrs.value_pool.slice(row.elems)) |v| _ = used2.put(gpa, v.toRaw(), {}) catch {};
+                                        for (t.instrs.value_pool.slice(row.elems)) |v| insertValueKey(gpa, &used2, v);
                                     },
                                     .ArrayMake => {
                                         const row = t.instrs.get(.ArrayMake, iid3);
-                                        for (t.instrs.value_pool.slice(row.elems)) |v| _ = used2.put(gpa, v.toRaw(), {}) catch {};
+                                        for (t.instrs.value_pool.slice(row.elems)) |v| insertValueKey(gpa, &used2, v);
                                     },
                                     .Select => {
                                         const row = t.instrs.get(.Select, iid3);
-                                        _ = used2.put(gpa, row.cond.toRaw(), {}) catch {};
-                                        _ = used2.put(gpa, row.then_value.toRaw(), {}) catch {};
-                                        _ = used2.put(gpa, row.else_value.toRaw(), {}) catch {};
+                                        insertValueKey(gpa, &used2, row.cond);
+                                        insertValueKey(gpa, &used2, row.then_value);
+                                        insertValueKey(gpa, &used2, row.else_value);
                                     },
                                     .Call => {
                                         const row = t.instrs.get(.Call, iid3);
-                                        for (t.instrs.val_list_pool.slice(row.args)) |v| _ = used2.put(gpa, v.toRaw(), {}) catch {};
+                                        for (t.instrs.val_list_pool.slice(row.args)) |v| insertValueKey(gpa, &used2, v);
                                     },
                                     .IndirectCall => {
                                         const row = t.instrs.get(.IndirectCall, iid3);
-                                        _ = used2.put(gpa, row.callee.toRaw(), {}) catch {};
-                                        for (t.instrs.val_list_pool.slice(row.args)) |v| _ = used2.put(gpa, v.toRaw(), {}) catch {};
+                                        insertValueKey(gpa, &used2, row.callee);
+                                        for (t.instrs.val_list_pool.slice(row.args)) |v| insertValueKey(gpa, &used2, v);
                                     },
                                     .MlirBlock => {
                                         const row = t.instrs.get(.MlirBlock, iid3);
-                                        for (t.instrs.value_pool.slice(row.args)) |v| _ = used2.put(gpa, v.toRaw(), {}) catch {};
+                                        for (t.instrs.value_pool.slice(row.args)) |v| insertValueKey(gpa, &used2, v);
                                     },
                                     .Load => {
                                         const row = t.instrs.get(.Load, iid3);
-                                        _ = used2.put(gpa, row.ptr.toRaw(), {}) catch {};
+                                        insertValueKey(gpa, &used2, row.ptr);
                                     },
                                     .Store => {
                                         const row = t.instrs.get(.Store, iid3);
-                                        _ = used2.put(gpa, row.ptr.toRaw(), {}) catch {};
-                                        _ = used2.put(gpa, row.value.toRaw(), {}) catch {};
+                                        insertValueKey(gpa, &used2, row.ptr);
+                                        insertValueKey(gpa, &used2, row.value);
                                     },
                                     .Index => {
                                         const row = t.instrs.get(.Index, iid3);
-                                        _ = used2.put(gpa, row.base.toRaw(), {}) catch {};
-                                        _ = used2.put(gpa, row.index.toRaw(), {}) catch {};
+                                        insertValueKey(gpa, &used2, row.base);
+                                        insertValueKey(gpa, &used2, row.index);
                                     },
                                     .AddressOf => {
                                         const row = t.instrs.get(.AddressOf, iid3);
-                                        _ = used2.put(gpa, row.value.toRaw(), {}) catch {};
+                                        insertValueKey(gpa, &used2, row.value);
                                     },
                                     .ExtractElem => {
                                         const row = t.instrs.get(.ExtractElem, iid3);
-                                        _ = used2.put(gpa, row.agg.toRaw(), {}) catch {};
+                                        insertValueKey(gpa, &used2, row.agg);
                                     },
                                     .InsertElem => {
                                         const row = t.instrs.get(.InsertElem, iid3);
-                                        _ = used2.put(gpa, row.agg.toRaw(), {}) catch {};
-                                        _ = used2.put(gpa, row.value.toRaw(), {}) catch {};
+                                        insertValueKey(gpa, &used2, row.agg);
+                                        insertValueKey(gpa, &used2, row.value);
                                     },
                                     .ExtractField => {
                                         const row = t.instrs.get(.ExtractField, iid3);
-                                        _ = used2.put(gpa, row.agg.toRaw(), {}) catch {};
+                                        insertValueKey(gpa, &used2, row.agg);
                                     },
                                     .InsertField => {
                                         const row = t.instrs.get(.InsertField, iid3);
-                                        _ = used2.put(gpa, row.agg.toRaw(), {}) catch {};
-                                        _ = used2.put(gpa, row.value.toRaw(), {}) catch {};
+                                        insertValueKey(gpa, &used2, row.agg);
+                                        insertValueKey(gpa, &used2, row.value);
                                     },
                                     .VariantMake => {
                                         const row = t.instrs.get(.VariantMake, iid3);
-                                        if (!row.payload.isNone()) _ = used2.put(gpa, row.payload.unwrap().toRaw(), {}) catch {};
+                                        if (!row.payload.isNone()) insertValueKey(gpa, &used2, row.payload.unwrap());
                                     },
                                     .UnionField => {
                                         const row = t.instrs.get(.UnionField, iid3);
-                                        _ = used2.put(gpa, row.base.toRaw(), {}) catch {};
+                                        insertValueKey(gpa, &used2, row.base);
                                     },
                                     .UnionFieldPtr => {
                                         const row = t.instrs.get(.UnionFieldPtr, iid3);
-                                        _ = used2.put(gpa, row.base.toRaw(), {}) catch {};
+                                        insertValueKey(gpa, &used2, row.base);
                                     },
                                     .ComplexMake => {
                                         const row = t.instrs.get(.ComplexMake, iid3);
-                                        _ = used2.put(gpa, row.re.toRaw(), {}) catch {};
-                                        _ = used2.put(gpa, row.im.toRaw(), {}) catch {};
+                                        insertValueKey(gpa, &used2, row.re);
+                                        insertValueKey(gpa, &used2, row.im);
                                     },
                                     .RangeMake => {
                                         const row = t.instrs.get(.RangeMake, iid3);
-                                        _ = used2.put(gpa, row.start.toRaw(), {}) catch {};
-                                        _ = used2.put(gpa, row.end.toRaw(), {}) catch {};
-                                        _ = used2.put(gpa, row.inclusive.toRaw(), {}) catch {};
+                                        insertValueKey(gpa, &used2, row.start);
+                                        insertValueKey(gpa, &used2, row.end);
+                                        insertValueKey(gpa, &used2, row.inclusive);
                                     },
                                     inline .Broadcast,
                                     .LogicalNot,
@@ -561,7 +585,7 @@ pub fn pruneUnusedFunctions(
                                     .UnionMake,
                                     => |kind| {
                                         const row = t.instrs.get(kind, iid3);
-                                        try used2.put(gpa, row.value.toRaw(), {});
+                                        insertValueKey(gpa, &used2, row.value);
                                     },
                                     inline .Add,
                                     .Sub,
@@ -590,8 +614,8 @@ pub fn pruneUnusedFunctions(
                                     .CmpGe,
                                     => |kind| {
                                         const row = t.instrs.get(kind, iid3);
-                                        try used2.put(gpa, row.lhs.toRaw(), {});
-                                        try used2.put(gpa, row.rhs.toRaw(), {});
+                                        insertValueKey(gpa, &used2, row.lhs);
+                                        insertValueKey(gpa, &used2, row.rhs);
                                     },
                                     else => {},
                                 }
@@ -601,7 +625,7 @@ pub fn pruneUnusedFunctions(
                         const params2 = t.funcs.param_pool.slice(frow.params);
                         for (params2) |pid2| {
                             const p2 = t.funcs.Param.get(pid2);
-                            if (used2.get(p2.value.toRaw()) == null) {
+                            if (!containsValueKey(&used2, p2.value)) {
                                 const pname_sid2: ?u32 = if (!p2.name.isNone()) p2.name.unwrap().toRaw() else null;
                                 const ploc = paramNameLocFromAst(unit, frow.name.toRaw(), pname_sid2) orelse
                                     functionNameLocFromAst(unit, frow.name.toRaw()) orelse
@@ -615,9 +639,9 @@ pub fn pruneUnusedFunctions(
                             const b3 = t.funcs.Block.get(bid3);
                             const instrs3 = t.instrs.instr_pool.slice(b3.instrs);
                             for (instrs3) |iid4| {
-                                if (t.instrs.index.kinds.items[iid4.toRaw()] == .Alloca) {
+                                if (t.kind(iid4) == .Alloca) {
                                     const arow2 = t.instrs.get(.Alloca, iid4);
-                                    const had_read = read_map.get(arow2.result.toRaw()) orelse false;
+                                    const had_read = valueBool(&read_map, arow2.result);
                                     if (!had_read) {
                                         const loc2 = if (!arow2.loc.isNone()) context.loc_store.get(arow2.loc.unwrap()) else anchor;
                                         if (!isThirdPartyUnit(context, unit))
@@ -647,7 +671,7 @@ pub fn pruneUnusedFunctions(
                         var has_local_def = false;
                         for (funcs) |fid2| {
                             const fr2 = t.funcs.Function.get(fid2);
-                            if (fr2.name.toRaw() == grow.name.toRaw()) {
+                            if (fr2.name.eq(grow.name)) {
                                 const blks = t.funcs.block_pool.slice(fr2.blocks);
                                 if (blks.len > 0) {
                                     has_local_def = true;
@@ -679,20 +703,21 @@ fn buildDefMap(
         const b = t.funcs.Block.get(bid);
         const instrs = t.instrs.instr_pool.slice(b.instrs);
         for (instrs) |iid| {
-            const k = t.instrs.index.kinds.items[iid.toRaw()];
-            switch (k) {
+            switch (t.kind(iid)) {
                 .MlirBlock => {
                     const row = t.instrs.get(.MlirBlock, iid);
-                    if (!row.result.isNone()) _ = defmap.put(gpa, row.result.unwrap().toRaw(), iid) catch {};
+                    insertOptValueInstr(gpa, &defmap, row.result, iid);
                 },
                 else => {
                     // Most ops have a concrete result field
                     inline for (@typeInfo(tir.OpKind).@"enum".fields) |f| {
-                        if (@field(tir.OpKind, f.name) == k) {
+                        if (@field(tir.OpKind, f.name) == t.kind(iid)) {
                             const Row = tir.RowT(@field(tir.OpKind, f.name));
                             if (@hasField(Row, "result")) {
                                 const row = t.instrs.get(@field(tir.OpKind, f.name), iid);
-                                _ = defmap.put(gpa, row.result.toRaw(), iid) catch {};
+                                if (@TypeOf(row.result) == tir.ValueId) {
+                                    insertValueInstr(gpa, &defmap, row.result, iid);
+                                } else insertValueInstr(gpa, &defmap, row.result.unwrap(), iid);
                             }
                             break;
                         }
@@ -714,7 +739,7 @@ fn computeReadAllocas(
     var read_allocas: std.AutoHashMapUnmanaged(u32, bool) = .{};
     var visited: std.AutoHashMapUnmanaged(u32, bool) = .{};
     defer visited.deinit(gpa);
-    var queue = std.ArrayListUnmanaged(u32){};
+    var queue = std.ArrayListUnmanaged(tir.ValueId){};
     defer queue.deinit(gpa);
 
     const blocks = t.funcs.block_pool.slice(frow.blocks);
@@ -722,51 +747,49 @@ fn computeReadAllocas(
         const b = t.funcs.Block.get(bid);
         const instrs = t.instrs.instr_pool.slice(b.instrs);
         for (instrs) |iid| {
-            const kind = t.instrs.index.kinds.items[iid.toRaw()];
-            switch (kind) {
+            switch (t.kind(iid)) {
                 .Load => {
                     const lr = t.instrs.get(.Load, iid);
-                    try queue.append(gpa, lr.ptr.toRaw());
+                    try queue.append(gpa, lr.ptr);
                 },
                 .Call => {
                     const cr = t.instrs.get(.Call, iid);
-                    for (t.instrs.val_list_pool.slice(cr.args)) |v| try queue.append(gpa, v.toRaw());
+                    for (t.instrs.val_list_pool.slice(cr.args)) |v| try queue.append(gpa, v);
                 },
                 .IndirectCall => {
                     const icr = t.instrs.get(.IndirectCall, iid);
-                    try queue.append(gpa, icr.callee.toRaw());
-                    for (t.instrs.val_list_pool.slice(icr.args)) |v| try queue.append(gpa, v.toRaw());
+                    try queue.append(gpa, icr.callee);
+                    for (t.instrs.val_list_pool.slice(icr.args)) |v| try queue.append(gpa, v);
                 },
                 else => {},
             }
         }
     }
 
-    while (queue.pop()) |vraw| {
-        if (visited.get(vraw) != null) continue;
-        _ = visited.put(gpa, vraw, true) catch {};
-        if (defmap.get(vraw)) |iid| {
-            const k = t.instrs.index.kinds.items[iid.toRaw()];
-            switch (k) {
+    while (queue.pop()) |value| {
+        if (valueBool(&visited, value)) continue;
+        insertValueBool(gpa, &visited, value);
+        if (lookupValueInstr(defmap, value)) |iid| {
+            switch (t.kind(iid)) {
                 .Alloca => {
                     const ar = t.instrs.get(.Alloca, iid);
-                    _ = read_allocas.put(gpa, ar.result.toRaw(), true) catch {};
+                    insertValueBool(gpa, &read_allocas, ar.result);
                 },
                 .Gep => {
                     const gr = t.instrs.get(.Gep, iid);
-                    try queue.append(gpa, gr.base.toRaw());
+                    try queue.append(gpa, gr.base);
                 },
                 .UnionFieldPtr => {
                     const ur = t.instrs.get(.UnionFieldPtr, iid);
-                    try queue.append(gpa, ur.base.toRaw());
+                    try queue.append(gpa, ur.base);
                 },
                 .VariantPayloadPtr => {
                     const vr = t.instrs.get(.VariantPayloadPtr, iid);
-                    try queue.append(gpa, vr.value.toRaw());
+                    try queue.append(gpa, vr.value);
                 },
                 .AddressOf => {
                     const ar = t.instrs.get(.AddressOf, iid);
-                    try queue.append(gpa, ar.value.toRaw());
+                    try queue.append(gpa, ar.value);
                 },
                 else => {},
             }
@@ -778,8 +801,7 @@ fn computeReadAllocas(
 
 /// instrOptLoc pruning helper.
 fn instrOptLoc(t: *tir.TIR, iid: tir.InstrId) tir.OptLocId {
-    const k = t.instrs.index.kinds.items[iid.toRaw()];
-    return switch (k) {
+    return switch (t.kind(iid)) {
         inline else => |kind| t.instrs.get(kind, iid).loc,
     };
 }
@@ -794,8 +816,7 @@ fn functionFirstLoc(context: *compile.Context, t: *tir.TIR, frow: tir.FuncRows.F
             const ol = instrOptLoc(t, iid);
             if (!ol.isNone()) return context.loc_store.get(ol.unwrap());
         }
-        const termk = t.terms.index.kinds.items[b.term.toRaw()];
-        const tl: tir.OptLocId = switch (termk) {
+        const tl: tir.OptLocId = switch (t.kind(b.term)) {
             .Return => t.terms.get(.Return, b.term).loc,
             .Br => t.terms.get(.Br, b.term).loc,
             .CondBr => t.terms.get(.CondBr, b.term).loc,
@@ -813,8 +834,7 @@ fn functionFirstLoc(context: *compile.Context, t: *tir.TIR, frow: tir.FuncRows.F
 
 /// exprLocFromId pruning helper.
 inline fn exprLocFromId(ast_unit: *ast.Ast, eid: ast.ExprId) Loc {
-    const k = ast_unit.exprs.index.kinds.items[eid.toRaw()];
-    return switch (k) {
+    return switch (ast_unit.kind(eid)) {
         inline else => |x| exprLoc(ast_unit, ast_unit.exprs.get(x, eid)),
     };
 }
@@ -825,8 +845,7 @@ inline fn exprLoc(ast_unit: *ast.Ast, expr: anytype) Loc {
 
 /// bindingNameOfPattern pruning helper.
 fn bindingNameOfPattern(a: *ast.Ast, pid: ast.PatternId) ?ast.StrId {
-    const k = a.pats.index.kinds.items[pid.toRaw()];
-    return switch (k) {
+    return switch (a.kind(pid)) {
         .Binding => a.pats.get(.Binding, pid).name,
         else => null,
     };
@@ -834,8 +853,7 @@ fn bindingNameOfPattern(a: *ast.Ast, pid: ast.PatternId) ?ast.StrId {
 
 /// bindingLocOfPattern pruning helper.
 fn bindingLocOfPattern(a: *ast.Ast, pid: ast.PatternId) ?Loc {
-    const k = a.pats.index.kinds.items[pid.toRaw()];
-    return switch (k) {
+    return switch (a.kind(pid)) {
         .Binding => blk: {
             const b = a.pats.get(.Binding, pid);
             break :blk a.exprs.locs.get(b.loc);
@@ -850,11 +868,10 @@ fn findTopFuncDeclByName(a: *ast.Ast, name_sid_raw: u32) ?ast.DeclId {
     for (decls) |did| {
         const d = a.exprs.Decl.get(did);
         // Only consider top-level named function declarations
-        const kind = a.exprs.index.kinds.items[d.value.toRaw()];
-        if (kind != .FunctionLit) continue;
+        if (a.kind(d.value) != .FunctionLit) continue;
         if (!d.pattern.isNone()) {
             if (bindingNameOfPattern(a, d.pattern.unwrap())) |nm| {
-                if (nm.toRaw() == name_sid_raw) return did;
+                if (nm.eq(ast.StrId.fromRaw(name_sid_raw))) return did;
             }
         }
     }
@@ -880,15 +897,14 @@ fn paramNameLocFromAst(unit: *package.FileUnit, func_name_sid_raw: u32, param_na
     const a = unit.ast orelse return null;
     const did_opt = findTopFuncDeclByName(a, func_name_sid_raw) orelse return null;
     const d = a.exprs.Decl.get(did_opt);
-    const kind = a.exprs.index.kinds.items[d.value.toRaw()];
-    if (kind != .FunctionLit) return null;
+    if (a.kind(d.value) != .FunctionLit) return null;
     const fnr = a.exprs.get(.FunctionLit, d.value);
     const params = a.exprs.param_pool.slice(fnr.params);
     for (params) |pid| {
         const p = a.exprs.Param.get(pid);
         if (!p.pat.isNone() and param_name_sid_raw != null) {
             if (bindingNameOfPattern(a, p.pat.unwrap())) |nm| {
-                if (nm.toRaw() == param_name_sid_raw.?) {
+                if (nm.eq(ast.StrId.fromRaw(param_name_sid_raw.?))) {
                     // Prefer binding loc if available, else use whole param loc
                     if (bindingLocOfPattern(a, p.pat.unwrap())) |loc| return loc;
                     return a.exprs.locs.get(p.loc);

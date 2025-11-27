@@ -44,7 +44,7 @@ const FunctionKey = struct {
 
 /// Compare two function specialization keys for equality.
 fn keysEqual(a: FunctionKey, b: FunctionKey) bool {
-    return a.decl_id.toRaw() == b.decl_id.toRaw() and a.bindings_hash == b.bindings_hash;
+    return a.decl_id.eq(b.decl_id) and a.bindings_hash == b.bindings_hash;
 }
 
 /// Cache entry for a function specialization computed via its bindings.
@@ -155,8 +155,7 @@ pub const Interpreter = struct {
 
     /// Evaluate the AST expression `expr` and return its runtime value.
     pub fn evalExpr(self: *Interpreter, expr: ast.ExprId) anyerror!Value {
-        const kind = self.ast.exprs.index.kinds.items[expr.toRaw()];
-        return switch (kind) {
+        return switch (self.ast.kind(expr)) {
             .Literal => self.evalLiteral(self.ast.exprs.get(.Literal, expr)),
             .NullLit => Value{ .Void = {} },
             .UndefLit => Value{ .Void = {} },
@@ -208,7 +207,7 @@ pub const Interpreter = struct {
             .Defer => self.evalDefer(self.ast.exprs.get(.Defer, expr)),
             .TypeOf => self.evalTypeOf(self.ast.exprs.get(.TypeOf, expr)),
             .MlirBlock => Value{ .Void = {} },
-            else => std.debug.panic("Unsupported expr: {}", .{kind}),
+            else => std.debug.panic("Unsupported expr: {}", .{self.ast.kind(expr)}),
         };
     }
 
@@ -242,8 +241,7 @@ pub const Interpreter = struct {
 
     /// Execute a statement, updating `last_value` when expression statements occur.
     fn evalStatement(self: *Interpreter, stmt_id: ast.StmtId, last_value: *?Value) anyerror!?Value {
-        const kind = self.ast.stmts.index.kinds.items[stmt_id.toRaw()];
-        switch (kind) {
+        switch (self.ast.kind(stmt_id)) {
             .Expr => {
                 const row = self.ast.stmts.get(.Expr, stmt_id);
                 const result = try self.evalExpr(row.expr);
@@ -256,7 +254,7 @@ pub const Interpreter = struct {
                 const decl = self.ast.exprs.Decl.get(row.decl);
                 if (decl.pattern.isNone()) return Error.InvalidStatement;
                 const pat_id = decl.pattern.unwrap();
-                if (self.ast.pats.index.kinds.items[pat_id.toRaw()] != .Binding) return Error.InvalidStatement;
+                if (self.ast.kind(pat_id) != .Binding) return Error.InvalidStatement;
                 const binding = self.ast.pats.get(.Binding, pat_id);
                 const value = try self.evalExpr(decl.value);
                 try self.setBinding(binding.name, value);
@@ -283,8 +281,7 @@ pub const Interpreter = struct {
 
     /// Evaluate an assignment statement and update the corresponding binding.
     fn evalAssignment(self: *Interpreter, row: ast.StmtRows.Assign) anyerror!void {
-        const kind = self.ast.exprs.index.kinds.items[row.left.toRaw()];
-        if (kind != .Ident) return Error.InvalidStatement;
+        if (self.ast.kind(row.left) != .Ident) return Error.InvalidStatement;
         const ident = self.ast.exprs.get(.Ident, row.left);
         const value = try self.evalExpr(row.right);
         try self.setBinding(ident.name, value);
@@ -568,8 +565,7 @@ pub const Interpreter = struct {
         const expr_index = expr.toRaw();
         if (expr_index < self.ast.type_info.expr_types.items.len) {
             if (self.ast.type_info.expr_types.items[expr_index]) |type_ty| {
-                const kind = self.ast.type_info.store.index.kinds.items[type_ty.toRaw()];
-                if (kind == .TypeType) {
+                if (self.ast.type_info.store.getKind(type_ty) == .TypeType) {
                     return self.ast.type_info.store.get(.TypeType, type_ty).of;
                 }
             }
@@ -588,8 +584,7 @@ pub const Interpreter = struct {
         var method_receiver: ?Value = null;
         defer if (method_receiver) |*recv| recv.destroy(self.allocator);
 
-        const callee_kind = self.ast.exprs.index.kinds.items[row.callee.toRaw()];
-        if (callee_kind == .FieldAccess) {
+        if (self.ast.kind(row.callee) == .FieldAccess) {
             const field_row = self.ast.exprs.get(.FieldAccess, row.callee);
             var parent = try self.evalExpr(field_row.parent);
             if (structOwner(parent)) |owner_name| {
@@ -786,8 +781,7 @@ pub const Interpreter = struct {
 
     /// Extract an identifier or field name from `expr` when possible.
     fn exprName(self: *Interpreter, expr: ast.ExprId) ?ast.StrId {
-        const kind = self.ast.exprs.index.kinds.items[expr.toRaw()];
-        return switch (kind) {
+        return switch (self.ast.kind(expr)) {
             .Ident => self.ast.exprs.get(.Ident, expr).name,
             .FieldAccess => self.ast.exprs.get(.FieldAccess, expr).field,
             else => null,
@@ -854,7 +848,7 @@ pub const Interpreter = struct {
             .Type => |type_id| {
                 var id = type_id;
                 const ts = self.ast.type_info.store;
-                var kind = ts.index.kinds.items[id.toRaw()];
+                var kind = ts.getKind(id);
                 if (kind == .TypeType) {
                     const type_type = ts.get(.TypeType, id);
                     id = type_type.of;
@@ -884,7 +878,7 @@ pub const Interpreter = struct {
                     }
                     return Error.InvalidFieldAccess;
                 }
-                kind = ts.index.kinds.items[id.toRaw()];
+                kind = ts.getKind(id);
                 if (kind == .Enum) {
                     const enum_type = ts.get(.Enum, id);
                     const members = ts.enum_member_pool.slice(enum_type.members);
@@ -1123,9 +1117,7 @@ pub const Interpreter = struct {
 
         if (self.findDeclByName(ident.name)) |did| {
             const row = self.ast.exprs.Decl.get(did);
-            const kind = self.ast.exprs.index.kinds.items[row.value.toRaw()];
-
-            if (isTypeExprKind(kind)) {
+            if (isTypeExprKind(self.ast.kind(row.value))) {
                 return try self.evalExpr(row.value);
             }
         }
@@ -1140,7 +1132,7 @@ pub const Interpreter = struct {
             const row = self.ast.exprs.Decl.get(did);
             if (row.pattern.isNone()) continue;
             const pat_id = row.pattern.unwrap();
-            if (self.ast.pats.index.kinds.items[pat_id.toRaw()] != .Binding) continue;
+            if (self.ast.kind(pat_id) != .Binding) continue;
             const binding = self.ast.pats.get(.Binding, pat_id);
             if (binding.name.eq(name)) return did;
         }
@@ -1466,10 +1458,10 @@ pub const Interpreter = struct {
                 .Range => rv.start == right.Range.start and rv.end == right.Range.end and rv.inclusive == right.Range.inclusive,
                 else => false,
             },
-            .Function => |func| switch (right) {
-                .Function => func.expr.toRaw() == right.Function.expr.toRaw(),
-                else => false,
-            },
+                .Function => |func| switch (right) {
+                    .Function => func.expr.eq(right.Function.expr),
+                    else => false,
+                },
             else => false,
         };
     }
@@ -1601,8 +1593,7 @@ pub const Interpreter = struct {
 
     /// Match `value` against pattern `pid`, recording bound identifiers.
     fn matchPattern(self: *Interpreter, pattern_ast: *ast.Ast, value: Value, pid: ast.PatternId, matches: *std.ArrayList(Binding)) anyerror!bool {
-        const kind = pattern_ast.pats.index.kinds.items[pid.toRaw()];
-        switch (kind) {
+        switch (pattern_ast.kind(pid)) {
             .Wildcard => return true,
             .Literal => {
                 const row = pattern_ast.pats.get(.Literal, pid);

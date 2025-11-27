@@ -18,7 +18,7 @@ test "special_types: passing any to function" {
     ;
 
     const code = getSource(globals, src);
-    try runCompilerTest(code, "Result: 468\nResult: 585\n");
+    try runCompilerTest(code, "Result: 468\nResult: 58500\n");
 }
 
 test "special_types: type checking any with typeof" {

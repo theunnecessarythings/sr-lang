@@ -41,7 +41,7 @@ pub const Pipeline = struct {
     /// Whether to prune unused TIR entities.
     tir_prune_unused: bool = true,
     /// Emit warnings for unused TIR during pruning.
-    tir_warn_unused: bool = true,
+    tir_warn_unused: bool = false,
 
     /// Execution modes supported by the pipeline (lex, parse, analyze, codegen...).
     pub const Mode = enum {
@@ -553,7 +553,7 @@ fn interpretAstUnit(self: *Pipeline, ast_unit: *ast_mod.Ast) anyerror!bool {
             // no binding to register
         } else {
             const pat_id = decl.pattern.unwrap();
-            if (ast_unit.pats.index.kinds.items[pat_id.toRaw()] == .Binding) {
+            if (ast_unit.kind(pat_id) == .Binding) {
                 const binding = ast_unit.pats.get(.Binding, pat_id);
                 const bound_value = try interp.cloneValue(result);
                 try interp.setBinding(binding.name, bound_value);

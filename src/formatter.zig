@@ -317,21 +317,21 @@ const Formatter = struct {
     /// Return true when `did` is an import declaration.
     fn isImportDecl(self: *Formatter, did: cst.DeclId) bool {
         const row = self.exprs.Decl.get(did);
-        const rhs_kind = self.exprs.index.kinds.items[row.rhs.toRaw()];
+        const rhs_kind = self.exprs.kind(row.rhs);
         return rhs_kind == .Import;
     }
 
     /// Return true when `did` names a function declaration.
     fn isFunctionDecl(self: *Formatter, did: cst.DeclId) bool {
         const row = self.exprs.Decl.get(did);
-        const rhs_kind = self.exprs.index.kinds.items[row.rhs.toRaw()];
+        const rhs_kind = self.exprs.kind(row.rhs);
         return rhs_kind == .Function;
     }
 
     /// Return true when `did` is a function declaration that includes a body.
     fn isFunctionWithBody(self: *Formatter, did: cst.DeclId) bool {
         const row = self.exprs.Decl.get(did);
-        const rhs_kind = self.exprs.index.kinds.items[row.rhs.toRaw()];
+        const rhs_kind = self.exprs.kind(row.rhs);
         if (rhs_kind != .Function) return false;
 
         const func = self.exprs.get(.Function, row.rhs);
@@ -377,7 +377,7 @@ const Formatter = struct {
     /// Return the source location recorded for expression `eid`.
     inline fn exprLocFromId(exprs: *cst.ExprStore, eid: cst.ExprId) Loc {
         @setEvalBranchQuota(10000);
-        const k = exprs.index.kinds.items[eid.toRaw()];
+        const k = exprs.kind(eid);
         return switch (k) {
             inline else => |x| exprs.locs.get(exprs.get(x, eid).loc),
         };
@@ -388,7 +388,7 @@ const Formatter = struct {
     // ------------------------------------------------------------
     /// Print expression `id` recursively with indentation and comments.
     pub fn printExpr(self: *Formatter, id: cst.ExprId) anyerror!void {
-        const kind = self.exprs.index.kinds.items[id.toRaw()];
+        const kind = self.exprs.kind(id);
 
         // Auto-update cursor at the end of the expression
         defer {
@@ -1248,7 +1248,7 @@ const Formatter = struct {
     // ------------------------------------------------------------
     /// Format the pattern `id`, recursing for nested structures.
     fn printPattern(self: *Formatter, id: cst.PatternId) anyerror!void {
-        const kind = self.pats.index.kinds.items[id.toRaw()];
+        const kind = self.pats.kind(id);
         switch (kind) {
             .Wildcard => try self.printf("_", .{}),
             .Literal => {

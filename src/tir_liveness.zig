@@ -13,18 +13,19 @@ pub const Liveness = struct {
 const U32Set = std.AutoHashMapUnmanaged(u32, void);
 
 /// setHas liveness analysis helper.
-fn setHas(set: *const U32Set, key: u32) bool {
-    return set.get(key) != null;
+fn setHas(set: *const U32Set, key: tir.ValueId) bool {
+    return set.get(key.toRaw()) != null;
 }
 /// setInsert liveness analysis helper.
-fn setInsert(gpa: Allocator, set: *U32Set, key: u32) !bool {
-    if (set.get(key) != null) return false;
-    try set.put(gpa, key, {});
+fn setInsert(gpa: Allocator, set: *U32Set, key: tir.ValueId) !bool {
+    const raw = key.toRaw();
+    if (set.get(raw) != null) return false;
+    try set.put(gpa, raw, {});
     return true;
 }
 /// setRemove liveness analysis helper.
-fn setRemove(set: *U32Set, key: u32) void {
-    _ = set.remove(key);
+fn setRemove(set: *U32Set, key: tir.ValueId) void {
+    _ = set.remove(key.toRaw());
 }
 /// setClearRetainingCapacity liveness analysis helper.
 fn setClearRetainingCapacity(set: *U32Set) void {
@@ -62,21 +63,21 @@ const UseCtx = struct {
 
 /// useAddVal liveness analysis helper.
 fn useAddVal(ctx: *UseCtx, v: tir.ValueId) !void {
-    _ = try setInsert(ctx.gpa, ctx.set, v.toRaw());
+    _ = try setInsert(ctx.gpa, ctx.set, v);
 }
 /// useAddOptVal liveness analysis helper.
 fn useAddOptVal(ctx: *UseCtx, v: tir.OptValueId) !void {
-    if (!v.isNone()) _ = try setInsert(ctx.gpa, ctx.set, v.unwrap().toRaw());
+    if (!v.isNone()) _ = try setInsert(ctx.gpa, ctx.set, v.unwrap());
 }
 /// useAddRangeValues liveness analysis helper.
 fn useAddRangeValues(ctx: *UseCtx, r: tir.RangeValue) !void {
     const vals = ctx.t.instrs.value_pool.slice(r);
-    for (vals) |v| _ = try setInsert(ctx.gpa, ctx.set, v.toRaw());
+    for (vals) |v| _ = try setInsert(ctx.gpa, ctx.set, v);
 }
 /// useAddRangeValuesFromValList liveness analysis helper.
 fn useAddRangeValuesFromValList(ctx: *UseCtx, r: tir.RangeValue) !void {
     const vals = ctx.t.instrs.val_list_pool.slice(r);
-    for (vals) |v| _ = try setInsert(ctx.gpa, ctx.set, v.toRaw());
+    for (vals) |v| _ = try setInsert(ctx.gpa, ctx.set, v);
 }
 /// useAddGepIndices liveness analysis helper.
 fn useAddGepIndices(ctx: *UseCtx, r: tir.RangeGepIndex) !void {
@@ -85,7 +86,7 @@ fn useAddGepIndices(ctx: *UseCtx, r: tir.RangeGepIndex) !void {
         const gi = ctx.t.instrs.GepIndex.get(gid);
         switch (gi) {
             .Const => {},
-            .Value => |vv| _ = try setInsert(ctx.gpa, ctx.set, vv.toRaw()),
+            .Value => |vv| _ = try setInsert(ctx.gpa, ctx.set, vv),
         }
     }
 }
@@ -94,14 +95,30 @@ fn useAddStructFieldInits(ctx: *UseCtx, r: tir.RangeStructFieldInit) !void {
     const fields = ctx.t.instrs.sfi_pool.slice(r);
     for (fields) |fid| {
         const frow = ctx.t.instrs.StructFieldInit.get(fid);
-        _ = try setInsert(ctx.gpa, ctx.set, frow.value.toRaw());
+        _ = try setInsert(ctx.gpa, ctx.set, frow.value);
     }
+}
+
+/// ensureIndex liveness analysis helper.
+fn ensureIndex(gpa: Allocator, map: *std.AutoHashMapUnmanaged(u32, u32), rev: *std.ArrayListUnmanaged(u32), vraw: u32) !u32 {
+    if (map.get(vraw)) |idx| return idx;
+    const idx: u32 = @intCast(rev.items.len);
+    try rev.append(gpa, vraw);
+    try map.put(gpa, vraw, idx);
+    return idx;
+}
+
+inline fn ensureValueIndex(gpa: Allocator, map: *std.AutoHashMapUnmanaged(u32, u32), rev: *std.ArrayListUnmanaged(u32), value: tir.ValueId) !u32 {
+    return ensureIndex(gpa, map, rev, value.toRaw());
+}
+
+inline fn valueIndexLookup(map: *std.AutoHashMapUnmanaged(u32, u32), value: tir.ValueId) ?u32 {
+    return map.get(value.toRaw());
 }
 
 /// collectInstrUses liveness analysis helper.
 fn collectInstrUses(ctx: *UseCtx, iid: tir.InstrId) !void {
-    const k = ctx.t.instrs.index.kinds.items[iid.toRaw()];
-    switch (k) {
+    switch (ctx.t.kind(iid)) {
         .Gep => {
             const row = ctx.t.instrs.get(.Gep, iid);
             try useAddVal(ctx, row.base);
@@ -255,10 +272,10 @@ fn collectInstrUses(ctx: *UseCtx, iid: tir.InstrId) !void {
 /// removeInstrDef liveness analysis helper.
 fn removeInstrDef(t: *tir.TIR, k: tir.OpKind, iid: tir.InstrId, set: *U32Set) void {
     switch (k) {
-        inline else => |kind| setRemove(set, t.instrs.get(kind, iid).result.toRaw()),
+        inline else => |kind| setRemove(set, t.instrs.get(kind, iid).result),
         .MlirBlock => {
             const row = t.instrs.get(.MlirBlock, iid);
-            if (!row.result.isNone()) setRemove(set, row.result.unwrap().toRaw());
+            if (!row.result.isNone()) setRemove(set, row.result.unwrap());
         },
     }
 }
@@ -282,40 +299,27 @@ pub fn dump(allocator: Allocator, t: *tir.TIR) !void {
         var index_to_value = std.ArrayListUnmanaged(u32){};
         defer index_to_value.deinit(allocator);
 
-        // Helper struct that interns values into the liveness index.
-        const ensureIndex = struct {
-            /// go liveness analysis helper.
-            fn go(gpa: Allocator, map: *std.AutoHashMapUnmanaged(u32, u32), rev: *std.ArrayListUnmanaged(u32), vraw: u32) !u32 {
-                if (map.get(vraw)) |idx| return idx;
-                const idx: u32 = @intCast(rev.items.len);
-                try rev.append(gpa, vraw);
-                try map.put(gpa, vraw, idx);
-                return idx;
-            }
-        }.go;
-
         // Collect values from params, defs, uses and terminators/edges
         for (blocks) |bid| {
             const b = t.funcs.Block.get(bid);
             // params
             for (t.funcs.param_pool.slice(b.params)) |pid| {
                 const v = t.funcs.Param.get(pid).value;
-                _ = try ensureIndex(allocator, &value_to_index, &index_to_value, v.toRaw());
+                _ = try ensureValueIndex(allocator, &value_to_index, &index_to_value, v);
             }
             // instr defs and uses
             const instrs = t.instrs.instr_pool.slice(b.instrs);
             for (instrs) |iid| {
-                const k = t.instrs.index.kinds.items[iid.toRaw()];
                 // defs
-                switch (k) {
+                switch (t.kind(iid)) {
                     .MlirBlock => {
                         const row = t.instrs.get(.MlirBlock, iid);
-                        if (!row.result.isNone()) _ = try ensureIndex(allocator, &value_to_index, &index_to_value, row.result.unwrap().toRaw());
+                        if (!row.result.isNone()) _ = try ensureValueIndex(allocator, &value_to_index, &index_to_value, row.result.unwrap());
                     },
                     inline else => |kind| {
                         const r = t.instrs.get(kind, iid);
                         if (@hasField(@TypeOf(r), "result")) {
-                            _ = try ensureIndex(allocator, &value_to_index, &index_to_value, r.result.toRaw());
+                            _ = try ensureValueIndex(allocator, &value_to_index, &index_to_value, r.result);
                         }
                     },
                 }
@@ -328,19 +332,18 @@ pub fn dump(allocator: Allocator, t: *tir.TIR) !void {
                 while (it.next()) |e| _ = try ensureIndex(allocator, &value_to_index, &index_to_value, e.key_ptr.*);
             }
             // terminator uses
-            const term_k = t.terms.index.kinds.items[b.term.toRaw()];
-            switch (term_k) {
+            switch (t.kind(b.term)) {
                 .Return => {
                     const r = t.terms.get(.Return, b.term);
-                    if (!r.value.isNone()) _ = try ensureIndex(allocator, &value_to_index, &index_to_value, r.value.unwrap().toRaw());
+                    if (!r.value.isNone()) _ = try ensureValueIndex(allocator, &value_to_index, &index_to_value, r.value.unwrap());
                 },
                 .CondBr => {
                     const c = t.terms.get(.CondBr, b.term);
-                    _ = try ensureIndex(allocator, &value_to_index, &index_to_value, c.cond.toRaw());
+                    _ = try ensureValueIndex(allocator, &value_to_index, &index_to_value, c.cond);
                 },
                 .SwitchInt => {
                     const s = t.terms.get(.SwitchInt, b.term);
-                    _ = try ensureIndex(allocator, &value_to_index, &index_to_value, s.scrut.toRaw());
+                    _ = try ensureValueIndex(allocator, &value_to_index, &index_to_value, s.scrut);
                 },
                 .Br, .Unreachable => {},
             }
@@ -384,8 +387,7 @@ pub fn dump(allocator: Allocator, t: *tir.TIR) !void {
             // gather successors (conservative union for multi-succ terms)
             var list = std.ArrayList(SuccEdge){};
             defer list.deinit(allocator);
-            const term_kind = t.terms.index.kinds.items[b.term.toRaw()];
-            switch (term_kind) {
+            switch (t.kind(b.term)) {
                 .Return => {},
                 .Unreachable => {},
                 .Br => {
@@ -438,7 +440,7 @@ pub fn dump(allocator: Allocator, t: *tir.TIR) !void {
                         var p: usize = 0;
                         while (p < limit) : (p += 1) {
                             if (livep[p]) {
-                                if (value_to_index.get(eargs[p].toRaw())) |ix| new_out.set(ix);
+                                if (valueIndexLookup(&value_to_index, eargs[p])) |ix| new_out.set(ix);
                             }
                         }
                         _ = sparams; // silence unused in release
@@ -467,22 +469,19 @@ pub fn dump(allocator: Allocator, t: *tir.TIR) !void {
 
                 // Terminator uses inside block
                 const b = t.funcs.Block.get(bid);
-                const term_k = t.terms.index.kinds.items[b.term.toRaw()];
-                switch (term_k) {
+                switch (t.kind(b.term)) {
                     .Return => {
                         const r = t.terms.get(.Return, b.term);
-                        if (!r.value.isNone()) if (value_to_index.get(r.value.unwrap().toRaw())) |ix| live.set(ix);
+                        if (!r.value.isNone()) if (valueIndexLookup(&value_to_index, r.value.unwrap())) |ix| live.set(ix);
                     },
-                    .Br => {
-                        // no direct value uses; edge args handled via live_out mapping
-                    },
+                    .Br => {}, // no direct value uses; edge args handled via live_out mapping
                     .CondBr => {
                         const c = t.terms.get(.CondBr, b.term);
-                        if (value_to_index.get(c.cond.toRaw())) |ix| live.set(ix);
+                        if (valueIndexLookup(&value_to_index, c.cond)) |ix| live.set(ix);
                     },
                     .SwitchInt => {
                         const s = t.terms.get(.SwitchInt, b.term);
-                        if (value_to_index.get(s.scrut.toRaw())) |ix| live.set(ix);
+                        if (valueIndexLookup(&value_to_index, s.scrut)) |ix| live.set(ix);
                     },
                     .Unreachable => {},
                 }
@@ -496,21 +495,20 @@ pub fn dump(allocator: Allocator, t: *tir.TIR) !void {
                 while (j > 0) {
                     j -= 1;
                     const iid = instrs[@intCast(j)];
-                    const k = t.instrs.index.kinds.items[iid.toRaw()];
                     try collectInstrUses(&use_ctx, iid);
                     // set uses
                     var it2 = tmp_uses.iterator();
-                    while (it2.next()) |e| if (value_to_index.get(e.key_ptr.*)) |ix| live.set(ix);
+                    while (it2.next()) |e| if (valueIndexLookup(&value_to_index, tir.ValueId.fromRaw(e.key_ptr.*))) |ix| live.set(ix);
                     tmp_uses.clearRetainingCapacity();
                     // remove def
-                    switch (k) {
+                    switch (t.kind(iid)) {
                         .MlirBlock => {
                             const row = t.instrs.get(.MlirBlock, iid);
-                            if (!row.result.isNone()) if (value_to_index.get(row.result.unwrap().toRaw())) |ix| live.unset(ix);
+                            if (!row.result.isNone()) if (valueIndexLookup(&value_to_index, row.result.unwrap())) |ix| live.unset(ix);
                         },
                         inline else => |kind| {
                             const r = t.instrs.get(kind, iid);
-                            if (@hasField(@TypeOf(r), "result")) if (value_to_index.get(r.result.toRaw())) |ix| live.unset(ix);
+                            if (@hasField(@TypeOf(r), "result")) if (valueIndexLookup(&value_to_index, r.result)) |ix| live.unset(ix);
                         },
                     }
                 }
@@ -521,13 +519,13 @@ pub fn dump(allocator: Allocator, t: *tir.TIR) !void {
                 var pidx: usize = 0;
                 while (pidx < params.len) : (pidx += 1) {
                     const pid = params[pidx];
-                    const pval = t.funcs.Param.get(pid).value.toRaw();
-                    const is_live = if (value_to_index.get(pval)) |ix| live.isSet(ix) else false;
+                    const pval = t.funcs.Param.get(pid).value;
+                    const is_live = if (valueIndexLookup(&value_to_index, pval)) |ix| live.isSet(ix) else false;
                     if (is_live != live_param_bits[i][pidx]) {
                         live_param_bits[i][pidx] = is_live;
                         livep_changed = true;
                     }
-                    if (is_live) if (value_to_index.get(pval)) |ix| live.unset(ix);
+                    if (is_live) if (valueIndexLookup(&value_to_index, pval)) |ix| live.unset(ix);
                 }
 
                 // Compare and swap live_in
@@ -597,6 +595,6 @@ pub fn dump(allocator: Allocator, t: *tir.TIR) !void {
 
 /// indexOfBlock liveness analysis helper.
 fn indexOfBlock(blocks: []const tir.BlockId, bid: tir.BlockId) ?usize {
-    for (blocks, 0..) |b, i| if (b.toRaw() == bid.toRaw()) return i;
+    for (blocks, 0..) |b, i| if (b.eq(bid)) return i;
     return null;
 }
