@@ -182,7 +182,7 @@ pub const LowerContext = struct {
         self.gpa.destroy(self.interpreter);
         var iter = self.interp_cache.iterator();
         while (iter.next()) |entry| {
-            entry.value_ptr.*.deinit(self.gpa);
+            entry.value_ptr.*.deinit();
             self.gpa.destroy(entry.value_ptr.*);
         }
         self.interp_cache.deinit();
@@ -245,11 +245,7 @@ pub fn run(self: *LowerTir, levels: *const compile.DependencyLevels) !*tir.TIR {
         }
     }
 
-    var threads = std.ArrayList(struct { std.Thread, *tir.TIR, *bool }){};
-    defer threads.deinit(self.gpa);
-
     for (levels.levels.items) |level| {
-        threads.clearRetainingCapacity();
         if (level.items.len == 0) continue;
 
         for (level.items) |file_id| {
@@ -263,7 +259,7 @@ pub fn run(self: *LowerTir, levels: *const compile.DependencyLevels) !*tir.TIR {
             ctx.* = LowerContext{
                 .method_lowered = .init(self.gpa),
                 .module_call_cache = .init(self.gpa),
-                .lowered_functions = std.AutoHashMap(tir.StrId, void).init(self.gpa),
+                .lowered_functions = .init(self.gpa),
                 .interpreter = interp,
                 .specialization_stack = .empty,
                 .expr_type_override_stack = .{},
@@ -271,45 +267,22 @@ pub fn run(self: *LowerTir, levels: *const compile.DependencyLevels) !*tir.TIR {
                 .gpa = self.gpa,
                 .builder = null,
             };
-            const ok_ptr = try self.gpa.create(bool);
-            ok_ptr.* = true;
-            const thread = try std.Thread.spawn(.{}, runAstCatching, .{ self, unit.ast.?, t, ctx, ok_ptr });
-            try threads.append(self.gpa, .{ thread, t, ok_ptr });
-        }
-
-        var any_failed = false;
-        for (threads.items, 0..) |item, i| {
-            const thread = item.@"0";
-            const t = item.@"1";
-            const ok_ptr = item.@"2";
-            thread.join();
-            const unit = unit_by_file.get(level.items[i]) orelse continue;
+            self.runAst(unit.ast.?, t, ctx) catch {
+                ctx.deinit(self.gpa);
+                self.gpa.destroy(ctx);
+                t.deinit();
+                self.gpa.destroy(t);
+                self.throwErr(.init(file_id, 0, 0)) catch {};
+                return error.TirLoweringFailed;
+            };
+            ctx.deinit(self.gpa);
+            self.gpa.destroy(ctx);
             unit.tir = t;
-            if (!ok_ptr.*) {
-                any_failed = true;
-                // Emit a TIR-specific diagnostic at the file level for visibility
-                const where = Loc.init(level.items[i], 0, 0);
-                self.throwErr(where) catch {};
-            }
-            self.gpa.destroy(ok_ptr);
-        }
-        if (any_failed) {
-            self.context.requestCancel();
-            return error.TirLoweringFailed;
         }
     }
 
     const main_pkg = self.context.compilation_unit.packages.getPtr("main") orelse return error.PackageNotFound;
     return main_pkg.sources.entries.get(0).value.tir.?;
-}
-
-/// Wrap `runAst`, setting `ok_ptr` to false if an error occurs.
-fn runAstCatching(self: *LowerTir, ast_unit: *ast.Ast, t: *tir.TIR, ctx: *LowerContext, ok_ptr: *bool) !void {
-    ok_ptr.* = true;
-    self.runAst(ast_unit, t, ctx) catch |err| {
-        ok_ptr.* = false;
-        return err;
-    };
 }
 
 /// Lower a single AST unit into the provided TIR builder/context.
@@ -650,7 +623,11 @@ fn lowerMlirBlock(
         const piece = a.exprs.MlirPiece.get(pid);
         var splice_value: comp.ComptimeValue = .Void;
         if (piece.kind == .splice) {
-            splice_value = try self.resolveMlirSpliceValue(ctx, a, pid, piece.text, row.loc);
+            if (a.type_info.getMlirSpliceValue(pid)) |cached| {
+                splice_value = try comp.cloneComptimeValue(self.gpa, cached.*);
+            } else {
+                splice_value = try self.resolveMlirSpliceValue(ctx, a, pid, piece.text, row.loc);
+            }
         }
         const new_id = blk.builder.t.instrs.addMlirPieceRow(
             .{ .kind = piece.kind, .text = piece.text, .value = splice_value },

@@ -542,12 +542,11 @@ fn evalComptimeValueWithBindings(
     ctx: *Checker.CheckerContext,
     ast_unit: *ast.Ast,
     expr: ast.ExprId,
-    expected_ty: types.TypeId,
     bindings: []const Binding,
 ) !comp.ComptimeValue {
     const pb = try pipelineBindingsFor(self, bindings);
     defer if (pb.owns) self.gpa.free(pb.items);
-    return self.evalComptimeExpr(ctx, ast_unit, expr, expected_ty, pb.items);
+    return self.evalComptimeExpr(ctx, ast_unit, expr, pb.items);
 }
 
 /// Search `bindings` for a type binding named `name`.
@@ -1220,7 +1219,7 @@ pub fn typeFromTypeExprWithBindings(
             const elem = res[1];
             var size: usize = 0;
             const size_loc = ast_unit.exprs.locs.get(row.loc);
-            var size_eval = evalComptimeValueWithBindings(self, ctx, ast_unit, row.size, self.context.type_store.tUsize(), bindings) catch |err| {
+            var size_eval = evalComptimeValueWithBindings(self, ctx, ast_unit, row.size, bindings) catch |err| {
                 std.debug.print("Size eval error: {}\n", .{err});
                 try self.context.diags.addError(size_loc, .array_size_not_integer_literal, .{});
                 status = false;
@@ -1255,8 +1254,7 @@ pub fn typeFromTypeExprWithBindings(
             const call_row = ast_unit.exprs.get(.Call, id);
             const callee_kind = ast_unit.kind(call_row.callee);
             if (callee_kind == .FieldAccess or callee_kind == .Ident) {
-                const any_type_ty = ts.mkTypeType(ts.tAny());
-                var value = evalComptimeValueWithBindings(self, ctx, ast_unit, id, any_type_ty, bindings) catch break :blk_call .{ false, ts.tTypeError() };
+                var value = evalComptimeValueWithBindings(self, ctx, ast_unit, id, bindings) catch break :blk_call .{ false, ts.tTypeError() };
                 defer value.destroy(self.gpa);
                 switch (value) {
                     .Type => |resolved| {
@@ -1345,7 +1343,7 @@ fn resolveTypeFunctionCall(
 
             if (!have_value) {
                 value = blk: {
-                    const computed = evalComptimeValueWithBindings(self, ctx, ast_unit, arg_expr, annotated, current_bindings) catch {
+                    const computed = evalComptimeValueWithBindings(self, ctx, ast_unit, arg_expr, current_bindings) catch {
                         if (arg_kind == .Literal) {
                             const literal_val = (try evalLiteralToComptime(ast_unit, arg_expr)) orelse return null;
                             break :blk literal_val;
@@ -1765,7 +1763,7 @@ pub fn typeFromTypeExpr(self: *Checker, ctx: *Checker.CheckerContext, ast_unit: 
 
                     if (!resolved_from_binding) {
                         const comptime_eval_ok = comptime_block: {
-                            var comptime_val = evalComptimeValueWithBindings(self, ctx, ast_unit, val_id, tag_ty, binding_slice) catch {
+                            var comptime_val = evalComptimeValueWithBindings(self, ctx, ast_unit, val_id, binding_slice) catch {
                                 break :comptime_block false;
                             };
                             defer comptime_val.destroy(self.gpa);
@@ -2058,8 +2056,7 @@ pub fn typeFromTypeExpr(self: *Checker, ctx: *Checker.CheckerContext, ast_unit: 
             const call_row = ast_unit.exprs.get(.Call, id);
             const callee_kind = ast_unit.kind(call_row.callee);
             if (callee_kind == .FieldAccess or callee_kind == .Ident) {
-                const any_type_ty = ts.mkTypeType(ts.tAny());
-                var value = evalComptimeValueWithBindings(self, ctx, ast_unit, id, any_type_ty, &[_]Binding{}) catch break :blk_call .{ false, ts.tTypeError() };
+                var value = evalComptimeValueWithBindings(self, ctx, ast_unit, id, &[_]Binding{}) catch break :blk_call .{ false, ts.tTypeError() };
                 defer value.destroy(self.gpa);
                 switch (value) {
                     .Type => |resolved| {

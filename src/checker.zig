@@ -39,6 +39,9 @@ pub const CheckerContext = struct {
     /// Symbol table used for name lookup inside the current AST unit.
     symtab: symbols.SymbolStore,
 
+    /// Persistent interpreter instance for this AST unit.
+    interp: ?*interpreter.Interpreter = null,
+
     /// Stack of function contexts currently being type-checked.
     func_stack: List(FunctionCtx) = .{},
     /// Stack of loop contexts for break/continue resolution.
@@ -79,6 +82,11 @@ pub const CheckerContext = struct {
         self.resolving_type_decls.deinit(gpa);
         self.resolving_type_exprs.deinit(gpa);
         self.param_specializations.deinit(gpa);
+
+        if (self.interp) |interp| {
+            interp.deinit();
+            gpa.destroy(interp);
+        }
     }
 };
 
@@ -175,34 +183,53 @@ pub fn run(self: *Checker, levels: *const compile.DependencyLevels) !void {
     const max_file_id = std.mem.max(u32, ast_by_file_id.keys());
     try self.checker_ctx.resize(self.gpa, max_file_id + 1);
 
-    var threads = List(std.Thread){};
-    defer threads.deinit(self.gpa);
-
     for (levels.levels.items) |level| {
-        threads.clearRetainingCapacity();
         if (level.items.len == 0) continue;
 
         for (level.items) |file_id| {
             const ast_unit = ast_by_file_id.get(file_id) orelse continue;
-            self.checker_ctx.items[file_id] = CheckerContext{
-                .symtab = symbols.SymbolStore.init(self.gpa),
-            };
-            const thread = try std.Thread.spawn(.{}, runAst, .{
-                self,
-                ast_unit,
-                &self.checker_ctx.items[file_id],
-            });
-            try threads.append(self.gpa, thread);
-        }
+            self.checker_ctx.items[file_id] = CheckerContext{ .symtab = .init(self.gpa) };
+            const ctx = &self.checker_ctx.items[file_id];
+            ctx.symtab = symbols.SymbolStore.init(self.gpa);
 
-        for (threads.items) |thread| {
-            thread.join();
+            try self.ensureInterpreter(ast_unit, ctx);
+            try predeclare(self, ast_unit, ctx);
+        }
+    }
+
+    for (levels.levels.items) |level| {
+        if (level.items.len == 0) continue;
+        for (level.items) |file_id| {
+            const ast_unit = ast_by_file_id.get(file_id) orelse continue;
+            const ctx = &self.checker_ctx.items[file_id];
+            const decl_ids = ast_unit.exprs.decl_pool.slice(ast_unit.unit.decls);
+            for (decl_ids) |did|
+                try self.checkDecl(ctx, ast_unit, did);
         }
     }
 }
 
+fn ensureInterpreter(self: *Checker, ast_unit: *ast.Ast, ctx: *CheckerContext) anyerror!void {
+    if (ctx.interp) |_| return;
+    const interp_ptr = try self.gpa.create(interpreter.Interpreter);
+    var interp_ready = false;
+    defer if (!interp_ready) self.gpa.destroy(interp_ptr);
+    interp_ptr.* = try interpreter.Interpreter.init(self.gpa, ast_unit, &ctx.symtab, &self.context.compilation_unit);
+    interp_ready = true;
+    ctx.interp = interp_ptr;
+}
+
 /// Walk the AST for `ast_unit`, binding top-level declarations and checking each node.
 pub fn runAst(self: *Checker, ast_unit: *ast.Ast, ctx: *CheckerContext) !void {
+    try self.ensureInterpreter(ast_unit, ctx);
+    try self.predeclare(ast_unit, ctx);
+
+    const decl_ids = ast_unit.exprs.decl_pool.slice(ast_unit.unit.decls);
+    for (decl_ids) |did|
+        try self.checkDecl(ctx, ast_unit, did);
+}
+
+fn predeclare(self: *Checker, ast_unit: *ast.Ast, ctx: *CheckerContext) !void {
     // pre-allocate type slots
     const expr_len: usize = ast_unit.exprs.index.kinds.items.len;
     const decl_len: usize = ast_unit.exprs.Decl.list.len;
@@ -234,11 +261,6 @@ pub fn runAst(self: *Checker, ast_unit: *ast.Ast, ctx: *CheckerContext) !void {
         if (ast_unit.kind(decl.value) != .FunctionLit) continue;
         const sig_ty = ast_unit.type_info.decl_types.items[did.toRaw()] orelse self.context.type_store.tAny();
         _ = try self.registerMethodDecl(ctx, ast_unit, did, decl, sig_ty);
-    }
-
-    // (3) Now type-check declarations (walk bodies, defaults, patterns, methods, etc.)
-    for (decl_ids) |did| {
-        try self.checkDecl(ctx, ast_unit, did);
     }
 }
 
@@ -290,60 +312,51 @@ fn isNestedFnAllowed(_: *const Checker, ctx: *CheckerContext) bool {
     return ctx.allow_nested_fn.items[ctx.allow_nested_fn.items.len - 1];
 }
 
-/// Helper invoked for each comptime binding during interpreter setup.
-fn bindingVisitor(
-    ctx: ?*anyopaque,
-    name: ast.StrId,
-    value: comp.ComptimeValue,
-    ty: types.TypeId,
-) anyerror!void {
-    _ = ty;
-    const interp: *interpreter.Interpreter = @ptrCast(@alignCast(ctx.?));
-    return interp.setBinding(name, value);
-}
-
-/// Populate `interp` with the compile-time bindings declared in `bindings`.
-fn installInterpreterBindings(
-    self: *Checker,
-    interp: *interpreter.Interpreter,
-    ast_unit: *ast.Ast,
-    bindings: []const Pipeline.ComptimeBinding,
-) anyerror!void {
-    for (bindings) |binding| {
-        switch (binding) {
-            .type_param => |tp| try interp.setBinding(tp.name, comp.ComptimeValue{ .Type = tp.ty }),
-            .value_param => |vp| {
-                var value = try comp.cloneComptimeValue(self.gpa, vp.value);
-                interp.setBinding(vp.name, value) catch |err| {
-                    value.destroy(self.gpa);
-                    return err;
-                };
-            },
-        }
-    }
-    try ast_unit.type_info.forEachComptimeBinding(
-        self.gpa,
-        @ptrCast(interp),
-        bindingVisitor,
-    );
-}
-
 /// Evaluate expression `expr` at compile time, caching the result in `ast_unit`.
 pub fn evalComptimeExpr(
     self: *Checker,
     ctx: *CheckerContext,
     ast_unit: *ast.Ast,
     expr: ast.ExprId,
-    _: types.TypeId,
     bindings: []const Pipeline.ComptimeBinding,
 ) anyerror!comp.ComptimeValue {
     if (ast_unit.type_info.getComptimeValue(expr)) |cached| {
         return comp.cloneComptimeValue(self.gpa, cached.*);
     }
 
-    var interp = try interpreter.Interpreter.init(self.gpa, ast_unit, &ctx.symtab, &self.context.compilation_unit);
-    defer interp.deinit();
-    try installInterpreterBindings(self, &interp, ast_unit, bindings);
+    std.debug.assert(ctx.interp != null);
+    const interp = ctx.interp.?;
+
+    var alias_bindings = std.ArrayList(interpreter.Binding).empty;
+    defer alias_bindings.deinit(self.gpa);
+
+    var has_binding_scope = false;
+    var binding_scope: interpreter.Interpreter.BindingScope = undefined;
+    defer if (has_binding_scope) binding_scope.deinit();
+
+    if (bindings.len > 0) {
+        var alias_success = false;
+        defer if (!alias_success) {
+            for (alias_bindings.items) |*binding| binding.value.destroy(self.gpa);
+        };
+
+        for (bindings) |binding| {
+            const binding_value = switch (binding) {
+                .type_param => interpreter.Binding{ .name = binding.type_param.name, .value = .{ .Type = binding.type_param.ty } },
+                .value_param => blk: {
+                    const cloned = try comp.cloneComptimeValue(self.gpa, binding.value_param.value);
+                    break :blk interpreter.Binding{ .name = binding.value_param.name, .value = cloned };
+                },
+            };
+            try alias_bindings.append(self.gpa, binding_value);
+        }
+
+        binding_scope = try interp.pushBindings(&alias_bindings);
+        alias_success = true;
+        has_binding_scope = true;
+        alias_bindings.clearRetainingCapacity();
+    }
+
     const computed = try interp.evalExpr(expr);
     const stored = try comp.cloneComptimeValue(self.gpa, computed);
     try ast_unit.type_info.setComptimeValue(expr, stored);
@@ -725,9 +738,19 @@ pub fn checkDecl(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, decl_
         if (ast_unit.kind(pat_id) == .Binding) {
             const binding = ast_unit.pats.get(.Binding, pat_id);
             const binding_ty = if (expect_ty) |et| et else rhs_ty;
-            const stored = self.evalComptimeExpr(ctx, ast_unit, decl.value, rhs_ty, &[_]Pipeline.ComptimeBinding{}) catch null;
-            if (stored) |value| {
-                try ast_unit.type_info.setComptimeBinding(binding.name, binding_ty, value);
+            var stored = self.evalComptimeExpr(ctx, ast_unit, decl.value, &[_]Pipeline.ComptimeBinding{}) catch null;
+            if (stored) |*value| {
+                const binding_clone = try comp.cloneComptimeValue(self.gpa, stored.?);
+                try ast_unit.type_info.setComptimeBinding(binding.name, binding_ty, binding_clone);
+                if (ctx.interp) |interp| {
+                    var interp_clone = try comp.cloneComptimeValue(self.gpa, stored.?);
+                    interp.setBinding(binding.name, interp_clone) catch |err| {
+                        interp_clone.destroy(self.gpa);
+                        value.destroy(self.gpa);
+                        return err;
+                    };
+                }
+                value.destroy(self.gpa);
             }
         }
     }
@@ -2082,7 +2105,10 @@ pub fn checkExpr(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, id: a
         .Call => try self.checkCall(ctx, ast_unit, id),
         .ComptimeBlock => {
             const cb = ast_unit.exprs.get(.ComptimeBlock, id);
-            return try self.checkExpr(ctx, ast_unit, cb.block);
+            const result_ty = try self.checkExpr(ctx, ast_unit, cb.block);
+            var computed = try self.evalComptimeExpr(ctx, ast_unit, cb.block, &[_]Pipeline.ComptimeBinding{});
+            computed.destroy(self.gpa);
+            return result_ty;
         },
         .CodeBlock => try self.checkCodeBlock(ctx, ast_unit, id),
         .AsyncBlock => try self.checkAsyncBlock(id),
@@ -2692,8 +2718,8 @@ fn checkBinary(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, id: ast
         },
 
         .logical_and, .logical_or => {
-                if (l.eq(self.context.type_store.tBool()) and
-                    r.eq(self.context.type_store.tBool()))
+            if (l.eq(self.context.type_store.tBool()) and
+                r.eq(self.context.type_store.tBool()))
                 return self.context.type_store.tBool();
             try self.context.diags.addError(exprLoc(ast_unit, bin), .invalid_binary_op_operands, .{ bin.op, lhs_kind, rhs_kind });
             return self.context.type_store.tTypeError();
@@ -4681,6 +4707,11 @@ fn checkMlirBlock(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, id: 
         if (!sym.origin_decl.isNone() and sym.is_comptime) {
             const did = sym.origin_decl.unwrap();
             try ast_unit.type_info.setMlirSpliceInfo(pid, .{ .decl = .{ .decl_id = did, .name = name } });
+            const decl = ast_unit.exprs.Decl.get(did);
+            var computed = try self.evalComptimeExpr(ctx, ast_unit, decl.value, &[_]Pipeline.ComptimeBinding{});
+            const value_clone = try comp.cloneComptimeValue(self.gpa, computed);
+            try ast_unit.type_info.setMlirSpliceValue(pid, value_clone);
+            computed.destroy(self.gpa);
             continue;
         }
 

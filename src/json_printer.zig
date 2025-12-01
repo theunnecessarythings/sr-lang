@@ -227,7 +227,7 @@ pub const JsonPrinter = struct {
 
     /// Serialize expression `id`, recursing into nested nodes.
     pub fn printExpr(self: *JsonPrinter, id: ast.ExprId) anyerror!void {
-    const kind = self.exprs.kind(id);
+        const kind = self.exprs.kind(id);
         try self.stream.beginObject();
         try self.stream.objectField("kind");
         try self.stream.write(@tagName(kind));

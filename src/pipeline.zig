@@ -158,49 +158,43 @@ pub const Pipeline = struct {
             // Diagnostics are already merged; the pipeline will stop after the loop.
             if (work.diags.anyErrors()) {
                 parse_failed = true;
-                self.context.requestCancel();
-                i += 1;
-                continue;
             }
-            if (self.context.isCancelled()) {
-                // Cancellation requested due to another thread's failure; skip consuming this unit.
-                i += 1;
-                continue;
+            if (!parse_failed) {
+                self.context.compilation_unit.mutex.lock();
+                const package_id = work.parser.cst_u.program.package_name.unwrap();
+                const package_name = self.context.interner.get(package_id);
+                const package = self.context.compilation_unit.packages.getPtr(package_name);
+                if (package) |pkg| {
+                    try pkg.sources.put(self.allocator, work.path, .{
+                        .file_id = work.file_id,
+                        .cst = work.parser.cst_u,
+                        .ast = null,
+                        .tir = null,
+                        .type_info = null,
+                    });
+                } else {
+                    const pkg_name = try self.allocator.dupe(u8, package_name);
+                    try self.context.compilation_unit.packages.put(
+                        self.allocator,
+                        pkg_name,
+                        .{
+                            .gpa = self.allocator,
+                            .name = pkg_name,
+                            .source_manager = self.context.source_manager,
+                            .sources = .{},
+                        },
+                    );
+                    const pkg = self.context.compilation_unit.packages.getPtr(pkg_name).?;
+                    try pkg.sources.put(self.allocator, work.path, .{
+                        .file_id = work.file_id,
+                        .cst = work.parser.cst_u,
+                        .ast = null,
+                        .tir = null,
+                        .type_info = null,
+                    });
+                }
+                self.context.compilation_unit.mutex.unlock();
             }
-            self.context.compilation_unit.mutex.lock();
-            const package_id = work.parser.cst_u.program.package_name.unwrap();
-            const package_name = self.context.interner.get(package_id);
-            const package = self.context.compilation_unit.packages.getPtr(package_name);
-            if (package) |pkg| {
-                try pkg.sources.put(self.allocator, work.path, .{
-                    .file_id = work.file_id,
-                    .cst = work.parser.cst_u,
-                    .ast = null,
-                    .tir = null,
-                    .type_info = null,
-                });
-            } else {
-                const pkg_name = try self.allocator.dupe(u8, package_name);
-                try self.context.compilation_unit.packages.put(
-                    self.allocator,
-                    pkg_name,
-                    .{
-                        .gpa = self.allocator,
-                        .name = pkg_name,
-                        .source_manager = self.context.source_manager,
-                        .sources = .{},
-                    },
-                );
-                const pkg = self.context.compilation_unit.packages.getPtr(pkg_name).?;
-                try pkg.sources.put(self.allocator, work.path, .{
-                    .file_id = work.file_id,
-                    .cst = work.parser.cst_u,
-                    .ast = null,
-                    .tir = null,
-                    .type_info = null,
-                });
-            }
-            self.context.compilation_unit.mutex.unlock();
             i += 1;
         }
         self.context.parse_worklist.deinit(self.allocator);
@@ -225,7 +219,6 @@ pub const Pipeline = struct {
         while (pkg_iter.next()) |pkg| {
             var source_iter = pkg.value_ptr.sources.iterator();
             while (source_iter.next()) |unit| {
-                if (self.context.isCancelled()) break;
                 const lower_pass = try self.allocator.create(lower_to_ast.Lower);
                 lower_pass.* = try lower_to_ast.Lower.init(
                     self.allocator,
@@ -236,17 +229,14 @@ pub const Pipeline = struct {
                 const thread = try std.Thread.spawn(.{}, runFn, .{lower_pass});
                 try threads.append(self.allocator, .{ thread, lower_pass, pkg.key_ptr.*, unit.key_ptr.* });
             }
-            if (self.context.isCancelled()) break;
         }
 
         for (threads.items) |thread| {
             thread.@"0".join();
-            if (!self.context.isCancelled()) {
-                self.context.compilation_unit.mutex.lock();
-                const pkg = self.context.compilation_unit.packages.getPtr(thread.@"2").?;
-                pkg.sources.getPtr(thread.@"3").?.ast = thread.@"1".ast_unit;
-                self.context.compilation_unit.mutex.unlock();
-            }
+            self.context.compilation_unit.mutex.lock();
+            const pkg = self.context.compilation_unit.packages.getPtr(thread.@"2").?;
+            pkg.sources.getPtr(thread.@"3").?.ast = thread.@"1".ast_unit;
+            self.context.compilation_unit.mutex.unlock();
             // Always destroy per-thread state.
             self.allocator.destroy(thread.@"1");
         }
@@ -308,7 +298,7 @@ pub const Pipeline = struct {
             }
             return error.CycleDetected;
         }
-        if (self.context.isCancelled() or self.context.diags.anyErrors()) {
+        if (self.context.diags.anyErrors()) {
             return error.LoweringFailed;
         }
 
@@ -338,12 +328,9 @@ pub const Pipeline = struct {
         defer tir_lowerer.deinit();
 
         // If any TIR lowering thread fails, do not proceed further.
-        _ = tir_lowerer.run(&dep_levels) catch |err| {
-            self.context.requestCancel();
-            return err;
-        };
+        _ = tir_lowerer.run(&dep_levels) catch |err| return err;
 
-        if (self.context.isCancelled() or self.context.diags.anyErrors()) {
+        if (self.context.diags.anyErrors()) {
             return error.TirLoweringFailed;
         }
         if (mode == .tir) {

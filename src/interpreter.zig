@@ -1458,10 +1458,10 @@ pub const Interpreter = struct {
                 .Range => rv.start == right.Range.start and rv.end == right.Range.end and rv.inclusive == right.Range.inclusive,
                 else => false,
             },
-                .Function => |func| switch (right) {
-                    .Function => func.expr.eq(right.Function.expr),
-                    else => false,
-                },
+            .Function => |func| switch (right) {
+                .Function => func.expr.eq(right.Function.expr),
+                else => false,
+            },
             else => false,
         };
     }
@@ -1810,7 +1810,7 @@ pub const Interpreter = struct {
 
     /// Tracks bound variables pushed during a function/pattern invocation.
     /// Temporary frame used when binding matched variables to new values.
-    const BindingScope = struct {
+    pub const BindingScope = struct {
         /// Interpreter owning the current scope.
         interpreter: *Interpreter,
         /// Length of the binding list before the scope began.
@@ -1839,14 +1839,14 @@ pub const Interpreter = struct {
         }
 
         /// Cleanup resources associated with the scope.
-        fn deinit(self: *BindingScope) void {
+        pub fn deinit(self: *BindingScope) void {
             self.restore();
             self.replaced.deinit(self.interpreter.allocator);
         }
     };
 
     /// Push the `matches` bindings into the interpreter, saving replaced bindings.
-    fn pushBindings(self: *Interpreter, matches: *std.ArrayList(Binding)) anyerror!BindingScope {
+    pub fn pushBindings(self: *Interpreter, matches: *std.ArrayList(Binding)) anyerror!BindingScope {
         var scope = BindingScope{
             .interpreter = self,
             .prev_len = self.bindings.items.len,

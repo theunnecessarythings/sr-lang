@@ -145,9 +145,6 @@ pub const Context = struct {
     /// Parsers currently created/executing on worker threads.
     parse_worklist: std.ArrayList(ParseRequest) = .{},
 
-    /// Cooperative cancellation flag for long-running stages.
-    cancel_requested: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
-
     /// Work item describing a parser running on a thread.
     const ParseRequest = struct {
         /// Path string for this parse request.
@@ -203,16 +200,6 @@ pub const Context = struct {
         self.gpa.destroy(self.source_manager);
         self.gpa.destroy(self.loc_store);
         self.gpa.destroy(self.type_store);
-    }
-
-    /// Signal cancellation to any cooperating threads by flipping the atomic flag.
-    pub inline fn requestCancel(self: *Context) void {
-        self.cancel_requested.store(true, .seq_cst);
-    }
-
-    /// Check whether cancellation has been requested.
-    pub inline fn isCancelled(self: *const Context) bool {
-        return self.cancel_requested.load(.seq_cst);
     }
 };
 

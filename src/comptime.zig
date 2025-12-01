@@ -370,9 +370,6 @@ fn evaluateTypeExpr(
                 else => return error.NotAProcedure,
             };
 
-            const callee_ty = self.getExprType(ctx, a, call.callee);
-            const proc_ty = self.context.type_store.get(.Function, callee_ty);
-
             var bindings_list = std.ArrayList(Pipeline.ComptimeBinding).empty;
             defer bindings_list.deinit(self.gpa);
             const params = a.exprs.param_pool.slice(proc_node.params);
@@ -418,7 +415,7 @@ fn evaluateTypeExpr(
                     const arg_type_val = try evaluateTypeExpr(self, ctx, a, arg_expr);
                     try bindings_list.append(self.gpa, .{ .type_param = .{ .name = param_name, .ty = arg_type_val } });
                 } else {
-                    const comptime_val = try runComptimeExpr(self, ctx, a, arg_expr, arg_ty, &[_]Pipeline.ComptimeBinding{});
+                    const comptime_val = try runComptimeExpr(self, ctx, a, arg_expr, &[_]Pipeline.ComptimeBinding{});
                     try bindings_list.append(self.gpa, .{ .value_param = .{ .name = param_name, .ty = arg_ty, .value = comptime_val } });
                 }
             }
@@ -430,7 +427,7 @@ fn evaluateTypeExpr(
                 body_expr = proc_node.body.unwrap();
             }
 
-            const result_comptime_val = try runComptimeExpr(self, ctx, a, body_expr, proc_ty.result, bindings_list.items);
+            const result_comptime_val = try runComptimeExpr(self, ctx, a, body_expr, bindings_list.items);
 
             return switch (result_comptime_val) {
                 .Type => |t| t,
@@ -580,11 +577,10 @@ pub fn runComptimeExpr(
     ctx: *LowerTir.LowerContext,
     a: *ast.Ast,
     expr: ast.ExprId,
-    result_ty: types.TypeId,
     bindings: []const Pipeline.ComptimeBinding,
 ) !ComptimeValue {
     _ = ctx;
-    return self.chk.evalComptimeExpr(&self.chk.checker_ctx.items[a.file_id], a, expr, result_ty, bindings);
+    return self.chk.evalComptimeExpr(&self.chk.checker_ctx.items[a.file_id], a, expr, bindings);
 }
 
 /// Materialize a `tir.ValueId` for the supplied `ComptimeValue` in lowered code.
