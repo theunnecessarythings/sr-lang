@@ -490,7 +490,7 @@ fn collectStmtExprs(
 }
 
 /// Collect expressions from declaration `decl_id`, including patterns, annotations, and initializer.
-fn collectDeclExprs(gpa: std.mem.Allocator, ast_unit: *ast.Ast, decl_id: ast.DeclId, out: *std.ArrayList(ast.ExprId)) !void {
+pub fn collectDeclExprs(gpa: std.mem.Allocator, ast_unit: *ast.Ast, decl_id: ast.DeclId, out: *std.ArrayList(ast.ExprId)) !void {
     const decl = ast_unit.exprs.Decl.get(decl_id);
     if (!decl.pattern.isNone()) try collectPatternExprs(gpa, ast_unit, decl.pattern.unwrap(), out);
     if (!decl.ty.isNone()) try collectExprIds(gpa, ast_unit, decl.ty.unwrap(), out);
@@ -528,6 +528,37 @@ pub fn storeMethodExprTypes(
     }
     if (count == 0) return;
     try ast_unit.type_info.storeMethodExprSnapshot(owner_ty, method_name, raw_ids[0..count], type_buf[0..count]);
+}
+
+/// Snapshot the expression types for `decl_id` when emitting a specialized clone.
+pub fn storeSpecializationExprTypes(
+    self: *Checker,
+    ast_unit: *ast.Ast,
+    source_decl_id: ast.DeclId,
+    specialization_decl_id: ast.DeclId,
+) !void {
+    var expr_ids = std.ArrayList(ast.ExprId){};
+    defer expr_ids.deinit(self.gpa);
+    try collectDeclExprs(self.gpa, ast_unit, source_decl_id, &expr_ids);
+    if (expr_ids.items.len == 0) return;
+
+    var raw_ids = try self.gpa.alloc(u32, expr_ids.items.len);
+    defer self.gpa.free(raw_ids);
+    var type_buf = try self.gpa.alloc(types.TypeId, expr_ids.items.len);
+    defer self.gpa.free(type_buf);
+
+    var count: usize = 0;
+    for (expr_ids.items) |eid| {
+        const raw = eid.toRaw();
+        if (raw >= ast_unit.type_info.expr_types.items.len) continue;
+        if (ast_unit.type_info.expr_types.items[raw]) |ty| {
+            raw_ids[count] = raw;
+            type_buf[count] = ty;
+            count += 1;
+        }
+    }
+    if (count == 0) return;
+    try ast_unit.type_info.storeSpecializationExprSnapshot(specialization_decl_id, raw_ids[0..count], type_buf[0..count]);
 }
 
 /// Convert `bindings` into a pipeline binding slice suitable for `evalComptimeExpr`.
@@ -1230,8 +1261,8 @@ pub fn typeFromTypeExprWithBindings(
             const elem = res[1];
             var size: usize = 0;
             const size_loc = ast_unit.exprs.locs.get(row.loc);
-            var size_eval = evalComptimeValueWithBindings(self, ctx, ast_unit, row.size, bindings) catch |err| {
-                std.debug.print("Size eval error: {}\n", .{err});
+            var size_eval = evalComptimeValueWithBindings(self, ctx, ast_unit, row.size, bindings) catch {
+                // If interpreter is unavailable (e.g. synthetic specialization), fall back to TypeError and surface a diagnostic.
                 try self.context.diags.addError(size_loc, .array_size_not_integer_literal, .{});
                 status = false;
                 break :blk_at .{ status, ts.mkArray(elem, size) };
@@ -1415,6 +1446,9 @@ fn resolveTypeFunctionCall(
 pub fn typeFromTypeExpr(self: *Checker, ctx: *Checker.CheckerContext, ast_unit: *ast.Ast, id: ast.ExprId) anyerror!struct { bool, types.TypeId } {
     const ts = self.context.type_store;
     var status = true;
+    if (ctx.symtab.stack.items.len == 0) {
+        _ = ctx.symtab.push(null) catch return .{ false, ts.tTypeError() };
+    }
     return switch (ast_unit.kind(id)) {
         .Ident => blk: {
             const name = ast_unit.exprs.get(.Ident, id).name;
@@ -1438,7 +1472,13 @@ pub fn typeFromTypeExpr(self: *Checker, ctx: *Checker.CheckerContext, ast_unit: 
             if (std.mem.eql(u8, s, "type"))
                 break :blk .{ true, ts.mkTypeType(ts.tAny()) };
 
-            if (self.lookupParamSpecialization(ctx, name)) |ty| return .{ status, ty };
+            if (self.lookupParamSpecialization(ctx, name)) |ty| {
+                const k = self.typeKind(ty);
+                if (k == .TypeType) {
+                    return .{ status, ts.get(.TypeType, ty).of };
+                }
+                return .{ status, ty };
+            }
 
             if (self.lookup(ctx, name)) |sid| {
                 const sym = ctx.symtab.syms.get(sid);

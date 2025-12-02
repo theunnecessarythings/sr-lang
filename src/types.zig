@@ -162,6 +162,7 @@ pub const TypeInfo = struct {
     comptime_bindings: std.AutoArrayHashMapUnmanaged(ast.StrId, StoredComptimeBinding) = .{},
     method_bindings: std.AutoArrayHashMapUnmanaged(u32, MethodBinding) = .{},
     method_expr_snapshots: std.AutoArrayHashMapUnmanaged(MethodKey, MethodExprSnapshot) = .{},
+    specialization_expr_snapshots: std.AutoArrayHashMapUnmanaged(u32, MethodExprSnapshot) = .{},
     mlir_splice_info: std.AutoArrayHashMapUnmanaged(u32, MlirSpliceInfo) = .{},
     mlir_splice_values: std.AutoArrayHashMapUnmanaged(u32, comp.ComptimeValue) = .{},
     exports: std.AutoArrayHashMapUnmanaged(ast.StrId, ExportEntry) = .{},
@@ -215,6 +216,12 @@ pub const TypeInfo = struct {
             self.gpa.free(entry.value_ptr.expr_types);
         }
         self.method_expr_snapshots.deinit(self.gpa);
+        var spec_snapshot_it = self.specialization_expr_snapshots.iterator();
+        while (spec_snapshot_it.next()) |entry| {
+            self.gpa.free(entry.value_ptr.expr_ids);
+            self.gpa.free(entry.value_ptr.expr_types);
+        }
+        self.specialization_expr_snapshots.deinit(self.gpa);
         self.mlir_splice_info.deinit(self.gpa);
         var splice_values_it = self.mlir_splice_values.iterator();
         while (splice_values_it.next()) |entry| {
@@ -344,6 +351,31 @@ pub const TypeInfo = struct {
             self.expr_types.items[raw] = snapshot.expr_types[i];
         }
         return true;
+    }
+
+    /// storeSpecializationExprSnapshot type system helper.
+    pub fn storeSpecializationExprSnapshot(
+        self: *TypeInfo,
+        decl_id: ast.DeclId,
+        expr_ids: []const u32,
+        expr_types: []const TypeId,
+    ) !void {
+        std.debug.assert(expr_ids.len == expr_types.len);
+        const gop = try self.specialization_expr_snapshots.getOrPut(self.gpa, decl_id.toRaw());
+        if (gop.found_existing) {
+            self.gpa.free(gop.value_ptr.expr_ids);
+            self.gpa.free(gop.value_ptr.expr_types);
+        }
+        const ids_copy = try self.gpa.alloc(u32, expr_ids.len);
+        const tys_copy = try self.gpa.alloc(TypeId, expr_types.len);
+        std.mem.copyForwards(u32, ids_copy, expr_ids);
+        std.mem.copyForwards(TypeId, tys_copy, expr_types);
+        gop.value_ptr.* = .{ .expr_ids = ids_copy, .expr_types = tys_copy };
+    }
+
+    /// getSpecializationExprSnapshot type system helper.
+    pub fn getSpecializationExprSnapshot(self: *const TypeInfo, decl_id: ast.DeclId) ?MethodExprSnapshot {
+        return self.specialization_expr_snapshots.get(decl_id.toRaw());
     }
 
     /// addExport type system helper.

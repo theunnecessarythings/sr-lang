@@ -142,6 +142,8 @@ const FunctionCtx = struct {
     require_pure: bool,
     /// Locally-defined entities tracked for resolution.
     locals: std.AutoArrayHashMapUnmanaged(u32, void) = .{},
+    /// Optional refined result type discovered during return checking.
+    inferred_result: ?types.TypeId = null,
 };
 
 /// Tracks the innermost loop label and result type for break/continue resolution.
@@ -328,11 +330,13 @@ pub fn evalComptimeExpr(
     expr: ast.ExprId,
     bindings: []const Pipeline.ComptimeBinding,
 ) anyerror!comp.ComptimeValue {
+    // Ensure the interpreter is available for this AST.
+    try self.ensureInterpreter(ast_unit, ctx);
+
     if (ast_unit.type_info.getComptimeValue(expr)) |cached| {
         return comp.cloneComptimeValue(self.gpa, cached.*);
     }
 
-    std.debug.assert(ctx.interp != null);
     const interp = ctx.interp.?;
 
     var alias_bindings = std.ArrayList(interpreter.Binding).empty;
@@ -416,6 +420,7 @@ fn pushFunc(
         .has_result = has_result,
         .pure = true,
         .require_pure = require_pure,
+        .inferred_result = null,
     });
 }
 /// Pop the current function context, releasing any locals map.
@@ -548,9 +553,13 @@ pub fn checkSpecializedFunction(
     self: *Checker,
     ctx: *CheckerContext,
     ast_unit: *ast.Ast,
-    id: ast.ExprId,
+    decl_id: ast.DeclId,
     specs: []const ParamSpecialization,
+    snapshot_decl: ?ast.DeclId,
 ) !types.TypeId {
+    const decl = ast_unit.exprs.Decl.get(decl_id);
+    std.debug.assert(ast_unit.kind(decl.value) == .FunctionLit);
+    const id = decl.value;
     const need_scope = ctx.symtab.stack.items.len == 0;
     if (need_scope) {
         _ = try ctx.symtab.push(null);
@@ -571,6 +580,15 @@ pub fn checkSpecializedFunction(
         const src = ast_unit.type_info.expr_types.items[0..backup_len];
         std.mem.copyForwards(?types.TypeId, backup, src);
     }
+    // Clear cached expression types for this function so specializations re-check bodies.
+    var expr_ids = std.ArrayList(ast.ExprId){};
+    defer expr_ids.deinit(self.gpa);
+    try check_types.collectDeclExprs(self.gpa, ast_unit, decl_id, &expr_ids);
+    for (expr_ids.items) |eid| {
+        if (eid.toRaw() < ast_unit.type_info.expr_types.items.len) {
+            ast_unit.type_info.expr_types.items[eid.toRaw()] = null;
+        }
+    }
     defer {
         ast_unit.type_info.expr_types.items.len = backup_len;
         if (backup_len != 0) {
@@ -582,7 +600,11 @@ pub fn checkSpecializedFunction(
 
     try self.pushAllowNestedFn(ctx, true);
     defer self.popAllowNestedFn(ctx);
-    return try self.checkFunctionLit(ctx, ast_unit, id);
+    const result_ty = try self.checkFunctionLit(ctx, ast_unit, id);
+    if (snapshot_decl) |target_decl| {
+        try check_types.storeSpecializationExprTypes(self, ast_unit, decl_id, target_decl);
+    }
+    return result_ty;
 }
 
 /// Retrieve or create a synthetic specialization of `original_decl_id` using `concrete_param_types`.
@@ -607,24 +629,44 @@ fn getOrInstantiateSpecialization(
         }
     };
 
+    var synthetic_decl_id: ast.DeclId = undefined;
     if (ctx.specialization_cache.get(key)) |existing| {
+        const sig_opt = if (existing.toRaw() < ast_unit.type_info.decl_types.items.len)
+            ast_unit.type_info.decl_types.items[existing.toRaw()]
+        else
+            null;
+        const needs_refresh = blk: {
+            if (sig_opt) |sig| {
+                if (self.context.type_store.getKind(sig) == .Function) {
+                    const fr = self.context.type_store.get(.Function, sig);
+                    const rk = self.typeKind(fr.result);
+                    if (rk == .Any) break :blk true;
+                    if (rk == .TypeType) {
+                        const of = self.context.type_store.get(.TypeType, fr.result).of;
+                        if (self.typeKind(of) == .Any) break :blk true;
+                    }
+                }
+            } else break :blk true;
+            break :blk false;
+        };
         self.gpa.free(params_dup);
-        return existing;
+        if (!needs_refresh) return existing;
+        synthetic_decl_id = existing;
+    } else {
+        const new_slot_index = ast_unit.type_info.decl_types.items.len;
+        try ast_unit.type_info.decl_types.append(self.gpa, null);
+        synthetic_decl_id = ast.DeclId.fromRaw(@intCast(new_slot_index));
+
+        const gop = try ctx.specialization_cache.getOrPut(self.gpa, key);
+        if (gop.found_existing) {
+            self.gpa.free(params_dup);
+            return gop.value_ptr.*;
+        }
+        params_owned = false;
+        gop.value_ptr.* = synthetic_decl_id;
+
+        try ast_unit.type_info.synthetic_decls.append(self.gpa, synthetic_decl_id.toRaw());
     }
-
-    const new_slot_index = ast_unit.type_info.decl_types.items.len;
-    try ast_unit.type_info.decl_types.append(self.gpa, null);
-    const synthetic_decl_id = ast.DeclId.fromRaw(@intCast(new_slot_index));
-
-    const gop = try ctx.specialization_cache.getOrPut(self.gpa, key);
-    if (gop.found_existing) {
-        self.gpa.free(params_dup);
-        return gop.value_ptr.*;
-    }
-    params_owned = false;
-    gop.value_ptr.* = synthetic_decl_id;
-
-    try ast_unit.type_info.synthetic_decls.append(self.gpa, synthetic_decl_id.toRaw());
 
     const original_decl = ast_unit.exprs.Decl.get(original_decl_id);
     if (ast_unit.kind(original_decl.value) != .FunctionLit) return synthetic_decl_id;
@@ -642,7 +684,7 @@ fn getOrInstantiateSpecialization(
         }
     }
 
-    const fn_type = try self.checkSpecializedFunction(ctx, ast_unit, original_decl.value, specs.items);
+    const fn_type = try self.checkSpecializedFunction(ctx, ast_unit, original_decl_id, specs.items, synthetic_decl_id);
     const fn_row_checked = self.context.type_store.get(.Function, fn_type);
     const new_sig = self.context.type_store.mkFunction(
         params_dup,
@@ -2356,7 +2398,12 @@ fn checkIdent(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, id: ast.
                 if (!res[0]) {
                     return self.context.type_store.tTypeError();
                 }
-                const pt = res[1];
+                var pt = res[1];
+                if (self.typeKind(pt) == .Any) {
+                    if (self.lookupParamSpecialization(ctx, row.name)) |override_ty| {
+                        pt = override_ty;
+                    }
+                }
                 if (self.typeKind(pt) == .TypeError) {
                     return self.context.type_store.tTypeError();
                 }
@@ -2877,7 +2924,22 @@ fn checkFunctionLit(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, id
         if (!p.ty.isNone()) {
             const res = try check_types.typeFromTypeExpr(self, ctx, ast_unit, p.ty.unwrap());
             if (!res[0]) return self.context.type_store.tTypeError();
-            const pt = res[1];
+            var pt = res[1];
+            if (!p.pat.isNone()) {
+                if (bindingNameOfPattern(ast_unit, p.pat.unwrap())) |pname| {
+                    if (self.lookupParamSpecialization(ctx, pname)) |override_ty| {
+                        const pk = self.typeKind(pt);
+                        if (pk == .Any) {
+                            pt = override_ty;
+                        } else if (pk == .TypeType) {
+                            const tt = self.context.type_store.get(.TypeType, pt);
+                            if (self.typeKind(tt.of) == .Any) {
+                                pt = override_ty;
+                            }
+                        }
+                    }
+                }
+            }
             // If parameter uses a pattern, ensure its shape matches the annotated type
             if (!p.pat.isNone()) {
                 const shape_ok = pattern_matching.checkPatternShapeForDecl(self, ast_unit, p.pat.unwrap(), pt);
@@ -2968,15 +3030,17 @@ fn checkFunctionLit(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, id
     const returns_value = result_kind != .Void and result_kind != .Noreturn;
     try self.pushFunc(ctx, res, returns_value, !fnr.flags.is_proc);
     defer self.popFunc(ctx);
-    if (!fnr.body.isNone() and result_kind != .TypeType) {
+    if (!fnr.body.isNone()) {
         // Function bodies are in statement context: no value required from the block
         try self.pushValueReq(ctx, false);
         defer self.popValueReq(ctx);
         _ = try self.checkExpr(ctx, ast_unit, fnr.body.unwrap());
     }
     // Extern procs are considered impure; otherwise proc purity comes from body analysis.
+    const func_ctx = ctx.func_stack.items[ctx.func_stack.items.len - 1];
+    const refined_res = func_ctx.inferred_result orelse res;
     const is_pure = if (fnr.flags.is_proc) false else true;
-    const final_ty = self.context.type_store.mkFunction(pbuf, res, is_variadic, is_pure, fnr.flags.is_extern);
+    const final_ty = self.context.type_store.mkFunction(pbuf, refined_res, is_variadic, is_pure, fnr.flags.is_extern);
     ast_unit.type_info.expr_types.items[id.toRaw()] = final_ty;
     return final_ty;
 }
@@ -3727,6 +3791,11 @@ fn checkRange(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, id: ast.
 
     const k = self.typeKind(final_ty);
     if (!check_types.isIntegerKind(self, k) and k != .Any) {
+        // Allow `..expr` spread forms even after specialization narrows `expr` to a concrete type.
+        if (range.start.isNone()) {
+            try ast_unit.type_info.markRangeSpread(self.gpa, id);
+            return final_ty;
+        }
         try self.context.diags.addError(exprLoc(ast_unit, range), .range_requires_integer_operands, .{});
         return self.context.type_store.tTypeError();
     }
@@ -4465,7 +4534,12 @@ fn checkCall(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, id: ast.E
     const has_any_param = blk: {
         var idx: usize = 0;
         while (idx < params.len) : (idx += 1) {
-            if (self.typeKind(params[idx]) == .Any) break :blk true;
+            const pk = self.typeKind(params[idx]);
+            if (pk == .Any) break :blk true;
+            if (pk == .TypeType) {
+                const tt = self.context.type_store.get(.TypeType, params[idx]);
+                if (self.typeKind(tt.of) == .Any) break :blk true;
+            }
         }
         break :blk false;
     };
@@ -4814,7 +4888,7 @@ fn maybeRecordRuntimeSpecialization(
         return;
 
     const target_ctx = &self.checker_ctx.items[decl_ctx.ast.file_id];
-    _ = try self.checkSpecializedFunction(target_ctx, decl_ctx.ast, decl.value, runtime_specs.items);
+    _ = try self.checkSpecializedFunction(target_ctx, decl_ctx.ast, decl_ctx.decl_id, runtime_specs.items, null);
     try ast_unit.type_info.markSpecializedCall(self.gpa, call_id, decl_ctx);
 }
 
@@ -5022,13 +5096,36 @@ fn checkReturn(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, rr: ast
     }
 
     const expect_ty = current_func.result;
-    const ret_ty = if (rr.value.isNone()) self.context.type_store.tVoid() else blk: {
+    var ret_ty = if (rr.value.isNone()) self.context.type_store.tVoid() else blk: {
         try self.pushValueReq(ctx, true);
         const t = try self.checkExpr(ctx, ast_unit, rr.value.unwrap());
         self.popValueReq(ctx);
         break :blk t;
     };
     if (self.typeKind(ret_ty) == .TypeError) return self.context.type_store.tTypeError();
+
+    // Opportunistically refine the function result when it was declared as `any` or `type` of `any`.
+    var func_ctx = &ctx.func_stack.items[ctx.func_stack.items.len - 1];
+    if (func_ctx.inferred_result == null) {
+        const expect_kind = self.typeKind(expect_ty);
+        if (expect_kind == .Any and self.typeKind(ret_ty) != .Any and self.typeKind(ret_ty) != .TypeError) {
+            func_ctx.inferred_result = ret_ty;
+        } else if (expect_kind == .TypeType) {
+            const expect_of = self.context.type_store.get(.TypeType, expect_ty).of;
+            if (self.typeKind(expect_of) == .Any) {
+                if (self.typeKind(ret_ty) == .TypeType) {
+                    const ret_of = self.context.type_store.get(.TypeType, ret_ty).of;
+                    if (self.typeKind(ret_of) != .Any and self.typeKind(ret_of) != .TypeError) {
+                        func_ctx.inferred_result = ret_ty;
+                    }
+                } else if (self.typeKind(ret_ty) != .TypeError) {
+                    const wrapped = self.context.type_store.mkTypeType(ret_ty);
+                    func_ctx.inferred_result = wrapped;
+                    ret_ty = wrapped;
+                }
+            }
+        }
+    }
 
     if (self.assignable(ret_ty, expect_ty) != .success) {
         if (check_types.isNumericKind(self, self.typeKind(expect_ty))) {

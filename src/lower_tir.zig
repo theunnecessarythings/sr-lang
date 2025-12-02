@@ -202,6 +202,8 @@ pub fn runAst(self: *LowerTir, ast_unit: *ast.Ast, t: *tir.TIR, ctx: *LowerConte
     const decls = ast_unit.exprs.decl_pool.slice(ast_unit.unit.decls);
     for (decls) |did| try self.lowerTopDecl(ctx, ast_unit, &b, did);
 
+    // Lower methods registered on this AST unit that live outside the top-level scope.
+    try self.lowerRegisteredMethods(ctx, ast_unit, &b);
     try self.lowerSyntheticDecls(ctx, ast_unit, &b);
 }
 
@@ -896,11 +898,12 @@ fn tryLowerNamedFunction(
     did: ast.DeclId,
     base_name: StrId,
     should_mangle: bool,
+    sig_override: ?types.TypeId,
 ) !void {
     const decl = a.exprs.Decl.get(did);
     if (a.kind(decl.value) != .FunctionLit) return;
 
-    const fn_ty = self.getExprType(ctx, a, decl.value);
+    const fn_ty = sig_override orelse self.getExprType(ctx, a, decl.value);
     if (self.context.type_store.getKind(fn_ty) != .Function) return;
 
     const fn_lit = a.exprs.get(.FunctionLit, decl.value);
@@ -910,7 +913,7 @@ fn tryLowerNamedFunction(
     if (skip_params != 0) return;
 
     const name = if (should_mangle) try self.qualifySymbolName(a, base_name) else base_name;
-    try self.lowerFunction(ctx, a, b, name, decl.value, null);
+    try self.lowerFunction(ctx, a, b, name, decl.value, sig_override);
 }
 
 /// Extract the binding name if `pid` is a simple identifier binding.
@@ -946,6 +949,19 @@ fn lowerSyntheticDecls(self: *LowerTir, ctx: *LowerContext, a: *ast.Ast, b: *Bui
 
         if (raw_id >= a.type_info.decl_types.items.len) continue;
         const spec_sig = a.type_info.decl_types.items[raw_id] orelse continue;
+        var pushed_override = false;
+        if (a.type_info.getSpecializationExprSnapshot(syn_did)) |snapshot| {
+            try self.pushExprTypeOverrideFrame(ctx);
+            pushed_override = true;
+            var i: usize = 0;
+            while (i < snapshot.expr_ids.len) : (i += 1) {
+                const expr_id = ast.ExprId.fromRaw(snapshot.expr_ids[i]);
+                const ty = snapshot.expr_types[i];
+                try self.noteExprType(ctx, expr_id, ty);
+            }
+        }
+        defer if (pushed_override) self.popExprTypeOverrideFrame(ctx);
+
         try self.lowerFunction(ctx, a, b, qualified_name, decl.value, spec_sig);
     }
 }
@@ -1028,6 +1044,33 @@ pub fn optionalWrapSome(
     }, loc);
 }
 
+/// Return tru when `did` belongs to the compilation unit's top-level decl list.
+fn isTopLevelDecl(a: *ast.Ast, did: ast.DeclId) bool {
+    const decls = a.exprs.decl_pool.slice(a.unit.decls);
+    for (decls) |top| {
+        if (top.eq(did)) return true;
+    }
+    return false;
+}
+
+fn lowerRegisteredMethods(self: *LowerTir, ctx: *LowerContext, a: *ast.Ast, b: *Builder) !void {
+    var it = self.context.type_store.method_table.iterator();
+    while (it.next()) |entry| {
+        const method = entry.value_ptr.*;
+        if (method.decl_ast != a) continue;
+        if (method.builtin != null) continue;
+        if (isTopLevelDecl(a, method.decl_id)) continue;
+
+        // Ensure expression types reflect the concrete owner specialization for this method
+        _ = a.type_info.applyMethodExprSnapshot(method.owner_type, method.method_name);
+        const decl = a.exprs.Decl.get(method.decl_id);
+        if (a.kind(decl.value) != .FunctionLit) continue;
+
+        const base_name = try self.methodSymbolName(a, method.decl_id, method.owner_type);
+        try self.tryLowerNamedFunction(ctx, a, b, method.decl_id, base_name, true, method.func_type);
+    }
+}
+
 /// Handle top-level declarations (globals/methods) by emitting lowered functions or globals.
 fn lowerTopDecl(self: *LowerTir, ctx: *LowerContext, a: *ast.Ast, b: *Builder, did: ast.DeclId) !void {
     const d = a.exprs.Decl.get(did);
@@ -1071,7 +1114,7 @@ fn lowerTopDecl(self: *LowerTir, ctx: *LowerContext, a: *ast.Ast, b: *Builder, d
                 try self.methodSymbolName(a, did, oty)
             else
                 nm;
-            try self.tryLowerNamedFunction(ctx, a, b, did, base_name, true);
+            try self.tryLowerNamedFunction(ctx, a, b, did, base_name, true, null);
         }
         return;
     }
@@ -1236,6 +1279,9 @@ fn lowerDecl(
 ) !void {
     const drow = a.stmts.get(.Decl, sid);
     const d = a.exprs.Decl.get(drow.decl);
+    if (!d.method_path.isNone() and a.kind(d.value) == .FunctionLit) {
+        return; // Method bodies are lowered separately via the method table.
+    }
     const value_ty = self.getExprType(ctx, a, d.value);
     const decl_ty = getDeclType(a, drow.decl) orelse value_ty;
     if (!d.pattern.isNone()) {
