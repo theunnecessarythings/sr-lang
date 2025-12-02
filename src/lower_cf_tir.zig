@@ -829,7 +829,7 @@ pub fn lowerMatch(
             try check_pattern_matching.collectPatternBindings(self.chk, a, arm.pattern, &binding_names);
             defer binding_names.deinit(self.gpa);
 
-            var saved = List(LowerTir.BindingSnapshot){};
+            var saved = List(LowerTir.EnvBindingSnapshot){};
             try saved.ensureTotalCapacity(self.gpa, binding_names.items.len);
             defer saved.deinit(self.gpa);
 
@@ -947,7 +947,7 @@ pub fn lowerMatch(
                 defer binding_names.deinit(self.gpa);
                 try check_pattern_matching.collectPatternBindings(self.chk, a, arm.pattern, &binding_names);
 
-                var saved = List(LowerTir.BindingSnapshot){};
+                var saved = List(LowerTir.EnvBindingSnapshot){};
                 defer saved.deinit(self.gpa);
                 for (binding_names.items) |name| {
                     try saved.append(self.gpa, .{ .name = name, .prev = env.lookup(name) });

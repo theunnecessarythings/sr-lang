@@ -87,6 +87,57 @@ pub const MethodKey = struct {
     name: usize,
 };
 
+/// Instructions for `lower_tir` on how to handle a specific function call.
+pub const CallSpecialization = struct {
+    /// The concrete function ID to call instead of the one in the AST.
+    target_decl: u32, // represents ast.DeclId
+    /// File id of the AST that owns `target_decl`.
+    target_file_id: u32 = std.math.maxInt(u32),
+    /// If true, the backend must create a tuple from the tail arguments before calling.
+    pack_args: bool = false,
+    /// The index in the argument list where packing begins.
+    pack_start_index: usize = 0,
+    /// If true, this call uses the spread `..` operator on a tuple,
+    /// requiring the backend to explode the tuple onto the stack/registers.
+    is_spread: bool = false,
+};
+
+/// Key used to cache specializations so we don't generate the same function twice.
+pub const SpecializationKey = struct {
+    original_decl_id: u32,
+    /// The concrete types mapped to the function's parameters for this specific call.
+    param_types: []const TypeId,
+    // (Future: Add comptime_values hash here)
+
+    pub fn hash(self: SpecializationKey) u64 {
+        var hasher = std.hash.Fnv1a_64.init();
+        hasher.update(std.mem.asBytes(&self.original_decl_id));
+        for (self.param_types) |pt| {
+            const raw = pt.toRaw();
+            hasher.update(std.mem.asBytes(&raw));
+        }
+        return hasher.final();
+    }
+    pub fn eql(self: SpecializationKey, other: SpecializationKey) bool {
+        if (self.original_decl_id != other.original_decl_id) return false;
+        if (self.param_types.len != other.param_types.len) return false;
+        for (self.param_types, other.param_types) |a, b| {
+            if (!a.eq(b)) return false;
+        }
+        return true;
+    }
+};
+
+/// Hash/equality context for `SpecializationKey` that hashes parameter contents.
+pub const SpecializationKeyContext = struct {
+    pub fn hash(_: @This(), key: SpecializationKey) u64 {
+        return key.hash();
+    }
+    pub fn eql(_: @This(), a: SpecializationKey, b: SpecializationKey) bool {
+        return a.eql(b);
+    }
+};
+
 /// makeMethodKey type system helper.
 fn makeMethodKey(owner: TypeId, name: ast.StrId) MethodKey {
     return .{ .owner = owner.toRaw(), .name = name.toRaw() };
@@ -116,6 +167,8 @@ pub const TypeInfo = struct {
     exports: std.AutoArrayHashMapUnmanaged(ast.StrId, ExportEntry) = .{},
     specialized_calls: std.AutoArrayHashMapUnmanaged(u32, call_resolution.FunctionDeclContext) = .{},
     spread_ranges: std.AutoArrayHashMapUnmanaged(u32, void) = .{},
+    call_specializations: std.AutoArrayHashMapUnmanaged(u32, CallSpecialization) = .{},
+    synthetic_decls: std.ArrayListUnmanaged(u32) = .{},
 
     /// ExportEntry struct definition used by the compiler.
     pub const ExportEntry = struct {
@@ -171,6 +224,8 @@ pub const TypeInfo = struct {
         self.exports.deinit(self.gpa);
         self.specialized_calls.deinit(self.gpa);
         self.spread_ranges.deinit(self.gpa);
+        self.call_specializations.deinit(self.gpa);
+        self.synthetic_decls.deinit(self.gpa);
     }
 
     /// print type system helper.
@@ -309,6 +364,11 @@ pub const TypeInfo = struct {
         gop.value_ptr.* = ctx;
     }
 
+    /// Maps a Call ExprId to its specialization details for lowering.
+    pub fn setCallSpecialization(self: *TypeInfo, gpa: std.mem.Allocator, expr_id: ast.ExprId, spec: CallSpecialization) !void {
+        try self.call_specializations.put(gpa, expr_id.toRaw(), spec);
+    }
+
     /// markRangeSpread type system helper.
     pub fn markRangeSpread(self: *TypeInfo, gpa: std.mem.Allocator, expr_id: ast.ExprId) !void {
         try self.spread_ranges.put(gpa, expr_id.toRaw(), {});
@@ -350,6 +410,26 @@ pub const TypeInfo = struct {
             self.destroyStoredComptimeBinding(gop.value_ptr);
         }
         gop.value_ptr.* = StoredComptimeBinding{ .ty = ty, .value = value };
+    }
+
+    /// lookupComptimeBindingType returns a stored type alias or `null`.
+    pub fn lookupComptimeBindingType(self: *const TypeInfo, name: ast.StrId) ?TypeId {
+        if (self.comptime_bindings.get(name)) |entry| {
+            return entry.ty;
+        }
+        return null;
+    }
+
+    /// cloneComptimeBindingValue duplicates a stored value alias so callers can own it.
+    pub fn cloneComptimeBindingValue(
+        self: *const TypeInfo,
+        gpa: std.mem.Allocator,
+        name: ast.StrId,
+    ) anyerror!?comp.ComptimeValue {
+        if (self.comptime_bindings.get(name)) |entry| {
+            return try comp.cloneComptimeValue(gpa, entry.value);
+        }
+        return null;
     }
 
     /// forEachComptimeBinding type system helper.

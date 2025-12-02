@@ -9,7 +9,6 @@ const mlir = @import("mlir_bindings.zig");
 const compile = @import("compile.zig");
 const codegen = @import("codegen_main.zig");
 const comp = @import("comptime.zig");
-const interpreter = @import("interpreter.zig");
 const check_types = @import("check_types.zig");
 const pipeline_mod = @import("pipeline.zig");
 const cf = @import("lower_cf_tir.zig");
@@ -23,17 +22,6 @@ const Context = @import("compile.zig").Context;
 const Pipeline = pipeline_mod.Pipeline;
 const Builder = tir.Builder;
 const List = std.ArrayList;
-const MethodKey = types.MethodKey;
-/// Links a previously captured binding snapshot with its interpreter instance.
-const SnapshotEntry = struct {
-    /// Captured binding snapshot paired with its interpreter.
-    snapshot: interpreter.BindingSnapshot,
-    /// Interpreter instance responsible for this snapshot.
-    interp: *interpreter.Interpreter,
-};
-
-const SnapshotList = std.ArrayList(*SnapshotEntry);
-
 /// Metadata for a value binding tracked during lowering (value id + type info).
 pub const ValueBinding = struct {
     /// SSA value identifier produced for the binding.
@@ -45,10 +33,10 @@ pub const ValueBinding = struct {
 };
 
 /// Snapshot entry showing the previous binding for a name so it can be restored.
-pub const BindingSnapshot = struct {
+pub const EnvBindingSnapshot = struct {
     /// Identifier whose binding is being restored.
     name: ast.StrId,
-    /// Prior binding that should be reinstated after specialization.
+    /// Prior binding that should be reinstated after binding overrides.
     prev: ?ValueBinding,
 };
 
@@ -65,7 +53,7 @@ const ExprTypeOverrideFrame = struct {
 
 const FunctionDeclContext = call_resolution.FunctionDeclContext;
 
-/// Driver for lowering AST units into TIR, managing interpreter state and builder contexts.
+/// Driver for lowering AST units into TIR, managing builder contexts.
 pub const LowerTir = @This();
 
 /// Allocator for TIR lowering resources.
@@ -79,113 +67,25 @@ chk: *checker.Checker,
 /// Stack of lowering contexts per file/function scope.
 lower_context: List(*LowerContext) = .{},
 
-/// Per-function/module lowering state that tracks loops, snapshots, and interpreter caches.
+/// Per-function/module lowering state that tracks loops and expression overrides.
 pub const LowerContext = struct {
     /// Stack of active loop contexts for control-flow lowering.
     loop_stack: List(cf.LoopCtx) = .{},
-    /// Cache mapping method calls to symbol names to avoid re-lowering.
-    module_call_cache: std.AutoHashMap(u64, StrId),
-    /// Record whether a given method key has been lowered.
-    method_lowered: std.AutoHashMap(MethodKey, void),
-    /// Track functions that already have TIR emitted.
-    lowered_functions: std.AutoHashMap(tir.StrId, void),
-    /// Interpreter instance used for comptime evaluation (per file).
-    interpreter: *interpreter.Interpreter,
-    /// Stack of current binding snapshots for specialization contexts.
-    specialization_stack: SnapshotList = .empty,
     /// Stack storing expression type overrides introduced by lowering heuristics.
     expr_type_override_stack: List(ExprTypeOverrideFrame) = .{},
-    /// Cache of interpreters keyed by AST pointers.
-    interp_cache: std.AutoHashMap(usize, *interpreter.Interpreter),
     /// Allocator owned by the lowering context.
     gpa: std.mem.Allocator,
     /// Active TIR builder emitting instructions for the current function.
     builder: ?*tir.Builder = null,
 
-    /// Return the comptime value previously bound to `name` from active snapshots.
-    pub fn lookupBindingValue(self: *LowerContext, name: ast.StrId) ?*const comp.ComptimeValue {
-        var i: usize = self.specialization_stack.items.len;
-        while (i > 0) {
-            i -= 1;
-            const entry = self.specialization_stack.items[i];
-            if (entry.snapshot.lookup(name)) |binding| {
-                return &binding.value;
-            }
-        }
-        return null;
-    }
-
-    /// Return the type binding for `name` by inspecting the active binding stack.
-    pub fn lookupBindingType(self: *LowerContext, name: ast.StrId) ?types.TypeId {
-        if (self.lookupBindingValue(name)) |value| {
-            return switch (value.*) {
-                .Type => |ty| ty,
-                else => null,
-            };
-        }
-        return null;
-    }
-
-    /// Return the active binding snapshot if any.
-    pub fn activeSnapshot(self: *LowerContext) ?*interpreter.BindingSnapshot {
-        if (self.specialization_stack.items.len == 0) return null;
-        return &self.specialization_stack.items[self.specialization_stack.items.len - 1].snapshot;
-    }
-
-    /// Push a new interpreter binding snapshot for the current specialization context.
-    pub fn pushSnapshot(self: *LowerContext, snapshot: interpreter.BindingSnapshot, interp: *interpreter.Interpreter) anyerror!void {
-        const entry = try self.gpa.create(SnapshotEntry);
-        entry.* = SnapshotEntry{ .snapshot = snapshot, .interp = interp };
-        try self.specialization_stack.append(self.gpa, entry);
-    }
-
-    /// Pop the most recent snapshot and release its interpreter resources.
-    pub fn popSnapshot(self: *LowerContext) void {
-        if (self.specialization_stack.pop()) |entry| {
-            entry.snapshot.destroy(entry.interp.allocator);
-            self.gpa.destroy(entry);
-        }
-    }
-
-    /// Return a cached interpreter for `target_ast`, creating one if necessary.
-    pub fn getInterpreterFor(self: *LowerContext, target_ast: *ast.Ast) anyerror!(*interpreter.Interpreter) {
-        if (self.interpreter.ast == target_ast) return self.interpreter;
-        const key = @intFromPtr(target_ast);
-        if (self.interp_cache.get(key)) |entry| {
-            return entry;
-        }
-        const interp = try self.gpa.create(interpreter.Interpreter);
-        interp.* = try interpreter.Interpreter.init(self.gpa, target_ast, null, null);
-        try self.interp_cache.put(key, interp);
-        return interp;
-    }
-
-    /// Destroy all interpreter state and snapshots owned by this context.
-    pub fn deinit(self: *LowerContext, gpa: std.mem.Allocator) void {
-        self.loop_stack.deinit(gpa);
-        self.module_call_cache.deinit();
-        self.lowered_functions.deinit();
-        self.method_lowered.deinit();
+    /// Destroy all comptime state and snapshots owned by this context.
+    pub fn deinit(self: *LowerContext, gga: std.mem.Allocator) void {
+        self.loop_stack.deinit(gga);
         while (self.expr_type_override_stack.items.len > 0) {
-            self.expr_type_override_stack.items[self.expr_type_override_stack.items.len - 1].deinit(gpa);
+            self.expr_type_override_stack.items[self.expr_type_override_stack.items.len - 1].deinit(gga);
             self.expr_type_override_stack.items.len -= 1;
         }
-        self.expr_type_override_stack.deinit(gpa);
-        while (self.specialization_stack.items.len > 0) {
-            if (self.specialization_stack.pop()) |entry| {
-                entry.snapshot.destroy(entry.interp.allocator);
-                self.gpa.destroy(entry);
-            }
-        }
-        self.specialization_stack.deinit(gpa);
-        self.interpreter.deinit();
-        self.gpa.destroy(self.interpreter);
-        var iter = self.interp_cache.iterator();
-        while (iter.next()) |entry| {
-            entry.value_ptr.*.deinit();
-            self.gpa.destroy(entry.value_ptr.*);
-        }
-        self.interp_cache.deinit();
+        self.expr_type_override_stack.deinit(gga);
     }
 };
 
@@ -199,6 +99,20 @@ pub fn qualifySymbolName(self: *LowerTir, a: *ast.Ast, base: StrId) !StrId {
     const symbol = try std.fmt.allocPrint(self.gpa, "{s}__{s}", .{ pkg_name, base_name });
     defer self.gpa.free(symbol);
     return self.context.type_store.strs.intern(symbol);
+}
+
+/// Find an AST unit by file id.
+fn astForFileId(self: *LowerTir, file_id: u32) ?*ast.Ast {
+    var pkg_iter = self.context.compilation_unit.packages.iterator();
+    while (pkg_iter.next()) |pkg| {
+        var src_iter = pkg.value_ptr.sources.iterator();
+        while (src_iter.next()) |entry| {
+            if (entry.value_ptr.file_id == file_id) {
+                return entry.value_ptr.ast;
+            }
+        }
+    }
+    return null;
 }
 
 /// Global flag tracking whether MLIR dialect/pass registrations were initialized.
@@ -253,17 +167,9 @@ pub fn run(self: *LowerTir, levels: *const compile.DependencyLevels) !*tir.TIR {
             if (unit.ast == null) continue;
             const t = try self.gpa.create(tir.TIR);
             t.* = tir.TIR.init(self.gpa, self.context.type_store);
-            const interp = try self.gpa.create(interpreter.Interpreter);
-            interp.* = try interpreter.Interpreter.init(self.gpa, unit.ast.?, null, null);
             const ctx = try self.gpa.create(LowerContext);
             ctx.* = LowerContext{
-                .method_lowered = .init(self.gpa),
-                .module_call_cache = .init(self.gpa),
-                .lowered_functions = .init(self.gpa),
-                .interpreter = interp,
-                .specialization_stack = .empty,
                 .expr_type_override_stack = .{},
-                .interp_cache = .init(self.gpa),
                 .gpa = self.gpa,
                 .builder = null,
             };
@@ -296,19 +202,7 @@ pub fn runAst(self: *LowerTir, ast_unit: *ast.Ast, t: *tir.TIR, ctx: *LowerConte
     const decls = ast_unit.exprs.decl_pool.slice(ast_unit.unit.decls);
     for (decls) |did| try self.lowerTopDecl(ctx, ast_unit, &b, did);
 
-    var method_it = self.context.type_store.method_table.iterator();
-    while (method_it.next()) |entry| {
-        const method = entry.value_ptr.*;
-        if (method.decl_ast != ast_unit) continue;
-
-        const key = methodLowerKey(method.owner_type, method.method_name);
-        if (ctx.method_lowered.contains(key)) continue;
-        // Skip lowering generic Any variants; only lower specialized methods
-        if (self.shouldSkipGenericMethod(method.func_type)) continue;
-        _ = ast_unit.type_info.applyMethodExprSnapshot(method.owner_type, method.method_name);
-        const base_name = try self.methodSymbolName(ast_unit, method.decl_id, method.owner_type);
-        try self.tryLowerNamedFunction(ctx, ast_unit, &b, method.decl_id, base_name, true, true, key);
-    }
+    try self.lowerSyntheticDecls(ctx, ast_unit, &b);
 }
 
 /// Return true if the method type is fully generic (`Any`) and shouldn't be lowered.
@@ -626,7 +520,7 @@ fn lowerMlirBlock(
             if (a.type_info.getMlirSpliceValue(pid)) |cached| {
                 splice_value = try comp.cloneComptimeValue(self.gpa, cached.*);
             } else {
-                splice_value = try self.resolveMlirSpliceValue(ctx, a, pid, piece.text, row.loc);
+                splice_value = try self.resolveMlirSpliceValue(a, pid, piece.text, row.loc);
             }
         }
         const new_id = blk.builder.t.instrs.addMlirPieceRow(
@@ -667,7 +561,6 @@ fn lowerMlirBlock(
 /// Resolve the `ComptimeValue` that a splice `piece_id` should inject into the MLIR block.
 fn resolveMlirSpliceValue(
     self: *LowerTir,
-    ctx: *LowerContext,
     a: *ast.Ast,
     piece_id: ast.MlirPieceId,
     name: StrId,
@@ -686,14 +579,14 @@ fn resolveMlirSpliceValue(
             return error.LoweringBug;
         },
         .value_param => |param_info| {
-            if (ctx.lookupBindingValue(param_info.name)) |value| {
-                return comp.cloneComptimeValue(self.gpa, value.*);
+            if (try self.cloneComptimeAliasValue(a, param_info.name)) |value| {
+                return value;
             }
             try self.context.diags.addError(diag_loc, .mlir_splice_unbound, .{name_str});
             return error.LoweringBug;
         },
         .type_param => |param_info| {
-            if (ctx.lookupBindingType(param_info.name)) |ty| {
+            if (self.lookupComptimeAliasType(a, param_info.name)) |ty| {
                 return comp.ComptimeValue{ .Type = ty };
             }
             try self.context.diags.addError(diag_loc, .mlir_splice_unbound, .{name_str});
@@ -1003,21 +896,12 @@ fn tryLowerNamedFunction(
     did: ast.DeclId,
     base_name: StrId,
     should_mangle: bool,
-    is_method: bool,
-    method_key: ?MethodKey,
 ) !void {
-    if (is_method and method_key != null) {
-        if (ctx.method_lowered.contains(method_key.?)) return;
-    }
-
     const decl = a.exprs.Decl.get(did);
     if (a.kind(decl.value) != .FunctionLit) return;
 
     const fn_ty = self.getExprType(ctx, a, decl.value);
     if (self.context.type_store.getKind(fn_ty) != .Function) return;
-
-    // const fn_ty_info = self.context.type_store.get(.Function, fn_ty);
-    // Removed: for (param_tys) |param_ty| { if (self.isType(param_ty, .Any)) return; }
 
     const fn_lit = a.exprs.get(.FunctionLit, decl.value);
     const params = a.exprs.param_pool.slice(fn_lit.params);
@@ -1027,10 +911,6 @@ fn tryLowerNamedFunction(
 
     const name = if (should_mangle) try self.qualifySymbolName(a, base_name) else base_name;
     try self.lowerFunction(ctx, a, b, name, decl.value, null);
-
-    if (is_method and method_key != null) {
-        try ctx.method_lowered.put(method_key.?, {});
-    }
 }
 
 /// Extract the binding name if `pid` is a simple identifier binding.
@@ -1041,40 +921,33 @@ fn bindingNameOfPattern(a: *ast.Ast, pid: ast.PatternId) ?StrId {
     };
 }
 
-/// Resolve a specialized type argument from bindings by inspecting `expr`.
-fn resolveSpecializedType(
-    _: *types.TypeStore,
-    bindings: []const comp.BindingInfo,
-    a: *ast.Ast,
-    expr: ast.ExprId,
-) ?types.TypeId {
-    switch (a.kind(expr)) {
-        .Ident => {
-            const name = a.exprs.get(.Ident, expr).name;
-            for (bindings) |info| {
-                if (!info.name.eq(name)) continue;
-                return switch (info.kind) {
-                    .type_param => |ty| ty,
-                    .value_param => |vp| vp.ty,
-                    .runtime_param => |_| null,
-                };
-            }
-            return null;
-        },
-        else => return null,
-    }
-}
+/// Lower all synthetic function declarations generated by the checker.
+fn lowerSyntheticDecls(self: *LowerTir, ctx: *LowerContext, a: *ast.Ast, b: *Builder) !void {
+    const syn_decls = a.type_info.synthetic_decls.items;
+    for (syn_decls) |raw_id| {
+        const syn_did = ast.DeclId.fromRaw(raw_id);
+        const orig_did = self.findOriginalDeclForSynthetic(a, syn_did) orelse continue;
+        const decl = a.exprs.Decl.get(orig_did);
+        if (a.kind(decl.value) != .FunctionLit) continue;
 
-/// Lookup an override type provided by runtime-only bindings.
-fn lookupRuntimeOverride(bindings: []const comp.BindingInfo, name: ast.StrId) ?types.TypeId {
-    for (bindings) |info| {
-        if (!info.name.eq(name)) continue;
-        switch (info.kind) {
-            .runtime_param => |ty| return ty,
-            else => {},
+        var base_name: ?StrId = null;
+        if (!decl.pattern.isNone()) {
+            base_name = bindingNameOfPattern(a, decl.pattern.unwrap());
+        } else if (!decl.method_path.isNone()) {
+            base_name = try self.methodSymbolShortName(a, orig_did);
         }
+        const base = base_name orelse continue;
+
+        const base_str = self.context.type_store.strs.get(base);
+        const spec_name_str = try std.fmt.allocPrint(self.gpa, "{s}_spec_{d}", .{ base_str, raw_id });
+        defer self.gpa.free(spec_name_str);
+        const spec_name = self.context.type_store.strs.intern(spec_name_str);
+        const qualified_name = try self.qualifySymbolName(a, spec_name);
+
+        if (raw_id >= a.type_info.decl_types.items.len) continue;
+        const spec_sig = a.type_info.decl_types.items[raw_id] orelse continue;
+        try self.lowerFunction(ctx, a, b, qualified_name, decl.value, spec_sig);
     }
-    return null;
 }
 
 /// Extract the payload value from the optional `opt_val` (pointer or struct-backed).
@@ -1155,22 +1028,6 @@ pub fn optionalWrapSome(
     }, loc);
 }
 
-/// Determine whether the runtime bindings provide a consistent result type.
-fn runtimeResultType(bindings: []const comp.BindingInfo) ?types.TypeId {
-    var candidate: ?types.TypeId = null;
-    for (bindings) |info| {
-        if (info.kind == .runtime_param) {
-            const ty = info.kind.runtime_param;
-            if (candidate) |existing| {
-                if (!existing.eq(ty)) return null;
-            } else {
-                candidate = ty;
-            }
-        }
-    }
-    return candidate;
-}
-
 /// Handle top-level declarations (globals/methods) by emitting lowered functions or globals.
 fn lowerTopDecl(self: *LowerTir, ctx: *LowerContext, a: *ast.Ast, b: *Builder, did: ast.DeclId) !void {
     const d = a.exprs.Decl.get(did);
@@ -1181,22 +1038,40 @@ fn lowerTopDecl(self: *LowerTir, ctx: *LowerContext, a: *ast.Ast, b: *Builder, d
 
     if (kind == .FunctionLit and !a.exprs.get(.FunctionLit, d.value).flags.is_extern) {
         var name_opt: ?StrId = null;
-        if (!d.pattern.isNone()) {
-            name_opt = bindingNameOfPattern(a, d.pattern.unwrap());
-        } else if (!d.method_path.isNone()) {
+        if (!d.method_path.isNone()) {
             name_opt = try methodSymbolShortName(self, a, did);
+        } else if (!d.pattern.isNone()) {
+            name_opt = bindingNameOfPattern(a, d.pattern.unwrap());
         }
 
         if (name_opt) |nm| {
             const is_method = !d.method_path.isNone();
-            const method_info = if (is_method) self.methodKeyForDecl(did) else null;
-            if (is_method and method_info == null) return;
-            const method_key = if (method_info) |info| info.key else null;
-            const base_name = if (method_info) |info|
-                try self.methodSymbolName(a, did, info.owner_type)
+            const method_entry = if (is_method) self.methodEntryForDecl(did) else null;
+            var owner_ty_fallback: ?types.TypeId = null;
+            if (is_method and method_entry == null) {
+                const fn_ty = self.getExprType(ctx, a, d.value);
+                if (self.context.type_store.getKind(fn_ty) == .Function) {
+                    const fn_info = self.context.type_store.get(.Function, fn_ty);
+                    const params = self.context.type_store.type_pool.slice(fn_info.params);
+                    if (params.len > 0) {
+                        const p0 = params[0];
+                        owner_ty_fallback = if (self.context.type_store.getKind(p0) == .Ptr)
+                            self.context.type_store.get(.Ptr, p0).elem
+                        else
+                            p0;
+                    }
+                }
+                if (owner_ty_fallback == null) return;
+            } else if (method_entry) |entry| {
+                owner_ty_fallback = entry.owner_type;
+            }
+            if (is_method and owner_ty_fallback == null) return;
+
+            const base_name = if (owner_ty_fallback) |oty|
+                try self.methodSymbolName(a, did, oty)
             else
                 nm;
-            try self.tryLowerNamedFunction(ctx, a, b, did, base_name, true, is_method, method_key);
+            try self.tryLowerNamedFunction(ctx, a, b, did, base_name, true);
         }
         return;
     }
@@ -1237,7 +1112,7 @@ fn lowerAttrs(
     return b.t.instrs.attribute_pool.pushMany(self.gpa, attr_list.items);
 }
 
-/// Lower a function literal into TIR and emit its body once per specialization.
+/// Lower a function literal into TIR.
 pub fn lowerFunction(
     self: *LowerTir,
     lower_ctx: *LowerContext,
@@ -1245,15 +1120,9 @@ pub fn lowerFunction(
     b: *Builder,
     name: StrId,
     fun_eid: ast.ExprId,
-    ctx: ?*const comp.SpecializationContext,
+    sig_override: ?types.TypeId,
 ) !void {
-    if (lower_ctx.lowered_functions.contains(name)) return;
-    try lower_ctx.lowered_functions.put(name, {});
-
-    const fid = if (ctx) |c|
-        c.specialized_ty
-    else
-        self.getExprType(lower_ctx, a, fun_eid);
+    const fid = sig_override orelse self.getExprType(lower_ctx, a, fun_eid);
     if (self.context.type_store.getKind(fid) != .Function) return;
     const fnty = self.context.type_store.get(.Function, fid);
 
@@ -1280,11 +1149,9 @@ pub fn lowerFunction(
     // Params
     const params = a.exprs.param_pool.slice(fnr.params);
     var i: usize = 0;
-    const skip_params: usize = if (ctx) |c| c.skip_params else 0;
     const runtime_param_tys = self.context.type_store.type_pool.slice(fnty.params);
     var runtime_index: usize = 0;
     while (i < params.len) : (i += 1) {
-        if (i < skip_params) continue;
         const p = a.exprs.Param.get(params[i]);
         const pty = runtime_param_tys[runtime_index];
         const pname = if (!p.pat.isNone()) bindingNameOfPattern(a, p.pat.unwrap()) else null;
@@ -1297,25 +1164,11 @@ pub fn lowerFunction(
     var env = cf.Env{};
     defer env.deinit(self.gpa);
 
-    if (ctx) |c| {
-        for (c.bindings) |binding| {
-            switch (binding.kind) {
-                .type_param => {},
-                .value_param => |vp| {
-                    const const_val = try comp.constValueFromComptime(self, &blk, vp.ty, vp.value);
-                    try env.bind(self.gpa, a, binding.name, .{ .value = const_val, .ty = vp.ty, .is_slot = false });
-                },
-                .runtime_param => {},
-            }
-        }
-    }
-
     // Bind params
     i = 0;
     const param_vals = f.param_vals.items;
     runtime_index = 0;
     while (i < params.len) : (i += 1) {
-        if (i < skip_params) continue;
         const p = a.exprs.Param.get(params[i]);
         if (!p.pat.isNone()) {
             const pname = bindingNameOfPattern(a, p.pat.unwrap()) orelse continue;
@@ -1565,11 +1418,6 @@ fn resolveTypeArg(self: *LowerTir, ctx: *LowerContext, a: *ast.Ast, expr: ast.Ex
     return self.context.type_store.get(.TypeType, ty).of;
 }
 
-/// Build a key used to cache method lookups by module alias and member name.
-fn moduleCallKey(alias: ast.StrId, field: StrId) u64 {
-    return (@as(u64, alias.toRaw()) << 32) | @as(u64, field.toRaw());
-}
-
 /// Build a short symbol name combining the owner and method segments.
 fn methodSymbolShortName(
     self: *LowerTir,
@@ -1591,18 +1439,18 @@ fn methodSymbolShortName(
     return self.context.type_store.strs.intern(symbol);
 }
 
-/// Create a key identifying a lowered method based on owner type and method name.
-fn methodLowerKey(owner_type: types.TypeId, method_name: ast.StrId) MethodKey {
-    return MethodKey{ .owner = owner_type.toRaw(), .name = method_name.toRaw() };
+/// Locate the original declaration that produced the synthetic specialization `syn_id`.
+fn findOriginalDeclForSynthetic(self: *LowerTir, a: *ast.Ast, syn_id: ast.DeclId) ?ast.DeclId {
+    if (a.file_id >= self.chk.checker_ctx.items.len) return null;
+    const ctx = &self.chk.checker_ctx.items[a.file_id];
+    var it = ctx.specialization_cache.iterator();
+    while (it.next()) |entry| {
+        if (entry.value_ptr.*.eq(syn_id)) {
+            return ast.DeclId.fromRaw(entry.key_ptr.original_decl_id);
+        }
+    }
+    return null;
 }
-
-/// Memoized data describing a previously lowered method symbol.
-const MethodLowerInfo = struct {
-    /// Derived key used to memoize lowered method declarations.
-    key: MethodKey,
-    /// Owner type that originally declared the method.
-    owner_type: types.TypeId,
-};
 
 /// Compute a lowered symbol name for method `did` bound to `owner_type`, ensuring uniqueness.
 pub fn methodSymbolName(
@@ -1618,17 +1466,11 @@ pub fn methodSymbolName(
     return self.context.type_store.strs.intern(symbol);
 }
 
-/// Lookup the stored `MethodLowerInfo` for `decl_id` if it was previously lowered.
-fn methodKeyForDecl(self: *LowerTir, decl_id: ast.DeclId) ?MethodLowerInfo {
+fn methodEntryForDecl(self: *LowerTir, decl_id: ast.DeclId) ?*types.MethodEntry {
     var it = self.context.type_store.method_table.iterator();
     while (it.next()) |entry| {
         const method = entry.value_ptr.*;
-        if (method.decl_id.eq(decl_id)) {
-            return MethodLowerInfo{
-                .key = methodLowerKey(method.owner_type, method.method_name),
-                .owner_type = method.owner_type,
-            };
-        }
+        if (method.decl_id.eq(decl_id)) return entry.value_ptr;
     }
     return null;
 }
@@ -2047,327 +1889,6 @@ fn tryComptimeCall(
     return blk.builder.indirectCall(blk, ret_ty, fn_ptr, all_args.items, loc);
 }
 
-/// Try to request a specialization for the target function when the call carries comptime bindings.
-fn trySpecializeFunctionCall(
-    self: *LowerTir,
-    ctx: *LowerContext,
-    a: *ast.Ast,
-    env: *cf.Env,
-    callee: *CalleeInfo,
-    _: ast.ExprId,
-    callee_name_ptr: *[]const u8,
-    _: ?ast.DeclId,
-    method_binding: ?types.MethodBinding,
-    arg_ids_ptr: *[]const ast.ExprId,
-    param_tys_ptr: *[]const types.TypeId,
-    fixed_ptr: *usize,
-    is_variadic_ptr: *bool,
-    treat_trailing_any_ptr: *bool,
-    trailing_any_tuple_ty_ptr: *?types.TypeId,
-    decl_ctx: call_resolution.FunctionDeclContext,
-) !void {
-    if (callee.fty == null) return;
-    const callee_fty = callee.fty.?;
-    if (self.context.type_store.getKind(callee_fty) != .Function) return;
-
-    var param_tys = param_tys_ptr.*;
-    var fixed = fixed_ptr.*;
-    var is_variadic = is_variadic_ptr.*;
-    var treat_trailing_any = treat_trailing_any_ptr.*;
-    var trailing_any_tuple_ty = trailing_any_tuple_ty_ptr.*;
-    var arg_ids = arg_ids_ptr.*;
-    var callee_name = callee_name_ptr.*;
-    defer {
-        param_tys_ptr.* = param_tys;
-        fixed_ptr.* = fixed;
-        is_variadic_ptr.* = is_variadic;
-        treat_trailing_any_ptr.* = treat_trailing_any;
-        trailing_any_tuple_ty_ptr.* = trailing_any_tuple_ty;
-        arg_ids_ptr.* = arg_ids;
-        callee_name_ptr.* = callee_name;
-    }
-
-    const fty = self.context.type_store.get(.Function, callee_fty);
-    param_tys = self.context.type_store.type_pool.slice(fty.params);
-    is_variadic = fty.is_variadic;
-    fixed = param_tys.len;
-    if (is_variadic and fixed > 0) fixed -= 1; // last param is the vararg pack type
-    if (!fty.is_extern and param_tys.len > 0 and self.isType(param_tys[param_tys.len - 1], .Any)) {
-        treat_trailing_any = true;
-    }
-    const decl_ast = decl_ctx.ast;
-    const decl = decl_ast.exprs.Decl.get(decl_ctx.decl_id);
-
-    if (callee.qualified_name == null) {
-        if (try symbolNameForDecl(self, decl_ast, decl_ctx.decl_id)) |sym| {
-            callee.qualified_name = sym;
-        }
-    }
-    if (decl_ast.kind(decl.value) != .FunctionLit) return;
-    const params = decl_ast.exprs.param_pool.slice(decl_ast.exprs.get(.FunctionLit, decl.value).params);
-    var skip_params: usize = 0;
-    while (skip_params < params.len and decl_ast.exprs.Param.get(params[skip_params]).is_comptime) : (skip_params += 1) {}
-
-    var binding_infos: List(comp.BindingInfo) = .empty;
-    var interpreter_bindings: List(interpreter.Binding) = .empty;
-    defer {
-        for (binding_infos.items) |*info| info.deinit(self.gpa);
-        binding_infos.deinit(self.gpa);
-        for (interpreter_bindings.items) |*binding| binding.value.destroy(self.gpa);
-        interpreter_bindings.deinit(self.gpa);
-    }
-
-    if (method_binding) |mb| {
-        const owner_sid = a.exprs.strs.intern("__owner");
-        try binding_infos.append(self.gpa, comp.BindingInfo.runtimeParam(owner_sid, mb.owner_type));
-        try interpreter_bindings.append(self.gpa, .{ .name = owner_sid, .value = comp.ComptimeValue{ .Type = mb.owner_type } });
-    }
-
-    var ok = true;
-    if (arg_ids.len >= skip_params) {
-        var idx: usize = 0;
-        while (idx < skip_params) : (idx += 1) {
-            const param = decl_ast.exprs.Param.get(params[idx]);
-            if (param.pat.isNone()) {
-                ok = false;
-                break;
-            }
-
-            const pname = bindingNameOfPattern(decl_ast, param.pat.unwrap()) orelse {
-                ok = false;
-                break;
-            };
-
-            var param_ty = if (idx < param_tys.len)
-                param_tys[idx]
-            else
-                self.context.type_store.tAny();
-
-            if (!param.ty.isNone()) {
-                const ty_expr_id = param.ty.unwrap();
-                if (decl_ast.kind(ty_expr_id) == .Ident) {
-                    const ident_name = decl_ast.exprs.get(.Ident, ty_expr_id).name;
-                    for (binding_infos.items) |info| {
-                        if (info.name.eq(ident_name) and info.kind == .type_param) {
-                            param_ty = info.kind.type_param;
-                            break;
-                        }
-                    }
-                }
-            }
-            const arg_expr = arg_ids[idx];
-            const param_kind = self.context.type_store.getKind(param_ty);
-
-            if (param_kind == .TypeType) {
-                const targ = self.resolveTypeArg(ctx, a, arg_expr) orelse {
-                    ok = false;
-                    break;
-                };
-                try binding_infos.append(self.gpa, comp.BindingInfo.typeParam(pname, targ));
-                try interpreter_bindings.append(self.gpa, .{ .name = pname, .value = comp.ComptimeValue{ .Type = targ } });
-            } else {
-                const comptime_val_opt = if (a.kind(arg_expr) == .Literal)
-                    try self.constValueFromLiteral(a, arg_expr)
-                else
-                    null;
-
-                const comptime_val = comptime_val_opt orelse blk: {
-                    if (try self.getCachedComptimeValue(a, arg_expr)) |cached| break :blk cached;
-                    ok = false;
-                    break :blk comp.ComptimeValue{ .Void = {} };
-                };
-
-                var info = comp.BindingInfo.valueParam(self.gpa, pname, param_ty, comptime_val) catch {
-                    ok = false;
-                    break;
-                };
-                binding_infos.append(self.gpa, info) catch |err| {
-                    info.deinit(self.gpa);
-                    return err;
-                };
-                try interpreter_bindings.append(self.gpa, .{ .name = pname, .value = comptime_val });
-            }
-        }
-    }
-
-    var specialized_result_override: ?types.TypeId = null;
-
-    if (ok) {
-        const original_args = arg_ids;
-        const trailing_start = if (treat_trailing_any and params.len > 0) params.len - 1 else params.len;
-        var runtime_idx: usize = skip_params;
-        while (runtime_idx < params.len and runtime_idx < original_args.len) : (runtime_idx += 1) {
-            if (treat_trailing_any and runtime_idx >= trailing_start) break;
-
-            const param = decl_ast.exprs.Param.get(params[runtime_idx]);
-            if (param.pat.isNone()) continue;
-            const pname = bindingNameOfPattern(decl_ast, param.pat.unwrap()) orelse continue;
-
-            const param_ty_idx = runtime_idx - skip_params;
-            const param_ty = if (param_ty_idx < param_tys.len)
-                param_tys[param_ty_idx]
-            else
-                self.context.type_store.tAny();
-            if (!self.isType(param_ty, .Any)) continue;
-
-            const arg_ty = self.exprTypeWithEnv(ctx, a, env, original_args[runtime_idx]);
-            if (self.isType(arg_ty, .Any)) continue;
-
-            try binding_infos.append(self.gpa, comp.BindingInfo.runtimeParam(pname, arg_ty));
-        }
-
-        if (treat_trailing_any and params.len > 0) {
-            const tuple_start = params.len - 1;
-            const tuple_ty = try self.computeTrailingAnyTupleType(ctx, a, env, original_args, tuple_start);
-            trailing_any_tuple_ty = tuple_ty;
-            const tuple_kind = self.context.type_store.getKind(tuple_ty);
-            const is_empty_tuple = tuple_kind == .Tuple and self.context.type_store.type_pool.slice(
-                self.context.type_store.get(.Tuple, tuple_ty).elems,
-            ).len == 0;
-            if (!is_empty_tuple) {
-                const last_param = decl_ast.exprs.Param.get(params[params.len - 1]);
-                if (!last_param.pat.isNone()) {
-                    if (bindingNameOfPattern(decl_ast, last_param.pat.unwrap())) |pname| {
-                        try binding_infos.append(self.gpa, comp.BindingInfo.runtimeParam(pname, tuple_ty));
-                    }
-                }
-            }
-        }
-    }
-
-    if (ok and binding_infos.items.len > 0) {
-        var runtime_specs: List(checker.Checker.ParamSpecialization) = .empty;
-        defer runtime_specs.deinit(self.gpa);
-
-        for (binding_infos.items) |info| {
-            switch (info.kind) {
-                .runtime_param => |ty| try runtime_specs.append(self.gpa, .{ .name = info.name, .ty = ty }),
-                else => {},
-            }
-        }
-
-        if (runtime_specs.items.len > 0) {
-            const context = &self.chk.checker_ctx.items[decl_ast.file_id];
-            const specialized_fn_ty = try self.chk.checkSpecializedFunction(context, decl_ast, decl.value, runtime_specs.items);
-            if (self.chk.typeKind(specialized_fn_ty) != .TypeError) {
-                const fn_info_override = self.context.type_store.get(.Function, specialized_fn_ty);
-                specialized_result_override = fn_info_override.result;
-            } else {
-                ok = false;
-            }
-        }
-    }
-
-    if (!ok or binding_infos.items.len <= 0) return;
-
-    const mangled = try comp.mangleMonomorphName(self, callee.name, binding_infos.items);
-    const qualified_mangled = try self.qualifySymbolName(decl_ast, mangled);
-
-    const base_params = self.context.type_store.type_pool.slice(fty.params);
-    std.debug.assert(skip_params <= base_params.len);
-
-    const runtime_count = base_params.len - skip_params;
-    var runtime_params = try self.gpa.alloc(types.TypeId, runtime_count);
-    defer self.gpa.free(runtime_params);
-
-    var idx: usize = 0;
-    var i: usize = skip_params;
-    while (i < base_params.len) : (i += 1) {
-        const base_ty = base_params[i];
-        const param = decl_ast.exprs.Param.get(params[i]);
-        var specialized_ty = base_ty;
-        if (!param.ty.isNone()) {
-            if (resolveSpecializedType(self.context.type_store, binding_infos.items, decl_ast, param.ty.unwrap())) |resolved| {
-                specialized_ty = resolved;
-            }
-        }
-        if (!param.pat.isNone()) {
-            if (bindingNameOfPattern(decl_ast, param.pat.unwrap())) |pname| {
-                if (lookupRuntimeOverride(binding_infos.items, pname)) |override_ty| {
-                    specialized_ty = override_ty;
-                }
-            }
-        }
-        const param_kind = self.context.type_store.getKind(specialized_ty);
-        runtime_params[idx] = if (param_kind == .TypeType)
-            self.context.type_store.get(.TypeType, specialized_ty).of
-        else
-            specialized_ty;
-        idx += 1;
-    }
-
-    var resolved_result: ?types.TypeId = null;
-
-    if (specialized_result_override) |override| {
-        if (self.context.type_store.getKind(override) != .Any) {
-            resolved_result = override;
-        }
-    }
-
-    if (resolved_result == null) {
-        if (!decl_ast.exprs.get(.FunctionLit, decl.value).result_ty.isNone()) {
-            if (resolveSpecializedType(
-                self.context.type_store,
-                binding_infos.items,
-                decl_ast,
-                decl_ast.exprs.get(.FunctionLit, decl.value).result_ty.unwrap(),
-            )) |resolved| {
-                resolved_result = resolved;
-            }
-        }
-        if (resolved_result == null) {
-            resolved_result = fty.result;
-        }
-    }
-
-    if (self.context.type_store.getKind(resolved_result.?) == .Any) {
-        if (runtimeResultType(binding_infos.items)) |override| {
-            resolved_result = override;
-        }
-    }
-
-    if (self.context.type_store.getKind(resolved_result.?) == .TypeType) {
-        resolved_result = self.context.type_store.get(.TypeType, resolved_result.?).of;
-    }
-
-    const result_ty = resolved_result.?;
-
-    const specialized_ty = self.context.type_store.mkFunction(
-        runtime_params,
-        result_ty,
-        fty.is_variadic,
-        fty.is_pure,
-        fty.is_extern,
-    );
-
-    var req = comp.SpecializationRequest{
-        .decl_id = decl_ctx.decl_id,
-        .mangled_name = qualified_mangled,
-        .specialized_ty = specialized_ty,
-        .skip_params = skip_params,
-        .bindings = binding_infos.items,
-    };
-
-    const target_interp = try ctx.getInterpreterFor(decl_ast);
-    const specialized = try target_interp.specializeFunction(decl_ctx.decl_id, &interpreter_bindings);
-    try ctx.pushSnapshot(specialized.snapshot, target_interp);
-    defer ctx.popSnapshot();
-    const builder = ctx.builder orelse unreachable;
-    try comp.lowerSpecializedFunction(self, ctx, decl_ast, builder, &req);
-
-    callee.name = mangled;
-    callee.qualified_name = qualified_mangled;
-    callee.fty = specialized_ty;
-    callee_name = self.context.type_store.strs.get(callee.name);
-    arg_ids = arg_ids[skip_params..];
-
-    const spec_info = self.context.type_store.get(.Function, specialized_ty);
-    param_tys = self.context.type_store.type_pool.slice(spec_info.params);
-    is_variadic = spec_info.is_variadic;
-    fixed = param_tys.len;
-    if (is_variadic and fixed > 0) fixed -= 1;
-}
-
 /// Emit the TIR form of a call expression, handling attributes, comptime args, and lowering the callee.
 fn lowerCall(
     self: *LowerTir,
@@ -2397,6 +1918,61 @@ fn lowerCall(
     const callee_expr = callee.expr;
     if (callee.fty == null) {
         callee.fty = self.getExprType(ctx, a, callee_expr);
+    }
+    var specialization_pack_args = false;
+    var specialization_pack_start: usize = 0;
+    if (a.type_info.call_specializations.get(id.toRaw())) |spec| {
+        if (spec.target_decl != 0) {
+            const target_ast = if (spec.target_file_id == std.math.maxInt(u32) or spec.target_file_id == a.file_id)
+                a
+            else
+                self.astForFileId(spec.target_file_id) orelse a;
+
+            const is_extern = blk: {
+                if (callee.fty) |fty| {
+                    if (self.context.type_store.getKind(fty) == .Function) {
+                        break :blk self.context.type_store.get(.Function, fty).is_extern;
+                    }
+                }
+                break :blk false;
+            };
+
+            if (!is_extern) {
+                const orig_decl = self.findOriginalDeclForSynthetic(target_ast, ast.DeclId.fromRaw(spec.target_decl));
+                var spec_name: StrId = callee.name;
+                if (orig_decl) |odid| {
+                    const decl_row = target_ast.exprs.Decl.get(odid);
+                    var base: ?StrId = null;
+                    if (!decl_row.pattern.isNone()) {
+                        base = bindingNameOfPattern(target_ast, decl_row.pattern.unwrap());
+                    } else if (!decl_row.method_path.isNone()) {
+                        base = try self.methodSymbolShortName(target_ast, odid);
+                    }
+                    if (base) |b| {
+                        const base_str = self.context.type_store.strs.get(b);
+                        const spec_name_str = try std.fmt.allocPrint(self.gpa, "{s}_spec_{d}", .{ base_str, spec.target_decl });
+                        defer self.gpa.free(spec_name_str);
+                        spec_name = self.context.type_store.strs.intern(spec_name_str);
+                    }
+                }
+                callee.name = spec_name;
+                callee.qualified_name = if (spec_name.eq(callee.name) and callee.qualified_name != null)
+                    callee.qualified_name.?
+                else
+                    try self.qualifySymbolName(target_ast, spec_name);
+
+                if (spec.target_decl < target_ast.type_info.decl_types.items.len) {
+                    if (target_ast.type_info.decl_types.items[spec.target_decl]) |sig| {
+                        callee.fty = sig;
+                    }
+                }
+                callee_name = self.context.type_store.strs.get(spec_name);
+            }
+        }
+        if (spec.pack_args) {
+            specialization_pack_args = true;
+            specialization_pack_start = spec.pack_start_index;
+        }
     }
     var arg_ids = a.exprs.expr_pool.slice(row.args);
     var method_arg_buf: []ast.ExprId = &.{};
@@ -2437,33 +2013,13 @@ fn lowerCall(
 
     // Try to get callee param types
     var param_tys: []const types.TypeId = &.{};
-    var fixed: usize = 0;
-    var is_variadic = false;
-    var treat_trailing_any = false;
+    var treat_trailing_any = specialization_pack_args;
     var trailing_any_tuple_ty: ?types.TypeId = null;
     if (callee.fty) |fty| {
-        treat_trailing_any = self.hasTrailingAnyRuntimeParam(fty);
+        if (self.hasTrailingAnyRuntimeParam(fty)) {
+            treat_trailing_any = true;
+        }
     }
-    if (a.type_info.getSpecializedCall(id)) |decl_ctx| {
-        try self.trySpecializeFunctionCall(
-            ctx,
-            a,
-            env,
-            &callee,
-            callee_expr,
-            &callee_name,
-            method_decl_id,
-            method_binding,
-            &arg_ids,
-            &param_tys,
-            &fixed,
-            &is_variadic,
-            &treat_trailing_any,
-            &trailing_any_tuple_ty,
-            decl_ctx,
-        );
-    }
-
     if (callee.qualified_name == null and method_decl_id == null) {
         if (call_resolution.findFunctionDeclForCall(self.context, a, callee_expr, callee.name)) |decl_ctx| {
             if (try symbolNameForDecl(self, decl_ctx.ast, decl_ctx.decl_id)) |sym| {
@@ -2482,12 +2038,12 @@ fn lowerCall(
             const fnrow = self.context.type_store.get(.Function, fty);
             param_tys = self.context.type_store.type_pool.slice(fnrow.params);
             is_variadic_extern = fnrow.is_variadic and fnrow.is_extern;
-            fixed_params_count = param_tys.len;
+            fixed_params_count = if (specialization_pack_args) specialization_pack_start else param_tys.len;
             if (is_variadic_extern and fixed_params_count > 0) fixed_params_count -= 1;
         }
     }
     const is_non_extern_any_variadic_candidate = treat_trailing_any;
-    if (is_non_extern_any_variadic_candidate and fixed_params_count > 0) {
+    if (is_non_extern_any_variadic_candidate and fixed_params_count > 0 and !specialization_pack_args) {
         fixed_params_count -= 1;
     }
     // Handle fixed arguments
@@ -2541,6 +2097,21 @@ fn lowerCall(
         is_variadic_extern,
         is_non_extern_any_variadic_candidate,
     );
+
+    // Final safety: if we still owe a single empty-tuple argument (common for
+    // internal variadic specializations), materialize it so the call is well-formed.
+    if (param_tys.len == vals_list.items.len + 1) {
+        const last_ty = param_tys[param_tys.len - 1];
+        if (self.context.type_store.getKind(last_ty) == .Tuple) {
+            const rrow = self.context.type_store.get(.Tuple, last_ty);
+            const elems = self.context.type_store.type_pool.slice(rrow.elems);
+            if (elems.len == 0) {
+                const unit_loc = optLoc(a, id);
+                const unit_val = blk.builder.tupleMake(blk, last_ty, &.{}, unit_loc);
+                try vals_list.append(self.gpa, unit_val);
+            }
+        }
+    }
 
     if (is_variadic_extern and vals_list.items.len > fixed_params_count) {
         try self.handleExternVariadicArgs(
@@ -2912,7 +2483,7 @@ fn handleExternVariadicArgs(
             var elem_idx: usize = 0;
             while (elem_idx < elem_types.len) : (elem_idx += 1) {
                 const elem_ty = elem_types[elem_idx];
-                const elem_val = blk.builder.extractField(blk, elem_ty, tuple_value, @intCast(elem_idx), tuple_loc);
+                const elem_val = blk.builder.extractElem(blk, elem_ty, tuple_value, @intCast(elem_idx), tuple_loc);
                 try var_entries.insert(self.gpa, ve_idx + elem_idx, .{
                     .value = elem_val,
                     .ty = elem_ty,
@@ -4134,7 +3705,7 @@ fn lowerIdent(
     var expr_ty = self.getExprType(ctx, a, id);
     const did_opt = call_resolution.findTopLevelDeclByName(a, name);
 
-    if (ctx.lookupBindingType(name)) |bound_ty| {
+    if (self.lookupComptimeAliasType(a, name)) |bound_ty| {
         expr_ty = self.context.type_store.mkTypeType(bound_ty);
     }
 
@@ -5264,6 +4835,17 @@ fn commonNumeric(
     return null;
 }
 
+fn lookupComptimeAliasType(self: *LowerTir, a: *ast.Ast, name: ast.StrId) ?types.TypeId {
+    const ty = a.type_info.lookupComptimeBindingType(name) orelse return null;
+    // Treat only type aliases (TypeType) as comptime type bindings.
+    if (self.context.type_store.getKind(ty) != .TypeType) return null;
+    return ty;
+}
+
+fn cloneComptimeAliasValue(self: *LowerTir, a: *ast.Ast, name: ast.StrId) !?comp.ComptimeValue {
+    return try a.type_info.cloneComptimeBindingValue(self.gpa, name);
+}
+
 /// Optionally adjust the type recorded for `expr` by considering surrounding bindings.
 fn refineExprType(
     self: *LowerTir,
@@ -5281,7 +4863,7 @@ fn refineExprType(
                 return bnd.ty;
             }
 
-            if (ctx.lookupBindingType(name)) |ty| {
+            if (self.lookupComptimeAliasType(a, name)) |ty| {
                 const type_ty = self.context.type_store.mkTypeType(ty);
                 try self.noteExprType(ctx, expr, type_ty);
                 return type_ty;
@@ -5867,7 +5449,7 @@ fn tagConstFromTypePath(
 }
 
 /// Reapply a snapshot of symbol bindings (e.g., after destructuring) in reverse order.
-pub fn restoreBindings(self: *LowerTir, env: *cf.Env, saved: []const BindingSnapshot) !void {
+pub fn restoreBindings(self: *LowerTir, env: *cf.Env, saved: []const EnvBindingSnapshot) !void {
     var i: usize = saved.len;
     while (i > 0) : (i -= 1) {
         const entry = saved[i - 1];

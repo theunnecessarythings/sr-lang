@@ -21,6 +21,7 @@ const mlir = @import("mlir_bindings.zig");
 
 const List = std.ArrayList;
 const Map = std.AutoArrayHashMapUnmanaged;
+const SpecializationCache = std.HashMapUnmanaged(types.SpecializationKey, ast.DeclId, types.SpecializationKeyContext, std.hash_map.default_max_load_percentage);
 
 /// Primary semantic analysis driver that owns global/checker-wide data.
 pub const Checker = @This();
@@ -68,6 +69,8 @@ pub const CheckerContext = struct {
     resolving_type_exprs: Map(ast.ExprId, void) = .{},
     /// Pending parameter specializations for generics.
     param_specializations: List(ParamSpecialization) = .{},
+    /// Cache to map a (Function + Concrete Args) -> Synthetic DeclId
+    specialization_cache: SpecializationCache = .{},
 
     /// Release all lists and the symbol table managed by this context.
     pub fn deinit(self: *CheckerContext, gpa: std.mem.Allocator) void {
@@ -82,6 +85,11 @@ pub const CheckerContext = struct {
         self.resolving_type_decls.deinit(gpa);
         self.resolving_type_exprs.deinit(gpa);
         self.param_specializations.deinit(gpa);
+        var spec_it = self.specialization_cache.iterator();
+        while (spec_it.next()) |entry| {
+            gpa.free(entry.key_ptr.param_types);
+        }
+        self.specialization_cache.deinit(gpa);
 
         if (self.interp) |interp| {
             interp.deinit();
@@ -575,6 +583,77 @@ pub fn checkSpecializedFunction(
     try self.pushAllowNestedFn(ctx, true);
     defer self.popAllowNestedFn(ctx);
     return try self.checkFunctionLit(ctx, ast_unit, id);
+}
+
+/// Retrieve or create a synthetic specialization of `original_decl_id` using `concrete_param_types`.
+fn getOrInstantiateSpecialization(
+    self: *Checker,
+    ctx: *CheckerContext,
+    ast_unit: *ast.Ast,
+    original_decl_id: ast.DeclId,
+    concrete_param_types: []const types.TypeId,
+) !ast.DeclId {
+    const params_dup = try self.gpa.dupe(types.TypeId, concrete_param_types);
+    var params_owned = true;
+    errdefer if (params_owned) self.gpa.free(params_dup);
+
+    const key = types.SpecializationKey{
+        .original_decl_id = original_decl_id.toRaw(),
+        .param_types = params_dup,
+    };
+    errdefer if (!params_owned) {
+        if (ctx.specialization_cache.fetchRemove(key)) |kv| {
+            self.gpa.free(kv.key.param_types);
+        }
+    };
+
+    if (ctx.specialization_cache.get(key)) |existing| {
+        self.gpa.free(params_dup);
+        return existing;
+    }
+
+    const new_slot_index = ast_unit.type_info.decl_types.items.len;
+    try ast_unit.type_info.decl_types.append(self.gpa, null);
+    const synthetic_decl_id = ast.DeclId.fromRaw(@intCast(new_slot_index));
+
+    const gop = try ctx.specialization_cache.getOrPut(self.gpa, key);
+    if (gop.found_existing) {
+        self.gpa.free(params_dup);
+        return gop.value_ptr.*;
+    }
+    params_owned = false;
+    gop.value_ptr.* = synthetic_decl_id;
+
+    try ast_unit.type_info.synthetic_decls.append(self.gpa, synthetic_decl_id.toRaw());
+
+    const original_decl = ast_unit.exprs.Decl.get(original_decl_id);
+    if (ast_unit.kind(original_decl.value) != .FunctionLit) return synthetic_decl_id;
+
+    var specs = std.ArrayList(ParamSpecialization){};
+    defer specs.deinit(self.gpa);
+    const fn_lit = ast_unit.exprs.get(.FunctionLit, original_decl.value);
+    const params = ast_unit.exprs.param_pool.slice(fn_lit.params);
+    var i: usize = 0;
+    while (i < params.len and i < concrete_param_types.len) : (i += 1) {
+        const p = ast_unit.exprs.Param.get(params[i]);
+        if (p.pat.isNone()) continue;
+        if (bindingNameOfPattern(ast_unit, p.pat.unwrap())) |name| {
+            try specs.append(self.gpa, .{ .name = name, .ty = concrete_param_types[i] });
+        }
+    }
+
+    const fn_type = try self.checkSpecializedFunction(ctx, ast_unit, original_decl.value, specs.items);
+    const fn_row_checked = self.context.type_store.get(.Function, fn_type);
+    const new_sig = self.context.type_store.mkFunction(
+        params_dup,
+        fn_row_checked.result,
+        fn_row_checked.is_variadic,
+        fn_row_checked.is_pure,
+        fn_row_checked.is_extern,
+    );
+    ast_unit.type_info.decl_types.items[synthetic_decl_id.toRaw()] = new_sig;
+
+    return synthetic_decl_id;
 }
 
 /// Track a match binding introduced by `pat` for the current subject type.
@@ -3735,6 +3814,40 @@ fn checkStructLit(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, id: 
             return self.context.type_store.tTypeError();
         },
     }
+
+    // If the literal was annotated with a struct type, refine the field literal
+    // types to match the expected field types (e.g., coerce int literals down).
+    if (self.typeKind(expect_ty) == .Struct) {
+        const expect_struct = self.context.type_store.get(.Struct, expect_ty);
+        const expect_fields = self.context.type_store.field_pool.slice(expect_struct.fields);
+        var j: usize = 0;
+        while (j < lit_fields.len) : (j += 1) {
+            const f = ast_unit.exprs.StructFieldValue.get(lit_fields[j]);
+            if (f.name.isNone()) continue;
+            const fname = f.name.unwrap();
+
+            // Locate the corresponding expected field type.
+            var expected_field_ty: ?types.TypeId = null;
+            for (expect_fields) |efid| {
+                const ef = self.context.type_store.Field.get(efid);
+                if (ef.name.eq(fname)) {
+                    expected_field_ty = ef.ty;
+                    break;
+                }
+            }
+            if (expected_field_ty == null) continue;
+
+            const ety = expected_field_ty.?;
+            const got_ty = buf[j].ty;
+            if (got_ty.eq(ety)) continue;
+
+            if (check_types.isNumericKind(self, self.typeKind(ety))) {
+                var coerced_ty = got_ty;
+                var coerced_kind = self.typeKind(coerced_ty);
+                _ = try self.updateCoercedLiteral(ast_unit, f.value, ety, &coerced_ty, &coerced_kind);
+            }
+        }
+    }
     return expect_ty;
 }
 
@@ -4178,7 +4291,10 @@ fn checkCall(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, id: ast.E
 
     // Arity & argument type checks
     const params = self.context.type_store.type_pool.slice(fnrow.params);
-    const is_non_extern_any_variadic_candidate = !fnrow.is_extern and params.len > 0 and self.typeKind(params[params.len - 1]) == .Any;
+    const is_internal_variadic = check_types.isInternalVariadic(self.context.type_store, func_ty);
+    const is_non_extern_any_variadic_candidate = is_internal_variadic;
+    var pack_args = false;
+    var pack_start_index: usize = 0;
 
     if (!fnrow.is_variadic) { // This branch is taken for non-extern functions
         var min_required = params.len;
@@ -4273,6 +4389,18 @@ fn checkCall(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, id: ast.E
         }
     }
 
+    var arg_types = std.ArrayList(types.TypeId){};
+    defer arg_types.deinit(self.gpa);
+
+    var saw_spread = false;
+
+    if (is_non_extern_any_variadic_candidate) {
+        pack_start_index = params.len - 1;
+        if (args.len > params.len) {
+            pack_args = true;
+        }
+    }
+
     var i: usize = 0;
     while (i < args.len) : (i += 1) {
         // Arguments must be evaluated in value context by default
@@ -4281,6 +4409,8 @@ fn checkCall(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, id: ast.E
         self.popValueReq(ctx);
         if (self.typeKind(at) == .TypeError) return self.context.type_store.tTypeError();
         var at_kind = self.typeKind(at);
+
+        if (self.isSpreadRangeExprChecker(ast_unit, args[i])) saw_spread = true;
 
         const pt = if (is_non_extern_any_variadic_candidate and i >= params.len - 1)
             params[params.len - 1]
@@ -4296,6 +4426,7 @@ fn checkCall(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, id: ast.E
         if (is_non_extern_any_variadic_candidate and i >= params.len - 1) {
             // No individual type check needed here, as 'any' accepts anything.
             // The 'at' (type of args[i]) is already checked for TypeError.
+            try arg_types.append(self.gpa, at);
             continue; // Move to the next argument
         }
 
@@ -4316,6 +4447,7 @@ fn checkCall(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, id: ast.E
                 if (try self.updateCoercedLiteral(ast_unit, args[i], pt, &at, &at_kind) and
                     self.assignable(at, pt) == .success)
                 {
+                    try arg_types.append(self.gpa, at);
                     continue;
                 }
             }
@@ -4327,6 +4459,75 @@ fn checkCall(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, id: ast.E
             try self.attachTryCastNote(diag_idx, pt);
             return self.context.type_store.tTypeError();
         }
+        try arg_types.append(self.gpa, at);
+    }
+
+    const has_any_param = blk: {
+        var idx: usize = 0;
+        while (idx < params.len) : (idx += 1) {
+            if (self.typeKind(params[idx]) == .Any) break :blk true;
+        }
+        break :blk false;
+    };
+
+    if (!fnrow.is_extern and (has_any_param or is_internal_variadic)) {
+        var concrete_param_types = std.ArrayList(types.TypeId){};
+        defer concrete_param_types.deinit(self.gpa);
+
+        if (is_internal_variadic) {
+            const fixed_params_count = if (params.len == 0) 0 else params.len - 1;
+            var idx: usize = 0;
+            while (idx < fixed_params_count and idx < arg_types.items.len) : (idx += 1) {
+                try concrete_param_types.append(self.gpa, arg_types.items[idx]);
+            }
+            const tuple_ty = try self.computeTrailingAnyTupleTypeChecker(ast_unit, args, fixed_params_count);
+            try concrete_param_types.append(self.gpa, tuple_ty);
+        } else {
+            var idx: usize = 0;
+            while (idx < params.len) : (idx += 1) {
+                const arg_ty = if (idx < arg_types.items.len) arg_types.items[idx] else params[idx];
+                try concrete_param_types.append(self.gpa, arg_ty);
+            }
+        }
+
+        if (calleeNameForCall(ast_unit, call_expr.callee)) |callee_name| {
+            if (call_resolution.findFunctionDeclForCall(self.context, ast_unit, call_expr.callee, callee_name)) |decl_ctx| {
+                var target_ctx_opt: ?*CheckerContext = null;
+                var resolved_ctx = decl_ctx;
+                if (resolveFunctionDeclAlias(self, resolved_ctx)) |resolved| {
+                    resolved_ctx = resolved;
+                }
+                if (resolved_ctx.ast.file_id < self.checker_ctx.items.len) {
+                    target_ctx_opt = &self.checker_ctx.items[resolved_ctx.ast.file_id];
+                }
+                if (target_ctx_opt) |target_ctx| {
+                    const spec_decl_id = try self.getOrInstantiateSpecialization(
+                        target_ctx,
+                        resolved_ctx.ast,
+                        resolved_ctx.decl_id,
+                        concrete_param_types.items,
+                    );
+                    const spec_sig = resolved_ctx.ast.type_info.decl_types.items[spec_decl_id.toRaw()] orelse func_ty;
+                    try ast_unit.type_info.setCallSpecialization(self.gpa, id, .{
+                        .target_decl = spec_decl_id.toRaw(),
+                        .target_file_id = @intCast(resolved_ctx.ast.file_id),
+                        .pack_args = pack_args,
+                        .pack_start_index = pack_start_index,
+                        .is_spread = saw_spread and fnrow.is_variadic,
+                    });
+                    return self.context.type_store.get(.Function, spec_sig).result;
+                }
+            }
+        }
+    }
+    if (fnrow.is_extern and saw_spread) {
+        try ast_unit.type_info.setCallSpecialization(self.gpa, id, .{
+            .target_decl = 0,
+            .target_file_id = std.math.maxInt(u32),
+            .pack_args = false,
+            .pack_start_index = 0,
+            .is_spread = true,
+        });
     }
     return fnrow.result;
 }

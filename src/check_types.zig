@@ -36,6 +36,17 @@ const PipelineBindingSlice = struct {
     owns: bool,
 };
 
+/// Return true when `func_ty` is a non-extern function whose final parameter is `any`.
+pub fn isInternalVariadic(store: *types.TypeStore, func_ty: types.TypeId) bool {
+    if (store.getKind(func_ty) != .Function) return false;
+    const fn_row = store.get(.Function, func_ty);
+    if (fn_row.is_extern) return false;
+    const params = store.type_pool.slice(fn_row.params);
+    if (params.len == 0) return false;
+    const last = params[params.len - 1];
+    return store.getKind(last) == .Any;
+}
+
 /// Recursively collect all expression IDs reachable from `expr_id`.
 fn collectExprIds(gpa: std.mem.Allocator, ast_unit: *ast.Ast, expr_id: ast.ExprId, out: *std.ArrayList(ast.ExprId)) !void {
     try out.append(gpa, expr_id);

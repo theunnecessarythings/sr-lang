@@ -271,36 +271,6 @@ pub fn get_type_by_name_impl(context: ?*anyopaque, name: [*c]const u8) callconv(
 // Comptime Lower TIR API
 // =============================
 
-/// Install comptime alias bindings in the interpreter so localized lookup sees them.
-pub fn pushComptimeBindings(self: *LowerTir, ctx: *LowerTir.LowerContext, bindings: []const Pipeline.ComptimeBinding) !bool {
-    if (bindings.len == 0) return false;
-
-    var alias_bindings: std.ArrayList(interpreter.Binding) = std.ArrayList(interpreter.Binding).empty;
-    defer alias_bindings.deinit(self.gpa);
-    var success = false;
-    defer if (!success) {
-        for (alias_bindings.items) |*binding| binding.value.destroy(self.gpa);
-    };
-
-    for (bindings) |binding| {
-        const value = switch (binding) {
-            .type_param => |tp| interpreter.Binding{ .name = tp.name, .value = .{ .Type = tp.ty } },
-            .value_param => |vp| blk: {
-                const cloned = try cloneComptimeValue(self.gpa, vp.value);
-                break :blk interpreter.Binding{ .name = vp.name, .value = cloned };
-            },
-        };
-        try alias_bindings.append(self.gpa, value);
-    }
-
-    const snapshot = try ctx.interpreter.captureBindingSnapshot(&alias_bindings);
-    success = true;
-    for (alias_bindings.items) |*binding| binding.value.destroy(self.gpa);
-
-    try ctx.pushSnapshot(snapshot, ctx.interpreter);
-    return true;
-}
-
 /// Evaluate an AST expression as a type literal and return its computed `TypeId`.
 fn evaluateTypeExpr(
     self: *LowerTir,
@@ -311,7 +281,7 @@ fn evaluateTypeExpr(
     switch (a.kind(expr)) {
         .Ident => {
             const ident = a.exprs.get(.Ident, expr);
-            if (ctx.lookupBindingType(ident.name)) |ty| {
+            if (self.lookupComptimeAliasType(a, ident.name)) |ty| {
                 return ty;
             }
 
@@ -440,15 +410,10 @@ fn evaluateTypeExpr(
             const stmts = a.stmts.stmt_pool.slice(block.items);
 
             // Track how many temporary type-bindings we push for local aliases.
-            var pushed_bindings: usize = 0;
             var last_ty: ?types.TypeId = null;
             var alias_names: std.ArrayList(ast.StrId) = std.ArrayList(ast.StrId).empty;
             var alias_types: std.ArrayList(types.TypeId) = std.ArrayList(types.TypeId).empty;
             defer {
-                while (pushed_bindings > 0) {
-                    pushed_bindings -= 1;
-                    ctx.popSnapshot();
-                }
                 alias_names.deinit(self.gpa);
                 alias_types.deinit(self.gpa);
             }
@@ -476,7 +441,7 @@ fn evaluateTypeExpr(
                                     }
                                 }
                                 if (!found_owner) {
-                                    if (ctx.lookupBindingType(owner_seg0.name)) |t0| {
+                                    if (self.lookupComptimeAliasType(a, owner_seg0.name)) |t0| {
                                         owner_ty0 = t0;
                                         found_owner = true;
                                     }
@@ -526,10 +491,6 @@ fn evaluateTypeExpr(
                             error.UnsupportedComptimeType, error.TypeNotFound, error.NotAProcedure, error.MissingFunctionBody => break,
                             else => return e,
                         };
-                        const binding = Pipeline.ComptimeBinding{ .type_param = .{ .name = name, .ty = ty } };
-                        if (try pushComptimeBindings(self, ctx, &[_]Pipeline.ComptimeBinding{binding})) {
-                            pushed_bindings += 1;
-                        }
                         last_ty = ty; // remember most recent type value
                         alias_names.append(self.gpa, name) catch {};
                         alias_types.append(self.gpa, ty) catch {};
@@ -815,11 +776,6 @@ pub fn lowerSpecializedFunction(
     b: *tir.Builder,
     req: *const SpecializationRequest,
 ) !void {
-    const spec_ctx = SpecializationContext{
-        .specialized_ty = req.specialized_ty,
-        .skip_params = req.skip_params,
-        .bindings = req.bindings,
-    };
     const decl = a.exprs.Decl.get(req.decl_id);
 
     if (a.kind(decl.value) == .FunctionLit) {
@@ -874,7 +830,7 @@ pub fn lowerSpecializedFunction(
                             }
                         }
                         if (!found) {
-                            if (ctx.lookupBindingType(owner_seg.name)) |t| {
+                            if (self.lookupComptimeAliasType(a, owner_seg.name)) |t| {
                                 owner_ty = t;
                                 found = true;
                             }
@@ -943,5 +899,5 @@ pub fn lowerSpecializedFunction(
         }
     }
 
-    try self.lowerFunction(ctx, a, b, req.mangled_name, decl.value, &spec_ctx);
+    try self.lowerFunction(ctx, a, b, req.mangled_name, decl.value);
 }
