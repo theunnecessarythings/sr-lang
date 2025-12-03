@@ -100,7 +100,7 @@ pub const SymbolStore = struct {
     }
 
     /// Pretty-print the symbol store contents (diagnostic aid).
-    pub fn print(self: *const SymbolStore, a: *const ast.Ast, comptime indent: usize) void {
+    pub fn print(self: *SymbolStore, a: *const ast.Ast, comptime indent: usize) void {
         var buffer: [128]u8 = undefined;
         const indent_str_slice = buffer[0..indent];
         @memset(indent_str_slice, ' ');

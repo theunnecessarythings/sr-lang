@@ -204,6 +204,7 @@ pub const Interpreter = struct {
             .NoreturnType => Value{ .Type = self.ast.type_info.store.tNoreturn() },
             .Catch => self.evalCatch(self.ast.exprs.get(.Catch, expr)),
             .OptionalUnwrap => self.evalOptionalUnwrap(self.ast.exprs.get(.OptionalUnwrap, expr)),
+            .ErrUnwrap => self.evalErrUnwrap(self.ast.exprs.get(.ErrUnwrap, expr)),
             .Defer => self.evalDefer(self.ast.exprs.get(.Defer, expr)),
             .TypeOf => self.evalTypeOf(self.ast.exprs.get(.TypeOf, expr)),
             .MlirBlock => Value{ .Void = {} },
@@ -289,7 +290,30 @@ pub const Interpreter = struct {
 
     /// Evaluate a cast expression by delegating to its inner expression.
     fn evalCast(self: *Interpreter, row: ast.Rows.Cast) anyerror!Value {
-        return self.evalExpr(row.expr);
+        const value = try self.evalExpr(row.expr);
+        const target_ty = self.typeIdFromTypeExpr(row.ty) catch return value;
+        const ts = self.ast.type_info.store;
+        const target_kind = ts.getKind(target_ty);
+
+        switch (value) {
+            .Float => |f| {
+                // Simple check for integer target types
+                const is_int = switch (target_kind) {
+                    .I8, .I16, .I32, .I64, .U8, .U16, .U32, .U64, .Usize => true,
+                    else => false,
+                };
+                if (is_int) {
+                    return Value{ .Int = @as(i128, @intFromFloat(f)) };
+                }
+            },
+            .Int => |i| {
+                if (target_kind == .F32 or target_kind == .F64) {
+                    return Value{ .Float = @as(f64, @floatFromInt(i)) };
+                }
+            },
+            else => {},
+        }
+        return value;
     }
 
     /// Evaluate a `catch` expression and clone the result.
@@ -313,6 +337,14 @@ pub const Interpreter = struct {
         var value = try self.evalExpr(row.expr);
         value.destroy(self.allocator);
         return Value{ .Void = {} };
+    }
+
+    /// Evaluate `err` propagation by cloning the underlying success value.
+    fn evalErrUnwrap(self: *Interpreter, row: ast.Rows.ErrUnwrap) anyerror!Value {
+        var value = try self.evalExpr(row.expr);
+        const result = try self.cloneValue(value);
+        value.destroy(self.allocator);
+        return result;
     }
 
     /// Evaluate `typeof(expr)` by returning the stored compile-time type.
@@ -1177,13 +1209,64 @@ pub const Interpreter = struct {
         defer right.destroy(self.allocator);
 
         switch (row.op) {
-            .add => return Value{ .Int = try expectInt(left) + try expectInt(right) },
-            .sub => return Value{ .Int = try expectInt(left) - try expectInt(right) },
-            .mul => return Value{ .Int = try expectInt(left) * try expectInt(right) },
+            .add => {
+                const l = try numericValue(left);
+                const r = try numericValue(right);
+                switch (l) {
+                    .Int => switch (r) {
+                        .Int => return Value{ .Int = l.Int + r.Int },
+                        .Float => return Value{ .Float = @as(f64, @floatFromInt(l.Int)) + r.Float },
+                    },
+                    .Float => switch (r) {
+                        .Int => return Value{ .Float = l.Float + @as(f64, @floatFromInt(r.Int)) },
+                        .Float => return Value{ .Float = l.Float + r.Float },
+                    },
+                }
+            },
+            .sub => {
+                const l = try numericValue(left);
+                const r = try numericValue(right);
+                switch (l) {
+                    .Int => switch (r) {
+                        .Int => return Value{ .Int = l.Int - r.Int },
+                        .Float => return Value{ .Float = @as(f64, @floatFromInt(l.Int)) - r.Float },
+                    },
+                    .Float => switch (r) {
+                        .Int => return Value{ .Float = l.Float - @as(f64, @floatFromInt(r.Int)) },
+                        .Float => return Value{ .Float = l.Float - r.Float },
+                    },
+                }
+            },
+            .mul => {
+                const l = try numericValue(left);
+                const r = try numericValue(right);
+                switch (l) {
+                    .Int => switch (r) {
+                        .Int => return Value{ .Int = l.Int * r.Int },
+                        .Float => return Value{ .Float = @as(f64, @floatFromInt(l.Int)) * r.Float },
+                    },
+                    .Float => switch (r) {
+                        .Int => return Value{ .Float = l.Float * @as(f64, @floatFromInt(r.Int)) },
+                        .Float => return Value{ .Float = l.Float * r.Float },
+                    },
+                }
+            },
             .div => {
-                const divisor = try expectInt(right);
-                if (divisor == 0) return Error.DivisionByZero;
-                return Value{ .Int = @divTrunc(try expectInt(left), divisor) };
+                const l = try numericValue(left);
+                const r = try numericValue(right);
+                switch (l) {
+                    .Int => switch (r) {
+                        .Int => {
+                            if (r.Int == 0) return Error.DivisionByZero;
+                            return Value{ .Int = @divTrunc(l.Int, r.Int) };
+                        },
+                        .Float => return Value{ .Float = @as(f64, @floatFromInt(l.Int)) / r.Float },
+                    },
+                    .Float => switch (r) {
+                        .Int => return Value{ .Float = l.Float / @as(f64, @floatFromInt(r.Int)) },
+                        .Float => return Value{ .Float = l.Float / r.Float },
+                    },
+                }
             },
             .mod => {
                 const divisor = try expectInt(right);

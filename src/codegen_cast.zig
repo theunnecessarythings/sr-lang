@@ -1,6 +1,6 @@
 const codegen = @import("codegen_main.zig");
 const Codegen = codegen.Codegen;
-const OpBuilder = Codegen.OpBuilder;
+const EmitOpArgs = codegen.EmitOpArgs;
 const mlir = @import("mlir_bindings.zig");
 const tir = @import("tir.zig");
 const types = @import("types.zig");
@@ -48,35 +48,31 @@ pub fn saturateIntToInt(self: *Codegen, v: mlir.Value, from_signed: bool, to_ty:
     const lim = intMinMax(self, to_ty, to_signed);
     const from_ty = v.getType();
     const ext_opname = if (from_signed) "arith.extsi" else "arith.extui";
-    const min_in_from = self.appendIfHasResult(OpBuilder.init(ext_opname, self.loc).builder()
-        .operands(&.{lim.min}).results(&.{from_ty}).build());
-    const max_in_from = self.appendIfHasResult(OpBuilder.init(ext_opname, self.loc).builder()
-        .operands(&.{lim.max}).results(&.{from_ty}).build());
+    const min_in_from = self.emitUnaryValueOp(ext_opname, lim.min, from_ty);
+    const max_in_from = self.emitUnaryValueOp(ext_opname, lim.max, from_ty);
 
     const pred_lt: i64 = if (from_signed) CMP_SLT else CMP_ULT;
     const pred_gt: i64 = if (from_signed) CMP_SGT else CMP_UGT;
 
-    const lt = OpBuilder.init("arith.cmpi", self.loc).builder()
-        .operands(&.{ v, min_in_from })
-        .attributes(&.{self.named("predicate", mlir.Attribute.integerAttrGet(self.i64_ty, pred_lt))})
-        .results(&.{self.i1_ty}).build();
-    const gt = OpBuilder.init("arith.cmpi", self.loc).builder()
-        .operands(&.{ v, max_in_from })
-        .attributes(&.{self.named("predicate", mlir.Attribute.integerAttrGet(self.i64_ty, pred_gt))})
-        .results(&.{self.i1_ty}).build();
-    self.append(lt);
-    self.append(gt);
+    const lt = self.emitBinaryValueOp("arith.cmpi", v, min_in_from, self.i1_ty, &.{
+        self.named("predicate", mlir.Attribute.integerAttrGet(self.i64_ty, pred_lt)),
+    });
+    const gt = self.emitBinaryValueOp("arith.cmpi", v, max_in_from, self.i1_ty, &.{
+        self.named("predicate", mlir.Attribute.integerAttrGet(self.i64_ty, pred_gt)),
+    });
 
     // select low/high in source domain
-    const sel_low = OpBuilder.init("arith.select", self.loc).builder()
-        .operands(&.{ lt.getResult(0), min_in_from, v }).results(&.{from_ty}).build();
-    self.append(sel_low);
-    const sel_hi = OpBuilder.init("arith.select", self.loc).builder()
-        .operands(&.{ gt.getResult(0), max_in_from, sel_low.getResult(0) }).results(&.{from_ty}).build();
-    self.append(sel_hi);
+    const sel_low = self.emitOp("arith.select", EmitOpArgs{
+        .operands = &.{ lt, min_in_from, v },
+        .results = &.{from_ty},
+    });
+    const sel_hi = self.emitOp("arith.select", EmitOpArgs{
+        .operands = &.{ gt, max_in_from, sel_low },
+        .results = &.{from_ty},
+    });
 
     // Final convert to destination width
-    return castIntToInt(self, sel_hi.getResult(0), from_ty, to_ty, from_signed);
+    return castIntToInt(self, sel_hi, from_ty, to_ty, from_signed);
 }
 
 /// Clamp float `v` to the integer bounds of `to_ty`, treating NaN as a safe zero value.
@@ -87,34 +83,29 @@ pub fn saturateFloatToInt(self: *Codegen, v: mlir.Value, to_ty: mlir.Type, signe
     const min_f = castIntToFloat(self, lim.min, ft, signed_to);
     const max_f = castIntToFloat(self, lim.max, ft, signed_to);
 
-    const lt = OpBuilder.init("arith.cmpf", self.loc).builder()
-        .operands(&.{ v, min_f })
-        .attributes(&.{self.named("predicate", mlir.Attribute.integerAttrGet(self.i64_ty, F_CMP_OLT))})
-        .results(&.{self.i1_ty}).build();
-    const gt = OpBuilder.init("arith.cmpf", self.loc).builder()
-        .operands(&.{ v, max_f })
-        .attributes(&.{self.named("predicate", mlir.Attribute.integerAttrGet(self.i64_ty, F_CMP_OGT))})
-        .results(&.{self.i1_ty}).build();
-    const isnan = OpBuilder.init("arith.cmpf", self.loc).builder()
-        .operands(&.{ v, v })
-        .attributes(&.{self.named("predicate", mlir.Attribute.integerAttrGet(self.i64_ty, F_CMP_UNO))})
-        .results(&.{self.i1_ty}).build();
-    self.append(lt);
-    self.append(gt);
-    self.append(isnan);
-
-    var fail = self.boolOr(lt.getResult(0), gt.getResult(0));
-    fail = self.boolOr(fail, isnan.getResult(0));
+    const lt = self.emitBinaryValueOp("arith.cmpf", v, min_f, self.i1_ty, &.{
+        self.named("predicate", mlir.Attribute.integerAttrGet(self.i64_ty, F_CMP_OLT)),
+    });
+    const gt = self.emitBinaryValueOp("arith.cmpf", v, max_f, self.i1_ty, &.{
+        self.named("predicate", mlir.Attribute.integerAttrGet(self.i64_ty, F_CMP_OGT)),
+    });
+    const isnan = self.emitBinaryValueOp("arith.cmpf", v, v, self.i1_ty, &.{
+        self.named("predicate", mlir.Attribute.integerAttrGet(self.i64_ty, F_CMP_UNO)),
+    });
+    var fail = self.boolOr(lt, gt);
+    fail = self.boolOr(fail, isnan);
 
     // clamp
-    const sel_low = OpBuilder.init("arith.select", self.loc).builder()
-        .operands(&.{ lt.getResult(0), min_f, v }).results(&.{ft}).build();
-    self.append(sel_low);
-    const sel_hi = OpBuilder.init("arith.select", self.loc).builder()
-        .operands(&.{ gt.getResult(0), max_f, sel_low.getResult(0) }).results(&.{ft}).build();
-    self.append(sel_hi);
+    const sel_low = self.emitOp("arith.select", EmitOpArgs{
+        .operands = &.{ lt, min_f, v },
+        .results = &.{ft},
+    });
+    const sel_hi = self.emitOp("arith.select", EmitOpArgs{
+        .operands = &.{ gt, max_f, sel_low },
+        .results = &.{ft},
+    });
 
-    return castFloatToInt(self, sel_hi.getResult(0), to_ty, signed_to);
+    return castFloatToInt(self, sel_hi, to_ty, signed_to);
 }
 
 // --- Checked helpers ---
@@ -124,15 +115,11 @@ pub fn checkedIntToInt(self: *Codegen, v: mlir.Value, from_ty: mlir.Type, to_ty:
     // Convert normally (trunc/extend)
     const narrowed = self.castIntToInt(v, from_ty, to_ty, from_signed);
 
-    // Re-extend to source width and compare equality (round-trip check)
-    const widened = self.appendIfHasResult(OpBuilder.init(if (from_signed) "arith.extsi" else "arith.extui", self.loc).builder()
-        .operands(&.{narrowed}).results(&.{from_ty}).build());
+    const widened = self.emitUnaryValueOp(if (from_signed) "arith.extsi" else "arith.extui", narrowed, from_ty);
 
-    const ok = OpBuilder.init("arith.cmpi", self.loc).builder()
-        .operands(&.{ v, widened })
-        .attributes(&.{self.named("predicate", mlir.Attribute.integerAttrGet(self.i64_ty, CMP_EQ))})
-        .results(&.{self.i1_ty}).build();
-    self.append(ok);
+    const ok = self.emitBinaryValueOp("arith.cmpi", v, widened, self.i1_ty, &.{
+        self.named("predicate", mlir.Attribute.integerAttrGet(self.i64_ty, CMP_EQ)),
+    });
     self.emitAssertCall(ok.getResult(0)); // trap if overflow
 
     return narrowed;
@@ -146,24 +133,18 @@ pub fn checkedFloatToInt(self: *Codegen, v: mlir.Value, to_ty: mlir.Type, signed
     const min_f = self.castIntToFloat(lim.min, ft, signed_to);
     const max_f = self.castIntToFloat(lim.max, ft, signed_to);
 
-    const lt = OpBuilder.init("arith.cmpf", self.loc).builder()
-        .operands(&.{ v, min_f })
-        .attributes(&.{self.named("predicate", mlir.Attribute.integerAttrGet(self.i64_ty, F_CMP_OLT))})
-        .results(&.{self.i1_ty}).build();
-    const gt = OpBuilder.init("arith.cmpf", self.loc).builder()
-        .operands(&.{ v, max_f })
-        .attributes(&.{self.named("predicate", mlir.Attribute.integerAttrGet(self.i64_ty, F_CMP_OGT))})
-        .results(&.{self.i1_ty}).build();
-    const isnan = OpBuilder.init("arith.cmpf", self.loc).builder()
-        .operands(&.{ v, v })
-        .attributes(&.{self.named("predicate", mlir.Attribute.integerAttrGet(self.i64_ty, F_CMP_UNO))})
-        .results(&.{self.i1_ty}).build();
-    self.append(lt);
-    self.append(gt);
-    self.append(isnan);
+    const lt = self.emitBinaryValueOp("arith.cmpf", v, min_f, self.i1_ty, &.{
+        self.named("predicate", mlir.Attribute.integerAttrGet(self.i64_ty, F_CMP_OLT)),
+    });
+    const gt = self.emitBinaryValueOp("arith.cmpf", v, max_f, self.i1_ty, &.{
+        self.named("predicate", mlir.Attribute.integerAttrGet(self.i64_ty, F_CMP_OGT)),
+    });
+    const isnan = self.emitBinaryValueOp("arith.cmpf", v, v, self.i1_ty, &.{
+        self.named("predicate", mlir.Attribute.integerAttrGet(self.i64_ty, F_CMP_UNO)),
+    });
 
-    var bad = self.boolOr(lt.getResult(0), gt.getResult(0));
-    bad = self.boolOr(bad, isnan.getResult(0));
+    var bad = self.boolOr(lt, gt);
+    bad = self.boolOr(bad, isnan);
 
     // assert(!bad)
     const ok = self.boolNot(bad);
@@ -179,11 +160,10 @@ pub fn emitCastNormal(self: *Codegen, dst_sr: types.TypeId, to_ty: mlir.Type, fr
     var from_ty = from_v.getType();
 
     if (from_ty.equal(self.llvm_ptr_ty) and mlir.LLVM.isLLVMStructType(to_ty)) {
-        var load = OpBuilder.init("llvm.load", self.loc).builder()
-            .operands(&.{from_v})
-            .results(&.{to_ty}).build();
-        self.append(load);
-        return load.getResult(0);
+        return self.emitOp("llvm.load", EmitOpArgs{
+            .operands = &.{from_v},
+            .results = &.{to_ty},
+        });
     }
 
     // Special-case: build an ErrorSet value from a non-error value.
@@ -211,16 +191,16 @@ pub fn emitCastNormal(self: *Codegen, dst_sr: types.TypeId, to_ty: mlir.Type, fr
         // Materialize the union storage by writing the Ok payload at offset 0.
         const tmp_union_ptr = self.spillAgg(self.undefOf(union_mlir), union_mlir, 0);
         self.storeAt(tmp_union_ptr, payload_val, 0);
-        var ld_union = OpBuilder.init("llvm.load", self.loc).builder()
-            .operands(&.{tmp_union_ptr})
-            .results(&.{union_mlir}).build();
-        self.append(ld_union);
+        const ld_union = self.emitOp("llvm.load", EmitOpArgs{
+            .operands = &.{tmp_union_ptr},
+            .results = &.{union_mlir},
+        });
 
         // Assemble the ErrorSet aggregate: { tag: i32 = 0, payload: union }
         var acc = self.zeroOf(to_ty);
         const tag0 = self.constInt(self.i32_ty, 0);
         acc = self.insertAt(acc, tag0, &.{0});
-        acc = self.insertAt(acc, ld_union.getResult(0), &.{1});
+        acc = self.insertAt(acc, ld_union, &.{1});
         return acc;
     }
 
@@ -312,12 +292,10 @@ pub fn emitCastNormal(self: *Codegen, dst_sr: types.TypeId, to_ty: mlir.Type, fr
                 }
                 elems[i] = e;
             }
-            var op = OpBuilder.init("vector.from_elements", self.loc).builder()
-                .operands(elems)
-                .results(&.{vec_ty})
-                .build();
-            self.append(op);
-            return op.getResult(0);
+            return self.emitOp("vector.from_elements", EmitOpArgs{
+                .operands = elems,
+                .results = &.{vec_ty},
+            });
         }
     }
 
@@ -338,9 +316,7 @@ pub fn emitCastNormal(self: *Codegen, dst_sr: types.TypeId, to_ty: mlir.Type, fr
         std.debug.print("codegen_cast: skip bitcast for aggregate types\n", .{});
         return from_v;
     }
-    const op = OpBuilder.init("arith.bitcast", self.loc).builder()
-        .operands(&.{from_v}).results(&.{to_ty}).build();
-    return self.appendIfHasResult(op);
+    return self.emitUnaryValueOp("arith.bitcast", from_v, to_ty);
 }
 
 // --- Public dispatcher for all cast kinds ---
@@ -398,12 +374,10 @@ pub fn emitCast(self: *Codegen, kind: tir.OpKind, dst_sr: types.TypeId, src_sr: 
                 } else if (fw > tw) {
                     // Truncation: check for overflow
                     const narrowed = castIntToInt(self, from_v, from_ty_mlir, optional_elem_mlir_ty, from_signed);
-                    const widened = self.appendIfHasResult(OpBuilder.init(if (from_signed) "arith.extsi" else "arith.extui", self.loc).builder()
-                        .operands(&.{narrowed}).results(&.{from_ty_mlir}).build());
-                    cast_ok = self.appendIfHasResult(OpBuilder.init("arith.cmpi", self.loc).builder()
-                        .operands(&.{ from_v, widened })
-                        .attributes(&.{self.named("predicate", mlir.Attribute.integerAttrGet(self.i64_ty, CMP_EQ))})
-                        .results(&.{self.i1_ty}).build());
+                    const widened = self.emitUnaryValueOp(if (from_signed) "arith.extsi" else "arith.extui", narrowed, from_ty_mlir);
+                    cast_ok = self.emitBinaryValueOp("arith.cmpi", from_v, widened, self.i1_ty, &.{
+                        self.named("predicate", mlir.Attribute.integerAttrGet(self.i64_ty, CMP_EQ)),
+                    });
                     casted_val = narrowed;
                 } else {
                     // Extension: always succeeds
@@ -416,40 +390,42 @@ pub fn emitCast(self: *Codegen, kind: tir.OpKind, dst_sr: types.TypeId, src_sr: 
                 const min_f = castIntToFloat(self, lim.min, ft, optional_elem_is_signed);
                 const max_f = castIntToFloat(self, lim.max, ft, optional_elem_is_signed);
 
-                const lt = self.appendIfHasResult(OpBuilder.init("arith.cmpf", self.loc).builder()
-                    .operands(&.{ from_v, min_f })
-                    .attributes(&.{self.named("predicate", mlir.Attribute.integerAttrGet(self.i64_ty, F_CMP_OLT))})
-                    .results(&.{self.i1_ty}).build());
-                const gt = self.appendIfHasResult(OpBuilder.init("arith.cmpf", self.loc).builder()
-                    .operands(&.{ from_v, max_f })
-                    .attributes(&.{self.named("predicate", mlir.Attribute.integerAttrGet(self.i64_ty, F_CMP_OGT))})
-                    .results(&.{self.i1_ty}).build());
-                const isnan = self.appendIfHasResult(OpBuilder.init("arith.cmpf", self.loc).builder()
-                    .operands(&.{ from_v, from_v })
-                    .attributes(&.{self.named("predicate", mlir.Attribute.integerAttrGet(self.i64_ty, F_CMP_UNO))})
-                    .results(&.{self.i1_ty}).build());
+                const lt = self.emitBinaryValueOp("arith.cmpf", from_v, min_f, self.i1_ty, &.{
+                    self.named("predicate", mlir.Attribute.integerAttrGet(self.i64_ty, F_CMP_OLT)),
+                });
+                const gt = self.emitBinaryValueOp("arith.cmpf", from_v, max_f, self.i1_ty, &.{
+                    self.named("predicate", mlir.Attribute.integerAttrGet(self.i64_ty, F_CMP_OGT)),
+                });
+                const isnan = self.emitBinaryValueOp("arith.cmpf", from_v, from_v, self.i1_ty, &.{
+                    self.named("predicate", mlir.Attribute.integerAttrGet(self.i64_ty, F_CMP_UNO)),
+                });
 
                 var bad = self.boolOr(lt, gt);
                 bad = self.boolOr(bad, isnan);
                 cast_ok = self.boolNot(bad);
 
                 // Clamp the source value into the integer domain (or a benign value for NaN)
-                const clamped_low = self.appendIfHasResult(OpBuilder.init("arith.select", self.loc).builder()
-                    .operands(&.{ lt, min_f, from_v }).results(&.{ft}).build());
-                const clamped_high = self.appendIfHasResult(OpBuilder.init("arith.select", self.loc).builder()
-                    .operands(&.{ gt, max_f, clamped_low }).results(&.{ft}).build());
+                const clamped_low = self.emitOp("arith.select", EmitOpArgs{
+                    .operands = &.{ lt, min_f, from_v },
+                    .results = &.{ft},
+                });
+                const clamped_high = self.emitOp("arith.select", EmitOpArgs{
+                    .operands = &.{ gt, max_f, clamped_low },
+                    .results = &.{ft},
+                });
                 const zero = self.constFloat(ft, 0.0);
-                const sanitized = self.appendIfHasResult(OpBuilder.init("arith.select", self.loc).builder()
-                    .operands(&.{ isnan, zero, clamped_high }).results(&.{ft}).build());
+                const sanitized = self.emitOp("arith.select", EmitOpArgs{
+                    .operands = &.{ isnan, zero, clamped_high },
+                    .results = &.{ft},
+                });
 
                 casted_val = castFloatToInt(self, sanitized, optional_elem_mlir_ty, optional_elem_is_signed);
 
                 // Verify round-trip back to float to catch fractional values.
                 const roundtrip = castIntToFloat(self, casted_val, ft, optional_elem_is_signed);
-                const same = self.appendIfHasResult(OpBuilder.init("arith.cmpf", self.loc).builder()
-                    .operands(&.{ from_v, roundtrip })
-                    .attributes(&.{self.named("predicate", mlir.Attribute.integerAttrGet(self.i64_ty, F_CMP_OEQ))})
-                    .results(&.{self.i1_ty}).build());
+                const same = self.emitBinaryValueOp("arith.cmpf", from_v, roundtrip, self.i1_ty, &.{
+                    self.named("predicate", mlir.Attribute.integerAttrGet(self.i64_ty, F_CMP_OEQ)),
+                });
                 cast_ok = self.boolAnd(cast_ok, same);
             } else {
                 // For other types (ptr<->int, float<->float), treat as normal cast for now.
@@ -474,21 +450,15 @@ pub fn emitCast(self: *Codegen, kind: tir.OpKind, dst_sr: types.TypeId, src_sr: 
 /// Bitcast a pointer value `v` into another pointer type `to_ty`.
 fn castPtrToPtr(self: *Codegen, v: mlir.Value, to_ty: mlir.Type) mlir.Value {
     // Use LLVM dialect bitcast for pointer-to-pointer casts
-    const op = OpBuilder.init("llvm.bitcast", self.loc).builder()
-        .operands(&.{v}).results(&.{to_ty}).build();
-    return self.appendIfHasResult(op);
+    return self.emitUnaryValueOp("llvm.bitcast", v, to_ty);
 }
 /// Convert a pointer value into an integer of `to_ty`.
 fn castPtrToInt(self: *Codegen, v: mlir.Value, to_ty: mlir.Type) mlir.Value {
-    const op = OpBuilder.init("llvm.ptrtoint", self.loc).builder()
-        .operands(&.{v}).results(&.{to_ty}).build();
-    return self.appendIfHasResult(op);
+    return self.emitUnaryValueOp("llvm.ptrtoint", v, to_ty);
 }
 /// Convert an integer value into a pointer type `to_ty`.
 fn castIntToPtr(self: *Codegen, v: mlir.Value, to_ty: mlir.Type) mlir.Value {
-    const op = OpBuilder.init("llvm.inttoptr", self.loc).builder()
-        .operands(&.{v}).results(&.{to_ty}).build();
-    return self.appendIfHasResult(op);
+    return self.emitUnaryValueOp("llvm.inttoptr", v, to_ty);
 }
 
 /// Emit integer truncation/extension from `from_ty` to `to_ty`, honoring `signed_from`.
@@ -497,28 +467,20 @@ fn castIntToInt(self: *Codegen, from_v: mlir.Value, from_ty: mlir.Type, to_ty: m
     const tw = intOrFloatWidth(to_ty) catch 0;
     if (fw == tw) return from_v;
     if (fw > tw) {
-        const op = OpBuilder.init("arith.trunci", self.loc).builder()
-            .operands(&.{from_v}).results(&.{to_ty}).build();
-        return self.appendIfHasResult(op);
+        return self.emitUnaryValueOp("arith.trunci", from_v, to_ty);
     }
     const opname = if (signed_from) "arith.extsi" else "arith.extui";
-    const op = OpBuilder.init(opname, self.loc).builder()
-        .operands(&.{from_v}).results(&.{to_ty}).build();
-    return self.appendIfHasResult(op);
+    return self.emitUnaryValueOp(opname, from_v, to_ty);
 }
 
 /// Convert integer `v` to the floating-point `to_ty`, using signed/unsigned conversion.
 fn castIntToFloat(self: *Codegen, v: mlir.Value, to_ty: mlir.Type, signed_from: bool) mlir.Value {
-    const op = OpBuilder.init(if (signed_from) "arith.sitofp" else "arith.uitofp", self.loc).builder()
-        .operands(&.{v}).results(&.{to_ty}).build();
-    return self.appendIfHasResult(op);
+    return self.emitUnaryValueOp(if (signed_from) "arith.sitofp" else "arith.uitofp", v, to_ty);
 }
 
 /// Convert floating-point `v` into integer `to_ty`, choosing signed or unsigned semantics.
 fn castFloatToInt(self: *Codegen, v: mlir.Value, to_ty: mlir.Type, signed_to: bool) mlir.Value {
-    const op = OpBuilder.init(if (signed_to) "arith.fptosi" else "arith.fptoui", self.loc).builder()
-        .operands(&.{v}).results(&.{to_ty}).build();
-    return self.appendIfHasResult(op);
+    return self.emitUnaryValueOp(if (signed_to) "arith.fptosi" else "arith.fptoui", v, to_ty);
 }
 
 /// Adjust the floating-point `v` from `from_ty` to `to_ty`, using truncation or extension.
@@ -527,9 +489,7 @@ fn resizeFloat(self: *Codegen, v: mlir.Value, from_ty: mlir.Type, to_ty: mlir.Ty
     const tw = intOrFloatWidth(to_ty) catch 0;
     if (fw == tw) return v;
     const opname = if (fw > tw) "arith.truncf" else "arith.extf";
-    const op = OpBuilder.init(opname, self.loc).builder()
-        .operands(&.{v}).results(&.{to_ty}).build();
-    return self.appendIfHasResult(op);
+    return self.emitUnaryValueOp(opname, v, to_ty);
 }
 
 // --- Integer limits as MLIR constants (destination type) ---

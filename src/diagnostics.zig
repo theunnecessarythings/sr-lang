@@ -213,6 +213,7 @@ pub const DiagnosticCode = enum {
     invalid_index_type, // payload: one (found)
 
     // Types
+    identifier_not_type, // payload: one (name)
     expected_array_type, // payload: one (found)
     expected_tensor_type,
     expected_map_type, // payload: one (found)
@@ -475,6 +476,7 @@ pub fn diagnosticMessageFmt(code: DiagnosticCode) []const u8 {
         .invalid_index_type => "invalid index type: {s}",
 
         // Types
+        .identifier_not_type => "identifier '{s}' is not a type",
         .expected_array_type => "expected array type, found {s}",
         .expected_tensor_type => "expected tensor type, found {s}",
         .expected_map_type => "expected map type, found {s}",

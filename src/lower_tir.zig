@@ -672,6 +672,14 @@ fn ensureExprTypeNotError(self: *LowerTir, ctx: *LowerContext, a: *ast.Ast, id: 
     }
 }
 
+/// Guard that the checker stamped a type for `id` before lowering proceeds.
+fn ensureExprTypeStamped(self: *LowerTir, a: *ast.Ast, id: ast.ExprId) anyerror!void {
+    const idx = id.toRaw();
+    if (idx >= a.type_info.expr_types.items.len or a.type_info.expr_types.items[idx] == null) {
+        return self.throwErr(exprDiagLoc(a, id));
+    }
+}
+
 /// Call the runtime `rt_alloc` helper and unwrap the returned optional pointer.
 fn callRuntimeAllocPtr(
     self: *LowerTir,
@@ -1587,10 +1595,7 @@ fn synthesizeMethodBinding(
     if (a.kind(field_expr_id) != .FieldAccess) return null;
 
     const field_expr = a.exprs.get(.FieldAccess, field_expr_id);
-    if (a.type_info.expr_types.items[field_expr.parent.toRaw()] == null) {
-        const cctx = &self.chk.checker_ctx.items[a.file_id];
-        _ = try self.chk.checkExpr(cctx, a, field_expr.parent);
-    }
+    try self.ensureExprTypeStamped(a, field_expr.parent);
     const refined = try self.refineExprType(ctx, a, env, field_expr.parent, self.getExprType(ctx, a, field_expr.parent));
     if (refined == null) return null;
 
@@ -4601,11 +4606,7 @@ pub fn lowerExpr(
     expected_ty: ?types.TypeId,
     mode: LowerMode,
 ) anyerror!tir.ValueId {
-    // Ensure we have a stamped type for this expression; if missing, invoke checker lazily.
-    if (a.type_info.expr_types.items[id.toRaw()] == null) {
-        const cctx = &self.chk.checker_ctx.items[a.file_id];
-        _ = try self.chk.checkExpr(cctx, a, id);
-    }
+    try self.ensureExprTypeStamped(a, id);
     _ = try self.refineExprType(ctx, a, env, id, self.getExprType(ctx, a, id));
     try self.ensureExprTypeNotError(ctx, a, id);
 
@@ -5217,11 +5218,8 @@ fn destructureDeclFromExpr(
         .Binding => {
             const guess_ty = src_ty;
             const expect_ty = if (target_kind == .Any) guess_ty else target_ty;
-            // Ensure type info for source expr before lowering in case checker didn’t stamp it yet.
-            if (a.type_info.expr_types.items[src_expr.toRaw()] == null) {
-                const cctx2 = &self.chk.checker_ctx.items[a.file_id];
-                _ = try self.chk.checkExpr(cctx2, a, src_expr);
-            }
+            // Ensure type info for source expr before lowering.
+            try self.ensureExprTypeStamped(a, src_expr);
             var raw = try self.lowerExpr(ctx, a, env, f, blk, src_expr, expect_ty, .rvalue);
 
             const refined = try self.refineExprType(ctx, a, env, src_expr, self.getExprType(ctx, a, src_expr)) orelse unreachable;

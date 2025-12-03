@@ -744,17 +744,17 @@ fn attributeFromConstInit(self: *Codegen, ci: tir.ConstInit, ty: mlir.Type) !mli
 }
 /// Append an `llvm.return` operation carrying `val` into `block`.
 fn appendReturnInBlock(self: *Codegen, block: *mlir.Block, val: mlir.Value) void {
-    const op = OpBuilder.init("llvm.return", self.loc).builder()
-        .operands(&.{val})
-        .build();
+    const op = self.buildOp("llvm.return", EmitOpArgs{
+        .operands = &.{val},
+    });
     block.appendOwnedOperation(op);
 }
 
 /// Append an `llvm.mlir.zero` of type `ty` into `block` and return the new value.
 fn appendZeroValueInBlock(self: *Codegen, block: *mlir.Block, ty: mlir.Type) mlir.Value {
-    var op = OpBuilder.init("llvm.mlir.zero", self.loc).builder()
-        .results(&.{ty})
-        .build();
+    const op = self.buildOp("llvm.mlir.zero", EmitOpArgs{
+        .results = &.{ty},
+    });
     block.appendOwnedOperation(op);
     return op.getResult(0);
 }
@@ -884,10 +884,10 @@ fn emitExternDecls(self: *Codegen, t: *tir.TIR) !void {
             const region = mlir.Region.create(); // extern: no body
             // Extern declarations originate from imported metadata and have no
             // source span, so we intentionally reuse the module location here.
-            const fnop = OpBuilder.init("llvm.func", self.loc).builder()
-                .attributes(&attrs)
-                .regions(&.{region})
-                .build();
+            const fnop = self.buildOp("llvm.func", EmitOpArgs{
+                .attributes = &attrs,
+                .regions = &.{region},
+            });
             var body = self.module.getBody();
             body.appendOwnedOperation(fnop);
 
@@ -935,11 +935,10 @@ fn emitExternDecls(self: *Codegen, t: *tir.TIR) !void {
             const attrs = attr_buf.items;
             // Likewise, synthesized globals are emitted with the module location
             // because they are not backed by user-written syntax.
-            var regions = [_]mlir.Region{init_region};
-            const global_op = OpBuilder.init("llvm.mlir.global", self.loc).builder()
-                .attributes(attrs)
-                .regions(&regions)
-                .build();
+            const global_op = self.buildOp("llvm.mlir.global", EmitOpArgs{
+                .attributes = attrs,
+                .regions = &.{init_region},
+            });
 
             var body = self.module.getBody();
             body.appendOwnedOperation(global_op);
@@ -1035,20 +1034,14 @@ fn emitFunctionHeader(self: *Codegen, f_id: tir.FuncId, t: *tir.TIR) !void {
     }
 
     const prev_loc = self.pushLocation(fn_loc);
-    const fn_mlir_loc = self.loc;
     self.loc = prev_loc;
-
-    const func_op_loc = if (maybe_dbg_attr) |dbg_attr|
-        mlir.Location.fusedGet(self.mlir_ctx, &.{fn_mlir_loc}, dbg_attr)
-    else
-        fn_mlir_loc;
 
     const region = mlir.Region.create();
     const op_name = if (emit_as_llvm_func) "llvm.func" else "func.func";
-    const fnop = OpBuilder.init(op_name, func_op_loc).builder()
-        .attributes(attrs.items)
-        .regions(&.{region})
-        .build();
+    const fnop = self.buildOp(op_name, EmitOpArgs{
+        .attributes = attrs.items,
+        .regions = &.{region},
+    });
 
     var body = self.module.getBody();
     body.appendOwnedOperation(fnop);
@@ -1086,10 +1079,10 @@ fn getI64OneInEntry(self: *Codegen) mlir.Value {
     if (self.i64_one_in_entry) |v| return v;
 
     // Build the constant op but place it in the entry block
-    var c = OpBuilder.init("llvm.mlir.constant", self.loc).builder()
-        .results(&.{self.i64_ty})
-        .attributes(&.{self.named("value", mlir.Attribute.integerAttrGet(self.i64_ty, 1))})
-        .build();
+    const c = self.buildOp("llvm.mlir.constant", EmitOpArgs{
+        .results = &.{self.i64_ty},
+        .attributes = &.{self.named("value", mlir.Attribute.integerAttrGet(self.i64_ty, 1))},
+    });
 
     self.appendInFuncEntry(c);
     const v = c.getResult(0);
@@ -1251,11 +1244,11 @@ fn emitFunctionBody(self: *Codegen, f_id: tir.FuncId, t: *tir.TIR) !void {
         self.cur_block = rb;
         if (self.ret_has_value) {
             const arg = rb.getArgument(0);
-            const retop = OpBuilder.init("func.return", self.loc).builder().operands(&.{arg}).build();
-            self.append(retop);
+            _ = self.appendOp("func.return", EmitOpArgs{
+                .operands = &.{arg},
+            });
         } else {
-            const retop = OpBuilder.init("func.return", self.loc).builder().build();
-            self.append(retop);
+            _ = self.appendOp("func.return", EmitOpArgs{});
         }
     }
 
@@ -1418,10 +1411,10 @@ fn ensureFuncDeclFromCall(self: *Codegen, p: tir.Rows.Call, t: *tir.TIR) !FuncIn
         self.named("sym_visibility", self.strAttr("private")),
     };
     const region = mlir.Region.create();
-    const fnop = OpBuilder.init("llvm.func", self.loc).builder()
-        .attributes(&attrs)
-        .regions(&.{region})
-        .build();
+    const fnop = self.buildOp("llvm.func", EmitOpArgs{
+        .attributes = &attrs,
+        .regions = &.{region},
+    });
     var body = self.module.getBody();
     body.appendOwnedOperation(fnop);
 
@@ -1456,17 +1449,11 @@ fn ensureCallArgType(
         const tw = try cast.intOrFloatWidth(want_ty);
         if (fw == tw) return value;
         if (fw > tw) {
-            var tr = OpBuilder.init("llvm.trunc", self.loc).builder()
-                .operands(&.{value}).results(&.{want_ty}).build();
-            self.append(tr);
-            return tr.getResult(0);
+            return self.emitUnaryValueOp("llvm.trunc", value, want_ty);
         } else {
             const signed_from = self.isSignedInt(src_sr);
             const op_name = if (signed_from) "llvm.sext" else "llvm.zext";
-            var ex = OpBuilder.init(op_name, self.loc).builder()
-                .operands(&.{value}).results(&.{want_ty}).build();
-            self.append(ex);
-            return ex.getResult(0);
+            return self.emitUnaryValueOp(op_name, value, want_ty);
         }
     }
 
@@ -1475,17 +1462,11 @@ fn ensureCallArgType(
         const tw = try cast.intOrFloatWidth(want_ty);
         if (fw == tw) return value;
         const op_name = if (fw > tw) "llvm.fptrunc" else "llvm.fpext";
-        var cast_op = OpBuilder.init(op_name, self.loc).builder()
-            .operands(&.{value}).results(&.{want_ty}).build();
-        self.append(cast_op);
-        return cast_op.getResult(0);
+        return self.emitUnaryValueOp(op_name, value, want_ty);
     }
 
     if (mlir.LLVM.isLLVMPointerType(have_ty) and mlir.LLVM.isLLVMPointerType(want_ty)) {
-        var bc = OpBuilder.init("llvm.bitcast", self.loc).builder()
-            .operands(&.{value}).results(&.{want_ty}).build();
-        self.append(bc);
-        return bc.getResult(0);
+        return self.emitUnaryValueOp("llvm.bitcast", value, want_ty);
     }
 
     return value;
@@ -1584,16 +1565,16 @@ fn emitConstNull(self: *Codegen, p: tir.Rows.ConstNull) !mlir.Value {
     const prev_loc = self.pushLocation(p.loc);
     defer self.loc = prev_loc;
     const ty = try self.llvmTypeOf(p.ty);
-    var zero = OpBuilder.init("llvm.mlir.zero", self.loc).builder()
-        .results(&.{ty}).build();
-    self.append(zero);
+    const zero_val = self.emitOp("llvm.mlir.zero", EmitOpArgs{
+        .results = &.{ty},
+    });
     const sr_kind = self.context.type_store.getKind(p.ty);
     if (sr_kind == .Optional and !self.context.type_store.isOptionalPointer(p.ty)) {
         const flag = self.constBool(false);
-        const v = self.insertAt(zero.getResult(0), flag, &.{0});
+        const v = self.insertAt(zero_val, flag, &.{0});
         return v;
     }
-    return zero.getResult(0);
+    return zero_val;
 }
 
 /// Emit an MLIR `undef` value specializing to the target type.
@@ -1601,10 +1582,9 @@ fn emitConstUndef(self: *Codegen, p: tir.Rows.ConstUndef) !mlir.Value {
     const prev_loc = self.pushLocation(p.loc);
     defer self.loc = prev_loc;
     const ty = try self.llvmTypeOf(p.ty);
-    var op = OpBuilder.init("llvm.mlir.undef", self.loc).builder()
-        .results(&.{ty}).build();
-    self.append(op);
-    return op.getResult(0);
+    return self.emitOp("llvm.mlir.undef", EmitOpArgs{
+        .results = &.{ty},
+    });
 }
 
 /// Emit an MLIR constant string filled with `p`’s text data.
@@ -1625,56 +1605,46 @@ fn emitConstString(self: *Codegen, p: tir.Rows.ConstString) !mlir.Value {
     return agg;
 }
 
-/// Emit the MLIR representation of integer/floating point addition.
-fn emitAdd(self: *Codegen, p: tir.Rows.Bin2) !mlir.Value {
+/// Emit a complex-number binary op (the caller is responsible for location).
+fn emitComplexBinOp(self: *Codegen, name: []const u8, p: tir.Rows.Bin2) !mlir.Value {
+    const lhs = self.getVal(p.lhs);
+    const rhs = self.getVal(p.rhs);
+    const cty = try self.llvmTypeOf(p.ty);
+    return self.emitOp(name, EmitOpArgs{
+        .operands = &.{ lhs, rhs },
+        .results = &.{cty},
+    });
+}
+
+/// Emit either a complex-number operation or a generic arithmetic op.
+fn emitBinArithWithComplex(
+    self: *Codegen,
+    p: tir.Rows.Bin2,
+    comptime op_kind: BinArithOp,
+    complex_name: []const u8,
+) !mlir.Value {
     const prev_loc = self.pushLocation(p.loc);
     defer self.loc = prev_loc;
-    // If result SR type is Complex, use complex.add
-    if (self.context.type_store.getKind(p.ty) == .Complex) {
-        const lhs = self.value_map.get(p.lhs).?;
-        const rhs = self.value_map.get(p.rhs).?;
-        const cty = try self.llvmTypeOf(p.ty);
-        var op = OpBuilder.init("complex.add", self.loc).builder()
-            .operands(&.{ lhs, rhs })
-            .results(&.{cty}).build();
-        self.append(op);
-        return op.getResult(0);
+
+    if (self.srKind(p.ty) == .Complex) {
+        return self.emitComplexBinOp(complex_name, p);
     }
-    return self.binArith(.add, p);
+    return self.binArith(op_kind, p);
+}
+
+/// Emit the MLIR representation of integer/floating point addition.
+fn emitAdd(self: *Codegen, p: tir.Rows.Bin2) !mlir.Value {
+    return self.emitBinArithWithComplex(p, .add, "complex.add");
 }
 
 /// Emit subtraction for the binary pair `p`.
 fn emitSub(self: *Codegen, p: tir.Rows.Bin2) !mlir.Value {
-    const prev_loc = self.pushLocation(p.loc);
-    defer self.loc = prev_loc;
-    if (self.context.type_store.getKind(p.ty) == .Complex) {
-        const lhs = self.value_map.get(p.lhs).?;
-        const rhs = self.value_map.get(p.rhs).?;
-        const cty = try self.llvmTypeOf(p.ty);
-        var op = OpBuilder.init("complex.sub", self.loc).builder()
-            .operands(&.{ lhs, rhs })
-            .results(&.{cty}).build();
-        self.append(op);
-        return op.getResult(0);
-    }
-    return self.binArith(.sub, p);
+    return self.emitBinArithWithComplex(p, .sub, "complex.sub");
 }
 
 /// Emit multiplication for `p`.
 fn emitMul(self: *Codegen, p: tir.Rows.Bin2) !mlir.Value {
-    const prev_loc = self.pushLocation(p.loc);
-    defer self.loc = prev_loc;
-    if (self.context.type_store.getKind(p.ty) == .Complex) {
-        const lhs = self.value_map.get(p.lhs).?;
-        const rhs = self.value_map.get(p.rhs).?;
-        const cty = try self.llvmTypeOf(p.ty);
-        var op = OpBuilder.init("complex.mul", self.loc).builder()
-            .operands(&.{ lhs, rhs })
-            .results(&.{cty}).build();
-        self.append(op);
-        return op.getResult(0);
-    }
-    return self.binArith(.mul, p);
+    return self.emitBinArithWithComplex(p, .mul, "complex.mul");
 }
 
 /// Emit division for `p`.
@@ -1685,11 +1655,10 @@ fn emitDiv(self: *Codegen, p: tir.Rows.Bin2) !mlir.Value {
         const lhs = self.value_map.get(p.lhs).?;
         const rhs = self.value_map.get(p.rhs).?;
         const cty = try self.llvmTypeOf(p.ty);
-        var op = OpBuilder.init("complex.div", self.loc).builder()
-            .operands(&.{ lhs, rhs })
-            .results(&.{cty}).build();
-        self.append(op);
-        return op.getResult(0);
+        return self.emitOp("complex.div", EmitOpArgs{
+            .operands = &.{ lhs, rhs },
+            .results = &.{cty},
+        });
     }
     const lhs = self.value_map.get(p.lhs).?;
     const rhs = self.value_map.get(p.rhs).?;
@@ -1748,20 +1717,14 @@ fn emitCastBit(self: *Codegen, p: tir.Rows.Un1) !mlir.Value {
 
     if (needs_spill) {
         const spill = self.spillAgg(from_v, from_ty, 0);
-        var load = OpBuilder.init("llvm.load", self.loc).builder()
-            .operands(&.{spill})
-            .results(&.{to_ty})
-            .attributes(&.{self.named("alignment", mlir.Attribute.integerAttrGet(self.i64_ty, 1))})
-            .build();
-        self.append(load);
-        return load.getResult(0);
+        return self.emitOp("llvm.load", EmitOpArgs{
+            .operands = &.{spill},
+            .results = &.{to_ty},
+            .attributes = &.{self.named("alignment", mlir.Attribute.integerAttrGet(self.i64_ty, 1))},
+        });
     }
 
-    var op = OpBuilder.init("llvm.bitcast", self.loc).builder()
-        .operands(&.{from_v})
-        .results(&.{to_ty}).build();
-    self.append(op);
-    return op.getResult(0);
+    return self.emitUnaryValueOp("llvm.bitcast", from_v, to_ty);
 }
 
 /// Emit the normal cast instruction (usually zero/sign extend or truncate).
@@ -1843,14 +1806,11 @@ fn emitAlloca(self: *Codegen, p: tir.Rows.Alloca) !mlir.Value {
     else
         one;
 
-    var attrs = [_]mlir.NamedAttribute{
-        self.named("elem_type", mlir.Attribute.typeAttrGet(elem_ty)),
-    };
-    var alloca = OpBuilder.init("llvm.alloca", self.loc).builder()
-        .operands(&.{count_v})
-        .results(&.{self.llvm_ptr_ty})
-        .attributes(&attrs)
-        .build();
+    const alloca = self.buildOp("llvm.alloca", EmitOpArgs{
+        .operands = &.{count_v},
+        .results = &.{self.llvm_ptr_ty},
+        .attributes = &.{self.named("elem_type", mlir.Attribute.typeAttrGet(elem_ty))},
+    });
 
     // Heuristic: hoist fixed-size locals (no VLA) to entry.
     const should_hoist = p.count.isNone();
@@ -1903,21 +1863,19 @@ fn emitLoad(self: *Codegen, p: tir.Rows.Load, t: *tir.TIR) !mlir.Value {
         const c = self.context.type_store.get(.Complex, p.ty);
         const elem_ty = try self.llvmTypeOf(c.elem);
         const storage_ty = mlir.LLVM.getLLVMStructTypeLiteral(self.mlir_ctx, &[_]mlir.Type{ elem_ty, elem_ty }, false);
-        var ld = OpBuilder.init("llvm.load", self.loc).builder()
-            .operands(&.{ptr})
-            .results(&.{storage_ty})
-            .attributes(&.{self.named("alignment", mlir.Attribute.integerAttrGet(self.i64_ty, 1))})
-            .build();
-        self.append(ld);
-        const agg = ld.getResult(0);
+        const agg = self.emitOp("llvm.load", EmitOpArgs{
+            .operands = &.{ptr},
+            .results = &.{storage_ty},
+            .attributes = &.{self.named("alignment", mlir.Attribute.integerAttrGet(self.i64_ty, 1))},
+        });
         const re = self.extractAt(agg, elem_ty, &.{0});
         const im = self.extractAt(agg, elem_ty, &.{1});
         const res_ty = try self.llvmTypeOf(p.ty);
-        var mk = OpBuilder.init("complex.create", self.loc).builder()
-            .operands(&.{ re, im })
-            .results(&.{res_ty}).build();
-        self.append(mk);
-        return mk.getResult(0);
+        const mk = self.emitOp("complex.create", EmitOpArgs{
+            .operands = &.{ re, im },
+            .results = &.{res_ty},
+        });
+        return mk;
     } else {
         const res_ty = try self.llvmTypeOf(p.ty);
         // If the operand is not a pointer (opaque ptr model), treat it as a value and coerce if needed.
@@ -1927,13 +1885,11 @@ fn emitLoad(self: *Codegen, p: tir.Rows.Load, t: *tir.TIR) !mlir.Value {
             const src_sr = self.srTypeOfValue(p.ptr);
             return try self.coerceOnBranch(ptr, res_ty, p.ty, src_sr);
         }
-        var load = OpBuilder.init("llvm.load", self.loc).builder()
-            .operands(&.{ptr})
-            .results(&.{res_ty})
-            .attributes(&.{self.named("alignment", mlir.Attribute.integerAttrGet(self.i64_ty, 1))})
-            .build();
-        self.append(load);
-        return load.getResult(0);
+        return self.emitOp("llvm.load", EmitOpArgs{
+            .operands = &.{ptr},
+            .results = &.{res_ty},
+            .attributes = &.{self.named("alignment", mlir.Attribute.integerAttrGet(self.i64_ty, 1))},
+        });
     }
 }
 
@@ -1958,27 +1914,21 @@ fn emitStore(self: *Codegen, p: tir.Rows.Store, t: *tir.TIR) !mlir.Value {
         const c = self.context.type_store.get(.Complex, v_sr);
         const elem_ty = try self.llvmTypeOf(c.elem);
         // Spill complex into {elem, elem}
-        var reop = OpBuilder.init("complex.re", self.loc).builder()
-            .operands(&.{v}).results(&.{elem_ty}).build();
-        self.append(reop);
-        var imop = OpBuilder.init("complex.im", self.loc).builder()
-            .operands(&.{v}).results(&.{elem_ty}).build();
-        self.append(imop);
+        const reop = self.emitUnaryValueOp("complex.re", v, elem_ty);
+        const imop = self.emitUnaryValueOp("complex.im", v, elem_ty);
         const storage_ty = mlir.LLVM.getLLVMStructTypeLiteral(self.mlir_ctx, &[_]mlir.Type{ elem_ty, elem_ty }, false);
         var acc = self.undefOf(storage_ty);
-        acc = self.insertAt(acc, reop.getResult(0), &.{0});
-        acc = self.insertAt(acc, imop.getResult(0), &.{1});
-        const st = OpBuilder.init("llvm.store", self.loc).builder()
-            .operands(&.{ acc, ptr })
-            .attributes(&.{self.named("alignment", mlir.Attribute.integerAttrGet(self.i64_ty, 1))})
-            .build();
-        self.append(st);
+        acc = self.insertAt(acc, reop, &.{0});
+        acc = self.insertAt(acc, imop, &.{1});
+        _ = self.emitOp("llvm.store", EmitOpArgs{
+            .operands = &.{ acc, ptr },
+            .attributes = &.{self.named("alignment", mlir.Attribute.integerAttrGet(self.i64_ty, 1))},
+        });
     } else {
-        const st = OpBuilder.init("llvm.store", self.loc).builder()
-            .operands(&.{ v, ptr })
-            .attributes(&.{self.named("alignment", mlir.Attribute.integerAttrGet(self.i64_ty, 1))})
-            .build();
-        self.append(st);
+        _ = self.emitOp("llvm.store", EmitOpArgs{
+            .operands = &.{ v, ptr },
+            .attributes = &.{self.named("alignment", mlir.Attribute.integerAttrGet(self.i64_ty, 1))},
+        });
     }
     return .empty();
 }
@@ -2016,10 +1966,10 @@ fn emitGlobalAddr(self: *Codegen, p: tir.Rows.GlobalAddr) !mlir.Value {
     if (self.global_addr_cache.get(name)) |cached| return cached;
 
     const gsym = mlir.Attribute.flatSymbolRefAttrGet(self.mlir_ctx, mlir.StringRef.from(name));
-    var addr = OpBuilder.init("llvm.mlir.addressof", self.loc).builder()
-        .results(&.{ty})
-        .attributes(&.{self.named("global_name", gsym)})
-        .build();
+    const addr = self.buildOp("llvm.mlir.addressof", EmitOpArgs{
+        .results = &.{ty},
+        .attributes = &.{self.named("global_name", gsym)},
+    });
     var entry_block = if (self.func_entry_block) |eb|
         eb
     else blk2: {
@@ -2082,9 +2032,10 @@ fn emitBroadcast(self: *Codegen, p: tir.Rows.Broadcast) !mlir.Value {
     defer self.loc = prev_loc;
     const vector_ty = try self.llvmTypeOf(p.ty);
     const scalar_val = self.value_map.get(p.value).?;
-    var op = OpBuilder.init("vector.broadcast", self.loc).builder().operands(&.{scalar_val}).results(&.{vector_ty}).build();
-    self.append(op);
-    return op.getResult(0);
+    return self.emitOp("vector.broadcast", EmitOpArgs{
+        .operands = &.{scalar_val},
+        .results = &.{vector_ty},
+    });
 }
 
 /// Emit a SIMD vector literal from `p`.
@@ -2107,11 +2058,10 @@ fn emitSimdMake(self: *Codegen, p: tir.Rows.ArrayMake, t: *const tir.TIR) !mlir.
         operands[i] = v;
     }
 
-    var literal = OpBuilder.init("vector.from_elements", self.loc).builder()
-        .operands(operands)
-        .results(&.{vec_ty}).build();
-    self.append(literal);
-    return literal.getResult(0);
+    return self.emitOp("vector.from_elements", EmitOpArgs{
+        .operands = operands,
+        .results = &.{vec_ty},
+    });
 }
 
 /// Emit a tensor literal materializing `p`’s values into `t`.
@@ -2140,11 +2090,10 @@ fn emitTensorMake(self: *Codegen, p: tir.Rows.ArrayMake, t: *const tir.TIR) !mli
         operands[i] = v;
     }
 
-    var literal = OpBuilder.init("tensor.from_elements", self.loc).builder()
-        .operands(operands)
-        .results(&.{tensor_ty}).build();
-    self.append(literal);
-    return literal.getResult(0);
+    return self.emitOp("tensor.from_elements", EmitOpArgs{
+        .operands = operands,
+        .results = &.{tensor_ty},
+    });
 }
 
 /// Emit the general array literal building logic for `p`.
@@ -2193,11 +2142,10 @@ fn emitIndex(self: *Codegen, p: tir.Rows.Index, t: *tir.TIR) !mlir.Value {
 
         if (base_rank == 1 and res_sr_kind != .Tensor and res_sr_kind != .Slice) {
             // Rank-1 tensor indexed by scalar -> tensor.extract returning element value.
-            var op = OpBuilder.init("tensor.extract", self.loc).builder()
-                .operands(&.{ base, idx_val })
-                .results(&.{res_ty}).build();
-            self.append(op);
-            return op.getResult(0);
+            return self.emitOp("tensor.extract", EmitOpArgs{
+                .operands = &.{ base, idx_val },
+                .results = &.{res_ty},
+            });
         }
 
         std.debug.assert(res_sr_kind == .Tensor);
@@ -2242,11 +2190,11 @@ fn emitIndex(self: *Codegen, p: tir.Rows.Index, t: *tir.TIR) !mlir.Value {
         };
 
         var extract_operands = [_]mlir.Value{ base, idx_val };
-        var slice = OpBuilder.init("tensor.extract_slice", self.loc).builder()
-            .operands(&extract_operands)
-            .results(&.{slice_ty})
-            .attributes(&extract_attrs).build();
-        self.append(slice);
+        const slice = self.appendOp("tensor.extract_slice", EmitOpArgs{
+            .operands = &extract_operands,
+            .results = &.{slice_ty},
+            .attributes = &extract_attrs,
+        });
 
         const collapse_result_ty = res_ty;
         const reassoc_rank = new_rank;
@@ -2268,23 +2216,21 @@ fn emitIndex(self: *Codegen, p: tir.Rows.Index, t: *tir.TIR) !mlir.Value {
         const reassoc_attr = mlir.Attribute.arrayAttrGet(self.mlir_ctx, reassoc_groups);
 
         var collapse_attrs = [_]mlir.NamedAttribute{self.named("reassociation", reassoc_attr)};
-        var collapse = OpBuilder.init("tensor.collapse_shape", self.loc).builder()
-            .operands(&.{slice.getResult(0)})
-            .results(&.{collapse_result_ty})
-            .attributes(&collapse_attrs).build();
-        self.append(collapse);
-        return collapse.getResult(0);
+        return self.emitOp("tensor.collapse_shape", EmitOpArgs{
+            .operands = &.{slice.getResult(0)},
+            .results = &.{collapse_result_ty},
+            .attributes = &collapse_attrs,
+        });
     }
 
     if (self.context.type_store.getKind(base_sr_ty) == .Simd) {
         const idx_val = try self.ensureIndexValue(self.value_map.get(p.index).?);
         const static_pos_attr = mlir.Attribute.denseI64ArrayGet(self.mlir_ctx, &.{mlir.Type.getDynamicSize()});
-        var op = OpBuilder.init("vector.extract", self.loc).builder()
-            .operands(&.{ base, idx_val })
-            .attributes(&.{self.named("static_position", static_pos_attr)})
-            .results(&.{res_ty}).build();
-        self.append(op);
-        return op.getResult(0);
+        return self.emitOp("vector.extract", EmitOpArgs{
+            .operands = &.{ base, idx_val },
+            .attributes = &.{self.named("static_position", static_pos_attr)},
+            .results = &.{res_ty},
+        });
     }
 
     if (res_sr_kind == .Slice or res_sr_kind == .String) {
@@ -2387,21 +2333,10 @@ fn emitIndex(self: *Codegen, p: tir.Rows.Index, t: *tir.TIR) !mlir.Value {
         // Ensure operands are i64
         const start64 = try self.coerceOnBranch(start_v, i64t, self.context.type_store.tI64(), self.srTypeOfValue(start_vid));
         const end64 = try self.coerceOnBranch(end_v, i64t, self.context.type_store.tI64(), self.srTypeOfValue(end_vid));
-        var sub = OpBuilder.init("llvm.sub", self.loc).builder()
-            .operands(&.{ end64, start64 })
-            .results(&.{i64t}).build();
-        self.append(sub);
-        const diff = sub.getResult(0);
+        const diff = self.emitBinaryValueOp("llvm.sub", end64, start64, i64t, null);
         // zext bool to i64
-        var z = OpBuilder.init("llvm.zext", self.loc).builder()
-            .operands(&.{incl_v})
-            .results(&.{i64t}).build();
-        self.append(z);
-        var add = OpBuilder.init("llvm.add", self.loc).builder()
-            .operands(&.{ diff, z.getResult(0) })
-            .results(&.{i64t}).build();
-        self.append(add);
-        const len64 = add.getResult(0);
+        const z = self.emitUnaryValueOp("llvm.zext", incl_v, i64t);
+        const len64 = self.emitBinaryValueOp("llvm.add", diff, z, i64t, null);
 
         // Build slice {ptr,len}
         var acc = self.zeroOf(res_ty);
@@ -2422,13 +2357,11 @@ fn emitIndex(self: *Codegen, p: tir.Rows.Index, t: *tir.TIR) !mlir.Value {
             else => unreachable,
         };
         const vptr = try self.emitGep(ptr0, elem_mlir, &.{.{ .Value = p.index }});
-        var ld = OpBuilder.init("llvm.load", self.loc).builder()
-            .operands(&.{vptr})
-            .results(&.{res_ty})
-            .attributes(&.{self.named("alignment", mlir.Attribute.integerAttrGet(self.i64_ty, 1))})
-            .build();
-        self.append(ld);
-        return ld.getResult(0);
+        return self.emitOp("llvm.load", EmitOpArgs{
+            .operands = &.{vptr},
+            .results = &.{res_ty},
+            .attributes = &.{self.named("alignment", mlir.Attribute.integerAttrGet(self.i64_ty, 1))},
+        });
     }
 
     if (base.getType().equal(self.llvm_ptr_ty)) {
@@ -2439,22 +2372,19 @@ fn emitIndex(self: *Codegen, p: tir.Rows.Index, t: *tir.TIR) !mlir.Value {
             elem_mlir2 = try self.llvmTypeOf(ptr_row2.elem);
         }
         const vptr = try self.emitGep(base, elem_mlir2, &.{.{ .Value = p.index }});
-        var ld = OpBuilder.init("llvm.load", self.loc).builder()
-            .operands(&.{vptr})
-            .results(&.{res_ty})
-            .attributes(&.{self.named("alignment", mlir.Attribute.integerAttrGet(self.i64_ty, 1))})
-            .build();
-        self.append(ld);
-        return ld.getResult(0);
+        return self.emitOp("llvm.load", EmitOpArgs{
+            .operands = &.{vptr},
+            .results = &.{res_ty},
+            .attributes = &.{self.named("alignment", mlir.Attribute.integerAttrGet(self.i64_ty, 1))},
+        });
     } else {
         const base_ty = base.getType();
         const tmp_ptr = self.spillAgg(base, base_ty, 0);
         const vptr = try self.emitGep(tmp_ptr, base_ty, &.{.{ .Value = p.index }});
-        var ld = OpBuilder.init("llvm.load", self.loc).builder()
-            .operands(&.{vptr})
-            .results(&.{res_ty}).build();
-        self.append(ld);
-        return ld.getResult(0);
+        return self.emitOp("llvm.load", EmitOpArgs{
+            .operands = &.{vptr},
+            .results = &.{res_ty},
+        });
     }
 }
 
@@ -2505,12 +2435,8 @@ fn expandVariadicArgTuple(
             return;
         },
         .Bool => {
-            var ext = OpBuilder.init("arith.extui", self.loc).builder()
-                .operands(&.{value})
-                .results(&.{self.i32_ty})
-                .build();
-            self.append(ext);
-            try out_vals.append(ext.getResult(0));
+            const ext = self.emitUnaryValueOp("arith.extui", value, self.i32_ty);
+            try out_vals.append(ext);
             try out_sr.append(self.context.type_store.tI32());
             return;
         },
@@ -2620,12 +2546,11 @@ fn emitCall(self: *Codegen, p: tir.Rows.Call, t: *tir.TIR) !mlir.Value {
         const attrs = [_]mlir.NamedAttribute{
             self.named("callee", mlir.Attribute.flatSymbolRefAttrGet(self.mlir_ctx, mlir.StringRef.from(callee_name))),
         };
-        var call = OpBuilder.init("func.call", self.loc).builder()
-            .operands(call_args)
-            .results(if (want_has_res) &.{want_res_mlir} else &.{})
-            .attributes(&attrs)
-            .build();
-        self.append(call);
+        const call = self.appendOp("func.call", EmitOpArgs{
+            .operands = call_args,
+            .results = if (want_has_res) &.{want_res_mlir} else &.{},
+            .attributes = &attrs,
+        });
         return if (want_has_res) call.getResult(0) else .empty();
     }
 
@@ -2681,11 +2606,10 @@ fn emitCall(self: *Codegen, p: tir.Rows.Call, t: *tir.TIR) !mlir.Value {
                         const bits = cls.scalar0.?.getIntegerBitwidth();
                         passv = self.loadIntAt(tmp, bits, 0);
                     } else {
-                        var ld = OpBuilder.init("llvm.load", self.loc).builder()
-                            .operands(&.{tmp})
-                            .results(&.{cls.scalar0.?}).build();
-                        self.append(ld);
-                        passv = ld.getResult(0);
+                        passv = self.emitOp("llvm.load", EmitOpArgs{
+                            .operands = &.{tmp},
+                            .results = &.{cls.scalar0.?},
+                        });
                     }
                 } else {
                     passv = v;
@@ -2737,17 +2661,16 @@ fn emitCall(self: *Codegen, p: tir.Rows.Call, t: *tir.TIR) !mlir.Value {
         const func_ty = finfo.?.op.getInherentAttributeByName(mlir.StringRef.from("function_type"));
         callAttrsList.append(self.named("var_callee_type", func_ty)) catch unreachable;
     }
-    var call = OpBuilder.init("llvm.call", self.loc).builder()
-        .operands(lowered_ops.items)
-        .results(if (want_no_result)
+    const call = self.appendOp("llvm.call", EmitOpArgs{
+        .operands = lowered_ops.items,
+        .results = if (want_no_result)
             &.{}
         else if (retClass.kind == .IndirectSRet)
             &.{}
         else
-            &.{finfo.?.ret_type})
-        .attributes(callAttrsList.items)
-        .build();
-    self.append(call);
+            &.{finfo.?.ret_type},
+        .attributes = callAttrsList.items,
+    });
 
     // Reconstruct desired result (structural) from ABI return
     if (want_no_result) return .empty();
@@ -2755,13 +2678,11 @@ fn emitCall(self: *Codegen, p: tir.Rows.Call, t: *tir.TIR) !mlir.Value {
     switch (retClass.kind) {
         .IndirectSRet => {
             // load structural result from retbuf
-            var ld = OpBuilder.init("llvm.load", self.loc).builder()
-                .operands(&.{retbuf})
-                .results(&.{want_res_mlir})
-                .attributes(&.{self.named("alignment", mlir.Attribute.integerAttrGet(self.i64_ty, 1))})
-                .build();
-            self.append(ld);
-            return ld.getResult(0);
+            return self.emitOp("llvm.load", EmitOpArgs{
+                .operands = &.{retbuf},
+                .results = &.{want_res_mlir},
+                .attributes = &.{self.named("alignment", mlir.Attribute.integerAttrGet(self.i64_ty, 1))},
+            });
         },
         .DirectScalar => {
             const rv = call.getResult(0);
@@ -2776,13 +2697,11 @@ fn emitCall(self: *Codegen, p: tir.Rows.Call, t: *tir.TIR) !mlir.Value {
             // Caller expects an aggregate: write scalar into buffer and reload as struct
             const tmp = self.spillAgg(self.undefOf(want_res_mlir), want_res_mlir, 8);
             self.storeAt(tmp, rv, 0);
-            var ld2 = OpBuilder.init("llvm.load", self.loc).builder()
-                .operands(&.{tmp})
-                .results(&.{want_res_mlir})
-                .attributes(&.{self.named("alignment", mlir.Attribute.integerAttrGet(self.i64_ty, 1))})
-                .build();
-            self.append(ld2);
-            return ld2.getResult(0);
+            return self.emitOp("llvm.load", EmitOpArgs{
+                .operands = &.{tmp},
+                .results = &.{want_res_mlir},
+                .attributes = &.{self.named("alignment", mlir.Attribute.integerAttrGet(self.i64_ty, 1))},
+            });
         },
         .DirectPair => {
             // Return value is a literal LLVM struct {lo,hi}
@@ -2790,21 +2709,19 @@ fn emitCall(self: *Codegen, p: tir.Rows.Call, t: *tir.TIR) !mlir.Value {
             const loTy = retClass.scalar0.?;
             const hiTy = retClass.scalar1.?;
             // extract pieces
-            var ex0 = OpBuilder.init("llvm.extractvalue", self.loc).builder()
-                .operands(&.{rv})
-                .results(&.{loTy})
-                .attributes(&.{self.named("position", mlir.Attribute.denseI64ArrayGet(self.mlir_ctx, &[_]i64{0}))})
-                .build();
-            self.append(ex0);
-            var ex1 = OpBuilder.init("llvm.extractvalue", self.loc).builder()
-                .operands(&.{rv})
-                .results(&.{hiTy})
-                .attributes(&.{self.named("position", mlir.Attribute.denseI64ArrayGet(self.mlir_ctx, &[_]i64{1}))})
-                .build();
-            self.append(ex1);
+            const ex0 = self.emitOp("llvm.extractvalue", EmitOpArgs{
+                .operands = &.{rv},
+                .results = &.{loTy},
+                .attributes = &.{self.named("position", mlir.Attribute.denseI64ArrayGet(self.mlir_ctx, &[_]i64{0}))},
+            });
+            const ex1 = self.emitOp("llvm.extractvalue", EmitOpArgs{
+                .operands = &.{rv},
+                .results = &.{hiTy},
+                .attributes = &.{self.named("position", mlir.Attribute.denseI64ArrayGet(self.mlir_ctx, &[_]i64{1}))},
+            });
             // Compose the aggregate via insertvalue instead of spilling to memory
-            var agg = self.insertAt(self.undefOf(want_res_mlir), ex0.getResult(0), &.{0});
-            agg = self.insertAt(agg, ex1.getResult(0), &.{1});
+            var agg = self.insertAt(self.undefOf(want_res_mlir), ex0, &.{0});
+            agg = self.insertAt(agg, ex1, &.{1});
             return agg;
         },
         else => unreachable,
@@ -3033,10 +2950,9 @@ fn emitMlirBlock(self: *Codegen, p: tir.Rows.MlirBlock, t: *tir.TIR) !mlir.Value
             } else {
                 // Materialize a dummy pointer value to satisfy SSA uses of mlir.module type
                 const ty = try self.llvmTypeOf(p.ty);
-                var zero = OpBuilder.init("llvm.mlir.zero", self.loc).builder()
-                    .results(&.{ty}).build();
-                self.append(zero);
-                return zero.getResult(0);
+                return self.emitOp("llvm.mlir.zero", EmitOpArgs{
+                    .results = &.{ty},
+                });
             }
         },
         .Type => {
@@ -3049,10 +2965,9 @@ fn emitMlirBlock(self: *Codegen, p: tir.Rows.MlirBlock, t: *tir.TIR) !mlir.Value
                 return .empty();
             } else {
                 const ty = try self.llvmTypeOf(p.ty);
-                var zero = OpBuilder.init("llvm.mlir.zero", self.loc).builder()
-                    .results(&.{ty}).build();
-                self.append(zero);
-                return zero.getResult(0);
+                return self.emitOp("llvm.mlir.zero", EmitOpArgs{
+                    .results = &.{ty},
+                });
             }
         },
         .Attribute => {
@@ -3065,10 +2980,9 @@ fn emitMlirBlock(self: *Codegen, p: tir.Rows.MlirBlock, t: *tir.TIR) !mlir.Value
                 return .empty();
             } else {
                 const ty = try self.llvmTypeOf(p.ty);
-                var zero = OpBuilder.init("llvm.mlir.zero", self.loc).builder()
-                    .results(&.{ty}).build();
-                self.append(zero);
-                return zero.getResult(0);
+                return self.emitOp("llvm.mlir.zero", EmitOpArgs{
+                    .results = &.{ty},
+                });
             }
         },
     }
@@ -3163,11 +3077,11 @@ fn emitInstr(self: *Codegen, ins_id: tir.InstrId, t: *tir.TIR) !mlir.Value {
             const cty = try self.llvmTypeOf(p.ty);
             const re = self.value_map.get(p.re).?;
             const im = self.value_map.get(p.im).?;
-            var op = OpBuilder.init("complex.create", self.loc).builder()
-                .operands(&.{ re, im })
-                .results(&.{cty}).build();
-            self.append(op);
-            break :blk op.getResult(0);
+            const result = self.emitOp("complex.create", EmitOpArgs{
+                .operands = &.{ re, im },
+                .results = &.{cty},
+            });
+            break :blk result;
         },
         .ExtractElem => blk: {
             const p = t.instrs.get(.ExtractElem, ins_id);
@@ -3211,11 +3125,8 @@ fn emitInstr(self: *Codegen, ins_id: tir.InstrId, t: *tir.TIR) !mlir.Value {
                 }
                 if (which_re or which_im) {
                     const opname = if (which_re) "complex.re" else "complex.im";
-                    var op = OpBuilder.init(opname, self.loc).builder()
-                        .operands(&.{agg})
-                        .results(&.{res_ty}).build();
-                    self.append(op);
-                    break :blk op.getResult(0);
+                    const result = self.emitUnaryValueOp(opname, agg, res_ty);
+                    break :blk result;
                 }
             }
             if (!p.name.isNone()) {
@@ -3234,25 +3145,16 @@ fn emitInstr(self: *Codegen, ins_id: tir.InstrId, t: *tir.TIR) !mlir.Value {
             if (parent_kind == .Optional) {
                 if (self.context.type_store.isOptionalPointer(parent_sr)) {
                     if (p.index == 0) {
-                        var ptr_int = OpBuilder.init("llvm.ptrtoint", self.loc).builder()
-                            .operands(&.{agg})
-                            .results(&.{self.i64_ty}).build();
-                        self.append(ptr_int);
+                        const ptr_int = self.emitUnaryValueOp("llvm.ptrtoint", agg, self.i64_ty);
                         const zero = self.constInt(self.i64_ty, 0);
-                        var cmp = OpBuilder.init("arith.cmpi", self.loc).builder()
-                            .operands(&.{ ptr_int.getResult(0), zero })
-                            .results(&.{self.i1_ty})
-                            .attributes(&.{self.named("predicate", self.arithCmpIPredAttr("ne"))})
-                            .build();
-                        self.append(cmp);
-                        break :blk cmp.getResult(0);
+                        const cmp = self.emitBinaryValueOp("arith.cmpi", ptr_int, zero, self.i1_ty, &.{
+                            self.named("predicate", self.arithCmpIPredAttr("ne")),
+                        });
+                        break :blk cmp;
                     } else if (p.index == 1) {
                         if (!agg.getType().equal(res_ty)) {
-                            var bc = OpBuilder.init("llvm.bitcast", self.loc).builder()
-                                .operands(&.{agg})
-                                .results(&.{res_ty}).build();
-                            self.append(bc);
-                            break :blk bc.getResult(0);
+                            const bc = self.emitUnaryValueOp("llvm.bitcast", agg, res_ty);
+                            break :blk bc;
                         }
                         break :blk agg;
                     }
@@ -3346,11 +3248,11 @@ fn emitInstr(self: *Codegen, ins_id: tir.InstrId, t: *tir.TIR) !mlir.Value {
             const tmp = self.spillAgg(self.undefOf(u_mlir), u_mlir, 0);
             self.storeAt(tmp, payload, 0);
 
-            var ld = OpBuilder.init("llvm.load", self.loc).builder()
-                .operands(&.{tmp})
-                .results(&.{u_mlir}).build();
-            self.append(ld);
-            break :blk ld.getResult(0);
+            const result = self.emitOp("llvm.load", EmitOpArgs{
+                .operands = &.{tmp},
+                .results = &.{u_mlir},
+            });
+            break :blk result;
         },
         .UnionField => blk: {
             const p = t.instrs.get(.UnionField, ins_id);
@@ -3386,13 +3288,12 @@ fn emitInstr(self: *Codegen, ins_id: tir.InstrId, t: *tir.TIR) !mlir.Value {
             const idxs = [_]tir.Rows.GepIndex{.{ .Const = 0 }};
             const fptr = try self.emitGep(storage_ptr, f_mlir, &idxs);
             // load the field value from the pointer
-            const load_op = OpBuilder.init("llvm.load", self.loc).builder()
-                .operands(&.{fptr})
-                .results(&.{f_mlir})
-                .attributes(&.{self.named("alignment", mlir.Attribute.integerAttrGet(self.i64_ty, 1))})
-                .build();
-            self.append(load_op);
-            break :blk load_op.getResult(0);
+            const load_result = self.emitOp("llvm.load", EmitOpArgs{
+                .operands = &.{fptr},
+                .results = &.{f_mlir},
+                .attributes = &.{self.named("alignment", mlir.Attribute.integerAttrGet(self.i64_ty, 1))},
+            });
+            break :blk load_result;
         },
 
         .UnionFieldPtr => blk: {
@@ -3476,11 +3377,11 @@ fn emitInstr(self: *Codegen, ins_id: tir.InstrId, t: *tir.TIR) !mlir.Value {
 
             try callAttrsList.append(self.named("op_bundle_sizes", mlir.Attribute.denseI32ArrayGet(self.mlir_ctx, &[_]i32{})));
 
-            var call = OpBuilder.init("llvm.call", self.loc).builder()
-                .operands(ops)
-                .results(if (has_res) &.{ret_ty} else &.{}).attributes(callAttrsList.items)
-                .build();
-            self.append(call);
+            const call = self.appendOp("llvm.call", EmitOpArgs{
+                .operands = ops,
+                .results = if (has_res) &.{ret_ty} else &.{},
+                .attributes = callAttrsList.items,
+            });
             break :blk if (has_res) call.getResult(0) else mlir.Value.empty();
         },
         .Call => self.emitCall(t.instrs.get(.Call, ins_id), t),
@@ -3596,12 +3497,11 @@ fn emitInlineMlirOperation(
     const attrs = [_]mlir.NamedAttribute{
         self.named("callee", mlir.Attribute.flatSymbolRefAttrGet(self.mlir_ctx, mlir.StringRef.from(func_name_buf))),
     };
-    var call = OpBuilder.init("func.call", self.loc).builder()
-        .operands(arg_values.items)
-        .results(if (has_result) &.{result_ty} else &.{}) //
-        .attributes(&attrs)
-        .build();
-    self.append(call);
+    const call = self.appendOp("func.call", EmitOpArgs{
+        .operands = arg_values.items,
+        .results = if (has_result) &.{result_ty} else &.{},
+        .attributes = &attrs,
+    });
 
     if (has_result) {
         return call.getResult(0);
@@ -3624,28 +3524,16 @@ fn emitCmp(
     var rhs = self.value_map.get(p.rhs).?;
 
     if (mlir.LLVM.isLLVMPointerType(lhs.getType())) {
-        var op = OpBuilder.init("llvm.ptrtoint", self.loc).builder()
-            .operands(&.{lhs})
-            .results(&.{self.i64_ty}).build();
-        self.append(op);
-        lhs = op.getResult(0);
+        lhs = self.emitUnaryValueOp("llvm.ptrtoint", lhs, self.i64_ty);
     }
     if (mlir.LLVM.isLLVMPointerType(rhs.getType())) {
-        var op = OpBuilder.init("llvm.ptrtoint", self.loc).builder()
-            .operands(&.{rhs})
-            .results(&.{self.i64_ty}).build();
-        self.append(op);
-        rhs = op.getResult(0);
+        rhs = self.emitUnaryValueOp("llvm.ptrtoint", rhs, self.i64_ty);
     }
 
     if (lhs.getType().isAFloat()) {
-        var op = OpBuilder.init("arith.cmpf", self.loc).builder()
-            .operands(&.{ lhs, rhs })
-            .results(&.{self.i1_ty})
-            .attributes(&.{self.named("predicate", self.arithCmpFPredAttr(pred_f))})
-            .build();
-        self.append(op);
-        return op.getResult(0);
+        return self.emitBinaryValueOp("arith.cmpf", lhs, rhs, self.i1_ty, &.{
+            self.named("predicate", self.arithCmpFPredAttr(pred_f)),
+        });
     } else {
         const unsigned = self.isUnsigned(self.srTypeOfValue(p.lhs));
         const pred = if (unsigned)
@@ -3653,13 +3541,9 @@ fn emitCmp(
         else
             self.arithCmpIPredAttr(pred_s);
 
-        var op = OpBuilder.init("arith.cmpi", self.loc).builder()
-            .operands(&.{ lhs, rhs })
-            .results(&.{self.i1_ty})
-            .attributes(&.{self.named("predicate", pred)})
-            .build();
-        self.append(op);
-        return op.getResult(0);
+        return self.emitBinaryValueOp("arith.cmpi", lhs, rhs, self.i1_ty, &.{
+            self.named("predicate", pred),
+        });
     }
 }
 
@@ -3679,39 +3563,35 @@ fn emitTerminator(self: *Codegen, term_id: tir.TermId, t: *tir.TIR) !void {
             const in_llvm_func = std.mem.eql(u8, func_op.getName().str().toSlice(), "llvm.func");
             if (in_llvm_func) {
                 // LLVM functions still return directly
-                var retop: mlir.Operation = undefined;
                 if (!p.value.isNone()) {
                     const maybe_v = self.value_map.get(p.value.unwrap());
                     const v = if (maybe_v) |mv| mv else self.zeroOf(ret_ty);
                     if (ret_ty.equal(self.void_ty)) {
-                        retop = OpBuilder.init("llvm.return", self.loc).builder().build();
+                        _ = self.appendOp("llvm.return", EmitOpArgs{});
                     } else {
-                        retop = OpBuilder.init("llvm.return", self.loc).builder().operands(&.{v}).build();
+                        _ = self.appendOp("llvm.return", EmitOpArgs{ .operands = &.{v} });
                     }
                 } else {
                     if (!ret_ty.equal(self.void_ty)) {
                         const z = self.zeroOf(ret_ty);
-                        retop = OpBuilder.init("llvm.return", self.loc).builder().operands(&.{z}).build();
+                        _ = self.appendOp("llvm.return", EmitOpArgs{ .operands = &.{z} });
                     } else {
-                        retop = OpBuilder.init("llvm.return", self.loc).builder().build();
+                        _ = self.appendOp("llvm.return", EmitOpArgs{});
                     }
                 }
-                self.append(retop);
             } else {
                 // For func.func: branch to the join-return block with optional value.
                 const dest = self.ret_join_block.?;
                 if (self.ret_has_value) {
                     const v = if (!p.value.isNone()) (self.value_map.get(p.value.unwrap()) orelse self.zeroOf(ret_ty)) else self.zeroOf(ret_ty);
-                    const br = OpBuilder.init("cf.br", self.loc).builder()
-                        .operands(&.{v})
-                        .successors(&.{dest})
-                        .build();
-                    self.append(br);
+                    _ = self.appendOp("cf.br", EmitOpArgs{
+                        .operands = &.{v},
+                        .successors = &.{dest},
+                    });
                 } else {
-                    const br = OpBuilder.init("cf.br", self.loc).builder()
-                        .successors(&.{dest})
-                        .build();
-                    self.append(br);
+                    _ = self.appendOp("cf.br", EmitOpArgs{
+                        .successors = &.{dest},
+                    });
                 }
             }
         },
@@ -3731,11 +3611,10 @@ fn emitTerminator(self: *Codegen, term_id: tir.TermId, t: *tir.TIR) !void {
 
             for (args, 0..) |avid, i| argv[i] = self.value_map.get(avid).?;
 
-            const br = OpBuilder.init("cf.br", self.loc).builder()
-                .operands(argv)
-                .successors(&.{dest})
-                .build();
-            self.append(br);
+            _ = self.appendOp("cf.br", EmitOpArgs{
+                .operands = argv,
+                .successors = &.{dest},
+            });
         },
 
         .CondBr => {
@@ -3770,12 +3649,11 @@ fn emitTerminator(self: *Codegen, term_id: tir.TermId, t: *tir.TIR) !void {
 
             const seg = mlir.Attribute.denseI32ArrayGet(self.mlir_ctx, &[_]i32{ 1, @intCast(tbuf.len), @intCast(ebuf.len) });
 
-            const br = OpBuilder.init("cf.cond_br", self.loc).builder()
-                .operands(ops)
-                .successors(&.{ tdest, edest })
-                .attributes(&.{self.named("operand_segment_sizes", seg)})
-                .build();
-            self.append(br);
+            _ = self.appendOp("cf.cond_br", EmitOpArgs{
+                .operands = ops,
+                .successors = &.{ tdest, edest },
+                .attributes = &.{self.named("operand_segment_sizes", seg)},
+            });
         },
 
         .SwitchInt => {
@@ -3786,8 +3664,7 @@ fn emitTerminator(self: *Codegen, term_id: tir.TermId, t: *tir.TIR) !void {
             const p = t.terms.get(.Unreachable, term_id);
             const prev_loc = self.pushLocation(p.loc);
             defer self.loc = prev_loc;
-            const op = OpBuilder.init("llvm.unreachable", self.loc).builder().build();
-            self.append(op);
+            _ = self.appendOp("llvm.unreachable", EmitOpArgs{});
         },
     }
 }
@@ -3882,11 +3759,10 @@ fn buildTensorIndexValues(
         out[i] = switch (entry) {
             .constant => |c| blk: {
                 const attr = mlir.Attribute.integerAttrGet(idx_ty, c);
-                var op = OpBuilder.init("arith.constant", self.loc).builder()
-                    .results(&.{idx_ty})
-                    .attributes(&.{self.named("value", attr)}).build();
-                self.append(op);
-                break :blk op.getResult(0);
+                break :blk self.emitOp("arith.constant", EmitOpArgs{
+                    .results = &.{idx_ty},
+                    .attributes = &.{self.named("value", attr)},
+                });
             },
             .value => |vid| blk: {
                 const raw = try self.ensureValue(t, vid);
@@ -3968,11 +3844,10 @@ fn tensorInsertScalar(
     ops[0] = elem_value;
     ops[1] = base_tensor;
     if (indices.len != 0) std.mem.copyForwards(mlir.Value, ops[2..], indices);
-    var insert = OpBuilder.init("tensor.insert", self.loc).builder()
-        .operands(ops)
-        .results(&.{tensor_mlir}).build();
-    self.append(insert);
-    return insert.getResult(0);
+    return self.emitOp("tensor.insert", EmitOpArgs{
+        .operands = ops,
+        .results = &.{tensor_mlir},
+    });
 }
 
 /// Extract a scalar from the tensor located at the computed index.
@@ -3987,11 +3862,10 @@ fn tensorExtractScalar(
     defer self.gpa.free(ops);
     ops[0] = base_tensor;
     if (indices.len != 0) std.mem.copyForwards(mlir.Value, ops[1..], indices);
-    var extract = OpBuilder.init("tensor.extract", self.loc).builder()
-        .operands(ops)
-        .results(&.{elem_mlir}).build();
-    self.append(extract);
-    return extract.getResult(0);
+    return self.emitOp("tensor.extract", EmitOpArgs{
+        .operands = ops,
+        .results = &.{elem_mlir},
+    });
 }
 
 /// Emit a pointer `getelementptr` operation for the TIR `p`.
@@ -4062,18 +3936,14 @@ fn emitGep(
     ops[0] = base_ptr;
     for (dyn[0..ndyn], 0..) |v, i| ops[1 + i] = v;
 
-    var op = OpBuilder.init("llvm.getelementptr", self.loc).builder()
-        .operands(ops)
-        .results(&.{self.llvm_ptr_ty})
-        .attributes(&.{
+    return self.emitOp("llvm.getelementptr", EmitOpArgs{
+        .operands = ops,
+        .results = &.{self.llvm_ptr_ty},
+        .attributes = &.{
             self.named("elem_type", mlir.Attribute.typeAttrGet(elem_ty)),
-
             self.named("rawConstantIndices", mlir.Attribute.denseI32ArrayGet(self.mlir_ctx, raw)),
-        }).build();
-
-    self.append(op);
-
-    return op.getResult(0);
+        },
+    });
 }
 
 // ----------------------------------------------------------------
@@ -4149,6 +4019,75 @@ pub fn strAttr(self: *const Codegen, s: []const u8) mlir.Attribute {
     return mlir.Attribute.stringAttrGet(self.mlir_ctx, mlir.StringRef.from(s));
 }
 
+/// Lightweight builder arguments for `emitOp`.
+pub const EmitOpArgs = struct {
+    operands: ?[]const mlir.Value = null,
+    results: ?[]const mlir.Type = null,
+    attributes: ?[]const mlir.NamedAttribute = null,
+    regions: ?[]const mlir.Region = null,
+    successors: ?[]const mlir.Block = null,
+};
+
+/// Build `name` with the given operands/results/etc. without appending.
+pub fn buildOp(self: *Codegen, name: []const u8, args: EmitOpArgs) mlir.Operation {
+    var builder = OpBuilder.init(name, self.loc).builder();
+    if (args.operands) |ops| _ = builder.operands(ops);
+    if (args.results) |res| _ = builder.results(res);
+    if (args.attributes) |attrs| _ = builder.attributes(attrs);
+    if (args.regions) |regs| _ = builder.regions(regs);
+    if (args.successors) |succs| _ = builder.successors(succs);
+
+    return builder.build();
+}
+
+/// Append the previously built operation into the current block.
+pub fn appendOp(self: *Codegen, name: []const u8, args: EmitOpArgs) mlir.Operation {
+    const op = self.buildOp(name, args);
+    self.append(op);
+    return op;
+}
+
+/// Emit `name` with the given operands/results and append its result if available.
+pub fn emitOp(self: *Codegen, name: []const u8, args: EmitOpArgs) mlir.Value {
+    const op = self.appendOp(name, args);
+    if (op.getNumResults() == 0) return .empty();
+    return op.getResult(0);
+}
+
+/// Emit a binary operation that consumes two values and produces one result.
+pub fn emitBinaryValueOp(
+    self: *Codegen,
+    name: []const u8,
+    lhs: mlir.Value,
+    rhs: mlir.Value,
+    result_ty: mlir.Type,
+    attrs: ?[]const mlir.NamedAttribute,
+) mlir.Value {
+    return self.emitOp(name, EmitOpArgs{
+        .operands = &.{ lhs, rhs },
+        .results = &.{result_ty},
+        .attributes = attrs,
+    });
+}
+
+/// Emit a unary operation that consumes one value and produces one result.
+pub fn emitUnaryValueOp(self: *Codegen, name: []const u8, operand: mlir.Value, result_ty: mlir.Type) mlir.Value {
+    return self.emitOp(name, EmitOpArgs{
+        .operands = &.{operand},
+        .results = &.{result_ty},
+    });
+}
+
+/// Helper that panics if a value ID is missing from the map.
+fn getVal(self: *Codegen, id: tir.ValueId) mlir.Value {
+    return self.value_map.get(id) orelse std.debug.panic("missing value for instr {}", .{id});
+}
+
+/// Shortcut for getting the SR kind for a type.
+fn srKind(self: *Codegen, ty: types.TypeId) types.TypeKind {
+    return self.context.type_store.getKind(ty);
+}
+
 /// Emit a zero constant for `ty`, using splat for vectors and `llvm.mlir.zero` otherwise.
 pub fn zeroOf(self: *Codegen, ty: mlir.Type) mlir.Value {
     if (ty.isAVector()) {
@@ -4162,17 +4101,14 @@ pub fn zeroOf(self: *Codegen, ty: mlir.Type) mlir.Value {
             return self.undefOf(ty);
         }
         const dense = mlir.Attribute.denseElementsAttrSplatGet(ty, elem_zero);
-        var const_op = OpBuilder.init("arith.constant", self.loc).builder()
-            .results(&.{ty})
-            .attributes(&.{self.named("value", dense)}).build();
-        self.append(const_op);
-        return const_op.getResult(0);
+        return self.emitOp("arith.constant", EmitOpArgs{
+            .results = &.{ty},
+            .attributes = &.{self.named("value", dense)},
+        });
     }
-    var op = OpBuilder.init("llvm.mlir.zero", self.loc).builder()
-        .results(&.{ty})
-        .build();
-    self.append(op);
-    return op.getResult(0);
+    return self.emitOp("llvm.mlir.zero", EmitOpArgs{
+        .results = &.{ty},
+    });
 }
 
 /// Convert `value` to the MLIR `index` type, emitting a cast if needed.
@@ -4180,11 +4116,7 @@ fn ensureIndexValue(self: *Codegen, value: mlir.Value) !mlir.Value {
     const idx_ty = mlir.Type.getIndexType(self.mlir_ctx);
     if (value.getType().equal(idx_ty)) return value;
     if (value.getType().isAInteger()) {
-        var cast_op = OpBuilder.init("arith.index_cast", self.loc).builder()
-            .operands(&.{value})
-            .results(&.{idx_ty}).build();
-        self.append(cast_op);
-        return cast_op.getResult(0);
+        return self.emitUnaryValueOp("arith.index_cast", value, idx_ty);
     }
     return value;
 }
@@ -4193,33 +4125,25 @@ fn ensureIndexValue(self: *Codegen, value: mlir.Value) !mlir.Value {
 fn llvmNullPtr(self: *Codegen) mlir.Value {
     // Create a null pointer via constant integer 0 casted to ptr
     const zero = self.constInt(self.i64_ty, 0);
-    var op = OpBuilder.init("llvm.inttoptr", self.loc).builder()
-        .operands(&.{zero})
-        .results(&.{self.llvm_ptr_ty}).build();
-    self.append(op);
-    return op.getResult(0);
+    return self.emitUnaryValueOp("llvm.inttoptr", zero, self.llvm_ptr_ty);
 }
 
 /// Emit an `llvm.mlir.undef` of type `ty`.
 pub fn undefOf(self: *Codegen, ty: mlir.Type) mlir.Value {
-    var op = OpBuilder.init("llvm.mlir.undef", self.loc).builder()
-        .results(&.{ty}).build();
-    self.append(op);
-    return op.getResult(0);
+    return self.emitOp("llvm.mlir.undef", EmitOpArgs{
+        .results = &.{ty},
+    });
 }
 
 /// Insert `val` at `pos` into the aggregate `agg`.
 pub fn insertAt(self: *Codegen, agg: mlir.Value, val: mlir.Value, pos: []const i64) mlir.Value {
     std.debug.assert(!mlir.LLVM.isLLVMPointerType(agg.getType()));
     const pos_attr = mlir.Attribute.denseI64ArrayGet(self.mlir_ctx, pos);
-    var op = OpBuilder.init("llvm.insertvalue", self.loc).builder()
-        // Builder expects (container, value)
-        .operands(&.{ agg, val })
-        .results(&.{agg.getType()})
-        .attributes(&.{self.named("position", pos_attr)})
-        .build();
-    self.append(op);
-    return op.getResult(0);
+    return self.emitOp("llvm.insertvalue", EmitOpArgs{
+        .operands = &.{ agg, val },
+        .results = &.{agg.getType()},
+        .attributes = &.{self.named("position", pos_attr)},
+    });
 }
 
 /// Extract the element at `pos` from `agg` and cast it to `res_ty`.
@@ -4227,22 +4151,18 @@ pub fn extractAt(self: *Codegen, agg: mlir.Value, res_ty: mlir.Type, pos: []cons
     // If the source is a pointer, load the requested type directly. This avoids
     // invalid extractvalue-on-pointer and matches our opaque-pointer lowering model.
     if (mlir.LLVM.isLLVMPointerType(agg.getType())) {
-        var ld = OpBuilder.init("llvm.load", self.loc).builder()
-            .operands(&.{agg})
-            .results(&.{res_ty})
-            .attributes(&.{self.named("alignment", mlir.Attribute.integerAttrGet(self.i64_ty, 1))})
-            .build();
-        self.append(ld);
-        return ld.getResult(0);
+        return self.emitOp("llvm.load", EmitOpArgs{
+            .operands = &.{agg},
+            .results = &.{res_ty},
+            .attributes = &.{self.named("alignment", mlir.Attribute.integerAttrGet(self.i64_ty, 1))},
+        });
     }
     const pos_attr = mlir.Attribute.denseI64ArrayGet(self.mlir_ctx, pos);
-    var op = OpBuilder.init("llvm.extractvalue", self.loc).builder()
-        .operands(&.{agg})
-        .results(&.{res_ty})
-        .attributes(&.{self.named("position", pos_attr)})
-        .build();
-    self.append(op);
-    return op.getResult(0);
+    return self.emitOp("llvm.extractvalue", EmitOpArgs{
+        .operands = &.{agg},
+        .results = &.{res_ty},
+        .attributes = &.{self.named("position", pos_attr)},
+    });
 }
 
 /// Spill `aggVal` into a temporary alloca and return the pointer, honoring `alignment` bytes.
@@ -4257,16 +4177,16 @@ pub fn spillAgg(self: *Codegen, aggVal: mlir.Value, elemTy: mlir.Type, alignment
     const attrs = attrs_buf[0..n_attrs];
 
     const one = self.getI64OneInEntry();
-    var a = OpBuilder.init("llvm.alloca", self.loc).builder()
-        .operands(&.{one})
-        .results(&.{self.llvm_ptr_ty})
-        .attributes(attrs)
-        .build();
+    const a = self.buildOp("llvm.alloca", EmitOpArgs{
+        .operands = &.{one},
+        .results = &.{self.llvm_ptr_ty},
+        .attributes = attrs,
+    });
     self.appendInFuncEntry(a);
 
-    const st = OpBuilder.init("llvm.store", self.loc).builder()
-        .operands(&.{ aggVal, a.getResult(0) }).build();
-    self.append(st);
+    _ = self.appendOp("llvm.store", EmitOpArgs{
+        .operands = &.{ aggVal, a.getResult(0) },
+    });
     return a.getResult(0);
 }
 
@@ -4277,24 +4197,20 @@ fn loadIntAt(self: *Codegen, base: mlir.Value, bits: u32, offset: usize) mlir.Va
     var p = base;
     if (offset != 0) {
         const offv = self.constInt(self.i64_ty, @intCast(offset));
-        var gep = OpBuilder.init("llvm.getelementptr", self.loc).builder()
-            .operands(&.{ base, offv })
-            .results(&.{self.llvm_ptr_ty})
-            .attributes(&.{
+        p = self.emitOp("llvm.getelementptr", EmitOpArgs{
+            .operands = &.{ base, offv },
+            .results = &.{self.llvm_ptr_ty},
+            .attributes = &.{
                 self.named("elem_type", mlir.Attribute.typeAttrGet(self.i8_ty)),
                 self.named("rawConstantIndices", mlir.Attribute.denseI32ArrayGet(self.mlir_ctx, &[_]i32{std.math.minInt(i32)})),
-            }) // byte-wise GEP with dynamic index marker
-            .build();
-        self.append(gep);
-        p = gep.getResult(0);
+            },
+        });
     }
-    var ld = OpBuilder.init("llvm.load", self.loc).builder()
-        .operands(&.{p})
-        .results(&.{ity})
-        .attributes(&.{self.named("alignment", mlir.Attribute.integerAttrGet(self.i64_ty, 1))})
-        .build();
-    self.append(ld);
-    return ld.getResult(0);
+    return self.emitOp("llvm.load", EmitOpArgs{
+        .operands = &.{p},
+        .results = &.{ity},
+        .attributes = &.{self.named("alignment", mlir.Attribute.integerAttrGet(self.i64_ty, 1))},
+    });
 }
 
 // Store scalar at ptr + offset
@@ -4303,41 +4219,36 @@ pub fn storeAt(self: *Codegen, base: mlir.Value, val: mlir.Value, offset: usize)
     var p = base;
     if (offset != 0) {
         const offv = self.constInt(self.i64_ty, @intCast(offset));
-        var gep = OpBuilder.init("llvm.getelementptr", self.loc).builder()
-            .operands(&.{ base, offv })
-            .results(&.{self.llvm_ptr_ty})
-            .attributes(&.{
+        p = self.emitOp("llvm.getelementptr", EmitOpArgs{
+            .operands = &.{ base, offv },
+            .results = &.{self.llvm_ptr_ty},
+            .attributes = &.{
                 self.named("elem_type", mlir.Attribute.typeAttrGet(self.i8_ty)),
                 self.named("rawConstantIndices", mlir.Attribute.denseI32ArrayGet(self.mlir_ctx, &[_]i32{std.math.minInt(i32)})),
-            })
-            .build();
-        self.append(gep);
-        p = gep.getResult(0);
+            },
+        });
     }
-    const st = OpBuilder.init("llvm.store", self.loc).builder()
-        .operands(&.{ val, p })
-        .attributes(&.{self.named("alignment", mlir.Attribute.integerAttrGet(self.i64_ty, 1))})
-        .build();
-    self.append(st);
+    _ = self.appendOp("llvm.store", EmitOpArgs{
+        .operands = &.{ val, p },
+        .attributes = &.{self.named("alignment", mlir.Attribute.integerAttrGet(self.i64_ty, 1))},
+    });
 }
 
 /// Emit a constant integer `v` of MLIR type `ty`.
 pub fn constInt(self: *Codegen, ty: mlir.Type, v: i128) mlir.Value {
-    var op = OpBuilder.init("llvm.mlir.constant", self.loc).builder()
-        .results(&.{ty})
-        .attributes(&.{self.named("value", mlir.Attribute.integerAttrGet(ty, @intCast(v)))}).build();
-    self.append(op);
-    return op.getResult(0);
+    return self.emitOp("llvm.mlir.constant", EmitOpArgs{
+        .results = &.{ty},
+        .attributes = &.{self.named("value", mlir.Attribute.integerAttrGet(ty, @intCast(v)))},
+    });
 }
 
 /// Emit a constant floating-point value `v` of MLIR type `ty`.
 pub fn constFloat(self: *Codegen, ty: mlir.Type, v: f64) mlir.Value {
     const attr = mlir.Attribute.floatAttrDoubleGet(self.mlir_ctx, ty, v);
-    var op = OpBuilder.init("llvm.mlir.constant", self.loc).builder()
-        .results(&.{ty})
-        .attributes(&.{self.named("value", attr)}).build();
-    self.append(op);
-    return op.getResult(0);
+    return self.emitOp("llvm.mlir.constant", EmitOpArgs{
+        .results = &.{ty},
+        .attributes = &.{self.named("value", attr)},
+    });
 }
 
 /// Emit an MLIR `i1` constant representing `v`.
@@ -4353,14 +4264,22 @@ fn isUnsigned(self: *Codegen, ty: types.TypeId) bool {
     };
 }
 
-/// Emit binary arithmetic operations (add/sub/mul/div/mod/shl/shr) for `p`.
+/// Emit a generic binary operation using the provided MLIR opcode and result type.
+fn emitBinOp(self: *Codegen, p: tir.Rows.Bin2, op_name: []const u8, ty: mlir.Type) !mlir.Value {
+    const lhs = self.getVal(p.lhs);
+    const rhs = self.getVal(p.rhs);
+    return self.emitOp(op_name, EmitOpArgs{
+        .operands = &.{ lhs, rhs },
+        .results = &.{ty},
+    });
+}
+
+/// Emit binary arithmetic operations (add/sub/mul) for `p` with float/int dispatch.
 fn binArith(
     self: *Codegen,
     comptime op_kind: BinArithOp,
     p: tir.Rows.Bin2,
 ) !mlir.Value {
-    const lhs = self.value_map.get(p.lhs).?;
-    const rhs = self.value_map.get(p.rhs).?;
     const ty = try self.llvmTypeOf(p.ty);
     const elem_ty = if (ty.isAVector()) ty.getShapedElementType() else ty;
 
@@ -4376,12 +4295,7 @@ fn binArith(
         .mul => "arith.muli",
     };
 
-    var op = OpBuilder.init(op_name, self.loc).builder()
-        .operands(&.{ lhs, rhs })
-        .results(&.{ty})
-        .build();
-    self.append(op);
-    return op.getResult(0);
+    return self.emitBinOp(p, op_name, ty);
 }
 
 /// Extend or truncate `v` to `to_ty` respecting signedness.
@@ -4391,11 +4305,7 @@ fn extendIntegerValue(self: *Codegen, v: mlir.Value, signed: bool, to_ty: mlir.T
     const to_w = cast.intOrFloatWidth(to_ty) catch 0;
     if (from_w >= to_w) return v;
     const opname = if (signed) "arith.extsi" else "arith.extui";
-    var op = OpBuilder.init(opname, self.loc).builder()
-        .operands(&.{v})
-        .results(&.{to_ty}).build();
-    self.append(op);
-    return op.getResult(0);
+    return self.emitUnaryValueOp(opname, v, to_ty);
 }
 
 /// Emit integer binary ops that saturate (used only when requested).
@@ -4427,11 +4337,7 @@ fn emitSaturatingIntBinary(
     const lhs_ext = self.extendIntegerValue(lhs, lhs_signed, ext_ty);
     const rhs_ext = self.extendIntegerValue(rhs, rhs_signed, ext_ty);
 
-    var op = OpBuilder.init(arith_name, self.loc).builder()
-        .operands(&.{ lhs_ext, rhs_ext })
-        .results(&.{ext_ty}).build();
-    self.append(op);
-    const wide = op.getResult(0);
+    const wide = self.emitBinaryValueOp(arith_name, lhs_ext, rhs_ext, ext_ty, null);
     return cast.saturateIntToInt(self, wide, lhs_signed, res_ty, lhs_signed);
 }
 
@@ -4441,8 +4347,8 @@ fn binBit(
     comptime op_kind: BinBitOp,
     p: tir.Rows.Bin2,
 ) !mlir.Value {
-    const lhs = self.value_map.get(p.lhs).?;
-    const rhs = self.value_map.get(p.rhs).?;
+    const lhs = self.getVal(p.lhs);
+    const rhs = self.getVal(p.rhs);
     const ty = try self.llvmTypeOf(p.ty);
 
     const op_name = switch (op_kind) {
@@ -4450,54 +4356,32 @@ fn binBit(
         .@"or" => "arith.ori",
         .xor => "arith.xori",
     };
-
-    var op = OpBuilder.init(op_name, self.loc).builder()
-        .operands(&.{ lhs, rhs })
-        .results(&.{ty})
-        .build();
-    self.append(op);
-    return op.getResult(0);
+    return self.emitBinaryValueOp(op_name, lhs, rhs, ty, null);
 }
 
 /// Emit division operations (signed or unsigned) for the arithmetic lowerings.
 fn arithDiv(self: *Codegen, lhs: mlir.Value, rhs: mlir.Value, res_ty: mlir.Type, signed: bool) mlir.Value {
     const elem_ty = if (res_ty.isAVector()) res_ty.getShapedElementType() else res_ty;
     const op_name = if (elem_ty.isAFloat()) "arith.divf" else (if (signed) "arith.divsi" else "arith.divui");
-    var op = OpBuilder.init(op_name, self.loc).builder()
-        .operands(&.{ lhs, rhs })
-        .results(&.{res_ty}).build();
-    self.append(op);
-    return op.getResult(0);
+    return self.emitBinaryValueOp(op_name, lhs, rhs, res_ty, null);
 }
 
 /// Emit remainder operations for signed/unsigned integers.
 fn arithRem(self: *Codegen, lhs: mlir.Value, rhs: mlir.Value, res_ty: mlir.Type, signed: bool) mlir.Value {
     const elem_ty = if (res_ty.isAVector()) res_ty.getShapedElementType() else res_ty;
     const op_name = if (elem_ty.isAFloat()) "arith.remf" else (if (signed) "arith.remsi" else "arith.remui");
-    var op = OpBuilder.init(op_name, self.loc).builder()
-        .operands(&.{ lhs, rhs })
-        .results(&.{res_ty}).build();
-    self.append(op);
-    return op.getResult(0);
+    return self.emitBinaryValueOp(op_name, lhs, rhs, res_ty, null);
 }
 
 /// Emit a shift-left operation for `lhs` and `rhs`.
 fn arithShl(self: *Codegen, lhs: mlir.Value, rhs: mlir.Value, res_ty: mlir.Type) mlir.Value {
-    var op = OpBuilder.init("arith.shli", self.loc).builder()
-        .operands(&.{ lhs, rhs })
-        .results(&.{res_ty}).build();
-    self.append(op);
-    return op.getResult(0);
+    return self.emitBinaryValueOp("arith.shli", lhs, rhs, res_ty, null);
 }
 
 /// Emit a shift-right operation, choosing arithmetic vs logical based on `signed`.
 fn arithShr(self: *Codegen, lhs: mlir.Value, rhs: mlir.Value, res_ty: mlir.Type, signed: bool) mlir.Value {
     const op_name = if (signed) "arith.shrsi" else "arith.shrui";
-    var op = OpBuilder.init(op_name, self.loc).builder()
-        .operands(&.{ lhs, rhs })
-        .results(&.{res_ty}).build();
-    self.append(op);
-    return op.getResult(0);
+    return self.emitBinaryValueOp(op_name, lhs, rhs, res_ty, null);
 }
 
 /// Emit a logical-not operation on i1 values.
@@ -4505,20 +4389,15 @@ fn arithLogicalNotI1(self: *Codegen, v: mlir.Value, loc: tir.OptLocId) mlir.Valu
     const prev_loc = self.pushLocation(loc);
     defer self.loc = prev_loc;
     // !v  ==  xori v, true
-    var op = OpBuilder.init("arith.xori", self.loc).builder()
-        .operands(&.{ v, self.constBool(true) })
-        .results(&.{self.i1_ty}).build();
-    self.append(op);
-    return op.getResult(0);
+    return self.emitBinaryValueOp("arith.xori", v, self.constBool(true), self.i1_ty, null);
 }
 
 /// Emit a select operation `c ? tv : ev` returning `res_ty`.
 fn arithSelect(self: *Codegen, c: mlir.Value, tv: mlir.Value, ev: mlir.Value, res_ty: mlir.Type) mlir.Value {
-    var op = OpBuilder.init("arith.select", self.loc).builder()
-        .operands(&.{ c, tv, ev })
-        .results(&.{res_ty}).build();
-    self.append(op);
-    return op.getResult(0);
+    return self.emitOp("arith.select", EmitOpArgs{
+        .operands = &.{ c, tv, ev },
+        .results = &.{res_ty},
+    });
 }
 
 /// Lookup or rebuild the `FuncInfo` for the call target `p`.
@@ -4555,9 +4434,10 @@ fn ensureDeclFromCall(self: *Codegen, p: tir.Rows.Call, t: *const tir.TIR) !Func
         self.named("sym_visibility", self.strAttr("private")),
     };
     const region = mlir.Region.create();
-    const func_op = OpBuilder.init("func.func", self.loc).builder()
-        .attributes(&attrs)
-        .regions(&.{region}).build();
+    const func_op = self.buildOp("func.func", EmitOpArgs{
+        .attributes = &attrs,
+        .regions = &.{region},
+    });
     var body = self.module.getBody();
     body.appendOwnedOperation(func_op);
 
@@ -4617,24 +4497,21 @@ fn addrOfFirstCharLen(self: *Codegen, global_op: *mlir.Operation, n_bytes: usize
     const name_attr = global_op.getInherentAttributeByName(mlir.StringRef.from("sym_name"));
     const gsym = mlir.Attribute.flatSymbolRefAttrGet(self.mlir_ctx, mlir.Attribute.stringAttrGetValue(name_attr));
 
-    var addr = OpBuilder.init("llvm.mlir.addressof", self.loc).builder()
-        .results(&.{self.llvm_ptr_ty})
-        .attributes(&.{self.named("global_name", gsym)})
-        .build();
-    self.append(addr);
+    const addr = self.appendOp("llvm.mlir.addressof", EmitOpArgs{
+        .results = &.{self.llvm_ptr_ty},
+        .attributes = &.{self.named("global_name", gsym)},
+    });
 
     // GEP 0,0 into [n x i8] to get pointer to first char
     const arr_ty = mlir.LLVM.getLLVMArrayType(self.i8_ty, @intCast(n_bytes));
-    const gep = OpBuilder.init("llvm.getelementptr", self.loc).builder()
-        .operands(&.{addr.getResult(0)})
-        .results(&.{self.llvm_ptr_ty})
-        .attributes(&.{
+    return self.appendOp("llvm.getelementptr", EmitOpArgs{
+        .operands = &.{addr.getResult(0)},
+        .results = &.{self.llvm_ptr_ty},
+        .attributes = &.{
             self.named("rawConstantIndices", mlir.Attribute.denseI32ArrayGet(self.mlir_ctx, &[_]i32{ 0, 0 })),
             self.named("elem_type", mlir.Attribute.typeAttrGet(arr_ty)),
-        })
-        .build();
-    self.append(gep);
-    return gep;
+        },
+    });
 }
 
 /// Escape special characters in `s` so it can be used as an MLIR string literal.
@@ -4728,6 +4605,24 @@ pub fn tryCopyAggregateValue(
     return null;
 }
 
+/// Copy a single indexed element from `src_val` into `result`.
+fn copyAggregateElement(
+    self: *Codegen,
+    result: mlir.Value,
+    idx: usize,
+    dst_sr: types.TypeId,
+    src_sr: types.TypeId,
+    src_val: mlir.Value,
+    elem_coercer: AggregateElemCoercer,
+) anyerror!mlir.Value {
+    const dst_elem_ty = try self.llvmTypeOf(dst_sr);
+    const src_elem_ty = try self.llvmTypeOf(src_sr);
+    const idx_arr = [_]i64{@intCast(idx)};
+    const elem_val = self.extractAt(src_val, src_elem_ty, &idx_arr);
+    const coerced = try elem_coercer(self, dst_sr, dst_elem_ty, elem_val, src_sr);
+    return self.insertAt(result, coerced, &idx_arr);
+}
+
 /// Copy the contents of an error aggregate to the destination block.
 fn copyErrorAggregate(
     self: *Codegen,
@@ -4790,16 +4685,10 @@ fn copyArrayAggregate(
     const src_info = self.context.type_store.get(.Array, src_sr);
     if (dst_info.len != src_info.len) return null;
 
-    const dst_elem_ty = try self.llvmTypeOf(dst_info.elem);
-    const src_elem_ty = try self.llvmTypeOf(src_info.elem);
-
     var result = self.undefOf(dst_ty);
-    var i: usize = 0;
-    while (i < dst_info.len) : (i += 1) {
-        const idx = [_]i64{@intCast(i)};
-        const elem_val = self.extractAt(src_val, src_elem_ty, &idx);
-        const coerced = try elemCoercer(self, dst_info.elem, dst_elem_ty, elem_val, src_info.elem);
-        result = self.insertAt(result, coerced, &idx);
+    var idx: usize = 0;
+    while (idx < dst_info.len) : (idx += 1) {
+        result = try self.copyAggregateElement(result, idx, dst_info.elem, src_info.elem, src_val, elemCoercer);
     }
     return result;
 }
@@ -4825,12 +4714,14 @@ fn copyStructAggregate(
         const src_field_id = src_fields[i];
         const dst_field = self.context.type_store.Field.get(dst_field_id);
         const src_field = self.context.type_store.Field.get(src_field_id);
-        const dst_field_ty = try self.llvmTypeOf(dst_field.ty);
-        const src_field_ty = try self.llvmTypeOf(src_field.ty);
-        const idx = [_]i64{@intCast(i)};
-        const field_val = self.extractAt(src_val, src_field_ty, &idx);
-        const coerced = try elem_coercer(self, dst_field.ty, dst_field_ty, field_val, src_field.ty);
-        result = self.insertAt(result, coerced, &idx);
+        result = try self.copyAggregateElement(
+            result,
+            i,
+            dst_field.ty,
+            src_field.ty,
+            src_val,
+            elem_coercer,
+        );
     }
     return result;
 }
@@ -4854,12 +4745,7 @@ fn copyTupleAggregate(
     var result = self.zeroOf(dst_ty);
     for (dst_elems, 0..) |dst_elem_sr, i| {
         const src_elem_sr = src_elems[i];
-        const dst_elem_ty = try self.llvmTypeOf(dst_elem_sr);
-        const src_elem_ty = try self.llvmTypeOf(src_elem_sr);
-        const idx = [_]i64{@intCast(i)};
-        const elem_val = self.extractAt(src_val, src_elem_ty, &idx);
-        const coerced = try elem_coercer(self, dst_elem_sr, dst_elem_ty, elem_val, src_elem_sr);
-        result = self.insertAt(result, coerced, &idx);
+        result = try self.copyAggregateElement(result, i, dst_elem_sr, src_elem_sr, src_val, elem_coercer);
     }
     return result;
 }
@@ -4993,10 +4879,10 @@ pub fn reinterpretAggregateViaSpill(
         self.storeAt(dst_ptr, byte, i);
     }
 
-    var ld = OpBuilder.init("llvm.load", self.loc).builder()
-        .operands(&.{dst_ptr}).results(&.{dst_ty}).build();
-    self.append(ld);
-    return ld.getResult(0);
+    return self.emitOp("llvm.load", EmitOpArgs{
+        .operands = &.{dst_ptr},
+        .results = &.{dst_ty},
+    });
 }
 
 /// Coerce an aggregate element when two branches need to reconcile differing layouts.
@@ -5024,26 +4910,17 @@ pub fn coerceOnBranch(
 
     // ptr <-> ptr : bitcast
     if (mlir.LLVM.isLLVMPointerType(v.getType()) and mlir.LLVM.isLLVMPointerType(want)) {
-        var bc = OpBuilder.init("llvm.bitcast", self.loc).builder()
-            .operands(&.{v}).results(&.{want}).build();
-        self.append(bc);
-        return bc.getResult(0);
+        return self.emitUnaryValueOp("llvm.bitcast", v, want);
     }
 
     // ptr -> int : ptrtoint
     if (mlir.LLVM.isLLVMPointerType(v.getType()) and want.isAInteger()) {
-        var op = OpBuilder.init("llvm.ptrtoint", self.loc).builder()
-            .operands(&.{v}).results(&.{want}).build();
-        self.append(op);
-        return op.getResult(0);
+        return self.emitUnaryValueOp("llvm.ptrtoint", v, want);
     }
 
     // int -> ptr : inttoptr
     if (v.getType().isAInteger() and mlir.LLVM.isLLVMPointerType(want)) {
-        var op = OpBuilder.init("llvm.inttoptr", self.loc).builder()
-            .operands(&.{v}).results(&.{want}).build();
-        self.append(op);
-        return op.getResult(0);
+        return self.emitUnaryValueOp("llvm.inttoptr", v, want);
     }
 
     // vector float <-> vector int
@@ -5054,18 +4931,12 @@ pub fn coerceOnBranch(
         if (v_elem.isAFloat() and want_elem.isAInteger()) {
             const to_signed = self.isSignedInt(dst_sr_ty);
             const op_name = if (to_signed) "arith.fptosi" else "arith.fptoui";
-            var op = OpBuilder.init(op_name, self.loc).builder()
-                .operands(&.{v}).results(&.{want}).build();
-            self.append(op);
-            return op.getResult(0);
+            return self.emitUnaryValueOp(op_name, v, want);
         }
         if (v_elem.isAInteger() and want_elem.isAFloat()) {
             const from_signed = self.isSignedInt(src_sr_ty);
             const op_name = if (from_signed) "arith.sitofp" else "arith.uitofp";
-            var op = OpBuilder.init(op_name, self.loc).builder()
-                .operands(&.{v}).results(&.{want}).build();
-            self.append(op);
-            return op.getResult(0);
+            return self.emitUnaryValueOp(op_name, v, want);
         }
     }
 
@@ -5075,16 +4946,10 @@ pub fn coerceOnBranch(
         const tw = try cast.intOrFloatWidth(want);
         if (fw == tw) return v;
         if (fw > tw) {
-            var tr = OpBuilder.init("arith.trunci", self.loc).builder()
-                .operands(&.{v}).results(&.{want}).build();
-            self.append(tr);
-            return tr.getResult(0);
+            return self.emitUnaryValueOp("arith.trunci", v, want);
         } else {
             const from_signed = self.isSignedInt(src_sr_ty);
-            var ex = OpBuilder.init(if (from_signed) "arith.extsi" else "arith.extui", self.loc).builder()
-                .operands(&.{v}).results(&.{want}).build();
-            self.append(ex);
-            return ex.getResult(0);
+            return self.emitUnaryValueOp(if (from_signed) "arith.extsi" else "arith.extui", v, want);
         }
     }
 
@@ -5094,32 +4959,20 @@ pub fn coerceOnBranch(
         const tw = try cast.intOrFloatWidth(want);
         if (fw == tw) return v;
         if (fw > tw) {
-            var tr = OpBuilder.init("arith.truncf", self.loc).builder()
-                .operands(&.{v}).results(&.{want}).build();
-            self.append(tr);
-            return tr.getResult(0);
+            return self.emitUnaryValueOp("arith.truncf", v, want);
         } else {
-            var ex = OpBuilder.init("arith.extf", self.loc).builder()
-                .operands(&.{v}).results(&.{want}).build();
-            self.append(ex);
-            return ex.getResult(0);
+            return self.emitUnaryValueOp("arith.extf", v, want);
         }
     }
 
     // int<->float (rare here): use normal cast rules to avoid crashes
     if (v.getType().isAInteger() and want.isAFloat()) {
         const from_signed = self.isSignedInt(src_sr_ty);
-        var op = OpBuilder.init(if (from_signed) "arith.sitofp" else "arith.uitofp", self.loc).builder()
-            .operands(&.{v}).results(&.{want}).build();
-        self.append(op);
-        return op.getResult(0);
+        return self.emitUnaryValueOp(if (from_signed) "arith.sitofp" else "arith.uitofp", v, want);
     }
     if (v.getType().isAFloat() and want.isAInteger()) {
         const to_signed = self.isSignedInt(dst_sr_ty);
-        var op = OpBuilder.init(if (to_signed) "arith.fptosi" else "arith.fptoui", self.loc).builder()
-            .operands(&.{v}).results(&.{want}).build();
-        self.append(op);
-        return op.getResult(0);
+        return self.emitUnaryValueOp(if (to_signed) "arith.fptosi" else "arith.fptoui", v, want);
     }
 
     const zero_sr_ty = types.TypeId.fromRaw(0);
@@ -5161,10 +5014,7 @@ pub fn coerceOnBranch(
     }
 
     // last resort (should be rare): bitcast
-    var bc = OpBuilder.init("llvm.bitcast", self.loc).builder()
-        .operands(&.{v}).results(&.{want}).build();
-    self.append(bc);
-    return bc.getResult(0);
+    return self.emitUnaryValueOp("llvm.bitcast", v, want);
 }
 
 /// Extract the `Err` case from an `ErrorSet` value and coerce it into the `Error` union.
@@ -5192,11 +5042,10 @@ fn errorSetToError(
     const union_ptr = self.spillAgg(payload, union_ty, 0);
     const idxs = [_]tir.Rows.GepIndex{.{ .Const = 0 }};
     const err_ptr = try self.emitGep(union_ptr, err_mlir, &idxs);
-    var load_op = OpBuilder.init("llvm.load", self.loc).builder()
-        .operands(&.{err_ptr}).results(&.{err_mlir}).build();
-    self.append(load_op);
-
-    var err_val = load_op.getResult(0);
+    var err_val = self.emitOp("llvm.load", EmitOpArgs{
+        .operands = &.{err_ptr},
+        .results = &.{err_mlir},
+    });
     if (!err_mlir.equal(dst_err_ty)) {
         err_val = try self.coerceOnBranch(err_val, dst_err_ty, dst_err_sr, es.error_ty);
     }
@@ -5230,10 +5079,10 @@ fn loadOkFromErrorSet(
     const union_ptr = self.spillAgg(payload, union_ty, @intCast(alignment));
     const idxs = [_]tir.Rows.GepIndex{.{ .Const = 0 }};
     const ok_ptr = try self.emitGep(union_ptr, ok_mlir, &idxs);
-    var load_op = OpBuilder.init("llvm.load", self.loc).builder()
-        .operands(&.{ok_ptr}).results(&.{ok_mlir}).build();
-    self.append(load_op);
-    return load_op.getResult(0);
+    return self.emitOp("llvm.load", EmitOpArgs{
+        .operands = &.{ok_ptr},
+        .results = &.{ok_mlir},
+    });
 }
 
 /// Append `op` to the current block and return its single result if present.
@@ -5246,63 +5095,59 @@ pub fn appendIfHasResult(self: *Codegen, op: mlir.Operation) mlir.Value {
 // boolean ops
 /// Emit a boolean OR between `a` and `b`.
 pub fn boolOr(self: *Codegen, a: mlir.Value, b: mlir.Value) mlir.Value {
-    const op = OpBuilder.init("arith.ori", self.loc).builder()
-        .operands(&.{ a, b }).results(&.{self.i1_ty}).build();
-    return appendIfHasResult(self, op);
+    return appendIfHasResult(self, self.buildOp("arith.ori", EmitOpArgs{
+        .operands = &.{ a, b },
+        .results = &.{self.i1_ty},
+    }));
 }
 /// Emit a boolean AND between `a` and `b`.
 pub fn boolAnd(self: *Codegen, a: mlir.Value, b: mlir.Value) mlir.Value {
-    const op = OpBuilder.init("arith.andi", self.loc).builder()
-        .operands(&.{ a, b }).results(&.{self.i1_ty}).build();
-    return appendIfHasResult(self, op);
+    return appendIfHasResult(self, self.buildOp("arith.andi", EmitOpArgs{
+        .operands = &.{ a, b },
+        .results = &.{self.i1_ty},
+    }));
 }
 /// Emit a boolean NOT of `a`.
 pub fn boolNot(self: *Codegen, a: mlir.Value) mlir.Value {
-    const t = OpBuilder.init("llvm.mlir.constant", self.loc).builder()
-        .attributes(&.{self.named("value", mlir.Attribute.integerAttrGet(self.i1_ty, 1))})
-        .results(&.{self.i1_ty}).build();
-    self.append(t);
-    const op = OpBuilder.init("arith.xori", self.loc).builder()
-        .operands(&.{ a, t.getResult(0) }).results(&.{self.i1_ty}).build();
-    return appendIfHasResult(self, op);
+    const constants = self.emitOp("llvm.mlir.constant", EmitOpArgs{
+        .results = &.{self.i1_ty},
+        .attributes = &.{self.named("value", mlir.Attribute.integerAttrGet(self.i1_ty, 1))},
+    });
+    return self.emitBinaryValueOp("arith.xori", a, constants, self.i1_ty, null);
 }
 
 // call the lowered @assert(bool)
 /// Emit a runtime `assert` call that aborts when `cond` is false.
 fn emitAssertCall(self: *Codegen, cond: mlir.Value) void {
-    _ = appendIfHasResult(self, OpBuilder.init("func.call", self.loc).builder()
-        .operands(&.{cond})
-        .attributes(&.{
+    const op = self.buildOp("func.call", EmitOpArgs{
+        .operands = &.{cond},
+        .attributes = &.{
             self.named("callee", mlir.Attribute.flatSymbolRefAttrGet(self.mlir_ctx, mlir.Attribute.stringAttrGetValue(self.strAttr("assert")))),
             self.named("sym_visibility", self.strAttr("private")),
             self.named("function_type", mlir.Attribute.typeAttrGet(mlir.LLVM.getLLVMFunctionType(self.i1_ty, &.{self.i1_ty}, false))),
-        })
-        // .add_attr("callee", @as(mlir.Attribute, mlir.FlatSymbolRefAttr.get(self.ctx, "assert")))
-        .build());
+        },
+    });
+    _ = appendIfHasResult(self, op);
 }
 
 // --- Complex helpers ---
 
 /// Extract the real part of the complex value `v`.
 pub fn complexRe(self: *Codegen, v: mlir.Value, elem_ty: mlir.Type) mlir.Value {
-    const op = OpBuilder.init("complex.re", self.loc).builder()
-        .operands(&.{v}).results(&.{elem_ty}).build();
-    return appendIfHasResult(self, op);
+    return self.emitUnaryValueOp("complex.re", v, elem_ty);
 }
 
 /// Extract the imaginary part of the complex value `v`.
 pub fn complexIm(self: *Codegen, v: mlir.Value, elem_ty: mlir.Type) mlir.Value {
-    const op = OpBuilder.init("complex.im", self.loc).builder()
-        .operands(&.{v}).results(&.{elem_ty}).build();
-    return appendIfHasResult(self, op);
+    return self.emitUnaryValueOp("complex.im", v, elem_ty);
 }
 
 /// Compose a complex value of type `complex_ty` from `re` and `im`.
 pub fn complexFromParts(self: *Codegen, re: mlir.Value, im: mlir.Value, complex_ty: mlir.Type) mlir.Value {
-    const make = OpBuilder.init("complex.create", self.loc).builder()
-        .operands(&.{ re, im }).results(&.{complex_ty}).build();
-    self.append(make);
-    return make.getResult(0);
+    return self.emitOp("complex.create", EmitOpArgs{
+        .operands = &.{ re, im },
+        .results = &.{complex_ty},
+    });
 }
 
 /// Map an SR type id to the corresponding MLIR type used during lowering.

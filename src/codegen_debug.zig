@@ -1,6 +1,5 @@
 const codegen = @import("codegen_main.zig");
 const Codegen = codegen.Codegen;
-const OpBuilder = Codegen.OpBuilder;
 const mlir = @import("mlir_bindings.zig");
 const tir = @import("tir.zig");
 const types = @import("types.zig");
@@ -468,10 +467,9 @@ pub fn emitParameterDebugInfo(
             self.named("varInfo", var_attr),
             self.named("locationExpr", expr_attr),
         };
-        const dbg = OpBuilder.init("llvm.intr.dbg.value", self.loc).builder()
-            .operands(&.{arg_val})
-            .attributes(&attrs)
-            .build();
-        self.append(dbg);
+        _ = self.appendOp("llvm.intr.dbg.value", .{
+            .operands = &.{arg_val},
+            .attributes = &attrs,
+        });
     }
 }

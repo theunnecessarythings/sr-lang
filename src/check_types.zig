@@ -7,6 +7,8 @@ const compile = @import("compile.zig");
 const comp = @import("comptime.zig");
 const PipelineBinding = @import("pipeline.zig").Pipeline.ComptimeBinding;
 const Loc = @import("lexer.zig").Token.Loc;
+const interpreter = @import("interpreter.zig");
+const symbols = @import("symbols.zig");
 
 /// Describes compile-time bindings introduced during type resolution (type/value).
 pub const Binding = union(enum) {
@@ -1296,7 +1298,9 @@ pub fn typeFromTypeExprWithBindings(
             const call_row = ast_unit.exprs.get(.Call, id);
             const callee_kind = ast_unit.kind(call_row.callee);
             if (callee_kind == .FieldAccess or callee_kind == .Ident) {
-                var value = evalComptimeValueWithBindings(self, ctx, ast_unit, id, bindings) catch break :blk_call .{ false, ts.tTypeError() };
+                var value = evalComptimeValueWithBindings(self, ctx, ast_unit, id, bindings) catch {
+                    break :blk_call .{ false, ts.tTypeError() };
+                };
                 defer value.destroy(self.gpa);
                 switch (value) {
                     .Type => |resolved| {
@@ -1305,7 +1309,9 @@ pub fn typeFromTypeExprWithBindings(
                         ast_unit.type_info.expr_types.items[id.toRaw()] = wrapped;
                         break :blk_call .{ status, resolved };
                     },
-                    else => {},
+                    else => {
+                        std.debug.print("evalComptimeValueWithBindings returned non-Type for call {}\n", .{id});
+                    },
                 }
             }
             break :blk_call .{ false, ts.tTypeError() };
@@ -1409,16 +1415,52 @@ fn resolveTypeFunctionCall(
     const stmts = ast_unit.stmts.stmt_pool.slice(block.items);
     _ = try callee_ctx.symtab.push(callee_ctx.symtab.currentId());
     defer callee_ctx.symtab.pop();
+
+    for (params) |pid| {
+        const p = ast_unit.exprs.Param.get(pid);
+        if (p.pat.isNone()) continue;
+        const pat_id = p.pat.unwrap();
+        if (ast_unit.kind(pat_id) != .Binding) continue;
+        const pname = ast_unit.pats.get(.Binding, pat_id).name;
+
+        _ = try callee_ctx.symtab.declare(.{
+            .name = pname,
+            .kind = .Param,
+            .is_comptime = p.is_comptime,
+            .loc = p.loc,
+            .origin_decl = .none(),
+            .origin_param = .some(pid),
+        });
+    }
+
     const base_param_specs = callee_ctx.param_specializations.items.len;
     defer callee_ctx.param_specializations.items.len = base_param_specs;
+    try self.ensureInterpreter(ast_unit, callee_ctx);
+    const interp = callee_ctx.interp.?;
+
+    var interp_bindings = std.ArrayList(interpreter.Binding){};
+    defer {
+        for (interp_bindings.items) |*b| b.value.destroy(self.gpa);
+        interp_bindings.deinit(self.gpa);
+    }
+
     for (bindings_builder.items) |binding| {
         switch (binding) {
             .Type => |t| {
                 try callee_ctx.param_specializations.append(self.gpa, .{ .name = t.name, .ty = t.ty });
+                // Also bind types in the interpreter so typeof() or type expressions using them work
+                const val = comp.ComptimeValue{ .Type = t.ty };
+                try interp_bindings.append(self.gpa, .{ .name = t.name, .value = val });
             },
-            else => {},
+            .Value => |v| {
+                const cloned = try comp.cloneComptimeValue(self.gpa, v.value);
+                try interp_bindings.append(self.gpa, .{ .name = v.name, .value = cloned });
+            },
         }
     }
+
+    var scope = try interp.pushBindings(&interp_bindings);
+    defer scope.deinit();
 
     for (stmts) |sid| {
         if (ast_unit.kind(sid) == .Decl) {
@@ -1451,8 +1493,10 @@ pub fn typeFromTypeExpr(self: *Checker, ctx: *Checker.CheckerContext, ast_unit: 
     }
     return switch (ast_unit.kind(id)) {
         .Ident => blk: {
-            const name = ast_unit.exprs.get(.Ident, id).name;
-            const s = ast_unit.exprs.strs.get(name);
+            const ident = ast_unit.exprs.get(.Ident, id);
+            const name = ident.name;
+            const ident_name = ast_unit.exprs.strs.get(name);
+            const s = ident_name;
             if (std.mem.eql(u8, s, "bool")) break :blk .{ true, ts.tBool() };
             if (std.mem.eql(u8, s, "i8")) break :blk .{ true, ts.tI8() };
             if (std.mem.eql(u8, s, "i16")) break :blk .{ true, ts.tI16() };
@@ -1503,7 +1547,7 @@ pub fn typeFromTypeExpr(self: *Checker, ctx: *Checker.CheckerContext, ast_unit: 
                     try ctx.resolving_type_decls.put(self.gpa, did, {});
                     defer _ = ctx.resolving_type_decls.swapRemove(did);
 
-                    // Lazy resolve: if the declaration\'s RHS is a type expression, resolve it now.
+                    // Lazy resolve: if the declaration's RHS is a type expression, resolve it now.
                     const drow = ast_unit.exprs.Decl.get(did);
                     const rhs_res = try typeFromTypeExpr(self, ctx, ast_unit, drow.value);
                     status = status and rhs_res[0];
@@ -1515,6 +1559,15 @@ pub fn typeFromTypeExpr(self: *Checker, ctx: *Checker.CheckerContext, ast_unit: 
                         try ast_unit.type_info.ensureExpr(self.gpa, drow.value);
                         ast_unit.type_info.expr_types.items[drow.value.toRaw()] = tt;
                         return .{ status, rhs_ty };
+                    } else {
+                        if (status) {
+                            try self.context.diags.addError(
+                                ast_unit.exprs.locs.get(ident.loc),
+                                .identifier_not_type,
+                                .{ident_name},
+                            );
+                        }
+                        return .{ status, ts.tTypeError() };
                     }
                 }
                 if (!sym.origin_param.isNone()) {
@@ -1536,8 +1589,6 @@ pub fn typeFromTypeExpr(self: *Checker, ctx: *Checker.CheckerContext, ast_unit: 
                 }
             }
 
-            const ident = ast_unit.exprs.get(.Ident, id);
-            const ident_name = ast_unit.exprs.strs.get(ident.name);
             try self.context.diags.addError(ast_unit.exprs.locs.get(ident.loc), .undefined_identifier, .{ident_name});
             break :blk .{ false, ts.tTypeError() };
         },

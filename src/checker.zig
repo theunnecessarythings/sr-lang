@@ -170,6 +170,9 @@ pub fn init(
 
 /// Deinitialize the checker, releasing all per-file contexts.
 pub fn deinit(self: *Checker) void {
+    for (self.checker_ctx.items) |*ctx| {
+        ctx.deinit(self.gpa);
+    }
     self.checker_ctx.deinit(self.gpa);
 }
 
@@ -219,7 +222,7 @@ pub fn run(self: *Checker, levels: *const compile.DependencyLevels) !void {
     }
 }
 
-fn ensureInterpreter(self: *Checker, ast_unit: *ast.Ast, ctx: *CheckerContext) anyerror!void {
+pub fn ensureInterpreter(self: *Checker, ast_unit: *ast.Ast, ctx: *CheckerContext) anyerror!void {
     if (ctx.interp) |_| return;
     const interp_ptr = try self.gpa.create(interpreter.Interpreter);
     var interp_ready = false;
@@ -2918,9 +2921,23 @@ fn checkFunctionLit(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, id
     _ = try ctx.symtab.push(ctx.symtab.currentId());
     defer ctx.symtab.pop();
 
+    var is_generic_template = false;
     var i: usize = 0;
     while (i < params.len) : (i += 1) {
         const p = ast_unit.exprs.Param.get(params[i]);
+
+        if (p.is_comptime) {
+             var specialized = false;
+             if (!p.pat.isNone()) {
+                 if (bindingNameOfPattern(ast_unit, p.pat.unwrap())) |pname| {
+                      if (self.lookupParamSpecialization(ctx, pname)) |_| {
+                          specialized = true;
+                      }
+                 }
+             }
+             if (!specialized) is_generic_template = true;
+        }
+
         if (!p.ty.isNone()) {
             const res = try check_types.typeFromTypeExpr(self, ctx, ast_unit, p.ty.unwrap());
             if (!res[0]) return self.context.type_store.tTypeError();
@@ -3030,7 +3047,7 @@ fn checkFunctionLit(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, id
     const returns_value = result_kind != .Void and result_kind != .Noreturn;
     try self.pushFunc(ctx, res, returns_value, !fnr.flags.is_proc);
     defer self.popFunc(ctx);
-    if (!fnr.body.isNone()) {
+    if (!fnr.body.isNone() and !is_generic_template) {
         // Function bodies are in statement context: no value required from the block
         try self.pushValueReq(ctx, false);
         defer self.popValueReq(ctx);
@@ -4544,7 +4561,12 @@ fn checkCall(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, id: ast.E
         break :blk false;
     };
 
-    if (!fnrow.is_extern and (has_any_param or is_internal_variadic)) {
+    const result_is_type = blk_res: {
+        const k = self.typeKind(fnrow.result);
+        break :blk_res k == .TypeType;
+    };
+
+    if (!fnrow.is_extern and (has_any_param or is_internal_variadic) and !result_is_type) {
         var concrete_param_types = std.ArrayList(types.TypeId){};
         defer concrete_param_types.deinit(self.gpa);
 

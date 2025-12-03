@@ -198,8 +198,10 @@ fn checkOrPattern(self: *Checker, ctx: *Checker.CheckerContext, ast_unit: *ast.A
     }
 
     var any_ok = false;
-    for (alts) |aid|
-        any_ok = any_ok or try checkPattern(self, ctx, ast_unit, aid, value_ty, false);
+    for (alts) |aid| {
+        const ok = try checkPattern(self, ctx, ast_unit, aid, value_ty, false);
+        any_ok = any_ok or ok;
+    }
     return any_ok;
 }
 
