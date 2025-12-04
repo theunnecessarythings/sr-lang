@@ -73,6 +73,10 @@ pub const LowerContext = struct {
     loop_stack: List(cf.LoopCtx) = .{},
     /// Stack storing expression type overrides introduced by lowering heuristics.
     expr_type_override_stack: List(ExprTypeOverrideFrame) = .{},
+    /// Scratch list for match binding names to avoid reallocations.
+    pattern_binding_names: List(ast.StrId) = .{},
+    /// Scratch list for saving/restoring bindings during match lowering.
+    binding_snapshots: List(EnvBindingSnapshot) = .{},
     /// Allocator owned by the lowering context.
     gpa: std.mem.Allocator,
     /// Active TIR builder emitting instructions for the current function.
@@ -86,6 +90,8 @@ pub const LowerContext = struct {
             self.expr_type_override_stack.items.len -= 1;
         }
         self.expr_type_override_stack.deinit(gga);
+        self.pattern_binding_names.deinit(gga);
+        self.binding_snapshots.deinit(gga);
     }
 };
 

@@ -59,19 +59,63 @@ pub fn printCallback(str: mlir.c.MlirStringRef, user_data: ?*anyopaque) callconv
     };
 }
 
-/// Convert a byte index into a `LineInfo` so diagnostics can report (line,col).
-fn computeLineCol(src: []const u8, index: usize) LineInfo {
+fn computeLineIndex(line_starts: []const usize, offset: usize) usize {
+    var lo: usize = 0;
+    var hi: usize = line_starts.len - 1;
+    while (lo < hi) {
+        const mid = lo + ((hi - lo + 1) / 2);
+        if (line_starts[mid] <= offset) {
+            lo = mid;
+        } else {
+            hi = mid - 1;
+        }
+    }
+    return lo;
+}
+
+fn computeLineColFallback(src: []const u8, offset: usize) LineInfo {
     var i: usize = 0;
     var line: usize = 0;
     var last_nl: usize = 0;
-    const limit = if (index > src.len) src.len else index;
-    while (i < limit) : (i += 1) {
+    while (i < offset) : (i += 1) {
         if (src[i] == '\n') {
             line += 1;
             last_nl = i + 1;
         }
     }
-    const col = if (limit >= last_nl) limit - last_nl else 0;
+    const col = if (offset >= last_nl) offset - last_nl else 0;
+    return .{ .line = line, .col = col };
+}
+
+fn ensureLineStarts(self: *Codegen, file_id: u32, src: []const u8) ![]usize {
+    if (self.line_index_cache.get(file_id)) |cached| return cached;
+    var count: usize = 1;
+    for (src) |c| {
+        if (c == '\n') count += 1;
+    }
+
+    var buf = try self.gpa.alloc(usize, count);
+    buf[0] = 0;
+    var line_idx: usize = 1;
+    var i: usize = 0;
+    while (i < src.len) : (i += 1) {
+        if (src[i] == '\n') {
+            if (line_idx < count) {
+                buf[line_idx] = i + 1;
+                line_idx += 1;
+            }
+        }
+    }
+    try self.line_index_cache.put(file_id, buf);
+    return buf;
+}
+
+/// Convert a byte index into a `LineInfo` so diagnostics can report (line,col).
+fn computeLineCol(self: *Codegen, src: []const u8, index: usize, file_id: u32) LineInfo {
+    const limit = if (index > src.len) src.len else index;
+    const lines = self.ensureLineStarts(file_id, src) catch return computeLineColFallback(src, limit);
+    const line = computeLineIndex(lines, limit);
+    const col = limit - lines[line];
     return .{ .line = line, .col = col };
 }
 
@@ -93,6 +137,8 @@ module: mlir.Module,
 loc_cache: std.AutoHashMap(cst.LocId, mlir.Location),
 /// Cache for original source files looked up via IDs.
 file_cache: std.AutoHashMap(u32, []const u8),
+/// Line-start tables per file used to convert offsets to (line,col) faster.
+line_index_cache: std.AutoHashMap(u32, []usize),
 /// Debug file metadata entries stored per file ID.
 di_files: std.AutoHashMap(u32, debug.DebugFileInfo),
 /// Cached subprogram metadata keyed by function ID.
@@ -471,6 +517,7 @@ pub fn init(gpa: Allocator, context: *compile.Context, ctx: mlir.Context) Codege
         .module = module,
         .loc_cache = std.AutoHashMap(cst.LocId, mlir.Location).init(gpa),
         .file_cache = std.AutoHashMap(u32, []const u8).init(gpa),
+        .line_index_cache = std.AutoHashMap(u32, []usize).init(gpa),
         .di_files = std.AutoHashMap(u32, debug.DebugFileInfo).init(gpa),
         .di_subprograms = std.AutoHashMap(tir.FuncId, debug.DebugSubprogramInfo).init(gpa),
         .di_null_type_attr = mlir.Attribute.empty(),
@@ -527,6 +574,9 @@ pub fn deinit(self: *Codegen) void {
     self.def_instr.deinit();
     self.global_addr_cache.deinit();
     self.force_llvm_func_syms.deinit();
+    var li_it = self.line_index_cache.valueIterator();
+    while (li_it.next()) |lines| self.gpa.free(lines);
+    self.line_index_cache.deinit();
     var it = self.file_cache.valueIterator();
     while (it.next()) |src| {
         self.context.source_manager.gpa.free(@constCast(src.*));
@@ -690,7 +740,7 @@ fn mlirFileLineColLocation(self: *Codegen, opt_loc: tir.OptLocId) mlir.Location 
     const src = self.getFileSource(loc_record.file_id) catch {
         return self.loc;
     };
-    const lc = computeLineCol(src, loc_record.start);
+    const lc = self.computeLineCol(src, loc_record.start, loc_record.file_id);
     const filename = self.context.source_manager.get(loc_record.file_id) orelse "unknown";
     const mlir_loc = mlir.Location.fileLineColGet(
         self.mlir_ctx,
@@ -1003,7 +1053,7 @@ fn emitFunctionHeader(self: *Codegen, f_id: tir.FuncId, t: *tir.TIR) !void {
         const loc_record = self.context.loc_store.get(fn_loc.unwrap());
         const src = self.getFileSource(loc_record.file_id) catch null;
         if (src) |src_text| {
-            const lc = computeLineCol(src_text, loc_record.start);
+            const lc = self.computeLineCol(src_text, loc_record.start, loc_record.file_id);
             const line = @as(u32, @intCast(lc.line + 1));
             const maybe_subp: ?*debug.DebugSubprogramInfo = debug.ensureDebugSubprogram(
                 self,
@@ -1052,7 +1102,12 @@ fn emitFunctionHeader(self: *Codegen, f_id: tir.FuncId, t: *tir.TIR) !void {
         .is_variadic = false,
         .n_formals = params.len,
         .ret_type = ret_mlir,
-        .param_types = try self.gpa.alloc(mlir.Type, 0),
+        .param_types = blk: {
+            const n_params = param_tys.len;
+            const copy = try self.gpa.alloc(mlir.Type, n_params);
+            std.mem.copyForwards(mlir.Type, copy, param_tys);
+            break :blk copy;
+        },
         .owns_param_types = true,
         .dbg_subprogram = maybe_dbg_attr,
     } else blk_info: {
@@ -1291,17 +1346,6 @@ fn ensureFuncDeclFromCall(self: *Codegen, p: tir.Rows.Call, t: *tir.TIR) !FuncIn
     // If already present, return it.
     if (self.func_syms.get(callee_id)) |fi| return fi;
 
-    // If this name matches a function defined in the current TIR module,
-    // ensure a func.func declaration instead of llvm.func.
-    const func_ids = t.funcs.func_pool.data.items;
-    var i: usize = 0;
-    while (i < func_ids.len) : (i += 1) {
-        const fname_id = t.funcs.Function.get(func_ids[i]).name;
-        if (fname_id.eq(callee_id)) {
-            return try self.ensureDeclFromCall(p, t);
-        }
-    }
-
     // Try to pick types from global (for varargs info etc.)
     const global_ids = t.funcs.global_pool.data.items;
     var found: bool = false;
@@ -1473,41 +1517,6 @@ fn ensureCallArgType(
     return value;
 }
 
-/// Cached parameter/return information produced by `resolveCallParamTypes`.
-const CallParamInfo = struct {
-    /// Flattened MLIR argument/return types for the function call.
-    types: []const mlir.Type,
-    /// Non-null when ownership was granted by the resolver.
-    owned: ?[]mlir.Type,
-};
-
-const emptyFunctionParamSlice: []const mlir.Type = &[_]mlir.Type{};
-
-/// Compute the lowered parameter/return types and ABI attributes for `finfo`.
-fn resolveCallParamTypes(self: *Codegen, finfo: FuncInfo) !CallParamInfo {
-    if (finfo.param_types.len != 0) {
-        return .{ .types = finfo.param_types, .owned = null };
-    }
-    const func_type_attr = finfo.op.getInherentAttributeByName(mlir.StringRef.from("function_type"));
-    if (func_type_attr.isNull()) {
-        return .{ .types = emptyFunctionParamSlice, .owned = null };
-    }
-    const func_type = func_type_attr.typeAttrGetValue();
-    if (!func_type.isAFunction()) {
-        return .{ .types = emptyFunctionParamSlice, .owned = null };
-    }
-    const num_inputs: usize = @intCast(func_type.getFunctionNumInputs());
-    if (num_inputs == 0) {
-        return .{ .types = emptyFunctionParamSlice, .owned = null };
-    }
-    var owned = try self.gpa.alloc(mlir.Type, num_inputs);
-    var idx: usize = 0;
-    while (idx < num_inputs) : (idx += 1) {
-        owned[idx] = func_type.getFunctionInput(@intCast(idx));
-    }
-    return .{ .types = owned, .owned = owned };
-}
-
 /// Build the SSA operand list when calling a known function, handling ABI lowering.
 fn prepareInternalCallArgs(
     self: *Codegen,
@@ -1515,12 +1524,11 @@ fn prepareInternalCallArgs(
     src_sr: []const types.TypeId,
     finfo: FuncInfo,
 ) ![]mlir.Value {
-    const param_info = try self.resolveCallParamTypes(finfo);
-    defer if (param_info.owned) |owned| self.gpa.free(owned);
+    const param_types = finfo.param_types;
     var args = try self.gpa.alloc(mlir.Value, src_vals.len);
     var i: usize = 0;
     while (i < src_vals.len) : (i += 1) {
-        const want_ty = if (i < param_info.types.len) param_info.types[i] else src_vals[i].getType();
+        const want_ty = if (i < param_types.len) param_types[i] else src_vals[i].getType();
         var passv = src_vals[i];
         if (!passv.getType().equal(want_ty)) {
             if (mlir.LLVM.isLLVMPointerType(want_ty) and !mlir.LLVM.isLLVMPointerType(passv.getType())) {

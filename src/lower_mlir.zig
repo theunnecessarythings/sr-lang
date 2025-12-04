@@ -8,6 +8,16 @@ const mlir = @import("mlir_bindings.zig");
 
 const Builder = tir.Builder;
 
+const Stats = struct {
+    block_count: usize = 0,
+    total_pieces: usize = 0,
+    total_args: usize = 0,
+    max_pieces: usize = 0,
+    max_args: usize = 0,
+    global_init_blocks: usize = 0,
+    global_init_decls: usize = 0,
+};
+
 /// External hooks needed when lowering MLIR fragments.
 pub const Hooks = struct {
     /// Host-provided context pointer forwarded to every callback.
@@ -42,6 +52,9 @@ pub const LowerMlir = struct {
     context: *compile.Context,
     /// Tracks whether the MLIR context has been initialized.
     state: State = {},
+    /// Tracking/trace state.
+    trace_enabled: bool = false,
+    stats: Stats = {},
 
     /// Tracks the lifecycle of the lazily-created MLIR context handle.
     const State = struct {
@@ -53,11 +66,14 @@ pub const LowerMlir = struct {
 
     /// Initialize a `LowerMlir` handle with the provided allocator and compiler context.
     pub fn init(gpa: std.mem.Allocator, context: *compile.Context) LowerMlir {
-        return .{ .gpa = gpa, .context = context };
+        var trace = false;
+        if (std.os.getenv("SR_MLIR_TRACE")) |_| trace = true;
+        return .{ .gpa = gpa, .context = context, .trace_enabled = trace };
     }
 
     /// Destroy any owned MLIR state if it was created.
     pub fn deinit(self: *LowerMlir) void {
+        if (self.trace_enabled) self.dumpStats();
         if (self.state.initialized) {
             self.state.ctx.destroy();
             self.state = .{};
@@ -73,12 +89,43 @@ pub const LowerMlir = struct {
         return self.state.ctx;
     }
 
+    fn recordBlock(self: *LowerMlir, piece_count: usize, arg_count: usize) void {
+        self.stats.block_count += 1;
+        self.stats.total_pieces += piece_count;
+        self.stats.total_args += arg_count;
+        if (piece_count > self.stats.max_pieces) self.stats.max_pieces = piece_count;
+        if (arg_count > self.stats.max_args) self.stats.max_args = arg_count;
+    }
+
+    fn noteGlobalInit(self: *LowerMlir, decl_count: usize) void {
+        if (decl_count == 0) return;
+        self.stats.global_init_blocks += 1;
+        self.stats.global_init_decls += decl_count;
+    }
+
+    fn dumpStats(self: *LowerMlir) void {
+        const s = self.stats;
+        std.debug.print(
+            "MLIR lowering trace: {d} blocks, {d} pieces (max {d}), {d} args (max {d}), {d} global init funcs covering {d} decls\n",
+            .{
+                s.block_count,
+                s.total_pieces,
+                s.max_pieces,
+                s.total_args,
+                s.max_args,
+                s.global_init_blocks,
+                s.global_init_decls,
+            },
+        );
+    }
+
     /// Emit a global initialization function for embedded MLIR fragments collected from `a`.
     pub fn emitGlobalInit(self: *LowerMlir, hooks: Hooks, a: *ast.Ast, b: *Builder) !void {
         var global_mlir_decls = std.ArrayList(ast.DeclId){};
         defer global_mlir_decls.deinit(self.gpa);
 
         const decls = a.exprs.decl_pool.slice(a.unit.decls);
+        try global_mlir_decls.ensureTotalCapacity(self.gpa, decls.len);
         for (decls) |did| {
             const d = a.exprs.Decl.get(did);
             if (a.kind(d.value) == .MlirBlock and d.pattern.isNone()) {
@@ -87,6 +134,7 @@ pub const LowerMlir = struct {
         }
 
         if (global_mlir_decls.items.len == 0) return;
+        self.noteGlobalInit(global_mlir_decls.items.len);
 
         const name = b.intern("__sr_global_mlir_init");
         var f = try b.beginFunction(name, self.context.type_store.tVoid(), false, .empty());
@@ -141,6 +189,7 @@ pub const LowerMlir = struct {
 
         const ast_piece_ids = a.exprs.mlir_piece_pool.slice(row.pieces);
         var tir_piece_ids = std.ArrayListUnmanaged(tir.MlirPieceId){};
+        try tir_piece_ids.ensureTotalCapacity(self.gpa, ast_piece_ids.len);
         defer tir_piece_ids.deinit(self.gpa);
         for (ast_piece_ids) |pid| {
             const piece = a.exprs.MlirPiece.get(pid);
@@ -156,6 +205,7 @@ pub const LowerMlir = struct {
         const pieces_range = blk.builder.t.instrs.mlir_piece_pool.pushMany(self.gpa, tir_piece_ids.items);
 
         const arg_ids = a.exprs.expr_pool.slice(row.args);
+        self.recordBlock(ast_piece_ids.len, arg_ids.len);
         var arg_vals = try self.gpa.alloc(tir.ValueId, arg_ids.len);
         defer self.gpa.free(arg_vals);
         for (arg_ids, 0..) |arg_id, i| {

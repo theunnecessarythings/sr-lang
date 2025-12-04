@@ -508,59 +508,78 @@ pub fn storeMethodExprTypes(
     method_name: ast.StrId,
     fn_expr: ast.ExprId,
 ) !void {
-    var expr_ids = std.ArrayList(ast.ExprId){};
-    defer expr_ids.deinit(self.gpa);
-    try collectExprIds(self.gpa, ast_unit, fn_expr, &expr_ids);
+    var expr_ids = try self.acquireExprIdsScratch();
+    defer self.releaseExprIdsScratch();
+    try collectExprIds(self.gpa, ast_unit, fn_expr, expr_ids);
     if (expr_ids.items.len == 0) return;
 
-    var raw_ids = try self.gpa.alloc(u32, expr_ids.items.len);
-    defer self.gpa.free(raw_ids);
-    var type_buf = try self.gpa.alloc(types.TypeId, expr_ids.items.len);
-    defer self.gpa.free(type_buf);
-
-    var count: usize = 0;
-    for (expr_ids.items) |eid| {
+    const expr_types = ast_unit.type_info.expr_types.items;
+    var needed: usize = 0;
+    for (expr_ids.items[0..expr_ids.items.len]) |eid| {
         const raw = eid.toRaw();
-        if (raw >= ast_unit.type_info.expr_types.items.len) continue;
-        if (ast_unit.type_info.expr_types.items[raw]) |ty| {
-            raw_ids[count] = raw;
-            type_buf[count] = ty;
-            count += 1;
+        if (raw >= expr_types.len) continue;
+        if (expr_types[raw]) |_| {
+            needed += 1;
         }
     }
-    if (count == 0) return;
-    try ast_unit.type_info.storeMethodExprSnapshot(owner_ty, method_name, raw_ids[0..count], type_buf[0..count]);
+    if (needed == 0) return;
+
+    var raw_ids = try self.gpa.alloc(u32, needed);
+    defer self.gpa.free(raw_ids);
+    var type_buf = try self.gpa.alloc(types.TypeId, needed);
+    defer self.gpa.free(type_buf);
+
+    var filled: usize = 0;
+    for (expr_ids.items[0..expr_ids.items.len]) |eid| {
+        const raw = eid.toRaw();
+        if (raw >= expr_types.len) continue;
+        if (expr_types[raw]) |ty| {
+            raw_ids[filled] = raw;
+            type_buf[filled] = ty;
+            filled += 1;
+        }
+    }
+    std.debug.assert(filled == needed);
+    try ast_unit.type_info.storeMethodExprSnapshot(owner_ty, method_name, raw_ids[0..filled], type_buf[0..filled]);
 }
 
 /// Snapshot the expression types for `decl_id` when emitting a specialized clone.
 pub fn storeSpecializationExprTypes(
     self: *Checker,
     ast_unit: *ast.Ast,
-    source_decl_id: ast.DeclId,
+    expr_ids: []const ast.ExprId,
     specialization_decl_id: ast.DeclId,
 ) !void {
-    var expr_ids = std.ArrayList(ast.ExprId){};
-    defer expr_ids.deinit(self.gpa);
-    try collectDeclExprs(self.gpa, ast_unit, source_decl_id, &expr_ids);
-    if (expr_ids.items.len == 0) return;
+    if (expr_ids.len == 0) return;
 
-    var raw_ids = try self.gpa.alloc(u32, expr_ids.items.len);
-    defer self.gpa.free(raw_ids);
-    var type_buf = try self.gpa.alloc(types.TypeId, expr_ids.items.len);
-    defer self.gpa.free(type_buf);
-
-    var count: usize = 0;
-    for (expr_ids.items) |eid| {
+    const expr_types = ast_unit.type_info.expr_types.items;
+    var needed: usize = 0;
+    for (expr_ids) |eid| {
         const raw = eid.toRaw();
-        if (raw >= ast_unit.type_info.expr_types.items.len) continue;
-        if (ast_unit.type_info.expr_types.items[raw]) |ty| {
-            raw_ids[count] = raw;
-            type_buf[count] = ty;
-            count += 1;
+        if (raw >= expr_types.len) continue;
+        if (expr_types[raw]) |_| {
+            needed += 1;
         }
     }
-    if (count == 0) return;
-    try ast_unit.type_info.storeSpecializationExprSnapshot(specialization_decl_id, raw_ids[0..count], type_buf[0..count]);
+    if (needed == 0) return;
+
+    var raw_ids = try self.gpa.alloc(u32, needed);
+    defer self.gpa.free(raw_ids);
+    var type_buf = try self.gpa.alloc(types.TypeId, needed);
+    defer self.gpa.free(type_buf);
+
+    var filled: usize = 0;
+    for (expr_ids) |eid| {
+        const raw = eid.toRaw();
+        if (raw >= expr_types.len) continue;
+        if (expr_types[raw]) |ty| {
+            raw_ids[filled] = raw;
+            type_buf[filled] = ty;
+            filled += 1;
+        }
+    }
+    std.debug.assert(filled == needed);
+    try ast_unit.type_info.storeSpecializationExprSnapshot(specialization_decl_id, raw_ids[0..filled], type_buf[0..filled]);
 }
 
 /// Convert `bindings` into a pipeline binding slice suitable for `evalComptimeExpr`.
@@ -2082,8 +2101,11 @@ pub fn typeFromTypeExpr(self: *Checker, ctx: *Checker.CheckerContext, ast_unit: 
                         // Re-intern field name in the imported unit's interner for lookup
                         const name_bytes = ast_unit.exprs.strs.get(fr.field);
                         const target_sid = a.exprs.strs.intern(name_bytes);
-                        if (a.type_info.getExport(target_sid)) |ex| {
-                            var ty = ex.ty;
+                        const sym_row = self.checker_ctx.items[a.file_id].symtab.lookup(.fromRaw(0), target_sid);
+                        if (sym_row) |ex| {
+                            const sym = self.checker_ctx.items[a.file_id].symtab.syms.get(ex);
+                            const decl = sym.origin_decl.unwrap();
+                            var ty = a.type_info.decl_types.items[decl.toRaw()].?;
                             if (self.typeKind(ty) == .TypeType) {
                                 ty = ts.get(.TypeType, ty).of;
                             }

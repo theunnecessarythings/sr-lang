@@ -10,6 +10,102 @@ const default_source = "sr-lang";
 const Loc = lib.lexer.Token.Loc;
 const Severity = lib.diagnostics.Severity;
 
+/// Cached semantic/AST data for a document version.
+const AnalysisCache = struct {
+    gpa: std.mem.Allocator,
+    map: std.StringHashMapUnmanaged(Entry) = .{},
+
+    const Entry = struct {
+        version: u64,
+        context: lib.compile.Context,
+        path: []const u8,
+        file_id: u32,
+        ast_unit: ?*ast.Ast,
+        resolution_map: std.AutoArrayHashMap(u32, Symbol),
+
+        fn deinit(self: *Entry, gpa: std.mem.Allocator) void {
+            self.resolution_map.deinit();
+            gpa.free(self.path);
+            self.context.deinit();
+        }
+    };
+
+    fn init(gpa: std.mem.Allocator) AnalysisCache {
+        return .{ .gpa = gpa };
+    }
+
+    fn deinit(self: *AnalysisCache) void {
+        var it = self.map.iterator();
+        while (it.next()) |entry| {
+            self.gpa.free(entry.key_ptr.*);
+            const value_ptr = @constCast(entry.value_ptr);
+            value_ptr.deinit(self.gpa);
+        }
+        self.map.deinit(self.gpa);
+    }
+
+    fn remove(self: *AnalysisCache, uri: []const u8) void {
+        if (self.map.fetchRemove(uri)) |kv| {
+            self.gpa.free(kv.key);
+            var val = kv.value;
+            val.deinit(self.gpa);
+        }
+    }
+
+    fn ensure(self: *AnalysisCache, uri: []const u8, doc: *const DocumentStore.Document) !?*Entry {
+        if (self.map.getPtr(uri)) |existing| {
+            if (existing.version == doc.version) return existing;
+        }
+
+        // Drop stale entry if present.
+        self.remove(uri);
+
+        var context = lib.compile.Context.init(self.gpa);
+        errdefer context.deinit();
+
+        const path = try fileUriToPath(self.gpa, uri);
+        errdefer self.gpa.free(path);
+
+        const file_id = try context.source_manager.setVirtualSourceByPath(path, doc.text);
+        var pipeline = lib.pipeline.Pipeline.init(self.gpa, &context);
+
+        _ = pipeline.run(path, &.{}, .check, null) catch |err| switch (err) {
+            error.ParseFailed,
+            error.TypeCheckFailed,
+            error.LoweringFailed,
+            error.TirLoweringFailed,
+            error.TooManyErrors,
+            => {},
+            else => {
+                std.debug.print("[lsp] pipeline error: {s}\n", .{@errorName(err)});
+            },
+        };
+
+        const ast_unit_opt = findAstForFile(&context.compilation_unit, file_id);
+        var resolution_map: std.AutoArrayHashMap(u32, Symbol) = undefined;
+        if (ast_unit_opt) |ast_unit| {
+            resolution_map = try buildResolutionMap(self.gpa, ast_unit);
+        } else {
+            resolution_map = std.AutoArrayHashMap(u32, Symbol).init(self.gpa);
+        }
+        errdefer resolution_map.deinit();
+
+        const entry = Entry{
+            .version = doc.version,
+            .context = context,
+            .path = path,
+            .file_id = file_id,
+            .ast_unit = ast_unit_opt,
+            .resolution_map = resolution_map,
+        };
+
+        const dup_uri = try self.gpa.dupe(u8, uri);
+        errdefer self.gpa.free(dup_uri);
+        try self.map.put(self.gpa, dup_uri, entry);
+        return self.map.getPtr(uri);
+    }
+};
+
 /// Line/character pair that identifies a position inside a text buffer.
 const LspPosition = struct {
     /// Zero-based line number.
@@ -143,6 +239,12 @@ const DocumentStore = struct {
     const Document = struct {
         /// Owned text bytes for the document.
         text: []u8,
+        /// Cached line starts for fast position math.
+        line_starts: []usize,
+        /// Incrementing version used to invalidate analysis cache.
+        version: u64,
+        /// Zero-terminated copy of text for lexer convenience.
+        z_text: [:0]u8,
     };
 
     /// Create an empty document store backed by `gpa`.
@@ -156,6 +258,7 @@ const DocumentStore = struct {
         while (it.next()) |entry| {
             self.gpa.free(entry.key_ptr.*);
             self.gpa.free(entry.value_ptr.text);
+            self.gpa.free(entry.value_ptr.line_starts);
         }
         self.map.deinit(self.gpa);
     }
@@ -164,24 +267,35 @@ const DocumentStore = struct {
     fn set(self: *DocumentStore, uri: []const u8, text: []const u8) !void {
         const dup_text = try self.gpa.dupe(u8, text);
         errdefer self.gpa.free(dup_text);
+        const line_starts = try buildLineStarts(self.gpa, dup_text);
+        errdefer self.gpa.free(line_starts);
+        const z_text = try buildZeroTerminated(self.gpa, dup_text);
+        errdefer self.gpa.free(z_text);
 
         if (self.map.getPtr(uri)) |doc| {
             self.gpa.free(doc.text);
+            self.gpa.free(doc.line_starts);
+            self.gpa.free(doc.z_text);
             doc.text = dup_text;
+            doc.line_starts = line_starts;
+            doc.z_text = z_text;
+            doc.version += 1;
             return;
         }
 
         const dup_uri = try self.gpa.dupe(u8, uri);
         errdefer self.gpa.free(dup_uri);
-        try self.map.put(self.gpa, dup_uri, .{ .text = dup_text });
+        try self.map.put(self.gpa, dup_uri, .{
+            .text = dup_text,
+            .line_starts = line_starts,
+            .version = 1,
+            .z_text = z_text,
+        });
     }
 
     /// Return the buffered text for `uri`, or `null` when missing.
-    fn get(self: *DocumentStore, uri: []const u8) ?[]u8 {
-        if (self.map.getPtr(uri)) |doc| {
-            return doc.text;
-        }
-        return null;
+    fn get(self: *DocumentStore, uri: []const u8) ?*Document {
+        return self.map.getPtr(uri);
     }
 
     /// Drop the stored document for `uri` if it exists.
@@ -189,6 +303,8 @@ const DocumentStore = struct {
         if (self.map.fetchRemove(uri)) |kv| {
             self.gpa.free(kv.key);
             self.gpa.free(kv.value.text);
+            self.gpa.free(kv.value.line_starts);
+            self.gpa.free(kv.value.z_text);
         }
     }
 };
@@ -203,6 +319,8 @@ pub fn run(gpa: std.mem.Allocator) !void {
     const Out: *std.Io.Writer = &out_w.interface;
     var docs = DocumentStore.init(gpa);
     defer docs.deinit();
+    var analysis = AnalysisCache.init(gpa);
+    defer analysis.deinit();
 
     while (true) {
         var hdr = try readHeaders(gpa, In);
@@ -254,23 +372,23 @@ pub fn run(gpa: std.mem.Allocator) !void {
         } else if (std.mem.eql(u8, req.method, "exit")) {
             return;
         } else if (std.mem.eql(u8, req.method, "textDocument/didOpen")) {
-            if (req.params) |p| try onDidOpen(Out, gpa, &docs, p);
+            if (req.params) |p| try onDidOpen(Out, gpa, &docs, &analysis, p);
         } else if (std.mem.eql(u8, req.method, "textDocument/didChange")) {
-            if (req.params) |p| try onDidChange(Out, gpa, &docs, p);
+            if (req.params) |p| try onDidChange(Out, gpa, &docs, &analysis, p);
         } else if (std.mem.eql(u8, req.method, "textDocument/didClose")) {
-            if (req.params) |p| try onDidClose(Out, gpa, &docs, p);
+            if (req.params) |p| try onDidClose(Out, gpa, &docs, &analysis, p);
         } else if (std.mem.eql(u8, req.method, "textDocument/definition")) {
-            if (req.params) |p| try onGoToDefinition(Out, gpa, &docs, req.id orelse 0, p);
+            if (req.params) |p| try onGoToDefinition(Out, gpa, &docs, &analysis, req.id orelse 0, p);
         } else if (std.mem.eql(u8, req.method, "textDocument/hover")) {
-            if (req.params) |p| try onHover(Out, gpa, &docs, req.id orelse 0, p);
+            if (req.params) |p| try onHover(Out, gpa, &docs, &analysis, req.id orelse 0, p);
         } else if (std.mem.eql(u8, req.method, "textDocument/rename")) {
-            if (req.params) |p| try onRename(Out, gpa, &docs, req.id orelse 0, p);
+            if (req.params) |p| try onRename(Out, gpa, &docs, &analysis, req.id orelse 0, p);
         } else if (std.mem.eql(u8, req.method, "textDocument/completion")) {
-            if (req.params) |p| try onCompletion(Out, gpa, &docs, req.id orelse 0, p);
+            if (req.params) |p| try onCompletion(Out, gpa, &docs, &analysis, req.id orelse 0, p);
         } else if (std.mem.eql(u8, req.method, "textDocument/semanticTokens/full")) {
-            if (req.params) |p| try onSemanticTokensFull(Out, gpa, &docs, req.id orelse 0, p);
+            if (req.params) |p| try onSemanticTokensFull(Out, gpa, &docs, &analysis, req.id orelse 0, p);
         } else if (std.mem.eql(u8, req.method, "textDocument/formatting")) {
-            if (req.params) |p| try onFormatting(Out, gpa, &docs, req.id orelse 0, p);
+            if (req.params) |p| try onFormatting(Out, gpa, &docs, &analysis, req.id orelse 0, p);
         } else {
             if (req.id) |rid| try writeJson(Out, gpa, .{ .jsonrpc = "2.0", .id = rid, .result = null });
         }
@@ -376,8 +494,8 @@ fn requireDocumentOrRespondNull(
     docs: *DocumentStore,
     uri: []const u8,
     id: u64,
-) !?[]const u8 {
-    if (docs.get(uri)) |text| return text;
+) !?*DocumentStore.Document {
+    if (docs.get(uri)) |doc| return doc;
     try respondNullResult(out, gpa, id);
     return null;
 }
@@ -430,33 +548,36 @@ fn respondInitialize(out: *std.Io.Writer, gpa: std.mem.Allocator, id: u64) !void
 }
 
 /// Handle `textDocument/didOpen` by caching the document's text.
-fn onDidOpen(out: *std.Io.Writer, gpa: std.mem.Allocator, docs: *DocumentStore, params: json.Value) !void {
+fn onDidOpen(out: *std.Io.Writer, gpa: std.mem.Allocator, docs: *DocumentStore, analysis: *AnalysisCache, params: json.Value) !void {
     // Parameters payload for `textDocument/didOpen` notifications.
     var p = try json.parseFromValue(TextDocumentOpenParams, gpa, params, .{ .ignore_unknown_fields = true });
     defer p.deinit();
     try docs.set(p.value.textDocument.uri, p.value.textDocument.text);
-    try publishDiagnostics(out, gpa, docs, p.value.textDocument.uri);
+    analysis.remove(p.value.textDocument.uri);
+    try publishDiagnostics(out, gpa, docs, analysis, p.value.textDocument.uri);
 }
 
 /// Handle `textDocument/didChange` by updating stored text ranges.
-fn onDidChange(out: *std.Io.Writer, gpa: std.mem.Allocator, docs: *DocumentStore, params: json.Value) !void {
+fn onDidChange(out: *std.Io.Writer, gpa: std.mem.Allocator, docs: *DocumentStore, analysis: *AnalysisCache, params: json.Value) !void {
     // JSON parameters for `textDocument/didChange`.
     // Parameters payload for `textDocument/didChange` notifications.
     var p = try json.parseFromValue(TextDocumentChangeParams, gpa, params, .{ .ignore_unknown_fields = true });
     defer p.deinit();
     if (p.value.contentChanges.len == 0) return;
     try docs.set(p.value.textDocument.uri, p.value.contentChanges[0].text);
-    try publishDiagnostics(out, gpa, docs, p.value.textDocument.uri);
+    analysis.remove(p.value.textDocument.uri);
+    try publishDiagnostics(out, gpa, docs, analysis, p.value.textDocument.uri);
 }
 
 /// Handle `textDocument/didClose` by removing the cached document.
-fn onDidClose(out: *std.Io.Writer, gpa: std.mem.Allocator, docs: *DocumentStore, params: json.Value) !void {
+fn onDidClose(out: *std.Io.Writer, gpa: std.mem.Allocator, docs: *DocumentStore, analysis: *AnalysisCache, params: json.Value) !void {
     // JSON parameters for `textDocument/didClose`.
     // Parameters payload for `textDocument/didClose` notifications.
     var p = try json.parseFromValue(TextDocumentParams, gpa, params, .{ .ignore_unknown_fields = true });
     defer p.deinit();
     const uri = p.value.textDocument.uri;
     docs.remove(uri);
+    analysis.remove(uri);
     // Notification payload sent to acknowledge diagnostics removal.
     const Msg = struct {
         jsonrpc: []const u8 = "2.0",
@@ -953,17 +1074,15 @@ const SymbolResolver = struct {
 };
 
 /// Respond to hover requests by computing `HoverInfo` at the caret.
-fn onHover(out: *std.Io.Writer, gpa: std.mem.Allocator, docs: *DocumentStore, id: u64, params: json.Value) !void {
+fn onHover(out: *std.Io.Writer, gpa: std.mem.Allocator, docs: *DocumentStore, analysis: *AnalysisCache, id: u64, params: json.Value) !void {
     // JSON parameters for hover requests.
     // Parameters payload for `textDocument/hover` requests.
     var p = try json.parseFromValue(TextDocumentPositionParams, gpa, params, .{ .ignore_unknown_fields = true });
     defer p.deinit();
 
     const uri = p.value.textDocument.uri;
-    const text = try requireDocumentOrRespondNull(out, gpa, docs, uri, id) orelse return;
-
-    const offset = positionToOffset(text, p.value.position.line, p.value.position.character);
-    const hover_info = try computeHover(gpa, uri, text, offset);
+    const doc = try requireDocumentOrRespondNull(out, gpa, docs, uri, id) orelse return;
+    const text = doc.text;
 
     // Response payload sent for semantic token requests.
     // Response envelope for the hover request.
@@ -975,6 +1094,14 @@ fn onHover(out: *std.Io.Writer, gpa: std.mem.Allocator, docs: *DocumentStore, id
             range: LspRange,
         } = null,
     };
+
+    const offset = positionToOffset(text, p.value.position.line, p.value.position.character, doc.line_starts);
+    const entry = try analysis.ensure(uri, doc) orelse {
+        try writeJson(out, gpa, Resp{ .id = id, .result = null });
+        return;
+    };
+
+    const hover_info = try computeHover(gpa, doc, entry, offset);
 
     if (hover_info) |info| {
         defer gpa.free(info.message);
@@ -991,38 +1118,26 @@ fn onHover(out: *std.Io.Writer, gpa: std.mem.Allocator, docs: *DocumentStore, id
 }
 
 /// Handle go-to-definition requests by locating the symbol at the caret.
-fn onGoToDefinition(out: *std.io.Writer, gpa: std.mem.Allocator, docs: *DocumentStore, id: u64, params: json.Value) !void {
+fn onGoToDefinition(out: *std.io.Writer, gpa: std.mem.Allocator, docs: *DocumentStore, analysis: *AnalysisCache, id: u64, params: json.Value) !void {
     // JSON parameters for `textDocument/definition`.
     // Parameters payload for `textDocument/definition` requests.
     var p = try json.parseFromValue(TextDocumentPositionParams, gpa, params, .{ .ignore_unknown_fields = true });
     defer p.deinit();
 
     const uri = p.value.textDocument.uri;
-    const text = try requireDocumentOrRespondNull(out, gpa, docs, uri, id) orelse return;
+    const doc = try requireDocumentOrRespondNull(out, gpa, docs, uri, id) orelse return;
+    const text = doc.text;
 
-    var session = try CompilationSession.init(gpa, uri, text);
-    defer session.deinit();
-
-    const offset = positionToOffset(text, p.value.position.line, p.value.position.character);
-    var pipeline = lib.pipeline.Pipeline.init(gpa, &session.context);
-
-    _ = pipeline.run(session.path, &.{}, .check, null) catch |err| switch (err) {
-        error.ParseFailed => {
-            try writeJson(out, gpa, .{ .jsonrpc = "2.0", .id = id, .result = null });
-            return;
-        },
-        else => {
-            // Proceed with partial results (AST) if available
-        },
-    };
-
-    const ast_unit = findAstForFile(&session.context.compilation_unit, session.file_id) orelse {
+    const offset = positionToOffset(text, p.value.position.line, p.value.position.character, doc.line_starts);
+    const entry = try analysis.ensure(uri, doc) orelse {
         try writeJson(out, gpa, .{ .jsonrpc = "2.0", .id = id, .result = null });
         return;
     };
 
-    var resolution_map = try buildResolutionMap(gpa, ast_unit);
-    defer resolution_map.deinit();
+    const ast_unit = entry.ast_unit orelse {
+        try writeJson(out, gpa, .{ .jsonrpc = "2.0", .id = id, .result = null });
+        return;
+    };
 
     const expr_id = findExprAt(ast_unit, offset) orelse {
         try writeJson(out, gpa, .{ .jsonrpc = "2.0", .id = id, .result = null });
@@ -1031,15 +1146,15 @@ fn onGoToDefinition(out: *std.io.Writer, gpa: std.mem.Allocator, docs: *Document
 
     var result: ?struct { uri: []const u8, range: LspRange } = null;
 
-    if (resolution_map.get(expr_id.toRaw())) |symbol| {
+    if (entry.resolution_map.get(expr_id.toRaw())) |symbol| {
         const decl_loc = ast_unit.exprs.locs.get(symbol.decl_loc);
         const decl_file_id = decl_loc.file_id;
 
-        const decl_path = session.context.source_manager.get(decl_file_id) orelse {
+        const decl_path = entry.context.source_manager.get(decl_file_id) orelse {
             try writeJson(out, gpa, .{ .jsonrpc = "2.0", .id = id, .result = null });
             return;
         };
-        const decl_text = session.context.source_manager.read(decl_file_id) catch {
+        const decl_text = entry.context.source_manager.read(decl_file_id) catch {
             try writeJson(out, gpa, .{ .jsonrpc = "2.0", .id = id, .result = null });
             return;
         };
@@ -1048,7 +1163,10 @@ fn onGoToDefinition(out: *std.io.Writer, gpa: std.mem.Allocator, docs: *Document
         const decl_uri = try pathToUri(gpa, decl_path);
         defer gpa.free(decl_uri);
 
-        const range = locToRange(decl_text, decl_loc);
+        const decl_lines = try buildLineStarts(gpa, decl_text);
+        defer gpa.free(decl_lines);
+
+        const range = locToRange(decl_text, decl_lines, decl_loc);
 
         const result_uri = try gpa.dupe(u8, decl_uri);
         result = .{ .uri = result_uri, .range = range };
@@ -1058,14 +1176,17 @@ fn onGoToDefinition(out: *std.io.Writer, gpa: std.mem.Allocator, docs: *Document
         const decl_loc = decl_ast.exprs.locs.get(decl_row.loc);
         const decl_file_id = decl_loc.file_id;
 
-        const decl_path = session.context.source_manager.get(decl_file_id) orelse break :blk;
-        const decl_text = session.context.source_manager.read(decl_file_id) catch break :blk;
+        const decl_path = entry.context.source_manager.get(decl_file_id) orelse break :blk;
+        const decl_text = entry.context.source_manager.read(decl_file_id) catch break :blk;
         defer gpa.free(decl_text);
 
         const decl_uri = try pathToUri(gpa, decl_path);
         defer gpa.free(decl_uri);
 
-        const range = locToRange(decl_text, decl_loc);
+        const decl_lines = try buildLineStarts(gpa, decl_text);
+        defer gpa.free(decl_lines);
+
+        const range = locToRange(decl_text, decl_lines, decl_loc);
 
         const result_uri = try gpa.dupe(u8, decl_uri);
         result = .{ .uri = result_uri, .range = range };
@@ -1080,44 +1201,33 @@ fn onGoToDefinition(out: *std.io.Writer, gpa: std.mem.Allocator, docs: *Document
 }
 
 /// Handle rename requests by recomputing AST and emitting edits.
-fn onRename(out: *std.io.Writer, gpa: std.mem.Allocator, docs: *DocumentStore, id: u64, params: json.Value) !void {
+fn onRename(out: *std.io.Writer, gpa: std.mem.Allocator, docs: *DocumentStore, analysis: *AnalysisCache, id: u64, params: json.Value) !void {
     // Rename request JSON payload describing the document and caret.
     // Parameters payload for `textDocument/rename` requests.
     var p = try json.parseFromValue(RenameParams, gpa, params, .{ .ignore_unknown_fields = true });
     defer p.deinit();
 
     const uri = p.value.textDocument.uri;
-    const text = try requireDocumentOrRespondNull(out, gpa, docs, uri, id) orelse return;
+    const doc = try requireDocumentOrRespondNull(out, gpa, docs, uri, id) orelse return;
+    const text = doc.text;
 
-    const offset = positionToOffset(text, p.value.position.line, p.value.position.character);
-    var session = try CompilationSession.init(gpa, uri, text);
-    defer session.deinit();
-    var pipeline = lib.pipeline.Pipeline.init(gpa, &session.context);
-
-    _ = pipeline.run(session.path, &.{}, .check, null) catch |err| switch (err) {
-        error.ParseFailed => {
-            try writeJson(out, gpa, .{ .jsonrpc = "2.0", .id = id, .result = null });
-            return;
-        },
-        else => {
-            // Proceed with partial results if AST is present
-        },
-    };
-
-    const ast_unit = findAstForFile(&session.context.compilation_unit, session.file_id) orelse {
+    const offset = positionToOffset(text, p.value.position.line, p.value.position.character, doc.line_starts);
+    const entry = try analysis.ensure(uri, doc) orelse {
         try writeJson(out, gpa, .{ .jsonrpc = "2.0", .id = id, .result = null });
         return;
     };
 
-    var resolution_map = try buildResolutionMap(gpa, ast_unit);
-    defer resolution_map.deinit();
+    const ast_unit = entry.ast_unit orelse {
+        try writeJson(out, gpa, .{ .jsonrpc = "2.0", .id = id, .result = null });
+        return;
+    };
 
     const expr_id = findExprAt(ast_unit, offset) orelse {
         try writeJson(out, gpa, .{ .jsonrpc = "2.0", .id = id, .result = null });
         return;
     };
 
-    const symbol = resolution_map.get(expr_id.toRaw()) orelse {
+    const symbol = entry.resolution_map.get(expr_id.toRaw()) orelse {
         try writeJson(out, gpa, .{ .jsonrpc = "2.0", .id = id, .result = null });
         return;
     };
@@ -1127,10 +1237,10 @@ fn onRename(out: *std.io.Writer, gpa: std.mem.Allocator, docs: *DocumentStore, i
 
     try references.append(gpa, ast_unit.exprs.locs.get(symbol.decl_loc));
 
-    var it = resolution_map.iterator();
-    while (it.next()) |entry| {
-        if (entry.value_ptr.decl_loc.eq(symbol.decl_loc)) {
-            const ref_expr_id = ast.ExprId.fromRaw(entry.key_ptr.*);
+    var it = entry.resolution_map.iterator();
+    while (it.next()) |ent| {
+        if (ent.value_ptr.decl_loc.eq(symbol.decl_loc)) {
+            const ref_expr_id = ast.ExprId.fromRaw(ent.key_ptr.*);
             const ref_loc = exprLoc(ast_unit, ref_expr_id);
             try references.append(gpa, ref_loc);
         }
@@ -1146,9 +1256,9 @@ fn onRename(out: *std.io.Writer, gpa: std.mem.Allocator, docs: *DocumentStore, i
             try s.objectField("changes");
             try s.beginObject();
             var changes_it = self.changes.iterator();
-            while (changes_it.next()) |entry| {
-                try s.objectField(entry.key_ptr.*);
-                try s.write(entry.value_ptr.*);
+            while (changes_it.next()) |ent| {
+                try s.objectField(ent.key_ptr.*);
+                try s.write(ent.value_ptr.*);
             }
             try s.endObject();
             try s.endObject();
@@ -1159,7 +1269,7 @@ fn onRename(out: *std.io.Writer, gpa: std.mem.Allocator, docs: *DocumentStore, i
     defer edits.deinit(gpa);
 
     for (references.items) |loc| {
-        const range = locToRange(text, loc);
+        const range = locToRange(text, doc.line_starts, loc);
         try edits.append(gpa, .{ .range = range, .newText = p.value.newName });
     }
 
@@ -1188,6 +1298,31 @@ const CompletionItem = struct {
     label: []const u8,
     kind: ?u32 = null,
     detail: ?[]const u8 = null,
+};
+
+/// Static keyword completion entries.
+const keyword_completion_items = [_]CompletionItem{
+    .{ .label = "fn", .kind = @intFromEnum(CompletionItemKind.Keyword) },
+    .{ .label = "struct", .kind = @intFromEnum(CompletionItemKind.Keyword) },
+    .{ .label = "enum", .kind = @intFromEnum(CompletionItemKind.Keyword) },
+    .{ .label = "let", .kind = @intFromEnum(CompletionItemKind.Keyword) },
+    .{ .label = "const", .kind = @intFromEnum(CompletionItemKind.Keyword) },
+    .{ .label = "if", .kind = @intFromEnum(CompletionItemKind.Keyword) },
+    .{ .label = "else", .kind = @intFromEnum(CompletionItemKind.Keyword) },
+    .{ .label = "for", .kind = @intFromEnum(CompletionItemKind.Keyword) },
+    .{ .label = "while", .kind = @intFromEnum(CompletionItemKind.Keyword) },
+    .{ .label = "match", .kind = @intFromEnum(CompletionItemKind.Keyword) },
+    .{ .label = "return", .kind = @intFromEnum(CompletionItemKind.Keyword) },
+    .{ .label = "true", .kind = @intFromEnum(CompletionItemKind.Keyword) },
+    .{ .label = "false", .kind = @intFromEnum(CompletionItemKind.Keyword) },
+    .{ .label = "import", .kind = @intFromEnum(CompletionItemKind.Keyword) },
+    .{ .label = "package", .kind = @intFromEnum(CompletionItemKind.Keyword) },
+    .{ .label = "defer", .kind = @intFromEnum(CompletionItemKind.Keyword) },
+    .{ .label = "errdefer", .kind = @intFromEnum(CompletionItemKind.Keyword) },
+    .{ .label = "async", .kind = @intFromEnum(CompletionItemKind.Keyword) },
+    .{ .label = "await", .kind = @intFromEnum(CompletionItemKind.Keyword) },
+    .{ .label = "try", .kind = @intFromEnum(CompletionItemKind.Keyword) },
+    .{ .label = "catch", .kind = @intFromEnum(CompletionItemKind.Keyword) },
 };
 
 /// Enumeration of semantic completion categories exposed over LSP.
@@ -1236,25 +1371,26 @@ fn lspCompletionKindFromSemantic(kind: SemanticTokenKind) CompletionItemKind {
 }
 
 /// Provide completion items in response to client requests.
-fn onCompletion(out: *std.Io.Writer, gpa: std.mem.Allocator, docs: *DocumentStore, id: u64, params: json.Value) !void {
+fn onCompletion(out: *std.Io.Writer, gpa: std.mem.Allocator, docs: *DocumentStore, analysis: *AnalysisCache, id: u64, params: json.Value) !void {
     // Completion request payload describing the document and cursor position.
     // Parameters payload for completion requests.
     var p = try json.parseFromValue(TextDocumentPositionParams, gpa, params, .{ .ignore_unknown_fields = true });
     defer p.deinit();
 
     const uri = p.value.textDocument.uri;
-    const text = try requireDocumentOrRespondNull(out, gpa, docs, uri, id) orelse return;
+    const doc = try requireDocumentOrRespondNull(out, gpa, docs, uri, id) orelse return;
 
     var items = std.ArrayList(CompletionItem){};
+    var owned = std.ArrayList([]const u8){};
     defer {
-        for (items.items) |item| {
-            gpa.free(item.label);
-            if (item.detail) |d| gpa.free(d);
+        for (owned.items) |buf| {
+            gpa.free(buf);
         }
+        owned.deinit(gpa);
         items.deinit(gpa);
     }
 
-    computeCompletions(gpa, uri, text, &items) catch |err| {
+    computeCompletions(gpa, uri, doc, analysis, &items, &owned) catch |err| {
         std.debug.print("[lsp] completion error: {s}\n", .{@errorName(err)});
         const empty_items: ?[]const CompletionItem = null;
         try writeJson(out, gpa, .{ .jsonrpc = "2.0", .id = id, .result = .{ .items = empty_items } });
@@ -1265,24 +1401,19 @@ fn onCompletion(out: *std.Io.Writer, gpa: std.mem.Allocator, docs: *DocumentStor
 }
 
 /// Populate `items` with completion candidates derived from `uri` and `text`.
-fn computeCompletions(gpa: std.mem.Allocator, uri: []const u8, text: []const u8, items: *std.ArrayList(CompletionItem)) !void {
-    // Add keywords
-    const keywords = [_][]const u8{ "fn", "struct", "enum", "let", "const", "if", "else", "for", "while", "match", "return", "true", "false", "import", "package", "defer", "errdefer", "async", "await", "try", "catch" };
-    for (keywords) |kw| {
-        try items.append(gpa, .{ .label = try gpa.dupe(u8, kw), .kind = @intFromEnum(CompletionItemKind.Keyword) });
-    }
+fn computeCompletions(
+    gpa: std.mem.Allocator,
+    uri: []const u8,
+    doc: *const DocumentStore.Document,
+    analysis: *AnalysisCache,
+    items: *std.ArrayList(CompletionItem),
+    owned: *std.ArrayList([]const u8),
+) !void {
+    // Add keywords (static storage, no dup/free required)
+    try items.appendSlice(gpa, &keyword_completion_items);
 
-    var session = try CompilationSession.init(gpa, uri, text);
-    defer session.deinit();
-
-    var pipeline = lib.pipeline.Pipeline.init(gpa, &session.context);
-
-    _ = pipeline.run(session.path, &.{}, .parse, null) catch |err| switch (err) {
-        error.ParseFailed, error.TooManyErrors => {},
-        else => |e| return e,
-    };
-
-    const ast_unit = findAstForFile(&session.context.compilation_unit, session.file_id) orelse return;
+    const entry = try analysis.ensure(uri, doc) orelse return;
+    const ast_unit = entry.ast_unit orelse return;
 
     // Add global declarations
     const decls = ast_unit.exprs.decl_pool.slice(ast_unit.unit.decls);
@@ -1290,71 +1421,82 @@ fn computeCompletions(gpa: std.mem.Allocator, uri: []const u8, text: []const u8,
         const decl_row = ast_unit.exprs.Decl.get(decl_id);
         const decl_kind = classifyDeclKind(ast_unit, decl_row.value);
         if (decl_row.pattern.isNone()) continue;
-        try addPatternBindingsToCompletions(gpa, items, ast_unit, patternFromOpt(decl_row.pattern), decl_kind);
+        try addPatternBindingsToCompletions(gpa, items, owned, ast_unit, patternFromOpt(decl_row.pattern), decl_kind);
     }
 }
 
 /// Add completion entries based on bindings found within `pat_id`.
-fn addPatternBindingsToCompletions(gpa: std.mem.Allocator, items: *std.ArrayList(CompletionItem), ast_unit: *ast.Ast, pat_id: ast.PatternId, kind: SemanticTokenKind) !void {
+fn addPatternBindingsToCompletions(
+    gpa: std.mem.Allocator,
+    items: *std.ArrayList(CompletionItem),
+    owned: *std.ArrayList([]const u8),
+    ast_unit: *ast.Ast,
+    pat_id: ast.PatternId,
+    kind: SemanticTokenKind,
+) !void {
     const pat_store = &ast_unit.pats;
     const pat_kind = pat_store.kind(pat_id);
     switch (pat_kind) {
         .Binding => {
             const row = pat_store.get(.Binding, pat_id);
             const name = ast_unit.pats.strs.get(row.name);
+            const copy = try gpa.dupe(u8, name);
+            try owned.append(gpa, copy);
             try items.append(gpa, .{
-                .label = try gpa.dupe(u8, name),
+                .label = copy,
                 .kind = @intFromEnum(lspCompletionKindFromSemantic(kind)),
             });
         },
         .Tuple => {
             const row = pat_store.get(.Tuple, pat_id);
-            for (pat_store.pat_pool.slice(row.elems)) |elem| try addPatternBindingsToCompletions(gpa, items, ast_unit, elem, kind);
+            for (pat_store.pat_pool.slice(row.elems)) |elem| try addPatternBindingsToCompletions(gpa, items, owned, ast_unit, elem, kind);
         },
         .Slice => {
             const row = pat_store.get(.Slice, pat_id);
-            for (pat_store.pat_pool.slice(row.elems)) |elem| try addPatternBindingsToCompletions(gpa, items, ast_unit, elem, kind);
+            for (pat_store.pat_pool.slice(row.elems)) |elem| try addPatternBindingsToCompletions(gpa, items, owned, ast_unit, elem, kind);
             if (!row.rest_binding.isNone()) {
-                try addPatternBindingsToCompletions(gpa, items, ast_unit, patternFromOpt(row.rest_binding), kind);
+                try addPatternBindingsToCompletions(gpa, items, owned, ast_unit, patternFromOpt(row.rest_binding), kind);
             }
         },
         .Struct => {
             const row = pat_store.get(.Struct, pat_id);
             for (pat_store.field_pool.slice(row.fields)) |field_id| {
                 const field = pat_store.StructField.get(field_id);
-                try addPatternBindingsToCompletions(gpa, items, ast_unit, field.pattern, kind);
+                try addPatternBindingsToCompletions(gpa, items, owned, ast_unit, field.pattern, kind);
             }
         },
         .VariantStruct => {
             const row = pat_store.get(.VariantStruct, pat_id);
             for (pat_store.field_pool.slice(row.fields)) |field_id| {
                 const field = pat_store.StructField.get(field_id);
-                try addPatternBindingsToCompletions(gpa, items, ast_unit, field.pattern, kind);
+                try addPatternBindingsToCompletions(gpa, items, owned, ast_unit, field.pattern, kind);
             }
         },
         .VariantTuple => {
             const row = pat_store.get(.VariantTuple, pat_id);
-            for (pat_store.pat_pool.slice(row.elems)) |elem| try addPatternBindingsToCompletions(gpa, items, ast_unit, elem, kind);
+            for (pat_store.pat_pool.slice(row.elems)) |elem| try addPatternBindingsToCompletions(gpa, items, owned, ast_unit, elem, kind);
         },
         .Or => {
             const row = pat_store.get(.Or, pat_id);
-            for (pat_store.pat_pool.slice(row.alts)) |alt| try addPatternBindingsToCompletions(gpa, items, ast_unit, alt, kind);
+            for (pat_store.pat_pool.slice(row.alts)) |alt| try addPatternBindingsToCompletions(gpa, items, owned, ast_unit, alt, kind);
         },
         .At => {
             const row = pat_store.get(.At, pat_id);
             const name = ast_unit.pats.strs.get(row.binder);
+            const copy = try gpa.dupe(u8, name);
+            try owned.append(gpa, copy);
             try items.append(gpa, .{
-                .label = try gpa.dupe(u8, name),
+                .label = copy,
                 .kind = @intFromEnum(lspCompletionKindFromSemantic(kind)),
             });
-            try addPatternBindingsToCompletions(gpa, items, ast_unit, row.pattern, kind);
+            try addPatternBindingsToCompletions(gpa, items, owned, ast_unit, row.pattern, kind);
         },
         else => {},
     }
 }
 
 /// Generate a full semantic token response for the given document.
-fn onSemanticTokensFull(out: *std.Io.Writer, gpa: std.mem.Allocator, docs: *DocumentStore, id: u64, params: json.Value) !void {
+fn onSemanticTokensFull(out: *std.Io.Writer, gpa: std.mem.Allocator, docs: *DocumentStore, analysis: *AnalysisCache, id: u64, params: json.Value) !void {
     // Semantic tokens request payload describing the document to highlight.
     // Parameters payload used for full semantic tokens requests.
     var p = try json.parseFromValue(TextDocumentParams, gpa, params, .{ .ignore_unknown_fields = true });
@@ -1368,8 +1510,8 @@ fn onSemanticTokensFull(out: *std.Io.Writer, gpa: std.mem.Allocator, docs: *Docu
         result: struct { data: []const u32 },
     };
 
-    if (docs.get(uri)) |text| {
-        const data = try computeSemanticTokens(gpa, uri, text);
+    if (docs.get(uri)) |doc| {
+        const data = try computeSemanticTokens(gpa, uri, doc, analysis);
         defer gpa.free(data);
         try writeJson(out, gpa, Resp{ .id = id, .result = .{ .data = data } });
     } else {
@@ -1379,7 +1521,7 @@ fn onSemanticTokensFull(out: *std.Io.Writer, gpa: std.mem.Allocator, docs: *Docu
 }
 
 /// Produce formatting edits for the document at `uri`.
-fn onFormatting(out: *std.Io.Writer, gpa: std.mem.Allocator, docs: *DocumentStore, id: u64, params: json.Value) !void {
+fn onFormatting(out: *std.Io.Writer, gpa: std.mem.Allocator, docs: *DocumentStore, analysis: *AnalysisCache, id: u64, params: json.Value) !void {
     // Formatting request payload specifying the document URI.
     // Parameters payload for `textDocument/formatting` requests.
     var p = try json.parseFromValue(TextDocumentParams, gpa, params, .{ .ignore_unknown_fields = true });
@@ -1387,7 +1529,7 @@ fn onFormatting(out: *std.Io.Writer, gpa: std.mem.Allocator, docs: *DocumentStor
 
     const uri = p.value.textDocument.uri;
 
-    const source = docs.get(uri) orelse {
+    const doc = docs.get(uri) orelse {
         // Response payload emitted when formatting cannot read the document.
         const Resp = struct {
             jsonrpc: []const u8 = "2.0",
@@ -1397,6 +1539,7 @@ fn onFormatting(out: *std.Io.Writer, gpa: std.mem.Allocator, docs: *DocumentStor
         try writeJson(out, gpa, Resp{ .id = id, .result = emptyTextEdits });
         return;
     };
+    const source = doc.text;
 
     const path = try fileUriToPath(gpa, uri);
     defer gpa.free(path);
@@ -1417,10 +1560,7 @@ fn onFormatting(out: *std.Io.Writer, gpa: std.mem.Allocator, docs: *DocumentStor
     };
     defer gpa.free(formatted);
 
-    const edit = TextEdit{
-        .range = fullRange(source),
-        .newText = formatted,
-    };
+    const edit = TextEdit{ .range = fullRange(source, doc.line_starts), .newText = formatted };
     const edits = [_]TextEdit{edit};
     // Response payload containing the formatting edits.
     const Resp = struct {
@@ -1431,11 +1571,12 @@ fn onFormatting(out: *std.Io.Writer, gpa: std.mem.Allocator, docs: *DocumentStor
     try writeJson(out, gpa, Resp{ .id = id, .result = edits[0..] });
 
     try docs.set(uri, formatted);
+    analysis.remove(uri);
 }
 
 /// Run the checker and publish diagnostics for `uri`.
-fn publishDiagnostics(out: *std.Io.Writer, gpa: std.mem.Allocator, docs: *DocumentStore, uri: []const u8) !void {
-    const text_mut = docs.get(uri) orelse {
+fn publishDiagnostics(out: *std.Io.Writer, gpa: std.mem.Allocator, docs: *DocumentStore, analysis: *AnalysisCache, uri: []const u8) !void {
+    const doc = docs.get(uri) orelse {
         // Notification payload used when no diagnostics are available.
         const Msg = struct {
             jsonrpc: []const u8 = "2.0",
@@ -1446,18 +1587,18 @@ fn publishDiagnostics(out: *std.Io.Writer, gpa: std.mem.Allocator, docs: *Docume
         try writeJson(out, gpa, Msg{ .params = .{ .uri = uri, .diagnostics = &empty_diags } });
         return;
     };
-    const text: []const u8 = text_mut;
+    const text: []const u8 = doc.text;
 
-    var session = try CompilationSession.init(gpa, uri, text);
-    defer session.deinit();
-
-    var pipeline = lib.pipeline.Pipeline.init(gpa, &session.context);
-
-    _ = pipeline.run(session.path, &.{}, .check, null) catch |err| switch (err) {
-        error.ParseFailed, error.TypeCheckFailed, error.LoweringFailed, error.TirLoweringFailed, error.TooManyErrors => {},
-        else => {
-            std.debug.print("[lsp] pipeline error: {s}\n", .{@errorName(err)});
-        },
+    const entry = try analysis.ensure(uri, doc) orelse {
+        // Notification payload used when no diagnostics are available.
+        const Msg = struct {
+            jsonrpc: []const u8 = "2.0",
+            method: []const u8 = "textDocument/publishDiagnostics",
+            params: struct { uri: []const u8, diagnostics: []const LspDiagnostic },
+        };
+        const empty_diags = [_]LspDiagnostic{};
+        try writeJson(out, gpa, Msg{ .params = .{ .uri = uri, .diagnostics = &empty_diags } });
+        return;
     };
 
     var diags = std.ArrayList(LspDiagnostic){};
@@ -1475,16 +1616,16 @@ fn publishDiagnostics(out: *std.Io.Writer, gpa: std.mem.Allocator, docs: *Docume
         diags.deinit(gpa);
     }
 
-    for (session.context.diags.messages.items) |message| {
-        if (message.loc.file_id != session.file_id) continue;
+    for (entry.context.diags.messages.items) |message| {
+        if (message.loc.file_id != entry.file_id) continue;
 
-        const msg_text = session.context.diags.messageToOwnedSlice(gpa, message) catch |err| {
+        const msg_text = entry.context.diags.messageToOwnedSlice(gpa, message) catch |err| {
             std.debug.print("[lsp] failed to render diagnostic: {s}\n", .{@errorName(err)});
             continue;
         };
 
         var diag = LspDiagnostic{
-            .range = locToRange(text, message.loc),
+            .range = locToRange(text, doc.line_starts, message.loc),
             .severity = severityToLsp(message.severity),
             .message = msg_text,
         };
@@ -1500,15 +1641,15 @@ fn publishDiagnostics(out: *std.Io.Writer, gpa: std.mem.Allocator, docs: *Docume
 
         for (message.notes.items) |note| {
             const note_loc = note.loc orelse continue;
-            if (note_loc.file_id != session.file_id) continue;
+            if (note_loc.file_id != entry.file_id) continue;
 
-            const note_msg = session.context.diags.noteToOwnedSlice(gpa, note) catch |err| {
+            const note_msg = entry.context.diags.noteToOwnedSlice(gpa, note) catch |err| {
                 std.debug.print("[lsp] failed to render note: {s}\n", .{@errorName(err)});
                 continue;
             };
 
             try related.append(gpa, .{
-                .location = .{ .uri = uri, .range = locToRange(text, note_loc) },
+                .location = .{ .uri = uri, .range = locToRange(text, doc.line_starts, note_loc) },
                 .message = note_msg,
             });
         }
@@ -1610,7 +1751,7 @@ const TokenAccumulator = struct {
     }
 
     /// Encode the accumulated tokens into the compact LSP semantic token format.
-    fn toEncodedSlice(self: *TokenAccumulator, text: []const u8) ![]u32 {
+    fn toEncodedSlice(self: *TokenAccumulator, text: []const u8, line_starts: []const usize) ![]u32 {
         const entries = try self.toSortedEntries();
         defer self.gpa.free(entries);
 
@@ -1622,7 +1763,7 @@ const TokenAccumulator = struct {
         var last_char: u32 = 0;
 
         for (entries) |entry| {
-            const pos = offsetToPosition(text, entry.start);
+            const pos = offsetToPosition(text, entry.start, line_starts);
             const seg_len = entry.end - entry.start;
 
             const delta_line: u32 = if (have_prev) pos.line - last_line else pos.line;
@@ -1680,31 +1821,32 @@ fn addSegmentMultiLine(tokens: *TokenAccumulator, text: []const u8, start: usize
 }
 
 /// Compute semantic tokens for `text` and return their LSP encoding.
-fn computeSemanticTokens(gpa: std.mem.Allocator, uri: []const u8, text: []const u8) ![]u32 {
+fn computeSemanticTokens(gpa: std.mem.Allocator, uri: []const u8, doc: *const DocumentStore.Document, analysis: *AnalysisCache) ![]u32 {
+    const text = doc.text;
     if (text.len == 0) {
         return &[_]u32{};
     }
 
-    const path = try fileUriToPath(gpa, uri);
-    defer gpa.free(path);
-
     var tokens = TokenAccumulator.init(gpa);
     defer tokens.deinit();
 
-    try collectLexicalTokens(&tokens, gpa, text);
-    try collectAstSemanticTokens(&tokens, gpa, text, path);
+    try collectLexicalTokens(&tokens, doc);
 
-    return try tokens.toEncodedSlice(text);
+    if (try analysis.ensure(uri, doc)) |entry| {
+        if (entry.ast_unit) |ast_unit| {
+            try gatherAstTokens(&tokens, gpa, text, ast_unit, entry.file_id, &entry.resolution_map);
+        }
+    }
+
+    return try tokens.toEncodedSlice(text, doc.line_starts);
 }
 
 /// Collect lexical tokens from `text` into `tokens`.
-fn collectLexicalTokens(tokens: *TokenAccumulator, gpa: std.mem.Allocator, text: []const u8) !void {
+fn collectLexicalTokens(tokens: *TokenAccumulator, doc: *const DocumentStore.Document) !void {
+    const text = doc.text;
     if (text.len == 0) return;
 
-    const text_z = try gpa.dupeZ(u8, text);
-    defer gpa.free(text_z);
-
-    var tokenizer = lib.lexer.Tokenizer.init(text_z, 0, .normal);
+    var tokenizer = lib.lexer.Tokenizer.init(doc.z_text, 0, .normal);
     while (true) {
         const tok = tokenizer.next();
         if (tok.tag == .eof) break;
@@ -1717,63 +1859,12 @@ fn collectLexicalTokens(tokens: *TokenAccumulator, gpa: std.mem.Allocator, text:
     }
 }
 
-/// Collect semantic tokens derived from AST nodes along `path`.
-fn collectAstSemanticTokens(tokens: *TokenAccumulator, gpa: std.mem.Allocator, text: []const u8, path: []const u8) !void {
-    var context = lib.compile.Context.init(gpa);
-    defer context.deinit();
-
-    const file_id = try context.source_manager.setVirtualSourceByPath(path, text);
-    var pipeline = lib.pipeline.Pipeline.init(gpa, &context);
-
-    _ = pipeline.run(path, &.{}, .check, null) catch |err| switch (err) {
-        error.ParseFailed,
-        error.TypeCheckFailed,
-        error.LoweringFailed,
-        error.TirLoweringFailed,
-        error.TooManyErrors,
-        => {},
-        else => {
-            std.debug.print("[lsp] semantic token pipeline error: {s}\n", .{@errorName(err)});
-            return;
-        },
-    };
-
-    const ast_unit = findAstForFile(&context.compilation_unit, file_id) orelse return;
-
-    var resolution_map = try buildResolutionMap(gpa, ast_unit);
-    defer resolution_map.deinit();
-
-    try gatherAstTokens(tokens, gpa, text, ast_unit, file_id, &resolution_map);
-}
-
 /// Gather semantic tokens from the AST and add them to `tokens`.
 fn gatherAstTokens(tokens: *TokenAccumulator, gpa: std.mem.Allocator, text: []const u8, ast_unit: *ast.Ast, file_id: u32, resolution_map: *const std.AutoArrayHashMap(u32, Symbol)) !void {
     try highlightPackage(tokens, text, ast_unit, file_id);
     try highlightDecls(tokens, text, ast_unit, file_id);
     try highlightExpressions(tokens, gpa, text, ast_unit, file_id, resolution_map);
 }
-
-/// Holds shared compilation state used across LSP handlers.
-const CompilationSession = struct {
-    gpa: std.mem.Allocator,
-    context: lib.compile.Context,
-    path: []const u8,
-    file_id: u32,
-
-    /// Allocate a compilation session for `uri`/`text`.
-    pub fn init(gpa: std.mem.Allocator, uri: []const u8, text: []const u8) !CompilationSession {
-        var context = lib.compile.Context.init(gpa);
-        const path = try fileUriToPath(gpa, uri);
-        const file_id = try context.source_manager.setVirtualSourceByPath(path, text);
-        return CompilationSession{ .gpa = gpa, .context = context, .path = path, .file_id = file_id };
-    }
-
-    /// Release session resources.
-    pub fn deinit(self: *CompilationSession) void {
-        self.context.deinit();
-        self.gpa.free(self.path);
-    }
-};
 
 /// Resolve symbols for `ast_unit` and return the populated map.
 fn buildResolutionMap(gpa: std.mem.Allocator, ast_unit: *ast.Ast) !std.AutoArrayHashMap(u32, Symbol) {
@@ -2410,23 +2501,52 @@ fn hexDigit(c: u8) ?u8 {
     };
 }
 
+/// Build a list of line start offsets for `text`.
+fn buildLineStarts(gpa: std.mem.Allocator, text: []const u8) ![]usize {
+    var starts = std.ArrayList(usize){};
+    errdefer starts.deinit(gpa);
+    try starts.append(gpa, 0);
+
+    var i: usize = 0;
+    while (i < text.len) : (i += 1) {
+        const c = text[i];
+        if (c == '\n') {
+            try starts.append(gpa, i + 1);
+        } else if (c == '\r') {
+            if (i + 1 < text.len and text[i + 1] == '\n') {
+                i += 1;
+            }
+            try starts.append(gpa, i + 1);
+        }
+    }
+
+    return starts.toOwnedSlice(gpa);
+}
+
 /// Convert `loc` into an LSP `Range` relative to `text`.
-fn locToRange(text: []const u8, loc: Loc) LspRange {
+fn locToRange(text: []const u8, line_starts: []const usize, loc: Loc) LspRange {
     const start_idx = clampOffset(text, loc.start);
     const raw_end = if (loc.end > loc.start) loc.end else loc.start;
     const end_idx = clampOffset(text, raw_end);
 
     return .{
-        .start = offsetToPosition(text, start_idx),
-        .end = offsetToPosition(text, end_idx),
+        .start = offsetToPosition(text, start_idx, line_starts),
+        .end = offsetToPosition(text, end_idx, line_starts),
     };
 }
 
+/// Allocate a zero-terminated copy of `text`.
+fn buildZeroTerminated(gpa: std.mem.Allocator, text: []const u8) ![:0]u8 {
+    const buf = try gpa.allocSentinel(u8, text.len, 0);
+    @memcpy(buf[0..text.len], text);
+    return buf;
+}
+
 /// Return the `LspRange` covering the entire `text`.
-fn fullRange(text: []const u8) LspRange {
+fn fullRange(text: []const u8, line_starts: []const usize) LspRange {
     return .{
         .start = .{ .line = 0, .character = 0 },
-        .end = offsetToPosition(text, text.len),
+        .end = offsetToPosition(text, text.len, line_starts),
     };
 }
 
@@ -2437,29 +2557,22 @@ fn clampOffset(text: []const u8, offset: usize) usize {
 }
 
 /// Convert byte `offset` inside `text` to an LSP position (line/char).
-fn offsetToPosition(text: []const u8, offset: usize) LspPosition {
-    var line: u32 = 0;
-    var col: u32 = 0;
-
-    var i: usize = 0;
-    while (i < offset and i < text.len) : (i += 1) {
-        switch (text[i]) {
-            '\n' => {
-                line += 1;
-                col = 0;
-            },
-            '\r' => {
-                line += 1;
-                col = 0;
-                if (i + 1 < offset and text[i + 1] == '\n') {
-                    i += 1;
-                }
-            },
-            else => col += 1,
+fn offsetToPosition(text: []const u8, offset_in: usize, line_starts: []const usize) LspPosition {
+    const offset = clampOffset(text, offset_in);
+    // line_starts are sorted; find greatest start <= offset.
+    var low: usize = 0;
+    var high: usize = line_starts.len;
+    while (low + 1 < high) {
+        const mid = low + (high - low) / 2;
+        if (line_starts[mid] > offset) {
+            high = mid;
+        } else {
+            low = mid;
         }
     }
-
-    return .{ .line = line, .character = col };
+    const line_start = line_starts[low];
+    const character = offset - line_start;
+    return .{ .line = @intCast(low), .character = @intCast(character) };
 }
 
 /// Translate diagnostic `Severity` into LSP severity codes.
@@ -2496,25 +2609,11 @@ fn printHoverFields(writer: *std.io.Writer, type_store: *types.TypeStore, fields
     }
 }
 
-/// Compute hover message for offset `offset_in` inside `uri`.
-fn computeHover(gpa: std.mem.Allocator, uri: []const u8, text: []const u8, offset_in: usize) !?HoverInfo {
-    var session = try CompilationSession.init(gpa, uri, text);
-    defer session.deinit();
-
+/// Compute hover message for offset `offset_in`.
+fn computeHover(gpa: std.mem.Allocator, doc: *const DocumentStore.Document, entry: *AnalysisCache.Entry, offset_in: usize) !?HoverInfo {
+    const text = doc.text;
     const offset = if (offset_in > text.len) text.len else offset_in;
-    var pipeline = lib.pipeline.Pipeline.init(gpa, &session.context);
-
-    _ = pipeline.run(session.path, &.{}, .check, null) catch |err| switch (err) {
-        error.ParseFailed => return null,
-        else => {
-            // Proceed with partial AST-based hover if available
-        },
-    };
-
-    const ast_unit = findAstForFile(&session.context.compilation_unit, session.file_id) orelse return null;
-
-    var resolution_map = try buildResolutionMap(gpa, ast_unit);
-    defer resolution_map.deinit();
+    const ast_unit = entry.ast_unit orelse return null;
     const expr_id = findExprAt(ast_unit, offset) orelse return null;
     const loc = exprLoc(ast_unit, expr_id);
 
@@ -2522,11 +2621,11 @@ fn computeHover(gpa: std.mem.Allocator, uri: []const u8, text: []const u8, offse
     defer msg_builder.deinit();
     const writer = &msg_builder.writer;
 
-    if (resolution_map.get(expr_id.toRaw())) |symbol| {
+    if (entry.resolution_map.get(expr_id.toRaw())) |symbol| {
         const decl_loc = ast_unit.exprs.locs.get(symbol.decl_loc);
         const decl_file_id = decl_loc.file_id;
 
-        const decl_text = session.context.source_manager.read(decl_file_id) catch return null;
+        const decl_text = entry.context.source_manager.read(decl_file_id) catch return null;
         defer gpa.free(decl_text);
 
         const start_offset = decl_loc.start;
@@ -2546,26 +2645,26 @@ fn computeHover(gpa: std.mem.Allocator, uri: []const u8, text: []const u8, offse
         if (getExprType(ast_unit, expr_id)) |type_id| {
             try writer.print("\n\n---\n\n", .{});
             try writer.print("```sr\n", .{});
-            try session.context.type_store.fmt(type_id, writer);
+            try entry.context.type_store.fmt(type_id, writer);
             try writer.print("\n```", .{});
         }
 
         const message = try msg_builder.toOwnedSlice();
         return HoverInfo{
             .message = message,
-            .range = locToRange(text, loc),
+            .range = locToRange(text, doc.line_starts, loc),
         };
     }
 
     // Fallback for unresolved symbols
     if (getExprType(ast_unit, expr_id)) |type_id| {
         try writer.print("```sr\n", .{});
-        try session.context.type_store.fmt(type_id, writer);
+        try entry.context.type_store.fmt(type_id, writer);
         try writer.print("\n```", .{});
         const message = try msg_builder.toOwnedSlice();
         return HoverInfo{
             .message = message,
-            .range = locToRange(text, loc),
+            .range = locToRange(text, doc.line_starts, loc),
         };
     }
 
@@ -2628,37 +2727,23 @@ fn getExprType(ast_unit: *ast.Ast, expr_id: ast.ExprId) ?types.TypeId {
 }
 
 /// Convert LSP position to byte offset within `text`.
-fn positionToOffset(text: []const u8, target_line: u32, target_character: u32) usize {
-    var line: u32 = 0;
-    var idx: usize = 0;
-    var last_line_start: usize = 0;
+fn positionToOffset(text: []const u8, target_line: u32, target_character: u32, line_starts: []const usize) usize {
+    if (line_starts.len == 0) return 0;
+    const line_idx: usize = if (target_line < line_starts.len) @intCast(target_line) else line_starts.len - 1;
+    const start = line_starts[line_idx];
+    if (start >= text.len) return text.len;
 
-    while (idx < text.len and line < target_line) : (idx += 1) {
-        const c = text[idx];
-        if (c == '\n') {
-            line += 1;
-            last_line_start = idx + 1;
-        } else if (c == '\r') {
-            line += 1;
-            last_line_start = idx + 1;
-            if (idx + 1 < text.len and text[idx + 1] == '\n') idx += 1;
-        }
-    }
-
-    if (line != target_line) return text.len;
-
-    idx = last_line_start;
-    var character: u32 = 0;
-    while (idx < text.len and character < target_character) : (idx += 1) {
+    // Clamp character within the line.
+    var idx = start;
+    var remaining = target_character;
+    while (idx < text.len and remaining > 0) : (idx += 1) {
         const c = text[idx];
         if (c == '\n') break;
         if (c == '\r') {
-            if (idx + 1 < text.len and text[idx + 1] == '\n') {
-                idx += 1;
-            }
+            if (idx + 1 < text.len and text[idx + 1] == '\n') idx += 1;
             break;
         }
-        character += 1;
+        remaining -= 1;
     }
 
     return idx;

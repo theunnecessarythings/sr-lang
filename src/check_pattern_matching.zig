@@ -298,17 +298,16 @@ fn checkVariantStructPattern(self: *Checker, ctx: *Checker.CheckerContext, ast_u
             const st = self.context.type_store.get(.Struct, value_ty);
             const value_fields = self.context.type_store.field_pool.slice(st.fields);
             const pat_fields = ast_unit.pats.field_pool.slice(vs_pat.fields);
+            var field_map = std.AutoArrayHashMap(ast.StrId, types.TypeId).init(self.gpa);
+            defer field_map.deinit();
+            for (value_fields) |vfid| {
+                const vf = self.context.type_store.Field.get(vfid);
+                _ = try field_map.put(vf.name, vf.ty);
+            }
 
             for (pat_fields) |pfid| {
                 const pf = ast_unit.pats.StructField.get(pfid);
-                var fty: ?types.TypeId = null;
-                for (value_fields) |vfid| {
-                    const vf = self.context.type_store.Field.get(vfid);
-                    if (vf.name.eq(pf.name)) {
-                        fty = vf.ty;
-                        break;
-                    }
-                }
+                const fty = field_map.get(pf.name);
                 if (fty == null) {
                     try self.context.diags.addError(ast_unit.exprs.locs.get(vs_pat.loc), .struct_pattern_field_mismatch, .{});
                     return false;
@@ -336,17 +335,16 @@ fn checkVariantStructPattern(self: *Checker, ctx: *Checker.CheckerContext, ast_u
     const st = self.context.type_store.get(.Struct, payload_ty);
     const value_fields = self.context.type_store.field_pool.slice(st.fields);
     const pat_fields = ast_unit.pats.field_pool.slice(vs_pat.fields);
+    var field_map = std.AutoArrayHashMap(ast.StrId, types.TypeId).init(self.gpa);
+    defer field_map.deinit();
+    for (value_fields) |vfid| {
+        const vf = self.context.type_store.Field.get(vfid);
+        _ = try field_map.put(vf.name, vf.ty);
+    }
 
     for (pat_fields) |pfid| {
         const pf = ast_unit.pats.StructField.get(pfid);
-        var fty: ?types.TypeId = null;
-        for (value_fields) |vfid| {
-            const vf = self.context.type_store.Field.get(vfid);
-            if (vf.name.eq(pf.name)) {
-                fty = vf.ty;
-                break;
-            }
-        }
+        const fty = field_map.get(pf.name);
         if (fty == null) return false;
         if (!(try checkPattern(self, ctx, ast_unit, pf.pattern, fty.?, false))) {
             try self.context.diags.addError(ast_unit.exprs.locs.get(vs_pat.loc), .struct_pattern_field_mismatch, .{});
@@ -485,18 +483,16 @@ fn checkStructPattern(self: *Checker, ctx: *Checker.CheckerContext, ast_unit: *a
     const value_struct_ty = self.context.type_store.get(.Struct, value_ty);
     const pattern_fields = ast_unit.pats.field_pool.slice(sp.fields);
     const value_fields = self.context.type_store.field_pool.slice(value_struct_ty.fields);
+    var field_map = std.AutoArrayHashMap(ast.StrId, types.TypeId).init(self.gpa);
+    defer field_map.deinit();
+    for (value_fields) |val_field_id| {
+        const val_field = self.context.type_store.Field.get(val_field_id);
+        _ = try field_map.put(val_field.name, val_field.ty);
+    }
 
     for (pattern_fields) |pat_field_id| {
         const pat_field = ast_unit.pats.StructField.get(pat_field_id);
-        var match_ty: ?types.TypeId = null;
-
-        for (value_fields) |val_field_id| {
-            const val_field = self.context.type_store.Field.get(val_field_id);
-            if (pat_field.name.eq(val_field.name)) {
-                match_ty = val_field.ty;
-                break;
-            }
-        }
+        const match_ty = field_map.get(pat_field.name);
 
         if (match_ty == null) {
             if (emit) try self.context.diags.addError(pattern_loc, .struct_pattern_field_mismatch, .{});

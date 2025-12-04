@@ -201,6 +201,9 @@ pub fn attachTargetInfo(self: *Codegen) !void {
     mod_op.setDiscardableAttributeByName(mlir.StringRef.from("llvm.data_layout"), dl);
 }
 
+const KEY_DEBUG_INFO_VERSION = ", \"Debug Info Version\",";
+const KEY_DWARF_VERSION = ", \"Dwarf Version\",";
+
 /// Format a module-flag attribute for the given `behavior`, `key`, and `value_repr`.
 fn moduleFlagAttr(self: *Codegen, behavior: []const u8, key: []const u8, value_repr: []const u8) !mlir.Attribute {
     const text = try std.fmt.allocPrint(
@@ -222,7 +225,13 @@ fn moduleFlagMatchesKey(self: *Codegen, attr: mlir.Attribute, key: []const u8) !
     defer self.gpa.free(needle);
     return std.mem.indexOf(u8, text, needle) != null;
 }
-/// Append a new module flag entry if a flag with `key` is not already present.
+fn moduleFlagHasKey(self: *Codegen, attr: mlir.Attribute, needle: []const u8) !bool {
+    const text = try self.ownedAttributeText(attr);
+    defer self.gpa.free(text);
+    return std.mem.indexOf(u8, text, needle) != null;
+}
+
+/// Append a new module flag entry; caller ensures key is missing already.
 fn appendModuleFlag(
     self: *Codegen,
     flags: *std.ArrayList(mlir.Attribute),
@@ -230,9 +239,6 @@ fn appendModuleFlag(
     key: []const u8,
     value_repr: []const u8,
 ) !void {
-    for (flags.items) |existing| {
-        if (try moduleFlagMatchesKey(self, existing, key)) return;
-    }
     const attr = try moduleFlagAttr(self, behavior, key, value_repr);
     try flags.append(self.gpa, attr);
 }
@@ -248,16 +254,25 @@ pub fn ensureDebugModuleAttrs(self: *Codegen) !void {
 
     var flags: std.ArrayList(mlir.Attribute) = .empty;
     defer flags.deinit(self.gpa);
+    var has_debug_info = false;
+    var has_dwarf = false;
     if (!existing_flags.isNull()) {
         const count = existing_flags.arrayAttrGetNumElements();
         var idx: usize = 0;
         while (idx < count) : (idx += 1) {
-            try flags.append(self.gpa, existing_flags.arrayAttrGetElement(idx));
+            const elem = existing_flags.arrayAttrGetElement(idx);
+            try flags.append(self.gpa, elem);
+            if (!has_debug_info) has_debug_info = try moduleFlagHasKey(self, elem, KEY_DEBUG_INFO_VERSION);
+            if (!has_dwarf) has_dwarf = try moduleFlagHasKey(self, elem, KEY_DWARF_VERSION);
         }
     }
 
-    try appendModuleFlag(self, &flags, "warning", "Debug Info Version", "3 : i32");
-    try appendModuleFlag(self, &flags, "max", "Dwarf Version", "5 : i32");
+    if (!has_debug_info) {
+        try appendModuleFlag(self, &flags, "warning", "Debug Info Version", "3 : i32");
+    }
+    if (!has_dwarf) {
+        try appendModuleFlag(self, &flags, "max", "Dwarf Version", "5 : i32");
+    }
 
     if (flags.items.len > 0) {
         const array_attr = mlir.Attribute.arrayAttrGet(self.mlir_ctx, flags.items);

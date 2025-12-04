@@ -306,8 +306,6 @@ pub fn emitCastNormal(self: *Codegen, dst_sr: types.TypeId, to_ty: mlir.Type, fr
         return agg;
     if (self.isUndefValue(from_v)) return self.undefOf(to_ty);
 
-    if (self.isUndefValue(from_v)) return self.undefOf(to_ty);
-
     // Fallback: avoid invalid bitcasts on aggregates. If either side is an
     // LLVM struct (aggregate), do not emit an arith.bitcast which is invalid
     // for structs. Let the caller supply a properly shaped value instead.

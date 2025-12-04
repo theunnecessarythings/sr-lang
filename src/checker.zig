@@ -34,6 +34,12 @@ context: *Context,
 pipeline: *Pipeline,
 /// Stack of per-file checker contexts currently active.
 checker_ctx: List(CheckerContext),
+/// Scratch buffer reused for expression collection.
+expr_id_scratch: std.ArrayList(ast.ExprId) = .{},
+/// Additional scratch buffers for nested requests.
+expr_id_scratch_extra: std.ArrayList(std.ArrayList(ast.ExprId)) = .{},
+/// How many scratch buffers are currently checked-out.
+expr_id_scratch_depth: usize = 0,
 
 /// Per-AST context that tracks symbol tables, loops, matches, and diagnostic state.
 pub const CheckerContext = struct {
@@ -165,6 +171,9 @@ pub fn init(
         .context = context,
         .pipeline = pipeline,
         .checker_ctx = .{},
+        .expr_id_scratch = std.ArrayList(ast.ExprId){},
+        .expr_id_scratch_extra = std.ArrayList(std.ArrayList(ast.ExprId)){},
+        .expr_id_scratch_depth = 0,
     };
 }
 
@@ -174,6 +183,11 @@ pub fn deinit(self: *Checker) void {
         ctx.deinit(self.gpa);
     }
     self.checker_ctx.deinit(self.gpa);
+    for (self.expr_id_scratch_extra.items) |*scratch| {
+        scratch.deinit(self.gpa);
+    }
+    self.expr_id_scratch_extra.deinit(self.gpa);
+    self.expr_id_scratch.deinit(self.gpa);
 }
 
 /// Execute the checker across all AST units ordered by `levels`.
@@ -309,6 +323,27 @@ inline fn getExpr(ast_unit: *ast.Ast, comptime K: ast.ExprKind, id: ast.ExprId) 
     return ast_unit.exprs.get(K, id);
 }
 
+pub fn acquireExprIdsScratch(self: *Checker) !*std.ArrayList(ast.ExprId) {
+    const idx = self.expr_id_scratch_depth;
+    self.expr_id_scratch_depth += 1;
+    if (idx == 0) {
+        self.expr_id_scratch.clearRetainingCapacity();
+        return &self.expr_id_scratch;
+    }
+    const extra_index = idx - 1;
+    if (extra_index >= self.expr_id_scratch_extra.items.len) {
+        try self.expr_id_scratch_extra.append(self.gpa, std.ArrayList(ast.ExprId){});
+    }
+    const scratch = &self.expr_id_scratch_extra.items[extra_index];
+    scratch.clearRetainingCapacity();
+    return scratch;
+}
+
+pub fn releaseExprIdsScratch(self: *Checker) void {
+    std.debug.assert(self.expr_id_scratch_depth > 0);
+    self.expr_id_scratch_depth -= 1;
+}
+
 /// Push a new nested-function permission `v` onto the current context.
 fn pushAllowNestedFn(self: *Checker, ctx: *CheckerContext, v: bool) !void {
     try ctx.allow_nested_fn.append(self.gpa, v);
@@ -342,14 +377,17 @@ pub fn evalComptimeExpr(
 
     const interp = ctx.interp.?;
 
-    var alias_bindings = std.ArrayList(interpreter.Binding).empty;
-    defer alias_bindings.deinit(self.gpa);
+    var alias_bindings: std.ArrayList(interpreter.Binding) = undefined;
+    var alias_bindings_init = false;
+    defer if (alias_bindings_init) alias_bindings.deinit(self.gpa);
 
     var has_binding_scope = false;
     var binding_scope: interpreter.Interpreter.BindingScope = undefined;
     defer if (has_binding_scope) binding_scope.deinit();
 
     if (bindings.len > 0) {
+        alias_bindings = std.ArrayList(interpreter.Binding).empty;
+        alias_bindings_init = true;
         var alias_success = false;
         defer if (!alias_success) {
             for (alias_bindings.items) |*binding| binding.value.destroy(self.gpa);
@@ -578,34 +616,42 @@ pub fn checkSpecializedFunction(
     if (specs.len > 0) try ctx.param_specializations.appendSlice(self.gpa, specs);
 
     const backup_len = ast_unit.type_info.expr_types.items.len;
-    const backup = try self.gpa.alloc(?types.TypeId, backup_len);
-    if (backup_len != 0) {
-        const src = ast_unit.type_info.expr_types.items[0..backup_len];
-        std.mem.copyForwards(?types.TypeId, backup, src);
-    }
     // Clear cached expression types for this function so specializations re-check bodies.
-    var expr_ids = std.ArrayList(ast.ExprId){};
-    defer expr_ids.deinit(self.gpa);
-    try check_types.collectDeclExprs(self.gpa, ast_unit, decl_id, &expr_ids);
+    var expr_ids = try self.acquireExprIdsScratch();
+    defer self.releaseExprIdsScratch();
+    try check_types.collectDeclExprs(self.gpa, ast_unit, decl_id, expr_ids);
+    const ExprTypeEntry = struct {
+        index: u32,
+        ty: ?types.TypeId,
+    };
+
+    var entry_buf = try self.gpa.alloc(ExprTypeEntry, expr_ids.items.len);
+    defer self.gpa.free(entry_buf);
+    var entry_count: usize = 0;
     for (expr_ids.items) |eid| {
-        if (eid.toRaw() < ast_unit.type_info.expr_types.items.len) {
-            ast_unit.type_info.expr_types.items[eid.toRaw()] = null;
-        }
+        const raw = eid.toRaw();
+        if (raw >= backup_len) continue;
+        entry_buf[entry_count] = ExprTypeEntry{ .index = raw, .ty = ast_unit.type_info.expr_types.items[raw] };
+        entry_count += 1;
+        ast_unit.type_info.expr_types.items[raw] = null;
     }
     defer {
         ast_unit.type_info.expr_types.items.len = backup_len;
-        if (backup_len != 0) {
-            const dest = ast_unit.type_info.expr_types.items[0..backup_len];
-            std.mem.copyForwards(?types.TypeId, dest, backup);
+        for (entry_buf[0..entry_count]) |entry| {
+            ast_unit.type_info.expr_types.items[entry.index] = entry.ty;
         }
-        self.gpa.free(backup);
     }
 
     try self.pushAllowNestedFn(ctx, true);
     defer self.popAllowNestedFn(ctx);
     const result_ty = try self.checkFunctionLit(ctx, ast_unit, id);
     if (snapshot_decl) |target_decl| {
-        try check_types.storeSpecializationExprTypes(self, ast_unit, decl_id, target_decl);
+        try check_types.storeSpecializationExprTypes(
+            self,
+            ast_unit,
+            expr_ids.items[0..expr_ids.items.len],
+            target_decl,
+        );
         var call_expr_ids = std.ArrayList(u32){};
         var call_specs = std.ArrayList(types.CallSpecialization){};
         defer {
@@ -634,22 +680,13 @@ fn getOrInstantiateSpecialization(
     original_decl_id: ast.DeclId,
     concrete_param_types: []const types.TypeId,
 ) !ast.DeclId {
-    const params_dup = try self.gpa.dupe(types.TypeId, concrete_param_types);
-    var params_owned = true;
-    errdefer if (params_owned) self.gpa.free(params_dup);
-
-    const key = types.SpecializationKey{
-        .original_decl_id = original_decl_id.toRaw(),
-        .param_types = params_dup,
-    };
-    errdefer if (!params_owned) {
-        if (ctx.specialization_cache.fetchRemove(key)) |kv| {
-            self.gpa.free(kv.key.param_types);
-        }
-    };
-
     var synthetic_decl_id: ast.DeclId = undefined;
-    if (ctx.specialization_cache.get(key)) |existing| {
+    const lookup_key = types.SpecializationKey{
+        .original_decl_id = original_decl_id.toRaw(),
+        .param_types = concrete_param_types,
+    };
+
+    if (ctx.specialization_cache.get(lookup_key)) |existing| {
         const sig_opt = if (existing.toRaw() < ast_unit.type_info.decl_types.items.len)
             ast_unit.type_info.decl_types.items[existing.toRaw()]
         else
@@ -668,13 +705,26 @@ fn getOrInstantiateSpecialization(
             } else break :blk true;
             break :blk false;
         };
-        self.gpa.free(params_dup);
         if (!needs_refresh) return existing;
         synthetic_decl_id = existing;
     } else {
         const new_slot_index = ast_unit.type_info.decl_types.items.len;
         try ast_unit.type_info.decl_types.append(self.gpa, null);
         synthetic_decl_id = ast.DeclId.fromRaw(@intCast(new_slot_index));
+
+        const params_dup = try self.gpa.dupe(types.TypeId, concrete_param_types);
+        var params_owned = true;
+        errdefer if (params_owned) self.gpa.free(params_dup);
+
+        const key = types.SpecializationKey{
+            .original_decl_id = original_decl_id.toRaw(),
+            .param_types = params_dup,
+        };
+        errdefer if (!params_owned) {
+            if (ctx.specialization_cache.fetchRemove(key)) |kv| {
+                self.gpa.free(kv.key.param_types);
+            }
+        };
 
         const gop = try ctx.specialization_cache.getOrPut(self.gpa, key);
         if (gop.found_existing) {
@@ -706,7 +756,7 @@ fn getOrInstantiateSpecialization(
     const fn_type = try self.checkSpecializedFunction(ctx, ast_unit, original_decl_id, specs.items, synthetic_decl_id);
     const fn_row_checked = self.context.type_store.get(.Function, fn_type);
     const new_sig = self.context.type_store.mkFunction(
-        params_dup,
+        concrete_param_types,
         fn_row_checked.result,
         fn_row_checked.is_variadic,
         fn_row_checked.is_pure,
@@ -2965,15 +3015,15 @@ fn checkFunctionLit(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, id
         const p = ast_unit.exprs.Param.get(params[i]);
 
         if (p.is_comptime) {
-             var specialized = false;
-             if (!p.pat.isNone()) {
-                 if (bindingNameOfPattern(ast_unit, p.pat.unwrap())) |pname| {
-                      if (self.lookupParamSpecialization(ctx, pname)) |_| {
-                          specialized = true;
-                      }
-                 }
-             }
-             if (!specialized) is_generic_template = true;
+            var specialized = false;
+            if (!p.pat.isNone()) {
+                if (bindingNameOfPattern(ast_unit, p.pat.unwrap())) |pname| {
+                    if (self.lookupParamSpecialization(ctx, pname)) |_| {
+                        specialized = true;
+                    }
+                }
+            }
+            if (!specialized) is_generic_template = true;
         }
 
         if (!p.ty.isNone()) {
