@@ -970,7 +970,7 @@ pub fn isIntegerKind(_: *const Checker, k: types.TypeKind) bool {
 }
 
 /// Estimate alignment requirements for `ty_id` based on structural layout rules.
-fn typeAlign(ctx: *const compile.Context, ty_id: types.TypeId) usize {
+pub fn typeAlign(ctx: *const compile.Context, ty_id: types.TypeId) usize {
     return switch (ctx.type_store.getKind(ty_id)) {
         .Bool, .I8, .U8 => 1,
         .I16, .U16 => 2,

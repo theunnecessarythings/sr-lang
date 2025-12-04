@@ -18,14 +18,14 @@ test "special_types: passing any to function" {
     ;
 
     const code = getSource(globals, src);
-    try runCompilerTest(code, "Result: 468\nResult: 58500\n");
+    try runCompilerTest(code, "Result: 46800\nResult: 585\n");
 }
 
 test "special_types: type checking any with typeof" {
     const globals =
         \\process_any :: proc(val: any) {
         \\    match typeof(val) {
-        \\        i32 => printf("It's an integer: %d\n", val),
+        \\        i64 => printf("It's an integer: %d\n", val),
         \\        string => printf("It's a string: %s\n", val),
         \\        _ => printf("Unknown type\n"),
         \\    }

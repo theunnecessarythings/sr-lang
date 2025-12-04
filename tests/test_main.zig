@@ -34,7 +34,7 @@ test "all" {
     _ = @import("behavior_float_literals.zig");
     _ = @import("behavior_for_loops.zig");
     _ = @import("behavior_functions.zig");
-    // _ = @import("behavior_generics.zig");
+    _ = @import("behavior_generics.zig");
     _ = @import("behavior_if_else.zig");
     _ = @import("behavior_if_guard_patterns.zig");
     _ = @import("behavior_integer_literals.zig");

@@ -314,7 +314,7 @@ pub fn emitCastNormal(self: *Codegen, dst_sr: types.TypeId, to_ty: mlir.Type, fr
     if (mlir.LLVM.isLLVMStructType(from_v.getType()) or mlir.LLVM.isLLVMStructType(to_ty)) {
         // Minimal breadcrumb to help locate the source site during bring-up.
         std.debug.print("codegen_cast: skip bitcast for aggregate types\n", .{});
-        return from_v;
+        return self.undefOf(to_ty);
     }
     return self.emitUnaryValueOp("arith.bitcast", from_v, to_ty);
 }

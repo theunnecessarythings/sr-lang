@@ -163,6 +163,7 @@ pub const TypeInfo = struct {
     method_bindings: std.AutoArrayHashMapUnmanaged(u32, MethodBinding) = .{},
     method_expr_snapshots: std.AutoArrayHashMapUnmanaged(MethodKey, MethodExprSnapshot) = .{},
     specialization_expr_snapshots: std.AutoArrayHashMapUnmanaged(u32, MethodExprSnapshot) = .{},
+    specialization_call_snapshots: std.AutoArrayHashMapUnmanaged(u32, CallSpecSnapshot) = .{},
     mlir_splice_info: std.AutoArrayHashMapUnmanaged(u32, MlirSpliceInfo) = .{},
     mlir_splice_values: std.AutoArrayHashMapUnmanaged(u32, comp.ComptimeValue) = .{},
     exports: std.AutoArrayHashMapUnmanaged(ast.StrId, ExportEntry) = .{},
@@ -181,6 +182,11 @@ pub const TypeInfo = struct {
     const MethodExprSnapshot = struct {
         expr_ids: []u32,
         expr_types: []TypeId,
+    };
+
+    const CallSpecSnapshot = struct {
+        expr_ids: []u32,
+        specs: []CallSpecialization,
     };
 
     /// init type system helper.
@@ -222,6 +228,12 @@ pub const TypeInfo = struct {
             self.gpa.free(entry.value_ptr.expr_types);
         }
         self.specialization_expr_snapshots.deinit(self.gpa);
+        var call_snapshot_it = self.specialization_call_snapshots.iterator();
+        while (call_snapshot_it.next()) |entry| {
+            self.gpa.free(entry.value_ptr.expr_ids);
+            self.gpa.free(entry.value_ptr.specs);
+        }
+        self.specialization_call_snapshots.deinit(self.gpa);
         self.mlir_splice_info.deinit(self.gpa);
         var splice_values_it = self.mlir_splice_values.iterator();
         while (splice_values_it.next()) |entry| {
@@ -373,9 +385,32 @@ pub const TypeInfo = struct {
         gop.value_ptr.* = .{ .expr_ids = ids_copy, .expr_types = tys_copy };
     }
 
+    pub fn storeSpecializationCallSnapshot(
+        self: *TypeInfo,
+        decl_id: ast.DeclId,
+        expr_ids: []const u32,
+        specs: []const CallSpecialization,
+    ) !void {
+        std.debug.assert(expr_ids.len == specs.len);
+        const gop = try self.specialization_call_snapshots.getOrPut(self.gpa, decl_id.toRaw());
+        if (gop.found_existing) {
+            self.gpa.free(gop.value_ptr.expr_ids);
+            self.gpa.free(gop.value_ptr.specs);
+        }
+        const ids_copy = try self.gpa.alloc(u32, expr_ids.len);
+        const specs_copy = try self.gpa.alloc(CallSpecialization, specs.len);
+        std.mem.copyForwards(u32, ids_copy, expr_ids);
+        std.mem.copyForwards(CallSpecialization, specs_copy, specs);
+        gop.value_ptr.* = .{ .expr_ids = ids_copy, .specs = specs_copy };
+    }
+
     /// getSpecializationExprSnapshot type system helper.
     pub fn getSpecializationExprSnapshot(self: *const TypeInfo, decl_id: ast.DeclId) ?MethodExprSnapshot {
         return self.specialization_expr_snapshots.get(decl_id.toRaw());
+    }
+
+    pub fn getSpecializationCallSnapshot(self: *const TypeInfo, decl_id: ast.DeclId) ?CallSpecSnapshot {
+        return self.specialization_call_snapshots.get(decl_id.toRaw());
     }
 
     /// addExport type system helper.

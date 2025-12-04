@@ -1751,7 +1751,7 @@ test "if expressions - failures" {
     try checkProgram("a :: if true { 1 }", &[_]diag.DiagnosticCode{.if_expression_requires_else});
 
     // Mismatched branch types
-    try checkProgram("a :: if true { 1 } else { 2.0 }", &[_]diag.DiagnosticCode{.if_branch_type_mismatch});
+    try checkProgram("a :: if true { 1 } else { false }", &[_]diag.DiagnosticCode{.if_branch_type_mismatch});
 
     // Return mismatches within branches
     try checkProgram(
@@ -2010,7 +2010,7 @@ test "patterns - declarations - success" {
     , &.{});
 
     // Slice with rest binding
-    try checkProgram("([x, y, ..rest]) :: [1, 2, 3, 4]", &.{});
+    try checkProgram("[x, y, ..rest] :: [1, 2, 3, 4]", &.{});
 }
 
 test "patterns - declarations - failures" {

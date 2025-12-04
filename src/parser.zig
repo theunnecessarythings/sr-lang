@@ -261,8 +261,10 @@ fn postfixBp(_: *const Parser, t: Token.Tag) ?u8 {
         .dotdoteq,
         .bang,
         .question,
-        .keyword_catch,
         => 95,
+        // Make `catch` bind looser than `orelse` so `a orelse b catch c`
+        // parses as `(a orelse b) catch c` instead of `a orelse (b catch c)`.
+        .keyword_catch => 10,
         else => null,
     };
 }

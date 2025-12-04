@@ -348,6 +348,28 @@ pub fn lowerContinueCommon(
     }
 }
 
+/// Map a simple identifier `name` to a builtin type when possible.
+fn typeIdForName(ts: *types.TypeStore, name: ast.StrId) ?types.TypeId {
+    const s = ts.strs.get(name);
+    if (std.mem.eql(u8, s, "bool")) return ts.tBool();
+    if (std.mem.eql(u8, s, "i8")) return ts.tI8();
+    if (std.mem.eql(u8, s, "i16")) return ts.tI16();
+    if (std.mem.eql(u8, s, "i32")) return ts.tI32();
+    if (std.mem.eql(u8, s, "i64")) return ts.tI64();
+    if (std.mem.eql(u8, s, "u8")) return ts.tU8();
+    if (std.mem.eql(u8, s, "u16")) return ts.tU16();
+    if (std.mem.eql(u8, s, "u32")) return ts.tU32();
+    if (std.mem.eql(u8, s, "u64")) return ts.tU64();
+    if (std.mem.eql(u8, s, "usize")) return ts.tUsize();
+    if (std.mem.eql(u8, s, "f32")) return ts.tF32();
+    if (std.mem.eql(u8, s, "f64")) return ts.tF64();
+    if (std.mem.eql(u8, s, "char")) return ts.tU32();
+    if (std.mem.eql(u8, s, "string")) return ts.tString();
+    if (std.mem.eql(u8, s, "any")) return ts.tAny();
+    if (std.mem.eql(u8, s, "type")) return ts.mkTypeType(ts.tAny());
+    return null;
+}
+
 /// Lower `match`/`switch` cases by testing the subject and emitting arm-specific code.
 pub fn matchPattern(
     self: *LowerTir,
@@ -363,6 +385,23 @@ pub fn matchPattern(
 ) !tir.ValueId {
     switch (a.kind(pid)) {
         .Wildcard => return blk.builder.tirValue(.ConstBool, blk, self.context.type_store.tBool(), loc, .{ .value = true }),
+        .Binding => {
+            const br = a.pats.get(.Binding, pid);
+            if (self.context.type_store.getKind(scrut_ty) == .TypeType) {
+                if (typeIdForName(self.context.type_store, br.name)) |want_ty| {
+                    const want = f.builder.tirValue(
+                        .ConstInt,
+                        blk,
+                        scrut_ty,
+                        loc,
+                        .{ .value = @as(u64, @intCast(want_ty.toRaw())) },
+                    );
+                    return blk.builder.binBool(blk, .CmpEq, scrut, want, loc);
+                }
+            }
+            return blk.builder.tirValue(.ConstBool, blk, self.context.type_store.tBool(), loc, .{ .value = true });
+        },
+
         .Literal => {
             const pr = a.pats.get(.Literal, pid);
             if (a.kind(pr.expr) == .Range) {
@@ -516,7 +555,7 @@ pub fn matchPattern(
                 loc,
             );
         },
-        .Binding, .Tuple, .Struct => {
+        .Tuple, .Struct => {
             return blk.builder.tirValue(.ConstBool, blk, self.context.type_store.tBool(), loc, .{ .value = true });
         },
     }

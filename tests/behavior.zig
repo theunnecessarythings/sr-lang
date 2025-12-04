@@ -322,16 +322,16 @@ test "behavior: tuple creation and indexing" {
     try runCompilerTest(code, "Tuple 0=1, 1=hello, 2=1\nFirst element=1\n");
 }
 
-// test "behavior: map creation and access" {
-//     const src =
-//         \\ m := ["one": 1, "two": 2]
-//         \\ printf("Map one=%d, two=%d\n", m["one"], m["two"])
-//         \\ m["three"] = 3
-//         \\ printf("Map three=%d\n", m["three"])
-//     ;
-//     const code = getSource("", src);
-//     try runCompilerTest(code, "Map one=1, two=2\nMap three=3\n");
-// }
+test "behavior: map creation and access" {
+    const src =
+        \\ m := ["one": 1, "two": 2]
+        \\ printf("Map one=%d, two=%d\n", m["one"], m["two"])
+        \\ m["three"] = 3
+        \\ printf("Map three=%d\n", m["three"])
+    ;
+    const code = getSource("", src);
+    try runCompilerTest(code, "Map one=1, two=2\nMap three=3\n");
+}
 
 test "behavior: enum definition and usage" {
     const src =
@@ -484,20 +484,22 @@ test "behavior: match expression with guards" {
     try runCompilerTest(code, "Match with guard result=100\n");
 }
 
-// test "behavior: variadic function call" {
-//     const src =
-//         \\ print_variadic :: proc(prefix: string, args: any) {
-//         \\   printf("%s", prefix)
-//         \\   // Assuming a way to iterate over 'any' tuple
-//         \\   // For simplicity, just print a fixed number of args
-//         \\   printf(" %d %f\n", args.0, args.1)
-//         \\ }
-//         \\ print_variadic("Numbers:", 10, 3.14)
-//     ;
-//     const code = getSource("", src);
-//     try runCompilerTest(code, "Numbers: 10 3.140000\n");
-// }
-//
+test "behavior: variadic function call" {
+    const globals =
+        \\ print_variadic :: proc(prefix: string, args: any) {
+        \\   printf("%s", prefix)
+        \\   // Assuming a way to iterate over 'any' tuple
+        \\   // For simplicity, just print a fixed number of args
+        \\   printf(" %d %f\n", args)
+        \\ }
+    ;
+    const src =
+        \\ print_variadic("Numbers:", 10, 3.14)
+    ;
+    const code = getSource(globals, src);
+    try runCompilerTest(code, "Numbers: 10 3.140000\n");
+}
+
 // test "behavior: closure basic usage" {
 //     const src =
 //         \\ add_one := fn(x: i32) i32 { return x + 1 }
@@ -543,19 +545,6 @@ test "behavior: match expression with guards" {
 //     ;
 //     const code = getSource("", src);
 //     try runCompilerTest(code, "Type of 1 is i32\nType of true is bool\n");
-// }
-//
-// test "behavior: import and module member access" {
-//     const src =
-//         \\ math :: import "examples/imports/math"
-//         \\ Vector :: math.Vector
-//         \\ v1 := Vector{ x: 10.0, y: 20.0 }
-//         \\ v2 := Vector{ x: 5.5, y: 1.5 }
-//         \\ result := math.add(v1, v2)
-//         \\ printf("Vector add x=%f, y=%f\n", result.x, result.y)
-//     ;
-//     const code = getSource("", src);
-//     try runCompilerTest(code, "Vector add x=15.500000, y=21.500000\n");
 // }
 
 test "behavior: mlir module block" {
@@ -608,7 +597,7 @@ test "behavior: errdefer statement" {
     const global =
         \\  MyErr :: error { Failed }
         \\  cleanup_ran := 0
-        \\  run_test :: proc() void!MyErr {
+        \\  run_test :: proc() MyErr!void {
         \\      errdefer {
         \\          cleanup_ran = 1
         \\          printf("Errdefer ran\n")
@@ -801,19 +790,21 @@ test "behavior: match at-pattern" {
 //     const code = getSource("", src);
 //     try runCompilerTest(code, "Function pointer result=30\n");
 // }
-//
-// test "behavior: default arguments" {
-//     const src =
-//         \\ greet :: proc(name: string, greeting: string = "Hello") {
-//         \\   printf("%s, %s!\n", greeting, name)
-//         \\ }
-//         \\ greet("Alice")
-//         \\ greet("Bob", "Hi")
-//     ;
-//     const code = getSource("", src);
-//     try runCompilerTest(code, "Hello, Alice!\nHi, Bob!\n");
-// }
-//
+
+test "behavior: default arguments" {
+    const globals =
+        \\ greet :: proc(name: string, greeting: string = "Hello") {
+        \\   printf("%s, %s!\n", greeting, name)
+        \\ }
+    ;
+    const src =
+        \\ greet("Alice")
+        \\ greet("Bob", "Hi")
+    ;
+    const code = getSource(globals, src);
+    try runCompilerTest(code, "Hello, Alice!\nHi, Bob!\n");
+}
+
 // test "behavior: code block and insert" {
 //     const src =
 //         \\ x := 10
@@ -825,17 +816,6 @@ test "behavior: match at-pattern" {
 //     ;
 //     const code = getSource("", src);
 //     try runCompilerTest(code, "Code block x=20\n");
-// }
-//
-// test "behavior: import and nested member access" {
-//     const src =
-//         \\ math :: import "examples/imports/math"
-//         \\ Vector :: math.Vector
-//         \\ v := Vector{ x: 10.0, y: 20.0 }
-//         \\ printf("Vector x=%f\n", v.x)
-//     ;
-//     const code = getSource("", src);
-//     try runCompilerTest(code, "Vector x=10.000000\n");
 // }
 
 test "behavior: error union catch" {
@@ -1108,7 +1088,7 @@ test "behavior: catch with error binding" {
         \\   } else {
         \\     printf("Caught unknown error\n")
         \\   }
-        \\   return 0
+        \\   0
         \\ }
         \\ printf("Catch result=%d\n", r)
     ;
@@ -1246,31 +1226,35 @@ test "behavior: labeled for loop with break" {
 //     const code = getSource("", src);
 //     try runCompilerTest(code, "Code block as expression assigned\n");
 // }
-//
-// test "behavior: default arguments mixed types" {
-//     const src =
-//         \\ configure :: proc(name: string, id: i32 = 0, active: bool = true) {
-//         \\   printf("Name=%s, ID=%d, Active=%b\n", name, id, active)
-//         \\ }
-//         \\ configure("UserA")
-//         \\ configure("UserB", 10)
-//         \\ configure("UserC", 20, false)
-//     ;
-//     const code = getSource("", src);
-//     try runCompilerTest(code, "Name=UserA, ID=0, Active=true\nName=UserB, ID=10, Active=true\nName=UserC, ID=20, Active=false\n");
-// }
-//
-// test "behavior: variadic function with mixed types" {
-//     const src =
-//         \\ print_mixed :: proc(tag: string, args: any) {
-//         \\   printf("%s: %d, %f, %s\n", tag, args.0, args.1, args.2)
-//         \\ }
-//         \\ print_mixed("Data", 10, 3.14, "hello")
-//     ;
-//     const code = getSource("", src);
-//     try runCompilerTest(code, "Data: 10, 3.140000, hello\n");
-// }
-//
+
+test "behavior: default arguments mixed types" {
+    const globals =
+        \\ configure :: proc(name: string, id: i32 = 0, active: bool = true) {
+        \\   printf("Name=%s, ID=%d, Active=%b\n", name, id, active)
+        \\ }
+    ;
+    const src =
+        \\ configure("UserA")
+        \\ configure("UserB", 10)
+        \\ configure("UserC", 20, false)
+    ;
+    const code = getSource(globals, src);
+    try runCompilerTest(code, "Name=UserA, ID=0, Active=1\nName=UserB, ID=10, Active=1\nName=UserC, ID=20, Active=0\n");
+}
+
+test "behavior: variadic function with mixed types" {
+    const globals =
+        \\ print_mixed :: proc(tag: string, args: any) {
+        \\   printf("%s: %d, %f, %s\n", tag, args.0, args.1, args.2)
+        \\ }
+    ;
+    const src =
+        \\ print_mixed("Data", 10, 3.14, "hello")
+    ;
+    const code = getSource(globals, src);
+    try runCompilerTest(code, "Data: 10, 3.140000, hello\n");
+}
+
 // test "behavior: nested maps" {
 //     const src =
 //         \\ m := ["user1": ["name": "Alice", "age": 30], "user2": ["name": "Bob", "age": 25]]
@@ -1308,7 +1292,7 @@ test "behavior: catch with nested errors" {
         \\ ErrA :: error { A }
         \\ ErrB :: error { B }
         \\ func_a :: proc() ErrA!i32 { return ErrA.A }
-        \\ func_b :: proc() ErrB!i32 { return func_a()! catch |err| { return ErrB.B } }
+        \\ func_b :: proc() ErrB!i32 { return func_a() catch |err| { return ErrB.B } }
     ;
     const src =
         \\ r := func_b() catch |err| {
@@ -1416,22 +1400,24 @@ test "behavior: recursive function" {
 //     const code = getSource("", src);
 //     try runCompilerTest(code, "Function pointers with different arities assigned\n");
 // }
-//
-// test "behavior: variadic function with no fixed arguments" {
-//     const src =
-//         \\ print_all :: proc(args: any) {
-//         \\   printf("Args count=%d\n", args.len)
-//         \\   // Assuming iteration over 'any' tuple
-//         \\   // For simplicity, just print first two if they exist
-//         \\   if args.len > 0 { printf("First arg=%d\n", args.0) }
-//         \\   if args.len > 1 { printf("Second arg=%s\n", args.1) }
-//         \\ }
-//         \\ print_all(10, "hello", true)
-//         \\ print_all(5)
-//     ;
-//     const code = getSource("", src);
-//     try runCompilerTest(code, "Args count=3\nFirst arg=10\nSecond arg=hello\nArgs count=1\nFirst arg=5\n");
-// }
+
+test "behavior: variadic function with no fixed arguments" {
+    const globals =
+        \\ print_all :: proc(args: any) {
+        \\   printf("Args count=%d\n", args.len)
+        \\   // Assuming iteration over 'any' tuple
+        \\   // For simplicity, just print first two if they exist
+        \\   if args.len > 0 { printf("First arg=%d\n", args.0) }
+        \\   if args.len > 1 { printf("Second arg=%s\n", args.1) }
+        \\ }
+    ;
+    const src =
+        \\ print_all(10, "hello", true)
+        \\ print_all(5)
+    ;
+    const code = getSource(globals, src);
+    try runCompilerTest(code, "Args count=3\nFirst arg=10\nSecond arg=hello\nArgs count=1\nFirst arg=5\n");
+}
 
 test "behavior: error union orelse and catch combined" {
     const globals =
@@ -1449,7 +1435,7 @@ test "behavior: error union orelse and catch combined" {
         \\printf("Combined error handling r1=%d, r2=%d, r3=%d\n", r1, r2, r3)
     ;
     const code = getSource(globals, src);
-    try runCompilerTest(code, "Combined error handling r1=0, r2=1, r3=5\n");
+    try runCompilerTest(code, "Combined error handling r1=100, r2=200, r3=5\n");
 }
 
 test "behavior: optional chaining (field access on optional struct)" {

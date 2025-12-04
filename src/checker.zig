@@ -606,6 +606,22 @@ pub fn checkSpecializedFunction(
     const result_ty = try self.checkFunctionLit(ctx, ast_unit, id);
     if (snapshot_decl) |target_decl| {
         try check_types.storeSpecializationExprTypes(self, ast_unit, decl_id, target_decl);
+        var call_expr_ids = std.ArrayList(u32){};
+        var call_specs = std.ArrayList(types.CallSpecialization){};
+        defer {
+            call_expr_ids.deinit(self.gpa);
+            call_specs.deinit(self.gpa);
+        }
+        for (expr_ids.items) |eid| {
+            const raw = eid.toRaw();
+            if (ast_unit.type_info.call_specializations.get(raw)) |spec| {
+                try call_expr_ids.append(self.gpa, raw);
+                try call_specs.append(self.gpa, spec);
+            }
+        }
+        if (call_expr_ids.items.len != 0) {
+            try ast_unit.type_info.storeSpecializationCallSnapshot(target_decl, call_expr_ids.items, call_specs.items);
+        }
     }
     return result_ty;
 }
@@ -824,7 +840,7 @@ pub fn checkDecl(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, decl_
         try self.pushAllowNestedFn(ctx, true);
         pushed_nested = true;
     }
-    const rhs_ty = try self.checkExpr(ctx, ast_unit, decl.value);
+    var rhs_ty = try self.checkExpr(ctx, ast_unit, decl.value);
     if (pushed_nested) self.popAllowNestedFn(ctx);
     self.popValueReq(ctx);
 
@@ -861,9 +877,20 @@ pub fn checkDecl(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, decl_
         const pat_id = decl.pattern.unwrap();
         if (ast_unit.kind(pat_id) == .Binding) {
             const binding = ast_unit.pats.get(.Binding, pat_id);
-            const binding_ty = if (expect_ty) |et| et else rhs_ty;
+            var binding_ty = if (expect_ty) |et| et else rhs_ty;
             var stored = self.evalComptimeExpr(ctx, ast_unit, decl.value, &[_]Pipeline.ComptimeBinding{}) catch null;
             if (stored) |*value| {
+                // If this binding represents `type` and we evaluated a concrete type, refine away `any`.
+                if (self.typeKind(binding_ty) == .TypeType) {
+                    const tt = self.context.type_store.get(.TypeType, binding_ty);
+                    if (self.typeKind(tt.of) == .Any and value.* == .Type) {
+                        binding_ty = self.context.type_store.mkTypeType(value.Type);
+                        rhs_ty = binding_ty;
+                        ast_unit.type_info.decl_types.items[decl_id.toRaw()] = binding_ty;
+                        ast_unit.type_info.expr_types.items[decl.value.toRaw()] = binding_ty;
+                    }
+                }
+
                 const binding_clone = try comp.cloneComptimeValue(self.gpa, stored.?);
                 try ast_unit.type_info.setComptimeBinding(binding.name, binding_ty, binding_clone);
                 if (ctx.interp) |interp| {
@@ -2378,13 +2405,24 @@ fn checkIdent(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, id: ast.
             // If this decl had a pattern, compute binding type from pattern and RHS type
             const drow = ast_unit.exprs.Decl.get(did);
             if (!drow.pattern.isNone()) {
-                const rhs_ty = blk: {
+                var rhs_ty = blk: {
                     if (ast_unit.type_info.expr_types.items[drow.value.toRaw()]) |t| break :blk t;
                     if (ast_unit.type_info.decl_types.items[did.toRaw()]) |t| break :blk t;
                     // Fallback: check rhs now
                     break :blk try self.checkExpr(ctx, ast_unit, drow.value);
                 };
                 if (ast_unit.kind(drow.pattern.unwrap()) == .Binding) {
+                    if (self.typeKind(rhs_ty) == .TypeType) {
+                        const tt = self.context.type_store.get(.TypeType, rhs_ty);
+                        if (self.typeKind(tt.of) == .Any) {
+                            const type_res = try check_types.typeFromTypeExpr(self, ctx, ast_unit, drow.value);
+                            if (type_res[0] and self.typeKind(type_res[1]) != .TypeError) {
+                                rhs_ty = self.context.type_store.mkTypeType(type_res[1]);
+                                ast_unit.type_info.decl_types.items[did.toRaw()] = rhs_ty;
+                                ast_unit.type_info.expr_types.items[drow.value.toRaw()] = rhs_ty;
+                            }
+                        }
+                    }
                     return rhs_ty;
                 }
                 const bt = pattern_matching.bindingTypeInPattern(self, ast_unit, drow.pattern.unwrap(), row.name, rhs_ty);

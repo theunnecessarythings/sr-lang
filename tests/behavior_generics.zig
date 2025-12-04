@@ -8,10 +8,10 @@ test "generics: simple specialization" {
     const globals =
         \\
         \\ max :: fn(comptime T: type, a: T, b: T) T {
-        \\   return if a > b { a } else { b };
+        \\   return if a > b { a } else { b }
         \\ }
         \\ clamp :: fn(comptime T: type, comptime Limit: T, value: T) T {
-        \\   return if value > Limit { Limit } else { value };
+        \\   return if value > Limit { Limit } else { value }
         \\ }
     ;
 
@@ -29,11 +29,11 @@ test "generics: nested type specializations" {
     const globals =
         \\
         \\ Vec :: fn(comptime T: type, comptime N: usize) type {
-        \\   return struct { data: [N]T };
+        \\   return struct { data: [N]T }
         \\ }
         \\ Matrix :: fn(comptime T: type, comptime R: usize, comptime C: usize) type {
         \\   Row :: Vec(T, C)
-        \\   return struct { rows: [R]Row };
+        \\   return struct { rows: [R]Row }
         \\ }
         \\ MatrixI32x2x3 :: Matrix(i32, 2, 3)
     ;
@@ -69,10 +69,37 @@ test "generics: struct field uses comptime array length" {
     try runCompilerTest(code, "1,2,3|4,5,6\n");
 }
 
+test "generics: methods" {
+    const globals =
+        \\ List :: proc(comptime T: type) type {
+        \\ Type :: struct {
+        \\     data: []const T,
+        \\     len: usize,
+        \\ }
+        \\
+        \\ Type.get :: proc(self: *Type, index: usize) T {
+        \\     return self.data[index]
+        \\ }
+        \\
+        \\ return Type
+        \\ }
+    ;
+    const src =
+        \\  list := List(i64){ data: [1, 2, 3], len: 3 }
+        \\  printf("%d\n", list.get(1))
+        \\
+        \\  list_f64 := List(f64){ data: [1.0, 2.0, 3.0], len: 3 }
+        \\  printf("%f\n", list_f64.get(1))
+    ;
+
+    const code = getSource(globals, src);
+    try runCompilerTest(code, "2\n2.000000\n");
+}
+
 test "generics: nested method specialization per owner" {
     const globals =
-        \\        A :: proc(comptime T: type) type {
-        \\   Type :: struct { item: T }
+        \\    A :: proc(comptime T: type) type {
+        \\    Type :: struct { item: T }
         \\    Type.init :: proc(val: T) Type {
         \\        return Type { item: val }
         \\    }
@@ -87,7 +114,7 @@ test "generics: nested method specialization per owner" {
         \\    TI64 :: A(i64)
         \\    y := TI64.init(7)
         \\    printf("y: %d\n", y.item)
-        \\}
+        \\
     ;
 
     const code = getSource(globals, src);

@@ -1333,9 +1333,10 @@ fn ensureFuncDeclFromCall(self: *Codegen, p: tir.Rows.Call, t: *tir.TIR) !FuncIn
     params_sr = params_sr_list.items;
 
     // Lower with classifier: same logic as emitExternDecls
-    var lowered_params = try self.gpa.alloc(mlir.Type, params_sr.len + 1);
+    // Worst case: sret slot (+1) and each param expands to two scalars.
+    var lowered_params = try self.gpa.alloc(mlir.Type, params_sr.len * 2 + 2);
     defer self.gpa.free(lowered_params);
-    var argAttrs = try self.gpa.alloc(mlir.Attribute, params_sr.len + 1);
+    var argAttrs = try self.gpa.alloc(mlir.Attribute, params_sr.len * 2 + 2);
     defer self.gpa.free(argAttrs);
     var n_args: usize = 0;
 
@@ -5186,6 +5187,23 @@ pub fn llvmTypeOf(self: *Codegen, ty: types.TypeId) !mlir.Type {
             const fields = [_]mlir.Type{ ptr_ty, self.i64_ty, self.i64_ty };
             break :blk mlir.LLVM.getLLVMStructTypeLiteral(self.mlir_ctx, &fields, false);
         },
+        .Map => blk: {
+            const map_ty = self.context.type_store.get(.Map, ty);
+            // Materialize an entry struct type so we can reuse normal pointer lowering.
+            const key_name = self.context.type_store.strs.intern("key");
+            const val_name = self.context.type_store.strs.intern("value");
+            const entry_sr_ty = self.context.type_store.mkStruct(&.{
+                .{ .name = key_name, .ty = map_ty.key },
+                .{ .name = val_name, .ty = map_ty.value },
+            });
+            const entry_ptr_ty = try self.llvmTypeOf(self.context.type_store.mkPtr(entry_sr_ty, false));
+            // DynArray<Entry> = { ptr, len, cap }
+            const dyn_fields = [_]mlir.Type{ entry_ptr_ty, self.i64_ty, self.i64_ty };
+            const dyn_ty = mlir.LLVM.getLLVMStructTypeLiteral(self.mlir_ctx, &dyn_fields, false);
+            // Map = { len, entries }
+            const map_fields = [_]mlir.Type{ self.i64_ty, dyn_ty };
+            break :blk mlir.LLVM.getLLVMStructTypeLiteral(self.mlir_ctx, &map_fields, false);
+        },
         .Simd => blk: {
             const simd_ty = self.context.type_store.get(.Simd, ty);
             const elem_ty = try self.llvmTypeOf(simd_ty.elem);
@@ -5322,8 +5340,8 @@ pub fn llvmTypeOf(self: *Codegen, ty: types.TypeId) !mlir.Type {
             const fields_mlir = [_]mlir.Type{ self.i32_ty, union_mlir_ty };
             break :blk mlir.LLVM.getLLVMStructTypeLiteral(self.mlir_ctx, &fields_mlir, false);
         },
-
-        .TypeType, .Ast => return self.llvm_ptr_ty,
+        .TypeType => return self.i64_ty,
+        .Ast => return self.llvm_ptr_ty,
         .TypeError => return error.CompilationFailed,
         else => std.debug.panic("unhandled type: {}", .{self.context.type_store.getKind(ty)}),
     };
