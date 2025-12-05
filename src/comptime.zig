@@ -570,12 +570,12 @@ pub fn constValueFromComptime(
                 .U64, .Usize => @as(u64, @intCast(val)),
                 else => @as(u64, @intCast(val)),
             };
-            break :blk blk.builder.tirValue(.ConstInt, blk, ty, tir.OptLocId.none(), .{ .value = u });
+            break :blk blk.builder.tirValue(.ConstInt, blk, ty, .none(), .{ .value = u });
         },
-        .Float => |val| blk.builder.tirValue(.ConstFloat, blk, ty, tir.OptLocId.none(), .{ .value = val }),
-        .Bool => |val| blk.builder.tirValue(.ConstBool, blk, ty, tir.OptLocId.none(), .{ .value = val }),
-        .Void => blk.builder.tirValue(.ConstUndef, blk, ty, tir.OptLocId.none(), .{}),
-        .String => |s| blk.builder.tirValue(.ConstString, blk, ty, tir.OptLocId.none(), .{ .text = blk.builder.intern(s) }),
+        .Float => |val| blk.builder.tirValue(.ConstFloat, blk, ty, .none(), .{ .value = val }),
+        .Bool => |val| blk.builder.tirValue(.ConstBool, blk, ty, .none(), .{ .value = val }),
+        .Void => blk.builder.tirValue(.ConstUndef, blk, ty, .none(), .{}),
+        .String => |s| blk.builder.tirValue(.ConstString, blk, ty, .none(), .{ .text = blk.builder.intern(s) }),
         .Sequence => return error.UnsupportedComptimeType,
         .Struct => return error.UnsupportedComptimeType,
         .Range => return error.UnsupportedComptimeType,
@@ -583,9 +583,9 @@ pub fn constValueFromComptime(
         .Pointer => return error.UnsupportedComptimeType,
         .Map => return error.UnsupportedComptimeType,
         .Type => return error.UnsupportedComptimeType,
-        .MlirType => blk.builder.tirValue(.ConstUndef, blk, ty, tir.OptLocId.none(), .{}),
-        .MlirAttribute => blk.builder.tirValue(.ConstUndef, blk, ty, tir.OptLocId.none(), .{}),
-        .MlirModule => blk.builder.tirValue(.ConstUndef, blk, ty, tir.OptLocId.none(), .{}),
+        .MlirType => blk.builder.tirValue(.ConstUndef, blk, ty, .none(), .{}),
+        .MlirAttribute => blk.builder.tirValue(.ConstUndef, blk, ty, .none(), .{}),
+        .MlirModule => blk.builder.tirValue(.ConstUndef, blk, ty, .none(), .{}),
     };
 }
 
@@ -647,7 +647,7 @@ pub fn cloneComptimeValue(gpa: std.mem.Allocator, value: ComptimeValue) !Comptim
 
 /// Fingerprint `value`, used when mangling specialization identifiers.
 pub fn hashComptimeValue(value: ComptimeValue) u64 {
-    var hasher = std.hash.Wyhash.init(0);
+    var hasher: std.hash.Wyhash = .init(0);
     const tag: u8 = @intFromEnum(value);
     hasher.update(&.{tag});
     switch (value) {

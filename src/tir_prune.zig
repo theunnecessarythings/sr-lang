@@ -68,7 +68,7 @@ pub fn pruneUnusedFunctions(
     };
 
     // Build name -> functions map across all units, and find roots.
-    var name_to_funcs = std.AutoHashMap(tir.StrId, std.ArrayListUnmanaged(FuncRef)).init(gpa);
+    var name_to_funcs: std.AutoHashMap(tir.StrId, std.ArrayListUnmanaged(FuncRef)) = .init(gpa);
     defer {
         var it = name_to_funcs.valueIterator();
         while (it.next()) |lst| lst.deinit(gpa);
@@ -407,7 +407,7 @@ pub fn pruneUnusedFunctions(
                                     const arow = t.instrs.get(.Alloca, iid2);
                                     const hadr = valueBool(&read_allocas0, arow.result);
                                     if (!hadr) {
-                                        const loc = if (!arow.loc.isNone()) context.loc_store.get(arow.loc.unwrap()) else Loc.init(unit.file_id, 0, 0);
+                                        const loc: Loc = if (!arow.loc.isNone()) context.loc_store.get(arow.loc.unwrap()) else Loc.init(unit.file_id, 0, 0);
                                         if (!isThirdPartyUnit(context, unit))
                                             _ = try context.diags.addWarning(loc, .unused_variable, .{});
                                     }
@@ -825,7 +825,7 @@ fn functionFirstLoc(context: *compile.Context, t: *tir.TIR, frow: tir.FuncRows.F
         };
         if (!tl.isNone()) return context.loc_store.get(tl.unwrap());
     }
-    return Loc.init(file_id, 0, 0);
+    return .init(file_id, 0, 0);
 }
 
 // =========================

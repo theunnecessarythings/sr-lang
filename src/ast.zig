@@ -178,9 +178,9 @@ pub const Unit = struct {
     /// Construct an empty `Unit` with no declarations or package info.
     pub fn empty() Unit {
         return .{
-            .decls = RangeDecl.empty(),
-            .package_name = OptStrId.none(),
-            .package_loc = OptLocId.none(),
+            .decls = .empty(),
+            .package_name = .none(),
+            .package_loc = .none(),
         };
     }
 };
@@ -1598,11 +1598,11 @@ pub const Ast = struct {
         return .{
             .gpa = gpa,
             .file_id = file_id,
-            .unit = Unit.empty(),
-            .exprs = ExprStore.init(gpa, interner, locs),
-            .stmts = StmtStore.init(gpa),
-            .pats = PatternStore.init(gpa, interner),
-            .type_info = TypeInfo.init(gpa, type_store),
+            .unit = .empty(),
+            .exprs = .init(gpa, interner, locs),
+            .stmts = .init(gpa),
+            .pats = .init(gpa, interner),
+            .type_info = .init(gpa, type_store),
         };
     }
 

@@ -298,7 +298,7 @@ fn checkVariantStructPattern(self: *Checker, ctx: *Checker.CheckerContext, ast_u
             const st = self.context.type_store.get(.Struct, value_ty);
             const value_fields = self.context.type_store.field_pool.slice(st.fields);
             const pat_fields = ast_unit.pats.field_pool.slice(vs_pat.fields);
-            var field_map = std.AutoArrayHashMap(ast.StrId, types.TypeId).init(self.gpa);
+            var field_map: std.AutoArrayHashMap(ast.StrId, types.TypeId) = .init(self.gpa);
             defer field_map.deinit();
             for (value_fields) |vfid| {
                 const vf = self.context.type_store.Field.get(vfid);
@@ -335,7 +335,7 @@ fn checkVariantStructPattern(self: *Checker, ctx: *Checker.CheckerContext, ast_u
     const st = self.context.type_store.get(.Struct, payload_ty);
     const value_fields = self.context.type_store.field_pool.slice(st.fields);
     const pat_fields = ast_unit.pats.field_pool.slice(vs_pat.fields);
-    var field_map = std.AutoArrayHashMap(ast.StrId, types.TypeId).init(self.gpa);
+    var field_map: std.AutoArrayHashMap(ast.StrId, types.TypeId) = .init(self.gpa);
     defer field_map.deinit();
     for (value_fields) |vfid| {
         const vf = self.context.type_store.Field.get(vfid);
@@ -483,7 +483,7 @@ fn checkStructPattern(self: *Checker, ctx: *Checker.CheckerContext, ast_unit: *a
     const value_struct_ty = self.context.type_store.get(.Struct, value_ty);
     const pattern_fields = ast_unit.pats.field_pool.slice(sp.fields);
     const value_fields = self.context.type_store.field_pool.slice(value_struct_ty.fields);
-    var field_map = std.AutoArrayHashMap(ast.StrId, types.TypeId).init(self.gpa);
+    var field_map: std.AutoArrayHashMap(ast.StrId, types.TypeId) = .init(self.gpa);
     defer field_map.deinit();
     for (value_fields) |val_field_id| {
         const val_field = self.context.type_store.Field.get(val_field_id);

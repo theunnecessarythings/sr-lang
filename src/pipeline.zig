@@ -78,6 +78,8 @@ pub const Pipeline = struct {
     tir_prune_unused: bool = true,
     /// Emit warnings for unused TIR during pruning.
     tir_warn_unused: bool = false,
+    /// Enable debug info generation.
+    debug_info: bool = false,
 
     /// Execution modes supported by the pipeline (lex, parse, analyze, codegen...).
     pub const Mode = enum {
@@ -155,7 +157,7 @@ pub const Pipeline = struct {
 
         if (progress) |reporter| reporter.report(.parsing);
         if (mode == .lex) {
-            var lexer = Lexer.init(source0, file_id, .semi);
+            var lexer: Lexer = .init(source0, file_id, .semi);
             while (true) {
                 const token = lexer.next();
                 if (token.tag == .eof) break;
@@ -165,7 +167,7 @@ pub const Pipeline = struct {
             return .{ .compilation_unit = null };
         }
 
-        var parser = Parser.init(self.allocator, source0, file_id, self.context.diags, self.context);
+        var parser: Parser = .init(self.allocator, source0, file_id, self.context.diags, self.context);
         const main_thread = try std.Thread.spawn(.{}, Parser.run, .{&parser});
         self.context.compilation_unit.mutex.lock();
         try self.context.parse_worklist.append(self.allocator, .{
@@ -317,7 +319,7 @@ pub const Pipeline = struct {
                 }
                 const sid = self.context.interner.intern(buf.items);
                 const msg = self.context.interner.get(sid);
-                const anchor = Loc.init(cy.items[0], 0, 0);
+                const anchor: Loc = .init(cy.items[0], 0, 0);
                 _ = self.context.diags.addError(anchor, .import_cycle_detected, .{msg}) catch {};
             }
             if (cycle_report.blocked.items.len > 0) {
@@ -332,7 +334,7 @@ pub const Pipeline = struct {
                 }
                 const sid = self.context.interner.intern(buf.items);
                 const msg = self.context.interner.get(sid);
-                const anchor = Loc.init(cycle_report.blocked.items[0], 0, 0);
+                const anchor: Loc = .init(cycle_report.blocked.items[0], 0, 0);
                 _ = self.context.diags.addError(anchor, .imports_blocked_by_cycle, .{msg}) catch {};
             }
             return error.CycleDetected;
@@ -349,7 +351,7 @@ pub const Pipeline = struct {
         }
 
         if (progress) |reporter| reporter.report(.type_checking);
-        var chk = checker.Checker.init(self.allocator, self.context, self);
+        var chk: checker.Checker = .init(self.allocator, self.context, self);
         defer chk.deinit();
         try chk.run(&dep_levels);
         if (self.context.diags.anyErrors()) {
@@ -365,7 +367,7 @@ pub const Pipeline = struct {
         }
 
         if (progress) |reporter| reporter.report(.lowering_tir);
-        var tir_lowerer = lower_tir.LowerTir.init(self.allocator, self.context, self, &chk);
+        var tir_lowerer: lower_tir.LowerTir = .init(self.allocator, self.context, self, &chk);
         defer tir_lowerer.deinit();
 
         // If any TIR lowering thread fails, do not proceed further.
@@ -404,8 +406,9 @@ pub const Pipeline = struct {
         // type_info.print();
 
         if (progress) |reporter| reporter.report(.mlir_codegen);
+        codegen.enable_debug_info = self.debug_info;
         const mlir_ctx_ptr = self.ensureMlirContext();
-        var gen = codegen.Codegen.init(self.allocator, self.context, mlir_ctx_ptr.*);
+        var gen: codegen.Codegen = .init(self.allocator, self.context, mlir_ctx_ptr.*);
         gen.resetDebugCaches();
 
         var mlir_module = gen.emit(&dep_levels) catch |err| {
@@ -417,7 +420,7 @@ pub const Pipeline = struct {
             }
         };
 
-        var buf = std.array_list.Managed(u8).init(self.allocator);
+        var buf: std.array_list.Managed(u8) = .init(self.allocator);
         defer buf.deinit();
         var had_error = false;
         var sink = codegen.PrintBuffer{ .list = &buf, .had_error = &had_error };
@@ -474,7 +477,7 @@ pub const Pipeline = struct {
             .llvm_ir => .llvm_ir,
             .llvm_passes => .llvm_passes,
             else => .compile,
-        }, optimization_level);
+        }, optimization_level, self.debug_info);
         if (self.context.diags.anyErrors()) {
             return error.LLVMIRFailed;
         }
@@ -520,7 +523,7 @@ fn packageLocOrDefault(ast: *const ast_mod.Ast, file_id: u32) Loc {
         const loc_id = ast.unit.package_loc.unwrap();
         return ast.exprs.locs.get(loc_id);
     }
-    return Loc.init(file_id, 0, 0);
+    return .init(file_id, 0, 0);
 }
 
 /// Case-sensitive comparison of two name slices (wrapper around `std.mem.eql`).

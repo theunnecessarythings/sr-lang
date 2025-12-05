@@ -148,7 +148,7 @@ pub const LowerMlir = struct {
         }
 
         if (blk.term.isNone()) {
-            try b.setReturn(&blk, .none(), tir.OptLocId.none());
+            try b.setReturn(&blk, .none(), .none());
         }
         try b.endBlock(&f, blk);
         try b.endFunction(f);

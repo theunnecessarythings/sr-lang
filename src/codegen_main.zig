@@ -353,7 +353,7 @@ pub const OpBuilder = struct {
 
 /// Capture the printed form of `attr` into an owned byte slice.
 pub fn ownedAttributeText(self: *Codegen, attr: mlir.Attribute) ![]u8 {
-    var list = ArrayList(u8).init(self.gpa);
+    var list: ArrayList(u8) = .init(self.gpa);
     errdefer list.deinit();
 
     var had_error = false;
@@ -366,7 +366,7 @@ pub fn ownedAttributeText(self: *Codegen, attr: mlir.Attribute) ![]u8 {
 
 /// Append the text representation of `ty` into `buf`.
 fn appendMlirTypeText(self: *Codegen, buf: *ArrayList(u8), ty: mlir.Type) !void {
-    var tmp = ArrayList(u8).init(self.gpa);
+    var tmp: ArrayList(u8) = .init(self.gpa);
     defer tmp.deinit();
     var had_error = false;
     var sink = PrintBuffer{ .list = &tmp, .had_error = &had_error };
@@ -377,7 +377,7 @@ fn appendMlirTypeText(self: *Codegen, buf: *ArrayList(u8), ty: mlir.Type) !void 
 
 /// Append the textual dump of `attr` into `buf`.
 fn appendMlirAttributeText(self: *Codegen, buf: *ArrayList(u8), attr: mlir.Attribute) !void {
-    var tmp = ArrayList(u8).init(self.gpa);
+    var tmp: ArrayList(u8) = .init(self.gpa);
     defer tmp.deinit();
     var had_error = false;
     var sink = PrintBuffer{ .list = &tmp, .had_error = &had_error };
@@ -388,7 +388,7 @@ fn appendMlirAttributeText(self: *Codegen, buf: *ArrayList(u8), attr: mlir.Attri
 
 /// Append the `module` textual dump to `buf`.
 fn appendMlirModuleText(self: *Codegen, buf: *ArrayList(u8), module: mlir.Module) !void {
-    var tmp = ArrayList(u8).init(self.gpa);
+    var tmp: ArrayList(u8) = .init(self.gpa);
     defer tmp.deinit();
     var had_error = false;
     var sink = PrintBuffer{ .list = &tmp, .had_error = &had_error };
@@ -453,7 +453,7 @@ fn renderMlirTemplate(
     t: *tir.TIR,
     pieces: []const tir.MlirPieceId,
 ) ![]u8 {
-    var buf = ArrayList(u8).init(self.gpa);
+    var buf: ArrayList(u8) = .init(self.gpa);
     errdefer buf.deinit();
 
     for (pieces) |pid| {
@@ -483,7 +483,7 @@ const DiagnosticData = struct {
 /// MLIR diagnostic callback that captures the error message and location span.
 fn diagnosticHandler(diag: mlir.c.MlirDiagnostic, userdata: ?*anyopaque) callconv(.c) mlir.c.MlirLogicalResult {
     const data: *DiagnosticData = @ptrCast(@alignCast(userdata));
-    var buf = ArrayList(u8).init(data.context.gpa);
+    var buf: ArrayList(u8) = .init(data.context.gpa);
     defer buf.deinit();
     var had_error = false;
     var sink = PrintBuffer{ .list = &buf, .had_error = &had_error };
@@ -515,15 +515,15 @@ pub fn init(gpa: Allocator, context: *compile.Context, ctx: mlir.Context) Codege
         .mlir_ctx = ctx,
         .loc = loc,
         .module = module,
-        .loc_cache = std.AutoHashMap(cst.LocId, mlir.Location).init(gpa),
-        .file_cache = std.AutoHashMap(u32, []const u8).init(gpa),
-        .line_index_cache = std.AutoHashMap(u32, []usize).init(gpa),
-        .di_files = std.AutoHashMap(u32, debug.DebugFileInfo).init(gpa),
-        .di_subprograms = std.AutoHashMap(tir.FuncId, debug.DebugSubprogramInfo).init(gpa),
-        .di_null_type_attr = mlir.Attribute.empty(),
-        .di_subroutine_null_type_attr = mlir.Attribute.empty(),
-        .di_empty_expr_attr = mlir.Attribute.empty(),
-        .di_type_cache = std.AutoHashMap(types.TypeId, mlir.Attribute).init(gpa),
+        .loc_cache = .init(gpa),
+        .file_cache = .init(gpa),
+        .line_index_cache = .init(gpa),
+        .di_files = .init(gpa),
+        .di_subprograms = .init(gpa),
+        .di_null_type_attr = .empty(),
+        .di_subroutine_null_type_attr = .empty(),
+        .di_empty_expr_attr = .empty(),
+        .di_type_cache = .init(gpa),
         .next_di_id = 0,
         .void_ty = void_ty,
         .i1_ty = mlir.Type.getSignlessIntegerType(ctx, 1),
@@ -533,17 +533,17 @@ pub fn init(gpa: Allocator, context: *compile.Context, ctx: mlir.Context) Codege
         .f32_ty = mlir.Type.getFloat32Type(ctx),
         .f64_ty = mlir.Type.getFloat64Type(ctx),
         .llvm_ptr_ty = mlir.LLVM.getPointerType(ctx, 0),
-        .func_syms = std.AutoHashMap(tir.StrId, FuncInfo).init(gpa),
-        .global_syms = std.StringHashMap(void).init(gpa),
-        .str_pool = std.StringHashMap(mlir.Operation).init(gpa),
-        .block_map = std.AutoHashMap(tir.BlockId, mlir.Block).init(gpa),
-        .value_map = std.AutoHashMap(tir.ValueId, mlir.Value).init(gpa),
-        .tensor_slots = std.AutoHashMap(tir.ValueId, mlir.Value).init(gpa),
-        .tensor_elem_ptrs = std.AutoHashMap(tir.ValueId, TensorElemPtrInfo).init(gpa),
-        .val_types = std.AutoHashMap(tir.ValueId, types.TypeId).init(gpa),
-        .def_instr = std.AutoHashMap(tir.ValueId, tir.InstrId).init(gpa),
-        .global_addr_cache = std.StringHashMap(mlir.Value).init(gpa),
-        .force_llvm_func_syms = std.AutoHashMap(tir.StrId, void).init(gpa),
+        .func_syms = .init(gpa),
+        .global_syms = .init(gpa),
+        .str_pool = .init(gpa),
+        .block_map = .init(gpa),
+        .value_map = .init(gpa),
+        .tensor_slots = .init(gpa),
+        .tensor_elem_ptrs = .init(gpa),
+        .val_types = .init(gpa),
+        .def_instr = .init(gpa),
+        .global_addr_cache = .init(gpa),
+        .force_llvm_func_syms = .init(gpa),
         .diagnostic_handler = mlir.c.mlirContextAttachDiagnosticHandler(ctx.handle, diagnosticHandler, @ptrCast(diag_data), null),
         .diagnostic_data = diag_data,
         .active_type_info = null,
@@ -667,7 +667,7 @@ fn functionOptLoc(self: *Codegen, f_id: tir.FuncId, t: *tir.TIR) tir.OptLocId {
     }
     // No block carried a concrete span. Leave the function location unknown so
     // downstream consumers treat it as compiler-synthesized.
-    return tir.OptLocId.none();
+    return .none();
 }
 
 // ----------------------------------------------------------------
@@ -676,7 +676,7 @@ fn functionOptLoc(self: *Codegen, f_id: tir.FuncId, t: *tir.TIR) tir.OptLocId {
 
 /// Lower all dependency levels into MLIR by iterating through TIR units.
 pub fn emit(self: *Codegen, levels: *const compile.DependencyLevels) !mlir.Module {
-    var unit_by_file = std.AutoHashMap(u32, *package.FileUnit).init(self.gpa);
+    var unit_by_file: std.AutoHashMap(u32, *package.FileUnit) = .init(self.gpa);
     defer unit_by_file.deinit();
 
     var pkg_iter = self.context.compilation_unit.packages.iterator();
@@ -1350,7 +1350,7 @@ fn ensureFuncDeclFromCall(self: *Codegen, p: tir.Rows.Call, t: *tir.TIR) !FuncIn
     const global_ids = t.funcs.global_pool.data.items;
     var found: bool = false;
     var is_var: bool = false;
-    var params_sr_list = ArrayList(types.TypeId).init(self.gpa);
+    var params_sr_list: ArrayList(types.TypeId) = .init(self.gpa);
     defer params_sr_list.deinit();
     var params_sr: []const types.TypeId = &.{};
     var ret_sr: types.TypeId = types.TypeId.fromRaw(0);
@@ -2498,9 +2498,9 @@ fn emitCall(self: *Codegen, p: tir.Rows.Call, t: *tir.TIR) !mlir.Value {
     }
 
     if (isExternLL and finfo.?.is_variadic and src_vals.len > finfo.?.n_formals) {
-        var expanded_vals = ArrayList(mlir.Value).init(self.gpa);
+        var expanded_vals: ArrayList(mlir.Value) = .init(self.gpa);
         defer expanded_vals.deinit();
-        var expanded_sr = ArrayList(types.TypeId).init(self.gpa);
+        var expanded_sr: ArrayList(types.TypeId) = .init(self.gpa);
         defer expanded_sr.deinit();
 
         for (src_vals, 0..) |val, idx| {
@@ -2519,9 +2519,9 @@ fn emitCall(self: *Codegen, p: tir.Rows.Call, t: *tir.TIR) !mlir.Value {
     }
 
     if (isExternLL and finfo.?.is_variadic and src_vals.len > finfo.?.n_formals) {
-        var expanded_vals = ArrayList(mlir.Value).init(self.gpa);
+        var expanded_vals: ArrayList(mlir.Value) = .init(self.gpa);
         defer expanded_vals.deinit();
-        var expanded_sr = ArrayList(types.TypeId).init(self.gpa);
+        var expanded_sr: ArrayList(types.TypeId) = .init(self.gpa);
         defer expanded_sr.deinit();
 
         for (src_vals, 0..) |val, idx| {
@@ -2571,11 +2571,11 @@ fn emitCall(self: *Codegen, p: tir.Rows.Call, t: *tir.TIR) !mlir.Value {
         retClass = abi.abiClassifyX64SysV(self, want_res_sr, true);
     }
 
-    var lowered_ops = ArrayList(mlir.Value).init(self.gpa);
+    var lowered_ops: ArrayList(mlir.Value) = .init(self.gpa);
     defer lowered_ops.deinit();
 
     var formal_index: usize = 0;
-    var retbuf: mlir.Value = mlir.Value.empty();
+    var retbuf: mlir.Value = .empty();
     if (!want_no_result and retClass.kind == .IndirectSRet) {
         // allocate result, pass as first arg
         retbuf = self.spillAgg(self.undefOf(want_res_mlir), want_res_mlir, @intCast(retClass.alignment));
@@ -2660,7 +2660,7 @@ fn emitCall(self: *Codegen, p: tir.Rows.Call, t: *tir.TIR) !mlir.Value {
 
     const seg = mlir.Attribute.denseI32ArrayGet(self.mlir_ctx, &[_]i32{ @as(i32, @intCast(lowered_ops.items.len)), 0 });
     // if variadic function, add var_callee_type attribute
-    var callAttrsList = ArrayList(mlir.NamedAttribute).init(self.gpa);
+    var callAttrsList: ArrayList(mlir.NamedAttribute) = .init(self.gpa);
     defer callAttrsList.deinit();
     try callAttrsList.append(self.named("callee", mlir.Attribute.flatSymbolRefAttrGet(self.mlir_ctx, mlir.StringRef.from(callee_name))));
     try callAttrsList.append(self.named("operand_segment_sizes", seg));
@@ -2844,7 +2844,7 @@ fn emitMlirBlock(self: *Codegen, p: tir.Rows.MlirBlock, t: *tir.TIR) !mlir.Value
         for (arg_vids) |arg_vid| {
             const mlir_val = self.value_map.get(arg_vid).?;
 
-            var str_buf = ArrayList(u8).init(self.gpa);
+            var str_buf: ArrayList(u8) = .init(self.gpa);
             defer str_buf.deinit();
             var had_error = false;
             var sink = PrintBuffer{ .list = &str_buf, .had_error = &had_error };
@@ -3378,7 +3378,7 @@ fn emitInstr(self: *Codegen, ins_id: tir.InstrId, t: *tir.TIR) !mlir.Value {
             const ret_ty = try self.llvmTypeOf(p.ty);
             const has_res = !ret_ty.equal(self.void_ty);
 
-            var callAttrsList = ArrayList(mlir.NamedAttribute).init(self.gpa);
+            var callAttrsList: ArrayList(mlir.NamedAttribute) = .init(self.gpa);
 
             defer callAttrsList.deinit();
 
@@ -3406,9 +3406,9 @@ fn emitInlineMlirOperation(
     result_ty: mlir.Type,
     loc: tir.OptLocId,
 ) !mlir.Value {
-    var arg_values = ArrayList(mlir.Value).init(self.gpa);
+    var arg_values: ArrayList(mlir.Value) = .init(self.gpa);
     defer arg_values.deinit();
-    var arg_types = ArrayList(mlir.Type).init(self.gpa);
+    var arg_types: ArrayList(mlir.Type) = .init(self.gpa);
     defer arg_types.deinit();
 
     try arg_values.ensureUnusedCapacity(arg_vids.len);
@@ -3426,7 +3426,7 @@ fn emitInlineMlirOperation(
     defer self.gpa.free(func_name_buf);
 
     // 2. Build the function string inside a module
-    var func_str = ArrayList(u8).init(self.gpa);
+    var func_str: ArrayList(u8) = .init(self.gpa);
     defer func_str.deinit();
     var writer = func_str.writer();
 
@@ -3434,7 +3434,7 @@ fn emitInlineMlirOperation(
     for (arg_types.items, 0..) |*ty, i| {
         if (i > 0) try writer.writeAll(", ");
         try writer.print("%arg{d}: ", .{i});
-        var type_str_buf = ArrayList(u8).init(self.gpa);
+        var type_str_buf: ArrayList(u8) = .init(self.gpa);
         defer type_str_buf.deinit();
         var had_error = false;
         var sink = PrintBuffer{ .list = &type_str_buf, .had_error = &had_error };
@@ -3446,7 +3446,7 @@ fn emitInlineMlirOperation(
     const has_result = !result_ty.equal(self.void_ty);
     if (has_result) {
         try writer.writeAll(" -> ");
-        var type_str_buf = ArrayList(u8).init(self.gpa);
+        var type_str_buf: ArrayList(u8) = .init(self.gpa);
         defer type_str_buf.deinit();
         var had_error = false;
         var sink = PrintBuffer{ .list = &type_str_buf, .had_error = &had_error };
@@ -3466,7 +3466,7 @@ fn emitInlineMlirOperation(
 
     if (has_result) {
         try writer.writeAll("  func.return %res : ");
-        var type_str_buf = ArrayList(u8).init(self.gpa);
+        var type_str_buf: ArrayList(u8) = .init(self.gpa);
         defer type_str_buf.deinit();
         var had_error = false;
         var sink = PrintBuffer{ .list = &type_str_buf, .had_error = &had_error };
@@ -4472,7 +4472,7 @@ fn constStringPtr(self: *Codegen, text: []const u8) !mlir.Operation {
         return self.addrOfFirstCharLen(@constCast(g), text.len + 1);
     }
 
-    var hasher = std.hash.Fnv1a_64.init();
+    var hasher: std.hash.Fnv1a_64 = .init();
     hasher.update(text);
     const h = hasher.final();
     const name = try std.fmt.allocPrint(self.gpa, "__str_{x}", .{h});
@@ -4525,7 +4525,7 @@ fn addrOfFirstCharLen(self: *Codegen, global_op: *mlir.Operation, n_bytes: usize
 
 /// Escape special characters in `s` so it can be used as an MLIR string literal.
 fn escapeForMlirString(self: *Codegen, s: []const u8) ![]u8 {
-    var out = ArrayList(u8).init(self.gpa);
+    var out: ArrayList(u8) = .init(self.gpa);
     for (s) |c| {
         switch (c) {
             '"' => try out.appendSlice("\\22"),

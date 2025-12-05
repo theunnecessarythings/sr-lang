@@ -42,7 +42,7 @@ pub fn init(
     var parser = Parser{
         .gpa = gpa,
         .src = source,
-        .lex = Lexer.init(source, file_id, .semi),
+        .lex = .init(source, file_id, .semi),
         .cur = undefined,
         .nxt = undefined,
         .context = context,
@@ -480,10 +480,10 @@ fn parseDecl(self: *Parser) anyerror!cst.DeclId {
     const loc = self.toLocId(self.cur.loc);
     const lhs_or_rhs = try self.parseExpr(0, .expr);
     var flags: cst.Rows.DeclFlags = .{ .is_const = false, .is_assign = false };
-    var ty_opt = cst.OptExprId.none();
-    var lhs_opt = cst.OptExprId.none();
+    var ty_opt: cst.OptExprId = .none();
+    var lhs_opt: cst.OptExprId = .none();
     var rhs_id = lhs_or_rhs;
-    var method_path = cst.OptRangeMethodPathSeg.none();
+    var method_path: cst.OptRangeMethodPathSeg = .none();
 
     switch (self.cur.tag) {
         .coloncolon => { // constant: x :: (type)? (= rhs)?
@@ -741,8 +741,8 @@ fn nud(self: *Parser, tag: Token.Tag, comptime mode: ParseMode) anyerror!cst.Exp
             const tok = self.cur;
             const loc = self.toLocId(tok.loc);
             self.advance();
-            var label = cst.OptStrId.none();
-            var value = cst.OptExprId.none();
+            var label: cst.OptStrId = .none();
+            var value: cst.OptExprId = .none();
 
             if (self.cur.tag == .colon) {
                 self.advance();
@@ -758,7 +758,7 @@ fn nud(self: *Parser, tag: Token.Tag, comptime mode: ParseMode) anyerror!cst.Exp
         .keyword_continue => blk: {
             const loc = self.toLocId(self.cur.loc);
             self.advance();
-            var label = cst.OptStrId.none();
+            var label: cst.OptStrId = .none();
             if (self.cur.tag == .colon) {
                 self.advance();
                 const name = self.cur;
@@ -900,7 +900,7 @@ fn parseStructLiteral(self: *Parser, lcurly_loc: Token.Loc) !cst.ExprId {
 
     while (self.cur.tag != .rcurly and self.cur.tag != .eof) {
         const field_tok = self.cur;
-        var name_opt = cst.OptStrId.none();
+        var name_opt: cst.OptStrId = .none();
         if ((self.cur.tag == .identifier or self.cur.tag == .raw_identifier) and self.nxt.tag == .colon) {
             name_opt = .some(self.intern(self.slice(field_tok)));
             self.advance();
@@ -930,7 +930,7 @@ fn parseStructLiteral(self: *Parser, lcurly_loc: Token.Loc) !cst.ExprId {
 
     const fields_range = self.cst_u.exprs.sfv_pool.pushMany(self.gpa, sfv_ids.items);
     const loc_id = self.toLocId(start_loc.merge(end_loc));
-    return self.addExpr(.StructLit, .{ .fields = fields_range, .ty = cst.OptExprId.none(), .trailing_comma = trailing, .loc = loc_id });
+    return self.addExpr(.StructLit, .{ .fields = fields_range, .ty = .none(), .trailing_comma = trailing, .loc = loc_id });
 }
 
 /// Parse a struct literal that follows a type head (`T { ... }`).
@@ -944,7 +944,7 @@ fn parseStructLiteralWithHead(self: *Parser, head: cst.ExprId, lcurly_loc: Token
 
     while (self.cur.tag != .rcurly and self.cur.tag != .eof) {
         const field_tok = self.cur;
-        var name_opt = cst.OptStrId.none();
+        var name_opt: cst.OptStrId = .none();
         if ((self.cur.tag == .identifier or self.cur.tag == .raw_identifier) and self.nxt.tag == .colon) {
             name_opt = .some(self.intern(self.slice(field_tok)));
             self.advance();
@@ -974,7 +974,7 @@ fn parseStructLiteralWithHead(self: *Parser, head: cst.ExprId, lcurly_loc: Token
 
     const fields_range = self.cst_u.exprs.sfv_pool.pushMany(self.gpa, sfv_ids.items);
     const loc_id = self.toLocId(start_loc.merge(end_loc));
-    return self.addExpr(.StructLit, .{ .fields = fields_range, .ty = cst.OptExprId.some(head), .trailing_comma = trailing, .loc = loc_id });
+    return self.addExpr(.StructLit, .{ .fields = fields_range, .ty = .some(head), .trailing_comma = trailing, .loc = loc_id });
 }
 
 /// Parse an index access expression using `collection` as the base.
@@ -1104,7 +1104,7 @@ inline fn parseReturn(self: *Parser) !cst.ExprId {
     const tok = self.cur;
     const loc = self.toLocId(tok.loc);
     self.advance(); // 'return'
-    var value: cst.OptExprId = cst.OptExprId.none();
+    var value: cst.OptExprId = .none();
     if (!self.isStmtTerminator()) {
         value = .some(try self.parseExpr(0, .expr));
     }
@@ -1450,7 +1450,7 @@ fn parseMatchExpr(self: *Parser) !cst.ExprId {
     while (self.cur.tag != .rcurly and self.cur.tag != .eof) {
         const pat_id = try self.parsePattern(); // PatternId
         // optional guard
-        var guard_opt = cst.OptExprId.none();
+        var guard_opt: cst.OptExprId = .none();
         if (self.cur.tag == .keyword_if) {
             self.advance();
             const gexpr = try self.parseExpr(0, .expr_no_struct);
@@ -2027,9 +2027,9 @@ fn parseStructLikeType(self: *Parser, comptime tag: Token.Tag, comptime is_exter
     const fields = try self.parseStructFieldList(.rcurly);
 
     return if (tag == .keyword_struct)
-        self.addExpr(.StructType, .{ .fields = fields.range, .is_extern = is_extern, .attrs = cst.OptRangeAttr.none(), .trailing_field_comma = fields.trailing, .loc = loc })
+        self.addExpr(.StructType, .{ .fields = fields.range, .is_extern = is_extern, .attrs = .none(), .trailing_field_comma = fields.trailing, .loc = loc })
     else
-        self.addExpr(.UnionType, .{ .fields = fields.range, .is_extern = is_extern, .attrs = cst.OptRangeAttr.none(), .trailing_field_comma = fields.trailing, .loc = loc });
+        self.addExpr(.UnionType, .{ .fields = fields.range, .is_extern = is_extern, .attrs = .none(), .trailing_field_comma = fields.trailing, .loc = loc });
 }
 
 //==============================================================
@@ -2447,7 +2447,7 @@ fn parseAnnotated(self: *Parser, comptime mode: ParseMode) !cst.ExprId {
     const idx = id.toRaw();
     const kind = self.cst_u.kind(id);
     const row = self.cst_u.exprs.index.rows.items[idx];
-    const some = cst.OptRangeAttr.some(r);
+    const some: cst.OptRangeAttr = .some(r);
 
     switch (kind) {
         .Function => self.cst_u.exprs.Function.col("attrs")[row] = some,

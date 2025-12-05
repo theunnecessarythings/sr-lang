@@ -86,6 +86,7 @@ const CliArgs = struct {
     run_mlir: bool = false,
     no_color: bool = false,
     verbose: bool = false,
+    debug_info: bool = false,
     optimization_level: ?[]const u8 = null,
     tir_prune_unused: bool = true,
     tir_warn_unused: bool = true,
@@ -153,6 +154,7 @@ fn printUsage(writer: anytype, exec_name: []const u8) !void {
     try writer.print("  {s}--run-mlir{s}         Run MLIR JIT after compilation (for testing).\n", .{ Colors.cyan, Colors.reset });
     try writer.print("  {s}--no-color{s}         Disable colored output for diagnostics.\n", .{ Colors.cyan, Colors.reset });
     try writer.print("  {s}--verbose{s}          Enable verbose output.\n", .{ Colors.cyan, Colors.reset });
+    try writer.print("  {s}--debug{s}            Enable debug info generation.\n", .{ Colors.cyan, Colors.reset });
     try writer.print("  {s}--tir-prune-unused{s}  Remove unreachable functions/globals before MLIR.\n", .{ Colors.cyan, Colors.reset });
     try writer.print("  {s}--tir-warn-unused{s}   Emit warnings for unused functions.\n", .{ Colors.cyan, Colors.reset });
     try writer.print("  {s}-O<level>{s}           Set optimization level (0, 1, 2, 3, s, z).\n\n", .{ Colors.cyan, Colors.reset });
@@ -166,10 +168,10 @@ fn repl(
     out_writer: anytype,
 ) !void {
     try err_writer.print("{s}Welcome to the REPL! Type your code and press Ctrl-D to evaluate.{s}\n", .{ Colors.green, Colors.reset });
-    var context = lib.compile.Context.init(allocator);
+    var context: lib.compile.Context = .init(allocator);
     defer context.deinit();
 
-    var pipeline = lib.pipeline.Pipeline.init(allocator, &context);
+    var pipeline: lib.pipeline.Pipeline = .init(allocator, &context);
 
     var in_buf: [4096]u8 = undefined;
 
@@ -198,13 +200,13 @@ fn repl(
     const tir_mod = main_pkg.sources.entries.get(0).value.tir.?;
 
     // Print results based on the 'result' struct
-    var cst_printer = lib.cst.DodPrinter.init(out_writer, &cst_program.exprs, &cst_program.pats);
+    var cst_printer: lib.cst.DodPrinter = .init(out_writer, &cst_program.exprs, &cst_program.pats);
     std.debug.print("{s}Concrete Syntax Tree (CST){s}\n", .{ Colors.bold, Colors.green });
     try cst_printer.printProgram(&cst_program.program);
-    var ast_printer = lib.ast.AstPrinter.init(out_writer, &hir.exprs, &hir.stmts, &hir.pats);
+    var ast_printer: lib.ast.AstPrinter = .init(out_writer, &hir.exprs, &hir.stmts, &hir.pats);
     std.debug.print("{s}Abstract Syntax Tree (AST){s}\n", .{ Colors.bold, Colors.cyan });
     try ast_printer.printUnit(&hir.unit);
-    var tir_printer = lib.tir.TirPrinter.init(out_writer, tir_mod);
+    var tir_printer: lib.tir.TirPrinter = .init(out_writer, tir_mod);
     std.debug.print("{s}Typed Intermediate Representation (TIR){s}\n", .{ Colors.bold, Colors.yellow });
     try tir_printer.print();
     if (result.mlir_module) |mlir_module| {
@@ -241,7 +243,7 @@ fn server(
         var send_buf: [4096]u8 = undefined;
         var conn_reader = conn.stream.reader(&recv_buf);
         var conn_writer = conn.stream.writer(&send_buf);
-        var http = std.http.Server.init(conn_reader.interface(), &conn_writer.interface);
+        var http: std.http.Server = .init(conn_reader.interface(), &conn_writer.interface);
 
         request_loop: while (http.reader.state == .ready) {
             var req = http.receiveHead() catch |err| switch (err) {
@@ -308,10 +310,10 @@ fn server(
             const source = try allocator.dupeZ(u8, body);
             defer allocator.free(source);
 
-            var context = lib.compile.Context.init(allocator);
+            var context: lib.compile.Context = .init(allocator);
             defer context.deinit();
 
-            var pipeline = lib.pipeline.Pipeline.init(allocator, &context); // Create pipeline here
+            var pipeline: lib.pipeline.Pipeline = .init(allocator, &context); // Create pipeline here
 
             const result = try pipeline.run(source, &.{}, .ast, null, null); // Run the pipeline to AST
 
@@ -334,7 +336,7 @@ fn server(
             const main_pkg = result.compilation_unit.?.packages.getPtr("main") orelse return error.NoMainPackage;
             const ast = main_pkg.sources.entries.get(0).value.ast.?;
 
-            var json_printer = lib.json_printer.JsonPrinter.init(
+            var json_printer: lib.json_printer.JsonPrinter = .init(
                 &json_buf.writer,
                 &ast.exprs, // Use result.ast
                 &ast.stmts, // Use result.ast
@@ -388,9 +390,11 @@ fn process_file(
         return;
     }
 
-    var pipeline = lib.pipeline.Pipeline.init(allocator, compiler_ctx);
+    var pipeline: lib.pipeline.Pipeline = .init(allocator, compiler_ctx);
     pipeline.tir_prune_unused = cli_args.tir_prune_unused;
     pipeline.tir_warn_unused = cli_args.tir_warn_unused;
+    pipeline.debug_info = cli_args.debug_info;
+    lib.codegen.enable_debug_info = cli_args.debug_info;
 
     const should_show_progress = cli_args.subcommand == .compile or cli_args.subcommand == .run;
     var progress_active = false;
@@ -442,7 +446,7 @@ fn process_file(
         for (result.compilation_unit.?.packages.values()) |pkg| {
             for (pkg.sources.values()) |entry| {
                 const hir = entry.ast.?;
-                var printer = lib.ast.AstPrinter.init(out_writer, &hir.exprs, &hir.stmts, &hir.pats);
+                var printer: lib.ast.AstPrinter = .init(out_writer, &hir.exprs, &hir.stmts, &hir.pats);
                 try printer.printUnit(&hir.unit);
             }
         }
@@ -456,7 +460,7 @@ fn process_file(
         for (result.compilation_unit.?.packages.values()) |pkg| {
             for (pkg.sources.values()) |entry| {
                 const hir = entry.ast.?;
-                var printer = lib.ast.AstPrinter.init(out_writer, &hir.exprs, &hir.stmts, &hir.pats);
+                var printer: lib.ast.AstPrinter = .init(out_writer, &hir.exprs, &hir.stmts, &hir.pats);
                 try printer.printUnit(&hir.unit);
             }
         }
@@ -470,7 +474,7 @@ fn process_file(
         for (result.compilation_unit.?.packages.values()) |pkg| {
             for (pkg.sources.values()) |entry| {
                 var cst = entry.cst.?;
-                var cst_printer = lib.cst.DodPrinter.init(out_writer, &cst.exprs, &cst.pats);
+                var cst_printer: lib.cst.DodPrinter = .init(out_writer, &cst.exprs, &cst.pats);
                 try cst_printer.printProgram(&cst.program);
             }
         }
@@ -493,7 +497,7 @@ fn process_file(
         for (result.compilation_unit.?.packages.values()) |pkg| {
             for (pkg.sources.values()) |entry| {
                 const hir = entry.ast.?;
-                var json_printer = lib.json_printer.JsonPrinter.init(
+                var json_printer: lib.json_printer.JsonPrinter = .init(
                     out_writer,
                     &hir.exprs,
                     &hir.stmts,
@@ -514,7 +518,7 @@ fn process_file(
         for (result.compilation_unit.?.packages.values()) |pkg| {
             for (pkg.sources.values()) |entry| {
                 const tir = entry.tir.?;
-                var tir_printer = lib.tir.TirPrinter.init(out_writer, tir);
+                var tir_printer: lib.tir.TirPrinter = .init(out_writer, tir);
                 try tir_printer.print();
             }
         }
@@ -569,6 +573,8 @@ pub fn main() !void {
                 cli_args.tir_warn_unused = true;
             } else if (std.mem.eql(u8, arg, "--verbose")) {
                 cli_args.verbose = true;
+            } else if (std.mem.eql(u8, arg, "--debug")) {
+                cli_args.debug_info = true;
             } else {
                 // Unknown option
                 try writer.print("{s}Error:{s} Unknown option '{s}'\n", .{ Colors.red, Colors.reset, arg });
@@ -650,7 +656,7 @@ pub fn main() !void {
         }
     }
 
-    var compiler_ctx = lib.compile.Context.init(gpa);
+    var compiler_ctx: lib.compile.Context = .init(gpa);
     defer compiler_ctx.deinit();
 
     var out_buf: [1024]u8 = undefined;

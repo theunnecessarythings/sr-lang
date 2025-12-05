@@ -169,7 +169,7 @@ pub fn SmallVector(comptime T: type, comptime N: usize) type {
 
         /// Clones contents into a new vector (deep copy).
         pub fn clone(self: *const Self, alloc: std.mem.Allocator) Self {
-            var out = Self.init(alloc);
+            var out: Self = .init(alloc);
             if (self.len > 0) {
                 out.reserve(self.len);
                 out.pushSlice(self.sliceConst());
@@ -422,7 +422,7 @@ pub const Location = struct {
         locations: []const Location,
         metadata: Attribute,
     ) Location {
-        var locs = SmallVector(c.MlirLocation, 8).init(global_alloc);
+        var locs: SmallVector(c.MlirLocation, 8) = .init(global_alloc);
         for (locations) |loc| {
             locs.push(loc.handle);
         }
@@ -510,7 +510,7 @@ pub const OperationState = struct {
     }
 
     pub fn addResults(self: *OperationState, results: []const Type) void {
-        var tmp = SmallVector(c.MlirType, 8).init(global_alloc);
+        var tmp: SmallVector(c.MlirType, 8) = .init(global_alloc);
         for (results) |t| {
             tmp.push(t.handle);
         }
@@ -518,7 +518,7 @@ pub const OperationState = struct {
     }
 
     pub fn addOperands(self: *OperationState, operands: []const Value) void {
-        var tmp = SmallVector(c.MlirValue, 8).init(global_alloc);
+        var tmp: SmallVector(c.MlirValue, 8) = .init(global_alloc);
         for (operands) |v| {
             tmp.push(v.handle);
         }
@@ -526,7 +526,7 @@ pub const OperationState = struct {
     }
 
     pub fn addOwnedRegions(self: *OperationState, regions: []const Region) void {
-        var tmp = SmallVector(c.MlirRegion, 8).init(global_alloc);
+        var tmp: SmallVector(c.MlirRegion, 8) = .init(global_alloc);
         for (regions) |r| {
             tmp.push(r.handle);
         }
@@ -534,7 +534,7 @@ pub const OperationState = struct {
     }
 
     pub fn addSuccessors(self: *OperationState, successors: []const Block) void {
-        var tmp = SmallVector(c.MlirBlock, 8).init(global_alloc);
+        var tmp: SmallVector(c.MlirBlock, 8) = .init(global_alloc);
         for (successors) |b| {
             tmp.push(b.handle);
         }
@@ -542,7 +542,7 @@ pub const OperationState = struct {
     }
 
     pub fn addAttributes(self: *OperationState, attrs: []const NamedAttribute) void {
-        var tmp = SmallVector(c.MlirNamedAttribute, 8).init(global_alloc);
+        var tmp: SmallVector(c.MlirNamedAttribute, 8) = .init(global_alloc);
         for (attrs) |na| {
             tmp.push(na.inner);
         }
@@ -744,7 +744,7 @@ pub const Operation = struct {
             c.mlirOperationSetOperands(self.handle, 0, null);
             return;
         }
-        var tmp = SmallVector(c.MlirValue, 8).init(global_alloc);
+        var tmp: SmallVector(c.MlirValue, 8) = .init(global_alloc);
         for (operands) |v| {
             tmp.push(v.handle);
         }
@@ -1250,7 +1250,7 @@ pub const ExecutionEngine = struct {
                 .handle = c.mlirExecutionEngineCreate(module.handle, optLevel, 0, null, enableObjectDump),
             };
         } else {
-            var tmpPaths = SmallVector(c.MlirStringRef, 8).init(global_alloc);
+            var tmpPaths: SmallVector(c.MlirStringRef, 8) = .init(global_alloc);
             for (sharedLibPaths) |sr| {
                 tmpPaths.push(sr.inner);
             }
@@ -1409,7 +1409,7 @@ pub const Attribute = struct {
         if (elements.len == 0) {
             return Attribute{ .handle = c.mlirArrayAttrGet(ctx.handle, 0, null) };
         } else {
-            var tmp = SmallVector(c.MlirAttribute, 8).init(global_alloc);
+            var tmp: SmallVector(c.MlirAttribute, 8) = .init(global_alloc);
             for (elements) |e| {
                 tmp.push(e.handle);
             }
@@ -1444,7 +1444,7 @@ pub const Attribute = struct {
         if (elements.len == 0) {
             return Attribute{ .handle = c.mlirDictionaryAttrGet(ctx.handle, 0, null) };
         } else {
-            var tmp = SmallVector(c.MlirNamedAttribute, 8).init(global_alloc);
+            var tmp: SmallVector(c.MlirNamedAttribute, 8) = .init(global_alloc);
             for (elements) |na| {
                 tmp.push(na.inner);
             }
@@ -1634,7 +1634,7 @@ pub const Attribute = struct {
         if (references.len == 0) {
             return Attribute{ .handle = c.mlirSymbolRefAttrGet(ctx.handle, symbol.inner, 0, null) };
         } else {
-            var tmp = SmallVector(c.MlirAttribute, 8).init(global_alloc);
+            var tmp: SmallVector(c.MlirAttribute, 8) = .init(global_alloc);
             for (references) |r| {
                 tmp.push(r.handle);
             }
@@ -1775,7 +1775,7 @@ pub const Attribute = struct {
         if (vals.len == 0) {
             return Attribute{ .handle = c.mlirDenseBoolArrayGet(ctx.handle, 0, null) };
         } else {
-            var tmp = SmallVector(c.int, 8).init(global_alloc);
+            var tmp: SmallVector(c.int, 8) = .init(global_alloc);
             for (vals) |v| {
                 tmp.push(if (v) 1 else 0);
             }
@@ -1791,7 +1791,7 @@ pub const Attribute = struct {
         if (vals.len == 0) {
             return Attribute{ .handle = c.mlirDenseI8ArrayGet(ctx.handle, 0, null) };
         } else {
-            var tmp = SmallVector(i8, 8).init(global_alloc);
+            var tmp: SmallVector(i8, 8) = .init(global_alloc);
             for (vals) |v| {
                 tmp.push(v);
             }
@@ -1806,7 +1806,7 @@ pub const Attribute = struct {
         if (vals.len == 0) {
             return Attribute{ .handle = c.mlirDenseI16ArrayGet(ctx.handle, 0, null) };
         } else {
-            var tmp = SmallVector(i16, 8).init(global_alloc);
+            var tmp: SmallVector(i16, 8) = .init(global_alloc);
             for (vals) |v| {
                 tmp.push(v);
             }
@@ -1832,7 +1832,7 @@ pub const Attribute = struct {
         if (vals.len == 0) {
             return Attribute{ .handle = c.mlirDenseI64ArrayGet(ctx.handle, 0, null) };
         } else {
-            var tmp = SmallVector(i64, 8).init(global_alloc);
+            var tmp: SmallVector(i64, 8) = .init(global_alloc);
             for (vals) |v| {
                 tmp.push(v);
             }
@@ -1848,7 +1848,7 @@ pub const Attribute = struct {
         if (vals.len == 0) {
             return Attribute{ .handle = c.mlirDenseF32ArrayGet(ctx.handle, 0, null) };
         } else {
-            var tmp = SmallVector(f32, 8).init(global_alloc);
+            var tmp: SmallVector(f32, 8) = .init(global_alloc);
             for (vals) |v| {
                 tmp.push(v);
             }
@@ -1864,7 +1864,7 @@ pub const Attribute = struct {
         if (vals.len == 0) {
             return Attribute{ .handle = c.mlirDenseF64ArrayGet(ctx.handle, 0, null) };
         } else {
-            var tmp = SmallVector(f64, 8).init(global_alloc);
+            var tmp: SmallVector(f64, 8) = .init(global_alloc);
             for (vals) |v| {
                 tmp.push(v);
             }
@@ -1944,7 +1944,7 @@ pub const Attribute = struct {
         if (elements.len == 0) {
             return Attribute{ .handle = c.mlirDenseElementsAttrGet(shapedType.handle, 0, null) };
         } else {
-            var tmp = SmallVector(c.MlirAttribute, 8).init(global_alloc);
+            var tmp: SmallVector(c.MlirAttribute, 8) = .init(global_alloc);
             for (elements) |e| {
                 tmp.push(e.handle);
             }
@@ -2214,7 +2214,7 @@ pub const Attribute = struct {
                 ),
             };
         } else {
-            var tmp = SmallVector(c.int, 8).init(global_alloc);
+            var tmp: SmallVector(c.int, 8) = .init(global_alloc);
             for (elements) |v| {
                 tmp.push(if (v) 1 else 0);
             }
@@ -2242,7 +2242,7 @@ pub const Attribute = struct {
                 ),
             };
         } else {
-            var tmp = SmallVector(u8, 8).init(global_alloc);
+            var tmp: SmallVector(u8, 8) = .init(global_alloc);
             for (elements) |v| {
                 tmp.push(v);
             }
@@ -2269,7 +2269,7 @@ pub const Attribute = struct {
                 ),
             };
         } else {
-            var tmp = SmallVector(i8, 8).init(global_alloc);
+            var tmp: SmallVector(i8, 8) = .init(global_alloc);
             for (elements) |v| {
                 tmp.push(v);
             }
@@ -2296,7 +2296,7 @@ pub const Attribute = struct {
                 ),
             };
         } else {
-            var tmp = SmallVector(u16, 8).init(global_alloc);
+            var tmp: SmallVector(u16, 8) = .init(global_alloc);
             for (elements) |v| {
                 tmp.push(v);
             }
@@ -2324,7 +2324,7 @@ pub const Attribute = struct {
                 ),
             };
         } else {
-            var tmp = SmallVector(i16, 8).init(global_alloc);
+            var tmp: SmallVector(i16, 8) = .init(global_alloc);
             for (elements) |v| {
                 tmp.push(v);
             }
@@ -2352,7 +2352,7 @@ pub const Attribute = struct {
                 ),
             };
         } else {
-            var tmp = SmallVector(u32, 8).init(global_alloc);
+            var tmp: SmallVector(u32, 8) = .init(global_alloc);
             for (elements) |v| {
                 tmp.push(v);
             }
@@ -2379,7 +2379,7 @@ pub const Attribute = struct {
                 ),
             };
         } else {
-            var tmp = SmallVector(i32, 8).init(global_alloc);
+            var tmp: SmallVector(i32, 8) = .init(global_alloc);
             for (elements) |v| {
                 tmp.push(v);
             }
@@ -2406,7 +2406,7 @@ pub const Attribute = struct {
                 ),
             };
         } else {
-            var tmp = SmallVector(u64, 8).init(global_alloc);
+            var tmp: SmallVector(u64, 8) = .init(global_alloc);
             for (elements) |v| {
                 tmp.push(v);
             }
@@ -2433,7 +2433,7 @@ pub const Attribute = struct {
                 ),
             };
         } else {
-            var tmp = SmallVector(i64, 8).init(global_alloc);
+            var tmp: SmallVector(i64, 8) = .init(global_alloc);
             for (elements) |v| {
                 tmp.push(v);
             }
@@ -2460,7 +2460,7 @@ pub const Attribute = struct {
                 ),
             };
         } else {
-            var tmp = SmallVector(f32, 8).init(global_alloc);
+            var tmp: SmallVector(f32, 8) = .init(global_alloc);
             for (elements) |v| {
                 tmp.push(v);
             }
@@ -2487,7 +2487,7 @@ pub const Attribute = struct {
                 ),
             };
         } else {
-            var tmp = SmallVector(f64, 8).init(global_alloc);
+            var tmp: SmallVector(f64, 8) = .init(global_alloc);
             for (elements) |v| {
                 tmp.push(v);
             }
@@ -3669,7 +3669,7 @@ pub const AffineMap = struct {
 
     /// Creates an affine map with the specified dimensions, symbols, and affine expressions.
     pub fn get(ctx: Context, dimCount: isize, symbolCount: isize, affineExprs: []const AffineExpr) AffineMap {
-        var exprArray = SmallVector(c.MlirAffineExpr, 8).init(global_alloc);
+        var exprArray: SmallVector(c.MlirAffineExpr, 8) = .init(global_alloc);
         defer exprArray.deinit();
         for (affineExprs) |expr| {
             exprArray.push(expr.handle);
@@ -3703,7 +3703,7 @@ pub const AffineMap = struct {
 
     /// Creates a permutation affine map.
     pub fn permutationGet(ctx: Context, size: isize, permutation: []const u32) AffineMap {
-        var permArray = SmallVector(u32, 8).init(global_alloc);
+        var permArray: SmallVector(u32, 8) = .init(global_alloc);
         defer permArray.deinit();
         for (permutation) |val| {
             permArray.push(val);
@@ -3783,7 +3783,7 @@ pub const AffineMap = struct {
 
     /// Gets a submap based on the provided result positions.
     pub fn getSubMap(self: AffineMap, resultPos: []const isize) AffineMap {
-        var posArray = SmallVector(isize, 8).init(global_alloc);
+        var posArray: SmallVector(isize, 8) = .init(global_alloc);
         defer posArray.deinit();
         for (resultPos) |pos| {
             posArray.push(pos);
@@ -3931,13 +3931,13 @@ pub const IntegerSet = struct {
     ) IntegerSet {
         // Allocate memory for dimension replacements.
 
-        var dimArray = SmallVector(c.MlirAffineExpr, 8).init(global_alloc);
+        var dimArray: SmallVector(c.MlirAffineExpr, 8) = .init(global_alloc);
         defer dimArray.deinit();
         for (dimReplacements) |expr| {
             dimArray.push(expr.handle);
         }
 
-        var symArray = SmallVector(c.MlirAffineExpr, 8).init(global_alloc);
+        var symArray: SmallVector(c.MlirAffineExpr, 8) = .init(global_alloc);
         defer symArray.deinit();
         for (symbolReplacements) |expr| {
             symArray.push(expr.handle);
@@ -4385,17 +4385,17 @@ pub const LLVMAttributes = struct {
         flags: i64,
         sizeInBits: u64,
         alignInBits: u64,
-        elements: []const Type,
+        elements: []const Attribute,
         dataLocation: Attribute,
         rank: Attribute,
         allocated: Attribute,
         associated: Attribute,
-    ) LogicalResult {
-        return LogicalResult{
+    ) Attribute {
+        return Attribute{
             .handle = c.mlirLLVMDICompositeTypeAttrGet(
                 ctx.handle,
                 recId.handle,
-                @intCast(isRecSelf),
+                isRecSelf,
                 @intCast(tag),
                 name.handle,
                 file.handle,

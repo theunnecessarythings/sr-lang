@@ -110,7 +110,7 @@ pub const SpecializationKey = struct {
     // (Future: Add comptime_values hash here)
 
     pub fn hash(self: SpecializationKey) u64 {
-        var hasher = std.hash.Fnv1a_64.init();
+        var hasher: std.hash.Fnv1a_64 = .init();
         hasher.update(std.mem.asBytes(&self.original_decl_id));
         for (self.param_types) |pt| {
             const raw = pt.toRaw();

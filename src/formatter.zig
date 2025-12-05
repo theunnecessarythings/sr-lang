@@ -9,17 +9,17 @@ const indent_chunk: []const u8 = "                ";
 
 /// Format a single source buffer and return the formatted text.
 pub fn formatSource(gpa: std.mem.Allocator, source: [:0]const u8, file_path: []const u8) ![]u8 {
-    var ctx = compile.Context.init(gpa);
+    var ctx: compile.Context = .init(gpa);
     defer ctx.deinit();
     ctx.load_imports = false;
 
     const file_id = try ctx.source_manager.setVirtualSourceByPath(file_path, source);
     defer ctx.source_manager.clearVirtualSource(file_id);
 
-    var diagnostics = diag.Diagnostics.init(gpa, ctx.type_store, ctx.interner);
+    var diagnostics: diag.Diagnostics = .init(gpa, ctx.type_store, ctx.interner);
     defer diagnostics.deinit();
 
-    var parser = Parser.init(gpa, source, file_id, &diagnostics, &ctx);
+    var parser: Parser = .init(gpa, source, file_id, &diagnostics, &ctx);
     var tree = try parser.parse();
     defer tree.deinit();
 

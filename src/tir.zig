@@ -583,9 +583,9 @@ pub const TIR = struct {
         return .{
             .gpa = gpa,
             .type_store = store,
-            .instrs = InstrStore.init(gpa, store.strs),
-            .terms = TermStore.init(gpa),
-            .funcs = FuncStore.init(gpa),
+            .instrs = .init(gpa, store.strs),
+            .terms = .init(gpa),
+            .funcs = .init(gpa),
             .loc_store = null,
         };
     }
@@ -666,9 +666,9 @@ pub const Builder = struct {
     ) !FunctionFrame {
         const idx = self.t.funcs.Function.add(self.gpa, .{
             .name = name,
-            .params = RangeParam.empty(),
+            .params = .empty(),
             .result = result,
-            .blocks = RangeBlock.empty(),
+            .blocks = .empty(),
             .is_variadic = is_variadic,
             .attrs = attrs,
         });
@@ -1008,25 +1008,25 @@ pub const Builder = struct {
         const te = self.edge(then_dest, then_args, loc);
         const ee = self.edge(else_dest, else_args, loc);
         const tid = self.t.terms.add(.CondBr, .{ .cond = cond, .then_edge = te, .else_edge = ee, .loc = loc });
-        blk.term = OptTermId.some(tid);
+        blk.term = .some(tid);
     }
     /// setReturn TIR builder helper.
     pub fn setReturn(self: *Builder, blk: *BlockFrame, value: OptValueId, loc: OptLocId) !void {
         const tid = self.t.terms.add(.Return, .{ .value = value, .loc = loc });
-        blk.term = OptTermId.some(tid);
+        blk.term = .some(tid);
     }
     /// setReturnVal TIR builder helper.
     pub fn setReturnVal(self: *Builder, blk: *BlockFrame, v: ValueId, loc: OptLocId) !void {
-        return self.setReturn(blk, OptValueId.some(v), loc);
+        return self.setReturn(blk, .some(v), loc);
     }
     /// setReturnVoid TIR builder helper.
     pub fn setReturnVoid(self: *Builder, blk: *BlockFrame, loc: OptLocId) !void {
-        return self.setReturn(blk, OptValueId.none(), loc);
+        return self.setReturn(blk, .none(), loc);
     }
     /// setUnreachable TIR builder helper.
     pub fn setUnreachable(self: *Builder, blk: *BlockFrame, loc: OptLocId) !void {
         const tid = self.t.terms.add(.Unreachable, .{ .loc = loc });
-        blk.term = OptTermId.some(tid);
+        blk.term = .some(tid);
     }
 
     /// switchInt TIR builder helper.

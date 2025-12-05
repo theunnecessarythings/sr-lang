@@ -192,7 +192,7 @@ pub fn deinit(self: *Checker) void {
 
 /// Execute the checker across all AST units ordered by `levels`.
 pub fn run(self: *Checker, levels: *const compile.DependencyLevels) !void {
-    var ast_by_file_id = std.AutoArrayHashMap(u32, *ast.Ast).init(self.gpa);
+    var ast_by_file_id: std.AutoArrayHashMap(u32, *ast.Ast) = .init(self.gpa);
     defer ast_by_file_id.deinit();
 
     var pkg_iter = self.context.compilation_unit.packages.iterator();
@@ -217,7 +217,7 @@ pub fn run(self: *Checker, levels: *const compile.DependencyLevels) !void {
             const ast_unit = ast_by_file_id.get(file_id) orelse continue;
             self.checker_ctx.items[file_id] = CheckerContext{ .symtab = .init(self.gpa) };
             const ctx = &self.checker_ctx.items[file_id];
-            ctx.symtab = symbols.SymbolStore.init(self.gpa);
+            ctx.symtab = .init(self.gpa);
 
             try self.ensureInterpreter(ast_unit, ctx);
             try predeclare(self, ast_unit, ctx);

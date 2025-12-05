@@ -72,7 +72,7 @@ fn unescapeString(self: *Lower, quoted_str: []const u8, raw: bool) !ast.StrId {
     else
         quoted_str[1 .. quoted_str.len - 1];
 
-    var unescaped_list = std.array_list.Managed(u8).init(self.gpa);
+    var unescaped_list: std.array_list.Managed(u8) = .init(self.gpa);
     defer unescaped_list.deinit();
 
     var i: usize = 0;

@@ -154,7 +154,7 @@ fn throwErr(self: *LowerTir, loc: Loc) anyerror {
 
 /// Lower every file in dependency order, producing a complete TIR module for main.
 pub fn run(self: *LowerTir, levels: *const compile.DependencyLevels) !*tir.TIR {
-    var unit_by_file = std.AutoHashMap(u32, *package.FileUnit).init(self.gpa);
+    var unit_by_file: std.AutoHashMap(u32, *package.FileUnit) = .init(self.gpa);
     defer unit_by_file.deinit();
 
     var pkg_iter = self.context.compilation_unit.packages.iterator();
@@ -199,7 +199,7 @@ pub fn run(self: *LowerTir, levels: *const compile.DependencyLevels) !*tir.TIR {
 
 /// Lower a single AST unit into the provided TIR builder/context.
 pub fn runAst(self: *LowerTir, ast_unit: *ast.Ast, t: *tir.TIR, ctx: *LowerContext) !void {
-    var b = Builder.init(self.gpa, t);
+    var b: Builder = .init(self.gpa, t);
     ctx.builder = &b;
 
     try self.lowerGlobalMlir(ctx, ast_unit, &b);
@@ -482,7 +482,7 @@ fn lowerGlobalMlir(self: *LowerTir, ctx: *LowerContext, a: *ast.Ast, b: *Builder
 
     if (blk.term.isNone()) {
         // This synthesized initializer has no source span; emit a location-less return.
-        try b.setReturn(&blk, .none(), tir.OptLocId.none());
+        try b.setReturn(&blk, .none(), .none());
     }
     try b.endBlock(&f, blk);
     try b.endFunction(f);
@@ -1278,7 +1278,7 @@ pub fn lowerFunction(
     }
 
     if (blk.term.isNone()) {
-        try b.setReturn(&blk, tir.OptValueId.none(), fn_loc);
+        try b.setReturn(&blk, .none(), fn_loc);
     }
 
     try b.endBlock(&f, blk);
@@ -1805,7 +1805,7 @@ fn buildVariantItem(
     }
     if (!found) {
         // Diagnostic: unknown variant tag at this call site (TIR-specific)
-        const where: Loc = if (!loc.isNone()) a.exprs.locs.get(loc.unwrap()) else Loc.init(@intCast(a.file_id), 0, 0);
+        const where: Loc = if (!loc.isNone()) a.exprs.locs.get(loc.unwrap()) else .init(@intCast(a.file_id), 0, 0);
         // Compose message: "Tag 'Name' in <Type>"
         var buf = std.ArrayList(u8){};
         defer buf.deinit(self.gpa);
@@ -3295,7 +3295,7 @@ fn lowerStructLit(
                 const default_val = try self.lowerExpr(ctx, a, env, f, blk, default_expr, field_def.ty, .rvalue);
                 try field_inits.append(self.gpa, .{
                     .index = @intCast(j),
-                    .name = ast.OptStrId.some(field_def.name),
+                    .name = .some(field_def.name),
                     .value = default_val,
                 });
             }

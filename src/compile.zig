@@ -183,7 +183,7 @@ pub const Context = struct {
             .gpa = gpa,
             .source_manager = source_manager,
             .type_store = type_store,
-            .compilation_unit = CompilationUnit.init(gpa),
+            .compilation_unit = .init(gpa),
         };
     }
 
@@ -232,13 +232,13 @@ pub fn computeDependencyLevels(
     interner: *cst.StringInterner,
     source_manager: *SourceManager,
 ) !DependencyLevels {
-    var result = DependencyLevels.init(allocator);
+    var result: DependencyLevels = .init(allocator);
     errdefer result.deinit();
 
-    var indegree = std.AutoHashMap(u32, usize).init(allocator);
+    var indegree: std.AutoHashMap(u32, usize) = .init(allocator);
     defer indegree.deinit();
 
-    var adjacency = std.AutoHashMap(u32, std.ArrayList(u32)).init(allocator);
+    var adjacency: std.AutoHashMap(u32, std.ArrayList(u32)) = .init(allocator);
     defer {
         var adj_iter = adjacency.iterator();
         while (adj_iter.next()) |entry| {
@@ -250,7 +250,7 @@ pub fn computeDependencyLevels(
     var ordered_nodes = std.ArrayList(u32){};
     defer ordered_nodes.deinit(allocator);
 
-    var remaining = std.AutoHashMap(u32, void).init(allocator);
+    var remaining: std.AutoHashMap(u32, void) = .init(allocator);
     defer remaining.deinit();
 
     var pkg_iter = unit.packages.iterator();
@@ -394,21 +394,21 @@ pub fn detectImportCycles(
     interner: *cst.StringInterner,
     source_manager: *SourceManager,
 ) !CycleReport {
-    var report = CycleReport.init(allocator);
+    var report: CycleReport = .init(allocator);
     errdefer report.deinit();
 
     // Build indegree and adjacency identical to computeDependencyLevels
-    var indegree = std.AutoHashMap(u32, usize).init(allocator);
+    var indegree: std.AutoHashMap(u32, usize) = .init(allocator);
     defer indegree.deinit();
 
-    var adjacency = std.AutoHashMap(u32, std.ArrayList(u32)).init(allocator);
+    var adjacency: std.AutoHashMap(u32, std.ArrayList(u32)) = .init(allocator);
     defer {
         var it = adjacency.iterator();
         while (it.next()) |entry| entry.value_ptr.deinit(allocator);
         adjacency.deinit();
     }
 
-    var nodes = std.AutoHashMap(u32, void).init(allocator);
+    var nodes: std.AutoHashMap(u32, void) = .init(allocator);
     defer nodes.deinit();
 
     // Collect all nodes (files) known to the unit
@@ -458,7 +458,7 @@ pub fn detectImportCycles(
     var next_queue = std.ArrayList(u32){};
     defer next_queue.deinit(allocator);
 
-    var remaining = std.AutoHashMap(u32, void).init(allocator);
+    var remaining: std.AutoHashMap(u32, void) = .init(allocator);
     defer remaining.deinit();
     {
         var itn = nodes.iterator();
@@ -491,11 +491,11 @@ pub fn detectImportCycles(
     if (remaining.count() == 0) return report; // no cycles
 
     // DFS on remaining subgraph to find back edges (simple cycle reporting)
-    var visited = std.AutoHashMap(u32, bool).init(allocator);
+    var visited: std.AutoHashMap(u32, bool) = .init(allocator);
     defer visited.deinit();
-    var onstack = std.AutoHashMap(u32, bool).init(allocator);
+    var onstack: std.AutoHashMap(u32, bool) = .init(allocator);
     defer onstack.deinit();
-    var in_cycle = std.AutoHashMap(u32, bool).init(allocator);
+    var in_cycle: std.AutoHashMap(u32, bool) = .init(allocator);
     defer in_cycle.deinit();
     var stack = std.ArrayList(u32){};
     defer stack.deinit(allocator);
@@ -687,7 +687,7 @@ const Mode = enum {
 };
 
 /// Translate `module` through MLIR to LLVM IR, optionally running passes or invoking clang.
-pub fn convert_to_llvm_ir(module: mlir.c.MlirModule, link_args: []const []const u8, mode: Mode, optimization_level: ?[]const u8) !void {
+pub fn convert_to_llvm_ir(module: mlir.c.MlirModule, link_args: []const []const u8, mode: Mode, optimization_level: ?[]const u8, debug_info: bool) !void {
     const print_ir = mode != .compile;
     _ = mlir.c.LLVMInitializeNativeTarget();
     _ = mlir.c.LLVMInitializeNativeAsmPrinter();
@@ -749,15 +749,15 @@ pub fn convert_to_llvm_ir(module: mlir.c.MlirModule, link_args: []const []const 
     // make output dir
     if (std.fs.cwd().access("out", .{})) |_| {} else |_| try std.fs.cwd().makeDir("out");
 
-    const objectFileName = "out/output.o";
-    if (mlir.c.LLVMTargetMachineEmitToFile(targetMachine, llvmIR, objectFileName, mlir.c.LLVMObjectFile, &err) != 0) {
-        std.debug.print("Error emitting object file: {s}\n", .{err});
+    const llFileName = "out/output.ll";
+    if (mlir.c.LLVMPrintModuleToFile(llvmIR, llFileName, &err) != 0) {
+        std.debug.print("Error writing LLVM IR to file: {s}\n", .{err});
         mlir.c.LLVMDisposeMessage(err);
         return error.ObjectFileEmissionFailed;
     }
 
     // Link object file and run executable
-    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    var arena: std.heap.ArenaAllocator = .init(std.heap.page_allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
 
@@ -766,10 +766,12 @@ pub fn convert_to_llvm_ir(module: mlir.c.MlirModule, link_args: []const []const 
     try args.append(allocator, "clang");
     const opt_level_arg = try std.fmt.allocPrint(allocator, "-O{s}", .{optimization_level orelse "0"});
     try args.append(allocator, opt_level_arg);
-    try args.append(allocator, "-g");
+    if (debug_info) {
+        try args.append(allocator, "-g");
+    }
     try args.append(allocator, "-o");
     try args.append(allocator, "out/output_program");
-    try args.append(allocator, "out/output.o");
+    try args.append(allocator, "out/output.ll");
     // Link the language runtime (static)
     const exe_path = try std.fs.selfExeDirPathAlloc(allocator);
     defer allocator.free(exe_path);
@@ -788,7 +790,7 @@ pub fn convert_to_llvm_ir(module: mlir.c.MlirModule, link_args: []const []const 
         try args.append(allocator, la);
     }
 
-    var child = std.process.Child.init(args.items, allocator);
+    var child: std.process.Child = .init(args.items, allocator);
     child.spawn() catch {
         return error.LinkFailed;
     };
@@ -808,7 +810,7 @@ pub fn convert_to_llvm_ir(module: mlir.c.MlirModule, link_args: []const []const 
 /// Run the compiled `out/output_program` executable (helper used by tests).
 pub fn run() void {
     const argv = &[_][]const u8{"out/output_program"};
-    var child = std.process.Child.init(argv, std.heap.page_allocator);
+    var child: std.process.Child = .init(argv, std.heap.page_allocator);
     child.spawn() catch unreachable;
     _ = child.wait() catch unreachable;
 }

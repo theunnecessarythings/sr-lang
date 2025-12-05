@@ -132,8 +132,8 @@ pub const Interpreter = struct {
             .symtab = symtab,
             .compilation_unit = compilation_unit,
             .bindings = std.ArrayList(Binding).empty,
-            .method_table = MethodMap.init(allocator),
-            .specializations = std.AutoHashMap(u128, FunctionSpecializationEntry).init(allocator),
+            .method_table = .init(allocator),
+            .specializations = .init(allocator),
         };
         var success = false;
         defer if (!success) interp.method_table.deinit();
@@ -653,7 +653,7 @@ pub const Interpreter = struct {
     fn evalCallArgs(self: *Interpreter, range: ast.RangeExpr) anyerror!std.ArrayList(Value) {
         const exprs = self.ast.exprs.expr_pool.slice(range);
         if (exprs.len == 0) return .empty;
-        var list = try std.ArrayList(Value).initCapacity(self.allocator, exprs.len);
+        var list: std.ArrayList(Value) = try .initCapacity(self.allocator, exprs.len);
         var success = false;
         defer if (!success) {
             for (list.items) |*value| value.destroy(self.allocator);
@@ -718,7 +718,7 @@ pub const Interpreter = struct {
     fn collectVariadicArgs(self: *Interpreter, args: *std.ArrayList(Value), start_idx: usize) anyerror!Value {
         if (start_idx >= args.items.len) return Value{ .Sequence = .{ .values = .empty } };
         const extra = args.items.len - start_idx;
-        var list = try std.ArrayList(Value).initCapacity(self.allocator, extra);
+        var list: std.ArrayList(Value) = try .initCapacity(self.allocator, extra);
         var success = false;
         defer if (!success) {
             for (list.items) |*value| value.destroy(self.allocator);
@@ -737,7 +737,7 @@ pub const Interpreter = struct {
     fn evalSequence(self: *Interpreter, expr_range: ast.RangeExpr) anyerror!Value {
         const exprs = self.ast.exprs.expr_pool.slice(expr_range);
         if (exprs.len == 0) return Value{ .Sequence = .{ .values = .empty } };
-        var list = try std.ArrayList(Value).initCapacity(self.allocator, exprs.len);
+        var list: std.ArrayList(Value) = try .initCapacity(self.allocator, exprs.len);
         var success = false;
         defer if (!success) {
             for (list.items) |*value| value.destroy(self.allocator);
@@ -757,7 +757,7 @@ pub const Interpreter = struct {
         const field_ids = self.ast.exprs.sfv_pool.slice(row.fields);
         const count = field_ids.len;
         if (count == 0) return Value{ .Struct = .{ .fields = .empty, .owner = self.structTypeName(row.ty) } };
-        var list = try std.ArrayList(StructField).initCapacity(self.allocator, count);
+        var list: std.ArrayList(StructField) = try .initCapacity(self.allocator, count);
         var success = false;
         defer if (!success) {
             for (list.items) |*field| field.value.destroy(self.allocator);
@@ -782,7 +782,7 @@ pub const Interpreter = struct {
     fn evalMapLit(self: *Interpreter, row: ast.Rows.MapLit) anyerror!Value {
         const entries = self.ast.exprs.kv_pool.slice(row.entries);
         if (entries.len == 0) return Value{ .Map = .{ .entries = .empty } };
-        var map = try std.ArrayList(MapEntry).initCapacity(self.allocator, entries.len);
+        var map: std.ArrayList(MapEntry) = try .initCapacity(self.allocator, entries.len);
         var success = false;
         defer if (!success) {
             for (map.items) |*entry| {
@@ -1599,7 +1599,7 @@ pub const Interpreter = struct {
     /// Clone a sequence value along with its entries.
     fn cloneSequence(self: *Interpreter, seq: Sequence) anyerror!Value {
         if (seq.values.items.len == 0) return Value{ .Sequence = .{ .values = .empty } };
-        var list = try std.ArrayList(Value).initCapacity(self.allocator, seq.values.items.len);
+        var list: std.ArrayList(Value) = try .initCapacity(self.allocator, seq.values.items.len);
         var success = false;
         defer if (!success) {
             for (list.items) |*value| value.destroy(self.allocator);
@@ -1616,7 +1616,7 @@ pub const Interpreter = struct {
     /// Clone a struct value (fields + owner) for reuse in bindings.
     fn cloneStruct(self: *Interpreter, sv: StructValue) anyerror!Value {
         if (sv.fields.items.len == 0) return Value{ .Struct = .{ .fields = .empty, .owner = sv.owner } };
-        var list = try std.ArrayList(StructField).initCapacity(self.allocator, sv.fields.items.len);
+        var list: std.ArrayList(StructField) = try .initCapacity(self.allocator, sv.fields.items.len);
         var success = false;
         defer if (!success) {
             for (list.items) |*field| field.value.destroy(self.allocator);
@@ -1636,7 +1636,7 @@ pub const Interpreter = struct {
     /// Deep clone of a map value so lookups do not share mutable entries.
     fn cloneMap(self: *Interpreter, mv: MapValue) anyerror!Value {
         if (mv.entries.items.len == 0) return Value{ .Map = .{ .entries = .empty } };
-        var list = try std.ArrayList(MapEntry).initCapacity(self.allocator, mv.entries.items.len);
+        var list: std.ArrayList(MapEntry) = try .initCapacity(self.allocator, mv.entries.items.len);
         var success = false;
         defer if (!success) {
             for (list.items) |*entry| {
@@ -1808,7 +1808,7 @@ pub const Interpreter = struct {
 
     /// Compute a hash over the provided bindings for memoization.
     fn bindingHash(bindings: []const Binding) u64 {
-        var hasher = std.hash.Wyhash.init(0);
+        var hasher: std.hash.Wyhash = .init(0);
         for (bindings) |binding| {
             const name_raw: u32 = binding.name.toRaw();
             hasher.update(std.mem.asBytes(&name_raw));
@@ -1820,8 +1820,8 @@ pub const Interpreter = struct {
 
     /// Capture bindings into a snapshot alongside its hash for reuse.
     pub fn captureBindingSnapshot(self: *Interpreter, matches: *std.ArrayList(Binding)) anyerror!BindingSnapshot {
-        var snapshot = try std.ArrayList(Binding).initCapacity(self.allocator, matches.items.len);
-        var hasher = std.hash.Wyhash.init(0);
+        var snapshot: std.ArrayList(Binding) = try .initCapacity(self.allocator, matches.items.len);
+        var hasher: std.hash.Wyhash = .init(0);
         var success = false;
         defer if (!success) {
             for (snapshot.items) |*binding| binding.value.destroy(self.allocator);
@@ -1841,7 +1841,7 @@ pub const Interpreter = struct {
 
     /// Clone an existing binding snapshot to keep a copy for future lookups.
     fn cloneSnapshot(self: *Interpreter, source: *BindingSnapshot) anyerror!BindingSnapshot {
-        var cloned = try std.ArrayList(Binding).initCapacity(self.allocator, source.bindings.items.len);
+        var cloned: std.ArrayList(Binding) = try .initCapacity(self.allocator, source.bindings.items.len);
         var success = false;
         defer if (!success) {
             for (cloned.items) |*binding| binding.value.destroy(self.allocator);

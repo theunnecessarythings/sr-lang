@@ -60,14 +60,14 @@ const AnalysisCache = struct {
         // Drop stale entry if present.
         self.remove(uri);
 
-        var context = lib.compile.Context.init(self.gpa);
+        var context: lib.compile.Context = .init(self.gpa);
         errdefer context.deinit();
 
         const path = try fileUriToPath(self.gpa, uri);
         errdefer self.gpa.free(path);
 
         const file_id = try context.source_manager.setVirtualSourceByPath(path, doc.text);
-        var pipeline = lib.pipeline.Pipeline.init(self.gpa, &context);
+        var pipeline: lib.pipeline.Pipeline = .init(self.gpa, &context);
 
         _ = pipeline.run(path, &.{}, .check, null, null) catch |err| switch (err) {
             error.ParseFailed,
@@ -86,7 +86,7 @@ const AnalysisCache = struct {
         if (ast_unit_opt) |ast_unit| {
             resolution_map = try buildResolutionMap(self.gpa, ast_unit);
         } else {
-            resolution_map = std.AutoArrayHashMap(u32, Symbol).init(self.gpa);
+            resolution_map = .init(self.gpa);
         }
         errdefer resolution_map.deinit();
 
@@ -391,12 +391,12 @@ pub fn run(gpa: std.mem.Allocator) !void {
     var out_w = std.fs.File.stdout().writerStreaming(&out_buf);
     const In: *std.Io.Reader = &in_r.interface;
     const Out: *std.Io.Writer = &out_w.interface;
-    var docs = DocumentStore.init(gpa);
+    var docs: DocumentStore = .init(gpa);
     defer docs.deinit();
-    var analysis = AnalysisCache.init(gpa);
+    var analysis: AnalysisCache = .init(gpa);
     defer analysis.deinit();
 
-    var arena_state = std.heap.ArenaAllocator.init(gpa);
+    var arena_state: std.heap.ArenaAllocator = .init(gpa);
     defer arena_state.deinit();
 
     while (true) {
@@ -562,7 +562,7 @@ fn sendMessage(out: *std.Io.Writer, payload: []const u8) !void {
 
 /// Serialize `value` as JSON and send it through `out`.
 fn writeJson(out: *std.Io.Writer, gpa: std.mem.Allocator, value: anytype) !void {
-    var allocw = std.Io.Writer.Allocating.init(gpa);
+    var allocw: std.Io.Writer.Allocating = .init(gpa);
     defer allocw.deinit();
     var s = json.Stringify{ .writer = &allocw.writer, .options = .{ .whitespace = .minified } };
     try s.write(value);
@@ -718,7 +718,7 @@ const Scope = struct {
     /// Create a nested scope optionally chained to `parent`.
     fn init(gpa: std.mem.Allocator, parent: ?*const Scope) Scope {
         return .{
-            .symbols = std.StringHashMap(Symbol).init(gpa),
+            .symbols = .init(gpa),
             .parent = parent,
             .gpa = gpa,
         };
@@ -763,7 +763,7 @@ const SymbolResolver = struct {
             .resolution_map = resolution_map,
         };
 
-        var global_scope = Scope.init(gpa, null);
+        var global_scope: Scope = .init(gpa, null);
         defer global_scope.deinit();
 
         try self.walkUnit(&global_scope);
@@ -834,7 +834,7 @@ const SymbolResolver = struct {
             },
             .Block => {
                 const row = expr_store.get(.Block, expr_id);
-                var block_scope = Scope.init(self.gpa, scope);
+                var block_scope: Scope = .init(self.gpa, scope);
                 defer block_scope.deinit();
                 const stmts = self.ast_unit.stmts.stmt_pool.slice(row.items);
                 for (stmts) |stmt_id| {
@@ -843,7 +843,7 @@ const SymbolResolver = struct {
             },
             .FunctionLit => {
                 const row = expr_store.get(.FunctionLit, expr_id);
-                var fn_scope = Scope.init(self.gpa, scope);
+                var fn_scope: Scope = .init(self.gpa, scope);
                 defer fn_scope.deinit();
 
                 const params = expr_store.param_pool.slice(row.params);
@@ -860,7 +860,7 @@ const SymbolResolver = struct {
             },
             .Closure => {
                 const row = expr_store.get(.Closure, expr_id);
-                var fn_scope = Scope.init(self.gpa, scope);
+                var fn_scope: Scope = .init(self.gpa, scope);
                 defer fn_scope.deinit();
 
                 const params = expr_store.param_pool.slice(row.params);
@@ -874,7 +874,7 @@ const SymbolResolver = struct {
             },
             .For => {
                 const row = expr_store.get(.For, expr_id);
-                var for_scope = Scope.init(self.gpa, scope);
+                var for_scope: Scope = .init(self.gpa, scope);
                 defer for_scope.deinit();
                 try self.walkPattern(&for_scope, row.pattern, .variable);
                 try self.walkExpr(scope, row.iterable);
@@ -883,7 +883,7 @@ const SymbolResolver = struct {
             .While => {
                 const row = expr_store.get(.While, expr_id);
                 if (row.is_pattern and !row.pattern.isNone()) {
-                    var while_scope = Scope.init(self.gpa, scope);
+                    var while_scope: Scope = .init(self.gpa, scope);
                     defer while_scope.deinit();
                     try self.walkPattern(&while_scope, patternFromOpt(row.pattern), .variable);
                     if (!row.cond.isNone()) {
@@ -989,7 +989,7 @@ const SymbolResolver = struct {
                 const arms = expr_store.arm_pool.slice(row.arms);
                 for (arms) |arm_id| {
                     const arm = expr_store.MatchArm.get(arm_id);
-                    var arm_scope = Scope.init(self.gpa, scope);
+                    var arm_scope: Scope = .init(self.gpa, scope);
                     defer arm_scope.deinit();
                     try self.walkPattern(&arm_scope, arm.pattern, .variable);
                     if (!arm.guard.isNone()) {
@@ -1030,7 +1030,7 @@ const SymbolResolver = struct {
             .Catch => {
                 const row = expr_store.get(.Catch, expr_id);
                 try self.walkExpr(scope, row.expr);
-                var handler_scope = Scope.init(self.gpa, scope);
+                var handler_scope: Scope = .init(self.gpa, scope);
                 defer handler_scope.deinit();
                 if (!row.binding_name.isNone()) {
                     try handler_scope.declare(expr_store.strs.get(row.binding_name.unwrap()), row.binding_loc.unwrap(), .variable);
@@ -1544,7 +1544,7 @@ fn onRename(out: *std.io.Writer, gpa: std.mem.Allocator, docs: *DocumentStore, a
             try edits.append(gpa, .{ .range = range, .newText = p.value.newName });
         }
 
-        var changes = std.StringHashMap([]const TextEdit).init(gpa);
+        var changes: std.StringHashMap([]const TextEdit) = .init(gpa);
         defer {
             if (changes.get(uri)) |owned_slice| {
                 gpa.free(owned_slice);
@@ -2131,7 +2131,7 @@ const TokenAccumulator = struct {
 
     /// Initialize a token accumulator that deduplicates semantic tokens.
     fn init(gpa: std.mem.Allocator) TokenAccumulator {
-        return .{ .map = std.AutoArrayHashMap(TokenKey, SemanticTokenKind).init(gpa), .gpa = gpa };
+        return .{ .map = .init(gpa), .gpa = gpa };
     }
 
     /// Release resources held by the accumulator.
@@ -2259,7 +2259,7 @@ fn computeSemanticTokens(gpa: std.mem.Allocator, uri: []const u8, doc: *const Do
         return &[_]u32{};
     }
 
-    var tokens = TokenAccumulator.init(gpa);
+    var tokens: TokenAccumulator = .init(gpa);
     defer tokens.deinit();
 
     try collectLexicalTokens(&tokens, doc);
@@ -2278,7 +2278,7 @@ fn collectLexicalTokens(tokens: *TokenAccumulator, doc: *const DocumentStore.Doc
     const text = doc.text;
     if (text.len == 0) return;
 
-    var tokenizer = lib.lexer.Tokenizer.init(doc.z_text, 0, .normal);
+    var tokenizer: lib.lexer.Tokenizer = .init(doc.z_text, 0, .normal);
     while (true) {
         const tok = tokenizer.next();
         if (tok.tag == .eof) break;
@@ -2300,7 +2300,7 @@ fn gatherAstTokens(tokens: *TokenAccumulator, gpa: std.mem.Allocator, text: []co
 
 /// Resolve symbols for `ast_unit` and return the populated map.
 fn buildResolutionMap(gpa: std.mem.Allocator, ast_unit: *ast.Ast) !std.AutoArrayHashMap(u32, Symbol) {
-    var map = std.AutoArrayHashMap(u32, Symbol).init(gpa);
+    var map: std.AutoArrayHashMap(u32, Symbol) = .init(gpa);
     try SymbolResolver.run(gpa, ast_unit, &map);
     return map;
 }
@@ -3049,7 +3049,7 @@ fn computeHover(gpa: std.mem.Allocator, doc: *const DocumentStore.Document, entr
     const expr_id = findExprAt(ast_unit, offset) orelse return null;
     const loc = exprLoc(ast_unit, expr_id);
 
-    var msg_builder = std.Io.Writer.Allocating.init(gpa);
+    var msg_builder: std.Io.Writer.Allocating = .init(gpa);
     defer msg_builder.deinit();
     const writer = &msg_builder.writer;
 

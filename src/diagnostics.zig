@@ -812,7 +812,7 @@ pub const Diagnostics = struct {
     pub fn init(allocator: std.mem.Allocator, type_store: ?*types.TypeStore, str_interner: ?*types.StringInterner) Diagnostics {
         return .{
             .allocator = allocator,
-            .messages = std.array_list.Managed(Message).init(allocator),
+            .messages = .init(allocator),
             .type_store = type_store,
             .str_interner = str_interner,
         };
@@ -916,7 +916,7 @@ pub const Diagnostics = struct {
             }
         }
 
-        const notes = std.array_list.Managed(Note).init(self.allocator);
+        const notes: std.array_list.Managed(Note) = .init(self.allocator);
         try self.messages.append(.{
             .severity = sev,
             .loc = loc,
@@ -1019,7 +1019,7 @@ pub const Diagnostics = struct {
             }
         }
 
-        var source_map = std.AutoArrayHashMap(usize, []const u8).init(context.gpa);
+        var source_map: std.AutoArrayHashMap(usize, []const u8) = .init(context.gpa);
         defer source_map.deinit();
 
         var errors_shown: usize = 0;

@@ -1364,9 +1364,9 @@ pub const CST = struct {
     pub fn init(gpa: std.mem.Allocator, interner: *StringInterner, locs: *LocStore) CST {
         return .{
             .gpa = gpa,
-            .exprs = ExprStore.init(gpa, interner, locs),
-            .pats = PatternStore.init(gpa, interner),
-            .program = .{ .top_decls = RangeOf(DeclId).empty(), .package_name = OptStrId.none(), .package_loc = OptLocId.none() },
+            .exprs = .init(gpa, interner, locs),
+            .pats = .init(gpa, interner),
+            .program = .{ .top_decls = RangeOf(DeclId).empty(), .package_name = .none(), .package_loc = .none() },
             .interner = interner,
         };
     }
@@ -2293,11 +2293,11 @@ fn printToString(
     printer: *DodPrinter,
     program: *const ProgramDO,
 ) ![]u8 {
-    var buf = ArrayList(u8).init(gpa);
+    var buf: ArrayList(u8) = .init(gpa);
     errdefer buf.deinit();
     const w = buf.writer();
     // Re-bind the writer for this call
-    var local = DodPrinter.init(w, printer.exprs, printer.pats);
+    var local: DodPrinter = .init(w, printer.exprs, printer.pats);
     try local.printProgram(program);
     return buf.toOwnedSlice();
 }
@@ -2310,10 +2310,10 @@ fn mkLoc(es: *ExprStore, start: u32, end: u32) LocId {
 test "printer: simple const decl with lhs, rhs literal" {
     const gpa = std.testing.allocator;
 
-    var exprs = ExprStore.init(gpa);
+    var exprs: ExprStore = .init(gpa);
     defer exprs.deinit();
 
-    var pats = PatternStore.init(gpa);
+    var pats: PatternStore = .init(gpa);
     defer pats.deinit();
 
     // strings & loc
@@ -2330,10 +2330,10 @@ test "printer: simple const decl with lhs, rhs literal" {
 
     // decl
     const drow: Rows.Decl = .{
-        .lhs = OptExprId.some(id_x),
+        .lhs = .some(id_x),
         .rhs = id_42,
-        .ty = OptExprId.none(),
-        .method_path = OptRangeMethodPathSeg.none(),
+        .ty = .none(),
+        .method_path = .none(),
         .flags = .{ .is_const = true, .is_assign = false },
         .loc = loc,
     };
@@ -2342,13 +2342,13 @@ test "printer: simple const decl with lhs, rhs literal" {
     // program
     var prog: ProgramDO = .{
         .top_decls = exprs.decl_pool.pushMany(gpa, &[_]DeclId{did}),
-        .package_name = OptStrId.some(s_pkg),
-        .package_loc = OptLocId.none(),
+        .package_name = .some(s_pkg),
+        .package_loc = .none(),
     };
-    var buf = ArrayList(u8).init(gpa);
+    var buf: ArrayList(u8) = .init(gpa);
     defer buf.deinit();
     const w = buf.writer();
-    var local = DodPrinter.init(w, &exprs, &pats);
+    var local: DodPrinter = .init(w, &exprs, &pats);
     try local.printProgram(&prog);
     const out = buf.items;
 
@@ -2373,10 +2373,10 @@ test "printer: simple const decl with lhs, rhs literal" {
 test "printer: function with attrs, one param, result type, empty body" {
     const gpa = std.testing.allocator;
 
-    var exprs = ExprStore.init(gpa);
+    var exprs: ExprStore = .init(gpa);
     defer exprs.deinit();
 
-    var pats = PatternStore.init(gpa);
+    var pats: PatternStore = .init(gpa);
     defer pats.deinit();
 
     // strings & loc
@@ -2391,17 +2391,17 @@ test "printer: function with attrs, one param, result type, empty body" {
 
     // param: (type i32)
     const pid = exprs.addParamRow(.{
-        .pat = OptExprId.none(),
-        .ty = OptExprId.some(id_i32),
-        .value = OptExprId.none(),
-        .attrs = OptRangeAttr.none(),
+        .pat = .none(),
+        .ty = .some(id_i32),
+        .value = .none(),
+        .attrs = .none(),
         .is_comptime = false,
         .loc = loc,
     });
     const params_r = exprs.param_pool.pushMany(gpa, &[_]ParamId{pid});
 
     // attributes: (attr name="inline")
-    const aid = exprs.addAttrRow(.{ .name = s_inline, .value = OptExprId.none(), .loc = loc });
+    const aid = exprs.addAttrRow(.{ .name = s_inline, .value = .none(), .loc = loc });
     const attrs_r = exprs.attr_pool.pushMany(gpa, &[_]AttributeId{aid});
 
     // body: empty block
@@ -2410,10 +2410,10 @@ test "printer: function with attrs, one param, result type, empty body" {
     // function expr
     const id_fun = exprs.add(.Function, .{
         .params = params_r,
-        .result_ty = OptExprId.some(id_i32),
-        .body = OptExprId.some(id_blk),
-        .raw_asm = OptStrId.none(),
-        .attrs = OptRangeAttr.some(attrs_r),
+        .result_ty = .some(id_i32),
+        .body = .some(id_blk),
+        .raw_asm = .none(),
+        .attrs = .some(attrs_r),
         .flags = .{ .is_proc = false, .is_async = false, .is_variadic = false, .is_extern = false },
         .loc = loc,
     });
@@ -2423,23 +2423,23 @@ test "printer: function with attrs, one param, result type, empty body" {
 
     // decl
     const did = exprs.addDeclRow(.{
-        .lhs = OptExprId.some(id_lhs),
+        .lhs = .some(id_lhs),
         .rhs = id_fun,
-        .ty = OptExprId.none(),
+        .ty = .none(),
         .flags = .{ .is_const = true, .is_assign = false },
         .loc = loc,
     });
 
     var prog: ProgramDO = .{
         .top_decls = exprs.decl_pool.pushMany(gpa, &[_]DeclId{did}),
-        .package_name = OptStrId.some(s_pkg),
-        .package_loc = OptLocId.none(),
+        .package_name = .some(s_pkg),
+        .package_loc = .none(),
     };
 
-    var buf = ArrayList(u8).init(gpa);
+    var buf: ArrayList(u8) = .init(gpa);
     defer buf.deinit();
     const w = buf.writer();
-    var local = DodPrinter.init(w, &exprs, &pats);
+    var local: DodPrinter = .init(w, &exprs, &pats);
     try local.printProgram(&prog);
     const out = buf.items;
 
@@ -2480,10 +2480,10 @@ test "printer: function with attrs, one param, result type, empty body" {
 test "printer: patterns — Or(literal 1 | literal 2)" {
     var gpa = std.testing.allocator;
 
-    var exprs = ExprStore.init(gpa);
+    var exprs: ExprStore = .init(gpa);
     defer exprs.deinit();
 
-    var pats = PatternStore.init(gpa);
+    var pats: PatternStore = .init(gpa);
     defer pats.deinit();
 
     // strings & loc
@@ -2507,16 +2507,16 @@ test "printer: patterns — Or(literal 1 | literal 2)" {
     // but we won't print program in this test; we'll print pattern directly.
     const dummy_prog: ProgramDO = .{
         .top_decls = RangeOf(DeclId).empty(),
-        .package_name = OptStrId.none(),
-        .package_loc = OptLocId.none(),
+        .package_name = .none(),
+        .package_loc = .none(),
     };
     _ = dummy_prog;
 
     // Print just the pattern by calling the printer's pattern entry.
-    var buf = ArrayList(u8).init(gpa);
+    var buf: ArrayList(u8) = .init(gpa);
     defer buf.deinit();
     const w = buf.writer();
-    var printer = DodPrinter.init(w, &exprs, &pats);
+    var printer: DodPrinter = .init(w, &exprs, &pats);
     try printer.printPattern(por);
     const out = try buf.toOwnedSlice();
     defer gpa.free(out);
