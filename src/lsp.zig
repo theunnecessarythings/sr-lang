@@ -175,6 +175,80 @@ const TextDocumentPositionParams = struct {
     textDocument: TextDocumentIdentifier,
     position: LspPosition,
 };
+const ReferenceParams = struct {
+    textDocument: TextDocumentIdentifier,
+    position: LspPosition,
+    context: struct { includeDeclaration: bool },
+};
+const DocumentSymbolParams = struct {
+    textDocument: TextDocumentIdentifier,
+};
+const SignatureHelpParams = struct {
+    textDocument: TextDocumentIdentifier,
+    position: LspPosition,
+    context: ?struct {
+        triggerKind: u32,
+        triggerCharacter: ?[]const u8,
+        isRetrigger: bool,
+    } = null,
+};
+const SignatureHelp = struct {
+    signatures: []const SignatureInformation,
+    activeSignature: ?u32 = 0,
+    activeParameter: ?u32 = 0,
+};
+const SignatureInformation = struct {
+    label: []const u8,
+    documentation: ?[]const u8 = null,
+    parameters: ?[]const ParameterInformation = null,
+};
+const ParameterInformation = struct {
+    label: []const u8,
+    documentation: ?[]const u8 = null,
+};
+const CodeActionParams = struct {
+    textDocument: TextDocumentIdentifier,
+    range: LspRange,
+    context: struct {
+        diagnostics: []const LspDiagnostic,
+    },
+};
+const DocumentSymbol = struct {
+    name: []const u8,
+    detail: ?[]const u8 = null,
+    kind: u32,
+    range: LspRange,
+    selectionRange: LspRange,
+    children: ?[]const DocumentSymbol = null,
+};
+const SymbolKind = enum(u32) {
+    File = 1,
+    Module = 2,
+    Namespace = 3,
+    Package = 4,
+    Class = 5,
+    Method = 6,
+    Property = 7,
+    Field = 8,
+    Constructor = 9,
+    Enum = 10,
+    Interface = 11,
+    Function = 12,
+    Variable = 13,
+    Constant = 14,
+    String = 15,
+    Number = 16,
+    Boolean = 17,
+    Array = 18,
+    Object = 19,
+    Key = 20,
+    Null = 21,
+    EnumMember = 22,
+    Struct = 23,
+    Event = 24,
+    Operator = 25,
+    TypeParameter = 26,
+};
 const RenameParams = struct {
     textDocument: TextDocumentIdentifier,
     position: LspPosition,
@@ -322,16 +396,21 @@ pub fn run(gpa: std.mem.Allocator) !void {
     var analysis = AnalysisCache.init(gpa);
     defer analysis.deinit();
 
+    var arena_state = std.heap.ArenaAllocator.init(gpa);
+    defer arena_state.deinit();
+
     while (true) {
-        var hdr = try readHeaders(gpa, In);
-        defer gpa.free(hdr.buf);
+        const arena = arena_state.allocator();
+        defer _ = arena_state.reset(.retain_capacity);
+
+        var hdr = try readHeaders(arena, In);
+        // We don't defer free because arena reset handles it.
 
         const cl = parseContentLength(hdr.buf[0..hdr.body_start]) catch |err| {
             std.debug.print("[lsp] error parsing content length: {s}\nHeaders received:\n---\n{s}\n---\n", .{ @errorName(err), hdr.buf[0..hdr.body_start] });
             continue;
         };
-        var body = try gpa.alloc(u8, cl);
-        defer gpa.free(body);
+        var body = try arena.alloc(u8, cl);
 
         const prefix = hdr.buf[hdr.body_start..];
         var off: usize = 0;
@@ -355,42 +434,50 @@ pub fn run(gpa: std.mem.Allocator) !void {
             params: ?json.Value = null,
         };
 
-        var parsed = json.parseFromSlice(Request, gpa, body, .{ .ignore_unknown_fields = true }) catch |e| {
+        const parsed = json.parseFromSlice(Request, arena, body, .{ .ignore_unknown_fields = true }) catch |e| {
             std.debug.print("[lsp] json parse error: {s}\n", .{@errorName(e)});
             continue;
         };
-        defer parsed.deinit();
+        // No defer parsed.deinit(), arena handles it.
         const req = parsed.value;
 
         // --- dispatch ---
         if (std.mem.eql(u8, req.method, "initialize")) {
-            try respondInitialize(Out, gpa, req.id orelse 0);
+            try respondInitialize(Out, arena, req.id orelse 0);
         } else if (std.mem.eql(u8, req.method, "initialized")) {
             // no-op
         } else if (std.mem.eql(u8, req.method, "shutdown")) {
-            try writeJson(Out, gpa, .{ .jsonrpc = "2.0", .id = req.id orelse 0, .result = null });
+            try writeJson(Out, arena, .{ .jsonrpc = "2.0", .id = req.id orelse 0, .result = null });
         } else if (std.mem.eql(u8, req.method, "exit")) {
             return;
         } else if (std.mem.eql(u8, req.method, "textDocument/didOpen")) {
-            if (req.params) |p| try onDidOpen(Out, gpa, &docs, &analysis, p);
+            if (req.params) |p| try onDidOpen(Out, arena, &docs, &analysis, p);
         } else if (std.mem.eql(u8, req.method, "textDocument/didChange")) {
-            if (req.params) |p| try onDidChange(Out, gpa, &docs, &analysis, p);
+            if (req.params) |p| try onDidChange(Out, arena, &docs, &analysis, p);
         } else if (std.mem.eql(u8, req.method, "textDocument/didClose")) {
-            if (req.params) |p| try onDidClose(Out, gpa, &docs, &analysis, p);
+            if (req.params) |p| try onDidClose(Out, arena, &docs, &analysis, p);
         } else if (std.mem.eql(u8, req.method, "textDocument/definition")) {
-            if (req.params) |p| try onGoToDefinition(Out, gpa, &docs, &analysis, req.id orelse 0, p);
+            if (req.params) |p| try onGoToDefinition(Out, arena, &docs, &analysis, req.id orelse 0, p);
         } else if (std.mem.eql(u8, req.method, "textDocument/hover")) {
-            if (req.params) |p| try onHover(Out, gpa, &docs, &analysis, req.id orelse 0, p);
+            if (req.params) |p| try onHover(Out, arena, &docs, &analysis, req.id orelse 0, p);
         } else if (std.mem.eql(u8, req.method, "textDocument/rename")) {
-            if (req.params) |p| try onRename(Out, gpa, &docs, &analysis, req.id orelse 0, p);
+            if (req.params) |p| try onRename(Out, arena, &docs, &analysis, req.id orelse 0, p);
         } else if (std.mem.eql(u8, req.method, "textDocument/completion")) {
-            if (req.params) |p| try onCompletion(Out, gpa, &docs, &analysis, req.id orelse 0, p);
+            if (req.params) |p| try onCompletion(Out, arena, &docs, &analysis, req.id orelse 0, p);
         } else if (std.mem.eql(u8, req.method, "textDocument/semanticTokens/full")) {
-            if (req.params) |p| try onSemanticTokensFull(Out, gpa, &docs, &analysis, req.id orelse 0, p);
+            if (req.params) |p| try onSemanticTokensFull(Out, arena, &docs, &analysis, req.id orelse 0, p);
         } else if (std.mem.eql(u8, req.method, "textDocument/formatting")) {
-            if (req.params) |p| try onFormatting(Out, gpa, &docs, &analysis, req.id orelse 0, p);
+            if (req.params) |p| try onFormatting(Out, arena, &docs, &analysis, req.id orelse 0, p);
+        } else if (std.mem.eql(u8, req.method, "textDocument/references")) {
+            if (req.params) |p| try onReferences(Out, arena, &docs, &analysis, req.id orelse 0, p);
+        } else if (std.mem.eql(u8, req.method, "textDocument/documentSymbol")) {
+            if (req.params) |p| try onDocumentSymbol(Out, arena, &docs, &analysis, req.id orelse 0, p);
+        } else if (std.mem.eql(u8, req.method, "textDocument/signatureHelp")) {
+            if (req.params) |p| try onSignatureHelp(Out, arena, &docs, &analysis, req.id orelse 0, p);
+        } else if (std.mem.eql(u8, req.method, "textDocument/codeAction")) {
+            if (req.params) |p| try onCodeAction(Out, arena, &docs, &analysis, req.id orelse 0, p);
         } else {
-            if (req.id) |rid| try writeJson(Out, gpa, .{ .jsonrpc = "2.0", .id = rid, .result = null });
+            if (req.id) |rid| try writeJson(Out, arena, .{ .jsonrpc = "2.0", .id = rid, .result = null });
         }
     }
 }
@@ -487,6 +574,15 @@ fn respondNullResult(out: *std.Io.Writer, gpa: std.mem.Allocator, id: u64) !void
     try writeJson(out, gpa, .{ .jsonrpc = "2.0", .id = id, .result = null });
 }
 
+/// Notify the client that semantic tokens should be refreshed.
+fn notifySemanticTokensRefresh(out: *std.Io.Writer, gpa: std.mem.Allocator) !void {
+    const Msg = struct {
+        jsonrpc: []const u8 = "2.0",
+        method: []const u8 = "workspace/semanticTokens/refresh",
+    };
+    try writeJson(out, gpa, Msg{});
+}
+
 /// Return the document text or respond with a null result when missing.
 fn requireDocumentOrRespondNull(
     out: *std.Io.Writer,
@@ -516,6 +612,16 @@ fn respondInitialize(out: *std.Io.Writer, gpa: std.mem.Allocator, id: u64) !void
         renameProvider: bool = true,
         /// Indicates formatting support.
         documentFormattingProvider: bool = true,
+        /// Indicates reference support.
+        referencesProvider: bool = true,
+        /// Indicates document symbol support.
+        documentSymbolProvider: bool = true,
+        /// Indicates signature help support.
+        signatureHelpProvider: struct {
+            triggerCharacters: []const []const u8,
+        } = .{ .triggerCharacters = &.{ "(", "," } },
+        /// Indicates code action support.
+        codeActionProvider: bool = true,
         /// Completion provider metadata.
         completionProvider: struct { triggerCharacters: []const []const u8 } = .{ .triggerCharacters = &.{"."} },
         /// Semantic token capability metadata.
@@ -526,12 +632,14 @@ fn respondInitialize(out: *std.Io.Writer, gpa: std.mem.Allocator, id: u64) !void
             },
             full: bool = true,
             range: bool = true,
+            refreshSupport: bool = true,
         } = .{
             .legend = .{
                 .tokenTypes = semantic_token_types[0..],
                 .tokenModifiers = semantic_token_modifiers[0..],
             },
             .range = true,
+            .refreshSupport = true,
         },
         positionEncoding: []const u8 = "utf-8",
     };
@@ -555,6 +663,7 @@ fn onDidOpen(out: *std.Io.Writer, gpa: std.mem.Allocator, docs: *DocumentStore, 
     try docs.set(p.value.textDocument.uri, p.value.textDocument.text);
     analysis.remove(p.value.textDocument.uri);
     try publishDiagnostics(out, gpa, docs, analysis, p.value.textDocument.uri);
+    try notifySemanticTokensRefresh(out, gpa);
 }
 
 /// Handle `textDocument/didChange` by updating stored text ranges.
@@ -567,6 +676,7 @@ fn onDidChange(out: *std.Io.Writer, gpa: std.mem.Allocator, docs: *DocumentStore
     try docs.set(p.value.textDocument.uri, p.value.contentChanges[0].text);
     analysis.remove(p.value.textDocument.uri);
     try publishDiagnostics(out, gpa, docs, analysis, p.value.textDocument.uri);
+    try notifySemanticTokensRefresh(out, gpa);
 }
 
 /// Handle `textDocument/didClose` by removing the cached document.
@@ -1144,59 +1254,245 @@ fn onGoToDefinition(out: *std.io.Writer, gpa: std.mem.Allocator, docs: *Document
         return;
     };
 
-    var result: ?struct { uri: []const u8, range: LspRange } = null;
-
-    if (entry.resolution_map.get(expr_id.toRaw())) |symbol| {
-        const decl_loc = ast_unit.exprs.locs.get(symbol.decl_loc);
-        const decl_file_id = decl_loc.file_id;
-
-        const decl_path = entry.context.source_manager.get(decl_file_id) orelse {
+    if (try resolveDefinition(gpa, entry, expr_id)) |def| {
+        const def_loc = def.loc;
+        const def_file_id = def_loc.file_id;
+        const def_path = entry.context.source_manager.get(def_file_id) orelse {
             try writeJson(out, gpa, .{ .jsonrpc = "2.0", .id = id, .result = null });
             return;
         };
-        const decl_text = entry.context.source_manager.read(decl_file_id) catch {
+        const def_text = entry.context.source_manager.read(def_file_id) catch {
             try writeJson(out, gpa, .{ .jsonrpc = "2.0", .id = id, .result = null });
             return;
         };
-        defer gpa.free(decl_text);
+        defer gpa.free(def_text);
 
-        const decl_uri = try pathToUri(gpa, decl_path);
-        defer gpa.free(decl_uri);
+        const def_uri = try pathToUri(gpa, def_path);
+        defer gpa.free(def_uri);
 
-        const decl_lines = try buildLineStarts(gpa, decl_text);
-        defer gpa.free(decl_lines);
+        const def_lines = try buildLineStarts(gpa, def_text);
+        defer gpa.free(def_lines);
 
-        const range = locToRange(decl_text, decl_lines, decl_loc);
+        const range = locToRange(def_text, def_lines, def_loc);
+        const res_uri = try gpa.dupe(u8, def_uri);
 
-        const result_uri = try gpa.dupe(u8, decl_uri);
-        result = .{ .uri = result_uri, .range = range };
-    } else if (ast_unit.type_info.getMethodBinding(expr_id)) |binding| blk: {
-        const decl_ast = binding.decl_ast;
-        const decl_row = decl_ast.exprs.Decl.get(binding.decl_id);
-        const decl_loc = decl_ast.exprs.locs.get(decl_row.loc);
-        const decl_file_id = decl_loc.file_id;
-
-        const decl_path = entry.context.source_manager.get(decl_file_id) orelse break :blk;
-        const decl_text = entry.context.source_manager.read(decl_file_id) catch break :blk;
-        defer gpa.free(decl_text);
-
-        const decl_uri = try pathToUri(gpa, decl_path);
-        defer gpa.free(decl_uri);
-
-        const decl_lines = try buildLineStarts(gpa, decl_text);
-        defer gpa.free(decl_lines);
-
-        const range = locToRange(decl_text, decl_lines, decl_loc);
-
-        const result_uri = try gpa.dupe(u8, decl_uri);
-        result = .{ .uri = result_uri, .range = range };
-    }
-
-    if (result) |r| {
-        try writeJson(out, gpa, .{ .jsonrpc = "2.0", .id = id, .result = r });
-        gpa.free(r.uri);
+        try writeJson(out, gpa, .{ .jsonrpc = "2.0", .id = id, .result = .{ .uri = res_uri, .range = range } });
+        gpa.free(res_uri);
     } else {
         try writeJson(out, gpa, .{ .jsonrpc = "2.0", .id = id, .result = null });
+    }
+}
+
+const ResolvedDef = struct {
+    decl_ast: *ast.Ast,
+    decl_id: ast.DeclId,
+    loc: Loc,
+};
+
+fn resolveDefinition(_: std.mem.Allocator, entry: *AnalysisCache.Entry, expr_id: ast.ExprId) !?ResolvedDef {
+    const ast_unit = entry.ast_unit orelse return null;
+
+    // 1. Try local resolution map
+    if (entry.resolution_map.get(expr_id.toRaw())) |symbol| {
+        const decl_loc = ast_unit.exprs.locs.get(symbol.decl_loc);
+        // Find which decl owns this loc
+        // Optimization: We know the decl location, we can scan decls.
+        // Or we can just return the loc and use the current AST.
+        // But we need DeclId for Signature Help.
+        // For now, let's scan top-level decls of the current unit.
+        const decls = ast_unit.exprs.decl_pool.slice(ast_unit.unit.decls);
+        for (decls) |d_id| {
+            const row = ast_unit.exprs.Decl.get(d_id);
+            if (row.loc.eq(symbol.decl_loc)) {
+                return ResolvedDef{ .decl_ast = ast_unit, .decl_id = d_id, .loc = decl_loc };
+            }
+        }
+        // If not a top-level decl, it might be a local variable binding.
+        // In that case we return the loc but maybe no DeclId (or a dummy).
+        // But Signature Help needs DeclId to get params.
+        // Local function literals are Exprs, not Decls.
+        // If the symbol resolves to a local binding `let x = fn...`, `x` is a Pattern.
+        // This is complex. For now, let's support Top-Level Decls (Imports/Functions).
+        return ResolvedDef{ .decl_ast = ast_unit, .decl_id = ast.DeclId.fromRaw(0), .loc = decl_loc };
+    }
+
+    // 2. Try Method Binding
+    if (ast_unit.type_info.getMethodBinding(expr_id)) |binding| {
+        const decl_loc = binding.decl_ast.exprs.locs.get(binding.decl_ast.exprs.Decl.get(binding.decl_id).loc);
+        return ResolvedDef{ .decl_ast = binding.decl_ast, .decl_id = binding.decl_id, .loc = decl_loc };
+    }
+
+    // 3. Try Global Search (Cross-file)
+    // Only if it is an Identifier
+    if (ast_unit.exprs.kind(expr_id) == .Ident) {
+        const ident_row = ast_unit.exprs.get(.Ident, expr_id);
+        const name = ast_unit.exprs.strs.get(ident_row.name);
+
+        // Iterate all packages -> sources
+        var pkg_iter = entry.context.compilation_unit.packages.iterator();
+        while (pkg_iter.next()) |pkg| {
+            var src_iter = pkg.value_ptr.sources.iterator();
+            while (src_iter.next()) |src_entry| {
+                // Skip current file (already checked via local resolution map usually, but safe to check again)
+                if (src_entry.value_ptr.file_id == entry.file_id) continue;
+
+                if (src_entry.value_ptr.ast) |other_ast| {
+                    const decls = other_ast.exprs.decl_pool.slice(other_ast.unit.decls);
+                    for (decls) |d_id| {
+                        const d_row = other_ast.exprs.Decl.get(d_id);
+                        // Check pattern name
+                        if (!d_row.pattern.isNone()) {
+                            const pat_id = patternFromOpt(d_row.pattern);
+                            if (other_ast.pats.kind(pat_id) == .Binding) {
+                                const bind = other_ast.pats.get(.Binding, pat_id);
+                                const bind_name = other_ast.pats.strs.get(bind.name);
+                                if (std.mem.eql(u8, bind_name, name)) {
+                                    const d_loc = other_ast.exprs.locs.get(d_row.loc);
+                                    return ResolvedDef{ .decl_ast = other_ast, .decl_id = d_id, .loc = d_loc };
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    return null;
+}
+
+/// Find all references to the symbol at `offset`.
+fn computeReferences(
+    gpa: std.mem.Allocator,
+    entry: *AnalysisCache.Entry,
+    offset: usize,
+    include_decl: bool,
+) !?std.ArrayList(Loc) {
+    const ast_unit = entry.ast_unit orelse return null;
+    const expr_id = findExprAt(ast_unit, offset) orelse return null;
+    const symbol = entry.resolution_map.get(expr_id.toRaw()) orelse return null;
+
+    var refs = std.ArrayList(Loc){};
+    errdefer refs.deinit(gpa);
+
+    if (include_decl) {
+        try refs.append(gpa, ast_unit.exprs.locs.get(symbol.decl_loc));
+    }
+
+    var it = entry.resolution_map.iterator();
+    while (it.next()) |ent| {
+        if (ent.value_ptr.decl_loc.eq(symbol.decl_loc)) {
+            const ref_expr_id = ast.ExprId.fromRaw(ent.key_ptr.*);
+            const ref_loc = exprLoc(ast_unit, ref_expr_id);
+            try refs.append(gpa, ref_loc);
+        }
+    }
+    return refs;
+}
+
+/// Handle find references requests.
+fn onReferences(out: *std.io.Writer, gpa: std.mem.Allocator, docs: *DocumentStore, analysis: *AnalysisCache, id: u64, params: json.Value) !void {
+    var p = try json.parseFromValue(ReferenceParams, gpa, params, .{ .ignore_unknown_fields = true });
+    defer p.deinit();
+
+    const uri = p.value.textDocument.uri;
+    const doc = try requireDocumentOrRespondNull(out, gpa, docs, uri, id) orelse return;
+    const text = doc.text;
+    const offset = positionToOffset(text, p.value.position.line, p.value.position.character, doc.line_starts);
+
+    const entry = try analysis.ensure(uri, doc) orelse {
+        try respondNullResult(out, gpa, id);
+        return;
+    };
+
+    var refs_opt = try computeReferences(gpa, entry, offset, p.value.context.includeDeclaration);
+    if (refs_opt) |*refs| {
+        defer refs.deinit(gpa);
+
+        var locs = std.ArrayList(struct { uri: []const u8, range: LspRange }){};
+        defer {
+            for (locs.items) |l| gpa.free(l.uri);
+            locs.deinit(gpa);
+        }
+
+        for (refs.items) |ref_loc| {
+            if (ref_loc.file_id != entry.file_id) continue;
+            const range = locToRange(text, doc.line_starts, ref_loc);
+            const u = try gpa.dupe(u8, uri);
+            try locs.append(gpa, .{ .uri = u, .range = range });
+        }
+        try writeJson(out, gpa, .{ .jsonrpc = "2.0", .id = id, .result = locs.items });
+    } else {
+        try respondNullResult(out, gpa, id);
+    }
+}
+
+/// Handle document symbol requests.
+fn onDocumentSymbol(out: *std.io.Writer, gpa: std.mem.Allocator, docs: *DocumentStore, analysis: *AnalysisCache, id: u64, params: json.Value) !void {
+    var p = try json.parseFromValue(DocumentSymbolParams, gpa, params, .{ .ignore_unknown_fields = true });
+    defer p.deinit();
+
+    const uri = p.value.textDocument.uri;
+    const doc = try requireDocumentOrRespondNull(out, gpa, docs, uri, id) orelse return;
+
+    const entry = try analysis.ensure(uri, doc) orelse {
+        try respondNullResult(out, gpa, id);
+        return;
+    };
+
+    var symbols = std.ArrayList(DocumentSymbol){};
+    defer {
+        freeDocumentSymbols(gpa, symbols.items);
+        symbols.deinit(gpa);
+    }
+
+    if (entry.ast_unit) |ast_unit| {
+        try computeDocumentSymbols(gpa, ast_unit, doc, &symbols);
+    }
+
+    try writeJson(out, gpa, .{ .jsonrpc = "2.0", .id = id, .result = symbols.items });
+}
+
+fn freeDocumentSymbols(gpa: std.mem.Allocator, items: []const DocumentSymbol) void {
+    for (items) |*item| {
+        gpa.free(item.name);
+        if (item.detail) |d| gpa.free(d);
+        if (item.children) |c| {
+            freeDocumentSymbols(gpa, c);
+            gpa.free(c);
+        }
+    }
+}
+
+fn computeDocumentSymbols(gpa: std.mem.Allocator, ast_unit: *ast.Ast, doc: *const DocumentStore.Document, out: *std.ArrayList(DocumentSymbol)) !void {
+    const decls = ast_unit.exprs.decl_pool.slice(ast_unit.unit.decls);
+    for (decls) |decl_id| {
+        const row = ast_unit.exprs.Decl.get(decl_id);
+        if (row.pattern.isNone()) continue;
+        const pat_id = patternFromOpt(row.pattern);
+
+        if (ast_unit.pats.kind(pat_id) == .Binding) {
+            const bind_row = ast_unit.pats.get(.Binding, pat_id);
+            const name = ast_unit.pats.strs.get(bind_row.name);
+            const name_dupe = try gpa.dupe(u8, name);
+
+            const loc = ast_unit.exprs.locs.get(row.loc);
+            const range = locToRange(doc.text, doc.line_starts, loc);
+
+            const kind: SymbolKind = switch (classifyDeclKind(ast_unit, row.value)) {
+                .function => .Function,
+                .type => .Struct,
+                .variable => .Variable,
+                else => .Variable,
+            };
+
+            try out.append(gpa, DocumentSymbol{
+                .name = name_dupe,
+                .kind = @intFromEnum(kind),
+                .range = range,
+                .selectionRange = range,
+            });
+        }
     }
 }
 
@@ -1217,75 +1513,53 @@ fn onRename(out: *std.io.Writer, gpa: std.mem.Allocator, docs: *DocumentStore, a
         return;
     };
 
-    const ast_unit = entry.ast_unit orelse {
-        try writeJson(out, gpa, .{ .jsonrpc = "2.0", .id = id, .result = null });
-        return;
-    };
+    var references = try computeReferences(gpa, entry, offset, true);
+    if (references) |*refs| {
+        defer refs.deinit(gpa);
 
-    const expr_id = findExprAt(ast_unit, offset) orelse {
-        try writeJson(out, gpa, .{ .jsonrpc = "2.0", .id = id, .result = null });
-        return;
-    };
+        // Encoded workspace edits returned by rename operations.
+        const WorkspaceEdit = struct {
+            changes: std.StringHashMap([]const TextEdit),
 
-    const symbol = entry.resolution_map.get(expr_id.toRaw()) orelse {
-        try writeJson(out, gpa, .{ .jsonrpc = "2.0", .id = id, .result = null });
-        return;
-    };
-
-    var references = std.ArrayList(Loc){};
-    defer references.deinit(gpa);
-
-    try references.append(gpa, ast_unit.exprs.locs.get(symbol.decl_loc));
-
-    var it = entry.resolution_map.iterator();
-    while (it.next()) |ent| {
-        if (ent.value_ptr.decl_loc.eq(symbol.decl_loc)) {
-            const ref_expr_id = ast.ExprId.fromRaw(ent.key_ptr.*);
-            const ref_loc = exprLoc(ast_unit, ref_expr_id);
-            try references.append(gpa, ref_loc);
-        }
-    }
-
-    // Encoded workspace edits returned by rename operations.
-    const WorkspaceEdit = struct {
-        changes: std.StringHashMap([]const TextEdit),
-
-        /// Emit JSON for this workspace edit (helper for rename responses).
-        pub fn jsonStringify(self: @This(), s: *json.Stringify) !void {
-            try s.beginObject();
-            try s.objectField("changes");
-            try s.beginObject();
-            var changes_it = self.changes.iterator();
-            while (changes_it.next()) |ent| {
-                try s.objectField(ent.key_ptr.*);
-                try s.write(ent.value_ptr.*);
+            /// Emit JSON for this workspace edit (helper for rename responses).
+            pub fn jsonStringify(self: @This(), s: *json.Stringify) !void {
+                try s.beginObject();
+                try s.objectField("changes");
+                try s.beginObject();
+                var changes_it = self.changes.iterator();
+                while (changes_it.next()) |ent| {
+                    try s.objectField(ent.key_ptr.*);
+                    try s.write(ent.value_ptr.*);
+                }
+                try s.endObject();
+                try s.endObject();
             }
-            try s.endObject();
-            try s.endObject();
+        };
+
+        var edits = std.ArrayList(TextEdit){};
+        defer edits.deinit(gpa);
+
+        for (refs.items) |loc| {
+            const range = locToRange(text, doc.line_starts, loc);
+            try edits.append(gpa, .{ .range = range, .newText = p.value.newName });
         }
-    };
 
-    var edits = std.ArrayList(TextEdit){};
-    defer edits.deinit(gpa);
-
-    for (references.items) |loc| {
-        const range = locToRange(text, doc.line_starts, loc);
-        try edits.append(gpa, .{ .range = range, .newText = p.value.newName });
-    }
-
-    var changes = std.StringHashMap([]const TextEdit).init(gpa);
-    defer {
-        if (changes.get(uri)) |owned_slice| {
-            gpa.free(owned_slice);
+        var changes = std.StringHashMap([]const TextEdit).init(gpa);
+        defer {
+            if (changes.get(uri)) |owned_slice| {
+                gpa.free(owned_slice);
+            }
+            changes.deinit();
         }
-        changes.deinit();
+
+        try changes.put(uri, try edits.toOwnedSlice(gpa));
+
+        const workspace_edit = WorkspaceEdit{ .changes = changes };
+
+        try writeJson(out, gpa, .{ .jsonrpc = "2.0", .id = id, .result = workspace_edit });
+    } else {
+        try writeJson(out, gpa, .{ .jsonrpc = "2.0", .id = id, .result = null });
     }
-
-    try changes.put(uri, try edits.toOwnedSlice(gpa));
-
-    const workspace_edit = WorkspaceEdit{ .changes = changes };
-
-    try writeJson(out, gpa, .{ .jsonrpc = "2.0", .id = id, .result = workspace_edit });
 }
 
 /// Convert filesystem `path` into a UTF-8 URI string.
@@ -1368,6 +1642,167 @@ fn lspCompletionKindFromSemantic(kind: SemanticTokenKind) CompletionItemKind {
         .enum_member => .EnumMember,
         .operator => .Operator,
     };
+}
+
+fn onSignatureHelp(out: *std.io.Writer, gpa: std.mem.Allocator, docs: *DocumentStore, analysis: *AnalysisCache, id: u64, params: json.Value) !void {
+    var p = try json.parseFromValue(SignatureHelpParams, gpa, params, .{ .ignore_unknown_fields = true });
+    defer p.deinit();
+
+    const uri = p.value.textDocument.uri;
+    const doc = try requireDocumentOrRespondNull(out, gpa, docs, uri, id) orelse return;
+    const text = doc.text;
+    const offset = positionToOffset(text, p.value.position.line, p.value.position.character, doc.line_starts);
+
+    const entry = try analysis.ensure(uri, doc) orelse {
+        try respondNullResult(out, gpa, id);
+        return;
+    };
+
+    if (entry.ast_unit) |ast_unit| {
+        if (try computeSignatureHelp(gpa, ast_unit, entry, offset)) |help| {
+            defer {
+                for (help.signatures) |sig| {
+                    gpa.free(sig.label);
+                    if (sig.parameters) |params_slice| {
+                        for (params_slice) |pm| gpa.free(pm.label);
+                        gpa.free(params_slice);
+                    }
+                }
+                gpa.free(help.signatures);
+            }
+            try writeJson(out, gpa, .{ .jsonrpc = "2.0", .id = id, .result = help });
+            return;
+        }
+    }
+    try respondNullResult(out, gpa, id);
+}
+
+fn computeSignatureHelp(gpa: std.mem.Allocator, ast_unit: *ast.Ast, entry: *AnalysisCache.Entry, offset: usize) !?SignatureHelp {
+    const expr_store = &ast_unit.exprs;
+    const total = expr_store.index.kinds.items.len;
+
+    var best_call: ?ast.ExprId = null;
+    var best_span: usize = std.math.maxInt(usize);
+
+    var i: usize = 0;
+    while (i < total) : (i += 1) {
+        const expr_id = ast.ExprId.fromRaw(@intCast(i));
+        if (expr_store.kind(expr_id) == .Call) {
+            const loc = exprLoc(ast_unit, expr_id);
+            if (loc.file_id != entry.file_id) continue;
+
+            if (offset >= loc.start and offset <= loc.end) {
+                const span = loc.end - loc.start;
+                if (span < best_span) {
+                    best_span = span;
+                    best_call = expr_id;
+                }
+            }
+        }
+    }
+
+    const call_id = best_call orelse return null;
+    const row = expr_store.get(.Call, call_id);
+
+    // Calculate active parameter
+    var active_param: u32 = 0;
+    const args = expr_store.expr_pool.slice(row.args);
+    for (args) |arg_id| {
+        const arg_loc = exprLoc(ast_unit, arg_id);
+        // If cursor is after this arg (and its comma), increment.
+        // A simple heuristic: check if offset > arg.end.
+        // This handles commas implicitly if we assume arguments are ordered.
+        if (offset > arg_loc.end) {
+            active_param += 1;
+        }
+    }
+    // Clamp to args.len if we are not strictly inside an arg but maybe at the end
+    // However, we might be typing the *next* argument.
+    // If we have 0 args, active is 0.
+    // If we have 1 arg and offset > arg.end, active is 1 (ready for 2nd arg).
+
+    // Resolve the function definition to get parameter names
+    var label = std.ArrayList(u8){};
+    defer label.deinit(gpa);
+    var parameters = std.ArrayList(ParameterInformation){};
+    defer {
+        for (parameters.items) |pm| gpa.free(pm.label);
+        parameters.deinit(gpa);
+    }
+
+    var found_def = false;
+    if (try resolveDefinition(gpa, entry, row.callee)) |def| {
+        const decl_ast = def.decl_ast;
+        const decl_row = decl_ast.exprs.Decl.get(def.decl_id);
+
+        // Check if the value is a function literal
+        if (decl_ast.exprs.kind(decl_row.value) == .FunctionLit) {
+            found_def = true;
+            const fn_row = decl_ast.exprs.get(.FunctionLit, decl_row.value);
+            const params = decl_ast.exprs.param_pool.slice(fn_row.params);
+
+            try label.appendSlice(gpa, "fn(");
+
+            for (params, 0..) |param_id, idx| {
+                if (idx > 0) try label.appendSlice(gpa, ", ");
+
+                const param = decl_ast.exprs.Param.get(param_id);
+                var param_str: []const u8 = "_";
+
+                if (!param.pat.isNone()) {
+                    const pat_id = patternFromOpt(param.pat);
+                    if (decl_ast.pats.kind(pat_id) == .Binding) {
+                        const bind = decl_ast.pats.get(.Binding, pat_id);
+                        param_str = decl_ast.pats.strs.get(bind.name);
+                    }
+                }
+
+                const start_idx = label.items.len;
+                try label.appendSlice(gpa, param_str);
+                const end_idx = label.items.len;
+
+                // Add type info if available
+                if (!param.ty.isNone()) {
+                    try label.appendSlice(gpa, ": ");
+                    // We can't easily print the AST type expr as a string without a formatter.
+                    // But we can use the type store if we have the resolved type.
+                    // For now, just ": type" is better than nothing, or skip type.
+                    // Or use "..."
+                    try label.appendSlice(gpa, "...");
+                }
+
+                const param_label = try gpa.dupe(u8, label.items[start_idx..end_idx]); // Just the name for highlighting?
+                // LSP says label can be string (substring of signature) or [start, end].
+                // If string, it must be contained in signature.
+                // Let's use the simple string "name".
+                try parameters.append(gpa, ParameterInformation{ .label = param_label });
+            }
+            try label.appendSlice(gpa, ")");
+        }
+    }
+
+    if (!found_def) {
+        try label.appendSlice(gpa, "fn(...)");
+    }
+
+    const sig_label = try label.toOwnedSlice(gpa);
+    const sigs = try gpa.alloc(SignatureInformation, 1);
+    const params_owned = try parameters.toOwnedSlice(gpa);
+    sigs[0] = .{ .label = sig_label, .parameters = if (params_owned.len > 0) params_owned else null };
+    if (params_owned.len == 0) gpa.free(params_owned);
+
+    return SignatureHelp{
+        .signatures = sigs,
+        .activeSignature = 0,
+        .activeParameter = active_param,
+    };
+}
+
+fn onCodeAction(out: *std.io.Writer, gpa: std.mem.Allocator, docs: *DocumentStore, analysis: *AnalysisCache, id: u64, params: json.Value) !void {
+    _ = docs;
+    _ = analysis;
+    _ = params;
+    try respondNullResult(out, gpa, id);
 }
 
 /// Provide completion items in response to client requests.
@@ -1521,7 +1956,7 @@ fn onSemanticTokensFull(out: *std.Io.Writer, gpa: std.mem.Allocator, docs: *Docu
 }
 
 /// Produce formatting edits for the document at `uri`.
-fn onFormatting(out: *std.Io.Writer, gpa: std.mem.Allocator, docs: *DocumentStore, analysis: *AnalysisCache, id: u64, params: json.Value) !void {
+fn onFormatting(out: *std.Io.Writer, gpa: std.mem.Allocator, docs: *DocumentStore, _: *AnalysisCache, id: u64, params: json.Value) !void {
     // Formatting request payload specifying the document URI.
     // Parameters payload for `textDocument/formatting` requests.
     var p = try json.parseFromValue(TextDocumentParams, gpa, params, .{ .ignore_unknown_fields = true });
@@ -1569,9 +2004,6 @@ fn onFormatting(out: *std.Io.Writer, gpa: std.mem.Allocator, docs: *DocumentStor
         result: []const TextEdit,
     };
     try writeJson(out, gpa, Resp{ .id = id, .result = edits[0..] });
-
-    try docs.set(uri, formatted);
-    analysis.remove(uri);
 }
 
 /// Run the checker and publish diagnostics for `uri`.

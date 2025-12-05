@@ -5,6 +5,8 @@ const compile = @import("compile.zig");
 const diag = @import("diagnostics.zig");
 const Loc = @import("lexer.zig").Token.Loc;
 
+const indent_chunk: []const u8 = "                ";
+
 /// Format a single source buffer and return the formatted text.
 pub fn formatSource(gpa: std.mem.Allocator, source: [:0]const u8, file_path: []const u8) ![]u8 {
     var ctx = compile.Context.init(gpa);
@@ -53,6 +55,8 @@ const Formatter = struct {
     comments: []const cst.Comment,
     /// Location table used to resolve node positions.
     locs: *cst.LocStore,
+    /// Prefix newline counts for fast blank-line detection.
+    newline_counts: []u32 = &[_]u32{},
 
     /// Builder that accumulates the emitted bytes.
     builder: std.ArrayList(u8) = .{},
@@ -71,6 +75,9 @@ const Formatter = struct {
         self.builder = .{};
         self.last_written_loc = 0;
         self.comment_idx = 0;
+        try self.builder.ensureTotalCapacity(self.gpa, self.source.len + 1);
+        self.newline_counts = try self.buildNewlineCounts();
+        defer self.gpa.free(self.newline_counts);
         errdefer self.builder.deinit(self.gpa);
 
         try self.printProgram();
@@ -88,9 +95,11 @@ const Formatter = struct {
     /// Ensure indentation spaces are emitted before the next token.
     fn ws(self: *Formatter) !void {
         if (!self.needs_indent) return;
-        var i: usize = 0;
-        while (i < self.indent) : (i += 1) {
-            try self.builder.append(self.gpa, ' ');
+        var remaining = self.indent;
+        while (remaining > 0) {
+            const chunk_size = if (remaining < indent_chunk.len) remaining else indent_chunk.len;
+            try self.builder.appendSlice(self.gpa, indent_chunk[0..chunk_size]);
+            remaining -= chunk_size;
         }
         self.needs_indent = false;
     }
@@ -117,6 +126,12 @@ const Formatter = struct {
     fn printf(self: *Formatter, comptime fmt: []const u8, args: anytype) !void {
         try self.ws();
         try std.fmt.format(self.builder.writer(self.gpa), fmt, args);
+    }
+
+    /// Append a literal slice after obeying the current indentation.
+    fn printLiteral(self: *Formatter, text: []const u8) !void {
+        try self.ws();
+        try self.builder.appendSlice(self.gpa, text);
     }
 
     /// Resolve interned string `id` into its byte slice.
@@ -228,16 +243,24 @@ const Formatter = struct {
         }
     }
 
+    fn buildNewlineCounts(self: *Formatter) ![]u32 {
+        const len = self.source.len + 1;
+        var counts = try self.gpa.alloc(u32, len);
+        var total: u32 = 0;
+        counts[0] = 0;
+        for (self.source, 0..) |byte, idx| {
+            if (byte == '\n') total += 1;
+            counts[idx + 1] = total;
+        }
+        return counts;
+    }
+
     /// Return whether `source[start..end]` contains at least two blank lines.
     fn gapHasExtraBlank(self: *Formatter, start: usize, end: usize) bool {
         if (start >= end or end > self.source.len) return false;
-        const slice = self.source[start..end];
-        var nl: usize = 0;
-        for (slice) |byte| {
-            if (byte == '\n') nl += 1;
-            if (nl >= 2) return true;
-        }
-        return false;
+        const start_count = self.newline_counts[start];
+        const end_count = self.newline_counts[end];
+        return end_count - start_count >= 2;
     }
 
     // ------------------------------------------------------------
@@ -274,9 +297,13 @@ const Formatter = struct {
         for (decl_ids, 0..) |did, i| {
             const row = self.exprs.Decl.get(did);
             const start_loc = self.locStart(row.loc);
-            const is_import = self.isImportDecl(did);
-            const is_function = self.isFunctionDecl(did);
-            const has_body = self.isFunctionWithBody(did);
+            const rhs_kind = self.exprs.kind(row.rhs);
+            const is_import = rhs_kind == .Import;
+            const is_function = rhs_kind == .Function;
+            const has_body = if (is_function)
+                !self.exprs.get(.Function, row.rhs).body.isNone()
+            else
+                false;
             const kind: u8 = if (is_import) 1 else if (is_function) 2 else 3;
 
             var needs_blank = false;
@@ -314,30 +341,6 @@ const Formatter = struct {
         try self.newline();
     }
 
-    /// Return true when `did` is an import declaration.
-    fn isImportDecl(self: *Formatter, did: cst.DeclId) bool {
-        const row = self.exprs.Decl.get(did);
-        const rhs_kind = self.exprs.kind(row.rhs);
-        return rhs_kind == .Import;
-    }
-
-    /// Return true when `did` names a function declaration.
-    fn isFunctionDecl(self: *Formatter, did: cst.DeclId) bool {
-        const row = self.exprs.Decl.get(did);
-        const rhs_kind = self.exprs.kind(row.rhs);
-        return rhs_kind == .Function;
-    }
-
-    /// Return true when `did` is a function declaration that includes a body.
-    fn isFunctionWithBody(self: *Formatter, did: cst.DeclId) bool {
-        const row = self.exprs.Decl.get(did);
-        const rhs_kind = self.exprs.kind(row.rhs);
-        if (rhs_kind != .Function) return false;
-
-        const func = self.exprs.get(.Function, row.rhs);
-        return !func.body.isNone();
-    }
-
     /// Format declaration `id` with comments and spacing.
     fn printDecl(self: *Formatter, id: cst.DeclId) !void {
         const row = self.exprs.Decl.get(id);
@@ -348,12 +351,12 @@ const Formatter = struct {
         }
 
         if (!row.ty.isNone()) {
-            try self.printf(": ", .{});
+            try self.printLiteral(": ");
             try self.printExpr(row.ty.unwrap());
             if (row.flags.is_const) {
-                try self.printf(" : ", .{});
+                try self.printLiteral(" : ");
             } else {
-                try self.printf(" = ", .{});
+                try self.printLiteral(" = ");
             }
             try self.printExpr(row.rhs);
             return;
@@ -361,11 +364,11 @@ const Formatter = struct {
 
         if (!row.lhs.isNone()) {
             if (row.flags.is_const) {
-                try self.printf(" :: ", .{});
+                try self.printLiteral(" :: ");
             } else if (row.flags.is_assign) {
-                try self.printf(" = ", .{});
+                try self.printLiteral(" = ");
             } else {
-                try self.printf(" := ", .{});
+                try self.printLiteral(" := ");
             }
             try self.printExpr(row.rhs);
             return;
@@ -375,10 +378,9 @@ const Formatter = struct {
     }
 
     /// Return the source location recorded for expression `eid`.
-    inline fn exprLocFromId(exprs: *cst.ExprStore, eid: cst.ExprId) Loc {
+    inline fn exprLocFromId(exprs: *cst.ExprStore, eid: cst.ExprId, kind: cst.ExprKind) Loc {
         @setEvalBranchQuota(10000);
-        const k = exprs.kind(eid);
-        return switch (k) {
+        return switch (kind) {
             inline else => |x| exprs.locs.get(exprs.get(x, eid).loc),
         };
     }
@@ -393,7 +395,7 @@ const Formatter = struct {
         // Auto-update cursor at the end of the expression
         defer {
             @setEvalBranchQuota(100000);
-            const loc = exprLocFromId(self.exprs, id);
+            const loc = exprLocFromId(self.exprs, id, kind);
             if (loc.end > self.last_written_loc) {
                 self.last_written_loc = loc.end;
             }
@@ -404,7 +406,7 @@ const Formatter = struct {
                 const node = self.exprs.get(.Block, id);
                 const block_loc = self.exprs.locs.get(node.loc);
 
-                try self.printf("{{", .{});
+                try self.printLiteral("{");
 
                 // Update cursor past '{'
                 if (block_loc.start + 1 > self.last_written_loc) {
@@ -436,7 +438,7 @@ const Formatter = struct {
                 if (!self.lastCharIsNewline()) {
                     try self.newline();
                 }
-                try self.printf("}}", .{});
+                try self.printLiteral("}");
             },
             .Literal => {
                 const node = self.exprs.get(.Literal, id);
@@ -460,11 +462,11 @@ const Formatter = struct {
             .Deref => {
                 const node = self.exprs.get(.Deref, id);
                 try self.printExpr(node.expr);
-                try self.printf(".*", .{});
+                try self.printLiteral(".*");
             },
             .ArrayLit => {
                 const node = self.exprs.get(.ArrayLit, id);
-                try self.printf("[", .{});
+                try self.printLiteral("[");
                 const elems = self.exprs.expr_pool.slice(node.elems);
                 if (node.trailing_comma and elems.len > 0) {
                     self.indent += 4;
@@ -472,82 +474,82 @@ const Formatter = struct {
                         try self.newline();
                         try self.ws();
                         try self.printExpr(el);
-                        try self.printf(",", .{});
+                        try self.printLiteral(",");
                     }
                     self.indent -= 4;
                     try self.newline();
                     try self.ws();
                 } else {
                     for (elems, 0..) |el, i| {
-                        if (i > 0) try self.printf(", ", .{});
+                        if (i > 0) try self.printLiteral(", ");
                         try self.printExpr(el);
                     }
                 }
-                try self.printf("]", .{});
+                try self.printLiteral("]");
             },
             .Tuple => {
                 const node = self.exprs.get(.Tuple, id);
-                try self.printf("(", .{});
+                try self.printLiteral("(");
                 const elems = self.exprs.expr_pool.slice(node.elems);
                 for (elems, 0..) |el, i| {
-                    if (i > 0) try self.printf(", ", .{});
+                    if (i > 0) try self.printLiteral(", ");
                     try self.printExpr(el);
                 }
-                try self.printf(")", .{});
+                try self.printLiteral(")");
             },
             .Parenthesized => {
                 const node = self.exprs.get(.Parenthesized, id);
-                try self.printf("(", .{});
+                try self.printLiteral("(");
                 try self.printExpr(node.inner);
-                try self.printf(")", .{});
+                try self.printLiteral(")");
             },
             .MapLit => {
                 const node = self.exprs.get(.MapLit, id);
-                try self.printf("[", .{});
+                try self.printLiteral("[");
                 const entries = self.exprs.kv_pool.slice(node.entries);
                 for (entries, 0..) |kv_id, i| {
-                    if (i > 0) try self.printf(", ", .{});
+                    if (i > 0) try self.printLiteral(", ");
                     const kv = self.exprs.KeyValue.get(kv_id);
                     try self.printExpr(kv.key);
-                    try self.printf(": ", .{});
+                    try self.printLiteral(": ");
                     try self.printExpr(kv.value);
                 }
-                try self.printf("]", .{});
+                try self.printLiteral("]");
             },
             .Call => {
                 const node = self.exprs.get(.Call, id);
                 try self.printExpr(node.callee);
                 const args = self.exprs.expr_pool.slice(node.args);
                 if (args.len == 0) {
-                    try self.printf("()", .{});
+                    try self.printLiteral("()");
                 } else if (node.trailing_arg_comma) {
-                    try self.printf("(", .{});
+                    try self.printLiteral("(");
                     self.indent += 4;
                     for (args) |arg| {
                         try self.newline();
                         try self.ws();
                         try self.printExpr(arg);
-                        try self.printf(",", .{});
+                        try self.printLiteral(",");
                     }
                     self.indent -= 4;
                     try self.newline();
                     try self.ws();
-                    try self.printf(")", .{});
+                    try self.printLiteral(")");
                 } else {
-                    try self.printf("(", .{});
+                    try self.printLiteral("(");
                     for (args, 0..) |arg, i| {
-                        if (i > 0) try self.printf(", ", .{});
+                        if (i > 0) try self.printLiteral(", ");
                         try self.printExpr(arg);
                     }
-                    try self.printf(")", .{});
+                    try self.printLiteral(")");
                 }
             },
             .IndexAccess => {
                 const node = self.exprs.get(.IndexAccess, id);
                 try self.printExpr(node.collection);
-                try self.printf("[", .{});
+                try self.printLiteral("[");
                 try self.printExpr(node.index);
-                try self.printf("]", .{});
+                try self.printLiteral("]");
             },
             .FieldAccess => {
                 const node = self.exprs.get(.FieldAccess, id);
@@ -558,11 +560,11 @@ const Formatter = struct {
                 const node = self.exprs.get(.StructLit, id);
                 if (!node.ty.isNone()) {
                     try self.printExpr(node.ty.unwrap());
-                    // try self.printf(" ", .{}); // Removed space
+                    // try self.printLiteral(" "); // Removed space
                 }
                 const fields = self.exprs.sfv_pool.slice(node.fields);
                 if (node.trailing_comma and fields.len > 0) {
-                    try self.printf("{{", .{});
+                    try self.printLiteral("{");
                     self.indent += 4;
                     for (fields) |fid| {
                         const field = self.exprs.StructFieldValue.get(fid);
@@ -572,46 +574,46 @@ const Formatter = struct {
                             try self.printf("{s}: ", .{self.s(field.name.unwrap())});
                         }
                         try self.printExpr(field.value);
-                        try self.printf(",", .{});
+                        try self.printLiteral(",");
                     }
                     self.indent -= 4;
                     try self.newline();
                     try self.ws();
-                    try self.printf("}}", .{});
+                    try self.printLiteral("}");
                 } else {
-                    try self.printf("{{", .{});
-                    if (fields.len > 0) try self.printf(" ", .{});
+                    try self.printLiteral("{");
+                    if (fields.len > 0) try self.printLiteral(" ");
                     for (fields, 0..) |fid, i| {
-                        if (i > 0) try self.printf(", ", .{});
+                        if (i > 0) try self.printLiteral(", ");
                         const field = self.exprs.StructFieldValue.get(fid);
                         if (!field.name.isNone()) {
                             try self.printf("{s}: ", .{self.s(field.name.unwrap())});
                         }
                         try self.printExpr(field.value);
                     }
-                    if (fields.len > 0) try self.printf(" ", .{});
-                    try self.printf("}}", .{});
+                    if (fields.len > 0) try self.printLiteral(" ");
+                    try self.printLiteral("}");
                 }
             },
             .Function => {
                 const node = self.exprs.get(.Function, id);
                 try self.printAttrs(node.attrs, .Before);
-                if (node.flags.is_async) try self.printf("async ", .{});
-                if (node.flags.is_extern) try self.printf("extern ", .{});
+                if (node.flags.is_async) try self.printLiteral("async ");
+                if (node.flags.is_extern) try self.printLiteral("extern ");
                 if (node.flags.is_proc) {
-                    try self.printf("proc", .{});
+                    try self.printLiteral("proc");
                 } else {
-                    try self.printf("fn", .{});
+                    try self.printLiteral("fn");
                 }
-                try self.printf("(", .{});
+                try self.printLiteral("(");
                 try self.printParams(node.params, node.flags.is_variadic, node.trailing_param_comma);
-                try self.printf(")", .{});
+                try self.printLiteral(")");
                 if (!node.result_ty.isNone()) {
-                    try self.printf(" ", .{});
+                    try self.printLiteral(" ");
                     try self.printExpr(node.result_ty.unwrap());
                 }
                 if (!node.body.isNone()) {
-                    try self.printf(" ", .{});
+                    try self.printLiteral(" ");
                     try self.printExpr(node.body.unwrap());
                 } else if (!node.raw_asm.isNone()) {
                     try self.printf(" asm {s}", .{self.s(node.raw_asm.unwrap())});
@@ -619,17 +621,17 @@ const Formatter = struct {
             },
             .Comptime => {
                 const node = self.exprs.get(.Comptime, id);
-                try self.printf("comptime ", .{});
+                try self.printLiteral("comptime ");
                 try self.printExpr(node.payload);
             },
             .Code => {
                 const node = self.exprs.get(.Code, id);
-                try self.printf("code ", .{});
+                try self.printLiteral("code ");
                 try self.printExpr(node.block);
             },
             .Insert => {
                 const node = self.exprs.get(.Insert, id);
-                try self.printf("insert ", .{});
+                try self.printLiteral("insert ");
                 try self.printExpr(node.expr);
             },
             .Mlir => {
@@ -643,17 +645,17 @@ const Formatter = struct {
                 try self.printf("mlir{s}", .{k});
                 if (!node.args.isNone()) {
                     const args = self.exprs.expr_pool.slice(node.args.asRange());
-                    try self.printf("(", .{});
+                    try self.printLiteral("(");
                     for (args, 0..) |arg, i| {
-                        if (i > 0) try self.printf(", ", .{});
+                        if (i > 0) try self.printLiteral(", ");
                         try self.printExpr(arg);
                     }
-                    try self.printf(")", .{});
+                    try self.printLiteral(")");
                 }
                 if (node.pieces.len == 0) {
                     try self.printf(" {{ {s} }}", .{self.s(node.text)});
                 } else {
-                    try self.printf(" {{ ", .{});
+                    try self.printLiteral(" { ");
                     const pieces = self.exprs.mlir_piece_pool.slice(node.pieces);
                     for (pieces) |pid| {
                         const piece = self.exprs.MlirPiece.get(pid);
@@ -662,60 +664,60 @@ const Formatter = struct {
                             .splice => try self.printf("${s}", .{self.s(piece.text)}),
                         }
                     }
-                    try self.printf(" }}", .{});
+                    try self.printLiteral(" }");
                 }
             },
             .Return => {
                 const node = self.exprs.get(.Return, id);
-                try self.printf("return", .{});
+                try self.printLiteral("return");
                 if (!node.value.isNone()) {
-                    try self.printf(" ", .{});
+                    try self.printLiteral(" ");
                     try self.printExpr(node.value.unwrap());
                 }
             },
             .If => {
                 const node = self.exprs.get(.If, id);
-                try self.printf("if ", .{});
+                try self.printLiteral("if ");
                 try self.printExpr(node.cond);
-                try self.printf(" ", .{});
+                try self.printLiteral(" ");
                 try self.printExpr(node.then_block);
                 if (!node.else_block.isNone()) {
-                    try self.printf(" else ", .{});
+                    try self.printLiteral(" else ");
                     try self.printExpr(node.else_block.unwrap());
                 }
             },
             .While => {
                 const node = self.exprs.get(.While, id);
                 if (!node.label.isNone()) try self.printf("{s}: ", .{self.s(node.label.unwrap())});
-                try self.printf("while ", .{});
+                try self.printLiteral("while ");
                 if (node.is_pattern) {
-                    try self.printf("is ", .{});
+                    try self.printLiteral("is ");
                     if (!node.pattern.isNone()) {
                         try self.printPattern(node.pattern.unwrap());
-                        try self.printf(" := ", .{});
+                        try self.printLiteral(" := ");
                     }
                 }
                 if (!node.cond.isNone()) {
                     try self.printExpr(node.cond.unwrap());
                 }
-                try self.printf(" ", .{});
+                try self.printLiteral(" ");
                 try self.printExpr(node.body);
             },
             .For => {
                 const node = self.exprs.get(.For, id);
                 if (!node.label.isNone()) try self.printf("{s}: ", .{self.s(node.label.unwrap())});
-                try self.printf("for ", .{});
+                try self.printLiteral("for ");
                 try self.printPattern(node.pattern);
-                try self.printf(" in ", .{});
+                try self.printLiteral(" in ");
                 try self.printExpr(node.iterable);
-                try self.printf(" ", .{});
+                try self.printLiteral(" ");
                 try self.printExpr(node.body);
             },
             .Match => {
                 const node = self.exprs.get(.Match, id);
-                try self.printf("match ", .{});
+                try self.printLiteral("match ");
                 try self.printExpr(node.expr);
-                try self.printf(" {{", .{});
+                try self.printLiteral(" {");
                 const arms = self.exprs.arm_pool.slice(node.arms);
                 for (arms) |aid| {
                     const arm = self.exprs.MatchArm.get(aid);
@@ -724,82 +726,82 @@ const Formatter = struct {
                     try self.ws();
                     try self.printPattern(arm.pattern);
                     if (!arm.guard.isNone()) {
-                        try self.printf(" if ", .{});
+                        try self.printLiteral(" if ");
                         try self.printExpr(arm.guard.unwrap());
                     }
-                    try self.printf(" => ", .{});
+                    try self.printLiteral(" => ");
                     try self.printExpr(arm.body);
                     self.indent -= 4;
-                    try self.printf(",", .{});
+                    try self.printLiteral(",");
                 }
                 try self.newline();
-                try self.printf("}}", .{});
+                try self.printLiteral("}");
             },
             .Break => {
                 const node = self.exprs.get(.Break, id);
-                try self.printf("break", .{});
+                try self.printLiteral("break");
                 if (!node.label.isNone()) try self.printf(" :{s}", .{self.s(node.label.unwrap())});
                 if (!node.value.isNone()) {
-                    try self.printf(" ", .{});
+                    try self.printLiteral(" ");
                     try self.printExpr(node.value.unwrap());
                 }
             },
             .Continue => {
                 _ = self.exprs.get(.Continue, id);
-                try self.printf("continue", .{});
+                try self.printLiteral("continue");
             },
             .Unreachable => {
                 _ = self.exprs.get(.Unreachable, id);
-                try self.printf("unreachable", .{});
+                try self.printLiteral("unreachable");
             },
             .Null => {
                 _ = self.exprs.get(.Null, id);
-                try self.printf("null", .{});
+                try self.printLiteral("null");
             },
             .Undefined => {
                 _ = self.exprs.get(.Undefined, id);
-                try self.printf("undefined", .{});
+                try self.printLiteral("undefined");
             },
             .Defer => {
                 const node = self.exprs.get(.Defer, id);
-                try self.printf("defer ", .{});
+                try self.printLiteral("defer ");
                 try self.printExpr(node.expr);
             },
             .ErrDefer => {
                 const node = self.exprs.get(.ErrDefer, id);
-                try self.printf("errdefer ", .{});
+                try self.printLiteral("errdefer ");
                 try self.printExpr(node.expr);
             },
             .ErrUnwrap => {
                 const node = self.exprs.get(.ErrUnwrap, id);
                 try self.printExpr(node.expr);
-                try self.printf("!", .{});
+                try self.printLiteral("!");
             },
             .OptionalUnwrap => {
                 const node = self.exprs.get(.OptionalUnwrap, id);
                 try self.printExpr(node.expr);
-                try self.printf("?", .{});
+                try self.printLiteral("?");
             },
             .Await => {
                 const node = self.exprs.get(.Await, id);
                 try self.printExpr(node.expr);
-                try self.printf(".await", .{});
+                try self.printLiteral(".await");
             },
             .Closure => {
                 const node = self.exprs.get(.Closure, id);
-                try self.printf("|", .{});
+                try self.printLiteral("|");
                 try self.printParams(node.params, false, false);
-                try self.printf("|", .{});
+                try self.printLiteral("|");
                 if (!node.result_ty.isNone()) {
-                    try self.printf(" ", .{});
+                    try self.printLiteral(" ");
                     try self.printExpr(node.result_ty.unwrap());
                 }
-                try self.printf(" ", .{});
+                try self.printLiteral(" ");
                 try self.printExpr(node.body);
             },
             .Async => {
                 const node = self.exprs.get(.Async, id);
-                try self.printf("async ", .{});
+                try self.printLiteral("async ");
                 try self.printExpr(node.body);
             },
             .Cast => {
@@ -807,24 +809,24 @@ const Formatter = struct {
                 try self.printExpr(node.expr);
                 switch (node.kind) {
                     .normal => {
-                        try self.printf(".(", .{});
+                        try self.printLiteral(".(");
                         try self.printExpr(node.ty);
-                        try self.printf(")", .{});
+                        try self.printLiteral(")");
                     },
                     .bitcast => {
-                        try self.printf(".^", .{});
+                        try self.printLiteral(".^");
                         try self.printExpr(node.ty);
                     },
                     .wrap => {
-                        try self.printf(".%", .{});
+                        try self.printLiteral(".%");
                         try self.printExpr(node.ty);
                     },
                     .saturate => {
-                        try self.printf(".|", .{});
+                        try self.printLiteral(".|");
                         try self.printExpr(node.ty);
                     },
                     .checked => {
-                        try self.printf(".?", .{});
+                        try self.printLiteral(".?");
                         try self.printExpr(node.ty);
                     },
                 }
@@ -832,7 +834,7 @@ const Formatter = struct {
             .Catch => {
                 const node = self.exprs.get(.Catch, id);
                 try self.printExpr(node.expr);
-                try self.printf(" catch ", .{});
+                try self.printLiteral(" catch ");
                 if (!node.binding_name.isNone()) {
                     try self.printf("|{s}| ", .{self.s(node.binding_name.unwrap())});
                 }
@@ -844,39 +846,39 @@ const Formatter = struct {
             },
             .TypeOf => {
                 const node = self.exprs.get(.TypeOf, id);
-                try self.printf("typeof(", .{});
+                try self.printLiteral("typeof(");
                 try self.printExpr(node.expr);
-                try self.printf(")", .{});
+                try self.printLiteral(")");
             },
             .ArrayType => {
                 const node = self.exprs.get(.ArrayType, id);
-                try self.printf("[", .{});
+                try self.printLiteral("[");
                 try self.printExpr(node.size);
-                try self.printf("]", .{});
+                try self.printLiteral("]");
                 try self.printExpr(node.elem);
             },
             .DynArrayType => {
                 const node = self.exprs.get(.DynArrayType, id);
-                try self.printf("[dyn]", .{});
+                try self.printLiteral("[dyn]");
                 try self.printExpr(node.elem);
             },
             .MapType => {
                 const node = self.exprs.get(.MapType, id);
-                try self.printf("[", .{});
+                try self.printLiteral("[");
                 try self.printExpr(node.key);
-                try self.printf(": ", .{});
+                try self.printLiteral(": ");
                 try self.printExpr(node.value);
-                try self.printf("]", .{});
+                try self.printLiteral("]");
             },
             .SliceType => {
                 const node = self.exprs.get(.SliceType, id);
-                try self.printf("[]", .{});
-                if (node.is_const) try self.printf("const ", .{});
+                try self.printLiteral("[]");
+                if (node.is_const) try self.printLiteral("const ");
                 try self.printExpr(node.elem);
             },
             .OptionalType => {
                 const node = self.exprs.get(.OptionalType, id);
-                try self.printf("?", .{});
+                try self.printLiteral("?");
                 try self.printExpr(node.elem);
             },
             .ErrorSetType => {
@@ -890,8 +892,8 @@ const Formatter = struct {
             .StructType => {
                 const node = self.exprs.get(.StructType, id);
                 try self.printAttrs(node.attrs, .Before);
-                if (node.is_extern) try self.printf("extern ", .{});
-                try self.printf("struct {{", .{});
+                if (node.is_extern) try self.printLiteral("extern ");
+                try self.printLiteral("struct {");
                 const fields = self.exprs.sfield_pool.slice(node.fields);
                 if (node.trailing_field_comma and fields.len > 0) {
                     self.indent += 4;
@@ -899,30 +901,30 @@ const Formatter = struct {
                         try self.newline();
                         try self.ws();
                         try self.printStructField(fid);
-                        try self.printf(",", .{});
+                        try self.printLiteral(",");
                     }
                     self.indent -= 4;
                     try self.newline();
                     try self.ws();
                 } else if (fields.len > 0) {
                     for (fields, 0..) |fid, i| {
-                        if (i > 0) try self.printf(", ", .{});
+                        if (i > 0) try self.printLiteral(", ");
                         try self.printStructField(fid);
                     }
                 }
-                try self.printf("}}", .{});
+                try self.printLiteral("}");
             },
             .EnumType => {
                 const node = self.exprs.get(.EnumType, id);
                 try self.printAttrs(node.attrs, .Before);
-                if (node.is_extern) try self.printf("extern ", .{});
-                try self.printf("enum", .{});
+                if (node.is_extern) try self.printLiteral("extern ");
+                try self.printLiteral("enum");
                 if (!node.discriminant.isNone()) {
-                    try self.printf("(", .{});
+                    try self.printLiteral("(");
                     try self.printExpr(node.discriminant.unwrap());
-                    try self.printf(")", .{});
+                    try self.printLiteral(")");
                 }
-                try self.printf(" {{", .{});
+                try self.printLiteral(" {");
                 const fields = self.exprs.efield_pool.slice(node.fields);
                 if (node.trailing_field_comma and fields.len > 0) {
                     self.indent += 4;
@@ -933,31 +935,31 @@ const Formatter = struct {
                         try self.printAttrs(field.attrs, .Before);
                         try self.printf("{s}", .{self.s(field.name)});
                         if (!field.value.isNone()) {
-                            try self.printf(" = ", .{});
+                            try self.printLiteral(" = ");
                             try self.printExpr(field.value.unwrap());
                         }
-                        try self.printf(",", .{});
+                        try self.printLiteral(",");
                     }
                     self.indent -= 4;
                     try self.newline();
                     try self.ws();
                 } else if (fields.len > 0) {
                     for (fields, 0..) |eid, i| {
-                        if (i > 0) try self.printf(", ", .{});
+                        if (i > 0) try self.printLiteral(", ");
                         const field = self.exprs.EnumField.get(eid);
                         try self.printAttrs(field.attrs, .Before);
                         try self.printf("{s}", .{self.s(field.name)});
                         if (!field.value.isNone()) {
-                            try self.printf(" = ", .{});
+                            try self.printLiteral(" = ");
                             try self.printExpr(field.value.unwrap());
                         }
                     }
                 }
-                try self.printf("}}", .{});
+                try self.printLiteral("}");
             },
             .VariantLikeType => {
                 const node = self.exprs.get(.VariantLikeType, id);
-                try self.printf("variant {{", .{});
+                try self.printLiteral("variant {");
                 const fields = self.exprs.vfield_pool.slice(node.fields);
                 if (node.trailing_field_comma and fields.len > 0) {
                     self.indent += 4;
@@ -965,22 +967,22 @@ const Formatter = struct {
                         try self.newline();
                         try self.ws();
                         try self.printVariantField(fid);
-                        try self.printf(",", .{});
+                        try self.printLiteral(",");
                     }
                     self.indent -= 4;
                     try self.newline();
                     try self.ws();
                 } else if (fields.len > 0) {
                     for (fields, 0..) |fid, i| {
-                        if (i > 0) try self.printf(", ", .{});
+                        if (i > 0) try self.printLiteral(", ");
                         try self.printVariantField(fid);
                     }
                 }
-                try self.printf("}}", .{});
+                try self.printLiteral("}");
             },
             .ErrorType => {
                 const node = self.exprs.get(.ErrorType, id);
-                try self.printf("error {{", .{});
+                try self.printLiteral("error {");
                 const fields = self.exprs.vfield_pool.slice(node.fields);
                 if (node.trailing_field_comma and fields.len > 0) {
                     self.indent += 4;
@@ -988,24 +990,24 @@ const Formatter = struct {
                         try self.newline();
                         try self.ws();
                         try self.printVariantField(fid);
-                        try self.printf(",", .{});
+                        try self.printLiteral(",");
                     }
                     self.indent -= 4;
                     try self.newline();
                     try self.ws();
                 } else if (fields.len > 0) {
                     for (fields, 0..) |fid, i| {
-                        if (i > 0) try self.printf(", ", .{});
+                        if (i > 0) try self.printLiteral(", ");
                         try self.printVariantField(fid);
                     }
                 }
-                try self.printf("}}", .{});
+                try self.printLiteral("}");
             },
             .UnionType => {
                 const node = self.exprs.get(.UnionType, id);
                 try self.printAttrs(node.attrs, .Before);
-                if (node.is_extern) try self.printf("extern ", .{});
-                try self.printf("union {{", .{});
+                if (node.is_extern) try self.printLiteral("extern ");
+                try self.printLiteral("union {");
                 const fields = self.exprs.sfield_pool.slice(node.fields);
                 if (node.trailing_field_comma and fields.len > 0) {
                     self.indent += 4;
@@ -1013,62 +1015,62 @@ const Formatter = struct {
                         try self.newline();
                         try self.ws();
                         try self.printStructField(fid);
-                        try self.printf(",", .{});
+                        try self.printLiteral(",");
                     }
                     self.indent -= 4;
                     try self.newline();
                     try self.ws();
                 } else if (fields.len > 0) {
                     for (fields, 0..) |fid, i| {
-                        if (i > 0) try self.printf(", ", .{});
+                        if (i > 0) try self.printLiteral(", ");
                         try self.printStructField(fid);
                     }
                 }
-                try self.printf("}}", .{});
+                try self.printLiteral("}");
             },
             .PointerType => {
                 const node = self.exprs.get(.PointerType, id);
-                try self.printf("*", .{});
-                if (node.is_const) try self.printf("const ", .{});
+                try self.printLiteral("*");
+                if (node.is_const) try self.printLiteral("const ");
                 try self.printExpr(node.elem);
             },
             .SimdType => {
                 const node = self.exprs.get(.SimdType, id);
-                try self.printf("simd(", .{});
+                try self.printLiteral("simd(");
                 try self.printExpr(node.lanes);
-                try self.printf(", ", .{});
+                try self.printLiteral(", ");
                 try self.printExpr(node.elem);
-                try self.printf(")", .{});
+                try self.printLiteral(")");
             },
             .ComplexType => {
                 const node = self.exprs.get(.ComplexType, id);
-                try self.printf("complex(", .{});
+                try self.printLiteral("complex(");
                 try self.printExpr(node.elem);
-                try self.printf(")", .{});
+                try self.printLiteral(")");
             },
             .TensorType => {
                 const node = self.exprs.get(.TensorType, id);
-                try self.printf("tensor(", .{});
+                try self.printLiteral("tensor(");
                 const shape = self.exprs.expr_pool.slice(node.shape);
                 for (shape, 0..) |si, i| {
-                    if (i > 0) try self.printf(", ", .{});
+                    if (i > 0) try self.printLiteral(", ");
                     try self.printExpr(si);
                 }
-                try self.printf(", ", .{});
+                try self.printLiteral(", ");
                 try self.printExpr(node.elem);
-                try self.printf(")", .{});
+                try self.printLiteral(")");
             },
             .TypeType => {
                 _ = self.exprs.get(.TypeType, id);
-                try self.printf("type", .{});
+                try self.printLiteral("type");
             },
             .AnyType => {
                 _ = self.exprs.get(.AnyType, id);
-                try self.printf("any", .{});
+                try self.printLiteral("any");
             },
             .NoreturnType => {
                 _ = self.exprs.get(.NoreturnType, id);
-                try self.printf("noreturn", .{});
+                try self.printLiteral("noreturn");
             },
         }
     }
@@ -1088,22 +1090,22 @@ const Formatter = struct {
                 try self.ws();
                 try self.printAttrs(param.attrs, .After);
                 if (param.is_comptime) {
-                    try self.printf("comptime ", .{});
+                    try self.printLiteral("comptime ");
                 }
                 if (!param.pat.isNone()) {
                     try self.printExpr(param.pat.unwrap());
                 }
                 if (!param.pat.isNone() and !param.ty.isNone()) {
-                    try self.printf(": ", .{});
+                    try self.printLiteral(": ");
                 }
                 if (!param.ty.isNone()) {
                     try self.printExpr(param.ty.unwrap());
                 }
                 if (!param.value.isNone()) {
-                    try self.printf(" = ", .{});
+                    try self.printLiteral(" = ");
                     try self.printExpr(param.value.unwrap());
                 }
-                try self.printf(",", .{});
+                try self.printLiteral(",");
             }
             self.indent -= 4;
             try self.newline();
@@ -1112,23 +1114,23 @@ const Formatter = struct {
         }
 
         for (params, 0..) |pid, i| {
-            if (i > 0) try self.printf(", ", .{});
+            if (i > 0) try self.printLiteral(", ");
             const param = self.exprs.Param.get(pid);
             try self.printAttrs(param.attrs, .After);
             if (param.is_comptime) {
-                try self.printf("comptime ", .{});
+                try self.printLiteral("comptime ");
             }
             if (!param.pat.isNone()) {
                 try self.printExpr(param.pat.unwrap());
             }
             if (!param.pat.isNone() and !param.ty.isNone()) {
-                try self.printf(": ", .{});
+                try self.printLiteral(": ");
             }
             if (!param.ty.isNone()) {
                 try self.printExpr(param.ty.unwrap());
             }
             if (!param.value.isNone()) {
-                try self.printf(" = ", .{});
+                try self.printLiteral(" = ");
                 try self.printExpr(param.value.unwrap());
             }
         }
@@ -1141,7 +1143,7 @@ const Formatter = struct {
         try self.printf("{s}: ", .{self.s(field.name)});
         try self.printExpr(field.ty);
         if (!field.value.isNone()) {
-            try self.printf(" = ", .{});
+            try self.printLiteral(" = ");
             try self.printExpr(field.value.unwrap());
         }
     }
@@ -1156,51 +1158,51 @@ const Formatter = struct {
             .Tuple => {
                 const elems = self.exprs.expr_pool.slice(field.tuple_elems);
                 if (field.tuple_trailing_comma and elems.len > 0) {
-                    try self.printf("(", .{});
+                    try self.printLiteral("(");
                     self.indent += 4;
                     for (elems) |eid| {
                         try self.newline();
                         try self.ws();
                         try self.printExpr(eid);
-                        try self.printf(",", .{});
+                        try self.printLiteral(",");
                     }
                     self.indent -= 4;
                     try self.newline();
                     try self.ws();
-                    try self.printf(")", .{});
+                    try self.printLiteral(")");
                 } else {
-                    try self.printf("(", .{});
+                    try self.printLiteral("(");
                     try self.printExprs(field.tuple_elems, ", ");
-                    try self.printf(")", .{});
+                    try self.printLiteral(")");
                 }
             },
             .Struct => {
                 const payload_fields = self.exprs.sfield_pool.slice(field.struct_fields);
                 if (field.struct_trailing_comma and payload_fields.len > 0) {
-                    try self.printf(" {{", .{});
+                    try self.printLiteral(" {");
                     self.indent += 4;
                     for (payload_fields) |fid| {
                         try self.newline();
                         try self.ws();
                         try self.printStructField(fid);
-                        try self.printf(",", .{});
+                        try self.printLiteral(",");
                     }
                     self.indent -= 4;
                     try self.newline();
                     try self.ws();
-                    try self.printf("}}", .{});
+                    try self.printLiteral("}");
                 } else {
-                    try self.printf(" {{", .{});
+                    try self.printLiteral(" {");
                     for (payload_fields, 0..) |fid, i| {
-                        if (i > 0) try self.printf(", ", .{});
+                        if (i > 0) try self.printLiteral(", ");
                         try self.printStructField(fid);
                     }
-                    try self.printf("}}", .{});
+                    try self.printLiteral("}");
                 }
             },
         }
         if (!field.value.isNone()) {
-            try self.printf(" = ", .{});
+            try self.printLiteral(" = ");
             try self.printExpr(field.value.unwrap());
         }
     }
@@ -1228,19 +1230,19 @@ const Formatter = struct {
         const attrs = self.exprs.attr_pool.slice(r);
         if (attrs.len == 0) return;
 
-        try self.printf("@[", .{});
+        try self.printLiteral("@[");
         for (attrs, 0..) |aid, i| {
-            if (i > 0) try self.printf(", ", .{});
+            if (i > 0) try self.printLiteral(", ");
             const attr = self.exprs.Attribute.get(aid);
             try self.ws();
             try self.printf("{s}", .{self.s(attr.name)});
             if (!attr.value.isNone()) {
-                try self.printf(" = ", .{});
+                try self.printLiteral(" = ");
                 try self.printExpr(attr.value.unwrap());
             }
             _ = pos;
         }
-        try self.printf("] ", .{});
+        try self.printLiteral("] ");
     }
 
     // ------------------------------------------------------------
@@ -1250,7 +1252,7 @@ const Formatter = struct {
     fn printPattern(self: *Formatter, id: cst.PatternId) anyerror!void {
         const kind = self.pats.kind(id);
         switch (kind) {
-            .Wildcard => try self.printf("_", .{}),
+            .Wildcard => try self.printLiteral("_"),
             .Literal => {
                 const node = self.pats.get(.Literal, id);
                 try self.printExpr(node.expr);
@@ -1259,98 +1261,98 @@ const Formatter = struct {
                 const node = self.pats.get(.Path, id);
                 const segs = self.pats.seg_pool.slice(node.segments);
                 for (segs, 0..) |sid, i| {
-                    if (i > 0) try self.printf(".", .{});
+                    if (i > 0) try self.printLiteral(".");
                     const seg = self.pats.PathSeg.get(sid);
                     try self.printf("{s}", .{self.s(seg.name)});
                 }
             },
             .Binding => {
                 const node = self.pats.get(.Binding, id);
-                if (node.by_ref) try self.printf("ref ", .{});
-                if (node.is_mut) try self.printf("mut ", .{});
+                if (node.by_ref) try self.printLiteral("ref ");
+                if (node.is_mut) try self.printLiteral("mut ");
                 try self.printf("{s}", .{self.s(node.name)});
             },
             .Parenthesized => {
                 const node = self.pats.get(.Parenthesized, id);
-                try self.printf("(", .{});
+                try self.printLiteral("(");
                 try self.printPattern(node.pattern);
-                try self.printf(")", .{});
+                try self.printLiteral(")");
             },
             .Tuple => {
                 const node = self.pats.get(.Tuple, id);
-                try self.printf("(", .{});
+                try self.printLiteral("(");
                 const elems = self.pats.pat_pool.slice(node.elems);
                 for (elems, 0..) |pid, i| {
-                    if (i > 0) try self.printf(", ", .{});
+                    if (i > 0) try self.printLiteral(", ");
                     try self.printPattern(pid);
                 }
-                try self.printf(")", .{});
+                try self.printLiteral(")");
             },
             .Slice => {
                 const node = self.pats.get(.Slice, id);
-                try self.printf("[", .{});
+                try self.printLiteral("[");
                 const elems = self.pats.pat_pool.slice(node.elems);
                 for (elems, 0..) |pid, i| {
-                    if (i > 0) try self.printf(", ", .{});
+                    if (i > 0) try self.printLiteral(", ");
                     if (node.has_rest and node.rest_index == i) {
-                        try self.printf("..", .{});
+                        try self.printLiteral("..");
                         if (!node.rest_binding.isNone()) {
                             try self.printPattern(node.rest_binding.unwrap());
                         }
-                        if (i < elems.len) try self.printf(", ", .{});
+                        if (i < elems.len) try self.printLiteral(", ");
                     }
                     try self.printPattern(pid);
                 }
-                try self.printf("]", .{});
+                try self.printLiteral("]");
             },
             .Struct => {
                 const node = self.pats.get(.Struct, id);
                 try self.printPatternPath(node.path);
-                try self.printf(" {{", .{});
+                try self.printLiteral(" {");
                 const fields = self.pats.field_pool.slice(node.fields);
                 for (fields, 0..) |fid, i| {
-                    if (i > 0) try self.printf(", ", .{});
+                    if (i > 0) try self.printLiteral(", ");
                     try self.printPatternField(fid);
                 }
                 if (node.has_rest) {
-                    if (fields.len > 0) try self.printf(", ", .{});
-                    try self.printf("..", .{});
+                    if (fields.len > 0) try self.printLiteral(", ");
+                    try self.printLiteral("..");
                 }
-                try self.printf("}}", .{});
+                try self.printLiteral("}");
             },
             .VariantTuple => {
                 const node = self.pats.get(.VariantTuple, id);
                 try self.printPatternPath(node.path);
-                try self.printf("(", .{});
+                try self.printLiteral("(");
                 const elems = self.pats.pat_pool.slice(node.elems);
                 for (elems, 0..) |pid, i| {
-                    if (i > 0) try self.printf(", ", .{});
+                    if (i > 0) try self.printLiteral(", ");
                     try self.printPattern(pid);
                 }
-                try self.printf(")", .{});
+                try self.printLiteral(")");
             },
             .VariantStruct => {
                 const node = self.pats.get(.VariantStruct, id);
                 try self.printPatternPath(node.path);
-                try self.printf(" {{", .{});
+                try self.printLiteral(" {");
                 const fields = self.pats.field_pool.slice(node.fields);
                 for (fields, 0..) |fid, i| {
-                    if (i > 0) try self.printf(", ", .{});
+                    if (i > 0) try self.printLiteral(", ");
                     try self.printPatternField(fid);
                 }
                 if (node.has_rest) {
-                    if (fields.len > 0) try self.printf(", ", .{});
-                    try self.printf("..", .{});
+                    if (fields.len > 0) try self.printLiteral(", ");
+                    try self.printLiteral("..");
                 }
-                try self.printf("}}", .{});
+                try self.printLiteral("}");
             },
             .Range => {
                 const node = self.pats.get(.Range, id);
                 if (!node.start.isNone()) try self.printExpr(node.start.unwrap());
                 if (node.inclusive_right) {
-                    try self.printf("..=", .{});
+                    try self.printLiteral("..=");
                 } else {
-                    try self.printf("..", .{});
+                    try self.printLiteral("..");
                 }
                 if (!node.end.isNone()) try self.printExpr(node.end.unwrap());
             },
@@ -1358,7 +1360,7 @@ const Formatter = struct {
                 const node = self.pats.get(.Or, id);
                 const alts = self.pats.pat_pool.slice(node.alts);
                 for (alts, 0..) |pid, i| {
-                    if (i > 0) try self.printf(" | ", .{});
+                    if (i > 0) try self.printLiteral(" | ");
                     try self.printPattern(pid);
                 }
             },
@@ -1374,7 +1376,7 @@ const Formatter = struct {
     fn printPatternPath(self: *Formatter, path: cst.RangeOf(cst.PathSegId)) !void {
         const segs = self.pats.seg_pool.slice(path);
         for (segs, 0..) |sid, i| {
-            if (i > 0) try self.printf(".", .{});
+            if (i > 0) try self.printLiteral(".");
             const seg = self.pats.PathSeg.get(sid);
             try self.printf("{s}", .{self.s(seg.name)});
         }
