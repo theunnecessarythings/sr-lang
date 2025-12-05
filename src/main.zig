@@ -13,6 +13,70 @@ const Colors = struct {
     pub const green = "\x1b[32m";
 };
 
+const ProgressContext = struct {
+    writer: *std.io.Writer,
+    use_colors: bool,
+    prev_line_length: usize,
+};
+
+fn reportProgress(
+    context: ?*anyopaque,
+    stage: lib.pipeline.ProgressStage,
+    index: usize,
+    total: usize,
+) void {
+    if (context) |ctx| {
+        const payload: *ProgressContext = @ptrCast(@alignCast(ctx));
+        const stage_name = lib.pipeline.stageName(stage);
+        const stage_color = if (payload.use_colors) Colors.cyan else "";
+        const bold = if (payload.use_colors) Colors.bold else "";
+        const reset = if (payload.use_colors) Colors.reset else "";
+        var line_buf: [128]u8 = undefined;
+        const line_slice = std.fmt.bufPrint(
+            &line_buf,
+            "[{d}/{d}] {s}",
+            .{ index, total, stage_name },
+        ) catch return;
+        const line_len = line_slice.len;
+        _ = payload.writer.print("\r", .{}) catch {};
+        if (payload.use_colors) {
+            _ = payload.writer.print("\x1b[2K", .{}) catch {};
+            _ = payload.writer.print("{s}{s}{s}{s}", .{
+                stage_color,
+                bold,
+                line_slice,
+                reset,
+            }) catch {};
+        } else {
+            _ = payload.writer.writeAll(line_slice) catch {};
+            const prev_len = payload.prev_line_length;
+            if (prev_len > line_len) {
+                var remaining = prev_len - line_len;
+                var pad_buf: [64]u8 = undefined;
+                while (remaining > 0) {
+                    const chunk = if (remaining < pad_buf.len) remaining else pad_buf.len;
+                    @memset(pad_buf[0..chunk], ' ');
+                    _ = payload.writer.writeAll(pad_buf[0..chunk]) catch {};
+                    remaining -= chunk;
+                }
+            }
+            payload.prev_line_length = line_len;
+        }
+        payload.writer.flush() catch {};
+    }
+}
+
+fn finalizeProgress(ctx: *ProgressContext, finalized: *bool, keep_line: bool) void {
+    if (finalized.*) return;
+    if (keep_line) {
+        _ = ctx.writer.print("\n", .{}) catch {};
+    } else {
+        _ = ctx.writer.print("\r\x1b[2K", .{}) catch {};
+    }
+    _ = ctx.writer.flush() catch {};
+    finalized.* = true;
+}
+
 /// Stores parsed CLI options before dispatching to the requested command.
 const CliArgs = struct {
     subcommand: Subcommand,
@@ -127,7 +191,7 @@ fn repl(
     const source = try std.mem.concatWithSentinel(allocator, u8, source_lines.items, 0);
     std.debug.print("{s}Input source:{s}\n{s}\n", .{ Colors.bold, Colors.reset, source });
 
-    const result = try pipeline.run(source, &.{}, .repl, null);
+    const result = try pipeline.run(source, &.{}, .repl, null, null);
     const main_pkg = result.compilation_unit.?.packages.getPtr("main") orelse return error.NoMainPackage;
     var cst_program = main_pkg.sources.entries.get(0).value.cst.?;
     const hir = main_pkg.sources.entries.get(0).value.ast.?;
@@ -249,7 +313,7 @@ fn server(
 
             var pipeline = lib.pipeline.Pipeline.init(allocator, &context); // Create pipeline here
 
-            const result = try pipeline.run(source, &.{}, .ast, null); // Run the pipeline to AST
+            const result = try pipeline.run(source, &.{}, .ast, null, null); // Run the pipeline to AST
 
             // If there are diagnostics, emit them to stderr and return 400
             if (context.diags.anyErrors()) {
@@ -328,10 +392,29 @@ fn process_file(
     pipeline.tir_prune_unused = cli_args.tir_prune_unused;
     pipeline.tir_warn_unused = cli_args.tir_warn_unused;
 
+    const should_show_progress = cli_args.subcommand == .compile or cli_args.subcommand == .run;
+    var progress_active = false;
+    var progress_arg: ?*lib.pipeline.ProgressReporter = null;
+    var progress_reporter: lib.pipeline.ProgressReporter = undefined;
+    var progress_ctx: ProgressContext = undefined;
+    var progress_finalized = false;
+    if (should_show_progress) {
+        progress_active = true;
+        progress_ctx = ProgressContext{
+            .writer = err_writer,
+            .use_colors = !cli_args.no_color,
+            .prev_line_length = 0,
+        };
+        progress_reporter = lib.pipeline.ProgressReporter{
+            .callback = reportProgress,
+            .context = &progress_ctx,
+        };
+        progress_arg = &progress_reporter;
+    }
     if (cli_args.verbose) {
         try err_writer.print("Compiling {s}...\n", .{abs_filename});
     }
-    const result = try pipeline.run(abs_filename, link_args, switch (cli_args.subcommand) {
+    const result = pipeline.run(abs_filename, link_args, switch (cli_args.subcommand) {
         .compile => .compile,
         .run => .run,
         .check => .check,
@@ -348,7 +431,11 @@ fn process_file(
         .json_ast => .ast,
         .format => unreachable,
         else => unreachable,
-    }, cli_args.optimization_level);
+    }, progress_arg, cli_args.optimization_level) catch |err| {
+        if (progress_active) finalizeProgress(&progress_ctx, &progress_finalized, true);
+        return err;
+    };
+    if (progress_active) finalizeProgress(&progress_ctx, &progress_finalized, false);
 
     // For 'check' command, stop after semantic checks
     if (cli_args.subcommand == .check) {

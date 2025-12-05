@@ -30,6 +30,42 @@ pub const Result = struct {
     gen: ?codegen.Codegen = null,
 };
 
+pub const ProgressStage = enum {
+    parsing,
+    lowering_ast,
+    type_checking,
+    lowering_tir,
+    mlir_codegen,
+    llvm_codegen,
+    count,
+};
+
+const stageNames: [@intFromEnum(ProgressStage.count)][]const u8 = .{
+    "Parsing",
+    "Lowering AST",
+    "Type checking",
+    "Lowering to TIR",
+    "MLIR codegen",
+    "LLVM codegen",
+};
+
+pub fn stageName(stage: ProgressStage) []const u8 {
+    return stageNames[@intFromEnum(stage)];
+}
+
+pub const ProgressCallback = *const fn (?*anyopaque, ProgressStage, usize, usize) void;
+
+pub const ProgressReporter = struct {
+    callback: ProgressCallback,
+    context: ?*anyopaque,
+
+    pub fn report(self: *ProgressReporter, stage: ProgressStage) void {
+        const idx = @intFromEnum(stage) + 1;
+        const total = @intFromEnum(ProgressStage.count);
+        self.callback(self.context, stage, idx, total);
+    }
+};
+
 /// Manages the compilation pipeline stages driven by CLI modes.
 pub const Pipeline = struct {
     /// Allocator used for temporary passes and intermediate buffers.
@@ -104,6 +140,7 @@ pub const Pipeline = struct {
         filename_or_src: []const u8,
         link_args: []const []const u8,
         mode: Mode,
+        progress: ?*ProgressReporter,
         optimization_level: ?[]const u8,
     ) anyerror!Result {
         const filename = if (mode == .repl) "temp.sr" else filename_or_src;
@@ -116,6 +153,7 @@ pub const Pipeline = struct {
         defer self.allocator.free(source);
         const source0 = try self.allocator.dupeZ(u8, source);
 
+        if (progress) |reporter| reporter.report(.parsing);
         if (mode == .lex) {
             var lexer = Lexer.init(source0, file_id, .semi);
             while (true) {
@@ -207,6 +245,7 @@ pub const Pipeline = struct {
             return .{ .compilation_unit = self.context.compilation_unit };
         }
 
+        if (progress) |reporter| reporter.report(.lowering_ast);
         var pkg_iter = self.context.compilation_unit.packages.iterator();
         // Helper thread entry that executes a lowering pass.
         const runFn = struct {
@@ -309,6 +348,7 @@ pub const Pipeline = struct {
             return .{ .compilation_unit = self.context.compilation_unit };
         }
 
+        if (progress) |reporter| reporter.report(.type_checking);
         var chk = checker.Checker.init(self.allocator, self.context, self);
         defer chk.deinit();
         try chk.run(&dep_levels);
@@ -324,6 +364,7 @@ pub const Pipeline = struct {
             return .{ .compilation_unit = self.context.compilation_unit };
         }
 
+        if (progress) |reporter| reporter.report(.lowering_tir);
         var tir_lowerer = lower_tir.LowerTir.init(self.allocator, self.context, self, &chk);
         defer tir_lowerer.deinit();
 
@@ -362,6 +403,7 @@ pub const Pipeline = struct {
         // Print Types
         // type_info.print();
 
+        if (progress) |reporter| reporter.report(.mlir_codegen);
         const mlir_ctx_ptr = self.ensureMlirContext();
         var gen = codegen.Codegen.init(self.allocator, self.context, mlir_ctx_ptr.*);
         gen.resetDebugCaches();
@@ -427,6 +469,7 @@ pub const Pipeline = struct {
             };
         }
 
+        if (progress) |reporter| reporter.report(.llvm_codegen);
         try compile.convert_to_llvm_ir(mlir_module.handle, link_args, switch (mode) {
             .llvm_ir => .llvm_ir,
             .llvm_passes => .llvm_passes,
