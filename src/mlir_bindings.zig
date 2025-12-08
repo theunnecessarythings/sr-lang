@@ -4391,6 +4391,11 @@ pub const LLVMAttributes = struct {
         allocated: Attribute,
         associated: Attribute,
     ) Attribute {
+        var tmp: SmallVector(c.MlirAttribute, 8) = .init(global_alloc);
+        defer tmp.deinit();
+        for (elements) |e| {
+            tmp.push(e.handle);
+        }
         return Attribute{
             .handle = c.mlirLLVMDICompositeTypeAttrGet(
                 ctx.handle,
@@ -4405,8 +4410,8 @@ pub const LLVMAttributes = struct {
                 flags,
                 sizeInBits,
                 alignInBits,
-                @intCast(elements.len),
-                @ptrCast(elements.ptr),
+                @intCast(tmp.len),
+                tmp.slice().ptr,
                 dataLocation.handle,
                 rank.handle,
                 allocated.handle,

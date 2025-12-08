@@ -158,6 +158,7 @@ pub const DiagnosticCode = enum {
     array_length_mismatch,
     heterogeneous_array_elements,
     cannot_infer_type_from_empty_array,
+    cannot_infer_type_from_null,
     cannot_infer_range_type,
     could_not_resolve_type, // payload: one (offending token)
     map_wrong_key_type,
@@ -422,6 +423,7 @@ pub fn diagnosticMessageFmt(code: DiagnosticCode) []const u8 {
         .array_length_mismatch => "array length mismatch: expected {d}, found {d}",
         .heterogeneous_array_elements => "heterogeneous array: expected {s}, found {s}",
         .cannot_infer_type_from_empty_array => "cannot infer type from empty array literal; add a type annotation",
+        .cannot_infer_type_from_null => "cannot infer type from 'null' literal; add a type annotation",
         .cannot_infer_range_type => "cannot infer type from range with no start or end value; add a type annotation to at least one side",
         .could_not_resolve_type => "could not resolve type: '{s}'",
         .map_wrong_key_type => "map key type mismatch: expected {s}, found {s}",
@@ -842,6 +844,11 @@ pub const Diagnostics = struct {
     }
 
     /// Convert the anonymous payload `args` into a `MessagePayload`.
+    fn isIntegerType(T: type) bool {
+        const info = @typeInfo(T);
+        return info == .int or info == .comptime_int;
+    }
+
     fn payloadFromArgs(args: anytype) MessagePayload {
         const info = @typeInfo(@TypeOf(args)).@"struct";
         const n = info.fields.len;
@@ -867,7 +874,7 @@ pub const Diagnostics = struct {
             if (T1 == types.TypeId and T2 == types.TypeId)
                 return .{ .two_type_ids = .{ .a = v0, .b = v1 } };
 
-            if (@typeInfo(T1) == .int and @typeInfo(T2) == .int)
+            if (@typeInfo(T1) == .int or @typeInfo(T2) == .int)
                 return .{ .two_integers = .{ .a = @intCast(v0), .b = @intCast(v1) } };
 
             if (T1 == ast.StrId and T2 == types.TypeId)

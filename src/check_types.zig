@@ -2105,11 +2105,19 @@ pub fn typeFromTypeExpr(self: *Checker, ctx: *Checker.CheckerContext, ast_unit: 
                         if (sym_row) |ex| {
                             const sym = self.checker_ctx.items[a.file_id].symtab.syms.get(ex);
                             const decl = sym.origin_decl.unwrap();
-                            var ty = a.type_info.decl_types.items[decl.toRaw()].?;
-                            if (self.typeKind(ty) == .TypeType) {
-                                ty = ts.get(.TypeType, ty).of;
+
+                            if (a.type_info.decl_types.items[decl.toRaw()] == null) {
+                                const other_ctx = &self.checker_ctx.items[a.file_id];
+                                try self.checkDecl(other_ctx, a, decl);
                             }
-                            break :blk_fa .{ status, ty };
+
+                            if (a.type_info.decl_types.items[decl.toRaw()]) |resolved| {
+                                var ty = resolved;
+                                if (self.typeKind(ty) == .TypeType)
+                                    ty = ts.get(.TypeType, ty).of;
+                                break :blk_fa .{ status, ty };
+                            }
+                            break :blk_fa .{ false, ts.tTypeError() };
                         }
                     }
                     try self.context.diags.addError(ast_unit.exprs.locs.get(fr.loc), .unknown_module_field, .{ast_unit.exprs.strs.get(fr.field)});

@@ -653,8 +653,8 @@ pub fn optLoc(a: *ast.Ast, id: anytype) tir.OptLocId {
 
 /// Produce an undef value of `ty`, falling back to `Any` when `ty` is void so that SSA stays valid.
 pub fn safeUndef(self: *LowerTir, blk: *Builder.BlockFrame, ty: types.TypeId, loc: tir.OptLocId) tir.ValueId {
-    if (self.isVoid(ty)) {
-        return blk.builder.tirValue(.ConstUndef, blk, self.context.type_store.tAny(), loc, .{});
+    if (self.isVoid(ty) or self.context.type_store.getKind(ty) == .Any) {
+        return blk.builder.tirValue(.ConstBool, blk, self.context.type_store.tBool(), loc, .{ .value = false });
     }
     return blk.builder.tirValue(.ConstUndef, blk, ty, loc, .{});
 }
@@ -1026,6 +1026,10 @@ pub fn optionalPayload(
     if (self.context.type_store.isOptionalPointer(opt_ty)) {
         return blk.builder.tirValue(.CastBit, blk, opt.elem, loc, .{ .value = opt_val });
     }
+    const ek = self.context.type_store.getKind(opt.elem);
+    if (ek == .Void or ek == .Any) {
+        return self.safeUndef(blk, opt.elem, loc);
+    }
     return blk.builder.extractField(blk, opt.elem, opt_val, 1, loc);
 }
 
@@ -1067,6 +1071,13 @@ pub fn optionalWrapWithFlag(
             .else_value = none_val,
         });
     }
+    const elem_ty = self.context.type_store.get(.Optional, opt_ty).elem;
+    const ek = self.context.type_store.getKind(elem_ty);
+    if (ek == .Void or ek == .Any) {
+        return blk.builder.structMake(blk, opt_ty, &[_]tir.Rows.StructFieldInit{
+            .{ .index = 0, .name = .none(), .value = flag },
+        }, loc);
+    }
     return blk.builder.structMake(blk, opt_ty, &[_]tir.Rows.StructFieldInit{
         .{ .index = 0, .name = .none(), .value = flag },
         .{ .index = 1, .name = .none(), .value = payload },
@@ -1086,6 +1097,15 @@ pub fn optionalWrapSome(
     }
     const bool_ty = self.context.type_store.tBool();
     const some_flag = blk.builder.tirValue(.ConstBool, blk, bool_ty, loc, .{ .value = true });
+
+    const elem_ty = self.context.type_store.get(.Optional, opt_ty).elem;
+    const ek = self.context.type_store.getKind(elem_ty);
+    if (ek == .Void or ek == .Any) {
+        return blk.builder.structMake(blk, opt_ty, &[_]tir.Rows.StructFieldInit{
+            .{ .index = 0, .name = .none(), .value = some_flag },
+        }, loc);
+    }
+
     return blk.builder.structMake(blk, opt_ty, &[_]tir.Rows.StructFieldInit{
         .{ .index = 0, .name = .none(), .value = some_flag },
         .{ .index = 1, .name = .none(), .value = payload },
@@ -2576,10 +2596,14 @@ fn handleExternVariadicArgs(
             var elem_idx: usize = 0;
             while (elem_idx < elem_types.len) : (elem_idx += 1) {
                 const elem_ty = elem_types[elem_idx];
-                const elem_val = blk.builder.extractElem(blk, elem_ty, tuple_value, @intCast(elem_idx), tuple_loc);
+                const resolved_elem_ty = if (self.context.type_store.getKind(elem_ty) == .Any)
+                    self.context.type_store.tUsize() // Resolve Any to its ABI representation (pointer-sized scalar)
+                else
+                    elem_ty;
+                const elem_val = blk.builder.extractElem(blk, resolved_elem_ty, tuple_value, @intCast(elem_idx), tuple_loc);
                 try var_entries.insert(self.gpa, ve_idx + elem_idx, .{
                     .value = elem_val,
-                    .ty = elem_ty,
+                    .ty = elem_ty, // Keep original elem_ty for later checks
                     .loc = tuple_loc,
                     // Mark as non-spread so we don't recursively re-expand nested tuple elements.
                     .expr = null,
@@ -3804,8 +3828,13 @@ fn lowerFieldAccess(
             blk.builder.extractElem(blk, ty0, base, resolved_idx, loc)
         else if (parent_kind == .Union)
             blk.builder.tirValue(.UnionField, blk, ty0, loc, .{ .base = base, .field_index = resolved_idx })
-        else
-            blk.builder.extractField(blk, ty0, base, resolved_idx, loc);
+        else blk: {
+            const res_ty = if (self.context.type_store.getKind(ty0) == .Any)
+                self.context.type_store.tUsize()
+            else
+                ty0;
+            break :blk blk.builder.extractField(blk, res_ty, base, resolved_idx, loc);
+        };
     } else {
         std.debug.assert(!is_tuple);
         v = blk.builder.extractFieldNamed(blk, ty0, base, row.field, loc);
@@ -4204,22 +4233,51 @@ fn lowerBinary(
     const r_is_optional = self.context.type_store.getKind(r_ty) == .Optional;
 
     const bool_ty = self.context.type_store.tBool();
-    const null_ty = self.context.type_store.mkOptional(self.context.type_store.tAny());
 
     if (row.op == .eq or row.op == .neq) {
         if (l_is_optional and r_is_optional) {
-            if (l_ty.eq(null_ty) or r_ty.eq(null_ty)) { // One of them is explicitly the null type
-                const optional_val = if (l_ty.eq(null_ty)) r else l; // The non-null optional
-                const optional_ty = if (l_ty.eq(null_ty)) r_ty else l_ty;
-                const flag = self.optionalFlag(blk, optional_ty, optional_val, loc); // Extract is_some flag
+            const elem_ty = self.context.type_store.get(.Optional, l_ty).elem;
+            const ek = self.context.type_store.getKind(elem_ty);
+            // Scalar types can be compared directly via CmpEq on their payload
+            const is_scalar = switch (ek) {
+                .Bool, .I8, .U8, .I16, .U16, .I32, .U32, .I64, .U64, .Usize, .F32, .F64, .Enum, .Error, .Ptr, .MlirType, .TypeType => true,
+                else => false,
+            };
 
-                const result = if (row.op == .eq)
-                    blk.builder.binBool(blk, .CmpEq, flag, blk.builder.tirValue(.ConstBool, blk, bool_ty, loc, .{ .value = false }), .none())
-                else
-                    blk.builder.binBool(blk, .CmpNe, flag, blk.builder.tirValue(.ConstBool, blk, bool_ty, loc, .{ .value = false }), .none());
+            const flag_l = self.optionalFlag(blk, l_ty, l, loc);
+            const flag_r = self.optionalFlag(blk, r_ty, r, loc);
+            const flags_eq = blk.builder.binBool(blk, .CmpEq, flag_l, flag_r, loc);
 
-                return result;
+            var result = flags_eq;
+
+            if (is_scalar) {
+                var then_blk = try f.builder.beginBlock(f);
+                var join_blk = try f.builder.beginBlock(f);
+                const res_param = try f.builder.addBlockParam(&join_blk, null, bool_ty);
+
+                const both_present = blk.builder.binBool(blk, .LogicalAnd, flag_l, flag_r, loc);
+
+                // If both_present -> check payloads.
+                // Else -> result is flags_eq.
+                try f.builder.condBr(blk, both_present, then_blk.id, &.{}, join_blk.id, &.{flags_eq}, loc);
+                const orig_blk = blk.*;
+                try f.builder.endBlock(f, orig_blk);
+
+                // then_blk: both are present, compare payloads
+                const pay_l = self.optionalPayload(&then_blk, l_ty, l, loc);
+                const pay_r = self.optionalPayload(&then_blk, r_ty, r, loc);
+                const pay_eq = then_blk.builder.binBool(&then_blk, .CmpEq, pay_l, pay_r, loc);
+                try f.builder.br(&then_blk, join_blk.id, &.{pay_eq}, loc);
+                try f.builder.endBlock(f, then_blk);
+
+                blk.* = join_blk;
+                result = res_param;
             }
+
+            if (row.op == .neq) {
+                result = blk.builder.binBool(blk, .CmpEq, result, blk.builder.tirValue(.ConstBool, blk, bool_ty, loc, .{ .value = false }), loc);
+            }
+            return result;
         } else if (l_is_optional != r_is_optional) {
             const opt_val = if (l_is_optional) l else r;
             const opt_ty = if (l_is_optional) l_ty else r_ty;
@@ -4776,6 +4834,11 @@ pub fn lowerExpr(
         .Literal => self.lowerLiteral(ctx, a, blk, id, expected_ty),
         .NullLit => {
             const loc = optLoc(a, id);
+            if (expected_ty) |want| {
+                if (self.context.type_store.getKind(want) == .Optional) {
+                    return blk.builder.constNull(blk, want, loc);
+                }
+            }
             const ty0 = self.getExprType(ctx, a, id);
             const v = blk.builder.constNull(blk, ty0, loc);
             if (expected_ty) |want| return self.emitCoerce(blk, v, ty0, want, loc);
@@ -4788,7 +4851,7 @@ pub fn lowerExpr(
                 return v;
             } else {
                 const any_ty = self.context.type_store.tAny();
-                return blk.builder.tirValue(.ConstUndef, blk, any_ty, loc, .{});
+                return self.safeUndef(blk, any_ty, loc);
             }
         },
         .Unary => self.lowerUnary(ctx, a, env, f, blk, id, expected_ty, mode),

@@ -454,11 +454,11 @@ test "string and char literals - failures" {
 
 test "null/undefined literals - success" {
     // Bare literals
-    try checkProgram("n :: null", &.{});
+    try checkProgram("n : ?i32 : null", &.{});
     try checkProgram("u :: undefined", &.{});
 
     // Parenthesized usage
-    try checkProgram("p :: (null)", &.{});
+    try checkProgram("p : ?i64 : (null)", &.{});
     try checkProgram("q :: (undefined)", &.{});
 }
 
@@ -1752,6 +1752,14 @@ test "if expressions - failures" {
 
     // Mismatched branch types
     try checkProgram("a :: if true { 1 } else { false }", &[_]diag.DiagnosticCode{.if_branch_type_mismatch});
+    try checkProgram(
+        \\ b: ?i32 = null
+        \\ c := if b != null {
+        \\    b
+        \\ } else {
+        \\    null
+        \\ }
+    , &[_]diag.DiagnosticCode{.if_branch_type_mismatch});
 
     // Return mismatches within branches
     try checkProgram(

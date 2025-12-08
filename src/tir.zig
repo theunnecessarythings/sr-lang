@@ -726,6 +726,7 @@ pub const Builder = struct {
         loc: OptLocId,
         value: anytype,
     ) ValueId {
+        std.debug.assert(self.t.type_store.getKind(ty) != .Any);
         const vid = self.freshValue();
         var v: RowT(kind) = undefined;
         v.result = vid;
@@ -748,6 +749,7 @@ pub const Builder = struct {
         r: ValueId,
         loc: OptLocId,
     ) ValueId {
+        std.debug.assert(self.t.type_store.getKind(ty) != .Any);
         const vid = self.freshValue();
         const iid = self.t.instrs.add(k, Rows.Bin2{ .result = vid, .ty = ty, .lhs = l, .rhs = r, .loc = loc });
         blk.instrs.append(self.gpa, iid) catch @panic("OOM");
@@ -763,6 +765,7 @@ pub const Builder = struct {
         loc: OptLocId,
     ) ValueId {
         const bty = self.t.type_store.tBool();
+        std.debug.assert(self.t.type_store.getKind(bty) != .Any);
         const vid = self.freshValue();
         const iid = self.t.instrs.add(k, Rows.Bin2{ .result = vid, .ty = bty, .lhs = l, .rhs = r, .loc = loc });
         blk.instrs.append(self.gpa, iid) catch @panic("OOM");
@@ -777,6 +780,7 @@ pub const Builder = struct {
         args: []const ValueId,
         loc: OptLocId,
     ) ValueId {
+        std.debug.assert(self.t.type_store.getKind(ty) != .Any);
         const r = self.t.instrs.val_list_pool.pushMany(self.gpa, args);
         const vid = self.freshValue();
         const iid = self.t.instrs.add(.Call, Rows.Call{ .result = vid, .ty = ty, .callee = callee, .args = r, .loc = loc });
@@ -792,6 +796,7 @@ pub const Builder = struct {
         args: []const ValueId,
         loc: OptLocId,
     ) ValueId {
+        std.debug.assert(self.t.type_store.getKind(ty) != .Any);
         const r = self.t.instrs.val_list_pool.pushMany(self.gpa, args);
         const vid = self.freshValue();
         const iid = self.t.instrs.add(.IndirectCall, Rows.IndirectCall{ .result = vid, .ty = ty, .callee = callee, .args = r, .loc = loc });
@@ -807,6 +812,7 @@ pub const Builder = struct {
         idx: ValueId,
         loc: OptLocId,
     ) ValueId {
+        std.debug.assert(self.t.type_store.getKind(ty) != .Any);
         const vid = self.freshValue();
         const iid = self.t.instrs.add(.Index, Rows.Index{ .result = vid, .ty = ty, .base = base, .index = idx, .loc = loc });
         blk.instrs.append(self.gpa, iid) catch @panic("OOM");
@@ -822,6 +828,7 @@ pub const Builder = struct {
         inclusive: ValueId,
         loc: OptLocId,
     ) ValueId {
+        std.debug.assert(self.t.type_store.getKind(ty) != .Any);
         const vid = self.freshValue();
         const iid = self.t.instrs.add(
             .RangeMake,
@@ -843,6 +850,7 @@ pub const Builder = struct {
         v: ValueId,
         loc: OptLocId,
     ) ValueId {
+        std.debug.assert(self.t.type_store.getKind(ty) != .Any);
         const vid = self.freshValue();
         const iid = self.t.instrs.add(k, Rows.Un1{ .result = vid, .ty = ty, .value = v, .loc = loc });
         blk.instrs.append(self.gpa, iid) catch @panic("OOM");
@@ -850,6 +858,7 @@ pub const Builder = struct {
     }
     /// constNull TIR builder helper.
     pub fn constNull(self: *Builder, blk: *BlockFrame, ty: types.TypeId, loc: OptLocId) ValueId {
+        std.debug.assert(self.t.type_store.getKind(ty) != .Any);
         const vid = self.freshValue();
         const iid = self.t.instrs.add(.ConstNull, Rows.ConstNull{ .result = vid, .ty = ty, .loc = loc });
         blk.instrs.append(self.gpa, iid) catch @panic("OOM");
@@ -857,6 +866,7 @@ pub const Builder = struct {
     }
     /// tupleMake TIR builder helper.
     pub fn tupleMake(self: *Builder, blk: *BlockFrame, ty: types.TypeId, elems: []const ValueId, loc: OptLocId) ValueId {
+        std.debug.assert(self.t.type_store.getKind(ty) != .Any);
         const r = self.t.instrs.value_pool.pushMany(self.gpa, elems);
         const vid = self.freshValue();
         const iid = self.t.instrs.add(.TupleMake, Rows.TupleMake{ .result = vid, .ty = ty, .elems = r, .loc = loc });
@@ -865,6 +875,7 @@ pub const Builder = struct {
     }
     /// arrayMake TIR builder helper.
     pub fn arrayMake(self: *Builder, blk: *BlockFrame, ty: types.TypeId, elems: []const ValueId, loc: OptLocId) ValueId {
+        std.debug.assert(self.t.type_store.getKind(ty) != .Any);
         const r = self.t.instrs.value_pool.pushMany(self.gpa, elems);
         const vid = self.freshValue();
         const iid = self.t.instrs.add(.ArrayMake, Rows.ArrayMake{ .result = vid, .ty = ty, .elems = r, .loc = loc });
@@ -879,6 +890,7 @@ pub const Builder = struct {
         fields: []const Rows.StructFieldInit,
         loc: OptLocId,
     ) ValueId {
+        std.debug.assert(self.t.type_store.getKind(ty) != .Any);
         var ids = self.gpa.alloc(StructFieldInitId, fields.len) catch @panic("OOM");
         defer self.gpa.free(ids);
         var i: usize = 0;
@@ -900,6 +912,7 @@ pub const Builder = struct {
         index: u32,
         loc: OptLocId,
     ) ValueId {
+        std.debug.assert(self.t.type_store.getKind(ty) != .Any);
         const vid = self.freshValue();
         const iid = self.t.instrs.add(.ExtractElem, Rows.ExtractElem{ .result = vid, .ty = ty, .agg = agg, .index = index, .loc = loc });
         blk.instrs.append(self.gpa, iid) catch @panic("OOM");
@@ -915,6 +928,7 @@ pub const Builder = struct {
         value: ValueId,
         loc: OptLocId,
     ) ValueId {
+        std.debug.assert(self.t.type_store.get(ty).kind != .Any);
         const vid = self.freshValue();
         const iid = self.t.instrs.add(
             .InsertElem,
@@ -932,6 +946,7 @@ pub const Builder = struct {
         index: u32,
         loc: OptLocId,
     ) ValueId {
+        std.debug.assert(self.t.type_store.getKind(ty) != .Any);
         const vid = self.freshValue();
         const iid = self.t.instrs.add(
             .ExtractField,
@@ -949,6 +964,7 @@ pub const Builder = struct {
         name: StrId,
         loc: OptLocId,
     ) ValueId {
+        std.debug.assert(self.t.type_store.getKind(ty) != .Any);
         const vid = self.freshValue();
         const iid = self.t.instrs.add(
             .ExtractField,
@@ -1064,6 +1080,7 @@ pub const Builder = struct {
         args: []const ValueId,
         loc: OptLocId,
     ) InstrId {
+        std.debug.assert(self.t.type_store.get(ty).kind != .Any);
         const r = self.t.instrs.val_list_pool.pushMany(self.gpa, args);
         const row: Rows.Call = .{ .result = result, .ty = ty, .callee = callee, .args = r, .loc = loc };
         const id = self.t.instrs.add(.Call, row);
@@ -1084,6 +1101,7 @@ pub const Builder = struct {
         args: []const ValueId,
         loc: OptLocId,
     ) InstrId {
+        std.debug.assert(self.t.type_store.get(ty).kind != .Any);
         const args_range = self.t.instrs.value_pool.pushMany(self.gpa, args);
         const pieces_range = self.t.instrs.mlir_piece_pool.pushMany(self.gpa, pieces);
         const row: Rows.MlirBlock = .{
@@ -1119,6 +1137,7 @@ pub const Builder = struct {
         idxs: []const GepIndexId,
         loc: OptLocId,
     ) ValueId {
+        std.debug.assert(self.t.type_store.getKind(ty) != .Any);
         const r = self.t.instrs.gep_pool.pushMany(self.gpa, idxs);
         const vid = self.freshValue();
         const iid = self.t.instrs.add(.Gep, Rows.Gep{ .result = vid, .ty = ty, .base = base, .indices = r, .loc = loc });

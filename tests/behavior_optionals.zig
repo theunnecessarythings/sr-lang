@@ -13,6 +13,26 @@ test "special_types: optional declaration with value" {
     try runCompilerTest(code, "x has value: 10\n");
 }
 
+test "special_types: optional in call" {
+    const globals =
+        \\func :: proc(a: ?i32) {
+        \\  printf("%d\n", a orelse -1)
+        \\}
+    ;
+
+    const src =
+        \\b: ?i32 = null
+        \\func(if b != null {
+        \\    b
+        \\} else {
+        \\    null
+        \\})
+    ;
+
+    const code = getSource(globals, src);
+    try runCompilerTest(code, "-1\n");
+}
+
 test "special_types: optional declaration with null" {
     const src =
         \\x: ?i32 = null

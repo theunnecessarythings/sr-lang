@@ -154,6 +154,9 @@ di_empty_expr_attr: mlir.Attribute,
 di_type_cache: std.AutoHashMap(types.TypeId, mlir.Attribute),
 /// Counter used when generating unique DI node names.
 next_di_id: usize = 0,
+/// Cache for recursive type IDs during DI generation to handle cycles.
+di_recursive_ids: std.AutoHashMap(types.TypeId, mlir.Attribute),
+/// Counter used when generating unique DI node names.next_di_id: usize = 0,
 /// Whether module-level debug attributes were already emitted.
 debug_module_attrs_initialized: bool = false,
 
@@ -225,9 +228,15 @@ force_llvm_func_syms: std.AutoHashMap(tir.StrId, void),
 diagnostic_handler: mlir.c.MlirDiagnosticHandlerID,
 /// Optional pointer to the active diagnostic data.
 diagnostic_data: *DiagnosticData,
-/// Tracks the type info context currently active during lowering.
-active_type_info: ?*types.TypeInfo = null,
+/// Active type info context
+active_type_info: ?*types.TypeInfo,
+/// Scratch arena for debug info string generation
+debug_arena: std.heap.ArenaAllocator,
 
+/// Helper to look up a string from an `ast.StrId` or return empty string.
+pub fn getStr(self: *Codegen, id: cst.StrId) []const u8 {
+    return self.context.type_store.strs.get(id);
+}
 /// Metadata cached per emitted function so we can re-enter or reference it.
 pub const FuncInfo = struct {
     /// MLIR operation representing the function (FuncOp or llvm.func).
@@ -524,6 +533,7 @@ pub fn init(gpa: Allocator, context: *compile.Context, ctx: mlir.Context) Codege
         .di_subroutine_null_type_attr = .empty(),
         .di_empty_expr_attr = .empty(),
         .di_type_cache = .init(gpa),
+        .di_recursive_ids = .init(gpa),
         .next_di_id = 0,
         .void_ty = void_ty,
         .i1_ty = mlir.Type.getSignlessIntegerType(ctx, 1),
@@ -547,15 +557,18 @@ pub fn init(gpa: Allocator, context: *compile.Context, ctx: mlir.Context) Codege
         .diagnostic_handler = mlir.c.mlirContextAttachDiagnosticHandler(ctx.handle, diagnosticHandler, @ptrCast(diag_data), null),
         .diagnostic_data = diag_data,
         .active_type_info = null,
+        .debug_arena = std.heap.ArenaAllocator.init(gpa),
     };
 }
 
 /// Tear down `Codegen`, releasing all MLIR/diagnostic caches and allocator ownership.
 pub fn deinit(self: *Codegen) void {
+    self.debug_arena.deinit();
     self.resetDebugCaches();
     self.di_subprograms.deinit();
     self.di_files.deinit();
     self.di_type_cache.deinit();
+    self.di_recursive_ids.deinit();
     var fit = self.func_syms.valueIterator();
     while (fit.next()) |info| {
         if (info.owns_param_types) {
@@ -711,6 +724,7 @@ pub fn emitModule(
     // self.active_type_info = type_info;
     // defer self.active_type_info = prev_type_info;
 
+    self.di_subprograms.clearRetainingCapacity();
     self.loc_cache.clearRetainingCapacity();
     try self.collectForceLlvmFuncSyms(t);
     try debug.attachTargetInfo(self);
@@ -1072,10 +1086,6 @@ fn emitFunctionHeader(self: *Codegen, f_id: tir.FuncId, t: *tir.TIR) !void {
         }
     }
 
-    if (maybe_dbg_attr) |dbg_attr| {
-        try attrs.append(self.gpa, self.named("llvm.di.subprogram", dbg_attr));
-    }
-
     for (f_attrs) |attr_id| {
         const attr = t.instrs.Attribute.get(attr_id);
         if (attr.name.eq(emit_c_iface)) {
@@ -1084,7 +1094,9 @@ fn emitFunctionHeader(self: *Codegen, f_id: tir.FuncId, t: *tir.TIR) !void {
     }
 
     const prev_loc = self.pushLocation(fn_loc);
-    self.loc = prev_loc;
+    if (maybe_dbg_attr) |dbg_attr| {
+        self.loc = mlir.Location.fusedGet(self.mlir_ctx, &.{self.loc}, dbg_attr);
+    }
 
     const region = mlir.Region.create();
     const op_name = if (emit_as_llvm_func) "llvm.func" else "func.func";
@@ -1092,6 +1104,8 @@ fn emitFunctionHeader(self: *Codegen, f_id: tir.FuncId, t: *tir.TIR) !void {
         .attributes = attrs.items,
         .regions = &.{region},
     });
+
+    self.loc = prev_loc;
 
     var body = self.module.getBody();
     body.appendOwnedOperation(fnop);
@@ -1126,7 +1140,7 @@ fn emitFunctionHeader(self: *Codegen, f_id: tir.FuncId, t: *tir.TIR) !void {
         };
     };
 
-    _ = try self.func_syms.put(func_name_id, finfo);
+    try self.func_syms.put(func_name_id, finfo);
 }
 
 /// Return a cached `i64` constant that lives in the entry block.
@@ -1313,8 +1327,7 @@ fn emitFunctionBody(self: *Codegen, f_id: tir.FuncId, t: *tir.TIR) !void {
 }
 
 /// Return the lowered SSA value corresponding to `id` if it was already emitted.
-fn getInstrResultId(self: *Codegen, t: *tir.TIR, id: tir.InstrId) ?tir.ValueId {
-    _ = self;
+fn getInstrResultId(_: *Codegen, t: *tir.TIR, id: tir.InstrId) ?tir.ValueId {
     switch (t.kind(id)) {
         inline else => |k| return t.instrs.get(k, id).result,
         inline .Add, .Sub, .Mul, .BinWrapAdd, .BinWrapSub, .BinWrapMul, .BinSatAdd, .BinSatSub, .BinSatMul, .BinSatShl, .Div, .Mod, .Shl, .Shr, .BitAnd, .BitOr, .BitXor, .CmpEq, .CmpNe, .CmpLt, .CmpLe, .CmpGt, .CmpGe, .LogicalAnd, .LogicalOr => |k| return t.instrs.get(k, id).result,
@@ -1455,6 +1468,7 @@ fn ensureFuncDeclFromCall(self: *Codegen, p: tir.Rows.Call, t: *tir.TIR) !FuncIn
         self.named("arg_attrs", argAttrsArray),
         self.named("sym_visibility", self.strAttr("private")),
     };
+    const prev_loc = self.pushLocation(p.loc);
     const region = mlir.Region.create();
     const fnop = self.buildOp("llvm.func", EmitOpArgs{
         .attributes = &attrs,
@@ -1462,6 +1476,8 @@ fn ensureFuncDeclFromCall(self: *Codegen, p: tir.Rows.Call, t: *tir.TIR) !FuncIn
     });
     var body = self.module.getBody();
     body.appendOwnedOperation(fnop);
+
+    self.loc = prev_loc;
 
     const param_types_copy = try self.gpa.alloc(mlir.Type, n_args);
     std.mem.copyForwards(mlir.Type, param_types_copy, lowered_params[0..n_args]);
@@ -1474,7 +1490,7 @@ fn ensureFuncDeclFromCall(self: *Codegen, p: tir.Rows.Call, t: *tir.TIR) !FuncIn
         .owns_param_types = true,
         .dbg_subprogram = null,
     };
-    _ = try self.func_syms.put(callee_id, info);
+    try self.func_syms.put(callee_id, info);
     return info;
 }
 
@@ -1661,16 +1677,16 @@ fn emitDiv(self: *Codegen, p: tir.Rows.Bin2) !mlir.Value {
     const prev_loc = self.pushLocation(p.loc);
     defer self.loc = prev_loc;
     if (self.context.type_store.getKind(p.ty) == .Complex) {
-        const lhs = self.value_map.get(p.lhs).?;
-        const rhs = self.value_map.get(p.rhs).?;
+        const lhs = self.getVal(p.lhs);
+        const rhs = self.getVal(p.rhs);
         const cty = try self.llvmTypeOf(p.ty);
         return self.emitOp("complex.div", EmitOpArgs{
             .operands = &.{ lhs, rhs },
             .results = &.{cty},
         });
     }
-    const lhs = self.value_map.get(p.lhs).?;
-    const rhs = self.value_map.get(p.rhs).?;
+    const lhs = self.getVal(p.lhs);
+    const rhs = self.getVal(p.rhs);
     const ty = try self.llvmTypeOf(p.ty);
     const signed = !self.isUnsigned(self.srTypeOfValue(p.lhs));
     return self.arithDiv(lhs, rhs, ty, signed);
@@ -1680,8 +1696,8 @@ fn emitDiv(self: *Codegen, p: tir.Rows.Bin2) !mlir.Value {
 fn emitMod(self: *Codegen, p: tir.Rows.Bin2) !mlir.Value {
     const prev_loc = self.pushLocation(p.loc);
     defer self.loc = prev_loc;
-    const lhs = self.value_map.get(p.lhs).?;
-    const rhs = self.value_map.get(p.rhs).?;
+    const lhs = self.getVal(p.lhs);
+    const rhs = self.getVal(p.rhs);
     const ty = try self.llvmTypeOf(p.ty);
     const signed = !self.isUnsigned(self.srTypeOfValue(p.lhs));
     return self.arithRem(lhs, rhs, ty, signed);
@@ -1691,8 +1707,8 @@ fn emitMod(self: *Codegen, p: tir.Rows.Bin2) !mlir.Value {
 fn emitShl(self: *Codegen, p: tir.Rows.Bin2) !mlir.Value {
     const prev_loc = self.pushLocation(p.loc);
     defer self.loc = prev_loc;
-    const lhs = self.value_map.get(p.lhs).?;
-    const rhs = self.value_map.get(p.rhs).?;
+    const lhs = self.getVal(p.lhs);
+    const rhs = self.getVal(p.rhs);
     const ty = try self.llvmTypeOf(p.ty);
     return self.arithShl(lhs, rhs, ty);
 }
@@ -1701,8 +1717,8 @@ fn emitShl(self: *Codegen, p: tir.Rows.Bin2) !mlir.Value {
 fn emitShr(self: *Codegen, p: tir.Rows.Bin2) !mlir.Value {
     const prev_loc = self.pushLocation(p.loc);
     defer self.loc = prev_loc;
-    const lhs = self.value_map.get(p.lhs).?;
-    const rhs = self.value_map.get(p.rhs).?;
+    const lhs = self.getVal(p.lhs);
+    const rhs = self.getVal(p.rhs);
     const ty = try self.llvmTypeOf(p.ty);
     const signed = !self.isUnsigned(self.srTypeOfValue(p.lhs));
     return self.arithShr(lhs, rhs, ty, signed);
@@ -1713,7 +1729,7 @@ fn emitCastBit(self: *Codegen, p: tir.Rows.Un1) !mlir.Value {
     const prev_loc = self.pushLocation(p.loc);
     defer self.loc = prev_loc;
     const to_ty = try self.llvmTypeOf(p.ty);
-    const from_v = self.value_map.get(p.value).?;
+    const from_v = self.getVal(p.value);
     const from_ty = from_v.getType();
     if (from_ty.equal(to_ty)) return from_v;
     if (self.isUndefValue(from_v)) return self.undefOf(to_ty);
@@ -1741,17 +1757,7 @@ fn emitCastNormalInstr(self: *Codegen, p: tir.Rows.Un1) !mlir.Value {
     const prev_loc = self.pushLocation(p.loc);
     defer self.loc = prev_loc;
     const to_ty = try self.llvmTypeOf(p.ty);
-    const from_v_opt = self.value_map.get(p.value);
-    if (from_v_opt == null) {
-        // Produce a diagnostic at the original source location for debugging.
-        if (!p.loc.isNone()) {
-            const loc_id = p.loc.unwrap();
-            const loc_rec = self.context.loc_store.get(loc_id);
-            try self.context.diags.addError(loc_rec, .tir_codegen_missing_operand, .{});
-        }
-        return error.CompilationFailed;
-    }
-    const from_v = from_v_opt.?;
+    const from_v = self.getVal(p.value);
     const src_sr = self.srTypeOfValue(p.value);
     const val = try cast.emitCastNormal(self, p.ty, to_ty, from_v, src_sr);
     return val;
@@ -1761,7 +1767,7 @@ fn emitCastNormalInstr(self: *Codegen, p: tir.Rows.Un1) !mlir.Value {
 fn emitCastSaturate(self: *Codegen, p: tir.Rows.Un1) !mlir.Value {
     const prev_loc = self.pushLocation(p.loc);
     defer self.loc = prev_loc;
-    const from_v = self.value_map.get(p.value).?;
+    const from_v = self.getVal(p.value);
     const src_sr = self.srTypeOfValue(p.value);
     const val = try cast.emitCast(self, .CastSaturate, p.ty, src_sr, from_v);
     return val;
@@ -1771,7 +1777,7 @@ fn emitCastSaturate(self: *Codegen, p: tir.Rows.Un1) !mlir.Value {
 fn emitCastWrap(self: *Codegen, comptime x: tir.OpKind, p: tir.Rows.Un1) !mlir.Value {
     const prev_loc = self.pushLocation(p.loc);
     defer self.loc = prev_loc;
-    const from_v = self.value_map.get(p.value).?;
+    const from_v = self.getVal(p.value);
     const src_sr = self.srTypeOfValue(p.value);
     const val = try cast.emitCast(self, x, p.ty, src_sr, from_v);
     return val;
@@ -1811,7 +1817,7 @@ fn emitAlloca(self: *Codegen, p: tir.Rows.Alloca) !mlir.Value {
     // Count
     const one = self.getI64OneInEntry();
     const count_v: mlir.Value = if (!p.count.isNone())
-        self.value_map.get(p.count.unwrap()).?
+        self.getVal(p.count.unwrap())
     else
         one;
 
@@ -1829,41 +1835,11 @@ fn emitAlloca(self: *Codegen, p: tir.Rows.Alloca) !mlir.Value {
 }
 
 /// Emit the MLIR instructions for a load operation `p`.
-fn emitLoad(self: *Codegen, p: tir.Rows.Load, t: *tir.TIR) !mlir.Value {
+fn emitLoad(self: *Codegen, p: tir.Rows.Load) !mlir.Value {
     const prev_loc = self.pushLocation(p.loc);
     defer self.loc = prev_loc;
-    if (try self.tryEmitTensorElementLoad(p, t)) |elem| return elem;
-    var ptr_val_opt = self.value_map.get(p.ptr);
-    if (ptr_val_opt == null) {
-        // Try materializing or folding known-constant pointers directly to values as a last resort.
-        if (self.def_instr.get(p.ptr)) |pid| {
-            const kdef = t.kind(pid);
-            const res_ty = try self.llvmTypeOf(p.ty);
-            switch (kdef) {
-                .ConstFloat => {
-                    const rowf = t.instrs.get(.ConstFloat, pid);
-                    return self.constFloat(res_ty, rowf.value);
-                },
-                .ConstInt => {
-                    const rowi = t.instrs.get(.ConstInt, pid);
-                    return self.constInt(res_ty, @intCast(rowi.value));
-                },
-                .ConstBool => {
-                    const rowb = t.instrs.get(.ConstBool, pid);
-                    return self.constBool(rowb.value);
-                },
-                else => {},
-            }
-            // Otherwise, attempt on-demand emission
-            _ = try self.emitInstr(pid, t);
-            ptr_val_opt = self.value_map.get(p.ptr);
-        }
-        if (ptr_val_opt == null) {
-            // Last-resort: treat as value load and synthesize zero of result type.
-            return self.zeroOf(try self.llvmTypeOf(p.ty));
-        }
-    }
-    const ptr = ptr_val_opt.?;
+    if (try self.tryEmitTensorElementLoad(p)) |elem| return elem;
+    var ptr = self.getVal(p.ptr);
     if (self.context.type_store.getKind(p.ty) == .Tensor) {
         return self.tensor_slots.get(p.ptr) orelse
             std.debug.panic("tensor load before store", .{});
@@ -1903,16 +1879,12 @@ fn emitLoad(self: *Codegen, p: tir.Rows.Load, t: *tir.TIR) !mlir.Value {
 }
 
 /// Emit the MLIR instructions for the store operation described by `p`.
-fn emitStore(self: *Codegen, p: tir.Rows.Store, t: *tir.TIR) !mlir.Value {
+fn emitStore(self: *Codegen, p: tir.Rows.Store) !mlir.Value {
     const prev_loc = self.pushLocation(p.loc);
     defer self.loc = prev_loc;
-    const v = self.value_map.get(p.value).?;
-    if (try self.handleTensorElementStore(p, v, t)) return .empty();
-    const ptr_opt = self.value_map.get(p.ptr);
-    if (ptr_opt == null) {
-        return error.CompileError;
-    }
-    const ptr = ptr_opt.?;
+    const v = self.getVal(p.value);
+    if (try self.handleTensorElementStore(p, v)) return .empty();
+    const ptr = self.getVal(p.ptr);
     const v_sr = self.srTypeOfValue(p.value);
     const ptr_sr = self.srTypeOfValue(p.ptr);
     if (self.context.type_store.getKind(ptr_sr) == .Ptr and self.context.type_store.getKind(self.context.type_store.get(.Ptr, ptr_sr).elem) == .Tensor) {
@@ -1949,7 +1921,7 @@ fn emitGepInstr(self: *Codegen, ins_id: tir.InstrId, t: *tir.TIR) !mlir.Value {
     const p = t.instrs.get(.Gep, ins_id);
     const prev_loc = self.pushLocation(p.loc);
     defer self.loc = prev_loc;
-    const base = self.value_map.get(p.base).?;
+    const base = self.getVal(p.base);
     const base_sr = self.srTypeOfValue(p.base);
     var elem_mlir: mlir.Type = self.i8_ty;
     if (self.context.type_store.getKind(base_sr) == .Ptr) {
@@ -2010,7 +1982,7 @@ fn emitTupleMake(self: *Codegen, p: tir.Rows.TupleMake, t: *const tir.TIR) !mlir
     for (elems, 0..) |vid, i| {
         const elem_sr = elem_srs[@intCast(i)];
         const elem_mlir = try self.llvmTypeOf(elem_sr);
-        var v = self.value_map.get(vid).?;
+        var v = self.getVal(vid);
         const src_sr = self.srTypeOfValue(vid);
         v = try self.coerceOnBranch(v, elem_mlir, elem_sr, src_sr);
         acc = self.insertAt(acc, v, &.{@intCast(i)});
@@ -2026,8 +1998,8 @@ fn emitRangeMake(self: *Codegen, p: tir.Rows.RangeMake) !mlir.Value {
     const i64t = self.i64_ty;
     const pairTy = mlir.LLVM.getLLVMStructTypeLiteral(self.mlir_ctx, &[_]mlir.Type{ i64t, i64t }, false);
     var acc = self.zeroOf(pairTy);
-    const s = self.value_map.get(p.start).?;
-    const e = self.value_map.get(p.end).?;
+    const s = self.getVal(p.start);
+    const e = self.getVal(p.end);
     const s64 = try self.coerceOnBranch(s, i64t, self.context.type_store.tI64(), self.srTypeOfValue(p.start));
     const e64 = try self.coerceOnBranch(e, i64t, self.context.type_store.tI64(), self.srTypeOfValue(p.end));
     acc = self.insertAt(acc, s64, &.{0});
@@ -2040,7 +2012,7 @@ fn emitBroadcast(self: *Codegen, p: tir.Rows.Broadcast) !mlir.Value {
     const prev_loc = self.pushLocation(p.loc);
     defer self.loc = prev_loc;
     const vector_ty = try self.llvmTypeOf(p.ty);
-    const scalar_val = self.value_map.get(p.value).?;
+    const scalar_val = self.getVal(p.value);
     return self.emitOp("vector.broadcast", EmitOpArgs{
         .operands = &.{scalar_val},
         .results = &.{vector_ty},
@@ -2060,7 +2032,7 @@ fn emitSimdMake(self: *Codegen, p: tir.Rows.ArrayMake, t: *const tir.TIR) !mlir.
     defer self.gpa.free(operands);
 
     for (elems, 0..) |vid, i| {
-        var v = self.value_map.get(vid).?;
+        var v = self.getVal(vid);
         if (!v.getType().equal(elem_mlir)) {
             v = try self.coerceOnBranch(v, elem_mlir, simd_ty.elem, self.srTypeOfValue(vid));
         }
@@ -2091,7 +2063,7 @@ fn emitTensorMake(self: *Codegen, p: tir.Rows.ArrayMake, t: *const tir.TIR) !mli
     defer self.gpa.free(operands);
 
     for (elems, 0..) |vid, i| {
-        var v = self.value_map.get(vid).?;
+        var v = self.getVal(vid);
         if (!v.getType().equal(scalar_elem_mlir)) {
             const src_sr = self.srTypeOfValue(vid);
             v = try self.coerceOnBranch(v, scalar_elem_mlir, tensor_sr.elem, src_sr);
@@ -2123,7 +2095,7 @@ fn emitArrayMake(self: *Codegen, p: tir.Rows.ArrayMake, t: *const tir.TIR) !mlir
     // Array elements are stored in value_pool
     const elems = t.instrs.value_pool.slice(p.elems);
     for (elems, 0..) |vid, i| {
-        var v = self.value_map.get(vid).?;
+        var v = self.getVal(vid);
         // Best-effort: coerce value to the array element type if it doesn't match
         if (!v.getType().equal(elem_mlir)) {
             v = try self.coerceOnBranch(v, elem_mlir, arr_sr.elem, self.srTypeOfValue(vid));
@@ -2137,7 +2109,7 @@ fn emitArrayMake(self: *Codegen, p: tir.Rows.ArrayMake, t: *const tir.TIR) !mlir
 fn emitIndex(self: *Codegen, p: tir.Rows.Index, t: *tir.TIR) !mlir.Value {
     const prev_loc = self.pushLocation(p.loc);
     defer self.loc = prev_loc;
-    const base = self.value_map.get(p.base).?;
+    const base = self.getVal(p.base);
     const res_ty = try self.llvmTypeOf(p.ty);
     const res_sr_kind = self.context.type_store.getKind(p.ty);
     const base_sr_ty = self.srTypeOfValue(p.base);
@@ -2146,7 +2118,7 @@ fn emitIndex(self: *Codegen, p: tir.Rows.Index, t: *tir.TIR) !mlir.Value {
     if (self.context.type_store.getKind(base_sr_ty) == .Tensor) {
         const base_tensor = self.context.type_store.get(.Tensor, base_sr_ty);
         const base_rank: usize = @intCast(base_tensor.rank);
-        const idx_raw = self.value_map.get(p.index).?;
+        const idx_raw = self.getVal(p.index);
         const idx_val = try self.ensureIndexValue(idx_raw);
 
         if (base_rank == 1 and res_sr_kind != .Tensor and res_sr_kind != .Slice) {
@@ -2233,7 +2205,7 @@ fn emitIndex(self: *Codegen, p: tir.Rows.Index, t: *tir.TIR) !mlir.Value {
     }
 
     if (self.context.type_store.getKind(base_sr_ty) == .Simd) {
-        const idx_val = try self.ensureIndexValue(self.value_map.get(p.index).?);
+        const idx_val = try self.ensureIndexValue(self.getVal(p.index));
         const static_pos_attr = mlir.Attribute.denseI64ArrayGet(self.mlir_ctx, &.{mlir.Type.getDynamicSize()});
         return self.emitOp("vector.extract", EmitOpArgs{
             .operands = &.{ base, idx_val },
@@ -2335,9 +2307,9 @@ fn emitIndex(self: *Codegen, p: tir.Rows.Index, t: *tir.TIR) !mlir.Value {
         }
 
         // Compute length: (end - start) + (inclusive ? 1 : 0)
-        const start_v = self.value_map.get(start_vid).?;
-        const end_v = self.value_map.get(end_vid).?;
-        const incl_v = self.value_map.get(incl_vid).?;
+        const start_v = self.getVal(start_vid);
+        const end_v = self.getVal(end_vid);
+        const incl_v = self.getVal(incl_vid);
         const i64t = self.i64_ty;
         // Ensure operands are i64
         const start64 = try self.coerceOnBranch(start_v, i64t, self.context.type_store.tI64(), self.srTypeOfValue(start_vid));
@@ -2493,7 +2465,7 @@ fn emitCall(self: *Codegen, p: tir.Rows.Call, t: *tir.TIR) !mlir.Value {
     var src_sr = try self.gpa.alloc(types.TypeId, args_slice.len);
     defer self.gpa.free(src_sr);
     for (args_slice, 0..) |vid, i| {
-        src_vals[i] = self.value_map.get(vid).?;
+        src_vals[i] = self.getVal(vid);
         src_sr[i] = self.srTypeOfValue(vid);
     }
 
@@ -2842,7 +2814,7 @@ fn emitMlirBlock(self: *Codegen, p: tir.Rows.MlirBlock, t: *tir.TIR) !mlir.Value
         }
 
         for (arg_vids) |arg_vid| {
-            const mlir_val = self.value_map.get(arg_vid).?;
+            const mlir_val = self.getVal(arg_vid);
 
             var str_buf: ArrayList(u8) = .init(self.gpa);
             defer str_buf.deinit();
@@ -2947,7 +2919,6 @@ fn emitMlirBlock(self: *Codegen, p: tir.Rows.MlirBlock, t: *tir.TIR) !mlir.Value
                         }
                     }
                 }
-
                 current_op.removeFromParent();
                 var body = self.module.getBody();
                 body.appendOwnedOperation(current_op);
@@ -3035,7 +3006,7 @@ fn emitInstr(self: *Codegen, ins_id: tir.InstrId, t: *tir.TIR) !mlir.Value {
         .LogicalOr => try self.binBit(.@"or", t.instrs.get(.LogicalOr, ins_id)),
         .LogicalNot => blk: {
             const p = t.instrs.get(.LogicalNot, ins_id);
-            const v = self.value_map.get(p.value).?;
+            const v = self.getVal(p.value);
             break :blk self.arithLogicalNotI1(v, p.loc);
         },
 
@@ -3055,8 +3026,8 @@ fn emitInstr(self: *Codegen, ins_id: tir.InstrId, t: *tir.TIR) !mlir.Value {
 
         // ------------- Memory -------------
         .Alloca => self.emitAlloca(t.instrs.get(.Alloca, ins_id)),
-        .Load => self.emitLoad(t.instrs.get(.Load, ins_id), t),
-        .Store => self.emitStore(t.instrs.get(.Store, ins_id), t),
+        .Load => self.emitLoad(t.instrs.get(.Load, ins_id)),
+        .Store => self.emitStore(t.instrs.get(.Store, ins_id)),
         .Gep => self.emitGepInstr(ins_id, t),
         .GlobalAddr => self.emitGlobalAddr(t.instrs.get(.GlobalAddr, ins_id)),
 
@@ -3074,7 +3045,7 @@ fn emitInstr(self: *Codegen, ins_id: tir.InstrId, t: *tir.TIR) !mlir.Value {
             const fields = t.instrs.sfi_pool.slice(p.fields);
             for (fields) |f_id| {
                 const f = t.instrs.StructFieldInit.get(f_id);
-                const v = self.value_map.get(f.value).?;
+                const v = self.getVal(f.value);
                 acc = self.insertAt(acc, v, &.{@as(i64, @intCast(f.index))});
             }
             break :blk acc;
@@ -3084,8 +3055,8 @@ fn emitInstr(self: *Codegen, ins_id: tir.InstrId, t: *tir.TIR) !mlir.Value {
             const prev_loc = self.pushLocation(p.loc);
             defer self.loc = prev_loc;
             const cty = try self.llvmTypeOf(p.ty);
-            const re = self.value_map.get(p.re).?;
-            const im = self.value_map.get(p.im).?;
+            const re = self.getVal(p.re);
+            const im = self.getVal(p.im);
             const result = self.emitOp("complex.create", EmitOpArgs{
                 .operands = &.{ re, im },
                 .results = &.{cty},
@@ -3096,7 +3067,7 @@ fn emitInstr(self: *Codegen, ins_id: tir.InstrId, t: *tir.TIR) !mlir.Value {
             const p = t.instrs.get(.ExtractElem, ins_id);
             const prev_loc = self.pushLocation(p.loc);
             defer self.loc = prev_loc;
-            const agg = self.value_map.get(p.agg).?;
+            const agg = self.getVal(p.agg);
             const res_ty = try self.llvmTypeOf(p.ty);
             const v = self.extractAt(agg, res_ty, &.{@as(i64, @intCast(p.index))});
             break :blk v;
@@ -3106,8 +3077,8 @@ fn emitInstr(self: *Codegen, ins_id: tir.InstrId, t: *tir.TIR) !mlir.Value {
             const p = t.instrs.get(.InsertElem, ins_id);
             const prev_loc = self.pushLocation(p.loc);
             defer self.loc = prev_loc;
-            const agg = self.value_map.get(p.agg).?;
-            const val = self.value_map.get(p.value).?;
+            const agg = self.getVal(p.agg);
+            const val = self.getVal(p.value);
             const v = self.insertAt(agg, val, &.{@as(i64, @intCast(p.index))});
             break :blk v;
         },
@@ -3116,7 +3087,7 @@ fn emitInstr(self: *Codegen, ins_id: tir.InstrId, t: *tir.TIR) !mlir.Value {
             const p = t.instrs.get(.ExtractField, ins_id);
             const prev_loc = self.pushLocation(p.loc);
             defer self.loc = prev_loc;
-            const agg = self.value_map.get(p.agg).?;
+            const agg = self.getVal(p.agg);
             const res_ty = try self.llvmTypeOf(p.ty);
             // Special-case: Complex field access -> complex.re/complex.im
             const parent_sr = self.srTypeOfValue(p.agg);
@@ -3184,8 +3155,8 @@ fn emitInstr(self: *Codegen, ins_id: tir.InstrId, t: *tir.TIR) !mlir.Value {
             const p = t.instrs.get(.InsertField, ins_id);
             const prev_loc = self.pushLocation(p.loc);
             defer self.loc = prev_loc;
-            const agg = self.value_map.get(p.agg).?;
-            const val = self.value_map.get(p.value).?;
+            const agg = self.getVal(p.agg);
+            const val = self.getVal(p.value);
             const v = self.insertAt(agg, val, &.{@as(i64, @intCast(p.index))});
             break :blk v;
         },
@@ -3202,7 +3173,7 @@ fn emitInstr(self: *Codegen, ins_id: tir.InstrId, t: *tir.TIR) !mlir.Value {
 
             if (!p.payload.isNone()) {
                 const payload_val_id = p.payload.unwrap();
-                const payload_val = self.value_map.get(payload_val_id).?;
+                const payload_val = self.getVal(payload_val_id);
 
                 const struct_ty = self.context.type_store.get(.Struct, p.ty);
                 const union_field = self.context.type_store.field_pool.slice(struct_ty.fields)[1];
@@ -3220,7 +3191,7 @@ fn emitInstr(self: *Codegen, ins_id: tir.InstrId, t: *tir.TIR) !mlir.Value {
             const p = t.instrs.get(.VariantTag, ins_id);
             const prev_loc = self.pushLocation(p.loc);
             defer self.loc = prev_loc;
-            const v = self.value_map.get(p.value).?;
+            const v = self.getVal(p.value);
             const i32ty = mlir.Type.getSignlessIntegerType(self.mlir_ctx, 32);
             const tag = self.extractAt(v, i32ty, &.{0});
             break :blk tag;
@@ -3229,7 +3200,7 @@ fn emitInstr(self: *Codegen, ins_id: tir.InstrId, t: *tir.TIR) !mlir.Value {
             const p = t.instrs.get(.VariantPayloadPtr, ins_id);
             const prev_loc = self.pushLocation(p.loc);
             defer self.loc = prev_loc;
-            const v = self.value_map.get(p.value).?;
+            const v = self.getVal(p.value);
             // Extract field 1 (payload pointer)
             const ptr = self.extractAt(v, self.llvm_ptr_ty, &.{1});
             break :blk ptr;
@@ -3244,7 +3215,7 @@ fn emitInstr(self: *Codegen, ins_id: tir.InstrId, t: *tir.TIR) !mlir.Value {
             const u_mlir = try self.llvmTypeOf(p.ty);
 
             // Figure out the chosen field type and coerce payload to it
-            var payload = self.value_map.get(p.value).?;
+            var payload = self.getVal(p.value);
             const urow = self.context.type_store.get(.Union, p.ty);
             const f_ids = self.context.type_store.field_pool.slice(urow.fields);
             const f_sr = self.context.type_store.Field.get(f_ids[@intCast(p.field_index)]).ty;
@@ -3269,7 +3240,7 @@ fn emitInstr(self: *Codegen, ins_id: tir.InstrId, t: *tir.TIR) !mlir.Value {
             defer self.loc = prev_loc;
 
             // Base & SR type
-            const base = self.value_map.get(p.base).?;
+            const base = self.getVal(p.base);
             const base_is_ptr = base.getType().equal(self.llvm_ptr_ty);
             const union_sr = self.srTypeOfValue(p.base);
             var core_union_sr = union_sr;
@@ -3310,7 +3281,7 @@ fn emitInstr(self: *Codegen, ins_id: tir.InstrId, t: *tir.TIR) !mlir.Value {
             const prev_loc = self.pushLocation(p.loc);
             defer self.loc = prev_loc;
 
-            const base = self.value_map.get(p.base).?;
+            const base = self.getVal(p.base);
             const base_is_ptr = base.getType().equal(self.llvm_ptr_ty);
             const union_sr = self.srTypeOfValue(p.base);
             var core_union_sr = union_sr;
@@ -3343,7 +3314,7 @@ fn emitInstr(self: *Codegen, ins_id: tir.InstrId, t: *tir.TIR) !mlir.Value {
             const p = t.instrs.get(.AddressOf, ins_id);
             const prev_loc = self.pushLocation(p.loc);
             defer self.loc = prev_loc;
-            const v = self.value_map.get(p.value).?;
+            const v = self.getVal(p.value);
             if (mlir.LLVM.isLLVMPointerType(v.getType())) break :blk v;
             break :blk v.opResultGetOwner().getOperand(0);
         },
@@ -3355,9 +3326,9 @@ fn emitInstr(self: *Codegen, ins_id: tir.InstrId, t: *tir.TIR) !mlir.Value {
             const p = t.instrs.get(.Select, ins_id);
             const prev_loc = self.pushLocation(p.loc);
             defer self.loc = prev_loc;
-            const c = self.value_map.get(p.cond).?;
-            const tv = self.value_map.get(p.then_value).?;
-            const ev = self.value_map.get(p.else_value).?;
+            const c = self.getVal(p.cond);
+            const tv = self.getVal(p.then_value);
+            const ev = self.getVal(p.else_value);
             const ty = try self.llvmTypeOf(p.ty);
             break :blk self.arithSelect(c, tv, ev, ty);
         },
@@ -3366,13 +3337,13 @@ fn emitInstr(self: *Codegen, ins_id: tir.InstrId, t: *tir.TIR) !mlir.Value {
             const p = t.instrs.get(.IndirectCall, ins_id);
             const prev_loc = self.pushLocation(p.loc);
             defer self.loc = prev_loc;
-            const callee = self.value_map.get(p.callee).?;
+            const callee = self.getVal(p.callee);
             const args_slice = t.instrs.val_list_pool.slice(p.args);
             var ops = try self.gpa.alloc(mlir.Value, 1 + args_slice.len);
             defer self.gpa.free(ops);
             ops[0] = callee;
             for (args_slice, 0..) |vid, i| {
-                ops[i + 1] = self.value_map.get(vid).?;
+                ops[i + 1] = self.getVal(vid);
             }
 
             const ret_ty = try self.llvmTypeOf(p.ty);
@@ -3415,7 +3386,7 @@ fn emitInlineMlirOperation(
     try arg_types.ensureUnusedCapacity(arg_vids.len);
 
     for (arg_vids) |arg_vid| {
-        const arg_val = self.value_map.get(arg_vid).?;
+        const arg_val = self.getVal(arg_vid);
         try arg_values.append(arg_val);
         try arg_types.append(arg_val.getType());
     }
@@ -3529,8 +3500,8 @@ fn emitCmp(
 ) !mlir.Value {
     const prev_loc = self.pushLocation(p.loc);
     defer self.loc = prev_loc;
-    var lhs = self.value_map.get(p.lhs).?;
-    var rhs = self.value_map.get(p.rhs).?;
+    var lhs = self.getVal(p.lhs);
+    var rhs = self.getVal(p.rhs);
 
     if (mlir.LLVM.isLLVMPointerType(lhs.getType())) {
         lhs = self.emitUnaryValueOp("llvm.ptrtoint", lhs, self.i64_ty);
@@ -3573,8 +3544,7 @@ fn emitTerminator(self: *Codegen, term_id: tir.TermId, t: *tir.TIR) !void {
             if (in_llvm_func) {
                 // LLVM functions still return directly
                 if (!p.value.isNone()) {
-                    const maybe_v = self.value_map.get(p.value.unwrap());
-                    const v = if (maybe_v) |mv| mv else self.zeroOf(ret_ty);
+                    const v = self.getVal(p.value.unwrap());
                     if (ret_ty.equal(self.void_ty)) {
                         _ = self.appendOp("llvm.return", EmitOpArgs{});
                     } else {
@@ -3592,7 +3562,7 @@ fn emitTerminator(self: *Codegen, term_id: tir.TermId, t: *tir.TIR) !void {
                 // For func.func: branch to the join-return block with optional value.
                 const dest = self.ret_join_block.?;
                 if (self.ret_has_value) {
-                    const v = if (!p.value.isNone()) (self.value_map.get(p.value.unwrap()) orelse self.zeroOf(ret_ty)) else self.zeroOf(ret_ty);
+                    const v = if (!p.value.isNone()) self.getVal(p.value.unwrap()) else self.zeroOf(ret_ty);
                     _ = self.appendOp("cf.br", EmitOpArgs{
                         .operands = &.{v},
                         .successors = &.{dest},
@@ -3618,7 +3588,7 @@ fn emitTerminator(self: *Codegen, term_id: tir.TermId, t: *tir.TIR) !void {
             var argv: []mlir.Value = if (args.len <= tmp4.len) tmp4[0..args.len] else try self.gpa.alloc(mlir.Value, args.len);
             defer if (argv.ptr != &tmp4) self.gpa.free(argv);
 
-            for (args, 0..) |avid, i| argv[i] = self.value_map.get(avid).?;
+            for (args, 0..) |avid, i| argv[i] = self.getVal(avid);
 
             _ = self.appendOp("cf.br", EmitOpArgs{
                 .operands = argv,
@@ -3630,7 +3600,7 @@ fn emitTerminator(self: *Codegen, term_id: tir.TermId, t: *tir.TIR) !void {
             const p = t.terms.get(.CondBr, term_id);
             const prev_loc = self.pushLocation(p.loc);
             defer self.loc = prev_loc;
-            const cond = self.value_map.get(p.cond).?;
+            const cond = self.getVal(p.cond);
 
             const tedge = t.terms.Edge.get(p.then_edge);
             const eedge = t.terms.Edge.get(p.else_edge);
@@ -3642,11 +3612,11 @@ fn emitTerminator(self: *Codegen, term_id: tir.TermId, t: *tir.TIR) !void {
 
             var tbuf = try self.gpa.alloc(mlir.Value, targs.len);
             defer self.gpa.free(tbuf);
-            for (targs, 0..) |vid, i| tbuf[i] = self.value_map.get(vid).?;
+            for (targs, 0..) |vid, i| tbuf[i] = self.getVal(vid);
 
             var ebuf = try self.gpa.alloc(mlir.Value, eargs.len);
             defer self.gpa.free(ebuf);
-            for (eargs, 0..) |vid, i| ebuf[i] = self.value_map.get(vid).?;
+            for (eargs, 0..) |vid, i| ebuf[i] = self.getVal(vid);
 
             // one combined operand vector: [cond, then..., else...]
             const total = 1 + tbuf.len + ebuf.len;
@@ -3756,7 +3726,6 @@ fn combineTensorIndexIds(
 /// Lower tensor index expressions into LLVM values based on the given f_id.
 fn buildTensorIndexValues(
     self: *Codegen,
-    t: *tir.TIR,
     indices: []const TensorIndex,
 ) ![]mlir.Value {
     if (indices.len == 0) return &[_]mlir.Value{};
@@ -3774,7 +3743,7 @@ fn buildTensorIndexValues(
                 });
             },
             .value => |vid| blk: {
-                const raw = try self.ensureValue(t, vid);
+                const raw = self.getVal(vid);
                 break :blk try self.ensureIndexValue(raw);
             },
         };
@@ -3782,21 +3751,11 @@ fn buildTensorIndexValues(
     return out;
 }
 
-/// Ensure the TIR value `vid` has a corresponding MLIR value, emitting it if needed.
-fn ensureValue(self: *Codegen, t: *tir.TIR, vid: tir.ValueId) anyerror!mlir.Value {
-    if (self.value_map.get(vid)) |v| return v;
-    if (self.def_instr.get(vid)) |iid| {
-        return try self.emitInstr(iid, t);
-    }
-    return error.CompileError;
-}
-
 /// Handle storing a scalar into a tensor element using indexed GEPs.
 fn handleTensorElementStore(
     self: *Codegen,
     p: tir.Rows.Store,
     value: mlir.Value,
-    t: *tir.TIR,
 ) !bool {
     if (self.tensor_elem_ptrs.get(p.ptr)) |info| {
         if (self.context.type_store.getKind(info.elem_ty) == .Tensor) return false;
@@ -3806,7 +3765,7 @@ fn handleTensorElementStore(
         const tensor_mlir_ty = try self.llvmTypeOf(tensor_ty);
         var base_val = self.tensor_slots.get(info.root_ptr) orelse mlir.Value.empty();
         if (base_val.isNull()) base_val = self.zeroOf(tensor_mlir_ty);
-        const index_vals = try self.buildTensorIndexValues(t, info.indices);
+        const index_vals = try self.buildTensorIndexValues(info.indices);
         defer if (index_vals.len != 0) self.gpa.free(index_vals);
         const new_tensor = try self.tensorInsertScalar(tensor_ty, info.elem_ty, base_val, value, index_vals);
         try self.tensor_slots.put(info.root_ptr, new_tensor);
@@ -3819,7 +3778,6 @@ fn handleTensorElementStore(
 fn tryEmitTensorElementLoad(
     self: *Codegen,
     p: tir.Rows.Load,
-    t: *tir.TIR,
 ) !?mlir.Value {
     if (self.tensor_elem_ptrs.get(p.ptr)) |info| {
         if (self.context.type_store.getKind(info.elem_ty) == .Tensor) return null;
@@ -3829,7 +3787,7 @@ fn tryEmitTensorElementLoad(
         const tensor_mlir_ty = try self.llvmTypeOf(tensor_ty);
         var base_val = self.tensor_slots.get(info.root_ptr) orelse mlir.Value.empty();
         if (base_val.isNull()) base_val = self.zeroOf(tensor_mlir_ty);
-        const index_vals = try self.buildTensorIndexValues(t, info.indices);
+        const index_vals = try self.buildTensorIndexValues(info.indices);
         defer if (index_vals.len != 0) self.gpa.free(index_vals);
         const elem_val = try self.tensorExtractScalar(info.elem_ty, base_val, index_vals);
         return elem_val;
@@ -3933,7 +3891,7 @@ fn emitGep(
             .Const => |c| raw[i] = @intCast(c),
             .Value => |vid| {
                 raw[i] = dyn_min;
-                dyn[ndyn] = self.value_map.get(vid).?;
+                dyn[ndyn] = self.getVal(vid);
                 ndyn += 1;
             },
         }
@@ -4332,8 +4290,8 @@ fn emitSaturatingIntBinary(
     const prev_loc = self.pushLocation(p.loc);
     defer self.loc = prev_loc;
 
-    const lhs = self.value_map.get(p.lhs).?;
-    const rhs = self.value_map.get(p.rhs).?;
+    const lhs = self.getVal(p.lhs);
+    const rhs = self.getVal(p.rhs);
     const res_ty = try self.llvmTypeOf(p.ty);
     const base_width = cast.intOrFloatWidth(res_ty) catch unreachable;
     std.debug.assert(base_width > 0);
@@ -4414,10 +4372,9 @@ fn ensureDeclFromCall(self: *Codegen, p: tir.Rows.Call, t: *const tir.TIR) !Func
     const args_slice = t.instrs.val_list_pool.slice(p.args);
     var arg_tys = try self.gpa.alloc(mlir.Type, args_slice.len);
     defer self.gpa.free(arg_tys);
-    for (args_slice, 0..) |vid, i| arg_tys[i] = self.value_map.get(vid).?.getType();
+    for (args_slice, 0..) |vid, i| arg_tys[i] = self.getVal(vid).getType();
     const ret_ty = try self.llvmTypeOf(p.ty);
     const name = t.instrs.strs.get(p.callee);
-    const callee_id = p.callee;
 
     if (std.mem.startsWith(u8, name, "m$")) {
         return .{
@@ -4461,7 +4418,7 @@ fn ensureDeclFromCall(self: *Codegen, p: tir.Rows.Call, t: *const tir.TIR) !Func
         .owns_param_types = true,
         .dbg_subprogram = null,
     };
-    _ = try self.func_syms.put(callee_id, info);
+    _ = try self.func_syms.put(p.callee, info);
     return info;
 }
 
@@ -5175,7 +5132,7 @@ pub fn llvmTypeOf(self: *Codegen, ty: types.TypeId) !mlir.Type {
         .F64 => self.f64_ty,
         .Usize => self.i64_ty,
 
-        .Any, .Function, .Ptr, .MlirModule, .MlirAttribute, .MlirType => self.llvm_ptr_ty,
+        .Function, .Ptr, .MlirModule, .MlirAttribute, .MlirType => self.llvm_ptr_ty,
 
         .String, .Slice => blk: {
             // { ptr, len } (opaque ptr for data)
@@ -5243,6 +5200,11 @@ pub fn llvmTypeOf(self: *Codegen, ty: types.TypeId) !mlir.Type {
             const opt_ty = self.context.type_store.get(.Optional, ty);
             if (self.context.type_store.isOptionalPointer(ty)) {
                 break :blk try self.llvmTypeOf(opt_ty.elem);
+            }
+            const elem_kind = self.context.type_store.getKind(opt_ty.elem);
+            if (elem_kind == .Void) {
+                const fields = [_]mlir.Type{self.i1_ty};
+                break :blk mlir.LLVM.getLLVMStructTypeLiteral(self.mlir_ctx, &fields, false);
             }
             const inner = try self.llvmTypeOf(opt_ty.elem);
             const fields = [_]mlir.Type{ self.i1_ty, inner };
@@ -5351,6 +5313,10 @@ pub fn llvmTypeOf(self: *Codegen, ty: types.TypeId) !mlir.Type {
         .TypeType => return self.i64_ty,
         .Ast => return self.llvm_ptr_ty,
         .TypeError => return error.CompilationFailed,
+        .Any => {
+            self.loc.getAttribute().dump();
+            std.debug.panic("We shouldn't have any type in codegen, all any must be resolved by now\n", .{});
+        },
         else => std.debug.panic("unhandled type: {}", .{self.context.type_store.getKind(ty)}),
     };
 }

@@ -777,7 +777,7 @@ pub fn lowerMatch(
 
     // Decide if this match-expression needs to produce a value
     const out_ty_guess = expected_ty orelse self.getExprType(ctx, a, id);
-    const produce_value = (expected_ty != null) and !self.isVoid(out_ty_guess);
+    const produce_value = (expected_ty != null) and !self.isVoid(out_ty_guess) and self.context.type_store.getKind(out_ty_guess) != .Any;
 
     if (produce_value) {
         // ------- value-producing path -------
@@ -915,7 +915,7 @@ pub fn lowerMatch(
         if (arms.len == 0) {
             try f.builder.br(blk, exit_blk.id, &.{}, loc);
             blk.* = exit_blk;
-            return self.safeUndef(blk, self.context.type_store.tAny(), loc);
+            return blk.builder.tirValue(.ConstBool, blk, self.context.type_store.tBool(), loc, .{ .value = false });
         }
 
         const values = try self.gpa.alloc(u64, arms.len);
@@ -951,7 +951,7 @@ pub fn lowerMatch(
             try f.builder.endBlock(f, default_blk);
 
             blk.* = exit_blk;
-            return self.safeUndef(blk, self.context.type_store.tAny(), loc);
+            return blk.builder.tirValue(.ConstBool, blk, self.context.type_store.tBool(), loc, .{ .value = false });
         }
 
         // General path (no value): chained tests, fallthrough to exit
@@ -1012,7 +1012,7 @@ pub fn lowerMatch(
         }
 
         blk.* = exit_blk;
-        return self.safeUndef(blk, self.context.type_store.tAny(), loc);
+        return blk.builder.tirValue(.ConstBool, blk, self.context.type_store.tBool(), loc, .{ .value = false });
     }
 }
 
@@ -1111,7 +1111,7 @@ pub fn lowerWhile(
     } else {
         _ = ctx.loop_stack.pop();
         blk.* = exit_blk;
-        return self.safeUndef(blk, self.context.type_store.tAny(), loc);
+        return blk.builder.tirValue(.ConstBool, blk, self.context.type_store.tBool(), loc, .{ .value = false });
     }
 }
 
@@ -1281,7 +1281,7 @@ pub fn lowerFor(
     } else {
         _ = ctx.loop_stack.pop();
         blk.* = exit_blk;
-        return self.safeUndef(blk, self.context.type_store.tAny(), loc);
+        return blk.builder.tirValue(.ConstBool, blk, self.context.type_store.tBool(), loc, .{ .value = false });
     }
 }
 /// Lower a pattern binding during `match` or `for` lowering and record introduced symbols.

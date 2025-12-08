@@ -129,16 +129,19 @@ pub fn build(b: *std.Build) void {
         .root_module = mod,
     });
     const run_mod_tests = b.addRunArtifact(mod_tests);
-
+    const test_filters = b.option([]const []const u8, "test-filter", "Skip tests that do not match any filter") orelse &[0][]const u8{};
     const exe_tests = b.addTest(.{
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("tests/test_main.zig"),
-            .target = target,
-            .optimize = optimize,
-            .imports = &.{
-                .{ .name = "compiler", .module = mod },
+        .root_module = b.createModule(
+            .{
+                .root_source_file = b.path("tests/test_main.zig"),
+                .target = target,
+                .optimize = optimize,
+                .imports = &.{
+                    .{ .name = "compiler", .module = mod },
+                },
             },
-        }),
+        ),
+        .filters = test_filters,
     });
     exe_tests.use_llvm = use_llvm;
     linkMLIR(LLVM_HOME_S, exe_tests) catch |err| {
