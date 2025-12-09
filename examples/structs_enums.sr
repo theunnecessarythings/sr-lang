@@ -6,8 +6,8 @@ event := Event.Click{ x: 100, y: 50 }
 
 // Struct definition
 Point :: struct {
-  x: i32,
-  y: i32,
+    x: i32,
+    y: i32,
 }
 
 //// TODO: Idea
@@ -16,15 +16,11 @@ Point :: struct {
 // @[some_comptime_constraint] width: i32, 
 //  height: i32,
 //}
-
 some_comptime_constraint :: proc(field: Field) bool {
-  // Example set the field to private
-  print("Field {} is set to private", field.name)
-  return false // false indicates compile-time error
+    // Example set the field to private
+    print("Field {} is set to private", field.name)
+    return false // false indicates compile-time error
 }
-
-
-
 
 // Struct instantiation
 point := Point{ x: 10, y: 20 }
@@ -36,6 +32,7 @@ IntOrFloat :: union {
     i: i32,
     f: f32,
 }
+
 u := IntOrFloat{ i: 123 }
 
 // Tuple-like struct (using a type alias for a tuple type)
@@ -48,30 +45,33 @@ unit_struct := UnitStruct{}
 
 // C-style enum
 State :: enum {
-  Running,
-  Walking,
+    Running,
+    Walking,
 }
+
 state := State.Running
 
 // Integer-backed enum
 MyInt :: enum(u8) {
-  Two = 2,
-  Three = 24,
+    Two = 2,
+    Three = 24,
 }
 
 // Variant definition (sum type)
 Message :: variant {
-  Write([]u8),
-  Read(bool),
-  Nothing,
+    Write(string),
+    Read(bool),
+    Nothing,
 }
+
 message := Message.Write("hello")
 
 // Variant with named fields (struct-like variants)
 Event :: variant {
-  Click {x: i32, y: i32},
-  Resize {width: i32, height: i32},
+    Click {x: i32, y: i32},
+    Resize {width: i32, height: i32},
 }
+
 event := Event.Click{ x: 100, y: 50 }
 
 // Accessing struct fields

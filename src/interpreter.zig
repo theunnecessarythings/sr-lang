@@ -473,7 +473,7 @@ pub const Interpreter = struct {
             const field_ty = try self.typeIdFromTypeExpr(field.ty);
             buf[i] = .{ .name = field.name, .ty = field_ty };
         }
-        const struct_ty = ts.mkStruct(buf);
+        const struct_ty = ts.mkStruct(buf, 0);
         return Value{ .Type = struct_ty };
     }
 
@@ -519,7 +519,7 @@ pub const Interpreter = struct {
                     const ty = try self.typeIdFromTypeExpr(sf.ty);
                     field_buf[j] = .{ .name = sf.name, .ty = ty };
                 }
-                return ts.mkStruct(field_buf);
+                return ts.mkStruct(field_buf, 0);
             },
         };
     }

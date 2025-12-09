@@ -633,7 +633,7 @@ pub const Rows = struct {
     pub const Function = struct { params: RangeType, result: TypeId, is_variadic: bool, is_pure: bool, is_extern: bool };
     pub const Field = struct { name: StrId, ty: TypeId };
     pub const EnumMember = struct { name: StrId, value: i64 };
-    pub const Struct = struct { fields: RangeField };
+    pub const Struct = struct { fields: RangeField, provenance: u64 };
     pub const Union = struct { fields: RangeField };
     pub const Enum = struct { members: RangeEnumMember, tag_type: TypeId };
     pub const Variant = struct { variants: RangeField };
@@ -1211,9 +1211,9 @@ pub const TypeStore = struct {
     /// StructFieldArg struct definition used by the compiler.
     pub const StructFieldArg = struct { name: StrId, ty: TypeId };
     /// mkStruct type system helper.
-    pub fn mkStruct(self: *TypeStore, fields: []const StructFieldArg) TypeId {
+    pub fn mkStruct(self: *TypeStore, fields: []const StructFieldArg, provenance: u64) TypeId {
         // Build interning key arrays
-        if (self.findStruct(fields)) |id| return id;
+        if (self.findStruct(fields, provenance)) |id| return id;
         var ids = self.gpa.alloc(FieldId, fields.len) catch @panic("OOM");
         defer self.gpa.free(ids);
         var i: usize = 0;
@@ -1222,7 +1222,7 @@ pub const TypeStore = struct {
             ids[i] = fid;
         }
         const r = self.field_pool.pushMany(self.gpa, ids);
-        return self.addLocked(.Struct, .{ .fields = r });
+        return self.addLocked(.Struct, .{ .fields = r, .provenance = provenance });
     }
     /// mkUnion type system helper.
     pub fn mkUnion(self: *TypeStore, fields: []const StructFieldArg) TypeId {
@@ -1425,10 +1425,10 @@ pub const TypeStore = struct {
         });
     }
     /// findStruct type system helper.
-    fn findStruct(self: *TypeStore, fields: []const StructFieldArg) ?TypeId {
+    fn findStruct(self: *TypeStore, fields: []const StructFieldArg, provenance: u64) ?TypeId {
         // Compare by name + type sequence
         // Key that pairs struct field names with their types for equality checks.
-        const key_names_and_tys = struct { names: []const StrId, tys: []const TypeId };
+        const key_names_and_tys = struct { names: []const StrId, tys: []const TypeId, prov: u64 };
         var names = self.gpa.alloc(StrId, fields.len) catch @panic("OOM");
         defer self.gpa.free(names);
         var tys = self.gpa.alloc(TypeId, fields.len) catch @panic("OOM");
@@ -1438,10 +1438,11 @@ pub const TypeStore = struct {
             names[i] = fields[i].name;
             tys[i] = fields[i].ty;
         }
-        const key_val = key_names_and_tys{ .names = names, .tys = tys };
+        const key_val = key_names_and_tys{ .names = names, .tys = tys, .prov = provenance };
         return self.findMatch(.Struct, key_val, struct {
             /// eq type system helper.
             fn eq(s: *TypeStore, row: Rows.Struct, k: anytype) bool {
+                if (row.provenance != k.prov) return false;
                 const ids = s.field_pool.slice(row.fields);
                 if (ids.len != k.names.len) return false;
                 var j: usize = 0;

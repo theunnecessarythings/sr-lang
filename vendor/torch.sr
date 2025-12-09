@@ -6,6 +6,8 @@ torch_bindings :: import "torch_bindings"
 io :: import "std/io"
 os :: import "std/os"
 
+Tensor :: struct {t: torch_bindings.Tensor}
+
 // ===== Pool + guards + simple tracked creators =====
 __pool: [dyn]torch_bindings.Tensor = []
 
@@ -252,8 +254,6 @@ Sequential.forward :: proc(self: *Sequential, input: *Tensor) Tensor {
     }
     return out
 }
-
-Tensor :: struct {t: torch_bindings.Tensor}
 
 Tensor.from_blob :: proc(data: *void, dims: *i64, ndims: usize, strides: *i64, nstrides: usize, dtype: i32, device: i32) Tensor {
     raw := torch_bindings.at_tensor_of_blob(data, dims, ndims, strides, nstrides, dtype, device)

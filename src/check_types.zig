@@ -1273,7 +1273,7 @@ pub fn typeFromTypeExprWithBindings(
                 status = status and res[0];
                 buf[i] = .{ .name = f.name, .ty = res[1] };
             }
-            break :blk_struct .{ status, ts.mkStruct(buf) };
+            break :blk_struct .{ status, ts.mkStruct(buf, @as(u64, ast_unit.file_id) << 32 | id.toRaw()) };
         },
         .ArrayType => blk_at: {
             const row = ast_unit.exprs.get(.ArrayType, id);
@@ -1789,9 +1789,23 @@ pub fn typeFromTypeExpr(self: *Checker, ctx: *Checker.CheckerContext, ast_unit: 
                 }
                 const res = try typeFromTypeExpr(self, ctx, ast_unit, f.ty);
                 status = status and res[0];
+                if (!f.value.isNone()) {
+                    const val_ty = try self.checkExpr(ctx, ast_unit, f.value.unwrap());
+                    if (self.typeKind(val_ty) != .TypeError and res[0]) {
+                        const field_ty = res[1];
+                        if (self.assignable(val_ty, field_ty) != .success) {
+                            try self.context.diags.addError(
+                                ast_unit.exprs.locs.get(f.loc),
+                                .type_annotation_mismatch,
+                                .{ field_ty, val_ty },
+                            );
+                            status = false;
+                        }
+                    }
+                }
                 buf[i] = .{ .name = f.name, .ty = res[1] };
             }
-            break :blk_sty .{ status, ts.mkStruct(buf) };
+            break :blk_sty .{ status, ts.mkStruct(buf, @as(u64, ast_unit.file_id) << 32 | id.toRaw()) };
         },
         .UnionType => blk_un: {
             const row = ast_unit.exprs.get(.UnionType, id);
@@ -1814,9 +1828,22 @@ pub fn typeFromTypeExpr(self: *Checker, ctx: *Checker.CheckerContext, ast_unit: 
                 } else {
                     gop.value_ptr.* = sf.loc;
                 }
-                // Validate field types resolve
                 const res = try typeFromTypeExpr(self, ctx, ast_unit, sf.ty);
                 status = status and res[0];
+                if (!sf.value.isNone()) {
+                    const val_ty = try self.checkExpr(ctx, ast_unit, sf.value.unwrap());
+                    if (self.typeKind(val_ty) != .TypeError and res[0]) {
+                        const field_ty = res[1];
+                        if (self.assignable(val_ty, field_ty) != .success) {
+                            try self.context.diags.addError(
+                                ast_unit.exprs.locs.get(sf.loc),
+                                .type_annotation_mismatch,
+                                .{ field_ty, val_ty },
+                            );
+                            status = false;
+                        }
+                    }
+                }
                 buf[i] = .{ .name = sf.name, .ty = res[1] };
             }
             break :blk_un .{ status, ts.mkUnion(buf) };
@@ -1969,7 +1996,7 @@ pub fn typeFromTypeExpr(self: *Checker, ctx: *Checker.CheckerContext, ast_unit: 
                                 .ty = res[1],
                             };
                         }
-                        break :blk_struct ts.mkStruct(field_buf);
+                        break :blk_struct ts.mkStruct(field_buf, 0);
                     },
                 };
                 case_buf[i] = .{ .name = vf.name, .ty = payload_ty };
@@ -2038,7 +2065,7 @@ pub fn typeFromTypeExpr(self: *Checker, ctx: *Checker.CheckerContext, ast_unit: 
                             status = status and res[0];
                             field_buf[j] = .{ .name = sf.name, .ty = res[1] };
                         }
-                        break :blk_struct ts.mkStruct(field_buf);
+                        break :blk_struct ts.mkStruct(field_buf, 0);
                     },
                 };
                 case_buf[i] = .{ .name = vf.name, .ty = payload_ty };

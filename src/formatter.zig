@@ -377,6 +377,73 @@ const Formatter = struct {
         try self.printExpr(row.rhs);
     }
 
+    fn tryFormatIfInline(self: *Formatter, id: cst.ExprId) !bool {
+        const node = self.exprs.get(.If, id);
+
+        // Check then_block
+        if (self.exprs.kind(node.then_block) != .Block) return false;
+        const then_blk = self.exprs.get(.Block, node.then_block);
+        const then_decls = self.exprs.decl_pool.slice(then_blk.items);
+        if (then_decls.len != 1) return false;
+
+        // Check else_block
+        var else_decl: ?cst.DeclId = null;
+        if (!node.else_block.isNone()) {
+            const else_id = node.else_block.unwrap();
+            if (self.exprs.kind(else_id) != .Block) return false;
+            const else_blk = self.exprs.get(.Block, else_id);
+            const else_decls = self.exprs.decl_pool.slice(else_blk.items);
+            if (else_decls.len != 1) return false;
+            else_decl = else_decls[0];
+        }
+
+        const snapshot = self.*;
+        self.builder = .{};
+        errdefer self.builder.deinit(self.gpa);
+
+        try self.printLiteral("if ");
+        try self.printExpr(node.cond);
+        try self.printLiteral(" { ");
+        try self.printDecl(then_decls[0]);
+        try self.printLiteral(" }");
+
+        if (else_decl) |ed| {
+            try self.printLiteral(" else { ");
+            try self.printDecl(ed);
+            try self.printLiteral(" }");
+        }
+
+        const text = self.builder.items;
+        if (std.mem.indexOfScalar(u8, text, '\n') != null) {
+            self.builder.deinit(self.gpa);
+            self.* = snapshot;
+            return false;
+        }
+
+        var pre_len: usize = 0;
+        if (snapshot.builder.items.len > 0) {
+            var i = snapshot.builder.items.len;
+            while (i > 0) {
+                i -= 1;
+                if (snapshot.builder.items[i] == '\n') break;
+                pre_len += 1;
+            }
+        }
+
+        if (pre_len + text.len > 100) {
+            self.builder.deinit(self.gpa);
+            self.* = snapshot;
+            return false;
+        }
+
+        var new_state = self.*;
+        new_state.builder = snapshot.builder;
+        try new_state.builder.appendSlice(self.gpa, text);
+        self.builder.deinit(self.gpa);
+        self.* = new_state;
+        return true;
+    }
+
     /// Return the source location recorded for expression `eid`.
     inline fn exprLocFromId(exprs: *cst.ExprStore, eid: cst.ExprId, kind: cst.ExprKind) Loc {
         @setEvalBranchQuota(10000);
@@ -676,6 +743,7 @@ const Formatter = struct {
                 }
             },
             .If => {
+                if (try self.tryFormatIfInline(id)) return;
                 const node = self.exprs.get(.If, id);
                 try self.printLiteral("if ");
                 try self.printExpr(node.cond);

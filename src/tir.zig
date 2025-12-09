@@ -125,6 +125,8 @@ pub const OpKind = enum(u16) {
     ComplexMake,
     RangeMake,
     Broadcast,
+    // Debug
+    DbgDeclare,
 };
 
 /// TermKind enum definition used by the compiler.
@@ -244,6 +246,8 @@ pub const Rows = struct {
     pub const RangeMake = struct { result: ValueId, ty: types.TypeId, start: ValueId, end: ValueId, inclusive: ValueId, loc: OptLocId };
     /// Broadcast struct definition used by the compiler.
     pub const Broadcast = struct { result: ValueId, ty: types.TypeId, value: ValueId, loc: OptLocId };
+    /// DbgDeclare struct definition used by the compiler.
+    pub const DbgDeclare = struct { result: ValueId, ty: types.TypeId, value: ValueId, name: StrId, loc: OptLocId };
 
     // Terminator rows
     /// Return struct definition used by the compiler.
@@ -315,6 +319,7 @@ pub inline fn RowT(comptime K: OpKind) type {
         .ComplexMake => Rows.ComplexMake,
         .RangeMake => Rows.RangeMake,
         .Broadcast => Rows.Broadcast,
+        .DbgDeclare => Rows.DbgDeclare,
     };
 }
 /// TermRowT TIR builder helper.
@@ -403,6 +408,7 @@ pub const InstrStore = struct {
     ComplexMake: Table(Rows.ComplexMake) = .{},
     RangeMake: Table(Rows.RangeMake) = .{},
     Broadcast: Table(Rows.Broadcast) = .{},
+    DbgDeclare: Table(Rows.DbgDeclare) = .{},
 
     // aux tables
     GepIndex: Table(Rows.GepIndex) = .{},
@@ -1874,6 +1880,18 @@ pub const TirPrinter = struct {
                 try self.writer.writeAll(" ");
                 try self.pv(r.result);
                 try self.writer.writeAll(" = Broadcast value=");
+                try self.pv(r.value);
+                try self.writer.print(" : {f})\n", .{self.tf(r.ty)});
+            },
+
+            .DbgDeclare => {
+                const r = self.tir.instrs.get(.DbgDeclare, iid);
+                try self.ws();
+                try self.writer.writeByte('(');
+                try self.pi(iid);
+                try self.writer.writeAll(" ");
+                try self.pv(r.result);
+                try self.writer.print(" = DbgDeclare name=\"{s}\" value=", .{self.s(r.name)});
                 try self.pv(r.value);
                 try self.writer.print(" : {f})\n", .{self.tf(r.ty)});
             },

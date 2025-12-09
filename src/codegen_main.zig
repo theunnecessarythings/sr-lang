@@ -218,7 +218,6 @@ val_types: std.AutoHashMap(tir.ValueId, types.TypeId), // SR types of SSA values
 def_instr: std.AutoHashMap(tir.ValueId, tir.InstrId), // SSA def site
 /// Counter used when emitting and naming inline helper operations.
 inline_mlir_counter: u32 = 0,
-
 /// Cache for LLVM values that represent constant addresses.
 global_addr_cache: std.StringHashMap(mlir.Value),
 /// Functions that must remain as `llvm.func` due to taking addresses.
@@ -1332,6 +1331,7 @@ fn getInstrResultId(_: *Codegen, t: *tir.TIR, id: tir.InstrId) ?tir.ValueId {
         inline else => |k| return t.instrs.get(k, id).result,
         inline .Add, .Sub, .Mul, .BinWrapAdd, .BinWrapSub, .BinWrapMul, .BinSatAdd, .BinSatSub, .BinSatMul, .BinSatShl, .Div, .Mod, .Shl, .Shr, .BitAnd, .BitOr, .BitXor, .CmpEq, .CmpNe, .CmpLt, .CmpLe, .CmpGt, .CmpGe, .LogicalAnd, .LogicalOr => |k| return t.instrs.get(k, id).result,
         inline .CastNormal, .CastBit, .CastSaturate, .CastWrap, .CastChecked => |k| return t.instrs.get(k, id).result,
+        .DbgDeclare => return t.instrs.get(.DbgDeclare, id).result,
         .Store => return null,
         .MlirBlock => {
             const p = t.instrs.get(.MlirBlock, id);
@@ -1347,6 +1347,7 @@ fn instrResultSrType(_: *Codegen, t: *tir.TIR, id: tir.InstrId) ?types.TypeId {
         inline else => |k| t.instrs.get(k, id).ty,
         inline .Add, .Sub, .Mul, .BinWrapAdd, .BinWrapSub, .BinWrapMul, .BinSatAdd, .BinSatSub, .BinSatMul, .BinSatShl, .Div, .Mod, .Shl, .Shr, .BitAnd, .BitOr, .BitXor, .CmpEq, .CmpNe, .CmpLt, .CmpLe, .CmpGt, .CmpGe, .LogicalAnd, .LogicalOr => |k| t.instrs.get(k, id).ty,
         inline .CastNormal, .CastBit, .CastSaturate, .CastWrap, .CastChecked => |k| t.instrs.get(k, id).ty,
+        .DbgDeclare => t.instrs.get(.DbgDeclare, id).ty,
         .Store => null,
     };
 }
@@ -3035,6 +3036,13 @@ fn emitInstr(self: *Codegen, ins_id: tir.InstrId, t: *tir.TIR) !mlir.Value {
         .TupleMake => self.emitTupleMake(t.instrs.get(.TupleMake, ins_id), t),
         .RangeMake => self.emitRangeMake(t.instrs.get(.RangeMake, ins_id)),
         .Broadcast => self.emitBroadcast(t.instrs.get(.Broadcast, ins_id)),
+        .DbgDeclare => blk: {
+            const p = t.instrs.get(.DbgDeclare, ins_id);
+            const v = self.getVal(p.value);
+            const name = t.instrs.strs.get(p.name);
+            try debug.emitLocalVariable(self, v, p.value, t, name, p.loc);
+            break :blk .empty();
+        },
         .ArrayMake => self.emitArrayMake(t.instrs.get(.ArrayMake, ins_id), t),
         .StructMake => blk: {
             const p = t.instrs.get(.StructMake, ins_id);
@@ -5160,7 +5168,7 @@ pub fn llvmTypeOf(self: *Codegen, ty: types.TypeId) !mlir.Type {
             const entry_sr_ty = self.context.type_store.mkStruct(&.{
                 .{ .name = key_name, .ty = map_ty.key },
                 .{ .name = val_name, .ty = map_ty.value },
-            });
+            }, 0);
             const entry_ptr_ty = try self.llvmTypeOf(self.context.type_store.mkPtr(entry_sr_ty, false));
             // DynArray<Entry> = { ptr, len, cap }
             const dyn_fields = [_]mlir.Type{ entry_ptr_ty, self.i64_ty, self.i64_ty };

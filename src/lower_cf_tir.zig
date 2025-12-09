@@ -3,6 +3,7 @@ const ast = @import("ast.zig");
 const tir = @import("tir.zig");
 const types = @import("types.zig");
 const std = @import("std");
+const codegen = @import("codegen_main.zig");
 const List = std.ArrayList;
 const ValueBinding = LowerTir.ValueBinding;
 const check_pattern_matching = @import("check_pattern_matching.zig");
@@ -70,8 +71,19 @@ pub const Env = struct {
         self.marks.deinit(gpa);
     }
     /// Bind `name` to `vb` for the remainder of this scope.
-    pub fn bind(self: *Env, gpa: std.mem.Allocator, _: *ast.Ast, name: tir.StrId, vb: ValueBinding) !void {
+    pub fn bind(self: *Env, gpa: std.mem.Allocator, name: tir.StrId, vb: ValueBinding, builder: *tir.Builder, blk: *tir.Builder.BlockFrame, loc: tir.OptLocId) !void {
         try self.map.put(gpa, name, vb);
+        if (codegen.enable_debug_info) {
+            const res = builder.freshValue();
+            const iid = builder.t.instrs.add(.DbgDeclare, .{
+                .result = res,
+                .ty = vb.ty,
+                .value = vb.value,
+                .name = name,
+                .loc = loc,
+            });
+            try blk.instrs.append(gpa, iid);
+        }
     }
     /// Lookup the current binding for `s`, if any.
     pub fn lookup(self: *Env, s: ast.StrId) ?ValueBinding {
@@ -1300,11 +1312,11 @@ pub fn bindPattern(
     switch (a.kind(pid)) {
         .Binding => {
             const nm = a.pats.get(.Binding, pid).name;
-            try env.bind(self.gpa, a, nm, .{ .value = value, .ty = vty, .is_slot = false });
+            try env.bind(self.gpa, nm, .{ .value = value, .ty = vty, .is_slot = false }, f.builder, blk, loc);
         },
         .At => {
             const at = a.pats.get(.At, pid);
-            try env.bind(self.gpa, a, at.binder, .{ .value = value, .ty = vty, .is_slot = false });
+            try env.bind(self.gpa, at.binder, .{ .value = value, .ty = vty, .is_slot = false }, f.builder, blk, loc);
             try bindPattern(self, ctx, a, env, f, blk, at.pattern, value, vty);
         },
         .Tuple => {

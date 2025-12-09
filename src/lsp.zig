@@ -53,11 +53,13 @@ const AnalysisCache = struct {
     }
 
     fn ensure(self: *AnalysisCache, uri: []const u8, doc: *const DocumentStore.Document) !?*Entry {
-        if (self.map.getPtr(uri)) |existing| {
-            if (existing.version == doc.version) return existing;
+        if (self.map.getPtr(uri)) |entry| {
+            if (entry.version == doc.version) {
+                return entry;
+            }
         }
 
-        // Drop stale entry if present.
+        // Only remove if the version is stale or it doesn't exist
         self.remove(uri);
 
         var context: lib.compile.Context = .init(self.gpa);
@@ -170,6 +172,7 @@ const HoverInfo = struct {
 };
 
 const TextDocumentIdentifier = struct { uri: []const u8 };
+const VersionedTextDocumentIdentifier = struct { uri: []const u8, version: u64 };
 const TextDocumentParams = struct { textDocument: TextDocumentIdentifier };
 const TextDocumentPositionParams = struct {
     textDocument: TextDocumentIdentifier,
@@ -258,10 +261,11 @@ const TextDocumentOpenParams = struct {
     textDocument: struct {
         uri: []const u8,
         text: []const u8,
+        version: u64,
     },
 };
 const TextDocumentChangeParams = struct {
-    textDocument: TextDocumentIdentifier,
+    textDocument: VersionedTextDocumentIdentifier,
     contentChanges: []const struct { text: []const u8 },
 };
 
@@ -338,7 +342,7 @@ const DocumentStore = struct {
     }
 
     /// Associate `text` with `uri`, replacing existing content if present.
-    fn set(self: *DocumentStore, uri: []const u8, text: []const u8) !void {
+    fn set(self: *DocumentStore, uri: []const u8, text: []const u8, client_version: u64) !void {
         const dup_text = try self.gpa.dupe(u8, text);
         errdefer self.gpa.free(dup_text);
         const line_starts = try buildLineStarts(self.gpa, dup_text);
@@ -353,7 +357,7 @@ const DocumentStore = struct {
             doc.text = dup_text;
             doc.line_starts = line_starts;
             doc.z_text = z_text;
-            doc.version += 1;
+            doc.version = client_version;
             return;
         }
 
@@ -362,7 +366,7 @@ const DocumentStore = struct {
         try self.map.put(self.gpa, dup_uri, .{
             .text = dup_text,
             .line_starts = line_starts,
-            .version = 1,
+            .version = client_version,
             .z_text = z_text,
         });
     }
@@ -657,24 +661,25 @@ fn respondInitialize(out: *std.Io.Writer, gpa: std.mem.Allocator, id: u64) !void
 
 /// Handle `textDocument/didOpen` by caching the document's text.
 fn onDidOpen(out: *std.Io.Writer, gpa: std.mem.Allocator, docs: *DocumentStore, analysis: *AnalysisCache, params: json.Value) !void {
-    // Parameters payload for `textDocument/didOpen` notifications.
     var p = try json.parseFromValue(TextDocumentOpenParams, gpa, params, .{ .ignore_unknown_fields = true });
     defer p.deinit();
-    try docs.set(p.value.textDocument.uri, p.value.textDocument.text);
+    try docs.set(p.value.textDocument.uri, p.value.textDocument.text, p.value.textDocument.version);
+
     analysis.remove(p.value.textDocument.uri);
+
     try publishDiagnostics(out, gpa, docs, analysis, p.value.textDocument.uri);
     try notifySemanticTokensRefresh(out, gpa);
 }
 
 /// Handle `textDocument/didChange` by updating stored text ranges.
 fn onDidChange(out: *std.Io.Writer, gpa: std.mem.Allocator, docs: *DocumentStore, analysis: *AnalysisCache, params: json.Value) !void {
-    // JSON parameters for `textDocument/didChange`.
-    // Parameters payload for `textDocument/didChange` notifications.
     var p = try json.parseFromValue(TextDocumentChangeParams, gpa, params, .{ .ignore_unknown_fields = true });
     defer p.deinit();
     if (p.value.contentChanges.len == 0) return;
-    try docs.set(p.value.textDocument.uri, p.value.contentChanges[0].text);
-    analysis.remove(p.value.textDocument.uri);
+
+    // Update the document text and version
+    try docs.set(p.value.textDocument.uri, p.value.contentChanges[0].text, p.value.textDocument.version);
+
     try publishDiagnostics(out, gpa, docs, analysis, p.value.textDocument.uri);
     try notifySemanticTokensRefresh(out, gpa);
 }
@@ -1946,7 +1951,12 @@ fn onSemanticTokensFull(out: *std.Io.Writer, gpa: std.mem.Allocator, docs: *Docu
     };
 
     if (docs.get(uri)) |doc| {
-        const data = try computeSemanticTokens(gpa, uri, doc, analysis);
+        const data = computeSemanticTokens(gpa, uri, doc, analysis) catch |err| {
+            std.debug.print("[lsp] computeSemanticTokens failed: {s}\n", .{@errorName(err)});
+            const empty = [_]u32{};
+            try writeJson(out, gpa, Resp{ .id = id, .result = .{ .data = &empty } });
+            return;
+        };
         defer gpa.free(data);
         try writeJson(out, gpa, Resp{ .id = id, .result = .{ .data = data } });
     } else {

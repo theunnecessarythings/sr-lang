@@ -4,6 +4,23 @@ const behavior = @import("behavior.zig");
 const getSource = behavior.getSource;
 const runCompilerTest = behavior.runCompilerTest;
 
+test "methods: default arguments" {
+    const globals =
+        \\A :: struct {}
+        \\
+        \\A.func :: proc(a: i32, b: i32 = 4) {
+        \\    printf("%d + %d = %d\n", a, b, a + b)
+        \\}
+    ;
+    const src =
+        \\a :: A{}
+        \\a.func(1)
+        \\a.func(1, 2)
+    ;
+    const code = getSource(globals, src);
+    try runCompilerTest(code, "1 + 4 = 5\n1 + 2 = 3\n");
+}
+
 test "methods: static, value, pointer, and const receivers" {
     const globals =
         \\Point :: struct { x: i32, y: i32 }

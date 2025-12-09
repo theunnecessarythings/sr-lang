@@ -318,7 +318,7 @@ fn evaluateTypeExpr(
             }
 
             const fields_slice = try fields.toOwnedSlice(self.gpa);
-            return self.context.type_store.mkStruct(fields_slice);
+            return self.context.type_store.mkStruct(fields_slice, 0);
         },
         .Call => {
             const call = a.exprs.get(.Call, expr);

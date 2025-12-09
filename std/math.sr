@@ -15,3 +15,23 @@ rand :: extern proc() i64
 fmin :: extern proc(x: f64, y: f64) f64
 fmax :: extern proc(x: f64, y: f64) f64
 fabs :: extern proc(x: f64) f64
+fmod :: extern proc(x: f64, y: f64) f64
+fmodf :: extern proc(x: f32, y: f32) f32
+
+round :: extern proc(x: f64) f64
+
+max :: proc(comptime T: type, a: T, b: T) T {
+    return if a > b {
+        a
+    } else {
+        b
+    }
+}
+
+min :: proc(comptime T: type, a: T, b: T) T {
+    return if a < b {
+        a
+    } else {
+        b
+    }
+}

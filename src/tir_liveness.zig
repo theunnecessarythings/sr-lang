@@ -229,6 +229,7 @@ fn collectInstrUses(ctx: *UseCtx, iid: tir.InstrId) !void {
         .CastWrap,
         .CastChecked,
         .CastSaturate,
+        .DbgDeclare,
         => |kind| {
             const row = ctx.t.instrs.get(kind, iid);
             try useAddVal(ctx, row.value);

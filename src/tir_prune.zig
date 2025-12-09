@@ -94,6 +94,8 @@ pub fn pruneUnusedFunctions(
                 const gop = try name_to_funcs.getOrPut(frow.name);
                 if (!gop.found_existing) gop.value_ptr.* = .{};
                 try gop.value_ptr.append(gpa, .{ .unit = unit, .fid = fid });
+                // // DEBUG
+                // std.debug.print("Registered: {s}\n", .{t.instrs.strs.get(frow.name)});
             }
             // No-op scan here
         }
@@ -112,6 +114,8 @@ pub fn pruneUnusedFunctions(
     const init_sid = context.interner.intern("__sr_global_mlir_init");
     try wl.append(gpa, main_sid);
     try wl.append(gpa, init_sid);
+    // DEBUG
+    // std.debug.print("Roots: main, __sr_global_mlir_init\n", .{});
 
     // Do not special-case externs; unreachable externs will be pruned too.
 
@@ -120,6 +124,10 @@ pub fn pruneUnusedFunctions(
         const name = wl.pop().?;
         if (reachable_names.get(name) != null) continue;
         _ = try reachable_names.put(gpa, name, {});
+
+        // DEBUG
+        // std.debug.print("Pop: {s}\n", .{context.interner.get(name)});
+
         // For each function with this name, traverse its calls
         if (name_to_funcs.get(name)) |lst| {
             for (lst.items) |ref| {
@@ -134,12 +142,16 @@ pub fn pruneUnusedFunctions(
                         if (t.kind(iid) == .Call) {
                             const row = t.instrs.get(.Call, iid);
                             try wl.append(gpa, row.callee);
+                            // DEBUG
+                            // std.debug.print("  Call: {s}\n", .{t.instrs.strs.get(row.callee)});
                         } else if (t.kind(iid) == .GlobalAddr) {
                             // Treat taking the address of a function as a use that makes it reachable.
                             // If the referenced symbol name corresponds to a function, add it to the worklist.
                             const row = t.instrs.get(.GlobalAddr, iid);
                             if (name_to_funcs.get(row.name) != null) {
                                 try wl.append(gpa, row.name);
+                                // DEBUG
+                                // std.debug.print("  GlobalAddr: {s}\n", .{t.instrs.strs.get(row.name)});
                             }
                         }
                     }

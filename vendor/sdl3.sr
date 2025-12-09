@@ -42,29 +42,29 @@ SDL_WINDOW_NOT_FOCUSABLE :: 0x0000000080000000
 SDL_Time :: Sint64
 
 wchar_t :: i32
-va_list :: *void
+va_list :: ?*void
 SDL_CameraID :: u32
 
 SDL_alignment_test :: struct {
     a: Uint8,
-    b: *void,
+    b: ?*void,
 }
 
 SDL_DUMMY_ENUM :: enum(i32) {
     DUMMY_ENUM_VALUE,
 }
 
-SDL_malloc_func :: fn(size: usize) ?*void
-SDL_calloc_func :: fn(nmemb: usize, size: usize) ?*void
-SDL_realloc_func :: fn(mem: *void, size: usize) ?*void
-SDL_free_func :: fn(mem: *void) void
+SDL_malloc_func :: fn(size: usize) ??*void
+SDL_calloc_func :: fn(nmemb: usize, size: usize) ??*void
+SDL_realloc_func :: fn(mem: ?*void, size: usize) ??*void
+SDL_free_func :: fn(mem: ?*void) void
 SDL_FunctionPointer :: fn() void
 
-SDL_GetOriginalMemoryFunctions :: extern proc(malloc_func: *SDL_malloc_func, calloc_func: *SDL_calloc_func, realloc_func: *SDL_realloc_func, free_func: *SDL_free_func)
-SDL_GetMemoryFunctions :: extern proc(malloc_func: *SDL_malloc_func, calloc_func: *SDL_calloc_func, realloc_func: *SDL_realloc_func, free_func: *SDL_free_func)
+SDL_GetOriginalMemoryFunctions :: extern proc(malloc_func: ?*SDL_malloc_func, calloc_func: ?*SDL_calloc_func, realloc_func: ?*SDL_realloc_func, free_func: ?*SDL_free_func)
+SDL_GetMemoryFunctions :: extern proc(malloc_func: ?*SDL_malloc_func, calloc_func: ?*SDL_calloc_func, realloc_func: ?*SDL_realloc_func, free_func: ?*SDL_free_func)
 SDL_SetMemoryFunctions :: extern proc(malloc_func: SDL_malloc_func, calloc_func: SDL_calloc_func, realloc_func: SDL_realloc_func, free_func: SDL_free_func) bool
-SDL_aligned_alloc :: extern proc(alignment: usize, size: usize) ?*void
-SDL_aligned_free :: extern proc(mem: *void)
+SDL_aligned_alloc :: extern proc(alignment: usize, size: usize) ??*void
+SDL_aligned_free :: extern proc(mem: ?*void)
 SDL_GetNumAllocations :: extern proc() i32
 
 SDL_Environment :: struct {}

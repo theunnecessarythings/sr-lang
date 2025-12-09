@@ -16,6 +16,16 @@ test "composite_types: basic struct definition and instantiation" {
     try runCompilerTest(code, "Point: (10, 20)\n");
 }
 
+test "composite_types: struct default values" {
+    const globals = "Point :: struct { x: i32 = 4, y: i32 = 2 }";
+    const src =
+        \\ p := Point{}
+        \\ printf("Point: (%d, %d)\n", p.x, p.y)
+    ;
+    const code = getSource(globals, src);
+    try runCompilerTest(code, "Point: (4, 2)\n");
+}
+
 test "composite_types: struct update syntax" {
     if (true) return error.SkipZigTest;
     const globals =

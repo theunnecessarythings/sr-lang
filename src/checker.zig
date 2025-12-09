@@ -1120,10 +1120,21 @@ fn resolveOwnerType(
         t
     else blk: {
         const owner_decl = ast_unit.exprs.Decl.get(owner_decl_id);
-        const ty = try self.checkExpr(ctx, ast_unit, owner_decl.value);
+        // Use typeFromTypeExpr for type declarations to ensure consistent TypeId resolution
+        // If it fails (returns TypeError), fallback to checkExpr to handle non-type values (e.g. Foo :: 42)
+        // so we can emit the correct .method_owner_not_struct error later.
+        const ty_res = check_types.typeFromTypeExpr(self, ctx, ast_unit, owner_decl.value) catch .{ false, self.context.type_store.tTypeError() };
+        var ty = ty_res[1];
+        
+        if (self.typeKind(ty) == .TypeError) {
+            ty = try self.checkExpr(ctx, ast_unit, owner_decl.value);
+        }
+        
         if (self.typeKind(ty) == .TypeError) return false;
-        ast_unit.type_info.decl_types.items[owner_decl_id.toRaw()] = ty;
-        break :blk ty;
+        // Cache as TypeType
+        const wrapped = self.context.type_store.mkTypeType(ty);
+        ast_unit.type_info.decl_types.items[owner_decl_id.toRaw()] = wrapped;
+        break :blk wrapped;
     };
 
     // If we got a `TypeType`, use its underlying `of` type.
@@ -4182,7 +4193,7 @@ fn checkStructLit(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, id: 
         }
         buf[i] = .{ .name = f.name.unwrap(), .ty = ft };
     }
-    const struct_ty = self.context.type_store.mkStruct(buf);
+    const struct_ty = self.context.type_store.mkStruct(buf, 0);
     if (struct_lit.ty.isNone()) {
         return struct_ty;
     }
@@ -4409,9 +4420,7 @@ fn structFieldHasDefault(
                 const sym = ctx.symtab.syms.get(sid);
                 if (!sym.origin_decl.isNone()) {
                     const decl = ast_unit.exprs.Decl.get(sym.origin_decl.unwrap());
-                    if (ast_unit.kind(decl.value) == .StructType) {
-                        break :blk structFieldHasDefaultInStructExpr(ast_unit, decl.value, field_name);
-                    }
+                    break :blk self.structFieldHasDefault(ctx, ast_unit, decl.value, field_name);
                 }
             }
             break :blk false;

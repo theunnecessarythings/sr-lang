@@ -1157,7 +1157,7 @@ fn lowerTopDecl(self: *LowerTir, ctx: *LowerContext, a: *ast.Ast, b: *Builder, d
 
         if (name_opt) |nm| {
             const is_method = !d.method_path.isNone();
-            const method_entry = if (is_method) self.methodEntryForDecl(did) else null;
+            const method_entry = if (is_method) self.methodEntryForDecl(a, did) else null;
             var owner_ty_fallback: ?types.TypeId = null;
             if (is_method and method_entry == null) {
                 const fn_ty = self.getExprType(ctx, a, d.value);
@@ -1284,7 +1284,7 @@ pub fn lowerFunction(
         if (!p.pat.isNone()) {
             const pname = bindingNameOfPattern(a, p.pat.unwrap()) orelse continue;
             const pty = runtime_param_tys[runtime_index];
-            try env.bind(self.gpa, a, pname, .{ .value = param_vals[runtime_index], .ty = pty, .is_slot = false });
+            try env.bind(self.gpa, pname, .{ .value = param_vals[runtime_index], .ty = pty, .is_slot = false }, b, &blk, optLoc(a, p.pat.unwrap()));
         }
         runtime_index += 1;
     }
@@ -1465,7 +1465,7 @@ fn lowerAssign(
         if (env.lookup(ident.name)) |bnd| {
             if (!bnd.is_slot) {
                 const rhs = try self.lowerExpr(ctx, a, env, f, blk, as.right, rty, .rvalue);
-                try env.bind(self.gpa, a, ident.name, .{ .value = rhs, .ty = rty, .is_slot = false });
+                try env.bind(self.gpa, ident.name, .{ .value = rhs, .ty = rty, .is_slot = false }, f.builder, blk, stmt_loc);
                 return;
             }
         }
@@ -1577,14 +1577,16 @@ pub fn methodSymbolName(
     const short_str = self.context.type_store.strs.get(short_name);
     const symbol = try std.fmt.allocPrint(self.gpa, "{s}_T{d}", .{ short_str, owner_type.toRaw() });
     defer self.gpa.free(symbol);
+
     return self.context.type_store.strs.intern(symbol);
 }
 
-fn methodEntryForDecl(self: *LowerTir, decl_id: ast.DeclId) ?*types.MethodEntry {
+fn methodEntryForDecl(self: *LowerTir, a: *ast.Ast, decl_id: ast.DeclId) ?*types.MethodEntry {
     var it = self.context.type_store.method_table.iterator();
     while (it.next()) |entry| {
         const method = entry.value_ptr.*;
-        if (method.decl_id.eq(decl_id)) return entry.value_ptr;
+        // Check both DeclId AND the AST pointer to ensure we get the method from the correct file
+        if (method.decl_id.eq(decl_id) and method.decl_ast == a) return entry.value_ptr;
     }
     return null;
 }
@@ -1629,6 +1631,7 @@ fn prepareMethodCall(
     callee.fty = binding.func_type;
     method_binding_out.* = binding;
     callee_name.* = self.context.type_store.strs.get(callee.name);
+    method_decl_id.* = binding.decl_id;
 
     if (binding.requires_implicit_receiver) {
         std.debug.assert(a.kind(row.callee) == .FieldAccess);
@@ -1967,7 +1970,7 @@ fn tryComptimeCall(
         .{ .name = f.builder.intern("print"), .ty = fn_ptr_ty },
         .{ .name = f.builder.intern("get_type_by_name"), .ty = fn_ptr_ty },
         .{ .name = f.builder.intern("type_of"), .ty = fn_ptr_ty },
-    });
+    }, 0);
 
     const comptime_api_ptr_ty = self.context.type_store.mkPtr(comptime_api_struct_ty, false);
     const typed_api_ptr = blk.builder.tirValue(.CastBit, blk, comptime_api_ptr_ty, loc, .{ .value = api_ptr });
@@ -2210,6 +2213,7 @@ fn lowerCall(
         &vals_list,
         is_variadic_extern,
         is_non_extern_any_variadic_candidate,
+        method_binding,
     );
 
     // Final safety: if we still owe a single empty-tuple argument (common for
@@ -2348,12 +2352,15 @@ fn synthesizeDefaultTrailingArgs(
     vals_list: *List(tir.ValueId),
     is_variadic_extern: bool,
     is_non_extern_any_variadic_candidate: bool,
+    method_binding: ?types.MethodBinding,
 ) !void {
     if (is_variadic_extern or is_non_extern_any_variadic_candidate or param_tys.len <= vals_list.items.len) {
         return;
     }
 
-    const dctx = if (method_decl_id) |mid|
+    const dctx = if (method_binding) |mb|
+        FunctionDeclContext{ .ast = mb.decl_ast, .decl_id = mb.decl_id }
+    else if (method_decl_id) |mid|
         FunctionDeclContext{ .ast = a, .decl_id = mid }
     else if (callee.fty) |_|
         call_resolution.findFunctionDeclForCall(self.context, a, callee_expr, callee.name) orelse return
@@ -2375,11 +2382,11 @@ fn synthesizeDefaultTrailingArgs(
         const p = decl_ast.exprs.Param.get(params2[j]);
         if (!p.pat.isNone()) {
             if (bindingNameOfPattern(decl_ast, p.pat.unwrap())) |pname| {
-                try env.bind(self.gpa, decl_ast, pname, .{
+                try env.bind(self.gpa, pname, .{
                     .value = vals_list.items[j],
                     .ty = param_tys[j],
                     .is_slot = false,
-                });
+                }, f.builder, blk, optLoc(decl_ast, p.pat.unwrap()));
             }
         }
     }
@@ -2395,7 +2402,7 @@ fn synthesizeDefaultTrailingArgs(
         if (!p.pat.isNone()) {
             if (bindingNameOfPattern(decl_ast, p.pat.unwrap())) |pname| {
                 const bind_ty = if (want_ty) |wt| wt else self.getExprType(ctx, decl_ast, def_expr);
-                try env.bind(self.gpa, decl_ast, pname, .{ .value = def_v, .ty = bind_ty, .is_slot = false });
+                try env.bind(self.gpa, pname, .{ .value = def_v, .ty = bind_ty, .is_slot = false }, f.builder, blk, optLoc(decl_ast, p.pat.unwrap()));
             }
         }
     }
@@ -3206,22 +3213,38 @@ fn lowerTupleLit(
     expected_ty: ?types.TypeId,
 ) anyerror!tir.ValueId {
     const row = a.exprs.get(.TupleLit, id);
-    const ty0 = expected_ty orelse self.getExprType(ctx, a, id);
+    var ty0 = self.getExprType(ctx, a, id);
     const loc = optLoc(a, id);
     const ids = a.exprs.expr_pool.slice(row.elems);
     var vals = try self.gpa.alloc(tir.ValueId, ids.len);
     defer self.gpa.free(vals);
-    var i: usize = 0;
-    while (i < ids.len) : (i += 1) {
-        // coerce element to tuple element type if known
-        var expect_elem = self.context.type_store.tAny();
-        if (self.context.type_store.getKind(ty0) == .Tuple) {
-            const trow = self.context.type_store.get(.Tuple, ty0);
-            const elems = self.context.type_store.type_pool.slice(trow.elems);
-            if (i < elems.len) expect_elem = elems[i];
+
+    // If the tuple type is Any (e.g. inferred from context), refine it to a concrete Tuple type
+    // based on the elements, or at least don't try to use Any as the result type of TupleMake.
+    if (self.context.type_store.getKind(ty0) == .Any) {
+        var elem_tys = try self.gpa.alloc(types.TypeId, ids.len);
+        defer self.gpa.free(elem_tys);
+        var i: usize = 0;
+        while (i < ids.len) : (i += 1) {
+            // Lower without expectation to get natural types
+            vals[i] = try self.lowerExpr(ctx, a, env, f, blk, ids[i], null, .rvalue);
+            elem_tys[i] = self.getExprType(ctx, a, ids[i]); // Fallback to stamped type
         }
-        vals[i] = try self.lowerExpr(ctx, a, env, f, blk, ids[i], expect_elem, .rvalue);
+        ty0 = self.context.type_store.mkTuple(elem_tys);
+    } else {
+        var i: usize = 0;
+        while (i < ids.len) : (i += 1) {
+            // coerce element to tuple element type if known
+            var expect_elem: ?types.TypeId = null;
+            if (self.context.type_store.getKind(ty0) == .Tuple) {
+                const trow = self.context.type_store.get(.Tuple, ty0);
+                const elems = self.context.type_store.type_pool.slice(trow.elems);
+                if (i < elems.len) expect_elem = elems[i];
+            }
+            vals[i] = try self.lowerExpr(ctx, a, env, f, blk, ids[i], expect_elem, .rvalue);
+        }
     }
+
     // Lower tuple literals using struct construction with ordinal fields
     var fields = try self.gpa.alloc(tir.Rows.StructFieldInit, vals.len);
     defer self.gpa.free(fields);
@@ -3375,7 +3398,7 @@ fn lowerMapLit(
     const entry_ty = self.context.type_store.mkStruct(&.{
         .{ .name = key_name, .ty = key_ty },
         .{ .name = val_name, .ty = val_ty },
-    });
+    }, 0);
     const entry_size = check_types.typeSize(self.context, entry_ty);
     const key_size = check_types.typeSize(self.context, key_ty);
     const val_align = check_types.typeAlign(self.context, val_ty);
@@ -3451,7 +3474,7 @@ fn lowerMapIndex(
     const entry_ty = self.context.type_store.mkStruct(&.{
         .{ .name = self.context.type_store.strs.intern("key"), .ty = mr.key },
         .{ .name = self.context.type_store.strs.intern("value"), .ty = mr.value },
-    });
+    }, 0);
     const entry_size = check_types.typeSize(self.context, entry_ty);
 
     const ptr_u8_ty = self.context.type_store.mkPtr(self.context.type_store.tU8(), false);
@@ -3966,7 +3989,7 @@ fn lowerIdent(
                 const ptr_ty = self.context.type_store.mkPtr(gty, !d.flags.is_const);
                 const sym = (try self.symbolNameForDecl(a, did)) orelse name;
                 const addr = blk.builder.tirValue(.GlobalAddr, blk, ptr_ty, loc, .{ .name = sym });
-                try env.bind(self.gpa, a, name, .{ .value = addr, .ty = gty, .is_slot = true });
+                try env.bind(self.gpa, name, .{ .value = addr, .ty = gty, .is_slot = true }, f.builder, blk, loc);
                 return addr;
             }
             // Fall through for TypeType: no addressable storage for types.
@@ -3981,7 +4004,7 @@ fn lowerIdent(
             const to_store = self.emitCoerce(blk, bnd.value, src_ty, want_elem, loc);
             _ = f.builder.tirValue(.Store, blk, want_elem, loc, .{ .ptr = slot, .value = to_store, .@"align" = 0 });
 
-            try env.bind(self.gpa, a, name, .{ .value = slot, .ty = want_elem, .is_slot = true });
+            try env.bind(self.gpa, name, .{ .value = slot, .ty = want_elem, .is_slot = true }, f.builder, blk, loc);
             return slot;
         }
 
@@ -4005,7 +4028,7 @@ fn lowerIdent(
                 // For function declarations, the global address is already the rvalue we want;
                 // do not treat it as an addressable slot to avoid emitting a spurious load.
                 const is_fn = self.context.type_store.getKind(gty) == .Function;
-                try env.bind(self.gpa, a, name, .{ .value = addr, .ty = gty, .is_slot = !is_fn });
+                try env.bind(self.gpa, name, .{ .value = addr, .ty = gty, .is_slot = !is_fn }, f.builder, blk, loc);
                 break :blk env.lookup(name).?;
             }
             // For type declarations, synthesize a non-addressable placeholder value.
@@ -4015,7 +4038,7 @@ fn lowerIdent(
         // Bind a safe placeholder so downstream code can keep going.
         const ty0 = expr_ty;
         const placeholder = self.safeUndef(blk, ty0, loc);
-        try env.bind(self.gpa, a, name, .{ .value = placeholder, .ty = ty0, .is_slot = false });
+        try env.bind(self.gpa, name, .{ .value = placeholder, .ty = ty0, .is_slot = false }, f.builder, blk, loc);
         break :blk env.lookup(name).?;
     };
 
@@ -4545,7 +4568,7 @@ fn lowerCatch(
         const err_val = err_blk.builder.tirValue(.UnionField, &err_blk, es.error_ty, loc, .{ .base = payload_union_err, .field_index = 1 });
         if (!row.binding_name.isNone()) {
             const nm = row.binding_name.unwrap();
-            try env.bind(self.gpa, a, nm, .{ .value = err_val, .ty = es.error_ty, .is_slot = false });
+            try env.bind(self.gpa, nm, .{ .value = err_val, .ty = es.error_ty, .is_slot = false }, f.builder, &err_blk, loc);
         }
         // Evaluate handler exactly once as a block expression to both run side-effects
         // and produce the resulting value. Only branch to the join if the handler
@@ -4629,7 +4652,7 @@ fn lowerCatch(
         });
         if (!row.binding_name.isNone()) {
             const name = row.binding_name.unwrap();
-            try env.bind(self.gpa, a, name, .{ .value = err_val, .ty = es.error_ty, .is_slot = false });
+            try env.bind(self.gpa, name, .{ .value = err_val, .ty = es.error_ty, .is_slot = false }, f.builder, &else_blk, loc);
         }
         // Evaluate handler exactly once and branch with the produced value.
         if (else_blk.term.isNone()) {
@@ -4674,7 +4697,7 @@ fn lowerCatch(
         });
         if (!row.binding_name.isNone()) {
             const name = row.binding_name.unwrap();
-            try env.bind(self.gpa, a, name, .{ .value = err_val, .ty = es.error_ty, .is_slot = false });
+            try env.bind(self.gpa, name, .{ .value = err_val, .ty = es.error_ty, .is_slot = false }, f.builder, &else_blk, loc);
         }
         try self.lowerExprAsStmtList(ctx, a, env, f, &else_blk, row.handler);
         _ = env.popScope(); // Pop scope after handler
@@ -5241,9 +5264,9 @@ fn destructureDeclPattern(self: *LowerTir, a: *ast.Ast, env: *cf.Env, f: *Builde
                 const slot_ty = self.context.type_store.mkPtr(vty, false);
                 const slot = f.builder.tirValue(.Alloca, blk, slot_ty, loc, .{ .count = tir.OptValueId.none(), .@"align" = 0 });
                 _ = f.builder.tirValue(.Store, blk, vty, loc, .{ .ptr = slot, .value = value, .@"align" = 0 });
-                try env.bind(self.gpa, a, nm, .{ .value = slot, .ty = vty, .is_slot = true });
+                try env.bind(self.gpa, nm, .{ .value = slot, .ty = vty, .is_slot = true }, f.builder, blk, loc);
             } else {
-                try env.bind(self.gpa, a, nm, .{ .value = value, .ty = vty, .is_slot = false });
+                try env.bind(self.gpa, nm, .{ .value = value, .ty = vty, .is_slot = false }, f.builder, blk, loc);
             }
         },
         .Tuple => {

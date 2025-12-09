@@ -17,59 +17,65 @@ PaintJoin :: skiac.SkPaintJoin
 
 Rect :: skiac.Rect
 
-// 1) Struct wrappers around opaque handles (for methods)
-GLInterface :: struct {iface: ?*skiac.GrGLInterface}
-
-DirectContext :: struct {ctx: ?*skiac.GrDirectContext}
-
-BackendRenderTarget :: struct {target: ?*skiac.GrBackendRenderTarget}
-
-ColorSpace :: struct {cs: ?*skiac.SkColorSpace}
-
-SurfaceProps :: struct {props: ?*skiac.SkSurfaceProps}
-
-Surface :: struct {surface: ?*skiac.SkSurface}
-
-Canvas :: struct {canvas: ?*skiac.SkCanvas}
-
-Paint :: struct {paint: ?*skiac.SkPaint}
-
-Path :: struct {path: ?*skiac.SkPath}
-
-Image :: struct {image: ?*skiac.SkImage}
-
-Shader :: struct {shader: ?*skiac.SkShader}
-
-ColorFilter :: struct {cf: ?*skiac.SkColorFilter}
-
-ImageFilter :: struct {f: ?*skiac.SkImageFilter}
-
-PathEffect :: struct {pe: ?*skiac.SkPathEffect}
-
-MaskFilter :: struct {mf: ?*skiac.SkMaskFilter}
-
-RuntimeEffect :: struct {e: ?*skiac.SkRuntimeEffect}
-
-Font :: struct {font: ?*skiac.SkFont}
-
-Data :: struct {data: ?*skiac.SkData}
-
-Point :: struct {point: ?*skiac.SkPoint}
-
-Matrix :: skiac.Matrix
-
 PixelGeometry :: skiac.SkPixelGeometry
 
 TileMode :: skiac.SkTileMode
+
+BlendMode :: skiac.SkBlendMode
+
+Point3 :: skiac.SkPoint3
+ISize :: skiac.SkIsize
+IPoint :: skiac.SkIpoint
+
+GLInterface :: struct {iface: skiac.GrGLInterface}
+
+DirectContext :: struct {ctx: skiac.GrDirectContext}
+
+BackendRenderTarget :: struct {target: skiac.GrBackendRenderTarget}
+
+ColorSpace :: struct {cs: skiac.SkColorSpace}
+
+SurfaceProps :: struct {props: skiac.SkSurfaceProps}
+
+Surface :: struct {surface: skiac.SkSurface}
+
+Canvas :: struct {canvas: skiac.SkCanvas}
+
+Paint :: struct {paint: skiac.SkPaint}
+
+Path :: struct {path: skiac.SkPath}
+
+Image :: struct {image: skiac.SkImage}
+
+Shader :: struct {shader: skiac.SkShader}
+
+ColorFilter :: struct {cf: skiac.SkColorFilter}
+
+ImageFilter :: struct {f: skiac.SkImageFilter}
+
+PathEffect :: struct {pe: skiac.SkPathEffect}
+
+MaskFilter :: struct {mf: skiac.SkMaskFilter}
+
+RuntimeEffect :: struct {e: skiac.SkRuntimeEffect}
+
+RuntimeEffectBuilder :: struct {builder: skiac.SkRuntimeEffectBuilder}
+
+Blender :: struct {blender: skiac.SkBlender}
+
+Font :: struct {font: skiac.SkFont}
+
+Data :: struct {data: skiac.SkData}
+
+Point :: struct {point: skiac.SkPoint}
+
+Matrix :: skiac.Matrix
 
 // Convenience: ARGB color helper
 argb :: proc(a: u8, r: u8, g: u8, b: u8) u32 {
     return skiac.skiac_sk_color_set_argb(a, r, g, b)
 }
 
-// ----------------------------
-// 2) Idiomatic constructors and methods
-// ----------------------------
 // GLInterface
 GLInterface.make :: proc(ctx: ?*void, get_proc: skiac.GrGLGetProc) GLInterface {
     return GLInterface{ iface: skiac.skiac_gr_gl_make_assembled_interface(ctx, get_proc) }
@@ -177,10 +183,19 @@ Surface.wrap_backend_render_target :: proc(
     target: *BackendRenderTarget,
     origin: SurfaceOrigin,
     color_type: ColorType,
-    color_space: *ColorSpace,
-    props: *SurfaceProps,
+    color_space: ?*ColorSpace = null,
+    props: ?*SurfaceProps = null,
 ) Surface {
-    return Surface{ surface: skiac.skiac_sk_surface_wrap_backend_render_target(ctx.ctx?, target.target?, origin, color_type, color_space.cs?, props.props?) }
+    return Surface{
+        surface: skiac.skiac_sk_surface_wrap_backend_render_target(
+            ctx.ctx?,
+            target.target?,
+            origin,
+            color_type,
+            if color_space == null { null } else { color_space?.cs? },
+            if props == null { null } else { props?.props? },
+        ),
+    }
 }
 
 Surface.is_null :: proc(self: *Surface) bool {
@@ -188,21 +203,22 @@ Surface.is_null :: proc(self: *Surface) bool {
 }
 
 Surface.get_canvas :: proc(self: *Surface) Canvas {
-    if self.surface == null {
-        return Canvas{ canvas: null }
-    }
+    if self.surface == null { return Canvas{ canvas: null } }
 
     return Canvas{ canvas: skiac.skiac_sk_surface_get_canvas(self.surface?) }
 }
 
 Surface.unref :: proc(self: *Surface) {
-    if self.surface != null {
-        skiac.skiac_sk_surface_unref(self.surface?)
-    }
+    if self.surface != null { skiac.skiac_sk_surface_unref(self.surface?) }
 
     self.surface = null
 }
 
+Surface.make_image_snapshot :: proc(self: *Surface) Image {
+    return Image{ image: skiac.skiac_sk_surface_make_image_snapshot(self.surface?) }
+}
+
+// Canvas
 Canvas.clear :: proc(self: *Canvas, color: u32) {
     skiac.skiac_sk_canvas_clear(self.canvas?, color)
 }
@@ -235,6 +251,7 @@ Canvas.draw_paint :: proc(self: *Canvas, paint: *Paint) {
     skiac.skiac_sk_canvas_draw_paint(self.canvas?, paint.paint?)
 }
 
+// SkCanvas state/transform/clip
 Canvas.save :: proc(self: *Canvas) {
     skiac.skiac_sk_canvas_save(self.canvas?)
 }
@@ -323,6 +340,7 @@ Canvas.draw_drrect :: proc(self: *Canvas, outer_rect: *Rect, outer_rx: f32, oute
     skiac.skiac_sk_canvas_draw_drrect(self.canvas?, outer_rect, outer_rx, outer_ry, inner_rect, inner_rx, inner_ry, paint.paint?)
 }
 
+// Paint
 Paint.new :: proc() Paint {
     return Paint{ paint: skiac.skiac_sk_paint_create() }
 }
@@ -346,12 +364,12 @@ Paint.set_anti_alias :: proc(self: *Paint, anti_alias: bool) {
     skiac.skiac_sk_paint_set_anti_alias(self.paint?, anti_alias)
 }
 
-Paint.set_color :: proc(self: *Paint, color: u32) {
-    skiac.skiac_sk_paint_set_color(self.paint?, color)
-}
-
 Paint.is_anti_alias :: proc(self: *Paint) bool {
     return skiac.skiac_sk_paint_is_anti_alias(self.paint?)
+}
+
+Paint.set_color :: proc(self: *Paint, color: u32) {
+    skiac.skiac_sk_paint_set_color(self.paint?, color)
 }
 
 Paint.get_color :: proc(self: *Paint) u32 {
@@ -414,8 +432,6 @@ Paint.get_style :: proc(self: *Paint) PaintStyle {
     return skiac.skiac_sk_paint_get_style(self.paint?)
 }
 
-BlendMode :: skiac.SkBlendMode
-
 Paint.set_blend_mode :: proc(self: *Paint, mode: BlendMode) {
     skiac.skiac_sk_paint_set_blend_mode(self.paint?, mode)
 }
@@ -424,6 +440,28 @@ Paint.get_blend_mode :: proc(self: *Paint) BlendMode {
     return skiac.skiac_sk_paint_get_blend_mode(self.paint?)
 }
 
+// Paint setters
+Paint.set_shader :: proc(self: *Paint, sh: *Shader) {
+    skiac.skiac_sk_paint_set_shader(self.paint?, sh.shader?)
+}
+
+Paint.set_color_filter :: proc(self: *Paint, cf: *ColorFilter) {
+    skiac.skiac_sk_paint_set_color_filter(self.paint?, cf.cf?)
+}
+
+Paint.set_image_filter :: proc(self: *Paint, f: *ImageFilter) {
+    skiac.skiac_sk_paint_set_image_filter(self.paint?, f.f?)
+}
+
+Paint.set_path_effect :: proc(self: *Paint, pe: *PathEffect) {
+    skiac.skiac_sk_paint_set_path_effect(self.paint?, pe.pe?)
+}
+
+Paint.set_mask_filter :: proc(self: *Paint, mf: *MaskFilter) {
+    skiac.skiac_sk_paint_set_mask_filter(self.paint?, mf.mf?)
+}
+
+// Path
 Path.new :: proc() Path {
     return Path{ path: skiac.skiac_sk_path_create() }
 }
@@ -483,6 +521,7 @@ Path.add_arc :: proc(self: *Path, bounds: *Rect, start_angle_deg: f32, sweep_ang
     skiac.skiac_sk_path_add_arc(self.path?, bounds, start_angle_deg, sweep_angle_deg)
 }
 
+// Matrix convenience constructors (pure, local)
 Matrix_identity :: proc() Matrix {
     return Matrix{ m00: 1.0, m01: 0.0, m02: 0.0, m10: 0.0, m11: 1.0, m12: 0.0, m20: 0.0, m21: 0.0, m22: 1.0 }
 }
@@ -502,10 +541,7 @@ Matrix_make_rotate_deg :: proc(degrees: f32) Matrix {
     return Matrix{ m00: c, m01: -s, m02: 0.0, m10: s, m11: c, m12: 0.0, m20: 0.0, m21: 0.0, m22: 1.0 }
 }
 
-Surface.make_image_snapshot :: proc(self: *Surface) Image {
-    return Image{ image: skiac.skiac_sk_surface_make_image_snapshot(self.surface?) }
-}
-
+// Image
 Image.is_null :: proc(self: *Image) bool {
     return self.image == null
 }
@@ -521,12 +557,35 @@ Image.unref :: proc(self: *Image) {
     }
 }
 
+Image.from_encoded :: proc(data: *Data) Image {
+    return Image{ image: skiac.skiac_sk_image_make_from_encoded(data.data?) }
+}
+
+// Shaders
 Shader.solid :: proc(color: u32) Shader {
     return Shader{ shader: skiac.skiac_sk_shader_make_solid_color(color) }
 }
 
+// UPDATED: use new linear-gradient API (points + arrays + flags)
 Shader.linear2 :: proc(x0: f32, y0: f32, x1: f32, y1: f32, c0: u32, c1: u32, tm: TileMode) Shader {
-    return Shader{ shader: skiac.skiac_sk_shader_make_linear_gradient(x0, y0, x1, y1, c0, c1, tm) }
+    pts: [2]skiac.SkPoint = [
+        skiac.SkPoint{ x: x0, y: y0 },
+        skiac.SkPoint{ x: x1, y: y1 },
+    ]
+
+    colors: [2]u32 = [c0, c1]
+    pos: [2]f32 = [0.0, 1.0]
+
+    return Shader{
+        shader: skiac.skiac_sk_shader_make_linear_gradient(
+            &pts[0],
+            &colors[0],
+            &pos[0],
+            2,
+            tm,
+            0,
+        ),
+    } // flags
 }
 
 Shader.radial :: proc(center: skiac.SkPoint, radius: f32, colors: []u32, pos: []f32, count: i32, tm: TileMode, flags: u32) Shader {
@@ -551,6 +610,7 @@ Shader.unref :: proc(self: *Shader) {
     }
 }
 
+// Color filters
 ColorFilter.blend :: proc(color: u32, mode: BlendMode) ColorFilter {
     return ColorFilter{ cf: skiac.skiac_sk_color_filter_make_blend(color, mode) }
 }
@@ -566,6 +626,7 @@ ColorFilter.unref :: proc(self: *ColorFilter) {
     }
 }
 
+// Image filters
 ImageFilter.unref :: proc(self: *ImageFilter) {
     if self.f != null {
         skiac.skiac_sk_image_filter_unref(self.f?)
@@ -573,62 +634,39 @@ ImageFilter.unref :: proc(self: *ImageFilter) {
     }
 }
 
-ImageFilter.drop_shadow :: proc(dx: f32, dy: f32, sigma_x: f32, sigma_y: f32, color: u32, input: ?*ImageFilter) ImageFilter {
-    filter := if input != null {
-        input?.f
-    } else {
-        null
-    }
+ImageFilter.drop_shadow :: proc(dx: f32, dy: f32, sigma_x: f32, sigma_y: f32, color: u32, input: ?ImageFilter) ImageFilter {
+    filter: skiac.SkImageFilter = if input != null { input?.f } else { null }
 
     return ImageFilter{ f: skiac.skiac_sk_image_filter_make_drop_shadow(dx, dy, sigma_x, sigma_y, color, filter, null) }
 }
 
-ImageFilter.blur :: proc(sigma_x: f32, sigma_y: f32, tile_mode: TileMode, input: ?*ImageFilter) ImageFilter {
-    filter := if input != null {
-        input?.f
-    } else {
-        null
-    }
+ImageFilter.blur :: proc(sigma_x: f32, sigma_y: f32, tile_mode: TileMode, input: ?ImageFilter) ImageFilter {
+    filter: skiac.SkImageFilter = if input != null { input?.f } else { null }
 
     return ImageFilter{ f: skiac.skiac_sk_image_filter_make_blur(sigma_x, sigma_y, tile_mode, filter, null) }
 }
 
-ImageFilter.color_filter :: proc(cf: ?*ColorFilter, input: ?*ImageFilter) ImageFilter {
-    filter := if input != null {
-        input?.f
-    } else {
-        null
-    }
+ImageFilter.color_filter :: proc(cf: ColorFilter, input: ?ImageFilter) ImageFilter {
+    filter: skiac.SkImageFilter = if input != null { input?.f } else { null }
 
-    return ImageFilter{ f: skiac.skiac_sk_image_filter_make_color_filter(cf?.cf, filter, null) }
+    return ImageFilter{ f: skiac.skiac_sk_image_filter_make_color_filter(cf.cf, filter, null) }
 }
 
-ImageFilter.offset :: proc(dx: f32, dy: f32, input: ?*ImageFilter) ImageFilter {
-    filter := if input != null {
-        input?.f
-    } else {
-        null
-    }
+ImageFilter.offset :: proc(dx: f32, dy: f32, input: ?ImageFilter) ImageFilter {
+    filter: skiac.SkImageFilter = if input != null { input?.f } else { null }
 
     return ImageFilter{ f: skiac.skiac_sk_image_filter_make_offset(dx, dy, filter, null) }
 }
 
-ImageFilter.blend :: proc(mode: BlendMode, background: ?*ImageFilter, foreground: ?*ImageFilter) ImageFilter {
-    bg := if background != null {
-        background?.f
-    } else {
-        null
-    }
+ImageFilter.blend :: proc(mode: BlendMode, background: ?ImageFilter, foreground: ?ImageFilter) ImageFilter {
+    bg: skiac.SkImageFilter = if background != null { background?.f } else { null }
 
-    fg := if foreground != null {
-        foreground?.f
-    } else {
-        null
-    }
+    fg: skiac.SkImageFilter = if foreground != null { foreground?.f } else { null }
 
     return ImageFilter{ f: skiac.skiac_sk_image_filter_make_blend(mode, bg, fg, null) }
 }
 
+// Path effects
 PathEffect.dash :: proc(intervals: *f32, count: i32, phase: f32) PathEffect {
     return PathEffect{ pe: skiac.skiac_sk_path_effect_make_dash(intervals, count, phase) }
 }
@@ -648,6 +686,7 @@ PathEffect.unref :: proc(self: *PathEffect) {
     }
 }
 
+// Mask filters
 MaskFilter.blur :: proc(style: i32, sigma: f32) MaskFilter {
     return MaskFilter{ mf: skiac.skiac_sk_mask_filter_make_blur(style, sigma) }
 }
@@ -659,26 +698,7 @@ MaskFilter.unref :: proc(self: *MaskFilter) {
     }
 }
 
-Paint.set_shader :: proc(self: *Paint, sh: *Shader) {
-    skiac.skiac_sk_paint_set_shader(self.paint?, sh.shader?)
-}
-
-Paint.set_color_filter :: proc(self: *Paint, cf: *ColorFilter) {
-    skiac.skiac_sk_paint_set_color_filter(self.paint?, cf.cf?)
-}
-
-Paint.set_image_filter :: proc(self: *Paint, f: *ImageFilter) {
-    skiac.skiac_sk_paint_set_image_filter(self.paint?, f.f?)
-}
-
-Paint.set_path_effect :: proc(self: *Paint, pe: *PathEffect) {
-    skiac.skiac_sk_paint_set_path_effect(self.paint?, pe.pe?)
-}
-
-Paint.set_mask_filter :: proc(self: *Paint, mf: *MaskFilter) {
-    skiac.skiac_sk_paint_set_mask_filter(self.paint?, mf.mf?)
-}
-
+// Runtime shader (SkSL)
 RuntimeEffect.make_for_shader :: proc(sksl: string) RuntimeEffect {
     return RuntimeEffect{ e: skiac.skiac_runtime_effect_make_for_shader(sksl.ptr) }
 }
@@ -702,6 +722,51 @@ RuntimeEffect.make_shader :: proc(self: *RuntimeEffect, uniforms: *Data) Shader 
     return Shader{ shader: skiac.skiac_runtime_effect_make_shader(self.e?, uniforms.data?) }
 }
 
+RuntimeEffect.builder :: proc(self: *RuntimeEffect) RuntimeEffectBuilder {
+    return RuntimeEffectBuilder{
+        builder: skiac.skiac_sk_runtime_effect_builder_create(self.e?),
+    }
+}
+
+RuntimeEffectBuilder.is_null :: proc(self: *RuntimeEffectBuilder) bool {
+    return self.builder == null
+}
+
+RuntimeEffectBuilder.unref :: proc(self: *RuntimeEffectBuilder) {
+    if self.builder != null {
+        skiac.skiac_sk_runtime_effect_builder_unref(self.builder?)
+        self.builder = null
+    }
+}
+
+RuntimeEffectBuilder.set_uniform_float :: proc(self: *RuntimeEffectBuilder, name: string, value: f32) {
+    skiac.skiac_sk_runtime_effect_builder_set_uniform_float(self.builder?, name.ptr, value)
+}
+
+RuntimeEffectBuilder.set_child_shader :: proc(self: *RuntimeEffectBuilder, name: string, shader: *Shader) {
+    skiac.skiac_sk_runtime_effect_builder_set_child_shader(self.builder?, name.ptr, shader.shader?)
+}
+
+RuntimeEffectBuilder.make_shader :: proc(self: *RuntimeEffectBuilder) Shader {
+    return Shader{ shader: skiac.skiac_sk_runtime_effect_builder_make_shader(self.builder?) }
+}
+
+RuntimeEffectBuilder.make_color_filter :: proc(self: *RuntimeEffectBuilder) ColorFilter {
+    return ColorFilter{ cf: skiac.skiac_sk_runtime_effect_builder_make_color_filter(self.builder?) }
+}
+
+RuntimeEffectBuilder.make_blender :: proc(self: *RuntimeEffectBuilder) Blender {
+    return Blender{ blender: skiac.skiac_sk_runtime_effect_builder_make_blender(self.builder?) }
+}
+
+Blender.unref :: proc(self: *Blender) {
+    if self.blender != null {
+        skiac.skiac_sk_blender_unref(self.blender?)
+        self.blender = null
+    }
+}
+
+// SkFont
 Font.new_default :: proc(size: f32) Font {
     return Font{ font: skiac.skiac_sk_font_create_default(size) }
 }
@@ -781,6 +846,7 @@ Font.text_to_glyphs_utf8 :: proc(self: *Font, text: string, out_glyphs: *u16, ma
     return skiac.skiac_sk_font_text_to_glyphs_utf8(self.font?, text.ptr, out_glyphs, max_glyphs)
 }
 
+// SkData
 Data.from_slice :: proc(ptr: *void, len: usize) Data {
     return Data{ data: skiac.skiac_sk_data_make_with_copy(ptr, len) }
 }
@@ -802,8 +868,4 @@ Data.unref :: proc(self: *Data) {
         skiac.skiac_sk_data_unref(self.data?)
         self.reset()
     }
-}
-
-Image.from_encoded :: proc(data: *Data) Image {
-    return Image{ image: skiac.skiac_sk_image_make_from_encoded(data.data?) }
 }
