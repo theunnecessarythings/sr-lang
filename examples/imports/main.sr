@@ -6,6 +6,7 @@ package main
 // The `import` expression returns a module object.
 // We assign it to a constant named `math`.
 math :: import "math"
+io :: import "std/io"
 
 // The main entry point of our program.
 main := proc() {
@@ -16,6 +17,6 @@ main := proc() {
 
     result := math.add(v1, v2)
 
-    print("Result of vector addition:")
-    print("x=", result.x, ", y=", result.y)
+    io.print("Result of vector addition:")
+    io.print("x=%f, y=%f", result.x, result.y)
 }

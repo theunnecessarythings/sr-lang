@@ -337,9 +337,9 @@ fn lowerDynArrayAppend(
     const array_ptr = args[0];
     const value = args[1];
 
-    const data_ptr_ptr = blk.builder.gep(blk, ptr_ptr_elem_ty, array_ptr, &.{blk.builder.gepConst(0)}, loc);
-    const len_ptr = blk.builder.gep(blk, ptr_usize_ty, array_ptr, &.{blk.builder.gepConst(1)}, loc);
-    const cap_ptr = blk.builder.gep(blk, ptr_usize_ty, array_ptr, &.{blk.builder.gepConst(2)}, loc);
+    const data_ptr_ptr = blk.builder.gep(blk, ptr_ptr_elem_ty, array_ptr, &.{ blk.builder.gepConst(0), blk.builder.gepConst(0) }, loc);
+    const len_ptr = blk.builder.gep(blk, ptr_usize_ty, array_ptr, &.{ blk.builder.gepConst(0), blk.builder.gepConst(1) }, loc);
+    const cap_ptr = blk.builder.gep(blk, ptr_usize_ty, array_ptr, &.{ blk.builder.gepConst(0), blk.builder.gepConst(2) }, loc);
 
     const len_val = blk.builder.tirValue(.Load, blk, usize_ty, loc, .{ .ptr = len_ptr, .@"align" = 0 });
     const cap_val = blk.builder.tirValue(.Load, blk, usize_ty, loc, .{ .ptr = cap_ptr, .@"align" = 0 });
@@ -774,6 +774,46 @@ fn coerceArrayToDynArray(
     }, loc);
 }
 
+/// Cast the fixed-size array value into a slice representation.
+fn coerceArrayToSlice(
+    self: *LowerTir,
+    blk: *Builder.BlockFrame,
+    array_value: tir.ValueId,
+    array_ty: types.TypeId,
+    slice_ty: types.TypeId,
+    loc: tir.OptLocId,
+) tir.ValueId {
+    const ts = self.context.type_store;
+    const arr = ts.get(.Array, array_ty);
+    const slice = ts.get(.Slice, slice_ty);
+
+    // Spill array to stack to get a pointer
+    const ptr_array_ty = ts.mkPtr(array_ty, false);
+    const slot = blk.builder.tirValue(.Alloca, blk, ptr_array_ty, loc, .{
+        .count = tir.OptValueId.none(),
+        .@"align" = 0,
+    });
+    _ = blk.builder.tirValue(.Store, blk, array_ty, loc, .{
+        .ptr = slot,
+        .value = array_value,
+        .@"align" = 0,
+    });
+
+    // Cast pointer to element pointer
+    const ptr_elem_ty = ts.mkPtr(slice.elem, slice.is_const);
+    const elem_ptr = blk.builder.tirValue(.CastBit, blk, ptr_elem_ty, loc, .{ .value = slot });
+
+    // Create length constant
+    const usize_ty = ts.tUsize();
+    const len_val = blk.builder.tirValue(.ConstInt, blk, usize_ty, loc, .{ .value = @as(u64, @intCast(arr.len)) });
+
+    // Create slice struct { ptr, len }
+    return blk.builder.structMake(blk, slice_ty, &[_]tir.Rows.StructFieldInit{
+        .{ .index = 0, .name = .none(), .value = elem_ptr },
+        .{ .index = 1, .name = .none(), .value = len_val },
+    }, loc);
+}
+
 /// Insert an explicit coercion that realizes what the checker proved assignable/castable.
 pub fn emitCoerce(
     self: *LowerTir,
@@ -833,6 +873,11 @@ pub fn emitCoerce(
                 }
             }
             // Fall through: no special coercion, let other cases handle
+        },
+        .Slice => {
+            if (gk == .Array) {
+                return self.coerceArrayToSlice(blk, v, got, want, loc);
+            }
         },
         .Optional => {
             const opt = ts.get(.Optional, want);
@@ -1975,13 +2020,13 @@ fn tryComptimeCall(
     const comptime_api_ptr_ty = self.context.type_store.mkPtr(comptime_api_struct_ty, false);
     const typed_api_ptr = blk.builder.tirValue(.CastBit, blk, comptime_api_ptr_ty, loc, .{ .value = api_ptr });
 
-    const ctx_ptr_ptr = blk.builder.gep(blk, self.context.type_store.mkPtr(ptr_ty, false), typed_api_ptr, &.{blk.builder.gepConst(0)}, loc);
+    const ctx_ptr_ptr = blk.builder.gep(blk, self.context.type_store.mkPtr(ptr_ty, false), typed_api_ptr, &.{ blk.builder.gepConst(0), blk.builder.gepConst(0) }, loc);
 
     const ctx_ptr = blk.builder.tirValue(.Load, blk, ptr_ty, loc, .{ .ptr = ctx_ptr_ptr, .@"align" = 0 });
 
     const fn_ptr_idx: u64 = if (std.mem.eql(u8, callee_name, "comptime_print")) 1 else if (std.mem.eql(u8, callee_name, "get_type_by_name")) 2 else 3;
 
-    const fn_ptr_ptr = blk.builder.gep(blk, self.context.type_store.mkPtr(fn_ptr_ty, false), typed_api_ptr, &.{blk.builder.gepConst(fn_ptr_idx)}, loc);
+    const fn_ptr_ptr = blk.builder.gep(blk, self.context.type_store.mkPtr(fn_ptr_ty, false), typed_api_ptr, &.{ blk.builder.gepConst(0), blk.builder.gepConst(fn_ptr_idx) }, loc);
     const fn_ptr = blk.builder.tirValue(.Load, blk, fn_ptr_ty, loc, .{ .ptr = fn_ptr_ptr, .@"align" = 0 });
 
     var all_args: List(tir.ValueId) = .empty;
@@ -3513,7 +3558,6 @@ fn lowerIndexAccess(
     }
     const loc = optLoc(a, id);
     if (mode == .lvalue_addr) {
-        const base_ptr = try self.lowerExpr(ctx, a, env, f, blk, row.collection, null, .lvalue_addr);
         // Prefer a usize constant for literal indices to avoid casts in TIR
         const idx_v = blk: {
             if (a.kind(row.index) == .Literal) {
@@ -3534,16 +3578,50 @@ fn lowerIndexAccess(
             break :blk try self.lowerExpr(ctx, a, env, f, blk, row.index, self.context.type_store.tUsize(), .rvalue);
         };
         const idx = blk.builder.gepValue(idx_v);
-        const rty = self.context.type_store.mkPtr(self.getExprType(ctx, a, id), false);
-        return blk.builder.gep(blk, rty, base_ptr, &.{idx}, loc);
+        const elem_ty = self.getExprType(ctx, a, id);
+        const ptr_elem_ty = self.context.type_store.mkPtr(elem_ty, false);
+        const base_kind = self.context.type_store.getKind(base_ty);
+
+        // Slices/dynarrays already carry a data pointer; derive the element address without
+        // forcing the base value into a stack slot.
+        if (base_kind == .Slice or base_kind == .DynArray or base_kind == .String) {
+            const base_val = try self.lowerExpr(ctx, a, env, f, blk, row.collection, null, .rvalue);
+            const data_ptr = blk.builder.tirValue(.ExtractField, blk, ptr_elem_ty, loc, .{
+                .agg = base_val,
+                .index = 0,
+                .name = OptStrId.none(),
+            });
+            return blk.builder.gep(blk, ptr_elem_ty, data_ptr, &.{idx}, loc);
+        }
+
+        const base_ptr = try self.lowerExpr(ctx, a, env, f, blk, row.collection, null, .lvalue_addr);
+        const is_array = base_kind == .Array or
+            (base_kind == .Ptr and self.context.type_store.getKind(self.context.type_store.get(.Ptr, base_ty).elem) == .Array);
+
+        if (is_array) {
+            return blk.builder.gep(blk, ptr_elem_ty, base_ptr, &.{ blk.builder.gepConst(0), idx }, loc);
+        }
+        return blk.builder.gep(blk, ptr_elem_ty, base_ptr, &.{idx}, loc);
     } else {
         const ty0 = self.getExprType(ctx, a, id);
-        const base = try self.lowerExpr(ctx, a, env, f, blk, row.collection, null, .rvalue);
+        const col_kind = a.kind(row.collection);
+        const is_addressable = switch (col_kind) {
+            .Ident, .FieldAccess, .IndexAccess, .Deref => true,
+            else => false,
+        };
+        // Only prefer address for fixed-size arrays to avoid implicit copy.
+        const prefer_addr = is_addressable and self.context.type_store.getKind(base_ty) == .Array;
+        const base = if (prefer_addr)
+            try self.lowerExpr(ctx, a, env, f, blk, row.collection, null, .lvalue_addr)
+        else
+            try self.lowerExpr(ctx, a, env, f, blk, row.collection, null, .rvalue);
+
         // If result is a slice, the index expression should be a range ([]usize);
         // otherwise, index is a single usize.
         const idx = blk: {
-            const rk = self.context.type_store.getKind(ty0);
-            if (rk == .Slice or rk == .String) {
+            const idx_ty = self.getExprType(ctx, a, row.index);
+            const idx_kind = self.context.type_store.getKind(idx_ty);
+            if (idx_kind == .Slice) {
                 const want = self.context.type_store.mkSlice(self.context.type_store.tUsize(), false);
                 break :blk try self.lowerExpr(ctx, a, env, f, blk, row.index, want, .rvalue);
             } else {
@@ -3770,8 +3848,8 @@ fn lowerFieldAccess(
             });
         }
         if (parent_kind == .Ptr)
-            return blk.builder.gep(blk, rptr_ty, parent_ptr, &.{blk.builder.gepConst(@intCast(idx))}, loc);
-        return blk.builder.gep(blk, rptr_ty, parent_ptr, &.{blk.builder.gepConst(@intCast(idx))}, loc);
+            return blk.builder.gep(blk, rptr_ty, parent_ptr, &.{blk.builder.gepConst(0), blk.builder.gepConst(@intCast(idx))}, loc);
+        return blk.builder.gep(blk, rptr_ty, parent_ptr, &.{blk.builder.gepConst(0), blk.builder.gepConst(@intCast(idx))}, loc);
     }
 
     // 4) rvalue extraction
@@ -3989,7 +4067,6 @@ fn lowerIdent(
                 const ptr_ty = self.context.type_store.mkPtr(gty, !d.flags.is_const);
                 const sym = (try self.symbolNameForDecl(a, did)) orelse name;
                 const addr = blk.builder.tirValue(.GlobalAddr, blk, ptr_ty, loc, .{ .name = sym });
-                try env.bind(self.gpa, name, .{ .value = addr, .ty = gty, .is_slot = true }, f.builder, blk, loc);
                 return addr;
             }
             // Fall through for TypeType: no addressable storage for types.
@@ -4028,8 +4105,7 @@ fn lowerIdent(
                 // For function declarations, the global address is already the rvalue we want;
                 // do not treat it as an addressable slot to avoid emitting a spurious load.
                 const is_fn = self.context.type_store.getKind(gty) == .Function;
-                try env.bind(self.gpa, name, .{ .value = addr, .ty = gty, .is_slot = !is_fn }, f.builder, blk, loc);
-                break :blk env.lookup(name).?;
+                break :blk ValueBinding{ .value = addr, .ty = gty, .is_slot = !is_fn };
             }
             // For type declarations, synthesize a non-addressable placeholder value.
         }
@@ -5748,4 +5824,35 @@ pub fn restoreBindings(self: *LowerTir, env: *cf.Env, saved: []const EnvBindingS
         const entry = saved[i - 1];
         try env.restoreBinding(self.gpa, entry.name, entry.prev);
     }
+}
+
+/// Restore the binding environment to the snapshot in `saved`, dropping names that
+/// were introduced after the snapshot was taken.
+pub fn restoreEnvSnapshot(
+    self: *LowerTir,
+    env: *cf.Env,
+    saved: []const EnvBindingSnapshot,
+    scratch_names: *std.ArrayList(ast.StrId),
+) !void {
+    scratch_names.clearRetainingCapacity();
+
+    // Collect bindings that were not present in the saved snapshot.
+    var it = env.map.iterator();
+    while (it.next()) |entry| {
+        const name = entry.key_ptr.*;
+        var found = false;
+        for (saved) |snap| {
+            if (snap.name.toRaw() == name.toRaw()) {
+                found = true;
+                break;
+            }
+        }
+        if (!found) try scratch_names.append(self.gpa, name);
+    }
+
+    // Remove bindings introduced after the snapshot and restore prior bindings.
+    for (scratch_names.items) |name| {
+        _ = env.map.swapRemove(name);
+    }
+    try self.restoreBindings(env, saved);
 }

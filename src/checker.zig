@@ -1125,11 +1125,11 @@ fn resolveOwnerType(
         // so we can emit the correct .method_owner_not_struct error later.
         const ty_res = check_types.typeFromTypeExpr(self, ctx, ast_unit, owner_decl.value) catch .{ false, self.context.type_store.tTypeError() };
         var ty = ty_res[1];
-        
+
         if (self.typeKind(ty) == .TypeError) {
             ty = try self.checkExpr(ctx, ast_unit, owner_decl.value);
         }
-        
+
         if (self.typeKind(ty) == .TypeError) return false;
         // Cache as TypeType
         const wrapped = self.context.type_store.mkTypeType(ty);

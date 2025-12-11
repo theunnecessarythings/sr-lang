@@ -158,6 +158,7 @@ pub fn checkedFloatToInt(self: *Codegen, v: mlir.Value, to_ty: mlir.Type, signed
 /// The caller must supply the destination LLVM `to_ty` so that special-case conversions can be handled.
 pub fn emitCastNormal(self: *Codegen, dst_sr: types.TypeId, to_ty: mlir.Type, from_v: mlir.Value, src_sr: types.TypeId) !mlir.Value {
     var from_ty = from_v.getType();
+    if (from_ty.equal(to_ty)) return from_v;
 
     if (from_ty.equal(self.llvm_ptr_ty) and mlir.LLVM.isLLVMStructType(to_ty)) {
         return self.emitOp("llvm.load", EmitOpArgs{

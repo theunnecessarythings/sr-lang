@@ -155,3 +155,22 @@ test "control_flow: match with range inside or-pattern" {
     const code = getSource("", src);
     try runCompilerTest(code, "Result: 222\n");
 }
+
+test "control_flow: match with automatic type conversion" {
+    const src =
+        \\  c: u8 = 13
+        \\  state := 0
+        \\  match c {
+        \\      13 => {
+        \\          state = 1
+        \\      },
+        \\      _ => {
+        \\          state = 0
+        \\      },
+        \\  }
+        \\
+        \\  printf("State: %d", state)
+    ;
+    const code = getSource("", src);
+    try runCompilerTest(code, "State: 1");
+}

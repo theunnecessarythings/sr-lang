@@ -6,6 +6,8 @@ package io
 printf :: extern proc(*const u8, any) i32
 fflush :: extern proc(*void) i32
 
+sprintf :: extern proc(buf: ?*u8, fmt: *const u8, arg: any) i32
+
 // Runtime helpers for raw printing and panic.
 rt_print :: extern proc(*const u8, usize) void
 rt_eprint :: extern proc(*const u8, usize) void
@@ -60,7 +62,5 @@ panic :: proc(msg: string) noreturn {
 
 // Assert
 assert :: proc(cond: bool, msg: string) void {
-    if !cond {
-        panic(msg)
-    }
+    if !cond { panic(msg) }
 }

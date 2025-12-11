@@ -169,13 +169,6 @@ Rect :: struct {
     height: f32,
 }
 
-SkRect :: struct {
-    x: f32,
-    y: f32,
-    width: f32,
-    height: f32,
-}
-
 Matrix :: struct {
     m00: f32,
     m01: f32,

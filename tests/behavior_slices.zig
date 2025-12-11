@@ -51,3 +51,22 @@ test "composite_types: slice as function argument" {
     const code = getSource(globals, src);
     try runCompilerTest(code, "Slice elements: 20, 30\n");
 }
+
+test "composite_types: slice of strings scalar indexing" {
+    const globals =
+        \\aa :: proc(a: []string) {
+        \\    printf("arr len %d, %s\n", a.len, a[a.len - 1])
+        \\    for str in a {
+        \\        printf("%s", str)
+        \\    }
+        \\}
+    ;
+    const src =
+        \\a := ["hello", "wordl", "where", "are", "you"]
+        \\aa(a)
+        \\aa(["hello", "world"])
+    ;
+    const code = getSource(globals, src);
+    try runCompilerTest(code, "arr len 5, you\nhellowordlwhereareyouarr len 2, world\nhelloworld");
+}
+

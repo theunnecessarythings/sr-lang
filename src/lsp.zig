@@ -389,12 +389,11 @@ const DocumentStore = struct {
 
 /// Start the LSP server loop reading from stdin/stdout using `gpa`.
 pub fn run(gpa: std.mem.Allocator) !void {
-    var in_buf: [64 * 1024]u8 = undefined;
-    var out_buf: [64 * 1024]u8 = undefined;
-    var in_r = std.fs.File.stdin().readerStreaming(&in_buf);
-    var out_w = std.fs.File.stdout().writerStreaming(&out_buf);
-    const In: *std.Io.Reader = &in_r.interface;
-    const Out: *std.Io.Writer = &out_w.interface;
+    const stdin_file = std.fs.File.stdin();
+    const stdout_file = std.fs.File.stdout();
+
+    var stdout = stdout_file.writer(&.{});
+
     var docs: DocumentStore = .init(gpa);
     defer docs.deinit();
     var analysis: AnalysisCache = .init(gpa);
@@ -403,38 +402,62 @@ pub fn run(gpa: std.mem.Allocator) !void {
     var arena_state: std.heap.ArenaAllocator = .init(gpa);
     defer arena_state.deinit();
 
+    // Persistent input buffer
+    var recv_buf = std.ArrayList(u8){};
+    defer recv_buf.deinit(gpa);
+
+    std.debug.print("[lsp] server started \n", .{});
+
     while (true) {
         const arena = arena_state.allocator();
         defer _ = arena_state.reset(.retain_capacity);
 
-        var hdr = try readHeaders(arena, In);
-        // We don't defer free because arena reset handles it.
+        // --- 1. Read Headers ---
+        var body_start_index: ?usize = null;
+        while (body_start_index == null) {
+            if (findHeaderEnd(recv_buf.items)) |idx| {
+                body_start_index = idx;
+            } else {
+                var tmp: [4096]u8 = undefined;
+                const n = try stdin_file.read(&tmp);
+                if (n == 0) return; // EOF
 
-        const cl = parseContentLength(hdr.buf[0..hdr.body_start]) catch |err| {
-            std.debug.print("[lsp] error parsing content length: {s}\nHeaders received:\n---\n{s}\n---\n", .{ @errorName(err), hdr.buf[0..hdr.body_start] });
-            continue;
-        };
-        var body = try arena.alloc(u8, cl);
+                try recv_buf.appendSlice(gpa, tmp[0..n]);
 
-        const prefix = hdr.buf[hdr.body_start..];
-        var off: usize = 0;
-        if (prefix.len != 0) {
-            const to_copy = @min(prefix.len, body.len);
-            @memcpy(body[0..to_copy], prefix[0..to_copy]);
-            off = to_copy;
+                if (recv_buf.items.len > 10 * 1024 * 1024) return error.ResourceExhausted;
+            }
         }
 
-        try readExact(In, body[off..]);
+        const body_start = body_start_index.?;
+        const header_bytes = recv_buf.items[0..body_start];
 
-        // Incoming JSON-RPC request representation.
+        // --- 2. Parse Content-Length ---
+        const content_len = parseContentLength(header_bytes) catch |err| {
+            std.debug.print("[lsp] header parse error: {s}\n", .{@errorName(err)});
+            // Robustness: consume bad header and retry
+            try recv_buf.replaceRange(gpa, 0, body_start, &.{});
+            continue;
+        };
+
+        // --- 3. Read Body ---
+        const total_msg_len = body_start + content_len;
+        while (recv_buf.items.len < total_msg_len) {
+            var tmp: [4096]u8 = undefined;
+            const n = try stdin_file.read(&tmp);
+            if (n == 0) return;
+            try recv_buf.appendSlice(gpa, tmp[0..n]);
+        }
+
+        // --- 4. Extract ---
+        const body_src = recv_buf.items[body_start..total_msg_len];
+        const body = try arena.dupe(u8, body_src);
+        try recv_buf.replaceRange(gpa, 0, total_msg_len, &.{});
+
+        // --- 5. Process ---
         const Request = struct {
-            /// JSON-RPC protocol version (always "2.0").
             jsonrpc: []const u8,
-            /// Method identifier string.
             method: []const u8,
-            /// Optional numeric identifier for matching responses.
             id: ?u64 = null,
-            /// Optional parameters object.
             params: ?json.Value = null,
         };
 
@@ -442,79 +465,46 @@ pub fn run(gpa: std.mem.Allocator) !void {
             std.debug.print("[lsp] json parse error: {s}\n", .{@errorName(e)});
             continue;
         };
-        // No defer parsed.deinit(), arena handles it.
         const req = parsed.value;
 
-        // --- dispatch ---
+        // Dispatch: Pass 'stdout' (anytype) which handles the unbuffered write
         if (std.mem.eql(u8, req.method, "initialize")) {
-            try respondInitialize(Out, arena, req.id orelse 0);
+            try respondInitialize(&stdout.interface, arena, req.id orelse 0);
         } else if (std.mem.eql(u8, req.method, "initialized")) {
             // no-op
         } else if (std.mem.eql(u8, req.method, "shutdown")) {
-            try writeJson(Out, arena, .{ .jsonrpc = "2.0", .id = req.id orelse 0, .result = null });
+            try writeJson(&stdout.interface, arena, .{ .jsonrpc = "2.0", .id = req.id orelse 0, .result = null });
         } else if (std.mem.eql(u8, req.method, "exit")) {
             return;
         } else if (std.mem.eql(u8, req.method, "textDocument/didOpen")) {
-            if (req.params) |p| try onDidOpen(Out, arena, &docs, &analysis, p);
+            if (req.params) |p| try onDidOpen(&stdout.interface, arena, &docs, &analysis, p);
         } else if (std.mem.eql(u8, req.method, "textDocument/didChange")) {
-            if (req.params) |p| try onDidChange(Out, arena, &docs, &analysis, p);
+            if (req.params) |p| try onDidChange(&stdout.interface, arena, &docs, &analysis, p);
         } else if (std.mem.eql(u8, req.method, "textDocument/didClose")) {
-            if (req.params) |p| try onDidClose(Out, arena, &docs, &analysis, p);
+            if (req.params) |p| try onDidClose(&stdout.interface, arena, &docs, &analysis, p);
         } else if (std.mem.eql(u8, req.method, "textDocument/definition")) {
-            if (req.params) |p| try onGoToDefinition(Out, arena, &docs, &analysis, req.id orelse 0, p);
+            if (req.params) |p| try onGoToDefinition(&stdout.interface, arena, &docs, &analysis, req.id orelse 0, p);
         } else if (std.mem.eql(u8, req.method, "textDocument/hover")) {
-            if (req.params) |p| try onHover(Out, arena, &docs, &analysis, req.id orelse 0, p);
+            if (req.params) |p| try onHover(&stdout.interface, arena, &docs, &analysis, req.id orelse 0, p);
         } else if (std.mem.eql(u8, req.method, "textDocument/rename")) {
-            if (req.params) |p| try onRename(Out, arena, &docs, &analysis, req.id orelse 0, p);
+            if (req.params) |p| try onRename(&stdout.interface, arena, &docs, &analysis, req.id orelse 0, p);
         } else if (std.mem.eql(u8, req.method, "textDocument/completion")) {
-            if (req.params) |p| try onCompletion(Out, arena, &docs, &analysis, req.id orelse 0, p);
+            if (req.params) |p| try onCompletion(&stdout.interface, arena, &docs, &analysis, req.id orelse 0, p);
         } else if (std.mem.eql(u8, req.method, "textDocument/semanticTokens/full")) {
-            if (req.params) |p| try onSemanticTokensFull(Out, arena, &docs, &analysis, req.id orelse 0, p);
+            if (req.params) |p| try onSemanticTokensFull(&stdout.interface, arena, &docs, &analysis, req.id orelse 0, p);
         } else if (std.mem.eql(u8, req.method, "textDocument/formatting")) {
-            if (req.params) |p| try onFormatting(Out, arena, &docs, &analysis, req.id orelse 0, p);
+            if (req.params) |p| try onFormatting(&stdout.interface, arena, &docs, &analysis, req.id orelse 0, p);
         } else if (std.mem.eql(u8, req.method, "textDocument/references")) {
-            if (req.params) |p| try onReferences(Out, arena, &docs, &analysis, req.id orelse 0, p);
+            if (req.params) |p| try onReferences(&stdout.interface, arena, &docs, &analysis, req.id orelse 0, p);
         } else if (std.mem.eql(u8, req.method, "textDocument/documentSymbol")) {
-            if (req.params) |p| try onDocumentSymbol(Out, arena, &docs, &analysis, req.id orelse 0, p);
+            if (req.params) |p| try onDocumentSymbol(&stdout.interface, arena, &docs, &analysis, req.id orelse 0, p);
         } else if (std.mem.eql(u8, req.method, "textDocument/signatureHelp")) {
-            if (req.params) |p| try onSignatureHelp(Out, arena, &docs, &analysis, req.id orelse 0, p);
+            if (req.params) |p| try onSignatureHelp(&stdout.interface, arena, &docs, &analysis, req.id orelse 0, p);
         } else if (std.mem.eql(u8, req.method, "textDocument/codeAction")) {
-            if (req.params) |p| try onCodeAction(Out, arena, &docs, &analysis, req.id orelse 0, p);
+            if (req.params) |p| try onCodeAction(&stdout.interface, arena, &docs, &analysis, req.id orelse 0, p);
         } else {
-            if (req.id) |rid| try writeJson(Out, arena, .{ .jsonrpc = "2.0", .id = rid, .result = null });
+            if (req.id) |rid| try writeJson(&stdout.interface, arena, .{ .jsonrpc = "2.0", .id = rid, .result = null });
         }
-    }
-}
-
-/// Raw header capture returned by `readHeaders`.
-const HeaderRead = struct {
-    /// Buffer that includes headers and any body slice already read.
-    buf: []u8, // header bytes + possibly some of the body already read
-    /// Byte index where the JSON body begins inside `buf`.
-    body_start: usize, // index within buf where the body begins
-};
-
-/// Read the HTTP-like LSP headers from `In`, returning header bytes and body offset.
-fn readHeaders(A: std.mem.Allocator, In: *std.Io.Reader) !HeaderRead {
-    var acc = std.ArrayList(u8){};
-    errdefer acc.deinit(A);
-
-    var tmp: [4096]u8 = undefined;
-
-    while (true) {
-        var b = [_][]u8{tmp[0..]};
-        const n = try In.readVec(&b);
-        if (n == 0) return error.EndOfStream;
-        try acc.appendSlice(A, tmp[0..n]);
-
-        if (findHeaderEnd(acc.items)) |start| {
-            // split position is start (index after the terminator)
-            const buf = try acc.toOwnedSlice(A);
-            return HeaderRead{ .buf = buf, .body_start = start };
-        }
-
-        // very defensive cap for pathological clients
-        if (acc.items.len > 1 * 1024 * 1024) return error.ResourceExhausted;
     }
 }
 

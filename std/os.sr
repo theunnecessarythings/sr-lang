@@ -1,1 +1,21 @@
 exit :: extern proc(i32) noreturn
+
+pid_t :: i32
+
+fork :: extern proc() pid_t
+
+execvp :: extern proc(file: ?*const u8, argv: **const u8) i32
+
+pipe :: extern proc(pipefd: *i32) i32
+
+dup2 :: extern proc(oldfd: i32, newfd: i32) i32
+
+close :: extern proc(fd: i32) i32
+
+read :: extern proc(fd: i32, buf: *u8, count: u64) i64
+
+write :: extern proc(fd: i32, buf: *const u8, count: u64) i64
+
+kill :: extern proc(pid: pid_t, sig: i32) i32
+
+waitpid :: extern proc(pid: pid_t, wstatus: *i32, options: i32) pid_t

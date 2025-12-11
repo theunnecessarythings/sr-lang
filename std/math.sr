@@ -17,21 +17,14 @@ fmax :: extern proc(x: f64, y: f64) f64
 fabs :: extern proc(x: f64) f64
 fmod :: extern proc(x: f64, y: f64) f64
 fmodf :: extern proc(x: f32, y: f32) f32
-
+log10f :: extern proc(x: f32) f32
+log10 :: extern proc(x: f64) f64
 round :: extern proc(x: f64) f64
 
 max :: proc(comptime T: type, a: T, b: T) T {
-    return if a > b {
-        a
-    } else {
-        b
-    }
+    return if a > b { a } else { b }
 }
 
 min :: proc(comptime T: type, a: T, b: T) T {
-    return if a < b {
-        a
-    } else {
-        b
-    }
+    return if a < b { a } else { b }
 }

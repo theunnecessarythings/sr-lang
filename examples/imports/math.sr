@@ -4,10 +4,9 @@ package math
 // A simple "library" file to be imported.
 
 // A public struct type.
-// Assumes `pub` makes this definition available to other modules.
 Vector :: struct {
-    pub x: f64,
-    pub y: f64,
+    x: f64,
+    y: f64,
 }
 
 // A public helper function.

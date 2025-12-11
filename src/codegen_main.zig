@@ -2215,7 +2215,10 @@ fn emitIndex(self: *Codegen, p: tir.Rows.Index, t: *tir.TIR) !mlir.Value {
         });
     }
 
-    if (res_sr_kind == .Slice or res_sr_kind == .String) {
+    const idx_sr_ty = self.srTypeOfValue(p.index);
+    const idx_kind = self.context.type_store.getKind(idx_sr_ty);
+
+    if (idx_kind == .Slice) {
         // Peel optional CastNormal from the index to find builtin.range.make
         var idx_vid: tir.ValueId = p.index;
         if (self.def_instr.get(idx_vid)) |iid1| {
@@ -2349,11 +2352,27 @@ fn emitIndex(self: *Codegen, p: tir.Rows.Index, t: *tir.TIR) !mlir.Value {
     if (base.getType().equal(self.llvm_ptr_ty)) {
         const base_sr = self.srTypeOfValue(p.base);
         var elem_mlir2: mlir.Type = res_ty; // fallback
+        var is_array = false;
         if (self.context.type_store.getKind(base_sr) == .Ptr) {
             const ptr_row2 = self.context.type_store.get(.Ptr, base_sr);
             elem_mlir2 = try self.llvmTypeOf(ptr_row2.elem);
+            if (self.context.type_store.getKind(ptr_row2.elem) == .Array) {
+                is_array = true;
+            }
         }
-        const vptr = try self.emitGep(base, elem_mlir2, &.{.{ .Value = p.index }});
+
+        var idxs_buf: [2]tir.Rows.GepIndex = undefined;
+        var idxs: []tir.Rows.GepIndex = &.{};
+        if (is_array) {
+            idxs_buf[0] = .{ .Const = 0 };
+            idxs_buf[1] = .{ .Value = p.index };
+            idxs = idxs_buf[0..2];
+        } else {
+            idxs_buf[0] = .{ .Value = p.index };
+            idxs = idxs_buf[0..1];
+        }
+
+        const vptr = try self.emitGep(base, elem_mlir2, idxs);
         return self.emitOp("llvm.load", EmitOpArgs{
             .operands = &.{vptr},
             .results = &.{res_ty},
@@ -2362,7 +2381,21 @@ fn emitIndex(self: *Codegen, p: tir.Rows.Index, t: *tir.TIR) !mlir.Value {
     } else {
         const base_ty = base.getType();
         const tmp_ptr = self.spillAgg(base, base_ty, 0);
-        const vptr = try self.emitGep(tmp_ptr, base_ty, &.{.{ .Value = p.index }});
+
+        const base_sr = self.srTypeOfValue(p.base);
+        const is_array = self.context.type_store.getKind(base_sr) == .Array;
+        var idxs_buf: [2]tir.Rows.GepIndex = undefined;
+        var idxs: []tir.Rows.GepIndex = &.{};
+        if (is_array) {
+            idxs_buf[0] = .{ .Const = 0 };
+            idxs_buf[1] = .{ .Value = p.index };
+            idxs = idxs_buf[0..2];
+        } else {
+            idxs_buf[0] = .{ .Value = p.index };
+            idxs = idxs_buf[0..1];
+        }
+
+        const vptr = try self.emitGep(tmp_ptr, base_ty, idxs);
         return self.emitOp("llvm.load", EmitOpArgs{
             .operands = &.{vptr},
             .results = &.{res_ty},
@@ -3858,35 +3891,7 @@ fn emitGep(
     }
     const dyn_min = std.math.minInt(i32);
 
-    var use_idxs = idxs;
-    var allocated_extra = false;
-    const is_scalarish =
-        elem_ty.isAInteger() or
-        elem_ty.isAFloat() or
-        elem_ty.isAComplex() or
-        elem_ty.isAVector() or
-        mlir.LLVM.isLLVMPointerType(elem_ty);
-    if (!is_scalarish) {
-        // For opaque-pointer GEPs:
-        // - Reinterpretation GEP (idxs = [0]) needs a leading zero (handled by caller).
-        // - Array element access on pointer-to-array needs a leading zero to step into the array.
-        // - Pointer arithmetic across elements of pointer-to-struct MUST NOT insert an extra
-        //   leading zero, otherwise the dynamic index becomes a struct field index which must
-        //   be constant in MLIR/LLVM. In that case, we want a single dynamic index.
-        const is_struct = mlir.LLVM.isLLVMStructType(elem_ty);
-        const need_leading_zero = if (idxs.len == 0) true else switch (idxs[0]) {
-            .Const => |c| c != 0,
-            .Value => !is_struct,
-        };
-        if (need_leading_zero) {
-            var tmp = try self.gpa.alloc(tir.Rows.GepIndex, idxs.len + 1);
-            tmp[0] = .{ .Const = 0 };
-            if (idxs.len != 0) std.mem.copyForwards(tir.Rows.GepIndex, tmp[1..], idxs);
-            use_idxs = tmp;
-            allocated_extra = true;
-        }
-    }
-    defer if (allocated_extra) self.gpa.free(use_idxs);
+    const use_idxs = idxs;
 
     var dyn = try self.gpa.alloc(mlir.Value, use_idxs.len);
     defer self.gpa.free(dyn);

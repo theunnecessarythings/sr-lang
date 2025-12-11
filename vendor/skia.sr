@@ -17,6 +17,10 @@ PaintJoin :: skiac.SkPaintJoin
 
 Rect :: skiac.Rect
 
+Rect.make :: proc(x: f32, y: f32, w: f32, h: f32) Rect {
+    return Rect{ x: x, y: y, width: w, height: h }
+}
+
 PixelGeometry :: skiac.SkPixelGeometry
 
 TileMode :: skiac.SkTileMode
@@ -280,7 +284,7 @@ Canvas.clip_rect :: proc(self: *Canvas, rect: *Rect, do_aa: bool) {
     skiac.skiac_sk_canvas_clip_rect(self.canvas?, rect, do_aa)
 }
 
-Canvas.save_layer :: proc(self: *Canvas, bounds: *Rect, paint: *Paint) i32 {
+Canvas.save_layer :: proc(self: *Canvas, bounds: ?*Rect, paint: *Paint) i32 {
     return skiac.skiac_sk_canvas_save_layer(self.canvas?, bounds, paint.paint?)
 }
 

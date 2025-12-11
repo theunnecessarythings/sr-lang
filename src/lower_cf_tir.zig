@@ -254,6 +254,15 @@ pub fn lowerIf(
         // statement-position if: no value, no phi
         const exit_blk = try f.builder.beginBlock(f);
 
+        // Snapshot current bindings so branch-local bindings don't leak across arms.
+        const saved_bindings = &ctx.binding_snapshots;
+        saved_bindings.clearRetainingCapacity();
+        var snap_it = env.map.iterator();
+        while (snap_it.next()) |entry| {
+            try saved_bindings.append(self.gpa, .{ .name = entry.key_ptr.*, .prev = entry.value_ptr.* });
+        }
+        const scratch_names = &ctx.pattern_binding_names;
+
         const br_cond = self.forceLocalCond(blk, cond_v, loc);
         try f.builder.condBr(blk, br_cond, then_blk.id, &.{}, else_blk.id, &.{}, loc);
         {
@@ -264,12 +273,14 @@ pub fn lowerIf(
         try self.lowerExprAsStmtList(ctx, a, env, f, &then_blk, row.then_block);
         if (then_blk.term.isNone()) try f.builder.br(&then_blk, exit_blk.id, &.{}, loc);
         try f.builder.endBlock(f, then_blk);
+        try self.restoreEnvSnapshot(env, saved_bindings.items, scratch_names);
 
         if (!row.else_block.isNone()) {
             try self.lowerExprAsStmtList(ctx, a, env, f, &else_blk, row.else_block.unwrap());
         }
         if (else_blk.term.isNone()) try f.builder.br(&else_blk, exit_blk.id, &.{}, loc);
         try f.builder.endBlock(f, else_blk);
+        try self.restoreEnvSnapshot(env, saved_bindings.items, scratch_names);
 
         blk.* = exit_blk;
         return self.safeUndef(blk, self.context.type_store.tAny(), loc);
@@ -433,7 +444,7 @@ pub fn matchPattern(
                     loc,
                 );
             }
-            const litv = try self.lowerExpr(ctx, a, env, f, blk, pr.expr, null, .rvalue);
+            const litv = try self.lowerExpr(ctx, a, env, f, blk, pr.expr, scrut_ty, .rvalue);
             return blk.builder.binBool(blk, .CmpEq, scrut, litv, loc);
         },
         .VariantTuple => {
