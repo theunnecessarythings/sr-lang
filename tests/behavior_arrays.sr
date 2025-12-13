@@ -1,0 +1,42 @@
+package behavior_arrays
+
+testing :: import "std/testing"
+
+test "composite_types: basic fixed-size array" {
+    arr: [3]i32 = [1, 2, 3]
+    if !testing.expect_equal_i64(1, arr[0].(i64)) { return Error.Fail }
+    if !testing.expect_equal_i64(2, arr[1].(i64)) { return Error.Fail }
+    if !testing.expect_equal_i64(3, arr[2].(i64)) { return Error.Fail }
+}
+
+test "composite_types: array indexing and modification" {
+    arr: [3]i32 = [10, 20, 30]
+    arr[1] = 25
+    if !testing.expect_equal_i64(10, arr[0].(i64)) { return Error.Fail }
+    if !testing.expect_equal_i64(25, arr[1].(i64)) { return Error.Fail }
+    if !testing.expect_equal_i64(30, arr[2].(i64)) { return Error.Fail }
+}
+
+test "composite_types: nested arrays (2D matrix)" {
+    matrix: [2][2]i32 = [[1, 2], [3, 4]]
+    if !testing.expect_equal_i64(2, matrix[0][1].(i64)) { return Error.Fail }
+    if !testing.expect_equal_i64(3, matrix[1][0].(i64)) { return Error.Fail }
+}
+
+test "composite_types: array iteration with for loop" {
+    arr: [4]i32 = [1, 2, 3, 4]
+    sum : i32 = 0
+    for x in arr {
+        sum = sum + x
+    }
+    if !testing.expect_equal_i64(10, sum.(i64)) { return Error.Fail }
+}
+
+test "composite_types: array length from comptime binding" {
+    len: usize = 3
+    arr: [len]i32 = [7, 8, 9]
+    if !testing.expect_equal_i64(7, arr[0].(i64)) { return Error.Fail }
+    if !testing.expect_equal_i64(8, arr[1].(i64)) { return Error.Fail }
+    if !testing.expect_equal_i64(9, arr[2].(i64)) { return Error.Fail }
+}
+

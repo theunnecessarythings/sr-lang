@@ -1,0 +1,31 @@
+package behavior_any_type
+
+testing :: import "std/testing"
+io :: import "std/io"
+
+calc :: proc(a: any, b: any) i64 {
+    result := (a + b) * 100
+    return result.(i64)
+}
+
+buf: [64]u8 = undefined
+process_any :: proc(val: any) string {
+
+    n := match typeof(val) {
+        i64 => io.sprintf(&buf[0], "Integer: %d".ptr, val),
+        string => io.sprintf(&buf[0], "String: %s".ptr, val),
+        _ => io.sprintf(&buf[0], "Unknown type".ptr),
+    }
+
+    return buf[0 .. n].(string)
+}
+
+test "special_types: passing any to function" {
+    if !testing.expect_equal_i64(46800, calc(123, 345)) { return Error.Fail }
+    if !testing.expect_equal_i64(585, calc(3.1415, 2.71828)) { return Error.Fail }
+}
+
+test "special_types: type checking any with typeof" {
+    if !testing.expect_equal_str("Integer: 42", process_any(42)) { return Error.Fail }
+    if !testing.expect_equal_str("String: Hello", process_any("Hello")) { return Error.Fail }
+}

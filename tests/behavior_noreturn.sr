@@ -1,0 +1,23 @@
+package behavior_noreturn
+
+testing :: import "std/testing"
+
+exit :: extern proc(c: i32) noreturn
+
+my_noreturn_func :: proc() noreturn {
+    exit(1)
+}
+
+test "special_types: function returning noreturn" {
+    // Calling this would exit the test runner with code 1.
+    // my_noreturn_func()
+}
+
+test "special_types: unreachable statement" {
+    x := 10
+    if x > 100 {
+        unreachable
+    }
+    // Reached here
+}
+

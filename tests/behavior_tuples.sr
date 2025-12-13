@@ -1,0 +1,45 @@
+package behavior_tuples
+
+testing :: import "std/testing"
+
+process_tuple :: proc(t: (i32, string)) {
+    if !testing.expect_equal_i64(100, t.0.(i64)) { return }
+    if !testing.expect_equal_str("world", t.1) { return }
+}
+
+create_tuple :: fn() (i32, bool) {
+    return (42, true)
+}
+
+test "composite_types: basic tuple definition" {
+    t := (1, "hello", true)
+    if !testing.expect_equal_i64(1, t.0.(i64)) { return Error.Fail }
+    if !testing.expect_equal_str("hello", t.1) { return Error.Fail }
+    testing.expect(t.2, "t.2 should be true")!
+}
+
+test "composite_types: accessing tuple elements" {
+    t := (10, 20, 30)
+    first := t.0
+    second := t.1
+    if !testing.expect_equal_i64(10, first.(i64)) { return Error.Fail }
+    if !testing.expect_equal_i64(20, second.(i64)) { return Error.Fail }
+}
+
+test "composite_types: nested tuples" {
+    t := (1, ("nested", 2.5), true)
+    if !testing.expect_equal_i64(1, t.0.(i64)) { return Error.Fail }
+    if !testing.expect_equal_str("nested", t.1.0) { return Error.Fail }
+    if !testing.expect_equal_f64(2.5, t.1.1, 0.000001) { return Error.Fail }
+    testing.expect(t.2, "t.2 should be true")!
+}
+
+test "composite_types: tuple as function argument" {
+    process_tuple((100, "world"))
+}
+
+test "composite_types: function returning tuple" {
+    t := create_tuple()
+    if !testing.expect_equal_i64(42, t.0.(i64)) { return Error.Fail }
+    testing.expect(t.1, "t.1 should be true")!
+}

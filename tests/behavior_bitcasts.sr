@@ -1,0 +1,22 @@
+package behavior_bitcasts
+
+testing :: import "std/testing"
+
+test "casts: integer to float bitcast" {
+    some_bits: u32 = 0x42F6E979
+    bits_as_float := some_bits.^f32
+    if !testing.expect_equal_f64(123.456001, bits_as_float.(f64), 0.000001) { return Error.Fail }
+}
+
+test "casts: float to integer bitcast" {
+    some_float: f32 = 123.45
+    float_as_bits := some_float.^u32
+    if !testing.expect_equal_i64(0x42F6E666, float_as_bits.(i64)) { return Error.Fail }
+}
+
+test "casts: u32 to i32 bitcast" {
+    x: u32 = 0xFFFFFFFF
+    y := x.^i32
+    if !testing.expect_equal_i64(-1, y.(i64)) { return Error.Fail }
+}
+

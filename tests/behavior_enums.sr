@@ -1,0 +1,29 @@
+package behavior_enums
+
+testing :: import "std/testing"
+
+State :: enum {Running, Paused, Stopped}
+HttpCode :: enum(u16) {Ok = 200, NotFound = 404, InternalError = 500}
+Color :: enum {Red, Green, Blue}
+
+test "composite_types: c-style enum definition and usage" {
+    s := State.Running
+    if !testing.expect_equal_i64(0, s.(i64)) { return Error.Fail }
+    testing.expect(s == State.Running, "s should be State.Running")!
+}
+
+test "composite_types: integer-backed enum" {
+    c := HttpCode.InternalError
+    if !testing.expect_equal_i64(500, c.(i64)) { return Error.Fail }
+    testing.expect(c == HttpCode.InternalError, "c should be HttpCode.InternalError")!
+}
+
+test "composite_types: enum in match expression" {
+    c := Color.Green
+    match c {
+        Color.Red => testing.fail("Matched Red")!,
+        Color.Green => {
+        },
+        Color.Blue => testing.fail("Matched Blue")!,
+    }
+}

@@ -1,0 +1,33 @@
+package behavior_default_arguments
+
+testing :: import "std/testing"
+io :: import "std/io"
+
+buf: [128]u8 = undefined
+
+greet :: proc(name: string, greeting: string = "Hello") string {
+    n := io.sprintf(&buf[0], "%s, %s".ptr, greeting, name)
+    return buf[0 .. n].(string)
+}
+
+configure :: proc(name: string, id: i32 = 0, active: bool = true) string {
+    n := io.sprintf(&buf[0], "User: %s, ID: %d, Active: %b".ptr, name, id, active)
+    return buf[0 .. n].(string)
+}
+
+test "functions: function with one default argument" {
+    if !testing.expect_equal_str("Hello, Alice", greet("Alice")) { return Error.Fail }
+    if !testing.expect_equal_str("Hi, Bob", greet("Bob", "Hi")) { return Error.Fail }
+}
+
+test "functions: function with multiple default arguments" {
+    if !testing.expect_equal_str("User: UserA, ID: 0, Active: 1", configure("UserA")) {
+        return Error.Fail
+    }
+    if !testing.expect_equal_str("User: UserB, ID: 10, Active: 1", configure("UserB", 10)) {
+        return Error.Fail
+    }
+    if !testing.expect_equal_str("User: UserC, ID: 20, Active: 0", configure("UserC", 20, false)) {
+        return Error.Fail
+    }
+}

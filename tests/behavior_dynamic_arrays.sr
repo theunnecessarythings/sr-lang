@@ -1,0 +1,36 @@
+package behavior_dynamic_arrays
+
+testing :: import "std/testing"
+
+test "composite_types: basic dynamic array creation" {
+    numbers: [dyn]i32 = []
+    if !testing.expect_equal_i64(0, numbers.len.(i64)) { return Error.Fail }
+}
+
+test "composite_types: append elements to dynamic array" {
+    numbers: [dyn]i32 = []
+    numbers.append(10)
+    numbers.append(20)
+    if !testing.expect_equal_i64(2, numbers.len.(i64)) { return Error.Fail }
+    if !testing.expect_equal_i64(10, numbers[0].(i64)) { return Error.Fail }
+}
+
+test "composite_types: dynamic array capacity" {
+    numbers: [dyn]i32 = []
+    numbers.append(1)
+    numbers.append(2)
+    numbers.append(3)
+    testing.expect(numbers.capacity >= numbers.len, "Capacity should be >= Length")!
+}
+
+test "composite_types: iterate dynamic array" {
+    numbers: [dyn]i32 = []
+    numbers.append(1)
+    numbers.append(2)
+    numbers.append(10)
+    sum: i32 = 0
+    for n in numbers {
+        sum = sum + n
+    }
+    if !testing.expect_equal_i64(13, sum.(i64)) { return Error.Fail }
+}

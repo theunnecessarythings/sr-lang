@@ -1,0 +1,29 @@
+package behavior_asm
+
+testing :: import "std/testing"
+
+add_asm :: fn(a: i64, b: i64) i64 asm {
+    mov rax, a
+    add rax, b
+}
+
+sub_asm :: fn(a: i64, b: i64) i64 asm {
+    mov rdx, a
+    sub rdx, b
+    mov rax, rdx
+}
+
+test "declarations: basic asm function" {
+    r := add_asm(10, 20)
+    if !testing.expect_equal_i64(30, r) {
+        return Error.Fail
+    }
+}
+
+test "declarations: asm function with different registers" {
+    r := sub_asm(50, 15)
+    if !testing.expect_equal_i64(35, r) {
+        return Error.Fail
+    }
+}
+

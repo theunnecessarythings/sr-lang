@@ -1,0 +1,1141 @@
+package main
+
+testing :: import "std/testing"
+
+// Aggregate all in-language behavior suites.
+_ :: import "behavior_any_type"
+_ :: import "behavior_arithmetic_operators"
+_ :: import "behavior_array_slice_patterns"
+_ :: import "behavior_arrays"
+_ :: import "behavior_asm"
+_ :: import "behavior_assignment_operators"
+
+// _ :: import "behavior_async"
+_ :: import "behavior_bitcasts"
+_ :: import "behavior_bitwise_operators"
+_ :: import "behavior_block_expressions"
+_ :: import "behavior_boolean_literals"
+_ :: import "behavior_calls"
+_ :: import "behavior_char_literals"
+_ :: import "behavior_checked_casts"
+_ :: import "behavior_comparison_operators"
+_ :: import "behavior_complex_types"
+_ :: import "behavior_declarations"
+_ :: import "behavior_default_arguments"
+_ :: import "behavior_dynamic_arrays"
+_ :: import "behavior_enums"
+_ :: import "behavior_error_types"
+_ :: import "behavior_error_unions"
+_ :: import "behavior_extern"
+_ :: import "behavior_float_literals"
+_ :: import "behavior_for_loops"
+_ :: import "behavior_functions"
+_ :: import "behavior_generics"
+_ :: import "behavior_if_else"
+_ :: import "behavior_if_guard_patterns"
+_ :: import "behavior_integer_literals"
+_ :: import "behavior_literal_patterns"
+_ :: import "behavior_logical_operators"
+
+// _ :: import "behavior_maps"
+_ :: import "behavior_match_expressions"
+_ :: import "behavior_member_access"
+_ :: import "behavior_methods"
+_ :: import "behavior_noreturn"
+_ :: import "behavior_normal_casts"
+_ :: import "behavior_optionals"
+_ :: import "behavior_or_patterns"
+_ :: import "behavior_pattern_declarations"
+_ :: import "behavior_pointers"
+_ :: import "behavior_procedures"
+_ :: import "behavior_range_expressions"
+_ :: import "behavior_saturating_casts"
+_ :: import "behavior_simd_types"
+_ :: import "behavior_slices"
+_ :: import "behavior_string_literals"
+_ :: import "behavior_struct_patterns"
+_ :: import "behavior_structs"
+_ :: import "behavior_tensor_types"
+_ :: import "behavior_tuple_patterns"
+_ :: import "behavior_tuples"
+_ :: import "behavior_unions"
+_ :: import "behavior_variable_binding_patterns"
+_ :: import "behavior_variant_patterns"
+_ :: import "behavior_variants"
+_ :: import "behavior_while_is_loops"
+_ :: import "behavior_while_loops"
+_ :: import "behavior_wildcard_patterns"
+_ :: import "behavior_wrapping_casts"
+_ :: import "behavior_wrapping_saturating_arithmetic"
+
+// Global definitions for tests
+add_func_test :: fn(a: i32, b: i32) i32 {
+    return a + b
+}
+
+print_val_test :: proc(val: i32) { /* no assert as proc prints */
+}
+Point_test :: struct {x: i32, y: i32}
+State_test :: enum {Running, Paused}
+Variant_test_V :: variant {A, B(i32)}
+Variant_test_C :: variant {C {x: i32, y: i32}}
+Union_test_U :: union {i: i32, f: f64}
+MyErr_test_err_prop :: error {NotFound}
+
+might_fail_test_err_prop :: proc() MyErr_test_err_prop ! i32 {
+    return MyErr_test_err_prop.NotFound
+}
+
+handle_error_test_err_prop :: proc() i32 {
+    val := might_fail_test_err_prop() catch |err| {
+        if err == MyErr_test_err_prop.NotFound { 0 } else { 1 }
+    }
+    return val
+}
+
+Option_test_while_is :: variant {None, Some(i32)}
+greet_test :: proc(name: string, greeting: string = "Hello") {
+}
+MyErr_test_catch :: error {Failed}
+might_fail_test_catch :: proc() MyErr_test_catch ! i32 {
+    return MyErr_test_catch.Failed
+}
+
+might_succeed_test_catch :: proc() MyErr_test_catch ! i32 {
+    return 100
+}
+
+Point_nested_struct :: struct {x: i32, y: i32}
+Rect_nested_struct :: struct {tl: Point_nested_struct, br: Point_nested_struct}
+Point_struct_destructuring :: struct {x: i32, y: i32}
+MyErr_test_orelse_success :: error {Failed}
+might_succeed_test_orelse_success :: proc() MyErr_test_orelse_success ! i32 {
+    return 100
+}
+MyErr_test_catch_error_binding :: error {NotFound, PermissionDenied}
+might_fail_test_catch_error_binding :: proc() MyErr_test_catch_error_binding ! i32 {
+    return MyErr_test_catch_error_binding.PermissionDenied
+}
+Point_match_nested_struct :: struct {x: i32, y: i32}
+Rect_match_nested_struct :: struct {tl: Point_match_nested_struct, br: Point_match_nested_struct}
+FileSystemError_test :: error {NotFound, PermissionDenied}
+get_error_test :: proc() FileSystemError_test {
+    return FileSystemError_test.PermissionDenied
+}
+
+configure_test :: proc(name: string, id: i32 = 0, active: bool = true) {
+}
+
+print_mixed_test :: proc(tag: string, args: any) {
+}
+Point_array_of_structs :: struct {x: i32, y: i32}
+MyErr_test_orelse_diff_types :: error {Failed}
+might_fail_test_orelse_diff_types :: proc() MyErr_test_orelse_diff_types ! f64 {
+    return MyErr_test_orelse_diff_types.Failed
+}
+ErrA_test :: error {A}
+ErrB_test :: error {B}
+func_a_test :: proc() ErrA_test ! i32 {
+    return ErrA_test.A
+}
+
+func_b_test :: proc() ErrB_test ! i32 {
+    return func_a_test() catch |err| {
+        return ErrB_test.B
+    }
+}
+Variant_match_struct_payload_destructuring :: variant {C {x: i32, y: i32}}
+State_match_enum_tags :: enum {Active, Inactive, Pending}
+get_status_test :: fn(c: i32) string {
+    if c == 200 { return "OK" }
+    if c == 404 { return "Not Found" }
+    return "Unknown"
+}
+
+factorial_test :: fn(n: i64) i64 {
+    if n == 0 { return 1 }
+    return n * factorial_test(n - 1)
+}
+MyErr_test_combined_catch :: error {Failed, Other}
+might_fail_test_combined_catch :: proc(val: i32) ?MyErr_test_combined_catch ! i32 {
+    if val == 0 { return MyErr_test_combined_catch.Failed }
+    if val == 1 { return MyErr_test_combined_catch.Other }
+    return val
+}
+Point_optional_chaining :: struct {x: i32, y: i32}
+Point_match_struct_test :: struct {x: i32, y: i32}
+Variant_match_test_V :: variant {A, B(i32), C {x: i32}}
+Enum_match_test_E :: enum {A, B}
+
+defer_test_cleanup_ran := 0
+defer_test_run :: proc() {
+    defer {
+        defer_test_cleanup_ran = 1
+    }
+}
+
+errdefer_test_err :: error {Failed}
+errdefer_test_cleanup_ran := 0
+errdefer_test_run :: proc() errdefer_test_err ! void {
+    errdefer {
+        errdefer_test_cleanup_ran = 1
+    }
+    defer {
+    }
+    return errdefer_test_err.Failed
+}
+
+// Tests
+test "behavior: hello world" {
+    a := "hello world"
+}
+
+test "behavior: simple addition" {
+    r := 10 + 20
+    if !testing.expect_equal_i64(30, r.(i64)) { return Error.Fail }
+}
+
+test "behavior: arithmetic operations" {
+    testing.expect(10 - 5 == 5, "sub")!
+    testing.expect(10 * 2 == 20, "mul")!
+    testing.expect(20 / 4 == 5, "div")!
+    testing.expect(10 % 3 == 1, "mod")!
+    testing.expect(1 + 2 * 3 == 7, "prec")!
+}
+
+test "behavior: boolean logic" {
+    testing.expect(true and true == true, "and true")!
+    testing.expect(true and false == false, "and false")!
+    testing.expect(false or true == true, "or true")!
+    testing.expect(false or false == false, "or false")!
+    testing.expect(!true == false, "not true")!
+    testing.expect(!false == true, "not false")!
+    testing.expect((true and false) or !false == true, "complex bool")!
+}
+
+test "behavior: comparison operations" {
+    testing.expect(10 == 10, "eq")!
+    testing.expect(10 != 5, "ne")!
+    testing.expect(5 < 10, "lt")!
+    testing.expect(10 > 5, "gt")!
+    testing.expect(5 <= 5, "le")!
+    testing.expect(10 >= 10, "ge")!
+    testing.expect(10 <= 10, "le eq")!
+}
+
+test "behavior: if-else" {
+    x := 10
+    if x == 10 { testing.expect(true, "if true")! } else { testing.expect(false, "if false")! }
+    if x != 10 { testing.expect(false, "if !true")! } else { testing.expect(true, "else true")! }
+}
+
+test "behavior: nested if" {
+    x := 10
+    if x > 5 {
+        if x < 15 {
+            testing.expect(true, "nested true")!
+        } else {
+            testing.expect(false, "nested false")!
+        }
+    } else {
+        testing.expect(false, "outer false")!
+    }
+}
+
+test "behavior: if expr" {
+    x := 10
+    y := if x > 5 { 100 } else { 200 }
+    if !testing.expect_equal_i64(100, y.(i64)) { return Error.Fail }
+}
+
+test "behavior: nested if expr" {
+    x := 10
+    y := if x < 5 {
+        1
+    } else if x < 15 { 2 } else { 3 }
+    if !testing.expect_equal_i64(2, y.(i64)) { return Error.Fail }
+}
+
+test "behavior: while loop" {
+    x := 10
+    keep_looping := true
+    loop_count := 0
+    while keep_looping {
+        loop_count = loop_count + 1
+        x = x + 1
+        if x > 12 { keep_looping = false }
+    }
+    if !testing.expect_equal_i64(3, loop_count.(i64)) { return Error.Fail }
+}
+
+test "behavior: for loop" {
+    sum := 0
+    for i in 0 .. 3 {
+        sum += i.(i64)
+    }
+    if !testing.expect_equal_i64(3, sum.(i64)) { return Error.Fail }
+}
+
+test "behavior: function call" {
+    r := add_func_test(5, 7)
+    if !testing.expect_equal_i64(12, r.(i64)) { return Error.Fail }
+}
+
+test "behavior: procedure call" {
+    print_val_test(15)
+}
+
+test "behavior: struct creation and field access" {
+    p := Point_test{ x: 10, y: 20 }
+    if !testing.expect_equal_i64(10, p.x.(i64)) { return Error.Fail }
+    if !testing.expect_equal_i64(20, p.y.(i64)) { return Error.Fail }
+}
+
+test "behavior: array creation and indexing" {
+    arr := [10, 20, 30]
+    val := arr[1]
+    if !testing.expect_equal_i64(20, val.(i64)) { return Error.Fail }
+}
+
+test "behavior: for iter array" {
+    arr := [1, 2, 3]
+    sum := 0
+    for v in arr {
+        sum += v.(i64)
+    }
+    if !testing.expect_equal_i64(6, sum.(i64)) { return Error.Fail }
+}
+
+test "behavior: char and complex literals" {
+    c := 'A'
+    testing.expect(c == 'A', "char eq")!
+    z := 1.0 + 2.0i
+    if !testing.expect_equal_f64(1.0, z.real.(f64), 0.000001) { return Error.Fail }
+    if !testing.expect_equal_f64(2.0, z.imag.(f64), 0.000001) { return Error.Fail }
+}
+
+test "behavior: variable reassignment" {
+    x := 10
+    if !testing.expect_equal_i64(10, x.(i64)) { return Error.Fail }
+    x = 20
+    if !testing.expect_equal_i64(20, x.(i64)) { return Error.Fail }
+}
+
+test "behavior: tuple creation and indexing" {
+    t := (1, "hello", true)
+    if !testing.expect_equal_i64(1, t.0.(i64)) { return Error.Fail }
+    if !testing.expect_equal_str("hello", t.1) { return Error.Fail }
+    testing.expect(t.2, "tuple bool")!
+    first := t.0
+    if !testing.expect_equal_i64(1, first.(i64)) { return Error.Fail }
+}
+
+test "behavior: map creation and access" {
+    m := ["one": 1, "two": 2]
+    if !testing.expect_equal_i64(1, m["one"].(i64)) { return Error.Fail }
+    if !testing.expect_equal_i64(2, m["two"].(i64)) { return Error.Fail }
+    m["three"] = 3
+    if !testing.expect_equal_i64(3, m["three"].(i64)) { return Error.Fail }
+}
+
+test "behavior: enum definition and usage" {
+    s := State_test.Running
+    testing.expect(s == State_test.Running, "enum eq")!
+    if !testing.expect_equal_i64(0, s.(i64)) { return Error.Fail }
+}
+
+test "behavior: variant tag-only and tuple payload" {
+    v1 := Variant_test_V.A
+    v2 := Variant_test_V.B(123)
+    match v2 {
+        Variant_test_V.B(val) => {
+            if !testing.expect_equal_i64(123, val.(i64)) { return Error.Fail }
+        },
+        _ => testing.fail("Expected Variant B")!,
+    }
+}
+
+test "behavior: variant struct payload" {
+    v := Variant_test_C.C{ x: 10, y: 20 }
+    match v {
+        Variant_test_C.C {x: vx, y: vy} => {
+            if !testing.expect_equal_i64(10, vx.(i64)) { return Error.Fail }
+            if !testing.expect_equal_i64(20, vy.(i64)) { return Error.Fail }
+        },
+        _ => testing.fail("Expected Variant C")!,
+    }
+}
+
+test "behavior: union literal initialization" {
+    u1 := Union_test_U{ i: 42 }
+    u2 := Union_test_U{ f: 3.14 }
+    if !testing.expect_equal_i64(42, u1.i.(i64)) { return Error.Fail }
+    if !testing.expect_equal_f64(3.14, u2.f.(f64), 0.000001) { return Error.Fail }
+}
+
+test "behavior: error propagation and catch" {
+    r := handle_error_test_err_prop()
+    if !testing.expect_equal_i64(0, r.(i64)) { return Error.Fail }
+}
+
+test "behavior: pointer address-of and dereference" {
+    x := 10
+    p := &x
+    val := p.*
+    if !testing.expect_equal_i64(10, x.(i64)) { return Error.Fail }
+    if !testing.expect_equal_i64(10, val.(i64)) { return Error.Fail }
+}
+
+test "behavior: normal cast" {
+    f := 123.45
+    i := f.(i32)
+    if !testing.expect_equal_i64(123, i.(i64)) { return Error.Fail }
+}
+
+test "behavior: saturating cast" {
+    big_int := 99999
+    saturated_to_i8 := big_int.|i8
+    if !testing.expect_equal_i64(127, saturated_to_i8.(i64)) { return Error.Fail }
+}
+
+test "behavior: wrapping cast" {
+    val := 254
+    wrapped_add := (val + 5).%u8
+    if !testing.expect_equal_i64(3, wrapped_add.(i64)) { return Error.Fail }
+}
+
+test "behavior: while is loop" {
+    maybe_value := Option_test_while_is.Some(42)
+    result := 0
+    while is Option_test_while_is.Some(x) := maybe_value {
+        result = x
+        maybe_value = Option_test_while_is.None
+    }
+    if !testing.expect_equal_i64(42, result.(i64)) { return Error.Fail }
+}
+
+test "behavior: match expression literals and wildcard" {
+    x := 2
+    r := match x {
+        1 => 10,
+        2 => 20,
+        _ => 30,
+    }
+
+    if !testing.expect_equal_i64(20, r.(i64)) { return Error.Fail }
+}
+
+test "behavior: match expression with guards" {
+    x := 3
+    r := match x {
+        y @ 3 if y == 3 => 100,
+        _ => 200,
+    }
+
+    if !testing.expect_equal_i64(100, r.(i64)) { return Error.Fail }
+}
+
+print_variadic :: proc(prefix: string, args: any) {
+    // io.print("%s", prefix)
+    // // Assuming a way to iterate over 'any' tuple
+    // // For simplicity, just print a fixed number of args
+    // io.print(" %d %f\n", ..args)
+}
+
+test "behavior: variadic function call" {
+    print_variadic("Numbers:", 10, 3.14)
+}
+
+// test "behavior: closure basic usage" {
+//     const src =
+//         \\ add_one := fn(x: i32) i32 { return x + 1 }
+//         \\ r := add_one(5)
+//         \\ printf("Closure result=%d\n", r)
+//     ;
+//     const code = getSource("", src);
+//     try runCompilerTest(code, "Closure result=6\n");
+// }
+//
+// test "behavior: closure with captured environment" {
+//     const src =
+//         \\ make_adder :: proc(amount: i32) fn(i32) i32 {
+//         \\   add_amount := fn(x: i32) i32 { return x + amount }
+//         \\   return add_amount
+//         \\ }
+//         \\ add_5 := make_adder(5)
+//         \\ r := add_5(7)
+//         \\ printf("Captured closure result=%d\n", r)
+//     ;
+//     const code = getSource("", src);
+//     try runCompilerTest(code, "Captured closure result=12\n");
+// }
+test "behavior: comptime block" {
+    x := 0
+    comptime {
+        x = 10 // This should modify x at compile time
+    }
+
+    if !testing.expect_equal_i64(10, x.(i64)) { return Error.Fail }
+}
+
+test "behavior: typeof expression" {
+    t_int := typeof(1)
+    t_bool := typeof(true)
+}
+
+test "behavior: mlir module block" {
+    mod := mlir {
+        module {
+        func.func @const() -> i32 {
+        %c42 = arith.constant 42 : i32
+        func.return %c42 : i32
+        }
+        }
+        }
+}
+
+test "behavior: comptime mlir type reuse" {
+    mlir_ty := comptime {
+        mlir type { !llvm.ptr }
+    }
+    reused_ty := comptime {
+        mlir_ty
+    }
+}
+
+test "behavior: defer statement" {
+    defer_test_cleanup_ran = 0
+    defer_test_run()
+    if !testing.expect_equal_i64(1, defer_test_cleanup_ran.(i64)) { return Error.Fail }
+}
+
+test "behavior: errdefer statement" {
+    errdefer_test_cleanup_ran = 0
+    errdefer_test_run() catch {
+    }
+    if !testing.expect_equal_i64(1, errdefer_test_cleanup_ran.(i64)) { return Error.Fail }
+}
+
+test "behavior: unreachable statement" {
+    x := 10
+    if x == 10 {
+    } else {
+        unreachable
+    }
+}
+
+test "behavior: break with value from loop" {
+    result := (L: while true {
+        break :L 42
+    })
+    if !testing.expect_equal_i64(42, result.(i64)) { return Error.Fail }
+}
+
+test "behavior: continue statement" {
+    count := 0
+    for i in 0 .. 5 {
+        if i == 2 { continue }
+
+        count += 1
+    }
+    if !testing.expect_equal_i64(4, count.(i64)) { return Error.Fail }
+}
+
+test "behavior: bitcast" {
+    some_bits: u32 = 0x42F6E979
+    bits_as_float := some_bits.^f32
+    if !testing.expect_equal_f64(123.456, bits_as_float.(f64), 0.001) { return Error.Fail }
+}
+
+test "behavior: checked cast" {
+    big_int: i64 = 99999
+    checked_cast: ?i8 = big_int.?i8
+    testing.expect(checked_cast == null, "checked cast null")!
+
+    successful_checked_cast: ?i8 = (100).?i8
+    if !testing.expect_equal_i64(100, successful_checked_cast?.(i64)) { return Error.Fail }
+}
+
+test "behavior: optional unwrap" {
+    opt: ?i32 = 123
+    val := opt?
+    if !testing.expect_equal_i64(123, val.(i64)) { return Error.Fail }
+}
+
+test "behavior: match expression tuple pattern" {
+    t := (10, "hello")
+    match t {
+        (a, b) => {
+            if !testing.expect_equal_i64(10, a.(i64)) { return Error.Fail }
+            if !testing.expect_equal_str("hello", b) { return Error.Fail }
+        },
+        _ => testing.fail("match tuple failed")!,
+    }
+}
+
+test "behavior: match expression struct pattern" {
+    p := Point_match_struct_test{ x: 1, y: 2 }
+    match p {
+        Point_match_struct_test {x: a, y: b} => {
+            if !testing.expect_equal_i64(1, a.(i64)) { return Error.Fail }
+            if !testing.expect_equal_i64(2, b.(i64)) { return Error.Fail }
+        },
+        _ => {
+            return Error.Fail
+        },
+    }
+}
+
+test "behavior: match expression variant pattern" {
+    v := Variant_match_test_V.B(42)
+    match v {
+        Variant_match_test_V.A => testing.fail("matched A")!,
+        Variant_match_test_V.B(val) => {
+            if !testing.expect_equal_i64(42, val.(i64)) { return Error.Fail }
+        },
+        Variant_match_test_V.C {x: val} => testing.fail("matched C")!,
+    }
+}
+
+test "behavior: match exhaustiveness bool" {
+    b := true
+    r := match b {
+        true => 1,
+        false => 0,
+    }
+
+    if !testing.expect_equal_i64(1, r.(i64)) { return Error.Fail }
+}
+
+test "behavior: match exhaustiveness enum" {
+    e := Enum_match_test_E.B
+    r := match e {
+        Enum_match_test_E.A => 10,
+        Enum_match_test_E.B => 20,
+    }
+
+    if !testing.expect_equal_i64(20, r.(i64)) { return Error.Fail }
+}
+
+test "behavior: match or-pattern" {
+    x := 2
+    r := match x {
+        1 | 2 => 10,
+        _ => 20,
+    }
+
+    if !testing.expect_equal_i64(10, r.(i64)) { return Error.Fail }
+}
+
+test "behavior: match at-pattern" {
+    x := 5
+    match x {
+        y @ (0..10) => {
+            if !testing.expect_equal_i64(5, y.(i64)) { return Error.Fail }
+        },
+        _ => testing.fail("match at failed")!,
+    }
+}
+
+test "behavior: default arguments" {
+    greet_test("Alice")
+    greet_test("Bob", "Hi")
+}
+
+test "behavior: error union catch" {
+    r1 := might_fail_test_catch() catch 0
+    r2 := might_succeed_test_catch() catch 0
+    if !testing.expect_equal_i64(0, r1.(i64)) { return Error.Fail }
+    if !testing.expect_equal_i64(100, r2.(i64)) { return Error.Fail }
+}
+
+// add :: fn(a: i32, b: i32) i32 {
+//     return a + b
+// }
+//
+// test "behavior: function pointer call" {
+//     add_ptr := add
+//     r := add_ptr(10, 20)
+//     if !testing.expect_equal_i64(30, r.(i64)) { return Error.Fail }
+// }
+
+// test "behavior: code block and insert" {
+//     const src =
+//         \\ x := 10
+//         \\ comptime {
+//         \\   code_block := code { x = 20 }
+//         \\   insert code_block
+//         \\ }
+//         \\ printf("Code block x=%d\n", x)
+//     ;
+//     const code = getSource("", src);
+//     try runCompilerTest(code, "Code block x=20\n");
+// }
+test "behavior: labeled continue" {
+    count := 0
+    outer: for i in 0 .. 3 {
+        inner: for j in 0 .. 3 {
+            if i == 1 and j == 1 { continue :outer }
+            count += 1
+        }
+    }
+    if !testing.expect_equal_i64(7, count.(i64)) { return Error.Fail }
+}
+
+test "behavior: break from for loop with value" {
+    result := (L: for i in 0 .. 10 {
+        if i == 5 { break :L i.(i64) * 2 }
+    })
+    if !testing.expect_equal_i64(10, result.(i64)) { return Error.Fail }
+}
+
+test "behavior: nested structs" {
+    r := Rect_nested_struct{ tl: Point_nested_struct{ x: 0, y: 0 }, br: Point_nested_struct{ x: 10, y: 10 } }
+    if !testing.expect_equal_i64(0, r.tl.x.(i64)) { return Error.Fail }
+    if !testing.expect_equal_i64(10, r.br.y.(i64)) { return Error.Fail }
+}
+
+test "behavior: nested arrays" {
+    matrix := [[1, 2], [3, 4]]
+    if !testing.expect_equal_i64(2, matrix[0][1].(i64)) { return Error.Fail }
+    if !testing.expect_equal_i64(3, matrix[1][0].(i64)) { return Error.Fail }
+}
+
+test "behavior: nested tuples" {
+    nested_tup := (1, ("hello", true), 3.14)
+    if !testing.expect_equal_i64(1, nested_tup.0.(i64)) { return Error.Fail }
+    if !testing.expect_equal_str("hello", nested_tup.1.0) { return Error.Fail }
+    testing.expect(nested_tup.1.1 == true, "nested bool")!
+}
+
+test "behavior: mlir attribute block" {
+    attr := mlir attribute { 0: i32 }
+}
+
+// test "behavior: code block with function insert" {
+//     const src =
+//         \\ x := 0
+//         \\ comptime {
+//         \\   add_one_func := code { add_one :: fn(val: i32) i32 { return val + 1 } }
+//         \\   insert add_one_func
+//         \\ }
+//         \\ r := add_one(x)
+//         \\ printf("Inserted function result=%d\n", r)
+//     ;
+//     const code = getSource("", src);
+//     try runCompilerTest(code, "Inserted function result=1\n");
+// }
+test "behavior: complex arithmetic with mixed types" {
+    x := 10 + 2.5 * 4 - (10 % 3)
+    if !testing.expect_equal_f64(19.0, x.(f64), 0.001) { return Error.Fail }
+}
+
+test "behavior: integer division and modulo with negative numbers" {
+    a := -10 / 3
+    b := -10 % 3
+    if !testing.expect_equal_i64(-3, a.(i64)) { return Error.Fail }
+    if !testing.expect_equal_i64(-1, b.(i64)) { return Error.Fail }
+}
+
+test "behavior: bitwise operations with different integer sizes" {
+    x: u8 = 0b1100_1100
+    y: u16 = 0b0000_0000_1111_0000
+    r := x.(u16) & y
+    if !testing.expect_equal_i64(192, r.(i64)) { return Error.Fail }
+}
+
+test "behavior: nested if-else" {
+    x := 10
+    y := 20
+    if x == 10 {
+        if y == 20 {
+            testing.expect(true, "nested if")!
+        } else {
+            testing.expect(false, "nested else")!
+        }
+    } else {
+        testing.expect(false, "outer else")!
+    }
+}
+
+test "behavior: while loop with break and continue" {
+    count := 0
+    i := 0
+    while i < 5 {
+        i += 1
+        if i == 3 { continue }
+
+        if i == 4 { break }
+
+        count += 1
+    }
+    if !testing.expect_equal_i64(2, count.(i64)) { return Error.Fail }
+}
+
+test "behavior: for loop with nested if" {
+    sum := 0
+    for i in 0 .. 5 {
+        if i.(i64) % 2 == 0 { sum += i.(i64) }
+    }
+    if !testing.expect_equal_i64(6, sum.(i64)) { return Error.Fail }
+}
+
+test "behavior: tuple destructuring in declaration" {
+    (a, b) := (10, 20)
+    if !testing.expect_equal_i64(10, a.(i64)) { return Error.Fail }
+    if !testing.expect_equal_i64(20, b.(i64)) { return Error.Fail }
+}
+
+test "behavior: struct destructuring in declaration" {
+    Point_struct_destructuring{ x: a, y: b } := Point_struct_destructuring{ x: 100, y: 200 }
+    if !testing.expect_equal_i64(100, a.(i64)) { return Error.Fail }
+    if !testing.expect_equal_i64(200, b.(i64)) { return Error.Fail }
+}
+
+test "behavior: array slice with rest pattern" {
+    arr := [1, 2, 3, 4, 5]
+    match arr {
+        [first, second, ..rest] => {
+            if !testing.expect_equal_i64(1, first.(i64)) { return Error.Fail }
+            if !testing.expect_equal_i64(2, second.(i64)) { return Error.Fail }
+            if !testing.expect_equal_i64(3, rest.len.(i64)) { return Error.Fail }
+        },
+        _ => testing.fail("slice match failed"),
+    }
+}
+
+test "behavior: error union orelse with success" {
+    r := might_succeed_test_orelse_success() catch 0
+    if !testing.expect_equal_i64(100, r.(i64)) { return Error.Fail }
+}
+
+test "behavior: catch with error binding" {
+    r := might_fail_test_catch_error_binding() catch |err| {
+        if err == MyErr_test_catch_error_binding.NotFound {
+            0
+        } else if err == MyErr_test_catch_error_binding.PermissionDenied { 0 } else { 1 }
+    }
+    if !testing.expect_equal_i64(0, r.(i64)) { return Error.Fail }
+}
+
+test "behavior: match nested tuple pattern" {
+    t := (1, (2, "three"))
+    match t {
+        (a, (b, c)) => {
+            if !testing.expect_equal_i64(1, a.(i64)) { return Error.Fail }
+            if !testing.expect_equal_i64(2, b.(i64)) { return Error.Fail }
+            if !testing.expect_equal_str("three", c) { return Error.Fail }
+        },
+        _ => testing.fail("nested tuple match failed"),
+    }
+}
+
+test "behavior: match nested struct pattern" {
+    r := Rect_match_nested_struct{ tl: Point_match_nested_struct{ x: 0, y: 0 }, br: Point_match_nested_struct{ x: 10, y: 10 } }
+    match r {
+        Rect_match_nested_struct {tl: Point_match_nested_struct {x: tx, y: ty}, br: Point_match_nested_struct {x: bx, y: by}} => {
+            if !testing.expect_equal_i64(0, tx.(i64)) { return Error.Fail }
+            if !testing.expect_equal_i64(0, ty.(i64)) { return Error.Fail }
+            if !testing.expect_equal_i64(10, bx.(i64)) { return Error.Fail }
+            if !testing.expect_equal_i64(10, by.(i64)) { return Error.Fail }
+        },
+        _ => testing.fail("nested struct match failed")!,
+    }
+}
+
+test "behavior: match or-pattern with binding" {
+    x := 10
+    match x {
+        y @ (1 | 2) => testing.fail("matched 1 or 2")!,
+        y @ (10 | 11) => {
+            if !testing.expect_equal_i64(10, y.(i64)) { return Error.Fail }
+        },
+        _ => testing.fail("or-pattern match failed")!,
+    }
+}
+
+apply :: proc(f: fn(i32) i32, val: i32) i32 {
+    return f(val)
+}
+
+inc :: fn(x: i32) i32 {
+    return x + 1
+}
+
+// test "behavior: function pointer as argument" {
+//      r := apply(inc, 5)
+//      if !testing.expect_equal_i64(6, r.(i64)) { return Error.Fail }
+// }
+
+// test "behavior: closure returning closure" {
+//     const src =
+//         \\ make_multiplier :: proc(factor: i32) fn(i32) i32 {
+//         \\   return fn(x: i32) i32 { return x * factor }
+//         \\ }
+//         \\ multiply_by_3 := make_multiplier(3)
+//         \\ r := multiply_by_3(10)
+//         \\ printf("Closure returning closure result=%d\n", r)
+//     ;
+//     const code = getSource("", src);
+//     try runCompilerTest(code, "Closure returning closure result=30\n");
+// }
+test "behavior: error type definition and usage" {
+    err := get_error_test()
+    testing.expect(err == FileSystemError_test.PermissionDenied, "error eq")!
+}
+
+test "behavior: nested for loops" {
+    count := 0
+    for i in 0 .. 2 {
+        for j in 0 .. 2 {
+            count += 1
+        }
+    }
+    if !testing.expect_equal_i64(4, count.(i64)) { return Error.Fail }
+}
+
+test "behavior: labeled for loop with break" {
+    result := 0
+    outer: for i in 0 .. 5 {
+        for j in 0 .. 5 {
+            if i * j > 10 { break :outer }
+
+            result += 1
+        }
+    }
+    if !testing.expect_equal_i64(19, result.(i64)) { return Error.Fail }
+}
+
+// test "behavior: comptime assertion" {
+//     const src =
+//         \\ comptime {
+//         \\   assert(1 + 1 == 2)
+//         \\   printf("Comptime assertion OK\n")
+//         \\ }
+//         \\ printf("Runtime after comptime\n")
+//     ;
+//     const code = getSource("", src);
+//     try runCompilerTest(code, "Comptime assertion OK\nRuntime after comptime\n");
+// }
+//
+// test "behavior: code block as expression" {
+//     const src =
+//         \\ x := 10
+//         \\ my_code := code { x + 5 }
+//         \\ // Assuming 'code' blocks are opaque and can be assigned
+//         \\ printf("Code block as expression assigned\n")
+//     ;
+//     const code = getSource("", src);
+//     try runCompilerTest(code, "Code block as expression assigned\n");
+// }
+test "behavior: default arguments mixed types" {
+    configure_test("UserA")
+    configure_test("UserB", 10)
+    configure_test("UserC", 20, false)
+}
+
+test "behavior: variadic function with mixed types" {
+    print_mixed_test("Data", 10, 3.14, "hello")
+}
+
+test "behavior: array of structs" {
+    points := [Point_array_of_structs{ x: 1, y: 1 }, Point_array_of_structs{ x: 2, y: 2 }]
+    if !testing.expect_equal_i64(1, points[0].x.(i64)) { return Error.Fail }
+    if !testing.expect_equal_i64(2, points[1].y.(i64)) { return Error.Fail }
+}
+
+test "behavior: error union orelse with different types" {
+    r := might_fail_test_orelse_diff_types() catch 10.0
+    if !testing.expect_equal_f64(10.0, r.(f64), 0.001) { return Error.Fail }
+}
+
+test "behavior: catch with nested errors" {
+    r := func_b_test() catch |err| {
+        if err == ErrB_test.B { 0 } else { 1 }
+    }
+    if !testing.expect_equal_i64(0, r.(i64)) { return Error.Fail }
+}
+
+test "behavior: match variant struct payload with destructuring" {
+    v := Variant_match_struct_payload_destructuring.C{ x: 100, y: 200 }
+    match v {
+        Variant_match_struct_payload_destructuring.C {x: val_x, y: val_y} => {
+            if !testing.expect_equal_i64(100, val_x.(i64)) { return Error.Fail }
+            if !testing.expect_equal_i64(200, val_y.(i64)) { return Error.Fail }
+        },
+        _ => testing.fail("match variant destructuring failed"),
+    }
+}
+
+// test "behavior: nested maps" {
+//      m := ["user1": ["name": "Alice", "age": "30"], "user2": ["name": "Bob", "age": "25"]]
+//      if !testing.expect_equal_str("Alice", m["user1"]["name"]) { return Error.Fail }
+//      if !testing.expect_equal_str("25", m["user2"]["age"]) { return Error.Fail }
+// }
+test "behavior: match enum tags" {
+    s := State_match_enum_tags.Inactive
+    match s {
+        State_match_enum_tags.Active => testing.fail("Matched Active")!,
+        State_match_enum_tags.Inactive => {
+        },
+        _ => testing.fail("Matched other")!,
+    }
+}
+
+test "behavior: function with multiple return statements" {
+    if !testing.expect_equal_str("OK", get_status_test(200)) { return Error.Fail }
+    if !testing.expect_equal_str("Not Found", get_status_test(404)) { return Error.Fail }
+    if !testing.expect_equal_str("Unknown", get_status_test(500)) { return Error.Fail }
+}
+
+test "behavior: recursive function" {
+    if !testing.expect_equal_i64(120, factorial_test(5)) { return Error.Fail }
+}
+
+// test "behavior: mlir op block with attributes" {
+//         op :i32= mlir op { arith.addi %a, %b { attr = "value" } : i32 }
+// }
+
+// test "behavior: code block with expression evaluation" {
+//     const src =
+//         \\ x := 10
+//         \\ comptime {
+//         \\   expr_code := code { x + 5 }
+//         \\   // Assuming a way to evaluate code blocks at comptime
+//         \\   // For now, just check if it can be assigned
+//         \\   evaluated_val := expr_code // This would be a comptime evaluation
+//         \\ }
+//         \\ printf("Code block expression assigned\n")
+//     ;
+//     const code = getSource("", src);
+//     try runCompilerTest(code, "Code block expression assigned\n");
+// }
+
+// test "behavior: variadic function with no fixed arguments" {
+//     const globals =
+//         \\ print_all :: proc(args: any) {
+//         \\   printf("Args count=%d\n", args.len)
+//         \\   // Assuming iteration over 'any' tuple
+//         \\   // For simplicity, just print first two if they exist
+//         \\   if args.len > 0 { printf("First arg=%d\n", args.0) }
+//         \\   if args.len > 1 { printf("Second arg=%s\n", args.1) }
+//         \\ }
+//     ;
+//     const src =
+//         \\ print_all(10, "hello", true)
+//         \\ print_all(5)
+//     ;
+//     const code = getSource(globals, src);
+//     try runCompilerTest(code, "Args count=3\nFirst arg=10\nSecond arg=hello\nArgs count=1\nFirst arg=5\n");
+// }
+//
+test "behavior: error union orelse and catch combined" {
+    r1 := might_fail_test_combined_catch(0) orelse {
+        0
+    } catch 100
+    r2 := might_fail_test_combined_catch(1) orelse {
+        1
+    } catch 200
+    r3 := might_fail_test_combined_catch(5) orelse {
+        2
+    } catch 300
+    if !testing.expect_equal_i64(100, r1.(i64)) { return Error.Fail }
+    if !testing.expect_equal_i64(200, r2.(i64)) { return Error.Fail }
+    if !testing.expect_equal_i64(5, r3.(i64)) { return Error.Fail }
+}
+
+test "behavior: optional chaining (field access on optional struct)" {
+    opt_point: ?Point_optional_chaining = Point_optional_chaining{ x: 10, y: 20 }
+    val_x := opt_point?.x
+    opt_null: ?Point_optional_chaining = null
+    if !testing.expect_equal_i64(10, val_x.(i64)) { return Error.Fail }
+    testing.expect(opt_null == null, "optional chaining null")!
+}
+
+test "behavior: array of arrays" {
+    matrix := [[1, 2], [3, 4], [5, 6]]
+    if !testing.expect_equal_i64(4, matrix[1][1].(i64)) { return Error.Fail }
+    if !testing.expect_equal_i64(5, matrix[2][0].(i64)) { return Error.Fail }
+}
+
+test "behavior: tuple of arrays" {
+    data := ([1, 2], [true, false])
+    if !testing.expect_equal_i64(1, data.0[0].(i64)) { return Error.Fail }
+    testing.expect(data.1[1] == false, "tuple array bool")!
+}
+
+test "behavior: mlir op with nested region" {
+    a: i32 = 10
+    b: i32 = 32
+    c := true
+    op: i32 = mlir op(a, b, c) {
+        scf.if %arg2 -> (i32) {
+        %1 = arith.addi %arg0, %arg1 : i32
+        scf.yield %1 : i32
+        } else {
+        %2 = arith.subi %arg0, %arg1 : i32
+        scf.yield %2 : i32
+        }
+        }
+    if !testing.expect_equal_i64(42, op.(i64)) { return Error.Fail }
+}
+
+// test "behavior: code block with complex type insert" {
+//     const src =
+//         \\ comptime {
+//         \\   PointType := code { Point :: struct { x: i32, y: i32 } }
+//         \\   insert PointType
+//         \\ }
+//         \\ p := Point{ x: 10, y: 20 }
+//         \\ printf("Inserted complex type x=%d\n", p.x)
+//     ;
+//     const code = getSource("", src);
+//     try runCompilerTest(code, "Inserted complex type x=10\n");
+// }
+test "behavior: match or-pattern with at-binding" {
+    x := 10
+    match x {
+        y @ (1 | 2 | 3) => testing.fail("Matched 1|2|3")!,
+        y @ (10 | 11 | 12) => {
+            if !testing.expect_equal_i64(10, y.(i64)) { return Error.Fail }
+        },
+        _ => testing.fail("Matched other")!,
+    }
+}
+
+test "behavior: match with if guard and binding" {
+    x := 15
+    match x {
+        y @ (0..10) if y % 2 == 0 => testing.fail("Matched 0..10")!,
+        y @ (10..20) if y % 2 != 0 => {
+            if !testing.expect_equal_i64(15, y.(i64)) { return Error.Fail }
+        },
+        _ => testing.fail("Matched other")!,
+    }
+}
+
+test "behavior: mlir block constant" {
+    value: i32 = mlir op { "arith.constant"() {value = 42 : i32} : () -> i32 }
+    if !testing.expect_equal_i64(42, value.(i64)) { return Error.Fail }
+}
+
+ValueTy :: mlir type { i32 }
+ConstAttr :: mlir attribute { 42 : i32 }
+test "behavior: mlir op with comptime splices" {
+    value: i32 = mlir op { "arith.constant"() {value = `ConstAttr`} : () -> `ValueTy` }
+    if !testing.expect_equal_i64(42, value.(i64)) { return Error.Fail }
+}
+
+test "behavior: mlir type with spliced shape" {
+    ElemTy :: mlir type { f32 }
+    Rows :: 4
+    Cols :: 16
+    TensorTy :: mlir type { tensor<`Rows`x`Cols`x`ElemTy`> }
+}
+
+test "behavior: mlir block with args" {
+    a: i32 = 10
+    b: i32 = 32
+    sum: i32 = mlir op(a, b) { "arith.addi"(%arg0, %arg1) : (i32, i32) -> i32 }
+    if !testing.expect_equal_i64(42, sum.(i64)) { return Error.Fail }
+}

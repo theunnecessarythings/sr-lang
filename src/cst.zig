@@ -725,7 +725,9 @@ pub const Rows = struct {
         is_variadic: bool,
         /// True when literal is marked `extern`.
         is_extern: bool,
-        _pad: u4 = 0,
+        /// True when literal originated from a `test` declaration.
+        is_test: bool,
+        _pad: u3 = 0,
     };
     /// Row representing a function literal or declaration block.
     pub const Function = struct {
@@ -2414,7 +2416,7 @@ test "printer: function with attrs, one param, result type, empty body" {
         .body = .some(id_blk),
         .raw_asm = .none(),
         .attrs = .some(attrs_r),
-        .flags = .{ .is_proc = false, .is_async = false, .is_variadic = false, .is_extern = false },
+        .flags = .{ .is_proc = false, .is_async = false, .is_variadic = false, .is_extern = false, .is_test = false },
         .loc = loc,
     });
 

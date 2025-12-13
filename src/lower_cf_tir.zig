@@ -720,7 +720,12 @@ pub fn lowerErrUnwrap(
 
     const res_ty = expected_ty orelse result_ty;
     try self.noteExprType(ctx, id, res_ty);
-    const res_param = try f.builder.addBlockParam(&join_blk, null, res_ty);
+
+    const value_is_void = self.isVoid(es.value_ty);
+    var res_param: tir.ValueId = undefined;
+    if (!value_is_void) {
+        res_param = try f.builder.addBlockParam(&join_blk, null, res_ty);
+    }
 
     const br_cond = self.forceLocalCond(blk, is_ok, expr_loc);
     try f.builder.condBr(blk, br_cond, then_blk.id, &.{}, else_blk.id, &.{}, loc);
@@ -730,17 +735,21 @@ pub fn lowerErrUnwrap(
     }
 
     // Ok path: extract Ok payload from union and jump to join
-    const payload_union_ty = self.context.type_store.mkUnion(&.{
-        .{ .name = f.builder.intern("Ok"), .ty = es.value_ty },
-        .{ .name = f.builder.intern("Err"), .ty = es.error_ty },
-    });
-    const payload_union_ok = then_blk.builder.extractField(&then_blk, payload_union_ty, es_val, 1, expr_loc);
-    var ok_val = then_blk.builder.tirValue(.UnionField, &then_blk, es.value_ty, loc, .{
-        .base = payload_union_ok,
-        .field_index = 0,
-    });
-    if (expected_ty) |want| ok_val = self.emitCoerce(&then_blk, ok_val, es.value_ty, want, loc);
-    try f.builder.br(&then_blk, join_blk.id, &.{ok_val}, loc);
+    if (value_is_void) {
+        try f.builder.br(&then_blk, join_blk.id, &.{}, loc);
+    } else {
+        const payload_union_ty = self.context.type_store.mkUnion(&.{
+            .{ .name = f.builder.intern("Ok"), .ty = es.value_ty },
+            .{ .name = f.builder.intern("Err"), .ty = es.error_ty },
+        });
+        const payload_union_ok = then_blk.builder.extractField(&then_blk, payload_union_ty, es_val, 1, expr_loc);
+        var ok_val = then_blk.builder.tirValue(.UnionField, &then_blk, es.value_ty, loc, .{
+            .base = payload_union_ok,
+            .field_index = 0,
+        });
+        if (expected_ty) |want| ok_val = self.emitCoerce(&then_blk, ok_val, es.value_ty, want, loc);
+        try f.builder.br(&then_blk, join_blk.id, &.{ok_val}, loc);
+    }
     try f.builder.endBlock(f, then_blk);
 
     // Err path: early-return the error to the caller
@@ -756,6 +765,11 @@ pub fn lowerErrUnwrap(
 
     // Continue after join with the unwrapped value
     blk.* = join_blk;
+    if (value_is_void) {
+        // No SSA value to thread when the payload is void; produce a benign
+        // placeholder to keep the caller happy.
+        return self.safeUndef(&join_blk, self.context.type_store.tBool(), loc);
+    }
     return res_param;
 }
 

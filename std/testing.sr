@@ -1,0 +1,40 @@
+package testing
+
+io :: import "std/io"
+str :: import "std/str"
+
+fail :: proc(msg: string) Error ! void {
+    io.println("Failure: %s", msg)
+    return Error.Fail
+}
+
+expect :: proc(cond: bool, msg: string) Error ! void {
+    if !cond { return fail(msg) }
+}
+
+expect_equal_i64 :: proc(expected: i64, actual: i64) bool {
+    if expected != actual {
+        io.printf("Expected %d, got %d\n".ptr, expected, actual)
+        return false
+    }
+    return true
+}
+
+expect_equal_f64 :: proc(expected: f64, actual: f64, epsilon: f64) bool {
+    diff := actual - expected
+    if diff < 0.0 { diff = -diff }
+
+    if diff > epsilon {
+        io.printf("Expected %f, got %f (epsilon=%f)\n".ptr, expected, actual, epsilon)
+        return false
+    }
+    return true
+}
+
+expect_equal_str :: proc(expected: string, actual: string) bool {
+    if !str.eq(expected, actual) {
+        io.printf("Expected \"%s\", got \"%s\"\n".ptr, expected.ptr, actual.ptr)
+        return false
+    }
+    return true
+}

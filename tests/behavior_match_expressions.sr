@@ -1,0 +1,145 @@
+package behavior_match_expressions
+
+testing :: import "std/testing"
+
+Color :: enum {Red, Green, Blue}
+Message :: variant {Quit, Move(i32, i32)}
+Point :: struct {x: i32, y: i32}
+
+test "control_flow: match with literal integer" {
+    x := 2
+    result := match x {
+        1 => 10,
+        2 => 20,
+        _ => 30,
+    }
+
+    if !testing.expect_equal_i64(20, result.(i64)) { return Error.Fail }
+}
+
+test "control_flow: match with or-pattern" {
+    x := 3
+    result := match x {
+        1 | 2 => 10,
+        3 | 4 => 20,
+        _ => 30,
+    }
+
+    if !testing.expect_equal_i64(20, result.(i64)) { return Error.Fail }
+}
+
+test "control_flow: match with range pattern" {
+    x := 7
+    result := match x {
+        0..=5 => 10,
+        6..10 => 20,
+        _ => 30,
+    }
+
+    if !testing.expect_equal_i64(20, result.(i64)) { return Error.Fail }
+}
+
+test "control_flow: match with enum variant" {
+    c := Color.Green
+    result := match c {
+        Color.Red => "Red",
+        Color.Green => "Green",
+        Color.Blue => "Blue",
+    }
+
+    if !testing.expect_equal_str("Green", result) { return Error.Fail }
+}
+
+test "control_flow: match with variant payload (tuple)" {
+    m := Message.Move(10, 20)
+    match m {
+        Message.Move(x, y) => {
+            if !testing.expect_equal_i64(10, x.(i64)) { return Error.Fail }
+            if !testing.expect_equal_i64(20, y.(i64)) { return Error.Fail }
+        },
+        _ => testing.fail("Matched other message")!,
+    }
+}
+
+test "control_flow: match with struct pattern" {
+    p := Point{ x: 5, y: 10 }
+    match p {
+        Point {x: px, y: py} => {
+            if !testing.expect_equal_i64(5, px.(i64)) { return Error.Fail }
+            if !testing.expect_equal_i64(10, py.(i64)) { return Error.Fail }
+        },
+        _ => testing.fail("Matched other pattern")!,
+    }
+}
+
+test "control_flow: match with if guard" {
+    x := 15
+    result := match x {
+        y if y < 10 => "Small",
+        y if y >= 10 and y < 20 => "Medium",
+        _ => "Large",
+    }
+
+    if !testing.expect_equal_str("Medium", result) { return Error.Fail }
+}
+
+test "control_flow: match with open and closed range patterns" {
+    x := 5
+    result1 := match x {
+        ..5 => "lt",
+        _ => "ge",
+    }
+
+    if !testing.expect_equal_str("ge", result1) { return Error.Fail }
+
+    y := 5
+    result2 := match y {
+        ..=5 => "le",
+        _ => "gt",
+    }
+
+    if !testing.expect_equal_str("le", result2) { return Error.Fail }
+
+    z := 5
+    result3 := match z {
+        5.. => "ge",
+        _ => "lt",
+    }
+
+    if !testing.expect_equal_str("ge", result3) { return Error.Fail }
+}
+
+test "control_flow: match with range inside at-pattern" {
+    x := 7
+    result := match x {
+        y @ (0..5) => y,
+        _ => 99,
+    }
+
+    if !testing.expect_equal_i64(99, result.(i64)) { return Error.Fail }
+}
+
+test "control_flow: match with range inside or-pattern" {
+    x := 10
+    result := match x {
+        0 | 1..5 => 111,
+        _ => 222,
+    }
+
+    if !testing.expect_equal_i64(222, result.(i64)) { return Error.Fail }
+}
+
+test "control_flow: match with automatic type conversion" {
+    c: u8 = 13
+    state := 0
+    match c {
+        13 => {
+            state = 1
+        },
+        _ => {
+            state = 0
+        },
+    }
+
+    if !testing.expect_equal_i64(1, state.(i64)) { return Error.Fail }
+}

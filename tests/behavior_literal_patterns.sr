@@ -1,0 +1,46 @@
+package behavior_literal_patterns
+
+testing :: import "std/testing"
+
+test "patterns: match with integer literal" {
+    x := 5
+    result := match x {
+        1 => "One",
+        5 => "Five",
+        _ => "Other",
+    }
+
+    if !testing.expect_equal_str("Five", result) { return Error.Fail }
+}
+
+test "patterns: match with string literal" {
+    return Error.Fail
+    // s := "world"
+    // result := match s {
+    //     "hello" => "Greeting",
+    //     "world" => "Target",
+    //     _ => "Unknown",
+    // }
+    // if !testing.expect_equal_str("Target", result) { return Error.Fail }
+}
+
+test "patterns: match with boolean literal" {
+    b := true
+    result := match b {
+        true => "It's true",
+        false => "It's false",
+    }
+
+    if !testing.expect_equal_str("It's true", result) { return Error.Fail }
+}
+
+test "patterns: match with character literal" {
+    c := 'B'
+    result := match c {
+        'A' => "Char A",
+        'B' => "Char B",
+        _ => "Other Char",
+    }
+
+    if !testing.expect_equal_str("Char B", result) { return Error.Fail }
+}

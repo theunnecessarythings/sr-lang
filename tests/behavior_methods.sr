@@ -1,0 +1,110 @@
+package behavior_methods
+
+testing :: import "std/testing"
+
+A :: struct {}
+
+A.func :: proc(a: i32, b: i32 = 4) {
+    // printf("%d + %d = %d\n", a, b, a + b)
+}
+
+Point :: struct {x: i32, y: i32}
+
+Point.origin :: fn() Point {
+    return Point{ x: 0, y: 0 }
+}
+
+Point.distance :: proc(self: Point) i32 {
+    return self.x + self.y
+}
+
+Point.translate :: proc(self: *Point, dx: i32, dy: i32) void {
+    self.x = self.x + dx
+    self.y = self.y + dy
+}
+
+Point.sum :: fn(self: *const Point) i32 {
+    return self.x + self.y
+}
+
+Color :: enum {Red, Blue}
+Color.describe :: fn(self: Color) i32 {
+    return 1
+}
+
+Thing :: struct {base: i32}
+Builder :: struct {owner: *Thing, value: i32}
+
+Thing.init :: proc(base: i32) Thing {
+    return Thing{ base: base }
+}
+
+Thing.bump :: proc(self: *Thing, delta: i32) void {
+    self.base = self.base + delta
+}
+
+Thing.make_builder :: proc(self: *Thing) Builder {
+    return Builder{ owner: self, value: self.base }
+}
+
+Builder.add :: proc(self: *Builder, x: i32) *Builder {
+    self.value = self.value + x
+    return self
+}
+
+Builder.finish :: proc(self: *Builder) i32 {
+    self.owner.bump(self.value)
+    return self.owner.base
+}
+
+Builder.finish_temp :: proc(self: *Builder) i32 {
+    return self.owner.base
+}
+
+test "methods: default arguments" {
+    a :: A{}
+    a.func(1)
+    a.func(1, 2)
+}
+
+test "methods: static, value, pointer, and const receivers" {
+    p := Point.origin()
+    if !testing.expect_equal_i64(0, p.x.(i64)) { return Error.Fail }
+    if !testing.expect_equal_i64(0, p.y.(i64)) { return Error.Fail }
+
+    p.translate(3, 4)
+    if !testing.expect_equal_i64(7, p.distance().(i64)) { return Error.Fail }
+    if !testing.expect_equal_i64(7, p.sum().(i64)) { return Error.Fail }
+
+    ptr := &p
+    ptr.translate(-1, 2)
+    if !testing.expect_equal_i64(2, p.x.(i64)) { return Error.Fail }
+    if !testing.expect_equal_i64(6, p.y.(i64)) { return Error.Fail }
+}
+
+test "methods: enum value receiver" {
+    value := Color.Red.describe()
+    if !testing.expect_equal_i64(1, value.(i64)) { return Error.Fail }
+}
+
+test "methods: imported multi-segment access" {
+    vec := Point.origin()
+    if !testing.expect_equal_i64(0, vec.x.(i64)) { return Error.Fail }
+}
+
+test "methods: imported builder with pointer receiver" {
+    thing := Thing.init(5)
+    ptr := &thing
+    b := ptr.make_builder()
+    b_ptr := &b
+    b_ptr.add(3)
+    result := b_ptr.finish()
+    if !testing.expect_equal_i64(13, result.(i64)) { return Error.Fail }
+}
+
+test "methods: builder chain on temporary" {
+    thing := Thing.init(7)
+    result := thing.make_builder().add(9).finish_temp()
+    if !testing.expect_equal_i64(7, result.(i64)) { return Error.Fail }
+    if !testing.expect_equal_i64(7, thing.base.(i64)) { return Error.Fail }
+}

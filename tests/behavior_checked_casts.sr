@@ -1,0 +1,41 @@
+package behavior_checked_casts
+
+testing :: import "std/testing"
+
+test "casts: i32 to i8 checked (in range)" {
+    x: i32 = 100
+    r := x.?i8
+    if r == null { return Error.Fail }
+    if !testing.expect_equal_i64(100, r?.(i64)) { return Error.Fail }
+}
+
+test "casts: i32 to i8 checked (out of range)" {
+    x: i32 = 200
+    r := x.?i8
+    testing.expect(r == null, "r should be null")!
+}
+
+test "casts: float to i32 checked (in range)" {
+    x: f32 = 123.0
+    r := x.?i32
+    if r == null { return Error.Fail }
+    if !testing.expect_equal_i64(123, r?.(i64)) { return Error.Fail }
+}
+
+test "casts: float to i32 checked (out of range)" {
+    x: f32 = 2147483648.0 // i32 max is 2147483647
+    r := x.?i32
+    testing.expect(r == null, "r should be null")!
+}
+
+test "casts: float to i32 checked (just below min)" {
+    x: f64 = -2147483649.0
+    r := x.?i32
+    testing.expect(r == null, "r should be null")!
+}
+
+test "casts: float to i32 checked (just above max)" {
+    x: f64 = 2147483647.0 + 0.5
+    r := x.?i32
+    testing.expect(r == null, "r should be null")!
+}

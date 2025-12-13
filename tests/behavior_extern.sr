@@ -1,0 +1,24 @@
+package behavior_extern
+
+testing :: import "std/testing"
+
+printf :: extern proc(fmt: *const u8, args: any) i32
+
+test "declarations: basic extern proc" {
+    printf("Extern proc called\n".ptr)
+}
+
+cos :: extern proc(x: f64) f64
+
+test "declarations: basic extern fn" {
+    r := cos(0.5)
+    if !testing.expect_equal_f64(0.877582561890372716, 0.000001, r) { return Error.Fail }
+}
+
+// extern_modify_int :: extern proc(ptr: *i32)
+//
+// test "declarations: extern fn with pointer type" {
+//     x: i32 = 0
+//     extern_modify_int(&x)
+//     if x != 10 { return Error.Fail }
+// }

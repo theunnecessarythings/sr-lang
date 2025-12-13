@@ -1,0 +1,61 @@
+package behavior_for_loops
+
+testing :: import "std/testing"
+
+test "control_flow: range-based for loop (exclusive)" {
+    sum := 0
+    for i in 0..3 {
+        sum = sum + i.(i64)
+    }
+    if !testing.expect_equal_i64(3, sum) { return Error.Fail }
+}
+
+test "control_flow: range-based for loop (inclusive)" {
+    sum := 0
+    for i in 0..=3 {
+        sum = sum + i.(i64)
+    }
+    if !testing.expect_equal_i64(6, sum) { return Error.Fail }
+}
+
+test "control_flow: iterator-based for loop over array" {
+    arr := [10, 20, 30]
+    sum := 0
+    for x in arr {
+        sum = sum + x.(i64)
+    }
+    if !testing.expect_equal_i64(60, sum) { return Error.Fail }
+}
+
+test "control_flow: for loop with break" {
+    sum := 0
+    for i in 0..10 {
+        if i == 5 {
+            break
+        }
+        sum = sum + i.(i64)
+    }
+    if !testing.expect_equal_i64(10, sum) { return Error.Fail }
+}
+
+test "control_flow: for loop with continue" {
+    sum := 0
+    for i in 0..5 {
+        if i == 2 {
+            continue
+        }
+        sum = sum + i.(i64)
+    }
+    if !testing.expect_equal_i64(8, sum) { return Error.Fail }
+}
+
+test "control_flow: nested for loops" {
+    count := 0
+    for i in 0..2 {
+        for j in 0..2 {
+            count = count + 1
+        }
+    }
+    if !testing.expect_equal_i64(4, count) { return Error.Fail }
+}
+

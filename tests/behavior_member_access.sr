@@ -1,0 +1,43 @@
+package behavior_member_access
+
+testing :: import "std/testing"
+
+Point :: struct { x: i32, y: i32 }
+Rect :: struct { tl: Point, br: Point }
+
+test "expressions_operators: struct field access" {
+    p := Point{ x: 10, y: 20 }
+    if !testing.expect_equal_i64(10, p.x.(i64)) { return Error.Fail }
+}
+
+test "expressions_operators: nested struct field access" {
+    r := Rect{ tl: Point{ x: 0, y: 0 }, br: Point{ x: 10, y: 10 } }
+    if !testing.expect_equal_i64(0, r.tl.x.(i64)) { return Error.Fail }
+}
+
+test "expressions_operators: pointer struct field access" {
+    p_val := Point{ x: 10, y: 20 }
+    p_ptr := &p_val
+    if !testing.expect_equal_i64(10, p_ptr.x.(i64)) { return Error.Fail }
+}
+
+test "expressions_operators: array element access" {
+    arr := [10, 20, 30]
+    if !testing.expect_equal_i64(20, arr[1].(i64)) { return Error.Fail }
+}
+
+test "expressions_operators: nested array element access" {
+    matrix := [[1, 2], [3, 4]]
+    if !testing.expect_equal_i64(2, matrix[0][1].(i64)) { return Error.Fail }
+}
+
+test "expressions_operators: tuple element access" {
+    t := (100, "hello")
+    if !testing.expect_equal_i64(100, t.0.(i64)) { return Error.Fail }
+}
+
+test "expressions_operators: nested tuple element access" {
+    t := (1, ("nested", 2.5))
+    if !testing.expect_equal_str("nested", t.1.0) { return Error.Fail }
+}
+

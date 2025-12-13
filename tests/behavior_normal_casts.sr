@@ -1,0 +1,34 @@
+package behavior_normal_casts
+
+testing :: import "std/testing"
+
+test "casts: integer to integer (wider to narrower)" {
+    x: i32 = 256
+    y := x.(u8)
+    if !testing.expect_equal_i64(0, y.(i64)) { return Error.Fail }
+}
+
+test "casts: integer to integer (narrower to wider)" {
+    x: u8 = 100
+    y := x.(i32)
+    if !testing.expect_equal_i64(100, y.(i64)) { return Error.Fail }
+}
+
+test "casts: float to integer (truncation)" {
+    x := 123.45
+    y := x.(i32)
+    if !testing.expect_equal_i64(123, y.(i64)) { return Error.Fail }
+}
+
+test "casts: integer to float" {
+    x := 100
+    y := x.(f64)
+    if !testing.expect_equal_f64(100.0, y, 0.000001) { return Error.Fail }
+}
+
+test "casts: float to float (wider to narrower)" {
+    x: f64 = 3.1415926535
+    y := x.(f32)
+    if !testing.expect_equal_f64(3.141593, y.(f64), 0.000001) { return Error.Fail }
+}
+

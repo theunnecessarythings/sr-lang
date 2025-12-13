@@ -1,0 +1,35 @@
+package behavior_async
+
+testing :: import "std/testing"
+io :: import "std/io"
+
+my_async_proc :: async proc() {
+    io.print("Async proc started\n")
+}
+
+my_async_fn :: async fn() i32 {
+    return 100
+}
+
+async_task1 :: async proc() {
+    io.print("Task 1\n")
+}
+
+async_task2 :: async proc() {
+    io.print("Task 2\n")
+}
+
+test "declarations: basic async proc" {
+    my_async_proc().await
+    // If we reached here, it didn't crash
+}
+
+test "declarations: basic async fn" {
+    r := my_async_fn().await
+    if !testing.expect_equal_i64(100, r.(i64)) { return Error.Fail }
+}
+
+test "declarations: multiple async calls and await" {
+    async_task1().await
+    async_task2().await
+}

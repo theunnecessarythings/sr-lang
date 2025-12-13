@@ -719,6 +719,7 @@ fn lowerExpr(self: *Lower, id: cst.ExprId) anyerror!ast.ExprId {
                     .is_async = f.flags.is_async,
                     .is_variadic = f.flags.is_variadic,
                     .is_extern = f.flags.is_extern,
+                    .is_test = f.flags.is_test,
                 },
                 .loc = f.loc,
             };

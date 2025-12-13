@@ -1,0 +1,37 @@
+package behavior_wildcard_patterns
+
+testing :: import "std/testing"
+
+Point :: struct {x: i32, y: i32}
+Message :: variant {Quit, Move(i32, i32)}
+
+test "patterns: wildcard in match expression" {
+    x := 10
+    result := match x {
+        1 => "One",
+        _ => "Other",
+    }
+
+    if !testing.expect_equal_str("Other", result) { return Error.Fail }
+}
+
+test "patterns: wildcard in tuple destructuring" {
+    (a, _, c) := (1, 2, 3)
+    if !testing.expect_equal_i64(1, a.(i64)) { return Error.Fail }
+    if !testing.expect_equal_i64(3, c.(i64)) { return Error.Fail }
+}
+
+test "patterns: wildcard in struct destructuring" {
+    Point{ x: px, y: _ } := Point{ x: 10, y: 20 }
+    if !testing.expect_equal_i64(10, px.(i64)) { return Error.Fail }
+}
+
+test "patterns: wildcard in variant destructuring" {
+    m := Message.Move(10, 20)
+    match m {
+        Message.Move(_, y) => {
+            if !testing.expect_equal_i64(20, y.(i64)) { return Error.Fail }
+        },
+        _ => testing.fail("Matched other message")!,
+    }
+}

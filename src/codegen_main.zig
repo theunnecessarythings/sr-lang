@@ -1360,8 +1360,6 @@ fn ensureFuncDeclFromCall(self: *Codegen, p: tir.Rows.Call, t: *tir.TIR) !FuncIn
     // If already present, return it.
     if (self.func_syms.get(callee_id)) |fi| return fi;
 
-    // Try to pick types from global (for varargs info etc.)
-    const global_ids = t.funcs.global_pool.data.items;
     var found: bool = false;
     var is_var: bool = false;
     var params_sr_list: ArrayList(types.TypeId) = .init(self.gpa);
@@ -1369,16 +1367,20 @@ fn ensureFuncDeclFromCall(self: *Codegen, p: tir.Rows.Call, t: *tir.TIR) !FuncIn
     var params_sr: []const types.TypeId = &.{};
     var ret_sr: types.TypeId = types.TypeId.fromRaw(0);
 
-    for (global_ids) |gid| {
-        const g = t.funcs.Global.get(gid);
-        if (self.context.type_store.getKind(g.ty) != .Function) continue;
-        if (!g.name.eq(p.callee)) continue;
-        const fnty = self.context.type_store.get(.Function, g.ty);
-        is_var = fnty.is_variadic;
-        params_sr = self.context.type_store.type_pool.slice(fnty.params);
-        ret_sr = fnty.result;
+    // Check if the callee is an internal function defined in any TIR unit of the compilation
+    if (self.context.global_func_map.get(callee_id)) |item| {
+        const funcs = item.@"1";
+        const fn_info = funcs.Function.get(item.@"0");
+        is_var = fn_info.is_variadic;
+
+        try params_sr_list.ensureTotalCapacity(fn_info.params.len);
+        const args_slice = funcs.param_pool.slice(fn_info.params);
+        for (args_slice, 0..) |p_id, i| {
+            const a = funcs.Param.get(p_id);
+            params_sr_list.items[i] = a.ty;
+        }
+        ret_sr = fn_info.result;
         found = true;
-        break;
     }
 
     if (!found) {
@@ -2297,8 +2299,14 @@ fn emitIndex(self: *Codegen, p: tir.Rows.Index, t: *tir.TIR) !mlir.Value {
                 const ptr_row = self.context.type_store.get(.Ptr, base_sr_ty);
                 elem_sr = ptr_row.elem;
                 const elem_mlir = try self.llvmTypeOf(elem_sr);
-                const idxs = [_]tir.Rows.GepIndex{.{ .Value = start_vid }};
-                data_ptr = try self.emitGep(base, elem_mlir, &idxs);
+
+                if (self.context.type_store.getKind(elem_sr) == .Array) {
+                    const idxs = [_]tir.Rows.GepIndex{ .{ .Const = 0 }, .{ .Value = start_vid } };
+                    data_ptr = try self.emitGep(base, elem_mlir, &idxs);
+                } else {
+                    const idxs = [_]tir.Rows.GepIndex{.{ .Value = start_vid }};
+                    data_ptr = try self.emitGep(base, elem_mlir, &idxs);
+                }
             },
             .String => {
                 elem_sr = self.context.type_store.tU8();
@@ -2473,18 +2481,13 @@ fn emitCall(self: *Codegen, p: tir.Rows.Call, t: *tir.TIR) !mlir.Value {
     if (finfo == null) {
         // If callee is in this module, ensure a func.func decl; else extern (llvm.func)
         var is_local = false;
-        const fids = t.funcs.func_pool.data.items;
-        var ii: usize = 0;
-        while (ii < fids.len) : (ii += 1) {
-            const fname_id = t.funcs.Function.get(fids[ii]).name;
-            if (fname_id.eq(callee_id)) {
-                is_local = true;
-                break;
-            }
+        if (self.context.global_func_map.get(callee_id)) |item| {
+            const funcs = item.@"1";
+            const fn_info = funcs.Function.get(item.@"0");
+            is_local = !fn_info.is_extern;
         }
         if (is_local) {
-            _ = try self.ensureDeclFromCall(p, t);
-            finfo = self.func_syms.get(callee_id);
+            finfo = try self.ensureDeclFromCall(p, t);
         } else {
             finfo = try self.ensureFuncDeclFromCall(p, t);
         }

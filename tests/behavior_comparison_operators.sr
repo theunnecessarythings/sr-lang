@@ -1,0 +1,35 @@
+package behavior_comparison_operators
+
+testing :: import "std/testing"
+
+test "expressions_operators: integer equality" {
+    r := 10 == 10
+    testing.expect(r, "10 == 10 should be true")!
+}
+
+test "expressions_operators: float inequality" {
+    r := 10.5 != 10.6
+    testing.expect(r, "10.5 != 10.6 should be true")!
+}
+
+test "expressions_operators: less than" {
+    r := 5 < 10
+    testing.expect(r, "5 < 10 should be true")!
+}
+
+test "expressions_operators: greater than or equal to" {
+    r := 10 >= 10
+    testing.expect(r, "10 >= 10 should be true")
+}
+
+test "expressions_operators: string equality" {
+    // r := "hello" == "hello"
+    // if !testing.expect(r, "strings should be equal") { return Error.Fail }
+    // Skipped as per zig test
+    return Error.Fail // TODO: Fail for now, add skip later
+}
+
+test "expressions_operators: boolean inequality" {
+    r := true != false
+    testing.expect(r, "true != false should be true")!
+}

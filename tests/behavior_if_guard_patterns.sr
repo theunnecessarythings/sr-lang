@@ -1,0 +1,35 @@
+package behavior_if_guard_patterns
+
+testing :: import "std/testing"
+
+User  :: struct { id: i32, name: string }
+Event :: variant { Login(User), Logout }
+
+test "patterns: match with if guard on literal" {
+    x := 10
+    result := match x {
+        y if y > 5 => "Greater than 5",
+        _ => "Not greater than 5",
+    }
+    if !testing.expect_equal_str("Greater than 5", result) { return Error.Fail }
+}
+
+test "patterns: match with if guard and variable binding" {
+    x := 15
+    result := match x {
+        y @ (10..20) if y % 2 != 0 => "Odd in range",
+        _ => "Other",
+    }
+    if !testing.expect_equal_str("Odd in range", result) { return Error.Fail }
+}
+
+test "patterns: match with if guard on variant payload" {
+    e := Event.Login(User{ id: 101, name: "Bob" })
+    match e {
+        Event.Login(u) if u.id > 100 => {
+            if !testing.expect_equal_str("Bob", u.name) { return Error.Fail }
+        },
+        _ => { testing.fail("Matched other event"); return Error.Fail },
+    }
+}
+

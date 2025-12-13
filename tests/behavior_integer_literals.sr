@@ -1,0 +1,39 @@
+package behavior_integer_literals
+
+testing :: import "std/testing"
+
+test "literals: decimal integer" {
+    x := 123
+    if !testing.expect_equal_i64(123, x.(i64)) { return Error.Fail }
+}
+
+test "literals: negative decimal integer" {
+    x := -456
+    if !testing.expect_equal_i64(-456, x.(i64)) { return Error.Fail }
+}
+
+test "literals: hexadecimal integer" {
+    x := 0xFF
+    if !testing.expect_equal_i64(255, x.(i64)) { return Error.Fail }
+}
+
+test "literals: octal integer" {
+    x := 0o755
+    if !testing.expect_equal_i64(493, x.(i64)) { return Error.Fail }
+}
+
+test "literals: binary integer" {
+    x := 0b1011_0011
+    if !testing.expect_equal_i64(179, x.(i64)) { return Error.Fail }
+}
+
+test "literals: integer with digit separators" {
+    x := 1_000_000
+    if !testing.expect_equal_i64(1000000, x.(i64)) { return Error.Fail }
+}
+
+test "literals: hexadecimal with digit separators" {
+    x := 0x_FF_00
+    if !testing.expect_equal_i64(65280, x.(i64)) { return Error.Fail }
+}
+

@@ -1,0 +1,21 @@
+package behavior_wrapping_casts
+
+testing :: import "std/testing"
+
+test "casts: i32 to u8 wrapping (overflow)" {
+    x: i32 = 256
+    r := x.%u8
+    if !testing.expect_equal_i64(0, r.(i64)) { return Error.Fail }
+}
+
+test "casts: u8 to i8 wrapping (overflow)" {
+    x: u8 = 128
+    r := x.%i8
+    if !testing.expect_equal_i64(-128, r.(i64)) { return Error.Fail }
+}
+
+test "casts: negative i32 to u8 wrapping" {
+    x: i32 = -1
+    r := x.%u8
+    if !testing.expect_equal_i64(255, r.(i64)) { return Error.Fail }
+}

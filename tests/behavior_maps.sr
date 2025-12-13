@@ -1,0 +1,34 @@
+package behavior_maps
+
+testing :: import "std/testing"
+
+test "composite_types: basic map creation" {
+    m: [string: i32] = ["one": 1, "two": 2]
+    if !testing.expect_equal_i64(2, m.len.(i64)) { return Error.Fail }
+}
+
+test "composite_types: accessing map elements" {
+    m: [string: i32] = ["one": 1, "two": 2]
+    val := m["one"]
+    if !testing.expect_equal_i64(1, val.(i64)) { return Error.Fail }
+}
+
+test "composite_types: inserting and updating map elements" {
+    m: [string: i32] = ["one": 1]
+    m["two"] = 2 // Insert
+    m["one"] = 11 // Update
+    if !testing.expect_equal_i64(11, m["one"].(i64)) { return Error.Fail }
+    if !testing.expect_equal_i64(2, m["two"].(i64)) { return Error.Fail }
+}
+
+test "composite_types: removing map elements" {
+    m: [string: i32] = ["one": 1, "two": 2]
+    m.remove("one")
+    if !testing.expect_equal_i64(1, m.len.(i64)) { return Error.Fail }
+}
+
+test "map in" {
+    return Error.Fail
+    m: [string: i32] = ["one": 1, "two": 2]
+    // if !testing.expect("one" in m, "\"one\" should be in map") { return Error.Fail }
+}

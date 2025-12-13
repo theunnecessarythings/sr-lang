@@ -1532,6 +1532,7 @@ pub fn typeFromTypeExpr(self: *Checker, ctx: *Checker.CheckerContext, ast_unit: 
             if (std.mem.eql(u8, s, "string")) break :blk .{ true, ts.tString() };
             if (std.mem.eql(u8, s, "void")) break :blk .{ true, ts.tVoid() };
             if (std.mem.eql(u8, s, "any")) break :blk .{ true, ts.tAny() };
+            if (std.mem.eql(u8, s, "Error")) break :blk .{ true, ts.tTestError() };
             if (std.mem.eql(u8, s, "type"))
                 break :blk .{ true, ts.mkTypeType(ts.tAny()) };
 

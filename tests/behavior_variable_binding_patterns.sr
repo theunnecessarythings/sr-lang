@@ -1,0 +1,44 @@
+package behavior_variable_binding_patterns
+
+testing :: import "std/testing"
+
+Option :: variant {None, Some(i32)}
+
+test "patterns: basic variable binding" {
+    x := 10
+    result := match x {
+        y @ 10 => {
+            if !testing.expect_equal_i64(10, y.(i64)) { return Error.Fail }
+            "Matched 10, bound to y=10"
+        },
+        _ => "Other",
+    }
+
+    if !testing.expect_equal_str("Matched 10, bound to y=10", result) { return Error.Fail }
+}
+
+test "patterns: variable binding with sub-pattern (optional)" {
+    opt_val := Option.Some(42)
+    match opt_val {
+        p @ Option.Some(val) => {
+            // p.0 should be tag? No, p is the variant. p.0 is access to tuple payload if it was tuple-like?
+            // Option.Some is tuple-like.
+            // If p is bound to the variant value, we check if it is Some(42).
+            // SR variants allow accessing tuple fields if active?
+            // The zig test printed p.0.
+            if !testing.expect_equal_i64(1, p.0.(i64)) { return Error.Fail } // Some is tag 1
+            if !testing.expect_equal_i64(42, val.(i64)) { return Error.Fail }
+        },
+        _ => testing.fail("Matched None")!,
+    }
+}
+
+test "patterns: variable binding in if guard" {
+    x := 15
+    result := match x {
+        y @ (10..20) if y % 2 != 0 => "Odd in range",
+        _ => "Other",
+    }
+
+    if !testing.expect_equal_str("Odd in range", result) { return Error.Fail }
+}

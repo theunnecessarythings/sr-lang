@@ -396,7 +396,9 @@ pub const Rows = struct {
         is_variadic: bool,
         /// Literal declared `extern`.
         is_extern: bool,
-        _pad: u4 = 0,
+        /// Literal produced by a `test` declaration.
+        is_test: bool,
+        _pad: u3 = 0,
     };
 
     /// Row for function literal declarations.

@@ -1,0 +1,56 @@
+package behavior_wrapping_saturating_arithmetic
+
+testing :: import "std/testing"
+
+test "expressions_operators: wrapping addition" {
+    x: u8 = 250
+    y: u8 = 10
+    r := x +% y
+    if !testing.expect_equal_i64(4, r.(i64)) { return Error.Fail }
+}
+
+test "expressions_operators: wrapping add assignment" {
+    x: u8 = 250
+    x +%= 10.(u8)
+    if !testing.expect_equal_i64(4, x.(i64)) { return Error.Fail }
+}
+
+test "expressions_operators: saturating addition" {
+    x: u8 = 250
+    y: u8 = 10
+    r := x +| y
+    if !testing.expect_equal_i64(255, r.(i64)) { return Error.Fail }
+}
+
+test "expressions_operators: saturating multiply assignment" {
+    x: u8 = 100
+    x *|= 3.(u8)
+    if !testing.expect_equal_i64(255, x.(i64)) { return Error.Fail }
+}
+
+test "expressions_operators: saturating addition clamps signed max" {
+    x: i8 = 120
+    y: i8 = 120
+    r := x +| y
+    if !testing.expect_equal_i64(127, r.(i64)) { return Error.Fail }
+}
+
+test "expressions_operators: saturating addition clamps signed min" {
+    x: i8 = -120
+    y: i8 = -20
+    r := x +| y
+    if !testing.expect_equal_i64(-128, r.(i64)) { return Error.Fail }
+}
+
+test "expressions_operators: saturating multiplication clamps signed min" {
+    x: i8 = -70
+    y: i8 = 3
+    r := x *| y
+    if !testing.expect_equal_i64(-128, r.(i64)) { return Error.Fail }
+}
+
+test "expressions_operators: saturating shift clamps to max" {
+    x: u8 = 200
+    r := x <<| 2.(u8)
+    if !testing.expect_equal_i64(255, r.(i64)) { return Error.Fail }
+}

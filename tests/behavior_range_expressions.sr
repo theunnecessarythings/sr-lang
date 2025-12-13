@@ -1,0 +1,28 @@
+package behavior_range_expressions
+
+testing :: import "std/testing"
+
+test "misc: exclusive range in for loop" {
+    sum := 0
+    for i in 0..3 {
+        sum = sum + i.(i64)
+    }
+    if !testing.expect_equal_i64(3, sum) { return Error.Fail }
+}
+
+test "misc: inclusive range in for loop" {
+    sum := 0
+    for i in 0..=3 {
+        sum = sum + i.(i64)
+    }
+    if !testing.expect_equal_i64(6, sum) { return Error.Fail }
+}
+
+test "misc: exclusive range assigned to variable" {
+    r := 1..5
+}
+
+test "misc: inclusive range assigned to variable" {
+    r := 1..=5
+}
+

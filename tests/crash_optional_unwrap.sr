@@ -1,0 +1,11 @@
+package main
+
+testing :: import "std/testing"
+
+test "special_types: optional unwrap with null (should panic)" {
+    x: ?i32 = null
+    // This should panic at runtime with "unwrap of null optional"
+    val := x?
+    // We should never reach here
+    if !testing.expect_equal_i64(0, val.(i64)) { return Error.Fail }
+}

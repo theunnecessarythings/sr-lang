@@ -1,0 +1,58 @@
+package behavior_array_slice_patterns
+
+testing :: import "std/testing"
+
+test "patterns: basic array pattern" {
+    arr := [1, 2, 3]
+    result := match arr {
+        [1, 2, 3] => "Matched [1, 2, 3]",
+        _ => "Other",
+    }
+
+    if !testing.expect_equal_str("Matched [1, 2, 3]", result) { return Error.Fail }
+}
+
+test "patterns: array pattern with variable binding" {
+    arr := [10, 20, 30]
+    match arr {
+        [x, y, z] => {
+            if !testing.expect_equal_i64(10, x.(i64)) { return Error.Fail }
+            if !testing.expect_equal_i64(20, y.(i64)) { return Error.Fail }
+            if !testing.expect_equal_i64(30, z.(i64)) { return Error.Fail }
+        },
+        _ => testing.fail("Failed to match [x, y, z]")!,
+    }
+}
+
+test "patterns: array pattern with wildcard" {
+    arr := [100, 200, 300]
+    match arr {
+        [_, y, _] => {
+            if !testing.expect_equal_i64(200, y.(i64)) { return Error.Fail }
+        },
+        _ => testing.fail("Failed to match [_, y, _]")!,
+    }
+}
+
+test "patterns: array pattern with head and rest" {
+    arr := [1, 2, 3, 4, 5]
+    match arr {
+        [head, ..tail] => {
+            if !testing.expect_equal_i64(1, head.(i64)) { return Error.Fail }
+            if !testing.expect_equal_i64(4, tail.len.(i64)) { return Error.Fail }
+        },
+        _ => testing.fail("Failed to match [head, ..tail]")!,
+    }
+}
+
+test "patterns: array pattern with multiple heads and rest" {
+    arr := [1, 2, 3, 4, 5]
+    match arr {
+        [first, second, ..rest] => {
+            if !testing.expect_equal_i64(1, first.(i64)) { return Error.Fail }
+            if !testing.expect_equal_i64(2, second.(i64)) { return Error.Fail }
+            if !testing.expect_equal_i64(3, rest.len.(i64)) { return Error.Fail }
+        },
+        _ => testing.fail("Failed to match [first, second, ..rest]")!,
+    }
+}

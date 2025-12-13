@@ -1,0 +1,46 @@
+package behavior_functions
+
+testing :: import "std/testing"
+
+add :: fn(a: i32, b: i32) i32 { return a + b }
+
+get_answer :: fn() i32 { return 42 }
+
+get_status :: fn(c: i32) string {
+    if c == 200 { return "OK" }
+    if c == 404 { return "Not Found" }
+    return "Unknown"
+}
+
+factorial :: fn(n: i64) i64 {
+    if n == 0 { return 1 }
+    return n * factorial(n - 1)
+}
+
+add_inline :: @[inline] fn(a: i32, b: i32) i32 { return a + b }
+
+test "declarations: basic function with parameters and return" {
+    r := add(5, 7)
+    if !testing.expect_equal_i64(12, r.(i64)) { return Error.Fail }
+}
+
+test "declarations: function without parameters" {
+    r := get_answer()
+    if !testing.expect_equal_i64(42, r.(i64)) { return Error.Fail }
+}
+
+test "declarations: function with multiple return statements" {
+    if !testing.expect_equal_str("OK", get_status(200)) { return Error.Fail }
+    if !testing.expect_equal_str("Not Found", get_status(404)) { return Error.Fail }
+    if !testing.expect_equal_str("Unknown", get_status(500)) { return Error.Fail }
+}
+
+test "declarations: recursive function" {
+    if !testing.expect_equal_i64(120, factorial(5)) { return Error.Fail }
+}
+
+test "declarations: function with inline attribute" {
+    r := add_inline(10, 15)
+    if !testing.expect_equal_i64(25, r.(i64)) { return Error.Fail }
+}
+

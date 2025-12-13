@@ -1,0 +1,28 @@
+package behavior_saturating_casts
+
+testing :: import "std/testing"
+
+test "casts: i32 to i8 saturating (overflow max)" {
+    big_int: i32 = 99999
+    saturated_to_i8 := big_int.|i8
+    if !testing.expect_equal_i64(127, saturated_to_i8.(i64)) { return Error.Fail }
+}
+
+test "casts: i32 to i8 saturating (overflow min)" {
+    small_int: i32 = -99999
+    saturated_to_i8 := small_int.|i8
+    if !testing.expect_equal_i64(-128, saturated_to_i8.(i64)) { return Error.Fail }
+}
+
+test "casts: i32 to u8 saturating (negative)" {
+    neg_int: i32 = -10
+    saturated_to_u8 := neg_int.|u8
+    if !testing.expect_equal_i64(0, saturated_to_u8.(i64)) { return Error.Fail }
+}
+
+test "casts: i32 to u8 saturating (overflow max)" {
+    big_int: i32 = 300
+    saturated_to_u8 := big_int.|u8
+    if !testing.expect_equal_i64(255, saturated_to_u8.(i64)) { return Error.Fail }
+}
+

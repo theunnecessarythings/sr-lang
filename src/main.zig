@@ -82,6 +82,7 @@ const CliArgs = struct {
     subcommand: Subcommand,
     filename: ?[]const u8 = null,
     output_path: ?[]const u8 = null,
+    emit_tir: bool = false,
     emit_mlir: bool = false,
     run_mlir: bool = false,
     no_color: bool = false,
@@ -89,7 +90,7 @@ const CliArgs = struct {
     debug_info: bool = false,
     optimization_level: ?[]const u8 = null,
     tir_prune_unused: bool = true,
-    tir_warn_unused: bool = true,
+    tir_warn_unused: bool = false,
 
     /// Supported subcommands exposed through the CLI.
     const Subcommand = enum {
@@ -106,6 +107,7 @@ const CliArgs = struct {
         mlir,
         mlir_passes,
         llvm_passes,
+        test_mode,
         unknown,
         repl,
         pretty_print,
@@ -129,6 +131,7 @@ fn printUsage(writer: anytype, exec_name: []const u8) !void {
     );
     try writer.print("  {s}compile{s} <file>      Compile a source file to an executable.\n", .{ Colors.cyan, Colors.reset });
     try writer.print("  {s}run{s}     <file>      Compile and immediately run a source file.\n", .{ Colors.cyan, Colors.reset });
+    try writer.print("  {s}test{s}    <file>      Compile and run all test declarations (ignores user main).\n", .{ Colors.cyan, Colors.reset });
     try writer.print("  {s}check{s}   <file>      Parse and perform semantic checks on a source file.\n", .{ Colors.cyan, Colors.reset });
     try writer.print("  {s}ast{s}     <file>      Print the Abstract Syntax Tree (AST) of a source file.\n", .{ Colors.cyan, Colors.reset });
     try writer.print("  {s}cst{s}     <file>      Print the Concrete Syntax Tree (CST) of a source file.\n", .{ Colors.cyan, Colors.reset });
@@ -150,6 +153,7 @@ fn printUsage(writer: anytype, exec_name: []const u8) !void {
         .{ Colors.bold, Colors.reset },
     );
     try writer.print("  {s}--output{s} <path>    Specify the output path for compiled executables.\n", .{ Colors.cyan, Colors.reset });
+    try writer.print("  {s}--emit-tir{s}         Emit TIR to stdout during compilation.\n", .{ Colors.cyan, Colors.reset });
     try writer.print("  {s}--emit-mlir{s}        Emit MLIR IR to stdout during compilation.\n", .{ Colors.cyan, Colors.reset });
     try writer.print("  {s}--run-mlir{s}         Run MLIR JIT after compilation (for testing).\n", .{ Colors.cyan, Colors.reset });
     try writer.print("  {s}--no-color{s}         Disable colored output for diagnostics.\n", .{ Colors.cyan, Colors.reset });
@@ -418,9 +422,10 @@ fn process_file(
     if (cli_args.verbose) {
         try err_writer.print("Compiling {s}...\n", .{abs_filename});
     }
-    const result = pipeline.run(abs_filename, link_args, switch (cli_args.subcommand) {
+    const result_or_err = pipeline.run(abs_filename, link_args, switch (cli_args.subcommand) {
         .compile => .compile,
         .run => .run,
+        .test_mode => .test_mode,
         .check => .check,
         .ast => .ast,
         .cst => .parse,
@@ -435,11 +440,24 @@ fn process_file(
         .json_ast => .ast,
         .format => unreachable,
         else => unreachable,
-    }, progress_arg, cli_args.optimization_level) catch |err| {
+    }, progress_arg, cli_args.optimization_level);
+
+    if (cli_args.emit_tir) {
+        for (compiler_ctx.compilation_unit.packages.values()) |pkg| {
+            for (pkg.sources.values()) |entry| {
+                if (entry.tir) |tir| {
+                    var tir_printer: lib.tir.TirPrinter = .init(out_writer, tir);
+                    tir_printer.print() catch {};
+                }
+            }
+        }
+        try out_writer.flush();
+    }
+
+    const result = result_or_err catch |err| {
         if (progress_active) finalizeProgress(&progress_ctx, &progress_finalized, true);
         return err;
     };
-    if (progress_active) finalizeProgress(&progress_ctx, &progress_finalized, false);
 
     // For 'check' command, stop after semantic checks
     if (cli_args.subcommand == .check) {
@@ -535,6 +553,16 @@ fn process_file(
     // For 'run', launch the compiled program after showing diagnostics
     if (cli_args.subcommand == .run) {
         lib.compile.run();
+    } else if (cli_args.subcommand == .test_mode) {
+        const status = lib.compile.runWithStatus() catch {
+            try err_writer.print("{s}Error:{s} failed to run test harness.\n", .{ Colors.red, Colors.reset });
+            return;
+        };
+        const total = result.test_count;
+        const fails: usize = @intCast(status);
+        const passed = if (fails > total) 0 else total - fails;
+        try out_writer.print("{s}tests:{s} {d} passed; {d} failed\n", .{ Colors.bold, Colors.reset, passed, fails });
+        if (status != 0) std.process.exit(status);
     }
     if (cli_args.verbose) {
         try err_writer.print("{s}Compilation successful for {s}.{s}\n", .{ Colors.green, filename, Colors.reset });
@@ -561,6 +589,8 @@ pub fn main() !void {
         if (std.mem.startsWith(u8, arg, "--")) {
             if (std.mem.eql(u8, arg, "--output")) {
                 cli_args.output_path = args_iter.next().?;
+            } else if (std.mem.eql(u8, arg, "--emit-tir")) {
+                cli_args.emit_tir = true;
             } else if (std.mem.eql(u8, arg, "--emit-mlir")) {
                 cli_args.emit_mlir = true;
             } else if (std.mem.eql(u8, arg, "--run-mlir")) {
@@ -594,6 +624,8 @@ pub fn main() !void {
                     cli_args.subcommand = .compile;
                 } else if (std.mem.eql(u8, arg, "run")) {
                     cli_args.subcommand = .run;
+                } else if (std.mem.eql(u8, arg, "test")) {
+                    cli_args.subcommand = .test_mode;
                 } else if (std.mem.eql(u8, arg, "check")) {
                     cli_args.subcommand = .check;
                 } else if (std.mem.eql(u8, arg, "ast")) {
@@ -682,7 +714,7 @@ pub fn main() !void {
         .help => {
             try printUsage(out_writer, exec_name);
         },
-        .compile, .mlir, .mlir_passes, .llvm_passes, .run, .check, .ast, .cst, .tir, .tir_liveness, .lex, .pretty_print, .json_ast, .format => {
+        .compile, .mlir, .mlir_passes, .llvm_passes, .run, .test_mode, .check, .ast, .cst, .tir, .tir_liveness, .lex, .pretty_print, .json_ast, .format => {
             if (cli_args.filename == null) {
                 try writer.print("{s}Error:{s} Missing source file for '{s}' command.\n", .{ Colors.red, Colors.reset, @tagName(cli_args.subcommand) });
                 try printUsage(writer, exec_name);

@@ -28,6 +28,8 @@ pub const Result = struct {
     mlir_module: ?mlir.Module = null,
     /// Active codegen emitter (needed when emitting debug output or diagnostics).
     gen: ?codegen.Codegen = null,
+    /// Number of discovered test functions when running in test mode.
+    test_count: usize = 0,
 };
 
 pub const ProgressStage = enum {
@@ -109,6 +111,8 @@ pub const Pipeline = struct {
         compile,
         /// Build, emit, and run the compiled binary (run only path, CLI handles launch).
         run,
+        // Compile all tests and emit a harness main that executes them.
+        test_mode,
         /// Execute the interpreter stage (comptime only).
         interpret,
 
@@ -358,17 +362,18 @@ pub const Pipeline = struct {
             return error.TypeCheckFailed;
         }
         if (mode == .check) {
-            return .{ .compilation_unit = self.context.compilation_unit };
+            return .{ .compilation_unit = self.context.compilation_unit, .test_count = 0 };
         }
 
         if (mode == .interpret) {
             try runInterpreterStage(self);
-            return .{ .compilation_unit = self.context.compilation_unit };
+            return .{ .compilation_unit = self.context.compilation_unit, .test_count = 0 };
         }
 
         if (progress) |reporter| reporter.report(.lowering_tir);
-        var tir_lowerer: lower_tir.LowerTir = .init(self.allocator, self.context, self, &chk);
+        var tir_lowerer: lower_tir.LowerTir = .init(self.allocator, self.context, self, &chk, mode == .test_mode);
         defer tir_lowerer.deinit();
+        const test_count = if (mode == .test_mode) tir_lowerer.test_funcs.items.len else 0;
 
         // If any TIR lowering thread fails, do not proceed further.
         _ = tir_lowerer.run(&dep_levels) catch |err| return err;
@@ -377,7 +382,7 @@ pub const Pipeline = struct {
             return error.TirLoweringFailed;
         }
         if (mode == .tir) {
-            return .{ .compilation_unit = self.context.compilation_unit };
+            return .{ .compilation_unit = self.context.compilation_unit, .test_count = test_count };
         }
         if (mode == .tir_liveness) {
             // Optional pruning before dump
@@ -394,7 +399,7 @@ pub const Pipeline = struct {
                     }
                 }
             }
-            return .{ .compilation_unit = self.context.compilation_unit };
+            return .{ .compilation_unit = self.context.compilation_unit, .test_count = test_count };
         }
 
         // Optional pruning in normal pipeline modes
@@ -435,7 +440,7 @@ pub const Pipeline = struct {
 
         // verify module
         if (!mlir_module.getOperation().verify()) {
-            mlir_module.getOperation().dump();
+            // mlir_module.getOperation().dump();
             const msg = gen.diagnostic_data.msg orelse "";
             try self.context.diags.addError(
                 .{ .file_id = file_id, .start = 0, .end = 0 },
@@ -454,6 +459,7 @@ pub const Pipeline = struct {
                 .compilation_unit = self.context.compilation_unit,
                 .mlir_module = mlir_module,
                 .gen = gen,
+                .test_count = test_count,
             };
         }
 
@@ -469,6 +475,7 @@ pub const Pipeline = struct {
                 .compilation_unit = self.context.compilation_unit,
                 .mlir_module = mlir_module,
                 .gen = gen,
+                .test_count = test_count,
             };
         }
 
@@ -476,6 +483,7 @@ pub const Pipeline = struct {
         try compile.convert_to_llvm_ir(mlir_module.handle, link_args, switch (mode) {
             .llvm_ir => .llvm_ir,
             .llvm_passes => .llvm_passes,
+            .test_mode => .compile,
             else => .compile,
         }, optimization_level, self.debug_info);
         if (self.context.diags.anyErrors()) {
@@ -486,13 +494,15 @@ pub const Pipeline = struct {
                 .compilation_unit = self.context.compilation_unit,
                 .mlir_module = mlir_module,
                 .gen = gen,
+                .test_count = test_count,
             };
         }
-        if (mode == .compile) {
+        if (mode == .compile or mode == .test_mode) {
             return .{
                 .compilation_unit = self.context.compilation_unit,
                 .mlir_module = mlir_module,
                 .gen = gen,
+                .test_count = test_count,
             };
         }
 
@@ -505,6 +515,7 @@ pub const Pipeline = struct {
                 .compilation_unit = self.context.compilation_unit,
                 .mlir_module = mlir_module,
                 .gen = gen,
+                .test_count = test_count,
             };
         }
         // For 'run' mode, do not launch the program here.
@@ -513,6 +524,7 @@ pub const Pipeline = struct {
             .compilation_unit = self.context.compilation_unit,
             .mlir_module = mlir_module,
             .gen = gen,
+            .test_count = test_count,
         };
     }
 };

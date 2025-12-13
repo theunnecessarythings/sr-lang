@@ -1,0 +1,24 @@
+package behavior_unions
+
+testing :: import "std/testing"
+
+IntOrFloat :: union {i: i32, f: f64}
+Value :: union {b: bool, s: string}
+
+test "composite_types: basic union definition and instantiation" {
+    u := IntOrFloat{ i: 123 }
+    if !testing.expect_equal_i64(123, u.i.(i64)) { return Error.Fail }
+}
+
+test "composite_types: switching active union field" {
+    u := IntOrFloat{ i: 123 }
+    u.f = 456.78
+    if !testing.expect_equal_f64(456.78, u.f, 0.000001) { return Error.Fail }
+}
+
+test "composite_types: union with different field types" {
+    v := Value{ b: true }
+    testing.expect(v.b, "v.b should be true")!
+    v.s = "hello"
+    if !testing.expect_equal_str("hello", v.s) { return Error.Fail }
+}

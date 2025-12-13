@@ -1,0 +1,29 @@
+package behavior_bitwise_operators
+
+testing :: import "std/testing"
+
+test "expressions_operators: bitwise AND" {
+    r := 0b1010 & 0b1100
+    if !testing.expect_equal_i64(8, r.(i64)) { return Error.Fail }
+}
+
+test "expressions_operators: bitwise OR" {
+    r := 0b1010 | 0b1100
+    if !testing.expect_equal_i64(14, r.(i64)) { return Error.Fail }
+}
+
+test "expressions_operators: bitwise XOR" {
+    r := 0b1010 ^ 0b1100
+    if !testing.expect_equal_i64(6, r.(i64)) { return Error.Fail }
+}
+
+test "expressions_operators: left shift" {
+    r := 0b0001 << 2
+    if !testing.expect_equal_i64(4, r.(i64)) { return Error.Fail }
+}
+
+test "expressions_operators: right shift" {
+    r := 0b1000 >> 2
+    if !testing.expect_equal_i64(2, r.(i64)) { return Error.Fail }
+}
+

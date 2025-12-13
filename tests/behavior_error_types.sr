@@ -1,0 +1,36 @@
+package behavior_error_types
+
+testing :: import "std/testing"
+
+MyError :: error {NotFound, PermissionDenied, InvalidInput}
+
+might_fail :: proc() MyError ! void {
+    return MyError.NotFound
+}
+
+parse_int :: fn(s: string) MyError ! i32 {
+    return MyError.InvalidInput
+}
+
+test "error_handling: basic error type definition" {
+    // Just defining it checks it compiles.
+}
+
+test "error_handling: returning error from procedure" {
+    might_fail() catch |err| {
+        if err != MyError.NotFound {
+            testing.fail("Expected NotFound")
+            return Error.Fail
+        }
+    }
+}
+
+test "error_handling: returning error from function" {
+    parse_int("abc") catch |err| {
+        if err != MyError.InvalidInput {
+            testing.fail("Expected InvalidInput")
+            return Error.Fail
+        }
+        0 // catch needs to return value if expression
+    }
+}

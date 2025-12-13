@@ -1,0 +1,85 @@
+package behavior_generics
+
+testing :: import "std/testing"
+
+max :: fn(comptime T: type, a: T, b: T) T {
+    return if a > b { a } else { b }
+}
+
+clamp :: fn(comptime T: type, comptime Limit: T, value: T) T {
+    return if value > Limit { Limit } else { value }
+}
+
+Vec :: fn(comptime T: type, comptime N: usize) type {
+    return struct {data: [N]T}
+}
+
+Matrix :: fn(comptime T: type, comptime R: usize, comptime C: usize) type {
+    Row :: Vec(T, C)
+    return struct {rows: [R]Row}
+}
+
+MatrixI32x2x3 :: Matrix(i32, 2, 3)
+
+List :: proc(comptime T: type) type {
+    Type :: struct {
+        data: []const T,
+        len: usize,
+    }
+
+    Type.get :: proc(self: *Type, index: usize) T {
+        return self.data[index]
+    }
+
+    return Type
+}
+
+A :: proc(comptime T: type) type {
+    Type :: struct {item: T}
+    Type.init :: proc(val: T) Type {
+        return Type{ item: val }
+    }
+    return Type
+}
+
+test "generics: simple specialization" {
+    if !testing.expect_equal_i64(10, max(i32, 10, 7).(i64)) { return Error.Fail }
+    if !testing.expect_equal_i64(5, clamp(i32, 5, 42).(i64)) { return Error.Fail }
+}
+
+test "generics: nested type specializations" {
+    row0 := Vec(i32, 3){ data: [1, 2, 3] }
+    row1 := Vec(i32, 3){ data: [4, 5, 6] }
+    mat := MatrixI32x2x3{ rows: [row0, row1] }
+    if !testing.expect_equal_i64(3, mat.rows[0].data[2].(i64)) { return Error.Fail }
+    if !testing.expect_equal_i64(4, mat.rows[1].data[0].(i64)) { return Error.Fail }
+}
+
+test "generics: struct field uses comptime array length" {
+    top := Vec(i32, 3){ data: [1, 2, 3] }
+    bottom := Vec(i32, 3){ data: [4, 5, 6] }
+    if !testing.expect_equal_i64(1, top.data[0].(i64)) { return Error.Fail }
+    if !testing.expect_equal_i64(2, top.data[1].(i64)) { return Error.Fail }
+    if !testing.expect_equal_i64(3, top.data[2].(i64)) { return Error.Fail }
+    if !testing.expect_equal_i64(4, bottom.data[0].(i64)) { return Error.Fail }
+    if !testing.expect_equal_i64(5, bottom.data[1].(i64)) { return Error.Fail }
+    if !testing.expect_equal_i64(6, bottom.data[2].(i64)) { return Error.Fail }
+}
+
+test "generics: methods" {
+    list := List(i64){ data: [1, 2, 3], len: 3 }
+    if !testing.expect_equal_i64(2, list.get(1)) { return Error.Fail }
+
+    list_f64 := List(f64){ data: [1.0, 2.0, 3.0], len: 3 }
+    if !testing.expect_equal_f64(2.0, list_f64.get(1), 0.000001) { return Error.Fail }
+}
+
+test "generics: nested method specialization per owner" {
+    TI32 :: A(i32)
+    x := TI32.init(5)
+    if !testing.expect_equal_i64(5, x.item.(i64)) { return Error.Fail }
+
+    TI64 :: A(i64)
+    y := TI64.init(7)
+    if !testing.expect_equal_i64(7, y.item) { return Error.Fail }
+}

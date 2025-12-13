@@ -2429,12 +2429,12 @@ pub fn checkExpr(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, id: a
         .Range => try self.checkRange(ctx, ast_unit, id),
         .Deref => try self.checkDeref(ctx, ast_unit, id),
         .Call => try self.checkCall(ctx, ast_unit, id),
-        .ComptimeBlock => {
+        .ComptimeBlock => blk: {
             const cb = ast_unit.exprs.get(.ComptimeBlock, id);
             const result_ty = try self.checkExpr(ctx, ast_unit, cb.block);
             var computed = try self.evalComptimeExpr(ctx, ast_unit, cb.block, &[_]Pipeline.ComptimeBinding{});
             computed.destroy(self.gpa);
-            return result_ty;
+            break :blk result_ty;
         },
         .CodeBlock => try self.checkCodeBlock(ctx, ast_unit, id),
         .AsyncBlock => try self.checkAsyncBlock(id),
@@ -3117,7 +3117,9 @@ fn checkBinary(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, id: ast
             try self.context.diags.addError(exprLoc(ast_unit, bin), .invalid_use_of_orelse_on_non_optional, .{l});
             return self.context.type_store.tTypeError();
         },
-        else => unreachable,
+        .contains => {
+            try self.context.diags.addError(exprLoc(ast_unit, bin), .in_operator_not_supported, .{});
+        },
     }
     return self.context.type_store.tTypeError();
 }
@@ -3325,6 +3327,7 @@ fn checkFunctionLit(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, id
     const refined_res = func_ctx.inferred_result orelse res;
     const is_pure = if (fnr.flags.is_proc) false else true;
     const final_ty = self.context.type_store.mkFunction(pbuf, refined_res, is_variadic, is_pure, fnr.flags.is_extern);
+
     ast_unit.type_info.expr_types.items[id.toRaw()] = final_ty;
     return final_ty;
 }

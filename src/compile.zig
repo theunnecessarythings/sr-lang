@@ -1,6 +1,7 @@
 const std = @import("std");
 const mlir = @import("mlir_bindings.zig");
 const cst = @import("cst.zig");
+const tir = @import("tir.zig");
 const package = @import("package.zig");
 const CompilationUnit = package.CompilationUnit;
 const Diagnostics = @import("diagnostics.zig").Diagnostics;
@@ -137,6 +138,8 @@ pub const Context = struct {
     type_store: *TypeStore,
     /// Aggregated unit that stores packages, modules, and files.
     compilation_unit: CompilationUnit,
+    /// Global map of all internal functions across all TIR units.
+    global_func_map: std.AutoHashMap(tir.StrId, struct { tir.FuncId, *tir.FuncStore }),
     /// Toggle that controls whether imported files are automatically loaded.
     load_imports: bool = true,
     /// Mutex guarding shared mutable state for threaded stages.
@@ -184,12 +187,14 @@ pub const Context = struct {
             .source_manager = source_manager,
             .type_store = type_store,
             .compilation_unit = .init(gpa),
+            .global_func_map = .init(gpa),
         };
     }
 
     /// Tear down the context and all associated storages (type store, interner, etc.).
     pub fn deinit(self: *Context) void {
         self.compilation_unit.deinit();
+        self.global_func_map.deinit();
         self.source_manager.deinit();
         self.diags.deinit();
         self.interner.deinit();
@@ -808,9 +813,19 @@ pub fn convert_to_llvm_ir(module: mlir.c.MlirModule, link_args: []const []const 
 }
 
 /// Run the compiled `out/output_program` executable (helper used by tests).
-pub fn run() void {
+/// Launch the compiled program and return its exit code.
+pub fn runWithStatus() !u8 {
     const argv = &[_][]const u8{"out/output_program"};
     var child: std.process.Child = .init(argv, std.heap.page_allocator);
-    child.spawn() catch unreachable;
-    _ = child.wait() catch unreachable;
+    try child.spawn();
+    const term = try child.wait();
+    return switch (term) {
+        .Exited => |code| @intCast(code),
+        else => error.ProgramFailed,
+    };
+}
+
+/// Launch the compiled program, ignoring its exit status (legacy helper).
+pub fn run() void {
+    _ = runWithStatus() catch unreachable;
 }

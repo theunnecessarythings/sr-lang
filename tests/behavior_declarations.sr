@@ -1,0 +1,74 @@
+package behavior_declarations
+
+testing :: import "std/testing"
+
+test "declarations: inferred variable (i32)" {
+    x := 10
+    if !testing.expect_equal_i64(10, x.(i64)) { return Error.Fail }
+}
+
+test "declarations: inferred variable (f32)" {
+    y := 3.14
+    if !testing.expect_equal_f64(3.14, y.(f64), 0.000001) { return Error.Fail }
+}
+
+test "declarations: inferred variable (bool)" {
+    b := true
+    testing.expect(b, "b should be true")!
+}
+
+test "declarations: inferred variable (string)" {
+    s := "hello"
+    if !testing.expect_equal_str("hello", s) { return Error.Fail }
+}
+
+test "declarations: typed variable (i32) with initialization" {
+    x: i32 = 20
+    if !testing.expect_equal_i64(20, x.(i64)) { return Error.Fail }
+}
+
+test "declarations: typed variable (f64) with initialization" {
+    y: f64 = 2.71
+    if !testing.expect_equal_f64(2.71, y, 0.000001) { return Error.Fail }
+}
+
+test "declarations: typed variable (bool) with initialization" {
+    b: bool = false
+    testing.expect(!b, "b should be false")!
+}
+
+test "declarations: typed variable (string) with initialization" {
+    s: string = "world"
+    if !testing.expect_equal_str("world", s) { return Error.Fail }
+}
+
+test "declarations: constant (i32)" {
+    MY_CONST :: 100
+    if !testing.expect_equal_i64(100, MY_CONST.(i64)) { return Error.Fail }
+}
+
+test "declarations: constant (string)" {
+    GREETING :: "Hi there"
+    if !testing.expect_equal_str("Hi there", GREETING) { return Error.Fail }
+}
+
+test "declarations: variable reassignment" {
+    x := 10
+    if !testing.expect_equal_i64(10, x.(i64)) { return Error.Fail }
+    x = 20
+    if !testing.expect_equal_i64(20, x.(i64)) { return Error.Fail }
+}
+
+test "declarations: local scope variable" {
+    outer_x := 5
+    {
+        inner_x := 15
+        if !testing.expect_equal_i64(15, inner_x.(i64)) { return Error.Fail }
+    }
+    if !testing.expect_equal_i64(5, outer_x.(i64)) { return Error.Fail }
+}
+
+test "declarations: typed variable without initialization (undefined)" {
+    x: i32 = undefined
+    if !testing.expect_equal_i64(0, x.(i64)) { return Error.Fail }
+}

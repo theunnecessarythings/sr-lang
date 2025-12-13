@@ -19,6 +19,8 @@ lex: Lexer,
 cur: Token,
 /// Lookahead token.
 nxt: Token,
+/// Counter used to synthesize unique names for `test` declarations.
+test_counter: usize = 0,
 
 /// CST being built/returned to the caller.
 cst_u: cst.CST,
@@ -477,6 +479,8 @@ fn parseProgram(self: *Parser) !void {
 
 /// Parse a declaration (function, const, import, etc.) and return its CST id.
 fn parseDecl(self: *Parser) anyerror!cst.DeclId {
+    if (self.cur.tag == .keyword_test) return self.parseTestDecl();
+
     const loc = self.toLocId(self.cur.loc);
     const lhs_or_rhs = try self.parseExpr(0, .expr);
     var flags: cst.Rows.DeclFlags = .{ .is_const = false, .is_assign = false };
@@ -581,6 +585,91 @@ fn parseDecl(self: *Parser) anyerror!cst.DeclId {
         .method_path = method_path,
         .flags = flags,
         .loc = loc,
+    };
+    return self.cst_u.exprs.addDeclRow(row);
+}
+
+/// Parse a `test "name" { ... }` declaration by desugaring into a const procedure with a test attribute.
+fn parseTestDecl(self: *Parser) anyerror!cst.DeclId {
+    const start_loc = self.cur.loc;
+    self.advance(); // consume 'test'
+
+    const name_tok = self.cur;
+    const name_tag = name_tok.tag;
+    if (name_tag != .string_literal and name_tag != .raw_string_literal) {
+        try self.expect(.string_literal); // emits diagnostic
+        return error.UnexpectedToken;
+    }
+
+    const name_loc = self.toLocId(name_tok.loc);
+    const name_str = self.slice(name_tok);
+    const lit_id = self.addExpr(.Literal, .{
+        .value = self.intern(name_str),
+        .tag_small = litTag(name_tag),
+        .loc = name_loc,
+    });
+    self.advance();
+
+    // Build @[test="name"] attribute list.
+    const test_attr_name = self.intern("test");
+    const attr_id = self.cst_u.exprs.addAttrRow(.{
+        .name = test_attr_name,
+        .value = .some(lit_id),
+        .loc = name_loc,
+    });
+    const attr_range = self.cst_u.exprs.attr_pool.pushMany(self.gpa, &[_]cst.AttributeId{attr_id});
+
+    // Require a block body.
+    const body_expr = try self.parseBlockExpr();
+
+    // Result type: Error!void
+    const err_ident = self.addExpr(.Ident, .{
+        .name = self.intern("Error"),
+        .loc = self.toLocId(start_loc),
+    });
+    const void_ident = self.addExpr(.Ident, .{
+        .name = self.intern("void"),
+        .loc = self.toLocId(start_loc),
+    });
+    const result_ty = self.addExpr(.Infix, .{
+        .op = .error_union,
+        .left = err_ident,
+        .right = void_ident,
+        .loc = self.toLocId(start_loc),
+    });
+
+    // Synthesize a unique identifier to bind the test procedure.
+    const idx = self.test_counter;
+    self.test_counter += 1;
+    var name_buf: [48]u8 = undefined;
+    const sym_name = std.fmt.bufPrint(&name_buf, "__test_{d}_{d}", .{ self.lex.file_id, idx }) catch unreachable;
+    const lhs_ident = self.addExpr(.Ident, .{ .name = self.intern(sym_name), .loc = self.toLocId(start_loc) });
+
+    const fn_id = self.addExpr(.Function, .{
+        .params = cst.RangeOf(cst.ParamId).empty(),
+        .result_ty = .some(result_ty),
+        .body = .some(body_expr),
+        .raw_asm = .none(),
+        .attrs = .some(attr_range),
+        .flags = .{ .is_proc = true, .is_async = false, .is_variadic = false, .is_extern = false, .is_test = true },
+        .trailing_param_comma = false,
+        .loc = self.toLocId(start_loc),
+    });
+
+    // Consume optional semicolon after the block, mirroring normal decl handling.
+    if (self.cur.tag == .eos) {
+        self.advance();
+    } else if (self.cur.tag != .rcurly and self.cur.tag != .eof) {
+        try self.expect(.eos);
+    }
+
+    const row: cst.Rows.Decl = .{
+        .lhs = .some(lhs_ident),
+        .rhs = fn_id,
+        .ty = .none(),
+        .method_path = .none(),
+        .flags = .{ .is_const = true, .is_assign = false },
+        .loc = self.toLocId(start_loc),
     };
     return self.cst_u.exprs.addDeclRow(row);
 }
@@ -2666,6 +2755,7 @@ fn parseFunctionLike(self: *Parser, tag: Token.Tag, comptime is_extern: bool, is
         .is_async = is_async,
         .is_variadic = is_variadic,
         .is_extern = is_extern,
+        .is_test = false,
     };
 
     return self.addExpr(.Function, .{

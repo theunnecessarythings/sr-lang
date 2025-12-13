@@ -1,0 +1,11 @@
+package main
+
+io :: import "std/io"
+
+test "hello world" {
+  io.assert(1 + 1 == 2, "1 + 1 != 2")
+}
+
+test "fail" {
+  return Error.Fail
+}

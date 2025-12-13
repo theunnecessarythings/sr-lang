@@ -1,0 +1,24 @@
+package behavior_tensor_types
+
+testing :: import "std/testing"
+
+test "special_types: tensor declaration and initialization (2D)" {
+    t: tensor(i32, 2, 3) = [[1, 2, 3], [4, 5, 6]]
+    if !testing.expect_equal_i64(2, t[0][1].(i64)) { return Error.Fail }
+    if !testing.expect_equal_i64(6, t[1][2].(i64)) { return Error.Fail }
+}
+
+test "special_types: tensor element access and modification" {
+    t: tensor(f32, 2, 2) = [[1.0, 2.0], [3.0, 4.0]]
+    t[0][0] = 99.0
+    if !testing.expect_equal_f64(99.0, t[0][0].(f64), 0.000001) { return Error.Fail }
+}
+
+test "special_types: tensor addition (element-wise)" {
+    t1: tensor(i32, 2, 2) = [[1, 2], [3, 4]]
+    t2: tensor(i32, 2, 2) = [[5, 6], [7, 8]]
+    sum := t1 + t2
+    if !testing.expect_equal_i64(6, sum[0][0].(i64)) { return Error.Fail }
+    if !testing.expect_equal_i64(12, sum[1][1].(i64)) { return Error.Fail }
+}
+

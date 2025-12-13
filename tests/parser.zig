@@ -216,3 +216,85 @@ test "decl: method path segments recorded" {
     try testing.expectEqualStrings("Point", ast.exprs.strs.get(owner_seg.name));
     try testing.expectEqualStrings("distance", ast.exprs.strs.get(method_seg.name));
 }
+
+test "test decl parses into const proc with test attribute" {
+    const gpa = testing.allocator;
+    var context = Context.init(gpa);
+    defer context.deinit();
+
+    const src =
+        \\test "hello world" {
+        \\  return;
+        \\}
+    ;
+
+    const src0 = try gpa.dupeZ(u8, src);
+    defer gpa.free(src0);
+
+    var ast = try parseProgramFromText(gpa, &context, src0);
+    defer ast.deinit();
+
+    const decl_ids = ast.exprs.decl_pool.slice(ast.program.top_decls);
+    try testing.expectEqual(@as(usize, 1), decl_ids.len);
+
+    const decl = ast.exprs.Decl.get(decl_ids[0]);
+    try testing.expect(decl.flags.is_const);
+    try testing.expect(!decl.lhs.isNone());
+
+    const lhs = ast.exprs.get(.Ident, decl.lhs.unwrap());
+    try testing.expectEqualStrings("__test_0_0", ast.exprs.strs.get(lhs.name));
+
+    try expectKind(&ast, decl.rhs, .Function);
+    const fnr = ast.exprs.get(.Function, decl.rhs);
+    try testing.expect(!fnr.body.isNone());
+    try testing.expect(!fnr.attrs.isNone());
+    try testing.expect(fnr.flags.is_test);
+    try testing.expect(fnr.flags.is_proc);
+
+    try testing.expect(!fnr.result_ty.isNone());
+    const res_id = fnr.result_ty.unwrap();
+    try expectKind(&ast, res_id, .Infix);
+    const res = ast.exprs.get(.Infix, res_id);
+    try testing.expectEqual(cst.InfixOp.error_union, res.op);
+    try expectKind(&ast, res.left, .Ident);
+    try expectKind(&ast, res.right, .Ident);
+    try testing.expectEqualStrings("Error", ast.exprs.strs.get(ast.exprs.get(.Ident, res.left).name));
+    try testing.expectEqualStrings("void", ast.exprs.strs.get(ast.exprs.get(.Ident, res.right).name));
+
+    const attr_range = fnr.attrs.asRange();
+    const attrs = ast.exprs.attr_pool.slice(attr_range);
+    try testing.expectEqual(@as(usize, 1), attrs.len);
+
+    const attr = ast.exprs.Attribute.get(attrs[0]);
+    try testing.expectEqualStrings("test", ast.exprs.strs.get(attr.name));
+    try testing.expect(!attr.value.isNone());
+
+    const lit = ast.exprs.get(.Literal, attr.value.unwrap());
+    try testing.expectEqual(cst.LiteralKind.string, lit.tag_small);
+    try testing.expectEqualStrings("\"hello world\"", ast.exprs.strs.get(lit.value));
+}
+
+test "multiple tests synthesize unique names" {
+    const gpa = testing.allocator;
+    var context = Context.init(gpa);
+    defer context.deinit();
+
+    const src =
+        \\test "first" {}
+        \\test "second" {}
+    ;
+
+    const src0 = try gpa.dupeZ(u8, src);
+    defer gpa.free(src0);
+
+    var ast = try parseProgramFromText(gpa, &context, src0);
+    defer ast.deinit();
+
+    const decl_ids = ast.exprs.decl_pool.slice(ast.program.top_decls);
+    try testing.expectEqual(@as(usize, 2), decl_ids.len);
+
+    const lhs0 = ast.exprs.get(.Ident, ast.exprs.Decl.get(decl_ids[0]).lhs.unwrap());
+    const lhs1 = ast.exprs.get(.Ident, ast.exprs.Decl.get(decl_ids[1]).lhs.unwrap());
+    try testing.expectEqualStrings("__test_0_0", ast.exprs.strs.get(lhs0.name));
+    try testing.expectEqualStrings("__test_0_1", ast.exprs.strs.get(lhs1.name));
+}

@@ -1,0 +1,29 @@
+package behavior_logical_operators
+
+testing :: import "std/testing"
+
+test "expressions_operators: logical AND" {
+    r1 := true and true
+    r2 := true and false
+    testing.expect(r1, "true and true should be true")!
+    testing.expect(!r2, "true and false should be false")!
+}
+
+test "expressions_operators: logical OR" {
+    r1 := true or false
+    r2 := false or false
+    testing.expect(r1, "true or false should be true")!
+    testing.expect(!r2, "false or false should be false")!
+}
+
+test "expressions_operators: logical NOT" {
+    r1 := !true
+    r2 := !false
+    testing.expect(!r1, "!true should be false")!
+    testing.expect(r2, "!false should be true")!
+}
+
+test "expressions_operators: logical operator precedence" {
+    r := true and false or true
+    testing.expect(r, "(true and false) or true should be true")!
+}

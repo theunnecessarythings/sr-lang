@@ -1,5 +1,93 @@
 const std = @import("std");
 
+const alloc = std.testing.allocator;
+
+pub var link_lib: []const u8 = "-lm";
+
+pub fn runBehaviorTests() !void {
+    // remove old output
+    _ = std.fs.cwd().deleteFile("out/output_program") catch {};
+
+    const compile_result = try std.process.Child.run(.{
+        .allocator = alloc,
+        .argv = &.{ "zig-out/bin/sr_lang", "test", "tests/behavior.sr", link_lib },
+        .max_output_bytes = 16 * 1024 * 1024,
+    });
+    defer alloc.free(compile_result.stdout);
+    defer alloc.free(compile_result.stderr);
+    switch (compile_result.term) {
+        .Exited => |code| {
+            if (code != 0) {
+                std.debug.print("Compiler stdout:\n{s}\n", .{compile_result.stdout});
+                std.debug.print("Compiler stderr:\n{s}\n", .{compile_result.stderr});
+                return error.CompilationFailed;
+            }
+        },
+        else => {
+            std.debug.print("Compiler stdout:\n{s}\n", .{compile_result.stdout});
+            std.debug.print("Compiler stderr:\n{s}\n", .{compile_result.stderr});
+            return error.ProcessFailed;
+        },
+    }
+
+    // check output program exists
+    _ = std.fs.cwd().statFile("out/output_program") catch |err| {
+        std.debug.print("Error: {}\n", .{err});
+        return error.CompilationFailed;
+    };
+    const run_result = try std.process.Child.run(.{
+        .allocator = alloc,
+        .argv = &.{"out/output_program"},
+        .max_output_bytes = 16 * 1024 * 1024,
+    });
+    defer alloc.free(run_result.stdout);
+    defer alloc.free(run_result.stderr);
+    switch (run_result.term) {
+        .Exited => |code| {
+            if (code != 0) {
+                std.debug.print("Compiler stdout:\n{s}\n", .{run_result.stdout});
+                std.debug.print("Compiler stderr:\n{s}\n", .{run_result.stderr});
+                return error.CompilationFailed;
+            }
+        },
+        else => {
+            std.debug.print("Compiler stdout:\n{s}\n", .{run_result.stdout});
+            std.debug.print("Compiler stderr:\n{s}\n", .{run_result.stderr});
+            return error.ProcessFailed;
+        },
+    }
+}
+
+fn runCrashTest(source_path: []const u8) !void {
+    const result = try std.process.Child.run(.{
+        .allocator = alloc,
+        .argv = &.{ "zig-out/bin/sr_lang", "test", source_path, link_lib },
+        .max_output_bytes = 16 * 1024 * 1024,
+    });
+    defer alloc.free(result.stdout);
+    defer alloc.free(result.stderr);
+
+    switch (result.term) {
+        .Exited => |code| {
+            if (code == 0) {
+                std.debug.print("Expected crash for {s}, but it passed!\n", .{source_path});
+                std.debug.print("Stdout:\n{s}\n", .{result.stdout});
+                std.debug.print("Stderr:\n{s}\n", .{result.stderr});
+                return error.TestShouldHaveCrashed;
+            }
+        },
+        else => {}, // Signals etc. count as crashes
+    }
+}
+
+test "behavior tests" {
+    try runBehaviorTests();
+}
+
+test "crash tests" {
+    try runCrashTest("tests/crash_optional_unwrap.sr");
+}
+
 test "all" {
     _ = @import("formatter.zig");
     _ = @import("lexer.zig");
@@ -7,66 +95,4 @@ test "all" {
     _ = @import("checker.zig");
     _ = @import("mlir_codegen.zig");
     // _ = @import("tir.zig");
-    _ = @import("behavior.zig");
-
-    _ = @import("behavior_any_type.zig");
-    _ = @import("behavior_arithmetic_operators.zig");
-    _ = @import("behavior_array_slice_patterns.zig");
-    _ = @import("behavior_arrays.zig");
-    // _ = @import("behavior_asm.zig");
-    _ = @import("behavior_assignment_operators.zig");
-    _ = @import("behavior_bitcasts.zig");
-    _ = @import("behavior_bitwise_operators.zig");
-    _ = @import("behavior_block_expressions.zig");
-    _ = @import("behavior_boolean_literals.zig");
-    _ = @import("behavior_calls.zig");
-    _ = @import("behavior_char_literals.zig");
-    _ = @import("behavior_checked_casts.zig");
-    _ = @import("behavior_comparison_operators.zig");
-    _ = @import("behavior_complex_types.zig");
-    _ = @import("behavior_declarations.zig");
-    _ = @import("behavior_default_arguments.zig");
-    _ = @import("behavior_dynamic_arrays.zig");
-    _ = @import("behavior_enums.zig");
-    _ = @import("behavior_error_types.zig");
-    _ = @import("behavior_error_unions.zig");
-    _ = @import("behavior_extern.zig");
-    _ = @import("behavior_float_literals.zig");
-    _ = @import("behavior_for_loops.zig");
-    _ = @import("behavior_functions.zig");
-    _ = @import("behavior_generics.zig");
-    _ = @import("behavior_if_else.zig");
-    _ = @import("behavior_if_guard_patterns.zig");
-    _ = @import("behavior_integer_literals.zig");
-    _ = @import("behavior_literal_patterns.zig");
-    _ = @import("behavior_logical_operators.zig");
-    // _ = @import("behavior_maps.zig");
-    _ = @import("behavior_match_expressions.zig");
-    _ = @import("behavior_member_access.zig");
-    _ = @import("behavior_methods.zig");
-    _ = @import("behavior_noreturn.zig");
-    _ = @import("behavior_normal_casts.zig");
-    _ = @import("behavior_optionals.zig");
-    _ = @import("behavior_or_patterns.zig");
-    _ = @import("behavior_pattern_declarations.zig");
-    _ = @import("behavior_pointers.zig");
-    _ = @import("behavior_procedures.zig");
-    _ = @import("behavior_range_expressions.zig");
-    _ = @import("behavior_saturating_casts.zig");
-    _ = @import("behavior_simd_types.zig");
-    _ = @import("behavior_string_literals.zig");
-    _ = @import("behavior_struct_patterns.zig");
-    _ = @import("behavior_structs.zig");
-    _ = @import("behavior_tensor_types.zig");
-    _ = @import("behavior_tuples.zig");
-    _ = @import("behavior_tuple_patterns.zig");
-    _ = @import("behavior_unions.zig");
-    _ = @import("behavior_variable_binding_patterns.zig");
-    _ = @import("behavior_variant_patterns.zig");
-    _ = @import("behavior_variants.zig");
-    _ = @import("behavior_while_is_loops.zig");
-    _ = @import("behavior_while_loops.zig");
-    _ = @import("behavior_wildcard_patterns.zig");
-    _ = @import("behavior_wrapping_casts.zig");
-    _ = @import("behavior_wrapping_saturating_arithmetic.zig");
 }

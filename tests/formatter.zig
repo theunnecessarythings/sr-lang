@@ -195,3 +195,26 @@ test "trailing commas" {
     ;
     try testFormat(input, expected);
 }
+
+test "test declarations" {
+    const input =
+        \\test "hello world" {
+        \\  io.assert(1 + 1 == 2, "1 + 1 != 2")
+        \\}
+        \\
+        \\test "fail" {
+        \\  return Error.Fail
+        \\}
+    ;
+    const expected =
+        \\test "hello world" {
+        \\    io.assert(1 + 1 == 2, "1 + 1 != 2")
+        \\}
+        \\
+        \\test "fail" {
+        \\    return Error.Fail
+        \\}
+        \\
+    ;
+    try testFormat(input, expected);
+}

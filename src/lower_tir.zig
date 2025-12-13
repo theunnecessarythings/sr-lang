@@ -66,6 +66,18 @@ pipeline: *Pipeline,
 chk: *checker.Checker,
 /// Stack of lowering contexts per file/function scope.
 lower_context: List(*LowerContext) = .{},
+/// When enabled, generate a test harness and suppress user-defined main.
+test_mode: bool = false,
+/// Accumulated list of lowered test functions (symbol + type).
+test_funcs: std.ArrayList(TestFunc) = .{},
+/// Ensures the harness is emitted only once.
+harness_emitted: bool = false,
+/// Name of the entry package that drives lowering (defaults to "main").
+entry_pkg_name: StrId,
+/// Tracks whether the entry package was selected from discovered tests.
+entry_pkg_locked: bool = false,
+
+const TestFunc = struct { sym: StrId, ty: types.TypeId, name: ?ast.StrId };
 
 /// Per-function/module lowering state that tracks loops and expression overrides.
 pub const LowerContext = struct {
@@ -132,6 +144,7 @@ pub fn init(
     context: *Context,
     pipeline: *Pipeline,
     chk: *checker.Checker,
+    test_mode: bool,
 ) LowerTir {
     return .{
         .gpa = gpa,
@@ -139,11 +152,17 @@ pub fn init(
         .pipeline = pipeline,
         .chk = chk,
         .lower_context = .{},
+        .test_mode = test_mode,
+        .test_funcs = .empty,
+        .entry_pkg_name = context.type_store.strs.intern("main"),
+        .entry_pkg_locked = false,
     };
 }
 
-/// No-op teardown (LowerTir uses externally owned resources).
-pub fn deinit(_: *LowerTir) void {}
+/// Release owned buffers used by the lowering driver.
+pub fn deinit(self: *LowerTir) void {
+    self.test_funcs.deinit(self.gpa);
+}
 
 /// Report a lowering failure at `loc`, emit a diagnostic, and surface `LoweringBug`.
 fn throwErr(self: *LowerTir, loc: Loc) anyerror {
@@ -164,6 +183,8 @@ pub fn run(self: *LowerTir, levels: *const compile.DependencyLevels) !*tir.TIR {
             try unit_by_file.put(unit.value_ptr.file_id, unit.value_ptr);
         }
     }
+
+    if (self.test_mode) try self.collectTestFunctions(&unit_by_file);
 
     for (levels.levels.items) |level| {
         if (level.items.len == 0) continue;
@@ -193,8 +214,73 @@ pub fn run(self: *LowerTir, levels: *const compile.DependencyLevels) !*tir.TIR {
         }
     }
 
-    const main_pkg = self.context.compilation_unit.packages.getPtr("main") orelse return error.PackageNotFound;
-    return main_pkg.sources.entries.get(0).value.tir.?;
+    const entry_pkg_name_str = self.context.type_store.strs.get(self.entry_pkg_name);
+    var entry_pkg: *package.Package = blk: {
+        if (self.context.compilation_unit.packages.getPtr(entry_pkg_name_str)) |pkg| break :blk pkg;
+        var it = self.context.compilation_unit.packages.iterator();
+        const first = it.next() orelse return error.PackageNotFound;
+        self.entry_pkg_name = self.context.type_store.strs.intern(first.value_ptr.name);
+        break :blk first.value_ptr;
+    };
+
+    return entry_pkg.sources.entries.get(0).value.tir.?;
+}
+
+/// Gather all test functions across packages so the harness can invoke them.
+fn collectTestFunctions(self: *LowerTir, unit_by_file: *std.AutoHashMap(u32, *package.FileUnit)) !void {
+    var it = unit_by_file.iterator();
+    while (it.next()) |entry| {
+        const unit = entry.value_ptr.*;
+        const ast_unit = unit.ast orelse continue;
+
+        const decls = ast_unit.exprs.decl_pool.slice(ast_unit.unit.decls);
+        for (decls) |did| {
+            const decl = ast_unit.exprs.Decl.get(did);
+            if (ast_unit.kind(decl.value) != .FunctionLit) continue;
+            const fnr = ast_unit.exprs.get(.FunctionLit, decl.value);
+            if (!fnr.flags.is_test) continue;
+            if (did.toRaw() >= ast_unit.type_info.decl_types.items.len) continue;
+            const ty_opt = ast_unit.type_info.decl_types.items[did.toRaw()] orelse continue;
+            if (self.context.type_store.getKind(ty_opt) == .TypeError) continue;
+
+            const sym = (try self.symbolNameForDecl(ast_unit, did)) orelse continue;
+            var test_name: ?ast.StrId = null;
+            if (!fnr.attrs.isNone()) {
+                const attrs = ast_unit.exprs.attr_pool.slice(fnr.attrs.asRange());
+                const test_sid = self.context.type_store.strs.intern("test");
+                for (attrs) |aid| {
+                    const arow = ast_unit.exprs.Attribute.get(aid);
+                    if (!arow.name.eq(test_sid)) continue;
+                    if (arow.value.isNone()) continue;
+                    const val_id = arow.value.unwrap();
+                    if (ast_unit.kind(val_id) != .Literal) continue;
+                    const lit = ast_unit.exprs.get(.Literal, val_id);
+                    if (lit.kind == .string) {
+                        test_name = lit.data.string;
+                        break;
+                    }
+                }
+            }
+            if (!self.entry_pkg_locked) {
+                if (!ast_unit.unit.package_name.isNone()) {
+                    self.entry_pkg_name = ast_unit.unit.package_name.unwrap();
+                } else {
+                    self.entry_pkg_name = self.context.type_store.strs.intern("main");
+                }
+                self.entry_pkg_locked = true;
+            }
+
+            try self.test_funcs.append(self.gpa, .{ .sym = sym, .ty = ty_opt, .name = test_name });
+        }
+    }
+}
+
+fn isMainPackageName(self: *const LowerTir, ast_unit: *ast.Ast) bool {
+    if (ast_unit.unit.package_name.isNone()) return true;
+    const pkg_id = ast_unit.unit.package_name.unwrap();
+    const pkg_name = self.context.type_store.strs.get(pkg_id);
+    const entry_name = self.context.type_store.strs.get(self.entry_pkg_name);
+    return std.mem.eql(u8, pkg_name, entry_name);
 }
 
 /// Lower a single AST unit into the provided TIR builder/context.
@@ -211,6 +297,10 @@ pub fn runAst(self: *LowerTir, ast_unit: *ast.Ast, t: *tir.TIR, ctx: *LowerConte
     // Lower methods registered on this AST unit that live outside the top-level scope.
     try self.lowerRegisteredMethods(ctx, ast_unit, &b);
     try self.lowerSyntheticDecls(ctx, ast_unit, &b);
+
+    if (self.test_mode and !self.harness_emitted and self.isMainPackageName(ast_unit)) {
+        try self.emitTestHarness(ctx, ast_unit, &b);
+    }
 }
 
 /// Return true if the method type is fully generic (`Any`) and shouldn't be lowered.
@@ -470,7 +560,7 @@ fn lowerGlobalMlir(self: *LowerTir, ctx: *LowerContext, a: *ast.Ast, b: *Builder
     if (global_mlir_decls.items.len == 0) return;
 
     const name = b.intern("__sr_global_mlir_init");
-    var f = try b.beginFunction(name, self.context.type_store.tVoid(), false, .empty());
+    var f = try b.beginFunction(self.context, name, self.context.type_store.tVoid(), false, false, .empty());
     var blk = try b.beginBlock(&f);
     var env = cf.Env{};
     defer env.deinit(self.gpa);
@@ -968,6 +1058,9 @@ fn tryLowerNamedFunction(
     if (self.context.type_store.getKind(fn_ty) != .Function) return;
 
     const fn_lit = a.exprs.get(.FunctionLit, decl.value);
+    if (fn_lit.flags.is_test) {
+        _ = self.context.type_store.tTestError();
+    }
     const params = a.exprs.param_pool.slice(fn_lit.params);
     var skip_params: usize = 0;
     while (skip_params < params.len and a.exprs.Param.get(params[skip_params]).is_comptime) : (skip_params += 1) {}
@@ -1057,6 +1150,86 @@ fn lowerSyntheticDecls(self: *LowerTir, ctx: *LowerContext, a: *ast.Ast, b: *Bui
 
         try self.lowerFunction(ctx, a, b, qualified_name, decl.value, spec_sig);
     }
+}
+
+/// Emit a native harness `main` that executes every collected test.
+fn emitTestHarness(self: *LowerTir, _: *LowerContext, _: *ast.Ast, b: *Builder) !void {
+    if (self.test_funcs.items.len == 0) return;
+    const ts = self.context.type_store;
+    const i32_ty = ts.tI32();
+    const usize_ty = ts.tUsize();
+    const attrs = tir.RangeAttribute.empty();
+    const name = self.context.type_store.strs.intern("main");
+
+    var f = try b.beginFunction(self.context, name, i32_ty, false, false, attrs);
+    var blk = try b.beginBlock(&f);
+
+    const zero = b.tirValue(.ConstInt, &blk, i32_ty, .none(), .{ .value = 0 });
+    var failures = zero;
+    const total_const = b.tirValue(.ConstInt, &blk, i32_ty, .none(), .{ .value = self.test_funcs.items.len });
+
+    const ptr_u8_const = ts.mkPtr(ts.tU8(), true);
+    const rt_print_sym = self.context.type_store.strs.intern("rt_print");
+    const printf_sym = self.context.type_store.strs.intern("printf");
+
+    for (self.test_funcs.items) |tf| {
+        if (ts.getKind(tf.ty) != .Function) continue;
+        const fn_info = ts.get(.Function, tf.ty);
+        const ret_ty = fn_info.result;
+        const call_v = b.call(&blk, ret_ty, tf.sym, &.{}, .none());
+
+        const name_sid = tf.name orelse tf.sym;
+        const test_name = self.context.type_store.strs.get(name_sid);
+        const pass_msg_bytes = try std.fmt.allocPrint(self.gpa, "\x1b[32mTest '{s}' passed\x1b[0m\n", .{test_name});
+        defer self.gpa.free(pass_msg_bytes);
+        const fail_msg_bytes = try std.fmt.allocPrint(self.gpa, "\x1b[31mTest '{s}' failed\x1b[0m\n", .{test_name});
+        defer self.gpa.free(fail_msg_bytes);
+        const pass_msg = b.tirValue(.ConstString, &blk, ts.tString(), .none(), .{ .text = self.context.type_store.strs.intern(pass_msg_bytes) });
+        const fail_msg = b.tirValue(.ConstString, &blk, ts.tString(), .none(), .{ .text = self.context.type_store.strs.intern(fail_msg_bytes) });
+
+        if (ts.getKind(ret_ty) == .ErrorSet) {
+            const tag = b.extractField(&blk, ts.tI32(), call_v, 0, .none());
+            const is_err = b.binBool(&blk, .CmpNe, tag, zero, .none());
+            const as_i32 = b.un1(&blk, .CastNormal, i32_ty, is_err, .none());
+            failures = b.bin(&blk, .Add, i32_ty, failures, as_i32, .none());
+
+            const pass_ptr = b.extractField(&blk, ptr_u8_const, pass_msg, 0, .none());
+            const pass_len = b.extractField(&blk, usize_ty, pass_msg, 1, .none());
+            const fail_ptr = b.extractField(&blk, ptr_u8_const, fail_msg, 0, .none());
+            const fail_len = b.extractField(&blk, usize_ty, fail_msg, 1, .none());
+
+            var pass_blk = try b.beginBlock(&f);
+            var fail_blk = try b.beginBlock(&f);
+            const cont_blk = try b.beginBlock(&f);
+
+            try b.condBr(&blk, is_err, fail_blk.id, &.{}, pass_blk.id, &.{}, .none());
+            try b.endBlock(&f, blk);
+
+            _ = b.call(&fail_blk, ts.tVoid(), rt_print_sym, &.{ fail_ptr, fail_len }, .none());
+            try b.br(&fail_blk, cont_blk.id, &.{}, .none());
+            try b.endBlock(&f, fail_blk);
+
+            _ = b.call(&pass_blk, ts.tVoid(), rt_print_sym, &.{ pass_ptr, pass_len }, .none());
+            try b.br(&pass_blk, cont_blk.id, &.{}, .none());
+            try b.endBlock(&f, pass_blk);
+
+            blk = cont_blk;
+        } else {
+            const ptr = b.extractField(&blk, ptr_u8_const, pass_msg, 0, .none());
+            const len = b.extractField(&blk, usize_ty, pass_msg, 1, .none());
+            _ = b.call(&blk, ts.tVoid(), rt_print_sym, &.{ ptr, len }, .none());
+        }
+    }
+
+    const passed = b.bin(&blk, .Sub, i32_ty, total_const, failures, .none());
+    const summary_fmt = b.tirValue(.ConstString, &blk, ts.tString(), .none(), .{ .text = self.context.type_store.strs.intern("\x1b[36mSummary:\x1b[0m \x1b[32m%d passed\x1b[0m; \x1b[31m%d failed\x1b[0m\n") });
+    const fmt_ptr = b.extractField(&blk, ptr_u8_const, summary_fmt, 0, .none());
+    _ = b.call(&blk, i32_ty, printf_sym, &.{ fmt_ptr, passed, failures }, .none());
+
+    try b.setReturnVal(&blk, failures, .none());
+    try b.endBlock(&f, blk);
+    try b.endFunction(f);
+    self.harness_emitted = true;
 }
 
 /// Extract the payload value from the optional `opt_val` (pointer or struct-backed).
@@ -1201,6 +1374,10 @@ fn lowerTopDecl(self: *LowerTir, ctx: *LowerContext, a: *ast.Ast, b: *Builder, d
         }
 
         if (name_opt) |nm| {
+            if (self.test_mode and self.isMainPackageName(a)) {
+                const nm_str = self.context.type_store.strs.get(nm);
+                if (std.mem.eql(u8, nm_str, "main")) return;
+            }
             const is_method = !d.method_path.isNone();
             const method_entry = if (is_method) self.methodEntryForDecl(a, did) else null;
             var owner_ty_fallback: ?types.TypeId = null;
@@ -1300,7 +1477,7 @@ pub fn lowerFunction(
     }
 
     const attrs = try self.lowerAttrs(a, b, fnr.attrs);
-    var f = try b.beginFunction(name, fnty.result, fnty.is_variadic, attrs);
+    var f = try b.beginFunction(self.context, name, fnty.result, fnty.is_variadic, fnty.is_extern, attrs);
 
     // Params
     const params = a.exprs.param_pool.slice(fnr.params);
@@ -3737,6 +3914,19 @@ fn getFieldIndex(
                 if (f.name.eq(field_name)) return @intCast(i);
             }
         },
+        inline .Error, .Variant => |x| {
+            const tr = self.context.type_store.get(x, parent_ty);
+            const fields = self.context.type_store.field_pool.slice(tr.variants);
+            var i: usize = 0;
+            while (i < fields.len) : (i += 1) {
+                const f = self.context.type_store.Field.get(fields[i]);
+                if (f.name.eq(field_name)) return @intCast(i);
+            }
+        },
+        .TypeType => {
+            const tr = self.context.type_store.get(.TypeType, parent_ty);
+            return self.getFieldIndex(tr.of, field_name);
+        },
         .Ptr => {
             const tr = self.context.type_store.get(.Ptr, parent_ty);
             const elem_ty = tr.elem;
@@ -3848,8 +4038,8 @@ fn lowerFieldAccess(
             });
         }
         if (parent_kind == .Ptr)
-            return blk.builder.gep(blk, rptr_ty, parent_ptr, &.{blk.builder.gepConst(0), blk.builder.gepConst(@intCast(idx))}, loc);
-        return blk.builder.gep(blk, rptr_ty, parent_ptr, &.{blk.builder.gepConst(0), blk.builder.gepConst(@intCast(idx))}, loc);
+            return blk.builder.gep(blk, rptr_ty, parent_ptr, &.{ blk.builder.gepConst(0), blk.builder.gepConst(@intCast(idx)) }, loc);
+        return blk.builder.gep(blk, rptr_ty, parent_ptr, &.{ blk.builder.gepConst(0), blk.builder.gepConst(@intCast(idx)) }, loc);
     }
 
     // 4) rvalue extraction

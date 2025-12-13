@@ -1,0 +1,36 @@
+package behavior_or_patterns
+
+testing :: import "std/testing"
+
+Status :: enum {Active, Inactive, Pending}
+
+test "patterns: or-pattern with literals" {
+    x := 2
+    result := match x {
+        1 | 2 => "One or Two",
+        3 => "Three",
+        _ => "Other",
+    }
+
+    if !testing.expect_equal_str("One or Two", result) { return Error.Fail }
+}
+
+test "patterns: or-pattern with ranges" {
+    x := 7
+    result := match x {
+        (0..=3) | (7..=10) => "In range",
+        _ => "Out of range",
+    }
+
+    if !testing.expect_equal_str("In range", result) { return Error.Fail }
+}
+
+test "patterns: or-pattern with enum variants" {
+    s := Status.Inactive
+    result := match s {
+        Status.Active | Status.Pending => "Not Inactive",
+        Status.Inactive => "Inactive",
+    }
+
+    if !testing.expect_equal_str("Inactive", result) { return Error.Fail }
+}

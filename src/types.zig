@@ -755,6 +755,7 @@ pub const TypeStore = struct {
     t_mlir_attribute: ?TypeId = null,
     t_mlir_type: ?TypeId = null,
     t_type_error: ?TypeId = null,
+    t_test_error: ?TypeId = null,
 
     /// init type system helper.
     pub fn init(gpa: std.mem.Allocator, strs: *StringInterner) TypeStore {
@@ -1088,6 +1089,15 @@ pub const TypeStore = struct {
     /// tTypeError type system helper.
     pub fn tTypeError(self: *TypeStore) TypeId {
         return self.tTypeErrorLocked();
+    }
+
+    /// Default error set used by synthesized test functions: `error { Fail }`.
+    pub fn tTestError(self: *TypeStore) TypeId {
+        if (self.t_test_error) |id| return id;
+        const fail_name = self.strs.intern("Fail");
+        const id = self.mkError(&[_]StructFieldArg{.{ .name = fail_name, .ty = self.tVoid() }});
+        self.t_test_error = id;
+        return id;
     }
 
     // ---- constructors with interning (linear dedup) ----

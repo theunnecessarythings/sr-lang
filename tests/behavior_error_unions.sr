@@ -1,0 +1,68 @@
+package behavior_error_unions
+
+testing :: import "std/testing"
+
+Error1 :: error {Failed}
+
+might_succeed :: fn() Error1 ! i32 {
+    return 100
+}
+
+might_fail :: fn() Error1 ! i32 {
+    return Error1.Failed
+}
+
+Error2 :: error {InnerError}
+
+inner_func :: fn() Error2 ! i32 {
+    return Error2.InnerError
+}
+
+outer_func :: fn() Error2 ! i32 {
+    return inner_func()!
+}
+
+Error3 :: error {NotFound}
+
+get_value :: fn(found: bool) Error3 ! i32 {
+    if found { return 50 } else { return Error3.NotFound }
+}
+
+Error4 :: error {SpecificError, OtherError}
+
+do_something :: fn(fail: bool) Error4 ! i32 {
+    if fail { return Error4.SpecificError } else { return 10 }
+}
+
+test "error_handling: basic error union return (success)" {
+    r := might_succeed() catch 0
+    if !testing.expect_equal_i64(100, r.(i64)) { return Error.Fail }
+}
+
+test "error_handling: basic error union return (error)" {
+    r := might_fail() catch 0
+    if !testing.expect_equal_i64(0, r.(i64)) { return Error.Fail }
+}
+
+test "error_handling: error propagation (!) operator" {
+    outer_func() catch |err| {
+        if err != Error2.InnerError {
+            testing.fail("Expected InnerError")
+            return Error.Fail
+        }
+    }
+}
+
+test "error_handling: expression" {
+    r1 := get_value(true) catch 0
+    r2 := get_value(false) catch 0
+    if !testing.expect_equal_i64(50, r1.(i64)) { return Error.Fail }
+    if !testing.expect_equal_i64(0, r2.(i64)) { return Error.Fail }
+}
+
+test "error_handling: catch expression with error binding" {
+    r := do_something(true) catch |err| {
+        if err == Error4.SpecificError { -1 } else { -2 }
+    }
+    if !testing.expect_equal_i64(-1, r.(i64)) { return Error.Fail }
+}

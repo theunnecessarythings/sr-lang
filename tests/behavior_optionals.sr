@@ -1,0 +1,87 @@
+package behavior_optionals
+
+testing :: import "std/testing"
+
+Point :: struct {x: i32, y: i32}
+
+func :: proc(a: ?i32) i32 {
+    return a orelse -1
+}
+
+use_optional :: proc(value: ?i32) i32 {
+    payload := value orelse return -1
+    return payload
+}
+
+test "special_types: optional declaration with value" {
+    x: ?i32 = 10
+    if !testing.expect_equal_i64(10, x?.(i64)) { return Error.Fail }
+}
+
+test "special_types: optional in call" {
+    b: ?i32 = null
+    r := func(if b != null { b } else { null })
+
+    if !testing.expect_equal_i64(-1, r.(i64)) { return Error.Fail }
+}
+
+test "special_types: optional declaration with null" {
+    x: ?i32 = null
+    testing.expect(x == null, "x should be null")!
+}
+
+test "special_types: optional compare with payload" {
+    opt: ?i32 = 42
+    testing.expect(opt == 42, "opt == 42")!
+    testing.expect(42 == opt, "42 == opt")!
+    testing.expect(opt != 13, "opt != 13")!
+    testing.expect(13 != opt, "13 != opt")!
+}
+
+test "special_types: optional unwrap with value" {
+    x: ?i32 = 100
+    val := x?
+    if !testing.expect_equal_i64(100, val.(i64)) { return Error.Fail }
+}
+
+test "special_types: optional chaining" {
+    opt_point: ?Point = Point{ x: 10, y: 20 }
+    val_x := opt_point?.x
+    if !testing.expect_equal_i64(10, val_x.(i64)) { return Error.Fail }
+}
+
+test "special_types: optional pointer equality and deref" {
+    value: i32 = 123
+    ptr := &value
+    maybe_ptr: ?*i32 = ptr
+    testing.expect(maybe_ptr != null, "maybe_ptr != null")!
+    testing.expect(maybe_ptr == ptr, "maybe_ptr == ptr")!
+    testing.expect(ptr == maybe_ptr, "ptr == maybe_ptr")!
+    deref := maybe_ptr?
+    if !testing.expect_equal_i64(123, deref.*.(i64)) { return Error.Fail }
+}
+
+test "special_types: optional pointer orelse fallback" {
+    stored: i32 = 777
+    stored_ptr := &stored
+    missing: ?*i32 = null
+    result_ptr := missing orelse stored_ptr
+    if !testing.expect_equal_i64(777, result_ptr.*.(i64)) { return Error.Fail }
+}
+
+test "special_types: optional void pointer interop" {
+    value: i32 = 55
+    void_ptr: *void = (&value).^*void
+    maybe_ctx: ?*void = void_ptr
+    missing_ctx: ?*void = null
+    payload := maybe_ctx?.^*i32
+    if !testing.expect_equal_i64(55, payload.*.(i64)) { return Error.Fail }
+    testing.expect(missing_ctx == null, "missing_ctx should be null")!
+}
+
+test "special_types: optional orelse return expression" {
+    some: ?i32 = 321
+    none: ?i32 = null
+    if !testing.expect_equal_i64(321, use_optional(some).(i64)) { return Error.Fail }
+    if !testing.expect_equal_i64(-1, use_optional(none).(i64)) { return Error.Fail }
+}

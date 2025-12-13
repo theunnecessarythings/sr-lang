@@ -3,6 +3,7 @@ const dod = @import("cst.zig");
 const ast = @import("ast.zig");
 const types = @import("types.zig");
 const comp = @import("comptime.zig");
+const Context = @import("compile.zig").Context;
 
 pub const OptLocId = dod.OptLocId;
 
@@ -537,6 +538,7 @@ pub const FuncRows = struct {
         result: types.TypeId,
         blocks: RangeBlock,
         is_variadic: bool,
+        is_extern: bool,
         attrs: RangeAttribute,
     };
     /// Global struct definition used by the compiler.
@@ -665,9 +667,11 @@ pub const Builder = struct {
     /// beginFunction TIR builder helper.
     pub fn beginFunction(
         self: *Builder,
+        context: *Context,
         name: StrId,
         result: types.TypeId,
         is_variadic: bool,
+        is_extern: bool,
         attrs: RangeAttribute,
     ) !FunctionFrame {
         const idx = self.t.funcs.Function.add(self.gpa, .{
@@ -676,8 +680,11 @@ pub const Builder = struct {
             .result = result,
             .blocks = .empty(),
             .is_variadic = is_variadic,
+            .is_extern = is_extern,
             .attrs = attrs,
         });
+        // Add to global function map
+        try context.global_func_map.put(name, .{ idx, &self.t.funcs });
         return .{ .builder = self, .id = idx };
     }
 

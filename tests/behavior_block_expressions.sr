@@ -1,0 +1,38 @@
+package behavior_block_expressions
+
+testing :: import "std/testing"
+
+test "misc: basic block expression" {
+    x := {
+        10 + 5
+    }
+    if !testing.expect_equal_i64(15, x.(i64)) { return Error.Fail }
+}
+
+test "misc: block with multiple statements" {
+    x := {
+        tmp := 20
+        tmp + 5
+    }
+    if !testing.expect_equal_i64(25, x.(i64)) { return Error.Fail }
+}
+
+test "misc: nested block expressions" {
+    x := {
+        y := {
+            1 + 1
+        }
+        y * 3
+    }
+    if !testing.expect_equal_i64(6, x.(i64)) { return Error.Fail }
+}
+
+test "misc: block with variable scoping" {
+    outer_var := 10
+    {
+        inner_var := 20
+        if !testing.expect_equal_i64(20, inner_var.(i64)) { return Error.Fail }
+    }
+    if !testing.expect_equal_i64(10, outer_var.(i64)) { return Error.Fail }
+}
+

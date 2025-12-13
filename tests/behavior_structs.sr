@@ -1,0 +1,43 @@
+package behavior_structs
+
+testing :: import "std/testing"
+
+Point :: struct {x: i32, y: i32}
+PointDef :: struct {x: i32 = 4, y: i32 = 2}
+Rect :: struct {tl: Point, br: Point}
+User :: struct {id: i32, name: string, active: bool}
+
+test "composite_types: basic struct definition and instantiation" {
+    p := Point{ x: 10, y: 20 }
+    if !testing.expect_equal_i64(10, p.x.(i64)) { return Error.Fail }
+    if !testing.expect_equal_i64(20, p.y.(i64)) { return Error.Fail }
+}
+
+test "composite_types: struct default values" {
+    p := PointDef{}
+    if !testing.expect_equal_i64(4, p.x.(i64)) { return Error.Fail }
+    if !testing.expect_equal_i64(2, p.y.(i64)) { return Error.Fail }
+}
+
+test "composite_types: struct update syntax" {
+    return Error.Fail
+    // p1 := Point{ x: 10, y: 20 }
+    // p2 := Point{ x: 5, ..p1 }
+    // if !testing.expect_equal_i64(5, p2.x.(i64)) { return Error.Fail }
+    // if !testing.expect_equal_i64(20, p2.y.(i64)) { return Error.Fail }
+}
+
+test "composite_types: nested structs" {
+    r := Rect{ tl: Point{ x: 0, y: 0 }, br: Point{ x: 10, y: 10 } }
+    if !testing.expect_equal_i64(0, r.tl.x.(i64)) { return Error.Fail }
+    if !testing.expect_equal_i64(0, r.tl.y.(i64)) { return Error.Fail }
+    if !testing.expect_equal_i64(10, r.br.x.(i64)) { return Error.Fail }
+    if !testing.expect_equal_i64(10, r.br.y.(i64)) { return Error.Fail }
+}
+
+test "composite_types: struct with mixed field types" {
+    u := User{ id: 1, name: "Alice", active: true }
+    if !testing.expect_equal_i64(1, u.id.(i64)) { return Error.Fail }
+    if !testing.expect_equal_str("Alice", u.name) { return Error.Fail }
+    testing.expect(u.active, "u.active should be true")!
+}

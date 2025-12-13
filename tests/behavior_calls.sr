@@ -1,0 +1,45 @@
+package behavior_calls
+
+testing :: import "std/testing"
+
+add :: fn(a: i32, b: i32) i32 {
+    return a + b
+}
+
+get_answer :: fn() i32 {
+    return 42
+}
+
+multiply :: fn(a: i32, b: i32) i32 {
+    return a * b
+}
+
+print_val :: proc(val: i32) {
+}
+
+say_hello :: proc() {
+}
+
+test "expressions_operators: basic function call with arguments" {
+    r := add(5, 7)
+    if !testing.expect_equal_i64(12, r.(i64)) { return Error.Fail }
+}
+
+test "expressions_operators: basic function call without arguments" {
+    r := get_answer()
+    if !testing.expect_equal_i64(42, r.(i64)) { return Error.Fail }
+}
+
+test "expressions_operators: basic procedure call with arguments" {
+    print_val(15)
+}
+
+test "expressions_operators: basic procedure call without arguments" {
+    say_hello()
+}
+
+test "expressions_operators: nested function calls" {
+    r := multiply(add(2, 3), 4) // (2+3)*4 = 20
+    if !testing.expect_equal_i64(20, r.(i64)) { return Error.Fail }
+}
+

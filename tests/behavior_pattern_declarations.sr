@@ -1,0 +1,58 @@
+package behavior_pattern_declarations
+
+testing :: import "std/testing"
+
+Point :: struct {x: i32, y: i32}
+User :: struct {id: i32, name: string, age: i32}
+Result :: variant {Ok(i32), Err(string)}
+Event :: variant {Click {x: i32, y: i32}}
+Rect :: struct {tl: Point, br: Point}
+Inner :: variant {A(i32)}
+Outer :: variant {Wrap(Inner)}
+
+test "declarations: tuple destructuring" {
+    (a, b) := (10, 20)
+    if !testing.expect_equal_i64(10, a.(i64)) { return Error.Fail }
+    if !testing.expect_equal_i64(20, b.(i64)) { return Error.Fail }
+}
+
+test "declarations: struct destructuring" {
+    Point{ x: a, y: b } := Point{ x: 100, y: 200 }
+    if !testing.expect_equal_i64(100, a.(i64)) { return Error.Fail }
+    if !testing.expect_equal_i64(200, b.(i64)) { return Error.Fail }
+}
+
+// test "declarations: partial struct destructuring" {
+//     User{ name: user_name, .. } := User{ id: 1, name: "Alice", age: 30 }
+//     if !testing.expect_equal_str("Alice", user_name) { return Error.Fail }
+// }
+test "declarations: variant destructuring (tuple payload)" {
+    Result.Ok(value) := Result.Ok(42)
+    if !testing.expect_equal_i64(42, value.(i64)) { return Error.Fail }
+}
+
+test "declarations: variant destructuring (struct payload)" {
+    Event.Click{ x: click_x, y: click_y } := Event.Click{ x: 10, y: 20 }
+    if !testing.expect_equal_i64(10, click_x.(i64)) { return Error.Fail }
+    if !testing.expect_equal_i64(20, click_y.(i64)) { return Error.Fail }
+}
+
+test "declarations: nested tuple destructuring" {
+    (a, (b, c)) := (1, (2, 3))
+    if !testing.expect_equal_i64(1, a.(i64)) { return Error.Fail }
+    if !testing.expect_equal_i64(2, b.(i64)) { return Error.Fail }
+    if !testing.expect_equal_i64(3, c.(i64)) { return Error.Fail }
+}
+
+test "declarations: nested struct destructuring" {
+    Rect{ tl: Point{ x: tx, y: ty }, br: Point{ x: bx, y: by } } := Rect{ tl: Point{ x: 0, y: 0 }, br: Point{ x: 10, y: 10 } }
+    if !testing.expect_equal_i64(0, tx.(i64)) { return Error.Fail }
+    if !testing.expect_equal_i64(0, ty.(i64)) { return Error.Fail }
+    if !testing.expect_equal_i64(10, bx.(i64)) { return Error.Fail }
+    if !testing.expect_equal_i64(10, by.(i64)) { return Error.Fail }
+}
+
+test "declarations: nested variant destructuring" {
+    Outer.Wrap(Inner.A(val)) := Outer.Wrap(Inner.A(99))
+    if !testing.expect_equal_i64(99, val.(i64)) { return Error.Fail }
+}

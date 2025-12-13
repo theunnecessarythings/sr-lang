@@ -208,6 +208,7 @@ pub const Interpreter = struct {
             .Defer => self.evalDefer(self.ast.exprs.get(.Defer, expr)),
             .TypeOf => self.evalTypeOf(self.ast.exprs.get(.TypeOf, expr)),
             .MlirBlock => Value{ .Void = {} },
+            .Await => Value{ .Void = {} },
             else => std.debug.panic("Unsupported expr: {}", .{self.ast.kind(expr)}),
         };
     }
@@ -1198,6 +1199,8 @@ pub const Interpreter = struct {
         if (std.mem.eql(u8, name, "string")) return ts.tString();
         if (std.mem.eql(u8, name, "any")) return ts.tAny();
         if (std.mem.eql(u8, name, "char")) return ts.tU32();
+        if (std.mem.eql(u8, name, "Error")) return ts.tTestError();
+        if (std.mem.eql(u8, name, "type")) return ts.mkTypeType(ts.tAny());
         return null;
     }
 
@@ -1423,6 +1426,10 @@ pub const Interpreter = struct {
 
     /// Insert or update a top-level binding with `name`.
     pub fn setBinding(self: *Interpreter, name: ast.StrId, value: Value) !void {
+        if (self.ast.type_info.lookupComptimeBindingType(name)) |ty| {
+            const cloned = try comptime_mod.cloneComptimeValue(self.ast.type_info.gpa, value);
+            try self.ast.type_info.setComptimeBinding(name, ty, cloned);
+        }
         if (self.findBinding(name)) |binding| {
             binding.value.destroy(self.allocator);
             binding.value = value;

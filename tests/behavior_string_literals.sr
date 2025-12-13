@@ -1,0 +1,34 @@
+package behavior_string_literals
+
+testing :: import "std/testing"
+
+test "literals: basic string" {
+    s := "Hello"
+    if !testing.expect_equal_str("Hello", s) { return Error.Fail }
+}
+
+test "literals: string with newline escape" {
+    s := "Line1\nLine2"
+    if !testing.expect_equal_str("Line1\nLine2", s) { return Error.Fail }
+}
+
+test "literals: string with tab escape" {
+    s := "Col1\tCol2"
+    if !testing.expect_equal_str("Col1\tCol2", s) { return Error.Fail }
+}
+
+test "literals: string with double quote escape" {
+    s := "He said \"Hello\""
+    if !testing.expect_equal_str("He said \"Hello\"", s) { return Error.Fail }
+}
+
+test "literals: raw string" {
+    s := r"No\nEscapes"
+    // Expect literal backslash and n
+    if !testing.expect_equal_str("No\nEscapes", s) { return Error.Fail }
+}
+
+test "literals: hashed raw string" {
+    s := r#"Hash \" inside\n"#
+    if !testing.expect_equal_str("Hash \" inside\n", s) { return Error.Fail }
+}

@@ -1,0 +1,57 @@
+package behavior_if_else
+
+testing :: import "std/testing"
+
+test "control_flow: basic if statement (true)" {
+    executed := false
+    if true { executed = true }
+
+    testing.expect(executed, "true branch should be executed")!
+}
+
+test "control_flow: basic if statement (false)" {
+    executed := false
+    if false { executed = true }
+
+    testing.expect(!executed, "false branch should not be executed")!
+}
+
+test "control_flow: if-else statement (true branch)" {
+    result := 0
+    if 10 > 5 { result = 1 } else { result = 2 }
+
+    if !testing.expect_equal_i64(1, result.(i64)) { return Error.Fail }
+}
+
+test "control_flow: if-else statement (false branch)" {
+    result := 0
+    if 5 > 10 { result = 1 } else { result = 2 }
+
+    if !testing.expect_equal_i64(2, result.(i64)) { return Error.Fail }
+}
+
+test "control_flow: if-else if-else chain" {
+    x := 10
+    result := 0
+    if x == 5 {
+        result = 1
+    } else if x == 10 { result = 2 } else { result = 3 }
+
+    if !testing.expect_equal_i64(2, result.(i64)) { return Error.Fail }
+}
+
+test "control_flow: if expression" {
+    x := 10
+    result := if x > 5 { 100 } else { 200 }
+
+    if !testing.expect_equal_i64(100, result.(i64)) { return Error.Fail }
+}
+
+test "control_flow: nested if-else" {
+    x := 10
+    y := 20
+    result := 0
+    if x == 10 { if y == 20 { result = 1 } else { result = 2 } } else { result = 3 }
+
+    if !testing.expect_equal_i64(1, result.(i64)) { return Error.Fail }
+}

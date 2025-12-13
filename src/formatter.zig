@@ -346,6 +346,10 @@ const Formatter = struct {
         const row = self.exprs.Decl.get(id);
         try self.emitCommentsBefore(self.locStart(row.loc));
 
+        if (try self.tryPrintTestDecl(row)) {
+            return;
+        }
+
         if (!row.lhs.isNone()) {
             try self.printExpr(row.lhs.unwrap());
         }
@@ -375,6 +379,37 @@ const Formatter = struct {
         }
 
         try self.printExpr(row.rhs);
+    }
+
+    fn tryPrintTestDecl(self: *Formatter, row: cst.Rows.Decl) !bool {
+        if (row.lhs.isNone()) return false;
+        if (!row.flags.is_const) return false;
+        if (self.exprs.kind(row.rhs) != .Function) return false;
+
+        const fn_node = self.exprs.get(.Function, row.rhs);
+        if (!fn_node.flags.is_test) return false;
+        if (fn_node.body.isNone()) return false;
+
+        const test_name = self.testNameFromAttrs(fn_node.attrs) orelse return false;
+
+        try self.printf("test {s} ", .{test_name});
+        try self.printExpr(fn_node.body.unwrap());
+        return true;
+    }
+
+    fn testNameFromAttrs(self: *Formatter, attrs_opt: cst.OptRangeAttr) ?[]const u8 {
+        if (attrs_opt.isNone()) return null;
+        const attrs = self.exprs.attr_pool.slice(attrs_opt.asRange());
+        for (attrs) |aid| {
+            const attr = self.exprs.Attribute.get(aid);
+            if (!std.mem.eql(u8, self.s(attr.name), "test")) continue;
+            if (attr.value.isNone()) continue;
+            const val_id = attr.value.unwrap();
+            if (self.exprs.kind(val_id) != .Literal) continue;
+            const lit = self.exprs.get(.Literal, val_id);
+            return self.s(lit.value);
+        }
+        return null;
     }
 
     fn tryFormatIfInline(self: *Formatter, id: cst.ExprId) !bool {
@@ -450,6 +485,55 @@ const Formatter = struct {
         return switch (kind) {
             inline else => |x| exprs.locs.get(exprs.get(x, eid).loc),
         };
+    }
+
+    fn trimAsciiSpace(str: []const u8) []const u8 {
+        return std.mem.trim(u8, str, " \t\r\n");
+    }
+
+    fn mlirBodyIsMultiline(body: []const u8) bool {
+        return std.mem.indexOfScalar(u8, body, '\n') != null;
+    }
+
+    /// Emit `body` inside `{ ... }`, choosing inline vs block formatting.
+    /// - Inline: `{ <trimmed> }`
+    /// - Block:  `{\n<indented lines>\n}`
+    fn printMlirBody(self: *Formatter, body_raw: []const u8) !void {
+        const body_trimmed = trimAsciiSpace(body_raw);
+
+        if (!mlirBodyIsMultiline(body_trimmed)) {
+            try self.printLiteral(" { ");
+            try self.printLiteral(body_trimmed);
+            try self.printLiteral(" }");
+            return;
+        }
+
+        // Multiline: reindent lines relative to current formatter indent.
+        try self.printLiteral(" {");
+        try self.newline();
+
+        self.indent += 4;
+        defer self.indent -= 4;
+
+        var it = std.mem.splitScalar(u8, body_trimmed, '\n');
+        while (it.next()) |line_raw| {
+            const line = std.mem.trimRight(u8, line_raw, " \t\r");
+            if (line.len == 0) {
+                // Preserve blank lines
+                try self.newline();
+                continue;
+            }
+            try self.ws();
+            // Avoid double-indenting if the literal already contains indentation.
+            // We only strip leading ASCII whitespace from the literal line itself.
+            const stripped = std.mem.trimLeft(u8, line, " \t");
+            try self.printLiteral(stripped);
+            try self.newline();
+        }
+
+        // Close brace aligned with current indentation level.
+        try self.ws();
+        try self.printLiteral("}");
     }
 
     // ------------------------------------------------------------
@@ -701,6 +785,7 @@ const Formatter = struct {
                 try self.printLiteral("insert ");
                 try self.printExpr(node.expr);
             },
+
             .Mlir => {
                 const node = self.exprs.get(.Mlir, id);
                 const k = switch (node.kind) {
@@ -719,20 +804,29 @@ const Formatter = struct {
                     }
                     try self.printLiteral(")");
                 }
+
                 if (node.pieces.len == 0) {
-                    try self.printf(" {{ {s} }}", .{self.s(node.text)});
-                } else {
-                    try self.printLiteral(" { ");
-                    const pieces = self.exprs.mlir_piece_pool.slice(node.pieces);
-                    for (pieces) |pid| {
-                        const piece = self.exprs.MlirPiece.get(pid);
-                        switch (piece.kind) {
-                            .literal => try self.printf("{s}", .{self.s(piece.text)}),
-                            .splice => try self.printf("${s}", .{self.s(piece.text)}),
-                        }
-                    }
-                    try self.printLiteral(" }");
+                    try self.printMlirBody(self.s(node.text));
+                    return;
                 }
+
+                var tmp = std.ArrayList(u8){};
+                defer tmp.deinit(self.gpa);
+
+                const pieces = self.exprs.mlir_piece_pool.slice(node.pieces);
+                for (pieces) |pid| {
+                    const piece = self.exprs.MlirPiece.get(pid);
+                    switch (piece.kind) {
+                        .literal => try tmp.appendSlice(self.gpa, self.s(piece.text)),
+                        .splice => {
+                            try tmp.append(self.gpa, '`');
+                            try tmp.appendSlice(self.gpa, self.s(piece.text));
+                            try tmp.append(self.gpa, '`');
+                        },
+                    }
+                }
+
+                try self.printMlirBody(tmp.items);
             },
             .Return => {
                 const node = self.exprs.get(.Return, id);
@@ -815,8 +909,9 @@ const Formatter = struct {
                 }
             },
             .Continue => {
-                _ = self.exprs.get(.Continue, id);
+                const node = self.exprs.get(.Continue, id);
                 try self.printLiteral("continue");
+                if (!node.label.isNone()) try self.printf(" :{s}", .{self.s(node.label.unwrap())});
             },
             .Unreachable => {
                 _ = self.exprs.get(.Unreachable, id);
@@ -1370,6 +1465,13 @@ const Formatter = struct {
                         if (i < elems.len) try self.printLiteral(", ");
                     }
                     try self.printPattern(pid);
+                }
+                if (node.has_rest and node.rest_index == elems.len) {
+                    if (elems.len > 0) try self.printLiteral(", ");
+                    try self.printLiteral("..");
+                    if (!node.rest_binding.isNone()) {
+                        try self.printPattern(node.rest_binding.unwrap());
+                    }
                 }
                 try self.printLiteral("]");
             },

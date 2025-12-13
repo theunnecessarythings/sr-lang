@@ -1,0 +1,30 @@
+package behavior_boolean_literals
+
+testing :: import "std/testing"
+
+test "literals: true boolean" {
+    x := true
+    testing.expect(x, "x should be true")!
+}
+
+test "literals: false boolean" {
+    x := false
+    testing.expect(!x, "x should be false")!
+}
+
+test "literals: boolean in conditional" {
+    executed := false
+    if true { executed = true }
+
+    testing.expect(executed, "true branch should be executed")!
+}
+
+test "literals: boolean expression (and)" {
+    x := true and false
+    testing.expect(!x, "true and false should be false")!
+}
+
+test "literals: boolean expression (not)" {
+    x := !true
+    testing.expect(!x, "!true should be false")!
+}

@@ -1,0 +1,24 @@
+package behavior_float_literals
+
+testing :: import "std/testing"
+
+test "literals: standard float" {
+    x := 123.45
+    if !testing.expect_equal_f64(123.45, x, 0.000001) { return Error.Fail }
+}
+
+test "literals: negative float" {
+    x := -67.89
+    if !testing.expect_equal_f64(-67.89, x, 0.000001) { return Error.Fail }
+}
+
+test "literals: scientific notation (positive exponent)" {
+    x := 1.0e5
+    if !testing.expect_equal_f64(100000.0, x, 0.000001) { return Error.Fail }
+}
+
+test "literals: scientific notation (negative exponent)" {
+    x := 1.0e-3
+    if !testing.expect_equal_f64(0.001, x, 0.000001) { return Error.Fail }
+}
+

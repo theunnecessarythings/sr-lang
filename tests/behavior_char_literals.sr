@@ -1,0 +1,23 @@
+package behavior_char_literals
+
+testing :: import "std/testing"
+
+test "literals: basic character" {
+    c := 'A'
+    testing.expect(c == 'A', "c should be 'A'")!
+}
+
+test "literals: escaped newline character" {
+    c := '\n'
+    testing.expect(c == '\n', "c should be newline")!
+}
+
+test "literals: escaped single quote character" {
+    c := '\''
+    testing.expect(c == '\'', "c should be single quote")!
+}
+
+test "literals: escaped backslash character" {
+    c := '\\'
+    testing.expect(c == '\\', "c should be backslash")!
+}

@@ -1,0 +1,49 @@
+package behavior_variants
+
+testing :: import "std/testing"
+
+Message :: variant {Quit, Move(i32, i32)}
+Event :: variant {Click {x: i32, y: i32}, KeyPress(char)}
+Inner :: variant {A(i32), B}
+Outer :: variant {Wrap(Inner), Unwrap}
+
+test "composite_types: unit-like variant" {
+    m := Message.Quit
+    match m {
+        Message.Quit => {
+        },
+        _ => testing.fail("Matched other message")!,
+    }
+}
+
+test "composite_types: tuple-like variant" {
+    m := Message.Move(10, 20)
+    match m {
+        Message.Move(x, y) => {
+            if !testing.expect_equal_i64(10, x.(i64)) { return Error.Fail }
+            if !testing.expect_equal_i64(20, y.(i64)) { return Error.Fail }
+        },
+        _ => testing.fail("Matched other message")!,
+    }
+}
+
+test "composite_types: struct-like variant" {
+    e := Event.Click{ x: 100, y: 200 }
+    match e {
+        Event.Click {x: x, y: y} => {
+            if !testing.expect_equal_i64(100, x.(i64)) { return Error.Fail }
+            if !testing.expect_equal_i64(200, y.(i64)) { return Error.Fail }
+        },
+        _ => testing.fail("Matched other event")!,
+    }
+}
+
+test "composite_types: nested variants" {
+    o := Outer.Wrap(Inner.A(50))
+    match o {
+        Outer.Wrap(Inner.A(val)) => {
+            if !testing.expect_equal_i64(50, val.(i64)) { return Error.Fail }
+        },
+        _ => testing.fail("Matched other nested variant")!,
+    }
+}

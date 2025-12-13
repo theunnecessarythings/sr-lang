@@ -1,0 +1,33 @@
+package behavior_complex_types
+
+testing :: import "std/testing"
+
+test "special_types: basic complex literal" {
+    z := 1.0 + 2.0i
+    if !testing.expect_equal_f64(1.0, z.real, 0.000001) { return Error.Fail }
+    if !testing.expect_equal_f64(2.0, z.imag, 0.000001) { return Error.Fail }
+}
+
+test "special_types: complex addition" {
+    z1 := 1.0 + 2.0i
+    z2 := 3.0 + 4.0i
+    sum := z1 + z2
+    if !testing.expect_equal_f64(4.0, sum.real, 0.000001) { return Error.Fail }
+    if !testing.expect_equal_f64(6.0, sum.imag, 0.000001) { return Error.Fail }
+}
+
+test "special_types: complex multiplication" {
+    z1 := 1.0 + 2.0i
+    z2 := 3.0 + 4.0i
+    prod := z1 * z2
+    if !testing.expect_equal_f64(-5.0, prod.real, 0.000001) { return Error.Fail }
+    if !testing.expect_equal_f64(10.0, prod.imag, 0.000001) { return Error.Fail }
+}
+
+test "special_types: complex with mixed float" {
+    z := 1.0 + 2.0i
+    r := z + 5.0
+    if !testing.expect_equal_f64(6.0, r.real, 0.000001) { return Error.Fail }
+    if !testing.expect_equal_f64(2.0, r.imag, 0.000001) { return Error.Fail }
+}
+

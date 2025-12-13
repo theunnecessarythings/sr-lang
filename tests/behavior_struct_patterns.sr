@@ -1,0 +1,56 @@
+package behavior_struct_patterns
+
+testing :: import "std/testing"
+
+Point :: struct {x: i32, y: i32}
+User :: struct {id: i32, name: string, age: i32}
+Rect :: struct {tl: Point, br: Point}
+
+test "patterns: basic struct pattern" {
+    p := Point{ x: 10, y: 20 }
+    result := match p {
+        Point {x: 10, y: 20} => "Matched (10, 20)",
+        _ => "Other",
+    }
+
+    if !testing.expect_equal_str("Matched (10, 20)", result) { return Error.Fail }
+}
+
+test "patterns: struct pattern with variable binding" {
+    p := Point{ x: 100, y: 200 }
+    match p {
+        Point {x: px, y: py} => {
+            if !testing.expect_equal_i64(100, px.(i64)) { return Error.Fail }
+            if !testing.expect_equal_i64(200, py.(i64)) { return Error.Fail }
+        },
+        _ => testing.fail("Matched other pattern")!,
+    }
+}
+
+test "patterns: partial struct pattern" {
+    return Error.Fail
+    // Partial struct matching syntax is not yet fully standardized/supported as '..'
+    // Commenting out until compiler support is confirmed or syntax is fixed.
+    /*
+    u := User{ id: 1, name: "Alice", age: 30 }
+    match u {
+        User{ name: "Alice", .. } => {
+            // Matched
+        },
+        _ => { testing.fail("Matched other user"); return Error.Fail },
+    }
+    */
+}
+
+test "patterns: nested struct pattern" {
+    r := Rect{ tl: Point{ x: 0, y: 0 }, br: Point{ x: 10, y: 10 } }
+    match r {
+        Rect {tl: Point {x: tx, y: ty}, br: Point {x: bx, y: by}} => {
+            if !testing.expect_equal_i64(0, tx.(i64)) { return Error.Fail }
+            if !testing.expect_equal_i64(0, ty.(i64)) { return Error.Fail }
+            if !testing.expect_equal_i64(10, bx.(i64)) { return Error.Fail }
+            if !testing.expect_equal_i64(10, by.(i64)) { return Error.Fail }
+        },
+        _ => testing.fail("Matched other rect")!,
+    }
+}

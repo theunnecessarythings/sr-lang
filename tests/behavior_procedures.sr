@@ -1,0 +1,28 @@
+package behavior_procedures
+
+testing :: import "std/testing"
+
+print_sum :: proc(a: i32, b: i32) {
+    // printf("Sum=%d\n", a + b)
+}
+
+print_hello :: proc() {
+    // printf("Hello\n")
+}
+
+my_cold_proc :: @[cold] proc() {
+    // printf("Cold proc executed\n")
+}
+
+test "declarations: basic procedure with parameters" {
+    print_sum(10, 20)
+}
+
+test "declarations: procedure without parameters" {
+    print_hello()
+}
+
+test "declarations: procedure with cold attribute" {
+    my_cold_proc()
+}
+

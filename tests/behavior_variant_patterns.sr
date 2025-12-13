@@ -1,0 +1,60 @@
+package behavior_variant_patterns
+
+testing :: import "std/testing"
+
+Message :: variant {Quit, Move(i32, i32)}
+Event :: variant {Click {x: i32, y: i32}, KeyPress(char)}
+Inner :: variant {A(i32), B}
+Outer :: variant {Wrap(Inner), Unwrap}
+
+test "patterns: basic unit-like variant pattern" {
+    m := Message.Quit
+    result := match m {
+        Message.Quit => "Quit",
+        _ => "Other",
+    }
+
+    if !testing.expect_equal_str("Quit", result) { return Error.Fail }
+}
+
+test "patterns: tuple-like variant pattern with binding" {
+    m := Message.Move(10, 20)
+    match m {
+        Message.Move(x, y) => {
+            if !testing.expect_equal_i64(10, x.(i64)) { return Error.Fail }
+            if !testing.expect_equal_i64(20, y.(i64)) { return Error.Fail }
+        },
+        _ => testing.fail("Matched other message")!,
+    }
+}
+
+test "patterns: struct-like variant pattern with binding" {
+    e := Event.Click{ x: 100, y: 200 }
+    match e {
+        Event.Click {x: px, y: py} => {
+            if !testing.expect_equal_i64(100, px.(i64)) { return Error.Fail }
+            if !testing.expect_equal_i64(200, py.(i64)) { return Error.Fail }
+        },
+        _ => testing.fail("Matched other event")!,
+    }
+}
+
+test "patterns: variant pattern with wildcard" {
+    m := Message.Move(10, 20)
+    match m {
+        Message.Move(_, y) => {
+            if !testing.expect_equal_i64(20, y.(i64)) { return Error.Fail }
+        },
+        _ => testing.fail("Matched other message")!,
+    }
+}
+
+test "patterns: nested variant pattern" {
+    o := Outer.Wrap(Inner.A(50))
+    match o {
+        Outer.Wrap(Inner.A(val)) => {
+            if !testing.expect_equal_i64(50, val.(i64)) { return Error.Fail }
+        },
+        _ => testing.fail("Matched other variant")!,
+    }
+}

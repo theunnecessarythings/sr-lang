@@ -1,0 +1,29 @@
+package behavior_pointers
+
+testing :: import "std/testing"
+
+modify_int :: proc(ptr: *i32) {
+    ptr.* = 20
+}
+
+Point :: struct { x: i32, y: i32 }
+
+test "special_types: dereference operator" {
+    x := 10
+    p := &x
+    val := p.*
+    if !testing.expect_equal_i64(10, val.(i64)) { return Error.Fail }
+}
+
+test "special_types: mutable pointer modification" {
+    x := 10
+    modify_int(&x)
+    if !testing.expect_equal_i64(20, x.(i64)) { return Error.Fail }
+}
+
+test "special_types: auto-dereferencing for field access" {
+    p_val := Point{ x: 10, y: 20 }
+    p_ptr := &p_val
+    if !testing.expect_equal_i64(10, p_ptr.x.(i64)) { return Error.Fail }
+}
+

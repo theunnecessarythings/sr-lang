@@ -80,6 +80,14 @@ test "hello world" {
     try checkProgram(src, &.{});
 }
 
+test "test declaration uses builtin Error type" {
+    const src =
+        \\test "sample" {
+        \\}
+    ;
+    try checkProgram(src, &.{});
+}
+
 test "integer expressions" {
     // Binary operations
     try checkProgram("a :: 2 + 3", &.{});

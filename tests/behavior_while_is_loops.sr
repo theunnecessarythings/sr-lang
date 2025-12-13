@@ -1,0 +1,40 @@
+package behavior_while_is_loops
+
+testing :: import "std/testing"
+
+Option :: variant { None, Some(i32) }
+Event :: variant { End, Data(string) }
+
+test "control_flow: while is with optional" {
+    maybe_value := Option.Some(42)
+    result := 0
+    while is Option.Some(x) := maybe_value {
+        result = x
+        maybe_value = Option.None // Exit loop
+    }
+    if !testing.expect_equal_i64(42, result.(i64)) { return Error.Fail }
+}
+
+test "control_flow: while is with variant and payload" {
+    event_stream := Event.Data("first")
+    received := ""
+    while is Event.Data(msg) := event_stream {
+        received = msg
+        event_stream = Event.End // Simulate end of stream
+    }
+    if !testing.expect_equal_str("first", received) { return Error.Fail }
+}
+
+test "control_flow: while is with break" {
+    maybe_value := Option.Some(10)
+    count : i32 = 0
+    while is Option.Some(x) := maybe_value {
+        count = count + x
+        if count > 10 {
+            break
+        }
+        maybe_value = Option.None // Ensure loop terminates if break fails (infinite loop prevention)
+    }
+    if !testing.expect_equal_i64(10, count.(i64)) { return Error.Fail }
+}
+

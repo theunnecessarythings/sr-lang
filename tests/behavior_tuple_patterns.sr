@@ -1,0 +1,47 @@
+package behavior_tuple_patterns
+
+testing :: import "std/testing"
+
+test "patterns: basic tuple pattern" {
+    t := (1, 2)
+    result := match t {
+        (1, 2) => "Matched (1, 2)",
+        _ => "Other",
+    }
+
+    if !testing.expect_equal_str("Matched (1, 2)", result) { return Error.Fail }
+}
+
+test "patterns: tuple pattern with variable binding" {
+    t := (10, "hello")
+    match t {
+        (num, text) => {
+            if !testing.expect_equal_i64(10, num.(i64)) { return Error.Fail }
+            if !testing.expect_equal_str("hello", text) { return Error.Fail }
+        },
+        _ => testing.fail("Matched other pattern")!,
+    }
+}
+
+test "patterns: tuple pattern with wildcard" {
+    t := (100, 200, 300)
+    match t {
+        (x, _, z) => {
+            if !testing.expect_equal_i64(100, x.(i64)) { return Error.Fail }
+            if !testing.expect_equal_i64(300, z.(i64)) { return Error.Fail }
+        },
+        _ => testing.fail("Matched other pattern")!,
+    }
+}
+
+test "patterns: nested tuple patterns" {
+    t := (1, ("nested", true))
+    match t {
+        (x, (s, b)) => {
+            if !testing.expect_equal_i64(1, x.(i64)) { return Error.Fail }
+            if !testing.expect_equal_str("nested", s) { return Error.Fail }
+            testing.expect(b, "b should be true")!
+        },
+        _ => testing.fail("Matched other pattern")!,
+    }
+}

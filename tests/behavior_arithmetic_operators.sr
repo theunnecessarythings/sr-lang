@@ -1,0 +1,53 @@
+package behavior_arithmetic_operators
+
+testing :: import "std/testing"
+
+test "expressions_operators: integer addition" {
+    r := 10 + 20
+    if !testing.expect_equal_i64(30, r.(i64)) {
+        return Error.Fail
+    }
+}
+
+test "expressions_operators: float subtraction" {
+    r := 25.5 - 10.2
+    if !testing.expect_equal_f64(15.3, r, 0.000001) {
+        return Error.Fail
+    }
+}
+
+test "expressions_operators: integer multiplication" {
+    r := 5 * 7
+    if !testing.expect_equal_i64(35, r.(i64)) {
+        return Error.Fail
+    }
+}
+
+test "expressions_operators: integer division" {
+    r := 20 / 3
+    if !testing.expect_equal_i64(6, r.(i64)) {
+        return Error.Fail
+    }
+}
+
+test "expressions_operators: integer modulo" {
+    r := 20 % 3
+    if !testing.expect_equal_i64(2, r.(i64)) {
+        return Error.Fail
+    }
+}
+
+test "expressions_operators: operator precedence" {
+    r := 1 + 2 * 3
+    if !testing.expect_equal_i64(7, r.(i64)) {
+        return Error.Fail
+    }
+}
+
+test "expressions_operators: unary minus" {
+    r := -10
+    if !testing.expect_equal_i64(-10, r.(i64)) {
+        return Error.Fail
+    }
+}
+
