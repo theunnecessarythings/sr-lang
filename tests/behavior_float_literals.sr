@@ -22,3 +22,17 @@ test "literals: scientific notation (negative exponent)" {
     if !testing.expect_equal_f64(0.001, x, 0.000001) { return Error.Fail }
 }
 
+test "literals: float with digit separators" {
+    x := 1_2.3_4
+    if !testing.expect_equal_f64(12.34, x, 0.000001) { return Error.Fail }
+}
+
+test "literals: scientific notation (explicit plus)" {
+    x := 1e+3
+    if !testing.expect_equal_f64(1000.0, x, 0.000001) { return Error.Fail }
+}
+
+test "literals: negative zero float" {
+    x := -0.0
+    if !testing.expect_equal_f64(0.0, x, 0.000001) { return Error.Fail }
+}

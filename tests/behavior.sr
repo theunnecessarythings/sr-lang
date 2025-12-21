@@ -1021,10 +1021,6 @@ test "behavior: recursive function" {
     if !testing.expect_equal_i64(120, factorial_test(5)) { return Error.Fail }
 }
 
-// test "behavior: mlir op block with attributes" {
-//         op :i32= mlir op { arith.addi %a, %b { attr = "value" } : i32 }
-// }
-
 // test "behavior: code block with expression evaluation" {
 //     const src =
 //         \\ x := 10

@@ -1129,10 +1129,15 @@ pub fn checkDecl(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, decl_
     }
 
     // Expected type from type annotation (if any)
-    const expect_ty = if (decl.ty.isNone())
-        null
-    else
-        (try check_types.typeFromTypeExpr(self, ctx, ast_unit, decl.ty.unwrap()))[1];
+    var expect_ty: ?types.TypeId = null;
+    var expect_ok: bool = true;
+    if (!decl.ty.isNone()) {
+        const res = try check_types.typeFromTypeExpr(self, ctx, ast_unit, decl.ty.unwrap());
+        expect_ok = res[0];
+        if (expect_ok) {
+            expect_ty = res[1];
+        }
+    }
 
     // Method registration happens in runAst() pre-pass for top-level methods.
 
@@ -1156,7 +1161,9 @@ pub fn checkDecl(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, decl_
     }
 
     // Try to coerce value type to expected type (if any)
-    try self.tryTypeCoercion(ctx, ast_unit, decl_id, rhs_ty, expect_ty);
+    if (expect_ok) {
+        try self.tryTypeCoercion(ctx, ast_unit, decl_id, rhs_ty, expect_ty);
+    }
 
     // If LHS is a pattern, ensure the RHS type matches the pattern's shape.
     if (!decl.pattern.isNone()) {
@@ -2066,6 +2073,20 @@ fn constNumericKind(self: *Checker, ast_unit: *ast.Ast, expr_id: ast.ExprId) Con
         },
         else => return .none,
     }
+}
+
+/// Determine whether `expr_id` yields a compile-time numeric value, including block expressions.
+fn constNumericKindForValue(self: *Checker, ast_unit: *ast.Ast, expr_id: ast.ExprId) ConstNumKind {
+    if (ast_unit.kind(expr_id) != .Block) {
+        return self.constNumericKind(ast_unit, expr_id);
+    }
+    const br = getExpr(ast_unit, .Block, expr_id);
+    const stmts = ast_unit.stmts.stmt_pool.slice(br.items);
+    if (stmts.len == 0) return .none;
+    const last = stmts[stmts.len - 1];
+    if (ast_unit.kind(last) != .Expr) return .none;
+    const row = getStmt(ast_unit, .Expr, last);
+    return self.constNumericKind(ast_unit, row.expr);
 }
 
 /// Attempt to coerce a compile-time numeric expression to `target_ty`.
@@ -6247,6 +6268,19 @@ fn checkIf(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, id: ast.Exp
         const t_ok = self.assignable(then_ty, expect) == .success;
         const e_ok = self.assignable(else_ty, expect) == .success;
         if (t_ok and e_ok) return expect;
+    }
+
+    if (expected_ty == null) {
+        const then_const = self.constNumericKindForValue(ast_unit, if_expr.then_block);
+        const else_const = self.constNumericKindForValue(ast_unit, if_expr.else_block.unwrap());
+        if (then_const != .none and else_const != .none and then_const != else_const) {
+            try self.context.diags.addError(
+                exprLoc(ast_unit, if_expr),
+                .if_branch_type_mismatch,
+                .{ then_ty, else_ty },
+            );
+            return self.context.type_store.tTypeError();
+        }
     }
 
     // Fallback: manual coercion of direct null literals (for cases where pushExpectedType didn't catch it?

@@ -41,3 +41,10 @@ test "composite_types: struct with mixed field types" {
     if !testing.expect_equal_str("Alice", u.name) { return Error.Fail }
     testing.expect(u.active, "u.active should be true")!
 }
+
+test "composite_types: struct field assignment" {
+    p := Point{ x: 1, y: 2 }
+    p.x = 9
+    if !testing.expect_equal_i64(9, p.x.(i64)) { return Error.Fail }
+    if !testing.expect_equal_i64(2, p.y.(i64)) { return Error.Fail }
+}

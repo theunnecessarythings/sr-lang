@@ -56,3 +56,9 @@ test "declarations: nested variant destructuring" {
     Outer.Wrap(Inner.A(val)) := Outer.Wrap(Inner.A(99))
     if !testing.expect_equal_i64(99, val.(i64)) { return Error.Fail }
 }
+
+test "declarations: wildcard in tuple destructuring" {
+    (a, _, c) := (1, 2, 3)
+    if !testing.expect_equal_i64(1, a.(i64)) { return Error.Fail }
+    if !testing.expect_equal_i64(3, c.(i64)) { return Error.Fail }
+}

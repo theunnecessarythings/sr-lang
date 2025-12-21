@@ -51,3 +51,23 @@ test "expressions_operators: unary minus" {
     }
 }
 
+test "expressions_operators: mixed numeric addition" {
+    r := 1 + 2.5
+    if !testing.expect_equal_f64(3.5, r, 0.000001) {
+        return Error.Fail
+    }
+}
+
+test "expressions_operators: nested parentheses" {
+    r := (1 + 2) * (3 - 4) + 5
+    if !testing.expect_equal_i64(2, r.(i64)) {
+        return Error.Fail
+    }
+}
+
+test "expressions_operators: unary and binary precedence" {
+    r := -1 * 2 + 3
+    if !testing.expect_equal_i64(1, r.(i64)) {
+        return Error.Fail
+    }
+}

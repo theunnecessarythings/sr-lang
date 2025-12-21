@@ -22,6 +22,16 @@ test "literals: string with double quote escape" {
     if !testing.expect_equal_str("He said \"Hello\"", s) { return Error.Fail }
 }
 
+test "literals: string with backslash escape" {
+    s := "C:\\temp\\file.txt"
+    if !testing.expect_equal_str("C:\\temp\\file.txt", s) { return Error.Fail }
+}
+
+test "literals: string with carriage return escape" {
+    s := "Line1\rLine2"
+    if !testing.expect_equal_str("Line1\rLine2", s) { return Error.Fail }
+}
+
 test "literals: raw string" {
     s := r"No\nEscapes"
     // Expect literal backslash and n

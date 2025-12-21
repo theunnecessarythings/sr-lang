@@ -81,8 +81,8 @@ fn runTypeStoreFmt(store: *types.TypeStore, interner: *cst.StringInterner) !void
     const optional_ty = store.mkOptional(bool_ty);
     const tuple_ty = store.mkTuple(&.{ bool_ty, i32_ty });
     const fn_ty = store.mkFunction(&.{ bool_ty, i32_ty }, bool_ty, false, true, false);
-    const proc_ty = store.mkFunction(&.{ bool_ty }, string_ty, false, false, false);
-    const variadic_ty = store.mkFunction(&.{ bool_ty }, bool_ty, true, true, false);
+    const proc_ty = store.mkFunction(&.{bool_ty}, string_ty, false, false, false);
+    const variadic_ty = store.mkFunction(&.{bool_ty}, bool_ty, true, true, false);
     const mlir_module = store.add(types.TypeKind.MlirModule, .{});
     const mlir_attribute = store.mkMlirAttribute(interner.intern("test_attr"));
     const mlir_type = store.mkMlirType(interner.intern("test_type"));

@@ -39,3 +39,16 @@ test "casts: float to i32 checked (just above max)" {
     r := x.?i32
     testing.expect(r == null, "r should be null")!
 }
+
+test "casts: unsigned to signed checked (in range)" {
+    x: u8 = 100
+    r := x.?i8
+    if r == null { return Error.Fail }
+    if !testing.expect_equal_i64(100, r?.(i64)) { return Error.Fail }
+}
+
+test "casts: unsigned to signed checked (out of range)" {
+    x: u8 = 200
+    r := x.?i8
+    testing.expect(r == null, "r should be null")!
+}

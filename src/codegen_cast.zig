@@ -10,9 +10,13 @@ const std = @import("std");
 const CMP_EQ: i64 = 0;
 const CMP_NE: i64 = 1;
 const CMP_SLT: i64 = 2;
+const CMP_SLE: i64 = 3;
 const CMP_SGT: i64 = 4;
+const CMP_SGE: i64 = 5;
 const CMP_ULT: i64 = 6;
+const CMP_ULE: i64 = 7;
 const CMP_UGT: i64 = 8;
+const CMP_UGE: i64 = 9;
 
 /// MLIR `arith.cmpf` predicates used when comparing floating-point inputs.
 const F_CMP_OEQ: i64 = 1;
@@ -390,21 +394,41 @@ pub fn emitCast(self: *Codegen, kind: tir.OpKind, dst_sr: types.TypeId, src_sr: 
                 const fw = try intOrFloatWidth(from_ty_mlir);
                 const tw = try intOrFloatWidth(optional_elem_mlir_ty);
                 const from_signed = self.isSignedInt(src_sr);
-                // const to_signed = self.isSignedInt(store.get(.Optional, dst_sr).elem);
+                const to_signed = optional_elem_is_signed;
 
-                if (fw == tw) {
-                    casted_val = from_v;
-                } else if (fw > tw) {
+                // Base cast (may be refined below).
+                casted_val = castIntToInt(self, from_v, from_ty_mlir, optional_elem_mlir_ty, from_signed);
+
+                // Signedness-range checks when converting between signed/unsigned.
+                if (from_signed and !to_signed) {
+                    const zero = self.constInt(from_ty_mlir, 0);
+                    cast_ok = self.emitBinaryValueOp("arith.cmpi", from_v, zero, self.i1_ty, &.{
+                        self.named("predicate", mlir.Attribute.integerAttrGet(self.i64_ty, CMP_SGE)),
+                    });
+                } else if (!from_signed and to_signed and tw <= fw) {
+                    const max_signed: i64 = switch (tw) {
+                        1 => 0,
+                        8 => std.math.maxInt(i8),
+                        16 => std.math.maxInt(i16),
+                        32 => std.math.maxInt(i32),
+                        64 => std.math.maxInt(i64),
+                        else => std.math.maxInt(i64),
+                    };
+                    const max_val = self.constInt(from_ty_mlir, @intCast(max_signed));
+                    cast_ok = self.emitBinaryValueOp("arith.cmpi", from_v, max_val, self.i1_ty, &.{
+                        self.named("predicate", mlir.Attribute.integerAttrGet(self.i64_ty, CMP_ULE)),
+                    });
+                }
+
+                if (fw > tw) {
                     // Truncation: check for overflow
                     const narrowed = castIntToInt(self, from_v, from_ty_mlir, optional_elem_mlir_ty, from_signed);
                     const widened = self.emitUnaryValueOp(if (from_signed) "arith.extsi" else "arith.extui", narrowed, from_ty_mlir);
-                    cast_ok = self.emitBinaryValueOp("arith.cmpi", from_v, widened, self.i1_ty, &.{
+                    const trunc_ok = self.emitBinaryValueOp("arith.cmpi", from_v, widened, self.i1_ty, &.{
                         self.named("predicate", mlir.Attribute.integerAttrGet(self.i64_ty, CMP_EQ)),
                     });
+                    cast_ok = self.boolAnd(cast_ok, trunc_ok);
                     casted_val = narrowed;
-                } else {
-                    // Extension: always succeeds
-                    casted_val = castIntToInt(self, from_v, from_ty_mlir, optional_elem_mlir_ty, from_signed);
                 }
             } else if (from_ty_mlir.isAFloat() and optional_elem_mlir_ty.isAInteger()) {
                 // Float to Integer checked cast

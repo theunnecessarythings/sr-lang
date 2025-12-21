@@ -44,3 +44,13 @@ test "patterns: match with character literal" {
 
     if !testing.expect_equal_str("Char B", result) { return Error.Fail }
 }
+
+test "patterns: match with negative integer literal" {
+    x := -1
+    result := match x {
+        -1 => "Neg",
+        _ => "Other",
+    }
+
+    if !testing.expect_equal_str("Neg", result) { return Error.Fail }
+}

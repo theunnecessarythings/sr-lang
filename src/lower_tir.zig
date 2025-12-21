@@ -1627,7 +1627,7 @@ pub fn lowerFunction(
         const body_id = fnr.body.unwrap();
         try env.pushScope(self.gpa);
         try self.lowerExprAsStmtList(lower_ctx, a, &env, &f, &blk, body_id);
-        _ = env.popScope();
+        _ = env.popScope(self.gpa);
     }
 
     if (blk.term.isNone()) {
@@ -1662,7 +1662,7 @@ pub fn lowerExprAsStmtList(
             if (slice.len > 0) try cf.emitDefers(self, ctx, a, env, f, blk, slice, false);
         }
         env.defers.items.len = start;
-        _ = env.popScope();
+        _ = env.popScope(self.gpa);
     } else {
         _ = try self.lowerExpr(ctx, a, env, f, blk, id, null, .rvalue);
     }
@@ -2711,7 +2711,7 @@ fn synthesizeDefaultTrailingArgs(
     const fnr = decl_ast.exprs.get(.FunctionLit, decl.value);
     const params2 = decl_ast.exprs.param_pool.slice(fnr.params);
     try env.pushScope(self.gpa);
-    defer _ = env.popScope();
+    defer _ = env.popScope(self.gpa);
 
     var j: usize = 0;
     while (j < vals_list.items.len and j < params2.len and j < param_tys.len) : (j += 1) {
@@ -5139,7 +5139,7 @@ fn lowerCatch(
                 try f.builder.br(&else_blk, join_blk.id, &.{hv}, loc);
             }
         }
-        _ = env.popScope(); // Pop scope after handler
+        _ = env.popScope(self.gpa); // Pop scope after handler
 
         try f.builder.endBlock(f, then_blk);
         try f.builder.endBlock(f, else_blk);
@@ -5178,7 +5178,7 @@ fn lowerCatch(
             try env.bind(self.gpa, name, .{ .value = err_val, .ty = es.error_ty, .is_slot = false }, f.builder, &else_blk, loc);
         }
         try self.lowerExprAsStmtList(ctx, a, env, f, &else_blk, row.handler);
-        _ = env.popScope(); // Pop scope after handler
+        _ = env.popScope(self.gpa); // Pop scope after handler
         if (else_blk.term.isNone()) try f.builder.br(&else_blk, exit_blk.id, &.{}, loc);
         try f.builder.endBlock(f, else_blk);
 
@@ -5484,6 +5484,9 @@ pub fn lowerBlockExprValue(
         try self.noteExprType(ctx, block_expr, expected_ty);
         return self.safeUndef(blk, expected_ty, loc);
     }
+
+    try env.pushScope(self.gpa);
+    defer _ = env.popScope(self.gpa);
 
     // Remember where this block's scope begins on the defer stack.
     const mark: u32 = @intCast(env.defers.items.len);

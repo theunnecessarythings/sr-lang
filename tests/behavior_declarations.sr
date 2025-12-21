@@ -52,11 +52,25 @@ test "declarations: constant (string)" {
     if !testing.expect_equal_str("Hi there", GREETING) { return Error.Fail }
 }
 
+test "declarations: constant expression" {
+    ANSWER :: 6 * 7
+    if !testing.expect_equal_i64(42, ANSWER.(i64)) { return Error.Fail }
+}
+
 test "declarations: variable reassignment" {
     x := 10
     if !testing.expect_equal_i64(10, x.(i64)) { return Error.Fail }
     x = 20
     if !testing.expect_equal_i64(20, x.(i64)) { return Error.Fail }
+}
+
+test "declarations: shadowing in inner scope" {
+    x := 1
+    {
+        x := 2
+        if !testing.expect_equal_i64(2, x.(i64)) { return Error.Fail }
+    }
+    if !testing.expect_equal_i64(1, x.(i64)) { return Error.Fail }
 }
 
 test "declarations: local scope variable" {

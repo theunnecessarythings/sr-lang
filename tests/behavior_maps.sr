@@ -27,6 +27,12 @@ test "composite_types: removing map elements" {
     if !testing.expect_equal_i64(1, m.len.(i64)) { return Error.Fail }
 }
 
+test "composite_types: map overwrite existing key" {
+    m: [string: i32] = ["one": 1]
+    m["one"] = 3
+    if !testing.expect_equal_i64(3, m["one"].(i64)) { return Error.Fail }
+}
+
 test "map in" {
     return Error.Fail
     m: [string: i32] = ["one": 1, "two": 2]

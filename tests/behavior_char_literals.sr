@@ -21,3 +21,23 @@ test "literals: escaped backslash character" {
     c := '\\'
     testing.expect(c == '\\', "c should be backslash")!
 }
+
+test "literals: escaped tab character" {
+    c := '\t'
+    testing.expect(c == '\t', "c should be tab")!
+}
+
+test "literals: escaped carriage return character" {
+    c := '\r'
+    testing.expect(c == '\r', "c should be carriage return")!
+}
+
+test "literals: escaped double quote character" {
+    c := '\"'
+    testing.expect(c == '\"', "c should be double quote")!
+}
+
+test "literals: escaped null character" {
+    c := '\0'
+    testing.expect(c == '\0', "c should be null")!
+}

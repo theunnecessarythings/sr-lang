@@ -19,3 +19,9 @@ test "casts: negative i32 to u8 wrapping" {
     r := x.%u8
     if !testing.expect_equal_i64(255, r.(i64)) { return Error.Fail }
 }
+
+test "casts: u16 to u8 wrapping" {
+    x: u16 = 0x1234
+    r := x.%u8
+    if !testing.expect_equal_i64(0x34, r.(i64)) { return Error.Fail }
+}

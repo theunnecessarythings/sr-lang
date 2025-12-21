@@ -54,3 +54,12 @@ test "patterns: nested struct pattern" {
         _ => testing.fail("Matched other rect")!,
     }
 }
+
+test "patterns: struct pattern mismatch falls through" {
+    p := Point{ x: 1, y: 2 }
+    result := match p {
+        Point {x: 3, y: 2} => "Hit",
+        _ => "Miss",
+    }
+    if !testing.expect_equal_str("Miss", result) { return Error.Fail }
+}

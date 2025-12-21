@@ -143,3 +143,13 @@ test "control_flow: match with automatic type conversion" {
 
     if !testing.expect_equal_i64(1, state.(i64)) { return Error.Fail }
 }
+
+test "control_flow: match with boolean" {
+    b := true
+    result := match b {
+        true => 1,
+        false => 2,
+    }
+
+    if !testing.expect_equal_i64(1, result.(i64)) { return Error.Fail }
+}

@@ -43,3 +43,10 @@ test "composite_types: function returning tuple" {
     if !testing.expect_equal_i64(42, t.0.(i64)) { return Error.Fail }
     testing.expect(t.1, "t.1 should be true")!
 }
+
+test "composite_types: tuple reassignment" {
+    t := (1, 2)
+    t = (3, 4)
+    if !testing.expect_equal_i64(3, t.0.(i64)) { return Error.Fail }
+    if !testing.expect_equal_i64(4, t.1.(i64)) { return Error.Fail }
+}

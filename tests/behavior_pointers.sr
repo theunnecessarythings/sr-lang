@@ -27,3 +27,11 @@ test "special_types: auto-dereferencing for field access" {
     if !testing.expect_equal_i64(10, p_ptr.x.(i64)) { return Error.Fail }
 }
 
+test "special_types: pointer reassignment" {
+    a := 1
+    b := 2
+    p := &a
+    if !testing.expect_equal_i64(1, p.*.(i64)) { return Error.Fail }
+    p = &b
+    if !testing.expect_equal_i64(2, p.*.(i64)) { return Error.Fail }
+}

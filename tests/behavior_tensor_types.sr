@@ -22,3 +22,10 @@ test "special_types: tensor addition (element-wise)" {
     if !testing.expect_equal_i64(12, sum[1][1].(i64)) { return Error.Fail }
 }
 
+test "special_types: tensor 3D indexing" {
+    t: tensor(i32, 2, 2, 2) = [
+        [[1, 2], [3, 4]],
+        [[5, 6], [7, 8]],
+    ]
+    if !testing.expect_equal_i64(6, t[1][0][1].(i64)) { return Error.Fail }
+}

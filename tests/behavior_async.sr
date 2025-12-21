@@ -92,3 +92,10 @@ test "declarations: await void future in loop" {
         async_noop().await
     }
 }
+
+test "declarations: async fn used multiple times" {
+    a := async_double(3).await
+    b := async_double(4).await
+    if !testing.expect_equal_i64(6, a.(i64)) { return Error.Fail }
+    if !testing.expect_equal_i64(8, b.(i64)) { return Error.Fail }
+}

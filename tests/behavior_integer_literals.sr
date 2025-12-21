@@ -37,3 +37,26 @@ test "literals: hexadecimal with digit separators" {
     if !testing.expect_equal_i64(65280, x.(i64)) { return Error.Fail }
 }
 
+test "literals: zero integer" {
+    x := 0
+    if !testing.expect_equal_i64(0, x.(i64)) { return Error.Fail }
+}
+
+test "literals: uppercase base prefixes" {
+    x := 0XFF
+    y := 0B1010
+    z := 0O77
+    if !testing.expect_equal_i64(255, x.(i64)) { return Error.Fail }
+    if !testing.expect_equal_i64(10, y.(i64)) { return Error.Fail }
+    if !testing.expect_equal_i64(63, z.(i64)) { return Error.Fail }
+}
+
+test "literals: negative hexadecimal integer" {
+    x := -0x10
+    if !testing.expect_equal_i64(-16, x.(i64)) { return Error.Fail }
+}
+
+test "literals: max i64 literal" {
+    x := 0x7fff_ffff_ffff_ffff
+    if !testing.expect_equal_i64(9223372036854775807, x.(i64)) { return Error.Fail }
+}

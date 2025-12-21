@@ -34,3 +34,12 @@ test "composite_types: iterate dynamic array" {
     }
     if !testing.expect_equal_i64(13, sum.(i64)) { return Error.Fail }
 }
+
+test "composite_types: dynamic array indexing after appends" {
+    numbers: [dyn]i32 = []
+    numbers.append(4)
+    numbers.append(5)
+    numbers.append(6)
+    if !testing.expect_equal_i64(4, numbers[0].(i64)) { return Error.Fail }
+    if !testing.expect_equal_i64(6, numbers[2].(i64)) { return Error.Fail }
+}

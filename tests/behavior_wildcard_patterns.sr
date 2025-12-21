@@ -35,3 +35,12 @@ test "patterns: wildcard in variant destructuring" {
         _ => testing.fail("Matched other message")!,
     }
 }
+
+test "patterns: wildcard in nested tuple match" {
+    t := (1, (2, 3))
+    result := match t {
+        (_, (2, _)) => "Hit",
+        _ => "Miss",
+    }
+    if !testing.expect_equal_str("Hit", result) { return Error.Fail }
+}

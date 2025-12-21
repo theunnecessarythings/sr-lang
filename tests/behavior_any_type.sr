@@ -29,3 +29,7 @@ test "special_types: type checking any with typeof" {
     if !testing.expect_equal_str("Integer: 42", process_any(42)) { return Error.Fail }
     if !testing.expect_equal_str("String: Hello", process_any("Hello")) { return Error.Fail }
 }
+
+test "special_types: any with unmatched typeof" {
+    if !testing.expect_equal_str("Unknown type", process_any(true)) { return Error.Fail }
+}

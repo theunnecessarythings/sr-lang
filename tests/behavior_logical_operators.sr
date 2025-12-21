@@ -27,3 +27,13 @@ test "expressions_operators: logical operator precedence" {
     r := true and false or true
     testing.expect(r, "(true and false) or true should be true")!
 }
+
+test "expressions_operators: logical precedence with not" {
+    r := !false and false
+    testing.expect(!r, "(!false) and false should be false")!
+}
+
+test "expressions_operators: logical grouping" {
+    r := !(true or false) and true
+    testing.expect(!r, "!(true or false) and true should be false")!
+}

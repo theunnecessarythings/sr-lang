@@ -1319,6 +1319,16 @@ pub const Tokenizer = struct {
                     continue :state .int;
                 },
                 'e', 'E', 'p', 'P' => {
+                    const start = result.loc.start;
+                    const has_prefix = start + 1 < self.buffer.len and self.buffer[start] == '0' and
+                        (self.buffer[start + 1] == 'x' or self.buffer[start + 1] == 'X' or
+                            self.buffer[start + 1] == 'b' or self.buffer[start + 1] == 'B' or
+                            self.buffer[start + 1] == 'o' or self.buffer[start + 1] == 'O');
+                    if (has_prefix) {
+                        self.advance();
+                        continue :state .int;
+                    }
+                    result.tag = .float_literal;
                     continue :state .int_exponent;
                 },
                 else => if (self.index > result.loc.start and self.buffer[self.index - 1] == 'i') {
@@ -1332,7 +1342,7 @@ pub const Tokenizer = struct {
                         self.advance();
                         continue :state .float;
                     },
-                    else => continue :state .int,
+                    else => continue :state .float,
                 }
             },
             .int_period => {

@@ -194,6 +194,15 @@ test "integer expression failure cases" {
     try checkProgram("a :: 10 +% \"20\"", &[_]diag.DiagnosticCode{.invalid_binary_op_operands});
 }
 
+test "integer literal failure cases" {
+    try checkProgram("a :: 0b102", &[_]diag.DiagnosticCode{.invalid_integer_literal});
+    try checkProgram("a :: 0o9", &[_]diag.DiagnosticCode{.invalid_integer_literal});
+    try checkProgram("a :: 0xG", &[_]diag.DiagnosticCode{.invalid_integer_literal});
+    try checkProgram("a :: 0x_", &[_]diag.DiagnosticCode{.invalid_integer_literal});
+    try checkProgram("a :: 0b_", &[_]diag.DiagnosticCode{.invalid_integer_literal});
+    try checkProgram("a :: 340282366920938463463374607431768211456", &[_]diag.DiagnosticCode{.invalid_integer_literal});
+}
+
 test "numeric literal coercion" {
     try checkProgram(
         \\ f: f32 = 1.5
@@ -270,6 +279,141 @@ test "mixed type expression failure cases" {
     try checkProgram("a :: \"hello\" or true", &[_]diag.DiagnosticCode{.invalid_binary_op_operands});
     try checkProgram("a :: 5 == true", &[_]diag.DiagnosticCode{.invalid_binary_op_operands});
     try checkProgram("a :: 3.0 != false", &[_]diag.DiagnosticCode{.invalid_binary_op_operands});
+}
+
+test "control flow failure cases" {
+    try checkProgram("main :: proc() { if 1 { } }", &[_]diag.DiagnosticCode{.non_boolean_condition});
+    try checkProgram("main :: proc() { while 0 { } }", &[_]diag.DiagnosticCode{.non_boolean_condition});
+    try checkProgram("x := if true { 1 } else { 2.0 }", &[_]diag.DiagnosticCode{.if_branch_type_mismatch});
+    try checkProgram("main :: proc() { break }", &[_]diag.DiagnosticCode{.break_outside_loop});
+    try checkProgram("main :: proc() { continue }", &[_]diag.DiagnosticCode{.continue_outside_loop});
+    try checkProgram("r := 1..2.0", &[_]diag.DiagnosticCode{.range_type_mismatch});
+    try checkProgram(
+        \\ Color :: enum {Red, Green}
+        \\ c := Color.Red
+        \\ x := match c { Color.Red => 1, }
+    , &[_]diag.DiagnosticCode{.non_exhaustive_match});
+    try checkProgram(
+        \\ x := 1
+        \\ y := match x { _ => 0, 1 => 1, }
+    , &[_]diag.DiagnosticCode{.unreachable_match_arm});
+    try checkProgram(
+        \\ flag := true
+        \\ v := (L: while true {
+        \\   if flag {
+        \\     flag = false
+        \\     break :L 1
+        \\   } else {
+        \\     break :L 2.0
+        \\   }
+        \\ })
+    , &[_]diag.DiagnosticCode{.loop_break_value_type_conflict});
+}
+
+test "declarations and calls failure cases" {
+    try checkProgram("main :: proc() { f := 1; f() }", &[_]diag.DiagnosticCode{.call_non_callable});
+    try checkProgram("main :: proc() { missing(1) }", &[_]diag.DiagnosticCode{.unknown_function});
+    try checkProgram(
+        \\ add :: fn(a: i32, b: i32) i32 { return a + b }
+        \\ main :: proc() { add(1) }
+    , &[_]diag.DiagnosticCode{.argument_count_mismatch});
+    try checkProgram(
+        \\ add :: fn(a: i32, b: i32) i32 { return a + b }
+        \\ main :: proc() { add(1, true) }
+    , &[_]diag.DiagnosticCode{.argument_type_mismatch});
+    try checkProgram(
+        \\ Point :: struct { x: i32 }
+        \\ main :: proc() { p := Point{ x: 1 }; _ = p.y }
+    , &[_]diag.DiagnosticCode{.unknown_struct_field});
+    try checkProgram("main :: proc() { t := (1, 2); _ = t.2 }", &[_]diag.DiagnosticCode{.tuple_index_out_of_bounds});
+    try checkProgram("main :: proc() { _ = (1).x }", &[_]diag.DiagnosticCode{.field_access_on_non_aggregate});
+    try checkProgram(
+        \\ foo :: proc(a: i32, b: i32 = 2) {}
+        \\ main :: proc() { foo() }
+    , &[_]diag.DiagnosticCode{.argument_count_mismatch});
+}
+
+test "core data structures failure cases" {
+    try checkProgram(
+        \\ arr: [3]i32 = [1, 2]
+    , &[_]diag.DiagnosticCode{.array_length_mismatch});
+    try checkProgram(
+        \\ arr: [2]i32 = [1, 2, 3]
+    , &[_]diag.DiagnosticCode{.array_length_mismatch});
+    try checkProgram(
+        \\ arr: [3]i32 = [1, 2.0, 3]
+    , &[_]diag.DiagnosticCode{.heterogeneous_array_elements});
+    try checkProgram(
+        \\ arr: [1.5]i32 = [1]
+    , &[_]diag.DiagnosticCode{.array_size_not_integer_literal});
+    try checkProgram(
+        \\ Point :: struct { x: i32, y: i32 }
+        \\ p := Point{ x: 1 }
+    , &[_]diag.DiagnosticCode{.struct_missing_field});
+    try checkProgram(
+        \\ Point :: struct { x: i32 }
+        \\ p := Point{ x: 1, z: 2 }
+    , &[_]diag.DiagnosticCode{.unknown_struct_field});
+    try checkProgram(
+        \\ t: (i32, i32) = (1,)
+    , &[_]diag.DiagnosticCode{.tuple_arity_mismatch});
+    try checkProgram(
+        \\ Color :: enum {Red, Blue}
+        \\ Other :: enum {Red}
+        \\ c: Color = Other.Red
+    , &[_]diag.DiagnosticCode{.type_annotation_mismatch});
+}
+
+test "casts and conversions failure cases" {
+    try checkProgram("x := \"s\".?i32", &[_]diag.DiagnosticCode{.invalid_checked_cast});
+    try checkProgram("x := \"s\".%i32", &[_]diag.DiagnosticCode{.numeric_cast_on_non_numeric});
+    try checkProgram("x := \"s\".|i32", &[_]diag.DiagnosticCode{.numeric_cast_on_non_numeric});
+    try checkProgram("x := \"s\".^i32", &[_]diag.DiagnosticCode{.invalid_bitcast});
+    try checkProgram("x := \"s\".(i32)", &[_]diag.DiagnosticCode{.invalid_cast});
+}
+
+test "patterns and destructuring failure cases" {
+    try checkProgram(
+        \\ v := 1
+        \\ r := match v { "s" => 0, _ => 1, }
+    , &[_]diag.DiagnosticCode{.string_equality_in_match_not_supported});
+    try checkProgram(
+        \\ Point :: struct { x: i32, y: i32 }
+        \\ p := Point{ x: 1, y: 2 }
+        \\ r := match p { Point {x: 1, z: 2} => 0, _ => 1, }
+    , &[_]diag.DiagnosticCode{.struct_pattern_field_mismatch});
+    try checkProgram(
+        \\ V :: variant { A(i32), B }
+        \\ v := V.A(1)
+        \\ r := match v { V.A(x, y) => 0, _ => 1, }
+    , &[_]diag.DiagnosticCode{.tuple_arity_mismatch});
+    try checkProgram(
+        \\ v := 1
+        \\ r := match v { y @ "s" => 0, _ => 1,}
+    , &[_]diag.DiagnosticCode{.string_equality_in_match_not_supported});
+    try checkProgram(
+        \\ v := 5
+        \\ r := match v { 1 | 2 => 0, 2 => 1, _ => 2, }
+    , &[_]diag.DiagnosticCode{.overlapping_match_arm});
+}
+
+test "interop and runtime failure cases" {
+    try checkProgram(
+        \\ printf :: extern proc(*void, any) i32
+        \\ r := printf()
+    , &[_]diag.DiagnosticCode{.argument_count_mismatch});
+    try checkProgram(
+        \\ printf :: extern proc(*void, any) i32
+        \\ r := printf(1, 2)
+    , &[_]diag.DiagnosticCode{.argument_type_mismatch});
+    try checkProgram(
+        \\ printf :: extern proc(*const u8, any) i32
+        \\ r := printf(null)
+    , &[_]diag.DiagnosticCode{.argument_type_mismatch});
+    try checkProgram(
+        \\ p: *i32 = null
+        \\ _ = p.*
+    , &[_]diag.DiagnosticCode{.assign_null_to_non_optional});
 }
 
 test "imaginary number expressions" {

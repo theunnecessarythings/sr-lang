@@ -22,3 +22,8 @@ test "composite_types: union with different field types" {
     v.s = "hello"
     if !testing.expect_equal_str("hello", v.s) { return Error.Fail }
 }
+
+test "composite_types: union string field access" {
+    v := Value{ s: "world" }
+    if !testing.expect_equal_str("world", v.s) { return Error.Fail }
+}

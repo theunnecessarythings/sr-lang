@@ -59,3 +59,18 @@ test "control_flow: nested for loops" {
     if !testing.expect_equal_i64(4, count) { return Error.Fail }
 }
 
+test "control_flow: for loop empty range" {
+    sum := 0
+    for i in 0..0 {
+        sum = sum + i.(i64)
+    }
+    if !testing.expect_equal_i64(0, sum) { return Error.Fail }
+}
+
+test "control_flow: for loop single iteration inclusive" {
+    sum := 0
+    for i in 0..=0 {
+        sum = sum + i.(i64)
+    }
+    if !testing.expect_equal_i64(0, sum) { return Error.Fail }
+}

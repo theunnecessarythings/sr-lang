@@ -1654,7 +1654,7 @@ fn canStartPattern(self: *Parser, tag: Token.Tag) bool {
         return true;
     }
     return switch (tag) {
-        .dotdot, .dotdoteq, .lsquare, .lparen, .lcurly, .keyword_proc, .keyword_fn, .keyword_extern, .keyword_any, .keyword_type, .keyword_noreturn, .keyword_complex, .keyword_simd, .keyword_tensor, .keyword_struct, .keyword_union, .keyword_enum, .keyword_variant, .keyword_error, .keyword_return, .keyword_import, .keyword_typeof, .keyword_async, .keyword_if, .keyword_while, .keyword_match, .keyword_for, .keyword_break, .keyword_continue, .keyword_unreachable, .keyword_null, .keyword_undefined, .keyword_defer, .keyword_errdefer => true,
+        .plus, .minus, .dotdot, .dotdoteq, .lsquare, .lparen, .lcurly, .keyword_proc, .keyword_fn, .keyword_extern, .keyword_any, .keyword_type, .keyword_noreturn, .keyword_complex, .keyword_simd, .keyword_tensor, .keyword_struct, .keyword_union, .keyword_enum, .keyword_variant, .keyword_error, .keyword_return, .keyword_import, .keyword_typeof, .keyword_async, .keyword_if, .keyword_while, .keyword_match, .keyword_for, .keyword_break, .keyword_continue, .keyword_unreachable, .keyword_null, .keyword_undefined, .keyword_defer, .keyword_errdefer => true,
         else => false,
     };
 }
@@ -1780,6 +1780,11 @@ fn parsePatPrimary(self: *Parser) !cst.PatternId {
     switch (self.cur.tag) {
         .char_literal, .string_literal, .raw_string_literal, .integer_literal, .float_literal, .keyword_true, .keyword_false => {
             const lit_expr = try self.nud(self.cur.tag, .expr_no_struct); // will consume token
+            const loc = self.toLocId(self.cur.loc);
+            return self.addPat(.Literal, .{ .expr = lit_expr, .loc = loc });
+        },
+        .plus, .minus => {
+            const lit_expr = try self.nud(self.cur.tag, .expr_no_struct);
             const loc = self.toLocId(self.cur.loc);
             return self.addPat(.Literal, .{ .expr = lit_expr, .loc = loc });
         },

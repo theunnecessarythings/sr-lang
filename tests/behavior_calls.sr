@@ -43,3 +43,7 @@ test "expressions_operators: nested function calls" {
     if !testing.expect_equal_i64(20, r.(i64)) { return Error.Fail }
 }
 
+test "expressions_operators: call in argument position" {
+    r := add(get_answer(), 8)
+    if !testing.expect_equal_i64(50, r.(i64)) { return Error.Fail }
+}

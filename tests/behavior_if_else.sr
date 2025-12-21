@@ -55,3 +55,16 @@ test "control_flow: nested if-else" {
 
     if !testing.expect_equal_i64(1, result.(i64)) { return Error.Fail }
 }
+
+test "control_flow: if expression with block values" {
+    x := 3
+    result := if x < 0 {
+        tmp := 1
+        tmp
+    } else {
+        tmp := 2
+        tmp + 1
+    }
+
+    if !testing.expect_equal_i64(3, result.(i64)) { return Error.Fail }
+}

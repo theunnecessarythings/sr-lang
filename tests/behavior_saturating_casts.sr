@@ -26,3 +26,8 @@ test "casts: i32 to u8 saturating (overflow max)" {
     if !testing.expect_equal_i64(255, saturated_to_u8.(i64)) { return Error.Fail }
 }
 
+test "casts: u16 to u8 saturating (in range)" {
+    x: u16 = 200
+    r := x.|u8
+    if !testing.expect_equal_i64(200, r.(i64)) { return Error.Fail }
+}

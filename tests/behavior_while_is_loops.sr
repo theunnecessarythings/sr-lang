@@ -38,3 +38,12 @@ test "control_flow: while is with break" {
     if !testing.expect_equal_i64(10, count.(i64)) { return Error.Fail }
 }
 
+test "control_flow: while is no match" {
+    maybe_value := Option.None
+    ran := false
+    while is Option.Some(x) := maybe_value {
+        _ = x
+        ran = true
+    }
+    testing.expect(!ran, "loop should not run for None")!
+}

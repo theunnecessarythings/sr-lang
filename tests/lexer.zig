@@ -338,16 +338,16 @@ test "number literals decimal" {
     try testSingle("0.0", &.{.float_literal});
     try testSingle("1.0", &.{.float_literal});
     try testSingle("10.0", &.{.float_literal});
-    try testSingle("0e0", &.{.integer_literal});
-    try testSingle("1e0", &.{.integer_literal});
-    try testSingle("1e100", &.{.integer_literal});
+    try testSingle("0e0", &.{.float_literal});
+    try testSingle("1e0", &.{.float_literal});
+    try testSingle("1e100", &.{.float_literal});
     try testSingle("1.0e100", &.{.float_literal});
     try testSingle("1.0e+100", &.{.float_literal});
     try testSingle("1.0e-100", &.{.float_literal});
     try testSingle("1_0_0_0.0_0_0_0_0_1e1_0_0_0", &.{.float_literal});
 
     try testSingle("1.", &.{ .integer_literal, .dot });
-    try testSingle("1e", &.{.integer_literal});
+    try testSingle("1e", &.{.float_literal});
     try testSingle("1.e100", &.{.float_literal});
     try testSingle("1.0e1f0", &.{.float_literal});
     try testSingle("1.0p100", &.{.float_literal});

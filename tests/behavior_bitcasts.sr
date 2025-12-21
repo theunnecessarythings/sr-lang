@@ -20,3 +20,8 @@ test "casts: u32 to i32 bitcast" {
     if !testing.expect_equal_i64(-1, y.(i64)) { return Error.Fail }
 }
 
+test "casts: i32 to u32 bitcast" {
+    x: i32 = -1
+    y := x.^u32
+    if !testing.expect_equal_i64(0xFFFF_FFFF, y.(i64)) { return Error.Fail }
+}

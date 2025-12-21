@@ -25,6 +25,12 @@ test "composite_types: slice length" {
     if !testing.expect_equal_i64(3, slice.len.(i64)) { return Error.Fail }
 }
 
+test "composite_types: empty slice" {
+    arr := [1, 2, 3, 4, 5]
+    slice := arr[2 .. 2]
+    if !testing.expect_equal_i64(0, slice.len.(i64)) { return Error.Fail }
+}
+
 test "composite_types: modifying slice elements affects array" {
     arr := [1, 2, 3, 4, 5]
     slice := arr[1 .. 4]

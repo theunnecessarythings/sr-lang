@@ -59,19 +59,29 @@ pub const LoopCtx = struct {
 pub const Env = struct {
     /// Current binding map used for lowering variables and temporaries.
     map: std.AutoArrayHashMapUnmanaged(ast.StrId, ValueBinding) = .{},
+    /// Stack of binding snapshots for each scope (used to restore shadowed names).
+    bindings: List(LowerTir.EnvBindingSnapshot) = .{},
     /// Stack of defers registered while entering statements.
     defers: List(DeferEntry) = .{},
     /// Markers that capture the defer depth for each pushed scope.
     marks: List(u32) = .{},
+    /// Markers that capture the binding snapshot depth for each pushed scope.
+    binding_marks: List(u32) = .{},
 
     /// Release allocator-backed resources owned by the environment.
     pub fn deinit(self: *Env, gpa: std.mem.Allocator) void {
         self.map.deinit(gpa);
+        self.bindings.deinit(gpa);
         self.defers.deinit(gpa);
         self.marks.deinit(gpa);
+        self.binding_marks.deinit(gpa);
     }
     /// Bind `name` to `vb` for the remainder of this scope.
     pub fn bind(self: *Env, gpa: std.mem.Allocator, name: tir.StrId, vb: ValueBinding, builder: *tir.Builder, blk: *tir.Builder.BlockFrame, loc: tir.OptLocId) !void {
+        if (self.binding_marks.items.len != 0) {
+            const prev = self.map.get(name);
+            try self.bindings.append(gpa, .{ .name = name, .prev = prev });
+        }
         try self.map.put(gpa, name, vb);
         if (codegen.enable_debug_info) {
             const res = builder.freshValue();
@@ -100,13 +110,24 @@ pub const Env = struct {
     /// Start a new lexical scope by recording the current defer depth.
     pub fn pushScope(self: *Env, gpa: std.mem.Allocator) !void {
         try self.marks.append(gpa, @intCast(self.defers.items.len));
+        try self.binding_marks.append(gpa, @intCast(self.bindings.items.len));
     }
     /// Exit the most recent scope, rolling back defers to the saved mark.
-    pub fn popScope(self: *Env) u32 {
+    pub fn popScope(self: *Env, gpa: std.mem.Allocator) u32 {
         if (self.marks.items.len == 0) return 0;
         const mark = self.marks.items[self.marks.items.len - 1];
         self.marks.items.len -= 1;
         self.defers.items.len = mark;
+        if (self.binding_marks.items.len != 0) {
+            const bmark = self.binding_marks.items[self.binding_marks.items.len - 1];
+            self.binding_marks.items.len -= 1;
+            var i: usize = self.bindings.items.len;
+            while (i > bmark) : (i -= 1) {
+                const entry = self.bindings.items[i - 1];
+                self.restoreBinding(gpa, entry.name, entry.prev) catch {};
+            }
+            self.bindings.items.len = bmark;
+        }
         return mark;
     }
 };
@@ -473,7 +494,29 @@ pub fn matchPattern(
             const vs = a.pats.get(.VariantStruct, pid);
             const vk = self.context.type_store.getKind(scrut_ty);
             if (vk == .Struct) {
-                return blk.builder.tirValue(.ConstBool, blk, self.context.type_store.tBool(), loc, .{ .value = true });
+                const pat_fields = a.pats.field_pool.slice(vs.fields);
+                const value_struct_ty = self.context.type_store.get(.Struct, scrut_ty);
+                const value_fields = self.context.type_store.field_pool.slice(value_struct_ty.fields);
+                var all_match = blk.builder.tirValue(.ConstBool, blk, self.context.type_store.tBool(), loc, .{ .value = true });
+                for (pat_fields) |pat_field_id| {
+                    const pat_field = a.pats.StructField.get(pat_field_id);
+                    var found = false;
+                    var j: usize = 0;
+                    while (j < value_fields.len) : (j += 1) {
+                        const val_field = self.context.type_store.Field.get(value_fields[j]);
+                        if (pat_field.name.eq(val_field.name)) {
+                            const field_val = blk.builder.extractField(blk, val_field.ty, scrut, @intCast(j), loc);
+                            const field_match = try matchPattern(self, ctx, a, env, f, blk, pat_field.pattern, field_val, val_field.ty, loc);
+                            all_match = blk.builder.binBool(blk, .LogicalAnd, all_match, field_match, loc);
+                            found = true;
+                            break;
+                        }
+                    }
+                    if (!found) {
+                        return blk.builder.tirValue(.ConstBool, blk, self.context.type_store.tBool(), loc, .{ .value = false });
+                    }
+                }
+                return all_match;
             }
 
             const segs = a.pats.seg_pool.slice(vs.path);
@@ -579,7 +622,54 @@ pub fn matchPattern(
             );
         },
         .Tuple, .Struct => {
-            return blk.builder.tirValue(.ConstBool, blk, self.context.type_store.tBool(), loc, .{ .value = true });
+            if (a.kind(pid) == .Tuple) {
+                if (self.context.type_store.getKind(scrut_ty) != .Tuple) {
+                    return blk.builder.tirValue(.ConstBool, blk, self.context.type_store.tBool(), loc, .{ .value = false });
+                }
+                const tp = a.pats.get(.Tuple, pid);
+                const pat_elems = a.pats.pat_pool.slice(tp.elems);
+                const value_tuple_ty = self.context.type_store.get(.Tuple, scrut_ty);
+                const value_elems = self.context.type_store.type_pool.slice(value_tuple_ty.elems);
+                if (pat_elems.len != value_elems.len) {
+                    return blk.builder.tirValue(.ConstBool, blk, self.context.type_store.tBool(), loc, .{ .value = false });
+                }
+                var all_match = blk.builder.tirValue(.ConstBool, blk, self.context.type_store.tBool(), loc, .{ .value = true });
+                var i: usize = 0;
+                while (i < pat_elems.len) : (i += 1) {
+                    const elem_val = blk.builder.extractField(blk, value_elems[i], scrut, @intCast(i), loc);
+                    const elem_match = try matchPattern(self, ctx, a, env, f, blk, pat_elems[i], elem_val, value_elems[i], loc);
+                    all_match = blk.builder.binBool(blk, .LogicalAnd, all_match, elem_match, loc);
+                }
+                return all_match;
+            }
+
+            if (self.context.type_store.getKind(scrut_ty) != .Struct) {
+                return blk.builder.tirValue(.ConstBool, blk, self.context.type_store.tBool(), loc, .{ .value = false });
+            }
+            const sp = a.pats.get(.Struct, pid);
+            const pat_fields = a.pats.field_pool.slice(sp.fields);
+            const value_struct_ty = self.context.type_store.get(.Struct, scrut_ty);
+            const value_fields = self.context.type_store.field_pool.slice(value_struct_ty.fields);
+            var all_match = blk.builder.tirValue(.ConstBool, blk, self.context.type_store.tBool(), loc, .{ .value = true });
+            for (pat_fields) |pat_field_id| {
+                const pat_field = a.pats.StructField.get(pat_field_id);
+                var found = false;
+                var j: usize = 0;
+                while (j < value_fields.len) : (j += 1) {
+                    const val_field = self.context.type_store.Field.get(value_fields[j]);
+                    if (pat_field.name.eq(val_field.name)) {
+                        const field_val = blk.builder.extractField(blk, val_field.ty, scrut, @intCast(j), loc);
+                        const field_match = try matchPattern(self, ctx, a, env, f, blk, pat_field.pattern, field_val, val_field.ty, loc);
+                        all_match = blk.builder.binBool(blk, .LogicalAnd, all_match, field_match, loc);
+                        found = true;
+                        break;
+                    }
+                }
+                if (!found) {
+                    return blk.builder.tirValue(.ConstBool, blk, self.context.type_store.tBool(), loc, .{ .value = false });
+                }
+            }
+            return all_match;
         },
     }
 }

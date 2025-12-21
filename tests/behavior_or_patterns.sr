@@ -34,3 +34,12 @@ test "patterns: or-pattern with enum variants" {
 
     if !testing.expect_equal_str("Inactive", result) { return Error.Fail }
 }
+
+test "patterns: or-pattern no match falls through" {
+    x := 9
+    result := match x {
+        1 | 2 | 3 => "Small",
+        _ => "Other",
+    }
+    if !testing.expect_equal_str("Other", result) { return Error.Fail }
+}

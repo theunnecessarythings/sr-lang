@@ -32,3 +32,14 @@ test "casts: float to float (wider to narrower)" {
     if !testing.expect_equal_f64(3.141593, y.(f64), 0.000001) { return Error.Fail }
 }
 
+test "casts: integer to integer (signed to unsigned)" {
+    x: i32 = -1
+    y := x.(u32)
+    if !testing.expect_equal_i64(0xFFFF_FFFF, y.(i64)) { return Error.Fail }
+}
+
+test "casts: float to integer (negative truncation)" {
+    x := -123.99
+    y := x.(i32)
+    if !testing.expect_equal_i64(-123, y.(i64)) { return Error.Fail }
+}

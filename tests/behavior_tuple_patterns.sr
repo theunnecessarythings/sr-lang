@@ -45,3 +45,12 @@ test "patterns: nested tuple patterns" {
         _ => testing.fail("Matched other pattern")!,
     }
 }
+
+test "patterns: tuple pattern mismatch falls through" {
+    t := (1, 2)
+    result := match t {
+        (2, 1) => "Swap",
+        _ => "Default",
+    }
+    if !testing.expect_equal_str("Default", result) { return Error.Fail }
+}

@@ -19,6 +19,10 @@ factorial :: fn(n: i64) i64 {
 
 add_inline :: @[inline] fn(a: i32, b: i32) i32 { return a + b }
 
+sum3 :: fn(a: i32, b: i32, c: i32) i32 {
+    return a + b + c
+}
+
 test "declarations: basic function with parameters and return" {
     r := add(5, 7)
     if !testing.expect_equal_i64(12, r.(i64)) { return Error.Fail }
@@ -44,3 +48,7 @@ test "declarations: function with inline attribute" {
     if !testing.expect_equal_i64(25, r.(i64)) { return Error.Fail }
 }
 
+test "declarations: function with multiple params" {
+    r := sum3(1, 2, 3)
+    if !testing.expect_equal_i64(6, r.(i64)) { return Error.Fail }
+}

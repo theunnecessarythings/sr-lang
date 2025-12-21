@@ -66,3 +66,8 @@ test "error_handling: catch expression with error binding" {
     }
     if !testing.expect_equal_i64(-1, r.(i64)) { return Error.Fail }
 }
+
+test "error_handling: catch default value" {
+    r := do_something(false) catch 0
+    if !testing.expect_equal_i64(10, r.(i64)) { return Error.Fail }
+}

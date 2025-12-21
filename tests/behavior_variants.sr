@@ -47,3 +47,12 @@ test "composite_types: nested variants" {
         _ => testing.fail("Matched other nested variant")!,
     }
 }
+
+test "composite_types: match unit variant in else" {
+    o := Outer.Unwrap
+    match o {
+        Outer.Wrap(_) => testing.fail("Expected Unwrap")!,
+        Outer.Unwrap => {
+        },
+    }
+}

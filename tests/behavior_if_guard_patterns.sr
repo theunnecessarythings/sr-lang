@@ -33,3 +33,11 @@ test "patterns: match with if guard on variant payload" {
     }
 }
 
+test "patterns: if guard false falls through" {
+    x := 4
+    result := match x {
+        y if y > 10 => "Big",
+        _ => "Small",
+    }
+    if !testing.expect_equal_str("Small", result) { return Error.Fail }
+}

@@ -54,3 +54,10 @@ test "expressions_operators: saturating shift clamps to max" {
     r := x <<| 2.(u8)
     if !testing.expect_equal_i64(255, r.(i64)) { return Error.Fail }
 }
+
+test "expressions_operators: wrapping subtraction" {
+    x: u8 = 5
+    y: u8 = 10
+    r := x -% y
+    if !testing.expect_equal_i64(251, r.(i64)) { return Error.Fail }
+}

@@ -34,3 +34,8 @@ test "error_handling: returning error from function" {
         0 // catch needs to return value if expression
     }
 }
+
+test "error_handling: catch without binding" {
+    value := parse_int("bad") catch 0
+    if !testing.expect_equal_i64(0, value.(i64)) { return Error.Fail }
+}

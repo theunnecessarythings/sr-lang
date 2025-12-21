@@ -56,3 +56,12 @@ test "patterns: array pattern with multiple heads and rest" {
         _ => testing.fail("Failed to match [first, second, ..rest]")!,
     }
 }
+
+test "patterns: array pattern mismatch falls through" {
+    arr := [1, 2, 3]
+    result := match arr {
+        [2, 3, 4] => "Hit",
+        _ => "Miss",
+    }
+    if !testing.expect_equal_str("Miss", result) { return Error.Fail }
+}

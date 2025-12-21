@@ -40,3 +40,15 @@ test "composite_types: array length from comptime binding" {
     if !testing.expect_equal_i64(9, arr[2].(i64)) { return Error.Fail }
 }
 
+test "composite_types: array length property" {
+    arr := [5, 6, 7, 8]
+    if !testing.expect_equal_i64(4, arr.len.(i64)) { return Error.Fail }
+}
+
+test "composite_types: array full slice" {
+    arr := [9, 8, 7]
+    slice := arr[0 .. arr.len]
+    if !testing.expect_equal_i64(3, slice.len.(i64)) { return Error.Fail }
+    if !testing.expect_equal_i64(9, slice[0].(i64)) { return Error.Fail }
+    if !testing.expect_equal_i64(7, slice[2].(i64)) { return Error.Fail }
+}

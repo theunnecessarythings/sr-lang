@@ -42,3 +42,13 @@ test "patterns: variable binding in if guard" {
 
     if !testing.expect_equal_str("Odd in range", result) { return Error.Fail }
 }
+
+test "patterns: variable binding with range and guard false" {
+    x := 12
+    result := match x {
+        y @ (10..20) if y % 2 != 0 => "Odd",
+        _ => "Other",
+    }
+
+    if !testing.expect_equal_str("Other", result) { return Error.Fail }
+}

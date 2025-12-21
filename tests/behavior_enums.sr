@@ -27,3 +27,10 @@ test "composite_types: enum in match expression" {
         Color.Blue => testing.fail("Matched Blue")!,
     }
 }
+
+test "composite_types: enum equality and inequality" {
+    a := State.Running
+    b := State.Paused
+    testing.expect(a != b, "enum values should differ")!
+    testing.expect(a == State.Running, "enum equality should hold")!
+}

@@ -58,3 +58,12 @@ test "patterns: nested variant pattern" {
         _ => testing.fail("Matched other variant")!,
     }
 }
+
+test "patterns: variant pattern mismatch falls through" {
+    o := Outer.Unwrap
+    result := match o {
+        Outer.Wrap(_) => "Wrap",
+        _ => "Other",
+    }
+    if !testing.expect_equal_str("Other", result) { return Error.Fail }
+}

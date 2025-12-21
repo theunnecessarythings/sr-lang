@@ -17,9 +17,19 @@ test "expressions_operators: less than" {
     testing.expect(r, "5 < 10 should be true")!
 }
 
+test "expressions_operators: less than or equal to" {
+    r := 10 <= 10
+    testing.expect(r, "10 <= 10 should be true")!
+}
+
 test "expressions_operators: greater than or equal to" {
     r := 10 >= 10
     testing.expect(r, "10 >= 10 should be true")
+}
+
+test "expressions_operators: greater than" {
+    r := 5 > -1
+    testing.expect(r, "5 > -1 should be true")!
 }
 
 test "expressions_operators: string equality" {

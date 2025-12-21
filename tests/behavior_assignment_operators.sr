@@ -38,3 +38,15 @@ test "expressions_operators: modulo assignment (integer)" {
     if !testing.expect_equal_i64(1, x.(i64)) { return Error.Fail }
 }
 
+test "expressions_operators: divide assignment (integer)" {
+    x := 20
+    x /= 5
+    if !testing.expect_equal_i64(4, x.(i64)) { return Error.Fail }
+}
+
+test "expressions_operators: chained assignments" {
+    x := 2
+    x += 3
+    x *= 4
+    if !testing.expect_equal_i64(20, x.(i64)) { return Error.Fail }
+}

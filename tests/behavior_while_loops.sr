@@ -46,3 +46,11 @@ test "control_flow: nested while loops" {
     }
     if !testing.expect_equal_i64(4, count.(i64)) { return Error.Fail }
 }
+
+test "control_flow: while loop zero iterations" {
+    i := 0
+    while false {
+        i = 1
+    }
+    if !testing.expect_equal_i64(0, i.(i64)) { return Error.Fail }
+}

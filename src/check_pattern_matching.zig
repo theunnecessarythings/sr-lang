@@ -395,8 +395,7 @@ fn checkLiteralPattern(self: *Checker, ctx: *Checker.CheckerContext, ast_unit: *
     const lit_expr_id = lp.expr;
     const lit_ty = try self.checkExpr(ctx, ast_unit, lit_expr_id);
     if (self.typeKind(lit_ty) == .TypeError) return false;
-    const lit_kind = ast_unit.exprs.get(.Literal, lit_expr_id).kind;
-    if (lit_kind == .string) {
+    if (self.typeKind(lit_ty) == .String) {
         if (emit) try self.context.diags.addError(pattern_loc, .string_equality_in_match_not_supported, .{});
         return false;
     }
@@ -527,7 +526,7 @@ pub fn checkPattern(
                 .origin_decl = .none(),
                 .origin_param = .none(),
             });
-            return try checkPattern(self, ctx, ast_unit, ap.pattern, value_ty, false);
+            return try checkPattern(self, ctx, ast_unit, ap.pattern, value_ty, emit);
         },
         .Binding => {
             const bp = ast_unit.pats.get(.Binding, pid);

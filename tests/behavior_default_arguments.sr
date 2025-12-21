@@ -31,3 +31,9 @@ test "functions: function with multiple default arguments" {
         return Error.Fail
     }
 }
+
+test "functions: default argument with explicit false" {
+    if !testing.expect_equal_str("User: UserZ, ID: 0, Active: 0", configure("UserZ", 0, false)) {
+        return Error.Fail
+    }
+}

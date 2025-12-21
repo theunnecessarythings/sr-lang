@@ -85,3 +85,12 @@ test "special_types: optional orelse return expression" {
     if !testing.expect_equal_i64(321, use_optional(some).(i64)) { return Error.Fail }
     if !testing.expect_equal_i64(-1, use_optional(none).(i64)) { return Error.Fail }
 }
+
+test "special_types: optional orelse default" {
+    some: ?i32 = 5
+    none: ?i32 = null
+    r1 := some orelse 7
+    r2 := none orelse 7
+    if !testing.expect_equal_i64(5, r1.(i64)) { return Error.Fail }
+    if !testing.expect_equal_i64(7, r2.(i64)) { return Error.Fail }
+}

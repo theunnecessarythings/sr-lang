@@ -41,3 +41,7 @@ test "expressions_operators: nested tuple element access" {
     if !testing.expect_equal_str("nested", t.1.0) { return Error.Fail }
 }
 
+test "expressions_operators: deep struct chain access" {
+    r := Rect{ tl: Point{ x: -1, y: -2 }, br: Point{ x: 3, y: 4 } }
+    if !testing.expect_equal_i64(-2, r.tl.y.(i64)) { return Error.Fail }
+}

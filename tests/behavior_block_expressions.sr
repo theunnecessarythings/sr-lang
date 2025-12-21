@@ -36,3 +36,9 @@ test "misc: block with variable scoping" {
     if !testing.expect_equal_i64(10, outer_var.(i64)) { return Error.Fail }
 }
 
+test "misc: block expression with if" {
+    x := {
+        if true { 7 } else { 9 }
+    }
+    if !testing.expect_equal_i64(7, x.(i64)) { return Error.Fail }
+}
