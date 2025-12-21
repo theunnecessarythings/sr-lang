@@ -126,6 +126,8 @@ pub const OpKind = enum(u16) {
     ComplexMake,
     RangeMake,
     Broadcast,
+    // Async
+    Await,
     // Debug
     DbgDeclare,
 };
@@ -247,6 +249,8 @@ pub const Rows = struct {
     pub const RangeMake = struct { result: ValueId, ty: types.TypeId, start: ValueId, end: ValueId, inclusive: ValueId, loc: OptLocId };
     /// Broadcast struct definition used by the compiler.
     pub const Broadcast = struct { result: ValueId, ty: types.TypeId, value: ValueId, loc: OptLocId };
+    /// Await struct definition used by the compiler.
+    pub const Await = struct { result: ValueId, ty: types.TypeId, operand: ValueId, loc: OptLocId };
     /// DbgDeclare struct definition used by the compiler.
     pub const DbgDeclare = struct { result: ValueId, ty: types.TypeId, value: ValueId, name: StrId, loc: OptLocId };
 
@@ -320,6 +324,7 @@ pub inline fn RowT(comptime K: OpKind) type {
         .ComplexMake => Rows.ComplexMake,
         .RangeMake => Rows.RangeMake,
         .Broadcast => Rows.Broadcast,
+        .Await => Rows.Await,
         .DbgDeclare => Rows.DbgDeclare,
     };
 }
@@ -409,6 +414,7 @@ pub const InstrStore = struct {
     ComplexMake: Table(Rows.ComplexMake) = .{},
     RangeMake: Table(Rows.RangeMake) = .{},
     Broadcast: Table(Rows.Broadcast) = .{},
+    Await: Table(Rows.Await) = .{},
     DbgDeclare: Table(Rows.DbgDeclare) = .{},
 
     // aux tables
@@ -541,6 +547,7 @@ pub const FuncRows = struct {
         is_extern: bool,
         attrs: RangeAttribute,
         is_triton_fn: bool,
+        is_async: bool,
     };
     /// Global struct definition used by the compiler.
     pub const Global = struct { name: StrId, ty: types.TypeId, init: ConstInit };
@@ -678,6 +685,7 @@ pub const Builder = struct {
         is_extern: bool,
         attrs: RangeAttribute,
         is_triton_fn: bool,
+        is_async: bool,
     ) !FunctionFrame {
         const idx = self.t.funcs.Function.add(self.gpa, .{
             .name = name,
@@ -688,6 +696,7 @@ pub const Builder = struct {
             .is_extern = is_extern,
             .attrs = attrs,
             .is_triton_fn = is_triton_fn,
+            .is_async = is_async,
         });
         // Add to global function map
         try context.global_func_map.put(name, .{ idx, &self.t.funcs });
@@ -1909,6 +1918,18 @@ pub const TirPrinter = struct {
                 try self.pv(r.result);
                 try self.writer.writeAll(" = Broadcast value=");
                 try self.pv(r.value);
+                try self.writer.print(" : {f})\n", .{self.tf(r.ty)});
+            },
+
+            .Await => {
+                const r = self.tir.instrs.get(.Await, iid);
+                try self.ws();
+                try self.writer.writeByte('(');
+                try self.pi(iid);
+                try self.writer.writeAll(" ");
+                try self.pv(r.result);
+                try self.writer.writeAll(" = Await operand=");
+                try self.pv(r.operand);
                 try self.writer.print(" : {f})\n", .{self.tf(r.ty)});
             },
 

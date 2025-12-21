@@ -670,6 +670,7 @@ pub const TypeKind = enum(u8) {
     MlirAttribute,
     MlirType,
     TypeType,
+    Future,
     Noreturn,
     Ast,
     TypeError,
@@ -705,6 +706,7 @@ pub const Rows = struct {
     pub const DynArray = struct { elem: TypeId };
     pub const Map = struct { key: TypeId, value: TypeId };
     pub const Optional = struct { elem: TypeId };
+    pub const Future = struct { elem: TypeId };
     pub const Tuple = struct { elems: RangeType };
     pub const Function = struct { params: RangeType, result: TypeId, is_variadic: bool, is_pure: bool, is_extern: bool };
     pub const Field = struct { name: StrId, ty: TypeId };
@@ -788,6 +790,7 @@ pub const TypeStore = struct {
     DynArray: Table(Rows.DynArray) = .{},
     Map: Table(Rows.Map) = .{},
     Optional: Table(Rows.Optional) = .{},
+    Future: Table(Rows.Future) = .{},
     Tuple: Table(Rows.Tuple) = .{},
     Function: Table(Rows.Function) = .{},
     Field: Table(Rows.Field) = .{},
@@ -1233,6 +1236,11 @@ pub const TypeStore = struct {
         if (self.findOptional(elem)) |id| return id;
         return self.addLocked(.Optional, .{ .elem = elem });
     }
+    /// mkFuture type system helper.
+    pub fn mkFuture(self: *TypeStore, elem: TypeId) TypeId {
+        if (self.findFuture(elem)) |id| return id;
+        return self.addLocked(.Future, .{ .elem = elem });
+    }
     /// isOptionalPointer type system helper.
     pub fn isOptionalPointer(self: *TypeStore, ty: TypeId) bool {
         if (self.index.kinds.items[ty.toRaw()] != .Optional) return false;
@@ -1450,6 +1458,16 @@ pub const TypeStore = struct {
             }
         });
     }
+    /// findFuture type system helper.
+    fn findFuture(self: *TypeStore, elem: TypeId) ?TypeId {
+        return self.findMatch(.Future, elem, struct {
+            /// eq type system helper.
+            fn eq(s: *const TypeStore, row: Rows.Future, key: TypeId) bool {
+                _ = s;
+                return row.elem.eq(key);
+            }
+        });
+    }
     /// findTuple type system helper.
     fn findTuple(self: *TypeStore, elems: []const TypeId) ?TypeId {
         return self.findMatch(.Tuple, elems, struct {
@@ -1647,6 +1665,12 @@ pub const TypeStore = struct {
                 const r = self.get(.Optional, id);
                 try w.print("?", .{});
                 try self.fmt(r.elem, w);
+            },
+            .Future => {
+                const r = self.get(.Future, id);
+                try w.print("future<", .{});
+                try self.fmt(r.elem, w);
+                try w.print(">", .{});
             },
             .Tuple => {
                 const r = self.get(.Tuple, id);
@@ -1852,6 +1876,12 @@ pub const TypeStore = struct {
                 const r = self.get(.Optional, type_id);
                 try writer.print("?", .{});
                 try self.fmtDiagnostic(r.elem, writer, options, depth + 1);
+            },
+            .Future => {
+                const r = self.get(.Future, type_id);
+                try writer.print("future<", .{});
+                try self.fmtDiagnostic(r.elem, writer, options, depth + 1);
+                try writer.print(">", .{});
             },
 
             // Complex types

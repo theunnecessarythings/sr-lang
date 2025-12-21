@@ -76,12 +76,10 @@ To build and run the compiler, you will need:
 git clone https://github.com/llvm/llvm-project
 export LLVM_HOME=llvm-project
 
-# Install libc++
-sudo apt install libc++-dev libc++abi-dev # For Ubuntu/Debian
 cd llvm-project
 mkdir build
 cd build
-CXXFLAGS=-stdlib=libc++ cmake -G Ninja ../llvm    -DLLVM_ENABLE_PROJECTS=mlir     -DLLVM_TARGETS_TO_BUILD="Native;NVPTX;AMDGPU"    -DCMAKE_BUILD_TYPE=Release    -DLLVM_ENABLE_ASSERTIONS=ON  -DCMAKE_C_COMPILER="clang" -DCMAKE_CXX_COMPILER="clang++" -DLLVM_ENABLE_LLD=ON
+cmake -G Ninja ../llvm    -DLLVM_ENABLE_PROJECTS=mlir;llvm     -DLLVM_TARGETS_TO_BUILD="Native;NVPTX;AMDGPU"    -DCMAKE_BUILD_TYPE=Release    -DLLVM_ENABLE_ASSERTIONS=ON  -DCMAKE_C_COMPILER="clang" -DCMAKE_CXX_COMPILER="clang++" -DLLVM_ENABLE_LLD=ON
 ninja
 cmake --install .
 ```
@@ -94,11 +92,15 @@ Navigate to the root of the `sr-lang` repository and run:
 zig build
 ```
 
+Release Build:
+
+```
+zig build -Doptimize=ReleaseFast
+```
+
 This command will compile the `sr-lang` compiler executable.
 
 ### Running Examples
-
-**Please Note:** As of now, only the `examples/hello.sr` example is fully functional and runnable. Other examples demonstrate language features and syntax but may not compile or execute correctly yet.
 
 To run the "hello world" example:
 
@@ -112,48 +114,55 @@ Alternatively, after building, you can directly run the executable:
 ./zig-out/bin/sr_lang examples/hello.sr
 ```
 
-## 🌳 Tree-sitter Grammar
-
-Experimental Tree-sitter support for the language is available in `tools/tree-sitter-sr`.
-
-### Generate & Test the Parser
-
-> **Heads-up:** The commands below require the `tree-sitter` CLI. The CLI is normally
-> installed via `npm install`, which downloads packages from the public npm registry.
-> The execution environment used for automated checks in this repository does not
-> have outbound network access, so `npm install` will fail there. Run these commands
-> on a machine with internet access (or with the CLI already installed) when you need
-> to regenerate or test the grammar.
+Release Version. (Why two different names? Because I can.)
 
 ```bash
-cd tools/tree-sitter-sr
-npm install
-npx tree-sitter generate
-npx tree-sitter test
+./zig-out/bin/src examples/hello.sr
 ```
 
-### Parse Sample Code
+### Building Vendor Packages
+
+#### Building Triton
 
 ```bash
-npx tree-sitter parse ../../examples/hello.sr
+cd third-party/triton # make sure to pull submodules
+python -m venv .venv --prompt triton
+source .venv/bin/activate
+pip install -r python/requirements.txt # build-time dependencies
+export LLVM_BUILD_DIR=$HOME/llvm-project/build
+LLVM_INCLUDE_DIRS=$LLVM_BUILD_DIR/include \
+         LLVM_LIBRARY_DIR=$LLVM_BUILD_DIR/lib \
+         LLVM_SYSPATH=$LLVM_BUILD_DIR \
+         pip install -e .
+
 ```
 
-### Neovim Integration
+### GLFW3, SDL3, Raylib
 
-The repository ships with a minimal Neovim plugin in `tools/nvim-sr`. To try it out:
+Install via system package manager.
+
+### Torch
+
+Download LibTorch from PyTorch website and extract to an appropriate location.
 
 ```bash
-mkdir -p ~/.config/nvim/pack/sr/start
-ln -s $(pwd)/tools/nvim-sr ~/.config/nvim/pack/sr/start/sr-lang
+export LIBTORCH=path/to/libtorch
+cd vendor/torch/torch-sys/libtch
+make
 ```
 
-Then restart Neovim and run:
+To link torch, link `vendor/torch/torch-sys/libtch/libtorch_api.so`.
 
-```vim
-:TSInstallFromGrammar sr
+### Skia
+
+Install Skia using system package manager if available, or build from source.
+
+```bash
+cd vendor/skiac
+make
 ```
 
-This will compile and install the grammar, enabling syntax highlighting for `.sr` files.
+To link skia, link `vendor/skiac/libskia.so`.
 
 ## 🚧 Current Status
 
@@ -161,14 +170,15 @@ The language is in an **alpha** state. This means:
 
 - The language syntax and semantics are subject to change.
 - Many features are implemented but may not be fully stable or correctly integrated.
-- Only basic programs (like "hello world") are expected to compile and run successfully.
 - The compiler is under active development, and contributions are welcome (see below).
 
 ## 📂 Project Structure
 
 - `src/`: Contains the core Zig source code for the compiler, including AST definitions, type checking, and MLIR code generation.
-- `grammar/`: Defines the language's lexical analysis (Flex) and parsing (Bison) rules. (Reference only)
 - `examples/`: A collection of `.sr` source files showcasing various language features and syntax.
+- `tests/`: A collection of `.sr` source files used for testing and validation.
+- `std/`: A very basic collection of standard library modules, such as `io`, `math`, and `string`.
+- `vendor/`: A collection of external packages that can be imported using the `import` keyword.
 - `build.zig`: The Zig build script for the project.
 
 ## 🤝 Contributing

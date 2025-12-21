@@ -334,7 +334,11 @@ const Formatter = struct {
             try self.emitCommentsBefore(start_loc);
             try self.printDecl(did);
 
-            self.updateLastWritten(row.loc);
+            var line_end = self.locEnd(row.loc);
+            while (line_end < self.source.len and self.source[line_end] != '\n') : (line_end += 1) {}
+            try self.flushComments(line_end);
+            self.last_written_loc = line_end;
+
             prev_kind = kind;
             prev_has_body = has_body;
         }
@@ -580,7 +584,11 @@ const Formatter = struct {
                     }
 
                     try self.printDecl(did);
-                    self.updateLastWritten(row.loc);
+
+                    var line_end = self.locEnd(row.loc);
+                    while (line_end < self.source.len and self.source[line_end] != '\n') : (line_end += 1) {}
+                    try self.flushComments(line_end);
+                    self.last_written_loc = line_end;
                 }
 
                 try self.emitCommentsBefore(block_loc.end);
@@ -622,13 +630,22 @@ const Formatter = struct {
                 if (node.trailing_comma and elems.len > 0) {
                     self.indent += 4;
                     for (elems) |el| {
-                        try self.newline();
+                        const el_kind = self.exprs.kind(el);
+                        const el_loc = exprLocFromId(self.exprs, el, el_kind);
+                        try self.emitCommentsBefore(el_loc.start);
+
+                        if (!self.lastCharIsNewline()) try self.newline();
                         try self.ws();
                         try self.printExpr(el);
                         try self.printLiteral(",");
+
+                        var line_end = el_loc.end;
+                        while (line_end < self.source.len and self.source[line_end] != '\n') : (line_end += 1) {}
+                        try self.flushComments(line_end);
+                        self.last_written_loc = line_end;
                     }
                     self.indent -= 4;
-                    try self.newline();
+                    if (!self.lastCharIsNewline()) try self.newline();
                     try self.ws();
                 } else {
                     for (elems, 0..) |el, i| {
@@ -677,13 +694,22 @@ const Formatter = struct {
                     try self.printLiteral("(");
                     self.indent += 4;
                     for (args) |arg| {
-                        try self.newline();
+                        const arg_kind = self.exprs.kind(arg);
+                        const arg_loc = exprLocFromId(self.exprs, arg, arg_kind);
+                        try self.emitCommentsBefore(arg_loc.start);
+
+                        if (!self.lastCharIsNewline()) try self.newline();
                         try self.ws();
                         try self.printExpr(arg);
                         try self.printLiteral(",");
+
+                        var line_end = arg_loc.end;
+                        while (line_end < self.source.len and self.source[line_end] != '\n') : (line_end += 1) {}
+                        try self.flushComments(line_end);
+                        self.last_written_loc = line_end;
                     }
                     self.indent -= 4;
-                    try self.newline();
+                    if (!self.lastCharIsNewline()) try self.newline();
                     try self.ws();
                     try self.printLiteral(")");
                 } else {
@@ -719,16 +745,23 @@ const Formatter = struct {
                     self.indent += 4;
                     for (fields) |fid| {
                         const field = self.exprs.StructFieldValue.get(fid);
-                        try self.newline();
+                        try self.emitCommentsBefore(self.locStart(field.loc));
+
+                        if (!self.lastCharIsNewline()) try self.newline();
                         try self.ws();
                         if (!field.name.isNone()) {
                             try self.printf("{s}: ", .{self.s(field.name.unwrap())});
                         }
                         try self.printExpr(field.value);
                         try self.printLiteral(",");
+
+                        var line_end = self.locEnd(field.loc);
+                        while (line_end < self.source.len and self.source[line_end] != '\n') : (line_end += 1) {}
+                        try self.flushComments(line_end);
+                        self.last_written_loc = line_end;
                     }
                     self.indent -= 4;
-                    try self.newline();
+                    if (!self.lastCharIsNewline()) try self.newline();
                     try self.ws();
                     try self.printLiteral("}");
                 } else {
@@ -803,6 +836,11 @@ const Formatter = struct {
                         try self.printExpr(arg);
                     }
                     try self.printLiteral(")");
+                }
+
+                if (!node.result_ty.isNone()) {
+                    try self.printLiteral(" : ");
+                    try self.printExpr(node.result_ty.unwrap());
                 }
 
                 if (node.pieces.len == 0) {
@@ -1061,13 +1099,21 @@ const Formatter = struct {
                 if (node.trailing_field_comma and fields.len > 0) {
                     self.indent += 4;
                     for (fields) |fid| {
-                        try self.newline();
+                        const field = self.exprs.StructField.get(fid);
+                        try self.emitCommentsBefore(self.locStart(field.loc));
+
+                        if (!self.lastCharIsNewline()) try self.newline();
                         try self.ws();
                         try self.printStructField(fid);
                         try self.printLiteral(",");
+
+                        var line_end = self.locEnd(field.loc);
+                        while (line_end < self.source.len and self.source[line_end] != '\n') : (line_end += 1) {}
+                        try self.flushComments(line_end);
+                        self.last_written_loc = line_end;
                     }
                     self.indent -= 4;
-                    try self.newline();
+                    if (!self.lastCharIsNewline()) try self.newline();
                     try self.ws();
                 } else if (fields.len > 0) {
                     for (fields, 0..) |fid, i| {
@@ -1093,7 +1139,9 @@ const Formatter = struct {
                     self.indent += 4;
                     for (fields) |eid| {
                         const field = self.exprs.EnumField.get(eid);
-                        try self.newline();
+                        try self.emitCommentsBefore(self.locStart(field.loc));
+
+                        if (!self.lastCharIsNewline()) try self.newline();
                         try self.ws();
                         try self.printAttrs(field.attrs, .Before);
                         try self.printf("{s}", .{self.s(field.name)});
@@ -1102,9 +1150,14 @@ const Formatter = struct {
                             try self.printExpr(field.value.unwrap());
                         }
                         try self.printLiteral(",");
+
+                        var line_end = self.locEnd(field.loc);
+                        while (line_end < self.source.len and self.source[line_end] != '\n') : (line_end += 1) {}
+                        try self.flushComments(line_end);
+                        self.last_written_loc = line_end;
                     }
                     self.indent -= 4;
-                    try self.newline();
+                    if (!self.lastCharIsNewline()) try self.newline();
                     try self.ws();
                 } else if (fields.len > 0) {
                     for (fields, 0..) |eid, i| {
@@ -1127,13 +1180,21 @@ const Formatter = struct {
                 if (node.trailing_field_comma and fields.len > 0) {
                     self.indent += 4;
                     for (fields) |fid| {
-                        try self.newline();
+                        const field = self.exprs.VariantField.get(fid);
+                        try self.emitCommentsBefore(self.locStart(field.loc));
+
+                        if (!self.lastCharIsNewline()) try self.newline();
                         try self.ws();
                         try self.printVariantField(fid);
                         try self.printLiteral(",");
+
+                        var line_end = self.locEnd(field.loc);
+                        while (line_end < self.source.len and self.source[line_end] != '\n') : (line_end += 1) {}
+                        try self.flushComments(line_end);
+                        self.last_written_loc = line_end;
                     }
                     self.indent -= 4;
-                    try self.newline();
+                    if (!self.lastCharIsNewline()) try self.newline();
                     try self.ws();
                 } else if (fields.len > 0) {
                     for (fields, 0..) |fid, i| {
@@ -1150,13 +1211,21 @@ const Formatter = struct {
                 if (node.trailing_field_comma and fields.len > 0) {
                     self.indent += 4;
                     for (fields) |fid| {
-                        try self.newline();
+                        const field = self.exprs.VariantField.get(fid);
+                        try self.emitCommentsBefore(self.locStart(field.loc));
+
+                        if (!self.lastCharIsNewline()) try self.newline();
                         try self.ws();
                         try self.printVariantField(fid);
                         try self.printLiteral(",");
+
+                        var line_end = self.locEnd(field.loc);
+                        while (line_end < self.source.len and self.source[line_end] != '\n') : (line_end += 1) {}
+                        try self.flushComments(line_end);
+                        self.last_written_loc = line_end;
                     }
                     self.indent -= 4;
-                    try self.newline();
+                    if (!self.lastCharIsNewline()) try self.newline();
                     try self.ws();
                 } else if (fields.len > 0) {
                     for (fields, 0..) |fid, i| {
@@ -1175,13 +1244,21 @@ const Formatter = struct {
                 if (node.trailing_field_comma and fields.len > 0) {
                     self.indent += 4;
                     for (fields) |fid| {
-                        try self.newline();
+                        const field = self.exprs.StructField.get(fid);
+                        try self.emitCommentsBefore(self.locStart(field.loc));
+
+                        if (!self.lastCharIsNewline()) try self.newline();
                         try self.ws();
                         try self.printStructField(fid);
                         try self.printLiteral(",");
+
+                        var line_end = self.locEnd(field.loc);
+                        while (line_end < self.source.len and self.source[line_end] != '\n') : (line_end += 1) {}
+                        try self.flushComments(line_end);
+                        self.last_written_loc = line_end;
                     }
                     self.indent -= 4;
-                    try self.newline();
+                    if (!self.lastCharIsNewline()) try self.newline();
                     try self.ws();
                 } else if (fields.len > 0) {
                     for (fields, 0..) |fid, i| {
@@ -1249,7 +1326,10 @@ const Formatter = struct {
             self.indent += 4;
             for (params) |pid| {
                 const param = self.exprs.Param.get(pid);
-                try self.newline();
+                const start = self.locStart(param.loc);
+                try self.emitCommentsBefore(start);
+
+                if (!self.lastCharIsNewline()) try self.newline();
                 try self.ws();
                 try self.printAttrs(param.attrs, .After);
                 if (param.is_comptime) {
@@ -1269,9 +1349,15 @@ const Formatter = struct {
                     try self.printExpr(param.value.unwrap());
                 }
                 try self.printLiteral(",");
+
+                // Find the end of the line to handle any inline comments
+                var line_end = self.locEnd(param.loc);
+                while (line_end < self.source.len and self.source[line_end] != '\n') : (line_end += 1) {}
+                try self.flushComments(line_end);
+                self.last_written_loc = line_end;
             }
             self.indent -= 4;
-            try self.newline();
+            if (!self.lastCharIsNewline()) try self.newline();
             try self.ws();
             return;
         }

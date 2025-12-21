@@ -2668,7 +2668,7 @@ pub fn checkExpr(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, id: a
             break :blk result_ty;
         },
         .CodeBlock => try self.checkCodeBlock(ctx, ast_unit, id),
-        .AsyncBlock => try self.checkAsyncBlock(id),
+        .AsyncBlock => try self.checkAsyncBlock(ctx, ast_unit, id),
         .MlirBlock => try self.checkMlirBlock(ctx, ast_unit, id),
         .Insert => try self.checkInsert(ctx, ast_unit, id),
         .Return => try self.checkReturn(ctx, ast_unit, getExpr(ast_unit, .Return, id)),
@@ -2686,7 +2686,7 @@ pub fn checkExpr(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, id: a
         .ErrDefer => try self.checkErrDefer(ctx, ast_unit, getExpr(ast_unit, .ErrDefer, id)),
         .ErrUnwrap => try self.checkErrUnwrap(ctx, ast_unit, id),
         .OptionalUnwrap => try self.checkOptionalUnwrap(ctx, ast_unit, id),
-        .Await => try self.checkAwait(id),
+        .Await => try self.checkAwait(ctx, ast_unit, id),
         .Closure => try self.checkClosure(ctx, ast_unit, id),
         .Cast => try self.checkCast(ctx, ast_unit, id),
         .Catch => try self.checkCatch(ctx, ast_unit, id),
@@ -3702,7 +3702,11 @@ fn checkFunctionLit(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, id
     const is_variadic = fnr.flags.is_variadic and fnr.flags.is_extern;
 
     // Temporarily record a function type (purity will be finalized after body analysis)
-    const temp_ty = self.context.type_store.mkFunction(pbuf, res, is_variadic, true, fnr.flags.is_extern);
+    var temp_res = res;
+    if (fnr.flags.is_async) {
+        temp_res = self.context.type_store.mkFuture(res);
+    }
+    const temp_ty = self.context.type_store.mkFunction(pbuf, temp_res, is_variadic, true, fnr.flags.is_extern);
     ast_unit.type_info.expr_types.items[id.toRaw()] = temp_ty;
 
     const result_kind = self.typeKind(res);
@@ -3718,8 +3722,12 @@ fn checkFunctionLit(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, id
     // Extern procs are considered impure; otherwise proc purity comes from body analysis.
     const func_ctx = ctx.func_stack.items[ctx.func_stack.items.len - 1];
     const refined_res = func_ctx.inferred_result orelse res;
+    var actual_res = refined_res;
+    if (fnr.flags.is_async) {
+        actual_res = self.context.type_store.mkFuture(refined_res);
+    }
     const is_pure = if (fnr.flags.is_proc) false else true;
-    const final_ty = self.context.type_store.mkFunction(pbuf, refined_res, is_variadic, is_pure, fnr.flags.is_extern);
+    const final_ty = self.context.type_store.mkFunction(pbuf, actual_res, is_variadic, is_pure, fnr.flags.is_extern);
 
     ast_unit.type_info.expr_types.items[id.toRaw()] = final_ty;
     return final_ty;
@@ -5925,11 +5933,12 @@ fn checkCodeBlock(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, id: 
     return try self.checkExpr(ctx, ast_unit, cb.block);
 }
 
-/// Treat async blocks opaquely by always returning `Any`.
-fn checkAsyncBlock(self: *Checker, id: ast.ExprId) !types.TypeId {
-    _ = id;
-    // Treat async blocks as opaque for typing.
-    return self.context.type_store.tAny();
+/// Check async block: validates body and returns Future<BodyType>.
+fn checkAsyncBlock(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, id: ast.ExprId) !types.TypeId {
+    const ab = ast_unit.exprs.get(.AsyncBlock, id);
+    const body_ty = try self.checkExpr(ctx, ast_unit, ab.body);
+    if (self.typeKind(body_ty) == .TypeError) return self.context.type_store.tTypeError();
+    return self.context.type_store.mkFuture(body_ty);
 }
 
 /// Validate an `mlir` block: check args, enforce comptime splices, and stamp the resulting type.
@@ -6611,10 +6620,21 @@ fn checkOptionalUnwrap(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast,
     return ore.elem;
 }
 
-/// Placeholder handling for `await` expressions (currently permits `any`).
-fn checkAwait(self: *Checker, id: ast.ExprId) !types.TypeId {
-    _ = id;
-    return self.context.type_store.tAny();
+/// Check await expression: operand must be Future<T>, result is T.
+fn checkAwait(self: *Checker, ctx: *CheckerContext, ast_unit: *ast.Ast, id: ast.ExprId) !types.TypeId {
+    const aw = ast_unit.exprs.get(.Await, id);
+    const op_ty = try self.checkExpr(ctx, ast_unit, aw.expr);
+    const kind = self.typeKind(op_ty);
+
+    if (kind == .TypeError) return self.context.type_store.tTypeError();
+    if (kind == .Any) return self.context.type_store.tAny();
+
+    if (kind == .Future) {
+        return self.context.type_store.get(.Future, op_ty).elem;
+    }
+
+    try self.context.diags.addError(exprLoc(ast_unit, aw), .await_on_non_future, .{op_ty});
+    return self.context.type_store.tTypeError();
 }
 
 /// Type-check closure literals, requiring explicit parameter annotations.

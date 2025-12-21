@@ -206,6 +206,8 @@ ret_join_block: ?mlir.Block = null,
 ret_has_value: bool = false,
 /// Cached return type for the function being lowered.
 ret_type_cache: ?mlir.Type = null,
+/// Tracks whether the current function is async (uses async.execute).
+current_func_is_async: bool = false,
 /// Tracks the current lexical scope/DI attribute.
 current_scope: ?mlir.Attribute = null,
 /// Mapping from TIR blocks to MLIR blocks.
@@ -227,6 +229,8 @@ inline_mlir_counter: u32 = 0,
 global_addr_cache: std.StringHashMap(mlir.Value),
 /// Functions that must remain as `llvm.func` due to taking addresses.
 force_llvm_func_syms: std.AutoHashMap(tir.StrId, void),
+/// Map async functions to their outlined body symbol names.
+async_body_syms: std.AutoHashMap(tir.FuncId, tir.StrId),
 
 /// MLIR diagnostic handler ID configured during module emission.
 diagnostic_handler: mlir.c.MlirDiagnosticHandlerID,
@@ -590,6 +594,7 @@ pub fn init(gpa: Allocator, context: *compile.Context, mlir_ctx: *mlir.Context, 
         .def_instr = .init(gpa),
         .global_addr_cache = .init(gpa),
         .force_llvm_func_syms = .init(gpa),
+        .async_body_syms = .init(gpa),
         .diagnostic_handler = mlir.c.mlirContextAttachDiagnosticHandler(ctx.handle, diagnosticHandler, @ptrCast(diag_data), null),
         .diagnostic_data = diag_data,
         .active_type_info = null,
@@ -623,6 +628,7 @@ pub fn deinit(self: *Codegen) void {
     self.def_instr.deinit();
     self.global_addr_cache.deinit();
     self.force_llvm_func_syms.deinit();
+    self.async_body_syms.deinit();
     var li_it = self.line_index_cache.valueIterator();
     while (li_it.next()) |lines| self.gpa.free(lines.*);
     self.line_index_cache.deinit();
@@ -881,6 +887,7 @@ pub fn emitModule(
 
     self.di_subprograms.clearRetainingCapacity();
     self.loc_cache.clearRetainingCapacity();
+    self.async_body_syms.clearRetainingCapacity();
     try self.collectForceLlvmFuncSyms(t);
     try debug.attachTargetInfo(self);
     try debug.ensureDebugModuleAttrs(self);
@@ -892,6 +899,24 @@ pub fn emitModule(
         const row = t.funcs.Function.get(fid);
         if (row.is_triton_fn) continue;
         try self.emitFunctionHeader(fid, t);
+        if (row.is_async) {
+            const body_sym = try self.asyncBodyName(fid, t);
+            try self.emitAsyncBodyHeader(fid, t, body_sym);
+        }
+    }
+    const module_has_async = blk: {
+        for (func_ids) |fid| {
+            const row = t.funcs.Function.get(fid);
+            if (row.is_async) break :blk true;
+        }
+        break :blk false;
+    };
+    if (module_has_async) {
+        var mod_op = self.module.getOperation();
+        mod_op.setDiscardableAttributeByName(
+            mlir.StringRef.from("sr.has_async"),
+            mlir.Attribute.unitAttrGet(self.mlir_ctx),
+        );
     }
     for (func_ids) |fid| {
         const row = t.funcs.Function.get(fid);
@@ -900,7 +925,22 @@ pub fn emitModule(
             continue;
         }
         const blocks = t.funcs.block_pool.slice(row.blocks);
-        if (blocks.len > 0) try self.emitFunctionBody(fid, t);
+        if (blocks.len > 0) {
+            if (row.is_async) {
+                const body_sym = self.async_body_syms.get(fid) orelse try self.asyncBodyName(fid, t);
+                const body_ret_ty = blk: {
+                    if (self.context.type_store.getKind(row.result) == .Future) {
+                        const fut = self.context.type_store.get(.Future, row.result);
+                        break :blk try self.llvmTypeOf(fut.elem);
+                    }
+                    break :blk try self.llvmTypeOf(row.result);
+                };
+                try self.emitFunctionBodyWith(fid, t, body_sym, false, body_ret_ty);
+                try self.emitAsyncWrapperBody(fid, t, body_sym);
+            } else {
+                try self.emitFunctionBody(fid, t);
+            }
+        }
     }
     return self.module;
 }
@@ -1299,6 +1339,9 @@ fn emitFunctionHeader(self: *Codegen, f_id: tir.FuncId, t: *tir.TIR) !void {
     try attrs.append(self.gpa, self.named("sym_name", self.strAttr(func_name)));
     try attrs.append(self.gpa, self.named("function_type", mlir.Attribute.typeAttrGet(fty)));
     try attrs.append(self.gpa, self.named("sym_visibility", self.strAttr("public")));
+    if (f.is_async) {
+        try attrs.append(self.gpa, self.named("async", mlir.Attribute.unitAttrGet(self.mlir_ctx)));
+    }
     if (emit_as_llvm_func) {
         // Ensure C calling convention when exposing to C/C++ callers.
         try attrs.append(self.gpa, self.named("CConv", mlir.LLVMAttributes.getLLVMCConvAttr(self.mlir_ctx, .C)));
@@ -1386,6 +1429,82 @@ fn emitFunctionHeader(self: *Codegen, f_id: tir.FuncId, t: *tir.TIR) !void {
     try self.func_syms.put(func_name_id, finfo);
 }
 
+/// Return (and cache) the outlined body symbol name for an async function.
+fn asyncBodyName(self: *Codegen, f_id: tir.FuncId, t: *tir.TIR) !tir.StrId {
+    if (self.async_body_syms.get(f_id)) |sid| return sid;
+    const f = t.funcs.Function.get(f_id);
+    const base = t.instrs.strs.get(f.name);
+    const name = try std.fmt.allocPrint(self.gpa, "{s}$async_body", .{base});
+    defer self.gpa.free(name);
+    const sid = self.context.type_store.strs.intern(name);
+    try self.async_body_syms.put(f_id, sid);
+    return sid;
+}
+
+/// Emit the header for an outlined async body function.
+fn emitAsyncBodyHeader(self: *Codegen, f_id: tir.FuncId, t: *tir.TIR, body_sym: tir.StrId) !void {
+    const f = t.funcs.Function.get(f_id);
+    const params = t.funcs.param_pool.slice(f.params);
+
+    var param_tys = try self.gpa.alloc(mlir.Type, params.len);
+    defer self.gpa.free(param_tys);
+    for (params, 0..) |p_id, i| {
+        const p = t.funcs.Param.get(p_id);
+        param_tys[i] = try self.llvmTypeOf(p.ty);
+    }
+
+    var ret_sr = f.result;
+    if (self.context.type_store.getKind(ret_sr) == .Future) {
+        ret_sr = self.context.type_store.get(.Future, ret_sr).elem;
+    }
+
+    var results: [1]mlir.Type = undefined;
+    const n_res: usize = switch (self.context.type_store.getKind(ret_sr)) {
+        .Void, .Noreturn => 0,
+        else => 1,
+    };
+    if (n_res == 1) results[0] = try self.llvmTypeOf(ret_sr);
+
+    const fn_ret_ty: mlir.Type = if (n_res == 0) self.void_ty else results[0];
+    const fty = mlir.Type.getFunctionType(self.mlir_ctx, @intCast(param_tys.len), param_tys, @intCast(n_res), results[0..n_res]);
+
+    const func_name = self.context.type_store.strs.get(body_sym);
+    if (self.func_syms.contains(body_sym)) return;
+
+    var attrs: std.ArrayList(mlir.NamedAttribute) = .empty;
+    defer attrs.deinit(self.gpa);
+
+    try attrs.append(self.gpa, self.named("sym_name", self.strAttr(func_name)));
+    try attrs.append(self.gpa, self.named("function_type", mlir.Attribute.typeAttrGet(fty)));
+    try attrs.append(self.gpa, self.named("sym_visibility", self.strAttr("private")));
+
+    const fn_loc = self.functionOptLoc(f_id, t);
+    const prev_loc = self.pushLocation(fn_loc);
+    defer self.loc = prev_loc;
+
+    const region = mlir.Region.create();
+    const fnop = self.buildOp("func.func", EmitOpArgs{
+        .attributes = attrs.items,
+        .regions = &.{region},
+    });
+
+    var body = self.module.getBody();
+    body.appendOwnedOperation(fnop);
+
+    const param_types_copy = try self.gpa.alloc(mlir.Type, param_tys.len);
+    std.mem.copyForwards(mlir.Type, param_types_copy, param_tys);
+    const finfo: FuncInfo = .{
+        .op = fnop,
+        .is_variadic = false,
+        .n_formals = params.len,
+        .ret_type = fn_ret_ty,
+        .param_types = param_types_copy,
+        .owns_param_types = true,
+        .dbg_subprogram = null,
+    };
+    _ = try self.func_syms.put(body_sym, finfo);
+}
+
 /// Return a cached `i64` constant that lives in the entry block.
 fn getI64OneInEntry(self: *Codegen) mlir.Value {
     if (self.i64_one_in_entry) |v| return v;
@@ -1404,6 +1523,17 @@ fn getI64OneInEntry(self: *Codegen) mlir.Value {
 
 /// Lower the instructions of function `f_id` after its header has been emitted.
 fn emitFunctionBody(self: *Codegen, f_id: tir.FuncId, t: *tir.TIR) !void {
+    return self.emitFunctionBodyWith(f_id, t, null, null, null);
+}
+
+fn emitFunctionBodyWith(
+    self: *Codegen,
+    f_id: tir.FuncId,
+    t: *tir.TIR,
+    sym_override: ?tir.StrId,
+    async_override: ?bool,
+    ret_type_override: ?mlir.Type,
+) !void {
     // reset per-function state
     self.block_map.clearRetainingCapacity();
     self.value_map.clearRetainingCapacity();
@@ -1422,12 +1552,23 @@ fn emitFunctionBody(self: *Codegen, f_id: tir.FuncId, t: *tir.TIR) !void {
 
     const f = t.funcs.Function.get(f_id);
     const fn_opt_loc = self.functionOptLoc(f_id, t);
-    const finfo = self.func_syms.get(f.name).?;
+    const func_sym = sym_override orelse f.name;
+    const finfo = self.func_syms.get(func_sym).?;
     self.current_scope = finfo.dbg_subprogram;
     defer self.current_scope = null;
-    self.current_func_sym = f.name;
+    self.current_func_sym = func_sym;
     defer self.current_func_sym = null;
-    self.ret_type_cache = finfo.ret_type;
+    const is_async = async_override orelse f.is_async;
+    self.current_func_is_async = is_async;
+    defer self.current_func_is_async = false;
+    var effective_ret_ty = finfo.ret_type;
+    if (ret_type_override) |rt| {
+        effective_ret_ty = rt;
+    } else if (is_async and self.context.type_store.getKind(f.result) == .Future) {
+        const fut = self.context.type_store.get(.Future, f.result);
+        effective_ret_ty = try self.llvmTypeOf(fut.elem);
+    }
+    self.ret_type_cache = effective_ret_ty;
     var func_op = finfo.op;
     var region = func_op.getRegion(0);
 
@@ -1460,9 +1601,54 @@ fn emitFunctionBody(self: *Codegen, f_id: tir.FuncId, t: *tir.TIR) !void {
     self.cur_block = entry_block;
     self.func_entry_block = entry_block;
 
+    var async_execute_res: ?mlir.Value = null;
+    if (is_async) {
+        const fut_ty = try self.llvmTypeOf(f.result);
+        const fut_sr_ty = f.result;
+        const fut_row = self.context.type_store.get(.Future, fut_sr_ty);
+        const is_void_future = self.context.type_store.getKind(fut_row.elem) == .Void;
+
+        var execute_results = ArrayList(mlir.Type).init(self.gpa);
+        defer execute_results.deinit();
+
+        // async.execute always returns a token as the first result
+        const token_ty = mlir.Type.parseGet(self.mlir_ctx, mlir.StringRef.from("!async.token"));
+        try execute_results.append(token_ty);
+
+        if (!is_void_future) {
+            try execute_results.append(fut_ty);
+        }
+
+        var exec_region = mlir.Region.create();
+        const exec_block = mlir.Block.create(&.{}, &.{});
+        exec_region.appendOwnedBlock(exec_block);
+
+        const execute_op = self.appendOp("async.execute", EmitOpArgs{
+            .results = execute_results.items,
+            .regions = &.{exec_region},
+        });
+
+        if (is_void_future) {
+            async_execute_res = execute_op.getResult(0);
+        } else {
+            async_execute_res = execute_op.getResult(1);
+        }
+
+        // The region ownership moved into async.execute; re-fetch it from the op.
+        const exec_region_owned = execute_op.getRegion(0);
+        self.cur_region = exec_region_owned;
+        self.cur_block = exec_block;
+
+        // Ensure subsequent blocks are added to the async region
+        region = exec_region_owned;
+    }
+
     if (blocks.len > 0) {
         const entry_bid = blocks[0];
-        try self.block_map.put(entry_bid, entry_block);
+        // If async, map TIR entry block to exec_block (inside async.execute).
+        // Otherwise, map to function entry block.
+        const target_block = if (is_async) self.cur_block.? else entry_block;
+        try self.block_map.put(entry_bid, target_block);
     }
 
     // seed param SSA values + SR types
@@ -1512,10 +1698,11 @@ fn emitFunctionBody(self: *Codegen, f_id: tir.FuncId, t: *tir.TIR) !void {
     const op_name = func_op.getName().str().toSlice();
     const is_llvm_func = std.mem.eql(u8, op_name, "llvm.func");
     const is_tt_func = std.mem.eql(u8, op_name, "tt.func");
-    if (!is_llvm_func and !is_tt_func) {
-        const has_res = !finfo.ret_type.equal(self.void_ty);
+    if (!is_llvm_func and !is_tt_func and !is_async) {
+        const ret_ty = self.ret_type_cache orelse finfo.ret_type;
+        const has_res = !ret_ty.equal(self.void_ty);
         self.ret_has_value = has_res;
-        const arg_ty_slice: []const mlir.Type = if (has_res) &.{finfo.ret_type} else &.{};
+        const arg_ty_slice: []const mlir.Type = if (has_res) &.{ret_ty} else &.{};
         const arg_loc_slice: []const mlir.Location = if (has_res) &.{entry_mlir_loc} else &.{};
         const ret_blk = mlir.Block.create(arg_ty_slice, arg_loc_slice);
         region.appendOwnedBlock(ret_blk);
@@ -1558,19 +1745,145 @@ fn emitFunctionBody(self: *Codegen, f_id: tir.FuncId, t: *tir.TIR) !void {
     // Emit the single func.return in the join block (if func.func)
     if (self.ret_join_block) |rb| {
         self.cur_block = rb;
-        if (self.ret_has_value) {
-            const arg = rb.getArgument(0);
-            _ = self.appendOp("func.return", EmitOpArgs{
-                .operands = &.{arg},
-            });
+        if (is_async) {
+            if (self.ret_has_value) {
+                const arg = rb.getArgument(0);
+                _ = self.appendOp("async.yield", EmitOpArgs{
+                    .operands = &.{arg},
+                });
+            } else {
+                _ = self.appendOp("async.yield", EmitOpArgs{});
+            }
         } else {
-            _ = self.appendOp("func.return", EmitOpArgs{});
+            if (self.ret_has_value) {
+                const arg = rb.getArgument(0);
+                _ = self.appendOp("func.return", EmitOpArgs{
+                    .operands = &.{arg},
+                });
+            } else {
+                _ = self.appendOp("func.return", EmitOpArgs{});
+            }
         }
+    }
+
+    if (is_async) {
+        // Return the future from the entry block
+        self.cur_block = self.func_entry_block;
+        _ = self.appendOp("func.return", EmitOpArgs{
+            .operands = &.{async_execute_res.?},
+        });
     }
 
     self.func_entry_block = null;
     self.ret_join_block = null;
     self.ret_type_cache = null;
+}
+
+/// Emit the wrapper body for an async function using async.execute and an outlined body call.
+fn emitAsyncWrapperBody(self: *Codegen, f_id: tir.FuncId, t: *tir.TIR, body_sym: tir.StrId) !void {
+    const f = t.funcs.Function.get(f_id);
+    const fn_opt_loc = self.functionOptLoc(f_id, t);
+    const finfo = self.func_syms.get(f.name).?;
+
+    self.current_scope = finfo.dbg_subprogram;
+    defer self.current_scope = null;
+    self.current_func_sym = f.name;
+    defer self.current_func_sym = null;
+    self.current_func_is_async = true;
+    defer self.current_func_is_async = false;
+
+    var func_op = finfo.op;
+    var region = func_op.getRegion(0);
+
+    const n_formals = finfo.n_formals;
+    const params = t.funcs.param_pool.slice(f.params);
+
+    // entry block arg types
+    var entry_arg_tys = try self.gpa.alloc(mlir.Type, n_formals);
+    defer self.gpa.free(entry_arg_tys);
+    for (params[0..n_formals], 0..) |p_id, i| {
+        const p = t.funcs.Param.get(p_id);
+        entry_arg_tys[i] = try self.llvmTypeOf(p.ty);
+    }
+    const entry_locs = try self.gpa.alloc(mlir.Location, n_formals);
+    defer self.gpa.free(entry_locs);
+    const entry_prev = self.pushLocation(fn_opt_loc);
+    const entry_mlir_loc = self.loc;
+    self.loc = entry_prev;
+    for (entry_locs) |*L| L.* = entry_mlir_loc;
+
+    var entry_block = mlir.Block.create(entry_arg_tys, entry_locs);
+    region.appendOwnedBlock(entry_block);
+    self.cur_region = region;
+    self.cur_block = entry_block;
+
+    // async.execute body
+    const fut_row = self.context.type_store.get(.Future, f.result);
+    const is_void_future = self.context.type_store.getKind(fut_row.elem) == .Void;
+
+    var execute_results = ArrayList(mlir.Type).init(self.gpa);
+    defer execute_results.deinit();
+    const token_ty = mlir.Type.parseGet(self.mlir_ctx, mlir.StringRef.from("!async.token"));
+    try execute_results.append(token_ty);
+    if (!is_void_future) {
+        const fut_val_ty = try self.llvmTypeOf(f.result);
+        try execute_results.append(fut_val_ty);
+    }
+
+    var exec_region = mlir.Region.create();
+    const exec_block = mlir.Block.create(&.{}, &.{});
+    exec_region.appendOwnedBlock(exec_block);
+
+    const execute_op = self.appendOp("async.execute", EmitOpArgs{
+        .results = execute_results.items,
+        .regions = &.{exec_region},
+    });
+
+    // The region ownership moved into async.execute; re-fetch it from the op.
+    const exec_region_owned = execute_op.getRegion(0);
+    self.cur_region = exec_region_owned;
+    self.cur_block = exec_block;
+
+    // Call outlined body inside async.execute.
+    var call_args = try self.gpa.alloc(mlir.Value, n_formals);
+    defer self.gpa.free(call_args);
+    for (params[0..n_formals], 0..) |_, i| {
+        call_args[i] = entry_block.getArgument(i);
+    }
+
+    const body_name = self.context.type_store.strs.get(body_sym);
+    const body_attrs = [_]mlir.NamedAttribute{
+        self.named("callee", mlir.Attribute.flatSymbolRefAttrGet(self.mlir_ctx, mlir.StringRef.from(body_name))),
+    };
+
+    if (!is_void_future) {
+        const body_ret_ty = try self.llvmTypeOf(fut_row.elem);
+        const call = self.appendOp("func.call", EmitOpArgs{
+            .operands = call_args,
+            .results = &.{body_ret_ty},
+            .attributes = &body_attrs,
+        });
+        const rv = call.getResult(0);
+        _ = self.appendOp("async.yield", EmitOpArgs{ .operands = &.{rv} });
+    } else {
+        _ = self.appendOp("func.call", EmitOpArgs{
+            .operands = call_args,
+            .results = &.{},
+            .attributes = &body_attrs,
+        });
+        _ = self.appendOp("async.yield", EmitOpArgs{});
+    }
+
+    // Return the future from the entry block.
+    self.cur_region = region;
+    self.cur_block = entry_block;
+    const ret_val = if (is_void_future) execute_op.getResult(0) else execute_op.getResult(1);
+    _ = self.appendOp("func.return", EmitOpArgs{
+        .operands = &.{ret_val},
+    });
+
+    self.cur_region = null;
+    self.cur_block = null;
 }
 
 /// Return the lowered SSA value corresponding to `id` if it was already emitted.
@@ -3469,6 +3782,31 @@ fn emitInstr(self: *Codegen, ins_id: tir.InstrId, t: *tir.TIR) !mlir.Value {
         .TupleMake => self.emitTupleMake(t.instrs.get(.TupleMake, ins_id), t),
         .RangeMake => self.emitRangeMake(t.instrs.get(.RangeMake, ins_id)),
         .Broadcast => self.emitBroadcast(t.instrs.get(.Broadcast, ins_id)),
+        .Await => blk: {
+            const p = t.instrs.get(.Await, ins_id);
+            const prev_loc = self.pushLocation(p.loc);
+            defer self.loc = prev_loc;
+            const fut_val = self.getVal(p.operand);
+            const res_ty = try self.llvmTypeOf(p.ty);
+
+            const op_ty = self.srTypeOfValue(p.operand);
+            const fut_info = self.context.type_store.get(.Future, op_ty);
+
+            if (self.context.type_store.getKind(fut_info.elem) != .Void) {
+                // !async.value<T> -> returns T
+                const result = self.emitOp("async.await", EmitOpArgs{
+                    .operands = &.{fut_val},
+                    .results = &.{res_ty},
+                });
+                break :blk result;
+            } else {
+                // !async.token -> returns nothing
+                _ = self.emitOp("async.await", EmitOpArgs{
+                    .operands = &.{fut_val},
+                });
+                break :blk .empty();
+            }
+        },
         .DbgDeclare => blk: {
             const p = t.instrs.get(.DbgDeclare, ins_id);
             const v = self.getVal(p.value);
@@ -3999,10 +4337,13 @@ fn emitTerminator(self: *Codegen, term_id: tir.TermId, t: *tir.TIR) !void {
             const sym_name_id = self.current_func_sym orelse return error.MlirMissingCurrentFunction;
             const finfo = self.func_syms.get(sym_name_id) orelse return error.MlirMissingFunctionInfo;
             const func_op = finfo.op;
-            const ret_ty = finfo.ret_type;
             const name_ref = func_op.getName().str().toSlice();
             const in_llvm_func = std.mem.eql(u8, name_ref, "llvm.func");
             const in_tt_func = std.mem.eql(u8, name_ref, "tt.func");
+            const ret_ty = if (in_llvm_func or in_tt_func)
+                finfo.ret_type
+            else
+                (self.ret_type_cache orelse finfo.ret_type);
             if (in_llvm_func) {
                 // LLVM functions still return directly
                 if (!p.value.isNone()) {
@@ -4028,18 +4369,27 @@ fn emitTerminator(self: *Codegen, term_id: tir.TermId, t: *tir.TIR) !void {
                     _ = self.appendOp("tt.return", EmitOpArgs{});
                 }
             } else {
-                // For func.func: branch to the join-return block with optional value.
-                const dest = self.ret_join_block.?;
-                if (self.ret_has_value) {
-                    const v = if (!p.value.isNone()) self.getVal(p.value.unwrap()) else self.zeroOf(ret_ty);
-                    _ = self.appendOp("cf.br", EmitOpArgs{
-                        .operands = &.{v},
-                        .successors = &.{dest},
-                    });
+                if (self.current_func_is_async) {
+                    if (!p.value.isNone()) {
+                        const v = self.getVal(p.value.unwrap());
+                        _ = self.appendOp("async.yield", EmitOpArgs{ .operands = &.{v} });
+                    } else {
+                        _ = self.appendOp("async.yield", EmitOpArgs{});
+                    }
                 } else {
-                    _ = self.appendOp("cf.br", EmitOpArgs{
-                        .successors = &.{dest},
-                    });
+                    // For func.func: branch to the join-return block with optional value.
+                    const dest = self.ret_join_block.?;
+                    if (self.ret_has_value) {
+                        const v = if (!p.value.isNone()) self.getVal(p.value.unwrap()) else self.zeroOf(ret_ty);
+                        _ = self.appendOp("cf.br", EmitOpArgs{
+                            .operands = &.{v},
+                            .successors = &.{dest},
+                        });
+                    } else {
+                        _ = self.appendOp("cf.br", EmitOpArgs{
+                            .successors = &.{dest},
+                        });
+                    }
                 }
             }
         },
@@ -5718,6 +6068,28 @@ pub fn llvmTypeOf(self: *Codegen, ty: types.TypeId) !mlir.Type {
             const inner = try self.llvmTypeOf(opt_ty.elem);
             const fields = [_]mlir.Type{ self.i1_ty, inner };
             break :blk mlir.LLVM.getLLVMStructTypeLiteral(self.mlir_ctx, &fields, false);
+        },
+
+        .Future => blk: {
+            const fut_ty = self.context.type_store.get(.Future, ty);
+            const ek = self.context.type_store.getKind(fut_ty.elem);
+            if (ek == .Void) {
+                // Return !async.token
+                const sref = mlir.StringRef.from("!async.token");
+                break :blk mlir.Type.parseGet(self.mlir_ctx, sref);
+            } else {
+                // Return !async.value<T>
+                const inner = try self.llvmTypeOf(fut_ty.elem);
+                var list: ArrayList(u8) = .init(self.gpa);
+                defer list.deinit();
+                try list.appendSlice("!async.value<");
+                var had_error = false;
+                var sink = PrintBuffer{ .list = &list, .had_error = &had_error };
+                inner.print(printCallback, &sink);
+                if (had_error) return error.OutOfMemory;
+                try list.appendSlice(">");
+                break :blk mlir.Type.parseGet(self.mlir_ctx, mlir.StringRef.from(list.items));
+            }
         },
 
         .ErrorSet => blk: {

@@ -613,6 +613,9 @@ pub fn run_passes(context: *mlir.Context, module: *mlir.Module) !void {
         // "lift-cf-to-scf," ++
         // "buffer-deallocation-pipeline," ++
         "canonicalize,cse," ++
+        "async-to-async-runtime," ++
+        "async-runtime-ref-counting," ++
+        "async-runtime-ref-counting-opt," ++
         "convert-bufferization-to-memref," ++
         "convert-linalg-to-loops," ++
         "loop-invariant-code-motion," ++
@@ -629,6 +632,7 @@ pub fn run_passes(context: *mlir.Context, module: *mlir.Module) !void {
 
         // To LLVM
         "finalize-memref-to-llvm," ++
+        "convert-async-to-llvm," ++
         "convert-complex-to-llvm," ++
         "convert-arith-to-llvm," ++
         "convert-func-to-llvm," ++
@@ -788,6 +792,14 @@ pub fn convert_to_llvm_ir(module: mlir.c.MlirModule, link_args: []const []const 
     // Ensure local out dir is searched at link and runtime for shared libs
     try args.append(allocator, "-Wl,-rpath,./out");
     try args.append(allocator, "-Lout");
+    // Link MLIR async runtime only when async lowering is present.
+    var mod_op = mlir.Operation{ .handle = mlir.c.mlirModuleGetOperation(module) };
+    const async_attr = mod_op.getDiscardableAttributeByName(mlir.StringRef.from("sr.has_async"));
+    if (!async_attr.isNull()) {
+        try args.append(allocator, "-L/usr/local/lib");
+        try args.append(allocator, "-Wl,-rpath,/usr/local/lib");
+        try args.append(allocator, "-lmlir_async_runtime");
+    }
 
     // Append user-provided link args (e.g., -L/usr/local/lib, -lraylib, ./out/mylib.so)
     for (link_args) |la| {

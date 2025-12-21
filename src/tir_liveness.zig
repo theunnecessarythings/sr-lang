@@ -218,6 +218,10 @@ fn collectInstrUses(ctx: *UseCtx, iid: tir.InstrId) !void {
             try useAddVal(ctx, row.end);
             try useAddVal(ctx, row.inclusive);
         },
+        .Await => {
+            const row = ctx.t.instrs.get(.Await, iid);
+            try useAddVal(ctx, row.operand);
+        },
 
         inline .VariantTag,
         .VariantPayloadPtr,

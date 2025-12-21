@@ -209,8 +209,9 @@ pub const DiagnosticCode = enum {
     // Values / indexing / fields
     field_access_on_non_aggregate,
     invalid_struct_field_index, // payload: one (found)
+    non_integer_index,
+    await_on_non_future,
     not_indexable,
-    non_integer_index, // payload: one (found)
     invalid_index_type, // payload: one (found)
 
     // Types
@@ -476,6 +477,7 @@ pub fn diagnosticMessageFmt(code: DiagnosticCode) []const u8 {
         .invalid_struct_field_index => "numeric field access is invalid on a struct; found {s}",
         .not_indexable => "value of type {s} is not indexable",
         .non_integer_index => "array index must be integer, found {s}",
+        .await_on_non_future => "cannot 'await' on non-future type {s}",
         .invalid_index_type => "invalid index type: {s}",
 
         // Types

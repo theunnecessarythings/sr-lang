@@ -560,7 +560,7 @@ fn lowerGlobalMlir(self: *LowerTir, ctx: *LowerContext, a: *ast.Ast, b: *Builder
     if (global_mlir_decls.items.len == 0) return;
 
     const name = b.intern("__sr_global_mlir_init");
-    var f = try b.beginFunction(self.context, name, self.context.type_store.tVoid(), false, false, .empty(), false);
+    var f = try b.beginFunction(self.context, name, self.context.type_store.tVoid(), false, false, .empty(), false, false);
     var blk = try b.beginBlock(&f);
     var env = cf.Env{};
     defer env.deinit(self.gpa);
@@ -1218,7 +1218,7 @@ fn emitTestHarness(self: *LowerTir, _: *LowerContext, _: *ast.Ast, b: *Builder) 
     const attrs = tir.RangeAttribute.empty();
     const name = self.context.type_store.strs.intern("main");
 
-    var f = try b.beginFunction(self.context, name, i32_ty, false, false, attrs, false);
+    var f = try b.beginFunction(self.context, name, i32_ty, false, false, attrs, false, false);
     var blk = try b.beginBlock(&f);
 
     const zero = b.tirValue(.ConstInt, &blk, i32_ty, .none(), .{ .value = 0 });
@@ -1572,7 +1572,7 @@ pub fn lowerFunction(
     }
 
     const attrs = try self.lowerAttrs(a, b, fnr.attrs);
-    var f = try b.beginFunction(self.context, name, fnty.result, fnty.is_variadic, fnty.is_extern, attrs, is_triton_fn);
+    var f = try b.beginFunction(self.context, name, fnty.result, fnty.is_variadic, fnty.is_extern, attrs, is_triton_fn, fnr.flags.is_async);
 
     // Params
     const params = a.exprs.param_pool.slice(fnr.params);
@@ -1711,7 +1711,10 @@ fn lowerReturnCommon(
 
     if (!value_opt.isNone()) {
         const frow = f.builder.t.funcs.Function.get(f.id);
-        const expect = frow.result;
+        var expect = frow.result;
+        if (frow.is_async and self.context.type_store.getKind(expect) == .Future) {
+            expect = self.context.type_store.get(.Future, expect).elem;
+        }
         const value_expr = value_opt.unwrap();
         const value_loc = optLoc(a, value_expr);
         const v = try self.lowerExpr(ctx, a, env, f, blk, value_expr, expect, .rvalue);
@@ -5380,6 +5383,25 @@ pub fn lowerExpr(
         .Call => self.lowerCall(ctx, a, env, f, blk, id, expected_ty, mode),
         .Cast => self.lowerCast(ctx, a, env, f, blk, id, expected_ty),
         .OptionalUnwrap => cf.lowerOptionalUnwrap(self, ctx, a, env, f, blk, id, expected_ty),
+        .Await => blk: {
+            const aw = a.exprs.get(.Await, id);
+            const loc = optLoc(a, id);
+            const op_val = try self.lowerExpr(ctx, a, env, f, blk, aw.expr, null, .rvalue);
+            const res_ty = self.getExprType(ctx, a, id);
+            const val = blk.builder.tirValue(
+                .Await,
+                blk,
+                res_ty,
+                loc,
+                .{ .operand = op_val },
+            );
+            if (expected_ty) |want| {
+                if (!res_ty.eq(want)) {
+                    break :blk self.emitCoerce(blk, val, res_ty, want, loc);
+                }
+            }
+            break :blk val;
+        },
         .ErrUnwrap => cf.lowerErrUnwrap(self, ctx, a, env, f, blk, id, expected_ty),
         .UnionType => self.lowerTypeExprOpaque(ctx, a, blk, id, expected_ty),
         .TypeOf => self.lowerTypeOf(ctx, a, blk, id),

@@ -2885,9 +2885,9 @@ test "mlir splices - success" {
     try checkProgram(
         \\
         \\ ValueTy :: mlir type { i32 }
-        \\ ConstAttr : i32 : mlir attribute { 42 : i32 }
+        \\ ConstAttr :: mlir attribute { 42 : i32 }
         \\ make_const :: proc() void {
-        \\    mlir op {
+        \\    mlir op : ValueTy {
         \\     "arith.constant"() {value = @ConstAttr} : () -> @ValueTy
         \\   }
         \\ }

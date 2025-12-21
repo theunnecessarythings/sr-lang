@@ -218,3 +218,18 @@ test "test declarations" {
     ;
     try testFormat(input, expected);
 }
+
+test "mlir formatting" {
+    const input =
+        \\foo :: proc(x: i32) {
+        \\mlir op(x) : void { "some.op"(%arg0) : (i32) -> () }
+        \\}
+    ;
+    const expected =
+        \\foo :: proc(x: i32) {
+        \\    mlir op(x) : void { "some.op"(%arg0) : (i32) -> () }
+        \\}
+        \\
+    ;
+    try testFormat(input, expected);
+}
